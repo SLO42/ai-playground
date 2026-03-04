@@ -27,6 +27,12 @@
 		{ href: 'about', label: 'About / Stack' }
 	];
 
+	const pageTitle = $derived(() => {
+		const sub = page.url.pathname.slice(`/projects/${data.projectId}`.length).replace(/^\//, '');
+		const label = sub ? sub.charAt(0).toUpperCase() + sub.slice(1) : 'Overview';
+		return `${label} — ${data.project.name}`;
+	});
+
 	function isActive(segment: string): boolean {
 		const path = page.url.pathname;
 		const base = `/projects/${data.projectId}`;
@@ -36,6 +42,10 @@
 		return sub === segment || sub.startsWith(`${segment}/`);
 	}
 </script>
+
+<svelte:head>
+	<title>{pageTitle()} | AI Playground</title>
+</svelte:head>
 
 <!-- Project Shell replaces global layout's main area -->
 <div class="flex min-h-[calc(100vh-48px)] -m-6">

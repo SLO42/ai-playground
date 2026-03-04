@@ -1,0 +1,43 @@
+name: Auto PR dev → main
+
+on:
+  push:
+    branches: [dev]
+
+jobs:
+  create-pr:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Check for existing PR
+        id: check
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          existing=$(gh pr list --base main --head dev --json number --jq '.[0].number // empty')
+          echo "pr_number=$existing" >> "$GITHUB_OUTPUT"
+
+      - name: Create PR if none exists
+        if: steps.check.outputs.pr_number == ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr create \
+            --base main \
+            --head dev \
+            --title "Release: dev → main" \
+            --body "Automated PR to promote dev changes to main."
+
+      - name: Update existing PR
+        if: steps.check.outputs.pr_number != ''
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ steps.check.outputs.pr_number }} \
+            --body "Updated with latest dev push ($(git rev-parse --short HEAD))."

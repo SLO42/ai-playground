@@ -1,0 +1,57 @@
+# Dependencies
+node_modules/
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.p12
+*.pfx
+*.crt
+config/security/certs/
+credentials.json
+**/secrets/
+
+# Runtime data
+.claude-flow/data/
+.claude-flow/logs/
+.claude-flow/sessions/
+.swarm/
+
+# Memory databases
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+
+# Build output
+dist/
+build/
+
+# Dashboard
+dashboard/node_modules/
+dashboard/.svelte-kit/
+dashboard/build/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Claude Code (local config, hooks, sessions)
+.claude/
+
+# Claude Flow runtime
+.claude-flow/
+
+# Claude Code project instructions (local)
+CLAUDE.md

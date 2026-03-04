@@ -1,0 +1,137 @@
+# Network Security Policy
+# Governs all network-facing components (OpenClaw Gateway, Ruflo MCP, etc.)
+
+version: "1.0.0"
+lastUpdated: "2026-03-03"
+
+# ─── Firewall Rules ──────────────────────────────────────────
+firewall:
+  defaultAction: "deny"       # Deny all unless explicitly allowed
+  inbound:
+    - name: "openclaw-gateway"
+      port: 18789
+      protocol: "tcp"
+      source: "127.0.0.1"    # Loopback only by default
+      action: "allow"
+    - name: "ruflo-mcp"
+      port: 3000
+      protocol: "tcp"
+      source: "127.0.0.1"
+      action: "allow"
+  outbound:
+    - name: "anthropic-api"
+      destination: "api.anthropic.com"
+      port: 443
+      protocol: "tcp"
+      action: "allow"
+    - name: "openclaw-updates"
+      destination: "registry.npmjs.org"
+      port: 443
+      protocol: "tcp"
+      action: "allow"
+
+# ─── Input Validation ────────────────────────────────────────
+inputValidation:
+  enabled: true
+  rules:
+    - name: "prompt-injection-guard"
+      description: "Block common prompt injection patterns"
+      action: "block"
+      severity: "critical"
+    - name: "path-traversal-guard"
+      description: "Prevent directory traversal in file paths"
+      action: "block"
+      severity: "critical"
+    - name: "command-injection-guard"
+      description: "Block shell command injection attempts"
+      action: "block"
+      severity: "critical"
+    - name: "xss-guard"
+      description: "Sanitize HTML/script injection in messages"
+      action: "sanitize"
+      severity: "high"
+
+# ─── Secret Management ───────────────────────────────────────
+secrets:
+  storage: "env"              # Use environment variables, never hardcode
+  required:
+    - name: "ANTHROPIC_API_KEY"
+      description: "Claude API key for model access"
+    - name: "OPENCLAW_GATEWAY_TOKEN"
+      description: "Gateway authentication token"
+  rotation:
+    enabled: true
+    intervalDays: 90
+  scanning:
+    enabled: true
+    blockOnDetection: true    # Prevent commits containing secrets
+
+# ─── Transport Security ──────────────────────────────────────
+transport:
+  enforceHTTPS: true
+  minTLSVersion: "1.3"
+  certificatePinning: false   # Enable for production with known certs
+  hsts:
+    enabled: true
+    maxAge: 31536000
+    includeSubDomains: true
+
+# ─── Access Control ──────────────────────────────────────────
+accessControl:
+  model: "rbac"               # Role-Based Access Control
+  roles:
+    - name: "admin"
+      permissions: ["*"]
+    - name: "operator"
+      permissions: ["gateway:read", "gateway:restart", "agents:read", "memory:read"]
+    - name: "user"
+      permissions: ["agents:interact", "memory:read"]
+  defaultRole: "user"
+  sessionTimeout: "30m"
+  maxFailedLogins: 5
+  lockoutDuration: "15m"
+
+# ─── Audit Logging ───────────────────────────────────────────
+audit:
+  enabled: true
+  logFile: ".claude-flow/logs/security-audit.log"
+  events:
+    - "auth.login"
+    - "auth.logout"
+    - "auth.failed"
+    - "gateway.start"
+    - "gateway.stop"
+    - "dm.pairing"
+    - "dm.blocked"
+    - "agent.spawn"
+    - "agent.terminate"
+    - "memory.access"
+    - "security.violation"
+  retention:
+    days: 90
+    compress: true
+
+# ─── Sandboxing ──────────────────────────────────────────────
+sandbox:
+  enabled: true
+  filesystem:
+    allowedPaths:
+      - "./src"
+      - "./config"
+      - "./.claude-flow"
+      - "./.claude"
+      - "./.swarm"
+    deniedPaths:
+      - "/etc"
+      - "/var"
+      - "~/.ssh"
+      - "~/.gnupg"
+  network:
+    allowedHosts:
+      - "api.anthropic.com"
+      - "registry.npmjs.org"
+    denyPrivateRanges: false  # Allow loopback for local services
+  process:
+    maxConcurrent: 20
+    maxMemoryMB: 2048
+    timeoutSeconds: 300

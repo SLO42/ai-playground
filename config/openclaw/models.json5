@@ -1,0 +1,59 @@
+// OpenClaw Model Configuration
+// Tiered routing: Local Ollama for orchestration, Claude for escalation
+{
+  models: {
+    // ─── Primary: Local Ollama (free, fast, handles routing & tool calls) ───
+    providers: {
+      ollama: {
+        baseUrl: "http://127.0.0.1:11434",  // Native API — NEVER use /v1
+        apiKey: "ollama-local",
+        api: "ollama",                        // Must be "ollama" for tool calling
+        models: [
+          {
+            id: "gpt-oss:20b",
+            name: "GPT-OSS 20B (MoE, 3.6B active)",
+            reasoning: true,
+            input: ["text"],
+            cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+            contextWindow: 131072,
+            maxTokens: 32768
+          }
+        ]
+      },
+
+      // ─── Escalation: Claude API (complex reasoning, code gen) ─────────
+      anthropic: {
+        // Uses ANTHROPIC_API_KEY from .env
+        models: [
+          {
+            id: "claude-sonnet-4-6",
+            name: "Claude Sonnet 4.6",
+            reasoning: true,
+            input: ["text", "image"]
+          },
+          {
+            id: "claude-haiku-4-5-20251001",
+            name: "Claude Haiku 4.5",
+            reasoning: false,
+            input: ["text"]
+          }
+        ]
+      }
+    },
+
+    // ─── Routing Strategy ───────────────────────────────────────────────
+    // OpenClaw uses the primary model for all conversations by default.
+    // Escalation to Claude happens when:
+    //   - Tool calls fail or produce unexpected results
+    //   - User explicitly requests it (e.g., "ask claude about this")
+    //   - Task complexity exceeds local model capability
+    //   - Ruflo swarm tasks requiring deep code analysis
+    defaults: {
+      primary: "ollama/gpt-oss:20b",        // Fast, free, local — agentic MoE
+      fallbacks: [
+        "anthropic/claude-sonnet-4-6",        // Smart escalation
+        "anthropic/claude-haiku-4-5-20251001"  // Cost-effective fallback
+      ]
+    }
+  }
+}

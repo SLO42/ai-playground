@@ -1,0 +1,90 @@
+# OpenClaw Gateway Configuration
+# Security-hardened for network deployment
+
+gateway:
+  host: "127.0.0.1"          # Bind to loopback only — never 0.0.0.0
+  port: 18789
+  protocol: "wss"             # WebSocket Secure only
+  verbose: false
+
+  # TLS/SSL — required for production
+  tls:
+    enabled: true
+    certPath: "./config/security/certs/gateway.crt"
+    keyPath: "./config/security/certs/gateway.key"
+    minVersion: "TLSv1.3"    # Enforce TLS 1.3 minimum
+
+  # Authentication
+  auth:
+    mode: "token"             # Options: token, password, tailscale
+    tokenRotationInterval: "24h"
+    maxSessionDuration: "8h"
+    requireMFA: false         # Enable for production
+
+  # Rate limiting
+  rateLimit:
+    enabled: true
+    maxRequestsPerMinute: 60
+    maxConnectionsPerIP: 5
+    burstLimit: 10
+
+  # CORS
+  cors:
+    enabled: true
+    allowedOrigins:
+      - "https://localhost"
+    allowedMethods:
+      - "GET"
+      - "POST"
+    allowCredentials: true
+
+# DM Security Policy — Family Only
+dm:
+  policy: "pairing"           # Unknown senders must provide a pairing code
+  pairingCodeExpiry: "5m"
+  maxPairingAttempts: 3
+  allowlist: []               # Add family members after pairing approval
+  blocklist: []
+  # Once a family member is paired, they stay approved.
+  # To add someone: openclaw pairing approve <channel> <code>
+  # To revoke: remove their entry from this allowlist and restart gateway
+
+# Channel configuration
+channels:
+  enabled:
+    - twitch                  # IRC-based, plugin channel
+  defaults:
+    activation: "mention"     # Require @mention in groups
+    thinking: "medium"
+    verbose: false
+
+# Model configuration — Tiered local-first routing
+# See config/openclaw/models.json5 for full provider setup
+models:
+  primary: "ollama/gpt-oss:20b"         # Local, free, fast (MoE 3.6B active, fits RTX 3090)
+  fallback:
+    - "anthropic/claude-sonnet-4-6"     # Escalation for complex tasks
+    - "anthropic/claude-haiku-4-5-20251001"  # Cost-effective fallback
+  maxTokens: 32768
+  thinking: "medium"
+
+# Ollama connection
+ollama:
+  baseUrl: "http://127.0.0.1:11434"    # Native API — NEVER use /v1 suffix
+  apiKey: "ollama-local"
+  api: "ollama"                          # Required for tool calling support
+
+# Workspace
+workspace:
+  path: "./config/openclaw/workspace"
+  skills:
+    autoLoad: true
+    path: "./config/openclaw/workspace/skills"
+
+# Logging
+logging:
+  level: "info"
+  file: ".claude-flow/logs/openclaw-gateway.log"
+  redactSecrets: true         # Always redact API keys, tokens in logs
+  maxFileSize: "50MB"
+  maxFiles: 5

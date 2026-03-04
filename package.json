@@ -1,0 +1,33 @@
+{
+  "name": "ai-playground",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "openclaw:start": "openclaw gateway --port 18789",
+    "openclaw:doctor": "openclaw doctor",
+    "openclaw:onboard": "openclaw onboard --install-daemon",
+    "ruflo:start": "npx ruflo daemon start",
+    "ruflo:doctor": "npx ruflo doctor --fix",
+    "ruflo:swarm": "npx ruflo swarm init --topology hierarchical --max-agents 8 --strategy specialized",
+    "ruflo:memory": "npx ruflo memory stats",
+    "heb:start": "uvx texas-grocery-mcp",
+    "heb:find-store": "uvx texas-grocery-mcp --help",
+    "security:scan": "npx @claude-flow/cli@latest security scan",
+    "security:audit": "npm audit",
+    "start": "npm run ruflo:start && npm run openclaw:start",
+    "doctor": "npm run ruflo:doctor && npm run openclaw:doctor",
+    "dashboard:dev": "cd dashboard && npm run dev",
+    "dashboard:build": "cd dashboard && npm run build",
+    "dashboard:start": "cd dashboard && node build"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "openclaw": "^2026.3.2",
+    "ruflo": "^3.5.2"
+  }
+}

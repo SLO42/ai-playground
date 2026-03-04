@@ -1,0 +1,43 @@
+{
+  "mcpServers": {
+    "claude-flow": {
+      "command": "cmd",
+      "args": [
+        "/c",
+        "npx",
+        "-y",
+        "@claude-flow/cli@latest",
+        "mcp",
+        "start"
+      ],
+      "env": {
+        "npm_config_update_notifier": "false",
+        "CLAUDE_FLOW_MODE": "v3",
+        "CLAUDE_FLOW_HOOKS_ENABLED": "true",
+        "CLAUDE_FLOW_TOPOLOGY": "hierarchical-mesh",
+        "CLAUDE_FLOW_MAX_AGENTS": "15",
+        "CLAUDE_FLOW_MEMORY_BACKEND": "hybrid"
+      },
+      "autoStart": false
+    },
+    "heb": {
+      "command": "uvx",
+      "args": ["texas-grocery-mcp"],
+      "env": {
+        "HEB_DEFAULT_STORE": "",
+        "LOG_LEVEL": "INFO"
+      },
+      "autoStart": false
+    },
+    "playwright": {
+      "command": "cmd",
+      "args": ["/c", "npx", "@anthropic-ai/mcp-playwright"],
+      "autoStart": false
+    },
+    "penpot": {
+      "command": "cmd",
+      "args": ["/c", "npx", "-y", "mcp-remote", "http://127.0.0.1:4401/mcp", "--allow-http"],
+      "autoStart": false
+    }
+  }
+}

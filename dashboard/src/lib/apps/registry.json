@@ -1,0 +1,5 @@
+[
+	{ "id": "heb", "name": "H-E-B Grocery", "description": "Texas grocery shopping", "status": "available" },
+	{ "id": "claude-flow", "name": "Claude Flow", "description": "Multi-agent orchestration", "status": "available" },
+	{ "id": "playwright", "name": "Playwright", "description": "Browser automation", "status": "available" }
+]

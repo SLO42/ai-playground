@@ -1,0 +1,52 @@
+# OpenClaw - Twitch Channel Configuration
+# Twitch chat via IRC connection (plugin-based)
+
+channel: twitch
+enabled: true
+
+# ─── Authentication ─────────────────────────────────────
+# Generate an OAuth token at https://twitchtokengen.com or
+# https://id.twitch.tv/oauth2/authorize
+auth:
+  username: ""                # Your Twitch bot account username
+  oauthToken: ""              # OAuth token (set in .env as TWITCH_OAUTH_TOKEN)
+  clientId: ""                # Twitch app client ID (set in .env as TWITCH_CLIENT_ID)
+
+# ─── Channels to Join ───────────────────────────────────
+# List of Twitch channels the bot should join
+join:
+  - ""                        # e.g., "your_channel_name"
+
+# ─── Behavior ───────────────────────────────────────────
+activation: "always"          # Family-only, so no need for @mention gating
+requireMention: false
+commandPrefix: "!"            # Trigger: !grocery, !cart, !coupons
+
+# ─── User Allowlist (FAMILY ONLY) ──────────────────────
+# ONLY these Twitch usernames can interact with the bot.
+# All other users are silently ignored.
+users:
+  mode: "allowlist"           # "allowlist" = whitelist only, "blocklist" = block specific
+  allowlist:                  # Add family Twitch usernames here (lowercase)
+    # - "your_username"
+    # - "family_member_1"
+    # - "family_member_2"
+  ignoreUnknown: true         # Silently drop messages from non-allowlisted users
+  logDenied: true             # Log denied attempts for security audit
+
+# ─── Rate Limiting (Twitch enforces these) ──────────────
+rateLimit:
+  messagesPerSecond: 1        # Twitch limit: 20/30s for regular, 100/30s for mod
+  maxMessageLength: 500       # Twitch max is 500 chars
+  whisperEnabled: false       # Twitch whispers are heavily restricted
+
+# ─── Message Formatting ────────────────────────────────
+formatting:
+  splitLongMessages: true     # Auto-split responses >500 chars
+  maxSplits: 3                # Don't flood chat with more than 3 messages
+  stripMarkdown: true         # Twitch chat doesn't render markdown
+
+# ─── Groups / Allowlists ───────────────────────────────
+groups:
+  allowlist: ["*"]            # Which channels to respond in ("*" = all joined)
+  moderatorsOnly: false

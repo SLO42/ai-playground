@@ -84,29 +84,37 @@
 	<div>
 		<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">Available Models</h2>
 		<div class="bg-bg-secondary border border-border rounded-lg overflow-hidden">
-			<div class="grid grid-cols-7 gap-4 px-4 py-2 border-b border-border text-xs text-text-secondary uppercase">
-				<span>Model</span>
-				<span>Size</span>
-				<span>Quantization</span>
-				<span>Params</span>
-				<span>Context</span>
-				<span>Status</span>
-				<span>Tokens/s</span>
-			</div>
-			{#each data.models as model}
-				<div class="grid grid-cols-7 gap-4 px-4 py-3 border-b border-border last:border-0 items-center">
-					<span class="text-sm font-mono text-text-primary">{model.name}</span>
-					<span class="text-sm text-text-secondary">{model.size}</span>
-					<span class="text-xs font-mono text-text-secondary">{model.quantization}</span>
-					<span class="text-sm text-text-secondary">{model.params}</span>
-					<span class="text-sm font-mono text-text-secondary">{model.context.toLocaleString()}</span>
-					<div class="flex items-center gap-1.5">
-						<span class="w-2 h-2 rounded-full {statusColors[model.status]}"></span>
-						<span class="text-xs text-text-secondary">{model.status}</span>
-					</div>
-					<span class="text-sm font-mono text-text-primary">{model.tokensPerSec > 0 ? model.tokensPerSec : '-'}</span>
-				</div>
-			{/each}
+			<table class="w-full text-left">
+				<thead>
+					<tr class="border-b border-border text-xs text-text-secondary uppercase">
+						<th class="px-4 py-2 font-medium">Model</th>
+						<th class="px-4 py-2 font-medium">Size</th>
+						<th class="px-4 py-2 font-medium">Quant</th>
+						<th class="px-4 py-2 font-medium">Params</th>
+						<th class="px-4 py-2 font-medium text-right">Context</th>
+						<th class="px-4 py-2 font-medium">Status</th>
+						<th class="px-4 py-2 font-medium text-right">Tokens/s</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each data.models as model}
+						<tr class="border-b border-border last:border-0 hover:bg-bg-tertiary/50 transition-colors">
+							<td class="px-4 py-3 text-sm font-mono text-text-primary whitespace-nowrap">{model.name}</td>
+							<td class="px-4 py-3 text-sm text-text-secondary">{model.size}</td>
+							<td class="px-4 py-3 text-xs font-mono text-text-secondary">{model.quantization}</td>
+							<td class="px-4 py-3 text-sm text-text-secondary">{model.params}</td>
+							<td class="px-4 py-3 text-sm font-mono text-text-secondary text-right">{model.context.toLocaleString()}</td>
+							<td class="px-4 py-3">
+								<div class="flex items-center gap-1.5">
+									<span class="w-2 h-2 rounded-full {statusColors[model.status]}"></span>
+									<span class="text-xs text-text-secondary">{model.status}</span>
+								</div>
+							</td>
+							<td class="px-4 py-3 text-sm font-mono text-text-primary text-right">{model.tokensPerSec > 0 ? model.tokensPerSec : '-'}</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
 		</div>
 	</div>
 

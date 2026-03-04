@@ -30,8 +30,10 @@
 	function isActive(segment: string): boolean {
 		const path = page.url.pathname;
 		const base = `/projects/${data.projectId}`;
-		if (segment === 'overview') return path === base || path === `${base}/`;
-		return path.includes(`/${segment}`);
+		// Strip the base prefix to get just the sub-path
+		const sub = path.slice(base.length).replace(/^\//, '');
+		if (segment === 'overview') return sub === '' || sub === '/';
+		return sub === segment || sub.startsWith(`${segment}/`);
 	}
 </script>
 
@@ -101,7 +103,10 @@
 			<a href="/projects/{data.projectId}" class="text-accent-blue hover:underline">{data.project.name}</a>
 			<span class="text-text-secondary">&rsaquo;</span>
 			<span class="text-text-secondary capitalize">
-				{page.url.pathname.split('/').pop() || 'Overview'}
+				{(() => {
+					const sub = page.url.pathname.slice(`/projects/${data.projectId}`.length).replace(/^\//, '');
+					return sub || 'Overview';
+				})()}
 			</span>
 		</div>
 

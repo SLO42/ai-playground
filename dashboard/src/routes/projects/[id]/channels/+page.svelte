@@ -111,20 +111,26 @@
 	<div>
 		<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">Allowlist</h2>
 		<div class="bg-bg-secondary border border-border rounded-lg overflow-hidden">
-			<div class="grid grid-cols-4 gap-4 px-4 py-2 border-b border-border text-xs text-text-secondary uppercase">
-				<span>Username</span>
-				<span>Platform</span>
-				<span>Role</span>
-				<span>Added</span>
-			</div>
-			{#each data.allowlist as entry}
-				<div class="grid grid-cols-4 gap-4 px-4 py-3 border-b border-border last:border-0">
-					<span class="text-sm font-mono text-text-primary">{entry.username}</span>
-					<span class="text-sm text-text-secondary">{entry.platform}</span>
-					<span class="text-xs px-2 py-0.5 rounded bg-accent-blue/20 text-accent-blue w-fit">{entry.role}</span>
-					<span class="text-sm text-text-secondary">{entry.added}</span>
-				</div>
-			{/each}
+			<table class="w-full text-left">
+				<thead>
+					<tr class="border-b border-border text-xs text-text-secondary uppercase">
+						<th class="px-4 py-2 font-medium">Username</th>
+						<th class="px-4 py-2 font-medium">Platform</th>
+						<th class="px-4 py-2 font-medium">Role</th>
+						<th class="px-4 py-2 font-medium">Added</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each data.allowlist as entry}
+						<tr class="border-b border-border last:border-0 hover:bg-bg-tertiary/50 transition-colors">
+							<td class="px-4 py-3 text-sm font-mono text-text-primary">{entry.username}</td>
+							<td class="px-4 py-3 text-sm text-text-secondary">{entry.platform}</td>
+							<td class="px-4 py-3"><span class="text-xs px-2 py-0.5 rounded bg-accent-blue/20 text-accent-blue">{entry.role}</span></td>
+							<td class="px-4 py-3 text-sm text-text-secondary">{entry.added}</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
 		</div>
 	</div>
 
@@ -132,14 +138,26 @@
 	<div>
 		<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">Recent Messages</h2>
 		<div class="bg-bg-secondary border border-border rounded-lg overflow-hidden">
-			{#each data.recentMessages as msg}
-				<div class="flex items-center gap-3 px-4 py-3 border-b border-border last:border-0">
-					<span class="text-xs px-2 py-0.5 rounded bg-bg-tertiary text-text-secondary">{msg.channel}</span>
-					<span class="text-sm font-mono text-accent-cyan">{msg.user}</span>
-					<span class="text-sm text-text-primary flex-1">{msg.message}</span>
-					<span class="text-xs text-text-secondary">{msg.time}</span>
-				</div>
-			{/each}
+			<table class="w-full text-left">
+				<thead>
+					<tr class="border-b border-border text-xs text-text-secondary uppercase">
+						<th class="px-4 py-2 font-medium w-24">Channel</th>
+						<th class="px-4 py-2 font-medium w-28">User</th>
+						<th class="px-4 py-2 font-medium">Message</th>
+						<th class="px-4 py-2 font-medium text-right w-20">Time</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each data.recentMessages as msg}
+						<tr class="border-b border-border last:border-0 hover:bg-bg-tertiary/50 transition-colors">
+							<td class="px-4 py-3"><span class="text-xs px-2 py-0.5 rounded bg-bg-tertiary text-text-secondary">{msg.channel}</span></td>
+							<td class="px-4 py-3 text-sm font-mono text-accent-cyan">{msg.user}</td>
+							<td class="px-4 py-3 text-sm text-text-primary">{msg.message}</td>
+							<td class="px-4 py-3 text-xs text-text-secondary text-right">{msg.time}</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
 		</div>
 	</div>
 </div>

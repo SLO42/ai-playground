@@ -2,6 +2,7 @@
 	import '../app.css';
 	import Sidebar from '$lib/components/Sidebar.svelte';
 	import StatusBar from '$lib/components/StatusBar.svelte';
+	import Toast from '$lib/components/Toast.svelte';
 	import type { LayoutData } from './$types.js';
 
 	let { data, children }: { data: LayoutData; children: any } = $props();
@@ -12,6 +13,12 @@
 		{ label: 'Memory DB', status: ('online' as const), text: 'Connected' },
 		{ label: 'Swarm', status: (data.health.swarm ? 'online' : 'warning') as 'online' | 'warning', text: data.health.swarm ? 'Active' : 'Idle' }
 	]);
+
+	let toasts = $state<Array<{ id: string; variant: 'success' | 'error' | 'warning' | 'info'; title: string; message?: string }>>([]);
+
+	function dismissToast(id: string) {
+		toasts = toasts.filter((t) => t.id !== id);
+	}
 </script>
 
 <svelte:head>
@@ -29,3 +36,5 @@
 		</main>
 	</div>
 </div>
+
+<Toast {toasts} onDismiss={dismissToast} />

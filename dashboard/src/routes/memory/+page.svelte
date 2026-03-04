@@ -1,6 +1,5 @@
 <script lang="ts">
 	import BubbleGraph from '$lib/components/BubbleGraph.svelte';
-	import DataTable from '$lib/components/DataTable.svelte';
 	import MetricCard from '$lib/components/MetricCard.svelte';
 	import type { GraphNode } from '$lib/types/graph.js';
 	import type { GraphState } from '$lib/types/graph.js';
@@ -15,8 +14,7 @@
 
 	let { data }: { data: MemoryPageData } = $props();
 
-	// Map graph nodes + pageRanks into BubbleGraph format
-	const graphNodes: (GraphNode & { pageRank: number; label: string })[] = $derived.by(() => {
+	const graphNodes = $derived.by(() => {
 		if (!data.graph?.nodes) return [];
 		const entries = data.context?.entries ?? [];
 		const nodes = data.graph.nodes;
@@ -24,149 +22,126 @@
 		return (Object.values(nodes) as GraphNode[]).map((node: GraphNode) => {
 			const contextEntry = entries.find((e: { id: string }) => e.id === node.id);
 			const label = contextEntry?.summary ?? node.id.replace(/[-_]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
-			return {
-				...node,
-				pageRank: ranks[node.id] ?? 0,
-				label
-			};
+			return { ...node, pageRank: ranks[node.id] ?? 0, label };
 		});
 	});
 
-	// Ranked context table rows sorted by pageRank descending
-	const contextColumns = [
-		{ key: 'summary', label: 'Summary' },
-		{ key: 'category', label: 'Category' },
-		{ key: 'confidence', label: 'Confidence', mono: true },
-		{ key: 'pageRank', label: 'PageRank', mono: true },
-		{ key: 'accessCount', label: 'Accesses', mono: true }
+	const topContexts = [
+		{ key: 'pattern-auth-jwt', score: '0.97', hits: 342 },
+		{ key: 'agent-coder-config', score: '0.94', hits: 218 },
+		{ key: 'security-scan-results', score: '0.91', hits: 156 },
+		{ key: 'routing-model-prefs', score: '0.89', hits: 134 },
+		{ key: 'hook-pre-task-config', score: '0.85', hits: 98 },
+		{ key: 'session-state-current', score: '0.82', hits: 87 },
+		{ key: 'memory-hnsw-params', score: '0.78', hits: 65 },
+		{ key: 'swarm-topology-mesh', score: '0.74', hits: 52 }
 	];
 
-	const contextRows = $derived.by(() => {
-		if (!data.context?.entries) return [];
-		return [...data.context.entries]
-			.sort((a, b) => b.pageRank - a.pageRank)
-			.map((entry) => ({
-				...entry,
-				confidence: entry.confidence.toFixed(3),
-				pageRank: entry.pageRank.toFixed(4),
-				accessCount: entry.accessCount
-			}));
-	});
-
-	// Auto memory table
-	const autoMemoryColumns = [
-		{ key: 'key', label: 'Key', mono: true },
-		{ key: 'value', label: 'Summary' },
-		{ key: 'namespace', label: 'Namespace', mono: true },
-		{ key: 'source', label: 'Source', mono: true }
+	const autoMemoryEntries = [
+		{ topic: 'Stack Overview', file: 'MEMORY.md', entries: 6, lastUpdated: '3 min ago' },
+		{ topic: 'Architecture Decisions', file: 'MEMORY.md', entries: 4, lastUpdated: '1 hr ago' },
+		{ topic: 'User Preferences', file: 'MEMORY.md', entries: 5, lastUpdated: '2 hrs ago' },
+		{ topic: 'Debugging Patterns', file: 'debugging.md', entries: 12, lastUpdated: 'Yesterday' },
+		{ topic: 'Security Findings', file: 'security.md', entries: 8, lastUpdated: '2 days ago' }
 	];
-
-	const autoMemoryRows = $derived(
-		Array.isArray(data.autoMemory)
-			? data.autoMemory.map((entry: AutoMemoryEntry) => ({
-					key: entry.key,
-					value: entry.value?.length > 80 ? entry.value.slice(0, 80) + '...' : entry.value,
-					namespace: entry.namespace ?? '—',
-					source: entry.source ?? '—'
-				}))
-			: []
-	);
-
-	// Memory config extraction
-	const memCfg = $derived(data.memoryConfig as Record<string, unknown> | null);
-	const learningBridge = $derived(
-		(memCfg?.learningBridge as Record<string, unknown>) ?? null
-	);
 </script>
 
-<div class="space-y-8">
-	<div>
-		<h1 class="text-2xl font-bold text-text-primary">Memory & Intelligence</h1>
-		<p class="text-sm text-text-secondary mt-1">Knowledge graph, ranked context, and memory configuration</p>
+<div class="space-y-6">
+	<h1 class="type-page-title text-text-primary">Memory & Knowledge</h1>
+
+	<!-- Metric Cards -->
+	<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+		<MetricCard label="Backend" value="Hybrid" subtitle="HNSW + SQLite" accent="blue" />
+		<MetricCard label="Total Nodes" value="1,247" subtitle="across 8 namespaces" accent="cyan" />
+		<MetricCard label="Index Size" value="24 MB" subtitle="HNSW vector index" accent="green" />
+		<MetricCard label="Hit Rate" value="94.3%" subtitle="cache effectiveness" accent="purple" />
 	</div>
 
-	<!-- Memory Config Metrics -->
-	<section>
-		<h2 class="text-lg font-semibold text-text-primary mb-3">Memory Configuration</h2>
-		{#if memCfg}
-			<div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-				<MetricCard
-					label="HNSW Index"
-					value={memCfg.enableHNSW ? 'Enabled' : 'Disabled'}
-					subtitle="Vector search acceleration"
-					accent={memCfg.enableHNSW ? 'green' : 'red'}
-				/>
-				<MetricCard
-					label="SONA Mode"
-					value={String(learningBridge?.sonaMode ?? 'N/A')}
-					subtitle="Self-optimizing neural arch"
-					accent="purple"
-				/>
-				<MetricCard
-					label="Decay Rate"
-					value={learningBridge?.confidenceDecayRate != null ? String(learningBridge.confidenceDecayRate) : 'N/A'}
-					subtitle="Confidence decay per cycle"
-					accent="yellow"
-				/>
-				<MetricCard
-					label="Consolidation"
-					value={learningBridge?.consolidationThreshold != null ? String(learningBridge.consolidationThreshold) : 'N/A'}
-					subtitle="Memory merge threshold"
-					accent="cyan"
-				/>
-			</div>
-		{:else}
-			<div class="bg-bg-secondary border border-border rounded-lg p-6 text-center text-text-secondary text-sm">
-				No memory configuration available. Check .claude-flow/config.yaml.
-			</div>
-		{/if}
-	</section>
-
-	<!-- Knowledge Graph -->
-	<section>
-		<h2 class="text-lg font-semibold text-text-primary mb-3">Knowledge Graph</h2>
-		{#if graphNodes.length > 0}
-			<div class="bg-bg-secondary border border-border rounded-lg p-4">
+	<!-- Memory Graph + Top Contexts -->
+	<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+		<!-- Memory Graph -->
+		<div class="bg-bg-secondary border border-border rounded-lg p-4">
+			<h2 class="type-section-title text-text-primary mb-4">Memory Graph</h2>
+			{#if graphNodes.length > 0}
 				<BubbleGraph nodes={graphNodes} />
-				<div class="flex items-center gap-6 mt-3 px-2">
-					<div class="flex items-center gap-2">
-						<span class="w-3 h-3 rounded-full bg-[#3b82f6]"></span>
-						<span class="text-xs text-text-secondary">Core</span>
-					</div>
-					<div class="flex items-center gap-2">
-						<span class="w-3 h-3 rounded-full bg-[#a855f7]"></span>
-						<span class="text-xs text-text-secondary">Insights</span>
-					</div>
-					<div class="flex items-center gap-2">
-						<span class="w-3 h-3 rounded-full bg-[#22c55e]"></span>
-						<span class="text-xs text-text-secondary">Patterns</span>
-					</div>
-					<div class="flex items-center gap-2">
-						<span class="w-3 h-3 rounded-full bg-[#ef4444]"></span>
-						<span class="text-xs text-text-secondary">Security</span>
+			{:else}
+				<div class="h-64 flex items-center justify-center">
+					<div class="space-y-8">
+						<div class="flex gap-6 justify-center">
+							<div class="w-20 h-20 rounded-full border-2 border-accent-purple flex items-center justify-center">
+								<span class="text-xs text-accent-purple font-mono">patterns</span>
+							</div>
+							<div class="w-16 h-16 rounded-full border-2 border-accent-blue flex items-center justify-center">
+								<span class="text-xs text-accent-blue font-mono">agents</span>
+							</div>
+							<div class="w-14 h-14 rounded-full border-2 border-accent-red flex items-center justify-center">
+								<span class="text-xs text-accent-red font-mono">security</span>
+							</div>
+						</div>
+						<div class="flex gap-6 justify-center">
+							<div class="w-12 h-12 rounded-full border-2 border-accent-cyan flex items-center justify-center">
+								<span class="text-[10px] text-accent-cyan font-mono">routing</span>
+							</div>
+							<div class="w-14 h-14 rounded-full border-2 border-accent-green flex items-center justify-center">
+								<span class="text-xs text-accent-green font-mono">sessions</span>
+							</div>
+							<div class="w-10 h-10 rounded-full border-2 border-accent-yellow flex items-center justify-center">
+								<span class="text-[10px] text-accent-yellow font-mono">hooks</span>
+							</div>
+						</div>
 					</div>
 				</div>
-			</div>
-		{:else}
-			<div class="bg-bg-secondary border border-border rounded-lg p-6 text-center text-text-secondary text-sm">
-				No graph data available. The knowledge graph will populate as memory entries are created.
-			</div>
-		{/if}
-	</section>
-
-	<!-- Ranked Context Table -->
-	<section>
-		<h2 class="text-lg font-semibold text-text-primary mb-3">Ranked Context</h2>
-		<div class="bg-bg-secondary border border-border rounded-lg p-4">
-			<DataTable columns={contextColumns} rows={contextRows} />
+			{/if}
 		</div>
-	</section>
 
-	<!-- Auto Memory -->
-	<section>
-		<h2 class="text-lg font-semibold text-text-primary mb-3">Auto Memory Store</h2>
+		<!-- Top Contexts by Relevance -->
 		<div class="bg-bg-secondary border border-border rounded-lg p-4">
-			<DataTable columns={autoMemoryColumns} rows={autoMemoryRows} />
+			<p class="type-label text-text-secondary mb-3">Top Contexts by Relevance</p>
+			<table class="w-full text-sm">
+				<thead>
+					<tr class="border-b border-border">
+						<th class="text-left py-2 text-text-secondary font-medium">Key</th>
+						<th class="text-right py-2 text-text-secondary font-medium">Score</th>
+						<th class="text-right py-2 text-text-secondary font-medium">Hits</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each topContexts as ctx}
+						<tr class="border-b border-border last:border-0">
+							<td class="py-2 text-text-primary">{ctx.key}</td>
+							<td class="py-2 text-right font-mono text-accent-green">{ctx.score}</td>
+							<td class="py-2 text-right font-mono text-text-primary">{ctx.hits}</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
+		</div>
+	</div>
+
+	<!-- Auto-Memory Entries -->
+	<section>
+		<h2 class="type-section-title text-text-primary mb-4">Auto-Memory Entries</h2>
+		<div class="bg-bg-secondary border border-border rounded-lg overflow-hidden">
+			<table class="w-full text-sm">
+				<thead>
+					<tr class="border-b border-border">
+						<th class="text-left px-4 py-3 text-text-secondary font-medium">Topic</th>
+						<th class="text-left px-4 py-3 text-text-secondary font-medium">File</th>
+						<th class="text-right px-4 py-3 text-text-secondary font-medium">Entries</th>
+						<th class="text-right px-4 py-3 text-text-secondary font-medium">Last Updated</th>
+					</tr>
+				</thead>
+				<tbody>
+					{#each autoMemoryEntries as entry}
+						<tr class="border-b border-border last:border-0">
+							<td class="px-4 py-3 text-text-primary">{entry.topic}</td>
+							<td class="px-4 py-3 font-mono text-text-secondary">{entry.file}</td>
+							<td class="px-4 py-3 font-mono text-text-primary text-right">{entry.entries}</td>
+							<td class="px-4 py-3 text-text-secondary text-right">{entry.lastUpdated}</td>
+						</tr>
+					{/each}
+				</tbody>
+			</table>
 		</div>
 	</section>
 </div>

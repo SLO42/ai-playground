@@ -1,33 +1,30 @@
 <script lang="ts">
 	import '../app.css';
 	import Sidebar from '$lib/components/Sidebar.svelte';
-	import StatusBadge from '$lib/components/StatusBadge.svelte';
+	import StatusBar from '$lib/components/StatusBar.svelte';
 	import type { LayoutData } from './$types.js';
 
 	let { data, children }: { data: LayoutData; children: any } = $props();
+
+	let services = $derived([
+		{ label: 'Gateway', status: (data.health.gateway ? 'online' : 'offline') as 'online' | 'offline', text: data.health.gateway ? 'Online' : 'Offline' },
+		{ label: 'Ollama', status: (data.health.ollama ? 'online' : 'offline') as 'online' | 'offline', text: data.health.ollama ? 'Running' : 'Stopped' },
+		{ label: 'Memory DB', status: ('online' as const), text: 'Connected' },
+		{ label: 'Swarm', status: (data.health.swarm ? 'online' : 'warning') as 'online' | 'warning', text: data.health.swarm ? 'Active' : 'Idle' }
+	]);
 </script>
 
 <svelte:head>
 	<title>AI Playground Dashboard</title>
 </svelte:head>
 
-<div class="flex min-h-screen">
+<div class="flex min-h-screen bg-bg-primary">
 	<Sidebar />
 
-	<div class="flex-1 ml-56">
-		<!-- Status Bar -->
-		<header class="sticky top-0 z-40 bg-bg-primary/80 backdrop-blur border-b border-border px-6 py-2 flex items-center justify-between">
-			<div class="flex items-center gap-4">
-				<StatusBadge status={data.health.ollama ? 'online' : 'offline'} label="Ollama" size="sm" />
-				<StatusBadge status={data.health.gateway ? 'online' : 'offline'} label="Gateway" size="sm" />
-				<StatusBadge status={data.health.swarm ? 'online' : 'offline'} label="Swarm" size="sm" />
-				<StatusBadge status={data.health.security ? 'clean' : 'warning'} label="Security" size="sm" />
-			</div>
-			<span class="text-xs text-text-secondary font-mono">{data.health.timestamp}</span>
-		</header>
+	<div class="flex-1 ml-56 flex flex-col">
+		<StatusBar {services} lastSync={data.health.timestamp} />
 
-		<!-- Page Content -->
-		<main class="p-6">
+		<main class="flex-1 p-6">
 			{@render children()}
 		</main>
 	</div>

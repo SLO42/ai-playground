@@ -66,6 +66,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `ollama-client.ts` | Ollama API client |
 | `file-reader.ts` | Safe JSON/text file reading helpers |
 | `agent-defaults.ts` | Agent configuration defaults |
+| `memory-bridge.ts` | Aggregates memory from multiple sources (auto-memory files, claude-flow MCP) for the `/api/memory/*` endpoints. Fetches claude-flow entries via MCP HTTP at `http://127.0.0.1:3577/mcp` — requires the claude-flow daemon to be running; skips silently if offline. |
 
 ## Key Types (`src/lib/types/`)
 

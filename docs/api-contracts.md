@@ -886,6 +886,19 @@ Create a new task in a project.
 
 ---
 
+## Memory
+
+Full memory API documentation is in [`docs/api-memory.md`](api-memory.md).
+
+| Endpoint | Methods | Description |
+|----------|---------|-------------|
+| `/api/memory/graph` | GET, POST, PUT | Knowledge graph CRUD (nodes + edges). Graph persisted at `.playground/graph-state.json`. |
+| `/api/memory/entries` | DELETE | Remove auto-memory entries by ID from `.playground/auto-memory-store.json`. |
+| `/api/memory/context` | GET | Combined ranked context and auto-memory entries for the memory page. |
+| `/api/memory/sync` | POST | Trigger manual sync of the memory bridge. |
+
+---
+
 ## Security
 
 ### `POST /api/security/scan`

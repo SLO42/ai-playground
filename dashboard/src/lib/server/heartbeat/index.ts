@@ -25,6 +25,7 @@ import { createDiscussionSession, checkDiscussionReplies } from './discussion.js
 import { classifyTask, shouldEscalate, spawnOpenClawAgent } from './openclaw-agent.js';
 import { recordEvent } from './agent-analytics.js';
 import { resolveSession, registerSession, releaseSession, autoScale, watchForSessionId, loadPersistedAutoScaleConfig } from './session-pool.js';
+import { commitAgentChanges, planFollowUps, spawnFollowUp } from './post-task.js';
 import { processSuggestions, suggestTasks } from '../task-suggestions.js';
 import type { ChatSession } from '$lib/types/chat.js';
 import type { Task } from '$lib/types/tasks.js';
@@ -262,6 +263,41 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 			logAgentCompletion(task, agentSnd, exitMsg, logFile, rId, agentBaseline).catch(() => {});
 			if (rId !== MONITOR_SESSION_ID) {
 				logAgentCompletion(task, agentSnd, exitMsg, logFile, MONITOR_SESSION_ID, agentBaseline, { skipUsageRecord: true }).catch(() => {});
+			}
+
+			// ── Post-task: git commit + follow-up agents ──
+			if (code === 0 && agentBaseline) {
+				(async () => {
+					const commitResult = commitAgentChanges(task, agentBaseline, model);
+					const ms = await loadMonitorSession();
+
+					if (commitResult.committed) {
+						log(ms, `[commit] "${task.title}" → ${commitResult.message}`);
+
+						pushNotification({
+							severity: 'success',
+							category: 'agent',
+							title: `Agent committed: ${task.title}`,
+							message: `${commitResult.hash} — ${commitResult.filesCommitted} file(s)`,
+							source: 'claw',
+							link: `/chat?session=${rId}`,
+							linkLabel: 'View Task'
+						}).catch(() => {});
+					} else if (commitResult.error) {
+						log(ms, `[commit] "${task.title}" — failed: ${commitResult.error}`);
+					}
+
+					// Plan and spawn follow-up agents
+					const followUps = planFollowUps(task, commitResult, parsed);
+					for (const fu of followUps) {
+						if (fu.shouldSpawn) {
+							log(ms, `[follow-up] Planning ${fu.type} for "${task.title}" — ${fu.reason}`);
+							await spawnFollowUp(task, fu.type, commitResult, ms);
+						}
+					}
+
+					await saveMonitorSession(ms);
+				})().catch(() => {});
 			}
 
 			pushNotification({

@@ -1,5 +1,6 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import { fade } from 'svelte/transition';
 
 	import type { FeatureFlags } from '$lib/server/feature-flags.js';
 
@@ -7,9 +8,45 @@
 		activePath?: string;
 		unreadCount?: number;
 		featureFlags?: FeatureFlags;
+		mobileOpen?: boolean;
+		onClose?: () => void;
 	}
 
-	let { activePath, unreadCount = 0, featureFlags }: Props = $props();
+	let { activePath, unreadCount = 0, featureFlags, mobileOpen = false, onClose }: Props = $props();
+
+	function handleNavClick() {
+		onClose?.();
+	}
+
+	let navEl: HTMLElement | undefined = $state();
+
+	function handleKeydown(e: KeyboardEvent) {
+		if (e.key === 'Escape') onClose?.();
+		if (e.key === 'Tab' && mobileOpen && navEl) {
+			const focusable = navEl.querySelectorAll<HTMLElement>(
+				'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+			);
+			if (focusable.length === 0) return;
+			const first = focusable[0];
+			const last = focusable[focusable.length - 1];
+			if (e.shiftKey && document.activeElement === first) {
+				e.preventDefault();
+				last.focus();
+			} else if (!e.shiftKey && document.activeElement === last) {
+				e.preventDefault();
+				first.focus();
+			}
+		}
+	}
+
+	$effect(() => {
+		if (mobileOpen && navEl) {
+			const first = navEl.querySelector<HTMLElement>(
+				'a[href], button:not([disabled]), [tabindex]:not([tabindex="-1"])'
+			);
+			first?.focus();
+		}
+	});
 
 	/** Routes gated by feature flags */
 	const routeFlagMap: Record<string, keyof FeatureFlags> = {
@@ -60,7 +97,27 @@
 	}
 </script>
 
-<nav aria-label="Main navigation" class="fixed left-0 top-0 h-full w-56 bg-bg-secondary border-r border-border flex flex-col z-50">
+<!-- svelte-ignore a11y_no_static_element_interactions -->
+{#if mobileOpen}
+	<!-- Backdrop overlay (mobile only) -->
+	<div
+		class="fixed inset-0 bg-black/50 z-40 md:hidden"
+		onclick={onClose}
+		role="presentation"
+		transition:fade={{ duration: 200 }}
+	></div>
+{/if}
+
+<nav
+	bind:this={navEl}
+	aria-label="Main navigation"
+	onkeydown={handleKeydown}
+	role={mobileOpen ? 'dialog' : undefined}
+	aria-modal={mobileOpen ? 'true' : undefined}
+	class="fixed left-0 top-0 h-full w-56 bg-bg-secondary border-r border-border flex flex-col z-50
+		transition-transform duration-300 ease-in-out
+		max-md:-translate-x-full {mobileOpen ? 'max-md:translate-x-0' : ''}"
+>
 	<div class="px-4 py-5 border-b border-border">
 		<h1 class="text-sm font-bold text-accent-cyan tracking-wider">ai-playground</h1>
 	</div>
@@ -83,6 +140,7 @@
 		{#each navItems as item}
 			<a
 				href={item.href}
+				onclick={handleNavClick}
 				aria-current={isActive(item.href) ? 'page' : undefined}
 				class="group relative flex items-center gap-3 mx-2 px-3 h-10 rounded-lg text-sm transition-colors
 					{isActive(item.href)

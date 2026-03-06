@@ -3,7 +3,7 @@
 	import * as Sentry from '@sentry/sveltekit';
 
 	$effect(() => {
-		if (page.error && page.status >= 500) {
+		if (page.error) {
 			Sentry.captureException(page.error, {
 				tags: { route: page.url?.pathname, status: page.status }
 			});

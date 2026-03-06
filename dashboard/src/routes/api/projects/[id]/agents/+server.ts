@@ -6,7 +6,7 @@ import { PATHS } from '$lib/server/constants.js';
 import { scanAllProjects } from '$lib/server/project-scanner.js';
 import type { AgentInfo, AgentStatus } from '$lib/types/agents.js';
 import { populateForProject, getProjectPoolStats, resetProjectPool } from '$lib/server/heartbeat/session-pool.js';
-import { getActiveAgents } from '$lib/server/heartbeat/shared.js';
+import { getActiveAgents, maxConcurrentAgents } from '$lib/server/heartbeat/shared.js';
 
 interface ProjectAgentAssociation {
 	agents: string[]; // agent filenames relative to agentsDir
@@ -174,6 +174,14 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 			if (association.agents.length === 0) {
 				return json({ error: 'No agents associated with this project. Add agents first.' }, { status: 400 });
 			}
+
+			const activeAgents = getActiveAgents();
+			if (activeAgents.size >= maxConcurrentAgents) {
+				return json({
+					error: `Pool is at capacity (${activeAgents.size}/${maxConcurrentAgents} agents running). Stop some agents before spawning more.`
+				}, { status: 400 });
+			}
+
 			const allAgents = await scanAvailableAgents();
 			const associatedSet = new Set(association.agents);
 			const projectAgents = allAgents

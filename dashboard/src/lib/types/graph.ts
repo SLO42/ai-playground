@@ -33,6 +33,7 @@ export interface BubbleGraphProps {
 	nodes: RankedGraphNode[];
 	edges?: GraphEdge[];
 	onNodeClick?: (nodeId: string) => void;
+	ariaLabel?: string;
 }
 
 /** POST /api/memory/graph request body. */

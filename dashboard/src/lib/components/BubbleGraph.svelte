@@ -5,9 +5,12 @@
 		nodes: RankedGraphNode[];
 		edges?: GraphEdge[];
 		onNodeClick?: (nodeId: string) => void;
+		ariaLabel?: string;
 	}
 
-	let { nodes, edges = [], onNodeClick }: Props = $props();
+	let { nodes, edges = [], onNodeClick, ariaLabel }: Props = $props();
+
+	let defaultAriaLabel = $derived(`Memory knowledge graph showing ${nodes.length} nodes and ${edges.length} connections, sized by PageRank relevance`);
 
 	let maxRank = $derived(Math.max(...nodes.map((n) => n.pageRank), 0.001));
 
@@ -57,7 +60,7 @@
 	};
 </script>
 
-<svg viewBox="0 0 {width} {height}" class="w-full min-w-[480px]" style="max-height: 420px" role="img" aria-label="Memory knowledge graph showing {nodes.length} nodes and {edges.length} connections, sized by PageRank relevance">
+<svg viewBox="0 0 {width} {height}" class="w-full min-w-[480px]" style="max-height: 420px" role="img" aria-label={ariaLabel ?? defaultAriaLabel}>
 	<title>Memory knowledge graph with {nodes.length} nodes connected by {edges.length} edges</title>
 	<!-- Edges -->
 	{#each edges as edge}

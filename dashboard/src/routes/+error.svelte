@@ -1,5 +1,14 @@
 <script lang="ts">
 	import { page } from '$app/state';
+	import * as Sentry from '@sentry/sveltekit';
+
+	$effect(() => {
+		if (page.error && page.status >= 500) {
+			Sentry.captureException(page.error, {
+				tags: { route: page.url?.pathname, status: page.status }
+			});
+		}
+	});
 </script>
 
 <div class="flex items-center justify-center min-h-[60vh]">

@@ -57,7 +57,7 @@
 	};
 </script>
 
-<svg viewBox="0 0 {width} {height}" class="w-full" style="max-height: 420px" role="img" aria-label="Memory knowledge graph showing {nodes.length} nodes and {edges.length} connections, sized by PageRank relevance">
+<svg viewBox="0 0 {width} {height}" class="w-full min-w-[480px]" style="max-height: 420px" role="img" aria-label="Memory knowledge graph showing {nodes.length} nodes and {edges.length} connections, sized by PageRank relevance">
 	<title>Memory knowledge graph with {nodes.length} nodes connected by {edges.length} edges</title>
 	<!-- Edges -->
 	{#each edges as edge}

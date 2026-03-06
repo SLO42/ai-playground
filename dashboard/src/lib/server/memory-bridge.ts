@@ -120,50 +120,57 @@ async function syncAutoMemoryFiles(): Promise<{ entries: AutoMemoryEntry[]; erro
 	return { entries, errors };
 }
 
-// ── Source 2: Claude-Flow MCP Memory (SQLite) ────────────────────────
+// ── Source 2: Claude-Flow MCP Memory ─────────────────────────────────
 
+/**
+ * Sync from claude-flow memory via the MCP memory_list tool.
+ * Requires the claude-flow daemon to be running.
+ * Falls back gracefully if daemon is offline — no CLI dependencies needed.
+ */
 async function syncClaudeFlowMemory(): Promise<{ entries: AutoMemoryEntry[]; errors: string[] }> {
 	const entries: AutoMemoryEntry[] = [];
 	const errors: string[] = [];
-	const dbPath = resolve(PATHS.root, '.swarm/memory.db');
-
-	if (!existsSync(dbPath)) {
-		return { entries, errors };
-	}
 
 	try {
-		// Use the MCP memory_list tool via HTTP if daemon is running,
-		// otherwise read the DB directly via a child process
-		const { execSync } = await import('child_process');
+		// Try the MCP memory list endpoint (claude-flow daemon must be running)
+		const res = await fetch('http://127.0.0.1:3577/mcp', {
+			method: 'POST',
+			headers: { 'Content-Type': 'application/json' },
+			body: JSON.stringify({
+				jsonrpc: '2.0',
+				id: 'bridge-sync',
+				method: 'tools/call',
+				params: { name: 'memory_list', arguments: { limit: 200 } }
+			}),
+			signal: AbortSignal.timeout(3000)
+		});
 
-		// Query memory_entries table for active entries
-		const query = `SELECT id, key, namespace, content, type, tags, metadata, created_at, access_count FROM memory_entries WHERE status = 'active' ORDER BY created_at DESC LIMIT 200;`;
+		if (!res.ok) return { entries, errors };
 
-		const raw = execSync(
-			`sqlite3 -json "${dbPath}" "${query.replace(/"/g, '\\"')}"`,
-			{ encoding: 'utf-8', timeout: 5000, windowsHide: true }
-		).trim();
+		const rpc = await res.json() as {
+			result?: {
+				content?: Array<{ text?: string }>;
+			};
+		};
 
-		if (!raw || raw === '[]') return { entries, errors };
+		const text = rpc.result?.content?.[0]?.text;
+		if (!text) return { entries, errors };
 
-		const rows = JSON.parse(raw) as Array<{
-			id: string;
-			key: string;
-			namespace: string;
-			content: string;
-			type: string;
-			tags?: string;
-			metadata?: string;
-			created_at: number;
-			access_count: number;
-		}>;
+		const parsed = JSON.parse(text) as {
+			entries?: Array<{
+				id: string;
+				key: string;
+				namespace: string;
+				content: string;
+				type?: string;
+				tags?: string[];
+				metadata?: Record<string, unknown>;
+				created_at?: number;
+				access_count?: number;
+			}>;
+		};
 
-		for (const row of rows) {
-			let tags: string[] = [];
-			let metadata: Record<string, unknown> = {};
-			try { if (row.tags) tags = JSON.parse(row.tags); } catch { /* */ }
-			try { if (row.metadata) metadata = JSON.parse(row.metadata); } catch { /* */ }
-
+		for (const row of parsed.entries ?? []) {
 			entries.push({
 				id: `mem-bridge-cf-${row.id}`,
 				key: `cf-${row.namespace}-${row.key}`,
@@ -172,21 +179,18 @@ async function syncClaudeFlowMemory(): Promise<{ entries: AutoMemoryEntry[]; err
 				namespace: `claude-flow:${row.namespace}`,
 				type: row.type || 'semantic',
 				metadata: {
-					...metadata,
-					bridge: 'claude-flow-db',
+					...(row.metadata ?? {}),
+					bridge: 'claude-flow-mcp',
 					originalId: row.id,
-					accessCount: row.access_count,
-					tags
+					accessCount: row.access_count ?? 0,
+					tags: row.tags ?? []
 				},
-				createdAt: row.created_at
+				createdAt: row.created_at ?? Date.now()
 			});
 		}
-	} catch (e) {
-		// sqlite3 CLI might not be available — try better-sqlite3 or just skip
-		const msg = e instanceof Error ? e.message : 'unknown';
-		if (!msg.includes('not found') && !msg.includes('not recognized')) {
-			errors.push(`claude-flow db: ${msg.slice(0, 100)}`);
-		}
+	} catch {
+		// Daemon not running or MCP unavailable — skip silently
+		// This is expected when the daemon isn't started
 	}
 
 	return { entries, errors };

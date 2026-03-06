@@ -33,7 +33,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `/api/chat/history` | GET/POST | Chat session CRUD |
 | `/api/services` | GET | Service status polling |
 | `/api/services/[id]` | POST | Start/stop/restart service |
-| `/api/health` | GET | Quick health check (ollama, gateway, daemon) |
+| `/api/health` | GET | Detailed health check — per-service probes with latency, DB connectivity (`.swarm/memory.db`), daemon PID validation, system memory/CPU |
 | `/api/projects` | GET/POST | Project CRUD |
 | `/api/projects/[id]/tasks` | GET/POST | Task CRUD per project |
 | `/api/notifications` | GET | Notification polling |
@@ -157,6 +157,17 @@ SvelteKit's catch-all error boundary. Handles all unmatched routes (404) and ser
 - **500** — "Something went wrong" with a Sentry event ID reference and Try Again + Go Back + Dashboard links.
 - **Other** — Generic fallback with error message and Back to Dashboard link.
 - All variants set `<title>` and `<meta name="description">` via `<svelte:head>`.
+
+### Route-Scoped Error Pages
+
+Several routes have their own `+error.svelte` that renders inline (within the app shell) instead of replacing the full page. Each captures the error to Sentry with a route-specific tag and shows a Retry + Back to Home option.
+
+| Route | File | Sentry tag |
+|-------|------|------------|
+| `/models` | `routes/models/+error.svelte` | `models-page` |
+| `/notifications` | `routes/notifications/+error.svelte` | `notifications-page` |
+| `/projects` | `routes/projects/+error.svelte` | `projects-page` |
+| `/security` | `routes/security/+error.svelte` | `security-page` |
 
 ## Data Flow
 

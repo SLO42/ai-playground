@@ -899,6 +899,52 @@ Full memory API documentation is in [`docs/api-memory.md`](api-memory.md).
 
 ---
 
+## Health
+
+### `GET /api/health`
+
+Probe all services, database connectivity, daemon process status, and system resource usage.
+
+Returns HTTP `200` when status is `healthy` or `degraded`; HTTP `503` when all services are `down`.
+
+**Response** `200 | 503`
+```json
+{
+  "status": "healthy | degraded | down",
+  "version": "2026.3.x",
+  "uptime": 3600,
+  "timestamp": "2026-03-06T23:00:00.000Z",
+  "services": {
+    "ollama":      { "status": "healthy | degraded | down", "latencyMs": 12 },
+    "openclaw":    { "status": "healthy | degraded | down", "latencyMs": 8, "message": "HTTP 503" },
+    "claude-flow": { "status": "healthy | down", "latencyMs": null, "message": "Daemon process not running" }
+  },
+  "database": {
+    "status": "healthy | down",
+    "sizeBytes": 1048576,
+    "path": ".swarm/memory.db"
+  },
+  "daemon": {
+    "online": true,
+    "activeWorkers": 3,
+    "pid": 12345
+  },
+  "system": {
+    "memoryUsedMb": 128,
+    "memoryTotalMb": 32768,
+    "cpuUsage": 0.5
+  }
+}
+```
+
+**Notes**
+- `status` rolls up: `healthy` if all services + DB are healthy; `down` if all are down; `degraded` otherwise.
+- `services["claude-flow"].latencyMs` is always `null` — liveness is determined by PID probe, not HTTP.
+- `message` is omitted on healthy services; present on degraded/down with a reason.
+- `database.path` is relative to the project root (`.swarm/memory.db`).
+
+---
+
 ## Security
 
 ### `POST /api/security/scan`

@@ -251,5 +251,27 @@
 			"edgeCount": 19959
 		},
 		"timestamp": "2026-03-06T22:57:56.242Z"
+	},
+	{
+		"id": "ui-1772837884230-24",
+		"category": "memory_graph",
+		"action": "graph_load_success",
+		"label": "initial",
+		"value": 242,
+		"metadata": {
+			"edgeCount": 19959
+		},
+		"timestamp": "2026-03-06T22:58:04.230Z"
+	},
+	{
+		"id": "ui-1772837887912-25",
+		"category": "memory_graph",
+		"action": "graph_load_success",
+		"label": "initial",
+		"value": 242,
+		"metadata": {
+			"edgeCount": 19959
+		},
+		"timestamp": "2026-03-06T22:58:07.912Z"
 	}
 ]

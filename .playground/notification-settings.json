@@ -1,0 +1,39 @@
+{
+	"desktop": true,
+	"inAppToasts": true,
+	"sound": false,
+	"quietHoursStart": "23:00",
+	"quietHoursEnd": "08:00",
+	"categories": {
+		"task": {
+			"desktop": true,
+			"inApp": true
+		},
+		"service": {
+			"desktop": true,
+			"inApp": true
+		},
+		"agent": {
+			"desktop": true,
+			"inApp": true
+		},
+		"chat": {
+			"desktop": true,
+			"inApp": true
+		},
+		"memory": {
+			"desktop": true,
+			"inApp": true
+		},
+		"model": {
+			"desktop": true,
+			"inApp": true
+		},
+		"system": {
+			"desktop": true,
+			"inApp": true
+		}
+	},
+	"heartbeatEnabled": true,
+	"heartbeatIntervalMs": 260000
+}

@@ -1,0 +1,139 @@
+# Agent Pool Configuration
+# 14 agents: 8 Opus, 2 Claw (local), 2 Sonnet, 2 Haiku
+# Each tier handles tasks matching its capability level
+
+pool:
+  id: agent-pool-default
+  maxSize: 14
+  autoScale: false
+
+  # Handoff routing rules
+  routing:
+    # Opus handles: complex reasoning, architecture, security, code generation, deep analysis
+    # Sonnet handles: moderate complexity, code review, refactoring, testing
+    # Haiku handles: simple tasks, formatting, linting, quick lookups, status checks
+    # Claw (local): orchestration, routing, tool calls, conversation, task delegation
+
+    escalation:
+      # When a lower-tier agent can't handle a task, escalate up
+      haiku_to_sonnet:
+        - complexity > 30%
+        - requires deep reasoning
+        - multi-file changes
+      sonnet_to_opus:
+        - complexity > 60%
+        - architecture decisions
+        - security-critical
+        - novel problem solving
+      claw_to_sonnet:
+        - code generation > 50 lines
+        - requires API knowledge
+        - analysis tasks
+
+    delegation:
+      # When a higher-tier agent has simple subtasks, delegate down
+      opus_to_sonnet:
+        - code review subtasks
+        - test writing
+        - refactoring
+      opus_to_haiku:
+        - formatting
+        - linting
+        - status checks
+      sonnet_to_haiku:
+        - simple lookups
+        - file listing
+        - basic transforms
+
+  agents:
+    # ─── Opus Agents (8) — Heavy lifting ───────────────────────────
+    - id: opus-coder-1
+      type: coder
+      model: opus
+      role: primary
+      description: General-purpose code implementation
+
+    - id: opus-coder-2
+      type: coder
+      model: opus
+      role: primary
+      description: Parallel code implementation
+
+    - id: opus-planner
+      type: planner
+      model: opus
+      role: coordinator
+      description: Task planning, breakdown, and orchestration
+
+    - id: opus-researcher
+      type: researcher
+      model: opus
+      role: primary
+      description: Deep codebase research and analysis
+
+    - id: opus-reviewer
+      type: reviewer
+      model: opus
+      role: primary
+      description: Code review and quality assurance
+
+    - id: opus-security
+      type: security-architect
+      model: opus
+      role: specialist
+      description: Security architecture and audit
+
+    - id: opus-architect
+      type: architecture/arch-system-design
+      model: opus
+      role: specialist
+      description: System design and architecture decisions
+
+    - id: opus-tester
+      type: tester
+      model: opus
+      role: primary
+      description: Test writing and validation
+
+    # ─── Claw Agents (2) — Local orchestration (free, fast) ────────
+    - id: claw-orchestrator-1
+      type: planner
+      model: claw
+      provider: ollama
+      providerModel: gpt-oss:20b
+      role: orchestrator
+      description: Task routing, tool calls, conversation handling
+
+    - id: claw-orchestrator-2
+      type: researcher
+      model: claw
+      provider: ollama
+      providerModel: gpt-oss:20b
+      role: orchestrator
+      description: Quick lookups, routing decisions, delegation
+
+    # ─── Sonnet Agents (2) — Balanced capability ──────────────────
+    - id: sonnet-coder
+      type: coder
+      model: sonnet
+      role: secondary
+      description: Moderate complexity code, refactoring, reviews
+
+    - id: sonnet-tester
+      type: tester
+      model: sonnet
+      role: secondary
+      description: Test generation, coverage analysis, validation
+
+    # ─── Haiku Agents (2) — Fast, cost-effective ──────────────────
+    - id: haiku-helper-1
+      type: coder
+      model: haiku
+      role: utility
+      description: Simple transforms, formatting, quick fixes
+
+    - id: haiku-helper-2
+      type: researcher
+      model: haiku
+      role: utility
+      description: Lookups, status checks, simple analysis

@@ -1,44 +1,71 @@
 import type { PageServerLoad } from './$types.js';
+import { PATHS } from '$lib/server/constants.js';
+import { scanAllProjects } from '$lib/server/project-scanner.js';
+import { readFile } from 'fs/promises';
+import { resolve } from 'path';
 
 export const load: PageServerLoad = async ({ params }) => {
-	const overviews: Record<string, any> = {
-		'ai-playground': {
-			description:
-				'Central AI interface with multi-agent orchestration, GPT-OSS 20B local model, and family-only access.',
-			techStack: ['SvelteKit', 'TypeScript', 'Tailwind', 'Ollama', 'Claude Flow v3'],
-			stats: { agents: 6, sessions: 3, memoryNodes: 89, hooks: 14, channels: 2, models: 4 },
-			health: 'healthy',
-			services: [
-				{ name: 'OpenClaw Gateway', status: 'online', port: 18789 },
-				{ name: 'Ollama (GPT-OSS 20B)', status: 'online', port: 11434 },
-				{ name: 'Claude Flow Daemon', status: 'online', port: null },
-				{ name: 'HEB MCP Server', status: 'offline', port: null }
-			],
-			recentActivity: [
-				{ action: 'Agent spawned', detail: 'coder — auth fix', time: '2m ago' },
-				{ action: 'Session started', detail: 'workflow-pipeline-42', time: '8m ago' },
-				{ action: 'Memory stored', detail: 'pattern-auth (patterns)', time: '15m ago' },
-				{ action: 'Hook executed', detail: 'post-edit → lint check', time: '22m ago' },
-				{ action: 'Channel message', detail: 'slo42 via Twitch', time: '31m ago' }
-			],
+	const projects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root);
+	const project = projects.find((p) => p.id === params.id);
+
+	if (!project) {
+		return { overview: buildFallback(params.id) };
+	}
+
+	// Read config for services
+	let configServices: { name: string; port?: number }[] = [];
+	try {
+		const configPath = resolve(project.path, '.playground/config.json');
+		const raw = await readFile(configPath, 'utf-8');
+		const config = JSON.parse(raw);
+		configServices = config.services ?? [];
+	} catch {
+		// no config services
+	}
+
+	const services = configServices.map((s) => ({
+		name: s.name,
+		status: 'offline' as const,
+		port: s.port ?? null
+	}));
+
+	return {
+		overview: {
+			description: project.description,
+			techStack: project.techStack,
+			tags: project.tags,
+			stats: {
+				agents: project.agents,
+				sessions: project.sessions,
+				memoryNodes: project.memoryNodes,
+				hooks: 0,
+				channels: 0,
+				models: 0
+			},
+			health: project.health,
+			services,
+			recentActivity: [],
 			quickLinks: [
-				{ label: 'Models', href: 'models', stat: '4 models', accent: 'blue' },
-				{ label: 'Agents', href: 'agents', stat: '6 active', accent: 'green' },
-				{ label: 'Channels', href: 'channels', stat: '2 connected', accent: 'cyan' },
-				{ label: 'Sessions', href: 'sessions', stat: '3 running', accent: 'purple' },
-				{ label: 'Memory', href: 'memory', stat: '89 nodes', accent: 'blue' },
-				{ label: 'Hooks', href: 'hooks', stat: '14 registered', accent: 'yellow' },
-				{ label: 'Security', href: 'security', stat: '0 findings', accent: 'green' },
-				{ label: 'Apps & MCP', href: 'services', stat: '4 services', accent: 'cyan' }
+				{ label: 'Models', href: 'models', stat: '-', accent: 'blue' },
+				{ label: 'Agents', href: 'agents', stat: `${project.agents} defined`, accent: 'green' },
+				{ label: 'Channels', href: 'channels', stat: '-', accent: 'cyan' },
+				{ label: 'Sessions', href: 'sessions', stat: `${project.sessions} files`, accent: 'purple' },
+				{ label: 'Memory', href: 'memory', stat: `${project.memoryNodes} nodes`, accent: 'blue' },
+				{ label: 'Hooks', href: 'hooks', stat: '-', accent: 'yellow' },
+				{ label: 'Security', href: 'security', stat: '-', accent: 'green' },
+				{ label: 'Apps & MCP', href: 'services', stat: `${services.length} services`, accent: 'cyan' }
 			]
 		}
 	};
+};
 
-	const fallback = {
-		description: `Project workspace for ${params.id}`,
+function buildFallback(id: string) {
+	return {
+		description: `Project workspace for ${id}`,
 		techStack: [],
+		tags: [],
 		stats: { agents: 0, sessions: 0, memoryNodes: 0, hooks: 0, channels: 0, models: 0 },
-		health: 'healthy',
+		health: 'unknown',
 		services: [],
 		recentActivity: [],
 		quickLinks: [
@@ -52,6 +79,4 @@ export const load: PageServerLoad = async ({ params }) => {
 			{ label: 'Apps & MCP', href: 'services', stat: '-', accent: 'cyan' }
 		]
 	};
-
-	return { overview: overviews[params.id] ?? fallback };
-};
+}

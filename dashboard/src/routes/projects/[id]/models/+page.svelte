@@ -51,6 +51,11 @@
 	<!-- Routing Chain -->
 	<div>
 		<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">Routing Chain</h2>
+		{#if data.routingChain.length === 0}
+			<div class="bg-bg-secondary border border-border rounded-lg p-8 text-center">
+				<p class="text-text-secondary text-sm">No routing chain configured</p>
+			</div>
+		{:else}
 		<div class="flex items-center gap-2">
 			{#each data.routingChain as model, i}
 				<div class="flex-1 bg-bg-secondary border border-border rounded-lg p-4">
@@ -78,6 +83,7 @@
 				{/if}
 			{/each}
 		</div>
+		{/if}
 	</div>
 
 	<!-- Model List -->
@@ -112,6 +118,8 @@
 							</td>
 							<td class="px-4 py-3 text-sm font-mono text-text-primary text-right">{model.tokensPerSec > 0 ? model.tokensPerSec : '-'}</td>
 						</tr>
+					{:else}
+						<tr><td colspan="7" class="px-4 py-6 text-center text-sm text-text-secondary">No models available</td></tr>
 					{/each}
 				</tbody>
 			</table>

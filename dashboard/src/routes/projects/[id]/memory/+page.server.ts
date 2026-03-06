@@ -1,30 +1,88 @@
 import type { PageServerLoad } from './$types.js';
+import { readJsonFile } from '$lib/server/file-reader.js';
+import { PATHS } from '$lib/server/constants.js';
+import type { RankedContext, AutoMemoryEntry } from '$lib/types/memory.js';
+import type { GraphState } from '$lib/types/graph.js';
 
-export const load: PageServerLoad = async () => {
+export const load: PageServerLoad = async ({ parent }) => {
+	const { projectId, project } = await parent();
+	const projectName = project.name;
+
+	let entries: AutoMemoryEntry[] = [];
+	let context: RankedContext | null = null;
+	let loadError: string | null = null;
+	let graph: GraphState | null = null;
+
+	try {
+		const [contextResult, autoMemory, graphResult] = await Promise.all([
+			readJsonFile<RankedContext>(PATHS.rankedContext),
+			readJsonFile<AutoMemoryEntry[]>(PATHS.autoMemoryStore),
+			readJsonFile<GraphState>(PATHS.graphState)
+		]);
+
+		graph = graphResult ?? null;
+		const allEntries = autoMemory ?? [];
+
+		// Filter entries relevant to this project (same logic as API endpoint)
+		const filtered = allEntries.filter((e) => {
+			const source = (e.metadata?.sourceFile as string) ?? '';
+			const projectMatch = source.match(/projects[/\\]([^/\\]+)[/\\]/);
+			const entryProject = projectMatch
+				? projectMatch[1].replace(/^[Cc]--/, '').replace(/-/g, '/').split('/').pop()
+				: '';
+			return (
+				entryProject === projectName ||
+				entryProject === projectId ||
+				source.includes(projectId)
+			);
+		});
+
+		// Fall back to all entries if no project-specific ones found (root project)
+		entries = filtered.length > 0 ? filtered : allEntries;
+		context = contextResult ?? null;
+	} catch (e) {
+		loadError = e instanceof Error ? e.message : 'Failed to load memory data';
+	}
+
+	// Namespace breakdown
+	const namespaces = new Map<string, number>();
+	for (const e of entries) {
+		const ns = e.namespace ?? 'default';
+		namespaces.set(ns, (namespaces.get(ns) ?? 0) + 1);
+	}
+
+	// Category breakdown from ranked context
+	const contextEntries = context?.entries ?? [];
+	const categories = new Map<string, number>();
+	for (const e of contextEntries) {
+		const cat = e.category ?? 'unknown';
+		categories.set(cat, (categories.get(cat) ?? 0) + 1);
+	}
+
+	const avgConfidence =
+		contextEntries.length > 0
+			? contextEntries.reduce((sum, e) => sum + e.confidence, 0) / contextEntries.length
+			: 0;
+
 	return {
-		summary: { totalNodes: 89, namespaces: 6, hnswIndex: '1.2MB', hitRate: '94.2%' },
-		namespaces: [
-			{ name: 'patterns', count: 24, description: 'Code patterns & conventions', color: 'accent-blue' },
-			{ name: 'decisions', count: 18, description: 'Architecture decisions (ADRs)', color: 'accent-purple' },
-			{ name: 'context', count: 16, description: 'Session context & state', color: 'accent-cyan' },
-			{ name: 'errors', count: 12, description: 'Error resolutions & fixes', color: 'accent-red' },
-			{ name: 'dependencies', count: 11, description: 'Package & version info', color: 'accent-yellow' },
-			{ name: 'user-prefs', count: 8, description: 'User preferences & workflow', color: 'accent-green' }
-		],
-		recentNodes: [
-			{ key: 'pattern-auth', namespace: 'patterns', value: 'JWT with refresh token rotation', ttl: null, score: 0.97 },
-			{ key: 'adr-026-routing', namespace: 'decisions', value: '3-tier model routing (Booster→Haiku→...', ttl: null, score: 0.95 },
-			{ key: 'ctx-current-task', namespace: 'context', value: 'Building Penpot design system pages', ttl: '24h', score: 0.92 },
-			{ key: 'err-vite-hmr', namespace: 'errors', value: 'HMR disconnect fix: check WebSocket...', ttl: '7d', score: 0.88 },
-			{ key: 'dep-svelte-5', namespace: 'dependencies', value: 'SvelteKit 2.x requires Svelte 5 runes', ttl: '30d', score: 0.85 }
-		],
-		hnswConfig: {
-			m: 16,
-			efConstruction: 200,
-			efSearch: 50,
-			dimensions: 384,
-			distance: 'cosine',
-			backend: 'hybrid'
-		}
+		projectId,
+		projectName,
+		loadError,
+		graph,
+		summary: {
+			totalNodes: entries.length + contextEntries.length,
+			namespaces: namespaces.size,
+			categories: categories.size,
+			avgConfidence,
+			hitRate: avgConfidence > 0 ? (avgConfidence * 100).toFixed(1) + '%' : 'N/A'
+		},
+		namespaceBreakdown: Array.from(namespaces.entries())
+			.map(([name, count]) => ({ name, count }))
+			.sort((a, b) => b.count - a.count),
+		categoryBreakdown: Array.from(categories.entries())
+			.map(([name, count]) => ({ name, count }))
+			.sort((a, b) => b.count - a.count),
+		entries,
+		context
 	};
 };

@@ -3,6 +3,15 @@
 	import type { PageData } from './$types.js';
 
 	let { data }: { data: PageData } = $props();
+
+	const bgColorMap: Record<string, string> = {
+		'accent-red': 'bg-accent-red',
+		'accent-blue': 'bg-accent-blue',
+		'accent-green': 'bg-accent-green',
+		'accent-yellow': 'bg-accent-yellow',
+		'accent-purple': 'bg-accent-purple',
+		'accent-cyan': 'bg-accent-cyan'
+	};
 </script>
 
 <div class="space-y-8">
@@ -29,7 +38,7 @@
 			{#each data.coreTech as tech}
 				<div class="bg-bg-secondary border border-border rounded-lg p-4">
 					<div class="flex items-center gap-2 mb-1">
-						<span class="w-2 h-2 rounded-full bg-{tech.color}"></span>
+						<span class="w-2 h-2 rounded-full {bgColorMap[tech.color]}"></span>
 						<span class="text-sm font-medium text-text-primary">{tech.name}</span>
 					</div>
 					<p class="text-xs font-mono text-text-secondary">{tech.version}</p>
@@ -46,7 +55,7 @@
 			{#each data.stack as panel}
 				<div class="bg-bg-secondary border border-border rounded-lg p-4">
 					<div class="flex items-center gap-2 mb-2">
-						<span class="w-2.5 h-2.5 rounded-full bg-{panel.color}"></span>
+						<span class="w-2.5 h-2.5 rounded-full {bgColorMap[panel.color]}"></span>
 						<h3 class="text-sm font-semibold text-text-primary">{panel.name}</h3>
 					</div>
 					<p class="text-xs text-text-secondary mb-3">{panel.description}</p>

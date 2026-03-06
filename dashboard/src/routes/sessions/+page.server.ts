@@ -1,168 +1,197 @@
 import type { PageServerLoad } from './$types.js';
+import { readdir, readFile } from 'fs/promises';
+import { join } from 'path';
+import { PATHS } from '$lib/server/constants.js';
+import type { ChatSessionMeta } from '$lib/types/chat.js';
 
-interface SessionAgent {
+interface SessionFile {
 	id: string;
-	name: string;
-	model: string;
-	started: string;
-	duration: string;
-	filesModified: number;
-	toolsUsed: string[];
-	input: string;
-	output: string;
-}
-
-interface WorkflowStage {
-	name: string;
-	status: 'completed' | 'running' | 'pending' | 'error';
-	agent?: string;
+	startedAt: string;
+	endedAt?: string;
+	duration?: number;
+	cwd?: string;
+	restoredAt?: string;
+	context?: {
+		title?: string;
+		eventsDropped?: number;
+	};
+	metrics?: {
+		edits?: number;
+		commands?: number;
+		tasks?: number;
+		errors?: number;
+	};
+	provider?: string;
+	model?: string;
 }
 
 export interface Session {
 	id: string;
-	name: string;
+	title: string | null;
+	type: 'agent' | 'chat';
+	provider: string | null;
+	model: string | null;
 	status: 'running' | 'completed' | 'error';
-	agentCount: number;
+	startedAt: string;
+	endedAt: string | null;
 	duration: string;
-	started: string;
-	workflow: WorkflowStage[];
-	agents: SessionAgent[];
-	logs: LogEntry[];
+	durationMs: number;
+	cwd: string;
+	restoredAt: string | null;
+	messageCount: number;
+	metrics: {
+		edits: number;
+		commands: number;
+		tasks: number;
+		errors: number;
+	};
 }
 
-export interface LogEntry {
-	timestamp: string;
-	agent: string;
-	agentType: 'coder' | 'reviewer' | 'tester' | 'planner' | 'coordinator';
-	message: string;
+function formatDuration(ms: number): string {
+	const seconds = Math.floor(ms / 1000);
+	if (seconds < 60) return `${seconds}s`;
+	const minutes = Math.floor(seconds / 60);
+	const secs = seconds % 60;
+	if (minutes < 60) return `${minutes}m ${secs}s`;
+	const hours = Math.floor(minutes / 60);
+	const mins = minutes % 60;
+	return `${hours}h ${mins}m`;
 }
 
 export const load: PageServerLoad = async () => {
-	const sessions: Session[] = [
-		{
-			id: 'sess-a1b2',
-			name: 'Feature: Auth Flow',
+	const sessionsDir = PATHS.sessionsDir;
+	let files: string[] = [];
+
+	try {
+		const entries = await readdir(sessionsDir);
+		files = entries.filter((f) => f.endsWith('.json') && f !== 'current.json');
+	} catch {
+		return { sessions: [], summary: { total: 0, running: 0, completed: 0, errored: 0, totalEdits: 0 } };
+	}
+
+	// Also read current session
+	let currentSession: SessionFile | null = null;
+	try {
+		const raw = await readFile(join(sessionsDir, 'current.json'), 'utf-8');
+		currentSession = JSON.parse(raw);
+	} catch {
+		// no current session
+	}
+
+	const sessionFiles = await Promise.all(
+		files.map(async (file) => {
+			try {
+				const raw = await readFile(join(sessionsDir, file), 'utf-8');
+				return JSON.parse(raw) as SessionFile;
+			} catch {
+				return null;
+			}
+		})
+	);
+
+	const sessions: Session[] = [];
+
+	for (const sf of sessionFiles) {
+		if (!sf) continue;
+		const hasErrors = (sf.metrics?.errors ?? 0) > 0;
+		const isEnded = !!sf.endedAt;
+		const durationMs = sf.duration ?? (sf.endedAt ? new Date(sf.endedAt).getTime() - new Date(sf.startedAt).getTime() : 0);
+
+		sessions.push({
+			id: sf.id,
+			title: sf.context?.title ?? null,
+			type: 'agent',
+			provider: sf.provider ?? 'claude-code',
+			model: sf.model ?? 'claude-opus-4-6',
+			status: hasErrors ? 'error' : isEnded ? 'completed' : 'running',
+			startedAt: sf.startedAt,
+			endedAt: sf.endedAt ?? null,
+			duration: formatDuration(durationMs),
+			durationMs,
+			cwd: sf.cwd ?? '',
+			restoredAt: sf.restoredAt ?? null,
+			messageCount: 0,
+			metrics: {
+				edits: sf.metrics?.edits ?? 0,
+				commands: sf.metrics?.commands ?? 0,
+				tasks: sf.metrics?.tasks ?? 0,
+				errors: sf.metrics?.errors ?? 0
+			}
+		});
+	}
+
+	// Add current session if not already in the list
+	if (currentSession && !sessions.some((s) => s.id === currentSession!.id)) {
+		const durationMs = Date.now() - new Date(currentSession.startedAt).getTime();
+		sessions.push({
+			id: currentSession.id,
+			title: currentSession.context?.title ?? null,
+			type: 'agent',
+			provider: currentSession.provider ?? 'claude-code',
+			model: currentSession.model ?? 'claude-opus-4-6',
 			status: 'running',
-			agentCount: 4,
-			duration: '3m 12s',
-			started: '2026-03-04T14:22:00Z',
-			workflow: [
-				{ name: 'Session Start', status: 'completed' },
-				{ name: 'planner', status: 'completed', agent: 'planner-01' },
-				{ name: 'coder', status: 'running', agent: 'coder-03' },
-				{ name: 'reviewer', status: 'pending' },
-				{ name: 'tester', status: 'pending' }
-			],
-			agents: [
-				{
-					id: 'planner-01',
-					name: 'planner-01',
-					model: 'gpt-oss-20b',
-					started: '14:22:05',
-					duration: '45s',
-					filesModified: 0,
-					toolsUsed: ['memory_search', 'task_create'],
-					input: 'Implement JWT authentication with refresh tokens',
-					output: 'Created 3 tasks: auth middleware, token service, refresh endpoint'
-				},
-				{
-					id: 'coder-03',
-					name: 'coder-03',
-					model: 'claude-sonnet-4.6',
-					started: '14:22:52',
-					duration: '2m 20s',
-					filesModified: 3,
-					toolsUsed: ['file_read', 'file_write', 'grep'],
-					input: 'Implement auth middleware and token service',
-					output: 'Writing middleware integration...'
-				}
-			],
-			logs: [
-				{ timestamp: '14:22:05', agent: 'planner-01', agentType: 'planner', message: 'Session started' },
-				{ timestamp: '14:22:10', agent: 'planner-01', agentType: 'planner', message: 'Analyzed codebase: found existing auth stub' },
-				{ timestamp: '14:22:50', agent: 'planner-01', agentType: 'planner', message: 'Deployment: JWT auth + refresh tokens' },
-				{ timestamp: '14:22:52', agent: 'coder-03', agentType: 'coder', message: 'Started implementation of auth middleware' },
-				{ timestamp: '14:24:10', agent: 'coder-03', agentType: 'coder', message: 'Created src/middleware/auth.ts' },
-				{ timestamp: '14:25:02', agent: 'coder-03', agentType: 'coder', message: 'coder in progress — writing middleware integration...' }
-			]
-		},
-		{
-			id: 'sess-c3d4',
-			name: 'Code Review #547',
-			status: 'completed',
-			agentCount: 3,
-			duration: '4m 32s',
-			started: '2026-03-04T14:10:00Z',
-			workflow: [
-				{ name: 'Session Start', status: 'completed' },
-				{ name: 'reviewer', status: 'completed', agent: 'reviewer-02' },
-				{ name: 'tester', status: 'completed', agent: 'tester-01' }
-			],
-			agents: [],
-			logs: [
-				{ timestamp: '14:10:01', agent: 'reviewer-02', agentType: 'reviewer', message: 'Started review of PR #547' },
-				{ timestamp: '14:12:30', agent: 'reviewer-02', agentType: 'reviewer', message: 'Found 2 issues, requesting changes' },
-				{ timestamp: '14:14:32', agent: 'tester-01', agentType: 'tester', message: 'All 14 tests passing' }
-			]
-		},
-		{
-			id: 'sess-e5f6',
-			name: 'Security Scan',
-			status: 'completed',
-			agentCount: 2,
-			duration: '1m 45s',
-			started: '2026-03-04T13:55:00Z',
-			workflow: [
-				{ name: 'Session Start', status: 'completed' },
-				{ name: 'security-auditor', status: 'completed', agent: 'sec-01' }
-			],
-			agents: [],
-			logs: []
-		},
-		{
-			id: 'sess-g7h8',
-			name: 'Memory Optimize',
-			status: 'running',
-			agentCount: 2,
-			duration: '5m 10s',
-			started: '2026-03-04T14:20:00Z',
-			workflow: [
-				{ name: 'Session Start', status: 'completed' },
-				{ name: 'performance-engineer', status: 'running', agent: 'perf-01' }
-			],
-			agents: [],
-			logs: []
-		},
-		{
-			id: 'sess-i9j0',
-			name: 'Bug Fix: Routing',
-			status: 'error',
-			agentCount: 1,
-			duration: '0m 38s',
-			started: '2026-03-04T13:45:00Z',
-			workflow: [
-				{ name: 'Session Start', status: 'completed' },
-				{ name: 'coder', status: 'error', agent: 'coder-05' }
-			],
-			agents: [],
-			logs: [
-				{ timestamp: '13:45:01', agent: 'coder-05', agentType: 'coder', message: 'Started bug fix for routing issue' },
-				{ timestamp: '13:45:38', agent: 'coder-05', agentType: 'coder', message: 'Error: OOM — model context exceeded' }
-			]
-		}
-	];
+			startedAt: currentSession.startedAt,
+			endedAt: null,
+			duration: formatDuration(durationMs),
+			durationMs,
+			cwd: currentSession.cwd ?? '',
+			restoredAt: currentSession.restoredAt ?? null,
+			messageCount: 0,
+			metrics: {
+				edits: currentSession.metrics?.edits ?? 0,
+				commands: currentSession.metrics?.commands ?? 0,
+				tasks: currentSession.metrics?.tasks ?? 0,
+				errors: currentSession.metrics?.errors ?? 0
+			}
+		});
+	}
+
+	// Load chat sessions from .playground/chats/index.json
+	let chatSessions: ChatSessionMeta[] = [];
+	try {
+		const raw = await readFile(`${PATHS.chatsDir}/index.json`, 'utf-8');
+		chatSessions = JSON.parse(raw);
+	} catch {
+		// no chat sessions
+	}
+
+	for (const cs of chatSessions) {
+		const durationMs = new Date(cs.updatedAt).getTime() - new Date(cs.createdAt).getTime();
+		const chatStatus = cs.status === 'streaming' ? 'running' : 'completed';
+		sessions.push({
+			id: `chat-${cs.id}`,
+			title: cs.title,
+			type: 'chat',
+			provider: cs.provider,
+			model: cs.model,
+			status: chatStatus,
+			startedAt: cs.createdAt,
+			endedAt: cs.updatedAt,
+			duration: formatDuration(durationMs),
+			durationMs,
+			cwd: '',
+			restoredAt: null,
+			messageCount: cs.messageCount,
+			metrics: { edits: 0, commands: 0, tasks: 0, errors: 0 }
+		});
+	}
+
+	// Sort: running first, then by startedAt descending
+	sessions.sort((a, b) => {
+		if (a.status === 'running' && b.status !== 'running') return -1;
+		if (b.status === 'running' && a.status !== 'running') return 1;
+		return new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime();
+	});
 
 	const running = sessions.filter((s) => s.status === 'running').length;
 	const completed = sessions.filter((s) => s.status === 'completed').length;
 	const errored = sessions.filter((s) => s.status === 'error').length;
+	const totalEdits = sessions.reduce((sum, s) => sum + s.metrics.edits, 0);
+	const chatCount = sessions.filter((s) => s.type === 'chat').length;
+	const totalMessages = sessions.reduce((sum, s) => sum + s.messageCount, 0);
 
 	return {
 		sessions,
-		summary: {
-			total: sessions.length,
-			running,
-			completed,
-			errored
-		}
+		summary: { total: sessions.length, running, completed, errored, totalEdits, chatCount, totalMessages }
 	};
 };

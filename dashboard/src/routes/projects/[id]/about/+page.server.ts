@@ -1,50 +1,130 @@
 import type { PageServerLoad } from './$types.js';
+import { readFile, readdir } from 'fs/promises';
+import { resolve } from 'path';
+import { PATHS, SERVICES } from '$lib/server/constants.js';
+import { scanAllProjects } from '$lib/server/project-scanner.js';
+import { readJsonFile } from '$lib/server/file-reader.js';
+import { getAllTasks } from '$lib/server/task-store.js';
 
-export const load: PageServerLoad = async () => {
+export const load: PageServerLoad = async ({ params, parent }) => {
+	const { projectId, project } = await parent();
+	const projects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root);
+	const proj = projects.find((p) => p.id === params.id);
+	const projectPath = proj?.path ?? PATHS.root;
+
+	// Read package.json for version/description
+	let pkgName = project.name;
+	let pkgVersion = 'unknown';
+	let pkgDescription = '';
+	try {
+		const raw = await readFile(resolve(projectPath, 'package.json'), 'utf-8');
+		const pkg = JSON.parse(raw);
+		pkgName = pkg.name ?? project.name;
+		pkgVersion = pkg.version ?? 'unknown';
+		pkgDescription = pkg.description ?? '';
+	} catch {
+		// no package.json
+	}
+
+	// Detect tech stack from project scanner data
+	const techStack = proj?.techStack ?? [];
+
+	// Check MCP servers from .mcp-agents.json
+	const mcpServers: { name: string; status: string; description: string }[] = [];
+	try {
+		const raw = await readFile(resolve(PATHS.root, '.mcp-agents.json'), 'utf-8');
+		const mcp = JSON.parse(raw);
+		const servers = mcp.mcpServers ?? mcp.servers ?? {};
+		for (const [name, cfg] of Object.entries(servers)) {
+			const c = cfg as any;
+			mcpServers.push({
+				name,
+				status: 'configured',
+				description: c.command ? `${c.command} ${(c.args ?? []).slice(0, 2).join(' ')}` : 'MCP Server'
+			});
+		}
+	} catch {
+		// no mcp config
+	}
+
+	// Check core service health
+	const coreTech: { name: string; version: string; status: string; badge: string }[] = [];
+	for (const [, svc] of Object.entries(SERVICES)) {
+		let status = 'stopped';
+		if (svc.healthUrl) {
+			try {
+				const res = await fetch(svc.healthUrl, { signal: AbortSignal.timeout(2000) });
+				status = (res.ok || res.status < 500) ? 'running' : 'stopped';
+			} catch {
+				status = 'stopped';
+			}
+		}
+		coreTech.push({
+			name: svc.name,
+			version: svc.type,
+			status,
+			badge: svc.type.toLowerCase()
+		});
+	}
+
+	// Read channel configs
+	const channels: { name: string; status: string; badge: string }[] = [];
+	try {
+		const entries = await readdir(PATHS.channelsDir);
+		for (const file of entries.filter((f) => f.endsWith('.yaml') || f.endsWith('.yml'))) {
+			const name = file.replace(/\.(yaml|yml)$/, '');
+			channels.push({ name: name.charAt(0).toUpperCase() + name.slice(1), status: 'configured', badge: 'channel' });
+		}
+	} catch {
+		// no channels dir
+	}
+
+	// Read tasks
+	let tasks: { id: string; title: string; priority: string; status: string; description: string }[] = [];
+	try {
+		const allTasks = await getAllTasks(projectPath);
+		tasks = allTasks.slice(0, 10).map((t: any) => ({
+			id: t.id ?? '',
+			title: t.title ?? '',
+			priority: t.priority ?? 'medium',
+			status: t.status ?? 'pending',
+			description: t.description ?? ''
+		}));
+	} catch {
+		// no tasks
+	}
+
+	// Detect languages from tech stack
+	const langMap: Record<string, { color: string }> = {
+		typescript: { color: 'accent-blue' },
+		javascript: { color: 'accent-yellow' },
+		svelte: { color: 'accent-red' },
+		python: { color: 'accent-green' },
+		rust: { color: 'accent-purple' },
+		go: { color: 'accent-cyan' }
+	};
+	const languages = techStack
+		.filter((t) => langMap[t.toLowerCase()])
+		.map((t, i) => ({
+			name: t,
+			files: 0,
+			pct: 0,
+			color: langMap[t.toLowerCase()]?.color ?? 'accent-blue'
+		}));
+
 	return {
 		identity: {
-			name: 'ai-playground',
-			version: 'v0.1.0-dev',
-			description: 'Local AI orchestration + multi-agent system, local-first, privacy-focused',
-			status: 'active'
+			name: pkgName,
+			version: `v${pkgVersion}`,
+			description: pkgDescription || proj?.description || 'No description',
+			status: proj?.health ?? 'unknown'
 		},
-		coreTech: [
-			{ name: 'OpenClaw', version: 'v2026.3.x', status: 'connected', badge: 'gateway' },
-			{ name: 'Ruflo / Claude Flow', version: 'v3.5.x', status: 'running', badge: 'orchestration' },
-			{ name: 'GPT-OSS 20B', version: 'MoE 3.6B', status: 'loaded', badge: 'local model' },
-			{ name: 'Claude API', version: 'Sonnet 4.6', status: 'available', badge: 'escalation' }
-		],
-		languages: [
-			{ name: 'TypeScript', files: 526, pct: 64, color: 'accent-blue' },
-			{ name: 'Svelte', files: 42, pct: 18, color: 'accent-red' },
-			{ name: 'YAML/JSON', files: 2571, pct: 8, color: 'accent-yellow' },
-			{ name: 'Python', files: 14, pct: 5, color: 'accent-green' },
-			{ name: 'HTML / CSS', files: 8, pct: 3, color: 'accent-purple' },
-			{ name: 'Shell', files: 12, pct: 2, color: 'accent-cyan' }
-		],
-		frameworks: [
-			'SvelteKit 2.x', 'Tailwind CSS 4', 'Vite 6', 'Node.js 22'
-		],
-		tools: [
-			'Claude Code', 'Penpot MCP', 'Playwright', 'Vitest'
-		],
-		mcpServers: [
-			{ name: 'claude-flow', status: 'running', description: 'Agent orchestration + memory' },
-			{ name: 'penpot', status: 'running', description: 'Design integration' },
-			{ name: 'heb', status: 'stopped', description: 'Grocery MCP (texas-grocery)' },
-			{ name: 'playwright', status: 'running', description: 'Browser automation' }
-		],
-		channels: [
-			{ name: 'Twitch', status: 'connected', badge: 'live' },
-			{ name: 'Discord', status: 'planned', badge: 'future' },
-			{ name: 'Telegram', status: 'planned', badge: 'future' }
-		],
-		tasks: [
-			{ id: 'DASH-001', title: 'Dashboard Design System', priority: 'high', status: 'in-progress', description: 'Penpot design system with Tailwind, typography, components, project system views' },
-			{ id: 'DASH-002', title: 'OpenClaw Gateway Config', priority: 'high', status: 'completed', description: 'Networking, security, Claude Flow v3 MCP integration, 3-tier proxy API' },
-			{ id: 'DASH-003', title: '3-Tier Model Routing', priority: 'medium', status: 'planned', description: 'Agent booster (WASM), Haiku routing, GPT-OSS 20B as primary with Claude escalation' },
-			{ id: 'DASH-004', title: 'Ruflo / Claude Flow v3 Integration', priority: 'high', status: 'in-progress', description: 'Full agent lifecycle, HNSW memory, swarm coordination' },
-			{ id: 'DASH-005', title: 'Ollama + GPT-OSS 20B Setup', priority: 'medium', status: 'completed', description: 'Local MoE model setup, initial testing, performance benchmarks' }
-		]
+		coreTech,
+		languages,
+		frameworks: techStack.filter((t) => !langMap[t.toLowerCase()]),
+		tools: mcpServers.map((s) => s.name),
+		mcpServers,
+		channels,
+		tasks
 	};
 };

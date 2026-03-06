@@ -1,4 +1,6 @@
 <script lang="ts">
+	import { goto } from '$app/navigation';
+	import { apiFetch } from '$lib/api-client.js';
 	import type { PageData } from './$types.js';
 
 	let { data }: { data: PageData } = $props();
@@ -18,6 +20,8 @@
 	let topology = $state('hierarchical-mesh');
 
 	let serviceToggles = $state(data.autoStartServices.map((s) => s.default));
+	let creating = $state(false);
+	let error = $state('');
 
 	$effect(() => {
 		projectDir = `${data.defaultWorkspace}\\${projectName}`;
@@ -32,6 +36,53 @@
 		'.env.example',
 		'.gitignore'
 	]);
+
+	async function handleCreate() {
+		if (creating) return;
+		creating = true;
+		error = '';
+
+		const enabledServices = data.autoStartServices
+			.filter((_, i) => serviceToggles[i])
+			.map((s) => s.name);
+
+		try {
+			const res = await apiFetch('/api/projects', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					name: projectName,
+					path: projectDir,
+					template: selectedTemplate,
+					description,
+					initGit,
+					createGithub,
+					primaryModel,
+					escalation,
+					memoryNamespace,
+					isolateMemory,
+					sharePatterns,
+					maxAgents,
+					topology,
+					services: enabledServices
+				})
+			});
+
+			const result = await res.json();
+
+			if (!res.ok) {
+				error = result.error || 'Failed to create project';
+				return;
+			}
+
+			goto(`/projects/${result.project.id}`);
+		} catch (e: unknown) {
+			const err = e as { message?: string };
+			error = err.message ?? 'Network error';
+		} finally {
+			creating = false;
+		}
+	}
 </script>
 
 <div class="space-y-6">
@@ -221,13 +272,24 @@
 		</div>
 	</div>
 
+	<!-- Error -->
+	{#if error}
+		<div class="bg-red-500/10 border border-red-500/30 rounded-lg px-4 py-3 text-sm text-red-400">
+			{error}
+		</div>
+	{/if}
+
 	<!-- Actions -->
 	<div class="flex items-center justify-end gap-3">
 		<a href="/projects" class="px-4 py-2 text-sm text-text-secondary hover:text-text-primary transition-colors">
 			Cancel
 		</a>
-		<button class="px-6 py-2 text-sm bg-accent-blue text-white rounded-lg hover:bg-accent-blue/90 transition-colors">
-			Create Project
+		<button
+			onclick={handleCreate}
+			disabled={creating || !projectName.trim()}
+			class="px-6 py-2 text-sm bg-accent-blue text-white rounded-lg hover:bg-accent-blue/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+		>
+			{creating ? 'Creating...' : 'Create Project'}
 		</button>
 	</div>
 </div>

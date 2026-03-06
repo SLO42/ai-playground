@@ -10,7 +10,7 @@ export const load: PageServerLoad = async () => {
 			{ id: 'fullstack', name: 'Full Stack', description: 'Monorepo: SvelteKit front + Python back', icon: '🏗' },
 			{ id: 'agent', name: 'Agent', description: 'Claude Agent SDK + MCP server template', icon: '🤖' }
 		],
-		defaultWorkspace: 'C:\\Users\\11sos\\work',
+		defaultWorkspace: 'F:\\code',
 		autoStartServices: [
 			{ name: 'Claude Flow Daemon', description: 'Agent orchestration + memory', default: true },
 			{ name: 'Dev Server (Vite)', description: 'npm run dev on :5173', default: true },

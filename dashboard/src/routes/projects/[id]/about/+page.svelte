@@ -24,6 +24,15 @@
 		medium: 'bg-accent-yellow/20 text-accent-yellow',
 		low: 'bg-accent-green/20 text-accent-green'
 	};
+
+	const bgColorMap: Record<string, string> = {
+		'accent-red': 'bg-accent-red',
+		'accent-blue': 'bg-accent-blue',
+		'accent-green': 'bg-accent-green',
+		'accent-yellow': 'bg-accent-yellow',
+		'accent-purple': 'bg-accent-purple',
+		'accent-cyan': 'bg-accent-cyan'
+	};
 </script>
 
 <div class="space-y-6">
@@ -75,7 +84,7 @@
 						<div class="flex items-center gap-2">
 							<span class="text-text-secondary font-mono">{lang.files}</span>
 							<div class="w-16 h-1.5 bg-bg-tertiary rounded-full overflow-hidden">
-								<div class="h-full bg-{lang.color} rounded-full" style="width: {lang.pct}%"></div>
+								<div class="h-full rounded-full {bgColorMap[lang.color]}" style="width: {lang.pct}%"></div>
 							</div>
 							<span class="text-text-secondary font-mono w-8 text-right">{lang.pct}%</span>
 						</div>

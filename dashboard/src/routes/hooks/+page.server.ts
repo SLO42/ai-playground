@@ -2,6 +2,7 @@ import type { PageServerLoad } from './$types.js';
 import { readJsonFile } from '$lib/server/file-reader.js';
 import { PATHS } from '$lib/server/constants.js';
 import type { HooksConfig, WorkerConfig } from '$lib/types/hooks.js';
+import type { DaemonState } from '$lib/types/daemon.js';
 
 interface Settings {
 	hooks?: HooksConfig;
@@ -28,7 +29,10 @@ const PRIORITY_MAP: Record<string, number> = {
 };
 
 export const load: PageServerLoad = async () => {
-	const settings = await readJsonFile<Settings>(PATHS.settingsJson);
+	const [settings, daemonState] = await Promise.all([
+		readJsonFile<Settings>(PATHS.settingsJson),
+		readJsonFile<DaemonState>(PATHS.daemonState)
+	]);
 
 	const hooks: HooksConfig = settings?.hooks ?? {};
 
@@ -53,10 +57,18 @@ export const load: PageServerLoad = async () => {
 
 	const learning = settings?.claudeFlow?.learning ?? null;
 
+	// Live worker stats from daemon-state.json
+	const workerStats = daemonState?.workers ?? {};
+	const workerConfigs = daemonState?.config?.workers ?? [];
+
 	return {
 		hooks,
 		workers,
 		learning,
-		daemonAutoStart: daemon?.autoStart ?? false
+		daemonAutoStart: daemon?.autoStart ?? false,
+		daemonRunning: daemonState?.running ?? false,
+		daemonStartedAt: daemonState?.startedAt ?? null,
+		workerStats,
+		workerConfigs
 	};
 };

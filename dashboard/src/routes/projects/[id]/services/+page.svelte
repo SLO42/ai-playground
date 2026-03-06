@@ -1,8 +1,51 @@
 <script lang="ts">
+	import { invalidateAll, goto } from '$app/navigation';
+	import { page } from '$app/stores';
 	import MetricCard from '$lib/components/MetricCard.svelte';
+	import { notifications } from '$lib/stores/notifications.js';
+	import { apiFetch } from '$lib/api-client.js';
 	import type { PageData } from './$types.js';
+	import type { ServiceAction } from '$lib/types/services.js';
 
 	let { data }: { data: PageData } = $props();
+
+	let loadingActions: Record<string, boolean> = $state({});
+	let searchQuery = $state('');
+
+	function updateFilter(key: string, value: string) {
+		const url = new URL($page.url);
+		if (value) url.searchParams.set(key, value);
+		else url.searchParams.delete(key);
+		url.searchParams.set('page', '1');
+		goto(url.toString(), { replaceState: true, invalidateAll: true });
+	}
+
+	async function handleAction(serviceId: string, action: ServiceAction) {
+		const key = `${serviceId}-${action}`;
+		loadingActions[key] = true;
+		try {
+			const res = await apiFetch(`/api/services/${serviceId}`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action })
+			});
+			const result = await res.json();
+			if (result.success) {
+				notifications.push('success', 'Service Action', result.message);
+				setTimeout(() => invalidateAll(), 2000);
+			} else {
+				notifications.push('error', 'Service Action Failed', result.message);
+			}
+		} catch (e) {
+			notifications.push('error', 'Service Action Failed', e instanceof Error ? e.message : 'Unknown error');
+		} finally {
+			loadingActions[key] = false;
+		}
+	}
+
+	function isActionLoading(serviceId: string, action: string): boolean {
+		return !!loadingActions[`${serviceId}-${action}`];
+	}
 </script>
 
 <div class="space-y-6">
@@ -10,7 +53,7 @@
 	<div class="flex items-center justify-between">
 		<div>
 			<h1 class="text-xl font-bold text-text-primary">Project Services</h1>
-			<p class="text-sm text-text-secondary mt-1">Services configured for ai-playground</p>
+			<p class="text-sm text-text-secondary mt-1">Services configured for {data.projectName}</p>
 		</div>
 		<div class="flex gap-2">
 			<button class="px-4 py-2 text-sm border border-border rounded-lg text-text-secondary hover:text-text-primary hover:bg-bg-tertiary transition-colors">
@@ -20,6 +63,33 @@
 				+ Add Service
 			</button>
 		</div>
+	</div>
+
+	{#if data.error}
+		<div class="bg-accent-red/10 border border-accent-red/30 rounded-lg px-4 py-3 text-sm text-accent-red">
+			Failed to load services: {data.error}
+		</div>
+	{/if}
+
+	<!-- Filters -->
+	<div class="flex items-center gap-3">
+		<input
+			type="text"
+			placeholder="Search services..."
+			value={searchQuery}
+			oninput={(e) => { searchQuery = e.currentTarget.value; }}
+			onkeydown={(e) => { if (e.key === 'Enter') updateFilter('q', searchQuery); }}
+			class="px-3 py-1.5 text-sm bg-bg-secondary border border-border rounded-lg text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent-blue w-56"
+		/>
+		<select
+			onchange={(e) => updateFilter('status', e.currentTarget.value)}
+			class="px-3 py-1.5 text-sm bg-bg-secondary border border-border rounded-lg text-text-primary focus:outline-none focus:border-accent-blue"
+		>
+			<option value="">All statuses</option>
+			<option value="running">Running</option>
+			<option value="stopped">Stopped</option>
+			<option value="errored">Errored</option>
+		</select>
 	</div>
 
 	<!-- Summary -->
@@ -37,16 +107,21 @@
 	</div>
 
 	<!-- Service Cards -->
+	{#if data.services.length === 0 && !data.error}
+		<div class="bg-bg-secondary border border-border rounded-lg p-8 text-center">
+			<p class="text-text-secondary text-sm">No services found.</p>
+		</div>
+	{/if}
 	<div class="grid grid-cols-1 md:grid-cols-2 gap-4">
 		{#each data.services as svc}
 			<div class="bg-bg-secondary border border-border rounded-lg p-4">
 				<div class="flex items-center justify-between mb-2">
 					<div class="flex items-center gap-2">
-						<span class="w-2.5 h-2.5 rounded-full {svc.status === 'running' ? 'bg-accent-green' : 'bg-accent-red'}"></span>
+						<span class="w-2.5 h-2.5 rounded-full {svc.status === 'running' ? 'bg-accent-green' : svc.status === 'errored' ? 'bg-accent-yellow' : 'bg-accent-red'}"></span>
 						<h3 class="text-sm font-bold text-text-primary">{svc.name}</h3>
 					</div>
 					<span class="text-xs px-2 py-0.5 rounded font-mono uppercase tracking-wider
-						{svc.status === 'running' ? 'bg-accent-green/20 text-accent-green' : 'bg-accent-red/20 text-accent-red'}">
+						{svc.status === 'running' ? 'bg-accent-green/20 text-accent-green' : svc.status === 'errored' ? 'bg-accent-yellow/20 text-accent-yellow' : 'bg-accent-red/20 text-accent-red'}">
 						{svc.status}
 					</span>
 				</div>
@@ -58,7 +133,7 @@
 				<div class="flex items-center gap-6 mt-3 pt-3 border-t border-border">
 					<div>
 						<p class="text-[10px] text-text-secondary uppercase">Port</p>
-						<p class="text-sm font-mono text-text-primary">{svc.port}</p>
+						<p class="text-sm font-mono text-text-primary">{svc.port ?? '—'}</p>
 					</div>
 					<div>
 						<p class="text-[10px] text-text-secondary uppercase">PID</p>
@@ -70,15 +145,33 @@
 					</div>
 					<div class="ml-auto flex gap-2">
 						{#if svc.status === 'running'}
-							<button class="p-1.5 rounded bg-bg-tertiary text-text-secondary hover:text-accent-yellow transition-colors" title="Restart">
-								&#x21BA;
+							<button
+								onclick={() => handleAction(svc.id, 'restart')}
+								disabled={isActionLoading(svc.id, 'restart')}
+								class="p-1.5 rounded bg-bg-tertiary text-text-secondary hover:text-accent-yellow transition-colors disabled:opacity-50"
+								title="Restart"
+								aria-label="Restart {svc.name}"
+							>
+								{isActionLoading(svc.id, 'restart') ? '...' : '&#x21BA;'}
 							</button>
-							<button class="p-1.5 rounded bg-accent-red/20 text-accent-red hover:bg-accent-red/30 transition-colors" title="Stop">
-								&#x25A0;
+							<button
+								onclick={() => handleAction(svc.id, 'stop')}
+								disabled={isActionLoading(svc.id, 'stop')}
+								class="p-1.5 rounded bg-accent-red/20 text-accent-red hover:bg-accent-red/30 transition-colors disabled:opacity-50"
+								title="Stop"
+								aria-label="Stop {svc.name}"
+							>
+								{isActionLoading(svc.id, 'stop') ? '...' : '&#x25A0;'}
 							</button>
 						{:else}
-							<button class="p-1.5 rounded bg-accent-green/20 text-accent-green hover:bg-accent-green/30 transition-colors" title="Start">
-								&#x25B6;
+							<button
+								onclick={() => handleAction(svc.id, 'start')}
+								disabled={isActionLoading(svc.id, 'start')}
+								class="p-1.5 rounded bg-accent-green/20 text-accent-green hover:bg-accent-green/30 transition-colors disabled:opacity-50"
+								title="Start"
+								aria-label="Start {svc.name}"
+							>
+								{isActionLoading(svc.id, 'start') ? '...' : '&#x25B6;'}
 							</button>
 						{/if}
 					</div>
@@ -86,6 +179,25 @@
 			</div>
 		{/each}
 	</div>
+
+	<!-- Pagination -->
+	{#if data.pagination.totalPages > 1}
+		<div class="flex items-center justify-between">
+			<p class="text-xs text-text-secondary">
+				Showing {(data.pagination.page - 1) * data.pagination.pageSize + 1}–{Math.min(data.pagination.page * data.pagination.pageSize, data.pagination.total)} of {data.pagination.total}
+			</p>
+			<div class="flex gap-1">
+				{#each Array.from({ length: data.pagination.totalPages }, (_, i) => i + 1) as pg}
+					<button
+						onclick={() => updateFilter('page', String(pg))}
+						class="px-2.5 py-1 text-xs rounded {pg === data.pagination.page ? 'bg-accent-blue text-white' : 'bg-bg-tertiary text-text-secondary hover:text-text-primary'}"
+					>
+						{pg}
+					</button>
+				{/each}
+			</div>
+		</div>
+	{/if}
 
 	<!-- Auto-Start Configuration -->
 	<div>

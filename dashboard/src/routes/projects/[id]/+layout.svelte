@@ -12,6 +12,7 @@
 
 	const workspaceNav = [
 		{ href: 'overview', label: 'Overview' },
+		{ href: 'tasks', label: 'Tasks' },
 		{ href: 'models', label: 'Models' },
 		{ href: 'agents', label: 'Agents' },
 		{ href: 'sessions', label: 'Sessions' },
@@ -47,14 +48,15 @@
 	<title>{pageTitle()} | AI Playground</title>
 </svelte:head>
 
-<!-- Project Shell replaces global layout's main area -->
+<!-- Project Shell — global sidebar is hidden, project nav takes over -->
 <div class="flex min-h-[calc(100vh-48px)] -m-6">
-	<!-- Project Sidebar -->
-	<nav class="w-52 bg-bg-secondary border-r border-border flex flex-col shrink-0">
-		<!-- Project Identity -->
+	<!-- Project Sidebar (fixed, mirrors global sidebar position) -->
+	<nav class="fixed left-0 top-0 h-full w-56 bg-bg-secondary border-r border-border flex flex-col z-50">
+		<!-- Back to Projects -->
 		<div class="p-4 border-b border-border">
-			<a href="/projects" class="text-xs text-accent-cyan hover:underline uppercase tracking-wider">
-				{data.project.name}
+			<a href="/projects" class="text-xs text-text-secondary hover:text-accent-cyan transition-colors uppercase tracking-wider flex items-center gap-1">
+				<svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M15 19l-7-7 7-7" /></svg>
+				All Projects
 			</a>
 			<div class="flex items-center gap-2 mt-2 bg-bg-tertiary rounded-lg px-3 py-2">
 				<span class="w-6 h-6 rounded bg-accent-blue/20 text-accent-blue text-xs flex items-center justify-center font-bold">
@@ -106,8 +108,8 @@
 		</div>
 	</nav>
 
-	<!-- Content Area -->
-	<div class="flex-1 min-w-0">
+	<!-- Content Area (offset by fixed sidebar width) -->
+	<div class="flex-1 min-w-0 ml-56">
 		<!-- Breadcrumb -->
 		<div class="px-6 py-2 border-b border-border flex items-center gap-2 text-xs">
 			<a href="/projects/{data.projectId}" class="text-accent-blue hover:underline">{data.project.name}</a>

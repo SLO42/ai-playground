@@ -217,23 +217,20 @@ export async function syncMemoryBridge(): Promise<BridgeSyncResult> {
 	for (const e of store) storeMap.set(e.id, e);
 
 	// Collect from all sources in parallel
-	const [autoMemory, claudeFlow, analytics] = await Promise.all([
+	const [autoMemory, claudeFlow] = await Promise.all([
 		syncAutoMemoryFiles(),
-		syncClaudeFlowMemory(),
-		syncAgentLearnings()
+		syncClaudeFlowMemory()
 	]);
 
 	const allNew: AutoMemoryEntry[] = [
 		...autoMemory.entries,
-		...claudeFlow.entries,
-		...analytics.entries
+		...claudeFlow.entries
 	];
 
-	result.errors.push(...autoMemory.errors, ...claudeFlow.errors, ...analytics.errors);
+	result.errors.push(...autoMemory.errors, ...claudeFlow.errors);
 
 	if (autoMemory.entries.length > 0) result.sources.push(`auto-memory (${autoMemory.entries.length})`);
 	if (claudeFlow.entries.length > 0) result.sources.push(`claude-flow (${claudeFlow.entries.length})`);
-	if (analytics.entries.length > 0) result.sources.push(`analytics (${analytics.entries.length})`);
 
 	// Merge into store
 	let changed = false;

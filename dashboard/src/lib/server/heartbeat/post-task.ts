@@ -255,10 +255,11 @@ export async function spawnFollowUp(
 		}
 
 		child.on('close', (code) => {
+			const agentStarted = agents.get(followUpId)?.startedAt;
 			agents.delete(followUpId);
 
 			const parsed = parseStreamJsonLog(logFile);
-			const startTime = new Date(agents.get(followUpId)?.startedAt ?? Date.now()).getTime();
+			const startTime = agentStarted ? new Date(agentStarted).getTime() : Date.now();
 
 			releaseSession(
 				session.slotId,
@@ -266,16 +267,19 @@ export async function spawnFollowUp(
 				parsed.usage?.costUsd ?? 0
 			).catch(() => {});
 
+			// Record on parent task so events group together
 			recordEvent({
-				taskId: followUpId,
-				taskTitle: `${label}: ${parentTask.title}`,
-				type: code === 0 ? 'completed' : 'failed',
+				taskId: parentTask.id,
+				taskTitle: parentTask.title,
+				type: 'follow_up_done',
 				model, modelTier: 'sonnet', provider: 'claude-code',
 				exitCode: code ?? undefined,
 				durationMs: parsed.usage?.durationMs ?? (Date.now() - startTime),
 				inputTokens: parsed.usage?.inputTokens ?? 0,
 				outputTokens: parsed.usage?.outputTokens ?? 0,
-				costUsd: parsed.usage?.costUsd ?? 0
+				costUsd: parsed.usage?.costUsd ?? 0,
+				followUpType: type,
+				parentTaskId: parentTask.id
 			}).catch(() => {});
 
 			logAgentCompletion(

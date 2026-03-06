@@ -18,7 +18,10 @@ export type AgentEventType =
 	| 'spawned'           // agent process started
 	| 'handoff'           // escalated from one provider to another
 	| 'completed'         // agent finished successfully
-	| 'failed';           // agent failed or exited non-zero
+	| 'failed'            // agent failed or exited non-zero
+	| 'committed'         // agent changes committed to git
+	| 'follow_up_spawned' // documenter or memory agent spawned
+	| 'follow_up_done';   // follow-up agent completed
 
 export interface AgentEvent {
 	id: string;
@@ -56,6 +59,16 @@ export interface AgentEvent {
 	filesChanged?: number;
 	insertions?: number;
 	deletions?: number;
+
+	// Commit
+	commitHash?: string;
+	commitFiles?: number;
+	commitError?: string;
+
+	// Follow-up
+	followUpType?: 'documenter' | 'memory';
+	followUpReason?: string;
+	parentTaskId?: string;
 }
 
 // ── Aggregated analytics ─────────────────────────────────────────────

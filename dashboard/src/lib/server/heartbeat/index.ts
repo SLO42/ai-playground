@@ -271,6 +271,16 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 					const commitResult = commitAgentChanges(task, agentBaseline, model);
 					const ms = await loadMonitorSession();
 
+					// Analytics: commit event
+					recordEvent({
+						taskId: task.id, taskTitle: task.title,
+						type: 'committed',
+						model, modelTier, provider: 'claude-code',
+						commitHash: commitResult.hash,
+						commitFiles: commitResult.filesCommitted,
+						commitError: commitResult.error
+					}).catch(() => {});
+
 					if (commitResult.committed) {
 						log(ms, `[commit] "${task.title}" → ${commitResult.message}`);
 
@@ -292,6 +302,17 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 					for (const fu of followUps) {
 						if (fu.shouldSpawn) {
 							log(ms, `[follow-up] Planning ${fu.type} for "${task.title}" — ${fu.reason}`);
+
+							// Analytics: follow-up spawn event
+							recordEvent({
+								taskId: task.id, taskTitle: task.title,
+								type: 'follow_up_spawned',
+								model: 'claude-sonnet-4-6', modelTier: 'sonnet', provider: 'claude-code',
+								followUpType: fu.type,
+								followUpReason: fu.reason,
+								parentTaskId: task.id
+							}).catch(() => {});
+
 							await spawnFollowUp(task, fu.type, commitResult, ms);
 						}
 					}

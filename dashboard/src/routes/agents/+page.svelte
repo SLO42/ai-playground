@@ -88,6 +88,12 @@
 		fromProvider?: string;
 		toProvider?: string;
 		handoffReason?: string;
+		commitHash?: string;
+		commitFiles?: number;
+		commitError?: string;
+		followUpType?: string;
+		followUpReason?: string;
+		parentTaskId?: string;
 	}
 
 	interface AgentAnalytics {
@@ -415,7 +421,10 @@
 		spawned: 'text-accent-green',
 		handoff: 'text-accent-yellow',
 		completed: 'text-accent-green',
-		failed: 'text-accent-red'
+		failed: 'text-accent-red',
+		committed: 'text-accent-purple',
+		follow_up_spawned: 'text-accent-blue',
+		follow_up_done: 'text-accent-blue'
 	};
 
 	const eventTypeIcons: Record<string, string> = {
@@ -425,7 +434,10 @@
 		spawned: '▶',
 		handoff: '⇄',
 		completed: '✓',
-		failed: '✕'
+		failed: '✕',
+		committed: '⊛',
+		follow_up_spawned: '⊹',
+		follow_up_done: '◉'
 	};
 
 	const eventTypeLabels: Record<string, string> = {
@@ -435,7 +447,10 @@
 		spawned: 'Agent Spawned',
 		handoff: 'Handoff',
 		completed: 'Completed',
-		failed: 'Failed'
+		failed: 'Failed',
+		committed: 'Committed',
+		follow_up_spawned: 'Follow-up Spawned',
+		follow_up_done: 'Follow-up Done'
 	};
 
 	// Group recent events by task for routing flow view
@@ -443,7 +458,7 @@
 		taskId: string;
 		taskTitle: string;
 		events: AnalyticsEvent[];
-		status: 'running' | 'completed' | 'failed' | 'in_progress';
+		status: 'running' | 'completed' | 'failed' | 'in_progress' | 'documenting';
 		model?: string;
 		modelTier?: string;
 		provider?: string;
@@ -451,6 +466,9 @@
 		totalDuration: number;
 		startTime: string;
 		endTime: string;
+		commitHash?: string;
+		commitFiles?: number;
+		followUps: { type: string; status: 'spawned' | 'done' | 'failed' }[];
 	}
 
 	let expandedTasks = $state<Record<string, boolean>>({});
@@ -472,7 +490,8 @@
 					totalCost: 0,
 					totalDuration: 0,
 					startTime: event.timestamp,
-					endTime: event.timestamp
+					endTime: event.timestamp,
+					followUps: []
 				};
 				groups.set(event.taskId, group);
 			}
@@ -486,13 +505,28 @@
 			if (event.durationMs) group.totalDuration += event.durationMs;
 			if (event.type === 'completed') group.status = 'completed';
 			if (event.type === 'failed') group.status = 'failed';
+			if (event.type === 'committed' && event.commitHash) {
+				group.commitHash = event.commitHash;
+				group.commitFiles = event.commitFiles;
+			}
+			if (event.type === 'follow_up_spawned' && event.followUpType) {
+				group.followUps.push({ type: event.followUpType, status: 'spawned' });
+			}
+			if (event.type === 'follow_up_done' && event.followUpType) {
+				const fu = group.followUps.find(f => f.type === event.followUpType && f.status === 'spawned');
+				if (fu) fu.status = event.exitCode === 0 ? 'done' : 'failed';
+				else group.followUps.push({ type: event.followUpType, status: event.exitCode === 0 ? 'done' : 'failed' });
+			}
 		}
-		// Sort events within each group chronologically
+		// Sort events within each group chronologically and determine status
 		for (const group of groups.values()) {
 			group.events.sort((a, b) => a.timestamp.localeCompare(b.timestamp));
-			// Check if running (has spawned but no completion)
 			const hasSpawn = group.events.some(e => e.type === 'spawned');
-			if (hasSpawn && group.status === 'in_progress') {
+			const hasFollowUpPending = group.followUps.some(f => f.status === 'spawned');
+
+			if (hasFollowUpPending && (group.status === 'completed')) {
+				group.status = 'documenting'; // Code done, follow-up still running
+			} else if (hasSpawn && group.status === 'in_progress') {
 				const isLive = liveActive.some(a => a.taskId === group.taskId);
 				group.status = isLive ? 'running' : 'in_progress';
 			}
@@ -504,14 +538,16 @@
 		running: 'bg-accent-green/15 text-accent-green border-accent-green/30',
 		completed: 'bg-accent-cyan/15 text-accent-cyan border-accent-cyan/30',
 		failed: 'bg-accent-red/15 text-accent-red border-accent-red/30',
-		in_progress: 'bg-accent-yellow/15 text-accent-yellow border-accent-yellow/30'
+		in_progress: 'bg-accent-yellow/15 text-accent-yellow border-accent-yellow/30',
+		documenting: 'bg-accent-blue/15 text-accent-blue border-accent-blue/30'
 	};
 
 	const taskStatusLabels: Record<string, string> = {
 		running: 'Running',
 		completed: 'Done',
 		failed: 'Failed',
-		in_progress: 'In Progress'
+		in_progress: 'In Progress',
+		documenting: 'Documenting'
 	};
 
 	const slotStatusColors: Record<string, string> = {
@@ -955,6 +991,31 @@
 													{#if event.exitCode != null && event.exitCode !== 0}
 														<span class="text-accent-red ml-2">exit {event.exitCode}</span>
 													{/if}
+												{:else if event.type === 'committed'}
+													{#if event.commitHash}
+														<span class="font-mono text-accent-purple">{event.commitHash}</span>
+														<span class="text-text-secondary ml-1">({event.commitFiles} file{(event.commitFiles ?? 0) !== 1 ? 's' : ''})</span>
+													{:else if event.commitError}
+														<span class="text-accent-red">failed: {event.commitError}</span>
+													{:else}
+														<span class="text-text-secondary">no changes to commit</span>
+													{/if}
+												{:else if event.type === 'follow_up_spawned'}
+													<span class="text-accent-blue">{event.followUpType}</span>
+													{#if event.followUpReason}
+														<span class="text-text-secondary ml-1">— {event.followUpReason}</span>
+													{/if}
+												{:else if event.type === 'follow_up_done'}
+													<span class="text-accent-blue">{event.followUpType}</span>
+													{#if event.durationMs != null}
+														<span class="font-mono text-text-primary ml-2">{(event.durationMs / 1000).toFixed(0)}s</span>
+													{/if}
+													{#if event.costUsd != null}
+														<span class="font-mono text-accent-yellow ml-1">${event.costUsd.toFixed(2)}</span>
+													{/if}
+													{#if event.exitCode != null && event.exitCode !== 0}
+														<span class="text-accent-red ml-1">exit {event.exitCode}</span>
+													{/if}
 												{/if}
 											</div>
 
@@ -968,8 +1029,29 @@
 									{/each}
 								</div>
 
-								<!-- Task footer -->
-								<div class="flex items-center justify-between mt-3 pt-2 border-t border-border/30 text-[11px]">
+								<!-- Task footer with commit + follow-up summary -->
+								{#if group.commitHash || group.followUps.length > 0}
+									<div class="flex items-center gap-3 mt-3 pt-2 border-t border-border/30 text-[11px] flex-wrap">
+										{#if group.commitHash}
+											<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-accent-purple/10 text-accent-purple border border-accent-purple/20">
+												<span>⊛</span> {group.commitHash}
+												<span class="text-text-secondary">({group.commitFiles} file{(group.commitFiles ?? 0) !== 1 ? 's' : ''})</span>
+											</span>
+										{/if}
+										{#each group.followUps as fu}
+											<span class="inline-flex items-center gap-1 px-2 py-0.5 rounded-full border
+												{fu.status === 'done' ? 'bg-accent-blue/10 text-accent-blue border-accent-blue/20' :
+												 fu.status === 'failed' ? 'bg-accent-red/10 text-accent-red border-accent-red/20' :
+												 'bg-accent-yellow/10 text-accent-yellow border-accent-yellow/20 animate-pulse'}">
+												{fu.status === 'done' ? '◉' : fu.status === 'failed' ? '✕' : '⊹'}
+												{fu.type}
+												<span class="text-text-secondary">({fu.status})</span>
+											</span>
+										{/each}
+									</div>
+								{/if}
+
+								<div class="flex items-center justify-between mt-2 pt-2 border-t border-border/30 text-[11px]">
 									<span class="text-text-secondary font-mono">{group.taskId}</span>
 									<div class="flex items-center gap-4">
 										<span class="text-text-secondary">{group.events.length} events</span>

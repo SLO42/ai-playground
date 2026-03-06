@@ -1,0 +1,2767 @@
+openapi: 3.1.0
+info:
+  title: AI Playground Dashboard API
+  version: 0.1.0
+  description: |
+    SvelteKit dashboard API for the AI Playground project.
+    Manages agents, chat sessions, projects, tasks, services,
+    notifications, routing telemetry, reports, and settings.
+  license:
+    name: MIT
+
+servers:
+  - url: http://localhost:5173
+    description: Local dev server
+
+tags:
+  - name: Health
+    description: Service health checks
+  - name: System
+    description: System-level status
+  - name: Agents
+    description: Agent CRUD and catalog
+  - name: Chat
+    description: Multi-provider chat with tool calling
+  - name: Chat History
+    description: Chat session persistence
+  - name: Chat Auto
+    description: Automated (Claw-initiated) chat sessions
+  - name: Projects
+    description: Project registry and scaffolding
+  - name: Tasks
+    description: Project task management
+  - name: Services
+    description: Service lifecycle (Ollama, OpenClaw, Claude Flow)
+  - name: Notifications
+    description: Push notifications and SSE stream
+  - name: Routing
+    description: Model routing telemetry
+  - name: Reports
+    description: Analytics reports
+  - name: Channels
+    description: OpenClaw channel config
+  - name: Sessions
+    description: Conversation session events
+  - name: Memory
+    description: Memory context and graph
+  - name: Security
+    description: Security scanning and audit
+  - name: Settings
+    description: Application settings
+  - name: GitHub
+    description: GitHub task sync
+  - name: MCP
+    description: MCP tool registry
+  - name: Hooks
+    description: Claude Flow hooks
+  - name: V3
+    description: Claude Flow v3 internals
+  - name: Ollama
+    description: Ollama API proxy
+
+paths:
+  # ── Health ──────────────────────────────────────────────────
+  /api/health:
+    get:
+      tags: [Health]
+      summary: Check service health
+      description: Returns liveness status for Ollama, OpenClaw gateway, and Claude Flow daemon.
+      responses:
+        '200':
+          description: Health status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ollama:
+                    type: boolean
+                  gateway:
+                    type: boolean
+                  daemon:
+                    type: boolean
+                  daemonWorkers:
+                    type: integer
+                  timestamp:
+                    type: string
+
+  # ── System ──────────────────────────────────────────────────
+  /api/system:
+    get:
+      tags: [System]
+      summary: System status overview
+      description: Aggregated system status including Ollama, gateway, swarm, and security.
+      responses:
+        '200':
+          description: System status
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ollama:
+                    type: boolean
+                  gateway:
+                    type: boolean
+                  swarm:
+                    type: boolean
+                  security:
+                    type: boolean
+                  timestamp:
+                    type: string
+                    format: date-time
+
+  # ── Agents ──────────────────────────────────────────────────
+  /api/agents:
+    get:
+      tags: [Agents]
+      summary: List or get agents
+      parameters:
+        - name: category
+          in: query
+          schema:
+            type: string
+          description: Filter by category or type
+        - name: file
+          in: query
+          schema:
+            type: string
+          description: Read a specific agent file by relative path
+        - name: name
+          in: query
+          schema:
+            type: string
+          description: Read a specific agent by name
+      responses:
+        '200':
+          description: Agent list or single agent
+          content:
+            application/json:
+              schema:
+                oneOf:
+                  - $ref: '#/components/schemas/AgentList'
+                  - $ref: '#/components/schemas/AgentFile'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Agents]
+      summary: Create a new agent file
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filename, content]
+              properties:
+                filename:
+                  type: string
+                content:
+                  type: string
+      responses:
+        '200':
+          description: Agent created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  filename:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '409':
+          description: Agent file already exists
+    put:
+      tags: [Agents]
+      summary: Update an existing agent file
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [filename, content]
+              properties:
+                filename:
+                  type: string
+                content:
+                  type: string
+      responses:
+        '200':
+          description: Agent updated
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Agents]
+      summary: Delete an agent file
+      parameters:
+        - name: file
+          in: query
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Agent deleted
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/agents/catalog:
+    get:
+      tags: [Agents]
+      summary: Agent catalog with built-in types
+      responses:
+        '200':
+          description: Catalog of agent types
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/agents/teams:
+    get:
+      tags: [Agents]
+      summary: List agent teams
+      responses:
+        '200':
+          description: Agent teams
+          content:
+            application/json:
+              schema:
+                type: object
+
+  /api/agents/usage:
+    get:
+      tags: [Agents]
+      summary: Agent usage analytics
+      responses:
+        '200':
+          description: Usage entries with aggregated totals
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                  totals:
+                    type: object
+                    properties:
+                      inputTokens:
+                        type: integer
+                      outputTokens:
+                        type: integer
+                      totalTokens:
+                        type: integer
+                      costUsd:
+                        type: number
+                      durationMs:
+                        type: number
+                      taskCount:
+                        type: integer
+                  byModel:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      properties:
+                        input:
+                          type: integer
+                        output:
+                          type: integer
+                        cost:
+                          type: number
+                        count:
+                          type: integer
+
+  # ── Chat ────────────────────────────────────────────────────
+  /api/chat:
+    post:
+      tags: [Chat]
+      summary: Send a chat message (SSE streaming)
+      description: |
+        Streams a chat response via Server-Sent Events. Supports multi-provider
+        routing (Ollama, Claude, OpenClaw) and tool calling with up to 5 loops.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/ChatRequest'
+      responses:
+        '200':
+          description: SSE stream of chat events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: "Newline-delimited JSON events: content, tool_call, tool_result, tool_confirm, error, done"
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/chat/history:
+    get:
+      tags: [Chat History]
+      summary: List chat sessions
+      description: Returns session metadata sorted by most recent.
+      responses:
+        '200':
+          description: Array of session metadata
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  $ref: '#/components/schemas/ChatSessionMeta'
+    post:
+      tags: [Chat History]
+      summary: Create a new chat session
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                model:
+                  type: string
+                  default: 'gpt-oss:20b'
+                provider:
+                  type: string
+                  default: ollama
+                source:
+                  type: string
+      responses:
+        '201':
+          description: New chat session
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatSession'
+
+  /api/chat/history/{id}:
+    get:
+      tags: [Chat History]
+      summary: Get a chat session
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: Full chat session with messages
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ChatSession'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Chat History]
+      summary: Update a chat session
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                messages:
+                  type: array
+                  items:
+                    $ref: '#/components/schemas/ChatMessage'
+                model:
+                  type: string
+                provider:
+                  type: string
+      responses:
+        '200':
+          description: Updated session
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Chat History]
+      summary: Delete a chat session
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: Deleted
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+
+  /api/chat/auto:
+    post:
+      tags: [Chat Auto]
+      summary: Start or control an auto session
+      description: |
+        Actions: start (default), inject, pause, resume, status.
+        Auto sessions are Claw-initiated streaming conversations.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                action:
+                  type: string
+                  enum: [inject, pause, resume, status]
+                  description: Control action. Omit to start a new session.
+                sessionId:
+                  type: string
+                  description: Required for control actions
+                message:
+                  type: string
+                  description: For inject action
+                userMessage:
+                  type: string
+                  description: Initial message for new session
+                model:
+                  type: string
+                  default: 'gpt-oss:20b'
+                provider:
+                  type: string
+                  default: ollama
+                systemPrompt:
+                  type: string
+                source:
+                  type: string
+      responses:
+        '200':
+          description: Action result
+        '201':
+          description: New auto session started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  sessionId:
+                    type: string
+                  status:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/chat/sessions/{id}/live:
+    get:
+      tags: [Chat Auto]
+      summary: SSE stream for live session monitoring
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: SSE stream of session events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+
+  # ── Projects ────────────────────────────────────────────────
+  /api/projects:
+    get:
+      tags: [Projects]
+      summary: List all registered projects
+      responses:
+        '200':
+          description: Project list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  projects:
+                    type: array
+                    items:
+                      type: object
+    patch:
+      tags: [Projects]
+      summary: Toggle project favorite
+      description: Set or unset a project as a favorite.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [id, favorite]
+              properties:
+                id:
+                  type: string
+                  description: Project ID
+                favorite:
+                  type: boolean
+                  description: Whether the project should be favorited
+      responses:
+        '200':
+          description: Favorite updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  favorites:
+                    type: array
+                    items:
+                      type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+    post:
+      tags: [Projects]
+      summary: Create or import a project
+      description: |
+        If `name` and `path` are provided, scaffolds a new project from a template.
+        If only `path` is provided, imports an existing directory.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProjectBody'
+      responses:
+        '201':
+          description: Project created or imported
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  project:
+                    type: object
+                  gitInitialized:
+                    type: boolean
+                  githubCreated:
+                    type: boolean
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/projects/{id}:
+    get:
+      tags: [Projects]
+      summary: Get a project by ID
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: Project details
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Projects]
+      summary: Remove a project from the registry
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: Project removed
+
+  /api/projects/{id}/scan:
+    post:
+      tags: [Projects]
+      summary: Re-scan a project
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: Scan result
+
+  /api/projects/{id}/security:
+    get:
+      tags: [Security, Projects]
+      summary: Get security data for a project
+      description: |
+        Returns aggregated security information for a project including audit
+        summary, vulnerability list, policy compliance checks, permission fixes,
+        and audit log entries. Data is assembled from the audit-status JSON,
+        network-policy YAML, and scan-findings JSON files.
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: Security overview for the project
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProjectSecurityResponse'
+              examples:
+                healthy:
+                  summary: Clean project with no vulnerabilities
+                  value:
+                    summary:
+                      lastScan: '2026-03-05T10:30:00Z'
+                      vulnerabilities: 0
+                      critical: 0
+                      score: '5/5'
+                      status: CLEAN
+                    vulnerabilities: []
+                    policies:
+                      - name: Default Firewall Action
+                        value: deny
+                        pass: true
+                      - name: Input Validation
+                        value: Enabled
+                        pass: true
+                      - name: Policy Version
+                        value: '1.2'
+                        pass: true
+                    permissions: []
+                    auditLog:
+                      - time: '2026-03-04T14:22:00Z'
+                        message: 'CVE-2026-1001: Updated TLS cipher suite'
+                        result: PASS
+                withFindings:
+                  summary: Project with vulnerabilities detected
+                  value:
+                    summary:
+                      lastScan: '2026-03-05T10:30:00Z'
+                      vulnerabilities: 2
+                      critical: 1
+                      score: '3/5'
+                      status: VULNERABLE
+                    vulnerabilities:
+                      - package: openssl
+                        severity: critical
+                        cve: 'CVE-2026-9999 openssl heap overflow'
+                        current: Affects versions < 3.1.5
+                        fixed: '2026-03-05T10:30:00Z'
+                      - package: node-fetch
+                        severity: medium
+                        cve: 'CVE-2026-8888 SSRF via redirect'
+                        current: Upgrade to >= 3.4.0
+                        fixed: '2026-03-05T10:30:00Z'
+                    policies:
+                      - name: Default Firewall Action
+                        value: allow
+                        pass: false
+                      - name: Input Validation
+                        value: Disabled
+                        pass: false
+                      - name: Policy Version
+                        value: '1.0'
+                        pass: true
+                    permissions:
+                      - path: chmod 600 .env
+                        perms: applied
+                        pass: true
+                    auditLog:
+                      - time: '2026-03-04T14:22:00Z'
+                        message: 'CVE-2026-1001: Updated TLS cipher suite'
+                        result: PASS
+                errorFallback:
+                  summary: When security data files are unavailable
+                  value:
+                    summary:
+                      lastScan: Never
+                      vulnerabilities: 0
+                      critical: 0
+                      score: 'N/A'
+                      status: PENDING
+                    vulnerabilities: []
+                    policies: []
+                    permissions: []
+                    auditLog: []
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/projects/{id}/tasks:
+    get:
+      tags: [Tasks]
+      summary: List tasks for a project
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+        - name: status
+          in: query
+          schema:
+            type: string
+          description: Comma-separated status filter (pending, in_progress, completed, cancelled)
+        - name: full
+          in: query
+          schema:
+            type: string
+            enum: ['true']
+          description: Return full task objects instead of index entries
+      responses:
+        '200':
+          description: Task list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  tasks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Task'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Tasks]
+      summary: Create a task
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title]
+              properties:
+                title:
+                  type: string
+                description:
+                  type: string
+                priority:
+                  $ref: '#/components/schemas/TaskPriority'
+                assignee:
+                  type: string
+                tags:
+                  type: array
+                  items:
+                    type: string
+                createdBy:
+                  type: string
+                  default: user
+      responses:
+        '201':
+          description: Task created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task:
+                    $ref: '#/components/schemas/Task'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/projects/{id}/tasks/{taskId}:
+    get:
+      tags: [Tasks]
+      summary: Get a single task
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task details
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task:
+                    $ref: '#/components/schemas/Task'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    put:
+      tags: [Tasks]
+      summary: Update a task
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                title:
+                  type: string
+                description:
+                  type: string
+                status:
+                  $ref: '#/components/schemas/TaskStatus'
+                priority:
+                  $ref: '#/components/schemas/TaskPriority'
+                assignee:
+                  type: string
+                tags:
+                  type: array
+                  items:
+                    type: string
+                flagDiscussion:
+                  type: boolean
+      responses:
+        '200':
+          description: Task updated
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Tasks]
+      summary: Delete a task
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+        - name: taskId
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Task deleted
+
+  # ── Project Hooks ─────────────────────────────────────────
+  /api/projects/{id}/hooks:
+    get:
+      tags: [Hooks]
+      summary: List hooks for a project
+      description: Returns all hooks configured for the specified project.
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: Hook list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hooks:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ProjectHook'
+                  total:
+                    type: integer
+                    description: Total number of hooks
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Hooks]
+      summary: Create a hook
+      description: Adds a new hook to the project. Hook names must be unique within a project.
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, type]
+              properties:
+                name:
+                  type: string
+                  description: Unique hook name within the project
+                type:
+                  type: string
+                  description: Hook event type (e.g. pre-task, post-task, pre-edit)
+                description:
+                  type: string
+                  default: ''
+                enabled:
+                  type: boolean
+                  default: true
+                command:
+                  type: string
+                  default: ''
+                  description: Shell command to execute when the hook fires
+      responses:
+        '200':
+          description: Hook created
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  hook:
+                    $ref: '#/components/schemas/ProjectHook'
+                  total:
+                    type: integer
+        '400':
+          description: Missing required field (name or type)
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          description: Hook with that name already exists
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+    patch:
+      tags: [Hooks]
+      summary: Update a hook
+      description: Updates an existing hook identified by name. Only provided fields are changed.
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Name of the hook to update (used as identifier)
+                type:
+                  type: string
+                description:
+                  type: string
+                enabled:
+                  type: boolean
+                command:
+                  type: string
+      responses:
+        '200':
+          description: Hook updated
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  hook:
+                    $ref: '#/components/schemas/ProjectHook'
+                  total:
+                    type: integer
+        '400':
+          description: Missing name field
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+    delete:
+      tags: [Hooks]
+      summary: Delete a hook
+      description: Removes a hook by name from the project.
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Name of the hook to remove
+      responses:
+        '200':
+          description: Hook removed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  ok:
+                    type: boolean
+                  removed:
+                    type: string
+                    description: Name of the removed hook
+                  total:
+                    type: integer
+        '400':
+          description: Missing name field
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Error'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/tasks/{id}:
+    get:
+      tags: [Tasks]
+      summary: Get a task by ID across all projects
+      description: Searches every registered project for a task matching the given ID.
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: Task found
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task:
+                    allOf:
+                      - $ref: '#/components/schemas/Task'
+                      - type: object
+                        properties:
+                          projectId:
+                            type: string
+                          projectName:
+                            type: string
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/tasks/{id}/start:
+    post:
+      tags: [Tasks]
+      summary: Start a pending task
+      description: Transitions a task from pending to in_progress. Searches all projects.
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: Task started
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  task:
+                    $ref: '#/components/schemas/Task'
+        '400':
+          description: Task is not pending
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  # ── Services ────────────────────────────────────────────────
+  /api/services:
+    get:
+      tags: [Services]
+      summary: List all services with live status
+      description: Detects Ollama, OpenClaw, Claude Flow daemon, and custom services.
+      responses:
+        '200':
+          description: Service list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  services:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Service'
+                  timestamp:
+                    type: string
+                    format: date-time
+    post:
+      tags: [Services]
+      summary: Register custom services
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [services]
+              properties:
+                services:
+                  type: array
+                  items:
+                    type: object
+                    properties:
+                      name:
+                        type: string
+                      type:
+                        type: string
+                      command:
+                        type: string
+                      port:
+                        type: integer
+                        nullable: true
+                      workingDir:
+                        type: string
+      responses:
+        '201':
+          description: Services created
+
+  /api/services/{id}:
+    post:
+      tags: [Services]
+      summary: Control a service (start/stop/restart)
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [action]
+              properties:
+                action:
+                  type: string
+                  enum: [start, stop, restart]
+      responses:
+        '200':
+          description: Action result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  message:
+                    type: string
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '404':
+          $ref: '#/components/responses/NotFound'
+
+  /api/services/{id}/config:
+    get:
+      tags: [Services]
+      summary: Read service config file
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: Config contents
+
+  /api/services/{id}/logs:
+    get:
+      tags: [Services]
+      summary: Read service log file
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+        - name: tail
+          in: query
+          schema:
+            type: integer
+          description: Number of lines from end
+      responses:
+        '200':
+          description: Log lines
+
+  /api/services/{id}/logs/stream:
+    get:
+      tags: [Services]
+      summary: SSE stream of service logs
+      description: |
+        Opens a Server-Sent Events connection that tails the service's log
+        file(s) in real time. Supports both single-file and directory log
+        sources (watches for new `.log` files). Sends a keepalive comment
+        every 15 seconds. Each `data:` frame is a JSON-encoded log line string.
+      parameters:
+        - $ref: '#/components/parameters/PathId'
+      responses:
+        '200':
+          description: SSE log stream
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-cache
+            Connection:
+              schema:
+                type: string
+                example: keep-alive
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: Each `data:` frame contains a JSON-encoded log line string.
+        '404':
+          description: Service not found or no logs configured
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/responses/NotFound'
+
+  # ── Notifications ───────────────────────────────────────────
+  /api/notifications:
+    get:
+      tags: [Notifications]
+      summary: List notifications
+      parameters:
+        - name: category
+          in: query
+          schema:
+            $ref: '#/components/schemas/NotifCategory'
+        - name: unread
+          in: query
+          schema:
+            type: string
+            enum: ['true']
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 50
+            maximum: 200
+        - name: offset
+          in: query
+          schema:
+            type: integer
+            default: 0
+      responses:
+        '200':
+          description: Notification list with stats
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  notifications:
+                    type: array
+                    items:
+                      type: object
+                  total:
+                    type: integer
+                  stats:
+                    type: object
+    post:
+      tags: [Notifications]
+      summary: Push notification or mark as read
+      description: |
+        Use `action: "mark_read"` with an `id` to mark one as read,
+        `action: "mark_all_read"` to mark all, or omit action to push a new notification.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                action:
+                  type: string
+                  enum: [mark_read, mark_all_read]
+                id:
+                  type: string
+                  description: Notification ID (for mark_read)
+                title:
+                  type: string
+                  description: Required when pushing new notification
+                message:
+                  type: string
+                severity:
+                  $ref: '#/components/schemas/NotifSeverity'
+                category:
+                  $ref: '#/components/schemas/NotifCategory'
+                source:
+                  type: string
+                link:
+                  type: string
+                linkLabel:
+                  type: string
+                desktop:
+                  type: boolean
+                  default: true
+      responses:
+        '200':
+          description: Action completed
+        '201':
+          description: Notification created
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/notifications/stream:
+    get:
+      tags: [Notifications]
+      summary: SSE stream of real-time notifications
+      description: |
+        Opens a Server-Sent Events connection that pushes new notifications
+        in real time. Sends a keepalive comment every 30 seconds. Each `data`
+        frame is a JSON-serialized notification object matching the items
+        returned by GET /api/notifications.
+      responses:
+        '200':
+          description: SSE notification stream
+          headers:
+            Cache-Control:
+              schema:
+                type: string
+                example: no-cache
+            Connection:
+              schema:
+                type: string
+                example: keep-alive
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: |
+                  Each SSE `data:` frame contains a JSON notification object
+                  with fields: id, title, message, severity, category, source,
+                  link, linkLabel, read, createdAt.
+
+  # ── Routing ─────────────────────────────────────────────────
+  /api/routing:
+    get:
+      tags: [Routing]
+      summary: Get routing telemetry stats
+      parameters:
+        - name: view
+          in: query
+          schema:
+            type: string
+            enum: [recent, workflows]
+          description: "'recent' for recent decisions, 'workflows' for workflow stats, omit for full stats"
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+            maximum: 50
+      responses:
+        '200':
+          description: Routing stats or decisions
+    post:
+      tags: [Routing]
+      summary: Log a routing decision
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [model, agent, taskType]
+              properties:
+                model:
+                  type: string
+                provider:
+                  type: string
+                agent:
+                  type: string
+                taskType:
+                  type: string
+                complexity:
+                  type: number
+                latencyMs:
+                  type: number
+                success:
+                  type: boolean
+                  default: true
+                source:
+                  type: string
+                reason:
+                  type: string
+                sessionId:
+                  type: string
+      responses:
+        '201':
+          description: Decision logged
+
+  /api/routing/log:
+    post:
+      tags: [Routing]
+      summary: Log a routing decision (alternate path)
+      requestBody:
+        $ref: '#/components/requestBodies/RoutingLogEntry'
+      responses:
+        '200':
+          description: Logged
+
+  # ── Reports ─────────────────────────────────────────────────
+  /api/reports:
+    get:
+      tags: [Reports]
+      summary: List or get reports
+      parameters:
+        - name: type
+          in: query
+          schema:
+            type: string
+            enum: [daily, weekly, monthly, quarterly, yearly]
+        - name: date
+          in: query
+          schema:
+            type: string
+          description: Date string. Required with type to get a specific report.
+      responses:
+        '200':
+          description: Report list or single report
+        '404':
+          $ref: '#/components/responses/NotFound'
+    post:
+      tags: [Reports]
+      summary: Generate a new report
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                type:
+                  type: string
+                  enum: [daily, weekly, monthly, quarterly, yearly]
+                  default: daily
+                source:
+                  type: string
+      responses:
+        '201':
+          description: Report generated
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/reports/usage:
+    get:
+      tags: [Reports]
+      summary: Agent usage report
+      responses:
+        '200':
+          description: Token usage and cost data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  entries:
+                    type: array
+                    items:
+                      type: object
+                  totals:
+                    type: object
+                  byModel:
+                    type: object
+
+  # ── Channels ────────────────────────────────────────────────
+  /api/channels:
+    get:
+      tags: [Channels]
+      summary: Get gateway and channel configs
+      responses:
+        '200':
+          description: Gateway config and channel list
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  gateway:
+                    type: object
+                    nullable: true
+                  channels:
+                    type: array
+                    items:
+                      type: object
+    post:
+      tags: [Channels]
+      summary: Create a channel config from template
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name]
+              properties:
+                name:
+                  type: string
+                  description: Channel name (e.g. "Twitch", "Discord")
+      responses:
+        '201':
+          description: Channel config created
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '403':
+          description: Path not allowed
+        '409':
+          description: Channel config already exists
+
+  # ── Sessions ────────────────────────────────────────────────
+  /api/session:
+    get:
+      tags: [Sessions]
+      summary: Get current session info
+      responses:
+        '200':
+          description: Session data
+
+  /api/sessions/{id}/events:
+    get:
+      tags: [Sessions]
+      summary: Get conversation events for a session
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+          description: "Session ID (session-\\d+) or 'current'"
+        - name: after
+          in: query
+          schema:
+            type: integer
+            default: 0
+          description: Sequence cursor — return events after this number
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 100
+            maximum: 500
+      responses:
+        '200':
+          description: Paginated events
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  events:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/ConversationEvent'
+                  nextCursor:
+                    type: integer
+                  total:
+                    type: integer
+        '400':
+          description: Invalid session ID format
+
+  # ── Memory ──────────────────────────────────────────────────
+  /api/memory/context:
+    get:
+      tags: [Memory]
+      summary: Get memory context
+      description: Returns ranked context entries and auto-memory store.
+      responses:
+        '200':
+          description: Memory context data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/MemoryContextResponse'
+
+  /api/memory/graph:
+    get:
+      tags: [Memory]
+      summary: Get memory graph
+      description: Returns the knowledge graph with nodes, edges, and PageRank scores.
+      responses:
+        '200':
+          description: Memory graph data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GraphState'
+
+  # ── Security ────────────────────────────────────────────────
+  /api/security/scan:
+    post:
+      tags: [Security]
+      summary: Run a security scan
+      description: |
+        Runs the Claude Flow CLI security scan. Falls back to a local scan
+        (env checks, gitignore, gateway binding, network policy) if CLI is
+        unavailable. Sensitive values are redacted from output.
+      responses:
+        '200':
+          description: Scan results
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                  output:
+                    type: string
+                    description: Formatted scan output (sensitive values redacted)
+                  error:
+                    type: string
+        '500':
+          description: Scan failed
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  success:
+                    type: boolean
+                    example: false
+                  error:
+                    type: string
+
+  /api/security/audit:
+    get:
+      tags: [Security]
+      summary: Get security audit status
+      description: Returns the current audit status including CVE tracking.
+      responses:
+        '200':
+          description: Audit data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/AuditStatus'
+
+  /api/security/policy:
+    get:
+      tags: [Security]
+      summary: Get security policy
+      description: Returns the network security policy (parsed from YAML).
+      responses:
+        '200':
+          description: Policy data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SecurityPolicy'
+
+  # ── GitHub ──────────────────────────────────────────────────
+  /api/github/sync:
+    get:
+      tags: [GitHub]
+      summary: Get GitHub sync status
+      responses:
+        '200':
+          description: Sync status
+    post:
+      tags: [GitHub]
+      summary: Trigger GitHub task sync
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                direction:
+                  type: string
+                  enum: [push, pull, both]
+                  default: both
+                projectId:
+                  type: string
+                  default: '.'
+                dryRun:
+                  type: boolean
+                  default: false
+                source:
+                  type: string
+      responses:
+        '200':
+          description: Sync result
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  created:
+                    type: integer
+                  updated:
+                    type: integer
+                  pulled:
+                    type: integer
+                  errors:
+                    type: array
+                    items:
+                      type: string
+
+  # ── Settings ────────────────────────────────────────────────
+  /api/settings/general:
+    get:
+      tags: [Settings]
+      summary: Get general settings
+      parameters:
+        - $ref: '#/components/parameters/SettingsScope'
+        - $ref: '#/components/parameters/ProjectPath'
+      responses:
+        '200':
+          description: General settings
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/GeneralSettings'
+    put:
+      tags: [Settings]
+      summary: Update general settings
+      parameters:
+        - $ref: '#/components/parameters/SettingsScope'
+        - $ref: '#/components/parameters/ProjectPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/GeneralSettings'
+      responses:
+        '200':
+          description: Updated
+
+  /api/settings/api-keys:
+    get:
+      tags: [Settings]
+      summary: Check which API keys are set
+      responses:
+        '200':
+          description: Key status array
+          content:
+            application/json:
+              schema:
+                type: array
+                items:
+                  type: object
+                  properties:
+                    name:
+                      type: string
+                      enum: [ANTHROPIC_API_KEY, OPENAI_API_KEY, GITHUB_TOKEN]
+                    set:
+                      type: boolean
+    put:
+      tags: [Settings]
+      summary: Set an API key in .env
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, value]
+              properties:
+                name:
+                  type: string
+                  enum: [ANTHROPIC_API_KEY, OPENAI_API_KEY, GITHUB_TOKEN]
+                value:
+                  type: string
+      responses:
+        '200':
+          description: Key updated
+        '400':
+          $ref: '#/components/responses/BadRequest'
+
+  /api/settings/memory:
+    get:
+      tags: [Settings]
+      summary: Get memory settings
+      responses:
+        '200':
+          description: Memory settings
+    put:
+      tags: [Settings]
+      summary: Update memory settings
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Updated
+
+  /api/settings/model-routing:
+    get:
+      tags: [Settings]
+      summary: Get model routing settings
+      parameters:
+        - $ref: '#/components/parameters/SettingsScope'
+        - $ref: '#/components/parameters/ProjectPath'
+      responses:
+        '200':
+          description: Model routing settings
+    put:
+      tags: [Settings]
+      summary: Update model routing settings
+      parameters:
+        - $ref: '#/components/parameters/SettingsScope'
+        - $ref: '#/components/parameters/ProjectPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Updated
+
+  /api/settings/notifications:
+    get:
+      tags: [Settings]
+      summary: Get notification settings
+      parameters:
+        - $ref: '#/components/parameters/SettingsScope'
+        - $ref: '#/components/parameters/ProjectPath'
+      responses:
+        '200':
+          description: Notification settings
+    put:
+      tags: [Settings]
+      summary: Update notification settings
+      parameters:
+        - $ref: '#/components/parameters/SettingsScope'
+        - $ref: '#/components/parameters/ProjectPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Updated
+
+  /api/settings/agent-defaults:
+    get:
+      tags: [Settings]
+      summary: Get agent default settings
+      parameters:
+        - $ref: '#/components/parameters/SettingsScope'
+        - $ref: '#/components/parameters/ProjectPath'
+      responses:
+        '200':
+          description: Agent default settings
+    put:
+      tags: [Settings]
+      summary: Update agent default settings
+      parameters:
+        - $ref: '#/components/parameters/SettingsScope'
+        - $ref: '#/components/parameters/ProjectPath'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+      responses:
+        '200':
+          description: Updated
+
+  # ── Apps ────────────────────────────────────────────────────
+  /api/apps/{path}:
+    get:
+      tags: [System]
+      summary: App registry proxy (GET)
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: App data
+    post:
+      tags: [System]
+      summary: App registry proxy (POST)
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: App action result
+
+  # ── Ollama Proxy ────────────────────────────────────────────
+  /api/ollama/{path}:
+    get:
+      tags: [Ollama]
+      summary: Proxy requests to local Ollama API
+      parameters:
+        - name: path
+          in: path
+          required: true
+          schema:
+            type: string
+          description: Ollama API path (e.g. api/tags, api/show)
+      responses:
+        '200':
+          description: Proxied Ollama response
+
+  # ── MCP ─────────────────────────────────────────────────────
+  /api/mcp:
+    get:
+      tags: [MCP]
+      summary: Get MCP tool registry
+      description: Returns MCP server configuration from `.mcp.json`.
+      responses:
+        '200':
+          description: MCP tools
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  mcpServers:
+                    type: object
+                    additionalProperties:
+                      type: object
+                      description: MCP server config (command, args, env, etc.)
+
+  # ── Hooks ───────────────────────────────────────────────────
+  /api/hooks:
+    get:
+      tags: [Hooks]
+      summary: Get Claude Flow hooks config
+      description: Returns hooks configuration, daemon status, and learning state from settings.
+      responses:
+        '200':
+          description: Hooks data
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  hooks:
+                    type: object
+                    description: Hook definitions keyed by event name
+                  daemon:
+                    type: object
+                    nullable: true
+                    description: Claude Flow daemon configuration
+                  learning:
+                    type: object
+                    nullable: true
+                    description: Learning/intelligence configuration
+
+  # ── V3 Internals ────────────────────────────────────────────
+  /api/v3/progress:
+    get:
+      tags: [V3]
+      summary: V3 migration progress
+      description: Returns V3 migration status including domain completion, DDD progress, swarm state, and learning metrics.
+      responses:
+        '200':
+          description: Progress data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/V3Progress'
+
+  /api/v3/swarm:
+    get:
+      tags: [V3]
+      summary: V3 swarm status
+      description: Returns current swarm activity including process counts, agent state, and integration status.
+      responses:
+        '200':
+          description: Swarm data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/SwarmActivity'
+
+  /api/v3/learning:
+    get:
+      tags: [V3]
+      summary: V3 learning status
+      description: Returns learning system status including routing accuracy, pattern counts, and session info.
+      responses:
+        '200':
+          description: Learning data
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Learning'
+
+components:
+  parameters:
+    PathId:
+      name: id
+      in: path
+      required: true
+      schema:
+        type: string
+    SettingsScope:
+      name: scope
+      in: query
+      schema:
+        type: string
+        enum: [global, project]
+        default: global
+    ProjectPath:
+      name: projectPath
+      in: query
+      schema:
+        type: string
+      description: Project path (required when scope=project)
+
+  schemas:
+    ProjectHook:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Unique hook name within the project
+        type:
+          type: string
+          description: Hook event type (e.g. pre-task, post-task, pre-edit)
+        description:
+          type: string
+        enabled:
+          type: boolean
+        command:
+          type: string
+          description: Shell command to execute when the hook fires
+      required: [name, type]
+
+    AgentList:
+      type: object
+      properties:
+        agents:
+          type: array
+          items:
+            $ref: '#/components/schemas/AgentConfig'
+        categories:
+          type: object
+          additionalProperties:
+            type: array
+            items:
+              $ref: '#/components/schemas/AgentConfig'
+        total:
+          type: integer
+
+    AgentConfig:
+      type: object
+      properties:
+        name:
+          type: string
+        description:
+          type: string
+        type:
+          type: string
+        category:
+          type: string
+        file:
+          type: string
+
+    AgentFile:
+      type: object
+      properties:
+        filename:
+          type: string
+        name:
+          type: string
+        content:
+          type: string
+
+    ChatRequest:
+      type: object
+      required: [messages]
+      properties:
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        model:
+          type: string
+        provider:
+          type: string
+          enum: [ollama, claude, openclaw]
+        complexity:
+          type: number
+          description: Complexity score for routing (0-1)
+        tools:
+          type: boolean
+          default: true
+          description: Enable tool calling
+
+    ChatMessage:
+      type: object
+      required: [role, content]
+      properties:
+        role:
+          type: string
+          enum: [system, user, assistant, tool]
+        content:
+          type: string
+        tool_calls:
+          type: array
+          items:
+            type: object
+        tool_call_id:
+          type: string
+
+    ChatSession:
+      type: object
+      properties:
+        id:
+          type: string
+        model:
+          type: string
+        provider:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        messages:
+          type: array
+          items:
+            $ref: '#/components/schemas/ChatMessage'
+        source:
+          type: string
+          enum: [user, claw]
+        status:
+          type: string
+          enum: [idle, streaming, paused]
+
+    ChatSessionMeta:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        model:
+          type: string
+        provider:
+          type: string
+        messageCount:
+          type: integer
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+        source:
+          type: string
+        status:
+          type: string
+
+    CreateProjectBody:
+      type: object
+      properties:
+        name:
+          type: string
+        path:
+          type: string
+        template:
+          type: string
+          enum: [blank, sveltekit, nextjs, python, fullstack, agent]
+          default: blank
+        description:
+          type: string
+        initGit:
+          type: boolean
+        createGithub:
+          type: boolean
+        primaryModel:
+          type: string
+        escalation:
+          type: string
+        memoryNamespace:
+          type: string
+        isolateMemory:
+          type: boolean
+        sharePatterns:
+          type: boolean
+        maxAgents:
+          type: integer
+        topology:
+          type: string
+        services:
+          type: array
+          items:
+            type: string
+
+    Task:
+      type: object
+      properties:
+        id:
+          type: string
+        title:
+          type: string
+        description:
+          type: string
+        status:
+          $ref: '#/components/schemas/TaskStatus'
+        priority:
+          $ref: '#/components/schemas/TaskPriority'
+        assignee:
+          type: string
+        tags:
+          type: array
+          items:
+            type: string
+        createdBy:
+          type: string
+        createdAt:
+          type: string
+          format: date-time
+        updatedAt:
+          type: string
+          format: date-time
+
+    TaskStatus:
+      type: string
+      enum: [pending, in_progress, completed, cancelled]
+
+    TaskPriority:
+      type: string
+      enum: [critical, high, medium, low]
+
+    Service:
+      type: object
+      properties:
+        id:
+          type: string
+        name:
+          type: string
+        type:
+          type: string
+        configPath:
+          type: string
+        pid:
+          type: integer
+          nullable: true
+        port:
+          type: integer
+          nullable: true
+        secondaryPort:
+          type: integer
+          nullable: true
+        status:
+          type: string
+          enum: [running, stopped, errored]
+        uptime:
+          type: string
+          nullable: true
+        ram:
+          type: string
+          nullable: true
+        cpu:
+          type: string
+          nullable: true
+        errorMessage:
+          type: string
+          nullable: true
+
+    GeneralSettings:
+      type: object
+      properties:
+        requireConfirmation:
+          type: boolean
+        autoApproveLowRisk:
+          type: boolean
+        showCommandsInInputBar:
+          type: boolean
+        defaultTimeout:
+          type: string
+        projectOverride:
+          type: boolean
+
+    NotifSeverity:
+      type: string
+      enum: [critical, warning, info, success]
+
+    NotifCategory:
+      type: string
+      enum: [task, service, agent, chat, memory, model, system]
+
+    MemoryContextResponse:
+      type: object
+      properties:
+        context:
+          nullable: true
+          $ref: '#/components/schemas/RankedContext'
+        autoMemory:
+          nullable: true
+          type: array
+          items:
+            $ref: '#/components/schemas/AutoMemoryEntry'
+
+    RankedContext:
+      type: object
+      properties:
+        version:
+          type: integer
+        computedAt:
+          type: number
+        entries:
+          type: array
+          items:
+            type: object
+            properties:
+              id:
+                type: string
+              content:
+                type: string
+              summary:
+                type: string
+              category:
+                type: string
+              confidence:
+                type: number
+              pageRank:
+                type: number
+              accessCount:
+                type: integer
+              words:
+                type: array
+                items:
+                  type: string
+
+    AutoMemoryEntry:
+      type: object
+      properties:
+        id:
+          type: string
+        key:
+          type: string
+        content:
+          type: string
+        summary:
+          type: string
+        namespace:
+          type: string
+        type:
+          type: string
+        metadata:
+          type: object
+        createdAt:
+          type: number
+
+    GraphState:
+      type: object
+      properties:
+        version:
+          type: integer
+        updatedAt:
+          type: number
+        nodeCount:
+          type: integer
+        nodes:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              id:
+                type: string
+              category:
+                type: string
+              confidence:
+                type: number
+              accessCount:
+                type: integer
+        edges:
+          type: array
+          items:
+            type: object
+            properties:
+              sourceId:
+                type: string
+              targetId:
+                type: string
+              type:
+                type: string
+              weight:
+                type: number
+        pageRanks:
+          type: object
+          additionalProperties:
+            type: number
+
+    AuditStatus:
+      type: object
+      properties:
+        initialized:
+          type: string
+        status:
+          type: string
+          enum: [CLEAN, PENDING, VULNERABLE]
+        cvesFixed:
+          type: integer
+        totalCves:
+          type: integer
+        lastScan:
+          type: string
+        fixes:
+          type: object
+          additionalProperties:
+            type: object
+            properties:
+              description:
+                type: string
+              fixedBy:
+                type: string
+              fixedAt:
+                type: string
+        additionalFixes:
+          type: array
+          items:
+            type: string
+
+    SecurityPolicy:
+      type: object
+      properties:
+        version:
+          type: string
+        lastUpdated:
+          type: string
+        firewall:
+          type: object
+          properties:
+            defaultAction:
+              type: string
+            inbound:
+              type: array
+              items:
+                $ref: '#/components/schemas/FirewallRule'
+            outbound:
+              type: array
+              items:
+                $ref: '#/components/schemas/FirewallRule'
+        inputValidation:
+          type: object
+          properties:
+            enabled:
+              type: boolean
+            rules:
+              type: array
+              items:
+                type: object
+                properties:
+                  name:
+                    type: string
+                  description:
+                    type: string
+                  action:
+                    type: string
+                  severity:
+                    type: string
+        accessControl:
+          type: object
+          nullable: true
+        sandbox:
+          type: object
+          nullable: true
+
+    ProjectSecurityResponse:
+      type: object
+      properties:
+        summary:
+          $ref: '#/components/schemas/SecuritySummary'
+        vulnerabilities:
+          type: array
+          items:
+            $ref: '#/components/schemas/VulnerabilityEntry'
+        policies:
+          type: array
+          items:
+            $ref: '#/components/schemas/PolicyCheck'
+        permissions:
+          type: array
+          items:
+            $ref: '#/components/schemas/PermissionEntry'
+        auditLog:
+          type: array
+          items:
+            $ref: '#/components/schemas/AuditLogEntry'
+      required: [summary, vulnerabilities, policies, permissions, auditLog]
+
+    SecuritySummary:
+      type: object
+      properties:
+        lastScan:
+          type: string
+          description: ISO-8601 timestamp of the last scan, or "Never" / "Error"
+          example: '2026-03-05T10:30:00Z'
+        vulnerabilities:
+          type: integer
+          description: Total number of findings from the latest scan
+          example: 2
+        critical:
+          type: integer
+          description: Count of CRITICAL + HIGH severity findings
+          example: 1
+        score:
+          type: string
+          description: 'CVEs fixed vs total, e.g. "5/5", or "N/A"'
+          example: '3/5'
+        status:
+          type: string
+          enum: [CLEAN, PENDING, VULNERABLE, ERROR]
+          description: Overall security posture
+          example: CLEAN
+      required: [lastScan, vulnerabilities, critical, score, status]
+
+    VulnerabilityEntry:
+      type: object
+      properties:
+        package:
+          type: string
+          description: Affected package or component name
+          example: openssl
+        severity:
+          type: string
+          enum: [critical, high, medium, low, info]
+          description: Lowercase severity level
+          example: critical
+        cve:
+          type: string
+          description: CVE identifier and short description
+          example: 'CVE-2026-9999 openssl heap overflow'
+        current:
+          type: string
+          description: Description of the current impact or affected versions
+          example: Affects versions < 3.1.5
+        fixed:
+          type: string
+          description: ISO-8601 timestamp when the finding was detected
+          example: '2026-03-05T10:30:00Z'
+      required: [package, severity, cve, current, fixed]
+
+    PolicyCheck:
+      type: object
+      properties:
+        name:
+          type: string
+          description: Name of the policy check
+          example: Default Firewall Action
+        value:
+          type: string
+          description: Current value of the setting
+          example: deny
+        pass:
+          type: boolean
+          description: Whether the policy check passes
+          example: true
+      required: [name, value, pass]
+
+    PermissionEntry:
+      type: object
+      properties:
+        path:
+          type: string
+          description: Permission fix that was applied
+          example: chmod 600 .env
+        perms:
+          type: string
+          description: Permission status
+          example: applied
+        pass:
+          type: boolean
+          description: Whether the fix was successfully applied
+          example: true
+      required: [path, perms, pass]
+
+    AuditLogEntry:
+      type: object
+      properties:
+        time:
+          type: string
+          description: ISO-8601 timestamp of the audit event
+          example: '2026-03-04T14:22:00Z'
+        message:
+          type: string
+          description: 'CVE ID and description of the fix'
+          example: 'CVE-2026-1001: Updated TLS cipher suite'
+        result:
+          type: string
+          enum: [PASS]
+          description: Outcome of the audit entry
+          example: PASS
+      required: [time, message, result]
+
+    FirewallRule:
+      type: object
+      properties:
+        name:
+          type: string
+        port:
+          type: integer
+        protocol:
+          type: string
+        source:
+          type: string
+        destination:
+          type: string
+        action:
+          type: string
+
+    V3Progress:
+      type: object
+      properties:
+        version:
+          type: string
+        initialized:
+          type: string
+        domains:
+          type: object
+          properties:
+            completed:
+              type: integer
+            total:
+              type: integer
+            status:
+              type: string
+        ddd:
+          type: object
+          properties:
+            progress:
+              type: number
+            modules:
+              type: integer
+            totalFiles:
+              type: integer
+            totalLines:
+              type: integer
+        swarm:
+          type: object
+          properties:
+            activeAgents:
+              type: integer
+            maxAgents:
+              type: integer
+            topology:
+              type: string
+        learning:
+          type: object
+          properties:
+            status:
+              type: string
+
+    SwarmActivity:
+      type: object
+      properties:
+        timestamp:
+          type: string
+        processes:
+          type: object
+          properties:
+            agentic_flow:
+              type: integer
+            mcp_server:
+              type: integer
+            estimated_agents:
+              type: integer
+        swarm:
+          type: object
+          properties:
+            active:
+              type: boolean
+            agent_count:
+              type: integer
+            coordination_active:
+              type: boolean
+        integration:
+          type: object
+          properties:
+            agentic_flow_active:
+              type: boolean
+            mcp_active:
+              type: boolean
+
+    Learning:
+      type: object
+      properties:
+        initialized:
+          type: string
+        routing:
+          type: object
+          properties:
+            accuracy:
+              type: number
+            decisions:
+              type: integer
+        patterns:
+          type: object
+          properties:
+            shortTerm:
+              type: integer
+            longTerm:
+              type: integer
+            quality:
+              type: number
+        sessions:
+          type: object
+          properties:
+            total:
+              type: integer
+            current:
+              type: string
+              nullable: true
+
+    ConversationEvent:
+      type: object
+      properties:
+        s:
+          type: integer
+          description: Sequence number
+        ts:
+          type: string
+          description: Timestamp
+        t:
+          type: string
+          enum: [prompt, tool, stop]
+          description: Event type
+        d:
+          type: string
+          description: Data payload
+        len:
+          type: integer
+          description: Content length
+        'n':
+          type: string
+          description: Tool name
+        f:
+          type: string
+          description: File path
+        ok:
+          type: boolean
+          description: Success flag
+
+  requestBodies:
+    RoutingLogEntry:
+      required: true
+      content:
+        application/json:
+          schema:
+            type: object
+            required: [model, agent, taskType]
+            properties:
+              model:
+                type: string
+              provider:
+                type: string
+              agent:
+                type: string
+              taskType:
+                type: string
+              complexity:
+                type: number
+              latencyMs:
+                type: number
+              success:
+                type: boolean
+              source:
+                type: string
+
+  responses:
+    BadRequest:
+      description: Bad request
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string
+    NotFound:
+      description: Resource not found
+      content:
+        application/json:
+          schema:
+            type: object
+            properties:
+              error:
+                type: string

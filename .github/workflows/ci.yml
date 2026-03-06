@@ -1,0 +1,158 @@
+name: CI
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint & Type Check
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - run: npm ci
+
+      - name: ESLint
+        run: npm run lint
+
+      - name: Prettier
+        run: npm run format
+
+      - name: Svelte check (type checking)
+        run: npm run check
+
+  test:
+    name: Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - run: npm ci
+
+      - name: Run tests with coverage
+        run: npx vitest run --coverage
+
+      - name: Enforce coverage thresholds
+        run: |
+          node -e "
+            const r = require('./coverage/coverage-summary.json').total;
+            const t = 85;
+            let fail = false;
+            for (const m of ['lines','functions','branches','statements']) {
+              const pct = r[m].pct;
+              console.log(m + ': ' + pct + '% (threshold: ' + t + '%)');
+              if (pct < t) { console.error('FAIL: ' + m + ' below threshold'); fail = true; }
+            }
+            if (fail) process.exit(1);
+            console.log('All coverage thresholds met.');
+          "
+
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - run: npm ci
+
+      - name: Run integration tests
+        run: npx vitest run --reporter=verbose src/integration-tests/
+
+  build:
+    name: Build
+    needs: [lint, test, integration-test]
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - run: npm ci
+
+      - name: Build
+        run: npm run build
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-build
+          path: dashboard/build
+          retention-days: 7
+
+  preview:
+    name: Deploy Preview
+    needs: build
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      deployments: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: dashboard-build
+          path: dashboard/build
+
+      - name: Post preview comment
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh pr comment ${{ github.event.pull_request.number }} \
+            --body "$(cat <<'EOF'
+          ### Build Preview Ready
+
+          Build artifact uploaded for commit ${{ github.sha }}.
+          Download from the **Actions** tab → **Artifacts** section.
+
+          | Check | Status |
+          |-------|--------|
+          | Lint & Types | :white_check_mark: Passed |
+          | Tests | :white_check_mark: Passed |
+          | Integration Tests | :white_check_mark: Passed |
+          | Build | :white_check_mark: Passed |
+          EOF
+          )"

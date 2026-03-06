@@ -138,8 +138,17 @@ Displays HNSW-indexed memory entries for a specific project. Shows auto-memory e
 7. **Memory Entries** — Expandable list of all auto-memory entries
 8. **Top Context Entries** — Top 10 ranked context entries with confidence/pageRank/hits
 
+### Time-Range Selector
+A segmented control above the graph lets users filter memory entries by creation time: **All time** (default), **1 hour**, **24 hours**, **7 days**. Selecting a range appends `?range=<value>` to the refresh request. The selector is rendered as a `role="radiogroup"` for accessibility.
+
+- Auto-memory entries are filtered server-side by `e.createdAt >= cutoff`.
+- Graph nodes/edges are filtered by `node.createdAt`; orphaned edges are dropped.
+- Ranked-context entries have no timestamps and are kept in full whenever any range is active.
+- Changing the range triggers an automatic re-fetch via a `$effect` that compares `selectedRange` to `_prevRange`.
+- Each (project, range) combination is cached independently for 30 s.
+
 ### Client-Side Refresh
-The Refresh button calls `GET /api/projects/{id}/memory` to reload entries and context without a full page navigation.
+The Refresh button (and the automatic range-change effect) calls `GET /api/projects/{id}/memory[?range=…]` to reload entries, context, and graph without a full page navigation.
 
 ### Troubleshooting
 | Symptom | Cause | Fix |

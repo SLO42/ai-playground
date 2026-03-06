@@ -196,87 +196,11 @@ async function syncClaudeFlowMemory(): Promise<{ entries: AutoMemoryEntry[]; err
 	return { entries, errors };
 }
 
-// ── Source 3: Agent Analytics Learnings ──────────────────────────────
-
-async function syncAgentLearnings(): Promise<{ entries: AutoMemoryEntry[]; errors: string[] }> {
-	const entries: AutoMemoryEntry[] = [];
-	const errors: string[] = [];
-	const analyticsPath = resolve(PATHS.root, '.playground/agent-analytics.json');
-
-	if (!existsSync(analyticsPath)) {
-		return { entries, errors };
-	}
-
-	try {
-		const raw = await readFile(analyticsPath, 'utf-8');
-		const events = JSON.parse(raw) as Array<{
-			id: string;
-			taskId: string;
-			taskTitle: string;
-			type: string;
-			timestamp: string;
-			model?: string;
-			modelTier?: string;
-			provider?: string;
-			costUsd?: number;
-			durationMs?: number;
-			classificationReason?: string;
-			classificationMethod?: string;
-			exitCode?: number;
-			commitHash?: string;
-			commitFiles?: number;
-		}>;
-
-		// Group completed tasks to create learning entries
-		const taskCompletions = new Map<string, typeof events[0]>();
-		const taskClassifications = new Map<string, typeof events[0]>();
-
-		for (const e of events) {
-			if (e.type === 'completed') taskCompletions.set(e.taskId, e);
-			if (e.type === 'classified') taskClassifications.set(e.taskId, e);
-		}
-
-		// Create a summary entry for completed tasks with notable learnings
-		for (const [taskId, completion] of taskCompletions) {
-			const classification = taskClassifications.get(taskId);
-			if (!classification) continue;
-
-			const key = `agent-task-${taskId}`;
-			const parts: string[] = [
-				`Task: ${completion.taskTitle}`,
-				`Route: ${classification.provider} (${classification.classificationMethod ?? 'unknown'})`,
-				`Model: ${completion.model ?? 'unknown'} (${completion.modelTier ?? 'unknown'} tier)`,
-			];
-			if (completion.durationMs) parts.push(`Duration: ${(completion.durationMs / 1000).toFixed(0)}s`);
-			if (completion.costUsd) parts.push(`Cost: $${completion.costUsd.toFixed(3)}`);
-			if (completion.commitHash) parts.push(`Commit: ${completion.commitHash}`);
-			if (classification.classificationReason) parts.push(`Routing reason: ${classification.classificationReason}`);
-
-			entries.push({
-				id: `mem-bridge-analytics-${taskId}`,
-				key,
-				content: parts.join('\n'),
-				summary: `Completed: ${completion.taskTitle}`,
-				namespace: 'agent-learnings',
-				type: 'episodic',
-				metadata: {
-					bridge: 'agent-analytics',
-					taskId,
-					model: completion.model,
-					modelTier: completion.modelTier,
-					provider: completion.provider,
-					costUsd: completion.costUsd,
-					durationMs: completion.durationMs
-				},
-				createdAt: new Date(completion.timestamp).getTime()
-			});
-		}
-	} catch (e) {
-		errors.push(`agent-analytics: ${e instanceof Error ? e.message : 'read failed'}`);
-	}
-
-	return { entries, errors };
-}
+// Source 3 (agent analytics) was removed — task completion metadata (cost,
+// duration, model) is already in agent-analytics.json and shown on the agents
+// page. Duplicating it into memory was adding bloat, not knowledge. Real
+// learnings come from the memory follow-up agents that store patterns via
+// claude-flow memory_store (Source 2).
 
 // ── Bridge Sync ──────────────────────────────────────────────────────
 

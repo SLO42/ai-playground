@@ -36,6 +36,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `/api/health` | GET | Detailed health check — per-service probes with latency, DB connectivity (`.swarm/memory.db`), daemon PID validation, system memory/CPU |
 | `/api/projects` | GET/POST | Project CRUD |
 | `/api/projects/[id]/tasks` | GET/POST | Task CRUD per project |
+| `/api/projects/[id]/memory` | GET | Project memory snapshot (entries, context, graph). Optional `?range=1h\|24h\|7d` filters by `createdAt`; cached 30 s per (project, range). |
 | `/api/notifications` | GET | Notification polling |
 | `/api/settings` | GET/POST | Settings read/write |
 | `/api/sessions` | GET | Session listing |

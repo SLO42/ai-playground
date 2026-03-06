@@ -19,7 +19,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `/sessions` | `routes/sessions/+page.svelte` | `routes/sessions/+page.server.ts` |
 | `/agents` | `routes/agents/+page.svelte` | (client-side) |
 | `/apps` | `routes/apps/+page.svelte` | `routes/apps/+page.server.ts` |
-| `/memory` | `routes/memory/+page.svelte` | (client-side MCP) |
+| `/memory` | `routes/memory/+page.svelte` | (client-side — see `docs/api-memory.md`) |
 | `/security` | `routes/security/+page.svelte` | (client-side) |
 | `/notifications` | `routes/notifications/+page.svelte` | `routes/notifications/+page.server.ts` |
 | `/hooks` | `routes/hooks/+page.svelte` | `routes/hooks/+page.server.ts` |
@@ -43,6 +43,10 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `/api/routing` | GET | Routing telemetry |
 | `/api/agents` | GET | Active agent listing |
 | `/api/github` | Various | GitHub sync operations |
+| `/api/memory/graph` | GET/POST/PUT | Knowledge graph CRUD (nodes + edges) |
+| `/api/memory/entries` | DELETE | Remove auto-memory entries by ID |
+| `/api/memory/context` | GET | Ranked context + auto-memory entries |
+| `/api/memory/sync` | POST | Trigger memory bridge sync |
 
 ## Server Modules (`src/lib/server/`)
 
@@ -72,6 +76,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `services.ts` | `Service`, `ServiceAction` |
 | `projects.ts` | `Project`, `ProjectConfig` |
 | `memory.ts` | `MemoryEntry`, `MemorySearchResult` |
+| `graph.ts` | `GraphNode`, `GraphEdge`, `GraphState`, `RankedGraphNode`, `BubbleGraphProps`, `GraphPostBody`, `GraphPutBody`, `GraphMutationResponse` |
 | `daemon.ts` | `DaemonState`, `DaemonWorker` |
 
 ## Components (`src/lib/components/`)

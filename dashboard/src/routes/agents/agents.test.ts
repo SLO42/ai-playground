@@ -72,7 +72,7 @@ function makeUrl(params: Record<string, string> = {}) {
 }
 
 function callLoad(urlParams: Record<string, string> = {}) {
-	return load({ url: makeUrl(urlParams) } as any);
+	return load({ url: makeUrl(urlParams) } as any) as ReturnType<typeof load>;
 }
 
 function setupDefaults() {
@@ -80,7 +80,7 @@ function setupDefaults() {
 	mockedReadFile.mockRejectedValue(new Error('no file'));
 	mockedReadJson.mockResolvedValue(null);
 	mockedReadYaml.mockResolvedValue(null);
-	mockedAnalytics.mockResolvedValue({ totalSpawned: 0, activeNow: 0, byType: {}, recentActivity: [] });
+	mockedAnalytics.mockResolvedValue({ events: [], summary: { totalTasks: 0, completedTasks: 0, failedTasks: 0, totalCostUsd: 0, totalDurationMs: 0, avgCostPerTask: 0, avgDurationMs: 0 }, byModel: {}, byRoute: { openclaw: { count: 0, escalated: 0, completedLocally: 0, totalCost: 0 }, claudeCode: { count: 0, sonnet: 0, opus: 0, totalCost: 0 } }, escalationRate: 0 } as any);
 	mockedPoolStats.mockResolvedValue({ total: 0, active: 0, idle: 0, sessions: [] } as any);
 	mockedActiveAgents.mockReturnValue(new Map());
 }
@@ -140,7 +140,7 @@ describe('Agents +page.server load', () => {
 		});
 
 		it('passes through analytics and poolStats', async () => {
-			const analytics = { totalSpawned: 5, activeNow: 2, byType: { coder: 3 }, recentActivity: [] };
+			const analytics = { events: [], summary: { totalTasks: 5, completedTasks: 2, failedTasks: 0, totalCostUsd: 0, totalDurationMs: 0, avgCostPerTask: 0, avgDurationMs: 0 }, byModel: {}, byRoute: { openclaw: { count: 0, escalated: 0, completedLocally: 0, totalCost: 0 }, claudeCode: { count: 0, sonnet: 0, opus: 0, totalCost: 0 } }, escalationRate: 0 } as any;
 			mockedAnalytics.mockResolvedValue(analytics);
 
 			const result = await callLoad();

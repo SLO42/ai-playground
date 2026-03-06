@@ -69,7 +69,7 @@ function setupAgentsDir(agents: Array<{ name: string; content: string }>) {
 			isFile: () => true
 		})) as any
 	);
-	mockReadFile.mockImplementation(async (path: string) => {
+	mockReadFile.mockImplementation(async (path: any) => {
 		// Association file
 		if (path.toString().includes('agents.json')) {
 			throw new Error('ENOENT');
@@ -135,7 +135,7 @@ describe('/api/projects/[id]/agents', () => {
 		});
 
 		it('splits agents into associated and available', async () => {
-			mockReadFile.mockImplementation(async (path: string) => {
+			mockReadFile.mockImplementation(async (path: any) => {
 				if (path.toString().includes('agents.json')) {
 					return JSON.stringify({ agents: ['coder.md'] });
 				}
@@ -180,7 +180,7 @@ describe('/api/projects/[id]/agents', () => {
 				{ name: 'readme.md', isDirectory: () => false },
 				{ name: 'coder.md', isDirectory: () => false }
 			] as any);
-			mockReadFile.mockImplementation(async (path: string) => {
+			mockReadFile.mockImplementation(async (path: any) => {
 				if (path.toString().includes('agents.json')) throw new Error('ENOENT');
 				if (path.toString().includes('readme.md')) return '# Just a readme, no frontmatter';
 				if (path.toString().includes('coder.md')) return AGENT_MD_CODER;
@@ -203,7 +203,7 @@ describe('/api/projects/[id]/agents', () => {
 					{ name: 'specialized', isDirectory: () => true }
 				] as any;
 			});
-			mockReadFile.mockImplementation(async (path: string) => {
+			mockReadFile.mockImplementation(async (path: any) => {
 				if (path.toString().includes('agents.json')) throw new Error('ENOENT');
 				if (path.toString().includes('coder.md')) return AGENT_MD_CODER;
 				if (path.toString().includes('reviewer.md')) return AGENT_MD_REVIEWER;
@@ -221,7 +221,7 @@ describe('/api/projects/[id]/agents', () => {
 
 		it('handles empty agents directory', async () => {
 			mockReaddir.mockResolvedValue([] as any);
-			mockReadFile.mockImplementation(async (path: string) => {
+			mockReadFile.mockImplementation(async (path: any) => {
 				if (path.toString().includes('agents.json')) throw new Error('ENOENT');
 				throw new Error('ENOENT');
 			});
@@ -259,7 +259,7 @@ describe('/api/projects/[id]/agents', () => {
 		});
 
 		it('adds agents to project association', async () => {
-			mockReadFile.mockImplementation(async (path: string) => {
+			mockReadFile.mockImplementation(async (path: any) => {
 				if (path.toString().includes('agents.json')) throw new Error('ENOENT');
 				throw new Error('ENOENT');
 			});
@@ -277,7 +277,7 @@ describe('/api/projects/[id]/agents', () => {
 		});
 
 		it('does not duplicate already-associated agents', async () => {
-			mockReadFile.mockImplementation(async (path: string) => {
+			mockReadFile.mockImplementation(async (path: any) => {
 				if (path.toString().includes('agents.json')) {
 					return JSON.stringify({ agents: ['coder.md'] });
 				}
@@ -331,7 +331,7 @@ describe('/api/projects/[id]/agents', () => {
 		});
 
 		it('removes agents from project association', async () => {
-			mockReadFile.mockImplementation(async (path: string) => {
+			mockReadFile.mockImplementation(async (path: any) => {
 				if (path.toString().includes('agents.json')) {
 					return JSON.stringify({ agents: ['coder.md', 'tester.md', 'reviewer.md'] });
 				}
@@ -350,7 +350,7 @@ describe('/api/projects/[id]/agents', () => {
 		});
 
 		it('handles removing agents that are not associated (no-op)', async () => {
-			mockReadFile.mockImplementation(async (path: string) => {
+			mockReadFile.mockImplementation(async (path: any) => {
 				if (path.toString().includes('agents.json')) {
 					return JSON.stringify({ agents: ['coder.md'] });
 				}
@@ -365,7 +365,7 @@ describe('/api/projects/[id]/agents', () => {
 		});
 
 		it('handles removing all agents', async () => {
-			mockReadFile.mockImplementation(async (path: string) => {
+			mockReadFile.mockImplementation(async (path: any) => {
 				if (path.toString().includes('agents.json')) {
 					return JSON.stringify({ agents: ['coder.md', 'tester.md'] });
 				}

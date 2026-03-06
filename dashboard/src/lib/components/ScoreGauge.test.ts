@@ -13,7 +13,7 @@ function renderGauge(overrides: Partial<{
 	score: number;
 	grade: string;
 	breakdown: typeof defaultBreakdown;
-	accent: string;
+	accent: 'green' | 'blue' | 'yellow' | 'red' | 'purple' | 'cyan';
 }> = {}) {
 	return render(ScoreGauge, {
 		props: {

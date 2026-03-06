@@ -22,7 +22,7 @@ function callLoad(overrides: { params?: Record<string, string>; urlParams?: Reco
 		params: { id: 'test-proj', ...overrides.params },
 		url: makeUrl(overrides.urlParams),
 		fetch: mockFetch
-	} as any);
+	} as any) as ReturnType<typeof load>;
 }
 
 const sampleApiResponse = {

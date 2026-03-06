@@ -55,7 +55,7 @@ function callLoad(overrides: {
 		params: { id: 'test-proj', ...overrides.params },
 		url: makeUrl(overrides.urlParams),
 		fetch: mockFetch
-	} as any);
+	} as any) as ReturnType<typeof load>;
 }
 
 describe('Project Services +page.server load', () => {

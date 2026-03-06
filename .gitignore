@@ -55,3 +55,19 @@ npm-debug.log*
 
 # Claude Code project instructions (local)
 CLAUDE.md
+
+# Playground data and reports (generated locally)
+.playground/chats/
+.playground/tasks/
+.playground/reports/
+.playground/agent-analytics.json
+.playground/agent-usage.json
+.playground/notifications.json
+.playground/routing-log.json
+.playground/session-pool.json
+.playground/tasks.json.migrated
+.playground/github-sync.json
+.playground/task-suggestions.json
+
+# OpenClaw runtime state
+.openclaw/

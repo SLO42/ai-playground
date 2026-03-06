@@ -18,10 +18,10 @@
 	};
 </script>
 
-<div class="bg-bg-secondary border border-border rounded-lg p-4">
-	<p class="text-xs text-text-secondary uppercase tracking-wider mb-1">{label}</p>
-	<p class="text-2xl font-bold font-mono {accentColors[accent]}">{value}</p>
+<div class="bg-bg-secondary border border-border rounded-lg p-3 sm:p-4 min-w-0">
+	<p class="text-[0.65rem] sm:text-xs text-text-secondary uppercase tracking-wider mb-1 truncate">{label}</p>
+	<p class="text-xl sm:text-2xl font-bold font-mono truncate {accentColors[accent]}">{value}</p>
 	{#if subtitle}
-		<p class="text-xs text-text-secondary mt-1">{subtitle}</p>
+		<p class="text-[0.65rem] sm:text-xs text-text-secondary mt-1 truncate">{subtitle}</p>
 	{/if}
 </div>

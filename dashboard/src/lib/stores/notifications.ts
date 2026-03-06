@@ -120,3 +120,6 @@ function createNotificationsStore() {
 }
 
 export const notifications = createNotificationsStore();
+
+// Shared badge count for the sidebar — written by layout polling/SSE, read by sidebar & inbox
+export const badgeCount = writable(0);

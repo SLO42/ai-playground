@@ -32,9 +32,10 @@
 </script>
 
 {#if toasts.length > 0}
-	<div class="fixed bottom-6 right-6 z-[100] flex flex-col gap-3 max-w-sm">
+	<div role="region" aria-label="Notifications" aria-live="polite" class="fixed bottom-6 right-6 z-[100] flex flex-col gap-3 max-w-sm">
 		{#each toasts as toast (toast.id)}
 			<div
+				role="alert"
 				class="bg-bg-secondary border border-border border-l-4 {borderColors[toast.variant]} rounded-lg p-4 shadow-lg animate-slide-in"
 			>
 				<div class="flex items-start justify-between gap-3">
@@ -49,6 +50,7 @@
 							<span class="text-xs text-text-secondary">{toast.timestamp}</span>
 						{/if}
 						<button
+							aria-label="Dismiss notification"
 							onclick={() => dismiss(toast.id)}
 							class="text-text-secondary hover:text-text-primary transition-colors text-sm leading-none"
 						>

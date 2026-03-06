@@ -4,6 +4,14 @@ export interface CveFix {
 	fixedAt: string;
 }
 
+export interface SecurityFinding {
+	severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO';
+	issue: string;
+	detail: string;
+	component?: string;
+	detected?: string;
+}
+
 export interface AuditStatus {
 	initialized: string;
 	status: 'CLEAN' | 'PENDING' | 'VULNERABLE';

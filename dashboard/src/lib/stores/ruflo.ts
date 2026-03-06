@@ -1,4 +1,5 @@
 import { writable, derived } from 'svelte/store';
+import { apiGet } from '$lib/api-client.js';
 import type { V3Progress, SwarmActivity, Learning } from '$lib/types/metrics.js';
 
 interface RufloState {
@@ -22,21 +23,11 @@ function createRufloStore() {
 		error: null
 	});
 
-	async function fetchEndpoint<T>(path: string): Promise<T | null> {
-		try {
-			const res = await fetch(path, { signal: AbortSignal.timeout(5000) });
-			if (!res.ok) return null;
-			return await res.json();
-		} catch {
-			return null;
-		}
-	}
-
 	async function poll() {
 		const [progress, swarm, learning] = await Promise.all([
-			fetchEndpoint<V3Progress>('/api/v3/progress'),
-			fetchEndpoint<SwarmActivity>('/api/v3/swarm'),
-			fetchEndpoint<Learning>('/api/v3/learning')
+			apiGet<V3Progress>('/api/v3/progress', { silent: true, timeout: 5000 }),
+			apiGet<SwarmActivity>('/api/v3/swarm', { silent: true, timeout: 5000 }),
+			apiGet<Learning>('/api/v3/learning', { silent: true, timeout: 5000 })
 		]);
 
 		const anyConnected = progress !== null || swarm !== null || learning !== null;

@@ -16,10 +16,18 @@ export interface RankedContext {
 }
 
 export interface AutoMemoryEntry {
+	id: string;
 	key: string;
-	value: string;
+	content: string;
+	summary: string;
 	namespace: string;
-	source?: string;
-	tags?: string[];
+	type?: string;
+	metadata?: Record<string, unknown>;
 	createdAt?: number;
+}
+
+/** Response shape from GET /api/memory/context */
+export interface MemoryContextResponse {
+	context: RankedContext | null;
+	autoMemory: AutoMemoryEntry[] | null;
 }

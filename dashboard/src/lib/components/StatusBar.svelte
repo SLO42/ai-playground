@@ -27,11 +27,11 @@
 	};
 </script>
 
-<header class="sticky top-0 z-40 h-12 bg-bg-secondary border-b border-border px-6 flex items-center justify-between">
-	<div class="flex items-center gap-6">
+<header role="banner" aria-label="System status" class="sticky top-0 z-40 h-12 bg-bg-secondary border-b border-border px-6 flex items-center justify-between">
+	<div role="status" class="flex items-center gap-6">
 		{#each services as svc}
 			<div class="flex items-center gap-2">
-				<span class="w-2 h-2 rounded-full {dotColors[svc.status]}"></span>
+				<span aria-hidden="true" class="w-2 h-2 rounded-full {dotColors[svc.status]}"></span>
 				<span class="text-xs text-text-secondary">
 					{svc.label}: <span class="text-text-primary">{svc.text}</span>
 				</span>

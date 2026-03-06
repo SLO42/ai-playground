@@ -1,4 +1,5 @@
 import { writable, derived } from 'svelte/store';
+import { apiGet } from '$lib/api-client.js';
 
 export interface OllamaModel {
 	name: string;
@@ -58,10 +59,11 @@ function createOllamaStore() {
 	});
 
 	async function fetchPs() {
-		try {
-			const res = await fetch('/api/ollama/ps', { signal: AbortSignal.timeout(5000) });
-			if (!res.ok) throw new Error(`HTTP ${res.status}`);
-			const data = await res.json();
+		const data = await apiGet<{ models: OllamaRunningModel[] }>('/api/ollama/ps', {
+			silent: true,
+			timeout: 5000
+		});
+		if (data) {
 			store.update((s) => ({
 				...s,
 				runningModels: data.models ?? [],
@@ -69,20 +71,21 @@ function createOllamaStore() {
 				error: null,
 				lastPsUpdate: Date.now()
 			}));
-		} catch (e) {
+		} else {
 			store.update((s) => ({
 				...s,
 				connected: false,
-				error: e instanceof Error ? e.message : 'Ollama unavailable'
+				error: 'Ollama unavailable'
 			}));
 		}
 	}
 
 	async function fetchTags() {
-		try {
-			const res = await fetch('/api/ollama/tags', { signal: AbortSignal.timeout(5000) });
-			if (!res.ok) throw new Error(`HTTP ${res.status}`);
-			const data = await res.json();
+		const data = await apiGet<{ models: OllamaModel[] }>('/api/ollama/tags', {
+			silent: true,
+			timeout: 5000
+		});
+		if (data) {
 			store.update((s) => ({
 				...s,
 				models: data.models ?? [],
@@ -90,10 +93,10 @@ function createOllamaStore() {
 				error: null,
 				lastTagsUpdate: Date.now()
 			}));
-		} catch (e) {
+		} else {
 			store.update((s) => ({
 				...s,
-				error: e instanceof Error ? e.message : 'Ollama unavailable'
+				error: 'Ollama unavailable'
 			}));
 		}
 	}

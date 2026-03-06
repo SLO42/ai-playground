@@ -74,17 +74,62 @@ ollama:
   apiKey: "ollama-local"
   api: "ollama"                          # Required for tool calling support
 
+# Tools — allow exec and file operations within the project
+# IMPORTANT: Use absolute paths — gateway cwd may differ from project root
+tools:
+  exec:
+    host: "gateway"                # Run commands on the gateway process itself
+    # Options: "gateway" (local), "node" (direct), "sandbox" (isolated)
+    allowedCommands:               # Restrict what agents can run
+      - "node"
+      - "npm"
+      - "npx"
+      - "git"
+      - "ls"
+      - "cat"
+      - "find"
+      - "grep"
+    timeout: 30000                 # 30s max per command
+    cwd: "F:/code/ai-playground"
+  read:
+    basePath: "F:/code/ai-playground"
+    allowedExtensions:
+      - ".json"
+      - ".json5"
+      - ".yaml"
+      - ".yml"
+      - ".ts"
+      - ".js"
+      - ".svelte"
+      - ".md"
+      - ".txt"
+      - ".css"
+    maxFileSize: "5MB"
+  write:
+    basePath: "F:/code/ai-playground"
+    allowedPaths:
+      - ".playground/"
+      - "config/openclaw/workspace/"
+    maxFileSize: "1MB"
+
+# Agent defaults
+agents:
+  defaults:
+    sandbox:
+      mode: "off"                  # Local dev — no sandbox needed (loopback only)
+      # Set to "non-main" or "all" for production deployments
+
 # Workspace
 workspace:
-  path: "./config/openclaw/workspace"
+  path: "F:/code/ai-playground/config/openclaw/workspace"
   skills:
     autoLoad: true
-    path: "./config/openclaw/workspace/skills"
+    path: "F:/code/ai-playground/config/openclaw/workspace/skills"
 
 # Logging
 logging:
   level: "info"
-  file: ".claude-flow/logs/openclaw-gateway.log"
+  file: "F:/code/ai-playground/.claude-flow/logs/openclaw-gateway.log"
   redactSecrets: true         # Always redact API keys, tokens in logs
   maxFileSize: "50MB"
   maxFiles: 5

@@ -43,14 +43,15 @@
   --ds-bg-secondary: #1A1A2E;
   --ds-bg-tertiary: #16213E;
   --ds-border: #2A2A4A;
-  --ds-text-primary: #E2E8F0;
-  --ds-text-secondary: #94A3B8;
-  --ds-accent-blue: #3B82F6;
-  --ds-accent-green: #22C55E;
-  --ds-accent-yellow: #EAB308;
-  --ds-accent-red: #EF4444;
-  --ds-accent-purple: #A855F7;
-  --ds-accent-cyan: #06B6D4;
+  --ds-text-primary: #E2E8F0;   /* vs bg-primary 15.31:1 AAA · vs bg-secondary 13.84:1 AAA */
+  --ds-text-secondary: #94A3B8; /* vs bg-primary  7.36:1 AAA · vs bg-secondary  6.65:1 AA  */
+  /* WCAG contrast ratios: ≥4.5 = AA (normal text), ≥3 = AA (large text), ≥7 = AAA */
+  --ds-accent-blue: #3B82F6;    /* vs bg-primary 5.13:1 AA  · vs bg-secondary 4.64:1 AA        */
+  --ds-accent-green: #22C55E;   /* vs bg-primary 8.28:1 AAA · vs bg-secondary 7.49:1 AAA       */
+  --ds-accent-yellow: #EAB308;  /* vs bg-primary 9.84:1 AAA · vs bg-secondary 8.89:1 AAA       */
+  --ds-accent-red: #EF4444;     /* vs bg-primary 5.01:1 AA  · vs bg-secondary 4.53:1 AA        */
+  --ds-accent-purple: #A855F7;  /* vs bg-primary 4.77:1 AA  · vs bg-secondary 4.31:1 AA-large! */
+  --ds-accent-cyan: #06B6D4;    /* vs bg-primary 7.77:1 AAA · vs bg-secondary 7.03:1 AAA       */
 }
 
 .dark {

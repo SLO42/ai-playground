@@ -36,6 +36,9 @@ export interface BubbleGraphProps {
 	ariaLabel?: string;
 }
 
+/** GET /api/memory/graph response — either the full graph state or an error. */
+export type GraphGetResponse = GraphState | { error: string };
+
 /** POST /api/memory/graph request body. */
 export interface GraphPostBody {
 	nodes?: GraphNode[];

@@ -17,10 +17,6 @@ SRC_DIR="$SCRIPT_DIR/../src"
 # Pre-existing violations (to be cleaned up separately).
 # Format: "filename:line_number" — remove entries as they are fixed.
 KNOWN_VIOLATIONS=(
-	"BubbleGraph.svelte:218"
-	"BubbleGraph.svelte:229"
-	"BubbleGraph.svelte:244"
-	"BubbleGraph.svelte:248"
 )
 
 # Match fill="..." but exclude safe values

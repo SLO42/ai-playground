@@ -30,6 +30,9 @@ export interface AgentEvent {
 	type: AgentEventType;
 	timestamp: string;
 
+	// Project
+	projectId?: string;
+
 	// Classification
 	route?: 'openclaw' | 'claude-code';
 	escalated?: boolean;
@@ -105,6 +108,14 @@ export interface AgentAnalytics {
 	modelDistribution: { model: string; percentage: number; count: number }[];
 	timeline: { hour: string; events: number; cost: number; tasks: number }[];
 	recentEvents: AgentEvent[];
+	byProject: Record<string, {
+		projectId: string;
+		taskCount: number;
+		completedCount: number;
+		failedCount: number;
+		totalCost: number;
+		totalDuration: number;
+	}>;
 }
 
 // ── Storage ──────────────────────────────────────────────────────────
@@ -258,6 +269,20 @@ export async function getAgentAnalytics(): Promise<AgentAnalytics> {
 		.sort(([a], [b]) => a.localeCompare(b))
 		.map(([hour, b]) => ({ hour, events: b.events, cost: b.cost, tasks: b.tasks.size }));
 
+	// Per-project stats from completion events
+	const byProject: AgentAnalytics['byProject'] = {};
+	for (const e of completionEvents) {
+		const pid = e.projectId ?? 'unknown';
+		if (!byProject[pid]) {
+			byProject[pid] = { projectId: pid, taskCount: 0, completedCount: 0, failedCount: 0, totalCost: 0, totalDuration: 0 };
+		}
+		byProject[pid].taskCount++;
+		if (e.type === 'completed') byProject[pid].completedCount++;
+		if (e.type === 'failed') byProject[pid].failedCount++;
+		byProject[pid].totalCost += e.costUsd ?? 0;
+		byProject[pid].totalDuration += e.durationMs ?? 0;
+	}
+
 	const totalTasks = completed + failed;
 	const escalationRate = openclawCount > 0 ? openclawEscalated / openclawCount : 0;
 
@@ -280,6 +305,7 @@ export async function getAgentAnalytics(): Promise<AgentAnalytics> {
 		escalationRate,
 		modelDistribution,
 		timeline,
-		recentEvents: events.slice(-50).reverse()
+		recentEvents: events.slice(-50).reverse(),
+		byProject
 	};
 }

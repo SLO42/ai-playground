@@ -224,7 +224,8 @@ export async function spawnFollowUp(
 
 		recordEvent({
 			taskId: followUpId, taskTitle: `${label}: ${parentTask.title}`,
-			type: 'spawned', provider: 'claude-code', model, modelTier: 'sonnet'
+			type: 'spawned', provider: 'claude-code', model, modelTier: 'sonnet',
+			projectId: parentTask._sourceProjectId
 		}).catch(() => {});
 
 		const child = spawnClaude(prompt, logFile, {
@@ -273,7 +274,8 @@ export async function spawnFollowUp(
 				outputTokens: parsed.usage?.outputTokens ?? 0,
 				costUsd: parsed.usage?.costUsd ?? 0,
 				followUpType: type,
-				parentTaskId: parentTask.id
+				parentTaskId: parentTask.id,
+				projectId: parentTask._sourceProjectId
 			}).catch(() => {});
 
 			logAgentCompletion(

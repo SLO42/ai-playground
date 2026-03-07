@@ -187,7 +187,8 @@ async function runOpenClawTask(
 			type: 'completed',
 			model: DEFAULT_MODEL, modelTier: 'local', provider: 'openclaw',
 			durationMs, costUsd: 0, inputTokens: 0, outputTokens: 0,
-			sessionId: reportId
+			sessionId: reportId,
+			projectId: task._sourceProjectId
 		}).catch(() => {});
 
 		trimSession(session);
@@ -221,7 +222,8 @@ async function runOpenClawTask(
 			taskId: task.id, taskTitle: task.title,
 			type: 'failed',
 			model: DEFAULT_MODEL, modelTier: 'local', provider: 'openclaw',
-			durationMs: Date.now() - startTime, costUsd: 0
+			durationMs: Date.now() - startTime, costUsd: 0,
+			projectId: task._sourceProjectId
 		}).catch(() => {});
 
 		session.status = 'idle';

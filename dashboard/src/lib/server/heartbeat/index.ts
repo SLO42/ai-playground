@@ -167,27 +167,27 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 	const route = classifyTask(task);
 
 	// Analytics: classification event — Claw (gpt-oss:20b) makes this decision
-	recordEvent({ taskId: task.id, taskTitle: task.title, type: 'classified', route, model: 'gpt-oss:20b', modelTier: 'local', provider: 'openclaw' }).catch(() => {});
+	recordEvent({ taskId: task.id, taskTitle: task.title, type: 'classified', route, model: 'gpt-oss:20b', modelTier: 'local', provider: 'openclaw', projectId: task._sourceProjectId }).catch(() => {});
 
 	if (route === 'openclaw') {
 		const { escalate, reason } = await shouldEscalate(task);
 
 		// Analytics: escalation check — Claw (gpt-oss:20b) evaluates whether to escalate
-		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'escalation_check', route, escalated: escalate, escalationReason: reason, model: 'gpt-oss:20b', modelTier: 'local', provider: 'openclaw' }).catch(() => {});
+		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'escalation_check', route, escalated: escalate, escalationReason: reason, model: 'gpt-oss:20b', modelTier: 'local', provider: 'openclaw', projectId: task._sourceProjectId }).catch(() => {});
 
 		if (!escalate) {
 			log(monitorSession, `[route] "${task.title}" → OpenClaw (local, $0) — ${reason}`);
 			const prompt = buildTaskPrompt(task);
 
 			// Analytics: spawn event for OpenClaw
-			recordEvent({ taskId: task.id, taskTitle: task.title, type: 'spawned', provider: 'openclaw', model: 'gpt-oss:20b', modelTier: 'local' }).catch(() => {});
+			recordEvent({ taskId: task.id, taskTitle: task.title, type: 'spawned', provider: 'openclaw', model: 'gpt-oss:20b', modelTier: 'local', projectId: task._sourceProjectId }).catch(() => {});
 
 			return spawnOpenClawAgent(task, prompt, monitorSession);
 		}
 		log(monitorSession, `[route] "${task.title}" → escalated to Claude Code — ${reason}`);
 
 		// Analytics: handoff event — Claw decides to hand off
-		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'handoff', fromProvider: 'openclaw', toProvider: 'claude-code', handoffReason: reason, model: 'gpt-oss:20b', modelTier: 'local', provider: 'openclaw' }).catch(() => {});
+		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'handoff', fromProvider: 'openclaw', toProvider: 'claude-code', handoffReason: reason, model: 'gpt-oss:20b', modelTier: 'local', provider: 'openclaw', projectId: task._sourceProjectId }).catch(() => {});
 	} else {
 		log(monitorSession, `[route] "${task.title}" → Claude Code (needs file ops)`);
 	}
@@ -210,7 +210,7 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 		const resumeLabel = session.isResume ? `warm (${session.area})` : `cold (${session.area})`;
 
 		// Analytics: model selection
-		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'model_selected', model, modelTier, provider: 'claude-code' }).catch(() => {});
+		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'model_selected', model, modelTier, provider: 'claude-code', projectId: task._sourceProjectId }).catch(() => {});
 
 		const child = spawnClaude(prompt, logFile, {
 			model,
@@ -231,7 +231,7 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 		});
 
 		// Analytics: spawned
-		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'spawned', provider: 'claude-code', model, modelTier, pid, maxTurns, sessionId: reportId }).catch(() => {});
+		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'spawned', provider: 'claude-code', model, modelTier, pid, maxTurns, sessionId: reportId, projectId: task._sourceProjectId }).catch(() => {});
 
 		// Extract Claude Code session ID from stream-json init message for pool registration
 		if (!session.isResume) {
@@ -271,7 +271,8 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 				inputTokens: parsed.usage?.inputTokens ?? 0,
 				outputTokens: parsed.usage?.outputTokens ?? 0,
 				costUsd: parsed.usage?.costUsd ?? 0,
-				sessionId: rId
+				sessionId: rId,
+				projectId: task._sourceProjectId
 			}).catch(() => {});
 
 			logAgentCompletion(task, agentSnd, exitMsg, logFile, rId, agentBaseline).catch(() => {});
@@ -292,7 +293,8 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 						model, modelTier, provider: 'claude-code',
 						commitHash: commitResult.hash,
 						commitFiles: commitResult.filesCommitted,
-						commitError: commitResult.error
+						commitError: commitResult.error,
+						projectId: task._sourceProjectId
 					}).catch(() => {});
 
 					if (commitResult.committed) {
@@ -324,7 +326,8 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 								model: 'claude-sonnet-4-6', modelTier: 'sonnet', provider: 'claude-code',
 								followUpType: fu.type,
 								followUpReason: fu.reason,
-								parentTaskId: task.id
+								parentTaskId: task.id,
+								projectId: task._sourceProjectId
 							}).catch(() => {});
 
 							await spawnFollowUp(task, fu.type, commitResult, ms);

@@ -132,9 +132,9 @@
 	});
 
 	let services = $derived([
-		{ label: 'Gateway', status: (health.gateway ? 'online' : 'offline') as 'online' | 'offline', text: health.gateway ? 'Online' : 'Offline' },
-		{ label: 'Ollama', status: (health.ollama ? 'online' : 'offline') as 'online' | 'offline', text: health.ollama ? 'Running' : 'Stopped' },
-		{ label: 'Daemon', status: (health.daemon ? 'online' : 'offline') as 'online' | 'offline', text: health.daemon ? `${health.daemonWorkers} workers` : 'Stopped' },
+		{ label: 'Ollama', status: (health.services?.ollama?.status === 'healthy' ? 'online' : 'offline') as 'online' | 'offline' },
+		{ label: 'Gateway', status: (health.services?.openclaw?.status === 'healthy' ? 'online' : 'offline') as 'online' | 'offline' },
+		{ label: 'Daemon', status: (health.daemon?.online ? 'online' : 'offline') as 'online' | 'offline' },
 	]);
 </script>
 

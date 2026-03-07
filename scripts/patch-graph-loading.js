@@ -1,8 +1,15 @@
 const fs = require('fs');
-const path = 'dashboard/src/routes/memory/+page.svelte';
-let content = fs.readFileSync(path, 'utf-8');
+const filePath = 'dashboard/src/routes/memory/+page.svelte';
+let content = fs.readFileSync(filePath, 'utf-8');
 
-const old = '\t\t\t{:else if graphNodes.length > 0 && BubbleGraph}\n\t\t\t\t<BubbleGraph nodes={graphNodes} edges={graphEdges} onNodeClick={handleNodeClick} />\n\t\t\t{:else if graphNodes.length > 0 || loading}';
+// Detect line ending
+const eol = content.includes('\r\n') ? '\r\n' : '\n';
+
+const old = [
+  '\t\t\t{:else if graphNodes.length > 0 && BubbleGraph}',
+  '\t\t\t\t<BubbleGraph nodes={graphNodes} edges={graphEdges} onNodeClick={handleNodeClick} />',
+  '\t\t\t{:else if graphNodes.length > 0 || loading}',
+].join(eol);
 
 if (!content.includes(old)) {
   console.log('ERROR: old string not found');
@@ -26,8 +33,8 @@ const replacement = [
   '\t\t\t\t\t<BubbleGraph nodes={graphNodes} edges={graphEdges} onNodeClick={handleNodeClick} />',
   '\t\t\t\t</div>',
   '\t\t\t{:else if graphNodes.length > 0 || loading}',
-].join('\n');
+].join(eol);
 
 content = content.replace(old, replacement);
-fs.writeFileSync(path, content);
+fs.writeFileSync(filePath, content);
 console.log('Done - loading overlay added');

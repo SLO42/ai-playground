@@ -2,7 +2,6 @@
 	interface ServiceStatus {
 		label: string;
 		status: 'online' | 'offline' | 'warning';
-		text: string;
 	}
 
 	interface Props {
@@ -12,10 +11,9 @@
 
 	let {
 		services = [
-			{ label: 'Gateway', status: 'online', text: 'Online' },
-			{ label: 'Ollama', status: 'online', text: 'Running' },
-			{ label: 'Memory DB', status: 'online', text: 'Connected' },
-			{ label: 'Swarm', status: 'online', text: 'Active' }
+			{ label: 'Ollama', status: 'online' },
+			{ label: 'Gateway', status: 'online' },
+			{ label: 'Daemon', status: 'online' }
 		],
 		lastSync = 'just now'
 	}: Props = $props();
@@ -25,18 +23,43 @@
 		offline: 'bg-accent-red',
 		warning: 'bg-accent-yellow'
 	};
+
+	const pillColors: Record<string, string> = {
+		online: 'bg-accent-green/15 text-accent-green border-accent-green/30',
+		offline: 'bg-accent-red/15 text-accent-red border-accent-red/30',
+		warning: 'bg-accent-yellow/15 text-accent-yellow border-accent-yellow/30'
+	};
+
+	const allOnline = $derived(services.every((s) => s.status === 'online'));
+	const syncLabel = $derived(() => {
+		if (!lastSync || lastSync === 'just now') return 'just now';
+		try {
+			const diff = Date.now() - new Date(lastSync).getTime();
+			if (diff < 60_000) return 'just now';
+			if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`;
+			return `${Math.round(diff / 3_600_000)}h ago`;
+		} catch {
+			return lastSync;
+		}
+	});
 </script>
 
-<header role="banner" aria-label="System status" class="sticky top-0 z-40 h-12 bg-bg-secondary border-b border-border px-6 flex items-center justify-between">
-	<div role="status" class="flex items-center gap-6">
+<header role="banner" aria-label="System status" class="sticky top-0 z-40 h-10 bg-bg-secondary/80 backdrop-blur-sm border-b border-border px-6 flex items-center justify-between">
+	<div role="status" class="flex items-center gap-2">
 		{#each services as svc}
-			<div class="flex items-center gap-2">
-				<span aria-hidden="true" class="w-2 h-2 rounded-full {dotColors[svc.status]}"></span>
-				<span class="text-xs text-text-secondary">
-					{svc.label}: <span class="text-text-primary">{svc.text}</span>
-				</span>
-			</div>
+			<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border {pillColors[svc.status]}">
+				<span aria-hidden="true" class="w-1.5 h-1.5 rounded-full {dotColors[svc.status]} {svc.status === 'online' ? 'animate-pulse' : ''}"></span>
+				{svc.label}
+			</span>
 		{/each}
 	</div>
-	<span class="text-xs text-text-secondary font-mono">Last sync: {lastSync}</span>
+
+	<div class="flex items-center gap-4">
+		<span class="text-[11px] text-text-secondary">
+			Synced {syncLabel()}
+		</span>
+		<span class="text-[11px] font-medium {allOnline ? 'text-accent-green' : 'text-accent-yellow'}">
+			{allOnline ? 'All systems operational' : 'Degraded'}
+		</span>
+	</div>
 </header>

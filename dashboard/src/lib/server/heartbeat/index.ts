@@ -99,17 +99,28 @@ async function scanTasks(): Promise<TaskScanResult> {
 		await migrateIfNeeded(PATHS.root);
 		const rootTasks = await getAllTasks(PATHS.root);
 
+		// Annotate root tasks with project info
+		const allProjects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root).catch(() => [] as Awaited<ReturnType<typeof scanAllProjects>>);
+		const rootProject = allProjects.find(p => resolve(p.path) === resolve(PATHS.root));
+		for (const t of rootTasks) {
+			t._sourceProjectId = rootProject?.id ?? 'root';
+			t._sourceProjectPath = PATHS.root;
+		}
+
 		let allTasks = [...rootTasks];
 		const scannedPaths = new Set<string>([resolve(PATHS.root)]);
 		try {
-			const projects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root);
-			for (const project of projects) {
+			for (const project of allProjects) {
 				const resolved = resolve(project.path);
 				if (scannedPaths.has(resolved)) continue; // skip duplicate (e.g. "." entry)
 				scannedPaths.add(resolved);
 				try {
 					await migrateIfNeeded(project.path);
 					const projectTasks = await getAllTasks(project.path);
+					for (const t of projectTasks) {
+						t._sourceProjectId = project.id;
+						t._sourceProjectPath = project.path;
+					}
 					allTasks.push(...projectTasks);
 				} catch { /* skip inaccessible projects */ }
 			}
@@ -234,6 +245,7 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 			const rId = agentInfo?.reportSessionId ?? reportId;
 			const agentBaseline = agentInfo?.gitBaseline;
 			agents.delete(task.id);
+			getProjectAgentMap().delete(task.id);
 
 			const exitMsg = code === 0 ? 'completed successfully' : `exited with code ${code}`;
 
@@ -334,10 +346,11 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 				desktop: true
 			}).catch(() => {});
 
+			const taskRoot = task._sourceProjectPath ?? PATHS.root;
 			if (code === 0) {
-				updateTask(PATHS.root, task.id, { status: 'completed' }).catch(() => {});
+				updateTask(taskRoot, task.id, { status: 'completed' }).catch(() => {});
 			} else {
-				updateTask(PATHS.root, task.id, { status: 'pending', assignee: null }).catch(() => {});
+				updateTask(taskRoot, task.id, { status: 'pending', assignee: null }).catch(() => {});
 			}
 		});
 
@@ -426,10 +439,16 @@ async function heartbeat() {
 	log(session, `[tasks] ${taskScan.total} total — ${taskScan.pending} pending, ${taskScan.inProgress} in progress, ${taskScan.completed} completed`);
 
 	if (taskScan.clawAssigned.length > 0) {
-		log(session, `[tasks] ${taskScan.clawAssigned.length} task(s) assigned to Claw: ${taskScan.clawAssigned.map((t) => t.title).join(', ')}`);
+		log(session, `[tasks] ${taskScan.clawAssigned.length} task(s) assigned to Claw: ${taskScan.clawAssigned.map((t) => `${t.title}${t._sourceProjectId ? ` [${t._sourceProjectId}]` : ''}`).join(', ')}`);
 	}
 	if (taskScan.unassignedPending.length > 0) {
-		log(session, `[tasks] ${taskScan.unassignedPending.length} pending task(s) available`);
+		const byProject = new Map<string, number>();
+		for (const t of taskScan.unassignedPending) {
+			const pid = t._sourceProjectId ?? 'unknown';
+			byProject.set(pid, (byProject.get(pid) ?? 0) + 1);
+		}
+		const projectBreakdown = [...byProject.entries()].map(([id, count]) => `${id}: ${count}`).join(', ');
+		log(session, `[tasks] ${taskScan.unassignedPending.length} pending task(s) available — ${projectBreakdown}`);
 	}
 
 	if (notificationsEnabled && (taskScan.clawAssigned.length > 0 || taskScan.unassignedPending.length > 0)) {

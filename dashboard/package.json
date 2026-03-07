@@ -13,7 +13,8 @@
 		"test": "vitest run",
 		"test:watch": "vitest",
 		"test:e2e": "playwright test",
-		"lint": "eslint . --max-warnings 0",
+		"lint": "eslint . --max-warnings 0 && bash scripts/lint-svg-fill.sh",
+		"lint:svg-fill": "bash scripts/lint-svg-fill.sh",
 		"lint:fix": "eslint . --fix",
 		"format": "prettier --check .",
 		"format:fix": "prettier --write ."

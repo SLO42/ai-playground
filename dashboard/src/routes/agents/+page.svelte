@@ -702,12 +702,19 @@
 			<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
 				{#each livePool.slots as slot (slot.slotId)}
 					{@const model = slotModel(slot.model)}
+					{@const projectMatch = slot.area.match(/^projects\/([^/]+)/)}
+					{@const projectId = projectMatch?.[1] ?? null}
 					<div class="bg-bg-secondary border border-border rounded-lg p-3 hover:border-{model === 'opus' ? 'accent-purple' : model === 'sonnet' ? 'accent-cyan' : model === 'haiku' ? 'accent-yellow' : 'accent-green'}/40 transition-colors">
 						<div class="flex items-center gap-2 mb-2">
 							<span class="w-2 h-2 rounded-full {slotStatusColors[slot.status]}"></span>
 							<span class="text-xs font-mono text-text-primary truncate">{slot.slotId}</span>
 							<span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full {slot.status === 'active' ? 'bg-accent-cyan/15 text-accent-cyan' : 'bg-bg-tertiary text-text-secondary'}">{slot.status}</span>
 						</div>
+						{#if projectId}
+							<a href="/projects/{projectId}/agents" class="inline-flex items-center gap-1 mb-2 px-2 py-0.5 rounded text-[10px] font-medium bg-accent-blue/10 text-accent-blue border border-accent-blue/20 hover:bg-accent-blue/20 transition-colors truncate max-w-full">
+								<span class="truncate">{projectId}</span>
+							</a>
+						{/if}
 						<div class="space-y-1 text-[11px]">
 							<div class="flex justify-between">
 								<span class="text-text-secondary">Model</span>
@@ -715,7 +722,7 @@
 							</div>
 							<div class="flex justify-between">
 								<span class="text-text-secondary">Area</span>
-								<span class="text-text-primary">{slot.area}</span>
+								<span class="text-text-primary">{slot.area.replace(/^projects\/[^/]+\//, '')}</span>
 							</div>
 							<div class="flex justify-between">
 								<span class="text-text-secondary">Tasks</span>

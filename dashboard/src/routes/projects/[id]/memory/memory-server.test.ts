@@ -123,6 +123,42 @@ describe('projects/[id]/memory +page.server load', () => {
 		expect(result.loadError).toBe('File read error');
 	});
 
+	it('does not throw when graphResult is undefined', async () => {
+		mockReadJsonFile.mockImplementation(async (path: string) => {
+			if (path.includes('graph')) return undefined as any;
+			return null;
+		});
+
+		const result = await callLoad();
+
+		expect(result.graph).toBeNull();
+		expect(result.loadError).toBeNull();
+	});
+
+	it('sets graph to null for non-object graphResult (e.g. string)', async () => {
+		mockReadJsonFile.mockImplementation(async (path: string) => {
+			if (path.includes('graph')) return 'not-an-object' as any;
+			return null;
+		});
+
+		const result = await callLoad();
+
+		expect(result.graph).toBeNull();
+		expect(result.loadError).toBeNull();
+	});
+
+	it('sets graph to null when graphResult lacks nodes property', async () => {
+		mockReadJsonFile.mockImplementation(async (path: string) => {
+			if (path.includes('graph')) return { version: 1, edges: [] } as any;
+			return null;
+		});
+
+		const result = await callLoad();
+
+		expect(result.graph).toBeNull();
+		expect(result.loadError).toBeNull();
+	});
+
 	it('returns graph with empty nodes and edges', async () => {
 		const emptyGraph = makeGraphState({ nodes: {}, edges: [], pageRanks: {} });
 

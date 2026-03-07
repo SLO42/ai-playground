@@ -50,3 +50,31 @@ export interface MemoryPageData {
 	memoryGraphEnabled: boolean;
 	loadErrors: string[] | null;
 }
+
+/** Namespace/category breakdown entry used in project memory summaries. */
+export interface BreakdownEntry {
+	name: string;
+	count: number;
+}
+
+/** Summary stats for a project's memory page. */
+export interface ProjectMemorySummary {
+	totalNodes: number;
+	namespaces: number;
+	categories: number;
+	avgConfidence: number;
+	hitRate: string;
+}
+
+/** Shape returned by the project memory page server load function. */
+export interface ProjectMemoryPageData {
+	projectId: string;
+	projectName: string;
+	loadError: string | null;
+	graph: import('$lib/types/graph.js').GraphState | null;
+	summary: ProjectMemorySummary;
+	namespaceBreakdown: BreakdownEntry[];
+	categoryBreakdown: BreakdownEntry[];
+	entries: AutoMemoryEntry[];
+	context: RankedContext | null;
+}

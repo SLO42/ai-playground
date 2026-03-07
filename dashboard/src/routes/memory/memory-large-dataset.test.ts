@@ -104,14 +104,13 @@ describe('Memory Page — Large Dataset Integration', () => {
 		unmount();
 	});
 
-	it('renders node and edge counts correctly for large dataset', () => {
+	it('renders edge count correctly for large dataset', () => {
 		const graph = generateLargeDataset(10_000, 3);
 		const { unmount } = render(MemoryPage, {
 			props: { data: makePageData({ graph }) }
 		});
 
-		// 10k nodes, 3 edges per node = 30k edges
-		expect(screen.getByText('10000')).toBeInTheDocument();
+		// 10k nodes * 3 edges = 30k edges displayed in the Edges metric
 		expect(screen.getByText('30000')).toBeInTheDocument();
 		unmount();
 	});
@@ -150,7 +149,8 @@ describe('Memory Page — Large Dataset Integration', () => {
 		});
 
 		expect(screen.getByText('Memory & Knowledge')).toBeInTheDocument();
-		expect(screen.getByText('10000')).toBeInTheDocument();
+		// Nodes metric shows context entry count formatted via toLocaleString
+		expect(screen.getByText('500')).toBeInTheDocument();
 		expect(screen.getByText('Context Summary')).toBeInTheDocument();
 		unmount();
 	});

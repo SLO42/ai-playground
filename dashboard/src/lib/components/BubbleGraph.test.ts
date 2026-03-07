@@ -1,17 +1,6 @@
 import { render, screen, fireEvent } from '@testing-library/svelte';
-import { describe, it, expect, vi, beforeAll } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import BubbleGraph from './BubbleGraph.svelte';
-
-// Polyfill ResizeObserver for JSDOM (used by Svelte's bind:clientWidth)
-beforeAll(() => {
-	if (typeof globalThis.ResizeObserver === 'undefined') {
-		globalThis.ResizeObserver = class ResizeObserver {
-			observe() {}
-			unobserve() {}
-			disconnect() {}
-		} as unknown as typeof ResizeObserver;
-	}
-});
 
 function makeNode(overrides: Partial<{
 	id: string;

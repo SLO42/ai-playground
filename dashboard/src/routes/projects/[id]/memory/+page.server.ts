@@ -1,12 +1,17 @@
 import type { PageServerLoad } from './$types.js';
 import { readJsonFile } from '$lib/server/file-reader.js';
 import { PATHS } from '$lib/server/constants.js';
+import { projectMemoryCache } from '$lib/server/cache.js';
 import type { RankedContext, AutoMemoryEntry } from '$lib/types/memory.js';
 import type { GraphState } from '$lib/types/graph.js';
 
 export const load: PageServerLoad = async ({ parent }) => {
 	const { projectId, project } = await parent();
 	const projectName = project.name;
+	const cacheKey = `page-memory:${projectId}`;
+
+	const cached = projectMemoryCache.get(cacheKey);
+	if (cached) return cached as Record<string, unknown>;
 
 	let entries: AutoMemoryEntry[] = [];
 	let context: RankedContext | null = null;
@@ -64,7 +69,7 @@ export const load: PageServerLoad = async ({ parent }) => {
 			? contextEntries.reduce((sum, e) => sum + e.confidence, 0) / contextEntries.length
 			: 0;
 
-	return {
+	const result = {
 		projectId,
 		projectName,
 		loadError,
@@ -85,4 +90,8 @@ export const load: PageServerLoad = async ({ parent }) => {
 		entries,
 		context
 	};
+
+	if (!loadError) projectMemoryCache.set(cacheKey, result);
+
+	return result;
 };

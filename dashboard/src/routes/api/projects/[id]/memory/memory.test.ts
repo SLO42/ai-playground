@@ -160,4 +160,92 @@ describe('/api/projects/[id]/memory GET', () => {
 		expect(body).toEqual(cached);
 		expect(mockReadJsonFile).not.toHaveBeenCalled();
 	});
+
+	describe('caching behavior', () => {
+		it('populates cache on first request and serves from cache on second', async () => {
+			// First request: cache miss — should read files and store result
+			mockCacheGet.mockReturnValue(undefined);
+			mockReadJsonFile
+				.mockResolvedValueOnce(null)
+				.mockResolvedValueOnce([])
+				.mockResolvedValueOnce(null);
+
+			const first = await GET(makeEvent('test-project'));
+			expect(first.status).toBe(200);
+			expect(mockCacheSet).toHaveBeenCalledTimes(1);
+			const storedValue = mockCacheSet.mock.calls[0][1];
+
+			// Second request: cache hit — should skip file reads entirely
+			mockReadJsonFile.mockClear();
+			mockScanAllProjects.mockClear();
+			mockCacheGet.mockReturnValue(storedValue);
+
+			const second = await GET(makeEvent('test-project'));
+			const secondBody = await second.json();
+
+			expect(mockReadJsonFile).not.toHaveBeenCalled();
+			expect(mockScanAllProjects).not.toHaveBeenCalled();
+			expect(secondBody).toEqual(storedValue);
+		});
+
+		it('includes Cache-Control header with remaining TTL on cache hit', async () => {
+			const cached = { projectId: 'test-project', graph: null };
+			mockCacheGet.mockReturnValue(cached);
+			mockCacheGetTtl.mockReturnValue(17);
+
+			const response = await GET(makeEvent('test-project'));
+			const cc = response.headers.get('Cache-Control');
+
+			expect(cc).toBe('max-age=17, stale-while-revalidate=10');
+		});
+
+		it('uses separate cache keys per range parameter', async () => {
+			mockCacheGet.mockReturnValue(undefined);
+			mockReadJsonFile
+				.mockResolvedValueOnce(null)
+				.mockResolvedValueOnce([])
+				.mockResolvedValueOnce(null);
+
+			await GET(makeEvent('test-project', { range: '1h' }));
+			const firstKey = mockCacheSet.mock.calls[0][0];
+
+			mockReadJsonFile
+				.mockResolvedValueOnce(null)
+				.mockResolvedValueOnce([])
+				.mockResolvedValueOnce(null);
+
+			await GET(makeEvent('test-project', { range: '24h' }));
+			const secondKey = mockCacheSet.mock.calls[1][0];
+
+			expect(firstKey).toBe('project-memory:test-project:1h');
+			expect(secondKey).toBe('project-memory:test-project:24h');
+			expect(firstKey).not.toBe(secondKey);
+		});
+
+		it('uses "all" suffix in cache key when no range is specified', async () => {
+			mockCacheGet.mockReturnValue(undefined);
+			mockReadJsonFile
+				.mockResolvedValueOnce(null)
+				.mockResolvedValueOnce([])
+				.mockResolvedValueOnce(null);
+
+			await GET(makeEvent('test-project'));
+			const key = mockCacheSet.mock.calls[0][0];
+
+			expect(key).toBe('project-memory:test-project:all');
+		});
+
+		it('sets Cache-Control max-age=30 on fresh (non-cached) response', async () => {
+			mockCacheGet.mockReturnValue(undefined);
+			mockReadJsonFile
+				.mockResolvedValueOnce(null)
+				.mockResolvedValueOnce([])
+				.mockResolvedValueOnce(null);
+
+			const response = await GET(makeEvent('test-project'));
+			const cc = response.headers.get('Cache-Control');
+
+			expect(cc).toBe('max-age=30, stale-while-revalidate=10');
+		});
+	});
 });

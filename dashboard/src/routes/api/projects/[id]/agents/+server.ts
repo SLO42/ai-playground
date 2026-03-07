@@ -178,10 +178,11 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 				return json({ error: 'No agents associated with this project. Add agents first.' }, { status: 400 });
 			}
 
+			const projMax = await loadProjectMaxAgents(project.path, params.id);
 			const activeAgents = getActiveAgents();
 			if (activeAgents.size >= maxConcurrentAgents) {
 				return json({
-					error: `Pool is at capacity (${activeAgents.size}/${maxConcurrentAgents} agents running). Stop some agents before spawning more.`
+					error: `Global pool is at capacity (${activeAgents.size}/${maxConcurrentAgents} agents running). Stop some agents before spawning more.`
 				}, { status: 400 });
 			}
 
@@ -189,7 +190,8 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 			const associatedSet = new Set(association.agents);
 			const projectAgents = allAgents
 				.filter(a => associatedSet.has(a.filename))
-				.map(a => ({ filename: a.filename, name: a.name, type: a.type }));
+				.map(a => ({ filename: a.filename, name: a.name, type: a.type }))
+				.slice(0, projMax); // Respect per-project limit
 
 			try {
 				const result = await populateForProject(params.id, projectAgents);

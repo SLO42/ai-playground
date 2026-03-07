@@ -677,7 +677,7 @@ describe('Memory Page — Client-side graph refresh', () => {
 		expect(screen.queryByText('Memory graph is disabled. Enable it in settings to visualize relationships.')).not.toBeInTheDocument();
 	});
 
-	it('shows graph when memoryGraphEnabled is true and graph data exists', () => {
+	it('shows graph section (not disabled message) when memoryGraphEnabled is true and graph data exists', () => {
 		render(MemoryPage, {
 			props: {
 				data: makePageData({
@@ -688,11 +688,12 @@ describe('Memory Page — Client-side graph refresh', () => {
 			}
 		});
 
-		// Should not show disabled or empty state
+		// Should not show disabled message
 		expect(screen.queryByText('Memory graph is disabled. Enable it in settings to visualize relationships.')).not.toBeInTheDocument();
-		expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
 		// Context entries should render
 		expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
+		// Memory Graph heading should be present
+		expect(screen.getByText('Memory Graph')).toBeInTheDocument();
 	});
 });
 

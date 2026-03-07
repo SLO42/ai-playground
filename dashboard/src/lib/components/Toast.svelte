@@ -10,6 +10,8 @@
 		message?: string;
 		timestamp?: string;
 		autoDismiss?: boolean;
+		actionLabel?: string;
+		onAction?: () => void;
 	}
 
 	interface Props {
@@ -46,6 +48,14 @@
 						{/if}
 					</div>
 					<div class="flex items-center gap-2 flex-shrink-0">
+						{#if toast.actionLabel && toast.onAction}
+							<button
+								onclick={() => { toast.onAction?.(); dismiss(toast.id); }}
+								class="text-xs font-medium px-2 py-0.5 rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors"
+							>
+								{toast.actionLabel}
+							</button>
+						{/if}
 						{#if toast.timestamp}
 							<span class="text-xs text-text-secondary">{toast.timestamp}</span>
 						{/if}

@@ -1,0 +1,3865 @@
+- generic [ref=e3]:
+  - navigation "Main navigation" [ref=e4]:
+    - heading "ai-playground" [level=1] [ref=e6]
+    - button "Search pages and actions (Ctrl+K)" [ref=e8] [cursor=pointer]:
+      - img [ref=e9]
+      - generic [ref=e11]: Search...
+      - generic [ref=e12]: Ctrl K
+    - generic [ref=e13]:
+      - link "Home" [ref=e14] [cursor=pointer]:
+        - /url: /
+        - img [ref=e15]
+        - text: Home
+      - link "Chat" [ref=e17] [cursor=pointer]:
+        - /url: /chat
+        - img [ref=e19]
+        - text: Chat
+      - link "Projects" [ref=e21] [cursor=pointer]:
+        - /url: /projects
+        - img [ref=e22]
+        - text: Projects
+      - link "Tasks" [ref=e24] [cursor=pointer]:
+        - /url: /tasks
+        - img [ref=e25]
+        - text: Tasks
+      - link "Models" [ref=e27] [cursor=pointer]:
+        - /url: /models
+        - img [ref=e28]
+        - text: Models
+      - link "Agents" [ref=e30] [cursor=pointer]:
+        - /url: /agents
+        - img [ref=e31]
+        - text: Agents
+      - link "Channels" [ref=e33] [cursor=pointer]:
+        - /url: /channels
+        - img [ref=e34]
+        - text: Channels
+      - link "Apps" [ref=e36] [cursor=pointer]:
+        - /url: /apps
+        - img [ref=e37]
+        - text: Apps
+      - link "Memory" [ref=e39] [cursor=pointer]:
+        - /url: /memory
+        - img [ref=e40]
+        - text: Memory
+      - link "Security" [ref=e42] [cursor=pointer]:
+        - /url: /security
+        - img [ref=e43]
+        - text: Security
+      - link "Hooks" [ref=e45] [cursor=pointer]:
+        - /url: /hooks
+        - img [ref=e46]
+        - text: Hooks
+      - link "Reports" [ref=e48] [cursor=pointer]:
+        - /url: /reports
+        - img [ref=e49]
+        - text: Reports
+      - link "Sessions" [ref=e51] [cursor=pointer]:
+        - /url: /sessions
+        - img [ref=e52]
+        - text: Sessions
+      - link "Inbox 99+ unread" [ref=e4703] [cursor=pointer]:
+        - /url: /inbox
+        - img [ref=e55]
+        - text: Inbox
+        - generic "99+ unread" [ref=e4704]: 99+
+      - link "Settings" [ref=e57] [cursor=pointer]:
+        - /url: /settings
+        - img [ref=e58]
+        - text: Settings
+      - link "Services" [ref=e60] [cursor=pointer]:
+        - /url: /services
+        - img [ref=e61]
+        - text: Services
+      - link "About" [ref=e63] [cursor=pointer]:
+        - /url: /about
+        - img [ref=e64]
+        - text: About
+    - generic [ref=e66]: ai-playground v0.0.1
+  - generic [ref=e67]:
+    - banner "System status" [ref=e68]:
+      - status [ref=e69]:
+        - generic [ref=e70]: Ollama
+        - generic [ref=e72]: Gateway
+        - generic [ref=e74]: Daemon
+      - generic [ref=e76]:
+        - generic [ref=e77]: Synced just now
+        - generic [ref=e78]: All systems operational
+    - main [ref=e79]:
+      - generic [ref=e80]:
+        - generic [ref=e81]:
+          - button "+ New Chat" [ref=e82]
+          - generic [ref=e83]:
+            - button "All" [ref=e84]
+            - button "Reply 1" [ref=e85]:
+              - text: Reply
+              - generic [ref=e86]: "1"
+            - button "Active 1" [ref=e87]:
+              - text: Active
+              - generic [ref=e88]: "1"
+            - button "Done" [ref=e89]
+          - generic [ref=e90]:
+            - 'button "reply Discuss: Add UI toggle for memory graph system · internal" [ref=e91] [cursor=pointer]':
+              - generic [ref=e92]:
+                - generic [ref=e93]: reply
+                - generic [ref=e94]: "Discuss: Add UI toggle for memory graph"
+                - button "Delete" [ref=e95]:
+                  - img [ref=e96]
+              - generic [ref=e98]: system · internal
+            - button "live Claw UX Inspector claude-sonnet-4-6 · claude-code" [ref=e99] [cursor=pointer]:
+              - generic [ref=e100]:
+                - generic [ref=e101]: live
+                - generic [ref=e102]: Claw UX Inspector
+                - button "Delete" [ref=e103]:
+                  - img [ref=e104]
+              - generic [ref=e106]: claude-sonnet-4-6 · claude-code
+            - button "done Claw System Monitor gpt-oss:20b · internal" [ref=e107] [cursor=pointer]:
+              - generic [ref=e108]:
+                - generic [ref=e109]: done
+                - generic [ref=e110]: Claw System Monitor
+                - button "Delete" [ref=e111]:
+                  - img [ref=e112]
+              - generic [ref=e114]: gpt-oss:20b · internal
+            - 'button "done Design Agent: C# Developer claude-sonnet-4-6 · claude-code" [ref=e115] [cursor=pointer]':
+              - generic [ref=e116]:
+                - generic [ref=e117]: done
+                - generic [ref=e118]: "Design Agent: C# Developer"
+                - button "Delete" [ref=e119]:
+                  - img [ref=e120]
+              - generic [ref=e122]: claude-sonnet-4-6 · claude-code
+            - 'button "done Design Agent: C# Developer claude-sonnet-4-6 · claude-code" [ref=e123] [cursor=pointer]':
+              - generic [ref=e124]:
+                - generic [ref=e125]: done
+                - generic [ref=e126]: "Design Agent: C# Developer"
+                - button "Delete" [ref=e127]:
+                  - img [ref=e128]
+              - generic [ref=e130]: claude-sonnet-4-6 · claude-code
+            - button "/agent-creator Create a new agent for m gpt-oss:20b · OpenClaw" [ref=e131] [cursor=pointer]:
+              - generic [ref=e132]:
+                - generic [ref=e133]: /agent-creator Create a new agent for m
+                - button "Delete" [ref=e134]:
+                  - img [ref=e135]
+              - generic [ref=e137]: gpt-oss:20b · OpenClaw
+            - button "done Analyze project \"rounds-mod\" and recomme claude-sonnet-4-6-20250514 · Claude API" [ref=e138] [cursor=pointer]:
+              - generic [ref=e139]:
+                - generic [ref=e140]: done
+                - generic [ref=e141]: Analyze project "rounds-mod" and recomme
+                - button "Delete" [ref=e142]:
+                  - img [ref=e143]
+              - generic [ref=e145]: claude-sonnet-4-6-20250514 · Claude API
+            - 'button "done Task: Fix BubbleGraph hardcoded SVG system · internal" [ref=e146] [cursor=pointer]':
+              - generic [ref=e147]:
+                - generic [ref=e148]: done
+                - generic [ref=e149]: "Task: Fix BubbleGraph hardcoded SVG"
+                - button "Delete" [ref=e150]:
+                  - img [ref=e151]
+              - generic [ref=e153]: system · internal
+            - 'button "done Task: Documenter: Add integration te system · internal" [ref=e154] [cursor=pointer]':
+              - generic [ref=e155]:
+                - generic [ref=e156]: done
+                - generic [ref=e157]: "Task: Documenter: Add integration te"
+                - button "Delete" [ref=e158]:
+                  - img [ref=e159]
+              - generic [ref=e161]: system · internal
+            - 'button "done Task: Add integration test for memor system · internal" [ref=e162] [cursor=pointer]':
+              - generic [ref=e163]:
+                - generic [ref=e164]: done
+                - generic [ref=e165]: "Task: Add integration test for memor"
+                - button "Delete" [ref=e166]:
+                  - img [ref=e167]
+              - generic [ref=e169]: system · internal
+            - 'button "done Task: Optimize BubbleGraph for large system · internal" [ref=e170] [cursor=pointer]':
+              - generic [ref=e171]:
+                - generic [ref=e172]: done
+                - generic [ref=e173]: "Task: Optimize BubbleGraph for large"
+                - button "Delete" [ref=e174]:
+                  - img [ref=e175]
+              - generic [ref=e177]: system · internal
+            - 'button "done Task: Unit test BubbleGraph for dupl system · internal" [ref=e178] [cursor=pointer]':
+              - generic [ref=e179]:
+                - generic [ref=e180]: done
+                - generic [ref=e181]: "Task: Unit test BubbleGraph for dupl"
+                - button "Delete" [ref=e182]:
+                  - img [ref=e183]
+              - generic [ref=e185]: system · internal
+            - 'button "done Task: Documenter: Fix BubbleGraph hi system · internal" [ref=e186] [cursor=pointer]':
+              - generic [ref=e187]:
+                - generic [ref=e188]: done
+                - generic [ref=e189]: "Task: Documenter: Fix BubbleGraph hi"
+                - button "Delete" [ref=e190]:
+                  - img [ref=e191]
+              - generic [ref=e193]: system · internal
+            - 'button "done Task: Accessibility test for high-co system · internal" [ref=e194] [cursor=pointer]':
+              - generic [ref=e195]:
+                - generic [ref=e196]: done
+                - generic [ref=e197]: "Task: Accessibility test for high-co"
+                - button "Delete" [ref=e198]:
+                  - img [ref=e199]
+              - generic [ref=e201]: system · internal
+            - 'button "done Task: CI lint rule for SVG fill attr system · internal" [ref=e202] [cursor=pointer]':
+              - generic [ref=e203]:
+                - generic [ref=e204]: done
+                - generic [ref=e205]: "Task: CI lint rule for SVG fill attr"
+                - button "Delete" [ref=e206]:
+                  - img [ref=e207]
+              - generic [ref=e209]: system · internal
+            - 'button "done Task: Fix memory page graph undefine system · internal" [ref=e210] [cursor=pointer]':
+              - generic [ref=e211]:
+                - generic [ref=e212]: done
+                - generic [ref=e213]: "Task: Fix memory page graph undefine"
+                - button "Delete" [ref=e214]:
+                  - img [ref=e215]
+              - generic [ref=e217]: system · internal
+            - 'button "done Task: Fix BubbleGraph high-contrast system · internal" [ref=e218] [cursor=pointer]':
+              - generic [ref=e219]:
+                - generic [ref=e220]: done
+                - generic [ref=e221]: "Task: Fix BubbleGraph high-contrast"
+                - button "Delete" [ref=e222]:
+                  - img [ref=e223]
+              - generic [ref=e225]: system · internal
+            - 'button "done Task: Documenter: Add empty state UI system · internal" [ref=e226] [cursor=pointer]':
+              - generic [ref=e227]:
+                - generic [ref=e228]: done
+                - generic [ref=e229]: "Task: Documenter: Add empty state UI"
+                - button "Delete" [ref=e230]:
+                  - img [ref=e231]
+              - generic [ref=e233]: system · internal
+            - 'button "done Task: Add empty state UI for disable system · internal" [ref=e234] [cursor=pointer]':
+              - generic [ref=e235]:
+                - generic [ref=e236]: done
+                - generic [ref=e237]: "Task: Add empty state UI for disable"
+                - button "Delete" [ref=e238]:
+                  - img [ref=e239]
+              - generic [ref=e241]: system · internal
+            - 'button "done Task: Document high-contrast usage f system · internal" [ref=e242] [cursor=pointer]':
+              - generic [ref=e243]:
+                - generic [ref=e244]: done
+                - generic [ref=e245]: "Task: Document high-contrast usage f"
+                - button "Delete" [ref=e246]:
+                  - img [ref=e247]
+              - generic [ref=e249]: system · internal
+            - button "done Claw Project Review gpt-oss:20b · OpenClaw" [ref=e250] [cursor=pointer]:
+              - generic [ref=e251]:
+                - generic [ref=e252]: done
+                - generic [ref=e253]: Claw Project Review
+                - button "Delete" [ref=e254]:
+                  - img [ref=e255]
+              - generic [ref=e257]: gpt-oss:20b · OpenClaw
+            - 'button "done Task: Fix BubbleGraph high-contrast system · internal" [ref=e258] [cursor=pointer]':
+              - generic [ref=e259]:
+                - generic [ref=e260]: done
+                - generic [ref=e261]: "Task: Fix BubbleGraph high-contrast"
+                - button "Delete" [ref=e262]:
+                  - img [ref=e263]
+              - generic [ref=e265]: system · internal
+            - 'button "done Task: Documenter: Ensure BubbleGraph system · internal" [ref=e266] [cursor=pointer]':
+              - generic [ref=e267]:
+                - generic [ref=e268]: done
+                - generic [ref=e269]: "Task: Documenter: Ensure BubbleGraph"
+                - button "Delete" [ref=e270]:
+                  - img [ref=e271]
+              - generic [ref=e273]: system · internal
+            - 'button "done Task: Ensure BubbleGraph component i system · internal" [ref=e274] [cursor=pointer]':
+              - generic [ref=e275]:
+                - generic [ref=e276]: done
+                - generic [ref=e277]: "Task: Ensure BubbleGraph component i"
+                - button "Delete" [ref=e278]:
+                  - img [ref=e279]
+              - generic [ref=e281]: system · internal
+            - 'button "done Task: Mock ResizeObserver in vitest system · internal" [ref=e282] [cursor=pointer]':
+              - generic [ref=e283]:
+                - generic [ref=e284]: done
+                - generic [ref=e285]: "Task: Mock ResizeObserver in vitest"
+                - button "Delete" [ref=e286]:
+                  - img [ref=e287]
+              - generic [ref=e289]: system · internal
+            - 'button "done Task: Fix BubbleGraph NaN height whe system · internal" [ref=e290] [cursor=pointer]':
+              - generic [ref=e291]:
+                - generic [ref=e292]: done
+                - generic [ref=e293]: "Task: Fix BubbleGraph NaN height whe"
+                - button "Delete" [ref=e294]:
+                  - img [ref=e295]
+              - generic [ref=e297]: system · internal
+            - 'button "done Task: Fix 4 pre-existing BubbleGraph system · internal" [ref=e298] [cursor=pointer]':
+              - generic [ref=e299]:
+                - generic [ref=e300]: done
+                - generic [ref=e301]: "Task: Fix 4 pre-existing BubbleGraph"
+                - button "Delete" [ref=e302]:
+                  - img [ref=e303]
+              - generic [ref=e305]: system · internal
+            - 'button "done Task: Add unit test for BubbleGraph system · internal" [ref=e306] [cursor=pointer]':
+              - generic [ref=e307]:
+                - generic [ref=e308]: done
+                - generic [ref=e309]: "Task: Add unit test for BubbleGraph"
+                - button "Delete" [ref=e310]:
+                  - img [ref=e311]
+              - generic [ref=e313]: system · internal
+            - 'button "done Task: Documenter: Add documentation system · internal" [ref=e314] [cursor=pointer]':
+              - generic [ref=e315]:
+                - generic [ref=e316]: done
+                - generic [ref=e317]: "Task: Documenter: Add documentation"
+                - button "Delete" [ref=e318]:
+                  - img [ref=e319]
+              - generic [ref=e321]: system · internal
+            - 'button "done Task: Documenter: Add documentation system · internal" [ref=e322] [cursor=pointer]':
+              - generic [ref=e323]:
+                - generic [ref=e324]: done
+                - generic [ref=e325]: "Task: Documenter: Add documentation"
+                - button "Delete" [ref=e326]:
+                  - img [ref=e327]
+              - generic [ref=e329]: system · internal
+            - 'button "done Task: Add unit test for client-side system · internal" [ref=e330] [cursor=pointer]':
+              - generic [ref=e331]:
+                - generic [ref=e332]: done
+                - generic [ref=e333]: "Task: Add unit test for client-side"
+                - button "Delete" [ref=e334]:
+                  - img [ref=e335]
+              - generic [ref=e337]: system · internal
+            - 'button "done Task: Documenter: Implement client-s system · internal" [ref=e338] [cursor=pointer]':
+              - generic [ref=e339]:
+                - generic [ref=e340]: done
+                - generic [ref=e341]: "Task: Documenter: Implement client-s"
+                - button "Delete" [ref=e342]:
+                  - img [ref=e343]
+              - generic [ref=e345]: system · internal
+            - 'button "done Task: Add documentation for memory g system · internal" [ref=e346] [cursor=pointer]':
+              - generic [ref=e347]:
+                - generic [ref=e348]: done
+                - generic [ref=e349]: "Task: Add documentation for memory g"
+                - button "Delete" [ref=e350]:
+                  - img [ref=e351]
+              - generic [ref=e353]: system · internal
+            - 'button "done Task: Documenter: Add loading state system · internal" [ref=e354] [cursor=pointer]':
+              - generic [ref=e355]:
+                - generic [ref=e356]: done
+                - generic [ref=e357]: "Task: Documenter: Add loading state"
+                - button "Delete" [ref=e358]:
+                  - img [ref=e359]
+              - generic [ref=e361]: system · internal
+            - 'button "done Task: Add DataFallback usage test fo system · internal" [ref=e362] [cursor=pointer]':
+              - generic [ref=e363]:
+                - generic [ref=e364]: done
+                - generic [ref=e365]: "Task: Add DataFallback usage test fo"
+                - button "Delete" [ref=e366]:
+                  - img [ref=e367]
+              - generic [ref=e369]: system · internal
+            - 'button "done Task: Add documentation for memory p system · internal" [ref=e370] [cursor=pointer]':
+              - generic [ref=e371]:
+                - generic [ref=e372]: done
+                - generic [ref=e373]: "Task: Add documentation for memory p"
+                - button "Delete" [ref=e374]:
+                  - img [ref=e375]
+              - generic [ref=e377]: system · internal
+            - 'button "done Task: Add integration test for memor system · internal" [ref=e378] [cursor=pointer]':
+              - generic [ref=e379]:
+                - generic [ref=e380]: done
+                - generic [ref=e381]: "Task: Add integration test for memor"
+                - button "Delete" [ref=e382]:
+                  - img [ref=e383]
+              - generic [ref=e385]: system · internal
+            - 'button "done Task: Add ARIA attributes to BubbleG system · internal" [ref=e386] [cursor=pointer]':
+              - generic [ref=e387]:
+                - generic [ref=e388]: done
+                - generic [ref=e389]: "Task: Add ARIA attributes to BubbleG"
+                - button "Delete" [ref=e390]:
+                  - img [ref=e391]
+              - generic [ref=e393]: system · internal
+            - 'button "done Task: Add loading state for memory p system · internal" [ref=e394] [cursor=pointer]':
+              - generic [ref=e395]:
+                - generic [ref=e396]: done
+                - generic [ref=e397]: "Task: Add loading state for memory p"
+                - button "Delete" [ref=e398]:
+                  - img [ref=e399]
+              - generic [ref=e401]: system · internal
+            - 'button "done Task: Documenter: Add error state ha system · internal" [ref=e402] [cursor=pointer]':
+              - generic [ref=e403]:
+                - generic [ref=e404]: done
+                - generic [ref=e405]: "Task: Documenter: Add error state ha"
+                - button "Delete" [ref=e406]:
+                  - img [ref=e407]
+              - generic [ref=e409]: system · internal
+            - 'button "done Task: Implement client-side graph re system · internal" [ref=e410] [cursor=pointer]':
+              - generic [ref=e411]:
+                - generic [ref=e412]: done
+                - generic [ref=e413]: "Task: Implement client-side graph re"
+                - button "Delete" [ref=e414]:
+                  - img [ref=e415]
+              - generic [ref=e417]: system · internal
+            - 'button "done Task: Add error state handling for m system · internal" [ref=e418] [cursor=pointer]':
+              - generic [ref=e419]:
+                - generic [ref=e420]: done
+                - generic [ref=e421]: "Task: Add error state handling for m"
+                - button "Delete" [ref=e422]:
+                  - img [ref=e423]
+              - generic [ref=e425]: system · internal
+            - 'button "done Task: Documenter: Memory page has no system · internal" [ref=e426] [cursor=pointer]':
+              - generic [ref=e427]:
+                - generic [ref=e428]: done
+                - generic [ref=e429]: "Task: Documenter: Memory page has no"
+                - button "Delete" [ref=e430]:
+                  - img [ref=e431]
+              - generic [ref=e433]: system · internal
+            - 'button "done Task: Fix 7 pre-existing broken inte system · internal" [ref=e434] [cursor=pointer]':
+              - generic [ref=e435]:
+                - generic [ref=e436]: done
+                - generic [ref=e437]: "Task: Fix 7 pre-existing broken inte"
+                - button "Delete" [ref=e438]:
+                  - img [ref=e439]
+              - generic [ref=e441]: system · internal
+            - 'button "done Task: MemoryPageData interface missi system · internal" [ref=e442] [cursor=pointer]':
+              - generic [ref=e443]:
+                - generic [ref=e444]: done
+                - generic [ref=e445]: "Task: MemoryPageData interface missi"
+                - button "Delete" [ref=e446]:
+                  - img [ref=e447]
+              - generic [ref=e449]: system · internal
+            - 'button "done Task: Memory page has no client-side system · internal" [ref=e450] [cursor=pointer]':
+              - generic [ref=e451]:
+                - generic [ref=e452]: done
+                - generic [ref=e453]: "Task: Memory page has no client-side"
+                - button "Delete" [ref=e454]:
+                  - img [ref=e455]
+              - generic [ref=e457]: system · internal
+            - 'button "done Task: Fix type errors in project mem system · internal" [ref=e458] [cursor=pointer]':
+              - generic [ref=e459]:
+                - generic [ref=e460]: done
+                - generic [ref=e461]: "Task: Fix type errors in project mem"
+                - button "Delete" [ref=e462]:
+                  - img [ref=e463]
+              - generic [ref=e465]: system · internal
+            - 'button "done Task: Fix width variable declaration system · internal" [ref=e466] [cursor=pointer]':
+              - generic [ref=e467]:
+                - generic [ref=e468]: done
+                - generic [ref=e469]: "Task: Fix width variable declaration"
+                - button "Delete" [ref=e470]:
+                  - img [ref=e471]
+              - generic [ref=e473]: system · internal
+            - 'button "done Task: Fix missing loadProjectMaxAgen system · internal" [ref=e474] [cursor=pointer]':
+              - generic [ref=e475]:
+                - generic [ref=e476]: done
+                - generic [ref=e477]: "Task: Fix missing loadProjectMaxAgen"
+                - button "Delete" [ref=e478]:
+                  - img [ref=e479]
+              - generic [ref=e481]: system · internal
+            - 'button "done Task: Add integration test for missi system · internal" [ref=e482] [cursor=pointer]':
+              - generic [ref=e483]:
+                - generic [ref=e484]: done
+                - generic [ref=e485]: "Task: Add integration test for missi"
+                - button "Delete" [ref=e486]:
+                  - img [ref=e487]
+              - generic [ref=e489]: system · internal
+            - 'button "done Task: Documenter: Add accessibility system · internal" [ref=e490] [cursor=pointer]':
+              - generic [ref=e491]:
+                - generic [ref=e492]: done
+                - generic [ref=e493]: "Task: Documenter: Add accessibility"
+                - button "Delete" [ref=e494]:
+                  - img [ref=e495]
+              - generic [ref=e497]: system · internal
+            - 'button "done Task: Verify feature flag toggles me system · internal" [ref=e498] [cursor=pointer]':
+              - generic [ref=e499]:
+                - generic [ref=e500]: done
+                - generic [ref=e501]: "Task: Verify feature flag toggles me"
+                - button "Delete" [ref=e502]:
+                  - img [ref=e503]
+              - generic [ref=e505]: system · internal
+            - 'button "done Task: Add unit test for malformed gr system · internal" [ref=e506] [cursor=pointer]':
+              - generic [ref=e507]:
+                - generic [ref=e508]: done
+                - generic [ref=e509]: "Task: Add unit test for malformed gr"
+                - button "Delete" [ref=e510]:
+                  - img [ref=e511]
+              - generic [ref=e513]: system · internal
+            - 'button "done Task: Add responsive design test for system · internal" [ref=e514] [cursor=pointer]':
+              - generic [ref=e515]:
+                - generic [ref=e516]: done
+                - generic [ref=e517]: "Task: Add responsive design test for"
+                - button "Delete" [ref=e518]:
+                  - img [ref=e519]
+              - generic [ref=e521]: system · internal
+            - 'button "done Task: Documenter: Fix 3 stale tests system · internal" [ref=e522] [cursor=pointer]':
+              - generic [ref=e523]:
+                - generic [ref=e524]: done
+                - generic [ref=e525]: "Task: Documenter: Fix 3 stale tests"
+                - button "Delete" [ref=e526]:
+                  - img [ref=e527]
+              - generic [ref=e529]: system · internal
+            - 'button "done Task: Complete ReferenceError guard system · internal" [ref=e530] [cursor=pointer]':
+              - generic [ref=e531]:
+                - generic [ref=e532]: done
+                - generic [ref=e533]: "Task: Complete ReferenceError guard"
+                - button "Delete" [ref=e534]:
+                  - img [ref=e535]
+              - generic [ref=e537]: system · internal
+            - 'button "done Task: Add type safety to memory page system · internal" [ref=e538] [cursor=pointer]':
+              - generic [ref=e539]:
+                - generic [ref=e540]: done
+                - generic [ref=e541]: "Task: Add type safety to memory page"
+                - button "Delete" [ref=e542]:
+                  - img [ref=e543]
+              - generic [ref=e545]: system · internal
+            - 'button "done Task: Add accessibility enhancements system · internal" [ref=e546] [cursor=pointer]':
+              - generic [ref=e547]:
+                - generic [ref=e548]: done
+                - generic [ref=e549]: "Task: Add accessibility enhancements"
+                - button "Delete" [ref=e550]:
+                  - img [ref=e551]
+              - generic [ref=e553]: system · internal
+            - 'button "done Task: Documenter: Document memory pa system · internal" [ref=e554] [cursor=pointer]':
+              - generic [ref=e555]:
+                - generic [ref=e556]: done
+                - generic [ref=e557]: "Task: Documenter: Document memory pa"
+                - button "Delete" [ref=e558]:
+                  - img [ref=e559]
+              - generic [ref=e561]: system · internal
+            - 'button "done Task: Add unit test for graph variab system · internal" [ref=e562] [cursor=pointer]':
+              - generic [ref=e563]:
+                - generic [ref=e564]: done
+                - generic [ref=e565]: "Task: Add unit test for graph variab"
+                - button "Delete" [ref=e566]:
+                  - img [ref=e567]
+              - generic [ref=e569]: system · internal
+            - 'button "done Task: Fix 3 stale GET tests in graph system · internal" [ref=e570] [cursor=pointer]':
+              - generic [ref=e571]:
+                - generic [ref=e572]: done
+                - generic [ref=e573]: "Task: Fix 3 stale GET tests in graph"
+                - button "Delete" [ref=e574]:
+                  - img [ref=e575]
+              - generic [ref=e577]: system · internal
+            - 'button "done Task: Fix 3 stale tests in graph.tes system · internal" [ref=e578] [cursor=pointer]':
+              - generic [ref=e579]:
+                - generic [ref=e580]: done
+                - generic [ref=e581]: "Task: Fix 3 stale tests in graph.tes"
+                - button "Delete" [ref=e582]:
+                  - img [ref=e583]
+              - generic [ref=e585]: system · internal
+            - 'button "done Task: Document memory page server ro system · internal" [ref=e586] [cursor=pointer]':
+              - generic [ref=e587]:
+                - generic [ref=e588]: done
+                - generic [ref=e589]: "Task: Document memory page server ro"
+                - button "Delete" [ref=e590]:
+                  - img [ref=e591]
+              - generic [ref=e593]: system · internal
+            - 'button "done Task: Update memory page documentati system · internal" [ref=e594] [cursor=pointer]':
+              - generic [ref=e595]:
+                - generic [ref=e596]: done
+                - generic [ref=e597]: "Task: Update memory page documentati"
+                - button "Delete" [ref=e598]:
+                  - img [ref=e599]
+              - generic [ref=e601]: system · internal
+            - 'button "done Task: Documenter: Add unit test for system · internal" [ref=e602] [cursor=pointer]':
+              - generic [ref=e603]:
+                - generic [ref=e604]: done
+                - generic [ref=e605]: "Task: Documenter: Add unit test for"
+                - button "Delete" [ref=e606]:
+                  - img [ref=e607]
+              - generic [ref=e609]: system · internal
+            - 'button "done Task: Documenter: Implement memoizat system · internal" [ref=e610] [cursor=pointer]':
+              - generic [ref=e611]:
+                - generic [ref=e612]: done
+                - generic [ref=e613]: "Task: Documenter: Implement memoizat"
+                - button "Delete" [ref=e614]:
+                  - img [ref=e615]
+              - generic [ref=e617]: system · internal
+            - 'button "done Task: Add server‑side caching for me system · internal" [ref=e618] [cursor=pointer]':
+              - generic [ref=e619]:
+                - generic [ref=e620]: done
+                - generic [ref=e621]: "Task: Add server‑side caching for me"
+                - button "Delete" [ref=e622]:
+                  - img [ref=e623]
+              - generic [ref=e625]: system · internal
+            - 'button "done Task: Add unit test for graceful han system · internal" [ref=e626] [cursor=pointer]':
+              - generic [ref=e627]:
+                - generic [ref=e628]: done
+                - generic [ref=e629]: "Task: Add unit test for graceful han"
+                - button "Delete" [ref=e630]:
+                  - img [ref=e631]
+              - generic [ref=e633]: system · internal
+            - 'button "done Task: Add integration test for memor system · internal" [ref=e634] [cursor=pointer]':
+              - generic [ref=e635]:
+                - generic [ref=e636]: done
+                - generic [ref=e637]: "Task: Add integration test for memor"
+                - button "Delete" [ref=e638]:
+                  - img [ref=e639]
+              - generic [ref=e641]: system · internal
+            - 'button "done Task: Implement memoization for grap system · internal" [ref=e642] [cursor=pointer]':
+              - generic [ref=e643]:
+                - generic [ref=e644]: done
+                - generic [ref=e645]: "Task: Implement memoization for grap"
+                - button "Delete" [ref=e646]:
+                  - img [ref=e647]
+              - generic [ref=e649]: system · internal
+            - 'button "done Task: Add unit test for reusable fal system · internal" [ref=e650] [cursor=pointer]':
+              - generic [ref=e651]:
+                - generic [ref=e652]: done
+                - generic [ref=e653]: "Task: Add unit test for reusable fal"
+                - button "Delete" [ref=e654]:
+                  - img [ref=e655]
+              - generic [ref=e657]: system · internal
+            - 'button "done Task: Documenter: Add CI job to run system · internal" [ref=e658] [cursor=pointer]':
+              - generic [ref=e659]:
+                - generic [ref=e660]: done
+                - generic [ref=e661]: "Task: Documenter: Add CI job to run"
+                - button "Delete" [ref=e662]:
+                  - img [ref=e663]
+              - generic [ref=e665]: system · internal
+            - 'button "done Task: Documenter: Create reusable fa system · internal" [ref=e666] [cursor=pointer]':
+              - generic [ref=e667]:
+                - generic [ref=e668]: done
+                - generic [ref=e669]: "Task: Documenter: Create reusable fa"
+                - button "Delete" [ref=e670]:
+                  - img [ref=e671]
+              - generic [ref=e673]: system · internal
+            - 'button "done Task: Add unit test for graph data s system · internal" [ref=e674] [cursor=pointer]':
+              - generic [ref=e675]:
+                - generic [ref=e676]: done
+                - generic [ref=e677]: "Task: Add unit test for graph data s"
+                - button "Delete" [ref=e678]:
+                  - img [ref=e679]
+              - generic [ref=e681]: system · internal
+            - 'button "done Task: Fix ReferenceError for graph v system · internal" [ref=e682] [cursor=pointer]':
+              - generic [ref=e683]:
+                - generic [ref=e684]: done
+                - generic [ref=e685]: "Task: Fix ReferenceError for graph v"
+                - button "Delete" [ref=e686]:
+                  - img [ref=e687]
+              - generic [ref=e689]: system · internal
+            - 'button "done Task: Create reusable fallback UI co system · internal" [ref=e690] [cursor=pointer]':
+              - generic [ref=e691]:
+                - generic [ref=e692]: done
+                - generic [ref=e693]: "Task: Create reusable fallback UI co"
+                - button "Delete" [ref=e694]:
+                  - img [ref=e695]
+              - generic [ref=e697]: system · internal
+            - 'button "done Task: Add accessibility test for mem system · internal" [ref=e698] [cursor=pointer]':
+              - generic [ref=e699]:
+                - generic [ref=e700]: done
+                - generic [ref=e701]: "Task: Add accessibility test for mem"
+                - button "Delete" [ref=e702]:
+                  - img [ref=e703]
+              - generic [ref=e705]: system · internal
+            - 'button "done Task: Add CI job to run memory page system · internal" [ref=e706] [cursor=pointer]':
+              - generic [ref=e707]:
+                - generic [ref=e708]: done
+                - generic [ref=e709]: "Task: Add CI job to run memory page"
+                - button "Delete" [ref=e710]:
+                  - img [ref=e711]
+              - generic [ref=e713]: system · internal
+            - 'button "done Task: Documenter: Add ESLint rule to system · internal" [ref=e714] [cursor=pointer]':
+              - generic [ref=e715]:
+                - generic [ref=e716]: done
+                - generic [ref=e717]: "Task: Documenter: Add ESLint rule to"
+                - button "Delete" [ref=e718]:
+                  - img [ref=e719]
+              - generic [ref=e721]: system · internal
+            - 'button "done Task: Add ESLint rule to flag undefi system · internal" [ref=e722] [cursor=pointer]':
+              - generic [ref=e723]:
+                - generic [ref=e724]: done
+                - generic [ref=e725]: "Task: Add ESLint rule to flag undefi"
+                - button "Delete" [ref=e726]:
+                  - img [ref=e727]
+              - generic [ref=e729]: system · internal
+            - 'button "done Task: Documenter: Guard against unde system · internal" [ref=e730] [cursor=pointer]':
+              - generic [ref=e731]:
+                - generic [ref=e732]: done
+                - generic [ref=e733]: "Task: Documenter: Guard against unde"
+                - button "Delete" [ref=e734]:
+                  - img [ref=e735]
+              - generic [ref=e737]: system · internal
+            - 'button "done Task: Add fallback UI for missing gr system · internal" [ref=e738] [cursor=pointer]':
+              - generic [ref=e739]:
+                - generic [ref=e740]: done
+                - generic [ref=e741]: "Task: Add fallback UI for missing gr"
+                - button "Delete" [ref=e742]:
+                  - img [ref=e743]
+              - generic [ref=e745]: system · internal
+            - 'button "done Task: Fix ReferenceError for graph v system · internal" [ref=e746] [cursor=pointer]':
+              - generic [ref=e747]:
+                - generic [ref=e748]: done
+                - generic [ref=e749]: "Task: Fix ReferenceError for graph v"
+                - button "Delete" [ref=e750]:
+                  - img [ref=e751]
+              - generic [ref=e753]: system · internal
+            - 'button "done Task: Add unit test for graph variab system · internal" [ref=e754] [cursor=pointer]':
+              - generic [ref=e755]:
+                - generic [ref=e756]: done
+                - generic [ref=e757]: "Task: Add unit test for graph variab"
+                - button "Delete" [ref=e758]:
+                  - img [ref=e759]
+              - generic [ref=e761]: system · internal
+            - 'button "done Task: Guard against undefined graph system · internal" [ref=e762] [cursor=pointer]':
+              - generic [ref=e763]:
+                - generic [ref=e764]: done
+                - generic [ref=e765]: "Task: Guard against undefined graph"
+                - button "Delete" [ref=e766]:
+                  - img [ref=e767]
+              - generic [ref=e769]: system · internal
+            - 'button "done Task: Update documentation for memor system · internal" [ref=e770] [cursor=pointer]':
+              - generic [ref=e771]:
+                - generic [ref=e772]: done
+                - generic [ref=e773]: "Task: Update documentation for memor"
+                - button "Delete" [ref=e774]:
+                  - img [ref=e775]
+              - generic [ref=e777]: system · internal
+            - 'button "done Task: BubbleGraph: dead code branch system · internal" [ref=e778] [cursor=pointer]':
+              - generic [ref=e779]:
+                - generic [ref=e780]: done
+                - generic [ref=e781]: "Task: BubbleGraph: dead code branch"
+                - button "Delete" [ref=e782]:
+                  - img [ref=e783]
+              - generic [ref=e785]: system · internal
+            - 'button "done Task: Documenter: Add loading state system · internal" [ref=e786] [cursor=pointer]':
+              - generic [ref=e787]:
+                - generic [ref=e788]: done
+                - generic [ref=e789]: "Task: Documenter: Add loading state"
+                - button "Delete" [ref=e790]:
+                  - img [ref=e791]
+              - generic [ref=e793]: system · internal
+            - 'button "done Task: Documenter: Add empty state to system · internal" [ref=e794] [cursor=pointer]':
+              - generic [ref=e795]:
+                - generic [ref=e796]: done
+                - generic [ref=e797]: "Task: Documenter: Add empty state to"
+                - button "Delete" [ref=e798]:
+                  - img [ref=e799]
+              - generic [ref=e801]: system · internal
+            - 'button "done Task: Documenter: Add error state to system · internal" [ref=e802] [cursor=pointer]':
+              - generic [ref=e803]:
+                - generic [ref=e804]: done
+                - generic [ref=e805]: "Task: Documenter: Add error state to"
+                - button "Delete" [ref=e806]:
+                  - img [ref=e807]
+              - generic [ref=e809]: system · internal
+            - 'button "done Task: Add integration test for memor system · internal" [ref=e810] [cursor=pointer]':
+              - generic [ref=e811]:
+                - generic [ref=e812]: done
+                - generic [ref=e813]: "Task: Add integration test for memor"
+                - button "Delete" [ref=e814]:
+                  - img [ref=e815]
+              - generic [ref=e817]: system · internal
+            - 'button "done Task: Add loading state to memory pa system · internal" [ref=e818] [cursor=pointer]':
+              - generic [ref=e819]:
+                - generic [ref=e820]: done
+                - generic [ref=e821]: "Task: Add loading state to memory pa"
+                - button "Delete" [ref=e822]:
+                  - img [ref=e823]
+              - generic [ref=e825]: system · internal
+            - 'button "done Task: Add error state to memory page system · internal" [ref=e826] [cursor=pointer]':
+              - generic [ref=e827]:
+                - generic [ref=e828]: done
+                - generic [ref=e829]: "Task: Add error state to memory page"
+                - button "Delete" [ref=e830]:
+                  - img [ref=e831]
+              - generic [ref=e833]: system · internal
+            - 'button "done Task: Add empty state to memory page system · internal" [ref=e834] [cursor=pointer]':
+              - generic [ref=e835]:
+                - generic [ref=e836]: done
+                - generic [ref=e837]: "Task: Add empty state to memory page"
+                - button "Delete" [ref=e838]:
+                  - img [ref=e839]
+              - generic [ref=e841]: system · internal
+            - 'button "done Task: Documenter: Verify feature fla system · internal" [ref=e842] [cursor=pointer]':
+              - generic [ref=e843]:
+                - generic [ref=e844]: done
+                - generic [ref=e845]: "Task: Documenter: Verify feature fla"
+                - button "Delete" [ref=e846]:
+                  - img [ref=e847]
+              - generic [ref=e849]: system · internal
+            - 'button "done Task: Ensure responsive design for m system · internal" [ref=e850] [cursor=pointer]':
+              - generic [ref=e851]:
+                - generic [ref=e852]: done
+                - generic [ref=e853]: "Task: Ensure responsive design for m"
+                - button "Delete" [ref=e854]:
+                  - img [ref=e855]
+              - generic [ref=e857]: system · internal
+            - 'button "done Task: Verify feature flag toggles me system · internal" [ref=e858] [cursor=pointer]':
+              - generic [ref=e859]:
+                - generic [ref=e860]: done
+                - generic [ref=e861]: "Task: Verify feature flag toggles me"
+                - button "Delete" [ref=e862]:
+                  - img [ref=e863]
+              - generic [ref=e865]: system · internal
+            - 'button "done Task: Add unit test for memory graph system · internal" [ref=e866] [cursor=pointer]':
+              - generic [ref=e867]:
+                - generic [ref=e868]: done
+                - generic [ref=e869]: "Task: Add unit test for memory graph"
+                - button "Delete" [ref=e870]:
+                  - img [ref=e871]
+              - generic [ref=e873]: system · internal
+            - 'button "done Task: Import BubbleGraph component i system · internal" [ref=e874] [cursor=pointer]':
+              - generic [ref=e875]:
+                - generic [ref=e876]: done
+                - generic [ref=e877]: "Task: Import BubbleGraph component i"
+                - button "Delete" [ref=e878]:
+                  - img [ref=e879]
+              - generic [ref=e881]: system · internal
+            - 'button "done Task: Define graph variable in memor system · internal" [ref=e882] [cursor=pointer]':
+              - generic [ref=e883]:
+                - generic [ref=e884]: done
+                - generic [ref=e885]: "Task: Define graph variable in memor"
+                - button "Delete" [ref=e886]:
+                  - img [ref=e887]
+              - generic [ref=e889]: system · internal
+            - 'button "done Task: Documenter: Define graph varia system · internal" [ref=e890] [cursor=pointer]':
+              - generic [ref=e891]:
+                - generic [ref=e892]: done
+                - generic [ref=e893]: "Task: Documenter: Define graph varia"
+                - button "Delete" [ref=e894]:
+                  - img [ref=e895]
+              - generic [ref=e897]: system · internal
+            - button "done no, not needed i think. system · internal" [ref=e898] [cursor=pointer]:
+              - generic [ref=e899]:
+                - generic [ref=e900]: done
+                - generic [ref=e901]: no, not needed i think.
+                - button "Delete" [ref=e902]:
+                  - img [ref=e903]
+              - generic [ref=e905]: system · internal
+            - 'button "done Task: Documenter: Fix pre-existing t system · internal" [ref=e906] [cursor=pointer]':
+              - generic [ref=e907]:
+                - generic [ref=e908]: done
+                - generic [ref=e909]: "Task: Documenter: Fix pre-existing t"
+                - button "Delete" [ref=e910]:
+                  - img [ref=e911]
+              - generic [ref=e913]: system · internal
+            - 'button "done Task: Fix SSR manifest-full.js build system · internal" [ref=e914] [cursor=pointer]':
+              - generic [ref=e915]:
+                - generic [ref=e916]: done
+                - generic [ref=e917]: "Task: Fix SSR manifest-full.js build"
+                - button "Delete" [ref=e918]:
+                  - img [ref=e919]
+              - generic [ref=e921]: system · internal
+            - 'button "done Task: Fix pre-existing type errors i system · internal" [ref=e922] [cursor=pointer]':
+              - generic [ref=e923]:
+                - generic [ref=e924]: done
+                - generic [ref=e925]: "Task: Fix pre-existing type errors i"
+                - button "Delete" [ref=e926]:
+                  - img [ref=e927]
+              - generic [ref=e929]: system · internal
+            - button "done im the only user and it runs locally, do system · internal" [ref=e930] [cursor=pointer]:
+              - generic [ref=e931]:
+                - generic [ref=e932]: done
+                - generic [ref=e933]: im the only user and it runs locally, do
+                - button "Delete" [ref=e934]:
+                  - img [ref=e935]
+              - generic [ref=e937]: system · internal
+            - 'button "done Task: Add server-side pool capacity system · internal" [ref=e938] [cursor=pointer]':
+              - generic [ref=e939]:
+                - generic [ref=e940]: done
+                - generic [ref=e941]: "Task: Add server-side pool capacity"
+                - button "Delete" [ref=e942]:
+                  - img [ref=e943]
+              - generic [ref=e945]: system · internal
+            - 'button "done Task: Fix pre-existing adapter-node system · internal" [ref=e946] [cursor=pointer]':
+              - generic [ref=e947]:
+                - generic [ref=e948]: done
+                - generic [ref=e949]: "Task: Fix pre-existing adapter-node"
+                - button "Delete" [ref=e950]:
+                  - img [ref=e951]
+              - generic [ref=e953]: system · internal
+            - 'button "done Task: Create .env.example with all d system · internal" [ref=e954] [cursor=pointer]':
+              - generic [ref=e955]:
+                - generic [ref=e956]: done
+                - generic [ref=e957]: "Task: Create .env.example with all d"
+                - button "Delete" [ref=e958]:
+                  - img [ref=e959]
+              - generic [ref=e961]: system · internal
+            - 'button "done Task: Documenter: Add integration te system · internal" [ref=e962] [cursor=pointer]':
+              - generic [ref=e963]:
+                - generic [ref=e964]: done
+                - generic [ref=e965]: "Task: Documenter: Add integration te"
+                - button "Delete" [ref=e966]:
+                  - img [ref=e967]
+              - generic [ref=e969]: system · internal
+            - 'button "done Task: Documenter: Add global error p system · internal" [ref=e970] [cursor=pointer]':
+              - generic [ref=e971]:
+                - generic [ref=e972]: done
+                - generic [ref=e973]: "Task: Documenter: Add global error p"
+                - button "Delete" [ref=e974]:
+                  - img [ref=e975]
+              - generic [ref=e977]: system · internal
+            - 'button "done Task: Documenter: Add Sentry error b system · internal" [ref=e978] [cursor=pointer]':
+              - generic [ref=e979]:
+                - generic [ref=e980]: done
+                - generic [ref=e981]: "Task: Documenter: Add Sentry error b"
+                - button "Delete" [ref=e982]:
+                  - img [ref=e983]
+              - generic [ref=e985]: system · internal
+            - 'button "done Task: Documenter: Add time‑range sel system · internal" [ref=e986] [cursor=pointer]':
+              - generic [ref=e987]:
+                - generic [ref=e988]: done
+                - generic [ref=e989]: "Task: Documenter: Add time‑range sel"
+                - button "Delete" [ref=e990]:
+                  - img [ref=e991]
+              - generic [ref=e993]: system · internal
+            - 'button "done Task: Add docker-compose.yml to repo system · internal" [ref=e994] [cursor=pointer]':
+              - generic [ref=e995]:
+                - generic [ref=e996]: done
+                - generic [ref=e997]: "Task: Add docker-compose.yml to repo"
+                - button "Delete" [ref=e998]:
+                  - img [ref=e999]
+              - generic [ref=e1001]: system · internal
+            - 'button "done Task: Memory: Add integration tests system · internal" [ref=e1002] [cursor=pointer]':
+              - generic [ref=e1003]:
+                - generic [ref=e1004]: done
+                - generic [ref=e1005]: "Task: Memory: Add integration tests"
+                - button "Delete" [ref=e1006]:
+                  - img [ref=e1007]
+              - generic [ref=e1009]: system · internal
+            - 'button "done Task: Add Sentry error boundaries to system · internal" [ref=e1010] [cursor=pointer]':
+              - generic [ref=e1011]:
+                - generic [ref=e1012]: done
+                - generic [ref=e1013]: "Task: Add Sentry error boundaries to"
+                - button "Delete" [ref=e1014]:
+                  - img [ref=e1015]
+              - generic [ref=e1017]: system · internal
+            - 'button "done Task: Add integration tests for agen system · internal" [ref=e1018] [cursor=pointer]':
+              - generic [ref=e1019]:
+                - generic [ref=e1020]: done
+                - generic [ref=e1021]: "Task: Add integration tests for agen"
+                - button "Delete" [ref=e1022]:
+                  - img [ref=e1023]
+              - generic [ref=e1025]: system · internal
+            - 'button "done Task: Documenter: Enhance system hea system · internal" [ref=e1026] [cursor=pointer]':
+              - generic [ref=e1027]:
+                - generic [ref=e1028]: done
+                - generic [ref=e1029]: "Task: Documenter: Enhance system hea"
+                - button "Delete" [ref=e1030]:
+                  - img [ref=e1031]
+              - generic [ref=e1033]: system · internal
+            - 'button "done Task: Add global error page for 500 system · internal" [ref=e1034] [cursor=pointer]':
+              - generic [ref=e1035]:
+                - generic [ref=e1036]: done
+                - generic [ref=e1037]: "Task: Add global error page for 500"
+                - button "Delete" [ref=e1038]:
+                  - img [ref=e1039]
+              - generic [ref=e1041]: system · internal
+            - 'button "done Task: Add time‑range selector to mem system · internal" [ref=e1042] [cursor=pointer]':
+              - generic [ref=e1043]:
+                - generic [ref=e1044]: done
+                - generic [ref=e1045]: "Task: Add time‑range selector to mem"
+                - button "Delete" [ref=e1046]:
+                  - img [ref=e1047]
+              - generic [ref=e1049]: system · internal
+            - 'button "done Task: Documenter: Memoize heavy grap system · internal" [ref=e1050] [cursor=pointer]':
+              - generic [ref=e1051]:
+                - generic [ref=e1052]: done
+                - generic [ref=e1053]: "Task: Documenter: Memoize heavy grap"
+                - button "Delete" [ref=e1054]:
+                  - img [ref=e1055]
+              - generic [ref=e1057]: system · internal
+            - 'button "done Task: Documenter: Add a generic 404 system · internal" [ref=e1058] [cursor=pointer]':
+              - generic [ref=e1059]:
+                - generic [ref=e1060]: done
+                - generic [ref=e1061]: "Task: Documenter: Add a generic 404"
+                - button "Delete" [ref=e1062]:
+                  - img [ref=e1063]
+              - generic [ref=e1065]: system · internal
+            - 'button "done Task: Enhance system health endpoint system · internal" [ref=e1066] [cursor=pointer]':
+              - generic [ref=e1067]:
+                - generic [ref=e1068]: done
+                - generic [ref=e1069]: "Task: Enhance system health endpoint"
+                - button "Delete" [ref=e1070]:
+                  - img [ref=e1071]
+              - generic [ref=e1073]: system · internal
+            - 'button "done Task: Documenter: Configure SvelteKi system · internal" [ref=e1074] [cursor=pointer]':
+              - generic [ref=e1075]:
+                - generic [ref=e1076]: done
+                - generic [ref=e1077]: "Task: Documenter: Configure SvelteKi"
+                - button "Delete" [ref=e1078]:
+                  - img [ref=e1079]
+              - generic [ref=e1081]: system · internal
+            - 'button "done Task: Document local development and system · internal" [ref=e1082] [cursor=pointer]':
+              - generic [ref=e1083]:
+                - generic [ref=e1084]: done
+                - generic [ref=e1085]: "Task: Document local development and"
+                - button "Delete" [ref=e1086]:
+                  - img [ref=e1087]
+              - generic [ref=e1089]: system · internal
+            - 'button "done Task: Documenter: Add unit tests for system · internal" [ref=e1090] [cursor=pointer]':
+              - generic [ref=e1091]:
+                - generic [ref=e1092]: done
+                - generic [ref=e1093]: "Task: Documenter: Add unit tests for"
+                - button "Delete" [ref=e1094]:
+                  - img [ref=e1095]
+              - generic [ref=e1097]: system · internal
+            - 'button "done Task: Configure SvelteKit to generat system · internal" [ref=e1098] [cursor=pointer]':
+              - generic [ref=e1099]:
+                - generic [ref=e1100]: done
+                - generic [ref=e1101]: "Task: Configure SvelteKit to generat"
+                - button "Delete" [ref=e1102]:
+                  - img [ref=e1103]
+              - generic [ref=e1105]: system · internal
+            - 'button "done Task: Memoize heavy graph calculatio system · internal" [ref=e1106] [cursor=pointer]':
+              - generic [ref=e1107]:
+                - generic [ref=e1108]: done
+                - generic [ref=e1109]: "Task: Memoize heavy graph calculatio"
+                - button "Delete" [ref=e1110]:
+                  - img [ref=e1111]
+              - generic [ref=e1113]: system · internal
+            - 'button "done Task: Documenter: Define TypeScript system · internal" [ref=e1114] [cursor=pointer]':
+              - generic [ref=e1115]:
+                - generic [ref=e1116]: done
+                - generic [ref=e1117]: "Task: Documenter: Define TypeScript"
+                - button "Delete" [ref=e1118]:
+                  - img [ref=e1119]
+              - generic [ref=e1121]: system · internal
+            - 'button "done Task: Add unit tests for /api/tasks/ system · internal" [ref=e1122] [cursor=pointer]':
+              - generic [ref=e1123]:
+                - generic [ref=e1124]: done
+                - generic [ref=e1125]: "Task: Add unit tests for /api/tasks/"
+                - button "Delete" [ref=e1126]:
+                  - img [ref=e1127]
+              - generic [ref=e1129]: system · internal
+            - 'button "done Task: Define TypeScript types for me system · internal" [ref=e1130] [cursor=pointer]':
+              - generic [ref=e1131]:
+                - generic [ref=e1132]: done
+                - generic [ref=e1133]: "Task: Define TypeScript types for me"
+                - button "Delete" [ref=e1134]:
+                  - img [ref=e1135]
+              - generic [ref=e1137]: system · internal
+            - 'button "done Task: Add a generic 404 Not Found pa system · internal" [ref=e1138] [cursor=pointer]':
+              - generic [ref=e1139]:
+                - generic [ref=e1140]: done
+                - generic [ref=e1141]: "Task: Add a generic 404 Not Found pa"
+                - button "Delete" [ref=e1142]:
+                  - img [ref=e1143]
+              - generic [ref=e1145]: system · internal
+            - 'button "done Task: Fix pre-existing build failure system · internal" [ref=e1146] [cursor=pointer]':
+              - generic [ref=e1147]:
+                - generic [ref=e1148]: done
+                - generic [ref=e1149]: "Task: Fix pre-existing build failure"
+                - button "Delete" [ref=e1150]:
+                  - img [ref=e1151]
+              - generic [ref=e1153]: system · internal
+            - 'button "done Task: Fix manifest-full.js build err system · internal" [ref=e1154] [cursor=pointer]':
+              - generic [ref=e1155]:
+                - generic [ref=e1156]: done
+                - generic [ref=e1157]: "Task: Fix manifest-full.js build err"
+                - button "Delete" [ref=e1158]:
+                  - img [ref=e1159]
+              - generic [ref=e1161]: system · internal
+            - 'button "done Task: Add Sentry error boundaries to system · internal" [ref=e1162] [cursor=pointer]':
+              - generic [ref=e1163]:
+                - generic [ref=e1164]: done
+                - generic [ref=e1165]: "Task: Add Sentry error boundaries to"
+                - button "Delete" [ref=e1166]:
+                  - img [ref=e1167]
+              - generic [ref=e1169]: system · internal
+            - 'button "done Task: Documenter: Fix SvelteKit buil system · internal" [ref=e1170] [cursor=pointer]':
+              - generic [ref=e1171]:
+                - generic [ref=e1172]: done
+                - generic [ref=e1173]: "Task: Documenter: Fix SvelteKit buil"
+                - button "Delete" [ref=e1174]:
+                  - img [ref=e1175]
+              - generic [ref=e1177]: system · internal
+            - 'button "done Task: BubbleGraph component needs ar system · internal" [ref=e1178] [cursor=pointer]':
+              - generic [ref=e1179]:
+                - generic [ref=e1180]: done
+                - generic [ref=e1181]: "Task: BubbleGraph component needs ar"
+                - button "Delete" [ref=e1182]:
+                  - img [ref=e1183]
+              - generic [ref=e1185]: system · internal
+            - 'button "done Task: Fix SvelteKit build: missing m system · internal" [ref=e1186] [cursor=pointer]':
+              - generic [ref=e1187]:
+                - generic [ref=e1188]: done
+                - generic [ref=e1189]: "Task: Fix SvelteKit build: missing m"
+                - button "Delete" [ref=e1190]:
+                  - img [ref=e1191]
+              - generic [ref=e1193]: system · internal
+            - 'button "done Task: Documenter: Add unit tests for system · internal" [ref=e1194] [cursor=pointer]':
+              - generic [ref=e1195]:
+                - generic [ref=e1196]: done
+                - generic [ref=e1197]: "Task: Documenter: Add unit tests for"
+                - button "Delete" [ref=e1198]:
+                  - img [ref=e1199]
+              - generic [ref=e1201]: system · internal
+            - 'button "done Task: Memory: Add Sentry error monit system · internal" [ref=e1202] [cursor=pointer]':
+              - generic [ref=e1203]:
+                - generic [ref=e1204]: done
+                - generic [ref=e1205]: "Task: Memory: Add Sentry error monit"
+                - button "Delete" [ref=e1206]:
+                  - img [ref=e1207]
+              - generic [ref=e1209]: system · internal
+            - 'button "done Task: Fix broken HTML in projects/[i system · internal" [ref=e1210] [cursor=pointer]':
+              - generic [ref=e1211]:
+                - generic [ref=e1212]: done
+                - generic [ref=e1213]: "Task: Fix broken HTML in projects/[i"
+                - button "Delete" [ref=e1214]:
+                  - img [ref=e1215]
+              - generic [ref=e1217]: system · internal
+            - 'button "done Task: Add unit tests for memory grap system · internal" [ref=e1218] [cursor=pointer]':
+              - generic [ref=e1219]:
+                - generic [ref=e1220]: done
+                - generic [ref=e1221]: "Task: Add unit tests for memory grap"
+                - button "Delete" [ref=e1222]:
+                  - img [ref=e1223]
+              - generic [ref=e1225]: system · internal
+            - 'button "done Task: Documenter: Add Sentry error m system · internal" [ref=e1226] [cursor=pointer]':
+              - generic [ref=e1227]:
+                - generic [ref=e1228]: done
+                - generic [ref=e1229]: "Task: Documenter: Add Sentry error m"
+                - button "Delete" [ref=e1230]:
+                  - img [ref=e1231]
+              - generic [ref=e1233]: system · internal
+            - 'button "done Task: Add Sentry error monitoring to system · internal" [ref=e1234] [cursor=pointer]':
+              - generic [ref=e1235]:
+                - generic [ref=e1236]: done
+                - generic [ref=e1237]: "Task: Add Sentry error monitoring to"
+                - button "Delete" [ref=e1238]:
+                  - img [ref=e1239]
+              - generic [ref=e1241]: system · internal
+            - 'button "done Task: Documenter: Fix undefined grap system · internal" [ref=e1242] [cursor=pointer]':
+              - generic [ref=e1243]:
+                - generic [ref=e1244]: done
+                - generic [ref=e1245]: "Task: Documenter: Fix undefined grap"
+                - button "Delete" [ref=e1246]:
+                  - img [ref=e1247]
+              - generic [ref=e1249]: system · internal
+            - 'button "done Task: Add loading, error, and empty system · internal" [ref=e1250] [cursor=pointer]':
+              - generic [ref=e1251]:
+                - generic [ref=e1252]: done
+                - generic [ref=e1253]: "Task: Add loading, error, and empty"
+                - button "Delete" [ref=e1254]:
+                  - img [ref=e1255]
+              - generic [ref=e1257]: system · internal
+            - 'button "done Task: Add integration tests for memo system · internal" [ref=e1258] [cursor=pointer]':
+              - generic [ref=e1259]:
+                - generic [ref=e1260]: done
+                - generic [ref=e1261]: "Task: Add integration tests for memo"
+                - button "Delete" [ref=e1262]:
+                  - img [ref=e1263]
+              - generic [ref=e1265]: system · internal
+            - 'button "done Task: Documenter: Document memory pa system · internal" [ref=e1266] [cursor=pointer]':
+              - generic [ref=e1267]:
+                - generic [ref=e1268]: done
+                - generic [ref=e1269]: "Task: Documenter: Document memory pa"
+                - button "Delete" [ref=e1270]:
+                  - img [ref=e1271]
+              - generic [ref=e1273]: system · internal
+            - 'button "done Task: Add accessibility audit for pr system · internal" [ref=e1274] [cursor=pointer]':
+              - generic [ref=e1275]:
+                - generic [ref=e1276]: done
+                - generic [ref=e1277]: "Task: Add accessibility audit for pr"
+                - button "Delete" [ref=e1278]:
+                  - img [ref=e1279]
+              - generic [ref=e1281]: system · internal
+            - 'button "done Task: Memory: Ensure responsive styl system · internal" [ref=e1282] [cursor=pointer]':
+              - generic [ref=e1283]:
+                - generic [ref=e1284]: done
+                - generic [ref=e1285]: "Task: Memory: Ensure responsive styl"
+                - button "Delete" [ref=e1286]:
+                  - img [ref=e1287]
+              - generic [ref=e1289]: system · internal
+            - 'button "done Task: Fix undefined graph on project system · internal" [ref=e1290] [cursor=pointer]':
+              - generic [ref=e1291]:
+                - generic [ref=e1292]: done
+                - generic [ref=e1293]: "Task: Fix undefined graph on project"
+                - button "Delete" [ref=e1294]:
+                  - img [ref=e1295]
+              - generic [ref=e1297]: system · internal
+            - 'button "done Task: Ensure responsive styling for system · internal" [ref=e1298] [cursor=pointer]':
+              - generic [ref=e1299]:
+                - generic [ref=e1300]: done
+                - generic [ref=e1301]: "Task: Ensure responsive styling for"
+                - button "Delete" [ref=e1302]:
+                  - img [ref=e1303]
+              - generic [ref=e1305]: system · internal
+            - 'button "done Task: Introduce TypeScript types for system · internal" [ref=e1306] [cursor=pointer]':
+              - generic [ref=e1307]:
+                - generic [ref=e1308]: done
+                - generic [ref=e1309]: "Task: Introduce TypeScript types for"
+                - button "Delete" [ref=e1310]:
+                  - img [ref=e1311]
+              - generic [ref=e1313]: system · internal
+            - 'button "done Task: Document memory page API endpo system · internal" [ref=e1314] [cursor=pointer]':
+              - generic [ref=e1315]:
+                - generic [ref=e1316]: done
+                - generic [ref=e1317]: "Task: Document memory page API endpo"
+                - button "Delete" [ref=e1318]:
+                  - img [ref=e1319]
+              - generic [ref=e1321]: system · internal
+            - 'button "done Task: Defer Sentry integration to v1 system · internal" [ref=e1322] [cursor=pointer]':
+              - generic [ref=e1323]:
+                - generic [ref=e1324]: done
+                - generic [ref=e1325]: "Task: Defer Sentry integration to v1"
+                - button "Delete" [ref=e1326]:
+                  - img [ref=e1327]
+              - generic [ref=e1329]: system · internal
+            - 'button "done Task: Documenter: Defer Sentry integ system · internal" [ref=e1330] [cursor=pointer]':
+              - generic [ref=e1331]:
+                - generic [ref=e1332]: done
+                - generic [ref=e1333]: "Task: Documenter: Defer Sentry integ"
+                - button "Delete" [ref=e1334]:
+                  - img [ref=e1335]
+              - generic [ref=e1337]: system · internal
+            - button "done for production this might be useful, sav system · internal" [ref=e1338] [cursor=pointer]:
+              - generic [ref=e1339]:
+                - generic [ref=e1340]: done
+                - generic [ref=e1341]: for production this might be useful, sav
+                - button "Delete" [ref=e1342]:
+                  - img [ref=e1343]
+              - generic [ref=e1345]: system · internal
+            - button "done this isnt something we need to do. mark system · internal" [ref=e1346] [cursor=pointer]:
+              - generic [ref=e1347]:
+                - generic [ref=e1348]: done
+                - generic [ref=e1349]: this isnt something we need to do. mark
+                - button "Delete" [ref=e1350]:
+                  - img [ref=e1351]
+              - generic [ref=e1353]: system · internal
+            - 'button "done Task: Fix duplicate attribute in Sid system · internal" [ref=e1354] [cursor=pointer]':
+              - generic [ref=e1355]:
+                - generic [ref=e1356]: done
+                - generic [ref=e1357]: "Task: Fix duplicate attribute in Sid"
+                - button "Delete" [ref=e1358]:
+                  - img [ref=e1359]
+              - generic [ref=e1361]: system · internal
+            - 'button "done Task: Fix SvelteKit build manifest-f system · internal" [ref=e1362] [cursor=pointer]':
+              - generic [ref=e1363]:
+                - generic [ref=e1364]: done
+                - generic [ref=e1365]: "Task: Fix SvelteKit build manifest-f"
+                - button "Delete" [ref=e1366]:
+                  - img [ref=e1367]
+              - generic [ref=e1369]: system · internal
+            - 'button "done Task: Add focus trap to mobile sideb system · internal" [ref=e1370] [cursor=pointer]':
+              - generic [ref=e1371]:
+                - generic [ref=e1372]: done
+                - generic [ref=e1373]: "Task: Add focus trap to mobile sideb"
+                - button "Delete" [ref=e1374]:
+                  - img [ref=e1375]
+              - generic [ref=e1377]: system · internal
+            - 'button "done Task: Add POST/PUT endpoints for mem system · internal" [ref=e1378] [cursor=pointer]':
+              - generic [ref=e1379]:
+                - generic [ref=e1380]: done
+                - generic [ref=e1381]: "Task: Add POST/PUT endpoints for mem"
+                - button "Delete" [ref=e1382]:
+                  - img [ref=e1383]
+              - generic [ref=e1385]: system · internal
+            - 'button "done Task: Add rate limiting to non-chat system · internal" [ref=e1386] [cursor=pointer]':
+              - generic [ref=e1387]:
+                - generic [ref=e1388]: done
+                - generic [ref=e1389]: "Task: Add rate limiting to non-chat"
+                - button "Delete" [ref=e1390]:
+                  - img [ref=e1391]
+              - generic [ref=e1393]: system · internal
+            - 'button "done Task: Add Cache-Control headers to c system · internal" [ref=e1394] [cursor=pointer]':
+              - generic [ref=e1395]:
+                - generic [ref=e1396]: done
+                - generic [ref=e1397]: "Task: Add Cache-Control headers to c"
+                - button "Delete" [ref=e1398]:
+                  - img [ref=e1399]
+              - generic [ref=e1401]: system · internal
+            - 'button "done Task: Add explicit error handling to system · internal" [ref=e1402] [cursor=pointer]':
+              - generic [ref=e1403]:
+                - generic [ref=e1404]: done
+                - generic [ref=e1405]: "Task: Add explicit error handling to"
+                - button "Delete" [ref=e1406]:
+                  - img [ref=e1407]
+              - generic [ref=e1409]: system · internal
+            - 'button "done Task: Responsive Sidebar for mobile system · internal" [ref=e1410] [cursor=pointer]':
+              - generic [ref=e1411]:
+                - generic [ref=e1412]: done
+                - generic [ref=e1413]: "Task: Responsive Sidebar for mobile"
+                - button "Delete" [ref=e1414]:
+                  - img [ref=e1415]
+              - generic [ref=e1417]: system · internal
+            - 'button "done Task: Add error boundary to ChatAuto system · internal" [ref=e1418] [cursor=pointer]':
+              - generic [ref=e1419]:
+                - generic [ref=e1420]: done
+                - generic [ref=e1421]: "Task: Add error boundary to ChatAuto"
+                - button "Delete" [ref=e1422]:
+                  - img [ref=e1423]
+              - generic [ref=e1425]: system · internal
+            - 'button "done Task: Document /api/chat/auto usage system · internal" [ref=e1426] [cursor=pointer]':
+              - generic [ref=e1427]:
+                - generic [ref=e1428]: done
+                - generic [ref=e1429]: "Task: Document /api/chat/auto usage"
+                - button "Delete" [ref=e1430]:
+                  - img [ref=e1431]
+              - generic [ref=e1433]: system · internal
+            - 'button "done Task: Unit test /api/notifications/s system · internal" [ref=e1434] [cursor=pointer]':
+              - generic [ref=e1435]:
+                - generic [ref=e1436]: done
+                - generic [ref=e1437]: "Task: Unit test /api/notifications/s"
+                - button "Delete" [ref=e1438]:
+                  - img [ref=e1439]
+              - generic [ref=e1441]: system · internal
+            - 'button "done Task: Add security headers to all AP system · internal" [ref=e1442] [cursor=pointer]':
+              - generic [ref=e1443]:
+                - generic [ref=e1444]: done
+                - generic [ref=e1445]: "Task: Add security headers to all AP"
+                - button "Delete" [ref=e1446]:
+                  - img [ref=e1447]
+              - generic [ref=e1449]: system · internal
+            - 'button "done Task: Unit test /api/memory/graph er system · internal" [ref=e1450] [cursor=pointer]':
+              - generic [ref=e1451]:
+                - generic [ref=e1452]: done
+                - generic [ref=e1453]: "Task: Unit test /api/memory/graph er"
+                - button "Delete" [ref=e1454]:
+                  - img [ref=e1455]
+              - generic [ref=e1457]: system · internal
+            - 'button "done Task: Integration tests for paginate system · internal" [ref=e1458] [cursor=pointer]':
+              - generic [ref=e1459]:
+                - generic [ref=e1460]: done
+                - generic [ref=e1461]: "Task: Integration tests for paginate"
+                - button "Delete" [ref=e1462]:
+                  - img [ref=e1463]
+              - generic [ref=e1465]: system · internal
+            - 'button "done Task: Add request rate limiting to c system · internal" [ref=e1466] [cursor=pointer]':
+              - generic [ref=e1467]:
+                - generic [ref=e1468]: done
+                - generic [ref=e1469]: "Task: Add request rate limiting to c"
+                - button "Delete" [ref=e1470]:
+                  - img [ref=e1471]
+              - generic [ref=e1473]: system · internal
+            - 'button "done Task: Cache /api/memory/graph respon system · internal" [ref=e1474] [cursor=pointer]':
+              - generic [ref=e1475]:
+                - generic [ref=e1476]: done
+                - generic [ref=e1477]: "Task: Cache /api/memory/graph respon"
+                - button "Delete" [ref=e1478]:
+                  - img [ref=e1479]
+              - generic [ref=e1481]: system · internal
+            - 'button "done Task: Implement pagination for /api/ system · internal" [ref=e1482] [cursor=pointer]':
+              - generic [ref=e1483]:
+                - generic [ref=e1484]: done
+                - generic [ref=e1485]: "Task: Implement pagination for /api/"
+                - button "Delete" [ref=e1486]:
+                  - img [ref=e1487]
+              - generic [ref=e1489]: system · internal
+            - 'button "done Task: Fix undefined graph variable i system · internal" [ref=e1490] [cursor=pointer]':
+              - generic [ref=e1491]:
+                - generic [ref=e1492]: done
+                - generic [ref=e1493]: "Task: Fix undefined graph variable i"
+                - button "Delete" [ref=e1494]:
+                  - img [ref=e1495]
+              - generic [ref=e1497]: system · internal
+            - 'button "done Task: Fix missing ESLint dependencie system · internal" [ref=e1498] [cursor=pointer]':
+              - generic [ref=e1499]:
+                - generic [ref=e1500]: done
+                - generic [ref=e1501]: "Task: Fix missing ESLint dependencie"
+                - button "Delete" [ref=e1502]:
+                  - img [ref=e1503]
+              - generic [ref=e1505]: system · internal
+            - 'button "done Task: Add lint rule to flag undeclar system · internal" [ref=e1506] [cursor=pointer]':
+              - generic [ref=e1507]:
+                - generic [ref=e1508]: done
+                - generic [ref=e1509]: "Task: Add lint rule to flag undeclar"
+                - button "Delete" [ref=e1510]:
+                  - img [ref=e1511]
+              - generic [ref=e1513]: system · internal
+            - 'button "done Task: Memoize graph data to avoid un system · internal" [ref=e1514] [cursor=pointer]':
+              - generic [ref=e1515]:
+                - generic [ref=e1516]: done
+                - generic [ref=e1517]: "Task: Memoize graph data to avoid un"
+                - button "Delete" [ref=e1518]:
+                  - img [ref=e1519]
+              - generic [ref=e1521]: system · internal
+            - 'button "done Task: Document usage and props for M system · internal" [ref=e1522] [cursor=pointer]':
+              - generic [ref=e1523]:
+                - generic [ref=e1524]: done
+                - generic [ref=e1525]: "Task: Document usage and props for M"
+                - button "Delete" [ref=e1526]:
+                  - img [ref=e1527]
+              - generic [ref=e1529]: system · internal
+            - 'button "done Task: Track analytics events for gra system · internal" [ref=e1530] [cursor=pointer]':
+              - generic [ref=e1531]:
+                - generic [ref=e1532]: done
+                - generic [ref=e1533]: "Task: Track analytics events for gra"
+                - button "Delete" [ref=e1534]:
+                  - img [ref=e1535]
+              - generic [ref=e1537]: system · internal
+            - 'button "done Task: Add smooth transition animatio system · internal" [ref=e1538] [cursor=pointer]':
+              - generic [ref=e1539]:
+                - generic [ref=e1540]: done
+                - generic [ref=e1541]: "Task: Add smooth transition animatio"
+                - button "Delete" [ref=e1542]:
+                  - img [ref=e1543]
+              - generic [ref=e1545]: system · internal
+            - 'button "done Task: Add unit tests for Memory page system · internal" [ref=e1546] [cursor=pointer]':
+              - generic [ref=e1547]:
+                - generic [ref=e1548]: done
+                - generic [ref=e1549]: "Task: Add unit tests for Memory page"
+                - button "Delete" [ref=e1550]:
+                  - img [ref=e1551]
+              - generic [ref=e1553]: system · internal
+            - 'button "done Task: Implement exponential backoff system · internal" [ref=e1554] [cursor=pointer]':
+              - generic [ref=e1555]:
+                - generic [ref=e1556]: done
+                - generic [ref=e1557]: "Task: Implement exponential backoff"
+                - button "Delete" [ref=e1558]:
+                  - img [ref=e1559]
+              - generic [ref=e1561]: system · internal
+            - 'button "done Task: Display empty state message wh system · internal" [ref=e1562] [cursor=pointer]':
+              - generic [ref=e1563]:
+                - generic [ref=e1564]: done
+                - generic [ref=e1565]: "Task: Display empty state message wh"
+                - button "Delete" [ref=e1566]:
+                  - img [ref=e1567]
+              - generic [ref=e1569]: system · internal
+            - 'button "done Task: Resolve graph reference error system · internal" [ref=e1570] [cursor=pointer]':
+              - generic [ref=e1571]:
+                - generic [ref=e1572]: done
+                - generic [ref=e1573]: "Task: Resolve graph reference error"
+                - button "Delete" [ref=e1574]:
+                  - img [ref=e1575]
+              - generic [ref=e1577]: system · internal
+            - 'button "done Task: Add accessibility labels for l system · internal" [ref=e1578] [cursor=pointer]':
+              - generic [ref=e1579]:
+                - generic [ref=e1580]: done
+                - generic [ref=e1581]: "Task: Add accessibility labels for l"
+                - button "Delete" [ref=e1582]:
+                  - img [ref=e1583]
+              - generic [ref=e1585]: system · internal
+            - 'button "done Task: Fix Svelte state_referenced_lo system · internal" [ref=e1586] [cursor=pointer]':
+              - generic [ref=e1587]:
+                - generic [ref=e1588]: done
+                - generic [ref=e1589]: "Task: Fix Svelte state_referenced_lo"
+                - button "Delete" [ref=e1590]:
+                  - img [ref=e1591]
+              - generic [ref=e1593]: system · internal
+            - button "did we remove the agents page from the g gpt-oss:20b · OpenClaw" [ref=e1594] [cursor=pointer]:
+              - generic [ref=e1595]:
+                - generic [ref=e1596]: did we remove the agents page from the g
+                - button "Delete" [ref=e1597]:
+                  - img [ref=e1598]
+              - generic [ref=e1600]: gpt-oss:20b · OpenClaw
+            - 'button "done Task: Add type safety for memory gra system · internal" [ref=e1601] [cursor=pointer]':
+              - generic [ref=e1602]:
+                - generic [ref=e1603]: done
+                - generic [ref=e1604]: "Task: Add type safety for memory gra"
+                - button "Delete" [ref=e1605]:
+                  - img [ref=e1606]
+              - generic [ref=e1608]: system · internal
+            - 'button "done Task: Add CI lint rule to detect und system · internal" [ref=e1609] [cursor=pointer]':
+              - generic [ref=e1610]:
+                - generic [ref=e1611]: done
+                - generic [ref=e1612]: "Task: Add CI lint rule to detect und"
+                - button "Delete" [ref=e1613]:
+                  - img [ref=e1614]
+              - generic [ref=e1616]: system · internal
+            - 'button "done Task: Add unit tests for Memory page system · internal" [ref=e1617] [cursor=pointer]':
+              - generic [ref=e1618]:
+                - generic [ref=e1619]: done
+                - generic [ref=e1620]: "Task: Add unit tests for Memory page"
+                - button "Delete" [ref=e1621]:
+                  - img [ref=e1622]
+              - generic [ref=e1624]: system · internal
+            - 'button "done Task: Add loading state to Memory pa system · internal" [ref=e1625] [cursor=pointer]':
+              - generic [ref=e1626]:
+                - generic [ref=e1627]: done
+                - generic [ref=e1628]: "Task: Add loading state to Memory pa"
+                - button "Delete" [ref=e1629]:
+                  - img [ref=e1630]
+              - generic [ref=e1632]: system · internal
+            - 'button "done Task: Fix graph reference error on M system · internal" [ref=e1633] [cursor=pointer]':
+              - generic [ref=e1634]:
+                - generic [ref=e1635]: done
+                - generic [ref=e1636]: "Task: Fix graph reference error on M"
+                - button "Delete" [ref=e1637]:
+                  - img [ref=e1638]
+              - generic [ref=e1640]: system · internal
+            - 'button "done Task: Add error boundary for Memory system · internal" [ref=e1641] [cursor=pointer]':
+              - generic [ref=e1642]:
+                - generic [ref=e1643]: done
+                - generic [ref=e1644]: "Task: Add error boundary for Memory"
+                - button "Delete" [ref=e1645]:
+                  - img [ref=e1646]
+              - generic [ref=e1648]: system · internal
+            - 'button "done Task: Add accessibility labels to Me system · internal" [ref=e1649] [cursor=pointer]':
+              - generic [ref=e1650]:
+                - generic [ref=e1651]: done
+                - generic [ref=e1652]: "Task: Add accessibility labels to Me"
+                - button "Delete" [ref=e1653]:
+                  - img [ref=e1654]
+              - generic [ref=e1656]: system · internal
+            - 'button "done Task: Add error boundary for session system · internal" [ref=e1657] [cursor=pointer]':
+              - generic [ref=e1658]:
+                - generic [ref=e1659]: done
+                - generic [ref=e1660]: "Task: Add error boundary for session"
+                - button "Delete" [ref=e1661]:
+                  - img [ref=e1662]
+              - generic [ref=e1664]: system · internal
+            - 'button "done Task: Discussion poll has no backoff system · internal" [ref=e1665] [cursor=pointer]':
+              - generic [ref=e1666]:
+                - generic [ref=e1667]: done
+                - generic [ref=e1668]: "Task: Discussion poll has no backoff"
+                - button "Delete" [ref=e1669]:
+                  - img [ref=e1670]
+              - generic [ref=e1672]: system · internal
+            - 'button "done Task: Add empty state for Notificati system · internal" [ref=e1673] [cursor=pointer]':
+              - generic [ref=e1674]:
+                - generic [ref=e1675]: done
+                - generic [ref=e1676]: "Task: Add empty state for Notificati"
+                - button "Delete" [ref=e1677]:
+                  - img [ref=e1678]
+              - generic [ref=e1680]: system · internal
+            - 'button "done Task: Wire real service data to Serv system · internal" [ref=e1681] [cursor=pointer]':
+              - generic [ref=e1682]:
+                - generic [ref=e1683]: done
+                - generic [ref=e1684]: "Task: Wire real service data to Serv"
+                - button "Delete" [ref=e1685]:
+                  - img [ref=e1686]
+              - generic [ref=e1688]: system · internal
+            - 'button "done Task: Wire project memory data to Me system · internal" [ref=e1689] [cursor=pointer]':
+              - generic [ref=e1690]:
+                - generic [ref=e1691]: done
+                - generic [ref=e1692]: "Task: Wire project memory data to Me"
+                - button "Delete" [ref=e1693]:
+                  - img [ref=e1694]
+              - generic [ref=e1696]: system · internal
+            - 'button "done Task: Wire hooks data to Hooks page system · internal" [ref=e1697] [cursor=pointer]':
+              - generic [ref=e1698]:
+                - generic [ref=e1699]: done
+                - generic [ref=e1700]: "Task: Wire hooks data to Hooks page"
+                - button "Delete" [ref=e1701]:
+                  - img [ref=e1702]
+              - generic [ref=e1704]: system · internal
+            - 'button "done Task: Wire project security data to system · internal" [ref=e1705] [cursor=pointer]':
+              - generic [ref=e1706]:
+                - generic [ref=e1707]: done
+                - generic [ref=e1708]: "Task: Wire project security data to"
+                - button "Delete" [ref=e1709]:
+                  - img [ref=e1710]
+              - generic [ref=e1712]: system · internal
+            - 'button "done Task: Exclude integration tests from system · internal" [ref=e1713] [cursor=pointer]':
+              - generic [ref=e1714]:
+                - generic [ref=e1715]: done
+                - generic [ref=e1716]: "Task: Exclude integration tests from"
+                - button "Delete" [ref=e1717]:
+                  - img [ref=e1718]
+              - generic [ref=e1720]: system · internal
+            - 'button "done Task: Add error boundary for chat SS system · internal" [ref=e1721] [cursor=pointer]':
+              - generic [ref=e1722]:
+                - generic [ref=e1723]: done
+                - generic [ref=e1724]: "Task: Add error boundary for chat SS"
+                - button "Delete" [ref=e1725]:
+                  - img [ref=e1726]
+              - generic [ref=e1728]: system · internal
+            - 'button "done Task: Add WCAG contrast check to des system · internal" [ref=e1729] [cursor=pointer]':
+              - generic [ref=e1730]:
+                - generic [ref=e1731]: done
+                - generic [ref=e1732]: "Task: Add WCAG contrast check to des"
+                - button "Delete" [ref=e1733]:
+                  - img [ref=e1734]
+              - generic [ref=e1736]: system · internal
+            - 'button "done Task: Chat send() uses any type in c system · internal" [ref=e1737] [cursor=pointer]':
+              - generic [ref=e1738]:
+                - generic [ref=e1739]: done
+                - generic [ref=e1740]: "Task: Chat send() uses any type in c"
+                - button "Delete" [ref=e1741]:
+                  - img [ref=e1742]
+              - generic [ref=e1744]: system · internal
+            - 'button "done Task: Add whitespace-only name valid system · internal" [ref=e1745] [cursor=pointer]':
+              - generic [ref=e1746]:
+                - generic [ref=e1747]: done
+                - generic [ref=e1748]: "Task: Add whitespace-only name valid"
+                - button "Delete" [ref=e1749]:
+                  - img [ref=e1750]
+              - generic [ref=e1752]: system · internal
+            - 'button "done Task: Add schema validation for hook system · internal" [ref=e1753] [cursor=pointer]':
+              - generic [ref=e1754]:
+                - generic [ref=e1755]: done
+                - generic [ref=e1756]: "Task: Add schema validation for hook"
+                - button "Delete" [ref=e1757]:
+                  - img [ref=e1758]
+              - generic [ref=e1760]: system · internal
+            - 'button "done Task: Add linting step to CI pipelin system · internal" [ref=e1761] [cursor=pointer]':
+              - generic [ref=e1762]:
+                - generic [ref=e1763]: done
+                - generic [ref=e1764]: "Task: Add linting step to CI pipelin"
+                - button "Delete" [ref=e1765]:
+                  - img [ref=e1766]
+              - generic [ref=e1768]: system · internal
+            - 'button "done Task: Add missing unit tests for Age system · internal" [ref=e1769] [cursor=pointer]':
+              - generic [ref=e1770]:
+                - generic [ref=e1771]: done
+                - generic [ref=e1772]: "Task: Add missing unit tests for Age"
+                - button "Delete" [ref=e1773]:
+                  - img [ref=e1774]
+              - generic [ref=e1776]: system · internal
+            - 'button "done Task: Verify Feature Flag usage for system · internal" [ref=e1777] [cursor=pointer]':
+              - generic [ref=e1778]:
+                - generic [ref=e1779]: done
+                - generic [ref=e1780]: "Task: Verify Feature Flag usage for"
+                - button "Delete" [ref=e1781]:
+                  - img [ref=e1782]
+              - generic [ref=e1784]: system · internal
+            - 'button "done Task: Extract shared security data t system · internal" [ref=e1785] [cursor=pointer]':
+              - generic [ref=e1786]:
+                - generic [ref=e1787]: done
+                - generic [ref=e1788]: "Task: Extract shared security data t"
+                - button "Delete" [ref=e1789]:
+                  - img [ref=e1790]
+              - generic [ref=e1792]: system · internal
+            - 'button "done Task: Add CI job to run integration system · internal" [ref=e1793] [cursor=pointer]':
+              - generic [ref=e1794]:
+                - generic [ref=e1795]: done
+                - generic [ref=e1796]: "Task: Add CI job to run integration"
+                - button "Delete" [ref=e1797]:
+                  - img [ref=e1798]
+              - generic [ref=e1800]: system · internal
+            - 'button "done Task: Add docs for new autoscale set system · internal" [ref=e1801] [cursor=pointer]':
+              - generic [ref=e1802]:
+                - generic [ref=e1803]: done
+                - generic [ref=e1804]: "Task: Add docs for new autoscale set"
+                - button "Delete" [ref=e1805]:
+                  - img [ref=e1806]
+              - generic [ref=e1808]: system · internal
+            - 'button "done Task: Update API docs for Project Ho system · internal" [ref=e1809] [cursor=pointer]':
+              - generic [ref=e1810]:
+                - generic [ref=e1811]: done
+                - generic [ref=e1812]: "Task: Update API docs for Project Ho"
+                - button "Delete" [ref=e1813]:
+                  - img [ref=e1814]
+              - generic [ref=e1816]: system · internal
+            - 'button "done Task: Ensure color contrast for Stat system · internal" [ref=e1817] [cursor=pointer]':
+              - generic [ref=e1818]:
+                - generic [ref=e1819]: done
+                - generic [ref=e1820]: "Task: Ensure color contrast for Stat"
+                - button "Delete" [ref=e1821]:
+                  - img [ref=e1822]
+              - generic [ref=e1824]: system · internal
+            - 'button "done Task: Add ARIA labels to AgentGrid p system · internal" [ref=e1825] [cursor=pointer]':
+              - generic [ref=e1826]:
+                - generic [ref=e1827]: done
+                - generic [ref=e1828]: "Task: Add ARIA labels to AgentGrid p"
+                - button "Delete" [ref=e1829]:
+                  - img [ref=e1830]
+              - generic [ref=e1832]: system · internal
+            - 'button "done Task: Add README section for Project system · internal" [ref=e1833] [cursor=pointer]':
+              - generic [ref=e1834]:
+                - generic [ref=e1835]: done
+                - generic [ref=e1836]: "Task: Add README section for Project"
+                - button "Delete" [ref=e1837]:
+                  - img [ref=e1838]
+              - generic [ref=e1840]: system · internal
+            - 'button "done Task: Add integration tests for Proj system · internal" [ref=e1841] [cursor=pointer]':
+              - generic [ref=e1842]:
+                - generic [ref=e1843]: done
+                - generic [ref=e1844]: "Task: Add integration tests for Proj"
+                - button "Delete" [ref=e1845]:
+                  - img [ref=e1846]
+              - generic [ref=e1848]: system · internal
+            - 'button "done Task: Add integration tests for Proj system · internal" [ref=e1849] [cursor=pointer]':
+              - generic [ref=e1850]:
+                - generic [ref=e1851]: done
+                - generic [ref=e1852]: "Task: Add integration tests for Proj"
+                - button "Delete" [ref=e1853]:
+                  - img [ref=e1854]
+              - generic [ref=e1856]: system · internal
+            - 'button "done Task: Add integration tests for Secu system · internal" [ref=e1857] [cursor=pointer]':
+              - generic [ref=e1858]:
+                - generic [ref=e1859]: done
+                - generic [ref=e1860]: "Task: Add integration tests for Secu"
+                - button "Delete" [ref=e1861]:
+                  - img [ref=e1862]
+              - generic [ref=e1864]: system · internal
+            - 'button "done Task: Add loading and error states t system · internal" [ref=e1865] [cursor=pointer]':
+              - generic [ref=e1866]:
+                - generic [ref=e1867]: done
+                - generic [ref=e1868]: "Task: Add loading and error states t"
+                - button "Delete" [ref=e1869]:
+                  - img [ref=e1870]
+              - generic [ref=e1872]: system · internal
+            - 'button "done Task: Add loading/error states for S system · internal" [ref=e1873] [cursor=pointer]':
+              - generic [ref=e1874]:
+                - generic [ref=e1875]: done
+                - generic [ref=e1876]: "Task: Add loading/error states for S"
+                - button "Delete" [ref=e1877]:
+                  - img [ref=e1878]
+              - generic [ref=e1880]: system · internal
+            - 'button "done Task: Deduplicate agent scanning in system · internal" [ref=e1881] [cursor=pointer]':
+              - generic [ref=e1882]:
+                - generic [ref=e1883]: done
+                - generic [ref=e1884]: "Task: Deduplicate agent scanning in"
+                - button "Delete" [ref=e1885]:
+                  - img [ref=e1886]
+              - generic [ref=e1888]: system · internal
+            - 'button "done Task: Add fetch timeout/abort signal system · internal" [ref=e1889] [cursor=pointer]':
+              - generic [ref=e1890]:
+                - generic [ref=e1891]: done
+                - generic [ref=e1892]: "Task: Add fetch timeout/abort signal"
+                - button "Delete" [ref=e1893]:
+                  - img [ref=e1894]
+              - generic [ref=e1896]: system · internal
+            - 'button "done Task: Fix pre-existing TypeScript er system · internal" [ref=e1897] [cursor=pointer]':
+              - generic [ref=e1898]:
+                - generic [ref=e1899]: done
+                - generic [ref=e1900]: "Task: Fix pre-existing TypeScript er"
+                - button "Delete" [ref=e1901]:
+                  - img [ref=e1902]
+              - generic [ref=e1904]: system · internal
+            - 'button "done Task: Fix 13 broken tests in project system · internal" [ref=e1905] [cursor=pointer]':
+              - generic [ref=e1906]:
+                - generic [ref=e1907]: done
+                - generic [ref=e1908]: "Task: Fix 13 broken tests in project"
+                - button "Delete" [ref=e1909]:
+                  - img [ref=e1910]
+              - generic [ref=e1912]: system · internal
+            - 'button "done Task: Fix pre-existing build failure system · internal" [ref=e1913] [cursor=pointer]':
+              - generic [ref=e1914]:
+                - generic [ref=e1915]: done
+                - generic [ref=e1916]: "Task: Fix pre-existing build failure"
+                - button "Delete" [ref=e1917]:
+                  - img [ref=e1918]
+              - generic [ref=e1920]: system · internal
+            - 'button "done Task: Fix adapter-node build error o system · internal" [ref=e1921] [cursor=pointer]':
+              - generic [ref=e1922]:
+                - generic [ref=e1923]: done
+                - generic [ref=e1924]: "Task: Fix adapter-node build error o"
+                - button "Delete" [ref=e1925]:
+                  - img [ref=e1926]
+              - generic [ref=e1928]: system · internal
+            - 'button "done Task: Fix broken full build — missin system · internal" [ref=e1929] [cursor=pointer]':
+              - generic [ref=e1930]:
+                - generic [ref=e1931]: done
+                - generic [ref=e1932]: "Task: Fix broken full build — missin"
+                - button "Delete" [ref=e1933]:
+                  - img [ref=e1934]
+              - generic [ref=e1936]: system · internal
+            - 'button "done Task: Add keyboard navigation to Age system · internal" [ref=e1937] [cursor=pointer]':
+              - generic [ref=e1938]:
+                - generic [ref=e1939]: done
+                - generic [ref=e1940]: "Task: Add keyboard navigation to Age"
+                - button "Delete" [ref=e1941]:
+                  - img [ref=e1942]
+              - generic [ref=e1944]: system · internal
+            - 'button "done Task: Add auto-scale metrics to dash system · internal" [ref=e1945] [cursor=pointer]':
+              - generic [ref=e1946]:
+                - generic [ref=e1947]: done
+                - generic [ref=e1948]: "Task: Add auto-scale metrics to dash"
+                - button "Delete" [ref=e1949]:
+                  - img [ref=e1950]
+              - generic [ref=e1952]: system · internal
+            - 'button "done Task: Add auto-scale config to setti system · internal" [ref=e1953] [cursor=pointer]':
+              - generic [ref=e1954]:
+                - generic [ref=e1955]: done
+                - generic [ref=e1956]: "Task: Add auto-scale config to setti"
+                - button "Delete" [ref=e1957]:
+                  - img [ref=e1958]
+              - generic [ref=e1960]: system · internal
+            - 'button "done Task: Fix pre-existing TS2367 error system · internal" [ref=e1961] [cursor=pointer]':
+              - generic [ref=e1962]:
+                - generic [ref=e1963]: done
+                - generic [ref=e1964]: "Task: Fix pre-existing TS2367 error"
+                - button "Delete" [ref=e1965]:
+                  - img [ref=e1966]
+              - generic [ref=e1968]: system · internal
+            - 'button "done Task: Quote path in stopService exec system · internal" [ref=e1969] [cursor=pointer]':
+              - generic [ref=e1970]:
+                - generic [ref=e1971]: done
+                - generic [ref=e1972]: "Task: Quote path in stopService exec"
+                - button "Delete" [ref=e1973]:
+                  - img [ref=e1974]
+              - generic [ref=e1976]: system · internal
+            - 'button "done Task: Add integration tests for /pro system · internal" [ref=e1977] [cursor=pointer]':
+              - generic [ref=e1978]:
+                - generic [ref=e1979]: done
+                - generic [ref=e1980]: "Task: Add integration tests for /pro"
+                - button "Delete" [ref=e1981]:
+                  - img [ref=e1982]
+              - generic [ref=e1984]: system · internal
+            - 'button "done Task: Deduplicate agent scanning log system · internal" [ref=e1985] [cursor=pointer]':
+              - generic [ref=e1986]:
+                - generic [ref=e1987]: done
+                - generic [ref=e1988]: "Task: Deduplicate agent scanning log"
+                - button "Delete" [ref=e1989]:
+                  - img [ref=e1990]
+              - generic [ref=e1992]: system · internal
+            - 'button "done Task: Add PATCH/PUT endpoint for pro system · internal" [ref=e1993] [cursor=pointer]':
+              - generic [ref=e1994]:
+                - generic [ref=e1995]: done
+                - generic [ref=e1996]: "Task: Add PATCH/PUT endpoint for pro"
+                - button "Delete" [ref=e1997]:
+                  - img [ref=e1998]
+              - generic [ref=e2000]: system · internal
+            - 'button "done Task: process.kill(pid, 0) unreliabl system · internal" [ref=e2001] [cursor=pointer]':
+              - generic [ref=e2002]:
+                - generic [ref=e2003]: done
+                - generic [ref=e2004]: "Task: process.kill(pid, 0) unreliabl"
+                - button "Delete" [ref=e2005]:
+                  - img [ref=e2006]
+              - generic [ref=e2008]: system · internal
+            - 'button "done Task: Sessions test was stale — mock system · internal" [ref=e2009] [cursor=pointer]':
+              - generic [ref=e2010]:
+                - generic [ref=e2011]: done
+                - generic [ref=e2012]: "Task: Sessions test was stale — mock"
+                - button "Delete" [ref=e2013]:
+                  - img [ref=e2014]
+              - generic [ref=e2016]: system · internal
+            - 'button "done Task: Wire service Start/Stop/Restar system · internal" [ref=e2017] [cursor=pointer]':
+              - generic [ref=e2018]:
+                - generic [ref=e2019]: done
+                - generic [ref=e2020]: "Task: Wire service Start/Stop/Restar"
+                - button "Delete" [ref=e2021]:
+                  - img [ref=e2022]
+              - generic [ref=e2024]: system · internal
+            - 'button "done Task: Sessions page action buttons h system · internal" [ref=e2025] [cursor=pointer]':
+              - generic [ref=e2026]:
+                - generic [ref=e2027]: done
+                - generic [ref=e2028]: "Task: Sessions page action buttons h"
+                - button "Delete" [ref=e2029]:
+                  - img [ref=e2030]
+              - generic [ref=e2032]: system · internal
+            - 'button "done Task: Sessions API endpoint lacks ca system · internal" [ref=e2033] [cursor=pointer]':
+              - generic [ref=e2034]:
+                - generic [ref=e2035]: done
+                - generic [ref=e2036]: "Task: Sessions API endpoint lacks ca"
+                - button "Delete" [ref=e2037]:
+                  - img [ref=e2038]
+              - generic [ref=e2040]: system · internal
+            - 'button "done Task: Timeline uses dynamic Tailwind system · internal" [ref=e2041] [cursor=pointer]':
+              - generic [ref=e2042]:
+                - generic [ref=e2043]: done
+                - generic [ref=e2044]: "Task: Timeline uses dynamic Tailwind"
+                - button "Delete" [ref=e2045]:
+                  - img [ref=e2046]
+              - generic [ref=e2048]: system · internal
+            - 'button "done Task: Timeline event colors use dyna system · internal" [ref=e2049] [cursor=pointer]':
+              - generic [ref=e2050]:
+                - generic [ref=e2051]: done
+                - generic [ref=e2052]: "Task: Timeline event colors use dyna"
+                - button "Delete" [ref=e2053]:
+                  - img [ref=e2054]
+              - generic [ref=e2056]: system · internal
+            - 'button "done Task: Add accessibility audit for Ag system · internal" [ref=e2057] [cursor=pointer]':
+              - generic [ref=e2058]:
+                - generic [ref=e2059]: done
+                - generic [ref=e2060]: "Task: Add accessibility audit for Ag"
+                - button "Delete" [ref=e2061]:
+                  - img [ref=e2062]
+              - generic [ref=e2064]: system · internal
+            - 'button "done Task: Fix mismatched closing tag in system · internal" [ref=e2065] [cursor=pointer]':
+              - generic [ref=e2066]:
+                - generic [ref=e2067]: done
+                - generic [ref=e2068]: "Task: Fix mismatched closing tag in"
+                - button "Delete" [ref=e2069]:
+                  - img [ref=e2070]
+              - generic [ref=e2072]: system · internal
+            - 'button "done Task: Add project-scoped /api/projec system · internal" [ref=e2073] [cursor=pointer]':
+              - generic [ref=e2074]:
+                - generic [ref=e2075]: done
+                - generic [ref=e2076]: "Task: Add project-scoped /api/projec"
+                - button "Delete" [ref=e2077]:
+                  - img [ref=e2078]
+              - generic [ref=e2080]: system · internal
+            - 'button "done Task: Add aria-live region to HookFo system · internal" [ref=e2081] [cursor=pointer]':
+              - generic [ref=e2082]:
+                - generic [ref=e2083]: done
+                - generic [ref=e2084]: "Task: Add aria-live region to HookFo"
+                - button "Delete" [ref=e2085]:
+                  - img [ref=e2086]
+              - generic [ref=e2088]: system · internal
+            - 'button "done Task: Add keyboard shortcut to toggl system · internal" [ref=e2089] [cursor=pointer]':
+              - generic [ref=e2090]:
+                - generic [ref=e2091]: done
+                - generic [ref=e2092]: "Task: Add keyboard shortcut to toggl"
+                - button "Delete" [ref=e2093]:
+                  - img [ref=e2094]
+              - generic [ref=e2096]: system · internal
+            - 'button "done Task: Add handoff routing rules to s system · internal" [ref=e2097] [cursor=pointer]':
+              - generic [ref=e2098]:
+                - generic [ref=e2099]: done
+                - generic [ref=e2100]: "Task: Add handoff routing rules to s"
+                - button "Delete" [ref=e2101]:
+                  - img [ref=e2102]
+              - generic [ref=e2104]: system · internal
+            - 'button "done Task: Fix Svelte template error in p system · internal" [ref=e2105] [cursor=pointer]':
+              - generic [ref=e2106]:
+                - generic [ref=e2107]: done
+                - generic [ref=e2108]: "Task: Fix Svelte template error in p"
+                - button "Delete" [ref=e2109]:
+                  - img [ref=e2110]
+              - generic [ref=e2112]: system · internal
+            - 'button "done Task: Wire session pool slots to act system · internal" [ref=e2113] [cursor=pointer]':
+              - generic [ref=e2114]:
+                - generic [ref=e2115]: done
+                - generic [ref=e2116]: "Task: Wire session pool slots to act"
+                - button "Delete" [ref=e2117]:
+                  - img [ref=e2118]
+              - generic [ref=e2120]: system · internal
+            - 'button "done Task: Persist daemon PID across npm system · internal" [ref=e2121] [cursor=pointer]':
+              - generic [ref=e2122]:
+                - generic [ref=e2123]: done
+                - generic [ref=e2124]: "Task: Persist daemon PID across npm"
+                - button "Delete" [ref=e2125]:
+                  - img [ref=e2126]
+              - generic [ref=e2128]: system · internal
+            - 'button "done Task: Agent pool CLI IDs not showing system · internal" [ref=e2129] [cursor=pointer]':
+              - generic [ref=e2130]:
+                - generic [ref=e2131]: done
+                - generic [ref=e2132]: "Task: Agent pool CLI IDs not showing"
+                - button "Delete" [ref=e2133]:
+                  - img [ref=e2134]
+              - generic [ref=e2136]: system · internal
+            - 'button "done Task: Auto-scale session pool based system · internal" [ref=e2137] [cursor=pointer]':
+              - generic [ref=e2138]:
+                - generic [ref=e2139]: done
+                - generic [ref=e2140]: "Task: Auto-scale session pool based"
+                - button "Delete" [ref=e2141]:
+                  - img [ref=e2142]
+              - generic [ref=e2144]: system · internal
+            - 'button "done Task: Per-project agent pool spawnin system · internal" [ref=e2145] [cursor=pointer]':
+              - generic [ref=e2146]:
+                - generic [ref=e2147]: done
+                - generic [ref=e2148]: "Task: Per-project agent pool spawnin"
+                - button "Delete" [ref=e2149]:
+                  - img [ref=e2150]
+              - generic [ref=e2152]: system · internal
+            - 'button "done Task: Fix headless executor C:Progra system · internal" [ref=e2153] [cursor=pointer]':
+              - generic [ref=e2154]:
+                - generic [ref=e2155]: done
+                - generic [ref=e2156]: "Task: Fix headless executor C:Progra"
+                - button "Delete" [ref=e2157]:
+                  - img [ref=e2158]
+              - generic [ref=e2160]: system · internal
+            - 'button "done Task: Add status field to API agent system · internal" [ref=e2161] [cursor=pointer]':
+              - generic [ref=e2162]:
+                - generic [ref=e2163]: done
+                - generic [ref=e2164]: "Task: Add status field to API agent"
+                - button "Delete" [ref=e2165]:
+                  - img [ref=e2166]
+              - generic [ref=e2168]: system · internal
+            - 'button "done Task: Fix daemon --quiet flag crash system · internal" [ref=e2169] [cursor=pointer]':
+              - generic [ref=e2170]:
+                - generic [ref=e2171]: done
+                - generic [ref=e2172]: "Task: Fix daemon --quiet flag crash"
+                - button "Delete" [ref=e2173]:
+                  - img [ref=e2174]
+              - generic [ref=e2176]: system · internal
+            - 'button "done Task: Add integration tests for /age system · internal" [ref=e2177] [cursor=pointer]':
+              - generic [ref=e2178]:
+                - generic [ref=e2179]: done
+                - generic [ref=e2180]: "Task: Add integration tests for /age"
+                - button "Delete" [ref=e2181]:
+                  - img [ref=e2182]
+              - generic [ref=e2184]: system · internal
+            - 'button "done Task: Document API contracts for pro system · internal" [ref=e2185] [cursor=pointer]':
+              - generic [ref=e2186]:
+                - generic [ref=e2187]: done
+                - generic [ref=e2188]: "Task: Document API contracts for pro"
+                - button "Delete" [ref=e2189]:
+                  - img [ref=e2190]
+              - generic [ref=e2192]: system · internal
+            - 'button "done Task: Add accessibility audit for /p system · internal" [ref=e2193] [cursor=pointer]':
+              - generic [ref=e2194]:
+                - generic [ref=e2195]: done
+                - generic [ref=e2196]: "Task: Add accessibility audit for /p"
+                - button "Delete" [ref=e2197]:
+                  - img [ref=e2198]
+              - generic [ref=e2200]: system · internal
+            - 'button "done Task: Deduplicate AgentInfo interfac system · internal" [ref=e2201] [cursor=pointer]':
+              - generic [ref=e2202]:
+                - generic [ref=e2203]: done
+                - generic [ref=e2204]: "Task: Deduplicate AgentInfo interfac"
+                - button "Delete" [ref=e2205]:
+                  - img [ref=e2206]
+              - generic [ref=e2208]: system · internal
+            - 'button "done Task: Add SEO meta tags to /projects system · internal" [ref=e2209] [cursor=pointer]':
+              - generic [ref=e2210]:
+                - generic [ref=e2211]: done
+                - generic [ref=e2212]: "Task: Add SEO meta tags to /projects"
+                - button "Delete" [ref=e2213]:
+                  - img [ref=e2214]
+              - generic [ref=e2216]: system · internal
+            - 'button "done Task: Wire /projects/[id]/sessions t system · internal" [ref=e2217] [cursor=pointer]':
+              - generic [ref=e2218]:
+                - generic [ref=e2219]: done
+                - generic [ref=e2220]: "Task: Wire /projects/[id]/sessions t"
+                - button "Delete" [ref=e2221]:
+                  - img [ref=e2222]
+              - generic [ref=e2224]: system · internal
+            - 'button "done Task: Wire /projects/[id]/services t system · internal" [ref=e2225] [cursor=pointer]':
+              - generic [ref=e2226]:
+                - generic [ref=e2227]: done
+                - generic [ref=e2228]: "Task: Wire /projects/[id]/services t"
+                - button "Delete" [ref=e2229]:
+                  - img [ref=e2230]
+              - generic [ref=e2232]: system · internal
+            - 'button "done Task: Add accessibility audit for /p system · internal" [ref=e2233] [cursor=pointer]':
+              - generic [ref=e2234]:
+                - generic [ref=e2235]: done
+                - generic [ref=e2236]: "Task: Add accessibility audit for /p"
+                - button "Delete" [ref=e2237]:
+                  - img [ref=e2238]
+              - generic [ref=e2240]: system · internal
+            - 'button "done Task: Add SEO meta tags to /projects system · internal" [ref=e2241] [cursor=pointer]':
+              - generic [ref=e2242]:
+                - generic [ref=e2243]: done
+                - generic [ref=e2244]: "Task: Add SEO meta tags to /projects"
+                - button "Delete" [ref=e2245]:
+                  - img [ref=e2246]
+              - generic [ref=e2248]: system · internal
+            - 'button "done Task: Add SEO meta tags to /projects system · internal" [ref=e2249] [cursor=pointer]':
+              - generic [ref=e2250]:
+                - generic [ref=e2251]: done
+                - generic [ref=e2252]: "Task: Add SEO meta tags to /projects"
+                - button "Delete" [ref=e2253]:
+                  - img [ref=e2254]
+              - generic [ref=e2256]: system · internal
+            - 'button "done Task: Add accessibility audit for /p system · internal" [ref=e2257] [cursor=pointer]':
+              - generic [ref=e2258]:
+                - generic [ref=e2259]: done
+                - generic [ref=e2260]: "Task: Add accessibility audit for /p"
+                - button "Delete" [ref=e2261]:
+                  - img [ref=e2262]
+              - generic [ref=e2264]: system · internal
+            - 'button "done Task: Add accessibility audit for /p system · internal" [ref=e2265] [cursor=pointer]':
+              - generic [ref=e2266]:
+                - generic [ref=e2267]: done
+                - generic [ref=e2268]: "Task: Add accessibility audit for /p"
+                - button "Delete" [ref=e2269]:
+                  - img [ref=e2270]
+              - generic [ref=e2272]: system · internal
+            - 'button "done Task: Wire /projects/[id]/hooks to r system · internal" [ref=e2273] [cursor=pointer]':
+              - generic [ref=e2274]:
+                - generic [ref=e2275]: done
+                - generic [ref=e2276]: "Task: Wire /projects/[id]/hooks to r"
+                - button "Delete" [ref=e2277]:
+                  - img [ref=e2278]
+              - generic [ref=e2280]: system · internal
+            - 'button "done Task: Ensure preview feature flag re system · internal" [ref=e2281] [cursor=pointer]':
+              - generic [ref=e2282]:
+                - generic [ref=e2283]: done
+                - generic [ref=e2284]: "Task: Ensure preview feature flag re"
+                - button "Delete" [ref=e2285]:
+                  - img [ref=e2286]
+              - generic [ref=e2288]: system · internal
+            - 'button "done Task: Add SEO meta tags to /projects system · internal" [ref=e2289] [cursor=pointer]':
+              - generic [ref=e2290]:
+                - generic [ref=e2291]: done
+                - generic [ref=e2292]: "Task: Add SEO meta tags to /projects"
+                - button "Delete" [ref=e2293]:
+                  - img [ref=e2294]
+              - generic [ref=e2296]: system · internal
+            - 'button "done Task: Add loading and error UI to /p system · internal" [ref=e2297] [cursor=pointer]':
+              - generic [ref=e2298]:
+                - generic [ref=e2299]: done
+                - generic [ref=e2300]: "Task: Add loading and error UI to /p"
+                - button "Delete" [ref=e2301]:
+                  - img [ref=e2302]
+              - generic [ref=e2304]: system · internal
+            - 'button "done Task: Wire /projects/[id]/agents to system · internal" [ref=e2305] [cursor=pointer]':
+              - generic [ref=e2306]:
+                - generic [ref=e2307]: done
+                - generic [ref=e2308]: "Task: Wire /projects/[id]/agents to"
+                - button "Delete" [ref=e2309]:
+                  - img [ref=e2310]
+              - generic [ref=e2312]: system · internal
+            - 'button "done Task: Wire Agents page to real API system · internal" [ref=e2313] [cursor=pointer]':
+              - generic [ref=e2314]:
+                - generic [ref=e2315]: done
+                - generic [ref=e2316]: "Task: Wire Agents page to real API"
+                - button "Delete" [ref=e2317]:
+                  - img [ref=e2318]
+              - generic [ref=e2320]: system · internal
+            - 'button "done Task: Add accessibility audit for /a system · internal" [ref=e2321] [cursor=pointer]':
+              - generic [ref=e2322]:
+                - generic [ref=e2323]: done
+                - generic [ref=e2324]: "Task: Add accessibility audit for /a"
+                - button "Delete" [ref=e2325]:
+                  - img [ref=e2326]
+              - generic [ref=e2328]: system · internal
+            - 'button "done Task: Add loading spinner to /agents system · internal" [ref=e2329] [cursor=pointer]':
+              - generic [ref=e2330]:
+                - generic [ref=e2331]: done
+                - generic [ref=e2332]: "Task: Add loading spinner to /agents"
+                - button "Delete" [ref=e2333]:
+                  - img [ref=e2334]
+              - generic [ref=e2336]: system · internal
+            - 'button "done Task: Ensure preview feature flag re system · internal" [ref=e2337] [cursor=pointer]':
+              - generic [ref=e2338]:
+                - generic [ref=e2339]: done
+                - generic [ref=e2340]: "Task: Ensure preview feature flag re"
+                - button "Delete" [ref=e2341]:
+                  - img [ref=e2342]
+              - generic [ref=e2344]: system · internal
+            - 'button "done Task: Add SEO meta tags to /agents p system · internal" [ref=e2345] [cursor=pointer]':
+              - generic [ref=e2346]:
+                - generic [ref=e2347]: done
+                - generic [ref=e2348]: "Task: Add SEO meta tags to /agents p"
+                - button "Delete" [ref=e2349]:
+                  - img [ref=e2350]
+              - generic [ref=e2352]: system · internal
+            - button "done Validate real data wiring for /projects/[id]/security page gpt-oss:20b · OpenClaw" [ref=e2353] [cursor=pointer]:
+              - generic [ref=e2354]:
+                - generic [ref=e2355]: done
+                - generic [ref=e2356]: Validate real data wiring for /projects/[id]/security page
+                - button "Delete" [ref=e2357]:
+                  - img [ref=e2358]
+              - generic [ref=e2360]: gpt-oss:20b · OpenClaw
+            - 'button "done Task: Add accessibility audit for /p system · internal" [ref=e2361] [cursor=pointer]':
+              - generic [ref=e2362]:
+                - generic [ref=e2363]: done
+                - generic [ref=e2364]: "Task: Add accessibility audit for /p"
+                - button "Delete" [ref=e2365]:
+                  - img [ref=e2366]
+              - generic [ref=e2368]: system · internal
+            - 'button "done Task: Implement lazy loading for hea system · internal" [ref=e2369] [cursor=pointer]':
+              - generic [ref=e2370]:
+                - generic [ref=e2371]: done
+                - generic [ref=e2372]: "Task: Implement lazy loading for hea"
+                - button "Delete" [ref=e2373]:
+                  - img [ref=e2374]
+              - generic [ref=e2376]: system · internal
+            - 'button "done Task: Add SEO meta tags to /projects system · internal" [ref=e2377] [cursor=pointer]':
+              - generic [ref=e2378]:
+                - generic [ref=e2379]: done
+                - generic [ref=e2380]: "Task: Add SEO meta tags to /projects"
+                - button "Delete" [ref=e2381]:
+                  - img [ref=e2382]
+              - generic [ref=e2384]: system · internal
+            - 'button "done Task: Ensure /projects/[id]/security system · internal" [ref=e2385] [cursor=pointer]':
+              - generic [ref=e2386]:
+                - generic [ref=e2387]: done
+                - generic [ref=e2388]: "Task: Ensure /projects/[id]/security"
+                - button "Delete" [ref=e2389]:
+                  - img [ref=e2390]
+              - generic [ref=e2392]: system · internal
+            - 'button "done Task: Add loading spinner to /projec system · internal" [ref=e2393] [cursor=pointer]':
+              - generic [ref=e2394]:
+                - generic [ref=e2395]: done
+                - generic [ref=e2396]: "Task: Add loading spinner to /projec"
+                - button "Delete" [ref=e2397]:
+                  - img [ref=e2398]
+              - generic [ref=e2400]: system · internal
+            - 'button "done Task: Write integration test for /ap system · internal" [ref=e2401] [cursor=pointer]':
+              - generic [ref=e2402]:
+                - generic [ref=e2403]: done
+                - generic [ref=e2404]: "Task: Write integration test for /ap"
+                - button "Delete" [ref=e2405]:
+                  - img [ref=e2406]
+              - generic [ref=e2408]: system · internal
+            - 'button "done Task: Document API contract for /api system · internal" [ref=e2409] [cursor=pointer]':
+              - generic [ref=e2410]:
+                - generic [ref=e2411]: done
+                - generic [ref=e2412]: "Task: Document API contract for /api"
+                - button "Delete" [ref=e2413]:
+                  - img [ref=e2414]
+              - generic [ref=e2416]: system · internal
+            - 'button "done Task: Add error handling UI for /pro system · internal" [ref=e2417] [cursor=pointer]':
+              - generic [ref=e2418]:
+                - generic [ref=e2419]: done
+                - generic [ref=e2420]: "Task: Add error handling UI for /pro"
+                - button "Delete" [ref=e2421]:
+                  - img [ref=e2422]
+              - generic [ref=e2424]: system · internal
+            - 'button "done Task: Write unit tests for SecurityP system · internal" [ref=e2425] [cursor=pointer]':
+              - generic [ref=e2426]:
+                - generic [ref=e2427]: done
+                - generic [ref=e2428]: "Task: Write unit tests for SecurityP"
+                - button "Delete" [ref=e2429]:
+                  - img [ref=e2430]
+              - generic [ref=e2432]: system · internal
+            - 'button "done Task: Update user flow documentation system · internal" [ref=e2433] [cursor=pointer]':
+              - generic [ref=e2434]:
+                - generic [ref=e2435]: done
+                - generic [ref=e2436]: "Task: Update user flow documentation"
+                - button "Delete" [ref=e2437]:
+                  - img [ref=e2438]
+              - generic [ref=e2440]: system · internal
+            - 'button "done Task: Verify new pages respect previ system · internal" [ref=e2441] [cursor=pointer]':
+              - generic [ref=e2442]:
+                - generic [ref=e2443]: done
+                - generic [ref=e2444]: "Task: Verify new pages respect previ"
+                - button "Delete" [ref=e2445]:
+                  - img [ref=e2446]
+              - generic [ref=e2448]: system · internal
+            - 'button "done Task: Add SEO meta tags to new proje system · internal" [ref=e2449] [cursor=pointer]':
+              - generic [ref=e2450]:
+                - generic [ref=e2451]: done
+                - generic [ref=e2452]: "Task: Add SEO meta tags to new proje"
+                - button "Delete" [ref=e2453]:
+                  - img [ref=e2454]
+              - generic [ref=e2456]: system · internal
+            - 'button "done Task: Unit tests for ProjectSessions system · internal" [ref=e2457] [cursor=pointer]':
+              - generic [ref=e2458]:
+                - generic [ref=e2459]: done
+                - generic [ref=e2460]: "Task: Unit tests for ProjectSessions"
+                - button "Delete" [ref=e2461]:
+                  - img [ref=e2462]
+              - generic [ref=e2464]: system · internal
+            - 'button "done Task: Unit tests for ProjectServices system · internal" [ref=e2465] [cursor=pointer]':
+              - generic [ref=e2466]:
+                - generic [ref=e2467]: done
+                - generic [ref=e2468]: "Task: Unit tests for ProjectServices"
+                - button "Delete" [ref=e2469]:
+                  - img [ref=e2470]
+              - generic [ref=e2472]: system · internal
+            - 'button "done Task: Document API contracts for /ap system · internal" [ref=e2473] [cursor=pointer]':
+              - generic [ref=e2474]:
+                - generic [ref=e2475]: done
+                - generic [ref=e2476]: "Task: Document API contracts for /ap"
+                - button "Delete" [ref=e2477]:
+                  - img [ref=e2478]
+              - generic [ref=e2480]: system · internal
+            - 'button "done Task: Unit tests for ProjectAgentsLi system · internal" [ref=e2481] [cursor=pointer]':
+              - generic [ref=e2482]:
+                - generic [ref=e2483]: done
+                - generic [ref=e2484]: "Task: Unit tests for ProjectAgentsLi"
+                - button "Delete" [ref=e2485]:
+                  - img [ref=e2486]
+              - generic [ref=e2488]: system · internal
+            - 'button "done Task: Unit tests for ProjectHooksLis system · internal" [ref=e2489] [cursor=pointer]':
+              - generic [ref=e2490]:
+                - generic [ref=e2491]: done
+                - generic [ref=e2492]: "Task: Unit tests for ProjectHooksLis"
+                - button "Delete" [ref=e2493]:
+                  - img [ref=e2494]
+              - generic [ref=e2496]: system · internal
+            - 'button "done Task: Integration tests for /api/pro system · internal" [ref=e2497] [cursor=pointer]':
+              - generic [ref=e2498]:
+                - generic [ref=e2499]: done
+                - generic [ref=e2500]: "Task: Integration tests for /api/pro"
+                - button "Delete" [ref=e2501]:
+                  - img [ref=e2502]
+              - generic [ref=e2504]: system · internal
+            - 'button "done Task: Integration tests for /api/pro system · internal" [ref=e2505] [cursor=pointer]':
+              - generic [ref=e2506]:
+                - generic [ref=e2507]: done
+                - generic [ref=e2508]: "Task: Integration tests for /api/pro"
+                - button "Delete" [ref=e2509]:
+                  - img [ref=e2510]
+              - generic [ref=e2512]: system · internal
+            - 'button "done Task: Integration tests for /api/pro system · internal" [ref=e2513] [cursor=pointer]':
+              - generic [ref=e2514]:
+                - generic [ref=e2515]: done
+                - generic [ref=e2516]: "Task: Integration tests for /api/pro"
+                - button "Delete" [ref=e2517]:
+                  - img [ref=e2518]
+              - generic [ref=e2520]: system · internal
+            - 'button "done Task: Integration tests for /api/pro system · internal" [ref=e2521] [cursor=pointer]':
+              - generic [ref=e2522]:
+                - generic [ref=e2523]: done
+                - generic [ref=e2524]: "Task: Integration tests for /api/pro"
+                - button "Delete" [ref=e2525]:
+                  - img [ref=e2526]
+              - generic [ref=e2528]: system · internal
+            - 'button "done Task: Lazy‑load heavy components on system · internal" [ref=e2529] [cursor=pointer]':
+              - generic [ref=e2530]:
+                - generic [ref=e2531]: done
+                - generic [ref=e2532]: "Task: Lazy‑load heavy components on"
+                - button "Delete" [ref=e2533]:
+                  - img [ref=e2534]
+              - generic [ref=e2536]: system · internal
+            - 'button "done Task: Lazy‑load heavy components on system · internal" [ref=e2537] [cursor=pointer]':
+              - generic [ref=e2538]:
+                - generic [ref=e2539]: done
+                - generic [ref=e2540]: "Task: Lazy‑load heavy components on"
+                - button "Delete" [ref=e2541]:
+                  - img [ref=e2542]
+              - generic [ref=e2544]: system · internal
+            - 'button "done Task: Lazy‑load heavy components on system · internal" [ref=e2545] [cursor=pointer]':
+              - generic [ref=e2546]:
+                - generic [ref=e2547]: done
+                - generic [ref=e2548]: "Task: Lazy‑load heavy components on"
+                - button "Delete" [ref=e2549]:
+                  - img [ref=e2550]
+              - generic [ref=e2552]: system · internal
+            - 'button "done Task: Lazy‑load heavy components on system · internal" [ref=e2553] [cursor=pointer]':
+              - generic [ref=e2554]:
+                - generic [ref=e2555]: done
+                - generic [ref=e2556]: "Task: Lazy‑load heavy components on"
+                - button "Delete" [ref=e2557]:
+                  - img [ref=e2558]
+              - generic [ref=e2560]: system · internal
+            - 'button "done Task: Add pagination to /projects/[i system · internal" [ref=e2561] [cursor=pointer]':
+              - generic [ref=e2562]:
+                - generic [ref=e2563]: done
+                - generic [ref=e2564]: "Task: Add pagination to /projects/[i"
+                - button "Delete" [ref=e2565]:
+                  - img [ref=e2566]
+              - generic [ref=e2568]: system · internal
+            - 'button "done Task: Add pagination to /projects/[i system · internal" [ref=e2569] [cursor=pointer]':
+              - generic [ref=e2570]:
+                - generic [ref=e2571]: done
+                - generic [ref=e2572]: "Task: Add pagination to /projects/[i"
+                - button "Delete" [ref=e2573]:
+                  - img [ref=e2574]
+              - generic [ref=e2576]: system · internal
+            - 'button "done Task: Add loading, error, and empty system · internal" [ref=e2577] [cursor=pointer]':
+              - generic [ref=e2578]:
+                - generic [ref=e2579]: done
+                - generic [ref=e2580]: "Task: Add loading, error, and empty"
+                - button "Delete" [ref=e2581]:
+                  - img [ref=e2582]
+              - generic [ref=e2584]: system · internal
+            - 'button "done Task: Add pagination to /projects/[i system · internal" [ref=e2585] [cursor=pointer]':
+              - generic [ref=e2586]:
+                - generic [ref=e2587]: done
+                - generic [ref=e2588]: "Task: Add pagination to /projects/[i"
+                - button "Delete" [ref=e2589]:
+                  - img [ref=e2590]
+              - generic [ref=e2592]: system · internal
+            - 'button "done Task: Add pagination to /projects/[i system · internal" [ref=e2593] [cursor=pointer]':
+              - generic [ref=e2594]:
+                - generic [ref=e2595]: done
+                - generic [ref=e2596]: "Task: Add pagination to /projects/[i"
+                - button "Delete" [ref=e2597]:
+                  - img [ref=e2598]
+              - generic [ref=e2600]: system · internal
+            - 'button "done Task: Add loading, error, and empty system · internal" [ref=e2601] [cursor=pointer]':
+              - generic [ref=e2602]:
+                - generic [ref=e2603]: done
+                - generic [ref=e2604]: "Task: Add loading, error, and empty"
+                - button "Delete" [ref=e2605]:
+                  - img [ref=e2606]
+              - generic [ref=e2608]: system · internal
+            - 'button "done Task: Add loading, error, and empty system · internal" [ref=e2609] [cursor=pointer]':
+              - generic [ref=e2610]:
+                - generic [ref=e2611]: done
+                - generic [ref=e2612]: "Task: Add loading, error, and empty"
+                - button "Delete" [ref=e2613]:
+                  - img [ref=e2614]
+              - generic [ref=e2616]: system · internal
+            - 'button "done Task: Add unit tests for /projects/[ system · internal" [ref=e2617] [cursor=pointer]':
+              - generic [ref=e2618]:
+                - generic [ref=e2619]: done
+                - generic [ref=e2620]: "Task: Add unit tests for /projects/["
+                - button "Delete" [ref=e2621]:
+                  - img [ref=e2622]
+              - generic [ref=e2624]: system · internal
+            - 'button "done Task: Add integration tests for /api system · internal" [ref=e2625] [cursor=pointer]':
+              - generic [ref=e2626]:
+                - generic [ref=e2627]: done
+                - generic [ref=e2628]: "Task: Add integration tests for /api"
+                - button "Delete" [ref=e2629]:
+                  - img [ref=e2630]
+              - generic [ref=e2632]: system · internal
+            - 'button "done Task: Document /projects/[id]/securi system · internal" [ref=e2633] [cursor=pointer]':
+              - generic [ref=e2634]:
+                - generic [ref=e2635]: done
+                - generic [ref=e2636]: "Task: Document /projects/[id]/securi"
+                - button "Delete" [ref=e2637]:
+                  - img [ref=e2638]
+              - generic [ref=e2640]: system · internal
+            - 'button "done Task: Add loading, error, and empty system · internal" [ref=e2641] [cursor=pointer]':
+              - generic [ref=e2642]:
+                - generic [ref=e2643]: done
+                - generic [ref=e2644]: "Task: Add loading, error, and empty"
+                - button "Delete" [ref=e2645]:
+                  - img [ref=e2646]
+              - generic [ref=e2648]: system · internal
+            - 'button "done Task: Add feature flag to preview ne system · internal" [ref=e2649] [cursor=pointer]':
+              - generic [ref=e2650]:
+                - generic [ref=e2651]: done
+                - generic [ref=e2652]: "Task: Add feature flag to preview ne"
+                - button "Delete" [ref=e2653]:
+                  - img [ref=e2654]
+              - generic [ref=e2656]: system · internal
+            - 'button "done Task: Enable lazy loading for heavy system · internal" [ref=e2657] [cursor=pointer]':
+              - generic [ref=e2658]:
+                - generic [ref=e2659]: done
+                - generic [ref=e2660]: "Task: Enable lazy loading for heavy"
+                - button "Delete" [ref=e2661]:
+                  - img [ref=e2662]
+              - generic [ref=e2664]: system · internal
+            - 'button "done Task: Add loading, error, and empty system · internal" [ref=e2665] [cursor=pointer]':
+              - generic [ref=e2666]:
+                - generic [ref=e2667]: done
+                - generic [ref=e2668]: "Task: Add loading, error, and empty"
+                - button "Delete" [ref=e2669]:
+                  - img [ref=e2670]
+              - generic [ref=e2672]: system · internal
+            - 'button "done Task: Add loading, error, and empty system · internal" [ref=e2673] [cursor=pointer]':
+              - generic [ref=e2674]:
+                - generic [ref=e2675]: done
+                - generic [ref=e2676]: "Task: Add loading, error, and empty"
+                - button "Delete" [ref=e2677]:
+                  - img [ref=e2678]
+              - generic [ref=e2680]: system · internal
+            - 'button "done Task: Add loading, error, and empty system · internal" [ref=e2681] [cursor=pointer]':
+              - generic [ref=e2682]:
+                - generic [ref=e2683]: done
+                - generic [ref=e2684]: "Task: Add loading, error, and empty"
+                - button "Delete" [ref=e2685]:
+                  - img [ref=e2686]
+              - generic [ref=e2688]: system · internal
+            - 'button "done Task: Add accessibility audit for ne system · internal" [ref=e2689] [cursor=pointer]':
+              - generic [ref=e2690]:
+                - generic [ref=e2691]: done
+                - generic [ref=e2692]: "Task: Add accessibility audit for ne"
+                - button "Delete" [ref=e2693]:
+                  - img [ref=e2694]
+              - generic [ref=e2696]: system · internal
+            - 'button "done Task: Add unit tests for new TaskLis system · internal" [ref=e2697] [cursor=pointer]':
+              - generic [ref=e2698]:
+                - generic [ref=e2699]: done
+                - generic [ref=e2700]: "Task: Add unit tests for new TaskLis"
+                - button "Delete" [ref=e2701]:
+                  - img [ref=e2702]
+              - generic [ref=e2704]: system · internal
+            - 'button "done Task: Add integration tests for /api system · internal" [ref=e2705] [cursor=pointer]':
+              - generic [ref=e2706]:
+                - generic [ref=e2707]: done
+                - generic [ref=e2708]: "Task: Add integration tests for /api"
+                - button "Delete" [ref=e2709]:
+                  - img [ref=e2710]
+              - generic [ref=e2712]: system · internal
+            - 'button "done Task: Document user flow for new pro system · internal" [ref=e2713] [cursor=pointer]':
+              - generic [ref=e2714]:
+                - generic [ref=e2715]: done
+                - generic [ref=e2716]: "Task: Document user flow for new pro"
+                - button "Delete" [ref=e2717]:
+                  - img [ref=e2718]
+              - generic [ref=e2720]: system · internal
+            - 'button "done Task: Add CI step to enforce test co system · internal" [ref=e2721] [cursor=pointer]':
+              - generic [ref=e2722]:
+                - generic [ref=e2723]: done
+                - generic [ref=e2724]: "Task: Add CI step to enforce test co"
+                - button "Delete" [ref=e2725]:
+                  - img [ref=e2726]
+              - generic [ref=e2728]: system · internal
+            - 'button "done Task: Add pagination to /tasks listi system · internal" [ref=e2729] [cursor=pointer]':
+              - generic [ref=e2730]:
+                - generic [ref=e2731]: done
+                - generic [ref=e2732]: "Task: Add pagination to /tasks listi"
+                - button "Delete" [ref=e2733]:
+                  - img [ref=e2734]
+              - generic [ref=e2736]: system · internal
+            - 'button "done Task: Add loading, error, and empty system · internal" [ref=e2737] [cursor=pointer]':
+              - generic [ref=e2738]:
+                - generic [ref=e2739]: done
+                - generic [ref=e2740]: "Task: Add loading, error, and empty"
+                - button "Delete" [ref=e2741]:
+                  - img [ref=e2742]
+              - generic [ref=e2744]: system · internal
+            - 'button "done Task: Validate real data wiring for system · internal" [ref=e2745] [cursor=pointer]':
+              - generic [ref=e2746]:
+                - generic [ref=e2747]: done
+                - generic [ref=e2748]: "Task: Validate real data wiring for"
+                - button "Delete" [ref=e2749]:
+                  - img [ref=e2750]
+              - generic [ref=e2752]: system · internal
+            - 'button "done Task: Validate real data wiring for system · internal" [ref=e2753] [cursor=pointer]':
+              - generic [ref=e2754]:
+                - generic [ref=e2755]: done
+                - generic [ref=e2756]: "Task: Validate real data wiring for"
+                - button "Delete" [ref=e2757]:
+                  - img [ref=e2758]
+              - generic [ref=e2760]: system · internal
+            - 'button "done Task: Add loading, error, and empty system · internal" [ref=e2761] [cursor=pointer]':
+              - generic [ref=e2762]:
+                - generic [ref=e2763]: done
+                - generic [ref=e2764]: "Task: Add loading, error, and empty"
+                - button "Delete" [ref=e2765]:
+                  - img [ref=e2766]
+              - generic [ref=e2768]: system · internal
+            - 'button "done Task: Add comprehensive integration system · internal" [ref=e2769] [cursor=pointer]':
+              - generic [ref=e2770]:
+                - generic [ref=e2771]: done
+                - generic [ref=e2772]: "Task: Add comprehensive integration"
+                - button "Delete" [ref=e2773]:
+                  - img [ref=e2774]
+              - generic [ref=e2776]: system · internal
+            - 'button "done Task: Update API documentation with system · internal" [ref=e2777] [cursor=pointer]':
+              - generic [ref=e2778]:
+                - generic [ref=e2779]: done
+                - generic [ref=e2780]: "Task: Update API documentation with"
+                - button "Delete" [ref=e2781]:
+                  - img [ref=e2782]
+              - generic [ref=e2784]: system · internal
+            - 'button "done Task: Validate data wiring across al system · internal" [ref=e2785] [cursor=pointer]':
+              - generic [ref=e2786]:
+                - generic [ref=e2787]: done
+                - generic [ref=e2788]: "Task: Validate data wiring across al"
+                - button "Delete" [ref=e2789]:
+                  - img [ref=e2790]
+              - generic [ref=e2792]: system · internal
+            - 'button "done Task: Add /projects/[id]/memory page system · internal" [ref=e2793] [cursor=pointer]':
+              - generic [ref=e2794]:
+                - generic [ref=e2795]: done
+                - generic [ref=e2796]: "Task: Add /projects/[id]/memory page"
+                - button "Delete" [ref=e2797]:
+                  - img [ref=e2798]
+              - generic [ref=e2800]: system · internal
+            - 'button "done Task: Add /projects/[id]/security pa system · internal" [ref=e2801] [cursor=pointer]':
+              - generic [ref=e2802]:
+                - generic [ref=e2803]: done
+                - generic [ref=e2804]: "Task: Add /projects/[id]/security pa"
+                - button "Delete" [ref=e2805]:
+                  - img [ref=e2806]
+              - generic [ref=e2808]: system · internal
+            - 'button "done Task: Add /projects/[id]/settings pa system · internal" [ref=e2809] [cursor=pointer]':
+              - generic [ref=e2810]:
+                - generic [ref=e2811]: done
+                - generic [ref=e2812]: "Task: Add /projects/[id]/settings pa"
+                - button "Delete" [ref=e2813]:
+                  - img [ref=e2814]
+              - generic [ref=e2816]: system · internal
+            - 'button "done Task: Add /projects/[id]/channels pa system · internal" [ref=e2817] [cursor=pointer]':
+              - generic [ref=e2818]:
+                - generic [ref=e2819]: done
+                - generic [ref=e2820]: "Task: Add /projects/[id]/channels pa"
+                - button "Delete" [ref=e2821]:
+                  - img [ref=e2822]
+              - generic [ref=e2824]: system · internal
+            - 'button "done Task: Add /projects/[id]/hooks page system · internal" [ref=e2825] [cursor=pointer]':
+              - generic [ref=e2826]:
+                - generic [ref=e2827]: done
+                - generic [ref=e2828]: "Task: Add /projects/[id]/hooks page"
+                - button "Delete" [ref=e2829]:
+                  - img [ref=e2830]
+              - generic [ref=e2832]: system · internal
+            - 'button "done Task: Create /tasks listing page system · internal" [ref=e2833] [cursor=pointer]':
+              - generic [ref=e2834]:
+                - generic [ref=e2835]: done
+                - generic [ref=e2836]: "Task: Create /tasks listing page"
+                - button "Delete" [ref=e2837]:
+                  - img [ref=e2838]
+              - generic [ref=e2840]: system · internal
+            - 'button "done Task: Add /services/new page system · internal" [ref=e2841] [cursor=pointer]':
+              - generic [ref=e2842]:
+                - generic [ref=e2843]: done
+                - generic [ref=e2844]: "Task: Add /services/new page"
+                - button "Delete" [ref=e2845]:
+                  - img [ref=e2846]
+              - generic [ref=e2848]: system · internal
+            - 'button "done Task: Implement /projects/[id]/tasks system · internal" [ref=e2849] [cursor=pointer]':
+              - generic [ref=e2850]:
+                - generic [ref=e2851]: done
+                - generic [ref=e2852]: "Task: Implement /projects/[id]/tasks"
+                - button "Delete" [ref=e2853]:
+                  - img [ref=e2854]
+              - generic [ref=e2856]: system · internal
+            - 'button "done Task: Add /projects/import page system · internal" [ref=e2857] [cursor=pointer]':
+              - generic [ref=e2858]:
+                - generic [ref=e2859]: done
+                - generic [ref=e2860]: "Task: Add /projects/import page"
+                - button "Delete" [ref=e2861]:
+                  - img [ref=e2862]
+              - generic [ref=e2864]: system · internal
+            - 'button "done Task: Add pagination to /agents list system · internal" [ref=e2865] [cursor=pointer]':
+              - generic [ref=e2866]:
+                - generic [ref=e2867]: done
+                - generic [ref=e2868]: "Task: Add pagination to /agents list"
+                - button "Delete" [ref=e2869]:
+                  - img [ref=e2870]
+              - generic [ref=e2872]: system · internal
+            - button "done tabs, easy sorting, on click should let system · internal" [ref=e2873] [cursor=pointer]:
+              - generic [ref=e2874]:
+                - generic [ref=e2875]: done
+                - generic [ref=e2876]: tabs, easy sorting, on click should let
+                - button "Delete" [ref=e2877]:
+                  - img [ref=e2878]
+              - generic [ref=e2880]: system · internal
+            - 'button "done Task: Add validation to service conf system · internal" [ref=e2881] [cursor=pointer]':
+              - generic [ref=e2882]:
+                - generic [ref=e2883]: done
+                - generic [ref=e2884]: "Task: Add validation to service conf"
+                - button "Delete" [ref=e2885]:
+                  - img [ref=e2886]
+              - generic [ref=e2888]: system · internal
+            - 'button "done Task: Add loading, error, and empty system · internal" [ref=e2889] [cursor=pointer]':
+              - generic [ref=e2890]:
+                - generic [ref=e2891]: done
+                - generic [ref=e2892]: "Task: Add loading, error, and empty"
+                - button "Delete" [ref=e2893]:
+                  - img [ref=e2894]
+              - generic [ref=e2896]: system · internal
+            - 'button "done Task: Add loading, error, and empty system · internal" [ref=e2897] [cursor=pointer]':
+              - generic [ref=e2898]:
+                - generic [ref=e2899]: done
+                - generic [ref=e2900]: "Task: Add loading, error, and empty"
+                - button "Delete" [ref=e2901]:
+                  - img [ref=e2902]
+              - generic [ref=e2904]: system · internal
+            - 'button "done Task: Ensure project‑agent associati system · internal" [ref=e2905] [cursor=pointer]':
+              - generic [ref=e2906]:
+                - generic [ref=e2907]: done
+                - generic [ref=e2908]: "Task: Ensure project‑agent associati"
+                - button "Delete" [ref=e2909]:
+                  - img [ref=e2910]
+              - generic [ref=e2912]: system · internal
+            - 'button "done Task: Add UI for editing service con system · internal" [ref=e2913] [cursor=pointer]':
+              - generic [ref=e2914]:
+                - generic [ref=e2915]: done
+                - generic [ref=e2916]: "Task: Add UI for editing service con"
+                - button "Delete" [ref=e2917]:
+                  - img [ref=e2918]
+              - generic [ref=e2920]: system · internal
+            - 'button "done Task: Wire /agents list page to real system · internal" [ref=e2921] [cursor=pointer]':
+              - generic [ref=e2922]:
+                - generic [ref=e2923]: done
+                - generic [ref=e2924]: "Task: Wire /agents list page to real"
+                - button "Delete" [ref=e2925]:
+                  - img [ref=e2926]
+              - generic [ref=e2928]: system · internal
+            - 'button "done Task: Add end‑to‑end tests for agent system · internal" [ref=e2929] [cursor=pointer]':
+              - generic [ref=e2930]:
+                - generic [ref=e2931]: done
+                - generic [ref=e2932]: "Task: Add end‑to‑end tests for agent"
+                - button "Delete" [ref=e2933]:
+                  - img [ref=e2934]
+              - generic [ref=e2936]: system · internal
+            - 'button "done Task: Implement agent creation form system · internal" [ref=e2937] [cursor=pointer]':
+              - generic [ref=e2938]:
+                - generic [ref=e2939]: done
+                - generic [ref=e2940]: "Task: Implement agent creation form"
+                - button "Delete" [ref=e2941]:
+                  - img [ref=e2942]
+              - generic [ref=e2944]: system · internal
+            - 'button "done Task: Update OpenAPI spec for new en system · internal" [ref=e2945] [cursor=pointer]':
+              - generic [ref=e2946]:
+                - generic [ref=e2947]: done
+                - generic [ref=e2948]: "Task: Update OpenAPI spec for new en"
+                - button "Delete" [ref=e2949]:
+                  - img [ref=e2950]
+              - generic [ref=e2952]: system · internal
+            - 'button "done Task: Run accessibility audit and fi system · internal" [ref=e2953] [cursor=pointer]':
+              - generic [ref=e2954]:
+                - generic [ref=e2955]: done
+                - generic [ref=e2956]: "Task: Run accessibility audit and fi"
+                - button "Delete" [ref=e2957]:
+                  - img [ref=e2958]
+              - generic [ref=e2960]: system · internal
+            - 'button "done Task: Lazy load BubbleGraph and Time system · internal" [ref=e2961] [cursor=pointer]':
+              - generic [ref=e2962]:
+                - generic [ref=e2963]: done
+                - generic [ref=e2964]: "Task: Lazy load BubbleGraph and Time"
+                - button "Delete" [ref=e2965]:
+                  - img [ref=e2966]
+              - generic [ref=e2968]: system · internal
+            - 'button "done Task: Add release automation GitHub system · internal" [ref=e2969] [cursor=pointer]':
+              - generic [ref=e2970]:
+                - generic [ref=e2971]: done
+                - generic [ref=e2972]: "Task: Add release automation GitHub"
+                - button "Delete" [ref=e2973]:
+                  - img [ref=e2974]
+              - generic [ref=e2976]: system · internal
+            - 'button "done Task: Consume notification stream an system · internal" [ref=e2977] [cursor=pointer]':
+              - generic [ref=e2978]:
+                - generic [ref=e2979]: done
+                - generic [ref=e2980]: "Task: Consume notification stream an"
+                - button "Delete" [ref=e2981]:
+                  - img [ref=e2982]
+              - generic [ref=e2984]: system · internal
+            - 'button "done Task: Integrate memory context API i system · internal" [ref=e2985] [cursor=pointer]':
+              - generic [ref=e2986]:
+                - generic [ref=e2987]: done
+                - generic [ref=e2988]: "Task: Integrate memory context API i"
+                - button "Delete" [ref=e2989]:
+                  - img [ref=e2990]
+              - generic [ref=e2992]: system · internal
+            - 'button "done Task: Add end‑to‑end tests for chat system · internal" [ref=e2993] [cursor=pointer]':
+              - generic [ref=e2994]:
+                - generic [ref=e2995]: done
+                - generic [ref=e2996]: "Task: Add end‑to‑end tests for chat"
+                - button "Delete" [ref=e2997]:
+                  - img [ref=e2998]
+              - generic [ref=e3000]: system · internal
+            - 'button "done Task: Add loading, error, and empty system · internal" [ref=e3001] [cursor=pointer]':
+              - generic [ref=e3002]:
+                - generic [ref=e3003]: done
+                - generic [ref=e3004]: "Task: Add loading, error, and empty"
+                - button "Delete" [ref=e3005]:
+                  - img [ref=e3006]
+              - generic [ref=e3008]: system · internal
+            - 'button "done Task: Implement log streaming UI for system · internal" [ref=e3009] [cursor=pointer]':
+              - generic [ref=e3010]:
+                - generic [ref=e3011]: done
+                - generic [ref=e3012]: "Task: Implement log streaming UI for"
+                - button "Delete" [ref=e3013]:
+                  - img [ref=e3014]
+              - generic [ref=e3016]: system · internal
+            - 'button "done Task: Add end‑to‑end tests for proje system · internal" [ref=e3017] [cursor=pointer]':
+              - generic [ref=e3018]:
+                - generic [ref=e3019]: done
+                - generic [ref=e3020]: "Task: Add end‑to‑end tests for proje"
+                - button "Delete" [ref=e3021]:
+                  - img [ref=e3022]
+              - generic [ref=e3024]: system · internal
+            - 'button "done Task: Implement task start UI and st system · internal" [ref=e3025] [cursor=pointer]':
+              - generic [ref=e3026]:
+                - generic [ref=e3027]: done
+                - generic [ref=e3028]: "Task: Implement task start UI and st"
+                - button "Delete" [ref=e3029]:
+                  - img [ref=e3030]
+              - generic [ref=e3032]: system · internal
+            - 'button "done Task: Add end‑to‑end tests for task system · internal" [ref=e3033] [cursor=pointer]':
+              - generic [ref=e3034]:
+                - generic [ref=e3035]: done
+                - generic [ref=e3036]: "Task: Add end‑to‑end tests for task"
+                - button "Delete" [ref=e3037]:
+                  - img [ref=e3038]
+              - generic [ref=e3040]: system · internal
+            - 'button "done Task: Scan API routes for stubbed re system · internal" [ref=e3041] [cursor=pointer]':
+              - generic [ref=e3042]:
+                - generic [ref=e3043]: done
+                - generic [ref=e3044]: "Task: Scan API routes for stubbed re"
+                - button "Delete" [ref=e3045]:
+                  - img [ref=e3046]
+              - generic [ref=e3048]: system · internal
+            - 'button "done Task: Add pagination to services and system · internal" [ref=e3049] [cursor=pointer]':
+              - generic [ref=e3050]:
+                - generic [ref=e3051]: done
+                - generic [ref=e3052]: "Task: Add pagination to services and"
+                - button "Delete" [ref=e3053]:
+                  - img [ref=e3054]
+              - generic [ref=e3056]: system · internal
+            - 'button "done Task: Wire chat session page to real system · internal" [ref=e3057] [cursor=pointer]':
+              - generic [ref=e3058]:
+                - generic [ref=e3059]: done
+                - generic [ref=e3060]: "Task: Wire chat session page to real"
+                - button "Delete" [ref=e3061]:
+                  - img [ref=e3062]
+              - generic [ref=e3064]: system · internal
+            - button "done is the real time updates better? if so, system · internal" [ref=e3065] [cursor=pointer]:
+              - generic [ref=e3066]:
+                - generic [ref=e3067]: done
+                - generic [ref=e3068]: is the real time updates better? if so,
+                - button "Delete" [ref=e3069]:
+                  - img [ref=e3070]
+              - generic [ref=e3072]: system · internal
+            - button "done keep it similar, but allow for favorites system · internal" [ref=e3073] [cursor=pointer]:
+              - generic [ref=e3074]:
+                - generic [ref=e3075]: done
+                - generic [ref=e3076]: keep it similar, but allow for favorites
+                - button "Delete" [ref=e3077]:
+                  - img [ref=e3078]
+              - generic [ref=e3080]: system · internal
+            - 'button "done Task: Document API endpoints in Open system · internal" [ref=e3081] [cursor=pointer]':
+              - generic [ref=e3082]:
+                - generic [ref=e3083]: done
+                - generic [ref=e3084]: "Task: Document API endpoints in Open"
+                - button "Delete" [ref=e3085]:
+                  - img [ref=e3086]
+              - generic [ref=e3088]: system · internal
+            - 'button "done Task: Add unit tests for routing tel system · internal" [ref=e3089] [cursor=pointer]':
+              - generic [ref=e3090]:
+                - generic [ref=e3091]: done
+                - generic [ref=e3092]: "Task: Add unit tests for routing tel"
+                - button "Delete" [ref=e3093]:
+                  - img [ref=e3094]
+              - generic [ref=e3096]: system · internal
+            - 'button "done Task: Implement responsive styling f system · internal" [ref=e3097] [cursor=pointer]':
+              - generic [ref=e3098]:
+                - generic [ref=e3099]: done
+                - generic [ref=e3100]: "Task: Implement responsive styling f"
+                - button "Delete" [ref=e3101]:
+                  - img [ref=e3102]
+              - generic [ref=e3104]: system · internal
+            - 'button "done Task: Add confirmation dialog for de system · internal" [ref=e3105] [cursor=pointer]':
+              - generic [ref=e3106]:
+                - generic [ref=e3107]: done
+                - generic [ref=e3108]: "Task: Add confirmation dialog for de"
+                - button "Delete" [ref=e3109]:
+                  - img [ref=e3110]
+              - generic [ref=e3112]: system · internal
+            - 'button "done Task: Centralize API error handling system · internal" [ref=e3113] [cursor=pointer]':
+              - generic [ref=e3114]:
+                - generic [ref=e3115]: done
+                - generic [ref=e3116]: "Task: Centralize API error handling"
+                - button "Delete" [ref=e3117]:
+                  - img [ref=e3118]
+              - generic [ref=e3120]: system · internal
+            - 'button "done Task: Add accessibility audit to cor system · internal" [ref=e3121] [cursor=pointer]':
+              - generic [ref=e3122]:
+                - generic [ref=e3123]: done
+                - generic [ref=e3124]: "Task: Add accessibility audit to cor"
+                - button "Delete" [ref=e3125]:
+                  - img [ref=e3126]
+              - generic [ref=e3128]: system · internal
+            - 'button "done Task: Add type safety for memory con system · internal" [ref=e3129] [cursor=pointer]':
+              - generic [ref=e3130]:
+                - generic [ref=e3131]: done
+                - generic [ref=e3132]: "Task: Add type safety for memory con"
+                - button "Delete" [ref=e3133]:
+                  - img [ref=e3134]
+              - generic [ref=e3136]: system · internal
+            - 'button "done Task: Add empty state for services l system · internal" [ref=e3137] [cursor=pointer]':
+              - generic [ref=e3138]:
+                - generic [ref=e3139]: done
+                - generic [ref=e3140]: "Task: Add empty state for services l"
+                - button "Delete" [ref=e3141]:
+                  - img [ref=e3142]
+              - generic [ref=e3144]: system · internal
+            - 'button "done Task: Add unit tests for core UI com system · internal" [ref=e3145] [cursor=pointer]':
+              - generic [ref=e3146]:
+                - generic [ref=e3147]: done
+                - generic [ref=e3148]: "Task: Add unit tests for core UI com"
+                - button "Delete" [ref=e3149]:
+                  - img [ref=e3150]
+              - generic [ref=e3152]: system · internal
+            - 'button "done Task: Create GitHub Actions for CI p system · internal" [ref=e3153] [cursor=pointer]':
+              - generic [ref=e3154]:
+                - generic [ref=e3155]: done
+                - generic [ref=e3156]: "Task: Create GitHub Actions for CI p"
+                - button "Delete" [ref=e3157]:
+                  - img [ref=e3158]
+              - generic [ref=e3160]: system · internal
+            - 'button "done Task: Replace hardcoded project data system · internal" [ref=e3161] [cursor=pointer]':
+              - generic [ref=e3162]:
+                - generic [ref=e3163]: done
+                - generic [ref=e3164]: "Task: Replace hardcoded project data"
+                - button "Delete" [ref=e3165]:
+                  - img [ref=e3166]
+              - generic [ref=e3168]: system · internal
+            - 'button "done Task: Implement task start action AP system · internal" [ref=e3169] [cursor=pointer]':
+              - generic [ref=e3170]:
+                - generic [ref=e3171]: done
+                - generic [ref=e3172]: "Task: Implement task start action AP"
+                - button "Delete" [ref=e3173]:
+                  - img [ref=e3174]
+              - generic [ref=e3176]: system · internal
+            - 'button "done Task: Add loading and error states t system · internal" [ref=e3177] [cursor=pointer]':
+              - generic [ref=e3178]:
+                - generic [ref=e3179]: done
+                - generic [ref=e3180]: "Task: Add loading and error states t"
+                - button "Delete" [ref=e3181]:
+                  - img [ref=e3182]
+              - generic [ref=e3184]: system · internal
+            - 'button "done Task: Centralize API error handling system · internal" [ref=e3185] [cursor=pointer]':
+              - generic [ref=e3186]:
+                - generic [ref=e3187]: done
+                - generic [ref=e3188]: "Task: Centralize API error handling"
+                - button "Delete" [ref=e3189]:
+                  - img [ref=e3190]
+              - generic [ref=e3192]: system · internal
+            - 'button "done Task: Add unit tests for core UI com system · internal" [ref=e3193] [cursor=pointer]':
+              - generic [ref=e3194]:
+                - generic [ref=e3195]: done
+                - generic [ref=e3196]: "Task: Add unit tests for core UI com"
+                - button "Delete" [ref=e3197]:
+                  - img [ref=e3198]
+              - generic [ref=e3200]: system · internal
+            - 'button "done Task: Add pagination to project list system · internal" [ref=e3201] [cursor=pointer]':
+              - generic [ref=e3202]:
+                - generic [ref=e3203]: done
+                - generic [ref=e3204]: "Task: Add pagination to project list"
+                - button "Delete" [ref=e3205]:
+                  - img [ref=e3206]
+              - generic [ref=e3208]: system · internal
+            - 'button "done Task: Wire inbox notifications to AP system · internal" [ref=e3209] [cursor=pointer]':
+              - generic [ref=e3210]:
+                - generic [ref=e3211]: done
+                - generic [ref=e3212]: "Task: Wire inbox notifications to AP"
+                - button "Delete" [ref=e3213]:
+                  - img [ref=e3214]
+              - generic [ref=e3216]: system · internal
+            - 'button "done Task: Implement task start action system · internal" [ref=e3217] [cursor=pointer]':
+              - generic [ref=e3218]:
+                - generic [ref=e3219]: done
+                - generic [ref=e3220]: "Task: Implement task start action"
+                - button "Delete" [ref=e3221]:
+                  - img [ref=e3222]
+              - generic [ref=e3224]: system · internal
+            - 'button "done Task: Consolidate duplicate task man system · internal" [ref=e3225] [cursor=pointer]':
+              - generic [ref=e3226]:
+                - generic [ref=e3227]: done
+                - generic [ref=e3228]: "Task: Consolidate duplicate task man"
+                - button "Delete" [ref=e3229]:
+                  - img [ref=e3230]
+              - generic [ref=e3232]: system · internal
+            - 'button "done Task: Add global search / command pa system · internal" [ref=e3233] [cursor=pointer]':
+              - generic [ref=e3234]:
+                - generic [ref=e3235]: done
+                - generic [ref=e3236]: "Task: Add global search / command pa"
+                - button "Delete" [ref=e3237]:
+                  - img [ref=e3238]
+              - generic [ref=e3240]: system · internal
+            - 'button "done Task: Implement apps/[appId] detail system · internal" [ref=e3241] [cursor=pointer]':
+              - generic [ref=e3242]:
+                - generic [ref=e3243]: done
+                - generic [ref=e3244]: "Task: Implement apps/[appId] detail"
+                - button "Delete" [ref=e3245]:
+                  - img [ref=e3246]
+              - generic [ref=e3248]: system · internal
+            - 'button "done Task: Add auto-refresh or real-time system · internal" [ref=e3249] [cursor=pointer]':
+              - generic [ref=e3250]:
+                - generic [ref=e3251]: done
+                - generic [ref=e3252]: "Task: Add auto-refresh or real-time"
+                - button "Delete" [ref=e3253]:
+                  - img [ref=e3254]
+              - generic [ref=e3256]: system · internal
+            - button "for now leave it as a wip skeleton with gpt-oss:20b · internal" [ref=e3257] [cursor=pointer]:
+              - generic [ref=e3258]:
+                - generic [ref=e3259]: for now leave it as a wip skeleton with
+                - button "Delete" [ref=e3260]:
+                  - img [ref=e3261]
+              - generic [ref=e3263]: gpt-oss:20b · internal
+            - 'button "done Task: Add empty-state or redirect fo system · internal" [ref=e3264] [cursor=pointer]':
+              - generic [ref=e3265]:
+                - generic [ref=e3266]: done
+                - generic [ref=e3267]: "Task: Add empty-state or redirect fo"
+                - button "Delete" [ref=e3268]:
+                  - img [ref=e3269]
+              - generic [ref=e3271]: system · internal
+            - 'button "done Task: Wire inbox notification prefer system · internal" [ref=e3272] [cursor=pointer]':
+              - generic [ref=e3273]:
+                - generic [ref=e3274]: done
+                - generic [ref=e3275]: "Task: Wire inbox notification prefer"
+                - button "Delete" [ref=e3276]:
+                  - img [ref=e3277]
+              - generic [ref=e3279]: system · internal
+            - 'button "done Task: Add loading/saving feedback to system · internal" [ref=e3280] [cursor=pointer]':
+              - generic [ref=e3281]:
+                - generic [ref=e3282]: done
+                - generic [ref=e3283]: "Task: Add loading/saving feedback to"
+                - button "Delete" [ref=e3284]:
+                  - img [ref=e3285]
+              - generic [ref=e3287]: system · internal
+            - 'button "done Task: Fix SSE reconnect leak in inbo system · internal" [ref=e3288] [cursor=pointer]':
+              - generic [ref=e3289]:
+                - generic [ref=e3290]: done
+                - generic [ref=e3291]: "Task: Fix SSE reconnect leak in inbo"
+                - button "Delete" [ref=e3292]:
+                  - img [ref=e3293]
+              - generic [ref=e3295]: system · internal
+            - 'button "done Task: Fix homepage topPageRankEntry system · internal" [ref=e3296] [cursor=pointer]':
+              - generic [ref=e3297]:
+                - generic [ref=e3298]: done
+                - generic [ref=e3299]: "Task: Fix homepage topPageRankEntry"
+                - button "Delete" [ref=e3300]:
+                  - img [ref=e3301]
+              - generic [ref=e3303]: system · internal
+            - button "we can remove themes, we will only have gpt-oss:20b · internal" [ref=e3304] [cursor=pointer]:
+              - generic [ref=e3305]:
+                - generic [ref=e3306]: we can remove themes, we will only have
+                - button "Delete" [ref=e3307]:
+                  - img [ref=e3308]
+              - generic [ref=e3310]: gpt-oss:20b · internal
+            - 'button "done Task: Wire Apps page tool catalog fr system · internal" [ref=e3311] [cursor=pointer]':
+              - generic [ref=e3312]:
+                - generic [ref=e3313]: done
+                - generic [ref=e3314]: "Task: Wire Apps page tool catalog fr"
+                - button "Delete" [ref=e3315]:
+                  - img [ref=e3316]
+              - generic [ref=e3318]: system · internal
+            - 'button "done Task: Enrich security findings table system · internal" [ref=e3319] [cursor=pointer]':
+              - generic [ref=e3320]:
+                - generic [ref=e3321]: done
+                - generic [ref=e3322]: "Task: Enrich security findings table"
+                - button "Delete" [ref=e3323]:
+                  - img [ref=e3324]
+              - generic [ref=e3326]: system · internal
+            - 'button "done Task: Display dashboard version from system · internal" [ref=e3327] [cursor=pointer]':
+              - generic [ref=e3328]:
+                - generic [ref=e3329]: done
+                - generic [ref=e3330]: "Task: Display dashboard version from"
+                - button "Delete" [ref=e3331]:
+                  - img [ref=e3332]
+              - generic [ref=e3334]: system · internal
+            - 'button "done Task: Fix security scan result layou system · internal" [ref=e3335] [cursor=pointer]':
+              - generic [ref=e3336]:
+                - generic [ref=e3337]: done
+                - generic [ref=e3338]: "Task: Fix security scan result layou"
+                - button "Delete" [ref=e3339]:
+                  - img [ref=e3340]
+              - generic [ref=e3342]: system · internal
+            - 'button "done Task: Add meta description, theme-co system · internal" [ref=e3343] [cursor=pointer]':
+              - generic [ref=e3344]:
+                - generic [ref=e3345]: done
+                - generic [ref=e3346]: "Task: Add meta description, theme-co"
+                - button "Delete" [ref=e3347]:
+                  - img [ref=e3348]
+              - generic [ref=e3350]: system · internal
+            - 'button "done Task: Wire Browse button on services system · internal" [ref=e3351] [cursor=pointer]':
+              - generic [ref=e3352]:
+                - generic [ref=e3353]: done
+                - generic [ref=e3354]: "Task: Wire Browse button on services"
+                - button "Delete" [ref=e3355]:
+                  - img [ref=e3356]
+              - generic [ref=e3358]: system · internal
+            - button "this is specifically for openclaw, so we gpt-oss:20b · internal" [ref=e3359] [cursor=pointer]:
+              - generic [ref=e3360]:
+                - generic [ref=e3361]: this is specifically for openclaw, so we
+                - button "Delete" [ref=e3362]:
+                  - img [ref=e3363]
+              - generic [ref=e3365]: gpt-oss:20b · internal
+            - 'button "done Task: Wire services/new Create butto system · internal" [ref=e3366] [cursor=pointer]':
+              - generic [ref=e3367]:
+                - generic [ref=e3368]: done
+                - generic [ref=e3369]: "Task: Wire services/new Create butto"
+                - button "Delete" [ref=e3370]:
+                  - img [ref=e3371]
+              - generic [ref=e3373]: system · internal
+            - 'button "done Task: Add keyboard shortcut support system · internal" [ref=e3374] [cursor=pointer]':
+              - generic [ref=e3375]:
+                - generic [ref=e3376]: done
+                - generic [ref=e3377]: "Task: Add keyboard shortcut support"
+                - button "Delete" [ref=e3378]:
+                  - img [ref=e3379]
+              - generic [ref=e3381]: system · internal
+            - 'button "done Task: Fix tasks page $derived bug — system · internal" [ref=e3382] [cursor=pointer]':
+              - generic [ref=e3383]:
+                - generic [ref=e3384]: done
+                - generic [ref=e3385]: "Task: Fix tasks page $derived bug —"
+                - button "Delete" [ref=e3386]:
+                  - img [ref=e3387]
+              - generic [ref=e3389]: system · internal
+            - 'button "done Task: Add service start/stop/restart system · internal" [ref=e3390] [cursor=pointer]':
+              - generic [ref=e3391]:
+                - generic [ref=e3392]: done
+                - generic [ref=e3393]: "Task: Add service start/stop/restart"
+                - button "Delete" [ref=e3394]:
+                  - img [ref=e3395]
+              - generic [ref=e3397]: system · internal
+            - 'button "done Task: Fix notifications SSE reconnec system · internal" [ref=e3398] [cursor=pointer]':
+              - generic [ref=e3399]:
+                - generic [ref=e3400]: done
+                - generic [ref=e3401]: "Task: Fix notifications SSE reconnec"
+                - button "Delete" [ref=e3402]:
+                  - img [ref=e3403]
+              - generic [ref=e3405]: system · internal
+            - 'button "done Task: Remove 7 unused component file system · internal" [ref=e3406] [cursor=pointer]':
+              - generic [ref=e3407]:
+                - generic [ref=e3408]: done
+                - generic [ref=e3409]: "Task: Remove 7 unused component file"
+                - button "Delete" [ref=e3410]:
+                  - img [ref=e3411]
+              - generic [ref=e3413]: system · internal
+            - button "done hidden, as long as the user knows that t gpt-oss:20b · internal" [ref=e3414] [cursor=pointer]:
+              - generic [ref=e3415]:
+                - generic [ref=e3416]: done
+                - generic [ref=e3417]: hidden, as long as the user knows that t
+                - button "Delete" [ref=e3418]:
+                  - img [ref=e3419]
+              - generic [ref=e3421]: gpt-oss:20b · internal
+            - 'button "done Task: Wire About page to read from r system · internal" [ref=e3422] [cursor=pointer]':
+              - generic [ref=e3423]:
+                - generic [ref=e3424]: done
+                - generic [ref=e3425]: "Task: Wire About page to read from r"
+                - button "Delete" [ref=e3426]:
+                  - img [ref=e3427]
+              - generic [ref=e3429]: system · internal
+            - 'button "done Task: Add mark-all-read action for n system · internal" [ref=e3430] [cursor=pointer]':
+              - generic [ref=e3431]:
+                - generic [ref=e3432]: done
+                - generic [ref=e3433]: "Task: Add mark-all-read action for n"
+                - button "Delete" [ref=e3434]:
+                  - img [ref=e3435]
+              - generic [ref=e3437]: system · internal
+            - 'button "done Task: Unify version tracking across system · internal" [ref=e3438] [cursor=pointer]':
+              - generic [ref=e3439]:
+                - generic [ref=e3440]: done
+                - generic [ref=e3441]: "Task: Unify version tracking across"
+                - button "Delete" [ref=e3442]:
+                  - img [ref=e3443]
+              - generic [ref=e3445]: system · internal
+            - 'button "done Task: Fix dynamic Tailwind class int system · internal" [ref=e3446] [cursor=pointer]':
+              - generic [ref=e3447]:
+                - generic [ref=e3448]: done
+                - generic [ref=e3449]: "Task: Fix dynamic Tailwind class int"
+                - button "Delete" [ref=e3450]:
+                  - img [ref=e3451]
+              - generic [ref=e3453]: system · internal
+            - 'button "done Task: Wire Apps page to real MCP ser system · internal" [ref=e3454] [cursor=pointer]':
+              - generic [ref=e3455]:
+                - generic [ref=e3456]: done
+                - generic [ref=e3457]: "Task: Wire Apps page to real MCP ser"
+                - button "Delete" [ref=e3458]:
+                  - img [ref=e3459]
+              - generic [ref=e3461]: system · internal
+            - 'button "done Task: Notify on all Claw actions — t system · internal" [ref=e3462] [cursor=pointer]':
+              - generic [ref=e3463]:
+                - generic [ref=e3464]: done
+                - generic [ref=e3465]: "Task: Notify on all Claw actions — t"
+                - button "Delete" [ref=e3466]:
+                  - img [ref=e3467]
+              - generic [ref=e3469]: system · internal
+            - 'button "done Task: The Models page should conside system · internal" [ref=e3470] [cursor=pointer]':
+              - generic [ref=e3471]:
+                - generic [ref=e3472]: done
+                - generic [ref=e3473]: "Task: The Models page should conside"
+                - button "Delete" [ref=e3474]:
+                  - img [ref=e3475]
+              - generic [ref=e3477]: system · internal
+            - 'button "done Task: Push notification on every Cla system · internal" [ref=e3478] [cursor=pointer]':
+              - generic [ref=e3479]:
+                - generic [ref=e3480]: done
+                - generic [ref=e3481]: "Task: Push notification on every Cla"
+                - button "Delete" [ref=e3482]:
+                  - img [ref=e3483]
+              - generic [ref=e3485]: system · internal
+            - 'button "done Task: Add markdown rendering to chat system · internal" [ref=e3486] [cursor=pointer]':
+              - generic [ref=e3487]:
+                - generic [ref=e3488]: done
+                - generic [ref=e3489]: "Task: Add markdown rendering to chat"
+                - button "Delete" [ref=e3490]:
+                  - img [ref=e3491]
+              - generic [ref=e3493]: system · internal
+            - 'button "done Task: Generate scoring engine and co system · internal" [ref=e3494] [cursor=pointer]':
+              - generic [ref=e3495]:
+                - generic [ref=e3496]: done
+                - generic [ref=e3497]: "Task: Generate scoring engine and co"
+                - button "Delete" [ref=e3498]:
+                  - img [ref=e3499]
+              - generic [ref=e3501]: system · internal
+            - 'button "done Task: Add timeline charts and data v system · internal" [ref=e3502] [cursor=pointer]':
+              - generic [ref=e3503]:
+                - generic [ref=e3504]: done
+                - generic [ref=e3505]: "Task: Add timeline charts and data v"
+                - button "Delete" [ref=e3506]:
+                  - img [ref=e3507]
+              - generic [ref=e3509]: system · internal
+            - 'button "done Task: Rework or remove report health system · internal" [ref=e3510] [cursor=pointer]':
+              - generic [ref=e3511]:
+                - generic [ref=e3512]: done
+                - generic [ref=e3513]: "Task: Rework or remove report health"
+                - button "Delete" [ref=e3514]:
+                  - img [ref=e3515]
+              - generic [ref=e3517]: system · internal
+            - 'button "done Task: Wire appearance/theme settings system · internal" [ref=e3518] [cursor=pointer]':
+              - generic [ref=e3519]:
+                - generic [ref=e3520]: done
+                - generic [ref=e3521]: "Task: Wire appearance/theme settings"
+                - button "Delete" [ref=e3522]:
+                  - img [ref=e3523]
+              - generic [ref=e3525]: system · internal
+            - 'button "done Task: Convert add-task form to a mod system · internal" [ref=e3526] [cursor=pointer]':
+              - generic [ref=e3527]:
+                - generic [ref=e3528]: done
+                - generic [ref=e3529]: "Task: Convert add-task form to a mod"
+                - button "Delete" [ref=e3530]:
+                  - img [ref=e3531]
+              - generic [ref=e3533]: system · internal
+            - 'button "done Task: Wire global/project scope togg system · internal" [ref=e3534] [cursor=pointer]':
+              - generic [ref=e3535]:
+                - generic [ref=e3536]: done
+                - generic [ref=e3537]: "Task: Wire global/project scope togg"
+                - button "Delete" [ref=e3538]:
+                  - img [ref=e3539]
+              - generic [ref=e3541]: system · internal
+            - 'button "done Task: Wire memory settings system · internal" [ref=e3542] [cursor=pointer]':
+              - generic [ref=e3543]:
+                - generic [ref=e3544]: done
+                - generic [ref=e3545]: "Task: Wire memory settings"
+                - button "Delete" [ref=e3546]:
+                  - img [ref=e3547]
+              - generic [ref=e3549]: system · internal
+            - 'button "done Task: Add monthly, quarterly, and ye system · internal" [ref=e3550] [cursor=pointer]':
+              - generic [ref=e3551]:
+                - generic [ref=e3552]: done
+                - generic [ref=e3553]: "Task: Add monthly, quarterly, and ye"
+                - button "Delete" [ref=e3554]:
+                  - img [ref=e3555]
+              - generic [ref=e3557]: system · internal
+            - 'button "done Task: Generate .playground/config.js system · internal" [ref=e3558] [cursor=pointer]':
+              - generic [ref=e3559]:
+                - generic [ref=e3560]: done
+                - generic [ref=e3561]: "Task: Generate .playground/config.js"
+                - button "Delete" [ref=e3562]:
+                  - img [ref=e3563]
+              - generic [ref=e3565]: system · internal
+            - 'button "done Task: Expand agent management — view system · internal" [ref=e3566] [cursor=pointer]':
+              - generic [ref=e3567]:
+                - generic [ref=e3568]: done
+                - generic [ref=e3569]: "Task: Expand agent management — view"
+                - button "Delete" [ref=e3570]:
+                  - img [ref=e3571]
+              - generic [ref=e3573]: system · internal
+            - 'button "done Task: View service logs and configs system · internal" [ref=e3574] [cursor=pointer]':
+              - generic [ref=e3575]:
+                - generic [ref=e3576]: done
+                - generic [ref=e3577]: "Task: View service logs and configs"
+                - button "Delete" [ref=e3578]:
+                  - img [ref=e3579]
+              - generic [ref=e3581]: system · internal
+            - 'button "done Task: Wire services health checks in system · internal" [ref=e3582] [cursor=pointer]':
+              - generic [ref=e3583]:
+                - generic [ref=e3584]: done
+                - generic [ref=e3585]: "Task: Wire services health checks in"
+                - button "Delete" [ref=e3586]:
+                  - img [ref=e3587]
+              - generic [ref=e3589]: system · internal
+            - 'button "done Task: Wire API keys status from .env system · internal" [ref=e3590] [cursor=pointer]':
+              - generic [ref=e3591]:
+                - generic [ref=e3592]: done
+                - generic [ref=e3593]: "Task: Wire API keys status from .env"
+                - button "Delete" [ref=e3594]:
+                  - img [ref=e3595]
+              - generic [ref=e3597]: system · internal
+            - button "done task-settings-general-persist system · internal" [ref=e3598] [cursor=pointer]:
+              - generic [ref=e3599]:
+                - generic [ref=e3600]: done
+                - generic [ref=e3601]: task-settings-general-persist
+                - button "Delete" [ref=e3602]:
+                  - img [ref=e3603]
+              - generic [ref=e3605]: system · internal
+            - 'button "done Task: Auto-detect project details on system · internal" [ref=e3606] [cursor=pointer]':
+              - generic [ref=e3607]:
+                - generic [ref=e3608]: done
+                - generic [ref=e3609]: "Task: Auto-detect project details on"
+                - button "Delete" [ref=e3610]:
+                  - img [ref=e3611]
+              - generic [ref=e3613]: system · internal
+            - 'button "done Task: Wire project creation form to system · internal" [ref=e3614] [cursor=pointer]':
+              - generic [ref=e3615]:
+                - generic [ref=e3616]: done
+                - generic [ref=e3617]: "Task: Wire project creation form to"
+                - button "Delete" [ref=e3618]:
+                  - img [ref=e3619]
+              - generic [ref=e3621]: system · internal
+            - 'button "done Task: Audit and fix all non-function system · internal" [ref=e3622] [cursor=pointer]':
+              - generic [ref=e3623]:
+                - generic [ref=e3624]: done
+                - generic [ref=e3625]: "Task: Audit and fix all non-function"
+                - button "Delete" [ref=e3626]:
+                  - img [ref=e3627]
+              - generic [ref=e3629]: system · internal
+            - 'button "done Task: Fix reports showing 0s â€” wir system · internal" [ref=e3630] [cursor=pointer]':
+              - generic [ref=e3631]:
+                - generic [ref=e3632]: done
+                - generic [ref=e3633]: "Task: Fix reports showing 0s â€” wir"
+                - button "Delete" [ref=e3634]:
+                  - img [ref=e3635]
+              - generic [ref=e3637]: system · internal
+            - button "done task-inbox-quick-actions-wire system · internal" [ref=e3638] [cursor=pointer]:
+              - generic [ref=e3639]:
+                - generic [ref=e3640]: done
+                - generic [ref=e3641]: task-inbox-quick-actions-wire
+                - button "Delete" [ref=e3642]:
+                  - img [ref=e3643]
+              - generic [ref=e3645]: system · internal
+            - button "done task-settings-model-routing system · internal" [ref=e3646] [cursor=pointer]:
+              - generic [ref=e3647]:
+                - generic [ref=e3648]: done
+                - generic [ref=e3649]: task-settings-model-routing
+                - button "Delete" [ref=e3650]:
+                  - img [ref=e3651]
+              - generic [ref=e3653]: system · internal
+            - button "done task-settings-agent-defaults system · internal" [ref=e3654] [cursor=pointer]:
+              - generic [ref=e3655]:
+                - generic [ref=e3656]: done
+                - generic [ref=e3657]: task-settings-agent-defaults
+                - button "Delete" [ref=e3658]:
+                  - img [ref=e3659]
+              - generic [ref=e3661]: system · internal
+            - button "done what ever they are currently set to, glo gpt-oss:20b · internal" [ref=e3662] [cursor=pointer]:
+              - generic [ref=e3663]:
+                - generic [ref=e3664]: done
+                - generic [ref=e3665]: what ever they are currently set to, glo
+                - button "Delete" [ref=e3666]:
+                  - img [ref=e3667]
+              - generic [ref=e3669]: gpt-oss:20b · internal
+            - button "done i didnt understand it as a health score. gpt-oss:20b · internal" [ref=e3670] [cursor=pointer]:
+              - generic [ref=e3671]:
+                - generic [ref=e3672]: done
+                - generic [ref=e3673]: i didnt understand it as a health score.
+                - button "Delete" [ref=e3674]:
+                  - img [ref=e3675]
+              - generic [ref=e3677]: gpt-oss:20b · internal
+            - 'button "done so far we have: OLLAMA_API_KEY gpt-oss:20b · internal" [ref=e3678] [cursor=pointer]':
+              - generic [ref=e3679]:
+                - generic [ref=e3680]: done
+                - generic [ref=e3681]: "so far we have: OLLAMA_API_KEY"
+                - button "Delete" [ref=e3682]:
+                  - img [ref=e3683]
+              - generic [ref=e3685]: gpt-oss:20b · internal
+        - generic [ref=e3686]:
+          - generic [ref=e3687]:
+            - heading "Chat" [level=2] [ref=e3688]
+            - generic [ref=e3689]:
+              - combobox [ref=e3690]:
+                - option "Ollama (Local)"
+                - option "OpenClaw"
+                - option "Claude API"
+              - combobox [ref=e3691]:
+                - option "gpt-oss:20b" [selected]
+              - button "Tools ON" [ref=e3692]
+          - generic [ref=e3693]:
+            - generic [ref=e3695]:
+              - generic [ref=e3696]: Claw
+              - paragraph [ref=e3698]: "[idle] Heartbeat #30 done — 1 agent(s) running — going idle"
+            - generic [ref=e3700]:
+              - generic [ref=e3701]: Claw
+              - paragraph [ref=e3703]: "--- Heartbeat #8 — 1:57:37 AM ---"
+            - generic [ref=e3705]:
+              - generic [ref=e3706]: Claw
+              - paragraph [ref=e3708]: "[wake] Claw waking up"
+            - generic [ref=e3710]:
+              - generic [ref=e3711]: Claw
+              - paragraph [ref=e3713]: "[plan] Check service health → Scan tasks across projects → Check running agents → Spawn agents for actionable tasks"
+            - generic [ref=e3715]:
+              - generic [ref=e3716]: Claw
+              - paragraph [ref=e3718]: "[health] Probing services..."
+            - generic [ref=e3720]:
+              - generic [ref=e3721]: Claw
+              - paragraph [ref=e3723]: "[health] 2/3 up — ollama: up, gateway: up, daemon: down"
+            - generic [ref=e3725]:
+              - generic [ref=e3726]: Claw
+              - paragraph [ref=e3728]: "[tasks] Scanning tasks..."
+            - generic [ref=e3730]:
+              - generic [ref=e3731]: Claw
+              - paragraph [ref=e3733]: "[tasks] 334 total — 1 pending, 1 in progress, 332 completed"
+            - generic [ref=e3735]:
+              - generic [ref=e3736]: Claw
+              - paragraph [ref=e3738]: "[discuss] 1 awaiting user response: Add UI toggle for memory graph in settings"
+            - generic [ref=e3740]:
+              - generic [ref=e3741]: Claw
+              - paragraph [ref=e3743]: "[spawn] No actionable tasks — nothing to spawn"
+            - generic [ref=e3745]:
+              - generic [ref=e3746]: Claw
+              - paragraph [ref=e3748]: "[notify] Heartbeat notification pushed"
+            - generic [ref=e3750]:
+              - generic [ref=e3751]: Claw
+              - paragraph [ref=e3753]: "[memory] Bridge sync: +0 new, 2 updated — sources: auto-memory (30), project-map (2)"
+            - generic [ref=e3755]:
+              - generic [ref=e3756]: Claw
+              - paragraph [ref=e3758]: "[idle] Heartbeat #8 done — 0 agent(s) running — going idle"
+            - generic [ref=e3760]:
+              - generic [ref=e3761]: Claw
+              - paragraph [ref=e3763]: "--- Heartbeat #30 — 2:01:32 AM ---"
+            - generic [ref=e3765]:
+              - generic [ref=e3766]: Claw
+              - paragraph [ref=e3768]: "[wake] Claw waking up"
+            - generic [ref=e3770]:
+              - generic [ref=e3771]: Claw
+              - paragraph [ref=e3773]: "[plan] Check service health → Scan tasks across projects → Check running agents → Spawn agents for actionable tasks"
+            - generic [ref=e3775]:
+              - generic [ref=e3776]: Claw
+              - paragraph [ref=e3778]: "[health] Probing services..."
+            - generic [ref=e3780]:
+              - generic [ref=e3781]: Claw
+              - paragraph [ref=e3783]: "[health] 2/3 up — ollama: up, gateway: up, daemon: down"
+            - generic [ref=e3785]:
+              - generic [ref=e3786]: Claw
+              - paragraph [ref=e3788]: "[tasks] Scanning tasks..."
+            - generic [ref=e3790]:
+              - generic [ref=e3791]: Claw
+              - paragraph [ref=e3793]: "[tasks] 334 total — 1 pending, 1 in progress, 332 completed"
+            - generic [ref=e3795]:
+              - generic [ref=e3796]: Claw
+              - paragraph [ref=e3798]: "[discuss] 1 awaiting user response: Add UI toggle for memory graph in settings"
+            - generic [ref=e3800]:
+              - generic [ref=e3801]: Claw
+              - paragraph [ref=e3803]: "[spawn] No actionable tasks — nothing to spawn"
+            - generic [ref=e3805]:
+              - generic [ref=e3806]: Claw
+              - paragraph [ref=e3808]: "[ux] Starting full discovery via Claude Sonnet + Playwright"
+            - generic [ref=e3810]:
+              - generic [ref=e3811]: Claw
+              - paragraph [ref=e3813]: "[notify] Heartbeat notification pushed"
+            - generic [ref=e3815]:
+              - generic [ref=e3816]: Claw
+              - paragraph [ref=e3818]: "[memory] Bridge sync: +0 new, 2 updated — sources: auto-memory (30), project-map (2)"
+            - generic [ref=e3820]:
+              - generic [ref=e3821]: Claw
+              - paragraph [ref=e3823]: "[idle] Heartbeat #30 done — 1 agent(s) running — going idle"
+            - generic [ref=e3825]:
+              - generic [ref=e3826]: Claw
+              - paragraph [ref=e3828]: "--- Heartbeat #31 — 2:01:36 AM ---"
+            - generic [ref=e3830]:
+              - generic [ref=e3831]: Claw
+              - paragraph [ref=e3833]: "[wake] Claw waking up"
+            - generic [ref=e3835]:
+              - generic [ref=e3836]: Claw
+              - paragraph [ref=e3838]: "[plan] Check service health → Scan tasks across projects → Check running agents → Spawn agents for actionable tasks"
+            - generic [ref=e3840]:
+              - generic [ref=e3841]: Claw
+              - paragraph [ref=e3843]: "[health] Probing services..."
+            - generic [ref=e3845]:
+              - generic [ref=e3846]: Claw
+              - paragraph [ref=e3848]: "[health] 2/3 up — ollama: up, gateway: up, daemon: down"
+            - generic [ref=e3850]:
+              - generic [ref=e3851]: Claw
+              - paragraph [ref=e3853]: "[tasks] Scanning tasks..."
+            - generic [ref=e3855]:
+              - generic [ref=e3856]: Claw
+              - paragraph [ref=e3858]: "[tasks] 334 total — 1 pending, 1 in progress, 332 completed"
+            - generic [ref=e3860]:
+              - generic [ref=e3861]: Claw
+              - paragraph [ref=e3863]: "[discuss] 1 awaiting user response: Add UI toggle for memory graph in settings"
+            - generic [ref=e3865]:
+              - generic [ref=e3866]: Claw
+              - paragraph [ref=e3868]: "[agents] 1 active: ux-inspector (0m 5s)"
+            - generic [ref=e3870]:
+              - generic [ref=e3871]: Claw
+              - paragraph [ref=e3873]: "[spawn] No actionable tasks — nothing to spawn"
+            - generic [ref=e3875]:
+              - generic [ref=e3876]: Claw
+              - paragraph [ref=e3878]: "[notify] Heartbeat notification pushed"
+            - generic [ref=e3880]:
+              - generic [ref=e3881]: Claw
+              - paragraph [ref=e3883]: "[memory] Bridge sync: +0 new, 2 updated — sources: auto-memory (30), project-map (2)"
+            - generic [ref=e3885]:
+              - generic [ref=e3886]: Claw
+              - paragraph [ref=e3888]: "[idle] Heartbeat #31 done — 1 agent(s) running — going idle"
+            - generic [ref=e3890]:
+              - generic [ref=e3891]: Claw
+              - paragraph [ref=e3893]: "--- Heartbeat #9 — 2:01:57 AM ---"
+            - generic [ref=e3895]:
+              - generic [ref=e3896]: Claw
+              - paragraph [ref=e3898]: "[wake] Claw waking up"
+            - generic [ref=e3900]:
+              - generic [ref=e3901]: Claw
+              - paragraph [ref=e3903]: "[plan] Check service health → Scan tasks across projects → Check running agents → Spawn agents for actionable tasks"
+            - generic [ref=e3905]:
+              - generic [ref=e3906]: Claw
+              - paragraph [ref=e3908]: "[health] Probing services..."
+            - generic [ref=e3910]:
+              - generic [ref=e3911]: Claw
+              - paragraph [ref=e3913]: "[health] 2/3 up — ollama: up, gateway: up, daemon: down"
+            - generic [ref=e3915]:
+              - generic [ref=e3916]: Claw
+              - paragraph [ref=e3918]: "[tasks] Scanning tasks..."
+            - generic [ref=e3920]:
+              - generic [ref=e3921]: Claw
+              - paragraph [ref=e3923]: "[tasks] 334 total — 1 pending, 1 in progress, 332 completed"
+            - generic [ref=e3925]:
+              - generic [ref=e3926]: Claw
+              - paragraph [ref=e3928]: "[discuss] 1 awaiting user response: Add UI toggle for memory graph in settings"
+            - generic [ref=e3930]:
+              - generic [ref=e3931]: Claw
+              - paragraph [ref=e3933]: "[spawn] No actionable tasks — nothing to spawn"
+            - generic [ref=e3935]:
+              - generic [ref=e3936]: Claw
+              - paragraph [ref=e3938]: "[notify] Heartbeat notification pushed"
+            - generic [ref=e3940]:
+              - generic [ref=e3941]: Claw
+              - paragraph [ref=e3943]: "[memory] Bridge sync: +0 new, 2 updated — sources: auto-memory (30), project-map (2)"
+            - generic [ref=e3945]:
+              - generic [ref=e3946]: Claw
+              - paragraph [ref=e3948]: "[idle] Heartbeat #9 done — 0 agent(s) running — going idle"
+            - generic [ref=e3950]:
+              - generic [ref=e3951]: Claw
+              - paragraph [ref=e3953]: "--- Heartbeat #31 — 2:05:52 AM ---"
+            - generic [ref=e3955]:
+              - generic [ref=e3956]: Claw
+              - paragraph [ref=e3958]: "[wake] Claw waking up"
+            - generic [ref=e3960]:
+              - generic [ref=e3961]: Claw
+              - paragraph [ref=e3963]: "[plan] Check service health → Scan tasks across projects → Check running agents → Spawn agents for actionable tasks"
+            - generic [ref=e3965]:
+              - generic [ref=e3966]: Claw
+              - paragraph [ref=e3968]: "[health] Probing services..."
+            - generic [ref=e3970]:
+              - generic [ref=e3971]: Claw
+              - paragraph [ref=e3973]: "[health] 2/3 up — ollama: up, gateway: up, daemon: down"
+            - generic [ref=e3975]:
+              - generic [ref=e3976]: Claw
+              - paragraph [ref=e3978]: "[tasks] Scanning tasks..."
+            - generic [ref=e3980]:
+              - generic [ref=e3981]: Claw
+              - paragraph [ref=e3983]: "[tasks] 334 total — 1 pending, 1 in progress, 332 completed"
+            - generic [ref=e3985]:
+              - generic [ref=e3986]: Claw
+              - paragraph [ref=e3988]: "[discuss] 1 awaiting user response: Add UI toggle for memory graph in settings"
+            - generic [ref=e3990]:
+              - generic [ref=e3991]: Claw
+              - paragraph [ref=e3993]: "[spawn] No actionable tasks — nothing to spawn"
+            - generic [ref=e3995]:
+              - generic [ref=e3996]: Claw
+              - paragraph [ref=e3998]: "[notify] Heartbeat notification pushed"
+            - generic [ref=e4000]:
+              - generic [ref=e4001]: Claw
+              - paragraph [ref=e4003]: "[memory] Bridge sync: +0 new, 2 updated — sources: auto-memory (30), project-map (2)"
+            - generic [ref=e4005]:
+              - generic [ref=e4006]: Claw
+              - paragraph [ref=e4008]: "[idle] Heartbeat #31 done — 0 agent(s) running — going idle"
+            - generic [ref=e4010]:
+              - generic [ref=e4011]: Claw
+              - paragraph [ref=e4013]: "--- Heartbeat #32 — 2:05:56 AM ---"
+            - generic [ref=e4015]:
+              - generic [ref=e4016]: Claw
+              - paragraph [ref=e4018]: "[wake] Claw waking up"
+            - generic [ref=e4020]:
+              - generic [ref=e4021]: Claw
+              - paragraph [ref=e4023]: "[plan] Check service health → Scan tasks across projects → Check running agents → Spawn agents for actionable tasks"
+            - generic [ref=e4025]:
+              - generic [ref=e4026]: Claw
+              - paragraph [ref=e4028]: "[health] Probing services..."
+            - generic [ref=e4030]:
+              - generic [ref=e4031]: Claw
+              - paragraph [ref=e4033]: "[health] 2/3 up — ollama: up, gateway: up, daemon: down"
+            - generic [ref=e4035]:
+              - generic [ref=e4036]: Claw
+              - paragraph [ref=e4038]: "[tasks] Scanning tasks..."
+            - generic [ref=e4040]:
+              - generic [ref=e4041]: Claw
+              - paragraph [ref=e4043]: "[tasks] 334 total — 1 pending, 1 in progress, 332 completed"
+            - generic [ref=e4045]:
+              - generic [ref=e4046]: Claw
+              - paragraph [ref=e4048]: "[discuss] 1 awaiting user response: Add UI toggle for memory graph in settings"
+            - generic [ref=e4050]:
+              - generic [ref=e4051]: Claw
+              - paragraph [ref=e4053]: "[spawn] No actionable tasks — nothing to spawn"
+            - generic [ref=e4055]:
+              - generic [ref=e4056]: Claw
+              - paragraph [ref=e4058]: "[notify] Heartbeat notification pushed"
+            - generic [ref=e4060]:
+              - generic [ref=e4061]: Claw
+              - paragraph [ref=e4063]: "[memory] Bridge sync: +0 new, 2 updated — sources: auto-memory (30), project-map (2)"
+            - generic [ref=e4065]:
+              - generic [ref=e4066]: Claw
+              - paragraph [ref=e4068]: "[idle] Heartbeat #32 done — 0 agent(s) running — going idle"
+            - generic [ref=e4070]:
+              - generic [ref=e4071]: Claw
+              - paragraph [ref=e4073]: "--- Heartbeat #10 — 2:06:17 AM ---"
+            - generic [ref=e4075]:
+              - generic [ref=e4076]: Claw
+              - paragraph [ref=e4078]: "[wake] Claw waking up"
+            - generic [ref=e4080]:
+              - generic [ref=e4081]: Claw
+              - paragraph [ref=e4083]: "[plan] Check service health → Scan tasks across projects → Check running agents → Spawn agents for actionable tasks"
+            - generic [ref=e4085]:
+              - generic [ref=e4086]: Claw
+              - paragraph [ref=e4088]: "[health] Probing services..."
+            - generic [ref=e4090]:
+              - generic [ref=e4091]: Claw
+              - paragraph [ref=e4093]: "[health] 2/3 up — ollama: up, gateway: up, daemon: down"
+            - generic [ref=e4095]:
+              - generic [ref=e4096]: Claw
+              - paragraph [ref=e4098]: "[tasks] Scanning tasks..."
+            - generic [ref=e4100]:
+              - generic [ref=e4101]: Claw
+              - paragraph [ref=e4103]: "[tasks] 334 total — 1 pending, 1 in progress, 332 completed"
+            - generic [ref=e4105]:
+              - generic [ref=e4106]: Claw
+              - paragraph [ref=e4108]: "[discuss] 1 awaiting user response: Add UI toggle for memory graph in settings"
+            - generic [ref=e4110]:
+              - generic [ref=e4111]: Claw
+              - paragraph [ref=e4113]: "[spawn] No actionable tasks — nothing to spawn"
+            - generic [ref=e4115]:
+              - generic [ref=e4116]: Claw
+              - paragraph [ref=e4118]: "[ux] Starting full discovery via Claude Sonnet + Playwright"
+            - generic [ref=e4120]:
+              - generic [ref=e4121]: Claw
+              - paragraph [ref=e4123]: "[notify] Heartbeat notification pushed"
+            - generic [ref=e4125]:
+              - generic [ref=e4126]: Claw
+              - paragraph [ref=e4128]: "[memory] Bridge sync: +0 new, 2 updated — sources: auto-memory (30), project-map (2)"
+            - generic [ref=e4130]:
+              - generic [ref=e4131]: Claw
+              - paragraph [ref=e4133]: "[idle] Heartbeat #10 done — 0 agent(s) running — going idle"
+            - generic [ref=e4135]:
+              - generic [ref=e4136]: Claw
+              - paragraph [ref=e4138]: "--- Heartbeat #32 — 2:10:12 AM ---"
+            - generic [ref=e4140]:
+              - generic [ref=e4141]: Claw
+              - paragraph [ref=e4143]: "[wake] Claw waking up"
+            - generic [ref=e4145]:
+              - generic [ref=e4146]: Claw
+              - paragraph [ref=e4148]: "[plan] Check service health → Scan tasks across projects → Check running agents → Spawn agents for actionable tasks"
+            - generic [ref=e4150]:
+              - generic [ref=e4151]: Claw
+              - paragraph [ref=e4153]: "[health] Probing services..."
+            - generic [ref=e4155]:
+              - generic [ref=e4156]: Claw
+              - paragraph [ref=e4158]: "[health] 2/3 up — ollama: up, gateway: up, daemon: down"
+            - generic [ref=e4160]:
+              - generic [ref=e4161]: Claw
+              - paragraph [ref=e4163]: "[tasks] Scanning tasks..."
+            - generic [ref=e4165]:
+              - generic [ref=e4166]: Claw
+              - paragraph [ref=e4168]: "[tasks] 334 total — 1 pending, 1 in progress, 332 completed"
+            - generic [ref=e4170]:
+              - generic [ref=e4171]: Claw
+              - paragraph [ref=e4173]: "[discuss] 1 awaiting user response: Add UI toggle for memory graph in settings"
+            - generic [ref=e4175]:
+              - generic [ref=e4176]: Claw
+              - paragraph [ref=e4178]: "[spawn] No actionable tasks — nothing to spawn"
+            - generic [ref=e4180]:
+              - generic [ref=e4181]: Claw
+              - paragraph [ref=e4183]: "[notify] Heartbeat notification pushed"
+            - generic [ref=e4185]:
+              - generic [ref=e4186]: Claw
+              - paragraph [ref=e4188]: "[memory] Bridge sync: +0 new, 2 updated — sources: auto-memory (30), project-map (2)"
+            - generic [ref=e4190]:
+              - generic [ref=e4191]: Claw
+              - paragraph [ref=e4193]: "[idle] Heartbeat #32 done — 0 agent(s) running — going idle"
+            - generic [ref=e4195]:
+              - generic [ref=e4196]: Claw
+              - paragraph [ref=e4198]: "--- Heartbeat #33 — 2:10:17 AM ---"
+            - generic [ref=e4200]:
+              - generic [ref=e4201]: Claw
+              - paragraph [ref=e4203]: "[wake] Claw waking up"
+            - generic [ref=e4205]:
+              - generic [ref=e4206]: Claw
+              - paragraph [ref=e4208]: "[plan] Check service health → Scan tasks across projects → Check running agents → Spawn agents for actionable tasks"
+            - generic [ref=e4210]:
+              - generic [ref=e4211]: Claw
+              - paragraph [ref=e4213]: "[health] Probing services..."
+            - generic [ref=e4215]:
+              - generic [ref=e4216]: Claw
+              - paragraph [ref=e4218]: "[health] 2/3 up — ollama: up, gateway: up, daemon: down"
+            - generic [ref=e4220]:
+              - generic [ref=e4221]: Claw
+              - paragraph [ref=e4223]: "[tasks] Scanning tasks..."
+            - generic [ref=e4225]:
+              - generic [ref=e4226]: Claw
+              - paragraph [ref=e4228]: "[tasks] 334 total — 1 pending, 1 in progress, 332 completed"
+            - generic [ref=e4230]:
+              - generic [ref=e4231]: Claw
+              - paragraph [ref=e4233]: "[discuss] 1 awaiting user response: Add UI toggle for memory graph in settings"
+            - generic [ref=e4235]:
+              - generic [ref=e4236]: Claw
+              - paragraph [ref=e4238]: "[spawn] No actionable tasks — nothing to spawn"
+            - generic [ref=e4240]:
+              - generic [ref=e4241]: Claw
+              - paragraph [ref=e4243]: "[notify] Heartbeat notification pushed"
+            - generic [ref=e4245]:
+              - generic [ref=e4246]: Claw
+              - paragraph [ref=e4248]: "[memory] Bridge sync: +0 new, 2 updated — sources: auto-memory (30), project-map (2)"
+            - generic [ref=e4250]:
+              - generic [ref=e4251]: Claw
+              - paragraph [ref=e4253]: "[idle] Heartbeat #33 done — 0 agent(s) running — going idle"
+            - generic [ref=e4255]:
+              - generic [ref=e4256]: Claw
+              - paragraph [ref=e4258]: "--- Heartbeat #11 — 2:10:37 AM ---"
+            - generic [ref=e4260]:
+              - generic [ref=e4261]: Claw
+              - paragraph [ref=e4263]: "[wake] Claw waking up"
+            - generic [ref=e4265]:
+              - generic [ref=e4266]: Claw
+              - paragraph [ref=e4268]: "[plan] Check service health → Scan tasks across projects → Check running agents → Spawn agents for actionable tasks"
+            - generic [ref=e4270]:
+              - generic [ref=e4271]: Claw
+              - paragraph [ref=e4273]: "[health] Probing services..."
+            - generic [ref=e4275]:
+              - generic [ref=e4276]: Claw
+              - paragraph [ref=e4278]: "[health] 2/3 up — ollama: up, gateway: up, daemon: down"
+            - generic [ref=e4280]:
+              - generic [ref=e4281]: Claw
+              - paragraph [ref=e4283]: "[tasks] Scanning tasks..."
+            - generic [ref=e4285]:
+              - generic [ref=e4286]: Claw
+              - paragraph [ref=e4288]: "[tasks] 334 total — 1 pending, 1 in progress, 332 completed"
+            - generic [ref=e4290]:
+              - generic [ref=e4291]: Claw
+              - paragraph [ref=e4293]: "[discuss] 1 awaiting user response: Add UI toggle for memory graph in settings"
+            - generic [ref=e4295]:
+              - generic [ref=e4296]: Claw
+              - paragraph [ref=e4298]: "[spawn] No actionable tasks — nothing to spawn"
+            - generic [ref=e4300]:
+              - generic [ref=e4301]: Claw
+              - paragraph [ref=e4303]: "[notify] Heartbeat notification pushed"
+            - generic [ref=e4305]:
+              - generic [ref=e4306]: Claw
+              - paragraph [ref=e4308]: "[memory] Bridge sync: +0 new, 2 updated — sources: auto-memory (30), project-map (2)"
+            - generic [ref=e4310]:
+              - generic [ref=e4311]: Claw
+              - paragraph [ref=e4313]: "[idle] Heartbeat #11 done — 0 agent(s) running — going idle"
+            - generic [ref=e4315]:
+              - generic [ref=e4316]: Claw
+              - paragraph [ref=e4318]: "--- Heartbeat #33 — 2:14:32 AM ---"
+            - generic [ref=e4320]:
+              - generic [ref=e4321]: Claw
+              - paragraph [ref=e4323]: "[wake] Claw waking up"
+            - generic [ref=e4325]:
+              - generic [ref=e4326]: Claw
+              - paragraph [ref=e4328]: "[plan] Check service health → Scan tasks across projects → Check running agents → Spawn agents for actionable tasks"
+            - generic [ref=e4330]:
+              - generic [ref=e4331]: Claw
+              - paragraph [ref=e4333]: "[health] Probing services..."
+            - generic [ref=e4335]:
+              - generic [ref=e4336]: Claw
+              - paragraph [ref=e4338]: "[health] 2/3 up — ollama: up, gateway: up, daemon: down"
+            - generic [ref=e4340]:
+              - generic [ref=e4341]: Claw
+              - paragraph [ref=e4343]: "[tasks] Scanning tasks..."
+            - generic [ref=e4345]:
+              - generic [ref=e4346]: Claw
+              - paragraph [ref=e4348]: "[tasks] 334 total — 1 pending, 1 in progress, 332 completed"
+            - generic [ref=e4350]:
+              - generic [ref=e4351]: Claw
+              - paragraph [ref=e4353]: "[discuss] 1 awaiting user response: Add UI toggle for memory graph in settings"
+            - generic [ref=e4355]:
+              - generic [ref=e4356]: Claw
+              - paragraph [ref=e4358]: "[spawn] No actionable tasks — nothing to spawn"
+            - generic [ref=e4360]:
+              - generic [ref=e4361]: Claw
+              - paragraph [ref=e4363]: "[notify] Heartbeat notification pushed"
+            - generic [ref=e4365]:
+              - generic [ref=e4366]: Claw
+              - paragraph [ref=e4368]: "[memory] Bridge sync: +0 new, 2 updated — sources: auto-memory (30), project-map (2)"
+            - generic [ref=e4370]:
+              - generic [ref=e4371]: Claw
+              - paragraph [ref=e4373]: "[idle] Heartbeat #33 done — 0 agent(s) running — going idle"
+            - generic [ref=e4375]:
+              - generic [ref=e4376]: Claw
+              - paragraph [ref=e4378]: "--- Heartbeat #34 — 2:14:37 AM ---"
+            - generic [ref=e4380]:
+              - generic [ref=e4381]: Claw
+              - paragraph [ref=e4383]: "[wake] Claw waking up"
+            - generic [ref=e4385]:
+              - generic [ref=e4386]: Claw
+              - paragraph [ref=e4388]: "[plan] Check service health → Scan tasks across projects → Check running agents → Spawn agents for actionable tasks"
+            - generic [ref=e4390]:
+              - generic [ref=e4391]: Claw
+              - paragraph [ref=e4393]: "[health] Probing services..."
+            - generic [ref=e4395]:
+              - generic [ref=e4396]: Claw
+              - paragraph [ref=e4398]: "[health] 2/3 up — ollama: up, gateway: up, daemon: down"
+            - generic [ref=e4400]:
+              - generic [ref=e4401]: Claw
+              - paragraph [ref=e4403]: "[tasks] Scanning tasks..."
+            - generic [ref=e4405]:
+              - generic [ref=e4406]: Claw
+              - paragraph [ref=e4408]: "[tasks] 334 total — 1 pending, 1 in progress, 332 completed"
+            - generic [ref=e4410]:
+              - generic [ref=e4411]: Claw
+              - paragraph [ref=e4413]: "[discuss] 1 awaiting user response: Add UI toggle for memory graph in settings"
+            - generic [ref=e4415]:
+              - generic [ref=e4416]: Claw
+              - paragraph [ref=e4418]: "[spawn] No actionable tasks — nothing to spawn"
+            - generic [ref=e4420]:
+              - generic [ref=e4421]: Claw
+              - paragraph [ref=e4423]: "[notify] Heartbeat notification pushed"
+            - generic [ref=e4425]:
+              - generic [ref=e4426]: Claw
+              - paragraph [ref=e4428]: "[memory] Bridge sync: +0 new, 2 updated — sources: auto-memory (30), project-map (2)"
+            - generic [ref=e4430]:
+              - generic [ref=e4431]: Claw
+              - paragraph [ref=e4433]: "[idle] Heartbeat #34 done — 0 agent(s) running — going idle"
+            - generic [ref=e4435]:
+              - generic [ref=e4436]: Claw
+              - paragraph [ref=e4438]: "--- Heartbeat #34 — 2:18:52 AM ---"
+            - generic [ref=e4440]:
+              - generic [ref=e4441]: Claw
+              - paragraph [ref=e4443]: "[wake] Claw waking up"
+            - generic [ref=e4445]:
+              - generic [ref=e4446]: Claw
+              - paragraph [ref=e4448]: "[plan] Check service health → Scan tasks across projects → Check running agents → Spawn agents for actionable tasks"
+            - generic [ref=e4450]:
+              - generic [ref=e4451]: Claw
+              - paragraph [ref=e4453]: "[health] Probing services..."
+            - generic [ref=e4455]:
+              - generic [ref=e4456]: Claw
+              - paragraph [ref=e4458]: "[health] 2/3 up — ollama: up, gateway: up, daemon: down"
+            - generic [ref=e4460]:
+              - generic [ref=e4461]: Claw
+              - paragraph [ref=e4463]: "[tasks] Scanning tasks..."
+            - generic [ref=e4465]:
+              - generic [ref=e4466]: Claw
+              - paragraph [ref=e4468]: "[tasks] 334 total — 1 pending, 1 in progress, 332 completed"
+            - generic [ref=e4470]:
+              - generic [ref=e4471]: Claw
+              - paragraph [ref=e4473]: "[discuss] 1 awaiting user response: Add UI toggle for memory graph in settings"
+            - generic [ref=e4475]:
+              - generic [ref=e4476]: Claw
+              - paragraph [ref=e4478]: "[spawn] No actionable tasks — nothing to spawn"
+            - generic [ref=e4480]:
+              - generic [ref=e4481]: Claw
+              - paragraph [ref=e4483]: "[notify] Heartbeat notification pushed"
+            - generic [ref=e4485]:
+              - generic [ref=e4486]: Claw
+              - paragraph [ref=e4488]: "[memory] Bridge sync: +0 new, 2 updated — sources: auto-memory (30), project-map (2)"
+            - generic [ref=e4490]:
+              - generic [ref=e4491]: Claw
+              - paragraph [ref=e4493]: "[idle] Heartbeat #34 done — 0 agent(s) running — going idle"
+            - generic [ref=e4495]:
+              - generic [ref=e4496]: Claw
+              - paragraph [ref=e4498]: "--- Heartbeat #35 — 2:18:57 AM ---"
+            - generic [ref=e4500]:
+              - generic [ref=e4501]: Claw
+              - paragraph [ref=e4503]: "[wake] Claw waking up"
+            - generic [ref=e4505]:
+              - generic [ref=e4506]: Claw
+              - paragraph [ref=e4508]: "[plan] Check service health → Scan tasks across projects → Check running agents → Spawn agents for actionable tasks"
+            - generic [ref=e4510]:
+              - generic [ref=e4511]: Claw
+              - paragraph [ref=e4513]: "[health] Probing services..."
+            - generic [ref=e4515]:
+              - generic [ref=e4516]: Claw
+              - paragraph [ref=e4518]: "[health] 2/3 up — ollama: up, gateway: up, daemon: down"
+            - generic [ref=e4520]:
+              - generic [ref=e4521]: Claw
+              - paragraph [ref=e4523]: "[tasks] Scanning tasks..."
+            - generic [ref=e4525]:
+              - generic [ref=e4526]: Claw
+              - paragraph [ref=e4528]: "[tasks] 334 total — 1 pending, 1 in progress, 332 completed"
+            - generic [ref=e4530]:
+              - generic [ref=e4531]: Claw
+              - paragraph [ref=e4533]: "[discuss] 1 awaiting user response: Add UI toggle for memory graph in settings"
+            - generic [ref=e4535]:
+              - generic [ref=e4536]: Claw
+              - paragraph [ref=e4538]: "[spawn] No actionable tasks — nothing to spawn"
+            - generic [ref=e4540]:
+              - generic [ref=e4541]: Claw
+              - paragraph [ref=e4543]: "[ux] Starting full discovery via Claude Sonnet + Playwright"
+            - generic [ref=e4545]:
+              - generic [ref=e4546]: Claw
+              - paragraph [ref=e4548]: "[notify] Heartbeat notification pushed"
+            - generic [ref=e4550]:
+              - generic [ref=e4551]: Claw
+              - paragraph [ref=e4553]: "[memory] Bridge sync: +0 new, 2 updated — sources: auto-memory (30), project-map (2)"
+            - generic [ref=e4555]:
+              - generic [ref=e4556]: Claw
+              - paragraph [ref=e4558]: "[idle] Heartbeat #35 done — 1 agent(s) running — going idle"
+            - generic [ref=e4560]:
+              - generic [ref=e4561]: Claw
+              - paragraph [ref=e4563]: "--- Heartbeat #35 — 2:23:12 AM ---"
+            - generic [ref=e4565]:
+              - generic [ref=e4566]: Claw
+              - paragraph [ref=e4568]: "[wake] Claw waking up"
+            - generic [ref=e4570]:
+              - generic [ref=e4571]: Claw
+              - paragraph [ref=e4573]: "[plan] Check service health → Scan tasks across projects → Check running agents → Spawn agents for actionable tasks"
+            - generic [ref=e4575]:
+              - generic [ref=e4576]: Claw
+              - paragraph [ref=e4578]: "[health] Probing services..."
+            - generic [ref=e4580]:
+              - generic [ref=e4581]: Claw
+              - paragraph [ref=e4583]: "[health] 2/3 up — ollama: up, gateway: up, daemon: down"
+            - generic [ref=e4585]:
+              - generic [ref=e4586]: Claw
+              - paragraph [ref=e4588]: "[tasks] Scanning tasks..."
+            - generic [ref=e4590]:
+              - generic [ref=e4591]: Claw
+              - paragraph [ref=e4593]: "[tasks] 334 total — 1 pending, 1 in progress, 332 completed"
+            - generic [ref=e4595]:
+              - generic [ref=e4596]: Claw
+              - paragraph [ref=e4598]: "[discuss] 1 awaiting user response: Add UI toggle for memory graph in settings"
+            - generic [ref=e4600]:
+              - generic [ref=e4601]: Claw
+              - paragraph [ref=e4603]: "[spawn] No actionable tasks — nothing to spawn"
+            - generic [ref=e4605]:
+              - generic [ref=e4606]: Claw
+              - paragraph [ref=e4608]: "[ux] Starting full discovery via Claude Sonnet + Playwright"
+            - generic [ref=e4610]:
+              - generic [ref=e4611]: Claw
+              - paragraph [ref=e4613]: "[notify] Heartbeat notification pushed"
+            - generic [ref=e4615]:
+              - generic [ref=e4616]: Claw
+              - paragraph [ref=e4618]: "[memory] Bridge sync: +0 new, 2 updated — sources: auto-memory (30), project-map (2)"
+            - generic [ref=e4620]:
+              - generic [ref=e4621]: Claw
+              - paragraph [ref=e4623]: "[idle] Heartbeat #35 done — 1 agent(s) running — going idle"
+            - generic [ref=e4625]:
+              - generic [ref=e4626]: Claw
+              - paragraph [ref=e4628]: "--- Heartbeat #36 — 2:23:17 AM ---"
+            - generic [ref=e4630]:
+              - generic [ref=e4631]: Claw
+              - paragraph [ref=e4633]: "[wake] Claw waking up"
+            - generic [ref=e4635]:
+              - generic [ref=e4636]: Claw
+              - paragraph [ref=e4638]: "[plan] Check service health → Scan tasks across projects → Check running agents → Spawn agents for actionable tasks"
+            - generic [ref=e4640]:
+              - generic [ref=e4641]: Claw
+              - paragraph [ref=e4643]: "[health] Probing services..."
+            - generic [ref=e4645]:
+              - generic [ref=e4646]: Claw
+              - paragraph [ref=e4648]: "[health] 2/3 up — ollama: up, gateway: up, daemon: down"
+            - generic [ref=e4650]:
+              - generic [ref=e4651]: Claw
+              - paragraph [ref=e4653]: "[tasks] Scanning tasks..."
+            - generic [ref=e4655]:
+              - generic [ref=e4656]: Claw
+              - paragraph [ref=e4658]: "[tasks] 334 total — 1 pending, 1 in progress, 332 completed"
+            - generic [ref=e4660]:
+              - generic [ref=e4661]: Claw
+              - paragraph [ref=e4663]: "[discuss] 1 awaiting user response: Add UI toggle for memory graph in settings"
+            - generic [ref=e4665]:
+              - generic [ref=e4666]: Claw
+              - paragraph [ref=e4668]: "[agents] 1 active: ux-inspector (0m 5s)"
+            - generic [ref=e4670]:
+              - generic [ref=e4671]: Claw
+              - paragraph [ref=e4673]: "[spawn] No actionable tasks — nothing to spawn"
+            - generic [ref=e4675]:
+              - generic [ref=e4676]: Claw
+              - paragraph [ref=e4678]: "[notify] Heartbeat notification pushed"
+            - generic [ref=e4680]:
+              - generic [ref=e4681]: Claw
+              - paragraph [ref=e4683]: "[memory] Bridge sync: +0 new, 2 updated — sources: auto-memory (30), project-map (2)"
+            - generic [ref=e4685]:
+              - generic [ref=e4686]: Claw
+              - paragraph [ref=e4688]: "[idle] Heartbeat #36 done — 1 agent(s) running — going idle"
+          - generic [ref=e4692]: Idle
+          - generic [ref=e4693]:
+            - generic [ref=e4694]:
+              - textbox "Inject a message into Claw's session..." [ref=e4695]
+              - button "Inject" [disabled] [ref=e4696]
+            - generic [ref=e4697]:
+              - generic [ref=e4698]: Enter Send
+              - generic [ref=e4699]: Esc Stop
+              - generic [ref=e4700]: Ctrl+N New chat
+              - generic [ref=e4701]: Ctrl+/ Toggle tools

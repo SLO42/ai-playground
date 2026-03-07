@@ -1,0 +1,10 @@
+{
+	"agents": [
+		"custom/playground-memory-keeper.md",
+		"custom/playground-heartbeat-architect.md",
+		"custom/playground-frontend-engineer.md",
+		"custom/playground-backend-engineer.md",
+		"custom/playground-openclaw-integrator.md",
+		"custom/playground-qa-guardian.md"
+	]
+}

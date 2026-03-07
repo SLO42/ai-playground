@@ -1,0 +1,53 @@
+# OpenClaw - Dashboard Channel Configuration
+# Custom channel: connects via gateway WS from the Claw dashboard
+
+channel: dashboard
+enabled: true
+type: custom
+description: "Claw dashboard chat — routes through OpenClaw gateway WS"
+
+# ─── Authentication ─────────────────────────────────────
+# Uses device identity (Ed25519 keypair) for WS auth
+auth:
+  mode: "device"
+  identityPath: ".playground/claw-device-identity.json"
+
+# ─── Behavior ───────────────────────────────────────────
+activation: "always"
+requireMention: false
+commandPrefix: "/"
+
+# ─── Users ──────────────────────────────────────────────
+# Dashboard is local-only — no user filtering needed
+users:
+  mode: "allowlist"
+  allowlist: []
+  ignoreUnknown: false
+  logDenied: true
+
+# ─── Rate Limiting ──────────────────────────────────────
+rateLimit:
+  messagesPerSecond: 10
+  maxMessageLength: 32768
+
+# ─── Message Formatting ────────────────────────────────
+formatting:
+  splitLongMessages: false
+  stripMarkdown: false
+  renderMarkdown: true
+
+# ─── Gateway Connection ────────────────────────────────
+# How the dashboard connects as a WS client
+gateway:
+  clientId: "webchat"
+  clientMode: "webchat"
+  role: "operator"
+  scopes:
+    - "operator.admin"
+
+# ─── Tool Access ───────────────────────────────────────
+# Dashboard channel has full tool access for Claw operations
+tools:
+  exec: true
+  read: true
+  write: true

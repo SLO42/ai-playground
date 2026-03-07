@@ -117,7 +117,7 @@
 				text-anchor="middle"
 				dominant-baseline="middle"
 				fill="#e2e8f0"
-				font-size="9"
+				font-size={labelFontSize}
 				class="pointer-events-none"
 			>
 				{node.label.length > 14 ? node.label.slice(0, 14) + '...' : node.label}
@@ -127,7 +127,7 @@
 				y={pos.y + 10}
 				text-anchor="middle"
 				fill="#94a3b8"
-				font-size="7"
+				font-size={detailFontSize}
 				font-family="monospace"
 				class="pointer-events-none"
 			>

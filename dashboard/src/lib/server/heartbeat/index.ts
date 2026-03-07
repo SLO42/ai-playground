@@ -16,7 +16,8 @@ import {
 	loadMaxAgents, maxConcurrentAgents,
 	loadMonitorSession, saveMonitorSession, readSessionIndex,
 	log, trimSession, agentSender, ensureTaskSession, taskSessionId,
-	upsertSessionMeta
+	upsertSessionMeta,
+	loadProjectMaxAgents, countProjectAgents, getProjectAgentMap, getProjectLimits
 } from './shared.js';
 import { spawnClaude, buildTaskPrompt, pickModelForTask } from './agent-spawn.js';
 import { logAgentCompletion, tailAgentLogs, cleanupPromptFiles, captureGitBaseline, parseStreamJsonLog } from './agent-tracking.js';
@@ -27,6 +28,7 @@ import { recordEvent } from './agent-analytics.js';
 import { resolveSession, registerSession, releaseSession, autoScale, watchForSessionId, loadPersistedAutoScaleConfig } from './session-pool.js';
 import { commitAgentChanges, planFollowUps, spawnFollowUp } from './post-task.js';
 import { processSuggestions, suggestTasks } from '../task-suggestions.js';
+import { syncMemoryBridge } from '../memory-bridge.js';
 import type { ChatSession } from '$lib/types/chat.js';
 import type { Task } from '$lib/types/tasks.js';
 

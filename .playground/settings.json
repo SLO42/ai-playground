@@ -1,0 +1,25 @@
+{
+	"name": "ai-playground",
+	"description": "",
+	"branch": "main",
+	"agentConfig": {
+		"topology": "hierarchical-mesh",
+		"maxAgents": 6,
+		"memoryBackend": "hybrid (HNSW + SQLite)",
+		"consensus": "raft"
+	},
+	"build": {
+		"dev": {
+			"command": "npm run dev",
+			"label": "Development server"
+		},
+		"build": {
+			"command": "npm run build",
+			"label": "Production build"
+		},
+		"test": {
+			"command": "npm test",
+			"label": "Test suite"
+		}
+	}
+}

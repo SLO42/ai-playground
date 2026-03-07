@@ -12,10 +12,12 @@
 		detail?: string | null;
 		/** Height class for the container (default: 'h-48') */
 		height?: string;
-		/** Called when the retry button is clicked (only shown for 'error' variant) */
+		/** Called when the retry/check-again button is clicked */
 		onretry?: () => void;
 		/** Whether the retry action is in progress */
 		retrying?: boolean;
+		/** Label for the retry button (default: 'Retry' for error, 'Check Again' for empty) */
+		retryLabel?: string;
 		/** Optional slot content rendered below the message area */
 		children?: Snippet;
 	}
@@ -28,8 +30,13 @@
 		height = 'h-48',
 		onretry,
 		retrying = false,
+		retryLabel,
 		children,
 	}: Props = $props();
+
+	const defaultRetryLabel = $derived(variant === 'error' ? 'Retry' : 'Check Again');
+	const activeRetryLabel = $derived(variant === 'error' ? 'Retrying...' : 'Checking...');
+	const buttonLabel = $derived(retrying ? activeRetryLabel : (retryLabel ?? defaultRetryLabel));
 </script>
 
 <div class="{height} flex flex-col items-center justify-center gap-2">

@@ -15,8 +15,13 @@
 	let maxRank = $derived(Math.max(...nodes.map((n) => n.pageRank), 0.001));
 
 	function getRadius(pageRank: number): number {
-		return 18 + (pageRank / maxRank) * 36;
+		const base = width < 500 ? 14 : 18;
+		const scale = width < 500 ? 26 : 36;
+		return base + (pageRank / maxRank) * scale;
 	}
+
+	let labelFontSize = $derived(width < 500 ? 8 : 9);
+	let detailFontSize = $derived(width < 500 ? 6 : 7);
 
 	function getColor(category: string): string {
 		const colors: Record<string, string> = {
@@ -28,21 +33,25 @@
 		return colors[category] ?? '#94a3b8';
 	}
 
-	// Force-directed layout with better spacing
+	// Responsive container width via bind:clientWidth
+	let containerWidth = $state(700);
+	const width = $derived(Math.max(320, containerWidth));
+
+	// Force-directed layout with responsive spacing
 	function getPosition(index: number, total: number): { x: number; y: number } {
 		const cols = Math.ceil(Math.sqrt(total));
 		const row = Math.floor(index / cols);
 		const col = index % cols;
-		const spacingX = 120;
-		const spacingY = 110;
+		// Scale spacing based on available width
+		const spacingX = Math.max(80, (width - 100) / cols);
+		const spacingY = width < 500 ? 90 : 110;
 		return {
-			x: 80 + col * spacingX + (row % 2 ? 50 : 0),
+			x: 50 + col * spacingX + (row % 2 ? spacingX * 0.4 : 0),
 			y: 60 + row * spacingY
 		};
 	}
 
-	const width = 700;
-	let height = $derived(Math.max(300, Math.ceil(nodes.length / Math.ceil(Math.sqrt(nodes.length))) * 110 + 80));
+	let height = $derived(Math.max(260, Math.ceil(nodes.length / Math.ceil(Math.sqrt(nodes.length))) * (width < 500 ? 90 : 110) + 80));
 
 	// Build position lookup for edges
 	let positionMap = $derived.by(() => {
@@ -60,7 +69,8 @@
 	};
 </script>
 
-<svg viewBox="0 0 {width} {height}" class="w-full min-w-[480px]" style="max-height: 420px" role="img" aria-label={ariaLabel ?? defaultAriaLabel}>
+<div bind:clientWidth={containerWidth} class="w-full">
+<svg viewBox="0 0 {width} {height}" class="w-full" style="max-height: {width < 500 ? '320px' : '420px'}" role="img" aria-label={ariaLabel ?? defaultAriaLabel}>
 	<title>Memory knowledge graph with {nodes.length} nodes connected by {edges.length} edges</title>
 	<!-- Edges -->
 	{#each edges as edge}
@@ -134,3 +144,4 @@
 		<text x="90" y="3" fill="#64748b" font-size="7">similar</text>
 	</g>
 </svg>
+</div>

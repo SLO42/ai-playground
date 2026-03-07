@@ -2,12 +2,16 @@ import type { PageServerLoad } from './$types.js';
 import { readJsonFile } from '$lib/server/file-reader.js';
 import { readYamlFile } from '$lib/server/yaml-parser.js';
 import { PATHS } from '$lib/server/constants.js';
+import { loadMemorySettings } from '$lib/server/memory-settings.js';
 import type { GraphState } from '$lib/types/graph.js';
 import type { RankedContext, AutoMemoryEntry } from '$lib/types/memory.js';
 
 export const load: PageServerLoad = async () => {
+	const memSettings = await loadMemorySettings();
+	const graphEnabled = memSettings.memoryGraphEnabled;
+
 	const [graph, context, autoMemory, config] = await Promise.allSettled([
-		readJsonFile<GraphState>(PATHS.graphState),
+		graphEnabled ? readJsonFile<GraphState>(PATHS.graphState) : Promise.resolve(null),
 		readJsonFile<RankedContext>(PATHS.rankedContext),
 		readJsonFile<AutoMemoryEntry[]>(PATHS.autoMemoryStore),
 		readYamlFile(PATHS.configYaml)
@@ -25,6 +29,7 @@ export const load: PageServerLoad = async () => {
 		context: context.status === 'fulfilled' ? context.value : null,
 		autoMemory: autoMemory.status === 'fulfilled' ? autoMemory.value : null,
 		memoryConfig: (configVal as Record<string, unknown>)?.memory ?? null,
+		memoryGraphEnabled: graphEnabled,
 		loadErrors: errors.length > 0 ? errors : null
 	};
 };

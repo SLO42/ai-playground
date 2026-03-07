@@ -13,10 +13,18 @@ export const load: PageServerLoad = async () => {
 		readYamlFile(PATHS.configYaml)
 	]);
 	const configVal = config.status === 'fulfilled' ? config.value : null;
+
+	// Surface load errors so the UI can distinguish "no data" from "fetch failed"
+	const errors: string[] = [];
+	if (graph.status === 'rejected') errors.push(`Graph: ${graph.reason?.message ?? 'unknown error'}`);
+	if (context.status === 'rejected') errors.push(`Context: ${context.reason?.message ?? 'unknown error'}`);
+	if (autoMemory.status === 'rejected') errors.push(`AutoMemory: ${autoMemory.reason?.message ?? 'unknown error'}`);
+
 	return {
 		graph: graph.status === 'fulfilled' ? graph.value : null,
 		context: context.status === 'fulfilled' ? context.value : null,
 		autoMemory: autoMemory.status === 'fulfilled' ? autoMemory.value : null,
-		memoryConfig: (configVal as Record<string, unknown>)?.memory ?? null
+		memoryConfig: (configVal as Record<string, unknown>)?.memory ?? null,
+		loadErrors: errors.length > 0 ? errors : null
 	};
 };

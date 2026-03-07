@@ -8,8 +8,9 @@
 	let { data }: { data: PageData } = $props();
 
 	const isNavigating = $derived(!!$navigating);
-
-	const capacityPct = $derived(Math.round((data.capacity.current / data.capacity.max) * 100));
+	const capacityPct = $derived(
+		data.capacity.max > 0 ? Math.min(100, Math.round((data.capacity.current / data.capacity.max) * 100)) : 0
+	);
 
 	let showAddPanel = $state(false);
 	let selectedAgents = $state<Set<string>>(new Set());
@@ -33,6 +34,7 @@
 		reviewer: 'bg-accent-cyan/20 text-accent-cyan',
 		planner: 'bg-accent-yellow/20 text-accent-yellow',
 		security: 'bg-accent-red/20 text-accent-red',
+		documenter: 'bg-accent-cyan/20 text-accent-cyan',
 		general: 'bg-bg-tertiary text-text-secondary'
 	};
 
@@ -41,6 +43,67 @@
 		idle: 'bg-accent-yellow',
 		stopped: 'bg-accent-red'
 	};
+
+	// Recommended agent templates for project-specific agent creation
+	const agentTemplates = [
+		{
+			id: 'coder',
+			name: 'Code Agent',
+			type: 'coder',
+			description: 'Writes and refactors code, implements features, fixes bugs',
+			workflow: 'Receives task → reads codebase → implements changes → runs build → commits',
+			value: 'Handles the bulk of implementation work autonomously',
+			when: 'Any code change, feature implementation, or bug fix'
+		},
+		{
+			id: 'reviewer',
+			name: 'Code Reviewer',
+			type: 'reviewer',
+			description: 'Reviews code changes for quality, security, and correctness',
+			workflow: 'Reads diffs → checks patterns → flags issues → suggests improvements',
+			value: 'Catches bugs, security issues, and quality problems before merge',
+			when: 'After code agents complete work, or on PR review'
+		},
+		{
+			id: 'tester',
+			name: 'Test Agent',
+			type: 'tester',
+			description: 'Writes and runs tests, validates functionality',
+			workflow: 'Reads code → writes unit/integration tests → runs test suite → reports coverage',
+			value: 'Ensures code correctness and prevents regressions',
+			when: 'After new features, after bug fixes, or on test coverage gaps'
+		},
+		{
+			id: 'documenter',
+			name: 'Documentation Agent',
+			type: 'documenter',
+			description: 'Updates docs, API contracts, and architecture notes',
+			workflow: 'Reads recent changes → updates relevant docs → verifies build',
+			value: 'Keeps documentation in sync with code changes',
+			when: 'After multi-file features, API changes, or architecture changes'
+		},
+		{
+			id: 'security',
+			name: 'Security Auditor',
+			type: 'security',
+			description: 'Scans for vulnerabilities, credential leaks, and OWASP issues',
+			workflow: 'Scans codebase → checks dependencies → reports vulnerabilities',
+			value: 'Proactive security scanning prevents vulnerabilities from shipping',
+			when: 'On new endpoints, auth changes, or dependency updates'
+		},
+		{
+			id: 'researcher',
+			name: 'Research Agent',
+			type: 'researcher',
+			description: 'Investigates approaches, reads docs, evaluates options',
+			workflow: 'Reads requirements → researches approaches → summarizes findings',
+			value: 'Provides informed recommendations before implementation begins',
+			when: 'Architecture decisions, new library evaluation, unfamiliar domains'
+		}
+	];
+
+	let showTemplates = $state(false);
+	let expandedTemplate = $state<string | null>(null);
 
 	function getProjectId(): string {
 		return $page.params.id;
@@ -64,7 +127,7 @@
 				const body = await res.json().catch(() => null);
 				error = body?.error ?? `Failed to add agents (${res.status})`;
 			}
-		} catch (e) {
+		} catch {
 			error = 'Network error — could not reach server.';
 		} finally {
 			loading = false;
@@ -86,7 +149,7 @@
 				const body = await res.json().catch(() => null);
 				error = body?.error ?? `Failed to remove agent (${res.status})`;
 			}
-		} catch (e) {
+		} catch {
 			error = 'Network error — could not reach server.';
 		} finally {
 			loading = false;
@@ -161,14 +224,8 @@
 
 <svelte:head>
 	<title>Project Agents | AI Playground</title>
-	<meta name="description" content="Manage AI agents associated with this project — view capacity, add or remove agents, and monitor agent status." />
+	<meta name="description" content="Manage AI agents for this project — configure capacity, add agents, spawn pools, and monitor status." />
 	<meta name="robots" content="noindex, nofollow" />
-	<meta property="og:title" content="Project Agents | AI Playground" />
-	<meta property="og:description" content="Manage AI agents associated with this project — view capacity, add or remove agents, and monitor agent status." />
-	<meta property="og:type" content="website" />
-	<meta name="twitter:card" content="summary" />
-	<meta name="twitter:title" content="Project Agents | AI Playground" />
-	<meta name="twitter:description" content="Manage AI agents associated with this project — view capacity, add or remove agents, and monitor agent status." />
 </svelte:head>
 
 <div class="space-y-6">
@@ -176,15 +233,26 @@
 	<div class="flex items-center justify-between">
 		<div>
 			<h1 class="text-xl font-bold text-text-primary">Project Agents</h1>
-			<p class="text-sm text-text-secondary mt-1">Agents associated with this project</p>
+			<p class="text-sm text-text-secondary mt-1">
+				Max {data.projectMaxAgents} concurrent agent{data.projectMaxAgents !== 1 ? 's' : ''} for this project
+				<a href="/projects/{getProjectId()}/settings" class="text-accent-blue hover:underline ml-1">(change)</a>
+			</p>
 		</div>
-		<button
-			onclick={() => (showAddPanel = !showAddPanel)}
-			aria-expanded={showAddPanel}
-			class="px-4 py-2 text-sm bg-accent-blue text-white rounded-lg hover:bg-accent-blue/90 transition-colors"
-		>
-			{showAddPanel ? 'Cancel' : '+ Add Agent'}
-		</button>
+		<div class="flex gap-2">
+			<button
+				onclick={() => { showTemplates = !showTemplates; showAddPanel = false; }}
+				class="px-4 py-2 text-sm border border-accent-purple/50 text-accent-purple rounded-lg hover:bg-accent-purple/10 transition-colors"
+			>
+				{showTemplates ? 'Hide' : 'Agent Guide'}
+			</button>
+			<button
+				onclick={() => { showAddPanel = !showAddPanel; showTemplates = false; }}
+				aria-expanded={showAddPanel}
+				class="px-4 py-2 text-sm bg-accent-blue text-white rounded-lg hover:bg-accent-blue/90 transition-colors"
+			>
+				{showAddPanel ? 'Cancel' : '+ Add Agent'}
+			</button>
+		</div>
 	</div>
 
 	<!-- Loading indicator -->
@@ -225,15 +293,15 @@
 	<div class="grid grid-cols-2 md:grid-cols-4 gap-4">
 		<MetricCard label="Associated" value={data.summary.associated} accent="green" />
 		<MetricCard label="Available" value={data.summary.available} accent="blue" />
-		<MetricCard label="Types" value={data.summary.types} accent="purple" />
-		<MetricCard label="Total" value={data.summary.total} accent="cyan" />
+		<MetricCard label="Max Concurrent" value={data.projectMaxAgents} accent="purple" />
+		<MetricCard label="Pool Sessions" value={poolSlots.length} accent="cyan" />
 	</div>
 
 	<!-- Capacity Bar -->
 	<div class="flex items-center gap-3">
 		<span id="capacity-label" class="text-xs text-text-secondary uppercase tracking-wider">Capacity</span>
-		<span class="text-xs font-mono text-text-primary">{data.capacity.current} / {data.capacity.max} slots</span>
-		<div class="flex-1 h-2 bg-bg-tertiary rounded-full overflow-hidden" role="progressbar" aria-labelledby="capacity-label" aria-valuenow={data.capacity.current} aria-valuemin={0} aria-valuemax={data.capacity.max} aria-valuetext="{data.capacity.current} of {data.capacity.max} slots used">
+		<span class="text-xs font-mono text-text-primary">{data.capacity.current} / {data.capacity.max} agents</span>
+		<div class="flex-1 h-2 bg-bg-tertiary rounded-full overflow-hidden" role="progressbar" aria-labelledby="capacity-label" aria-valuenow={data.capacity.current} aria-valuemin={0} aria-valuemax={data.capacity.max} aria-valuetext="{data.capacity.current} of {data.capacity.max} agents configured">
 			<div
 				class="h-full rounded-full transition-all {capacityPct > 80 ? 'bg-accent-red' : capacityPct > 50 ? 'bg-accent-yellow' : 'bg-accent-green'}"
 				style="width: {capacityPct}%"
@@ -241,12 +309,80 @@
 		</div>
 	</div>
 
+	<!-- Claw Monitor -->
+	<section aria-label="Claw Monitor" class="bg-bg-secondary border border-accent-cyan/30 rounded-lg p-4">
+		<div class="flex items-center justify-between">
+			<div class="flex items-center gap-3">
+				<span class="w-2 h-2 rounded-full bg-accent-cyan animate-pulse"></span>
+				<div>
+					<h2 class="text-sm font-bold text-text-primary">Claw Monitor</h2>
+					<p class="text-xs text-text-secondary">Global system — monitors all projects, scans tasks, spawns agents</p>
+				</div>
+			</div>
+			<a
+				href="/chat?session=claw-monitor"
+				class="px-3 py-1.5 text-xs border border-accent-cyan/40 text-accent-cyan rounded hover:bg-accent-cyan/10 transition-colors"
+			>
+				View Monitor
+			</a>
+		</div>
+	</section>
+
+	<!-- Agent Guide / Templates -->
+	{#if showTemplates}
+		<section aria-label="Agent templates" class="bg-bg-secondary border border-accent-purple/30 rounded-lg p-4 space-y-3">
+			<div>
+				<h2 class="text-sm font-bold text-text-primary">Agent Guide</h2>
+				<p class="text-xs text-text-secondary mt-0.5">
+					Recommended agent types for this project. Add agents from the global pool, then spawn them.
+					You can add the same type multiple times for parallel work.
+				</p>
+			</div>
+			<div class="space-y-2">
+				{#each agentTemplates as tmpl}
+					<button
+						onclick={() => expandedTemplate = expandedTemplate === tmpl.id ? null : tmpl.id}
+						class="w-full text-left"
+					>
+						<div class="p-3 rounded-lg border border-border bg-bg-primary hover:border-accent-purple/40 transition-colors">
+							<div class="flex items-center gap-3">
+								<span class="text-[10px] px-1.5 py-0.5 rounded font-mono shrink-0 {typeColors[tmpl.type] ?? typeColors.general}">{tmpl.type}</span>
+								<span class="text-sm font-medium text-text-primary">{tmpl.name}</span>
+								<span class="text-xs text-text-secondary flex-1 truncate">{tmpl.description}</span>
+								<span class="text-text-secondary text-xs">{expandedTemplate === tmpl.id ? '▲' : '▼'}</span>
+							</div>
+							{#if expandedTemplate === tmpl.id}
+								<div class="mt-3 pt-3 border-t border-border grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
+									<div>
+										<span class="text-text-secondary uppercase tracking-wider text-[10px]">Workflow</span>
+										<p class="text-text-primary mt-1">{tmpl.workflow}</p>
+									</div>
+									<div>
+										<span class="text-text-secondary uppercase tracking-wider text-[10px]">Value</span>
+										<p class="text-accent-green mt-1">{tmpl.value}</p>
+									</div>
+									<div>
+										<span class="text-text-secondary uppercase tracking-wider text-[10px]">When to Use</span>
+										<p class="text-text-primary mt-1">{tmpl.when}</p>
+									</div>
+								</div>
+							{/if}
+						</div>
+					</button>
+				{/each}
+			</div>
+		</section>
+	{/if}
+
 	<!-- Session Pool -->
 	<section aria-label="Project session pool" class="bg-bg-secondary border border-border rounded-lg p-4 space-y-3">
 		<div class="flex items-center justify-between">
 			<div>
 				<h2 class="text-sm font-bold text-text-primary">Session Pool</h2>
-				<p class="text-xs text-text-secondary mt-0.5">{poolSlots.length} session{poolSlots.length !== 1 ? 's' : ''} for this project</p>
+				<p class="text-xs text-text-secondary mt-0.5">
+					{poolSlots.length} session{poolSlots.length !== 1 ? 's' : ''} for this project
+					(max {data.projectMaxAgents} concurrent)
+				</p>
 			</div>
 			<div class="flex gap-2">
 				<button
@@ -287,7 +423,12 @@
 	{#if showAddPanel}
 		<section aria-label="Add agents" class="bg-bg-secondary border border-accent-blue/30 rounded-lg p-4 space-y-3">
 			<div class="flex items-center justify-between">
-				<h2 class="text-sm font-bold text-text-primary">Select agents to add</h2>
+				<div>
+					<h2 class="text-sm font-bold text-text-primary">Select agents to add</h2>
+					<p class="text-xs text-text-secondary mt-0.5">
+						Pick from the global agent pool. You can add the same type multiple times to run parallel instances.
+					</p>
+				</div>
 				<button
 					onclick={addAgents}
 					disabled={selectedAgents.size === 0 || loading}
@@ -297,7 +438,7 @@
 				</button>
 			</div>
 			{#if data.availableAgents.length > 0}
-				<div role="listbox" aria-label="Available agents" aria-multiselectable="true" class="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-64 overflow-y-auto">
+				<div role="listbox" aria-label="Available agents" aria-multiselectable="true" class="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-80 overflow-y-auto">
 					{#each data.availableAgents as agent}
 						<button
 							role="option"
@@ -342,12 +483,23 @@
 				ongoToPage={goToPage}
 			/>
 			{#if data.agents.length === 0}
-				<button
-					onclick={() => (showAddPanel = true)}
-					class="mt-4 px-4 py-2 text-xs bg-accent-blue text-white rounded-lg hover:bg-accent-blue/90 transition-colors"
-				>
-					+ Add Agent
-				</button>
+				<div class="text-center py-6">
+					<p class="text-text-secondary text-sm mb-3">No agents associated yet. Add agents from the global pool to get started.</p>
+					<div class="flex justify-center gap-2">
+						<button
+							onclick={() => { showTemplates = true; showAddPanel = false; }}
+							class="px-4 py-2 text-xs border border-accent-purple/50 text-accent-purple rounded-lg hover:bg-accent-purple/10 transition-colors"
+						>
+							View Agent Guide
+						</button>
+						<button
+							onclick={() => { showAddPanel = true; showTemplates = false; }}
+							class="px-4 py-2 text-xs bg-accent-blue text-white rounded-lg hover:bg-accent-blue/90 transition-colors"
+						>
+							+ Add Agent
+						</button>
+					</div>
+				</div>
 			{/if}
 		{:else}
 			<div role="status" aria-live="polite" class="flex items-center justify-center py-8 text-text-secondary text-sm">

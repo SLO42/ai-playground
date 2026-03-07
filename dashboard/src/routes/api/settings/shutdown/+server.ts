@@ -27,16 +27,21 @@ export const POST: RequestHandler = async () => {
 		steps.push({ step: 'heartbeat', status: 'error', detail: e instanceof Error ? e.message : 'unknown' });
 	}
 
-	// 2. Kill active agents
+	// 2. Kill active agents (use taskkill on Windows/MINGW, SIGTERM elsewhere)
 	const agents = getActiveAgents();
 	if (agents.size > 0) {
 		const killed: string[] = [];
 		const failed: string[] = [];
+		const isWindows = process.platform === 'win32';
 
 		for (const [taskId, agent] of agents) {
 			try {
 				if (agent.pid > 0) {
-					process.kill(agent.pid, 'SIGTERM');
+					if (isWindows) {
+						exec(`taskkill /F /PID ${agent.pid}`, { timeout: 5000 });
+					} else {
+						process.kill(agent.pid, 'SIGTERM');
+					}
 					killed.push(taskId);
 				}
 			} catch {
@@ -44,17 +49,17 @@ export const POST: RequestHandler = async () => {
 			}
 		}
 
-		// Give agents 5s to exit gracefully, then force kill
+		// Give agents 3s to exit, then force kill any remaining
 		if (killed.length > 0) {
-			await new Promise(resolve => setTimeout(resolve, 5000));
-			for (const taskId of killed) {
-				const agent = agents.get(taskId);
-				if (agent?.pid) {
-					try {
-						process.kill(agent.pid, 0); // Check if still alive
-						process.kill(agent.pid, 'SIGKILL');
-					} catch {
-						// Already exited — good
+			await new Promise(resolve => setTimeout(resolve, 3000));
+			if (!isWindows) {
+				for (const taskId of killed) {
+					const agent = agents.get(taskId);
+					if (agent?.pid) {
+						try {
+							process.kill(agent.pid, 0);
+							process.kill(agent.pid, 'SIGKILL');
+						} catch { /* already exited */ }
 					}
 				}
 			}

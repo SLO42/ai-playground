@@ -239,6 +239,61 @@ describe('BubbleGraph', () => {
 		expect(dashedLine).toBeTruthy();
 	});
 
+	// --- Empty data graceful handling ---
+
+	describe('empty data handling', () => {
+		it('renders without throwing when nodes is an empty array', () => {
+			expect(() => render(BubbleGraph, { props: { nodes: [] } })).not.toThrow();
+		});
+
+		it('renders SVG with valid dimensions when nodes is empty', () => {
+			const { container } = render(BubbleGraph, { props: { nodes: [] } });
+			const svg = container.querySelector('svg');
+			expect(svg).toBeInTheDocument();
+			const viewBox = svg?.getAttribute('viewBox');
+			expect(viewBox).toBeTruthy();
+			const [, , vbWidth, vbHeight] = (viewBox ?? '').split(' ').map(Number);
+			expect(vbWidth).toBeGreaterThanOrEqual(320);
+			expect(vbHeight).toBeGreaterThanOrEqual(260);
+		});
+
+		it('renders accessible title reflecting zero nodes when empty', () => {
+			const { container } = render(BubbleGraph, { props: { nodes: [] } });
+			const title = container.querySelector('svg title');
+			expect(title?.textContent).toContain('0 nodes');
+		});
+
+		it('still renders legend when nodes is empty', () => {
+			const { container } = render(BubbleGraph, { props: { nodes: [] } });
+			const texts = container.querySelectorAll('text');
+			const legendTexts = Array.from(texts).map((t) => t.textContent);
+			expect(legendTexts).toContain('temporal');
+			expect(legendTexts).toContain('similar');
+		});
+
+		it('renders no circles and no interactive elements when empty', () => {
+			const { container } = render(BubbleGraph, { props: { nodes: [] } });
+			expect(container.querySelectorAll('circle').length).toBe(0);
+			expect(container.querySelectorAll('g[role="button"]').length).toBe(0);
+		});
+
+		it('renders without throwing when both nodes and edges are empty', () => {
+			expect(() => render(BubbleGraph, { props: { nodes: [], edges: [] } })).not.toThrow();
+			const { container } = render(BubbleGraph, { props: { nodes: [], edges: [] } });
+			const svg = container.querySelector('svg');
+			expect(svg).toBeInTheDocument();
+			expect(container.querySelectorAll('line').length).toBe(2); // only legend lines
+		});
+
+		it('accepts custom ariaLabel when empty', () => {
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [], ariaLabel: 'Empty graph' }
+			});
+			const svg = container.querySelector('svg');
+			expect(svg?.getAttribute('aria-label')).toBe('Empty graph');
+		});
+	});
+
 	// --- Responsive / mobile viewport tests ---
 
 	describe('responsive mobile rendering', () => {

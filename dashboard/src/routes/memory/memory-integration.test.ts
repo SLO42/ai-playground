@@ -767,3 +767,140 @@ describe('Memory Page — Integration (error handling with retries)', () => {
 		expect(screen.getByText('Refreshing...')).toBeInTheDocument();
 	});
 });
+
+// ─── Large Dataset Performance Tests ─────────────────────────────────────────
+
+describe('Memory Page — Large dataset (~10k nodes)', () => {
+	const NODE_COUNT = 10_000;
+
+	function makeLargeGraphData() {
+		const categories = ['core', 'insights', 'patterns', 'security', 'infra', 'api', 'config'];
+		const edgeTypes = ['temporal', 'similar', 'causal'] as const;
+		const nodes: Record<string, { id: string; category: string; confidence: number; accessCount: number; createdAt: number }> = {};
+		const pageRanks: Record<string, number> = {};
+		const now = Date.now();
+
+		for (let i = 0; i < NODE_COUNT; i++) {
+			const id = `node-${i}`;
+			nodes[id] = {
+				id,
+				category: categories[i % categories.length],
+				confidence: 0.3 + Math.random() * 0.7,
+				accessCount: Math.floor(Math.random() * 50),
+				createdAt: now - i * 1000
+			};
+			pageRanks[id] = Math.random();
+		}
+
+		// Create ~2x edges (sparse connectivity)
+		const edgeCount = NODE_COUNT * 2;
+		const edges = [];
+		for (let i = 0; i < edgeCount; i++) {
+			const srcIdx = Math.floor(Math.random() * NODE_COUNT);
+			let tgtIdx = Math.floor(Math.random() * NODE_COUNT);
+			if (tgtIdx === srcIdx) tgtIdx = (srcIdx + 1) % NODE_COUNT;
+			edges.push({
+				sourceId: `node-${srcIdx}`,
+				targetId: `node-${tgtIdx}`,
+				type: edgeTypes[i % edgeTypes.length],
+				weight: Math.random()
+			});
+		}
+
+		return {
+			version: 1,
+			updatedAt: now,
+			nodeCount: NODE_COUNT,
+			nodes,
+			edges,
+			pageRanks
+		};
+	}
+
+	function makeLargeContextData() {
+		const categories = ['core', 'insights', 'patterns', 'security', 'infra', 'api', 'config'];
+		const entries = [];
+		for (let i = 0; i < NODE_COUNT; i++) {
+			entries.push({
+				id: `node-${i}`,
+				summary: `Node ${i}`,
+				content: `Content for node ${i}`,
+				category: categories[i % categories.length],
+				confidence: 0.3 + Math.random() * 0.7,
+				pageRank: Math.random(),
+				accessCount: Math.floor(Math.random() * 50)
+			});
+		}
+		return { entries };
+	}
+
+	beforeEach(() => {
+		vi.restoreAllMocks();
+		globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as any;
+	});
+
+	it('renders without crashing with ~10k nodes from server data', () => {
+		const graph = makeLargeGraphData();
+		const context = makeLargeContextData();
+		const data = makePageData({ graph, context });
+
+		expect(() => render(MemoryPage, { props: { data } })).not.toThrow();
+	});
+
+	it('renders metric cards with correct counts for large dataset', () => {
+		const graph = makeLargeGraphData();
+		const context = makeLargeContextData();
+		const data = makePageData({ graph, context });
+		render(MemoryPage, { props: { data } });
+
+		// Should display the total node count
+		expect(screen.getByText(NODE_COUNT.toLocaleString())).toBeInTheDocument();
+	});
+
+	it('renders within a reasonable time for ~10k nodes', () => {
+		const graph = makeLargeGraphData();
+		const context = makeLargeContextData();
+		const data = makePageData({ graph, context });
+
+		const start = performance.now();
+		render(MemoryPage, { props: { data } });
+		const elapsed = performance.now() - start;
+
+		// Should render in under 5 seconds even in JSDOM
+		expect(elapsed).toBeLessThan(5000);
+	});
+
+	it('handles refresh replacing small dataset with large dataset', async () => {
+		vi.useFakeTimers();
+		const smallData = makePageData({ graph: makeGraphData(), context: makeContextData() });
+		render(MemoryPage, { props: { data: smallData } });
+
+		await vi.advanceTimersByTimeAsync(0);
+
+		// Refresh returns a large dataset
+		const largeGraph = makeLargeGraphData();
+		const largeContext = makeLargeContextData();
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+			routedFetch({
+				'/api/memory/context': () => Promise.resolve({ ok: true, json: () => Promise.resolve(largeContext) }),
+				'/api/memory/graph': () => Promise.resolve({ ok: true, json: () => Promise.resolve(largeGraph) })
+			})
+		);
+
+		await fireEvent.click(screen.getByText('Refresh'));
+		await vi.advanceTimersByTimeAsync(0);
+
+		// Should still be rendering without crash — node count should update
+		expect(screen.getByText(NODE_COUNT.toLocaleString())).toBeInTheDocument();
+		vi.useRealTimers();
+	});
+
+	it('handles large dataset with no edges gracefully', () => {
+		const graph = makeLargeGraphData();
+		graph.edges = [];
+		const context = makeLargeContextData();
+		const data = makePageData({ graph, context });
+
+		expect(() => render(MemoryPage, { props: { data } })).not.toThrow();
+	});
+});

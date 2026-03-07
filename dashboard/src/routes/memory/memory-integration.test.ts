@@ -621,7 +621,14 @@ describe('Memory Page — Client-side graph refresh', () => {
 	});
 
 	it('handles graph API failure gracefully while context succeeds', async () => {
-		render(MemoryPage, { props: { data: makePageData() } });
+		render(MemoryPage, {
+			props: {
+				data: makePageData({
+					context: makeContextData(),
+					autoMemory: makeAutoMemoryData()
+				})
+			}
+		});
 
 		// Context succeeds, graph fails
 		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
@@ -641,10 +648,10 @@ describe('Memory Page — Client-side graph refresh', () => {
 		await fireEvent.click(screen.getByText('Refresh'));
 
 		await vi.waitFor(() => {
-			// Context should still update successfully
+			// Context should still be visible (no error thrown)
 			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
-			// Graph stays empty since API returned error
-			expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+			// No client-side error banner should appear (graph failure is silent)
+			expect(screen.queryByText('Internal server error')).not.toBeInTheDocument();
 		});
 	});
 

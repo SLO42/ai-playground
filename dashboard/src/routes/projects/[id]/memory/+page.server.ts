@@ -2,7 +2,7 @@ import type { PageServerLoad } from './$types.js';
 import { readJsonFile } from '$lib/server/file-reader.js';
 import { PATHS } from '$lib/server/constants.js';
 import { projectMemoryCache } from '$lib/server/cache.js';
-import type { RankedContext, AutoMemoryEntry } from '$lib/types/memory.js';
+import type { RankedContext, AutoMemoryEntry, ProjectMemoryPageData } from '$lib/types/memory.js';
 import type { GraphState } from '$lib/types/graph.js';
 
 export const load: PageServerLoad = async ({ parent }) => {
@@ -11,7 +11,7 @@ export const load: PageServerLoad = async ({ parent }) => {
 	const cacheKey = `page-memory:${projectId}`;
 
 	const cached = projectMemoryCache.get(cacheKey);
-	if (cached) return cached as Record<string, unknown>;
+	if (cached) return cached as ProjectMemoryPageData;
 
 	let entries: AutoMemoryEntry[] = [];
 	let context: RankedContext | null = null;
@@ -25,7 +25,9 @@ export const load: PageServerLoad = async ({ parent }) => {
 			readJsonFile<GraphState>(PATHS.graphState)
 		]);
 
-		graph = graphResult ?? null;
+		graph = graphResult && typeof graphResult === 'object' && graphResult.nodes
+			? graphResult
+			: null;
 		const allEntries = autoMemory ?? [];
 
 		// Filter entries relevant to this project (same logic as API endpoint)
@@ -69,7 +71,7 @@ export const load: PageServerLoad = async ({ parent }) => {
 			? contextEntries.reduce((sum, e) => sum + e.confidence, 0) / contextEntries.length
 			: 0;
 
-	const result = {
+	const result: ProjectMemoryPageData = {
 		projectId,
 		projectName,
 		loadError,

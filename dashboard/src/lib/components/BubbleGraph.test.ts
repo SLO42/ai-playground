@@ -1,6 +1,17 @@
 import { render, screen, fireEvent } from '@testing-library/svelte';
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeAll } from 'vitest';
 import BubbleGraph from './BubbleGraph.svelte';
+
+// Polyfill ResizeObserver for JSDOM (used by Svelte's bind:clientWidth)
+beforeAll(() => {
+	if (typeof globalThis.ResizeObserver === 'undefined') {
+		globalThis.ResizeObserver = class ResizeObserver {
+			observe() {}
+			unobserve() {}
+			disconnect() {}
+		} as unknown as typeof ResizeObserver;
+	}
+});
 
 function makeNode(overrides: Partial<{
 	id: string;
@@ -226,5 +237,132 @@ describe('BubbleGraph', () => {
 			l => l.getAttribute('stroke') === '#a855f7' && l.getAttribute('stroke-dasharray') === '4,3'
 		);
 		expect(dashedLine).toBeTruthy();
+	});
+
+	// --- Responsive / mobile viewport tests ---
+
+	describe('responsive mobile rendering', () => {
+		// In JSDOM, clientWidth=0 so width=max(320,0)=320, triggering width<500 mobile path
+
+		it('uses mobile viewBox width of 320 (minimum clamp)', () => {
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [makeNode()] }
+			});
+			const svg = container.querySelector('svg');
+			const viewBox = svg?.getAttribute('viewBox');
+			expect(viewBox).toMatch(/^0 0 320 /);
+		});
+
+		it('applies mobile max-height style (320px)', () => {
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [makeNode()] }
+			});
+			const svg = container.querySelector('svg');
+			expect(svg?.getAttribute('style')).toContain('max-height: 320px');
+		});
+
+		it('uses smaller radii at mobile width', () => {
+			// Mobile: base=14, scale=26 → radius = 14 + (pageRank/maxRank)*26
+			// With single node pageRank=0.5, maxRank=0.5 → ratio=1 → r = 14+26 = 40
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [makeNode({ pageRank: 0.5 })] }
+			});
+			const circle = container.querySelector('circle');
+			const r = parseFloat(circle?.getAttribute('r') ?? '0');
+			// Mobile max radius: 14 + 26 = 40 (desktop would be 18 + 36 = 54)
+			expect(r).toBe(40);
+		});
+
+		it('uses mobile font sizes for labels', () => {
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [makeNode({ label: 'TestLabel' })] }
+			});
+			const texts = container.querySelectorAll('text');
+			const label = Array.from(texts).find((t) => t.textContent === 'TestLabel');
+			// Mobile label font-size is 8
+			expect(label?.getAttribute('font-size')).toBe('8');
+		});
+
+		it('uses mobile font sizes for detail text', () => {
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [makeNode({ pageRank: 0.75, accessCount: 3 })] }
+			});
+			const texts = container.querySelectorAll('text');
+			const detail = Array.from(texts).find((t) => t.textContent?.includes('PR'));
+			// Mobile detail font-size is 6
+			expect(detail?.getAttribute('font-size')).toBe('6');
+		});
+
+		it('renders multiple nodes without SVG overflow at mobile width', () => {
+			const nodes = Array.from({ length: 9 }, (_, i) =>
+				makeNode({ id: `n${i}`, label: `Node ${i}`, pageRank: 0.3 + i * 0.05 })
+			);
+			const { container } = render(BubbleGraph, { props: { nodes } });
+			const svg = container.querySelector('svg');
+			const viewBox = svg?.getAttribute('viewBox');
+			const [, , vbWidth, vbHeight] = (viewBox ?? '').split(' ').map(Number);
+			// viewBox dimensions should be positive and finite
+			expect(vbWidth).toBeGreaterThanOrEqual(320);
+			expect(vbHeight).toBeGreaterThan(0);
+			// All 9 circles should render
+			expect(container.querySelectorAll('circle').length).toBe(9);
+		});
+
+		it('keeps nodes interactive (clickable) at mobile viewport', async () => {
+			const handler = vi.fn();
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [makeNode({ id: 'mobile-tap' })], onNodeClick: handler }
+			});
+			const button = container.querySelector('g[role="button"]');
+			await fireEvent.click(button!);
+			expect(handler).toHaveBeenCalledWith('mobile-tap');
+		});
+
+		it('keeps nodes keyboard-accessible at mobile viewport', async () => {
+			const handler = vi.fn();
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [makeNode({ id: 'mobile-key' })], onNodeClick: handler }
+			});
+			const button = container.querySelector('g[role="button"]');
+			await fireEvent.keyDown(button!, { key: 'Enter' });
+			expect(handler).toHaveBeenCalledWith('mobile-key');
+		});
+
+		it('uses mobile spacing (90px) for vertical node layout', () => {
+			// With width<500, spacingY=90. Two rows → height = max(260, 2*90+80) = 260
+			const nodes = [
+				makeNode({ id: 'a' }),
+				makeNode({ id: 'b' }),
+				makeNode({ id: 'c' }),
+				makeNode({ id: 'd' })
+			];
+			const { container } = render(BubbleGraph, { props: { nodes } });
+			const svg = container.querySelector('svg');
+			const viewBox = svg?.getAttribute('viewBox');
+			const vbHeight = Number((viewBox ?? '').split(' ')[3]);
+			// Mobile spacingY=90, so height should use 90-based calculation
+			expect(vbHeight).toBeGreaterThanOrEqual(260);
+			expect(vbHeight).toBeLessThanOrEqual(400);
+		});
+
+		it('renders edges correctly between nodes at mobile width', () => {
+			const nodes = [
+				makeNode({ id: 'x', label: 'X' }),
+				makeNode({ id: 'y', label: 'Y' })
+			];
+			const edges = [{ sourceId: 'x', targetId: 'y', type: 'temporal' as const, weight: 1 }];
+			const { container } = render(BubbleGraph, { props: { nodes, edges } });
+			const lines = container.querySelectorAll('line');
+			// Should have edge line + 2 legend lines
+			expect(lines.length).toBeGreaterThanOrEqual(3);
+		});
+
+		it('preserves ARIA label at mobile viewport', () => {
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [makeNode()], ariaLabel: 'Mobile graph' }
+			});
+			const svg = container.querySelector('svg');
+			expect(svg?.getAttribute('aria-label')).toBe('Mobile graph');
+		});
 	});
 });

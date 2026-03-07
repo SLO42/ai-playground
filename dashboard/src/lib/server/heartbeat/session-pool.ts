@@ -532,6 +532,134 @@ export async function resetProjectPool(projectId: string): Promise<void> {
 	await savePool();
 }
 
+// ── Default agent presets ────────────────────────────────────────────
+
+/** Standard agent presets by capacity limit */
+const AGENT_PRESETS: Record<number, string[]> = {
+	1: ['coder'],
+	2: ['coder', 'reviewer'],
+	3: ['coder', 'reviewer', 'tester'],
+	4: ['coder', 'coder', 'reviewer', 'tester'],
+	5: ['coder', 'coder', 'reviewer', 'tester', 'documenter'],
+	6: ['coder', 'coder', 'reviewer', 'tester', 'documenter', 'security'],
+};
+
+/**
+ * Suggest a default agent combination for a project based on its capacity.
+ * Returns agent type names (e.g. ['coder', 'reviewer', 'tester']).
+ */
+export function suggestAgentPreset(maxAgents: number): string[] {
+	if (maxAgents <= 0) return [];
+	if (maxAgents <= 6) return AGENT_PRESETS[maxAgents];
+	// For 7+, extend with more coders and a researcher
+	const base = [...AGENT_PRESETS[6]];
+	const extras = maxAgents - 6;
+	for (let i = 0; i < extras; i++) {
+		base.push(i === 0 ? 'researcher' : 'coder');
+	}
+	return base;
+}
+
+export interface ProjectPoolResult {
+	projectId: string;
+	maxAgents: number;
+	created: number;
+	skipped: number;
+	preset: string[];
+	presetSaved: boolean;
+}
+
+/**
+ * Populate session pool for ALL projects, respecting per-project maxAgents.
+ *
+ * For each project:
+ * 1. Read its agent associations (.playground/agents.json)
+ * 2. If no preset exists, suggest one and save it
+ * 3. Create pool slots up to the project's maxAgents limit
+ */
+export async function populateFromProjects(
+	scanProjects: () => Promise<{ id: string; path: string }[]>,
+	loadMaxAgents: (path: string, id: string) => Promise<number>
+): Promise<{ projects: ProjectPoolResult[]; totalCreated: number; totalSkipped: number }> {
+	const projects = await scanProjects();
+	await loadPool();
+
+	let totalCreated = 0;
+	let totalSkipped = 0;
+	const results: ProjectPoolResult[] = [];
+
+	for (const project of projects) {
+		const maxAgents = await loadMaxAgents(project.path, project.id);
+
+		// Read existing agent associations
+		let agents: string[] = [];
+		try {
+			const raw = await readFile(resolve(project.path, '.playground', 'agents.json'), 'utf-8');
+			const parsed = JSON.parse(raw);
+			agents = parsed.agents ?? [];
+		} catch { /* no associations yet */ }
+
+		let presetSaved = false;
+		let preset: string[];
+
+		if (agents.length === 0) {
+			// No preset — suggest one and save it
+			preset = suggestAgentPreset(maxAgents);
+			try {
+				const dir = resolve(project.path, '.playground');
+				await mkdir(dir, { recursive: true });
+				await writeFile(
+					resolve(dir, 'agents.json'),
+					JSON.stringify({ agents: preset.map(t => `${t}.md`) }, null, '\t'),
+					'utf-8'
+				);
+				presetSaved = true;
+			} catch { /* best effort */ }
+		} else {
+			// Use existing associations, limited to maxAgents
+			preset = agents.slice(0, maxAgents).map(f => f.replace(/\.md$/, ''));
+		}
+
+		// Create pool slots for this project
+		let created = 0;
+		let skipped = 0;
+		const slotAgents = preset.slice(0, maxAgents);
+
+		for (let i = 0; i < slotAgents.length; i++) {
+			const agentType = slotAgents[i];
+			const slotId = `proj-${project.id}-${agentType}-${i}`;
+
+			if (pool.slots.some(s => s.slotId === slotId)) {
+				skipped++;
+				continue;
+			}
+
+			pool.slots.push({
+				slotId,
+				sessionId: '',
+				model: 'claude-opus-4-6',
+				area: `projects/${project.id}/${agentType}`,
+				createdAt: new Date().toISOString(),
+				lastUsedAt: new Date().toISOString(),
+				taskCount: 0,
+				totalTokens: 0,
+				totalCost: 0,
+				status: 'idle'
+			});
+			created++;
+		}
+
+		totalCreated += created;
+		totalSkipped += skipped;
+		results.push({ projectId: project.id, maxAgents, created, skipped, preset: slotAgents, presetSaved });
+	}
+
+	pool.maxSlots = Math.max(pool.maxSlots, pool.slots.length);
+	await savePool();
+
+	return { projects: results, totalCreated, totalSkipped };
+}
+
 // ── Auto-scaling ────────────────────────────────────────────────────
 
 export interface AutoScaleConfig {

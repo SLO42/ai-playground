@@ -162,24 +162,12 @@
 			onclick={() => onNodeClick?.(node.id)}
 			onkeydown={(e) => handleNodeKeydown(e, i)}
 		>
-			<!-- Focus ring (visible on keyboard focus) -->
-			<circle
-				cx={pos.x}
-				cy={pos.y}
-				r={r + 3}
-				fill="none"
-				stroke="transparent"
-				stroke-width="2"
-				class="focus-ring"
-			/>
 			<circle
 				cx={pos.x}
 				cy={pos.y}
 				r={r}
 				fill={getColor(node.category)}
-				opacity="0.2"
-				stroke={getColor(node.category)}
-				stroke-width="1.5"
+				fill-opacity="0.85"
 				class="node-circle"
 			/>
 			<text
@@ -228,14 +216,8 @@
 	.graph-node:focus {
 		outline: none;
 	}
-	.graph-node:focus .focus-ring {
-		stroke: #38bdf8;
-		stroke-width: 2;
-	}
-	.graph-node:focus-visible .focus-ring {
-		stroke: #38bdf8;
-		stroke-width: 2.5;
-		stroke-dasharray: 4 2;
+	.graph-node:focus-visible .node-circle {
+		filter: drop-shadow(0 0 4px #38bdf8);
 	}
 
 	/* High-contrast mode adjustments */

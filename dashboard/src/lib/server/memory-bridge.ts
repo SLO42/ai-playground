@@ -196,11 +196,87 @@ async function syncClaudeFlowMemory(): Promise<{ entries: AutoMemoryEntry[]; err
 	return { entries, errors };
 }
 
-// Source 3 (agent analytics) was removed — task completion metadata (cost,
-// duration, model) is already in agent-analytics.json and shown on the agents
-// page. Duplicating it into memory was adding bloat, not knowledge. Real
-// learnings come from the memory follow-up agents that store patterns via
-// claude-flow memory_store (Source 2).
+// Source 3: Compact Project Map
+// Maintains a single auto-updated memory entry per project so agents can
+// understand the project landscape via memory_search. Gets UPSERTED each
+// sync cycle — never appends, always replaces with current state.
+
+async function syncProjectMap(): Promise<{ entries: AutoMemoryEntry[]; errors: string[] }> {
+	const entries: AutoMemoryEntry[] = [];
+	const errors: string[] = [];
+
+	try {
+		const registryPath = resolve(PATHS.root, '.playground/registry.json');
+		const raw = await readFile(registryPath, 'utf-8');
+		const registry = JSON.parse(raw) as { projects?: Array<{ id: string; name: string; path: string; description?: string; techStack?: string[]; tags?: string[] }> };
+
+		if (!registry.projects?.length) return { entries, errors };
+
+		for (const project of registry.projects) {
+			const fullPath = project.path === '.' ? PATHS.root : resolve(PATHS.root, project.path);
+			const lines: string[] = [];
+
+			lines.push(`**Path**: \`${project.path}\``);
+			if (project.description) lines.push(`**Description**: ${project.description}`);
+			if (project.techStack?.length) lines.push(`**Stack**: ${project.techStack.join(', ')}`);
+			if (project.tags?.length) lines.push(`**Tags**: ${project.tags.join(', ')}`);
+
+			// Scan for key files
+			try {
+				const { readdirSync, statSync } = await import('fs');
+				const keyFiles: string[] = [];
+				const scanDir = (dir: string, prefix: string, depth: number) => {
+					if (depth > 2) return;
+					try {
+						for (const entry of readdirSync(dir)) {
+							if (entry.startsWith('.') || entry === 'node_modules' || entry === 'dist' || entry === 'build') continue;
+							const full = resolve(dir, entry);
+							const st = statSync(full);
+							if (st.isDirectory() && depth < 2) {
+								scanDir(full, `${prefix}${entry}/`, depth + 1);
+							} else if (st.isFile() && /\.(ts|svelte|json|yaml|py|rs)$/.test(entry)) {
+								keyFiles.push(`${prefix}${entry}`);
+							}
+						}
+					} catch { /* skip */ }
+				};
+				scanDir(fullPath, '', 0);
+				if (keyFiles.length > 0) {
+					lines.push(`**Key files** (${keyFiles.length}): ${keyFiles.slice(0, 15).join(', ')}${keyFiles.length > 15 ? '...' : ''}`);
+				}
+			} catch { /* skip */ }
+
+			// Task summary
+			try {
+				const tasksPath = resolve(fullPath, '.playground/tasks.json');
+				const tasksRaw = await readFile(tasksPath, 'utf-8');
+				const tasks = JSON.parse(tasksRaw) as Array<{ status: string }>;
+				const pending = tasks.filter(t => t.status === 'pending').length;
+				const inProgress = tasks.filter(t => t.status === 'in_progress').length;
+				const completed = tasks.filter(t => t.status === 'completed').length;
+				lines.push(`**Tasks**: ${pending} pending, ${inProgress} active, ${completed} completed`);
+			} catch { /* no tasks */ }
+
+			const content = lines.join('\n');
+			const key = `project-map-${project.id}`;
+
+			entries.push({
+				id: `mem-bridge-project-${project.id}`,
+				key,
+				content,
+				summary: `Project: ${project.name}`,
+				namespace: 'project-map',
+				type: 'semantic',
+				metadata: { bridge: 'project-map', projectId: project.id, projectName: project.name },
+				createdAt: Date.now()
+			});
+		}
+	} catch (e) {
+		errors.push(`project-map: ${e instanceof Error ? e.message : 'scan failed'}`);
+	}
+
+	return { entries, errors };
+}
 
 // ── Bridge Sync ──────────────────────────────────────────────────────
 
@@ -217,20 +293,23 @@ export async function syncMemoryBridge(): Promise<BridgeSyncResult> {
 	for (const e of store) storeMap.set(e.id, e);
 
 	// Collect from all sources in parallel
-	const [autoMemory, claudeFlow] = await Promise.all([
+	const [autoMemory, claudeFlow, projectMap] = await Promise.all([
 		syncAutoMemoryFiles(),
-		syncClaudeFlowMemory()
+		syncClaudeFlowMemory(),
+		syncProjectMap()
 	]);
 
 	const allNew: AutoMemoryEntry[] = [
 		...autoMemory.entries,
-		...claudeFlow.entries
+		...claudeFlow.entries,
+		...projectMap.entries
 	];
 
-	result.errors.push(...autoMemory.errors, ...claudeFlow.errors);
+	result.errors.push(...autoMemory.errors, ...claudeFlow.errors, ...projectMap.errors);
 
 	if (autoMemory.entries.length > 0) result.sources.push(`auto-memory (${autoMemory.entries.length})`);
 	if (claudeFlow.entries.length > 0) result.sources.push(`claude-flow (${claudeFlow.entries.length})`);
+	if (projectMap.entries.length > 0) result.sources.push(`project-map (${projectMap.entries.length})`);
 
 	// Merge into store
 	let changed = false;

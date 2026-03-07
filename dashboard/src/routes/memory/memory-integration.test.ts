@@ -67,7 +67,6 @@ function makePageData(overrides: Record<string, unknown> = {}) {
 		context: null as ReturnType<typeof makeContextData> | null,
 		autoMemory: null as ReturnType<typeof makeAutoMemoryData> | null,
 		memoryConfig: null as Record<string, unknown> | null,
-		loadErrors: null as string[] | null,
 		...overrides
 	};
 }
@@ -212,7 +211,7 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 		});
 	});
 
-	it('handles API returning null graph data on refresh gracefully', async () => {
+	it('handles context refresh when graph data is null — page does not crash', async () => {
 		// Start with some context so we're not in global empty state
 		render(MemoryPage, {
 			props: {
@@ -223,16 +222,12 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 			}
 		});
 
-		// API returns null graph (undefined can't be JSON-serialized)
+		// Refresh only updates context (graph is server-loaded only)
 		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
 			routedFetch({
 				'/api/memory/context': () => Promise.resolve({
 					ok: true,
 					json: () => Promise.resolve({ context: makeContextData(), autoMemory: makeAutoMemoryData() })
-				}),
-				'/api/memory/graph': () => Promise.resolve({
-					ok: true,
-					json: () => Promise.resolve(null)
 				})
 			})
 		);
@@ -240,47 +235,44 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 		await fireEvent.click(screen.getByText('Refresh'));
 
 		await vi.waitFor(() => {
-			// Graph section shows empty fallback, page doesn't crash
-			expect(screen.getByText('No graph data yet')).toBeInTheDocument();
+			// Graph section shows empty fallback (graph is null from server), page doesn't crash
+			expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
 			// Context is still visible
 			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
 		});
 	});
 
-	// ── Server data with loadErrors shows error banner ───────────────────
+	// ── Client-side refresh error shows error banner ────────────────────
 
-	it('shows error banner when server data has loadErrors', () => {
-		render(MemoryPage, {
-			props: {
-				data: makePageData({
-					loadErrors: ['Graph file not found', 'Context timeout']
-				})
-			}
+	it('shows error banner when client-side refresh fails', async () => {
+		render(MemoryPage, { props: { data: makePageData() } });
+
+		// Make fetch reject to trigger client-side error
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Context fetch failed'));
+
+		await fireEvent.click(screen.getByText('Refresh'));
+
+		await vi.waitFor(() => {
+			expect(screen.getByText('Context fetch failed')).toBeInTheDocument();
 		});
-
-		expect(screen.getByText('Failed to load: Graph file not found; Context timeout')).toBeInTheDocument();
 	});
 
 	// ── Client-side refresh fetches API and updates display ──────────────
 
-	it('refreshes graph data via API and updates the displayed nodes', async () => {
+	it('refreshes context data via API and updates the displayed entries', async () => {
 		render(MemoryPage, { props: { data: makePageData() } });
 
-		// Wait for $effect to set initialLoading = false, revealing the empty state
+		// Wait for empty state to appear
 		await vi.waitFor(() => {
 			expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
 		});
 
-		// Set up API responses for the refresh call
+		// Set up API response for context refresh (graph is server-only)
 		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
 			routedFetch({
 				'/api/memory/context': () => Promise.resolve({
 					ok: true,
 					json: () => Promise.resolve({ context: makeContextData(), autoMemory: makeAutoMemoryData() })
-				}),
-				'/api/memory/graph': () => Promise.resolve({
-					ok: true,
-					json: () => Promise.resolve(makeGraphData())
 				})
 			})
 		);
@@ -288,7 +280,8 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 		await fireEvent.click(screen.getByText('Refresh'));
 
 		await vi.waitFor(() => {
-			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
+			// Graph stays empty (server-only), but context entries appear
+			expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
 			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
 			expect(screen.getByText('Redis Caching')).toBeInTheDocument();
 		});
@@ -350,7 +343,7 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 		});
 	});
 
-	it('handles full lifecycle: empty → refresh → populated graph + context', async () => {
+	it('handles full lifecycle: empty → refresh → populated context + auto-memory', async () => {
 		render(MemoryPage, { props: { data: makePageData() } });
 
 		// 1. Wait for initial loading to clear, showing empty states
@@ -359,25 +352,21 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 			expect(screen.getByText('No auto-memory entries loaded')).toBeInTheDocument();
 		});
 
-		// 2. Set up refresh responses
+		// 2. Set up context refresh response (graph is server-only, not refreshed client-side)
 		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
 			routedFetch({
 				'/api/memory/context': () => Promise.resolve({
 					ok: true,
 					json: () => Promise.resolve({ context: makeContextData(), autoMemory: makeAutoMemoryData() })
-				}),
-				'/api/memory/graph': () => Promise.resolve({
-					ok: true,
-					json: () => Promise.resolve(makeGraphData())
 				})
 			})
 		);
 
 		await fireEvent.click(screen.getByText('Refresh'));
 
-		// 3. After refresh — everything is populated
+		// 3. After refresh — context and auto-memory are populated, graph stays server-only
 		await vi.waitFor(() => {
-			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
+			expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
 			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
 			expect(screen.getByText('Redis Caching')).toBeInTheDocument();
 			expect(screen.getByText('Database Connection Pool')).toBeInTheDocument();

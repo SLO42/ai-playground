@@ -607,7 +607,23 @@ async function heartbeat() {
 	checkAgents(session);
 	await tailAgentLogs(session);
 
-	// ── Phase 5: Spawn agents
+	// ── Phase 5: Load per-project agent limits
+	const projectLimits = getProjectLimits();
+	const seenProjects = new Map<string, string>();
+	for (const t of [...taskScan.clawAssigned, ...taskScan.unassignedPending]) {
+		if (t._sourceProjectId && t._sourceProjectPath && !seenProjects.has(t._sourceProjectId)) {
+			seenProjects.set(t._sourceProjectId, t._sourceProjectPath);
+		}
+	}
+	for (const [projId, projPath] of seenProjects) {
+		await loadProjectMaxAgents(projPath, projId);
+	}
+	if (seenProjects.size > 0) {
+		const limitSummary = [...seenProjects.keys()].map(id => `${id}: ${projectLimits.get(id) ?? 2}`).join(', ');
+		log(session, `[spawn] Per-project limits: ${limitSummary} (global max: ${maxConcurrentAgents})`);
+	}
+
+	// ── Phase 5b: Spawn agents (respecting per-project limits)
 	const actionable = [...taskScan.clawAssigned, ...taskScan.unassignedPending];
 	let spawned = 0;
 
@@ -616,14 +632,30 @@ async function heartbeat() {
 		const slotsAvailable = maxConcurrentAgents - agents.size;
 
 		if (slotsAvailable > 0) {
-			log(session, `[spawn] ${slotsAvailable} agent slot(s) available — evaluating ${actionable.length} actionable task(s)`);
+			log(session, `[spawn] ${slotsAvailable} global slot(s) available — evaluating ${actionable.length} actionable task(s)`);
 
 			for (const task of actionable) {
 				if (spawned >= slotsAvailable) break;
 				if (agents.has(task.id)) continue;
 
+				// Per-project limit check
+				const projId = task._sourceProjectId;
+				if (projId) {
+					const projMax = projectLimits.get(projId) ?? 2;
+					const projActive = countProjectAgents(projId);
+					if (projActive >= projMax) {
+						log(session, `[skip] Project "${projId}" at agent limit (${projActive}/${projMax}) — deferring "${task.title}"`);
+						continue;
+					}
+				}
+
 				if (await spawnAgent(task, session)) {
-					await updateTask(PATHS.root, task.id, {
+					if (projId) {
+						getProjectAgentMap().set(task.id, projId);
+					}
+
+					const taskRoot = task._sourceProjectPath ?? PATHS.root;
+					await updateTask(taskRoot, task.id, {
 						status: 'in_progress',
 						assignee: 'claw'
 					}).catch(() => {});
@@ -634,7 +666,7 @@ async function heartbeat() {
 							severity: 'info',
 							category: 'agent',
 							title: `Claw spawned agent: ${task.title}`,
-							message: `Working on ${task.id} [${task.priority}] — ${pickModelForTask(task)}`,
+							message: `Working on ${task.id} [${task.priority}] — ${pickModelForTask(task)}${projId ? ` (${projId})` : ''}`,
 							source: 'claw',
 							link: `/chat?session=${taskSessionId(task.id)}`,
 							linkLabel: 'View Task'
@@ -706,7 +738,18 @@ async function heartbeat() {
 		log(session, `[skip] Notifications disabled`);
 	}
 
-	// ── Phase 8: Cleanup & Idle
+	// ── Phase 8: Memory bridge sync
+	try {
+		const bridgeResult = await syncMemoryBridge();
+		if (bridgeResult.added > 0 || bridgeResult.updated > 0) {
+			log(session, `[memory] Bridge sync: +${bridgeResult.added} new, ${bridgeResult.updated} updated — sources: ${bridgeResult.sources.join(', ')}`);
+		}
+		if (bridgeResult.errors.length > 0) {
+			log(session, `[memory] Bridge errors: ${bridgeResult.errors.join('; ')}`);
+		}
+	} catch { /* memory bridge is best-effort */ }
+
+	// ── Phase 9: Cleanup & Idle
 	await cleanupPromptFiles();
 	const agentCount = getActiveAgents().size;
 	log(session, `[idle] Heartbeat #${heartbeatCount} done — ${agentCount} agent(s) running — going idle`);

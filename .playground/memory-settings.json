@@ -1,0 +1,8 @@
+{
+	"backend": "hybrid",
+	"enableHNSW": true,
+	"cacheSize": 1000,
+	"persistPath": ".claude-flow/data",
+	"learningBridgeEnabled": true,
+	"memoryGraphEnabled": true
+}

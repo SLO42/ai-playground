@@ -31,3 +31,22 @@ export interface MemoryContextResponse {
 	context: RankedContext | null;
 	autoMemory: AutoMemoryEntry[] | null;
 }
+
+/** Subset of the memory YAML config used by the memory page. */
+export interface MemoryConfig {
+	backend?: string;
+	type?: string;
+	enableHNSW?: boolean;
+	hnsw?: boolean;
+	[key: string]: unknown;
+}
+
+/** Shape returned by the memory page server load function. */
+export interface MemoryPageData {
+	graph: import('$lib/types/graph.js').GraphState | null;
+	context: RankedContext | null;
+	autoMemory: AutoMemoryEntry[] | null;
+	memoryConfig: MemoryConfig | null;
+	memoryGraphEnabled: boolean;
+	loadErrors: string[] | null;
+}

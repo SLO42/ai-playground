@@ -6,6 +6,56 @@ All endpoints return `Content-Type: application/json`. Error responses follow th
 
 ---
 
+## Memory Page — Server Route (`/memory`)
+
+The memory page uses a `+page.server.ts` loader to fetch all data server-side before rendering.
+
+### Data Loading (`+page.server.ts`)
+
+The loader reads four data sources in parallel via `Promise.allSettled`:
+
+| Source | File | Condition |
+|--------|------|-----------|
+| `graph` | `.playground/graph-state.json` | Only loaded when `memoryGraphEnabled` is `true` |
+| `context` | `.playground/ranked-context.json` | Always loaded |
+| `autoMemory` | `.playground/auto-memory-store.json` | Always loaded |
+| `config` | `config/config.yaml` (memory section) | Always loaded |
+
+The `memoryGraphEnabled` flag comes from `loadMemorySettings()` which reads `.playground/memory-settings.json`. When the flag is `false`, the graph fetch is skipped entirely and `graph` is returned as `null`.
+
+### Returned Shape
+
+```ts
+{
+  graph: GraphState | null;       // null when disabled or load failed
+  context: RankedContext | null;
+  autoMemory: AutoMemoryEntry[] | null;
+  memoryConfig: Record<string, unknown> | null;
+  memoryGraphEnabled: boolean;    // feature flag
+  loadErrors: string[] | null;    // per-source error messages, or null if all succeeded
+}
+```
+
+### Fallback UI Behavior
+
+The page renders different states depending on the data:
+
+| Condition | UI State |
+|-----------|----------|
+| `loadErrors` is non-null | **Error state** — shows error message with a "Retry" button |
+| `graph` is null and `memoryGraphEnabled` is true | **Empty state** — "No graph data yet" message with a "Check Again" button |
+| `graph` is null and `memoryGraphEnabled` is false | **Disabled state** — informs the user the graph feature is off |
+| Data is loading (initial or refresh) | **Loading skeleton** — animated placeholder cards |
+| Data loaded successfully | **Full render** — metric cards, bubble graph, context tables |
+
+The page also supports client-side **refresh** via `fetchWithRetry()` which uses exponential backoff (up to 3 retries) against the same API endpoints. The refresh button is disabled during loading to prevent duplicate requests.
+
+### Error Handling
+
+`Promise.allSettled` ensures that a failure in one source does not block the others. Each rejected promise appends a descriptive message (e.g. `"Graph: ENOENT..."`) to the `loadErrors` array. The UI distinguishes "no data exists" (null value, no error) from "fetch failed" (null value, error present) so users see the correct fallback.
+
+---
+
 ## Graph — `/api/memory/graph`
 
 Manages the knowledge graph (nodes and edges) stored at `.playground/graph-state.json`.

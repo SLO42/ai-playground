@@ -4,9 +4,9 @@ import { readYamlFile } from '$lib/server/yaml-parser.js';
 import { PATHS } from '$lib/server/constants.js';
 import { loadMemorySettings } from '$lib/server/memory-settings.js';
 import type { GraphState } from '$lib/types/graph.js';
-import type { RankedContext, AutoMemoryEntry } from '$lib/types/memory.js';
+import type { RankedContext, AutoMemoryEntry, MemoryConfig, MemoryPageData } from '$lib/types/memory.js';
 
-export const load: PageServerLoad = async () => {
+export const load: PageServerLoad = async (): Promise<MemoryPageData> => {
 	const memSettings = await loadMemorySettings();
 	const graphEnabled = memSettings.memoryGraphEnabled;
 
@@ -14,7 +14,7 @@ export const load: PageServerLoad = async () => {
 		graphEnabled ? readJsonFile<GraphState>(PATHS.graphState) : Promise.resolve(null),
 		readJsonFile<RankedContext>(PATHS.rankedContext),
 		readJsonFile<AutoMemoryEntry[]>(PATHS.autoMemoryStore),
-		readYamlFile(PATHS.configYaml)
+		readYamlFile<{ memory?: MemoryConfig }>(PATHS.configYaml)
 	]);
 	const configVal = config.status === 'fulfilled' ? config.value : null;
 
@@ -28,7 +28,7 @@ export const load: PageServerLoad = async () => {
 		graph: graph.status === 'fulfilled' ? graph.value : null,
 		context: context.status === 'fulfilled' ? context.value : null,
 		autoMemory: autoMemory.status === 'fulfilled' ? autoMemory.value : null,
-		memoryConfig: (configVal as Record<string, unknown>)?.memory ?? null,
+		memoryConfig: configVal?.memory ?? null,
 		memoryGraphEnabled: graphEnabled,
 		loadErrors: errors.length > 0 ? errors : null
 	};

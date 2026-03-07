@@ -1,0 +1,5 @@
+{
+	"defaultModel": "gpt-oss-20b",
+	"maxConcurrentAgents": 6,
+	"defaultTopology": "hierarchical"
+}

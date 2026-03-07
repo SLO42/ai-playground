@@ -92,9 +92,34 @@ jobs:
       - name: Run integration tests
         run: npx vitest run --reporter=verbose src/integration-tests/
 
+  memory-tests:
+    name: Memory Page Tests
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: dashboard
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: dashboard/package-lock.json
+
+      - run: npm ci
+
+      - name: Run memory page tests
+        run: |
+          npx vitest run --reporter=verbose \
+            src/routes/memory/memory.test.ts \
+            src/routes/memory/memory-integration.test.ts \
+            src/routes/api/memory/graph/graph.test.ts \
+            src/routes/projects/[id]/memory/memory-server.test.ts
+
   build:
     name: Build
-    needs: [lint, test, integration-test]
+    needs: [lint, test, integration-test, memory-tests]
     runs-on: ubuntu-latest
     defaults:
       run:
@@ -153,6 +178,7 @@ jobs:
           | Lint & Types | :white_check_mark: Passed |
           | Tests | :white_check_mark: Passed |
           | Integration Tests | :white_check_mark: Passed |
+          | Memory Page Tests | :white_check_mark: Passed |
           | Build | :white_check_mark: Passed |
           EOF
           )"

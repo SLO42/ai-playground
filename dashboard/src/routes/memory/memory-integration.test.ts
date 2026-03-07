@@ -147,6 +147,99 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 		expect(screen.getByText('Total Entries')).toBeInTheDocument();
 	});
 
+	// ── Undefined graph renders fallback without error ──────────────────
+
+	it('renders fallback UI when graph is undefined (not just null)', () => {
+		render(MemoryPage, {
+			props: { data: makePageData({ graph: undefined }) }
+		});
+
+		// Should show the empty-state message, not crash
+		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		// Metric cards should still render with N/A defaults
+		expect(screen.getByText('Nodes')).toBeInTheDocument();
+		expect(screen.getByText('Edges')).toBeInTheDocument();
+	});
+
+	it('renders all sections when graph is undefined but context and autoMemory have data', () => {
+		render(MemoryPage, {
+			props: {
+				data: makePageData({
+					graph: undefined,
+					context: makeContextData(),
+					autoMemory: makeAutoMemoryData()
+				})
+			}
+		});
+
+		// Graph section shows empty state
+		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		// Context still renders
+		expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
+		expect(screen.getByText('Redis Caching')).toBeInTheDocument();
+		// Auto-memory still renders
+		expect(screen.getByText('JWT with refresh tokens')).toBeInTheDocument();
+	});
+
+	it('handles refresh after starting with undefined graph', async () => {
+		render(MemoryPage, {
+			props: { data: makePageData({ graph: undefined }) }
+		});
+
+		await vi.waitFor(() => {
+			expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		});
+
+		// Set up API responses for the refresh
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+			routedFetch({
+				'/api/memory/context': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve({ context: makeContextData(), autoMemory: makeAutoMemoryData() })
+				}),
+				'/api/memory/graph': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve(makeGraphData())
+				})
+			})
+		);
+
+		await fireEvent.click(screen.getByText('Refresh'));
+
+		await vi.waitFor(() => {
+			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
+			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
+		});
+	});
+
+	it('handles API returning undefined graph data on refresh gracefully', async () => {
+		render(MemoryPage, { props: { data: makePageData() } });
+
+		await vi.waitFor(() => {
+			expect(screen.getByText('Refresh')).toBeInTheDocument();
+		});
+
+		// API returns null (which is what JSON.parse of "null" yields — undefined can't be JSON-serialized)
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+			routedFetch({
+				'/api/memory/context': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve({ context: { entries: [] }, autoMemory: [] })
+				}),
+				'/api/memory/graph': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve(null)
+				})
+			})
+		);
+
+		await fireEvent.click(screen.getByText('Refresh'));
+
+		await vi.waitFor(() => {
+			expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		});
+	});
+
 	// ── Server data with loadErrors shows error banner ───────────────────
 
 	it('shows error banner when server data has loadErrors', () => {

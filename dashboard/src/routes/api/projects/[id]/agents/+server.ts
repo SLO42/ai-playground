@@ -6,7 +6,7 @@ import { PATHS } from '$lib/server/constants.js';
 import { scanAllProjects } from '$lib/server/project-scanner.js';
 import type { AgentInfo, AgentStatus } from '$lib/types/agents.js';
 import { populateForProject, getProjectPoolStats, resetProjectPool } from '$lib/server/heartbeat/session-pool.js';
-import { getActiveAgents, maxConcurrentAgents } from '$lib/server/heartbeat/shared.js';
+import { getActiveAgents, maxConcurrentAgents, loadProjectMaxAgents } from '$lib/server/heartbeat/shared.js';
 
 interface ProjectAgentAssociation {
 	agents: string[]; // agent filenames relative to agentsDir
@@ -77,8 +77,11 @@ export const GET: RequestHandler = async ({ params, url }) => {
 	const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
 	const pageSize = Math.min(50, Math.max(1, parseInt(url.searchParams.get('pageSize') ?? '10', 10) || 10));
 
-	const association = await readAssociation(project.path);
-	const allAgents = await scanAvailableAgents();
+	const [association, allAgents, projectMaxAgents] = await Promise.all([
+		readAssociation(project.path),
+		scanAvailableAgents(),
+		loadProjectMaxAgents(project.path, params.id)
+	]);
 
 	const associatedSet = new Set(association.agents);
 	const associated = allAgents.filter((a) => associatedSet.has(a.filename));
@@ -104,7 +107,7 @@ export const GET: RequestHandler = async ({ params, url }) => {
 			total: allAgents.length,
 			types: Object.keys(typeCounts).length
 		},
-		capacity: { current: totalAssociated, max: 15 },
+		capacity: { current: totalAssociated, max: projectMaxAgents },
 		pagination: {
 			page: safePage,
 			pageSize,

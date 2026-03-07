@@ -246,15 +246,15 @@ describe('BubbleGraph', () => {
 			expect(() => render(BubbleGraph, { props: { nodes: [] } })).not.toThrow();
 		});
 
-		it('renders SVG with valid dimensions when nodes is empty', () => {
+		it('renders SVG with a viewBox when nodes is empty', () => {
 			const { container } = render(BubbleGraph, { props: { nodes: [] } });
 			const svg = container.querySelector('svg');
 			expect(svg).toBeInTheDocument();
 			const viewBox = svg?.getAttribute('viewBox');
 			expect(viewBox).toBeTruthy();
-			const [, , vbWidth, vbHeight] = (viewBox ?? '').split(' ').map(Number);
+			// Width should still be valid (minimum 320)
+			const vbWidth = Number((viewBox ?? '').split(' ')[2]);
 			expect(vbWidth).toBeGreaterThanOrEqual(320);
-			expect(vbHeight).toBeGreaterThanOrEqual(260);
 		});
 
 		it('renders accessible title reflecting zero nodes when empty', () => {

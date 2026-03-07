@@ -14,6 +14,10 @@
 
 	let maxRank = $derived(Math.max(...nodes.map((n) => n.pageRank), 0.001));
 
+	// Responsive container width via bind:clientWidth (must be declared before functions that reference `width`)
+	let containerWidth = $state(700);
+	const width = $derived(Math.max(320, containerWidth));
+
 	function getRadius(pageRank: number): number {
 		const base = width < 500 ? 14 : 18;
 		const scale = width < 500 ? 26 : 36;
@@ -43,10 +47,6 @@
 		};
 		return colors[category] ?? '#cbd5e1';
 	}
-
-	// Responsive container width via bind:clientWidth
-	let containerWidth = $state(700);
-	const width = $derived(Math.max(320, containerWidth));
 
 	// Force-directed layout with responsive spacing
 	function getPosition(index: number, total: number): { x: number; y: number } {

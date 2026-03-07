@@ -13,7 +13,12 @@ vi.mock('$lib/server/constants.js', () => ({
 	}
 }));
 
+vi.mock('$lib/server/cache.js', () => ({
+	projectMemoryCache: { get: vi.fn(() => null), set: vi.fn() }
+}));
+
 import { readJsonFile } from '$lib/server/file-reader.js';
+import type { ProjectMemoryPageData } from '$lib/types/memory.js';
 
 const mockReadJsonFile = vi.mocked(readJsonFile);
 
@@ -37,12 +42,12 @@ function makeParentData(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-async function callLoad(parentOverrides: Record<string, unknown> = {}) {
+async function callLoad(parentOverrides: Record<string, unknown> = {}): Promise<ProjectMemoryPageData> {
 	// Dynamic import so mocks are applied first
 	const { load } = await import('./+page.server.js');
 	return load({
 		parent: () => Promise.resolve(makeParentData(parentOverrides))
-	} as any);
+	} as any) as Promise<ProjectMemoryPageData>;
 }
 
 describe('projects/[id]/memory +page.server load', () => {

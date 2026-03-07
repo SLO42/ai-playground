@@ -153,6 +153,35 @@
 		pattern: 'bg-accent-yellow',
 		bug: 'bg-accent-red'
 	};
+
+	// Periodic graph refresh (every 30s) when memoryGraphEnabled is true
+	const GRAPH_REFRESH_INTERVAL = 30_000;
+	let graphRefreshTimer = $state<ReturnType<typeof setInterval> | null>(null);
+
+	async function refreshGraph() {
+		try {
+			const res = await fetch(`/api/projects/${data.projectId}/memory`);
+			if (!res.ok) return;
+			const body = await res.json();
+			if (body.graph) liveGraph = body.graph;
+			if (body.context) liveContext = body.context;
+			if (body.entries) liveEntries = body.entries;
+		} catch {
+			// Silent fail for background refresh
+		}
+	}
+
+	$effect(() => {
+		if (data.memoryGraphEnabled) {
+			graphRefreshTimer = setInterval(refreshGraph, GRAPH_REFRESH_INTERVAL);
+		}
+		return () => {
+			if (graphRefreshTimer) {
+				clearInterval(graphRefreshTimer);
+				graphRefreshTimer = null;
+			}
+		};
+	});
 </script>
 
 <div class="space-y-6">
@@ -241,6 +270,10 @@
 		{:else if graphNodes.length > 0}
 			<div class="flex items-center justify-center py-12 text-text-secondary text-sm">
 				<p>Loading graph...</p>
+			</div>
+		{:else if data.memoryGraphEnabled === false}
+			<div class="flex items-center justify-center py-12 text-text-secondary text-sm">
+				<p>Memory graph is disabled. Enable it in settings to visualize relationships.</p>
 			</div>
 		{:else}
 			<div class="flex items-center justify-center py-12 text-text-secondary text-sm">

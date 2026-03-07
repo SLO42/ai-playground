@@ -992,3 +992,157 @@ Severity levels: `CRITICAL`, `HIGH`, `MEDIUM`, `LOW`, `INFO`.
   "error": "Security scan failed: <error message>"
 }
 ```
+
+---
+
+## Project Channels
+
+### `GET /api/projects/[id]/channels`
+
+List channels connected to a project plus all available channels from the gateway config directory.
+
+**Response** `200`
+```json
+{
+  "connected": [
+    {
+      "id": "discord",
+      "type": "discord",
+      "name": "Discord",
+      "enabled": true,
+      "connectedAt": "2026-03-07T10:00:00.000Z"
+    }
+  ],
+  "available": [
+    {
+      "id": "slack",
+      "type": "slack",
+      "name": "Slack"
+    }
+  ]
+}
+```
+
+### `POST /api/projects/[id]/channels`
+
+Connect a channel to the project.
+
+**Request body**
+```json
+{ "channelId": "discord" }
+```
+
+**Response** `201`
+```json
+{ "ok": true, "channel": { "id": "discord", "type": "discord", "name": "Discord", "enabled": true, "connectedAt": "..." } }
+```
+
+**Errors**: `400` missing channelId · `409` channel already connected
+
+### `DELETE /api/projects/[id]/channels`
+
+Disconnect a channel from the project.
+
+**Request body**
+```json
+{ "channelId": "discord" }
+```
+
+**Response** `200`
+```json
+{ "ok": true }
+```
+
+**Errors**: `400` missing channelId · `404` channel not connected
+
+### `PATCH /api/projects/[id]/channels`
+
+Update a connected channel's config or toggle its enabled state.
+
+**Request body**
+```json
+{ "channelId": "discord", "enabled": false, "config": {} }
+```
+
+**Response** `200`
+```json
+{ "ok": true, "channel": { "id": "discord", "enabled": false } }
+```
+
+**Errors**: `400` missing channelId · `404` channel not connected
+
+---
+
+## Project Task Sync
+
+### `GET /api/projects/[id]/tasks/sync`
+
+Return the GitHub sync status for a project.
+
+**Response** `200`
+```json
+{
+  "repo": "owner/repo",
+  "lastSync": "2026-03-07T10:00:00.000Z",
+  "mappings": 12
+}
+```
+
+Returns `{ "repo": "unknown", "lastSync": null, "mappings": 0, "error": "..." }` on failure (still `200`).
+
+### `POST /api/projects/[id]/tasks/sync`
+
+Trigger a GitHub task sync for a project.
+
+**Response** `200`
+```json
+{ "ok": true, "synced": 5 }
+```
+
+**Error** `404` project not found
+
+---
+
+## Sessions
+
+### `GET /api/sessions/active`
+
+List all active processes: heartbeat agents, chat sessions, and pool slots.
+
+**Response** `200`
+```json
+{
+  "processes": [
+    {
+      "id": "task-abc123",
+      "type": "agent",
+      "label": "coder — my-project",
+      "status": "running",
+      "provider": "anthropic",
+      "model": "claude-sonnet-4-6",
+      "projectId": "my-project",
+      "pid": 1234,
+      "startedAt": "2026-03-07T10:00:00.000Z"
+    }
+  ],
+  "count": 1
+}
+```
+
+`type` is one of `"agent"` | `"chat"` | `"pool"`.
+
+### `POST /api/sessions/active`
+
+Perform an action on an active session. Supported action: `"cancel"`.
+
+**Request body**
+```json
+{ "action": "cancel", "sessionId": "sess-abc123" }
+```
+
+**Response** `200`
+```json
+{ "ok": true }
+```
+
+**Error** `400` unknown action

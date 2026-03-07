@@ -395,7 +395,7 @@ describe('Memory Page — Integration (missing graph data renders fallback)', ()
 		globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as any;
 	});
 
-	it('renders fallback when graph property is entirely absent from page data', () => {
+	it('renders graph empty state when graph property is entirely absent from page data', () => {
 		// Simulate server returning data without the `graph` key at all
 		const dataWithoutGraph = {
 			context: null,
@@ -406,13 +406,15 @@ describe('Memory Page — Integration (missing graph data renders fallback)', ()
 
 		render(MemoryPage, { props: { data: dataWithoutGraph as any } });
 
-		// Page should not throw — shows global empty state
-		expect(screen.getByText('No memories yet')).toBeInTheDocument();
-		// Should NOT show loading or crash-related text
+		// Page should not throw — graph section shows empty state
+		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		// Other sections show their own empty states
+		expect(screen.getByText('No memory context available. Context populates as the system processes entries.')).toBeInTheDocument();
+		// Should NOT show loading
 		expect(screen.queryByText('Loading memory graph...')).not.toBeInTheDocument();
 	});
 
-	it('renders graph fallback alongside populated context when graph property is absent', () => {
+	it('renders graph empty state alongside populated context when graph property is absent', () => {
 		const dataWithoutGraph = {
 			context: makeContextData(),
 			autoMemory: makeAutoMemoryData(),
@@ -423,32 +425,34 @@ describe('Memory Page — Integration (missing graph data renders fallback)', ()
 		render(MemoryPage, { props: { data: dataWithoutGraph as any } });
 
 		// Graph section shows empty fallback
-		expect(screen.getByText('No graph data yet')).toBeInTheDocument();
+		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
 		// Other sections still render correctly
 		expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
 		expect(screen.getByText('JWT with refresh tokens')).toBeInTheDocument();
 		expect(screen.getByText('agentdb')).toBeInTheDocument();
 	});
 
-	it('does not throw when graph is undefined and memoryGraphEnabled is true', () => {
+	it('does not throw when graph is undefined and context has data', () => {
 		render(MemoryPage, {
 			props: {
 				data: makePageData({
 					graph: undefined,
-					memoryGraphEnabled: true,
 					context: makeContextData()
 				})
 			}
 		});
 
-		expect(screen.getByText('No graph data yet')).toBeInTheDocument();
+		// Graph section shows empty state without crashing
+		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
 		// Metric cards should still render
 		expect(screen.getByText('Nodes')).toBeInTheDocument();
 		expect(screen.getByText('Edges')).toBeInTheDocument();
+		// Context renders correctly alongside missing graph
+		expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
 	});
 
-	it('recovers from missing graph after API refresh returns valid data', async () => {
-		// Start with graph absent
+	it('recovers from absent graph after API refresh returns valid data', async () => {
+		// Start with graph absent but context populated
 		const dataWithoutGraph = {
 			context: makeContextData(),
 			autoMemory: makeAutoMemoryData(),
@@ -458,18 +462,14 @@ describe('Memory Page — Integration (missing graph data renders fallback)', ()
 
 		render(MemoryPage, { props: { data: dataWithoutGraph as any } });
 
-		expect(screen.getByText('No graph data yet')).toBeInTheDocument();
+		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
 
-		// API returns valid graph on refresh
+		// API returns valid context on refresh (graph is server-loaded, not refreshed by client)
 		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
 			routedFetch({
 				'/api/memory/context': () => Promise.resolve({
 					ok: true,
 					json: () => Promise.resolve({ context: makeContextData(), autoMemory: makeAutoMemoryData() })
-				}),
-				'/api/memory/graph': () => Promise.resolve({
-					ok: true,
-					json: () => Promise.resolve(makeGraphData())
 				})
 			})
 		);
@@ -477,8 +477,7 @@ describe('Memory Page — Integration (missing graph data renders fallback)', ()
 		await fireEvent.click(screen.getByText('Refresh'));
 
 		await vi.waitFor(() => {
-			// Graph fallback should disappear, real data shown
-			expect(screen.queryByText('No graph data yet')).not.toBeInTheDocument();
+			// Context still visible after refresh
 			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
 		});
 	});

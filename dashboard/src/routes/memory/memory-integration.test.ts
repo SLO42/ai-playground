@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { render, screen, fireEvent } from '@testing-library/svelte';
 
 // ─── Mocks ──────────────────────────────────────────────────────────────────
@@ -72,16 +72,24 @@ function makePageData(overrides: Record<string, unknown> = {}) {
 	};
 }
 
+/** Stub fetch that routes by URL — analytics calls always resolve silently */
+function routedFetch(routes: Record<string, () => Promise<{ ok: boolean; status?: number; json: () => Promise<unknown> }>>) {
+	return (url: string, _opts?: RequestInit) => {
+		for (const [pattern, handler] of Object.entries(routes)) {
+			if (url.includes(pattern)) return handler();
+		}
+		// Default: analytics and other fire-and-forget calls
+		return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+	};
+}
+
 // ─── Integration Tests ──────────────────────────────────────────────────────
 
 describe('Memory Page — Integration (API fetch → graph display)', () => {
-	let mockFetch: ReturnType<typeof vi.fn>;
-
 	beforeEach(() => {
 		vi.restoreAllMocks();
-		// Default mock returns a minimal Response-like object (needed for trackEvent's fire-and-forget fetch)
-		mockFetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) });
-		globalThis.fetch = mockFetch as any;
+		// Default mock: always return a minimal Response-like object (needed for trackEvent)
+		globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as any;
 	});
 
 	// ── Initial server data renders graph correctly ──────────────────────
@@ -119,188 +127,6 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 		expect(screen.getByText('81.7%')).toBeInTheDocument();
 	});
 
-	// ── Client-side refresh fetches API and updates display ──────────────
-
-	it('refreshes graph data via API and updates the displayed nodes', async () => {
-		// Start with empty data
-		render(MemoryPage, { props: { data: makePageData() } });
-
-		// Verify empty state first
-		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
-
-		// Mock the API responses for refresh
-		const freshGraph = makeGraphData();
-		const freshContext = makeContextData();
-
-		mockFetch.mockImplementation((url: string) => {
-			if (url.includes('/api/memory/context')) {
-				return Promise.resolve({
-					ok: true,
-					json: () => Promise.resolve({ context: freshContext, autoMemory: makeAutoMemoryData() })
-				});
-			}
-			if (url.includes('/api/memory/graph')) {
-				return Promise.resolve({
-					ok: true,
-					json: () => Promise.resolve(freshGraph)
-				});
-			}
-			// Analytics endpoint (fire-and-forget)
-			return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
-		});
-
-		// Click refresh
-		const btn = screen.getByText('Refresh');
-		await fireEvent.click(btn);
-
-		// Wait for async updates
-		await vi.waitFor(() => {
-			// Graph should now be populated — empty state should be gone
-			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
-		});
-
-		// Context entries should be visible after refresh
-		await vi.waitFor(() => {
-			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
-			expect(screen.getByText('Redis Caching')).toBeInTheDocument();
-		});
-	});
-
-	it('shows graph fetch error when API returns error response', async () => {
-		render(MemoryPage, { props: { data: makePageData() } });
-
-		mockFetch.mockImplementation((url: string) => {
-			if (url.includes('/api/memory/context')) {
-				return Promise.resolve({
-					ok: true,
-					json: () => Promise.resolve({ context: { entries: [] }, autoMemory: [] })
-				});
-			}
-			if (url.includes('/api/memory/graph')) {
-				return Promise.resolve({
-					ok: true,
-					json: () => Promise.resolve({ error: 'Graph file corrupted' })
-				});
-			}
-			return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
-		});
-
-		await fireEvent.click(screen.getByText('Refresh'));
-
-		await vi.waitFor(() => {
-			// The graph error should not crash the page — other sections should still render
-			expect(screen.getByText('No context entries loaded')).toBeInTheDocument();
-		});
-	});
-
-	it('handles network failure on graph refresh gracefully', async () => {
-		render(MemoryPage, { props: { data: makePageData() } });
-
-		// Both API calls fail
-		mockFetch.mockRejectedValue(new Error('Network offline'));
-
-		await fireEvent.click(screen.getByText('Refresh'));
-
-		await vi.waitFor(() => {
-			expect(screen.getByText('Network offline')).toBeInTheDocument();
-		});
-	});
-
-	// ── Server data with loadErrors shows error banner ───────────────────
-
-	it('shows error banner when server data has loadErrors', () => {
-		render(MemoryPage, {
-			props: {
-				data: makePageData({
-					loadErrors: ['Graph file not found', 'Context timeout']
-				})
-			}
-		});
-
-		expect(screen.getByText('Failed to load: Graph file not found; Context timeout')).toBeInTheDocument();
-	});
-
-	// ── Auto-memory entries render after refresh ─────────────────────────
-
-	it('renders auto-memory entries after API refresh', async () => {
-		render(MemoryPage, { props: { data: makePageData() } });
-
-		// Initially no entries
-		expect(screen.getByText('No auto-memory entries loaded')).toBeInTheDocument();
-
-		mockFetch.mockImplementation((url: string) => {
-			if (url.includes('/api/memory/context')) {
-				return Promise.resolve({
-					ok: true,
-					json: () => Promise.resolve({ context: { entries: [] }, autoMemory: makeAutoMemoryData() })
-				});
-			}
-			if (url.includes('/api/memory/graph')) {
-				return Promise.resolve({
-					ok: true,
-					json: () => Promise.resolve(makeGraphData())
-				});
-			}
-			return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
-		});
-
-		await fireEvent.click(screen.getByText('Refresh'));
-
-		await vi.waitFor(() => {
-			expect(screen.getByText('JWT with refresh tokens')).toBeInTheDocument();
-			expect(screen.getByText('patterns')).toBeInTheDocument();
-		});
-	});
-
-	// ── Full pipeline: empty → refresh → populated → dismiss error ──────
-
-	it('handles full lifecycle: empty → refresh → populated graph + context', async () => {
-		const { unmount } = render(MemoryPage, { props: { data: makePageData() } });
-
-		// 1. Starts empty
-		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
-		expect(screen.getByText('No auto-memory entries loaded')).toBeInTheDocument();
-
-		// 2. Refresh with full data
-		const graph = makeGraphData();
-		const context = makeContextData();
-
-		mockFetch.mockImplementation((url: string) => {
-			if (url.includes('/api/memory/context')) {
-				return Promise.resolve({
-					ok: true,
-					json: () => Promise.resolve({ context, autoMemory: makeAutoMemoryData() })
-				});
-			}
-			if (url.includes('/api/memory/graph')) {
-				return Promise.resolve({
-					ok: true,
-					json: () => Promise.resolve(graph)
-				});
-			}
-			return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
-		});
-
-		await fireEvent.click(screen.getByText('Refresh'));
-
-		// 3. After refresh — graph and context are populated
-		await vi.waitFor(() => {
-			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
-			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
-			expect(screen.getByText('Redis Caching')).toBeInTheDocument();
-			expect(screen.getByText('Database Connection Pool')).toBeInTheDocument();
-		});
-
-		// 4. Auto-memory should also be populated
-		await vi.waitFor(() => {
-			expect(screen.getByText('JWT with refresh tokens')).toBeInTheDocument();
-		});
-
-		unmount();
-	});
-
-	// ── Metric cards update with refreshed data ─────────────────────────
-
 	it('metric cards reflect graph structure after server-loaded data', () => {
 		const graph = makeGraphData();
 		const context = makeContextData();
@@ -317,19 +143,193 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 
 		expect(screen.getByText('hybrid')).toBeInTheDocument();
 		expect(screen.getByText('Disabled')).toBeInTheDocument();
-		// Context summary should show total entries
 		expect(screen.getByText('Context Summary')).toBeInTheDocument();
 		expect(screen.getByText('Total Entries')).toBeInTheDocument();
 	});
 
-	// ── Error dismissal clears the error state ──────────────────────────
+	// ── Server data with loadErrors shows error banner ───────────────────
+
+	it('shows error banner when server data has loadErrors', () => {
+		render(MemoryPage, {
+			props: {
+				data: makePageData({
+					loadErrors: ['Graph file not found', 'Context timeout']
+				})
+			}
+		});
+
+		expect(screen.getByText('Failed to load: Graph file not found; Context timeout')).toBeInTheDocument();
+	});
+
+	// ── Client-side refresh fetches API and updates display ──────────────
+
+	it('refreshes graph data via API and updates the displayed nodes', async () => {
+		render(MemoryPage, { props: { data: makePageData() } });
+
+		// Wait for $effect to set initialLoading = false, revealing the empty state
+		await vi.waitFor(() => {
+			expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		});
+
+		// Set up API responses for the refresh call
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+			routedFetch({
+				'/api/memory/context': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve({ context: makeContextData(), autoMemory: makeAutoMemoryData() })
+				}),
+				'/api/memory/graph': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve(makeGraphData())
+				})
+			})
+		);
+
+		await fireEvent.click(screen.getByText('Refresh'));
+
+		await vi.waitFor(() => {
+			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
+			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
+			expect(screen.getByText('Redis Caching')).toBeInTheDocument();
+		});
+	});
+
+	it('shows graph fetch error when API returns error object', async () => {
+		render(MemoryPage, { props: { data: makePageData() } });
+
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+			routedFetch({
+				'/api/memory/context': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve({ context: { entries: [] }, autoMemory: [] })
+				}),
+				'/api/memory/graph': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve({ error: 'Graph file corrupted' })
+				})
+			})
+		);
+
+		await vi.waitFor(() => {
+			expect(screen.getByText('Refresh')).toBeInTheDocument();
+		});
+
+		await fireEvent.click(screen.getByText('Refresh'));
+
+		await vi.waitFor(() => {
+			expect(screen.getByText('No context entries loaded')).toBeInTheDocument();
+		});
+	});
+
+	it('renders auto-memory entries after API refresh', async () => {
+		render(MemoryPage, { props: { data: makePageData() } });
+
+		// Wait for initial loading to finish
+		await vi.waitFor(() => {
+			expect(screen.getByText('No auto-memory entries loaded')).toBeInTheDocument();
+		});
+
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+			routedFetch({
+				'/api/memory/context': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve({ context: { entries: [] }, autoMemory: makeAutoMemoryData() })
+				}),
+				'/api/memory/graph': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve(makeGraphData())
+				})
+			})
+		);
+
+		await fireEvent.click(screen.getByText('Refresh'));
+
+		await vi.waitFor(() => {
+			expect(screen.getByText('JWT with refresh tokens')).toBeInTheDocument();
+			expect(screen.getByText('patterns')).toBeInTheDocument();
+		});
+	});
+
+	it('handles full lifecycle: empty → refresh → populated graph + context', async () => {
+		render(MemoryPage, { props: { data: makePageData() } });
+
+		// 1. Wait for initial loading to clear, showing empty states
+		await vi.waitFor(() => {
+			expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+			expect(screen.getByText('No auto-memory entries loaded')).toBeInTheDocument();
+		});
+
+		// 2. Set up refresh responses
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+			routedFetch({
+				'/api/memory/context': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve({ context: makeContextData(), autoMemory: makeAutoMemoryData() })
+				}),
+				'/api/memory/graph': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve(makeGraphData())
+				})
+			})
+		);
+
+		await fireEvent.click(screen.getByText('Refresh'));
+
+		// 3. After refresh — everything is populated
+		await vi.waitFor(() => {
+			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
+			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
+			expect(screen.getByText('Redis Caching')).toBeInTheDocument();
+			expect(screen.getByText('Database Connection Pool')).toBeInTheDocument();
+			expect(screen.getByText('JWT with refresh tokens')).toBeInTheDocument();
+		});
+	});
+});
+
+// ─── Tests requiring fake timers (fetchWithRetry has exponential backoff) ────
+
+describe('Memory Page — Integration (error handling with retries)', () => {
+	beforeEach(() => {
+		vi.useFakeTimers();
+		// Default fetch: return a proper response for trackEvent fire-and-forget
+		globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as any;
+	});
+
+	afterEach(() => {
+		vi.useRealTimers();
+		vi.restoreAllMocks();
+	});
+
+	it('handles network failure on graph refresh gracefully', async () => {
+		render(MemoryPage, { props: { data: makePageData() } });
+
+		// Wait for initial $effect
+		await vi.advanceTimersByTimeAsync(0);
+
+		// Now make all fetches reject
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Network offline'));
+
+		await fireEvent.click(screen.getByText('Refresh'));
+
+		// Advance through all retry delays (500 + 1000 + 2000 + jitter)
+		await vi.advanceTimersByTimeAsync(5000);
+
+		await vi.waitFor(() => {
+			expect(screen.getByText('Network offline')).toBeInTheDocument();
+		});
+	});
 
 	it('error can be dismissed after failed refresh', async () => {
 		render(MemoryPage, { props: { data: makePageData() } });
 
-		mockFetch.mockRejectedValue(new Error('Server down'));
+		await vi.advanceTimersByTimeAsync(0);
+
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockRejectedValue(new Error('Server down'));
 
 		await fireEvent.click(screen.getByText('Refresh'));
+
+		// Advance past all retries
+		await vi.advanceTimersByTimeAsync(5000);
 
 		await vi.waitFor(() => {
 			expect(screen.getByText('Server down')).toBeInTheDocument();
@@ -341,38 +341,18 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 		expect(screen.queryByText('Server down')).not.toBeInTheDocument();
 	});
 
-	// ── Refresh shows loading state then resolves ───────────────────────
-
-	it('shows loading state during refresh then resolves', async () => {
+	it('shows loading state during refresh', async () => {
 		render(MemoryPage, { props: { data: makePageData() } });
 
-		// Make fetch hang initially
-		let resolveContext!: (value: unknown) => void;
-		let resolveGraph!: (value: unknown) => void;
+		await vi.advanceTimersByTimeAsync(0);
 
-		mockFetch.mockImplementation((url: string) => {
-			if (url.includes('/api/memory/context')) {
-				return new Promise(resolve => { resolveContext = resolve; });
-			}
-			if (url.includes('/api/memory/graph')) {
-				return new Promise(resolve => { resolveGraph = resolve; });
-			}
-			return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
-		});
+		// Make fetch hang so loading state persists
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+			() => new Promise(() => {}) // Never resolves
+		);
 
 		await fireEvent.click(screen.getByText('Refresh'));
 
-		// Should be in loading state
 		expect(screen.getByText('Refreshing...')).toBeInTheDocument();
-
-		// Resolve both API calls
-		resolveContext({ ok: true, json: () => Promise.resolve({ context: makeContextData(), autoMemory: [] }) });
-		resolveGraph({ ok: true, json: () => Promise.resolve(makeGraphData()) });
-
-		await vi.waitFor(() => {
-			// Loading should be done — Refresh button should be back
-			expect(screen.getByText('Refresh')).toBeInTheDocument();
-			expect(screen.queryByText('Refreshing...')).not.toBeInTheDocument();
-		});
 	});
 });

@@ -143,7 +143,7 @@ function inferCommitVerb(task: Task): string {
 
 // ── Follow-up agent spawning ────────────────────────────────────────
 
-export type FollowUpType = 'documenter' | 'memory';
+export type FollowUpType = 'documenter';
 
 interface FollowUpConfig {
 	type: FollowUpType;
@@ -153,11 +153,14 @@ interface FollowUpConfig {
 
 /**
  * Decide which follow-up agents (if any) should run after a task completes.
+ * Memory follow-up agents were removed — the heartbeat maintains a compact
+ * project map automatically via the memory bridge. Agents should read memory
+ * (memory_search) but never write to it.
  */
 export function planFollowUps(
 	task: Task,
 	commitResult: CommitResult,
-	parsed: { mcpTools: string[]; usedClaudeFlow: boolean }
+	_parsed: { mcpTools: string[]; usedClaudeFlow: boolean }
 ): FollowUpConfig[] {
 	const followUps: FollowUpConfig[] = [];
 
@@ -178,15 +181,6 @@ export function planFollowUps(
 			reason: manyFiles ? `${commitResult.filesCommitted} files changed` :
 				isFeature ? 'new feature' :
 				touchedServer ? 'server module changed' : 'type definitions changed'
-		});
-	}
-
-	// Memory: runs when claude-flow was used or when patterns were discovered
-	if (parsed.usedClaudeFlow && parsed.mcpTools.some(t => t.includes('memory') || t.includes('pattern'))) {
-		followUps.push({
-			type: 'memory',
-			shouldSpawn: true,
-			reason: 'agent used claude-flow memory/pattern tools'
 		});
 	}
 
@@ -306,9 +300,8 @@ export async function spawnFollowUp(
 
 // ── Follow-up prompts ───────────────────────────────────────────────
 
-function buildFollowUpPrompt(type: FollowUpType, task: Task, commit: CommitResult): string {
-	if (type === 'documenter') return buildDocumenterPrompt(task, commit);
-	return buildMemoryPrompt(task, commit);
+function buildFollowUpPrompt(_type: FollowUpType, task: Task, commit: CommitResult): string {
+	return buildDocumenterPrompt(task, commit);
 }
 
 function buildDocumenterPrompt(task: Task, commit: CommitResult): string {
@@ -358,32 +351,3 @@ function buildDocumenterPrompt(task: Task, commit: CommitResult): string {
 	].join('\n');
 }
 
-function buildMemoryPrompt(task: Task, commit: CommitResult): string {
-	return [
-		`You are a memory agent. A code agent just completed a task.`,
-		`Your job is to store useful patterns and solutions in claude-flow memory for future agents.`,
-		``,
-		`## Completed Task`,
-		`**Title**: ${task.title}`,
-		`**ID**: ${task.id}`,
-		`**Description**: ${task.description ?? 'none'}`,
-		`**Tags**: ${task.tags.join(', ') || 'none'}`,
-		`**Commit**: ${commit.hash} (${commit.filesCommitted} files)`,
-		``,
-		`## Instructions`,
-		`1. Read the commit diff: \`git show ${commit.hash}\``,
-		`2. Identify patterns worth remembering:`,
-		`   - Solutions to tricky problems`,
-		`   - Architecture patterns used`,
-		`   - Common pitfalls encountered and avoided`,
-		`   - File organization conventions`,
-		`3. Use claude-flow MCP tools to store memories:`,
-		`   - **memory_store** — Store each pattern with descriptive key and tags`,
-		`   - **memory_search** — Check if similar patterns already exist (avoid duplicates)`,
-		`4. Do NOT modify any code — memory operations only`,
-		`5. Store 1-3 concise, high-value memories. Quality over quantity.`,
-		``,
-		`## Token Budget`,
-		`You have a tiny budget (~30K tokens). Read the diff, store patterns, done.`,
-	].join('\n');
-}

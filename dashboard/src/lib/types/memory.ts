@@ -77,4 +77,5 @@ export interface ProjectMemoryPageData {
 	categoryBreakdown: BreakdownEntry[];
 	entries: AutoMemoryEntry[];
 	context: RankedContext | null;
+	memoryGraphEnabled: boolean;
 }

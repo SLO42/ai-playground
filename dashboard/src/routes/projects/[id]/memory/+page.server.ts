@@ -2,12 +2,14 @@ import type { PageServerLoad } from './$types.js';
 import { readJsonFile } from '$lib/server/file-reader.js';
 import { PATHS } from '$lib/server/constants.js';
 import { projectMemoryCache } from '$lib/server/cache.js';
+import { loadMemorySettings } from '$lib/server/memory-settings.js';
 import type { RankedContext, AutoMemoryEntry, ProjectMemoryPageData } from '$lib/types/memory.js';
 import type { GraphState } from '$lib/types/graph.js';
 
 export const load: PageServerLoad = async ({ parent }) => {
 	const { projectId, project } = await parent();
 	const projectName = project.name;
+	const memSettings = await loadMemorySettings();
 	const cacheKey = `page-memory:${projectId}`;
 
 	const cached = projectMemoryCache.get(cacheKey);
@@ -90,7 +92,8 @@ export const load: PageServerLoad = async ({ parent }) => {
 			.map(([name, count]) => ({ name, count }))
 			.sort((a, b) => b.count - a.count),
 		entries,
-		context
+		context,
+		memoryGraphEnabled: memSettings.memoryGraphEnabled
 	};
 
 	if (!loadError) projectMemoryCache.set(cacheKey, result);

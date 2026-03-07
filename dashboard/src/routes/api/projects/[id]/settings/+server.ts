@@ -133,5 +133,18 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 	}
 
 	await writeSettings(project.path, result.data);
+
+	// Sync maxAgents into .playground/config.json so the heartbeat picks it up
+	try {
+		const configPath = resolve(project.path, '.playground', 'config.json');
+		let config: Record<string, unknown> = {};
+		try {
+			config = JSON.parse(await readFile(configPath, 'utf-8'));
+		} catch { /* no config yet */ }
+		if (!config.agents || typeof config.agents !== 'object') config.agents = {};
+		(config.agents as Record<string, unknown>).maxAgents = result.data.agentConfig.maxAgents;
+		await writeFile(configPath, JSON.stringify(config, null, '\t'), 'utf-8');
+	} catch { /* best effort */ }
+
 	return json({ ok: true, settings: result.data });
 };

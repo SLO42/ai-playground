@@ -697,6 +697,95 @@ describe('Memory Page — Client-side graph refresh', () => {
 	});
 });
 
+// ─── Empty API dataset → empty-state components ─────────────────────────────
+
+describe('Memory Page — Integration (empty API dataset renders empty-state)', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+		globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as any;
+	});
+
+	it('renders all empty-state components when API returns empty arrays/objects', () => {
+		render(MemoryPage, {
+			props: {
+				data: makePageData({
+					graph: { version: 1, updatedAt: Date.now(), nodeCount: 0, nodes: {}, edges: [], pageRanks: {} },
+					context: { entries: [] },
+					autoMemory: [],
+					memoryConfig: null,
+					loadErrors: null
+				})
+			}
+		});
+
+		// Graph section: no nodes → empty state
+		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		// Context section: empty entries → empty state
+		expect(screen.getByText('No memory context available. Context populates as the system processes entries.')).toBeInTheDocument();
+		// Auto-memory section: empty array → empty state
+		expect(screen.getByText('No auto-memory entries loaded')).toBeInTheDocument();
+		// No error banner
+		expect(screen.queryByText('Some data failed to load:')).not.toBeInTheDocument();
+	});
+
+	it('renders empty-state after refresh when API returns empty datasets', async () => {
+		// Start with populated data
+		render(MemoryPage, {
+			props: {
+				data: makePageData({
+					graph: makeGraphData(),
+					context: makeContextData(),
+					autoMemory: makeAutoMemoryData()
+				})
+			}
+		});
+
+		// Verify data is initially populated
+		expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
+
+		// API now returns empty datasets on refresh
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+			routedFetch({
+				'/api/memory/context': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve({ context: { entries: [] }, autoMemory: [] })
+				}),
+				'/api/memory/graph': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve({ version: 1, updatedAt: Date.now(), nodeCount: 0, nodes: {}, edges: [], pageRanks: {} })
+				})
+			})
+		);
+
+		await fireEvent.click(screen.getByText('Refresh'));
+
+		await vi.waitFor(() => {
+			// Previous data gone, empty states shown
+			expect(screen.queryByText('JWT Authentication')).not.toBeInTheDocument();
+			expect(screen.getByText('No auto-memory entries loaded')).toBeInTheDocument();
+		});
+	});
+
+	it('shows zero counts in metric cards with empty datasets', () => {
+		render(MemoryPage, {
+			props: {
+				data: makePageData({
+					graph: { version: 1, updatedAt: Date.now(), nodeCount: 0, nodes: {}, edges: [], pageRanks: {} },
+					context: { entries: [] },
+					autoMemory: [],
+					memoryConfig: { backend: 'agentdb', enableHNSW: true }
+				})
+			}
+		});
+
+		// Metric cards should show zero values
+		expect(screen.getByText('Nodes')).toBeInTheDocument();
+		expect(screen.getByText('Edges')).toBeInTheDocument();
+		// Backend config still renders
+		expect(screen.getByText('agentdb')).toBeInTheDocument();
+	});
+});
+
 // ─── Tests requiring fake timers (fetchWithRetry has exponential backoff) ────
 
 describe('Memory Page — Integration (error handling with retries)', () => {
@@ -765,6 +854,191 @@ describe('Memory Page — Integration (error handling with retries)', () => {
 		await fireEvent.click(screen.getByText('Refresh'));
 
 		expect(screen.getByText('Refreshing...')).toBeInTheDocument();
+	});
+});
+
+// ─── Loading State Lifecycle Tests ────────────────────────────────────────────
+
+describe('Memory Page — Loading state shows while API pending, then clears on resolve', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+		globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as any;
+	});
+
+	it('shows loading indicators while refresh is pending, removes them once data resolves', async () => {
+		render(MemoryPage, {
+			props: {
+				data: makePageData({
+					context: makeContextData(),
+					autoMemory: makeAutoMemoryData()
+				})
+			}
+		});
+
+		// Verify no loading indicators initially
+		expect(screen.queryByText('Loading memory context...')).not.toBeInTheDocument();
+		expect(screen.queryByText('Refreshing...')).not.toBeInTheDocument();
+
+		// Create deferred promises so we control when the API responds
+		let resolveContext!: (value: unknown) => void;
+		let resolveGraph!: (value: unknown) => void;
+		const contextPromise = new Promise((resolve) => { resolveContext = resolve; });
+		const graphPromise = new Promise((resolve) => { resolveGraph = resolve; });
+
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+			if (url === '/api/memory/context') return contextPromise;
+			if (url === '/api/memory/graph') return graphPromise;
+			return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+		});
+
+		// Click refresh — loading state should appear
+		await fireEvent.click(screen.getByText('Refresh'));
+
+		expect(screen.getByText('Refreshing...')).toBeInTheDocument();
+		expect(screen.getByText('Loading memory context...')).toBeInTheDocument();
+
+		// Resolve both API calls
+		resolveContext({
+			ok: true,
+			json: () => Promise.resolve({ context: makeContextData(), autoMemory: makeAutoMemoryData() })
+		});
+		resolveGraph({
+			ok: true,
+			json: () => Promise.resolve(makeGraphData())
+		});
+
+		// Wait for loading state to clear
+		await vi.waitFor(() => {
+			expect(screen.queryByText('Refreshing...')).not.toBeInTheDocument();
+			expect(screen.queryByText('Loading memory context...')).not.toBeInTheDocument();
+			expect(screen.getByText('Refresh')).not.toBeDisabled();
+		});
+
+		// Data should be populated
+		expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
+	});
+
+	it('shows skeleton loader for context summary while loading', async () => {
+		// Start with null context so the skeleton branch is reachable
+		render(MemoryPage, { props: { data: makePageData() } });
+
+		// Make fetch hang forever
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+			() => new Promise(() => {})
+		);
+
+		await fireEvent.click(screen.getByText('Refresh'));
+
+		// The skeleton loader and overlay text should be visible
+		expect(screen.getByText('Loading memory context...')).toBeInTheDocument();
+		expect(screen.getByText('Refreshing...')).toBeInTheDocument();
+
+		// Context summary should NOT be visible (context is null + loading)
+		expect(screen.queryByText('Context Summary')).not.toBeInTheDocument();
+	});
+
+	it('shows graph loading spinner while refresh is pending, clears after resolve', async () => {
+		// Start with graph data so the graph section has nodes
+		render(MemoryPage, {
+			props: {
+				data: makePageData({
+					graph: makeGraphData(),
+					context: makeContextData(),
+					autoMemory: makeAutoMemoryData()
+				})
+			}
+		});
+
+		// Graph should render normally, not in loading state
+		expect(screen.queryByText('Loading memory graph...')).not.toBeInTheDocument();
+
+		let resolveContext!: (value: unknown) => void;
+		let resolveGraph!: (value: unknown) => void;
+		const contextPromise = new Promise((resolve) => { resolveContext = resolve; });
+		const graphPromise = new Promise((resolve) => { resolveGraph = resolve; });
+
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+			if (url === '/api/memory/context') return contextPromise;
+			if (url === '/api/memory/graph') return graphPromise;
+			return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+		});
+
+		await fireEvent.click(screen.getByText('Refresh'));
+		expect(screen.getByText('Refreshing...')).toBeInTheDocument();
+
+		// Resolve APIs
+		resolveContext({
+			ok: true,
+			json: () => Promise.resolve({ context: makeContextData(), autoMemory: makeAutoMemoryData() })
+		});
+		resolveGraph({
+			ok: true,
+			json: () => Promise.resolve(makeGraphData())
+		});
+
+		await vi.waitFor(() => {
+			expect(screen.getByText('Refresh')).not.toBeDisabled();
+			expect(screen.queryByText('Refreshing...')).not.toBeInTheDocument();
+			expect(screen.queryByText('Loading memory graph...')).not.toBeInTheDocument();
+		});
+	});
+
+	it('disables Refresh and Sync buttons while loading', async () => {
+		render(MemoryPage, {
+			props: {
+				data: makePageData({
+					context: makeContextData(),
+					autoMemory: makeAutoMemoryData()
+				})
+			}
+		});
+
+		// Make fetch hang
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+			() => new Promise(() => {})
+		);
+
+		const refreshBtn = screen.getByText('Refresh');
+		expect(refreshBtn).not.toBeDisabled();
+
+		await fireEvent.click(refreshBtn);
+
+		// Both buttons should be disabled while loading
+		expect(screen.getByText('Refreshing...')).toBeDisabled();
+		expect(screen.getByText('Sync Sources')).toBeDisabled();
+	});
+
+	it('loading state clears even when API returns an error', async () => {
+		render(MemoryPage, {
+			props: {
+				data: makePageData({
+					context: makeContextData(),
+					autoMemory: makeAutoMemoryData()
+				})
+			}
+		});
+
+		let rejectContext!: (reason: Error) => void;
+		const contextPromise = new Promise((_resolve, reject) => { rejectContext = reject; });
+
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation((url: string) => {
+			if (url === '/api/memory/context') return contextPromise;
+			return Promise.resolve({ ok: true, json: () => Promise.resolve({}) });
+		});
+
+		await fireEvent.click(screen.getByText('Refresh'));
+		expect(screen.getByText('Refreshing...')).toBeInTheDocument();
+
+		// Reject the promise
+		rejectContext(new Error('Server unreachable'));
+
+		await vi.waitFor(() => {
+			// Loading should be gone
+			expect(screen.queryByText('Refreshing...')).not.toBeInTheDocument();
+			expect(screen.getByText('Refresh')).not.toBeDisabled();
+			// Error banner should appear
+			expect(screen.getByText('Server unreachable')).toBeInTheDocument();
+		});
 	});
 });
 

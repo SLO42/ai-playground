@@ -88,13 +88,162 @@ The memory page supports refreshing graph data without a full page reload. It fe
 
 ## UI States
 
+The `BubbleGraph` component supports four visual states controlled via props:
+
+| State | Props | What the User Sees |
+|-------|-------|--------------------|
+| **Loading** | `isLoading={true}` | Spinning icon with "Loading graph…" text (48px tall centered area) |
+| **Empty** | `isEmpty={true}` | Cloud icon (40% opacity) with "No memory data to display" |
+| **Error** | `hasError={true}` | Red alert icon, error message, and optional Retry button |
+| **Graph** | (default) | Interactive SVG bubble graph sized by PageRank |
+
+State priority: `hasError` > `isLoading` > `isEmpty` > normal graph.
+
+At the **page level**, additional states exist:
+
 | Condition | What the User Sees |
 |-----------|-------------------|
-| `memoryGraphEnabled` is `false` | "Graph feature is disabled" message |
-| Graph loading in progress | "Loading memory graph..." skeleton |
-| Graph file missing / no data | "No graph data yet" with a refresh button |
-| Graph load error | Error message with a "Retry" button |
-| Graph loaded successfully | Interactive bubble graph visualization |
+| `memoryGraphEnabled` is `false` | "Graph feature is disabled" message (graph not rendered at all) |
+| Server returns `null` graph | Empty state shown via `isEmpty` prop |
+| Client-side refresh fails | Error state shown via `hasError` + `errorMessage` props |
+
+---
+
+## Component Props Reference
+
+```typescript
+interface Props {
+  nodes: RankedGraphNode[];         // Required — the graph data
+  edges?: GraphEdge[];              // Optional — connections between nodes (default: [])
+  onNodeClick?: (nodeId: string) => void; // Optional — callback when a node is clicked/activated
+  ariaLabel?: string;               // Optional — override the auto-generated aria-label
+  isLoading?: boolean;              // Show loading spinner (default: false)
+  isEmpty?: boolean;                // Show empty state (default: false)
+  hasError?: boolean;               // Show error state (default: false)
+  errorMessage?: string;            // Custom error text (default: "Failed to load memory graph")
+  onRetry?: () => void;             // If provided, shows a Retry button in error state
+}
+```
+
+---
+
+## Usage Examples
+
+### Basic usage with data
+
+```svelte
+<script lang="ts">
+  import BubbleGraph from '$lib/components/BubbleGraph.svelte';
+  import type { RankedGraphNode, GraphEdge } from '$lib/types/graph.js';
+
+  let nodes: RankedGraphNode[] = [
+    { id: 'auth', label: 'Authentication', category: 'core', pageRank: 0.8, confidence: 0.95, accessCount: 12, createdAt: Date.now() },
+    { id: 'jwt', label: 'JWT Tokens', category: 'patterns', pageRank: 0.5, confidence: 0.9, accessCount: 7, createdAt: Date.now() },
+  ];
+  let edges: GraphEdge[] = [
+    { sourceId: 'auth', targetId: 'jwt', type: 'causal', weight: 0.9 }
+  ];
+</script>
+
+<BubbleGraph {nodes} {edges} onNodeClick={(id) => console.log('Selected:', id)} />
+```
+
+### Loading state (while fetching data)
+
+```svelte
+<BubbleGraph nodes={[]} isLoading={true} />
+```
+
+### Empty state (no data available)
+
+```svelte
+<BubbleGraph nodes={[]} isEmpty={true} />
+```
+
+### Error state with retry
+
+```svelte
+<BubbleGraph
+  nodes={[]}
+  hasError={true}
+  errorMessage="Network error — could not load graph"
+  onRetry={() => fetchGraph()}
+/>
+```
+
+### Lazy-loaded (as used on the memory page)
+
+```svelte
+<script lang="ts">
+  import type { Component } from 'svelte';
+  import type { RankedGraphNode, GraphEdge } from '$lib/types/graph.js';
+
+  let BubbleGraph = $state<Component | null>(null);
+  $effect(() => {
+    import('$lib/components/BubbleGraph.svelte').then(m => { BubbleGraph = m.default; });
+  });
+
+  let graphNodes: RankedGraphNode[] = $state([]);
+  let graphEdges: GraphEdge[] = $state([]);
+  let graphLoading = $state(true);
+  let graphError = $state<string | null>(null);
+</script>
+
+{#if BubbleGraph}
+  <svelte:component
+    this={BubbleGraph}
+    nodes={graphNodes}
+    edges={graphEdges}
+    isLoading={graphLoading}
+    isEmpty={!graphLoading && graphNodes.length === 0 && !graphError}
+    hasError={!!graphError}
+    errorMessage={graphError ?? undefined}
+    onRetry={() => refreshGraph()}
+  />
+{:else}
+  <p>Loading component…</p>
+{/if}
+```
+
+---
+
+## Customization
+
+### Node categories and colors
+
+Nodes are colored by their `category` field:
+
+| Category | Color | Hex |
+|----------|-------|-----|
+| `core` | Blue | `#3b82f6` |
+| `insights` | Purple | `#a855f7` |
+| `patterns` | Green | `#22c55e` |
+| `security` | Red | `#ef4444` |
+| Other | Slate | `#94a3b8` |
+
+### Edge types and styles
+
+| Type | Color | Style |
+|------|-------|-------|
+| `temporal` | Slate (`#475569`) | Solid, thin (0.8px) |
+| `similar` | Purple (`#a855f7`) | Dashed (4,3), medium (1.5px) |
+| `causal` | Green (`#22c55e`) | Solid, thin (0.8px) |
+
+### Responsive behavior
+
+- **Desktop** (≥500px): 18px base radius, 36px scale, 14-char labels
+- **Mobile** (400–499px): 14px base radius, 26px scale, 11-char labels
+- **Narrow** (<400px): 14px base radius, 26px scale, 8-char labels
+- Max height caps at `420px` on desktop, `60vh` on mobile, `50vh` on narrow
+
+### Accessibility
+
+- Full keyboard navigation: Arrow keys move focus, Enter/Space activate nodes
+- ARIA labels with PageRank score, hit count, category, and connection count
+- Focus indicator: cyan drop-shadow ring on focused node
+- High contrast mode: full opacity, bold labels, thicker strokes
+- Reduced motion: transitions disabled
+- Minimum 44px touch targets (invisible hit area for small nodes)
 
 ---
 
@@ -156,7 +305,7 @@ All types are defined in `dashboard/src/lib/types/graph.ts`.
 | `GraphNode` | A single memory node — `id`, `category`, `confidence`, `accessCount`, `createdAt` |
 | `GraphEdge` | A directed edge — `sourceId`, `targetId`, `type` (temporal/similar/causal), `weight` |
 | `RankedGraphNode` | `GraphNode` + `pageRank` + `label` — used by `BubbleGraph` for rendering |
-| `BubbleGraphProps` | Component props — `nodes`, `edges?`, `onNodeClick?`, `ariaLabel?` |
+| `BubbleGraphProps` | Component props — `nodes`, `edges?`, `onNodeClick?`, `ariaLabel?`, `isLoading?`, `isEmpty?`, `hasError?`, `errorMessage?`, `onRetry?` |
 
 ---
 

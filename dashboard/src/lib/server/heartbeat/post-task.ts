@@ -11,7 +11,8 @@ import { pushNotification } from '../notifications.js';
 import {
 	MONITOR_SESSION_ID, getActiveAgents, maxConcurrentAgents,
 	agentSender, log, trimSession, ensureTaskSession,
-	loadMonitorSession, saveMonitorSession
+	loadMonitorSession, saveMonitorSession,
+	getProjectAgentMap, getProjectLimits, countProjectAgents
 } from './shared.js';
 import { spawnClaude, pickModelForTask } from './agent-spawn.js';
 import { logAgentCompletion, parseStreamJsonLog } from './agent-tracking.js';
@@ -202,6 +203,17 @@ export async function spawnFollowUp(
 		return false;
 	}
 
+	// Respect per-project limits for follow-ups (same as normal spawns)
+	const projId = parentTask._sourceProjectId;
+	if (projId) {
+		const projMax = getProjectLimits().get(projId) ?? 2;
+		const projActive = countProjectAgents(projId);
+		if (projActive >= projMax) {
+			log(monitorSession, `[follow-up] Skipping ${type} — project "${projId}" at agent limit (${projActive}/${projMax})`);
+			return false;
+		}
+	}
+
 	const followUpId = `${parentTask.id}-${type}`;
 	if (agents.has(followUpId)) return false;
 
@@ -245,6 +257,11 @@ export async function spawnFollowUp(
 			reportSessionId: reportId
 		});
 
+		// Track follow-up in project agent map so it counts against per-project limits
+		if (projId) {
+			getProjectAgentMap().set(followUpId, projId);
+		}
+
 		if (!session.isResume) {
 			watchForSessionId(logFile, session.slotId).catch(() => {});
 		}
@@ -252,6 +269,7 @@ export async function spawnFollowUp(
 		child.on('close', (code) => {
 			const agentStarted = agents.get(followUpId)?.startedAt;
 			agents.delete(followUpId);
+			getProjectAgentMap().delete(followUpId);
 
 			const parsed = parseStreamJsonLog(logFile);
 			const startTime = agentStarted ? new Date(agentStarted).getTime() : Date.now();

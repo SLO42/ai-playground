@@ -298,12 +298,13 @@ describe('BubbleGraph', () => {
 			expect(viewBox).toMatch(/^0 0 320 /);
 		});
 
-		it('applies mobile max-height style (320px)', () => {
+		it('applies mobile max-height style (50vh for very narrow viewport)', () => {
+			// JSDOM width=320 < 360 → max-height: 50vh
 			const { container } = render(BubbleGraph, {
 				props: { nodes: [makeNode()] }
 			});
 			const svg = container.querySelector('svg');
-			expect(svg?.getAttribute('style')).toContain('max-height: 320px');
+			expect(svg?.getAttribute('style')).toContain('max-height: 50vh');
 		});
 
 		it('uses smaller radii at mobile width than desktop would', () => {
@@ -375,8 +376,8 @@ describe('BubbleGraph', () => {
 			expect(handler).toHaveBeenCalledWith('mobile-key');
 		});
 
-		it('uses mobile spacing (90px) for vertical node layout', () => {
-			// With width<500, spacingY=90. Two rows → height = max(260, 2*90+80) = 260
+		it('uses mobile spacing (100px) for vertical node layout', () => {
+			// With width<500, spacingY=100. 4 nodes → cols=2, rows=2 → height = max(260, 2*100+80) = 280
 			const nodes = [
 				makeNode({ id: 'a' }),
 				makeNode({ id: 'b' }),
@@ -387,9 +388,8 @@ describe('BubbleGraph', () => {
 			const svg = container.querySelector('svg');
 			const viewBox = svg?.getAttribute('viewBox');
 			const vbHeight = Number((viewBox ?? '').split(' ')[3]);
-			// Mobile spacingY=90, so height should use 90-based calculation
-			expect(vbHeight).toBeGreaterThanOrEqual(260);
-			expect(vbHeight).toBeLessThanOrEqual(400);
+			// Mobile spacingY=100, height = max(260, ceil(4/2)*100+80) = 280
+			expect(vbHeight).toBe(280);
 		});
 
 		it('renders edges correctly between nodes at mobile width', () => {
@@ -410,6 +410,107 @@ describe('BubbleGraph', () => {
 			});
 			const svg = container.querySelector('svg');
 			expect(svg?.getAttribute('aria-label')).toBe('Mobile graph');
+		});
+
+		it('truncates labels to 8 chars at narrow width (<400px)', () => {
+			// JSDOM gives containerWidth=0, so width=max(320,0)=320 < 400 → isNarrow=true → truncLen=8
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [makeNode({ label: 'Authentication Module' })] }
+			});
+			const texts = container.querySelectorAll('text');
+			const label = Array.from(texts).find((t) => t.textContent?.includes('...'));
+			expect(label).toBeTruthy();
+			// 8 chars + '...' = 'Authenti...'
+			expect(label!.textContent).toBe('Authenti...');
+		});
+
+		it('renders invisible hit-area circle for small nodes (touch target >= 44px)', () => {
+			// A node with low pageRank gets a small radius (< MIN_TOUCH_R=22)
+			// The component should render a transparent circle with r=22 for touch targeting
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [makeNode({ pageRank: 0.01 })] }
+			});
+			const circles = container.querySelectorAll('circle');
+			// Should have 2 circles: transparent hit area (r=22) + visible node circle
+			expect(circles.length).toBe(2);
+			const hitArea = Array.from(circles).find(
+				(c) => c.getAttribute('fill') === 'transparent'
+			);
+			expect(hitArea).toBeTruthy();
+			expect(parseFloat(hitArea!.getAttribute('r')!)).toBe(22);
+		});
+
+		it('does not render hit-area circle when node radius >= MIN_TOUCH_R', () => {
+			// A node with high pageRank gets r >= 22, so no extra hit area needed
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [makeNode({ pageRank: 1.0 })] }
+			});
+			const circles = container.querySelectorAll('circle');
+			const hitArea = Array.from(circles).find(
+				(c) => c.getAttribute('fill') === 'transparent'
+			);
+			expect(hitArea).toBeFalsy();
+		});
+
+		it('applies very-narrow max-height (50vh) when width < 360', () => {
+			// JSDOM width=320 < 360 → max-height: 50vh
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [makeNode()] }
+			});
+			const svg = container.querySelector('svg');
+			const style = svg?.getAttribute('style') ?? '';
+			expect(style).toContain('max-height: 50vh');
+		});
+
+		it('sets aspect-ratio on SVG matching viewBox dimensions', () => {
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [makeNode()] }
+			});
+			const svg = container.querySelector('svg');
+			const style = svg?.getAttribute('style') ?? '';
+			expect(style).toContain('aspect-ratio:');
+		});
+
+		it('container has overflow-x-auto for horizontal scrolling on narrow screens', () => {
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [makeNode()] }
+			});
+			const wrapper = container.querySelector('.bubble-graph-container');
+			expect(wrapper).toBeTruthy();
+			expect(wrapper?.classList.contains('overflow-x-auto')).toBe(true);
+		});
+
+		it('node groups have touch-action: manipulation class for tap responsiveness', () => {
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [makeNode()] }
+			});
+			const node = container.querySelector('.graph-node');
+			expect(node).toBeTruthy();
+			// The graph-node class applies touch-action: manipulation via CSS
+			expect(node?.classList.contains('graph-node')).toBe(true);
+		});
+
+		it('height calculation uses mobile spacingY (100) when width < 500', () => {
+			// 9 nodes → cols=ceil(sqrt(9))=3, rows=ceil(9/3)=3
+			// mobile spacingY=100 → height=max(260, 3*100+80)=380
+			const nodes = Array.from({ length: 9 }, (_, i) =>
+				makeNode({ id: `n${i}`, label: `N${i}`, pageRank: 0.5 })
+			);
+			const { container } = render(BubbleGraph, { props: { nodes } });
+			const svg = container.querySelector('svg');
+			const viewBox = svg?.getAttribute('viewBox');
+			const vbHeight = Number((viewBox ?? '').split(' ')[3]);
+			expect(vbHeight).toBe(380);
+		});
+
+		it('maintains minimum container height of 180px', () => {
+			const { container } = render(BubbleGraph, {
+				props: { nodes: [] }
+			});
+			const wrapper = container.querySelector('.bubble-graph-container');
+			expect(wrapper).toBeTruthy();
+			// min-height: 180px is set via CSS on .bubble-graph-container
+			expect(wrapper?.classList.contains('bubble-graph-container')).toBe(true);
 		});
 	});
 

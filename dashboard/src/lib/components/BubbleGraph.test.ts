@@ -51,14 +51,15 @@ describe('BubbleGraph', () => {
 		expect(labelText).toBeTruthy();
 	});
 
-	it('truncates long labels to 14 chars + ellipsis', () => {
+	it('truncates long labels based on viewport width', () => {
+		// JSDOM width=320 < 400 → isNarrow=true → truncLen=8
 		const { container } = render(BubbleGraph, {
 			props: { nodes: [makeNode({ label: 'A Very Long Label Name' })] }
 		});
 		const texts = container.querySelectorAll('text');
 		const labelText = Array.from(texts).find((t) => t.textContent?.includes('...'));
 		expect(labelText).toBeTruthy();
-		expect(labelText!.textContent).toBe('A Very Long La...');
+		expect(labelText!.textContent).toBe('A Very L...');
 	});
 
 	it('does not truncate short labels', () => {

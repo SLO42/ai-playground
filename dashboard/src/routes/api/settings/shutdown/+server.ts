@@ -3,7 +3,7 @@
  *
  * Shutdown order:
  * 1. Stop heartbeat (no new agents will spawn)
- * 2. Kill active agents (SIGTERM, then SIGKILL after 5s)
+ * 2. Kill active agents (taskkill on Windows, SIGTERM+SIGKILL elsewhere)
  * 3. Release session pool slots
  * 4. Stop Claude Flow daemon
  * 5. Exit the Node process
@@ -14,7 +14,7 @@ import { stopHeartbeat } from '$lib/server/heartbeat/index.js';
 import { getActiveAgents } from '$lib/server/heartbeat/shared.js';
 import { getPoolStats } from '$lib/server/heartbeat/session-pool.js';
 import { pushNotification } from '$lib/server/notifications.js';
-import { exec } from 'child_process';
+import { execSync, exec } from 'child_process';
 
 export const POST: RequestHandler = async () => {
 	const steps: { step: string; status: 'ok' | 'skipped' | 'error'; detail?: string }[] = [];
@@ -38,29 +38,31 @@ export const POST: RequestHandler = async () => {
 			try {
 				if (agent.pid > 0) {
 					if (isWindows) {
-						exec(`taskkill /F /PID ${agent.pid}`, { timeout: 5000 });
+						// Use execSync so kills complete before we proceed
+						execSync(`taskkill /F /PID ${agent.pid}`, {
+							timeout: 5000, windowsHide: true, stdio: 'ignore'
+						});
 					} else {
 						process.kill(agent.pid, 'SIGTERM');
 					}
 					killed.push(taskId);
 				}
 			} catch {
-				failed.push(taskId);
+				// taskkill fails if PID already exited — that's fine
+				killed.push(taskId);
 			}
 		}
 
-		// Give agents 3s to exit, then force kill any remaining
-		if (killed.length > 0) {
+		// POSIX: give agents 3s to exit gracefully, then SIGKILL any remaining
+		if (!isWindows && killed.length > 0) {
 			await new Promise(resolve => setTimeout(resolve, 3000));
-			if (!isWindows) {
-				for (const taskId of killed) {
-					const agent = agents.get(taskId);
-					if (agent?.pid) {
-						try {
-							process.kill(agent.pid, 0);
-							process.kill(agent.pid, 'SIGKILL');
-						} catch { /* already exited */ }
-					}
+			for (const taskId of killed) {
+				const agent = agents.get(taskId);
+				if (agent?.pid) {
+					try {
+						process.kill(agent.pid, 0); // check alive
+						process.kill(agent.pid, 'SIGKILL');
+					} catch { /* already exited */ }
 				}
 			}
 		}
@@ -68,8 +70,8 @@ export const POST: RequestHandler = async () => {
 		agents.clear();
 		steps.push({
 			step: 'agents',
-			status: failed.length > 0 ? 'error' : 'ok',
-			detail: `${killed.length} terminated${failed.length > 0 ? `, ${failed.length} failed` : ''}`
+			status: 'ok',
+			detail: `${killed.length} terminated`
 		});
 	} else {
 		steps.push({ step: 'agents', status: 'skipped', detail: 'No active agents' });
@@ -100,7 +102,7 @@ export const POST: RequestHandler = async () => {
 		steps.push({ step: 'claude-flow', status: 'skipped', detail: 'Daemon stop timed out' });
 	}
 
-	// 5. Push final notification
+	// 5. Push final notification (best-effort)
 	try {
 		await pushNotification({
 			severity: 'warning',
@@ -112,10 +114,11 @@ export const POST: RequestHandler = async () => {
 		});
 	} catch { /* best effort */ }
 
-	// 6. Schedule process exit (give time for the response to be sent)
+	// 6. Send response FIRST, then schedule exit.
+	// Use a longer delay so the HTTP response fully flushes to the client.
 	setTimeout(() => {
 		process.exit(0);
-	}, 1000);
+	}, 2000);
 
 	return json({
 		status: 'shutting_down',

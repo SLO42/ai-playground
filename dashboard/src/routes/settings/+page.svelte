@@ -258,7 +258,8 @@
 		try {
 			const res = await apiFetch('/api/settings/shutdown', {
 				method: 'POST',
-				headers: { 'Content-Type': 'application/json' }
+				headers: { 'Content-Type': 'application/json' },
+				silent: true  // suppress network error toast — connection drop is expected
 			});
 
 			if (res.ok) {

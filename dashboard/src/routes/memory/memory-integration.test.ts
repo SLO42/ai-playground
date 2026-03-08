@@ -937,8 +937,9 @@ describe('Memory Page — Loading state shows while API pending, then clears on 
 		expect(screen.queryByText('Context Summary')).not.toBeInTheDocument();
 	});
 
-	it('shows graph loading spinner while refresh is pending, clears after resolve', async () => {
-		// Start with graph data so the graph section has nodes
+	it('shows loading overlay during refresh, clears once APIs resolve with graph data', async () => {
+		// Start with context + autoMemory populated (so page is not in global empty state)
+		// but no graph — to verify refresh populates graph and clears loading
 		render(MemoryPage, {
 			props: {
 				data: makePageData({
@@ -948,9 +949,6 @@ describe('Memory Page — Loading state shows while API pending, then clears on 
 				})
 			}
 		});
-
-		// Graph should render normally, not in loading state
-		expect(screen.queryByText('Loading memory graph...')).not.toBeInTheDocument();
 
 		let resolveContext!: (value: unknown) => void;
 		let resolveGraph!: (value: unknown) => void;
@@ -964,7 +962,10 @@ describe('Memory Page — Loading state shows while API pending, then clears on 
 		});
 
 		await fireEvent.click(screen.getByText('Refresh'));
+
+		// Loading overlay should appear
 		expect(screen.getByText('Refreshing...')).toBeInTheDocument();
+		expect(screen.getByText('Loading memory context...')).toBeInTheDocument();
 
 		// Resolve APIs
 		resolveContext({
@@ -979,8 +980,11 @@ describe('Memory Page — Loading state shows while API pending, then clears on 
 		await vi.waitFor(() => {
 			expect(screen.getByText('Refresh')).not.toBeDisabled();
 			expect(screen.queryByText('Refreshing...')).not.toBeInTheDocument();
-			expect(screen.queryByText('Loading memory graph...')).not.toBeInTheDocument();
+			expect(screen.queryByText('Loading memory context...')).not.toBeInTheDocument();
 		});
+
+		// Data should remain populated
+		expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
 	});
 
 	it('disables Refresh and Sync buttons while loading', async () => {

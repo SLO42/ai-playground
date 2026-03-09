@@ -184,7 +184,10 @@ describe('BubbleGraph', () => {
 			makeNode({ id: 'high', pageRank: 1.0 })
 		];
 		const { container } = render(BubbleGraph, { props: { nodes } });
-		const circles = container.querySelectorAll('circle');
+		// Filter out transparent hit-area circles added for small touch targets
+		const circles = Array.from(container.querySelectorAll('circle')).filter(
+			(c) => c.getAttribute('fill') !== 'transparent'
+		);
 		const lowR = parseFloat(circles[0].getAttribute('r')!);
 		const highR = parseFloat(circles[1].getAttribute('r')!);
 		expect(highR).toBeGreaterThan(lowR);

@@ -10,6 +10,12 @@
  *   No API calls needed — pure local test execution.
  *
  * Memory agent: distills learnings to optimize costs and efficiency.
+ *
+ * Resource controls:
+ * - Regression tests run async (non-blocking) with a 120s hard timeout
+ * - Minimum 12-hour cooldown between inspections (twice a day)
+ * - Project route count capped to prevent combinatorial explosion
+ * - Memory agent work is done locally (no AI spawn) when possible
  */
 import { readFile, writeFile, mkdir, access } from 'fs/promises';
 import { resolve } from 'path';
@@ -24,13 +30,19 @@ import {
 import { spawnClaude } from './agent-spawn.js';
 import { logAgentCompletion, parseStreamJsonLog, captureGitBaseline } from './agent-tracking.js';
 import { recordEvent } from './agent-analytics.js';
+import { registerPid, unregisterPid } from './pid-registry.js';
 import type { ChatSession, ChatSender } from '$lib/types/chat.js';
 
 const UX_SESSION_ID = 'claw-ux-inspector';
-const MEMORY_SESSION_ID = 'claw-ux-learnings';
 const GENERATED_TESTS_DIR = 'e2e/generated';
 const REGRESSION_TEST_FILE = 'e2e/generated/ux-regression.test.ts';
 const INSPECTION_STATE_FILE = '.playground/ux-inspection-state.json';
+
+// Minimum time between inspections (any mode) — prevents churn
+const INSPECTION_COOLDOWN_MS = 12 * 60 * 60_000; // 12 hours (twice a day)
+
+// Max project sub-routes to add — prevents combinatorial explosion
+const MAX_PROJECT_ROUTES = 21; // 3 projects × 7 sub-routes
 
 // Routes to inspect — all dashboard pages
 const INSPECT_ROUTES = [
@@ -121,6 +133,17 @@ export async function runUxInspection(monitorSession: ChatSession): Promise<void
 	}
 
 	const state = await loadInspectionState();
+
+	// Enforce cooldown — prevent rapid churn
+	const lastRun = Math.max(
+		state.lastDiscoveryAt ? new Date(state.lastDiscoveryAt).getTime() : 0,
+		state.lastRegressionAt ? new Date(state.lastRegressionAt).getTime() : 0
+	);
+	if (lastRun > 0 && Date.now() - lastRun < INSPECTION_COOLDOWN_MS) {
+		log(monitorSession, `[ux] Skipping — cooldown (${Math.round((INSPECTION_COOLDOWN_MS - (Date.now() - lastRun)) / 1000)}s remaining)`);
+		return;
+	}
+
 	const allRoutes = await collectRoutes();
 	const hasGeneratedTests = await fileExists(resolve(PATHS.root, 'dashboard', REGRESSION_TEST_FILE));
 
@@ -144,6 +167,31 @@ export async function runUxInspection(monitorSession: ChatSession): Promise<void
 	}
 }
 
+// ── Async Playwright runner (non-blocking) ──────────────────────────
+
+function execPlaywright(cmd: string, cwd: string, timeoutMs: number): Promise<string> {
+	return new Promise((resolve) => {
+		import('child_process').then(({ exec }) => {
+			const child = exec(cmd, {
+				cwd,
+				timeout: timeoutMs,
+				windowsHide: true,
+				maxBuffer: 10 * 1024 * 1024,
+				env: { ...process.env, FORCE_COLOR: '0' }
+			}, (_err, stdout, stderr) => {
+				// Playwright exits non-zero on test failures — still return output
+				resolve(stdout || stderr || '');
+			});
+			// Hard safety timeout — kill if still running at 2x
+			const safety = setTimeout(() => {
+				try { child.kill(); } catch { /* already dead */ }
+				resolve('');
+			}, timeoutMs * 2);
+			child.on('close', () => clearTimeout(safety));
+		});
+	});
+}
+
 // ── Regression Mode ($0, local Playwright tests) ────────────────────
 
 async function runRegressionTests(monitorSession: ChatSession, state: InspectionState): Promise<void> {
@@ -152,15 +200,10 @@ async function runRegressionTests(monitorSession: ChatSession, state: Inspection
 	const startTime = Date.now();
 
 	try {
-		const { execSync } = await import('child_process');
-		const output = execSync(
-			`npx playwright test ${REGRESSION_TEST_FILE} --reporter=json 2>&1`,
-			{
-				cwd: resolve(PATHS.root, 'dashboard'),
-				timeout: 120_000,
-				encoding: 'utf-8',
-				windowsHide: true
-			}
+		const output = await execPlaywright(
+			`npx playwright test ${REGRESSION_TEST_FILE} --reporter=json`,
+			resolve(PATHS.root, 'dashboard'),
+			120_000
 		);
 
 		const durationMs = Date.now() - startTime;
@@ -221,24 +264,7 @@ async function runRegressionTests(monitorSession: ChatSession, state: Inspection
 	} catch (err) {
 		const durationMs = Date.now() - startTime;
 		const msg = err instanceof Error ? err.message : 'test run failed';
-
-		// Playwright exits non-zero on test failures — check if we got output
-		const stdout = (err as any)?.stdout as string | undefined;
-		if (stdout) {
-			log(monitorSession, `[ux] Regression tests had failures (${(durationMs / 1000).toFixed(1)}s) — scheduling AI review`);
-
-			await pushNotification({
-				severity: 'warning',
-				category: 'system',
-				title: 'UX regression tests failed',
-				message: `Test run completed with failures — AI review scheduled`,
-				source: 'claw',
-				link: `/chat?session=${UX_SESSION_ID}`,
-				linkLabel: 'View Details'
-			});
-		} else {
-			log(monitorSession, `[ux] Regression test run error: ${msg.slice(0, 200)}`);
-		}
+		log(monitorSession, `[ux] Regression test run error (${(durationMs / 1000).toFixed(1)}s): ${msg.slice(0, 200)}`);
 	}
 }
 
@@ -281,6 +307,8 @@ async function runDiscoveryInspection(
 			gitBaseline: baseline
 		});
 
+		registerPid(pid, 'agent:ux-inspector', 'agent').catch(() => {});
+
 		await recordEvent({
 			taskId: 'ux-inspector',
 			taskTitle: `UX Inspection (${mode})`,
@@ -292,6 +320,7 @@ async function runDiscoveryInspection(
 		});
 
 		child.on('close', async (code) => {
+			unregisterPid('agent:ux-inspector').catch(() => {});
 			agents.delete('ux-inspector');
 			const exitMsg = code === 0 ? 'UX inspection complete' : `UX inspector exited with code ${code}`;
 
@@ -335,20 +364,56 @@ async function runDiscoveryInspection(
 	}
 }
 
-/** Collect all routes to inspect, including per-project routes */
+// Frameworks that have a browser-facing UI worth inspecting
+const UI_FRAMEWORKS = new Set([
+	'sveltekit', 'next.js', 'nuxt', 'remix', 'astro',
+	'react', 'vue', 'angular', 'solid', 'svelte',
+	'gatsby', 'vite', 'react native', 'expo'
+]);
+
+/** Check if a project has a browser-facing UI based on its framework. */
+function projectHasUi(config: { framework?: string } | null): boolean {
+	if (!config?.framework) return false;
+	return UI_FRAMEWORKS.has(config.framework.toLowerCase());
+}
+
+/** Collect all routes to inspect, including per-project routes (UI projects only). */
 async function collectRoutes(): Promise<string[]> {
 	const routes = [...INSPECT_ROUTES];
 
 	try {
 		const projects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root);
-		for (const project of projects.slice(0, 5)) {
+		// Cap total project sub-routes to prevent combinatorial explosion
+		const maxProjects = Math.min(projects.length, Math.floor(MAX_PROJECT_ROUTES / PROJECT_SUB_ROUTES.length));
+
+		let added = 0;
+		for (const project of projects) {
+			if (added >= maxProjects) break;
+
+			// Skip projects without a browser-facing UI
+			const config = await readProjectConfig(project.path);
+			if (!projectHasUi(config)) continue;
+
 			for (const sub of PROJECT_SUB_ROUTES) {
 				routes.push(`/projects/${project.id}${sub}`);
 			}
+			added++;
 		}
 	} catch { /* registry might not exist */ }
 
 	return routes;
+}
+
+/** Read a project's .playground/config.json for framework detection. */
+async function readProjectConfig(
+	projectPath: string
+): Promise<{ framework?: string } | null> {
+	try {
+		const raw = await readFile(resolve(projectPath, '.playground/config.json'), 'utf-8');
+		return JSON.parse(raw);
+	} catch {
+		return null;
+	}
 }
 
 function buildDiscoveryPrompt(
@@ -688,136 +753,92 @@ async function storeLearnings(
 
 	await writeFile(learningsPath, JSON.stringify(existing, null, '\t'), 'utf-8');
 
-	// Also spawn a memory agent to distill learnings into actionable optimization patterns
-	await spawnMemoryAgent(existing.slice(-10), sender);
+	// Distill learnings into optimizations locally (no AI spawn needed)
+	await distillOptimizationsLocally(existing, findings);
 }
 
-/** Spawn a documenting/memory agent to analyze UX learnings and feed back optimizations */
-async function spawnMemoryAgent(
-	recentLearnings: Array<{ learning: string; timestamp: string; source: string }>,
-	parentSender: ChatSender
+/**
+ * Distill UX learnings into optimizations locally — no AI spawn needed.
+ * Analyzes patterns in learnings and findings to produce the same
+ * ux-optimizations.json that the memory agent used to write via Sonnet.
+ */
+async function distillOptimizationsLocally(
+	learnings: Array<{ learning: string; timestamp: string; source: string; context?: string }>,
+	findings: UxFinding[]
 ): Promise<void> {
-	const agents = getActiveAgents();
-	if (agents.size >= maxConcurrentAgents) return;
-	if (agents.has('ux-memory')) return;
+	const optPath = resolve(PATHS.root, '.playground', 'ux-optimizations.json');
 
-	const sender = agentSender('ux-memory', 'Claw UX Memory');
-	const logFile = resolve(PATHS.headlessLogsDir, `agent-ux-memory-${Date.now()}.log`);
-
-	const prompt = buildMemoryPrompt(recentLearnings);
-
+	// Load existing optimizations to merge with
+	let existing: {
+		stableRoutes?: string[];
+		priorityRoutes?: string[];
+		recurringPatterns?: Array<{ pattern: string; affectedRoutes: string[]; estimatedImpact: string }>;
+		costOptimizations?: Array<{ optimization: string; estimatedSaving: string; tradeoff: string }>;
+		consecutiveClean?: Record<string, number>;
+	} = {};
 	try {
-		const child = spawnClaude(prompt, logFile, { model: 'claude-sonnet-4-6' });
-		const pid = child.pid ?? 0;
+		existing = JSON.parse(await readFile(optPath, 'utf-8'));
+	} catch { /* first run */ }
 
-		agents.set('ux-memory', {
-			taskId: 'ux-memory',
-			pid,
-			startedAt: new Date().toISOString(),
-			sender,
-			logFile,
-			lastLogPos: 0,
-			reportSessionId: MEMORY_SESSION_ID
-		});
+	// Track consecutive clean counts per route
+	const cleanCounts: Record<string, number> = existing.consecutiveClean ?? {};
+	const inspectionState = await loadInspectionState();
+	const failedRoutes = new Set(findings.map(f => f.route));
 
-		await recordEvent({
-			taskId: 'ux-memory',
-			taskTitle: 'UX Memory Agent',
-			type: 'follow_up_spawned',
-			model: 'claude-sonnet-4-6',
-			modelTier: 'sonnet',
-			provider: 'claude-code',
-			pid
-		});
-
-		child.on('close', async (code) => {
-			agents.delete('ux-memory');
-
-			if (code === 0) {
-				await processMemoryOutput(logFile).catch(() => {});
-			}
-
-			await recordEvent({
-				taskId: 'ux-memory',
-				taskTitle: 'UX Memory Agent',
-				type: code === 0 ? 'follow_up_done' : 'failed',
-				model: 'claude-sonnet-4-6',
-				modelTier: 'sonnet',
-				provider: 'claude-code'
-			});
-		});
-
-	} catch {
-		agents.delete('ux-memory');
+	for (const route of inspectionState.passedRoutes) {
+		if (failedRoutes.has(route)) {
+			cleanCounts[route] = 0;
+		} else {
+			cleanCounts[route] = (cleanCounts[route] ?? 0) + 1;
+		}
 	}
-}
 
-function buildMemoryPrompt(learnings: Array<{ learning: string; timestamp: string; source: string }>): string {
-	const learningList = learnings.map(l => `- [${l.source}] ${l.learning}`).join('\n');
+	// Stable = 3+ consecutive clean inspections
+	const stableRoutes = Object.entries(cleanCounts)
+		.filter(([, count]) => count >= 3)
+		.map(([route]) => route);
 
-	return [
-		`You are the Claw UX Memory Agent — you distill UX inspection findings into actionable optimization patterns.`,
-		``,
-		`## Recent UX Learnings`,
-		learningList,
-		``,
-		`## Your Job`,
-		`1. Read the UX learnings file at .playground/ux-learnings.json`,
-		`2. Read the current inspection results at .playground/ux-inspection.json`,
-		`3. Analyze patterns across findings and learnings`,
-		`4. Update .playground/ux-optimizations.json with:`,
-		``,
-		`### Optimization Categories`,
-		`- **Agent efficiency**: Which routes/checks can be skipped or batched?`,
-		`- **Cost reduction**: Are we over-inspecting stable pages? Can we reduce Sonnet calls?`,
-		`- **Pattern detection**: Recurring issues that suggest systemic fixes`,
-		`- **Route prioritization**: Which pages change most often and need more frequent checks?`,
-		`- **Fix suggestions**: Specific code changes that would resolve multiple findings at once`,
-		``,
-		`## Output Format`,
-		`Write a JSON file to .playground/ux-optimizations.json:`,
-		``,
-		'```json',
-		`{`,
-		`  "lastAnalyzed": "ISO date",`,
-		`  "stableRoutes": ["/routes/that/rarely/change"],`,
-		`  "priorityRoutes": ["/routes/that/need/frequent/checks"],`,
-		`  "recurringPatterns": [`,
-		`    {`,
-		`      "pattern": "Description of recurring issue",`,
-		`      "affectedRoutes": ["/a", "/b"],`,
-		`      "suggestedFix": "How to fix it once for all",`,
-		`      "estimatedImpact": "high|medium|low"`,
-		`    }`,
-		`  ],`,
-		`  "costOptimizations": [`,
-		`    {`,
-		`      "optimization": "What to change",`,
-		`      "estimatedSaving": "e.g., skip 5 routes = 30% less Sonnet tokens",`,
-		`      "tradeoff": "What we lose by optimizing this"`,
-		`    }`,
-		`  ]`,
-		`}`,
-		'```',
-		``,
-		`## Rules`,
-		`- Do NOT modify any source code — only write to .playground/ux-optimizations.json`,
-		`- Do NOT create tasks — the inspector handles that`,
-		`- Be conservative with "stable" classifications — only mark routes stable after 3+ clean inspections`,
-		`- Focus on actionable, concrete optimizations — not vague suggestions`
-	].join('\n');
-}
+	// Priority = routes that had findings this run
+	const priorityRoutes = [...failedRoutes];
 
-/** Process memory agent output — read the optimizations file it wrote */
-async function processMemoryOutput(logFile: string): Promise<void> {
-	// The memory agent writes directly to .playground/ux-optimizations.json
-	// We just verify it completed and the file is valid
-	try {
-		const raw = await readFile(resolve(PATHS.root, '.playground', 'ux-optimizations.json'), 'utf-8');
-		JSON.parse(raw); // validate
-	} catch {
-		// File wasn't written or isn't valid — that's okay, next run will try again
+	// Detect recurring patterns — group findings by category
+	const categoryCounts = new Map<string, { count: number; routes: Set<string> }>();
+	for (const f of findings) {
+		const entry = categoryCounts.get(f.category) ?? { count: 0, routes: new Set() };
+		entry.count++;
+		entry.routes.add(f.route);
+		categoryCounts.set(f.category, entry);
 	}
+
+	const recurringPatterns = [...categoryCounts.entries()]
+		.filter(([, v]) => v.count >= 2)
+		.map(([category, v]) => ({
+			pattern: `Recurring ${category} issues (${v.count} found)`,
+			affectedRoutes: [...v.routes],
+			estimatedImpact: v.count >= 4 ? 'high' : v.count >= 2 ? 'medium' : 'low'
+		}));
+
+	// Cost optimizations based on stable route count
+	const costOptimizations: Array<{ optimization: string; estimatedSaving: string; tradeoff: string }> = [];
+	if (stableRoutes.length >= 3) {
+		costOptimizations.push({
+			optimization: `Skip ${stableRoutes.length} stable routes in discovery mode`,
+			estimatedSaving: `${Math.round(stableRoutes.length / Math.max(inspectionState.passedRoutes.length, 1) * 100)}% fewer AI-inspected routes`,
+			tradeoff: 'Regressions on stable routes only caught by Playwright tests'
+		});
+	}
+
+	const optimizations = {
+		lastAnalyzed: new Date().toISOString(),
+		stableRoutes,
+		priorityRoutes,
+		recurringPatterns,
+		costOptimizations,
+		consecutiveClean: cleanCounts
+	};
+
+	await mkdir(resolve(PATHS.root, '.playground'), { recursive: true }).catch(() => {});
+	await writeFile(optPath, JSON.stringify(optimizations, null, '\t'), 'utf-8');
 }
 
 async function ensureUxSession(sender: ChatSender): Promise<void> {

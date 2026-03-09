@@ -3,6 +3,7 @@
  * Uses globalThis to survive HMR module reloads in dev mode.
  */
 import { readFile, writeFile, mkdir } from 'fs/promises';
+import { resolve } from 'path';
 import { PATHS } from '../constants.js';
 import { loadAgentDefaults } from '../agent-defaults.js';
 import type { ChatSession, ChatSessionMeta, ChatSender } from '$lib/types/chat.js';
@@ -55,6 +56,56 @@ export function enqueueSpawn(fn: () => Promise<void>): void {
 	g.__claw_spawn_queue = spawnQueue;
 }
 
+// ── Orphaned agent cleanup ───────────────────────────────────────────
+
+/**
+ * Check all active agents for PID liveness. Remove entries whose
+ * processes are no longer running (orphaned by HMR, crash, etc.).
+ * Returns the number of stale agents cleaned up.
+ */
+export async function reapOrphanedAgents(): Promise<number> {
+	const agents = getActiveAgents();
+	if (agents.size === 0) return 0;
+
+	let reaped = 0;
+	for (const [taskId, info] of agents) {
+		if (info.pid === 0) continue; // OpenClaw agents have pid 0
+
+		const alive = await isPidAlive(info.pid);
+		if (!alive) {
+			agents.delete(taskId);
+			getProjectAgentMap().delete(taskId);
+			reaped++;
+		}
+	}
+
+	// Reset spawn queue when no agents remain to prevent closure chain growth
+	if (agents.size === 0) {
+		spawnQueue = Promise.resolve();
+		g.__claw_spawn_queue = spawnQueue;
+	}
+
+	return reaped;
+}
+
+async function isPidAlive(pid: number): Promise<boolean> {
+	if (pid <= 0) return false;
+	try {
+		if (process.platform === 'win32') {
+			const { execSync } = await import('child_process');
+			const out = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
+				timeout: 3000, windowsHide: true, encoding: 'utf-8'
+			});
+			return out.includes(String(pid));
+		}
+		// POSIX: signal 0 checks existence without killing
+		process.kill(pid, 0);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
 // ── Discussion map ───────────────────────────────────────────────────
 
 export function getDiscussionMap(): Map<string, string> {
@@ -75,6 +126,56 @@ export async function loadMaxAgents(): Promise<number> {
 		g.__claw_max_agents = maxConcurrentAgents;
 	} catch { /* use last known value */ }
 	return maxConcurrentAgents;
+}
+
+// ── Per-project agent limits ─────────────────────────────────────────
+
+const DEFAULT_PROJECT_MAX_AGENTS = 2;
+
+/** Cache of per-project max agents, refreshed each heartbeat cycle. */
+export function getProjectLimits(): Map<string, number> {
+	if (!g.__claw_project_limits) {
+		g.__claw_project_limits = new Map<string, number>();
+	}
+	return g.__claw_project_limits as Map<string, number>;
+}
+
+/** Load a project's maxAgents from its .playground/settings.json or config.json */
+export async function loadProjectMaxAgents(projectPath: string, projectId: string): Promise<number> {
+	const limits = getProjectLimits();
+	// Try settings.json first (user-configured via UI), then config.json (auto-detected)
+	for (const file of ['settings.json', 'config.json']) {
+		try {
+			const raw = await readFile(resolve(projectPath, '.playground', file), 'utf-8');
+			const parsed = JSON.parse(raw);
+			const max = parsed.agentConfig?.maxAgents ?? parsed.agents?.maxAgents;
+			if (typeof max === 'number' && max > 0) {
+				limits.set(projectId, max);
+				return max;
+			}
+		} catch { /* try next */ }
+	}
+	limits.set(projectId, DEFAULT_PROJECT_MAX_AGENTS);
+	return DEFAULT_PROJECT_MAX_AGENTS;
+}
+
+/** Count how many active agents belong to a given project. */
+export function countProjectAgents(projectId: string): number {
+	const agents = getActiveAgents();
+	const projectAgentMap = getProjectAgentMap();
+	let count = 0;
+	for (const taskId of agents.keys()) {
+		if (projectAgentMap.get(taskId) === projectId) count++;
+	}
+	return count;
+}
+
+/** Maps taskId → projectId for active agents. */
+export function getProjectAgentMap(): Map<string, string> {
+	if (!g.__claw_project_agent_map) {
+		g.__claw_project_agent_map = new Map<string, string>();
+	}
+	return g.__claw_project_agent_map as Map<string, string>;
 }
 
 // ── Session helpers ──────────────────────────────────────────────────

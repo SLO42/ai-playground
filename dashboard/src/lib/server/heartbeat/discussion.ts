@@ -15,6 +15,7 @@ import { spawnClaude, buildTaskPromptWithDiscussion, pickModelForTask } from './
 import { logAgentCompletion, captureGitBaseline } from './agent-tracking.js';
 import { resolveSession, releaseSession, watchForSessionId } from './session-pool.js';
 import { parseStreamJsonLog } from './agent-tracking.js';
+import { registerPid, unregisterPid } from './pid-registry.js';
 import type { ChatSession } from '$lib/types/chat.js';
 import type { Task } from '$lib/types/tasks.js';
 
@@ -250,12 +251,15 @@ async function spawnAgentWithContext(task: Task, monitorSession: ChatSession, di
 			gitBaseline: baseline
 		});
 
+		registerPid(pid, `agent:${task.id}`, 'agent').catch(() => {});
+
 		// Capture Claude Code session ID for pool reuse on cold starts
 		if (!session.isResume) {
 			watchForSessionId(logFile, session.slotId).catch(() => {});
 		}
 
 		child.on('close', (code) => {
+			unregisterPid(`agent:${task.id}`).catch(() => {});
 			const agentInfo = agents.get(task.id);
 			const agentSnd = agentInfo?.sender ?? sender;
 			const reportId = agentInfo?.reportSessionId ?? discussionSessionId;

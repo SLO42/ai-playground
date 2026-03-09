@@ -3,7 +3,7 @@
  *
  * Shutdown order:
  * 1. Stop heartbeat (no new agents will spawn)
- * 2. Kill active agents (taskkill on Windows, SIGTERM+SIGKILL elsewhere)
+ * 2. Kill all tracked processes via PID registry (agents, MCP servers, test runners)
  * 3. Release session pool slots
  * 4. Stop Claude Flow daemon
  * 5. Exit the Node process
@@ -13,8 +13,9 @@ import type { RequestHandler } from './$types.js';
 import { stopHeartbeat } from '$lib/server/heartbeat/index.js';
 import { getActiveAgents } from '$lib/server/heartbeat/shared.js';
 import { getPoolStats } from '$lib/server/heartbeat/session-pool.js';
+import { killAll } from '$lib/server/heartbeat/pid-registry.js';
 import { pushNotification } from '$lib/server/notifications.js';
-import { execSync, exec } from 'child_process';
+import { exec } from 'child_process';
 
 export const POST: RequestHandler = async () => {
 	const steps: { step: string; status: 'ok' | 'skipped' | 'error'; detail?: string }[] = [];
@@ -27,54 +28,25 @@ export const POST: RequestHandler = async () => {
 		steps.push({ step: 'heartbeat', status: 'error', detail: e instanceof Error ? e.message : 'unknown' });
 	}
 
-	// 2. Kill active agents (use taskkill on Windows/MINGW, SIGTERM elsewhere)
-	const agents = getActiveAgents();
-	if (agents.size > 0) {
-		const killed: string[] = [];
-		const failed: string[] = [];
-		const isWindows = process.platform === 'win32';
-
-		for (const [taskId, agent] of agents) {
-			try {
-				if (agent.pid > 0) {
-					if (isWindows) {
-						// Use execSync so kills complete before we proceed
-						execSync(`taskkill /F /PID ${agent.pid}`, {
-							timeout: 5000, windowsHide: true, stdio: 'ignore'
-						});
-					} else {
-						process.kill(agent.pid, 'SIGTERM');
-					}
-					killed.push(taskId);
-				}
-			} catch {
-				// taskkill fails if PID already exited — that's fine
-				killed.push(taskId);
-			}
-		}
-
-		// POSIX: give agents 3s to exit gracefully, then SIGKILL any remaining
-		if (!isWindows && killed.length > 0) {
-			await new Promise(resolve => setTimeout(resolve, 3000));
-			for (const taskId of killed) {
-				const agent = agents.get(taskId);
-				if (agent?.pid) {
-					try {
-						process.kill(agent.pid, 0); // check alive
-						process.kill(agent.pid, 'SIGKILL');
-					} catch { /* already exited */ }
-				}
-			}
-		}
-
+	// 2. Kill all tracked processes via PID registry
+	// This catches agents, MCP servers, test runners — anything registered
+	try {
+		const result = await killAll();
+		const agents = getActiveAgents();
 		agents.clear();
-		steps.push({
-			step: 'agents',
-			status: 'ok',
-			detail: `${killed.length} terminated`
-		});
-	} else {
-		steps.push({ step: 'agents', status: 'skipped', detail: 'No active agents' });
+
+		const total = result.killed.length + result.failed.length;
+		if (total > 0) {
+			steps.push({
+				step: 'processes',
+				status: result.failed.length > 0 ? 'error' : 'ok',
+				detail: `${result.killed.length} killed${result.failed.length > 0 ? `, ${result.failed.length} failed` : ''}`
+			});
+		} else {
+			steps.push({ step: 'processes', status: 'skipped', detail: 'No tracked processes' });
+		}
+	} catch (e) {
+		steps.push({ step: 'processes', status: 'error', detail: e instanceof Error ? e.message : 'unknown' });
 	}
 
 	// 3. Session pool — just report status (slots are in-memory)

@@ -14,6 +14,7 @@ import {
 } from './shared.js';
 import { spawnClaude } from './agent-spawn.js';
 import { logAgentCompletion, parseStreamJsonLog, captureGitBaseline } from './agent-tracking.js';
+import { registerPid, unregisterPid } from './pid-registry.js';
 import { classifyTask } from './openclaw-agent.js';
 import type { ChatSession, ChatSender } from '$lib/types/chat.js';
 import type { Task } from '$lib/types/tasks.js';
@@ -166,7 +167,10 @@ function spawnClaudeReview(
 			gitBaseline: baseline
 		});
 
+		registerPid(pid, 'agent:review', 'agent').catch(() => {});
+
 		child.on('close', async (code) => {
+			unregisterPid('agent:review').catch(() => {});
 			agents.delete('review');
 
 			const exitMsg = code === 0 ? 'review complete' : `review exited with code ${code}`;
@@ -309,6 +313,52 @@ async function parseReviewText(content: string, sender: ChatSender): Promise<voi
 	}
 }
 
+/** Async recursive directory scan — yields to event loop between directories. */
+async function scanDirsAsync(
+	dir: string,
+	prefix: string,
+	filter: (name: string, isDir: boolean) => boolean,
+	maxDepth = 3,
+	depth = 0
+): Promise<string[]> {
+	if (depth >= maxDepth) return [];
+	const results: string[] = [];
+	try {
+		const { readdir } = await import('fs/promises');
+		const entries = await readdir(dir, { withFileTypes: true });
+		for (const entry of entries) {
+			if (entry.name.startsWith('.') || entry.name.startsWith('_')) continue;
+			if (entry.isDirectory()) {
+				if (!filter(entry.name, true)) continue;
+				const route = `${prefix}/${entry.name}`;
+				results.push(route);
+				const sub = await scanDirsAsync(resolve(dir, entry.name), route, filter, maxDepth, depth + 1);
+				results.push(...sub);
+			} else if (filter(entry.name, false)) {
+				results.push(`${prefix}/${entry.name}`);
+			}
+		}
+	} catch { /* skip inaccessible */ }
+	return results;
+}
+
+/** Run a shell command in a child process without blocking the event loop. */
+function execAsync(cmd: string, cwd: string, timeoutMs: number): Promise<string> {
+	return new Promise((resolve) => {
+		const { exec } = require('child_process') as typeof import('child_process');
+		const child = exec(cmd, { cwd, timeout: timeoutMs, encoding: 'utf-8', windowsHide: true }, (err, stdout, stderr) => {
+			if (err) {
+				resolve(`FAILED: ${(err as any).stdout ?? stderr ?? err.message}`.slice(-500));
+			} else {
+				resolve(stdout.trim());
+			}
+		});
+		// Safety: kill if it exceeds 2x timeout (handles stuck processes)
+		const safety = setTimeout(() => { try { child.kill(); } catch {} }, timeoutMs * 2);
+		child.on('close', () => clearTimeout(safety));
+	});
+}
+
 async function collectReviewContext(): Promise<string> {
 	const parts: string[] = ['## Project Context (pre-collected)'];
 
@@ -368,50 +418,47 @@ async function collectReviewContext(): Promise<string> {
 		parts.push(``, `### Tasks: could not read task index`);
 	}
 
-	// 2. Route listing
-	try {
-		const { readdirSync, statSync } = await import('fs');
-		const routesDir = resolve(PATHS.root, 'dashboard/src/routes');
-		const routes: string[] = [];
+	// 2-4. Routes, server modules, components — all async in parallel
+	const SKIP_DIRS = new Set(['node_modules', 'dist', 'build', '.svelte-kit', '__pycache__', 'target']);
+	const [routeResult, serverResult, compResult] = await Promise.allSettled([
+		// 2. Route listing
+		scanDirsAsync(
+			resolve(PATHS.root, 'dashboard/src/routes'), '',
+			(name, isDir) => isDir && !SKIP_DIRS.has(name)
+		),
+		// 3. Server modules
+		(async () => {
+			const { readdir } = await import('fs/promises');
+			const entries = await readdir(resolve(PATHS.root, 'dashboard/src/lib/server'));
+			return entries.filter(f => f.endsWith('.ts'));
+		})(),
+		// 4. Components
+		(async () => {
+			const { readdir } = await import('fs/promises');
+			const entries = await readdir(resolve(PATHS.root, 'dashboard/src/lib/components'));
+			return entries.filter(f => f.endsWith('.svelte'));
+		})()
+	]);
 
-		function scanRoutes(dir: string, prefix: string) {
-			try {
-				for (const entry of readdirSync(dir)) {
-					const full = resolve(dir, entry);
-					const st = statSync(full);
-					if (st.isDirectory() && !entry.startsWith('.') && !entry.startsWith('_')) {
-						const route = `${prefix}/${entry}`;
-						routes.push(route);
-						scanRoutes(full, route);
-					}
-				}
-			} catch { /* skip */ }
-		}
-
-		scanRoutes(routesDir, '');
+	if (routeResult.status === 'fulfilled') {
+		const routes = routeResult.value;
 		parts.push(``, `### Routes (${routes.length} pages)`);
 		parts.push(routes.map(r => `- \`${r || '/'}\``).join('\n'));
-	} catch {
+	} else {
 		parts.push(``, `### Routes: could not scan`);
 	}
 
-	// 3. Server modules listing
-	try {
-		const { readdirSync } = await import('fs');
-		const serverDir = resolve(PATHS.root, 'dashboard/src/lib/server');
-		const files = readdirSync(serverDir).filter(f => f.endsWith('.ts'));
+	if (serverResult.status === 'fulfilled') {
+		const files = serverResult.value;
 		parts.push(``, `### Server Modules (${files.length})`);
 		parts.push(files.map(f => `- \`${f}\``).join('\n'));
-	} catch { /* skip */ }
+	}
 
-	// 4. Components listing
-	try {
-		const { readdirSync } = await import('fs');
-		const compDir = resolve(PATHS.root, 'dashboard/src/lib/components');
-		const files = readdirSync(compDir).filter(f => f.endsWith('.svelte'));
+	if (compResult.status === 'fulfilled') {
+		const files = compResult.value;
 		parts.push(``, `### Components (${files.length})`);
 		parts.push(files.map(f => `- \`${f}\``).join('\n'));
-	} catch { /* skip */ }
+	}
 
 	// 5. Recent agent usage
 	try {
@@ -427,20 +474,14 @@ async function collectReviewContext(): Promise<string> {
 		}
 	} catch { /* skip */ }
 
-	// 6. Build status
-	try {
-		const { execSync } = await import('child_process');
-		const buildOutput = execSync('cd dashboard && npm run build 2>&1 | tail -5', {
-			cwd: PATHS.root,
-			timeout: 60_000,
-			encoding: 'utf-8'
-		});
-		parts.push(``, `### Build Status`);
-		parts.push('```', buildOutput.trim(), '```');
-	} catch (err) {
-		const msg = err instanceof Error ? (err as any).stdout ?? err.message : 'build failed';
+	// 6. Build status — async child process, no event loop blocking
+	const buildOutput = await execAsync('cd dashboard && npm run build 2>&1 | tail -5', PATHS.root, 60_000);
+	if (buildOutput.startsWith('FAILED:')) {
 		parts.push(``, `### Build Status: FAILED`);
-		parts.push('```', String(msg).slice(-500), '```');
+		parts.push('```', buildOutput.slice(8), '```');
+	} else {
+		parts.push(``, `### Build Status`);
+		parts.push('```', buildOutput, '```');
 	}
 
 	return parts.join('\n');

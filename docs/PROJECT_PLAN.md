@@ -1,6 +1,6 @@
-# ai-playground — Unified Dashboard Project Plan
+# ai-playground — Project Plan
 
-> Updated: 2026-03-04
+> Updated: 2026-03-09
 > Original plan: [DASHBOARD_PLAN_ORIGINAL.md](./DASHBOARD_PLAN_ORIGINAL.md)
 > Design file: Penpot (29 frames, 1 design system page)
 
@@ -8,10 +8,23 @@
 
 ## Vision
 
-A locally-hosted dashboard that unifies all ai-playground services into a single interface. Two operational modes:
+A project lifecycle platform where users can **create, develop, maintain, and release** software projects of any kind — any language, any framework. The dashboard is the user-facing application; **Claw** is the automation engine underneath that handles agent orchestration, task execution, and CI workflows.
 
-1. **Global views** — Monitor and manage all services, agents, models, and channels across the entire platform
-2. **Project views** — Drill into a specific project's agents, memory, hooks, security, and settings
+Two operational modes:
+
+1. **Global views** — Manage all projects, monitor agents, configure models and services across the platform
+2. **Project views** — Drill into a specific project's tasks, agents, memory, releases, and settings
+
+### Core Product Flow
+
+```
+Create Project → Define Tasks → Claw Executes → Review Changes → Release
+```
+
+- **Create**: Import from directory/git or scaffold from template
+- **Develop**: Define tasks manually or let Claw suggest them; agents implement autonomously
+- **Maintain**: Automated UX testing, code review, memory-driven context
+- **Release**: Version management, changelog generation, deployment
 
 ---
 

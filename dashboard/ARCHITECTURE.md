@@ -1,5 +1,7 @@
 # Dashboard Architecture
 
+The dashboard is the user-facing application for ai-playground — a project lifecycle platform for creating, developing, maintaining, and releasing software projects. **Claw** is the automation engine that powers autonomous agent execution underneath.
+
 Quick reference for navigating the codebase. Read specific files — don't explore directories.
 
 ## Route → File Map
@@ -17,9 +19,9 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `/settings` | `routes/settings/+page.svelte` | `routes/settings/+page.server.ts` |
 | `/reports` | `routes/reports/+page.svelte` | (uses `lib/server/reports.ts`) |
 | `/sessions` | `routes/sessions/+page.svelte` | `routes/sessions/+page.server.ts` |
-| `/agents` | `routes/agents/+page.svelte` | (client-side) |
+| `/agents` | `routes/agents/+page.svelte` | `routes/agents/+page.server.ts` — loads `agentProjectMap` (agent filename → project IDs) via `buildAgentProjectMap()` alongside pool stats and analytics |
 | `/apps` | `routes/apps/+page.svelte` | `routes/apps/+page.server.ts` |
-| `/memory` | `routes/memory/+page.svelte` | (client-side — see `docs/api-memory.md`) |
+| `/memory` | `routes/memory/+page.svelte` | (client-side — see `docs/api-memory.md`, `docs/memory-graph-guide.md`) |
 | `/security` | `routes/security/+page.svelte` | (client-side) |
 | `/notifications` | `routes/notifications/+page.svelte` | `routes/notifications/+page.server.ts` |
 | `/hooks` | `routes/hooks/+page.svelte` | `routes/hooks/+page.server.ts` |
@@ -43,6 +45,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `/api/reports` | GET/POST | Report generation |
 | `/api/routing` | GET | Routing telemetry |
 | `/api/agents` | GET | Active agent listing |
+| `/api/agents/pool` | GET/POST | Session pool stats and management. POST actions: `populate` (project-aware, iterates all projects via `populateFromProjects`), `populate-config` (config-only legacy populate), `reset`, `remove-slot` |
 | `/api/github` | Various | GitHub sync operations |
 | `/api/memory/graph` | GET/POST/PUT | Knowledge graph CRUD (nodes + edges) |
 | `/api/memory/entries` | DELETE | Remove auto-memory entries by ID |
@@ -53,7 +56,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 
 | Module | Purpose |
 |--------|---------|
-| `heartbeat/` | Claw autonomous agent system (split into shared, spawn, tracking, review, discussion) |
+| `heartbeat/` | Claw automation engine — handles the autonomous task execution loop (scan tasks across all projects → spawn agents → commit changes → follow-up). Split into shared, spawn, tracking, review, discussion, session-pool, pid-registry. Round-robin scheduling ensures fair agent allocation across projects. `pid-registry.ts` persists all child PIDs to `.playground/pid-registry.json` and reaps orphaned processes on startup. During task scanning, each task is annotated with `_sourceProjectId` and `_sourceProjectPath` (runtime-only, not persisted) so agent completion callbacks update the correct project's task file. `session-pool.ts` exports `suggestAgentPreset(maxAgents)` (returns agent type list) and `populateFromProjects(scanFn, loadMaxAgentsFn)` (project-aware pool seeding that reads/writes `.playground/agents.json` per project). `agent-analytics.ts` records `projectId` on every `AgentEvent` and exposes `AgentAnalytics.byProject` — a per-project breakdown of task counts, completion/failure counts, total cost, and total duration derived from completion events. |
 | `constants.ts` | Paths, service definitions, polling intervals |
 | `notifications.ts` | Push notifications (desktop + in-app) |
 | `session-manager.ts` | Server-side SSE streaming engine |
@@ -77,7 +80,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `tasks.ts` | `Task`, `TaskStatus`, `TaskPriority` |
 | `services.ts` | `Service`, `ServiceAction` |
 | `projects.ts` | `Project`, `ProjectConfig` |
-| `memory.ts` | `MemoryEntry`, `MemorySearchResult` |
+| `memory.ts` | `MemoryEntry`, `MemorySearchResult`, `MemoryConfig`, `MemoryPageData` (includes `loadErrors: string[] \| null`), `RankedContext`, `AutoMemoryEntry`, `BreakdownEntry`, `ProjectMemorySummary`, `ProjectMemoryPageData` (includes `memoryGraphEnabled: boolean` from memory settings) |
 | `graph.ts` | `GraphNode`, `GraphEdge`, `GraphState`, `RankedGraphNode`, `BubbleGraphProps`, `GraphGetResponse`, `GraphPostBody`, `GraphPutBody`, `GraphMutationResponse` |
 | `daemon.ts` | `DaemonState`, `DaemonWorker` |
 
@@ -86,8 +89,9 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | Component | Used By |
 |-----------|---------|
 | `Sidebar.svelte` | `+layout.svelte` — main navigation |
+| `StatusBar.svelte` | `+layout.svelte` — sticky top bar showing service status pills (Ollama, Gateway, Daemon) and last-sync label. Accepts `services: { label, status }[]` (no `text` field) and `lastSync: string`. Derives `allOnline` to show "All systems operational" / "Degraded" summary. |
 | `MetricCard.svelte` | Dashboard, services, models pages |
-| `BubbleGraph.svelte` | Dashboard overview visualization |
+| `BubbleGraph.svelte` | Memory knowledge graph visualization — responsive SVG (mobile ≤320 px width, desktop ≥500 px), 1 circle per node sized by PageRank, category colour-coded fills via CSS custom property `--node-fill` (no hardcoded SVG `fill` attributes, so `prefers-contrast: more` overrides work correctly), keyboard navigation (arrow keys, Enter/Space), and screen-reader ARIA descriptions. Controlled by the `memoryGraphEnabled` feature flag (see `docs/feature-flag-memory-graph.md`). Accepts `isLoading`, `isEmpty`, `hasError`, `errorMessage`, and `onRetry` props so parent components control UI state without duplicating logic. Resize updates are RAF-batched via `ResizeObserver`; node/edge data changes are also RAF-batched to avoid redundant recomputation when both props update in the same frame. |
 | `Markdown.svelte` | Chat messages rendering |
 
 ## Project Memory Page (`/projects/[id]/memory`)
@@ -100,7 +104,7 @@ Displays HNSW-indexed memory entries for a specific project. Shows auto-memory e
 |------|------|-------------|
 | `PATHS.autoMemoryStore` | `AutoMemoryEntry[]` | Raw memory entries with key, content, namespace, metadata |
 | `PATHS.rankedContext` | `RankedContext` | Entries ranked by confidence, pageRank, and access count |
-| `PATHS.graphState` | `GraphState` | Nodes and edges for the BubbleGraph visualization |
+| `PATHS.graphState` | `GraphState \| null` | Nodes and edges for the BubbleGraph visualization. Set to `null` when the file is missing, returns a non-object value, or lacks a `nodes` property. |
 
 ### Entry Format (`AutoMemoryEntry`)
 ```ts
@@ -130,7 +134,7 @@ Displays HNSW-indexed memory entries for a specific project. Shows auto-memory e
 
 ### Page Sections
 1. **Summary Metrics** — Total nodes, namespaces, categories, avg confidence, auto-memory count
-2. **Memory Graph** — Lazy-loaded `BubbleGraph` visualization (node size = pageRank)
+2. **Memory Graph** — Lazy-loaded `BubbleGraph` visualization (node size = pageRank). Shows a "disabled" banner when `data.memoryGraphEnabled === false`; shows the empty-state message when the flag is unset/true but no graph data is available.
 3. **Namespace Distribution** — Horizontal bar chart of entries per namespace
 4. **Category Distribution** — Horizontal bar chart of entries per category
 5. **Search** — Client-side filter across key, summary, content, namespace
@@ -150,12 +154,16 @@ A segmented control above the graph lets users filter memory entries by creation
 ### Client-Side Refresh
 The Refresh button (and the automatic range-change effect) calls `GET /api/projects/{id}/memory[?range=…]` to reload entries, context, and graph without a full page navigation.
 
+In addition to manual refresh, when `data.memoryGraphEnabled` is `true` a `setInterval` timer fires every 30 s and calls the same endpoint (`refreshGraph()`), updating `liveGraph`, `liveContext`, and `liveEntries` in place. The timer is started and cleared inside a `$effect` — it is torn down automatically on component destroy or if the flag becomes `false`.
+
+> **Note — `/memory` page (global, non-project):** The Refresh button on the top-level `/memory` route calls both `GET /api/memory/context` and `GET /api/memory/graph` in parallel. Graph data updates client-side on each refresh; a full page navigation is not required.
+
 ### Troubleshooting
 | Symptom | Cause | Fix |
 |---------|-------|-----|
 | "Failed to load memory" error | JSON files missing or malformed | Ensure `.playground/` contains valid `auto-memory-store.json` and `ranked-context.json` |
 | "No memory data yet" | No entries stored for this project | Memory populates as agents store patterns — run `npx @claude-flow/cli@latest memory store --key test --value test` |
-| Graph shows "No graph data" | `graph-state.json` missing or empty | Graph populates after memory processing; check `PATHS.graphState` |
+| Graph shows "No graph data" | `graph-state.json` missing, empty, or lacks a `nodes` property | Graph populates after memory processing; check `PATHS.graphState` — the server validates the object has `nodes` before using it |
 | Entries show but no context | `ranked-context.json` missing | Context is generated by the scoring engine — run a memory search to trigger ranking |
 | Wrong project's entries shown | Filtering falls back to all entries when none match | Check `metadata.sourceFile` contains the project path |
 
@@ -187,8 +195,10 @@ User action → +page.svelte (client)
   → lib/server/ module
   → .playground/ files or external service
 
-Heartbeat cycle (every 60s):
-  heartbeat/index.ts → health check → task scan → agent spawn → review
+Claw automation loop (every 60s):
+  heartbeat/index.ts → health checks → task scan (all projects, round-robin)
+  → agent spawn (per-project limits enforced) → commit changes → follow-ups
+  → pid-registry.ts tracks all child PIDs on disk (reaps orphans on restart)
   → Writes to .playground/chats/, .playground/tasks/
   → Pushes notifications via notifications.ts
 ```

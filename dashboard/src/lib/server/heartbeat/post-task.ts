@@ -18,6 +18,7 @@ import { spawnClaude, pickModelForTask } from './agent-spawn.js';
 import { logAgentCompletion, parseStreamJsonLog } from './agent-tracking.js';
 import { recordEvent } from './agent-analytics.js';
 import { resolveSession, releaseSession, watchForSessionId } from './session-pool.js';
+import { registerPid, unregisterPid } from './pid-registry.js';
 import type { ChatSession } from '$lib/types/chat.js';
 import type { Task } from '$lib/types/tasks.js';
 
@@ -262,11 +263,15 @@ export async function spawnFollowUp(
 			getProjectAgentMap().set(followUpId, projId);
 		}
 
+		// Track in PID registry (survives crashes/HMR)
+		registerPid(pid, `agent:${followUpId}`, 'agent').catch(() => {});
+
 		if (!session.isResume) {
 			watchForSessionId(logFile, session.slotId).catch(() => {});
 		}
 
 		child.on('close', (code) => {
+			unregisterPid(`agent:${followUpId}`).catch(() => {});
 			const agentStarted = agents.get(followUpId)?.startedAt;
 			agents.delete(followUpId);
 			getProjectAgentMap().delete(followUpId);

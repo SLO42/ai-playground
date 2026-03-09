@@ -68,6 +68,10 @@ CLAUDE.md
 .playground/tasks.json.migrated
 .playground/github-sync.json
 .playground/task-suggestions.json
+.playground/pid-registry.json
 
 # OpenClaw runtime state
 .openclaw/
+
+# Playwright test artifacts
+.playwright-mcp/

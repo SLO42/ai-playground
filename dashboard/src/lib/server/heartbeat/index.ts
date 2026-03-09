@@ -8,7 +8,7 @@ import { SERVICES, PATHS } from '../constants.js';
 import { isOllamaOnline } from '../ollama-client.js';
 import { pushNotification, loadSettings } from '../notifications.js';
 import { getAllTasks, migrateIfNeeded, updateTask } from '../task-store.js';
-import { scanAllProjects } from '../project-scanner.js';
+import { scanAllProjects, detectProjectMeta } from '../project-scanner.js';
 import { loadAgentDefaults } from '../agent-defaults.js';
 import {
 	DEFAULT_INTERVAL_MS, MONITOR_SESSION_ID,
@@ -17,18 +17,22 @@ import {
 	loadMonitorSession, saveMonitorSession, readSessionIndex,
 	log, trimSession, agentSender, ensureTaskSession, taskSessionId,
 	upsertSessionMeta,
-	loadProjectMaxAgents, countProjectAgents, getProjectAgentMap, getProjectLimits
+	loadProjectMaxAgents, countProjectAgents, getProjectAgentMap, getProjectLimits,
+	reapOrphanedAgents
 } from './shared.js';
 import { spawnClaude, buildTaskPrompt, pickModelForTask } from './agent-spawn.js';
 import { logAgentCompletion, tailAgentLogs, cleanupPromptFiles, captureGitBaseline, parseStreamJsonLog } from './agent-tracking.js';
 import { spawnReviewAgent } from './review-agent.js';
 import { createDiscussionSession, checkDiscussionReplies } from './discussion.js';
-import { classifyTask, shouldEscalate, spawnOpenClawAgent } from './openclaw-agent.js';
+import { classifyTask, shouldEscalate, spawnOpenClawAgent, gatherContext } from './openclaw-agent.js';
+import type { TaskRoute } from './openclaw-agent.js';
 import { recordEvent } from './agent-analytics.js';
 import { resolveSession, registerSession, releaseSession, autoScale, watchForSessionId, loadPersistedAutoScaleConfig } from './session-pool.js';
 import { commitAgentChanges, planFollowUps, spawnFollowUp } from './post-task.js';
+import { reapStaleProcesses, registerPid, unregisterPid } from './pid-registry.js';
 import { processSuggestions, suggestTasks } from '../task-suggestions.js';
 import { syncMemoryBridge } from '../memory-bridge.js';
+import { runUxInspection } from './ux-inspector.js';
 import type { ChatSession } from '$lib/types/chat.js';
 import type { Task } from '$lib/types/tasks.js';
 
@@ -164,7 +168,7 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 	}
 
 	// ── Route: OpenClaw (local, $0) vs Claude Code (API, $$) ──
-	const route = classifyTask(task);
+	const route: TaskRoute = classifyTask(task);
 
 	// Analytics: classification event — Claw (gpt-oss:20b) makes this decision
 	recordEvent({ taskId: task.id, taskTitle: task.title, type: 'classified', route, model: 'gpt-oss:20b', modelTier: 'local', provider: 'openclaw', projectId: task._sourceProjectId }).catch(() => {});
@@ -176,7 +180,7 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'escalation_check', route, escalated: escalate, escalationReason: reason, model: 'gpt-oss:20b', modelTier: 'local', provider: 'openclaw', projectId: task._sourceProjectId }).catch(() => {});
 
 		if (!escalate) {
-			log(monitorSession, `[route] "${task.title}" → OpenClaw (local, $0) — ${reason}`);
+			log(monitorSession, `[route] "${task.title}" → OpenClaw (gateway + tools, $0) — ${reason}`);
 			const prompt = buildTaskPrompt(task);
 
 			// Analytics: spawn event for OpenClaw
@@ -188,6 +192,30 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 
 		// Analytics: handoff event — Claw decides to hand off
 		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'handoff', fromProvider: 'openclaw', toProvider: 'claude-code', handoffReason: reason, model: 'gpt-oss:20b', modelTier: 'local', provider: 'openclaw', projectId: task._sourceProjectId }).catch(() => {});
+	} else if (route === 'openclaw-context') {
+		// Context-first route: OpenClaw gathers context, then Claude Code executes
+		log(monitorSession, `[route] "${task.title}" → OpenClaw context-first → Claude Code`);
+
+		// Analytics: context gathering phase
+		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'context_gathering', provider: 'openclaw', model: 'gpt-oss:20b', modelTier: 'local', projectId: task._sourceProjectId }).catch(() => {});
+
+		// Gather context via OpenClaw (async, non-blocking with timeout)
+		const contextPromise = gatherContext(task);
+		const context = await Promise.race([
+			contextPromise,
+			new Promise<null>(resolve => setTimeout(() => resolve(null), 30000))
+		]);
+
+		if (context) {
+			log(monitorSession, `[context] OpenClaw gathered ${context.length} chars of context for "${task.title}"`);
+			// Inject context into the task description for Claude Code
+			task.description = `${task.description ?? ''}\n\n---\n## Pre-gathered Context (via OpenClaw)\n${context}`;
+
+			recordEvent({ taskId: task.id, taskTitle: task.title, type: 'context_gathered', provider: 'openclaw', model: 'gpt-oss:20b', modelTier: 'local', contextLength: context.length, projectId: task._sourceProjectId }).catch(() => {});
+		} else {
+			log(monitorSession, `[context] OpenClaw context gathering timed out — proceeding without`);
+		}
+		// Fall through to Claude Code path below
 	} else {
 		log(monitorSession, `[route] "${task.title}" → Claude Code (needs file ops)`);
 	}
@@ -230,6 +258,9 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 			gitBaseline: baseline
 		});
 
+		// Track in PID registry (survives crashes/HMR)
+		registerPid(pid, `agent:${task.id}`, 'agent').catch(() => {});
+
 		// Analytics: spawned
 		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'spawned', provider: 'claude-code', model, modelTier, pid, maxTurns, sessionId: reportId, projectId: task._sourceProjectId }).catch(() => {});
 
@@ -240,6 +271,7 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 		}
 
 		child.on('close', (code) => {
+			unregisterPid(`agent:${task.id}`).catch(() => {});
 			const agentInfo = agents.get(task.id);
 			const agentSnd = agentInfo?.sender ?? sender;
 			const rId = agentInfo?.reportSessionId ?? reportId;
@@ -606,8 +638,17 @@ async function heartbeat() {
 
 	await checkDiscussionReplies(session);
 
-	// ── Phase 4: Check running agents
+	// ── Phase 4: Check running agents + reap orphans
 	checkAgents(session);
+
+	// Reap agents whose PIDs are no longer alive (orphaned by HMR, crash, etc.)
+	try {
+		const reaped = await reapOrphanedAgents();
+		if (reaped > 0) {
+			log(session, `[cleanup] Reaped ${reaped} orphaned agent(s) — PID no longer alive`);
+		}
+	} catch { /* reap failed gracefully */ }
+
 	await tailAgentLogs(session);
 
 	// ── Phase 5: Load per-project agent limits
@@ -626,7 +667,7 @@ async function heartbeat() {
 		log(session, `[spawn] Per-project limits: ${limitSummary} (global max: ${maxConcurrentAgents})`);
 	}
 
-	// ── Phase 5b: Spawn agents (respecting per-project limits)
+	// ── Phase 5b: Spawn agents (round-robin across projects, respecting per-project limits)
 	const actionable = [...taskScan.clawAssigned, ...taskScan.unassignedPending];
 	let spawned = 0;
 
@@ -637,7 +678,30 @@ async function heartbeat() {
 		if (slotsAvailable > 0) {
 			log(session, `[spawn] ${slotsAvailable} global slot(s) available — evaluating ${actionable.length} actionable task(s)`);
 
+			// Group tasks by project, preserving priority order within each group
+			const tasksByProject = new Map<string, Task[]>();
 			for (const task of actionable) {
+				const projId = task._sourceProjectId ?? 'unknown';
+				if (!tasksByProject.has(projId)) tasksByProject.set(projId, []);
+				tasksByProject.get(projId)!.push(task);
+			}
+
+			// Round-robin: interleave tasks across projects so no single project
+			// drains all global slots before others get a turn
+			const projectQueues = [...tasksByProject.entries()];
+			const interleaved: Task[] = [];
+			let remaining = true;
+			while (remaining) {
+				remaining = false;
+				for (const [, tasks] of projectQueues) {
+					if (tasks.length > 0) {
+						interleaved.push(tasks.shift()!);
+						remaining = remaining || tasks.length > 0;
+					}
+				}
+			}
+
+			for (const task of interleaved) {
 				if (spawned >= slotsAvailable) break;
 				if (agents.has(task.id)) continue;
 
@@ -682,6 +746,61 @@ async function heartbeat() {
 		}
 	} else {
 		log(session, `[spawn] No actionable tasks — nothing to spawn`);
+	}
+
+	// ── Phase 5c: Audit project agent associations
+	// Check every 5th heartbeat for projects with no agents configured
+	if (heartbeatCount % 5 === 1) {
+		try {
+			const allProjects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root).catch(() => []);
+			for (const project of allProjects) {
+				try {
+					const assocRaw = await readFile(resolve(project.path, '.playground', 'agents.json'), 'utf-8').catch(() => '{"agents":[]}');
+					const assoc = JSON.parse(assocRaw) as { agents: string[] };
+					if (assoc.agents.length === 0 && project.status === 'active') {
+						// Only log once per project per session by checking monitor session content
+						const alreadyNotified = session.messages.some(m =>
+							m.content.includes(`[agents] Project "${project.id}" has no agents`)
+						);
+						if (!alreadyNotified) {
+							const meta = await detectProjectMeta(project.path).catch(() => null);
+							const profileHints: string[] = [];
+							if (meta?.language) profileHints.push(meta.language);
+							if (meta?.framework) profileHints.push(meta.framework);
+							if (!meta?.testCommand) profileHints.push('no tests');
+							if (meta?.workflows.length === 0) profileHints.push('no CI/CD');
+							if (!meta?.maintenance.hasDocsDir) profileHints.push('no docs');
+
+							log(session, `[agents] Project "${project.id}" has no agents configured` +
+								(profileHints.length > 0 ? ` (${profileHints.join(', ')})` : '') +
+								` — use Suggest Agents on /projects/${project.id}/agents to auto-configure`);
+
+							if (notificationsEnabled) {
+								await pushNotification({
+									severity: 'info',
+									category: 'agent',
+									title: `Project "${project.name}" needs agents`,
+									message: `No agents configured${profileHints.length > 0 ? ` — detected: ${profileHints.join(', ')}` : ''}. Click to configure.`,
+									source: 'claw',
+									link: `/projects/${project.id}/agents`,
+									linkLabel: 'Configure Agents'
+								});
+							}
+						}
+					}
+				} catch { /* skip individual project errors */ }
+			}
+		} catch { /* project scan failed */ }
+	}
+
+	// ── Phase 5d: UX Inspection (every 5th heartbeat)
+	if (heartbeatCount % 5 === 0 && heartbeatCount > 0) {
+		try {
+			await runUxInspection(session);
+		} catch (err) {
+			const msg = err instanceof Error ? err.message : 'ux inspection failed';
+			log(session, `[error] UX inspection failed: ${msg}`);
+		}
 	}
 
 	// ── Phase 6: Project review cycle
@@ -797,8 +916,17 @@ async function cleanupStuckSessions(): Promise<void> {
 
 function startHeartbeat() {
 	if (getTimer()) return;
-	ensureChatsDir().then(() => {
+	ensureChatsDir().then(async () => {
 		cleanupStuckSessions().catch(() => {});
+
+		// Kill orphaned processes from previous server instance
+		try {
+			const { reaped } = await reapStaleProcesses();
+			if (reaped.length > 0) {
+				console.log(`[heartbeat] Reaped ${reaped.length} orphaned process(es): ${reaped.join(', ')}`);
+			}
+		} catch { /* don't block startup */ }
+
 		setTimer(setTimeout(() => {
 			heartbeat().catch(() => { scheduleNext(); });
 		}, 5_000));

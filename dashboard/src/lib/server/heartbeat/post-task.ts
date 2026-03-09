@@ -145,7 +145,7 @@ function inferCommitVerb(task: Task): string {
 
 // ── Follow-up agent spawning ────────────────────────────────────────
 
-export type FollowUpType = 'documenter';
+export type FollowUpType = 'documenter' | 'reviewer';
 
 interface FollowUpConfig {
 	type: FollowUpType;
@@ -186,6 +186,18 @@ export function planFollowUps(
 		});
 	}
 
+	// Reviewer: runs when 3+ files changed or server/security code was touched
+	const touchedSecurity = commitResult.message?.includes('security') ?? false;
+
+	if (manyFiles || touchedServer || touchedSecurity) {
+		followUps.push({
+			type: 'reviewer',
+			shouldSpawn: true,
+			reason: manyFiles ? `${commitResult.filesCommitted} files changed` :
+				touchedServer ? 'server module changed' : 'security-related changes'
+		});
+	}
+
 	return followUps;
 }
 
@@ -220,7 +232,7 @@ export async function spawnFollowUp(
 
 	const prompt = buildFollowUpPrompt(type, parentTask, commitResult);
 	const logFile = `${PATHS.headlessLogsDir}/agent-${followUpId}.log`;
-	const label = type === 'documenter' ? 'Documenter' : 'Memory';
+	const label = type === 'documenter' ? 'Documenter' : type === 'reviewer' ? 'Reviewer' : 'Follow-up';
 	const sender = agentSender(followUpId, `${label}: ${parentTask.title.slice(0, 20)}`);
 	const reportId = await ensureTaskSession(
 		{ ...parentTask, id: followUpId, title: `${label}: ${parentTask.title}` } as Task,
@@ -325,7 +337,8 @@ export async function spawnFollowUp(
 
 // ── Follow-up prompts ───────────────────────────────────────────────
 
-function buildFollowUpPrompt(_type: FollowUpType, task: Task, commit: CommitResult): string {
+function buildFollowUpPrompt(type: FollowUpType, task: Task, commit: CommitResult): string {
+	if (type === 'reviewer') return buildReviewerPrompt(task, commit);
 	return buildDocumenterPrompt(task, commit);
 }
 
@@ -373,6 +386,66 @@ function buildDocumenterPrompt(task: Task, commit: CommitResult): string {
 		``,
 		`## Token Budget`,
 		`You have a small budget (~50K tokens). Read only the diff, update only what's needed, build, done.`,
+	].join('\n');
+}
+
+function buildReviewerPrompt(task: Task, commit: CommitResult): string {
+	let diffSummary = '';
+	try {
+		diffSummary = execSync(`git show ${commit.hash} --stat`, {
+			cwd: PATHS.root, encoding: 'utf-8', timeout: 10000
+		}).trim();
+	} catch { /* no diff available */ }
+
+	return [
+		`You are a code review agent. A code agent just completed a task and committed changes.`,
+		`Your job is to review the diff for bugs, security issues, and code quality problems.`,
+		``,
+		`## Completed Task`,
+		`**Title**: ${task.title}`,
+		`**ID**: ${task.id}`,
+		`**Description**: ${task.description ?? 'none'}`,
+		`**Tags**: ${task.tags.join(', ') || 'none'}`,
+		``,
+		`## Commit`,
+		`**Hash**: ${commit.hash}`,
+		`**Files**: ${commit.filesCommitted}`,
+		``,
+		`## Diff Summary`,
+		'```',
+		diffSummary,
+		'```',
+		``,
+		`## Instructions`,
+		`1. Read the full commit diff using \`git show ${commit.hash}\``,
+		`2. Review the changes for:`,
+		`   - **Bugs / logic errors**: off-by-one, null derefs, incorrect conditions, race conditions`,
+		`   - **Security vulnerabilities**: injection (SQL/command/path), XSS, hardcoded secrets, insecure defaults`,
+		`   - **Missing error handling**: uncaught exceptions, unhandled promise rejections, missing try/catch`,
+		`   - **Type safety issues**: unsafe casts, missing null checks, \`any\` types that should be narrowed`,
+		`3. Write findings to the task suggestion inbox. For EACH finding, run:`,
+		'```javascript',
+		`const fs = require('fs');`,
+		`const path = '.playground/task-suggestions.json';`,
+		`const file = fs.existsSync(path) ? JSON.parse(fs.readFileSync(path, 'utf-8')) : { suggestions: [] };`,
+		`file.suggestions.push({`,
+		`  title: '<short title describing the issue>',`,
+		`  description: '<detailed description with file path, line context, and suggested fix>',`,
+		`  priority: '<high|medium|low>',`,
+		`  tags: ['code-review', 'auto-suggested'],`,
+		`  source: 'agent:review'`,
+		`});`,
+		`fs.writeFileSync(path, JSON.stringify(file, null, '\\t'));`,
+		'```',
+		`4. Do NOT modify any source code — this is a review-only agent`,
+		`5. Run \`npm run build\` in dashboard/ to verify the build still passes (read-only check)`,
+		`6. If the diff is clean with no issues, write a single suggestion noting the review passed:`,
+		`   - title: "Review passed: ${task.title.slice(0, 40)}"`,
+		`   - priority: "low"`,
+		`   - tags: ['code-review', 'auto-suggested', 'clean']`,
+		``,
+		`## Token Budget`,
+		`You have a small budget (~30K tokens). Read the diff, check for issues, write findings, done.`,
 	].join('\n');
 }
 

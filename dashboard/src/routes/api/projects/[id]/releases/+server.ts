@@ -35,6 +35,28 @@ export async function POST({ params, request }) {
 	const projectPath = await getProjectPath(params.id);
 	const body = await request.json();
 
+	// ── Action: prepare — spawn a release agent ──────────────────────
+	if (body.action === 'prepare') {
+		try {
+			const { spawnReleaseAgent } = await import('$lib/server/heartbeat/release-agent.js');
+			const spawned = await spawnReleaseAgent(projectPath, params.id, {
+				dryRun: body.dryRun ?? false
+			});
+
+			return json({
+				spawned,
+				agentId: spawned ? `release-${params.id}` : null,
+				message: spawned
+					? `Release agent spawned for ${params.id}`
+					: 'Release agent not spawned — check agent limits or existing agent'
+			}, { status: spawned ? 202 : 409 });
+		} catch (e) {
+			const message = e instanceof Error ? e.message : 'Failed to spawn release agent';
+			throw error(500, message);
+		}
+	}
+
+	// ── Default: manual release creation ─────────────────────────────
 	if (!body.version || typeof body.version !== 'string') {
 		throw error(400, 'Version is required');
 	}

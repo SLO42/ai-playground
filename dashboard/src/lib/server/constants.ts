@@ -128,7 +128,17 @@ const ALLOWED_PREFIXES = [
 ];
 
 export function isPathAllowed(filePath: string): boolean {
-	const resolved = resolve(filePath);
+	let resolved = resolve(filePath);
+	// On Windows, normalize case to avoid mismatches (e.g., F: vs f:)
+	if (process.platform === 'win32') {
+		resolved = resolved.toLowerCase();
+		return ALLOWED_PREFIXES.some(
+			(prefix) => {
+				const lowerPrefix = prefix.toLowerCase();
+				return resolved === lowerPrefix || resolved.startsWith(lowerPrefix + sep);
+			}
+		);
+	}
 	return ALLOWED_PREFIXES.some(
 		(prefix) => resolved === prefix || resolved.startsWith(prefix + sep)
 	);

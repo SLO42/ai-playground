@@ -4,7 +4,7 @@
  * Sources:
  * 1. Claude auto-memory files (~/.claude/projects/.../memory/*.md)
  * 2. Claude-flow MCP memory (.swarm/memory.db → memory_entries table)
- * 3. Agent analytics learnings (.playground/agent-analytics.json)
+ * 3. Project map (compact project profiles from registry)
  *
  * The bridge runs during each heartbeat cycle. It deduplicates by key+namespace
  * and only adds genuinely new entries. Existing entries are updated if content changed.
@@ -14,6 +14,7 @@ import { existsSync } from 'fs';
 import { resolve, basename, dirname } from 'path';
 import { homedir } from 'os';
 import { PATHS } from './constants.js';
+import { getAllTasks } from './task-store.js';
 import type { AutoMemoryEntry } from '$lib/types/memory.js';
 
 // ── Types ────────────────────────────────────────────────────────────
@@ -65,7 +66,7 @@ function parseMarkdownMemory(content: string, fileName: string, sourceFile: stri
 					summary: currentHeading,
 					namespace: 'claude-memory',
 					type: 'semantic',
-					metadata: { sourceFile, bridge: 'auto-memory-files', fileName },
+					metadata: { sourceFile, bridge: 'auto-memory-files', fileName, projectId: 'ai-playground' },
 					createdAt: Date.now()
 				});
 			}
@@ -201,6 +202,44 @@ async function syncClaudeFlowMemory(): Promise<{ entries: AutoMemoryEntry[]; err
 // understand the project landscape via memory_search. Gets UPSERTED each
 // sync cycle — never appends, always replaces with current state.
 
+// Cache for key-files scans — only re-scan a project every 5 minutes
+const _keyFilesCache = new Map<string, { files: string[]; expiresAt: number }>();
+const KEY_FILES_CACHE_TTL = 5 * 60_000;
+
+/** Async directory scan — yields to the event loop between directories. */
+async function scanKeyFilesAsync(dir: string, prefix: string, depth: number): Promise<string[]> {
+	if (depth > 2) return [];
+	const SKIP = new Set(['.', '..', 'node_modules', 'dist', 'build', '.git', '.svelte-kit', '__pycache__', 'target', '.next']);
+	const SOURCE_EXT = /\.(ts|svelte|json|yaml|py|rs|go|java|cs|jsx|tsx|vue)$/;
+	const keyFiles: string[] = [];
+
+	try {
+		const entries = await readdir(dir, { withFileTypes: true });
+		for (const entry of entries) {
+			if (entry.name.startsWith('.') || SKIP.has(entry.name)) continue;
+			if (entry.isDirectory() && depth < 2) {
+				const sub = await scanKeyFilesAsync(resolve(dir, entry.name), `${prefix}${entry.name}/`, depth + 1);
+				keyFiles.push(...sub);
+			} else if (entry.isFile() && SOURCE_EXT.test(entry.name)) {
+				keyFiles.push(`${prefix}${entry.name}`);
+			}
+			// Cap at 200 files to prevent runaway on huge projects
+			if (keyFiles.length >= 200) break;
+		}
+	} catch { /* dir inaccessible */ }
+
+	return keyFiles;
+}
+
+async function getKeyFilesForProject(projectPath: string): Promise<string[]> {
+	const cached = _keyFilesCache.get(projectPath);
+	if (cached && Date.now() < cached.expiresAt) return cached.files;
+
+	const files = await scanKeyFilesAsync(projectPath, '', 0);
+	_keyFilesCache.set(projectPath, { files, expiresAt: Date.now() + KEY_FILES_CACHE_TTL });
+	return files;
+}
+
 async function syncProjectMap(): Promise<{ entries: AutoMemoryEntry[]; errors: string[] }> {
 	const entries: AutoMemoryEntry[] = [];
 	const errors: string[] = [];
@@ -212,64 +251,51 @@ async function syncProjectMap(): Promise<{ entries: AutoMemoryEntry[]; errors: s
 
 		if (!registry.projects?.length) return { entries, errors };
 
-		for (const project of registry.projects) {
-			const fullPath = project.path === '.' ? PATHS.root : resolve(PATHS.root, project.path);
-			const lines: string[] = [];
+		// Process projects concurrently (bounded to avoid I/O saturation)
+		const CONCURRENCY = 4;
+		for (let i = 0; i < registry.projects.length; i += CONCURRENCY) {
+			const batch = registry.projects.slice(i, i + CONCURRENCY);
+			const results = await Promise.allSettled(batch.map(async (project) => {
+				const fullPath = project.path === '.' ? PATHS.root : resolve(PATHS.root, project.path);
+				const lines: string[] = [];
 
-			lines.push(`**Path**: \`${project.path}\``);
-			if (project.description) lines.push(`**Description**: ${project.description}`);
-			if (project.techStack?.length) lines.push(`**Stack**: ${project.techStack.join(', ')}`);
-			if (project.tags?.length) lines.push(`**Tags**: ${project.tags.join(', ')}`);
+				lines.push(`**Path**: \`${project.path}\``);
+				if (project.description) lines.push(`**Description**: ${project.description}`);
+				if (project.techStack?.length) lines.push(`**Stack**: ${project.techStack.join(', ')}`);
+				if (project.tags?.length) lines.push(`**Tags**: ${project.tags.join(', ')}`);
 
-			// Scan for key files
-			try {
-				const { readdirSync, statSync } = await import('fs');
-				const keyFiles: string[] = [];
-				const scanDir = (dir: string, prefix: string, depth: number) => {
-					if (depth > 2) return;
-					try {
-						for (const entry of readdirSync(dir)) {
-							if (entry.startsWith('.') || entry === 'node_modules' || entry === 'dist' || entry === 'build') continue;
-							const full = resolve(dir, entry);
-							const st = statSync(full);
-							if (st.isDirectory() && depth < 2) {
-								scanDir(full, `${prefix}${entry}/`, depth + 1);
-							} else if (st.isFile() && /\.(ts|svelte|json|yaml|py|rs)$/.test(entry)) {
-								keyFiles.push(`${prefix}${entry}`);
-							}
-						}
-					} catch { /* skip */ }
+				// Async key files scan with caching
+				try {
+					const keyFiles = await getKeyFilesForProject(fullPath);
+					if (keyFiles.length > 0) {
+						lines.push(`**Key files** (${keyFiles.length}): ${keyFiles.slice(0, 15).join(', ')}${keyFiles.length > 15 ? '...' : ''}`);
+					}
+				} catch { /* skip */ }
+
+				// Task summary — use v2 task store
+				try {
+					const tasks = await getAllTasks(fullPath);
+					const pending = tasks.filter(t => t.status === 'pending').length;
+					const inProgress = tasks.filter(t => t.status === 'in_progress').length;
+					const completed = tasks.filter(t => t.status === 'completed').length;
+					lines.push(`**Tasks**: ${pending} pending, ${inProgress} active, ${completed} completed`);
+				} catch { /* no tasks */ }
+
+				return {
+					id: `mem-bridge-project-${project.id}`,
+					key: `project-map-${project.id}`,
+					content: lines.join('\n'),
+					summary: `Project: ${project.name}`,
+					namespace: 'project-map' as const,
+					type: 'semantic' as const,
+					metadata: { bridge: 'project-map', projectId: project.id, projectName: project.name },
+					createdAt: Date.now()
 				};
-				scanDir(fullPath, '', 0);
-				if (keyFiles.length > 0) {
-					lines.push(`**Key files** (${keyFiles.length}): ${keyFiles.slice(0, 15).join(', ')}${keyFiles.length > 15 ? '...' : ''}`);
-				}
-			} catch { /* skip */ }
+			}));
 
-			// Task summary
-			try {
-				const tasksPath = resolve(fullPath, '.playground/tasks.json');
-				const tasksRaw = await readFile(tasksPath, 'utf-8');
-				const tasks = JSON.parse(tasksRaw) as Array<{ status: string }>;
-				const pending = tasks.filter(t => t.status === 'pending').length;
-				const inProgress = tasks.filter(t => t.status === 'in_progress').length;
-				const completed = tasks.filter(t => t.status === 'completed').length;
-				lines.push(`**Tasks**: ${pending} pending, ${inProgress} active, ${completed} completed`);
-			} catch { /* no tasks */ }
-
-			const content = lines.join('\n');
-			const key = `project-map-${project.id}`;
-
-			entries.push({
-				id: `mem-bridge-project-${project.id}`,
-				key,
-				content,
-				summary: `Project: ${project.name}`,
-				namespace: 'project-map',
-				type: 'semantic',
-				metadata: { bridge: 'project-map', projectId: project.id, projectName: project.name },
-				createdAt: Date.now()
-			});
+			for (const r of results) {
+				if (r.status === 'fulfilled') entries.push(r.value as AutoMemoryEntry);
+			}
 		}
 	} catch (e) {
 		errors.push(`project-map: ${e instanceof Error ? e.message : 'scan failed'}`);
@@ -311,6 +337,9 @@ export async function syncMemoryBridge(): Promise<BridgeSyncResult> {
 	if (claudeFlow.entries.length > 0) result.sources.push(`claude-flow (${claudeFlow.entries.length})`);
 	if (projectMap.entries.length > 0) result.sources.push(`project-map (${projectMap.entries.length})`);
 
+	// Build set of IDs from all sources — entries NOT in this set are stale
+	const freshIds = new Set(allNew.map(e => e.id));
+
 	// Merge into store
 	let changed = false;
 	for (const entry of allNew) {
@@ -331,8 +360,25 @@ export async function syncMemoryBridge(): Promise<BridgeSyncResult> {
 		// Same content = skip (no-op)
 	}
 
+	// Prune entries from bridge sources that no longer exist in the source
+	// Only prune entries that came from the bridge (have bridge metadata),
+	// not user-created entries or entries from other systems
+	let pruned = 0;
+	for (const [id, entry] of storeMap) {
+		const bridge = (entry.metadata as Record<string, unknown>)?.bridge as string | undefined;
+		if (bridge && !freshIds.has(id)) {
+			storeMap.delete(id);
+			pruned++;
+			changed = true;
+		}
+	}
+
 	if (changed) {
 		await saveStore(Array.from(storeMap.values()));
+	}
+
+	if (pruned > 0) {
+		result.sources.push(`pruned ${pruned} stale`);
 	}
 
 	return result;

@@ -6,6 +6,7 @@ import { readFile } from 'fs/promises';
 import { spawn } from 'child_process';
 import { resolve } from 'path';
 import { PATHS } from '../constants.js';
+import { registerPid, unregisterPid } from './pid-registry.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -171,6 +172,31 @@ export async function attemptRestart(serviceName: string): Promise<boolean> {
 			cwd: PATHS.root
 		});
 		child.unref();
+
+		// Track the spawned PID in the registry
+		if (child.pid) {
+			registerPid(child.pid, `restart:${serviceName}`, 'service').catch(() => {});
+		}
+
+		// Schedule a post-restart health check
+		setTimeout(async () => {
+			try {
+				const svc = (await import('../constants.js')).SERVICES[serviceName];
+				if (svc?.healthUrl) {
+					const res = await fetch(svc.healthUrl, { signal: AbortSignal.timeout(5000) });
+					if (res.ok) {
+						resetRestartCount(serviceName);
+					}
+				}
+			} catch {
+				// Health check failed — service may still be starting
+			} finally {
+				if (child.pid) {
+					unregisterPid(`restart:${serviceName}`).catch(() => {});
+				}
+			}
+		}, 10_000);
+
 		return true;
 	} catch {
 		return false;

@@ -130,7 +130,8 @@ async function queryOllamaFallback(messages: Array<{ role: string; content: stri
 			model: DEFAULT_MODEL,
 			messages,
 			stream: false
-		})
+		}),
+		signal: AbortSignal.timeout(30_000)
 	});
 
 	if (!res.ok) {
@@ -304,7 +305,7 @@ export async function spawnOpenClawAgent(
 		pid: 0,
 		startedAt: new Date().toISOString(),
 		sender,
-		logFile: '',
+		logFile: '/dev/null',
 		lastLogPos: 0,
 		reportSessionId: reportId
 	});

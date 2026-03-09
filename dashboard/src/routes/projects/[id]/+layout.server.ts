@@ -1,5 +1,6 @@
+import { join } from 'path';
 import type { LayoutServerLoad } from './$types.js';
-import { PATHS } from '$lib/server/constants.js';
+import { PATHS, WORKSPACE_ROOT } from '$lib/server/constants.js';
 import { scanAllProjects } from '$lib/server/project-scanner.js';
 
 export const load: LayoutServerLoad = async ({ params }) => {
@@ -11,7 +12,7 @@ export const load: LayoutServerLoad = async ({ params }) => {
 			projectId: params.id,
 			project: {
 				name: params.id,
-				path: `F:/code/${params.id}`,
+				path: join(WORKSPACE_ROOT, params.id),
 				health: 'unknown' as const,
 				branch: 'main',
 				commits: 0

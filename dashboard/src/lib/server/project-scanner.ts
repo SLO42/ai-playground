@@ -935,6 +935,63 @@ export async function scanAllProjects(
 		});
 }
 
+/**
+ * Scan multiple workspace roots for projects.
+ * Each root is scanned for subdirectories that look like projects
+ * (contain .git, package.json, Cargo.toml, etc.).
+ * Results are deduplicated by resolved path.
+ */
+export async function scanWorkspaceDirectories(
+	workspaceRoots: string[]
+): Promise<Project[]> {
+	const projectMarkers = ['.git', 'package.json', 'Cargo.toml', 'go.mod', 'pyproject.toml', '.playground'];
+
+	const seen = new Set<string>();
+	const allProjects: Project[] = [];
+
+	await Promise.all(
+		workspaceRoots.map(async (root) => {
+			try {
+				const entries = await readdir(root);
+				const results = await Promise.all(
+					entries.map(async (entry) => {
+						const fullPath = resolve(root, entry);
+						try {
+							const s = await stat(fullPath);
+							if (!s.isDirectory()) return null;
+							if (entry.startsWith('.') || entry === 'node_modules') return null;
+
+							// Check if this directory looks like a project
+							const hasMarker = await Promise.all(
+								projectMarkers.map((marker) => exists(resolve(fullPath, marker)))
+							);
+							if (!hasMarker.some(Boolean)) return null;
+
+							const resolved = resolve(fullPath);
+							if (seen.has(resolved)) return null;
+							seen.add(resolved);
+
+							return await scanProject(fullPath);
+						} catch {
+							return null;
+						}
+					})
+				);
+				for (const p of results) {
+					if (p) allProjects.push(p);
+				}
+			} catch {
+				// workspace root doesn't exist or isn't readable
+			}
+		})
+	);
+
+	return allProjects.sort((a, b) => {
+		const statusOrder = { active: 0, archived: 1, unconfigured: 2 };
+		return statusOrder[a.status] - statusOrder[b.status];
+	});
+}
+
 export async function scanAllProjectsPaginated(
 	registryPath: string,
 	projectRoot: string,

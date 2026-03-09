@@ -2,6 +2,7 @@ import type { PageServerLoad } from './$types.js';
 import { access, readFile } from 'fs/promises';
 import { resolve } from 'path';
 import { detectProjectMeta, createDefaultConfig } from '$lib/server/project-scanner.js';
+import { WORKSPACE_ROOT } from '$lib/server/constants.js';
 import type { DetectedProjectMeta, PlaygroundConfig } from '$lib/types/projects.js';
 
 interface DetectedConfig {
@@ -114,8 +115,9 @@ async function scanPath(projectPath: string) {
 }
 
 export const load: PageServerLoad = async ({ url }) => {
-	const defaultPath = url.searchParams.get('path') || 'F:\\code\\';
-	const scanResult = defaultPath.endsWith('\\') ? null : await scanPath(defaultPath).catch(() => null);
+	const defaultPath = url.searchParams.get('path') || WORKSPACE_ROOT;
+	const endsWithSep = defaultPath.endsWith('/') || defaultPath.endsWith('\\');
+	const scanResult = endsWithSep ? null : await scanPath(defaultPath).catch(() => null);
 
 	return {
 		defaultPath,

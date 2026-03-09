@@ -1,6 +1,23 @@
-import { resolve } from 'path';
+import { resolve, join, sep } from 'path';
 
 const PROJECT_ROOT = resolve(process.cwd(), '..');
+
+/**
+ * Workspace root directory where projects are stored.
+ * Configurable via PLAYGROUND_WORKSPACE env var; defaults to the parent of PROJECT_ROOT.
+ */
+export const WORKSPACE_ROOT = resolve(
+	process.env.PLAYGROUND_WORKSPACE || resolve(PROJECT_ROOT, '..')
+);
+
+/**
+ * Multiple workspace roots for scanning projects across directories.
+ * Configurable via PLAYGROUND_WORKSPACES (comma-separated) env var.
+ * Falls back to a single-element array containing WORKSPACE_ROOT.
+ */
+export const WORKSPACE_ROOTS: string[] = process.env.PLAYGROUND_WORKSPACES
+	? process.env.PLAYGROUND_WORKSPACES.split(',').map((p) => resolve(p.trim()))
+	: [WORKSPACE_ROOT];
 
 export const PATHS = {
 	root: PROJECT_ROOT,
@@ -89,7 +106,7 @@ export const SERVICES: Record<string, ServiceDef> = {
 		id: 'penpot-mcp',
 		name: 'Penpot MCP Server',
 		type: 'MCP Server',
-		configPath: 'F:\\code\\tools\\penpot-mcp',
+		configPath: join(WORKSPACE_ROOT, 'tools', 'penpot-mcp'),
 		port: 4400,
 		healthUrl: 'http://127.0.0.1:4400/',
 		logFile: null
@@ -113,7 +130,7 @@ const ALLOWED_PREFIXES = [
 export function isPathAllowed(filePath: string): boolean {
 	const resolved = resolve(filePath);
 	return ALLOWED_PREFIXES.some(
-		(prefix) => resolved === prefix || resolved.startsWith(prefix + '/')  || resolved.startsWith(prefix + '\\')
+		(prefix) => resolved === prefix || resolved.startsWith(prefix + sep)
 	);
 }
 
@@ -128,7 +145,7 @@ export function scopedSettingsPath(
 	if (scope === 'project' && projectPath) {
 		const resolved = resolve(projectPath, '.playground', fileName);
 		const normalizedProject = resolve(projectPath);
-		if (!resolved.startsWith(normalizedProject + '/') && !resolved.startsWith(normalizedProject + '\\')) {
+		if (!resolved.startsWith(normalizedProject + sep)) {
 			throw new Error('Invalid project path');
 		}
 		return resolved;

@@ -1,7 +1,12 @@
 import { pathToFileURL } from 'url';
+import { resolve, dirname } from 'path';
+import { fileURLToPath } from 'url';
 import WebSocket from 'ws';
 
-const clientPath = 'F:/code/ai-playground/node_modules/openclaw/dist/client-CuIxivDk.js';
+const __dirname = dirname(fileURLToPath(import.meta.url));
+const projectRoot = resolve(__dirname, '..', '..', '..', '..', '..', '..');
+
+const clientPath = resolve(projectRoot, 'node_modules/openclaw/dist/client-CuIxivDk.js');
 const mod = await import(pathToFileURL(clientPath).href);
 
 const loadOrCreateDeviceIdentity = mod.nn;
@@ -11,7 +16,7 @@ const normalizeDevicePublicKeyBase64Url = mod.rn;
 
 // Load persistent device identity
 const identity = await loadOrCreateDeviceIdentity(
-  'F:/code/ai-playground/.playground/claw-device-identity.json'
+  resolve(projectRoot, '.playground/claw-device-identity.json')
 );
 console.log('Device ID:', identity.deviceId.substring(0, 16) + '...');
 console.log('Identity keys:', Object.keys(identity));

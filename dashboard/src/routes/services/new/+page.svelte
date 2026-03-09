@@ -6,7 +6,7 @@
 	let { data }: { data: PageData } = $props();
 
 	let mode = $state<'config' | 'manual'>('config');
-	let configFile = $state('F:\\code\\tools\\my-project\\.mcp.json');
+	let configFile = $state('');
 	let configDir = $state(data.defaultConfigDir);
 	let autoStart = $state(true);
 	let healthMonitoring = $state(true);

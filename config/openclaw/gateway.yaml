@@ -33,10 +33,18 @@ gateway:
     enabled: true
     allowedOrigins:
       - "https://localhost"
+      - "http://127.0.0.1:18789"
+      - "http://localhost:5173"       # SvelteKit dev server
     allowedMethods:
       - "GET"
       - "POST"
     allowCredentials: true
+
+  # Control UI — allow Node.js agent clients to connect
+  controlUi:
+    allowedOrigins:
+      - "http://127.0.0.1:18789"
+      - "http://localhost:5173"       # Claw agent (dashboard server)
 
 # DM Security Policy — Family Only
 dm:
@@ -53,6 +61,7 @@ dm:
 channels:
   enabled:
     - twitch                  # IRC-based, plugin channel
+    - dashboard               # Custom: Claw dashboard WS chat
   defaults:
     activation: "mention"     # Require @mention in groups
     thinking: "medium"
@@ -74,11 +83,11 @@ ollama:
   apiKey: "ollama-local"
   api: "ollama"                          # Required for tool calling support
 
-# Tools — allow exec and file operations within the project
+# Tools — allow exec and file operations across F:/code
 # IMPORTANT: Use absolute paths — gateway cwd may differ from project root
 tools:
   exec:
-    host: "gateway"                # Run commands on the gateway process itself
+    host: "node"                   # Run commands directly (no sandbox)
     # Options: "gateway" (local), "node" (direct), "sandbox" (isolated)
     allowedCommands:               # Restrict what agents can run
       - "node"
@@ -89,27 +98,38 @@ tools:
       - "cat"
       - "find"
       - "grep"
+      - "tree"
+      - "dir"
     timeout: 30000                 # 30s max per command
-    cwd: "F:/code/ai-playground"
+    cwd: "F:/code"
   read:
-    basePath: "F:/code/ai-playground"
+    basePath: "F:/code"
     allowedExtensions:
       - ".json"
       - ".json5"
       - ".yaml"
       - ".yml"
       - ".ts"
+      - ".tsx"
       - ".js"
+      - ".jsx"
       - ".svelte"
+      - ".vue"
       - ".md"
       - ".txt"
       - ".css"
+      - ".scss"
+      - ".html"
+      - ".py"
+      - ".rs"
+      - ".toml"
+      - ".lock"
+      - ".env.example"
     maxFileSize: "5MB"
   write:
-    basePath: "F:/code/ai-playground"
+    basePath: "F:/code"
     allowedPaths:
-      - ".playground/"
-      - "config/openclaw/workspace/"
+      - "*/"                         # All projects under F:/code
     maxFileSize: "1MB"
 
 # Agent defaults

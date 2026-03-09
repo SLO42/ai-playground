@@ -2,12 +2,14 @@
 	import MetricCard from '$lib/components/MetricCard.svelte';
 	import type { PageData } from './$types.js';
 	import { page } from '$app/stores';
-	import { goto } from '$app/navigation';
+	import { goto, invalidateAll } from '$app/navigation';
 
 	let { data }: { data: PageData } = $props();
 
 	let loading = $state(false);
 	let error = $state<string | null>(data.loadError ?? null);
+	let showConnectModal = $state(false);
+	let connectingId = $state<string | null>(null);
 
 	const statusDots: Record<string, string> = {
 		connected: 'bg-accent-green',
@@ -18,7 +20,11 @@
 	const typeIcons: Record<string, string> = {
 		twitch: '📺',
 		discord: '💬',
-		telegram: '✈️'
+		telegram: '✈️',
+		whatsapp: '📱',
+		imessage: '🍎',
+		dashboard: '🖥️',
+		custom: '🔌'
 	};
 
 	function getProjectId(): string {
@@ -69,6 +75,68 @@
 			loading = false;
 		}
 	}
+
+	async function connectChannel(channelId: string, channelName: string) {
+		connectingId = channelId;
+		try {
+			const res = await fetch(`/api/projects/${getProjectId()}/channels`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ channelId, name: channelName })
+			});
+			const result = await res.json();
+			if (!res.ok) {
+				error = result.error ?? 'Failed to connect channel';
+				return;
+			}
+			showConnectModal = false;
+			await invalidateAll();
+		} catch {
+			error = 'Network error connecting channel';
+		} finally {
+			connectingId = null;
+		}
+	}
+
+	async function disconnectChannel(channelId: string) {
+		if (!confirm(`Disconnect ${channelId}?`)) return;
+		loading = true;
+		try {
+			const res = await fetch(`/api/projects/${getProjectId()}/channels`, {
+				method: 'DELETE',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ channelId })
+			});
+			const result = await res.json();
+			if (!res.ok) {
+				error = result.error ?? 'Failed to disconnect';
+				return;
+			}
+			await invalidateAll();
+		} catch {
+			error = 'Network error disconnecting channel';
+		} finally {
+			loading = false;
+		}
+	}
+
+	async function toggleChannel(channelId: string, enabled: boolean) {
+		try {
+			const res = await fetch(`/api/projects/${getProjectId()}/channels`, {
+				method: 'PATCH',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ channelId, enabled })
+			});
+			if (!res.ok) {
+				const result = await res.json();
+				error = result.error ?? 'Failed to update channel';
+				return;
+			}
+			await invalidateAll();
+		} catch {
+			error = 'Network error updating channel';
+		}
+	}
 </script>
 
 <div class="space-y-6">
@@ -85,7 +153,7 @@
 					<path d="M21 3v6h-6" stroke-linecap="round" stroke-linejoin="round"/>
 				</svg>
 			</button>
-			<button class="px-4 py-2 text-sm bg-accent-blue text-white rounded-lg hover:bg-accent-blue/90 transition-colors">
+			<button onclick={() => (showConnectModal = true)} class="px-4 py-2 text-sm bg-accent-blue text-white rounded-lg hover:bg-accent-blue/90 transition-colors">
 				+ Connect Channel
 			</button>
 		</div>
@@ -104,10 +172,10 @@
 
 	<!-- Summary -->
 	<div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-		<MetricCard label="Total Channels" value={data.summary.total} accent="blue" />
-		<MetricCard label="Connected" value={data.summary.connected} accent="green" />
-		<MetricCard label="Messages" value={data.summary.messages.toLocaleString()} accent="cyan" />
-		<MetricCard label="Active Users" value={data.summary.users} accent="purple" />
+		<MetricCard label="Connected" value={data.summary.total} accent="blue" />
+		<MetricCard label="Active" value={data.summary.connected} accent="green" />
+		<MetricCard label="Available" value={data.summary.available} accent="cyan" />
+		<MetricCard label="Messages" value={data.summary.messages.toLocaleString()} accent="purple" />
 	</div>
 
 	<!-- Type Filter -->
@@ -134,7 +202,7 @@
 
 	<!-- Channel Cards -->
 	<div class="relative">
-		<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">Channels</h2>
+		<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">Connected Channels</h2>
 		{#if loading}
 			<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
 				{#each Array(3) as _}
@@ -154,10 +222,6 @@
 								<div class="h-3 w-16 rounded bg-bg-tertiary"></div>
 								<div class="h-3 w-10 rounded bg-bg-tertiary"></div>
 							</div>
-							<div class="flex justify-between">
-								<div class="h-3 w-12 rounded bg-bg-tertiary"></div>
-								<div class="h-3 w-14 rounded bg-bg-tertiary"></div>
-							</div>
 						</div>
 						<div class="flex gap-2 mt-3 pt-3 border-t border-border">
 							<div class="flex-1 h-7 rounded bg-bg-tertiary"></div>
@@ -166,21 +230,17 @@
 					</div>
 				{/each}
 			</div>
-		{:else if !error && data.channels.length === 0 && data.typeFilter}
-			<div class="bg-bg-secondary border border-dashed border-border rounded-lg p-10 text-center">
-				<div class="text-4xl mb-3 opacity-40">🔍</div>
-				<p class="text-text-primary text-sm font-medium">No {data.typeFilter} channels found</p>
-				<p class="text-text-secondary text-xs mt-2 max-w-xs mx-auto">No channels match the current filter. Try a different type or clear the filter.</p>
-				<button onclick={() => filterByType('')} class="mt-4 px-4 py-2 text-xs bg-accent-blue text-white rounded-lg hover:bg-accent-blue/90 transition-colors">
-					Clear Filter
-				</button>
-			</div>
 		{:else if !error && data.channels.length === 0}
 			<div class="bg-bg-secondary border border-dashed border-border rounded-lg p-10 text-center">
 				<div class="text-4xl mb-3 opacity-40">📡</div>
 				<p class="text-text-primary text-sm font-medium">No channels connected</p>
-				<p class="text-text-secondary text-xs mt-2 max-w-xs mx-auto">Connect a messaging channel like Twitch, Discord, or Telegram to start receiving messages in this project.</p>
-				<button class="mt-4 px-4 py-2 text-xs bg-accent-blue text-white rounded-lg hover:bg-accent-blue/90 transition-colors">
+				<p class="text-text-secondary text-xs mt-2 max-w-xs mx-auto">
+					Connect a channel to enable messaging for this project.
+					{#if data.availableChannels.length > 0}
+						{data.availableChannels.length} channel{data.availableChannels.length === 1 ? '' : 's'} available.
+					{/if}
+				</p>
+				<button onclick={() => (showConnectModal = true)} class="mt-4 px-4 py-2 text-xs bg-accent-blue text-white rounded-lg hover:bg-accent-blue/90 transition-colors">
 					+ Connect Channel
 				</button>
 			</div>
@@ -200,33 +260,36 @@
 					</div>
 					<div class="space-y-2 text-xs">
 						<div class="flex justify-between">
-							<span class="text-text-secondary">Messages</span>
-							<span class="font-mono text-text-primary">{channel.messages}</span>
+							<span class="text-text-secondary">Type</span>
+							<span class="font-mono text-text-primary">{channel.type}</span>
 						</div>
 						<div class="flex justify-between">
 							<span class="text-text-secondary">Uptime</span>
 							<span class="font-mono text-text-primary">{channel.uptime}</span>
 						</div>
+						{#if channel.description}
+							<p class="text-text-secondary pt-1 border-t border-border">{channel.description}</p>
+						{/if}
 					</div>
 					<div class="flex gap-2 mt-3 pt-3 border-t border-border">
-						<button class="flex-1 px-2 py-1.5 text-xs bg-bg-tertiary text-text-secondary rounded hover:text-text-primary transition-colors">
-							Configure
+						<button
+							onclick={() => toggleChannel(channel.id, !channel.enabled)}
+							class="flex-1 px-2 py-1.5 text-xs rounded transition-colors {channel.enabled ? 'bg-accent-green/20 text-accent-green hover:bg-accent-green/30' : 'bg-bg-tertiary text-text-secondary hover:text-text-primary'}"
+						>
+							{channel.enabled ? 'Enabled' : 'Disabled'}
 						</button>
-						{#if channel.status === 'connected'}
-							<button class="px-2 py-1.5 text-xs bg-accent-red/20 text-accent-red rounded hover:bg-accent-red/30 transition-colors">
-								Disconnect
-							</button>
-						{:else}
-							<button class="px-2 py-1.5 text-xs bg-accent-green/20 text-accent-green rounded hover:bg-accent-green/30 transition-colors">
-								Connect
-							</button>
-						{/if}
+						<button
+							onclick={() => disconnectChannel(channel.id)}
+							class="px-2 py-1.5 text-xs bg-accent-red/20 text-accent-red rounded hover:bg-accent-red/30 transition-colors"
+						>
+							Disconnect
+						</button>
 					</div>
 				</div>
 			{/each}
 		</div>
 		{/if}
-	</div><!-- /channel cards -->
+	</div>
 
 	<!-- Pagination -->
 	{#if data.pagination.totalPages > 1}
@@ -262,86 +325,79 @@
 		</div>
 	{/if}
 
-	<!-- DM Pairing Policy -->
-	<div>
-		<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">DM Pairing Policy</h2>
-		<div class="bg-bg-secondary border border-border rounded-lg p-4">
-			<div class="grid grid-cols-2 md:grid-cols-4 gap-4 text-sm">
-				<div>
-					<p class="text-xs text-text-secondary uppercase mb-1">Mode</p>
-					<p class="font-mono text-accent-blue">{data.dmPolicy.mode}</p>
-				</div>
-				<div>
-					<p class="text-xs text-text-secondary uppercase mb-1">Approval</p>
-					<p class="font-mono text-text-primary">{data.dmPolicy.approvalRequired ? 'Required' : 'Auto'}</p>
-				</div>
-				<div>
-					<p class="text-xs text-text-secondary uppercase mb-1">Timeout</p>
-					<p class="font-mono text-text-primary">{data.dmPolicy.pairingTimeout}</p>
-				</div>
-				<div>
-					<p class="text-xs text-text-secondary uppercase mb-1">Max Sessions</p>
-					<p class="font-mono text-text-primary">{data.dmPolicy.maxSessions}</p>
-				</div>
+	<!-- Available Channels -->
+	{#if data.availableChannels.length > 0}
+		<div>
+			<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">Available Channels</h2>
+			<div class="grid grid-cols-1 md:grid-cols-3 gap-4">
+				{#each data.availableChannels as ch}
+					<div class="bg-bg-secondary border border-dashed border-border rounded-lg p-4 opacity-70 hover:opacity-100 transition-opacity">
+						<div class="flex items-center justify-between mb-2">
+							<div class="flex items-center gap-2">
+								<span class="text-lg">{typeIcons[ch.type] ?? '📡'}</span>
+								<span class="text-sm font-bold text-text-primary">{ch.name}</span>
+							</div>
+							<span class="text-xs px-2 py-0.5 rounded bg-bg-tertiary text-text-secondary">{ch.type}</span>
+						</div>
+						{#if ch.description}
+							<p class="text-xs text-text-secondary mb-3">{ch.description}</p>
+						{/if}
+						<button
+							onclick={() => connectChannel(ch.id, ch.name)}
+							disabled={connectingId === ch.id}
+							class="w-full px-3 py-1.5 text-xs bg-accent-blue/20 text-accent-blue rounded hover:bg-accent-blue/30 transition-colors disabled:opacity-40"
+						>
+							{connectingId === ch.id ? 'Connecting...' : '+ Connect'}
+						</button>
+					</div>
+				{/each}
 			</div>
 		</div>
-	</div>
-
-	<!-- Allowlist -->
-	<div>
-		<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">Allowlist</h2>
-		<div class="bg-bg-secondary border border-border rounded-lg overflow-hidden">
-			<table class="w-full text-left">
-				<thead>
-					<tr class="border-b border-border text-xs text-text-secondary uppercase">
-						<th class="px-4 py-2 font-medium">Username</th>
-						<th class="px-4 py-2 font-medium">Platform</th>
-						<th class="px-4 py-2 font-medium">Role</th>
-						<th class="px-4 py-2 font-medium">Added</th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each data.allowlist as entry}
-						<tr class="border-b border-border last:border-0 hover:bg-bg-tertiary/50 transition-colors">
-							<td class="px-4 py-3 text-sm font-mono text-text-primary">{entry.username}</td>
-							<td class="px-4 py-3 text-sm text-text-secondary">{entry.platform}</td>
-							<td class="px-4 py-3"><span class="text-xs px-2 py-0.5 rounded bg-accent-blue/20 text-accent-blue">{entry.role}</span></td>
-							<td class="px-4 py-3 text-sm text-text-secondary">{entry.added}</td>
-						</tr>
-					{:else}
-						<tr><td colspan="4" class="px-4 py-6 text-center text-sm text-text-secondary">No users in allowlist</td></tr>
-					{/each}
-				</tbody>
-			</table>
-		</div>
-	</div>
-
-	<!-- Recent Messages -->
-	<div>
-		<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">Recent Messages</h2>
-		<div class="bg-bg-secondary border border-border rounded-lg overflow-hidden">
-			<table class="w-full text-left">
-				<thead>
-					<tr class="border-b border-border text-xs text-text-secondary uppercase">
-						<th class="px-4 py-2 font-medium w-24">Channel</th>
-						<th class="px-4 py-2 font-medium w-28">User</th>
-						<th class="px-4 py-2 font-medium">Message</th>
-						<th class="px-4 py-2 font-medium text-right w-20">Time</th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each data.recentMessages as msg}
-						<tr class="border-b border-border last:border-0 hover:bg-bg-tertiary/50 transition-colors">
-							<td class="px-4 py-3"><span class="text-xs px-2 py-0.5 rounded bg-bg-tertiary text-text-secondary">{msg.channel}</span></td>
-							<td class="px-4 py-3 text-sm font-mono text-accent-cyan">{msg.user}</td>
-							<td class="px-4 py-3 text-sm text-text-primary">{msg.message}</td>
-							<td class="px-4 py-3 text-xs text-text-secondary text-right">{msg.time}</td>
-						</tr>
-					{:else}
-						<tr><td colspan="4" class="px-4 py-6 text-center text-sm text-text-secondary">No recent messages</td></tr>
-					{/each}
-				</tbody>
-			</table>
-		</div>
-	</div>
+	{/if}
 </div>
+
+<!-- Connect Channel Modal -->
+{#if showConnectModal}
+	<div class="fixed inset-0 z-50 flex items-center justify-center">
+		<!-- backdrop -->
+		<button class="absolute inset-0 bg-black/50" onclick={() => (showConnectModal = false)} aria-label="Close"></button>
+		<!-- modal -->
+		<div class="relative bg-bg-primary border border-border rounded-xl shadow-2xl w-full max-w-lg mx-4 p-6">
+			<div class="flex items-center justify-between mb-4">
+				<h2 class="text-lg font-bold text-text-primary">Connect Channel</h2>
+				<button onclick={() => (showConnectModal = false)} class="text-text-secondary hover:text-text-primary text-xl leading-none">&times;</button>
+			</div>
+			{#if data.availableChannels.length === 0}
+				<div class="text-center py-8">
+					<div class="text-3xl mb-2 opacity-40">📡</div>
+					<p class="text-sm text-text-secondary">No channels available to connect.</p>
+					<p class="text-xs text-text-secondary mt-1">All gateway channels are already connected, or no channel configs exist yet.</p>
+				</div>
+			{:else}
+				<p class="text-sm text-text-secondary mb-4">Select a channel from the gateway to connect to this project.</p>
+				<div class="space-y-2 max-h-80 overflow-y-auto">
+					{#each data.availableChannels as ch}
+						<div class="flex items-center justify-between p-3 bg-bg-secondary border border-border rounded-lg hover:border-accent-blue/50 transition-colors">
+							<div class="flex items-center gap-3">
+								<span class="text-xl">{typeIcons[ch.type] ?? '📡'}</span>
+								<div>
+									<p class="text-sm font-medium text-text-primary">{ch.name}</p>
+									{#if ch.description}
+										<p class="text-xs text-text-secondary">{ch.description}</p>
+									{/if}
+								</div>
+							</div>
+							<button
+								onclick={() => connectChannel(ch.id, ch.name)}
+								disabled={connectingId === ch.id}
+								class="px-3 py-1.5 text-xs bg-accent-blue text-white rounded-lg hover:bg-accent-blue/90 transition-colors disabled:opacity-40 whitespace-nowrap"
+							>
+								{connectingId === ch.id ? 'Connecting...' : 'Connect'}
+							</button>
+						</div>
+					{/each}
+				</div>
+			{/if}
+		</div>
+	</div>
+{/if}

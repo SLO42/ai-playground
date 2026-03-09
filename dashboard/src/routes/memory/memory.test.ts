@@ -1,5 +1,5 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-import { render, screen, fireEvent } from '@testing-library/svelte';
+import { render, screen, fireEvent, cleanup } from '@testing-library/svelte';
 
 // Mock the BubbleGraph lazy import so it resolves immediately
 vi.mock('$lib/components/BubbleGraph.svelte', () => {
@@ -269,6 +269,504 @@ describe('Memory Page', () => {
 		});
 		// The Edges metric card should show 1
 		expect(screen.getByText('Edges')).toBeInTheDocument();
+	});
+
+	describe('malformed graph data handling', () => {
+		it('handles graph with nodes as an array instead of object', () => {
+			render(MemoryPage, {
+				props: {
+					data: makePageData({
+						graph: { nodes: ['bad'] as any, edges: [], pageRanks: {} }
+					})
+				}
+			});
+			// Array has no Object.values mapping to valid nodes — should show fallback error
+			expect(screen.getByText('Failed to load graph data')).toBeInTheDocument();
+		});
+
+		it('handles graph with edges containing invalid sourceId/targetId references', () => {
+			render(MemoryPage, {
+				props: {
+					data: makePageData({
+						graph: makeGraphState({
+							nodes: {
+								a: { id: 'a', category: 'core', confidence: 0.9, accessCount: 1, createdAt: Date.now() }
+							},
+							edges: [
+								{ sourceId: 'nonexistent', targetId: 'also-missing', type: 'temporal' as const, weight: 1 }
+							],
+							pageRanks: { a: 0.5 }
+						})
+					})
+				}
+			});
+			// Dangling edges should not crash — graph still renders
+			expect(screen.getByText('Memory & Knowledge')).toBeInTheDocument();
+		});
+
+		it('handles graph with null node value', () => {
+			render(MemoryPage, {
+				props: {
+					data: makePageData({
+						graph: makeGraphState({
+							nodes: { broken: null as any },
+							pageRanks: {}
+						})
+					})
+				}
+			});
+			// Accessing properties on null throws — caught by graphNodes error handler
+			expect(screen.getByText('Failed to load graph data')).toBeInTheDocument();
+		});
+
+		it('handles graph with undefined nodes value', () => {
+			render(MemoryPage, {
+				props: {
+					data: makePageData({
+						graph: { nodes: undefined as any, edges: [], pageRanks: {} }
+					})
+				}
+			});
+			// data.graph?.nodes is undefined — derived returns []
+			expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		});
+
+		it('handles graph with edges as non-array value', () => {
+			render(MemoryPage, {
+				props: {
+					data: makePageData({
+						graph: makeGraphState({
+							nodes: {
+								a: { id: 'a', category: 'core', confidence: 0.9, accessCount: 1, createdAt: Date.now() }
+							},
+							edges: 'not-an-array' as any,
+							pageRanks: { a: 0.5 }
+						})
+					})
+				}
+			});
+			// Should not crash the page
+			expect(screen.getByText('Memory & Knowledge')).toBeInTheDocument();
+		});
+
+		it('handles completely empty graph object', () => {
+			render(MemoryPage, {
+				props: {
+					data: makePageData({
+						graph: {} as any
+					})
+				}
+			});
+			// Empty object has no nodes — should show empty state
+			expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		});
+
+		it('handles graph with pageRanks as null', () => {
+			render(MemoryPage, {
+				props: {
+					data: makePageData({
+						graph: makeGraphState({
+							nodes: {
+								a: { id: 'a', category: 'core', confidence: 0.9, accessCount: 1, createdAt: Date.now() }
+							},
+							edges: [],
+							pageRanks: null as any
+						})
+					})
+				}
+			});
+			// pageRanks ?? {} fallback should handle null — page renders normally
+			expect(screen.getByText('Memory & Knowledge')).toBeInTheDocument();
+		});
+
+		it('does not render BubbleGraph when graph error occurs from malformed data', () => {
+			render(MemoryPage, {
+				props: {
+					data: makePageData({
+						graph: makeGraphState({
+							nodes: { broken: null as any },
+							edges: [{ sourceId: 'a', targetId: 'b', type: 'temporal' as const, weight: 1 }],
+							pageRanks: {}
+						})
+					})
+				}
+			});
+			expect(screen.getByText('Failed to load graph data')).toBeInTheDocument();
+			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
+			expect(screen.queryByText('Loading memory graph...')).not.toBeInTheDocument();
+		});
+	});
+
+	describe('memoryGraphEnabled flag disabled', () => {
+		it('shows disabled message when memoryGraphEnabled is false', () => {
+			render(MemoryPage, {
+				props: {
+					data: makePageData({ memoryGraphEnabled: false, graph: null })
+				}
+			});
+			expect(screen.getByText('Memory graph is disabled. Enable it in settings to visualize relationships.')).toBeInTheDocument();
+			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
+		});
+
+		it('does not render BubbleGraph when memoryGraphEnabled is false even with graph data', () => {
+			render(MemoryPage, {
+				props: {
+					data: makePageData({
+						memoryGraphEnabled: false,
+						graph: makeGraphState({
+							nodes: {
+								a: { id: 'a', category: 'core', confidence: 0.9, accessCount: 2, createdAt: Date.now() }
+							},
+							edges: [],
+							pageRanks: { a: 0.5 }
+						})
+					})
+				}
+			});
+			// Graph disabled message should show, not the graph itself
+			expect(screen.getByText('Memory graph is disabled. Enable it in settings to visualize relationships.')).toBeInTheDocument();
+		});
+
+		it('does not fetch graph data on refresh when memoryGraphEnabled is false', async () => {
+			const fetchMock = vi.fn().mockImplementation((url: string) => {
+				if (url === '/api/memory/context') {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({ context: makeContext(), autoMemory: [] })
+					});
+				}
+				if (url === '/api/memory/graph') {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve(makeGraphState())
+					});
+				}
+				return Promise.resolve({ ok: false, status: 404 });
+			});
+			globalThis.fetch = fetchMock;
+
+			render(MemoryPage, {
+				props: {
+					data: makePageData({ memoryGraphEnabled: false })
+				}
+			});
+
+			const btn = screen.getByText('Refresh');
+			await fireEvent.click(btn);
+
+			await vi.waitFor(() => {
+				expect(screen.getByText('Refresh')).not.toBeDisabled();
+			});
+
+			const graphCalls = fetchMock.mock.calls.filter(
+				(call: unknown[]) => call[0] === '/api/memory/graph'
+			);
+			expect(graphCalls).toHaveLength(0);
+		});
+	});
+
+	describe('graph fetch failure and fallback with retry', () => {
+		it('does not show error banner when graph fetch returns non-ok but context succeeds', async () => {
+			const fetchMock = vi.fn().mockImplementation((url: string) => {
+				if (url === '/api/memory/context') {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({ context: makeContext(), autoMemory: [] })
+					});
+				}
+				if (url === '/api/memory/graph') {
+					return Promise.resolve({ ok: false, status: 502 });
+				}
+				return Promise.resolve({ ok: false, status: 404 });
+			});
+			globalThis.fetch = fetchMock;
+
+			render(MemoryPage, { props: { data: makePageData({ graph: null }) } });
+			await fireEvent.click(screen.getByText('Refresh'));
+			await vi.waitFor(() => {
+				expect(screen.getByText('Refresh')).not.toBeDisabled();
+			});
+			// No error banner shown — graph failure is silent, only context failure triggers error
+			expect(screen.queryByText(/Network error/)).not.toBeInTheDocument();
+			expect(screen.queryByText(/Failed to fetch memory context/)).not.toBeInTheDocument();
+		});
+
+		it('shows graph error fallback when server returns malformed graph data on refresh', async () => {
+			const fetchMock = vi.fn().mockImplementation((url: string) => {
+				if (url === '/api/memory/context') {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({
+							context: makeContext({
+								entries: [
+									{ id: 'e1', summary: 'Test', content: '', category: 'core', confidence: 0.8, pageRank: 0.5, accessCount: 1 }
+								]
+							}),
+							autoMemory: []
+						})
+					});
+				}
+				if (url === '/api/memory/graph') {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({
+							nodes: { broken: null },
+							edges: [],
+							pageRanks: {}
+						})
+					});
+				}
+				return Promise.resolve({ ok: false, status: 404 });
+			});
+			globalThis.fetch = fetchMock;
+
+			render(MemoryPage, { props: { data: makePageData() } });
+			await fireEvent.click(screen.getByText('Refresh'));
+			await vi.waitFor(() => {
+				expect(screen.getByText('Refresh')).not.toBeDisabled();
+			});
+			// Malformed graph data triggers the inline error fallback
+			expect(screen.getByText('Failed to load graph data')).toBeInTheDocument();
+		});
+
+		it('recovers from graph error on retry with valid data', async () => {
+			let callCount = 0;
+			const fetchMock = vi.fn().mockImplementation((url: string) => {
+				if (url === '/api/memory/context') {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({
+							context: makeContext({
+								entries: [
+									{ id: 'a', summary: 'Auth', content: 'JWT', category: 'core', confidence: 0.9, pageRank: 0.5, accessCount: 2 }
+								]
+							}),
+							autoMemory: []
+						})
+					});
+				}
+				if (url === '/api/memory/graph') {
+					callCount++;
+					if (callCount === 1) {
+						// First call: return malformed data
+						return Promise.resolve({
+							ok: true,
+							json: () => Promise.resolve({
+								nodes: { broken: null },
+								edges: [],
+								pageRanks: {}
+							})
+						});
+					}
+					// Second call: return valid data
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve(makeGraphState({
+							nodes: {
+								a: { id: 'a', category: 'core', confidence: 0.9, accessCount: 2, createdAt: Date.now() }
+							},
+							edges: [],
+							pageRanks: { a: 0.5 }
+						}))
+					});
+				}
+				return Promise.resolve({ ok: false, status: 404 });
+			});
+			globalThis.fetch = fetchMock;
+
+			render(MemoryPage, { props: { data: makePageData() } });
+
+			// First refresh — malformed data triggers fallback
+			await fireEvent.click(screen.getByText('Refresh'));
+			await vi.waitFor(() => {
+				expect(screen.getByText('Refresh')).not.toBeDisabled();
+			});
+			expect(screen.getByText('Failed to load graph data')).toBeInTheDocument();
+
+			// Second refresh (retry) — valid data recovers
+			await fireEvent.click(screen.getByText('Refresh'));
+			await vi.waitFor(() => {
+				expect(screen.getByText('Refresh')).not.toBeDisabled();
+			});
+			// Error fallback should be gone after successful retry
+			expect(screen.queryByText('Failed to load graph data')).not.toBeInTheDocument();
+		});
+
+		it('shows error fallback message text from caught exception', () => {
+			render(MemoryPage, {
+				props: {
+					data: makePageData({
+						graph: makeGraphState({
+							nodes: { broken: null as any },
+							edges: [],
+							pageRanks: {}
+						})
+					})
+				}
+			});
+			// The fallback renders both the heading and the error detail
+			expect(screen.getByText('Failed to load graph data')).toBeInTheDocument();
+			// The error detail text should be present (from the caught TypeError)
+			const graphSection = screen.getByText('Failed to load graph data').closest('div');
+			expect(graphSection).toBeInTheDocument();
+		});
+
+		it('renders graph fallback with warning icon when graph processing fails', () => {
+			render(MemoryPage, {
+				props: {
+					data: makePageData({
+						graph: makeGraphState({
+							nodes: { broken: null as any },
+							edges: [],
+							pageRanks: {}
+						})
+					})
+				}
+			});
+			// Fallback container has centered flex layout
+			const fallbackContainer = screen.getByText('Failed to load graph data').closest('div');
+			expect(fallbackContainer).toHaveClass('flex', 'flex-col', 'items-center', 'justify-center');
+		});
+
+		it('shows graph error fallback with Retry button when graph API network-rejects on refresh', async () => {
+			const fetchMock = vi.fn().mockImplementation((url: string) => {
+				if (url === '/api/memory/context') {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({ context: makeContext(), autoMemory: [] })
+					});
+				}
+				if (url === '/api/memory/graph') {
+					return Promise.reject(new Error('Network request failed'));
+				}
+				return Promise.resolve({ ok: false, status: 404 });
+			});
+			globalThis.fetch = fetchMock;
+
+			render(MemoryPage, { props: { data: makePageData({ graph: null }) } });
+			await fireEvent.click(screen.getByText('Refresh'));
+			await vi.waitFor(() => {
+				// Network rejection goes to general error banner, not graph-specific fallback
+				expect(screen.getByText('Network request failed')).toBeInTheDocument();
+			});
+		});
+
+		it('shows graph fallback with Retry when graph API returns non-ok and user can retry successfully', async () => {
+			let graphCallCount = 0;
+			const fetchMock = vi.fn().mockImplementation((url: string) => {
+				if (url === '/api/memory/context') {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({
+							context: makeContext({
+								entries: [{ id: 'e1', summary: 'Test', content: '', category: 'core', confidence: 0.8, pageRank: 0.5, accessCount: 1 }]
+							}),
+							autoMemory: [{ id: 'am1', key: 'k1', summary: 's1', namespace: 'default', content: '', type: 'pattern', createdAt: Date.now(), metadata: {} }]
+						})
+					});
+				}
+				if (url === '/api/memory/graph') {
+					graphCallCount++;
+					if (graphCallCount === 1) {
+						return Promise.resolve({ ok: false, status: 503, statusText: 'Service Unavailable' });
+					}
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve(makeGraphState({
+							nodes: {
+								a: { id: 'a', category: 'core', confidence: 0.9, accessCount: 2, createdAt: Date.now() }
+							},
+							edges: [],
+							pageRanks: { a: 0.5 }
+						}))
+					});
+				}
+				return Promise.resolve({ ok: false, status: 404 });
+			});
+			globalThis.fetch = fetchMock;
+
+			render(MemoryPage, { props: { data: makePageData({ graph: null }) } });
+
+			// First refresh — graph API returns 503
+			await fireEvent.click(screen.getByText('Refresh'));
+			await vi.waitFor(() => {
+				expect(screen.getByText('Refresh')).not.toBeDisabled();
+			});
+			// Graph error fallback should appear with retry button
+			expect(screen.getByText('Failed to load graph data')).toBeInTheDocument();
+			expect(screen.getByText('Retry')).toBeInTheDocument();
+
+			// Click Retry — second call returns valid data
+			await fireEvent.click(screen.getByText('Retry'));
+			await vi.waitFor(() => {
+				expect(screen.queryByText('Failed to load graph data')).not.toBeInTheDocument();
+			});
+			// Graph error should be cleared
+			expect(screen.queryByText('Retry')).not.toBeInTheDocument();
+		});
+
+		it('shows graph fallback with error detail when retryGraphFetch itself rejects', async () => {
+			const fetchMock = vi.fn().mockImplementation((url: string) => {
+				if (url === '/api/memory/context') {
+					return Promise.resolve({
+						ok: true,
+						json: () => Promise.resolve({
+							context: makeContext({
+								entries: [{ id: 'e1', summary: 'Test', content: '', category: 'core', confidence: 0.8, pageRank: 0.5, accessCount: 1 }]
+							}),
+							autoMemory: [{ id: 'am1', key: 'k1', summary: 's1', namespace: 'default', content: '', type: 'pattern', createdAt: Date.now(), metadata: {} }]
+						})
+					});
+				}
+				if (url === '/api/memory/graph') {
+					return Promise.resolve({ ok: false, status: 500, statusText: 'Internal Server Error' });
+				}
+				return Promise.resolve({ ok: false, status: 404 });
+			});
+			globalThis.fetch = fetchMock;
+
+			render(MemoryPage, { props: { data: makePageData({ graph: null }) } });
+			await fireEvent.click(screen.getByText('Refresh'));
+			await vi.waitFor(() => {
+				expect(screen.getByText('Refresh')).not.toBeDisabled();
+			});
+			// Should show graph-specific error with status detail
+			expect(screen.getByText('Failed to load graph data')).toBeInTheDocument();
+			expect(screen.getByText(/Graph API returned 500/)).toBeInTheDocument();
+
+			// Now make retry also fail with a network error
+			fetchMock.mockImplementation((url: string) => {
+				if (url === '/api/memory/graph') {
+					return Promise.reject(new Error('Connection refused'));
+				}
+				return Promise.resolve({ ok: false, status: 404 });
+			});
+
+			await fireEvent.click(screen.getByText('Retry'));
+			await vi.waitFor(() => {
+				expect(screen.getByText('Connection refused')).toBeInTheDocument();
+			});
+			// Fallback still shows with updated error message
+			expect(screen.getByText('Failed to load graph data')).toBeInTheDocument();
+			expect(screen.getByText('Retry')).toBeInTheDocument();
+		});
+
+		it('does not show empty-state message when graph error fallback is active', () => {
+			render(MemoryPage, {
+				props: {
+					data: makePageData({
+						graph: makeGraphState({
+							nodes: { broken: null as any },
+							edges: [],
+							pageRanks: {}
+						})
+					})
+				}
+			});
+			expect(screen.getByText('Failed to load graph data')).toBeInTheDocument();
+			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
+			expect(screen.queryByText('Loading memory graph...')).not.toBeInTheDocument();
+		});
 	});
 
 	it('displays confidence metric from context entries', () => {

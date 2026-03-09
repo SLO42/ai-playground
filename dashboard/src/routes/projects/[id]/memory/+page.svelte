@@ -15,22 +15,69 @@
 		import('$lib/components/BubbleGraph.svelte').then(m => { BubbleGraph = m.default; });
 	});
 
-	// Derive graph nodes from memory entries
+	// Derive graph nodes from memory entries — must produce RankedGraphNode for BubbleGraph
 	const graphNodes = $derived.by(() => {
 		if (!liveGraph?.nodes) return [];
 		const nodes = liveGraph.nodes;
-		const ranks = liveGraph.pageRanks;
-		return (Object.values(nodes) as GraphNode[]).map((node: GraphNode) => ({
-			...node,
-			size: ranks?.[node.id] ? Math.max(8, ranks[node.id] * 100) : 10
-		}));
+		const ranks = liveGraph.pageRanks ?? {};
+		const contextEntries = liveContext?.entries ?? [];
+		return (Object.values(nodes) as GraphNode[]).map((node: GraphNode) => {
+			const contextEntry = contextEntries.find((e: { id: string }) => e.id === node.id);
+			const label = contextEntry?.summary ?? node.id.replace(/[-_]/g, ' ').replace(/\b\w/g, (c: string) => c.toUpperCase());
+			const pageRank = ranks[node.id] ?? 0;
+			return {
+				...node,
+				label,
+				pageRank,
+				size: pageRank > 0 ? Math.max(8, pageRank * 100) : 10
+			};
+		});
 	});
 
 	const graphEdges = $derived<GraphEdge[]>(liveGraph?.edges ?? []);
 
 	let searchQuery = $state('');
 	let loading = $state(false);
+	let graphRefreshing = $state(false);
 	let error = $state<string | null>(data.loadError ?? null);
+	let graphFetchError = $state<string | null>(null);
+
+	// Track whether initial data has been received (for client-side navigation)
+	let initialReady = $state(!!(data.entries?.length || data.graph || data.context));
+
+	// Tab state
+	let activeTab = $state<'overview' | 'entries'>('overview');
+
+	// Entries tab: sort
+	let sortField = $state<'summary' | 'namespace' | 'type' | 'createdAt'>('createdAt');
+	let sortDir = $state<'asc' | 'desc'>('desc');
+
+	function setSort(field: typeof sortField) {
+		if (sortField === field) {
+			sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+		} else {
+			sortField = field;
+			sortDir = field === 'createdAt' ? 'desc' : 'asc';
+		}
+	}
+
+	// Entries tab: filters
+	let filterNamespace = $state<string>('all');
+	let filterType = $state<string>('all');
+
+	const availableNamespaces = $derived.by(() => {
+		const ns = new Set(liveEntries.map((e: AutoMemoryEntry) => e.namespace ?? 'default'));
+		return Array.from(ns).sort();
+	});
+
+	const availableTypes = $derived.by(() => {
+		const types = new Set(liveEntries.map((e: AutoMemoryEntry) => e.type ?? 'unknown'));
+		return Array.from(types).sort();
+	});
+
+	// Entries tab: pagination
+	let currentPage = $state(1);
+	const PAGE_SIZE = 25;
 
 	// Live data that can be refreshed client-side
 	let liveEntries = $state<AutoMemoryEntry[]>(data.entries ?? []);
@@ -41,11 +88,13 @@
 		liveEntries = data.entries ?? [];
 		liveContext = data.context ?? null;
 		liveGraph = data.graph ?? null;
+		initialReady = true;
 	});
 
 	async function refresh() {
 		loading = true;
 		error = null;
+		graphFetchError = null;
 		try {
 			const res = await fetch(`/api/projects/${data.projectId}/memory`);
 			if (!res.ok) throw new Error(`Failed to load memory (${res.status})`);
@@ -123,17 +172,54 @@
 	// Category chart — bar widths relative to max
 	const catMaxCount = $derived(Math.max(1, ...categoryBreakdown.map((c) => c.count)));
 
-	// Filtered entries
-	const filteredEntries = $derived.by(() => {
-		if (!searchQuery.trim()) return liveEntries;
-		const q = searchQuery.toLowerCase();
-		return liveEntries.filter(
-			(e) =>
-				e.key.toLowerCase().includes(q) ||
-				(e.summary ?? '').toLowerCase().includes(q) ||
-				(e.content ?? '').toLowerCase().includes(q) ||
-				(e.namespace ?? '').toLowerCase().includes(q)
-		);
+	// Filtered, sorted, paginated entries
+	const sortedFilteredEntries = $derived.by(() => {
+		let list = liveEntries as AutoMemoryEntry[];
+
+		// Text search
+		if (searchQuery.trim()) {
+			const q = searchQuery.toLowerCase();
+			list = list.filter(
+				(e) =>
+					e.key.toLowerCase().includes(q) ||
+					(e.summary ?? '').toLowerCase().includes(q) ||
+					(e.content ?? '').toLowerCase().includes(q) ||
+					(e.namespace ?? '').toLowerCase().includes(q)
+			);
+		}
+
+		// Namespace filter
+		if (filterNamespace !== 'all') {
+			list = list.filter(e => (e.namespace ?? 'default') === filterNamespace);
+		}
+
+		// Type filter
+		if (filterType !== 'all') {
+			list = list.filter(e => (e.type ?? 'unknown') === filterType);
+		}
+
+		// Sort
+		const dir = sortDir === 'asc' ? 1 : -1;
+		list = [...list].sort((a, b) => {
+			const fieldMap: Record<string, string> = { summary: 'summary', namespace: 'namespace', type: 'type', createdAt: 'createdAt' };
+			const key = fieldMap[sortField] as keyof AutoMemoryEntry;
+			const av = (a[key] as string | number) ?? '';
+			const bv = (b[key] as string | number) ?? '';
+			if (typeof av === 'number' && typeof bv === 'number') return (av - bv) * dir;
+			return String(av).localeCompare(String(bv)) * dir;
+		});
+
+		return list;
+	});
+
+	const filteredEntries = $derived(sortedFilteredEntries);
+	const totalPages = $derived(Math.max(1, Math.ceil(sortedFilteredEntries.length / PAGE_SIZE)));
+	const paginatedEntries = $derived(sortedFilteredEntries.slice((currentPage - 1) * PAGE_SIZE, currentPage * PAGE_SIZE));
+
+	// Reset page when filters change
+	$effect(() => {
+		searchQuery; filterNamespace; filterType; sortField; sortDir;
+		currentPage = 1;
 	});
 
 	// Expanded entries
@@ -159,16 +245,28 @@
 	let graphRefreshTimer = $state<ReturnType<typeof setInterval> | null>(null);
 
 	async function refreshGraph() {
+		graphRefreshing = true;
 		try {
 			const res = await fetch(`/api/projects/${data.projectId}/memory`);
-			if (!res.ok) return;
+			if (!res.ok) {
+				graphFetchError = `Graph API returned ${res.status}: ${res.statusText}`;
+				return;
+			}
 			const body = await res.json();
 			if (body.graph) liveGraph = body.graph;
 			if (body.context) liveContext = body.context;
 			if (body.entries) liveEntries = body.entries;
-		} catch {
-			// Silent fail for background refresh
+			graphFetchError = null;
+		} catch (e) {
+			graphFetchError = e instanceof Error ? e.message : 'Failed to fetch graph data';
+		} finally {
+			graphRefreshing = false;
 		}
+	}
+
+	async function retryGraphFetch() {
+		graphFetchError = null;
+		await refreshGraph();
 	}
 
 	$effect(() => {
@@ -221,12 +319,20 @@
 		</div>
 	{/if}
 
-	<!-- Loading Overlay -->
-	{#if loading}
-		<div class="flex items-center justify-center py-8">
-			<div class="flex flex-col items-center gap-3 text-text-secondary text-sm">
-				<svg class="w-6 h-6 animate-spin text-accent-blue" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
-				<span>Loading memory data...</span>
+	<!-- Loading Overlay — shown during refresh or initial client-side navigation -->
+	{#if loading || !initialReady}
+		<div class="flex items-center justify-center py-12">
+			<div class="flex flex-col items-center gap-4 text-text-secondary text-sm">
+				<div class="relative w-10 h-10">
+					<div class="absolute inset-0 rounded-full border-2 border-border"></div>
+					<div class="absolute inset-0 rounded-full border-2 border-accent-blue border-t-transparent animate-spin"></div>
+				</div>
+				<span>{loading ? 'Refreshing memory data...' : 'Loading memory data...'}</span>
+				<div class="flex gap-1.5 mt-1">
+					<div class="w-1.5 h-1.5 rounded-full bg-accent-blue/60 animate-pulse"></div>
+					<div class="w-1.5 h-1.5 rounded-full bg-accent-blue/40 animate-pulse" style="animation-delay: 150ms"></div>
+					<div class="w-1.5 h-1.5 rounded-full bg-accent-blue/20 animate-pulse" style="animation-delay: 300ms"></div>
+				</div>
 			</div>
 		</div>
 	{/if}
@@ -244,7 +350,7 @@
 				Try Again
 			</button>
 		</div>
-	{:else if !loading && totalNodes === 0 && !error}
+	{:else if !loading && initialReady && totalNodes === 0 && !error}
 		<!-- Empty State -->
 		<div class="bg-bg-secondary border border-border rounded-lg p-12 text-center">
 			<svg class="w-10 h-10 mx-auto text-text-secondary/40 mb-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5"><path stroke-linecap="round" stroke-linejoin="round" d="M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125" /></svg>
@@ -252,6 +358,26 @@
 			<p class="text-text-secondary text-sm">Memory entries will appear here as the project stores patterns, decisions, and context.</p>
 		</div>
 	{:else}
+
+	<!-- Tab Bar -->
+	<div class="flex items-center gap-1 border-b border-border">
+		<button
+			onclick={() => (activeTab = 'overview')}
+			class="px-4 py-2 text-sm font-medium border-b-2 transition-colors {activeTab === 'overview' ? 'border-accent-cyan text-accent-cyan' : 'border-transparent text-text-secondary hover:text-text-primary'}"
+		>
+			Overview
+		</button>
+		<button
+			onclick={() => (activeTab = 'entries')}
+			class="px-4 py-2 text-sm font-medium border-b-2 transition-colors {activeTab === 'entries' ? 'border-accent-cyan text-accent-cyan' : 'border-transparent text-text-secondary hover:text-text-primary'}"
+		>
+			Entries
+			<span class="ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-bg-tertiary text-text-secondary font-mono">{liveEntries.length}</span>
+		</button>
+	</div>
+
+	<!-- ═══ OVERVIEW TAB ═══ -->
+	{#if activeTab === 'overview'}
 
 	<!-- Summary Metrics -->
 	<div class="grid grid-cols-2 md:grid-cols-5 gap-4">
@@ -263,17 +389,38 @@
 	</div>
 
 	<!-- Memory Graph (lazy-loaded) -->
-	<div class="bg-bg-secondary border border-border rounded-lg p-4">
-		<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">Memory Graph</h2>
-		{#if graphNodes.length > 0 && BubbleGraph}
-			<BubbleGraph nodes={graphNodes} edges={graphEdges} />
-		{:else if graphNodes.length > 0}
-			<div class="flex items-center justify-center py-12 text-text-secondary text-sm">
-				<p>Loading graph...</p>
-			</div>
-		{:else if data.memoryGraphEnabled === false}
+	<div class="bg-bg-secondary border border-border rounded-lg p-4 relative">
+		<div class="flex items-center gap-2 mb-3">
+			<h2 class="text-xs text-text-secondary uppercase tracking-wider">Memory Graph</h2>
+			{#if graphRefreshing}
+				<div class="w-3 h-3 rounded-full border border-accent-blue/40 border-t-accent-blue animate-spin"></div>
+			{/if}
+		</div>
+		{#if data.memoryGraphEnabled === false}
 			<div class="flex items-center justify-center py-12 text-text-secondary text-sm">
 				<p>Memory graph is disabled. Enable it in settings to visualize relationships.</p>
+			</div>
+		{:else if graphFetchError}
+			<div class="h-48 flex flex-col items-center justify-center gap-2" role="alert">
+				<svg class="w-5 h-5 text-accent-yellow" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M12 9v2m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" /></svg>
+				<p class="text-text-secondary text-sm">Failed to load graph data</p>
+				<p class="text-text-secondary text-xs max-w-md text-center">{graphFetchError}</p>
+				<button
+					onclick={retryGraphFetch}
+					disabled={graphRefreshing}
+					class="mt-1 flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium rounded border border-border bg-bg-tertiary text-text-primary hover:bg-bg-primary transition-colors disabled:opacity-50"
+					aria-label="Retry loading memory graph"
+				>
+					<svg class="w-3 h-3 {graphRefreshing ? 'animate-spin' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
+					{graphRefreshing ? 'Retrying...' : 'Retry'}
+				</button>
+			</div>
+		{:else if graphNodes.length > 0 && BubbleGraph}
+			<BubbleGraph nodes={graphNodes} edges={graphEdges} />
+		{:else if graphNodes.length > 0 || graphRefreshing}
+			<div class="flex flex-col items-center justify-center py-12 gap-3 text-text-secondary text-sm">
+				<div class="w-8 h-8 rounded-full border-2 border-border border-t-accent-cyan animate-spin"></div>
+				<p>Loading graph visualization...</p>
 			</div>
 		{:else}
 			<div class="flex items-center justify-center py-12 text-text-secondary text-sm">
@@ -331,16 +478,6 @@
 		</div>
 	</div>
 
-	<!-- Search -->
-	<div class="flex gap-2">
-		<input
-			type="text"
-			placeholder="Search memory entries..."
-			bind:value={searchQuery}
-			class="flex-1 bg-bg-secondary border border-border rounded-lg px-4 py-2 text-sm text-text-primary placeholder:text-text-secondary focus:outline-none focus:border-accent-blue"
-		/>
-	</div>
-
 	<!-- Namespaces Grid -->
 	<div>
 		<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">Namespaces</h2>
@@ -364,47 +501,6 @@
 		{/if}
 	</div>
 
-	<!-- Memory Entries -->
-	<div>
-		<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">
-			Memory Entries
-			{#if searchQuery.trim()}
-				<span class="text-accent-blue">({filteredEntries.length} of {liveEntries.length})</span>
-			{/if}
-		</h2>
-		<div class="bg-bg-secondary border border-border rounded-lg overflow-hidden">
-			{#each filteredEntries as entry}
-				<button
-					onclick={() => toggleExpand(entry.key)}
-					class="w-full flex items-start gap-3 px-4 py-3 border-b border-border last:border-0 hover:bg-bg-tertiary/30 transition-colors text-left"
-				>
-					<svg class="w-3 h-3 mt-1 text-text-secondary flex-shrink-0 transition-transform {expandedKeys.has(entry.key) ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" /></svg>
-					<div class="min-w-0 flex-1">
-						<div class="flex items-center gap-2 mb-0.5">
-							<span class="text-sm text-text-primary font-medium truncate">{entry.summary || entry.key}</span>
-							<span class="text-[10px] px-1.5 py-0.5 rounded font-mono {nsBadgeColors[entry.namespace] ?? nsBadgeColors['default']}">{entry.namespace ?? 'default'}</span>
-							{#if entry.type}
-								<span class="text-[10px] px-1.5 py-0.5 bg-bg-tertiary text-text-secondary rounded">{entry.type}</span>
-							{/if}
-						</div>
-						<span class="text-[10px] font-mono text-text-secondary">{entry.key}</span>
-						{#if expandedKeys.has(entry.key)}
-							<div class="mt-2 bg-bg-primary border border-border rounded p-3 text-xs text-text-primary font-mono whitespace-pre-wrap max-h-48 overflow-y-auto">
-								{entry.content || 'No content'}
-							</div>
-						{/if}
-					</div>
-				</button>
-			{:else}
-				<div class="px-4 py-8 text-center">
-					<p class="text-text-secondary text-sm">
-						{searchQuery.trim() ? 'No entries match your search' : 'No memory entries yet'}
-					</p>
-				</div>
-			{/each}
-		</div>
-	</div>
-
 	<!-- Context Entries -->
 	{#if (liveContext?.entries ?? []).length > 0}
 		<div>
@@ -421,6 +517,138 @@
 				{/each}
 			</div>
 		</div>
+	{/if}
+
+	{/if}
+
+	<!-- ═══ ENTRIES TAB ═══ -->
+	{#if activeTab === 'entries'}
+
+	<section>
+		<!-- Toolbar: Search, Filters -->
+		<div class="flex flex-wrap items-center gap-3 mb-4">
+			<div class="relative flex-1 min-w-[200px]">
+				<svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-secondary" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><circle cx="11" cy="11" r="8" /><path d="m21 21-4.35-4.35" /></svg>
+				<input
+					type="text"
+					bind:value={searchQuery}
+					placeholder="Search memories..."
+					class="w-full pl-8 pr-3 py-1.5 text-xs bg-bg-primary border border-border rounded text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent-cyan/50"
+				/>
+			</div>
+			<select
+				bind:value={filterNamespace}
+				class="text-xs bg-bg-primary border border-border rounded px-2 py-1.5 text-text-primary focus:outline-none focus:border-accent-cyan/50"
+			>
+				<option value="all">All namespaces</option>
+				{#each availableNamespaces as ns}
+					<option value={ns}>{ns}</option>
+				{/each}
+			</select>
+			<select
+				bind:value={filterType}
+				class="text-xs bg-bg-primary border border-border rounded px-2 py-1.5 text-text-primary focus:outline-none focus:border-accent-cyan/50"
+			>
+				<option value="all">All types</option>
+				{#each availableTypes as t}
+					<option value={t}>{t}</option>
+				{/each}
+			</select>
+		</div>
+
+		<!-- Results count -->
+		<div class="flex items-center justify-between mb-2">
+			<span class="text-xs text-text-secondary">{sortedFilteredEntries.length} of {liveEntries.length} entries</span>
+			<span class="text-xs text-text-secondary">Page {currentPage} of {totalPages}</span>
+		</div>
+
+		<!-- Table -->
+		<div class="bg-bg-secondary border border-border rounded-lg overflow-hidden">
+			<!-- Header -->
+			<div class="grid grid-cols-[1fr_8rem_6rem_7rem] items-center px-4 py-2 bg-bg-tertiary/50 border-b border-border text-[10px] uppercase tracking-wider text-text-secondary font-medium">
+				<button onclick={() => setSort('summary')} class="text-left hover:text-text-primary transition-colors flex items-center gap-1">
+					Summary
+					{#if sortField === 'summary'}<span class="text-accent-cyan">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
+				</button>
+				<button onclick={() => setSort('namespace')} class="text-left hover:text-text-primary transition-colors flex items-center gap-1">
+					Namespace
+					{#if sortField === 'namespace'}<span class="text-accent-cyan">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
+				</button>
+				<button onclick={() => setSort('type')} class="text-left hover:text-text-primary transition-colors flex items-center gap-1">
+					Type
+					{#if sortField === 'type'}<span class="text-accent-cyan">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
+				</button>
+				<button onclick={() => setSort('createdAt')} class="text-left hover:text-text-primary transition-colors flex items-center gap-1">
+					Created
+					{#if sortField === 'createdAt'}<span class="text-accent-cyan">{sortDir === 'asc' ? '↑' : '↓'}</span>{/if}
+				</button>
+			</div>
+
+			<!-- Rows -->
+			{#each paginatedEntries as entry (entry.id)}
+				<div class="border-b border-border last:border-0">
+					<button
+						onclick={() => toggleExpand(entry.key)}
+						class="w-full grid grid-cols-[1fr_8rem_6rem_7rem] items-center px-4 py-2.5 hover:bg-bg-tertiary/30 transition-colors text-left"
+					>
+						<div class="flex items-center gap-2 truncate min-w-0">
+							<svg class="w-3 h-3 text-text-secondary flex-shrink-0 transition-transform {expandedKeys.has(entry.key) ? 'rotate-90' : ''}" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M9 5l7 7-7 7" /></svg>
+							<span class="text-xs text-text-primary truncate">{entry.summary || entry.key}</span>
+						</div>
+						<span class="text-[10px] px-1.5 py-0.5 rounded font-mono truncate {nsBadgeColors[entry.namespace] ?? nsBadgeColors['default']}">{entry.namespace ?? 'default'}</span>
+						<span class="text-[10px] text-text-secondary">{entry.type ?? 'unknown'}</span>
+						<span class="text-[10px] text-text-secondary font-mono">{entry.createdAt ? new Date(entry.createdAt).toLocaleDateString() : 'N/A'}</span>
+					</button>
+					{#if expandedKeys.has(entry.key)}
+						<div class="px-10 pb-3">
+							<span class="text-[10px] font-mono text-text-secondary">{entry.key}</span>
+							<div class="mt-2 bg-bg-primary border border-border rounded p-3 text-xs text-text-primary font-mono whitespace-pre-wrap max-h-48 overflow-y-auto">
+								{entry.content || 'No content'}
+							</div>
+						</div>
+					{/if}
+				</div>
+			{:else}
+				<div class="px-4 py-8 text-center">
+					<p class="text-text-secondary text-sm">{searchQuery.trim() || filterNamespace !== 'all' || filterType !== 'all' ? 'No entries match your filters' : 'No memory entries yet'}</p>
+				</div>
+			{/each}
+		</div>
+
+		<!-- Pagination -->
+		{#if totalPages > 1}
+			<div class="flex items-center justify-center gap-2 mt-4">
+				<button
+					onclick={() => (currentPage = Math.max(1, currentPage - 1))}
+					disabled={currentPage <= 1}
+					class="px-2.5 py-1 text-xs rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-30"
+				>
+					Prev
+				</button>
+				{#each Array.from({ length: Math.min(totalPages, 7) }, (_, i) => {
+					if (totalPages <= 7) return i + 1;
+					if (currentPage <= 4) return i + 1;
+					if (currentPage >= totalPages - 3) return totalPages - 6 + i;
+					return currentPage - 3 + i;
+				}) as page}
+					<button
+						onclick={() => (currentPage = page)}
+						class="w-7 h-7 text-xs rounded border transition-colors {page === currentPage ? 'border-accent-cyan bg-accent-cyan/10 text-accent-cyan' : 'border-border bg-bg-secondary text-text-secondary hover:bg-bg-tertiary'}"
+					>
+						{page}
+					</button>
+				{/each}
+				<button
+					onclick={() => (currentPage = Math.min(totalPages, currentPage + 1))}
+					disabled={currentPage >= totalPages}
+					class="px-2.5 py-1 text-xs rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-30"
+				>
+					Next
+				</button>
+			</div>
+		{/if}
+	</section>
+
 	{/if}
 
 	{/if}

@@ -19,6 +19,33 @@
 	let poolAction = $state('');
 	let poolSlots = $state<Array<{ slotId: string; model: string; area: string; status: string; taskCount: number }>>(data.poolSlots ?? []);
 
+	// Add panel search/filter
+	let agentSearch = $state('');
+	let agentTypeFilter = $state('all');
+
+	let availableTypes = $derived(() => {
+		const types = new Set<string>();
+		for (const a of data.availableAgents) types.add(a.type);
+		return [...types].sort();
+	});
+
+	let filteredAvailableAgents = $derived(() => {
+		let agents = data.availableAgents as Array<{ filename: string; name: string; type: string; description?: string }>;
+		if (agentTypeFilter !== 'all') {
+			agents = agents.filter(a => a.type === agentTypeFilter);
+		}
+		if (agentSearch.trim()) {
+			const q = agentSearch.toLowerCase().trim();
+			agents = agents.filter(a =>
+				a.name.toLowerCase().includes(q) ||
+				a.type.toLowerCase().includes(q) ||
+				(a.description ?? '').toLowerCase().includes(q) ||
+				a.filename.toLowerCase().includes(q)
+			);
+		}
+		return agents;
+	});
+
 	// Lazy-load the heavy AgentGrid component
 	let AgentGrid = $state<typeof import('$lib/components/AgentGrid.svelte').default | null>(null);
 	onMount(() => {
@@ -44,66 +71,47 @@
 		stopped: 'bg-accent-red'
 	};
 
-	// Recommended agent templates for project-specific agent creation
-	const agentTemplates = [
-		{
-			id: 'coder',
-			name: 'Code Agent',
-			type: 'coder',
-			description: 'Writes and refactors code, implements features, fixes bugs',
-			workflow: 'Receives task → reads codebase → implements changes → runs build → commits',
-			value: 'Handles the bulk of implementation work autonomously',
-			when: 'Any code change, feature implementation, or bug fix'
-		},
-		{
-			id: 'reviewer',
-			name: 'Code Reviewer',
-			type: 'reviewer',
-			description: 'Reviews code changes for quality, security, and correctness',
-			workflow: 'Reads diffs → checks patterns → flags issues → suggests improvements',
-			value: 'Catches bugs, security issues, and quality problems before merge',
-			when: 'After code agents complete work, or on PR review'
-		},
-		{
-			id: 'tester',
-			name: 'Test Agent',
-			type: 'tester',
-			description: 'Writes and runs tests, validates functionality',
-			workflow: 'Reads code → writes unit/integration tests → runs test suite → reports coverage',
-			value: 'Ensures code correctness and prevents regressions',
-			when: 'After new features, after bug fixes, or on test coverage gaps'
-		},
-		{
-			id: 'documenter',
-			name: 'Documentation Agent',
-			type: 'documenter',
-			description: 'Updates docs, API contracts, and architecture notes',
-			workflow: 'Reads recent changes → updates relevant docs → verifies build',
-			value: 'Keeps documentation in sync with code changes',
-			when: 'After multi-file features, API changes, or architecture changes'
-		},
-		{
-			id: 'security',
-			name: 'Security Auditor',
-			type: 'security',
-			description: 'Scans for vulnerabilities, credential leaks, and OWASP issues',
-			workflow: 'Scans codebase → checks dependencies → reports vulnerabilities',
-			value: 'Proactive security scanning prevents vulnerabilities from shipping',
-			when: 'On new endpoints, auth changes, or dependency updates'
-		},
-		{
-			id: 'researcher',
-			name: 'Research Agent',
-			type: 'researcher',
-			description: 'Investigates approaches, reads docs, evaluates options',
-			workflow: 'Reads requirements → researches approaches → summarizes findings',
-			value: 'Provides informed recommendations before implementation begins',
-			when: 'Architecture decisions, new library evaluation, unfamiliar domains'
+	// Category metadata — explains what each agent type does and when to use it
+	const categoryInfo: Record<string, { label: string; description: string; when: string; priority: number }> = {
+		coder: { label: 'Coders', description: 'Write code, implement features, fix bugs', when: 'Any code change or feature work', priority: 1 },
+		reviewer: { label: 'Reviewers', description: 'Review code for quality, security, and correctness', when: 'After code changes, PR review', priority: 2 },
+		tester: { label: 'Testers', description: 'Write and run tests, validate functionality', when: 'After features, bug fixes, coverage gaps', priority: 3 },
+		security: { label: 'Security', description: 'Scan for vulnerabilities, credential leaks, OWASP issues', when: 'New endpoints, auth changes, dependency updates', priority: 4 },
+		documenter: { label: 'Documenters', description: 'Update docs, API contracts, architecture notes', when: 'Multi-file features, API changes', priority: 5 },
+		researcher: { label: 'Researchers', description: 'Investigate approaches, evaluate options', when: 'Architecture decisions, unfamiliar domains', priority: 6 },
+		planner: { label: 'Planners', description: 'Break down work, create task plans', when: 'Complex features, sprint planning', priority: 7 }
+	};
+
+	// Group available agents by type, sorted by priority
+	type AgentEntry = { filename: string; name: string; type: string; description?: string };
+	let guideCategories = $derived(() => {
+		const groups = new Map<string, AgentEntry[]>();
+		for (const agent of data.availableAgents as AgentEntry[]) {
+			const list = groups.get(agent.type) ?? [];
+			list.push(agent);
+			groups.set(agent.type, list);
 		}
-	];
+		return [...groups.entries()]
+			.map(([type, agents]) => ({
+				type,
+				info: categoryInfo[type] ?? { label: type, description: '', when: '', priority: 99 },
+				agents
+			}))
+			.sort((a, b) => a.info.priority - b.info.priority);
+	});
 
 	let showTemplates = $state(false);
 	let expandedTemplate = $state<string | null>(null);
+	let suggesting = $state(false);
+	let suggestLoading = $state(false);
+	let suggestions = $state<Array<{ type: string; name: string; filename: string; description?: string; reason: string; priority: number }>>([]);
+	let missingTypes = $state<Array<{ type: string; reason: string; suggestedName: string; suggestedDescription: string }>>([]);
+	let suggestionReason = $state('');
+	let projectProfile = $state<Record<string, unknown> | null>(null);
+
+	// Agent creation
+	let creating = $state(false);
+	let createSuccess = $state<string | null>(null);
 
 	function getProjectId(): string {
 		return $page.params.id;
@@ -192,6 +200,156 @@
 		}
 	}
 
+	async function suggestAgents() {
+		suggestLoading = true;
+		suggesting = true;
+		error = null;
+		suggestions = [];
+		missingTypes = [];
+		projectProfile = null;
+
+		try {
+			const res = await fetch(`/api/projects/${getProjectId()}/agents`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: 'suggest' })
+			});
+			const body = await res.json();
+			if (!res.ok) {
+				error = body?.error ?? `Failed to analyze project (${res.status})`;
+				return;
+			}
+
+			suggestions = body.suggestions ?? [];
+			missingTypes = body.missingTypes ?? [];
+			projectProfile = body.projectProfile ?? null;
+
+			if (suggestions.length === 0) {
+				suggestionReason = 'No matching agents found for this project. Try adding agents to the global pool first.';
+			} else {
+				const typeSummary = suggestions.reduce((acc: Record<string, number>, s: { type: string }) => {
+					acc[s.type] = (acc[s.type] ?? 0) + 1;
+					return acc;
+				}, {} as Record<string, number>);
+				const parts = Object.entries(typeSummary).map(([t, n]) => `${n} ${t}${n > 1 ? 's' : ''}`);
+				suggestionReason = `Based on project analysis: ${parts.join(', ')}`;
+			}
+		} catch {
+			error = 'Network error — could not analyze project.';
+		} finally {
+			suggestLoading = false;
+		}
+	}
+
+	async function applySuggestions() {
+		const toAdd = suggestions.filter(s => s.filename).map(s => s.filename!);
+		if (toAdd.length === 0) {
+			error = 'No agents to add.';
+			return;
+		}
+
+		loading = true;
+		error = null;
+		try {
+			const res = await fetch(`/api/projects/${getProjectId()}/agents`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ agents: toAdd })
+			});
+			if (res.ok) {
+				suggestions = [];
+				suggesting = false;
+				await invalidateAll();
+			} else {
+				const body = await res.json().catch(() => null);
+				error = body?.error ?? `Failed to add agents (${res.status})`;
+			}
+		} catch {
+			error = 'Network error — could not add agents.';
+		} finally {
+			loading = false;
+		}
+	}
+
+	async function designAgentWithAI(mt: { type: string; suggestedName: string; suggestedDescription: string }) {
+		creating = true;
+		error = null;
+		try {
+			const res = await fetch(`/api/projects/${getProjectId()}/agents`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					action: 'design-agent',
+					type: mt.type,
+					name: mt.suggestedName,
+					description: mt.suggestedDescription,
+					language: projectProfile?.language ?? '',
+					framework: projectProfile?.framework ?? ''
+				})
+			});
+			const body = await res.json();
+			if (!res.ok) {
+				error = body?.error ?? 'Failed to spawn agent designer';
+				return;
+			}
+			// Navigate to the chat session to watch Claude Code work
+			goto(`/chat?session=${body.sessionId}`);
+		} catch {
+			error = 'Network error — could not spawn agent designer.';
+		} finally {
+			creating = false;
+		}
+	}
+
+	async function quickCreateAgent(mt: { type: string; suggestedName: string; suggestedDescription: string }) {
+		creating = true;
+		error = null;
+		createSuccess = null;
+		try {
+			// Generate the markdown server-side
+			const genRes = await fetch(`/api/projects/${getProjectId()}/agents`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					action: 'generate-agent',
+					type: mt.type,
+					name: mt.suggestedName,
+					description: mt.suggestedDescription,
+					language: projectProfile?.language ?? '',
+					framework: projectProfile?.framework ?? ''
+				})
+			});
+			const genBody = await genRes.json();
+			if (!genRes.ok) {
+				error = genBody?.error ?? 'Failed to generate agent';
+				return;
+			}
+
+			// Create the file
+			const createRes = await fetch(`/api/projects/${getProjectId()}/agents`, {
+				method: 'PUT',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					action: 'create-agent',
+					filename: genBody.filename,
+					markdown: genBody.markdown
+				})
+			});
+			const createBody = await createRes.json();
+			if (!createRes.ok) {
+				error = createBody?.error ?? 'Failed to create agent';
+				return;
+			}
+			createSuccess = genBody.filename;
+			missingTypes = missingTypes.filter(m => m.suggestedName !== mt.suggestedName);
+			await invalidateAll();
+		} catch {
+			error = 'Network error — could not create agent.';
+		} finally {
+			creating = false;
+		}
+	}
+
 	async function resetPool() {
 		if (!confirm('Reset this project\'s session pool? All project sessions will be removed.')) return;
 		poolAction = 'resetting';
@@ -239,6 +397,13 @@
 			</p>
 		</div>
 		<div class="flex gap-2">
+			<button
+				onclick={() => { if (suggesting) { suggesting = false; suggestions = []; missingTypes = []; projectProfile = null; } else { suggestAgents(); showTemplates = false; showAddPanel = false; } }}
+				disabled={suggestLoading}
+				class="px-4 py-2 text-sm border border-accent-green/50 text-accent-green rounded-lg hover:bg-accent-green/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+			>
+				{suggestLoading ? 'Analyzing...' : suggesting ? 'Hide Suggestions' : 'Suggest Agents'}
+			</button>
 			<button
 				onclick={() => { showTemplates = !showTemplates; showAddPanel = false; }}
 				class="px-4 py-2 text-sm border border-accent-purple/50 text-accent-purple rounded-lg hover:bg-accent-purple/10 transition-colors"
@@ -309,6 +474,136 @@
 		</div>
 	</div>
 
+	<!-- Suggestions Panel -->
+	{#if suggesting}
+		<section aria-label="Agent suggestions" class="bg-bg-secondary border border-accent-green/30 rounded-lg p-4 space-y-3">
+			<div class="flex items-center justify-between">
+				<div>
+					<h2 class="text-sm font-bold text-text-primary">
+						{suggestLoading ? 'Analyzing Project...' : 'Recommended Agents'}
+					</h2>
+					{#if !suggestLoading}
+						<p class="text-xs text-text-secondary mt-0.5">{suggestionReason}</p>
+					{/if}
+				</div>
+				{#if suggestions.length > 0 && !suggestLoading}
+					<button
+						onclick={applySuggestions}
+						disabled={loading}
+						class="px-3 py-1.5 text-xs bg-accent-green text-white rounded hover:bg-accent-green/90 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+					>
+						{loading ? 'Adding...' : `Add All ${suggestions.length} Agents`}
+					</button>
+				{/if}
+			</div>
+
+			{#if suggestLoading}
+				<div class="flex items-center gap-2 py-4 justify-center text-text-secondary text-sm">
+					<svg class="animate-spin h-4 w-4" viewBox="0 0 24 24" fill="none">
+						<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+						<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+					</svg>
+					Scanning project files, dependencies, and structure...
+				</div>
+			{/if}
+
+			<!-- Project Profile -->
+			{#if projectProfile && !suggestLoading}
+				<div class="flex flex-wrap gap-2 text-[10px]">
+					{#if projectProfile.language}
+						<span class="px-2 py-0.5 rounded bg-accent-blue/15 text-accent-blue">{projectProfile.language}</span>
+					{/if}
+					{#if projectProfile.framework}
+						<span class="px-2 py-0.5 rounded bg-accent-purple/15 text-accent-purple">{projectProfile.framework}</span>
+					{/if}
+					<span class="px-2 py-0.5 rounded {projectProfile.hasTests ? 'bg-accent-green/15 text-accent-green' : 'bg-accent-yellow/15 text-accent-yellow'}">
+						{projectProfile.hasTests ? 'Tests configured' : 'No tests detected'}
+					</span>
+					<span class="px-2 py-0.5 rounded {projectProfile.hasCi ? 'bg-accent-green/15 text-accent-green' : 'bg-accent-yellow/15 text-accent-yellow'}">
+						{projectProfile.hasCi ? 'CI/CD found' : 'No CI/CD'}
+					</span>
+					<span class="px-2 py-0.5 rounded {projectProfile.hasDocs ? 'bg-accent-green/15 text-accent-green' : 'bg-accent-yellow/15 text-accent-yellow'}">
+						{projectProfile.hasDocs ? 'Docs exist' : 'No docs'}
+					</span>
+					{#if projectProfile.dependencyCount}
+						<span class="px-2 py-0.5 rounded bg-bg-tertiary text-text-secondary">{projectProfile.dependencyCount} deps</span>
+					{/if}
+					{#if projectProfile.serviceCount}
+						<span class="px-2 py-0.5 rounded bg-bg-tertiary text-text-secondary">{projectProfile.serviceCount} service{projectProfile.serviceCount !== 1 ? 's' : ''}</span>
+					{/if}
+				</div>
+			{/if}
+
+			<!-- Suggestion Cards -->
+			{#if suggestions.length > 0 && !suggestLoading}
+				<div class="space-y-2">
+					{#each suggestions as suggestion, i}
+						<div class="flex items-start gap-3 p-2.5 bg-bg-primary rounded border border-accent-green/20">
+							<span class="text-sm text-text-secondary font-mono w-5 text-center mt-0.5">{i + 1}</span>
+							<span class="text-[10px] px-1.5 py-0.5 rounded font-mono shrink-0 mt-0.5 {typeColors[suggestion.type] ?? typeColors.general}">{suggestion.type}</span>
+							<div class="min-w-0 flex-1">
+								<span class="text-sm font-medium text-text-primary">{suggestion.name}</span>
+								<p class="text-xs text-accent-green mt-0.5">{suggestion.reason}</p>
+								{#if suggestion.description}
+									<p class="text-xs text-text-secondary mt-0.5 truncate">{suggestion.description}</p>
+								{/if}
+								<p class="text-[10px] text-text-secondary/50 font-mono truncate mt-0.5">{suggestion.filename}</p>
+							</div>
+						</div>
+					{/each}
+				</div>
+			{/if}
+
+			<!-- Missing Types — agents that should exist but don't -->
+			{#if missingTypes.length > 0 && !suggestLoading}
+				<div class="border-t border-border pt-3 mt-1">
+					<h3 class="text-xs font-bold text-accent-yellow mb-2">Agents to Create</h3>
+					<p class="text-[10px] text-text-secondary mb-2">
+						These agent types would help this project but don't exist in the pool yet. Click "Design" to preview and create them.
+					</p>
+					<div class="space-y-2">
+						{#each missingTypes as mt}
+							<div class="flex items-start gap-3 p-2.5 bg-bg-primary rounded border border-accent-yellow/20">
+								<span class="text-[10px] px-1.5 py-0.5 rounded font-mono shrink-0 mt-0.5 bg-accent-yellow/20 text-accent-yellow">{mt.type}</span>
+								<div class="min-w-0 flex-1">
+									<span class="text-sm font-medium text-text-primary">{mt.suggestedName}</span>
+									<p class="text-xs text-accent-yellow mt-0.5">{mt.reason}</p>
+									<p class="text-xs text-text-secondary mt-0.5">{mt.suggestedDescription}</p>
+								</div>
+								<div class="flex gap-1 shrink-0 mt-0.5">
+									<button
+										onclick={() => designAgentWithAI(mt)}
+										class="px-2.5 py-1 text-[10px] font-medium bg-accent-cyan/20 text-accent-cyan rounded hover:bg-accent-cyan/30 transition-colors"
+										title="Open Claude Code chat with agent-creator skill"
+									>
+										Design with AI
+									</button>
+									<button
+										onclick={() => quickCreateAgent(mt)}
+										disabled={creating}
+										class="px-2.5 py-1 text-[10px] font-medium bg-accent-yellow/20 text-accent-yellow rounded hover:bg-accent-yellow/30 transition-colors disabled:opacity-50"
+										title="Create from template instantly"
+									>
+										{creating ? '...' : 'Quick Create'}
+									</button>
+								</div>
+							</div>
+						{/each}
+					</div>
+				</div>
+			{/if}
+
+			<!-- Create Success -->
+			{#if createSuccess}
+				<div class="flex items-center gap-2 px-3 py-2 bg-accent-green/10 border border-accent-green/30 rounded text-xs text-accent-green">
+					Agent created and associated: <span class="font-mono">{createSuccess}</span>
+					<button onclick={() => createSuccess = null} class="ml-auto text-accent-green/60 hover:text-accent-green">dismiss</button>
+				</div>
+			{/if}
+
+		</section>
+	{/if}
+
 	<!-- Claw Monitor -->
 	<section aria-label="Claw Monitor" class="bg-bg-secondary border border-accent-cyan/30 rounded-lg p-4">
 		<div class="flex items-center justify-between">
@@ -328,49 +623,65 @@
 		</div>
 	</section>
 
-	<!-- Agent Guide / Templates -->
+	<!-- Agent Guide — real agents grouped by category -->
 	{#if showTemplates}
-		<section aria-label="Agent templates" class="bg-bg-secondary border border-accent-purple/30 rounded-lg p-4 space-y-3">
-			<div>
-				<h2 class="text-sm font-bold text-text-primary">Agent Guide</h2>
-				<p class="text-xs text-text-secondary mt-0.5">
-					Recommended agent types for this project. Add agents from the global pool, then spawn them.
-					You can add the same type multiple times for parallel work.
-				</p>
+		<section aria-label="Agent guide" class="bg-bg-secondary border border-accent-purple/30 rounded-lg p-4 space-y-3">
+			<div class="flex items-center justify-between">
+				<div>
+					<h2 class="text-sm font-bold text-text-primary">Agent Guide</h2>
+					<p class="text-xs text-text-secondary mt-0.5">
+						{data.availableAgents.length} agents available, grouped by role. Click a category to see agents, then add them directly.
+					</p>
+				</div>
 			</div>
-			<div class="space-y-2">
-				{#each agentTemplates as tmpl}
-					<button
-						onclick={() => expandedTemplate = expandedTemplate === tmpl.id ? null : tmpl.id}
-						class="w-full text-left"
-					>
-						<div class="p-3 rounded-lg border border-border bg-bg-primary hover:border-accent-purple/40 transition-colors">
-							<div class="flex items-center gap-3">
-								<span class="text-[10px] px-1.5 py-0.5 rounded font-mono shrink-0 {typeColors[tmpl.type] ?? typeColors.general}">{tmpl.type}</span>
-								<span class="text-sm font-medium text-text-primary">{tmpl.name}</span>
-								<span class="text-xs text-text-secondary flex-1 truncate">{tmpl.description}</span>
-								<span class="text-text-secondary text-xs">{expandedTemplate === tmpl.id ? '▲' : '▼'}</span>
-							</div>
-							{#if expandedTemplate === tmpl.id}
-								<div class="mt-3 pt-3 border-t border-border grid grid-cols-1 md:grid-cols-3 gap-3 text-xs">
-									<div>
-										<span class="text-text-secondary uppercase tracking-wider text-[10px]">Workflow</span>
-										<p class="text-text-primary mt-1">{tmpl.workflow}</p>
-									</div>
-									<div>
-										<span class="text-text-secondary uppercase tracking-wider text-[10px]">Value</span>
-										<p class="text-accent-green mt-1">{tmpl.value}</p>
-									</div>
-									<div>
-										<span class="text-text-secondary uppercase tracking-wider text-[10px]">When to Use</span>
-										<p class="text-text-primary mt-1">{tmpl.when}</p>
-									</div>
+			{#if guideCategories().length === 0}
+				<p class="text-xs text-text-secondary text-center py-3">All agents are already associated with this project.</p>
+			{:else}
+				<div class="space-y-2">
+					{#each guideCategories() as category}
+						<button
+							onclick={() => expandedTemplate = expandedTemplate === category.type ? null : category.type}
+							class="w-full text-left"
+						>
+							<div class="p-3 rounded-lg border border-border bg-bg-primary hover:border-accent-purple/40 transition-colors">
+								<div class="flex items-center gap-3">
+									<span class="text-[10px] px-1.5 py-0.5 rounded font-mono shrink-0 {typeColors[category.type] ?? typeColors.general}">{category.type}</span>
+									<span class="text-sm font-medium text-text-primary">{category.info.label}</span>
+									<span class="text-xs text-text-secondary flex-1 truncate">{category.info.description}</span>
+									<span class="text-[10px] text-text-secondary font-mono">{category.agents.length}</span>
+									<span class="text-text-secondary text-xs">{expandedTemplate === category.type ? '▲' : '▼'}</span>
 								</div>
-							{/if}
-						</div>
-					</button>
-				{/each}
-			</div>
+								{#if category.info.when}
+									<p class="text-[10px] text-text-secondary mt-1 ml-[4.5rem]">When: {category.info.when}</p>
+								{/if}
+							</div>
+						</button>
+						{#if expandedTemplate === category.type}
+							<div class="ml-4 space-y-1">
+								{#each category.agents as agent}
+									<div class="flex items-center gap-3 p-2 bg-bg-primary rounded border border-border/50">
+										<div class="min-w-0 flex-1">
+											<div class="flex items-center gap-2">
+												<span class="text-sm font-medium text-text-primary">{agent.name}</span>
+											</div>
+											{#if agent.description}
+												<p class="text-xs text-text-secondary truncate mt-0.5">{agent.description}</p>
+											{/if}
+											<p class="text-[10px] text-text-secondary/50 font-mono truncate">{agent.filename}</p>
+										</div>
+										<button
+											onclick={(e) => { e.stopPropagation(); const s = new Set(selectedAgents); s.add(agent.filename); selectedAgents = s; showAddPanel = true; showTemplates = false; }}
+											class="px-2 py-1 text-[10px] font-medium border border-accent-blue/40 text-accent-blue rounded hover:bg-accent-blue/10 transition-colors shrink-0"
+										>
+											+ Add
+										</button>
+									</div>
+								{/each}
+							</div>
+						{/if}
+					{/each}
+				</div>
+			{/if}
 		</section>
 	{/if}
 
@@ -426,7 +737,7 @@
 				<div>
 					<h2 class="text-sm font-bold text-text-primary">Select agents to add</h2>
 					<p class="text-xs text-text-secondary mt-0.5">
-						Pick from the global agent pool. You can add the same type multiple times to run parallel instances.
+						{data.availableAgents.length} agents in global pool — search or filter by type
 					</p>
 				</div>
 				<button
@@ -437,9 +748,46 @@
 					Add {selectedAgents.size} Agent{selectedAgents.size !== 1 ? 's' : ''}
 				</button>
 			</div>
+
 			{#if data.availableAgents.length > 0}
+				<!-- Search + Type Filter -->
+				<div class="flex flex-col sm:flex-row gap-2">
+					<div class="relative flex-1">
+						<svg class="absolute left-2.5 top-1/2 -translate-y-1/2 w-3.5 h-3.5 text-text-secondary pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+							<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z" />
+						</svg>
+						<input
+							type="text"
+							bind:value={agentSearch}
+							placeholder="Search agents..."
+							class="w-full pl-8 pr-3 py-1.5 text-sm bg-bg-primary border border-border rounded-lg text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent-blue"
+						/>
+					</div>
+					<div class="flex gap-1 flex-wrap">
+						<button
+							onclick={() => agentTypeFilter = 'all'}
+							class="px-2 py-1 text-[10px] font-medium rounded transition-colors {agentTypeFilter === 'all' ? 'bg-accent-blue/20 text-accent-blue' : 'bg-bg-primary text-text-secondary hover:text-text-primary'}"
+						>All</button>
+						{#each availableTypes() as type}
+							<button
+								onclick={() => agentTypeFilter = type}
+								class="px-2 py-1 text-[10px] font-medium rounded transition-colors {agentTypeFilter === type ? typeColors[type] ?? 'bg-bg-primary text-text-primary' : 'bg-bg-primary text-text-secondary hover:text-text-primary'}"
+							>{type}</button>
+						{/each}
+					</div>
+				</div>
+
+				<!-- Results count -->
+				<div class="text-[10px] text-text-secondary">
+					{filteredAvailableAgents().length} of {data.availableAgents.length} agents
+					{#if selectedAgents.size > 0}
+						<span class="text-accent-blue ml-1">· {selectedAgents.size} selected</span>
+					{/if}
+				</div>
+
+				<!-- Agent List -->
 				<div role="listbox" aria-label="Available agents" aria-multiselectable="true" class="grid grid-cols-1 md:grid-cols-2 gap-2 max-h-80 overflow-y-auto">
-					{#each data.availableAgents as agent}
+					{#each filteredAvailableAgents() as agent (agent.filename)}
 						<button
 							role="option"
 							aria-selected={selectedAgents.has(agent.filename)}
@@ -463,6 +811,12 @@
 						</button>
 					{/each}
 				</div>
+
+				{#if filteredAvailableAgents().length === 0}
+					<p class="text-text-secondary text-xs text-center py-3">
+						No agents match "{agentSearch || agentTypeFilter}" — try a different search or filter
+					</p>
+				{/if}
 			{:else}
 				<p class="text-text-secondary text-sm text-center py-4">All agents are already associated with this project.</p>
 			{/if}
@@ -484,8 +838,15 @@
 			/>
 			{#if data.agents.length === 0}
 				<div class="text-center py-6">
-					<p class="text-text-secondary text-sm mb-3">No agents associated yet. Add agents from the global pool to get started.</p>
+					<p class="text-text-secondary text-sm mb-3">No agents associated yet. Add agents from the global pool or let Claw suggest the best combination.</p>
 					<div class="flex justify-center gap-2">
+						<button
+							onclick={() => { suggestAgents(); showTemplates = false; showAddPanel = false; }}
+							disabled={suggestLoading}
+							class="px-4 py-2 text-xs border border-accent-green/50 text-accent-green rounded-lg hover:bg-accent-green/10 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+						>
+							{suggestLoading ? 'Analyzing...' : 'Suggest Agents'}
+						</button>
 						<button
 							onclick={() => { showTemplates = true; showAddPanel = false; }}
 							class="px-4 py-2 text-xs border border-accent-purple/50 text-accent-purple rounded-lg hover:bg-accent-purple/10 transition-colors"

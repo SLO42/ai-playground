@@ -19,6 +19,7 @@
 		sessionId: string;
 		model: string;
 		area: string;
+		projectId?: string;
 		createdAt: string;
 		lastUsedAt: string;
 		taskCount: number;
@@ -108,7 +109,7 @@
 		};
 		byModel: Record<string, AnalyticsModelStat>;
 		byRoute: {
-			openclaw: { count: number; escalated: number; completedLocally: number; totalCost: number };
+			openclaw: { count: number; escalated: number; completedLocally: number; contextGathered: number; totalCost: number };
 			claudeCode: { count: number; sonnet: number; opus: number; totalCost: number };
 		};
 		escalationRate: number;
@@ -138,6 +139,7 @@
 		analytics: AgentAnalytics;
 		poolStats: PoolStats;
 		activeAgents: ActiveAgent[];
+		agentProjectMap: Record<string, string[]>;
 	}
 
 	let { data }: { data: PageData } = $props();
@@ -147,26 +149,43 @@
 	let loading = $state(false);
 	let error = $state('');
 
+	interface ActiveProcess {
+		id: string;
+		type: 'agent' | 'chat' | 'pool';
+		label: string;
+		status: string;
+		provider?: string;
+		model?: string;
+		projectId?: string;
+		pid?: number;
+		startedAt?: string;
+		sessionId?: string;
+	}
+
 	// Live-polling state
 	let liveActive = $state<ActiveAgent[]>(data.activeAgents);
 	let livePool = $state<PoolStats>(data.poolStats);
 	let analytics = $state<AgentAnalytics>(data.analytics);
+	let liveProcesses = $state<ActiveProcess[]>([]);
 	let pollTimer: ReturnType<typeof setInterval> | null = null;
 
 	async function pollActivity() {
 		try {
-			const [activeRes, poolRes, analyticsRes] = await Promise.all([
+			const [activeRes, poolRes, analyticsRes, processesRes] = await Promise.all([
 				apiFetch('/api/agents/active', { signal: AbortSignal.timeout(5000) }),
 				apiFetch('/api/agents/pool', { signal: AbortSignal.timeout(5000) }),
-				apiFetch('/api/agents/analytics', { signal: AbortSignal.timeout(5000) })
+				apiFetch('/api/agents/analytics', { signal: AbortSignal.timeout(5000) }),
+				apiFetch('/api/sessions/active', { signal: AbortSignal.timeout(5000) })
 			]);
 			if (activeRes.ok) { const body = await activeRes.json(); liveActive = body.agents; }
 			if (poolRes.ok) livePool = await poolRes.json();
 			if (analyticsRes.ok) analytics = await analyticsRes.json();
+			if (processesRes.ok) { const body = await processesRes.json(); liveProcesses = body.processes; }
 		} catch { /* keep last */ }
 	}
 
 	onMount(() => {
+		pollActivity(); // initial fetch
 		pollTimer = setInterval(pollActivity, 10_000);
 	});
 	onDestroy(() => {
@@ -175,6 +194,30 @@
 
 	// Session Pool actions
 	let poolAction = $state('');
+	let cancellingId = $state<string | null>(null);
+
+	async function cancelProcess(id: string) {
+		if (!confirm(`Cancel process "${id}"?`)) return;
+		cancellingId = id;
+		try {
+			const res = await apiFetch('/api/sessions/active', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: 'cancel', id })
+			});
+			const body = await res.json();
+			if (body.ok) {
+				liveProcesses = liveProcesses.filter(p => p.id !== id);
+				await pollActivity();
+			} else {
+				error = body.error ?? 'Cancel failed';
+			}
+		} catch {
+			error = 'Network error — cancel failed';
+		} finally {
+			cancellingId = null;
+		}
+	}
 
 	async function populatePool() {
 		poolAction = 'populating';
@@ -253,6 +296,9 @@
 		}
 		return counts;
 	});
+
+	const unassignedSlots = $derived(livePool.slots.filter(s => !s.projectId && !s.slotId.startsWith('auto-')).length);
+	const sharedSlots = $derived(livePool.slots.filter(s => !s.projectId && s.slotId.startsWith('auto-')).length);
 
 	const modelColors: Record<string, string> = {
 		opus: 'bg-accent-purple',
@@ -420,6 +466,9 @@
 		model_selected: 'text-accent-cyan',
 		spawned: 'text-accent-green',
 		handoff: 'text-accent-yellow',
+		context_gathering: 'text-accent-cyan',
+		context_gathered: 'text-accent-cyan',
+		learning_extracted: 'text-accent-purple',
 		completed: 'text-accent-green',
 		failed: 'text-accent-red',
 		committed: 'text-accent-purple',
@@ -433,6 +482,9 @@
 		model_selected: '◈',
 		spawned: '▶',
 		handoff: '⇄',
+		context_gathering: '⊙',
+		context_gathered: '⊚',
+		learning_extracted: '◎',
 		completed: '✓',
 		failed: '✕',
 		committed: '⊛',
@@ -446,6 +498,9 @@
 		model_selected: 'Model Selected',
 		spawned: 'Agent Spawned',
 		handoff: 'Handoff',
+		context_gathering: 'Context Gathering',
+		context_gathered: 'Context Ready',
+		learning_extracted: 'Learning Extracted',
 		completed: 'Completed',
 		failed: 'Failed',
 		committed: 'Committed',
@@ -643,6 +698,76 @@
 		</section>
 	{/if}
 
+	<!-- Active Sessions (unified view) -->
+	{#if liveProcesses.length > 0}
+		<section>
+			<div class="flex items-center justify-between mb-3">
+				<div>
+					<h2 class="type-section-title text-text-primary">Active Sessions</h2>
+					<p class="text-xs text-text-secondary mt-0.5">{liveProcesses.length} active process{liveProcesses.length !== 1 ? 'es' : ''} across all providers</p>
+				</div>
+			</div>
+			<div class="overflow-x-auto">
+				<table class="w-full text-xs">
+					<thead>
+						<tr class="border-b border-border text-text-secondary text-left">
+							<th class="py-2 pr-3 font-medium">Status</th>
+							<th class="py-2 pr-3 font-medium">Type</th>
+							<th class="py-2 pr-3 font-medium">Label</th>
+							<th class="py-2 pr-3 font-medium">Project</th>
+							<th class="py-2 pr-3 font-medium">Provider / Model</th>
+							<th class="py-2 pr-3 font-medium">PID</th>
+							<th class="py-2 pr-3 font-medium">Running</th>
+							<th class="py-2 font-medium">Actions</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each liveProcesses as proc (proc.id)}
+							<tr class="border-b border-border/50 hover:bg-bg-secondary/50">
+								<td class="py-2 pr-3">
+									<span class="inline-flex items-center gap-1.5">
+										<span class="w-1.5 h-1.5 rounded-full {proc.status === 'running' || proc.status === 'active' || proc.status === 'streaming' ? 'bg-accent-green animate-pulse' : proc.status === 'paused' ? 'bg-accent-yellow' : 'bg-text-secondary'}"></span>
+										<span class="font-mono">{proc.status}</span>
+									</span>
+								</td>
+								<td class="py-2 pr-3">
+									<span class="px-1.5 py-0.5 rounded text-[10px] font-medium {proc.type === 'agent' ? 'bg-accent-purple/15 text-accent-purple' : proc.type === 'chat' ? 'bg-accent-cyan/15 text-accent-cyan' : 'bg-accent-yellow/15 text-accent-yellow'}">{proc.type}</span>
+								</td>
+								<td class="py-2 pr-3 text-text-primary max-w-[200px] truncate" title={proc.label}>{proc.label}</td>
+								<td class="py-2 pr-3">
+									{#if proc.projectId}
+										<a href="/projects/{proc.projectId}/agents" class="px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent-blue/10 text-accent-blue border border-accent-blue/20 hover:bg-accent-blue/20 transition-colors">{proc.projectId}</a>
+									{:else}
+										<span class="text-text-secondary">—</span>
+									{/if}
+								</td>
+								<td class="py-2 pr-3 font-mono text-text-secondary">
+									{proc.provider ?? ''}{proc.model ? ` / ${proc.model.split('-').slice(-2, -1)[0] ?? proc.model}` : ''}
+								</td>
+								<td class="py-2 pr-3 font-mono text-text-secondary">{proc.pid ?? '—'}</td>
+								<td class="py-2 pr-3 font-mono text-text-secondary">{proc.startedAt ? runningFor(proc.startedAt) : '—'}</td>
+								<td class="py-2">
+									<div class="flex items-center gap-2">
+										{#if proc.sessionId}
+											<a href="/chat?session={proc.sessionId}" class="text-accent-cyan hover:underline">monitor</a>
+										{/if}
+										<button
+											onclick={() => cancelProcess(proc.id)}
+											disabled={cancellingId === proc.id}
+											class="text-accent-red hover:underline disabled:opacity-50"
+										>
+											{cancellingId === proc.id ? '...' : 'cancel'}
+										</button>
+									</div>
+								</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			</div>
+		</section>
+	{/if}
+
 	<!-- Session Pool -->
 	<section>
 		<div class="flex items-center justify-between mb-3">
@@ -698,23 +823,40 @@
 				</div>
 			</div>
 
+			{#if unassignedSlots > 0}
+				<div class="mb-4 flex items-center gap-2 px-3 py-2 rounded-lg bg-accent-yellow/10 border border-accent-yellow/20 text-xs text-accent-yellow">
+					<span>{unassignedSlots} slot{unassignedSlots !== 1 ? 's' : ''} not assigned to any project.</span>
+					<span class="text-text-secondary">Reset and re-spawn to assign slots based on project settings.</span>
+				</div>
+			{/if}
+			{#if sharedSlots > 0 && unassignedSlots === 0}
+				<div class="mb-4 flex items-center gap-2 px-3 py-2 rounded-lg bg-accent-cyan/5 border border-accent-cyan/15 text-xs text-text-secondary">
+					<span>{sharedSlots} shared overflow slot{sharedSlots !== 1 ? 's' : ''} — auto-scaled for burst capacity, assigned to a project when used by a task.</span>
+				</div>
+			{/if}
+
 			<!-- Session cards -->
 			<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
 				{#each livePool.slots as slot (slot.slotId)}
 					{@const model = slotModel(slot.model)}
-					{@const projectMatch = slot.area.match(/^projects\/([^/]+)/)}
-					{@const projectId = projectMatch?.[1] ?? null}
+					{@const projectId = slot.projectId ?? null}
 					<div class="bg-bg-secondary border border-border rounded-lg p-3 hover:border-{model === 'opus' ? 'accent-purple' : model === 'sonnet' ? 'accent-cyan' : model === 'haiku' ? 'accent-yellow' : 'accent-green'}/40 transition-colors">
 						<div class="flex items-center gap-2 mb-2">
 							<span class="w-2 h-2 rounded-full {slotStatusColors[slot.status]}"></span>
 							<span class="text-xs font-mono text-text-primary truncate">{slot.slotId}</span>
 							<span class="ml-auto text-[10px] px-1.5 py-0.5 rounded-full {slot.status === 'active' ? 'bg-accent-cyan/15 text-accent-cyan' : 'bg-bg-tertiary text-text-secondary'}">{slot.status}</span>
 						</div>
-						{#if projectId}
-							<a href="/projects/{projectId}/agents" class="inline-flex items-center gap-1 mb-2 px-2 py-0.5 rounded text-[10px] font-medium bg-accent-blue/10 text-accent-blue border border-accent-blue/20 hover:bg-accent-blue/20 transition-colors truncate max-w-full">
-								<span class="truncate">{projectId}</span>
-							</a>
-						{/if}
+						<div class="mb-2">
+							{#if projectId}
+								<a href="/projects/{projectId}/agents" class="inline-flex items-center gap-1 px-2 py-0.5 rounded text-[10px] font-medium bg-accent-blue/10 text-accent-blue border border-accent-blue/20 hover:bg-accent-blue/20 transition-colors truncate max-w-full">
+									{projectId}
+								</a>
+							{:else if slot.slotId.startsWith('auto-')}
+								<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-accent-cyan/10 text-accent-cyan border border-accent-cyan/20" title="Auto-scaled overflow slot — assigned to a project when a task uses it">Shared (overflow)</span>
+							{:else}
+								<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-medium bg-bg-tertiary text-text-secondary border border-border">Unassigned</span>
+							{/if}
+						</div>
 						<div class="space-y-1 text-[11px]">
 							<div class="flex justify-between">
 								<span class="text-text-secondary">Model</span>
@@ -763,7 +905,7 @@
 		{:else}
 			<div class="bg-bg-secondary border border-border/50 border-dashed rounded-lg p-8 text-center">
 				<p class="text-sm text-text-secondary mb-2">No sessions in pool</p>
-				<p class="text-xs text-text-secondary/70 mb-4">Click "Spawn Pool" to create sessions from config/agent-pool.yaml</p>
+				<p class="text-xs text-text-secondary/70 mb-4">Click "Spawn Pool" to create project-assigned sessions (respects per-project agent limits)</p>
 			</div>
 		{/if}
 	</section>
@@ -782,7 +924,7 @@
 					<div class="bg-bg-tertiary rounded-lg px-3 py-2 border border-accent-green/30">
 						<div class="text-accent-green text-xs">OpenClaw (local)</div>
 						<div class="font-mono text-text-primary">{analytics.byRoute.openclaw.count}
-							<span class="text-xs text-text-secondary">({analytics.byRoute.openclaw.completedLocally} local, {analytics.byRoute.openclaw.escalated} escalated)</span>
+							<span class="text-xs text-text-secondary">({analytics.byRoute.openclaw.completedLocally} local, {analytics.byRoute.openclaw.escalated} escalated{analytics.byRoute.openclaw.contextGathered > 0 ? `, ${analytics.byRoute.openclaw.contextGathered} context-first` : ''})</span>
 						</div>
 					</div>
 					<span class="text-text-secondary">&rarr;</span>
@@ -985,6 +1127,15 @@
 													{#if event.handoffReason}
 														<span class="text-text-secondary ml-1">— {event.handoffReason}</span>
 													{/if}
+												{:else if event.type === 'context_gathering'}
+													<span class="text-accent-cyan">OpenClaw scoping</span> project for <span class="text-text-primary">{event.taskTitle}</span>
+												{:else if event.type === 'context_gathered'}
+													<span class="text-accent-cyan">Context ready</span>
+													{#if event.contextLength}
+														<span class="font-mono text-text-primary ml-1">{(event.contextLength / 1000).toFixed(1)}K chars</span>
+													{/if}
+												{:else if event.type === 'learning_extracted'}
+													<span class="text-accent-purple">Learnings stored</span> from <span class="text-text-primary">{event.provider}</span>
 												{:else if event.type === 'completed' || event.type === 'failed'}
 													{#if event.durationMs != null}
 														<span class="font-mono text-text-primary">{(event.durationMs / 1000).toFixed(0)}s</span>
@@ -1214,6 +1365,7 @@
 					</h3>
 					<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
 						{#each agents as agent (agent.filename)}
+							{@const projects = data.agentProjectMap[agent.filename] ?? []}
 							<div class="bg-bg-secondary border border-border rounded-lg p-4 hover:border-accent-blue/30 transition-colors group">
 								<div class="flex items-start justify-between gap-2 mb-2">
 									<a href="/agents/{agent.filename}" class="type-card-title text-text-primary group-hover:text-accent-blue transition-colors">
@@ -1224,6 +1376,15 @@
 								<p class="text-xs text-text-secondary leading-relaxed line-clamp-2 mb-2">
 									{agent.description}
 								</p>
+								{#if projects.length > 0}
+									<div class="flex flex-wrap gap-1 mb-2">
+										{#each projects as projId}
+											<a href="/projects/{projId}/agents" class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent-blue/10 text-accent-blue border border-accent-blue/20 hover:bg-accent-blue/20 transition-colors truncate max-w-[120px]" title="Project: {projId}">
+												{projId}
+											</a>
+										{/each}
+									</div>
+								{/if}
 								<div class="flex items-center justify-between mb-3">
 									<p class="text-[10px] font-mono text-text-secondary truncate" title={agent.filename}>
 										{agent.filename}

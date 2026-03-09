@@ -12,16 +12,20 @@ import { PATHS } from '../constants.js';
 // ── Event types ──────────────────────────────────────────────────────
 
 export type AgentEventType =
-	| 'classified'        // task routed to openclaw or claude-code
-	| 'escalation_check'  // shouldEscalate result
-	| 'model_selected'    // pickModelForTask picked sonnet/opus
-	| 'spawned'           // agent process started
-	| 'handoff'           // escalated from one provider to another
-	| 'completed'         // agent finished successfully
-	| 'failed'            // agent failed or exited non-zero
-	| 'committed'         // agent changes committed to git
-	| 'follow_up_spawned' // documenter or memory agent spawned
-	| 'follow_up_done';   // follow-up agent completed
+	| 'classified'          // task routed to openclaw, openclaw-context, or claude-code
+	| 'escalation_check'    // shouldEscalate result
+	| 'model_selected'      // pickModelForTask picked sonnet/opus
+	| 'spawned'             // agent process started
+	| 'handoff'             // escalated from one provider to another
+	| 'context_gathering'   // OpenClaw starting context/project scoping
+	| 'context_gathered'    // OpenClaw context ready for Claude Code
+	| 'learning_extracted'  // OpenClaw extracted learnings after task completion
+	| 'completed'           // agent finished successfully
+	| 'failed'              // agent failed or exited non-zero
+	| 'committed'           // agent changes committed to git
+	| 'follow_up_spawned'   // documenter or memory agent spawned
+	| 'follow_up_done'      // follow-up agent completed
+	| 'test_run';           // post-commit test suite executed
 
 export interface AgentEvent {
 	id: string;
@@ -34,7 +38,7 @@ export interface AgentEvent {
 	projectId?: string;
 
 	// Classification
-	route?: 'openclaw' | 'claude-code';
+	route?: 'openclaw' | 'openclaw-context' | 'claude-code';
 	escalated?: boolean;
 	escalationReason?: string;
 
@@ -72,6 +76,10 @@ export interface AgentEvent {
 	followUpType?: 'documenter' | 'memory';
 	followUpReason?: string;
 	parentTaskId?: string;
+
+	// Context gathering (OpenClaw)
+	contextLength?: number;
+	learningData?: string;
 }
 
 // ── Aggregated analytics ─────────────────────────────────────────────
@@ -101,7 +109,7 @@ export interface AgentAnalytics {
 		totalOutput: number;
 	}>;
 	byRoute: {
-		openclaw: { count: number; escalated: number; completedLocally: number; totalCost: number };
+		openclaw: { count: number; escalated: number; completedLocally: number; contextGathered: number; totalCost: number };
 		claudeCode: { count: number; sonnet: number; opus: number; totalCost: number };
 	};
 	escalationRate: number;
@@ -123,16 +131,20 @@ export interface AgentAnalytics {
 const ANALYTICS_PATH = resolve(PATHS.root, '.playground/agent-analytics.json');
 const MAX_EVENTS = 2000;
 
-let eventCache: AgentEvent[] | null = null;
+// Use globalThis so HMR reloads share the same cache instead of duplicating it
+const _g = globalThis as Record<string, unknown>;
+let eventCache: AgentEvent[] | null = (_g.__claw_analytics_cache as AgentEvent[] | null) ?? null;
 
 async function loadEvents(): Promise<AgentEvent[]> {
 	if (eventCache) return eventCache;
 	try {
 		const raw = await readFile(ANALYTICS_PATH, 'utf-8');
 		eventCache = JSON.parse(raw) as AgentEvent[];
+		_g.__claw_analytics_cache = eventCache;
 		return eventCache;
 	} catch {
 		eventCache = [];
+		_g.__claw_analytics_cache = eventCache;
 		return eventCache;
 	}
 }
@@ -140,6 +152,7 @@ async function loadEvents(): Promise<AgentEvent[]> {
 async function saveEvents(events: AgentEvent[]): Promise<void> {
 	const trimmed = events.length > MAX_EVENTS ? events.slice(-MAX_EVENTS) : events;
 	eventCache = trimmed;
+	_g.__claw_analytics_cache = trimmed;
 	try {
 		await mkdir(dirname(ANALYTICS_PATH), { recursive: true });
 		await writeFile(ANALYTICS_PATH, JSON.stringify(trimmed, null, '\t'), 'utf-8');
@@ -218,11 +231,16 @@ export async function getAgentAnalytics(): Promise<AgentAnalytics> {
 	}
 
 	// Route stats from classification events
+	let contextGatheredCount = 0;
 	const classEvents = events.filter(e => e.type === 'classified');
 	for (const e of classEvents) {
-		if (e.route === 'openclaw') openclawCount++;
+		if (e.route === 'openclaw' || e.route === 'openclaw-context') openclawCount++;
 		else ccCount++;
 	}
+
+	// Count context gathering events
+	const contextEvents = events.filter(e => e.type === 'context_gathered');
+	contextGatheredCount = contextEvents.length;
 
 	const escalationEvents = events.filter(e => e.type === 'escalation_check');
 	for (const e of escalationEvents) {
@@ -299,7 +317,7 @@ export async function getAgentAnalytics(): Promise<AgentAnalytics> {
 		},
 		byModel,
 		byRoute: {
-			openclaw: { count: openclawCount, escalated: openclawEscalated, completedLocally: openclawLocal, totalCost: openclawCost },
+			openclaw: { count: openclawCount, escalated: openclawEscalated, completedLocally: openclawLocal, contextGathered: contextGatheredCount, totalCost: openclawCost },
 			claudeCode: { count: ccCount, sonnet: ccSonnet, opus: ccOpus, totalCost: ccCost }
 		},
 		escalationRate,

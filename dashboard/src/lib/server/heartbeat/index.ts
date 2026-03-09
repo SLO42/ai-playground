@@ -7,7 +7,7 @@ import { resolve } from 'path';
 import { SERVICES, PATHS } from '../constants.js';
 import { isOllamaOnline } from '../ollama-client.js';
 import { pushNotification, loadSettings } from '../notifications.js';
-import { getAllTasks, migrateIfNeeded, updateTask } from '../task-store.js';
+import { getAllTasks, migrateIfNeeded, updateTask, getBlockedStatus } from '../task-store.js';
 import { scanAllProjects, detectProjectMeta } from '../project-scanner.js';
 import { loadAgentDefaults } from '../agent-defaults.js';
 import {
@@ -29,6 +29,7 @@ import type { TaskRoute } from './openclaw-agent.js';
 import { recordEvent } from './agent-analytics.js';
 import { resolveSession, registerSession, releaseSession, autoScale, watchForSessionId, loadPersistedAutoScaleConfig } from './session-pool.js';
 import { commitAgentChanges, planFollowUps, spawnFollowUp } from './post-task.js';
+import { runPostCommitTests } from './post-test.js';
 import { reapStaleProcesses, registerPid, unregisterPid } from './pid-registry.js';
 import { processSuggestions, suggestTasks } from '../task-suggestions.js';
 import { syncMemoryBridge } from '../memory-bridge.js';
@@ -91,12 +92,13 @@ interface TaskScanResult {
 	clawAssigned: Task[];
 	unassignedPending: Task[];
 	flaggedForDiscussion: Task[];
+	blocked: Task[];
 }
 
 async function scanTasks(): Promise<TaskScanResult> {
 	const result: TaskScanResult = {
 		total: 0, pending: 0, inProgress: 0, completed: 0,
-		clawAssigned: [], unassignedPending: [], flaggedForDiscussion: []
+		clawAssigned: [], unassignedPending: [], flaggedForDiscussion: [], blocked: []
 	};
 
 	try {
@@ -135,6 +137,15 @@ async function scanTasks(): Promise<TaskScanResult> {
 			if (task.status === 'pending') result.pending++;
 			else if (task.status === 'in_progress') result.inProgress++;
 			else if (task.status === 'completed') result.completed++;
+
+			// Skip blocked tasks — they can't be worked yet
+			if (task.status === 'pending' && task.blockedBy?.length) {
+				const { blocked, blockers } = getBlockedStatus(task.id, allTasks);
+				if (blocked) {
+					result.blocked.push(task);
+					continue;
+				}
+			}
 
 			if (task.flagDiscussion && task.status === 'pending') {
 				result.flaggedForDiscussion.push(task);
@@ -367,6 +378,9 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 					}
 
 					await saveMonitorSession(ms);
+
+					// Fire-and-forget: run post-commit tests (non-blocking)
+					runPostCommitTests(task, commitResult).catch(() => {});
 				})().catch(() => {});
 			}
 
@@ -473,6 +487,12 @@ async function heartbeat() {
 	const taskScan = await scanTasks();
 	log(session, `[tasks] ${taskScan.total} total — ${taskScan.pending} pending, ${taskScan.inProgress} in progress, ${taskScan.completed} completed`);
 
+	if (taskScan.blocked.length > 0) {
+		for (const t of taskScan.blocked) {
+			const depCount = t.blockedBy?.length ?? 0;
+			log(session, `[skip] Task "${t.title}" blocked by ${depCount} incomplete task(s)`);
+		}
+	}
 	if (taskScan.clawAssigned.length > 0) {
 		log(session, `[tasks] ${taskScan.clawAssigned.length} task(s) assigned to Claw: ${taskScan.clawAssigned.map((t) => `${t.title}${t._sourceProjectId ? ` [${t._sourceProjectId}]` : ''}`).join(', ')}`);
 	}

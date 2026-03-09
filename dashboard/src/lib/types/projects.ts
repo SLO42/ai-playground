@@ -97,6 +97,16 @@ export interface PlaygroundStats {
 	totalAgentSpawns?: number;
 }
 
+/** Template metadata for project creation UI */
+export interface ProjectTemplate {
+	id: string;
+	name: string;
+	description: string;
+	language: string;
+	icon: string;
+	tags: string[];
+}
+
 /** What lives in `.playground/registry.json` */
 export interface ProjectRegistry {
 	version: number;

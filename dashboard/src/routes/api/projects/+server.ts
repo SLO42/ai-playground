@@ -191,6 +191,49 @@ const TEMPLATES: Record<string, (name: string, description: string) => Record<st
 		'.mcp.json': JSON.stringify({ mcpServers: {} }, null, '\t'),
 		'.env.example': 'ANTHROPIC_API_KEY=\n',
 		'.gitignore': 'node_modules/\ndist/\n.env\n.playground/\n'
+	}),
+	go: (name, description) => ({
+		'CLAUDE.md': `# ${name}\n\n${description || 'Go project.'}\n\n## Build & Run\n\`\`\`bash\ngo build -o ${name} .\ngo run .\ngo test ./...\n\`\`\`\n`,
+		'main.go': `package main\n\nimport "fmt"\n\nfunc main() {\n\tfmt.Println("Hello from ${name}")\n}\n`,
+		'main_test.go': `package main\n\nimport "testing"\n\nfunc TestMain(t *testing.T) {\n\t// placeholder test\n\tif false {\n\t\tt.Fatal("unreachable")\n\t}\n}\n`,
+		'go.mod': `module ${name}\n\ngo 1.22\n`,
+		'README.md': `# ${name}\n\n${description || 'A Go project.'}\n\n## Getting Started\n\n\`\`\`bash\ngo run .\n\`\`\`\n`,
+		'.gitignore': `# Binaries\n${name}\n*.exe\n*.exe~\n*.dll\n*.so\n*.dylib\n\n# Test binary\n*.test\n\n# Output\n*.out\n\n# Dependency directories\nvendor/\n\n# IDE\n.idea/\n.vscode/\n\n# Project\n.env\n.playground/\n`
+	}),
+	rust: (name, description) => ({
+		'CLAUDE.md': `# ${name}\n\n${description || 'Rust project.'}\n\n## Build & Run\n\`\`\`bash\ncargo build\ncargo run\ncargo test\n\`\`\`\n`,
+		'Cargo.toml': `[package]\nname = "${name}"\nversion = "0.1.0"\nedition = "2021"\ndescription = "${description || ''}"\n\n[dependencies]\n`,
+		'src/main.rs': `fn main() {\n    println!("Hello from ${name}");\n}\n\n#[cfg(test)]\nmod tests {\n    #[test]\n    fn it_works() {\n        assert_eq!(2 + 2, 4);\n    }\n}\n`,
+		'.gitignore': `# Generated files\n/target/\n\n# Cargo.lock for binaries\n# Cargo.lock\n\n# IDE\n.idea/\n.vscode/\n*.swp\n\n# Project\n.env\n.playground/\n`
+	}),
+	'python-cli': (name, description) => ({
+		'CLAUDE.md': `# ${name}\n\n${description || 'Python project.'}\n\n## Setup & Run\n\`\`\`bash\npython -m venv .venv\nsource .venv/bin/activate  # or .venv\\\\Scripts\\\\activate on Windows\npip install -e ".[dev]"\npython main.py\npytest\n\`\`\`\n`,
+		'pyproject.toml': `[project]\nname = "${name}"\nversion = "0.1.0"\ndescription = "${description || ''}"\nrequires-python = ">=3.11"\ndependencies = []\n\n[project.optional-dependencies]\ndev = ["pytest>=8.0"]\n\n[build-system]\nrequires = ["hatchling"]\nbuild-backend = "hatchling.build"\n`,
+		'main.py': `\"\"\"${name} — ${description || 'A Python application.'}\"\"\"\n\n\ndef greet(name: str = "World") -> str:\n    \"\"\"Return a greeting string.\"\"\"\n    return f"Hello, {name}!"\n\n\ndef main() -> None:\n    print(greet())\n\n\nif __name__ == "__main__":\n    main()\n`,
+		'requirements.txt': `# Pin your production dependencies here\n# Or use: pip install -e .\n`,
+		'tests/__init__.py': '',
+		'tests/test_main.py': `from main import greet\n\n\ndef test_greet_default():\n    assert greet() == "Hello, World!"\n\n\ndef test_greet_custom():\n    assert greet("Python") == "Hello, Python!"\n`,
+		'.gitignore': `# Byte-compiled\n__pycache__/\n*.py[cod]\n*$py.class\n\n# Virtual environments\n.venv/\nvenv/\nENV/\n\n# Distribution\ndist/\nbuild/\n*.egg-info/\n*.egg\n\n# IDE\n.idea/\n.vscode/\n*.swp\n\n# Testing\n.pytest_cache/\nhtmlcov/\n.coverage\n\n# Project\n.env\n.playground/\n`
+	}),
+	ruby: (name, description) => ({
+		'CLAUDE.md': `# ${name}\n\n${description || 'Ruby project.'}\n\n## Setup & Run\n\`\`\`bash\nbundle install\nruby lib/main.rb\nbundle exec rspec\n\`\`\`\n`,
+		'Gemfile': `source "https://rubygems.org"\n\ngem "rspec", "~> 3.13", group: :test\n`,
+		'lib/main.rb': `# frozen_string_literal: true\n\n# ${name} — ${description || 'A Ruby application.'}\nmodule ${name.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+|_+$/g, '').replace(/_([a-z])/g, (_, c) => c.toUpperCase()).replace(/^[a-z]/, (c) => c.toUpperCase())}\n  def self.greet(name = "World")\n    "Hello, #{name}!"\n  end\nend\n\nputs ${name.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+|_+$/g, '').replace(/_([a-z])/g, (_, c) => c.toUpperCase()).replace(/^[a-z]/, (c) => c.toUpperCase())}.greet if __FILE__ == $PROGRAM_NAME\n`,
+		'spec/main_spec.rb': `require_relative "../lib/main"\n\nRSpec.describe ${name.replace(/[^a-zA-Z0-9]/g, '_').replace(/^_+|_+$/g, '').replace(/_([a-z])/g, (_, c) => c.toUpperCase()).replace(/^[a-z]/, (c) => c.toUpperCase())} do\n  it "greets the world by default" do\n    expect(described_class.greet).to eq("Hello, World!")\n  end\n\n  it "greets a custom name" do\n    expect(described_class.greet("Ruby")).to eq("Hello, Ruby!")\n  end\nend\n`,
+		'.gitignore': `# Bundler\n/.bundle/\nvendor/bundle/\n\n# Gems\n*.gem\n\n# IDE\n.idea/\n.vscode/\n*.swp\n\n# Project\n.env\n.playground/\n`
+	}),
+	java: (name, description) => ({
+		'CLAUDE.md': `# ${name}\n\n${description || 'Java project.'}\n\n## Build & Run\n\`\`\`bash\nmvn compile\nmvn exec:java -Dexec.mainClass="App"\nmvn test\n\`\`\`\n`,
+		'pom.xml': `<?xml version="1.0" encoding="UTF-8"?>\n<project xmlns="http://maven.apache.org/POM/4.0.0"\n         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"\n         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">\n    <modelVersion>4.0.0</modelVersion>\n\n    <groupId>com.example</groupId>\n    <artifactId>${name}</artifactId>\n    <version>0.1.0</version>\n    <packaging>jar</packaging>\n\n    <name>${name}</name>\n    <description>${description || ''}</description>\n\n    <properties>\n        <maven.compiler.source>21</maven.compiler.source>\n        <maven.compiler.target>21</maven.compiler.target>\n        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>\n    </properties>\n\n    <dependencies>\n        <dependency>\n            <groupId>org.junit.jupiter</groupId>\n            <artifactId>junit-jupiter</artifactId>\n            <version>5.11.0</version>\n            <scope>test</scope>\n        </dependency>\n    </dependencies>\n</project>\n`,
+		'src/main/java/App.java': `/**\n * ${name} — ${description || 'A Java application.'}\n */\npublic class App {\n    public static String greet(String name) {\n        return "Hello, " + name + "!";\n    }\n\n    public static void main(String[] args) {\n        System.out.println(greet("World"));\n    }\n}\n`,
+		'src/test/java/AppTest.java': `import static org.junit.jupiter.api.Assertions.assertEquals;\nimport org.junit.jupiter.api.Test;\n\nclass AppTest {\n    @Test\n    void greetReturnsCorrectMessage() {\n        assertEquals("Hello, World!", App.greet("World"));\n    }\n\n    @Test\n    void greetWithCustomName() {\n        assertEquals("Hello, Java!", App.greet("Java"));\n    }\n}\n`,
+		'.gitignore': `# Compiled class files\n*.class\n\n# Maven\ntarget/\n\n# Package files\n*.jar\n*.war\n*.ear\n\n# IDE\n.idea/\n*.iml\n.vscode/\n.project\n.classpath\n.settings/\n\n# Project\n.env\n.playground/\n`
+	}),
+	dotnet: (name, description) => ({
+		'CLAUDE.md': `# ${name}\n\n${description || 'C#/.NET project.'}\n\n## Build & Run\n\`\`\`bash\ndotnet build\ndotnet run\ndotnet test\n\`\`\`\n`,
+		[`${name}.csproj`]: `<Project Sdk="Microsoft.NET.Sdk">\n\n  <PropertyGroup>\n    <OutputType>Exe</OutputType>\n    <TargetFramework>net8.0</TargetFramework>\n    <RootNamespace>${name.replace(/[^a-zA-Z0-9]/g, '_')}</RootNamespace>\n    <ImplicitUsings>enable</ImplicitUsings>\n    <Nullable>enable</Nullable>\n  </PropertyGroup>\n\n</Project>\n`,
+		'Program.cs': `// ${name} — ${description || 'A C#/.NET application.'}\n\nnamespace ${name.replace(/[^a-zA-Z0-9]/g, '_')};\n\nclass Program\n{\n    static string Greet(string name = "World") => $"Hello, {name}!";\n\n    static void Main(string[] args)\n    {\n        Console.WriteLine(Greet());\n    }\n}\n`,
+		'.gitignore': `# Build results\nbin/\nobj/\n\n# User-specific files\n*.user\n*.suo\n*.userosscache\n*.sln.docstates\n\n# NuGet\n*.nupkg\n.nuget/\n\n# IDE\n.idea/\n.vscode/\n*.swp\n\n# Project\n.env\n.playground/\n`
 	})
 };
 
@@ -348,7 +391,13 @@ function detectTechFromTemplate(template: string): string[] {
 		nextjs: ['Next.js', 'TypeScript', 'React'],
 		python: ['Python', 'FastAPI'],
 		fullstack: ['SvelteKit', 'TypeScript', 'Python', 'FastAPI'],
-		agent: ['TypeScript', 'MCP']
+		agent: ['TypeScript', 'MCP'],
+		go: ['Go'],
+		rust: ['Rust'],
+		'python-cli': ['Python'],
+		ruby: ['Ruby'],
+		java: ['Java', 'Maven'],
+		dotnet: ['C#', '.NET']
 	};
 	return map[template] ?? [];
 }

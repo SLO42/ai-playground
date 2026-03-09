@@ -138,7 +138,7 @@
 			<!-- Template Selection -->
 			<div>
 				<label class="block text-xs text-text-secondary uppercase tracking-wider mb-2">Project Template</label>
-				<div class="grid grid-cols-2 md:grid-cols-3 gap-2">
+				<div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-2">
 					{#each data.templates as tpl}
 						<button
 							class="text-left border rounded-lg p-3 transition-colors

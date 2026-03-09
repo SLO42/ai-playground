@@ -19,6 +19,10 @@
 		projectFilter?: string;
 		projects?: { id: string; name: string }[];
 		onprojectfilter?: (projectId: string) => void;
+		/** Returns true if the task is blocked by incomplete dependencies. */
+		isBlocked?: (task: TaskItem) => boolean;
+		/** Returns the list of blocking tasks for tooltip display. */
+		getBlockers?: (task: TaskItem) => { id: string; title: string }[];
 	}
 
 	let {
@@ -31,7 +35,9 @@
 		showProjectBadge = false,
 		projectFilter = 'all',
 		projects = [],
-		onprojectfilter
+		onprojectfilter,
+		isBlocked,
+		getBlockers
 	}: Props = $props();
 
 	let startingId = $state<string | null>(null);
@@ -101,10 +107,25 @@
 					<div class="flex items-start gap-2 mb-1">
 						<span class="mt-1.5 w-2 h-2 rounded-full flex-shrink-0 {priorityColors[task.priority]}"></span>
 						<span class="text-sm font-medium text-text-primary leading-tight line-clamp-2 flex-1">{task.title}</span>
+						{#if task.id.startsWith('gh-')}
+							<svg class="w-3 h-3 text-text-secondary/50 flex-shrink-0 mt-0.5" viewBox="0 0 16 16" fill="currentColor" aria-label="Synced from GitHub"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+						{/if}
 						{#if task.flagDiscussion}
 							<svg class="w-3.5 h-3.5 text-accent-yellow flex-shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
 								<path stroke-linecap="round" stroke-linejoin="round" d="M3 21v-4m0 0V5a2 2 0 012-2h6.5l1 1H21l-3 6 3 6h-8.5l-1-1H5a2 2 0 00-2 2z" />
 							</svg>
+						{/if}
+						{#if isBlocked?.(task)}
+							{@const blockers = getBlockers?.(task) ?? []}
+							<span
+								class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-medium bg-accent-red/15 text-accent-red flex-shrink-0"
+								title={blockers.length > 0 ? `Blocked by: ${blockers.map((b) => b.title).join(', ')}` : 'Blocked'}
+							>
+								<svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
+									<path stroke-linecap="round" stroke-linejoin="round" d="M16.5 10.5V6.75a4.5 4.5 0 10-9 0v3.75m-.75 11.25h10.5a2.25 2.25 0 002.25-2.25v-6.75a2.25 2.25 0 00-2.25-2.25H6.75a2.25 2.25 0 00-2.25 2.25v6.75a2.25 2.25 0 002.25 2.25z" />
+								</svg>
+								Blocked
+							</span>
 						{/if}
 					</div>
 					<div class="flex items-center gap-2 text-xs text-text-secondary ml-4">

@@ -4,6 +4,7 @@ import { scanAllProjects } from '$lib/server/project-scanner.js';
 import { readdir } from 'fs/promises';
 import { basename } from 'path';
 import { getAllTasks, migrateIfNeeded } from '$lib/server/task-store.js';
+import { getSyncStatus } from '$lib/server/github-sync.js';
 
 async function getAgentNames(): Promise<string[]> {
 	try {
@@ -24,10 +25,17 @@ export const load: PageServerLoad = async ({ params }) => {
 	const project = projects.find((p) => p.id === params.id);
 
 	let tasks: import('$lib/types/tasks.js').Task[] = [];
+	let syncStatus: { repo: string; lastSync: string | null; mappings: number } | null = null;
+
 	if (project) {
-		await migrateIfNeeded(project.path);
-		tasks = await getAllTasks(project.path);
+		const [, allTasks, status] = await Promise.all([
+			migrateIfNeeded(project.path),
+			getAllTasks(project.path),
+			getSyncStatus(project.path).catch(() => null)
+		]);
+		tasks = allTasks;
+		syncStatus = status ? { repo: status.repo, lastSync: status.lastSync, mappings: status.mappings } : null;
 	}
 
-	return { tasks, projectId: params.id, agentNames };
+	return { tasks, projectId: params.id, agentNames, syncStatus };
 };

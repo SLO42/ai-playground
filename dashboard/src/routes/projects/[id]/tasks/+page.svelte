@@ -4,6 +4,7 @@
 	import TaskDetail from '$lib/components/TaskDetail.svelte';
 	import { apiPost, apiPut, apiDelete } from '$lib/api-client.js';
 	import { navigating } from '$app/stores';
+	import { notifications } from '$lib/stores/notifications.js';
 	import type { PageData } from './$types.js';
 	import type { Task, TaskPriority } from '$lib/types/tasks.js';
 
@@ -18,11 +19,110 @@
 	let showNewTaskModal = $state(false);
 	let newTitle = $state('');
 	let newPriority = $state<TaskPriority>('medium');
+	let newBlockedBy = $state<string[]>([]);
 	let adding = $state(false);
 	let saving = $state(false);
 	let error = $state<string | null>(null);
 
+	/** Tasks eligible to be blockers (pending/in-progress from this project). */
+	const blockerCandidates = $derived(
+		tasks.filter((t) => t.status === 'pending' || t.status === 'in_progress')
+	);
+
+	/** Check if a task is blocked (has unresolved blockers). */
+	function isTaskBlocked(task: Task): boolean {
+		if (!task.blockedBy?.length) return false;
+		return task.blockedBy.some((depId) => {
+			const dep = tasks.find((t) => t.id === depId);
+			return dep && dep.status !== 'completed' && dep.status !== 'cancelled';
+		});
+	}
+
+	/** Get the blocking tasks for a given task. */
+	function getBlockers(task: Task): Task[] {
+		if (!task.blockedBy?.length) return [];
+		return task.blockedBy
+			.map((depId) => tasks.find((t) => t.id === depId))
+			.filter((t): t is Task => !!t && t.status !== 'completed' && t.status !== 'cancelled');
+	}
+
 	let loading = $derived(!!$navigating);
+
+	// GitHub sync state
+	let syncing = $state(false);
+	let syncRepo = $state(data.syncStatus?.repo ?? '');
+	let lastSync = $state(data.syncStatus?.lastSync ?? null);
+	let syncMappings = $state(data.syncStatus?.mappings ?? 0);
+	let showSyncMenu = $state(false);
+
+	const hasGitHub = $derived(!!syncRepo && syncRepo !== 'unknown');
+
+	function timeSince(iso: string): string {
+		const diff = Date.now() - new Date(iso).getTime();
+		const mins = Math.floor(diff / 60000);
+		if (mins < 1) return 'just now';
+		if (mins < 60) return `${mins}m ago`;
+		const hrs = Math.floor(mins / 60);
+		if (hrs < 24) return `${hrs}h ago`;
+		return `${Math.floor(hrs / 24)}d ago`;
+	}
+
+	async function triggerSync(direction: 'both' | 'pull' | 'push' = 'both') {
+		if (syncing) return;
+		syncing = true;
+		showSyncMenu = false;
+		error = null;
+		try {
+			const res = await fetch(`/api/projects/${data.projectId}/tasks/sync`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ direction })
+			});
+			const result = await res.json();
+
+			if (result.error && !res.ok) {
+				throw new Error(result.error);
+			}
+
+			// Refresh tasks from server
+			const taskRes = await fetch(`/api/projects/${data.projectId}/tasks?full=true`);
+			const taskData = await taskRes.json();
+			if (taskData.tasks) tasks = taskData.tasks;
+
+			// Update sync status
+			const statusRes = await fetch(`/api/projects/${data.projectId}/tasks/sync`);
+			const status = await statusRes.json();
+			syncRepo = status.repo ?? syncRepo;
+			lastSync = status.lastSync ?? lastSync;
+			syncMappings = status.mappings ?? syncMappings;
+
+			const parts: string[] = [];
+			if (result.created > 0) parts.push(`${result.created} pushed`);
+			if (result.pulled > 0) parts.push(`${result.pulled} pulled`);
+			if (result.updated > 0) parts.push(`${result.updated} updated`);
+			if (result.errors?.length > 0) parts.push(`${result.errors.length} error(s)`);
+			const msg = parts.length > 0 ? parts.join(', ') : 'Already in sync';
+
+			notifications.push(
+				result.errors?.length > 0 ? 'warning' : 'success',
+				'GitHub sync complete',
+				msg
+			);
+		} catch (e) {
+			const msg = e instanceof Error ? e.message : 'Sync failed';
+			error = msg;
+			notifications.push('error', 'GitHub sync failed', msg);
+		} finally {
+			syncing = false;
+		}
+	}
+
+	// Close sync menu on outside click
+	function handleWindowClick(e: MouseEvent) {
+		if (showSyncMenu && !(e.target as HTMLElement)?.closest?.('.relative')) {
+			showSyncMenu = false;
+		}
+	}
 
 	const filteredTasks = $derived.by(() => {
 		if (filter === 'active') return tasks.filter((t) => t.status === 'pending' || t.status === 'in_progress');
@@ -46,12 +146,14 @@
 		try {
 			const result = await apiPost<{ task: Task }>(`/api/projects/${data.projectId}/tasks`, {
 				title: newTitle.trim(),
-				priority: newPriority
+				priority: newPriority,
+				blockedBy: newBlockedBy.length > 0 ? newBlockedBy : undefined
 			});
 			if (result?.task) {
 				tasks = [...tasks, result.task];
 				newTitle = '';
 				newPriority = 'medium';
+				newBlockedBy = [];
 				selectedId = result.task.id;
 				showNewTaskModal = false;
 			}
@@ -94,18 +196,83 @@
 	}
 </script>
 
+<svelte:window onclick={handleWindowClick} />
+
 <div class="space-y-6">
 	<div class="flex items-center justify-between">
-		<h1 class="type-page-title text-text-primary">Tasks</h1>
-		<button
-			onclick={() => (showNewTaskModal = true)}
-			class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-accent-blue/20 text-accent-blue hover:bg-accent-blue/30 transition-colors"
-		>
-			<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
-				<path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-			</svg>
-			New Task
-		</button>
+		<div>
+			<h1 class="type-page-title text-text-primary">Tasks</h1>
+			{#if hasGitHub}
+				<p class="text-xs text-text-secondary mt-0.5 flex items-center gap-1.5">
+					<svg class="w-3 h-3" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+					<span class="font-mono">{syncRepo}</span>
+					{#if lastSync}
+						<span class="text-text-secondary/60">synced {timeSince(lastSync)}</span>
+					{/if}
+					{#if syncMappings > 0}
+						<span class="text-text-secondary/60">{syncMappings} linked</span>
+					{/if}
+				</p>
+			{/if}
+		</div>
+		<div class="flex items-center gap-2">
+			{#if hasGitHub}
+				<div class="relative">
+					<button
+						onclick={() => triggerSync('both')}
+						disabled={syncing}
+						class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium border border-border bg-bg-secondary text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-50"
+					>
+						<svg class="w-3.5 h-3.5 {syncing ? 'animate-spin' : ''}" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+							<path stroke-linecap="round" stroke-linejoin="round" d="M16.023 9.348h4.992v-.001M2.985 19.644v-4.992m0 0h4.992m-4.993 0l3.181 3.183a8.25 8.25 0 0013.803-3.7M4.031 9.865a8.25 8.25 0 0113.803-3.7l3.181 3.182M2.985 19.644l3.181-3.182" />
+						</svg>
+						{syncing ? 'Syncing...' : 'Sync Issues'}
+					</button>
+					<button
+						onclick={() => (showSyncMenu = !showSyncMenu)}
+						disabled={syncing}
+						class="absolute -right-6 top-0 bottom-0 px-1.5 text-text-secondary hover:text-text-primary transition-colors disabled:opacity-50"
+						aria-label="Sync options"
+					>
+						<svg class="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 8.25l-7.5 7.5-7.5-7.5" /></svg>
+					</button>
+					{#if showSyncMenu}
+						<div class="absolute right-0 top-full mt-1 w-48 bg-bg-secondary border border-border rounded-lg shadow-lg z-20 py-1">
+							<button
+								onclick={() => triggerSync('pull')}
+								class="w-full text-left px-3 py-1.5 text-xs text-text-primary hover:bg-bg-tertiary transition-colors flex items-center gap-2"
+							>
+								<svg class="w-3 h-3 text-accent-green" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M19.5 13.5L12 21m0 0l-7.5-7.5M12 21V3" /></svg>
+								Pull from GitHub
+							</button>
+							<button
+								onclick={() => triggerSync('push')}
+								class="w-full text-left px-3 py-1.5 text-xs text-text-primary hover:bg-bg-tertiary transition-colors flex items-center gap-2"
+							>
+								<svg class="w-3 h-3 text-accent-blue" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M4.5 10.5L12 3m0 0l7.5 7.5M12 3v18" /></svg>
+								Push to GitHub
+							</button>
+							<button
+								onclick={() => triggerSync('both')}
+								class="w-full text-left px-3 py-1.5 text-xs text-text-primary hover:bg-bg-tertiary transition-colors flex items-center gap-2"
+							>
+								<svg class="w-3 h-3 text-accent-cyan" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2"><path stroke-linecap="round" stroke-linejoin="round" d="M7.5 21L3 16.5m0 0L7.5 12M3 16.5h13.5m0-13.5L21 7.5m0 0L16.5 12M21 7.5H7.5" /></svg>
+								Sync both ways
+							</button>
+						</div>
+					{/if}
+				</div>
+			{/if}
+			<button
+				onclick={() => (showNewTaskModal = true)}
+				class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-accent-blue/20 text-accent-blue hover:bg-accent-blue/30 transition-colors"
+			>
+				<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+					<path stroke-linecap="round" stroke-linejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+				</svg>
+				New Task
+			</button>
+		</div>
 	</div>
 
 	<!-- Error Banner -->
@@ -168,6 +335,8 @@
 				{filter}
 				onselect={(id) => (selectedId = id)}
 				onfilter={(f) => (filter = f)}
+				isBlocked={isTaskBlocked}
+				getBlockers={(t) => getBlockers(t).map((b) => ({ id: b.id, title: b.title }))}
 			/>
 
 			{#if selected}
@@ -230,6 +399,33 @@
 						<option value="low">Low</option>
 					</select>
 				</div>
+				{#if blockerCandidates.length > 0}
+					<div>
+						<label class="block text-xs text-text-secondary mb-1">Blocked by</label>
+						<div class="max-h-32 overflow-y-auto border border-border rounded bg-bg-primary p-1.5 space-y-1">
+							{#each blockerCandidates as candidate}
+								<label class="flex items-center gap-2 px-1.5 py-1 rounded hover:bg-bg-tertiary cursor-pointer text-xs text-text-primary">
+									<input
+										type="checkbox"
+										checked={newBlockedBy.includes(candidate.id)}
+										onchange={() => {
+											if (newBlockedBy.includes(candidate.id)) {
+												newBlockedBy = newBlockedBy.filter((id) => id !== candidate.id);
+											} else {
+												newBlockedBy = [...newBlockedBy, candidate.id];
+											}
+										}}
+										class="accent-accent-blue"
+									/>
+									<span class="truncate">{candidate.title}</span>
+								</label>
+							{/each}
+						</div>
+						{#if newBlockedBy.length > 0}
+							<p class="text-xs text-text-secondary mt-1">{newBlockedBy.length} task(s) selected</p>
+						{/if}
+					</div>
+				{/if}
 				<div class="flex items-center justify-end gap-2 pt-2">
 					<button
 						type="button"

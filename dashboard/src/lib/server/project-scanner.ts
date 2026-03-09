@@ -13,6 +13,7 @@ import type {
 	DetectedDependency,
 	MaintenanceInfo
 } from '$lib/types/projects.js';
+import { detectWorkspaceType } from './workspace-detector.js';
 
 async function exists(p: string): Promise<boolean> {
 	try {
@@ -708,6 +709,9 @@ export async function detectProjectMeta(projectPath: string): Promise<DetectedPr
 
 	const maintenance = await detectMaintenance(projectPath, branches);
 
+	// Lightweight workspace type detection (no full package scan)
+	const workspace = detectWorkspaceType(projectPath);
+
 	// Infer commands based on build tool if not in package.json
 	let buildCommand = scripts.build;
 	let devCommand = scripts.dev;
@@ -797,7 +801,8 @@ export async function detectProjectMeta(projectPath: string): Promise<DetectedPr
 		agents,
 		branches,
 		dependencies,
-		maintenance
+		maintenance,
+		workspace
 	};
 }
 

@@ -44,6 +44,8 @@ export interface DetectedProjectMeta {
 	dependencies: DetectedDependency[];
 	/** Maintenance hints: README exists, docs dir, changelog, etc. */
 	maintenance: MaintenanceInfo;
+	/** Workspace/monorepo type if detected */
+	workspace?: 'npm' | 'yarn' | 'pnpm' | 'cargo' | 'dotnet' | null;
 }
 
 export interface DetectedWorkflow {

@@ -15,6 +15,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `/models` | `routes/models/+page.svelte` | `routes/models/+page.server.ts` |
 | `/projects` | `routes/projects/+page.svelte` | `routes/projects/+page.server.ts` |
 | `/projects/[id]` | `routes/projects/[id]/+layout.svelte` | `routes/projects/[id]/+layout.server.ts` |
+| `/projects/[id]/releases` | `routes/projects/[id]/releases/+page.svelte` | `routes/projects/[id]/releases/+page.server.ts` |
 | `/services` | `routes/services/+page.svelte` | `routes/services/+page.server.ts` |
 | `/settings` | `routes/settings/+page.svelte` | `routes/settings/+page.server.ts` |
 | `/reports` | `routes/reports/+page.svelte` | (uses `lib/server/reports.ts`) |
@@ -39,6 +40,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `/api/projects` | GET/POST | Project CRUD |
 | `/api/projects/[id]/tasks` | GET/POST | Task CRUD per project |
 | `/api/projects/[id]/memory` | GET | Project memory snapshot (entries, context, graph). Optional `?range=1h\|24h\|7d` filters by `createdAt`; cached 30 s per (project, range). |
+| `/api/projects/[id]/releases` | GET/POST | Release listing and creation per project |
 | `/api/notifications` | GET | Notification polling |
 | `/api/settings` | GET/POST | Settings read/write |
 | `/api/sessions` | GET | Session listing |

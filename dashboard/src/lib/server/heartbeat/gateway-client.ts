@@ -8,8 +8,17 @@
  * Protocol: WS connect → challenge nonce → Ed25519 sign → connect → chat
  */
 import { sign, createPrivateKey } from 'crypto';
+import { readdirSync } from 'fs';
 import { pathToFileURL } from 'url';
+import { resolve, join } from 'path';
 import { APIS, PATHS } from '../constants.js';
+
+// ── Cached ws module ────────────────────────────────────────────────
+let _wsModule: typeof import('ws') | null = null;
+async function getWs() {
+	if (!_wsModule) _wsModule = await import('ws');
+	return _wsModule;
+}
 
 // ── SDK imports (bypass package.json exports restriction) ────────────
 
@@ -31,7 +40,10 @@ let normalizeDevicePublicKeyBase64Url: (pem: string) => string;
 
 async function ensureSDK(): Promise<void> {
 	if (_sdkLoaded) return;
-	const clientPath = `${PATHS.root}/node_modules/openclaw/dist/client-CuIxivDk.js`;
+	const sdkDir = resolve(`${PATHS.root}/node_modules/openclaw/dist/`);
+	const files = readdirSync(sdkDir).filter(f => f.startsWith('client-') && f.endsWith('.js'));
+	if (files.length === 0) throw new Error('OpenClaw SDK client bundle not found in ' + sdkDir);
+	const clientPath = join(sdkDir, files[0]);
 	const mod = await import(pathToFileURL(clientPath).href);
 	loadOrCreateDeviceIdentity = mod.nn;
 	buildDeviceAuthPayload = mod.Lt;
@@ -87,7 +99,7 @@ export class OpenClawGatewayClient {
 	}>();
 	private connected = false;
 	private connectPromise: Promise<void> | null = null;
-	private eventHandlers = new Map<string, (payload: unknown) => void>();
+	private eventHandlers = new Map<string, Array<(payload: unknown) => void>>();
 
 	constructor(opts: GatewayClientOptions = {}) {
 		this.token = opts.token ?? process.env.OPENCLAW_TOKEN ?? '';
@@ -112,8 +124,8 @@ export class OpenClawGatewayClient {
 		await ensureSDK();
 		this.identity = await loadOrCreateDeviceIdentity(this.identityPath);
 
-		// Dynamic import ws for Node.js
-		const { default: WebSocket } = await import('ws');
+		// Dynamic import ws for Node.js (cached at module level)
+		const { default: WebSocket } = await getWs();
 
 		return new Promise<void>((resolveConnect, rejectConnect) => {
 			const wsUrl = APIS.gateway;
@@ -180,8 +192,10 @@ export class OpenClawGatewayClient {
 
 				// Handle events (chat streaming, etc.)
 				if (msg.type === 'event' && msg.event) {
-					const handler = this.eventHandlers.get(msg.event);
-					if (handler) handler(msg.payload);
+					const handlers = this.eventHandlers.get(msg.event);
+					if (handlers) {
+						for (const handler of handlers) handler(msg.payload);
+					}
 				}
 			});
 		});
@@ -254,24 +268,48 @@ export class OpenClawGatewayClient {
 		const idempotencyKey = `idem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 		return new Promise<string>((resolve, reject) => {
+			let settled = false;
+
+			const cleanup = () => {
+				// Remove this specific handler from the array
+				const handlers = this.eventHandlers.get('chat');
+				if (handlers) {
+					const idx = handlers.indexOf(handler);
+					if (idx >= 0) handlers.splice(idx, 1);
+					if (handlers.length === 0) this.eventHandlers.delete('chat');
+				}
+			};
+
 			const timeout = setTimeout(() => {
-				this.eventHandlers.delete('chat');
-				reject(new Error('Chat response timeout'));
+				if (!settled) {
+					settled = true;
+					cleanup();
+					reject(new Error('Chat response timeout'));
+				}
 			}, this.timeout);
 
-			// Listen for chat events
-			this.eventHandlers.set('chat', (payload: unknown) => {
+			// Listen for chat events — per-request handler in the array
+			const handler = (payload: unknown) => {
 				const event = payload as ChatEvent;
-				if (event.state === 'final') {
-					clearTimeout(timeout);
-					this.eventHandlers.delete('chat');
-					const text = event.message.content
-						?.filter(c => c.type === 'text')
-						.map(c => c.text ?? '')
-						.join('') ?? '';
-					resolve(text);
+				if (event.sessionKey === key && event.state === 'final') {
+					if (!settled) {
+						settled = true;
+						clearTimeout(timeout);
+						cleanup();
+						const text = event.message.content
+							?.filter(c => c.type === 'text')
+							.map(c => c.text ?? '')
+							.join('') ?? '';
+						resolve(text);
+					}
 				}
-			});
+			};
+
+			// Register handler in array
+			if (!this.eventHandlers.has('chat')) {
+				this.eventHandlers.set('chat', []);
+			}
+			this.eventHandlers.get('chat')!.push(handler);
 
 			// Send the chat request
 			this.request('chat.send', {
@@ -279,16 +317,22 @@ export class OpenClawGatewayClient {
 				message,
 				idempotencyKey
 			}).catch((err) => {
-				clearTimeout(timeout);
-				this.eventHandlers.delete('chat');
-				reject(err);
+				if (!settled) {
+					settled = true;
+					clearTimeout(timeout);
+					cleanup();
+					reject(err);
+				}
 			});
 		});
 	}
 
 	/** Register an event handler. */
 	on(event: string, handler: (payload: unknown) => void): void {
-		this.eventHandlers.set(event, handler);
+		if (!this.eventHandlers.has(event)) {
+			this.eventHandlers.set(event, []);
+		}
+		this.eventHandlers.get(event)!.push(handler);
 	}
 
 	/** Disconnect from the gateway. */
@@ -311,19 +355,23 @@ export class OpenClawGatewayClient {
 	}
 }
 
-// ── Singleton ────────────────────────────────────────────────────────
+// ── Singleton (on globalThis to survive HMR reloads) ─────────────────
 
-let _client: OpenClawGatewayClient | null = null;
+const _g = globalThis as Record<string, unknown>;
 
 /**
  * Get a shared gateway client instance.
  * Creates and connects on first call; reuses on subsequent calls.
+ * Stored on globalThis so HMR reloads disconnect the old client
+ * instead of orphaning its WebSocket connection.
  */
 export async function getGatewayClient(): Promise<OpenClawGatewayClient> {
+	let _client = _g.__openclaw_gateway_client as OpenClawGatewayClient | null ?? null;
 	if (_client?.isConnected) return _client;
 
 	_client?.disconnect();
 	_client = new OpenClawGatewayClient();
+	_g.__openclaw_gateway_client = _client;
 	await _client.connect();
 	return _client;
 }

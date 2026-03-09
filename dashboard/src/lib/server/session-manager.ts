@@ -13,6 +13,15 @@ import { loadAgentDefaults } from './agent-defaults.js';
 
 const MAX_TOOL_LOOPS = 5;
 
+// ── Index write lock (prevents concurrent read-modify-write races) ──
+let _indexLock = Promise.resolve();
+function withIndexLock<T>(fn: () => Promise<T>): Promise<T> {
+	const prev = _indexLock;
+	let release: () => void;
+	_indexLock = new Promise(r => { release = r; });
+	return prev.then(fn).finally(() => release!());
+}
+
 // ── In-memory state for active sessions ───────────────────────────────
 
 interface ActiveSession {
@@ -34,7 +43,12 @@ export interface SessionEvent {
 	error?: string;
 }
 
-const activeSessions = new Map<string, ActiveSession>();
+// Use globalThis to survive HMR module reloads — prevents orphaned timers and leaked sessions
+const _g = globalThis as Record<string, unknown>;
+if (!_g.__chat_active_sessions) {
+	_g.__chat_active_sessions = new Map<string, ActiveSession>();
+}
+const activeSessions = _g.__chat_active_sessions as Map<string, ActiveSession>;
 
 // ── Helpers ───────────────────────────────────────────────────────────
 
@@ -75,25 +89,28 @@ async function saveSession(session: ChatSession) {
 	const firstUserMsg = session.messages.find((m) => m.role === 'user');
 	const title = firstUserMsg ? firstUserMsg.content.slice(0, 40) : 'New Chat';
 
-	const index = await readIndex();
-	const idx = index.findIndex((s) => s.id === session.id);
-	const meta: ChatSessionMeta = {
-		id: session.id,
-		title,
-		model: session.model,
-		provider: session.provider,
-		messageCount: session.messages.length,
-		createdAt: session.createdAt,
-		updatedAt: session.updatedAt,
-		source: session.source,
-		status: session.status
-	};
-	if (idx >= 0) {
-		index[idx] = meta;
-	} else {
-		index.unshift(meta);
-	}
-	await writeIndex(index);
+	// Wrap index read-modify-write in a lock to prevent concurrent races
+	await withIndexLock(async () => {
+		const index = await readIndex();
+		const idx = index.findIndex((s) => s.id === session.id);
+		const meta: ChatSessionMeta = {
+			id: session.id,
+			title,
+			model: session.model,
+			provider: session.provider,
+			messageCount: session.messages.length,
+			createdAt: session.createdAt,
+			updatedAt: session.updatedAt,
+			source: session.source,
+			status: session.status
+		};
+		if (idx >= 0) {
+			index[idx] = meta;
+		} else {
+			index.unshift(meta);
+		}
+		await writeIndex(index);
+	});
 }
 
 function broadcast(sessionId: string, event: SessionEvent) {
@@ -141,15 +158,46 @@ export function subscribe(sessionId: string, fn: (event: SessionEvent) => void):
 	active.subscribers.add(fn);
 	return () => {
 		active!.subscribers.delete(fn);
-		if (active!.subscribers.size === 0 && active!.status === 'idle') {
+		if (active!.subscribers.size === 0) {
 			clearIdleTimer(active!);
-			activeSessions.delete(sessionId);
+			if (active!.status === 'idle') {
+				activeSessions.delete(sessionId);
+			} else {
+				// No subscribers left but session is still streaming/paused —
+				// start a cleanup timer so it doesn't stay in memory forever.
+				active!.idleTimer = setTimeout(() => {
+					const s = activeSessions.get(sessionId);
+					if (s && s.subscribers.size === 0) {
+						if (s.abortController) s.abortController.abort();
+						clearIdleTimer(s);
+						activeSessions.delete(sessionId);
+					}
+				}, 5 * 60_000); // 5 min grace period
+			}
 		}
 	};
 }
 
 export function getSessionStatus(sessionId: string): SessionStatus {
 	return activeSessions.get(sessionId)?.status ?? 'idle';
+}
+
+/** List all active chat sessions (streaming, paused, etc.) */
+export function getActiveSessions(): { id: string; status: SessionStatus }[] {
+	return Array.from(activeSessions.entries()).map(([id, s]) => ({ id, status: s.status }));
+}
+
+/** Cancel an active session by aborting its request and removing it. */
+export function cancelSession(sessionId: string): boolean {
+	const active = activeSessions.get(sessionId);
+	if (!active) return false;
+	if (active.abortController) active.abortController.abort();
+	if (active.idleTimer) clearTimeout(active.idleTimer);
+	for (const fn of active.subscribers) {
+		fn({ type: 'done', sessionId });
+	}
+	activeSessions.delete(sessionId);
+	return true;
 }
 
 export async function startAutoSession(opts: {
@@ -216,7 +264,7 @@ export async function startAutoSession(opts: {
 	}).catch(() => {});
 
 	// Start streaming in background
-	streamSession(id).catch(() => {});
+	streamSession(id).catch(err => console.error('[session-manager] Stream error:', err.message));
 
 	return id;
 }
@@ -272,7 +320,7 @@ export async function injectMessage(sessionId: string, message: string): Promise
 	});
 
 	// Continue streaming with the injected message
-	streamSession(sessionId).catch(() => {});
+	streamSession(sessionId).catch(err => console.error('[session-manager] Stream error:', err.message));
 	return true;
 }
 
@@ -303,7 +351,7 @@ export async function resumeSession(sessionId: string): Promise<boolean> {
 	session.status = 'streaming';
 	await saveSession(session);
 
-	streamSession(sessionId).catch(() => {});
+	streamSession(sessionId).catch(err => console.error('[session-manager] Stream error:', err.message));
 	return true;
 }
 
@@ -409,6 +457,21 @@ async function streamSession(sessionId: string) {
 			}
 
 			for (const tc of pendingToolCalls) {
+				// Tools that need user confirmation must NOT auto-execute
+				if (!shouldAutoExecute(tc.name, settings)) {
+					console.warn(`[session-manager] Tool "${tc.name}" requires confirmation — skipping auto-execution`);
+					const skippedResult = `Tool "${tc.name}" requires user confirmation before execution.`;
+					const toolMsg: ChatMessage = {
+						role: 'tool',
+						content: skippedResult,
+						tool_call_id: tc.id,
+						tool_name: tc.name
+					};
+					session.messages.push(toolMsg);
+					history.push({ role: 'tool', content: skippedResult, tool_call_id: tc.id });
+					continue;
+				}
+
 				const result = await executeTool(tc);
 				broadcast(sessionId, {
 					type: 'tool_result',

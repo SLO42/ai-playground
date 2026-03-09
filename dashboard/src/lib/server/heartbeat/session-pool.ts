@@ -8,12 +8,26 @@
  * Pool slots are keyed by code area (routes, server, components, etc.)
  * so related tasks reuse the same session and benefit from accumulated context.
  */
-import { readFile, writeFile, mkdir } from 'fs/promises';
+import { readFile, writeFile, mkdir, access } from 'fs/promises';
 import { readFileSync, existsSync } from 'fs';
 import { resolve, dirname } from 'path';
 import { homedir } from 'os';
 import { PATHS } from '../constants.js';
 import type { Task } from '$lib/types/tasks.js';
+
+// ── Pool write lock ─────────────────────────────────────────────────
+// Simple promise-chain mutex to serialize pool mutations (no external deps)
+
+let poolLock = Promise.resolve();
+function withPoolLock<T>(fn: () => Promise<T>): Promise<T> {
+	const prev = poolLock;
+	let release: () => void;
+	poolLock = new Promise<void>(r => { release = r; });
+	return prev.then(fn).finally(() => release!());
+}
+
+// ── Pool slot cap ───────────────────────────────────────────────────
+const MAX_POOL_SLOTS = 50;
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -22,6 +36,7 @@ export interface SessionSlot {
 	sessionId: string;        // Claude Code session UUID
 	model: string;            // Model this session was started with
 	area: string;             // Code area (routes, server, components, etc.)
+	projectId?: string;       // Which project this slot belongs to (if any)
 	createdAt: string;
 	lastUsedAt: string;
 	taskCount: number;        // Number of tasks run in this session
@@ -49,7 +64,7 @@ export interface SessionPool {
 
 const POOL_PATH = resolve(PATHS.root, '.playground/session-pool.json');
 
-// In-memory cache
+// In-memory cache — only read from disk on first call (startup / HMR reset)
 const g = globalThis as Record<string, unknown>;
 let pool: SessionPool = (g.__claw_session_pool as SessionPool) ?? {
 	slots: [],
@@ -58,16 +73,19 @@ let pool: SessionPool = (g.__claw_session_pool as SessionPool) ?? {
 	warmResumes: 0,
 	scaleEvents: []
 };
+let poolLoaded = !!(g.__claw_session_pool);
 
 async function loadPool(): Promise<SessionPool> {
+	if (poolLoaded) return pool;
 	try {
 		const raw = await readFile(POOL_PATH, 'utf-8');
 		pool = JSON.parse(raw) as SessionPool;
 		g.__claw_session_pool = pool;
-		return pool;
 	} catch {
-		return pool;
+		// First run — use default in-memory state
 	}
+	poolLoaded = true;
+	return pool;
 }
 
 async function savePool(): Promise<void> {
@@ -115,39 +133,60 @@ export function classifyArea(task: Task): string {
 
 // ── Claude Code session validation ───────────────────────────────────
 
-/**
- * Check if a Claude Code session ID is still valid on disk.
- * Claude Code stores sessions under ~/.claude/projects/<project-hash>/sessions/
- * or ~/.claude/sessions/ — we check both locations.
- */
-function isSessionValid(sessionId: string): boolean {
-	if (!sessionId) return false;
+// Cache the list of session directories so we don't re-scan ~/.claude/projects/
+// on every spawn. Refresh every 2 minutes.
+let _sessionDirsCache: string[] | null = null;
+let _sessionDirsCacheExpiry = 0;
+const SESSION_DIRS_CACHE_TTL = 2 * 60_000;
 
-	// Claude Code stores conversation data keyed by session ID.
-	// The primary location is ~/.claude/ with project-scoped subdirs.
+async function getSessionDirs(): Promise<string[]> {
+	if (_sessionDirsCache && Date.now() < _sessionDirsCacheExpiry) return _sessionDirsCache;
+
 	const home = homedir();
-	const claudeDir = resolve(home, '.claude');
+	const projectsDir = resolve(home, '.claude', 'projects');
+	const dirs: string[] = [];
 
 	try {
-		// Check for session in the projects directory (most common case)
-		// Sessions are stored as JSON files named by their UUID
-		const projectsDir = resolve(claudeDir, 'projects');
-		if (existsSync(projectsDir)) {
-			// Scan project dirs for a matching session file
-			const { readdirSync, statSync } = require('fs') as typeof import('fs');
-			const projectDirs = readdirSync(projectsDir);
-			for (const dir of projectDirs) {
-				const sessionsPath = resolve(projectsDir, dir, '.sessions');
-				if (existsSync(sessionsPath) && statSync(sessionsPath).isDirectory()) {
-					const sessionFile = resolve(sessionsPath, `${sessionId}.json`);
-					if (existsSync(sessionFile)) return true;
-				}
-			}
+		const { readdir: readdirAsync, stat: statAsync } = await import('fs/promises');
+		const projectDirs = await readdirAsync(projectsDir);
+		for (const dir of projectDirs) {
+			const sessionsPath = resolve(projectsDir, dir, '.sessions');
+			try {
+				const st = await statAsync(sessionsPath);
+				if (st.isDirectory()) dirs.push(sessionsPath);
+			} catch { /* no .sessions dir */ }
 		}
+	} catch { /* projects dir doesn't exist */ }
 
-		// Fallback: check the flat sessions directory
-		const flatSessionFile = resolve(claudeDir, 'sessions', `${sessionId}.json`);
-		if (existsSync(flatSessionFile)) return true;
+	// Also include flat sessions dir
+	const flatDir = resolve(home, '.claude', 'sessions');
+	try {
+		const { stat: statAsync } = await import('fs/promises');
+		const st = await statAsync(flatDir);
+		if (st.isDirectory()) dirs.push(flatDir);
+	} catch { /* no flat sessions dir */ }
+
+	_sessionDirsCache = dirs;
+	_sessionDirsCacheExpiry = Date.now() + SESSION_DIRS_CACHE_TTL;
+	return dirs;
+}
+
+/**
+ * Check if a Claude Code session ID is still valid on disk.
+ * Uses async I/O and caches the directory listing.
+ */
+async function isSessionValid(sessionId: string): Promise<boolean> {
+	if (!sessionId) return false;
+
+	try {
+		const sessionDirs = await getSessionDirs();
+		for (const dir of sessionDirs) {
+			const sessionFile = resolve(dir, `${sessionId}.json`);
+			try {
+				await access(sessionFile);
+				return true;
+			} catch { /* not found, try next */ }
+		}
 	} catch {
 		// If we can't check, assume valid to avoid unnecessary cold starts
 		return true;
@@ -220,91 +259,97 @@ export interface SessionResolution {
  * Find or create a session slot for a task.
  * Returns a session ID to resume if one exists, or null for cold start.
  */
-export async function resolveSession(task: Task, model: string): Promise<SessionResolution> {
-	await loadPool();
+export function resolveSession(task: Task, model: string): Promise<SessionResolution> {
+	return withPoolLock(async () => {
+		await loadPool();
 
-	const area = classifyArea(task);
+		const area = classifyArea(task);
+		const projectId = task._sourceProjectId;
 
-	// Look for an existing idle slot with matching area AND model
-	const match = pool.slots.find(s =>
-		s.area === area &&
-		s.model === model &&
-		s.status === 'idle'
-	);
+		// Look for an existing idle slot with matching area AND model
+		const match = pool.slots.find(s =>
+			s.area === area &&
+			s.model === model &&
+			s.status === 'idle'
+		);
 
-	if (match) {
-		// Validate the session ID is still valid on disk before attempting --resume
-		const hasValidSession = match.sessionId && isSessionValid(match.sessionId);
+		if (match) {
+			// Validate the session ID is still valid on disk before attempting --resume
+			const hasValidSession = match.sessionId && await isSessionValid(match.sessionId);
 
-		if (!hasValidSession && match.sessionId) {
-			// Session expired or was cleaned up — clear it for a cold start
-			match.sessionId = '';
+			if (!hasValidSession && match.sessionId) {
+				// Session expired or was cleaned up — clear it for a cold start
+				match.sessionId = '';
+			}
+
+			match.status = 'active';
+			match.lastUsedAt = new Date().toISOString();
+			match.taskCount++;
+			if (projectId) match.projectId = projectId;
+
+			if (hasValidSession) {
+				pool.warmResumes++;
+			} else {
+				pool.coldStarts++;
+			}
+
+			await savePool();
+			return {
+				sessionId: hasValidSession ? match.sessionId : null,
+				isResume: hasValidSession as boolean,
+				slotId: match.slotId,
+				area
+			};
 		}
 
-		match.status = 'active';
-		match.lastUsedAt = new Date().toISOString();
-		match.taskCount++;
-
-		if (hasValidSession) {
-			pool.warmResumes++;
-		} else {
+		// No matching slot — check if we can create a new one
+		if (pool.slots.length < pool.maxSlots) {
+			const slotId = `slot-${area.replace(/\//g, '-')}-${Date.now()}`;
+			const slot: SessionSlot = {
+				slotId,
+				sessionId: '',  // Will be filled after first run
+				model,
+				area,
+				projectId,
+				createdAt: new Date().toISOString(),
+				lastUsedAt: new Date().toISOString(),
+				taskCount: 1,
+				totalTokens: 0,
+				totalCost: 0,
+				status: 'active'
+			};
+			pool.slots.push(slot);
 			pool.coldStarts++;
+			await savePool();
+			return { sessionId: null, isResume: false, slotId, area };
 		}
 
-		await savePool();
-		return {
-			sessionId: hasValidSession ? match.sessionId : null,
-			isResume: hasValidSession as boolean,
-			slotId: match.slotId,
-			area
-		};
-	}
+		// Pool is full — evict the oldest idle slot
+		const idleSlots = pool.slots
+			.filter(s => s.status === 'idle')
+			.sort((a, b) => new Date(a.lastUsedAt).getTime() - new Date(b.lastUsedAt).getTime());
 
-	// No matching slot — check if we can create a new one
-	if (pool.slots.length < pool.maxSlots) {
-		const slotId = `slot-${area.replace(/\//g, '-')}-${Date.now()}`;
-		const slot: SessionSlot = {
-			slotId,
-			sessionId: '',  // Will be filled after first run
-			model,
-			area,
-			createdAt: new Date().toISOString(),
-			lastUsedAt: new Date().toISOString(),
-			taskCount: 1,
-			totalTokens: 0,
-			totalCost: 0,
-			status: 'active'
-		};
-		pool.slots.push(slot);
+		if (idleSlots.length > 0) {
+			const evicted = idleSlots[0];
+			evicted.sessionId = '';
+			evicted.model = model;
+			evicted.area = area;
+			evicted.projectId = projectId;
+			evicted.lastUsedAt = new Date().toISOString();
+			evicted.taskCount = 1;
+			evicted.totalTokens = 0;
+			evicted.totalCost = 0;
+			evicted.status = 'active';
+			pool.coldStarts++;
+			await savePool();
+			return { sessionId: null, isResume: false, slotId: evicted.slotId, area };
+		}
+
+		// All slots busy — cold start without a slot (won't be tracked)
 		pool.coldStarts++;
 		await savePool();
-		return { sessionId: null, isResume: false, slotId, area };
-	}
-
-	// Pool is full — evict the oldest idle slot
-	const idleSlots = pool.slots
-		.filter(s => s.status === 'idle')
-		.sort((a, b) => new Date(a.lastUsedAt).getTime() - new Date(b.lastUsedAt).getTime());
-
-	if (idleSlots.length > 0) {
-		const evicted = idleSlots[0];
-		evicted.sessionId = '';
-		evicted.model = model;
-		evicted.area = area;
-		evicted.lastUsedAt = new Date().toISOString();
-		evicted.taskCount = 1;
-		evicted.totalTokens = 0;
-		evicted.totalCost = 0;
-		evicted.status = 'active';
-		pool.coldStarts++;
-		await savePool();
-		return { sessionId: null, isResume: false, slotId: evicted.slotId, area };
-	}
-
-	// All slots busy — cold start without a slot (won't be tracked)
-	pool.coldStarts++;
-	await savePool();
-	return { sessionId: null, isResume: false, slotId: `temp-${Date.now()}`, area };
+		return { sessionId: null, isResume: false, slotId: `temp-${Date.now()}`, area };
+	});
 }
 
 // ── Session lifecycle ────────────────────────────────────────────────
@@ -313,27 +358,31 @@ export async function resolveSession(task: Task, model: string): Promise<Session
  * Register the Claude Code session ID after first cold start.
  * Called when we parse the init message from stream-json output.
  */
-export async function registerSession(slotId: string, sessionId: string): Promise<void> {
-	await loadPool();
-	const slot = pool.slots.find(s => s.slotId === slotId);
-	if (slot) {
-		slot.sessionId = sessionId;
-		await savePool();
-	}
+export function registerSession(slotId: string, sessionId: string): Promise<void> {
+	return withPoolLock(async () => {
+		await loadPool();
+		const slot = pool.slots.find(s => s.slotId === slotId);
+		if (slot) {
+			slot.sessionId = sessionId;
+			await savePool();
+		}
+	});
 }
 
 /**
  * Mark a slot as idle after the agent completes.
  */
-export async function releaseSession(slotId: string, tokens?: number, cost?: number): Promise<void> {
-	await loadPool();
-	const slot = pool.slots.find(s => s.slotId === slotId);
-	if (slot) {
-		slot.status = 'idle';
-		if (tokens) slot.totalTokens += tokens;
-		if (cost) slot.totalCost += cost;
-		await savePool();
-	}
+export function releaseSession(slotId: string, tokens?: number, cost?: number): Promise<void> {
+	return withPoolLock(async () => {
+		await loadPool();
+		const slot = pool.slots.find(s => s.slotId === slotId);
+		if (slot) {
+			slot.status = 'idle';
+			if (tokens) slot.totalTokens += tokens;
+			if (cost) slot.totalCost += cost;
+			await savePool();
+		}
+	});
 }
 
 /**
@@ -430,7 +479,7 @@ export async function populateFromConfig(): Promise<{ created: number; skipped: 
 		created++;
 	}
 
-	pool.maxSlots = Math.max(pool.maxSlots, pool.slots.length);
+	pool.maxSlots = Math.min(Math.max(pool.maxSlots, pool.slots.length), MAX_POOL_SLOTS);
 	await savePool();
 
 	return { created, skipped };
@@ -490,6 +539,7 @@ export async function populateForProject(
 			sessionId: '',
 			model: 'claude-opus-4-6',
 			area: `projects/${projectId}/${agent.type}`,
+			projectId,
 			createdAt: new Date().toISOString(),
 			lastUsedAt: new Date().toISOString(),
 			taskCount: 0,
@@ -501,7 +551,7 @@ export async function populateForProject(
 		created++;
 	}
 
-	pool.maxSlots = Math.max(pool.maxSlots, pool.slots.length);
+	pool.maxSlots = Math.min(Math.max(pool.maxSlots, pool.slots.length), MAX_POOL_SLOTS);
 	await savePool();
 
 	return { created, skipped };
@@ -514,7 +564,7 @@ export async function getProjectPoolStats(projectId: string): Promise<SessionPoo
 	await loadPool();
 	const prefix = `proj-${projectId}-`;
 	return {
-		slots: pool.slots.filter(s => s.slotId.startsWith(prefix)),
+		slots: pool.slots.filter(s => s.projectId === projectId || s.slotId.startsWith(prefix)),
 		maxSlots: pool.maxSlots,
 		coldStarts: pool.coldStarts,
 		warmResumes: pool.warmResumes,
@@ -528,7 +578,7 @@ export async function getProjectPoolStats(projectId: string): Promise<SessionPoo
 export async function resetProjectPool(projectId: string): Promise<void> {
 	await loadPool();
 	const prefix = `proj-${projectId}-`;
-	pool.slots = pool.slots.filter(s => !s.slotId.startsWith(prefix));
+	pool.slots = pool.slots.filter(s => s.projectId !== projectId && !s.slotId.startsWith(prefix));
 	await savePool();
 }
 
@@ -639,6 +689,7 @@ export async function populateFromProjects(
 				sessionId: '',
 				model: 'claude-opus-4-6',
 				area: `projects/${project.id}/${agentType}`,
+				projectId: project.id,
 				createdAt: new Date().toISOString(),
 				lastUsedAt: new Date().toISOString(),
 				taskCount: 0,
@@ -654,7 +705,7 @@ export async function populateFromProjects(
 		results.push({ projectId: project.id, maxAgents, created, skipped, preset: slotAgents, presetSaved });
 	}
 
-	pool.maxSlots = Math.max(pool.maxSlots, pool.slots.length);
+	pool.maxSlots = Math.min(Math.max(pool.maxSlots, pool.slots.length), MAX_POOL_SLOTS);
 	await savePool();
 
 	return { projects: results, totalCreated, totalSkipped };
@@ -703,102 +754,106 @@ export interface AutoScaleResult {
  * @param pendingTaskCount - Number of tasks in pending/in_progress status
  * @param config - Override default thresholds
  */
-export async function autoScale(
+export function autoScale(
 	pendingTaskCount: number,
 	config?: Partial<AutoScaleConfig>
 ): Promise<AutoScaleResult> {
-	const cfg = { ...DEFAULT_AUTOSCALE, ...config };
-	await loadPool();
+	return withPoolLock(async () => {
+		const cfg = { ...DEFAULT_AUTOSCALE, ...config };
+		await loadPool();
 
-	const now = Date.now();
-	const previousMaxSlots = pool.maxSlots;
+		const now = Date.now();
+		const previousMaxSlots = pool.maxSlots;
 
-	const activeSlots = pool.slots.filter(s => s.status === 'active');
-	const idleSlots = pool.slots.filter(s => s.status === 'idle');
+		const activeSlots = pool.slots.filter(s => s.status === 'active');
+		const idleSlots = pool.slots.filter(s => s.status === 'idle');
 
-	// How many slots do we need to handle the pending queue?
-	const desiredSlots = Math.max(
-		cfg.minSlots,
-		Math.min(cfg.maxSlots, activeSlots.length + Math.ceil(pendingTaskCount / cfg.tasksPerSlot))
-	);
+		// How many slots do we need to handle the pending queue?
+		const desiredSlots = Math.max(
+			cfg.minSlots,
+			Math.min(cfg.maxSlots, activeSlots.length + Math.ceil(pendingTaskCount / cfg.tasksPerSlot))
+		);
 
-	let slotsAdded = 0;
-	let slotsRemoved = 0;
-	let action: AutoScaleResult['action'] = 'no-op';
+		let slotsAdded = 0;
+		let slotsRemoved = 0;
+		let action: AutoScaleResult['action'] = 'no-op';
 
-	if (desiredSlots > pool.slots.length && pendingTaskCount > idleSlots.length) {
-		// ── Scale up ──────────────────────────────────────────────────
-		action = 'scale-up';
-		const toAdd = desiredSlots - pool.slots.length;
+		if (desiredSlots > pool.slots.length && pendingTaskCount > idleSlots.length) {
+			// ── Scale up ──────────────────────────────────────────────────
+			action = 'scale-up';
+			const toAdd = desiredSlots - pool.slots.length;
 
-		for (let i = 0; i < toAdd; i++) {
-			const slot: SessionSlot = {
-				slotId: `auto-${Date.now()}-${i}`,
-				sessionId: '',
-				model: 'claude-opus-4-6',
-				area: 'general',
-				createdAt: new Date().toISOString(),
-				lastUsedAt: new Date().toISOString(),
-				taskCount: 0,
-				totalTokens: 0,
-				totalCost: 0,
-				status: 'idle'
-			};
-			pool.slots.push(slot);
-			slotsAdded++;
+			for (let i = 0; i < toAdd; i++) {
+				const slot: SessionSlot = {
+					slotId: `auto-${Date.now()}-${i}`,
+					sessionId: '',
+					model: 'claude-opus-4-6',
+					area: 'general',
+					createdAt: new Date().toISOString(),
+					lastUsedAt: new Date().toISOString(),
+					taskCount: 0,
+					totalTokens: 0,
+					totalCost: 0,
+					status: 'idle'
+				};
+				pool.slots.push(slot);
+				slotsAdded++;
+			}
+
+			pool.maxSlots = Math.min(Math.max(pool.maxSlots, pool.slots.length), MAX_POOL_SLOTS);
+		} else if (
+			desiredSlots < pool.slots.length &&
+			pendingTaskCount === 0 &&
+			idleSlots.length > cfg.minSlots
+		) {
+			// ── Scale down ────────────────────────────────────────────────
+			// Only remove auto-created idle slots past the cooldown period
+			const removable = idleSlots
+				.filter(s => s.slotId.startsWith('auto-'))
+				.filter(s => now - new Date(s.lastUsedAt).getTime() > cfg.idleCooldownMs)
+				.sort((a, b) => new Date(a.lastUsedAt).getTime() - new Date(b.lastUsedAt).getTime());
+
+			const excess = pool.slots.length - Math.max(cfg.minSlots, desiredSlots);
+			const toRemove = Math.min(removable.length, excess);
+
+			if (toRemove > 0) {
+				action = 'scale-down';
+				const removeIds = new Set(removable.slice(0, toRemove).map(s => s.slotId));
+				pool.slots = pool.slots.filter(s => !removeIds.has(s.slotId));
+				slotsRemoved = toRemove;
+				// Recalculate maxSlots after removal, respecting cap
+				pool.maxSlots = Math.min(Math.max(pool.slots.length, pool.maxSlots), MAX_POOL_SLOTS);
+			}
 		}
 
-		pool.maxSlots = Math.max(pool.maxSlots, pool.slots.length);
-	} else if (
-		desiredSlots < pool.slots.length &&
-		pendingTaskCount === 0 &&
-		idleSlots.length > cfg.minSlots
-	) {
-		// ── Scale down ────────────────────────────────────────────────
-		// Only remove auto-created idle slots past the cooldown period
-		const removable = idleSlots
-			.filter(s => s.slotId.startsWith('auto-'))
-			.filter(s => now - new Date(s.lastUsedAt).getTime() > cfg.idleCooldownMs)
-			.sort((a, b) => new Date(a.lastUsedAt).getTime() - new Date(b.lastUsedAt).getTime());
-
-		const excess = pool.slots.length - Math.max(cfg.minSlots, desiredSlots);
-		const toRemove = Math.min(removable.length, excess);
-
-		if (toRemove > 0) {
-			action = 'scale-down';
-			const removeIds = new Set(removable.slice(0, toRemove).map(s => s.slotId));
-			pool.slots = pool.slots.filter(s => !removeIds.has(s.slotId));
-			slotsRemoved = toRemove;
+		// Record scale events for dashboard visibility
+		if (action !== 'no-op') {
+			if (!pool.scaleEvents) pool.scaleEvents = [];
+			pool.scaleEvents.push({
+				action,
+				slotsChanged: slotsAdded || slotsRemoved,
+				totalSlots: pool.slots.length,
+				timestamp: new Date().toISOString()
+			});
+			// Keep only the last 20 events
+			if (pool.scaleEvents.length > 20) {
+				pool.scaleEvents = pool.scaleEvents.slice(-20);
+			}
 		}
-	}
 
-	// Record scale events for dashboard visibility
-	if (action !== 'no-op') {
-		if (!pool.scaleEvents) pool.scaleEvents = [];
-		pool.scaleEvents.push({
+		await savePool();
+
+		return {
 			action,
-			slotsChanged: slotsAdded || slotsRemoved,
-			totalSlots: pool.slots.length,
-			timestamp: new Date().toISOString()
-		});
-		// Keep only the last 20 events
-		if (pool.scaleEvents.length > 20) {
-			pool.scaleEvents = pool.scaleEvents.slice(-20);
-		}
-	}
-
-	await savePool();
-
-	return {
-		action,
-		previousMaxSlots,
-		newMaxSlots: pool.maxSlots,
-		slotsAdded,
-		slotsRemoved,
-		pendingTasks: pendingTaskCount,
-		activeSlots: activeSlots.length,
-		idleSlots: idleSlots.length
-	};
+			previousMaxSlots,
+			newMaxSlots: pool.maxSlots,
+			slotsAdded,
+			slotsRemoved,
+			pendingTasks: pendingTaskCount,
+			activeSlots: activeSlots.length,
+			idleSlots: idleSlots.length
+		};
+	});
 }
 
 /**

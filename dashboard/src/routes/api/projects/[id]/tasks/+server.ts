@@ -46,7 +46,8 @@ export async function POST({ params, request }) {
 		priority: validPriorities.includes(body.priority) ? body.priority : 'medium',
 		assignee: body.assignee,
 		tags: Array.isArray(body.tags) ? body.tags.filter((t: unknown) => typeof t === 'string') : [],
-		createdBy: body.createdBy ?? 'user'
+		createdBy: body.createdBy ?? 'user',
+		blockedBy: Array.isArray(body.blockedBy) ? body.blockedBy.filter((id: unknown) => typeof id === 'string') : undefined
 	});
 
 	return json({ task }, { status: 201 });

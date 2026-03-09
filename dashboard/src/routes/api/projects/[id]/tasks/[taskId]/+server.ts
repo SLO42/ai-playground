@@ -35,6 +35,7 @@ export async function PUT({ params, request }) {
 	if (body.flagDiscussion !== undefined) updates.flagDiscussion = body.flagDiscussion;
 	if (body.assignee !== undefined) updates.assignee = body.assignee;
 	if (body.tags !== undefined && Array.isArray(body.tags)) updates.tags = body.tags.filter((t: unknown) => typeof t === 'string');
+	if (body.blockedBy !== undefined) updates.blockedBy = Array.isArray(body.blockedBy) ? body.blockedBy.filter((id: unknown) => typeof id === 'string') : [];
 
 	const task = await updateTask(projectPath, params.taskId, updates as any);
 	if (!task) throw error(404, 'Task not found');

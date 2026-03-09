@@ -128,6 +128,7 @@ export async function createTask(projectPath: string, data: {
 	tags?: string[];
 	feature?: string | null;
 	createdBy?: string;
+	blockedBy?: string[];
 }): Promise<Task> {
 	const now = new Date().toISOString();
 	const task: Task = {
@@ -143,7 +144,8 @@ export async function createTask(projectPath: string, data: {
 		createdBy: data.createdBy ?? 'user',
 		createdAt: now,
 		updatedAt: now,
-		completedAt: null
+		completedAt: null,
+		blockedBy: data.blockedBy?.length ? data.blockedBy : undefined
 	};
 
 	await ensureDirs(projectPath);
@@ -157,7 +159,7 @@ export async function createTask(projectPath: string, data: {
 	return task;
 }
 
-export async function updateTask(projectPath: string, taskId: string, updates: Partial<Pick<Task, 'title' | 'description' | 'status' | 'priority' | 'flagDiscussion' | 'assignee' | 'tags' | 'feature'>>): Promise<Task | null> {
+export async function updateTask(projectPath: string, taskId: string, updates: Partial<Pick<Task, 'title' | 'description' | 'status' | 'priority' | 'flagDiscussion' | 'assignee' | 'tags' | 'feature' | 'blockedBy'>>): Promise<Task | null> {
 	const index = await readIndex(projectPath);
 	const entryIdx = index.tasks.findIndex((t) => t.id === taskId);
 	if (entryIdx === -1) return null;
@@ -175,6 +177,7 @@ export async function updateTask(projectPath: string, taskId: string, updates: P
 	if (updates.assignee !== undefined) task.assignee = updates.assignee || null;
 	if (updates.tags !== undefined) task.tags = updates.tags;
 	if (updates.feature !== undefined) task.feature = updates.feature || null;
+	if (updates.blockedBy !== undefined) task.blockedBy = updates.blockedBy?.length ? updates.blockedBy : undefined;
 	if (updates.status !== undefined) {
 		task.status = updates.status;
 		if (updates.status === 'completed') task.completedAt = now;
@@ -212,6 +215,29 @@ export async function deleteTask(projectPath: string, taskId: string): Promise<b
 	await writeIndex(projectPath, index);
 
 	return true;
+}
+
+// ── Dependency helpers ────────────────────────────────────────────────
+
+/**
+ * Check whether a task is blocked by incomplete dependencies.
+ * Returns `blocked: true` with the list of blocking task IDs/titles
+ * if any task in `blockedBy` is not yet `completed` or `cancelled`.
+ */
+export function getBlockedStatus(taskId: string, allTasks: Task[]): { blocked: boolean; blockers: { id: string; title: string; status: Task['status'] }[] } {
+	const task = allTasks.find(t => t.id === taskId);
+	if (!task?.blockedBy?.length) return { blocked: false, blockers: [] };
+
+	const blockers: { id: string; title: string; status: Task['status'] }[] = [];
+	for (const depId of task.blockedBy) {
+		const dep = allTasks.find(t => t.id === depId);
+		if (!dep) continue; // dependency was deleted — not blocking
+		if (dep.status !== 'completed' && dep.status !== 'cancelled') {
+			blockers.push({ id: dep.id, title: dep.title, status: dep.status });
+		}
+	}
+
+	return { blocked: blockers.length > 0, blockers };
 }
 
 // ── Migration ─────────────────────────────────────────────────────────

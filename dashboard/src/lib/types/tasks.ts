@@ -16,4 +16,10 @@ export interface Task {
 	createdAt: string;
 	updatedAt: string;
 	completedAt: string | null;
+	/** Task IDs that must be completed/cancelled before this task can be worked. */
+	blockedBy?: string[];
+	/** Runtime-only: which project this task belongs to (set by heartbeat scanner, not persisted). */
+	_sourceProjectId?: string;
+	/** Runtime-only: absolute path to the project root (set by heartbeat scanner, not persisted). */
+	_sourceProjectPath?: string;
 }

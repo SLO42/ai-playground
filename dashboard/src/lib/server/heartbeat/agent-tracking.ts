@@ -2,8 +2,7 @@
  * Agent token usage tracking, log parsing, completion logging, and log tailing.
  */
 import { readFile, writeFile, unlink } from 'fs/promises';
-import { readFileSync } from 'fs';
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { resolve } from 'path';
 import { PATHS } from '../constants.js';
 import {
@@ -59,10 +58,10 @@ export interface ParsedLog {
 	usedClaudeFlow: boolean;
 }
 
-export function parseStreamJsonLog(logFile: string): ParsedLog {
+export async function parseStreamJsonLog(logFile: string): Promise<ParsedLog> {
 	const result: ParsedLog = { text: '', usage: {}, mcpTools: [], toolCounts: {}, usedClaudeFlow: false };
 	try {
-		const raw = readFileSync(logFile, 'utf-8');
+		const raw = await readFile(logFile, 'utf-8');
 		const lines = raw.split('\n').filter(l => l.trim());
 
 		for (const line of lines) {
@@ -218,8 +217,8 @@ function getGitDiffStats(baseline?: Set<string>): { files: string[]; insertions:
 
 		let chars = 0;
 		try {
-			// Only diff the files this agent changed
-			const diff = execSync(`git diff -- ${files.map(f => `"${f}"`).join(' ')}`, { cwd: PATHS.root, encoding: 'utf-8', timeout: 10000 });
+			// Only diff the files this agent changed (use execFileSync to avoid shell injection)
+			const diff = execFileSync('git', ['diff', '--', ...files], { cwd: PATHS.root, encoding: 'utf-8', timeout: 10000 }) as string;
 			chars = diff.length;
 		} catch { /* ignore */ }
 
@@ -249,7 +248,7 @@ export async function logAgentCompletion(task: Task, sender: ChatSender, exitMsg
 
 	const isMonitor = sessionId === MONITOR_SESSION_ID;
 
-	const parsed = parseStreamJsonLog(logFile);
+	const parsed = await parseStreamJsonLog(logFile);
 	const usage = parsed.usage;
 
 	let failureReason = '';

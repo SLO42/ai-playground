@@ -7,7 +7,7 @@
  */
 import { PATHS } from '../constants.js';
 import {
-	getActiveAgents, maxConcurrentAgents,
+	getActiveAgents, getMaxConcurrentAgents,
 	agentSender, log, ensureTaskSession,
 	loadMonitorSession, saveMonitorSession,
 	getProjectAgentMap, getProjectLimits, countProjectAgents
@@ -38,8 +38,8 @@ export async function spawnReleaseAgent(
 	const agents = getActiveAgents();
 	const monitorSession = await loadMonitorSession();
 
-	if (agents.size >= maxConcurrentAgents) {
-		log(monitorSession, `[release] Skipping release agent — max agents reached (${agents.size}/${maxConcurrentAgents})`);
+	if (agents.size >= getMaxConcurrentAgents()) {
+		log(monitorSession, `[release] Skipping release agent — max agents reached (${agents.size}/${getMaxConcurrentAgents()})`);
 		await saveMonitorSession(monitorSession);
 		return false;
 	}
@@ -124,13 +124,13 @@ export async function spawnReleaseAgent(
 			watchForSessionId(logFile, session.slotId).catch(() => {});
 		}
 
-		child.on('close', (code) => {
+		child.on('close', async (code) => {
 			unregisterPid(`agent:${agentId}`).catch(() => {});
 			const agentStarted = agents.get(agentId)?.startedAt;
 			agents.delete(agentId);
 			getProjectAgentMap().delete(agentId);
 
-			const parsed = parseStreamJsonLog(logFile);
+			const parsed = await parseStreamJsonLog(logFile);
 			const startTime = agentStarted ? new Date(agentStarted).getTime() : Date.now();
 
 			releaseSession(

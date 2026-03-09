@@ -5,11 +5,11 @@
  * 1. Commit the agent's file changes with a task-specific message
  * 2. Spawn a lightweight documenter agent to update memory/docs if needed
  */
-import { execSync } from 'child_process';
+import { execSync, execFileSync } from 'child_process';
 import { PATHS } from '../constants.js';
 import { pushNotification } from '../notifications.js';
 import {
-	MONITOR_SESSION_ID, getActiveAgents, maxConcurrentAgents,
+	MONITOR_SESSION_ID, getActiveAgents, getMaxConcurrentAgents,
 	agentSender, log, trimSession, ensureTaskSession,
 	loadMonitorSession, saveMonitorSession,
 	getProjectAgentMap, getProjectLimits, countProjectAgents
@@ -28,6 +28,7 @@ export interface CommitResult {
 	committed: boolean;
 	hash?: string;
 	filesCommitted: number;
+	files?: string[];
 	message?: string;
 	error?: string;
 }
@@ -42,8 +43,8 @@ export function commitAgentChanges(
 	model: string
 ): CommitResult {
 	try {
-		// Get current modified files
-		const currentRaw = execSync('git diff --name-only', {
+		// Get current modified files (include staged via HEAD)
+		const currentRaw = execSync('git diff --name-only HEAD', {
 			cwd: PATHS.root, encoding: 'utf-8', timeout: 5000
 		}).trim();
 		const currentFiles = new Set(currentRaw.split('\n').filter(Boolean));
@@ -82,9 +83,8 @@ export function commitAgentChanges(
 			return { committed: false, filesCommitted: 0, message: 'only sensitive files changed — skipped' };
 		}
 
-		// Stage only the agent's files
-		const fileArgs = safeFiles.map(f => `"${f}"`).join(' ');
-		execSync(`git add ${fileArgs}`, {
+		// Stage only the agent's files (use execFileSync to avoid shell injection)
+		execFileSync('git', ['add', '--', ...safeFiles], {
 			cwd: PATHS.root, encoding: 'utf-8', timeout: 10000
 		});
 
@@ -93,9 +93,9 @@ export function commitAgentChanges(
 		const verb = inferCommitVerb(task);
 		const commitMsg = `${verb}(${scope}): ${task.title}\n\nTask: ${task.id}\nModel: ${model}\nFiles: ${safeFiles.length}\n\nCo-Authored-By: Claw Agent <noreply@openclaw.ai>`;
 
-		const result = execSync(`git commit -m "${commitMsg.replace(/"/g, '\\"')}"`, {
+		const result = execFileSync('git', ['commit', '-m', commitMsg], {
 			cwd: PATHS.root, encoding: 'utf-8', timeout: 15000
-		});
+		}) as string;
 
 		// Extract commit hash
 		const hashMatch = result.match(/\[[\w/]+ ([a-f0-9]+)\]/);
@@ -105,6 +105,7 @@ export function commitAgentChanges(
 			committed: true,
 			hash,
 			filesCommitted: safeFiles.length,
+			files: safeFiles,
 			message: `${hash} — ${safeFiles.length} file(s)`
 		};
 	} catch (err) {
@@ -172,8 +173,8 @@ export function planFollowUps(
 
 	// Documenter: runs when the agent changed 3+ files or touched server/types
 	const manyFiles = commitResult.filesCommitted >= 3;
-	const touchedServer = commitResult.message?.includes('server') ?? false;
-	const touchedTypes = commitResult.message?.includes('types') ?? false;
+	const touchedServer = commitResult.files?.some(f => f.includes('server/')) ?? false;
+	const touchedTypes = commitResult.files?.some(f => f.includes('types/')) ?? false;
 	const isFeature = inferCommitVerb(task) === 'feat';
 
 	if (manyFiles || touchedServer || touchedTypes || isFeature) {
@@ -187,7 +188,7 @@ export function planFollowUps(
 	}
 
 	// Reviewer: runs when 3+ files changed or server/security code was touched
-	const touchedSecurity = commitResult.message?.includes('security') ?? false;
+	const touchedSecurity = commitResult.files?.some(f => f.includes('security')) ?? false;
 
 	if (manyFiles || touchedServer || touchedSecurity) {
 		followUps.push({
@@ -211,7 +212,7 @@ export async function spawnFollowUp(
 	monitorSession: ChatSession
 ): Promise<boolean> {
 	const agents = getActiveAgents();
-	if (agents.size >= maxConcurrentAgents) {
+	if (agents.size >= getMaxConcurrentAgents()) {
 		log(monitorSession, `[follow-up] Skipping ${type} — max agents reached`);
 		return false;
 	}
@@ -282,13 +283,13 @@ export async function spawnFollowUp(
 			watchForSessionId(logFile, session.slotId).catch(() => {});
 		}
 
-		child.on('close', (code) => {
+		child.on('close', async (code) => {
 			unregisterPid(`agent:${followUpId}`).catch(() => {});
 			const agentStarted = agents.get(followUpId)?.startedAt;
 			agents.delete(followUpId);
 			getProjectAgentMap().delete(followUpId);
 
-			const parsed = parseStreamJsonLog(logFile);
+			const parsed = await parseStreamJsonLog(logFile);
 			const startTime = agentStarted ? new Date(agentStarted).getTime() : Date.now();
 
 			releaseSession(

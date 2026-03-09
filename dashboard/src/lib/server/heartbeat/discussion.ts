@@ -9,7 +9,7 @@ import { pushNotification } from '../notifications.js';
 import { getAllTasks, updateTask } from '../task-store.js';
 import {
 	MONITOR_SESSION_ID, agentSender, getActiveAgents, getDiscussionMap,
-	maxConcurrentAgents, log, readSessionIndex, upsertSessionMeta
+	getMaxConcurrentAgents, log, readSessionIndex, upsertSessionMeta
 } from './shared.js';
 import { spawnClaude, buildTaskPromptWithDiscussion, pickModelForTask } from './agent-spawn.js';
 import { logAgentCompletion, captureGitBaseline } from './agent-tracking.js';
@@ -143,6 +143,9 @@ export async function checkDiscussionReplies(monitorSession: ChatSession): Promi
 
 	if (discussions.size === 0) return;
 
+	// Hoist task list outside the loop — one read per heartbeat cycle
+	const allTasks = await getAllTasks(PATHS.root);
+
 	for (const [taskId, sessionId] of discussions) {
 		try {
 			const raw = await readFile(`${PATHS.chatsDir}/${sessionId}.json`, 'utf-8');
@@ -156,6 +159,11 @@ export async function checkDiscussionReplies(monitorSession: ChatSession): Promi
 			const userReplies = session.messages.filter(m => m.role === 'user');
 			if (userReplies.length === 0) continue;
 
+			// Validate that the latest reply has actual content
+			const lastReply = userReplies[userReplies.length - 1];
+			const content = lastReply.content?.trim();
+			if (!content) continue; // skip empty replies
+
 			log(monitorSession, `[discuss] User responded to "${taskId}" — handing off to Claude Code agent`);
 
 			const discussionContext = session.messages
@@ -163,7 +171,6 @@ export async function checkDiscussionReplies(monitorSession: ChatSession): Promi
 				.map(m => `${m.sender?.label ?? m.role}: ${m.content}`)
 				.join('\n\n');
 
-			const allTasks = await getAllTasks(PATHS.root);
 			const task = allTasks.find(t => t.id === taskId);
 
 			if (task && (task.status === 'pending' || task.status === 'in_progress')) {
@@ -174,6 +181,7 @@ export async function checkDiscussionReplies(monitorSession: ChatSession): Promi
 
 				const success = await spawnAgentWithContext(task, monitorSession, discussionContext, sessionId);
 				if (success) {
+					discussions.delete(taskId); // agent running, no longer need to watch
 					await updateTask(PATHS.root, taskId, { status: 'in_progress' }).catch(() => {});
 
 					session.status = 'streaming';
@@ -208,11 +216,12 @@ export async function checkDiscussionReplies(monitorSession: ChatSession): Promi
 						desktop: true
 					});
 				}
+				// If not spawned (max agents), leave it in the map — will retry next cycle
 			} else {
+				// Task not found or already completed — clean up
+				discussions.delete(taskId);
 				log(monitorSession, `[discuss] Task "${taskId}" not found or already completed — closing discussion`);
 			}
-
-			discussions.delete(taskId);
 		} catch { /* session file missing or corrupt */ }
 	}
 }
@@ -220,7 +229,7 @@ export async function checkDiscussionReplies(monitorSession: ChatSession): Promi
 async function spawnAgentWithContext(task: Task, monitorSession: ChatSession, discussionContext: string, discussionSessionId: string): Promise<boolean> {
 	const agents = getActiveAgents();
 
-	if (agents.size >= maxConcurrentAgents) {
+	if (agents.size >= getMaxConcurrentAgents()) {
 		log(monitorSession, `[skip] Max agents — deferring discussed task "${task.title}"`);
 		return false;
 	}
@@ -258,7 +267,7 @@ async function spawnAgentWithContext(task: Task, monitorSession: ChatSession, di
 			watchForSessionId(logFile, session.slotId).catch(() => {});
 		}
 
-		child.on('close', (code) => {
+		child.on('close', async (code) => {
 			unregisterPid(`agent:${task.id}`).catch(() => {});
 			const agentInfo = agents.get(task.id);
 			const agentSnd = agentInfo?.sender ?? sender;
@@ -269,7 +278,7 @@ async function spawnAgentWithContext(task: Task, monitorSession: ChatSession, di
 			const exitMsg = code === 0 ? 'completed successfully' : `exited with code ${code}`;
 
 			// Parse log for token usage before releasing the pool slot
-			const parsed = parseStreamJsonLog(logFile);
+			const parsed = await parseStreamJsonLog(logFile);
 			releaseSession(
 				session.slotId,
 				parsed.usage?.totalTokens ?? 0,

@@ -9,7 +9,7 @@ import { pushNotification } from '../notifications.js';
 import { getAllTasks, migrateIfNeeded, createTask, updateTask } from '../task-store.js';
 import { scanAllProjects } from '../project-scanner.js';
 import {
-	MONITOR_SESSION_ID, agentSender, getActiveAgents, maxConcurrentAgents,
+	MONITOR_SESSION_ID, agentSender, getActiveAgents, getMaxConcurrentAgents,
 	log, trimSession, upsertSessionMeta, saveMonitorSession
 } from './shared.js';
 import { spawnClaude } from './agent-spawn.js';
@@ -24,7 +24,7 @@ const DEFAULT_MODEL = 'gpt-oss:20b';
 
 export async function spawnReviewAgent(monitorSession: ChatSession): Promise<void> {
 	const agents = getActiveAgents();
-	if (agents.size >= maxConcurrentAgents) return;
+	if (agents.size >= getMaxConcurrentAgents()) return;
 
 	const sender = agentSender('review', 'Claw Review');
 	const reportId = REVIEW_SESSION_ID;
@@ -211,19 +211,30 @@ async function ensureReviewSession(sender: ChatSender): Promise<void> {
 	const sessionPath = `${PATHS.chatsDir}/${REVIEW_SESSION_ID}.json`;
 	const now = new Date().toISOString();
 
-	const session: ChatSession = {
-		id: REVIEW_SESSION_ID,
-		model: 'system',
-		provider: 'internal',
-		createdAt: now,
-		updatedAt: now,
-		messages: [{
-			role: 'system',
-			content: 'Claw project review — audits the project and creates tasks for missing features, bugs, and improvements.'
-		}],
-		source: 'claw',
-		status: 'streaming'
-	};
+	// Try to load existing session to preserve history
+	let session: ChatSession;
+	try {
+		const raw = await readFile(sessionPath, 'utf-8');
+		session = JSON.parse(raw);
+		// Update status for the new review run
+		session.status = 'streaming';
+		session.updatedAt = now;
+	} catch {
+		// No existing session — create fresh
+		session = {
+			id: REVIEW_SESSION_ID,
+			model: 'system',
+			provider: 'internal',
+			createdAt: now,
+			updatedAt: now,
+			messages: [{
+				role: 'system',
+				content: 'Claw project review — audits the project and creates tasks for missing features, bugs, and improvements.'
+			}],
+			source: 'claw',
+			status: 'streaming'
+		};
+	}
 
 	await writeFile(sessionPath, JSON.stringify(session, null, '\t'), 'utf-8');
 
@@ -232,8 +243,8 @@ async function ensureReviewSession(sender: ChatSender): Promise<void> {
 		title: 'Claw Project Review',
 		model: 'system',
 		provider: 'internal',
-		messageCount: 1,
-		createdAt: now,
+		messageCount: session.messages.length,
+		createdAt: session.createdAt,
 		updatedAt: now,
 		source: 'claw',
 		status: 'streaming'
@@ -359,8 +370,11 @@ function execAsync(cmd: string, cwd: string, timeoutMs: number): Promise<string>
 	});
 }
 
+const MAX_CONTEXT_CHARS = 8000;
+
 async function collectReviewContext(): Promise<string> {
 	const parts: string[] = ['## Project Context (pre-collected)'];
+	let totalChars = parts[0].length;
 
 	// 1. Existing tasks (grouped by feature)
 	try {
@@ -460,36 +474,40 @@ async function collectReviewContext(): Promise<string> {
 		parts.push(files.map(f => `- \`${f}\``).join('\n'));
 	}
 
-	// 5. Recent agent usage
-	try {
-		const raw = await readFile(resolve(PATHS.root, '.playground/agent-usage.json'), 'utf-8');
-		const usage = JSON.parse(raw) as Array<{ taskTitle: string; model: string; inputTokens: number; costUsd: number }>;
-		const recent = usage.slice(-5);
-		if (recent.length > 0) {
-			const totalCost = usage.reduce((s, e) => s + (e.costUsd ?? 0), 0);
-			parts.push(``, `### Recent Agent Activity (total cost: $${totalCost.toFixed(2)})`);
-			for (const e of recent) {
-				parts.push(`- "${e.taskTitle}" — ${e.model} — ${(e.inputTokens / 1000).toFixed(0)}K input — $${(e.costUsd ?? 0).toFixed(4)}`);
-			}
-		}
-	} catch { /* skip */ }
+	// Track accumulated size for cap enforcement
+	totalChars = parts.reduce((s, p) => s + p.length, 0);
 
-	// 6. Build status — async child process, no event loop blocking
-	const buildOutput = await execAsync('cd dashboard && npm run build 2>&1 | tail -5', PATHS.root, 60_000);
-	if (buildOutput.startsWith('FAILED:')) {
-		parts.push(``, `### Build Status: FAILED`);
-		parts.push('```', buildOutput.slice(8), '```');
-	} else {
-		parts.push(``, `### Build Status`);
-		parts.push('```', buildOutput, '```');
+	// 5. Recent agent usage (only if within size cap)
+	if (totalChars < MAX_CONTEXT_CHARS) {
+		try {
+			const raw = await readFile(resolve(PATHS.root, '.playground/agent-usage.json'), 'utf-8');
+			const usage = JSON.parse(raw) as Array<{ taskTitle: string; model: string; inputTokens: number; costUsd: number }>;
+			const recent = usage.slice(-5);
+			if (recent.length > 0) {
+				const totalCost = usage.reduce((s, e) => s + (e.costUsd ?? 0), 0);
+				const section = [``, `### Recent Agent Activity (total cost: $${totalCost.toFixed(2)})`];
+				for (const e of recent) {
+					section.push(`- "${e.taskTitle}" — ${e.model} — ${(e.inputTokens / 1000).toFixed(0)}K input — $${(e.costUsd ?? 0).toFixed(4)}`);
+				}
+				const sectionStr = section.join('\n');
+				if (totalChars + sectionStr.length <= MAX_CONTEXT_CHARS) {
+					parts.push(...section);
+					totalChars += sectionStr.length;
+				}
+			}
+		} catch { /* skip */ }
 	}
+
+	// 6. Build status — skipped from context collection.
+	// The review agent can run `npm run build` itself as part of its execution
+	// if needed. Running a full build per review prompt is wasteful.
 
 	return parts.join('\n');
 }
 
 async function parseReviewOutput(logFile: string, sender: ChatSender): Promise<void> {
 	try {
-		const parsed = parseStreamJsonLog(logFile);
+		const parsed = await parseStreamJsonLog(logFile);
 		const content = parsed.text;
 		if (!content) return;
 

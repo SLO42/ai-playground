@@ -24,7 +24,7 @@ import { pushNotification } from '../notifications.js';
 import { createTask, getAllTasks, migrateIfNeeded } from '../task-store.js';
 import { scanAllProjects } from '../project-scanner.js';
 import {
-	agentSender, getActiveAgents, maxConcurrentAgents,
+	agentSender, getActiveAgents, getMaxConcurrentAgents,
 	log, trimSession, upsertSessionMeta
 } from './shared.js';
 import { spawnClaude } from './agent-spawn.js';
@@ -122,8 +122,8 @@ interface InspectionState {
  */
 export async function runUxInspection(monitorSession: ChatSession): Promise<void> {
 	const agents = getActiveAgents();
-	if (agents.size >= maxConcurrentAgents) {
-		log(monitorSession, `[ux] Skipping — max agents (${maxConcurrentAgents}) already running`);
+	if (agents.size >= getMaxConcurrentAgents()) {
+		log(monitorSession, `[ux] Skipping — max agents (${getMaxConcurrentAgents()}) already running`);
 		return;
 	}
 
@@ -169,7 +169,12 @@ export async function runUxInspection(monitorSession: ChatSession): Promise<void
 
 // ── Async Playwright runner (non-blocking) ──────────────────────────
 
-function execPlaywright(cmd: string, cwd: string, timeoutMs: number): Promise<string> {
+interface PlaywrightOutput {
+	stdout: string;
+	stderr: string;
+}
+
+function execPlaywright(cmd: string, cwd: string, timeoutMs: number): Promise<PlaywrightOutput> {
 	return new Promise((resolve) => {
 		import('child_process').then(({ exec }) => {
 			const child = exec(cmd, {
@@ -180,12 +185,13 @@ function execPlaywright(cmd: string, cwd: string, timeoutMs: number): Promise<st
 				env: { ...process.env, FORCE_COLOR: '0' }
 			}, (_err, stdout, stderr) => {
 				// Playwright exits non-zero on test failures — still return output
-				resolve(stdout || stderr || '');
+				// Keep stdout and stderr separate so JSON parsing only uses stdout
+				resolve({ stdout: stdout || '', stderr: stderr || '' });
 			});
 			// Hard safety timeout — kill if still running at 2x
 			const safety = setTimeout(() => {
 				try { child.kill(); } catch { /* already dead */ }
-				resolve('');
+				resolve({ stdout: '', stderr: '' });
 			}, timeoutMs * 2);
 			child.on('close', () => clearTimeout(safety));
 		});
@@ -200,7 +206,7 @@ async function runRegressionTests(monitorSession: ChatSession, state: Inspection
 	const startTime = Date.now();
 
 	try {
-		const output = await execPlaywright(
+		const { stdout } = await execPlaywright(
 			`npx playwright test ${REGRESSION_TEST_FILE} --reporter=json`,
 			resolve(PATHS.root, 'dashboard'),
 			120_000
@@ -208,15 +214,15 @@ async function runRegressionTests(monitorSession: ChatSession, state: Inspection
 
 		const durationMs = Date.now() - startTime;
 
-		// Parse Playwright JSON output
+		// Parse Playwright JSON output — only from stdout (stderr contains warnings/noise)
 		let results: { suites?: Array<{ specs?: Array<{ ok: boolean; title: string }> }> } = {};
 		try {
-			results = JSON.parse(output);
+			results = JSON.parse(stdout);
 		} catch {
 			// Output might have non-JSON prefix — try to extract
-			const jsonStart = output.indexOf('{');
+			const jsonStart = stdout.indexOf('{');
 			if (jsonStart >= 0) {
-				try { results = JSON.parse(output.slice(jsonStart)); } catch { /* give up */ }
+				try { results = JSON.parse(stdout.slice(jsonStart)); } catch { /* give up */ }
 			}
 		}
 
@@ -529,7 +535,7 @@ async function processUxResults(
 	state: InspectionState,
 	inspectedRoutes: string[]
 ): Promise<void> {
-	const parsed = parseStreamJsonLog(logFile);
+	const parsed = await parseStreamJsonLog(logFile);
 	const content = parsed.text;
 	if (!content) return;
 
@@ -580,7 +586,7 @@ async function processUxResults(
 
 	// Store learnings for memory agent
 	if (learnings.length > 0) {
-		await storeLearnings(learnings, findings, sender);
+		await storeLearnings(learnings, findings, sender, state);
 	}
 
 	// Save inspection result
@@ -697,7 +703,8 @@ async function createTasksFromFindings(findings: UxFinding[], sender: ChatSender
 async function storeLearnings(
 	learnings: string[],
 	findings: UxFinding[],
-	sender: ChatSender
+	_sender: ChatSender,
+	inspectionState: InspectionState
 ): Promise<void> {
 	const learningsPath = resolve(PATHS.root, '.playground', 'ux-learnings.json');
 	let existing: Array<{ learning: string; timestamp: string; source: string; context?: string }> = [];
@@ -754,17 +761,19 @@ async function storeLearnings(
 	await writeFile(learningsPath, JSON.stringify(existing, null, '\t'), 'utf-8');
 
 	// Distill learnings into optimizations locally (no AI spawn needed)
-	await distillOptimizationsLocally(existing, findings);
+	await distillOptimizationsLocally(existing, findings, inspectionState);
 }
 
 /**
  * Distill UX learnings into optimizations locally — no AI spawn needed.
  * Analyzes patterns in learnings and findings to produce the same
  * ux-optimizations.json that the memory agent used to write via Sonnet.
+ * Accepts the already-loaded inspection state to avoid re-reading from disk.
  */
 async function distillOptimizationsLocally(
-	learnings: Array<{ learning: string; timestamp: string; source: string; context?: string }>,
-	findings: UxFinding[]
+	_learnings: Array<{ learning: string; timestamp: string; source: string; context?: string }>,
+	findings: UxFinding[],
+	inspectionState: InspectionState
 ): Promise<void> {
 	const optPath = resolve(PATHS.root, '.playground', 'ux-optimizations.json');
 
@@ -782,7 +791,6 @@ async function distillOptimizationsLocally(
 
 	// Track consecutive clean counts per route
 	const cleanCounts: Record<string, number> = existing.consecutiveClean ?? {};
-	const inspectionState = await loadInspectionState();
 	const failedRoutes = new Set(findings.map(f => f.route));
 
 	for (const route of inspectionState.passedRoutes) {

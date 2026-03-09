@@ -44,20 +44,24 @@ export interface SyncResult {
 
 // ── Storage ────────────────────────────────────────────────────────────
 
-const SYNC_FILE = resolve(PATHS.root, '.playground/github-sync.json');
+function syncFilePath(projectPath?: string): string {
+	const base = projectPath ?? PATHS.root;
+	return resolve(base, '.playground/github-sync.json');
+}
 
-async function loadSyncState(): Promise<SyncState> {
+async function loadSyncState(projectPath?: string): Promise<SyncState> {
 	try {
-		const raw = await readFile(SYNC_FILE, 'utf-8');
+		const raw = await readFile(syncFilePath(projectPath), 'utf-8');
 		return JSON.parse(raw);
 	} catch {
 		return { mappings: [], lastFullSync: null, repo: '' };
 	}
 }
 
-async function saveSyncState(state: SyncState): Promise<void> {
-	await mkdir(resolve(PATHS.root, '.playground'), { recursive: true });
-	await writeFile(SYNC_FILE, JSON.stringify(state, null, '\t'), 'utf-8');
+async function saveSyncState(state: SyncState, projectPath?: string): Promise<void> {
+	const base = projectPath ?? PATHS.root;
+	await mkdir(resolve(base, '.playground'), { recursive: true });
+	await writeFile(syncFilePath(projectPath), JSON.stringify(state, null, '\t'), 'utf-8');
 }
 
 // ── Task file helpers ──────────────────────────────────────────────────
@@ -75,12 +79,12 @@ async function saveTasks(projectPath: string, tasks: Task[]): Promise<void> {
 
 // ── GitHub CLI helpers ─────────────────────────────────────────────────
 
-async function gh(args: string, stdin?: string): Promise<string> {
+async function gh(args: string, stdin?: string, cwd?: string): Promise<string> {
 	const { spawn } = await import('child_process');
 
 	return new Promise((resolve, reject) => {
 		const proc = spawn('gh', splitArgs(args), {
-			cwd: PATHS.root,
+			cwd: cwd ?? PATHS.root,
 			stdio: ['pipe', 'pipe', 'pipe']
 		});
 
@@ -134,16 +138,18 @@ function splitArgs(cmd: string): string[] {
 	return args;
 }
 
-async function getRepoName(): Promise<string> {
-	const result = await gh('repo view --json nameWithOwner --jq .nameWithOwner');
+async function getRepoName(cwd?: string): Promise<string> {
+	const result = await gh('repo view --json nameWithOwner --jq .nameWithOwner', undefined, cwd);
 	return result;
 }
 
-async function listIssues(repo: string, since?: string | null): Promise<GitHubIssue[]> {
+async function listIssues(repo: string, since?: string | null, cwd?: string): Promise<GitHubIssue[]> {
 	// When we have a last-sync timestamp, use GitHub search to only fetch issues updated since then
 	const sinceFilter = since ? ` --search "updated:>=${since.slice(0, 10)}"` : '';
 	const result = await gh(
-		`issue list --repo ${repo} --state all --limit 100 --json number,title,body,state,labels,assignees,createdAt,updatedAt,url${sinceFilter}`
+		`issue list --repo ${repo} --state all --limit 100 --json number,title,body,state,labels,assignees,createdAt,updatedAt,url${sinceFilter}`,
+		undefined,
+		cwd
 	);
 	if (!result) return [];
 	const issues = JSON.parse(result);
@@ -186,6 +192,9 @@ async function createIssue(repo: string, task: Task, projectId: string, source?:
 			: '_Synced from ai-playground dashboard_'
 	].filter((l) => l !== undefined).join('\n');
 
+	// Sanitize task title to prevent shell injection via quote/backtick/dollar chars
+	const safeTitle = task.title.replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`');
+
 	// Ensure labels exist (--force updates if exists, creates if not)
 	for (const label of labels) {
 		await gh(`label create "${label}" --repo ${repo} --color 0E8A16 --force`).catch(() => {});
@@ -195,7 +204,7 @@ async function createIssue(repo: string, task: Task, projectId: string, source?:
 
 	// Use --body-file - (stdin) to avoid shell escaping issues with body content
 	const url = await gh(
-		`issue create --repo ${repo} -t "${task.title}" --body-file - ${labelFlags}`,
+		`issue create --repo ${repo} -t "${safeTitle}" --body-file - ${labelFlags}`,
 		body
 	);
 
@@ -290,26 +299,29 @@ function issueToTask(issue: GitHubIssue): Task {
 
 export async function syncTasks(opts?: {
 	projectId?: string;
+	projectPath?: string;
 	direction?: 'push' | 'pull' | 'both';
 	dryRun?: boolean;
 	source?: string;
 }): Promise<SyncResult> {
 	const direction = opts?.direction ?? 'both';
 	const projectId = opts?.projectId ?? '.';
+	const projectPath = opts?.projectPath;
+	const cwd = projectPath ?? PATHS.root;
 	const result: SyncResult = { created: 0, updated: 0, pulled: 0, skipped: 0, errors: [] };
 
 	try {
-		const repo = await getRepoName();
-		const state = await loadSyncState();
+		const repo = await getRepoName(cwd);
+		const state = await loadSyncState(projectPath);
 		state.repo = repo;
 
 		// Clean broken mappings (null/invalid issueNumber from past failures)
 		state.mappings = state.mappings.filter((m) => m.issueNumber != null && m.issueNumber > 0);
 
-		const tasks = await loadTasks(projectId);
+		const tasks = projectPath ? await getAllTasks(projectPath) : await loadTasks(projectId);
 
 		// Only fetch issues updated since last sync (or all if first sync)
-		const allIssues = await listIssues(repo, state.lastFullSync);
+		const allIssues = await listIssues(repo, state.lastFullSync, cwd);
 		// Only pull issues that have the dashboard-task label
 		const issues = allIssues.filter((i) =>
 			i.labels.some((l) => l.name === 'dashboard-task')
@@ -444,8 +456,12 @@ export async function syncTasks(opts?: {
 		// Save
 		if (!opts?.dryRun) {
 			state.lastFullSync = new Date().toISOString();
-			await saveSyncState(state);
-			await saveTasks(projectId, tasks);
+			await saveSyncState(state, projectPath);
+			if (projectPath) {
+				await replaceAllTasks(projectPath, tasks);
+			} else {
+				await saveTasks(projectId, tasks);
+			}
 		}
 
 		// Notify on sync results
@@ -488,17 +504,17 @@ export async function syncTasks(opts?: {
 	}
 }
 
-export async function getSyncStatus(): Promise<{
+export async function getSyncStatus(projectPath?: string): Promise<{
 	repo: string;
 	lastSync: string | null;
 	mappings: number;
 	state: SyncState;
 }> {
-	const state = await loadSyncState();
+	const state = await loadSyncState(projectPath);
 	let repo = state.repo;
 	if (!repo) {
 		try {
-			repo = await getRepoName();
+			repo = await getRepoName(projectPath);
 		} catch {
 			repo = 'unknown';
 		}

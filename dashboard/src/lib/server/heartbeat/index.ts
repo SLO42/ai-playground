@@ -13,7 +13,7 @@ import { loadAgentDefaults } from '../agent-defaults.js';
 import {
 	DEFAULT_INTERVAL_MS, MONITOR_SESSION_ID,
 	getActiveAgents, getDiscussionMap, ensureChatsDir,
-	loadMaxAgents, maxConcurrentAgents,
+	loadMaxAgents, getMaxConcurrentAgents,
 	loadMonitorSession, saveMonitorSession, readSessionIndex,
 	log, trimSession, agentSender, ensureTaskSession, taskSessionId,
 	upsertSessionMeta,
@@ -34,7 +34,7 @@ import { reapStaleProcesses, registerPid, unregisterPid } from './pid-registry.j
 import { processSuggestions, suggestTasks } from '../task-suggestions.js';
 import { syncMemoryBridge } from '../memory-bridge.js';
 import { runUxInspection } from './ux-inspector.js';
-import { loadRestartConfigAsync, shouldRestart, attemptRestart, resetRestartCount } from './auto-restart.js';
+import { loadRestartConfigAsync, shouldRestart, attemptRestart, resetRestartCount, getRestartState } from './auto-restart.js';
 import type { ChatSession } from '$lib/types/chat.js';
 import type { Task } from '$lib/types/tasks.js';
 
@@ -169,8 +169,8 @@ async function scanTasks(): Promise<TaskScanResult> {
 async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<boolean> {
 	const agents = getActiveAgents();
 
-	if (agents.size >= maxConcurrentAgents) {
-		log(monitorSession, `[skip] Max agents (${maxConcurrentAgents}) already running — deferring "${task.title}"`);
+	if (agents.size >= getMaxConcurrentAgents()) {
+		log(monitorSession, `[skip] Max agents (${getMaxConcurrentAgents()}) already running — deferring "${task.title}"`);
 		return false;
 	}
 
@@ -220,8 +220,10 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 
 		if (context) {
 			log(monitorSession, `[context] OpenClaw gathered ${context.length} chars of context for "${task.title}"`);
-			// Inject context into the task description for Claude Code
-			task.description = `${task.description ?? ''}\n\n---\n## Pre-gathered Context (via OpenClaw)\n${context}`;
+			// Clone task to avoid mutating the original (which lives in the scan results)
+			const taskCopy = { ...task };
+			taskCopy.description = `${task.description ?? ''}\n\n---\n## Pre-gathered Context (via OpenClaw)\n${context}`;
+			task = taskCopy;
 
 			recordEvent({ taskId: task.id, taskTitle: task.title, type: 'context_gathered', provider: 'openclaw', model: 'gpt-oss:20b', modelTier: 'local', contextLength: context.length, projectId: task._sourceProjectId }).catch(() => {});
 		} else {
@@ -258,7 +260,12 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 			slotId: session.slotId
 		});
 
-		const pid = child.pid ?? 0;
+		if (!child.pid) {
+			log(monitorSession, `[error] spawnClaude returned no PID for "${task.title}" — aborting`);
+			return false;
+		}
+
+		const pid = child.pid;
 		agents.set(task.id, {
 			taskId: task.id,
 			pid,
@@ -282,7 +289,7 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 			watchForSessionId(logFile, session.slotId).catch(() => {});
 		}
 
-		child.on('close', (code) => {
+		child.on('close', async (code) => {
 			unregisterPid(`agent:${task.id}`).catch(() => {});
 			const agentInfo = agents.get(task.id);
 			const agentSnd = agentInfo?.sender ?? sender;
@@ -294,7 +301,7 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 			const exitMsg = code === 0 ? 'completed successfully' : `exited with code ${code}`;
 
 			// Parse log for final stats before recording analytics
-			const parsed = parseStreamJsonLog(logFile);
+			const parsed = await parseStreamJsonLog(logFile);
 			const startTime = agentInfo ? new Date(agentInfo.startedAt).getTime() : Date.now();
 			const durationMs = parsed.usage?.durationMs ?? (Date.now() - startTime);
 
@@ -513,7 +520,6 @@ async function heartbeat() {
 				}
 			} else {
 				// Either in cooldown, at max attempts, or not configured
-				const { getRestartState } = await import('./auto-restart.js');
 				const state = getRestartState().get(restartName);
 				if (state && state.status === 'failed') {
 					log(session, `[restart] ${name} exceeded max restart attempts (${restartConfig.maxAttempts}) — manual intervention required`);
@@ -574,19 +580,29 @@ async function heartbeat() {
 		});
 	}
 
-	// Reset stale in_progress tasks
+	// Reset stale in_progress tasks across all projects
 	if (taskScan.inProgress > 0) {
 		const activeAgents = getActiveAgents();
 		let staleReset = 0;
 		const staleNames: string[] = [];
 		try {
-			const allTasks = await getAllTasks(PATHS.root);
-			for (const task of allTasks) {
-				if (task.status === 'in_progress' && task.assignee === 'claw' && !activeAgents.has(task.id)) {
-					await updateTask(PATHS.root, task.id, { status: 'pending', assignee: null }).catch(() => {});
-					staleNames.push(task.title);
-					staleReset++;
-				}
+			const allProjects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root).catch(() => [] as Awaited<ReturnType<typeof scanAllProjects>>);
+			const projectPaths = new Set<string>([PATHS.root]);
+			for (const project of allProjects) {
+				projectPaths.add(resolve(project.path));
+			}
+
+			for (const projPath of projectPaths) {
+				try {
+					const tasks = await getAllTasks(projPath);
+					for (const task of tasks) {
+						if (task.status === 'in_progress' && task.assignee === 'claw' && !activeAgents.has(task.id)) {
+							await updateTask(projPath, task.id, { status: 'pending', assignee: null }).catch(() => {});
+							staleNames.push(task.title);
+							staleReset++;
+						}
+					}
+				} catch { /* skip inaccessible project */ }
 			}
 		} catch { /* reset failed */ }
 		if (staleReset > 0) {
@@ -736,7 +752,7 @@ async function heartbeat() {
 	}
 	if (seenProjects.size > 0) {
 		const limitSummary = [...seenProjects.keys()].map(id => `${id}: ${projectLimits.get(id) ?? 2}`).join(', ');
-		log(session, `[spawn] Per-project limits: ${limitSummary} (global max: ${maxConcurrentAgents})`);
+		log(session, `[spawn] Per-project limits: ${limitSummary} (global max: ${getMaxConcurrentAgents()})`);
 	}
 
 	// ── Phase 5b: Spawn agents (round-robin across projects, respecting per-project limits)
@@ -745,7 +761,7 @@ async function heartbeat() {
 
 	if (actionable.length > 0) {
 		const agents = getActiveAgents();
-		const slotsAvailable = maxConcurrentAgents - agents.size;
+		const slotsAvailable = getMaxConcurrentAgents() - agents.size;
 
 		if (slotsAvailable > 0) {
 			log(session, `[spawn] ${slotsAvailable} global slot(s) available — evaluating ${actionable.length} actionable task(s)`);
@@ -814,7 +830,7 @@ async function heartbeat() {
 				}
 			}
 		} else {
-			log(session, `[spawn] No agent slots — ${agents.size}/${maxConcurrentAgents} running`);
+			log(session, `[spawn] No agent slots — ${agents.size}/${getMaxConcurrentAgents()} running`);
 		}
 	} else {
 		log(session, `[spawn] No actionable tasks — nothing to spawn`);

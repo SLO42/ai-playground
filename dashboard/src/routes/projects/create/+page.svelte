@@ -20,6 +20,7 @@
 	let topology = $state('hierarchical-mesh');
 
 	let serviceToggles = $state(data.autoStartServices.map((s) => s.default));
+	let autoStart = $state(true);
 	let creating = $state(false);
 	let error = $state('');
 
@@ -64,7 +65,8 @@
 					sharePatterns,
 					maxAgents,
 					topology,
-					services: enabledServices
+					services: enabledServices,
+					startServices: autoStart
 				})
 			});
 
@@ -211,6 +213,17 @@
 							</button>
 						</div>
 					{/each}
+				</div>
+
+				<!-- Auto-start after creation -->
+				<div class="pt-1">
+					<label class="flex items-center gap-2 cursor-pointer">
+						<input type="checkbox" bind:checked={autoStart} class="accent-accent-blue" />
+						<span class="text-sm text-text-primary">Auto-start services after creation</span>
+					</label>
+					<p class="text-[10px] text-text-secondary mt-1 ml-5">
+						Selected services above will be started automatically when the project is created
+					</p>
 				</div>
 
 				<!-- Model Routing -->

@@ -5,6 +5,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { PATHS } from '$lib/server/constants.js';
 import { scanAllProjects, scanProject } from '$lib/server/project-scanner.js';
+import { startProjectServices } from '$lib/server/service-starter.js';
 import type { ProjectRegistry, PlaygroundConfig } from '$lib/types/projects.js';
 
 const execFileAsync = promisify(execFile);
@@ -73,6 +74,7 @@ interface CreateProjectBody {
 	maxAgents?: number;
 	topology?: string;
 	services?: string[];
+	startServices?: boolean | string[];
 }
 
 /** Template file generators keyed by template ID */
@@ -354,7 +356,16 @@ export async function POST({ request }) {
 
 	// 7. Scan and return the created project
 	const project = await scanProject(projectPath);
-	return json({ project, gitInitialized, githubCreated }, { status: 201 });
+
+	// 8. Fire-and-forget service auto-start (don't block the response)
+	const shouldStart = body.startServices;
+	if (shouldStart === true || (Array.isArray(shouldStart) && shouldStart.length > 0)) {
+		startProjectServices(projectPath).catch(() => {
+			// Service start failures are non-fatal — logged in service-starter
+		});
+	}
+
+	return json({ project, gitInitialized, githubCreated, servicesStarting: !!shouldStart }, { status: 201 });
 }
 
 /** Legacy import handler — existing directories only */

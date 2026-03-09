@@ -53,7 +53,9 @@ export const load: PageServerLoad = async ({ params }) => {
 				{ label: 'Memory', href: 'memory', stat: `${project.memoryNodes} nodes`, accent: 'blue' },
 				{ label: 'Hooks', href: 'hooks', stat: '-', accent: 'yellow' },
 				{ label: 'Security', href: 'security', stat: '-', accent: 'green' },
-				{ label: 'Apps & MCP', href: 'services', stat: `${services.length} services`, accent: 'cyan' }
+				{ label: 'Apps & MCP', href: 'services', stat: `${services.length} services`, accent: 'cyan' },
+				{ label: 'Pipelines', href: 'pipelines', stat: '-', accent: 'purple' },
+				{ label: 'Releases', href: 'releases', stat: '-', accent: 'cyan' }
 			]
 		}
 	};
@@ -76,7 +78,9 @@ function buildFallback(id: string) {
 			{ label: 'Memory', href: 'memory', stat: '-', accent: 'blue' },
 			{ label: 'Hooks', href: 'hooks', stat: '-', accent: 'yellow' },
 			{ label: 'Security', href: 'security', stat: '-', accent: 'green' },
-			{ label: 'Apps & MCP', href: 'services', stat: '-', accent: 'cyan' }
+			{ label: 'Apps & MCP', href: 'services', stat: '-', accent: 'cyan' },
+			{ label: 'Pipelines', href: 'pipelines', stat: '-', accent: 'purple' },
+			{ label: 'Releases', href: 'releases', stat: '-', accent: 'cyan' }
 		]
 	};
 }

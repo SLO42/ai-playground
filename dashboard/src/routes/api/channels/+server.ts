@@ -1,6 +1,6 @@
 import { json } from '@sveltejs/kit';
 import { resolve } from 'path';
-import { access } from 'fs/promises';
+import { access, readdir } from 'fs/promises';
 import { readYamlFile, writeYamlFile } from '$lib/server/yaml-parser.js';
 import { PATHS, isPathAllowed } from '$lib/server/constants.js';
 import { CHANNEL_TEMPLATES, CHANNEL_NAME_MAP } from '$lib/server/channel-templates.js';
@@ -8,12 +8,24 @@ import type { GatewayConfig, ChannelConfig } from '$lib/types/channels.js';
 import type { RequestHandler } from './$types.js';
 
 export const GET: RequestHandler = async () => {
-	const [gateway, twitch] = await Promise.all([
-		readYamlFile<GatewayConfig>(PATHS.gatewayYaml),
-		readYamlFile<ChannelConfig>(PATHS.twitchYaml)
-	]);
+	const gateway = await readYamlFile<GatewayConfig>(PATHS.gatewayYaml);
 
-	return json({ gateway, channels: [twitch].filter(Boolean) });
+	// Scan all channel YAML files in the channels directory
+	const channels: ChannelConfig[] = [];
+	try {
+		const files = await readdir(PATHS.channelsDir);
+		const yamlFiles = files.filter(f => f.endsWith('.yaml') || f.endsWith('.yml'));
+		const results = await Promise.all(
+			yamlFiles.map(f => readYamlFile<ChannelConfig>(resolve(PATHS.channelsDir, f)).catch(() => null))
+		);
+		for (const ch of results) {
+			if (ch) channels.push(ch);
+		}
+	} catch {
+		// channelsDir may not exist yet
+	}
+
+	return json({ gateway, channels });
 };
 
 export const POST: RequestHandler = async ({ request }) => {

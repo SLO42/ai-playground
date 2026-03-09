@@ -155,6 +155,49 @@ export const CHANNEL_TEMPLATES: Record<string, ChannelTemplate> = {
 				stripMarkdown: false
 			}
 		}
+	},
+
+	dashboard: {
+		header: `# OpenClaw - Dashboard Channel Configuration\n# Custom channel: connects via gateway WS from the Claw dashboard\n\n`,
+		data: {
+			channel: 'dashboard',
+			enabled: true,
+			type: 'custom',
+			description: 'Claw dashboard chat — routes through OpenClaw gateway WS',
+			auth: {
+				mode: 'device',
+				identityPath: '.playground/claw-device-identity.json'
+			},
+			activation: 'always',
+			requireMention: false,
+			commandPrefix: '/',
+			users: {
+				mode: 'allowlist',
+				allowlist: [],
+				ignoreUnknown: false,
+				logDenied: true
+			},
+			rateLimit: {
+				messagesPerSecond: 10,
+				maxMessageLength: 32768
+			},
+			formatting: {
+				splitLongMessages: false,
+				stripMarkdown: false,
+				renderMarkdown: true
+			},
+			gateway: {
+				clientId: 'webchat',
+				clientMode: 'webchat',
+				role: 'operator',
+				scopes: ['operator.admin']
+			},
+			tools: {
+				exec: true,
+				read: true,
+				write: true
+			}
+		}
 	}
 };
 
@@ -164,5 +207,6 @@ export const CHANNEL_NAME_MAP: Record<string, string> = {
 	Telegram: 'telegram',
 	Discord: 'discord',
 	WhatsApp: 'whatsapp',
-	iMessage: 'imessage'
+	iMessage: 'imessage',
+	Dashboard: 'dashboard'
 };

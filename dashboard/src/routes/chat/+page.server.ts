@@ -26,6 +26,7 @@ export const load: PageServerLoad = async ({ url }) => {
 		loadGeneralSettings()
 	]);
 	const requestedSession = url.searchParams.get('session');
+	const prefillPrompt = url.searchParams.get('prompt') ?? null;
 
 	await mkdir(PATHS.chatsDir, { recursive: true }).catch(() => {});
 
@@ -46,6 +47,7 @@ export const load: PageServerLoad = async ({ url }) => {
 		claudeModels: CLAUDE_MODELS,
 		sessions,
 		lastSession,
+		prefillPrompt,
 		generalSettings: {
 			requireConfirmation: generalSettings.requireConfirmation,
 			autoApproveLowRisk: generalSettings.autoApproveLowRisk,

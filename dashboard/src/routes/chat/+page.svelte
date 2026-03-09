@@ -44,6 +44,19 @@
 		await tick();
 		scrollToBottom(true);
 
+		// Pre-fill input from ?prompt= URL param (e.g. from agent creator)
+		if (data.prefillPrompt) {
+			input = data.prefillPrompt;
+			// Auto-select Claude for agent creation tasks
+			if (data.prefillPrompt.includes('/agent-creator') || data.prefillPrompt.includes('Create a new agent')) {
+				selectedProvider = 'claude';
+				const claudeModels = data.claudeModels ?? [];
+				if (claudeModels.length > 0) selectedModel = claudeModels[0];
+			}
+			await tick();
+			inputEl?.focus();
+		}
+
 		// Poll session index every 10s to catch new agent sessions
 		sessionPollTimer = setInterval(async () => {
 			try {
@@ -241,6 +254,14 @@
 		return () => disconnectLive();
 	});
 
+	// Auto-poll claw sessions that are actively streaming (e.g. agent-design sessions)
+	// The heartbeat writes output to the session JSON — poll to pick up changes
+	$effect(() => {
+		if (activeSessionId && isClaw && activeSessionMeta?.status === 'streaming' && !discussionPollTimer) {
+			startDiscussionPoll(activeSessionId, { fastPoll: true });
+		}
+	});
+
 	async function pauseLive() {
 		if (!activeSessionId) return;
 		await apiPost('/api/chat/auto', { action: 'pause', sessionId: activeSessionId }, { silent: true });
@@ -282,16 +303,18 @@
 	}
 
 	let discussionPollTimer: ReturnType<typeof setTimeout> | null = null;
-	function startDiscussionPoll(sessionId: string) {
+	function startDiscussionPoll(sessionId: string, opts?: { fastPoll?: boolean }) {
 		stopDiscussionPoll();
 		let pollCount = 0;
 		let consecutiveFailures = 0;
+		let noChanges = 0;
+		const FAST_INTERVAL = 3_000;
 		const BASE_INTERVAL = 10_000;
 		const MAX_INTERVAL = 120_000; // 2 min cap
 
 		async function poll() {
 			pollCount++;
-			if (pollCount > 30 || activeSessionId !== sessionId) {
+			if (pollCount > 60 || activeSessionId !== sessionId) {
 				stopDiscussionPoll();
 				return;
 			}
@@ -299,18 +322,29 @@
 				const session = await apiGet<ChatSession>(`/api/chat/history/${sessionId}`);
 				if (session && session.messages.length > messages.length) {
 					messages = session.messages;
+					noChanges = 0;
 					await scrollToBottom();
+					// Stop polling if the session is done
+					if (session.status === 'idle') {
+						stopDiscussionPoll();
+						return;
+					}
+				} else {
+					noChanges++;
 				}
 				consecutiveFailures = 0;
 			} catch {
 				consecutiveFailures++;
 			}
-			// Exponential backoff: 10s, 20s, 40s, 80s, capped at 120s
-			const delay = Math.min(BASE_INTERVAL * Math.pow(2, consecutiveFailures), MAX_INTERVAL);
+			// Fast mode (3s) for the first 10 polls or while actively receiving updates,
+			// then slow down to base interval with backoff
+			const useFast = opts?.fastPoll && (pollCount < 10 || noChanges < 3);
+			const interval = useFast ? FAST_INTERVAL : BASE_INTERVAL;
+			const delay = Math.min(interval * Math.pow(2, consecutiveFailures), MAX_INTERVAL);
 			discussionPollTimer = setTimeout(poll, delay);
 		}
 
-		discussionPollTimer = setTimeout(poll, BASE_INTERVAL);
+		discussionPollTimer = setTimeout(poll, opts?.fastPoll ? FAST_INTERVAL : BASE_INTERVAL);
 	}
 	function stopDiscussionPoll() {
 		if (discussionPollTimer) {

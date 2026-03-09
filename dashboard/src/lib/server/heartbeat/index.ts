@@ -34,6 +34,7 @@ import { reapStaleProcesses, registerPid, unregisterPid } from './pid-registry.j
 import { processSuggestions, suggestTasks } from '../task-suggestions.js';
 import { syncMemoryBridge } from '../memory-bridge.js';
 import { runUxInspection } from './ux-inspector.js';
+import { loadRestartConfigAsync, shouldRestart, attemptRestart, resetRestartCount } from './auto-restart.js';
 import type { ChatSession } from '$lib/types/chat.js';
 import type { Task } from '$lib/types/tasks.js';
 
@@ -480,6 +481,57 @@ async function heartbeat() {
 
 	if (changes.length > 0) {
 		log(session, `[alert] Status changed: ${changes.join('; ')}`);
+	}
+
+	// ── Phase 2b: Auto-restart offline services
+	const serviceNameMap: Record<string, string> = { ollama: 'ollama', gateway: 'gateway', daemon: 'daemon' };
+	const restartConfig = await loadRestartConfigAsync();
+	if (restartConfig.enabled) {
+		for (const [name, online] of services) {
+			const restartName = serviceNameMap[name];
+			if (!restartName) continue;
+
+			if (online) {
+				// Service came back — reset counter
+				resetRestartCount(restartName);
+			} else if (shouldRestart(restartName, restartConfig)) {
+				log(session, `[restart] Attempting auto-restart of ${name}...`);
+				const ok = await attemptRestart(restartName);
+				if (ok) {
+					log(session, `[restart] Restart command fired for ${name}`);
+					await pushNotification({
+						severity: 'warning',
+						category: 'service',
+						title: `Auto-restarting ${name}`,
+						message: `Service ${name} is offline — restart attempt initiated`,
+						source: 'claw',
+						link: '/services',
+						linkLabel: 'View Services'
+					}).catch(() => {});
+				} else {
+					log(session, `[restart] No restart command available for ${name}`);
+				}
+			} else {
+				// Either in cooldown, at max attempts, or not configured
+				const { getRestartState } = await import('./auto-restart.js');
+				const state = getRestartState().get(restartName);
+				if (state && state.status === 'failed') {
+					log(session, `[restart] ${name} exceeded max restart attempts (${restartConfig.maxAttempts}) — manual intervention required`);
+					await pushNotification({
+						severity: 'critical',
+						category: 'service',
+						title: `${name} restart failed`,
+						message: `Exceeded ${restartConfig.maxAttempts} restart attempts — manual intervention required`,
+						source: 'claw',
+						link: '/services',
+						linkLabel: 'View Services',
+						desktop: true
+					}).catch(() => {});
+				} else if (state && state.status === 'cooldown') {
+					log(session, `[restart] ${name} in cooldown — next attempt after ${Math.round(restartConfig.cooldownMs / 1000)}s`);
+				}
+			}
+		}
 	}
 
 	// ── Phase 3: Task scan

@@ -8,6 +8,7 @@
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { resolve, dirname } from 'path';
 import { PATHS } from '../constants.js';
+import { withLock } from '../async-mutex.js';
 
 // ── Event types ──────────────────────────────────────────────────────
 
@@ -161,17 +162,22 @@ async function saveEvents(events: AgentEvent[]): Promise<void> {
 
 // ── Record an event ──────────────────────────────────────────────────
 
-let eventCounter = 0;
+if (!('__claw_event_counter' in _g)) _g.__claw_event_counter = 0;
+
 
 export async function recordEvent(event: Omit<AgentEvent, 'id' | 'timestamp'>): Promise<void> {
-	const events = await loadEvents();
-	const id = `evt-${Date.now()}-${++eventCounter}`;
-	events.push({
-		id,
-		timestamp: new Date().toISOString(),
-		...event
-	} as AgentEvent);
-	await saveEvents(events);
+	await withLock(ANALYTICS_PATH, async () => {
+		const events = await loadEvents();
+		const counter = (_g.__claw_event_counter as number) + 1;
+		_g.__claw_event_counter = counter;
+		const id = `evt-${Date.now()}-${counter}`;
+		events.push({
+			id,
+			timestamp: new Date().toISOString(),
+			...event
+		} as AgentEvent);
+		await saveEvents(events);
+	});
 }
 
 // ── Build analytics summary ──────────────────────────────────────────
@@ -191,36 +197,61 @@ export async function getAgentAnalytics(): Promise<AgentAnalytics> {
 	const byModel: Record<string, AgentAnalytics['byModel'][string]> = {};
 	let openclawCount = 0, openclawEscalated = 0, openclawLocal = 0, openclawCost = 0;
 	let ccCount = 0, ccSonnet = 0, ccOpus = 0, ccCost = 0;
+	let contextGatheredCount = 0;
 
-	// Process completion events for stats
-	const completionEvents = events.filter(e => e.type === 'completed' || e.type === 'failed');
-	for (const e of completionEvents) {
-		const cost = e.costUsd ?? 0;
-		const dur = e.durationMs ?? 0;
-		totalCost += cost;
-		totalDuration += dur;
+	// Single-pass event processing
+	for (const e of events) {
+		switch (e.type) {
+			case 'completed':
+			case 'failed': {
+				const cost = e.costUsd ?? 0;
+				const dur = e.durationMs ?? 0;
+				totalCost += cost;
+				totalDuration += dur;
 
-		if (e.type === 'completed') completed++;
-		if (e.type === 'failed') failed++;
+				if (e.type === 'completed') completed++;
+				if (e.type === 'failed') failed++;
 
-		const model = e.model ?? 'unknown';
-		if (!byModel[model]) {
-			byModel[model] = {
-				model,
-				tier: model.includes('sonnet') ? 'sonnet' : model.includes('opus') ? 'opus' : 'local',
-				count: 0, completedCount: 0, failedCount: 0,
-				totalCost: 0, totalDuration: 0, avgCost: 0, avgDuration: 0,
-				totalInput: 0, totalOutput: 0
-			};
+				const model = e.model ?? 'unknown';
+				if (!byModel[model]) {
+					byModel[model] = {
+						model,
+						tier: model.includes('sonnet') ? 'sonnet' : model.includes('opus') ? 'opus' : 'local',
+						count: 0, completedCount: 0, failedCount: 0,
+						totalCost: 0, totalDuration: 0, avgCost: 0, avgDuration: 0,
+						totalInput: 0, totalOutput: 0
+					};
+				}
+				byModel[model].count++;
+				if (e.type === 'completed') byModel[model].completedCount++;
+				if (e.type === 'failed') byModel[model].failedCount++;
+				byModel[model].totalCost += cost;
+				byModel[model].totalDuration += dur;
+				byModel[model].totalInput += e.inputTokens ?? 0;
+				byModel[model].totalOutput += e.outputTokens ?? 0;
+
+				// Cost by route
+				if (e.provider === 'openclaw') openclawCost += cost;
+				else ccCost += cost;
+				break;
+			}
+			case 'classified':
+				if (e.route === 'openclaw' || e.route === 'openclaw-context') openclawCount++;
+				else ccCount++;
+				break;
+			case 'context_gathered':
+				contextGatheredCount++;
+				break;
+			case 'escalation_check':
+				if (e.escalated) openclawEscalated++;
+				break;
+			case 'model_selected':
+				if (e.modelTier === 'sonnet') ccSonnet++;
+				else if (e.modelTier === 'opus') ccOpus++;
+				break;
 		}
-		byModel[model].count++;
-		if (e.type === 'completed') byModel[model].completedCount++;
-		if (e.type === 'failed') byModel[model].failedCount++;
-		byModel[model].totalCost += cost;
-		byModel[model].totalDuration += dur;
-		byModel[model].totalInput += e.inputTokens ?? 0;
-		byModel[model].totalOutput += e.outputTokens ?? 0;
 	}
+	openclawLocal = openclawCount - openclawEscalated;
 
 	// Compute averages
 	for (const m of Object.values(byModel)) {
@@ -228,37 +259,6 @@ export async function getAgentAnalytics(): Promise<AgentAnalytics> {
 			m.avgCost = m.totalCost / m.count;
 			m.avgDuration = m.totalDuration / m.count;
 		}
-	}
-
-	// Route stats from classification events
-	let contextGatheredCount = 0;
-	const classEvents = events.filter(e => e.type === 'classified');
-	for (const e of classEvents) {
-		if (e.route === 'openclaw' || e.route === 'openclaw-context') openclawCount++;
-		else ccCount++;
-	}
-
-	// Count context gathering events
-	const contextEvents = events.filter(e => e.type === 'context_gathered');
-	contextGatheredCount = contextEvents.length;
-
-	const escalationEvents = events.filter(e => e.type === 'escalation_check');
-	for (const e of escalationEvents) {
-		if (e.escalated) openclawEscalated++;
-	}
-	openclawLocal = openclawCount - openclawEscalated;
-
-	// Model tier counts from model_selected events
-	const modelEvents = events.filter(e => e.type === 'model_selected');
-	for (const e of modelEvents) {
-		if (e.modelTier === 'sonnet') ccSonnet++;
-		else if (e.modelTier === 'opus') ccOpus++;
-	}
-
-	// Cost by route from completion events
-	for (const e of completionEvents) {
-		if (e.provider === 'openclaw') openclawCost += e.costUsd ?? 0;
-		else ccCost += e.costUsd ?? 0;
 	}
 
 	// Model distribution
@@ -289,7 +289,8 @@ export async function getAgentAnalytics(): Promise<AgentAnalytics> {
 
 	// Per-project stats from completion events
 	const byProject: AgentAnalytics['byProject'] = {};
-	for (const e of completionEvents) {
+	for (const e of events) {
+		if (e.type !== 'completed' && e.type !== 'failed') continue;
 		const pid = e.projectId ?? 'unknown';
 		if (!byProject[pid]) {
 			byProject[pid] = { projectId: pid, taskCount: 0, completedCount: 0, failedCount: 0, totalCost: 0, totalDuration: 0 };

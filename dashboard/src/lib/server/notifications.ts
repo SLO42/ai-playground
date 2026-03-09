@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir } from 'fs/promises';
 import { resolve, dirname } from 'path';
 import { PATHS } from './constants.js';
 import crypto from 'crypto';
+import { withLock } from './async-mutex.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -197,33 +198,35 @@ export async function pushNotification(opts: {
 		linkLabel: opts.linkLabel
 	};
 
-	// Persist — stack similar sequential notifications
-	const notifs = await readNotifications();
-	const STACK_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
-	const top = notifs[0];
-	const isStackable = top
-		&& !top.read
-		&& top.title === notif.title
-		&& top.source === notif.source
-		&& top.category === notif.category
-		&& (Date.now() - new Date(top.timestamp).getTime()) < STACK_WINDOW_MS;
+	await withLock(NOTIF_FILE, async () => {
+		// Persist — stack similar sequential notifications
+		const notifs = await readNotifications();
+		const STACK_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
+		const top = notifs[0];
+		const isStackable = top
+			&& !top.read
+			&& top.title === notif.title
+			&& top.source === notif.source
+			&& top.category === notif.category
+			&& (Date.now() - new Date(top.timestamp).getTime()) < STACK_WINDOW_MS;
 
-	if (isStackable && top) {
-		// Update existing notification instead of creating a new one
-		top.stackCount = (top.stackCount ?? 1) + 1;
-		top.message = notif.message;
-		top.timestamp = notif.timestamp;
-		top.severity = notif.severity;
-		// Use the stacked notification for broadcast/desktop below
-		Object.assign(notif, { id: top.id, stackCount: top.stackCount });
-	} else {
-		notifs.unshift(notif);
-	}
-	// Trim to max
-	if (notifs.length > MAX_STORED) {
-		notifs.length = MAX_STORED;
-	}
-	await writeNotifications(notifs);
+		if (isStackable && top) {
+			// Update existing notification instead of creating a new one
+			top.stackCount = (top.stackCount ?? 1) + 1;
+			top.message = notif.message;
+			top.timestamp = notif.timestamp;
+			top.severity = notif.severity;
+			// Use the stacked notification for broadcast/desktop below
+			Object.assign(notif, { id: top.id, stackCount: top.stackCount });
+		} else {
+			notifs.unshift(notif);
+		}
+		// Trim to max
+		if (notifs.length > MAX_STORED) {
+			notifs.length = MAX_STORED;
+		}
+		await writeNotifications(notifs);
+	});
 
 	// Load saved settings to decide delivery channels
 	const settings = await loadSettings();
@@ -247,51 +250,65 @@ export async function pushNotification(opts: {
 }
 
 export async function markRead(id: string): Promise<boolean> {
-	const notifs = await readNotifications();
-	const notif = notifs.find((n) => n.id === id);
-	if (!notif) return false;
-	notif.read = true;
-	await writeNotifications(notifs);
-	return true;
+	return withLock(NOTIF_FILE, async () => {
+		const notifs = await readNotifications();
+		const notif = notifs.find((n) => n.id === id);
+		if (!notif) return false;
+		notif.read = true;
+		await writeNotifications(notifs);
+		return true;
+	});
 }
 
 export async function markAllRead(): Promise<number> {
-	const notifs = await readNotifications();
-	let count = 0;
-	for (const n of notifs) {
-		if (!n.read) {
-			n.read = true;
-			count++;
+	return withLock(NOTIF_FILE, async () => {
+		const notifs = await readNotifications();
+		let count = 0;
+		for (const n of notifs) {
+			if (!n.read) {
+				n.read = true;
+				count++;
+			}
 		}
-	}
-	if (count > 0) await writeNotifications(notifs);
-	return count;
+		if (count > 0) await writeNotifications(notifs);
+		return count;
+	});
 }
 
 export async function dismissNotification(id: string): Promise<boolean> {
-	const notifs = await readNotifications();
-	const idx = notifs.findIndex((n) => n.id === id);
-	if (idx === -1) return false;
-	notifs.splice(idx, 1);
-	await writeNotifications(notifs);
-	return true;
+	return withLock(NOTIF_FILE, async () => {
+		const notifs = await readNotifications();
+		const idx = notifs.findIndex((n) => n.id === id);
+		if (idx === -1) return false;
+		notifs.splice(idx, 1);
+		await writeNotifications(notifs);
+		return true;
+	});
 }
 
 export async function clearNotifications(): Promise<void> {
-	await writeNotifications([]);
+	return withLock(NOTIF_FILE, async () => {
+		await writeNotifications([]);
+	});
 }
 
 export async function getStats() {
 	const notifs = await readNotifications();
 	const now = new Date();
-	const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+	const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
 
-	return {
-		total: notifs.length,
-		unread: notifs.filter((n) => !n.read).length,
-		critical: notifs.filter((n) => n.severity === 'critical' && !n.read).length,
-		today: notifs.filter((n) => new Date(n.timestamp) >= todayStart).length,
-		activeJobs: notifs.filter((n) => n.category === 'task' && !n.read).length,
-		alerts: notifs.filter((n) => (n.severity === 'critical' || n.severity === 'warning') && !n.read).length
-	};
+	let unread = 0, critical = 0, today = 0, activeJobs = 0, alerts = 0;
+
+	for (const n of notifs) {
+		const isUnread = !n.read;
+		if (isUnread) {
+			unread++;
+			if (n.severity === 'critical') critical++;
+			if (n.severity === 'critical' || n.severity === 'warning') alerts++;
+			if (n.category === 'task') activeJobs++;
+		}
+		if (new Date(n.timestamp).getTime() >= todayStart) today++;
+	}
+
+	return { total: notifs.length, unread, critical, today, activeJobs, alerts };
 }

@@ -2,6 +2,7 @@ import { readFile, writeFile, mkdir, readdir, rename, unlink } from 'fs/promises
 import { resolve, join } from 'path';
 import type { Task } from '$lib/types/tasks.js';
 import crypto from 'crypto';
+import { withLock } from './async-mutex.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -37,8 +38,13 @@ function indexPath(projectPath: string): string {
 	return join(tasksRoot(projectPath), 'index.json');
 }
 
+function sanitizeId(id: string): string {
+	if (/[/\\]|\.\./.test(id)) throw new Error(`Invalid task ID: ${id}`);
+	return id;
+}
+
 function taskFilePath(projectPath: string, bucket: string, id: string): string {
-	return join(tasksRoot(projectPath), bucket, `${id}.json`);
+	return join(tasksRoot(projectPath), bucket, `${sanitizeId(id)}.json`);
 }
 
 function bucketForStatus(status: Task['status']): TaskIndexEntry['bucket'] {
@@ -104,6 +110,7 @@ export async function listTasks(projectPath: string): Promise<TaskIndexEntry[]> 
 }
 
 export async function getTask(projectPath: string, taskId: string): Promise<Task | null> {
+	sanitizeId(taskId);
 	const index = await readIndex(projectPath);
 	const entry = index.tasks.find((t) => t.id === taskId);
 	if (!entry) return null;
@@ -130,91 +137,99 @@ export async function createTask(projectPath: string, data: {
 	createdBy?: string;
 	blockedBy?: string[];
 }): Promise<Task> {
-	const now = new Date().toISOString();
-	const task: Task = {
-		id: crypto.randomUUID().slice(0, 8),
-		title: data.title.trim(),
-		description: data.description?.trim() ?? '',
-		status: 'pending',
-		priority: data.priority ?? 'medium',
-		flagDiscussion: false,
-		assignee: data.assignee ?? null,
-		tags: data.tags ?? [],
-		feature: data.feature ?? null,
-		createdBy: data.createdBy ?? 'user',
-		createdAt: now,
-		updatedAt: now,
-		completedAt: null,
-		blockedBy: data.blockedBy?.length ? data.blockedBy : undefined
-	};
+	return withLock(indexPath(projectPath), async () => {
+		const now = new Date().toISOString();
+		const task: Task = {
+			id: crypto.randomUUID().slice(0, 8),
+			title: data.title.trim(),
+			description: data.description?.trim() ?? '',
+			status: 'pending',
+			priority: data.priority ?? 'medium',
+			flagDiscussion: false,
+			assignee: data.assignee ?? null,
+			tags: data.tags ?? [],
+			feature: data.feature ?? null,
+			createdBy: data.createdBy ?? 'user',
+			createdAt: now,
+			updatedAt: now,
+			completedAt: null,
+			blockedBy: data.blockedBy?.length ? data.blockedBy : undefined
+		};
 
-	await ensureDirs(projectPath);
-	const bucket = bucketForStatus(task.status);
-	await writeFile(taskFilePath(projectPath, bucket, task.id), JSON.stringify(task, null, '\t'), 'utf-8');
+		await ensureDirs(projectPath);
+		const bucket = bucketForStatus(task.status);
+		await writeFile(taskFilePath(projectPath, bucket, task.id), JSON.stringify(task, null, '\t'), 'utf-8');
 
-	const index = await readIndex(projectPath);
-	index.tasks.push(toIndexEntry(task));
-	await writeIndex(projectPath, index);
+		const index = await readIndex(projectPath);
+		index.tasks.push(toIndexEntry(task));
+		await writeIndex(projectPath, index);
 
-	return task;
+		return task;
+	});
 }
 
 export async function updateTask(projectPath: string, taskId: string, updates: Partial<Pick<Task, 'title' | 'description' | 'status' | 'priority' | 'flagDiscussion' | 'assignee' | 'tags' | 'feature' | 'blockedBy'>>): Promise<Task | null> {
-	const index = await readIndex(projectPath);
-	const entryIdx = index.tasks.findIndex((t) => t.id === taskId);
-	if (entryIdx === -1) return null;
+	sanitizeId(taskId);
+	return withLock(indexPath(projectPath), async () => {
+		const index = await readIndex(projectPath);
+		const entryIdx = index.tasks.findIndex((t) => t.id === taskId);
+		if (entryIdx === -1) return null;
 
-	const entry = index.tasks[entryIdx];
-	const task = await readJson<Task>(taskFilePath(projectPath, entry.bucket, taskId));
-	if (!task) return null;
+		const entry = index.tasks[entryIdx];
+		const task = await readJson<Task>(taskFilePath(projectPath, entry.bucket, taskId));
+		if (!task) return null;
 
-	const now = new Date().toISOString();
+		const now = new Date().toISOString();
 
-	if (updates.title !== undefined) task.title = String(updates.title).trim();
-	if (updates.description !== undefined) task.description = String(updates.description).trim();
-	if (updates.priority !== undefined) task.priority = updates.priority;
-	if (updates.flagDiscussion !== undefined) task.flagDiscussion = updates.flagDiscussion;
-	if (updates.assignee !== undefined) task.assignee = updates.assignee || null;
-	if (updates.tags !== undefined) task.tags = updates.tags;
-	if (updates.feature !== undefined) task.feature = updates.feature || null;
-	if (updates.blockedBy !== undefined) task.blockedBy = updates.blockedBy?.length ? updates.blockedBy : undefined;
-	if (updates.status !== undefined) {
-		task.status = updates.status;
-		if (updates.status === 'completed') task.completedAt = now;
-		else if (task.completedAt) task.completedAt = null;
-	}
-	task.updatedAt = now;
+		if (updates.title !== undefined) task.title = String(updates.title).trim();
+		if (updates.description !== undefined) task.description = String(updates.description).trim();
+		if (updates.priority !== undefined) task.priority = updates.priority;
+		if (updates.flagDiscussion !== undefined) task.flagDiscussion = updates.flagDiscussion;
+		if (updates.assignee !== undefined) task.assignee = updates.assignee || null;
+		if (updates.tags !== undefined) task.tags = updates.tags;
+		if (updates.feature !== undefined) task.feature = updates.feature || null;
+		if (updates.blockedBy !== undefined) task.blockedBy = updates.blockedBy?.length ? updates.blockedBy : undefined;
+		if (updates.status !== undefined) {
+			task.status = updates.status;
+			if (updates.status === 'completed') task.completedAt = now;
+			else if (task.completedAt) task.completedAt = null;
+		}
+		task.updatedAt = now;
 
-	const newBucket = bucketForStatus(task.status);
-	const oldBucket = entry.bucket;
+		const newBucket = bucketForStatus(task.status);
+		const oldBucket = entry.bucket;
 
-	// Write to new location
-	await ensureDirs(projectPath);
-	await writeFile(taskFilePath(projectPath, newBucket, task.id), JSON.stringify(task, null, '\t'), 'utf-8');
+		// Write to new location
+		await ensureDirs(projectPath);
+		await writeFile(taskFilePath(projectPath, newBucket, task.id), JSON.stringify(task, null, '\t'), 'utf-8');
 
-	// Remove from old location if bucket changed
-	if (newBucket !== oldBucket) {
-		await unlink(taskFilePath(projectPath, oldBucket, task.id)).catch(() => {});
-	}
+		// Remove from old location if bucket changed
+		if (newBucket !== oldBucket) {
+			await unlink(taskFilePath(projectPath, oldBucket, task.id)).catch(() => {});
+		}
 
-	// Update index
-	index.tasks[entryIdx] = toIndexEntry(task);
-	await writeIndex(projectPath, index);
+		// Update index
+		index.tasks[entryIdx] = toIndexEntry(task);
+		await writeIndex(projectPath, index);
 
-	return task;
+		return task;
+	});
 }
 
 export async function deleteTask(projectPath: string, taskId: string): Promise<boolean> {
-	const index = await readIndex(projectPath);
-	const entryIdx = index.tasks.findIndex((t) => t.id === taskId);
-	if (entryIdx === -1) return false;
+	sanitizeId(taskId);
+	return withLock(indexPath(projectPath), async () => {
+		const index = await readIndex(projectPath);
+		const entryIdx = index.tasks.findIndex((t) => t.id === taskId);
+		if (entryIdx === -1) return false;
 
-	const entry = index.tasks[entryIdx];
-	await unlink(taskFilePath(projectPath, entry.bucket, taskId)).catch(() => {});
-	index.tasks.splice(entryIdx, 1);
-	await writeIndex(projectPath, index);
+		const entry = index.tasks[entryIdx];
+		await unlink(taskFilePath(projectPath, entry.bucket, taskId)).catch(() => {});
+		index.tasks.splice(entryIdx, 1);
+		await writeIndex(projectPath, index);
 
-	return true;
+		return true;
+	});
 }
 
 // ── Dependency helpers ────────────────────────────────────────────────
@@ -440,35 +455,39 @@ export async function autoAssignTask(projectPath: string, taskId: string): Promi
 
 /** Write a full task (used by github-sync import) */
 export async function putTask(projectPath: string, task: Task): Promise<void> {
-	const bucket = bucketForStatus(task.status);
-	await ensureDirs(projectPath);
-	await writeFile(taskFilePath(projectPath, bucket, task.id), JSON.stringify(task, null, '\t'), 'utf-8');
+	return withLock(indexPath(projectPath), async () => {
+		const bucket = bucketForStatus(task.status);
+		await ensureDirs(projectPath);
+		await writeFile(taskFilePath(projectPath, bucket, task.id), JSON.stringify(task, null, '\t'), 'utf-8');
 
-	const index = await readIndex(projectPath);
-	const existingIdx = index.tasks.findIndex((t) => t.id === task.id);
-	if (existingIdx >= 0) {
-		// Move old file if bucket changed
-		const oldBucket = index.tasks[existingIdx].bucket;
-		if (oldBucket !== bucket) {
-			await unlink(taskFilePath(projectPath, oldBucket, task.id)).catch(() => {});
+		const index = await readIndex(projectPath);
+		const existingIdx = index.tasks.findIndex((t) => t.id === task.id);
+		if (existingIdx >= 0) {
+			// Move old file if bucket changed
+			const oldBucket = index.tasks[existingIdx].bucket;
+			if (oldBucket !== bucket) {
+				await unlink(taskFilePath(projectPath, oldBucket, task.id)).catch(() => {});
+			}
+			index.tasks[existingIdx] = toIndexEntry(task);
+		} else {
+			index.tasks.push(toIndexEntry(task));
 		}
-		index.tasks[existingIdx] = toIndexEntry(task);
-	} else {
-		index.tasks.push(toIndexEntry(task));
-	}
-	await writeIndex(projectPath, index);
+		await writeIndex(projectPath, index);
+	});
 }
 
 /** Replace all tasks (used by github-sync full write) */
 export async function replaceAllTasks(projectPath: string, tasks: Task[]): Promise<void> {
-	await ensureDirs(projectPath);
-	const entries: TaskIndexEntry[] = [];
+	return withLock(indexPath(projectPath), async () => {
+		await ensureDirs(projectPath);
+		const entries: TaskIndexEntry[] = [];
 
-	for (const task of tasks) {
-		const bucket = bucketForStatus(task.status);
-		await writeFile(taskFilePath(projectPath, bucket, task.id), JSON.stringify(task, null, '\t'), 'utf-8');
-		entries.push(toIndexEntry(task));
-	}
+		for (const task of tasks) {
+			const bucket = bucketForStatus(task.status);
+			await writeFile(taskFilePath(projectPath, bucket, task.id), JSON.stringify(task, null, '\t'), 'utf-8');
+			entries.push(toIndexEntry(task));
+		}
 
-	await writeIndex(projectPath, { version: 2, tasks: entries, lastUpdated: new Date().toISOString() });
+		await writeIndex(projectPath, { version: 2, tasks: entries, lastUpdated: new Date().toISOString() });
+	});
 }

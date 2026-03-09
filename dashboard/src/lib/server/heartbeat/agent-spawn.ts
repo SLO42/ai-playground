@@ -1,10 +1,11 @@
 /**
  * Claude Code agent spawning — binary invocation, prompt building, and path hinting.
  */
-import { mkdirSync, openSync, writeFileSync } from 'fs';
+import { mkdirSync, openSync, closeSync, writeFileSync } from 'fs';
 import { unlink } from 'fs/promises';
 import { spawn } from 'child_process';
 import { resolve } from 'path';
+import { randomUUID } from 'crypto';
 import { PATHS } from '../constants.js';
 import type { Task } from '$lib/types/tasks.js';
 
@@ -15,62 +16,77 @@ export interface SpawnOptions {
 }
 
 export function spawnClaude(prompt: string, logFile: string, opts: SpawnOptions): ReturnType<typeof spawn> {
-	const { model, resumeSessionId, slotId } = opts;
+	const { model, resumeSessionId } = opts;
 	mkdirSync(PATHS.headlessLogsDir, { recursive: true });
 
-	const promptFile = resolve(PATHS.headlessLogsDir, `prompt-${Date.now()}.txt`);
+	const promptFile = resolve(PATHS.headlessLogsDir, `prompt-${randomUUID().slice(0, 12)}.txt`);
 	writeFileSync(promptFile, prompt, 'utf-8');
 
-	const stdinFd = openSync(promptFile, 'r');
-	const outFd = openSync(logFile, 'a');
+	let stdinFd: number | undefined;
+	let outFd: number | undefined;
+	try {
+		stdinFd = openSync(promptFile, 'r');
+		outFd = openSync(logFile, 'a');
 
-	// Strip Claude Code session env vars so nested instances don't refuse to start
-	const env = { ...process.env };
-	for (const key of Object.keys(env)) {
-		if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_')) {
-			delete env[key];
+		// Strip Claude Code session env vars so nested instances don't refuse to start
+		const env = { ...process.env };
+		for (const key of Object.keys(env)) {
+			if (key === 'CLAUDECODE' || key.startsWith('CLAUDE_CODE_')) {
+				delete env[key];
+			}
 		}
+
+		const claudeBin = process.platform === 'win32'
+			? resolve(process.env.USERPROFILE ?? process.env.HOME ?? '', '.local/bin/claude.exe')
+			: 'claude';
+
+		const mcpConfig = resolve(PATHS.root, '.mcp-agents.json');
+		// Simple tasks (Sonnet) get fewer turns to prevent token runaway
+		const maxTurns = model === 'claude-sonnet-4-6' ? '15' : '25';
+		const args = [
+			'--dangerously-skip-permissions', '--print', '--verbose',
+			'--output-format', 'stream-json',
+			'--mcp-config', mcpConfig,
+			'--max-turns', maxTurns
+		];
+
+		args.push('--model', model);
+
+		// Resume existing session for cache hits (saves ~44K tokens / ~$0.05 per spawn)
+		if (resumeSessionId) {
+			args.push('--resume', resumeSessionId);
+		}
+
+		// On Windows, use shell: true so paths with spaces (e.g. C:\Program Files\nodejs)
+		// are handled correctly by the shell rather than breaking spawn().
+		const child = spawn(claudeBin, args, {
+			detached: false,
+			stdio: [stdinFd, outFd, outFd],
+			cwd: PATHS.root,
+			shell: process.platform === 'win32',
+			windowsHide: true,
+			env
+		});
+
+		// Close parent's copy of the file descriptors — child inherited them via spawn.
+		// Without this, FDs leak in the parent process for the lifetime of the child.
+		closeSync(stdinFd);
+		closeSync(outFd);
+		stdinFd = undefined;
+		outFd = undefined;
+
+		child.unref();
+
+		child.on('close', () => {
+			unlink(promptFile).catch(() => {});
+		});
+
+		return child;
+	} catch (err) {
+		if (stdinFd !== undefined) { try { closeSync(stdinFd); } catch { /* already closed */ } }
+		if (outFd !== undefined) { try { closeSync(outFd); } catch { /* already closed */ } }
+		throw err;
 	}
-
-	const claudeBin = process.platform === 'win32'
-		? resolve(process.env.USERPROFILE ?? process.env.HOME ?? '', '.local/bin/claude.exe')
-		: 'claude';
-
-	const mcpConfig = resolve(PATHS.root, '.mcp-agents.json');
-	// Simple tasks (Sonnet) get fewer turns to prevent token runaway
-	const maxTurns = model === 'claude-sonnet-4-6' ? '15' : '25';
-	const args = [
-		'--dangerously-skip-permissions', '--print', '--verbose',
-		'--output-format', 'stream-json',
-		'--mcp-config', mcpConfig,
-		'--max-turns', maxTurns
-	];
-
-	args.push('--model', model);
-
-	// Resume existing session for cache hits (saves ~44K tokens / ~$0.05 per spawn)
-	if (resumeSessionId) {
-		args.push('--resume', resumeSessionId);
-	}
-
-	// On Windows, use shell: true so paths with spaces (e.g. C:\Program Files\nodejs)
-	// are handled correctly by the shell rather than breaking spawn().
-	const child = spawn(claudeBin, args, {
-		detached: false,
-		stdio: [stdinFd, outFd, outFd],
-		cwd: PATHS.root,
-		shell: process.platform === 'win32',
-		windowsHide: true,
-		env
-	});
-
-	child.unref();
-
-	child.on('close', () => {
-		unlink(promptFile).catch(() => {});
-	});
-
-	return child;
 }
 
 export function buildTaskPrompt(task: Task): string {

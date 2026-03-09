@@ -47,15 +47,6 @@ export function getActiveAgents(): Map<string, ActiveAgent> {
 	return g.__claw_active_agents as Map<string, ActiveAgent>;
 }
 
-// ── Spawn queue (sequential to avoid git conflicts) ──────────────────
-
-let spawnQueue: Promise<void> = (g.__claw_spawn_queue as Promise<void>) ?? Promise.resolve();
-
-export function enqueueSpawn(fn: () => Promise<void>): void {
-	spawnQueue = spawnQueue.then(fn).catch(() => {});
-	g.__claw_spawn_queue = spawnQueue;
-}
-
 // ── Orphaned agent cleanup ───────────────────────────────────────────
 
 /**
@@ -79,12 +70,6 @@ export async function reapOrphanedAgents(): Promise<number> {
 		}
 	}
 
-	// Reset spawn queue when no agents remain to prevent closure chain growth
-	if (agents.size === 0) {
-		spawnQueue = Promise.resolve();
-		g.__claw_spawn_queue = spawnQueue;
-	}
-
 	return reaped;
 }
 
@@ -92,9 +77,14 @@ async function isPidAlive(pid: number): Promise<boolean> {
 	if (pid <= 0) return false;
 	try {
 		if (process.platform === 'win32') {
-			const { execSync } = await import('child_process');
-			const out = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, {
-				timeout: 3000, windowsHide: true, encoding: 'utf-8'
+			const { execFile } = await import('child_process');
+			const out = await new Promise<string>((resolve, reject) => {
+				execFile('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], {
+					timeout: 3000, windowsHide: true, encoding: 'utf-8'
+				}, (err, stdout) => {
+					if (err) reject(err);
+					else resolve(stdout);
+				});
 			});
 			return out.includes(String(pid));
 		}
@@ -117,15 +107,19 @@ export function getDiscussionMap(): Map<string, string> {
 
 // ── Max agents ───────────────────────────────────────────────────────
 
-export let maxConcurrentAgents = (g.__claw_max_agents as number) ?? DEFAULT_MAX_AGENTS;
+let _maxConcurrentAgents = (g.__claw_max_agents as number) ?? DEFAULT_MAX_AGENTS;
+
+export function getMaxConcurrentAgents(): number {
+	return _maxConcurrentAgents;
+}
 
 export async function loadMaxAgents(): Promise<number> {
 	try {
 		const settings = await loadAgentDefaults();
-		maxConcurrentAgents = settings.maxConcurrentAgents ?? DEFAULT_MAX_AGENTS;
-		g.__claw_max_agents = maxConcurrentAgents;
+		_maxConcurrentAgents = settings.maxConcurrentAgents ?? DEFAULT_MAX_AGENTS;
+		g.__claw_max_agents = _maxConcurrentAgents;
 	} catch { /* use last known value */ }
-	return maxConcurrentAgents;
+	return _maxConcurrentAgents;
 }
 
 // ── Per-project agent limits ─────────────────────────────────────────

@@ -357,6 +357,7 @@ export async function runExperiment(
 				loras: config.loras,
 				params: config.params,
 				outputFile: outputFilename,
+				outputType: 'image',
 				comfyPromptId: queued.prompt_id,
 				createdAt: new Date().toISOString()
 			};

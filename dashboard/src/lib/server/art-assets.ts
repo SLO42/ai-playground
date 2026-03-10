@@ -24,7 +24,8 @@ const ASSET_DIRS: Record<ArtAsset['type'], string> = {
 	lora: resolve(MODELS_ROOT, 'loras'),
 	vae: resolve(MODELS_ROOT, 'vae'),
 	embedding: resolve(MODELS_ROOT, 'embeddings'),
-	upscaler: resolve(MODELS_ROOT, 'upscale_models')
+	upscaler: resolve(MODELS_ROOT, 'upscale_models'),
+	video_model: resolve(MODELS_ROOT, 'video_models')
 };
 
 async function ensureAssetDirs(): Promise<void> {
@@ -72,6 +73,7 @@ function civitaiTypeToAssetType(civitType: string): ArtAsset['type'] {
 		case 'VAE': return 'vae';
 		case 'TextualInversion': return 'embedding';
 		case 'Upscaler': return 'upscaler';
+		case 'MotionModule': return 'video_model';
 		default: return 'lora';
 	}
 }

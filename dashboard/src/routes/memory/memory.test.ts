@@ -53,6 +53,7 @@ function makePageData(overrides: Record<string, unknown> = {}) {
 		graph: null as ReturnType<typeof makeGraphState> | null,
 		context: null as ReturnType<typeof makeContext> | null,
 		autoMemory: null as Array<{
+			id: string;
 			key: string;
 			summary: string;
 			namespace: string;
@@ -62,6 +63,8 @@ function makePageData(overrides: Record<string, unknown> = {}) {
 			metadata: Record<string, unknown>;
 		}> | null,
 		memoryConfig: null as Record<string, unknown> | null,
+		memoryGraphEnabled: true,
+		loadErrors: null as string[] | null,
 		...overrides
 	};
 }
@@ -79,41 +82,64 @@ describe('Memory Page', () => {
 	});
 
 	it('shows empty state when graph data is null', () => {
-		render(MemoryPage, { props: { data: makePageData({ graph: null }) } });
-		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		// Provide context entries so isEmpty=false and graph section renders
+		render(MemoryPage, { props: { data: makePageData({
+			graph: null,
+			context: makeContext({ entries: [{ id: 'e1', summary: 'X', content: '', category: 'core', confidence: 0.5, pageRank: 0.5, accessCount: 1 }] })
+		}) } });
+		expect(screen.getByText('No graph data yet')).toBeInTheDocument();
 	});
 
 	it('shows empty state when graph has no nodes', () => {
 		render(MemoryPage, {
-			props: { data: makePageData({ graph: makeGraphState({ nodes: {} }) }) }
+			props: { data: makePageData({
+				graph: makeGraphState({ nodes: {} }),
+				context: makeContext({ entries: [{ id: 'e1', summary: 'X', content: '', category: 'core', confidence: 0.5, pageRank: 0.5, accessCount: 1 }] })
+			}) }
 		});
-		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		expect(screen.getByText('No graph data yet')).toBeInTheDocument();
 	});
 
 	it('shows no-context message when context is null and not loading', () => {
-		render(MemoryPage, { props: { data: makePageData({ context: null }) } });
-		expect(screen.getByText('No memory context available. Context populates as the system processes entries.')).toBeInTheDocument();
+		// Provide autoMemory so isEmpty=false and context section renders
+		render(MemoryPage, { props: { data: makePageData({
+			context: null,
+			autoMemory: [{ id: 'a1', key: 'k', summary: 's', namespace: 'default', content: '', type: 'p', createdAt: Date.now(), metadata: {} }]
+		}) } });
+		expect(screen.getByText('No memory context yet')).toBeInTheDocument();
 	});
 
 	it('shows "No context entries loaded" when context has empty entries', () => {
 		render(MemoryPage, {
-			props: { data: makePageData({ context: makeContext({ entries: [] }) }) }
+			props: { data: makePageData({
+				context: makeContext({ entries: [] }),
+				autoMemory: [{ id: 'a1', key: 'k', summary: 's', namespace: 'default', content: '', type: 'p', createdAt: Date.now(), metadata: {} }]
+			}) }
 		});
-		expect(screen.getByText('No context entries loaded')).toBeInTheDocument();
+		expect(screen.getByText('No context entries yet')).toBeInTheDocument();
 	});
 
 	it('shows "No auto-memory entries loaded" when autoMemory is empty', () => {
-		render(MemoryPage, { props: { data: makePageData({ autoMemory: [] }) } });
-		expect(screen.getByText('No auto-memory entries loaded')).toBeInTheDocument();
+		render(MemoryPage, { props: { data: makePageData({
+			autoMemory: [],
+			context: makeContext({ entries: [{ id: 'e1', summary: 'X', content: '', category: 'core', confidence: 0.5, pageRank: 0.5, accessCount: 1 }] })
+		}) } });
+		expect(screen.getByText('No auto-memory entries yet')).toBeInTheDocument();
 	});
 
 	it('shows "No auto-memory entries loaded" when autoMemory is null', () => {
-		render(MemoryPage, { props: { data: makePageData({ autoMemory: null }) } });
-		expect(screen.getByText('No auto-memory entries loaded')).toBeInTheDocument();
+		render(MemoryPage, { props: { data: makePageData({
+			autoMemory: null,
+			context: makeContext({ entries: [{ id: 'e1', summary: 'X', content: '', category: 'core', confidence: 0.5, pageRank: 0.5, accessCount: 1 }] })
+		}) } });
+		expect(screen.getByText('No auto-memory entries yet')).toBeInTheDocument();
 	});
 
 	it('renders metric cards with default N/A values when data is null', () => {
-		render(MemoryPage, { props: { data: makePageData() } });
+		// Provide some context so isEmpty=false and metric cards render
+		render(MemoryPage, { props: { data: makePageData({
+			context: makeContext({ entries: [{ id: 'e1', summary: 'X', content: '', category: 'core', confidence: 0.5, pageRank: 0.5, accessCount: 1 }] })
+		}) } });
 		expect(screen.getByText('Backend')).toBeInTheDocument();
 		expect(screen.getByText('Nodes')).toBeInTheDocument();
 		expect(screen.getByText('Edges')).toBeInTheDocument();
@@ -125,7 +151,8 @@ describe('Memory Page', () => {
 		render(MemoryPage, {
 			props: {
 				data: makePageData({
-					memoryConfig: { backend: 'agentdb', enableHNSW: true }
+					memoryConfig: { backend: 'agentdb', enableHNSW: true },
+					context: makeContext({ entries: [{ id: 'e1', summary: 'X', content: '', category: 'core', confidence: 0.5, pageRank: 0.5, accessCount: 1 }] })
 				})
 			}
 		});
@@ -137,7 +164,8 @@ describe('Memory Page', () => {
 		render(MemoryPage, {
 			props: {
 				data: makePageData({
-					memoryConfig: { enableHNSW: false }
+					memoryConfig: { enableHNSW: false },
+					context: makeContext({ entries: [{ id: 'e1', summary: 'X', content: '', category: 'core', confidence: 0.5, pageRank: 0.5, accessCount: 1 }] })
 				})
 			}
 		});
@@ -182,6 +210,7 @@ describe('Memory Page', () => {
 				data: makePageData({
 					autoMemory: [
 						{
+							id: 'am1',
 							key: 'mem-auth-jwt',
 							summary: 'JWT authentication',
 							namespace: 'patterns',
@@ -323,12 +352,13 @@ describe('Memory Page', () => {
 			render(MemoryPage, {
 				props: {
 					data: makePageData({
-						graph: { nodes: undefined as any, edges: [], pageRanks: {} }
+						graph: { nodes: undefined as any, edges: [], pageRanks: {} },
+						context: makeContext({ entries: [{ id: 'e1', summary: 'X', content: '', category: 'core', confidence: 0.5, pageRank: 0.5, accessCount: 1 }] })
 					})
 				}
 			});
 			// data.graph?.nodes is undefined — derived returns []
-			expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+			expect(screen.getByText('No graph data yet')).toBeInTheDocument();
 		});
 
 		it('handles graph with edges as non-array value', () => {
@@ -353,12 +383,13 @@ describe('Memory Page', () => {
 			render(MemoryPage, {
 				props: {
 					data: makePageData({
-						graph: {} as any
+						graph: {} as any,
+						context: makeContext({ entries: [{ id: 'e1', summary: 'X', content: '', category: 'core', confidence: 0.5, pageRank: 0.5, accessCount: 1 }] })
 					})
 				}
 			});
 			// Empty object has no nodes — should show empty state
-			expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+			expect(screen.getByText('No graph data yet')).toBeInTheDocument();
 		});
 
 		it('handles graph with pageRanks as null', () => {
@@ -392,7 +423,7 @@ describe('Memory Page', () => {
 				}
 			});
 			expect(screen.getByText('Failed to load graph data')).toBeInTheDocument();
-			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
+			expect(screen.queryByText('No graph data yet')).not.toBeInTheDocument();
 			expect(screen.queryByText('Loading memory graph...')).not.toBeInTheDocument();
 		});
 	});
@@ -401,11 +432,15 @@ describe('Memory Page', () => {
 		it('shows disabled message when memoryGraphEnabled is false', () => {
 			render(MemoryPage, {
 				props: {
-					data: makePageData({ memoryGraphEnabled: false, graph: null })
+					data: makePageData({
+						memoryGraphEnabled: false,
+						graph: null,
+						context: makeContext({ entries: [{ id: 'e1', summary: 'X', content: '', category: 'core', confidence: 0.5, pageRank: 0.5, accessCount: 1 }] })
+					})
 				}
 			});
 			expect(screen.getByText('Memory graph is disabled. Enable it in settings to visualize relationships.')).toBeInTheDocument();
-			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
+			expect(screen.queryByText('No graph data yet')).not.toBeInTheDocument();
 		});
 
 		it('does not render BubbleGraph when memoryGraphEnabled is false even with graph data', () => {
@@ -764,7 +799,7 @@ describe('Memory Page', () => {
 				}
 			});
 			expect(screen.getByText('Failed to load graph data')).toBeInTheDocument();
-			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
+			expect(screen.queryByText('No graph data yet')).not.toBeInTheDocument();
 			expect(screen.queryByText('Loading memory graph...')).not.toBeInTheDocument();
 		});
 	});

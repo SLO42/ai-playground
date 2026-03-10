@@ -10,7 +10,7 @@
  * Format: { serverPid: number, startedAt: string, processes: Record<string, PidEntry> }
  */
 import { readFile, writeFile, mkdir } from 'fs/promises';
-import { execFile, execSync } from 'child_process';
+import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { resolve, dirname } from 'path';
 import { PATHS } from '../constants.js';

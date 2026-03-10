@@ -1,8 +1,8 @@
 /**
  * Claude Code agent spawning — binary invocation, prompt building, and path hinting.
  */
-import { mkdirSync, openSync, closeSync, writeFileSync } from 'fs';
-import { unlink } from 'fs/promises';
+import { openSync, closeSync } from 'fs';
+import { mkdir, writeFile, unlink } from 'fs/promises';
 import { spawn } from 'child_process';
 import { resolve } from 'path';
 import { randomUUID } from 'crypto';
@@ -11,16 +11,14 @@ import type { Task } from '$lib/types/tasks.js';
 
 export interface SpawnOptions {
 	model: string;
-	resumeSessionId?: string | null;  // Claude Code session UUID to resume
-	slotId?: string;                   // Session pool slot ID
 }
 
-export function spawnClaude(prompt: string, logFile: string, opts: SpawnOptions): ReturnType<typeof spawn> {
-	const { model, resumeSessionId } = opts;
-	mkdirSync(PATHS.headlessLogsDir, { recursive: true });
+export async function spawnClaude(prompt: string, logFile: string, opts: SpawnOptions): Promise<ReturnType<typeof spawn>> {
+	const { model } = opts;
+	await mkdir(PATHS.headlessLogsDir, { recursive: true });
 
 	const promptFile = resolve(PATHS.headlessLogsDir, `prompt-${randomUUID().slice(0, 12)}.txt`);
-	writeFileSync(promptFile, prompt, 'utf-8');
+	await writeFile(promptFile, prompt, 'utf-8');
 
 	let stdinFd: number | undefined;
 	let outFd: number | undefined;
@@ -51,11 +49,6 @@ export function spawnClaude(prompt: string, logFile: string, opts: SpawnOptions)
 		];
 
 		args.push('--model', model);
-
-		// Resume existing session for cache hits (saves ~44K tokens / ~$0.05 per spawn)
-		if (resumeSessionId) {
-			args.push('--resume', resumeSessionId);
-		}
 
 		// On Windows, use shell: true so paths with spaces (e.g. C:\Program Files\nodejs)
 		// are handled correctly by the shell rather than breaking spawn().

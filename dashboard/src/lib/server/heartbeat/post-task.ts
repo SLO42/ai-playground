@@ -5,7 +5,10 @@
  * 1. Commit the agent's file changes with a task-specific message
  * 2. Spawn a lightweight documenter agent to update memory/docs if needed
  */
-import { execSync, execFileSync } from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
 import { PATHS } from '../constants.js';
 import { pushNotification } from '../notifications.js';
 import {
@@ -17,7 +20,7 @@ import {
 import { spawnClaude, pickModelForTask } from './agent-spawn.js';
 import { logAgentCompletion, parseStreamJsonLog } from './agent-tracking.js';
 import { recordEvent } from './agent-analytics.js';
-import { resolveSession, releaseSession, watchForSessionId } from './session-pool.js';
+import { recordSpawn, recordSpawnCompletion } from './session-pool.js';
 import { registerPid, unregisterPid } from './pid-registry.js';
 import type { ChatSession } from '$lib/types/chat.js';
 import type { Task } from '$lib/types/tasks.js';
@@ -37,23 +40,23 @@ export interface CommitResult {
  * Commit only the files an agent changed (delta from baseline).
  * Returns info about the commit or why it was skipped.
  */
-export function commitAgentChanges(
+export async function commitAgentChanges(
 	task: Task,
 	baseline: Set<string>,
 	model: string
-): CommitResult {
+): Promise<CommitResult> {
 	try {
 		// Get current modified files (include staged via HEAD)
-		const currentRaw = execSync('git diff --name-only HEAD', {
+		const { stdout: currentRaw } = await execFileAsync('git', ['diff', '--name-only', 'HEAD'], {
 			cwd: PATHS.root, encoding: 'utf-8', timeout: 5000
-		}).trim();
-		const currentFiles = new Set(currentRaw.split('\n').filter(Boolean));
+		});
+		const currentFiles = new Set(currentRaw.trim().split('\n').filter(Boolean));
 
 		// Also check for new untracked files the agent may have created
-		const untrackedRaw = execSync('git ls-files --others --exclude-standard', {
+		const { stdout: untrackedRaw } = await execFileAsync('git', ['ls-files', '--others', '--exclude-standard'], {
 			cwd: PATHS.root, encoding: 'utf-8', timeout: 5000
-		}).trim();
-		const untrackedFiles = new Set(untrackedRaw.split('\n').filter(Boolean));
+		});
+		const untrackedFiles = new Set(untrackedRaw.trim().split('\n').filter(Boolean));
 
 		// Delta: files that are modified now but weren't before the agent ran
 		const agentFiles: string[] = [];
@@ -83,8 +86,8 @@ export function commitAgentChanges(
 			return { committed: false, filesCommitted: 0, message: 'only sensitive files changed — skipped' };
 		}
 
-		// Stage only the agent's files (use execFileSync to avoid shell injection)
-		execFileSync('git', ['add', '--', ...safeFiles], {
+		// Stage only the agent's files
+		await execFileAsync('git', ['add', '--', ...safeFiles], {
 			cwd: PATHS.root, encoding: 'utf-8', timeout: 10000
 		});
 
@@ -93,9 +96,9 @@ export function commitAgentChanges(
 		const verb = inferCommitVerb(task);
 		const commitMsg = `${verb}(${scope}): ${task.title}\n\nTask: ${task.id}\nModel: ${model}\nFiles: ${safeFiles.length}\n\nCo-Authored-By: Claw Agent <noreply@openclaw.ai>`;
 
-		const result = execFileSync('git', ['commit', '-m', commitMsg], {
+		const { stdout: result } = await execFileAsync('git', ['commit', '-m', commitMsg], {
 			cwd: PATHS.root, encoding: 'utf-8', timeout: 15000
-		}) as string;
+		});
 
 		// Extract commit hash
 		const hashMatch = result.match(/\[[\w/]+ ([a-f0-9]+)\]/);
@@ -231,7 +234,7 @@ export async function spawnFollowUp(
 	const followUpId = `${parentTask.id}-${type}`;
 	if (agents.has(followUpId)) return false;
 
-	const prompt = buildFollowUpPrompt(type, parentTask, commitResult);
+	const prompt = await buildFollowUpPrompt(type, parentTask, commitResult);
 	const logFile = `${PATHS.headlessLogsDir}/agent-${followUpId}.log`;
 	const label = type === 'documenter' ? 'Documenter' : type === 'reviewer' ? 'Reviewer' : 'Follow-up';
 	const sender = agentSender(followUpId, `${label}: ${parentTask.title.slice(0, 20)}`);
@@ -243,22 +246,14 @@ export async function spawnFollowUp(
 	const model = 'claude-sonnet-4-6'; // Always Sonnet for follow-ups (cheap + fast)
 
 	try {
-		const session = await resolveSession(
-			{ ...parentTask, id: followUpId } as Task,
-			model
-		);
-
 		recordEvent({
 			taskId: followUpId, taskTitle: `${label}: ${parentTask.title}`,
 			type: 'spawned', provider: 'claude-code', model, modelTier: 'sonnet',
 			projectId: parentTask._sourceProjectId
 		}).catch(() => {});
 
-		const child = spawnClaude(prompt, logFile, {
-			model,
-			resumeSessionId: session.sessionId,
-			slotId: session.slotId
-		});
+		recordSpawn().catch(() => {});
+		const child = await spawnClaude(prompt, logFile, { model });
 
 		const pid = child.pid ?? 0;
 		agents.set(followUpId, {
@@ -279,10 +274,6 @@ export async function spawnFollowUp(
 		// Track in PID registry (survives crashes/HMR)
 		registerPid(pid, `agent:${followUpId}`, 'agent').catch(() => {});
 
-		if (!session.isResume) {
-			watchForSessionId(logFile, session.slotId).catch(() => {});
-		}
-
 		child.on('close', async (code) => {
 			unregisterPid(`agent:${followUpId}`).catch(() => {});
 			const agentStarted = agents.get(followUpId)?.startedAt;
@@ -292,8 +283,7 @@ export async function spawnFollowUp(
 			const parsed = await parseStreamJsonLog(logFile);
 			const startTime = agentStarted ? new Date(agentStarted).getTime() : Date.now();
 
-			releaseSession(
-				session.slotId,
+			recordSpawnCompletion(
 				parsed.usage?.totalTokens ?? 0,
 				parsed.usage?.costUsd ?? 0
 			).catch(() => {});
@@ -338,18 +328,19 @@ export async function spawnFollowUp(
 
 // ── Follow-up prompts ───────────────────────────────────────────────
 
-function buildFollowUpPrompt(type: FollowUpType, task: Task, commit: CommitResult): string {
+async function buildFollowUpPrompt(type: FollowUpType, task: Task, commit: CommitResult): Promise<string> {
 	if (type === 'reviewer') return buildReviewerPrompt(task, commit);
 	return buildDocumenterPrompt(task, commit);
 }
 
-function buildDocumenterPrompt(task: Task, commit: CommitResult): string {
+async function buildDocumenterPrompt(task: Task, commit: CommitResult): Promise<string> {
 	// Get the actual diff for context
 	let diffSummary = '';
 	try {
-		diffSummary = execSync(`git show ${commit.hash} --stat`, {
+		const { stdout } = await execFileAsync('git', ['show', commit.hash ?? '', '--stat'], {
 			cwd: PATHS.root, encoding: 'utf-8', timeout: 10000
-		}).trim();
+		});
+		diffSummary = stdout.trim();
 	} catch { /* no diff available */ }
 
 	return [
@@ -390,12 +381,13 @@ function buildDocumenterPrompt(task: Task, commit: CommitResult): string {
 	].join('\n');
 }
 
-function buildReviewerPrompt(task: Task, commit: CommitResult): string {
+async function buildReviewerPrompt(task: Task, commit: CommitResult): Promise<string> {
 	let diffSummary = '';
 	try {
-		diffSummary = execSync(`git show ${commit.hash} --stat`, {
+		const { stdout } = await execFileAsync('git', ['show', commit.hash ?? '', '--stat'], {
 			cwd: PATHS.root, encoding: 'utf-8', timeout: 10000
-		}).trim();
+		});
+		diffSummary = stdout.trim();
 	} catch { /* no diff available */ }
 
 	return [

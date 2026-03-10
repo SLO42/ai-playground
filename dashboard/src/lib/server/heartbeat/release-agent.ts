@@ -15,7 +15,7 @@ import {
 import { spawnClaude } from './agent-spawn.js';
 import { logAgentCompletion, parseStreamJsonLog } from './agent-tracking.js';
 import { recordEvent } from './agent-analytics.js';
-import { resolveSession, releaseSession, watchForSessionId } from './session-pool.js';
+import { recordSpawn, recordSpawnCompletion } from './session-pool.js';
 import { registerPid, unregisterPid } from './pid-registry.js';
 import type { Task } from '$lib/types/tasks.js';
 
@@ -88,8 +88,6 @@ export async function spawnReleaseAgent(
 	const model = 'claude-sonnet-4-6'; // Sonnet — release steps are well-defined
 
 	try {
-		const session = await resolveSession(syntheticTask, model);
-
 		recordEvent({
 			taskId: agentId,
 			taskTitle: syntheticTask.title,
@@ -100,11 +98,8 @@ export async function spawnReleaseAgent(
 			projectId
 		}).catch(() => {});
 
-		const child = spawnClaude(prompt, logFile, {
-			model,
-			resumeSessionId: session.sessionId,
-			slotId: session.slotId
-		});
+		recordSpawn().catch(() => {});
+		const child = await spawnClaude(prompt, logFile, { model });
 
 		const pid = child.pid ?? 0;
 		agents.set(agentId, {
@@ -120,10 +115,6 @@ export async function spawnReleaseAgent(
 		getProjectAgentMap().set(agentId, projectId);
 		registerPid(pid, `agent:${agentId}`, 'agent').catch(() => {});
 
-		if (!session.isResume) {
-			watchForSessionId(logFile, session.slotId).catch(() => {});
-		}
-
 		child.on('close', async (code) => {
 			unregisterPid(`agent:${agentId}`).catch(() => {});
 			const agentStarted = agents.get(agentId)?.startedAt;
@@ -133,8 +124,7 @@ export async function spawnReleaseAgent(
 			const parsed = await parseStreamJsonLog(logFile);
 			const startTime = agentStarted ? new Date(agentStarted).getTime() : Date.now();
 
-			releaseSession(
-				session.slotId,
+			recordSpawnCompletion(
 				parsed.usage?.totalTokens ?? 0,
 				parsed.usage?.costUsd ?? 0
 			).catch(() => {});

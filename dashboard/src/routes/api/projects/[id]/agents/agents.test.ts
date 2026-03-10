@@ -9,20 +9,47 @@ vi.mock('fs/promises', async (importOriginal) => {
 		readFile: vi.fn(),
 		writeFile: vi.fn(),
 		readdir: vi.fn(),
-		mkdir: vi.fn()
+		mkdir: vi.fn(),
+		access: vi.fn()
 	};
 });
 
 vi.mock('$lib/server/project-scanner.js', () => ({
-	scanAllProjects: vi.fn()
+	scanAllProjects: vi.fn(),
+	detectProjectMeta: vi.fn()
 }));
 
 vi.mock('$lib/server/constants.js', () => ({
 	PATHS: {
 		playgroundRegistry: '/mock/registry',
 		root: '/mock/root',
-		agentsDir: '/mock/agents'
+		agentsDir: '/mock/agents',
+		headlessLogsDir: '/mock/logs',
+		chatsDir: '/mock/chats'
 	}
+}));
+
+vi.mock('$lib/server/heartbeat/session-pool.js', () => ({
+	populateForProject: vi.fn(),
+	getProjectPoolStats: vi.fn().mockResolvedValue({ slots: [] }),
+	resetProjectPool: vi.fn()
+}));
+
+vi.mock('$lib/server/heartbeat/shared.js', () => ({
+	getActiveAgents: vi.fn().mockReturnValue(new Map()),
+	getMaxConcurrentAgents: vi.fn().mockReturnValue(15),
+	loadProjectMaxAgents: vi.fn().mockResolvedValue(15),
+	agentSender: vi.fn(),
+	ensureChatsDir: vi.fn(),
+	upsertSessionMeta: vi.fn(),
+	log: vi.fn(),
+	saveMonitorSession: vi.fn(),
+	loadMonitorSession: vi.fn(),
+	CLAW_SENDER: { label: 'claw', color: 'cyan' }
+}));
+
+vi.mock('$lib/server/heartbeat/agent-spawn.js', () => ({
+	spawnClaude: vi.fn()
 }));
 
 import { GET, POST, DELETE } from './+server.js';
@@ -38,8 +65,10 @@ const mockScanAllProjects = vi.mocked(scanAllProjects);
 const TEST_PROJECT = { id: 'proj-1', name: 'Test', path: '/mock/projects/test' };
 
 function makeEvent(id: string, body?: unknown) {
+	const url = new URL('http://localhost/api/projects/' + id + '/agents');
 	return {
 		params: { id },
+		url,
 		request: body
 			? new Request('http://localhost/api/projects/' + id + '/agents', {
 					method: 'POST',
@@ -53,6 +82,7 @@ function makeEvent(id: string, body?: unknown) {
 function makeDeleteEvent(id: string, body: unknown) {
 	return {
 		params: { id },
+		url: new URL('http://localhost/api/projects/' + id + '/agents'),
 		request: new Request('http://localhost/api/projects/' + id + '/agents', {
 			method: 'DELETE',
 			headers: { 'Content-Type': 'application/json' },
@@ -129,9 +159,12 @@ describe('/api/projects/[id]/agents', () => {
 			expect(res.status).toBe(200);
 			const data = await res.json();
 
-			expect(data.associated).toEqual([]);
-			expect(data.available).toHaveLength(2);
-			expect(data.total).toBe(2);
+			// No agents.json means no associated agents
+			expect(data.agents).toEqual([]);
+			expect(data.availableAgents).toHaveLength(2);
+			expect(data.summary.total).toBe(2);
+			expect(data.summary.associated).toBe(0);
+			expect(data.summary.available).toBe(2);
 		});
 
 		it('splits agents into associated and available', async () => {
@@ -151,14 +184,14 @@ describe('/api/projects/[id]/agents', () => {
 			const res = await GET(makeEvent('proj-1'));
 			const data = await res.json();
 
-			expect(data.associated).toHaveLength(1);
-			expect(data.associated[0].name).toBe('coder');
-			expect(data.associated[0].type).toBe('development');
+			expect(data.agents).toHaveLength(1);
+			expect(data.agents[0].name).toBe('coder');
+			expect(data.agents[0].type).toBe('development');
 
-			expect(data.available).toHaveLength(1);
-			expect(data.available[0].name).toBe('tester');
+			expect(data.availableAgents).toHaveLength(1);
+			expect(data.availableAgents[0].name).toBe('tester');
 
-			expect(data.total).toBe(2);
+			expect(data.summary.total).toBe(2);
 		});
 
 		it('parses agent frontmatter correctly', async () => {
@@ -167,7 +200,7 @@ describe('/api/projects/[id]/agents', () => {
 			const res = await GET(makeEvent('proj-1'));
 			const data = await res.json();
 
-			expect(data.available[0]).toEqual({
+			expect(data.availableAgents[0]).toMatchObject({
 				name: 'coder',
 				type: 'development',
 				description: 'Writes code',
@@ -189,8 +222,8 @@ describe('/api/projects/[id]/agents', () => {
 
 			const res = await GET(makeEvent('proj-1'));
 			const data = await res.json();
-			expect(data.available).toHaveLength(1);
-			expect(data.available[0].name).toBe('coder');
+			expect(data.availableAgents).toHaveLength(1);
+			expect(data.availableAgents[0].name).toBe('coder');
 		});
 
 		it('scans subdirectories for agents', async () => {
@@ -212,9 +245,9 @@ describe('/api/projects/[id]/agents', () => {
 
 			const res = await GET(makeEvent('proj-1'));
 			const data = await res.json();
-			expect(data.available).toHaveLength(2);
+			expect(data.availableAgents).toHaveLength(2);
 
-			const filenames = data.available.map((a: any) => a.filename);
+			const filenames = data.availableAgents.map((a: any) => a.filename);
 			expect(filenames).toContain('coder.md');
 			expect(filenames).toContain('specialized/reviewer.md');
 		});
@@ -228,9 +261,9 @@ describe('/api/projects/[id]/agents', () => {
 
 			const res = await GET(makeEvent('proj-1'));
 			const data = await res.json();
-			expect(data.associated).toEqual([]);
-			expect(data.available).toEqual([]);
-			expect(data.total).toBe(0);
+			expect(data.agents).toEqual([]);
+			expect(data.availableAgents).toEqual([]);
+			expect(data.summary.total).toBe(0);
 		});
 	});
 

@@ -416,7 +416,7 @@
 			.sort((a, b) => b.count - a.count);
 	});
 
-	const isEmpty = $derived(!loading && (liveAutoMemory ?? []).length === 0 && (liveContext?.entries ?? []).length === 0);
+	const isEmpty = $derived(!loading && (liveAutoMemory ?? []).length === 0 && (liveContext?.entries ?? []).length === 0 && Object.keys(liveGraph?.nodes ?? {}).length === 0);
 
 	const metricBackend = $derived(
 		(data.memoryConfig?.backend as string) ?? (data.memoryConfig?.type as string) ?? 'N/A'

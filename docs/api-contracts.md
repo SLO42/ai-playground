@@ -899,6 +899,205 @@ Full memory API documentation is in [`docs/api-memory.md`](api-memory.md).
 
 ---
 
+## Art Generation
+
+### `GET /api/art/assets`
+
+List registered art model assets and optionally query ComfyUI-visible models.
+
+**Query Parameters**
+| Param | Values | Description |
+|-------|--------|-------------|
+| `view` | `comfyui` | Return ComfyUI-visible models instead of registry |
+| `view` | `scan` | Scan local model directories and return discovered models |
+
+**Response** `200` — registered assets (default)
+```json
+[
+  {
+    "id": "string",
+    "name": "string",
+    "type": "checkpoint | lora | vae | embedding | upscaler",
+    "source": "civitai | huggingface | local",
+    "filePath": "string",
+    "triggerWords": ["string"],
+    "compatibleBases": ["sdxl", "sd15"],
+    "downloadedAt": "ISO date",
+    "tested": false
+  }
+]
+```
+
+---
+
+### `POST /api/art/assets`
+
+Search, download, register, or remove art assets.
+
+**Request Body**
+```json
+{
+  "action": "search-civitai | download-civitai | search-huggingface | download-huggingface | register | remove",
+  "query": "string (search actions)",
+  "type": "string (optional — model type filter)",
+  "limit": "number (optional)",
+  "modelId": "string (download-civitai)",
+  "versionId": "string (optional — download-civitai)",
+  "repoId": "string (download-huggingface)",
+  "fileName": "string (download-huggingface)",
+  "assetId": "string (remove)",
+  "deleteFile": "boolean (optional, default false — remove)"
+}
+```
+
+**Response** `200` — search results array
+**Response** `201` — created `ArtAsset` object (download/register)
+**Response** `200` `{ "removed": true }` (remove)
+**Error** `400` `{ "error": "Unknown action" }`
+
+---
+
+### `GET /api/art/comfyui`
+
+ComfyUI health and queue status.
+
+**Query Parameters**
+| Param | Values | Description |
+|-------|--------|-------------|
+| `view` | `queue` | Return queue counts only |
+
+**Response** `200` — default (system stats)
+```json
+{
+  "online": true,
+  "stats": { ... }
+}
+```
+
+**Response** `200` — `view=queue`
+```json
+{ "running": 1, "pending": 3 }
+```
+
+---
+
+### `POST /api/art/comfyui`
+
+Control ComfyUI operations.
+
+**Request Body**
+```json
+{ "action": "interrupt | refresh-models" }
+```
+
+**Response** `200`
+```json
+{ "interrupted": true }
+{ "refreshed": true }
+```
+
+**Error** `400` `{ "error": "Unknown action" }`
+
+---
+
+### `GET /api/art/experiments`
+
+List all art generation experiments.
+
+**Response** `200` — array of `Experiment` objects.
+
+---
+
+### `POST /api/art/experiments`
+
+Create an experiment or poll progress.
+
+**Request Body — create**
+```json
+{
+  "name": "string (default: 'Untitled Experiment')",
+  "positive": "string",
+  "negative": "string (optional)",
+  "checkpoint": "string",
+  "loras": "LoraRef[] (optional)",
+  "variables": "ExperimentVariable[] (default: [])",
+  "params": "Partial<GenerationParams> (optional)",
+  "autoRun": "boolean (optional)",
+  "autoEvaluate": "boolean (optional, default: true)"
+}
+```
+
+**Response** `201` — `Experiment` object
+**Response** `202` — `{ ...experiment, status: 'running' }` when `autoRun: true`
+
+**Request Body — progress**
+```json
+{ "action": "progress", "experimentId": "string" }
+```
+
+**Response** `200`
+```json
+{ "experimentId": "string", "total": 10, "completed": 4, "failed": 0 }
+```
+
+---
+
+### `POST /api/art/generate`
+
+LLM-backed prompt generation and experiment planning.
+
+**Request Body**
+```json
+{
+  "action": "prompt | variations | plan",
+  "description": "string (prompt)",
+  "style": "string (optional — prompt)",
+  "model": "string (optional — prompt)",
+  "positive": "string (variations)",
+  "negative": "string (optional, default: 'low quality, blurry, deformed' — variations)",
+  "count": "number (optional, default: 5 — variations)",
+  "goal": "string (plan)",
+  "context": "string (optional — plan)"
+}
+```
+
+**Response** `200` — generated prompt object, variations array, or experiment plan
+**Error** `400` `{ "error": "Unknown action. Use: prompt, variations, plan" }`
+
+---
+
+### `GET /api/art/knowledge`
+
+Art knowledge base: prompt templates, keyword index, LoRA profiles, model profiles.
+
+**Query Parameters**
+| Param | Values | Description |
+|-------|--------|-------------|
+| `view` | `summary` | Return stats summary instead of full knowledge base |
+
+**Response** `200` — `ArtKnowledge` object or summary stats
+
+---
+
+### `POST /api/art/knowledge`
+
+Distill experiment results into the knowledge base.
+
+**Request Body**
+```json
+{ "action": "distill-all" }
+```
+or
+```json
+{ "experimentId": "string" }
+```
+
+**Response** `200` — updated `ArtKnowledge` object
+**Error** `404` `{ "error": "Experiment not found" }`
+**Error** `400` `{ "error": "Provide experimentId or action=distill-all" }`
+
+---
+
 ## Health
 
 ### `GET /api/health`

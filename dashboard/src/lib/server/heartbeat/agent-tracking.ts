@@ -2,8 +2,11 @@
  * Agent token usage tracking, log parsing, completion logging, and log tailing.
  */
 import { readFile, writeFile, unlink } from 'fs/promises';
-import { execSync, execFileSync } from 'child_process';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { resolve } from 'path';
+
+const execFileAsync = promisify(execFile);
 import { PATHS } from '../constants.js';
 import {
 	MONITOR_SESSION_ID, getActiveAgents, taskSessionId,
@@ -175,10 +178,10 @@ async function extractFailureReason(logFile: string): Promise<string> {
 // ── Git diff stats ───────────────────────────────────────────────────
 
 /** Capture the set of currently modified files — call before spawning an agent. */
-export function captureGitBaseline(): Set<string> {
+export async function captureGitBaseline(): Promise<Set<string>> {
 	try {
-		const raw = execSync('git diff --name-only', { cwd: PATHS.root, encoding: 'utf-8', timeout: 5000 });
-		return new Set(raw.trim().split('\n').filter(Boolean));
+		const { stdout } = await execFileAsync('git', ['diff', '--name-only'], { cwd: PATHS.root, encoding: 'utf-8', timeout: 5000 });
+		return new Set(stdout.trim().split('\n').filter(Boolean));
 	} catch {
 		return new Set();
 	}
@@ -189,9 +192,9 @@ export function captureGitBaseline(): Set<string> {
  * before the agent started (baseline). This ensures we only report changes
  * the agent actually made.
  */
-function getGitDiffStats(baseline?: Set<string>): { files: string[]; insertions: number; deletions: number; chars: number } | null {
+async function getGitDiffStats(baseline?: Set<string>): Promise<{ files: string[]; insertions: number; deletions: number; chars: number } | null> {
 	try {
-		const raw = execSync('git diff --numstat', { cwd: PATHS.root, encoding: 'utf-8', timeout: 5000 });
+		const { stdout: raw } = await execFileAsync('git', ['diff', '--numstat'], { cwd: PATHS.root, encoding: 'utf-8', timeout: 5000 });
 		if (!raw.trim()) return null;
 
 		const lines = raw.trim().split('\n');
@@ -217,8 +220,7 @@ function getGitDiffStats(baseline?: Set<string>): { files: string[]; insertions:
 
 		let chars = 0;
 		try {
-			// Only diff the files this agent changed (use execFileSync to avoid shell injection)
-			const diff = execFileSync('git', ['diff', '--', ...files], { cwd: PATHS.root, encoding: 'utf-8', timeout: 10000 }) as string;
+			const { stdout: diff } = await execFileAsync('git', ['diff', '--', ...files], { cwd: PATHS.root, encoding: 'utf-8', timeout: 10000 });
 			chars = diff.length;
 		} catch { /* ignore */ }
 
@@ -296,7 +298,7 @@ export async function logAgentCompletion(task: Task, sender: ChatSender, exitMsg
 		}
 	}
 
-	const diffStats = getGitDiffStats(gitBaseline);
+	const diffStats = await getGitDiffStats(gitBaseline);
 	const statsLine = diffStats && diffStats.files.length > 0
 		? `${diffStats.files.length} file(s) changed, +${diffStats.insertions} -${diffStats.deletions} lines, ~${(diffStats.chars / 1024).toFixed(1)}KB diff`
 		: 'no file changes detected';

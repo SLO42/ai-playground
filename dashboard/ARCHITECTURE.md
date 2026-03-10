@@ -27,6 +27,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `/notifications` | `routes/notifications/+page.svelte` | `routes/notifications/+page.server.ts` |
 | `/hooks` | `routes/hooks/+page.svelte` | `routes/hooks/+page.server.ts` |
 | `/about` | `routes/about/+page.server.ts` | (server only) |
+| `/art` | `routes/art/+page.svelte` | `routes/art/+page.server.ts` |
 
 ## API Endpoints
 
@@ -53,6 +54,11 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `/api/memory/entries` | DELETE | Remove auto-memory entries by ID |
 | `/api/memory/context` | GET | Ranked context + auto-memory entries |
 | `/api/memory/sync` | POST | Trigger memory bridge sync |
+| `/api/art/assets` | GET/POST | List/search/download art model assets (CivitAI, HuggingFace, local) |
+| `/api/art/comfyui` | GET/POST | ComfyUI health, queue status, interrupt, refresh models |
+| `/api/art/experiments` | GET/POST | List/create/run generation experiments with variable sweeps |
+| `/api/art/generate` | POST | Prompt generation and experiment planning via LLM |
+| `/api/art/knowledge` | GET/POST | Art knowledge base (prompt templates, keyword index, LoRA/model profiles) |
 
 ## Server Modules (`src/lib/server/`)
 
@@ -73,6 +79,11 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `file-reader.ts` | Safe JSON/text file reading helpers |
 | `agent-defaults.ts` | Agent configuration defaults |
 | `memory-bridge.ts` | Aggregates memory from multiple sources (auto-memory files, claude-flow MCP) for the `/api/memory/*` endpoints. Fetches claude-flow entries via MCP HTTP at `http://127.0.0.1:3577/mcp` — requires the claude-flow daemon to be running; skips silently if offline. |
+| `art-assets.ts` | Art model asset management — CivitAI/HuggingFace search and download, local model scanning, ComfyUI model listing, asset registry CRUD. |
+| `art-experiments.ts` | Experiment lifecycle — create, run (via ComfyUI), and persist generation experiments with variable sweeping. Exposes `loadAssets()`, `loadExperiments()`, `loadKnowledge()`, `createQuickExperiment()`, `runExperiment()`, `getExperimentProgress()`. |
+| `art-knowledge.ts` | Distills completed experiment results into a persistent knowledge base (`ArtKnowledge`). Provides `getKnowledgeSummary()` and `distillExperiment()`. |
+| `art-prompt-gen.ts` | LLM-backed prompt generation: `generatePrompt()`, `generatePromptVariations()`, `planExperiment()`. |
+| `comfyui-client.ts` | HTTP client for ComfyUI — `isComfyOnline()`, `getSystemStats()`, `getQueue()`, `getComfyModels()` (cached), `interrupt()`, `invalidateModelCache()`. Defaults to `http://127.0.0.1:8188`. |
 
 ## Key Types (`src/lib/types/`)
 
@@ -84,6 +95,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `projects.ts` | `Project`, `ProjectConfig` |
 | `memory.ts` | `MemoryEntry`, `MemorySearchResult`, `MemoryConfig`, `MemoryPageData` (includes `loadErrors: string[] \| null`), `RankedContext`, `AutoMemoryEntry`, `BreakdownEntry`, `ProjectMemorySummary`, `ProjectMemoryPageData` (includes `memoryGraphEnabled: boolean` from memory settings) |
 | `graph.ts` | `GraphNode`, `GraphEdge`, `GraphState`, `RankedGraphNode`, `BubbleGraphProps`, `GraphGetResponse`, `GraphPostBody`, `GraphPutBody`, `GraphMutationResponse` |
+| `art.ts` | `ArtAsset`, `LoraRef`, `GenerationParams`, `Generation`, `ExperimentVariable`, `Experiment`, `PromptTemplate`, `KeywordEntry`, `LoraProfile`, `ModelProfile`, `ArtKnowledge` |
 | `daemon.ts` | `DaemonState`, `DaemonWorker` |
 
 ## Components (`src/lib/components/`)

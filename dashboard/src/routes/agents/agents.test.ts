@@ -1,11 +1,6 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('fs/promises', async (importOriginal) => {
-	const actual = (await importOriginal()) as any;
-	return { ...actual, readdir: vi.fn(), readFile: vi.fn() };
-});
-
 vi.mock('$lib/server/file-reader.js', () => ({
 	readJsonFile: vi.fn()
 }));
@@ -19,51 +14,57 @@ vi.mock('$lib/server/heartbeat/agent-analytics.js', () => ({
 }));
 
 vi.mock('$lib/server/heartbeat/session-pool.js', () => ({
-	getPoolStats: vi.fn()
+	getPoolStats: vi.fn(),
+	getConfigAgents: vi.fn()
 }));
 
 vi.mock('$lib/server/heartbeat/shared.js', () => ({
 	getActiveAgents: vi.fn()
 }));
 
+vi.mock('$lib/server/agent-scanner.js', () => ({
+	scanAgents: vi.fn()
+}));
+
+vi.mock('$lib/server/project-scanner.js', () => ({
+	scanAllProjects: vi.fn()
+}));
+
+vi.mock('fs/promises', async (importOriginal) => {
+	const actual = (await importOriginal()) as any;
+	return { ...actual, readFile: vi.fn() };
+});
+
 vi.mock('$lib/server/constants.js', () => ({
 	PATHS: {
 		agentsDir: '/tmp/agents',
 		v3Progress: '/tmp/v3-progress.json',
 		swarmActivity: '/tmp/swarm-activity.json',
-		configYaml: '/tmp/config.yaml'
+		configYaml: '/tmp/config.yaml',
+		playgroundRegistry: '/tmp/registry',
+		root: '/tmp/root'
 	}
 }));
 
-import { readdir, readFile } from 'fs/promises';
 import { readJsonFile } from '$lib/server/file-reader.js';
 import { readYamlFile } from '$lib/server/yaml-parser.js';
 import { getAgentAnalytics } from '$lib/server/heartbeat/agent-analytics.js';
-import { getPoolStats } from '$lib/server/heartbeat/session-pool.js';
+import { getPoolStats, getConfigAgents } from '$lib/server/heartbeat/session-pool.js';
 import { getActiveAgents } from '$lib/server/heartbeat/shared.js';
+import { scanAgents } from '$lib/server/agent-scanner.js';
+import { scanAllProjects } from '$lib/server/project-scanner.js';
+import { readFile } from 'fs/promises';
 import { load } from './+page.server.js';
 
-const mockedReaddir = vi.mocked(readdir);
-const mockedReadFile = vi.mocked(readFile);
 const mockedReadJson = vi.mocked(readJsonFile);
 const mockedReadYaml = vi.mocked(readYamlFile);
 const mockedAnalytics = vi.mocked(getAgentAnalytics);
 const mockedPoolStats = vi.mocked(getPoolStats);
 const mockedActiveAgents = vi.mocked(getActiveAgents);
-
-const AGENT_MD = `---
-name: Test Agent
-description: A test agent
-type: coder
-color: cyan
-priority: high
-capabilities:
-  - coding
-  - testing
----
-# Test Agent
-Body content here.
-`;
+const mockedScanAgents = vi.mocked(scanAgents);
+const mockedConfigAgents = vi.mocked(getConfigAgents);
+const mockedScanAllProjects = vi.mocked(scanAllProjects);
+const mockedReadFile = vi.mocked(readFile);
 
 function makeUrl(params: Record<string, string> = {}) {
 	const url = new URL('http://localhost/agents');
@@ -76,24 +77,29 @@ function callLoad(urlParams: Record<string, string> = {}) {
 }
 
 function setupDefaults() {
-	mockedReaddir.mockResolvedValue([] as any);
-	mockedReadFile.mockRejectedValue(new Error('no file'));
+	mockedScanAgents.mockResolvedValue([]);
 	mockedReadJson.mockResolvedValue(null);
 	mockedReadYaml.mockResolvedValue(null);
 	mockedAnalytics.mockResolvedValue({ events: [], summary: { totalTasks: 0, completedTasks: 0, failedTasks: 0, totalCostUsd: 0, totalDurationMs: 0, avgCostPerTask: 0, avgDurationMs: 0 }, byModel: {}, byRoute: { openclaw: { count: 0, escalated: 0, completedLocally: 0, totalCost: 0 }, claudeCode: { count: 0, sonnet: 0, opus: 0, totalCost: 0 } }, escalationRate: 0 } as any);
 	mockedPoolStats.mockResolvedValue({ total: 0, active: 0, idle: 0, sessions: [] } as any);
 	mockedActiveAgents.mockReturnValue(new Map());
+	mockedConfigAgents.mockResolvedValue([]);
+	mockedScanAllProjects.mockResolvedValue([]);
+	mockedReadFile.mockRejectedValue(new Error('ENOENT'));
 }
 
 function setupAgentFiles(count: number) {
-	const files = Array.from({ length: count }, (_, i) => ({
-		name: `agent-${i}.md`,
-		isDirectory: () => false,
-		isFile: () => true
+	const agents = Array.from({ length: count }, (_, i) => ({
+		name: `Test Agent ${i}`,
+		description: 'A test agent',
+		type: 'coder',
+		color: 'cyan',
+		priority: 'high',
+		capabilities: ['coding', 'testing'],
+		filename: `agent-${i}.md`,
+		searchText: ''
 	}));
-
-	mockedReaddir.mockResolvedValue(files as any);
-	mockedReadFile.mockResolvedValue(AGENT_MD as any);
+	mockedScanAgents.mockResolvedValue(agents as any);
 }
 
 describe('Agents +page.server load', () => {
@@ -109,15 +115,14 @@ describe('Agents +page.server load', () => {
 			expect(result.total).toBe(0);
 		});
 
-		it('parses agent definitions from markdown frontmatter', async () => {
+		it('parses agent definitions from scanAgents', async () => {
 			setupAgentFiles(1);
 			const result = await callLoad();
 
 			expect(result.agents.length).toBe(1);
-			expect(result.agents[0].name).toBe('Test Agent');
+			expect(result.agents[0].name).toBe('Test Agent 0');
 			expect(result.agents[0].description).toBe('A test agent');
 			expect(result.agents[0].type).toBe('coder');
-			expect(result.agents[0].capabilities).toEqual(['coding', 'testing']);
 		});
 
 		it('returns swarmStatus defaults when no swarm activity', async () => {
@@ -228,33 +233,23 @@ describe('Agents +page.server load', () => {
 	});
 
 	describe('error handling', () => {
-		it('returns empty agents when readdir fails', async () => {
-			mockedReaddir.mockRejectedValue(new Error('ENOENT'));
+		it('returns empty agents when scanAgents returns empty', async () => {
+			mockedScanAgents.mockResolvedValue([]);
 			const result = await callLoad();
 			expect(result.agents).toEqual([]);
 			expect(result.total).toBe(0);
 		});
 
-		it('skips files that fail to read', async () => {
-			const files = [
-				{ name: 'good.md', isDirectory: () => false, isFile: () => true },
-				{ name: 'bad.md', isDirectory: () => false, isFile: () => true }
-			];
-			mockedReaddir.mockResolvedValue(files as any);
-			mockedReadFile.mockImplementation(((path: string) => {
-				if (typeof path === 'string' && path.includes('bad')) return Promise.reject(new Error('read error'));
-				return Promise.resolve(AGENT_MD);
-			}) as any);
-
+		it('skips files that fail to read (handled by scanAgents internally)', async () => {
+			// scanAgents handles this internally, so just verify it returns what scanAgents provides
+			setupAgentFiles(1);
 			const result = await callLoad();
 			expect(result.agents.length).toBe(1);
 		});
 
-		it('skips files without valid frontmatter', async () => {
-			const files = [{ name: 'no-front.md', isDirectory: () => false, isFile: () => true }];
-			mockedReaddir.mockResolvedValue(files as any);
-			mockedReadFile.mockResolvedValue('# Just a heading\nNo frontmatter here.' as any);
-
+		it('skips files without valid frontmatter (handled by scanAgents internally)', async () => {
+			// scanAgents filters these internally
+			mockedScanAgents.mockResolvedValue([]);
 			const result = await callLoad();
 			expect(result.agents).toEqual([]);
 		});

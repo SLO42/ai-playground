@@ -297,8 +297,8 @@ async function runDiscoveryInspection(
 	const prompt = buildDiscoveryPrompt(routes, mode, state);
 
 	try {
-		const baseline = captureGitBaseline();
-		const child = spawnClaude(prompt, logFile, { model: 'claude-sonnet-4-6' });
+		const baseline = await captureGitBaseline();
+		const child = await spawnClaude(prompt, logFile, { model: 'claude-sonnet-4-6' });
 		const pid = child.pid ?? 0;
 		const agents = getActiveAgents();
 

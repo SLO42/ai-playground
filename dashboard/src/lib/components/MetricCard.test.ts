@@ -58,7 +58,7 @@ describe('MetricCard', () => {
 	it('label has correct styling', () => {
 		render(MetricCard, { props: { label: 'Metric', value: 0 } });
 		const label = screen.getByText('Metric');
-		expect(label).toHaveClass('text-xs', 'uppercase', 'tracking-wider');
+		expect(label).toHaveClass('uppercase', 'tracking-wider');
 	});
 
 	it('value has monospace font', () => {

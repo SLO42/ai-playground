@@ -27,7 +27,7 @@ import { createDiscussionSession, checkDiscussionReplies } from './discussion.js
 import { classifyTask, shouldEscalate, spawnOpenClawAgent, gatherContext } from './openclaw-agent.js';
 import type { TaskRoute } from './openclaw-agent.js';
 import { recordEvent } from './agent-analytics.js';
-import { resolveSession, registerSession, releaseSession, autoScale, watchForSessionId, loadPersistedAutoScaleConfig } from './session-pool.js';
+import { recordSpawn, recordSpawnCompletion } from './session-pool.js';
 import { commitAgentChanges, planFollowUps, spawnFollowUp } from './post-task.js';
 import { runPostCommitTests } from './post-test.js';
 import { reapStaleProcesses, registerPid, unregisterPid } from './pid-registry.js';
@@ -76,8 +76,10 @@ async function isDaemonRunning(): Promise<boolean> {
 		const pid = parseInt(pidRaw.trim(), 10);
 		if (isNaN(pid)) return false;
 		// Use tasklist on Windows (process.kill(pid, 0) is unreliable on MINGW)
-		const { execSync } = await import('child_process');
-		const out = execSync(`tasklist /FI "PID eq ${pid}" /FO CSV /NH`, { timeout: 5000, windowsHide: true, encoding: 'utf-8' });
+		const { execFile } = await import('child_process');
+		const { promisify } = await import('util');
+		const execFileAsync = promisify(execFile);
+		const { stdout: out } = await execFileAsync('tasklist', ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH'], { timeout: 5000, windowsHide: true, encoding: 'utf-8' });
 		return out.includes(String(pid));
 	} catch {
 		return false;
@@ -243,23 +245,17 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 	const reportId = await ensureTaskSession(task, sender);
 
 	try {
-		const baseline = captureGitBaseline();
+		const baseline = await captureGitBaseline();
 		const model = pickModelForTask(task);
 		const modelTier = model.includes('sonnet') ? 'sonnet' as const : 'opus' as const;
 		const maxTurns = modelTier === 'sonnet' ? 15 : 25;
 
-		// Session pool: find or create a warm session for this code area
-		const session = await resolveSession(task, model);
-		const resumeLabel = session.isResume ? `warm (${session.area})` : `cold (${session.area})`;
-
 		// Analytics: model selection
 		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'model_selected', model, modelTier, provider: 'claude-code', projectId: task._sourceProjectId }).catch(() => {});
 
-		const child = spawnClaude(prompt, logFile, {
-			model,
-			resumeSessionId: session.sessionId,
-			slotId: session.slotId
-		});
+		// Each task gets a fresh session — no resume, no accumulated context
+		recordSpawn().catch(() => {});
+		const child = await spawnClaude(prompt, logFile, { model });
 
 		if (!child.pid) {
 			log(monitorSession, `[error] spawnClaude returned no PID for "${task.title}" — aborting`);
@@ -284,12 +280,6 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 		// Analytics: spawned
 		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'spawned', provider: 'claude-code', model, modelTier, pid, maxTurns, sessionId: reportId, projectId: task._sourceProjectId }).catch(() => {});
 
-		// Extract Claude Code session ID from stream-json init message for pool registration
-		if (!session.isResume) {
-			// Cold start — watch log for init message to capture the session UUID
-			watchForSessionId(logFile, session.slotId).catch(() => {});
-		}
-
 		child.on('close', async (code) => {
 			unregisterPid(`agent:${task.id}`).catch(() => {});
 			const agentInfo = agents.get(task.id);
@@ -306,9 +296,8 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 			const startTime = agentInfo ? new Date(agentInfo.startedAt).getTime() : Date.now();
 			const durationMs = parsed.usage?.durationMs ?? (Date.now() - startTime);
 
-			// Release session pool slot
-			releaseSession(
-				session.slotId,
+			// Record spawn stats
+			recordSpawnCompletion(
 				parsed.usage?.totalTokens ?? 0,
 				parsed.usage?.costUsd ?? 0
 			).catch(() => {});
@@ -335,7 +324,7 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 			// ── Post-task: git commit + follow-up agents ──
 			if (code === 0 && agentBaseline) {
 				(async () => {
-					const commitResult = commitAgentChanges(task, agentBaseline, model);
+					const commitResult = await commitAgentChanges(task, agentBaseline, model);
 					const ms = await loadMonitorSession();
 
 					// Analytics: commit event
@@ -623,20 +612,7 @@ async function heartbeat() {
 		}
 	}
 
-	// ── Phase 3a: Auto-scale session pool based on task queue depth
-	try {
-		const pendingCount = taskScan.pending + taskScan.inProgress;
-		const scaleConfig = await loadPersistedAutoScaleConfig();
-		const scaleResult = await autoScale(pendingCount, scaleConfig);
-		if (scaleResult.action !== 'no-op') {
-			const changed = scaleResult.slotsAdded || scaleResult.slotsRemoved;
-			log(session, `[pool] Auto-scale ${scaleResult.action}: ${changed} slot(s) — active: ${scaleResult.activeSlots}, idle: ${scaleResult.idleSlots} (pending tasks: ${pendingCount})`);
-		}
-	} catch {
-		/* auto-scale failed gracefully */
-	}
-
-	// ── Phase 3b: Process suggestion inbox (from agents, daemon, etc.)
+	// ── Phase 3a: Process suggestion inbox (from agents, daemon, etc.)
 	try {
 		const suggestions = await processSuggestions();
 		if (suggestions.created > 0) {
@@ -883,7 +859,8 @@ async function heartbeat() {
 	}
 
 	// ── Phase 5d: UX Inspection (every 5th heartbeat)
-	if (heartbeatCount % 5 === 0 && heartbeatCount > 0) {
+	// UX inspector (Playwright) disabled — wastes VRAM and blocks GPU for art gen
+	if (false && heartbeatCount % 5 === 0 && heartbeatCount > 0) {
 		try {
 			await runUxInspection(session);
 		} catch (err) {

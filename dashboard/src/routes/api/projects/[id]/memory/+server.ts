@@ -3,6 +3,7 @@ import type { RequestHandler } from './$types.js';
 import { readJsonFile } from '$lib/server/file-reader.js';
 import { PATHS } from '$lib/server/constants.js';
 import { scanAllProjects } from '$lib/server/project-scanner.js';
+import { projectMemoryCache } from '$lib/server/cache.js';
 import type { RankedContext, AutoMemoryEntry } from '$lib/types/memory.js';
 import type { GraphState } from '$lib/types/graph.js';
 
@@ -23,8 +24,47 @@ export interface ProjectMemoryResponse {
 	graph: GraphState | null;
 }
 
-export const GET: RequestHandler = async ({ params }) => {
+const RANGE_MS: Record<string, number> = {
+	'1h': 3_600_000,
+	'6h': 21_600_000,
+	'24h': 86_400_000,
+	'7d': 604_800_000
+};
+
+function filterGraphByRange(graph: GraphState, cutoff: number): GraphState {
+	const nodes: Record<string, GraphState['nodes'][string]> = {};
+	for (const [id, node] of Object.entries(graph.nodes)) {
+		if (node.createdAt != null && node.createdAt >= cutoff) {
+			nodes[id] = node;
+		}
+	}
+	const nodeIds = new Set(Object.keys(nodes));
+	// Support both source/target and sourceId/targetId edge shapes
+	const edges = (graph.edges ?? []).filter((e) => {
+		const src = (e as Record<string, unknown>).source ?? e.sourceId;
+		const tgt = (e as Record<string, unknown>).target ?? e.targetId;
+		return nodeIds.has(src as string) && nodeIds.has(tgt as string);
+	});
+	const pageRanks: Record<string, number> = {};
+	for (const id of nodeIds) {
+		if (graph.pageRanks?.[id] != null) pageRanks[id] = graph.pageRanks[id];
+	}
+	return { ...graph, nodes, edges, pageRanks };
+}
+
+export const GET: RequestHandler = async ({ params, url }) => {
 	const projectId = params.id;
+	const range = url.searchParams.get('range') ?? null;
+	const cacheKey = `project-memory:${projectId}:${range ?? 'all'}`;
+
+	// Check cache first
+	const cached = projectMemoryCache.get(cacheKey) as ProjectMemoryResponse | undefined;
+	if (cached) {
+		const ttl = projectMemoryCache.getRemainingTtl(cacheKey);
+		return json(cached, {
+			headers: { 'Cache-Control': `max-age=${ttl}, stale-while-revalidate=10` }
+		});
+	}
 
 	const projects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root);
 	const project = projects.find((p) => p.id === projectId);
@@ -44,33 +84,28 @@ export const GET: RequestHandler = async ({ params }) => {
 		// Individual reads may fail (missing files, parse errors) — continue with defaults
 	}
 
-	const graph: GraphState | null = graphRaw && typeof graphRaw === 'object' && graphRaw.nodes
+	let graph: GraphState | null = graphRaw && typeof graphRaw === 'object' && graphRaw.nodes
 		? { ...graphRaw, edges: graphRaw.edges ?? [], pageRanks: graphRaw.pageRanks ?? {} }
 		: null;
 
+	// Apply time-range filtering to graph
+	if (graph && range && RANGE_MS[range]) {
+		const cutoff = Date.now() - RANGE_MS[range];
+		graph = filterGraphByRange(graph, cutoff);
+	}
+
 	// Filter auto-memory entries relevant to this project
-	// Check metadata.projectId first (reliable), then fall back to sourceFile path matching
 	const entries = (autoMemory ?? []).filter((e) => {
 		const meta = e.metadata as Record<string, unknown> | undefined;
-
-		// Primary: explicit projectId in metadata
 		if (meta?.projectId === projectId) return true;
 		if (meta?.projectName === projectName) return true;
-
-		// Secondary: namespace scoping (e.g., claude-flow:rounds-mod)
 		if (e.namespace?.includes(projectId)) return true;
-
-		// Tertiary: sourceFile path matching
 		const source = (meta?.sourceFile as string) ?? '';
 		if (source.includes(projectId)) return true;
-
-		// Check if project name appears in the key
 		if (e.key?.includes(projectId)) return true;
-
 		return false;
 	});
 
-	// If no project-specific entries, fall back to all entries only for root project
 	const isRootProject = project?.path === '.' || project?.path === PATHS.root;
 	const effectiveEntries = entries.length > 0 ? entries : (isRootProject ? (autoMemory ?? []) : []);
 
@@ -113,5 +148,9 @@ export const GET: RequestHandler = async ({ params }) => {
 		graph: graph ?? null
 	};
 
-	return json(body);
+	// Store in cache and return with Cache-Control
+	projectMemoryCache.set(cacheKey, body);
+	return json(body, {
+		headers: { 'Cache-Control': 'max-age=30, stale-while-revalidate=10' }
+	});
 };

@@ -8,7 +8,7 @@
  * Protocol: WS connect → challenge nonce → Ed25519 sign → connect → chat
  */
 import { sign, createPrivateKey } from 'crypto';
-import { readdirSync } from 'fs';
+import { readdir } from 'fs/promises';
 import { pathToFileURL } from 'url';
 import { resolve, join } from 'path';
 import { APIS, PATHS } from '../constants.js';
@@ -41,7 +41,7 @@ let normalizeDevicePublicKeyBase64Url: (pem: string) => string;
 async function ensureSDK(): Promise<void> {
 	if (_sdkLoaded) return;
 	const sdkDir = resolve(`${PATHS.root}/node_modules/openclaw/dist/`);
-	const files = readdirSync(sdkDir).filter(f => f.startsWith('client-') && f.endsWith('.js'));
+	const files = (await readdir(sdkDir)).filter(f => f.startsWith('client-') && f.endsWith('.js'));
 	if (files.length === 0) throw new Error('OpenClaw SDK client bundle not found in ' + sdkDir);
 	const clientPath = join(sdkDir, files[0]);
 	const mod = await import(pathToFileURL(clientPath).href);

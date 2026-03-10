@@ -1,14 +1,33 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('$lib/server/feature-flags.js', () => ({
-	getFeatureFlags: vi.fn()
+vi.mock('$lib/server/heartbeat/session-pool.js', () => ({
+	getProjectPoolStats: vi.fn()
 }));
 
-import { getFeatureFlags } from '$lib/server/feature-flags.js';
+vi.mock('$lib/server/heartbeat/shared.js', () => ({
+	loadProjectMaxAgents: vi.fn()
+}));
+
+vi.mock('$lib/server/project-scanner.js', () => ({
+	scanAllProjects: vi.fn()
+}));
+
+vi.mock('$lib/server/constants.js', () => ({
+	PATHS: {
+		playgroundRegistry: '/mock/registry',
+		root: '/mock/root'
+	}
+}));
+
+import { getProjectPoolStats } from '$lib/server/heartbeat/session-pool.js';
+import { loadProjectMaxAgents } from '$lib/server/heartbeat/shared.js';
+import { scanAllProjects } from '$lib/server/project-scanner.js';
 import { load } from './+page.server.js';
 
-const mockedFlags = vi.mocked(getFeatureFlags);
+const mockedPoolStats = vi.mocked(getProjectPoolStats);
+const mockedMaxAgents = vi.mocked(loadProjectMaxAgents);
+const mockedScanProjects = vi.mocked(scanAllProjects);
 const mockFetch = vi.fn();
 
 function makeUrl(params: Record<string, string> = {}) {
@@ -39,27 +58,14 @@ const sampleApiResponse = {
 describe('Project Agents +page.server load', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockedFlags.mockReturnValue({ previewNewPages: true } as any);
+		mockedScanProjects.mockResolvedValue([
+			{ id: 'test-proj', name: 'Test', path: '/mock/projects/test' }
+		] as any);
+		mockedMaxAgents.mockResolvedValue(15);
+		mockedPoolStats.mockResolvedValue({ slots: [] } as any);
 		mockFetch.mockResolvedValue({
 			ok: true,
 			json: () => Promise.resolve(sampleApiResponse)
-		});
-	});
-
-	describe('feature flag gating', () => {
-		it('returns disabled state when previewNewPages is false', async () => {
-			mockedFlags.mockReturnValue({ previewNewPages: false } as any);
-			const result = await callLoad();
-
-			expect(result.previewEnabled).toBe(false);
-			expect(result.agents).toEqual([]);
-			expect(result.summary).toEqual({ associated: 0, available: 0, total: 0, types: 0 });
-			expect(result.capacity).toEqual({ current: 0, max: 15 });
-		});
-
-		it('returns enabled state when previewNewPages is true', async () => {
-			const result = await callLoad();
-			expect(result.previewEnabled).toBe(true);
 		});
 	});
 
@@ -77,7 +83,9 @@ describe('Project Agents +page.server load', () => {
 
 			expect(result.agents).toEqual(sampleApiResponse.agents);
 			expect(result.summary).toEqual(sampleApiResponse.summary);
-			expect(result.capacity).toEqual(sampleApiResponse.capacity);
+			// capacity.max comes from loadProjectMaxAgents, not the API
+			expect(result.capacity.current).toBe(sampleApiResponse.capacity.current);
+			expect(result.capacity.max).toBe(15);
 			expect(result.availableAgents).toEqual(sampleApiResponse.availableAgents);
 		});
 

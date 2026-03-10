@@ -4,9 +4,12 @@
  *
  * Phase 1.2: Post-commit test runner for the heartbeat system.
  */
-import { execSync } from 'child_process';
-import { readFileSync, readdirSync } from 'fs';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import { readFile, readdir, access } from 'fs/promises';
 import { resolve } from 'path';
+
+const execFileAsync = promisify(execFile);
 import { createTask } from '../task-store.js';
 import { recordEvent, type AgentEventType } from './agent-analytics.js';
 import { log, loadMonitorSession, saveMonitorSession } from './shared.js';
@@ -33,11 +36,11 @@ const MAX_OUTPUT_CHARS = 2000;
  * Look up the project's test command. Checks .playground/config.json first,
  * then falls back to common defaults based on project files.
  */
-function resolveTestCommand(projectPath: string): string | null {
+async function resolveTestCommand(projectPath: string): Promise<string | null> {
 	// 1. Check .playground/config.json for explicit testCommand
 	try {
 		const configPath = resolve(projectPath, '.playground/config.json');
-		const raw = readFileSync(configPath, 'utf-8');
+		const raw = await readFile(configPath, 'utf-8');
 		const config = JSON.parse(raw);
 		if (config.testCommand && typeof config.testCommand === 'string') {
 			return config.testCommand;
@@ -46,20 +49,18 @@ function resolveTestCommand(projectPath: string): string | null {
 
 	// 2. Fall back to common defaults by detecting project type
 	try {
-		const packagePath = resolve(projectPath, 'package.json');
-		readFileSync(packagePath, 'utf-8'); // Just check existence
+		await access(resolve(projectPath, 'package.json'));
 		return 'npm test';
 	} catch { /* not a Node.js project */ }
 
 	try {
-		const reqPath = resolve(projectPath, 'requirements.txt');
-		readFileSync(reqPath, 'utf-8');
+		await access(resolve(projectPath, 'requirements.txt'));
 		return 'python -m pytest';
 	} catch { /* not a Python project */ }
 
 	try {
 		// Check for .csproj files (C# / .NET)
-		const entries = readdirSync(projectPath, { encoding: 'utf-8' });
+		const entries = await readdir(projectPath, { encoding: 'utf-8' });
 		if (entries.some((e) => e.endsWith('.csproj') || e.endsWith('.sln'))) {
 			return 'dotnet test';
 		}
@@ -74,29 +75,30 @@ function resolveTestCommand(projectPath: string): string | null {
  * Run the project's test suite synchronously with a timeout.
  * Returns the result including pass/fail status and truncated output.
  */
-function runTests(command: string, projectPath: string): TestResult {
+async function runTests(command: string, projectPath: string): Promise<TestResult> {
+	// Split command for execFile (avoids shell injection, still uses shell for resolution)
+	const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh';
+	const shellArgs = process.platform === 'win32' ? ['/c', command] : ['-c', command];
+
 	try {
-		const output = execSync(command, {
+		const { stdout } = await execFileAsync(shell, shellArgs, {
 			cwd: projectPath,
 			encoding: 'utf-8',
-			timeout: TEST_TIMEOUT_MS,
-			stdio: ['pipe', 'pipe', 'pipe'],
-			// Cross-platform: use shell mode so npm/python/dotnet resolve correctly
-			shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/sh'
+			timeout: TEST_TIMEOUT_MS
 		});
 
 		return {
 			passed: true,
 			exitCode: 0,
-			output: truncateOutput(output),
+			output: truncateOutput(stdout),
 			command
 		};
 	} catch (err: unknown) {
-		const execErr = err as { status?: number; stdout?: string; stderr?: string; message?: string };
+		const execErr = err as { code?: number; stdout?: string; stderr?: string; message?: string };
 		const stdout = typeof execErr.stdout === 'string' ? execErr.stdout : '';
 		const stderr = typeof execErr.stderr === 'string' ? execErr.stderr : '';
 		const combined = stdout + '\n' + stderr;
-		const exitCode = typeof execErr.status === 'number' ? execErr.status : 1;
+		const exitCode = typeof execErr.code === 'number' ? execErr.code : 1;
 
 		return {
 			passed: false,
@@ -131,10 +133,10 @@ export async function runPostCommitTests(
 	const projectPath = task._sourceProjectPath;
 	if (!projectPath) return;
 
-	const command = resolveTestCommand(projectPath);
+	const command = await resolveTestCommand(projectPath);
 	if (!command) return; // No test command — skip silently
 
-	const result = runTests(command, projectPath);
+	const result = await runTests(command, projectPath);
 
 	// Log to monitor session
 	const ms = await loadMonitorSession();

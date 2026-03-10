@@ -83,13 +83,13 @@ async function isPidAlive(pid: number): Promise<boolean> {
 	}
 }
 
-function killPid(pid: number): boolean {
+async function killPid(pid: number): Promise<boolean> {
 	if (pid <= 0) return false;
 	try {
 		if (IS_WINDOWS) {
 			// /T = kill child tree, /F = force
-			execSync(`taskkill /F /T /PID ${pid}`, {
-				timeout: 5000, windowsHide: true, stdio: 'ignore'
+			await execFileAsync('taskkill', ['/F', '/T', '/PID', String(pid)], {
+				timeout: 5000, windowsHide: true
 			});
 		} else {
 			process.kill(pid, 'SIGTERM');
@@ -142,7 +142,7 @@ export async function reapStaleProcesses(): Promise<{ reaped: string[]; alive: s
 	for (let i = 0; i < entries.length; i++) {
 		const [label, entry] = entries[i];
 		if (aliveChecks[i]) {
-			if (killPid(entry.pid)) {
+			if (await killPid(entry.pid)) {
 				reaped.push(`${label} (PID ${entry.pid})`);
 			} else {
 				alive.push(`${label} (PID ${entry.pid}) — kill failed`);
@@ -187,7 +187,7 @@ export async function unregisterPid(label: string): Promise<void> {
 export async function killAndUnregister(label: string): Promise<boolean> {
 	const entry = registry.processes[label];
 	if (!entry) return false;
-	const killed = killPid(entry.pid);
+	const killed = await killPid(entry.pid);
 	delete registry.processes[label];
 	await saveRegistry();
 	return killed;
@@ -207,7 +207,7 @@ export async function killAll(): Promise<{ killed: string[]; failed: string[] }>
 	for (let i = 0; i < entries.length; i++) {
 		const [label, entry] = entries[i];
 		if (aliveChecks[i]) {
-			if (killPid(entry.pid)) {
+			if (await killPid(entry.pid)) {
 				killed.push(label);
 				// On POSIX, killPid schedules a SIGKILL after 1s — wait for it
 				if (!IS_WINDOWS) {

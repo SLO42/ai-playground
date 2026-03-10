@@ -72,7 +72,7 @@ describe('StatusBadge', () => {
 	it('applies correct text color to label', () => {
 		render(StatusBadge, { props: { status: 'online', label: 'Active' } });
 		const label = screen.getByText('Active');
-		expect(label).toHaveClass('text-accent-green');
+		expect(label).toHaveClass('text-green-400');
 	});
 
 	it('label has uppercase tracking', () => {

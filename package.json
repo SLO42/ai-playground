@@ -4,7 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "cd dashboard && npm test",
     "openclaw:start": "openclaw gateway --port 18789",
     "openclaw:doctor": "openclaw doctor",
     "openclaw:onboard": "openclaw onboard --install-daemon",

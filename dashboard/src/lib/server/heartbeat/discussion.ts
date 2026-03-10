@@ -13,7 +13,7 @@ import {
 } from './shared.js';
 import { spawnClaude, buildTaskPromptWithDiscussion, pickModelForTask } from './agent-spawn.js';
 import { logAgentCompletion, captureGitBaseline } from './agent-tracking.js';
-import { resolveSession, releaseSession, watchForSessionId } from './session-pool.js';
+import { recordSpawn, recordSpawnCompletion } from './session-pool.js';
 import { parseStreamJsonLog } from './agent-tracking.js';
 import { registerPid, unregisterPid } from './pid-registry.js';
 import type { ChatSession } from '$lib/types/chat.js';
@@ -239,14 +239,10 @@ async function spawnAgentWithContext(task: Task, monitorSession: ChatSession, di
 	const sender = agentSender(task.id, task.title.slice(0, 30));
 
 	try {
-		const baseline = captureGitBaseline();
+		const baseline = await captureGitBaseline();
 		const model = pickModelForTask(task);
-		const session = await resolveSession(task, model);
-		const child = spawnClaude(prompt, logFile, {
-			model,
-			resumeSessionId: session.sessionId,
-			slotId: session.slotId
-		});
+		recordSpawn().catch(() => {});
+		const child = await spawnClaude(prompt, logFile, { model });
 
 		const pid = child.pid ?? 0;
 		agents.set(task.id, {
@@ -262,11 +258,6 @@ async function spawnAgentWithContext(task: Task, monitorSession: ChatSession, di
 
 		registerPid(pid, `agent:${task.id}`, 'agent').catch(() => {});
 
-		// Capture Claude Code session ID for pool reuse on cold starts
-		if (!session.isResume) {
-			watchForSessionId(logFile, session.slotId).catch(() => {});
-		}
-
 		child.on('close', async (code) => {
 			unregisterPid(`agent:${task.id}`).catch(() => {});
 			const agentInfo = agents.get(task.id);
@@ -277,10 +268,9 @@ async function spawnAgentWithContext(task: Task, monitorSession: ChatSession, di
 
 			const exitMsg = code === 0 ? 'completed successfully' : `exited with code ${code}`;
 
-			// Parse log for token usage before releasing the pool slot
+			// Parse log for token usage stats
 			const parsed = await parseStreamJsonLog(logFile);
-			releaseSession(
-				session.slotId,
+			recordSpawnCompletion(
 				parsed.usage?.totalTokens ?? 0,
 				parsed.usage?.costUsd ?? 0
 			).catch(() => {});

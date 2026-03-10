@@ -5,35 +5,26 @@ import StatusBar from './StatusBar.svelte';
 describe('StatusBar', () => {
 	it('renders default services', () => {
 		render(StatusBar, { props: {} });
-		expect(screen.getByText(/Gateway/)).toBeInTheDocument();
-		expect(screen.getByText(/Ollama/)).toBeInTheDocument();
-		expect(screen.getByText(/Memory DB/)).toBeInTheDocument();
-		expect(screen.getByText(/Swarm/)).toBeInTheDocument();
-	});
-
-	it('renders default service status texts', () => {
-		render(StatusBar, { props: {} });
-		expect(screen.getByText('Online')).toBeInTheDocument();
-		expect(screen.getByText('Running')).toBeInTheDocument();
-		expect(screen.getByText('Connected')).toBeInTheDocument();
-		expect(screen.getByText('Active')).toBeInTheDocument();
+		expect(screen.getByText('Ollama')).toBeInTheDocument();
+		expect(screen.getByText('Gateway')).toBeInTheDocument();
+		expect(screen.getByText('Daemon')).toBeInTheDocument();
 	});
 
 	it('renders custom services', () => {
 		const services = [
-			{ label: 'API', status: 'online' as const, text: 'Healthy' },
-			{ label: 'DB', status: 'offline' as const, text: 'Down' }
+			{ label: 'API', status: 'online' as const },
+			{ label: 'DB', status: 'offline' as const }
 		];
 		render(StatusBar, { props: { services } });
-		expect(screen.getByText(/API/)).toBeInTheDocument();
-		expect(screen.getByText('Healthy')).toBeInTheDocument();
-		expect(screen.getByText(/DB/)).toBeInTheDocument();
-		expect(screen.getByText('Down')).toBeInTheDocument();
+		expect(screen.getByText('API')).toBeInTheDocument();
+		expect(screen.getByText('DB')).toBeInTheDocument();
 	});
 
 	it('renders lastSync text', () => {
-		render(StatusBar, { props: { lastSync: '5 min ago' } });
-		expect(screen.getByText(/5 min ago/)).toBeInTheDocument();
+		// Pass an ISO date ~5 minutes in the past so syncLabel computes "5m ago"
+		const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
+		render(StatusBar, { props: { lastSync: fiveMinAgo } });
+		expect(screen.getByText(/5m ago/)).toBeInTheDocument();
 	});
 
 	it('renders default lastSync as "just now"', () => {
@@ -42,24 +33,25 @@ describe('StatusBar', () => {
 	});
 
 	it('applies green dot for online status', () => {
-		const services = [{ label: 'Test', status: 'online' as const, text: 'OK' }];
+		const services = [{ label: 'Test', status: 'online' as const }];
 		const { container } = render(StatusBar, { props: { services } });
-		const dot = container.querySelector('.w-2.h-2.rounded-full');
-		expect(dot).toHaveClass('bg-accent-green');
+		const dot = container.querySelector('.rounded-full.bg-accent-green');
+		expect(dot).toBeInTheDocument();
+		expect(dot).toHaveClass('animate-pulse');
 	});
 
 	it('applies red dot for offline status', () => {
-		const services = [{ label: 'Test', status: 'offline' as const, text: 'Down' }];
+		const services = [{ label: 'Test', status: 'offline' as const }];
 		const { container } = render(StatusBar, { props: { services } });
-		const dot = container.querySelector('.w-2.h-2.rounded-full');
-		expect(dot).toHaveClass('bg-accent-red');
+		const dot = container.querySelector('.rounded-full.bg-accent-red');
+		expect(dot).toBeInTheDocument();
 	});
 
 	it('applies yellow dot for warning status', () => {
-		const services = [{ label: 'Test', status: 'warning' as const, text: 'Degraded' }];
+		const services = [{ label: 'Test', status: 'warning' as const }];
 		const { container } = render(StatusBar, { props: { services } });
-		const dot = container.querySelector('.w-2.h-2.rounded-full');
-		expect(dot).toHaveClass('bg-accent-yellow');
+		const dot = container.querySelector('.rounded-full.bg-accent-yellow');
+		expect(dot).toBeInTheDocument();
 	});
 
 	it('renders as a sticky header', () => {
@@ -71,6 +63,6 @@ describe('StatusBar', () => {
 	it('has correct height class', () => {
 		const { container } = render(StatusBar, { props: {} });
 		const header = container.querySelector('header');
-		expect(header).toHaveClass('h-12');
+		expect(header).toHaveClass('h-10');
 	});
 });

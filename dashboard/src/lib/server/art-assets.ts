@@ -2,13 +2,14 @@
  * Art Asset Manager — downloads and manages LoRAs, checkpoints, VAEs,
  * and embeddings from CivitAI and HuggingFace.
  *
- * Models are stored in F:\models\image\ with subdirectories:
+ * Models are stored in a configurable directory (env: COMFYUI_MODELS_ROOT,
+ * defaults to F:/models/image) with subdirectories:
  *   checkpoints/  loras/  vae/  embeddings/
  *
  * ComfyUI must be configured to scan these paths (extra_model_paths.yaml).
  */
 import { mkdir, writeFile, readdir, stat, unlink } from 'fs/promises';
-import { resolve, basename, extname } from 'path';
+import { resolve, basename, extname, sep } from 'path';
 import { randomUUID } from 'crypto';
 import { loadAssets, saveAssets } from './art-experiments.js';
 import * as comfy from './comfyui-client.js';
@@ -309,12 +310,14 @@ export async function registerLocalModel(
 	type: ArtAsset['type'],
 	opts?: { name?: string; triggerWords?: string[]; compatibleBases?: string[] }
 ): Promise<ArtAsset> {
+	// Strip any directory traversal — only keep the basename
+	const safeFileName = basename(fileName);
 	const asset: ArtAsset = {
 		id: randomUUID().slice(0, 12),
-		name: opts?.name ?? fileName.replace(/\.[^.]+$/, ''),
+		name: opts?.name ?? safeFileName.replace(/\.[^.]+$/, ''),
 		type,
 		source: 'local',
-		filePath: fileName,
+		filePath: safeFileName,
 		triggerWords: opts?.triggerWords ?? [],
 		compatibleBases: opts?.compatibleBases ?? [],
 		downloadedAt: new Date().toISOString(),
@@ -338,7 +341,12 @@ export async function removeAsset(assetId: string, deleteFile = false): Promise<
 	if (deleteFile) {
 		try {
 			const dir = ASSET_DIRS[asset.type];
-			await unlink(resolve(dir, asset.filePath));
+			const target = resolve(dir, asset.filePath);
+			// Guard against path traversal: ensure target stays within the asset dir
+			if (!target.startsWith(resolve(dir) + sep)) {
+				throw new Error(`Refusing to delete file outside asset directory: ${target}`);
+			}
+			await unlink(target);
 		} catch {
 			// File may already be gone
 		}

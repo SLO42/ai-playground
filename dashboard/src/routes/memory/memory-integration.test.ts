@@ -67,6 +67,7 @@ function makePageData(overrides: Record<string, unknown> = {}) {
 		context: null as ReturnType<typeof makeContextData> | null,
 		autoMemory: null as ReturnType<typeof makeAutoMemoryData> | null,
 		memoryConfig: null as Record<string, unknown> | null,
+		memoryGraphEnabled: true,
 		loadErrors: null as string[] | null,
 		...overrides
 	};
@@ -150,13 +151,13 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 	// ── Undefined graph renders fallback without error ──────────────────
 
 	it('renders fallback UI when graph is undefined (not just null)', () => {
+		// Provide context so isEmpty=false and graph section renders its empty state
 		render(MemoryPage, {
-			props: { data: makePageData({ graph: undefined }) }
+			props: { data: makePageData({ graph: undefined, context: makeContextData() }) }
 		});
 
-		// When all data is empty, page shows section-level empty states — should not crash
-		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
-		expect(screen.getByText('No auto-memory entries loaded')).toBeInTheDocument();
+		// When graph is missing but other data exists, graph section shows its empty state
+		expect(screen.getByText('No graph data yet')).toBeInTheDocument();
 	});
 
 	it('renders all sections when graph is undefined but context and autoMemory have data', () => {
@@ -171,7 +172,7 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 		});
 
 		// Graph section shows the per-section empty fallback
-		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		expect(screen.getByText('No graph data yet')).toBeInTheDocument();
 		// Context still renders
 		expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
 		expect(screen.getByText('Redis Caching')).toBeInTheDocument();
@@ -191,7 +192,7 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 			}
 		});
 
-		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		expect(screen.getByText('No graph data yet')).toBeInTheDocument();
 
 		// Set up API responses for both context and graph refresh
 		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
@@ -211,7 +212,7 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 
 		await vi.waitFor(() => {
 			// Graph empty state should be gone after refresh populates liveGraph
-			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
+			expect(screen.queryByText('No graph data yet')).not.toBeInTheDocument();
 			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
 		});
 	});
@@ -285,9 +286,9 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 	it('refreshes both context and graph data via API on refresh click', async () => {
 		render(MemoryPage, { props: { data: makePageData() } });
 
-		// Wait for empty state to appear
+		// Wait for global empty state to appear (all data is null → isEmpty)
 		await vi.waitFor(() => {
-			expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+			expect(screen.getByText('No memory data yet')).toBeInTheDocument();
 		});
 
 		// Set up API responses for both endpoints
@@ -308,7 +309,7 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 
 		await vi.waitFor(() => {
 			// Graph empty state should be gone after client-side refresh
-			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
+			expect(screen.queryByText('No graph data yet')).not.toBeInTheDocument();
 			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
 			expect(screen.getByText('Redis Caching')).toBeInTheDocument();
 		});
@@ -337,16 +338,16 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 		await fireEvent.click(screen.getByText('Refresh'));
 
 		await vi.waitFor(() => {
-			expect(screen.getByText('No context entries loaded')).toBeInTheDocument();
+			expect(screen.getByText('No context entries yet')).toBeInTheDocument();
 		});
 	});
 
 	it('renders auto-memory entries after API refresh', async () => {
 		render(MemoryPage, { props: { data: makePageData() } });
 
-		// Wait for initial loading to finish
+		// Wait for global empty state (all data is null → isEmpty)
 		await vi.waitFor(() => {
-			expect(screen.getByText('No auto-memory entries loaded')).toBeInTheDocument();
+			expect(screen.getByText('No memory data yet')).toBeInTheDocument();
 		});
 
 		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
@@ -373,10 +374,9 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 	it('handles full lifecycle: empty → refresh → populated graph + context + auto-memory', async () => {
 		render(MemoryPage, { props: { data: makePageData() } });
 
-		// 1. Wait for initial loading to clear, showing empty states
+		// 1. Wait for global empty state (all data is null → isEmpty)
 		await vi.waitFor(() => {
-			expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
-			expect(screen.getByText('No auto-memory entries loaded')).toBeInTheDocument();
+			expect(screen.getByText('No memory data yet')).toBeInTheDocument();
 		});
 
 		// 2. Set up refresh responses for both context and graph
@@ -397,7 +397,7 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 
 		// 3. After refresh — everything is populated
 		await vi.waitFor(() => {
-			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
+			expect(screen.queryByText('No graph data yet')).not.toBeInTheDocument();
 			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
 			expect(screen.getByText('Redis Caching')).toBeInTheDocument();
 			expect(screen.getByText('Database Connection Pool')).toBeInTheDocument();
@@ -420,15 +420,14 @@ describe('Memory Page — Integration (missing graph data renders fallback)', ()
 			context: null,
 			autoMemory: null,
 			memoryConfig: null,
+			memoryGraphEnabled: true,
 			loadErrors: null
 		};
 
 		render(MemoryPage, { props: { data: dataWithoutGraph as any } });
 
-		// Page should not throw — graph section shows empty state
-		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
-		// Other sections show their own empty states
-		expect(screen.getByText('No memory context available. Context populates as the system processes entries.')).toBeInTheDocument();
+		// Page should not throw — when all data is null, global empty state shows
+		expect(screen.getByText('No memory data yet')).toBeInTheDocument();
 		// Should NOT show loading
 		expect(screen.queryByText('Loading memory graph...')).not.toBeInTheDocument();
 	});
@@ -438,13 +437,14 @@ describe('Memory Page — Integration (missing graph data renders fallback)', ()
 			context: makeContextData(),
 			autoMemory: makeAutoMemoryData(),
 			memoryConfig: { backend: 'agentdb', enableHNSW: true },
+			memoryGraphEnabled: true,
 			loadErrors: null
 		};
 
 		render(MemoryPage, { props: { data: dataWithoutGraph as any } });
 
 		// Graph section shows empty fallback
-		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		expect(screen.getByText('No graph data yet')).toBeInTheDocument();
 		// Other sections still render correctly
 		expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
 		expect(screen.getByText('JWT with refresh tokens')).toBeInTheDocument();
@@ -462,7 +462,7 @@ describe('Memory Page — Integration (missing graph data renders fallback)', ()
 		});
 
 		// Graph section shows empty state without crashing
-		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		expect(screen.getByText('No graph data yet')).toBeInTheDocument();
 		// Metric cards should still render
 		expect(screen.getByText('Nodes')).toBeInTheDocument();
 		expect(screen.getByText('Edges')).toBeInTheDocument();
@@ -476,12 +476,13 @@ describe('Memory Page — Integration (missing graph data renders fallback)', ()
 			context: makeContextData(),
 			autoMemory: makeAutoMemoryData(),
 			memoryConfig: null,
+			memoryGraphEnabled: true,
 			loadErrors: null
 		};
 
 		render(MemoryPage, { props: { data: dataWithoutGraph as any } });
 
-		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		expect(screen.getByText('No graph data yet')).toBeInTheDocument();
 
 		// API returns valid data for both context and graph on refresh
 		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
@@ -501,7 +502,7 @@ describe('Memory Page — Integration (missing graph data renders fallback)', ()
 
 		await vi.waitFor(() => {
 			// Graph empty state gone, data populated
-			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
+			expect(screen.queryByText('No graph data yet')).not.toBeInTheDocument();
 			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
 		});
 	});
@@ -548,7 +549,8 @@ describe('Memory Page — Client-side graph refresh', () => {
 	});
 
 	it('fetches both /api/memory/context and /api/memory/graph on refresh', async () => {
-		render(MemoryPage, { props: { data: makePageData() } });
+		// Provide some data so isEmpty=false and Refresh button is in the non-empty section
+		render(MemoryPage, { props: { data: makePageData({ context: makeContextData() }) } });
 
 		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
 			routedFetch({
@@ -570,7 +572,7 @@ describe('Memory Page — Client-side graph refresh', () => {
 			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
 			expect(screen.getByText('JWT with refresh tokens')).toBeInTheDocument();
 			// Graph empty state should be gone
-			expect(screen.queryByText('No graph data. Memory graph populates as the system processes entries.')).not.toBeInTheDocument();
+			expect(screen.queryByText('No graph data yet')).not.toBeInTheDocument();
 		});
 
 		// Verify both endpoints were called
@@ -658,7 +660,7 @@ describe('Memory Page — Client-side graph refresh', () => {
 	it('shows disabled message when memoryGraphEnabled is false', () => {
 		render(MemoryPage, {
 			props: {
-				data: makePageData({ memoryGraphEnabled: false })
+				data: makePageData({ memoryGraphEnabled: false, context: makeContextData() })
 			}
 		});
 
@@ -668,12 +670,12 @@ describe('Memory Page — Client-side graph refresh', () => {
 	it('shows normal graph empty state when memoryGraphEnabled is not set', () => {
 		render(MemoryPage, {
 			props: {
-				data: makePageData()
+				data: makePageData({ context: makeContextData() })
 			}
 		});
 
 		// Should show the default empty state, not the disabled message
-		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
+		expect(screen.getByText('No graph data yet')).toBeInTheDocument();
 		expect(screen.queryByText('Memory graph is disabled. Enable it in settings to visualize relationships.')).not.toBeInTheDocument();
 	});
 
@@ -705,7 +707,7 @@ describe('Memory Page — Integration (empty API dataset renders empty-state)', 
 		globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as any;
 	});
 
-	it('renders all empty-state components when API returns empty arrays/objects', () => {
+	it('renders global empty-state when API returns empty arrays/objects', () => {
 		render(MemoryPage, {
 			props: {
 				data: makePageData({
@@ -718,14 +720,16 @@ describe('Memory Page — Integration (empty API dataset renders empty-state)', 
 			}
 		});
 
-		// Graph section: no nodes → empty state
-		expect(screen.getByText('No graph data. Memory graph populates as the system processes entries.')).toBeInTheDocument();
-		// Context section: empty entries → empty state
-		expect(screen.getByText('No memory context available. Context populates as the system processes entries.')).toBeInTheDocument();
-		// Auto-memory section: empty array → empty state
-		expect(screen.getByText('No auto-memory entries loaded')).toBeInTheDocument();
+		// When both context entries and autoMemory are empty, page shows the global
+		// PageFallback empty state — per-section content is not rendered at all
+		expect(screen.getByText('No memory data yet')).toBeInTheDocument();
+		expect(screen.getByText(/Memory entries will appear here/)).toBeInTheDocument();
+		// Sync Sources buttons: header always renders one, empty-state fallback renders another
+		expect(screen.getAllByText('Sync Sources').length).toBeGreaterThanOrEqual(1);
 		// No error banner
 		expect(screen.queryByText('Some data failed to load:')).not.toBeInTheDocument();
+		// Tab bar and metric cards should NOT be rendered
+		expect(screen.queryByText('Overview')).not.toBeInTheDocument();
 	});
 
 	it('renders empty-state after refresh when API returns empty datasets', async () => {
@@ -760,13 +764,13 @@ describe('Memory Page — Integration (empty API dataset renders empty-state)', 
 		await fireEvent.click(screen.getByText('Refresh'));
 
 		await vi.waitFor(() => {
-			// Previous data gone, empty states shown
+			// Previous data gone — all sections empty triggers global empty state
 			expect(screen.queryByText('JWT Authentication')).not.toBeInTheDocument();
-			expect(screen.getByText('No auto-memory entries loaded')).toBeInTheDocument();
+			expect(screen.getByText('No memory data yet')).toBeInTheDocument();
 		});
 	});
 
-	it('shows zero counts in metric cards with empty datasets', () => {
+	it('shows global empty state even when memoryConfig is set but data is empty', () => {
 		render(MemoryPage, {
 			props: {
 				data: makePageData({
@@ -778,11 +782,133 @@ describe('Memory Page — Integration (empty API dataset renders empty-state)', 
 			}
 		});
 
-		// Metric cards should show zero values
+		// isEmpty is true when context+autoMemory+graph are all empty,
+		// so the global PageFallback renders — metric cards are hidden
+		expect(screen.getByText('No memory data yet')).toBeInTheDocument();
+		// Metric cards are NOT rendered when isEmpty is true
+		expect(screen.queryByText('Overview')).not.toBeInTheDocument();
+	});
+
+	it('renders graph empty-state component when API returns zero nodes alongside populated context', () => {
+		render(MemoryPage, {
+			props: {
+				data: makePageData({
+					graph: { version: 1, updatedAt: Date.now(), nodeCount: 0, nodes: {}, edges: [], pageRanks: {} },
+					context: makeContextData(),
+					autoMemory: makeAutoMemoryData(),
+					memoryConfig: { backend: 'agentdb', enableHNSW: true }
+				})
+			}
+		});
+
+		// Graph section should show its empty-state text (not the global empty fallback)
+		expect(screen.getByText('No graph data yet')).toBeInTheDocument();
+		expect(screen.getByText(/memory graph visualizes connections/i)).toBeInTheDocument();
+
+		// Context summary renders with data on the overview tab (default)
+		expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
+		expect(screen.getByText('Redis Caching')).toBeInTheDocument();
+
+		// Global empty state should NOT appear — only graph section is empty
+		expect(screen.queryByText('No memory data yet')).not.toBeInTheDocument();
+
+		// Metric cards and config still render
 		expect(screen.getByText('Nodes')).toBeInTheDocument();
-		expect(screen.getByText('Edges')).toBeInTheDocument();
-		// Backend config still renders
 		expect(screen.getByText('agentdb')).toBeInTheDocument();
+	});
+});
+
+describe('Memory Page — Integration (empty API dataset → empty-state via client refresh)', () => {
+	beforeEach(() => {
+		vi.restoreAllMocks();
+		globalThis.fetch = vi.fn().mockResolvedValue({ ok: true, json: () => Promise.resolve({}) }) as any;
+	});
+
+	it('renders empty-state when API refresh from empty initial state also returns empty data', async () => {
+		// Start with completely empty server-loaded data (global empty state)
+		render(MemoryPage, {
+			props: {
+				data: makePageData({
+					graph: { version: 1, updatedAt: Date.now(), nodeCount: 0, nodes: {}, edges: [], pageRanks: {} },
+					context: { entries: [] },
+					autoMemory: [],
+					memoryConfig: null,
+					loadErrors: null
+				})
+			}
+		});
+
+		// Global empty state is shown initially
+		expect(screen.getByText('No memory data yet')).toBeInTheDocument();
+		expect(screen.getByText(/Memory entries will appear here/)).toBeInTheDocument();
+
+		// API refresh also returns empty data
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+			routedFetch({
+				'/api/memory/context': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve({ context: { entries: [] }, autoMemory: [] })
+				}),
+				'/api/memory/graph': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve({ version: 1, updatedAt: Date.now(), nodeCount: 0, nodes: {}, edges: [], pageRanks: {} })
+				})
+			})
+		);
+
+		// Click Sync Sources (the action available in empty state)
+		await fireEvent.click(screen.getByText('Sync Sources'));
+
+		await vi.waitFor(() => {
+			// Empty state should persist — no crash, no stale data
+			expect(screen.getByText('No memory data yet')).toBeInTheDocument();
+			expect(screen.getByText(/Memory entries will appear here/)).toBeInTheDocument();
+			// No error banner should appear
+			expect(screen.queryByText('Some data failed to load:')).not.toBeInTheDocument();
+		});
+	});
+
+	it('transitions from empty-state to populated when API refresh returns data', async () => {
+		// Start with completely empty data
+		render(MemoryPage, {
+			props: {
+				data: makePageData({
+					graph: { version: 1, updatedAt: Date.now(), nodeCount: 0, nodes: {}, edges: [], pageRanks: {} },
+					context: { entries: [] },
+					autoMemory: [],
+					memoryConfig: null,
+					loadErrors: null
+				})
+			}
+		});
+
+		// Confirm empty state
+		expect(screen.getByText('No memory data yet')).toBeInTheDocument();
+
+		// API returns populated data on refresh
+		(globalThis.fetch as ReturnType<typeof vi.fn>).mockImplementation(
+			routedFetch({
+				'/api/memory/context': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve({ context: makeContextData(), autoMemory: makeAutoMemoryData() })
+				}),
+				'/api/memory/graph': () => Promise.resolve({
+					ok: true,
+					json: () => Promise.resolve(makeGraphData())
+				})
+			})
+		);
+
+		await fireEvent.click(screen.getByText('Sync Sources'));
+
+		await vi.waitFor(() => {
+			// Empty state should be gone
+			expect(screen.queryByText('No memory data yet')).not.toBeInTheDocument();
+			// Populated data renders
+			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
+			expect(screen.getByText('Redis Caching')).toBeInTheDocument();
+			expect(screen.getByText('JWT with refresh tokens')).toBeInTheDocument();
+		});
 	});
 });
 

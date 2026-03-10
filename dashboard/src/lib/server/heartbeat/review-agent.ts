@@ -142,18 +142,18 @@ async function runOpenClawReview(
 	}
 }
 
-function spawnClaudeReview(
+async function spawnClaudeReview(
 	prompt: string,
 	sender: ChatSender,
 	reportId: string,
 	monitorSession: ChatSession
-): void {
+): Promise<void> {
 	const agents = getActiveAgents();
 	const logFile = resolve(PATHS.headlessLogsDir, `agent-review-${Date.now()}.log`);
 
 	try {
-		const baseline = captureGitBaseline();
-		const child = spawnClaude(prompt, logFile, { model: 'claude-opus-4-6' });
+		const baseline = await captureGitBaseline();
+		const child = await spawnClaude(prompt, logFile, { model: 'claude-opus-4-6' });
 
 		const pid = child.pid ?? 0;
 		agents.set('review', {

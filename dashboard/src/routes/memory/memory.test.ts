@@ -119,19 +119,23 @@ describe('Memory Page', () => {
 		expect(screen.getByText('No context entries yet')).toBeInTheDocument();
 	});
 
-	it('shows "No auto-memory entries loaded" when autoMemory is empty', () => {
+	it('shows "No auto-memory entries loaded" when autoMemory is empty', async () => {
 		render(MemoryPage, { props: { data: makePageData({
 			autoMemory: [],
 			context: makeContext({ entries: [{ id: 'e1', summary: 'X', content: '', category: 'core', confidence: 0.5, pageRank: 0.5, accessCount: 1 }] })
 		}) } });
+		// Switch to entries tab where auto-memory empty state renders
+		await fireEvent.click(screen.getByRole('button', { name: /Entries/ }));
 		expect(screen.getByText('No auto-memory entries yet')).toBeInTheDocument();
 	});
 
-	it('shows "No auto-memory entries loaded" when autoMemory is null', () => {
+	it('shows "No auto-memory entries loaded" when autoMemory is null', async () => {
 		render(MemoryPage, { props: { data: makePageData({
 			autoMemory: null,
 			context: makeContext({ entries: [{ id: 'e1', summary: 'X', content: '', category: 'core', confidence: 0.5, pageRank: 0.5, accessCount: 1 }] })
 		}) } });
+		// Switch to entries tab where auto-memory empty state renders
+		await fireEvent.click(screen.getByRole('button', { name: /Entries/ }));
 		expect(screen.getByText('No auto-memory entries yet')).toBeInTheDocument();
 	});
 
@@ -204,7 +208,7 @@ describe('Memory Page', () => {
 		expect(screen.getByText('Auth pattern')).toBeInTheDocument();
 	});
 
-	it('renders auto-memory entries with key and namespace', () => {
+	it('renders auto-memory entries with key and namespace', async () => {
 		render(MemoryPage, {
 			props: {
 				data: makePageData({
@@ -223,9 +227,12 @@ describe('Memory Page', () => {
 				})
 			}
 		});
-		expect(screen.getByText('JWT authentication')).toBeInTheDocument();
-		expect(screen.getByText('patterns')).toBeInTheDocument();
-		expect(screen.getByText('pattern')).toBeInTheDocument();
+		// Switch to entries tab where auto-memory entries render
+		await fireEvent.click(screen.getByRole('button', { name: /Entries/ }));
+		// Desktop + mobile rows both render, so use getAllByText
+		expect(screen.getAllByText('JWT authentication').length).toBeGreaterThanOrEqual(1);
+		expect(screen.getAllByText('patterns').length).toBeGreaterThanOrEqual(1);
+		expect(screen.getAllByText('pattern').length).toBeGreaterThanOrEqual(1);
 	});
 
 	it('shows Refresh button', () => {

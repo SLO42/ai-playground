@@ -408,7 +408,7 @@ export const PUT: RequestHandler = async ({ params, request }) => {
 			await saveMonitorSession(monitor);
 
 			// Spawn Claude Code
-			const child = spawnClaude(prompt, logFile, { model: 'claude-sonnet-4-6' });
+			const child = await spawnClaude(prompt, logFile, { model: 'claude-sonnet-4-6' });
 
 			// Track in active agents so it shows in the sessions/active endpoint
 			const agents = getActiveAgents();

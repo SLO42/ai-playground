@@ -7,6 +7,7 @@ import {
 	scanLocalModels, registerLocalModel, removeAsset,
 	getComfyModels
 } from '$lib/server/art-assets.js';
+import { DASHBOARD_TOKEN } from '../../../../hooks.server.js';
 
 /** GET /api/art/assets — list registered assets and ComfyUI-visible models */
 export const GET: RequestHandler = async ({ url }) => {
@@ -32,13 +33,19 @@ export const GET: RequestHandler = async ({ url }) => {
 };
 
 /** POST /api/art/assets — search, download, register, or remove assets */
-export const POST: RequestHandler = async ({ request }) => {
-	// Guard: only allow requests originating from the local dashboard (CSRF / remote-caller protection).
-	// The Origin header is always sent by browsers for cross-origin POST requests.
-	// Requests without Origin (e.g. server-to-server on localhost) are also permitted.
+export const POST: RequestHandler = async ({ request, cookies }) => {
+	// Layer 1 — Origin check (blocks cross-origin browser requests)
 	const origin = request.headers.get('origin');
 	if (origin && !/^https?:\/\/(localhost|127\.0\.0\.1)(:\d+)?$/.test(origin)) {
-		return json({ error: 'Unauthorized' }, { status: 401 });
+		return json({ error: 'Forbidden: invalid origin' }, { status: 403 });
+	}
+
+	// Layer 2 — Dashboard token check (blocks curl, server-to-server, and scripted callers).
+	// The token is set as an httpOnly, SameSite=Strict cookie by hooks.server.ts on every
+	// page load, so only a browser that actually rendered the dashboard will have it.
+	const token = cookies.get('dashboard_token');
+	if (!token || token !== DASHBOARD_TOKEN) {
+		return json({ error: 'Unauthorized: valid dashboard session required' }, { status: 401 });
 	}
 
 	try {

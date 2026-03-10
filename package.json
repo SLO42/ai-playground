@@ -24,7 +24,8 @@
     "dashboard:dev": "cd dashboard && npm run dev",
     "dashboard:build": "cd dashboard && npm run build",
     "dashboard:start": "cd dashboard && node build",
-    "postinstall": "bash scripts/patch-agentdb.sh"
+    "postinstall": "bash scripts/patch-agentdb.sh",
+    "prepare": "cp scripts/pre-commit-checks.sh .git/hooks/pre-commit 2>/dev/null && chmod +x .git/hooks/pre-commit || true"
   },
   "keywords": [],
   "author": "",

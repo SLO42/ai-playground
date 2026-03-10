@@ -35,6 +35,7 @@ import { processSuggestions, suggestTasks } from '../task-suggestions.js';
 import { syncMemoryBridge } from '../memory-bridge.js';
 import { runUxInspection } from './ux-inspector.js';
 import { loadRestartConfigAsync, shouldRestart, attemptRestart, resetRestartCount, getRestartState } from './auto-restart.js';
+import { runMemoryGuardian, loadGuardianConfig } from './memory-guardian.js';
 import type { ChatSession } from '$lib/types/chat.js';
 import type { Task } from '$lib/types/tasks.js';
 
@@ -959,7 +960,25 @@ async function heartbeat() {
 		}
 	} catch { /* memory bridge is best-effort */ }
 
-	// ── Phase 9: Cleanup & Idle
+	// ── Phase 9: Memory Guardian
+	try {
+		const guardianCfg = await loadGuardianConfig();
+		const guardianReport = await runMemoryGuardian(session, guardianCfg);
+		if (guardianReport && (guardianReport.agentsKilled > 0 || guardianReport.agentsWarned > 0)) {
+			await pushNotification({
+				severity: guardianReport.agentsKilled > 0 ? 'critical' : 'warning',
+				category: 'system',
+				title: 'Memory Guardian alert',
+				message: `${guardianReport.agentsWarned} warned, ${guardianReport.agentsKilled} killed — ${(guardianReport.logBytesFreed / 1024 / 1024).toFixed(1)} MB freed`,
+				source: 'claw',
+				link: `/chat?session=${MONITOR_SESSION_ID}`,
+				linkLabel: 'View Monitor',
+				desktop: guardianReport.agentsKilled > 0
+			}).catch(() => {});
+		}
+	} catch { /* guardian is best-effort */ }
+
+	// ── Phase 10: Cleanup & Idle
 	await cleanupPromptFiles();
 	const agentCount = getActiveAgents().size;
 	log(session, `[idle] Heartbeat #${heartbeatCount} done — ${agentCount} agent(s) running — going idle`);

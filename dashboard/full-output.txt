@@ -1,0 +1,3361 @@
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90mF:/code/ai-playground/dashboard[39m
+
+ [31m❯[39m src/routes/api/projects/[id]/agents/agents.test.ts [2m([22m[2m21 tests[22m[2m | [22m[31m6 failed[39m[2m)[22m[32m 257[2mms[22m[39m
+       [32m✓[39m returns 404 for unknown project[32m 83[2mms[22m[39m
+[31m       [31m×[31m returns empty associations when no agents.json exists[39m[32m 7[2mms[22m[39m
+[31m       [31m×[31m splits agents into associated and available[39m[32m 140[2mms[22m[39m
+[31m       [31m×[31m parses agent frontmatter correctly[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m skips files without frontmatter[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m scans subdirectories for agents[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m handles empty agents directory[39m[32m 1[2mms[22m[39m
+       [32m✓[39m returns 404 for unknown project[32m 2[2mms[22m[39m
+       [32m✓[39m returns 400 when agents array is missing[32m 2[2mms[22m[39m
+       [32m✓[39m returns 400 when agents is empty array[32m 1[2mms[22m[39m
+       [32m✓[39m returns 400 when agents is not an array[32m 3[2mms[22m[39m
+       [32m✓[39m adds agents to project association[32m 3[2mms[22m[39m
+       [32m✓[39m does not duplicate already-associated agents[32m 2[2mms[22m[39m
+       [32m✓[39m creates .playground directory if needed[32m 3[2mms[22m[39m
+       [32m✓[39m skips non-string entries in agents array[32m 1[2mms[22m[39m
+       [32m✓[39m returns 404 for unknown project[32m 1[2mms[22m[39m
+       [32m✓[39m returns 400 when agents array is missing[32m 1[2mms[22m[39m
+       [32m✓[39m returns 400 when agents is empty array[32m 0[2mms[22m[39m
+       [32m✓[39m removes agents from project association[32m 1[2mms[22m[39m
+       [32m✓[39m handles removing agents that are not associated (no-op)[32m 1[2mms[22m[39m
+       [32m✓[39m handles removing all agents[32m 1[2mms[22m[39m
+ [32m✓[39m src/routes/projects/[id]/services/services.test.ts [2m([22m[2m36 tests[22m[2m)[22m[33m 469[2mms[22m[39m
+ [31m❯[39m src/routes/agents/agents.test.ts [2m([22m[2m20 tests[22m[2m | [22m[31m20 failed[39m[2m)[22m[32m 37[2mms[22m[39m
+[31m       [31m×[31m returns empty agents when no .md files exist[39m[32m 7[2mms[22m[39m
+[31m       [31m×[31m parses agent definitions from markdown frontmatter[39m[32m 2[2mms[22m[39m
+[31m       [31m×[31m returns swarmStatus defaults when no swarm activity[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m returns v3Progress defaults when no progress file[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m passes through analytics and poolStats[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m returns active agents list from shared state[39m[32m 0[2mms[22m[39m
+[31m       [31m×[31m defaults to page 1 with perPage 24[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m respects custom page and perPage[39m[32m 13[2mms[22m[39m
+[31m       [31m×[31m clamps page to minimum 1 for invalid values[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m clamps page to minimum 1 for negative values[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m caps perPage at 100[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m enforces minimum perPage of 1[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m calculates totalPages correctly[39m[32m 2[2mms[22m[39m
+[31m       [31m×[31m clamps page to totalPages if exceeding[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m returns correct slice for page 2[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m returns empty agents when readdir fails[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m skips files that fail to read[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m skips files without valid frontmatter[39m[32m 0[2mms[22m[39m
+[31m       [31m×[31m populates swarmStatus from swarm activity data[39m[32m 0[2mms[22m[39m
+[31m       [31m×[31m populates v3Progress from progress file[39m[32m 0[2mms[22m[39m
+ [31m❯[39m src/routes/memory/memory-integration.test.ts [2m([22m[2m0 test[22m[2m)[22m
+12:39:15 AM [vite-plugin-svelte] src/lib/components/StatusBar.svelte:47:8 Redundant role 'banner'
+https://svelte.dev/e/a11y_no_redundant_roles
+12:39:16 AM [vite-plugin-svelte] src/routes/memory/+page.svelte:247:26 This reference only captures the initial value of `groupBy`. Did you mean to reference it inside a closure instead?
+https://svelte.dev/e/state_referenced_locally
+ [31m❯[39m src/routes/projects/[id]/agents/agents.test.ts [2m([22m[2m12 tests[22m[2m | [22m[31m3 failed[39m[2m)[22m[33m 4238[2mms[22m[39m
+[31m       [31m×[31m returns disabled state when previewNewPages is false[39m[32m 15[2mms[22m[39m
+[31m       [31m×[31m returns enabled state when previewNewPages is true[39m[32m 7[2mms[22m[39m
+       [32m✓[39m fetches agents from the API with correct project id[32m 87[2mms[22m[39m
+[31m       [31m×[31m returns agent data from API response[39m[33m 892[2mms[22m[39m
+       [33m[2m✓[22m[39m passes page and pageSize query params to API [33m 697[2mms[22m[39m
+       [33m[2m✓[22m[39m defaults page to 1 and pageSize to 10 [33m 632[2mms[22m[39m
+       [33m[2m✓[22m[39m returns error state on non-ok API response [33m 871[2mms[22m[39m
+       [32m✓[39m handles API response that cannot be parsed as JSON[32m 285[2mms[22m[39m
+       [33m[2m✓[22m[39m returns error state when fetch throws [33m 306[2mms[22m[39m
+       [32m✓[39m returns generic error for non-Error throws[32m 7[2mms[22m[39m
+       [32m✓[39m preserves pageSize in error pagination[32m 8[2mms[22m[39m
+       [33m[2m✓[22m[39m encodes project id with special characters [33m 429[2mms[22m[39m
+12:39:16 AM [vite-plugin-svelte] src/lib/components/TaskDetail.svelte:145:4 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+12:39:16 AM [vite-plugin-svelte] src/lib/components/TaskDetail.svelte:158:4 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+12:39:16 AM [vite-plugin-svelte] src/lib/components/TaskDetail.svelte:174:3 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+12:39:16 AM [vite-plugin-svelte] src/lib/components/TaskDetail.svelte:190:3 A form label must be associated with a control
+https://svelte.dev/e/a11y_label_has_associated_control
+12:39:17 AM [vite-plugin-svelte] src/lib/components/AgentGrid.svelte:75:3 Non-interactive element `<div>` should not be assigned mouse or keyboard event listeners
+https://svelte.dev/e/a11y_no_noninteractive_element_interactions
+ [31m❯[39m src/lib/components/StatusBadge.test.ts [2m([22m[2m13 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 75[2mms[22m[39m
+     [32m✓[39m renders the status dot[32m 27[2mms[22m[39m
+     [32m✓[39m applies green color for online status[32m 3[2mms[22m[39m
+     [32m✓[39m applies green color for clean status[32m 2[2mms[22m[39m
+     [32m✓[39m applies red color for offline status[32m 2[2mms[22m[39m
+     [32m✓[39m applies red color for error status[32m 2[2mms[22m[39m
+     [32m✓[39m applies yellow color for warning status[32m 3[2mms[22m[39m
+     [32m✓[39m applies yellow color for pending status[32m 2[2mms[22m[39m
+     [32m✓[39m renders label text when provided[32m 16[2mms[22m[39m
+     [32m✓[39m does not render label text when not provided[32m 3[2mms[22m[39m
+     [32m✓[39m uses small size by default[32m 2[2mms[22m[39m
+     [32m✓[39m uses medium size when specified[32m 1[2mms[22m[39m
+[31m     [31m×[31m applies correct text color to label[39m[32m 7[2mms[22m[39m
+     [32m✓[39m label has uppercase tracking[32m 3[2mms[22m[39m
+ [31m❯[39m src/lib/components/StatusBar.test.ts [2m([22m[2m10 tests[22m[2m | [22m[31m8 failed[39m[2m)[22m[32m 160[2mms[22m[39m
+[31m     [31m×[31m renders default services[39m[32m 114[2mms[22m[39m
+[31m     [31m×[31m renders default service status texts[39m[32m 8[2mms[22m[39m
+[31m     [31m×[31m renders custom services[39m[32m 7[2mms[22m[39m
+[31m     [31m×[31m renders lastSync text[39m[32m 4[2mms[22m[39m
+     [32m✓[39m renders default lastSync as "just now"[32m 3[2mms[22m[39m
+[31m     [31m×[31m applies green dot for online status[39m[32m 8[2mms[22m[39m
+[31m     [31m×[31m applies red dot for offline status[39m[32m 3[2mms[22m[39m
+[31m     [31m×[31m applies yellow dot for warning status[39m[32m 2[2mms[22m[39m
+     [32m✓[39m renders as a sticky header[32m 5[2mms[22m[39m
+[31m     [31m×[31m has correct height class[39m[32m 4[2mms[22m[39m
+ [32m✓[39m src/lib/components/ScoreGauge.test.ts [2m([22m[2m24 tests[22m[2m)[22m[33m 332[2mms[22m[39m
+ [31m❯[39m src/lib/components/MetricCard.test.ts [2m([22m[2m11 tests[22m[2m | [22m[31m1 failed[39m[2m)[22m[32m 85[2mms[22m[39m
+     [32m✓[39m renders label and value[32m 35[2mms[22m[39m
+     [32m✓[39m renders string values[32m 3[2mms[22m[39m
+     [32m✓[39m renders subtitle when provided[32m 5[2mms[22m[39m
+     [32m✓[39m does not render subtitle when not provided[32m 3[2mms[22m[39m
+     [32m✓[39m applies blue accent by default[32m 2[2mms[22m[39m
+     [32m✓[39m applies green accent when specified[32m 2[2mms[22m[39m
+     [32m✓[39m applies red accent when specified[32m 2[2mms[22m[39m
+     [32m✓[39m applies all supported accent colors[32m 20[2mms[22m[39m
+[31m     [31m×[31m label has correct styling[39m[32m 7[2mms[22m[39m
+     [32m✓[39m value has monospace font[32m 2[2mms[22m[39m
+     [32m✓[39m card has border and rounded corners[32m 2[2mms[22m[39m
+ [32m✓[39m src/routes/projects/[id]/hooks/HookList.test.ts [2m([22m[2m25 tests[22m[2m)[22m[32m 271[2mms[22m[39m
+ [31m❯[39m src/routes/projects/[id]/security/security.test.ts [2m([22m[2m0 test[22m[2m)[22m
+ [32m✓[39m src/lib/components/TaskList.test.ts [2m([22m[2m22 tests[22m[2m)[22m[33m 410[2mms[22m[39m
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+ [31m❯[39m src/routes/api/memory/graph/graph.test.ts [2m([22m[2m10 tests[22m[2m | [22m[31m2 failed[39m[2m)[22m[32m 23[2mms[22m[39m
+     [32m✓[39m returns graph data when file exists and is valid[32m 7[2mms[22m[39m
+[31m     [31m×[31m returns cached data without reading file[39m[32m 5[2mms[22m[39m
+[31m     [31m×[31m caches graph data after successful file read[39m[32m 3[2mms[22m[39m
+     [32m✓[39m returns null with 200 when graph file is missing[32m 1[2mms[22m[39m
+     [32m✓[39m does not cache null when file is missing[32m 1[2mms[22m[39m
+     [32m✓[39m returns null when file contains malformed JSON (readJsonFile catches internally)[32m 1[2mms[22m[39m
+     [32m✓[39m propagates error when readJsonFile throws unexpectedly[32m 2[2mms[22m[39m
+     [32m✓[39m returns empty graph structure when file has empty nodes/edges[32m 1[2mms[22m[39m
+     [32m✓[39m returns data as-is when graph has unexpected shape (no server-side validation)[32m 1[2mms[22m[39m
+     [32m✓[39m passes PATHS.graphState to readJsonFile[32m 1[2mms[22m[39m
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+ [32m✓[39m src/lib/components/TaskDetail.test.ts [2m([22m[2m30 tests[22m[2m)[22m[33m 873[2mms[22m[39m
+     [33m[2m✓[22m[39m calls onupdate when flag checkbox toggled [33m 428[2mms[22m[39m
+ [32m✓[39m src/routes/projects/[id]/memory/memory-server.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 893[2mms[22m[39m
+     [33m[2m✓[22m[39m returns graph as null when no graph file exists [33m 877[2mms[22m[39m
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+ [31m❯[39m src/routes/api/projects/[id]/memory/memory.test.ts [2m([22m[2m11 tests[22m[2m | [22m[31m7 failed[39m[2m)[22m[32m 35[2mms[22m[39m
+     [32m✓[39m does not throw when graph is null (no graph file)[32m 6[2mms[22m[39m
+     [32m✓[39m does not throw when graph is null and a time range is set[32m 1[2mms[22m[39m
+     [32m✓[39m does not throw when graph is undefined and range is 24h[32m 1[2mms[22m[39m
+[31m     [31m×[31m filters graph nodes by cutoff when graph exists and range is set[39m[32m 8[2mms[22m[39m
+     [32m✓[39m returns full graph when no range is set[32m 2[2mms[22m[39m
+[31m     [31m×[31m returns cached response when available[39m[32m 5[2mms[22m[39m
+[31m       [31m×[31m populates cache on first request and serves from cache on second[39m[32m 4[2mms[22m[39m
+[31m       [31m×[31m includes Cache-Control header with remaining TTL on cache hit[39m[32m 2[2mms[22m[39m
+[31m       [31m×[31m uses separate cache keys per range parameter[39m[32m 2[2mms[22m[39m
+[31m       [31m×[31m uses "all" suffix in cache key when no range is specified[39m[32m 1[2mms[22m[39m
+[31m       [31m×[31m sets Cache-Control max-age=30 on fresh (non-cached) response[39m[32m 1[2mms[22m[39m
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+Not implemented: HTMLCanvasElement's getContext() method: without installing the canvas npm package
+ [32m✓[39m src/lib/components/BubbleGraph.a11y.test.ts [2m([22m[2m31 tests[22m[2m)[22m[33m 1232[2mms[22m[39m
+       [33m[2m✓[22m[39m passes axe-core checks in loading state [33m 550[2mms[22m[39m
+ [32m✓[39m src/lib/components/BubbleGraph.test.ts [2m([22m[2m72 tests[22m[2m)[22m[33m 1391[2mms[22m[39m
+       [33m[2m✓[22m[39m passes axe-core accessibility checks [33m 613[2mms[22m[39m
+ [32m✓[39m src/lib/server/routing-telemetry.test.ts [2m([22m[2m23 tests[22m[2m)[22m[32m 69[2mms[22m[39m
+ [32m✓[39m src/routes/security/security.test.ts [2m([22m[2m27 tests[22m[2m)[22m[33m 484[2mms[22m[39m
+ [32m✓[39m src/lib/components/AgentGrid.test.ts [2m([22m[2m43 tests[22m[2m)[22m[33m 1716[2mms[22m[39m
+       [33m[2m✓[22m[39m ArrowRight calls ongoToPage with next page [33m 555[2mms[22m[39m
+       [33m[2m✓[22m[39m ArrowLeft does nothing on first page [33m 313[2mms[22m[39m
+ [31m❯[39m src/routes/memory/memory.test.ts [2m([22m[2m40 tests[22m[2m | [22m[31m13 failed[39m[2m)[22m[33m 1663[2mms[22m[39m
+     [32m✓[39m renders page title[32m 128[2mms[22m[39m
+[31m     [31m×[31m shows empty state when graph data is null[39m[32m 18[2mms[22m[39m
+[31m     [31m×[31m shows empty state when graph has no nodes[39m[32m 10[2mms[22m[39m
+[31m     [31m×[31m shows no-context message when context is null and not loading[39m[32m 9[2mms[22m[39m
+[31m     [31m×[31m shows "No context entries loaded" when context has empty entries[39m[32m 17[2mms[22m[39m
+[31m     [31m×[31m shows "No auto-memory entries loaded" when autoMemory is empty[39m[32m 10[2mms[22m[39m
+[31m     [31m×[31m shows "No auto-memory entries loaded" when autoMemory is null[39m[32m 8[2mms[22m[39m
+[31m     [31m×[31m renders metric cards with default N/A values when data is null[39m[32m 6[2mms[22m[39m
+[31m     [31m×[31m renders metric values from memoryConfig[39m[32m 9[2mms[22m[39m
+[31m     [31m×[31m shows HNSW Disabled when enableHNSW is false[39m[32m 7[2mms[22m[39m
+     [32m✓[39m renders context summary when context has entries[32m 60[2mms[22m[39m
+     [32m✓[39m renders top contexts list from context entries[32m 9[2mms[22m[39m
+[31m     [31m×[31m renders auto-memory entries with key and namespace[39m[32m 21[2mms[22m[39m
+     [32m✓[39m shows Refresh button[32m 3[2mms[22m[39m
+     [32m✓[39m shows loading state when refresh is clicked[32m 20[2mms[22m[39m
+     [32m✓[39m shows error banner when refresh fails[32m 70[2mms[22m[39m
+     [32m✓[39m shows error when refresh returns non-ok response[32m 20[2mms[22m[39m
+     [32m✓[39m dismisses error when dismiss button is clicked[32m 18[2mms[22m[39m
+     [32m✓[39m computes edge count from graph data[32m 9[2mms[22m[39m
+       [32m✓[39m handles graph with nodes as an array instead of object[32m 12[2mms[22m[39m
+       [32m✓[39m handles graph with edges containing invalid sourceId/targetId references[32m 10[2mms[22m[39m
+       [32m✓[39m handles graph with null node value[32m 10[2mms[22m[39m
+[31m       [31m×[31m handles graph with undefined nodes value[39m[32m 7[2mms[22m[39m
+       [32m✓[39m handles graph with edges as non-array value[32m 12[2mms[22m[39m
+[31m       [31m×[31m handles completely empty graph object[39m[32m 6[2mms[22m[39m
+       [32m✓[39m handles graph with pageRanks as null[32m 9[2mms[22m[39m
+       [32m✓[39m does not render BubbleGraph when graph error occurs from malformed data[32m 66[2mms[22m[39m
+[31m       [31m×[31m shows disabled message when memoryGraphEnabled is false[39m[32m 5[2mms[22m[39m
+       [32m✓[39m does not render BubbleGraph when memoryGraphEnabled is false even with graph data[32m 13[2mms[22m[39m
+       [32m✓[39m does not fetch graph data on refresh when memoryGraphEnabled is false[32m 220[2mms[22m[39m
+       [32m✓[39m does not show error banner when graph fetch returns non-ok but context succeeds[32m 142[2mms[22m[39m
+       [32m✓[39m shows graph error fallback when server returns malformed graph data on refresh[32m 196[2mms[22m[39m
+       [32m✓[39m recovers from graph error on retry with valid data[32m 206[2mms[22m[39m
+       [32m✓[39m shows error fallback message text from caught exception[32m 12[2mms[22m[39m
+       [32m✓[39m renders graph fallback with warning icon when graph processing fails[32m 9[2mms[22m[39m
+       [32m✓[39m shows graph error fallback with Retry button when graph API network-rejects on refresh[32m 48[2mms[22m[39m
+       [32m✓[39m shows graph fallback with Retry when graph API returns non-ok and user can retry successfully[32m 81[2mms[22m[39m
+       [32m✓[39m shows graph fallback with error detail when retryGraphFetch itself rejects[32m 122[2mms[22m[39m
+       [32m✓[39m does not show empty-state message when graph error fallback is active[32m 12[2mms[22m[39m
+     [32m✓[39m displays confidence metric from context entries[32m 12[2mms[22m[39m
+ [32m✓[39m src/routes/projects/[id]/sessions/sessions.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 14[2mms[22m[39m
+ [32m✓[39m src/routes/projects/[id]/hooks/hooks.test.ts [2m([22m[2m18 tests[22m[2m)[22m[32m 17[2mms[22m[39m
+ [32m✓[39m src/lib/components/VramGauge.test.ts [2m([22m[2m11 tests[22m[2m)[22m[32m 103[2mms[22m[39m
+ [32m✓[39m src/lib/server/task-store.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 3031[2mms[22m[39m
+     [33m[2m✓[22m[39m starts a pending task and transitions to in_progress [33m 1622[2mms[22m[39m
+     [33m[2m✓[22m[39m cancelling a task moves it to archived bucket [33m 888[2mms[22m[39m
+ [32m✓[39m src/lib/components/Toast.test.ts [2m([22m[2m14 tests[22m[2m)[22m[32m 116[2mms[22m[39m
+ [32m✓[39m src/lib/components/TimelineChart.test.ts [2m([22m[2m13 tests[22m[2m)[22m[32m 127[2mms[22m[39m
+ [32m✓[39m src/lib/components/PageFallback.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 64[2mms[22m[39m
+ [32m✓[39m src/routes/api/tasks/tasks-pagination.test.ts [2m([22m[2m16 tests[22m[2m)[22m[32m 24[2mms[22m[39m
+ [32m✓[39m src/routes/api/tasks/suggest/suggest.test.ts [2m([22m[2m9 tests[22m[2m)[22m[32m 22[2mms[22m[39m
+ [32m✓[39m src/routes/api/notifications/stream/stream.test.ts [2m([22m[2m10 tests[22m[2m)[22m[32m 23[2mms[22m[39m
+ [32m✓[39m src/routes/memory/memory-large-dataset.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 9270[2mms[22m[39m
+     [33m[2m✓[22m[39m renders without crashing with ~10k graph nodes [33m 762[2mms[22m[39m
+     [33m[2m✓[22m[39m renders edge count correctly for large dataset [33m 516[2mms[22m[39m
+     [33m[2m✓[22m[39m completes initial render within a reasonable time for 10k nodes [33m 613[2mms[22m[39m
+     [33m[2m✓[22m[39m handles combined large graph + large context [33m 2198[2mms[22m[39m
+     [33m[2m✓[22m[39m renders all metric cards with large dataset values [33m 4713[2mms[22m[39m
+
+[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Suites 2 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m src/routes/memory/memory-integration.test.ts[2m [ src/routes/memory/memory-integration.test.ts ][22m
+[31m[1mError[22m: Transform failed with 1 error:
+F:/code/ai-playground/dashboard/src/routes/memory/memory-integration.test.ts:906:0: ERROR: Unexpected "}"[39m
+  Plugin: [35mvite:esbuild[39m
+  File: [36mF:/code/ai-playground/dashboard/src/routes/memory/memory-integration.test.ts[39m:906:0
+[33m  
+  [33mUnexpected "}"[33m
+  904 |  		});
+  905 |  	});
+  906 |  });
+      |  ^
+  907 |  
+  908 |  // ─── Tests requiring fake timers (fetchWithRetry has exponential backoff) ────
+  [39m
+[90m [2m❯[22m failureErrorWithLog node_modules/esbuild/lib/main.js:[2m1467:15[22m[39m
+[90m [2m❯[22m node_modules/esbuild/lib/main.js:[2m736:50[22m[39m
+[90m [2m❯[22m responseCallbacks.<computed> node_modules/esbuild/lib/main.js:[2m603:9[22m[39m
+[90m [2m❯[22m handleIncomingPacket node_modules/esbuild/lib/main.js:[2m658:12[22m[39m
+[90m [2m❯[22m Socket.readFromStdout node_modules/esbuild/lib/main.js:[2m581:7[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/projects/[id]/security/security.test.ts[2m [ src/routes/projects/[id]/security/security.test.ts ][22m
+[31m[1mError[22m: Failed to resolve import "$env/dynamic/private" from "src/lib/server/feature-flags.ts". Does the file exist?[39m
+  Plugin: [35mvite:import-analysis[39m
+  File: [36mF:/code/ai-playground/dashboard/src/lib/server/feature-flags.ts[39m:1:20
+[33m  1  |  import { env } from "$env/dynamic/private";
+     |                       ^
+  2  |  const FLAG_PREFIX = "FF_";
+  3  |  const FLAG_DEFAULTS = {[39m
+[90m [2m❯[22m TransformPluginContext._formatLog node_modules/vite/dist/node/chunks/config.js:[2m28999:43[22m[39m
+[90m [2m❯[22m TransformPluginContext.error node_modules/vite/dist/node/chunks/config.js:[2m28996:14[22m[39m
+[90m [2m❯[22m normalizeUrl node_modules/vite/dist/node/chunks/config.js:[2m27119:18[22m[39m
+[90m [2m❯[22m node_modules/vite/dist/node/chunks/config.js:[2m27177:32[22m[39m
+[90m [2m❯[22m TransformPluginContext.transform node_modules/vite/dist/node/chunks/config.js:[2m27145:4[22m[39m
+[90m [2m❯[22m EnvironmentPluginContainer.transform node_modules/vite/dist/node/chunks/config.js:[2m28797:14[22m[39m
+[90m [2m❯[22m loadAndTransform node_modules/vite/dist/node/chunks/config.js:[2m22670:26[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/63]⎯[22m[39m
+
+
+[31m⎯⎯⎯⎯⎯⎯[39m[1m[41m Failed Tests 61 [49m[22m[31m⎯⎯⎯⎯⎯⎯⎯[39m
+
+[41m[1m FAIL [22m[49m src/lib/components/MetricCard.test.ts[2m > [22mMetricCard[2m > [22mlabel has correct styling
+[31m[1mError[22m: [2mexpect([22m[31melement[31m[2m).toHaveClass([22m[32m[32m"text-xs uppercase tracking-wider"[32m[31m[2m)[22m
+
+Expected the element to have class:
+[32m  text-xs uppercase tracking-wider[31m
+Received:
+[31m  text-[0.65rem] sm:text-xs text-text-secondary uppercase tracking-wider mb-1 truncate[31m[39m
+[36m [2m❯[22m src/lib/components/MetricCard.test.ts:[2m61:17[22m[39m
+    [90m 59| [39m  [34mrender[39m([33mMetricCard[39m[33m,[39m { props[33m:[39m { label[33m:[39m [32m'Metric'[39m[33m,[39m value[33m:[39m [34m0[39m } })[33m;[39m
+    [90m 60| [39m  [35mconst[39m label [33m=[39m screen[33m.[39m[34mgetByText[39m([32m'Metric'[39m)[33m;[39m
+    [90m 61| [39m  [34mexpect[39m(label)[33m.[39m[34mtoHaveClass[39m([32m'text-xs'[39m[33m,[39m [32m'uppercase'[39m[33m,[39m [32m'tracking-wider'[39m)[33m;[39m
+    [90m   | [39m                [31m^[39m
+    [90m 62| [39m })[33m;[39m
+    [90m 63| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[3/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/lib/components/StatusBadge.test.ts[2m > [22mStatusBadge[2m > [22mapplies correct text color to label
+[31m[1mError[22m: [2mexpect([22m[31melement[31m[2m).toHaveClass([22m[32m[32m"text-accent-green"[32m[31m[2m)[22m
+
+Expected the element to have class:
+[32m  text-accent-green[31m
+Received:
+[31m  text-green-400 font-medium uppercase tracking-wider[31m[39m
+[36m [2m❯[22m src/lib/components/StatusBadge.test.ts:[2m75:17[22m[39m
+    [90m 73| [39m  render(StatusBadge, { props: { status: 'online', label: 'Active' } }…
+    [90m 74| [39m  [35mconst[39m label [33m=[39m screen[33m.[39m[34mgetByText[39m([32m'Active'[39m)[33m;[39m
+    [90m 75| [39m  [34mexpect[39m(label)[33m.[39m[34mtoHaveClass[39m([32m'text-accent-green'[39m)[33m;[39m
+    [90m   | [39m                [31m^[39m
+    [90m 76| [39m })[33m;[39m
+    [90m 77| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[4/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/lib/components/StatusBar.test.ts[2m > [22mStatusBar[2m > [22mrenders default services
+[31m[1mTestingLibraryElementError[22m: Unable to find an element with the text: /Memory DB/. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<header[31m
+      [33maria-label[31m=[32m"System status"[31m
+      [33mclass[31m=[32m"sticky top-0 z-40 h-10 bg-bg-secondary/80 backdrop-blur-sm border-b border-border px-6 flex items-center justify-between"[31m
+      [33mrole[31m=[32m"banner"[31m
+    [36m>[31m
+      [36m<div[31m
+        [33mclass[31m=[32m"flex items-center gap-2"[31m
+        [33mrole[31m=[32m"status"[31m
+      [36m>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border bg-accent-green/15 text-accent-green border-accent-green/30"[31m
+        [36m>[31m
+          [36m<span[31m
+            [33maria-hidden[31m=[32m"true"[31m
+            [33mclass[31m=[32m"w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse"[31m
+          [36m/>[31m
+          [0m Ollama[0m
+        [36m</span>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border bg-accent-green/15 text-accent-green border-accent-green/30"[31m
+        [36m>[31m
+          [36m<span[31m
+            [33maria-hidden[31m=[32m"true"[31m
+            [33mclass[31m=[32m"w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse"[31m
+          [36m/>[31m
+          [0m Gateway[0m
+        [36m</span>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border bg-accent-green/15 text-accent-green border-accent-green/30"[31m
+        [36m>[31m
+          [36m<span[31m
+            [33maria-hidden[31m=[32m"true"[31m
+            [33mclass[31m=[32m"w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse"[31m
+          [36m/>[31m
+          [0m Daemon[0m
+        [36m</span>[31m
+        [0m[0m
+      [36m</div>[31m
+      [0m [0m
+      [36m<div[31m
+        [33mclass[31m=[32m"flex items-center gap-4"[31m
+      [36m>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"text-[11px] text-text-secondary"[31m
+        [36m>[31m
+          [0mSynced just now[0m
+        [36m</span>[31m
+        [0m [0m
+        [36m<span[31m
+          [33mclass[31m=[32m"text-[11px] font-medium text-accent-green"[31m
+        [36m>[31m
+          [0mAll systems operational[0m
+        [36m</span>[31m
+      [36m</div>[31m
+    [36m</header>[31m
+    [0m[0m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/lib/components/StatusBar.test.ts:[2m10:17[22m[39m
+    [90m  8| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([36m/Gateway/[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m  9| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([36m/Ollama/[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m 10| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([36m/Memory DB/[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m   | [39m                [31m^[39m
+    [90m 11| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([36m/Swarm/[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m 12| [39m })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[5/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/lib/components/StatusBar.test.ts[2m > [22mStatusBar[2m > [22mrenders default service status texts
+[31m[1mTestingLibraryElementError[22m: Unable to find an element with the text: Online. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<header[31m
+      [33maria-label[31m=[32m"System status"[31m
+      [33mclass[31m=[32m"sticky top-0 z-40 h-10 bg-bg-secondary/80 backdrop-blur-sm border-b border-border px-6 flex items-center justify-between"[31m
+      [33mrole[31m=[32m"banner"[31m
+    [36m>[31m
+      [36m<div[31m
+        [33mclass[31m=[32m"flex items-center gap-2"[31m
+        [33mrole[31m=[32m"status"[31m
+      [36m>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border bg-accent-green/15 text-accent-green border-accent-green/30"[31m
+        [36m>[31m
+          [36m<span[31m
+            [33maria-hidden[31m=[32m"true"[31m
+            [33mclass[31m=[32m"w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse"[31m
+          [36m/>[31m
+          [0m Ollama[0m
+        [36m</span>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border bg-accent-green/15 text-accent-green border-accent-green/30"[31m
+        [36m>[31m
+          [36m<span[31m
+            [33maria-hidden[31m=[32m"true"[31m
+            [33mclass[31m=[32m"w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse"[31m
+          [36m/>[31m
+          [0m Gateway[0m
+        [36m</span>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border bg-accent-green/15 text-accent-green border-accent-green/30"[31m
+        [36m>[31m
+          [36m<span[31m
+            [33maria-hidden[31m=[32m"true"[31m
+            [33mclass[31m=[32m"w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse"[31m
+          [36m/>[31m
+          [0m Daemon[0m
+        [36m</span>[31m
+        [0m[0m
+      [36m</div>[31m
+      [0m [0m
+      [36m<div[31m
+        [33mclass[31m=[32m"flex items-center gap-4"[31m
+      [36m>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"text-[11px] text-text-secondary"[31m
+        [36m>[31m
+          [0mSynced just now[0m
+        [36m</span>[31m
+        [0m [0m
+        [36m<span[31m
+          [33mclass[31m=[32m"text-[11px] font-medium text-accent-green"[31m
+        [36m>[31m
+          [0mAll systems operational[0m
+        [36m</span>[31m
+      [36m</div>[31m
+    [36m</header>[31m
+    [0m[0m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/lib/components/StatusBar.test.ts:[2m16:17[22m[39m
+    [90m 14| [39m [34mit[39m([32m'renders default service status texts'[39m[33m,[39m () [33m=>[39m {
+    [90m 15| [39m  [34mrender[39m([33mStatusBar[39m[33m,[39m { props[33m:[39m {} })[33m;[39m
+    [90m 16| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'Online'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m   | [39m                [31m^[39m
+    [90m 17| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'Running'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m 18| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'Connected'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[6/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/lib/components/StatusBar.test.ts[2m > [22mStatusBar[2m > [22mrenders custom services
+[31m[1mTestingLibraryElementError[22m: Unable to find an element with the text: Healthy. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<header[31m
+      [33maria-label[31m=[32m"System status"[31m
+      [33mclass[31m=[32m"sticky top-0 z-40 h-10 bg-bg-secondary/80 backdrop-blur-sm border-b border-border px-6 flex items-center justify-between"[31m
+      [33mrole[31m=[32m"banner"[31m
+    [36m>[31m
+      [36m<div[31m
+        [33mclass[31m=[32m"flex items-center gap-2"[31m
+        [33mrole[31m=[32m"status"[31m
+      [36m>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border bg-accent-green/15 text-accent-green border-accent-green/30"[31m
+        [36m>[31m
+          [36m<span[31m
+            [33maria-hidden[31m=[32m"true"[31m
+            [33mclass[31m=[32m"w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse"[31m
+          [36m/>[31m
+          [0m API[0m
+        [36m</span>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border bg-accent-red/15 text-accent-red border-accent-red/30"[31m
+        [36m>[31m
+          [36m<span[31m
+            [33maria-hidden[31m=[32m"true"[31m
+            [33mclass[31m=[32m"w-1.5 h-1.5 rounded-full bg-accent-red "[31m
+          [36m/>[31m
+          [0m DB[0m
+        [36m</span>[31m
+        [0m[0m
+      [36m</div>[31m
+      [0m [0m
+      [36m<div[31m
+        [33mclass[31m=[32m"flex items-center gap-4"[31m
+      [36m>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"text-[11px] text-text-secondary"[31m
+        [36m>[31m
+          [0mSynced just now[0m
+        [36m</span>[31m
+        [0m [0m
+        [36m<span[31m
+          [33mclass[31m=[32m"text-[11px] font-medium text-accent-yellow"[31m
+        [36m>[31m
+          [0mDegraded[0m
+        [36m</span>[31m
+      [36m</div>[31m
+    [36m</header>[31m
+    [0m[0m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/lib/components/StatusBar.test.ts:[2m29:17[22m[39m
+    [90m 27| [39m  [34mrender[39m([33mStatusBar[39m[33m,[39m { props[33m:[39m { services } })[33m;[39m
+    [90m 28| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([36m/API/[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m 29| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'Healthy'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m   | [39m                [31m^[39m
+    [90m 30| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([36m/DB/[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m 31| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'Down'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[7/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/lib/components/StatusBar.test.ts[2m > [22mStatusBar[2m > [22mrenders lastSync text
+[31m[1mTestingLibraryElementError[22m: Unable to find an element with the text: /5 min ago/. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[31m
+  [36m<div>[31m
+    [36m<header[31m
+      [33maria-label[31m=[32m"System status"[31m
+      [33mclass[31m=[32m"sticky top-0 z-40 h-10 bg-bg-secondary/80 backdrop-blur-sm border-b border-border px-6 flex items-center justify-between"[31m
+      [33mrole[31m=[32m"banner"[31m
+    [36m>[31m
+      [36m<div[31m
+        [33mclass[31m=[32m"flex items-center gap-2"[31m
+        [33mrole[31m=[32m"status"[31m
+      [36m>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border bg-accent-green/15 text-accent-green border-accent-green/30"[31m
+        [36m>[31m
+          [36m<span[31m
+            [33maria-hidden[31m=[32m"true"[31m
+            [33mclass[31m=[32m"w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse"[31m
+          [36m/>[31m
+          [0m Ollama[0m
+        [36m</span>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border bg-accent-green/15 text-accent-green border-accent-green/30"[31m
+        [36m>[31m
+          [36m<span[31m
+            [33maria-hidden[31m=[32m"true"[31m
+            [33mclass[31m=[32m"w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse"[31m
+          [36m/>[31m
+          [0m Gateway[0m
+        [36m</span>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border bg-accent-green/15 text-accent-green border-accent-green/30"[31m
+        [36m>[31m
+          [36m<span[31m
+            [33maria-hidden[31m=[32m"true"[31m
+            [33mclass[31m=[32m"w-1.5 h-1.5 rounded-full bg-accent-green animate-pulse"[31m
+          [36m/>[31m
+          [0m Daemon[0m
+        [36m</span>[31m
+        [0m[0m
+      [36m</div>[31m
+      [0m [0m
+      [36m<div[31m
+        [33mclass[31m=[32m"flex items-center gap-4"[31m
+      [36m>[31m
+        [36m<span[31m
+          [33mclass[31m=[32m"text-[11px] text-text-secondary"[31m
+        [36m>[31m
+          [0mSynced NaNh ago[0m
+        [36m</span>[31m
+        [0m [0m
+        [36m<span[31m
+          [33mclass[31m=[32m"text-[11px] font-medium text-accent-green"[31m
+        [36m>[31m
+          [0mAll systems operational[0m
+        [36m</span>[31m
+      [36m</div>[31m
+    [36m</header>[31m
+    [0m[0m
+  [36m</div>[31m
+[36m</body>[31m[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/lib/components/StatusBar.test.ts:[2m36:17[22m[39m
+    [90m 34| [39m [34mit[39m([32m'renders lastSync text'[39m[33m,[39m () [33m=>[39m {
+    [90m 35| [39m  [34mrender[39m([33mStatusBar[39m[33m,[39m { props[33m:[39m { lastSync[33m:[39m [32m'5 min ago'[39m } })[33m;[39m
+    [90m 36| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([36m/5 min ago/[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m   | [39m                [31m^[39m
+    [90m 37| [39m })[33m;[39m
+    [90m 38| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[8/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/lib/components/StatusBar.test.ts[2m > [22mStatusBar[2m > [22mapplies green dot for online status
+[31m[1mError[22m: [2mexpect([22m[31mreceived[31m[2m).toHaveClass()[22m
+
+[31mreceived[31m value must be an HTMLElement or an SVGElement.
+Received has type:  Null
+Received has value: [31mnull[31m[39m
+[36m [2m❯[22m src/lib/components/StatusBar.test.ts:[2m48:15[22m[39m
+    [90m 46| [39m  [35mconst[39m { container } [33m=[39m [34mrender[39m([33mStatusBar[39m[33m,[39m { props[33m:[39m { services } })[33m;[39m
+    [90m 47| [39m  [35mconst[39m dot [33m=[39m container[33m.[39m[34mquerySelector[39m([32m'.w-2.h-2.rounded-full'[39m)[33m;[39m
+    [90m 48| [39m  [34mexpect[39m(dot)[33m.[39m[34mtoHaveClass[39m([32m'bg-accent-green'[39m)[33m;[39m
+    [90m   | [39m              [31m^[39m
+    [90m 49| [39m })[33m;[39m
+    [90m 50| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[9/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/lib/components/StatusBar.test.ts[2m > [22mStatusBar[2m > [22mapplies red dot for offline status
+[31m[1mError[22m: [2mexpect([22m[31mreceived[31m[2m).toHaveClass()[22m
+
+[31mreceived[31m value must be an HTMLElement or an SVGElement.
+Received has type:  Null
+Received has value: [31mnull[31m[39m
+[36m [2m❯[22m src/lib/components/StatusBar.test.ts:[2m55:15[22m[39m
+    [90m 53| [39m  [35mconst[39m { container } [33m=[39m [34mrender[39m([33mStatusBar[39m[33m,[39m { props[33m:[39m { services } })[33m;[39m
+    [90m 54| [39m  [35mconst[39m dot [33m=[39m container[33m.[39m[34mquerySelector[39m([32m'.w-2.h-2.rounded-full'[39m)[33m;[39m
+    [90m 55| [39m  [34mexpect[39m(dot)[33m.[39m[34mtoHaveClass[39m([32m'bg-accent-red'[39m)[33m;[39m
+    [90m   | [39m              [31m^[39m
+    [90m 56| [39m })[33m;[39m
+    [90m 57| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[10/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/lib/components/StatusBar.test.ts[2m > [22mStatusBar[2m > [22mapplies yellow dot for warning status
+[31m[1mError[22m: [2mexpect([22m[31mreceived[31m[2m).toHaveClass()[22m
+
+[31mreceived[31m value must be an HTMLElement or an SVGElement.
+Received has type:  Null
+Received has value: [31mnull[31m[39m
+[36m [2m❯[22m src/lib/components/StatusBar.test.ts:[2m62:15[22m[39m
+    [90m 60| [39m  [35mconst[39m { container } [33m=[39m [34mrender[39m([33mStatusBar[39m[33m,[39m { props[33m:[39m { services } })[33m;[39m
+    [90m 61| [39m  [35mconst[39m dot [33m=[39m container[33m.[39m[34mquerySelector[39m([32m'.w-2.h-2.rounded-full'[39m)[33m;[39m
+    [90m 62| [39m  [34mexpect[39m(dot)[33m.[39m[34mtoHaveClass[39m([32m'bg-accent-yellow'[39m)[33m;[39m
+    [90m   | [39m              [31m^[39m
+    [90m 63| [39m })[33m;[39m
+    [90m 64| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[11/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/lib/components/StatusBar.test.ts[2m > [22mStatusBar[2m > [22mhas correct height class
+[31m[1mError[22m: [2mexpect([22m[31melement[31m[2m).toHaveClass([22m[32m[32m"h-12"[32m[31m[2m)[22m
+
+Expected the element to have class:
+[32m  h-12[31m
+Received:
+[31m  sticky top-0 z-40 h-10 bg-bg-secondary/80 backdrop-blur-sm border-b border-border px-6 flex items-center justify-between[31m[39m
+[36m [2m❯[22m src/lib/components/StatusBar.test.ts:[2m74:18[22m[39m
+    [90m 72| [39m  [35mconst[39m { container } [33m=[39m [34mrender[39m([33mStatusBar[39m[33m,[39m { props[33m:[39m {} })[33m;[39m
+    [90m 73| [39m  [35mconst[39m header [33m=[39m container[33m.[39m[34mquerySelector[39m([32m'header'[39m)[33m;[39m
+    [90m 74| [39m  [34mexpect[39m(header)[33m.[39m[34mtoHaveClass[39m([32m'h-12'[39m)[33m;[39m
+    [90m   | [39m                 [31m^[39m
+    [90m 75| [39m })[33m;[39m
+    [90m 76| [39m})[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[12/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mbasic data loading[2m > [22mreturns empty agents when no .md files exist
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m107:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[13/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mbasic data loading[2m > [22mparses agent definitions from markdown frontmatter
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m114:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[14/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mbasic data loading[2m > [22mreturns swarmStatus defaults when no swarm activity
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m124:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[15/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mbasic data loading[2m > [22mreturns v3Progress defaults when no progress file
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m134:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[16/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mbasic data loading[2m > [22mpasses through analytics and poolStats
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m146:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[17/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mbasic data loading[2m > [22mreturns active agents list from shared state
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m161:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[18/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mpagination[2m > [22mdefaults to page 1 with perPage 24
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m176:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[19/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mpagination[2m > [22mrespects custom page and perPage
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m183:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[20/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mpagination[2m > [22mclamps page to minimum 1 for invalid values
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m189:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[21/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mpagination[2m > [22mclamps page to minimum 1 for negative values
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m194:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[22/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mpagination[2m > [22mcaps perPage at 100
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m199:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[23/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mpagination[2m > [22menforces minimum perPage of 1
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m204:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[24/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mpagination[2m > [22mcalculates totalPages correctly
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m210:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[25/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mpagination[2m > [22mclamps page to totalPages if exceeding
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m216:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[26/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mpagination[2m > [22mreturns correct slice for page 2
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m222:24[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[27/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22merror handling[2m > [22mreturns empty agents when readdir fails
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m233:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[28/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22merror handling[2m > [22mskips files that fail to read
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m249:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[29/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22merror handling[2m > [22mskips files without valid frontmatter
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m258:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[30/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mswarm status from data[2m > [22mpopulates swarmStatus from swarm activity data
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m275:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[31/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/agents/agents.test.ts[2m > [22mAgents +page.server load[2m > [22mswarm status from data[2m > [22mpopulates v3Progress from progress file
+[31m[1mError[22m: [vitest] No "getConfigAgents" export is defined on the "$lib/server/heartbeat/session-pool.js" mock. Did you forget to return it from "vi.mock"?
+If you need to partially mock a module, you can use "importOriginal" helper inside:
+[39m
+vi.mock(import("$lib/server/heartbeat/session-pool.js"), async (importOriginal) => {
+  const actual = await importOriginal()
+  return {
+    ...actual,
+    // your mocked methods
+  }
+})
+
+[36m [2m❯[22m Module.load src/routes/agents/+page.server.ts:[2m47:3[22m[39m
+    [90m 45| [39m  [34mgetAgentAnalytics[39m()[33m,[39m
+    [90m 46| [39m  [34mgetPoolStats[39m()[33m,[39m
+    [90m 47| [39m  [34mgetConfigAgents[39m()[33m,[39m
+    [90m   | [39m  [31m^[39m
+    [90m 48| [39m  [34mbuildAgentProjectMap[39m()
+    [90m 49| [39m ])[33m;[39m
+[90m [2m❯[22m callLoad src/routes/agents/agents.test.ts:[2m75:9[22m[39m
+[90m [2m❯[22m src/routes/agents/agents.test.ts:[2m291:25[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[32/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/memory/memory.test.ts[2m > [22mMemory Page[2m > [22mshows empty state when graph data is null
+[31m[1mTestingLibraryElementError[22m[39m: Unable to find an element with the text: No graph data. Memory graph populates as the system processes entries.. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"space-y-6"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"[39m
+      [36m>[39m
+        [36m<h1[39m
+          [33mclass[39m=[32m"type-page-title text-text-primary"[39m
+        [36m>[39m
+          [0mMemory & Knowledge[0m
+        [36m</h1>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex items-center gap-2 flex-shrink-0"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+          [0m [0m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Refresh[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [36m<div[39m
+        [33maria-live[39m=[32m"polite"[39m
+        [33mclass[39m=[32m"h-48 flex flex-col items-center justify-center gap-2 text-center px-4"[39m
+        [33mdata-testid[39m=[32m"page-fallback"[39m
+        [33mdata-variant[39m=[32m"empty"[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"text-text-secondary/40"[39m
+        [36m>[39m
+          [36m<svg[39m
+            [33mclass[39m=[32m"w-10 h-10"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-width[39m=[32m"1.5"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+        [36m</span>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary text-sm font-medium"[39m
+          [33mdata-testid[39m=[32m"fallback-title"[39m
+        [36m>[39m
+          [0mNo memory data yet[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary/70 text-xs max-w-sm"[39m
+          [33mdata-testid[39m=[32m"fallback-message"[39m
+        [36m>[39m
+          [0mMemory entries will appear here as the system stores patterns, decisions, and context. Use Sync Sources to import existing memory files.[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"mt-1"[39m
+          [33mdata-testid[39m=[32m"fallback-actions"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+    [0m[0m
+  [36m</div>[39m
+[36m</body>[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/routes/memory/memory.test.ts:[2m83:17[22m[39m
+    [90m 81| [39m [34mit[39m([32m'shows empty state when graph data is null'[39m[33m,[39m () [33m=>[39m {
+    [90m 82| [39m  render(MemoryPage, { props: { data: makePageData({ graph: null }) } …
+    [90m 83| [39m  expect(screen.getByText('No graph data. Memory graph populates as th…
+    [90m   | [39m                [31m^[39m
+    [90m 84| [39m })[33m;[39m
+    [90m 85| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[33/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/memory/memory.test.ts[2m > [22mMemory Page[2m > [22mshows empty state when graph has no nodes
+[31m[1mTestingLibraryElementError[22m[39m: Unable to find an element with the text: No graph data. Memory graph populates as the system processes entries.. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"space-y-6"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"[39m
+      [36m>[39m
+        [36m<h1[39m
+          [33mclass[39m=[32m"type-page-title text-text-primary"[39m
+        [36m>[39m
+          [0mMemory & Knowledge[0m
+        [36m</h1>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex items-center gap-2 flex-shrink-0"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+          [0m [0m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Refresh[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [36m<div[39m
+        [33maria-live[39m=[32m"polite"[39m
+        [33mclass[39m=[32m"h-48 flex flex-col items-center justify-center gap-2 text-center px-4"[39m
+        [33mdata-testid[39m=[32m"page-fallback"[39m
+        [33mdata-variant[39m=[32m"empty"[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"text-text-secondary/40"[39m
+        [36m>[39m
+          [36m<svg[39m
+            [33mclass[39m=[32m"w-10 h-10"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-width[39m=[32m"1.5"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+        [36m</span>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary text-sm font-medium"[39m
+          [33mdata-testid[39m=[32m"fallback-title"[39m
+        [36m>[39m
+          [0mNo memory data yet[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary/70 text-xs max-w-sm"[39m
+          [33mdata-testid[39m=[32m"fallback-message"[39m
+        [36m>[39m
+          [0mMemory entries will appear here as the system stores patterns, decisions, and context. Use Sync Sources to import existing memory files.[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"mt-1"[39m
+          [33mdata-testid[39m=[32m"fallback-actions"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+    [0m[0m
+  [36m</div>[39m
+[36m</body>[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/routes/memory/memory.test.ts:[2m90:17[22m[39m
+    [90m 88| [39m   props: { data: makePageData({ graph: makeGraphState({ nodes: {} }) …
+    [90m 89| [39m  })[33m;[39m
+    [90m 90| [39m  expect(screen.getByText('No graph data. Memory graph populates as th…
+    [90m   | [39m                [31m^[39m
+    [90m 91| [39m })[33m;[39m
+    [90m 92| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[34/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/memory/memory.test.ts[2m > [22mMemory Page[2m > [22mshows no-context message when context is null and not loading
+[31m[1mTestingLibraryElementError[22m[39m: Unable to find an element with the text: No memory context available. Context populates as the system processes entries.. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"space-y-6"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"[39m
+      [36m>[39m
+        [36m<h1[39m
+          [33mclass[39m=[32m"type-page-title text-text-primary"[39m
+        [36m>[39m
+          [0mMemory & Knowledge[0m
+        [36m</h1>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex items-center gap-2 flex-shrink-0"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+          [0m [0m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Refresh[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [36m<div[39m
+        [33maria-live[39m=[32m"polite"[39m
+        [33mclass[39m=[32m"h-48 flex flex-col items-center justify-center gap-2 text-center px-4"[39m
+        [33mdata-testid[39m=[32m"page-fallback"[39m
+        [33mdata-variant[39m=[32m"empty"[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"text-text-secondary/40"[39m
+        [36m>[39m
+          [36m<svg[39m
+            [33mclass[39m=[32m"w-10 h-10"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-width[39m=[32m"1.5"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+        [36m</span>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary text-sm font-medium"[39m
+          [33mdata-testid[39m=[32m"fallback-title"[39m
+        [36m>[39m
+          [0mNo memory data yet[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary/70 text-xs max-w-sm"[39m
+          [33mdata-testid[39m=[32m"fallback-message"[39m
+        [36m>[39m
+          [0mMemory entries will appear here as the system stores patterns, decisions, and context. Use Sync Sources to import existing memory files.[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"mt-1"[39m
+          [33mdata-testid[39m=[32m"fallback-actions"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+    [0m[0m
+  [36m</div>[39m
+[36m</body>[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/routes/memory/memory.test.ts:[2m95:17[22m[39m
+    [90m 93| [39m it('shows no-context message when context is null and not loading', (…
+    [90m 94| [39m  render(MemoryPage, { props: { data: makePageData({ context: null }) …
+    [90m 95| [39m  expect(screen.getByText('No memory context available. Context popula…
+    [90m   | [39m                [31m^[39m
+    [90m 96| [39m })[33m;[39m
+    [90m 97| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[35/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/memory/memory.test.ts[2m > [22mMemory Page[2m > [22mshows "No context entries loaded" when context has empty entries
+[31m[1mTestingLibraryElementError[22m[39m: Unable to find an element with the text: No context entries loaded. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"space-y-6"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"[39m
+      [36m>[39m
+        [36m<h1[39m
+          [33mclass[39m=[32m"type-page-title text-text-primary"[39m
+        [36m>[39m
+          [0mMemory & Knowledge[0m
+        [36m</h1>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex items-center gap-2 flex-shrink-0"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+          [0m [0m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Refresh[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [36m<div[39m
+        [33maria-live[39m=[32m"polite"[39m
+        [33mclass[39m=[32m"h-48 flex flex-col items-center justify-center gap-2 text-center px-4"[39m
+        [33mdata-testid[39m=[32m"page-fallback"[39m
+        [33mdata-variant[39m=[32m"empty"[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"text-text-secondary/40"[39m
+        [36m>[39m
+          [36m<svg[39m
+            [33mclass[39m=[32m"w-10 h-10"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-width[39m=[32m"1.5"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+        [36m</span>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary text-sm font-medium"[39m
+          [33mdata-testid[39m=[32m"fallback-title"[39m
+        [36m>[39m
+          [0mNo memory data yet[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary/70 text-xs max-w-sm"[39m
+          [33mdata-testid[39m=[32m"fallback-message"[39m
+        [36m>[39m
+          [0mMemory entries will appear here as the system stores patterns, decisions, and context. Use Sync Sources to import existing memory files.[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"mt-1"[39m
+          [33mdata-testid[39m=[32m"fallback-actions"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+    [0m[0m
+  [36m</div>[39m
+[36m</body>[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/routes/memory/memory.test.ts:[2m102:17[22m[39m
+    [90m100| [39m   props: { data: makePageData({ context: makeContext({ entries: [] })…
+    [90m101| [39m  })[33m;[39m
+    [90m102| [39m  expect(screen.getByText('No context entries loaded')).toBeInTheDocum…
+    [90m   | [39m                [31m^[39m
+    [90m103| [39m })[33m;[39m
+    [90m104| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[36/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/memory/memory.test.ts[2m > [22mMemory Page[2m > [22mshows "No auto-memory entries loaded" when autoMemory is empty
+[31m[1mTestingLibraryElementError[22m[39m: Unable to find an element with the text: No auto-memory entries loaded. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"space-y-6"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"[39m
+      [36m>[39m
+        [36m<h1[39m
+          [33mclass[39m=[32m"type-page-title text-text-primary"[39m
+        [36m>[39m
+          [0mMemory & Knowledge[0m
+        [36m</h1>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex items-center gap-2 flex-shrink-0"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+          [0m [0m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Refresh[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [36m<div[39m
+        [33maria-live[39m=[32m"polite"[39m
+        [33mclass[39m=[32m"h-48 flex flex-col items-center justify-center gap-2 text-center px-4"[39m
+        [33mdata-testid[39m=[32m"page-fallback"[39m
+        [33mdata-variant[39m=[32m"empty"[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"text-text-secondary/40"[39m
+        [36m>[39m
+          [36m<svg[39m
+            [33mclass[39m=[32m"w-10 h-10"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-width[39m=[32m"1.5"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+        [36m</span>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary text-sm font-medium"[39m
+          [33mdata-testid[39m=[32m"fallback-title"[39m
+        [36m>[39m
+          [0mNo memory data yet[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary/70 text-xs max-w-sm"[39m
+          [33mdata-testid[39m=[32m"fallback-message"[39m
+        [36m>[39m
+          [0mMemory entries will appear here as the system stores patterns, decisions, and context. Use Sync Sources to import existing memory files.[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"mt-1"[39m
+          [33mdata-testid[39m=[32m"fallback-actions"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+    [0m[0m
+  [36m</div>[39m
+[36m</body>[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/routes/memory/memory.test.ts:[2m107:17[22m[39m
+    [90m105| [39m it('shows "No auto-memory entries loaded" when autoMemory is empty', …
+    [90m106| [39m  render(MemoryPage, { props: { data: makePageData({ autoMemory: [] })…
+    [90m107| [39m  expect(screen.getByText('No auto-memory entries loaded')).toBeInTheD…
+    [90m   | [39m                [31m^[39m
+    [90m108| [39m })[33m;[39m
+    [90m109| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[37/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/memory/memory.test.ts[2m > [22mMemory Page[2m > [22mshows "No auto-memory entries loaded" when autoMemory is null
+[31m[1mTestingLibraryElementError[22m[39m: Unable to find an element with the text: No auto-memory entries loaded. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"space-y-6"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"[39m
+      [36m>[39m
+        [36m<h1[39m
+          [33mclass[39m=[32m"type-page-title text-text-primary"[39m
+        [36m>[39m
+          [0mMemory & Knowledge[0m
+        [36m</h1>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex items-center gap-2 flex-shrink-0"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+          [0m [0m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Refresh[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [36m<div[39m
+        [33maria-live[39m=[32m"polite"[39m
+        [33mclass[39m=[32m"h-48 flex flex-col items-center justify-center gap-2 text-center px-4"[39m
+        [33mdata-testid[39m=[32m"page-fallback"[39m
+        [33mdata-variant[39m=[32m"empty"[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"text-text-secondary/40"[39m
+        [36m>[39m
+          [36m<svg[39m
+            [33mclass[39m=[32m"w-10 h-10"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-width[39m=[32m"1.5"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+        [36m</span>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary text-sm font-medium"[39m
+          [33mdata-testid[39m=[32m"fallback-title"[39m
+        [36m>[39m
+          [0mNo memory data yet[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary/70 text-xs max-w-sm"[39m
+          [33mdata-testid[39m=[32m"fallback-message"[39m
+        [36m>[39m
+          [0mMemory entries will appear here as the system stores patterns, decisions, and context. Use Sync Sources to import existing memory files.[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"mt-1"[39m
+          [33mdata-testid[39m=[32m"fallback-actions"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+    [0m[0m
+  [36m</div>[39m
+[36m</body>[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/routes/memory/memory.test.ts:[2m112:17[22m[39m
+    [90m110| [39m it('shows "No auto-memory entries loaded" when autoMemory is null', (…
+    [90m111| [39m  render(MemoryPage, { props: { data: makePageData({ autoMemory: null …
+    [90m112| [39m  expect(screen.getByText('No auto-memory entries loaded')).toBeInTheD…
+    [90m   | [39m                [31m^[39m
+    [90m113| [39m })[33m;[39m
+    [90m114| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[38/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/memory/memory.test.ts[2m > [22mMemory Page[2m > [22mrenders metric cards with default N/A values when data is null
+[31m[1mTestingLibraryElementError[22m[39m: Unable to find an element with the text: Backend. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"space-y-6"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"[39m
+      [36m>[39m
+        [36m<h1[39m
+          [33mclass[39m=[32m"type-page-title text-text-primary"[39m
+        [36m>[39m
+          [0mMemory & Knowledge[0m
+        [36m</h1>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex items-center gap-2 flex-shrink-0"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+          [0m [0m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Refresh[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [36m<div[39m
+        [33maria-live[39m=[32m"polite"[39m
+        [33mclass[39m=[32m"h-48 flex flex-col items-center justify-center gap-2 text-center px-4"[39m
+        [33mdata-testid[39m=[32m"page-fallback"[39m
+        [33mdata-variant[39m=[32m"empty"[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"text-text-secondary/40"[39m
+        [36m>[39m
+          [36m<svg[39m
+            [33mclass[39m=[32m"w-10 h-10"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-width[39m=[32m"1.5"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+        [36m</span>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary text-sm font-medium"[39m
+          [33mdata-testid[39m=[32m"fallback-title"[39m
+        [36m>[39m
+          [0mNo memory data yet[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary/70 text-xs max-w-sm"[39m
+          [33mdata-testid[39m=[32m"fallback-message"[39m
+        [36m>[39m
+          [0mMemory entries will appear here as the system stores patterns, decisions, and context. Use Sync Sources to import existing memory files.[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"mt-1"[39m
+          [33mdata-testid[39m=[32m"fallback-actions"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+    [0m[0m
+  [36m</div>[39m
+[36m</body>[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/routes/memory/memory.test.ts:[2m117:17[22m[39m
+    [90m115| [39m it('renders metric cards with default N/A values when data is null', …
+    [90m116| [39m  [34mrender[39m([33mMemoryPage[39m[33m,[39m { props[33m:[39m { data[33m:[39m [34mmakePageData[39m() } })[33m;[39m
+    [90m117| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'Backend'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m   | [39m                [31m^[39m
+    [90m118| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'Nodes'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m119| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'Edges'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[39/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/memory/memory.test.ts[2m > [22mMemory Page[2m > [22mrenders metric values from memoryConfig
+[31m[1mTestingLibraryElementError[22m[39m: Unable to find an element with the text: agentdb. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"space-y-6"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"[39m
+      [36m>[39m
+        [36m<h1[39m
+          [33mclass[39m=[32m"type-page-title text-text-primary"[39m
+        [36m>[39m
+          [0mMemory & Knowledge[0m
+        [36m</h1>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex items-center gap-2 flex-shrink-0"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+          [0m [0m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Refresh[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [36m<div[39m
+        [33maria-live[39m=[32m"polite"[39m
+        [33mclass[39m=[32m"h-48 flex flex-col items-center justify-center gap-2 text-center px-4"[39m
+        [33mdata-testid[39m=[32m"page-fallback"[39m
+        [33mdata-variant[39m=[32m"empty"[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"text-text-secondary/40"[39m
+        [36m>[39m
+          [36m<svg[39m
+            [33mclass[39m=[32m"w-10 h-10"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-width[39m=[32m"1.5"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+        [36m</span>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary text-sm font-medium"[39m
+          [33mdata-testid[39m=[32m"fallback-title"[39m
+        [36m>[39m
+          [0mNo memory data yet[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary/70 text-xs max-w-sm"[39m
+          [33mdata-testid[39m=[32m"fallback-message"[39m
+        [36m>[39m
+          [0mMemory entries will appear here as the system stores patterns, decisions, and context. Use Sync Sources to import existing memory files.[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"mt-1"[39m
+          [33mdata-testid[39m=[32m"fallback-actions"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+    [0m[0m
+  [36m</div>[39m
+[36m</body>[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/routes/memory/memory.test.ts:[2m132:17[22m[39m
+    [90m130| [39m   }
+    [90m131| [39m  })[33m;[39m
+    [90m132| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'agentdb'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m   | [39m                [31m^[39m
+    [90m133| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'Enabled'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m134| [39m })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[40/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/memory/memory.test.ts[2m > [22mMemory Page[2m > [22mshows HNSW Disabled when enableHNSW is false
+[31m[1mTestingLibraryElementError[22m[39m: Unable to find an element with the text: Disabled. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"space-y-6"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"[39m
+      [36m>[39m
+        [36m<h1[39m
+          [33mclass[39m=[32m"type-page-title text-text-primary"[39m
+        [36m>[39m
+          [0mMemory & Knowledge[0m
+        [36m</h1>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex items-center gap-2 flex-shrink-0"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+          [0m [0m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Refresh[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [36m<div[39m
+        [33maria-live[39m=[32m"polite"[39m
+        [33mclass[39m=[32m"h-48 flex flex-col items-center justify-center gap-2 text-center px-4"[39m
+        [33mdata-testid[39m=[32m"page-fallback"[39m
+        [33mdata-variant[39m=[32m"empty"[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"text-text-secondary/40"[39m
+        [36m>[39m
+          [36m<svg[39m
+            [33mclass[39m=[32m"w-10 h-10"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-width[39m=[32m"1.5"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+        [36m</span>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary text-sm font-medium"[39m
+          [33mdata-testid[39m=[32m"fallback-title"[39m
+        [36m>[39m
+          [0mNo memory data yet[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary/70 text-xs max-w-sm"[39m
+          [33mdata-testid[39m=[32m"fallback-message"[39m
+        [36m>[39m
+          [0mMemory entries will appear here as the system stores patterns, decisions, and context. Use Sync Sources to import existing memory files.[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"mt-1"[39m
+          [33mdata-testid[39m=[32m"fallback-actions"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+    [0m[0m
+  [36m</div>[39m
+[36m</body>[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/routes/memory/memory.test.ts:[2m144:17[22m[39m
+    [90m142| [39m   }
+    [90m143| [39m  })[33m;[39m
+    [90m144| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'Disabled'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m   | [39m                [31m^[39m
+    [90m145| [39m })[33m;[39m
+    [90m146| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[41/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/memory/memory.test.ts[2m > [22mMemory Page[2m > [22mrenders auto-memory entries with key and namespace
+[31m[1mTestingLibraryElementError[22m[39m: Unable to find an element with the text: JWT authentication. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"space-y-6"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"[39m
+      [36m>[39m
+        [36m<h1[39m
+          [33mclass[39m=[32m"type-page-title text-text-primary"[39m
+        [36m>[39m
+          [0mMemory & Knowledge[0m
+        [36m</h1>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex items-center gap-2 flex-shrink-0"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+          [0m [0m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Refresh[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [36m<div[39m
+        [33mclass[39m=[32m"flex items-center gap-1 border-b border-border"[39m
+      [36m>[39m
+        [36m<button[39m
+          [33mclass[39m=[32m"px-4 py-2 text-sm font-medium border-b-2 transition-colors border-accent-cyan text-accent-cyan"[39m
+        [36m>[39m
+          [0mOverview[0m
+        [36m</button>[39m
+        [0m [0m
+        [36m<button[39m
+          [33mclass[39m=[32m"px-4 py-2 text-sm font-medium border-b-2 transition-colors border-transparent text-text-secondary hover:text-text-primary"[39m
+        [36m>[39m
+          [0mEntries [0m
+          [36m<span[39m
+            [33mclass[39m=[32m"ml-1.5 text-[10px] px-1.5 py-0.5 rounded-full bg-bg-tertiary text-text-secondary font-mono"[39m
+          [36m>[39m
+            [0m1[0m
+          [36m</span>[39m
+        [36m</button>[39m
+      [36m</div>[39m
+      [0m [0m
+      [0m [0m
+      [36m<div[39m
+        [33mclass[39m=[32m"bg-bg-secondary border border-border rounded-lg p-6"[39m
+      [36m>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex flex-col items-center justify-center py-4 gap-3"[39m
+        [36m>[39m
+          [36m<div[39m
+            [33mclass[39m=[32m"w-10 h-10 rounded-full bg-accent-cyan/10 flex items-center justify-center"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-5 h-5 text-accent-cyan"[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"1.5"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M9.813 15.904L9 18.75l-.813-2.846a4.5 4.5 0 00-3.09-3.09L2.25 12l2.846-.813a4.5 4.5 0 003.09-3.09L9 5.25l.813 2.846a4.5 4.5 0 003.09 3.09L15.75 12l-2.846.813a4.5 4.5 0 00-3.09 3.09zM18.259 8.715L18 9.75l-.259-1.035a3.375 3.375 0 00-2.455-2.456L14.25 6l1.036-.259a3.375 3.375 0 002.455-2.456L18 2.25l.259 1.035a3.375 3.375 0 002.455 2.456L21.75 6l-1.036.259a3.375 3.375 0 00-2.455 2.456z"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+          [36m</div>[39m
+          [0m [0m
+          [36m<p[39m
+            [33mclass[39m=[32m"text-text-primary text-sm font-medium"[39m
+          [36m>[39m
+            [0mNo memory context yet[0m
+          [36m</p>[39m
+          [0m [0m
+          [36m<p[39m
+            [33mclass[39m=[32m"text-text-secondary text-xs text-center max-w-xs"[39m
+          [36m>[39m
+            [0mMemory context populates automatically as agents process tasks and store knowledge. Use the refresh button to check for new entries.[0m
+          [36m</p>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [0m [0m
+      [0m [0m
+      [36m<div[39m
+        [33mclass[39m=[32m"grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4"[39m
+      [36m>[39m
+        [36m<div[39m
+          [33mclass[39m=[32m"bg-bg-secondary border border-border rounded-lg p-3 sm:p-4 min-w-0"[39m
+        [36m>[39m
+          [36m<p[39m
+            [33mclass[39m=[32m"text-[0.65rem] sm:text-xs text-text-secondary uppercase tracking-wider mb-1 truncate"[39m
+          [36m>[39m
+            [0mBackend[0m
+          [36m</p>[39m
+          [0m [0m
+          [36m<p[39m
+            [33mclass[39m=[32m"text-xl sm:text-2xl font-bold font-mono truncate text-accent-blue"[39m
+          [36m>[39m
+            [0mN/A[0m
+          [36m</p>[39m
+          [0m [0m
+          [36m<p[39m
+            [33mclass[39m=[32m"text-[0.65rem] sm:text-xs text-text-secondary mt-1 truncate"[39m
+          [36m>[39m
+            [0mmemory store[0m
+          [36m</p>[39m
+        [36m</div>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"bg-bg-secondary border border-border rounded-lg p-3 sm:p-4 min-w-0"[39m
+        [36m>[39m
+          [36m<p[39m
+            [33mclass[39m=[32m"text-[0.65rem] sm:text-xs text-text-secondary uppercase tracking-wider mb-1 truncate"[39m
+          [36m>[39m
+            [0mNodes[0m
+          [36m</p>[39m
+          [0m [0m
+          [36m<p[39m
+ ...
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/routes/memory/memory.test.ts:[2m197:17[22m[39m
+    [90m195| [39m   }
+    [90m196| [39m  })[33m;[39m
+    [90m197| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'JWT authentication'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m   | [39m                [31m^[39m
+    [90m198| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'patterns'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+    [90m199| [39m  [34mexpect[39m(screen[33m.[39m[34mgetByText[39m([32m'pattern'[39m))[33m.[39m[34mtoBeInTheDocument[39m()[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[42/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/memory/memory.test.ts[2m > [22mMemory Page[2m > [22mmalformed graph data handling[2m > [22mhandles graph with undefined nodes value
+[31m[1mTestingLibraryElementError[22m[39m: Unable to find an element with the text: No graph data. Memory graph populates as the system processes entries.. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"space-y-6"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"[39m
+      [36m>[39m
+        [36m<h1[39m
+          [33mclass[39m=[32m"type-page-title text-text-primary"[39m
+        [36m>[39m
+          [0mMemory & Knowledge[0m
+        [36m</h1>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex items-center gap-2 flex-shrink-0"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+          [0m [0m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Refresh[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [36m<div[39m
+        [33maria-live[39m=[32m"polite"[39m
+        [33mclass[39m=[32m"h-48 flex flex-col items-center justify-center gap-2 text-center px-4"[39m
+        [33mdata-testid[39m=[32m"page-fallback"[39m
+        [33mdata-variant[39m=[32m"empty"[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"text-text-secondary/40"[39m
+        [36m>[39m
+          [36m<svg[39m
+            [33mclass[39m=[32m"w-10 h-10"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-width[39m=[32m"1.5"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+        [36m</span>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary text-sm font-medium"[39m
+          [33mdata-testid[39m=[32m"fallback-title"[39m
+        [36m>[39m
+          [0mNo memory data yet[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary/70 text-xs max-w-sm"[39m
+          [33mdata-testid[39m=[32m"fallback-message"[39m
+        [36m>[39m
+          [0mMemory entries will appear here as the system stores patterns, decisions, and context. Use Sync Sources to import existing memory files.[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"mt-1"[39m
+          [33mdata-testid[39m=[32m"fallback-actions"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+    [0m[0m
+  [36m</div>[39m
+[36m</body>[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/routes/memory/memory.test.ts:[2m331:18[22m[39m
+    [90m329| [39m   })[33m;[39m
+    [90m330| [39m   [90m// data.graph?.nodes is undefined — derived returns [][39m
+    [90m331| [39m   expect(screen.getByText('No graph data. Memory graph populates as t…
+    [90m   | [39m                 [31m^[39m
+    [90m332| [39m  })[33m;[39m
+    [90m333| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[43/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/memory/memory.test.ts[2m > [22mMemory Page[2m > [22mmalformed graph data handling[2m > [22mhandles completely empty graph object
+[31m[1mTestingLibraryElementError[22m[39m: Unable to find an element with the text: No graph data. Memory graph populates as the system processes entries.. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"space-y-6"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"[39m
+      [36m>[39m
+        [36m<h1[39m
+          [33mclass[39m=[32m"type-page-title text-text-primary"[39m
+        [36m>[39m
+          [0mMemory & Knowledge[0m
+        [36m</h1>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex items-center gap-2 flex-shrink-0"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+          [0m [0m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Refresh[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [36m<div[39m
+        [33maria-live[39m=[32m"polite"[39m
+        [33mclass[39m=[32m"h-48 flex flex-col items-center justify-center gap-2 text-center px-4"[39m
+        [33mdata-testid[39m=[32m"page-fallback"[39m
+        [33mdata-variant[39m=[32m"empty"[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"text-text-secondary/40"[39m
+        [36m>[39m
+          [36m<svg[39m
+            [33mclass[39m=[32m"w-10 h-10"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-width[39m=[32m"1.5"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+        [36m</span>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary text-sm font-medium"[39m
+          [33mdata-testid[39m=[32m"fallback-title"[39m
+        [36m>[39m
+          [0mNo memory data yet[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary/70 text-xs max-w-sm"[39m
+          [33mdata-testid[39m=[32m"fallback-message"[39m
+        [36m>[39m
+          [0mMemory entries will appear here as the system stores patterns, decisions, and context. Use Sync Sources to import existing memory files.[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"mt-1"[39m
+          [33mdata-testid[39m=[32m"fallback-actions"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+    [0m[0m
+  [36m</div>[39m
+[36m</body>[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/routes/memory/memory.test.ts:[2m361:18[22m[39m
+    [90m359| [39m   })[33m;[39m
+    [90m360| [39m   [90m// Empty object has no nodes — should show empty state[39m
+    [90m361| [39m   expect(screen.getByText('No graph data. Memory graph populates as t…
+    [90m   | [39m                 [31m^[39m
+    [90m362| [39m  })[33m;[39m
+    [90m363| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[44/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/memory/memory.test.ts[2m > [22mMemory Page[2m > [22mmemoryGraphEnabled flag disabled[2m > [22mshows disabled message when memoryGraphEnabled is false
+[31m[1mTestingLibraryElementError[22m[39m: Unable to find an element with the text: Memory graph is disabled. Enable it in settings to visualize relationships.. This could be because the text is broken up by multiple elements. In this case, you can provide a function for your text matcher to make your matcher more flexible.
+
+Ignored nodes: comments, script, style
+[36m<body>[39m
+  [36m<div>[39m
+    [36m<div[39m
+      [33mclass[39m=[32m"space-y-6"[39m
+    [36m>[39m
+      [36m<div[39m
+        [33mclass[39m=[32m"flex flex-col sm:flex-row items-start sm:items-center justify-between gap-3"[39m
+      [36m>[39m
+        [36m<h1[39m
+          [33mclass[39m=[32m"type-page-title text-text-primary"[39m
+        [36m>[39m
+          [0mMemory & Knowledge[0m
+        [36m</h1>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"flex items-center gap-2 flex-shrink-0"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+          [0m [0m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-border bg-bg-secondary text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Refresh[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [0m [0m
+      [36m<div[39m
+        [33maria-live[39m=[32m"polite"[39m
+        [33mclass[39m=[32m"h-48 flex flex-col items-center justify-center gap-2 text-center px-4"[39m
+        [33mdata-testid[39m=[32m"page-fallback"[39m
+        [33mdata-variant[39m=[32m"empty"[39m
+        [33mrole[39m=[32m"alert"[39m
+      [36m>[39m
+        [36m<span[39m
+          [33mclass[39m=[32m"text-text-secondary/40"[39m
+        [36m>[39m
+          [36m<svg[39m
+            [33mclass[39m=[32m"w-10 h-10"[39m
+            [33mfill[39m=[32m"none"[39m
+            [33mstroke[39m=[32m"currentColor"[39m
+            [33mstroke-width[39m=[32m"1.5"[39m
+            [33mviewBox[39m=[32m"0 0 24 24"[39m
+          [36m>[39m
+            [36m<path[39m
+              [33md[39m=[32m"M20.25 6.375c0 2.278-3.694 4.125-8.25 4.125S3.75 8.653 3.75 6.375m16.5 0c0-2.278-3.694-4.125-8.25-4.125S3.75 4.097 3.75 6.375m16.5 0v11.25c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125V6.375m16.5 0v3.75m-16.5-3.75v3.75m16.5 0v3.75C20.25 16.153 16.556 18 12 18s-8.25-1.847-8.25-4.125v-3.75m16.5 0c0 2.278-3.694 4.125-8.25 4.125s-8.25-1.847-8.25-4.125"[39m
+              [33mstroke-linecap[39m=[32m"round"[39m
+              [33mstroke-linejoin[39m=[32m"round"[39m
+            [36m/>[39m
+          [36m</svg>[39m
+        [36m</span>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary text-sm font-medium"[39m
+          [33mdata-testid[39m=[32m"fallback-title"[39m
+        [36m>[39m
+          [0mNo memory data yet[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<p[39m
+          [33mclass[39m=[32m"text-text-secondary/70 text-xs max-w-sm"[39m
+          [33mdata-testid[39m=[32m"fallback-message"[39m
+        [36m>[39m
+          [0mMemory entries will appear here as the system stores patterns, decisions, and context. Use Sync Sources to import existing memory files.[0m
+        [36m</p>[39m
+        [0m [0m
+        [36m<div[39m
+          [33mclass[39m=[32m"mt-1"[39m
+          [33mdata-testid[39m=[32m"fallback-actions"[39m
+        [36m>[39m
+          [36m<button[39m
+            [33mclass[39m=[32m"flex items-center gap-2 px-3 py-1.5 text-xs font-medium rounded border border-accent-cyan/30 bg-accent-cyan/10 text-accent-cyan hover:bg-accent-cyan/20 transition-colors disabled:opacity-50"[39m
+          [36m>[39m
+            [36m<svg[39m
+              [33mclass[39m=[32m"w-3.5 h-3.5 "[39m
+              [33mfill[39m=[32m"none"[39m
+              [33mstroke[39m=[32m"currentColor"[39m
+              [33mstroke-width[39m=[32m"2"[39m
+              [33mviewBox[39m=[32m"0 0 24 24"[39m
+            [36m>[39m
+              [36m<path[39m
+                [33md[39m=[32m"M7 16V4m0 0L3 8m4-4l4 4m6 0v12m0 0l4-4m-4 4l-4-4"[39m
+                [33mstroke-linecap[39m=[32m"round"[39m
+                [33mstroke-linejoin[39m=[32m"round"[39m
+              [36m/>[39m
+            [36m</svg>[39m
+            [0m Sync Sources[0m
+          [36m</button>[39m
+        [36m</div>[39m
+      [36m</div>[39m
+    [36m</div>[39m
+    [0m[0m
+  [36m</div>[39m
+[36m</body>[39m
+[90m [2m❯[22m Object.getElementError node_modules/@testing-library/dom/dist/config.js:[2m37:19[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m76:38[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m52:17[22m[39m
+[90m [2m❯[22m node_modules/@testing-library/dom/dist/query-helpers.js:[2m95:19[22m[39m
+[36m [2m❯[22m src/routes/memory/memory.test.ts:[2m407:18[22m[39m
+    [90m405| [39m    }
+    [90m406| [39m   })[33m;[39m
+    [90m407| [39m   expect(screen.getByText('Memory graph is disabled. Enable it in set…
+    [90m   | [39m                 [31m^[39m
+    [90m408| [39m   expect(screen.queryByText('No graph data. Memory graph populates as…
+    [90m409| [39m  })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[45/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/api/memory/graph/graph.test.ts[2m > [22m/api/memory/graph GET[2m > [22mreturns cached data without reading file
+[31m[1mSyntaxError[22m: Unexpected end of JSON input[39m
+[36m [2m❯[22m src/routes/api/memory/graph/graph.test.ts:[2m70:31[22m[39m
+    [90m 68| [39m
+    [90m 69| [39m  [35mconst[39m response [33m=[39m [35mawait[39m [33mGET[39m()[33m;[39m
+    [90m 70| [39m  [35mconst[39m body [33m=[39m [35mawait[39m response[33m.[39m[34mjson[39m()[33m;[39m
+    [90m   | [39m                              [31m^[39m
+    [90m 71| [39m
+    [90m 72| [39m  [34mexpect[39m(response[33m.[39mstatus)[33m.[39m[34mtoBe[39m([34m200[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[46/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/api/memory/graph/graph.test.ts[2m > [22m/api/memory/graph GET[2m > [22mcaches graph data after successful file read
+[31m[1mAssertionError[22m: expected "vi.fn()" to be called with arguments: [ 'graph-state', { …(3) } ][90m
+
+Number of calls: [1m0[22m
+[31m[39m
+[36m [2m❯[22m src/routes/api/memory/graph/graph.test.ts:[2m84:24[22m[39m
+    [90m 82| [39m  [35mawait[39m [33mGET[39m()[33m;[39m
+    [90m 83| [39m
+    [90m 84| [39m  [34mexpect[39m(mockCacheSet)[33m.[39m[34mtoHaveBeenCalledWith[39m([32m'graph-state'[39m[33m,[39m graphData)[33m;[39m
+    [90m   | [39m                       [31m^[39m
+    [90m 85| [39m })[33m;[39m
+    [90m 86| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[47/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/projects/[id]/agents/agents.test.ts[2m > [22mProject Agents +page.server load[2m > [22mfeature flag gating[2m > [22mreturns disabled state when previewNewPages is false
+[31m[1mAssertionError[22m: expected undefined to be false // Object.is equality[39m
+
+[32m- Expected:[39m 
+false
+
+[31m+ Received:[39m 
+undefined
+
+[36m [2m❯[22m src/routes/projects/[id]/agents/agents.test.ts:[2m54:34[22m[39m
+    [90m 52| [39m   [35mconst[39m result [33m=[39m [35mawait[39m [34mcallLoad[39m()[33m;[39m
+    [90m 53| [39m
+    [90m 54| [39m   [34mexpect[39m(result[33m.[39mpreviewEnabled)[33m.[39m[34mtoBe[39m([35mfalse[39m)[33m;[39m
+    [90m   | [39m                                 [31m^[39m
+    [90m 55| [39m   [34mexpect[39m(result[33m.[39magents)[33m.[39m[34mtoEqual[39m([])[33m;[39m
+    [90m 56| [39m   expect(result.summary).toEqual({ associated: 0, available: 0, total…
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[48/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/projects/[id]/agents/agents.test.ts[2m > [22mProject Agents +page.server load[2m > [22mfeature flag gating[2m > [22mreturns enabled state when previewNewPages is true
+[31m[1mAssertionError[22m: expected undefined to be true // Object.is equality[39m
+
+[32m- Expected:[39m 
+true
+
+[31m+ Received:[39m 
+undefined
+
+[36m [2m❯[22m src/routes/projects/[id]/agents/agents.test.ts:[2m62:34[22m[39m
+    [90m 60| [39m  it('returns enabled state when previewNewPages is true', async () =>…
+    [90m 61| [39m   [35mconst[39m result [33m=[39m [35mawait[39m [34mcallLoad[39m()[33m;[39m
+    [90m 62| [39m   [34mexpect[39m(result[33m.[39mpreviewEnabled)[33m.[39m[34mtoBe[39m([35mtrue[39m)[33m;[39m
+    [90m   | [39m                                 [31m^[39m
+    [90m 63| [39m  })[33m;[39m
+    [90m 64| [39m })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[49/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/projects/[id]/agents/agents.test.ts[2m > [22mProject Agents +page.server load[2m > [22mdata loading[2m > [22mreturns agent data from API response
+[31m[1mAssertionError[22m: expected { current: 3, max: 2 } to deeply equal { current: 3, max: 15 }[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[2m  {[22m
+[2m    "current": 3,[22m
+[32m-   "max": 15,[39m
+[31m+   "max": 2,[39m
+[2m  }[22m
+
+[36m [2m❯[22m src/routes/projects/[id]/agents/agents.test.ts:[2m80:28[22m[39m
+    [90m 78| [39m   [34mexpect[39m(result[33m.[39magents)[33m.[39m[34mtoEqual[39m(sampleApiResponse[33m.[39magents)[33m;[39m
+    [90m 79| [39m   [34mexpect[39m(result[33m.[39msummary)[33m.[39m[34mtoEqual[39m(sampleApiResponse[33m.[39msummary)[33m;[39m
+    [90m 80| [39m   [34mexpect[39m(result[33m.[39mcapacity)[33m.[39m[34mtoEqual[39m(sampleApiResponse[33m.[39mcapacity)[33m;[39m
+    [90m   | [39m                           [31m^[39m
+    [90m 81| [39m   expect(result.availableAgents).toEqual(sampleApiResponse.availableA…
+    [90m 82| [39m  })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[50/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/api/projects/[id]/agents/agents.test.ts[2m > [22m/api/projects/[id]/agents[2m > [22mGET[2m > [22mreturns empty associations when no agents.json exists
+[31m[1mTypeError[22m: Cannot read properties of undefined (reading 'searchParams')[39m
+[36m [2m❯[22m Module.GET src/routes/api/projects/[id]/agents/+server.ts:[2m91:40[22m[39m
+    [90m 89| [39m }
+    [90m 90| [39m
+    [90m 91| [39m const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1'…
+    [90m   | [39m                                       [31m^[39m
+    [90m 92| [39m const pageSize = Math.min(50, Math.max(1, parseInt(url.searchParams.g…
+    [90m 93| [39m
+[90m [2m❯[22m src/routes/api/projects/[id]/agents/agents.test.ts:[2m128:16[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[51/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/api/projects/[id]/agents/agents.test.ts[2m > [22m/api/projects/[id]/agents[2m > [22mGET[2m > [22msplits agents into associated and available
+[31m[1mTypeError[22m: Cannot read properties of undefined (reading 'searchParams')[39m
+[36m [2m❯[22m Module.GET src/routes/api/projects/[id]/agents/+server.ts:[2m91:40[22m[39m
+    [90m 89| [39m }
+    [90m 90| [39m
+    [90m 91| [39m const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1'…
+    [90m   | [39m                                       [31m^[39m
+    [90m 92| [39m const pageSize = Math.min(50, Math.max(1, parseInt(url.searchParams.g…
+    [90m 93| [39m
+[90m [2m❯[22m src/routes/api/projects/[id]/agents/agents.test.ts:[2m151:16[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[52/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/api/projects/[id]/agents/agents.test.ts[2m > [22m/api/projects/[id]/agents[2m > [22mGET[2m > [22mparses agent frontmatter correctly
+[31m[1mTypeError[22m: Cannot read properties of undefined (reading 'searchParams')[39m
+[36m [2m❯[22m Module.GET src/routes/api/projects/[id]/agents/+server.ts:[2m91:40[22m[39m
+    [90m 89| [39m }
+    [90m 90| [39m
+    [90m 91| [39m const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1'…
+    [90m   | [39m                                       [31m^[39m
+    [90m 92| [39m const pageSize = Math.min(50, Math.max(1, parseInt(url.searchParams.g…
+    [90m 93| [39m
+[90m [2m❯[22m src/routes/api/projects/[id]/agents/agents.test.ts:[2m167:16[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[53/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/api/projects/[id]/agents/agents.test.ts[2m > [22m/api/projects/[id]/agents[2m > [22mGET[2m > [22mskips files without frontmatter
+[31m[1mTypeError[22m: Cannot read properties of undefined (reading 'searchParams')[39m
+[36m [2m❯[22m Module.GET src/routes/api/projects/[id]/agents/+server.ts:[2m91:40[22m[39m
+    [90m 89| [39m }
+    [90m 90| [39m
+    [90m 91| [39m const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1'…
+    [90m   | [39m                                       [31m^[39m
+    [90m 92| [39m const pageSize = Math.min(50, Math.max(1, parseInt(url.searchParams.g…
+    [90m 93| [39m
+[90m [2m❯[22m src/routes/api/projects/[id]/agents/agents.test.ts:[2m190:16[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[54/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/api/projects/[id]/agents/agents.test.ts[2m > [22m/api/projects/[id]/agents[2m > [22mGET[2m > [22mscans subdirectories for agents
+[31m[1mTypeError[22m: Cannot read properties of undefined (reading 'searchParams')[39m
+[36m [2m❯[22m Module.GET src/routes/api/projects/[id]/agents/+server.ts:[2m91:40[22m[39m
+    [90m 89| [39m }
+    [90m 90| [39m
+    [90m 91| [39m const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1'…
+    [90m   | [39m                                       [31m^[39m
+    [90m 92| [39m const pageSize = Math.min(50, Math.max(1, parseInt(url.searchParams.g…
+    [90m 93| [39m
+[90m [2m❯[22m src/routes/api/projects/[id]/agents/agents.test.ts:[2m213:16[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[55/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/api/projects/[id]/agents/agents.test.ts[2m > [22m/api/projects/[id]/agents[2m > [22mGET[2m > [22mhandles empty agents directory
+[31m[1mTypeError[22m: Cannot read properties of undefined (reading 'searchParams')[39m
+[36m [2m❯[22m Module.GET src/routes/api/projects/[id]/agents/+server.ts:[2m91:40[22m[39m
+    [90m 89| [39m }
+    [90m 90| [39m
+    [90m 91| [39m const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1'…
+    [90m   | [39m                                       [31m^[39m
+    [90m 92| [39m const pageSize = Math.min(50, Math.max(1, parseInt(url.searchParams.g…
+    [90m 93| [39m
+[90m [2m❯[22m src/routes/api/projects/[id]/agents/agents.test.ts:[2m229:16[22m[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[56/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/api/projects/[id]/memory/memory.test.ts[2m > [22m/api/projects/[id]/memory GET[2m > [22mfilters graph nodes by cutoff when graph exists and range is set
+[31m[1mAssertionError[22m: expected { Object (recent, old) } to not have property "old"[39m
+
+[32m- Expected:[39m 
+undefined
+
+[31m+ Received:[39m 
+{
+  "accessCount": 0,
+  "category": "core",
+  "confidence": 1,
+  "createdAt": 1000,
+  "id": "old",
+}
+
+[36m [2m❯[22m src/routes/api/projects/[id]/memory/memory.test.ts:[2m125:32[22m[39m
+    [90m123| [39m  [34mexpect[39m(body[33m.[39mgraph)[33m.[39mnot[33m.[39m[34mtoBeNull[39m()[33m;[39m
+    [90m124| [39m  [34mexpect[39m(body[33m.[39mgraph[33m.[39mnodes)[33m.[39m[34mtoHaveProperty[39m([32m'recent'[39m)[33m;[39m
+    [90m125| [39m  [34mexpect[39m(body[33m.[39mgraph[33m.[39mnodes)[33m.[39mnot[33m.[39m[34mtoHaveProperty[39m([32m'old'[39m)[33m;[39m
+    [90m   | [39m                               [31m^[39m
+    [90m126| [39m  [34mexpect[39m(body[33m.[39mgraph[33m.[39mpageRanks[33m.[39mrecent)[33m.[39m[34mtoBe[39m([34m0.5[39m)[33m;[39m
+    [90m127| [39m  [34mexpect[39m(body[33m.[39mgraph[33m.[39mpageRanks)[33m.[39mnot[33m.[39m[34mtoHaveProperty[39m([32m'old'[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[57/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/api/projects/[id]/memory/memory.test.ts[2m > [22m/api/projects/[id]/memory GET[2m > [22mreturns cached response when available
+[31m[1mAssertionError[22m: expected { projectId: 'test-project', …(6) } to deeply equal { projectId: 'test-project', …(1) }[39m
+
+[32m- Expected[39m
+[31m+ Received[39m
+
+[2m  {[22m
+[31m+   "categoryBreakdown": [],[39m
+[31m+   "entries": [],[39m
+[2m    "graph": null,[22m
+[31m+   "namespaceBreakdown": [],[39m
+[2m    "projectId": "test-project",[22m
+[31m+   "projectName": "test-project",[39m
+[31m+   "summary": {[39m
+[31m+     "avgConfidence": 0,[39m
+[31m+     "categories": 0,[39m
+[31m+     "hitRate": "N/A",[39m
+[31m+     "namespaces": 0,[39m
+[31m+     "totalNodes": 0,[39m
+[31m+   },[39m
+[2m  }[22m
+
+[36m [2m❯[22m src/routes/api/projects/[id]/memory/memory.test.ts:[2m160:16[22m[39m
+    [90m158| [39m  [35mconst[39m body [33m=[39m [35mawait[39m response[33m.[39m[34mjson[39m()[33m;[39m
+    [90m159| [39m
+    [90m160| [39m  [34mexpect[39m(body)[33m.[39m[34mtoEqual[39m(cached)[33m;[39m
+    [90m   | [39m               [31m^[39m
+    [90m161| [39m  [34mexpect[39m(mockReadJsonFile)[33m.[39mnot[33m.[39m[34mtoHaveBeenCalled[39m()[33m;[39m
+    [90m162| [39m })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[58/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/api/projects/[id]/memory/memory.test.ts[2m > [22m/api/projects/[id]/memory GET[2m > [22mcaching behavior[2m > [22mpopulates cache on first request and serves from cache on second
+[31m[1mAssertionError[22m: expected "vi.fn()" to be called 1 times, but got 0 times[39m
+[36m [2m❯[22m src/routes/api/projects/[id]/memory/memory.test.ts:[2m175:25[22m[39m
+    [90m173| [39m   [35mconst[39m first [33m=[39m [35mawait[39m [33mGET[39m([34mmakeEvent[39m([32m'test-project'[39m))[33m;[39m
+    [90m174| [39m   [34mexpect[39m(first[33m.[39mstatus)[33m.[39m[34mtoBe[39m([34m200[39m)[33m;[39m
+    [90m175| [39m   [34mexpect[39m(mockCacheSet)[33m.[39m[34mtoHaveBeenCalledTimes[39m([34m1[39m)[33m;[39m
+    [90m   | [39m                        [31m^[39m
+    [90m176| [39m   [35mconst[39m storedValue [33m=[39m mockCacheSet[33m.[39mmock[33m.[39mcalls[[34m0[39m][[34m1[39m][33m;[39m
+    [90m177| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[59/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/api/projects/[id]/memory/memory.test.ts[2m > [22m/api/projects/[id]/memory GET[2m > [22mcaching behavior[2m > [22mincludes Cache-Control header with remaining TTL on cache hit
+[31m[1mAssertionError[22m: expected null to be 'max-age=17, stale-while-revalidate=10' // Object.is equality[39m
+
+[32m- Expected:[39m 
+"max-age=17, stale-while-revalidate=10"
+
+[31m+ Received:[39m 
+null
+
+[36m [2m❯[22m src/routes/api/projects/[id]/memory/memory.test.ts:[2m199:15[22m[39m
+    [90m197| [39m   [35mconst[39m cc [33m=[39m response[33m.[39mheaders[33m.[39m[35mget[39m([32m'Cache-Control'[39m)[33m;[39m
+    [90m198| [39m
+    [90m199| [39m   [34mexpect[39m(cc)[33m.[39m[34mtoBe[39m([32m'max-age=17, stale-while-revalidate=10'[39m)[33m;[39m
+    [90m   | [39m              [31m^[39m
+    [90m200| [39m  })[33m;[39m
+    [90m201| [39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[60/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/api/projects/[id]/memory/memory.test.ts[2m > [22m/api/projects/[id]/memory GET[2m > [22mcaching behavior[2m > [22muses separate cache keys per range parameter
+[31m[1mTypeError[22m: Cannot read properties of undefined (reading '0')[39m
+[36m [2m❯[22m src/routes/api/projects/[id]/memory/memory.test.ts:[2m210:46[22m[39m
+    [90m208| [39m
+    [90m209| [39m   [35mawait[39m [33mGET[39m([34mmakeEvent[39m([32m'test-project'[39m[33m,[39m { range[33m:[39m [32m'1h'[39m }))[33m;[39m
+    [90m210| [39m   [35mconst[39m firstKey [33m=[39m mockCacheSet[33m.[39mmock[33m.[39mcalls[[34m0[39m][[34m0[39m][33m;[39m
+    [90m   | [39m                                             [31m^[39m
+    [90m211| [39m
+    [90m212| [39m   mockReadJsonFile
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[61/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/api/projects/[id]/memory/memory.test.ts[2m > [22m/api/projects/[id]/memory GET[2m > [22mcaching behavior[2m > [22muses "all" suffix in cache key when no range is specified
+[31m[1mTypeError[22m: Cannot read properties of undefined (reading '0')[39m
+[36m [2m❯[22m src/routes/api/projects/[id]/memory/memory.test.ts:[2m233:41[22m[39m
+    [90m231| [39m
+    [90m232| [39m   [35mawait[39m [33mGET[39m([34mmakeEvent[39m([32m'test-project'[39m))[33m;[39m
+    [90m233| [39m   [35mconst[39m key [33m=[39m mockCacheSet[33m.[39mmock[33m.[39mcalls[[34m0[39m][[34m0[39m][33m;[39m
+    [90m   | [39m                                        [31m^[39m
+    [90m234| [39m
+    [90m235| [39m   [34mexpect[39m(key)[33m.[39m[34mtoBe[39m([32m'project-memory:test-project:all'[39m)[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[62/63]⎯[22m[39m
+
+[41m[1m FAIL [22m[49m src/routes/api/projects/[id]/memory/memory.test.ts[2m > [22m/api/projects/[id]/memory GET[2m > [22mcaching behavior[2m > [22msets Cache-Control max-age=30 on fresh (non-cached) response
+[31m[1mAssertionError[22m: expected null to be 'max-age=30, stale-while-revalidate=10' // Object.is equality[39m
+
+[32m- Expected:[39m 
+"max-age=30, stale-while-revalidate=10"
+
+[31m+ Received:[39m 
+null
+
+[36m [2m❯[22m src/routes/api/projects/[id]/memory/memory.test.ts:[2m248:15[22m[39m
+    [90m246| [39m   [35mconst[39m cc [33m=[39m response[33m.[39mheaders[33m.[39m[35mget[39m([32m'Cache-Control'[39m)[33m;[39m
+    [90m247| [39m
+    [90m248| [39m   [34mexpect[39m(cc)[33m.[39m[34mtoBe[39m([32m'max-age=30, stale-while-revalidate=10'[39m)[33m;[39m
+    [90m   | [39m              [31m^[39m
+    [90m249| [39m  })[33m;[39m
+    [90m250| [39m })[33m;[39m
+
+[31m[2m⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[63/63]⎯[22m[39m
+
+
+[2m Test Files [22m [1m[31m11 failed[39m[22m[2m | [22m[1m[32m22 passed[39m[22m[90m (33)[39m
+[2m      Tests [22m [1m[31m61 failed[39m[22m[2m | [22m[1m[32m559 passed[39m[22m[90m (620)[39m
+[2m   Start at [22m 00:39:04
+[2m   Duration [22m 22.28s[2m (transform 48.90s, setup 108.67s, import 37.94s, tests 27.53s, environment 155.64s)[22m
+

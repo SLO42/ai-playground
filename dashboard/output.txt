@@ -1,0 +1,17 @@
+
+[1m[46m RUN [49m[22m [36mv4.0.18 [39m[90mF:/code/ai-playground/dashboard[39m
+
+12:38:19 AM [vite-plugin-svelte] src/routes/memory/+page.svelte:247:26 This reference only captures the initial value of `groupBy`. Did you mean to reference it inside a closure instead?
+https://svelte.dev/e/state_referenced_locally
+ [32m✓[39m src/routes/memory/memory-large-dataset.test.ts [2m([22m[2m8 tests[22m[2m)[22m[33m 8479[2mms[22m[39m
+     [33m[2m✓[22m[39m renders without crashing with ~10k graph nodes [33m 1096[2mms[22m[39m
+     [33m[2m✓[22m[39m renders edge count correctly for large dataset [33m 440[2mms[22m[39m
+     [33m[2m✓[22m[39m completes initial render within a reasonable time for 10k nodes [33m 585[2mms[22m[39m
+     [33m[2m✓[22m[39m handles combined large graph + large context [33m 1938[2mms[22m[39m
+     [33m[2m✓[22m[39m renders all metric cards with large dataset values [33m 4009[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m8 passed[39m[22m[90m (8)[39m
+[2m   Start at [22m 00:38:08
+[2m   Duration [22m 20.45s[2m (transform 4.22s, setup 6.79s, import 1.12s, tests 8.48s, environment 3.64s)[22m
+

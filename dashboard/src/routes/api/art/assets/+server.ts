@@ -33,7 +33,6 @@ export const GET: RequestHandler = async ({ url }) => {
 
 /** POST /api/art/assets — search, download, register, or remove assets */
 export const POST: RequestHandler = async ({ request }) => {
-<<<<<<< Updated upstream
 	// Guard: only allow requests originating from the local dashboard (CSRF / remote-caller protection).
 	// The Origin header is always sent by browsers for cross-origin POST requests.
 	// Requests without Origin (e.g. server-to-server on localhost) are also permitted.
@@ -46,12 +45,6 @@ export const POST: RequestHandler = async ({ request }) => {
 		const body = await request.json();
 		const { action } = body;
 
-=======
-	try {
-		const body = await request.json();
-		const { action } = body;
-
->>>>>>> Stashed changes
 		switch (action) {
 			case 'search-civitai': {
 				const results = await searchCivitAI(body.query, body.type, body.limit);

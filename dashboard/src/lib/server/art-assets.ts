@@ -147,7 +147,13 @@ export async function downloadFromCivitAI(
 	const targetDir = ASSET_DIRS[assetType];
 	await mkdir(targetDir, { recursive: true });
 
-	const targetPath = resolve(targetDir, file.name);
+	const safeName = basename(file.name);
+	const targetPath = resolve(targetDir, safeName);
+
+	// Guard against path traversal: ensure target stays within the asset dir
+	if (!targetPath.startsWith(resolve(targetDir) + sep)) {
+		throw new Error(`Refusing to write file outside asset directory: ${targetPath}`);
+	}
 
 	// Download the file
 	const dlRes = await fetch(file.downloadUrl, {
@@ -167,7 +173,7 @@ export async function downloadFromCivitAI(
 		source: 'civitai',
 		sourceId: String(modelId),
 		sourceUrl: `https://civitai.com/models/${modelId}`,
-		filePath: file.name,
+		filePath: safeName,
 		triggerWords: version.trainedWords ?? [],
 		compatibleBases: [version.baseModel.toLowerCase().replace(/\s+/g, '')],
 		downloadedAt: new Date().toISOString(),
@@ -223,12 +229,44 @@ export async function searchHuggingFace(query: string, limit = 10): Promise<{
 	}));
 }
 
+/** Validate a HuggingFace repo ID (owner/model format). */
+function validateHFRepoId(repoId: string): void {
+	if (!repoId || repoId.length > 200) {
+		throw new Error('Invalid HuggingFace repo ID: too long or empty');
+	}
+	if (!/^[a-zA-Z0-9_.-]+\/[a-zA-Z0-9_.-]+$/.test(repoId)) {
+		throw new Error('Invalid HuggingFace repo ID: must be "owner/model" with alphanumeric, hyphens, underscores, dots only');
+	}
+}
+
+/** Validate a HuggingFace file path (no traversal, no query strings). */
+function validateHFFileName(fileName: string): void {
+	if (!fileName || fileName.length > 500) {
+		throw new Error('Invalid HuggingFace fileName: too long or empty');
+	}
+	if (/(\.\.|[?#]|%2e%2e|%2f|%5c)/i.test(fileName)) {
+		throw new Error('Invalid HuggingFace fileName: path traversal or query strings not allowed');
+	}
+	if (/[\\]/.test(fileName) || /^\//.test(fileName)) {
+		throw new Error('Invalid HuggingFace fileName: must be a relative path without backslashes');
+	}
+	const segments = fileName.split('/');
+	for (const seg of segments) {
+		if (!seg || !/^[a-zA-Z0-9_.-]+$/.test(seg)) {
+			throw new Error(`Invalid HuggingFace fileName segment: "${seg}"`);
+		}
+	}
+}
+
 /** Download a single file from HuggingFace. */
 export async function downloadFromHuggingFace(
 	repoId: string,
 	fileName: string,
 	type: ArtAsset['type']
 ): Promise<ArtAsset> {
+	validateHFRepoId(repoId);
+	validateHFFileName(fileName);
+
 	const targetDir = ASSET_DIRS[type];
 	await mkdir(targetDir, { recursive: true });
 

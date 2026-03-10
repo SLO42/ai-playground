@@ -54,7 +54,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `/api/memory/entries` | DELETE | Remove auto-memory entries by ID |
 | `/api/memory/context` | GET | Ranked context + auto-memory entries |
 | `/api/memory/sync` | POST | Trigger memory bridge sync |
-| `/api/art/assets` | GET/POST | List/search/download art model assets (CivitAI, HuggingFace, local) |
+| `/api/art/assets` | GET/POST | List/search/download art model assets (CivitAI, HuggingFace, local). POST requires `Origin` to be localhost/127.0.0.1 (CSRF guard). |
 | `/api/art/comfyui` | GET/POST | ComfyUI health, queue status, interrupt, refresh models |
 | `/api/art/experiments` | GET/POST | List/create/run generation experiments with variable sweeps |
 | `/api/art/generate` | POST | Prompt generation and experiment planning via LLM |

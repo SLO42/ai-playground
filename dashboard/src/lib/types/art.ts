@@ -3,17 +3,19 @@
 export interface ArtAsset {
 	id: string;
 	name: string;
-	type: 'checkpoint' | 'lora' | 'vae' | 'embedding' | 'upscaler';
+	type: 'checkpoint' | 'lora' | 'vae' | 'embedding' | 'upscaler' | 'video_model';
 	source: 'civitai' | 'huggingface' | 'local';
 	sourceId?: string;
 	sourceUrl?: string;
 	filePath: string;              // relative to ComfyUI models dir
 	triggerWords: string[];
-	compatibleBases: string[];     // e.g. ['sdxl', 'sd15', 'pony', 'flux']
+	compatibleBases: string[];     // e.g. ['sdxl', 'sd15', 'pony', 'flux', 'svd', 'animatediff']
 	hash?: string;
 	downloadedAt: string;
 	tested: boolean;
 	notes?: string;
+	/** For video models: the workflow type they require (e.g. 'svd', 'animatediff', 'wan') */
+	videoWorkflow?: string;
 }
 
 export interface LoraRef {
@@ -34,6 +36,29 @@ export interface GenerationParams {
 	denoise?: number;              // for img2img
 }
 
+/** Extra params for video generation. */
+export interface VideoParams {
+	frames: number;                // total frames to generate
+	fps: number;                   // output framerate
+	motionBucketId?: number;       // SVD: motion amount (1-255)
+	augmentationLevel?: number;    // SVD: noise augmentation
+	minCfg?: number;               // SVD: min CFG for guidance curve
+	motionModule?: string;         // AnimateDiff: motion module name
+	contextLength?: number;        // AnimateDiff: sliding window context
+}
+
+/** A ComfyUI workflow template (stored as JSON files). */
+export interface WorkflowTemplate {
+	id: string;
+	name: string;
+	type: 'txt2img' | 'img2img' | 'txt2video' | 'img2video' | 'upscale' | 'custom';
+	description: string;
+	filePath: string;              // path to workflow JSON template
+	requiredInputs: string[];      // e.g. ['checkpoint', 'positive', 'negative']
+	optionalInputs: string[];      // e.g. ['lora', 'video_model', 'upscaler']
+	baseModels: string[];          // compatible base model types
+}
+
 export interface Generation {
 	id: string;
 	experimentId: string;
@@ -42,7 +67,10 @@ export interface Generation {
 	checkpoint: string;
 	loras: LoraRef[];
 	params: GenerationParams;
+	videoParams?: VideoParams;     // present for video generations
+	workflowTemplate?: string;     // which workflow template was used
 	outputFile: string;            // relative path in art/outputs/
+	outputType: 'image' | 'video'; // what was produced
 	comfyPromptId: string;
 	score?: number;                // 1-5 user or vision model rating
 	autoScore?: number;            // vision model score

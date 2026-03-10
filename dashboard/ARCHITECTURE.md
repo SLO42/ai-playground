@@ -59,6 +59,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `/api/art/experiments` | GET/POST | List/create/run generation experiments with variable sweeps |
 | `/api/art/generate` | POST | Prompt generation and experiment planning via LLM |
 | `/api/art/knowledge` | GET/POST | Art knowledge base (prompt templates, keyword index, LoRA/model profiles) |
+| `/api/art/brain` | POST | Autonomous art brain — action dispatch: `run` (full research→plan→execute cycle), `status` (current brain state), `queue` (pending test queue). Calls `art-brain.ts` which uses GPT-OSS 20B via Ollama for reasoning. |
 
 ## Server Modules (`src/lib/server/`)
 
@@ -79,7 +80,8 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `file-reader.ts` | Safe JSON/text file reading helpers |
 | `agent-defaults.ts` | Agent configuration defaults |
 | `memory-bridge.ts` | Aggregates memory from multiple sources (auto-memory files, claude-flow MCP) for the `/api/memory/*` endpoints. Fetches claude-flow entries via MCP HTTP at `http://127.0.0.1:3577/mcp` — requires the claude-flow daemon to be running; skips silently if offline. |
-| `art-assets.ts` | Art model asset management — CivitAI/HuggingFace search and download, local model scanning, ComfyUI model listing, asset registry CRUD. HuggingFace downloads validate `repoId` (alphanumeric/hyphen/dot/slash, max 200 chars) and `fileName` (no path traversal, no query strings, no backslashes) before constructing fetch URLs (SSRF guard). |
+| `art-assets.ts` | Art model asset management — CivitAI/HuggingFace search and download, local model scanning, ComfyUI model listing, asset registry CRUD. CivitAI downloads apply `basename(file.name)` and verify the resolved path starts with `targetDir` before writing (path traversal guard). HuggingFace downloads validate `repoId` (alphanumeric/hyphen/dot/slash, max 200 chars) and `fileName` (no path traversal, no query strings, no backslashes) before constructing fetch URLs (SSRF guard). |
+| `art-brain.ts` | Autonomous orchestrator for image generation testing. Uses GPT-OSS 20B via Ollama to: research every asset (via `art-researcher`), decide what to test, craft prompts, create and execute bulk experiment batches, and track coverage. Exports `runBrainCycle()`, `getBrainStatus()`, and `getTestQueue()`. All reasoning is model-driven — no hardcoded prompt logic. |
 | `art-researcher.ts` | Fetches real-world usage data for models, LoRAs, upscalers, and embeddings from CivitAI. Returns `AssetResearch` with creator-recommended settings (trigger words, CFG, steps, sampler, strength), up to 20 community prompts, common asset pairings, and version/tag metadata. Used by the art brain before testing any asset. |
 | `art-experiments.ts` | Experiment lifecycle — create, run (via ComfyUI), and persist generation experiments with variable sweeping. Exposes `loadAssets()`, `loadExperiments()`, `loadKnowledge()`, `createQuickExperiment()`, `runExperiment()`, `getExperimentProgress()`. |
 | `art-knowledge.ts` | Distills completed experiment results into a persistent knowledge base (`ArtKnowledge`). Provides `getKnowledgeSummary()` and `distillExperiment()`. |

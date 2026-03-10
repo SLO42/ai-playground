@@ -816,16 +816,19 @@ describe('BubbleGraph', () => {
 		});
 
 		it('high-contrast mode labels use white fill (#ffffff)', () => {
-			// The CSS specifies fill: #ffffff for .node-label in high-contrast mode
-			// We verify the inline fill attribute on labels (default mode) is a light color
+			// The CSS specifies fill: #ffffff for .node-label in high-contrast mode via media query.
+			// Fill is applied via the CSS class, not as an inline attribute, so we verify
+			// the label element has the .node-label class (which carries the fill rules).
 			const { container } = render(BubbleGraph, {
 				props: { nodes: [makeNode({ label: 'HCLabel' })] }
 			});
 			const label = Array.from(container.querySelectorAll('text')).find(
 				(t) => t.textContent === 'HCLabel'
 			);
-			// Default fill is #e2e8f0 (light gray), high-contrast overrides to #ffffff
-			expect(label?.getAttribute('fill')).toBe('#e2e8f0');
+			// Fill is controlled by CSS class, not an inline attribute
+			expect(label?.classList.contains('node-label')).toBe(true);
+			// No inline fill attribute — styling comes from the CSS rule
+			expect(label?.getAttribute('fill')).toBeNull();
 		});
 
 		it('node groups are focusable for keyboard navigation', () => {

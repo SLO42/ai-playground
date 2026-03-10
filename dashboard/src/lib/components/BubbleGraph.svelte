@@ -103,13 +103,7 @@
 
 	// Single-pass: batch all per-node computations into one derived (uses RAF-batched data)
 	let computedNodes = $derived.by((): ComputedNode[] => {
-		// Deduplicate by ID — keyed {#each} throws on duplicate keys
-		const seen = new Set<string>();
-		const uniqueNodes = batchedNodes.filter((n) => {
-			if (seen.has(n.id)) return false;
-			seen.add(n.id);
-			return true;
-		});
+		const uniqueNodes = batchedNodes;
 		const total = uniqueNodes.length;
 		if (total === 0) return [];
 		const cols = Math.ceil(Math.sqrt(total));
@@ -279,7 +273,7 @@
 	{/each}
 
 	<!-- Nodes (viewport-culled, stable keys for efficient diffing) -->
-	{#each visibleNodes as cn (cn.id)}
+	{#each visibleNodes as cn (cn.index)}
 		<g
 			data-graph-node={cn.index}
 			role="button"

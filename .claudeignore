@@ -1,7 +1,9 @@
 # Exclude large/irrelevant directories from Claude Code context
+
 # This reduces input tokens for spawned agents significantly
 
 # Playground runtime data (agents don't need chat history, reports, or logs)
+
 .playground/chats/
 .playground/reports/
 .playground/headless-logs/
@@ -11,20 +13,24 @@
 .playground/notifications.json
 
 # Claude Flow runtime (agents use MCP tools instead of reading raw data)
+
 .claude-flow/
 .swarm/
 
 # Build artifacts
+
 dashboard/.svelte-kit/
 dashboard/build/
 dist/
 build/
 
 # Dependencies (never need to read these)
+
 node_modules/
 dashboard/node_modules/
 
 # Agent definitions, skills, commands, and helpers (agents don't need these)
+
 .claude/agents/
 .claude/skills/
 .claude/commands/
@@ -32,6 +38,7 @@ dashboard/node_modules/
 .claude/memory.db
 
 # Config files agents rarely need
+
 config/security/certs/
 config/openclaw/workspace/
 config/openclaw/channels/
@@ -39,29 +46,39 @@ config/openclaw/models.json5
 config/security/network-policy.yaml
 
 # Task store files (heartbeat manages these, agents shouldn't browse)
+
 .playground/tasks/
+.playground/art/
 
 # E2E test fixtures (agents writing unit tests don't need these)
+
 dashboard/e2e/
 
 # GitHub workflows (agents don't modify CI)
+
 .github/
 
 # OpenClaw local config
+
 .openclaw/
 
 # Scripts directory
+
 scripts/
 
 # Claude Flow data inside dashboard (session events, intelligence snapshots)
+
 dashboard/.claude-flow/
 
 # Docs and design assets (5.2MB — agents don't need reference docs or PNGs)
+
 docs/
 
 # Git internals
+
 .git/
 
 # Lock files
+
 package-lock.json
 dashboard/package-lock.json

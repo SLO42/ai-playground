@@ -57,19 +57,11 @@ export const PATHS = {
 	customServices: resolve(PROJECT_ROOT, '.playground/custom-services.json'),
 	scanFindings: resolve(PROJECT_ROOT, '.playground/security-findings.json'),
 	taskSuggestions: resolve(PROJECT_ROOT, '.playground/task-suggestions.json'),
-	artDir: resolve(PROJECT_ROOT, '.playground/art'),
-	artOutputDir: resolve(PROJECT_ROOT, '.playground/art/outputs'),
-	artExperiments: resolve(PROJECT_ROOT, '.playground/art/experiments.json'),
-	artAssets: resolve(PROJECT_ROOT, '.playground/art/assets.json'),
-	artKnowledge: resolve(PROJECT_ROOT, '.playground/art/knowledge.json'),
-	artConfig: resolve(PROJECT_ROOT, 'config/comfyui/config.yaml'),
-	artWorkflows: resolve(PROJECT_ROOT, 'config/comfyui/workflows')
 } as const;
 
 export const APIS = {
 	ollama: 'http://127.0.0.1:11434',
 	gateway: 'ws://127.0.0.1:18789',
-	comfyui: 'http://127.0.0.1:8188'
 } as const;
 
 export interface ServiceDef {
@@ -117,15 +109,6 @@ export const SERVICES: Record<string, ServiceDef> = {
 		configPath: join(WORKSPACE_ROOT, 'tools', 'penpot-mcp'),
 		port: 4400,
 		healthUrl: 'http://127.0.0.1:4400/',
-		logFile: null
-	},
-	comfyui: {
-		id: 'comfyui',
-		name: 'ComfyUI Server',
-		type: 'Image Generation',
-		configPath: 'config/comfyui/config.yaml',
-		port: 8188,
-		healthUrl: 'http://127.0.0.1:8188/system_stats',
 		logFile: null
 	},
 } as const;

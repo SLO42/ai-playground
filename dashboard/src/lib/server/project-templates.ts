@@ -915,6 +915,695 @@ const fabric: ProjectTemplateDef = {
 };
 
 // ---------------------------------------------------------------------------
+// G4: Forge / NeoForge Minecraft mod template
+// ---------------------------------------------------------------------------
+
+const forge: ProjectTemplateDef = {
+	id: 'forge',
+	name: 'Forge Mod',
+	description: 'NeoForge/Forge Minecraft mod with Gradle',
+	language: 'Java',
+	icon: '\u2692\uFE0F',
+	tags: ['mod', 'game', 'minecraft', 'java'],
+	params: [
+		{ key: 'modName', label: 'Mod Name', type: 'string', default: 'My Mod', description: 'Display name of your mod' },
+		{ key: 'modId', label: 'Mod ID', type: 'string', default: 'mymod', description: 'Lowercase identifier (no spaces)' },
+		{ key: 'minecraftVersion', label: 'Minecraft Version', type: 'select', default: '1.21.1', options: ['1.20.4', '1.21.1'] },
+		{ key: 'language', label: 'Language', type: 'select', default: 'java', options: ['java', 'kotlin'] },
+		{ key: 'includeCI', label: 'Include CI', type: 'boolean', default: false, description: 'Add GitHub Actions build workflow' }
+	],
+	generate: (name, description, params) => {
+		const modName = (params.modName as string) || name;
+		const modId = ((params.modId as string) || name).toLowerCase().replace(/[^a-z0-9]/g, '');
+		const mcVersion = (params.minecraftVersion as string) || '1.21.1';
+		const lang = (params.language as string) || 'java';
+		const includeCI = params.includeCI === true;
+		const isKotlin = lang === 'kotlin';
+		const neoVersion = mcVersion === '1.20.4' ? '20.4' : '21.1';
+		const forgeVersion = mcVersion === '1.20.4' ? '49.0.0' : '51.0.0';
+		const className = modId.replace(/(^|_)([a-z])/g, (_, _p, c: string) => c.toUpperCase());
+		const pkg = `com.example.${modId}`;
+		const pkgPath = `com/example/${modId}`;
+
+		const files: Record<string, string> = {};
+
+		// build.gradle
+		const kotlinPlugin = isKotlin ? "\n    id 'org.jetbrains.kotlin.jvm' version '1.9.22'" : '';
+		const kotlinDep = isKotlin ? '\n    implementation "org.jetbrains.kotlin:kotlin-stdlib"' : '';
+		files['build.gradle'] = [
+			'plugins {',
+			`    id 'net.neoforged.gradle.userdev' version '7.0.+'${kotlinPlugin}`,
+			'}',
+			'',
+			`version = '1.0.0'`,
+			`group = '${pkg}'`,
+			'',
+			'java {',
+			'    toolchain {',
+			'        languageVersion = JavaLanguageVersion.of(17)',
+			'    }',
+			'}',
+			'',
+			'minecraft {',
+			'    accessTransformers {',
+			"        file('src/main/resources/META-INF/accesstransformer.cfg')",
+			'    }',
+			'}',
+			'',
+			'repositories {',
+			'    mavenCentral()',
+			'}',
+			'',
+			'dependencies {',
+			`    implementation "net.neoforged:neoforge:${neoVersion}.+"${kotlinDep}`,
+			'}',
+			'',
+			'tasks.withType(ProcessResources).configureEach {',
+			'    var replaceProperties = [',
+			`        mod_id: '${modId}',`,
+			`        mod_name: '${modName}',`,
+			'        mod_version: project.version,',
+			`        minecraft_version: '${mcVersion}'`,
+			'    ]',
+			'    inputs.properties replaceProperties',
+			"    filesMatching(['META-INF/mods.toml']) {",
+			'        expand replaceProperties',
+			'    }',
+			'}',
+			''
+		].join('\n');
+
+		// gradle.properties
+		files['gradle.properties'] = [
+			'org.gradle.jvmargs=-Xmx3G',
+			'org.gradle.daemon=false',
+			'',
+			`mod_id=${modId}`,
+			`mod_name=${modName}`,
+			'mod_version=1.0.0',
+			`minecraft_version=${mcVersion}`,
+			`forge_version=${forgeVersion}`,
+			`neo_version=${neoVersion}`,
+			''
+		].join('\n');
+
+		// settings.gradle
+		files['settings.gradle'] = [
+			'pluginManagement {',
+			'    repositories {',
+			'        gradlePluginPortal()',
+			"        maven { url = 'https://maven.neoforged.net/releases' }",
+			'    }',
+			'}',
+			'',
+			'plugins {',
+			"    id 'org.gradle.toolchains.foojay-resolver-convention' version '0.8.0'",
+			'}',
+			'',
+			`rootProject.name = '${modId}'`,
+			''
+		].join('\n');
+
+		// Main mod class
+		const srcDir = isKotlin ? 'src/main/kotlin' : 'src/main/java';
+		const ext = isKotlin ? 'kt' : 'java';
+
+		if (isKotlin) {
+			files[`${srcDir}/${pkgPath}/${className}Mod.kt`] = [
+				`package ${pkg}`,
+				'',
+				'import net.neoforged.bus.api.IEventBus',
+				'import net.neoforged.fml.common.Mod',
+				'import org.slf4j.LoggerFactory',
+				'',
+				`@Mod(${className}Mod.MOD_ID)`,
+				`class ${className}Mod(modEventBus: IEventBus) {`,
+				'    companion object {',
+				`        const val MOD_ID = "${modId}"`,
+				`        private val LOGGER = LoggerFactory.getLogger(${className}Mod::class.java)`,
+				'    }',
+				'',
+				'    init {',
+				`        LOGGER.info("${modName} initializing...")`,
+				'    }',
+				'}',
+				''
+			].join('\n');
+		} else {
+			files[`${srcDir}/${pkgPath}/${className}Mod.java`] = [
+				`package ${pkg};`,
+				'',
+				'import net.neoforged.bus.api.IEventBus;',
+				'import net.neoforged.fml.common.Mod;',
+				'import org.slf4j.Logger;',
+				'import org.slf4j.LoggerFactory;',
+				'',
+				`@Mod(${className}Mod.MOD_ID)`,
+				`public class ${className}Mod {`,
+				`    public static final String MOD_ID = "${modId}";`,
+				`    private static final Logger LOGGER = LoggerFactory.getLogger(${className}Mod.class);`,
+				'',
+				`    public ${className}Mod(IEventBus modEventBus) {`,
+				`        LOGGER.info("${modName} initializing...");`,
+				'    }',
+				'}',
+				''
+			].join('\n');
+		}
+
+		// mods.toml
+		files['src/main/resources/META-INF/mods.toml'] = [
+			'modLoader = "javafml"',
+			'loaderVersion = "[1,)"',
+			'license = "All Rights Reserved"',
+			'',
+			'[[mods]]',
+			`modId = "${modId}"`,
+			'version = "${mod_version}"',
+			`displayName = "${modName}"`,
+			`description = '''${description || `${modName} - a Minecraft mod.`}'''`,
+			'',
+			`[[dependencies.${modId}]]`,
+			'modId = "neoforge"',
+			'type = "required"',
+			`versionRange = "[${neoVersion},)"`,
+			'ordering = "NONE"',
+			'side = "BOTH"',
+			'',
+			`[[dependencies.${modId}]]`,
+			'modId = "minecraft"',
+			'type = "required"',
+			`versionRange = "[${mcVersion},)"`,
+			'ordering = "NONE"',
+			'side = "BOTH"',
+			''
+		].join('\n');
+
+		// .gitignore
+		files['.gitignore'] = [
+			'# Gradle',
+			'.gradle/',
+			'build/',
+			'!gradle/wrapper/gradle-wrapper.jar',
+			'',
+			'# IDE',
+			'.idea/',
+			'*.iml',
+			'.vscode/',
+			'*.swp',
+			'out/',
+			'',
+			'# Runtime',
+			'run/',
+			'logs/',
+			'crash-reports/',
+			'',
+			'# Project',
+			'.env',
+			'.playground/',
+			''
+		].join('\n');
+
+		// CI
+		if (includeCI) {
+			files['.github/workflows/build.yml'] = [
+				'name: Build',
+				'',
+				'on:',
+				'  push:',
+				'    branches: [main]',
+				'  pull_request:',
+				'    branches: [main]',
+				'',
+				'jobs:',
+				'  build:',
+				'    runs-on: ubuntu-latest',
+				'    steps:',
+				'      - uses: actions/checkout@v4',
+				'      - uses: actions/setup-java@v4',
+				'        with:',
+				'          distribution: temurin',
+				'          java-version: 17',
+				'      - uses: gradle/actions/setup-gradle@v4',
+				'      - run: ./gradlew build',
+				''
+			].join('\n');
+		}
+
+		return files;
+	}
+};
+
+// ---------------------------------------------------------------------------
+// G5: Paper/Spigot Minecraft plugin template
+// ---------------------------------------------------------------------------
+
+const paper: ProjectTemplateDef = {
+	id: 'paper',
+	name: 'Paper Plugin',
+	description: 'Paper/Spigot Minecraft plugin',
+	language: 'Java',
+	icon: '\uD83D\uDCC3',
+	tags: ['mod', 'game', 'minecraft', 'java'],
+	params: [
+		{ key: 'pluginName', label: 'Plugin Name', type: 'string', default: 'My Plugin', description: 'Display name of your plugin' },
+		{ key: 'pluginId', label: 'Plugin ID', type: 'string', default: 'myplugin', description: 'Lowercase identifier (no spaces)' },
+		{ key: 'minecraftVersion', label: 'Minecraft Version', type: 'select', default: '1.21.1', options: ['1.20.4', '1.21.1'] },
+		{ key: 'buildTool', label: 'Build Tool', type: 'select', default: 'gradle', options: ['gradle', 'maven'] },
+		{ key: 'language', label: 'Language', type: 'select', default: 'java', options: ['java', 'kotlin'] },
+		{ key: 'includeCI', label: 'Include CI', type: 'boolean', default: false, description: 'Add GitHub Actions build workflow' }
+	],
+	generate: (name, description, params) => {
+		const pluginName = (params.pluginName as string) || name;
+		const pluginId = ((params.pluginId as string) || name).toLowerCase().replace(/[^a-z0-9]/g, '');
+		const mcVersion = (params.minecraftVersion as string) || '1.21.1';
+		const buildTool = (params.buildTool as string) || 'gradle';
+		const lang = (params.language as string) || 'java';
+		const includeCI = params.includeCI === true;
+		const isKotlin = lang === 'kotlin';
+		const className = pluginId.replace(/(^|_)([a-z])/g, (_, _p, c: string) => c.toUpperCase());
+		const apiVersion = mcVersion.replace(/\.\d+$/, '');
+		const pkg = `com.example.${pluginId}`;
+		const pkgPath = `com/example/${pluginId}`;
+
+		const files: Record<string, string> = {};
+
+		// Main plugin class
+		const srcDir = isKotlin ? 'src/main/kotlin' : 'src/main/java';
+		if (isKotlin) {
+			files[`${srcDir}/${pkgPath}/${className}Plugin.kt`] = [
+				`package ${pkg}`,
+				'',
+				'import org.bukkit.plugin.java.JavaPlugin',
+				'',
+				`class ${className}Plugin : JavaPlugin() {`,
+				'    override fun onEnable() {',
+				`        logger.info("${pluginName} has been enabled!")`,
+				'    }',
+				'',
+				'    override fun onDisable() {',
+				`        logger.info("${pluginName} has been disabled.")`,
+				'    }',
+				'}',
+				''
+			].join('\n');
+		} else {
+			files[`${srcDir}/${pkgPath}/${className}Plugin.java`] = [
+				`package ${pkg};`,
+				'',
+				'import org.bukkit.plugin.java.JavaPlugin;',
+				'',
+				`public class ${className}Plugin extends JavaPlugin {`,
+				'    @Override',
+				'    public void onEnable() {',
+				`        getLogger().info("${pluginName} has been enabled!");`,
+				'    }',
+				'',
+				'    @Override',
+				'    public void onDisable() {',
+				`        getLogger().info("${pluginName} has been disabled.");`,
+				'    }',
+				'}',
+				''
+			].join('\n');
+		}
+
+		// plugin.yml
+		files['src/main/resources/plugin.yml'] = [
+			`name: ${pluginName}`,
+			"version: '${version}'",
+			`main: ${pkg}.${className}Plugin`,
+			`api-version: '${apiVersion}'`,
+			`description: ${description || `${pluginName} - a Paper/Spigot plugin.`}`,
+			'author: author',
+			''
+		].join('\n');
+
+		// Build files
+		if (buildTool === 'maven') {
+			files['pom.xml'] = [
+				'<?xml version="1.0" encoding="UTF-8"?>',
+				'<project xmlns="http://maven.apache.org/POM/4.0.0"',
+				'         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"',
+				'         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">',
+				'    <modelVersion>4.0.0</modelVersion>',
+				'',
+				'    <groupId>com.example</groupId>',
+				`    <artifactId>${pluginId}</artifactId>`,
+				'    <version>1.0.0-SNAPSHOT</version>',
+				'    <packaging>jar</packaging>',
+				'',
+				`    <name>${pluginName}</name>`,
+				`    <description>${description || ''}</description>`,
+				'',
+				'    <properties>',
+				'        <java.version>17</java.version>',
+				'        <maven.compiler.source>17</maven.compiler.source>',
+				'        <maven.compiler.target>17</maven.compiler.target>',
+				'        <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>',
+				'    </properties>',
+				'',
+				'    <repositories>',
+				'        <repository>',
+				'            <id>papermc</id>',
+				'            <url>https://repo.papermc.io/repository/maven-public/</url>',
+				'        </repository>',
+				'    </repositories>',
+				'',
+				'    <dependencies>',
+				'        <dependency>',
+				'            <groupId>io.papermc.paper</groupId>',
+				'            <artifactId>paper-api</artifactId>',
+				`            <version>${mcVersion}-R0.1-SNAPSHOT</version>`,
+				'            <scope>provided</scope>',
+				'        </dependency>',
+				'    </dependencies>',
+				'',
+				'    <build>',
+				'        <resources>',
+				'            <resource>',
+				'                <directory>src/main/resources</directory>',
+				'                <filtering>true</filtering>',
+				'            </resource>',
+				'        </resources>',
+				'        <plugins>',
+				'            <plugin>',
+				'                <groupId>org.apache.maven.plugins</groupId>',
+				'                <artifactId>maven-shade-plugin</artifactId>',
+				'                <version>3.5.3</version>',
+				'                <executions>',
+				'                    <execution>',
+				'                        <phase>package</phase>',
+				'                        <goals><goal>shade</goal></goals>',
+				'                    </execution>',
+				'                </executions>',
+				'            </plugin>',
+				'        </plugins>',
+				'    </build>',
+				'</project>',
+				''
+			].join('\n');
+		} else {
+			if (isKotlin) {
+				files['build.gradle.kts'] = [
+					'plugins {',
+					'    kotlin("jvm") version "1.9.22"',
+					'    id("com.github.johnrengelman.shadow") version "8.1.1"',
+					'    id("io.papermc.paperweight.userdev") version "1.7.1"',
+					'}',
+					'',
+					'group = "com.example"',
+					'version = "1.0.0-SNAPSHOT"',
+					'',
+					'repositories {',
+					'    mavenCentral()',
+					'    maven("https://repo.papermc.io/repository/maven-public/")',
+					'}',
+					'',
+					'dependencies {',
+					`    paperweight.paperDevBundle("${mcVersion}-R0.1-SNAPSHOT")`,
+					'    implementation(kotlin("stdlib"))',
+					'}',
+					'',
+					'tasks {',
+					'    processResources {',
+					'        val props = mapOf("version" to version)',
+					'        inputs.properties(props)',
+					'        filesMatching("plugin.yml") {',
+					'            expand(props)',
+					'        }',
+					'    }',
+					'',
+					'    shadowJar {',
+					'        archiveClassifier.set("")',
+					'    }',
+					'',
+					'    build {',
+					'        dependsOn(shadowJar)',
+					'    }',
+					'}',
+					'',
+					'java {',
+					'    toolchain.languageVersion.set(JavaLanguageVersion.of(17))',
+					'}',
+					''
+				].join('\n');
+			} else {
+				files['build.gradle.kts'] = [
+					'plugins {',
+					'    id("java")',
+					'    id("com.github.johnrengelman.shadow") version "8.1.1"',
+					'    id("io.papermc.paperweight.userdev") version "1.7.1"',
+					'}',
+					'',
+					'group = "com.example"',
+					'version = "1.0.0-SNAPSHOT"',
+					'',
+					'repositories {',
+					'    mavenCentral()',
+					'    maven("https://repo.papermc.io/repository/maven-public/")',
+					'}',
+					'',
+					'dependencies {',
+					`    paperweight.paperDevBundle("${mcVersion}-R0.1-SNAPSHOT")`,
+					'}',
+					'',
+					'tasks.processResources {',
+					'    val props = mapOf("version" to version)',
+					'    inputs.properties(props)',
+					'    filesMatching("plugin.yml") {',
+					'        expand(props)',
+					'    }',
+					'}',
+					'',
+					'tasks.shadowJar {',
+					'    archiveClassifier.set("")',
+					'}',
+					'',
+					'tasks.build {',
+					'    dependsOn(tasks.shadowJar)',
+					'}',
+					'',
+					'java {',
+					'    toolchain.languageVersion.set(JavaLanguageVersion.of(17))',
+					'}',
+					''
+				].join('\n');
+			}
+			files['settings.gradle.kts'] = `rootProject.name = "${pluginId}"\n`;
+		}
+
+		// .gitignore
+		files['.gitignore'] = [
+			'# Build output',
+			'build/',
+			'target/',
+			'',
+			'# Gradle',
+			'.gradle/',
+			'!gradle/wrapper/gradle-wrapper.jar',
+			'',
+			'# IDE',
+			'.idea/',
+			'*.iml',
+			'.vscode/',
+			'*.swp',
+			'out/',
+			'',
+			'# Project',
+			'.env',
+			'.playground/',
+			''
+		].join('\n');
+
+		// CI
+		if (includeCI) {
+			const buildCmd = buildTool === 'maven' ? 'mvn package --no-transfer-progress' : './gradlew build';
+			files['.github/workflows/build.yml'] = [
+				'name: Build',
+				'',
+				'on:',
+				'  push:',
+				'    branches: [main]',
+				'  pull_request:',
+				'    branches: [main]',
+				'',
+				'jobs:',
+				'  build:',
+				'    runs-on: ubuntu-latest',
+				'    steps:',
+				'      - uses: actions/checkout@v4',
+				'      - uses: actions/setup-java@v4',
+				'        with:',
+				'          distribution: temurin',
+				'          java-version: 17',
+				...(buildTool === 'gradle' ? ['      - uses: gradle/actions/setup-gradle@v4'] : []),
+				`      - run: ${buildCmd}`,
+				''
+			].join('\n');
+		}
+
+		return files;
+	}
+};
+
+// ---------------------------------------------------------------------------
+// G6: Baldur's Gate 3 mod template
+// ---------------------------------------------------------------------------
+
+const bg3: ProjectTemplateDef = {
+	id: 'bg3',
+	name: 'BG3 Mod',
+	description: "Baldur's Gate 3 mod with LSX metadata",
+	language: '',
+	icon: '\uD83D\uDDE1\uFE0F',
+	tags: ['mod', 'game', 'bg3'],
+	params: [
+		{ key: 'modName', label: 'Mod Name', type: 'string', default: 'My BG3 Mod', description: 'Display name of your mod' },
+		{ key: 'modAuthor', label: 'Author', type: 'string', default: 'Author', description: 'Mod author name' },
+		{ key: 'modDescription', label: 'Description', type: 'string', default: '', description: 'Short description of your mod' },
+		{ key: 'includeScriptExtender', label: 'Script Extender', type: 'boolean', default: false, description: 'Include BG3 Script Extender config' }
+	],
+	generate: (name, description, params) => {
+		const modName = (params.modName as string) || name;
+		const modAuthor = (params.modAuthor as string) || 'Author';
+		const modDescription = (params.modDescription as string) || description || `${modName} - a Baldur's Gate 3 mod.`;
+		const includeScriptExtender = params.includeScriptExtender === true;
+		const folderName = modName.replace(/[^a-zA-Z0-9]/g, '');
+
+		// Generate a deterministic-looking UUID from the mod name
+		const modUUID = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+			const r = (Math.random() * 16) | 0;
+			return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+		});
+
+		const files: Record<string, string> = {};
+
+		// info.json
+		files['info.json'] = JSON.stringify({
+			Mods: [{
+				Author: modAuthor,
+				Name: modName,
+				Folder: folderName,
+				Version: '1.0.0.0',
+				Description: modDescription,
+				UUID: modUUID,
+				Created: new Date().toISOString().split('T')[0],
+				Dependencies: [],
+				Group: modUUID
+			}]
+		}, null, '\t') + '\n';
+
+		// meta.lsx
+		files['meta.lsx'] = [
+			'<?xml version="1.0" encoding="UTF-8"?>',
+			'<save>',
+			'    <version major="4" minor="0" revision="0" build="49"/>',
+			'    <region id="Config">',
+			'        <node id="root">',
+			'            <children>',
+			'                <node id="Dependencies"/>',
+			'                <node id="ModuleInfo">',
+			`                    <attribute id="Author" type="LSString" value="${modAuthor}"/>`,
+			'                    <attribute id="CharacterCreationLevelName" type="FixedString" value=""/>',
+			`                    <attribute id="Description" type="LSString" value="${modDescription}"/>`,
+			`                    <attribute id="Folder" type="LSString" value="${folderName}"/>`,
+			'                    <attribute id="GMTemplate" type="FixedString" value=""/>',
+			'                    <attribute id="LobbyLevelName" type="FixedString" value=""/>',
+			'                    <attribute id="MD5" type="LSString" value=""/>',
+			'                    <attribute id="MainMenuBackgroundVideo" type="FixedString" value=""/>',
+			'                    <attribute id="MenuLevelName" type="FixedString" value=""/>',
+			`                    <attribute id="Name" type="FixedString" value="${modName}"/>`,
+			'                    <attribute id="NumPlayers" type="uint8" value="4"/>',
+			'                    <attribute id="PhotoBooth" type="FixedString" value=""/>',
+			'                    <attribute id="StartupLevelName" type="FixedString" value=""/>',
+			'                    <attribute id="Tags" type="LSString" value=""/>',
+			'                    <attribute id="Type" type="FixedString" value="Add-on"/>',
+			`                    <attribute id="UUID" type="FixedString" value="${modUUID}"/>`,
+			'                    <attribute id="Version64" type="int64" value="36028797018963968"/>',
+			'                    <children>',
+			'                        <node id="PublishVersion">',
+			'                            <attribute id="Version64" type="int64" value="36028797018963968"/>',
+			'                        </node>',
+			'                        <node id="Scripts"/>',
+			'                        <node id="TargetModes">',
+			'                            <children>',
+			'                                <node id="Target">',
+			'                                    <attribute id="Object" type="FixedString" value="Story"/>',
+			'                                </node>',
+			'                            </children>',
+			'                        </node>',
+			'                    </children>',
+			'                </node>',
+			'            </children>',
+			'        </node>',
+			'    </region>',
+			'</save>',
+			''
+		].join('\n');
+
+		// Directory structure
+		files[`Mods/${folderName}/.gitkeep`] = '';
+		files[`Public/${folderName}/.gitkeep`] = '';
+
+		// README.md
+		files['README.md'] = [
+			`# ${modName}`,
+			'',
+			modDescription,
+			'',
+			'## Installation',
+			'',
+			'1. Download the latest release',
+			`2. Extract to \`%LocalAppData%\\Larian Studios\\Baldur's Gate 3\\Mods\\${folderName}\\\``,
+			'3. Use a mod manager (BG3 Mod Manager recommended) to activate the mod',
+			'4. Save the load order and launch the game',
+			'',
+			'## Structure',
+			'',
+			`- \`Mods/${folderName}/\` \u2014 mod scripts, story, and data`,
+			`- \`Public/${folderName}/\` \u2014 shared data (stats, root templates, etc.)`,
+			'- `info.json` \u2014 mod metadata',
+			'- `meta.lsx` \u2014 module info for the game engine',
+			''
+		].join('\n');
+
+		// .gitignore
+		files['.gitignore'] = [
+			'# BG3 generated files',
+			'*.pak',
+			'*.lsf',
+			'*.lsfx',
+			'',
+			'# OS',
+			'Thumbs.db',
+			'.DS_Store',
+			'',
+			'# IDE',
+			'.idea/',
+			'.vscode/',
+			'*.swp',
+			'',
+			'# Project',
+			'.env',
+			'.playground/',
+			''
+		].join('\n');
+
+		// Script Extender config
+		if (includeScriptExtender) {
+			files['ScriptExtender/Config.json'] = JSON.stringify({
+				RequiredVersion: 19,
+				ModTable: folderName,
+				FeatureFlags: ['Lua', 'Osiris']
+			}, null, '\t') + '\n';
+		}
+
+		return files;
+	}
+};
+
+// ---------------------------------------------------------------------------
 // Registry
 // ---------------------------------------------------------------------------
 
@@ -932,7 +1621,10 @@ export const TEMPLATE_DEFS: ProjectTemplateDef[] = [
 	java,
 	dotnet,
 	bepinex,
-	fabric
+	fabric,
+	forge,
+	paper,
+	bg3
 ];
 
 /** Lookup map by template id */

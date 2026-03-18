@@ -19,14 +19,29 @@
 	let maxAgents = $state(8);
 	let topology = $state('hierarchical-mesh');
 
+	let templateParams: Record<string, string | boolean> = $state({});
 	let serviceToggles = $state(data.autoStartServices.map((s) => s.default));
 	let autoStart = $state(true);
 	let creating = $state(false);
 	let error = $state('');
 
+	const selectedTpl = $derived(data.templates.find((t) => t.id === selectedTemplate));
+
 	$effect(() => {
 		projectDir = `${data.defaultWorkspace}\\${projectName}`;
 		memoryNamespace = projectName;
+	});
+
+	// Reset template params to defaults when template changes
+	$effect(() => {
+		const tpl = data.templates.find((t) => t.id === selectedTemplate);
+		const defaults: Record<string, string | boolean> = {};
+		if (tpl?.params) {
+			for (const p of tpl.params) {
+				defaults[p.key] = p.default;
+			}
+		}
+		templateParams = defaults;
 	});
 
 	const willCreate = $derived([

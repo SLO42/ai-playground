@@ -11,6 +11,8 @@ import { resolve } from 'path';
 
 const execFileAsync = promisify(execFile);
 import { createTask } from '../task-store.js';
+import { createIncident } from '../incidents.js';
+import { collectCoverage } from '../coverage-tracker.js';
 import { recordEvent, type AgentEventType } from './agent-analytics.js';
 import { log, loadMonitorSession, saveMonitorSession } from './shared.js';
 import type { Task } from '$lib/types/tasks.js';
@@ -196,7 +198,7 @@ export async function runPostCommitTests(
 		exitCode: result.exitCode
 	}).catch(() => {});
 
-	// If tests failed, create a fix task
+	// If tests failed, create a fix task and an incident
 	if (!result.passed && projectPath) {
 		const last50Lines = result.output.split('\n').slice(-50).join('\n');
 		const description = [
@@ -212,14 +214,39 @@ export async function runPostCommitTests(
 			'```'
 		].join('\n');
 
+		let relatedTaskId: string | undefined;
 		try {
-			await createTask(projectPath, {
+			const fixTask = await createTask(projectPath, {
 				title: `Fix failing tests after: ${task.title}`,
 				description,
 				priority: 'high',
 				tags: ['auto-suggested', 'test-fix'],
 				createdBy: `agent:${task.id}`
 			});
+			relatedTaskId = fixTask?.id;
 		} catch { /* best effort — don't crash if task creation fails */ }
+
+		// Create an incident for the test failure
+		await createIncident({
+			projectId: task._sourceProjectId ?? 'unknown',
+			type: 'test_regression',
+			title: `Tests failed: ${task.title}`,
+			description,
+			severity: 'high',
+			status: 'open',
+			relatedTaskId,
+			context: {
+				taskId: task.id,
+				command: result.command,
+				exitCode: result.exitCode,
+				commitHash: commitResult.hash ?? 'unknown',
+				output: last50Lines
+			}
+		}).catch(() => {});
+	}
+
+	// If tests passed, collect coverage data
+	if (result.passed && projectPath && task._sourceProjectId) {
+		await collectCoverage(task._sourceProjectId, projectPath).catch(() => {});
 	}
 }

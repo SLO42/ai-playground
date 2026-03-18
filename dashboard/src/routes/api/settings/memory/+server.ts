@@ -1,3 +1,7 @@
+/**
+ * Memory settings API — backend type, HNSW toggle, cache size, learning bridge.
+ * Data stored at: .playground/memory-settings.json (falls back to .claude-flow/config.yaml).
+ */
 import { json } from '@sveltejs/kit';
 import { getFeatureFlags } from '$lib/server/feature-flags.js';
 import type { RequestHandler } from './$types.js';
@@ -15,8 +19,13 @@ export const GET: RequestHandler = async () => {
 	if (!getFeatureFlags().memory) {
 		return json({ error: 'Memory feature is disabled' }, { status: 403 });
 	}
-	const settings = await loadMemorySettings();
-	return json(settings);
+	try {
+		const settings = await loadMemorySettings();
+		return json(settings);
+	} catch (e) {
+		console.error('[api/settings/memory] GET failed:', e);
+		return json({ error: 'Failed to load memory settings' }, { status: 500 });
+	}
 };
 
 export const PUT: RequestHandler = async ({ request }) => {
@@ -48,6 +57,11 @@ export const PUT: RequestHandler = async ({ request }) => {
 		memoryGraphEnabled: typeof body.memoryGraphEnabled === 'boolean' ? body.memoryGraphEnabled : MEMORY_DEFAULTS.memoryGraphEnabled
 	};
 
-	await saveMemorySettings(settings);
-	return json({ ok: true });
+	try {
+		await saveMemorySettings(settings);
+		return json({ ok: true });
+	} catch (e) {
+		console.error('[api/settings/memory] PUT failed:', e);
+		return json({ error: 'Failed to save memory settings' }, { status: 500 });
+	}
 };

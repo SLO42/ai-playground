@@ -1,226 +1,308 @@
 <script lang="ts">
-	import { invalidateAll } from '$app/navigation';
 	import MetricCard from '$lib/components/MetricCard.svelte';
 	import type { PageData } from './$types.js';
 
 	let { data }: { data: PageData } = $props();
 
-	const projectId = data.projectId ?? '';
-	const projectName = data.project?.name ?? projectId ?? 'Project';
-	const pageTitle = `Security — ${projectName}`;
-	const pageDescription = `Security audit, vulnerability analysis, and policy compliance for ${projectName}. View dependency vulnerabilities, security policies, file permissions, and audit logs.`;
+	const audit = $derived(data.audit);
+	const policy = $derived(data.policy);
+	const projectName = $derived(data.project?.name ?? data.projectId ?? 'Project');
 
-	let scanning = $state(false);
-	let error = $state('');
+	const statusBgColor = $derived.by(() => {
+		const s = audit?.status ?? 'CLEAN';
+		if (s === 'VULNERABLE') return 'bg-accent-red';
+		if (s === 'PENDING') return 'bg-accent-yellow';
+		return 'bg-accent-green';
+	});
+
+	const statusTextColor = $derived.by(() => {
+		const s = audit?.status ?? 'CLEAN';
+		if (s === 'VULNERABLE') return 'text-accent-red';
+		if (s === 'PENDING') return 'text-accent-yellow';
+		return 'text-accent-green';
+	});
+
+	const statusLabel = $derived.by(() => {
+		const s = audit?.status ?? 'CLEAN';
+		if (s === 'VULNERABLE') return 'Vulnerable';
+		if (s === 'PENDING') return 'Pending Review';
+		return 'All Clear';
+	});
+
+	const cveRemediations = $derived.by(() => {
+		const fixes = audit?.fixes ?? {};
+		const total = audit?.totalCves ?? 1;
+		return Object.entries(fixes).map(([id, fix]) => {
+			const hasFixedAt = Boolean(fix.fixedAt);
+			const percent = hasFixedAt ? 100 : Math.round((audit?.cvesFixed ?? 0) / total * 100);
+			const color = percent === 100
+				? 'bg-accent-green'
+				: percent >= 60
+					? 'bg-accent-yellow'
+					: 'bg-accent-blue';
+			return { id, desc: fix.description, percent, color };
+		});
+	});
 
 	const severityColors: Record<string, string> = {
-		critical: 'bg-accent-red/20 text-accent-red',
-		high: 'bg-accent-red/20 text-accent-red',
-		moderate: 'bg-accent-yellow/20 text-accent-yellow',
-		low: 'bg-accent-green/20 text-accent-green'
+		CRITICAL: 'text-accent-red',
+		HIGH: 'text-accent-red',
+		MEDIUM: 'text-accent-yellow',
+		LOW: 'text-accent-blue',
+		INFO: 'text-text-secondary'
 	};
 
-	const resultColors: Record<string, string> = {
-		PASS: 'text-accent-green',
-		WARN: 'text-accent-yellow',
-		FAIL: 'text-accent-red'
+	const severityStatusMap: Record<string, { status: string; color: string }> = {
+		CRITICAL: { status: 'Action Required', color: 'text-accent-red' },
+		HIGH: { status: 'Action Required', color: 'text-accent-red' },
+		MEDIUM: { status: 'Review', color: 'text-accent-yellow' },
+		LOW: { status: 'Monitor', color: 'text-accent-blue' },
+		INFO: { status: 'Noted', color: 'text-accent-blue' }
 	};
+
+	function inferSeverity(text: string): string {
+		const lower = text.toLowerCase();
+		if (lower.includes('injection') || lower.includes('traversal') || lower.includes('rce'))
+			return 'HIGH';
+		if (lower.includes('blocklist') || lower.includes('validation') || lower.includes('sanitiz'))
+			return 'MEDIUM';
+		if (lower.includes('deprecated') || lower.includes('warning'))
+			return 'LOW';
+		return 'INFO';
+	}
+
+	function parseComponent(text: string): string {
+		const match = text.match(/^([^\s:]+\.[a-z]{1,4}):/i);
+		return match ? match[1] : '-';
+	}
+
+	function formatDate(iso?: string): string {
+		if (!iso) return '-';
+		try {
+			return new Date(iso).toLocaleDateString('en-US', {
+				month: 'short',
+				day: 'numeric',
+				year: 'numeric'
+			});
+		} catch {
+			return '-';
+		}
+	}
+
+	const findings = $derived.by(() => {
+		const result: Array<{
+			severity: string;
+			severityColor: string;
+			finding: string;
+			component: string;
+			status: string;
+			statusColor: string;
+			detected: string;
+		}> = [];
+
+		for (const f of data.scanFindings ?? []) {
+			const sev = f.severity ?? 'INFO';
+			const statusInfo = severityStatusMap[sev] ?? severityStatusMap.INFO;
+			result.push({
+				severity: sev,
+				severityColor: severityColors[sev] ?? 'text-text-secondary',
+				finding: f.issue + (f.detail ? ` — ${f.detail}` : ''),
+				component: f.component ?? '-',
+				status: statusInfo.status,
+				statusColor: statusInfo.color,
+				detected: formatDate(f.detected)
+			});
+		}
+
+		const extras = audit?.additionalFixes ?? [];
+		for (const desc of extras) {
+			const sev = inferSeverity(desc);
+			const statusInfo = severityStatusMap[sev] ?? severityStatusMap.INFO;
+			const component = parseComponent(desc);
+			result.push({
+				severity: sev,
+				severityColor: severityColors[sev] ?? 'text-text-secondary',
+				finding: component !== '-' ? desc.slice(desc.indexOf(':') + 1).trim() : desc,
+				component,
+				status: statusInfo.status,
+				statusColor: statusInfo.color,
+				detected: formatDate(audit?.lastScan)
+			});
+		}
+
+		return result;
+	});
+
+	const networkRules = $derived.by(() => {
+		const fw = policy?.firewall;
+		if (!fw) return [];
+		const rules: Array<{ label: string; value: string; color: string }> = [];
+
+		for (const r of fw.inbound ?? []) {
+			const value = r.source
+				? `${r.source}${r.port ? ':' + r.port : ''}`
+				: r.port
+					? `port ${r.port}`
+					: r.protocol;
+			const color = r.action === 'deny' ? 'text-accent-red' : 'text-accent-green';
+			rules.push({ label: `Inbound: ${r.name}`, value, color });
+		}
+
+		for (const r of fw.outbound ?? []) {
+			const value = r.destination
+				? `${r.destination}${r.port ? ':' + r.port : ''}`
+				: r.port
+					? `port ${r.port}`
+					: r.protocol;
+			const color = r.action === 'deny' ? 'text-accent-red' : 'text-accent-blue';
+			rules.push({ label: `Outbound: ${r.name}`, value, color });
+		}
+
+		if (fw.defaultAction) {
+			rules.push({
+				label: 'Default',
+				value: fw.defaultAction,
+				color: fw.defaultAction === 'deny' ? 'text-accent-red' : 'text-accent-yellow'
+			});
+		}
+
+		return rules;
+	});
+
+	let scanLoading = $state(false);
+	let scanResult = $state<{ success: boolean; output?: string; error?: string } | null>(null);
 
 	async function runScan() {
-		scanning = true;
-		error = '';
+		scanLoading = true;
+		scanResult = null;
 		try {
-			const res = await fetch(`/api/projects/${encodeURIComponent(projectId)}/security`, { method: 'POST' });
-			if (!res.ok) {
-				const body = await res.json().catch(() => ({ error: 'Scan failed' }));
-				error = body.error ?? 'Scan failed';
-			} else {
-				await invalidateAll();
-			}
-		} catch (e) {
-			error = e instanceof Error ? e.message : 'Scan failed';
+			const res = await fetch('/api/security/scan', { method: 'POST' });
+			scanResult = await res.json();
+		} catch {
+			scanResult = { success: false, error: 'Request failed' };
 		} finally {
-			scanning = false;
+			scanLoading = false;
 		}
 	}
 </script>
 
-<svelte:head>
-	<title>{pageTitle}</title>
-	<meta name="description" content={pageDescription} />
-	<meta property="og:title" content={pageTitle} />
-	<meta property="og:description" content={pageDescription} />
-	<meta property="og:type" content="website" />
-	<meta name="twitter:card" content="summary" />
-	<meta name="twitter:title" content={pageTitle} />
-	<meta name="twitter:description" content={pageDescription} />
-</svelte:head>
-
-<div class="space-y-6" role="main" aria-label="Project Security">
-	<!-- Header -->
+<div class="space-y-6">
 	<div class="flex items-center justify-between">
 		<div>
-			<h1 class="text-xl font-bold text-text-primary">Project Security</h1>
-			<p class="text-sm text-text-secondary mt-1">Security audit, dependencies, and policies</p>
+			<h1 class="type-page-title text-text-primary">Security</h1>
+			<p class="text-xs text-text-secondary mt-0.5">
+				Audit status and findings for <span class="font-mono text-accent-cyan">{projectName}</span>
+			</p>
 		</div>
 		<button
 			onclick={runScan}
-			disabled={scanning}
-			aria-busy={scanning}
-			class="px-4 py-2 text-sm bg-accent-blue text-white rounded-lg hover:bg-accent-blue/90 transition-colors disabled:opacity-50"
+			disabled={scanLoading}
+			class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-accent-blue/20 text-accent-blue hover:bg-accent-blue/30 transition-colors disabled:opacity-50"
 		>
-			{scanning ? 'Scanning...' : 'Run Scan'}
+			<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+				<path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+			</svg>
+			{scanLoading ? 'Scanning...' : 'Run Scan'}
 		</button>
 	</div>
 
-	<!-- Scan Error Banner -->
-	{#if error}
-		<div role="alert" class="bg-accent-red/10 border border-accent-red/30 rounded-lg px-4 py-3 flex items-center justify-between">
-			<p class="text-sm text-accent-red">{error}</p>
-			<button onclick={() => (error = '')} aria-label="Dismiss error" class="text-accent-red/60 hover:text-accent-red text-xs">Dismiss</button>
+	{#if scanResult}
+		<div class="px-4 py-3 rounded-lg text-sm {scanResult.success ? 'bg-accent-green/10 border border-accent-green/20 text-accent-green' : 'bg-accent-red/10 border border-accent-red/20 text-accent-red'}">
+			{scanResult.success ? 'Scan completed successfully' : scanResult.error ?? 'Scan failed'}
 		</div>
 	{/if}
 
-	<!-- Scanning State -->
-	{#if scanning}
-		<div class="flex items-center justify-center py-12" role="status" aria-label="Running security scan">
-			<div class="text-center space-y-3">
-				<div class="w-8 h-8 border-2 border-accent-blue border-t-transparent rounded-full animate-spin mx-auto" aria-hidden="true"></div>
-				<p class="text-sm text-text-secondary">Running security scan...</p>
+	<!-- Audit Status + CVE Remediation -->
+	<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+		<div class="bg-bg-secondary border border-border rounded-lg p-4">
+			<p class="type-label text-text-secondary mb-3">Audit Status</p>
+			<div class="flex items-center gap-2 mb-3">
+				<span class="w-2.5 h-2.5 rounded-full {statusBgColor}"></span>
+				<span class="text-sm font-medium {statusTextColor}">{statusLabel}</span>
+			</div>
+			<div class="space-y-1 text-sm text-text-secondary">
+				<p>Last scan: {audit?.lastScan ?? 'Never'}</p>
+				<p>CVEs fixed: <span class="{statusTextColor}">{audit?.cvesFixed ?? 0}/{audit?.totalCves ?? 0}</span></p>
+				<p>Initialized: {audit?.initialized ?? 'Unknown'}</p>
 			</div>
 		</div>
-	{/if}
 
-	{#await data.security}
-		<!-- Skeleton Loader -->
-		<div class="space-y-6 animate-pulse" aria-busy="true" aria-label="Loading security data">
-			<div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-				{#each Array(4) as _}
-					<div class="bg-bg-secondary border border-border rounded-lg p-4">
-						<div class="h-3 w-16 bg-border rounded mb-2"></div>
-						<div class="h-6 w-12 bg-border rounded"></div>
-					</div>
-				{/each}
-			</div>
-
-			<div>
-				<div class="h-3 w-40 bg-border rounded mb-3"></div>
-				<div class="bg-bg-secondary border border-border rounded-lg overflow-hidden">
-					{#each Array(3) as _}
-						<div class="flex items-center gap-4 px-4 py-3 border-b border-border last:border-0">
-							<div class="h-4 w-20 bg-border rounded"></div>
-							<div class="h-4 w-14 bg-border rounded"></div>
-							<div class="h-4 w-28 bg-border rounded"></div>
-							<div class="h-4 w-16 bg-border rounded ml-auto"></div>
-						</div>
-					{/each}
-				</div>
-			</div>
-
-			<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-				{#each Array(2) as _}
+		<div class="bg-bg-secondary border border-border rounded-lg p-4">
+			<p class="type-label text-text-secondary mb-3">CVE Remediation</p>
+			<div class="space-y-4">
+				{#each cveRemediations as cve}
 					<div>
-						<div class="h-3 w-32 bg-border rounded mb-3"></div>
-						<div class="bg-bg-secondary border border-border rounded-lg p-4 space-y-3">
-							{#each Array(3) as __}
-								<div class="flex items-center justify-between">
-									<div class="h-4 w-32 bg-border rounded"></div>
-									<div class="h-4 w-16 bg-border rounded"></div>
-								</div>
-							{/each}
+						<div class="flex justify-between text-sm mb-1">
+							<span class="text-text-primary">
+								<span class="font-mono font-medium">{cve.id}</span>
+								<span class="text-text-secondary ml-2">{cve.desc}</span>
+							</span>
+							<span class="font-mono text-accent-green">{cve.percent}%</span>
+						</div>
+						<div class="h-2 bg-bg-primary rounded-full overflow-hidden">
+							<div class="h-full {cve.color} rounded-full transition-all" style="width: {cve.percent}%"></div>
 						</div>
 					</div>
+				{:else}
+					<p class="text-sm text-text-secondary">No CVE data available.</p>
 				{/each}
 			</div>
+		</div>
+	</div>
 
-			<div>
-				<div class="h-3 w-28 bg-border rounded mb-3"></div>
-				<div class="bg-bg-secondary border border-border rounded-lg p-4 space-y-2">
-					{#each Array(4) as _}
-						<div class="flex items-center gap-4">
-							<div class="h-3 w-24 bg-border rounded"></div>
-							<div class="h-3 flex-1 bg-border rounded"></div>
-							<div class="h-3 w-10 bg-border rounded"></div>
+	<!-- Security Findings -->
+	<section>
+		<h2 class="type-section-title text-text-primary mb-4">Security Findings</h2>
+		<div class="bg-bg-secondary border border-border rounded-lg overflow-hidden">
+			{#if findings.length > 0}
+				<table class="w-full text-sm">
+					<thead>
+						<tr class="border-b border-border">
+							<th class="text-left px-4 py-3 text-text-secondary font-medium">Severity</th>
+							<th class="text-left px-4 py-3 text-text-secondary font-medium">Finding</th>
+							<th class="text-left px-4 py-3 text-text-secondary font-medium">Component</th>
+							<th class="text-left px-4 py-3 text-text-secondary font-medium">Status</th>
+							<th class="text-left px-4 py-3 text-text-secondary font-medium">Detected</th>
+						</tr>
+					</thead>
+					<tbody>
+						{#each findings as f}
+							<tr class="border-b border-border last:border-0">
+								<td class="px-4 py-3 font-mono font-bold {f.severityColor}">{f.severity}</td>
+								<td class="px-4 py-3 text-text-primary">{f.finding}</td>
+								<td class="px-4 py-3 font-mono text-text-secondary">{f.component}</td>
+								<td class="px-4 py-3 {f.statusColor}">{f.status}</td>
+								<td class="px-4 py-3 text-text-secondary">{f.detected}</td>
+							</tr>
+						{/each}
+					</tbody>
+				</table>
+			{:else}
+				<div class="px-4 py-12 flex flex-col items-center justify-center text-center">
+					<svg class="w-12 h-12 text-text-secondary/40 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
+						<path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75m-3-7.036A11.959 11.959 0 013.598 6 11.99 11.99 0 003 9.749c0 5.592 3.824 10.29 9 11.623 5.176-1.332 9-6.03 9-11.622 0-1.31-.21-2.571-.598-3.751h-.152c-3.196 0-6.1-1.248-8.25-3.285z" />
+					</svg>
+					<h2 class="text-text-primary text-sm font-medium mb-1">No findings</h2>
+					<p class="text-text-secondary text-xs">Run a security scan to check for vulnerabilities</p>
+				</div>
+			{/if}
+		</div>
+	</section>
+
+	<!-- Network Policy -->
+	{#if networkRules.length > 0}
+		<section>
+			<h2 class="type-section-title text-text-primary mb-4">Network Policy</h2>
+			<div class="bg-bg-secondary border border-border rounded-lg p-4">
+				<div class="space-y-2">
+					{#each networkRules as rule}
+						<div class="flex justify-between text-sm">
+							<span class="text-text-secondary">{rule.label}</span>
+							<span class="font-mono {rule.color}">{rule.value}</span>
 						</div>
 					{/each}
 				</div>
 			</div>
-		</div>
-	{:then sec}
-		{#if sec.loadError}
-			<div role="alert" class="bg-accent-red/10 border border-accent-red/30 rounded-lg px-5 py-4">
-				<div class="flex items-start gap-3">
-					<span class="text-xl leading-none mt-0.5" aria-hidden="true">&#9888;</span>
-					<div class="flex-1">
-						<h3 class="text-accent-red font-semibold text-sm">Failed to load security data</h3>
-						<p class="text-xs text-text-secondary mt-1">{sec.loadError}</p>
-						<p class="text-xs text-text-secondary mt-0.5">This may be caused by missing configuration files or a server error. You can retry or run a new scan.</p>
-						<div class="flex items-center gap-2 mt-3">
-							<button
-								onclick={() => invalidateAll()}
-								class="text-xs px-3 py-1.5 bg-accent-blue/20 text-accent-blue rounded hover:bg-accent-blue/30 transition-colors"
-							>
-								Retry
-							</button>
-							<button
-								onclick={runScan}
-								disabled={scanning}
-								class="text-xs px-3 py-1.5 bg-accent-red/20 text-accent-red rounded hover:bg-accent-red/30 transition-colors disabled:opacity-50"
-							>
-								Run Scan
-							</button>
-						</div>
-					</div>
-				</div>
-			</div>
-		{:else if sec.vulnerabilities.length === 0 && sec.policies.length === 0 && sec.permissions.length === 0 && sec.auditLog.length === 0}
-			<!-- Empty State -->
-			<div class="bg-bg-secondary border border-border rounded-lg px-6 py-12 text-center">
-				<div class="text-4xl mb-3 opacity-40" aria-hidden="true">&#128274;</div>
-				<h2 class="text-lg font-semibold text-text-primary mb-1">No Security Data</h2>
-				<p class="text-sm text-text-secondary mb-4">
-					Run a security scan to audit dependencies, policies, and file permissions.
-				</p>
-				<button
-					onclick={runScan}
-					class="px-4 py-2 text-sm bg-accent-blue text-white rounded-lg hover:bg-accent-blue/90 transition-colors"
-				>
-					Run First Scan
-				</button>
-			</div>
-		{:else}
-			<!-- Summary -->
-			<section aria-label="Security summary">
-				<div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-					<MetricCard label="Last Scan" value={sec.summary.lastScan} accent="blue" />
-					<MetricCard label="Vulnerabilities" value={sec.summary.vulnerabilities} accent="yellow" />
-					<MetricCard label="Critical" value={sec.summary.critical} accent="green" />
-					<MetricCard label="Score" value={sec.summary.score} accent="cyan" />
-				</div>
-			</section>
-
-			<!-- Lazy-loaded details: vulnerability table, policies, permissions, audit log -->
-			{#await import('./SecurityDetails.svelte') then { default: SecurityDetails }}
-				<SecurityDetails
-					vulnerabilities={sec.vulnerabilities}
-					policies={sec.policies}
-					permissions={sec.permissions}
-					auditLog={sec.auditLog}
-					{severityColors}
-					{resultColors}
-				/>
-			{/await}
-		{/if}
-	{:catch err}
-		<div role="alert" class="bg-accent-red/10 border border-accent-red/30 rounded-lg px-4 py-3">
-			<span class="text-accent-red font-semibold text-sm">Failed to load security data</span>
-			<p class="text-xs text-accent-red/80 mt-1">{err?.message ?? 'Unknown error'}</p>
-			<button
-				onclick={() => invalidateAll()}
-				class="mt-2 text-xs px-3 py-1 bg-accent-red/20 text-accent-red rounded hover:bg-accent-red/30 transition-colors"
-			>
-				Retry
-			</button>
-		</div>
-	{/await}
+		</section>
+	{/if}
 </div>

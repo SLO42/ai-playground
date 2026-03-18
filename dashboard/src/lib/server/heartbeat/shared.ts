@@ -5,13 +5,57 @@
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { resolve } from 'path';
 import { PATHS } from '../constants.js';
+import { readJsonFile } from '../file-reader.js';
 import { loadAgentDefaults } from '../agent-defaults.js';
 import type { ChatSession, ChatSessionMeta, ChatSender } from '$lib/types/chat.js';
 import type { Task } from '$lib/types/tasks.js';
 
 export const DEFAULT_INTERVAL_MS = 60_000;
+export const MIN_INTERVAL_MS = 10_000;
 export const MONITOR_SESSION_ID = 'claw-monitor';
 export const DEFAULT_MAX_AGENTS = 5;
+
+// ── Heartbeat config ─────────────────────────────────────────────────
+
+export interface HeartbeatPhases {
+	healthChecks: boolean;
+	taskScanning: boolean;
+	agentSpawning: boolean;
+	reviewCycle: boolean;
+	memorySync: boolean;
+}
+
+export interface HeartbeatIntervals {
+	healthChecks: number;
+	taskScanning: number;
+	agentSpawning: number;
+	reviewCycle: number;
+	memorySync: number;
+}
+
+export interface HeartbeatConfig {
+	enabled: boolean;
+	phases: HeartbeatPhases;
+	intervals: HeartbeatIntervals;
+}
+
+const DEFAULT_CONFIG: HeartbeatConfig = {
+	enabled: true,
+	phases: {
+		healthChecks: true,
+		taskScanning: true,
+		agentSpawning: true,
+		reviewCycle: true,
+		memorySync: true,
+	},
+	intervals: {
+		healthChecks: 30_000,
+		taskScanning: 60_000,
+		agentSpawning: 60_000,
+		reviewCycle: 1_800_000,
+		memorySync: 60_000,
+	},
+};
 
 // Agent color palette — assigned round-robin to spawned agents
 const AGENT_COLORS = ['#a78bfa', '#f97316', '#22d3ee', '#f472b6', '#84cc16', '#facc15', '#e879f7'];
@@ -25,6 +69,82 @@ export function agentSender(taskId: string, label: string): ChatSender {
 	agentColorIdx++;
 	g.__claw_color_idx = agentColorIdx;
 	return { id: `agent-${taskId}`, label, color };
+}
+
+// ── Heartbeat config persistence ─────────────────────────────────────
+
+/** Returns a deep copy of the default config. */
+export function getDefaultConfig(): HeartbeatConfig {
+	return JSON.parse(JSON.stringify(DEFAULT_CONFIG));
+}
+
+/** In-memory cached config, survives HMR via globalThis. */
+function getCachedConfig(): HeartbeatConfig {
+	if (!g.__claw_heartbeat_config) {
+		g.__claw_heartbeat_config = getDefaultConfig();
+	}
+	return g.__claw_heartbeat_config as HeartbeatConfig;
+}
+
+function setCachedConfig(cfg: HeartbeatConfig) {
+	g.__claw_heartbeat_config = cfg;
+}
+
+/** Clamp all intervals to the safety floor. */
+function clampIntervals(intervals: HeartbeatIntervals): HeartbeatIntervals {
+	return {
+		healthChecks: Math.max(intervals.healthChecks, MIN_INTERVAL_MS),
+		taskScanning: Math.max(intervals.taskScanning, MIN_INTERVAL_MS),
+		agentSpawning: Math.max(intervals.agentSpawning, MIN_INTERVAL_MS),
+		reviewCycle: Math.max(intervals.reviewCycle, MIN_INTERVAL_MS),
+		memorySync: Math.max(intervals.memorySync, MIN_INTERVAL_MS),
+	};
+}
+
+/** Load heartbeat config from disk. Falls back to defaults if file is missing or invalid. */
+export async function loadHeartbeatConfig(): Promise<HeartbeatConfig> {
+	const saved = await readJsonFile<Partial<HeartbeatConfig>>(PATHS.heartbeatConfig);
+	if (!saved) {
+		const defaults = getDefaultConfig();
+		setCachedConfig(defaults);
+		return defaults;
+	}
+
+	const defaults = getDefaultConfig();
+	const config: HeartbeatConfig = {
+		enabled: typeof saved.enabled === 'boolean' ? saved.enabled : defaults.enabled,
+		phases: { ...defaults.phases, ...(saved.phases ?? {}) },
+		intervals: clampIntervals({ ...defaults.intervals, ...(saved.intervals ?? {}) }),
+	};
+
+	setCachedConfig(config);
+	return config;
+}
+
+/** Save heartbeat config to disk and update the in-memory cache. */
+export async function saveHeartbeatConfig(config: HeartbeatConfig): Promise<void> {
+	config.intervals = clampIntervals(config.intervals);
+	setCachedConfig(config);
+	await writeFile(PATHS.heartbeatConfig, JSON.stringify(config, null, '\t'), 'utf-8');
+}
+
+/** Get the current in-memory heartbeat config (no disk read). */
+export function getHeartbeatConfig(): HeartbeatConfig {
+	return getCachedConfig();
+}
+
+/** Deep-merge a partial update into the current config, save to disk, and return the result. */
+export async function updateHeartbeatConfig(partial: Partial<HeartbeatConfig>): Promise<HeartbeatConfig> {
+	const current = getCachedConfig();
+
+	const merged: HeartbeatConfig = {
+		enabled: typeof partial.enabled === 'boolean' ? partial.enabled : current.enabled,
+		phases: { ...current.phases, ...(partial.phases ?? {}) },
+		intervals: clampIntervals({ ...current.intervals, ...(partial.intervals ?? {}) }),
+	};
+
+	await saveHeartbeatConfig(merged);
+	return merged;
 }
 
 // ── Active agents ────────────────────────────────────────────────────

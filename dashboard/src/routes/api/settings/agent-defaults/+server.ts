@@ -1,3 +1,7 @@
+/**
+ * Agent defaults API — default model, max concurrent agents, default topology.
+ * Data stored at: .playground/agent-defaults.json (global) or project-scoped equivalent.
+ */
 import { json } from '@sveltejs/kit';
 import { writeFile, mkdir } from 'fs/promises';
 import { dirname } from 'path';
@@ -14,9 +18,14 @@ function resolveFilePath(url: URL): string {
 }
 
 export const GET: RequestHandler = async ({ url }) => {
-	const filePath = resolveFilePath(url);
-	const settings = await loadAgentDefaults(filePath);
-	return json(settings);
+	try {
+		const filePath = resolveFilePath(url);
+		const settings = await loadAgentDefaults(filePath);
+		return json(settings);
+	} catch (e) {
+		console.error('[api/settings/agent-defaults] GET failed:', e);
+		return json({ error: 'Failed to load agent defaults' }, { status: 500 });
+	}
 };
 
 export const PUT: RequestHandler = async ({ request, url }) => {
@@ -43,8 +52,13 @@ export const PUT: RequestHandler = async ({ request, url }) => {
 		defaultTopology: topology
 	};
 
-	const filePath = resolveFilePath(url);
-	await mkdir(dirname(filePath), { recursive: true });
-	await writeFile(filePath, JSON.stringify(settings, null, '\t'), 'utf-8');
-	return json({ ok: true });
+	try {
+		const filePath = resolveFilePath(url);
+		await mkdir(dirname(filePath), { recursive: true });
+		await writeFile(filePath, JSON.stringify(settings, null, '\t'), 'utf-8');
+		return json({ ok: true });
+	} catch (e) {
+		console.error('[api/settings/agent-defaults] PUT failed:', e);
+		return json({ error: 'Failed to save agent defaults' }, { status: 500 });
+	}
 };

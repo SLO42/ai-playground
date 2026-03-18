@@ -14,6 +14,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 import { resolve, dirname } from 'path';
 import { PATHS } from '../constants.js';
+import { withLock } from '../async-mutex.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -114,51 +115,53 @@ async function killPid(pid: number): Promise<boolean> {
  * Returns a summary of what was cleaned up.
  */
 export async function reapStaleProcesses(): Promise<{ reaped: string[]; alive: string[] }> {
-	const previous = await loadRegistry();
-	const reaped: string[] = [];
-	const alive: string[] = [];
+	return withLock(REGISTRY_PATH, async () => {
+		const previous = await loadRegistry();
+		const reaped: string[] = [];
+		const alive: string[] = [];
 
-	// If the previous server is still running, this is a concurrent instance or HMR —
-	// don't kill processes that may belong to the still-running server.
-	if (previous.serverPid !== process.pid && await isPidAlive(previous.serverPid)) {
-		// Previous server still alive — skip reaping (likely HMR reload)
-		// Just take over the registry
+		// If the previous server is still running, this is a concurrent instance or HMR —
+		// don't kill processes that may belong to the still-running server.
+		if (previous.serverPid !== process.pid && await isPidAlive(previous.serverPid)) {
+			// Previous server still alive — skip reaping (likely HMR reload)
+			// Just take over the registry
+			registry = {
+				serverPid: process.pid,
+				startedAt: new Date().toISOString(),
+				processes: previous.processes
+			};
+			await saveRegistry();
+			return { reaped, alive: Object.keys(previous.processes) };
+		}
+
+		// Previous server is dead — any remaining children are orphans
+		// Check all PIDs in parallel for better performance
+		const entries = Object.entries(previous.processes);
+		const aliveChecks = await Promise.all(
+			entries.map(([, entry]) => isPidAlive(entry.pid))
+		);
+
+		for (let i = 0; i < entries.length; i++) {
+			const [label, entry] = entries[i];
+			if (aliveChecks[i]) {
+				if (await killPid(entry.pid)) {
+					reaped.push(`${label} (PID ${entry.pid})`);
+				} else {
+					alive.push(`${label} (PID ${entry.pid}) — kill failed`);
+				}
+			}
+		}
+
+		// Fresh registry for this server instance
 		registry = {
 			serverPid: process.pid,
 			startedAt: new Date().toISOString(),
-			processes: previous.processes
+			processes: {}
 		};
 		await saveRegistry();
-		return { reaped, alive: Object.keys(previous.processes) };
-	}
 
-	// Previous server is dead — any remaining children are orphans
-	// Check all PIDs in parallel for better performance
-	const entries = Object.entries(previous.processes);
-	const aliveChecks = await Promise.all(
-		entries.map(([, entry]) => isPidAlive(entry.pid))
-	);
-
-	for (let i = 0; i < entries.length; i++) {
-		const [label, entry] = entries[i];
-		if (aliveChecks[i]) {
-			if (await killPid(entry.pid)) {
-				reaped.push(`${label} (PID ${entry.pid})`);
-			} else {
-				alive.push(`${label} (PID ${entry.pid}) — kill failed`);
-			}
-		}
-	}
-
-	// Fresh registry for this server instance
-	registry = {
-		serverPid: process.pid,
-		startedAt: new Date().toISOString(),
-		processes: {}
-	};
-	await saveRegistry();
-
-	return { reaped, alive };
+		return { reaped, alive };
+	});
 }
 
 /** Register a spawned child process (debounced disk write). */
@@ -168,65 +171,73 @@ export async function registerPid(
 	category: PidEntry['category']
 ): Promise<void> {
 	if (pid <= 0) return;
-	registry.processes[label] = {
-		pid,
-		label,
-		spawnedAt: new Date().toISOString(),
-		category
-	};
-	debouncedSave();
+	await withLock(REGISTRY_PATH, async () => {
+		registry.processes[label] = {
+			pid,
+			label,
+			spawnedAt: new Date().toISOString(),
+			category
+		};
+		debouncedSave();
+	});
 }
 
 /** Unregister a process (debounced disk write). */
 export async function unregisterPid(label: string): Promise<void> {
-	delete registry.processes[label];
-	debouncedSave();
+	await withLock(REGISTRY_PATH, async () => {
+		delete registry.processes[label];
+		debouncedSave();
+	});
 }
 
 /** Kill and unregister a specific process by label. */
 export async function killAndUnregister(label: string): Promise<boolean> {
-	const entry = registry.processes[label];
-	if (!entry) return false;
-	const killed = await killPid(entry.pid);
-	delete registry.processes[label];
-	await saveRegistry();
-	return killed;
+	return withLock(REGISTRY_PATH, async () => {
+		const entry = registry.processes[label];
+		if (!entry) return false;
+		const killed = await killPid(entry.pid);
+		delete registry.processes[label];
+		await saveRegistry();
+		return killed;
+	});
 }
 
 /** Kill all registered processes (used by shutdown endpoint). */
 export async function killAll(): Promise<{ killed: string[]; failed: string[] }> {
-	const killed: string[] = [];
-	const failed: string[] = [];
-	const killPromises: Promise<void>[] = [];
+	return withLock(REGISTRY_PATH, async () => {
+		const killed: string[] = [];
+		const failed: string[] = [];
+		const killPromises: Promise<void>[] = [];
 
-	const entries = Object.entries(registry.processes);
-	const aliveChecks = await Promise.all(
-		entries.map(([, entry]) => isPidAlive(entry.pid))
-	);
+		const entries = Object.entries(registry.processes);
+		const aliveChecks = await Promise.all(
+			entries.map(([, entry]) => isPidAlive(entry.pid))
+		);
 
-	for (let i = 0; i < entries.length; i++) {
-		const [label, entry] = entries[i];
-		if (aliveChecks[i]) {
-			if (await killPid(entry.pid)) {
-				killed.push(label);
-				// On POSIX, killPid schedules a SIGKILL after 1s — wait for it
-				if (!IS_WINDOWS) {
-					killPromises.push(new Promise<void>(resolve => setTimeout(resolve, 1200)));
+		for (let i = 0; i < entries.length; i++) {
+			const [label, entry] = entries[i];
+			if (aliveChecks[i]) {
+				if (await killPid(entry.pid)) {
+					killed.push(label);
+					// On POSIX, killPid schedules a SIGKILL after 1s — wait for it
+					if (!IS_WINDOWS) {
+						killPromises.push(new Promise<void>(resolve => setTimeout(resolve, 1200)));
+					}
+				} else {
+					failed.push(label);
 				}
-			} else {
-				failed.push(label);
 			}
 		}
-	}
 
-	// Wait for all deferred SIGKILL timeouts before clearing the registry
-	await Promise.allSettled(killPromises);
+		// Wait for all deferred SIGKILL timeouts before clearing the registry
+		await Promise.allSettled(killPromises);
 
-	registry.processes = {};
-	// Immediate save (not debounced) — need consistency before exit
-	await saveRegistry();
+		registry.processes = {};
+		// Immediate save (not debounced) — need consistency before exit
+		await saveRegistry();
 
-	return { killed, failed };
+		return { killed, failed };
+	});
 }
 
 /** Get all currently registered processes. */

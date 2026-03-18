@@ -9,6 +9,7 @@
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { resolve, dirname } from 'path';
 import { PATHS } from '../constants.js';
+import { withLock } from '../async-mutex.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -87,19 +88,23 @@ async function saveStats(): Promise<void> {
  * Record that an agent was spawned. Call at spawn time.
  */
 export async function recordSpawn(): Promise<void> {
-	await loadStats();
-	stats.totalSpawns++;
-	await saveStats();
+	await withLock(STATS_PATH, async () => {
+		await loadStats();
+		stats.totalSpawns++;
+		await saveStats();
+	});
 }
 
 /**
  * Record token usage and cost after an agent completes.
  */
 export async function recordSpawnCompletion(tokens?: number, cost?: number): Promise<void> {
-	await loadStats();
-	if (tokens) stats.totalTokens += tokens;
-	if (cost) stats.totalCost += cost;
-	await saveStats();
+	await withLock(STATS_PATH, async () => {
+		await loadStats();
+		if (tokens) stats.totalTokens += tokens;
+		if (cost) stats.totalCost += cost;
+		await saveStats();
+	});
 }
 
 /**
@@ -121,8 +126,10 @@ export async function getPoolStats(): Promise<SessionPool> {
  * Reset stats.
  */
 export async function resetPool(): Promise<void> {
-	stats = { totalSpawns: 0, totalTokens: 0, totalCost: 0 };
-	await saveStats();
+	await withLock(STATS_PATH, async () => {
+		stats = { totalSpawns: 0, totalTokens: 0, totalCost: 0 };
+		await saveStats();
+	});
 }
 
 // ── No-op legacy functions (keep API endpoints from breaking) ───────

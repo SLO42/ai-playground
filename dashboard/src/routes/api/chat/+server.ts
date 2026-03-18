@@ -119,32 +119,19 @@ export const POST: RequestHandler = async ({ request }) => {
 						tool_calls: pendingToolCalls
 					});
 
-					// Check which tools need confirmation vs auto-execute
-					const needsConfirmation = pendingToolCalls.filter(
-						(tc) => !shouldAutoExecute(tc.name, settings)
-					);
-
-					// Notify client about tools that need confirmation
-					if (needsConfirmation.length > 0) {
-						for (const tc of needsConfirmation) {
-							send('tool_confirm', {
-								tool_confirm: {
-									id: tc.id,
-									name: tc.name,
-									arguments: tc.arguments
-								}
-							});
+					// Split tool calls into auto-execute vs needs-confirmation
+					const autoExecCalls: ToolCall[] = [];
+					const confirmCalls: ToolCall[] = [];
+					for (const tc of pendingToolCalls) {
+						if (shouldAutoExecute(tc.name, settings)) {
+							autoExecCalls.push(tc);
+						} else {
+							confirmCalls.push(tc);
 						}
 					}
 
-					// Execute each tool and append results
-					for (const tc of pendingToolCalls) {
-						const autoExec = shouldAutoExecute(tc.name, settings);
-						if (!autoExec) {
-							send('tool_pending', {
-								tool_pending: { id: tc.id, name: tc.name, status: 'auto-approved' }
-							});
-						}
+					// Execute auto-approved tools immediately
+					for (const tc of autoExecCalls) {
 						const result = await executeTool(tc);
 						send('tool_result', {
 							tool_result: { call_id: tc.id, name: tc.name, content: result }
@@ -156,7 +143,33 @@ export const POST: RequestHandler = async ({ request }) => {
 						});
 					}
 
-					// Loop continues — re-prompt with tool results
+					// Tools that need confirmation: do NOT execute, notify client and end stream
+					if (confirmCalls.length > 0) {
+						for (const tc of confirmCalls) {
+							send('tool_confirm', {
+								tool_confirm: {
+									id: tc.id,
+									name: tc.name,
+									arguments: tc.arguments
+								}
+							});
+						}
+
+						// Add denial results so the LLM history stays consistent
+						for (const tc of confirmCalls) {
+							const pendingResult = `Tool "${tc.name}" requires user confirmation. Execution paused.`;
+							history.push({
+								role: 'tool',
+								content: pendingResult,
+								tool_call_id: tc.id
+							});
+						}
+
+						send('done', { done: true, awaiting_confirmation: true });
+						break;
+					}
+
+					// Loop continues — re-prompt with tool results (all tools were auto-approved)
 				}
 
 				if (loops >= MAX_TOOL_LOOPS) {

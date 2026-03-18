@@ -92,10 +92,16 @@ export class OpenClawGatewayClient {
 	private identityPath: string;
 	private timeout: number;
 	private reqId = 0;
+	private chatSeq = 0;
 	private pending = new Map<string, {
 		resolve: (v: unknown) => void;
 		reject: (e: Error) => void;
 		timer: ReturnType<typeof setTimeout>;
+	}>();
+	/** Active chat() promises keyed by internal sequence ID, rejected on disconnect. */
+	private pendingChats = new Map<number, {
+		reject: (e: Error) => void;
+		cleanup: () => void;
 	}>();
 	private connected = false;
 	private connectPromise: Promise<void> | null = null;
@@ -154,6 +160,12 @@ export class OpenClawGatewayClient {
 					p.reject(new Error('Gateway connection closed'));
 					clearTimeout(p.timer);
 					this.pending.delete(id);
+				}
+				// Reject all pending chat() promises so callers don't hang
+				for (const [seq, pc] of this.pendingChats) {
+					pc.cleanup();
+					pc.reject(new Error('Gateway connection closed'));
+					this.pendingChats.delete(seq);
 				}
 			});
 
@@ -264,11 +276,22 @@ export class OpenClawGatewayClient {
 	async chat(message: string, sessionKey?: string): Promise<string> {
 		if (!this.connected) await this.connect();
 
-		const key = sessionKey ?? `claw-${Date.now()}`;
+		// Unique session key per call to prevent concurrent calls from stealing each other's response
+		const seq = ++this.chatSeq;
+		const key = sessionKey ?? `claw-${Date.now()}-${seq}`;
 		const idempotencyKey = `idem-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
 
 		return new Promise<string>((resolve, reject) => {
 			let settled = false;
+
+			const settle = () => {
+				if (settled) return false;
+				settled = true;
+				clearTimeout(timer);
+				cleanup();
+				this.pendingChats.delete(seq);
+				return true;
+			};
 
 			const cleanup = () => {
 				// Remove this specific handler from the array
@@ -280,22 +303,17 @@ export class OpenClawGatewayClient {
 				}
 			};
 
-			const timeout = setTimeout(() => {
-				if (!settled) {
-					settled = true;
-					cleanup();
+			const timer = setTimeout(() => {
+				if (settle()) {
 					reject(new Error('Chat response timeout'));
 				}
 			}, this.timeout);
 
-			// Listen for chat events — per-request handler in the array
+			// Listen for chat events -- per-request handler filtered by sessionKey
 			const handler = (payload: unknown) => {
 				const event = payload as ChatEvent;
 				if (event.sessionKey === key && event.state === 'final') {
-					if (!settled) {
-						settled = true;
-						clearTimeout(timeout);
-						cleanup();
+					if (settle()) {
 						const text = event.message.content
 							?.filter(c => c.type === 'text')
 							.map(c => c.text ?? '')
@@ -311,16 +329,16 @@ export class OpenClawGatewayClient {
 			}
 			this.eventHandlers.get('chat')!.push(handler);
 
+			// Track this chat promise so disconnect() can reject it
+			this.pendingChats.set(seq, { reject, cleanup });
+
 			// Send the chat request
 			this.request('chat.send', {
 				sessionKey: key,
 				message,
 				idempotencyKey
 			}).catch((err) => {
-				if (!settled) {
-					settled = true;
-					clearTimeout(timeout);
-					cleanup();
+				if (settle()) {
 					reject(err);
 				}
 			});
@@ -347,6 +365,12 @@ export class OpenClawGatewayClient {
 			clearTimeout(p.timer);
 		}
 		this.pending.clear();
+		// Reject all pending chat() promises so callers don't hang
+		for (const [, pc] of this.pendingChats) {
+			pc.cleanup();
+			pc.reject(new Error('Client disconnected'));
+		}
+		this.pendingChats.clear();
 		this.eventHandlers.clear();
 	}
 

@@ -1,3 +1,7 @@
+/**
+ * Autoscale settings API — min/max slots, tasks per slot, idle cooldown.
+ * Data stored at: .playground/autoscale-settings.json.
+ */
 import { json } from '@sveltejs/kit';
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { dirname, resolve } from 'path';
@@ -54,7 +58,12 @@ export const PUT: RequestHandler = async ({ request }) => {
 		idleCooldownMs: typeof body.idleCooldownMs === 'number' ? Math.max(30000, Math.min(3600000, body.idleCooldownMs)) : defaults.idleCooldownMs
 	};
 
-	await mkdir(dirname(AUTOSCALE_FILE), { recursive: true });
-	await writeFile(AUTOSCALE_FILE, JSON.stringify(settings, null, '\t'), 'utf-8');
-	return json({ ok: true });
+	try {
+		await mkdir(dirname(AUTOSCALE_FILE), { recursive: true });
+		await writeFile(AUTOSCALE_FILE, JSON.stringify(settings, null, '\t'), 'utf-8');
+		return json({ ok: true });
+	} catch (e) {
+		console.error('[api/settings/autoscale] PUT failed:', e);
+		return json({ error: 'Failed to save autoscale settings' }, { status: 500 });
+	}
 };

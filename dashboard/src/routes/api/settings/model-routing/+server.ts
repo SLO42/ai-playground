@@ -1,3 +1,7 @@
+/**
+ * Model routing settings API — strategy, complexity threshold, local/cloud model pairs.
+ * Data stored at: .playground/model-routing.json (global) or project-scoped equivalent.
+ */
 import { json } from '@sveltejs/kit';
 import { scopedSettingsPath, type SettingsScope } from '$lib/server/constants.js';
 import type { RequestHandler } from './$types.js';
@@ -18,9 +22,14 @@ function resolveFilePath(url: URL): string {
 }
 
 export const GET: RequestHandler = async ({ url }) => {
-	const filePath = resolveFilePath(url);
-	const settings = await loadModelRoutingSettings(filePath);
-	return json(settings);
+	try {
+		const filePath = resolveFilePath(url);
+		const settings = await loadModelRoutingSettings(filePath);
+		return json(settings);
+	} catch (e) {
+		console.error('[api/settings/model-routing] GET failed:', e);
+		return json({ error: 'Failed to load model routing settings' }, { status: 500 });
+	}
 };
 
 export const PUT: RequestHandler = async ({ request, url }) => {
@@ -49,7 +58,12 @@ export const PUT: RequestHandler = async ({ request, url }) => {
 		cloudProvider: typeof body.cloudProvider === 'string' && body.cloudProvider ? body.cloudProvider : MODEL_ROUTING_DEFAULTS.cloudProvider
 	};
 
-	const filePath = resolveFilePath(url);
-	await saveModelRoutingSettings(settings, filePath);
-	return json({ ok: true });
+	try {
+		const filePath = resolveFilePath(url);
+		await saveModelRoutingSettings(settings, filePath);
+		return json({ ok: true });
+	} catch (e) {
+		console.error('[api/settings/model-routing] PUT failed:', e);
+		return json({ error: 'Failed to save model routing settings' }, { status: 500 });
+	}
 };

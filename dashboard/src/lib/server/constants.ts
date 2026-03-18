@@ -19,7 +19,25 @@ export const PATHS = {
 	modelsJson5: resolve(PROJECT_ROOT, 'config/openclaw/models.json5'),
 	mcpJson: resolve(PROJECT_ROOT, '.mcp.json'),
 	agentsDir: resolve(PROJECT_ROOT, '.claude/agents'),
-	sessionsDir: resolve(PROJECT_ROOT, '.claude-flow/sessions')
+	sessionsDir: resolve(PROJECT_ROOT, '.claude-flow/sessions'),
+	logsDir: resolve(PROJECT_ROOT, '.claude-flow/logs'),
+	headlessLogsDir: resolve(PROJECT_ROOT, '.claude-flow/logs/headless'),
+	openclawLog: resolve(PROJECT_ROOT, '.claude-flow/logs/openclaw-gateway.log'),
+	playgroundConfig: resolve(PROJECT_ROOT, '.playground/config.json'),
+	playgroundRegistry: resolve(PROJECT_ROOT, '.playground/registry.json'),
+	chatsDir: resolve(PROJECT_ROOT, '.playground/chats'),
+	routingLog: resolve(PROJECT_ROOT, '.playground/routing-log.json'),
+	reportsDir: resolve(PROJECT_ROOT, '.playground/reports'),
+	tasksDir: resolve(PROJECT_ROOT, '.playground/tasks'),
+	generalSettings: resolve(PROJECT_ROOT, '.playground/settings.json'),
+	agentDefaultsSettings: resolve(PROJECT_ROOT, '.playground/agent-defaults.json'),
+	modelRoutingSettings: resolve(PROJECT_ROOT, '.playground/model-routing.json'),
+	memorySettings: resolve(PROJECT_ROOT, '.playground/memory-settings.json'),
+	envFile: resolve(PROJECT_ROOT, '.env'),
+	customServices: resolve(PROJECT_ROOT, '.playground/custom-services.json'),
+	scanFindings: resolve(PROJECT_ROOT, '.playground/security-findings.json'),
+	taskSuggestions: resolve(PROJECT_ROOT, '.playground/task-suggestions.json'),
+	heartbeatConfig: resolve(PROJECT_ROOT, '.playground/heartbeat-config.json')
 } as const;
 
 export const APIS = {

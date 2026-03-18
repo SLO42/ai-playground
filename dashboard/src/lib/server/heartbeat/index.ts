@@ -18,8 +18,11 @@ import {
 	log, trimSession, agentSender, ensureTaskSession, taskSessionId,
 	upsertSessionMeta,
 	loadProjectMaxAgents, countProjectAgents, getProjectAgentMap, getProjectLimits,
-	reapOrphanedAgents
+	reapOrphanedAgents,
+	loadHeartbeatConfig, getHeartbeatConfig, updateHeartbeatConfig, saveHeartbeatConfig,
+	getDefaultConfig,
 } from './shared.js';
+import type { HeartbeatConfig } from './shared.js';
 import { spawnClaude, buildTaskPrompt, pickModelForTask } from './agent-spawn.js';
 import { logAgentCompletion, tailAgentLogs, cleanupPromptFiles, captureGitBaseline, parseStreamJsonLog } from './agent-tracking.js';
 import { spawnReviewAgent } from './review-agent.js';
@@ -41,6 +44,8 @@ import type { Task } from '$lib/types/tasks.js';
 
 // Re-export public API
 export { startHeartbeat, stopHeartbeat, isHeartbeatRunning };
+export { loadHeartbeatConfig, getHeartbeatConfig, updateHeartbeatConfig, saveHeartbeatConfig, getDefaultConfig };
+export type { HeartbeatConfig };
 
 const g = globalThis as Record<string, unknown>;
 
@@ -54,7 +59,6 @@ function setTimer(t: ReturnType<typeof setTimeout> | null) {
 let lastStatuses: Record<string, boolean> = (g.__claw_last_statuses as Record<string, boolean>) ?? {};
 let heartbeatCount = (g.__claw_heartbeat_count as number) ?? 0;
 let lastReviewAt = (g.__claw_last_review as number) ?? 0;
-const REVIEW_COOLDOWN_MS = 30 * 60 * 1000;
 
 // ── Health checks ────────────────────────────────────────────────────
 
@@ -98,6 +102,11 @@ interface TaskScanResult {
 	flaggedForDiscussion: Task[];
 	blocked: Task[];
 }
+
+const EMPTY_TASK_SCAN: TaskScanResult = {
+	total: 0, pending: 0, inProgress: 0, completed: 0,
+	clawAssigned: [], unassignedPending: [], flaggedForDiscussion: [], blocked: []
+};
 
 async function scanTasks(): Promise<TaskScanResult> {
 	const result: TaskScanResult = {
@@ -170,6 +179,7 @@ async function scanTasks(): Promise<TaskScanResult> {
 // ── Agent spawning ───────────────────────────────────────────────────
 
 async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<boolean> {
+	task = structuredClone(task);
 	const agents = getActiveAgents();
 
 	if (agents.size >= getMaxConcurrentAgents()) {
@@ -401,7 +411,7 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 			}
 		});
 
-		log(monitorSession, `[spawn] Claude Code (${modelTier}, ${resumeLabel}) → "${task.title}" → chat: ${reportId}`);
+		log(monitorSession, `[spawn] Claude Code (${modelTier}) → "${task.title}" → chat: ${reportId}`);
 		return true;
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : 'spawn failed';
@@ -430,6 +440,7 @@ function checkAgents(session: ChatSession) {
 async function heartbeat() {
 	const settings = await loadSettings();
 	const notificationsEnabled = settings.heartbeatEnabled !== false;
+	const hbConfig = getHeartbeatConfig();
 
 	heartbeatCount++;
 	g.__claw_heartbeat_count = heartbeatCount;
@@ -442,268 +453,281 @@ async function heartbeat() {
 
 	await loadMaxAgents();
 
-	// ── Phase 1: Plan
-	const plan = [
-		'Check service health',
-		'Scan tasks across projects',
-		'Check running agents',
-		'Spawn agents for actionable tasks'
-	];
-	log(session, `[plan] ${plan.join(' → ')}`);
+	// ── Phase 1: Plan (dynamically based on enabled phases)
+	const enabledPhases: string[] = [];
+	if (hbConfig.phases.healthChecks) enabledPhases.push('Check service health');
+	if (hbConfig.phases.taskScanning) enabledPhases.push('Scan tasks across projects');
+	enabledPhases.push('Check running agents');
+	if (hbConfig.phases.agentSpawning) enabledPhases.push('Spawn agents for actionable tasks');
+	if (hbConfig.phases.reviewCycle) enabledPhases.push('Review cycle');
+	if (hbConfig.phases.memorySync) enabledPhases.push('Memory sync');
+	log(session, `[plan] ${enabledPhases.join(' → ')}`);
 
-	// ── Phase 2: Service health
-	log(session, `[health] Probing services...`);
-	const [ollama, gateway, daemon] = await Promise.all([
-		isOllamaOnline(),
-		checkHealth(SERVICES.openclaw.healthUrl!),
-		isDaemonRunning()
-	]);
-
-	const statuses: Record<string, boolean> = { ollama, gateway, daemon };
-	const services = Object.entries(statuses);
-	const onlineCount = services.filter(([, v]) => v).length;
-	const totalCount = services.length;
-	const statusList = services.map(([n, v]) => `${n}: ${v ? 'up' : 'down'}`).join(', ');
-
-	log(session, `[health] ${onlineCount}/${totalCount} up — ${statusList}`);
-
+	// ── Phase 2: Service health (gated by config.phases.healthChecks)
+	let onlineCount = 0;
+	let totalCount = 0;
 	const changes: string[] = [];
-	for (const [name, online] of services) {
-		if (lastStatuses[name] !== undefined && lastStatuses[name] !== online) {
-			changes.push(`${name} ${online ? 'came online' : 'went offline'}`);
-		}
-	}
-	lastStatuses = statuses;
-	g.__claw_last_statuses = statuses;
 
-	if (changes.length > 0) {
-		log(session, `[alert] Status changed: ${changes.join('; ')}`);
-	}
+	if (hbConfig.phases.healthChecks) {
+		log(session, `[health] Probing services...`);
+		const [ollama, gateway, daemon] = await Promise.all([
+			isOllamaOnline(),
+			checkHealth(SERVICES.openclaw.healthUrl!),
+			isDaemonRunning()
+		]);
 
-	// ── Phase 2b: Auto-restart offline services
-	const serviceNameMap: Record<string, string> = { ollama: 'ollama', gateway: 'gateway', daemon: 'daemon' };
-	const restartConfig = await loadRestartConfigAsync();
-	if (restartConfig.enabled) {
+		const statuses: Record<string, boolean> = { ollama, gateway, daemon };
+		const services = Object.entries(statuses);
+		onlineCount = services.filter(([, v]) => v).length;
+		totalCount = services.length;
+		const statusList = services.map(([n, v]) => `${n}: ${v ? 'up' : 'down'}`).join(', ');
+
+		log(session, `[health] ${onlineCount}/${totalCount} up — ${statusList}`);
+
 		for (const [name, online] of services) {
-			const restartName = serviceNameMap[name];
-			if (!restartName) continue;
-
-			if (online) {
-				// Service came back — reset counter
-				resetRestartCount(restartName);
-			} else if (shouldRestart(restartName, restartConfig)) {
-				log(session, `[restart] Attempting auto-restart of ${name}...`);
-				const ok = await attemptRestart(restartName);
-				if (ok) {
-					log(session, `[restart] Restart command fired for ${name}`);
-					await pushNotification({
-						severity: 'warning',
-						category: 'service',
-						title: `Auto-restarting ${name}`,
-						message: `Service ${name} is offline — restart attempt initiated`,
-						source: 'claw',
-						link: '/services',
-						linkLabel: 'View Services'
-					}).catch(() => {});
-				} else {
-					log(session, `[restart] No restart command available for ${name}`);
-				}
-			} else {
-				// Either in cooldown, at max attempts, or not configured
-				const state = getRestartState().get(restartName);
-				if (state && state.status === 'failed') {
-					log(session, `[restart] ${name} exceeded max restart attempts (${restartConfig.maxAttempts}) — manual intervention required`);
-					await pushNotification({
-						severity: 'critical',
-						category: 'service',
-						title: `${name} restart failed`,
-						message: `Exceeded ${restartConfig.maxAttempts} restart attempts — manual intervention required`,
-						source: 'claw',
-						link: '/services',
-						linkLabel: 'View Services',
-						desktop: true
-					}).catch(() => {});
-				} else if (state && state.status === 'cooldown') {
-					log(session, `[restart] ${name} in cooldown — next attempt after ${Math.round(restartConfig.cooldownMs / 1000)}s`);
-				}
+			if (lastStatuses[name] !== undefined && lastStatuses[name] !== online) {
+				changes.push(`${name} ${online ? 'came online' : 'went offline'}`);
 			}
 		}
-	}
+		lastStatuses = statuses;
+		g.__claw_last_statuses = statuses;
 
-	// ── Phase 3: Task scan
-	log(session, `[tasks] Scanning tasks...`);
-	const taskScan = await scanTasks();
-	log(session, `[tasks] ${taskScan.total} total — ${taskScan.pending} pending, ${taskScan.inProgress} in progress, ${taskScan.completed} completed`);
-
-	if (taskScan.blocked.length > 0) {
-		for (const t of taskScan.blocked) {
-			const depCount = t.blockedBy?.length ?? 0;
-			log(session, `[skip] Task "${t.title}" blocked by ${depCount} incomplete task(s)`);
+		if (changes.length > 0) {
+			log(session, `[alert] Status changed: ${changes.join('; ')}`);
 		}
-	}
-	if (taskScan.clawAssigned.length > 0) {
-		log(session, `[tasks] ${taskScan.clawAssigned.length} task(s) assigned to Claw: ${taskScan.clawAssigned.map((t) => `${t.title}${t._sourceProjectId ? ` [${t._sourceProjectId}]` : ''}`).join(', ')}`);
-	}
-	if (taskScan.unassignedPending.length > 0) {
-		const byProject = new Map<string, number>();
-		for (const t of taskScan.unassignedPending) {
-			const pid = t._sourceProjectId ?? 'unknown';
-			byProject.set(pid, (byProject.get(pid) ?? 0) + 1);
-		}
-		const projectBreakdown = [...byProject.entries()].map(([id, count]) => `${id}: ${count}`).join(', ');
-		log(session, `[tasks] ${taskScan.unassignedPending.length} pending task(s) available — ${projectBreakdown}`);
-	}
 
-	if (notificationsEnabled && (taskScan.clawAssigned.length > 0 || taskScan.unassignedPending.length > 0)) {
-		const parts: string[] = [`${taskScan.total} total`];
-		if (taskScan.clawAssigned.length > 0) parts.push(`${taskScan.clawAssigned.length} assigned to Claw`);
-		if (taskScan.unassignedPending.length > 0) parts.push(`${taskScan.unassignedPending.length} unassigned pending`);
+		// ── Phase 2b: Auto-restart offline services
+		const serviceNameMap: Record<string, string> = { ollama: 'ollama', gateway: 'gateway', daemon: 'daemon' };
+		const restartConfig = await loadRestartConfigAsync();
+		if (restartConfig.enabled) {
+			for (const [name, online] of services) {
+				const restartName = serviceNameMap[name];
+				if (!restartName) continue;
 
-		await pushNotification({
-			severity: 'info',
-			category: 'task',
-			title: 'Claw task scan',
-			message: parts.join(' | '),
-			source: 'claw',
-			link: '/tasks',
-			linkLabel: 'View Tasks'
-		});
-	}
-
-	// Reset stale in_progress tasks across all projects
-	if (taskScan.inProgress > 0) {
-		const activeAgents = getActiveAgents();
-		let staleReset = 0;
-		const staleNames: string[] = [];
-		try {
-			const allProjects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root).catch(() => [] as Awaited<ReturnType<typeof scanAllProjects>>);
-			const projectPaths = new Set<string>([PATHS.root]);
-			for (const project of allProjects) {
-				projectPaths.add(resolve(project.path));
-			}
-
-			for (const projPath of projectPaths) {
-				try {
-					const tasks = await getAllTasks(projPath);
-					for (const task of tasks) {
-						if (task.status === 'in_progress' && task.assignee === 'claw' && !activeAgents.has(task.id)) {
-							await updateTask(projPath, task.id, { status: 'pending', assignee: null }).catch(() => {});
-							staleNames.push(task.title);
-							staleReset++;
-						}
+				if (online) {
+					resetRestartCount(restartName);
+				} else if (shouldRestart(restartName, restartConfig)) {
+					log(session, `[restart] Attempting auto-restart of ${name}...`);
+					const ok = await attemptRestart(restartName);
+					if (ok) {
+						log(session, `[restart] Restart command fired for ${name}`);
+						await pushNotification({
+							severity: 'warning',
+							category: 'service',
+							title: `Auto-restarting ${name}`,
+							message: `Service ${name} is offline — restart attempt initiated`,
+							source: 'claw',
+							link: '/services',
+							linkLabel: 'View Services'
+						}).catch(() => {});
+					} else {
+						log(session, `[restart] No restart command available for ${name}`);
 					}
-				} catch { /* skip inaccessible project */ }
-			}
-		} catch { /* reset failed */ }
-		if (staleReset > 0) {
-			log(session, `[tasks] Reset ${staleReset} stale in_progress task(s) back to pending`);
-
-			if (notificationsEnabled) {
-				await pushNotification({
-					severity: 'warning',
-					category: 'task',
-					title: `Claw reset ${staleReset} stale task(s)`,
-					message: staleNames.join(', '),
-					source: 'claw',
-					link: '/tasks',
-					linkLabel: 'View Tasks'
-				});
+				} else {
+					const state = getRestartState().get(restartName);
+					if (state && state.status === 'failed') {
+						log(session, `[restart] ${name} exceeded max restart attempts (${restartConfig.maxAttempts}) — manual intervention required`);
+						await pushNotification({
+							severity: 'critical',
+							category: 'service',
+							title: `${name} restart failed`,
+							message: `Exceeded ${restartConfig.maxAttempts} restart attempts — manual intervention required`,
+							source: 'claw',
+							link: '/services',
+							linkLabel: 'View Services',
+							desktop: true
+						}).catch(() => {});
+					} else if (state && state.status === 'cooldown') {
+						log(session, `[restart] ${name} in cooldown — next attempt after ${Math.round(restartConfig.cooldownMs / 1000)}s`);
+					}
+				}
 			}
 		}
+	} else {
+		log(session, `[health] Phase disabled — skipping service health checks`);
 	}
 
-	// ── Phase 3a: Process suggestion inbox (from agents, daemon, etc.)
-	try {
-		const suggestions = await processSuggestions();
-		if (suggestions.created > 0) {
-			log(session, `[suggestions] Created ${suggestions.created} task(s) from inbox (sources: ${suggestions.sources.join(', ')})`);
-		}
-		if (suggestions.skipped > 0) {
-			log(session, `[suggestions] Skipped ${suggestions.skipped} duplicate/invalid suggestion(s)`);
-		}
-	} catch {
-		/* suggestion processing failed gracefully */
-	}
+	// ── Phase 3: Task scan (gated by config.phases.taskScanning)
+	let taskScan: TaskScanResult;
 
-	// ── Phase 3c: Heartbeat self-suggestions (detect issues worth tracking)
-	try {
-		const selfSuggestions: Parameters<typeof suggestTasks>[0] = [];
+	if (hbConfig.phases.taskScanning) {
+		log(session, `[tasks] Scanning tasks...`);
+		taskScan = await scanTasks();
+		log(session, `[tasks] ${taskScan.total} total — ${taskScan.pending} pending, ${taskScan.inProgress} in progress, ${taskScan.completed} completed`);
 
-		// Service flaps — if a service just went offline, suggest investigating
-		for (const change of changes) {
-			if (change.includes('went offline')) {
-				const serviceName = change.split(' ')[0];
-				selfSuggestions.push({
-					title: `Investigate ${serviceName} service going offline`,
-					description: `The heartbeat detected ${serviceName} went offline during cycle #${heartbeatCount}. Check logs and ensure auto-restart is configured.`,
-					priority: 'high',
-					tags: ['reliability', 'services'],
-					feature: 'service-reliability',
-					source: 'heartbeat'
-				});
+		if (taskScan.blocked.length > 0) {
+			for (const t of taskScan.blocked) {
+				const depCount = t.blockedBy?.length ?? 0;
+				log(session, `[skip] Task "${t.title}" blocked by ${depCount} incomplete task(s)`);
 			}
 		}
+		if (taskScan.clawAssigned.length > 0) {
+			log(session, `[tasks] ${taskScan.clawAssigned.length} task(s) assigned to Claw: ${taskScan.clawAssigned.map((t) => `${t.title}${t._sourceProjectId ? ` [${t._sourceProjectId}]` : ''}`).join(', ')}`);
+		}
+		if (taskScan.unassignedPending.length > 0) {
+			const byProject = new Map<string, number>();
+			for (const t of taskScan.unassignedPending) {
+				const pid = t._sourceProjectId ?? 'unknown';
+				byProject.set(pid, (byProject.get(pid) ?? 0) + 1);
+			}
+			const projectBreakdown = [...byProject.entries()].map(([id, count]) => `${id}: ${count}`).join(', ');
+			log(session, `[tasks] ${taskScan.unassignedPending.length} pending task(s) available — ${projectBreakdown}`);
+		}
 
-		// Stale tasks — if tasks have been pending too long without being picked up
-		if (taskScan.unassignedPending.length > 10) {
-			selfSuggestions.push({
-				title: 'Triage unassigned task backlog — too many pending tasks',
-				description: `${taskScan.unassignedPending.length} unassigned pending tasks detected. Consider prioritizing, assigning, or closing stale tasks.`,
-				priority: 'medium',
-				tags: ['backlog', 'triage'],
-				feature: 'task-management',
-				source: 'heartbeat'
+		if (notificationsEnabled && (taskScan.clawAssigned.length > 0 || taskScan.unassignedPending.length > 0)) {
+			const parts: string[] = [`${taskScan.total} total`];
+			if (taskScan.clawAssigned.length > 0) parts.push(`${taskScan.clawAssigned.length} assigned to Claw`);
+			if (taskScan.unassignedPending.length > 0) parts.push(`${taskScan.unassignedPending.length} unassigned pending`);
+
+			await pushNotification({
+				severity: 'info',
+				category: 'task',
+				title: 'Claw task scan',
+				message: parts.join(' | '),
+				source: 'claw',
+				link: '/tasks',
+				linkLabel: 'View Tasks'
 			});
 		}
 
-		if (selfSuggestions.length > 0) {
-			await suggestTasks(selfSuggestions);
-			log(session, `[suggestions] Heartbeat suggested ${selfSuggestions.length} improvement(s)`);
-		}
-	} catch { /* self-suggestion failed gracefully */ }
-
-	if (taskScan.flaggedForDiscussion.length > 0) {
-		const discussions = getDiscussionMap();
-		const newDiscussions: string[] = [];
-		const pendingDiscussions: string[] = [];
-
-		for (const task of taskScan.flaggedForDiscussion) {
-			if (discussions.has(task.id)) {
-				pendingDiscussions.push(task.title);
-				continue;
-			}
-
+		// Reset stale in_progress tasks across all projects
+		if (taskScan.inProgress > 0) {
+			const activeAgents = getActiveAgents();
+			let staleReset = 0;
+			const staleNames: string[] = [];
 			try {
-				const sessionId = await createDiscussionSession(task);
-				discussions.set(task.id, sessionId);
-				newDiscussions.push(task.title);
+				const allProjects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root).catch(() => [] as Awaited<ReturnType<typeof scanAllProjects>>);
+				const projectPaths = new Set<string>([PATHS.root]);
+				for (const project of allProjects) {
+					projectPaths.add(resolve(project.path));
+				}
+
+				for (const projPath of projectPaths) {
+					try {
+						const tasks = await getAllTasks(projPath);
+						for (const task of tasks) {
+							if (task.status === 'in_progress' && task.assignee === 'claw' && !activeAgents.has(task.id)) {
+								await updateTask(projPath, task.id, { status: 'pending', assignee: null }).catch(() => {});
+								staleNames.push(task.title);
+								staleReset++;
+							}
+						}
+					} catch { /* skip inaccessible project */ }
+				}
+			} catch { /* reset failed */ }
+			if (staleReset > 0) {
+				log(session, `[tasks] Reset ${staleReset} stale in_progress task(s) back to pending`);
 
 				if (notificationsEnabled) {
 					await pushNotification({
-						severity: 'info',
-						category: 'agent',
-						title: `Claw wants to discuss: ${task.title}`,
-						message: `Flagged for discussion — please review and respond`,
+						severity: 'warning',
+						category: 'task',
+						title: `Claw reset ${staleReset} stale task(s)`,
+						message: staleNames.join(', '),
 						source: 'claw',
-						link: `/chat?session=discuss-${task.id}`,
-						linkLabel: 'Join Discussion',
-						desktop: true
+						link: '/tasks',
+						linkLabel: 'View Tasks'
 					});
 				}
-			} catch { /* session creation failed */ }
+			}
 		}
 
-		if (newDiscussions.length > 0) {
-			log(session, `[discuss] Started ${newDiscussions.length} discussion(s): ${newDiscussions.join(', ')}`);
+		// ── Phase 3a: Process suggestion inbox (from agents, daemon, etc.)
+		try {
+			const suggestions = await processSuggestions();
+			if (suggestions.created > 0) {
+				log(session, `[suggestions] Created ${suggestions.created} task(s) from inbox (sources: ${suggestions.sources.join(', ')})`);
+			}
+			if (suggestions.skipped > 0) {
+				log(session, `[suggestions] Skipped ${suggestions.skipped} duplicate/invalid suggestion(s)`);
+			}
+		} catch {
+			/* suggestion processing failed gracefully */
 		}
-		if (pendingDiscussions.length > 0) {
-			log(session, `[discuss] ${pendingDiscussions.length} awaiting user response: ${pendingDiscussions.join(', ')}`);
+
+		// ── Phase 3c: Heartbeat self-suggestions (detect issues worth tracking)
+		try {
+			const selfSuggestions: Parameters<typeof suggestTasks>[0] = [];
+
+			// Service flaps — if a service just went offline, suggest investigating
+			for (const change of changes) {
+				if (change.includes('went offline')) {
+					const serviceName = change.split(' ')[0];
+					selfSuggestions.push({
+						title: `Investigate ${serviceName} service going offline`,
+						description: `The heartbeat detected ${serviceName} went offline during cycle #${heartbeatCount}. Check logs and ensure auto-restart is configured.`,
+						priority: 'high',
+						tags: ['reliability', 'services'],
+						feature: 'service-reliability',
+						source: 'heartbeat'
+					});
+				}
+			}
+
+			// Stale tasks — if tasks have been pending too long without being picked up
+			if (taskScan.unassignedPending.length > 10) {
+				selfSuggestions.push({
+					title: 'Triage unassigned task backlog — too many pending tasks',
+					description: `${taskScan.unassignedPending.length} unassigned pending tasks detected. Consider prioritizing, assigning, or closing stale tasks.`,
+					priority: 'medium',
+					tags: ['backlog', 'triage'],
+					feature: 'task-management',
+					source: 'heartbeat'
+				});
+			}
+
+			if (selfSuggestions.length > 0) {
+				await suggestTasks(selfSuggestions);
+				log(session, `[suggestions] Heartbeat suggested ${selfSuggestions.length} improvement(s)`);
+			}
+		} catch { /* self-suggestion failed gracefully */ }
+
+		if (taskScan.flaggedForDiscussion.length > 0) {
+			const discussions = getDiscussionMap();
+			const newDiscussions: string[] = [];
+			const pendingDiscussions: string[] = [];
+
+			for (const task of taskScan.flaggedForDiscussion) {
+				if (discussions.has(task.id)) {
+					pendingDiscussions.push(task.title);
+					continue;
+				}
+
+				try {
+					const sessionId = await createDiscussionSession(task);
+					discussions.set(task.id, sessionId);
+					newDiscussions.push(task.title);
+
+					if (notificationsEnabled) {
+						await pushNotification({
+							severity: 'info',
+							category: 'agent',
+							title: `Claw wants to discuss: ${task.title}`,
+							message: `Flagged for discussion — please review and respond`,
+							source: 'claw',
+							link: `/chat?session=discuss-${task.id}`,
+							linkLabel: 'Join Discussion',
+							desktop: true
+						});
+					}
+				} catch { /* session creation failed */ }
+			}
+
+			if (newDiscussions.length > 0) {
+				log(session, `[discuss] Started ${newDiscussions.length} discussion(s): ${newDiscussions.join(', ')}`);
+			}
+			if (pendingDiscussions.length > 0) {
+				log(session, `[discuss] ${pendingDiscussions.length} awaiting user response: ${pendingDiscussions.join(', ')}`);
+			}
 		}
+
+		await checkDiscussionReplies(session);
+	} else {
+		log(session, `[tasks] Phase disabled — skipping task scan`);
+		taskScan = { ...EMPTY_TASK_SCAN };
 	}
 
-	await checkDiscussionReplies(session);
-
-	// ── Phase 4: Check running agents + reap orphans
+	// ── Phase 4: Check running agents + reap orphans (always runs)
 	checkAgents(session);
 
 	// Reap agents whose PIDs are no longer alive (orphaned by HMR, crash, etc.)
@@ -716,184 +740,196 @@ async function heartbeat() {
 
 	await tailAgentLogs(session);
 
-	// ── Phase 5: Load per-project agent limits
-	const projectLimits = getProjectLimits();
-	const seenProjects = new Map<string, string>();
-	for (const t of [...taskScan.clawAssigned, ...taskScan.unassignedPending]) {
-		if (t._sourceProjectId && t._sourceProjectPath && !seenProjects.has(t._sourceProjectId)) {
-			seenProjects.set(t._sourceProjectId, t._sourceProjectPath);
-		}
-	}
-	for (const [projId, projPath] of seenProjects) {
-		await loadProjectMaxAgents(projPath, projId);
-	}
-	if (seenProjects.size > 0) {
-		const limitSummary = [...seenProjects.keys()].map(id => `${id}: ${projectLimits.get(id) ?? 2}`).join(', ');
-		log(session, `[spawn] Per-project limits: ${limitSummary} (global max: ${getMaxConcurrentAgents()})`);
-	}
-
-	// ── Phase 5b: Spawn agents (round-robin across projects, respecting per-project limits)
-	const actionable = [...taskScan.clawAssigned, ...taskScan.unassignedPending];
+	// ── Phase 5: Agent spawning (gated by config.phases.agentSpawning)
 	let spawned = 0;
 
-	if (actionable.length > 0) {
-		const agents = getActiveAgents();
-		const slotsAvailable = getMaxConcurrentAgents() - agents.size;
-
-		if (slotsAvailable > 0) {
-			log(session, `[spawn] ${slotsAvailable} global slot(s) available — evaluating ${actionable.length} actionable task(s)`);
-
-			// Group tasks by project, preserving priority order within each group
-			const tasksByProject = new Map<string, Task[]>();
-			for (const task of actionable) {
-				const projId = task._sourceProjectId ?? 'unknown';
-				if (!tasksByProject.has(projId)) tasksByProject.set(projId, []);
-				tasksByProject.get(projId)!.push(task);
+	if (hbConfig.phases.agentSpawning) {
+		const projectLimits = getProjectLimits();
+		const seenProjects = new Map<string, string>();
+		for (const t of [...taskScan.clawAssigned, ...taskScan.unassignedPending]) {
+			if (t._sourceProjectId && t._sourceProjectPath && !seenProjects.has(t._sourceProjectId)) {
+				seenProjects.set(t._sourceProjectId, t._sourceProjectPath);
 			}
-
-			// Round-robin: interleave tasks across projects so no single project
-			// drains all global slots before others get a turn
-			const projectQueues = [...tasksByProject.entries()];
-			const interleaved: Task[] = [];
-			let remaining = true;
-			while (remaining) {
-				remaining = false;
-				for (const [, tasks] of projectQueues) {
-					if (tasks.length > 0) {
-						interleaved.push(tasks.shift()!);
-						remaining = remaining || tasks.length > 0;
-					}
-				}
-			}
-
-			for (const task of interleaved) {
-				if (spawned >= slotsAvailable) break;
-				if (agents.has(task.id)) continue;
-
-				// Per-project limit check
-				const projId = task._sourceProjectId;
-				if (projId) {
-					const projMax = projectLimits.get(projId) ?? 2;
-					const projActive = countProjectAgents(projId);
-					if (projActive >= projMax) {
-						log(session, `[skip] Project "${projId}" at agent limit (${projActive}/${projMax}) — deferring "${task.title}"`);
-						continue;
-					}
-				}
-
-				if (await spawnAgent(task, session)) {
-					if (projId) {
-						getProjectAgentMap().set(task.id, projId);
-					}
-
-					const taskRoot = task._sourceProjectPath ?? PATHS.root;
-					await updateTask(taskRoot, task.id, {
-						status: 'in_progress',
-						assignee: 'claw'
-					}).catch(() => {});
-					spawned++;
-
-					if (notificationsEnabled) {
-						await pushNotification({
-							severity: 'info',
-							category: 'agent',
-							title: `Claw spawned agent: ${task.title}`,
-							message: `Working on ${task.id} [${task.priority}] — ${pickModelForTask(task)}${projId ? ` (${projId})` : ''}`,
-							source: 'claw',
-							link: `/chat?session=${taskSessionId(task.id)}`,
-							linkLabel: 'View Task'
-						});
-					}
-				}
-			}
-		} else {
-			log(session, `[spawn] No agent slots — ${agents.size}/${getMaxConcurrentAgents()} running`);
 		}
-	} else {
-		log(session, `[spawn] No actionable tasks — nothing to spawn`);
-	}
+		for (const [projId, projPath] of seenProjects) {
+			await loadProjectMaxAgents(projPath, projId);
+		}
+		if (seenProjects.size > 0) {
+			const limitSummary = [...seenProjects.keys()].map(id => `${id}: ${projectLimits.get(id) ?? 2}`).join(', ');
+			log(session, `[spawn] Per-project limits: ${limitSummary} (global max: ${getMaxConcurrentAgents()})`);
+		}
 
-	// ── Phase 5c: Audit project agent associations
-	// Check every 5th heartbeat for projects with no agents configured
-	if (heartbeatCount % 5 === 1) {
-		try {
-			const allProjects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root).catch(() => []);
-			for (const project of allProjects) {
-				try {
-					const assocRaw = await readFile(resolve(project.path, '.playground', 'agents.json'), 'utf-8').catch(() => '{"agents":[]}');
-					const assoc = JSON.parse(assocRaw) as { agents: string[] };
-					if (assoc.agents.length === 0 && project.status === 'active') {
-						// Only log once per project per session by checking monitor session content
-						const alreadyNotified = session.messages.some(m =>
-							m.content.includes(`[agents] Project "${project.id}" has no agents`)
-						);
-						if (!alreadyNotified) {
-							const meta = await detectProjectMeta(project.path).catch(() => null);
-							const profileHints: string[] = [];
-							if (meta?.language) profileHints.push(meta.language);
-							if (meta?.framework) profileHints.push(meta.framework);
-							if (!meta?.testCommand) profileHints.push('no tests');
-							if (meta?.workflows.length === 0) profileHints.push('no CI/CD');
-							if (!meta?.maintenance.hasDocsDir) profileHints.push('no docs');
+		// ── Phase 5b: Spawn agents (round-robin across projects, respecting per-project limits)
+		const actionable = [...taskScan.clawAssigned, ...taskScan.unassignedPending];
 
-							log(session, `[agents] Project "${project.id}" has no agents configured` +
-								(profileHints.length > 0 ? ` (${profileHints.join(', ')})` : '') +
-								` — use Suggest Agents on /projects/${project.id}/agents to auto-configure`);
+		if (actionable.length > 0) {
+			const agents = getActiveAgents();
+			const slotsAvailable = getMaxConcurrentAgents() - agents.size;
 
-							if (notificationsEnabled) {
-								await pushNotification({
-									severity: 'info',
-									category: 'agent',
-									title: `Project "${project.name}" needs agents`,
-									message: `No agents configured${profileHints.length > 0 ? ` — detected: ${profileHints.join(', ')}` : ''}. Click to configure.`,
-									source: 'claw',
-									link: `/projects/${project.id}/agents`,
-									linkLabel: 'Configure Agents'
-								});
-							}
+			if (slotsAvailable > 0) {
+				log(session, `[spawn] ${slotsAvailable} global slot(s) available — evaluating ${actionable.length} actionable task(s)`);
+
+				// Group tasks by project, preserving priority order within each group
+				const tasksByProject = new Map<string, Task[]>();
+				for (const task of actionable) {
+					const projId = task._sourceProjectId ?? 'unknown';
+					if (!tasksByProject.has(projId)) tasksByProject.set(projId, []);
+					tasksByProject.get(projId)!.push(task);
+				}
+
+				// Round-robin: interleave tasks across projects so no single project
+				// drains all global slots before others get a turn
+				const projectQueues = [...tasksByProject.entries()];
+				const interleaved: Task[] = [];
+				let remaining = true;
+				while (remaining) {
+					remaining = false;
+					for (const [, tasks] of projectQueues) {
+						if (tasks.length > 0) {
+							interleaved.push(tasks.shift()!);
+							remaining = remaining || tasks.length > 0;
 						}
 					}
-				} catch { /* skip individual project errors */ }
+				}
+
+				for (const task of interleaved) {
+					if (spawned >= slotsAvailable) break;
+					if (agents.has(task.id)) continue;
+
+					// Per-project limit check
+					const projId = task._sourceProjectId;
+					if (projId) {
+						const projMax = projectLimits.get(projId) ?? 2;
+						const projActive = countProjectAgents(projId);
+						if (projActive >= projMax) {
+							log(session, `[skip] Project "${projId}" at agent limit (${projActive}/${projMax}) — deferring "${task.title}"`);
+							continue;
+						}
+					}
+
+					if (await spawnAgent(task, session)) {
+						if (projId) {
+							getProjectAgentMap().set(task.id, projId);
+						}
+
+						const taskRoot = task._sourceProjectPath ?? PATHS.root;
+						await updateTask(taskRoot, task.id, {
+							status: 'in_progress',
+							assignee: 'claw'
+						}).catch(() => {});
+						spawned++;
+
+						if (notificationsEnabled) {
+							await pushNotification({
+								severity: 'info',
+								category: 'agent',
+								title: `Claw spawned agent: ${task.title}`,
+								message: `Working on ${task.id} [${task.priority}] — ${pickModelForTask(task)}${projId ? ` (${projId})` : ''}`,
+								source: 'claw',
+								link: `/chat?session=${taskSessionId(task.id)}`,
+								linkLabel: 'View Task'
+							});
+						}
+					}
+				}
+			} else {
+				log(session, `[spawn] No agent slots — ${agents.size}/${getMaxConcurrentAgents()} running`);
 			}
-		} catch { /* project scan failed */ }
-	}
-
-	// ── Phase 5d: UX Inspection (every 5th heartbeat)
-	// UX inspector (Playwright) disabled — wastes VRAM and blocks GPU for art gen
-	if (false && heartbeatCount % 5 === 0 && heartbeatCount > 0) {
-		try {
-			await runUxInspection(session);
-		} catch (err) {
-			const msg = err instanceof Error ? err.message : 'ux inspection failed';
-			log(session, `[error] UX inspection failed: ${msg}`);
+		} else {
+			log(session, `[spawn] No actionable tasks — nothing to spawn`);
 		}
+
+		// ── Phase 5c: Audit project agent associations
+		// Check every 5th heartbeat for projects with no agents configured
+		if (heartbeatCount % 5 === 1) {
+			try {
+				const allProjects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root).catch(() => []);
+				for (const project of allProjects) {
+					try {
+						const assocRaw = await readFile(resolve(project.path, '.playground', 'agents.json'), 'utf-8').catch(() => '{"agents":[]}');
+						const assoc = JSON.parse(assocRaw) as { agents: string[] };
+						if (assoc.agents.length === 0 && project.status === 'active') {
+							// Only log once per project per session by checking monitor session content
+							const alreadyNotified = session.messages.some(m =>
+								m.content.includes(`[agents] Project "${project.id}" has no agents`)
+							);
+							if (!alreadyNotified) {
+								const meta = await detectProjectMeta(project.path).catch(() => null);
+								const profileHints: string[] = [];
+								if (meta?.language) profileHints.push(meta.language);
+								if (meta?.framework) profileHints.push(meta.framework);
+								if (!meta?.testCommand) profileHints.push('no tests');
+								if (meta?.workflows.length === 0) profileHints.push('no CI/CD');
+								if (!meta?.maintenance.hasDocsDir) profileHints.push('no docs');
+
+								log(session, `[agents] Project "${project.id}" has no agents configured` +
+									(profileHints.length > 0 ? ` (${profileHints.join(', ')})` : '') +
+									` — use Suggest Agents on /projects/${project.id}/agents to auto-configure`);
+
+								if (notificationsEnabled) {
+									await pushNotification({
+										severity: 'info',
+										category: 'agent',
+										title: `Project "${project.name}" needs agents`,
+										message: `No agents configured${profileHints.length > 0 ? ` — detected: ${profileHints.join(', ')}` : ''}. Click to configure.`,
+										source: 'claw',
+										link: `/projects/${project.id}/agents`,
+										linkLabel: 'Configure Agents'
+									});
+								}
+							}
+						}
+					} catch { /* skip individual project errors */ }
+				}
+			} catch { /* project scan failed */ }
+		}
+
+		// ── Phase 5d: UX Inspection (every 5th heartbeat)
+		// UX inspector (Playwright) disabled — wastes VRAM and blocks GPU for art gen
+		if (false && heartbeatCount % 5 === 0 && heartbeatCount > 0) {
+			try {
+				await runUxInspection(session);
+			} catch (err) {
+				const msg = err instanceof Error ? err.message : 'ux inspection failed';
+				log(session, `[error] UX inspection failed: ${msg}`);
+			}
+		}
+	} else {
+		log(session, `[spawn] Phase disabled — skipping agent spawning`);
 	}
 
-	// ── Phase 6: Project review cycle
-	const agents = getActiveAgents();
-	const timeSinceReview = Date.now() - lastReviewAt;
-	const shouldReview = taskScan.pending === 0
-		&& taskScan.clawAssigned.length === 0
-		&& taskScan.unassignedPending.length === 0
-		&& taskScan.flaggedForDiscussion.length === 0
-		&& agents.size === 0
-		&& timeSinceReview > REVIEW_COOLDOWN_MS;
+	// ── Phase 6: Project review cycle (gated by config.phases.reviewCycle)
+	if (hbConfig.phases.reviewCycle) {
+		const agents = getActiveAgents();
+		const timeSinceReview = Date.now() - lastReviewAt;
+		const reviewCooldown = hbConfig.intervals.reviewCycle;
+		const shouldReviewNow = taskScan.pending === 0
+			&& taskScan.clawAssigned.length === 0
+			&& taskScan.unassignedPending.length === 0
+			&& taskScan.flaggedForDiscussion.length === 0
+			&& agents.size === 0
+			&& timeSinceReview > reviewCooldown;
 
-	if (shouldReview) {
-		log(session, `[review] No pending tasks — launching project review`);
-		lastReviewAt = Date.now();
-		g.__claw_last_review = lastReviewAt;
-		await spawnReviewAgent(session);
+		if (shouldReviewNow) {
+			log(session, `[review] No pending tasks — launching project review`);
+			lastReviewAt = Date.now();
+			g.__claw_last_review = lastReviewAt;
+			await spawnReviewAgent(session);
+		}
 	}
 
 	// ── Phase 7: Notifications
 	if (notificationsEnabled) {
-		const allUp = onlineCount === totalCount;
+		const allUp = onlineCount === totalCount && totalCount > 0;
 		const hasErrors = !allUp || changes.some((c) => c.includes('went offline'));
 
 		const parts: string[] = [];
-		parts.push(`checked services (${onlineCount}/${totalCount} up)`);
-		parts.push(`scanned tasks (${taskScan.pending} pending, ${taskScan.inProgress} active)`);
+		if (hbConfig.phases.healthChecks) {
+			parts.push(`checked services (${onlineCount}/${totalCount} up)`);
+		}
+		if (hbConfig.phases.taskScanning) {
+			parts.push(`scanned tasks (${taskScan.pending} pending, ${taskScan.inProgress} active)`);
+		}
 		if (spawned > 0) parts.push(`spawned ${spawned} agent(s)`);
 		if (changes.length > 0) parts.push(changes.join(', '));
 		if (taskScan.flaggedForDiscussion.length > 0) parts.push(`${taskScan.flaggedForDiscussion.length} flagged for discussion`);
@@ -902,7 +938,7 @@ async function heartbeat() {
 			severity: hasErrors ? 'warning' : 'success',
 			category: 'system',
 			title: `Heartbeat #${heartbeatCount}`,
-			message: parts.join(', '),
+			message: parts.join(', ') || 'cycle complete',
 			source: 'claw',
 			link: `/chat?session=${MONITOR_SESSION_ID}`,
 			linkLabel: 'View Monitor'
@@ -926,34 +962,38 @@ async function heartbeat() {
 		log(session, `[skip] Notifications disabled`);
 	}
 
-	// ── Phase 8: Memory bridge sync
-	try {
-		const bridgeResult = await syncMemoryBridge();
-		if (bridgeResult.added > 0 || bridgeResult.updated > 0) {
-			log(session, `[memory] Bridge sync: +${bridgeResult.added} new, ${bridgeResult.updated} updated — sources: ${bridgeResult.sources.join(', ')}`);
-		}
-		if (bridgeResult.errors.length > 0) {
-			log(session, `[memory] Bridge errors: ${bridgeResult.errors.join('; ')}`);
-		}
-	} catch { /* memory bridge is best-effort */ }
+	// ── Phase 8: Memory bridge sync (gated by config.phases.memorySync)
+	if (hbConfig.phases.memorySync) {
+		try {
+			const bridgeResult = await syncMemoryBridge();
+			if (bridgeResult.added > 0 || bridgeResult.updated > 0) {
+				log(session, `[memory] Bridge sync: +${bridgeResult.added} new, ${bridgeResult.updated} updated — sources: ${bridgeResult.sources.join(', ')}`);
+			}
+			if (bridgeResult.errors.length > 0) {
+				log(session, `[memory] Bridge errors: ${bridgeResult.errors.join('; ')}`);
+			}
+		} catch { /* memory bridge is best-effort */ }
 
-	// ── Phase 9: Memory Guardian
-	try {
-		const guardianCfg = await loadGuardianConfig();
-		const guardianReport = await runMemoryGuardian(session, guardianCfg);
-		if (guardianReport && (guardianReport.agentsKilled > 0 || guardianReport.agentsWarned > 0)) {
-			await pushNotification({
-				severity: guardianReport.agentsKilled > 0 ? 'critical' : 'warning',
-				category: 'system',
-				title: 'Memory Guardian alert',
-				message: `${guardianReport.agentsWarned} warned, ${guardianReport.agentsKilled} killed — ${(guardianReport.logBytesFreed / 1024 / 1024).toFixed(1)} MB freed`,
-				source: 'claw',
-				link: `/chat?session=${MONITOR_SESSION_ID}`,
-				linkLabel: 'View Monitor',
-				desktop: guardianReport.agentsKilled > 0
-			}).catch(() => {});
-		}
-	} catch { /* guardian is best-effort */ }
+		// ── Phase 9: Memory Guardian
+		try {
+			const guardianCfg = await loadGuardianConfig();
+			const guardianReport = await runMemoryGuardian(session, guardianCfg);
+			if (guardianReport && (guardianReport.agentsKilled > 0 || guardianReport.agentsWarned > 0)) {
+				await pushNotification({
+					severity: guardianReport.agentsKilled > 0 ? 'critical' : 'warning',
+					category: 'system',
+					title: 'Memory Guardian alert',
+					message: `${guardianReport.agentsWarned} warned, ${guardianReport.agentsKilled} killed — ${(guardianReport.logBytesFreed / 1024 / 1024).toFixed(1)} MB freed`,
+					source: 'claw',
+					link: `/chat?session=${MONITOR_SESSION_ID}`,
+					linkLabel: 'View Monitor',
+					desktop: guardianReport.agentsKilled > 0
+				}).catch(() => {});
+			}
+		} catch { /* guardian is best-effort */ }
+	} else {
+		log(session, `[memory] Phase disabled — skipping memory sync`);
+	}
 
 	// ── Phase 10: Cleanup & Idle
 	await cleanupPromptFiles();
@@ -969,16 +1009,16 @@ async function heartbeat() {
 // ── Scheduling ───────────────────────────────────────────────────────
 
 function scheduleNext() {
-	loadSettings().then((settings) => {
-		const interval = settings.heartbeatIntervalMs ?? DEFAULT_INTERVAL_MS;
-		setTimer(setTimeout(() => {
-			heartbeat().catch(() => { scheduleNext(); });
-		}, interval));
-	}).catch(() => {
-		setTimer(setTimeout(() => {
-			heartbeat().catch(() => { scheduleNext(); });
-		}, DEFAULT_INTERVAL_MS));
-	});
+	// Use the smallest enabled phase interval as the heartbeat tick rate
+	const hbConfig = getHeartbeatConfig();
+	const interval = Math.min(
+		hbConfig.intervals.healthChecks,
+		hbConfig.intervals.taskScanning,
+		hbConfig.intervals.agentSpawning,
+	);
+	setTimer(setTimeout(() => {
+		heartbeat().catch(() => { scheduleNext(); });
+	}, interval));
 }
 
 async function cleanupStuckSessions(): Promise<void> {
@@ -1002,6 +1042,9 @@ function startHeartbeat() {
 	if (getTimer()) return;
 	ensureChatsDir().then(async () => {
 		cleanupStuckSessions().catch(() => {});
+
+		// Load config from disk on startup
+		await loadHeartbeatConfig();
 
 		// Kill orphaned processes from previous server instance
 		try {

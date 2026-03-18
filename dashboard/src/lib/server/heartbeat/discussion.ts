@@ -19,6 +19,69 @@ import { registerPid, unregisterPid } from './pid-registry.js';
 import type { ChatSession } from '$lib/types/chat.js';
 import type { Task } from '$lib/types/tasks.js';
 
+// ── Reply queue for when all agent slots are full ────────────────────
+interface PendingReply {
+	task: Task;
+	discussionContext: string;
+	sessionId: string;
+	timestamp: number;
+}
+
+const MAX_PENDING_REPLIES = 50;
+const REPLY_TTL_MS = 10 * 60 * 1000; // 10 minutes
+
+const pendingReplies: PendingReply[] = [];
+
+/** Drain queued replies when an agent slot frees up. Called after agent completion. */
+export async function drainPendingReplies(monitorSession: ChatSession): Promise<void> {
+	// Expire stale entries first
+	const now = Date.now();
+	for (let i = pendingReplies.length - 1; i >= 0; i--) {
+		if (now - pendingReplies[i].timestamp > REPLY_TTL_MS) {
+			const expired = pendingReplies.splice(i, 1)[0];
+			log(monitorSession, `[discuss] Queued reply for "${expired.task.title}" expired (>10min) — dropping`);
+			pushNotification({
+				severity: 'warning',
+				category: 'agent',
+				title: `Discussion reply expired`,
+				message: `Reply for "${expired.task.title}" was queued too long and was dropped. Please reply again.`,
+				source: 'claw',
+				link: `/chat?session=${expired.sessionId}`,
+				linkLabel: 'View Discussion',
+				desktop: true
+			}).catch(() => {});
+		}
+	}
+
+	// Process oldest pending reply if there's a free slot
+	while (pendingReplies.length > 0 && getActiveAgents().size < getMaxConcurrentAgents()) {
+		const next = pendingReplies.shift()!;
+
+		// Verify task is still actionable
+		const allTasks = await getAllTasks(PATHS.root);
+		const task = allTasks.find(t => t.id === next.task.id);
+		if (!task || (task.status !== 'pending' && task.status !== 'in_progress')) {
+			log(monitorSession, `[discuss] Queued reply for "${next.task.title}" — task no longer actionable, skipping`);
+			continue;
+		}
+
+		log(monitorSession, `[discuss] Draining queued reply for "${task.title}"`);
+		const success = await spawnAgentWithContext(task, monitorSession, next.discussionContext, next.sessionId);
+		if (success) {
+			await handleSuccessfulSpawn(task, next.sessionId, monitorSession);
+		} else {
+			// Still full (shouldn't happen, but be defensive) — re-queue at front
+			pendingReplies.unshift(next);
+			break;
+		}
+	}
+}
+
+/** Get the current pending reply queue length (for diagnostics). */
+export function getPendingReplyCount(): number {
+	return pendingReplies.length;
+}
+
 export async function createDiscussionSession(task: Task): Promise<string> {
 	const sessionId = `discuss-${task.id}`;
 	const now = new Date().toISOString();
@@ -181,42 +244,13 @@ export async function checkDiscussionReplies(monitorSession: ChatSession): Promi
 
 				const success = await spawnAgentWithContext(task, monitorSession, discussionContext, sessionId);
 				if (success) {
-					discussions.delete(taskId); // agent running, no longer need to watch
-					await updateTask(PATHS.root, taskId, { status: 'in_progress' }).catch(() => {});
-
-					session.status = 'streaming';
-					const agentSnd = agentSender(taskId, task.title.slice(0, 30));
-					session.messages.push({
-						role: 'assistant',
-						content: `Understood. Spawning a Claude Code agent to handle this. I'll post progress updates here.`,
-						sender: agentSnd
-					});
-					await writeFile(
-						`${PATHS.chatsDir}/${sessionId}.json`,
-						JSON.stringify(session, null, '\t'),
-						'utf-8'
-					);
-
-					try {
-						const existingIndex = await readSessionIndex();
-						const si = existingIndex.findIndex(s => s.id === sessionId);
-						if (si >= 0) {
-							await upsertSessionMeta({ ...existingIndex[si], status: 'streaming', updatedAt: new Date().toISOString() });
-						}
-					} catch { /* index update failed */ }
-
-					await pushNotification({
-						severity: 'info',
-						category: 'agent',
-						title: `Discussion resolved: ${task.title}`,
-						message: `Claude Code agent spawned — follow progress in chat`,
-						source: 'claw',
-						link: `/chat?session=${sessionId}`,
-						linkLabel: 'View Progress',
-						desktop: true
-					});
+					discussions.delete(taskId);
+					await handleSuccessfulSpawn(task, sessionId, monitorSession);
+				} else {
+					// Queue the reply instead of silently dropping it
+					discussions.delete(taskId); // remove from discussion map — queue owns it now
+					enqueueReply(task, discussionContext, sessionId, monitorSession);
 				}
-				// If not spawned (max agents), leave it in the map — will retry next cycle
 			} else {
 				// Task not found or already completed — clean up
 				discussions.delete(taskId);
@@ -224,6 +258,90 @@ export async function checkDiscussionReplies(monitorSession: ChatSession): Promi
 			}
 		} catch { /* session file missing or corrupt */ }
 	}
+}
+
+async function handleSuccessfulSpawn(task: Task, sessionId: string, monitorSession: ChatSession): Promise<void> {
+	await updateTask(PATHS.root, task.id, { status: 'in_progress' }).catch(() => {});
+
+	// Update session file to streaming
+	try {
+		const raw = await readFile(`${PATHS.chatsDir}/${sessionId}.json`, 'utf-8');
+		const session: ChatSession = JSON.parse(raw);
+		session.status = 'streaming';
+		const agentSnd = agentSender(task.id, task.title.slice(0, 30));
+		session.messages.push({
+			role: 'assistant',
+			content: `Understood. Spawning a Claude Code agent to handle this. I'll post progress updates here.`,
+			sender: agentSnd
+		});
+		await writeFile(
+			`${PATHS.chatsDir}/${sessionId}.json`,
+			JSON.stringify(session, null, '\t'),
+			'utf-8'
+		);
+	} catch { /* session file missing or corrupt */ }
+
+	try {
+		const existingIndex = await readSessionIndex();
+		const si = existingIndex.findIndex(s => s.id === sessionId);
+		if (si >= 0) {
+			await upsertSessionMeta({ ...existingIndex[si], status: 'streaming', updatedAt: new Date().toISOString() });
+		}
+	} catch { /* index update failed */ }
+
+	await pushNotification({
+		severity: 'info',
+		category: 'agent',
+		title: `Discussion resolved: ${task.title}`,
+		message: `Claude Code agent spawned — follow progress in chat`,
+		source: 'claw',
+		link: `/chat?session=${sessionId}`,
+		linkLabel: 'View Progress',
+		desktop: true
+	});
+}
+
+function enqueueReply(task: Task, discussionContext: string, sessionId: string, monitorSession: ChatSession): void {
+	// Check if already queued for this task
+	if (pendingReplies.some(r => r.task.id === task.id)) {
+		log(monitorSession, `[discuss] Reply for "${task.title}" already queued — skipping duplicate`);
+		return;
+	}
+
+	if (pendingReplies.length >= MAX_PENDING_REPLIES) {
+		// Drop the oldest entry to make room
+		const dropped = pendingReplies.shift()!;
+		log(monitorSession, `[discuss] Reply queue full (${MAX_PENDING_REPLIES}) — dropped oldest: "${dropped.task.title}"`);
+		pushNotification({
+			severity: 'warning',
+			category: 'agent',
+			title: `Discussion reply dropped`,
+			message: `Queue is full. Reply for "${dropped.task.title}" was dropped. Please reply again when agents are free.`,
+			source: 'claw',
+			link: `/chat?session=${dropped.sessionId}`,
+			linkLabel: 'View Discussion',
+			desktop: true
+		}).catch(() => {});
+	}
+
+	pendingReplies.push({
+		task,
+		discussionContext,
+		sessionId,
+		timestamp: Date.now()
+	});
+
+	log(monitorSession, `[discuss] Reply for "${task.title}" queued (${pendingReplies.length} pending) — agents busy`);
+	pushNotification({
+		severity: 'info',
+		category: 'agent',
+		title: `Reply queued — agents busy`,
+		message: `Your reply for "${task.title}" is queued and will be processed when an agent slot opens.`,
+		source: 'claw',
+		link: `/chat?session=${sessionId}`,
+		linkLabel: 'View Discussion',
+		desktop: true
+	}).catch(() => {});
 }
 
 async function spawnAgentWithContext(task: Task, monitorSession: ChatSession, discussionContext: string, discussionSessionId: string): Promise<boolean> {
@@ -295,6 +413,9 @@ async function spawnAgentWithContext(task: Task, monitorSession: ChatSession, di
 			} else {
 				updateTask(PATHS.root, task.id, { status: 'pending', assignee: null }).catch(() => {});
 			}
+
+			// Agent slot freed — drain any queued discussion replies
+			drainPendingReplies(monitorSession).catch(() => {});
 		});
 
 		log(monitorSession, `[spawn] Agent → "${task.title}" → chat: ${discussionSessionId}`);

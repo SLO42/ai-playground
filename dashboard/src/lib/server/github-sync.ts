@@ -1,9 +1,13 @@
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { resolve, basename } from 'path';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { PATHS } from './constants.js';
 import { pushNotification } from './notifications.js';
 import { getAllTasks, replaceAllTasks, migrateIfNeeded } from './task-store.js';
 import type { Task, TaskStatus, TaskPriority } from '$lib/types/tasks.js';
+
+const execFileAsync = promisify(execFile);
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -79,78 +83,68 @@ async function saveTasks(projectPath: string, tasks: Task[]): Promise<void> {
 
 // ── GitHub CLI helpers ─────────────────────────────────────────────────
 
-async function gh(args: string, stdin?: string, cwd?: string): Promise<string> {
-	const { spawn } = await import('child_process');
+/**
+ * Execute a GitHub CLI command using array-form args (no shell interpolation).
+ * If stdin content is provided, it is written via the child's stdin pipe.
+ */
+async function gh(args: string[], stdin?: string, cwd?: string): Promise<string> {
+	if (stdin) {
+		// execFile doesn't support piping stdin directly, use spawn for stdin cases
+		const { spawn } = await import('child_process');
 
-	return new Promise((resolve, reject) => {
-		const proc = spawn('gh', splitArgs(args), {
-			cwd: cwd ?? PATHS.root,
-			stdio: ['pipe', 'pipe', 'pipe']
-		});
+		return new Promise((resolve, reject) => {
+			const proc = spawn('gh', args, {
+				cwd: cwd ?? PATHS.root,
+				stdio: ['pipe', 'pipe', 'pipe']
+			});
 
-		let stdout = '';
-		let stderr = '';
-		proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
-		proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
+			let stdout = '';
+			let stderr = '';
+			proc.stdout.on('data', (d: Buffer) => { stdout += d.toString(); });
+			proc.stderr.on('data', (d: Buffer) => { stderr += d.toString(); });
 
-		if (stdin) {
 			proc.stdin.write(stdin);
 			proc.stdin.end();
-		} else {
-			proc.stdin.end();
-		}
 
-		const timer = setTimeout(() => { proc.kill(); reject(new Error('gh timed out')); }, 30000);
+			const timer = setTimeout(() => { proc.kill(); reject(new Error('gh timed out')); }, 30000);
 
-		proc.on('close', (code: number) => {
-			clearTimeout(timer);
-			if (code === 0) {
-				resolve(stdout.trim());
-			} else {
-				reject(new Error(`gh ${splitArgs(args)[0]} failed: ${stderr.trim() || `exit code ${code}`}`));
-			}
+			proc.on('close', (code: number) => {
+				clearTimeout(timer);
+				if (code === 0) {
+					resolve(stdout.trim());
+				} else {
+					reject(new Error(`gh ${args[0]} failed: ${stderr.trim() || `exit code ${code}`}`));
+				}
+			});
+
+			proc.on('error', (err: Error) => {
+				clearTimeout(timer);
+				reject(err);
+			});
 		});
-
-		proc.on('error', (err: Error) => {
-			clearTimeout(timer);
-			reject(err);
-		});
-	});
-}
-
-// Split a command string into args, respecting quotes
-function splitArgs(cmd: string): string[] {
-	const args: string[] = [];
-	let current = '';
-	let inQuote = '';
-	for (const ch of cmd) {
-		if (ch === '"' || ch === "'") {
-			if (inQuote === ch) { inQuote = ''; }
-			else if (!inQuote) { inQuote = ch; }
-			else { current += ch; }
-		} else if (ch === ' ' && !inQuote) {
-			if (current) { args.push(current); current = ''; }
-		} else {
-			current += ch;
-		}
 	}
-	if (current) args.push(current);
-	return args;
+
+	const { stdout } = await execFileAsync('gh', args, {
+		cwd: cwd ?? PATHS.root,
+		timeout: 30000,
+		maxBuffer: 10 * 1024 * 1024
+	});
+	return stdout.trim();
 }
 
 async function getRepoName(cwd?: string): Promise<string> {
-	const result = await gh('repo view --json nameWithOwner --jq .nameWithOwner', undefined, cwd);
+	const result = await gh(['repo', 'view', '--json', 'nameWithOwner', '--jq', '.nameWithOwner'], undefined, cwd);
 	return result;
 }
 
 async function listIssues(repo: string, since?: string | null, cwd?: string): Promise<GitHubIssue[]> {
+	const args = ['issue', 'list', '--repo', repo, '--state', 'all', '--limit', '100',
+		'--json', 'number,title,body,state,labels,assignees,createdAt,updatedAt,url'];
 	// When we have a last-sync timestamp, use GitHub search to only fetch issues updated since then
-	const sinceFilter = since ? ` --search "updated:>=${since.slice(0, 10)}"` : '';
-	const result = await gh(
-		`issue list --repo ${repo} --state all --limit 100 --json number,title,body,state,labels,assignees,createdAt,updatedAt,url${sinceFilter}`,
-		undefined,
-		cwd
-	);
+	if (since) {
+		args.push('--search', `updated:>=${since.slice(0, 10)}`);
+	}
+	const result = await gh(args, undefined, cwd);
 	if (!result) return [];
 	const issues = JSON.parse(result);
 	// Normalize field names (gh CLI uses camelCase)
@@ -192,21 +186,17 @@ async function createIssue(repo: string, task: Task, projectId: string, source?:
 			: '_Synced from ai-playground dashboard_'
 	].filter((l) => l !== undefined).join('\n');
 
-	// Sanitize task title to prevent shell injection via quote/backtick/dollar chars
-	const safeTitle = task.title.replace(/"/g, '\\"').replace(/\$/g, '\\$').replace(/`/g, '\\`');
-
 	// Ensure labels exist (--force updates if exists, creates if not)
 	for (const label of labels) {
-		await gh(`label create "${label}" --repo ${repo} --color 0E8A16 --force`).catch(() => {});
+		await gh(['label', 'create', label, '--repo', repo, '--color', '0E8A16', '--force']).catch(() => {});
 	}
 
-	const labelFlags = labels.map((l) => `-l "${l}"`).join(' ');
-
 	// Use --body-file - (stdin) to avoid shell escaping issues with body content
-	const url = await gh(
-		`issue create --repo ${repo} -t "${safeTitle}" --body-file - ${labelFlags}`,
-		body
-	);
+	const issueArgs = ['issue', 'create', '--repo', repo, '-t', task.title, '--body-file', '-'];
+	for (const label of labels) {
+		issueArgs.push('-l', label);
+	}
+	const url = await gh(issueArgs, body);
 
 	// Parse issue number from URL: https://github.com/owner/repo/issues/123
 	const match = url.match(/\/issues\/(\d+)/);
@@ -216,7 +206,7 @@ async function createIssue(repo: string, task: Task, projectId: string, source?:
 	// Credit the source with a comment if it's an agent
 	if (source && source !== 'dashboard' && source !== 'user') {
 		await gh(
-			`issue comment ${issueNumber} --repo ${repo} --body-file -`,
+			['issue', 'comment', String(issueNumber), '--repo', repo, '--body-file', '-'],
 			`> Created-By: **${source}** via ai-playground dashboard\n>\n> This issue was synced automatically by the \`${source}\` agent.`
 		).catch(() => {});
 	}
@@ -229,9 +219,9 @@ async function updateIssue(repo: string, issueNumber: number, task: Task): Promi
 
 	// Update state
 	if (state === 'closed') {
-		await gh(`issue close ${issueNumber} --repo ${repo}`);
+		await gh(['issue', 'close', String(issueNumber), '--repo', repo]);
 	} else {
-		await gh(`issue reopen ${issueNumber} --repo ${repo}`).catch(() => {});
+		await gh(['issue', 'reopen', String(issueNumber), '--repo', repo]).catch(() => {});
 	}
 
 	// Update labels
@@ -240,16 +230,19 @@ async function updateIssue(repo: string, issueNumber: number, task: Task): Promi
 		`priority:${task.priority}`,
 		`status:${task.status}`
 	];
-	const labelFlags = labels.map((l) => `--add-label "${l}"`).join(' ');
 
 	// Create labels if needed
 	for (const label of labels) {
 		try {
-			await gh(`label create "${label}" --repo ${repo} --color 0E8A16 --force 2>/dev/null`);
+			await gh(['label', 'create', label, '--repo', repo, '--color', '0E8A16', '--force']);
 		} catch { /* ignore */ }
 	}
 
-	await gh(`issue edit ${issueNumber} --repo ${repo} ${labelFlags}`).catch(() => {});
+	const editArgs = ['issue', 'edit', String(issueNumber), '--repo', repo];
+	for (const label of labels) {
+		editArgs.push('--add-label', label);
+	}
+	await gh(editArgs).catch(() => {});
 }
 
 // ── Status/Priority mapping ────────────────────────────────────────────

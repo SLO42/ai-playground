@@ -12,12 +12,16 @@ export const GET: RequestHandler = async ({ params }) => {
 
 	const logPath = service.logFile;
 
+	// Shared cleanup reference — set inside start(), called from cancel()
+	let cleanupRef: (() => void) | null = null;
+
 	const stream = new ReadableStream({
 		start(controller) {
 			const encoder = new TextEncoder();
-			let positions = new Map<string, number>();
+			const positions = new Map<string, number>();
 			let watchedFiles: string[] = [];
 			let dirInterval: ReturnType<typeof setInterval> | null = null;
+			let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
 			let closed = false;
 
 			function send(data: string) {
@@ -38,7 +42,8 @@ export const GET: RequestHandler = async ({ params }) => {
 						return;
 					}
 					const buf = Buffer.alloc(s.size - prev);
-					const fh = await (await import('fs/promises')).open(filePath, 'r');
+					const { open } = await import('fs/promises');
+					const fh = await open(filePath, 'r');
 					await fh.read(buf, 0, buf.length, prev);
 					await fh.close();
 					positions.set(filePath, s.size);
@@ -67,7 +72,6 @@ export const GET: RequestHandler = async ({ params }) => {
 					const info = await stat(logPath);
 
 					if (info.isDirectory()) {
-						// Watch directory for new/changed files
 						async function scanDir() {
 							try {
 								const files = await readdir(logPath);
@@ -91,30 +95,35 @@ export const GET: RequestHandler = async ({ params }) => {
 			}
 
 			function cleanup() {
+				if (closed) return;
 				closed = true;
 				for (const fp of watchedFiles) {
 					unwatchFile(fp);
 				}
 				watchedFiles = [];
-				if (dirInterval) clearInterval(dirInterval);
+				if (dirInterval) { clearInterval(dirInterval); dirInterval = null; }
+				if (keepaliveTimer) { clearInterval(keepaliveTimer); keepaliveTimer = null; }
 			}
+
+			// Expose cleanup for the cancel() handler
+			cleanupRef = cleanup;
 
 			setup();
 
 			// Send keepalive every 15s
-			const keepalive = setInterval(() => {
-				if (closed) { clearInterval(keepalive); return; }
+			keepaliveTimer = setInterval(() => {
+				if (closed) { cleanup(); return; }
 				try {
 					controller.enqueue(encoder.encode(': keepalive\n\n'));
 				} catch {
 					cleanup();
-					clearInterval(keepalive);
 				}
 			}, 15000);
 
-			// Clean up when the client disconnects
-			// The controller's cancel signal is handled via the pull/cancel mechanism
 			controller.enqueue(encoder.encode(': connected\n\n'));
+		},
+		cancel() {
+			cleanupRef?.();
 		}
 	});
 

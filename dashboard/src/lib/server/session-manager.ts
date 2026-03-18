@@ -24,21 +24,42 @@ function withIndexLock<T>(fn: () => Promise<T>): Promise<T> {
 
 // ── In-memory state for active sessions ───────────────────────────────
 
+export interface PendingToolCall {
+	id: string;
+	name: string;
+	arguments: Record<string, unknown>;
+}
+
 interface ActiveSession {
 	id: string;
 	status: SessionStatus;
 	abortController: AbortController | null;
 	subscribers: Set<(event: SessionEvent) => void>;
 	idleTimer: ReturnType<typeof setTimeout> | null;
+	/** Tool calls waiting for user confirmation before execution */
+	pendingConfirmations: PendingToolCall[];
+	/** Accumulated assistant text from the turn that produced pending tool calls */
+	pendingAssistantText: string;
+	/** All tool calls from the turn (including auto-approved ones already executed) */
+	pendingAllToolCalls: ToolCall[];
 }
 
 export interface SessionEvent {
-	type: 'message' | 'content_delta' | 'tool_call' | 'tool_result' | 'status' | 'error' | 'done';
+	type:
+		| 'message'
+		| 'content_delta'
+		| 'tool_call'
+		| 'tool_result'
+		| 'status'
+		| 'error'
+		| 'done'
+		| 'pending_confirmation';
 	sessionId: string;
 	message?: ChatMessage;
 	content?: string;
 	tool_call?: { id: string; name: string; arguments: Record<string, unknown> };
 	tool_result?: { call_id: string; name: string; content: string };
+	pending_confirmations?: PendingToolCall[];
 	status?: SessionStatus;
 	error?: string;
 }
@@ -152,7 +173,7 @@ function clearIdleTimer(active: ActiveSession) {
 export function subscribe(sessionId: string, fn: (event: SessionEvent) => void): () => void {
 	let active = activeSessions.get(sessionId);
 	if (!active) {
-		active = { id: sessionId, status: 'idle', abortController: null, subscribers: new Set(), idleTimer: null };
+		active = { id: sessionId, status: 'idle', abortController: null, subscribers: new Set(), idleTimer: null, pendingConfirmations: [], pendingAssistantText: '', pendingAllToolCalls: [] };
 		activeSessions.set(sessionId, active);
 	}
 	active.subscribers.add(fn);
@@ -360,7 +381,7 @@ export async function resumeSession(sessionId: string): Promise<boolean> {
 async function streamSession(sessionId: string) {
 	let active = activeSessions.get(sessionId);
 	if (!active) {
-		active = { id: sessionId, status: 'streaming', abortController: null, subscribers: new Set(), idleTimer: null };
+		active = { id: sessionId, status: 'streaming', abortController: null, subscribers: new Set(), idleTimer: null, pendingConfirmations: [], pendingAssistantText: '', pendingAllToolCalls: [] };
 		activeSessions.set(sessionId, active);
 	}
 	clearIdleTimer(active);
@@ -444,34 +465,19 @@ async function streamSession(sessionId: string) {
 			// Execute tools
 			history.push({ role: 'assistant', content: fullText, tool_calls: pendingToolCalls });
 
-			// Notify subscribers about tools needing confirmation
-			const needsConfirmation = pendingToolCalls.filter(
-				(tc) => !shouldAutoExecute(tc.name, settings)
-			);
-			for (const tc of needsConfirmation) {
-				broadcast(sessionId, {
-					type: 'tool_call',
-					sessionId,
-					tool_call: { id: tc.id, name: tc.name, arguments: tc.arguments }
-				});
+			// Split tool calls into auto-execute vs needs-confirmation
+			const autoExecCalls: ToolCall[] = [];
+			const confirmCalls: PendingToolCall[] = [];
+			for (const tc of pendingToolCalls) {
+				if (shouldAutoExecute(tc.name, settings)) {
+					autoExecCalls.push(tc);
+				} else {
+					confirmCalls.push({ id: tc.id, name: tc.name, arguments: tc.arguments });
+				}
 			}
 
-			for (const tc of pendingToolCalls) {
-				// Tools that need user confirmation must NOT auto-execute
-				if (!shouldAutoExecute(tc.name, settings)) {
-					console.warn(`[session-manager] Tool "${tc.name}" requires confirmation — skipping auto-execution`);
-					const skippedResult = `Tool "${tc.name}" requires user confirmation before execution.`;
-					const toolMsg: ChatMessage = {
-						role: 'tool',
-						content: skippedResult,
-						tool_call_id: tc.id,
-						tool_name: tc.name
-					};
-					session.messages.push(toolMsg);
-					history.push({ role: 'tool', content: skippedResult, tool_call_id: tc.id });
-					continue;
-				}
-
+			// Execute auto-approved tools immediately
+			for (const tc of autoExecCalls) {
 				const result = await executeTool(tc);
 				broadcast(sessionId, {
 					type: 'tool_result',
@@ -487,6 +493,33 @@ async function streamSession(sessionId: string) {
 				};
 				session.messages.push(toolMsg);
 				history.push({ role: 'tool', content: result, tool_call_id: tc.id });
+			}
+
+			// If any tools need confirmation, pause the session and wait
+			if (confirmCalls.length > 0) {
+				console.warn(
+					`[session-manager] ${confirmCalls.length} tool(s) require confirmation: ${confirmCalls.map((t) => t.name).join(', ')}`
+				);
+
+				// Store pending state on the active session
+				active.pendingConfirmations = confirmCalls;
+				active.pendingAssistantText = fullText;
+				active.pendingAllToolCalls = pendingToolCalls;
+				active.status = 'waiting';
+
+				session.status = 'waiting';
+				await saveSession(session);
+
+				// Notify all subscribers about the pending confirmations
+				broadcast(sessionId, {
+					type: 'pending_confirmation',
+					sessionId,
+					pending_confirmations: confirmCalls
+				});
+				broadcast(sessionId, { type: 'status', sessionId, status: 'waiting' });
+
+				// Break the streaming loop — execution resumes via confirmToolCalls / denyToolCalls
+				return;
 			}
 
 			await saveSession(session);
@@ -515,4 +548,129 @@ async function streamSession(sessionId: string) {
 	} finally {
 		active.abortController = null;
 	}
+}
+
+// ── Tool Confirmation API ─────────────────────────────────────────────
+
+/** Get pending tool confirmations for a session (empty array if none) */
+export function getPendingConfirmations(sessionId: string): PendingToolCall[] {
+	const active = activeSessions.get(sessionId);
+	if (!active || active.status !== 'waiting') return [];
+	return [...active.pendingConfirmations];
+}
+
+/** Confirm and execute pending tool calls. Resumes the streaming loop afterward. */
+export async function confirmToolCalls(
+	sessionId: string,
+	toolCallIds?: string[]
+): Promise<boolean> {
+	const active = activeSessions.get(sessionId);
+	if (!active || active.status !== 'waiting' || active.pendingConfirmations.length === 0) {
+		return false;
+	}
+
+	const session = await loadSession(sessionId);
+	if (!session) return false;
+
+	// Determine which pending calls to confirm (all if no specific IDs given)
+	const idsToConfirm = toolCallIds
+		? new Set(toolCallIds)
+		: new Set(active.pendingConfirmations.map((tc) => tc.id));
+
+	const confirmed = active.pendingConfirmations.filter((tc) => idsToConfirm.has(tc.id));
+	const denied = active.pendingConfirmations.filter((tc) => !idsToConfirm.has(tc.id));
+
+	// Execute confirmed tools
+	for (const tc of confirmed) {
+		const fullTc: ToolCall = active.pendingAllToolCalls.find((t) => t.id === tc.id) ?? {
+			id: tc.id,
+			name: tc.name,
+			arguments: tc.arguments
+		};
+		const result = await executeTool(fullTc);
+		broadcast(sessionId, {
+			type: 'tool_result',
+			sessionId,
+			tool_result: { call_id: tc.id, name: tc.name, content: result }
+		});
+
+		const toolMsg: ChatMessage = {
+			role: 'tool',
+			content: result,
+			tool_call_id: tc.id,
+			tool_name: tc.name
+		};
+		session.messages.push(toolMsg);
+	}
+
+	// Deny remaining tools (return a denial message as the tool result)
+	for (const tc of denied) {
+		const denialResult = `Tool "${tc.name}" was denied by the user.`;
+		const toolMsg: ChatMessage = {
+			role: 'tool',
+			content: denialResult,
+			tool_call_id: tc.id,
+			tool_name: tc.name
+		};
+		session.messages.push(toolMsg);
+	}
+
+	// Clear pending state
+	active.pendingConfirmations = [];
+	active.pendingAssistantText = '';
+	active.pendingAllToolCalls = [];
+
+	session.status = 'streaming';
+	await saveSession(session);
+
+	// Resume the streaming loop so the LLM can process tool results
+	streamSession(sessionId).catch((err) =>
+		console.error('[session-manager] Stream error after confirm:', err.message)
+	);
+
+	return true;
+}
+
+/** Deny all pending tool calls and resume the session with denial messages. */
+export async function denyToolCalls(sessionId: string): Promise<boolean> {
+	const active = activeSessions.get(sessionId);
+	if (!active || active.status !== 'waiting' || active.pendingConfirmations.length === 0) {
+		return false;
+	}
+
+	const session = await loadSession(sessionId);
+	if (!session) return false;
+
+	// Add denial result for every pending tool call
+	for (const tc of active.pendingConfirmations) {
+		const denialResult = `Tool "${tc.name}" was denied by the user.`;
+		broadcast(sessionId, {
+			type: 'tool_result',
+			sessionId,
+			tool_result: { call_id: tc.id, name: tc.name, content: denialResult }
+		});
+
+		const toolMsg: ChatMessage = {
+			role: 'tool',
+			content: denialResult,
+			tool_call_id: tc.id,
+			tool_name: tc.name
+		};
+		session.messages.push(toolMsg);
+	}
+
+	// Clear pending state
+	active.pendingConfirmations = [];
+	active.pendingAssistantText = '';
+	active.pendingAllToolCalls = [];
+
+	session.status = 'streaming';
+	await saveSession(session);
+
+	// Resume streaming so the LLM gets the denial results and can respond
+	streamSession(sessionId).catch((err) =>
+		console.error('[session-manager] Stream error after deny:', err.message)
+	);
+
+	return true;
 }

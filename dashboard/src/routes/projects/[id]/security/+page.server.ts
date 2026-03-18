@@ -1,41 +1,52 @@
 import type { PageServerLoad } from './$types.js';
-import { error } from '@sveltejs/kit';
-import { getFeatureFlags } from '$lib/server/feature-flags.js';
+import { resolve } from 'path';
+import { readJsonFile } from '$lib/server/file-reader.js';
+import { readYamlFile } from '$lib/server/yaml-parser.js';
+import { PATHS } from '$lib/server/constants.js';
+import { scanAllProjects } from '$lib/server/project-scanner.js';
+import type { AuditStatus, SecurityFinding, SecurityPolicy } from '$lib/types/security.js';
 
-interface SecurityData {
-	summary: { lastScan: string; vulnerabilities: number; critical: number; score: string; status: string };
-	vulnerabilities: Array<{ package: string; severity: string; cve: string; current: string; fixed: string }>;
-	policies: Array<{ name: string; value: string; pass: boolean }>;
-	permissions: Array<{ path: string; perms: string; pass: boolean }>;
-	auditLog: Array<{ time: string; message: string; result: 'PASS' }>;
-	loadError: string | null;
+interface ScanFindingsFile {
+	scannedAt: string;
+	findings: Array<{ severity: string; issue: string; detail: string; component?: string }>;
 }
 
-export const load: PageServerLoad = async ({ params, fetch }) => {
-	const flags = getFeatureFlags();
-	if (!flags.previewNewPages) throw error(404, 'Not found');
+export const load: PageServerLoad = async ({ params }) => {
+	const projects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root);
+	const project = projects.find((p) => p.id === params.id);
+	const projectPath = project?.path ?? PATHS.root;
 
-	const loadSecurity = async (): Promise<SecurityData> => {
-		const res = await fetch(`/api/projects/${encodeURIComponent(params.id)}/security`);
-		if (!res.ok) {
-			const body = await res.json().catch(() => ({ error: 'Failed to load security data' }));
-			throw new Error(body.error ?? `HTTP ${res.status}`);
-		}
-		const data = await res.json();
-		return { ...data, loadError: null };
-	};
+	// Try project-specific security files first, fall back to global
+	const projectAuditPath = resolve(projectPath, '.playground', 'security-audit.json');
+	const projectScanPath = resolve(projectPath, '.playground', 'security-findings.json');
+	const projectPolicyPath = resolve(projectPath, 'config', 'security', 'network-policy.yaml');
+
+	const [projectAudit, projectScan, projectPolicy, globalAudit, globalScan, globalPolicy] =
+		await Promise.all([
+			readJsonFile<AuditStatus>(projectAuditPath),
+			readJsonFile<ScanFindingsFile>(projectScanPath),
+			readYamlFile<SecurityPolicy>(projectPolicyPath),
+			readJsonFile<AuditStatus>(PATHS.auditStatus),
+			readJsonFile<ScanFindingsFile>(PATHS.scanFindings),
+			readYamlFile<SecurityPolicy>(PATHS.networkPolicy)
+		]);
+
+	const audit = projectAudit ?? globalAudit;
+	const scanFile = projectScan ?? globalScan;
+	const policy = projectPolicy ?? globalPolicy;
+
+	const scanFindings: SecurityFinding[] = (scanFile?.findings ?? []).map((f) => ({
+		severity: f.severity as SecurityFinding['severity'],
+		issue: f.issue,
+		detail: f.detail,
+		component: f.component,
+		detected: scanFile?.scannedAt
+	}));
 
 	return {
-		security: loadSecurity().catch((e) => {
-			const message = e instanceof Error ? e.message : 'Failed to load security data';
-			return {
-				summary: { lastScan: 'Error', vulnerabilities: 0, critical: 0, score: 'N/A', status: 'ERROR' },
-				vulnerabilities: [],
-				policies: [],
-				permissions: [],
-				auditLog: [],
-				loadError: message
-			} satisfies SecurityData;
-		})
+		audit,
+		policy,
+		scanFindings,
+		projectPath
 	};
 };

@@ -3,11 +3,17 @@
  */
 import { openSync, closeSync } from 'fs';
 import { mkdir, writeFile, unlink } from 'fs/promises';
-import { spawn } from 'child_process';
+import { spawn, type ChildProcess } from 'child_process';
 import { resolve } from 'path';
 import { randomUUID } from 'crypto';
 import { PATHS } from '../constants.js';
 import type { Task } from '$lib/types/tasks.js';
+
+const destroyStreams = (child: ChildProcess) => {
+	child.stdin?.destroy();
+	child.stdout?.destroy();
+	child.stderr?.destroy();
+};
 
 export interface SpawnOptions {
 	model: string;
@@ -71,7 +77,12 @@ export async function spawnClaude(prompt: string, logFile: string, opts: SpawnOp
 		child.unref();
 
 		child.on('close', () => {
+			destroyStreams(child);
 			unlink(promptFile).catch(() => {});
+		});
+
+		child.on('error', () => {
+			destroyStreams(child);
 		});
 
 		return child;

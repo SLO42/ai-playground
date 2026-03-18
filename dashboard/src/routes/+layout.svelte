@@ -82,6 +82,43 @@
 	// SSE stream for real-time notifications
 	let eventSource: EventSource | null = null;
 
+	// Desktop notification support via browser Notification API
+	let desktopEnabled = $state(false);
+
+	async function requestDesktopPermission() {
+		if (typeof Notification === 'undefined') return;
+		if (Notification.permission === 'granted') {
+			desktopEnabled = true;
+			return;
+		}
+		if (Notification.permission === 'denied') return;
+		const result = await Notification.requestPermission();
+		desktopEnabled = result === 'granted';
+	}
+
+	async function fetchDesktopPref(): Promise<boolean> {
+		try {
+			const res = await fetch('/api/settings/notifications', { signal: AbortSignal.timeout(3000) });
+			if (!res.ok) return true;
+			const settings = await res.json();
+			return settings.desktop !== false;
+		} catch {
+			return true;
+		}
+	}
+
+	function showDesktopNotification(title: string, body: string, severity?: string) {
+		if (!desktopEnabled) return;
+		if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
+		// Don't show desktop notification if the tab is focused
+		if (document.hasFocus()) return;
+		try {
+			new Notification(title, { body, tag: `notif-${Date.now()}` });
+		} catch {
+			// Browser may block in certain contexts
+		}
+	}
+
 	function connectNotificationStream() {
 		if (typeof EventSource === 'undefined') return;
 
@@ -103,6 +140,9 @@
 					notif.message
 				);
 				badgeCount.update((n) => n + 1);
+
+				// Show browser desktop notification when enabled
+				showDesktopNotification(notif.title, notif.message, notif.severity);
 			} catch {
 				// skip malformed
 			}
@@ -115,13 +155,19 @@
 		};
 	}
 
-	onMount(() => {
+	onMount(async () => {
 		pollTimer = setInterval(() => {
 			pollHealth();
 			pollNotifCount();
 		}, 15000);
 		pollNotifCount();
 		connectNotificationStream();
+
+		// Request desktop notification permission if the server setting is enabled
+		const pref = await fetchDesktopPref();
+		if (pref) {
+			await requestDesktopPermission();
+		}
 	});
 
 	onDestroy(() => {

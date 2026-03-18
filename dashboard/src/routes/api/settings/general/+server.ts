@@ -1,3 +1,7 @@
+/**
+ * General settings API — confirmation prompts, auto-approve, timeouts.
+ * Data stored at: .playground/settings.json (global) or project-scoped equivalent.
+ */
 import { json } from '@sveltejs/kit';
 import { writeFile, mkdir } from 'fs/promises';
 import { dirname } from 'path';
@@ -12,9 +16,14 @@ function resolveFilePath(url: URL): string {
 }
 
 export const GET: RequestHandler = async ({ url }) => {
-	const filePath = resolveFilePath(url);
-	const settings = await loadGeneralSettings(filePath);
-	return json(settings);
+	try {
+		const filePath = resolveFilePath(url);
+		const settings = await loadGeneralSettings(filePath);
+		return json(settings);
+	} catch (e) {
+		console.error('[api/settings/general] GET failed:', e);
+		return json({ error: 'Failed to load general settings' }, { status: 500 });
+	}
 };
 
 export const PUT: RequestHandler = async ({ request, url }) => {
@@ -33,8 +42,13 @@ export const PUT: RequestHandler = async ({ request, url }) => {
 		projectOverride: typeof body.projectOverride === 'boolean' ? body.projectOverride : GENERAL_DEFAULTS.projectOverride
 	};
 
-	const filePath = resolveFilePath(url);
-	await mkdir(dirname(filePath), { recursive: true });
-	await writeFile(filePath, JSON.stringify(settings, null, '\t'), 'utf-8');
-	return json({ ok: true });
+	try {
+		const filePath = resolveFilePath(url);
+		await mkdir(dirname(filePath), { recursive: true });
+		await writeFile(filePath, JSON.stringify(settings, null, '\t'), 'utf-8');
+		return json({ ok: true });
+	} catch (e) {
+		console.error('[api/settings/general] PUT failed:', e);
+		return json({ error: 'Failed to save general settings' }, { status: 500 });
+	}
 };

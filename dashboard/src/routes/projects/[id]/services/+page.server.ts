@@ -1,126 +1,163 @@
+import { resolve } from 'path';
+import { readFile } from 'fs/promises';
 import type { PageServerLoad } from './$types.js';
-import { error } from '@sveltejs/kit';
-import { PATHS } from '$lib/server/constants.js';
-import { scanAllProjects } from '$lib/server/project-scanner.js';
-import { getFeatureFlags } from '$lib/server/feature-flags.js';
-import type { Service } from '$lib/types/services.js';
+import { PATHS, SERVICES } from '$lib/server/constants.js';
+import { scanAllProjects, detectProjectMeta } from '$lib/server/project-scanner.js';
 
-interface ServiceEntry {
+interface ProjectService {
 	id: string;
 	name: string;
-	status: string;
-	description: string;
+	type: string;
 	port: number | null;
-	pid: number | null;
-	uptime: string | null;
-	configFile: string | null;
+	healthUrl: string | null;
+	status: 'unknown' | 'running' | 'stopped';
+	source: 'detected' | 'config' | 'global';
+	command: string | null;
 }
 
-const PAGE_SIZE = 10;
-
-function toServiceEntry(svc: Service): ServiceEntry {
-	return {
-		id: svc.id,
-		name: svc.name,
-		status: svc.status,
-		description: svc.type,
-		port: svc.port,
-		pid: svc.pid,
-		uptime: svc.uptime,
-		configFile: svc.configPath
+interface ServicePageData {
+	projectId: string;
+	projectName: string;
+	projectPath: string;
+	services: ProjectService[];
+	scripts: Record<string, string>;
+	stats: {
+		total: number;
+		withPort: number;
+		detected: number;
+		global: number;
 	};
 }
 
-export const load: PageServerLoad = async ({ params, url, fetch: serverFetch }) => {
-	const flags = getFeatureFlags();
-	if (!flags.previewNewPages) throw error(404, 'Not found');
-
+async function checkHealth(url: string): Promise<boolean> {
 	try {
-		const [projects, apiRes] = await Promise.all([
-			scanAllProjects(PATHS.playgroundRegistry, PATHS.root),
-			serverFetch(`/api/projects/${encodeURIComponent(params.id)}/services`)
-		]);
-
-		const project = projects.find((p) => p.id === params.id);
-
-		if (!apiRes.ok) {
-			const body = await apiRes.json().catch(() => ({ error: 'Unknown error' }));
-			throw new Error(body.error ?? `API returned ${apiRes.status}`);
-		}
-
-		const { services: rawServices } = (await apiRes.json()) as { services: Service[] };
-		const services: ServiceEntry[] = rawServices.map(toServiceEntry);
-
-		const configSources = new Set<string>();
-		for (const svc of rawServices) {
-			if (svc.configPath) configSources.add(svc.configPath);
-		}
-
-		const running = services.filter((s) => s.status === 'running').length;
-		const stopped = services.filter((s) => s.status !== 'running').length;
-
-		// Filtering
-		const statusFilter = url.searchParams.get('status');
-		const search = url.searchParams.get('q')?.toLowerCase();
-		let filtered = services;
-		if (statusFilter && statusFilter !== 'all') {
-			filtered = filtered.filter((s) => s.status === statusFilter);
-		}
-		if (search) {
-			filtered = filtered.filter(
-				(s) => s.name.toLowerCase().includes(search) || s.description.toLowerCase().includes(search)
-			);
-		}
-
-		// Sorting
-		const sortBy = url.searchParams.get('sort') ?? 'name';
-		const sortDir = url.searchParams.get('dir') === 'desc' ? -1 : 1;
-		filtered.sort((a, b) => {
-			const aVal = (a as Record<string, unknown>)[sortBy] ?? '';
-			const bVal = (b as Record<string, unknown>)[sortBy] ?? '';
-			if (typeof aVal === 'string' && typeof bVal === 'string') return aVal.localeCompare(bVal) * sortDir;
-			if (typeof aVal === 'number' && typeof bVal === 'number') return (aVal - bVal) * sortDir;
-			return 0;
-		});
-
-		// Pagination
-		const total = filtered.length;
-		const page = Math.max(1, parseInt(url.searchParams.get('page') ?? '1', 10) || 1);
-		const pageSize = Math.max(1, Math.min(50, parseInt(url.searchParams.get('pageSize') ?? String(PAGE_SIZE), 10) || PAGE_SIZE));
-		const totalPages = Math.max(1, Math.ceil(total / pageSize));
-		const safePage = Math.min(page, totalPages);
-		const start = (safePage - 1) * pageSize;
-		const paginatedServices = filtered.slice(start, start + pageSize);
-
-		return {
-			projectName: project?.name ?? params.id,
-			error: null as string | null,
-			summary: {
-				running,
-				stopped,
-				fromConfig: rawServices.filter((s) => s.configPath).length,
-				manual: rawServices.filter((s) => !s.configPath).length,
-				configSource: [...configSources]
-			},
-			services: paginatedServices,
-			pagination: {
-				page: safePage,
-				pageSize,
-				total,
-				totalPages
-			},
-			autoStart: [] as any[],
-			logs: [] as any[]
-		};
-	} catch (err) {
-		return {
-			projectName: params.id,
-			error: err instanceof Error ? err.message : 'Failed to load services',
-			summary: { running: 0, stopped: 0, fromConfig: 0, manual: 0, configSource: [] as string[] },
-			services: [] as ServiceEntry[],
-			pagination: { page: 1, pageSize: PAGE_SIZE, total: 0, totalPages: 1 },
-			autoStart: [] as any[],
-			logs: [] as any[]
-		};
+		const controller = new AbortController();
+		const timeout = setTimeout(() => controller.abort(), 2000);
+		const res = await fetch(url, { signal: controller.signal });
+		clearTimeout(timeout);
+		return res.ok;
+	} catch {
+		return false;
 	}
+}
+
+export const load: PageServerLoad = async ({ parent, params }): Promise<ServicePageData> => {
+	const { project } = await parent();
+	const projects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root);
+	const scannedProject = projects.find((p) => p.id === params.id);
+	const projectPath = scannedProject?.path ?? project.path;
+	const projectName = scannedProject?.name ?? project.name;
+
+	const services: ProjectService[] = [];
+
+	// 1. Detect services from project files
+	let meta;
+	try {
+		meta = await detectProjectMeta(projectPath);
+	} catch {
+		meta = null;
+	}
+
+	if (meta?.services) {
+		for (const svc of meta.services) {
+			const healthUrl = svc.healthUrl ?? null;
+			let status: 'unknown' | 'running' | 'stopped' = 'unknown';
+			if (healthUrl) {
+				status = (await checkHealth(healthUrl)) ? 'running' : 'stopped';
+			}
+			services.push({
+				id: svc.name.toLowerCase().replace(/[^a-z0-9]/g, '-'),
+				name: svc.name,
+				type: 'Detected Service',
+				port: svc.port ?? null,
+				healthUrl,
+				status,
+				source: 'detected',
+				command: svc.command ?? null
+			});
+		}
+	}
+
+	// 2. Read project-local custom services config
+	try {
+		const configPath = resolve(projectPath, '.playground/custom-services.json');
+		const raw = await readFile(configPath, 'utf-8');
+		const customServices = JSON.parse(raw) as Array<{
+			name: string;
+			type?: string;
+			port?: number;
+			command?: string;
+			healthUrl?: string;
+		}>;
+		for (const cs of customServices) {
+			const healthUrl = cs.healthUrl ?? null;
+			let status: 'unknown' | 'running' | 'stopped' = 'unknown';
+			if (healthUrl) {
+				status = (await checkHealth(healthUrl)) ? 'running' : 'stopped';
+			}
+			services.push({
+				id: cs.name.toLowerCase().replace(/[^a-z0-9]/g, '-'),
+				name: cs.name,
+				type: cs.type ?? 'Custom Service',
+				port: cs.port ?? null,
+				healthUrl,
+				status,
+				source: 'config',
+				command: cs.command ?? null
+			});
+		}
+	} catch {
+		// no custom services config
+	}
+
+	// 3. Add global services that are relevant (check health)
+	const globalServiceDefs = Object.values(SERVICES);
+	for (const svc of globalServiceDefs) {
+		// Skip if already added from detection
+		const alreadyAdded = services.some((s) => s.port === svc.port && svc.port !== null);
+		if (alreadyAdded) continue;
+
+		let status: 'unknown' | 'running' | 'stopped' = 'unknown';
+		if (svc.healthUrl) {
+			status = (await checkHealth(svc.healthUrl)) ? 'running' : 'stopped';
+		}
+		services.push({
+			id: svc.id,
+			name: svc.name,
+			type: svc.type,
+			port: svc.port,
+			healthUrl: svc.healthUrl,
+			status,
+			source: 'global',
+			command: null
+		});
+	}
+
+	// 4. Add dev/build/test as virtual services from scripts
+	let scripts: Record<string, string> = {};
+	try {
+		const raw = await readFile(resolve(projectPath, 'package.json'), 'utf-8');
+		const pkg = JSON.parse(raw);
+		scripts = (pkg.scripts as Record<string, string>) ?? {};
+	} catch {
+		// no package.json
+	}
+
+	const detected = services.filter((s) => s.source === 'detected').length;
+	const global = services.filter((s) => s.source === 'global').length;
+	const withPort = services.filter((s) => s.port !== null).length;
+
+	return {
+		projectId: params.id,
+		projectName,
+		projectPath,
+		services,
+		scripts,
+		stats: {
+			total: services.length,
+			withPort,
+			detected,
+			global
+		}
+	};
 };

@@ -1,130 +1,163 @@
-import type { PageServerLoad } from './$types.js';
-import { readFile, readdir } from 'fs/promises';
 import { resolve } from 'path';
-import { PATHS, SERVICES } from '$lib/server/constants.js';
-import { scanAllProjects } from '$lib/server/project-scanner.js';
-import { readJsonFile } from '$lib/server/file-reader.js';
-import { getAllTasks } from '$lib/server/task-store.js';
+import { readFile, stat } from 'fs/promises';
+import type { PageServerLoad } from './$types.js';
+import { PATHS } from '$lib/server/constants.js';
+import { scanAllProjects, detectProjectMeta } from '$lib/server/project-scanner.js';
 
-export const load: PageServerLoad = async ({ params, parent }) => {
-	const { projectId, project } = await parent();
+interface LanguageStat {
+	name: string;
+	pct: number;
+	color: string;
+}
+
+interface AboutData {
+	projectId: string;
+	identity: {
+		name: string;
+		description: string;
+		path: string;
+		health: string;
+		status: string;
+		branch: string;
+		lastOpened: string;
+	};
+	techStack: string[];
+	language: string | null;
+	framework: string | null;
+	buildTool: string | null;
+	commands: {
+		build: string | null;
+		dev: string | null;
+		test: string | null;
+		lint: string | null;
+		start: string | null;
+	};
+	gitRemote: string | null;
+	defaultBranch: string | null;
+	branches: string[];
+	dependencies: { name: string; version?: string; type: string }[];
+	scripts: Record<string, string>;
+	maintenance: {
+		hasReadme: boolean;
+		hasChangelog: boolean;
+		hasDocsDir: boolean;
+		hasClaude: boolean;
+		hasClaudeFlow: boolean;
+		hasLicense: boolean;
+	};
+	workflows: { name: string; file: string; triggers: string[]; jobs: string[] }[];
+	agents: { name: string; type: string; fileCount: number }[];
+	releaseProcess: string[];
+	timeline: {
+		created: string | null;
+		lastModified: string | null;
+	};
+	stats: {
+		totalDeps: number;
+		totalBranches: number;
+		totalAgents: number;
+		totalWorkflows: number;
+	};
+}
+
+async function getTimestamps(projectPath: string): Promise<{ created: string | null; lastModified: string | null }> {
+	try {
+		const gitDir = resolve(projectPath, '.git');
+		const s = await stat(gitDir);
+		// .git creation time ~ project init; mtime ~ last git activity
+		return {
+			created: s.birthtime?.toISOString() ?? null,
+			lastModified: s.mtime?.toISOString() ?? null
+		};
+	} catch {
+		try {
+			const s = await stat(projectPath);
+			return {
+				created: s.birthtime?.toISOString() ?? null,
+				lastModified: s.mtime?.toISOString() ?? null
+			};
+		} catch {
+			return { created: null, lastModified: null };
+		}
+	}
+}
+
+export const load: PageServerLoad = async ({ parent, params }): Promise<AboutData> => {
+	const { project } = await parent();
 	const projects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root);
-	const proj = projects.find((p) => p.id === params.id);
-	const projectPath = proj?.path ?? PATHS.root;
+	const scannedProject = projects.find((p) => p.id === params.id);
 
-	// Read package.json for version/description
-	let pkgName = project.name;
-	let pkgVersion = 'unknown';
-	let pkgDescription = '';
+	const projectPath = scannedProject?.path ?? project.path;
+
+	// Detect full metadata
+	let meta;
+	try {
+		meta = await detectProjectMeta(projectPath);
+	} catch {
+		meta = null;
+	}
+
+	// Read package.json scripts
+	let scripts: Record<string, string> = {};
 	try {
 		const raw = await readFile(resolve(projectPath, 'package.json'), 'utf-8');
 		const pkg = JSON.parse(raw);
-		pkgName = pkg.name ?? project.name;
-		pkgVersion = pkg.version ?? 'unknown';
-		pkgDescription = pkg.description ?? '';
+		scripts = (pkg.scripts as Record<string, string>) ?? {};
 	} catch {
-		// no package.json
+		// no package.json or not JSON
 	}
 
-	// Detect tech stack from project scanner data
-	const techStack = proj?.techStack ?? [];
+	const timeline = await getTimestamps(projectPath);
 
-	// Check MCP servers from .mcp-agents.json
-	const mcpServers: { name: string; status: string; description: string }[] = [];
-	try {
-		const raw = await readFile(resolve(PATHS.root, '.mcp-agents.json'), 'utf-8');
-		const mcp = JSON.parse(raw);
-		const servers = mcp.mcpServers ?? mcp.servers ?? {};
-		for (const [name, cfg] of Object.entries(servers)) {
-			const c = cfg as any;
-			mcpServers.push({
-				name,
-				status: 'configured',
-				description: c.command ? `${c.command} ${(c.args ?? []).slice(0, 2).join(' ')}` : 'MCP Server'
-			});
-		}
-	} catch {
-		// no mcp config
-	}
-
-	// Check core service health
-	const coreTech: { name: string; version: string; status: string; badge: string }[] = [];
-	for (const [, svc] of Object.entries(SERVICES)) {
-		let status = 'stopped';
-		if (svc.healthUrl) {
-			try {
-				const res = await fetch(svc.healthUrl, { signal: AbortSignal.timeout(2000) });
-				status = (res.ok || res.status < 500) ? 'running' : 'stopped';
-			} catch {
-				status = 'stopped';
-			}
-		}
-		coreTech.push({
-			name: svc.name,
-			version: svc.type,
-			status,
-			badge: svc.type.toLowerCase()
-		});
-	}
-
-	// Read channel configs
-	const channels: { name: string; status: string; badge: string }[] = [];
-	try {
-		const entries = await readdir(PATHS.channelsDir);
-		for (const file of entries.filter((f) => f.endsWith('.yaml') || f.endsWith('.yml'))) {
-			const name = file.replace(/\.(yaml|yml)$/, '');
-			channels.push({ name: name.charAt(0).toUpperCase() + name.slice(1), status: 'configured', badge: 'channel' });
-		}
-	} catch {
-		// no channels dir
-	}
-
-	// Read tasks
-	let tasks: { id: string; title: string; priority: string; status: string; description: string }[] = [];
-	try {
-		const allTasks = await getAllTasks(projectPath);
-		tasks = allTasks.slice(0, 10).map((t: any) => ({
-			id: t.id ?? '',
-			title: t.title ?? '',
-			priority: t.priority ?? 'medium',
-			status: t.status ?? 'pending',
-			description: t.description ?? ''
-		}));
-	} catch {
-		// no tasks
-	}
-
-	// Detect languages from tech stack
-	const langMap: Record<string, { color: string }> = {
-		typescript: { color: 'accent-blue' },
-		javascript: { color: 'accent-yellow' },
-		svelte: { color: 'accent-red' },
-		python: { color: 'accent-green' },
-		rust: { color: 'accent-purple' },
-		go: { color: 'accent-cyan' }
-	};
-	const languages = techStack
-		.filter((t) => langMap[t.toLowerCase()])
-		.map((t, i) => ({
-			name: t,
-			files: 0,
-			pct: 0,
-			color: langMap[t.toLowerCase()]?.color ?? 'accent-blue'
-		}));
+	const deps = meta?.dependencies ?? [];
+	const branches = meta?.branches ?? [];
+	const agents = meta?.agents ?? [];
+	const workflows = meta?.workflows ?? [];
 
 	return {
+		projectId: params.id,
 		identity: {
-			name: pkgName,
-			version: `v${pkgVersion}`,
-			description: pkgDescription || proj?.description || 'No description',
-			status: proj?.health ?? 'unknown'
+			name: scannedProject?.name ?? project.name,
+			description: scannedProject?.description ?? `Project at ${projectPath}`,
+			path: projectPath,
+			health: scannedProject?.health ?? project.health,
+			status: scannedProject?.status ?? 'unknown',
+			branch: scannedProject?.branch ?? project.branch,
+			lastOpened: scannedProject?.lastOpened ?? 'unknown'
 		},
-		coreTech,
-		languages,
-		frameworks: techStack.filter((t) => !langMap[t.toLowerCase()]),
-		tools: mcpServers.map((s) => s.name),
-		mcpServers,
-		channels,
-		tasks
+		techStack: scannedProject?.techStack ?? [],
+		language: meta?.language ?? null,
+		framework: meta?.framework ?? null,
+		buildTool: meta?.buildTool ?? null,
+		commands: {
+			build: meta?.buildCommand ?? null,
+			dev: meta?.devCommand ?? null,
+			test: meta?.testCommand ?? null,
+			lint: meta?.lintCommand ?? null,
+			start: meta?.startCommand ?? null
+		},
+		gitRemote: meta?.gitRemote ?? null,
+		defaultBranch: meta?.defaultBranch ?? null,
+		branches,
+		dependencies: deps.map((d) => ({ name: d.name, version: d.version, type: d.type })),
+		scripts,
+		maintenance: meta?.maintenance ?? {
+			hasReadme: false,
+			hasChangelog: false,
+			hasDocsDir: false,
+			hasClaude: false,
+			hasClaudeFlow: false,
+			hasLicense: false
+		},
+		workflows,
+		agents,
+		releaseProcess: meta?.releaseProcess ?? [],
+		timeline,
+		stats: {
+			totalDeps: deps.length,
+			totalBranches: branches.length,
+			totalAgents: agents.length,
+			totalWorkflows: workflows.length
+		}
 	};
 };

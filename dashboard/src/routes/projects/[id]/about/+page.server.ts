@@ -1,50 +1,163 @@
+import { resolve } from 'path';
+import { readFile, stat } from 'fs/promises';
 import type { PageServerLoad } from './$types.js';
+import { PATHS } from '$lib/server/constants.js';
+import { scanAllProjects, detectProjectMeta } from '$lib/server/project-scanner.js';
 
-export const load: PageServerLoad = async () => {
+interface LanguageStat {
+	name: string;
+	pct: number;
+	color: string;
+}
+
+interface AboutData {
+	projectId: string;
+	identity: {
+		name: string;
+		description: string;
+		path: string;
+		health: string;
+		status: string;
+		branch: string;
+		lastOpened: string;
+	};
+	techStack: string[];
+	language: string | null;
+	framework: string | null;
+	buildTool: string | null;
+	commands: {
+		build: string | null;
+		dev: string | null;
+		test: string | null;
+		lint: string | null;
+		start: string | null;
+	};
+	gitRemote: string | null;
+	defaultBranch: string | null;
+	branches: string[];
+	dependencies: { name: string; version?: string; type: string }[];
+	scripts: Record<string, string>;
+	maintenance: {
+		hasReadme: boolean;
+		hasChangelog: boolean;
+		hasDocsDir: boolean;
+		hasClaude: boolean;
+		hasClaudeFlow: boolean;
+		hasLicense: boolean;
+	};
+	workflows: { name: string; file: string; triggers: string[]; jobs: string[] }[];
+	agents: { name: string; type: string; fileCount: number }[];
+	releaseProcess: string[];
+	timeline: {
+		created: string | null;
+		lastModified: string | null;
+	};
+	stats: {
+		totalDeps: number;
+		totalBranches: number;
+		totalAgents: number;
+		totalWorkflows: number;
+	};
+}
+
+async function getTimestamps(projectPath: string): Promise<{ created: string | null; lastModified: string | null }> {
+	try {
+		const gitDir = resolve(projectPath, '.git');
+		const s = await stat(gitDir);
+		// .git creation time ~ project init; mtime ~ last git activity
+		return {
+			created: s.birthtime?.toISOString() ?? null,
+			lastModified: s.mtime?.toISOString() ?? null
+		};
+	} catch {
+		try {
+			const s = await stat(projectPath);
+			return {
+				created: s.birthtime?.toISOString() ?? null,
+				lastModified: s.mtime?.toISOString() ?? null
+			};
+		} catch {
+			return { created: null, lastModified: null };
+		}
+	}
+}
+
+export const load: PageServerLoad = async ({ parent, params }): Promise<AboutData> => {
+	const { project } = await parent();
+	const projects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root);
+	const scannedProject = projects.find((p) => p.id === params.id);
+
+	const projectPath = scannedProject?.path ?? project.path;
+
+	// Detect full metadata
+	let meta;
+	try {
+		meta = await detectProjectMeta(projectPath);
+	} catch {
+		meta = null;
+	}
+
+	// Read package.json scripts
+	let scripts: Record<string, string> = {};
+	try {
+		const raw = await readFile(resolve(projectPath, 'package.json'), 'utf-8');
+		const pkg = JSON.parse(raw);
+		scripts = (pkg.scripts as Record<string, string>) ?? {};
+	} catch {
+		// no package.json or not JSON
+	}
+
+	const timeline = await getTimestamps(projectPath);
+
+	const deps = meta?.dependencies ?? [];
+	const branches = meta?.branches ?? [];
+	const agents = meta?.agents ?? [];
+	const workflows = meta?.workflows ?? [];
+
 	return {
+		projectId: params.id,
 		identity: {
-			name: 'ai-playground',
-			version: 'v0.1.0-dev',
-			description: 'Local AI orchestration + multi-agent system, local-first, privacy-focused',
-			status: 'active'
+			name: scannedProject?.name ?? project.name,
+			description: scannedProject?.description ?? `Project at ${projectPath}`,
+			path: projectPath,
+			health: scannedProject?.health ?? project.health,
+			status: scannedProject?.status ?? 'unknown',
+			branch: scannedProject?.branch ?? project.branch,
+			lastOpened: scannedProject?.lastOpened ?? 'unknown'
 		},
-		coreTech: [
-			{ name: 'OpenClaw', version: 'v2026.3.x', status: 'connected', badge: 'gateway' },
-			{ name: 'Ruflo / Claude Flow', version: 'v3.5.x', status: 'running', badge: 'orchestration' },
-			{ name: 'GPT-OSS 20B', version: 'MoE 3.6B', status: 'loaded', badge: 'local model' },
-			{ name: 'Claude API', version: 'Sonnet 4.6', status: 'available', badge: 'escalation' }
-		],
-		languages: [
-			{ name: 'TypeScript', files: 526, pct: 64, color: 'accent-blue' },
-			{ name: 'Svelte', files: 42, pct: 18, color: 'accent-red' },
-			{ name: 'YAML/JSON', files: 2571, pct: 8, color: 'accent-yellow' },
-			{ name: 'Python', files: 14, pct: 5, color: 'accent-green' },
-			{ name: 'HTML / CSS', files: 8, pct: 3, color: 'accent-purple' },
-			{ name: 'Shell', files: 12, pct: 2, color: 'accent-cyan' }
-		],
-		frameworks: [
-			'SvelteKit 2.x', 'Tailwind CSS 4', 'Vite 6', 'Node.js 22'
-		],
-		tools: [
-			'Claude Code', 'Penpot MCP', 'Playwright', 'Vitest'
-		],
-		mcpServers: [
-			{ name: 'claude-flow', status: 'running', description: 'Agent orchestration + memory' },
-			{ name: 'penpot', status: 'running', description: 'Design integration' },
-			{ name: 'heb', status: 'stopped', description: 'Grocery MCP (texas-grocery)' },
-			{ name: 'playwright', status: 'running', description: 'Browser automation' }
-		],
-		channels: [
-			{ name: 'Twitch', status: 'connected', badge: 'live' },
-			{ name: 'Discord', status: 'planned', badge: 'future' },
-			{ name: 'Telegram', status: 'planned', badge: 'future' }
-		],
-		tasks: [
-			{ id: 'DASH-001', title: 'Dashboard Design System', priority: 'high', status: 'in-progress', description: 'Penpot design system with Tailwind, typography, components, project system views' },
-			{ id: 'DASH-002', title: 'OpenClaw Gateway Config', priority: 'high', status: 'completed', description: 'Networking, security, Claude Flow v3 MCP integration, 3-tier proxy API' },
-			{ id: 'DASH-003', title: '3-Tier Model Routing', priority: 'medium', status: 'planned', description: 'Agent booster (WASM), Haiku routing, GPT-OSS 20B as primary with Claude escalation' },
-			{ id: 'DASH-004', title: 'Ruflo / Claude Flow v3 Integration', priority: 'high', status: 'in-progress', description: 'Full agent lifecycle, HNSW memory, swarm coordination' },
-			{ id: 'DASH-005', title: 'Ollama + GPT-OSS 20B Setup', priority: 'medium', status: 'completed', description: 'Local MoE model setup, initial testing, performance benchmarks' }
-		]
+		techStack: scannedProject?.techStack ?? [],
+		language: meta?.language ?? null,
+		framework: meta?.framework ?? null,
+		buildTool: meta?.buildTool ?? null,
+		commands: {
+			build: meta?.buildCommand ?? null,
+			dev: meta?.devCommand ?? null,
+			test: meta?.testCommand ?? null,
+			lint: meta?.lintCommand ?? null,
+			start: meta?.startCommand ?? null
+		},
+		gitRemote: meta?.gitRemote ?? null,
+		defaultBranch: meta?.defaultBranch ?? null,
+		branches,
+		dependencies: deps.map((d) => ({ name: d.name, version: d.version, type: d.type })),
+		scripts,
+		maintenance: meta?.maintenance ?? {
+			hasReadme: false,
+			hasChangelog: false,
+			hasDocsDir: false,
+			hasClaude: false,
+			hasClaudeFlow: false,
+			hasLicense: false
+		},
+		workflows,
+		agents,
+		releaseProcess: meta?.releaseProcess ?? [],
+		timeline,
+		stats: {
+			totalDeps: deps.length,
+			totalBranches: branches.length,
+			totalAgents: agents.length,
+			totalWorkflows: workflows.length
+		}
 	};
 };

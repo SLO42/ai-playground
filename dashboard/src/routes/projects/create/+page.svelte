@@ -81,7 +81,8 @@
 					maxAgents,
 					topology,
 					services: enabledServices,
-					startServices: autoStart
+					startServices: autoStart,
+					templateParams: Object.keys(templateParams).length > 0 ? templateParams : undefined
 				})
 			});
 
@@ -173,6 +174,50 @@
 					{/each}
 				</div>
 			</div>
+
+			<!-- Template Parameters -->
+			{#if selectedTpl?.params && selectedTpl.params.length > 0}
+				<div>
+					<label class="block text-xs text-text-secondary uppercase tracking-wider mb-2">Template Options</label>
+					<div class="bg-bg-secondary border border-border rounded-lg p-4 space-y-3">
+						{#each selectedTpl.params as param}
+							<div class="flex items-center justify-between gap-4">
+								<div class="min-w-0">
+									<p class="text-sm text-text-primary">{param.label}</p>
+									{#if param.description}
+										<p class="text-[10px] text-text-secondary">{param.description}</p>
+									{/if}
+								</div>
+								{#if param.type === 'boolean'}
+									<input
+										type="checkbox"
+										checked={templateParams[param.key] === true}
+										onchange={(e) => { templateParams[param.key] = (e.target as HTMLInputElement).checked; }}
+										class="accent-accent-blue shrink-0"
+									/>
+								{:else if param.type === 'select' && param.options}
+									<select
+										value={templateParams[param.key] as string}
+										onchange={(e) => { templateParams[param.key] = (e.target as HTMLSelectElement).value; }}
+										class="bg-bg-tertiary border border-border rounded px-2 py-1 text-xs text-text-primary font-mono shrink-0"
+									>
+										{#each param.options as opt}
+											<option value={opt}>{opt}</option>
+										{/each}
+									</select>
+								{:else}
+									<input
+										type="text"
+										value={templateParams[param.key] as string}
+										oninput={(e) => { templateParams[param.key] = (e.target as HTMLInputElement).value; }}
+										class="bg-bg-tertiary border border-border rounded px-2 py-1 text-xs text-text-primary font-mono w-40 shrink-0"
+									/>
+								{/if}
+							</div>
+						{/each}
+					</div>
+				</div>
+			{/if}
 
 			<!-- Description -->
 			<div>

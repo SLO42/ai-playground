@@ -1,200 +1,30 @@
 <script lang="ts">
-	import { onMount, onDestroy } from 'svelte';
-	import { page } from '$app/state';
 	import '../app.css';
 	import { goto } from '$app/navigation';
 	import Sidebar from '$lib/components/Sidebar.svelte';
 	import StatusBar from '$lib/components/StatusBar.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import CommandPalette from '$lib/components/CommandPalette.svelte';
-<<<<<<< HEAD
-	import { apiGet } from '$lib/api-client.js';
-	import { badgeCount, notifications } from '$lib/stores/index.js';
-=======
->>>>>>> worktree-agent-a855fd15
 	import type { LayoutData } from './$types.js';
 
 	let { data, children }: { data: LayoutData; children: any } = $props();
 
-	// Hide global sidebar when inside a project detail view (project has its own nav)
-	const inProjectView = $derived(
-		/^\/projects\/[^/]+/.test(page.url.pathname) &&
-		!page.url.pathname.endsWith('/projects/create') &&
-		!page.url.pathname.endsWith('/projects/import')
-	);
+	let services = $derived([
+		{ label: 'Gateway', status: (data.health.gateway ? 'online' : 'offline') as 'online' | 'offline', text: data.health.gateway ? 'Online' : 'Offline' },
+		{ label: 'Ollama', status: (data.health.ollama ? 'online' : 'offline') as 'online' | 'offline', text: data.health.ollama ? 'Running' : 'Stopped' },
+		{ label: 'Memory DB', status: ('online' as const), text: 'Connected' },
+		{ label: 'Swarm', status: (data.health.swarm ? 'online' : 'warning') as 'online' | 'warning', text: data.health.swarm ? 'Active' : 'Idle' }
+	]);
 
-<<<<<<< HEAD
-	// Live health state — seeded from SSR, then polled client-side
-	let health = $state({ ...data.health });
-	let pollTimer: ReturnType<typeof setInterval> | null = null;
-
-	async function pollHealth() {
-		const data = await apiGet<typeof health>('/api/health', { silent: true, timeout: 5000 });
-		if (data) health = data;
-	}
-
-	// Notification badge count — shared via store so inbox can reset it
-	let unreadCount = $state(0);
-	const unsubBadge = badgeCount.subscribe((v) => { unreadCount = v; });
-
-	async function pollNotifCount() {
-		const data = await apiGet<{ stats?: { unread?: number } }>('/api/notifications?limit=1', { silent: true, timeout: 3000 });
-		if (data) badgeCount.set(data.stats?.unread ?? 0);
-	}
-
-	// Toast system
-	interface ToastItem {
-		id: string;
-		variant: 'success' | 'error' | 'warning' | 'info';
-		title: string;
-		message?: string;
-		timestamp?: string;
-		autoDismiss?: boolean;
-	}
-
-	let toasts = $state<ToastItem[]>([]);
-	let toastIdCounter = 0;
-
-	function addToast(variant: ToastItem['variant'], title: string, message?: string) {
-		const id = `toast-${++toastIdCounter}`;
-		toasts = [...toasts, { id, variant, title, message }];
-		// Auto-dismiss after 6s (critical stays longer)
-		const delay = variant === 'error' ? 10000 : 6000;
-		setTimeout(() => {
-			toasts = toasts.filter((t) => t.id !== id);
-		}, delay);
-	}
-=======
 	let toasts = $state<Array<{ id: string; variant: 'success' | 'error' | 'warning' | 'info'; title: string; message?: string }>>([]);
 	let commandPaletteOpen = $state(false);
 	let sidebarCollapsed = $state(false);
 	let sidebarMobileOpen = $state(false);
->>>>>>> worktree-agent-a855fd15
 
 	function dismissToast(id: string) {
 		toasts = toasts.filter((t) => t.id !== id);
-		// Also dismiss from store (no-op if id doesn't exist there)
-		notifications.dismiss(id);
 	}
 
-<<<<<<< HEAD
-	// Merge store-driven toasts (from apiFetch etc.) into local toast list
-	let storeToasts = $state<ToastItem[]>([]);
-	const unsubToasts = notifications.toasts.subscribe((items) => {
-		storeToasts = items.map((t) => ({
-			id: t.id,
-			variant: t.type,
-			title: t.title,
-			message: t.message
-		}));
-	});
-
-	let allToasts = $derived([...toasts, ...storeToasts]);
-
-	// SSE stream for real-time notifications
-	let eventSource: EventSource | null = null;
-
-	// Desktop notification support via browser Notification API
-	let desktopEnabled = $state(false);
-
-	async function requestDesktopPermission() {
-		if (typeof Notification === 'undefined') return;
-		if (Notification.permission === 'granted') {
-			desktopEnabled = true;
-			return;
-		}
-		if (Notification.permission === 'denied') return;
-		const result = await Notification.requestPermission();
-		desktopEnabled = result === 'granted';
-	}
-
-	async function fetchDesktopPref(): Promise<boolean> {
-		try {
-			const res = await fetch('/api/settings/notifications', { signal: AbortSignal.timeout(3000) });
-			if (!res.ok) return true;
-			const settings = await res.json();
-			return settings.desktop !== false;
-		} catch {
-			return true;
-		}
-	}
-
-	function showDesktopNotification(title: string, body: string, severity?: string) {
-		if (!desktopEnabled) return;
-		if (typeof Notification === 'undefined' || Notification.permission !== 'granted') return;
-		// Don't show desktop notification if the tab is focused
-		if (document.hasFocus()) return;
-		try {
-			new Notification(title, { body, tag: `notif-${Date.now()}` });
-		} catch {
-			// Browser may block in certain contexts
-		}
-	}
-
-	function connectNotificationStream() {
-		if (typeof EventSource === 'undefined') return;
-
-		eventSource = new EventSource('/api/notifications/stream');
-
-		eventSource.onmessage = (event) => {
-			try {
-				const notif = JSON.parse(event.data);
-				// Map severity to toast variant
-				const variantMap: Record<string, ToastItem['variant']> = {
-					critical: 'error',
-					warning: 'warning',
-					success: 'success',
-					info: 'info'
-				};
-				addToast(
-					variantMap[notif.severity] ?? 'info',
-					notif.title,
-					notif.message
-				);
-				badgeCount.update((n) => n + 1);
-
-				// Show browser desktop notification when enabled
-				showDesktopNotification(notif.title, notif.message, notif.severity);
-			} catch {
-				// skip malformed
-			}
-		};
-
-		eventSource.onerror = () => {
-			eventSource?.close();
-			// Reconnect after 5s
-			setTimeout(connectNotificationStream, 5000);
-		};
-	}
-
-	onMount(async () => {
-		pollTimer = setInterval(() => {
-			pollHealth();
-			pollNotifCount();
-		}, 15000);
-		pollNotifCount();
-		connectNotificationStream();
-
-		// Request desktop notification permission if the server setting is enabled
-		const pref = await fetchDesktopPref();
-		if (pref) {
-			await requestDesktopPermission();
-		}
-	});
-
-	onDestroy(() => {
-		if (pollTimer) clearInterval(pollTimer);
-		eventSource?.close();
-		unsubBadge();
-		unsubToasts();
-	});
-
-	let services = $derived([
-		{ label: 'Ollama', status: (health.services?.ollama?.status === 'healthy' ? 'online' : 'offline') as 'online' | 'offline' },
-		{ label: 'Gateway', status: (health.services?.openclaw?.status === 'healthy' ? 'online' : 'offline') as 'online' | 'offline' },
-		{ label: 'Daemon', status: (health.daemon?.online ? 'online' : 'offline') as 'online' | 'offline' },
-	]);
-=======
 	// Keyboard shortcuts
 	let chordPrefix = $state('');
 	let chordTimeout: ReturnType<typeof setTimeout> | null = null;
@@ -270,7 +100,6 @@
 		window.addEventListener('keydown', handleKeydown);
 		return () => window.removeEventListener('keydown', handleKeydown);
 	});
->>>>>>> worktree-agent-a855fd15
 </script>
 
 <svelte:head>
@@ -278,14 +107,6 @@
 </svelte:head>
 
 <div class="flex min-h-screen bg-bg-primary">
-<<<<<<< HEAD
-	{#if !inProjectView}
-		<Sidebar {unreadCount} featureFlags={data.featureFlags} />
-	{/if}
-
-	<div class="flex-1 flex flex-col" class:ml-56={!inProjectView}>
-		<StatusBar {services} lastSync={health.timestamp} />
-=======
 	<!-- Mobile sidebar backdrop -->
 	{#if sidebarMobileOpen}
 		<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
@@ -314,7 +135,6 @@
 		</div>
 
 		<StatusBar {services} lastSync={data.health.timestamp} />
->>>>>>> worktree-agent-a855fd15
 
 		<main class="flex-1 p-4 md:p-6">
 			{@render children()}
@@ -322,10 +142,6 @@
 	</div>
 </div>
 
-<<<<<<< HEAD
-<Toast toasts={allToasts} onDismiss={dismissToast} />
-<CommandPalette />
-=======
 <Toast {toasts} onDismiss={dismissToast} />
 <CommandPalette bind:open={commandPaletteOpen} />
 
@@ -335,4 +151,3 @@
 		g + ...
 	</div>
 {/if}
->>>>>>> worktree-agent-a855fd15

@@ -1,5 +1,8 @@
 /**
  * Claude Code agent spawning — binary invocation, prompt building, and path hinting.
+ *
+ * Agents are only spawned when there is a concrete task to execute.
+ * Project-specific context is injected via context-loader.ts when available.
  */
 import { openSync, closeSync } from 'fs';
 import { mkdir, writeFile, unlink } from 'fs/promises';
@@ -8,6 +11,7 @@ import { resolve } from 'path';
 import { randomUUID } from 'crypto';
 import { PATHS } from '../constants.js';
 import type { Task } from '$lib/types/tasks.js';
+import type { AgentContext } from './context-loader.js';
 
 const destroyStreams = (child: ChildProcess) => {
 	child.stdin?.destroy();
@@ -93,11 +97,11 @@ export async function spawnClaude(prompt: string, logFile: string, opts: SpawnOp
 	}
 }
 
-export function buildTaskPrompt(task: Task): string {
+export function buildTaskPrompt(task: Task, projectContext?: AgentContext): string {
 	const relevantPaths = guessRelevantPaths(task);
 
 	const parts = [
-		`You are Claw, an autonomous AI agent working on a task in the ai-playground project.`,
+		`You are Claw, an autonomous AI agent working on a task.`,
 		``,
 		`## Task: ${task.title}`,
 		`**ID**: ${task.id}`,
@@ -116,11 +120,41 @@ export function buildTaskPrompt(task: Task): string {
 		`5. **NEVER** read imports, dependencies, or related files "for context."`,
 		`6. Go straight to the suggested files below. If none listed, Grep for the relevant code, then edit.`,
 		`7. One file task = read it, edit it, build, done. Do NOT touch anything else.`,
+	];
+
+	// Inject project-specific context if available (replaces generic structure section)
+	if (projectContext && projectContext.systemPrompt) {
+		parts.push(``, `## Project Context (auto-detected)`);
+		parts.push(projectContext.systemPrompt);
+	} else {
+		// Fallback: generic ai-playground structure for tasks without project context
+		parts.push(
+			``,
+			`## Project Structure`,
+			`- Dashboard: \`dashboard/\` (SvelteKit + Svelte 5 with runes)`,
+			`- Server code: \`dashboard/src/lib/server/\``,
+			`- Routes: \`dashboard/src/routes/\``,
+			`- Types: \`dashboard/src/lib/types/\``,
+			`- Config: \`config/\``,
+			`- Task files: \`.playground/tasks/\``
+		);
+	}
+
+	parts.push(
 		``,
 		`## Instructions`,
 		`1. Read the relevant source files (see suggested paths below)`,
 		`2. Implement the task as described — keep changes minimal and focused`,
-		`3. Run \`npm run build\` in the dashboard/ directory to verify your changes compile`,
+	);
+
+	// Use project-specific build command if available, otherwise fallback
+	if (projectContext?.systemPrompt.includes('Build:')) {
+		parts.push(`3. Run the build command listed in Project Context above to verify your changes compile`);
+	} else {
+		parts.push(`3. Run \`npm run build\` in the dashboard/ directory to verify your changes compile`);
+	}
+
+	parts.push(
 		`4. Do NOT commit or push — the heartbeat auto-commits your changes after you exit`,
 		`5. Do NOT update documentation files unless the task specifically asks for it`,
 		``,
@@ -154,19 +188,19 @@ export function buildTaskPrompt(task: Task): string {
 		`- A type that could be more specific`,
 		`- A function over 50 lines that should be split`,
 		`- Hardcoded values that should be config`,
-		``,
-		`## Project Structure`,
-		`- Dashboard: \`dashboard/\` (SvelteKit + Svelte 5 with runes)`,
-		`- Server code: \`dashboard/src/lib/server/\``,
-		`- Routes: \`dashboard/src/routes/\``,
-		`- Types: \`dashboard/src/lib/types/\``,
-		`- Config: \`config/\``,
-		`- Task files: \`.playground/tasks/\``,
-	];
+	);
 
-	if (relevantPaths.length > 0) {
+	// Merge suggested files from both path guessing and project context
+	const allPaths = [...relevantPaths];
+	if (projectContext?.projectFiles) {
+		for (const f of projectContext.projectFiles) {
+			if (!allPaths.includes(f)) allPaths.push(f);
+		}
+	}
+
+	if (allPaths.length > 0) {
 		parts.push(``, `## Suggested Starting Files`);
-		for (const p of relevantPaths) {
+		for (const p of allPaths) {
 			parts.push(`- \`${p}\``);
 		}
 	}
@@ -174,8 +208,8 @@ export function buildTaskPrompt(task: Task): string {
 	return parts.join('\n');
 }
 
-export function buildTaskPromptWithDiscussion(task: Task, discussionContext: string): string {
-	const base = buildTaskPrompt(task);
+export function buildTaskPromptWithDiscussion(task: Task, discussionContext: string, projectContext?: AgentContext): string {
+	const base = buildTaskPrompt(task, projectContext);
 	return [
 		base,
 		``,

@@ -30,7 +30,8 @@ import { createDiscussionSession, checkDiscussionReplies } from './discussion.js
 import { classifyTask, shouldEscalate, spawnOpenClawAgent, gatherContext } from './openclaw-agent.js';
 import type { TaskRoute } from './openclaw-agent.js';
 import { recordEvent } from './agent-analytics.js';
-import { recordSpawn, recordSpawnCompletion } from './session-pool.js';
+import { recordSpawn, recordSpawnCompletion, requestSlot, releaseSlot } from './session-pool.js';
+import { buildContextForTask } from './context-loader.js';
 import { commitAgentChanges, planFollowUps, spawnFollowUp } from './post-task.js';
 import { runPostCommitTests } from './post-test.js';
 import { reapStaleProcesses, registerPid, unregisterPid } from './pid-registry.js';
@@ -182,14 +183,37 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 	task = structuredClone(task);
 	const agents = getActiveAgents();
 
-	if (agents.size >= getMaxConcurrentAgents()) {
-		log(monitorSession, `[skip] Max agents (${getMaxConcurrentAgents()}) already running — deferring "${task.title}"`);
-		return false;
-	}
-
 	if (agents.has(task.id)) {
 		log(monitorSession, `[skip] Agent already working on "${task.title}"`);
 		return false;
+	}
+
+	// On-demand slot allocation — checks both global and per-project limits
+	const projectId = task._sourceProjectId ?? 'unknown';
+	const slot = requestSlot(task.id, projectId);
+	if (!slot) {
+		const projActive = countProjectAgents(projectId);
+		const projMax = getProjectLimits().get(projectId) ?? 2;
+		if (agents.size >= getMaxConcurrentAgents()) {
+			log(monitorSession, `[skip] Max agents (${getMaxConcurrentAgents()}) already running — deferring "${task.title}"`);
+		} else {
+			log(monitorSession, `[skip] Project "${projectId}" at agent limit (${projActive}/${projMax}) — deferring "${task.title}"`);
+		}
+		return false;
+	}
+
+	// Load project-specific context for the agent (non-blocking, falls back to generic)
+	let projectContext: Awaited<ReturnType<typeof buildContextForTask>> | undefined;
+	if (task._sourceProjectPath) {
+		try {
+			const meta = await detectProjectMeta(task._sourceProjectPath);
+			projectContext = await buildContextForTask(task, task._sourceProjectPath, meta);
+			if (projectContext.systemPrompt) {
+				log(monitorSession, `[context] Loaded ${meta.language ?? 'unknown'}/${meta.framework ?? 'generic'} context for "${task.title}"`);
+			}
+		} catch {
+			// Context loading failed — proceed with generic prompt
+		}
 	}
 
 	// ── Route: OpenClaw (local, $0) vs Claude Code (API, $$) ──
@@ -206,12 +230,14 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 
 		if (!escalate) {
 			log(monitorSession, `[route] "${task.title}" → OpenClaw (gateway + tools, $0) — ${reason}`);
-			const prompt = buildTaskPrompt(task);
+			const prompt = buildTaskPrompt(task, projectContext);
 
 			// Analytics: spawn event for OpenClaw
 			recordEvent({ taskId: task.id, taskTitle: task.title, type: 'spawned', provider: 'openclaw', model: 'gpt-oss:20b', modelTier: 'local', projectId: task._sourceProjectId }).catch(() => {});
 
-			return spawnOpenClawAgent(task, prompt, monitorSession);
+			const ok = await spawnOpenClawAgent(task, prompt, monitorSession);
+			if (!ok) releaseSlot(task.id);
+			return ok;
 		}
 		log(monitorSession, `[route] "${task.title}" → escalated to Claude Code — ${reason}`);
 
@@ -248,7 +274,7 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 	}
 
 	// ── Claude Code path (file edits, builds, git) ──
-	const prompt = buildTaskPrompt(task);
+	const prompt = buildTaskPrompt(task, projectContext);
 	const logFile = `${PATHS.headlessLogsDir}/agent-${task.id}.log`;
 	const sender = agentSender(task.id, task.title.slice(0, 30));
 
@@ -292,6 +318,7 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 
 		child.on('close', async (code) => {
 			unregisterPid(`agent:${task.id}`).catch(() => {});
+			releaseSlot(task.id);
 			const agentInfo = agents.get(task.id);
 			const agentSnd = agentInfo?.sender ?? sender;
 			const rId = agentInfo?.reportSessionId ?? reportId;
@@ -414,6 +441,7 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 		log(monitorSession, `[spawn] Claude Code (${modelTier}) → "${task.title}" → chat: ${reportId}`);
 		return true;
 	} catch (err) {
+		releaseSlot(task.id);
 		const msg = err instanceof Error ? err.message : 'spawn failed';
 		log(monitorSession, `[error] Failed to spawn agent for "${task.title}": ${msg}`);
 		return false;
@@ -759,7 +787,8 @@ async function heartbeat() {
 			log(session, `[spawn] Per-project limits: ${limitSummary} (global max: ${getMaxConcurrentAgents()})`);
 		}
 
-		// ── Phase 5b: Spawn agents (round-robin across projects, respecting per-project limits)
+		// ── Phase 5b: On-demand agent spawning (round-robin across projects)
+		// For each eligible task: requestSlot → spawn if slot available → skip if not
 		const actionable = [...taskScan.clawAssigned, ...taskScan.unassignedPending];
 
 		if (actionable.length > 0) {
@@ -796,18 +825,10 @@ async function heartbeat() {
 					if (spawned >= slotsAvailable) break;
 					if (agents.has(task.id)) continue;
 
-					// Per-project limit check
-					const projId = task._sourceProjectId;
-					if (projId) {
-						const projMax = projectLimits.get(projId) ?? 2;
-						const projActive = countProjectAgents(projId);
-						if (projActive >= projMax) {
-							log(session, `[skip] Project "${projId}" at agent limit (${projActive}/${projMax}) — deferring "${task.title}"`);
-							continue;
-						}
-					}
-
+					// spawnAgent() calls requestSlot() internally — handles both
+					// global and per-project limits, logs skip reasons
 					if (await spawnAgent(task, session)) {
+						const projId = task._sourceProjectId;
 						if (projId) {
 							getProjectAgentMap().set(task.id, projId);
 						}

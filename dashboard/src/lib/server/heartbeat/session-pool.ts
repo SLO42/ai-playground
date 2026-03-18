@@ -1,17 +1,31 @@
 /**
- * Agent spawn stats — lightweight tracker for cumulative spawn metrics.
+ * On-demand agent slot management and spawn stats.
  *
- * Each task gets a fresh Claude Code session (no --resume). This avoids
- * accumulated context from prior tasks eating memory and tokens.
+ * Agents are spawned only when a concrete task needs execution.
+ * No idle pre-population — slots are requested per-task and released on completion.
  *
- * This module tracks spawn counts, token usage, and costs for the dashboard.
+ * This module tracks:
+ * - Active slot allocations (taskId → AgentSlot)
+ * - Cumulative spawn metrics for the dashboard
  */
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { resolve, dirname } from 'path';
 import { PATHS } from '../constants.js';
 import { withLock } from '../async-mutex.js';
+import {
+	getActiveAgents, getMaxConcurrentAgents,
+	countProjectAgents, getProjectLimits
+} from './shared.js';
 
 // ── Types ────────────────────────────────────────────────────────────
+
+/** Active agent slot — allocated on-demand when a task is ready to execute. */
+export interface AgentSlot {
+	taskId: string;
+	projectId: string;
+	allocatedAt: string;
+	model?: string;
+}
 
 /** Legacy SessionSlot — kept for API compatibility but no longer actively managed. */
 export interface SessionSlot {
@@ -132,16 +146,101 @@ export async function resetPool(): Promise<void> {
 	});
 }
 
+// ── On-demand slot management ────────────────────────────────────────
+
+/** In-memory map of active slot allocations. Survives HMR via globalThis. */
+function getSlotMap(): Map<string, AgentSlot> {
+	if (!g.__claw_slot_map) {
+		g.__claw_slot_map = new Map<string, AgentSlot>();
+	}
+	return g.__claw_slot_map as Map<string, AgentSlot>;
+}
+
+/**
+ * Request an agent slot for a task. Returns the slot if allocation succeeds,
+ * or null if no capacity is available (global or per-project limit reached).
+ *
+ * Call this BEFORE spawning an agent. If it returns null, the task stays queued.
+ */
+export function requestSlot(taskId: string, projectId: string): AgentSlot | null {
+	const slots = getSlotMap();
+	const agents = getActiveAgents();
+
+	// Already has a slot
+	if (slots.has(taskId)) return slots.get(taskId)!;
+
+	// Global limit check
+	if (agents.size >= getMaxConcurrentAgents()) return null;
+
+	// Per-project limit check
+	const projectLimits = getProjectLimits();
+	const projMax = projectLimits.get(projectId) ?? 2;
+	const projActive = countProjectAgents(projectId);
+	if (projActive >= projMax) return null;
+
+	const slot: AgentSlot = {
+		taskId,
+		projectId,
+		allocatedAt: new Date().toISOString()
+	};
+	slots.set(taskId, slot);
+	return slot;
+}
+
+/**
+ * Release a slot when an agent completes (success or failure).
+ * Safe to call multiple times — idempotent.
+ */
+export function releaseSlot(taskId: string): void {
+	getSlotMap().delete(taskId);
+}
+
+/**
+ * Get all currently allocated slots (for dashboard display).
+ */
+export function getAllocatedSlots(): AgentSlot[] {
+	return [...getSlotMap().values()];
+}
+
+/**
+ * Suggest what kind of agent to spawn for a project based on its task.
+ * Returns a preset hint (model tier, agent type) — does NOT allocate a slot.
+ */
+export function suggestAgentPreset(taskTags: string[], projectLanguage?: string): { model: string; type: string } {
+	const tags = taskTags.map(t => t.toLowerCase());
+
+	// Test tasks → Sonnet (cheaper, focused)
+	if (tags.some(t => ['test', 'testing', 'e2e', 'unit-test'].includes(t))) {
+		return { model: 'claude-sonnet-4-6', type: 'tester' };
+	}
+
+	// Review/audit tasks → Sonnet
+	if (tags.some(t => ['review', 'audit', 'lint', 'security'].includes(t))) {
+		return { model: 'claude-sonnet-4-6', type: 'reviewer' };
+	}
+
+	// Complex implementation → Opus
+	if (tags.some(t => ['feature', 'refactor', 'architecture', 'api', 'integration'].includes(t))) {
+		return { model: 'claude-opus-4-6', type: 'coder' };
+	}
+
+	// Default: coder with Sonnet for unknown tasks
+	return { model: 'claude-sonnet-4-6', type: 'coder' };
+}
+
 // ── No-op legacy functions (keep API endpoints from breaking) ───────
 
+/** @deprecated Use requestSlot() instead. */
 export async function removeSlot(_slotId: string): Promise<boolean> {
 	return false;
 }
 
+/** @deprecated No-op. Agents are now spawned on-demand per-task. */
 export async function populateFromConfig(): Promise<{ created: number; skipped: number }> {
 	return { created: 0, skipped: 0 };
 }
 
+/** @deprecated No-op. Agents are now spawned on-demand per-task via requestSlot(). */
 export async function populateFromProjects(
 	_scanProjects: () => Promise<{ id: string; path: string }[]>,
 	_loadMaxAgents: (path: string, id: string) => Promise<number>
@@ -149,6 +248,7 @@ export async function populateFromProjects(
 	return { projects: [], totalCreated: 0, totalSkipped: 0 };
 }
 
+/** @deprecated No-op. Agents are now spawned on-demand per-task via requestSlot(). */
 export async function populateForProject(
 	_projectId: string,
 	_agents: { filename: string; name: string; type: string }[]

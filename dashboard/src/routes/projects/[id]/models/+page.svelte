@@ -92,70 +92,6 @@
 	{/if}
 
 	<!-- Routing Chain -->
-<<<<<<< HEAD
-	<div>
-		<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">Routing Chain</h2>
-		{#if data.routingChain.length === 0}
-			<div class="bg-bg-secondary border border-border rounded-lg p-8 text-center">
-				<p class="text-text-secondary text-sm">No routing chain configured</p>
-			</div>
-		{:else}
-		<div class="flex items-center gap-2">
-			{#each data.routingChain as model, i}
-				<div class="flex-1 bg-bg-secondary border border-border rounded-lg p-4">
-					<div class="flex items-center justify-between mb-2">
-						<span class="text-sm font-bold text-text-primary">{model.name}</span>
-						<span class="text-[10px] px-2 py-0.5 rounded {tierColors[model.tier]}">{model.tier}</span>
-					</div>
-					<div class="space-y-1 text-xs">
-						<div class="flex justify-between">
-							<span class="text-text-secondary">Provider</span>
-							<span class="text-text-primary">{model.provider}</span>
-						</div>
-						<div class="flex justify-between">
-							<span class="text-text-secondary">Latency</span>
-							<span class="font-mono text-text-primary">{model.latency}</span>
-						</div>
-						<div class="flex justify-between">
-							<span class="text-text-secondary">Cost</span>
-							<span class="font-mono text-accent-green">{model.cost}</span>
-						</div>
-					</div>
-				</div>
-				{#if i < data.routingChain.length - 1}
-					<span class="text-text-secondary text-lg">→</span>
-				{/if}
-			{/each}
-		</div>
-		{/if}
-	</div>
-
-	<!-- Model List -->
-	<div>
-		<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">Available Models</h2>
-		<div class="bg-bg-secondary border border-border rounded-lg overflow-hidden">
-			<table class="w-full text-left">
-				<thead>
-					<tr class="border-b border-border text-xs text-text-secondary uppercase">
-						<th class="px-4 py-2 font-medium">Model</th>
-						<th class="px-4 py-2 font-medium">Size</th>
-						<th class="px-4 py-2 font-medium">Quant</th>
-						<th class="px-4 py-2 font-medium">Params</th>
-						<th class="px-4 py-2 font-medium text-right">Context</th>
-						<th class="px-4 py-2 font-medium">Status</th>
-						<th class="px-4 py-2 font-medium text-right">Tokens/s</th>
-					</tr>
-				</thead>
-				<tbody>
-					{#each data.models as model}
-						<tr class="border-b border-border last:border-0 hover:bg-bg-tertiary/50 transition-colors">
-							<td class="px-4 py-3 text-sm font-mono text-text-primary whitespace-nowrap">{model.name}</td>
-							<td class="px-4 py-3 text-sm text-text-secondary">{model.size}</td>
-							<td class="px-4 py-3 text-xs font-mono text-text-secondary">{model.quantization}</td>
-							<td class="px-4 py-3 text-sm text-text-secondary">{model.params}</td>
-							<td class="px-4 py-3 text-sm font-mono text-text-secondary text-right">{model.context.toLocaleString()}</td>
-							<td class="px-4 py-3">
-=======
 	{#if data.routingChain.length > 0}
 		<div>
 			<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">Routing Chain</h2>
@@ -173,21 +109,10 @@
 							</div>
 							<div class="flex justify-between">
 								<span class="text-text-secondary">Status</span>
->>>>>>> worktree-agent-a73da255
 								<div class="flex items-center gap-1.5">
 									<span class="w-2 h-2 rounded-full {statusDots[model.status]}"></span>
 									<span class="text-text-primary">{model.status}</span>
 								</div>
-<<<<<<< HEAD
-							</td>
-							<td class="px-4 py-3 text-sm font-mono text-text-primary text-right">{model.tokensPerSec > 0 ? model.tokensPerSec : '-'}</td>
-						</tr>
-					{:else}
-						<tr><td colspan="7" class="px-4 py-6 text-center text-sm text-text-secondary">No models available</td></tr>
-					{/each}
-				</tbody>
-			</table>
-=======
 							</div>
 						</div>
 					</div>
@@ -198,7 +123,6 @@
 					{/if}
 				{/each}
 			</div>
->>>>>>> worktree-agent-a73da255
 		</div>
 	{:else}
 		<div class="bg-bg-secondary border border-border rounded-lg p-8 text-center">

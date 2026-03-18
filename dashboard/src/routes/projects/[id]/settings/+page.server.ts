@@ -29,19 +29,6 @@ export const load: PageServerLoad = async ({ parent }) => {
 	const path = resolve(PATHS.projectsDir, `${sanitized}.json`);
 	const stored = await readJsonFile<ProjectSettings>(path);
 
-<<<<<<< HEAD
-export const load: PageServerLoad = async ({ params, fetch }) => {
-	const res = await fetch(`/api/projects/${params.id}/settings`);
-	if (!res.ok) {
-		return {
-			settings: null,
-			error: 'Failed to load project settings'
-		};
-	}
-
-	const settings = await res.json();
-	return { settings, error: null };
-=======
 	return {
 		general: stored?.general ?? {
 			name: 'ai-playground',
@@ -67,5 +54,4 @@ export const load: PageServerLoad = async ({ params, fetch }) => {
 		},
 		autoStart: stored?.autoStart ?? false
 	};
->>>>>>> worktree-agent-a97739c0
 };

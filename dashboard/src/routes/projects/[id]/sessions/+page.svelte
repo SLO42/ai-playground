@@ -1,292 +1,234 @@
 <script lang="ts">
-	import { navigating } from '$app/stores';
-	import { page } from '$app/stores';
-	import { goto, invalidateAll } from '$app/navigation';
+	import StatusBadge from '$lib/components/StatusBadge.svelte';
 	import MetricCard from '$lib/components/MetricCard.svelte';
-	import { notifications } from '$lib/stores/notifications.js';
 	import type { PageData } from './$types.js';
 
 	let { data }: { data: PageData } = $props();
 
-	async function sessionAction(sessionId: string, name: string, action: 'pause' | 'resume' | 'stop') {
-		const labels = { pause: 'Pausing', resume: 'Resuming', stop: 'Stopping' } as const;
-		const past = { pause: 'paused', resume: 'resumed', stop: 'stopped' } as const;
-		notifications.push('info', `${labels[action]} "${name}"...`, `Session ${sessionId}`);
-		try {
-			const res = await fetch(`/api/sessions/${sessionId}/${action}`, { method: 'POST' });
-			if (res.ok) {
-				notifications.push('success', `Session ${past[action]}`, `"${name}" has been ${past[action]}.`);
-				invalidateAll();
-			} else {
-				const body = await res.json().catch(() => ({ error: 'Unknown error' }));
-				notifications.push('error', `Failed to ${action}`, body.error ?? `Could not ${action} session.`);
-			}
-		} catch {
-			notifications.push('warning', 'API not available', `Session ${action} endpoint is not implemented yet.`);
-		}
-	}
+	let selectedId = $state(data.sessions[0]?.id ?? '');
+	let selected = $derived(data.sessions.find((s) => s.id === selectedId) ?? data.sessions[0]);
 
-	function viewSession(sessionId: string) {
-		goto(`/sessions?id=${encodeURIComponent(sessionId)}`);
-	}
-
-	const timelineColors: Record<string, string> = {
-		cyan: 'bg-accent-cyan',
-		green: 'bg-accent-green',
-		yellow: 'bg-accent-yellow',
-		red: 'bg-accent-red',
-		purple: 'bg-accent-purple',
-		blue: 'bg-accent-blue',
+	const statusMap: Record<string, 'online' | 'offline' | 'warning' | 'error'> = {
+		running: 'online',
+		completed: 'offline',
+		error: 'error'
 	};
 
-	let isLoading = $derived(!!$navigating);
+	const statusLabel: Record<string, string> = {
+		running: 'Running',
+		completed: 'Done',
+		error: 'Error'
+	};
 
-	// Lazy-load sentinels for heavy sections
-	let timelineSentinel: HTMLDivElement | undefined = $state();
-	let resourceSentinel: HTMLDivElement | undefined = $state();
-	let showTimeline = $state(false);
-	let showResources = $state(false);
+	const providerNames: Record<string, string> = {
+		ollama: 'Ollama',
+		openclaw: 'OpenClaw',
+		claude: 'Claude API',
+		'claude-code': 'Claude Code'
+	};
 
-	$effect(() => {
-		if (!timelineSentinel || !resourceSentinel) return;
-		const observer = new IntersectionObserver(
-			(entries) => {
-				for (const entry of entries) {
-					if (!entry.isIntersecting) continue;
-					if (entry.target === timelineSentinel) showTimeline = true;
-					if (entry.target === resourceSentinel) showResources = true;
-					observer.unobserve(entry.target);
-				}
-			},
-			{ rootMargin: '200px' }
-		);
-		observer.observe(timelineSentinel);
-		observer.observe(resourceSentinel);
-		return () => observer.disconnect();
-	});
+	const modelShortNames: Record<string, string> = {
+		'claude-opus-4-6': 'Opus 4.6',
+		'claude-sonnet-4-6': 'Sonnet 4.6',
+		'claude-haiku-4-5': 'Haiku 4.5'
+	};
 
-	function goToPage(p: number) {
-		const url = new URL($page.url);
-		url.searchParams.set('page', String(p));
-		goto(url.toString(), { keepFocus: true, noScroll: true });
+	function formatTimestamp(iso: string | null): string {
+		if (!iso) return '\u2014';
+		const d = new Date(iso);
+		return d.toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
 	}
 
-	const statusDots: Record<string, string> = {
-		active: 'bg-accent-green',
-		paused: 'bg-accent-yellow',
-		completed: 'bg-bg-tertiary'
-	};
+	function shortId(id: string): string {
+		return id.length > 12 ? id.slice(0, 12) + '...' : id;
+	}
 
-	const typeColors: Record<string, string> = {
-		sparc: 'bg-accent-purple/20 text-accent-purple',
-		debug: 'bg-accent-red/20 text-accent-red',
-		swarm: 'bg-accent-blue/20 text-accent-blue',
-		tdd: 'bg-accent-green/20 text-accent-green',
-		agent: 'bg-accent-cyan/20 text-accent-cyan',
-		chat: 'bg-accent-blue/20 text-accent-blue'
-	};
+	function displayTitle(session: typeof selected): string {
+		if (!session) return '';
+		if (session.title) return session.title;
+		return session.id;
+	}
 </script>
-
-<svelte:head>
-	<title>Sessions – {data.project?.name ?? 'Project'} | AI Playground</title>
-	<meta name="description" content="Track and manage sessions for {data.project?.name ?? 'this project'} — view active workflows, session timelines, and resource usage." />
-	<meta property="og:title" content="Sessions – {data.project?.name ?? 'Project'} | AI Playground" />
-	<meta property="og:description" content="Track and manage sessions for {data.project?.name ?? 'this project'} — view active workflows, session timelines, and resource usage." />
-	<meta property="og:type" content="website" />
-	<meta name="robots" content="noindex, nofollow" />
-</svelte:head>
 
 <div class="space-y-6">
 	<!-- Header -->
-	<div class="flex items-center justify-between">
-		<div>
-			<h1 class="text-xl font-bold text-text-primary">Project Sessions</h1>
-			<p class="text-sm text-text-secondary mt-1">Workflows and sessions scoped to ai-playground</p>
-		</div>
-		<button
-			onclick={() => notifications.push('info', 'New Session', 'Session creation is not yet implemented.')}
-			class="px-4 py-2 text-sm bg-accent-blue text-white rounded-lg hover:bg-accent-blue/90 transition-colors"
-		>
-			+ New Session
-		</button>
+	<div>
+		<h1 class="type-page-title text-text-primary">Project Sessions</h1>
+		<p class="text-xs text-text-secondary mt-0.5">Agent and chat sessions scoped to this project</p>
 	</div>
 
-	<!-- Loading Overlay -->
-	{#if isLoading}
-		<div role="status" aria-live="polite" class="flex items-center gap-3 px-4 py-3 bg-accent-blue/10 border border-accent-blue/30 rounded-lg">
-			<svg class="animate-spin h-4 w-4 text-accent-blue" viewBox="0 0 24 24" fill="none" aria-hidden="true">
-				<circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-				<path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4z"></path>
+	<!-- Summary Metrics -->
+	<div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
+		<MetricCard label="Total" value={data.summary.total} subtitle="sessions" accent="blue" />
+		<MetricCard label="Running" value={data.summary.running} subtitle="active now" accent="green" />
+		<MetricCard label="Completed" value={data.summary.completed} subtitle="finished" accent="cyan" />
+		<MetricCard label="Chats" value={data.summary.chatCount} subtitle="chat sessions" accent="purple" />
+		<MetricCard label="Errors" value={data.summary.errored} subtitle="with errors" accent="red" />
+		<MetricCard label="Total Edits" value={data.summary.totalEdits} subtitle="across sessions" accent="yellow" />
+	</div>
+
+	<!-- Empty State -->
+	{#if data.sessions.length === 0}
+		<div class="bg-bg-secondary border border-border rounded-lg p-12 flex flex-col items-center justify-center text-center">
+			<svg class="w-12 h-12 text-text-secondary/40 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
+				<path stroke-linecap="round" stroke-linejoin="round" d="M20.25 8.511c.884.284 1.5 1.128 1.5 2.097v4.286c0 1.136-.847 2.1-1.98 2.193-.34.027-.68.052-1.02.072v3.091l-3-3c-1.354 0-2.694-.055-4.02-.163a2.115 2.115 0 01-.825-.242m9.345-8.334a2.126 2.126 0 00-.476-.095 48.64 48.64 0 00-8.048 0c-1.131.094-1.976 1.057-1.976 2.192v4.286c0 .837.46 1.58 1.155 1.951m9.345-8.334V6.637c0-1.621-1.152-3.026-2.76-3.235A48.455 48.455 0 0011.25 3c-2.115 0-4.198.137-6.24.402-1.608.209-2.76 1.614-2.76 3.235v6.226c0 1.621 1.152 3.026 2.76 3.235.577.075 1.157.14 1.74.194V21l4.155-4.155" />
 			</svg>
-			<span class="text-sm text-accent-blue">Loading sessions...</span>
+			<h2 class="text-text-primary text-sm font-medium mb-1">No sessions for this project</h2>
+			<p class="text-text-secondary text-xs">Sessions appear as agents and chats interact with this project.</p>
 		</div>
-	{/if}
-
-	<!-- Error Banner -->
-	{#if data.error}
-		<div role="alert" class="flex items-center justify-between gap-3 px-4 py-3 bg-accent-red/10 border border-accent-red/30 rounded-lg">
-			<div class="flex items-center gap-3">
-				<svg class="h-4 w-4 text-accent-red flex-shrink-0" viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-					<path fill-rule="evenodd" d="M10 18a8 8 0 100-16 8 8 0 000 16zM8.707 7.293a1 1 0 00-1.414 1.414L8.586 10l-1.293 1.293a1 1 0 101.414 1.414L10 11.414l1.293 1.293a1 1 0 001.414-1.414L11.414 10l1.293-1.293a1 1 0 00-1.414-1.414L10 8.586 8.707 7.293z" clip-rule="evenodd" />
-				</svg>
-				<span class="text-sm text-accent-red">{data.error}</span>
-			</div>
-			<button
-				onclick={() => invalidateAll()}
-				class="text-xs px-3 py-1 bg-accent-red/20 text-accent-red rounded hover:bg-accent-red/30 transition-colors"
-			>
-				Retry
-			</button>
-		</div>
-	{/if}
-
-	<!-- Summary -->
-	<div class="grid grid-cols-2 md:grid-cols-4 gap-4">
-		<MetricCard label="Active" value={data.summary.active} accent="green" />
-		<MetricCard label="Paused" value={data.summary.paused} accent="yellow" />
-		<MetricCard label="Completed" value={data.summary.completed} accent="blue" />
-		<MetricCard label="Total Turns" value={data.summary.totalTurns.toLocaleString()} accent="cyan" />
-	</div>
-
-	<!-- Session Table -->
-	<section aria-labelledby="sessions-heading">
-		<h2 id="sessions-heading" class="text-xs text-text-secondary uppercase tracking-wider mb-3">Active Sessions</h2>
-		<div class="bg-bg-secondary border border-border rounded-lg overflow-hidden" role="table" aria-label="Active sessions">
-			<div class="sr-only" role="row">
-				<span role="columnheader">Session</span>
-				<span role="columnheader">Type</span>
-				<span role="columnheader">Status</span>
-				<span role="columnheader">Agents</span>
-				<span role="columnheader">Turns</span>
-				<span role="columnheader">Duration</span>
-				<span role="columnheader">Actions</span>
-			</div>
-			{#each data.sessions as session}
-				<div role="row" class="flex items-center gap-4 px-4 py-3 border-b border-border last:border-0">
-					<div class="min-w-0 flex-1" role="cell">
-						<div class="flex items-center gap-2">
-							<span class="text-sm font-medium text-text-primary">{session.name}</span>
-							<span class="text-[10px] font-mono text-text-secondary">{session.id}</span>
-						</div>
-					</div>
-					<span role="cell" class="text-[10px] px-2 py-0.5 rounded font-mono {typeColors[session.type]}">{session.type}</span>
-					<div role="cell" class="flex items-center gap-1.5">
-						<span class="w-2 h-2 rounded-full {statusDots[session.status]}" aria-hidden="true"></span>
-						<span class="text-xs text-text-secondary">{session.status}</span>
-					</div>
-					<span role="cell" class="text-xs font-mono text-text-secondary w-8 text-center"><span class="sr-only">Agents: </span>{session.agents}</span>
-					<span role="cell" class="text-xs font-mono text-text-secondary w-12 text-center"><span class="sr-only">Turns: </span>{session.turns}</span>
-					<span role="cell" class="text-xs font-mono text-text-secondary w-16 text-right"><span class="sr-only">Duration: </span>{session.duration}</span>
-					<div role="cell" class="flex gap-1 w-20 justify-end">
-						{#if session.status === 'active'}
-							<button onclick={() => sessionAction(session.id, session.name, 'pause')} aria-label="Pause session {session.name}" class="text-[10px] px-2 py-1 bg-accent-yellow/20 text-accent-yellow rounded hover:bg-accent-yellow/30 transition-colors">Pause</button>
-							<button onclick={() => sessionAction(session.id, session.name, 'stop')} aria-label="Stop session {session.name}" class="text-[10px] px-2 py-1 bg-accent-red/20 text-accent-red rounded hover:bg-accent-red/30 transition-colors">Stop</button>
-						{:else if session.status === 'paused'}
-							<button onclick={() => notifications.push('info', 'Resume Session', `Resume requested for "${session.name}" — not yet implemented.`)} aria-label="Resume session {session.name}" class="text-[10px] px-2 py-1 bg-accent-green/20 text-accent-green rounded hover:bg-accent-green/30 transition-colors">Resume</button>
-						{:else}
-							<button onclick={() => notifications.push('info', 'View Session', `Viewing "${session.name}" — not yet implemented.`)} aria-label="View session {session.name}" class="text-[10px] px-2 py-1 bg-bg-tertiary text-text-secondary rounded hover:text-text-primary transition-colors">View</button>
-						{/if}
-					</div>
+	{:else}
+		<!-- Main Layout: List + Detail -->
+		<div class="grid grid-cols-1 lg:grid-cols-[320px_1fr] gap-4">
+			<!-- Left: Session List -->
+			<div class="bg-bg-secondary border border-border rounded-lg overflow-hidden">
+				<div class="p-3 border-b border-border">
+					<p class="text-xs text-text-secondary uppercase tracking-wider">Sessions ({data.sessions.length})</p>
 				</div>
-			{:else}
-				<div class="px-4 py-8 text-center">
-					<p class="text-text-secondary text-sm">No sessions yet</p>
-					<p class="text-text-secondary text-xs mt-1">Start a new session to begin working.</p>
-				</div>
-			{/each}
-		</div>
-
-		<!-- Pagination -->
-		{#if data.pagination.totalPages > 1}
-			<nav aria-label="Session pagination" class="flex items-center justify-between px-4 py-3">
-				<span class="text-xs text-text-secondary">
-					Showing {(data.pagination.page - 1) * data.pagination.perPage + 1}–{Math.min(data.pagination.page * data.pagination.perPage, data.pagination.totalSessions)} of {data.pagination.totalSessions}
-				</span>
-				<div class="flex items-center gap-1">
-					<button
-						onclick={() => goToPage(data.pagination.page - 1)}
-						disabled={data.pagination.page <= 1}
-						aria-label="Previous page"
-						class="px-2 py-1 text-xs rounded border border-border text-text-secondary hover:text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-					>
-						Prev
-					</button>
-					{#each Array.from({ length: data.pagination.totalPages }, (_, i) => i + 1) as p}
+				<div class="divide-y divide-border max-h-[600px] overflow-y-auto">
+					{#each data.sessions as session}
 						<button
-							onclick={() => goToPage(p)}
-							aria-label="Page {p}"
-							aria-current={p === data.pagination.page ? 'page' : undefined}
-							class="px-2 py-1 text-xs rounded border transition-colors {p === data.pagination.page ? 'border-accent-blue bg-accent-blue/20 text-accent-blue' : 'border-border text-text-secondary hover:text-text-primary hover:bg-bg-tertiary'}"
+							class="w-full text-left p-3 hover:bg-bg-tertiary transition-colors {session.id === selectedId ? 'bg-bg-tertiary border-l-2 border-l-accent-blue' : ''}"
+							onclick={() => (selectedId = session.id)}
 						>
-							{p}
+							<div class="flex items-start justify-between mb-1 gap-2">
+								<div class="flex items-center gap-1.5 min-w-0">
+									{#if session.type === 'chat'}
+										<span class="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded bg-accent-purple/20 text-accent-purple uppercase">chat</span>
+									{:else}
+										<span class="shrink-0 text-[10px] font-medium px-1.5 py-0.5 rounded bg-accent-blue/20 text-accent-blue uppercase">agent</span>
+									{/if}
+									<span class="text-sm font-medium text-text-primary leading-tight line-clamp-2">{displayTitle(session)}</span>
+								</div>
+								<StatusBadge status={statusMap[session.status]} label={statusLabel[session.status]} size="sm" />
+							</div>
+							<div class="flex items-center gap-3 text-xs text-text-secondary">
+								{#if session.type === 'chat'}
+									<span>{providerNames[session.provider ?? ''] ?? session.provider}</span>
+									<span>{session.messageCount} msgs</span>
+								{:else}
+									<span class="font-mono">{shortId(session.id)}</span>
+									<span>{session.duration}</span>
+									<span>{session.metrics.edits} edits</span>
+								{/if}
+							</div>
 						</button>
 					{/each}
-					<button
-						onclick={() => goToPage(data.pagination.page + 1)}
-						disabled={data.pagination.page >= data.pagination.totalPages}
-						aria-label="Next page"
-						class="px-2 py-1 text-xs rounded border border-border text-text-secondary hover:text-text-primary hover:bg-bg-tertiary transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
-					>
-						Next
-					</button>
 				</div>
-			</nav>
-		{/if}
-	</section>
+			</div>
 
-	<!-- Session Timeline (lazy-loaded) -->
-	<section bind:this={timelineSentinel} aria-labelledby="timeline-heading">
-		{#if showTimeline}
-			<h2 id="timeline-heading" class="text-xs text-text-secondary uppercase tracking-wider mb-3">Session Timeline</h2>
-			<div class="bg-bg-secondary border border-border rounded-lg p-4">
-				{#if data.timeline.length > 0}
-					<ol class="flex items-center justify-between" aria-label="Session timeline events">
-						{#each data.timeline as event}
-							<li class="flex flex-col items-center gap-2">
-								<span class="w-3 h-3 rounded-full {timelineColors[event.color] ?? 'bg-accent-cyan'}" aria-hidden="true"></span>
-								<span class="text-[10px] font-mono text-text-secondary">{event.time}</span>
-								<span class="text-[10px] text-text-secondary text-center max-w-20">{event.label}</span>
-							</li>
-						{/each}
-					</ol>
-				{:else}
-					<p class="text-text-secondary text-sm text-center py-2">No timeline events yet</p>
-				{/if}
-			</div>
-		{:else}
-			<h2 id="timeline-heading" class="sr-only">Session Timeline</h2>
-			<div class="h-24 bg-bg-secondary border border-border rounded-lg animate-pulse" aria-hidden="true"></div>
-		{/if}
-	</section>
+			<!-- Right: Detail Panel -->
+			{#if selected}
+				<div class="space-y-4">
+					<!-- Session Info -->
+					<div class="bg-bg-secondary border border-border rounded-lg p-4">
+						<div class="flex items-center justify-between mb-4">
+							<div class="flex items-center gap-2">
+								<h2 class="text-sm text-text-secondary uppercase tracking-wider">Session Detail</h2>
+								{#if selected.type === 'chat'}
+									<span class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-accent-purple/20 text-accent-purple uppercase">chat</span>
+								{:else}
+									<span class="text-[10px] font-medium px-1.5 py-0.5 rounded bg-accent-blue/20 text-accent-blue uppercase">agent</span>
+								{/if}
+							</div>
+							<StatusBadge status={statusMap[selected.status]} label={statusLabel[selected.status]} size="sm" />
+						</div>
 
-	<!-- Resource Usage (lazy-loaded) -->
-	<section bind:this={resourceSentinel} aria-labelledby="resources-heading">
-		{#if showResources}
-			<h2 id="resources-heading" class="text-xs text-text-secondary uppercase tracking-wider mb-3">Resource Usage</h2>
-			<div class="grid grid-cols-3 gap-4">
-				<div class="bg-bg-secondary border border-border rounded-lg p-4">
-					<p class="text-xs text-text-secondary" id="api-tokens-label">API Tokens Used</p>
-					<p class="text-2xl font-bold font-mono text-accent-blue" aria-labelledby="api-tokens-label">{data.resources.apiTokens.value.toLocaleString()}</p>
-					<p class="text-xs text-text-secondary mt-1">{data.resources.apiTokens.cost}</p>
+						{#if selected.title}
+							<p class="text-base font-medium text-text-primary mb-3">{selected.title}</p>
+						{/if}
+
+						<div class="grid grid-cols-2 md:grid-cols-3 gap-x-8 gap-y-3 text-sm">
+							<div>
+								<span class="text-text-secondary">ID</span>
+								<p class="font-mono text-text-primary text-xs mt-0.5 break-all">{selected.id}</p>
+							</div>
+							<div>
+								<span class="text-text-secondary">Provider</span>
+								<p class="font-mono text-xs mt-0.5 {selected.type === 'chat' ? 'text-accent-purple' : 'text-accent-blue'}">
+									{providerNames[selected.provider ?? ''] ?? selected.provider}
+								</p>
+							</div>
+							<div>
+								<span class="text-text-secondary">Model</span>
+								<p class="font-mono text-text-primary text-xs mt-0.5">{modelShortNames[selected.model ?? ''] ?? selected.model}</p>
+							</div>
+							<div>
+								<span class="text-text-secondary">Started</span>
+								<p class="font-mono text-text-primary text-xs mt-0.5">{formatTimestamp(selected.startedAt)}</p>
+							</div>
+							<div>
+								<span class="text-text-secondary">{selected.type === 'chat' ? 'Last Active' : 'Ended'}</span>
+								<p class="font-mono text-text-primary text-xs mt-0.5">{formatTimestamp(selected.endedAt)}</p>
+							</div>
+							<div>
+								<span class="text-text-secondary">Duration</span>
+								<p class="font-mono text-accent-cyan text-xs mt-0.5">{selected.duration}</p>
+							</div>
+						</div>
+
+						{#if selected.type === 'chat'}
+							<div class="mt-4 pt-3 border-t border-border flex items-center justify-between">
+								<span class="text-sm text-text-secondary">{selected.messageCount} messages</span>
+								<a
+									href="/chat?session={selected.id.replace('chat-', '')}"
+									class="px-3 py-1.5 rounded-lg text-sm font-medium bg-accent-purple/20 text-accent-purple hover:bg-accent-purple/30 transition-colors"
+								>
+									Resume Chat
+								</a>
+							</div>
+						{/if}
+					</div>
+
+					<!-- Session Metrics (agent only) -->
+					{#if selected.type === 'agent'}
+						<div class="bg-bg-secondary border border-border rounded-lg p-4">
+							<h2 class="text-sm text-text-secondary uppercase tracking-wider mb-4">Activity Metrics</h2>
+							<div class="grid grid-cols-2 md:grid-cols-4 gap-4">
+								<div class="border border-border rounded-lg p-3 bg-bg-primary text-center">
+									<p class="text-2xl font-bold font-mono text-accent-blue">{selected.metrics.edits}</p>
+									<p class="text-xs text-text-secondary mt-1">Edits</p>
+								</div>
+								<div class="border border-border rounded-lg p-3 bg-bg-primary text-center">
+									<p class="text-2xl font-bold font-mono text-accent-cyan">{selected.metrics.commands}</p>
+									<p class="text-xs text-text-secondary mt-1">Commands</p>
+								</div>
+								<div class="border border-border rounded-lg p-3 bg-bg-primary text-center">
+									<p class="text-2xl font-bold font-mono text-accent-green">{selected.metrics.tasks}</p>
+									<p class="text-xs text-text-secondary mt-1">Tasks</p>
+								</div>
+								<div class="border border-border rounded-lg p-3 bg-bg-primary text-center">
+									<p class="text-2xl font-bold font-mono {selected.metrics.errors > 0 ? 'text-accent-red' : 'text-text-secondary'}">{selected.metrics.errors}</p>
+									<p class="text-xs text-text-secondary mt-1">Errors</p>
+								</div>
+							</div>
+						</div>
+
+						<!-- Activity Breakdown Bar -->
+						{#if selected.metrics.edits + selected.metrics.commands + selected.metrics.tasks > 0}
+							{@const totalActivity = selected.metrics.edits + selected.metrics.commands + selected.metrics.tasks}
+							<div class="bg-bg-secondary border border-border rounded-lg p-4">
+								<h2 class="text-sm text-text-secondary uppercase tracking-wider mb-3">Activity Breakdown</h2>
+								<div class="h-3 rounded-full overflow-hidden flex bg-bg-primary">
+									{#if selected.metrics.edits > 0}
+										<div class="bg-accent-blue h-full" style="width: {(selected.metrics.edits / totalActivity) * 100}%"></div>
+									{/if}
+									{#if selected.metrics.commands > 0}
+										<div class="bg-accent-cyan h-full" style="width: {(selected.metrics.commands / totalActivity) * 100}%"></div>
+									{/if}
+									{#if selected.metrics.tasks > 0}
+										<div class="bg-accent-green h-full" style="width: {(selected.metrics.tasks / totalActivity) * 100}%"></div>
+									{/if}
+								</div>
+								<div class="flex items-center gap-4 mt-2 text-xs text-text-secondary">
+									<span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-blue"></span> Edits</span>
+									<span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-cyan"></span> Commands</span>
+									<span class="flex items-center gap-1"><span class="w-2 h-2 rounded-full bg-accent-green"></span> Tasks</span>
+								</div>
+							</div>
+						{/if}
+					{/if}
 				</div>
-				<div class="bg-bg-secondary border border-border rounded-lg p-4">
-					<p class="text-xs text-text-secondary" id="local-tokens-label">Local Tokens</p>
-					<p class="text-2xl font-bold font-mono text-accent-green" aria-labelledby="local-tokens-label">{data.resources.localTokens.value.toLocaleString()}</p>
-					<p class="text-xs text-text-secondary mt-1">{data.resources.localTokens.cost}</p>
-				</div>
-				<div class="bg-bg-secondary border border-border rounded-lg p-4">
-					<p class="text-xs text-text-secondary" id="memory-nodes-label">Memory Nodes</p>
-					<p class="text-2xl font-bold font-mono text-accent-purple" aria-labelledby="memory-nodes-label">{data.resources.memoryNodes.value}</p>
-					<p class="text-xs text-text-secondary mt-1">{data.resources.memoryNodes.label}</p>
-				</div>
-			</div>
-		{:else}
-			<h2 id="resources-heading" class="sr-only">Resource Usage</h2>
-			<div class="grid grid-cols-3 gap-4" aria-hidden="true">
-				<div class="h-24 bg-bg-secondary border border-border rounded-lg animate-pulse"></div>
-				<div class="h-24 bg-bg-secondary border border-border rounded-lg animate-pulse"></div>
-				<div class="h-24 bg-bg-secondary border border-border rounded-lg animate-pulse"></div>
-			</div>
-		{/if}
-	</section>
+			{/if}
+		</div>
+	{/if}
 </div>

@@ -1,3 +1,14 @@
+/** Environment configuration for a project */
+export interface ProjectEnvironment {
+	name: string;           // 'dev' | 'staging' | 'production' | custom
+	branch?: string;        // git branch for this env
+	url?: string;           // deployment URL
+	variables: Record<string, string>; // env-specific config (values hidden in UI)
+	lastDeployedAt?: string;
+	lastDeployedVersion?: string;
+	status: 'active' | 'inactive' | 'deploying';
+}
+
 /** What lives in `.playground/config.json` — source of truth for project identity */
 export interface PlaygroundConfig {
 	name: string;
@@ -46,8 +57,19 @@ export interface DetectedProjectMeta {
 	dependencies: DetectedDependency[];
 	/** Maintenance hints: README exists, docs dir, changelog, etc. */
 	maintenance: MaintenanceInfo;
-	/** Workspace/monorepo type if detected */
-	workspace?: 'npm' | 'yarn' | 'pnpm' | 'cargo' | 'dotnet' | null;
+	/** Workspace/monorepo type if detected (lightweight, type only) */
+	workspace?: 'npm' | 'yarn' | 'pnpm' | 'cargo' | 'dotnet' | 'gradle' | null;
+	/** Full workspace info with resolved packages and inter-dependencies */
+	workspaceInfo?: {
+		type: 'npm' | 'yarn' | 'pnpm' | 'cargo' | 'dotnet' | 'gradle';
+		rootPath: string;
+		packages: {
+			name: string;
+			path: string;
+			version?: string;
+			dependencies?: string[];
+		}[];
+	} | null;
 }
 
 export interface DetectedWorkflow {

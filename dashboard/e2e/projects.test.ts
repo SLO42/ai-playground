@@ -256,7 +256,7 @@ test.describe('Import project page', () => {
 						project: {
 							id: 'ai-playground',
 							name: 'ai-playground',
-							path: 'F:\\code\\ai-playground',
+							path: '/mock/workspace/ai-playground',
 							status: 'active',
 							health: 'healthy'
 						}
@@ -289,7 +289,7 @@ test.describe('Project visible in list after creation', () => {
 								id: 'e2e-test-project',
 								name: 'e2e-test-project',
 								description: 'Created by e2e test',
-								path: 'F:\\code\\e2e-test-project',
+								path: '/mock/workspace/e2e-test-project',
 								status: 'active',
 								health: 'healthy',
 								tags: ['webapp'],

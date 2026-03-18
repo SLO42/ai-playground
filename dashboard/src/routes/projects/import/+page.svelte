@@ -138,7 +138,7 @@
 			<input
 				type="text"
 				bind:value={projectPath}
-				placeholder="F:\code\my-project"
+				placeholder="/path/to/my-project"
 				class="flex-1 bg-bg-secondary border border-border rounded-lg px-4 py-2.5 text-sm text-text-primary font-mono focus:outline-none focus:border-accent-blue"
 			/>
 			<button

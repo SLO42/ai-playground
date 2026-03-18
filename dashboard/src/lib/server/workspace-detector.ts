@@ -2,7 +2,7 @@ import { resolve, basename } from 'path';
 import { readFileSync, readdirSync, statSync, existsSync } from 'fs';
 
 export interface WorkspaceInfo {
-	type: 'npm' | 'yarn' | 'pnpm' | 'cargo' | 'dotnet' | null;
+	type: 'npm' | 'yarn' | 'pnpm' | 'cargo' | 'dotnet' | 'gradle' | null;
 	root: string;
 	packages: WorkspacePackage[];
 }
@@ -16,7 +16,7 @@ export interface WorkspacePackage {
 	scripts: Record<string, string>;
 }
 
-type WsType = 'npm' | 'yarn' | 'pnpm' | 'cargo' | 'dotnet';
+type WsType = 'npm' | 'yarn' | 'pnpm' | 'cargo' | 'dotnet' | 'gradle';
 const SKIP_DIRS = new Set(['node_modules', '.git', 'bin', 'obj']);
 
 function readJsonSync<T>(p: string): T | null {
@@ -101,6 +101,12 @@ export function detectWorkspaceType(projectPath: string): WsType | null {
 	const cargoToml = readTextSync(resolve(projectPath, 'Cargo.toml'));
 	if (cargoToml && /^\[workspace\]/m.test(cargoToml)) return 'cargo';
 
+	// Gradle multi-project: settings.gradle(.kts) with include statements
+	for (const gradleFile of ['settings.gradle.kts', 'settings.gradle']) {
+		const gradleSettings = readTextSync(resolve(projectPath, gradleFile));
+		if (gradleSettings && /include\s*\(/.test(gradleSettings)) return 'gradle';
+	}
+
 	try {
 		if (readdirSync(projectPath).some((e) => e.endsWith('.sln'))) {
 			if (countCsprojFiles(projectPath, 0, 3) >= 2) return 'dotnet';
@@ -141,6 +147,31 @@ function resolvePackageDirs(root: string, wsType: WsType): string[] {
 			const members: string[] = [];
 			for (const m of wsSection[1].matchAll(/"([^"]+)"/g)) members.push(m[1]);
 			return expandGlobs(root, members, 'Cargo.toml');
+		}
+		case 'gradle': {
+			const dirs: string[] = [];
+			for (const gradleFile of ['settings.gradle.kts', 'settings.gradle']) {
+				const raw = readTextSync(resolve(root, gradleFile));
+				if (!raw) continue;
+				// Parse include(":subproject") or include ":subproject", ":other"
+				for (const m of raw.matchAll(/include\s*\(?["':]+([^"')]+)["')]/g)) {
+					// Gradle uses ':' as path separator for subprojects
+					const subPath = m[1].replace(/:/g, '/').replace(/^\//, '');
+					const full = resolve(root, subPath);
+					if (fileExists(full)) dirs.push(full);
+				}
+				// Also handle multi-arg include: include(":a", ":b")
+				for (const m of raw.matchAll(/include\s*\(([\s\S]*?)\)/g)) {
+					const content = m[1];
+					for (const sub of content.matchAll(/["']([^"']+)["']/g)) {
+						const subPath = sub[1].replace(/^:/, '').replace(/:/g, '/');
+						const full = resolve(root, subPath);
+						if (fileExists(full) && !dirs.includes(full)) dirs.push(full);
+					}
+				}
+				break;
+			}
+			return dirs;
 		}
 		case 'dotnet': {
 			const dirs: string[] = [];
@@ -219,6 +250,46 @@ function readDotnetPackage(dir: string) {
 	};
 }
 
+function readGradlePackage(dir: string): RawPkg | null {
+	// Try build.gradle.kts first, then build.gradle
+	for (const buildFile of ['build.gradle.kts', 'build.gradle']) {
+		const raw = readTextSync(resolve(dir, buildFile));
+		if (!raw) continue;
+
+		const deps: Record<string, string> = {};
+		// Match: implementation("group:artifact:version") or implementation "group:artifact:version"
+		for (const m of raw.matchAll(/(?:implementation|api|compileOnly|runtimeOnly)\s*[\("]+([^"')]+)["')]/g)) {
+			const parts = m[1].split(':');
+			if (parts.length >= 2) {
+				const name = `${parts[0]}:${parts[1]}`;
+				deps[name] = parts[2] ?? '*';
+			}
+		}
+		// Match: project(":subproject")
+		for (const m of raw.matchAll(/project\s*\(\s*["']:?([^"')]+)["']\s*\)/g)) {
+			deps[m[1]] = '*';
+		}
+
+		const testDeps: Record<string, string> = {};
+		for (const m of raw.matchAll(/testImplementation\s*[\("]+([^"')]+)["')]/g)) {
+			const parts = m[1].split(':');
+			if (parts.length >= 2) {
+				const name = `${parts[0]}:${parts[1]}`;
+				testDeps[name] = parts[2] ?? '*';
+			}
+		}
+
+		const versionMatch = raw.match(/version\s*=\s*["']([^"']+)["']/);
+		return {
+			name: basename(dir), path: dir,
+			version: versionMatch?.[1] ?? null,
+			allDeps: deps, allDevDeps: testDeps,
+			scripts: {} as Record<string, string>
+		};
+	}
+	return null;
+}
+
 type RawPkg = {
 	name: string; path: string; version: string | null;
 	allDeps: Record<string, string>; allDevDeps: Record<string, string>;
@@ -228,6 +299,7 @@ type RawPkg = {
 function readPackageInfo(dir: string, wsType: WsType): RawPkg | null {
 	if (wsType === 'cargo') return readCargoPackage(dir);
 	if (wsType === 'dotnet') return readDotnetPackage(dir);
+	if (wsType === 'gradle') return readGradlePackage(dir);
 	return readNodePackage(dir);
 }
 
@@ -299,10 +371,19 @@ export function getTopologicalOrder(packages: WorkspacePackage[]): string[] {
 	return result;
 }
 
-/** Get full workspace info. Returns type: null for non-monorepo projects. */
-export async function getWorkspaceInfo(projectPath: string): Promise<WorkspaceInfo> {
+/**
+ * Detect workspace type and resolve all packages with inter-dependencies.
+ * Returns null if the project is not a monorepo/workspace.
+ */
+export async function detectWorkspacePackages(projectPath: string): Promise<WorkspaceInfo | null> {
 	const type = detectWorkspaceType(projectPath);
-	if (!type) return { type: null, root: projectPath, packages: [] };
+	if (!type) return null;
 	const packages = await scanWorkspacePackages(projectPath);
 	return { type, root: projectPath, packages };
+}
+
+/** Get full workspace info. Returns type: null for non-monorepo projects. */
+export async function getWorkspaceInfo(projectPath: string): Promise<WorkspaceInfo> {
+	const info = await detectWorkspacePackages(projectPath);
+	return info ?? { type: null, root: projectPath, packages: [] };
 }

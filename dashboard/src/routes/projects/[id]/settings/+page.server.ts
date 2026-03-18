@@ -2,6 +2,7 @@ import type { PageServerLoad } from './$types.js';
 import { resolve } from 'path';
 import { readJsonFile } from '$lib/server/file-reader.js';
 import { PATHS } from '$lib/server/constants.js';
+import { loadEnvironments } from '$lib/server/environments.js';
 
 interface ProjectSettings {
 	general: {
@@ -24,17 +25,19 @@ interface ProjectSettings {
 }
 
 export const load: PageServerLoad = async ({ parent }) => {
-	const { projectId } = await parent();
+	const { projectId, project } = await parent();
 	const sanitized = projectId.replace(/[^a-zA-Z0-9_-]/g, '');
 	const path = resolve(PATHS.projectsDir, `${sanitized}.json`);
 	const stored = await readJsonFile<ProjectSettings>(path);
 
+	const environments = await loadEnvironments(project.path);
+
 	return {
 		general: stored?.general ?? {
-			name: 'ai-playground',
-			path: 'F:\\code\\ai-playground',
-			description: 'Local AI orchestration dashboard',
-			branch: 'master'
+			name: project.name ?? projectId,
+			path: project.path ?? '',
+			description: project.description ?? '',
+			branch: project.branch ?? 'main'
 		},
 		envVars: [
 			{ key: 'ANTHROPIC_API_KEY', value: '\u2022\u2022\u2022\u2022sk-ant-...7x4Q', source: '.env' },
@@ -52,6 +55,7 @@ export const load: PageServerLoad = async ({ parent }) => {
 			memoryBackend: 'hybrid (HNSW + SQLite)',
 			consensus: 'raft'
 		},
-		autoStart: stored?.autoStart ?? false
+		autoStart: stored?.autoStart ?? false,
+		environments
 	};
 };

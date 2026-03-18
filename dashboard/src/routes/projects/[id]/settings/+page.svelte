@@ -1,5 +1,6 @@
 <script lang="ts">
 	import type { PageData } from './$types.js';
+	import type { ProjectEnvironment } from '$lib/types/projects.js';
 
 	let { data }: { data: PageData } = $props();
 
@@ -24,6 +25,112 @@
 
 	// Services
 	let autoStart = $state(data.autoStart);
+
+	// Environments
+	let environments = $state<ProjectEnvironment[]>(data.environments ?? []);
+	let showEnvForm = $state(false);
+	let editingEnv = $state<string | null>(null);
+	let envName = $state('');
+	let envBranch = $state('');
+	let envUrl = $state('');
+	let envStatus = $state<'active' | 'inactive' | 'deploying'>('active');
+	let envVariables = $state<Array<{ key: string; value: string }>>([]);
+	let revealedVars = $state<Set<string>>(new Set());
+	let envSaving = $state(false);
+	let envMessage = $state('');
+
+	function resetEnvForm() {
+		envName = '';
+		envBranch = '';
+		envUrl = '';
+		envStatus = 'active';
+		envVariables = [];
+		editingEnv = null;
+		showEnvForm = false;
+	}
+
+	function editEnvironment(env: ProjectEnvironment) {
+		editingEnv = env.name;
+		envName = env.name;
+		envBranch = env.branch ?? '';
+		envUrl = env.url ?? '';
+		envStatus = env.status;
+		envVariables = Object.entries(env.variables).map(([key, value]) => ({ key, value }));
+		showEnvForm = true;
+	}
+
+	function addEnvVariable() {
+		envVariables = [...envVariables, { key: '', value: '' }];
+	}
+
+	function removeEnvVariable(idx: number) {
+		envVariables = envVariables.filter((_, i) => i !== idx);
+	}
+
+	function toggleReveal(envName: string) {
+		const next = new Set(revealedVars);
+		if (next.has(envName)) {
+			next.delete(envName);
+		} else {
+			next.add(envName);
+		}
+		revealedVars = next;
+	}
+
+	async function saveEnvironment() {
+		envSaving = true;
+		envMessage = '';
+		try {
+			const variables: Record<string, string> = {};
+			for (const v of envVariables) {
+				if (v.key.trim()) variables[v.key.trim()] = v.value;
+			}
+			const res = await fetch(`/api/projects/${data.projectId}/environments`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					name: envName.trim().toLowerCase(),
+					branch: envBranch || undefined,
+					url: envUrl || undefined,
+					status: envStatus,
+					variables
+				})
+			});
+			const result = await res.json();
+			if (res.ok) {
+				// Refresh environments list
+				const listRes = await fetch(`/api/projects/${data.projectId}/environments`);
+				if (listRes.ok) {
+					const listData = await listRes.json();
+					environments = listData.environments;
+				}
+				resetEnvForm();
+				envMessage = 'Environment saved';
+				setTimeout(() => (envMessage = ''), 2500);
+			} else {
+				envMessage = result.error ?? 'Save failed';
+			}
+		} catch {
+			envMessage = 'Network error';
+		} finally {
+			envSaving = false;
+		}
+	}
+
+	async function deleteEnvironment(envNameToDelete: string) {
+		try {
+			const res = await fetch(`/api/projects/${data.projectId}/environments`, {
+				method: 'DELETE',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ name: envNameToDelete })
+			});
+			if (res.ok) {
+				environments = environments.filter((e) => e.name !== envNameToDelete);
+			}
+		} catch {
+			// silent
+		}
+	}
 
 	// Save state
 	let saving = $state(false);
@@ -136,6 +243,186 @@
 			{/each}
 		</div>
 		<p class="text-[11px] text-text-secondary mt-1">Environment variables are read from .env and cannot be edited here for security.</p>
+	</div>
+
+	<!-- Environments -->
+	<div>
+		<div class="flex items-center justify-between mb-3">
+			<h2 class="text-xs text-text-secondary uppercase tracking-wider">Environments</h2>
+			<div class="flex items-center gap-2">
+				{#if envMessage}
+					<span class="text-xs {envMessage === 'Environment saved' ? 'text-accent-green' : 'text-accent-red'}">{envMessage}</span>
+				{/if}
+				<button
+					onclick={() => { resetEnvForm(); showEnvForm = !showEnvForm; }}
+					class="px-3 py-1 text-xs font-medium text-accent-blue border border-accent-blue/30 rounded-lg hover:bg-accent-blue/10 transition-colors"
+				>
+					{showEnvForm ? 'Cancel' : '+ Add Environment'}
+				</button>
+			</div>
+		</div>
+
+		{#if showEnvForm}
+			<div class="bg-bg-secondary border border-accent-blue/30 rounded-lg p-4 mb-3 space-y-3">
+				<div class="grid grid-cols-2 gap-3">
+					<div class="flex items-center gap-3">
+						<span class="text-sm text-text-secondary w-20">Name</span>
+						<input
+							type="text"
+							bind:value={envName}
+							placeholder="staging"
+							disabled={editingEnv !== null}
+							class="flex-1 bg-bg-tertiary border border-border rounded px-3 py-1.5 text-sm text-text-primary font-mono focus:outline-none focus:border-accent-blue disabled:opacity-50"
+						/>
+					</div>
+					<div class="flex items-center gap-3">
+						<span class="text-sm text-text-secondary w-20">Status</span>
+						<select
+							bind:value={envStatus}
+							class="flex-1 bg-bg-tertiary border border-border rounded px-3 py-1.5 text-sm text-text-primary font-mono focus:outline-none focus:border-accent-blue"
+						>
+							<option value="active">Active</option>
+							<option value="inactive">Inactive</option>
+							<option value="deploying">Deploying</option>
+						</select>
+					</div>
+					<div class="flex items-center gap-3">
+						<span class="text-sm text-text-secondary w-20">Branch</span>
+						<input
+							type="text"
+							bind:value={envBranch}
+							placeholder="main"
+							class="flex-1 bg-bg-tertiary border border-border rounded px-3 py-1.5 text-sm text-text-primary font-mono focus:outline-none focus:border-accent-blue"
+						/>
+					</div>
+					<div class="flex items-center gap-3">
+						<span class="text-sm text-text-secondary w-20">URL</span>
+						<input
+							type="text"
+							bind:value={envUrl}
+							placeholder="https://staging.example.com"
+							class="flex-1 bg-bg-tertiary border border-border rounded px-3 py-1.5 text-sm text-text-primary font-mono focus:outline-none focus:border-accent-blue"
+						/>
+					</div>
+				</div>
+
+				<!-- Variables -->
+				<div>
+					<div class="flex items-center justify-between mb-2">
+						<span class="text-xs text-text-secondary uppercase tracking-wider">Variables</span>
+						<button
+							onclick={addEnvVariable}
+							class="text-xs text-accent-blue hover:underline"
+						>+ Add Variable</button>
+					</div>
+					{#each envVariables as variable, idx}
+						<div class="flex items-center gap-2 mb-1.5">
+							<input
+								type="text"
+								bind:value={variable.key}
+								placeholder="KEY"
+								class="w-40 bg-bg-tertiary border border-border rounded px-2 py-1 text-xs text-text-primary font-mono focus:outline-none focus:border-accent-blue"
+							/>
+							<input
+								type="text"
+								bind:value={variable.value}
+								placeholder="value"
+								class="flex-1 bg-bg-tertiary border border-border rounded px-2 py-1 text-xs text-text-primary font-mono focus:outline-none focus:border-accent-blue"
+							/>
+							<button
+								onclick={() => removeEnvVariable(idx)}
+								class="text-xs text-accent-red hover:underline shrink-0"
+							>Remove</button>
+						</div>
+					{/each}
+				</div>
+
+				<div class="flex justify-end">
+					<button
+						onclick={saveEnvironment}
+						disabled={envSaving || !envName.trim()}
+						class="px-4 py-1.5 text-xs font-medium text-white bg-accent-blue rounded-lg hover:bg-accent-blue/80 transition-colors disabled:opacity-50"
+					>
+						{envSaving ? 'Saving...' : editingEnv ? 'Update Environment' : 'Create Environment'}
+					</button>
+				</div>
+			</div>
+		{/if}
+
+		{#if environments.length > 0}
+			<div class="bg-bg-secondary border border-border rounded-lg overflow-hidden divide-y divide-border">
+				{#each environments as env}
+					<div class="px-4 py-3">
+						<div class="flex items-center justify-between">
+							<div class="flex items-center gap-3">
+								<span class="w-2 h-2 rounded-full {env.status === 'active' ? 'bg-accent-green' : env.status === 'deploying' ? 'bg-accent-yellow' : 'bg-text-secondary/40'}"></span>
+								<span class="text-sm font-medium text-text-primary font-mono">{env.name}</span>
+								<span class="text-[10px] px-1.5 py-0.5 rounded font-medium {env.status === 'active' ? 'bg-accent-green/20 text-accent-green' : env.status === 'deploying' ? 'bg-accent-yellow/20 text-accent-yellow' : 'bg-bg-tertiary text-text-secondary'}">
+									{env.status}
+								</span>
+							</div>
+							<div class="flex items-center gap-2">
+								<button
+									onclick={() => editEnvironment(env)}
+									class="text-xs text-accent-blue hover:underline"
+								>Edit</button>
+								<button
+									onclick={() => deleteEnvironment(env.name)}
+									class="text-xs text-accent-red hover:underline"
+								>Delete</button>
+							</div>
+						</div>
+						<div class="flex items-center gap-4 mt-1.5 text-xs text-text-secondary">
+							{#if env.branch}
+								<span>Branch: <span class="font-mono text-text-primary">{env.branch}</span></span>
+							{/if}
+							{#if env.url}
+								<a href={env.url} target="_blank" rel="noopener noreferrer" class="text-accent-blue hover:underline truncate max-w-xs">{env.url}</a>
+							{/if}
+							{#if env.lastDeployedAt}
+								<span>Deployed: {env.lastDeployedAt}</span>
+							{/if}
+							{#if env.lastDeployedVersion}
+								<span class="font-mono">{env.lastDeployedVersion}</span>
+							{/if}
+						</div>
+						{#if Object.keys(env.variables).length > 0}
+							<div class="mt-2">
+								<button
+									onclick={() => toggleReveal(env.name)}
+									class="text-[10px] text-text-secondary hover:text-text-primary transition-colors"
+								>
+									{revealedVars.has(env.name) ? 'Hide' : 'Show'} {Object.keys(env.variables).length} variable{Object.keys(env.variables).length === 1 ? '' : 's'}
+								</button>
+								{#if revealedVars.has(env.name)}
+									<div class="mt-1 space-y-0.5">
+										{#each Object.entries(env.variables) as [key, value]}
+											<div class="flex items-center gap-2 text-xs">
+												<span class="font-mono text-accent-cyan w-36 truncate">{key}</span>
+												<span class="font-mono text-text-secondary">{value}</span>
+											</div>
+										{/each}
+									</div>
+								{:else}
+									<div class="mt-1 space-y-0.5">
+										{#each Object.keys(env.variables) as key}
+											<div class="flex items-center gap-2 text-xs">
+												<span class="font-mono text-accent-cyan w-36 truncate">{key}</span>
+												<span class="font-mono text-text-secondary">••••••••</span>
+											</div>
+										{/each}
+									</div>
+								{/if}
+							</div>
+						{/if}
+					</div>
+				{/each}
+			</div>
+		{:else if !showEnvForm}
+			<div class="bg-bg-secondary border border-border rounded-lg p-6 text-center">
+				<p class="text-sm text-text-secondary">No environments configured. Add one to manage deployment targets.</p>
+			</div>
+		{/if}
 	</div>
 
 	<!-- Build & Development -->

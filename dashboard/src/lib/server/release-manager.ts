@@ -2,11 +2,15 @@
  * Release Manager — changelog generation, semver bumping, and GitHub release creation.
  *
  * Parses conventional commits, determines version bumps, and orchestrates
- * releases via git tags and the `gh` CLI.
+ * releases via git tags and the `gh` CLI.  Also provides `publishRelease()`
+ * for multi-platform publishing via the pluggable publisher registry.
  */
 import { readFile, writeFile } from 'fs/promises';
 import { resolve } from 'path';
 import { execSync } from 'child_process';
+import type { DetectedProjectMeta } from '$lib/types/projects.js';
+import type { PublisherConfig, ReleaseInfo, PublishResult } from './publishers/types.js';
+import { getPublisher, getPublishersForProject } from './publishers/registry.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -392,4 +396,66 @@ export function formatChangelog(entries: ChangelogEntry[]): string {
 	}
 
 	return sections.join('\n').trim();
+}
+
+// ── Multi-platform publishing ─────────────────────────────────────────
+
+export interface PublishReleaseOptions {
+	/** Explicit platform IDs to publish to. When omitted, auto-detect from project metadata. */
+	platforms?: string[];
+	/** Per-platform config overrides keyed by platform ID. */
+	configs?: Record<string, PublisherConfig>;
+	/** When true, validate and package but do not upload. */
+	dryRun?: boolean;
+}
+
+/**
+ * Publish a release to one or more platforms.
+ *
+ * When `platforms` is omitted, uses the publisher registry to auto-detect
+ * applicable publishers from `projectMeta`. Each publisher runs independently;
+ * partial failures do not block other platforms.
+ *
+ * @returns An array of results, one per publisher that was invoked.
+ */
+export async function publishRelease(
+	release: ReleaseInfo,
+	projectMeta: DetectedProjectMeta | null,
+	options?: PublishReleaseOptions
+): Promise<PublishResult[]> {
+	const dryRun = options?.dryRun ?? false;
+	const configs = options?.configs ?? {};
+
+	// Resolve publishers
+	let publishers;
+	if (options?.platforms && options.platforms.length > 0) {
+		publishers = options.platforms
+			.map((p) => getPublisher(p))
+			.filter((p): p is NonNullable<typeof p> => p !== null);
+	} else if (projectMeta) {
+		publishers = getPublishersForProject(projectMeta);
+	} else {
+		return [{ success: false, error: 'No platforms specified and no project metadata for auto-detection', platform: 'unknown' }];
+	}
+
+	if (publishers.length === 0) {
+		return [{ success: false, error: 'No matching publishers found for this project', platform: 'unknown' }];
+	}
+
+	// Run all publishers concurrently
+	const results = await Promise.allSettled(
+		publishers.map(async (publisher) => {
+			const config = configs[publisher.id] ?? {};
+			return publisher.publish(release, config, dryRun);
+		})
+	);
+
+	return results.map((result, i) => {
+		if (result.status === 'fulfilled') return result.value;
+		return {
+			success: false,
+			error: result.reason instanceof Error ? result.reason.message : String(result.reason),
+			platform: publishers[i].id
+		};
+	});
 }

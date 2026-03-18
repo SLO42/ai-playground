@@ -4,6 +4,7 @@
  */
 import { resolve, basename } from 'path';
 import { readdir, readFile, access } from 'fs/promises';
+import { execSync } from 'child_process';
 import type { PageServerLoad } from './$types.js';
 import {
 	getPipelineStatus,
@@ -82,11 +83,11 @@ async function detectCiConfigs(projectPath: string): Promise<CiConfig[]> {
 
 function getGitRemote(projectPath: string): string | null {
 	try {
-		const { execSync } = require('child_process');
 		const remote = execSync('git remote get-url origin', {
 			cwd: projectPath,
 			encoding: 'utf-8',
-			stdio: ['pipe', 'pipe', 'ignore']
+			stdio: ['pipe', 'pipe', 'ignore'],
+			timeout: 5000
 		}).trim();
 		return remote || null;
 	} catch {

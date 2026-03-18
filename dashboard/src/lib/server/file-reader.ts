@@ -1,4 +1,5 @@
-import { readFile } from 'fs/promises';
+import { readFile, writeFile, mkdir } from 'fs/promises';
+import { dirname } from 'path';
 import { isPathAllowed } from './constants.js';
 
 export async function readJsonFile<T>(path: string): Promise<T | null> {
@@ -11,6 +12,21 @@ export async function readJsonFile<T>(path: string): Promise<T | null> {
 		return JSON.parse(content) as T;
 	} catch {
 		return null;
+	}
+}
+
+export async function writeJsonFile(path: string, data: unknown): Promise<boolean> {
+	if (!isPathAllowed(path)) {
+		console.error(`Path not allowed: ${path}`);
+		return false;
+	}
+	try {
+		await mkdir(dirname(path), { recursive: true });
+		await writeFile(path, JSON.stringify(data, null, 2), 'utf-8');
+		return true;
+	} catch (err) {
+		console.error(`Failed to write ${path}:`, err);
+		return false;
 	}
 }
 

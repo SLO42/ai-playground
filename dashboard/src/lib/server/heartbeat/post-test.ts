@@ -54,6 +54,41 @@ async function resolveTestCommand(projectPath: string): Promise<string | null> {
 	} catch { /* not a Node.js project */ }
 
 	try {
+		await access(resolve(projectPath, 'Cargo.toml'));
+		return 'cargo test';
+	} catch { /* not a Rust project */ }
+
+	try {
+		await access(resolve(projectPath, 'go.mod'));
+		return 'go test ./...';
+	} catch { /* not a Go project */ }
+
+	try {
+		await access(resolve(projectPath, 'build.gradle.kts'));
+		return './gradlew test';
+	} catch { /* skip */ }
+
+	try {
+		await access(resolve(projectPath, 'build.gradle'));
+		return './gradlew test';
+	} catch { /* skip */ }
+
+	try {
+		await access(resolve(projectPath, 'pom.xml'));
+		return 'mvn test';
+	} catch { /* not a Maven project */ }
+
+	try {
+		await access(resolve(projectPath, 'pyproject.toml'));
+		return 'pytest';
+	} catch { /* skip */ }
+
+	try {
+		await access(resolve(projectPath, 'setup.py'));
+		return 'pytest';
+	} catch { /* skip */ }
+
+	try {
 		await access(resolve(projectPath, 'requirements.txt'));
 		return 'python -m pytest';
 	} catch { /* not a Python project */ }
@@ -64,6 +99,11 @@ async function resolveTestCommand(projectPath: string): Promise<string | null> {
 		if (entries.some((e) => e.endsWith('.csproj') || e.endsWith('.sln'))) {
 			return 'dotnet test';
 		}
+	} catch { /* skip */ }
+
+	try {
+		await access(resolve(projectPath, 'Makefile'));
+		return 'make test';
 	} catch { /* skip */ }
 
 	return null;

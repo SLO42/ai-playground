@@ -12,6 +12,7 @@ export interface PlaygroundConfig {
 	testCommand?: string;
 	lintCommand?: string;
 	startCommand?: string;
+	releaseCommand?: string;
 	gitRemote?: string;
 	defaultBranch?: string;
 	releaseProcess?: string[];
@@ -30,6 +31,7 @@ export interface DetectedProjectMeta {
 	testCommand?: string;
 	lintCommand?: string;
 	startCommand?: string;
+	releaseCommand?: string;
 	gitRemote?: string;
 	defaultBranch?: string;
 	releaseProcess: string[];
@@ -99,6 +101,16 @@ export interface PlaygroundStats {
 	totalAgentSpawns?: number;
 }
 
+/** Configuration parameter for a project template */
+export interface TemplateParam {
+	key: string;
+	label: string;
+	type: 'boolean' | 'string' | 'select';
+	default: string | boolean;
+	options?: string[];        // for select type
+	description?: string;
+}
+
 /** Template metadata for project creation UI */
 export interface ProjectTemplate {
 	id: string;
@@ -107,6 +119,19 @@ export interface ProjectTemplate {
 	language: string;
 	icon: string;
 	tags: string[];
+	params?: TemplateParam[];
+}
+
+/** Full template definition with file generator */
+export interface ProjectTemplateDef {
+	id: string;
+	name: string;
+	description: string;
+	language: string;
+	icon: string;
+	tags: string[];
+	params: TemplateParam[];
+	generate: (name: string, description: string, params: Record<string, string | boolean>) => Record<string, string>;
 }
 
 /** What lives in `.playground/registry.json` */

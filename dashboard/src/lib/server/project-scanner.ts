@@ -163,9 +163,22 @@ async function detectBuildTool(projectPath: string): Promise<string | undefined>
 	for (const [file, tool] of lockfiles) {
 		if (await exists(resolve(projectPath, file))) return tool;
 	}
+	// Gradle (check before generic fallbacks)
+	if (await exists(resolve(projectPath, 'build.gradle.kts'))) return 'gradle';
+	if (await exists(resolve(projectPath, 'build.gradle'))) return 'gradle';
+	// Maven
+	if (await exists(resolve(projectPath, 'pom.xml'))) return 'maven';
 	// Fallback: if package.json exists but no lockfile, assume npm
 	if (await exists(resolve(projectPath, 'package.json'))) return 'npm';
-	if (await exists(resolve(projectPath, 'pyproject.toml'))) return 'pip';
+	// Python: poetry takes priority if pyproject.toml has [tool.poetry]
+	if (await exists(resolve(projectPath, 'pyproject.toml'))) {
+		try {
+			const raw = await readFile(resolve(projectPath, 'pyproject.toml'), 'utf-8');
+			if (raw.includes('[tool.poetry]')) return 'poetry';
+		} catch { /* ignore */ }
+		return 'pip';
+	}
+	if (await exists(resolve(projectPath, 'setup.py'))) return 'pip';
 	return undefined;
 }
 
@@ -731,7 +744,11 @@ export async function detectProjectMeta(projectPath: string): Promise<DetectedPr
 			go: 'go build ./...',
 			make: 'make',
 			cmake: 'cmake --build build',
-			dotnet: 'dotnet build -c Release'
+			dotnet: 'dotnet build -c Release',
+			gradle: './gradlew build',
+			maven: 'mvn package',
+			pip: 'pip install -e .',
+			poetry: 'poetry install'
 		};
 		buildCommand = buildCommands[buildTool];
 	}
@@ -742,7 +759,9 @@ export async function detectProjectMeta(projectPath: string): Promise<DetectedPr
 			go: 'go run .',
 			poetry: 'poetry run python -m app',
 			uv: 'uv run python -m app',
-			dotnet: 'dotnet run'
+			dotnet: 'dotnet run',
+			gradle: './gradlew run',
+			maven: 'mvn exec:java'
 		};
 		devCommand = devCommands[buildTool];
 	}
@@ -756,7 +775,9 @@ export async function detectProjectMeta(projectPath: string): Promise<DetectedPr
 			pip: 'pytest',
 			pipenv: 'pipenv run pytest',
 			make: 'make test',
-			dotnet: 'dotnet test'
+			dotnet: 'dotnet test',
+			gradle: './gradlew test',
+			maven: 'mvn test'
 		};
 		testCommand = testCommands[buildTool];
 	}
@@ -768,9 +789,27 @@ export async function detectProjectMeta(projectPath: string): Promise<DetectedPr
 			poetry: 'poetry run ruff check .',
 			uv: 'uv run ruff check .',
 			pip: 'ruff check .',
-			pipenv: 'pipenv run ruff check .'
+			pipenv: 'pipenv run ruff check .',
+			gradle: './gradlew check',
+			maven: 'mvn checkstyle:check',
+			dotnet: 'dotnet format --verify-no-changes'
 		};
 		lintCommand = lintCommands[buildTool];
+	}
+
+	// Infer release command based on build tool
+	let releaseCommand: string | undefined;
+	if (buildTool) {
+		const releaseCommands: Record<string, string> = {
+			cargo: 'cargo publish',
+			go: 'goreleaser release',
+			dotnet: 'dotnet publish -c Release',
+			gradle: './gradlew publish',
+			maven: 'mvn deploy',
+			pip: 'python -m build && twine upload dist/*',
+			poetry: 'poetry publish --build'
+		};
+		releaseCommand = releaseCommands[buildTool];
 	}
 
 	// Prefix Node.js commands with the build tool runner
@@ -793,6 +832,7 @@ export async function detectProjectMeta(projectPath: string): Promise<DetectedPr
 		testCommand,
 		lintCommand,
 		startCommand,
+		releaseCommand,
 		gitRemote,
 		defaultBranch,
 		releaseProcess,
@@ -1036,6 +1076,7 @@ export async function createDefaultConfig(projectPath: string): Promise<Playgrou
 		testCommand: meta.testCommand,
 		lintCommand: meta.lintCommand,
 		startCommand: meta.startCommand,
+		releaseCommand: meta.releaseCommand,
 		gitRemote: meta.gitRemote,
 		defaultBranch: meta.defaultBranch,
 		releaseProcess: meta.releaseProcess.length > 0 ? meta.releaseProcess : undefined,

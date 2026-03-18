@@ -42,8 +42,16 @@ const ALLOWED_PREFIXES = [
 ];
 
 export function isPathAllowed(filePath: string): boolean {
+	// Reject null bytes and explicit traversal sequences before resolving
+	if (filePath.includes('\0') || /(?:^|[\\/])\.\.(?:[\\/]|$)/.test(filePath)) {
+		return false;
+	}
 	const resolved = resolve(filePath);
+	// Double-check resolved path doesn't escape PROJECT_ROOT
+	if (!resolved.startsWith(PROJECT_ROOT + '/') && !resolved.startsWith(PROJECT_ROOT + '\\') && resolved !== PROJECT_ROOT) {
+		return false;
+	}
 	return ALLOWED_PREFIXES.some(
-		(prefix) => resolved === prefix || resolved.startsWith(prefix + '/')  || resolved.startsWith(prefix + '\\')
+		(prefix) => resolved === prefix || resolved.startsWith(prefix + '/') || resolved.startsWith(prefix + '\\')
 	);
 }

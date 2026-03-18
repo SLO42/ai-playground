@@ -8,8 +8,8 @@
 	let { columns, rows, onRowClick }: Props = $props();
 </script>
 
-<div class="overflow-x-auto">
-	<table class="w-full text-sm">
+<div class="overflow-x-auto -mx-4 sm:mx-0">
+	<table class="w-full text-sm min-w-[500px]">
 		<thead>
 			<tr class="border-b border-border">
 				{#each columns as col}
@@ -27,7 +27,7 @@
 				>
 					{#each columns as col}
 						<td class="px-3 py-2.5 {col.mono ? 'font-mono text-xs' : ''}">
-							{row[col.key] ?? '—'}
+							{row[col.key] ?? '\u2014'}
 						</td>
 					{/each}
 				</tr>

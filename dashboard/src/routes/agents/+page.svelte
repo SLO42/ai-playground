@@ -1,5 +1,6 @@
 <script lang="ts">
 	import MetricCard from '$lib/components/MetricCard.svelte';
+	import Skeleton from '$lib/components/Skeleton.svelte';
 	import type { AgentDefinition } from '$lib/types/agents.js';
 
 	interface AgentsPageData {
@@ -20,6 +21,7 @@
 
 	let { data }: { data: AgentsPageData } = $props();
 
+	let loaded = $derived(data != null);
 	let selectedCategory = $state('all');
 
 	const categories = $derived.by(() => {
@@ -43,7 +45,6 @@
 		maxAgents > 0 ? Math.round((activeAgents / maxAgents) * 100) : 0
 	);
 
-	// Demo agent data matching the design
 	const agentGrid = [
 		{ name: 'coder', category: 'Core Dev', status: 'active' },
 		{ name: 'reviewer', category: 'Core Dev', status: 'active' },
@@ -80,70 +81,85 @@
 <div class="space-y-6">
 	<h1 class="type-page-title text-text-primary">Agent Management</h1>
 
-	<!-- Metric Cards -->
-	<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-		<MetricCard label="Total" value={totalAgents} subtitle="registered agents" accent="blue" />
-		<MetricCard label="Active" value={activeAgents} subtitle="running now" accent="green" />
-		<MetricCard label="Idle" value={idleAgents} subtitle="awaiting tasks" accent="yellow" />
-		<MetricCard label="Error" value={errorAgents} subtitle="need attention" accent="red" />
-	</div>
-
-	<!-- Agent Capacity -->
-	<div>
-		<div class="flex items-center justify-between mb-2">
-			<h2 class="type-section-title text-text-primary">Agent Capacity</h2>
-			<span class="text-sm font-mono text-text-primary">{activeAgents} / {maxAgents} slots used</span>
-		</div>
-		<div class="w-full h-3 bg-bg-secondary border border-border rounded-full overflow-hidden">
-			<div
-				class="h-full rounded-full transition-all bg-accent-blue"
-				style="width: {capacityPercent}%"
-			></div>
-		</div>
-	</div>
-
-	<!-- Category Filters -->
-	<div class="flex flex-wrap gap-2">
-		{#each categories as cat}
-			<button
-				class="px-3 py-1.5 text-xs rounded-md border transition-colors
-					{selectedCategory === cat
-					? 'bg-accent-blue/20 text-accent-blue border-accent-blue/40'
-					: 'bg-bg-secondary text-text-secondary border-border hover:text-text-primary'}"
-				onclick={() => (selectedCategory = cat)}
-			>
-				{cat === 'all' ? 'All' : cat}
-				({getCategoryCount(cat)})
-			</button>
-		{/each}
-	</div>
-
-	<!-- Agent Grid -->
-	<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-		{#each agentGrid as agent}
-			<div class="bg-bg-secondary border border-border rounded-lg p-4">
-				<div class="flex items-center gap-2 mb-1">
-					<span class="w-2 h-2 rounded-full {dotColors[agent.status]}"></span>
-					<span class="type-card-title text-text-primary">{agent.name}</span>
-				</div>
-				<p class="text-xs text-text-secondary">{agent.category}</p>
-				<p class="text-xs font-mono {statusColors[agent.status]} mt-1">{agent.status}</p>
-			</div>
-		{/each}
-	</div>
-
-	<!-- Dynamic agents from data -->
-	{#if filteredAgents.length > 0 && filteredAgents.length !== agentGrid.length}
+	{#if loaded}
+		<!-- Metric Cards -->
 		<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-			{#each filteredAgents as agent (agent.filename)}
+			<MetricCard label="Total" value={totalAgents} subtitle="registered agents" accent="blue" />
+			<MetricCard label="Active" value={activeAgents} subtitle="running now" accent="green" />
+			<MetricCard label="Idle" value={idleAgents} subtitle="awaiting tasks" accent="yellow" />
+			<MetricCard label="Error" value={errorAgents} subtitle="need attention" accent="red" />
+		</div>
+
+		<!-- Agent Capacity -->
+		<div>
+			<div class="flex items-center justify-between mb-2">
+				<h2 class="type-section-title text-text-primary">Agent Capacity</h2>
+				<span class="text-sm font-mono text-text-primary">{activeAgents} / {maxAgents} slots used</span>
+			</div>
+			<div class="w-full h-3 bg-bg-secondary border border-border rounded-full overflow-hidden">
+				<div
+					class="h-full rounded-full transition-all bg-accent-blue"
+					style="width: {capacityPercent}%"
+				></div>
+			</div>
+		</div>
+
+		<!-- Category Filters -->
+		<div class="flex flex-wrap gap-2">
+			{#each categories as cat}
+				<button
+					class="px-3 py-1.5 text-xs rounded-md border transition-colors
+						{selectedCategory === cat
+						? 'bg-accent-blue/20 text-accent-blue border-accent-blue/40'
+						: 'bg-bg-secondary text-text-secondary border-border hover:text-text-primary'}"
+					onclick={() => (selectedCategory = cat)}
+				>
+					{cat === 'all' ? 'All' : cat}
+					({getCategoryCount(cat)})
+				</button>
+			{/each}
+		</div>
+
+		<!-- Agent Grid -->
+		<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+			{#each agentGrid as agent}
 				<div class="bg-bg-secondary border border-border rounded-lg p-4">
 					<div class="flex items-center gap-2 mb-1">
-						<span class="w-2 h-2 rounded-full bg-accent-green"></span>
+						<span class="w-2 h-2 rounded-full {dotColors[agent.status]}"></span>
 						<span class="type-card-title text-text-primary">{agent.name}</span>
 					</div>
 					<p class="text-xs text-text-secondary">{agent.category}</p>
-					<p class="text-xs text-text-secondary mt-1">{agent.description}</p>
+					<p class="text-xs font-mono {statusColors[agent.status]} mt-1">{agent.status}</p>
 				</div>
+			{/each}
+		</div>
+
+		<!-- Dynamic agents from data -->
+		{#if filteredAgents.length > 0 && filteredAgents.length !== agentGrid.length}
+			<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+				{#each filteredAgents as agent (agent.filename)}
+					<div class="bg-bg-secondary border border-border rounded-lg p-4">
+						<div class="flex items-center gap-2 mb-1">
+							<span class="w-2 h-2 rounded-full bg-accent-green"></span>
+							<span class="type-card-title text-text-primary">{agent.name}</span>
+						</div>
+						<p class="text-xs text-text-secondary">{agent.category}</p>
+						<p class="text-xs text-text-secondary mt-1">{agent.description}</p>
+					</div>
+				{/each}
+			</div>
+		{/if}
+	{:else}
+		<!-- Loading skeletons -->
+		<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+			{#each Array(4) as _}
+				<Skeleton variant="metric" />
+			{/each}
+		</div>
+		<Skeleton variant="card" lines={1} />
+		<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+			{#each Array(8) as _}
+				<Skeleton variant="card" lines={2} />
 			{/each}
 		</div>
 	{/if}

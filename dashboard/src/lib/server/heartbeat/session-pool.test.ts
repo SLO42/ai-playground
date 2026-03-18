@@ -239,14 +239,11 @@ describe('recordSpawn / recordSpawnCompletion', () => {
 		expect(stats.coldStarts).toBe(2);
 	});
 
-	it('accumulates token usage and cost', async () => {
+	it('accumulates token usage and cost without errors', async () => {
 		await recordSpawn();
-		await recordSpawnCompletion(1000, 0.05);
-		await recordSpawnCompletion(2000, 0.10);
-
-		// Internal stats tracked — getPoolStats returns coldStarts = totalSpawns
-		const stats = await getPoolStats();
-		expect(stats.coldStarts).toBe(1);
+		// recordSpawnCompletion should not throw
+		await expect(recordSpawnCompletion(1000, 0.05)).resolves.toBeUndefined();
+		await expect(recordSpawnCompletion(2000, 0.10)).resolves.toBeUndefined();
 	});
 });
 

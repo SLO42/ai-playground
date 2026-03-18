@@ -37,6 +37,8 @@ export const PATHS = {
 	channelsDir: resolve(PROJECT_ROOT, 'config/openclaw/channels'),
 	twitchYaml: resolve(PROJECT_ROOT, 'config/openclaw/channels/twitch.yaml'),
 	modelsJson5: resolve(PROJECT_ROOT, 'config/openclaw/models.json5'),
+	heartbeatConfig: resolve(PROJECT_ROOT, '.playground/heartbeat-config.json'),
+	projectsDir: resolve(PROJECT_ROOT, '.playground/projects'),
 	mcpJson: resolve(PROJECT_ROOT, '.mcp.json'),
 	agentsDir: resolve(PROJECT_ROOT, '.claude/agents'),
 	sessionsDir: resolve(PROJECT_ROOT, '.claude-flow/sessions'),
@@ -123,6 +125,7 @@ export const POLL_INTERVALS = {
 const ALLOWED_PREFIXES = [
 	resolve(PROJECT_ROOT, '.claude-flow'),
 	resolve(PROJECT_ROOT, '.claude'),
+	resolve(PROJECT_ROOT, '.playground'),
 	resolve(PROJECT_ROOT, 'config'),
 	resolve(PROJECT_ROOT, '.mcp.json'),
 	resolve(PROJECT_ROOT, '.playground')

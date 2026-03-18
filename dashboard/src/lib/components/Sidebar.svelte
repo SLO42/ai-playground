@@ -6,6 +6,7 @@
 
 	interface Props {
 		activePath?: string;
+<<<<<<< HEAD
 		unreadCount?: number;
 		featureFlags?: FeatureFlags;
 		mobileOpen?: boolean;
@@ -13,6 +14,14 @@
 	}
 
 	let { activePath, unreadCount = 0, featureFlags, mobileOpen = false, onClose }: Props = $props();
+=======
+		collapsed?: boolean;
+		mobileOpen?: boolean;
+		onNavigate?: () => void;
+	}
+
+	let { activePath, collapsed = false, mobileOpen = false, onNavigate }: Props = $props();
+>>>>>>> worktree-agent-a855fd15
 
 	function handleNavClick() {
 		onClose?.();
@@ -95,8 +104,13 @@
 		if (href === '/') return path === '/';
 		return path.startsWith(href);
 	}
+
+	function handleNav() {
+		onNavigate?.();
+	}
 </script>
 
+<<<<<<< HEAD
 <!-- svelte-ignore a11y_no_static_element_interactions -->
 {#if mobileOpen}
 	<!-- Backdrop overlay (mobile only) -->
@@ -120,6 +134,20 @@
 >
 	<div class="px-4 py-5 border-b border-border">
 		<h1 class="text-sm font-bold text-accent-cyan tracking-wider">ai-playground</h1>
+=======
+<!-- Desktop sidebar -->
+<nav
+	class="fixed left-0 top-0 h-full bg-bg-secondary border-r border-border flex-col z-50 transition-all duration-200
+		hidden lg:flex
+		{collapsed ? 'w-16' : 'w-56'}"
+>
+	<div class="px-4 py-5 border-b border-border {collapsed ? 'px-2 flex justify-center' : ''}">
+		{#if collapsed}
+			<span class="text-sm font-bold text-accent-cyan">ai</span>
+		{:else}
+			<h1 class="text-sm font-bold text-accent-cyan tracking-wider">ai-playground</h1>
+		{/if}
+>>>>>>> worktree-agent-a855fd15
 	</div>
 
 	<div class="mx-2 mt-3 mb-1">
@@ -140,12 +168,18 @@
 		{#each navItems as item}
 			<a
 				href={item.href}
+<<<<<<< HEAD
 				onclick={handleNavClick}
 				aria-current={isActive(item.href) ? 'page' : undefined}
 				class="group relative flex items-center gap-3 mx-2 px-3 h-10 rounded-lg text-sm transition-colors
+=======
+				class="group relative flex items-center mx-2 h-10 rounded-lg text-sm transition-colors
+					{collapsed ? 'justify-center px-0 gap-0' : 'gap-3 px-3'}
+>>>>>>> worktree-agent-a855fd15
 					{isActive(item.href)
 						? 'bg-accent-blue/10 text-accent-blue font-medium'
 						: 'text-text-secondary hover:text-text-primary hover:bg-bg-tertiary/50'}"
+				title={collapsed ? item.label : undefined}
 			>
 				{#if isActive(item.href)}
 					<span aria-hidden="true" class="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-accent-blue rounded-r"></span>
@@ -153,17 +187,61 @@
 				<svg aria-hidden="true" class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
 					<path stroke-linecap="round" stroke-linejoin="round" d={item.icon} />
 				</svg>
+<<<<<<< HEAD
 				{item.label}
 				{#if item.href === '/inbox' && unreadCount > 0}
 					<span aria-label="{unreadCount > 99 ? '99+' : unreadCount} unread" class="ml-auto inline-flex items-center justify-center min-w-[18px] h-[18px] px-1 rounded-full bg-accent-red text-[10px] font-medium text-white">
 						{unreadCount > 99 ? '99+' : unreadCount}
 					</span>
+=======
+				{#if !collapsed}
+					{item.label}
+>>>>>>> worktree-agent-a855fd15
 				{/if}
 			</a>
 		{/each}
 	</div>
 
+<<<<<<< HEAD
 	<div class="px-4 py-3 border-t border-border">
 		<span class="text-xs text-text-secondary font-mono">ai-playground v{__APP_VERSION__}</span>
+=======
+	<div class="px-4 py-3 border-t border-border {collapsed ? 'px-2 text-center' : ''}">
+		<span class="text-xs text-text-secondary font-mono">{collapsed ? 'v3' : 'Claude Flow v3'}</span>
+>>>>>>> worktree-agent-a855fd15
 	</div>
 </nav>
+
+<!-- Mobile sidebar (overlay) -->
+{#if mobileOpen}
+	<nav class="fixed left-0 top-0 h-full w-56 bg-bg-secondary border-r border-border flex flex-col z-50 lg:hidden">
+		<div class="px-4 py-5 border-b border-border">
+			<h1 class="text-sm font-bold text-accent-cyan tracking-wider">ai-playground</h1>
+		</div>
+
+		<div class="flex-1 py-3 overflow-y-auto">
+			{#each navItems as item}
+				<a
+					href={item.href}
+					onclick={handleNav}
+					class="group relative flex items-center gap-3 mx-2 px-3 h-10 rounded-lg text-sm transition-colors
+						{isActive(item.href)
+							? 'bg-accent-blue/10 text-accent-blue font-medium'
+							: 'text-text-secondary hover:text-text-primary hover:bg-bg-tertiary/50'}"
+				>
+					{#if isActive(item.href)}
+						<span class="absolute left-0 top-1/2 -translate-y-1/2 w-1 h-6 bg-accent-blue rounded-r"></span>
+					{/if}
+					<svg class="w-4 h-4 flex-shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.5">
+						<path stroke-linecap="round" stroke-linejoin="round" d={item.icon} />
+					</svg>
+					{item.label}
+				</a>
+			{/each}
+		</div>
+
+		<div class="px-4 py-3 border-t border-border">
+			<span class="text-xs text-text-secondary font-mono">Claude Flow v3</span>
+		</div>
+	</nav>
+{/if}

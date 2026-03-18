@@ -1,8 +1,12 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import MetricCard from '$lib/components/MetricCard.svelte';
+<<<<<<< HEAD
 	import StatusBadge from '$lib/components/StatusBadge.svelte';
 	import { apiFetch } from '$lib/api-client.js';
+=======
+	import Skeleton from '$lib/components/Skeleton.svelte';
+>>>>>>> worktree-agent-a855fd15
 	import type { AgentDefinition } from '$lib/types/agents.js';
 
 	interface ActiveAgent {
@@ -144,7 +148,11 @@
 
 	let { data }: { data: PageData } = $props();
 
+<<<<<<< HEAD
 	let searchQuery = $state('');
+=======
+	let loaded = $derived(data != null);
+>>>>>>> worktree-agent-a855fd15
 	let selectedCategory = $state('all');
 	let loading = $state(false);
 	let error = $state('');
@@ -398,9 +406,26 @@
 			: 0
 	);
 
+<<<<<<< HEAD
 	const capacityBarColor = $derived(
 		capacityPercent >= 90 ? 'bg-accent-red' : capacityPercent >= 70 ? 'bg-accent-yellow' : 'bg-accent-blue'
 	);
+=======
+	const agentGrid = [
+		{ name: 'coder', category: 'Core Dev', status: 'active' },
+		{ name: 'reviewer', category: 'Core Dev', status: 'active' },
+		{ name: 'tester', category: 'Core Dev', status: 'idle' },
+		{ name: 'planner', category: 'Core Dev', status: 'active' },
+		{ name: 'security-architect', category: 'Specialized', status: 'active' },
+		{ name: 'memory-specialist', category: 'Specialized', status: 'idle' },
+		{ name: 'perf-engineer', category: 'Specialized', status: 'error' },
+		{ name: 'security-auditor', category: 'Specialized', status: 'active' },
+		{ name: 'hierarchical-coord', category: 'Swarm', status: 'active' },
+		{ name: 'mesh-coordinator', category: 'Swarm', status: 'idle' },
+		{ name: 'pr-manager', category: 'GitHub', status: 'idle' },
+		{ name: 'sparc-coord', category: 'SPARC', status: 'active' }
+	];
+>>>>>>> worktree-agent-a855fd15
 
 	const warmRate = $derived(
 		livePool.warmResumes + livePool.coldStarts > 0
@@ -623,6 +648,7 @@
 </svelte:head>
 
 <div class="space-y-6">
+<<<<<<< HEAD
 	<div class="flex items-center justify-between">
 		<h1 class="type-page-title text-text-primary">Agent Management</h1>
 		<div class="flex items-center gap-2">
@@ -1412,6 +1438,59 @@
 							</div>
 						{/each}
 					</div>
+=======
+	<h1 class="type-page-title text-text-primary">Agent Management</h1>
+
+	{#if loaded}
+		<!-- Metric Cards -->
+		<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+			<MetricCard label="Total" value={totalAgents} subtitle="registered agents" accent="blue" />
+			<MetricCard label="Active" value={activeAgents} subtitle="running now" accent="green" />
+			<MetricCard label="Idle" value={idleAgents} subtitle="awaiting tasks" accent="yellow" />
+			<MetricCard label="Error" value={errorAgents} subtitle="need attention" accent="red" />
+		</div>
+
+		<!-- Agent Capacity -->
+		<div>
+			<div class="flex items-center justify-between mb-2">
+				<h2 class="type-section-title text-text-primary">Agent Capacity</h2>
+				<span class="text-sm font-mono text-text-primary">{activeAgents} / {maxAgents} slots used</span>
+			</div>
+			<div class="w-full h-3 bg-bg-secondary border border-border rounded-full overflow-hidden">
+				<div
+					class="h-full rounded-full transition-all bg-accent-blue"
+					style="width: {capacityPercent}%"
+				></div>
+			</div>
+		</div>
+
+		<!-- Category Filters -->
+		<div class="flex flex-wrap gap-2">
+			{#each categories as cat}
+				<button
+					class="px-3 py-1.5 text-xs rounded-md border transition-colors
+						{selectedCategory === cat
+						? 'bg-accent-blue/20 text-accent-blue border-accent-blue/40'
+						: 'bg-bg-secondary text-text-secondary border-border hover:text-text-primary'}"
+					onclick={() => (selectedCategory = cat)}
+				>
+					{cat === 'all' ? 'All' : cat}
+					({getCategoryCount(cat)})
+				</button>
+			{/each}
+		</div>
+
+		<!-- Agent Grid -->
+		<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+			{#each agentGrid as agent}
+				<div class="bg-bg-secondary border border-border rounded-lg p-4">
+					<div class="flex items-center gap-2 mb-1">
+						<span class="w-2 h-2 rounded-full {dotColors[agent.status]}"></span>
+						<span class="type-card-title text-text-primary">{agent.name}</span>
+					</div>
+					<p class="text-xs text-text-secondary">{agent.category}</p>
+					<p class="text-xs font-mono {statusColors[agent.status]} mt-1">{agent.status}</p>
+>>>>>>> worktree-agent-a855fd15
 				</div>
 			{/each}
 		{/if}
@@ -1453,6 +1532,35 @@
 					Next
 				</button>
 			</div>
+		</div>
+
+		<!-- Dynamic agents from data -->
+		{#if filteredAgents.length > 0 && filteredAgents.length !== agentGrid.length}
+			<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+				{#each filteredAgents as agent (agent.filename)}
+					<div class="bg-bg-secondary border border-border rounded-lg p-4">
+						<div class="flex items-center gap-2 mb-1">
+							<span class="w-2 h-2 rounded-full bg-accent-green"></span>
+							<span class="type-card-title text-text-primary">{agent.name}</span>
+						</div>
+						<p class="text-xs text-text-secondary">{agent.category}</p>
+						<p class="text-xs text-text-secondary mt-1">{agent.description}</p>
+					</div>
+				{/each}
+			</div>
+		{/if}
+	{:else}
+		<!-- Loading skeletons -->
+		<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+			{#each Array(4) as _}
+				<Skeleton variant="metric" />
+			{/each}
+		</div>
+		<Skeleton variant="card" lines={1} />
+		<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
+			{#each Array(8) as _}
+				<Skeleton variant="card" lines={2} />
+			{/each}
 		</div>
 	{/if}
 </div>

@@ -1653,7 +1653,10 @@ export function detectTechFromTemplate(templateId: string): string[] {
 		java: ['Java', 'Maven'],
 		dotnet: ['C#', '.NET'],
 		bepinex: ['C#', 'BepInEx', 'Unity'],
-		fabric: ['Java', 'Fabric', 'Minecraft']
+		fabric: ['Java', 'Fabric', 'Minecraft'],
+		forge: ['Java', 'NeoForge', 'Minecraft', 'Gradle'],
+		paper: ['Java', 'Paper', 'Spigot', 'Minecraft'],
+		bg3: ["Baldur's Gate 3", 'Modding', 'LSX']
 	};
 	return map[templateId] ?? [];
 }

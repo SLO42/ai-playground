@@ -139,22 +139,22 @@ async function handleSave(params: { id: string }, request: Request) {
 		return json({ error: 'Invalid JSON' }, { status: 400 });
 	}
 
-	// Validate and save structured settings (name, build, agentConfig)
+	// Normalize: frontend may wrap general fields in a `general` envelope
 	const general = body.general as Record<string, unknown> | undefined;
-	const name = (general?.name as string) ?? (body.name as string);
-	if (!name || typeof name !== 'string' || name.trim().length === 0) {
-		return json({ error: 'Project name is required' }, { status: 400 });
-	}
-
-	const settings: ProjectSettings = {
-		name: name.trim(),
-		description: (general?.description as string) ?? (body.description as string) ?? '',
-		branch: (general?.branch as string) ?? (body.branch as string) ?? 'main',
-		agentConfig: (body.agentConfig as ProjectSettings['agentConfig']) ?? {
-			topology: 'hierarchical-mesh', maxAgents: 15, memoryBackend: 'hybrid (HNSW + SQLite)', consensus: 'raft'
-		},
-		build: (body.build as ProjectSettings['build']) ?? {}
+	const normalized: Record<string, unknown> = {
+		name: general?.name ?? body.name,
+		description: general?.description ?? body.description,
+		branch: general?.branch ?? body.branch,
+		agentConfig: body.agentConfig,
+		build: body.build
 	};
+
+	// Validate shape, required fields, and value ranges
+	const result = validateSettings(normalized);
+	if (!result.valid) {
+		return json({ error: result.error }, { status: 400 });
+	}
+	const settings = result.data;
 
 	await writeSettings(project.path, settings);
 

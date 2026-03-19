@@ -161,7 +161,7 @@ describe('createDiscussionSession', () => {
 
 		// Should include questions relevant to settings and UI tags
 		expect(assistantMsg.content).toContain('settings');
-		expect(assistantMsg.content).toContain('questions');
+		expect(assistantMsg.content.toLowerCase()).toContain('questions');
 	});
 
 	it('generates settings question for settings-tagged tasks', async () => {

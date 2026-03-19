@@ -8,9 +8,12 @@ import { json } from '@sveltejs/kit';
 import { resolve } from 'path';
 import { scanAllProjects } from '$lib/server/project-scanner.js';
 import { PATHS } from '$lib/server/constants.js';
-import { loadPlan, savePlan, bootstrapProjectManager, syncToGitHubBoard } from '$lib/server/project-manager.js';
+import { loadPlan, savePlan, bootstrapProjectManager, syncToGitHubBoard, buildPMDiscussionPrompt, gatherBootstrapContext, reviewProjectPlan } from '$lib/server/project-manager.js';
+import { detectProjectMeta } from '$lib/server/project-scanner.js';
 import * as pmDb from '$lib/server/pm-memory-db.js';
+import { writeFile, mkdir } from 'fs/promises';
 import type { PMMemoryQuery } from '$lib/types/project-plan.js';
+import type { ChatSession, ChatSessionMeta } from '$lib/types/chat.js';
 
 async function resolveProjectPath(id: string): Promise<string | null> {
 	const projects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root);
@@ -106,6 +109,71 @@ export async function POST({ params, request }) {
 			const plan = await loadPlan(projectPath);
 			if (!plan) return json({ error: 'No plan exists' }, { status: 400 });
 			const result = await syncToGitHubBoard(projectPath, plan, body.gitRemote);
+			return json(result);
+		}
+
+		case 'start-discussion': {
+			const plan = await loadPlan(projectPath);
+			if (!plan) return json({ error: 'No plan exists — bootstrap first' }, { status: 400 });
+
+			const meta = await detectProjectMeta(projectPath);
+			const ctx = await gatherBootstrapContext(projectPath, meta);
+			const prompt = buildPMDiscussionPrompt(ctx, plan);
+
+			const sessionId = `pm-${params.id}`;
+			const now = new Date().toISOString();
+			const session: ChatSession = {
+				id: sessionId,
+				model: 'system',
+				provider: 'internal',
+				createdAt: now,
+				updatedAt: now,
+				messages: [
+					{ role: 'system', content: `Project Manager discussion for ${ctx.projectName}` },
+					{
+						role: 'assistant',
+						content: prompt,
+						sender: { id: 'pm', label: 'Project Manager', color: '#10b981' }
+					}
+				],
+				source: 'claw',
+				status: 'waiting'
+			};
+
+			await mkdir(resolve(PATHS.root, '.playground/chats'), { recursive: true });
+			await writeFile(
+				resolve(PATHS.root, `.playground/chats/${sessionId}.json`),
+				JSON.stringify(session, null, '\t'),
+				'utf-8'
+			);
+
+			// Update session index
+			const { upsertSessionMeta } = await import('$lib/server/heartbeat/shared.js');
+			await upsertSessionMeta({
+				id: sessionId,
+				title: `PM: ${ctx.projectName}`,
+				model: session.model,
+				provider: session.provider,
+				messageCount: session.messages.length,
+				createdAt: now,
+				updatedAt: now,
+				source: 'claw',
+				status: 'waiting'
+			});
+
+			// Record in PM memory
+			pmDb.addEntry(projectPath, {
+				type: 'observation',
+				content: `Discussion session opened by user for roadmap planning`,
+				source: 'user-initiated',
+				confidence: 1.0
+			});
+
+			return json({ sessionId });
+		}
+
+		case 'review': {
+			const result = await reviewProjectPlan(projectPath);
 			return json(result);
 		}
 

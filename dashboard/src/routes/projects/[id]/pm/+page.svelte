@@ -5,6 +5,8 @@
 
 	let bootstrapping = $state(false);
 	let syncing = $state(false);
+	let reviewing = $state(false);
+	let openingDiscussion = $state(false);
 	let memoryFilter = $state<string>('all');
 	let searchQuery = $state('');
 	let showArchived = $state(false);
@@ -69,6 +71,39 @@
 		}
 	}
 
+	async function openDiscussion() {
+		openingDiscussion = true;
+		try {
+			const res = await fetch(`/api/projects/${data.projectId}/pm`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: 'start-discussion' })
+			});
+			if (res.ok) {
+				const { sessionId } = await res.json();
+				window.location.href = `/chat?session=${sessionId}`;
+			}
+		} finally {
+			openingDiscussion = false;
+		}
+	}
+
+	async function runReview() {
+		reviewing = true;
+		try {
+			const res = await fetch(`/api/projects/${data.projectId}/pm`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({ action: 'review' })
+			});
+			if (res.ok) {
+				window.location.reload();
+			}
+		} finally {
+			reviewing = false;
+		}
+	}
+
 	function formatDate(iso: string): string {
 		const d = new Date(iso);
 		const now = new Date();
@@ -95,15 +130,20 @@
 		<h2 class="text-xl font-semibold text-text-primary mb-2">Project Manager</h2>
 		<p class="text-sm text-text-secondary mb-6">
 			Bootstrap a PM agent for this project. It will scan the codebase, generate an initial roadmap,
-			and open a discussion so you can refine the plan together.
+			and create a discussion where you can refine the plan together — even while the project is idle.
 		</p>
-		<button
-			onclick={bootstrap}
-			disabled={bootstrapping}
-			class="px-6 py-2.5 rounded-lg bg-accent-green text-black font-medium text-sm hover:bg-accent-green/90 transition-colors disabled:opacity-50"
-		>
-			{bootstrapping ? 'Scanning project...' : 'Bootstrap Project Manager'}
-		</button>
+		<div class="flex flex-col gap-3 items-center">
+			<button
+				onclick={async () => { await bootstrap(); }}
+				disabled={bootstrapping}
+				class="px-6 py-2.5 rounded-lg bg-accent-green text-black font-medium text-sm hover:bg-accent-green/90 transition-colors disabled:opacity-50"
+			>
+				{bootstrapping ? 'Scanning project...' : 'Bootstrap & Open Roadmap'}
+			</button>
+			<p class="text-xs text-text-secondary">
+				Creates the plan, then you build out the roadmap through a conversation.
+			</p>
+		</div>
 	</div>
 {:else}
 	<div class="space-y-6">
@@ -118,6 +158,20 @@
 				{/if}
 			</div>
 			<div class="flex gap-2">
+				<button
+					onclick={openDiscussion}
+					disabled={openingDiscussion}
+					class="px-3 py-1.5 rounded-md bg-accent-green/10 text-accent-green text-xs font-medium hover:bg-accent-green/20 transition-colors disabled:opacity-50"
+				>
+					{openingDiscussion ? 'Opening...' : 'Open Discussion'}
+				</button>
+				<button
+					onclick={runReview}
+					disabled={reviewing}
+					class="px-3 py-1.5 rounded-md bg-bg-tertiary text-text-secondary text-xs hover:text-text-primary transition-colors disabled:opacity-50"
+				>
+					{reviewing ? 'Reviewing...' : 'Run Review'}
+				</button>
 				<button
 					onclick={syncGitHub}
 					disabled={syncing}

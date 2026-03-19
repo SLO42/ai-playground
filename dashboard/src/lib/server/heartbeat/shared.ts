@@ -23,6 +23,7 @@ export interface HeartbeatPhases {
 	agentSpawning: boolean;
 	reviewCycle: boolean;
 	memorySync: boolean;
+	projectPlanning: boolean;
 }
 
 export interface HeartbeatIntervals {
@@ -31,6 +32,7 @@ export interface HeartbeatIntervals {
 	agentSpawning: number;
 	reviewCycle: number;
 	memorySync: number;
+	projectPlanning: number;
 }
 
 export interface HeartbeatConfig {
@@ -47,6 +49,7 @@ const DEFAULT_CONFIG: HeartbeatConfig = {
 		agentSpawning: true,
 		reviewCycle: true,
 		memorySync: true,
+		projectPlanning: true,
 	},
 	intervals: {
 		healthChecks: 30_000,
@@ -54,6 +57,7 @@ const DEFAULT_CONFIG: HeartbeatConfig = {
 		agentSpawning: 60_000,
 		reviewCycle: 1_800_000,
 		memorySync: 60_000,
+		projectPlanning: 300_000,
 	},
 };
 
@@ -98,6 +102,7 @@ function clampIntervals(intervals: HeartbeatIntervals): HeartbeatIntervals {
 		agentSpawning: Math.max(intervals.agentSpawning, MIN_INTERVAL_MS),
 		reviewCycle: Math.max(intervals.reviewCycle, MIN_INTERVAL_MS),
 		memorySync: Math.max(intervals.memorySync, MIN_INTERVAL_MS),
+		projectPlanning: Math.max(intervals.projectPlanning, MIN_INTERVAL_MS),
 	};
 }
 

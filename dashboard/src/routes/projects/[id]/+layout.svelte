@@ -12,6 +12,7 @@
 
 	const workspaceNav = [
 		{ href: 'overview', label: 'Overview' },
+		{ href: 'pm', label: 'Project Manager' },
 		{ href: 'chat', label: 'Chat' },
 		{ href: 'tasks', label: 'Tasks' },
 		{ href: 'models', label: 'Models' },

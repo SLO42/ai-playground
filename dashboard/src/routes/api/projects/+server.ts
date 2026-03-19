@@ -8,6 +8,7 @@ import { scanAllProjects, scanProject } from '$lib/server/project-scanner.js';
 import { startProjectServices } from '$lib/server/service-starter.js';
 import { TEMPLATE_MAP, detectTechFromTemplate } from '$lib/server/project-templates.js';
 import { syncTasks } from '$lib/server/github-sync.js';
+import { bootstrapProjectManager } from '$lib/server/project-manager.js';
 import type { ProjectRegistry, PlaygroundConfig } from '$lib/types/projects.js';
 
 const execFileAsync = promisify(execFile);
@@ -213,6 +214,9 @@ export async function POST({ request }) {
 		syncTasks({ projectId: project.id, projectPath: project.path, direction: 'pull', source: 'project-create' }).catch(() => {});
 	}
 
+	// 10. Fire-and-forget PM bootstrap — scans project and creates initial plan + memory
+	bootstrapProjectManager(projectPath).catch(() => {});
+
 	return json({ project, gitInitialized, githubCreated, servicesStarting: !!shouldStart }, { status: 201 });
 }
 
@@ -245,6 +249,9 @@ async function handleImport(path: string) {
 	if (project.gitRemote) {
 		syncTasks({ projectId: project.id, projectPath: project.path, direction: 'pull', source: 'project-import' }).catch(() => {});
 	}
+
+	// Fire-and-forget PM bootstrap on import
+	bootstrapProjectManager(path).catch(() => {});
 
 	return json({ project }, { status: 201 });
 }

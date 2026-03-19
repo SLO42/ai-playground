@@ -1,10 +1,10 @@
 # Agent Pool Configuration
-# 14 agents: 8 Opus, 2 Claw (local), 2 Sonnet, 2 Haiku
+# 15 agents: 9 Opus, 2 Claw (local), 2 Sonnet, 2 Haiku
 # Each tier handles tasks matching its capability level
 
 pool:
   id: agent-pool-default
-  maxSize: 14
+  maxSize: 15
   autoScale: false
 
   # Handoff routing rules
@@ -94,6 +94,12 @@ pool:
       model: opus
       role: primary
       description: Test writing and validation
+
+    - id: opus-pm
+      type: project-manager
+      model: opus
+      role: coordinator
+      description: Per-project roadmap, decisions, and milestone tracking
 
     # ─── Claw Agents (2) — Local orchestration (free, fast) ────────
     - id: claw-orchestrator-1

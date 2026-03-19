@@ -40,6 +40,7 @@ import { syncMemoryBridge } from '../memory-bridge.js';
 import { runUxInspection } from './ux-inspector.js';
 import { loadRestartConfigAsync, shouldRestart, attemptRestart, resetRestartCount, getRestartState } from './auto-restart.js';
 import { runMemoryGuardian, loadGuardianConfig } from './memory-guardian.js';
+import { reviewProjectPlan } from '../project-manager.js';
 import type { ChatSession } from '$lib/types/chat.js';
 import type { Task } from '$lib/types/tasks.js';
 
@@ -489,6 +490,7 @@ async function heartbeat() {
 	if (hbConfig.phases.agentSpawning) enabledPhases.push('Spawn agents for actionable tasks');
 	if (hbConfig.phases.reviewCycle) enabledPhases.push('Review cycle');
 	if (hbConfig.phases.memorySync) enabledPhases.push('Memory sync');
+	if (hbConfig.phases.projectPlanning) enabledPhases.push('PM review');
 	log(session, `[plan] ${enabledPhases.join(' → ')}`);
 
 	// ── Phase 2: Service health (gated by config.phases.healthChecks)
@@ -1016,7 +1018,23 @@ async function heartbeat() {
 		log(session, `[memory] Phase disabled — skipping memory sync`);
 	}
 
-	// ── Phase 10: Cleanup & Idle
+	// ── Phase 10: Project Planning review (gated by config.phases.projectPlanning)
+	if (hbConfig.phases.projectPlanning) {
+		try {
+			const allProjects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root).catch(() => []);
+			for (const project of allProjects) {
+				if (project.status !== 'active') continue;
+				try {
+					const result = await reviewProjectPlan(project.path);
+					if (result.reviewed && result.observations.length > 0) {
+						log(session, `[pm] ${project.id}: ${result.observations.join('; ')}`);
+					}
+				} catch { /* PM review is best-effort per project */ }
+			}
+		} catch { /* project scan failed */ }
+	}
+
+	// ── Phase 11: Cleanup & Idle
 	await cleanupPromptFiles();
 	const agentCount = getActiveAgents().size;
 	log(session, `[idle] Heartbeat #${heartbeatCount} done — ${agentCount} agent(s) running — going idle`);

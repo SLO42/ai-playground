@@ -26,6 +26,15 @@
 	// Services
 	let autoStart = $state(data.autoStart);
 
+	// Heartbeat / Automation
+	let hbEnabled = $state(data.heartbeat?.enabled !== false);
+	let hbTaskScanning = $state(data.heartbeat?.phases?.taskScanning !== false);
+	let hbAgentSpawning = $state(data.heartbeat?.phases?.agentSpawning !== false);
+	let hbGithubSync = $state(data.heartbeat?.phases?.githubSync !== false);
+	let hbReviewCycle = $state(data.heartbeat?.phases?.reviewCycle !== false);
+	let hbTesting = $state(data.heartbeat?.phases?.testing !== false);
+	let hbMaxAgents = $state(data.heartbeat?.maxAgents ?? 5);
+
 	// Environments
 	let environments = $state<ProjectEnvironment[]>(data.environments ?? []);
 	let showEnvForm = $state(false);
@@ -151,7 +160,18 @@
 						test: { command: testCommand, label: testLabel }
 					},
 					agentConfig: { topology, maxAgents, memoryBackend, consensus },
-					autoStart
+					autoStart,
+					heartbeat: {
+						enabled: hbEnabled,
+						phases: {
+							taskScanning: hbTaskScanning,
+							agentSpawning: hbAgentSpawning,
+							githubSync: hbGithubSync,
+							reviewCycle: hbReviewCycle,
+							testing: hbTesting
+						},
+						maxAgents: hbMaxAgents
+					}
 				})
 			});
 			const result = await res.json();
@@ -227,6 +247,54 @@
 					class="flex-1 bg-bg-tertiary border border-border rounded px-3 py-1.5 text-sm text-text-primary focus:outline-none focus:border-accent-blue resize-none"
 				></textarea>
 			</div>
+		</div>
+	</div>
+
+	<!-- Heartbeat / Automation -->
+	<div>
+		<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-3">Heartbeat / Automation</h2>
+		<div class="bg-bg-secondary border border-border rounded-lg p-4 space-y-4">
+			<div class="flex items-center justify-between">
+				<div>
+					<p class="text-sm font-medium text-text-primary">Enable heartbeat for this project</p>
+					<p class="text-xs text-text-secondary">When disabled, Claw will not scan tasks, spawn agents, or sync with GitHub for this project</p>
+				</div>
+				<label class="relative inline-flex items-center cursor-pointer">
+					<input type="checkbox" bind:checked={hbEnabled} class="sr-only peer" />
+					<div class="w-9 h-5 bg-bg-tertiary rounded-full peer peer-checked:bg-accent-blue transition-colors after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></div>
+				</label>
+			</div>
+
+			{#if hbEnabled}
+				<div class="border-t border-border pt-4 space-y-3">
+					<p class="text-xs text-text-secondary font-medium">Phase Controls</p>
+					{#each [
+						{ key: 'taskScanning', label: 'Task Scanning', desc: 'Scan and assign pending tasks', bind: () => hbTaskScanning, set: (v: boolean) => hbTaskScanning = v },
+						{ key: 'agentSpawning', label: 'Agent Spawning', desc: 'Spawn agents to work on tasks', bind: () => hbAgentSpawning, set: (v: boolean) => hbAgentSpawning = v },
+						{ key: 'githubSync', label: 'GitHub Sync', desc: 'Sync tasks with GitHub issues', bind: () => hbGithubSync, set: (v: boolean) => hbGithubSync = v },
+						{ key: 'reviewCycle', label: 'Review Cycle', desc: 'Run code review on commits', bind: () => hbReviewCycle, set: (v: boolean) => hbReviewCycle = v },
+						{ key: 'testing', label: 'Post-Commit Testing', desc: 'Run tests after agent commits', bind: () => hbTesting, set: (v: boolean) => hbTesting = v }
+					] as phase}
+						<div class="flex items-center justify-between py-1">
+							<div>
+								<p class="text-sm text-text-primary">{phase.label}</p>
+								<p class="text-xs text-text-secondary">{phase.desc}</p>
+							</div>
+							<label class="relative inline-flex items-center cursor-pointer">
+								<input type="checkbox" checked={phase.bind()} onchange={(e) => phase.set(e.currentTarget.checked)} class="sr-only peer" />
+								<div class="w-9 h-5 bg-bg-tertiary rounded-full peer peer-checked:bg-accent-cyan transition-colors after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></div>
+							</label>
+						</div>
+					{/each}
+				</div>
+
+				<div class="border-t border-border pt-4">
+					<label class="block">
+						<span class="text-sm text-text-primary">Max concurrent agents</span>
+						<input type="number" bind:value={hbMaxAgents} min="1" max="20" class="mt-1 w-24 bg-bg-tertiary border border-border rounded-lg px-3 py-1.5 text-sm text-text-primary font-mono" />
+					</label>
+				</div>
+			{/if}
 		</div>
 	</div>
 

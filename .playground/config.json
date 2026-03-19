@@ -35,19 +35,37 @@
 	],
 	"agents": {
 		"topology": "hierarchical-mesh",
-		"maxAgents": 6,
+		"maxAgents": 15,
 		"memoryNamespace": "ai-playground"
 	},
 	"autoRestart": {
 		"enabled": true,
 		"maxAttempts": 3,
 		"cooldownMs": 30000,
-		"services": ["ollama", "gateway", "daemon"]
+		"services": [
+			"ollama",
+			"gateway",
+			"daemon"
+		]
 	},
 	"stats": {
 		"lastSynced": null,
 		"totalToolUses": 0,
 		"totalSessions": 0,
 		"totalAgentSpawns": 0
-	}
+	},
+	"heartbeat": {
+		"enabled": true,
+		"phases": {
+			"taskScanning": true,
+			"agentSpawning": true,
+			"githubSync": true,
+			"reviewCycle": true,
+			"testing": true
+		},
+		"maxAgents": 5
+	},
+	"buildCommand": "npm run build",
+	"testCommand": "npm test",
+	"devCommand": "npm run dev"
 }

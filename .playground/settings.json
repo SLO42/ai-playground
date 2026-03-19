@@ -1,17 +1,17 @@
 {
 	"name": "ai-playground",
 	"description": "",
-	"branch": "main",
+	"branch": "feature/real-data",
 	"agentConfig": {
 		"topology": "hierarchical-mesh",
-		"maxAgents": 6,
+		"maxAgents": 15,
 		"memoryBackend": "hybrid (HNSW + SQLite)",
 		"consensus": "raft"
 	},
 	"build": {
 		"dev": {
 			"command": "npm run dev",
-			"label": "Development server"
+			"label": "Vite + SvelteKit"
 		},
 		"build": {
 			"command": "npm run build",
@@ -19,7 +19,7 @@
 		},
 		"test": {
 			"command": "npm test",
-			"label": "Test suite"
+			"label": "Vitest"
 		}
 	}
 }

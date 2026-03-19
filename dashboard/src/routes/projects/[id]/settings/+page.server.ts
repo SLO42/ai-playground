@@ -32,6 +32,20 @@ export const load: PageServerLoad = async ({ parent }) => {
 
 	const environments = await loadEnvironments(project.path);
 
+	// Load project-level heartbeat config from .playground/config.json
+	const projectConfig = await readJsonFile<Record<string, any>>(resolve(project.path, '.playground/config.json'));
+	const heartbeat = projectConfig?.heartbeat ?? {
+		enabled: true,
+		phases: {
+			taskScanning: true,
+			agentSpawning: true,
+			githubSync: true,
+			reviewCycle: true,
+			testing: true
+		},
+		maxAgents: 5
+	};
+
 	return {
 		general: stored?.general ?? {
 			name: project.name ?? projectId,
@@ -56,6 +70,7 @@ export const load: PageServerLoad = async ({ parent }) => {
 			consensus: 'raft'
 		},
 		autoStart: stored?.autoStart ?? false,
-		environments
+		environments,
+		heartbeat
 	};
 };

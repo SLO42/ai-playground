@@ -126,43 +126,83 @@ export const GET: RequestHandler = async ({ params }) => {
 	}
 };
 
+async function handleSave(params: { id: string }, request: Request) {
+	const project = await resolveProject(params.id);
+	if (!project) {
+		return json({ error: 'Project not found' }, { status: 404 });
+	}
+
+	let body: Record<string, unknown>;
+	try {
+		body = await request.json() as Record<string, unknown>;
+	} catch {
+		return json({ error: 'Invalid JSON' }, { status: 400 });
+	}
+
+	// Validate and save structured settings (name, build, agentConfig)
+	const general = body.general as Record<string, unknown> | undefined;
+	const name = (general?.name as string) ?? (body.name as string);
+	if (!name || typeof name !== 'string' || name.trim().length === 0) {
+		return json({ error: 'Project name is required' }, { status: 400 });
+	}
+
+	const settings: ProjectSettings = {
+		name: name.trim(),
+		description: (general?.description as string) ?? (body.description as string) ?? '',
+		branch: (general?.branch as string) ?? (body.branch as string) ?? 'main',
+		agentConfig: (body.agentConfig as ProjectSettings['agentConfig']) ?? {
+			topology: 'hierarchical-mesh', maxAgents: 15, memoryBackend: 'hybrid (HNSW + SQLite)', consensus: 'raft'
+		},
+		build: (body.build as ProjectSettings['build']) ?? {}
+	};
+
+	await writeSettings(project.path, settings);
+
+	// Sync heartbeat + agent config into .playground/config.json so the heartbeat reads it
+	try {
+		const configPath = resolve(project.path, '.playground', 'config.json');
+		let config: Record<string, unknown> = {};
+		try {
+			config = JSON.parse(await readFile(configPath, 'utf-8'));
+		} catch { /* no config yet */ }
+
+		// Sync agent maxAgents
+		if (!config.agents || typeof config.agents !== 'object') config.agents = {};
+		(config.agents as Record<string, unknown>).maxAgents = settings.agentConfig.maxAgents;
+
+		// Sync heartbeat config (per-project automation control)
+		if (body.heartbeat && typeof body.heartbeat === 'object') {
+			config.heartbeat = body.heartbeat;
+		}
+
+		// Sync build commands
+		config.buildCommand = settings.build?.build?.command;
+		config.testCommand = settings.build?.test?.command;
+		config.devCommand = settings.build?.dev?.command;
+
+		await mkdir(resolve(project.path, '.playground'), { recursive: true });
+		await writeFile(configPath, JSON.stringify(config, null, '\t'), 'utf-8');
+	} catch { /* best effort */ }
+
+	return json({ ok: true, settings });
+}
+
 /** PUT /api/projects/[id]/settings */
 export const PUT: RequestHandler = async ({ params, request }) => {
 	try {
-		const project = await resolveProject(params.id);
-		if (!project) {
-			return json({ error: 'Project not found' }, { status: 404 });
-		}
-
-		let body: unknown;
-		try {
-			body = await request.json();
-		} catch {
-			return json({ error: 'Invalid JSON' }, { status: 400 });
-		}
-
-		const result = validateSettings(body);
-		if (!result.valid) {
-			return json({ error: result.error }, { status: 400 });
-		}
-
-		await writeSettings(project.path, result.data);
-
-		// Sync maxAgents into .playground/config.json so the heartbeat picks it up
-		try {
-			const configPath = resolve(project.path, '.playground', 'config.json');
-			let config: Record<string, unknown> = {};
-			try {
-				config = JSON.parse(await readFile(configPath, 'utf-8'));
-			} catch { /* no config yet */ }
-			if (!config.agents || typeof config.agents !== 'object') config.agents = {};
-			(config.agents as Record<string, unknown>).maxAgents = result.data.agentConfig.maxAgents;
-			await writeFile(configPath, JSON.stringify(config, null, '\t'), 'utf-8');
-		} catch { /* best effort */ }
-
-		return json({ ok: true, settings: result.data });
+		return await handleSave(params, request);
 	} catch (e) {
 		console.error('[api/projects/settings] PUT failed:', e);
+		return json({ error: 'Failed to save project settings' }, { status: 500 });
+	}
+};
+
+/** POST /api/projects/[id]/settings — same as PUT, for frontend compatibility */
+export const POST: RequestHandler = async ({ params, request }) => {
+	try {
+		return await handleSave(params, request);
+	} catch (e) {
+		console.error('[api/projects/settings] POST failed:', e);
 		return json({ error: 'Failed to save project settings' }, { status: 500 });
 	}
 };

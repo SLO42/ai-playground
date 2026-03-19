@@ -1,0 +1,47 @@
+{
+	"enabled": false,
+	"phases": {
+		"0": {
+			"id": "health-checks",
+			"name": "Health Checks",
+			"enabled": true,
+			"intervalSeconds": 30
+		},
+		"1": {
+			"id": "task-scanning",
+			"name": "Task Scanning",
+			"enabled": true,
+			"intervalSeconds": 60
+		},
+		"2": {
+			"id": "agent-spawning",
+			"name": "Agent Spawning",
+			"enabled": true,
+			"intervalSeconds": 120
+		},
+		"3": {
+			"id": "review-cycle",
+			"name": "Review Cycle",
+			"enabled": false,
+			"intervalSeconds": 300
+		},
+		"4": {
+			"id": "memory-sync",
+			"name": "Memory Sync",
+			"enabled": true,
+			"intervalSeconds": 180
+		},
+		"healthChecks": true,
+		"taskScanning": true,
+		"agentSpawning": true,
+		"reviewCycle": true,
+		"memorySync": true
+	},
+	"intervals": {
+		"healthChecks": 30000,
+		"taskScanning": 60000,
+		"agentSpawning": 60000,
+		"reviewCycle": 1800000,
+		"memorySync": 60000
+	}
+}

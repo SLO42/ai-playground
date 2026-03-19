@@ -38,6 +38,12 @@
 		"maxAgents": 6,
 		"memoryNamespace": "ai-playground"
 	},
+	"autoRestart": {
+		"enabled": true,
+		"maxAttempts": 3,
+		"cooldownMs": 30000,
+		"services": ["ollama", "gateway", "daemon"]
+	},
 	"stats": {
 		"lastSynced": null,
 		"totalToolUses": 0,

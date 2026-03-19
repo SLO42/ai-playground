@@ -219,9 +219,12 @@ Create a new project from a template, or import an existing directory.
 {
   "project": { "id": "...", "name": "...", "path": "..." },
   "gitInitialized": true,
-  "githubCreated": false
+  "githubCreated": false,
+  "servicesStarting": false
 }
 ```
+
+> **Side-effect**: if the project has a `gitRemote`, a fire-and-forget GitHub issue sync (`direction: pull`, `source: project-create`) is triggered after the response is sent. Sync errors are silently swallowed.
 
 **Request Body — import** (legacy flow: name omitted)
 ```json
@@ -236,6 +239,8 @@ Create a new project from a template, or import an existing directory.
   "project": { "id": "...", "name": "...", "path": "..." }
 }
 ```
+
+> **Side-effect**: if the imported project has a `gitRemote`, a fire-and-forget GitHub issue sync (`direction: pull`, `source: project-import`) is triggered after the response is sent. Sync errors are silently swallowed.
 
 **Errors**
 | Status | Body |

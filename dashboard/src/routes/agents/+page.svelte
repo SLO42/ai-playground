@@ -25,7 +25,7 @@
 	let selectedCategory = $state('all');
 
 	// Live-poll active agents every 5s
-	let liveActiveAgents = $state(liveActiveAgents ?? []);
+	let liveActiveAgents = $state(data.activeAgents ?? []);
 
 	$effect(() => {
 		const interval = setInterval(async () => {

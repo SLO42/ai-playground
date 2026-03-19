@@ -260,10 +260,163 @@
 						{hbSaving ? 'Saving...' : 'Save Heartbeat Config'}
 					</button>
 				</div>
+			{:else if activeCategory === 'notifications'}
+				<div>
+					<h2 class="text-lg font-semibold text-text-primary">Notifications</h2>
+					<p class="text-sm text-text-secondary mt-1">Control how you receive alerts from Claw agents.</p>
+				</div>
+				<div class="space-y-4 mt-4">
+					{#each data.preferences ?? [] as pref}
+						<div class="flex items-center justify-between py-2">
+							<p class="text-sm text-text-primary">{pref.type}</p>
+							<label class="relative inline-flex items-center cursor-pointer">
+								<input type="checkbox" checked={pref.desktop || pref.sound} class="sr-only peer" />
+								<div class="w-9 h-5 bg-bg-tertiary rounded-full peer peer-checked:bg-accent-blue transition-colors after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></div>
+							</label>
+						</div>
+					{/each}
+				</div>
+
+			{:else if activeCategory === 'model-routing'}
+				<div>
+					<h2 class="text-lg font-semibold text-text-primary">Model Routing</h2>
+					<p class="text-sm text-text-secondary mt-1">Configure how tasks are routed to AI providers.</p>
+				</div>
+				<div class="mt-4 space-y-3">
+					<div class="bg-bg-secondary border border-border rounded-lg p-4">
+						<p class="text-xs text-text-secondary uppercase tracking-wider mb-2">Routing Strategy</p>
+						<select class="w-full bg-bg-tertiary border border-border rounded-lg px-3 py-2 text-sm text-text-primary">
+							<option>Tiered (Haiku → Sonnet → Opus)</option>
+							<option>Cost-optimized</option>
+							<option>Quality-first</option>
+							<option>Local-first (Ollama → Cloud fallback)</option>
+						</select>
+					</div>
+					<div class="bg-bg-secondary border border-border rounded-lg p-4">
+						<p class="text-xs text-text-secondary uppercase tracking-wider mb-2">Provider Priority</p>
+						<div class="space-y-2 text-sm text-text-primary">
+							<div class="flex items-center justify-between py-1"><span>1. Ollama (local)</span><span class="text-xs text-accent-green">Free</span></div>
+							<div class="flex items-center justify-between py-1"><span>2. Claude Sonnet</span><span class="text-xs text-text-secondary">$3/MTok</span></div>
+							<div class="flex items-center justify-between py-1"><span>3. Claude Opus</span><span class="text-xs text-text-secondary">$15/MTok</span></div>
+						</div>
+					</div>
+				</div>
+
+			{:else if activeCategory === 'agent-defaults'}
+				<div>
+					<h2 class="text-lg font-semibold text-text-primary">Agent Defaults</h2>
+					<p class="text-sm text-text-secondary mt-1">Default configuration for new agent sessions.</p>
+				</div>
+				<div class="mt-4 space-y-4">
+					<div class="flex items-center justify-between">
+						<div><p class="text-sm text-text-primary">Default Topology</p><p class="text-xs text-text-secondary">How agents coordinate</p></div>
+						<select class="bg-bg-tertiary border border-border rounded-lg px-3 py-2 text-sm text-text-primary">
+							<option>hierarchical-mesh</option>
+							<option>mesh</option>
+							<option>hierarchical</option>
+							<option>adaptive</option>
+						</select>
+					</div>
+					<div class="flex items-center justify-between">
+						<div><p class="text-sm text-text-primary">Max Concurrent Agents</p><p class="text-xs text-text-secondary">Global limit across all projects</p></div>
+						<input type="number" value="15" min="1" max="50" class="w-20 bg-bg-tertiary border border-border rounded-lg px-3 py-2 text-sm text-text-primary font-mono" />
+					</div>
+					<div class="flex items-center justify-between">
+						<div><p class="text-sm text-text-primary">Default Model</p><p class="text-xs text-text-secondary">Model used when no routing rule matches</p></div>
+						<select class="bg-bg-tertiary border border-border rounded-lg px-3 py-2 text-sm text-text-primary">
+							<option>claude-sonnet-4-6</option>
+							<option>claude-opus-4-6</option>
+							<option>claude-haiku-4-5</option>
+							<option>gpt-oss:20b (local)</option>
+						</select>
+					</div>
+				</div>
+
+			{:else if activeCategory === 'memory'}
+				<div>
+					<h2 class="text-lg font-semibold text-text-primary">Memory</h2>
+					<p class="text-sm text-text-secondary mt-1">Configure HNSW vector memory and knowledge graph.</p>
+				</div>
+				<div class="mt-4 space-y-4">
+					<div class="flex items-center justify-between">
+						<div><p class="text-sm text-text-primary">Memory Graph</p><p class="text-xs text-text-secondary">Enable BubbleGraph visualization on memory pages</p></div>
+						<label class="relative inline-flex items-center cursor-pointer">
+							<input type="checkbox" checked class="sr-only peer" />
+							<div class="w-9 h-5 bg-bg-tertiary rounded-full peer peer-checked:bg-accent-blue transition-colors after:content-[''] after:absolute after:top-0.5 after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:after:translate-x-full"></div>
+						</label>
+					</div>
+					<div class="flex items-center justify-between">
+						<div><p class="text-sm text-text-primary">Auto-sync Interval</p><p class="text-xs text-text-secondary">How often memory bridge syncs with claude-flow</p></div>
+						<select class="bg-bg-tertiary border border-border rounded-lg px-3 py-2 text-sm text-text-primary">
+							<option>30 seconds</option>
+							<option selected>60 seconds</option>
+							<option>5 minutes</option>
+							<option>Manual only</option>
+						</select>
+					</div>
+					<div class="flex items-center justify-between">
+						<div><p class="text-sm text-text-primary">Pattern Decay</p><p class="text-xs text-text-secondary">Half-life for learned patterns</p></div>
+						<select class="bg-bg-tertiary border border-border rounded-lg px-3 py-2 text-sm text-text-primary">
+							<option>7 days</option>
+							<option selected>30 days</option>
+							<option>90 days</option>
+							<option>Never</option>
+						</select>
+					</div>
+				</div>
+
+			{:else if activeCategory === 'security'}
+				<div>
+					<h2 class="text-lg font-semibold text-text-primary">Security</h2>
+					<p class="text-sm text-text-secondary mt-1">Network policy, input validation, and audit settings.</p>
+				</div>
+				<div class="mt-4 space-y-3">
+					<div class="bg-bg-secondary border border-border rounded-lg p-4 space-y-3">
+						<div class="flex items-center justify-between"><p class="text-sm text-text-primary">Prompt Injection Guard</p><span class="text-xs text-accent-green">Active</span></div>
+						<div class="flex items-center justify-between"><p class="text-sm text-text-primary">Path Traversal Guard</p><span class="text-xs text-accent-green">Active</span></div>
+						<div class="flex items-center justify-between"><p class="text-sm text-text-primary">Command Injection Guard</p><span class="text-xs text-accent-green">Active</span></div>
+						<div class="flex items-center justify-between"><p class="text-sm text-text-primary">XSS Sanitization</p><span class="text-xs text-accent-green">Active</span></div>
+					</div>
+					<div class="bg-bg-secondary border border-border rounded-lg p-4">
+						<p class="text-xs text-text-secondary uppercase tracking-wider mb-2">Secret Rotation</p>
+						<p class="text-sm text-text-primary">Policy: 90-day rotation</p>
+						<p class="text-xs text-text-secondary mt-1">Scanning: Enabled (blocks commits with secrets)</p>
+					</div>
+				</div>
+
+			{:else if activeCategory === 'api-keys'}
+				<div>
+					<h2 class="text-lg font-semibold text-text-primary">API Keys</h2>
+					<p class="text-sm text-text-secondary mt-1">Manage provider API keys. Values are never displayed.</p>
+				</div>
+				<div class="mt-4 space-y-3">
+					{#each [
+						{ name: 'ANTHROPIC_API_KEY', status: 'configured' },
+						{ name: 'OPENCLAW_TOKEN', status: 'configured' },
+						{ name: 'GITHUB_TOKEN', status: 'from gh CLI' },
+						{ name: 'THUNDERSTORE_TOKEN', status: 'not set' },
+						{ name: 'CURSEFORGE_TOKEN', status: 'not set' },
+						{ name: 'NEXUS_API_KEY', status: 'not set' }
+					] as key}
+						<div class="bg-bg-secondary border border-border rounded-lg p-3 flex items-center justify-between">
+							<span class="text-sm font-mono text-text-primary">{key.name}</span>
+							<span class="text-xs {key.status === 'not set' ? 'text-text-secondary' : 'text-accent-green'}">{key.status}</span>
+						</div>
+					{/each}
+				</div>
+
+			{:else if activeCategory === 'services'}
+				<div>
+					<h2 class="text-lg font-semibold text-text-primary">Services</h2>
+					<p class="text-sm text-text-secondary mt-1">Configure managed services and daemon workers.</p>
+				</div>
+				<div class="mt-4">
+					<a href="/services" class="text-sm text-accent-blue hover:underline">Open Services Dashboard →</a>
+				</div>
+
 			{:else}
-				<!-- Placeholder for other categories -->
 				<div class="bg-bg-secondary border border-border rounded-lg p-8 text-center">
-					<p class="text-sm text-text-secondary">Settings for <span class="font-medium text-text-primary capitalize">{activeCategory.replace('-', ' ')}</span> will appear here.</p>
+					<p class="text-sm text-text-secondary">Settings for <span class="font-medium text-text-primary capitalize">{activeCategory.replace('-', ' ')}</span> coming soon.</p>
 				</div>
 			{/if}
 

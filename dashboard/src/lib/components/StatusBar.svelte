@@ -34,10 +34,8 @@
 	const syncLabel = $derived(() => {
 		if (!lastSync || lastSync === 'just now') return 'just now';
 		try {
-			const diff = Date.now() - new Date(lastSync).getTime();
-			if (diff < 60_000) return 'just now';
-			if (diff < 3_600_000) return `${Math.round(diff / 60_000)}m ago`;
-			return `${Math.round(diff / 3_600_000)}h ago`;
+			const d = new Date(lastSync);
+			return d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
 		} catch {
 			return lastSync;
 		}

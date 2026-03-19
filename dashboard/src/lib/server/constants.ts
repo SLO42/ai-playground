@@ -59,7 +59,6 @@ export const PATHS = {
 	customServices: resolve(PROJECT_ROOT, '.playground/custom-services.json'),
 	scanFindings: resolve(PROJECT_ROOT, '.playground/security-findings.json'),
 	taskSuggestions: resolve(PROJECT_ROOT, '.playground/task-suggestions.json'),
-	heartbeatConfig: resolve(PROJECT_ROOT, '.playground/heartbeat-config.json'),
 } as const;
 
 export const APIS = {

@@ -139,8 +139,9 @@ export async function updateHeartbeatConfig(partial: Partial<HeartbeatConfig>): 
 
 	const merged: HeartbeatConfig = {
 		enabled: typeof partial.enabled === 'boolean' ? partial.enabled : current.enabled,
-		phases: { ...current.phases, ...(partial.phases ?? {}) },
-		intervals: clampIntervals({ ...current.intervals, ...(partial.intervals ?? {}) }),
+		// Replace phases/intervals entirely when provided — prevents stale keys from corrupted merges
+		phases: partial.phases ?? current.phases,
+		intervals: clampIntervals(partial.intervals ?? current.intervals),
 	};
 
 	await saveHeartbeatConfig(merged);

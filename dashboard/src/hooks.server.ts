@@ -1,11 +1,21 @@
 import { redirect, type Handle } from '@sveltejs/kit';
 import { randomBytes } from 'node:crypto';
-import { startHeartbeat, stopHeartbeat } from '$lib/server/heartbeat.js';
+import { startHeartbeat, stopHeartbeat, loadHeartbeatConfig, getHeartbeatConfig } from '$lib/server/heartbeat.js';
 import { getFeatureFlags, isRouteEnabled } from '$lib/server/feature-flags.js';
 
-// Stop any existing heartbeat (HMR reload) before starting fresh
+// Stop any existing heartbeat (HMR reload), then only start if config says enabled
 stopHeartbeat();
-startHeartbeat();
+loadHeartbeatConfig().then(() => {
+	const config = getHeartbeatConfig();
+	if (config.enabled !== false) {
+		startHeartbeat();
+	} else {
+		console.log('[heartbeat] Disabled in config — not starting');
+	}
+}).catch(() => {
+	// Config load failed — start anyway as fallback
+	startHeartbeat();
+});
 
 /**
  * Per-boot dashboard token — regenerated every time the server starts.

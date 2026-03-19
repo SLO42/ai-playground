@@ -97,12 +97,82 @@ export async function POST({ params, request }) {
 			if (body.vision !== undefined) plan.vision = body.vision;
 			if (body.definitionOfDone !== undefined) plan.definitionOfDone = body.definitionOfDone;
 			if (body.roadmap !== undefined) plan.roadmap = body.roadmap;
+			if (body.sprints !== undefined) plan.sprints = body.sprints;
+			if (body.activeSprint !== undefined) plan.activeSprint = body.activeSprint;
 			if (body.decisions !== undefined) plan.decisions = body.decisions;
 			plan.lastUpdated = new Date().toISOString();
 			plan.updatedBy = body.updatedBy ?? 'user';
 
 			await savePlan(projectPath, plan);
 			return json({ plan });
+		}
+
+		case 'create-sprint': {
+			const plan = await loadPlan(projectPath);
+			if (!plan) return json({ error: 'No plan exists — bootstrap first' }, { status: 400 });
+			if (!body.name || !body.milestoneId || !body.goal) {
+				return json({ error: 'name, milestoneId, and goal are required' }, { status: 400 });
+			}
+
+			const milestone = plan.roadmap.find(m => m.id === body.milestoneId);
+			if (!milestone) return json({ error: `Milestone ${body.milestoneId} not found` }, { status: 404 });
+
+			const sprint = {
+				id: `sprint-${Date.now()}`,
+				name: body.name,
+				status: (body.activate ? 'active' : 'planned') as 'active' | 'planned',
+				milestoneId: body.milestoneId,
+				goal: body.goal,
+				tasks: body.tasks ?? [],
+				startDate: body.activate ? new Date().toISOString() : body.startDate,
+				endDate: body.endDate
+			};
+
+			plan.sprints.push(sprint);
+			milestone.sprints.push(sprint.id);
+			if (body.activate) plan.activeSprint = sprint.id;
+			plan.lastUpdated = new Date().toISOString();
+			plan.updatedBy = body.updatedBy ?? 'user';
+
+			await savePlan(projectPath, plan);
+
+			pmDb.addEntry(projectPath, {
+				type: 'observation',
+				content: `Sprint "${sprint.name}" created under milestone "${milestone.name}" — goal: ${sprint.goal}`,
+				source: 'user',
+				confidence: 1.0,
+				relatedTo: sprint.id
+			});
+
+			return json({ sprint, plan });
+		}
+
+		case 'complete-sprint': {
+			const plan = await loadPlan(projectPath);
+			if (!plan) return json({ error: 'No plan exists' }, { status: 400 });
+			if (!body.sprintId) return json({ error: 'sprintId is required' }, { status: 400 });
+
+			const sprint = plan.sprints.find(s => s.id === body.sprintId);
+			if (!sprint) return json({ error: 'Sprint not found' }, { status: 404 });
+
+			sprint.status = 'completed';
+			sprint.completedAt = new Date().toISOString();
+			if (body.retrospective) sprint.retrospective = body.retrospective;
+			if (plan.activeSprint === sprint.id) plan.activeSprint = null;
+			plan.lastUpdated = new Date().toISOString();
+			plan.updatedBy = body.updatedBy ?? 'user';
+
+			await savePlan(projectPath, plan);
+
+			pmDb.addEntry(projectPath, {
+				type: 'learning',
+				content: `Sprint "${sprint.name}" completed.${body.retrospective ? ` Retro: ${body.retrospective}` : ''}`,
+				source: 'sprint-completion',
+				confidence: 1.0,
+				relatedTo: sprint.id
+			});
+
+			return json({ sprint, plan });
 		}
 
 		case 'sync-github': {

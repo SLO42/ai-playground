@@ -2,18 +2,41 @@
 
 export type MilestoneStatus = 'planned' | 'active' | 'completed' | 'blocked';
 
+// ── Macro: strategic phases (weeks-months) ───────────────────────────
+
 export interface Milestone {
 	id: string;
 	name: string;
 	status: MilestoneStatus;
 	goals: string[];
 	acceptanceCriteria: string[];
-	/** Task IDs linked to this milestone */
+	/** Task IDs linked directly to this milestone (unsprinted work) */
 	tasks: string[];
 	/** Milestone IDs that must complete first */
 	dependencies: string[];
+	/** Sprint IDs that belong to this milestone */
+	sprints: string[];
 	targetDate?: string;
 	completedAt?: string;
+}
+
+// ── Micro: time-boxed sprints (1-2 weeks) ────────────────────────────
+
+export interface Sprint {
+	id: string;
+	name: string;
+	status: MilestoneStatus;
+	/** Which macro milestone this sprint serves */
+	milestoneId: string;
+	/** Sprint goal — what we're trying to achieve this cycle */
+	goal: string;
+	/** Task IDs in this sprint */
+	tasks: string[];
+	startDate?: string;
+	endDate?: string;
+	completedAt?: string;
+	/** Retro notes from the PM after sprint completion */
+	retrospective?: string;
 }
 
 export interface ArchDecision {
@@ -27,10 +50,15 @@ export interface ArchDecision {
 }
 
 export interface ProjectPlan {
-	version: 1;
+	version: 2;
 	vision: string;
 	definitionOfDone: string[];
+	/** Macro roadmap — strategic phases */
 	roadmap: Milestone[];
+	/** Micro roadmap — time-boxed sprints linked to macro milestones */
+	sprints: Sprint[];
+	/** Active sprint ID (at most one) */
+	activeSprint: string | null;
 	decisions: ArchDecision[];
 	lastUpdated: string;
 	updatedBy: string;

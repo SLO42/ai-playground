@@ -13,7 +13,7 @@ import { promisify } from 'util';
 import { detectProjectMeta } from './project-scanner.js';
 import { readJsonFile } from './file-reader.js';
 import * as pmDb from './pm-memory-db.js';
-import type { ProjectPlan, PMBootstrapContext, Milestone } from '$lib/types/project-plan.js';
+import type { ProjectPlan, PMBootstrapContext, Milestone, Sprint } from '$lib/types/project-plan.js';
 import type { DetectedProjectMeta } from '$lib/types/projects.js';
 
 const execFileAsync = promisify(execFile);
@@ -25,7 +25,23 @@ function planPath(projectPath: string): string {
 }
 
 export async function loadPlan(projectPath: string): Promise<ProjectPlan | null> {
-	return readJsonFile<ProjectPlan>(planPath(projectPath));
+	const raw = await readJsonFile<Record<string, unknown>>(planPath(projectPath));
+	if (!raw) return null;
+
+	// Migrate v1 → v2: add sprints + activeSprint + milestone.sprints
+	if (!raw.version || raw.version === 1) {
+		const plan = raw as unknown as ProjectPlan;
+		plan.version = 2;
+		if (!plan.sprints) plan.sprints = [];
+		if (plan.activeSprint === undefined) plan.activeSprint = null;
+		for (const ms of plan.roadmap) {
+			if (!ms.sprints) ms.sprints = [];
+		}
+		await savePlan(projectPath, plan);
+		return plan;
+	}
+
+	return raw as unknown as ProjectPlan;
 }
 
 export async function savePlan(projectPath: string, plan: ProjectPlan): Promise<void> {
@@ -35,10 +51,12 @@ export async function savePlan(projectPath: string, plan: ProjectPlan): Promise<
 
 export function createEmptyPlan(updatedBy: string): ProjectPlan {
 	return {
-		version: 1,
+		version: 2,
 		vision: '',
 		definitionOfDone: [],
 		roadmap: [],
+		sprints: [],
+		activeSprint: null,
 		decisions: [],
 		lastUpdated: new Date().toISOString(),
 		updatedBy
@@ -219,7 +237,8 @@ function buildInitialRoadmap(ctx: PMBootstrapContext): Milestone[] {
 			goals: infraGoals,
 			acceptanceCriteria: infraGoals.map(g => `${g} — verified working`),
 			tasks: [],
-			dependencies: []
+			dependencies: [],
+			sprints: []
 		});
 	}
 
@@ -230,7 +249,8 @@ function buildInitialRoadmap(ctx: PMBootstrapContext): Milestone[] {
 		goals: ['Core features implemented and functional'],
 		acceptanceCriteria: ['To be defined in PM discussion'],
 		tasks: [],
-		dependencies: infraGoals.length > 0 ? ['ms-infrastructure'] : []
+		dependencies: infraGoals.length > 0 ? ['ms-infrastructure'] : [],
+		sprints: []
 	});
 
 	milestones.push({
@@ -240,7 +260,8 @@ function buildInitialRoadmap(ctx: PMBootstrapContext): Milestone[] {
 		goals: ['Production-ready release'],
 		acceptanceCriteria: ['All tests passing', 'Documentation complete', 'No known critical bugs'],
 		tasks: [],
-		dependencies: ['ms-core']
+		dependencies: ['ms-core'],
+		sprints: []
 	});
 
 	return milestones;
@@ -289,11 +310,25 @@ export function buildPMDiscussionPrompt(ctx: PMBootstrapContext, plan: ProjectPl
 	}
 
 	lines.push(``);
+	// Sprints
+	if (plan.sprints.length > 0) {
+		const active = plan.sprints.find(s => s.id === plan.activeSprint);
+		lines.push(``);
+		lines.push(`**Sprints** (${plan.sprints.length} total${active ? `, active: ${active.name}` : ''}):`);
+		for (const sprint of plan.sprints.slice(0, 5)) {
+			const icon = sprint.status === 'active' ? '🟢' : sprint.status === 'completed' ? '✅' : '⬜';
+			const ms = plan.roadmap.find(m => m.id === sprint.milestoneId);
+			lines.push(`${icon} **${sprint.name}**: ${sprint.goal}${ms ? ` → _${ms.name}_` : ''}`);
+		}
+	}
+
+	lines.push(``);
 	lines.push(`**I'd like your input on**:`);
 	lines.push(`1. Is this vision accurate? What's the real goal for this project?`);
-	lines.push(`2. What milestones matter most to you right now?`);
-	lines.push(`3. Any key architectural decisions already made that I should know about?`);
-	lines.push(`4. What does "done" look like for you?`);
+	lines.push(`2. What are the big strategic phases (macro milestones) you see?`);
+	lines.push(`3. What should the first sprint focus on? (I'll create it once we agree)`);
+	lines.push(`4. Any key architectural decisions already made that I should know about?`);
+	lines.push(`5. What does "done" look like for you?`);
 
 	if (ctx.existingTasks.length > 0) {
 		lines.push(``);
@@ -383,19 +418,52 @@ export async function reviewProjectPlan(projectPath: string): Promise<{
 	const { getAllTasks } = await import('./task-store.js');
 	const tasks = await getAllTasks(projectPath).catch(() => []);
 
+	// ── Sprint progress ──
+	for (const sprint of plan.sprints) {
+		if (sprint.status === 'completed') continue;
+
+		const sprintTasks = tasks.filter(t => sprint.tasks.includes(t.id));
+		const done = sprintTasks.filter(t => t.status === 'completed').length;
+		const total = sprintTasks.length;
+
+		if (total > 0 && done === total) {
+			sprint.status = 'completed';
+			sprint.completedAt = new Date().toISOString();
+			planChanged = true;
+			observations.push(`Sprint "${sprint.name}" completed — all ${total} tasks done`);
+
+			if (plan.activeSprint === sprint.id) {
+				plan.activeSprint = null;
+				observations.push(`Active sprint cleared — ready for next sprint`);
+			}
+		} else if (total > 0 && sprint.status === 'active') {
+			observations.push(`Sprint "${sprint.name}": ${done}/${total} tasks complete`);
+		}
+	}
+
+	// ── Macro milestone progress (includes sprint tasks) ──
 	for (const milestone of plan.roadmap) {
 		if (milestone.status === 'completed') continue;
 
-		const linkedTasks = tasks.filter(t => milestone.tasks.includes(t.id));
-		const completedCount = linkedTasks.filter(t => t.status === 'completed').length;
-		const totalLinked = linkedTasks.length;
+		// Collect all tasks: directly linked + from child sprints
+		const directTasks = tasks.filter(t => milestone.tasks.includes(t.id));
+		const sprintTaskIds = new Set<string>();
+		for (const sprintId of milestone.sprints) {
+			const sprint = plan.sprints.find(s => s.id === sprintId);
+			if (sprint) sprint.tasks.forEach(id => sprintTaskIds.add(id));
+		}
+		const sprintTasks = tasks.filter(t => sprintTaskIds.has(t.id));
+		const allLinked = [...directTasks, ...sprintTasks];
+		const completedCount = allLinked.filter(t => t.status === 'completed').length;
+		const totalLinked = allLinked.length;
 
 		if (totalLinked > 0 && completedCount === totalLinked) {
 			milestone.status = 'completed';
 			milestone.completedAt = new Date().toISOString();
 			planChanged = true;
-			observations.push(`Milestone "${milestone.name}" completed — all ${totalLinked} linked tasks done`);
+			observations.push(`Milestone "${milestone.name}" completed — all ${totalLinked} tasks done (${milestone.sprints.length} sprint(s))`);
 
+			// Auto-activate dependent milestones
 			for (const ms of plan.roadmap) {
 				if (ms.status === 'planned' && ms.dependencies.includes(milestone.id)) {
 					const allDepsDone = ms.dependencies.every(

@@ -61,8 +61,27 @@ export const load: PageServerLoad = async () => {
 		{ id: 'delegate', icon: 'arrow-right', name: 'Delegate', description: 'Hand off to another agent or escalate', shortcut: 'Ctrl+D' }
 	];
 
-	const storedHeartbeat = await readJsonFile<HeartbeatConfig>(PATHS.heartbeatConfig);
-	const heartbeat: HeartbeatConfig = storedHeartbeat ?? DEFAULT_HEARTBEAT;
+	// Load heartbeat config — handle both array format (UI) and object format (shared.ts disk)
+	const storedRaw = await readJsonFile<Record<string, unknown>>(PATHS.heartbeatConfig);
+	let heartbeat: HeartbeatConfig;
+	if (storedRaw && Array.isArray(storedRaw.phases)) {
+		heartbeat = storedRaw as unknown as HeartbeatConfig;
+	} else if (storedRaw && storedRaw.phases && typeof storedRaw.phases === 'object') {
+		const p = storedRaw.phases as Record<string, boolean>;
+		const iv = (storedRaw.intervals ?? {}) as Record<string, number>;
+		const names: Record<string, string> = { healthChecks: 'Health Checks', taskScanning: 'Task Scanning', agentSpawning: 'Agent Spawning', reviewCycle: 'Review Cycle', memorySync: 'Memory Sync' };
+		heartbeat = {
+			enabled: storedRaw.enabled !== false,
+			phases: Object.entries(names).map(([key, name]) => ({
+				id: key.replace(/([A-Z])/g, '-$1').toLowerCase(),
+				name,
+				enabled: p[key] !== false,
+				intervalSeconds: Math.round((iv[key] ?? 60000) / 1000)
+			}))
+		};
+	} else {
+		heartbeat = DEFAULT_HEARTBEAT;
+	}
 
 	return {
 		categories,

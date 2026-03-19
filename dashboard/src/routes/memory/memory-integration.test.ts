@@ -365,13 +365,11 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 
 		await fireEvent.click(screen.getByText('Refresh'));
 
+		// Switch to Entries tab to see auto-memory entries (use role selector to hit the tab button, not the metric card label)
 		await vi.waitFor(() => {
-			// After refresh with autoMemory data, Entries tab should show count
-			expect(screen.getAllByText('Entries').length).toBeGreaterThanOrEqual(1);
+			expect(screen.getByRole('button', { name: /^Entries/ })).toBeInTheDocument();
 		});
-
-		// Switch to Entries tab to see auto-memory entries
-		await fireEvent.click(screen.getAllByText('Entries')[0]);
+		await fireEvent.click(screen.getByRole('button', { name: /^Entries/ }));
 		await vi.waitFor(() => {
 			expect(screen.getAllByText('JWT with refresh tokens').length).toBeGreaterThanOrEqual(1);
 			expect(screen.getAllByText('patterns').length).toBeGreaterThanOrEqual(1);
@@ -411,7 +409,7 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 		});
 
 		// Switch to Entries tab to verify auto-memory
-		await fireEvent.click(screen.getAllByText('Entries')[0]);
+		await fireEvent.click(screen.getByRole('button', { name: /^Entries/ }));
 		await vi.waitFor(() => {
 			expect(screen.getAllByText('JWT with refresh tokens').length).toBeGreaterThanOrEqual(1);
 		});
@@ -922,7 +920,7 @@ describe('Memory Page — Integration (empty API dataset → empty-state via cli
 		});
 
 		// Switch to Entries tab to verify auto-memory
-		await fireEvent.click(screen.getAllByText('Entries')[0]);
+		await fireEvent.click(screen.getByRole('button', { name: /^Entries/ }));
 		await vi.waitFor(() => {
 			expect(screen.getAllByText('JWT with refresh tokens').length).toBeGreaterThanOrEqual(1);
 		});
@@ -1306,11 +1304,11 @@ describe('Memory Page — Large dataset (~1k nodes)', () => {
 		);
 
 		await fireEvent.click(screen.getByText('Refresh'));
-		// Allow async fetch + state updates to settle
-		await new Promise((r) => setTimeout(r, 50));
 
 		// Should still be rendering without crash — node count should update
-		expect(screen.getByText(NODE_COUNT.toLocaleString())).toBeInTheDocument();
+		await vi.waitFor(() => {
+			expect(screen.getByText(NODE_COUNT.toLocaleString())).toBeInTheDocument();
+		});
 	});
 
 	it('handles large dataset with no edges gracefully', () => {

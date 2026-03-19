@@ -72,9 +72,9 @@ export const load: PageServerLoad = async () => {
 		const names: Record<string, string> = { healthChecks: 'Health Checks', taskScanning: 'Task Scanning', agentSpawning: 'Agent Spawning', reviewCycle: 'Review Cycle', memorySync: 'Memory Sync' };
 		heartbeat = {
 			enabled: storedRaw.enabled !== false,
-			phases: Object.entries(names).map(([key, name]) => ({
+			phases: Object.keys(p).map((key) => ({
 				id: key.replace(/([A-Z])/g, '-$1').toLowerCase(),
-				name,
+				name: names[key] ?? key.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase()),
 				enabled: p[key] !== false,
 				intervalSeconds: Math.round((iv[key] ?? 60000) / 1000)
 			}))

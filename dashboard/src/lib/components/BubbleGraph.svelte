@@ -103,7 +103,7 @@
 
 	// Single-pass: batch all per-node computations into one derived (uses RAF-batched data)
 	let computedNodes = $derived.by((): ComputedNode[] => {
-		const uniqueNodes = batchedNodes;
+		const uniqueNodes = batchedNodes.slice(); // plain array copy — avoids per-element proxy subscriptions in Svelte 5
 		const total = uniqueNodes.length;
 		if (total === 0) return [];
 		const cols = Math.ceil(Math.sqrt(total));

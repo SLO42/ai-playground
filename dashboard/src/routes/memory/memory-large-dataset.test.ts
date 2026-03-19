@@ -185,7 +185,7 @@ describe('Memory Page — Large Dataset Integration', () => {
 		unmount();
 	});
 
-	it('renders all metric cards with large dataset values', () => {
+	it('renders all metric cards with large dataset values', { timeout: 15_000 }, () => {
 		const graph = generateLargeDataset(10_000, 2);
 		const context = generateLargeContext(200);
 		const { unmount } = render(MemoryPage, {

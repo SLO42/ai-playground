@@ -67,7 +67,7 @@ function parseHeartbeatConfig(storedRaw: Record<string, unknown> | null): Heartb
 		};
 	}
 
-	// Object format from shared.ts — phases is Record<string, boolean>, intervals in milliseconds
+	// Object format from shared.ts — phases is Record<string, boolean>, intervals stored in ms (see shared.ts DEFAULT_CONFIG)
 	if (storedRaw.phases && typeof storedRaw.phases === 'object') {
 		const p = storedRaw.phases as Record<string, boolean>;
 		const iv = (storedRaw.intervals ?? {}) as Record<string, number>;

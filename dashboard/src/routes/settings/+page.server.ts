@@ -45,9 +45,27 @@ const DEFAULT_INTERVAL_MS = 60_000;
 function parseHeartbeatConfig(storedRaw: Record<string, unknown> | null): HeartbeatConfig {
 	if (!storedRaw) return DEFAULT_HEARTBEAT;
 
-	// Already in array/UI format
+	// Already in array/UI format — validate each phase has required fields
 	if (Array.isArray(storedRaw.phases)) {
-		return storedRaw as unknown as HeartbeatConfig;
+		const rawPhases = storedRaw.phases as Record<string, unknown>[];
+		const validPhases: HeartbeatPhase[] = rawPhases
+			.filter((p): p is Record<string, unknown> =>
+				p !== null && typeof p === 'object' &&
+				typeof p.id === 'string' &&
+				typeof p.name === 'string' &&
+				typeof p.enabled === 'boolean' &&
+				typeof p.intervalSeconds === 'number'
+			)
+			.map((p) => ({
+				id: p.id as string,
+				name: p.name as string,
+				enabled: p.enabled as boolean,
+				intervalSeconds: p.intervalSeconds as number
+			}));
+		return {
+			enabled: typeof storedRaw.enabled === 'boolean' ? storedRaw.enabled : true,
+			phases: validPhases.length > 0 ? validPhases : DEFAULT_HEARTBEAT.phases
+		};
 	}
 
 	// Object format from shared.ts — phases is Record<string, boolean>, intervals in milliseconds

@@ -57,10 +57,10 @@ export const load: PageServerLoad = async ({ parent, params }): Promise<MemoryPa
 	// Load graph state — try project-local first, then global
 	let graph: GraphState | null = null;
 	const projectGraphPath = resolve(projectPath, '.claude-flow/data/graph-state.json');
-	graph = await readJsonFile<GraphState>(projectGraphPath);
+	graph = (await readJsonFile<GraphState>(projectGraphPath)) ?? null;
 	if (!graph) {
 		// Fall back to global graph and filter by project-related nodes
-		graph = await readJsonFile<GraphState>(PATHS.graphState);
+		graph = (await readJsonFile<GraphState>(PATHS.graphState)) ?? null;
 	}
 
 	// Load auto-memory — try project-local first, then filter global

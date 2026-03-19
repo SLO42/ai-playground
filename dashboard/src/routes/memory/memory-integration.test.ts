@@ -175,9 +175,9 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 		expect(screen.getByText('No graph data yet')).toBeInTheDocument();
 		// Context still renders
 		expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
-		expect(screen.getByText('Redis Caching')).toBeInTheDocument();
-		// Auto-memory still renders
-		expect(screen.getByText('JWT with refresh tokens')).toBeInTheDocument();
+		expect(screen.getAllByText('Redis Caching').length).toBeGreaterThanOrEqual(1);
+		// Auto-memory entry count shown in tab badge
+		expect(screen.getAllByText('Entries').length).toBeGreaterThanOrEqual(1);
 	});
 
 	it('handles refresh from undefined graph — graph populates via client-side fetch', async () => {
@@ -366,6 +366,13 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 		await fireEvent.click(screen.getByText('Refresh'));
 
 		await vi.waitFor(() => {
+			// After refresh with autoMemory data, Entries tab should show count
+			expect(screen.getByText('Entries')).toBeInTheDocument();
+		});
+
+		// Switch to Entries tab to see auto-memory entries
+		await fireEvent.click(screen.getAllByText('Entries')[0]);
+		await vi.waitFor(() => {
 			expect(screen.getByText('JWT with refresh tokens')).toBeInTheDocument();
 			expect(screen.getByText('patterns')).toBeInTheDocument();
 		});
@@ -399,8 +406,13 @@ describe('Memory Page — Integration (API fetch → graph display)', () => {
 		await vi.waitFor(() => {
 			expect(screen.queryByText('No graph data yet')).not.toBeInTheDocument();
 			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
-			expect(screen.getByText('Redis Caching')).toBeInTheDocument();
+			expect(screen.getAllByText('Redis Caching').length).toBeGreaterThanOrEqual(1);
 			expect(screen.getByText('Database Connection Pool')).toBeInTheDocument();
+		});
+
+		// Switch to Entries tab to verify auto-memory
+		await fireEvent.click(screen.getAllByText('Entries')[0]);
+		await vi.waitFor(() => {
 			expect(screen.getByText('JWT with refresh tokens')).toBeInTheDocument();
 		});
 	});
@@ -447,8 +459,9 @@ describe('Memory Page — Integration (missing graph data renders fallback)', ()
 		expect(screen.getByText('No graph data yet')).toBeInTheDocument();
 		// Other sections still render correctly
 		expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
-		expect(screen.getByText('JWT with refresh tokens')).toBeInTheDocument();
 		expect(screen.getByText('agentdb')).toBeInTheDocument();
+		// Auto-memory entries are in the Entries tab
+		expect(screen.getByText('Entries')).toBeInTheDocument();
 	});
 
 	it('does not throw when graph is undefined and context has data', () => {
@@ -570,7 +583,6 @@ describe('Memory Page — Client-side graph refresh', () => {
 		await vi.waitFor(() => {
 			// Both context and graph data should appear after refresh
 			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
-			expect(screen.getByText('JWT with refresh tokens')).toBeInTheDocument();
 			// Graph empty state should be gone
 			expect(screen.queryByText('No graph data yet')).not.toBeInTheDocument();
 		});
@@ -856,8 +868,8 @@ describe('Memory Page — Integration (empty API dataset → empty-state via cli
 			})
 		);
 
-		// Click Sync Sources (the action available in empty state)
-		await fireEvent.click(screen.getByText('Sync Sources'));
+		// Click Sync Sources (the action available in empty state — header always has one)
+		await fireEvent.click(screen.getAllByText('Sync Sources')[0]);
 
 		await vi.waitFor(() => {
 			// Empty state should persist — no crash, no stale data
@@ -899,14 +911,19 @@ describe('Memory Page — Integration (empty API dataset → empty-state via cli
 			})
 		);
 
-		await fireEvent.click(screen.getByText('Sync Sources'));
+		await fireEvent.click(screen.getAllByText('Sync Sources')[0]);
 
 		await vi.waitFor(() => {
 			// Empty state should be gone
 			expect(screen.queryByText('No memory data yet')).not.toBeInTheDocument();
 			// Populated data renders
 			expect(screen.getByText('JWT Authentication')).toBeInTheDocument();
-			expect(screen.getByText('Redis Caching')).toBeInTheDocument();
+			expect(screen.getAllByText('Redis Caching').length).toBeGreaterThanOrEqual(1);
+		});
+
+		// Switch to Entries tab to verify auto-memory
+		await fireEvent.click(screen.getAllByText('Entries')[0]);
+		await vi.waitFor(() => {
 			expect(screen.getByText('JWT with refresh tokens')).toBeInTheDocument();
 		});
 	});
@@ -1275,11 +1292,8 @@ describe('Memory Page — Large dataset (~10k nodes)', () => {
 	});
 
 	it('handles refresh replacing small dataset with large dataset', async () => {
-		vi.useFakeTimers();
 		const smallData = makePageData({ graph: makeGraphData(), context: makeContextData() });
 		render(MemoryPage, { props: { data: smallData } });
-
-		await vi.advanceTimersByTimeAsync(0);
 
 		// Refresh returns a large dataset
 		const largeGraph = makeLargeGraphData();
@@ -1292,11 +1306,11 @@ describe('Memory Page — Large dataset (~10k nodes)', () => {
 		);
 
 		await fireEvent.click(screen.getByText('Refresh'));
-		await vi.advanceTimersByTimeAsync(0);
+		// Allow async fetch + state updates to settle
+		await new Promise((r) => setTimeout(r, 50));
 
 		// Should still be rendering without crash — node count should update
 		expect(screen.getByText(NODE_COUNT.toLocaleString())).toBeInTheDocument();
-		vi.useRealTimers();
 	});
 
 	it('handles large dataset with no edges gracefully', () => {

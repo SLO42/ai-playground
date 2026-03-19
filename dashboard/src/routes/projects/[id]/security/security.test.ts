@@ -1,99 +1,144 @@
 // @vitest-environment node
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-vi.mock('$lib/server/feature-flags.js', () => ({
-	getFeatureFlags: vi.fn()
+vi.mock('$lib/server/file-reader.js', () => ({
+	readJsonFile: vi.fn()
 }));
 
-import { load } from './+page.server.js';
-import { getFeatureFlags } from '$lib/server/feature-flags.js';
+vi.mock('$lib/server/yaml-parser.js', () => ({
+	readYamlFile: vi.fn()
+}));
 
-const mockedFlags = vi.mocked(getFeatureFlags);
-const mockFetch = vi.fn();
+vi.mock('$lib/server/project-scanner.js', () => ({
+	scanAllProjects: vi.fn()
+}));
+
+vi.mock('$lib/server/constants.js', () => ({
+	PATHS: {
+		playgroundRegistry: '/mock/registry.json',
+		root: '/mock/root',
+		auditStatus: '/mock/audit-status.json',
+		scanFindings: '/mock/scan-findings.json',
+		networkPolicy: '/mock/network-policy.yaml'
+	}
+}));
+
+import { readJsonFile } from '$lib/server/file-reader.js';
+import { readYamlFile } from '$lib/server/yaml-parser.js';
+import { scanAllProjects } from '$lib/server/project-scanner.js';
+import { load } from './+page.server.js';
+
+const mockedReadJson = vi.mocked(readJsonFile);
+const mockedReadYaml = vi.mocked(readYamlFile);
+const mockedScan = vi.mocked(scanAllProjects);
 
 function callLoad(paramsOverride?: Record<string, string>) {
 	return load({
-		params: { id: 'test-proj', ...paramsOverride },
-		fetch: mockFetch
+		params: { id: 'test-proj', ...paramsOverride }
 	} as any);
 }
 
-const fullSecurityResponse = {
-	summary: { lastScan: '2026-03-01T12:00:00Z', vulnerabilities: 2, critical: 1, score: '4/5', status: 'PASS' },
-	vulnerabilities: [
-		{ package: 'xml-parser', severity: 'critical', cve: 'CVE-2026-9999', current: 'RCE in parser', fixed: '2026-03-01T12:00:00Z' },
-		{ package: 'lodash', severity: 'low', cve: 'CVE-2026-0001', current: 'Info leak', fixed: '2026-03-01T12:00:00Z' }
-	],
-	policies: [
-		{ name: 'Default Firewall Action', value: 'deny', pass: true },
-		{ name: 'Input Validation', value: 'Enabled', pass: true },
-		{ name: 'Policy Version', value: '1.2.0', pass: true }
-	],
-	permissions: [{ path: '/etc/app/config.yaml', perms: 'applied', pass: true }],
-	auditLog: [{ time: '2026-03-01T10:00:00Z', message: 'CVE-2026-1234: Updated lodash to 4.17.21', result: 'PASS' }]
+const sampleAudit = {
+	lastScan: '2026-03-01T12:00:00Z',
+	vulnerabilities: 2,
+	critical: 1,
+	score: '4/5',
+	status: 'PASS'
+};
+
+const sampleScanFile = {
+	scannedAt: '2026-03-01T12:00:00Z',
+	findings: [
+		{ severity: 'critical', issue: 'RCE', detail: 'Remote code execution', component: 'xml-parser' },
+		{ severity: 'low', issue: 'Info leak', detail: 'Information disclosure' }
+	]
+};
+
+const samplePolicy = {
+	name: 'Default Policy',
+	rules: [{ action: 'deny', source: '*' }]
 };
 
 describe('/projects/[id]/security load', () => {
 	beforeEach(() => {
 		vi.clearAllMocks();
-		mockedFlags.mockReturnValue({ previewNewPages: true } as any);
-		mockFetch.mockResolvedValue({
-			ok: true,
-			json: () => Promise.resolve(fullSecurityResponse)
+		mockedScan.mockResolvedValue([
+			{ id: 'test-proj', name: 'Test Project', path: '/tmp/test-proj' }
+		] as any);
+		// Default: project-specific files not found, use global
+		mockedReadJson.mockImplementation(async (path: any) => {
+			const p = String(path);
+			if (p.includes('test-proj')) return null; // project-specific not found
+			if (p.includes('audit')) return sampleAudit;
+			if (p.includes('scan') || p.includes('findings')) return sampleScanFile;
+			return null;
 		});
-	});
-
-	describe('feature flag gating', () => {
-		it('throws 404 when previewNewPages is false', async () => {
-			mockedFlags.mockReturnValue({ previewNewPages: false } as any);
-			await expect(callLoad()).rejects.toThrow();
+		mockedReadYaml.mockImplementation(async (path: any) => {
+			const p = String(path);
+			if (p.includes('test-proj')) return null;
+			return samplePolicy;
 		});
 	});
 
 	describe('typical scenarios', () => {
-		it('returns security data from API when previewNewPages is true', async () => {
+		it('returns security data from files', async () => {
 			const result = await callLoad();
-			const securityData = await result.security;
 
-			expect(securityData.summary).toEqual(fullSecurityResponse.summary);
-			expect(securityData.vulnerabilities).toEqual(fullSecurityResponse.vulnerabilities);
-			expect(securityData.policies).toEqual(fullSecurityResponse.policies);
-			expect(securityData.permissions).toEqual(fullSecurityResponse.permissions);
-			expect(securityData.auditLog).toEqual(fullSecurityResponse.auditLog);
-			expect(securityData.loadError).toBeNull();
+			expect(result.audit).toEqual(sampleAudit);
+			expect(result.policy).toEqual(samplePolicy);
+			expect(result.scanFindings).toHaveLength(2);
+			expect(result.scanFindings[0].severity).toBe('critical');
+			expect(result.scanFindings[0].issue).toBe('RCE');
+			expect(result.scanFindings[0].detected).toBe('2026-03-01T12:00:00Z');
+		});
+
+		it('returns projectPath', async () => {
+			const result = await callLoad();
+
+			expect(result.projectPath).toBeDefined();
+		});
+
+		it('prefers project-specific audit over global', async () => {
+			const projectAudit = { ...sampleAudit, score: '5/5' };
+			mockedReadJson.mockImplementation(async (path: any) => {
+				const p = String(path);
+				if (p.includes('test-proj') && p.includes('audit')) return projectAudit;
+				if (p.includes('audit')) return sampleAudit;
+				if (p.includes('scan') || p.includes('findings')) return sampleScanFile;
+				return null;
+			});
+
+			const result = await callLoad();
+			expect(result.audit).toEqual(projectAudit);
 		});
 	});
 
 	describe('failure scenarios', () => {
-		it('returns error state when fetch fails', async () => {
-			mockFetch.mockRejectedValue(new Error('Network failure'));
-			const result = await callLoad();
-			const securityData = await result.security;
+		it('returns null audit when no audit files exist', async () => {
+			mockedReadJson.mockResolvedValue(null);
+			mockedReadYaml.mockResolvedValue(null);
 
-			expect(securityData.loadError).toBe('Network failure');
-			expect(securityData.summary.status).toBe('ERROR');
-			expect(securityData.vulnerabilities).toEqual([]);
+			const result = await callLoad();
+
+			expect(result.audit).toBeNull();
+			expect(result.scanFindings).toEqual([]);
+			expect(result.policy).toBeNull();
 		});
 
-		it('returns error state when API returns non-ok', async () => {
-			mockFetch.mockResolvedValue({
-				ok: false,
-				status: 500,
-				json: () => Promise.resolve({ error: 'Internal error' })
-			});
-			const result = await callLoad();
-			const securityData = await result.security;
+		it('handles missing findings gracefully', async () => {
+			mockedReadJson.mockResolvedValue(null);
+			mockedReadYaml.mockResolvedValue(null);
 
-			expect(securityData.loadError).toBeTruthy();
-			expect(securityData.summary.status).toBe('ERROR');
+			const result = await callLoad();
+
+			expect(result.scanFindings).toEqual([]);
 		});
 
-		it('returns generic message for non-Error throws', async () => {
-			mockFetch.mockRejectedValue('string error');
-			const result = await callLoad();
-			const securityData = await result.security;
+		it('falls back to root path when project not found', async () => {
+			mockedScan.mockResolvedValue([] as any);
 
-			expect(securityData.loadError).toBe('Failed to load security data');
+			const result = await callLoad();
+			expect(result.projectPath).toBeDefined();
 		});
 	});
 });

@@ -139,14 +139,17 @@ async function handleSave(params: { id: string }, request: Request) {
 		return json({ error: 'Invalid JSON' }, { status: 400 });
 	}
 
+	// Merge with existing settings so callers can send partial updates
+	const existing = await readSettings(project.path);
+
 	// Normalize: frontend may wrap general fields in a `general` envelope
 	const general = body.general as Record<string, unknown> | undefined;
 	const normalized: Record<string, unknown> = {
-		name: general?.name ?? body.name,
-		description: general?.description ?? body.description,
-		branch: general?.branch ?? body.branch,
-		agentConfig: body.agentConfig,
-		build: body.build
+		name: general?.name ?? body.name ?? existing.name,
+		description: general?.description ?? body.description ?? existing.description,
+		branch: general?.branch ?? body.branch ?? existing.branch,
+		agentConfig: body.agentConfig ?? existing.agentConfig,
+		build: body.build ?? existing.build
 	};
 
 	// Validate shape, required fields, and value ranges

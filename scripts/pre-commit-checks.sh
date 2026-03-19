@@ -12,23 +12,20 @@ if [ -z "$STAGED_FILES" ]; then
   exit 0
 fi
 
+# Match conflict markers at start of line: <<<<<<< ======= >>>>>>> |||||||
 CONFLICT_PATTERN='^(<{7}|>{7}|={7}|\|{7})'
 FOUND=0
 
 for file in $STAGED_FILES; do
-  # Skip binary files
-  if file --brief "$file" 2>/dev/null | grep -q "binary"; then
-    continue
-  fi
-
-  if git diff --cached -- "$file" | grep -qE "$CONFLICT_PATTERN"; then
+  # Check the staged version of the file (not the working copy)
+  if git show ":$file" 2>/dev/null | grep -qE "$CONFLICT_PATTERN"; then
     if [ "$FOUND" -eq 0 ]; then
       echo "ERROR: Unresolved conflict markers found in staged files:"
       echo ""
     fi
-    # Show the exact lines
-    git diff --cached -- "$file" | grep -nE "$CONFLICT_PATTERN" | while read -r line; do
-      echo "  $file: $line"
+    # Show the exact lines with line numbers
+    git show ":$file" | grep -nE "$CONFLICT_PATTERN" | while read -r line; do
+      echo "  $file:$line"
     done
     FOUND=1
   fi

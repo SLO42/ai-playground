@@ -7,16 +7,18 @@
 	let syncing = $state(false);
 	let reviewing = $state(false);
 	let openingDiscussion = $state(false);
+	let viewScale = $state<'macro' | 'micro' | 'memory'>('macro');
+
+	// Memory filters
 	let memoryFilter = $state<string>('all');
 	let searchQuery = $state('');
 	let showArchived = $state(false);
-	let viewScale = $state<'macro' | 'micro' | 'memory'>('macro');
 
-	// Sprint creation
+	// Sprint form
 	let showSprintForm = $state(false);
 	let sprintName = $state('');
 	let sprintGoal = $state('');
-	let sprintMilestone = $state('');
+	let sprintPhase = $state('');
 	let sprintActivate = $state(true);
 	let creatingSprint = $state(false);
 
@@ -33,34 +35,13 @@
 		data.plan?.sprints.find(s => s.id === data.plan?.activeSprint) ?? null
 	);
 
-	let macroProgress = $derived(() => {
-		if (!data.plan) return { completed: 0, total: 0, pct: 0 };
-		const total = data.plan.roadmap.length;
-		const completed = data.plan.roadmap.filter(m => m.status === 'completed').length;
-		return { completed, total, pct: total > 0 ? Math.round((completed / total) * 100) : 0 };
-	});
-
-	let sprintProgress = $derived(() => {
-		if (!data.plan) return { completed: 0, total: 0, pct: 0 };
-		const total = data.plan.sprints.length;
-		const completed = data.plan.sprints.filter(s => s.status === 'completed').length;
-		return { completed, total, pct: total > 0 ? Math.round((completed / total) * 100) : 0 };
-	});
-
-	const statusColors: Record<string, string> = {
-		planned: 'text-text-secondary',
-		active: 'text-accent-blue',
-		completed: 'text-accent-green',
-		blocked: 'text-accent-red'
-	};
-
 	const statusIcons: Record<string, string> = {
-		planned: '⬜',
-		active: '🔵',
-		completed: '✅',
-		blocked: '🔴'
+		planned: '⬜', active: '🔵', completed: '✅', blocked: '🔴'
 	};
-
+	const statusColors: Record<string, string> = {
+		planned: 'text-text-secondary', active: 'text-accent-blue',
+		completed: 'text-accent-green', blocked: 'text-accent-red'
+	};
 	const typeColors: Record<string, string> = {
 		observation: 'bg-accent-blue/10 text-accent-blue',
 		learning: 'bg-accent-green/10 text-accent-green',
@@ -69,134 +50,75 @@
 		'decision-context': 'bg-accent-yellow/10 text-accent-yellow'
 	};
 
-	async function bootstrap() {
-		bootstrapping = true;
-		try {
-			const res = await fetch(`/api/projects/${data.projectId}/pm`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ action: 'bootstrap' })
-			});
-			if (res.ok) window.location.reload();
-		} finally {
-			bootstrapping = false;
-		}
-	}
-
-	async function syncGitHub() {
-		syncing = true;
-		try {
-			await fetch(`/api/projects/${data.projectId}/pm`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ action: 'sync-github' })
-			});
-		} finally {
-			syncing = false;
-		}
-	}
-
-	async function openDiscussion() {
-		openingDiscussion = true;
-		try {
-			const res = await fetch(`/api/projects/${data.projectId}/pm`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ action: 'start-discussion' })
-			});
-			if (res.ok) {
-				const { sessionId } = await res.json();
-				window.location.href = `/chat?session=${sessionId}`;
-			}
-		} finally {
-			openingDiscussion = false;
-		}
-	}
-
-	async function runReview() {
-		reviewing = true;
-		try {
-			const res = await fetch(`/api/projects/${data.projectId}/pm`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ action: 'review' })
-			});
-			if (res.ok) window.location.reload();
-		} finally {
-			reviewing = false;
-		}
-	}
-
-	async function createSprint() {
-		if (!sprintName || !sprintGoal || !sprintMilestone) return;
-		creatingSprint = true;
-		try {
-			const res = await fetch(`/api/projects/${data.projectId}/pm`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({
-					action: 'create-sprint',
-					name: sprintName,
-					goal: sprintGoal,
-					milestoneId: sprintMilestone,
-					activate: sprintActivate
-				})
-			});
-			if (res.ok) window.location.reload();
-		} finally {
-			creatingSprint = false;
-		}
-	}
-
-	async function completeSprint(sprintId: string) {
-		const retro = prompt('Sprint retrospective (optional):');
+	async function pmAction(action: string, extra: Record<string, unknown> = {}) {
 		const res = await fetch(`/api/projects/${data.projectId}/pm`, {
 			method: 'POST',
 			headers: { 'Content-Type': 'application/json' },
-			body: JSON.stringify({ action: 'complete-sprint', sprintId, retrospective: retro })
+			body: JSON.stringify({ action, ...extra })
 		});
-		if (res.ok) window.location.reload();
+		return res;
+	}
+
+	async function bootstrap() {
+		bootstrapping = true;
+		try { const r = await pmAction('bootstrap'); if (r.ok) window.location.reload(); }
+		finally { bootstrapping = false; }
+	}
+	async function syncGitHub() {
+		syncing = true;
+		try { await pmAction('sync-github'); } finally { syncing = false; }
+	}
+	async function openDiscussion() {
+		openingDiscussion = true;
+		try {
+			const r = await pmAction('start-discussion');
+			if (r.ok) { const { sessionId } = await r.json(); window.location.href = `/chat?session=${sessionId}`; }
+		} finally { openingDiscussion = false; }
+	}
+	async function runReview() {
+		reviewing = true;
+		try { const r = await pmAction('review'); if (r.ok) window.location.reload(); }
+		finally { reviewing = false; }
+	}
+	async function createSprint() {
+		if (!sprintName || !sprintGoal || !sprintPhase) return;
+		creatingSprint = true;
+		try {
+			const r = await pmAction('create-sprint', { name: sprintName, goal: sprintGoal, phaseId: sprintPhase, activate: sprintActivate });
+			if (r.ok) window.location.reload();
+		} finally { creatingSprint = false; }
+	}
+	async function completeSprint(sprintId: string) {
+		const retro = prompt('Sprint retrospective (optional):');
+		const r = await pmAction('complete-sprint', { sprintId, retrospective: retro });
+		if (r.ok) window.location.reload();
 	}
 
 	function formatDate(iso: string): string {
 		const d = new Date(iso);
-		const now = new Date();
-		const diff = now.getTime() - d.getTime();
+		const diff = Date.now() - d.getTime();
 		if (diff < 60000) return 'just now';
 		if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`;
 		if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`;
 		return d.toLocaleDateString();
 	}
-
-	function confidenceBar(conf: number): string {
-		if (conf >= 0.8) return 'bg-accent-green';
-		if (conf >= 0.5) return 'bg-accent-yellow';
-		return 'bg-accent-red';
+	function confBar(c: number): string {
+		return c >= 0.8 ? 'bg-accent-green' : c >= 0.5 ? 'bg-accent-yellow' : 'bg-accent-red';
 	}
 </script>
 
 {#if !data.hasPm}
 	<div class="max-w-lg mx-auto mt-16 text-center">
-		<div class="w-16 h-16 mx-auto mb-4 rounded-2xl bg-accent-green/10 flex items-center justify-center">
-			<span class="text-3xl">📋</span>
-		</div>
+		<div class="w-16 h-16 mx-auto mb-4 rounded-2xl bg-accent-green/10 flex items-center justify-center text-3xl">📋</div>
 		<h2 class="text-xl font-semibold text-text-primary mb-2">Project Manager</h2>
 		<p class="text-sm text-text-secondary mb-6">
-			Bootstrap a PM agent for this project. It will scan the codebase, generate an initial roadmap,
-			and create a discussion where you can refine the plan together — even while the project is idle.
+			Bootstrap a PM for this project. It scans the codebase and builds an initial strategic plan —
+			purpose, releases, phases, features, and your role. Then you refine it together.
 		</p>
-		<div class="flex flex-col gap-3 items-center">
-			<button
-				onclick={async () => { await bootstrap(); }}
-				disabled={bootstrapping}
-				class="px-6 py-2.5 rounded-lg bg-accent-green text-black font-medium text-sm hover:bg-accent-green/90 transition-colors disabled:opacity-50"
-			>
-				{bootstrapping ? 'Scanning project...' : 'Bootstrap & Open Roadmap'}
-			</button>
-			<p class="text-xs text-text-secondary">
-				Creates the plan, then you build out the roadmap through a conversation.
-			</p>
-		</div>
+		<button onclick={bootstrap} disabled={bootstrapping}
+			class="px-6 py-2.5 rounded-lg bg-accent-green text-black font-medium text-sm hover:bg-accent-green/90 transition-colors disabled:opacity-50">
+			{bootstrapping ? 'Scanning...' : 'Bootstrap Project Manager'}
+		</button>
 	</div>
 {:else}
 	<div class="space-y-6">
@@ -205,93 +127,41 @@
 			<div>
 				<h2 class="text-lg font-semibold text-text-primary">Project Manager</h2>
 				{#if data.plan}
-					<p class="text-sm text-text-secondary mt-1">
-						Last updated {formatDate(data.plan.lastUpdated)} by {data.plan.updatedBy}
-					</p>
+					<p class="text-sm text-text-secondary mt-1">Updated {formatDate(data.plan.lastUpdated)} by {data.plan.updatedBy}</p>
 				{/if}
 			</div>
 			<div class="flex gap-2">
-				<button
-					onclick={openDiscussion}
-					disabled={openingDiscussion}
-					class="px-3 py-1.5 rounded-md bg-accent-green/10 text-accent-green text-xs font-medium hover:bg-accent-green/20 transition-colors disabled:opacity-50"
-				>
+				<button onclick={openDiscussion} disabled={openingDiscussion}
+					class="px-3 py-1.5 rounded-md bg-accent-green/10 text-accent-green text-xs font-medium hover:bg-accent-green/20 transition-colors disabled:opacity-50">
 					{openingDiscussion ? 'Opening...' : 'Open Discussion'}
 				</button>
-				<button
-					onclick={runReview}
-					disabled={reviewing}
-					class="px-3 py-1.5 rounded-md bg-bg-tertiary text-text-secondary text-xs hover:text-text-primary transition-colors disabled:opacity-50"
-				>
+				<button onclick={runReview} disabled={reviewing}
+					class="px-3 py-1.5 rounded-md bg-bg-tertiary text-text-secondary text-xs hover:text-text-primary transition-colors disabled:opacity-50">
 					{reviewing ? 'Reviewing...' : 'Run Review'}
 				</button>
-				<button
-					onclick={syncGitHub}
-					disabled={syncing}
-					class="px-3 py-1.5 rounded-md bg-bg-tertiary text-text-secondary text-xs hover:text-text-primary transition-colors disabled:opacity-50"
-				>
+				<button onclick={syncGitHub} disabled={syncing}
+					class="px-3 py-1.5 rounded-md bg-bg-tertiary text-text-secondary text-xs hover:text-text-primary transition-colors disabled:opacity-50">
 					{syncing ? 'Syncing...' : 'Sync to GitHub'}
 				</button>
-				<button
-					onclick={bootstrap}
-					disabled={bootstrapping}
-					class="px-3 py-1.5 rounded-md bg-bg-tertiary text-text-secondary text-xs hover:text-text-primary transition-colors disabled:opacity-50"
-				>
+				<button onclick={bootstrap} disabled={bootstrapping}
+					class="px-3 py-1.5 rounded-md bg-bg-tertiary text-text-secondary text-xs hover:text-text-primary transition-colors disabled:opacity-50">
 					Re-scan
 				</button>
 			</div>
 		</div>
 
 		{#if data.plan}
-			<!-- Vision -->
-			<div class="bg-bg-secondary rounded-lg border border-border p-4">
-				<h3 class="text-xs font-medium text-text-secondary uppercase tracking-wider mb-2">Vision</h3>
-				<p class="text-sm text-text-primary">{data.plan.vision}</p>
-			</div>
-
-			<!-- Progress Overview -->
-			<div class="grid grid-cols-3 gap-4">
-				<div class="bg-bg-secondary rounded-lg border border-border p-4 text-center">
-					<p class="text-2xl font-bold text-text-primary font-mono">{macroProgress().pct}%</p>
-					<p class="text-[10px] text-text-secondary uppercase tracking-wider mt-1">Macro Progress</p>
-					<p class="text-xs text-text-secondary">{macroProgress().completed}/{macroProgress().total} phases</p>
-				</div>
-				<div class="bg-bg-secondary rounded-lg border border-border p-4 text-center">
-					<p class="text-2xl font-bold text-text-primary font-mono">{sprintProgress().completed}</p>
-					<p class="text-[10px] text-text-secondary uppercase tracking-wider mt-1">Sprints Done</p>
-					<p class="text-xs text-text-secondary">{sprintProgress().total} total</p>
-				</div>
-				<div class="bg-bg-secondary rounded-lg border {activeSprint ? 'border-accent-blue/30' : 'border-border'} p-4 text-center">
-					{#if activeSprint}
-						<p class="text-sm font-semibold text-accent-blue">{activeSprint.name}</p>
-						<p class="text-[10px] text-text-secondary uppercase tracking-wider mt-1">Active Sprint</p>
-						<p class="text-xs text-text-secondary">{activeSprint.goal}</p>
-					{:else}
-						<p class="text-sm text-text-secondary">No active sprint</p>
-						<p class="text-[10px] text-text-secondary uppercase tracking-wider mt-1">Sprint Status</p>
-						<button
-							onclick={() => { showSprintForm = true; viewScale = 'micro'; }}
-							class="text-xs text-accent-blue hover:underline mt-1"
-						>
-							Create one
-						</button>
-					{/if}
-				</div>
-			</div>
+			{@const m = data.plan.macro}
 
 			<!-- Scale Tabs -->
 			<div class="flex gap-1 bg-bg-secondary rounded-lg border border-border p-1">
-				{#each [['macro', 'Macro Roadmap'], ['micro', 'Sprints'], ['memory', 'PM Memory']] as [key, label]}
-					<button
-						onclick={() => viewScale = key as typeof viewScale}
+				{#each [['macro', 'Macro Strategy'], ['micro', 'Sprints'], ['memory', 'PM Memory']] as [key, label]}
+					<button onclick={() => viewScale = key as typeof viewScale}
 						class="flex-1 px-3 py-2 rounded-md text-xs font-medium transition-colors
-							{viewScale === key
-								? 'bg-bg-primary text-text-primary shadow-sm'
-								: 'text-text-secondary hover:text-text-primary'}"
-					>
+							{viewScale === key ? 'bg-bg-primary text-text-primary shadow-sm' : 'text-text-secondary hover:text-text-primary'}">
 						{label}
 						{#if key === 'macro'}
-							<span class="ml-1 text-text-secondary">({data.plan.roadmap.length})</span>
+							<span class="ml-1 text-text-secondary">({m.releases.length}R / {m.phases.length}P)</span>
 						{:else if key === 'micro'}
 							<span class="ml-1 text-text-secondary">({data.plan.sprints.length})</span>
 						{:else if key === 'memory' && data.stats}
@@ -304,98 +174,166 @@
 			<!-- ═══ MACRO VIEW ═══ -->
 			{#if viewScale === 'macro'}
 				<div class="space-y-4">
-					<!-- Roadmap -->
+					<!-- Identity Card -->
+					<div class="bg-bg-secondary rounded-lg border border-border p-5">
+						<div class="grid grid-cols-2 gap-6">
+							<div>
+								<h3 class="text-[10px] font-medium text-text-secondary uppercase tracking-wider mb-1">Purpose</h3>
+								<p class="text-sm text-text-primary leading-relaxed">{m.purpose}</p>
+							</div>
+							<div>
+								<h3 class="text-[10px] font-medium text-text-secondary uppercase tracking-wider mb-1">Long-term Vision</h3>
+								<p class="text-sm text-text-primary leading-relaxed">{m.longTermVision}</p>
+							</div>
+						</div>
+						<div class="grid grid-cols-2 gap-6 mt-4 pt-4 border-t border-border">
+							<div>
+								<h3 class="text-[10px] font-medium text-text-secondary uppercase tracking-wider mb-1">Your Role</h3>
+								<p class="text-sm font-medium text-text-primary">{m.role.title}</p>
+								{#each m.role.responsibilities as r}
+									<p class="text-xs text-text-secondary">• {r}</p>
+								{/each}
+							</div>
+							<div>
+								<h3 class="text-[10px] font-medium text-text-secondary uppercase tracking-wider mb-1">Key Highlights</h3>
+								{#if m.keyHighlights.length > 0}
+									{#each m.keyHighlights as h}
+										<p class="text-xs text-text-primary">• {h}</p>
+									{/each}
+								{:else}
+									<p class="text-xs text-text-secondary italic">Define in discussion</p>
+								{/if}
+							</div>
+						</div>
+					</div>
+
+					<!-- Release Roadmap -->
 					<div class="bg-bg-secondary rounded-lg border border-border p-4">
-						<h3 class="text-xs font-medium text-text-secondary uppercase tracking-wider mb-3">
-							Strategic Phases ({data.plan.roadmap.length})
+						<h3 class="text-[10px] font-medium text-text-secondary uppercase tracking-wider mb-3">
+							Release Roadmap ({m.releases.length} release{m.releases.length !== 1 ? 's' : ''})
 						</h3>
-						<div class="space-y-3">
-							{#each data.plan.roadmap as milestone}
-								{@const childSprints = data.plan.sprints.filter(s => s.milestoneId === milestone.id)}
-								<div class="bg-bg-primary rounded-md border border-border p-3">
-									<div class="flex items-start justify-between">
+						<div class="space-y-4">
+							{#each m.releases as release}
+								{@const relPhases = m.phases.filter(p => p.releaseId === release.id)}
+								{@const donePhases = relPhases.filter(p => p.status === 'completed').length}
+								<div class="bg-bg-primary rounded-md border border-border p-4">
+									<div class="flex items-center justify-between mb-2">
 										<div class="flex items-center gap-2">
-											<span class="text-sm">{statusIcons[milestone.status]}</span>
-											<h4 class="text-sm font-medium {statusColors[milestone.status]}">{milestone.name}</h4>
+											<span class="text-sm">{statusIcons[release.status]}</span>
+											<span class="text-xs font-mono font-bold text-accent-cyan">{release.version}</span>
+											<h4 class="text-sm font-medium {statusColors[release.status]}">{release.name}</h4>
 										</div>
 										<div class="flex items-center gap-2">
-											{#if childSprints.length > 0}
-												<span class="text-[10px] px-1.5 py-0.5 rounded bg-bg-tertiary text-text-secondary font-mono">
-													{childSprints.filter(s => s.status === 'completed').length}/{childSprints.length} sprints
-												</span>
-											{/if}
-											{#if milestone.targetDate}
-												<span class="text-[10px] text-text-secondary font-mono">{milestone.targetDate}</span>
+											<span class="text-[10px] px-1.5 py-0.5 rounded bg-bg-tertiary text-text-secondary font-mono">
+												{donePhases}/{relPhases.length} phases
+											</span>
+											{#if release.targetDate}
+												<span class="text-[10px] text-text-secondary font-mono">{release.targetDate}</span>
 											{/if}
 										</div>
 									</div>
-									<div class="mt-2 pl-6">
-										{#each milestone.goals as goal}
-											<p class="text-xs text-text-secondary">• {goal}</p>
-										{/each}
-									</div>
-									<!-- Child sprints preview -->
-									{#if childSprints.length > 0}
-										<div class="mt-2 pl-6 border-l-2 border-border ml-2">
-											{#each childSprints as sprint}
-												<div class="flex items-center gap-2 py-0.5 pl-2">
-													<span class="text-[10px]">{statusIcons[sprint.status]}</span>
-													<span class="text-[10px] text-text-secondary">{sprint.name}</span>
-													<span class="text-[10px] text-text-secondary/50">— {sprint.goal}</span>
-												</div>
+
+									<!-- Feature Complete -->
+									{#if release.featureComplete.length > 0 && release.featureComplete[0] !== 'To be defined in PM discussion'}
+										<div class="mb-3 pl-6">
+											<p class="text-[10px] text-text-secondary uppercase tracking-wider mb-1">Feature Complete =</p>
+											{#each release.featureComplete as fc}
+												<p class="text-xs text-text-primary">☐ {fc}</p>
 											{/each}
 										</div>
 									{/if}
-									{#if milestone.acceptanceCriteria.length > 0 && milestone.acceptanceCriteria[0] !== 'To be defined in PM discussion'}
-										<details class="mt-2 pl-6">
-											<summary class="text-[10px] text-text-secondary cursor-pointer hover:text-text-primary">
-												Acceptance criteria ({milestone.acceptanceCriteria.length})
-											</summary>
-											<div class="mt-1 space-y-0.5">
-												{#each milestone.acceptanceCriteria as criterion}
-													<p class="text-xs text-text-secondary">☐ {criterion}</p>
+
+									<!-- Phases -->
+									<div class="space-y-2 pl-6">
+										{#each relPhases as phase}
+											{@const childSprints = data.plan.sprints.filter(s => s.phaseId === phase.id)}
+											<div class="border-l-2 {phase.status === 'active' ? 'border-accent-blue' : phase.status === 'completed' ? 'border-accent-green' : 'border-border'} pl-3 py-1">
+												<div class="flex items-center justify-between">
+													<div class="flex items-center gap-2">
+														<span class="text-xs">{statusIcons[phase.status]}</span>
+														<span class="text-xs font-medium {statusColors[phase.status]}">{phase.name}</span>
+													</div>
+													{#if childSprints.length > 0}
+														<span class="text-[10px] text-text-secondary font-mono">
+															{childSprints.filter(s => s.status === 'completed').length}/{childSprints.length} sprints
+														</span>
+													{/if}
+												</div>
+												{#each phase.goals as goal}
+													<p class="text-[10px] text-text-secondary ml-5">{goal}</p>
 												{/each}
 											</div>
-										</details>
-									{/if}
+										{/each}
+									</div>
 								</div>
 							{/each}
 						</div>
 					</div>
 
-					<!-- Definition of Done -->
-					<div class="bg-bg-secondary rounded-lg border border-border p-4">
-						<h3 class="text-xs font-medium text-text-secondary uppercase tracking-wider mb-2">Definition of Done</h3>
-						<div class="space-y-1">
-							{#each data.plan.definitionOfDone as criterion}
-								<p class="text-sm text-text-primary">☐ {criterion}</p>
-							{/each}
-						</div>
-					</div>
-
-					<!-- Decisions -->
-					{#if data.plan.decisions.length > 0}
+					<!-- Feature Map -->
+					{#if m.featureMap.length > 0}
 						<div class="bg-bg-secondary rounded-lg border border-border p-4">
-							<h3 class="text-xs font-medium text-text-secondary uppercase tracking-wider mb-3">
-								Architectural Decisions ({data.plan.decisions.length})
-							</h3>
-							<div class="space-y-3">
-								{#each data.plan.decisions as decision}
-									<div class="bg-bg-primary rounded-md border border-border p-3">
-										<div class="flex items-center justify-between">
-											<h4 class="text-sm font-medium text-text-primary">{decision.title}</h4>
-											<span class="text-[10px] text-text-secondary font-mono">{decision.date}</span>
+							<h3 class="text-[10px] font-medium text-text-secondary uppercase tracking-wider mb-3">Feature Map</h3>
+							<div class="grid grid-cols-2 gap-2">
+								{#each m.featureMap as feat}
+									{@const rel = m.releases.find(r => r.id === feat.releaseId)}
+									<div class="bg-bg-primary rounded-md border border-border p-2.5">
+										<div class="flex items-center gap-2">
+											<span class="text-[10px] px-1 py-0.5 rounded {feat.status === 'shipped' ? 'bg-accent-green/10 text-accent-green' : feat.status === 'in-progress' ? 'bg-accent-blue/10 text-accent-blue' : 'bg-bg-tertiary text-text-secondary'}">
+												{feat.status}
+											</span>
+											<span class="text-xs font-medium text-text-primary">{feat.name}</span>
 										</div>
-										<p class="text-xs text-text-secondary mt-1">{decision.context}</p>
-										<p class="text-xs text-accent-blue mt-1">→ {decision.decision}</p>
+										<p class="text-[10px] text-text-secondary mt-1">{feat.description}</p>
+										{#if rel}
+											<p class="text-[10px] text-text-secondary mt-0.5 font-mono">{rel.version}</p>
+										{/if}
 									</div>
 								{/each}
 							</div>
 						</div>
 					{/if}
+
+					<!-- Definition of Done + Decisions -->
+					<div class="grid grid-cols-2 gap-4">
+						<div class="bg-bg-secondary rounded-lg border border-border p-4">
+							<h3 class="text-[10px] font-medium text-text-secondary uppercase tracking-wider mb-2">Definition of Done</h3>
+							{#each m.definitionOfDone as d}
+								<p class="text-xs text-text-primary">☐ {d}</p>
+							{/each}
+						</div>
+						<div class="bg-bg-secondary rounded-lg border border-border p-4">
+							<h3 class="text-[10px] font-medium text-text-secondary uppercase tracking-wider mb-2">
+								Decisions ({data.plan.decisions.length})
+							</h3>
+							{#if data.plan.decisions.length > 0}
+								{#each data.plan.decisions.slice(0, 5) as dec}
+									<div class="mb-2">
+										<p class="text-xs font-medium text-text-primary">{dec.title}</p>
+										<p class="text-[10px] text-accent-blue">→ {dec.decision}</p>
+									</div>
+								{/each}
+							{:else}
+								<p class="text-xs text-text-secondary italic">No decisions recorded yet</p>
+							{/if}
+						</div>
+					</div>
+
+					<!-- Risks -->
+					{#if data.risks.length > 0}
+						<div class="bg-bg-secondary rounded-lg border border-accent-red/20 p-4">
+							<h3 class="text-[10px] font-medium text-accent-red uppercase tracking-wider mb-2">Active Risks ({data.risks.length})</h3>
+							{#each data.risks as risk}
+								<div class="flex items-start gap-2 mb-1">
+									<span class="text-accent-red text-xs">⚠</span>
+									<p class="text-xs text-text-primary">{risk.content}</p>
+								</div>
+							{/each}
+						</div>
+					{/if}
 				</div>
 
-			<!-- ═══ MICRO (SPRINTS) VIEW ═══ -->
+			<!-- ═══ MICRO VIEW ═══ -->
 			{:else if viewScale === 'micro'}
 				<div class="space-y-4">
 					<!-- Active Sprint -->
@@ -406,104 +344,75 @@
 									<span class="w-2 h-2 rounded-full bg-accent-blue animate-pulse"></span>
 									<h3 class="text-sm font-semibold text-accent-blue">{activeSprint.name}</h3>
 								</div>
-								<div class="flex items-center gap-2">
-									{#if activeSprint.endDate}
-										<span class="text-[10px] text-text-secondary font-mono">ends {formatDate(activeSprint.endDate)}</span>
-									{/if}
-									<button
-										onclick={() => { if (activeSprint) completeSprint(activeSprint.id); }}
-										class="px-2 py-1 rounded text-[10px] bg-accent-green/10 text-accent-green hover:bg-accent-green/20"
-									>
-										Complete Sprint
-									</button>
-								</div>
+								<button onclick={() => { if (activeSprint) completeSprint(activeSprint.id); }}
+									class="px-2 py-1 rounded text-[10px] bg-accent-green/10 text-accent-green hover:bg-accent-green/20">
+									Complete Sprint
+								</button>
 							</div>
-							<p class="text-xs text-text-secondary mb-2">{activeSprint.goal}</p>
-							{#each data.plan.roadmap.filter(m => m.id === activeSprint?.milestoneId).slice(0, 1) as parentMs}
-								<p class="text-[10px] text-text-secondary">
-									Part of: <span class="text-accent-blue">{parentMs.name}</span>
-								</p>
+							<p class="text-xs text-text-secondary">{activeSprint.goal}</p>
+							{#each (data.plan?.macro.phases ?? []).filter(p => p.id === activeSprint?.phaseId) as parentPhase}
+								{#each (data.plan?.macro.releases ?? []).filter(r => r.id === parentPhase.releaseId) as parentRel}
+									<p class="text-[10px] text-text-secondary mt-1">
+										{parentRel.version} → <span class="text-accent-blue">{parentPhase.name}</span>
+									</p>
+								{/each}
 							{/each}
-							{#if activeSprint.tasks.length > 0}
-								<p class="text-[10px] text-text-secondary mt-1 font-mono">{activeSprint.tasks.length} task(s) linked</p>
-							{:else}
-								<p class="text-[10px] text-text-secondary mt-1">No tasks linked yet — link tasks from the Tasks page</p>
-							{/if}
+							<p class="text-[10px] text-text-secondary mt-1 font-mono">{activeSprint.tasks.length} task(s)</p>
 						</div>
 					{/if}
 
-					<!-- Create Sprint Form -->
+					<!-- Create Sprint -->
 					{#if showSprintForm}
 						<div class="bg-bg-secondary rounded-lg border border-accent-blue/20 p-4">
 							<h3 class="text-xs font-medium text-accent-blue uppercase tracking-wider mb-3">New Sprint</h3>
 							<div class="space-y-3">
-								<div>
-									<label class="block text-[10px] text-text-secondary mb-1">Name</label>
-									<input bind:value={sprintName} placeholder="Sprint 1: Setup" class="w-full px-3 py-1.5 rounded-md bg-bg-primary border border-border text-sm text-text-primary focus:outline-none focus:border-accent-blue" />
-								</div>
-								<div>
-									<label class="block text-[10px] text-text-secondary mb-1">Goal</label>
-									<input bind:value={sprintGoal} placeholder="What this sprint achieves" class="w-full px-3 py-1.5 rounded-md bg-bg-primary border border-border text-sm text-text-primary focus:outline-none focus:border-accent-blue" />
-								</div>
-								<div>
-									<label class="block text-[10px] text-text-secondary mb-1">Parent Milestone</label>
-									<select bind:value={sprintMilestone} class="w-full px-3 py-1.5 rounded-md bg-bg-primary border border-border text-sm text-text-primary focus:outline-none focus:border-accent-blue">
-										<option value="">Select milestone...</option>
-										{#each data.plan.roadmap as ms}
-											<option value={ms.id}>{ms.name}</option>
+								<input bind:value={sprintName} placeholder="Sprint name" class="w-full px-3 py-1.5 rounded-md bg-bg-primary border border-border text-sm text-text-primary focus:outline-none focus:border-accent-blue" />
+								<input bind:value={sprintGoal} placeholder="Sprint goal" class="w-full px-3 py-1.5 rounded-md bg-bg-primary border border-border text-sm text-text-primary focus:outline-none focus:border-accent-blue" />
+								<select bind:value={sprintPhase} class="w-full px-3 py-1.5 rounded-md bg-bg-primary border border-border text-sm text-text-primary focus:outline-none focus:border-accent-blue">
+									<option value="">Select phase...</option>
+									{#each data.plan?.macro.phases ?? [] as phase}
+										{#each (data.plan?.macro.releases ?? []).filter(r => r.id === phase.releaseId) as rel}
+											<option value={phase.id}>{rel.version} → {phase.name}</option>
 										{/each}
-									</select>
-								</div>
+									{/each}
+								</select>
 								<label class="flex items-center gap-2 text-xs text-text-secondary">
-									<input type="checkbox" bind:checked={sprintActivate} class="rounded" />
-									Set as active sprint
+									<input type="checkbox" bind:checked={sprintActivate} class="rounded" /> Set as active sprint
 								</label>
 								<div class="flex gap-2">
-									<button
-										onclick={createSprint}
-										disabled={creatingSprint || !sprintName || !sprintGoal || !sprintMilestone}
-										class="px-4 py-1.5 rounded-md bg-accent-blue text-black text-xs font-medium hover:bg-accent-blue/90 disabled:opacity-50"
-									>
+									<button onclick={createSprint} disabled={creatingSprint || !sprintName || !sprintGoal || !sprintPhase}
+										class="px-4 py-1.5 rounded-md bg-accent-blue text-black text-xs font-medium hover:bg-accent-blue/90 disabled:opacity-50">
 										{creatingSprint ? 'Creating...' : 'Create Sprint'}
 									</button>
-									<button
-										onclick={() => showSprintForm = false}
-										class="px-4 py-1.5 rounded-md bg-bg-tertiary text-text-secondary text-xs hover:text-text-primary"
-									>
-										Cancel
-									</button>
+									<button onclick={() => showSprintForm = false}
+										class="px-4 py-1.5 rounded-md bg-bg-tertiary text-text-secondary text-xs hover:text-text-primary">Cancel</button>
 								</div>
 							</div>
 						</div>
 					{:else}
-						<button
-							onclick={() => showSprintForm = true}
-							class="w-full py-2 rounded-lg border border-dashed border-border text-xs text-text-secondary hover:text-accent-blue hover:border-accent-blue transition-colors"
-						>
+						<button onclick={() => showSprintForm = true}
+							class="w-full py-2 rounded-lg border border-dashed border-border text-xs text-text-secondary hover:text-accent-blue hover:border-accent-blue transition-colors">
 							+ New Sprint
 						</button>
 					{/if}
 
-					<!-- All Sprints -->
+					<!-- Sprint List -->
 					{#if data.plan.sprints.length > 0}
 						<div class="bg-bg-secondary rounded-lg border border-border p-4">
-							<h3 class="text-xs font-medium text-text-secondary uppercase tracking-wider mb-3">
-								All Sprints ({data.plan.sprints.length})
-							</h3>
+							<h3 class="text-[10px] font-medium text-text-secondary uppercase tracking-wider mb-3">All Sprints ({data.plan.sprints.length})</h3>
 							<div class="space-y-2">
 								{#each data.plan.sprints as sprint}
-									{@const parentMs = data.plan.roadmap.find(m => m.id === sprint.milestoneId)}
 									<div class="bg-bg-primary rounded-md border border-border p-3 {sprint.id === data.plan.activeSprint ? 'border-accent-blue/30' : ''}">
 										<div class="flex items-center justify-between">
 											<div class="flex items-center gap-2">
 												<span class="text-sm">{statusIcons[sprint.status]}</span>
 												<h4 class="text-sm font-medium {statusColors[sprint.status]}">{sprint.name}</h4>
 											</div>
-											{#if parentMs}
-												<span class="text-[10px] px-1.5 py-0.5 rounded bg-bg-tertiary text-text-secondary">
-													{parentMs.name}
-												</span>
-											{/if}
+											{#each (data.plan?.macro.phases ?? []).filter(p => p.id === sprint.phaseId) as phase}
+												{#each (data.plan?.macro.releases ?? []).filter(r => r.id === phase.releaseId) as rel}
+													<span class="text-[10px] px-1.5 py-0.5 rounded bg-bg-tertiary text-text-secondary">{rel.version} → {phase.name}</span>
+												{/each}
+											{/each}
 										</div>
 										<p class="text-xs text-text-secondary mt-1 pl-6">{sprint.goal}</p>
 										{#if sprint.retrospective}
@@ -512,12 +421,8 @@
 											</div>
 										{/if}
 										<div class="flex items-center gap-3 mt-1 pl-6 text-[10px] text-text-secondary">
-											{#if sprint.startDate}
-												<span>Started {formatDate(sprint.startDate)}</span>
-											{/if}
-											{#if sprint.completedAt}
-												<span>Completed {formatDate(sprint.completedAt)}</span>
-											{/if}
+											{#if sprint.startDate}<span>Started {formatDate(sprint.startDate)}</span>{/if}
+											{#if sprint.completedAt}<span>Done {formatDate(sprint.completedAt)}</span>{/if}
 											<span class="font-mono">{sprint.tasks.length} task(s)</span>
 										</div>
 									</div>
@@ -526,7 +431,7 @@
 						</div>
 					{:else}
 						<div class="text-center py-8 text-sm text-text-secondary">
-							No sprints yet. Create your first sprint to start breaking the roadmap into actionable chunks.
+							No sprints yet. Create your first sprint to start executing against the macro roadmap.
 						</div>
 					{/if}
 				</div>
@@ -537,31 +442,25 @@
 					<div class="bg-bg-secondary rounded-lg border border-border p-4">
 						<div class="flex items-center justify-between mb-3">
 							<div>
-								<h3 class="text-xs font-medium text-text-secondary uppercase tracking-wider">PM Memory</h3>
+								<h3 class="text-[10px] font-medium text-text-secondary uppercase tracking-wider">PM Memory</h3>
 								{#if data.stats}
 									<p class="text-[10px] text-text-secondary mt-0.5">
 										{data.stats.totalEntries} entries &middot; {data.stats.totalReviews} reviews
-										{#if data.stats.lastReviewedAt}
-											&middot; last reviewed {formatDate(data.stats.lastReviewedAt)}
-										{/if}
+										{#if data.stats.lastReviewedAt}&middot; reviewed {formatDate(data.stats.lastReviewedAt)}{/if}
 									</p>
 								{/if}
 							</div>
 							<label class="flex items-center gap-1.5 text-[10px] text-text-secondary">
-								<input type="checkbox" bind:checked={showArchived} class="rounded" />
-								Show archived
+								<input type="checkbox" bind:checked={showArchived} class="rounded" /> Archived
 							</label>
 						</div>
 
-						<!-- Stats Bar -->
 						{#if data.stats}
 							<div class="grid grid-cols-5 gap-2 mb-3">
 								{#each Object.entries(data.stats.byType) as [type, count]}
-									<button
-										onclick={() => memoryFilter = memoryFilter === type ? 'all' : type}
+									<button onclick={() => memoryFilter = memoryFilter === type ? 'all' : type}
 										class="text-center px-2 py-1.5 rounded-md text-[10px] transition-colors
-											{memoryFilter === type ? 'bg-bg-primary border border-accent-blue' : 'bg-bg-tertiary border border-transparent hover:border-border'}"
-									>
+											{memoryFilter === type ? 'bg-bg-primary border border-accent-blue' : 'bg-bg-tertiary border border-transparent hover:border-border'}">
 										<span class="block text-sm font-mono text-text-primary">{count}</span>
 										<span class="text-text-secondary">{type}</span>
 									</button>
@@ -569,57 +468,40 @@
 							</div>
 						{/if}
 
-						<input
-							type="text"
-							bind:value={searchQuery}
-							placeholder="Search memory..."
-							class="w-full px-3 py-1.5 mb-3 rounded-md bg-bg-primary border border-border text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent-blue"
-						/>
+						<input type="text" bind:value={searchQuery} placeholder="Search memory..."
+							class="w-full px-3 py-1.5 mb-3 rounded-md bg-bg-primary border border-border text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent-blue" />
 
 						<div class="space-y-2 max-h-96 overflow-y-auto">
 							{#each filteredMemory as entry}
 								<div class="bg-bg-primary rounded-md border border-border p-2.5 {entry.archived ? 'opacity-50' : ''}">
 									<div class="flex items-center gap-2 mb-1">
-										<span class="px-1.5 py-0.5 rounded text-[10px] font-medium {typeColors[entry.type]}">
-											{entry.type}
-										</span>
+										<span class="px-1.5 py-0.5 rounded text-[10px] font-medium {typeColors[entry.type]}">{entry.type}</span>
 										<span class="text-[10px] text-text-secondary">{entry.source}</span>
 										<span class="text-[10px] text-text-secondary ml-auto">{formatDate(entry.createdAt)}</span>
 									</div>
 									<p class="text-xs text-text-primary leading-relaxed">{entry.content}</p>
 									<div class="flex items-center gap-2 mt-1.5">
 										<div class="flex-1 h-1 rounded-full bg-bg-tertiary overflow-hidden">
-											<div
-												class="h-full rounded-full {confidenceBar(entry.confidence)}"
-												style="width: {entry.confidence * 100}%"
-											></div>
+											<div class="h-full rounded-full {confBar(entry.confidence)}" style="width: {entry.confidence * 100}%"></div>
 										</div>
 										<span class="text-[10px] text-text-secondary font-mono">{(entry.confidence * 100).toFixed(0)}%</span>
 									</div>
 								</div>
 							{:else}
-								<p class="text-sm text-text-secondary text-center py-4">No memory entries match filters</p>
+								<p class="text-sm text-text-secondary text-center py-4">No entries match</p>
 							{/each}
 						</div>
 					</div>
 
-					<!-- Risks Summary -->
 					{#if data.risks.length > 0}
 						<div class="bg-bg-secondary rounded-lg border border-accent-red/20 p-4">
-							<h3 class="text-xs font-medium text-accent-red uppercase tracking-wider mb-2">
-								Active Risks ({data.risks.length})
-							</h3>
-							<div class="space-y-1.5">
-								{#each data.risks as risk}
-									<div class="flex items-start gap-2">
-										<span class="text-accent-red text-xs mt-0.5">⚠</span>
-										<div class="flex-1 min-w-0">
-											<p class="text-xs text-text-primary">{risk.content}</p>
-											<p class="text-[10px] text-text-secondary">{risk.source} &middot; {(risk.confidence * 100).toFixed(0)}%</p>
-										</div>
-									</div>
-								{/each}
-							</div>
+							<h3 class="text-[10px] font-medium text-accent-red uppercase tracking-wider mb-2">Active Risks ({data.risks.length})</h3>
+							{#each data.risks as risk}
+								<div class="flex items-start gap-2 mb-1">
+									<span class="text-accent-red text-xs">⚠</span>
+									<p class="text-xs text-text-primary">{risk.content}</p>
+								</div>
+							{/each}
 						</div>
 					{/if}
 				</div>

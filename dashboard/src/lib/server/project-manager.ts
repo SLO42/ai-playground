@@ -1,10 +1,18 @@
 /**
  * Project Manager — bootstraps per-project PM agent with SQLite-backed memory.
- * Creates initial plan, opens discussion for user refinement, and maintains
- * roadmap state as the project evolves.
  *
  * Memory: SQLite at .playground/pm-memory.db (via pm-memory-db.ts)
  * Plan: JSON at .playground/project-plan.json
+ *
+ * Plan v3 structure:
+ *   macro.purpose      — what this project IS
+ *   macro.longTermVision — where it's going
+ *   macro.role          — who the user is
+ *   macro.releases[]    — versioned ship points (v0.1, v1.0, v2.0)
+ *   macro.phases[]      — phases within releases
+ *   macro.featureMap[]  — key features mapped to releases
+ *   macro.definitionOfDone — when the whole project is "done"
+ *   sprints[]           — time-boxed execution chunks linked to phases
  */
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { resolve } from 'path';
@@ -13,12 +21,12 @@ import { promisify } from 'util';
 import { detectProjectMeta } from './project-scanner.js';
 import { readJsonFile } from './file-reader.js';
 import * as pmDb from './pm-memory-db.js';
-import type { ProjectPlan, PMBootstrapContext, Milestone, Sprint } from '$lib/types/project-plan.js';
+import type { ProjectPlan, PMBootstrapContext, Phase, Release, MacroPlan, Sprint } from '$lib/types/project-plan.js';
 import type { DetectedProjectMeta } from '$lib/types/projects.js';
 
 const execFileAsync = promisify(execFile);
 
-// ── Plan CRUD (JSON) ─────────────────────────────────────────────────
+// ── Plan CRUD ────────────────────────────────────────────────────────
 
 function planPath(projectPath: string): string {
 	return resolve(projectPath, '.playground/project-plan.json');
@@ -28,15 +36,61 @@ export async function loadPlan(projectPath: string): Promise<ProjectPlan | null>
 	const raw = await readJsonFile<Record<string, unknown>>(planPath(projectPath));
 	if (!raw) return null;
 
-	// Migrate v1 → v2: add sprints + activeSprint + milestone.sprints
-	if (!raw.version || raw.version === 1) {
-		const plan = raw as unknown as ProjectPlan;
-		plan.version = 2;
-		if (!plan.sprints) plan.sprints = [];
-		if (plan.activeSprint === undefined) plan.activeSprint = null;
-		for (const ms of plan.roadmap) {
-			if (!ms.sprints) ms.sprints = [];
-		}
+	// Migrate v1/v2 → v3
+	if (!raw.version || (raw.version as number) < 3) {
+		const oldRoadmap = (raw as any).roadmap ?? [];
+		const oldSprints = (raw as any).sprints ?? [];
+		const oldVision = (raw as any).vision ?? '';
+		const oldDoD = (raw as any).definitionOfDone ?? [];
+
+		// Convert old milestones → phases under a single "v0.1" release
+		const phases: Phase[] = oldRoadmap.map((ms: any) => ({
+			id: ms.id,
+			name: ms.name,
+			status: ms.status ?? 'planned',
+			releaseId: 'rel-initial',
+			goals: ms.goals ?? [],
+			acceptanceCriteria: ms.acceptanceCriteria ?? [],
+			tasks: ms.tasks ?? [],
+			dependencies: ms.dependencies ?? [],
+			sprints: ms.sprints ?? [],
+			targetDate: ms.targetDate,
+			completedAt: ms.completedAt
+		}));
+
+		// Migrate sprints: milestoneId → phaseId
+		const sprints: Sprint[] = oldSprints.map((s: any) => ({
+			...s,
+			phaseId: s.milestoneId ?? s.phaseId ?? ''
+		}));
+
+		const plan: ProjectPlan = {
+			version: 3,
+			macro: {
+				purpose: oldVision,
+				longTermVision: '',
+				role: { title: 'Project Lead', responsibilities: ['Define scope', 'Guide development'] },
+				keyHighlights: [],
+				featureMap: [],
+				releases: [{
+					id: 'rel-initial',
+					version: 'v0.1',
+					name: 'Initial Release',
+					status: phases.some(p => p.status === 'active') ? 'active' : 'planned',
+					featureComplete: [],
+					phases: phases.map(p => p.id),
+					targetDate: undefined
+				}],
+				phases,
+				definitionOfDone: oldDoD
+			},
+			sprints,
+			activeSprint: (raw as any).activeSprint ?? null,
+			decisions: (raw as any).decisions ?? [],
+			lastUpdated: new Date().toISOString(),
+			updatedBy: 'migration-v3'
+		};
+
 		await savePlan(projectPath, plan);
 		return plan;
 	}
@@ -49,12 +103,23 @@ export async function savePlan(projectPath: string, plan: ProjectPlan): Promise<
 	await writeFile(planPath(projectPath), JSON.stringify(plan, null, '\t'), 'utf-8');
 }
 
+function createEmptyMacro(): MacroPlan {
+	return {
+		purpose: '',
+		longTermVision: '',
+		role: { title: '', responsibilities: [] },
+		keyHighlights: [],
+		featureMap: [],
+		releases: [],
+		phases: [],
+		definitionOfDone: []
+	};
+}
+
 export function createEmptyPlan(updatedBy: string): ProjectPlan {
 	return {
-		version: 2,
-		vision: '',
-		definitionOfDone: [],
-		roadmap: [],
+		version: 3,
+		macro: createEmptyMacro(),
 		sprints: [],
 		activeSprint: null,
 		decisions: [],
@@ -128,18 +193,15 @@ export async function bootstrapProjectManager(projectPath: string): Promise<{
 	const meta = await detectProjectMeta(projectPath);
 	const context = await gatherBootstrapContext(projectPath, meta);
 
-	// Create initial plan
 	const plan = createEmptyPlan('project-manager');
-	plan.vision = buildInitialVision(context);
-	plan.definitionOfDone = buildInitialDoD(context);
-	plan.roadmap = buildInitialRoadmap(context);
+	plan.macro = buildInitialMacro(context);
 	await savePlan(projectPath, plan);
 
-	// Store initial observations in SQLite memory
+	// Initial observations in SQLite
 	const observations: { type: 'observation' | 'risk'; content: string; source: string; confidence: number }[] = [
 		{
 			type: 'observation',
-			content: `Project "${context.projectName}" detected as ${context.language ?? 'unknown'}/${context.framework ?? 'unknown'} project.`,
+			content: `Project "${context.projectName}" — ${context.language ?? 'unknown'}/${context.framework ?? 'unknown'}. Stack: ${context.techStack.join(', ') || 'not detected'}.`,
 			source: 'bootstrap-scan',
 			confidence: 0.9
 		}
@@ -148,44 +210,29 @@ export async function bootstrapProjectManager(projectPath: string): Promise<{
 	if (context.gitRemote) {
 		observations.push({
 			type: 'observation',
-			content: `Git remote: ${context.gitRemote}. ${context.branches.length} branch(es): ${context.branches.slice(0, 5).join(', ')}`,
+			content: `Git remote: ${context.gitRemote}. ${context.branches.length} branch(es).`,
 			source: 'bootstrap-scan',
 			confidence: 1.0
 		});
 	}
-
 	if (!context.hasTests) {
-		observations.push({
-			type: 'risk',
-			content: 'No test command detected. Testing infrastructure should be a priority.',
-			source: 'bootstrap-scan',
-			confidence: 0.8
-		});
+		observations.push({ type: 'risk', content: 'No test command detected.', source: 'bootstrap-scan', confidence: 0.8 });
 	}
-
 	if (!context.hasCi) {
-		observations.push({
-			type: 'risk',
-			content: 'No CI/CD workflows detected. Automated quality checks should be set up.',
-			source: 'bootstrap-scan',
-			confidence: 0.8
-		});
+		observations.push({ type: 'risk', content: 'No CI/CD workflows detected.', source: 'bootstrap-scan', confidence: 0.8 });
 	}
-
 	if (context.recentCommitMessages.length > 0) {
-		const themes = context.recentCommitMessages.slice(0, 5).join('; ');
 		observations.push({
 			type: 'observation',
-			content: `Recent development focus: ${themes}`,
+			content: `Recent work: ${context.recentCommitMessages.slice(0, 5).join('; ')}`,
 			source: 'bootstrap-scan',
 			confidence: 0.7
 		});
 	}
-
 	if (context.readmeExcerpt) {
 		observations.push({
 			type: 'observation',
-			content: `README excerpt: ${context.readmeExcerpt.slice(0, 200)}`,
+			content: `README: ${context.readmeExcerpt.slice(0, 200)}`,
 			source: 'bootstrap-scan',
 			confidence: 0.85
 		});
@@ -197,146 +244,164 @@ export async function bootstrapProjectManager(projectPath: string): Promise<{
 	return { plan, context };
 }
 
-// ── Initial plan generation ──────────────────────────────────────────
+// ── Initial macro generation ─────────────────────────────────────────
 
-function buildInitialVision(ctx: PMBootstrapContext): string {
+function buildInitialMacro(ctx: PMBootstrapContext): MacroPlan {
+	// Purpose from README or placeholder
+	let purpose = `${ctx.projectName} — purpose to be defined in PM discussion`;
 	if (ctx.readmeExcerpt) {
 		const firstSentence = ctx.readmeExcerpt.split(/[.!?]\s/)[0];
-		if (firstSentence && firstSentence.length > 10) {
-			return firstSentence.trim();
-		}
+		if (firstSentence && firstSentence.length > 10) purpose = firstSentence.trim();
 	}
-	const parts = [ctx.projectName];
-	if (ctx.framework) parts.push(`(${ctx.framework})`);
-	return `${parts.join(' ')} — vision to be defined in discussion with user`;
-}
 
-function buildInitialDoD(ctx: PMBootstrapContext): string[] {
-	const dod: string[] = [];
-	if (!ctx.hasTests) dod.push('Test suite established with passing tests');
-	if (!ctx.hasCi) dod.push('CI/CD pipeline configured and green');
-	if (!ctx.hasDocs) dod.push('Documentation covering setup and usage');
-	dod.push('All planned milestones completed');
-	dod.push('No critical or high-priority open issues');
-	return dod;
-}
-
-function buildInitialRoadmap(ctx: PMBootstrapContext): Milestone[] {
-	const milestones: Milestone[] = [];
-
+	// Build initial phases based on detected gaps
+	const phases: Phase[] = [];
 	const infraGoals: string[] = [];
-	if (!ctx.hasTests) infraGoals.push('Set up testing framework and initial test suite');
+	if (!ctx.hasTests) infraGoals.push('Set up testing framework');
 	if (!ctx.hasCi) infraGoals.push('Configure CI/CD pipeline');
-	if (!ctx.hasDocs) infraGoals.push('Create basic documentation');
+	if (!ctx.hasDocs) infraGoals.push('Create documentation');
 
 	if (infraGoals.length > 0) {
-		milestones.push({
-			id: 'ms-infrastructure',
-			name: 'Project Infrastructure',
+		phases.push({
+			id: 'phase-infra',
+			name: 'Infrastructure',
 			status: 'planned',
+			releaseId: 'rel-v01',
 			goals: infraGoals,
-			acceptanceCriteria: infraGoals.map(g => `${g} — verified working`),
+			acceptanceCriteria: infraGoals.map(g => `${g} — verified`),
 			tasks: [],
 			dependencies: [],
 			sprints: []
 		});
 	}
 
-	milestones.push({
-		id: 'ms-core',
+	phases.push({
+		id: 'phase-core',
 		name: 'Core Development',
 		status: ctx.recentCommitMessages.length > 0 ? 'active' : 'planned',
-		goals: ['Core features implemented and functional'],
+		releaseId: 'rel-v01',
+		goals: ['Core features implemented'],
 		acceptanceCriteria: ['To be defined in PM discussion'],
 		tasks: [],
-		dependencies: infraGoals.length > 0 ? ['ms-infrastructure'] : [],
+		dependencies: infraGoals.length > 0 ? ['phase-infra'] : [],
 		sprints: []
 	});
 
-	milestones.push({
-		id: 'ms-release',
-		name: 'Release Ready',
+	phases.push({
+		id: 'phase-polish',
+		name: 'Polish & Ship',
 		status: 'planned',
-		goals: ['Production-ready release'],
-		acceptanceCriteria: ['All tests passing', 'Documentation complete', 'No known critical bugs'],
+		releaseId: 'rel-v01',
+		goals: ['Release-ready quality'],
+		acceptanceCriteria: ['All tests passing', 'No critical bugs'],
 		tasks: [],
-		dependencies: ['ms-core'],
+		dependencies: ['phase-core'],
 		sprints: []
 	});
 
-	return milestones;
+	const releases: Release[] = [{
+		id: 'rel-v01',
+		version: 'v0.1',
+		name: 'First Release',
+		status: phases.some(p => p.status === 'active') ? 'active' : 'planned',
+		featureComplete: ['To be defined in PM discussion'],
+		phases: phases.map(p => p.id)
+	}];
+
+	const dod: string[] = [];
+	if (!ctx.hasTests) dod.push('Test suite with passing tests');
+	if (!ctx.hasCi) dod.push('CI/CD pipeline green');
+	if (!ctx.hasDocs) dod.push('Documentation complete');
+	dod.push('All planned releases shipped');
+	dod.push('No critical open issues');
+
+	return {
+		purpose,
+		longTermVision: 'To be defined — discuss the long-term direction in the PM discussion',
+		role: {
+			title: 'Project Lead',
+			responsibilities: [
+				'Define project vision and priorities',
+				'Review and approve key decisions',
+				'Guide development direction'
+			]
+		},
+		keyHighlights: [],
+		featureMap: [],
+		releases,
+		phases,
+		definitionOfDone: dod
+	};
 }
 
 // ── Discussion prompt ────────────────────────────────────────────────
 
 export function buildPMDiscussionPrompt(ctx: PMBootstrapContext, plan: ProjectPlan): string {
+	const m = plan.macro;
 	const lines: string[] = [
-		`I'm your Project Manager for **${ctx.projectName}**. I've scanned the project and here's what I understand so far:`,
+		`I'm your Project Manager for **${ctx.projectName}**. I've scanned the project and built an initial strategic plan. Let's refine it together.`,
 		``
 	];
 
-	lines.push(`**Project Profile**:`);
-	if (ctx.language || ctx.framework) {
-		lines.push(`- Stack: ${ctx.techStack.join(', ')}`);
-	}
-	lines.push(`- Tests: ${ctx.hasTests ? 'yes' : 'not detected'}`);
-	lines.push(`- CI/CD: ${ctx.hasCi ? 'yes' : 'not detected'}`);
-	lines.push(`- Docs: ${ctx.hasDocs ? 'yes' : 'not detected'}`);
-	if (ctx.branches.length > 1) {
-		lines.push(`- Active branches: ${ctx.branches.slice(0, 5).join(', ')}`);
-	}
+	// Identity
+	lines.push(`## Project Identity`);
+	lines.push(`**Purpose**: ${m.purpose}`);
+	lines.push(`**Your Role**: ${m.role.title}`);
+	if (ctx.techStack.length > 0) lines.push(`**Stack**: ${ctx.techStack.join(', ')}`);
+	lines.push(`**Tests**: ${ctx.hasTests ? 'yes' : 'not detected'} | **CI/CD**: ${ctx.hasCi ? 'yes' : 'not detected'} | **Docs**: ${ctx.hasDocs ? 'yes' : 'not detected'}`);
 	if (ctx.recentCommitMessages.length > 0) {
-		lines.push(`- Recent work: ${ctx.recentCommitMessages.slice(0, 3).join('; ')}`);
+		lines.push(`**Recent work**: ${ctx.recentCommitMessages.slice(0, 3).join('; ')}`);
 	}
 
+	// Releases
 	lines.push(``);
-	lines.push(`**Working Vision**: ${plan.vision}`);
-
-	if (plan.roadmap.length > 0) {
-		lines.push(``);
-		lines.push(`**Initial Roadmap** (${plan.roadmap.length} milestones):`);
-		for (const ms of plan.roadmap) {
-			const icon = ms.status === 'active' ? '🔵' : '⬜';
-			lines.push(`${icon} **${ms.name}**: ${ms.goals[0]}`);
+	lines.push(`## Release Roadmap`);
+	for (const rel of m.releases) {
+		const icon = rel.status === 'active' ? '🔵' : rel.status === 'completed' ? '✅' : '⬜';
+		lines.push(`${icon} **${rel.version}** — ${rel.name}`);
+		const relPhases = m.phases.filter(p => p.releaseId === rel.id);
+		for (const phase of relPhases) {
+			const pIcon = phase.status === 'active' ? '  🔵' : '  ⬜';
+			lines.push(`${pIcon} ${phase.name}: ${phase.goals[0] ?? 'TBD'}`);
+		}
+		if (rel.featureComplete.length > 0 && rel.featureComplete[0] !== 'To be defined in PM discussion') {
+			lines.push(`  Feature complete: ${rel.featureComplete.join(', ')}`);
 		}
 	}
 
-	if (plan.definitionOfDone.length > 0) {
+	// DoD
+	if (m.definitionOfDone.length > 0) {
 		lines.push(``);
-		lines.push(`**Definition of Done**:`);
-		for (const d of plan.definitionOfDone) {
-			lines.push(`- [ ] ${d}`);
-		}
+		lines.push(`## Definition of Done`);
+		for (const d of m.definitionOfDone) lines.push(`- [ ] ${d}`);
 	}
 
-	lines.push(``);
 	// Sprints
 	if (plan.sprints.length > 0) {
 		const active = plan.sprints.find(s => s.id === plan.activeSprint);
 		lines.push(``);
-		lines.push(`**Sprints** (${plan.sprints.length} total${active ? `, active: ${active.name}` : ''}):`);
-		for (const sprint of plan.sprints.slice(0, 5)) {
-			const icon = sprint.status === 'active' ? '🟢' : sprint.status === 'completed' ? '✅' : '⬜';
-			const ms = plan.roadmap.find(m => m.id === sprint.milestoneId);
-			lines.push(`${icon} **${sprint.name}**: ${sprint.goal}${ms ? ` → _${ms.name}_` : ''}`);
-		}
+		lines.push(`## Sprints (${plan.sprints.length})`);
+		if (active) lines.push(`Active: **${active.name}** — ${active.goal}`);
 	}
 
+	// Questions
 	lines.push(``);
-	lines.push(`**I'd like your input on**:`);
-	lines.push(`1. Is this vision accurate? What's the real goal for this project?`);
-	lines.push(`2. What are the big strategic phases (macro milestones) you see?`);
-	lines.push(`3. What should the first sprint focus on? (I'll create it once we agree)`);
-	lines.push(`4. Any key architectural decisions already made that I should know about?`);
-	lines.push(`5. What does "done" look like for you?`);
+	lines.push(`## Let's define this project together`);
+	lines.push(`1. **Purpose**: Is "${m.purpose}" accurate? What problem does this project solve?`);
+	lines.push(`2. **Your role**: Are you the sole dev, team lead, or contributor? What are your responsibilities?`);
+	lines.push(`3. **Releases**: What releases do you envision? (v0.1 MVP, v1.0 stable, v2.0 expansion?)`);
+	lines.push(`4. **Key features**: What are the standout capabilities? What makes this project unique?`);
+	lines.push(`5. **Feature complete**: For each release, what does "feature complete" mean?`);
+	lines.push(`6. **Long-term**: Where does this project go after the first release?`);
+	lines.push(`7. **Done**: When is the entire project "done"? Or is it ongoing?`);
 
 	if (ctx.existingTasks.length > 0) {
 		lines.push(``);
-		lines.push(`I see ${ctx.existingTasks.length} existing task(s). I'll link those to milestones once we align on the roadmap.`);
+		lines.push(`I see ${ctx.existingTasks.length} existing task(s) — I'll map them to phases and sprints once we align.`);
 	}
 
 	lines.push(``);
-	lines.push(`Reply here and I'll refine the roadmap based on your input. My memory for this project is stored in a dedicated database — view it anytime in the dashboard under Project Manager.`);
+	lines.push(`Reply and I'll build out the full macro roadmap. View the plan and my memory anytime in the dashboard.`);
 
 	return lines.join('\n');
 }
@@ -361,20 +426,22 @@ export async function syncToGitHubBoard(
 	}
 
 	try {
-		for (const milestone of plan.roadmap) {
-			const title = `[PM] ${milestone.name}`;
+		// Sync releases as milestone-level issues
+		for (const release of plan.macro.releases) {
+			const relPhases = plan.macro.phases.filter(p => p.releaseId === release.id);
+			const title = `[PM] Release ${release.version}: ${release.name}`;
 			const body = [
-				`## Milestone: ${milestone.name}`,
-				`**Status**: ${milestone.status}`,
-				milestone.targetDate ? `**Target**: ${milestone.targetDate}` : '',
+				`## Release: ${release.version} — ${release.name}`,
+				`**Status**: ${release.status}`,
+				release.targetDate ? `**Target**: ${release.targetDate}` : '',
 				``,
-				`### Goals`,
-				...milestone.goals.map(g => `- ${g}`),
+				`### Feature Complete`,
+				...release.featureComplete.map(f => `- [ ] ${f}`),
 				``,
-				`### Acceptance Criteria`,
-				...milestone.acceptanceCriteria.map(c => `- [ ] ${c}`),
+				`### Phases`,
+				...relPhases.map(p => `- [${p.status === 'completed' ? 'x' : ' '}] **${p.name}**: ${p.goals[0] ?? 'TBD'}`),
 				``,
-				`_Managed by Project Manager agent — do not edit directly_`
+				`_Managed by Project Manager agent_`
 			].filter(Boolean).join('\n');
 
 			const { stdout: existing } = await execFileAsync(
@@ -384,16 +451,11 @@ export async function syncToGitHubBoard(
 
 			const issues = JSON.parse(existing || '[]');
 			if (issues.length > 0) {
-				await execFileAsync(
-					'gh', ['issue', 'edit', String(issues[0].number), '--repo', repo, '--body', body],
-					{ cwd: projectPath, timeout: 10000, windowsHide: true, encoding: 'utf-8' }
-				);
+				await execFileAsync('gh', ['issue', 'edit', String(issues[0].number), '--repo', repo, '--body', body],
+					{ cwd: projectPath, timeout: 10000, windowsHide: true, encoding: 'utf-8' });
 			} else {
-				const labels = ['project-manager', `milestone:${milestone.status}`];
-				await execFileAsync(
-					'gh', ['issue', 'create', '--repo', repo, '--title', title, '--body', body, '--label', labels.join(',')],
-					{ cwd: projectPath, timeout: 10000, windowsHide: true, encoding: 'utf-8' }
-				);
+				await execFileAsync('gh', ['issue', 'create', '--repo', repo, '--title', title, '--body', body, '--label', 'project-manager'],
+					{ cwd: projectPath, timeout: 10000, windowsHide: true, encoding: 'utf-8' });
 			}
 		}
 		return { synced: true };
@@ -418,10 +480,9 @@ export async function reviewProjectPlan(projectPath: string): Promise<{
 	const { getAllTasks } = await import('./task-store.js');
 	const tasks = await getAllTasks(projectPath).catch(() => []);
 
-	// ── Sprint progress ──
+	// Sprint progress
 	for (const sprint of plan.sprints) {
 		if (sprint.status === 'completed') continue;
-
 		const sprintTasks = tasks.filter(t => sprint.tasks.includes(t.id));
 		const done = sprintTasks.filter(t => t.status === 'completed').length;
 		const total = sprintTasks.length;
@@ -431,53 +492,60 @@ export async function reviewProjectPlan(projectPath: string): Promise<{
 			sprint.completedAt = new Date().toISOString();
 			planChanged = true;
 			observations.push(`Sprint "${sprint.name}" completed — all ${total} tasks done`);
-
 			if (plan.activeSprint === sprint.id) {
 				plan.activeSprint = null;
-				observations.push(`Active sprint cleared — ready for next sprint`);
+				observations.push(`Active sprint cleared`);
 			}
 		} else if (total > 0 && sprint.status === 'active') {
 			observations.push(`Sprint "${sprint.name}": ${done}/${total} tasks complete`);
 		}
 	}
 
-	// ── Macro milestone progress (includes sprint tasks) ──
-	for (const milestone of plan.roadmap) {
-		if (milestone.status === 'completed') continue;
+	// Phase progress (includes sprint tasks)
+	for (const phase of plan.macro.phases) {
+		if (phase.status === 'completed') continue;
 
-		// Collect all tasks: directly linked + from child sprints
-		const directTasks = tasks.filter(t => milestone.tasks.includes(t.id));
+		const directTasks = tasks.filter(t => phase.tasks.includes(t.id));
 		const sprintTaskIds = new Set<string>();
-		for (const sprintId of milestone.sprints) {
+		for (const sprintId of phase.sprints) {
 			const sprint = plan.sprints.find(s => s.id === sprintId);
 			if (sprint) sprint.tasks.forEach(id => sprintTaskIds.add(id));
 		}
 		const sprintTasks = tasks.filter(t => sprintTaskIds.has(t.id));
 		const allLinked = [...directTasks, ...sprintTasks];
-		const completedCount = allLinked.filter(t => t.status === 'completed').length;
-		const totalLinked = allLinked.length;
+		const completed = allLinked.filter(t => t.status === 'completed').length;
+		const total = allLinked.length;
 
-		if (totalLinked > 0 && completedCount === totalLinked) {
-			milestone.status = 'completed';
-			milestone.completedAt = new Date().toISOString();
+		if (total > 0 && completed === total) {
+			phase.status = 'completed';
+			phase.completedAt = new Date().toISOString();
 			planChanged = true;
-			observations.push(`Milestone "${milestone.name}" completed — all ${totalLinked} tasks done (${milestone.sprints.length} sprint(s))`);
+			observations.push(`Phase "${phase.name}" completed — all ${total} tasks done`);
 
-			// Auto-activate dependent milestones
-			for (const ms of plan.roadmap) {
-				if (ms.status === 'planned' && ms.dependencies.includes(milestone.id)) {
-					const allDepsDone = ms.dependencies.every(
-						depId => plan.roadmap.find(m => m.id === depId)?.status === 'completed'
-					);
-					if (allDepsDone) {
-						ms.status = 'active';
+			// Auto-activate dependent phases
+			for (const p of plan.macro.phases) {
+				if (p.status === 'planned' && p.dependencies.includes(phase.id)) {
+					if (p.dependencies.every(depId => plan.macro.phases.find(pp => pp.id === depId)?.status === 'completed')) {
+						p.status = 'active';
 						planChanged = true;
-						observations.push(`Milestone "${ms.name}" activated — all dependencies met`);
+						observations.push(`Phase "${p.name}" activated`);
 					}
 				}
 			}
-		} else if (totalLinked > 0) {
-			observations.push(`Milestone "${milestone.name}": ${completedCount}/${totalLinked} tasks complete`);
+		} else if (total > 0) {
+			observations.push(`Phase "${phase.name}": ${completed}/${total} tasks complete`);
+		}
+	}
+
+	// Release progress (all phases done → release done)
+	for (const release of plan.macro.releases) {
+		if (release.status === 'completed') continue;
+		const relPhases = plan.macro.phases.filter(p => release.phases.includes(p.id));
+		if (relPhases.length > 0 && relPhases.every(p => p.status === 'completed')) {
+			release.status = 'completed';
+			release.shippedAt = new Date().toISOString();
+			planChanged = true;
+			observations.push(`Release ${release.version} "${release.name}" completed — all phases done`);
 		}
 	}
 
@@ -487,22 +555,13 @@ export async function reviewProjectPlan(projectPath: string): Promise<{
 		await savePlan(projectPath, plan);
 	}
 
-	// Record review in SQLite memory
 	pmDb.recordReview(projectPath);
 	if (observations.length > 0) {
-		pmDb.addEntries(
-			projectPath,
-			observations.map(obs => ({
-				type: 'observation' as const,
-				content: obs,
-				source: 'heartbeat-review',
-				confidence: 0.9
-			}))
-		);
+		pmDb.addEntries(projectPath, observations.map(obs => ({
+			type: 'observation' as const, content: obs, source: 'heartbeat-review', confidence: 0.9
+		})));
 	}
 
-	// Auto-archive old low-confidence entries (older than 30 days)
 	pmDb.archiveOlderThan(projectPath, 30);
-
 	return { reviewed: true, observations };
 }

@@ -24,6 +24,22 @@
 	let loaded = $derived(data != null);
 	let selectedCategory = $state('all');
 
+	// Live-poll active agents every 5s
+	let liveActiveAgents = $state(liveActiveAgents ?? []);
+
+	$effect(() => {
+		const interval = setInterval(async () => {
+			try {
+				const res = await fetch('/api/agents');
+				if (res.ok) {
+					const json = await res.json();
+					if (json.activeAgents) liveActiveAgents = json.activeAgents;
+				}
+			} catch { /* silent */ }
+		}, 5000);
+		return () => clearInterval(interval);
+	});
+
 	const categories = $derived.by(() => {
 		const cats = new Set(data.agents.map((a: AgentDefinition) => a.category));
 		return ['all', ...Array.from(cats).sort()];
@@ -35,11 +51,11 @@
 			: data.agents.filter((a: AgentDefinition) => a.category === selectedCategory)
 	);
 
-	const totalAgents = 99;
-	const activeAgents = $derived(data.v3Progress.activeAgents || 42);
-	const idleAgents = 45;
-	const errorAgents = 12;
-	const maxAgents = $derived(data.v3Progress.maxAgents || 99);
+	const totalAgents = $derived(data.total ?? data.agents?.length ?? 0);
+	const activeAgents = $derived(liveActiveAgents.length);
+	const idleAgents = $derived(Math.max(0, totalAgents - activeAgents));
+	const errorAgents = $derived(data.analytics?.failureCount ?? 0);
+	const maxAgents = $derived(data.v3Progress.maxAgents || 15);
 
 	const capacityPercent = $derived(
 		maxAgents > 0 ? Math.round((activeAgents / maxAgents) * 100) : 0
@@ -103,6 +119,30 @@
 				></div>
 			</div>
 		</div>
+
+		<!-- Currently Active Agents -->
+		{#if liveActiveAgents && liveActiveAgents.length > 0}
+			<div>
+				<h2 class="text-xs text-text-secondary uppercase tracking-wider mb-2">Running Now</h2>
+				<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-3">
+					{#each liveActiveAgents as agent}
+						<div class="bg-bg-secondary border border-accent-green/30 rounded-lg p-3 flex items-center gap-3">
+							<div class="w-2 h-2 rounded-full bg-accent-green animate-pulse"></div>
+							<div class="min-w-0 flex-1">
+								<p class="text-sm font-medium text-text-primary truncate">{agent.label}</p>
+								<p class="text-xs text-text-secondary font-mono truncate">Task: {agent.taskId}</p>
+							</div>
+							<span class="text-xs text-text-secondary font-mono">PID {agent.pid}</span>
+						</div>
+					{/each}
+				</div>
+			</div>
+		{:else}
+			<div class="bg-bg-secondary border border-border rounded-lg p-4 text-center">
+				<p class="text-sm text-text-secondary">No agents currently running</p>
+				<p class="text-xs text-text-secondary mt-1">Agents spawn on-demand when tasks need execution</p>
+			</div>
+		{/if}
 
 		<!-- Category Filters -->
 		<div class="flex flex-wrap gap-2">

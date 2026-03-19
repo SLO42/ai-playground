@@ -312,6 +312,69 @@ Remove a project from the registry (does not delete files on disk).
 
 ---
 
+## Project Settings
+
+### `GET /api/projects/:id/settings`
+
+Return stored settings for a project, including general info, build commands, agent config, and heartbeat automation config.
+
+**Response** `200`
+```json
+{
+  "general": { "name": "my-project", "description": "", "branch": "main" },
+  "build": {
+    "build": { "command": "npm run build", "label": "Build" },
+    "test": { "command": "npm test", "label": "Test" },
+    "dev": { "command": "npm run dev", "label": "Dev" }
+  },
+  "agentConfig": { "topology": "hierarchical-mesh", "maxAgents": 15, "memoryBackend": "hybrid (HNSW + SQLite)", "consensus": "raft" },
+  "autoStart": false,
+  "environments": [],
+  "heartbeat": {
+    "enabled": true,
+    "phases": {
+      "taskScanning": true,
+      "agentSpawning": true,
+      "githubSync": true,
+      "reviewCycle": true,
+      "testing": true
+    },
+    "maxAgents": 5
+  }
+}
+```
+
+---
+
+### `PUT /api/projects/:id/settings` · `POST /api/projects/:id/settings`
+
+Save project settings. Both `PUT` and `POST` are accepted (aliases). Syncs `agentConfig.maxAgents`, `heartbeat`, and build commands into the project's `.playground/config.json` so the heartbeat process picks up the new values without a restart.
+
+**Request body**
+```json
+{
+  "general": { "name": "my-project", "description": "", "branch": "main" },
+  "build": { "build": { "command": "npm run build" }, "test": { "command": "npm test" }, "dev": { "command": "npm run dev" } },
+  "agentConfig": { "topology": "hierarchical-mesh", "maxAgents": 15, "memoryBackend": "hybrid (HNSW + SQLite)", "consensus": "raft" },
+  "autoStart": false,
+  "heartbeat": {
+    "enabled": true,
+    "phases": { "taskScanning": true, "agentSpawning": true, "githubSync": true, "reviewCycle": true, "testing": true },
+    "maxAgents": 5
+  }
+}
+```
+
+**Response** `200`
+```json
+{ "ok": true, "settings": { "name": "my-project", "..." : "..." } }
+```
+
+**Error** `400` — missing or invalid project name
+**Error** `404` — project not found
+
+---
+
 ## Project Agents
 
 ### `GET /api/projects/:id/agents`

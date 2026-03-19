@@ -48,10 +48,10 @@
 	<title>{pageTitle()} | AI Playground</title>
 </svelte:head>
 
-<!-- Project Shell — global sidebar is hidden, project nav takes over -->
+<!-- Project Shell — project sidebar replaces global sidebar -->
 <div class="flex min-h-[calc(100vh-48px)] -m-6">
-	<!-- Project Sidebar (fixed, mirrors global sidebar position) -->
-	<nav class="fixed left-0 top-0 h-full w-56 bg-bg-secondary border-r border-border flex flex-col z-50">
+	<!-- Project Sidebar (sticky, flows within content area) -->
+	<nav class="sticky top-0 h-screen w-56 shrink-0 bg-bg-secondary border-r border-border flex flex-col overflow-y-auto">
 		<!-- Back to Projects -->
 		<div class="p-4 border-b border-border">
 			<a href="/projects" class="text-xs text-text-secondary hover:text-accent-cyan transition-colors uppercase tracking-wider flex items-center gap-1">
@@ -108,8 +108,8 @@
 		</div>
 	</nav>
 
-	<!-- Content Area (offset by fixed sidebar width) -->
-	<div class="flex-1 min-w-0 ml-56">
+	<!-- Content Area -->
+	<div class="flex-1 min-w-0">
 		<!-- Breadcrumb -->
 		<div class="px-6 py-2 border-b border-border flex items-center gap-2 text-xs">
 			<a href="/projects/{data.projectId}" class="text-accent-blue hover:underline">{data.project.name}</a>

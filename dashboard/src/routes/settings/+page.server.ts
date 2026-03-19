@@ -62,6 +62,8 @@ export const load: PageServerLoad = async () => {
 	];
 
 	// Load heartbeat config — handle both array format (UI) and object format (shared.ts disk)
+	// Object format (from shared.ts) stores intervals in MILLISECONDS — convert to seconds for UI
+	const DEFAULT_INTERVAL_MS = 60_000;
 	const storedRaw = await readJsonFile<Record<string, unknown>>(PATHS.heartbeatConfig);
 	let heartbeat: HeartbeatConfig;
 	if (storedRaw && Array.isArray(storedRaw.phases)) {
@@ -76,7 +78,7 @@ export const load: PageServerLoad = async () => {
 				id: key.replace(/([A-Z])/g, '-$1').toLowerCase(),
 				name: names[key] ?? key.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase()),
 				enabled: p[key] !== false,
-				intervalSeconds: Math.round((iv[key] ?? 60000) / 1000)
+				intervalSeconds: Math.round((iv[key] ?? DEFAULT_INTERVAL_MS) / 1000)
 			}))
 		};
 	} else {

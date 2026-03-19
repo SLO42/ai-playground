@@ -48,10 +48,19 @@
 		hbSaving = true;
 		hbSaveMessage = '';
 		try {
+			// Convert array phases to object format expected by the API
+			const phasesObj: Record<string, boolean> = {};
+			const intervalsObj: Record<string, number> = {};
+			for (const p of hbPhases) {
+				// Convert kebab-case id back to camelCase key
+				const key = p.id.replace(/-([a-z])/g, (_: string, c: string) => c.toUpperCase());
+				phasesObj[key] = p.enabled;
+				intervalsObj[key] = p.intervalSeconds * 1000;
+			}
 			const res = await fetch('/api/settings/heartbeat', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ enabled: hbEnabled, phases: hbPhases })
+				body: JSON.stringify({ enabled: hbEnabled, phases: phasesObj, intervals: intervalsObj })
 			});
 			const result = await res.json();
 			if (res.ok) {

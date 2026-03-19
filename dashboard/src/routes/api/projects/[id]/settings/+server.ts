@@ -171,8 +171,29 @@ async function handleSave(params: { id: string }, request: Request) {
 		(config.agents as Record<string, unknown>).maxAgents = settings.agentConfig.maxAgents;
 
 		// Sync heartbeat config (per-project automation control)
+		// Validate shape: only allow known fields with correct types
 		if (body.heartbeat && typeof body.heartbeat === 'object') {
-			config.heartbeat = body.heartbeat;
+			const hb = body.heartbeat as Record<string, unknown>;
+			const PHASE_KEYS = ['taskScanning', 'agentSpawning', 'githubSync', 'reviewCycle', 'testing'] as const;
+			const phases: Record<string, boolean> = {};
+			if (hb.phases && typeof hb.phases === 'object' && !Array.isArray(hb.phases)) {
+				const raw = hb.phases as Record<string, unknown>;
+				for (const key of PHASE_KEYS) {
+					if (typeof raw[key] === 'boolean') phases[key] = raw[key] as boolean;
+				}
+			}
+			const maxAgents = typeof hb.maxAgents === 'number'
+				? Math.max(1, Math.min(20, Math.floor(hb.maxAgents)))
+				: undefined;
+
+			const validated: Record<string, unknown> = {};
+			if (typeof hb.enabled === 'boolean') validated.enabled = hb.enabled;
+			if (Object.keys(phases).length > 0) validated.phases = phases;
+			if (maxAgents !== undefined) validated.maxAgents = maxAgents;
+
+			if (Object.keys(validated).length > 0) {
+				config.heartbeat = { ...(typeof config.heartbeat === 'object' && config.heartbeat ? config.heartbeat : {}), ...validated };
+			}
 		}
 
 		// Sync build commands

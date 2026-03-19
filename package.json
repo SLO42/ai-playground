@@ -4,6 +4,7 @@
   "description": "",
   "main": "index.js",
   "scripts": {
+    "build": "cd dashboard && npm run build",
     "test": "cd dashboard && npm test",
     "openclaw:start": "openclaw gateway --port 18789",
     "openclaw:doctor": "openclaw doctor",

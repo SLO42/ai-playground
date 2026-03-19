@@ -55,7 +55,7 @@
 	const activeAgents = $derived(liveActiveAgents.length);
 	const idleAgents = $derived(Math.max(0, totalAgents - activeAgents));
 	const errorAgents = $derived(data.analytics?.failureCount ?? 0);
-	const maxAgents = $derived(data.v3Progress.maxAgents || 6);
+	const maxAgents = $derived(data.v3Progress.maxAgents ?? 6);
 
 	const capacityPercent = $derived(
 		maxAgents > 0 ? Math.round((activeAgents / maxAgents) * 100) : 0

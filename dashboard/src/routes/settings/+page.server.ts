@@ -39,6 +39,42 @@ const DEFAULT_HEARTBEAT: HeartbeatConfig = {
 	]
 };
 
+const DEFAULT_INTERVAL_MS = 60_000;
+
+/** Convert stored heartbeat config (array or object format) to the UI's HeartbeatConfig shape. */
+function parseHeartbeatConfig(storedRaw: Record<string, unknown> | null): HeartbeatConfig {
+	if (!storedRaw) return DEFAULT_HEARTBEAT;
+
+	// Already in array/UI format
+	if (Array.isArray(storedRaw.phases)) {
+		return storedRaw as unknown as HeartbeatConfig;
+	}
+
+	// Object format from shared.ts — phases is Record<string, boolean>, intervals in milliseconds
+	if (storedRaw.phases && typeof storedRaw.phases === 'object') {
+		const p = storedRaw.phases as Record<string, boolean>;
+		const iv = (storedRaw.intervals ?? {}) as Record<string, number>;
+		const names: Record<string, string> = {
+			healthChecks: 'Health Checks',
+			taskScanning: 'Task Scanning',
+			agentSpawning: 'Agent Spawning',
+			reviewCycle: 'Review Cycle',
+			memorySync: 'Memory Sync'
+		};
+		return {
+			enabled: storedRaw.enabled !== false,
+			phases: Object.keys(p).map((key) => ({
+				id: key.replace(/([A-Z])/g, '-$1').toLowerCase(),
+				name: names[key] ?? key.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase()),
+				enabled: p[key] !== false,
+				intervalSeconds: Math.round((iv[key] ?? DEFAULT_INTERVAL_MS) / 1000)
+			}))
+		};
+	}
+
+	return DEFAULT_HEARTBEAT;
+}
+
 export const load: PageServerLoad = async () => {
 	const categories: SettingsCategory[] = [
 		{ id: 'general', icon: 'gear', name: 'General' },
@@ -61,29 +97,8 @@ export const load: PageServerLoad = async () => {
 		{ id: 'delegate', icon: 'arrow-right', name: 'Delegate', description: 'Hand off to another agent or escalate', shortcut: 'Ctrl+D' }
 	];
 
-	// Load heartbeat config — handle both array format (UI) and object format (shared.ts disk)
-	// Object format (from shared.ts) stores intervals in MILLISECONDS — convert to seconds for UI
-	const DEFAULT_INTERVAL_MS = 60_000;
 	const storedRaw = await readJsonFile<Record<string, unknown>>(PATHS.heartbeatConfig);
-	let heartbeat: HeartbeatConfig;
-	if (storedRaw && Array.isArray(storedRaw.phases)) {
-		heartbeat = storedRaw as unknown as HeartbeatConfig;
-	} else if (storedRaw && storedRaw.phases && typeof storedRaw.phases === 'object') {
-		const p = storedRaw.phases as Record<string, boolean>;
-		const iv = (storedRaw.intervals ?? {}) as Record<string, number>;
-		const names: Record<string, string> = { healthChecks: 'Health Checks', taskScanning: 'Task Scanning', agentSpawning: 'Agent Spawning', reviewCycle: 'Review Cycle', memorySync: 'Memory Sync' };
-		heartbeat = {
-			enabled: storedRaw.enabled !== false,
-			phases: Object.keys(p).map((key) => ({
-				id: key.replace(/([A-Z])/g, '-$1').toLowerCase(),
-				name: names[key] ?? key.replace(/([A-Z])/g, ' $1').replace(/^./, (c) => c.toUpperCase()),
-				enabled: p[key] !== false,
-				intervalSeconds: Math.round((iv[key] ?? DEFAULT_INTERVAL_MS) / 1000)
-			}))
-		};
-	} else {
-		heartbeat = DEFAULT_HEARTBEAT;
-	}
+	const heartbeat = parseHeartbeatConfig(storedRaw);
 
 	return {
 		categories,

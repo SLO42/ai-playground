@@ -1,6 +1,7 @@
 import type { PageServerLoad } from './$types.js';
 import { readJsonFile } from '$lib/server/file-reader.js';
 import { PATHS } from '$lib/server/constants.js';
+import { DEFAULT_INTERVAL_MS } from '$lib/server/heartbeat/shared.js';
 
 export interface QuickAction {
 	id: string;
@@ -38,8 +39,6 @@ const DEFAULT_HEARTBEAT: HeartbeatConfig = {
 		{ id: 'memory-sync', name: 'Memory Sync', enabled: true, intervalSeconds: 180 }
 	]
 };
-
-const DEFAULT_INTERVAL_MS = 60_000;
 
 /** Convert stored heartbeat config (array or object format) to the UI's HeartbeatConfig shape. */
 function parseHeartbeatConfig(storedRaw: Record<string, unknown> | null): HeartbeatConfig {

@@ -168,7 +168,7 @@ export const load: PageServerLoad = async () => {
 
 	const cfVersion = cfConfig?.version ?? '3.0.0';
 	const cfTopology = cfConfig?.swarm?.topology ?? 'hierarchical-mesh';
-	const cfMaxAgents = cfConfig?.swarm?.maxAgents ?? 15;
+	const cfMaxAgents = cfConfig?.swarm?.maxAgents ?? 6;
 	const cfMemoryBackend = cfConfig?.memory?.backend ?? 'hybrid';
 	const cfHnsw = cfConfig?.memory?.enableHNSW ?? true;
 	const cfNeural = cfConfig?.neural?.enabled ?? true;

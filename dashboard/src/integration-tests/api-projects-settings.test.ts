@@ -37,7 +37,7 @@ function defaultSettings(projectPath: string): ProjectSettings {
 		branch: 'main',
 		agentConfig: {
 			topology: 'hierarchical-mesh',
-			maxAgents: 15,
+			maxAgents: 6,
 			memoryBackend: 'hybrid (HNSW + SQLite)',
 			consensus: 'raft'
 		},
@@ -175,7 +175,7 @@ describe('/api/projects/[id]/settings — GET', () => {
 		expect(result.branch).toBe('main');
 		expect(result.agentConfig).toEqual({
 			topology: 'hierarchical-mesh',
-			maxAgents: 15,
+			maxAgents: 6,
 			memoryBackend: 'hybrid (HNSW + SQLite)',
 			consensus: 'raft'
 		});
@@ -211,7 +211,7 @@ describe('/api/projects/[id]/settings — GET', () => {
 		// Defaults should fill in the rest
 		expect(result.agentConfig).toEqual({
 			topology: 'hierarchical-mesh',
-			maxAgents: 15,
+			maxAgents: 6,
 			memoryBackend: 'hybrid (HNSW + SQLite)',
 			consensus: 'raft'
 		});
@@ -229,7 +229,7 @@ describe('/api/projects/[id]/settings — GET', () => {
 
 		expect(result.name).toBe(dirName);
 		expect(result.branch).toBe('main');
-		expect(result.agentConfig.maxAgents).toBe(15);
+		expect(result.agentConfig.maxAgents).toBe(6);
 	});
 });
 

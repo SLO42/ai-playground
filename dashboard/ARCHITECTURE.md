@@ -17,7 +17,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `/projects/[id]` | `routes/projects/[id]/+layout.svelte` | `routes/projects/[id]/+layout.server.ts` |
 | `/projects/[id]/releases` | `routes/projects/[id]/releases/+page.svelte` | `routes/projects/[id]/releases/+page.server.ts` |
 | `/services` | `routes/services/+page.svelte` | `routes/services/+page.server.ts` |
-| `/settings` | `routes/settings/+page.svelte` | `routes/settings/+page.server.ts` |
+| `/settings` | `routes/settings/+page.svelte` | `routes/settings/+page.server.ts` — heartbeat config load converts disk format (`phases` as object, from `shared.ts`) to UI format (`phases` as `HeartbeatPhase[]`); both formats accepted |
 | `/reports` | `routes/reports/+page.svelte` | (uses `lib/server/reports.ts`) |
 | `/sessions` | `routes/sessions/+page.svelte` | `routes/sessions/+page.server.ts` |
 | `/agents` | `routes/agents/+page.svelte` | `routes/agents/+page.server.ts` — loads `agentProjectMap` (agent filename → project IDs) via `buildAgentProjectMap()` alongside pool stats and analytics |

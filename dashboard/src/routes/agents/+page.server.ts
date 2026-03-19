@@ -79,7 +79,7 @@ export const load: PageServerLoad = async ({ url }) => {
 		},
 		v3Progress: {
 			activeAgents: v3Progress?.swarm?.activeAgents ?? 0,
-			maxAgents: v3Progress?.swarm?.maxAgents ?? 15,
+			maxAgents: v3Progress?.swarm?.maxAgents ?? 6,
 			topology: v3Progress?.swarm?.topology ?? 'hierarchical-mesh'
 		},
 		swarmConfig: swarmConfig ?? null,

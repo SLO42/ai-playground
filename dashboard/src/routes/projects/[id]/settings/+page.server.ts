@@ -65,7 +65,7 @@ export const load: PageServerLoad = async ({ parent }) => {
 		},
 		agentConfig: stored?.agentConfig ?? {
 			topology: 'hierarchical-mesh',
-			maxAgents: 15,
+			maxAgents: 6,
 			memoryBackend: 'hybrid (HNSW + SQLite)',
 			consensus: 'raft'
 		},

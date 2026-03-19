@@ -35,7 +35,7 @@
 	],
 	"agents": {
 		"topology": "hierarchical-mesh",
-		"maxAgents": 15,
+		"maxAgents": 6,
 		"memoryNamespace": "ai-playground"
 	},
 	"autoRestart": {

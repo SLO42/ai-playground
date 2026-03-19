@@ -33,7 +33,7 @@ function buildPageData(agents = mockAgents) {
 			coordinationActive: true,
 			processes: { agentic_flow: 1, mcp_server: 1, estimated_agents: 2 }
 		},
-		v3Progress: { activeAgents: 2, maxAgents: 15, topology: 'hierarchical-mesh' },
+		v3Progress: { activeAgents: 2, maxAgents: 6, topology: 'hierarchical-mesh' },
 		swarmConfig: null
 	};
 }

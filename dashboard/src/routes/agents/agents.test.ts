@@ -139,7 +139,7 @@ describe('Agents +page.server load', () => {
 			const result = await callLoad();
 			expect(result.v3Progress).toEqual({
 				activeAgents: 0,
-				maxAgents: 15,
+				maxAgents: 6,
 				topology: 'hierarchical-mesh'
 			});
 		});

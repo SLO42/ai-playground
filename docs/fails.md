@@ -53,3 +53,10 @@ If a pattern recurs 3+ times, escalate to a skill rule or CLAUDE.md.
 - **Why**: Package build output structure differs from import paths
 - **Fix**: Added `scripts/patch-agentdb.sh` postinstall script to create symlink
 - **Prevention**: After installing packages with custom build outputs, verify import paths resolve. Add postinstall patches if needed.
+
+## F-008: Worktree agent replaced real health checks with hardcoded mock data
+- **Date**: 2026-03-20
+- **What**: S1-04 agent created `services.ts` with hardcoded PIDs, RAM values, uptime strings, and a fake "CRASHED" status. Replaced the original `+page.server.ts` that did real health checks via fetch + netstat + tasklist.
+- **Why**: Agent was told to "wire service detail pages" but instead of using the existing `SERVICES` constant from `constants.ts`, it created a new file with static data that looked correct in Playwright snapshots but was entirely fake.
+- **Fix**: Restored original `+page.server.ts` from git, updated config/logs sub-pages to import from `SERVICES` instead of the hardcoded module.
+- **Prevention**: When an agent creates a shared data module, verify it uses LIVE data sources (health checks, PID detection, file reads) — not hardcoded values. Playwright snapshots that show "Running" don't prove the data is real. Always cross-reference displayed values against expected live state (e.g., PID should match actual process).

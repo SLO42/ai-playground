@@ -1,0 +1,897 @@
+{
+	"version": 3,
+	"macro": {
+		"purpose": "To support the full lifecycle of personal projects — from initial idea through final release — by automating construction, updates, and every modification in between. Covering development, design, and deployment, the platform grows toward full automation: every step guided or executed without manual intervention, across projects of any size, over months of tasks, refinement, and learning.",
+		"longTermVision": "Refinement of existing features, improved performance, more efficient token usage, expanded templates with user-created template support, and cross-platform portability.",
+		"role": {
+			"title": "Sole Developer & Owner",
+			"responsibilities": [
+				"Architecture, implementation, testing, and release of all platform features"
+			]
+		},
+		"keyHighlights": [
+			"Full project lifecycle automation (create → develop → maintain → release)",
+			"Analytics on all agent activity with routing telemetry",
+			"Game mod creation for any game with local modding tools",
+			"Build new projects from prompts with 6+ templates",
+			"Plans, designs, and PM-driven development with macro/micro roadmaps",
+			"Agent-automated development guided by the owner"
+		],
+		"featureMap": [
+			{
+				"id": "feat-task-deps",
+				"name": "Task Dependencies",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "blockedBy field on tasks so heartbeat skips blocked work",
+				"evidence": "blockedBy?: string[] defined in types/tasks.ts; API accepts it on POST; heartbeat enforcement and UI picker not confirmed",
+				"priority": "high",
+				"effort": "small"
+			},
+			{
+				"id": "feat-post-test",
+				"name": "Post-Commit Test Runner",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "After agent commits, run project test command and create fix tasks on failure",
+				"evidence": "heartbeat/post-test.ts — multi-language (npm, cargo, go, gradle, mvn, pytest, dotnet), coverage collection, fix task creation",
+				"priority": "high",
+				"effort": "medium",
+				"shippedIn": "cc8816c"
+			},
+			{
+				"id": "feat-review-agent",
+				"name": "Post-Commit Review Agent",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Spawn review agent for multi-file commits to check bugs, security, quality",
+				"evidence": "heartbeat/review-agent.ts — triggers for 3+ file or security commits; post-task.ts planFollowUps() wires documenter + reviewer; OpenClaw escalation with Ollama fallback",
+				"priority": "medium",
+				"effort": "medium",
+				"shippedIn": "e3798e7"
+			},
+			{
+				"id": "feat-settings-save",
+				"name": "Wire Project Settings Save",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "PUT endpoint for project settings, connected to save button",
+				"evidence": "routes/api/projects/[id]/settings/+server.ts — GET/PUT/POST; validates, merges, persists to .playground/settings.json; syncs to heartbeat config",
+				"priority": "medium",
+				"effort": "tiny",
+				"shippedIn": "c6f4447"
+			},
+			{
+				"id": "feat-release-service",
+				"name": "Release Service Module",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Changelog generation, semver bumping, GitHub release creation",
+				"evidence": "lib/server/heartbeat/release-manager.ts — conventional commit parsing, changelog gen, version writing, gh release create, publisher registry",
+				"priority": "high",
+				"effort": "large",
+				"shippedIn": "175be76"
+			},
+			{
+				"id": "feat-release-page",
+				"name": "Release Page UI",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "List past releases, create release flow with version picker and changelog preview",
+				"evidence": "routes/projects/[id]/releases/ exists; +page.server.ts loads real releases via listReleases(), checks gh, calculates suggested bumps; UI shows 'No releases yet' empty state — creation flow completeness not verified",
+				"priority": "high",
+				"effort": "medium"
+			},
+			{
+				"id": "feat-release-agent",
+				"name": "Release Agent",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Claw agent for automated release preparation",
+				"evidence": "heartbeat/release-agent.ts — spawns Claude Code agent; builds changelog, runs tests, bumps version, tags, publishes; Sonnet tier; respects project limits",
+				"priority": "medium",
+				"effort": "medium",
+				"shippedIn": "175be76"
+			},
+			{
+				"id": "feat-dep-health",
+				"name": "Dependency Health Scanning",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Periodic audit of dependencies with severity tracking",
+				"evidence": "heartbeat/dependency-health.ts — detects npm/pip/cargo/dotnet; runs audit commands; parses vulnerabilities; tracks outdated packages; unified AuditResult",
+				"priority": "medium",
+				"effort": "medium",
+				"shippedIn": "cc8816c"
+			},
+			{
+				"id": "feat-auto-restart",
+				"name": "Auto-Restart on Service Failure",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Health check detects service down, auto-restarts with configurable attempts",
+				"evidence": "heartbeat/auto-restart.ts — config-driven (ollama, gateway, daemon); health checks post-restart; maxAttempts + cooldown; Windows-safe PID checks",
+				"priority": "medium",
+				"effort": "small",
+				"shippedIn": "710157d"
+			},
+			{
+				"id": "feat-coverage",
+				"name": "Test Coverage Tracking",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Parse coverage reports, track trends, alert on regression",
+				"evidence": "heartbeat/coverage-tracker.ts — lcov/cobertura/jacoco parsing; .playground/coverage-trends.json; 5% regression threshold; auto-creates incidents",
+				"priority": "medium",
+				"effort": "medium",
+				"shippedIn": "cc8816c"
+			},
+			{
+				"id": "feat-templates",
+				"name": "Project Templates",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "17 templates covering web, backend, compiled, scripting, and game modding",
+				"evidence": "project-templates.ts — 17 templates: blank, sveltekit, nextjs, python, python-cli, fullstack, agent, go, rust, ruby, java, dotnet, bepinex, fabric, forge, paper, bg3. Parameterized configs, CLAUDE.md generation, .gitignore per language.",
+				"priority": "medium",
+				"effort": "medium"
+			},
+			{
+				"id": "feat-cross-platform",
+				"name": "Cross-Platform Path Handling",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Configurable workspace root via PLAYGROUND_WORKSPACE and PLAYGROUND_WORKSPACES env vars",
+				"evidence": "Verified 2026-03-20: zero hardcoded F: paths in dashboard/src/. constants.ts uses resolve() for all paths. WORKSPACE_ROOT reads from env, WORKSPACE_ROOTS supports comma-separated multi-workspace. .env.example documents both vars.",
+				"priority": "medium",
+				"effort": "small"
+			},
+			{
+				"id": "feat-service-start",
+				"name": "Wire Service Auto-Start",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "On project creation, start selected services with health polling",
+				"evidence": "heartbeat/service-starter.ts — startService() + health polling; defined for ollama, daemon, gateway; respects cwd; handles Windows shell=true; detached spawn",
+				"priority": "medium",
+				"effort": "small",
+				"shippedIn": "710157d"
+			},
+			{
+				"id": "feat-monorepo",
+				"name": "Monorepo/Workspace Detection",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Detect workspaces, resolve inter-package dependencies, topological sort",
+				"evidence": "heartbeat/workspace-detector.ts — npm/yarn/pnpm/cargo/gradle/dotnet workspaces; full package resolution with dependency graph; topological sort",
+				"priority": "low",
+				"effort": "large",
+				"shippedIn": "240e81b"
+			},
+			{
+				"id": "feat-environments",
+				"name": "Environment Management",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Per-project named environments with variables and deploy targets",
+				"evidence": "heartbeat/environments.ts — CRUD for environments; .playground/environments.json; validates name/status/variables; multiple deploy targets",
+				"priority": "low",
+				"effort": "medium"
+			},
+			{
+				"id": "feat-cicd",
+				"name": "CI/CD Pipeline Visibility",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Read GitHub Actions workflows and display status in project dashboard",
+				"evidence": "heartbeat/ci-pipeline.ts — lists workflows, fetches recent runs, extracts owner/repo from git remote; uses gh CLI; pipelines page renders detected CI configs and workflow definitions",
+				"priority": "low",
+				"effort": "medium",
+				"shippedIn": "bb2c5c4"
+			},
+			{
+				"id": "feat-analytics",
+				"name": "Agent Analytics & Routing Telemetry",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Track every agent decision point with cost/token metrics",
+				"evidence": "heartbeat/agent-analytics.ts — classification, model selection, escalation, completion events; .playground/agent-analytics.json; powers Models page",
+				"priority": "high",
+				"effort": "medium"
+			},
+			{
+				"id": "feat-github-sync",
+				"name": "GitHub Sync (Task ↔ Issue)",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Bidirectional sync between tasks and GitHub issues",
+				"evidence": "heartbeat/github-sync.ts — pull + push; .playground/github-sync.json mappings",
+				"priority": "medium",
+				"effort": "medium"
+			},
+			{
+				"id": "feat-pm",
+				"name": "Project Manager System",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Per-project PM agent with SQLite memory, macro planning, chat interface",
+				"evidence": "heartbeat/project-manager.ts + pm-memory.db (163 reviews); PM page with chat, macro strategy, roadmap; routes through Claude Code CLI",
+				"priority": "high",
+				"effort": "large",
+				"shippedIn": "5f7f0b2"
+			},
+			{
+				"id": "feat-memory",
+				"name": "Memory Bridge & Guardian",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Compact project memory with bloat prevention and agent read access",
+				"evidence": "heartbeat/memory-bridge.ts + memory-guardian.ts; agents read via memory_search MCP tool",
+				"priority": "medium",
+				"effort": "medium",
+				"shippedIn": "619d47b"
+			},
+			{
+				"id": "feat-openclaw",
+				"name": "OpenClaw + Ollama Cost Routing",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Route simple tasks to local Ollama ($0) before escalating to Claude",
+				"evidence": "review-agent.ts + openclaw-agent.ts; gateway-client.ts for WS on port 18789; Ed25519 device identity",
+				"priority": "medium",
+				"effort": "large"
+			},
+			{
+				"id": "feat-discussions",
+				"name": "Discussion Sessions",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Persistent discussion sessions for flagged tasks without auto-agent assignment",
+				"evidence": "heartbeat/discussion.ts — flagDiscussion: true tasks; .playground/chats/ directory with session files",
+				"priority": "low",
+				"effort": "small"
+			},
+			{
+				"id": "feat-incidents",
+				"name": "Incident Management",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Auto-created incidents for test failures, security issues, build failures",
+				"evidence": "heartbeat/incidents.ts — .playground/incidents.json; linked to related tasks",
+				"priority": "medium",
+				"effort": "small",
+				"shippedIn": "cc8816c"
+			},
+			{
+				"id": "feat-service-detail-pages",
+				"name": "Service Detail Pages",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Service detail, config, and logs sub-pages under /services/[id]",
+				"evidence": "Routes exist at services/[id]/, services/[id]/config/, services/[id]/logs/ but return 404 — service lookup by ID fails; needs valid service registry integration",
+				"priority": "low",
+				"effort": "small"
+			},
+			{
+				"id": "feat-service-status",
+				"name": "Live Service Status",
+				"phase": "ms-core",
+				"status": "done",
+				"description": "Show actual running/stopped status for services instead of hardcoded 'offline'",
+				"evidence": "Project overview page shows services but status is hardcoded to 'offline' even if configured",
+				"priority": "low",
+				"effort": "small"
+			},
+			{
+				"id": "feat-sqlite-migration",
+				"name": "SQLite Data Layer",
+				"phase": "ms-data-layer",
+				"status": "not-started",
+				"description": "Migrate .playground/ JSON files to SQLite — tasks, sessions, analytics, incidents, sync state, notifications, favorites, coverage trends",
+				"evidence": "dec-004: 15+ JSON files with read-parse-write cycles; PM already uses SQLite successfully",
+				"priority": "high",
+				"effort": "large"
+			},
+			{
+				"id": "feat-reactive-data",
+				"name": "Reactive Dashboard Updates",
+				"phase": "ms-data-layer",
+				"status": "not-started",
+				"description": "Live data updates on dashboard pages via SSE or polling from SQLite queries instead of full page reload",
+				"priority": "medium",
+				"effort": "medium"
+			},
+			{
+				"id": "feat-plan-task-link",
+				"name": "Plan ↔ Task ↔ GitHub Integration",
+				"phase": "ms-data-layer",
+				"status": "not-started",
+				"description": "Link sprint tasks to task-store tasks via SQLite foreign keys. When a task completes, PM auto-advances sprint/phase/release. GitHub sync creates issues tagged by sprint, updates project board columns by phase. Sprint progress is calculated from real task completion, not inline status.",
+				"priority": "high",
+				"effort": "large"
+			},
+			{
+				"id": "feat-token-optimization",
+				"name": "Token Usage Reduction",
+				"phase": "ms-perf",
+				"status": "not-started",
+				"description": "Reduce tokens per agent interaction — smarter context loading, prompt compression, only send relevant project context",
+				"priority": "high",
+				"effort": "large"
+			},
+			{
+				"id": "feat-heartbeat-profiling",
+				"name": "Heartbeat Cycle Profiling",
+				"phase": "ms-perf",
+				"status": "not-started",
+				"description": "Profile heartbeat loop to identify bottlenecks — measure time per module, optimize slow paths",
+				"priority": "medium",
+				"effort": "medium"
+			},
+			{
+				"id": "feat-design-audit",
+				"name": "Design Consistency Audit",
+				"phase": "ms-design-revision",
+				"status": "not-started",
+				"description": "Audit all pages for consistent layout, component patterns, spacing, empty/loading/error states. Fix inconsistencies discovered during v0.1.",
+				"priority": "medium",
+				"effort": "large"
+			},
+			{
+				"id": "feat-page-content-depth",
+				"name": "Page Content Depth",
+				"phase": "ms-design-revision",
+				"status": "not-started",
+				"description": "Pages that currently show just a heading (hooks, inbox, reports, security, sessions, settings, tasks at top level) need proper content layouts with real data visualization",
+				"priority": "medium",
+				"effort": "large"
+			},
+			{
+				"id": "feat-user-templates",
+				"name": "User-Created Templates",
+				"phase": "ms-templates",
+				"status": "not-started",
+				"description": "Save project configs as reusable templates. Template creation flow in UI. Share/export templates.",
+				"priority": "medium",
+				"effort": "medium"
+			},
+			{
+				"id": "feat-template-params",
+				"name": "Template Parameter System",
+				"phase": "ms-templates",
+				"status": "done",
+				"description": "Parameterized templates with interactive prompts during project creation. Go, Rust, game mod templates already support params (project type, CI workflow, game version, framework).",
+				"evidence": "project-templates.ts — params array with key/label/type/default/options. Go has project type selector, Rust has CI workflow toggle, game mods have version/framework params.",
+				"priority": "medium",
+				"effort": "medium"
+			},
+			{
+				"id": "feat-create-with-ai",
+				"name": "Create with AI",
+				"phase": "ms-templates",
+				"status": "not-started",
+				"description": "Instead of picking a template, user describes what they want and an AI agent researches the framework/engine, configures the workspace, creates CLAUDE.md and build scripts. Same as import but generative — for projects where no static template can capture the modding/engine nuances.",
+				"priority": "high",
+				"effort": "large"
+			},
+			{
+				"id": "feat-backlog",
+				"name": "v0.2 Backlog (discovered during v0.1)",
+				"phase": "ms-design-revision",
+				"status": "collecting",
+				"description": "Placeholder for improvements, design revisions, and fixes discovered during v0.1 sprint execution. Items added here as they're found.",
+				"priority": "varies",
+				"effort": "varies",
+				"items": [
+					"Review Agent Queue UI — show pending/completed reviews, findings, escalation decisions",
+					"Test Execution Log Viewer — display post-commit test output, pass/fail, coverage per run",
+					"Post-Commit Activity Log — show commits, pushes, follow-ups, discussion replies in timeline",
+					"Memory Guardian Dashboard — show consolidation runs, drift detection, entry pruning stats",
+					"UX Inspector Results — show inspection findings, regression test results, route coverage",
+					"Release Agent Queue — show pending/in-progress/completed release preparations",
+					"Memory UPDATE endpoint — PUT not implemented (only DELETE exists)",
+					"Incident escalation workflow — incidents exist but no severity escalation or notification chain",
+					"AGENT CONTROL: Add Stop Agent button on agents page (kill PID, mark task interrupted, preserve partial work)",
+					"AGENT CONTROL: Session interjection — send messages into a running agent's stdin for course correction",
+					"AGENT CONTROL: Restart agent on same task with updated context/correction message",
+					"BLOCKING: Add per-phase timeouts to heartbeat loop — one hanging phase blocks entire cycle (heartbeat/index.ts)",
+					"BLOCKING: Add AbortSignal.timeout() to Claude API fetch (providers/claude.ts:80) — can hang indefinitely",
+					"BLOCKING: Add timeout to buildContextForTask() in agent spawning (heartbeat/index.ts:207-218)",
+					"BLOCKING: Replace execSync with execFileAsync in ci-pipeline.ts (lines 48, 53, 68) and dependency-health.ts (lines 70, 98)",
+					"REACTIVE: Replace dashboard 15s health polling with SSE (reuse notification SSE pattern)",
+					"REACTIVE: Replace agents 5s polling with SSE — broadcast spawn/complete/fail events from heartbeat",
+					"REACTIVE: Add task list auto-refresh — polling or SSE for task status changes",
+					"REACTIVE: Add memory sync notifications — memory writes trigger SSE broadcast",
+					"QUALITY: Replace 47 `any` types with proper interfaces across server modules",
+					"QUALITY: Replace console.log/warn/error with structured logger (15+ locations)",
+					"QUALITY: Add size cap to agent-analytics.json (currently 954KB, no limit)",
+					"QUALITY: Fix empty catch blocks — at minimum log with context (6+ locations)",
+					"QUALITY: Consistent API error response envelope across 67 endpoints",
+					"QUALITY: Apply rate-limiter to /api/chat and /api/agents/spawn (module exists but unused)",
+					"TESTING: Add tests for cache.ts, rate-limiter.ts, incidents.ts, coverage-tracker.ts, mcp-tool-registry.ts",
+					"REFACTOR: Split files over 1000 lines — project-templates.ts (1662), heartbeat/index.ts (1116), memory/+page.svelte (1035), chat/+page.svelte (1052)"
+				]
+			}
+		],
+		"releases": [
+			{
+				"id": "rel-initial",
+				"version": "v0.1",
+				"name": "Initial Release",
+				"status": "active",
+				"featureComplete": [
+					"The individual component works end-to-end",
+					"Code is DRY — no dead code or unnecessary abstractions",
+					"Changes are scoped to planned files only",
+					"The page still works with the component across happy path, loading, empty, and error states",
+					"Any trackable data is wired to analytics/reporting"
+				],
+				"phases": [
+					"ms-core",
+					"ms-release"
+				]
+			},
+			{
+				"id": "rel-refinement",
+				"version": "v0.2",
+				"name": "Refinement",
+				"status": "planned",
+				"featureComplete": [
+					"All v0.1 DoD criteria still hold",
+					"Performance improvement is measurable (before/after metrics)",
+					"Design revisions maintain or improve UX consistency across all pages",
+					"Token usage reduction is quantified per feature"
+				],
+				"phases": [
+					"ms-data-layer",
+					"ms-perf",
+					"ms-design-revision",
+					"ms-templates"
+				]
+			}
+		],
+		"phases": [
+			{
+				"id": "ms-core",
+				"name": "Core Development",
+				"status": "active",
+				"releaseId": "rel-initial",
+				"goals": [
+					"All lifecycle phases functional (Create, Develop, Maintain, Release)",
+					"Real data loading on all pages — no mock data",
+					"Agent automation works end-to-end without manual intervention"
+				],
+				"acceptanceCriteria": [
+					"All 42 pages load with zero console errors (Playwright-verified)",
+					"All features in featureMap with status 'done' pass DoD criteria",
+					"All 'partial' and 'not-started' features either completed or explicitly deferred to v0.2"
+				],
+				"tasks": [],
+				"dependencies": [],
+				"sprints": []
+			},
+			{
+				"id": "ms-release",
+				"name": "Release Ready",
+				"status": "planned",
+				"releaseId": "rel-initial",
+				"goals": [
+					"Production-ready release with all tests passing",
+					"PRODUCT_ROADMAP.md retired — project-plan.json is sole source of truth"
+				],
+				"acceptanceCriteria": [
+					"npm run build passes with zero errors",
+					"All Playwright smoke tests pass",
+					"No known critical bugs",
+					"Cross-platform paths resolved (no hardcoded F:/code)"
+				],
+				"tasks": [],
+				"dependencies": [
+					"ms-core"
+				],
+				"sprints": []
+			},
+			{
+				"id": "ms-data-layer",
+				"name": "Data Layer Migration",
+				"status": "planned",
+				"releaseId": "rel-refinement",
+				"goals": [
+					"Consolidate .playground/*.json into SQLite with proper indexing",
+					"Queryable runtime state — no more read-parse-write cycles",
+					"Reactive data updates for live dashboard",
+					"Plan ↔ Task ↔ GitHub relational model — sprints reference task-store tasks, PM auto-advances on completion, GitHub sync is plan-aware"
+				],
+				"acceptanceCriteria": [
+					"All JSON state files migrated to SQLite tables",
+					"Migration script handles existing .playground/ data",
+					"Query performance measurably faster than JSON scanning",
+					"Dashboard pages load from SQLite without regression",
+					"Sprint tasks link to task-store tasks via foreign key — PM calculates progress from real task completion",
+					"Heartbeat spawns agents from tasks that reference sprint → phase → release roadmap",
+					"GitHub issues created from sprint tasks include sprint/phase/release labels"
+				],
+				"tasks": [],
+				"dependencies": [
+					"ms-release"
+				],
+				"sprints": []
+			},
+			{
+				"id": "ms-perf",
+				"name": "Performance & Token Optimization",
+				"status": "planned",
+				"releaseId": "rel-refinement",
+				"goals": [
+					"Reduce token usage per agent interaction",
+					"Faster page loads and heartbeat cycles",
+					"Smarter context loading — only send what agents need"
+				],
+				"acceptanceCriteria": [
+					"Token usage per task reduced by measurable percentage",
+					"Agent context size optimized — no redundant data in prompts",
+					"Dashboard page load times within acceptable range",
+					"Heartbeat cycle time profiled and bottlenecks addressed"
+				],
+				"tasks": [],
+				"dependencies": [],
+				"sprints": []
+			},
+			{
+				"id": "ms-design-revision",
+				"name": "Design Revision",
+				"status": "planned",
+				"releaseId": "rel-refinement",
+				"goals": [
+					"Audit and update page designs discovered during v0.1 work",
+					"Consistent UX patterns across all 42+ pages",
+					"Improve information density and navigation flow"
+				],
+				"acceptanceCriteria": [
+					"All pages follow consistent layout and component patterns",
+					"Empty/loading/error states are visually consistent",
+					"Navigation flow tested and refined",
+					"Pages that were 'heading only' in v0.1 have proper content layouts"
+				],
+				"tasks": [],
+				"dependencies": [],
+				"sprints": []
+			},
+			{
+				"id": "ms-templates",
+				"name": "Template System & AI Creation",
+				"status": "planned",
+				"releaseId": "rel-refinement",
+				"goals": [
+					"Create with AI — agent-driven project setup for any framework/engine",
+					"User-created template support (save project configs as templates)",
+					"Template sharing/export"
+				],
+				"acceptanceCriteria": [
+					"Create with AI flow works end-to-end for a novel modding project",
+					"Users can save project configs as reusable templates",
+					"Template creation flow in the UI",
+					"17+ templates maintained (already at 17)"
+				],
+				"tasks": [],
+				"dependencies": [],
+				"sprints": []
+			}
+		],
+		"definitionOfDone": [
+			"npm run build passes — no broken imports or type errors",
+			"Page renders correctly across happy path, loading, empty, and error states",
+			"Playwright smoke test passes for all affected pages — key UI renders, no console errors",
+			"Code is scoped to planned files — DRY, no dead code",
+			"Agent tasks (if involved) complete without manual intervention, no progress loss on restart, no regressions",
+			"All feature data wired to analytics/reporting",
+			"Every feature documented — inline comments for non-obvious logic + entry in project plan"
+		]
+	},
+	"sprints": [
+		{
+			"id": "sprint-1",
+			"name": "Close the Gaps",
+			"phase": "ms-core",
+			"status": "completed",
+			"completedAt": "2026-03-20T04:15:00.000Z",
+			"goal": "Complete all partial features to bring v0.1 to feature-complete. Templates already done (17 exist). Branch per task, batch-merge as sprint PR.",
+			"tasks": [
+				{
+					"id": "task-s1-01",
+					"feature": "feat-task-deps",
+					"title": "Add dependency picker widget to task create/edit modal",
+					"status": "todo",
+					"effort": "tiny",
+					"description": "Heartbeat already skips blocked tasks (index.ts:157-162). task-store.ts has getBlockedStatus() (line 242) and accepts blockedBy in create/update. UI has newBlockedBy state + blockerCandidates derived list. ONLY MISSING: the actual picker widget (multi-select dropdown) in the task modal that lets users select from blockerCandidates.",
+					"files": ["dashboard/src/routes/projects/[id]/tasks/+page.svelte"],
+					"verify": "npm run build && navigate to /projects/ai-playground/tasks, create task with dependency, verify blocked task shows status"
+				},
+				{
+					"id": "task-s1-02",
+					"feature": "feat-release-page",
+					"title": "Create POST endpoint for release creation",
+					"status": "todo",
+					"effort": "small",
+					"description": "Release page modal exists with version picker, changelog field, draft/prerelease flags, and createRelease() function that POSTs to /api/projects/:id/releases. The endpoint doesn't exist yet. Create +server.ts that calls release-manager.ts generateChangelog() and publishRelease(). Pattern: copy from /api/projects/[id]/tasks/+server.ts.",
+					"files": ["dashboard/src/routes/api/projects/[id]/releases/+server.ts"],
+					"verify": "npm run build && navigate to /projects/ai-playground/releases, click Create Release, verify modal submits and release appears"
+				},
+				{
+					"id": "task-s1-03",
+					"feature": "feat-cross-platform",
+					"title": "Verify and document cross-platform path handling",
+					"status": "todo",
+					"effort": "tiny",
+					"description": "WORKSPACE_ROOT already configurable via PLAYGROUND_WORKSPACE env var. WORKSPACE_ROOTS supports multiple via PLAYGROUND_WORKSPACES. No hardcoded F:/code found in source. Task: verify with grep, document env vars in .env.example, mark feature as done.",
+					"files": [".env.example"],
+					"verify": "grep -r 'F:[/\\\\]' dashboard/src/ (should return 0 matches) && npm run build"
+				},
+				{
+					"id": "task-s1-04",
+					"feature": "feat-service-detail-pages",
+					"title": "Wire service detail pages to SERVICES registry",
+					"status": "todo",
+					"effort": "small",
+					"description": "Service detail +page.server.ts already loads from SERVICES const by ID with health checks, PID, RAM. Valid IDs: 'ollama', 'openclaw', 'claude-flow', 'penpot-mcp'. Pages 404 because service lookup fails. Check if the server code returns properly or if +page.svelte needs error handling. Wire config sub-page to read service configPath, logs sub-page to tail log files.",
+					"files": ["dashboard/src/routes/services/[id]/+page.svelte", "dashboard/src/routes/services/[id]/config/+page.svelte", "dashboard/src/routes/services/[id]/logs/+page.svelte"],
+					"verify": "npm run build && navigate to /services/ollama, /services/openclaw — verify they load with status"
+				},
+				{
+					"id": "task-s1-05",
+					"feature": "feat-service-status",
+					"title": "Replace hardcoded 'offline' with real health checks on project overview",
+					"status": "todo",
+					"effort": "tiny",
+					"description": "Project overview +page.server.ts line 28 hardcodes status: 'offline' for all services. The project services page (/projects/[id]/services/+page.server.ts lines 32-42) already has checkHealth() with fetch + AbortSignal.timeout(2000). Copy that pattern to the overview page. 3 lines of code.",
+					"files": ["dashboard/src/routes/projects/[id]/+page.server.ts"],
+					"verify": "npm run build && navigate to /projects/ai-playground — verify services show 'running' or 'stopped' instead of 'offline'"
+				}
+			]
+		},
+		{
+			"id": "sprint-2",
+			"name": "Polish & Verify",
+			"phase": "ms-release",
+			"status": "planned",
+			"goal": "Verify all done features meet DoD, fix any gaps found by Playwright/analytics audit, prepare for release",
+			"tasks": [
+				{
+					"id": "task-s2-01",
+					"feature": null,
+					"title": "Full Playwright smoke test suite for all 42 pages",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Create a Playwright test file at tests/smoke.spec.ts that visits all 42 routes and asserts: page loads (200), key heading renders, no console errors. Use the Playwright MCP browser tools or @playwright/test. Route list: /, /about, /agents, /agents/create, /apps, /channels, /chat, /hooks, /inbox, /memory, /models, /notifications, /projects, /projects/create, /projects/import, /reports, /security, /services, /services/new, /sessions, /settings, /tasks, plus /projects/ai-playground and all 16 sub-routes. Add to CI workflow (.github/workflows/ci.yml).",
+					"files": ["tests/smoke.spec.ts", ".github/workflows/ci.yml"],
+					"verify": "npx playwright test tests/smoke.spec.ts"
+				},
+				{
+					"id": "task-s2-02",
+					"feature": null,
+					"title": "Audit analytics wiring — ensure all features emit events",
+					"status": "done",
+					"effort": "small",
+					"description": "Chunk D audit completed 2026-03-20. Found 13 event types with 1,939 events. 12 features have zero analytics — covered by Sprint 3 tasks."
+				},
+				{
+					"id": "task-s2-03",
+					"feature": null,
+					"title": "Verify all pages serve real data (no remaining mocks)",
+					"status": "done",
+					"effort": "small",
+					"description": "Chunk C audit completed 2026-03-20. All 25+ routes load from real sources. Zero mock data, zero TODOs in server files. Service status hardcoded to 'offline' covered by Sprint 1 task-s1-05."
+				},
+				{
+					"id": "task-s2-04",
+					"feature": null,
+					"title": "Retire PRODUCT_ROADMAP.md",
+					"status": "done",
+					"effort": "tiny",
+					"description": "Deprecation notice added 2026-03-20 pointing to project-plan.json as sole source of truth."
+				},
+				{
+					"id": "task-s2-05",
+					"feature": null,
+					"title": "npm run build passes with zero errors",
+					"status": "done",
+					"effort": "small",
+					"description": "Build verified 2026-03-20 after PM page type updates. Built in 7.34s with zero errors."
+				}
+			]
+		},
+		{
+			"id": "sprint-3",
+			"name": "Analytics Wiring",
+			"phase": "ms-core",
+			"status": "planned",
+			"goal": "Every agent lifecycle event is logged — every handoff, start, thought, token usage, input, output. Reports depend on complete observability.",
+			"tasks": [
+				{
+					"id": "task-s3-01",
+					"feature": "feat-analytics",
+					"title": "Review Agent analytics — spawn, findings, escalation, completion",
+					"status": "todo",
+					"effort": "small",
+					"description": "Import recordEvent from agent-analytics.ts. Add calls at: spawn point (review_spawned with trigger reason), findings parsed (review_findings with count/severity), escalation decision (review_escalated from Ollama to Claude), completion (review_completed with duration/tokens). Pattern: see agent-spawn.ts for existing recordEvent calls.",
+					"files": ["dashboard/src/lib/server/heartbeat/review-agent.ts", "dashboard/src/lib/server/heartbeat/agent-analytics.ts"],
+					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/heartbeat/review-agent.ts (should be 4+)"
+				},
+				{
+					"id": "task-s3-02",
+					"feature": "feat-analytics",
+					"title": "Task dependency events — created, resolved, blocked",
+					"status": "todo",
+					"effort": "small",
+					"description": "Add recordEvent calls in task-store.ts: when blockedBy is set in createTask/updateTask (task_dependency_created), when a task completes and unblocks others (task_dependency_resolved), in heartbeat/index.ts when a task is skipped due to blockers (task_blocked).",
+					"files": ["dashboard/src/lib/server/task-store.ts", "dashboard/src/lib/server/heartbeat/index.ts"],
+					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/task-store.ts (should be 2+)"
+				},
+				{
+					"id": "task-s3-03",
+					"feature": "feat-analytics",
+					"title": "PM System analytics — agent spawn, sync, task planning",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Add recordEvent calls in project-manager.ts: bootstrapProjectManager (pm_spawned), syncToGitHubBoard (pm_sync_completed with items count), reviewProjectPlan (pm_reviewed with observations count). Also in the PM chat API endpoint when Claude responds (pm_chat with token count).",
+					"files": ["dashboard/src/lib/server/project-manager.ts", "dashboard/src/routes/api/projects/[id]/pm/+server.ts"],
+					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/project-manager.ts (should be 3+)"
+				},
+				{
+					"id": "task-s3-04",
+					"feature": "feat-analytics",
+					"title": "Memory Guardian analytics — consolidation, drift, cleanup",
+					"status": "todo",
+					"effort": "small",
+					"description": "Add recordEvent calls in memory-guardian.ts at: start of consolidation run, when drift threshold crossed, when entries pruned (with count), when consolidation completes (with duration).",
+					"files": ["dashboard/src/lib/server/heartbeat/memory-guardian.ts"],
+					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/heartbeat/memory-guardian.ts (should be 3+)"
+				},
+				{
+					"id": "task-s3-05",
+					"feature": "feat-analytics",
+					"title": "Release Manager analytics — prep, publish, changelog",
+					"status": "todo",
+					"effort": "small",
+					"description": "Add recordEvent calls in release-manager.ts: determineBump (release_prepared with version/bump type), generateChangelog (changelog_generated with entry count), publishRelease (release_published with target). Also in release-agent.ts for agent-driven releases.",
+					"files": ["dashboard/src/lib/server/release-manager.ts", "dashboard/src/lib/server/heartbeat/release-agent.ts"],
+					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/release-manager.ts (should be 3+)"
+				},
+				{
+					"id": "task-s3-06",
+					"feature": "feat-analytics",
+					"title": "Settings & config change tracking",
+					"status": "todo",
+					"effort": "small",
+					"description": "Add recordEvent call in the settings PUT handler at dashboard/src/routes/api/projects/[id]/settings/+server.ts. Log settings_saved with the keys that changed (diff old vs new). Also track model routing changes in model-routing-settings.ts.",
+					"files": ["dashboard/src/routes/api/projects/[id]/settings/+server.ts", "dashboard/src/lib/server/model-routing-settings.ts"],
+					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/routes/api/projects/[id]/settings/+server.ts (should be 1+)"
+				},
+				{
+					"id": "task-s3-07",
+					"feature": "feat-analytics",
+					"title": "GitHub Sync analytics — push, pull, failures",
+					"status": "todo",
+					"effort": "small",
+					"description": "Add recordEvent calls in github-sync.ts: after pull (github_sync_pull with count), after push (github_sync_push with count), on failure (github_sync_failed with reason).",
+					"files": ["dashboard/src/lib/server/github-sync.ts"],
+					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/github-sync.ts (should be 3+)"
+				},
+				{
+					"id": "task-s3-08",
+					"feature": "feat-analytics",
+					"title": "Dependency Health analytics — audit runs, vulnerabilities",
+					"status": "todo",
+					"effort": "small",
+					"description": "Add recordEvent calls in dependency-health.ts: when audit starts (dependency_audit_started with project type), when vulnerability found (vulnerability_found with severity/package), when audit completes (dependency_audit_completed with total count).",
+					"files": ["dashboard/src/lib/server/heartbeat/dependency-health.ts"],
+					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/heartbeat/dependency-health.ts (should be 3+)"
+				},
+				{
+					"id": "task-s3-09",
+					"feature": "feat-analytics",
+					"title": "Coverage Tracking analytics — collection, regression",
+					"status": "todo",
+					"effort": "small",
+					"description": "Add recordEvent calls in coverage-tracker.ts: when coverage collected (coverage_collected with percentage/format), when regression detected (coverage_regression_detected with old%/new%), when trend updated (coverage_trend_updated with direction).",
+					"files": ["dashboard/src/lib/server/heartbeat/coverage-tracker.ts"],
+					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/heartbeat/coverage-tracker.ts (should be 2+)"
+				},
+				{
+					"id": "task-s3-10",
+					"feature": "feat-analytics",
+					"title": "Service lifecycle analytics — start, restart, health",
+					"status": "todo",
+					"effort": "small",
+					"description": "Add recordEvent calls in service-starter.ts (service_started with name/method) and auto-restart.ts (auto_restart_triggered with name/reason/attempt, auto_restart_result with success/fail/duration).",
+					"files": ["dashboard/src/lib/server/heartbeat/service-starter.ts", "dashboard/src/lib/server/heartbeat/auto-restart.ts"],
+					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/heartbeat/auto-restart.ts (should be 2+)"
+				},
+				{
+					"id": "task-s3-11",
+					"feature": "feat-analytics",
+					"title": "Token usage tracking on all agent interactions",
+					"status": "todo",
+					"effort": "medium",
+					"description": "In agent-spawn.ts, parse Claude Code CLI output for token usage (look for 'input_tokens', 'output_tokens' in stream). In openclaw-agent.ts, capture token counts from response headers. Record with each 'completed' event: {input_tokens, output_tokens, total_cost, model_used, duration_ms}. Update the 'completed' recordEvent call to include these fields.",
+					"files": ["dashboard/src/lib/server/heartbeat/agent-spawn.ts", "dashboard/src/lib/server/heartbeat/openclaw-agent.ts", "dashboard/src/lib/server/heartbeat/agent-analytics.ts"],
+					"verify": "npm run build && grep 'input_tokens\\|output_tokens\\|total_cost' dashboard/src/lib/server/heartbeat/agent-spawn.ts (should match)"
+				},
+				{
+					"id": "task-s3-12",
+					"feature": "feat-analytics",
+					"title": "Agent I/O logging — prompt sent, response received",
+					"status": "todo",
+					"effort": "medium",
+					"description": "In agent-spawn.ts, capture the prompt sent to the agent (from context-loader output) and truncate to 500 chars. On completion, capture the agent's final output summary (last 500 chars of stdout). Store both in the 'spawned' and 'completed' events as {prompt_preview, response_preview}. Full I/O remains in .playground/chats/ session files.",
+					"files": ["dashboard/src/lib/server/heartbeat/agent-spawn.ts"],
+					"verify": "npm run build && grep 'prompt_preview\\|response_preview' dashboard/src/lib/server/heartbeat/agent-spawn.ts (should match)"
+				},
+				{
+					"id": "task-s3-13",
+					"feature": "feat-analytics",
+					"title": "Reports page wiring — verify all event types power reports",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Read dashboard/src/lib/server/reports.ts and dashboard/src/routes/reports/+page.server.ts. Check which analytics event types have corresponding report sections. For new event types added in tasks s3-01 through s3-12 (review_*, task_dependency_*, pm_*, memory_*, release_*, settings_*, github_sync_*, dependency_*, coverage_*, service_*, token usage), add report generation logic in reports.ts and chart/table sections in +page.svelte.",
+					"files": ["dashboard/src/lib/server/reports.ts", "dashboard/src/routes/reports/+page.server.ts", "dashboard/src/routes/reports/+page.svelte"],
+					"verify": "npm run build && navigate to /reports — verify new event categories appear in report options"
+				}
+			]
+		}
+	],
+	"activeSprint": "sprint-2",
+	"decisions": [
+		{
+			"id": "dec-001",
+			"date": "2026-03-20",
+			"decision": "project-plan.json is the sole source of truth for roadmap and feature tracking",
+			"rationale": "PRODUCT_ROADMAP.md was massively stale (showed 5% Release coverage when most features were done). Single source prevents drift.",
+			"status": "accepted"
+		},
+		{
+			"id": "dec-002",
+			"date": "2026-03-20",
+			"decision": "Merge feature/real-data into dev before backfilling roadmap",
+			"rationale": "Clean baseline needed — 205 commits ahead, no merge conflicts, fast-forward merge",
+			"status": "accepted"
+		},
+		{
+			"id": "dec-003",
+			"date": "2026-03-20",
+			"decision": "Sequential Playwright agents for page health inventory",
+			"rationale": "App has 42+ pages — too large for single agent context. Chunked into top-level (A1) and project sub-pages (A2)",
+			"status": "accepted"
+		},
+		{
+			"id": "dec-004",
+			"date": "2026-03-20",
+			"decision": "Keep JSON for v0.1, migrate runtime state to SQLite in v0.2",
+			"rationale": "JSON works for single-user localhost but doesn't scale — no indexing, no queries, no reactivity. .playground/ already has 15+ JSON files with read-parse-write cycles. SQLite migration will consolidate tasks, sessions, analytics, incidents, and sync state into a queryable store with proper indexing.",
+			"status": "accepted"
+		},
+		{
+			"id": "dec-005",
+			"date": "2026-03-20",
+			"decision": "Branch per task, PR per sprint group for agent execution",
+			"rationale": "Solo dev with agents — PRs per task create merge overhead, but per-sprint gives clean rollback. Agents work on isolated branches (sprint-1/task-deps, sprint-1/release-endpoint), batch-merge into one sprint PR for review.",
+			"status": "accepted"
+		},
+		{
+			"id": "dec-006",
+			"date": "2026-03-20",
+			"decision": "Templates marked done (17 exist), Create with AI added to v0.2",
+			"rationale": "Roadmap said 6 templates, but 17 actually exist (blank, sveltekit, nextjs, python, python-cli, fullstack, agent, go, rust, ruby, java, dotnet, bepinex, fabric, forge, paper, bg3). Template params also done. The real gap is Create with AI — agent-driven project setup for novel frameworks where static templates can't capture the nuances.",
+			"status": "accepted"
+		},
+		{
+			"id": "dec-007",
+			"date": "2026-03-20",
+			"decision": "No Sprint 0 needed — all 8 backend security issues already fixed",
+			"rationale": "Security verification confirmed all 8 issues (TOCTOU races, shell injection, gateway hangs, tool bypass, FD leaks, task mutation, dropped replies, tool message exclusion) were fixed across 5 commits: b6d313d, 0dde6ad, 1f6e77c, 1898d6a, e3798e7. AsyncMutex, execFile with arrays, per-request isolation, confirmation gates all verified in code.",
+			"status": "accepted"
+		}
+	],
+	"lastUpdated": "2026-03-20T03:30:00.000Z",
+	"updatedBy": "pm-session"
+}

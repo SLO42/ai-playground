@@ -1,6 +1,12 @@
-# Product Roadmap
+# Product Roadmap (RETIRED)
 
-> Updated: 2026-03-09
+> **DEPRECATED as of 2026-03-20** — This file is no longer maintained.
+> The sole source of truth for roadmap, features, and sprints is `.playground/project-plan.json`.
+> See the PM page (`/projects/ai-playground/pm`) for the live macro strategy.
+
+---
+
+> Last content update: 2026-03-09
 
 ai-playground is a project lifecycle platform — create, develop, maintain, and release software projects of any kind. Claw is the automation engine underneath.
 

@@ -94,6 +94,42 @@
 		if (r.ok) window.location.reload();
 	}
 
+	// Inline PM input — talk to the PM directly from the dashboard
+	let pmInput = $state('');
+	let pmProcessing = $state(false);
+	let pmFeedback = $state<string | null>(null);
+
+	async function sendToPm() {
+		const text = pmInput.trim();
+		if (!text || pmProcessing) return;
+		pmProcessing = true;
+		pmFeedback = null;
+		try {
+			const r = await pmAction('process-reply', { content: text });
+			if (r.ok) {
+				const result = await r.json();
+				const applied: string[] = [];
+				if (result.applied?.purpose) applied.push('purpose');
+				if (result.applied?.longTermVision) applied.push('long-term vision');
+				if (result.applied?.role) applied.push('role');
+				if (result.applied?.keyHighlights?.length) applied.push(`${result.applied.keyHighlights.length} highlights`);
+				if (result.applied?.definitionOfDone?.length) applied.push(`${result.applied.definitionOfDone.length} DoD criteria`);
+				if (result.applied?.featureComplete?.length) applied.push(`${result.applied.featureComplete.length} feature-complete criteria`);
+				pmFeedback = applied.length > 0
+					? `Updated: ${applied.join(', ')}. Saved to PM memory.`
+					: 'Saved to PM memory. Open a discussion to refine further with Claude.';
+				pmInput = '';
+				// Reload after a short delay so the user sees the feedback
+				setTimeout(() => window.location.reload(), 2000);
+			} else {
+				const err = await r.json().catch(() => ({ error: 'Failed' }));
+				pmFeedback = `Error: ${err.error}`;
+			}
+		} finally {
+			pmProcessing = false;
+		}
+	}
+
 	function formatDate(iso: string): string {
 		const d = new Date(iso);
 		const diff = Date.now() - d.getTime();
@@ -148,6 +184,28 @@
 					Re-scan
 				</button>
 			</div>
+		</div>
+
+		<!-- Inline PM Input -->
+		<div class="bg-bg-secondary rounded-lg border border-border p-4">
+			<form onsubmit={(e) => { e.preventDefault(); sendToPm(); }} class="flex gap-3">
+				<textarea
+					bind:value={pmInput}
+					placeholder="Tell the PM about your project — purpose, role, releases, features, what 'done' means..."
+					rows={2}
+					class="flex-1 px-3 py-2 rounded-md bg-bg-primary border border-border text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent-green resize-y"
+				></textarea>
+				<button
+					type="submit"
+					disabled={pmProcessing || !pmInput.trim()}
+					class="self-end px-4 py-2 rounded-md bg-accent-green text-black text-xs font-medium hover:bg-accent-green/90 transition-colors disabled:opacity-50 whitespace-nowrap"
+				>
+					{pmProcessing ? 'Processing...' : 'Update Plan'}
+				</button>
+			</form>
+			{#if pmFeedback}
+				<p class="text-xs mt-2 {pmFeedback.startsWith('Error') ? 'text-accent-red' : 'text-accent-green'}">{pmFeedback}</p>
+			{/if}
 		</div>
 
 		{#if data.plan}

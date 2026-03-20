@@ -19,6 +19,81 @@ import { writeFile, mkdir } from 'fs/promises';
 import type { PMMemoryQuery } from '$lib/types/project-plan.js';
 import type { ChatSession } from '$lib/types/chat.js';
 
+/** Extract structured plan updates from freeform user text. */
+function parseUserInput(text: string, plan: import('$lib/types/project-plan.js').ProjectPlan) {
+	const lower = text.toLowerCase();
+	const result = {
+		purpose: '',
+		longTermVision: '',
+		role: null as import('$lib/types/project-plan.js').ProjectRole | null,
+		keyHighlights: [] as string[],
+		definitionOfDone: [] as string[],
+		featureComplete: [] as string[]
+	};
+
+	// Extract purpose — look for "purpose:" or first substantial sentence about what the project is
+	const purposeMatch = text.match(/purpose[:\s]*(?:is\s+)?(.+?)(?:\.\s+(?:my role|we will|key feature|feature complete|first release|long.?term|for future))/is);
+	if (purposeMatch) {
+		result.purpose = purposeMatch[1].trim().replace(/\s+/g, ' ');
+	}
+
+	// Extract role
+	const roleMatch = text.match(/my role\s+(?:is\s+)?(.+?)(?:\.\s+(?:we |this |key |feature|first|for future))/is);
+	if (roleMatch) {
+		const roleText = roleMatch[1].trim();
+		result.role = {
+			title: roleText.includes('sole') ? 'Sole Developer & Owner' : 'Project Lead',
+			responsibilities: [roleText.replace(/\s+/g, ' ')]
+		};
+	}
+
+	// Extract key features
+	const featureMatch = text.match(/key feature[s]?\s+(?:would be|are|include)\s+(.+?)(?:\.\s+(?:feature complete|first release|long.?term|for future|done))/is);
+	if (featureMatch) {
+		result.keyHighlights = featureMatch[1]
+			.split(/[,.]/)
+			.map(s => s.trim())
+			.filter(s => s.length > 5);
+	}
+
+	// Extract feature complete definition
+	const fcMatch = text.match(/feature complete\s+(?:means|is when|=)\s+(.+?)(?:\.\s+(?:first release|long.?term|for future|apis|it doesn))/is);
+	if (fcMatch) {
+		result.featureComplete = fcMatch[1]
+			.split(/[,.]/)
+			.map(s => s.trim())
+			.filter(s => s.length > 5);
+	}
+
+	// Extract definition of done / feature complete criteria
+	const dodPatterns = [
+		/(?:the code is|it doesn.t|page still|any data|doesn.t put|apis are|features are)[^.]+/gi
+	];
+	for (const p of dodPatterns) {
+		const matches = text.match(p);
+		if (matches) {
+			result.definitionOfDone.push(...matches.map(m => m.trim()));
+		}
+	}
+
+	// Extract long-term vision
+	const ltMatch = text.match(/(?:for future releases|long.?term|this project is ongoing|will one day|will see improvements)(.+?)(?:\.|$)/is);
+	if (ltMatch) {
+		result.longTermVision = ltMatch[0].trim().replace(/\s+/g, ' ');
+	}
+
+	// If we couldn't parse structure, store the whole thing as purpose if it's substantial
+	if (!result.purpose && text.length > 50) {
+		// Take the first 2 sentences as purpose
+		const sentences = text.split(/[.!?]\s+/).filter(s => s.length > 10);
+		if (sentences.length > 0) {
+			result.purpose = sentences.slice(0, 2).join('. ').trim();
+		}
+	}
+
+	return result;
+}
+
 async function resolveProjectPath(id: string): Promise<string | null> {
 	const projects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root);
 	const project = projects.find(p => p.id === id);
@@ -212,6 +287,40 @@ export async function POST({ params, request }) {
 
 		case 'review':
 			return json(await reviewProjectPlan(projectPath));
+
+		case 'process-reply': {
+			// Directly process a PM discussion reply — doesn't wait for heartbeat.
+			// Reads user input, updates the plan and memory based on what they said.
+			const plan = await loadPlan(projectPath);
+			if (!plan) return json({ error: 'No plan — bootstrap first' }, { status: 400 });
+			if (!body.content) return json({ error: 'content is required' }, { status: 400 });
+
+			const userInput = body.content as string;
+
+			// Store the user's input as PM memory
+			pmDb.addEntry(projectPath, {
+				type: 'decision-context',
+				content: `User provided project direction: ${userInput.slice(0, 500)}`,
+				source: 'user-discussion',
+				confidence: 1.0
+			});
+
+			// Parse structured updates from the user's input and apply to plan
+			const updates = parseUserInput(userInput, plan);
+			if (updates.purpose) plan.macro.purpose = updates.purpose;
+			if (updates.longTermVision) plan.macro.longTermVision = updates.longTermVision;
+			if (updates.role) plan.macro.role = updates.role;
+			if (updates.keyHighlights.length > 0) plan.macro.keyHighlights = updates.keyHighlights;
+			if (updates.definitionOfDone.length > 0) plan.macro.definitionOfDone = updates.definitionOfDone;
+			if (updates.featureComplete.length > 0 && plan.macro.releases[0]) {
+				plan.macro.releases[0].featureComplete = updates.featureComplete;
+			}
+			plan.lastUpdated = new Date().toISOString();
+			plan.updatedBy = 'user-discussion';
+
+			await savePlan(projectPath, plan);
+			return json({ plan, applied: updates });
+		}
 
 		default:
 			return json({ error: `Unknown action: ${action}` }, { status: 400 });

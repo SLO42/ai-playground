@@ -982,14 +982,14 @@
 			"id": "sprint-5",
 			"name": "Data Foundation & AI Creation",
 			"phase": "ms-data-layer",
-			"status": "planned",
+			"status": "completed",
 			"goal": "Begin SQLite migration for tasks (replacing JSON files) and scaffold the Create with AI feature for generating new projects from prompts.",
 			"tasks": [
 				{
 					"id": "task-s5-01",
 					"feature": "feat-sqlite-migration",
 					"title": "Create SQLite task store with migration from JSON",
-					"status": "todo",
+					"status": "done",
 					"effort": "large",
 					"description": "Create a new task-store-sql.ts that uses better-sqlite3 (already a dependency via pm-memory-db). Schema: tasks(id, title, status, priority, complexity, assignee, projectId, blockedBy JSON, createdAt, updatedAt, completedAt). Include a migrate() function that reads existing tasks.json and imports rows. Keep task-store.ts as fallback during transition.",
 					"files": [
@@ -1002,7 +1002,7 @@
 					"id": "task-s5-02",
 					"feature": "feat-sqlite-migration",
 					"title": "Wire task API endpoints to SQLite store",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Update /api/tasks and /api/projects/[id]/tasks endpoints to use task-store-sql.ts instead of task-store.ts. Add a feature flag (TASK_STORE_BACKEND=sqlite|json) in settings to allow rollback. Default to sqlite when DB exists.",
 					"files": [
@@ -1015,7 +1015,7 @@
 					"id": "task-s5-03",
 					"feature": "feat-sqlite-migration",
 					"title": "SQLite analytics store (replace agent-analytics.json)",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Create agent-analytics-sql.ts with schema: events(id, taskId, taskTitle, type, timestamp, projectId, data JSON). Migrate existing JSON events on first load. Update getAgentAnalytics() to query SQL with proper indexing. Keep JSON as write-through cache for compatibility.",
 					"files": [
@@ -1028,7 +1028,7 @@
 					"id": "task-s5-04",
 					"feature": "feat-create-with-ai",
 					"title": "Scaffold Create with AI page and prompt interface",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Create /projects/create-ai route with a prompt input, template selector (optional), and technology tag picker. On submit, POST to /api/projects/create-ai which spawns a Claude agent with the prompt + selected template. Show real-time progress via SSE.",
 					"files": [
@@ -1042,7 +1042,7 @@
 					"id": "task-s5-05",
 					"feature": "feat-create-with-ai",
 					"title": "AI project generator agent — template + prompt to scaffold",
-					"status": "todo",
+					"status": "done",
 					"effort": "large",
 					"description": "Create a project-generator.ts module that: 1) Takes a user prompt + optional template ID, 2) Builds a Claude agent prompt with template structure + user requirements, 3) Spawns via spawnClaude with the project directory as cwd, 4) Creates the project, installs deps, runs initial build. Register the new project in the playground registry on completion.",
 					"files": [
@@ -1055,7 +1055,7 @@
 					"id": "task-s5-06",
 					"feature": "feat-plan-task-link",
 					"title": "Link sprint tasks to task-store via SQLite foreign keys",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Add sprint_id and plan_task_id columns to the SQLite tasks table. When a sprint task is created in the plan, auto-create a corresponding task-store entry with the link. When a task completes, update the sprint task status. This bridges the macro (plan) and micro (task-store) layers.",
 					"files": [
@@ -1067,7 +1067,7 @@
 			]
 		}
 	],
-	"activeSprint": "sprint-4",
+	"activeSprint": null,
 	"decisions": [
 		{
 			"id": "dec-001",
@@ -1119,6 +1119,6 @@
 			"status": "accepted"
 		}
 	],
-	"lastUpdated": "2026-03-20T04:12:30.776Z",
-	"updatedBy": "pm-session"
+	"lastUpdated": "2026-03-20T06:33:11.961Z",
+	"updatedBy": "claude-pm"
 }

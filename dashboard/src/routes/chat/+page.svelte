@@ -95,7 +95,7 @@
 	);
 	let isClaw = $derived(activeSessionMeta?.source === 'claw');
 	let isDiscussionSession = $derived(
-		isClaw && (activeSessionMeta?.status === 'waiting' || activeSessionId?.startsWith('discuss-'))
+		isClaw && (activeSessionMeta?.status === 'waiting' || activeSessionId?.startsWith('discuss-') || activeSessionId?.startsWith('pm-'))
 	);
 	let isLiveSession = $derived(
 		isClaw && !isDiscussionSession

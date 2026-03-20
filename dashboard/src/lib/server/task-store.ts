@@ -4,6 +4,7 @@ import type { Task } from '$lib/types/tasks.js';
 import crypto from 'crypto';
 import { withLock } from './async-mutex.js';
 import { recordEvent } from './heartbeat/agent-analytics.js';
+import { emit } from './event-bus.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -165,6 +166,8 @@ export async function createTask(projectPath: string, data: {
 		index.tasks.push(toIndexEntry(task));
 		await writeIndex(projectPath, index);
 
+		emit({ channel: 'tasks', type: 'created', data: { id: task.id, title: task.title }, timestamp: new Date().toISOString() });
+
 		if (task.blockedBy?.length) {
 			recordEvent({ taskId: task.id, taskTitle: task.title, type: 'task_dependency_created', count: task.blockedBy.length }).catch(() => {});
 		}
@@ -217,6 +220,8 @@ export async function updateTask(projectPath: string, taskId: string, updates: P
 		index.tasks[entryIdx] = toIndexEntry(task);
 		await writeIndex(projectPath, index);
 
+		emit({ channel: 'tasks', type: 'updated', data: { id: task.id, status: task.status }, timestamp: new Date().toISOString() });
+
 		// Track dependency resolution when a task is completed/cancelled
 		if (updates.status === 'completed' || updates.status === 'cancelled') {
 			const allTasks = await Promise.all(
@@ -245,6 +250,8 @@ export async function deleteTask(projectPath: string, taskId: string): Promise<b
 		await unlink(taskFilePath(projectPath, entry.bucket, taskId)).catch(() => {});
 		index.tasks.splice(entryIdx, 1);
 		await writeIndex(projectPath, index);
+
+		emit({ channel: 'tasks', type: 'deleted', data: { id: taskId }, timestamp: new Date().toISOString() });
 
 		return true;
 	});

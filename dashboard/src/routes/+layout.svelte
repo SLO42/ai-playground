@@ -6,9 +6,15 @@
 	import StatusBar from '$lib/components/StatusBar.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import CommandPalette from '$lib/components/CommandPalette.svelte';
+	import { startLiveUpdates, isConnected } from '$lib/stores/live-updates.js';
 	import type { LayoutData } from './$types.js';
 
 	let { data, children }: { data: LayoutData; children: any } = $props();
+
+	// Start SSE live updates — guards against non-browser and duplicate calls
+	$effect(() => {
+		startLiveUpdates();
+	});
 
 	// Live health polling — refreshes every 15s so status bar stays current
 	let liveHealth = $state(data.health);
@@ -164,7 +170,14 @@
 			</div>
 		{/if}
 
-		<StatusBar {services} {lastSync} />
+		<StatusBar {services} {lastSync}>
+			{#snippet trailing()}
+				<div class="flex items-center gap-1.5 text-[11px] text-text-secondary" title={isConnected() ? 'Live updates connected' : 'Live updates disconnected'}>
+					<span class="inline-block w-1.5 h-1.5 rounded-full {isConnected() ? 'bg-accent-green' : 'bg-text-tertiary'}"></span>
+					<span class="hidden sm:inline">Live</span>
+				</div>
+			{/snippet}
+		</StatusBar>
 
 		<main class="flex-1 p-4 md:p-6">
 			{@render children()}

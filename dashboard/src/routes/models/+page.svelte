@@ -161,6 +161,111 @@
 				</div>
 			</div>
 		</div>
+		<!-- Token Cost Breakdown -->
+		{#if data.efficiencyByModel && data.efficiencyByModel.length > 0}
+			<section>
+				<h2 class="type-section-title text-text-primary mb-4">Token Cost Breakdown</h2>
+				<div class="bg-bg-secondary border border-border rounded-lg overflow-x-auto">
+					<table class="w-full text-sm">
+						<thead>
+							<tr class="border-b border-border text-text-secondary text-left">
+								<th class="px-4 py-3">Model</th>
+								<th class="px-4 py-3 text-right">Tasks</th>
+								<th class="px-4 py-3 text-right">Input Tokens</th>
+								<th class="px-4 py-3 text-right">Output Tokens</th>
+								<th class="px-4 py-3 text-right">Total Cost</th>
+								<th class="px-4 py-3 text-right">Avg Cost/Task</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each data.efficiencyByModel as model}
+								<tr class="border-b border-border last:border-0">
+									<td class="px-4 py-3 text-text-primary">{model.name}</td>
+									<td class="px-4 py-3 text-right font-mono text-text-primary">{model.count.toLocaleString()}</td>
+									<td class="px-4 py-3 text-right font-mono text-text-secondary">{model.inputTokens.toLocaleString()}</td>
+									<td class="px-4 py-3 text-right font-mono text-text-secondary">{model.outputTokens.toLocaleString()}</td>
+									<td class="px-4 py-3 text-right font-mono text-accent-green">${model.totalCost.toFixed(4)}</td>
+									<td class="px-4 py-3 text-right font-mono text-accent-yellow">${model.avgCostPerTask.toFixed(4)}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			</section>
+		{/if}
+
+		<!-- Efficiency Ratios -->
+		{#if data.efficiencyByModel && data.efficiencyByModel.length > 0}
+			<section>
+				<h2 class="type-section-title text-text-primary mb-4">Efficiency Ratios</h2>
+				<p class="text-xs text-text-secondary mb-3">Output tokens / Input tokens -- higher ratio means more output per input token</p>
+				<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+					{#each data.efficiencyByModel as model}
+						{@const maxRatio = Math.max(...data.efficiencyByModel.map((m) => m.efficiencyRatio), 1)}
+						{@const barPct = maxRatio > 0 ? (model.efficiencyRatio / maxRatio) * 100 : 0}
+						<div class="bg-bg-secondary border border-border rounded-lg p-4">
+							<p class="text-sm font-medium text-text-primary mb-1">{model.name}</p>
+							<p class="font-mono text-lg text-accent-cyan mb-2">{model.efficiencyRatio.toFixed(3)}</p>
+							<div class="h-2 bg-bg-primary rounded-full overflow-hidden">
+								<div
+									class="h-full rounded-full bg-accent-cyan transition-all"
+									style="width: {barPct}%"
+								></div>
+							</div>
+							<p class="text-xs text-text-secondary mt-2">{model.count} task{model.count !== 1 ? 's' : ''} completed</p>
+						</div>
+					{/each}
+				</div>
+			</section>
+		{/if}
+
+		<!-- Most Expensive Tasks -->
+		{#if data.topExpensiveTasks && data.topExpensiveTasks.length > 0}
+			<section>
+				<h2 class="type-section-title text-text-primary mb-4">Most Expensive Tasks</h2>
+				<div class="bg-bg-secondary border border-border rounded-lg divide-y divide-border">
+					{#each data.topExpensiveTasks as task, i}
+						<div class="px-4 py-3 flex flex-col sm:flex-row sm:items-center gap-2">
+							<span class="text-xs font-mono text-text-secondary w-6 shrink-0">#{i + 1}</span>
+							<div class="flex-1 min-w-0">
+								<p class="text-sm text-text-primary truncate">{task.taskTitle || task.taskId}</p>
+								<p class="text-xs text-text-secondary">{task.model}</p>
+							</div>
+							<div class="flex items-center gap-4 text-xs shrink-0">
+								<span class="font-mono text-accent-green">${task.costUsd.toFixed(4)}</span>
+								<span class="font-mono text-text-secondary">{(task.durationMs / 1000).toFixed(1)}s</span>
+								<span class="font-mono text-text-secondary">{(task.inputTokens + task.outputTokens).toLocaleString()} tok</span>
+							</div>
+						</div>
+					{/each}
+				</div>
+			</section>
+		{/if}
+
+		<!-- Daily Cost Trend -->
+		{#if data.dailyCostTrend && data.dailyCostTrend.length > 0}
+			{@const maxDailyCost = Math.max(...data.dailyCostTrend.map((d) => d.cost), 0.0001)}
+			<section>
+				<h2 class="type-section-title text-text-primary mb-4">Daily Cost Trend (Last 7 Days)</h2>
+				<div class="bg-bg-secondary border border-border rounded-lg p-4 space-y-3">
+					{#each data.dailyCostTrend as day}
+						{@const barPct = maxDailyCost > 0 ? (day.cost / maxDailyCost) * 100 : 0}
+						<div class="flex items-center gap-3">
+							<span class="text-xs font-mono text-text-secondary w-20 shrink-0">{day.date.slice(5)}</span>
+							<div class="flex-1 h-4 bg-bg-primary rounded-full overflow-hidden">
+								<div
+									class="h-full rounded-full bg-accent-purple transition-all"
+									style="width: {barPct}%"
+								></div>
+							</div>
+							<span class="text-xs font-mono text-accent-green w-16 text-right shrink-0">${day.cost.toFixed(4)}</span>
+							<span class="text-xs text-text-secondary w-14 text-right shrink-0">{day.tasks} task{day.tasks !== 1 ? 's' : ''}</span>
+						</div>
+					{/each}
+				</div>
+			</section>
+		{/if}
+
 	{:else}
 		<!-- Loading skeletons -->
 		<Skeleton variant="card" lines={3} />

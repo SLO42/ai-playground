@@ -151,6 +151,49 @@ export const load: PageServerLoad = async () => {
 
 	const modelsConfig = modelsRaw ? parseJson5(modelsRaw) : null;
 
+	// Top 5 most expensive tasks
+	const topExpensiveTasks = agentUsage.entries
+		.filter((e) => e.costUsd > 0)
+		.sort((a, b) => b.costUsd - a.costUsd)
+		.slice(0, 5)
+		.map((e) => ({
+			taskId: e.taskId,
+			taskTitle: e.taskTitle,
+			model: e.model,
+			costUsd: e.costUsd,
+			durationMs: e.durationMs,
+			inputTokens: e.inputTokens,
+			outputTokens: e.outputTokens
+		}));
+
+	// Daily cost trend (last 7 days)
+	const now = new Date();
+	const dailyCostTrend: { date: string; cost: number; tasks: number }[] = [];
+	for (let i = 6; i >= 0; i--) {
+		const d = new Date(now);
+		d.setDate(d.getDate() - i);
+		const dateStr = d.toISOString().slice(0, 10);
+		const dayEntries = agentUsage.entries.filter(
+			(e) => e.timestamp && e.timestamp.slice(0, 10) === dateStr
+		);
+		dailyCostTrend.push({
+			date: dateStr,
+			cost: dayEntries.reduce((sum, e) => sum + (e.costUsd ?? 0), 0),
+			tasks: dayEntries.length
+		});
+	}
+
+	// Efficiency ratios per model (output/input)
+	const efficiencyByModel = Object.entries(agentUsage.byModel).map(([name, stats]) => ({
+		name,
+		inputTokens: stats.input,
+		outputTokens: stats.output,
+		efficiencyRatio: stats.input > 0 ? stats.output / stats.input : 0,
+		count: stats.count,
+		totalCost: stats.cost,
+		avgCostPerTask: stats.count > 0 ? stats.cost / stats.count : 0
+	}));
+
 	return {
 		ollamaModels,
 		runningModels,
@@ -158,6 +201,9 @@ export const load: PageServerLoad = async () => {
 		learning,
 		routingStats,
 		workflowStats,
-		agentUsage
+		agentUsage,
+		topExpensiveTasks,
+		dailyCostTrend,
+		efficiencyByModel
 	};
 };

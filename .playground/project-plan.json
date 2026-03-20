@@ -296,7 +296,7 @@
 				"id": "feat-reactive-data",
 				"name": "Reactive Dashboard Updates",
 				"phase": "ms-data-layer",
-				"status": "not-started",
+				"status": "done",
 				"description": "Live data updates on dashboard pages via SSE or polling from SQLite queries instead of full page reload",
 				"priority": "medium",
 				"effort": "medium"
@@ -323,7 +323,7 @@
 				"id": "feat-heartbeat-profiling",
 				"name": "Heartbeat Cycle Profiling",
 				"phase": "ms-perf",
-				"status": "not-started",
+				"status": "done",
 				"description": "Profile heartbeat loop to identify bottlenecks — measure time per module, optimize slow paths",
 				"priority": "medium",
 				"effort": "medium"
@@ -341,7 +341,7 @@
 				"id": "feat-page-content-depth",
 				"name": "Page Content Depth",
 				"phase": "ms-design-revision",
-				"status": "not-started",
+				"status": "done",
 				"description": "Pages that currently show just a heading (hooks, inbox, reports, security, sessions, settings, tasks at top level) need proper content layouts with real data visualization",
 				"priority": "medium",
 				"effort": "large"
@@ -894,14 +894,14 @@
 			"id": "sprint-4",
 			"name": "Reactive Dashboard & Polish",
 			"phase": "ms-core",
-			"status": "planned",
+			"status": "completed",
 			"goal": "Make all dashboard pages update in real-time when data changes. Fix UX rough edges before v0.2 work begins.",
 			"tasks": [
 				{
 					"id": "task-s4-01",
 					"feature": "feat-reactive-data",
 					"title": "SSE endpoint for live task/service/session updates",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Create a server-sent events endpoint at /api/events that pushes updates when tasks change, services start/stop, or sessions open/close. Use the existing notification system as a model. Clients subscribe and receive JSON patches.",
 					"files": [
@@ -914,7 +914,7 @@
 					"id": "task-s4-02",
 					"feature": "feat-reactive-data",
 					"title": "Client-side SSE store for reactive page updates",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Create a Svelte 5 runes-based store that connects to /api/events SSE endpoint. On receiving updates, invalidate relevant SvelteKit load functions via invalidateAll() or targeted invalidation. Auto-reconnect on disconnect.",
 					"files": [
@@ -927,7 +927,7 @@
 					"id": "task-s4-03",
 					"feature": "feat-reactive-data",
 					"title": "Wire SSE events from heartbeat, task-store, and service changes",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Import event-bus in heartbeat/index.ts, task-store.ts, and auto-restart.ts. Emit events on task create/update/complete, agent spawn/complete, and service start/stop/restart. Each event: { channel, type, data }.",
 					"files": [
@@ -941,7 +941,7 @@
 					"id": "task-s4-04",
 					"feature": "feat-heartbeat-profiling",
 					"title": "Add timing instrumentation to heartbeat cycle",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Wrap each phase of the heartbeat loop (scan, classify, spawn, post-task, memory-guard) with Date.now() timing. Store per-cycle metrics in .playground/heartbeat-metrics.json (last 100 cycles). Add a /api/heartbeat/metrics endpoint to expose them.",
 					"files": [
@@ -954,7 +954,7 @@
 					"id": "task-s4-05",
 					"feature": "feat-page-content-depth",
 					"title": "Enrich tasks page — inline agent progress, dependency graph",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "On the tasks page, show each task's agent progress (from analytics events), blocked-by chain as a mini dependency graph, and estimated completion. Read from agent-analytics.ts and task-store.ts. Use existing MetricCard and BubbleGraph components.",
 					"files": [
@@ -967,7 +967,7 @@
 					"id": "task-s4-06",
 					"feature": "feat-page-content-depth",
 					"title": "Enrich models page — token cost breakdown, efficiency trends",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "On the models page, add sections for: token cost per model over time (chart), efficiency ratio (output tokens / input tokens), and top-5 most expensive tasks. Data comes from getAgentAnalytics(). Use existing chart patterns from reports page.",
 					"files": [
@@ -1067,7 +1067,7 @@
 			]
 		}
 	],
-	"activeSprint": "sprint-3",
+	"activeSprint": "sprint-4",
 	"decisions": [
 		{
 			"id": "dec-001",
@@ -1119,6 +1119,6 @@
 			"status": "accepted"
 		}
 	],
-	"lastUpdated": "2026-03-20T04:01:14.812Z",
+	"lastUpdated": "2026-03-20T04:12:30.776Z",
 	"updatedBy": "pm-session"
 }

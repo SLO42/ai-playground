@@ -30,6 +30,7 @@ import { createDiscussionSession, checkDiscussionReplies } from './discussion.js
 import { classifyTask, shouldEscalate, spawnOpenClawAgent, gatherContext } from './openclaw-agent.js';
 import type { TaskRoute } from './openclaw-agent.js';
 import { recordEvent } from './agent-analytics.js';
+import { emit } from '../event-bus.js';
 import { recordSpawn, recordSpawnCompletion, requestSlot, releaseSlot } from './session-pool.js';
 import { buildContextForTask } from './context-loader.js';
 import { commitAgentChanges, planFollowUps, spawnFollowUp } from './post-task.js';
@@ -41,6 +42,7 @@ import { runUxInspection } from './ux-inspector.js';
 import { loadRestartConfigAsync, shouldRestart, attemptRestart, resetRestartCount, getRestartState } from './auto-restart.js';
 import { runMemoryGuardian, loadGuardianConfig } from './memory-guardian.js';
 import { reviewProjectPlan } from '../project-manager.js';
+import { recordHeartbeatMetrics } from './heartbeat-metrics.js';
 import type { ChatSession } from '$lib/types/chat.js';
 import type { Task } from '$lib/types/tasks.js';
 
@@ -317,6 +319,8 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 		// Analytics: spawned
 		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'spawned', provider: 'claude-code', model, modelTier, pid, maxTurns, sessionId: reportId, projectId: task._sourceProjectId }).catch(() => {});
 
+		emit({ channel: 'heartbeat', type: 'agent_spawned', data: { taskId: task.id, model }, timestamp: new Date().toISOString() });
+
 		child.on('close', async (code) => {
 			unregisterPid(`agent:${task.id}`).catch(() => {});
 			releaseSlot(task.id);
@@ -353,6 +357,8 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 				sessionId: rId,
 				projectId: task._sourceProjectId
 			}).catch(() => {});
+
+			emit({ channel: 'heartbeat', type: 'agent_completed', data: { taskId: task.id, exitCode: code ?? undefined }, timestamp: new Date().toISOString() });
 
 			logAgentCompletion(task, agentSnd, exitMsg, logFile, rId, agentBaseline).catch(() => {});
 			if (rId !== MONITOR_SESSION_ID) {
@@ -476,6 +482,10 @@ async function heartbeat() {
 	const session = await loadMonitorSession();
 	session.status = 'streaming';
 
+	const cycleStart = Date.now();
+	const timings: Record<string, number> = {};
+	let phaseStart: number;
+
 	const ts = new Date().toLocaleTimeString();
 	log(session, `\n--- Heartbeat #${heartbeatCount} — ${ts} ---`);
 	log(session, `[wake] Claw waking up`);
@@ -498,6 +508,7 @@ async function heartbeat() {
 	let totalCount = 0;
 	const changes: string[] = [];
 
+	phaseStart = Date.now();
 	if (hbConfig.phases.healthChecks) {
 		log(session, `[health] Probing services...`);
 		const [ollama, gateway, daemon] = await Promise.all([
@@ -576,10 +587,12 @@ async function heartbeat() {
 	} else {
 		log(session, `[health] Phase disabled — skipping service health checks`);
 	}
+	timings.healthChecks = Date.now() - phaseStart;
 
 	// ── Phase 3: Task scan (gated by config.phases.taskScanning)
 	let taskScan: TaskScanResult;
 
+	phaseStart = Date.now();
 	if (hbConfig.phases.taskScanning) {
 		log(session, `[tasks] Scanning tasks...`);
 		taskScan = await scanTasks();
@@ -757,8 +770,10 @@ async function heartbeat() {
 		log(session, `[tasks] Phase disabled — skipping task scan`);
 		taskScan = { ...EMPTY_TASK_SCAN };
 	}
+	timings.taskScanning = Date.now() - phaseStart;
 
 	// ── Phase 4: Check running agents + reap orphans (always runs)
+	phaseStart = Date.now();
 	checkAgents(session);
 
 	// Reap agents whose PIDs are no longer alive (orphaned by HMR, crash, etc.)
@@ -770,10 +785,12 @@ async function heartbeat() {
 	} catch { /* reap failed gracefully */ }
 
 	await tailAgentLogs(session);
+	timings.checkAgents = Date.now() - phaseStart;
 
 	// ── Phase 5: Agent spawning (gated by config.phases.agentSpawning)
 	let spawned = 0;
 
+	phaseStart = Date.now();
 	if (hbConfig.phases.agentSpawning) {
 		const projectLimits = getProjectLimits();
 		const seenProjects = new Map<string, string>();
@@ -921,8 +938,10 @@ async function heartbeat() {
 	} else {
 		log(session, `[spawn] Phase disabled — skipping agent spawning`);
 	}
+	timings.spawn = Date.now() - phaseStart;
 
 	// ── Phase 6: Project review cycle (gated by config.phases.reviewCycle)
+	phaseStart = Date.now();
 	if (hbConfig.phases.reviewCycle) {
 		const agents = getActiveAgents();
 		const timeSinceReview = Date.now() - lastReviewAt;
@@ -941,8 +960,10 @@ async function heartbeat() {
 			await spawnReviewAgent(session);
 		}
 	}
+	timings.reviewCycle = Date.now() - phaseStart;
 
 	// ── Phase 7: Notifications
+	phaseStart = Date.now();
 	if (notificationsEnabled) {
 		const allUp = onlineCount === totalCount && totalCount > 0;
 		const hasErrors = !allUp || changes.some((c) => c.includes('went offline'));
@@ -985,8 +1006,10 @@ async function heartbeat() {
 	} else {
 		log(session, `[skip] Notifications disabled`);
 	}
+	timings.notifications = Date.now() - phaseStart;
 
 	// ── Phase 8: Memory bridge sync (gated by config.phases.memorySync)
+	phaseStart = Date.now();
 	if (hbConfig.phases.memorySync) {
 		try {
 			const bridgeResult = await syncMemoryBridge();
@@ -1018,8 +1041,10 @@ async function heartbeat() {
 	} else {
 		log(session, `[memory] Phase disabled — skipping memory sync`);
 	}
+	timings.memoryGuard = Date.now() - phaseStart;
 
 	// ── Phase 10: Project Planning review (gated by config.phases.projectPlanning)
+	phaseStart = Date.now();
 	if (hbConfig.phases.projectPlanning) {
 		try {
 			const allProjects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root).catch(() => []);
@@ -1034,11 +1059,17 @@ async function heartbeat() {
 			}
 		} catch { /* project scan failed */ }
 	}
+	timings.projectPlanning = Date.now() - phaseStart;
 
 	// ── Phase 11: Cleanup & Idle
 	await cleanupPromptFiles();
+
+	const totalMs = Date.now() - cycleStart;
+	const tasksProcessed = spawned;
+	recordHeartbeatMetrics({ timings, totalMs, tasksProcessed }).catch(() => {});
+
 	const agentCount = getActiveAgents().size;
-	log(session, `[idle] Heartbeat #${heartbeatCount} done — ${agentCount} agent(s) running — going idle`);
+	log(session, `[idle] Heartbeat #${heartbeatCount} done (${totalMs}ms) — ${agentCount} agent(s) running — going idle`);
 	session.status = 'idle';
 	trimSession(session);
 	await saveMonitorSession(session);

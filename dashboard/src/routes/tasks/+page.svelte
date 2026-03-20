@@ -325,6 +325,8 @@
 				{projectFilter}
 				projects={data.projects}
 				onprojectfilter={(id) => setProjectFilter(id)}
+				taskAnalytics={data.taskAnalytics}
+				blockerNames={data.blockerNames}
 			/>
 			{#if totalPages > 1}
 				<div class="flex items-center justify-between text-xs text-text-secondary px-1">

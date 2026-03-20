@@ -8,6 +8,13 @@
 		githubIssue?: number;
 	}
 
+	interface TaskAnalyticsInfo {
+		lastEvent: string;
+		model?: string;
+		durationMs?: number;
+		status: 'pending' | 'running' | 'completed' | 'failed';
+	}
+
 	interface Props {
 		tasks: TaskItem[];
 		selectedId: string | null;
@@ -23,6 +30,10 @@
 		isBlocked?: (task: TaskItem) => boolean;
 		/** Returns the list of blocking tasks for tooltip display. */
 		getBlockers?: (task: TaskItem) => { id: string; title: string }[];
+		/** Agent analytics per task */
+		taskAnalytics?: Record<string, TaskAnalyticsInfo>;
+		/** Resolved blocker task titles per task */
+		blockerNames?: Record<string, string[]>;
 	}
 
 	let {
@@ -37,7 +48,9 @@
 		projects = [],
 		onprojectfilter,
 		isBlocked,
-		getBlockers
+		getBlockers,
+		taskAnalytics = {},
+		blockerNames = {}
 	}: Props = $props();
 
 	let startingId = $state<string | null>(null);
@@ -62,6 +75,58 @@
 		completed: 'Done',
 		cancelled: 'Cancelled'
 	};
+
+	// Agent event badge colors — static lookup, no dynamic interpolation
+	const agentEventBgColors: Record<string, string> = {
+		completed: 'bg-accent-green/15',
+		failed: 'bg-accent-red/15',
+		spawned: 'bg-accent-cyan/15',
+		model_selected: 'bg-accent-purple/15',
+		classified: 'bg-accent-blue/15',
+		context_gathering: 'bg-accent-yellow/15',
+		context_gathered: 'bg-accent-yellow/15',
+		committed: 'bg-accent-green/15',
+		handoff: 'bg-accent-purple/15'
+	};
+	const agentEventTextColors: Record<string, string> = {
+		completed: 'text-accent-green',
+		failed: 'text-accent-red',
+		spawned: 'text-accent-cyan',
+		model_selected: 'text-accent-purple',
+		classified: 'text-accent-blue',
+		context_gathering: 'text-accent-yellow',
+		context_gathered: 'text-accent-yellow',
+		committed: 'text-accent-green',
+		handoff: 'text-accent-purple'
+	};
+	const agentEventLabels: Record<string, string> = {
+		completed: 'Completed',
+		failed: 'Failed',
+		spawned: 'Spawned',
+		model_selected: 'Model selected',
+		classified: 'Classified',
+		context_gathering: 'Gathering context',
+		context_gathered: 'Context ready',
+		committed: 'Committed',
+		handoff: 'Handed off',
+		escalation_check: 'Escalation check',
+		learning_extracted: 'Learning extracted',
+		follow_up_spawned: 'Follow-up',
+		follow_up_done: 'Follow-up done',
+		test_run: 'Tests ran'
+	};
+
+	const defaultEventBg = 'bg-bg-tertiary';
+	const defaultEventText = 'text-text-secondary';
+
+	function formatDuration(ms: number): string {
+		if (ms < 1000) return `${ms}ms`;
+		const seconds = Math.floor(ms / 1000);
+		if (seconds < 60) return `${seconds}s`;
+		const minutes = Math.floor(seconds / 60);
+		const remainingSeconds = seconds % 60;
+		return `${minutes}m ${remainingSeconds}s`;
+	}
 </script>
 
 <div class="bg-bg-secondary border border-border rounded-lg overflow-hidden">
@@ -128,13 +193,25 @@
 							</span>
 						{/if}
 					</div>
-					<div class="flex items-center gap-2 text-xs text-text-secondary ml-4">
+					<div class="flex items-center gap-2 text-xs text-text-secondary ml-4 flex-wrap">
 						{#if showProjectBadge && task.projectName}
 							<span class="px-1.5 py-0.5 rounded bg-accent-blue/10 text-accent-blue font-medium">{task.projectName}</span>
 						{/if}
 						<StatusBadge status={statusBadgeMap[task.status]} label={statusLabels[task.status]} size="sm" />
 						{#if task.status === 'in_progress'}
 							<span class="w-2 h-2 rounded-full bg-accent-cyan animate-pulse" title="Running"></span>
+						{/if}
+						{#if taskAnalytics[task.id]}
+							{@const info = taskAnalytics[task.id]}
+							<span
+								class="px-1.5 py-0.5 rounded text-[10px] font-medium {agentEventBgColors[info.lastEvent] ?? defaultEventBg} {agentEventTextColors[info.lastEvent] ?? defaultEventText}"
+								title="Agent: {info.lastEvent}{info.model ? ` (${info.model})` : ''}"
+							>
+								{agentEventLabels[info.lastEvent] ?? info.lastEvent}
+							</span>
+							{#if info.durationMs != null}
+								<span class="text-[10px] text-text-secondary" title="Agent duration">{formatDuration(info.durationMs)}</span>
+							{/if}
 						{/if}
 						{#if task.githubIssue}
 							<span class="px-1.5 py-0.5 rounded bg-bg-tertiary font-mono">#{task.githubIssue}</span>
@@ -146,6 +223,11 @@
 							<span class="px-1.5 py-0.5 rounded bg-bg-tertiary">{tag}</span>
 						{/each}
 					</div>
+					{#if blockerNames[task.id]?.length}
+						<p class="text-[10px] text-text-secondary/70 ml-4 mt-0.5 line-clamp-1">
+							Blocked by: {blockerNames[task.id].join(', ')}
+						</p>
+					{/if}
 				</button>
 				{#if task.status === 'pending' && onstart}
 					<button

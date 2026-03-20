@@ -8,6 +8,7 @@ import { resolve } from 'path';
 import { PATHS } from '../constants.js';
 import { registerPid, unregisterPid } from './pid-registry.js';
 import { recordEvent } from './agent-analytics.js';
+import { emit } from '../event-bus.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -169,6 +170,8 @@ export async function attemptRestart(serviceName: string): Promise<boolean> {
 
 	recordEvent({ type: 'auto_restart_triggered', serviceName, reason, attempt }).catch(() => {});
 
+	emit({ channel: 'services', type: 'restarting', data: { name: serviceName }, timestamp: new Date().toISOString() });
+
 	const restartStartMs = Date.now();
 
 	try {
@@ -188,6 +191,8 @@ export async function attemptRestart(serviceName: string): Promise<boolean> {
 
 		const durationMs = Date.now() - restartStartMs;
 		recordEvent({ type: 'auto_restart_result', serviceName, success: true, durationMs }).catch(() => {});
+
+		emit({ channel: 'services', type: 'restarted', data: { name: serviceName, success: true }, timestamp: new Date().toISOString() });
 
 		// Schedule a post-restart health check
 		setTimeout(async () => {
@@ -212,6 +217,7 @@ export async function attemptRestart(serviceName: string): Promise<boolean> {
 	} catch {
 		const durationMs = Date.now() - restartStartMs;
 		recordEvent({ type: 'auto_restart_result', serviceName, success: false, durationMs }).catch(() => {});
+		emit({ channel: 'services', type: 'restarted', data: { name: serviceName, success: false }, timestamp: new Date().toISOString() });
 		return false;
 	}
 }

@@ -60,3 +60,17 @@ If a pattern recurs 3+ times, escalate to a skill rule or CLAUDE.md.
 - **Why**: Agent was told to "wire service detail pages" but instead of using the existing `SERVICES` constant from `constants.ts`, it created a new file with static data that looked correct in Playwright snapshots but was entirely fake.
 - **Fix**: Restored original `+page.server.ts` from git, updated config/logs sub-pages to import from `SERVICES` instead of the hardcoded module.
 - **Prevention**: When an agent creates a shared data module, verify it uses LIVE data sources (health checks, PID detection, file reads) — not hardcoded values. Playwright snapshots that show "Running" don't prove the data is real. Always cross-reference displayed values against expected live state (e.g., PID should match actual process).
+
+## F-009: $state rune in plain .ts file crashes all pages with 500
+- **Date**: 2026-03-20
+- **What**: S4-02 agent created `live-updates.ts` with `$state()` rune. Every page returned 500: `The $state rune is only available inside .svelte and .svelte.js/ts files`
+- **Why**: Svelte 5 runes (`$state`, `$derived`, `$effect`) are compiler macros — they only work in `.svelte` and `.svelte.js/.svelte.ts` files, NOT plain `.ts` files
+- **Fix**: Renamed `live-updates.ts` → `live-updates.svelte.ts`, updated import to `.svelte.js`
+- **Prevention**: Files using Svelte 5 runes MUST have `.svelte.ts` or `.svelte.js` extension. When creating stores or modules that use `$state`/`$derived`/`$effect`, always use the `.svelte.ts` extension.
+
+## F-010: SSE endpoint causes Playwright networkidle timeout
+- **Date**: 2026-03-20
+- **What**: All 42 Playwright smoke tests timed out after adding SSE `/api/events` endpoint
+- **Why**: `waitUntil: 'networkidle'` requires all network connections to settle. SSE keeps a persistent open connection, so "network idle" is never reached
+- **Fix**: Changed `smokeCheck()` to use `waitUntil: 'load'` instead of `'networkidle'`
+- **Prevention**: When a page has SSE or WebSocket connections, NEVER use `waitUntil: 'networkidle'` in Playwright. Use `'load'` or `'domcontentloaded'` instead.

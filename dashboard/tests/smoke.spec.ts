@@ -22,7 +22,7 @@ test.afterEach(async () => {
 // Helper: visit a route and assert basic health
 // ---------------------------------------------------------------------------
 async function smokeCheck(page: import('@playwright/test').Page, route: string) {
-	const response = await page.goto(route, { waitUntil: 'networkidle' });
+	const response = await page.goto(route, { waitUntil: 'load' });
 	expect(response?.status(), `${route} should return 200`).toBe(200);
 
 	// Page should have a visible <main> or <body> content area

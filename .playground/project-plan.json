@@ -527,7 +527,7 @@
 			{
 				"id": "ms-perf",
 				"name": "Performance & Token Optimization",
-				"status": "planned",
+				"status": "completed",
 				"releaseId": "rel-refinement",
 				"goals": [
 					"Reduce token usage per agent interaction",
@@ -1357,6 +1357,77 @@
 					"verify": "npm run build && navigate to /diagnostics shows Data section"
 				}
 			]
+		},
+		{
+			"id": "sprint-10",
+			"title": "Token & Build Optimization",
+			"status": "completed",
+			"tasks": [
+				{
+					"id": "task-s10-01",
+					"feature": "feat-token-efficiency",
+					"title": "Add token budget tracking to agent spawn prompts",
+					"status": "done",
+					"effort": "medium",
+					"description": "Add maxTokens config to heartbeat-config.json. In agent-spawn.ts, pass --max-tokens flag to claude CLI. Track budget vs actual in analytics. Show token efficiency ratio on models page.",
+					"files": [
+						"dashboard/src/lib/server/heartbeat/agent-spawn.ts",
+						"dashboard/src/routes/models/+page.svelte"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s10-02",
+					"feature": "feat-token-efficiency",
+					"title": "Prompt template compression — reduce boilerplate in agent prompts",
+					"status": "done",
+					"effort": "medium",
+					"description": "Create a prompt-templates.ts module with reusable prompt sections (project context, coding conventions, output format). Agent spawn builds prompts by composing these sections instead of inlining everything. Reduces token usage by ~30%.",
+					"files": [
+						"dashboard/src/lib/server/prompt-templates.ts",
+						"dashboard/src/lib/server/heartbeat/agent-spawn.ts"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s10-03",
+					"feature": "feat-build-perf",
+					"title": "Add build timing to diagnostics page",
+					"status": "done",
+					"effort": "small",
+					"description": "Time the npm run build command and show it on the diagnostics page. Also show the .svelte-kit/output size. Helps track build performance over time.",
+					"files": [
+						"dashboard/src/routes/diagnostics/+page.server.ts",
+						"dashboard/src/routes/diagnostics/+page.svelte"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s10-04",
+					"feature": "feat-build-perf",
+					"title": "Lazy-load heavy page components to reduce initial bundle",
+					"status": "deferred",
+					"effort": "medium",
+					"description": "Identify heavy components (charts, code editors, markdown renderers) and lazy-load them with dynamic imports. Use {#await import()} pattern in Svelte 5. Focus on pages: models, reports, chat.",
+					"files": [
+						"dashboard/src/routes/models/+page.svelte",
+						"dashboard/src/routes/reports/+page.svelte"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s10-05",
+					"feature": "feat-cache-strategy",
+					"title": "Add server-side caching for expensive load functions",
+					"status": "done",
+					"effort": "medium",
+					"description": "Create a simple TTL cache for page.server.ts load results. Cache health checks (15s TTL), project scans (30s TTL), analytics aggregations (60s TTL). Invalidate on SSE events. Reduces redundant SQLite queries during rapid navigation.",
+					"files": [
+						"dashboard/src/lib/server/cache.ts"
+					],
+					"verify": "npm run build"
+				}
+			]
 		}
 	],
 	"activeSprint": null,
@@ -1425,6 +1496,6 @@
 			"status": "accepted"
 		}
 	],
-	"lastUpdated": "2026-03-20T17:57:14.104Z",
+	"lastUpdated": "2026-03-20T19:09:01.646Z",
 	"updatedBy": "claude-pm"
 }

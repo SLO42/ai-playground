@@ -499,7 +499,7 @@
 			{
 				"id": "ms-data-layer",
 				"name": "Data Layer Migration",
-				"status": "active",
+				"status": "completed",
 				"releaseId": "rel-refinement",
 				"goals": [
 					"Consolidate .playground/*.json into SQLite with proper indexing",
@@ -1226,13 +1226,13 @@
 		{
 			"id": "sprint-8",
 			"title": "SQLite Consolidation — High-Volume Stores",
-			"status": "planned",
+			"status": "completed",
 			"tasks": [
 				{
 					"id": "task-s8-01",
 					"feature": "feat-sqlite-consolidation",
 					"title": "Migrate routing-telemetry to SQLite",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Create routing-telemetry-sql.ts. Schema: decisions(id, timestamp, taskId, route, model, reason, durationMs). Migrate from JSON, wire getRoutingStats() to SQL aggregation. Keep JSON write-through.",
 					"files": [
@@ -1244,7 +1244,7 @@
 					"id": "task-s8-02",
 					"feature": "feat-sqlite-consolidation",
 					"title": "Migrate pid-registry to SQLite",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Add processes table to existing tasks.db or create pid-registry-sql.ts. Schema: processes(pid, label, command, spawnedAt, exitedAt, exitCode). Replace JSON debounce with synchronous SQLite writes.",
 					"files": [
@@ -1256,7 +1256,7 @@
 					"id": "task-s8-03",
 					"feature": "feat-sqlite-consolidation",
 					"title": "Migrate notifications to SQLite",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Create notifications table in a shared dashboard.db. Schema: notifications(id, type, severity, title, message, source, read, createdAt). Keep notification-settings.json as-is (config, not data).",
 					"files": [
@@ -1268,7 +1268,7 @@
 					"id": "task-s8-04",
 					"feature": "feat-sqlite-consolidation",
 					"title": "Migrate incidents to SQLite",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Add incidents table. Schema: incidents(id, type, severity, title, description, status, projectId, createdAt, resolvedAt, data JSON). Wire incident queries to SQL.",
 					"files": [
@@ -1280,7 +1280,7 @@
 					"id": "task-s8-05",
 					"feature": "feat-sqlite-consolidation",
 					"title": "Migrate session-pool spawn stats to SQLite",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Add spawn_stats table or embed in analytics.db. Schema: spawn_stats(id, timestamp, totalSpawns, totalTokens, totalCost, activeSlots). Simple cumulative counters.",
 					"files": [
@@ -1293,13 +1293,13 @@
 		{
 			"id": "sprint-9",
 			"title": "Query Optimization & Cleanup",
-			"status": "planned",
+			"status": "completed",
 			"tasks": [
 				{
 					"id": "task-s9-01",
 					"feature": "feat-query-optimization",
 					"title": "Add compound indexes to analytics.db for common queries",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Profile the most common getAgentAnalyticsSql queries. Add compound indexes: (type, timestamp), (project_id, type), (task_id, type). Measure query time before/after.",
 					"files": [
@@ -1311,7 +1311,7 @@
 					"id": "task-s9-02",
 					"feature": "feat-query-optimization",
 					"title": "Consolidate DB handles into a shared connection manager",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Multiple modules now open their own SQLite DBs. Create a db-manager.ts that provides getDb(name) with shared WAL config, connection caching, and graceful close. Wire existing stores to use it.",
 					"files": [
@@ -1323,7 +1323,7 @@
 					"id": "task-s9-03",
 					"feature": "feat-cleanup",
 					"title": "Remove JSON fallback paths from migrated stores",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Now that SQLite is primary for tasks, analytics, routing, notifications, incidents, and pid-registry: remove the JSON write-through code. Keep JSON read for migration but stop writing.",
 					"files": [
@@ -1336,7 +1336,7 @@
 					"id": "task-s9-04",
 					"feature": "feat-cleanup",
 					"title": "Add data retention policies to SQLite stores",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Add cleanup on DB open: DELETE events older than 90 days from analytics, 30 days from routing telemetry, 60 days from notifications. Log how many rows pruned.",
 					"files": [
@@ -1348,7 +1348,7 @@
 					"id": "task-s9-05",
 					"feature": "feat-cleanup",
 					"title": "Update diagnostics page with SQLite health info",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Add DB size and row counts to /diagnostics: tasks.db, analytics.db sizes + total rows per table. Show as a \"Data\" section.",
 					"files": [
@@ -1359,7 +1359,7 @@
 			]
 		}
 	],
-	"activeSprint": "sprint-8",
+	"activeSprint": null,
 	"decisions": [
 		{
 			"id": "dec-001",
@@ -1425,6 +1425,6 @@
 			"status": "accepted"
 		}
 	],
-	"lastUpdated": "2026-03-20T17:43:59.603Z",
+	"lastUpdated": "2026-03-20T17:57:14.104Z",
 	"updatedBy": "claude-pm"
 }

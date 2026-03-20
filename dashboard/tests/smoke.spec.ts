@@ -67,7 +67,8 @@ test.describe('Top-level routes', () => {
 		['/settings', 'settings'],
 		['/tasks', 'tasks'],
 		['/diagnostics', 'diagnostics'],
-		['/projects/create-ai', 'create with AI']
+		['/projects/create-ai', 'create with AI'],
+		['/templates', 'templates']
 	] as const;
 
 	for (const [route, label] of routes) {

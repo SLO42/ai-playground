@@ -99,10 +99,10 @@
 	let pmMessages = $state<PmMsg[]>([]);
 	let pmInput = $state('');
 	let pmStreaming = $state(false);
-	/** Accumulates streamed text — separate from pmMessages for reactivity */
 	let pmStreamContent = $state('');
 	let pmChatEl: HTMLDivElement | undefined = $state();
 	let pmAbort: AbortController | null = null;
+	let pmProvider = $state<'claude' | 'ollama'>('claude');
 
 	function buildPmSystemPrompt(): string {
 		if (!data.plan) return 'You are a Project Manager agent.';
@@ -158,8 +158,8 @@
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
 					messages: apiMessages,
-					provider: 'claude',
-					model: 'claude-sonnet-4-6',
+					provider: pmProvider,
+					model: pmProvider === 'claude' ? 'claude-sonnet-4-6' : undefined,
 					tools: false
 				}),
 				signal: pmAbort.signal
@@ -197,6 +197,9 @@
 						const event = JSON.parse(part.slice(6));
 						if (event.type === 'content' && event.content) {
 							pmStreamContent += event.content;
+							scrollPmChat();
+						} else if (event.type === 'error' && event.content) {
+							pmStreamContent += `\n\nError: ${event.content}`;
 							scrollPmChat();
 						}
 					} catch { /* skip bad json */ }
@@ -277,7 +280,12 @@
 		<div class="bg-bg-secondary rounded-lg border border-accent-green/20 p-4">
 			<div class="flex items-center gap-2 mb-3">
 				<span class="w-2 h-2 rounded-full {pmStreaming ? 'bg-accent-green animate-pulse' : 'bg-accent-green/40'}"></span>
-				<h3 class="text-xs font-medium text-accent-green uppercase tracking-wider">PM Chat (Claude)</h3>
+				<h3 class="text-xs font-medium text-accent-green uppercase tracking-wider">PM Chat</h3>
+				<select bind:value={pmProvider}
+					class="text-[10px] px-1.5 py-0.5 rounded bg-bg-tertiary border border-border text-text-secondary">
+					<option value="claude">Claude</option>
+					<option value="ollama">Ollama (Local)</option>
+				</select>
 				{#if pmMessages.length > 0}
 					<button onclick={() => { pmMessages = []; }}
 						class="ml-auto text-[10px] text-text-secondary hover:text-text-primary">Clear</button>

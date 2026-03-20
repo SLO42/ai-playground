@@ -549,7 +549,7 @@
 			{
 				"id": "ms-design-revision",
 				"name": "Design Revision",
-				"status": "planned",
+				"status": "completed",
 				"releaseId": "rel-refinement",
 				"goals": [
 					"Audit and update page designs discovered during v0.1 work",
@@ -1428,6 +1428,76 @@
 					"verify": "npm run build"
 				}
 			]
+		},
+		{
+			"id": "sprint-11",
+			"title": "UI Polish & Accessibility",
+			"status": "completed",
+			"tasks": [
+				{
+					"id": "task-s11-01",
+					"feature": "feat-responsive",
+					"title": "Fix mobile responsive layout on all major pages",
+					"status": "done",
+					"effort": "medium",
+					"description": "Audit sidebar collapse, content overflow, and touch targets on mobile viewport. Fix: dashboard home, tasks, models, projects list, chat. Ensure hamburger menu works on all pages.",
+					"files": [
+						"dashboard/src/lib/components/Sidebar.svelte",
+						"dashboard/src/routes/+layout.svelte"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s11-02",
+					"feature": "feat-a11y",
+					"title": "Add aria labels and keyboard navigation to interactive elements",
+					"status": "done",
+					"effort": "medium",
+					"description": "Audit all buttons, modals, dropdowns for missing aria-labels. Fix keyboard navigation (Tab order, Escape to close, Enter to submit). Focus on: CommandPalette, Sidebar, Toast, modals.",
+					"files": [
+						"dashboard/src/lib/components/CommandPalette.svelte",
+						"dashboard/src/lib/components/Sidebar.svelte"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s11-03",
+					"feature": "feat-ui-consistency",
+					"title": "Standardize page headers across all routes",
+					"status": "done",
+					"effort": "small",
+					"description": "Create a PageHeader component with consistent title, subtitle, and action slot. Replace ad-hoc headers on: tasks, models, agents, services, reports, settings, diagnostics.",
+					"files": [
+						"dashboard/src/lib/components/PageHeader.svelte"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s11-04",
+					"feature": "feat-ui-consistency",
+					"title": "Add empty states to all data pages",
+					"status": "done",
+					"effort": "small",
+					"description": "Create an EmptyState component. Add to pages that can show no data: tasks (no tasks), agents (no active agents), models (no usage data), notifications (all clear), reports (no reports).",
+					"files": [
+						"dashboard/src/lib/components/EmptyState.svelte"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s11-05",
+					"feature": "feat-lazy-load",
+					"title": "Lazy-load heavy components on models and reports pages",
+					"status": "done",
+					"effort": "medium",
+					"description": "Deferred from S10-04. Identify chart/visualization components and wrap in {#await import()} blocks with skeleton placeholders.",
+					"files": [
+						"dashboard/src/routes/models/+page.svelte",
+						"dashboard/src/routes/reports/+page.svelte"
+					],
+					"verify": "npm run build"
+				}
+			]
 		}
 	],
 	"activeSprint": null,
@@ -1496,6 +1566,6 @@
 			"status": "accepted"
 		}
 	],
-	"lastUpdated": "2026-03-20T19:09:01.646Z",
+	"lastUpdated": "2026-03-20T19:20:07.889Z",
 	"updatedBy": "claude-pm"
 }

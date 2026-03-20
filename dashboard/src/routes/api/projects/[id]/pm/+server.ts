@@ -15,7 +15,7 @@ import {
 	buildPMDiscussionPrompt, gatherBootstrapContext, reviewProjectPlan
 } from '$lib/server/project-manager.js';
 import * as pmDb from '$lib/server/pm-memory-db.js';
-import { writeFile, mkdir } from 'fs/promises';
+import { readFile, writeFile, mkdir } from 'fs/promises';
 import type { PMMemoryQuery } from '$lib/types/project-plan.js';
 import type { ChatSession } from '$lib/types/chat.js';
 
@@ -320,6 +320,111 @@ export async function POST({ params, request }) {
 
 			await savePlan(projectPath, plan);
 			return json({ plan, applied: updates });
+		}
+
+		case 'chat': {
+			// Spawn Claude Code CLI with PM context — uses existing CLI auth, no API key
+			const plan = await loadPlan(projectPath);
+			if (!plan) return json({ error: 'No plan — bootstrap first' }, { status: 400 });
+			if (!body.message) return json({ error: 'message is required' }, { status: 400 });
+
+			const { spawnClaude } = await import('$lib/server/heartbeat/agent-spawn.js');
+
+			const m = plan.macro;
+			const sysCtx = [
+				'You are the Project Manager for this project. Refine the plan through conversation.',
+				'Suggest concrete updates — exact wording for purpose, vision, releases, phases, features, DoD.',
+				'',
+				'## Current Plan',
+				`Purpose: ${m.purpose}`,
+				`Vision: ${m.longTermVision}`,
+				`Role: ${m.role.title} — ${m.role.responsibilities.join(', ')}`,
+				`Highlights: ${m.keyHighlights.join(', ') || 'none'}`,
+				`Releases: ${m.releases.map(r => `${r.version} "${r.name}" (${r.status})`).join(', ') || 'none'}`,
+				`Phases: ${m.phases.map(p => `${p.name} (${p.status})`).join(', ') || 'none'}`,
+				`DoD: ${m.definitionOfDone.join('; ') || 'none'}`,
+				`Features: ${m.featureMap.map(f => f.name).join(', ') || 'none'}`,
+			].join('\n');
+
+			const history = (body.history ?? []) as { role: string; content: string }[];
+			const prompt = [
+				sysCtx,
+				'',
+				'## Conversation',
+				...history.map((h: { role: string; content: string }) =>
+					`${h.role === 'user' ? 'User' : 'PM'}: ${h.content}`
+				),
+				`User: ${body.message}`,
+				'',
+				'Respond as the PM. Be concise and actionable.'
+			].join('\n');
+
+			const logFile = resolve(PATHS.headlessLogsDir, `pm-chat-${Date.now()}.log`);
+
+			try {
+				const child = await spawnClaude(prompt, logFile, { model: 'claude-sonnet-4-6' });
+
+				pmDb.addEntry(projectPath, {
+					type: 'decision-context',
+					content: `User: ${(body.message as string).slice(0, 300)}`,
+					source: 'pm-chat', confidence: 1.0
+				});
+
+				// Stream the log file as SSE — tail it while Claude runs
+				const encoder = new TextEncoder();
+				let closed = false;
+
+				const stream = new ReadableStream({
+					async start(controller) {
+						function send(data: string) {
+							if (closed) return;
+							try { controller.enqueue(encoder.encode(`data: ${data}\n\n`)); }
+							catch { closed = true; }
+						}
+
+						let lastPos = 0;
+						async function readNewContent() {
+							try {
+								const content = await readFile(logFile, 'utf-8');
+								if (content.length <= lastPos) return;
+								const newLines = content.slice(lastPos);
+								lastPos = content.length;
+
+								for (const line of newLines.split('\n')) {
+									if (!line.trim()) continue;
+									try {
+										const evt = JSON.parse(line);
+										if (evt.type === 'assistant' && evt.message?.content) {
+											for (const block of evt.message.content) {
+												if (block.type === 'text' && block.text) {
+													send(JSON.stringify({ type: 'content', content: block.text }));
+												}
+											}
+										}
+									} catch { /* partial line or not json */ }
+								}
+							} catch { /* file not ready */ }
+						}
+
+						const poll = setInterval(() => { if (!closed) readNewContent(); }, 400);
+
+						child.on('close', async () => {
+							await new Promise(r => setTimeout(r, 500));
+							await readNewContent(); // final flush
+							clearInterval(poll);
+							send(JSON.stringify({ type: 'done' }));
+							if (!closed) { try { controller.close(); } catch {} }
+							closed = true;
+						});
+					}
+				});
+
+				return new Response(stream, {
+					headers: { 'Content-Type': 'text/event-stream', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' }
+				});
+			} catch (err) {
+				return json({ error: `Spawn failed: ${err instanceof Error ? err.message : 'unknown'}` }, { status: 500 });
+			}
 		}
 
 		default:

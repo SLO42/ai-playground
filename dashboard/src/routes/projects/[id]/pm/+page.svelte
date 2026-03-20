@@ -102,30 +102,6 @@
 	let pmStreamContent = $state('');
 	let pmChatEl: HTMLDivElement | undefined = $state();
 	let pmAbort: AbortController | null = null;
-	let pmProvider = $state<'claude' | 'ollama'>('claude');
-
-	function buildPmSystemPrompt(): string {
-		if (!data.plan) return 'You are a Project Manager agent.';
-		const m = data.plan.macro;
-		return [
-			'You are the Project Manager for this project. Your job is to refine the strategic plan through conversation.',
-			'You have the current plan below. When the user tells you about the project, update your understanding and suggest concrete changes to the plan.',
-			'Be specific — suggest exact wording for purpose, vision, releases, phases, features, DoD criteria.',
-			'After each exchange, summarize what you would update in the plan.',
-			'',
-			'## Current Plan',
-			`**Purpose**: ${m.purpose}`,
-			`**Long-term Vision**: ${m.longTermVision}`,
-			`**Role**: ${m.role.title} — ${m.role.responsibilities.join(', ')}`,
-			`**Highlights**: ${m.keyHighlights.length > 0 ? m.keyHighlights.join(', ') : 'none yet'}`,
-			`**Releases**: ${m.releases.map(r => `${r.version} "${r.name}" (${r.status})`).join(', ') || 'none yet'}`,
-			`**Phases**: ${m.phases.map(p => `${p.name} (${p.status}, release: ${p.releaseId})`).join(', ') || 'none yet'}`,
-			`**DoD**: ${m.definitionOfDone.join('; ') || 'none yet'}`,
-			`**Features**: ${m.featureMap.map(f => `${f.name}: ${f.description}`).join('; ') || 'none yet'}`,
-			`**Sprints**: ${data.plan.sprints.length} total`,
-			`**Decisions**: ${data.plan.decisions.length} recorded`,
-		].join('\n');
-	}
 
 	function scrollPmChat() {
 		if (pmChatEl) pmChatEl.scrollTop = pmChatEl.scrollHeight;
@@ -139,28 +115,19 @@
 		pmInput = '';
 		pmStreaming = true;
 		pmStreamContent = '';
-
-		// Also save to PM memory
-		pmAction('process-reply', { content: text }).catch(() => {});
-
 		scrollPmChat();
 
 		pmAbort = new AbortController();
 
 		try {
-			const apiMessages = [
-				{ role: 'system', content: buildPmSystemPrompt() },
-				...pmMessages
-			];
-
-			const res = await fetch('/api/chat', {
+			// Spawn Claude Code CLI directly — uses existing auth, no API key needed
+			const res = await fetch(`/api/projects/${data.projectId}/pm`, {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					messages: apiMessages,
-					provider: pmProvider,
-					model: pmProvider === 'claude' ? 'claude-sonnet-4-6' : undefined,
-					tools: false
+					action: 'chat',
+					message: text,
+					history: pmMessages.slice(0, -1) // all except the one we just added
 				}),
 				signal: pmAbort.signal
 			});
@@ -281,11 +248,7 @@
 			<div class="flex items-center gap-2 mb-3">
 				<span class="w-2 h-2 rounded-full {pmStreaming ? 'bg-accent-green animate-pulse' : 'bg-accent-green/40'}"></span>
 				<h3 class="text-xs font-medium text-accent-green uppercase tracking-wider">PM Chat</h3>
-				<select bind:value={pmProvider}
-					class="text-[10px] px-1.5 py-0.5 rounded bg-bg-tertiary border border-border text-text-secondary">
-					<option value="claude">Claude</option>
-					<option value="ollama">Ollama (Local)</option>
-				</select>
+				<span class="text-[10px] px-1.5 py-0.5 rounded bg-bg-tertiary text-text-secondary">Claude Code</span>
 				{#if pmMessages.length > 0}
 					<button onclick={() => { pmMessages = []; }}
 						class="ml-auto text-[10px] text-text-secondary hover:text-text-primary">Clear</button>

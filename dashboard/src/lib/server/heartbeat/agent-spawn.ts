@@ -243,6 +243,7 @@ export function pickModelForTask(task: Task): string {
 		/\bnew feature\b/, /\badd\b.*\bpage\b/, /\bintegrat/, /\bmigrat/,
 		/\bsecurity\b.*\baudit/, /\baccessibility\b.*\baudit/,
 		/\bdocument\b.*\bapi/, /\bstream/, /\breal.?time/,
+		/\bproject.manager\b/, /\broadmap\b.*\bplanning\b/,
 	];
 
 	if (complexPatterns.some(p => p.test(text))) return 'claude-opus-4-6';

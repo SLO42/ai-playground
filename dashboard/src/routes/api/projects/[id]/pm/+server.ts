@@ -184,7 +184,7 @@ export async function POST({ params, request }) {
 			const sessionId = `pm-${params.id}`;
 			const now = new Date().toISOString();
 			const session: ChatSession = {
-				id: sessionId, model: 'system', provider: 'internal',
+				id: sessionId, model: 'claude-opus-4-6', provider: 'internal',
 				createdAt: now, updatedAt: now,
 				messages: [
 					{ role: 'system', content: `Project Manager discussion for ${ctx.projectName}` },

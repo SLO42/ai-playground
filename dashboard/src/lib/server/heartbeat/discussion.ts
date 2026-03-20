@@ -192,13 +192,20 @@ export async function checkDiscussionReplies(monitorSession: ChatSession): Promi
 	const discussions = getDiscussionMap();
 
 	// Scan for discussion sessions we may have lost track of (HMR, restart)
+	// Includes both task discussions (discuss-*) and PM sessions (pm-*)
 	try {
 		const index = await readSessionIndex();
 		for (const meta of index) {
-			if (meta.id.startsWith('discuss-') && meta.status === 'waiting') {
+			if (meta.status !== 'waiting') continue;
+			if (meta.id.startsWith('discuss-')) {
 				const taskId = meta.id.replace('discuss-', '');
 				if (!discussions.has(taskId)) {
 					discussions.set(taskId, meta.id);
+				}
+			} else if (meta.id.startsWith('pm-')) {
+				// PM sessions use the session ID as the key
+				if (!discussions.has(meta.id)) {
+					discussions.set(meta.id, meta.id);
 				}
 			}
 		}
@@ -234,25 +241,46 @@ export async function checkDiscussionReplies(monitorSession: ChatSession): Promi
 				.map(m => `${m.sender?.label ?? m.role}: ${m.content}`)
 				.join('\n\n');
 
-			const task = allTasks.find(t => t.id === taskId);
+			// PM sessions (pm-*) don't have a real task — synthesize one
+			let task: Task | undefined;
+			if (sessionId.startsWith('pm-')) {
+				const projectId = sessionId.replace('pm-', '');
+				task = {
+					id: sessionId,
+					title: `PM roadmap planning: ${projectId}`,
+					description: 'Project Manager discussion — update roadmap based on user input',
+					status: 'pending',
+					priority: 'high',
+					flagDiscussion: false,
+					assignee: 'claw',
+					tags: ['project-manager', 'roadmap'],
+					feature: null,
+					createdBy: 'pm',
+					createdAt: new Date().toISOString(),
+					updatedAt: new Date().toISOString(),
+					completedAt: null
+				};
+			} else {
+				task = allTasks.find(t => t.id === taskId);
+			}
 
 			if (task && (task.status === 'pending' || task.status === 'in_progress')) {
-				await updateTask(PATHS.root, taskId, {
-					flagDiscussion: false,
-					assignee: 'claw'
-				}).catch(() => {});
+				if (!sessionId.startsWith('pm-')) {
+					await updateTask(PATHS.root, taskId, {
+						flagDiscussion: false,
+						assignee: 'claw'
+					}).catch(() => {});
+				}
 
 				const success = await spawnAgentWithContext(task, monitorSession, discussionContext, sessionId);
 				if (success) {
 					discussions.delete(taskId);
 					await handleSuccessfulSpawn(task, sessionId, monitorSession);
 				} else {
-					// Queue the reply instead of silently dropping it
-					discussions.delete(taskId); // remove from discussion map — queue owns it now
+					discussions.delete(taskId);
 					enqueueReply(task, discussionContext, sessionId, monitorSession);
 				}
 			} else {
-				// Task not found or already completed — clean up
 				discussions.delete(taskId);
 				log(monitorSession, `[discuss] Task "${taskId}" not found or already completed — closing discussion`);
 			}

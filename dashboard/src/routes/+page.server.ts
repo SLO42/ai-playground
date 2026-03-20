@@ -9,6 +9,7 @@ import { getPoolStats } from '$lib/server/heartbeat/session-pool.js';
 import { getActiveAgents } from '$lib/server/heartbeat/shared.js';
 import { isHeartbeatRunning } from '$lib/server/heartbeat.js';
 import { getAllTasks } from '$lib/server/task-store-sql.js';
+import { scanAllProjects } from '$lib/server/project-scanner.js';
 import { readFile, readdir } from 'fs/promises';
 
 async function checkHealth(url: string, timeoutMs = 1500): Promise<boolean> {
@@ -114,7 +115,11 @@ export const load: PageServerLoad = async () => {
 		online: healthResults[i] ?? false
 	}));
 
+	// Check if any projects exist for onboarding detection
+	const projects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root).catch(() => []);
+
 	return {
+		hasProjects: projects.length > 0,
 		daemonState,
 		graphState,
 		topEntries,

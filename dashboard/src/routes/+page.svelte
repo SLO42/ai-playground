@@ -37,114 +37,196 @@
 		{ key: 'security-scan-latest', namespace: 'security', hits: 156, lastAccess: '12 min ago' },
 		{ key: 'routing-model-prefs', namespace: 'routing', hits: 134, lastAccess: '1 min ago' }
 	];
+
+	// Onboarding: derive service statuses from serviceHealth
+	let ollamaOnline = $derived(
+		data.serviceHealth?.find((s: { id: string }) => s.id === 'ollama')?.online ?? false
+	);
+	let openclawOnline = $derived(
+		data.serviceHealth?.find((s: { id: string }) => s.id === 'openclaw')?.online ?? false
+	);
+
+	const actionCards = [
+		{
+			title: 'Create New Project',
+			description: 'Start from a template',
+			href: '/projects/create',
+			icon: '\u2795',
+			accent: 'border-accent-cyan',
+			hoverBg: 'hover:bg-accent-cyan/10'
+		},
+		{
+			title: 'Import Existing',
+			description: 'Bring in an existing project',
+			href: '/projects/import',
+			icon: '\u{1F4E5}',
+			accent: 'border-accent-green',
+			hoverBg: 'hover:bg-accent-green/10'
+		},
+		{
+			title: 'Create with AI',
+			description: 'Describe it, we build it',
+			href: '/projects/create-ai',
+			icon: '\u2728',
+			accent: 'border-accent-purple',
+			hoverBg: 'hover:bg-accent-purple/10'
+		}
+	];
 </script>
 
 <div class="space-y-6">
-	<h1 class="type-page-title text-text-primary">Dashboard Overview</h1>
+	{#if data.hasProjects}
+		<h1 class="type-page-title text-text-primary">Dashboard Overview</h1>
 
-	{#if loaded}
-		<!-- Metric Cards -->
-		<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-			<MetricCard label="Total Agents" value={totalAgents} subtitle="42 active now" accent="blue" />
-			<MetricCard label="Memory Nodes" value={memoryNodes.toLocaleString()} subtitle="HNSW indexed" accent="cyan" />
-			<MetricCard label="Active Hooks" value={activeHooks} subtitle="3 learning" accent="green" />
-			<MetricCard label="Uptime" value={uptime} subtitle="Since last restart" accent="purple" />
-		</div>
+		{#if loaded}
+			<!-- Metric Cards -->
+			<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+				<MetricCard label="Total Agents" value={totalAgents} subtitle="42 active now" accent="blue" />
+				<MetricCard label="Memory Nodes" value={memoryNodes.toLocaleString()} subtitle="HNSW indexed" accent="cyan" />
+				<MetricCard label="Active Hooks" value={activeHooks} subtitle="3 learning" accent="green" />
+				<MetricCard label="Uptime" value={uptime} subtitle="Since last restart" accent="purple" />
+			</div>
 
-		<!-- V3 Migration Progress -->
-		<section>
-			<h2 class="type-section-title text-text-primary mb-4">V3 Migration Progress</h2>
-			<div class="space-y-4">
-				{#each migrationProgress as item}
-					<div class="flex items-center gap-4">
-						<span class="text-sm text-text-secondary w-40 flex-shrink-0">{item.label}</span>
-						<div class="flex-1 h-3 bg-bg-secondary rounded-full overflow-hidden border border-border">
-							<div class="h-full {item.color} rounded-full transition-all" style="width: {item.percent}%"></div>
+			<!-- V3 Migration Progress -->
+			<section>
+				<h2 class="type-section-title text-text-primary mb-4">V3 Migration Progress</h2>
+				<div class="space-y-4">
+					{#each migrationProgress as item}
+						<div class="flex items-center gap-4">
+							<span class="text-sm text-text-secondary w-40 flex-shrink-0">{item.label}</span>
+							<div class="flex-1 h-3 bg-bg-secondary rounded-full overflow-hidden border border-border">
+								<div class="h-full {item.color} rounded-full transition-all" style="width: {item.percent}%"></div>
+							</div>
+							<span class="text-sm font-mono text-text-primary w-12 text-right">{item.percent}%</span>
 						</div>
-						<span class="text-sm font-mono text-text-primary w-12 text-right">{item.percent}%</span>
+					{/each}
+				</div>
+			</section>
+
+			<!-- VRAM + Learning -->
+			<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+				<!-- VRAM Usage -->
+				<div class="bg-bg-secondary border border-border rounded-lg p-4">
+					<p class="type-label text-text-secondary mb-2">VRAM Usage</p>
+					<div class="flex items-baseline gap-2 mb-1">
+						<span class="type-mono-value text-accent-yellow">{vramUsedGb.toFixed(1)} GB</span>
+						<span class="text-sm text-text-secondary">/ {totalVramGb} GB</span>
 					</div>
+					<div class="h-3 bg-bg-primary rounded-full overflow-hidden mb-3">
+						<div
+							class="h-full rounded-full transition-all {vramUsedGb / totalVramGb > 0.8 ? 'bg-accent-yellow' : 'bg-accent-green'}"
+							style="width: {(vramUsedGb / totalVramGb) * 100}%"
+						></div>
+					</div>
+					<div class="space-y-1 text-xs text-text-secondary font-mono">
+						<p>GPT-OSS 20B: 14.2 GB</p>
+						<p>KV Cache: 2.8 GB</p>
+						<p>System: 1.2 GB</p>
+					</div>
+				</div>
+
+				<!-- Learning Intelligence -->
+				<div class="bg-bg-secondary border border-border rounded-lg p-4">
+					<p class="type-label text-text-secondary mb-2">Learning Intelligence</p>
+					<div class="flex items-baseline gap-2 mb-1">
+						<span class="type-mono-value text-accent-purple">{patternsLearned}</span>
+						<span class="text-sm text-text-secondary">patterns</span>
+					</div>
+					<div class="h-3 bg-bg-primary rounded-full overflow-hidden mb-3">
+						<div class="h-full bg-accent-purple rounded-full" style="width: 72%"></div>
+					</div>
+					<div class="space-y-1 text-xs text-text-secondary font-mono">
+						<p>Trajectories: 234</p>
+						<p>Verdicts: 1,892</p>
+						<p>Graph edges: 456</p>
+					</div>
+				</div>
+			</div>
+
+			<!-- Top Memory Nodes -->
+			<section>
+				<h2 class="type-section-title text-text-primary mb-4">Top Memory Nodes</h2>
+				<div class="bg-bg-secondary border border-border rounded-lg overflow-x-auto">
+					<table class="w-full text-sm min-w-[500px]">
+						<thead>
+							<tr class="border-b border-border">
+								<th class="text-left px-4 py-3 text-text-secondary font-medium">Key</th>
+								<th class="text-left px-4 py-3 text-text-secondary font-medium">Namespace</th>
+								<th class="text-right px-4 py-3 text-text-secondary font-medium">Hits</th>
+								<th class="text-right px-4 py-3 text-text-secondary font-medium">Last Access</th>
+							</tr>
+						</thead>
+						<tbody>
+							{#each topMemoryNodes as node}
+								<tr class="border-b border-border last:border-0">
+									<td class="px-4 py-3 font-mono text-text-primary">{node.key}</td>
+									<td class="px-4 py-3 font-mono text-text-secondary">{node.namespace}</td>
+									<td class="px-4 py-3 font-mono text-text-primary text-right">{node.hits}</td>
+									<td class="px-4 py-3 text-text-secondary text-right">{node.lastAccess}</td>
+								</tr>
+							{/each}
+						</tbody>
+					</table>
+				</div>
+			</section>
+		{:else}
+			<!-- Loading skeletons -->
+			<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+				{#each Array(4) as _}
+					<Skeleton variant="metric" />
 				{/each}
 			</div>
-		</section>
-
-		<!-- VRAM + Learning -->
-		<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-			<!-- VRAM Usage -->
-			<div class="bg-bg-secondary border border-border rounded-lg p-4">
-				<p class="type-label text-text-secondary mb-2">VRAM Usage</p>
-				<div class="flex items-baseline gap-2 mb-1">
-					<span class="type-mono-value text-accent-yellow">{vramUsedGb.toFixed(1)} GB</span>
-					<span class="text-sm text-text-secondary">/ {totalVramGb} GB</span>
-				</div>
-				<div class="h-3 bg-bg-primary rounded-full overflow-hidden mb-3">
-					<div
-						class="h-full rounded-full transition-all {vramUsedGb / totalVramGb > 0.8 ? 'bg-accent-yellow' : 'bg-accent-green'}"
-						style="width: {(vramUsedGb / totalVramGb) * 100}%"
-					></div>
-				</div>
-				<div class="space-y-1 text-xs text-text-secondary font-mono">
-					<p>GPT-OSS 20B: 14.2 GB</p>
-					<p>KV Cache: 2.8 GB</p>
-					<p>System: 1.2 GB</p>
-				</div>
+			<Skeleton variant="card" lines={4} />
+			<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+				<Skeleton variant="card" lines={5} />
+				<Skeleton variant="card" lines={5} />
 			</div>
-
-			<!-- Learning Intelligence -->
-			<div class="bg-bg-secondary border border-border rounded-lg p-4">
-				<p class="type-label text-text-secondary mb-2">Learning Intelligence</p>
-				<div class="flex items-baseline gap-2 mb-1">
-					<span class="type-mono-value text-accent-purple">{patternsLearned}</span>
-					<span class="text-sm text-text-secondary">patterns</span>
-				</div>
-				<div class="h-3 bg-bg-primary rounded-full overflow-hidden mb-3">
-					<div class="h-full bg-accent-purple rounded-full" style="width: 72%"></div>
-				</div>
-				<div class="space-y-1 text-xs text-text-secondary font-mono">
-					<p>Trajectories: 234</p>
-					<p>Verdicts: 1,892</p>
-					<p>Graph edges: 456</p>
-				</div>
-			</div>
+			<Skeleton variant="table" lines={4} />
+		{/if}
+	{:else}
+		<!-- Onboarding: no projects yet -->
+		<div class="flex flex-col items-center text-center pt-8 pb-4">
+			<h1 class="text-3xl font-bold text-text-primary mb-2">Welcome to AI Playground</h1>
+			<p class="text-lg text-text-secondary">Your project lifecycle automation platform</p>
 		</div>
 
-		<!-- Top Memory Nodes -->
-		<section>
-			<h2 class="type-section-title text-text-primary mb-4">Top Memory Nodes</h2>
-			<div class="bg-bg-secondary border border-border rounded-lg overflow-x-auto">
-				<table class="w-full text-sm min-w-[500px]">
-					<thead>
-						<tr class="border-b border-border">
-							<th class="text-left px-4 py-3 text-text-secondary font-medium">Key</th>
-							<th class="text-left px-4 py-3 text-text-secondary font-medium">Namespace</th>
-							<th class="text-right px-4 py-3 text-text-secondary font-medium">Hits</th>
-							<th class="text-right px-4 py-3 text-text-secondary font-medium">Last Access</th>
-						</tr>
-					</thead>
-					<tbody>
-						{#each topMemoryNodes as node}
-							<tr class="border-b border-border last:border-0">
-								<td class="px-4 py-3 font-mono text-text-primary">{node.key}</td>
-								<td class="px-4 py-3 font-mono text-text-secondary">{node.namespace}</td>
-								<td class="px-4 py-3 font-mono text-text-primary text-right">{node.hits}</td>
-								<td class="px-4 py-3 text-text-secondary text-right">{node.lastAccess}</td>
-							</tr>
-						{/each}
-					</tbody>
-				</table>
-			</div>
-		</section>
-	{:else}
-		<!-- Loading skeletons -->
-		<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
-			{#each Array(4) as _}
-				<Skeleton variant="metric" />
+		<!-- Action Cards -->
+		<div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+			{#each actionCards as card}
+				<a
+					href={card.href}
+					class="group bg-bg-secondary border-2 {card.accent} rounded-lg p-6 text-center
+						transition-all {card.hoverBg} hover:shadow-lg"
+				>
+					<span class="text-3xl block mb-3">{card.icon}</span>
+					<h3 class="text-lg font-semibold text-text-primary mb-1">{card.title}</h3>
+					<p class="text-sm text-text-secondary">{card.description}</p>
+				</a>
 			{/each}
 		</div>
-		<Skeleton variant="card" lines={4} />
-		<div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-			<Skeleton variant="card" lines={5} />
-			<Skeleton variant="card" lines={5} />
-		</div>
-		<Skeleton variant="table" lines={4} />
+
+		<!-- Setup Status -->
+		<section class="bg-bg-secondary border border-border rounded-lg p-6">
+			<h2 class="type-section-title text-text-primary mb-4">Setup</h2>
+			<div class="space-y-3">
+				<div class="flex items-center justify-between">
+					<span class="text-sm text-text-secondary">Ollama Server</span>
+					<span class="text-sm font-mono {ollamaOnline ? 'text-accent-green' : 'text-accent-red'}">
+						{ollamaOnline ? 'Connected' : 'Offline'}
+					</span>
+				</div>
+				<div class="flex items-center justify-between">
+					<span class="text-sm text-text-secondary">OpenClaw Gateway</span>
+					<span class="text-sm font-mono {openclawOnline ? 'text-accent-green' : 'text-accent-red'}">
+						{openclawOnline ? 'Connected' : 'Offline'}
+					</span>
+				</div>
+				<div class="pt-2 border-t border-border">
+					<a href="/diagnostics" class="text-sm text-accent-cyan hover:underline">
+						Run full diagnostics &rarr;
+					</a>
+				</div>
+			</div>
+		</section>
 	{/if}
 </div>

@@ -4,9 +4,12 @@
 		status: 'online' | 'offline' | 'warning';
 	}
 
+	import type { Snippet } from 'svelte';
+
 	interface Props {
 		services?: ServiceStatus[];
 		lastSync?: string;
+		trailing?: Snippet;
 	}
 
 	let {
@@ -15,7 +18,8 @@
 			{ label: 'Gateway', status: 'online' },
 			{ label: 'Daemon', status: 'online' }
 		],
-		lastSync = 'just now'
+		lastSync = 'just now',
+		trailing
 	}: Props = $props();
 
 	const dotColors: Record<string, string> = {
@@ -53,6 +57,9 @@
 	</div>
 
 	<div class="flex items-center gap-4">
+		{#if trailing}
+			{@render trailing()}
+		{/if}
 		<span class="text-[11px] text-text-secondary">
 			Synced {syncLabel()}
 		</span>

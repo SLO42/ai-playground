@@ -6,7 +6,7 @@
 	import StatusBar from '$lib/components/StatusBar.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import CommandPalette from '$lib/components/CommandPalette.svelte';
-	import { startLiveUpdates, isConnected } from '$lib/stores/live-updates.js';
+	import { startLiveUpdates, isConnected } from '$lib/stores/live-updates.svelte.js';
 	import type { LayoutData } from './$types.js';
 
 	let { data, children }: { data: LayoutData; children: any } = $props();

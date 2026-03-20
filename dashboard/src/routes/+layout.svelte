@@ -156,7 +156,7 @@
 		<Sidebar collapsed={sidebarCollapsed} mobileOpen={sidebarMobileOpen} onNavigate={() => (sidebarMobileOpen = false)} />
 	{/if}
 
-	<div class="flex-1 {isProjectRoute ? '' : sidebarCollapsed ? 'lg:ml-16' : 'lg:ml-56'} flex flex-col transition-[margin] duration-200">
+	<div class="flex-1 min-w-0 {isProjectRoute ? '' : sidebarCollapsed ? 'lg:ml-16' : 'lg:ml-56'} flex flex-col transition-[margin] duration-200">
 		<!-- Mobile header with hamburger (hidden on project routes) -->
 		{#if !isProjectRoute}
 			<div class="flex items-center gap-3 lg:hidden px-4 py-3 border-b border-border bg-bg-secondary">
@@ -182,7 +182,7 @@
 			{/snippet}
 		</StatusBar>
 
-		<main class="flex-1 p-4 md:p-6">
+		<main class="flex-1 p-4 md:p-6 min-w-0 overflow-x-hidden">
 			{@render children()}
 		</main>
 	</div>

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import type { PageData } from './$types.js';
 
 	let { data }: { data: PageData } = $props();
@@ -21,10 +22,7 @@
 </script>
 
 <div class="space-y-6">
-	<div>
-		<h1 class="text-2xl font-bold text-text-primary">System Diagnostics</h1>
-		<p class="text-sm text-text-secondary mt-1">Health checks for local tools, services, and dependencies</p>
-	</div>
+	<PageHeader title="System Diagnostics" subtitle="Health checks for local tools, services, and dependencies" />
 
 	<!-- Summary -->
 	<div class="flex items-center gap-4 text-sm">

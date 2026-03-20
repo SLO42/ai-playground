@@ -49,7 +49,7 @@
 <header role="banner" aria-label="System status" class="sticky top-0 z-40 h-10 bg-bg-secondary/80 backdrop-blur-sm border-b border-border px-6 flex items-center justify-between">
 	<div role="status" class="flex items-center gap-2">
 		{#each services as svc}
-			<span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border {pillColors[svc.status]}">
+			<span aria-label="{svc.label}: {svc.status}" class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-[11px] font-medium border {pillColors[svc.status]}">
 				<span aria-hidden="true" class="w-1.5 h-1.5 rounded-full {dotColors[svc.status]} {svc.status === 'online' ? 'animate-pulse' : ''}"></span>
 				{svc.label}
 			</span>

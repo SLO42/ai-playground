@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { onMount, onDestroy } from 'svelte';
 	import MetricCard from '$lib/components/MetricCard.svelte';
+	import EmptyState from '$lib/components/EmptyState.svelte';
 	import { apiGet, apiPost } from '$lib/api-client.js';
 	import type { PageData } from './$types.js';
 
@@ -238,28 +239,19 @@
 				</div>
 			{/each}
 			{#if filtered.length === 0}
-				<div class="flex flex-col items-center justify-center py-16 px-4" role="status" aria-label="No notifications">
-					<svg xmlns="http://www.w3.org/2000/svg" class="w-16 h-16 text-text-secondary/30 mb-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-						<path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9" />
-						<path d="M13.73 21a2 2 0 0 1-3.46 0" />
-						<line x1="1" y1="1" x2="23" y2="23" stroke="currentColor" stroke-width="1.5" opacity="0.5" />
-					</svg>
-					<p class="text-sm font-medium text-text-primary mb-1">
+				<EmptyState
+					title={activeTab !== 'all' ? `No ${activeTab} notifications` : 'All clear'}
+					message={activeTab !== 'all'
+						? `There are no notifications in the ${activeTab} category right now.`
+						: 'No notifications right now'}
+					icon="🔔"
+				>
+					{#snippet actions()}
 						{#if activeTab !== 'all'}
-							No {activeTab} notifications
-						{:else}
-							All caught up
+							<button class="text-xs text-accent-blue hover:underline" onclick={() => (activeTab = 'all')}>View all</button>
 						{/if}
-					</p>
-					<p class="text-xs text-text-secondary text-center max-w-xs">
-						{#if activeTab !== 'all'}
-							There are no notifications in the <span class="font-medium">{activeTab}</span> category right now.
-							<button class="text-accent-blue hover:underline ml-1" onclick={() => (activeTab = 'all')}>View all</button>
-						{:else}
-							You have no notifications. New alerts, task updates, and system events will appear here.
-						{/if}
-					</p>
-				</div>
+					{/snippet}
+				</EmptyState>
 			{/if}
 		</div>
 

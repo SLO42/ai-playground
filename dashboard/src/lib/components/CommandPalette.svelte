@@ -76,6 +76,9 @@
 	<!-- Backdrop -->
 	<!-- svelte-ignore a11y_no_static_element_interactions -->
 	<div
+		role="dialog"
+		aria-modal="true"
+		aria-label="Command palette"
 		class="fixed inset-0 bg-black/50 z-[100] flex items-start justify-center pt-[15vh] md:pt-[20vh]"
 		onkeydown={handleKeydown}
 		onclick={(e) => { if (e.target === e.currentTarget) close(); }}
@@ -93,6 +96,7 @@
 					bind:value={query}
 					onkeydown={handleKeydown}
 					placeholder="Type a command..."
+					aria-label="Command palette"
 					autofocus
 					class="flex-1 bg-transparent text-sm text-text-primary placeholder:text-text-secondary focus:outline-none"
 				/>

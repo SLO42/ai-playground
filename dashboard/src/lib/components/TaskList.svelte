@@ -131,7 +131,7 @@
 
 <div class="bg-bg-secondary border border-border rounded-lg overflow-hidden">
 	<!-- Filter Row -->
-	<div class="flex items-center border-b border-border">
+	<div class="flex items-center border-b border-border overflow-x-auto">
 		<!-- Tab filters -->
 		<div class="flex flex-1">
 			{#each [['active', 'Active'], ['completed', 'Completed'], ['all', 'All']] as [key, label]}

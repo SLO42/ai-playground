@@ -1,5 +1,7 @@
 <script lang="ts">
+	import PageHeader from '$lib/components/PageHeader.svelte';
 	import MetricCard from '$lib/components/MetricCard.svelte';
+	import EmptyState from '$lib/components/EmptyState.svelte';
 	import TaskList from '$lib/components/TaskList.svelte';
 	import TaskDetail from '$lib/components/TaskDetail.svelte';
 	import { apiPost, apiPut, apiDelete } from '$lib/api-client.js';
@@ -199,9 +201,8 @@
 </script>
 
 <div class="space-y-6">
-	<div class="flex items-center justify-between">
-		<h1 class="type-page-title text-text-primary">Tasks</h1>
-		<div class="flex items-center gap-2">
+	<PageHeader title="Tasks">
+		{#snippet actions()}
 			{#if syncResult}
 				<span class="text-xs text-text-secondary">{syncResult}</span>
 			{/if}
@@ -227,8 +228,8 @@
 				</svg>
 				New Task
 			</button>
-		</div>
-	</div>
+		{/snippet}
+	</PageHeader>
 
 	<!-- Summary -->
 	<div class="grid grid-cols-2 sm:grid-cols-4 gap-4">
@@ -289,31 +290,27 @@
 					</button>
 				</div>
 			{:else if tasks.length === 0}
-				<div class="bg-bg-secondary border border-border rounded-lg p-8 flex flex-col items-center justify-center gap-3 min-h-[200px]">
-					<svg class="w-8 h-8 text-text-secondary/50" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
-						<path stroke-linecap="round" stroke-linejoin="round" d="M9 12h3.75M9 15h3.75M9 18h3.75m3 .75H18a2.25 2.25 0 002.25-2.25V6.108c0-1.135-.845-2.098-1.976-2.192a48.424 48.424 0 00-1.123-.08m-5.801 0c-.065.21-.1.433-.1.664 0 .414.336.75.75.75h4.5a.75.75 0 00.75-.75 2.25 2.25 0 00-.1-.664m-5.8 0A2.251 2.251 0 0113.5 2.25H15c1.012 0 1.867.668 2.15 1.586m-5.8 0c-.376.023-.75.05-1.124.08C9.095 4.01 8.25 4.973 8.25 6.108V8.25m0 0H4.875c-.621 0-1.125.504-1.125 1.125v11.25c0 .621.504 1.125 1.125 1.125h9.75c.621 0 1.125-.504 1.125-1.125V9.375c0-.621-.504-1.125-1.125-1.125H8.25z" />
-					</svg>
-					<p class="text-sm text-text-secondary">No tasks yet</p>
-					<button
-						onclick={() => (showNewTaskModal = true)}
-						class="text-xs text-accent-blue hover:underline transition-colors"
-					>
-						Create your first task
-					</button>
-				</div>
+				<EmptyState title="No tasks" message="Create a task to get started" icon="📋">
+					{#snippet actions()}
+						<button
+							onclick={() => (showNewTaskModal = true)}
+							class="text-xs text-accent-blue hover:underline transition-colors"
+						>
+							Create your first task
+						</button>
+					{/snippet}
+				</EmptyState>
 			{:else if totalFiltered === 0}
-				<div class="bg-bg-secondary border border-border rounded-lg p-8 flex flex-col items-center justify-center gap-2 min-h-[200px]">
-					<svg class="w-6 h-6 text-text-secondary/50" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="1.5">
-						<path stroke-linecap="round" stroke-linejoin="round" d="M21 21l-5.197-5.197m0 0A7.5 7.5 0 105.196 5.196a7.5 7.5 0 0010.607 10.607z" />
-					</svg>
-					<p class="text-sm text-text-secondary">No tasks match your filters</p>
-					<button
-						onclick={() => { searchQuery = ''; navigate({ q: '', filter: 'active', project: 'all', page: 1 }); }}
-						class="text-xs text-accent-blue hover:underline transition-colors"
-					>
-						Clear all filters
-					</button>
-				</div>
+				<EmptyState title="No matches" message="No tasks match your current filters" icon="🔍">
+					{#snippet actions()}
+						<button
+							onclick={() => { searchQuery = ''; navigate({ q: '', filter: 'active', project: 'all', page: 1 }); }}
+							class="text-xs text-accent-blue hover:underline transition-colors"
+						>
+							Clear all filters
+						</button>
+					{/snippet}
+				</EmptyState>
 			{:else}
 			<TaskList
 				tasks={tasks}
@@ -329,9 +326,9 @@
 				blockerNames={data.blockerNames}
 			/>
 			{#if totalPages > 1}
-				<div class="flex items-center justify-between text-xs text-text-secondary px-1">
-					<span>{totalFiltered} task{totalFiltered !== 1 ? 's' : ''} — page {page} of {totalPages}</span>
-					<nav class="flex items-center gap-1" aria-label="Task pagination">
+				<div class="flex flex-wrap items-center justify-between gap-2 text-xs text-text-secondary px-1">
+					<span class="shrink-0">{totalFiltered} task{totalFiltered !== 1 ? 's' : ''} — page {page} of {totalPages}</span>
+					<nav class="flex flex-wrap items-center gap-1" aria-label="Task pagination">
 						<button
 							disabled={page <= 1}
 							class="px-3 py-1.5 rounded-md border transition-colors {page <= 1 ? 'bg-bg-secondary text-text-secondary/40 border-border cursor-not-allowed' : 'bg-bg-secondary text-text-secondary border-border hover:text-text-primary hover:bg-bg-tertiary'}"

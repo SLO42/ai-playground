@@ -42,6 +42,8 @@
 
 <!-- Desktop sidebar -->
 <nav
+	role="navigation"
+	aria-label="Main navigation"
 	class="fixed left-0 top-0 h-full bg-bg-secondary border-r border-border flex-col z-50 transition-all duration-200
 		hidden lg:flex
 		{collapsed ? 'w-16' : 'w-56'}"
@@ -58,6 +60,8 @@
 		{#each navItems as item}
 			<a
 				href={item.href}
+				aria-current={isActive(item.href) ? 'page' : undefined}
+				aria-label={collapsed ? item.label : undefined}
 				class="group relative flex items-center mx-2 h-10 rounded-lg text-sm transition-colors
 					{collapsed ? 'justify-center px-0 gap-0' : 'gap-3 px-3'}
 					{isActive(item.href)
@@ -85,7 +89,7 @@
 
 <!-- Mobile sidebar (overlay) -->
 {#if mobileOpen}
-	<nav class="fixed left-0 top-0 h-full w-56 bg-bg-secondary border-r border-border flex flex-col z-50 lg:hidden">
+	<nav role="navigation" aria-label="Main navigation" class="fixed left-0 top-0 h-full w-56 bg-bg-secondary border-r border-border flex flex-col z-50 lg:hidden">
 		<div class="px-4 py-5 border-b border-border">
 			<h1 class="text-sm font-bold text-accent-cyan tracking-wider">ai-playground</h1>
 		</div>
@@ -95,6 +99,7 @@
 				<a
 					href={item.href}
 					onclick={handleNav}
+					aria-current={isActive(item.href) ? 'page' : undefined}
 					class="group relative flex items-center gap-3 mx-2 px-3 h-10 rounded-lg text-sm transition-colors
 						{isActive(item.href)
 							? 'bg-accent-blue/10 text-accent-blue font-medium'

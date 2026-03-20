@@ -129,9 +129,9 @@
 		<!-- Routing Chain -->
 		<section>
 			<h2 class="type-section-title text-text-primary mb-4">Routing Chain</h2>
-			<div class="flex flex-wrap items-center gap-3">
+			<div class="flex flex-wrap items-center gap-3 overflow-x-auto">
 				{#each routingChain as step, i}
-					<div class="bg-bg-secondary border border-border rounded-lg px-4 py-3 min-w-[140px] sm:min-w-[160px]">
+					<div class="bg-bg-secondary border border-border rounded-lg px-4 py-3 min-w-[120px] sm:min-w-[160px]">
 						<p class="text-sm font-medium {step.color || 'text-text-primary'}">{step.label}</p>
 						<p class="text-xs text-text-secondary mt-0.5">{step.sublabel}</p>
 					</div>
@@ -238,9 +238,9 @@
 							<span class="text-xs font-mono text-text-secondary w-6 shrink-0">#{i + 1}</span>
 							<div class="flex-1 min-w-0">
 								<p class="text-sm text-text-primary truncate">{task.taskTitle || task.taskId}</p>
-								<p class="text-xs text-text-secondary">{task.model}</p>
+								<p class="text-xs text-text-secondary truncate">{task.model}</p>
 							</div>
-							<div class="flex items-center gap-4 text-xs shrink-0">
+							<div class="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs shrink-0">
 								<span class="font-mono text-accent-green">${task.costUsd.toFixed(4)}</span>
 								<span class="font-mono text-text-secondary">{(task.durationMs / 1000).toFixed(1)}s</span>
 								<span class="font-mono text-text-secondary">{(task.inputTokens + task.outputTokens).toLocaleString()} tok</span>
@@ -256,10 +256,10 @@
 			{@const maxDailyCost = Math.max(...data.dailyCostTrend.map((d) => d.cost), 0.0001)}
 			<section>
 				<h2 class="type-section-title text-text-primary mb-4">Daily Cost Trend (Last 7 Days)</h2>
-				<div class="bg-bg-secondary border border-border rounded-lg p-4 space-y-3">
+				<div class="bg-bg-secondary border border-border rounded-lg p-4 space-y-3 overflow-x-auto">
 					{#each data.dailyCostTrend as day}
 						{@const barPct = maxDailyCost > 0 ? (day.cost / maxDailyCost) * 100 : 0}
-						<div class="flex items-center gap-3">
+						<div class="flex items-center gap-2 sm:gap-3 min-w-[280px]">
 							<span class="text-xs font-mono text-text-secondary w-20 shrink-0">{day.date.slice(5)}</span>
 							<div class="flex-1 h-4 bg-bg-primary rounded-full overflow-hidden">
 								<div

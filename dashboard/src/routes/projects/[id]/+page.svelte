@@ -15,7 +15,10 @@
 
 	const serviceStatus: Record<string, 'online' | 'offline' | 'warning'> = {
 		online: 'online',
+		running: 'online',
 		offline: 'offline',
+		stopped: 'offline',
+		unknown: 'offline',
 		degraded: 'warning'
 	};
 

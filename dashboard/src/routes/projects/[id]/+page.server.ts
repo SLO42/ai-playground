@@ -4,6 +4,15 @@ import { scanAllProjects } from '$lib/server/project-scanner.js';
 import { readFile } from 'fs/promises';
 import { resolve } from 'path';
 
+async function checkHealth(url: string): Promise<boolean> {
+	try {
+		const res = await fetch(url, { signal: AbortSignal.timeout(2000) });
+		return res.ok;
+	} catch {
+		return false;
+	}
+}
+
 export const load: PageServerLoad = async ({ params }) => {
 	const projects = await scanAllProjects(PATHS.playgroundRegistry, PATHS.root);
 	const project = projects.find((p) => p.id === params.id);
@@ -13,7 +22,7 @@ export const load: PageServerLoad = async ({ params }) => {
 	}
 
 	// Read config for services
-	let configServices: { name: string; port?: number }[] = [];
+	let configServices: { name: string; port?: number; healthUrl?: string }[] = [];
 	try {
 		const configPath = resolve(project.path, '.playground/config.json');
 		const raw = await readFile(configPath, 'utf-8');
@@ -23,11 +32,17 @@ export const load: PageServerLoad = async ({ params }) => {
 		// no config services
 	}
 
-	const services = configServices.map((s) => ({
-		name: s.name,
-		status: 'offline' as const,
-		port: s.port ?? null
-	}));
+	const services = await Promise.all(
+		configServices.map(async (s) => {
+			const port = s.port ?? null;
+			const healthUrl = s.healthUrl ?? (port ? `http://127.0.0.1:${port}/` : null);
+			let status: 'running' | 'stopped' | 'unknown' = 'unknown';
+			if (healthUrl) {
+				status = (await checkHealth(healthUrl)) ? 'running' : 'stopped';
+			}
+			return { name: s.name, status, port };
+		})
+	);
 
 	return {
 		overview: {

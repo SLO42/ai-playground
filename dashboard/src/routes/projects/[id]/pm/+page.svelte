@@ -94,39 +94,126 @@
 		if (r.ok) window.location.reload();
 	}
 
-	// Inline PM input — talk to the PM directly from the dashboard
+	// ── PM Chat — stream conversation with Claude ──────────────────
+	interface PmMsg { role: 'user' | 'assistant' | 'system'; content: string }
+	let pmMessages = $state<PmMsg[]>([]);
 	let pmInput = $state('');
-	let pmProcessing = $state(false);
-	let pmFeedback = $state<string | null>(null);
+	let pmStreaming = $state(false);
+	let pmChatEl: HTMLDivElement | undefined = $state();
+	let pmAbort: AbortController | null = null;
 
-	async function sendToPm() {
+	function buildPmSystemPrompt(): string {
+		if (!data.plan) return 'You are a Project Manager agent.';
+		const m = data.plan.macro;
+		return [
+			'You are the Project Manager for this project. Your job is to refine the strategic plan through conversation.',
+			'You have the current plan below. When the user tells you about the project, update your understanding and suggest concrete changes to the plan.',
+			'Be specific — suggest exact wording for purpose, vision, releases, phases, features, DoD criteria.',
+			'After each exchange, summarize what you would update in the plan.',
+			'',
+			'## Current Plan',
+			`**Purpose**: ${m.purpose}`,
+			`**Long-term Vision**: ${m.longTermVision}`,
+			`**Role**: ${m.role.title} — ${m.role.responsibilities.join(', ')}`,
+			`**Highlights**: ${m.keyHighlights.length > 0 ? m.keyHighlights.join(', ') : 'none yet'}`,
+			`**Releases**: ${m.releases.map(r => `${r.version} "${r.name}" (${r.status})`).join(', ') || 'none yet'}`,
+			`**Phases**: ${m.phases.map(p => `${p.name} (${p.status}, release: ${p.releaseId})`).join(', ') || 'none yet'}`,
+			`**DoD**: ${m.definitionOfDone.join('; ') || 'none yet'}`,
+			`**Features**: ${m.featureMap.map(f => `${f.name}: ${f.description}`).join('; ') || 'none yet'}`,
+			`**Sprints**: ${data.plan.sprints.length} total`,
+			`**Decisions**: ${data.plan.decisions.length} recorded`,
+		].join('\n');
+	}
+
+	function scrollPmChat() {
+		if (pmChatEl) pmChatEl.scrollTop = pmChatEl.scrollHeight;
+	}
+
+	async function sendPmChat() {
 		const text = pmInput.trim();
-		if (!text || pmProcessing) return;
-		pmProcessing = true;
-		pmFeedback = null;
+		if (!text || pmStreaming) return;
+
+		pmMessages.push({ role: 'user', content: text });
+		pmInput = '';
+		pmStreaming = true;
+
+		// Also save to PM memory
+		pmAction('process-reply', { content: text }).catch(() => {});
+
+		// Add empty assistant message for streaming
+		const assistantIdx = pmMessages.length;
+		pmMessages.push({ role: 'assistant', content: '' });
+		scrollPmChat();
+
+		pmAbort = new AbortController();
+
 		try {
-			const r = await pmAction('process-reply', { content: text });
-			if (r.ok) {
-				const result = await r.json();
-				const applied: string[] = [];
-				if (result.applied?.purpose) applied.push('purpose');
-				if (result.applied?.longTermVision) applied.push('long-term vision');
-				if (result.applied?.role) applied.push('role');
-				if (result.applied?.keyHighlights?.length) applied.push(`${result.applied.keyHighlights.length} highlights`);
-				if (result.applied?.definitionOfDone?.length) applied.push(`${result.applied.definitionOfDone.length} DoD criteria`);
-				if (result.applied?.featureComplete?.length) applied.push(`${result.applied.featureComplete.length} feature-complete criteria`);
-				pmFeedback = applied.length > 0
-					? `Updated: ${applied.join(', ')}. Saved to PM memory.`
-					: 'Saved to PM memory. Open a discussion to refine further with Claude.';
-				pmInput = '';
-				// Reload after a short delay so the user sees the feedback
-				setTimeout(() => window.location.reload(), 2000);
-			} else {
-				const err = await r.json().catch(() => ({ error: 'Failed' }));
-				pmFeedback = `Error: ${err.error}`;
+			const apiMessages = [
+				{ role: 'system', content: buildPmSystemPrompt() },
+				...pmMessages.slice(0, assistantIdx)
+			];
+
+			const res = await fetch('/api/chat', {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
+					messages: apiMessages,
+					provider: 'claude',
+					model: 'claude-sonnet-4-6',
+					tools: false
+				}),
+				signal: pmAbort.signal
+			});
+
+			if (!res.ok) {
+				const err = await res.json().catch(() => ({ error: res.statusText }));
+				pmMessages[assistantIdx] = { role: 'assistant', content: `Error: ${err.error ?? res.statusText}` };
+				pmStreaming = false;
+				return;
+			}
+
+			const reader = res.body?.getReader();
+			if (!reader) {
+				pmMessages[assistantIdx] = { role: 'assistant', content: 'Error: No stream' };
+				pmStreaming = false;
+				return;
+			}
+
+			const decoder = new TextDecoder();
+			let buffer = '';
+
+			while (true) {
+				const { done, value } = await reader.read();
+				if (done) break;
+
+				buffer += decoder.decode(value, { stream: true });
+				const parts = buffer.split('\n\n');
+				buffer = parts.pop() ?? '';
+
+				for (const part of parts) {
+					if (!part.startsWith('data: ')) continue;
+					try {
+						const event = JSON.parse(part.slice(6));
+						if (event.type === 'content' && event.content) {
+							pmMessages[assistantIdx] = {
+								role: 'assistant',
+								content: pmMessages[assistantIdx].content + event.content
+							};
+							scrollPmChat();
+						}
+					} catch { /* skip bad json */ }
+				}
+			}
+		} catch (err) {
+			if ((err as Error).name !== 'AbortError') {
+				pmMessages[assistantIdx] = {
+					role: 'assistant',
+					content: pmMessages[assistantIdx].content || 'Error: Stream failed'
+				};
 			}
 		} finally {
-			pmProcessing = false;
+			pmStreaming = false;
+			pmAbort = null;
 		}
 	}
 
@@ -186,26 +273,58 @@
 			</div>
 		</div>
 
-		<!-- Inline PM Input -->
-		<div class="bg-bg-secondary rounded-lg border border-border p-4">
-			<form onsubmit={(e) => { e.preventDefault(); sendToPm(); }} class="flex gap-3">
-				<textarea
+		<!-- PM Chat — converse with Claude about the plan -->
+		<div class="bg-bg-secondary rounded-lg border border-accent-green/20 p-4">
+			<div class="flex items-center gap-2 mb-3">
+				<span class="w-2 h-2 rounded-full {pmStreaming ? 'bg-accent-green animate-pulse' : 'bg-accent-green/40'}"></span>
+				<h3 class="text-xs font-medium text-accent-green uppercase tracking-wider">PM Chat (Claude)</h3>
+				{#if pmMessages.length > 0}
+					<button onclick={() => { pmMessages = []; }}
+						class="ml-auto text-[10px] text-text-secondary hover:text-text-primary">Clear</button>
+				{/if}
+			</div>
+
+			{#if pmMessages.length > 0}
+				<div bind:this={pmChatEl} class="space-y-3 max-h-80 overflow-y-auto mb-3 pr-1">
+					{#each pmMessages as msg}
+						{#if msg.role !== 'system'}
+							<div class="flex gap-2 {msg.role === 'user' ? 'justify-end' : ''}">
+								<div class="max-w-[85%] rounded-lg px-3 py-2 text-xs leading-relaxed
+									{msg.role === 'user'
+										? 'bg-accent-blue/10 text-text-primary'
+										: 'bg-bg-primary border border-border text-text-primary'}">
+									{#if msg.role === 'assistant' && !msg.content && pmStreaming}
+										<span class="text-text-secondary animate-pulse">Thinking...</span>
+									{:else}
+										<p class="whitespace-pre-wrap">{msg.content}</p>
+									{/if}
+								</div>
+							</div>
+						{/if}
+					{/each}
+				</div>
+			{:else}
+				<p class="text-xs text-text-secondary mb-3">
+					Tell the PM about your project — purpose, role, releases, features, what "done" means. It will suggest plan updates.
+				</p>
+			{/if}
+
+			<form onsubmit={(e) => { e.preventDefault(); sendPmChat(); }} class="flex gap-2">
+				<input
 					bind:value={pmInput}
-					placeholder="Tell the PM about your project — purpose, role, releases, features, what 'done' means..."
-					rows={2}
-					class="flex-1 px-3 py-2 rounded-md bg-bg-primary border border-border text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent-green resize-y"
-				></textarea>
+					placeholder="Talk to the PM..."
+					disabled={pmStreaming}
+					class="flex-1 px-3 py-2 rounded-md bg-bg-primary border border-border text-sm text-text-primary placeholder:text-text-secondary/50 focus:outline-none focus:border-accent-green disabled:opacity-50"
+					onkeydown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendPmChat(); }}}
+				/>
 				<button
 					type="submit"
-					disabled={pmProcessing || !pmInput.trim()}
-					class="self-end px-4 py-2 rounded-md bg-accent-green text-black text-xs font-medium hover:bg-accent-green/90 transition-colors disabled:opacity-50 whitespace-nowrap"
+					disabled={pmStreaming || !pmInput.trim()}
+					class="px-4 py-2 rounded-md bg-accent-green text-black text-xs font-medium hover:bg-accent-green/90 transition-colors disabled:opacity-50"
 				>
-					{pmProcessing ? 'Processing...' : 'Update Plan'}
+					{pmStreaming ? '...' : 'Send'}
 				</button>
 			</form>
-			{#if pmFeedback}
-				<p class="text-xs mt-2 {pmFeedback.startsWith('Error') ? 'text-accent-red' : 'text-accent-green'}">{pmFeedback}</p>
-			{/if}
 		</div>
 
 		{#if data.plan}

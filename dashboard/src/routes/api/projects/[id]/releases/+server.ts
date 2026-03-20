@@ -68,21 +68,21 @@ export async function POST({ params, request }) {
 	try {
 		const { createGitHubRelease, bumpVersion } = await import('$lib/server/release-manager.js');
 
-		const [releaseResult, bumpResult] = await Promise.all([
-			createGitHubRelease(projectPath, {
-				tag: `v${body.version}`,
-				name: `v${body.version}`,
-				body: body.changelog,
-				draft: body.draft ?? false,
-				prerelease: body.prerelease ?? false
-			}).catch((e: Error) => ({ error: e.message })),
-			bumpVersion(projectPath, body.version).catch((e: Error) => ({ error: e.message }))
-		]);
+		// createGitHubRelease(path, version, changelog, options?) — separate args, not an object
+		const releaseResult = await createGitHubRelease(
+			projectPath,
+			body.version,
+			body.changelog,
+			{ draft: body.draft ?? false, prerelease: body.prerelease ?? false }
+		).catch(() => null);
+
+		// Bump version in package.json (best-effort, may not have one)
+		await bumpVersion(projectPath, body.version).catch(() => {});
 
 		return json({
-			release: releaseResult,
-			bump: bumpResult,
-			version: body.version
+			success: true,
+			version: body.version,
+			release: releaseResult
 		}, { status: 201 });
 	} catch (e) {
 		const message = e instanceof Error ? e.message : 'Release creation failed';

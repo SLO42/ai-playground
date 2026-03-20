@@ -7,11 +7,14 @@
  * This module tracks:
  * - Active slot allocations (taskId → AgentSlot)
  * - Cumulative spawn metrics for the dashboard
+ *
+ * Stats storage: SQLite at .playground/spawn-stats.db (WAL mode).
+ * Migrates from legacy .playground/spawn-stats.json on first load.
  */
-import { readFile, writeFile, mkdir } from 'fs/promises';
-import { resolve, dirname } from 'path';
+import Database from 'better-sqlite3';
+import { readFileSync, mkdirSync, existsSync, promises as fsp } from 'fs';
+import { resolve } from 'path';
 import { PATHS } from '../constants.js';
-import { withLock } from '../async-mutex.js';
 import {
 	getActiveAgents, getMaxConcurrentAgents,
 	countProjectAgents, getProjectLimits
@@ -57,7 +60,7 @@ export interface SessionPool {
 	scaleEvents: ScaleEvent[];
 }
 
-// ── Stats storage ───────────────────────────────────────────────────
+// ── SQLite stats storage ────────────────────────────────────────────
 
 interface SpawnStats {
 	totalSpawns: number;
@@ -65,35 +68,84 @@ interface SpawnStats {
 	totalCost: number;
 }
 
-const STATS_PATH = resolve(PATHS.root, '.playground/spawn-stats.json');
+const DB_PATH = resolve(PATHS.root, '.playground/spawn-stats.db');
+const JSON_PATH = resolve(PATHS.root, '.playground/spawn-stats.json');
 
+// Cache the DB handle across HMR reloads (same pattern as pm-memory-db.ts)
 const g = globalThis as Record<string, unknown>;
-let stats: SpawnStats = (g.__claw_spawn_stats as SpawnStats) ?? {
-	totalSpawns: 0,
-	totalTokens: 0,
-	totalCost: 0
-};
-let statsLoaded = !!(g.__claw_spawn_stats);
 
-async function loadStats(): Promise<SpawnStats> {
-	if (statsLoaded) return stats;
-	try {
-		const raw = await readFile(STATS_PATH, 'utf-8');
-		stats = JSON.parse(raw) as SpawnStats;
-		g.__claw_spawn_stats = stats;
-	} catch {
-		// First run
-	}
-	statsLoaded = true;
-	return stats;
+function getDb(): Database.Database {
+	const cached = g.__claw_spawn_stats_db as Database.Database | undefined;
+	if (cached) return cached;
+
+	mkdirSync(resolve(PATHS.root, '.playground'), { recursive: true });
+
+	const db = new Database(DB_PATH);
+	db.pragma('journal_mode = WAL');
+
+	db.exec(`
+		CREATE TABLE IF NOT EXISTS spawn_stats (
+			id INTEGER PRIMARY KEY AUTOINCREMENT,
+			timestamp TEXT NOT NULL,
+			total_spawns INTEGER NOT NULL DEFAULT 0,
+			total_tokens INTEGER NOT NULL DEFAULT 0,
+			total_cost REAL NOT NULL DEFAULT 0,
+			active_slots INTEGER NOT NULL DEFAULT 0
+		);
+	`);
+
+	g.__claw_spawn_stats_db = db;
+
+	// Migrate legacy JSON on first open
+	migrateFromJson(db);
+
+	return db;
 }
 
-async function saveStats(): Promise<void> {
-	g.__claw_spawn_stats = stats;
+/** Migrate existing spawn-stats.json into SQLite (one-time, idempotent). */
+function migrateFromJson(db: Database.Database): void {
+	// Skip if JSON doesn't exist or we already have rows
+	if (!existsSync(JSON_PATH)) return;
+
+	const count = (db.prepare('SELECT COUNT(*) AS cnt FROM spawn_stats').get() as { cnt: number }).cnt;
+	if (count > 0) return;
+
 	try {
-		await mkdir(dirname(STATS_PATH), { recursive: true });
-		await writeFile(STATS_PATH, JSON.stringify(stats, null, '\t'), 'utf-8');
-	} catch { /* best effort */ }
+		const raw = readFileSync(JSON_PATH, 'utf-8');
+		const data = JSON.parse(raw) as Partial<SpawnStats>;
+		const spawns = data.totalSpawns ?? 0;
+		const tokens = data.totalTokens ?? 0;
+		const cost = data.totalCost ?? 0;
+
+		if (spawns > 0 || tokens > 0 || cost > 0) {
+			db.prepare(
+				`INSERT INTO spawn_stats (timestamp, total_spawns, total_tokens, total_cost, active_slots)
+				 VALUES (?, ?, ?, ?, 0)`
+			).run(new Date().toISOString(), spawns, tokens, cost);
+		}
+	} catch {
+		// JSON was corrupt or unreadable — start fresh
+	}
+}
+
+/** Read current cumulative stats from the latest row. */
+function readStats(): SpawnStats {
+	const db = getDb();
+	const row = db.prepare(
+		'SELECT total_spawns, total_tokens, total_cost FROM spawn_stats ORDER BY id DESC LIMIT 1'
+	).get() as { total_spawns: number; total_tokens: number; total_cost: number } | undefined;
+
+	if (!row) return { totalSpawns: 0, totalTokens: 0, totalCost: 0 };
+	return { totalSpawns: row.total_spawns, totalTokens: row.total_tokens, totalCost: row.total_cost };
+}
+
+/** Insert a new stats snapshot row. */
+function writeStats(stats: SpawnStats, activeSlots: number = 0): void {
+	const db = getDb();
+	db.prepare(
+		`INSERT INTO spawn_stats (timestamp, total_spawns, total_tokens, total_cost, active_slots)
+		 VALUES (?, ?, ?, ?, ?)`
+	).run(new Date().toISOString(), stats.totalSpawns, stats.totalTokens, stats.totalCost, activeSlots);
 }
 
 // ── Public API ──────────────────────────────────────────────────────
@@ -102,23 +154,19 @@ async function saveStats(): Promise<void> {
  * Record that an agent was spawned. Call at spawn time.
  */
 export async function recordSpawn(): Promise<void> {
-	await withLock(STATS_PATH, async () => {
-		await loadStats();
-		stats.totalSpawns++;
-		await saveStats();
-	});
+	const stats = readStats();
+	stats.totalSpawns++;
+	writeStats(stats);
 }
 
 /**
  * Record token usage and cost after an agent completes.
  */
 export async function recordSpawnCompletion(tokens?: number, cost?: number): Promise<void> {
-	await withLock(STATS_PATH, async () => {
-		await loadStats();
-		if (tokens) stats.totalTokens += tokens;
-		if (cost) stats.totalCost += cost;
-		await saveStats();
-	});
+	const stats = readStats();
+	if (tokens) stats.totalTokens += tokens;
+	if (cost) stats.totalCost += cost;
+	writeStats(stats);
 }
 
 /**
@@ -126,7 +174,7 @@ export async function recordSpawnCompletion(tokens?: number, cost?: number): Pro
  * Returns the SessionPool shape for backward compatibility — slots is always empty.
  */
 export async function getPoolStats(): Promise<SessionPool> {
-	await loadStats();
+	const stats = readStats();
 	return {
 		slots: [],
 		maxSlots: 0,
@@ -140,10 +188,8 @@ export async function getPoolStats(): Promise<SessionPool> {
  * Reset stats.
  */
 export async function resetPool(): Promise<void> {
-	await withLock(STATS_PATH, async () => {
-		stats = { totalSpawns: 0, totalTokens: 0, totalCost: 0 };
-		await saveStats();
-	});
+	const db = getDb();
+	db.prepare('DELETE FROM spawn_stats').run();
 }
 
 // ── On-demand slot management ────────────────────────────────────────
@@ -312,7 +358,7 @@ function parseAgentPoolYaml(raw: string): AgentPoolEntry[] {
 export async function getConfigAgents(): Promise<AgentPoolEntry[]> {
 	try {
 		const configPath = resolve(PATHS.root, 'config/agent-pool.yaml');
-		const raw = await readFile(configPath, 'utf-8');
+		const raw = await fsp.readFile(configPath, 'utf-8');
 		return parseAgentPoolYaml(raw);
 	} catch {
 		return [];

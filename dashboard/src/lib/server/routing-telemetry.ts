@@ -1,5 +1,7 @@
 import { readFile, writeFile, mkdir } from 'fs/promises';
-import { dirname } from 'path';
+import { dirname, resolve } from 'path';
+import { mkdirSync } from 'fs';
+import Database from 'better-sqlite3';
 import { PATHS } from './constants.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
@@ -125,11 +127,150 @@ export interface WorkflowStats {
 	agentProfiles: Record<string, AgentRoutingProfile>;
 }
 
-// ── Storage ────────────────────────────────────────────────────────────
+// ── SQLite Storage ────────────────────────────────────────────────────
 
-const MAX_ENTRIES = 500;
+const DB_PATH = resolve(dirname(PATHS.routingLog), 'routing-telemetry.db');
 
-async function readLog(): Promise<RoutingDecision[]> {
+let _db: Database.Database | null = null;
+
+function getDb(): Database.Database {
+	if (_db) return _db;
+
+	mkdirSync(dirname(DB_PATH), { recursive: true });
+
+	const db = new Database(DB_PATH);
+	db.pragma('journal_mode = WAL');
+
+	db.exec(`
+		CREATE TABLE IF NOT EXISTS decisions (
+			id TEXT PRIMARY KEY,
+			timestamp TEXT NOT NULL,
+			model TEXT NOT NULL DEFAULT '',
+			provider TEXT NOT NULL DEFAULT '',
+			agent TEXT NOT NULL DEFAULT '',
+			task_type TEXT NOT NULL DEFAULT '',
+			complexity REAL NOT NULL DEFAULT 0,
+			latency_ms REAL NOT NULL DEFAULT 0,
+			success INTEGER NOT NULL DEFAULT 0,
+			source TEXT NOT NULL DEFAULT '',
+			reason TEXT,
+			session_id TEXT
+		);
+		CREATE INDEX IF NOT EXISTS idx_decisions_timestamp ON decisions(timestamp);
+		CREATE INDEX IF NOT EXISTS idx_decisions_model ON decisions(model);
+		CREATE INDEX IF NOT EXISTS idx_decisions_agent ON decisions(agent);
+		CREATE INDEX IF NOT EXISTS idx_decisions_source ON decisions(source);
+		CREATE INDEX IF NOT EXISTS idx_decisions_session ON decisions(session_id);
+	`);
+
+	_db = db;
+
+	// Migrate existing JSON data on first open
+	migrateFromJson(db);
+
+	return db;
+}
+
+// ── Prepared statements (lazy) ────────────────────────────────────────
+
+let _insertStmt: Database.Statement | null = null;
+
+function getInsertStmt(): Database.Statement {
+	if (_insertStmt) return _insertStmt;
+	_insertStmt = getDb().prepare(`
+		INSERT OR IGNORE INTO decisions
+			(id, timestamp, model, provider, agent, task_type, complexity, latency_ms, success, source, reason, session_id)
+		VALUES
+			(@id, @timestamp, @model, @provider, @agent, @taskType, @complexity, @latencyMs, @success, @source, @reason, @sessionId)
+	`);
+	return _insertStmt;
+}
+
+// ── JSON migration ────────────────────────────────────────────────────
+
+function migrateFromJson(db: Database.Database): void {
+	// Check if migration already done by seeing if we have any rows
+	const count = db.prepare('SELECT COUNT(*) as c FROM decisions').get() as { c: number };
+	if (count.c > 0) return;
+
+	let entries: RoutingDecision[];
+	try {
+		const raw = readFileSync(PATHS.routingLog, 'utf-8');
+		entries = JSON.parse(raw) as RoutingDecision[];
+	} catch {
+		return; // No JSON file or parse error — nothing to migrate
+	}
+
+	if (entries.length === 0) return;
+
+	const insert = db.prepare(`
+		INSERT OR IGNORE INTO decisions
+			(id, timestamp, model, provider, agent, task_type, complexity, latency_ms, success, source, reason, session_id)
+		VALUES
+			(@id, @timestamp, @model, @provider, @agent, @taskType, @complexity, @latencyMs, @success, @source, @reason, @sessionId)
+	`);
+
+	const migrate = db.transaction((rows: RoutingDecision[]) => {
+		for (const d of rows) {
+			insert.run({
+				id: d.id,
+				timestamp: d.timestamp,
+				model: d.model ?? '',
+				provider: d.provider ?? '',
+				agent: d.agent ?? '',
+				taskType: d.taskType ?? '',
+				complexity: d.complexity ?? 0,
+				latencyMs: d.latencyMs ?? 0,
+				success: d.success ? 1 : 0,
+				source: d.source ?? '',
+				reason: d.reason ?? null,
+				sessionId: d.sessionId ?? null
+			});
+		}
+	});
+
+	migrate(entries);
+}
+
+// ── Row → RoutingDecision mapper ──────────────────────────────────────
+
+interface DecisionRow {
+	id: string;
+	timestamp: string;
+	model: string;
+	provider: string;
+	agent: string;
+	task_type: string;
+	complexity: number;
+	latency_ms: number;
+	success: number;
+	source: string;
+	reason: string | null;
+	session_id: string | null;
+}
+
+function rowToDecision(row: DecisionRow): RoutingDecision {
+	return {
+		id: row.id,
+		timestamp: row.timestamp,
+		model: row.model,
+		provider: row.provider,
+		agent: row.agent,
+		taskType: row.task_type,
+		complexity: row.complexity,
+		latencyMs: row.latency_ms,
+		success: row.success === 1,
+		source: row.source,
+		reason: row.reason ?? undefined,
+		sessionId: row.session_id ?? undefined
+	};
+}
+
+// ── JSON write-through (keeps legacy file in sync) ────────────────────
+
+const MAX_JSON_ENTRIES = 500;
+
+async function readJsonLog(): Promise<RoutingDecision[]> {
 	try {
 		const raw = await readFile(PATHS.routingLog, 'utf-8');
 		return JSON.parse(raw) as RoutingDecision[];
@@ -138,7 +279,7 @@ async function readLog(): Promise<RoutingDecision[]> {
 	}
 }
 
-async function writeLog(entries: RoutingDecision[]): Promise<void> {
+async function writeJsonLog(entries: RoutingDecision[]): Promise<void> {
 	await mkdir(dirname(PATHS.routingLog), { recursive: true });
 	await writeFile(PATHS.routingLog, JSON.stringify(entries, null, '\t'), 'utf-8');
 }
@@ -181,123 +322,151 @@ export async function logRoutingDecision(opts: {
 		...opts
 	};
 
-	const log = await readLog();
-	log.unshift(entry);
-	if (log.length > MAX_ENTRIES) {
-		log.length = MAX_ENTRIES;
+	// SQLite primary insert
+	getInsertStmt().run({
+		id: entry.id,
+		timestamp: entry.timestamp,
+		model: entry.model,
+		provider: entry.provider,
+		agent: entry.agent,
+		taskType: entry.taskType,
+		complexity: entry.complexity,
+		latencyMs: entry.latencyMs,
+		success: entry.success ? 1 : 0,
+		source: entry.source,
+		reason: entry.reason ?? null,
+		sessionId: entry.sessionId ?? null
+	});
+
+	// JSON write-through (fire-and-forget for backwards compat)
+	const jsonLog = await readJsonLog();
+	jsonLog.unshift(entry);
+	if (jsonLog.length > MAX_JSON_ENTRIES) {
+		jsonLog.length = MAX_JSON_ENTRIES;
 	}
-	await writeLog(log);
+	await writeJsonLog(jsonLog);
 
 	return entry;
 }
 
 export async function getRoutingStats(): Promise<RoutingStats> {
-	const log = await readLog();
+	const db = getDb();
 
-	const totalDecisions = log.length;
-	const successCount = log.filter((d) => d.success).length;
-	const successRate = totalDecisions > 0 ? successCount / totalDecisions : 0;
-	const avgLatencyMs = totalDecisions > 0
-		? log.reduce((sum, d) => sum + d.latencyMs, 0) / totalDecisions
-		: 0;
+	// Global aggregates
+	const totals = db.prepare(`
+		SELECT
+			COUNT(*) as total,
+			SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successes,
+			AVG(latency_ms) as avg_latency
+		FROM decisions
+	`).get() as { total: number; successes: number; avg_latency: number | null };
+
+	const totalDecisions = totals.total;
+	const successRate = totalDecisions > 0 ? totals.successes / totalDecisions : 0;
+	const avgLatencyMs = totals.avg_latency ?? 0;
 
 	// By model
+	const modelRows = db.prepare(`
+		SELECT
+			model,
+			provider,
+			COUNT(*) as count,
+			AVG(CASE WHEN success = 1 THEN 1.0 ELSE 0.0 END) as success_rate,
+			AVG(latency_ms) as avg_latency,
+			AVG(complexity) as avg_complexity
+		FROM decisions
+		GROUP BY model
+	`).all() as { model: string; provider: string; count: number; success_rate: number; avg_latency: number; avg_complexity: number }[];
+
 	const byModel: Record<string, ModelStats> = {};
-	for (const d of log) {
-		if (!byModel[d.model]) {
-			byModel[d.model] = {
-				model: d.model,
-				provider: d.provider,
-				count: 0,
-				successRate: 0,
-				avgLatencyMs: 0,
-				avgComplexity: 0,
-				costEstimate: 0
-			};
-		}
-		const m = byModel[d.model];
-		m.count++;
-		m.avgLatencyMs += d.latencyMs;
-		m.avgComplexity += d.complexity;
-		m.costEstimate += estimateCost(d.model);
-		if (d.success) m.successRate++;
-	}
-	for (const m of Object.values(byModel)) {
-		if (m.count > 0) {
-			m.avgLatencyMs /= m.count;
-			m.avgComplexity /= m.count;
-			m.successRate /= m.count;
-		}
+	for (const r of modelRows) {
+		byModel[r.model] = {
+			model: r.model,
+			provider: r.provider,
+			count: r.count,
+			successRate: r.success_rate,
+			avgLatencyMs: r.avg_latency,
+			avgComplexity: r.avg_complexity,
+			costEstimate: estimateCost(r.model) * r.count
+		};
 	}
 
 	// By agent
+	const agentRows = db.prepare(`
+		SELECT
+			agent,
+			COUNT(*) as count,
+			AVG(CASE WHEN success = 1 THEN 1.0 ELSE 0.0 END) as success_rate,
+			AVG(latency_ms) as avg_latency,
+			GROUP_CONCAT(DISTINCT task_type) as task_types
+		FROM decisions
+		GROUP BY agent
+	`).all() as { agent: string; count: number; success_rate: number; avg_latency: number; task_types: string | null }[];
+
 	const byAgent: Record<string, AgentStats> = {};
-	for (const d of log) {
-		if (!byAgent[d.agent]) {
-			byAgent[d.agent] = { agent: d.agent, count: 0, successRate: 0, avgLatencyMs: 0, taskTypes: [] };
-		}
-		const a = byAgent[d.agent];
-		a.count++;
-		a.avgLatencyMs += d.latencyMs;
-		if (d.success) a.successRate++;
-		if (!a.taskTypes.includes(d.taskType)) a.taskTypes.push(d.taskType);
-	}
-	for (const a of Object.values(byAgent)) {
-		if (a.count > 0) {
-			a.avgLatencyMs /= a.count;
-			a.successRate /= a.count;
-		}
+	for (const r of agentRows) {
+		byAgent[r.agent] = {
+			agent: r.agent,
+			count: r.count,
+			successRate: r.success_rate,
+			avgLatencyMs: r.avg_latency,
+			taskTypes: r.task_types ? r.task_types.split(',') : []
+		};
 	}
 
-	// By task type
+	// By task type (with preferred agent via subquery)
+	const taskRows = db.prepare(`
+		SELECT
+			task_type,
+			COUNT(*) as count,
+			AVG(complexity) as avg_complexity,
+			AVG(CASE WHEN success = 1 THEN 1.0 ELSE 0.0 END) as success_rate,
+			(
+				SELECT agent FROM decisions d2
+				WHERE d2.task_type = decisions.task_type
+				GROUP BY agent ORDER BY COUNT(*) DESC LIMIT 1
+			) as preferred_agent
+		FROM decisions
+		GROUP BY task_type
+	`).all() as { task_type: string; count: number; avg_complexity: number; success_rate: number; preferred_agent: string | null }[];
+
 	const byTaskType: Record<string, TaskTypeStats> = {};
-	for (const d of log) {
-		if (!byTaskType[d.taskType]) {
-			byTaskType[d.taskType] = {
-				taskType: d.taskType,
-				count: 0,
-				preferredAgent: '',
-				avgComplexity: 0,
-				successRate: 0
-			};
-		}
-		const t = byTaskType[d.taskType];
-		t.count++;
-		t.avgComplexity += d.complexity;
-		if (d.success) t.successRate++;
-	}
-	// Find preferred agent per task type
-	for (const [taskType, stats] of Object.entries(byTaskType)) {
-		const taskEntries = log.filter((d) => d.taskType === taskType);
-		const agentCounts: Record<string, number> = {};
-		for (const d of taskEntries) {
-			agentCounts[d.agent] = (agentCounts[d.agent] ?? 0) + 1;
-		}
-		stats.preferredAgent = Object.entries(agentCounts)
-			.sort((a, b) => b[1] - a[1])[0]?.[0] ?? '';
-		if (stats.count > 0) {
-			stats.avgComplexity /= stats.count;
-			stats.successRate /= stats.count;
-		}
+	for (const r of taskRows) {
+		byTaskType[r.task_type] = {
+			taskType: r.task_type,
+			count: r.count,
+			preferredAgent: r.preferred_agent ?? '',
+			avgComplexity: r.avg_complexity,
+			successRate: r.success_rate
+		};
 	}
 
 	// Hourly activity (last 24 hours)
 	const now = Date.now();
 	const hourlyActivity: HourlyBucket[] = [];
 	for (let h = 23; h >= 0; h--) {
-		const hourStart = now - (h + 1) * 3600_000;
-		const hourEnd = now - h * 3600_000;
-		const bucket = log.filter((d) => {
-			const ts = new Date(d.timestamp).getTime();
-			return ts >= hourStart && ts < hourEnd;
-		});
-		const hourLabel = new Date(hourEnd).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+		const hourStart = new Date(now - (h + 1) * 3600_000).toISOString();
+		const hourEnd = new Date(now - h * 3600_000).toISOString();
+		const bucket = db.prepare(`
+			SELECT
+				COUNT(*) as count,
+				SUM(CASE WHEN success = 1 THEN 1 ELSE 0 END) as successes
+			FROM decisions
+			WHERE timestamp >= ? AND timestamp < ?
+		`).get(hourStart, hourEnd) as { count: number; successes: number };
+
+		const hourLabel = new Date(now - h * 3600_000).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 		hourlyActivity.push({
 			hour: hourLabel,
-			count: bucket.length,
-			successRate: bucket.length > 0 ? bucket.filter((d) => d.success).length / bucket.length : 0
+			count: bucket.count,
+			successRate: bucket.count > 0 ? bucket.successes / bucket.count : 0
 		});
 	}
+
+	// Recent decisions
+	const recentRows = db.prepare(`
+		SELECT * FROM decisions ORDER BY timestamp DESC LIMIT 20
+	`).all() as DecisionRow[];
 
 	return {
 		totalDecisions,
@@ -306,18 +475,26 @@ export async function getRoutingStats(): Promise<RoutingStats> {
 		byModel,
 		byAgent,
 		byTaskType,
-		recentDecisions: log.slice(0, 20),
+		recentDecisions: recentRows.map(rowToDecision),
 		hourlyActivity
 	};
 }
 
 export async function getRecentDecisions(limit = 20): Promise<RoutingDecision[]> {
-	const log = await readLog();
-	return log.slice(0, limit);
+	const rows = getDb().prepare(`
+		SELECT * FROM decisions ORDER BY timestamp DESC LIMIT ?
+	`).all(limit) as DecisionRow[];
+	return rows.map(rowToDecision);
 }
 
 export async function getWorkflowStats(): Promise<WorkflowStats> {
-	const log = await readLog();
+	const db = getDb();
+
+	// Load all decisions from SQLite
+	const allRows = db.prepare(`
+		SELECT * FROM decisions ORDER BY timestamp ASC
+	`).all() as DecisionRow[];
+	const log = allRows.map(rowToDecision);
 
 	// Group decisions by sessionId to form workflow chains
 	const sessionMap = new Map<string, RoutingDecision[]>();
@@ -442,7 +619,7 @@ export async function getWorkflowStats(): Promise<WorkflowStats> {
 	const patternMap = new Map<string, { count: number; successes: number; latencySum: number; escalations: number; sourceCounts: Record<string, number> }>();
 	for (const wf of workflows) {
 		if (wf.steps.length === 0) continue;
-		const key = wf.steps.map((s) => s.agent).join(' → ');
+		const key = wf.steps.map((s) => s.agent).join(' \u2192 ');
 		const entry = patternMap.get(key) ?? { count: 0, successes: 0, latencySum: 0, escalations: 0, sourceCounts: {} };
 		entry.count++;
 		if (wf.steps.every((s) => s.success)) entry.successes++;
@@ -454,7 +631,7 @@ export async function getWorkflowStats(): Promise<WorkflowStats> {
 
 	const chainPatterns: ChainPattern[] = [...patternMap.entries()]
 		.map(([key, v]) => ({
-			pattern: key.split(' → '),
+			pattern: key.split(' \u2192 '),
 			count: v.count,
 			successRate: v.count > 0 ? v.successes / v.count : 0,
 			avgLatencyMs: v.count > 0 ? v.latencySum / v.count : 0,

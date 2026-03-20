@@ -499,7 +499,7 @@
 			{
 				"id": "ms-data-layer",
 				"name": "Data Layer Migration",
-				"status": "planned",
+				"status": "active",
 				"releaseId": "rel-refinement",
 				"goals": [
 					"Consolidate .playground/*.json into SQLite with proper indexing",
@@ -1222,9 +1222,144 @@
 					"verify": "grep 0.1.0 dashboard/package.json"
 				}
 			]
+		},
+		{
+			"id": "sprint-8",
+			"title": "SQLite Consolidation — High-Volume Stores",
+			"status": "planned",
+			"tasks": [
+				{
+					"id": "task-s8-01",
+					"feature": "feat-sqlite-consolidation",
+					"title": "Migrate routing-telemetry to SQLite",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Create routing-telemetry-sql.ts. Schema: decisions(id, timestamp, taskId, route, model, reason, durationMs). Migrate from JSON, wire getRoutingStats() to SQL aggregation. Keep JSON write-through.",
+					"files": [
+						"dashboard/src/lib/server/routing-telemetry.ts"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s8-02",
+					"feature": "feat-sqlite-consolidation",
+					"title": "Migrate pid-registry to SQLite",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Add processes table to existing tasks.db or create pid-registry-sql.ts. Schema: processes(pid, label, command, spawnedAt, exitedAt, exitCode). Replace JSON debounce with synchronous SQLite writes.",
+					"files": [
+						"dashboard/src/lib/server/pid-registry.ts"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s8-03",
+					"feature": "feat-sqlite-consolidation",
+					"title": "Migrate notifications to SQLite",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Create notifications table in a shared dashboard.db. Schema: notifications(id, type, severity, title, message, source, read, createdAt). Keep notification-settings.json as-is (config, not data).",
+					"files": [
+						"dashboard/src/lib/server/notifications.ts"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s8-04",
+					"feature": "feat-sqlite-consolidation",
+					"title": "Migrate incidents to SQLite",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Add incidents table. Schema: incidents(id, type, severity, title, description, status, projectId, createdAt, resolvedAt, data JSON). Wire incident queries to SQL.",
+					"files": [
+						"dashboard/src/lib/server/incidents.ts"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s8-05",
+					"feature": "feat-sqlite-consolidation",
+					"title": "Migrate session-pool spawn stats to SQLite",
+					"status": "todo",
+					"effort": "small",
+					"description": "Add spawn_stats table or embed in analytics.db. Schema: spawn_stats(id, timestamp, totalSpawns, totalTokens, totalCost, activeSlots). Simple cumulative counters.",
+					"files": [
+						"dashboard/src/lib/server/session-pool.ts"
+					],
+					"verify": "npm run build"
+				}
+			]
+		},
+		{
+			"id": "sprint-9",
+			"title": "Query Optimization & Cleanup",
+			"status": "planned",
+			"tasks": [
+				{
+					"id": "task-s9-01",
+					"feature": "feat-query-optimization",
+					"title": "Add compound indexes to analytics.db for common queries",
+					"status": "todo",
+					"effort": "small",
+					"description": "Profile the most common getAgentAnalyticsSql queries. Add compound indexes: (type, timestamp), (project_id, type), (task_id, type). Measure query time before/after.",
+					"files": [
+						"dashboard/src/lib/server/heartbeat/agent-analytics-sql.ts"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s9-02",
+					"feature": "feat-query-optimization",
+					"title": "Consolidate DB handles into a shared connection manager",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Multiple modules now open their own SQLite DBs. Create a db-manager.ts that provides getDb(name) with shared WAL config, connection caching, and graceful close. Wire existing stores to use it.",
+					"files": [
+						"dashboard/src/lib/server/db-manager.ts"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s9-03",
+					"feature": "feat-cleanup",
+					"title": "Remove JSON fallback paths from migrated stores",
+					"status": "todo",
+					"effort": "small",
+					"description": "Now that SQLite is primary for tasks, analytics, routing, notifications, incidents, and pid-registry: remove the JSON write-through code. Keep JSON read for migration but stop writing.",
+					"files": [
+						"dashboard/src/lib/server/heartbeat/agent-analytics.ts",
+						"dashboard/src/lib/server/task-store-sql.ts"
+					],
+					"verify": "npm run build && npx playwright test"
+				},
+				{
+					"id": "task-s9-04",
+					"feature": "feat-cleanup",
+					"title": "Add data retention policies to SQLite stores",
+					"status": "todo",
+					"effort": "small",
+					"description": "Add cleanup on DB open: DELETE events older than 90 days from analytics, 30 days from routing telemetry, 60 days from notifications. Log how many rows pruned.",
+					"files": [
+						"dashboard/src/lib/server/db-manager.ts"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s9-05",
+					"feature": "feat-cleanup",
+					"title": "Update diagnostics page with SQLite health info",
+					"status": "todo",
+					"effort": "small",
+					"description": "Add DB size and row counts to /diagnostics: tasks.db, analytics.db sizes + total rows per table. Show as a \"Data\" section.",
+					"files": [
+						"dashboard/src/routes/diagnostics/+page.server.ts"
+					],
+					"verify": "npm run build && navigate to /diagnostics shows Data section"
+				}
+			]
 		}
 	],
-	"activeSprint": null,
+	"activeSprint": "sprint-8",
 	"decisions": [
 		{
 			"id": "dec-001",
@@ -1281,8 +1416,15 @@
 			"decision": "Phase 2 focuses on end-to-end workflow validation and release prep, not new features",
 			"rationale": "All major features exist and are functional. The gap to v0.1 is: agent execution pipeline validation, error resilience, project import flow, release pipeline wiring, and onboarding.",
 			"status": "accepted"
+		},
+		{
+			"id": "dec-009",
+			"date": "2026-03-20",
+			"decision": "Consolidate 5 high-volume JSON stores to SQLite, keep config files as JSON",
+			"rationale": "routing-telemetry, pid-registry, notifications, incidents, session-pool all have high read/write patterns that benefit from indexing. Settings and feature flags stay as JSON (rarely written).",
+			"status": "accepted"
 		}
 	],
-	"lastUpdated": "2026-03-20T14:14:03.926Z",
-	"updatedBy": "heartbeat-review"
+	"lastUpdated": "2026-03-20T17:43:59.603Z",
+	"updatedBy": "claude-pm"
 }

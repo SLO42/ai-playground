@@ -1,8 +1,9 @@
-import { readFile, writeFile, mkdir } from 'fs/promises';
-import { resolve, dirname } from 'path';
+import { readFile } from 'fs/promises';
+import { resolve } from 'path';
+import { mkdirSync, existsSync, readFileSync } from 'fs';
 import { PATHS } from './constants.js';
 import crypto from 'crypto';
-import { withLock } from './async-mutex.js';
+import Database from 'better-sqlite3';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -23,11 +24,136 @@ export interface Notification {
 	stackCount?: number;
 }
 
-// ── Storage ────────────────────────────────────────────────────────────
+// ── SQLite Storage ────────────────────────────────────────────────────
 
-const NOTIF_FILE = resolve(PATHS.root, '.playground/notifications.json');
+const DB_PATH = resolve(PATHS.root, '.playground/notifications.db');
+const NOTIF_JSON_PATH = resolve(PATHS.root, '.playground/notifications.json');
 const SETTINGS_FILE = resolve(PATHS.root, '.playground/notification-settings.json');
 const MAX_STORED = 200;
+
+// Cached DB handle (same pattern as pm-memory-db.ts)
+let _db: Database.Database | null = null;
+
+function getDb(): Database.Database {
+	if (_db) return _db;
+
+	// Ensure .playground dir exists
+	mkdirSync(resolve(PATHS.root, '.playground'), { recursive: true });
+
+	const db = new Database(DB_PATH);
+	db.pragma('journal_mode = WAL');
+
+	// Create table and indices
+	db.exec(`
+		CREATE TABLE IF NOT EXISTS notifications (
+			id TEXT PRIMARY KEY,
+			type TEXT NOT NULL,
+			severity TEXT NOT NULL DEFAULT 'info',
+			title TEXT NOT NULL,
+			message TEXT,
+			source TEXT,
+			link TEXT,
+			link_label TEXT,
+			stack_count INTEGER,
+			read INTEGER NOT NULL DEFAULT 0,
+			created_at TEXT NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_notif_type ON notifications(type);
+		CREATE INDEX IF NOT EXISTS idx_notif_created ON notifications(created_at);
+	`);
+
+	_db = db;
+
+	// Migrate existing JSON data on first open
+	migrateFromJson(db);
+
+	return db;
+}
+
+/** Close the DB handle (for cleanup/shutdown). */
+export function closeDb(): void {
+	if (_db) {
+		_db.close();
+		_db = null;
+	}
+}
+
+// ── JSON Migration ────────────────────────────────────────────────────
+
+function migrateFromJson(db: Database.Database): void {
+	if (!existsSync(NOTIF_JSON_PATH)) return;
+
+	// Only migrate if the DB is empty
+	const count = db.prepare('SELECT COUNT(*) as cnt FROM notifications').get() as { cnt: number };
+	if (count.cnt > 0) return;
+
+	try {
+		const raw = readFileSync(NOTIF_JSON_PATH, 'utf-8');
+		const notifs = JSON.parse(raw) as Notification[];
+		if (!Array.isArray(notifs) || notifs.length === 0) return;
+
+		const insert = db.prepare(`
+			INSERT OR IGNORE INTO notifications (id, type, severity, title, message, source, link, link_label, stack_count, read, created_at)
+			VALUES (@id, @type, @severity, @title, @message, @source, @link, @linkLabel, @stackCount, @read, @createdAt)
+		`);
+
+		const migrate = db.transaction((items: Notification[]) => {
+			for (const n of items) {
+				insert.run({
+					id: n.id,
+					type: n.category,
+					severity: n.severity,
+					title: n.title,
+					message: n.message ?? null,
+					source: n.source ?? null,
+					link: n.link ?? null,
+					linkLabel: n.linkLabel ?? null,
+					stackCount: n.stackCount ?? null,
+					read: n.read ? 1 : 0,
+					createdAt: n.timestamp
+				});
+			}
+		});
+
+		migrate(notifs);
+	} catch {
+		// Migration is best-effort — don't crash if JSON is corrupt
+	}
+}
+
+// ── Row ↔ Notification mapping ────────────────────────────────────────
+
+interface NotifRow {
+	id: string;
+	type: string;
+	severity: string;
+	title: string;
+	message: string | null;
+	source: string | null;
+	link: string | null;
+	link_label: string | null;
+	stack_count: number | null;
+	read: number;
+	created_at: string;
+}
+
+function rowToNotif(row: NotifRow): Notification {
+	return {
+		id: row.id,
+		timestamp: row.created_at,
+		severity: row.severity as NotifSeverity,
+		category: row.type as NotifCategory,
+		title: row.title,
+		message: row.message ?? '',
+		read: row.read === 1,
+		source: row.source ?? undefined,
+		link: row.link ?? undefined,
+		linkLabel: row.link_label ?? undefined,
+		stackCount: row.stack_count ?? undefined
+	};
+}
+
+// ── Settings (JSON config — unchanged) ────────────────────────────────
 
 interface NotifCategoryPref {
 	desktop: boolean;
@@ -71,20 +197,6 @@ function isQuietHours(settings: NotifSettings): boolean {
 	}
 	// Wraps midnight (e.g. 23:00 - 08:00)
 	return hhmm >= start || hhmm < end;
-}
-
-async function readNotifications(): Promise<Notification[]> {
-	try {
-		const raw = await readFile(NOTIF_FILE, 'utf-8');
-		return JSON.parse(raw) as Notification[];
-	} catch {
-		return [];
-	}
-}
-
-async function writeNotifications(notifs: Notification[]): Promise<void> {
-	await mkdir(dirname(NOTIF_FILE), { recursive: true });
-	await writeFile(NOTIF_FILE, JSON.stringify(notifs, null, '\t'), 'utf-8');
 }
 
 // ── SSE Subscribers ────────────────────────────────────────────────────
@@ -154,25 +266,35 @@ export async function getNotifications(opts?: {
 	limit?: number;
 	offset?: number;
 }): Promise<{ items: Notification[]; total: number }> {
-	let notifs = await readNotifications();
+	const db = getDb();
+
+	// Build dynamic WHERE clause
+	const conditions: string[] = [];
+	const params: Record<string, string | number> = {};
 
 	if (opts?.category) {
-		notifs = notifs.filter((n) => n.category === opts.category);
+		conditions.push('type = @category');
+		params.category = opts.category;
 	}
 	if (opts?.unreadOnly) {
-		notifs = notifs.filter((n) => !n.read);
+		conditions.push('read = 0');
 	}
 
-	// Most recent first
-	notifs.sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+	const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-	const total = notifs.length;
+	// Get total count
+	const countRow = db.prepare(`SELECT COUNT(*) as cnt FROM notifications ${where}`).get(params) as { cnt: number };
+	const total = countRow.cnt;
+
+	// Get paginated results, most recent first
 	const offset = opts?.offset ?? 0;
-	const limit = opts?.limit ?? total;
+	const limit = opts?.limit ?? (total || MAX_STORED);
 
-	notifs = notifs.slice(offset, offset + limit);
+	const rows = db.prepare(
+		`SELECT * FROM notifications ${where} ORDER BY created_at DESC LIMIT @limit OFFSET @offset`
+	).all({ ...params, limit, offset }) as NotifRow[];
 
-	return { items: notifs, total };
+	return { items: rows.map(rowToNotif), total };
 }
 
 export async function pushNotification(opts: {
@@ -185,6 +307,8 @@ export async function pushNotification(opts: {
 	linkLabel?: string;
 	desktop?: boolean;
 }): Promise<Notification> {
+	const db = getDb();
+
 	const notif: Notification = {
 		id: crypto.randomUUID().slice(0, 12),
 		timestamp: new Date().toISOString(),
@@ -198,35 +322,71 @@ export async function pushNotification(opts: {
 		linkLabel: opts.linkLabel
 	};
 
-	await withLock(NOTIF_FILE, async () => {
-		// Persist — stack similar sequential notifications
-		const notifs = await readNotifications();
-		const STACK_WINDOW_MS = 5 * 60 * 1000; // 5 minutes
-		const top = notifs[0];
-		const isStackable = top
-			&& !top.read
-			&& top.title === notif.title
-			&& top.source === notif.source
-			&& top.category === notif.category
-			&& (Date.now() - new Date(top.timestamp).getTime()) < STACK_WINDOW_MS;
+	// Stack similar sequential notifications (within 5 min window)
+	const STACK_WINDOW_MS = 5 * 60 * 1000;
+	const cutoff = new Date(Date.now() - STACK_WINDOW_MS).toISOString();
 
-		if (isStackable && top) {
-			// Update existing notification instead of creating a new one
-			top.stackCount = (top.stackCount ?? 1) + 1;
-			top.message = notif.message;
-			top.timestamp = notif.timestamp;
-			top.severity = notif.severity;
-			// Use the stacked notification for broadcast/desktop below
-			Object.assign(notif, { id: top.id, stackCount: top.stackCount });
-		} else {
-			notifs.unshift(notif);
-		}
-		// Trim to max
-		if (notifs.length > MAX_STORED) {
-			notifs.length = MAX_STORED;
-		}
-		await writeNotifications(notifs);
-	});
+	const top = db.prepare(`
+		SELECT * FROM notifications
+		WHERE read = 0
+			AND title = @title
+			AND type = @type
+			AND (source = @source OR (source IS NULL AND @source IS NULL))
+			AND created_at > @cutoff
+		ORDER BY created_at DESC
+		LIMIT 1
+	`).get({
+		title: notif.title,
+		type: notif.category,
+		source: notif.source ?? null,
+		cutoff
+	}) as NotifRow | undefined;
+
+	if (top) {
+		// Update existing notification (stack)
+		const newCount = (top.stack_count ?? 1) + 1;
+		db.prepare(`
+			UPDATE notifications
+			SET stack_count = @stackCount, message = @message, created_at = @createdAt, severity = @severity
+			WHERE id = @id
+		`).run({
+			id: top.id,
+			stackCount: newCount,
+			message: notif.message,
+			createdAt: notif.timestamp,
+			severity: notif.severity
+		});
+		// Use the stacked notification for broadcast/desktop
+		notif.id = top.id;
+		notif.stackCount = newCount;
+	} else {
+		// Insert new notification
+		db.prepare(`
+			INSERT INTO notifications (id, type, severity, title, message, source, link, link_label, stack_count, read, created_at)
+			VALUES (@id, @type, @severity, @title, @message, @source, @link, @linkLabel, @stackCount, 0, @createdAt)
+		`).run({
+			id: notif.id,
+			type: notif.category,
+			severity: notif.severity,
+			title: notif.title,
+			message: notif.message,
+			source: notif.source ?? null,
+			link: notif.link ?? null,
+			linkLabel: notif.linkLabel ?? null,
+			stackCount: null,
+			createdAt: notif.timestamp
+		});
+	}
+
+	// Trim to MAX_STORED — delete oldest beyond the cap
+	const totalRow = db.prepare('SELECT COUNT(*) as cnt FROM notifications').get() as { cnt: number };
+	if (totalRow.cnt > MAX_STORED) {
+		db.prepare(`
+			DELETE FROM notifications WHERE id IN (
+				SELECT id FROM notifications ORDER BY created_at DESC LIMIT -1 OFFSET @max
+			)
+		`).run({ max: MAX_STORED });
+	}
 
 	// Load saved settings to decide delivery channels
 	const settings = await loadSettings();
@@ -250,65 +410,57 @@ export async function pushNotification(opts: {
 }
 
 export async function markRead(id: string): Promise<boolean> {
-	return withLock(NOTIF_FILE, async () => {
-		const notifs = await readNotifications();
-		const notif = notifs.find((n) => n.id === id);
-		if (!notif) return false;
-		notif.read = true;
-		await writeNotifications(notifs);
-		return true;
-	});
+	const db = getDb();
+	const result = db.prepare('UPDATE notifications SET read = 1 WHERE id = @id AND read = 0').run({ id });
+	return result.changes > 0;
 }
 
 export async function markAllRead(): Promise<number> {
-	return withLock(NOTIF_FILE, async () => {
-		const notifs = await readNotifications();
-		let count = 0;
-		for (const n of notifs) {
-			if (!n.read) {
-				n.read = true;
-				count++;
-			}
-		}
-		if (count > 0) await writeNotifications(notifs);
-		return count;
-	});
+	const db = getDb();
+	const result = db.prepare('UPDATE notifications SET read = 1 WHERE read = 0').run();
+	return result.changes;
 }
 
 export async function dismissNotification(id: string): Promise<boolean> {
-	return withLock(NOTIF_FILE, async () => {
-		const notifs = await readNotifications();
-		const idx = notifs.findIndex((n) => n.id === id);
-		if (idx === -1) return false;
-		notifs.splice(idx, 1);
-		await writeNotifications(notifs);
-		return true;
-	});
+	const db = getDb();
+	const result = db.prepare('DELETE FROM notifications WHERE id = @id').run({ id });
+	return result.changes > 0;
 }
 
 export async function clearNotifications(): Promise<void> {
-	return withLock(NOTIF_FILE, async () => {
-		await writeNotifications([]);
-	});
+	const db = getDb();
+	db.prepare('DELETE FROM notifications').run();
 }
 
 export async function getStats() {
-	const notifs = await readNotifications();
+	const db = getDb();
 	const now = new Date();
-	const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
+	const todayStart = new Date(now.getFullYear(), now.getMonth(), now.getDate()).toISOString();
 
-	let unread = 0, critical = 0, today = 0, activeJobs = 0, alerts = 0;
+	const stats = db.prepare(`
+		SELECT
+			COUNT(*) as total,
+			SUM(CASE WHEN read = 0 THEN 1 ELSE 0 END) as unread,
+			SUM(CASE WHEN read = 0 AND severity = 'critical' THEN 1 ELSE 0 END) as critical,
+			SUM(CASE WHEN created_at >= @todayStart THEN 1 ELSE 0 END) as today,
+			SUM(CASE WHEN read = 0 AND type = 'task' THEN 1 ELSE 0 END) as activeJobs,
+			SUM(CASE WHEN read = 0 AND severity IN ('critical', 'warning') THEN 1 ELSE 0 END) as alerts
+		FROM notifications
+	`).get({ todayStart }) as {
+		total: number;
+		unread: number;
+		critical: number;
+		today: number;
+		activeJobs: number;
+		alerts: number;
+	};
 
-	for (const n of notifs) {
-		const isUnread = !n.read;
-		if (isUnread) {
-			unread++;
-			if (n.severity === 'critical') critical++;
-			if (n.severity === 'critical' || n.severity === 'warning') alerts++;
-			if (n.category === 'task') activeJobs++;
-		}
-		if (new Date(n.timestamp).getTime() >= todayStart) today++;
-	}
-
-	return { total: notifs.length, unread, critical, today, activeJobs, alerts };
+	return {
+		total: stats.total ?? 0,
+		unread: stats.unread ?? 0,
+		critical: stats.critical ?? 0,
+		today: stats.today ?? 0,
+		activeJobs: stats.activeJobs ?? 0,
+		alerts: stats.alerts ?? 0
+	};
 }

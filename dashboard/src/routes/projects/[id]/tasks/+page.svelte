@@ -345,6 +345,10 @@
 					agentNames={data.agentNames}
 					onupdate={updateTask}
 					ondelete={deleteTask}
+					blockers={getBlockers(selected)}
+					isBlocked={isTaskBlocked(selected)}
+					allTasks={tasks}
+					onselecttask={(id) => (selectedId = id)}
 				/>
 			{:else}
 				<div class="bg-bg-secondary border border-border rounded-lg p-6 flex items-center justify-center min-h-[300px]">

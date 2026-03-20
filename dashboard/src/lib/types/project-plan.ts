@@ -53,11 +53,24 @@ export interface Phase {
 
 /** A key feature or capability the project delivers */
 export interface KeyFeature {
+	id?: string;
 	name: string;
 	description: string;
-	/** Which release introduces this feature */
-	releaseId: string;
-	status: 'planned' | 'in-progress' | 'shipped';
+	/** Which release introduces this feature (legacy) */
+	releaseId?: string;
+	/** Which phase this feature belongs to */
+	phase?: string;
+	status: 'planned' | 'in-progress' | 'shipped' | 'done' | 'partial' | 'not-started' | 'collecting' | 'needs-testing' | 'deferred' | 'pushed-back';
+	/** Implementation evidence — files, commits, patterns found */
+	evidence?: string;
+	/** Reason for deferral or push-back (required when status is 'deferred' or 'pushed-back') */
+	statusReason?: string;
+	priority?: 'high' | 'medium' | 'low' | 'varies';
+	effort?: 'tiny' | 'small' | 'medium' | 'large' | 'varies';
+	/** Commit hash where this feature shipped */
+	shippedIn?: string;
+	/** Sub-items for collecting features (e.g. backlog) */
+	items?: unknown[];
 }
 
 /** The full macro picture — project identity + strategic roadmap */
@@ -84,16 +97,31 @@ export interface MacroPlan {
 // MICRO — Sprint-level execution (1-2 week chunks)
 // ═══════════════════════════════════════════════════════════════════════
 
+/** An inline task within a sprint */
+export interface SprintTask {
+	id: string;
+	/** Feature this task relates to */
+	feature: string | null;
+	title: string;
+	status: 'todo' | 'in-progress' | 'done' | 'blocked' | 'needs-testing' | 'deferred' | 'pushed-back';
+	effort?: 'tiny' | 'small' | 'medium' | 'large';
+	description?: string;
+	/** Reason for deferral or push-back */
+	statusReason?: string;
+}
+
 export interface Sprint {
 	id: string;
 	name: string;
 	status: PhaseStatus;
 	/** Which phase this sprint serves */
-	phaseId: string;
+	phaseId?: string;
+	/** Which phase this sprint serves (alias) */
+	phase?: string;
 	/** Sprint goal — what we're trying to achieve this cycle */
 	goal: string;
-	/** Task IDs in this sprint */
-	tasks: string[];
+	/** Task IDs (legacy) or inline task objects */
+	tasks: (string | SprintTask)[];
 	startDate?: string;
 	endDate?: string;
 	completedAt?: string;
@@ -107,12 +135,14 @@ export interface Sprint {
 
 export interface ArchDecision {
 	id: string;
-	title: string;
-	context: string;
+	title?: string;
+	context?: string;
 	decision: string;
-	consequences: string[];
+	rationale?: string;
+	consequences?: string[];
 	date: string;
-	decidedBy: string;
+	decidedBy?: string;
+	status?: 'proposed' | 'accepted' | 'deprecated' | 'superseded';
 }
 
 export interface ProjectPlan {

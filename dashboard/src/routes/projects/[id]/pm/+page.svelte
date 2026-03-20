@@ -35,12 +35,29 @@
 		data.plan?.sprints.find(s => s.id === data.plan?.activeSprint) ?? null
 	);
 
+	/** Resolve phaseId from either phaseId or phase field */
+	function getPhaseId(sprint: { phaseId?: string; phase?: string }): string {
+		return sprint.phaseId ?? sprint.phase ?? '';
+	}
+
+	/** Get task count from sprint (handles both string[] and object[]) */
+	function getTaskCount(tasks: (string | { id: string })[]): number {
+		return tasks.length;
+	}
+
+	/** Get done task count from sprint inline tasks */
+	function getDoneTaskCount(tasks: (string | { id: string; status?: string })[]): number {
+		return tasks.filter(t => typeof t === 'object' && (t as any).status === 'done').length;
+	}
+
 	const statusIcons: Record<string, string> = {
-		planned: '⬜', active: '🔵', completed: '✅', blocked: '🔴'
+		planned: '⬜', active: '🔵', completed: '✅', blocked: '🔴',
+		'needs-testing': '🧪', deferred: '⏸️', 'pushed-back': '↩️'
 	};
 	const statusColors: Record<string, string> = {
 		planned: 'text-text-secondary', active: 'text-accent-blue',
-		completed: 'text-accent-green', blocked: 'text-accent-red'
+		completed: 'text-accent-green', blocked: 'text-accent-red',
+		'needs-testing': 'text-accent-yellow', deferred: 'text-text-secondary', 'pushed-back': 'text-accent-purple'
 	};
 	const typeColors: Record<string, string> = {
 		observation: 'bg-accent-blue/10 text-accent-blue',
@@ -402,7 +419,7 @@
 									<!-- Phases -->
 									<div class="space-y-2 pl-6">
 										{#each relPhases as phase}
-											{@const childSprints = data.plan.sprints.filter(s => s.phaseId === phase.id)}
+											{@const childSprints = data.plan.sprints.filter(s => getPhaseId(s) === phase.id)}
 											<div class="border-l-2 {phase.status === 'active' ? 'border-accent-blue' : phase.status === 'completed' ? 'border-accent-green' : 'border-border'} pl-3 py-1">
 												<div class="flex items-center justify-between">
 													<div class="flex items-center gap-2">
@@ -428,22 +445,59 @@
 
 					<!-- Feature Map -->
 					{#if m.featureMap.length > 0}
+						{@const doneCount = m.featureMap.filter(f => f.status === 'done' || f.status === 'shipped').length}
+						{@const partialCount = m.featureMap.filter(f => f.status === 'partial' || f.status === 'in-progress').length}
+						{@const notStartedCount = m.featureMap.filter(f => f.status === 'not-started' || f.status === 'planned').length}
 						<div class="bg-bg-secondary rounded-lg border border-border p-4">
-							<h3 class="text-[10px] font-medium text-text-secondary uppercase tracking-wider mb-3">Feature Map</h3>
+							<div class="flex items-center justify-between mb-3">
+								<h3 class="text-[10px] font-medium text-text-secondary uppercase tracking-wider">
+									Feature Map ({m.featureMap.length})
+								</h3>
+								<div class="flex gap-2 text-[10px]">
+									<span class="text-accent-green">{doneCount} done</span>
+									<span class="text-accent-yellow">{partialCount} partial</span>
+									<span class="text-text-secondary">{notStartedCount} todo</span>
+								</div>
+							</div>
+							<!-- Progress bar -->
+							<div class="h-1.5 rounded-full bg-bg-tertiary mb-3 overflow-hidden flex">
+								{#if doneCount > 0}
+									<div class="h-full bg-accent-green" style="width: {(doneCount / m.featureMap.length) * 100}%"></div>
+								{/if}
+								{#if partialCount > 0}
+									<div class="h-full bg-accent-yellow" style="width: {(partialCount / m.featureMap.length) * 100}%"></div>
+								{/if}
+							</div>
 							<div class="grid grid-cols-2 gap-2">
-								{#each m.featureMap as feat}
-									{@const rel = m.releases.find(r => r.id === feat.releaseId)}
+								{#each m.featureMap.filter(f => f.status !== 'collecting') as feat}
+									{@const rel = feat.releaseId ? m.releases.find(r => r.id === feat.releaseId) : null}
+									{@const phase = feat.phase ? m.phases.find(p => p.id === feat.phase) : null}
+									{@const parentRel = phase ? m.releases.find(r => r.id === phase.releaseId) : rel}
 									<div class="bg-bg-primary rounded-md border border-border p-2.5">
 										<div class="flex items-center gap-2">
-											<span class="text-[10px] px-1 py-0.5 rounded {feat.status === 'shipped' ? 'bg-accent-green/10 text-accent-green' : feat.status === 'in-progress' ? 'bg-accent-blue/10 text-accent-blue' : 'bg-bg-tertiary text-text-secondary'}">
+											<span class="text-[10px] px-1 py-0.5 rounded {
+												feat.status === 'done' || feat.status === 'shipped' ? 'bg-accent-green/10 text-accent-green' :
+												feat.status === 'partial' || feat.status === 'in-progress' ? 'bg-accent-yellow/10 text-accent-yellow' :
+												'bg-bg-tertiary text-text-secondary'}">
 												{feat.status}
 											</span>
-											<span class="text-xs font-medium text-text-primary">{feat.name}</span>
+											<span class="text-xs font-medium text-text-primary truncate">{feat.name}</span>
 										</div>
-										<p class="text-[10px] text-text-secondary mt-1">{feat.description}</p>
-										{#if rel}
-											<p class="text-[10px] text-text-secondary mt-0.5 font-mono">{rel.version}</p>
-										{/if}
+										<p class="text-[10px] text-text-secondary mt-1 line-clamp-2">{feat.description}</p>
+										<div class="flex items-center gap-2 mt-1.5">
+											{#if parentRel}
+												<span class="text-[10px] text-text-secondary font-mono">{parentRel.version}</span>
+											{/if}
+											{#if feat.priority}
+												<span class="text-[10px] px-1 py-0.5 rounded {
+													feat.priority === 'high' ? 'bg-accent-red/10 text-accent-red' :
+													feat.priority === 'medium' ? 'bg-accent-yellow/10 text-accent-yellow' :
+													'bg-bg-tertiary text-text-secondary'}">{feat.priority}</span>
+											{/if}
+											{#if feat.effort}
+												<span class="text-[10px] text-text-secondary">{feat.effort}</span>
+											{/if}
+										</div>
 									</div>
 								{/each}
 							</div>
@@ -463,10 +517,21 @@
 								Decisions ({data.plan.decisions.length})
 							</h3>
 							{#if data.plan.decisions.length > 0}
-								{#each data.plan.decisions.slice(0, 5) as dec}
+								{#each data.plan.decisions.slice(0, 8) as dec}
 									<div class="mb-2">
-										<p class="text-xs font-medium text-text-primary">{dec.title}</p>
-										<p class="text-[10px] text-accent-blue">→ {dec.decision}</p>
+										{#if dec.title}
+											<p class="text-xs font-medium text-text-primary">{dec.title}</p>
+											<p class="text-[10px] text-accent-blue">→ {dec.decision}</p>
+										{:else}
+											<p class="text-xs font-medium text-text-primary">{dec.decision}</p>
+										{/if}
+										{#if dec.rationale}
+											<p class="text-[10px] text-text-secondary mt-0.5">{dec.rationale}</p>
+										{/if}
+										<div class="flex gap-2 mt-0.5">
+											{#if dec.date}<span class="text-[10px] text-text-secondary font-mono">{dec.date}</span>{/if}
+											{#if dec.status}<span class="text-[10px] px-1 py-0.5 rounded bg-bg-tertiary text-text-secondary">{dec.status}</span>{/if}
+										</div>
 									</div>
 								{/each}
 							{:else}
@@ -494,6 +559,9 @@
 				<div class="space-y-4">
 					<!-- Active Sprint -->
 					{#if activeSprint}
+						{@const activePhaseId = getPhaseId(activeSprint)}
+						{@const taskCount = getTaskCount(activeSprint.tasks)}
+						{@const doneCount = getDoneTaskCount(activeSprint.tasks)}
 						<div class="bg-bg-secondary rounded-lg border border-accent-blue/30 p-4">
 							<div class="flex items-center justify-between mb-2">
 								<div class="flex items-center gap-2">
@@ -506,14 +574,41 @@
 								</button>
 							</div>
 							<p class="text-xs text-text-secondary">{activeSprint.goal}</p>
-							{#each (data.plan?.macro.phases ?? []).filter(p => p.id === activeSprint?.phaseId) as parentPhase}
+							{#each (data.plan?.macro.phases ?? []).filter(p => p.id === activePhaseId) as parentPhase}
 								{#each (data.plan?.macro.releases ?? []).filter(r => r.id === parentPhase.releaseId) as parentRel}
 									<p class="text-[10px] text-text-secondary mt-1">
 										{parentRel.version} → <span class="text-accent-blue">{parentPhase.name}</span>
 									</p>
 								{/each}
 							{/each}
-							<p class="text-[10px] text-text-secondary mt-1 font-mono">{activeSprint.tasks.length} task(s)</p>
+							<!-- Progress -->
+							{#if taskCount > 0}
+								<div class="flex items-center gap-2 mt-2">
+									<div class="flex-1 h-1.5 rounded-full bg-bg-tertiary overflow-hidden">
+										<div class="h-full bg-accent-green rounded-full" style="width: {(doneCount / taskCount) * 100}%"></div>
+									</div>
+									<span class="text-[10px] text-text-secondary font-mono">{doneCount}/{taskCount}</span>
+								</div>
+							{/if}
+							<!-- Inline tasks -->
+							{#if activeSprint.tasks.some(t => typeof t === 'object')}
+								<div class="mt-3 space-y-1">
+									{#each activeSprint.tasks.filter(t => typeof t === 'object') as task}
+										{@const t = task as { id: string; title: string; status: string; effort?: string; feature?: string | null }}
+										<div class="flex items-center gap-2 text-xs">
+											<span class="w-4 text-center {t.status === 'done' ? 'text-accent-green' : t.status === 'in-progress' ? 'text-accent-blue' : t.status === 'needs-testing' ? 'text-accent-yellow' : t.status === 'blocked' ? 'text-accent-red' : t.status === 'pushed-back' ? 'text-accent-purple' : t.status === 'deferred' ? 'text-text-secondary/50' : 'text-text-secondary'}">
+												{t.status === 'done' ? '✓' : t.status === 'in-progress' ? '●' : t.status === 'needs-testing' ? '⚡' : t.status === 'deferred' ? '⏸' : t.status === 'pushed-back' ? '↩' : t.status === 'blocked' ? '✗' : '○'}
+											</span>
+											<span class="{t.status === 'done' ? 'text-text-secondary line-through' : 'text-text-primary'}">{t.title}</span>
+											{#if t.effort}
+												<span class="text-[10px] text-text-secondary ml-auto">{t.effort}</span>
+											{/if}
+										</div>
+									{/each}
+								</div>
+							{:else}
+								<p class="text-[10px] text-text-secondary mt-1 font-mono">{taskCount} task(s)</p>
+							{/if}
 						</div>
 					{/if}
 
@@ -558,19 +653,44 @@
 							<h3 class="text-[10px] font-medium text-text-secondary uppercase tracking-wider mb-3">All Sprints ({data.plan.sprints.length})</h3>
 							<div class="space-y-2">
 								{#each data.plan.sprints as sprint}
+									{@const sprintPhaseId = getPhaseId(sprint)}
+									{@const sprintTaskCount = getTaskCount(sprint.tasks)}
+									{@const sprintDoneCount = getDoneTaskCount(sprint.tasks)}
 									<div class="bg-bg-primary rounded-md border border-border p-3 {sprint.id === data.plan.activeSprint ? 'border-accent-blue/30' : ''}">
 										<div class="flex items-center justify-between">
 											<div class="flex items-center gap-2">
 												<span class="text-sm">{statusIcons[sprint.status]}</span>
 												<h4 class="text-sm font-medium {statusColors[sprint.status]}">{sprint.name}</h4>
 											</div>
-											{#each (data.plan?.macro.phases ?? []).filter(p => p.id === sprint.phaseId) as phase}
+											{#each (data.plan?.macro.phases ?? []).filter(p => p.id === sprintPhaseId) as phase}
 												{#each (data.plan?.macro.releases ?? []).filter(r => r.id === phase.releaseId) as rel}
 													<span class="text-[10px] px-1.5 py-0.5 rounded bg-bg-tertiary text-text-secondary">{rel.version} → {phase.name}</span>
 												{/each}
 											{/each}
 										</div>
 										<p class="text-xs text-text-secondary mt-1 pl-6">{sprint.goal}</p>
+										{#if sprintTaskCount > 0}
+											<div class="flex items-center gap-2 mt-1.5 pl-6">
+												<div class="flex-1 h-1 rounded-full bg-bg-tertiary overflow-hidden">
+													<div class="h-full bg-accent-green rounded-full" style="width: {(sprintDoneCount / sprintTaskCount) * 100}%"></div>
+												</div>
+												<span class="text-[10px] text-text-secondary font-mono">{sprintDoneCount}/{sprintTaskCount}</span>
+											</div>
+										{/if}
+										<!-- Inline task list -->
+										{#if sprint.tasks.some(t => typeof t === 'object')}
+											<div class="mt-2 pl-6 space-y-0.5">
+												{#each sprint.tasks.filter(t => typeof t === 'object') as task}
+													{@const t = task as { id: string; title: string; status: string; effort?: string }}
+													<div class="flex items-center gap-2 text-[10px]">
+														<span class="{t.status === 'done' ? 'text-accent-green' : t.status === 'in-progress' ? 'text-accent-blue' : t.status === 'needs-testing' ? 'text-accent-yellow' : t.status === 'blocked' ? 'text-accent-red' : t.status === 'pushed-back' ? 'text-accent-purple' : t.status === 'deferred' ? 'text-text-secondary/50' : 'text-text-secondary'}">
+															{t.status === 'done' ? '✓' : t.status === 'in-progress' ? '●' : t.status === 'needs-testing' ? '⚡' : t.status === 'deferred' ? '⏸' : t.status === 'pushed-back' ? '↩' : t.status === 'blocked' ? '✗' : '○'}
+														</span>
+														<span class="{t.status === 'done' ? 'text-text-secondary' : 'text-text-primary'}">{t.title}</span>
+													</div>
+												{/each}
+											</div>
+										{/if}
 										{#if sprint.retrospective}
 											<div class="mt-2 pl-6 border-l-2 border-accent-green/30 ml-2">
 												<p class="text-[10px] text-accent-green pl-2">Retro: {sprint.retrospective}</p>
@@ -579,7 +699,6 @@
 										<div class="flex items-center gap-3 mt-1 pl-6 text-[10px] text-text-secondary">
 											{#if sprint.startDate}<span>Started {formatDate(sprint.startDate)}</span>{/if}
 											{#if sprint.completedAt}<span>Done {formatDate(sprint.completedAt)}</span>{/if}
-											<span class="font-mono">{sprint.tasks.length} task(s)</span>
 										</div>
 									</div>
 								{/each}

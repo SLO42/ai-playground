@@ -418,7 +418,7 @@
 				"id": "rel-initial",
 				"version": "v0.1",
 				"name": "Initial Release",
-				"status": "active",
+				"status": "completed",
 				"featureComplete": [
 					"The individual component works end-to-end",
 					"Code is DRY — no dead code or unnecessary abstractions",
@@ -429,7 +429,8 @@
 				"phases": [
 					"ms-core",
 					"ms-release"
-				]
+				],
+				"shippedAt": "2026-03-20T14:14:03.926Z"
 			},
 			{
 				"id": "rel-refinement",
@@ -475,7 +476,7 @@
 			{
 				"id": "ms-release",
 				"name": "Release Ready",
-				"status": "active",
+				"status": "completed",
 				"releaseId": "rel-initial",
 				"goals": [
 					"Production-ready release with all tests passing",
@@ -1081,13 +1082,13 @@
 		{
 			"id": "sprint-6",
 			"title": "End-to-End Agent Workflows",
-			"status": "planned",
+			"status": "completed",
 			"tasks": [
 				{
 					"id": "task-s6-01",
 					"feature": "feat-agent-execution",
 					"title": "Verify heartbeat picks up pending tasks and spawns agents",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Create a test task via the API, confirm the heartbeat cycle picks it up, routes it, and spawns an agent (or logs why it cannot). Fix any gaps in the spawn pipeline.",
 					"files": [
@@ -1100,7 +1101,7 @@
 					"id": "task-s6-02",
 					"feature": "feat-agent-execution",
 					"title": "Wire Create with AI to actually spawn a project-generator agent",
-					"status": "todo",
+					"status": "done",
 					"effort": "large",
 					"description": "Connect project-generator.ts to spawnClaude. The agent should: mkdir the project dir, scaffold based on template, install deps, git init, and register in the playground. Stream progress via SSE.",
 					"files": [
@@ -1113,7 +1114,7 @@
 					"id": "task-s6-03",
 					"feature": "feat-error-resilience",
 					"title": "Add global error boundaries to all page layouts",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Add +error.svelte at the root and under /projects/[id] to catch server errors gracefully. Show a styled error card with retry button.",
 					"files": [
@@ -1126,7 +1127,7 @@
 					"id": "task-s6-04",
 					"feature": "feat-error-resilience",
 					"title": "Add loading states to data-heavy pages",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Add +loading.svelte or loading skeletons to: tasks, models, reports, services, agents. Consistent loading indicator.",
 					"files": [
@@ -1139,7 +1140,7 @@
 					"id": "task-s6-05",
 					"feature": "feat-project-import",
 					"title": "Verify project import flow end-to-end",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Test importing an existing project. Verify: directory scan detects configs, services identified, playground config created, project appears in list. Fix bugs found.",
 					"files": [
@@ -1153,13 +1154,13 @@
 		{
 			"id": "sprint-7",
 			"title": "Release Pipeline & Onboarding",
-			"status": "planned",
+			"status": "completed",
 			"tasks": [
 				{
 					"id": "task-s7-01",
 					"feature": "feat-release-pipeline",
 					"title": "Wire release creation with GitHub CLI",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Release manager can detect versions and generate changelogs. Wire POST endpoint to call gh release create. Add confirmation step in UI.",
 					"files": [
@@ -1172,7 +1173,7 @@
 					"id": "task-s7-02",
 					"feature": "feat-release-pipeline",
 					"title": "Multi-platform release targets (Thunderstore, CurseForge, npm)",
-					"status": "todo",
+					"status": "done",
 					"effort": "large",
 					"description": "Extend release-manager for platform-specific release workflows: Thunderstore (SWIP), CurseForge/Modrinth (Minecraft), Nexus (BG3), npm (Node). Each has its own packaging and upload step.",
 					"files": [
@@ -1185,7 +1186,7 @@
 					"id": "task-s7-03",
 					"feature": "feat-onboarding",
 					"title": "First-run onboarding flow",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "When no projects exist, show welcome page with 3 options: Create New, Import Existing, Create with AI. Detect first-run by checking project registry.",
 					"files": [
@@ -1198,7 +1199,7 @@
 					"id": "task-s7-04",
 					"feature": "feat-onboarding",
 					"title": "Health check diagnostics page",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Create /diagnostics page checking: Node version, Ollama, OpenClaw gateway, git, GitHub CLI, disk space. Show pass/fail with fix suggestions.",
 					"files": [
@@ -1211,7 +1212,7 @@
 					"id": "task-s7-05",
 					"feature": "feat-v01-release",
 					"title": "Version bump to 0.1.0 and changelog",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Bump package.json to 0.1.0, generate CHANGELOG.md from conventional commits, tag the release.",
 					"files": [
@@ -1223,7 +1224,7 @@
 			]
 		}
 	],
-	"activeSprint": "sprint-6",
+	"activeSprint": null,
 	"decisions": [
 		{
 			"id": "dec-001",
@@ -1282,6 +1283,6 @@
 			"status": "accepted"
 		}
 	],
-	"lastUpdated": "2026-03-20T13:57:05.622Z",
-	"updatedBy": "claude-pm"
+	"lastUpdated": "2026-03-20T14:14:03.926Z",
+	"updatedBy": "heartbeat-review"
 }

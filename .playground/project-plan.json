@@ -889,6 +889,182 @@
 					"verify": "npm run build && navigate to /reports — verify new event categories appear in report options"
 				}
 			]
+		},
+		{
+			"id": "sprint-4",
+			"name": "Reactive Dashboard & Polish",
+			"phase": "ms-core",
+			"status": "planned",
+			"goal": "Make all dashboard pages update in real-time when data changes. Fix UX rough edges before v0.2 work begins.",
+			"tasks": [
+				{
+					"id": "task-s4-01",
+					"feature": "feat-reactive-data",
+					"title": "SSE endpoint for live task/service/session updates",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Create a server-sent events endpoint at /api/events that pushes updates when tasks change, services start/stop, or sessions open/close. Use the existing notification system as a model. Clients subscribe and receive JSON patches.",
+					"files": [
+						"dashboard/src/routes/api/events/+server.ts",
+						"dashboard/src/lib/server/event-bus.ts"
+					],
+					"verify": "npm run build && curl -N http://localhost:5173/api/events (should stream events)"
+				},
+				{
+					"id": "task-s4-02",
+					"feature": "feat-reactive-data",
+					"title": "Client-side SSE store for reactive page updates",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Create a Svelte 5 runes-based store that connects to /api/events SSE endpoint. On receiving updates, invalidate relevant SvelteKit load functions via invalidateAll() or targeted invalidation. Auto-reconnect on disconnect.",
+					"files": [
+						"dashboard/src/lib/stores/live-updates.ts",
+						"dashboard/src/routes/+layout.svelte"
+					],
+					"verify": "npm run build && open dashboard — changes to tasks.json should reflect within 2s"
+				},
+				{
+					"id": "task-s4-03",
+					"feature": "feat-reactive-data",
+					"title": "Wire SSE events from heartbeat, task-store, and service changes",
+					"status": "todo",
+					"effort": "small",
+					"description": "Import event-bus in heartbeat/index.ts, task-store.ts, and auto-restart.ts. Emit events on task create/update/complete, agent spawn/complete, and service start/stop/restart. Each event: { channel, type, data }.",
+					"files": [
+						"dashboard/src/lib/server/heartbeat/index.ts",
+						"dashboard/src/lib/server/task-store.ts",
+						"dashboard/src/lib/server/heartbeat/auto-restart.ts"
+					],
+					"verify": "npm run build && grep -c 'emit' dashboard/src/lib/server/task-store.ts (should be 3+)"
+				},
+				{
+					"id": "task-s4-04",
+					"feature": "feat-heartbeat-profiling",
+					"title": "Add timing instrumentation to heartbeat cycle",
+					"status": "todo",
+					"effort": "small",
+					"description": "Wrap each phase of the heartbeat loop (scan, classify, spawn, post-task, memory-guard) with Date.now() timing. Store per-cycle metrics in .playground/heartbeat-metrics.json (last 100 cycles). Add a /api/heartbeat/metrics endpoint to expose them.",
+					"files": [
+						"dashboard/src/lib/server/heartbeat/index.ts",
+						"dashboard/src/routes/api/heartbeat/metrics/+server.ts"
+					],
+					"verify": "npm run build && check .playground/heartbeat-metrics.json has timing data after a heartbeat cycle"
+				},
+				{
+					"id": "task-s4-05",
+					"feature": "feat-page-content-depth",
+					"title": "Enrich tasks page — inline agent progress, dependency graph",
+					"status": "todo",
+					"effort": "medium",
+					"description": "On the tasks page, show each task's agent progress (from analytics events), blocked-by chain as a mini dependency graph, and estimated completion. Read from agent-analytics.ts and task-store.ts. Use existing MetricCard and BubbleGraph components.",
+					"files": [
+						"dashboard/src/routes/tasks/+page.server.ts",
+						"dashboard/src/routes/tasks/+page.svelte"
+					],
+					"verify": "npm run build && navigate to /tasks — tasks should show agent status and dependency indicators"
+				},
+				{
+					"id": "task-s4-06",
+					"feature": "feat-page-content-depth",
+					"title": "Enrich models page — token cost breakdown, efficiency trends",
+					"status": "todo",
+					"effort": "medium",
+					"description": "On the models page, add sections for: token cost per model over time (chart), efficiency ratio (output tokens / input tokens), and top-5 most expensive tasks. Data comes from getAgentAnalytics(). Use existing chart patterns from reports page.",
+					"files": [
+						"dashboard/src/routes/models/+page.server.ts",
+						"dashboard/src/routes/models/+page.svelte"
+					],
+					"verify": "npm run build && navigate to /models — should show cost breakdown and efficiency data"
+				}
+			]
+		},
+		{
+			"id": "sprint-5",
+			"name": "Data Foundation & AI Creation",
+			"phase": "ms-data-layer",
+			"status": "planned",
+			"goal": "Begin SQLite migration for tasks (replacing JSON files) and scaffold the Create with AI feature for generating new projects from prompts.",
+			"tasks": [
+				{
+					"id": "task-s5-01",
+					"feature": "feat-sqlite-migration",
+					"title": "Create SQLite task store with migration from JSON",
+					"status": "todo",
+					"effort": "large",
+					"description": "Create a new task-store-sql.ts that uses better-sqlite3 (already a dependency via pm-memory-db). Schema: tasks(id, title, status, priority, complexity, assignee, projectId, blockedBy JSON, createdAt, updatedAt, completedAt). Include a migrate() function that reads existing tasks.json and imports rows. Keep task-store.ts as fallback during transition.",
+					"files": [
+						"dashboard/src/lib/server/task-store-sql.ts",
+						"dashboard/src/lib/server/task-store.ts"
+					],
+					"verify": "npm run build && node -e 'require(\"./.playground/tasks.db\")' (DB file should exist after migration)"
+				},
+				{
+					"id": "task-s5-02",
+					"feature": "feat-sqlite-migration",
+					"title": "Wire task API endpoints to SQLite store",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Update /api/tasks and /api/projects/[id]/tasks endpoints to use task-store-sql.ts instead of task-store.ts. Add a feature flag (TASK_STORE_BACKEND=sqlite|json) in settings to allow rollback. Default to sqlite when DB exists.",
+					"files": [
+						"dashboard/src/routes/api/tasks/+server.ts",
+						"dashboard/src/routes/api/projects/[id]/tasks/+server.ts"
+					],
+					"verify": "npm run build && POST /api/tasks creates row in .playground/tasks.db"
+				},
+				{
+					"id": "task-s5-03",
+					"feature": "feat-sqlite-migration",
+					"title": "SQLite analytics store (replace agent-analytics.json)",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Create agent-analytics-sql.ts with schema: events(id, taskId, taskTitle, type, timestamp, projectId, data JSON). Migrate existing JSON events on first load. Update getAgentAnalytics() to query SQL with proper indexing. Keep JSON as write-through cache for compatibility.",
+					"files": [
+						"dashboard/src/lib/server/heartbeat/agent-analytics-sql.ts",
+						"dashboard/src/lib/server/heartbeat/agent-analytics.ts"
+					],
+					"verify": "npm run build && .playground/analytics.db should exist with events table"
+				},
+				{
+					"id": "task-s5-04",
+					"feature": "feat-create-with-ai",
+					"title": "Scaffold Create with AI page and prompt interface",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Create /projects/create-ai route with a prompt input, template selector (optional), and technology tag picker. On submit, POST to /api/projects/create-ai which spawns a Claude agent with the prompt + selected template. Show real-time progress via SSE.",
+					"files": [
+						"dashboard/src/routes/projects/create-ai/+page.svelte",
+						"dashboard/src/routes/projects/create-ai/+page.server.ts",
+						"dashboard/src/routes/api/projects/create-ai/+server.ts"
+					],
+					"verify": "npm run build && navigate to /projects/create-ai — form renders with prompt input and template selector"
+				},
+				{
+					"id": "task-s5-05",
+					"feature": "feat-create-with-ai",
+					"title": "AI project generator agent — template + prompt to scaffold",
+					"status": "todo",
+					"effort": "large",
+					"description": "Create a project-generator.ts module that: 1) Takes a user prompt + optional template ID, 2) Builds a Claude agent prompt with template structure + user requirements, 3) Spawns via spawnClaude with the project directory as cwd, 4) Creates the project, installs deps, runs initial build. Register the new project in the playground registry on completion.",
+					"files": [
+						"dashboard/src/lib/server/project-generator.ts",
+						"dashboard/src/lib/server/heartbeat/agent-spawn.ts"
+					],
+					"verify": "npm run build && grep 'projectGenerator\\|generateProject' dashboard/src/lib/server/project-generator.ts (should match exports)"
+				},
+				{
+					"id": "task-s5-06",
+					"feature": "feat-plan-task-link",
+					"title": "Link sprint tasks to task-store via SQLite foreign keys",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Add sprint_id and plan_task_id columns to the SQLite tasks table. When a sprint task is created in the plan, auto-create a corresponding task-store entry with the link. When a task completes, update the sprint task status. This bridges the macro (plan) and micro (task-store) layers.",
+					"files": [
+						"dashboard/src/lib/server/task-store-sql.ts",
+						"dashboard/src/lib/server/project-manager.ts"
+					],
+					"verify": "npm run build && tasks in tasks.db should have sprint_id populated for sprint-linked tasks"
+				}
+			]
 		}
 	],
 	"activeSprint": "sprint-3",
@@ -943,6 +1119,6 @@
 			"status": "accepted"
 		}
 	],
-	"lastUpdated": "2026-03-20T03:55:13.804Z",
+	"lastUpdated": "2026-03-20T04:01:14.812Z",
 	"updatedBy": "pm-session"
 }

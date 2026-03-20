@@ -23,5 +23,6 @@ export const POST: RequestHandler = async ({ request }) => {
 	return json({
 		success: true,
 		projectPath: result.projectPath,
+		message: `Project generation started. A Claude agent is scaffolding your project at ${result.projectPath}.`,
 	});
 };

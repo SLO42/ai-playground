@@ -3,8 +3,10 @@
  * a new project by spawning a Claude agent with the appropriate instructions.
  */
 import { resolve } from 'path';
+import { mkdirSync } from 'fs';
 import { PATHS } from './constants.js';
 import { recordEvent } from './heartbeat/agent-analytics.js';
+import { spawnClaude } from './heartbeat/agent-spawn.js';
 
 // ── Interfaces ───────────────────────────────────────────────────────
 
@@ -91,31 +93,71 @@ export async function generateProject(options: GenerateProjectOptions): Promise<
 
 	const projectPath = resolve(PATHS.root, '..', options.name);
 
+	const taskTitle = `Generate project: ${options.name}`;
+	const model = 'claude-opus-4-6';
+
 	// Record classification event
 	recordEvent({
 		type: 'classified',
-		taskTitle: `Generate project: ${options.name}`,
+		taskTitle,
 		route: 'claude-code',
-		model: 'claude-opus-4-6',
+		model,
 		modelTier: 'opus',
 	}).catch(() => {});
 
-	// Build the agent prompt (used when spawning is wired)
-	const _prompt = buildGeneratorPrompt(options, projectPath);
+	// Create the project directory
+	try {
+		mkdirSync(projectPath, { recursive: true });
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		recordEvent({
+			type: 'failed',
+			taskTitle,
+			route: 'claude-code',
+			model,
+			modelTier: 'opus',
+		}).catch(() => {});
+		return { success: false, projectPath, error: `Failed to create project directory: ${msg}` };
+	}
 
-	// TODO: Wire to spawnClaude when ready
-	// The prompt is prepared above. When agent infrastructure is ready,
-	// this will spawn a Claude agent with the built prompt to actually
-	// create the project on disk.
+	// Build the agent prompt
+	const prompt = buildGeneratorPrompt(options, projectPath);
 
-	// Record completion event
-	recordEvent({
-		type: 'completed',
-		taskTitle: `Generate project: ${options.name}`,
-		route: 'claude-code',
-		model: 'claude-opus-4-6',
-		modelTier: 'opus',
-	}).catch(() => {});
+	// Spawn the Claude agent (fire-and-forget)
+	const logFile = resolve(PATHS.headlessLogsDir, `gen-${options.name}-${Date.now()}.jsonl`);
+	try {
+		const child = await spawnClaude(prompt, logFile, { model });
+
+		// Record spawned event
+		recordEvent({
+			type: 'spawned',
+			taskTitle,
+			route: 'claude-code',
+			model,
+			modelTier: 'opus',
+		}).catch(() => {});
+
+		// Fire-and-forget: listen for exit to record completion/failure
+		child.on('close', (code) => {
+			recordEvent({
+				type: code === 0 ? 'completed' : 'failed',
+				taskTitle,
+				route: 'claude-code',
+				model,
+				modelTier: 'opus',
+			}).catch(() => {});
+		});
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		recordEvent({
+			type: 'failed',
+			taskTitle,
+			route: 'claude-code',
+			model,
+			modelTier: 'opus',
+		}).catch(() => {});
+		return { success: false, projectPath, error: `Failed to spawn agent: ${msg}` };
+	}
 
 	return {
 		success: true,

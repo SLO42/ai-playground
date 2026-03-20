@@ -9,9 +9,11 @@
 	let projectName = $state('');
 	let isGenerating = $state(false);
 	let error = $state<string | null>(null);
-	let generationResult = $state<{ success: boolean; projectId: string; message: string } | null>(
-		null
-	);
+	let generationResult = $state<{
+		success: boolean;
+		projectPath: string;
+		message: string;
+	} | null>(null);
 
 	let autoName = $derived(
 		prompt
@@ -171,9 +173,16 @@
 		</div>
 	{:else if generationResult}
 		<div
-			class="bg-accent-green/10 border border-accent-green/30 rounded-lg px-4 py-3 text-sm text-accent-green"
+			class="bg-accent-green/10 border border-accent-green/30 rounded-lg px-4 py-4 space-y-3"
 		>
-			{generationResult.message}
+			<p class="text-sm text-accent-green">{generationResult.message}</p>
+			<p class="text-xs text-text-secondary font-mono">{generationResult.projectPath}</p>
+			<a
+				href="/projects"
+				class="inline-flex items-center gap-1.5 text-sm text-accent-cyan hover:text-accent-cyan/80 transition-colors"
+			>
+				View Projects &rarr;
+			</a>
 		</div>
 	{/if}
 

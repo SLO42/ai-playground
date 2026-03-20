@@ -1,7 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import { PATHS } from '$lib/server/constants.js';
 import { scanAllProjects } from '$lib/server/project-scanner.js';
-import { getTask, updateTask, deleteTask, migrateIfNeeded } from '$lib/server/task-store.js';
+import { getTask, updateTask, deleteTask, migrateFromJson } from '$lib/server/task-store-sql.js';
 import type { TaskStatus, TaskPriority } from '$lib/types/tasks.js';
 
 async function getProjectPath(id: string): Promise<string> {
@@ -13,15 +13,15 @@ async function getProjectPath(id: string): Promise<string> {
 
 export async function GET({ params }) {
 	const projectPath = await getProjectPath(params.id);
-	await migrateIfNeeded(projectPath);
-	const task = await getTask(projectPath, params.taskId);
+	migrateFromJson(projectPath);
+	const task = getTask(projectPath, params.taskId);
 	if (!task) throw error(404, 'Task not found');
 	return json({ task });
 }
 
 export async function PUT({ params, request }) {
 	const projectPath = await getProjectPath(params.id);
-	await migrateIfNeeded(projectPath);
+	migrateFromJson(projectPath);
 
 	const body = await request.json();
 	const validStatuses: TaskStatus[] = ['pending', 'in_progress', 'completed', 'cancelled'];
@@ -37,7 +37,7 @@ export async function PUT({ params, request }) {
 	if (body.tags !== undefined && Array.isArray(body.tags)) updates.tags = body.tags.filter((t: unknown) => typeof t === 'string');
 	if (body.blockedBy !== undefined) updates.blockedBy = Array.isArray(body.blockedBy) ? body.blockedBy.filter((id: unknown) => typeof id === 'string') : [];
 
-	const task = await updateTask(projectPath, params.taskId, updates as any);
+	const task = updateTask(projectPath, params.taskId, updates as any);
 	if (!task) throw error(404, 'Task not found');
 
 	return json({ task });
@@ -45,8 +45,8 @@ export async function PUT({ params, request }) {
 
 export async function DELETE({ params }) {
 	const projectPath = await getProjectPath(params.id);
-	await migrateIfNeeded(projectPath);
-	const deleted = await deleteTask(projectPath, params.taskId);
+	migrateFromJson(projectPath);
+	const deleted = deleteTask(projectPath, params.taskId);
 	if (!deleted) throw error(404, 'Task not found');
 	return json({ success: true });
 }

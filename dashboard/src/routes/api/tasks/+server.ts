@@ -1,10 +1,10 @@
 import { json } from '@sveltejs/kit';
 import type { RequestHandler } from './$types.js';
-import { listTasks, type TaskIndexEntry } from '$lib/server/task-store.js';
+import { listTasks, type TaskIndexEntry } from '$lib/server/task-store-sql.js';
 import { PATHS } from '$lib/server/constants.js';
 
 export const GET: RequestHandler = async ({ url }) => {
-	const allTasks = await listTasks(PATHS.root);
+	const allTasks = listTasks(PATHS.root);
 
 	// Filtering
 	const status = url.searchParams.get('status');

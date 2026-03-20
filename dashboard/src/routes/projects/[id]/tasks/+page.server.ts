@@ -3,7 +3,7 @@ import { PATHS } from '$lib/server/constants.js';
 import { scanAllProjects } from '$lib/server/project-scanner.js';
 import { readdir } from 'fs/promises';
 import { basename } from 'path';
-import { getAllTasks, migrateIfNeeded } from '$lib/server/task-store.js';
+import { getAllTasks, migrateFromJson } from '$lib/server/task-store-sql.js';
 import { getSyncStatus } from '$lib/server/github-sync.js';
 
 async function getAgentNames(): Promise<string[]> {
@@ -29,7 +29,7 @@ export const load: PageServerLoad = async ({ params }) => {
 
 	if (project) {
 		const [, allTasks, status] = await Promise.all([
-			migrateIfNeeded(project.path),
+			migrateFromJson(project.path),
 			getAllTasks(project.path),
 			getSyncStatus(project.path).catch(() => null)
 		]);

@@ -9,6 +9,7 @@ import { readFile, writeFile, mkdir } from 'fs/promises';
 import { resolve, dirname } from 'path';
 import { PATHS } from '../constants.js';
 import { withLock } from '../async-mutex.js';
+import { recordEventSql, getAgentAnalyticsSql, migrateFromJson } from './agent-analytics-sql.js';
 
 // ── Event types ──────────────────────────────────────────────────────
 
@@ -223,8 +224,14 @@ async function saveEvents(events: AgentEvent[]): Promise<void> {
 
 if (!('__claw_event_counter' in _g)) _g.__claw_event_counter = 0;
 
+// Migrate JSON events to SQLite on first load
+try { migrateFromJson(); } catch { /* best effort */ }
 
 export async function recordEvent(event: Omit<AgentEvent, 'id' | 'timestamp'>): Promise<void> {
+	// SQL primary — synchronous, fast
+	try { recordEventSql(event); } catch { /* fall through to JSON */ }
+
+	// JSON write-through for compatibility
 	await withLock(ANALYTICS_PATH, async () => {
 		const events = await loadEvents();
 		const counter = (_g.__claw_event_counter as number) + 1;
@@ -242,6 +249,13 @@ export async function recordEvent(event: Omit<AgentEvent, 'id' | 'timestamp'>): 
 // ── Build analytics summary ──────────────────────────────────────────
 
 export async function getAgentAnalytics(): Promise<AgentAnalytics> {
+	// SQL primary path
+	try {
+		return getAgentAnalyticsSql();
+	} catch {
+		// Fall back to JSON-based calculation
+	}
+
 	const events = await loadEvents();
 
 	// Group events by taskId to build per-task lifecycle

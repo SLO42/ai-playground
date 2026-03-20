@@ -4,7 +4,7 @@ import { scanAllProjects } from '$lib/server/project-scanner.js';
 import { readdir } from 'fs/promises';
 import { basename } from 'path';
 import type { Task } from '$lib/types/tasks.js';
-import { getAllTasks, migrateIfNeeded } from '$lib/server/task-store.js';
+import { getAllTasks, migrateFromJson } from '$lib/server/task-store-sql.js';
 import { getSyncStatus } from '$lib/server/github-sync.js';
 import { getAgentAnalytics } from '$lib/server/heartbeat/agent-analytics.js';
 
@@ -57,8 +57,8 @@ export const load: PageServerLoad = async ({ url }) => {
 	await Promise.all(
 		projects.map(async (project) => {
 			try {
-				await migrateIfNeeded(project.path);
-				const tasks = await getAllTasks(project.path);
+				migrateFromJson(project.path);
+				const tasks = getAllTasks(project.path);
 				for (const task of tasks) {
 					const issue = issueMap.get(task.id);
 					allTasks.push({

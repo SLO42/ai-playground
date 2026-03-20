@@ -1,7 +1,7 @@
 import { json, error } from '@sveltejs/kit';
 import { PATHS } from '$lib/server/constants.js';
 import { scanAllProjects } from '$lib/server/project-scanner.js';
-import { listTasks, getAllTasks, createTask, migrateIfNeeded } from '$lib/server/task-store.js';
+import { listTasks, getAllTasks, createTask, migrateFromJson } from '$lib/server/task-store-sql.js';
 import type { TaskStatus, TaskPriority } from '$lib/types/tasks.js';
 
 async function getProjectPath(id: string): Promise<string> {
@@ -13,25 +13,25 @@ async function getProjectPath(id: string): Promise<string> {
 
 export async function GET({ params, url }) {
 	const projectPath = await getProjectPath(params.id);
-	await migrateIfNeeded(projectPath);
+	migrateFromJson(projectPath);
 
 	const statusFilter = url.searchParams.get('status');
 	if (statusFilter) {
 		const statuses = statusFilter.split(',') as TaskStatus[];
-		const all = await getAllTasks(projectPath);
+		const all = getAllTasks(projectPath);
 		return json({ tasks: all.filter((t) => statuses.includes(t.status)) });
 	}
 
 	// Return index entries for fast listing, or full tasks if ?full=true
 	if (url.searchParams.get('full') === 'true') {
-		return json({ tasks: await getAllTasks(projectPath) });
+		return json({ tasks: getAllTasks(projectPath) });
 	}
-	return json({ tasks: await listTasks(projectPath) });
+	return json({ tasks: listTasks(projectPath) });
 }
 
 export async function POST({ params, request }) {
 	const projectPath = await getProjectPath(params.id);
-	await migrateIfNeeded(projectPath);
+	migrateFromJson(projectPath);
 
 	const body = await request.json();
 	if (!body.title || typeof body.title !== 'string' || !body.title.trim()) {
@@ -40,7 +40,7 @@ export async function POST({ params, request }) {
 
 	const validPriorities: TaskPriority[] = ['critical', 'high', 'medium', 'low'];
 
-	const task = await createTask(projectPath, {
+	const task = createTask(projectPath, {
 		title: body.title,
 		description: body.description,
 		priority: validPriorities.includes(body.priority) ? body.priority : 'medium',

@@ -8,7 +8,7 @@ import { getAgentAnalytics } from '$lib/server/heartbeat/agent-analytics.js';
 import { getPoolStats } from '$lib/server/heartbeat/session-pool.js';
 import { getActiveAgents } from '$lib/server/heartbeat/shared.js';
 import { isHeartbeatRunning } from '$lib/server/heartbeat.js';
-import { getAllTasks } from '$lib/server/task-store.js';
+import { getAllTasks } from '$lib/server/task-store-sql.js';
 import { readFile, readdir } from 'fs/promises';
 
 async function checkHealth(url: string, timeoutMs = 1500): Promise<boolean> {
@@ -74,7 +74,7 @@ export const load: PageServerLoad = async () => {
 		getRunningModels(),
 		getAgentAnalytics(),
 		getPoolStats(),
-		getAllTasks(PATHS.root).catch(() => []),
+		Promise.resolve(getAllTasks(PATHS.root)).catch(() => []),
 		loadRecentSessions(),
 		loadRecentNotifications(),
 		...Object.values(SERVICES).map((s) =>

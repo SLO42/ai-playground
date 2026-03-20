@@ -99,6 +99,8 @@
 	let pmMessages = $state<PmMsg[]>([]);
 	let pmInput = $state('');
 	let pmStreaming = $state(false);
+	/** Accumulates streamed text — separate from pmMessages for reactivity */
+	let pmStreamContent = $state('');
 	let pmChatEl: HTMLDivElement | undefined = $state();
 	let pmAbort: AbortController | null = null;
 
@@ -133,16 +135,14 @@
 		const text = pmInput.trim();
 		if (!text || pmStreaming) return;
 
-		pmMessages.push({ role: 'user', content: text });
+		pmMessages = [...pmMessages, { role: 'user', content: text }];
 		pmInput = '';
 		pmStreaming = true;
+		pmStreamContent = '';
 
 		// Also save to PM memory
 		pmAction('process-reply', { content: text }).catch(() => {});
 
-		// Add empty assistant message for streaming
-		const assistantIdx = pmMessages.length;
-		pmMessages.push({ role: 'assistant', content: '' });
 		scrollPmChat();
 
 		pmAbort = new AbortController();
@@ -150,7 +150,7 @@
 		try {
 			const apiMessages = [
 				{ role: 'system', content: buildPmSystemPrompt() },
-				...pmMessages.slice(0, assistantIdx)
+				...pmMessages
 			];
 
 			const res = await fetch('/api/chat', {
@@ -167,14 +167,15 @@
 
 			if (!res.ok) {
 				const err = await res.json().catch(() => ({ error: res.statusText }));
-				pmMessages[assistantIdx] = { role: 'assistant', content: `Error: ${err.error ?? res.statusText}` };
+				pmStreamContent = `Error: ${err.error ?? res.statusText}`;
+				pmMessages = [...pmMessages, { role: 'assistant', content: pmStreamContent }];
 				pmStreaming = false;
 				return;
 			}
 
 			const reader = res.body?.getReader();
 			if (!reader) {
-				pmMessages[assistantIdx] = { role: 'assistant', content: 'Error: No stream' };
+				pmMessages = [...pmMessages, { role: 'assistant', content: 'Error: No stream' }];
 				pmStreaming = false;
 				return;
 			}
@@ -195,23 +196,22 @@
 					try {
 						const event = JSON.parse(part.slice(6));
 						if (event.type === 'content' && event.content) {
-							pmMessages[assistantIdx] = {
-								role: 'assistant',
-								content: pmMessages[assistantIdx].content + event.content
-							};
+							pmStreamContent += event.content;
 							scrollPmChat();
 						}
 					} catch { /* skip bad json */ }
 				}
 			}
 		} catch (err) {
-			if ((err as Error).name !== 'AbortError') {
-				pmMessages[assistantIdx] = {
-					role: 'assistant',
-					content: pmMessages[assistantIdx].content || 'Error: Stream failed'
-				};
+			if ((err as Error).name !== 'AbortError' && !pmStreamContent) {
+				pmStreamContent = 'Error: Stream failed';
 			}
 		} finally {
+			// Commit the streamed content to the messages array
+			if (pmStreamContent) {
+				pmMessages = [...pmMessages, { role: 'assistant', content: pmStreamContent }];
+			}
+			pmStreamContent = '';
 			pmStreaming = false;
 			pmAbort = null;
 		}
@@ -284,7 +284,7 @@
 				{/if}
 			</div>
 
-			{#if pmMessages.length > 0}
+			{#if pmMessages.length > 0 || pmStreaming}
 				<div bind:this={pmChatEl} class="space-y-3 max-h-80 overflow-y-auto mb-3 pr-1">
 					{#each pmMessages as msg}
 						{#if msg.role !== 'system'}
@@ -293,15 +293,23 @@
 									{msg.role === 'user'
 										? 'bg-accent-blue/10 text-text-primary'
 										: 'bg-bg-primary border border-border text-text-primary'}">
-									{#if msg.role === 'assistant' && !msg.content && pmStreaming}
-										<span class="text-text-secondary animate-pulse">Thinking...</span>
-									{:else}
-										<p class="whitespace-pre-wrap">{msg.content}</p>
-									{/if}
+									<p class="whitespace-pre-wrap">{msg.content}</p>
 								</div>
 							</div>
 						{/if}
 					{/each}
+					<!-- Streaming assistant response (not yet committed to pmMessages) -->
+					{#if pmStreaming}
+						<div class="flex gap-2">
+							<div class="max-w-[85%] rounded-lg px-3 py-2 text-xs leading-relaxed bg-bg-primary border border-accent-green/20 text-text-primary">
+								{#if pmStreamContent}
+									<p class="whitespace-pre-wrap">{pmStreamContent}</p>
+								{:else}
+									<span class="text-text-secondary animate-pulse">Thinking...</span>
+								{/if}
+							</div>
+						</div>
+					{/if}
 				</div>
 			{:else}
 				<p class="text-xs text-text-secondary mb-3">

@@ -4,6 +4,7 @@
 	import { page } from '$app/state';
 	import Sidebar from '$lib/components/Sidebar.svelte';
 	import StatusBar from '$lib/components/StatusBar.svelte';
+	import NavigationLoader from '$lib/components/NavigationLoader.svelte';
 	import Toast from '$lib/components/Toast.svelte';
 	import CommandPalette from '$lib/components/CommandPalette.svelte';
 	import { startLiveUpdates, isConnected } from '$lib/stores/live-updates.svelte.js';
@@ -139,6 +140,8 @@
 </svelte:head>
 
 <div class="flex min-h-screen bg-bg-primary">
+	<NavigationLoader />
+
 	<!-- Mobile sidebar backdrop -->
 	{#if sidebarMobileOpen && !isProjectRoute}
 		<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->

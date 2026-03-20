@@ -454,7 +454,7 @@
 			{
 				"id": "ms-core",
 				"name": "Core Development",
-				"status": "active",
+				"status": "completed",
 				"releaseId": "rel-initial",
 				"goals": [
 					"All lifecycle phases functional (Create, Develop, Maintain, Release)",
@@ -468,12 +468,14 @@
 				],
 				"tasks": [],
 				"dependencies": [],
-				"sprints": []
+				"sprints": [],
+				"title": "Core Development",
+				"description": "All pages functional with real data, SQLite migration, analytics wiring, SSE reactivity, Playwright coverage"
 			},
 			{
 				"id": "ms-release",
 				"name": "Release Ready",
-				"status": "planned",
+				"status": "active",
 				"releaseId": "rel-initial",
 				"goals": [
 					"Production-ready release with all tests passing",
@@ -489,7 +491,9 @@
 				"dependencies": [
 					"ms-core"
 				],
-				"sprints": []
+				"sprints": [],
+				"title": "Release Readiness",
+				"description": "Polish, end-to-end workflows, agent execution validation, error handling, and v0.1 release prep"
 			},
 			{
 				"id": "ms-data-layer",
@@ -515,7 +519,9 @@
 				"dependencies": [
 					"ms-release"
 				],
-				"sprints": []
+				"sprints": [],
+				"title": "Data Layer Consolidation",
+				"description": "Full SQLite migration for sessions, settings, sync state; query optimization"
 			},
 			{
 				"id": "ms-perf",
@@ -535,7 +541,9 @@
 				],
 				"tasks": [],
 				"dependencies": [],
-				"sprints": []
+				"sprints": [],
+				"title": "Performance & Token Efficiency",
+				"description": "Reduce token usage, optimize agent prompts, cache strategies"
 			},
 			{
 				"id": "ms-design-revision",
@@ -555,7 +563,9 @@
 				],
 				"tasks": [],
 				"dependencies": [],
-				"sprints": []
+				"sprints": [],
+				"title": "Design Revision",
+				"description": "UI/UX polish, responsive design, accessibility audit"
 			},
 			{
 				"id": "ms-templates",
@@ -575,7 +585,9 @@
 				],
 				"tasks": [],
 				"dependencies": [],
-				"sprints": []
+				"sprints": [],
+				"title": "Template Expansion",
+				"description": "Community templates, Create with AI agent wiring, template marketplace"
 			}
 		],
 		"definitionOfDone": [
@@ -1065,9 +1077,153 @@
 					"verify": "npm run build && tasks in tasks.db should have sprint_id populated for sprint-linked tasks"
 				}
 			]
+		},
+		{
+			"id": "sprint-6",
+			"title": "End-to-End Agent Workflows",
+			"status": "planned",
+			"tasks": [
+				{
+					"id": "task-s6-01",
+					"feature": "feat-agent-execution",
+					"title": "Verify heartbeat picks up pending tasks and spawns agents",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Create a test task via the API, confirm the heartbeat cycle picks it up, routes it, and spawns an agent (or logs why it cannot). Fix any gaps in the spawn pipeline.",
+					"files": [
+						"dashboard/src/lib/server/heartbeat/index.ts",
+						"dashboard/src/lib/server/heartbeat/agent-spawn.ts"
+					],
+					"verify": "Create a task via POST /api/tasks, wait for heartbeat cycle, check agent-analytics.json for classified+spawned events"
+				},
+				{
+					"id": "task-s6-02",
+					"feature": "feat-agent-execution",
+					"title": "Wire Create with AI to actually spawn a project-generator agent",
+					"status": "todo",
+					"effort": "large",
+					"description": "Connect project-generator.ts to spawnClaude. The agent should: mkdir the project dir, scaffold based on template, install deps, git init, and register in the playground. Stream progress via SSE.",
+					"files": [
+						"dashboard/src/lib/server/project-generator.ts",
+						"dashboard/src/routes/projects/create-ai/+page.svelte"
+					],
+					"verify": "POST /api/projects/create-ai with a prompt and directory should be created with files"
+				},
+				{
+					"id": "task-s6-03",
+					"feature": "feat-error-resilience",
+					"title": "Add global error boundaries to all page layouts",
+					"status": "todo",
+					"effort": "small",
+					"description": "Add +error.svelte at the root and under /projects/[id] to catch server errors gracefully. Show a styled error card with retry button.",
+					"files": [
+						"dashboard/src/routes/+error.svelte",
+						"dashboard/src/routes/projects/[id]/+error.svelte"
+					],
+					"verify": "npm run build && navigate to /nonexistent shows styled 404"
+				},
+				{
+					"id": "task-s6-04",
+					"feature": "feat-error-resilience",
+					"title": "Add loading states to data-heavy pages",
+					"status": "todo",
+					"effort": "small",
+					"description": "Add +loading.svelte or loading skeletons to: tasks, models, reports, services, agents. Consistent loading indicator.",
+					"files": [
+						"dashboard/src/routes/tasks/+loading.svelte",
+						"dashboard/src/routes/models/+loading.svelte"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s6-05",
+					"feature": "feat-project-import",
+					"title": "Verify project import flow end-to-end",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Test importing an existing project. Verify: directory scan detects configs, services identified, playground config created, project appears in list. Fix bugs found.",
+					"files": [
+						"dashboard/src/routes/projects/import/+page.svelte",
+						"dashboard/src/lib/server/project-scanner.ts"
+					],
+					"verify": "Import a project via UI and it should appear in /projects with detected services"
+				}
+			]
+		},
+		{
+			"id": "sprint-7",
+			"title": "Release Pipeline & Onboarding",
+			"status": "planned",
+			"tasks": [
+				{
+					"id": "task-s7-01",
+					"feature": "feat-release-pipeline",
+					"title": "Wire release creation with GitHub CLI",
+					"status": "todo",
+					"effort": "medium",
+					"description": "Release manager can detect versions and generate changelogs. Wire POST endpoint to call gh release create. Add confirmation step in UI.",
+					"files": [
+						"dashboard/src/routes/projects/[id]/releases/+page.svelte",
+						"dashboard/src/lib/server/release-manager.ts"
+					],
+					"verify": "npm run build && release button visible on releases page with confirmation dialog"
+				},
+				{
+					"id": "task-s7-02",
+					"feature": "feat-release-pipeline",
+					"title": "Multi-platform release targets (Thunderstore, CurseForge, npm)",
+					"status": "todo",
+					"effort": "large",
+					"description": "Extend release-manager for platform-specific release workflows: Thunderstore (SWIP), CurseForge/Modrinth (Minecraft), Nexus (BG3), npm (Node). Each has its own packaging and upload step.",
+					"files": [
+						"dashboard/src/lib/server/release-manager.ts",
+						"dashboard/src/lib/types/project-plan.ts"
+					],
+					"verify": "npm run build && release-manager.ts exports getPlatformTargets()"
+				},
+				{
+					"id": "task-s7-03",
+					"feature": "feat-onboarding",
+					"title": "First-run onboarding flow",
+					"status": "todo",
+					"effort": "medium",
+					"description": "When no projects exist, show welcome page with 3 options: Create New, Import Existing, Create with AI. Detect first-run by checking project registry.",
+					"files": [
+						"dashboard/src/routes/+page.svelte",
+						"dashboard/src/routes/+page.server.ts"
+					],
+					"verify": "npm run build && empty project registry shows onboarding instead of empty dashboard"
+				},
+				{
+					"id": "task-s7-04",
+					"feature": "feat-onboarding",
+					"title": "Health check diagnostics page",
+					"status": "todo",
+					"effort": "small",
+					"description": "Create /diagnostics page checking: Node version, Ollama, OpenClaw gateway, git, GitHub CLI, disk space. Show pass/fail with fix suggestions.",
+					"files": [
+						"dashboard/src/routes/diagnostics/+page.svelte",
+						"dashboard/src/routes/diagnostics/+page.server.ts"
+					],
+					"verify": "npm run build && navigate to /diagnostics shows system checks"
+				},
+				{
+					"id": "task-s7-05",
+					"feature": "feat-v01-release",
+					"title": "Version bump to 0.1.0 and changelog",
+					"status": "todo",
+					"effort": "small",
+					"description": "Bump package.json to 0.1.0, generate CHANGELOG.md from conventional commits, tag the release.",
+					"files": [
+						"dashboard/package.json",
+						"CHANGELOG.md"
+					],
+					"verify": "grep 0.1.0 dashboard/package.json"
+				}
+			]
 		}
 	],
-	"activeSprint": null,
+	"activeSprint": "sprint-6",
 	"decisions": [
 		{
 			"id": "dec-001",
@@ -1117,8 +1273,15 @@
 			"decision": "No Sprint 0 needed — all 8 backend security issues already fixed",
 			"rationale": "Security verification confirmed all 8 issues (TOCTOU races, shell injection, gateway hangs, tool bypass, FD leaks, task mutation, dropped replies, tool message exclusion) were fixed across 5 commits: b6d313d, 0dde6ad, 1f6e77c, 1898d6a, e3798e7. AsyncMutex, execFile with arrays, per-request isolation, confirmation gates all verified in code.",
 			"status": "accepted"
+		},
+		{
+			"id": "dec-008",
+			"date": "2026-03-20",
+			"decision": "Phase 2 focuses on end-to-end workflow validation and release prep, not new features",
+			"rationale": "All major features exist and are functional. The gap to v0.1 is: agent execution pipeline validation, error resilience, project import flow, release pipeline wiring, and onboarding.",
+			"status": "accepted"
 		}
 	],
-	"lastUpdated": "2026-03-20T06:33:11.961Z",
+	"lastUpdated": "2026-03-20T13:57:05.622Z",
 	"updatedBy": "claude-pm"
 }

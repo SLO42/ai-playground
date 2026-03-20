@@ -1,21 +1,17 @@
 import { defineConfig } from '@playwright/test';
 
 export default defineConfig({
-	webServer: {
-		command: 'npm run build && npm run preview',
-		port: 4173,
-		reuseExistingServer: true,
-		timeout: 60000
-	},
-	testDir: 'e2e',
-	testMatch: '**/*.test.ts',
+	testDir: './tests',
+	timeout: 15000,
+	retries: 0,
 	use: {
-		baseURL: 'http://localhost:4173'
+		baseURL: 'http://localhost:5173',
+		headless: true
 	},
-	projects: [
-		{
-			name: 'chromium',
-			use: { browserName: 'chromium' }
-		}
-	]
+	webServer: {
+		command: 'npm run dev',
+		port: 5173,
+		reuseExistingServer: true,
+		timeout: 30000
+	}
 });

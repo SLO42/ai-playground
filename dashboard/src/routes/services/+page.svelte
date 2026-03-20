@@ -60,7 +60,7 @@
 					<div class="flex items-center gap-3 min-w-0 flex-1">
 						<span class="w-2.5 h-2.5 rounded-full shrink-0 {statusDots[service.status]}"></span>
 						<div class="min-w-0">
-							<div class="text-sm font-medium text-text-primary">{service.name}</div>
+							<a href="/services/{service.id}" class="text-sm font-medium text-text-primary hover:text-accent-blue transition-colors">{service.name}</a>
 							<div class="text-xs text-text-secondary">{service.type}</div>
 							<div class="text-xs font-mono text-text-secondary truncate">{service.configPath}</div>
 						</div>
@@ -112,8 +112,8 @@
 							<button class="px-2 py-1 text-xs text-accent-yellow border border-accent-yellow/30 rounded hover:bg-accent-yellow/10 transition-colors">Force Restart</button>
 						{/if}
 
-						<button class="px-2 py-1 text-xs text-text-secondary border border-border rounded hover:bg-bg-tertiary transition-colors">Logs</button>
-						<button class="px-2 py-1 text-xs text-text-secondary border border-border rounded hover:bg-bg-tertiary transition-colors">Config</button>
+						<a href="/services/{service.id}/logs" class="px-2 py-1 text-xs text-text-secondary border border-border rounded hover:bg-bg-tertiary transition-colors">Logs</a>
+						<a href="/services/{service.id}/config" class="px-2 py-1 text-xs text-text-secondary border border-border rounded hover:bg-bg-tertiary transition-colors">Config</a>
 					</div>
 				</div>
 

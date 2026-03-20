@@ -38,15 +38,19 @@
 
 		try {
 			abortController = new AbortController();
+
+			// Build messages array: system context + conversation history (excluding the empty assistant placeholder)
+			const apiMessages = [
+				{ role: 'system' as const, content: `You are assisting with the project "${data.projectName}" located at ${data.projectPath}. Focus your answers on this project's codebase, tech stack, and tasks.` },
+				...messages.slice(0, assistantIdx)
+			];
+
 			const res = await fetch('/api/chat', {
 				method: 'POST',
 				headers: { 'Content-Type': 'application/json' },
 				body: JSON.stringify({
-					message: text,
-					provider: selectedProvider,
-					projectId: data.projectId,
-					projectPath: data.projectPath,
-					systemContext: `You are assisting with the project "${data.projectName}" located at ${data.projectPath}. Focus your answers on this project's codebase, tech stack, and tasks.`
+					messages: apiMessages,
+					provider: selectedProvider
 				}),
 				signal: abortController.signal
 			});

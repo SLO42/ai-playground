@@ -1,4 +1,3 @@
-import { readFile, writeFile, mkdir } from 'fs/promises';
 import { dirname, resolve } from 'path';
 import { mkdirSync } from 'fs';
 import Database from 'better-sqlite3';
@@ -161,7 +160,14 @@ function getDb(): Database.Database {
 		CREATE INDEX IF NOT EXISTS idx_decisions_agent ON decisions(agent);
 		CREATE INDEX IF NOT EXISTS idx_decisions_source ON decisions(source);
 		CREATE INDEX IF NOT EXISTS idx_decisions_session ON decisions(session_id);
+		CREATE INDEX IF NOT EXISTS idx_decisions_session_ts ON decisions(session_id, timestamp);
+		CREATE INDEX IF NOT EXISTS idx_decisions_tasktype_agent ON decisions(task_type, agent);
 	`);
+
+	// Retention: keep 30 days of routing decisions
+	const cutoff30d = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString();
+	const pruned = db.prepare('DELETE FROM decisions WHERE timestamp < ?').run(cutoff30d);
+	if (pruned.changes > 0) console.log(`[routing] Pruned ${pruned.changes} decisions older than 30 days`);
 
 	_db = db;
 
@@ -266,24 +272,6 @@ function rowToDecision(row: DecisionRow): RoutingDecision {
 	};
 }
 
-// ── JSON write-through (keeps legacy file in sync) ────────────────────
-
-const MAX_JSON_ENTRIES = 500;
-
-async function readJsonLog(): Promise<RoutingDecision[]> {
-	try {
-		const raw = await readFile(PATHS.routingLog, 'utf-8');
-		return JSON.parse(raw) as RoutingDecision[];
-	} catch {
-		return [];
-	}
-}
-
-async function writeJsonLog(entries: RoutingDecision[]): Promise<void> {
-	await mkdir(dirname(PATHS.routingLog), { recursive: true });
-	await writeFile(PATHS.routingLog, JSON.stringify(entries, null, '\t'), 'utf-8');
-}
-
 // ── Cost estimation (per 1K tokens, approximate) ───────────────────────
 
 const COST_PER_REQUEST: Record<string, number> = {
@@ -322,7 +310,7 @@ export async function logRoutingDecision(opts: {
 		...opts
 	};
 
-	// SQLite primary insert
+	// SQLite is the primary store — no JSON write-through
 	getInsertStmt().run({
 		id: entry.id,
 		timestamp: entry.timestamp,
@@ -337,14 +325,6 @@ export async function logRoutingDecision(opts: {
 		reason: entry.reason ?? null,
 		sessionId: entry.sessionId ?? null
 	});
-
-	// JSON write-through (fire-and-forget for backwards compat)
-	const jsonLog = await readJsonLog();
-	jsonLog.unshift(entry);
-	if (jsonLog.length > MAX_JSON_ENTRIES) {
-		jsonLog.length = MAX_JSON_ENTRIES;
-	}
-	await writeJsonLog(jsonLog);
 
 	return entry;
 }

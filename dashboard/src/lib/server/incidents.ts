@@ -73,6 +73,11 @@ function getDb(): Database.Database {
 		CREATE INDEX IF NOT EXISTS idx_incidents_created ON incidents(created_at);
 	`);
 
+	// Retention: keep resolved incidents for 90 days
+	const cutoff90d = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+	const pruned = db.prepare("DELETE FROM incidents WHERE status = 'resolved' AND resolved_at < ?").run(cutoff90d);
+	if (pruned.changes > 0) console.log(`[incidents] Pruned ${pruned.changes} resolved incidents older than 90 days`);
+
 	cachedDb = db;
 
 	// Migrate existing JSON data on first open

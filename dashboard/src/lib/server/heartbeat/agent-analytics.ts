@@ -5,10 +5,9 @@
  * Events are stored in .playground/agent-analytics.json and served via API
  * for the Models page visualization.
  */
-import { readFile, writeFile, mkdir } from 'fs/promises';
-import { resolve, dirname } from 'path';
+import { readFile } from 'fs/promises';
+import { resolve } from 'path';
 import { PATHS } from '../constants.js';
-import { withLock } from '../async-mutex.js';
 import { recordEventSql, getAgentAnalyticsSql, migrateFromJson } from './agent-analytics-sql.js';
 
 // ── Event types ──────────────────────────────────────────────────────
@@ -190,8 +189,6 @@ export interface AgentAnalytics {
 // ── Storage ──────────────────────────────────────────────────────────
 
 const ANALYTICS_PATH = resolve(PATHS.root, '.playground/agent-analytics.json');
-const MAX_EVENTS = 2000;
-
 // Use globalThis so HMR reloads share the same cache instead of duplicating it
 const _g = globalThis as Record<string, unknown>;
 let eventCache: AgentEvent[] | null = (_g.__claw_analytics_cache as AgentEvent[] | null) ?? null;
@@ -210,40 +207,14 @@ async function loadEvents(): Promise<AgentEvent[]> {
 	}
 }
 
-async function saveEvents(events: AgentEvent[]): Promise<void> {
-	const trimmed = events.length > MAX_EVENTS ? events.slice(-MAX_EVENTS) : events;
-	eventCache = trimmed;
-	_g.__claw_analytics_cache = trimmed;
-	try {
-		await mkdir(dirname(ANALYTICS_PATH), { recursive: true });
-		await writeFile(ANALYTICS_PATH, JSON.stringify(trimmed, null, '\t'), 'utf-8');
-	} catch { /* best effort */ }
-}
-
 // ── Record an event ──────────────────────────────────────────────────
-
-if (!('__claw_event_counter' in _g)) _g.__claw_event_counter = 0;
 
 // Migrate JSON events to SQLite on first load
 try { migrateFromJson(); } catch { /* best effort */ }
 
 export async function recordEvent(event: Omit<AgentEvent, 'id' | 'timestamp'>): Promise<void> {
-	// SQL primary — synchronous, fast
-	try { recordEventSql(event); } catch { /* fall through to JSON */ }
-
-	// JSON write-through for compatibility
-	await withLock(ANALYTICS_PATH, async () => {
-		const events = await loadEvents();
-		const counter = (_g.__claw_event_counter as number) + 1;
-		_g.__claw_event_counter = counter;
-		const id = `evt-${Date.now()}-${counter}`;
-		events.push({
-			id,
-			timestamp: new Date().toISOString(),
-			...event
-		} as AgentEvent);
-		await saveEvents(events);
-	});
+	// SQLite is the primary store — no JSON write-through
+	recordEventSql(event);
 }
 
 // ── Build analytics summary ──────────────────────────────────────────

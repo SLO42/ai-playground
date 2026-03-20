@@ -46,7 +46,15 @@ export function getAnalyticsDb(rootPath?: string): Database.Database {
 		CREATE INDEX IF NOT EXISTS idx_events_task ON events(task_id);
 		CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp);
 		CREATE INDEX IF NOT EXISTS idx_events_project ON events(project_id);
+		CREATE INDEX IF NOT EXISTS idx_events_type_ts ON events(type, timestamp);
+		CREATE INDEX IF NOT EXISTS idx_events_project_type ON events(project_id, type);
+		CREATE INDEX IF NOT EXISTS idx_events_task_type ON events(task_id, type);
 	`);
+
+	// Retention: keep 90 days of events
+	const cutoff90d = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000).toISOString();
+	const pruned = db.prepare('DELETE FROM events WHERE timestamp < ?').run(cutoff90d);
+	if (pruned.changes > 0) console.log(`[analytics] Pruned ${pruned.changes} events older than 90 days`);
 
 	cachedDb = db;
 	_g.__claw_analytics_db = db;

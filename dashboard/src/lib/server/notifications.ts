@@ -62,6 +62,11 @@ function getDb(): Database.Database {
 		CREATE INDEX IF NOT EXISTS idx_notif_created ON notifications(created_at);
 	`);
 
+	// Retention: keep 60 days of notifications
+	const cutoff60d = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000).toISOString();
+	const pruned = db.prepare('DELETE FROM notifications WHERE created_at < ?').run(cutoff60d);
+	if (pruned.changes > 0) console.log(`[notifications] Pruned ${pruned.changes} notifications older than 60 days`);
+
 	_db = db;
 
 	// Migrate existing JSON data on first open

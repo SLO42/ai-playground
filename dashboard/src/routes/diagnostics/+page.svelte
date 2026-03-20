@@ -62,4 +62,21 @@
 			</div>
 		{/each}
 	</div>
+
+	<!-- Data Stores -->
+	{#if data.databases?.length}
+		<div class="mt-8">
+			<h2 class="text-sm font-bold text-text-primary mb-3">Data Stores</h2>
+			<div class="space-y-1">
+				{#each data.databases as db}
+					<div class="flex items-center justify-between py-2 px-3 bg-bg-secondary rounded-lg">
+						<span class="text-sm text-text-primary">{db.name}</span>
+						<span class="text-xs text-text-secondary font-mono">
+							{db.exists ? `${db.sizeKB} KB` : 'not created'}
+						</span>
+					</div>
+				{/each}
+			</div>
+		</div>
+	{/if}
 </div>

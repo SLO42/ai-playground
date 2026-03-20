@@ -1,6 +1,9 @@
 import type { PageServerLoad } from './$types.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
+import { statSync } from 'fs';
+import { resolve } from 'path';
+import { PATHS } from '$lib/server/constants.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -132,5 +135,27 @@ export const load: PageServerLoad = async () => {
 		// Skip disk check on non-Windows or if wmic fails
 	}
 
-	return { checks };
+	// 8. SQLite databases
+	const dbFiles = [
+		{ name: 'Tasks', path: '.playground/tasks.db' },
+		{ name: 'Analytics', path: '.playground/analytics.db' },
+		{ name: 'Routing', path: '.playground/routing-telemetry.db' },
+		{ name: 'PID Registry', path: '.playground/pid-registry.db' },
+		{ name: 'Notifications', path: '.playground/notifications.db' },
+		{ name: 'Incidents', path: '.playground/incidents.db' },
+		{ name: 'Spawn Stats', path: '.playground/spawn-stats.db' },
+		{ name: 'PM Memory', path: '.playground/pm-memory.db' }
+	];
+
+	const databases = dbFiles.map((db) => {
+		const fullPath = resolve(PATHS.root, db.path);
+		try {
+			const stat = statSync(fullPath);
+			return { name: db.name, sizeKB: Math.round(stat.size / 1024), exists: true };
+		} catch {
+			return { name: db.name, sizeKB: 0, exists: false };
+		}
+	});
+
+	return { checks, databases };
 };

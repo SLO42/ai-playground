@@ -63,6 +63,21 @@
 		{/each}
 	</div>
 
+	<!-- Build Output -->
+	{#if data.buildInfo}
+		<div class="mt-8">
+			<h2 class="text-sm font-bold text-text-primary mb-3">Build Output</h2>
+			<div class="space-y-1">
+				<div class="flex items-center justify-between py-2 px-3 bg-bg-secondary rounded-lg">
+					<span class="text-sm text-text-primary">dashboard/build</span>
+					<span class="text-xs text-text-secondary font-mono">
+						{data.buildInfo.exists ? `${data.buildInfo.sizeMB} MB` : 'not built'}
+					</span>
+				</div>
+			</div>
+		</div>
+	{/if}
+
 	<!-- Data Stores -->
 	{#if data.databases?.length}
 		<div class="mt-8">

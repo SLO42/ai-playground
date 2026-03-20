@@ -1,8 +1,8 @@
 import type { PageServerLoad } from './$types.js';
 import { execFile } from 'child_process';
 import { promisify } from 'util';
-import { statSync } from 'fs';
-import { resolve } from 'path';
+import { statSync, readdirSync } from 'fs';
+import { resolve, join } from 'path';
 import { PATHS } from '$lib/server/constants.js';
 
 const execFileAsync = promisify(execFile);
@@ -157,5 +157,33 @@ export const load: PageServerLoad = async () => {
 		}
 	});
 
-	return { checks, databases };
+	// 9. Build output
+	const buildDir = resolve(PATHS.root, 'dashboard/build');
+	let buildInfo = { exists: false, sizeMB: 0 };
+	try {
+		statSync(buildDir);
+		// Recursively sum file sizes
+		function dirSize(dir: string): number {
+			let total = 0;
+			for (const entry of readdirSync(dir, { withFileTypes: true })) {
+				const full = join(dir, entry.name);
+				if (entry.isDirectory()) {
+					total += dirSize(full);
+				} else {
+					try {
+						total += statSync(full).size;
+					} catch {
+						/* skip unreadable files */
+					}
+				}
+			}
+			return total;
+		}
+		const bytes = dirSize(buildDir);
+		buildInfo = { exists: true, sizeMB: parseFloat((bytes / 1e6).toFixed(1)) };
+	} catch {
+		/* build dir does not exist */
+	}
+
+	return { checks, databases, buildInfo };
 };

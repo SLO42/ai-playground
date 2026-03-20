@@ -79,6 +79,15 @@
 			</div>
 		</div>
 
+		<!-- Token Efficiency Summary -->
+		{#if data.avgTokenEfficiency > 0}
+			<div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+				<MetricCard label="Token Efficiency" value="{(data.avgTokenEfficiency * 100).toFixed(1)}%" sublabel="output / input ratio (all models)" />
+				<MetricCard label="Total Input" value="{(data.efficiencyByModel.reduce((s, m) => s + m.inputTokens, 0)).toLocaleString()}" sublabel="tokens consumed" />
+				<MetricCard label="Total Output" value="{(data.efficiencyByModel.reduce((s, m) => s + m.outputTokens, 0)).toLocaleString()}" sublabel="tokens generated" />
+			</div>
+		{/if}
+
 		<!-- Available Models -->
 		<section>
 			<h2 class="type-section-title text-text-primary mb-4">Available Models</h2>

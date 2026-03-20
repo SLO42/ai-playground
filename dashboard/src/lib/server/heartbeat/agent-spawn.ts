@@ -59,13 +59,17 @@ export function extractTokenUsage(usage: {
 	inputTokens: number;
 	outputTokens: number;
 	costUsd: number;
+	efficiencyRatio: number;
 	model?: string;
 } {
-	if (!usage) return { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+	if (!usage) return { inputTokens: 0, outputTokens: 0, costUsd: 0, efficiencyRatio: 0 };
+	const input = usage.inputTokens ?? 0;
+	const output = usage.outputTokens ?? 0;
 	return {
-		inputTokens: usage.inputTokens ?? 0,
-		outputTokens: usage.outputTokens ?? 0,
+		inputTokens: input,
+		outputTokens: output,
 		costUsd: usage.costUsd ?? 0,
+		efficiencyRatio: input > 0 ? output / input : 0,
 		...(usage.model ? { model: usage.model } : {})
 	};
 }

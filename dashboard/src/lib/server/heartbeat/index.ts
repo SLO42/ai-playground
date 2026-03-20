@@ -316,8 +316,9 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 		// Track in PID registry (survives crashes/HMR)
 		registerPid(pid, `agent:${task.id}`, 'agent').catch(() => {});
 
-		// Analytics: spawned
-		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'spawned', provider: 'claude-code', model, modelTier, pid, maxTurns, sessionId: reportId, projectId: task._sourceProjectId }).catch(() => {});
+		// Analytics: spawned (budgetTokens = max input tokens before termination)
+		const budgetTokens = modelTier === 'sonnet' ? 150_000 : 200_000;
+		recordEvent({ taskId: task.id, taskTitle: task.title, type: 'spawned', provider: 'claude-code', model, modelTier, pid, maxTurns, budgetTokens, sessionId: reportId, projectId: task._sourceProjectId }).catch(() => {});
 
 		emit({ channel: 'heartbeat', type: 'agent_spawned', data: { taskId: task.id, model }, timestamp: new Date().toISOString() });
 
@@ -345,15 +346,20 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 			).catch(() => {});
 
 			// Analytics: completion/failure event
+			const inTok = parsed.usage?.inputTokens ?? 0;
+			const outTok = parsed.usage?.outputTokens ?? 0;
+			const tokenEfficiency = inTok > 0 ? outTok / inTok : 0;
 			recordEvent({
 				taskId: task.id, taskTitle: task.title,
 				type: code === 0 ? 'completed' : 'failed',
 				model, modelTier, provider: 'claude-code',
 				exitCode: code ?? undefined,
 				durationMs,
-				inputTokens: parsed.usage?.inputTokens ?? 0,
-				outputTokens: parsed.usage?.outputTokens ?? 0,
+				inputTokens: inTok,
+				outputTokens: outTok,
 				costUsd: parsed.usage?.costUsd ?? 0,
+				tokenEfficiency,
+				budgetTokens,
 				sessionId: rId,
 				projectId: task._sourceProjectId
 			}).catch(() => {});

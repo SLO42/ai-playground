@@ -194,6 +194,11 @@ export const load: PageServerLoad = async () => {
 		avgCostPerTask: stats.count > 0 ? stats.cost / stats.count : 0
 	}));
 
+	// Aggregate token efficiency: weighted average output/input ratio across all models
+	const totalIn = efficiencyByModel.reduce((s, m) => s + m.inputTokens, 0);
+	const totalOut = efficiencyByModel.reduce((s, m) => s + m.outputTokens, 0);
+	const avgTokenEfficiency = totalIn > 0 ? totalOut / totalIn : 0;
+
 	return {
 		ollamaModels,
 		runningModels,
@@ -204,6 +209,7 @@ export const load: PageServerLoad = async () => {
 		agentUsage,
 		topExpensiveTasks,
 		dailyCostTrend,
-		efficiencyByModel
+		efficiencyByModel,
+		avgTokenEfficiency
 	};
 };

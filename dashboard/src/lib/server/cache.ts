@@ -73,3 +73,73 @@ export function invalidateMemoryCaches(): void {
 	graphCache.invalidateAll();
 	projectMemoryCache.invalidateAll();
 }
+
+// ---------------------------------------------------------------------------
+// Functional TTL cache for +page.server.ts load functions
+// Uses globalThis to survive HMR reloads in dev
+// ---------------------------------------------------------------------------
+
+const _g = globalThis as Record<string, unknown>;
+const CACHE_KEY = '__claw_server_cache';
+
+function getStore(): Map<string, CacheEntry<unknown>> {
+	if (!_g[CACHE_KEY]) _g[CACHE_KEY] = new Map();
+	return _g[CACHE_KEY] as Map<string, CacheEntry<unknown>>;
+}
+
+/**
+ * Get a cached value, or compute and cache it if missing/expired.
+ * @param key - Cache key
+ * @param ttlMs - Time to live in milliseconds
+ * @param compute - Function to compute the value if not cached
+ */
+export async function cached<T>(key: string, ttlMs: number, compute: () => T | Promise<T>): Promise<T> {
+	const store = getStore();
+	const entry = store.get(key);
+
+	if (entry && entry.expires > Date.now()) {
+		return entry.value as T;
+	}
+
+	const value = await compute();
+	store.set(key, { value, expires: Date.now() + ttlMs });
+	return value;
+}
+
+/** Synchronous version for non-async computations */
+export function cachedSync<T>(key: string, ttlMs: number, compute: () => T): T {
+	const store = getStore();
+	const entry = store.get(key);
+
+	if (entry && entry.expires > Date.now()) {
+		return entry.value as T;
+	}
+
+	const value = compute();
+	store.set(key, { value, expires: Date.now() + ttlMs });
+	return value;
+}
+
+/** Invalidate a specific cache key */
+export function invalidate(key: string): void {
+	getStore().delete(key);
+}
+
+/** Invalidate all keys matching a prefix */
+export function invalidatePrefix(prefix: string): void {
+	const store = getStore();
+	for (const key of store.keys()) {
+		if (key.startsWith(prefix)) store.delete(key);
+	}
+}
+
+/** Clear entire cache (both LRU instances and functional store) */
+export function clearCache(): void {
+	getStore().clear();
+}
+
+/** Get cache stats for diagnostics */
+export function getCacheStats(): { entries: number; keys: string[] } {
+	const store = getStore();
+	return { entries: store.size, keys: [...store.keys()] };
+}

@@ -17,15 +17,21 @@ export async function GET({ params }) {
 
 		const [releases, bump] = await Promise.all([
 			listReleases(projectPath).catch(() => []),
-			determineBump(projectPath).catch(() => ({
-				current: '0.0.0',
-				major: '1.0.0',
-				minor: '0.1.0',
-				patch: '0.0.1'
-			}))
+			determineBump(projectPath).catch(() => null)
 		]);
 
-		return json({ releases, currentVersion: bump.current ?? '0.0.0' });
+		const current = bump?.current ?? '0.0.0';
+		const [maj = 0, min = 0, pat = 0] = current.replace(/^v/, '').split('.').map(Number);
+
+		return json({
+			releases,
+			currentVersion: current,
+			suggestedBump: {
+				major: `${maj + 1}.0.0`,
+				minor: `${maj}.${min + 1}.0`,
+				patch: `${maj}.${min}.${pat + 1}`
+			}
+		});
 	} catch {
 		return json({ releases: [], currentVersion: '0.0.0' });
 	}
@@ -68,13 +74,16 @@ export async function POST({ params, request }) {
 	try {
 		const { createGitHubRelease, bumpVersion } = await import('$lib/server/release-manager.js');
 
-		// createGitHubRelease(path, version, changelog, options?) — separate args, not an object
-		const releaseResult = await createGitHubRelease(
+		const result = await createGitHubRelease(
 			projectPath,
 			body.version,
 			body.changelog,
 			{ draft: body.draft ?? false, prerelease: body.prerelease ?? false }
-		).catch(() => null);
+		);
+
+		if (!result.success) {
+			throw error(422, result.error ?? 'Failed to create GitHub release');
+		}
 
 		// Bump version in package.json (best-effort, may not have one)
 		await bumpVersion(projectPath, body.version).catch(() => {});
@@ -82,9 +91,12 @@ export async function POST({ params, request }) {
 		return json({
 			success: true,
 			version: body.version,
-			release: releaseResult
+			url: result.url,
+			tagName: result.tagName
 		}, { status: 201 });
 	} catch (e) {
+		// Re-throw SvelteKit HttpErrors as-is
+		if (e && typeof e === 'object' && 'status' in e) throw e;
 		const message = e instanceof Error ? e.message : 'Release creation failed';
 		throw error(500, message);
 	}

@@ -7,11 +7,14 @@
  */
 import { readFile, writeFile } from 'fs/promises';
 import { resolve } from 'path';
-import { execSync } from 'child_process';
+import { execSync, execFile } from 'child_process';
+import { promisify } from 'util';
 import type { DetectedProjectMeta } from '$lib/types/projects.js';
 import type { PublisherConfig, ReleaseInfo, PublishResult } from './publishers/types.js';
 import { getPublisher, getPublishersForProject } from './publishers/registry.js';
 import { recordEvent } from './heartbeat/agent-analytics.js';
+
+const execFileAsync = promisify(execFile);
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -39,6 +42,14 @@ export interface BumpResult {
 	current: string;
 	next: string;
 	bumpType: 'major' | 'minor' | 'patch';
+}
+
+export interface ReleasePlatform {
+	id: string;
+	name: string;
+	available: boolean;
+	command?: string;
+	configFile?: string;
 }
 
 // ── Constants ──────────────────────────────────────────────────────────
@@ -69,7 +80,7 @@ function ghCli(args: string, cwd: string): string {
 	return execSync(`gh ${args}`, { ...EXEC_OPTS, cwd }).trim();
 }
 
-function isGhAvailable(cwd: string): boolean {
+export function isGhAvailable(cwd: string): boolean {
 	try {
 		execSync('gh --version', { ...EXEC_OPTS, cwd, timeout: 5_000 });
 		return true;
@@ -136,6 +147,139 @@ function parseCommit(subject: string, body: string, hash: string, date: string):
 		date,
 		breaking
 	};
+}
+
+// ── Platform Detection ────────────────────────────────────────────────
+
+/** Check whether a CLI command is available on the system PATH. */
+async function commandExists(cmd: string): Promise<boolean> {
+	try {
+		await execFileAsync(process.platform === 'win32' ? 'where' : 'which', [cmd]);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** Safely read a text file, returning null if it doesn't exist or can't be read. */
+async function safeReadFile(filePath: string): Promise<string | null> {
+	try {
+		return await readFile(filePath, 'utf-8');
+	} catch {
+		return null;
+	}
+}
+
+/** Safely check whether a file exists by attempting to read it. */
+async function fileExists(filePath: string): Promise<boolean> {
+	return (await safeReadFile(filePath)) !== null;
+}
+
+/**
+ * Detect available release platform targets for a project.
+ *
+ * Inspects the project directory for config files and checks whether
+ * the corresponding CLI tools are installed. Always includes GitHub
+ * as the baseline target.
+ */
+export async function getPlatformTargets(projectPath: string): Promise<ReleasePlatform[]> {
+	const platforms: ReleasePlatform[] = [];
+
+	// ── GitHub: always present, available if `gh` CLI exists ───────
+	const ghAvailable = await commandExists('gh');
+	platforms.push({
+		id: 'github',
+		name: 'GitHub Releases',
+		available: ghAvailable,
+		command: 'gh release create'
+	});
+
+	// ── npm: package.json with name and not private ───────────────
+	const pkgContent = await safeReadFile(resolve(projectPath, 'package.json'));
+	if (pkgContent) {
+		try {
+			const pkg = JSON.parse(pkgContent);
+			if (pkg.name && pkg.private !== true) {
+				const npmAvailable = await commandExists('npm');
+				platforms.push({
+					id: 'npm',
+					name: 'npm Registry',
+					available: npmAvailable,
+					command: 'npm publish',
+					configFile: 'package.json'
+				});
+			}
+		} catch { /* malformed package.json — skip npm */ }
+	}
+
+	// ── Thunderstore: thunderstore.toml exists ────────────────────
+	const hasThunderstoreToml = await fileExists(resolve(projectPath, 'thunderstore.toml'));
+	const hasThunderstoreManifest = await fileExists(resolve(projectPath, 'manifest.json'));
+	if (hasThunderstoreToml || hasThunderstoreManifest) {
+		const tcliAvailable = await commandExists('tcli');
+		platforms.push({
+			id: 'thunderstore',
+			name: 'Thunderstore',
+			available: tcliAvailable,
+			command: 'tcli publish',
+			configFile: hasThunderstoreToml ? 'thunderstore.toml' : 'manifest.json'
+		});
+	}
+
+	// ── CurseForge: .curseforge.json or gradle with curseforge block
+	const hasCurseforgeJson = await fileExists(resolve(projectPath, '.curseforge.json'));
+	let gradleContent = await safeReadFile(resolve(projectPath, 'build.gradle'));
+	if (!gradleContent) {
+		gradleContent = await safeReadFile(resolve(projectPath, 'build.gradle.kts'));
+	}
+	const gradleHasCurseforge = gradleContent ? /curseforge/i.test(gradleContent) : false;
+
+	if (hasCurseforgeJson || gradleHasCurseforge) {
+		// CurseForge publishing typically goes through gradle or a custom CLI
+		const configFile = hasCurseforgeJson ? '.curseforge.json' : 'build.gradle';
+		platforms.push({
+			id: 'curseforge',
+			name: 'CurseForge',
+			available: gradleHasCurseforge,
+			command: gradleHasCurseforge ? './gradlew curseforge' : undefined,
+			configFile
+		});
+	}
+
+	// ── Modrinth: modrinth.json or gradle with modrinth block ─────
+	const hasModrinthJson = await fileExists(resolve(projectPath, 'modrinth.json'));
+	const gradleHasModrinth = gradleContent ? /modrinth/i.test(gradleContent) : false;
+
+	if (hasModrinthJson || gradleHasModrinth) {
+		const configFile = hasModrinthJson ? 'modrinth.json' : 'build.gradle';
+		platforms.push({
+			id: 'modrinth',
+			name: 'Modrinth',
+			available: gradleHasModrinth,
+			command: gradleHasModrinth ? './gradlew modrinth' : undefined,
+			configFile
+		});
+	}
+
+	// ── Nexus Mods: .nexusmods.json (manual upload) ──────────────
+	const hasNexusJson = await fileExists(resolve(projectPath, '.nexusmods.json'));
+	if (hasNexusJson) {
+		platforms.push({
+			id: 'nexus',
+			name: 'Nexus Mods',
+			available: true, // manual upload — always "available"
+			configFile: '.nexusmods.json'
+		});
+	}
+
+	// Record analytics
+	recordEvent({
+		type: 'release_prepared',
+		targets: platforms.map((p) => p.id),
+		availableCount: platforms.filter((p) => p.available).length
+	}).catch(() => {});
+
+	return platforms;
 }
 
 // ── Public API ─────────────────────────────────────────────────────────
@@ -241,6 +385,7 @@ export async function bumpVersion(projectPath: string, newVersion: string): Prom
 
 /**
  * Create a GitHub release via the `gh` CLI.
+ * Uses execFile with array args to prevent shell injection.
  * Creates the git tag and GitHub release in a single command.
  */
 export async function createGitHubRelease(
@@ -248,33 +393,66 @@ export async function createGitHubRelease(
 	version: string,
 	changelog: string,
 	options?: { draft?: boolean; prerelease?: boolean }
-): Promise<{ url: string; tagName: string } | null> {
+): Promise<{ success: boolean; url?: string; tagName: string; error?: string }> {
+	const tagName = version.startsWith('v') ? version : `v${version}`;
+
+	if (!isGhAvailable(projectPath)) {
+		return {
+			success: false,
+			tagName,
+			error: 'GitHub CLI (gh) is not installed or not authenticated. Install it from https://cli.github.com/'
+		};
+	}
+
+	// Build args as an array — no shell interpolation, no injection risk
+	const args: string[] = [
+		'release', 'create', tagName,
+		'--title', tagName,
+		'--notes', changelog
+	];
+
+	if (options?.draft) args.push('--draft');
+	if (options?.prerelease) args.push('--prerelease');
+
 	try {
-		if (!isGhAvailable(projectPath)) return null;
-
-		const tagName = version.startsWith('v') ? version : `v${version}`;
-		const flags: string[] = [];
-
-		if (options?.draft) flags.push('--draft');
-		if (options?.prerelease) flags.push('--prerelease');
-
-		// Write changelog to a temp approach via --notes
-		// Escape double quotes in the changelog for shell safety
-		const safeNotes = changelog.replace(/"/g, '\\"');
-		const flagStr = flags.join(' ');
-
-		const output = ghCli(
-			`release create "${tagName}" --title "${tagName}" --notes "${safeNotes}" ${flagStr}`,
-			projectPath
-		);
+		const { stdout } = await execFileAsync('gh', args, {
+			cwd: projectPath,
+			timeout: 30_000,
+			windowsHide: true
+		});
 
 		// gh release create prints the release URL on success
-		const url = output.trim() || null;
+		const url = stdout.trim() || undefined;
 
-		return { url: url ?? '', tagName };
-	} catch {
-		return null;
+		recordEvent({
+			type: 'release_published',
+			target: 'github',
+			version: tagName,
+			draft: options?.draft ?? false,
+			prerelease: options?.prerelease ?? false
+		}).catch(() => {});
+
+		return { success: true, url, tagName };
+	} catch (e) {
+		const message = e instanceof Error ? e.message : String(e);
+		return { success: false, tagName, error: message };
 	}
+}
+
+/**
+ * Create a release: convenience wrapper matching the API contract.
+ */
+export async function createRelease(projectPath: string, options: {
+	version: string;
+	title?: string;
+	notes: string;
+	draft?: boolean;
+	prerelease?: boolean;
+}): Promise<{ success: boolean; url?: string; error?: string }> {
+	return createGitHubRelease(projectPath, options.version, options.notes, {
+		draft: options.draft,
+		prerelease: options.prerelease
+	});
 }
 
 /**

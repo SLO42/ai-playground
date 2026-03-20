@@ -1,6 +1,5 @@
 <script lang="ts">
 	import MetricCard from '$lib/components/MetricCard.svelte';
-	import { apiPost } from '$lib/api-client.js';
 	import { navigating } from '$app/stores';
 	import { notifications } from '$lib/stores/notifications.js';
 	import type { PageData } from './$types.js';
@@ -20,6 +19,7 @@
 	let isDraft = $state(false);
 	let isPrerelease = $state(false);
 	let creating = $state(false);
+	let releaseUrl = $state<string | null>(null);
 
 	// Expanded release cards
 	let expandedIds = $state<Set<string>>(new Set());
@@ -67,10 +67,14 @@
 
 	function openModal() {
 		customVersion = '';
-		changelog = '';
+		// Pre-fill changelog from generated notes if available
+		changelog = data.generatedNotes && data.generatedNotes !== 'No changes.'
+			? data.generatedNotes
+			: '';
 		bumpType = 'patch';
 		isDraft = false;
 		isPrerelease = false;
+		releaseUrl = null;
 		showModal = true;
 	}
 
@@ -90,27 +94,34 @@
 		error = null;
 
 		try {
-			const result = await apiPost<{ version: string }>(
-				`/api/projects/${data.projectId}/releases`,
-				{
+			const res = await fetch(`/api/projects/${data.projectId}/releases`, {
+				method: 'POST',
+				headers: { 'Content-Type': 'application/json' },
+				body: JSON.stringify({
 					version,
 					changelog: changelog.trim(),
 					draft: isDraft,
 					prerelease: isPrerelease
-				}
-			);
+				})
+			});
 
-			if (result) {
-				notifications.push('success', 'Release created', `v${result.version} has been created`);
-				showModal = false;
+			const result = await res.json();
 
-				// Refresh releases
-				const res = await fetch(`/api/projects/${data.projectId}/releases`);
-				if (res.ok) {
-					const refreshed = await res.json();
-					releases = refreshed.releases ?? [];
-					currentVersion = refreshed.currentVersion ?? currentVersion;
-				}
+			if (!res.ok) {
+				error = result.message ?? result.error ?? `Failed to create release (${res.status})`;
+				return;
+			}
+
+			releaseUrl = result.url ?? null;
+			notifications.push('success', 'Release created', `v${result.version} has been published`);
+			showModal = false;
+
+			// Refresh releases
+			const refreshRes = await fetch(`/api/projects/${data.projectId}/releases`);
+			if (refreshRes.ok) {
+				const refreshed = await refreshRes.json();
+				releases = refreshed.releases ?? [];
+				currentVersion = refreshed.currentVersion ?? currentVersion;
 			}
 		} catch (e) {
 			error = e instanceof Error ? e.message : 'Failed to create release';
@@ -140,6 +151,20 @@
 		</button>
 	</div>
 
+	<!-- gh CLI warning -->
+	{#if !data.hasGh}
+		<div class="flex items-center gap-3 px-4 py-3 rounded-lg bg-accent-yellow/10 border border-accent-yellow/20 text-accent-yellow text-sm">
+			<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+				<path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126z" />
+			</svg>
+			<span class="flex-1">
+				GitHub CLI (gh) not detected. Install it from
+				<a href="https://cli.github.com/" target="_blank" rel="noopener noreferrer" class="underline hover:text-accent-yellow/80">cli.github.com</a>
+				to create GitHub releases.
+			</span>
+		</div>
+	{/if}
+
 	<!-- Error Banner -->
 	{#if error}
 		<div class="flex items-center gap-3 px-4 py-3 rounded-lg bg-accent-red/10 border border-accent-red/20 text-accent-red text-sm">
@@ -148,6 +173,24 @@
 			</svg>
 			<span class="flex-1">{error}</span>
 			<button onclick={clearError} class="text-accent-red/70 hover:text-accent-red transition-colors">
+				<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+					<path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
+				</svg>
+			</button>
+		</div>
+	{/if}
+
+	<!-- Success Banner (after release creation) -->
+	{#if releaseUrl}
+		<div class="flex items-center gap-3 px-4 py-3 rounded-lg bg-accent-green/10 border border-accent-green/20 text-accent-green text-sm">
+			<svg class="w-4 h-4 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+				<path stroke-linecap="round" stroke-linejoin="round" d="M9 12.75L11.25 15 15 9.75M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+			</svg>
+			<span class="flex-1">
+				Release published successfully.
+				<a href={releaseUrl} target="_blank" rel="noopener noreferrer" class="underline hover:text-accent-green/80">View on GitHub</a>
+			</span>
+			<button onclick={() => (releaseUrl = null)} class="text-accent-green/70 hover:text-accent-green transition-colors">
 				<svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
 					<path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
 				</svg>
@@ -298,6 +341,16 @@
 				</button>
 			</div>
 			<form class="p-4 space-y-4" onsubmit={(e) => { e.preventDefault(); createRelease(); }}>
+				<!-- gh CLI warning inside modal -->
+				{#if !data.hasGh}
+					<div class="flex items-center gap-2 px-3 py-2 rounded bg-accent-yellow/10 border border-accent-yellow/20 text-accent-yellow text-xs">
+						<svg class="w-3.5 h-3.5 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24" stroke-width="2">
+							<path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126z" />
+						</svg>
+						<span>GitHub CLI not installed. Release creation will fail.</span>
+					</div>
+				{/if}
+
 				<!-- Bump Type -->
 				<div>
 					<label class="block text-xs text-text-secondary mb-1.5">Bump Type</label>
@@ -345,12 +398,23 @@
 
 				<!-- Changelog -->
 				<div>
-					<label class="block text-xs text-text-secondary mb-1" for="release-changelog">Changelog</label>
+					<div class="flex items-center justify-between mb-1">
+						<label class="block text-xs text-text-secondary" for="release-changelog">Release Notes</label>
+						{#if data.generatedNotes && data.generatedNotes !== 'No changes.'}
+							<button
+								type="button"
+								onclick={() => { changelog = data.generatedNotes; }}
+								class="text-[0.65rem] text-accent-blue hover:text-accent-blue/80 transition-colors"
+							>
+								Fill from commits
+							</button>
+						{/if}
+					</div>
 					<textarea
 						id="release-changelog"
 						bind:value={changelog}
 						placeholder="Describe what changed in this release..."
-						rows="6"
+						rows="8"
 						class="w-full bg-bg-primary border border-border rounded px-3 py-1.5 text-sm text-text-primary placeholder:text-text-secondary font-mono focus:outline-none focus:border-accent-blue resize-y"
 					></textarea>
 				</div>
@@ -386,7 +450,7 @@
 					</button>
 					<button
 						type="submit"
-						disabled={creating || !changelog.trim()}
+						disabled={creating || !changelog.trim() || !data.hasGh}
 						class="px-4 py-1.5 rounded text-xs font-medium bg-accent-blue/20 text-accent-blue hover:bg-accent-blue/30 transition-colors disabled:opacity-50"
 					>
 						{creating ? 'Creating...' : 'Create Release'}

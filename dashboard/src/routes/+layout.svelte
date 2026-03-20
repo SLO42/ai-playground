@@ -50,7 +50,7 @@
 	// Hide global sidebar when inside a project (project layout has its own nav)
 	// Matches /projects/[id] and /projects/[id]/anything — but NOT /projects, /projects/create, /projects/import
 	let isProjectRoute = $derived(
-		page.url.pathname.match(/^\/projects\/(?!create$|import$)[^/]+/) !== null
+		page.url.pathname.match(/^\/projects\/(?!create$|create-ai$|import$)[^/]+/) !== null
 	);
 
 	function dismissToast(id: string) {

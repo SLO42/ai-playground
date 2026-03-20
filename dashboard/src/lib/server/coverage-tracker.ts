@@ -8,6 +8,7 @@ import { resolve, dirname } from 'path';
 import { PATHS } from './constants.js';
 import { withLock } from './async-mutex.js';
 import { createIncident } from './incidents.js';
+import { recordEvent } from './heartbeat/agent-analytics.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -201,6 +202,14 @@ export async function storeCoverageReport(report: CoverageReport): Promise<void>
 
 		await writeTrends(trimmed);
 
+		// Fire coverage collected analytics event
+		recordEvent({
+			type: 'coverage_collected',
+			percentage: report.lines.percentage,
+			target: report.source,
+			projectId: report.projectId
+		}).catch(() => {});
+
 		// Detect regression
 		if (previous && previous.lines.percentage - report.lines.percentage >= REGRESSION_THRESHOLD_PCT) {
 			const drop = Math.round((previous.lines.percentage - report.lines.percentage) * 100) / 100;
@@ -222,6 +231,13 @@ export async function storeCoverageReport(report: CoverageReport): Promise<void>
 					drop,
 					source: report.source
 				}
+			}).catch(() => {});
+
+			recordEvent({
+				type: 'coverage_regression_detected',
+				percentage: report.lines.percentage,
+				target: report.projectId,
+				reason: `dropped from ${previous.lines.percentage}% to ${report.lines.percentage}%`
 			}).catch(() => {});
 		}
 	});

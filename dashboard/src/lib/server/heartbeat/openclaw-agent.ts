@@ -106,23 +106,40 @@ interface OllamaResponse {
 	message?: { content?: string; role?: string };
 	done?: boolean;
 	error?: string;
+	// Token usage fields returned by Ollama API
+	prompt_eval_count?: number;
+	eval_count?: number;
+	total_duration?: number;
+}
+
+/** Result from OpenClaw/Ollama query, including token counts when available. */
+interface QueryResult {
+	content: string;
+	inputTokens: number;
+	outputTokens: number;
 }
 
 /** Run a prompt through the OpenClaw gateway (falls back to direct Ollama). */
-async function queryOpenClaw(messages: Array<{ role: string; content: string }>, sessionKey?: string): Promise<string> {
+async function queryOpenClaw(messages: Array<{ role: string; content: string }>, sessionKey?: string): Promise<QueryResult> {
 	const prompt = messages
 		.map(m => m.role === 'system' ? `[System] ${m.content}` : m.content)
 		.join('\n\n');
 
 	try {
-		return await queryGateway(prompt, sessionKey);
+		const content = await queryGateway(prompt, sessionKey);
+		// Gateway doesn't return token counts — estimate from text length
+		return { content, inputTokens: 0, outputTokens: 0 };
 	} catch {
 		return queryOllamaFallback(messages);
 	}
 }
 
-/** Direct Ollama fallback when gateway is unavailable. */
-async function queryOllamaFallback(messages: Array<{ role: string; content: string }>): Promise<string> {
+/** Direct Ollama fallback when gateway is unavailable. Returns content + token counts. */
+async function queryOllamaFallback(messages: Array<{ role: string; content: string }>): Promise<{
+	content: string;
+	inputTokens: number;
+	outputTokens: number;
+}> {
 	const res = await fetch(`${APIS.ollama}/api/chat`, {
 		method: 'POST',
 		headers: { 'Content-Type': 'application/json' },
@@ -140,7 +157,11 @@ async function queryOllamaFallback(messages: Array<{ role: string; content: stri
 	}
 
 	const data = await res.json() as OllamaResponse;
-	return data.message?.content ?? '';
+	return {
+		content: data.message?.content ?? '',
+		inputTokens: data.prompt_eval_count ?? 0,
+		outputTokens: data.eval_count ?? 0
+	};
 }
 
 // ── Escalation Check ─────────────────────────────────────────────────
@@ -157,7 +178,7 @@ export async function shouldEscalate(task: Task): Promise<{ escalate: boolean; r
 
 	// Double-check with the model for borderline cases
 	try {
-		const response = await queryOpenClaw([
+		const { content } = await queryOpenClaw([
 			{
 				role: 'system',
 				content: 'You are a task router. Respond with ONLY "local" or "escalate" followed by a brief reason. "local" means the task is analysis/discussion/review that doesn\'t need file editing. "escalate" means the task requires writing/editing code files, running builds, or git operations.'
@@ -168,11 +189,11 @@ export async function shouldEscalate(task: Task): Promise<{ escalate: boolean; r
 			}
 		], `route-${task.id}`);
 
-		const lower = response.toLowerCase().trim();
+		const lower = content.toLowerCase().trim();
 		if (lower.startsWith('escalate')) {
-			return { escalate: true, reason: response.slice(0, 100) };
+			return { escalate: true, reason: content.slice(0, 100) };
 		}
-		return { escalate: false, reason: response.slice(0, 100) };
+		return { escalate: false, reason: content.slice(0, 100) };
 	} catch {
 		return { escalate: true, reason: 'openclaw gateway unreachable — escalating to Claude Code' };
 	}
@@ -242,7 +263,7 @@ Explore the relevant project(s), read key files, and produce a context brief tha
 			}
 		], `context-${task.id}`);
 
-		return context || null;
+		return context.content || null;
 	} catch (err) {
 		// Context gathering is best-effort — don't block task execution
 		return null;
@@ -257,7 +278,7 @@ Explore the relevant project(s), read key files, and produce a context brief tha
  */
 export async function updateMemoryFromResult(task: Task, result: string): Promise<void> {
 	try {
-		const learning = await queryOpenClaw([
+		const { content: learning } = await queryOpenClaw([
 			{
 				role: 'system',
 				content: `You are a memory curator. Given a completed task and its result, extract key learnings that future agents should know. Return ONLY a JSON object with these fields:
@@ -340,7 +361,7 @@ async function runOpenClawTask(
 	}
 
 	try {
-		const response = await queryOpenClaw([
+		const { content: response, inputTokens, outputTokens } = await queryOpenClaw([
 			{
 				role: 'system',
 				content: `You are Claw, an autonomous AI agent with tool access (file read/write, exec) via the OpenClaw gateway. You can explore the filesystem at ${WORKSPACE_ROOT}, read files, and execute commands. Respond concisely and actionably. When the task involves analysis or context gathering, USE YOUR TOOLS to read actual files and explore the codebase — don't guess.`
@@ -353,12 +374,17 @@ async function runOpenClawTask(
 		log(session, response, sender);
 		log(session, `**Routed**: OpenClaw gateway (local + tools, $0) — ${(durationMs / 1000).toFixed(1)}s`, sender);
 
-		// Analytics: OpenClaw completion
+		// I/O previews for analytics
+		const promptPreview = prompt.slice(0, 500);
+		const responsePreview = response.length > 500 ? response.slice(-500) : response;
+
+		// Analytics: OpenClaw completion (with token counts from Ollama fallback when available)
 		recordEvent({
 			taskId: task.id, taskTitle: task.title,
 			type: 'completed',
 			model: DEFAULT_MODEL, modelTier: 'local', provider: 'openclaw',
-			durationMs, costUsd: 0, inputTokens: 0, outputTokens: 0,
+			durationMs, costUsd: 0, inputTokens, outputTokens,
+			promptPreview, responsePreview,
 			sessionId: reportId,
 			projectId: task._sourceProjectId
 		}).catch(() => {});

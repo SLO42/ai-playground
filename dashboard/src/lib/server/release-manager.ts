@@ -11,6 +11,7 @@ import { execSync } from 'child_process';
 import type { DetectedProjectMeta } from '$lib/types/projects.js';
 import type { PublisherConfig, ReleaseInfo, PublishResult } from './publishers/types.js';
 import { getPublisher, getPublishersForProject } from './publishers/registry.js';
+import { recordEvent } from './heartbeat/agent-analytics.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -176,6 +177,8 @@ export async function generateChangelog(
 			if (entry) entries.push(entry);
 		}
 
+		recordEvent({ type: 'changelog_generated', count: entries.length }).catch(() => {});
+
 		return entries;
 	} catch {
 		return [];
@@ -211,11 +214,15 @@ export async function determineBump(
 			}
 		}
 
-		return {
+		const bump: BumpResult = {
 			current,
 			next: incrementVersion(current, bumpType),
 			bumpType
 		};
+
+		recordEvent({ type: 'release_prepared', version: current, bumpType }).catch(() => {});
+
+		return bump;
 	} catch {
 		return null;
 	}
@@ -450,7 +457,7 @@ export async function publishRelease(
 		})
 	);
 
-	return results.map((result, i) => {
+	const mapped = results.map((result, i) => {
 		if (result.status === 'fulfilled') return result.value;
 		return {
 			success: false,
@@ -458,4 +465,10 @@ export async function publishRelease(
 			platform: publishers[i].id
 		};
 	});
+
+	for (const r of mapped) {
+		recordEvent({ type: 'release_published', target: r.platform, version: release.version }).catch(() => {});
+	}
+
+	return mapped;
 }

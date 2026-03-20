@@ -6,6 +6,7 @@ import { spawn } from 'child_process';
 import { readFile } from 'fs/promises';
 import { resolve } from 'path';
 import { PATHS, SERVICES } from './constants.js';
+import { recordEvent } from './heartbeat/agent-analytics.js';
 
 export interface ServiceStartResult {
 	service: string;
@@ -165,6 +166,11 @@ export async function startService(
 	// Brief delay then health check
 	await delay(1500);
 	result.healthy = await healthCheck(id, 3);
+
+	if (result.started && result.healthy) {
+		recordEvent({ type: 'service_started', serviceName: id, pid: result.pid }).catch(() => {});
+	}
+
 	return result;
 }
 

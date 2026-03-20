@@ -3,6 +3,7 @@ import { resolve, join } from 'path';
 import type { Task } from '$lib/types/tasks.js';
 import crypto from 'crypto';
 import { withLock } from './async-mutex.js';
+import { recordEvent } from './heartbeat/agent-analytics.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -164,6 +165,10 @@ export async function createTask(projectPath: string, data: {
 		index.tasks.push(toIndexEntry(task));
 		await writeIndex(projectPath, index);
 
+		if (task.blockedBy?.length) {
+			recordEvent({ taskId: task.id, taskTitle: task.title, type: 'task_dependency_created', count: task.blockedBy.length }).catch(() => {});
+		}
+
 		return task;
 	});
 }
@@ -211,6 +216,19 @@ export async function updateTask(projectPath: string, taskId: string, updates: P
 		// Update index
 		index.tasks[entryIdx] = toIndexEntry(task);
 		await writeIndex(projectPath, index);
+
+		// Track dependency resolution when a task is completed/cancelled
+		if (updates.status === 'completed' || updates.status === 'cancelled') {
+			const allTasks = await Promise.all(
+				index.tasks.map((e) => readJson<Task>(taskFilePath(projectPath, e.bucket, e.id)))
+			);
+			const unblockedCount = allTasks.filter(
+				(t): t is Task => t !== null && !!t.blockedBy?.includes(taskId)
+			).length;
+			if (unblockedCount > 0) {
+				recordEvent({ taskId: task.id, taskTitle: task.title, type: 'task_dependency_resolved', count: unblockedCount }).catch(() => {});
+			}
+		}
 
 		return task;
 	});

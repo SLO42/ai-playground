@@ -195,7 +195,7 @@
 				"phase": "ms-core",
 				"status": "done",
 				"description": "Track every agent decision point with cost/token metrics",
-				"evidence": "heartbeat/agent-analytics.ts — classification, model selection, escalation, completion events; .playground/agent-analytics.json; powers Models page",
+				"evidence": "Sprint 3 completed: 13 tasks wired recordEvent across 16 modules + reports page",
 				"priority": "high",
 				"effort": "medium"
 			},
@@ -604,7 +604,9 @@
 					"status": "todo",
 					"effort": "tiny",
 					"description": "Heartbeat already skips blocked tasks (index.ts:157-162). task-store.ts has getBlockedStatus() (line 242) and accepts blockedBy in create/update. UI has newBlockedBy state + blockerCandidates derived list. ONLY MISSING: the actual picker widget (multi-select dropdown) in the task modal that lets users select from blockerCandidates.",
-					"files": ["dashboard/src/routes/projects/[id]/tasks/+page.svelte"],
+					"files": [
+						"dashboard/src/routes/projects/[id]/tasks/+page.svelte"
+					],
 					"verify": "npm run build && navigate to /projects/ai-playground/tasks, create task with dependency, verify blocked task shows status"
 				},
 				{
@@ -614,7 +616,9 @@
 					"status": "todo",
 					"effort": "small",
 					"description": "Release page modal exists with version picker, changelog field, draft/prerelease flags, and createRelease() function that POSTs to /api/projects/:id/releases. The endpoint doesn't exist yet. Create +server.ts that calls release-manager.ts generateChangelog() and publishRelease(). Pattern: copy from /api/projects/[id]/tasks/+server.ts.",
-					"files": ["dashboard/src/routes/api/projects/[id]/releases/+server.ts"],
+					"files": [
+						"dashboard/src/routes/api/projects/[id]/releases/+server.ts"
+					],
 					"verify": "npm run build && navigate to /projects/ai-playground/releases, click Create Release, verify modal submits and release appears"
 				},
 				{
@@ -624,7 +628,9 @@
 					"status": "todo",
 					"effort": "tiny",
 					"description": "WORKSPACE_ROOT already configurable via PLAYGROUND_WORKSPACE env var. WORKSPACE_ROOTS supports multiple via PLAYGROUND_WORKSPACES. No hardcoded F:/code found in source. Task: verify with grep, document env vars in .env.example, mark feature as done.",
-					"files": [".env.example"],
+					"files": [
+						".env.example"
+					],
 					"verify": "grep -r 'F:[/\\\\]' dashboard/src/ (should return 0 matches) && npm run build"
 				},
 				{
@@ -634,7 +640,11 @@
 					"status": "todo",
 					"effort": "small",
 					"description": "Service detail +page.server.ts already loads from SERVICES const by ID with health checks, PID, RAM. Valid IDs: 'ollama', 'openclaw', 'claude-flow', 'penpot-mcp'. Pages 404 because service lookup fails. Check if the server code returns properly or if +page.svelte needs error handling. Wire config sub-page to read service configPath, logs sub-page to tail log files.",
-					"files": ["dashboard/src/routes/services/[id]/+page.svelte", "dashboard/src/routes/services/[id]/config/+page.svelte", "dashboard/src/routes/services/[id]/logs/+page.svelte"],
+					"files": [
+						"dashboard/src/routes/services/[id]/+page.svelte",
+						"dashboard/src/routes/services/[id]/config/+page.svelte",
+						"dashboard/src/routes/services/[id]/logs/+page.svelte"
+					],
 					"verify": "npm run build && navigate to /services/ollama, /services/openclaw — verify they load with status"
 				},
 				{
@@ -644,7 +654,9 @@
 					"status": "todo",
 					"effort": "tiny",
 					"description": "Project overview +page.server.ts line 28 hardcodes status: 'offline' for all services. The project services page (/projects/[id]/services/+page.server.ts lines 32-42) already has checkHealth() with fetch + AbortSignal.timeout(2000). Copy that pattern to the overview page. 3 lines of code.",
-					"files": ["dashboard/src/routes/projects/[id]/+page.server.ts"],
+					"files": [
+						"dashboard/src/routes/projects/[id]/+page.server.ts"
+					],
 					"verify": "npm run build && navigate to /projects/ai-playground — verify services show 'running' or 'stopped' instead of 'offline'"
 				}
 			]
@@ -653,17 +665,20 @@
 			"id": "sprint-2",
 			"name": "Polish & Verify",
 			"phase": "ms-release",
-			"status": "planned",
+			"status": "completed",
 			"goal": "Verify all done features meet DoD, fix any gaps found by Playwright/analytics audit, prepare for release",
 			"tasks": [
 				{
 					"id": "task-s2-01",
 					"feature": null,
 					"title": "Full Playwright smoke test suite for all 42 pages",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Create a Playwright test file at tests/smoke.spec.ts that visits all 42 routes and asserts: page loads (200), key heading renders, no console errors. Use the Playwright MCP browser tools or @playwright/test. Route list: /, /about, /agents, /agents/create, /apps, /channels, /chat, /hooks, /inbox, /memory, /models, /notifications, /projects, /projects/create, /projects/import, /reports, /security, /services, /services/new, /sessions, /settings, /tasks, plus /projects/ai-playground and all 16 sub-routes. Add to CI workflow (.github/workflows/ci.yml).",
-					"files": ["tests/smoke.spec.ts", ".github/workflows/ci.yml"],
+					"files": [
+						"tests/smoke.spec.ts",
+						".github/workflows/ci.yml"
+					],
 					"verify": "npx playwright test tests/smoke.spec.ts"
 				},
 				{
@@ -704,143 +719,179 @@
 			"id": "sprint-3",
 			"name": "Analytics Wiring",
 			"phase": "ms-core",
-			"status": "planned",
+			"status": "completed",
 			"goal": "Every agent lifecycle event is logged — every handoff, start, thought, token usage, input, output. Reports depend on complete observability.",
 			"tasks": [
 				{
 					"id": "task-s3-01",
 					"feature": "feat-analytics",
 					"title": "Review Agent analytics — spawn, findings, escalation, completion",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Import recordEvent from agent-analytics.ts. Add calls at: spawn point (review_spawned with trigger reason), findings parsed (review_findings with count/severity), escalation decision (review_escalated from Ollama to Claude), completion (review_completed with duration/tokens). Pattern: see agent-spawn.ts for existing recordEvent calls.",
-					"files": ["dashboard/src/lib/server/heartbeat/review-agent.ts", "dashboard/src/lib/server/heartbeat/agent-analytics.ts"],
+					"files": [
+						"dashboard/src/lib/server/heartbeat/review-agent.ts",
+						"dashboard/src/lib/server/heartbeat/agent-analytics.ts"
+					],
 					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/heartbeat/review-agent.ts (should be 4+)"
 				},
 				{
 					"id": "task-s3-02",
 					"feature": "feat-analytics",
 					"title": "Task dependency events — created, resolved, blocked",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Add recordEvent calls in task-store.ts: when blockedBy is set in createTask/updateTask (task_dependency_created), when a task completes and unblocks others (task_dependency_resolved), in heartbeat/index.ts when a task is skipped due to blockers (task_blocked).",
-					"files": ["dashboard/src/lib/server/task-store.ts", "dashboard/src/lib/server/heartbeat/index.ts"],
+					"files": [
+						"dashboard/src/lib/server/task-store.ts",
+						"dashboard/src/lib/server/heartbeat/index.ts"
+					],
 					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/task-store.ts (should be 2+)"
 				},
 				{
 					"id": "task-s3-03",
 					"feature": "feat-analytics",
 					"title": "PM System analytics — agent spawn, sync, task planning",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Add recordEvent calls in project-manager.ts: bootstrapProjectManager (pm_spawned), syncToGitHubBoard (pm_sync_completed with items count), reviewProjectPlan (pm_reviewed with observations count). Also in the PM chat API endpoint when Claude responds (pm_chat with token count).",
-					"files": ["dashboard/src/lib/server/project-manager.ts", "dashboard/src/routes/api/projects/[id]/pm/+server.ts"],
+					"files": [
+						"dashboard/src/lib/server/project-manager.ts",
+						"dashboard/src/routes/api/projects/[id]/pm/+server.ts"
+					],
 					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/project-manager.ts (should be 3+)"
 				},
 				{
 					"id": "task-s3-04",
 					"feature": "feat-analytics",
 					"title": "Memory Guardian analytics — consolidation, drift, cleanup",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Add recordEvent calls in memory-guardian.ts at: start of consolidation run, when drift threshold crossed, when entries pruned (with count), when consolidation completes (with duration).",
-					"files": ["dashboard/src/lib/server/heartbeat/memory-guardian.ts"],
+					"files": [
+						"dashboard/src/lib/server/heartbeat/memory-guardian.ts"
+					],
 					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/heartbeat/memory-guardian.ts (should be 3+)"
 				},
 				{
 					"id": "task-s3-05",
 					"feature": "feat-analytics",
 					"title": "Release Manager analytics — prep, publish, changelog",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Add recordEvent calls in release-manager.ts: determineBump (release_prepared with version/bump type), generateChangelog (changelog_generated with entry count), publishRelease (release_published with target). Also in release-agent.ts for agent-driven releases.",
-					"files": ["dashboard/src/lib/server/release-manager.ts", "dashboard/src/lib/server/heartbeat/release-agent.ts"],
+					"files": [
+						"dashboard/src/lib/server/release-manager.ts",
+						"dashboard/src/lib/server/heartbeat/release-agent.ts"
+					],
 					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/release-manager.ts (should be 3+)"
 				},
 				{
 					"id": "task-s3-06",
 					"feature": "feat-analytics",
 					"title": "Settings & config change tracking",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Add recordEvent call in the settings PUT handler at dashboard/src/routes/api/projects/[id]/settings/+server.ts. Log settings_saved with the keys that changed (diff old vs new). Also track model routing changes in model-routing-settings.ts.",
-					"files": ["dashboard/src/routes/api/projects/[id]/settings/+server.ts", "dashboard/src/lib/server/model-routing-settings.ts"],
+					"files": [
+						"dashboard/src/routes/api/projects/[id]/settings/+server.ts",
+						"dashboard/src/lib/server/model-routing-settings.ts"
+					],
 					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/routes/api/projects/[id]/settings/+server.ts (should be 1+)"
 				},
 				{
 					"id": "task-s3-07",
 					"feature": "feat-analytics",
 					"title": "GitHub Sync analytics — push, pull, failures",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Add recordEvent calls in github-sync.ts: after pull (github_sync_pull with count), after push (github_sync_push with count), on failure (github_sync_failed with reason).",
-					"files": ["dashboard/src/lib/server/github-sync.ts"],
+					"files": [
+						"dashboard/src/lib/server/github-sync.ts"
+					],
 					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/github-sync.ts (should be 3+)"
 				},
 				{
 					"id": "task-s3-08",
 					"feature": "feat-analytics",
 					"title": "Dependency Health analytics — audit runs, vulnerabilities",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Add recordEvent calls in dependency-health.ts: when audit starts (dependency_audit_started with project type), when vulnerability found (vulnerability_found with severity/package), when audit completes (dependency_audit_completed with total count).",
-					"files": ["dashboard/src/lib/server/heartbeat/dependency-health.ts"],
+					"files": [
+						"dashboard/src/lib/server/heartbeat/dependency-health.ts"
+					],
 					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/heartbeat/dependency-health.ts (should be 3+)"
 				},
 				{
 					"id": "task-s3-09",
 					"feature": "feat-analytics",
 					"title": "Coverage Tracking analytics — collection, regression",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Add recordEvent calls in coverage-tracker.ts: when coverage collected (coverage_collected with percentage/format), when regression detected (coverage_regression_detected with old%/new%), when trend updated (coverage_trend_updated with direction).",
-					"files": ["dashboard/src/lib/server/heartbeat/coverage-tracker.ts"],
+					"files": [
+						"dashboard/src/lib/server/heartbeat/coverage-tracker.ts"
+					],
 					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/heartbeat/coverage-tracker.ts (should be 2+)"
 				},
 				{
 					"id": "task-s3-10",
 					"feature": "feat-analytics",
 					"title": "Service lifecycle analytics — start, restart, health",
-					"status": "todo",
+					"status": "done",
 					"effort": "small",
 					"description": "Add recordEvent calls in service-starter.ts (service_started with name/method) and auto-restart.ts (auto_restart_triggered with name/reason/attempt, auto_restart_result with success/fail/duration).",
-					"files": ["dashboard/src/lib/server/heartbeat/service-starter.ts", "dashboard/src/lib/server/heartbeat/auto-restart.ts"],
+					"files": [
+						"dashboard/src/lib/server/heartbeat/service-starter.ts",
+						"dashboard/src/lib/server/heartbeat/auto-restart.ts"
+					],
 					"verify": "npm run build && grep -c 'recordEvent' dashboard/src/lib/server/heartbeat/auto-restart.ts (should be 2+)"
 				},
 				{
 					"id": "task-s3-11",
 					"feature": "feat-analytics",
 					"title": "Token usage tracking on all agent interactions",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "In agent-spawn.ts, parse Claude Code CLI output for token usage (look for 'input_tokens', 'output_tokens' in stream). In openclaw-agent.ts, capture token counts from response headers. Record with each 'completed' event: {input_tokens, output_tokens, total_cost, model_used, duration_ms}. Update the 'completed' recordEvent call to include these fields.",
-					"files": ["dashboard/src/lib/server/heartbeat/agent-spawn.ts", "dashboard/src/lib/server/heartbeat/openclaw-agent.ts", "dashboard/src/lib/server/heartbeat/agent-analytics.ts"],
+					"files": [
+						"dashboard/src/lib/server/heartbeat/agent-spawn.ts",
+						"dashboard/src/lib/server/heartbeat/openclaw-agent.ts",
+						"dashboard/src/lib/server/heartbeat/agent-analytics.ts"
+					],
 					"verify": "npm run build && grep 'input_tokens\\|output_tokens\\|total_cost' dashboard/src/lib/server/heartbeat/agent-spawn.ts (should match)"
 				},
 				{
 					"id": "task-s3-12",
 					"feature": "feat-analytics",
 					"title": "Agent I/O logging — prompt sent, response received",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "In agent-spawn.ts, capture the prompt sent to the agent (from context-loader output) and truncate to 500 chars. On completion, capture the agent's final output summary (last 500 chars of stdout). Store both in the 'spawned' and 'completed' events as {prompt_preview, response_preview}. Full I/O remains in .playground/chats/ session files.",
-					"files": ["dashboard/src/lib/server/heartbeat/agent-spawn.ts"],
+					"files": [
+						"dashboard/src/lib/server/heartbeat/agent-spawn.ts"
+					],
 					"verify": "npm run build && grep 'prompt_preview\\|response_preview' dashboard/src/lib/server/heartbeat/agent-spawn.ts (should match)"
 				},
 				{
 					"id": "task-s3-13",
 					"feature": "feat-analytics",
 					"title": "Reports page wiring — verify all event types power reports",
-					"status": "todo",
+					"status": "done",
 					"effort": "medium",
 					"description": "Read dashboard/src/lib/server/reports.ts and dashboard/src/routes/reports/+page.server.ts. Check which analytics event types have corresponding report sections. For new event types added in tasks s3-01 through s3-12 (review_*, task_dependency_*, pm_*, memory_*, release_*, settings_*, github_sync_*, dependency_*, coverage_*, service_*, token usage), add report generation logic in reports.ts and chart/table sections in +page.svelte.",
-					"files": ["dashboard/src/lib/server/reports.ts", "dashboard/src/routes/reports/+page.server.ts", "dashboard/src/routes/reports/+page.svelte"],
+					"files": [
+						"dashboard/src/lib/server/reports.ts",
+						"dashboard/src/routes/reports/+page.server.ts",
+						"dashboard/src/routes/reports/+page.svelte"
+					],
 					"verify": "npm run build && navigate to /reports — verify new event categories appear in report options"
 				}
 			]
 		}
 	],
-	"activeSprint": "sprint-2",
+	"activeSprint": "sprint-3",
 	"decisions": [
 		{
 			"id": "dec-001",
@@ -892,6 +943,6 @@
 			"status": "accepted"
 		}
 	],
-	"lastUpdated": "2026-03-20T03:30:00.000Z",
+	"lastUpdated": "2026-03-20T03:55:13.804Z",
 	"updatedBy": "pm-session"
 }

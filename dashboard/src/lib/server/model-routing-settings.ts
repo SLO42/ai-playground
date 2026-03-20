@@ -1,6 +1,7 @@
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { dirname } from 'path';
 import { PATHS } from './constants.js';
+import { recordEvent } from './heartbeat/agent-analytics.js';
 
 export type RoutingStrategy = 'local-first' | 'cloud-first' | 'round-robin' | 'manual';
 
@@ -35,6 +36,7 @@ export async function saveModelRoutingSettings(settings: ModelRoutingSettings, f
 	const target = filePath ?? PATHS.modelRoutingSettings;
 	await mkdir(dirname(target), { recursive: true });
 	await writeFile(target, JSON.stringify(settings, null, '\t'), 'utf-8');
+	recordEvent({ type: 'model_routing_changed', target: settings.strategy }).catch(() => {});
 }
 
 /** Round-robin state (in-memory, resets on restart) */

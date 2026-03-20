@@ -20,6 +20,7 @@ import {
 	trimSession, log, CLAW_SENDER
 } from './shared.js';
 import { unregisterPid } from './pid-registry.js';
+import { recordEvent } from './agent-analytics.js';
 import type { ChatSession } from '$lib/types/chat.js';
 
 // ── Configuration ────────────────────────────────────────────────────
@@ -88,6 +89,9 @@ export async function runMemoryGuardian(
 		return null;
 	}
 
+	const startTime = Date.now();
+	recordEvent({ type: 'memory_consolidation_started' }).catch(() => {});
+
 	const report: GuardianReport = {
 		agentsChecked: 0,
 		agentsWarned: 0,
@@ -116,6 +120,12 @@ export async function runMemoryGuardian(
 	report.discussionsExpired = await expireStaleDiscussions(cfg).catch(() => 0);
 	report.projectLimitsPruned = pruneProjectLimitsCache(cfg);
 
+	// Record pruning analytics if anything was pruned/trimmed
+	const prunedCount = report.sessionsTrimmed + report.logsRotated + report.discussionsExpired + report.projectLimitsPruned;
+	if (prunedCount > 0) {
+		recordEvent({ type: 'memory_entries_pruned', count: prunedCount }).catch(() => {});
+	}
+
 	// Log summary if anything happened
 	const actions: string[] = [];
 	if (report.agentsWarned > 0) actions.push(`${report.agentsWarned} agent(s) warned`);
@@ -128,6 +138,8 @@ export async function runMemoryGuardian(
 	if (actions.length > 0) {
 		log(monitorSession, `[guardian] Memory check: ${actions.join(', ')}`, CLAW_SENDER);
 	}
+
+	recordEvent({ type: 'memory_consolidation_completed', durationMs: Date.now() - startTime }).catch(() => {});
 
 	return report;
 }

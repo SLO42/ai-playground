@@ -8,6 +8,7 @@ import { readFile, writeFile, mkdir } from 'fs/promises';
 import { resolve } from 'path';
 import { PATHS } from '$lib/server/constants.js';
 import { scanAllProjects } from '$lib/server/project-scanner.js';
+import { recordEvent } from '$lib/server/heartbeat/agent-analytics.js';
 
 interface ProjectSettings {
 	name: string;
@@ -160,6 +161,14 @@ async function handleSave(params: { id: string }, request: Request) {
 	const settings = result.data;
 
 	await writeSettings(project.path, settings);
+
+	// Track which top-level keys changed
+	const keysChanged = (Object.keys(settings) as (keyof ProjectSettings)[]).filter(
+		(k) => JSON.stringify(existing[k]) !== JSON.stringify(settings[k])
+	);
+	if (keysChanged.length > 0) {
+		recordEvent({ type: 'settings_saved', projectId: params.id, keysChanged }).catch(() => {});
+	}
 
 	// Sync heartbeat + agent config into .playground/config.json so the heartbeat reads it
 	try {

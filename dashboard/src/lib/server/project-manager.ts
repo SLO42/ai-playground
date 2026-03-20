@@ -21,6 +21,7 @@ import { promisify } from 'util';
 import { detectProjectMeta } from './project-scanner.js';
 import { readJsonFile } from './file-reader.js';
 import * as pmDb from './pm-memory-db.js';
+import { recordEvent } from './heartbeat/agent-analytics.js';
 import type { ProjectPlan, PMBootstrapContext, Phase, Release, MacroPlan, Sprint } from '$lib/types/project-plan.js';
 import type { DetectedProjectMeta } from '$lib/types/projects.js';
 
@@ -241,6 +242,8 @@ export async function bootstrapProjectManager(projectPath: string): Promise<{
 	pmDb.addEntries(projectPath, observations);
 	pmDb.recordReview(projectPath);
 
+	recordEvent({ type: 'pm_spawned', projectId: projectPath }).catch(() => {});
+
 	return { plan, context };
 }
 
@@ -458,6 +461,7 @@ export async function syncToGitHubBoard(
 					{ cwd: projectPath, timeout: 10000, windowsHide: true, encoding: 'utf-8' });
 			}
 		}
+		recordEvent({ type: 'pm_sync_completed', projectId: projectPath, count: plan.macro.releases.length }).catch(() => {});
 		return { synced: true };
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : 'sync failed';
@@ -563,5 +567,8 @@ export async function reviewProjectPlan(projectPath: string): Promise<{
 	}
 
 	pmDb.archiveOlderThan(projectPath, 30);
+
+	recordEvent({ type: 'pm_reviewed', projectId: projectPath, count: observations.length }).catch(() => {});
+
 	return { reviewed: true, observations };
 }

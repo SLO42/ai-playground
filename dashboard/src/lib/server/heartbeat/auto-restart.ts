@@ -7,6 +7,7 @@ import { spawn } from 'child_process';
 import { resolve } from 'path';
 import { PATHS } from '../constants.js';
 import { registerPid, unregisterPid } from './pid-registry.js';
+import { recordEvent } from './agent-analytics.js';
 
 // ── Types ────────────────────────────────────────────────────────────
 
@@ -163,6 +164,13 @@ export async function attemptRestart(serviceName: string): Promise<boolean> {
 	state.attempts++;
 	state.lastAttempt = new Date().toISOString();
 
+	const reason = state.attempts === 1 ? 'service_offline' : 'retry_after_failure';
+	const attempt = state.attempts;
+
+	recordEvent({ type: 'auto_restart_triggered', serviceName, reason, attempt }).catch(() => {});
+
+	const restartStartMs = Date.now();
+
 	try {
 		const child = spawn(entry.cmd, entry.args, {
 			detached: true,
@@ -177,6 +185,9 @@ export async function attemptRestart(serviceName: string): Promise<boolean> {
 		if (child.pid) {
 			registerPid(child.pid, `restart:${serviceName}`, 'service').catch(() => {});
 		}
+
+		const durationMs = Date.now() - restartStartMs;
+		recordEvent({ type: 'auto_restart_result', serviceName, success: true, durationMs }).catch(() => {});
 
 		// Schedule a post-restart health check
 		setTimeout(async () => {
@@ -199,6 +210,8 @@ export async function attemptRestart(serviceName: string): Promise<boolean> {
 
 		return true;
 	} catch {
+		const durationMs = Date.now() - restartStartMs;
+		recordEvent({ type: 'auto_restart_result', serviceName, success: false, durationMs }).catch(() => {});
 		return false;
 	}
 }

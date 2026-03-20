@@ -5,6 +5,7 @@ import { promisify } from 'util';
 import { PATHS } from './constants.js';
 import { pushNotification } from './notifications.js';
 import { getAllTasks, replaceAllTasks, migrateIfNeeded } from './task-store.js';
+import { recordEvent } from './heartbeat/agent-analytics.js';
 import type { Task, TaskStatus, TaskPriority } from '$lib/types/tasks.js';
 
 const execFileAsync = promisify(execFile);
@@ -383,6 +384,8 @@ export async function syncTasks(opts?: {
 					result.errors.push(`Push task ${task.id}: ${err.message}`);
 				}
 			}
+
+			recordEvent({ type: 'github_sync_push', count: result.created + result.updated, projectId } as any).catch(() => {});
 		}
 
 		// ── PULL: GitHub issues → Dashboard tasks ──────────────────────
@@ -444,6 +447,8 @@ export async function syncTasks(opts?: {
 					result.errors.push(`Pull issue #${issue.number}: ${err.message}`);
 				}
 			}
+
+			recordEvent({ type: 'github_sync_pull', count: result.pulled, projectId } as any).catch(() => {});
 		}
 
 		// Save
@@ -481,6 +486,8 @@ export async function syncTasks(opts?: {
 		return result;
 	} catch (err: any) {
 		result.errors.push(`Sync failed: ${err.message}`);
+
+		recordEvent({ type: 'github_sync_failed', reason: err.message, projectId: opts?.projectId ?? '.' } as any).catch(() => {});
 
 		await pushNotification({
 			severity: 'warning',

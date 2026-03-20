@@ -13,6 +13,7 @@ import { withLock } from '../async-mutex.js';
 // ── Event types ──────────────────────────────────────────────────────
 
 export type AgentEventType =
+	// Agent lifecycle
 	| 'classified'          // task routed to openclaw, openclaw-context, or claude-code
 	| 'escalation_check'    // shouldEscalate result
 	| 'model_selected'      // pickModelForTask picked sonnet/opus
@@ -26,12 +27,54 @@ export type AgentEventType =
 	| 'committed'           // agent changes committed to git
 	| 'follow_up_spawned'   // documenter or memory agent spawned
 	| 'follow_up_done'      // follow-up agent completed
-	| 'test_run';           // post-commit test suite executed
+	| 'test_run'            // post-commit test suite executed
+	// Review agent
+	| 'review_spawned'      // review agent launched
+	| 'review_findings'     // review findings parsed
+	| 'review_escalated'    // escalated from local to cloud model
+	| 'review_completed'    // review finished
+	// Task dependencies
+	| 'task_dependency_created'   // blockedBy set on a task
+	| 'task_dependency_resolved'  // blocking task completed, dependents unblocked
+	| 'task_blocked'              // heartbeat skipped a blocked task
+	// PM system
+	| 'pm_spawned'          // project manager agent launched
+	| 'pm_sync_completed'   // PM synced to GitHub board
+	| 'pm_reviewed'         // PM reviewed project plan
+	| 'pm_chat'             // PM chat interaction
+	// Memory guardian
+	| 'memory_consolidation_started'  // consolidation run began
+	| 'memory_drift_detected'         // drift threshold crossed
+	| 'memory_entries_pruned'         // stale entries cleaned
+	| 'memory_consolidation_completed' // consolidation finished
+	// Release manager
+	| 'release_prepared'    // version bump determined
+	| 'changelog_generated' // changelog entries created
+	| 'release_published'   // release published to target
+	// Settings
+	| 'settings_saved'      // app settings changed
+	| 'model_routing_changed' // model routing config updated
+	// GitHub sync
+	| 'github_sync_pull'    // pulled from GitHub
+	| 'github_sync_push'    // pushed to GitHub
+	| 'github_sync_failed'  // sync operation failed
+	// Dependency health
+	| 'dependency_audit_started'    // audit run began
+	| 'vulnerability_found'         // vulnerability detected
+	| 'dependency_audit_completed'  // audit finished
+	// Coverage tracking
+	| 'coverage_collected'           // coverage data gathered
+	| 'coverage_regression_detected' // coverage dropped
+	| 'coverage_trend_updated'       // trend direction changed
+	// Service lifecycle
+	| 'service_started'            // service process started
+	| 'auto_restart_triggered'     // auto-restart initiated
+	| 'auto_restart_result';       // restart succeeded or failed
 
 export interface AgentEvent {
 	id: string;
-	taskId: string;
-	taskTitle: string;
+	taskId?: string;
+	taskTitle?: string;
 	type: AgentEventType;
 	timestamp: string;
 
@@ -81,6 +124,22 @@ export interface AgentEvent {
 	// Context gathering (OpenClaw)
 	contextLength?: number;
 	learningData?: string;
+
+	// Generic metadata for system events (reviews, syncs, settings, etc.)
+	count?: number;
+	severity?: string;
+	reason?: string;
+	target?: string;
+	keysChanged?: string[];
+	percentage?: number;
+	direction?: 'up' | 'down' | 'stable';
+	attempt?: number;
+	success?: boolean;
+	promptPreview?: string;
+	responsePreview?: string;
+	serviceName?: string;
+	version?: string;
+	bumpType?: string;
 }
 
 // ── Aggregated analytics ─────────────────────────────────────────────

@@ -18,6 +18,7 @@ import * as pmDb from '$lib/server/pm-memory-db.js';
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import type { PMMemoryQuery } from '$lib/types/project-plan.js';
 import type { ChatSession } from '$lib/types/chat.js';
+import { recordEvent } from '$lib/server/heartbeat/agent-analytics.js';
 
 /** Extract structured plan updates from freeform user text. */
 function parseUserInput(text: string, plan: import('$lib/types/project-plan.js').ProjectPlan) {
@@ -415,6 +416,7 @@ export async function POST({ params, request }) {
 							send(JSON.stringify({ type: 'done' }));
 							if (!closed) { try { controller.close(); } catch {} }
 							closed = true;
+							recordEvent({ type: 'pm_chat', projectId: params.id }).catch(() => {});
 						});
 					}
 				});

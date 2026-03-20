@@ -23,6 +23,53 @@ export interface SpawnOptions {
 	model: string;
 }
 
+/**
+ * Extract I/O previews from a completed agent run.
+ * - promptPreview: first 500 chars of the prompt sent to the agent
+ * - responsePreview: last 500 chars of the agent's text output (from parsed log)
+ *
+ * Usage: call after process exits with the original prompt and
+ * the `text` field from `parseStreamJsonLog(logFile)`.
+ */
+export function extractIOPreviews(prompt: string, parsedText: string): {
+	promptPreview: string;
+	responsePreview: string;
+} {
+	return {
+		promptPreview: prompt.slice(0, 500),
+		responsePreview: parsedText.length > 500
+			? parsedText.slice(-500)
+			: parsedText
+	};
+}
+
+/**
+ * Extract token usage from a parsed stream-JSON log result.
+ * Returns fields ready to spread into a recordEvent call.
+ *
+ * Usage: call with `parsed.usage` from `parseStreamJsonLog(logFile)`.
+ */
+export function extractTokenUsage(usage: {
+	inputTokens?: number;
+	outputTokens?: number;
+	totalTokens?: number;
+	costUsd?: number;
+	model?: string;
+} | undefined): {
+	inputTokens: number;
+	outputTokens: number;
+	costUsd: number;
+	model?: string;
+} {
+	if (!usage) return { inputTokens: 0, outputTokens: 0, costUsd: 0 };
+	return {
+		inputTokens: usage.inputTokens ?? 0,
+		outputTokens: usage.outputTokens ?? 0,
+		costUsd: usage.costUsd ?? 0,
+		...(usage.model ? { model: usage.model } : {})
+	};
+}
+
 export async function spawnClaude(prompt: string, logFile: string, opts: SpawnOptions): Promise<ReturnType<typeof spawn>> {
 	const { model } = opts;
 	await mkdir(PATHS.headlessLogsDir, { recursive: true });

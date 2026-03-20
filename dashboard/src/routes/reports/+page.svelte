@@ -500,6 +500,82 @@
 					</div>
 				</div>
 
+				<!-- System Events -->
+				{#if report.sections.systemEvents}
+					{@const se = report.sections.systemEvents}
+					{@const categories = [
+						{ label: 'Code Review', items: [
+							{ name: 'Spawned', value: se.review.spawned },
+							{ name: 'Completed', value: se.review.completed },
+							{ name: 'Findings', value: se.review.findings },
+							{ name: 'Escalated', value: se.review.escalated }
+						]},
+						{ label: 'Task Dependencies', items: [
+							{ name: 'Created', value: se.dependencies.created },
+							{ name: 'Resolved', value: se.dependencies.resolved },
+							{ name: 'Blocked', value: se.dependencies.blocked }
+						]},
+						{ label: 'Project Manager', items: [
+							{ name: 'Spawned', value: se.pm.spawned },
+							{ name: 'Syncs', value: se.pm.syncs },
+							{ name: 'Reviews', value: se.pm.reviews },
+							{ name: 'Chats', value: se.pm.chats }
+						]},
+						{ label: 'Memory', items: [
+							{ name: 'Consolidations', value: se.memory.consolidations },
+							{ name: 'Pruned', value: se.memory.pruned }
+						]},
+						{ label: 'Releases', items: [
+							{ name: 'Prepared', value: se.releases.prepared },
+							{ name: 'Published', value: se.releases.published },
+							{ name: 'Changelogs', value: se.releases.changelogs }
+						]},
+						{ label: 'Settings', items: [
+							{ name: 'Saved', value: se.settings.saved },
+							{ name: 'Routing Changed', value: se.settings.routingChanged }
+						]},
+						{ label: 'GitHub Sync', items: [
+							{ name: 'Pulls', value: se.githubSync.pulls },
+							{ name: 'Pushes', value: se.githubSync.pushes },
+							{ name: 'Failures', value: se.githubSync.failures }
+						]},
+						{ label: 'Dependency Health', items: [
+							{ name: 'Audits', value: se.dependencyHealth.audits },
+							{ name: 'Vulnerabilities', value: se.dependencyHealth.vulnerabilities }
+						]},
+						{ label: 'Coverage', items: [
+							{ name: 'Collected', value: se.coverage.collected },
+							{ name: 'Regressions', value: se.coverage.regressions }
+						]},
+						{ label: 'Services', items: [
+							{ name: 'Started', value: se.services.started },
+							{ name: 'Restarts', value: se.services.restarts },
+							{ name: 'Restart Failures', value: se.services.restartFailures }
+						]}
+					]}
+					{@const activeCategories = categories.filter(c => c.items.some(i => i.value > 0))}
+					{#if activeCategories.length > 0}
+						<div class="bg-bg-secondary border border-border rounded-lg p-4">
+							<h3 class="text-xs text-text-secondary uppercase tracking-wider mb-3">System Events</h3>
+							<div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+								{#each activeCategories as category}
+									<div class="bg-bg-primary rounded-lg px-3 py-2.5">
+										<p class="text-xs font-medium text-text-primary mb-2">{category.label}</p>
+										<div class="space-y-1">
+											{#each category.items as item}
+												<div class="flex justify-between text-xs">
+													<span class="text-text-secondary">{item.name}</span>
+													<span class="font-mono text-text-primary">{item.value}</span>
+												</div>
+											{/each}
+										</div>
+									</div>
+								{/each}
+							</div>
+						</div>
+					{/if}
+				{/if}
+
 				<!-- Projects -->
 				{#if report.sections.projects.projectSummaries.length > 0}
 					<div class="bg-bg-secondary border border-border rounded-lg p-4">

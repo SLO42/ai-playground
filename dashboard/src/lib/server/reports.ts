@@ -6,6 +6,7 @@ import { PATHS, APIS, SERVICES } from './constants.js';
 import { getRoutingStats, getRecentDecisions } from './routing-telemetry.js';
 import { getNotifications, getStats as getNotifStats } from './notifications.js';
 import { getAllTasks, migrateIfNeeded } from './task-store.js';
+import { getAgentAnalytics } from './heartbeat/agent-analytics.js';
 import { computeScores, type ScoringResult } from './scoring-engine.js';
 export type { ScoringResult, CompositeScore, ScoreBreakdown } from './scoring-engine.js';
 
@@ -37,6 +38,7 @@ export interface ReportSections {
 	tokens: TokenSection;
 	projects: ProjectSection;
 	notifications: NotificationSection;
+	systemEvents: SystemEventsSection;
 }
 
 export interface SummarySection {
@@ -122,6 +124,19 @@ export interface NotificationSection {
 	bySeverity: Record<string, number>;
 	byCategory: Record<string, number>;
 	criticalCount: number;
+}
+
+export interface SystemEventsSection {
+	review: { spawned: number; completed: number; findings: number; escalated: number };
+	dependencies: { created: number; resolved: number; blocked: number };
+	pm: { spawned: number; syncs: number; reviews: number; chats: number };
+	memory: { consolidations: number; pruned: number };
+	releases: { prepared: number; published: number; changelogs: number };
+	settings: { saved: number; routingChanged: number };
+	githubSync: { pulls: number; pushes: number; failures: number };
+	dependencyHealth: { audits: number; vulnerabilities: number };
+	coverage: { collected: number; regressions: number };
+	services: { started: number; restarts: number; restartFailures: number };
 }
 
 // ── Report Storage ────────────────────────────────────────────────────
@@ -799,6 +814,79 @@ export async function generateTimeSeries(periodStart: Date, periodEnd: Date): Pr
 	};
 }
 
+// ── System Events Collection ──────────────────────────────────────────
+
+async function collectSystemEvents(periodStart: Date, periodEnd: Date): Promise<SystemEventsSection> {
+	const analytics = await getAgentAnalytics();
+	const events = analytics.events.filter((e) => {
+		const ts = new Date(e.timestamp);
+		return ts >= periodStart && ts < periodEnd;
+	});
+
+	const section: SystemEventsSection = {
+		review: { spawned: 0, completed: 0, findings: 0, escalated: 0 },
+		dependencies: { created: 0, resolved: 0, blocked: 0 },
+		pm: { spawned: 0, syncs: 0, reviews: 0, chats: 0 },
+		memory: { consolidations: 0, pruned: 0 },
+		releases: { prepared: 0, published: 0, changelogs: 0 },
+		settings: { saved: 0, routingChanged: 0 },
+		githubSync: { pulls: 0, pushes: 0, failures: 0 },
+		dependencyHealth: { audits: 0, vulnerabilities: 0 },
+		coverage: { collected: 0, regressions: 0 },
+		services: { started: 0, restarts: 0, restartFailures: 0 },
+	};
+
+	for (const e of events) {
+		switch (e.type) {
+			case 'review_spawned': section.review.spawned++; break;
+			case 'review_completed': section.review.completed++; break;
+			case 'review_findings': section.review.findings++; break;
+			case 'review_escalated': section.review.escalated++; break;
+
+			case 'task_dependency_created': section.dependencies.created++; break;
+			case 'task_dependency_resolved': section.dependencies.resolved++; break;
+			case 'task_blocked': section.dependencies.blocked++; break;
+
+			case 'pm_spawned': section.pm.spawned++; break;
+			case 'pm_sync_completed': section.pm.syncs++; break;
+			case 'pm_reviewed': section.pm.reviews++; break;
+			case 'pm_chat': section.pm.chats++; break;
+
+			case 'memory_consolidation_started':
+			case 'memory_consolidation_completed':
+				section.memory.consolidations++; break;
+			case 'memory_entries_pruned': section.memory.pruned++; break;
+
+			case 'release_prepared': section.releases.prepared++; break;
+			case 'release_published': section.releases.published++; break;
+			case 'changelog_generated': section.releases.changelogs++; break;
+
+			case 'settings_saved': section.settings.saved++; break;
+			case 'model_routing_changed': section.settings.routingChanged++; break;
+
+			case 'github_sync_pull': section.githubSync.pulls++; break;
+			case 'github_sync_push': section.githubSync.pushes++; break;
+			case 'github_sync_failed': section.githubSync.failures++; break;
+
+			case 'dependency_audit_started':
+			case 'dependency_audit_completed':
+				section.dependencyHealth.audits++; break;
+			case 'vulnerability_found': section.dependencyHealth.vulnerabilities++; break;
+
+			case 'coverage_collected': section.coverage.collected++; break;
+			case 'coverage_regression_detected': section.coverage.regressions++; break;
+
+			case 'service_started': section.services.started++; break;
+			case 'auto_restart_triggered': section.services.restarts++; break;
+			case 'auto_restart_result':
+				if (e.success === false) section.services.restartFailures++;
+				break;
+		}
+	}
+
+	return section;
+}
+
 // ── Report Generation ─────────────────────────────────────────────────
 
 export async function generateReport(type: ReportType, opts?: { source?: string }): Promise<Report> {
@@ -851,7 +939,7 @@ export async function generateReport(type: ReportType, opts?: { source?: string 
 		gpuHoursEstimate = 0;
 	}
 
-	const [code, tasks, conversations, routing, services, gpu, tokens, projects, notifications] = await Promise.all([
+	const [code, tasks, conversations, routing, services, gpu, tokens, projects, notifications, systemEvents] = await Promise.all([
 		collectCodeStats(periodStart, periodEnd),
 		collectTaskStats(periodStart, periodEnd),
 		collectConversationStats(periodStart, periodEnd),
@@ -860,7 +948,8 @@ export async function generateReport(type: ReportType, opts?: { source?: string 
 		collectGpuStats(gpuHoursEstimate),
 		collectTokenStats(periodStart, periodEnd),
 		collectProjectStats(periodStart, periodEnd),
-		collectNotificationStats(periodStart, periodEnd)
+		collectNotificationStats(periodStart, periodEnd),
+		collectSystemEvents(periodStart, periodEnd)
 	]);
 
 	// Compute scores via the scoring engine
@@ -896,7 +985,8 @@ export async function generateReport(type: ReportType, opts?: { source?: string 
 			gpu,
 			tokens,
 			projects,
-			notifications
+			notifications,
+			systemEvents
 		},
 		scores
 	};

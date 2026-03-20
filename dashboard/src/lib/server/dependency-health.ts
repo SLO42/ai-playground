@@ -8,6 +8,7 @@
 import { existsSync } from 'fs';
 import { resolve } from 'path';
 import { execSync } from 'child_process';
+import { recordEvent } from './heartbeat/agent-analytics.js';
 
 // ── Types ──────────────────────────────────────────────────────────────
 
@@ -310,8 +311,19 @@ export async function getDependencyHealth(projectPath: string): Promise<Dependen
 	const type = detectProjectType(projectPath);
 	const now = new Date().toISOString();
 
+	recordEvent({ type: 'dependency_audit_started', target: type }).catch(() => {});
+
 	const audit = AUDIT[type]?.(projectPath) ?? emptyAudit(type);
 	const outdated = OUTDATED[type]?.(projectPath) ?? [];
+
+	// Log critical and high vulnerabilities only (avoid noise)
+	for (const vuln of audit.vulnerabilities) {
+		if (vuln.severity === 'critical' || vuln.severity === 'high') {
+			recordEvent({ type: 'vulnerability_found', severity: vuln.severity, target: vuln.package }).catch(() => {});
+		}
+	}
+
+	recordEvent({ type: 'dependency_audit_completed', count: audit.vulnerabilities.length }).catch(() => {});
 
 	return {
 		projectType: type,

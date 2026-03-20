@@ -16,6 +16,7 @@ import { spawnClaude } from './agent-spawn.js';
 import { logAgentCompletion, parseStreamJsonLog, captureGitBaseline } from './agent-tracking.js';
 import { registerPid, unregisterPid } from './pid-registry.js';
 import { classifyTask } from './openclaw-agent.js';
+import { recordEvent } from './agent-analytics.js';
 import type { ChatSession, ChatSender } from '$lib/types/chat.js';
 import type { Task } from '$lib/types/tasks.js';
 
@@ -38,6 +39,7 @@ export async function spawnReviewAgent(monitorSession: ChatSession): Promise<voi
 
 	if (ollamaUp) {
 		log(monitorSession, `[review] Running via OpenClaw (local, $0) → chat: ${reportId}`);
+		recordEvent({ type: 'review_spawned', reason: 'scheduled review via OpenClaw (local)' }).catch(() => {});
 		runOpenClawReview(prompt, sender, reportId, monitorSession).catch((err) => {
 			const msg = err instanceof Error ? err.message : 'review failed';
 			log(monitorSession, `[error] OpenClaw review failed: ${msg}`);
@@ -47,6 +49,8 @@ export async function spawnReviewAgent(monitorSession: ChatSession): Promise<voi
 	}
 
 	log(monitorSession, `[review] Ollama offline — escalating to Claude Code`);
+	recordEvent({ type: 'review_spawned', reason: 'scheduled review — Ollama offline, escalating to Claude Code' }).catch(() => {});
+	recordEvent({ type: 'review_escalated', fromProvider: 'openclaw', toProvider: 'claude-code', reason: 'Ollama unreachable' }).catch(() => {});
 	spawnClaudeReview(prompt, sender, reportId, monitorSession);
 }
 
@@ -124,6 +128,7 @@ async function runOpenClawReview(
 		});
 
 		log(monitorSession, `[review] OpenClaw review complete — ${(durationMs / 1000).toFixed(1)}s ($0)`);
+		recordEvent({ type: 'review_completed', durationMs, provider: 'openclaw', model: DEFAULT_MODEL }).catch(() => {});
 		await saveMonitorSession(monitorSession);
 
 		await pushNotification({
@@ -169,9 +174,13 @@ async function spawnClaudeReview(
 
 		registerPid(pid, 'agent:review', 'agent').catch(() => {});
 
+		const spawnedAt = Date.now();
 		child.on('close', async (code) => {
 			unregisterPid('agent:review').catch(() => {});
 			agents.delete('review');
+
+			const durationMs = Date.now() - spawnedAt;
+			recordEvent({ type: 'review_completed', durationMs, exitCode: code ?? undefined, provider: 'claude-code', model: 'claude-opus-4-6' }).catch(() => {});
 
 			const exitMsg = code === 0 ? 'review complete' : `review exited with code ${code}`;
 
@@ -582,6 +591,11 @@ async function createTasksFromReview(jsonStr: string, sender: ChatSender): Promi
 	}
 
 	if (created > 0) {
+		// Determine highest severity from the parsed tasks
+		const severityOrder = ['critical', 'high', 'medium', 'low'] as const;
+		const highestSeverity = severityOrder.find(s => tasks.some(t => t.priority === s)) ?? 'medium';
+		recordEvent({ type: 'review_findings', count: created, severity: highestSeverity }).catch(() => {});
+
 		const featureSummary = features.size > 0
 			? ` across ${features.size} feature(s): ${[...features.entries()].map(([f, n]) => `${f} (${n})`).join(', ')}`
 			: '';

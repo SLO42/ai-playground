@@ -589,6 +589,7 @@ async function heartbeat() {
 			for (const t of taskScan.blocked) {
 				const depCount = t.blockedBy?.length ?? 0;
 				log(session, `[skip] Task "${t.title}" blocked by ${depCount} incomplete task(s)`);
+				recordEvent({ taskId: t.id, taskTitle: t.title, type: 'task_blocked', reason: 'blocked by dependencies' }).catch(() => {});
 			}
 		}
 		if (taskScan.clawAssigned.length > 0) {

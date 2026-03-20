@@ -1,22 +1,20 @@
 import { error } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types.js';
-import { getServiceById } from '$lib/server/services.js';
+import { SERVICES, PATHS } from '$lib/server/constants.js';
+import { readFile } from 'node:fs/promises';
+import { resolve } from 'node:path';
 
 /** Map service IDs to their log file paths (if known). */
 const LOG_PATHS: Record<string, string> = {
 	'claude-flow': '.claude-flow/logs/daemon.log',
 	'openclaw': '.claude-flow/logs/security-audit.log',
 	'ollama': '.playground/logs/ollama.log',
-	'penpot-mcp': '.playground/logs/penpot-mcp.log',
-	'memory-db': '.playground/logs/memory-db.log'
+	'penpot-mcp': '.playground/logs/penpot-mcp.log'
 };
 
 export const load: PageServerLoad = async ({ params }) => {
-	const service = getServiceById(params.id);
-
-	if (!service) {
-		error(404, `Service "${params.id}" not found`);
-	}
+	const def = SERVICES[params.id as keyof typeof SERVICES];
+	if (!def) throw error(404, `Service "${params.id}" not found`);
 
 	const logPath = LOG_PATHS[params.id] ?? null;
 	let logLines: string[] = [];
@@ -24,9 +22,7 @@ export const load: PageServerLoad = async ({ params }) => {
 
 	if (logPath) {
 		try {
-			const { readFile } = await import('node:fs/promises');
-			const { resolve } = await import('node:path');
-			const content = await readFile(resolve(logPath), 'utf-8');
+			const content = await readFile(resolve(PATHS.root, logPath), 'utf-8');
 			const allLines = content.split('\n');
 			logLines = allLines.slice(-100);
 		} catch {
@@ -37,7 +33,7 @@ export const load: PageServerLoad = async ({ params }) => {
 	}
 
 	return {
-		service,
+		service: { id: params.id, name: def.name, type: def.type ?? 'Service' },
 		logPath,
 		logLines,
 		logError

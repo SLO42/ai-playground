@@ -436,7 +436,7 @@
 				"id": "rel-refinement",
 				"version": "v0.2",
 				"name": "Refinement",
-				"status": "planned",
+				"status": "completed",
 				"featureComplete": [
 					"All v0.1 DoD criteria still hold",
 					"Performance improvement is measurable (before/after metrics)",
@@ -448,7 +448,8 @@
 					"ms-perf",
 					"ms-design-revision",
 					"ms-templates"
-				]
+				],
+				"shippedAt": "2026-03-20T21:03:36.143Z"
 			}
 		],
 		"phases": [
@@ -571,7 +572,7 @@
 			{
 				"id": "ms-templates",
 				"name": "Template System & AI Creation",
-				"status": "planned",
+				"status": "completed",
 				"releaseId": "rel-refinement",
 				"goals": [
 					"Create with AI — agent-driven project setup for any framework/engine",
@@ -1498,6 +1499,76 @@
 					"verify": "npm run build"
 				}
 			]
+		},
+		{
+			"id": "sprint-12",
+			"title": "Template Management & Final Polish",
+			"status": "completed",
+			"tasks": [
+				{
+					"id": "task-s12-01",
+					"feature": "feat-template-browser",
+					"title": "Template browser page with filtering and preview",
+					"status": "done",
+					"effort": "medium",
+					"description": "Create /templates route showing all 17 templates in a searchable grid. Filter by language, category (web, game-mod, cli, api). Each card shows: name, description, language, tags, params count. Click to preview the template structure.",
+					"files": [
+						"dashboard/src/routes/templates/+page.svelte",
+						"dashboard/src/routes/templates/+page.server.ts"
+					],
+					"verify": "npm run build && navigate to /templates shows template grid"
+				},
+				{
+					"id": "task-s12-02",
+					"feature": "feat-template-browser",
+					"title": "Add template detail page with file tree preview",
+					"status": "done",
+					"effort": "medium",
+					"description": "Create /templates/[id] route showing template details: description, params, generated file tree preview, and a Create Project button linking to /projects/create?template=[id].",
+					"files": [
+						"dashboard/src/routes/templates/[id]/+page.svelte",
+						"dashboard/src/routes/templates/[id]/+page.server.ts"
+					],
+					"verify": "npm run build && navigate to /templates/sveltekit shows template details"
+				},
+				{
+					"id": "task-s12-03",
+					"feature": "feat-sidebar-nav",
+					"title": "Add Templates and Diagnostics to sidebar navigation",
+					"status": "done",
+					"effort": "small",
+					"description": "Add /templates and /diagnostics links to the Sidebar component. Templates under a Tools section, Diagnostics under System.",
+					"files": [
+						"dashboard/src/lib/components/Sidebar.svelte"
+					],
+					"verify": "npm run build"
+				},
+				{
+					"id": "task-s12-04",
+					"feature": "feat-smoke-tests",
+					"title": "Add new routes to Playwright smoke tests",
+					"status": "done",
+					"effort": "small",
+					"description": "Add /templates and /templates/sveltekit to the smoke test route list. Verify they load with 200 status.",
+					"files": [
+						"dashboard/tests/smoke.spec.ts"
+					],
+					"verify": "npx playwright test"
+				},
+				{
+					"id": "task-s12-05",
+					"feature": "feat-final-version",
+					"title": "Bump to v0.2.0 — all phases complete",
+					"status": "done",
+					"effort": "small",
+					"description": "Bump package.json to 0.2.0. Update project plan to mark all phases complete. Final build and test verification.",
+					"files": [
+						"dashboard/package.json",
+						".playground/project-plan.json"
+					],
+					"verify": "npm run build && npx playwright test && grep 0.2.0 dashboard/package.json"
+				}
+			]
 		}
 	],
 	"activeSprint": null,
@@ -1566,6 +1637,6 @@
 			"status": "accepted"
 		}
 	],
-	"lastUpdated": "2026-03-20T19:20:07.889Z",
-	"updatedBy": "claude-pm"
+	"lastUpdated": "2026-03-20T21:03:36.144Z",
+	"updatedBy": "heartbeat-review"
 }

@@ -18,6 +18,7 @@ import {
 } from './shared.js';
 import { recordEvent } from './agent-analytics.js';
 import { queryGateway } from './gateway-client.js';
+import { updateTask } from '../task-store-sql.js';
 import type { ChatSession, ChatSender } from '$lib/types/chat.js';
 import type { Task } from '$lib/types/tasks.js';
 
@@ -414,6 +415,10 @@ async function runOpenClawTask(
 		log(monitor, `[done] OpenClaw agent for "${task.title}" — completed in ${(durationMs / 1000).toFixed(1)}s ($0)`);
 		await saveMonitorSession(monitor);
 
+		// Mark task as completed so the stale-reset logic doesn't loop it back to pending
+		const taskRoot = task._sourceProjectPath ?? PATHS.root;
+		try { updateTask(taskRoot, task.id, { status: 'completed' }); } catch { /* skip */ }
+
 	} catch (err) {
 		const msg = err instanceof Error ? err.message : 'unknown error';
 		log(session, `**Error**: ${msg}`, sender);
@@ -429,5 +434,9 @@ async function runOpenClawTask(
 		session.status = 'idle';
 		session.updatedAt = new Date().toISOString();
 		await writeFile(`${PATHS.chatsDir}/${reportId}.json`, JSON.stringify(session, null, '\t'), 'utf-8');
+
+		// Reset task to pending so it can be retried
+		const taskRoot = task._sourceProjectPath ?? PATHS.root;
+		try { updateTask(taskRoot, task.id, { status: 'pending', assignee: null }); } catch { /* skip */ }
 	}
 }

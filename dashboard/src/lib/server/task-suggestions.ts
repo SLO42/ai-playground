@@ -10,7 +10,7 @@
 import { readFile, writeFile, mkdir } from 'fs/promises';
 import { resolve, dirname } from 'path';
 import { PATHS } from './constants.js';
-import { createTask, getAllTasks } from './task-store.js';
+import { createTask, getAllTasks } from './task-store-sql.js';
 import { pushNotification } from './notifications.js';
 
 // ── Types ────────────────────────────────────────────────────────────

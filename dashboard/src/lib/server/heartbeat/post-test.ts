@@ -10,7 +10,7 @@ import { readFile, readdir, access } from 'fs/promises';
 import { resolve } from 'path';
 
 const execFileAsync = promisify(execFile);
-import { createTask } from '../task-store.js';
+import { createTask } from '../task-store-sql.js';
 import { createIncident } from '../incidents.js';
 import { collectCoverage } from '../coverage-tracker.js';
 import { recordEvent, type AgentEventType } from './agent-analytics.js';

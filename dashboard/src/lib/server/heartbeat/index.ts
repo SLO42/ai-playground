@@ -7,7 +7,7 @@ import { resolve } from 'path';
 import { SERVICES, PATHS } from '../constants.js';
 import { isOllamaOnline } from '../ollama-client.js';
 import { pushNotification, loadSettings } from '../notifications.js';
-import { getAllTasks, migrateIfNeeded, updateTask, getBlockedStatus } from '../task-store.js';
+import { getAllTasks, migrateFromJson, updateTask, getBlockedStatus } from '../task-store-sql.js';
 import { scanAllProjects, detectProjectMeta } from '../project-scanner.js';
 import { loadAgentDefaults } from '../agent-defaults.js';
 import {
@@ -119,7 +119,7 @@ async function scanTasks(): Promise<TaskScanResult> {
 	};
 
 	try {
-		await migrateIfNeeded(PATHS.root);
+		await migrateFromJson(PATHS.root);
 		const rootTasks = await getAllTasks(PATHS.root);
 
 		// Annotate root tasks with project info
@@ -138,7 +138,7 @@ async function scanTasks(): Promise<TaskScanResult> {
 				if (scannedPaths.has(resolved)) continue; // skip duplicate (e.g. "." entry)
 				scannedPaths.add(resolved);
 				try {
-					await migrateIfNeeded(project.path);
+					await migrateFromJson(project.path);
 					const projectTasks = await getAllTasks(project.path);
 					for (const t of projectTasks) {
 						t._sourceProjectId = project.id;
@@ -444,11 +444,13 @@ async function spawnAgent(task: Task, monitorSession: ChatSession): Promise<bool
 			}).catch(() => {});
 
 			const taskRoot = task._sourceProjectPath ?? PATHS.root;
-			if (code === 0) {
-				updateTask(taskRoot, task.id, { status: 'completed' }).catch(() => {});
-			} else {
-				updateTask(taskRoot, task.id, { status: 'pending', assignee: null }).catch(() => {});
-			}
+			try {
+				if (code === 0) {
+					updateTask(taskRoot, task.id, { status: 'completed' });
+				} else {
+					updateTask(taskRoot, task.id, { status: 'pending', assignee: null });
+				}
+			} catch { /* task update failed */ }
 		});
 
 		log(monitorSession, `[spawn] Claude Code (${modelTier}) → "${task.title}" → chat: ${reportId}`);
@@ -481,7 +483,8 @@ function checkAgents(session: ChatSession) {
 async function heartbeat() {
 	const settings = await loadSettings();
 	const notificationsEnabled = settings.heartbeatEnabled !== false;
-	const hbConfig = getHeartbeatConfig();
+	// Reload config from disk each cycle so dashboard settings changes take effect
+	const hbConfig = await loadHeartbeatConfig();
 
 	heartbeatCount++;
 	g.__claw_heartbeat_count = heartbeatCount;
@@ -654,10 +657,10 @@ async function heartbeat() {
 
 				for (const projPath of projectPaths) {
 					try {
-						const tasks = await getAllTasks(projPath);
+						const tasks = getAllTasks(projPath);
 						for (const task of tasks) {
 							if (task.status === 'in_progress' && task.assignee === 'claw' && !activeAgents.has(task.id)) {
-								await updateTask(projPath, task.id, { status: 'pending', assignee: null }).catch(() => {});
+								try { updateTask(projPath, task.id, { status: 'pending', assignee: null }); } catch { /* skip */ }
 								staleNames.push(task.title);
 								staleReset++;
 							}
@@ -860,10 +863,7 @@ async function heartbeat() {
 						}
 
 						const taskRoot = task._sourceProjectPath ?? PATHS.root;
-						await updateTask(taskRoot, task.id, {
-							status: 'in_progress',
-							assignee: 'claw'
-						}).catch(() => {});
+						try { updateTask(taskRoot, task.id, { status: 'in_progress', assignee: 'claw' }); } catch { /* skip */ }
 						spawned++;
 
 						if (notificationsEnabled) {

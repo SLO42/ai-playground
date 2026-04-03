@@ -6,7 +6,7 @@ import { readFile, writeFile } from 'fs/promises';
 import { resolve } from 'path';
 import { PATHS } from '../constants.js';
 import { pushNotification } from '../notifications.js';
-import { getAllTasks, updateTask } from '../task-store.js';
+import { getAllTasks, updateTask } from '../task-store-sql.js';
 import {
 	MONITOR_SESSION_ID, agentSender, getActiveAgents, getDiscussionMap,
 	getMaxConcurrentAgents, log, readSessionIndex, upsertSessionMeta
@@ -266,10 +266,7 @@ export async function checkDiscussionReplies(monitorSession: ChatSession): Promi
 
 			if (task && (task.status === 'pending' || task.status === 'in_progress')) {
 				if (!sessionId.startsWith('pm-')) {
-					await updateTask(PATHS.root, taskId, {
-						flagDiscussion: false,
-						assignee: 'claw'
-					}).catch(() => {});
+					try { updateTask(PATHS.root, taskId, { flagDiscussion: false, assignee: 'claw' }); } catch { /* skip */ }
 				}
 
 				const success = await spawnAgentWithContext(task, monitorSession, discussionContext, sessionId);
@@ -289,7 +286,7 @@ export async function checkDiscussionReplies(monitorSession: ChatSession): Promi
 }
 
 async function handleSuccessfulSpawn(task: Task, sessionId: string, monitorSession: ChatSession): Promise<void> {
-	await updateTask(PATHS.root, task.id, { status: 'in_progress' }).catch(() => {});
+	try { updateTask(PATHS.root, task.id, { status: 'in_progress' }); } catch { /* skip */ }
 
 	// Update session file to streaming
 	try {
@@ -437,9 +434,9 @@ async function spawnAgentWithContext(task: Task, monitorSession: ChatSession, di
 			}).catch(() => {});
 
 			if (code === 0) {
-				updateTask(PATHS.root, task.id, { status: 'completed' }).catch(() => {});
+				try { updateTask(PATHS.root, task.id, { status: 'completed' }); } catch { /* skip */ }
 			} else {
-				updateTask(PATHS.root, task.id, { status: 'pending', assignee: null }).catch(() => {});
+				try { updateTask(PATHS.root, task.id, { status: 'pending', assignee: null }); } catch { /* skip */ }
 			}
 
 			// Agent slot freed — drain any queued discussion replies

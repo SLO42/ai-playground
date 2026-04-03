@@ -14,7 +14,7 @@ import { existsSync } from 'fs';
 import { resolve, basename, dirname } from 'path';
 import { homedir } from 'os';
 import { PATHS } from './constants.js';
-import { getAllTasks } from './task-store.js';
+import { getAllTasks } from './task-store-sql.js';
 import type { AutoMemoryEntry } from '$lib/types/memory.js';
 
 // ── Types ────────────────────────────────────────────────────────────

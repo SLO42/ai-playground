@@ -21,7 +21,7 @@ import { readFile, writeFile, mkdir, access } from 'fs/promises';
 import { resolve } from 'path';
 import { PATHS } from '../constants.js';
 import { pushNotification } from '../notifications.js';
-import { createTask, getAllTasks, migrateIfNeeded } from '../task-store.js';
+import { createTask, getAllTasks, migrateFromJson } from '../task-store-sql.js';
 import { scanAllProjects } from '../project-scanner.js';
 import {
 	agentSender, getActiveAgents, getMaxConcurrentAgents,
@@ -671,8 +671,8 @@ async function processUxResults(
 
 /** Create tasks from UX findings, deduplicating against existing tasks */
 async function createTasksFromFindings(findings: UxFinding[], sender: ChatSender): Promise<number> {
-	await migrateIfNeeded(PATHS.root);
-	const existing = await getAllTasks(PATHS.root);
+	migrateFromJson(PATHS.root);
+	const existing = getAllTasks(PATHS.root);
 	const existingTitles = new Set(existing.map(t => t.title.toLowerCase()));
 
 	let created = 0;

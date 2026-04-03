@@ -6,7 +6,7 @@ import { readFile, writeFile } from 'fs/promises';
 import { resolve } from 'path';
 import { APIS, PATHS } from '../constants.js';
 import { pushNotification } from '../notifications.js';
-import { getAllTasks, migrateIfNeeded, createTask, updateTask } from '../task-store.js';
+import { getAllTasks, migrateFromJson, createTask, updateTask } from '../task-store-sql.js';
 import { scanAllProjects } from '../project-scanner.js';
 import {
 	MONITOR_SESSION_ID, agentSender, getActiveAgents, getMaxConcurrentAgents,
@@ -387,8 +387,8 @@ async function collectReviewContext(): Promise<string> {
 
 	// 1. Existing tasks (grouped by feature)
 	try {
-		await migrateIfNeeded(PATHS.root);
-		const tasks = await getAllTasks(PATHS.root);
+		migrateFromJson(PATHS.root);
+		const tasks = getAllTasks(PATHS.root);
 		const pending = tasks.filter(t => t.status === 'pending');
 		const inProgress = tasks.filter(t => t.status === 'in_progress');
 		const completed = tasks.filter(t => t.status === 'completed');
@@ -574,7 +574,7 @@ async function createTasksFromReview(jsonStr: string, sender: ChatSender): Promi
 			});
 
 			if (t.flagDiscussion) {
-				await updateTask(PATHS.root, task.id, { flagDiscussion: true }).catch(() => {});
+				try { updateTask(PATHS.root, task.id, { flagDiscussion: true }); } catch { /* skip */ }
 			}
 
 			// Classify the routing for the log

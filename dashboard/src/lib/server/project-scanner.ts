@@ -119,6 +119,12 @@ async function detectTechStack(projectPath: string): Promise<string[]> {
 	if (await exists(resolve(projectPath, 'src/main/resources/fabric.mod.json'))) {
 		detected.add('Fabric'); detected.add('Minecraft');
 	}
+
+	// Claude Peers / multi-agent detection
+	if (await exists(resolve(projectPath, 'start-agents.sh')) || await exists(resolve(projectPath, 'start-agents.ps1'))) {
+		detected.add('Claude Peers');
+		detected.add('Multi-Agent');
+	}
 	await Promise.all(
 		markers.map(async ([file, tech]) => {
 			if (await exists(resolve(projectPath, file))) detected.add(tech);
@@ -658,6 +664,72 @@ async function detectAgents(projectPath: string): Promise<DetectedAgent[]> {
 			if (entry.endsWith('.md') && !seen.has(entry.replace('.md', ''))) {
 				agents.push({ name: entry.replace('.md', ''), type: 'agent-definition', fileCount: 1 });
 			}
+		}
+	} catch { /* skip */ }
+
+	// 4. Parse start-agents.sh/ps1 for agent launch definitions
+	// Pattern: wt new-tab --title "AgentName (Role)" -d "path"
+	for (const scriptName of ['start-agents.sh', 'start-agents.ps1']) {
+		try {
+			const raw = await readFile(resolve(projectPath, scriptName), 'utf-8');
+			// Match: --title "Name (Role)" -d "path"
+			const tabDefs = raw.matchAll(/--title\s+"([^"]+)"\s+-d\s+"([^"]+)"/g);
+			for (const m of tabDefs) {
+				const titleMatch = m[1].match(/^(\w+)\s*\(([^)]+)\)/);
+				if (titleMatch && !seen.has(titleMatch[1].toLowerCase())) {
+					const agentName = titleMatch[1];
+					const role = titleMatch[2];
+					const workDir = m[2];
+					agents.push({
+						name: agentName,
+						type: role.toLowerCase().includes('orchestrat') ? 'orchestrator'
+							: role.toLowerCase().includes('art') ? 'artist'
+							: role.toLowerCase().includes('test') ? 'tester'
+							: 'module-agent',
+						fileCount: 1
+					});
+					seen.add(agentName.toLowerCase());
+				}
+			}
+			// Also detect MCP servers from CLAUDE_FLAGS
+			const mcpMatch = raw.match(/--dangerously-load-development-channels\s+server:(\S+)/);
+			if (mcpMatch) {
+				const mcpName = mcpMatch[1];
+				if (!seen.has(`mcp:${mcpName}`)) {
+					agents.push({ name: `mcp:${mcpName}`, type: 'mcp-server', fileCount: 0 });
+					seen.add(`mcp:${mcpName}`);
+				}
+			}
+		} catch { /* no start-agents script */ }
+	}
+
+	// 5. Detect agents from CLAUDE.md files in subdirectories
+	// Pattern: subdirs with their own CLAUDE.md that starts with "# AgentName — Role"
+	try {
+		const entries = await readdir(projectPath);
+		for (const entry of entries) {
+			if (entry === 'node_modules' || entry === '.git' || entry === 'build' || entry === '.gradle') continue;
+			const claudeMd = resolve(projectPath, entry, 'CLAUDE.md');
+			try {
+				const raw = await readFile(claudeMd, 'utf-8');
+				// Match "# AgentName — Description" or "# AgentName - Description"
+				const header = raw.match(/^#\s+(\w+)\s+[—–-]\s+(.+)/m);
+				if (header) {
+					const agentName = header[1];
+					const role = header[2].trim();
+					if (!seen.has(agentName.toLowerCase())) {
+						agents.push({
+							name: agentName,
+							type: role.toLowerCase().includes('orchestrat') ? 'orchestrator'
+								: role.toLowerCase().includes('art') ? 'artist'
+								: role.toLowerCase().includes('test') ? 'tester'
+								: 'module-agent',
+							fileCount: 1
+						});
+						seen.add(agentName.toLowerCase());
+					}
+				}
+			} catch { /* no CLAUDE.md in this subdir */ }
 		}
 	} catch { /* skip */ }
 

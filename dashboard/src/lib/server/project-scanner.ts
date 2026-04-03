@@ -96,6 +96,29 @@ async function detectTechStack(projectPath: string): Promise<string[]> {
 		if (entries.some(e => e === 'nuget.config')) detected.add('NuGet');
 		if (entries.some(e => e.endsWith('.csproj'))) detected.add('C#/.NET');
 	} catch { /* skip */ }
+
+	// Gradle/Java project markers
+	if (await exists(resolve(projectPath, 'build.gradle')) || await exists(resolve(projectPath, 'build.gradle.kts'))) {
+		detected.add('Gradle');
+		detected.add('Java');
+	}
+
+	// Minecraft mod markers
+	const gradlePropsPath = resolve(projectPath, 'gradle.properties');
+	if (await exists(gradlePropsPath)) {
+		try {
+			const raw = await readFile(gradlePropsPath, 'utf-8');
+			if (/^neo_version\s*=/m.test(raw)) { detected.add('NeoForge'); detected.add('Minecraft'); }
+			if (/^minecraft_version\s*=/m.test(raw)) detected.add('Minecraft');
+			if (/^fabric_version\s*=/m.test(raw)) { detected.add('Fabric'); detected.add('Minecraft'); }
+		} catch { /* skip */ }
+	}
+	if (await exists(resolve(projectPath, 'src/main/resources/META-INF/neoforge.mods.toml'))) {
+		detected.add('NeoForge'); detected.add('Minecraft');
+	}
+	if (await exists(resolve(projectPath, 'src/main/resources/fabric.mod.json'))) {
+		detected.add('Fabric'); detected.add('Minecraft');
+	}
 	await Promise.all(
 		markers.map(async ([file, tech]) => {
 			if (await exists(resolve(projectPath, file))) detected.add(tech);
@@ -272,6 +295,59 @@ async function detectFramework(
 			if (raw.includes('tauri')) return 'Tauri';
 		} catch { /* ignore */ }
 	}
+
+	// Java/Gradle mod frameworks (Minecraft)
+	const buildGradlePath = resolve(projectPath, 'build.gradle');
+	const buildGradleKtsPath = resolve(projectPath, 'build.gradle.kts');
+	const gradlePropsPath = resolve(projectPath, 'gradle.properties');
+	const gradleFile = await exists(buildGradlePath) ? buildGradlePath
+		: await exists(buildGradleKtsPath) ? buildGradleKtsPath
+		: null;
+	if (gradleFile) {
+		try {
+			const raw = await readFile(gradleFile, 'utf-8');
+			// NeoForge (ModDevGradle or NeoGradle)
+			if (raw.includes('net.neoforged.moddev') || raw.includes('net.neoforged.gradle')) return 'NeoForge';
+		} catch { /* ignore */ }
+	}
+	// Check gradle.properties for neo_version (multi-module projects apply plugin in subprojects)
+	if (await exists(gradlePropsPath)) {
+		try {
+			const raw = await readFile(gradlePropsPath, 'utf-8');
+			if (/^neo_version\s*=/m.test(raw)) return 'NeoForge';
+		} catch { /* ignore */ }
+	}
+	// Check subproject build.gradle files (multi-module NeoForge)
+	if (gradleFile || await exists(resolve(projectPath, 'settings.gradle'))) {
+		try {
+			const entries = await readdir(projectPath);
+			for (const entry of entries.slice(0, 20)) {
+				const subGradle = resolve(projectPath, entry, 'build.gradle');
+				if (await exists(subGradle)) {
+					try {
+						const raw = await readFile(subGradle, 'utf-8');
+						if (raw.includes('net.neoforged.moddev') || raw.includes('net.neoforged.gradle')) return 'NeoForge';
+						if (raw.includes('fabric-loom') || raw.includes('net.fabricmc')) return 'Fabric';
+					} catch { /* ignore */ }
+				}
+			}
+		} catch { /* ignore */ }
+	}
+	// Check mods.toml for NeoForge/Forge dependency
+	for (const tomlPath of [
+		resolve(projectPath, 'src/main/resources/META-INF/neoforge.mods.toml'),
+		resolve(projectPath, 'src/main/resources/META-INF/mods.toml')
+	]) {
+		if (await exists(tomlPath)) {
+			try {
+				const raw = await readFile(tomlPath, 'utf-8');
+				if (raw.includes('modId="neoforge"') || raw.includes("modId='neoforge'")) return 'NeoForge';
+				if (raw.includes('modId="forge"') || raw.includes("modId='forge'")) return 'Forge';
+			} catch { /* ignore */ }
+		}
+	}
+	// Fabric: fabric.mod.json
+	if (await exists(resolve(projectPath, 'src/main/resources/fabric.mod.json'))) return 'Fabric';
 
 	// C#/.NET mod frameworks
 	try {
@@ -533,8 +609,11 @@ async function detectWorkflows(projectPath: string): Promise<DetectedWorkflow[]>
 
 /** Detect agent directories and types from .claude/agents/ */
 async function detectAgents(projectPath: string): Promise<DetectedAgent[]> {
-	const agentsDir = resolve(projectPath, '.claude/agents');
 	const agents: DetectedAgent[] = [];
+	const seen = new Set<string>();
+
+	// 1. Scan .claude/agents/ directory (agent definition folders)
+	const agentsDir = resolve(projectPath, '.claude/agents');
 	try {
 		const entries = await readdir(agentsDir);
 		for (const entry of entries) {
@@ -543,15 +622,45 @@ async function detectAgents(projectPath: string): Promise<DetectedAgent[]> {
 				const s = await stat(entryPath);
 				if (s.isDirectory()) {
 					const files = await readdir(entryPath);
-					agents.push({
-						name: entry,
-						type: entry,
-						fileCount: files.length
-					});
+					agents.push({ name: entry, type: entry, fileCount: files.length });
+					seen.add(entry);
 				}
 			} catch { /* skip */ }
 		}
 	} catch { /* no agents dir */ }
+
+	// 2. Read .claude/settings.json for inline agent definitions
+	try {
+		const settingsPath = resolve(projectPath, '.claude/settings.json');
+		const raw = await readFile(settingsPath, 'utf-8');
+		const settings = JSON.parse(raw) as { agents?: Record<string, { description?: string; command?: string }> };
+		if (settings.agents) {
+			for (const [name, config] of Object.entries(settings.agents)) {
+				if (!seen.has(name)) {
+					agents.push({
+						name,
+						type: config.description?.toLowerCase().includes('deploy') ? 'deployer'
+							: config.description?.toLowerCase().includes('build') ? 'builder'
+							: config.description?.toLowerCase().includes('test') ? 'tester'
+							: 'custom',
+						fileCount: 0
+					});
+					seen.add(name);
+				}
+			}
+		}
+	} catch { /* no settings.json or no agents field */ }
+
+	// 3. Scan .claude/agents/*.md files (flat agent definitions)
+	try {
+		const entries = await readdir(agentsDir);
+		for (const entry of entries) {
+			if (entry.endsWith('.md') && !seen.has(entry.replace('.md', ''))) {
+				agents.push({ name: entry.replace('.md', ''), type: 'agent-definition', fileCount: 1 });
+			}
+		}
+	} catch { /* skip */ }
+
 	return agents;
 }
 
@@ -671,6 +780,32 @@ async function detectDependencies(projectPath: string): Promise<DetectedDependen
 			}
 		}
 	} catch { /* skip */ }
+
+	// gradle.properties — key=value pairs for Minecraft/NeoForge versions
+	try {
+		const raw = await readFile(resolve(projectPath, 'gradle.properties'), 'utf-8');
+		const propMap: [RegExp, string, DetectedDependency['type']][] = [
+			[/^minecraft_version\s*=\s*(.+)/m, 'Minecraft', 'runtime'],
+			[/^neo_version\s*=\s*(.+)/m, 'NeoForge', 'mod-framework'],
+			[/^fabric_version\s*=\s*(.+)/m, 'Fabric API', 'mod-framework'],
+			[/^loader_version\s*=\s*(.+)/m, 'Fabric Loader', 'mod-framework'],
+			[/^parchment_version\s*=\s*(.+)/m, 'Parchment Mappings', 'dev'],
+		];
+		for (const [re, name, type] of propMap) {
+			const m = raw.match(re);
+			if (m) addDep(name, m[1].trim(), type);
+		}
+	} catch { /* skip */ }
+
+	// build.gradle — plugin and dependency declarations
+	for (const gradleName of ['build.gradle', 'build.gradle.kts']) {
+		try {
+			const raw = await readFile(resolve(projectPath, gradleName), 'utf-8');
+			// Plugin IDs: id 'net.neoforged.moddev' version '2.0.141'
+			const plugins = raw.matchAll(/id\s+['"]([^'"]+)['"]\s+version\s+['"]([^'"]+)['"]/g);
+			for (const m of plugins) addDep(`gradle-plugin:${m[1]}`, m[2], 'dev');
+		} catch { /* skip */ }
+	}
 
 	return deps;
 }
@@ -813,6 +948,12 @@ export async function detectProjectMeta(projectPath: string): Promise<DetectedPr
 			poetry: 'poetry publish --build'
 		};
 		releaseCommand = releaseCommands[buildTool];
+	}
+
+	// Minecraft mod framework overrides (more specific than generic gradle)
+	if (framework === 'NeoForge' || framework === 'Fabric' || framework === 'Forge') {
+		if (!devCommand || devCommand === './gradlew run') devCommand = './gradlew runClient';
+		if (!testCommand || testCommand === './gradlew test') testCommand = './gradlew runGameTestServer';
 	}
 
 	// Prefix Node.js commands with the build tool runner
@@ -1002,7 +1143,7 @@ export async function scanAllProjects(
 export async function scanWorkspaceDirectories(
 	workspaceRoots: string[]
 ): Promise<Project[]> {
-	const projectMarkers = ['.git', 'package.json', 'Cargo.toml', 'go.mod', 'pyproject.toml', '.playground'];
+	const projectMarkers = ['.git', 'package.json', 'Cargo.toml', 'go.mod', 'pyproject.toml', 'build.gradle', 'build.gradle.kts', '.sln', '.playground'];
 
 	const seen = new Set<string>();
 	const allProjects: Project[] = [];

@@ -228,13 +228,17 @@ async function detectLanguage(projectPath: string): Promise<string | undefined> 
 		['Gemfile', 'Ruby'],
 		['composer.json', 'PHP']
 	];
-	// TypeScript takes priority over JavaScript
+	// Priority checks — these override the generic langFiles scan
 	if (await exists(resolve(projectPath, 'tsconfig.json'))) return 'TypeScript';
 	// .sln or .csproj files indicate C#
 	try {
 		const entries = await readdir(projectPath);
 		if (entries.some(e => e.endsWith('.sln') || e.endsWith('.csproj'))) return 'C#';
 	} catch { /* skip */ }
+	// Gradle/Maven → Java/Kotlin (must check before package.json which could be incidental)
+	if (await exists(resolve(projectPath, 'build.gradle'))) return 'Java';
+	if (await exists(resolve(projectPath, 'build.gradle.kts'))) return 'Kotlin';
+	if (await exists(resolve(projectPath, 'pom.xml'))) return 'Java';
 	for (const [file, lang] of langFiles) {
 		if (await exists(resolve(projectPath, file))) return lang;
 	}

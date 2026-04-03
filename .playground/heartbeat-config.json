@@ -2,9 +2,9 @@
 	"enabled": true,
 	"phases": {
 		"healthChecks": true,
-		"taskScanning": false,
+		"taskScanning": true,
 		"agentSpawning": true,
-		"reviewCycle": false,
+		"reviewCycle": true,
 		"memorySync": true
 	},
 	"intervals": {
@@ -13,6 +13,12 @@
 		"agentSpawning": 60000,
 		"reviewCycle": 1800000,
 		"memorySync": 60000,
-		"projectPlanning": null
+		"projectPlanning": 300000
+	},
+	"gitPush": {
+		"enabled": true,
+		"afterCommits": 5,
+		"intervalMs": 1800000,
+		"remote": "origin"
 	}
 }

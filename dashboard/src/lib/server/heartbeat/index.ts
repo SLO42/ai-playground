@@ -63,6 +63,8 @@ function setTimer(t: ReturnType<typeof setTimeout> | null) {
 let lastStatuses: Record<string, boolean> = (g.__claw_last_statuses as Record<string, boolean>) ?? {};
 let heartbeatCount = (g.__claw_heartbeat_count as number) ?? 0;
 let lastReviewAt = (g.__claw_last_review as number) ?? 0;
+let commitsSinceLastPush = (g.__claw_commits_since_push as number) ?? 0;
+let lastPushAt = (g.__claw_last_push as number) ?? 0;
 
 // ── Health checks ────────────────────────────────────────────────────
 
@@ -1067,7 +1069,42 @@ async function heartbeat() {
 	}
 	timings.projectPlanning = Date.now() - phaseStart;
 
-	// ── Phase 11: Cleanup & Idle
+	// ── Phase 11: Git push (gated by config.gitPush)
+	const pushPolicy = hbConfig.gitPush;
+	if (pushPolicy?.enabled && spawned > 0) {
+		commitsSinceLastPush += spawned;
+		g.__claw_commits_since_push = commitsSinceLastPush;
+	}
+	if (pushPolicy?.enabled) {
+		const commitThreshold = pushPolicy.afterCommits || 5;
+		const intervalThreshold = pushPolicy.intervalMs || 1_800_000;
+		const timeSincePush = Date.now() - lastPushAt;
+		const shouldPush =
+			(commitsSinceLastPush >= commitThreshold) ||
+			(intervalThreshold > 0 && timeSincePush >= intervalThreshold && commitsSinceLastPush > 0);
+
+		if (shouldPush) {
+			const remote = pushPolicy.remote || 'origin';
+			try {
+				const { execFile } = await import('child_process');
+				const { promisify } = await import('util');
+				const execFileAsync = promisify(execFile);
+				const { stdout: branch } = await execFileAsync('git', ['branch', '--show-current'], { cwd: PATHS.root, encoding: 'utf-8', timeout: 5000 });
+				const branchName = branch.trim();
+				await execFileAsync('git', ['push', remote, branchName], { cwd: PATHS.root, encoding: 'utf-8', timeout: 30000 });
+				log(session, `[git] Pushed ${commitsSinceLastPush} commit(s) to ${remote}/${branchName}`);
+				commitsSinceLastPush = 0;
+				lastPushAt = Date.now();
+				g.__claw_commits_since_push = 0;
+				g.__claw_last_push = lastPushAt;
+			} catch (err) {
+				const msg = err instanceof Error ? err.message.split('\n')[0] : 'git push failed';
+				log(session, `[git] Push failed: ${msg}`);
+			}
+		}
+	}
+
+	// ── Phase 12: Cleanup & Idle
 	await cleanupPromptFiles();
 
 	const totalMs = Date.now() - cycleStart;

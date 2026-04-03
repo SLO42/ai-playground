@@ -35,10 +35,23 @@ export interface HeartbeatIntervals {
 	projectPlanning: number;
 }
 
+/** Git push policy — controls when Claw auto-pushes commits to the remote. */
+export interface GitPushPolicy {
+	/** Enable automatic pushing. Default: false (manual only). */
+	enabled: boolean;
+	/** Push after every N agent commits. 0 = don't use commit count. Default: 5. */
+	afterCommits: number;
+	/** Push at most once every N milliseconds. 0 = no time-based pushing. Default: 1800000 (30min). */
+	intervalMs: number;
+	/** Target remote. Default: 'origin'. */
+	remote: string;
+}
+
 export interface HeartbeatConfig {
 	enabled: boolean;
 	phases: HeartbeatPhases;
 	intervals: HeartbeatIntervals;
+	gitPush?: GitPushPolicy;
 }
 
 const DEFAULT_CONFIG: HeartbeatConfig = {

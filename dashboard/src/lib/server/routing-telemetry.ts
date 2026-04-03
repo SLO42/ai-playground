@@ -238,6 +238,17 @@ function migrateFromJson(db: Database.Database): void {
 	migrate(entries);
 }
 
+// ── Testing helpers ──────────────────────────────────────────────────
+
+/** Reset singleton DB for test isolation. Accepts an optional in-memory DB. */
+export function _resetForTesting(inMemoryDb?: Database.Database): void {
+	if (_db && _db !== inMemoryDb) {
+		try { _db.close(); } catch { /* already closed */ }
+	}
+	_db = inMemoryDb ?? null;
+	_insertStmt = null;
+}
+
 // ── Row → RoutingDecision mapper ──────────────────────────────────────
 
 interface DecisionRow {

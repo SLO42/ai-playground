@@ -21,10 +21,11 @@ describe('StatusBar', () => {
 	});
 
 	it('renders lastSync text', () => {
-		// Pass an ISO date ~5 minutes in the past so syncLabel computes "5m ago"
+		// Pass an ISO date — component formats it via toLocaleTimeString
 		const fiveMinAgo = new Date(Date.now() - 5 * 60_000).toISOString();
 		render(StatusBar, { props: { lastSync: fiveMinAgo } });
-		expect(screen.getByText(/5m ago/)).toBeInTheDocument();
+		// Should display a formatted time, not "just now"
+		expect(screen.getByText(/Synced \d{1,2}:\d{2}/)).toBeInTheDocument();
 	});
 
 	it('renders default lastSync as "just now"', () => {

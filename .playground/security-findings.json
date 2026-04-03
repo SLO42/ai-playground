@@ -1,0 +1,15 @@
+{
+  "scannedAt": "2026-04-03T15:40:50.694Z",
+  "findings": [
+    {
+      "severity": "INFO",
+      "issue": ".env file present",
+      "detail": "Secrets file exists — ensure it is listed in .gitignore"
+    },
+    {
+      "severity": "INFO",
+      "issue": "OLLAMA_API_KEY is configured",
+      "detail": "Value: [HIDDEN]"
+    }
+  ]
+}

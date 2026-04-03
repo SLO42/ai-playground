@@ -21,8 +21,8 @@ function makeTasks(count: number) {
 
 const MOCK_TASKS = makeTasks(25);
 
-vi.mock('$lib/server/task-store.js', () => ({
-	listTasks: vi.fn(() => Promise.resolve([...MOCK_TASKS]))
+vi.mock('$lib/server/task-store-sql.js', () => ({
+	listTasks: vi.fn(() => [...MOCK_TASKS])
 }));
 
 vi.mock('$lib/server/constants.js', () => ({

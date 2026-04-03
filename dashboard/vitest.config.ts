@@ -8,6 +8,11 @@ export default defineConfig({
 		exclude: ['src/integration-tests/**'],
 		environment: 'jsdom',
 		setupFiles: ['src/test-setup.ts'],
+		server: {
+			deps: {
+				inline: ['@testing-library/svelte', '@testing-library/svelte-core']
+			}
+		},
 		coverage: {
 			provider: 'v8',
 			reporter: ['text', 'json-summary'],

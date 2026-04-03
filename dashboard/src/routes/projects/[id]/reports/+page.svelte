@@ -7,6 +7,7 @@
 
 	let generating = $state(false);
 	let generated = $state(false);
+	let generateError = $state('');
 
 	const priorityColors: Record<string, string> = {
 		critical: 'text-accent-red',
@@ -49,9 +50,16 @@
 
 	async function generateGlobalReport() {
 		generating = true;
+		generateError = '';
 		try {
-			await apiPost('/api/reports', { type: 'daily', source: 'project-page' });
-			generated = true;
+			const result = await apiPost('/api/reports', { type: 'daily', source: 'project-page' });
+			if (result === null) {
+				generateError = 'Failed to generate report. Please try again.';
+			} else {
+				generated = true;
+			}
+		} catch (err) {
+			generateError = err instanceof Error ? err.message : 'An unexpected error occurred.';
 		} finally {
 			generating = false;
 		}
@@ -79,13 +87,18 @@
 				</svg>
 				Global Reports
 			</a>
-			<button
-				onclick={generateGlobalReport}
-				disabled={generating || generated}
-				class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium bg-accent-blue/20 text-accent-blue hover:bg-accent-blue/30 transition-colors disabled:opacity-50"
-			>
-				{generating ? 'Generating...' : generated ? 'Generated' : 'Generate Daily Report'}
-			</button>
+			<div class="flex items-center gap-2">
+				<button
+					onclick={generateGlobalReport}
+					disabled={generating || generated}
+					class="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium {generateError ? 'bg-accent-red/20 text-accent-red' : 'bg-accent-blue/20 text-accent-blue hover:bg-accent-blue/30'} transition-colors disabled:opacity-50"
+				>
+					{generating ? 'Generating...' : generated ? 'Generated' : generateError ? 'Retry Report' : 'Generate Daily Report'}
+				</button>
+				{#if generateError}
+					<span class="text-xs text-accent-red">{generateError}</span>
+				{/if}
+			</div>
 		</div>
 	</div>
 

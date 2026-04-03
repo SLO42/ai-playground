@@ -18,7 +18,8 @@ const baseProps = {
 	totalPages: 1,
 	pageSize: 10,
 	loading: false,
-	ondelete: vi.fn()
+	ondelete: vi.fn(),
+	ontoggle: vi.fn()
 };
 
 describe('HookList', () => {

@@ -231,9 +231,8 @@
 									<span class="text-xs font-semibold {meta.color}">{meta.label}</span>
 									<span class="text-[0.65rem] text-text-secondary font-mono">{formatTime(event.timestamp)}</span>
 								</div>
-								{@const detail = eventDetail(event as unknown as Record<string, unknown>)}
-								{#if detail}
-									<p class="text-xs text-text-secondary mt-0.5 leading-relaxed">{detail}</p>
+								{#if eventDetail(event as unknown as Record<string, unknown>)}
+									<p class="text-xs text-text-secondary mt-0.5 leading-relaxed">{eventDetail(event as unknown as Record<string, unknown>)}</p>
 								{/if}
 							</div>
 						</div>

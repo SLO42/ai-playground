@@ -16,6 +16,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `/projects` | `routes/projects/+page.svelte` | `routes/projects/+page.server.ts` |
 | `/projects/[id]` | `routes/projects/[id]/+layout.svelte` | `routes/projects/[id]/+layout.server.ts` |
 | `/projects/[id]/releases` | `routes/projects/[id]/releases/+page.svelte` | `routes/projects/[id]/releases/+page.server.ts` |
+| `/projects/[id]/reports` | (page.svelte — not yet created) | `routes/projects/[id]/reports/+page.server.ts` — task stats (total/completed/in-progress/pending), recent completions, tag distribution, priority breakdown for a single project |
 | `/services` | `routes/services/+page.svelte` | `routes/services/+page.server.ts` |
 | `/settings` | `routes/settings/+page.svelte` | `routes/settings/+page.server.ts` — heartbeat config load converts disk format (`phases` as object, from `shared.ts`) to UI format (`phases` as `HeartbeatPhase[]`); both formats accepted |
 | `/reports` | `routes/reports/+page.svelte` | (uses `lib/server/reports.ts`) |
@@ -27,6 +28,7 @@ Quick reference for navigating the codebase. Read specific files — don't explo
 | `/notifications` | `routes/notifications/+page.svelte` | `routes/notifications/+page.server.ts` |
 | `/hooks` | `routes/hooks/+page.svelte` | `routes/hooks/+page.server.ts` |
 | `/about` | `routes/about/+page.server.ts` | (server only) |
+| `/demo` | `routes/demo/+page.svelte` | `routes/demo/+page.server.ts` — agent lifecycle visualizer; groups `AgentEvent`s by `taskId`, filters to lifecycle-relevant event types (classified → spawned → completed → committed → review → follow-up), and returns `LifecycleTask[]` sorted by most recent. Exports `LifecycleTask` interface. |
 
 ## API Endpoints
 

@@ -74,3 +74,10 @@ If a pattern recurs 3+ times, escalate to a skill rule or CLAUDE.md.
 - **Why**: `waitUntil: 'networkidle'` requires all network connections to settle. SSE keeps a persistent open connection, so "network idle" is never reached
 - **Fix**: Changed `smokeCheck()` to use `waitUntil: 'load'` instead of `'networkidle'`
 - **Prevention**: When a page has SSE or WebSocket connections, NEVER use `waitUntil: 'networkidle'` in Playwright. Use `'load'` or `'domcontentloaded'` instead.
+
+## F-011: {@const} placed inside a plain HTML element breaks Svelte compile
+- **Date**: 2026-04-03
+- **What**: `dashboard/src/routes/demo/+page.svelte:234` used `{@const detail = ...}` directly inside a `<div>`, causing a build failure: `` `{@const}` must be the immediate child of `{#snippet}`, `{#if}`, `{:else}`, `{#each}`, etc. ``
+- **Why**: `{@const}` is a block-level Svelte directive, not an inline expression. It is only valid as a direct child of control-flow blocks or components — not inside regular HTML elements.
+- **Fix**: Move the `{@const}` inside an `{#each}` or `{#if}` block that directly wraps it, or compute the value in a helper variable outside the template.
+- **Prevention**: `{@const}` must be the *immediate* child of `{#each}`, `{#if}`, `{:else if}`, `{:else}`, `{#snippet}`, `{:then}`, `{:catch}`, `<svelte:fragment>`, `<svelte:boundary>`, or a component. NEVER place it inside a `<div>` or other HTML element, even if that element is inside a valid block.

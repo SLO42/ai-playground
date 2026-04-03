@@ -240,8 +240,9 @@ function migrateFromJson(db: Database.Database): void {
 
 // ── Testing helpers ──────────────────────────────────────────────────
 
-/** Reset singleton DB for test isolation. Accepts an optional in-memory DB. */
+/** Reset singleton DB for test isolation. No-op outside NODE_ENV=test. */
 export function _resetForTesting(inMemoryDb?: Database.Database): void {
+	if (process.env.NODE_ENV !== 'test') return;
 	if (_db && _db !== inMemoryDb) {
 		try { _db.close(); } catch { /* already closed */ }
 	}

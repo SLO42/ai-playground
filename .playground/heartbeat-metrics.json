@@ -1,141 +1,6 @@
 [
 	{
 		"timings": {
-			"healthChecks": 94,
-			"taskScanning": 83,
-			"checkAgents": 0,
-			"spawn": 3070,
-			"reviewCycle": 0,
-			"notifications": 7,
-			"memoryGuard": 43,
-			"projectPlanning": 0
-		},
-		"totalMs": 3297,
-		"tasksProcessed": 1,
-		"timestamp": "2026-04-03T16:02:48.712Z"
-	},
-	{
-		"timings": {
-			"healthChecks": 91,
-			"taskScanning": 64,
-			"checkAgents": 0,
-			"spawn": 4928,
-			"reviewCycle": 0,
-			"notifications": 15,
-			"memoryGuard": 51,
-			"projectPlanning": 0
-		},
-		"totalMs": 5149,
-		"tasksProcessed": 2,
-		"timestamp": "2026-04-03T16:03:23.877Z"
-	},
-	{
-		"timings": {
-			"healthChecks": 109,
-			"taskScanning": 85,
-			"checkAgents": 0,
-			"spawn": 1617,
-			"reviewCycle": 0,
-			"notifications": 1,
-			"memoryGuard": 160,
-			"projectPlanning": 0
-		},
-		"totalMs": 1972,
-		"tasksProcessed": 1,
-		"timestamp": "2026-04-03T16:03:55.854Z"
-	},
-	{
-		"timings": {
-			"healthChecks": 89,
-			"taskScanning": 65,
-			"checkAgents": 0,
-			"spawn": 5295,
-			"reviewCycle": 0,
-			"notifications": 9,
-			"memoryGuard": 68,
-			"projectPlanning": 0
-		},
-		"totalMs": 5527,
-		"tasksProcessed": 2,
-		"timestamp": "2026-04-03T16:04:31.392Z"
-	},
-	{
-		"timings": {
-			"healthChecks": 79,
-			"taskScanning": 73,
-			"checkAgents": 0,
-			"spawn": 2051,
-			"reviewCycle": 0,
-			"notifications": 8,
-			"memoryGuard": 49,
-			"projectPlanning": 0
-		},
-		"totalMs": 2260,
-		"tasksProcessed": 1,
-		"timestamp": "2026-04-03T16:05:03.668Z"
-	},
-	{
-		"timings": {
-			"healthChecks": 101,
-			"taskScanning": 63,
-			"checkAgents": 0,
-			"spawn": 3829,
-			"reviewCycle": 0,
-			"notifications": 10,
-			"memoryGuard": 168,
-			"projectPlanning": 0
-		},
-		"totalMs": 4171,
-		"tasksProcessed": 2,
-		"timestamp": "2026-04-03T16:05:37.858Z"
-	},
-	{
-		"timings": {
-			"healthChecks": 75,
-			"taskScanning": 73,
-			"checkAgents": 0,
-			"spawn": 1964,
-			"reviewCycle": 0,
-			"notifications": 7,
-			"memoryGuard": 45,
-			"projectPlanning": 0
-		},
-		"totalMs": 2165,
-		"tasksProcessed": 1,
-		"timestamp": "2026-04-03T16:06:10.030Z"
-	},
-	{
-		"timings": {
-			"healthChecks": 87,
-			"taskScanning": 63,
-			"checkAgents": 0,
-			"spawn": 4800,
-			"reviewCycle": 0,
-			"notifications": 1,
-			"memoryGuard": 50,
-			"projectPlanning": 0
-		},
-		"totalMs": 5001,
-		"tasksProcessed": 2,
-		"timestamp": "2026-04-03T16:06:45.049Z"
-	},
-	{
-		"timings": {
-			"healthChecks": 100,
-			"taskScanning": 178,
-			"checkAgents": 0,
-			"spawn": 3318,
-			"reviewCycle": 0,
-			"notifications": 1,
-			"memoryGuard": 45,
-			"projectPlanning": 35
-		},
-		"totalMs": 3679,
-		"tasksProcessed": 1,
-		"timestamp": "2026-04-03T16:07:11.417Z"
-	},
-	{
-		"timings": {
 			"healthChecks": 107,
 			"taskScanning": 88,
 			"checkAgents": 0,
@@ -1498,5 +1363,140 @@
 		"totalMs": 689,
 		"tasksProcessed": 0,
 		"timestamp": "2026-04-03T16:41:23.476Z"
+	},
+	{
+		"timings": {
+			"healthChecks": 141,
+			"taskScanning": 56,
+			"checkAgents": 262,
+			"spawn": 0,
+			"reviewCycle": 0,
+			"notifications": 9,
+			"memoryGuard": 16,
+			"projectPlanning": 30
+		},
+		"totalMs": 514,
+		"tasksProcessed": 0,
+		"timestamp": "2026-04-03T16:41:33.810Z"
+	},
+	{
+		"timings": {
+			"healthChecks": 165,
+			"taskScanning": 40,
+			"checkAgents": 493,
+			"spawn": 2965,
+			"reviewCycle": 0,
+			"notifications": 36,
+			"memoryGuard": 862,
+			"projectPlanning": 34
+		},
+		"totalMs": 4595,
+		"tasksProcessed": 1,
+		"timestamp": "2026-04-03T16:41:58.089Z"
+	},
+	{
+		"timings": {
+			"healthChecks": 218,
+			"taskScanning": 365,
+			"checkAgents": 623,
+			"spawn": 0,
+			"reviewCycle": 0,
+			"notifications": 1,
+			"memoryGuard": 11,
+			"projectPlanning": 25
+		},
+		"totalMs": 1244,
+		"tasksProcessed": 0,
+		"timestamp": "2026-04-03T16:42:05.077Z"
+	},
+	{
+		"timings": {
+			"healthChecks": 163,
+			"taskScanning": 41,
+			"checkAgents": 1103,
+			"spawn": 0,
+			"reviewCycle": 0,
+			"notifications": 1,
+			"memoryGuard": 14,
+			"projectPlanning": 25
+		},
+		"totalMs": 1347,
+		"tasksProcessed": 0,
+		"timestamp": "2026-04-03T16:42:29.442Z"
+	},
+	{
+		"timings": {
+			"healthChecks": 145,
+			"taskScanning": 38,
+			"checkAgents": 574,
+			"spawn": 0,
+			"reviewCycle": 0,
+			"notifications": 0,
+			"memoryGuard": 932,
+			"projectPlanning": 28
+		},
+		"totalMs": 1717,
+		"tasksProcessed": 0,
+		"timestamp": "2026-04-03T16:42:36.800Z"
+	},
+	{
+		"timings": {
+			"healthChecks": 192,
+			"taskScanning": 45,
+			"checkAgents": 1547,
+			"spawn": 7,
+			"reviewCycle": 0,
+			"notifications": 4,
+			"memoryGuard": 27,
+			"projectPlanning": 43
+		},
+		"totalMs": 1866,
+		"tasksProcessed": 0,
+		"timestamp": "2026-04-03T16:43:01.326Z"
+	},
+	{
+		"timings": {
+			"healthChecks": 177,
+			"taskScanning": 41,
+			"checkAgents": 523,
+			"spawn": 0,
+			"reviewCycle": 0,
+			"notifications": 1,
+			"memoryGuard": 10,
+			"projectPlanning": 31
+		},
+		"totalMs": 784,
+		"tasksProcessed": 0,
+		"timestamp": "2026-04-03T16:43:07.589Z"
+	},
+	{
+		"timings": {
+			"healthChecks": 290,
+			"taskScanning": 71,
+			"checkAgents": 907,
+			"spawn": 0,
+			"reviewCycle": 0,
+			"notifications": 1,
+			"memoryGuard": 881,
+			"projectPlanning": 25
+		},
+		"totalMs": 2175,
+		"tasksProcessed": 0,
+		"timestamp": "2026-04-03T16:43:33.522Z"
+	},
+	{
+		"timings": {
+			"healthChecks": 186,
+			"taskScanning": 38,
+			"checkAgents": 552,
+			"spawn": 3,
+			"reviewCycle": 0,
+			"notifications": 0,
+			"memoryGuard": 10,
+			"projectPlanning": 24
+		},
+		"totalMs": 813,
+		"tasksProcessed": 0,
+		"timestamp": "2026-04-03T16:43:38.411Z"
 	}
 ]

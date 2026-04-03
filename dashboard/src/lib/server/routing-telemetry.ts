@@ -1,5 +1,5 @@
 import { dirname, resolve } from 'path';
-import { mkdirSync } from 'fs';
+import { mkdirSync, readFileSync } from 'fs';
 import Database from 'better-sqlite3';
 import { PATHS } from './constants.js';
 

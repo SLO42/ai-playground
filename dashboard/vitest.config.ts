@@ -7,6 +7,7 @@ export default defineConfig({
 		include: ['src/**/*.test.ts', 'src/**/*.test.svelte.ts'],
 		exclude: ['src/integration-tests/**'],
 		environment: 'jsdom',
+		env: { NODE_ENV: 'test' },
 		setupFiles: ['src/test-setup.ts'],
 		server: {
 			deps: {

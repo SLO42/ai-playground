@@ -81,3 +81,10 @@ If a pattern recurs 3+ times, escalate to a skill rule or CLAUDE.md.
 - **Why**: `{@const}` is a block-level Svelte directive, not an inline expression. It is only valid as a direct child of control-flow blocks or components — not inside regular HTML elements.
 - **Fix**: Move the `{@const}` inside an `{#each}` or `{#if}` block that directly wraps it, or compute the value in a helper variable outside the template.
 - **Prevention**: `{@const}` must be the *immediate* child of `{#each}`, `{#if}`, `{:else if}`, `{:else}`, `{#snippet}`, `{:then}`, `{:catch}`, `<svelte:fragment>`, `<svelte:boundary>`, or a component. NEVER place it inside a `<div>` or other HTML element, even if that element is inside a valid block.
+
+## F-012: Claw agent git operations wiped uncommitted edits in shared repo
+- **Date**: 2026-04-03
+- **What**: Made extensive edits to 8+ heartbeat files (JSON→SQL migration). Claw agents spawned concurrently, ran `git add` + `git commit` for their own task files. Our uncommitted edits were lost — reverted to the pre-edit state.
+- **Why**: Claw agents share the same working tree. When `commitAgentChanges()` runs `git diff --name-only HEAD` to build the delta, it sees ALL dirty files (including our edits). The baseline filter should exclude them, but Claude Code (the subprocess) may also do internal git operations (stash/restore) that interfere with uncommitted changes.
+- **Fix**: Re-applied all changes and committed immediately (`095b028`).
+- **Prevention**: ALWAYS commit work-in-progress before Claw agents can run in the same repo. If you're making multi-file edits, commit early and often — don't leave changes unstaged while the heartbeat is active. Consider pausing the heartbeat (`agentSpawning: false`) during manual editing sessions.

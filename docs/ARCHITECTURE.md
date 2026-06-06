@@ -144,7 +144,7 @@ Model identity is config-driven; adding/swapping a model is config, not code.
 Carried from v1 (it's good). Scans a code root, detects ecosystem and mod frameworks, writes/updates a `project` record. Registry is a SurrealDB table, not `registry.json`.
 
 ### 2.8 Services manager
-Start/stop/health/auto-restart for the local model server (Ollama) and the engine. Uses Windows-safe process control (`tasklist`/`taskkill`, `shell:true` on spawn — fails F-001/F-002). PID registry is a SurrealDB table.
+Start/stop/health/auto-restart for the local model server (Ollama), the SurrealDB server (D-006), and the engine. Uses Windows-safe process control (`tasklist`/`taskkill`, `shell:true` on spawn — fails F-001/F-002). PID registry is a SurrealDB table. The dashboard itself self-reports status only (it can't start/stop itself).
 
 ### 2.9 Dashboard
 SvelteKit 2.x + Svelte 5 (runes) SSR. Server routes are a **thin** API over the services above. Client uses Svelte 5 runes; **one SSE/event stream** carries live updates (agent events, task changes, metrics, **live Claude Code transcripts**) instead of many independent pollers. Pages gated by feature flags.
@@ -222,7 +222,7 @@ v1 had ~30 pages. v2 consolidates. Proposed global pages:
 | Page | Purpose | Consolidates (v1) |
 |------|---------|-------------------|
 | `/` | Home / portfolio overview | home |
-| `/projects` + `/projects/[id]/…` | Project workspace: overview, tasks, roadmap, sessions, memory, settings | most `/projects/[id]/*` |
+| `/projects` + `/projects/[id]/…` | Project workspace: overview, tasks, roadmap, sessions, memory, release, settings | most `/projects/[id]/*` |
 | `/agents` | Pool, usage, catalog, live activity | agents, agents usage/catalog |
 | `/chat` | Multi-provider chat (global + project-scoped) | chat, sessions, channels |
 | `/memory` | Knowledge graph + semantic search explorer | memory |

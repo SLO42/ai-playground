@@ -358,7 +358,7 @@ SELECT ->references->memory->references->memory.* AS two_hop FROM memory:a;
 
 ```sql
 DEFINE TABLE service SCHEMAFULL;
-DEFINE FIELD name    ON service TYPE string;     -- ollama | engine | dashboard
+DEFINE FIELD name    ON service TYPE string;     -- ollama | surrealdb | engine | dashboard (dashboard = status-only self-report)
 DEFINE FIELD status  ON service TYPE string DEFAULT "unknown"
   ASSERT $value IN ["running","stopped","crashed","unknown"];
 DEFINE FIELD pid     ON service TYPE option<int>;

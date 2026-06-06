@@ -18,6 +18,7 @@ These are **planning documents only**. No code yet. The build happens later, pha
 | 4 | [DEVELOPMENT.md](./DEVELOPMENT.md) | Repo layout, stack versions, build/test/lint, conventions, Windows rules |
 | 5 | [ROADMAP.md](./ROADMAP.md) | Phased build plan, releases, milestones, and the open spikes |
 | 6 | [DECISIONS.md](./DECISIONS.md) | ADR-style log: locked decisions + tracked OPEN decisions |
+| 7 | [UI-SPEC.md](./UI-SPEC.md) | UI/UX design contract: IA, layout, per-screen specs, components, live-update UX, states (visual styling values deferred) |
 
 ## The four pivotal decisions (locked)
 

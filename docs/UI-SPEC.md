@@ -234,6 +234,13 @@ One SSE stream feeds all live regions (ARCHITECTURE `events` bus → one SSE fan
 - **Fail-closed gate while server down (D-024):** a Claude Code `permissions.deny` block still surfaces in the UI via the **runtime transcript stream** — the denial arrives as a `tool_result` in `TranscriptView` — even when our own gate-telemetry event (the `GateBanner` path) never fires because the server is down. The operator still sees the block happened.
 - Live regions use ARIA live semantics for a11y (§9).
 
+**Motion model** (cannibalized: `design-motion-principles` + `motion-dev`, both MIT — see foundry):
+- **Frequency gate — decide IF before HOW.** Occasional events may animate; high-frequency live updates (sub-second metric/ticker churn) get an instant transition or none. Never spring-*bounce* a frequently-repeating update — the #1 motion-slop tell, and it tires fast. Use `bounce:0` springs / custom ease-out for enters.
+- **Enter ≠ exit.** New rows enter `opacity 0→1` + `translateY ~8px→0` + `blur 4→0` (spring ~0.45s, `bounce:0`); removals use a subtler/faster exit. Wrap streamed/conditional content so enters+exits actually run (an un-animated `{#if}` is a motion gap).
+- **GPU-only + interruptible.** Animate only `transform`/`opacity`/`filter`; prefer state-driven CSS transitions over keyframes so a fast stream blends instead of queueing; cap ~10–15 concurrent.
+- **Reduced-motion is mandatory and keeps the end-state.** `prefers-reduced-motion` collapses durations to ~instant but still lands on the final visible state — never leave a row stuck at `opacity:0`.
+- **Svelte 5 impl (stack note):** drive Motion's framework-agnostic `animate`/`stagger`/`scroll`/`inView` from `use:` actions / `$effect` on raw DOM — there is **no** React `<motion.div>` in Svelte. Keep named spring presets (gentle/snappy/critical) in a `motion-tokens` module so streaming rows, fleet grid, and hovers feel consistent.
+
 ---
 
 ## 8. State & feedback patterns
@@ -247,6 +254,15 @@ One SSE stream feeds all live regions (ARCHITECTURE `events` bus → one SSE fan
 - **Confirmation**: destructive or config-mutating actions (config write, stop agent, delete) require explicit confirm; config writes show a **diff** first (D-010). Gate blocks surface a `GateBanner` explaining what was blocked and why (D-018).
 - **Toasts + tray**: transient success/info as toasts; durable items in the right tray.
 
+### 8.1 Chart design (analytics surfaces — `ReportChart` / `TimelineChart`, §6 `/reports`)
+
+Cannibalized (`mckinsey-viz`, MIT — **logic only, NOT** its light/serif/boardroom look, which conflicts with this dark dense tool):
+- **Chart by data-question, deterministically.** Map the metric's shape → chart: timeseries→line, delta→bar/bridge, breakdown→stacked, ranking→sorted bar or `ReportTable`, milestones→timeline, positioning→scatter. Make "which chart" a function, not a taste call.
+- **Asserted-conclusion titles.** Title states the finding ("Routing cost fell 38% after escalation tuning"), not the topic ("Cost over time") — compute from the data delta.
+- **Two-role color.** One accent (the subject) + muted/grey for the rest, mapped onto §4 dark tokens. No rainbow per-series palettes.
+- **Data-ink discipline.** Hairline 1px gridlines, direct value labels over axis-reading, a persistent annotation slot for the so-what; no shadows/gradients on marks.
+- **Chart a11y** (see §9): `role="img"` + `aria-label` + hidden data-table fallback; series readable without color; CVD-safe.
+
 ---
 
 ## 9. Accessibility
@@ -256,6 +272,18 @@ One SSE stream feeds all live regions (ARCHITECTURE `events` bus → one SSE fan
 - Live regions (transcripts, status) use `aria-live="polite"` so updates are announced without stealing focus.
 - `prefers-reduced-motion` disables slide/fade for live updates.
 - Mono/numeric data aligned; status never conveyed by color alone (pair with icon/label).
+
+**Frozen acceptance criteria** (from the `impeccable` anti-pattern set — enforced at the §15 visual pass + the v1.0 gate, §12):
+- Body text contrast ≥ 4.5:1; large/UI text ≥ 3:1 (WCAG AA). No light-gray-for-elegance — muted text must still meet ratio on *its* surface, not just on white.
+- No AI-slop tells: no purple/pink gradients, no gradient text, no icon-tile-above-heading, no `01/02/03` section markers, no cream/beige default background (this app is dark-first regardless).
+- Density discipline (§1.5 calm density): don't nest cards; flatten with spacing / dividers / type hierarchy. Hold nav ≤ ~7 top items, form groups ≤ ~4 fields, metric rows ≤ ~4 — working-memory caps.
+- UX copy: verb+object button labels; no buzzwords; errors quote the real message (§11). Status words == data-model enums.
+
+**A11y acceptance criteria** (cannibalized: `accessibility-agents`, MIT — these replace "enforced later"):
+- **Live regions for SSE/streaming.** One always-mounted `aria-live="polite"` region at app root (never conditionally rendered); stream status, toasts, result counts announced via a debounced (~500ms) `announce()` using `textContent`; transcript = `role="log"`; fatal stream errors = `role="alert"`. *Verify: starting a stream + a toast each produce exactly one SR announcement.*
+- **Data-viz a11y.** Every chart: `role="img"` + descriptive `aria-label` + a visually-hidden `<table>` fallback; series distinguishable without color; CVD-safe palette ≥3:1 adjacent (§8.1).
+- **Contrast + focus CI gate (dark theme).** A CI job runs a WCAG-luminance check over the `@theme` `:root`/`.dark` token pairs; fail build on text <4.5:1 / large <3:1 / UI+focus-ring <3:1. `:focus-visible` = two-color ring ≥2px @3:1 on the dark surface; bare `outline:none` lint-banned.
+- **Keyboard + WCAG 2.2 numerics.** Interactive targets ≥24×24px; composite widgets (tab strips, grids, filter toolbars) arrow-key operable via roving tabindex; SPA route change moves focus to the new `h1`/`main`; skip link is first focusable; reflow to single column at 320px (tables/charts exempt).
 
 ---
 
@@ -268,6 +296,14 @@ Target = local **desktop** (the single operator's machine). Design to a comforta
 ## 11. Content & voice
 
 Terse, technical, honest. Labels are nouns/verbs, not marketing. Numbers carry units. Errors quote the real message. Status words match the data-model enums exactly (running/done/failed/blocked…), so UI vocabulary == system vocabulary.
+
+**Microcopy rules** (cannibalized: `ux-writing-skill`, MIT):
+- **Buttons** = verb + object, sentence case ("Start run", "Stop agent", "Save config") — never "OK / Submit / Click here".
+- **Errors** = `[what failed]. [likely cause]. [recovery]`, blame-free, no raw codes: "Couldn't save config. Connection lost. Reconnect and retry." (pairs with the real message surfaced in §8).
+- **Empty states**, three subtypes: first-use ("No projects yet — register one"), user-cleared ("All caught up"), no-results ("No tasks match 'blocked' — clear filters"). Never an empty void.
+- **Success** = past tense + specific ("Config saved", "Agent stopped"), proportional to stakes (minimal for routine; full confirm for destructive — §8).
+- **Unknown/outage** = name it, reassure, give a status action — never fake-cheerful, never a fabricated number (§1.3, F-008).
+- Tone adapts to the operator's state (frustrated → calm/direct; confident → minimal); **voice stays constant** (terse-technical-honest). Run user-facing strings through the 4-standard pass: Purposeful → Concise → Conversational → Clear.
 
 ---
 
@@ -312,3 +348,19 @@ The concrete look is intentionally **not** designed here. Plan:
 4. Re-verify contrast/a11y (§9) once values are real.
 
 Until then: token **roles + structure + screen behavior** (this doc) are the contract; **values inherit v1** as a placeholder so the UI is buildable and consistent now, restyleable later in one token file.
+
+### 15.1 Cannibalized design inputs (harvested 2026-06-06)
+
+Two design skills were studied via the `cannibalize` foundry; they power steps 2–4 above. **Use them, don't reinvent.**
+
+**SEED — `ui-ux-pro-max`** (license: repo `src/` is MIT → liftable; its `cli/` is CC-BY-NC-4.0 → **do not** lift, v2 may go commercial). Closest reference rows for this app (product register: dense, dark, keyboard-driven):
+- **Developer Tool / IDE** *(primary lens)* — dark + minimalism, blue focus, **monospace + functional typography**, command palette, keyboard shortcuts. Maps to §1.6 / §3 / §4 (mono first-class).
+- **Financial + Analytics Dashboard** *(data-dense screens)* — dark bg, red/green status alerts, real-time number animation, drill-down. Maps to §4 status-enum roles + §7 live updates.
+
+Candidate **starting** tokens to reconcile against v1's existing `@theme` (step 1) — a seed, not final values:
+- Palette (dark, status-bearing; lifted from rows 6/7/81, already WCAG-adjusted): bg `#020617` / panel `#0F172A` / raised `#1E293B`, border `#334155`, text `#F8FAFC`, muted-text `#94A3B8`, accent/focus `#3B82F6`, running/success `#22C55E`, error `#EF4444`, warn `#D97706`, info `#3B82F6`. Drops onto the §4 color roles + the status-enum→role table 1:1.
+- Type: **JetBrains Mono** (`--font-mono`) + **IBM Plex Sans** (`--font-sans`) — the developer-tool pairing; satisfies §4 "mono is first-class."
+
+**GATE — `impeccable`** (Apache-2.0). Run its deterministic anti-pattern detector + LLM critique pass as the QC step before the v1.0 visual sign-off (§12). Its bans are frozen into §9 as acceptance criteria. If installed as a plugin in this repo, invoke the skill; otherwise run the lifted detector from the foundry (`sources/impeccable`, no API key needed).
+
+> These are *candidates to tune against v1's tokens*, per the deferral above — not a license to skip harvesting v1's own `@theme` (step 1). The skills seed and gate the pass; they don't replace it.

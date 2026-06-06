@@ -181,6 +181,8 @@ Triggers and interval live in `config` and a settings page.
 
 **Decision (default, pending confirm):** **Embed via Ollama** (`bge-m3`, **1024-dim**) — reuses the local model server already in the stack, no new native dependency. Fallback options: `node-llama-cpp` + GGUF (KongCode's path, fully self-contained) or a hosted embedding API (no local weight, costs + network). HNSW `DIMENSION` is locked to the chosen model (1024 for BGE-M3); changing models later = re-embed + redefine index.
 
+**Consequence (cannibalize foundry):** the foundry independently validated **`qwen3-embedding:0.6b` served via Ollama (1024-dim, HNSW COSINE in SurrealDB)** as a proven local embedder — a concrete candidate alongside `bge-m3`. **Both are 1024-dim, so the HNSW index `DIMENSION` is unaffected either way** — the choice between them is a quality/throughput call, not an index-locking one. *Verify against v2 constraints before build.* Stays 🟡.
+
 **Revisit:** confirm with owner (see open questions). Dimension must be set before writing the index.
 
 ---
@@ -320,6 +322,98 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 
 ---
 
+## D-027 🔒 Two-tier learning loop: fast in-use writer + slow periodic consolidator
+
+**Source:** cannibalize foundry — **hermes-agent (Nous Research, MIT — code liftable)**. Refines D-022 (self-improvement loop) + D-021 (job queue). *Candidate adapted from hermes; verify against v2 constraints before build.*
+
+**Context:** hermes decouples WRITE cadence from CONSOLIDATE cadence — the architecture the foundry recommends copying wholesale for v2's memory.
+
+**Decision:** Two distinct cadences:
+- **Fast additive WRITE happens in-use** — a **forked, tool-restricted review subagent** fires on a **turn-count cadence**, mines the just-finished turn for memory/skill writes, runs **async**, and **never touches the live prompt cache**.
+- **A SEPARATE periodic consolidator** (inactivity-triggered, ~7-day) **merges narrow knowledge into class-level umbrellas** and **GCs stale items**.
+
+**Consequences:**
+- Keeps knowledge fresh without micro-knowledge proliferation.
+- The in-use fork is **gated** (every Nth turn) and **prefix-cache-optimized** — by inheriting the parent's cached system-prompt prefix verbatim, hermes measured a **~26% cost cut** — so it doesn't violate the "lighter / idle≈zero" principle (D-004). **VERIFY that per-turn fork cost is actually acceptable on v2's stack before build**; write-cadence is config-tunable.
+- Cross-ref: **D-021** (the `work_item` queue is the consolidator's drain), **D-022** (this is the concrete shape of that deferred loop). Detailed mechanics live in the new **MEMORY-SPEC.md**.
+
+---
+
+## D-028 🔒 Extraction is ADD-only; conflict resolution is a separate deterministic/graph pass
+
+**Source:** cannibalize foundry — **mem0 (Apache-2.0 — prompts/code liftable)** + **kongcode (friend's code — IDEAS fine, code-lift needs consent)**. Refines D-008 (dedup) + D-015 (soft-archive). *Candidate; verify against v2 constraints before build.*
+
+**Context:** mem0's V3 **dropped LLM ADD/UPDATE/DELETE decisioning** as too unreliable — trusting the LLM to mutate stored memory in place did not hold up.
+
+**Decision:** **Extraction is one cheap LLM call, ADD-only.** Dedup / supersession / contradiction happen **downstream in a deterministic + graph pass** (supersede edges), **never** by trusting the LLM to mutate in place. Pair with kongcode's **lifecycle** (graduation, decay) — ideas only, no code lift.
+
+**Consequences:**
+- Cheaper and more reliable than in-place LLM mutation.
+- Aligns with **D-008** (dedup via computed `VALUE` keys + unique-violation re-select) and **D-015** (append-only / soft-archive).
+- **Licensing:** mem0 prompts are **Apache-2.0** (liftable); kongcode lifecycle is **ideas only** (code-lift needs the friend's consent).
+
+---
+
+## D-029 🔒 Cross-session recall returns RAW windowed messages + bookends, no summary-LLM
+
+**Source:** cannibalize foundry — **hermes-agent (MIT — FTS5 sanitizer liftable)**. *Candidate; verify against v2 constraints before build.*
+
+**Context:** the live agent has its own reasoning budget and prefers real excerpts over a lossy summary.
+
+**Decision:** Recall path = **FTS5 (or vector) → dedupe by session lineage → return windowed raw messages + first/last bookends**; **NO LLM summarization in the recall path** (cheaper, no added latency, no summarization hallucination). Reserve LLM synthesis for an explicit **"dialectic" tool**, not default recall.
+
+**Consequences:**
+- **Distinct from MEMORY recall ranking** — that path keeps WMR / cross-encoder rerank (see D-022 north-star); **this** is the **cross-session message/turn recall** path.
+- **Licensing:** hermes code is **MIT** (the FTS5 query sanitizer is liftable near-verbatim).
+
+---
+
+## D-030 🟡 OPEN — Close the utilization loop? (FLAG FOR HUMAN — v2's competitive edge)
+
+**Source:** cannibalize foundry — **kongcode** + cannibalize's `mark-applied` outcome signal; the question **hermes leaves open**. *Open question — do NOT pick; flagged for the owner.*
+
+**Context:** hermes self-improvement is **pure WRITE-time judgment with NO retrieval/utilization feedback** — it never measures whether a saved skill later **HELPED**, and prunes purely on inactivity. kongcode's lesson: **retrieval ≠ utilization, and outcome is the best ranker.** v2 already has the `retrieval_outcome` table as **D-022 groundwork**.
+
+**Open question:** Should v2 **track whether a recalled skill/memory led to a GOOD OUTCOME** and feed that signal into **BOTH ranking AND the curator's keep/prune decision** — making the utilization loop **CENTRAL**? This is the move all three sources under-use: **hermes ignores it, mem0 lacks it, kongcode has it but doesn't centralize it.**
+
+**Decision:** **Do NOT pick — explicitly flagged for the owner.** Positioned as **v2's differentiator** (the place v2 can beat hermes, not just match it).
+
+---
+
+## D-031 🟡 OPEN — Periodic consolidation pass vs retrieval-time diversity/novelty gate vs BOTH?
+
+**Source:** cannibalize foundry — **kongcode**. *Open question — do NOT pick.*
+
+**Context:** redundant near-dup memory families accumulate over time. kongcode hints at **both** a **HARD novelty gate at query time** AND a **periodic consolidation pass** (a hard novelty gate beats soft MMR when the corpus has redundant near-dup families).
+
+**Open question:** Which — the consolidation pass, the retrieval-time novelty gate, or **BOTH** — for v2?
+
+**Decision:** **Do not pick.** Open for the owner to resolve.
+
+---
+
+## D-032 🟡 OPEN — Single SurrealDB store (D-001) vs hermes' polyglot split? (FLAG FOR HUMAN — tension with locked D-001)
+
+**Source:** cannibalize foundry — **hermes** vs **kongcode / v2's current plan**. *Open question — surfaces a tension with locked D-001; do NOT silently flip it.*
+
+**Context:** **D-001 locks a single SurrealDB store.** hermes instead **splits** storage: **skills = `SKILL.md` files + sidecar `.usage.json` telemetry**; **sessions = SQLite FTS5**; **user-model = external Honcho**. Claimed advantages of the split: **git-diffable skills, agentskills.io interop, FTS5 maturity**.
+
+**Open question:** Does any of hermes' split carry **enough advantage to carve an exception to D-001** — e.g. keep **skills as git-diffable `SKILL.md` files** while everything else stays in SurrealDB — or does the **unified store win**?
+
+**Decision:** **Do NOT silently flip D-001** — surfaced as a **tension for the owner to resolve**. Note: **§5 / AGENTS.md** leans toward **agentskills.io-compatible `SKILL.md` authoring**, which partially intersects this question.
+
+---
+
+## D-033 🔒 Design skills seed + gate the UI-SPEC (already applied)
+
+**Source:** cannibalize foundry — **D-D in the brief**; `ui-ux-pro-max` (**repo src MIT; CLI is CC-BY-NC — do NOT lift**) + `impeccable` (**Apache-2.0**). *Already applied — recorded for traceability.*
+
+**Context / Decision:** `ui-ux-pro-max` **seeds** UI foundations (dev-tool/dashboard palette + JetBrains Mono / IBM Plex Sans); `impeccable` **gates** via its anti-pattern detector + critique, and its **bans are frozen as UI-SPEC §9 acceptance criteria**; seed tokens live in **UI-SPEC §15.1**.
+
+**Status:** **already applied** to `UI-SPEC.md` (§7 motion, §8.1 charts, §9 a11y/bans, §11 microcopy, §15.1) — recorded here for traceability. **No further action.**
+
+---
+
 ## Decision index
 
 | ID | Status | Topic |
@@ -338,7 +432,7 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 | D-011 | 🔒 | Session orchestration (interject/stop/resume) |
 | D-012 | 🟡 | OpenClaw cannibalization audit (S.2) |
 | D-013 | 🔒 | Headless workflow runner |
-| D-014 | 🟡 | Embedding source (default: Ollama bge-m3, 1024-dim) |
+| D-014 | 🟡 | Embedding source (default: Ollama bge-m3, 1024-dim; qwen3-embedding:0.6b candidate) |
 | D-015 | 🔒 | Append-only / soft-archive for knowledge tables |
 | D-016 | 🔒 | Record-id validation guard (injection) |
 | D-017 | 🔒 | Maintenance on trigger, not a loop (confirms D-004) |
@@ -351,5 +445,12 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 | D-024 | 🔒 | Safety-critical gates fail CLOSED (permissions.deny primary) |
 | D-025 | 🔒 | Control-plane security (per-boot token + loopback-only) |
 | D-026 | 🔒 | Untrusted content as data; secret/PII screen; least-priv DB |
+| D-027 | 🔒 | Two-tier learning loop (fast in-use writer + slow consolidator) |
+| D-028 | 🔒 | Extraction ADD-only; conflict resolution = separate det/graph pass |
+| D-029 | 🔒 | Cross-session recall = raw windowed messages + bookends, no summary-LLM |
+| D-030 | 🟡 | OPEN — close the utilization loop? (FLAG FOR HUMAN — v2's edge) |
+| D-031 | 🟡 | OPEN — consolidation pass vs retrieval-time novelty gate vs both? |
+| D-032 | 🟡 | OPEN — single SurrealDB store (D-001) vs hermes polyglot split? (FLAG FOR HUMAN) |
+| D-033 | 🔒 | Design skills seed + gate UI-SPEC (already applied) |
 
-> **Provenance:** **D-006–D-008 (in part)** and **D-014–D-023** are **KongCode-informed** — derived from studying KongCode v0.7.113 (`C:/Users/11sos/.claude/plugins/cache/kongcode-marketplace/kongcode/0.7.113/`), a production SurrealDB knowledge-graph + Claude Code harness (D-006 server-binary path is the biggest borrow; D-007 SurrealKV, D-008 dedup correction). ARCHITECTURE §9 "Lessons from KongCode" is the authoritative map. **D-024–D-026** are **security hardening surfaced by the pre-commit audit**.
+> **Provenance:** **D-006–D-008 (in part)** and **D-014–D-023** are **KongCode-informed** — derived from studying KongCode v0.7.113 (`C:/Users/11sos/.claude/plugins/cache/kongcode-marketplace/kongcode/0.7.113/`), a production SurrealDB knowledge-graph + Claude Code harness (D-006 server-binary path is the biggest borrow; D-007 SurrealKV, D-008 dedup correction). ARCHITECTURE §9 "Lessons from KongCode" is the authoritative map. **D-024–D-026** are **security hardening surfaced by the pre-commit audit**. **D-027–D-033** (and the D-014 `qwen3-embedding:0.6b` embedding candidate) are sourced from the **cannibalize foundry** (`docs/CANNIBALIZE-BRIEF.md`) — distilled from **hermes-agent** (Nous Research, MIT), **mem0** (Apache-2.0), and **kongcode** (friend's plugin — ideas fine, code-lift needs consent). Each is a **candidate with provenance, to be verified against v2 constraints before build** — not a mandate; the OPEN items (D-030/D-031/D-032) are explicitly deferred to the owner and do **not** override any locked decision (notably D-001, whose tension is surfaced in D-032).

@@ -134,6 +134,11 @@ Model identity is config-driven; adding/swapping a model is config, not code.
 - **Analytics**: first-class. Every routing decision and agent lifecycle event is written to SurrealDB as a queryable record with full rationale (why this provider/model, intent, complexity score, cost, duration, escalations, outcome). Drives the reports/agents pages. **Rollups + anomaly detection (KongCode pattern):** per-turn metrics roll up into daily aggregates (mean tool calls, tokens, p95 duration, tool-failure rate); an anomaly check flags regressions with severity + cooldown so the reports page shows trends ("improving vs degrading"), not just raw events.
 
 ### 2.6 Memory service (vector + graph, unified)
+
+> **The memory/learning engine now has a dedicated spec — see [MEMORY-SPEC.md](./MEMORY-SPEC.md) for the full design** (two-tier loop, extraction, recall, lifecycle, SurrealDB gotchas), folded from the cannibalize research. This section keeps the system-level view; the spec holds the detail.
+
+**Learning-loop summary (detail in MEMORY-SPEC.md).** Memory writes happen via a **two-tier learning loop** — a fast in-use writer fork mines each just-finished turn for memory/skill writes async, decoupled from a slow periodic consolidator that merges narrow knowledge into class-level umbrellas and GCs stale items (D-027, *hermes*). Extraction is **ADD-only** (one cheap LLM call), with dedup/supersession/contradiction handled in a separate deterministic/graph conflict pass rather than trusting the LLM to mutate in place (D-028, *mem0 + kongcode*). **Cross-session recall returns raw windowed messages + first/last bookends with no summary-LLM in the path** (D-029, *hermes*) — distinct from the WMR/rerank MEMORY recall ranking below, which scores and bands semantic-memory hits.
+
 - **Store**: memory entries with embeddings (semantic), plus episodic and procedural entries — all SurrealDB records.
 - **Recall**: hybrid, modeled on KongCode's proven pipeline — **(1)** multi-table vector KNN (HNSW) with per-table budgets, batched in one round-trip; **(2)** graph expansion (1–2 hop BFS from top seeds along typed edges); **(3)** optional FTS for keyword misses; **(4)** merge + dedup by id; **(5)** **WMR scoring** `0.5·cosine + 0.35·historical_utility + 0.15·recency_decay`; **(6)** optional cross-encoder rerank + salience banding (load-bearing/supporting/background). Returns a ranked, budget-trimmed `ContextBundle`. Bumps `access_count`/`last_accessed` on hit.
 - **Knowledge graph**: native SurrealDB `RELATE` edges between memory/entity nodes (typed edges: references/supports/contradicts/derived-from). Replaces v1 `graph-state.json`.
@@ -372,5 +377,22 @@ KongCode v0.7.113 is a shipping SurrealDB knowledge-graph for Claude Code. **It 
 | **Self-improvement loop** (extract → outcome-label → learned rerank → skill synthesis → reflections → optional per-project "soul/profile"). | D-022 — post-v1.0 vision |
 | **Realtime vs batch capture**: lightweight inline capture + heavy batch extraction off the critical path via a spawned subagent. | D-021 / memory bridge |
 | **Resource-profile detection**: detect CPU/RAM at boot → adapt concurrency caps. | services/orchestrator (lighter) |
+
+### 9.1 Cannibalize foundry — hermes / mem0 / kongcode
+
+KongCode is one of three memory engines we mined. The broader memory/learning design comes from comparing **hermes-agent** (Nous Research, MIT — liftable), **mem0** (Apache-2.0 — prompts/code liftable), and **kongcode** (a friend's plugin — ideas/findings fine, lifting code needs consent). The strategic positioning (detail in [MEMORY-SPEC.md](./MEMORY-SPEC.md)):
+
+| Dimension | hermes | kongcode | mem0 | → v2 take |
+|-----------|--------|----------|------|-----------|
+| **Write timing** | in-use per-turn fork | batch end-of-session (hours lag) | per-turn flat facts | in-use fork (hermes) |
+| **Consolidation** | dedicated periodic curator (umbrellas) | graph consolidation / audit-drift | fact dedupe only | curator + graph (both) |
+| **Storage** | polyglot (files + sqlite + Honcho) | single SurrealDB | vector + 2 sqlite | single SurrealDB (D-032 🟡 OPEN) |
+| **Utilization signal** | **NONE** (prunes on time) | outcome = best ranker | none | **close the loop — v2's edge** (D-030 🟡 OPEN) |
+| **Graph** | n/a | real edges (traversal, graduation) | faked (id arrays) | real edges (lean in) |
+| **Extraction** | skill-shaping fork | end-of-session | ADD-only + dedup | ADD-only + kongcode lifecycle (D-028) |
+
+**Net:** copy hermes' two-tier loop + cost-cached fork (background fork inherits the cached system-prompt prefix → ~26% measured cost cut) + the **DO-NOT-CAPTURE guardrail** (never persist environment failures or negative tool claims — they harden into self-cited refusals); keep kongcode's real-graph lifecycle (append-only soft-delete, skill graduation, retrieval-quality scoring); take mem0's cheap **ADD-only extraction** prompt. **v2's winning move = the utilization loop (D-030 🟡 OPEN) all three under-use** — hermes ignores it, mem0 lacks it, kongcode has it; v2 makes it central. Remaining open items in this space: D-030 (utilization loop), D-031 (consolidation pass vs retrieval-time novelty gate), D-032 (single SurrealDB store vs hermes' polyglot split). Locked: D-027 (two-tier loop), D-028 (ADD-only extraction + graph consolidation), D-029 (raw-windowed recall), D-033 (design skills). Provenance is preserved above; full design lives in [MEMORY-SPEC.md](./MEMORY-SPEC.md).
+
+---
 
 What we did **not** adopt: KongCode's **separate daemon + IPC + MCP-thin-client** topology — our SvelteKit server is the long-lived owner (but we DO borrow its hook-proxy + graceful-degradation transport); its full 5-pillar/soul identity model (we borrow only a deferred per-project "profile" idea, D-022); SEA single-executable packaging (revisit only if we distribute v2 beyond this machine).

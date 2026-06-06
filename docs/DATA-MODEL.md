@@ -253,7 +253,7 @@ DEFINE FIELD kind      ON memory TYPE string DEFAULT "semantic"
 DEFINE FIELD namespace ON memory TYPE string DEFAULT "default";
 DEFINE FIELD key       ON memory TYPE option<string>;            -- for dedup on import
 DEFINE FIELD content   ON memory TYPE string;
-DEFINE FIELD embedding ON memory TYPE array<float>;              -- 1024-dim (BGE-M3 via Ollama, D-014); must equal the memory_vec HNSW DIMENSION
+DEFINE FIELD embedding ON memory TYPE array<float>;              -- 1024-dim — D-014 🟡: `bge-m3` (default) or `qwen3-embedding:0.6b` (cannibalize-validated); both 1024-dim so the index is unaffected. Must equal the memory_vec HNSW DIMENSION
 DEFINE FIELD tags      ON memory TYPE option<array<string>>;
 DEFINE FIELD source    ON memory TYPE option<string>;           -- claude-auto-memory|agent|scanner
 DEFINE FIELD scope     ON memory TYPE string DEFAULT "project"  -- KongCode-style soft scoping
@@ -285,13 +285,20 @@ DEFINE FIELD superseded_by  ON memory TYPE option<record<memory>>;
 -- class-level umbrella, set absorbed_into → the umbrella and rewrite its `references` edges to the umbrella.
 -- Readers FOLLOW this exactly like superseded_by (chase to the live umbrella row); no dangling edges.
 DEFINE FIELD absorbed_into  ON memory TYPE option<record<memory>>;
+-- D-026 secret/PII screen: set by the pre-store scanner (runs BEFORE embed, so the
+-- HNSW index + embedding_cache never see raw secrets). Quarantined rows are excluded
+-- from recall (active-set filter) and from the knowledge-only export.
+DEFINE FIELD screen_status ON memory TYPE string DEFAULT "clean"
+  ASSERT $value IN ["clean","redacted","quarantined"];
+DEFINE FIELD screened_at ON memory TYPE option<datetime>;
 DEFINE FIELD created_at ON memory TYPE datetime DEFAULT time::now();
 DEFINE FIELD updated_at ON memory TYPE datetime DEFAULT time::now();
 
 -- HNSW vector index. DIMENSION must match the embedding model.
--- Default model = BGE-M3 (1024-dim) via Ollama (D-014). DIST COSINE for normalized text embeddings.
+-- 1024-dim — D-014 🟡: `bge-m3` (default) or `qwen3-embedding:0.6b` (cannibalize-validated); both 1024-dim so the index is unaffected.
+-- DIST COSINE for normalized text embeddings.
 DEFINE INDEX memory_vec ON memory FIELDS embedding
-  HNSW DIMENSION 1024 DIST COSINE TYPE F32 EFC 150 M 12 M0 24;
+  HNSW DIMENSION 1024 DIST COSINE TYPE F32 EFC 150 M 12;
 
 -- Dedup support for the bridge import (dedup_key VALUE pattern, D-008).
 -- `key` is optional, so a naive UNIQUE on (namespace, key) would collide on the 2nd
@@ -315,6 +322,7 @@ FROM memory
 WHERE embedding <|10,40|> $q
   AND ( $project = NONE OR project = $project )
   AND ( status = "active" OR status IS NONE )   -- soft-archive filter (D-015)
+  AND screen_status != "quarantined"            -- D-026 secret/PII screen
 ORDER BY dist;            -- smaller = closer (cosine distance)
 ```
 The index path returns cosine **distance**; the WMR formula wants cosine **similarity**, so convert with `similarity = 1 - dist`.
@@ -325,6 +333,7 @@ SELECT id, content, vector::similarity::cosine(embedding, $q) AS sim
 FROM memory
 WHERE ( $project = NONE OR project = $project )
   AND ( status = "active" OR status IS NONE )
+  AND screen_status != "quarantined"            -- D-026 secret/PII screen
 ORDER BY sim DESC;        -- larger = closer (cosine similarity)
 ```
 
@@ -349,9 +358,11 @@ Importance decays with age too: `effective_importance = max(importance - min(flo
 
 mem0 keeps three logical tables even in one store (MEMORY-SPEC §6.9): `memory` (searchable, §4.5) + raw turns (≈ `message`, §4.3) + an **append-only audit log**. The audit table records every mutation — ADD on extraction, supersede on the deterministic conflict pass (D-028), archive on consolidation (D-031) — feeding the curator's tool-call audit (MEMORY-SPEC §5.2) and the conflict pass. **Append-only: never updated or deleted.**
 
+> **D-026 secret screen:** screen the content BEFORE the snapshot is written, so the audit log isn't a scrubbed-content leak (the `before`/`after` snapshots must not carry secrets the live row had redacted). If a row is redacted *after* a snapshot was already written, treat that as an audited hard-delete exception to append-only for the affected snapshot field only.
+
 ```sql
 DEFINE TABLE memory_history SCHEMAFULL;
-DEFINE FIELD memory ON memory_history TYPE option<record<memory>>;  -- the row mutated (option<>: ADD may log before id settles)
+DEFINE FIELD memory ON memory_history TYPE option<record<memory>>;  -- the row mutated (option<>: batch/extraction audit rows may be staged before the memory row is created)
 DEFINE FIELD op     ON memory_history TYPE string
   ASSERT $value IN ["add","supersede","archive"];
 DEFINE FIELD before ON memory_history TYPE option<object>;          -- prior snapshot (NONE for add)
@@ -641,7 +652,7 @@ DEFINE FIELD created_at    ON causal_chain TYPE datetime DEFAULT time::now();
 DEFINE TABLE skill SCHEMAFULL;
 DEFINE FIELD name          ON skill TYPE string;
 DEFINE FIELD description   ON skill TYPE string;
-DEFINE FIELD embedding     ON skill TYPE array<float>;        -- 1024-dim (D-014); must equal the skill_vec HNSW DIMENSION
+DEFINE FIELD embedding     ON skill TYPE array<float>;        -- 1024-dim — D-014 🟡: `bge-m3` (default) or `qwen3-embedding:0.6b` (cannibalize-validated); both 1024-dim so the index is unaffected. Must equal the skill_vec HNSW DIMENSION
 DEFINE FIELD preconditions ON skill TYPE option<string>;
 DEFINE FIELD steps         ON skill TYPE array<string>;
 DEFINE FIELD postconditions ON skill TYPE option<string>;
@@ -663,7 +674,7 @@ DEFINE FIELD last_used      ON skill TYPE option<datetime>;
 
 -- HNSW over skill embeddings so a task can recall relevant graduated skills. Same 1024-dim / COSINE as memory_vec (D-014).
 DEFINE INDEX skill_vec ON skill FIELDS embedding
-  HNSW DIMENSION 1024 DIST COSINE TYPE F32 EFC 150 M 12 M0 24;
+  HNSW DIMENSION 1024 DIST COSINE TYPE F32 EFC 150 M 12;
 DEFINE INDEX skill_by_status ON skill FIELDS status;          -- hot path: live-skill recall filter
 DEFINE INDEX causal_chain_by_session ON causal_chain FIELDS session;
 ```
@@ -672,7 +683,7 @@ DEFINE INDEX causal_chain_by_session ON causal_chain FIELDS session;
 
 ### 4.15 Embedding cache (L2 — kongcode two-tier cache)
 
-Embedding is the hot path of every ADD and every recall (MEMORY-SPEC §7.1), so it is cached two-tier: **L1 = in-process LRU** (not a table), **L2 = this persistent table**. Keyed on content hash + model version so a model swap invalidates cleanly. *(kongcode — IDEAS only; reimplement the shape, do not lift code.)*
+Embedding is the hot path of every ADD and every recall (MEMORY-SPEC §7.1), so it is cached two-tier: **L1 = in-process LRU** (not a table), **L2 = this persistent table**. Keyed on content hash + model version so a model swap invalidates cleanly. *(kongcode — IDEAS only; reimplement the shape, do not lift code.)* The D-026 secret screen runs BEFORE embedding, so `embedding_cache` never stores a secret-derived vector.
 
 ```sql
 DEFINE TABLE embedding_cache SCHEMAFULL;
@@ -689,7 +700,7 @@ DEFINE INDEX embedding_cache_hash ON embedding_cache FIELDS hash UNIQUE;
 
 Engineering gotchas the new tables above must respect (kongcode lessons, MEMORY-SPEC §6 — full detail there):
 
-- **`option<bool>`/enum + `RETURN AFTER` deadlock.** SurrealDB treats `NONE` as a distinct value, so any boolean/enum field **read back on a `RETURN AFTER` write** (e.g. `causal_chain.success`, the `graduated_at` watermarks, `memory.surfaceable`) **MUST be `option<>` or backfilled in the same migration** — else a freshly-created row whose field defaulted to `NONE` deadlocks a `WHERE field = …` claim. This is the same class the `dedup_key VALUE` pattern (§4.3/§7a) already dodges; the general rule holds for every new boolean/enum.
+- **`option<bool>`/enum + `RETURN AFTER` missed-match / claim-starvation.** SurrealDB treats `NONE` as a distinct value that never matches `= true` (or any concrete enum value), so any boolean/enum field **read back on a `RETURN AFTER` write** (e.g. `causal_chain.success`, the `graduated_at` watermarks, `memory.surfaceable`) that can land in `NONE` is silently invisible to a `WHERE field = …` claim — the row is never matched and the work starves. This is NOT a lock deadlock; it is a silent missed match. Such a field **MUST EITHER be `option<T>`** (if it's legitimately absent on some rows) **OR carry a concrete non-NONE `DEFAULT`** (e.g. `surfaceable bool DEFAULT false`) so it can never default to `NONE` — never a bare typed field with no default that can land in `NONE`. Pre-existing rows must be backfilled in the same migration. This is the same class the `dedup_key VALUE` pattern (§4.3/§7a) already dodges; the general rule holds for every new boolean/enum.
 - **Idempotent migrations.** One-time table-scan `UPDATE`s must be gated behind `LET <count> = (SELECT …); IF count > 0 { … }` so re-running the migration is a no-op; use `OVERWRITE` to widen tables/indexes; annotate each one-time migration with its removal condition.
 - **Backfill `VALUE` fields.** A computed `VALUE` field (e.g. `dedup_key`) is only recomputed on write, so at schema-apply time **backfill it with a no-op touch-`UPDATE`** over existing rows; otherwise pre-existing rows carry a stale/empty key.
 
@@ -757,7 +768,7 @@ A one-time **importer script** (Phase 1) reads each v1 file/DB and writes the ma
 
 ## 7. Embedding model note
 
-Default (D-014): **BGE-M3, 1024-dim, served by Ollama** (reuses the local model server; KongCode proves BGE-M3 1024 works well, but runs it via `node-llama-cpp` because it has no Ollama — we do). HNSW `DIMENSION` is **locked to 1024** to match. Alternatives: `node-llama-cpp` + GGUF (self-contained, KongCode's path) or a hosted embedding API. Changing the model later = re-embed all rows + redefine the index. Keep the dimension as a single config constant, never a scattered magic number.
+1024-dim — D-014 🟡: `bge-m3` (default) or `qwen3-embedding:0.6b` (cannibalize-validated); both 1024-dim so the index is unaffected. Served by Ollama (reuses the local model server; KongCode proves BGE-M3 1024 works well, but runs it via `node-llama-cpp` because it has no Ollama — we do). HNSW `DIMENSION` is **locked to 1024** to match either model. Alternatives: `node-llama-cpp` + GGUF (self-contained, KongCode's path) or a hosted embedding API. Changing to a *different-dimension* model later = re-embed all rows + redefine the index. Keep the dimension as a single config constant, never a scattered magic number.
 
 **Embedding input limit / truncation (KongCode lesson):** embedding models cap input (BGE-M3 ≈ 8192 tokens / ~6000 chars). For long `content`, the tail may not be embedded — set `embedding_truncated = true` so recall fidelity is auditable and reranking can compensate. Chunk very long content into multiple `memory` rows rather than silently truncating.
 
@@ -774,7 +785,7 @@ Default (D-014): **BGE-M3, 1024-dim, served by Ollama** (reuses the local model 
 
 KongCode's three backup modes reveal a useful schema partition: **knowledge core** (memory, concepts, graph edges, plan, security findings) is ~100× smaller than **transcript volume** (`message`, `routing_event`, `agent_event`, transcripts). Offer:
 - **Native/full** — copy the SurrealDB data dir (lossless, includes embeddings + indexes).
-- **Knowledge-only (JSONL)** — export knowledge-core tables without embeddings/transcripts; small, portable, good for sharing/seeding a fresh install (re-embed on import).
+- **Knowledge-only (JSONL)** — export knowledge-core tables without embeddings/transcripts; small, portable, good for sharing/seeding a fresh install (re-embed on import). Emits ONLY `screen_status = "clean"` rows — hard-exclude `quarantined`/`redacted`-residue (D-026) so the shareable artifact never carries secrets.
 - **Semantic** — knowledge + embeddings, drop low-utility rows.
 Design queries so "knowledge core" is cleanly separable from "transcript volume" (it already is, by table).
 
@@ -783,6 +794,6 @@ Design queries so "knowledge core" is cleanly separable from "transcript volume"
 - **Isolation level** for the server (surrealkv) backend transaction isolation — verify (D-006).
 - **Embedding dimension/model** — pick before writing the index (above).
 - **`engine_metric`** table — resolved: heartbeat/orchestrator metrics fold into `agent_event` (cycle rows); no separate `engine_metric` table.
-- **Memory-engine schema deltas** (MEMORY-SPEC §372) — **resolved**: folded into the schema above — `session.user_turn_count`/`tool_iter_count` (§4.3), `memory` Tier-0 + Fibonacci-resurfacing fields + `absorbed_into` (§4.5), `memory_history` audit (§4.5a), `skill` + `causal_chain` (§4.14), `embedding_cache` (§4.15). Honors D-030 (utilization → ranking only), D-031 (novelty gate + consolidation), D-032 (learned skills + user-model in-store).
+- **Memory-engine schema deltas** (MEMORY-SPEC — "Schema deltas flagged for DATA-MODEL") — **resolved**: folded into the schema above — `session.user_turn_count`/`tool_iter_count` (§4.3), `memory` Tier-0 + Fibonacci-resurfacing fields + `absorbed_into` (§4.5), `memory_history` audit (§4.5a), `skill` + `causal_chain` (§4.14), `embedding_cache` (§4.15). Honors D-030 (utilization → ranking only), D-031 (novelty gate + consolidation), D-032 (learned skills + user-model in-store).
 - **User-model storage** — resolved by D-032: lives in SurrealDB (Honcho dropped). Exact `user_model` table shape is deferred to the user-modeling epic (MEMORY-SPEC §8, post-v1.0 candidate) — not declared here yet.
 - **Versioning/time-travel** — if wanted, evaluate `surrealkv+versioned://` (currently beta) instead of RocksDB (D-007).

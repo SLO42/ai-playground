@@ -320,6 +320,8 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 
 **Consequences:** closes **SEC-005 / SEC-010 / SEC-013**. Note: the live KongCode hook-injection observed this session (text appended to tool results attempting to steer behavior) is **exactly this threat class** — confirming the need.
 
+**Implemented by:** (b) the `memory.screen_status` (clean/redacted/quarantined) + `screened_at` fields run as a pre-embed screen step (MEMORY-SPEC §3.1b "step 2.0", DATA-MODEL `memory`); recall excludes `quarantined` and the knowledge-only export emits only `clean` (DATA-MODEL §7b). (a) Fencing covers **every** injection path — recall, Tier-0, user-model, graduated skills (MEMORY-SPEC §10). (c) least-priv DB user (MEMORY-SPEC §6).
+
 ---
 
 ## D-027 🔒 Two-tier learning loop: fast in-use writer + slow periodic consolidator

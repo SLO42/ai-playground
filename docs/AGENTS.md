@@ -10,7 +10,7 @@ Authoring conventions for the **agents and skills** v2 manages and runs. How to 
 
 v2 is a **Claude Code harness** (D-002): Claude Code is the execution backend, and the harness *manages* the agent definitions (`.claude/agents/*.md`) and skills (`.claude/skills/*/SKILL.md`) that Claude Code reads — with the **filesystem as the source of truth** and SurrealDB as a synced mirror (D-010). These conventions therefore govern **authored content** Claude Code consumes, so they must align with Claude Code's agent/skill format (YAML frontmatter + Markdown body), not with v2's internal data model.
 
-This doc is the authoring standard. It does **not** describe the runtime (session orchestration → D-011; gates → D-018/D-024; hook transport → D-019). Where a convention touches an open decision it is flagged inline — most importantly the skill-files-vs-DB question (D-032), which the agentskills.io convention partially pre-commits.
+This doc is the authoring standard. It does **not** describe the runtime (session orchestration → D-011; gates → D-018/D-024; hook transport → D-019). Where a convention touches a runtime decision it is cross-referenced inline. The skill-files-vs-DB question (D-032) is **resolved** — authored skills are git-diffable files (D-010), learned skills are SurrealDB rows (D-027); the agentskills.io convention applies to authored skills.
 
 ---
 
@@ -102,6 +102,7 @@ Process:
 
 | Work shape | Tier |
 |------------|------|
+| Trivial / $0 local (routing, classification, intent-tagging) | **local** (Ollama `gpt-oss:20b`, D-003) |
 | Structured / mechanical (classification, extraction, formatting) | **haiku** |
 | Judgment / synthesis / review | **sonnet / opus** |
 
@@ -141,9 +142,41 @@ Author skills to the **agentskills.io standard** so they stay portable and Claud
 
 ---
 
-## 9. Worked example — SKILL.md skeleton
+## 9. Worked examples — skeletons
 
-A **template**, not a real skill — it shows the §2–§8 conventions in one place. Fill the bracketed slots.
+**Templates**, not real artifacts — they show the §2–§8 conventions in one place. Fill the bracketed slots. Claude Code distinguishes two artifact kinds, and their frontmatter keys differ — don't mix them:
+
+- **Subagent** (`.claude/agents/<name>.md`) — keys: `name`, `description`, `tools`, `model`. The `model:` tier (§6) is the **agent path**.
+- **Skill** (`.claude/skills/<name>/SKILL.md`) — keys: `name`, `description`, `allowed-tools`. **No `model:`** — a skill is invoked within whatever model the agent is already running. Its tier intent, if any, rides `metadata.v2.tier`.
+
+### 9a. Subagent skeleton — `.claude/agents/<name>.md`
+
+```markdown
+---
+name: <agent-name>
+description: >
+  Activate when <intent>.                       # §2 classifier
+  Triggers include "<verbatim phrase>", "<…>".   # §2 verbatim triggers
+  If this is skipped, <silent failure>.          # §4 stakes (proactive agents)
+  Use BEFORE <irreversible action>, not after.   # §4 timing (if applicable)
+  Use <sibling> instead when <condition>.        # §3 family tail (if in a family)
+tools: Read, Grep, Glob                          # §6 minimal whitelist (read-only here)
+model: haiku                                     # §6 tier: structured→haiku, judgment→sonnet/opus
+metadata:
+  v2:                                            # §8 namespaced v2 metadata
+    tier: structured                             # mirrors model: — what the pool reads (D-020)
+    intent: <intent-class>                       # ties D-020 intent-adaptive routing
+# telemetry NOT here — lives in <agent-name>.usage.json sidecar  (§8)
+---
+
+# <Agent Name>
+
+<Body — Process / Output / Quality, as below.>
+```
+
+### 9b. Skill skeleton — `.claude/skills/<name>/SKILL.md`
+
+A skill carries **no `model:`** — the tier lives only under `metadata.v2.tier`. Note: in Claude Code skills `allowed-tools` is conventionally a **comma-separated string** (as written below), not a YAML array — verify the exact form against the current agentskills.io / Claude Code spec before locking, rather than assuming the array form.
 
 ```markdown
 ---
@@ -154,19 +187,18 @@ description: >
   If this is skipped, <silent failure>.          # §4 stakes (proactive skills)
   Use BEFORE <irreversible action>, not after.   # §4 timing (if applicable)
   Use <sibling> instead when <condition>.        # §3 family tail (if in a family)
-model: haiku                                     # §6 tier: structured→haiku, judgment→sonnet/opus
-allowed-tools: [Read, Grep, Glob]                # §6 minimal whitelist (read-only here)
+allowed-tools: Read, Grep, Glob                  # §6 minimal whitelist (comma-separated; verify form)
 metadata:
   v2:                                            # §8 namespaced v2 metadata
-    tier: structured
+    tier: structured                             # §6 tier intent — no model: key on skills
     intent: <intent-class>                       # ties D-020 intent-adaptive routing
-    loader: <db|file>                            # §5 stub + loader; D-032 decides source
 # telemetry NOT here — lives in <skill-name>.usage.json sidecar  (§8)
 ---
 
 # <Skill Name>
 
-<One-line loader / body stub — full body served at activation (§5).>
+<Body — authored skills: the body lives in this file (D-010 filesystem-authoritative).
+ Learned/graduated skills load their body from the DB at activation (D-027/D-032, §5).>
 
 ## Process                                       # §5 numbered loop (queue workers)
 1. <claim next item / read the input>
@@ -189,7 +221,7 @@ Your <output> is earned and grounded, not invented —              # §7 recenc
 if you can't cite it, you don't claim it.
 ```
 
-`references/`, `templates/`, `scripts/`, `assets/` sit beside this file per §8.
+`references/`, `templates/`, `scripts/`, `assets/` sit beside `SKILL.md` per §8.
 
 ---
 

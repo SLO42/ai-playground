@@ -1,0 +1,8 @@
+# v2-main is a docs-only orphan branch.
+# The v1 working tree (dashboard/, CLAUDE.md, .env, node_modules/, etc.) is
+# present on disk but is NOT part of this branch. Ignore everything at the
+# repo root except docs/ and this file, so an accidental `git add -A` can
+# never commit secrets (.env) or the v1 codebase onto v2-main.
+/*
+!/docs/
+!/.gitignore

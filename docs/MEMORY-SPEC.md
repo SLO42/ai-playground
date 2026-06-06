@@ -28,14 +28,14 @@ Wherever the text says "lift X near-verbatim," the license + lift permission is 
 
 ### Decisions this spec is bound to
 
-This spec does **not** silently override locked decisions. Where an item touches an **OPEN** question, it points to the decision id and flags it unresolved. Canonical decision ids (authored into `DECISIONS.md` by another agent — referenced, not defined, here):
+This spec does **not** silently override locked decisions. Where an item touches a decision, it points to the decision id and reflects its current status; the three formerly-open memory questions (D-030/D-031/D-032) are now **RESOLVED** and locked below. Canonical decision ids (authored into `DECISIONS.md` by another agent — referenced, not defined, here):
 
 - **D-027** two-tier learning loop (fast in-use writer fork + slow periodic consolidator) 🔒
 - **D-028** ADD-only extraction + separate deterministic/graph conflict pass 🔒
 - **D-029** raw-windowed cross-session recall, no summary-LLM in the recall path 🔒
-- **D-030** 🟡 **OPEN** — utilization loop (outcome feedback → ranking + curator prune). *v2's edge; owner to decide.*
-- **D-031** 🟡 **OPEN** — consolidation pass vs retrieval-time novelty gate vs both.
-- **D-032** 🟡 **OPEN** — single SurrealDB vs hermes polyglot split.
+- **D-030** 🔒 **RESOLVED** — utilization loop feeds **RANKING only**, not pruning. `retrieval_outcome` (cited / preceded tool success) is a recall-ranker input; the curator prunes on time/inactivity only (archive-not-delete, D-015). Still v2's edge over hermes (zero utilization signal), applied conservatively. *Outcome-pruning revisited post-v1.0.*
+- **D-031** 🔒 **RESOLVED** — **BOTH**: query-time hard novelty gate (cosine-band cut) **and** periodic consolidation (merges near-dup families into umbrellas via `absorbed_into` forwarding).
+- **D-032** 🔒 **RESOLVED** — **single SurrealDB store stands** (reaffirms D-001). No SQLite-FTS5 split (SurrealDB native FTS, D-009), no external Honcho.
 - **D-014** embeddings (Ollama, 1024-dim; `qwen3-embedding:0.6b` validated candidate).
 - **D-015** append-only soft-archive · **D-008** dedup (UNIQUE / computed VALUE key) · **D-021** `work_item` queue · **D-022** self-improvement loop · **D-026** untrusted-memory / secret-screen.
 
@@ -140,9 +140,9 @@ This is the detailed expansion of ARCHITECTURE §2.6's six-step recall *(kongcod
 
 Alongside the staged pipeline, support **hybrid retrieval** *(mem0, Apache-2.0 — liftable)*: semantic + BM25 + entity-boost, fused with an **adaptive normalizing divisor** (so one signal's raw scale doesn't dominate), plus an **explain mode** that surfaces *why* each result ranked where it did. The explain mode feeds the dashboard `/memory` recall-explain view (ARCHITECTURE §2.9) and the truncation-visibility surfacing in §7.3.
 
-### 4.5 Retrieval-quality / utilization scoring — D-030 🟡 OPEN
+### 4.5 Retrieval-quality / utilization scoring — D-030 🔒 RESOLVED (ranking-only)
 
-**This is the utilization loop, and it is OPEN (D-030) — owner decision required.** *(kongcode — IDEAS liftable; CODE-LIFT NEEDS CONSENT, reimplement from this description.)*
+**This is the utilization loop. D-030 is RESOLVED: the outcome signal feeds RANKING only, NOT pruning.** *(kongcode — IDEAS liftable; CODE-LIFT NEEDS CONSENT, reimplement from this description.)*
 
 Per injected item, record whether the context was **USED, not merely retrieved**:
 
@@ -150,13 +150,13 @@ Per injected item, record whether the context was **USED, not merely retrieved**
 - **`[#N]` citation parse** — read the model's response for explicit `[#N]` citation markers tying back to injected items.
 - **Implicit-path-hit rescue** — credit an item that clearly shaped the answer even when not formally cited.
 
-Use the result to **(a) prefilter junk** before it reaches the prompt and **(b) train the ranker** (feed `historical_utility`). The plumbing already exists in DATA-MODEL §4.13 (`retrieval_outcome`: `utilized` / `cited` / `tool_success` / `was_neighbor`); v0.2 *records* these rows, and the **learned reranker that consumes them is D-022 / D-030 work.**
+Use the result to **train the ranker** (feed `historical_utility`) — the outcome signal is a **recall-ranker input only**. The plumbing already exists in DATA-MODEL §4.13 (`retrieval_outcome`: `utilized` / `cited` / `tool_success` / `was_neighbor`); v0.2 *records* these rows, and the **learned reranker that consumes them is D-022 / D-030 work.** The curator's keep/prune decision (§5) does **NOT** read this signal — pruning stays **time/inactivity-based** (archive-not-delete, D-015).
 
-> **D-030 is v2's edge.** §11's comparison shows all three sources under-use this: hermes ignores it (prunes on time), mem0 lacks it, kongcode has it. Whether v2 makes the utilization signal **central to both ranking AND the curator's keep/prune decision** (§5) is the unresolved call for the owner. Do not lock the curator's prune policy (§5) until D-030 resolves.
+> **D-030 — resolved: ranking-only.** §11's comparison shows all three sources under-use this: hermes ignores it (prunes on time), mem0 lacks it, kongcode has it. v2 feeds the utilization signal into **ranking** but deliberately **not** into the curator's keep/prune decision (§5). Rationale: low citation ≠ low worth; ranking is reversible per-query, pruning is destructive. This is still v2's edge over hermes (which has zero utilization signal), applied conservatively. **Outcome-pruning is revisited post-v1.0.**
 
-### 4.6 Hard novelty gate vs soft MMR — ties D-031 🟡 OPEN
+### 4.6 Hard novelty gate vs soft MMR — ties D-031 🔒 RESOLVED (both)
 
-For corpora with **redundant near-dup families**, a **HARD novelty gate at query time beats soft MMR** *(kongcode — IDEAS liftable; CODE-LIFT NEEDS CONSENT)*. Measure the family-vs-distinct cosine bands on the real corpus to set the cut threshold. **This is one half of D-031** (the other half is a periodic consolidation pass, §5): the open question is *novelty-gate-at-query-time* vs *consolidation-pass* vs *both* — kongcode hints both. **D-031 is unresolved**; this spec describes both mechanisms but does not pick.
+For corpora with **redundant near-dup families**, a **HARD novelty gate at query time beats soft MMR** *(kongcode — IDEAS liftable; CODE-LIFT NEEDS CONSENT)*. Measure the family-vs-distinct cosine bands on the real corpus to set the cut threshold (a **tunable starting point**, not a locked constant). **This is one half of D-031.** **D-031 is RESOLVED: BOTH** — the query-time hard novelty gate here (cosine-band cut, stops near-dups surfacing) **and** the periodic consolidation pass (§5) that merges near-dup families into umbrellas. This spec describes both mechanisms because both ship.
 
 ---
 
@@ -168,7 +168,7 @@ The **slow tier** of D-027: the periodic consolidator + the per-row lifecycle. T
 
 *(hermes, MIT — liftable)*
 
-- **Inactivity-triggered batch consolidation** — fires after a quiet period (~7-day cadence in hermes), merges narrow knowledge into **class-level umbrellas**. Decoupled from the write cadence (§2) by design.
+- **Inactivity-triggered batch consolidation** — fires after a quiet period (~7-day cadence in hermes), merges narrow knowledge into **class-level umbrellas**. Decoupled from the write cadence (§2) by design. This is the periodic-consolidation half of **D-031 (resolved: both)** — it merges near-dup families into umbrellas (via `absorbed_into` forwarding, §5.1; D-027 curator / D-021 queue), complementing the §4.6 query-time novelty gate.
 - **Archive, never delete** — archive is the **maximum destructive** action. Stale items are archived, **pinned items are exempt**.
 - **`absorbed_into` forwarding** — when an item is absorbed into an umbrella, **rewrite refs/edges** that point at it to point at the umbrella. No dangling edges; the graph stays traversable.
 
@@ -206,7 +206,7 @@ These **complement DATA-MODEL** (they are engineering gotchas the schema must re
 
 ### 6.1 At most one external memory provider, behind an ABC
 
-*(hermes, MIT — liftable)* If v2 ever adds an external memory provider (e.g. Honcho, §8), there is **at most ONE**, behind an abstract base class with full lifecycle hooks. **Built-in (SurrealDB) is always tried first**, and **a provider failure never blocks its siblings** — a down external provider degrades to built-in, exactly like the hook graceful-degradation in ARCHITECTURE §2.10d. Ties **D-032** (single-store vs polyglot): the ABC is what keeps the polyglot option *open* without committing to it.
+*(hermes, MIT — liftable)* **D-032 resolved: single SurrealDB store stands — no external provider is adopted** (no SQLite-FTS5 split, no external Honcho). The ABC below is kept as a **defensive seam, not an active path**: if v2 *ever* added an external memory provider, there would be **at most ONE**, behind an abstract base class with full lifecycle hooks, with **built-in (SurrealDB) always tried first** and **a provider failure never blocking its siblings** — degrading to built-in, exactly like the hook graceful-degradation in ARCHITECTURE §2.10d. For v2 the single store is the decision; the ABC just keeps the door from being welded shut.
 
 ### 6.2 SCHEMALESS base + explicit `option<T>` for read-back fields
 
@@ -280,19 +280,19 @@ These **complement DATA-MODEL** (they are engineering gotchas the schema must re
 
 ---
 
-## 8. User modeling — CANDIDATE / optional (§3g, ties D-032 🟡)
+## 8. User modeling — CANDIDATE / optional, single-store (§3g, ties D-032 🔒)
 
-**Marked CANDIDATE / optional — not on the v1.0 critical path.** *(hermes, MIT — liftable)*
+**Marked CANDIDATE / optional — not on the v1.0 critical path.** *(hermes, MIT — the dialectic ideas are liftable; the external Honcho dependency is NOT adopted.)*
 
-The **Honcho dialectic**: bidirectional "peers" with **3 orthogonal knobs** —
+The dialectic *ideas* are worth keeping; the **external Honcho store is NOT ADOPTED (D-032)**. The **user-model lives in SurrealDB** — the single store stands. What we keep as a candidate design **within** that one store:
 
-- **WHEN** = cadence (how often the model updates its representation),
-- **HOW-MANY** = depth, with **cheap-first escalation** (start shallow, deepen only if needed),
-- **HOW-HARD** = reasoning level.
+- A bidirectional "peers" representation with **3 orthogonal knobs** —
+  - **WHEN** = cadence (how often the model updates its representation),
+  - **HOW-MANY** = depth, with **cheap-first escalation** (start shallow, deepen only if needed),
+  - **HOW-HARD** = reasoning level.
+- It builds **BOTH a user representation AND an agent self-model**, and injects **summary → user → self** at turn start.
 
-It builds **BOTH a user representation AND an agent self-model**, and injects **summary → user → self** at turn start.
-
-**This ties D-032 (OPEN).** Honcho is an **external store** in hermes' polyglot split; adopting it means accepting a second store *or* reimplementing the dialectic over SurrealDB. So it is gated behind the single-store-vs-polyglot decision: **do not build this until D-032 resolves.** If D-032 lands on single-store, the dialectic *logic* (the 3 knobs, the self-model) can still be lifted and run over SurrealDB without the external Honcho dependency. The §6.1 ABC is the seam that keeps both paths open.
+**This is resolved by D-032 (single store stands).** Honcho was an **external store** in hermes' polyglot split; v2 does **not** take a second store. The dialectic *logic* (the 3 knobs, the self-model, the user representation) is lifted and run over **SurrealDB** without the external Honcho dependency. The §6.1 ABC remains the at-most-one-external-provider seam, but no external provider is adopted here.
 
 ---
 
@@ -331,8 +331,8 @@ The brief's three-way comparison, reproduced, with the v2 take:
 |-----------|--------|----------|------|-----------|
 | **Write timing** | in-use per-turn fork | batch end-of-session (hours lag) | per-turn flat facts | **in-use fork** (hermes) — §2 |
 | **Consolidation** | dedicated periodic curator (umbrellas) | graph consolidation / audit-drift | fact dedupe only | **curator + graph (both)** — §5 |
-| **Storage** | polyglot (files + sqlite + Honcho) | single SurrealDB | vector + 2 sqlite | **single SurrealDB** (D-032 🟡) |
-| **Utilization signal** | **NONE** (prunes on time) | outcome = best ranker | none | **close the loop — v2's edge** (D-030 🟡) — §4.5 |
+| **Storage** | polyglot (files + sqlite + Honcho) | single SurrealDB | vector + 2 sqlite | **single SurrealDB** (D-032 — resolved) |
+| **Utilization signal** | **NONE** (prunes on time) | outcome = best ranker | none | **close the loop into RANKING — v2's edge** (D-030 — resolved: ranking-only) — §4.5 |
 | **Graph** | n/a | real edges (traversal, graduation) | faked (id arrays) | **real edges (lean in)** — §6.10 |
 | **Extraction** | skill-shaping fork | end-of-session | ADD-only + dedup | **ADD-only + kongcode lifecycle** — §3, §5 |
 
@@ -341,17 +341,22 @@ The brief's three-way comparison, reproduced, with the v2 take:
 - **Copy hermes**: two-tier loop (§2, D-027), cost-cached fork (§2.3), DO-NOT-CAPTURE (§3.1). *(MIT — liftable.)*
 - **Keep kongcode's real-graph lifecycle**: soft-delete (§5.3), graduation (§5.4), retrieval-quality scoring (§4.5). *(IDEAS — code-lift needs consent.)*
 - **Take mem0's cheap ADD-only extraction prompt** (§3.2) and three-table split (§6.9). *(Apache-2.0 — liftable.)*
-- **v2's winning move = the utilization loop (D-030)** that all three under-use — fed by the same outcome plumbing (`retrieval_outcome`, DATA-MODEL §4.13) that cannibalize's `mark-applied` already models. Make it **central to ranking AND curator prune** if the owner approves D-030.
+- **v2's winning move = the utilization loop (D-030 — resolved: ranking-only)** that all three under-use — fed by the same outcome plumbing (`retrieval_outcome`, DATA-MODEL §4.13) that cannibalize's `mark-applied` already models. It is **central to ranking**; the curator's prune stays time-based (archive-not-delete, D-015). Outcome-pruning is a post-v1.0 revisit.
 
 ---
 
-## 12. Open questions (gating the memory design — for the owner)
+## 12. Resolved questions (formerly gating) + remaining open items
 
-Restated crisply; these are the unresolved items that **gate locking the memory engine**. Each is owned in `DECISIONS.md`:
+The three questions that used to gate locking the memory engine are now **RESOLVED** by the owner (each owned in `DECISIONS.md`):
 
-- **D-030 🟡 — Close the utilization loop?** Should v2 track whether a recalled skill/memory led to a **good outcome** and feed that into **BOTH** retrieval ranking **AND** the curator's keep/prune decision? hermes ignores it, mem0 lacks it, kongcode proves it works. **This is where v2 beats the field** (§4.5, §5.5, §11). *Blocks: §5 curator prune policy, §4.5 ranker.*
-- **D-031 🟡 — Consolidation pass vs retrieval-time novelty gate vs both?** A periodic curator pass (§5.1) so near-dup families don't accumulate, **and/or** a hard novelty gate at query time (§4.6). kongcode hints **both**. *Blocks: §4.6 gate, §5.1 cadence.*
-- **D-032 🟡 — Single SurrealDB vs hermes polyglot split?** hermes splits skills (`SKILL.md` + sidecar `.usage.json`), sessions (SQLite FTS5), and user-model (external Honcho). Do the polyglot advantages (git-diffable skills, agentskills.io interop, FTS5 maturity) outweigh one unified store? v2's plan is single-store; the §6.1 ABC keeps the door open. *Blocks: §8 user modeling, §6.1 provider count.*
+- **D-030 🔒 — Utilization loop: RANKING only, NOT pruning.** v2 tracks whether a recalled skill/memory led to a **good outcome** (`retrieval_outcome`: cited / preceded tool success) and feeds it into the **recall ranker** — but **not** into the curator's keep/prune decision; pruning stays time/inactivity-based (archive-not-delete, D-015). Rationale: low citation ≠ low worth; ranking is reversible per-query, pruning is destructive. Still v2's edge over hermes (which has zero utilization signal), applied conservatively (§4.5, §5.5, §11). *Outcome-pruning revisited post-v1.0.*
+- **D-031 🔒 — BOTH.** A query-time hard novelty gate (cosine-band cut, §4.6) **and** a periodic consolidation pass (§5.1) that merges near-dup families into umbrellas via `absorbed_into` forwarding (D-027 curator / D-021 queue). Both ship.
+- **D-032 🔒 — Single SurrealDB store stands** (reaffirms D-001). No SQLite-FTS5 split (SurrealDB native FTS, D-009), no external Honcho. **Key insight:** the harness's AUTHORED Claude Code skills are ALREADY git-diffable files (D-010 filesystem-authoritative + DB mirror) — so v2 already has hermes' git-diff / agentskills.io benefit for *authored* skills WITHOUT splitting the memory store. The engine's LEARNED/graduated skills live in SurrealDB (real-graph rows, D-027); the user-model lives in SurrealDB (§8). The §6.1 ABC stays as a defensive seam only.
+
+**Remaining genuinely-open items** (tunable/verification, not blocking decisions):
+
+- The **~26% prefix-cache cost-cut figure** (§2.3) — measured by hermes; **verify on v2's Agent SDK path during spike S.1** before relying on it.
+- The **WMR weights** (`0.50 / 0.35 / 0.15`, §4.3) and the **novelty-gate cosine thresholds** (§4.6) — documented as **tunable starting points** (kongcode defaults), to be re-validated on v2's real corpus, not locked constants.
 
 ---
 
@@ -363,11 +368,13 @@ Restated crisply; these are the unresolved items that **gate locking the memory 
 - D-029 raw-windowed recall, no summary-LLM in the recall path (§4.1).
 - D-014 embeddings — Ollama, 1024-dim, HNSW COSINE; `qwen3-embedding:0.6b` validated (§7.4).
 - D-015 soft-archive · D-008 dedup VALUE key · D-021 `work_item` queue · D-026 untrusted-memory/secret-screen (§3.1, §5.3, §6, §10).
+- **D-030** utilization loop — feeds **RANKING only**, not pruning; pruning stays time-based (§4.5, §5.5). *v2's edge over hermes, applied conservatively.*
+- **D-031** consolidation — **BOTH** query-time novelty gate (§4.6) + periodic consolidation pass (§5.1).
+- **D-032** **single SurrealDB store** — no SQLite-FTS5 split, no external Honcho; authored skills are already git-diffable files (D-010); learned skills + user-model live in SurrealDB (§8, §6.1).
 
-**Open (do not lock dependent designs until resolved):**
-- **D-030** utilization loop — *v2's edge*; gates the §4.5 learned ranker and the §5 curator prune policy.
-- **D-031** consolidation pass vs query-time novelty gate vs both — gates §4.6 + §5.1.
-- **D-032** single store vs polyglot — gates §8 (Honcho) and §6.1 (provider count).
+**Remaining open (tunable / verification only — not blocking):**
+- The **~26% prefix-cache figure** (§2.3) — verify on the Agent SDK path during spike S.1.
+- The **WMR weights** (§4.3) and **novelty-gate cosine thresholds** (§4.6) — tunable starting points, re-validate on v2's corpus.
 
 **Schema deltas flagged for DATA-MODEL** (new structure this spec implies, not yet in the schema): `session.user_turn_count` / `tool_iter_count` (§2.2); a `skill` table or procedural-memory graduation fields (§5.4); `memory_history` audit table (§6.9); Tier-0 + resurfacing fields `tier`/`pinned` + `(surfaceable, next_surface_at)` (§6.8); `embedding_cache` table (§7.1).
 

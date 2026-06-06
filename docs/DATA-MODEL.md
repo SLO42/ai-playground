@@ -177,6 +177,11 @@ DEFINE FIELD cc_session_id ON session TYPE option<string>;  -- Claude Code sessi
 DEFINE FIELD workflow_run  ON session TYPE option<record<workflow_run>>;  -- set if part of a pipeline
 DEFINE FIELD started_at ON session TYPE datetime DEFAULT time::now();
 DEFINE FIELD ended_at   ON session TYPE option<datetime>;
+-- Two-cadence learning-fork nudge (D-027, MEMORY-SPEC §2.2). Persisted counters so the
+-- modulo cadence (turn_index % N) survives Claude Code's per-message agent rebuilds —
+-- an in-memory tick would reset. Memory review fires on user_turn_count; skill review on tool_iter_count.
+DEFINE FIELD user_turn_count ON session TYPE int DEFAULT 0;   -- memory-review fork clock (every N user turns)
+DEFINE FIELD tool_iter_count ON session TYPE int DEFAULT 0;   -- skill-review fork clock (every M tool calls)
 
 DEFINE TABLE message SCHEMAFULL;        -- chat/session messages (replaces chats/*.jsonl)
 DEFINE FIELD session ON message TYPE record<session>;
@@ -258,12 +263,28 @@ DEFINE FIELD confidence ON memory TYPE float DEFAULT 1.0;
 DEFINE FIELD access_count ON memory TYPE int DEFAULT 0;         -- bumped on every recall
 DEFINE FIELD last_accessed ON memory TYPE option<datetime>;    -- updated on recall (for decay)
 DEFINE FIELD embedding_truncated ON memory TYPE bool DEFAULT false;  -- content tail not in vector (input-limit)
+-- Tiered memory (kongcode, MEMORY-SPEC §6.8). Three operational tiers:
+--   tier 0 = always-loaded directive, in context every turn → NO vector recall needed (KNN is pointless).
+--   tier 1 (default) = long-term, vector-recalled via memory_vec HNSW.
+-- Tier-0 membership is set by the operator/curator only — NEVER self-granted by recalled or injected
+-- text (D-026; the "tier0 directives" hook string is content, not a grant).
+DEFINE FIELD tier      ON memory TYPE int DEFAULT 1;            -- 0 = always-loaded directive (no KNN); 1 = long-term
+-- Fibonacci / backoff resurfacing (kongcode, MEMORY-SPEC §6.8): proactively re-show items not seen in a while.
+DEFINE FIELD surfaceable     ON memory TYPE bool DEFAULT false;     -- opted into the resurfacing schedule
+DEFINE FIELD next_surface_at ON memory TYPE option<datetime>;      -- when this item is next eligible to resurface
+DEFINE FIELD fib_index       ON memory TYPE int DEFAULT 0;         -- position in the Fibonacci backoff sequence
+DEFINE FIELD surface_count   ON memory TYPE int DEFAULT 0;         -- times proactively resurfaced
+DEFINE FIELD last_surfaced   ON memory TYPE option<datetime>;
 -- Append-only soft-archive (D-015): never DELETE knowledge.
 DEFINE FIELD status    ON memory TYPE string DEFAULT "active"
   ASSERT $value IN ["active","archived","superseded"];
 DEFINE FIELD archived_at    ON memory TYPE option<datetime>;
 DEFINE FIELD archive_reason ON memory TYPE option<string>;
 DEFINE FIELD superseded_by  ON memory TYPE option<record<memory>>;
+-- Consolidation umbrella forwarding (D-031, MEMORY-SPEC §5.1): when a near-dup member is merged into a
+-- class-level umbrella, set absorbed_into → the umbrella and rewrite its `references` edges to the umbrella.
+-- Readers FOLLOW this exactly like superseded_by (chase to the live umbrella row); no dangling edges.
+DEFINE FIELD absorbed_into  ON memory TYPE option<record<memory>>;
 DEFINE FIELD created_at ON memory TYPE datetime DEFAULT time::now();
 DEFINE FIELD updated_at ON memory TYPE datetime DEFAULT time::now();
 
@@ -281,6 +302,9 @@ DEFINE INDEX memory_dedup ON memory FIELDS dedup_key UNIQUE;
 
 -- Project-scoped recall. Consider a composite (project, kind, status) for filtered recall.
 DEFINE INDEX memory_by_project ON memory FIELDS project;
+-- Hot path for the Fibonacci resurfacing sweep (MEMORY-SPEC §6.8): "what is due to resurface now?"
+-- → SELECT … WHERE surfaceable = true AND next_surface_at <= time::now().
+DEFINE INDEX memory_resurface ON memory FIELDS surfaceable, next_surface_at;
 ```
 
 **Semantic recall (HNSW KNN):**
@@ -315,6 +339,27 @@ final = 0.50 * cosine_similarity          -- 0..1
 Importance decays with age too: `effective_importance = max(importance - min(floor(days_old/7), 3), 0)` (−1/week, cap −3). On every recall, bump `access_count` and set `last_accessed` (drives future scoring).
 
 **Per-table budgets + one round-trip.** When memory spans multiple kinds/tables, query each with its own `LIMIT` budget and **batch all statements in a single round-trip**, then merge + dedup by id in-process (KongCode batches ~8). Avoids N sequential queries.
+
+**Diversity control (D-031) — two mechanisms, no extra schema:**
+- **Novelty gate (query time).** A **hard cosine-band cut on the candidate set** after KNN/rerank: drop members of a near-dup family so the agent's context isn't filled with five restatements of one fact (beats soft MMR on redundant corpora — MEMORY-SPEC §4.6). This is a runtime filter on candidates, **not** a stored field.
+- **Consolidation (periodic).** The slow curator (D-027, MEMORY-SPEC §5.1) merges near-dup families into a class-level umbrella, sets each member's `absorbed_into` → the umbrella, and **rewrites that member's `references` edges (§4.6) to the umbrella** so the graph stays traversable. Runs as a `work_item` job (D-021).
+- **Reader rule:** when a recalled row has `absorbed_into` (or `superseded_by`) set, **follow the pointer** to the live umbrella/replacement row — exactly the same chase as supersession. The gate fixes *what surfaces now*; consolidation fixes *what accumulates* (D-031 belt-and-suspenders).
+
+### 4.5a Memory audit log (mem0 three-logical-tables)
+
+mem0 keeps three logical tables even in one store (MEMORY-SPEC §6.9): `memory` (searchable, §4.5) + raw turns (≈ `message`, §4.3) + an **append-only audit log**. The audit table records every mutation — ADD on extraction, supersede on the deterministic conflict pass (D-028), archive on consolidation (D-031) — feeding the curator's tool-call audit (MEMORY-SPEC §5.2) and the conflict pass. **Append-only: never updated or deleted.**
+
+```sql
+DEFINE TABLE memory_history SCHEMAFULL;
+DEFINE FIELD memory ON memory_history TYPE option<record<memory>>;  -- the row mutated (option<>: ADD may log before id settles)
+DEFINE FIELD op     ON memory_history TYPE string
+  ASSERT $value IN ["add","supersede","archive"];
+DEFINE FIELD before ON memory_history TYPE option<object>;          -- prior snapshot (NONE for add)
+DEFINE FIELD after  ON memory_history TYPE option<object>;          -- new snapshot (NONE for pure archive if desired)
+DEFINE FIELD at     ON memory_history TYPE datetime DEFAULT time::now();
+
+DEFINE INDEX memory_history_by_memory ON memory_history FIELDS memory;
+```
 
 ### 4.6 Knowledge graph — native edges
 
@@ -552,6 +597,8 @@ UPDATE work_item
 
 Records what recall actually returned and whether it helped — the data source for WMR's `historical_utility` (4.5) and the post-v1.0 learned reranker (D-022). v0.2 only *records* these rows; the learned reranker consumes them later.
 
+> **D-030 (utilization loop feeds RANKING only, NOT pruning):** these rows are a **ranker input** (a WMR/ACAN feature — `utilized`/`cited`/`tool_success`/`was_neighbor` feed `historical_utility`). They do **NOT** drive the curator's keep/prune decision. **Pruning stays time/inactivity-based** (D-027 consolidator, archive-not-delete per D-015): outcome improves *what surfaces*, never *what survives* (low citation ≠ low worth; ranking is reversible per-query, pruning is soft-destructive). Revisit outcome-driven pruning post-v1.0.
+
 ```sql
 DEFINE TABLE retrieval_outcome SCHEMAFULL;
 DEFINE FIELD session      ON retrieval_outcome TYPE option<record<session>>;
@@ -568,6 +615,83 @@ DEFINE FIELD created_at   ON retrieval_outcome TYPE datetime DEFAULT time::now()
 DEFINE INDEX retrieval_outcome_by_session ON retrieval_outcome FIELDS session;
 DEFINE INDEX retrieval_outcome_by_memory  ON retrieval_outcome FIELDS memory;
 ```
+
+### 4.14 Learned skills + causal chains (D-027 graduation, D-022 north-star)
+
+The memory engine **synthesizes proven task sequences into reusable skills** (MEMORY-SPEC §5.4). These are the **learned/graduated** skills — distinct from the **authored** Claude Code skills mirrored in `cc_skill` (§4.10), which stay as files on disk (D-010/D-032). Per **D-032**, learned skills (and the user-model) live **in SurrealDB**, not files and not an external store: real-graph rows give traversal + RL counts that files/mem0 cannot do.
+
+A `causal_chain` is the graduation *source*: a recorded trigger→outcome sequence (D-022 "extract → link → label → synthesize"). When a chain proves out, the curator graduates it into a `skill` **exactly once**, gated by a `graduated_at` watermark on the chain (idempotent — prevents duplicate skill synthesis).
+
+```sql
+-- A proven (or failed) action sequence; the synthesis source for skills.
+DEFINE TABLE causal_chain SCHEMAFULL;
+DEFINE FIELD session      ON causal_chain TYPE option<record<session>>;
+DEFINE FIELD trigger      ON causal_chain TYPE string;        -- what kicked it off
+DEFINE FIELD outcome      ON causal_chain TYPE string;        -- what resulted
+DEFINE FIELD kind         ON causal_chain TYPE string
+  ASSERT $value IN ["debug","refactor","feature","fix"];
+DEFINE FIELD success      ON causal_chain TYPE bool;
+DEFINE FIELD confidence   ON causal_chain TYPE float;
+-- Once-only graduation watermark (D-022/D-027): a chain graduates into a skill exactly once.
+-- Set when synthesized; prevents the curator re-synthesizing a duplicate skill from the same chain.
+DEFINE FIELD graduated_at ON causal_chain TYPE option<datetime>;
+DEFINE FIELD created_at    ON causal_chain TYPE datetime DEFAULT time::now();
+
+-- Learned/graduated skill (D-027 graduation). In-store (D-032), NOT a file (cf. cc_skill §4.10).
+DEFINE TABLE skill SCHEMAFULL;
+DEFINE FIELD name          ON skill TYPE string;
+DEFINE FIELD description   ON skill TYPE string;
+DEFINE FIELD embedding     ON skill TYPE array<float>;        -- 1024-dim (D-014); must equal the skill_vec HNSW DIMENSION
+DEFINE FIELD preconditions ON skill TYPE option<string>;
+DEFINE FIELD steps         ON skill TYPE array<string>;
+DEFINE FIELD postconditions ON skill TYPE option<string>;
+-- RL counts (MEMORY-SPEC §5.4) — sourced from retrieval/outcome signals (§4.13), inject as "adapt, don't follow".
+DEFINE FIELD success_count ON skill TYPE int DEFAULT 0;
+DEFINE FIELD failure_count ON skill TYPE int DEFAULT 0;
+-- Once-only graduation watermark — gates re-graduation of this skill.
+DEFINE FIELD graduated_at  ON skill TYPE option<datetime>;
+DEFINE FIELD source_causal_chain ON skill TYPE option<record<causal_chain>>;  -- the chain it graduated from
+-- Append-only soft-archive (D-015): knowledge-bearing, never DELETE. name-scoped supersession
+-- (a newer skill of the SAME name supersedes the older one — set superseded_by on the old row).
+DEFINE FIELD status        ON skill TYPE string DEFAULT "active"
+  ASSERT $value IN ["active","archived","superseded"];
+DEFINE FIELD archived_at    ON skill TYPE option<datetime>;
+DEFINE FIELD archive_reason ON skill TYPE option<string>;
+DEFINE FIELD superseded_by  ON skill TYPE option<record<skill>>;
+DEFINE FIELD created_at     ON skill TYPE datetime DEFAULT time::now();
+DEFINE FIELD last_used      ON skill TYPE option<datetime>;
+
+-- HNSW over skill embeddings so a task can recall relevant graduated skills. Same 1024-dim / COSINE as memory_vec (D-014).
+DEFINE INDEX skill_vec ON skill FIELDS embedding
+  HNSW DIMENSION 1024 DIST COSINE TYPE F32 EFC 150 M 12 M0 24;
+DEFINE INDEX skill_by_status ON skill FIELDS status;          -- hot path: live-skill recall filter
+DEFINE INDEX causal_chain_by_session ON causal_chain FIELDS session;
+```
+
+> **Watermark note:** both `graduated_at` watermarks are `option<datetime>` (NONE = not yet graduated) — read back on the synthesis write, so they follow the §4.16 `option<bool>`/enum `RETURN AFTER` rule. **Name-scoped supersession** is a write-time convention (the synthesizer finds the prior active skill of the same `name` and sets its `superseded_by`), not an index constraint — there is no UNIQUE on `name` (soft-archive keeps many same-name rows; the live one is `status = "active"`).
+
+### 4.15 Embedding cache (L2 — kongcode two-tier cache)
+
+Embedding is the hot path of every ADD and every recall (MEMORY-SPEC §7.1), so it is cached two-tier: **L1 = in-process LRU** (not a table), **L2 = this persistent table**. Keyed on content hash + model version so a model swap invalidates cleanly. *(kongcode — IDEAS only; reimplement the shape, do not lift code.)*
+
+```sql
+DEFINE TABLE embedding_cache SCHEMAFULL;
+DEFINE FIELD hash          ON embedding_cache TYPE string;     -- sha256(text) + model_version (clean invalidation on model change)
+DEFINE FIELD vector        ON embedding_cache TYPE array<float>;
+DEFINE FIELD model_version ON embedding_cache TYPE string;
+DEFINE FIELD created_at    ON embedding_cache TYPE datetime DEFAULT time::now();
+DEFINE FIELD pruned_at     ON embedding_cache TYPE option<datetime>;  -- soft-prune (consistent with D-015 ethos), NOT DELETE
+
+DEFINE INDEX embedding_cache_hash ON embedding_cache FIELDS hash UNIQUE;
+```
+
+### 4.16 SurrealDB schema gotchas (memory engine) — see MEMORY-SPEC §6
+
+Engineering gotchas the new tables above must respect (kongcode lessons, MEMORY-SPEC §6 — full detail there):
+
+- **`option<bool>`/enum + `RETURN AFTER` deadlock.** SurrealDB treats `NONE` as a distinct value, so any boolean/enum field **read back on a `RETURN AFTER` write** (e.g. `causal_chain.success`, the `graduated_at` watermarks, `memory.surfaceable`) **MUST be `option<>` or backfilled in the same migration** — else a freshly-created row whose field defaulted to `NONE` deadlocks a `WHERE field = …` claim. This is the same class the `dedup_key VALUE` pattern (§4.3/§7a) already dodges; the general rule holds for every new boolean/enum.
+- **Idempotent migrations.** One-time table-scan `UPDATE`s must be gated behind `LET <count> = (SELECT …); IF count > 0 { … }` so re-running the migration is a no-op; use `OVERWRITE` to widen tables/indexes; annotate each one-time migration with its removal condition.
+- **Backfill `VALUE` fields.** A computed `VALUE` field (e.g. `dedup_key`) is only recomputed on write, so at schema-apply time **backfill it with a no-op touch-`UPDATE`** over existing rows; otherwise pre-existing rows carry a stale/empty key.
 
 ---
 
@@ -618,6 +742,12 @@ If anything fails, `CANCEL TRANSACTION` (or `THROW`) rolls back all of it. No pa
 | _(none — new)_ | `service` table (new — ephemeral in v1) |
 | _(none — new)_ | `workflow` / `workflow_run` tables (new, D-013) |
 | _(none — new)_ | `retrieval_outcome` table (new, D-022 groundwork) |
+| _(none — new)_ | `skill` table — learned/graduated skills (new, D-027/D-022); distinct from authored `cc_skill` files |
+| _(none — new)_ | `causal_chain` table — graduation source (new, D-027/D-022) |
+| _(none — new)_ | `memory_history` table — audit log (new, D-028; mem0 three-table split) |
+| _(none — new)_ | `embedding_cache` table — L2 embed cache (new; kongcode shape, ideas-only) |
+| _(none — new)_ | `session.user_turn_count` / `tool_iter_count` fields (new, D-027 two-cadence nudge) |
+| _(none — new)_ | `memory` Tier-0 + resurfacing fields (`tier`, `surfaceable`, `next_surface_at`, `fib_index`, `surface_count`, `last_surfaced`) + `absorbed_into` (new, D-027/D-031) |
 
 A one-time **importer script** (Phase 1) reads each v1 file/DB and writes the mapped records in transactions. Embeddings in `.swarm/memory.db` can be re-used if dimensions match the chosen embedding model; otherwise re-embed `content`.
 
@@ -653,4 +783,6 @@ Design queries so "knowledge core" is cleanly separable from "transcript volume"
 - **Isolation level** for the server (surrealkv) backend transaction isolation — verify (D-006).
 - **Embedding dimension/model** — pick before writing the index (above).
 - **`engine_metric`** table — resolved: heartbeat/orchestrator metrics fold into `agent_event` (cycle rows); no separate `engine_metric` table.
+- **Memory-engine schema deltas** (MEMORY-SPEC §372) — **resolved**: folded into the schema above — `session.user_turn_count`/`tool_iter_count` (§4.3), `memory` Tier-0 + Fibonacci-resurfacing fields + `absorbed_into` (§4.5), `memory_history` audit (§4.5a), `skill` + `causal_chain` (§4.14), `embedding_cache` (§4.15). Honors D-030 (utilization → ranking only), D-031 (novelty gate + consolidation), D-032 (learned skills + user-model in-store).
+- **User-model storage** — resolved by D-032: lives in SurrealDB (Honcho dropped). Exact `user_model` table shape is deferred to the user-modeling epic (MEMORY-SPEC §8, post-v1.0 candidate) — not declared here yet.
 - **Versioning/time-travel** — if wanted, evaluate `surrealkv+versioned://` (currently beta) instead of RocksDB (D-007).

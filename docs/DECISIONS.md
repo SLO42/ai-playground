@@ -368,39 +368,41 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 
 ---
 
-## D-030 🟡 OPEN — Close the utilization loop? (FLAG FOR HUMAN — v2's competitive edge)
+## D-030 🔒 Utilization loop feeds RANKING, not pruning (owner-resolved)
 
-**Source:** cannibalize foundry — **kongcode** + cannibalize's `mark-applied` outcome signal; the question **hermes leaves open**. *Open question — do NOT pick; flagged for the owner.*
+**Source:** cannibalize foundry — **kongcode** + cannibalize's `mark-applied` outcome signal; the question **hermes leaves open**. Resolved by the owner 2026-06-06.
 
 **Context:** hermes self-improvement is **pure WRITE-time judgment with NO retrieval/utilization feedback** — it never measures whether a saved skill later **HELPED**, and prunes purely on inactivity. kongcode's lesson: **retrieval ≠ utilization, and outcome is the best ranker.** v2 already has the `retrieval_outcome` table as **D-022 groundwork**.
 
-**Open question:** Should v2 **track whether a recalled skill/memory led to a GOOD OUTCOME** and feed that signal into **BOTH ranking AND the curator's keep/prune decision** — making the utilization loop **CENTRAL**? This is the move all three sources under-use: **hermes ignores it, mem0 lacks it, kongcode has it but doesn't centralize it.**
+**Decision:** v2 **tracks whether a recalled skill/memory led to a good outcome** (`retrieval_outcome`: was it cited / did it precede tool success) and feeds that signal into the **recall RANKER** — but **NOT** into the curator's keep/prune decision. **Pruning stays time/inactivity-based** (hermes-style, archive-not-delete per D-015). Outcome improves *what surfaces*; it does **not** decide *what survives*.
 
-**Decision:** **Do NOT pick — explicitly flagged for the owner.** Positioned as **v2's differentiator** (the place v2 can beat hermes, not just match it).
+**Rationale:** outcome-driven pruning risks discarding a still-valuable but rarely-cited memory (low citation ≠ low worth); ranking is reversible per-query, pruning is (soft-)destructive. Keep the high-value signal where it's safe.
 
----
-
-## D-031 🟡 OPEN — Periodic consolidation pass vs retrieval-time diversity/novelty gate vs BOTH?
-
-**Source:** cannibalize foundry — **kongcode**. *Open question — do NOT pick.*
-
-**Context:** redundant near-dup memory families accumulate over time. kongcode hints at **both** a **HARD novelty gate at query time** AND a **periodic consolidation pass** (a hard novelty gate beats soft MMR when the corpus has redundant near-dup families).
-
-**Open question:** Which — the consolidation pass, the retrieval-time novelty gate, or **BOTH** — for v2?
-
-**Decision:** **Do not pick.** Open for the owner to resolve.
+**Consequences:** `retrieval_outcome` is a ranker input (WMR/ACAN feature), recorded in v0.2 (ROADMAP 2.16). The curator (D-027 consolidator) prunes on inactivity + consolidation only. Still v2's edge over hermes (which has no utilization signal at all) — just applied conservatively. Revisit outcome-driven pruning post-v1.0 if data shows ranking-only leaves junk.
 
 ---
 
-## D-032 🟡 OPEN — Single SurrealDB store (D-001) vs hermes' polyglot split? (FLAG FOR HUMAN — tension with locked D-001)
+## D-031 🔒 Diversity control = BOTH query-time novelty gate + periodic consolidation (owner-resolved)
 
-**Source:** cannibalize foundry — **hermes** vs **kongcode / v2's current plan**. *Open question — surfaces a tension with locked D-001; do NOT silently flip it.*
+**Source:** cannibalize foundry — **kongcode**. Resolved by the owner 2026-06-06.
 
-**Context:** **D-001 locks a single SurrealDB store.** hermes instead **splits** storage: **skills = `SKILL.md` files + sidecar `.usage.json` telemetry**; **sessions = SQLite FTS5**; **user-model = external Honcho**. Claimed advantages of the split: **git-diffable skills, agentskills.io interop, FTS5 maturity**.
+**Context:** redundant near-dup memory families accumulate over time. kongcode: a **HARD novelty gate at query time** beats soft MMR when the corpus has redundant near-dup families; a **periodic consolidation pass** merges the families themselves.
 
-**Open question:** Does any of hermes' split carry **enough advantage to carve an exception to D-001** — e.g. keep **skills as git-diffable `SKILL.md` files** while everything else stays in SurrealDB — or does the **unified store win**?
+**Decision:** Use **both**. A **hard novelty gate at recall time** (cosine-band cut on the candidate set) stops near-dups surfacing into context; the **periodic consolidator** (D-027) merges near-dup families into class-level umbrellas so storage doesn't bloat. Belt-and-suspenders: the gate fixes *what the agent sees now*, consolidation fixes *what accumulates*.
 
-**Decision:** **Do NOT silently flip D-001** — surfaced as a **tension for the owner to resolve**. Note: **§5 / AGENTS.md** leans toward **agentskills.io-compatible `SKILL.md` authoring**, which partially intersects this question.
+**Consequences:** novelty-gate thresholds (family-vs-distinct cosine bands) are tunable starting points (kongcode-documented); consolidation is a `work_item` job (D-021) on the curator cadence (D-027). `absorbed_into` forwarding (D-027/D-015) rewrites edges from merged members to the umbrella.
+
+---
+
+## D-032 🔒 Single SurrealDB store stands; no polyglot split (owner-resolved, reaffirms D-001)
+
+**Source:** cannibalize foundry — **hermes** vs **kongcode / v2's plan**. Resolved by the owner 2026-06-06.
+
+**Context:** **D-001 locks a single SurrealDB store.** hermes splits: skills = `SKILL.md` files + `.usage.json` sidecar; sessions = SQLite FTS5; user-model = external Honcho. Claimed wins: git-diffable skills, agentskills.io interop, FTS5 maturity.
+
+**Decision:** **Keep the single SurrealDB store (D-001).** No SQLite FTS5 split (SurrealDB has native FTS, D-009), no external Honcho (the user-model lives in SurrealDB). **Key insight that dissolves the tension:** the harness's *authored* Claude Code skills/agents are **already git-diffable files on disk** (D-010 filesystem-authoritative, DB mirrors them) — so v2 *already* has hermes' git-diff + agentskills.io benefit for authored skills **without** splitting the memory store. The memory engine's *graduated/learned* skills (D-027 skill graduation) live in SurrealDB as real-graph rows (traversal + RL counts mem0/files can't do).
+
+**Consequences:** D-001 holds. AGENTS.md's agentskills.io `SKILL.md` convention applies to **authored** skills (already files, D-010) — it does **not** mandate splitting the *memory* store. user-model = SurrealDB (drop the Honcho candidate in MEMORY-SPEC §8 to "not adopted"). Two skill notions, clearly separated: authored skills = files (D-010); learned skills = SurrealDB rows (D-027).
 
 ---
 
@@ -448,9 +450,9 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 | D-027 | 🔒 | Two-tier learning loop (fast in-use writer + slow consolidator) |
 | D-028 | 🔒 | Extraction ADD-only; conflict resolution = separate det/graph pass |
 | D-029 | 🔒 | Cross-session recall = raw windowed messages + bookends, no summary-LLM |
-| D-030 | 🟡 | OPEN — close the utilization loop? (FLAG FOR HUMAN — v2's edge) |
-| D-031 | 🟡 | OPEN — consolidation pass vs retrieval-time novelty gate vs both? |
-| D-032 | 🟡 | OPEN — single SurrealDB store (D-001) vs hermes polyglot split? (FLAG FOR HUMAN) |
+| D-030 | 🔒 | Utilization loop feeds ranking, NOT pruning (prune stays time-based) |
+| D-031 | 🔒 | Diversity = BOTH query-time novelty gate + periodic consolidation |
+| D-032 | 🔒 | Single SurrealDB stands (no polyglot); authored skills already files (D-010) |
 | D-033 | 🔒 | Design skills seed + gate UI-SPEC (already applied) |
 
-> **Provenance:** **D-006–D-008 (in part)** and **D-014–D-023** are **KongCode-informed** — derived from studying KongCode v0.7.113 (`C:/Users/11sos/.claude/plugins/cache/kongcode-marketplace/kongcode/0.7.113/`), a production SurrealDB knowledge-graph + Claude Code harness (D-006 server-binary path is the biggest borrow; D-007 SurrealKV, D-008 dedup correction). ARCHITECTURE §9 "Lessons from KongCode" is the authoritative map. **D-024–D-026** are **security hardening surfaced by the pre-commit audit**. **D-027–D-033** (and the D-014 `qwen3-embedding:0.6b` embedding candidate) are sourced from the **cannibalize foundry** (`docs/CANNIBALIZE-BRIEF.md`) — distilled from **hermes-agent** (Nous Research, MIT), **mem0** (Apache-2.0), and **kongcode** (friend's plugin — ideas fine, code-lift needs consent). Each is a **candidate with provenance, to be verified against v2 constraints before build** — not a mandate; the OPEN items (D-030/D-031/D-032) are explicitly deferred to the owner and do **not** override any locked decision (notably D-001, whose tension is surfaced in D-032).
+> **Provenance:** **D-006–D-008 (in part)** and **D-014–D-023** are **KongCode-informed** — derived from studying KongCode v0.7.113 (`C:/Users/11sos/.claude/plugins/cache/kongcode-marketplace/kongcode/0.7.113/`), a production SurrealDB knowledge-graph + Claude Code harness (D-006 server-binary path is the biggest borrow; D-007 SurrealKV, D-008 dedup correction). ARCHITECTURE §9 "Lessons from KongCode" is the authoritative map. **D-024–D-026** are **security hardening surfaced by the pre-commit audit**. **D-027–D-033** (and the D-014 `qwen3-embedding:0.6b` embedding candidate) are sourced from the **cannibalize foundry** (`docs/CANNIBALIZE-BRIEF.md`) — distilled from **hermes-agent** (Nous Research, MIT), **mem0** (Apache-2.0), and **kongcode** (friend's plugin — ideas fine, code-lift needs consent). Each is a **candidate with provenance, to be verified against v2 constraints before build** — not a mandate. The three originally-OPEN items were **resolved by the owner 2026-06-06**: D-030 (utilization loop → ranking only, not pruning), D-031 (diversity → both novelty gate + consolidation), D-032 (single SurrealDB stands — reaffirms D-001; authored skills are already files per D-010). No locked decision was overridden.

@@ -14,7 +14,7 @@ The **concrete** design system — the values UI-SPEC §4 left as roles. Deliver
   1. **Web = WOFF2/WOFF only** via `@font-face`. **TTF/OTF on the web is prohibited.** (`fonts.css` fixed to woff2/woff.)
   2. **Font binaries MUST NOT be committed to the public repo** ("not accessible to unlicensed third parties; not on GitHub/S3"). Provision at **build time** into `dashboard/static/fonts/` (or equivalent), **gitignored**. This repo tracks **no** `.woff/.woff2/.ttf/.otf`.
   3. **Single-operator / local serving only.** No SAS/public exposure that serves the font to unlicensed third parties. Re-check before any public or multi-user deployment.
-  4. **Confirm the exact cut (🟡):** the system wired `Lastik-Free` while `uploads/` holds the purchased **Commercial** Lastik + EULA. Confirm which ships and that its terms match the above (the free cut may differ). Until confirmed, treat as Commercial (strictest).
+  4. **Cut confirmed (✅):** ships **Lastik-Free**, **purchased** — the That That Type **Commercial EULA** applies, so (1)–(3) above stand.
 - **JetBrains Mono** — OFL (open), Google Fonts; no constraint.
 - **Fallback:** `--font-sans` falls back to `ui-sans-serif, system-ui, …` so the UI is fully functional if Lastik can't load (license/offline).
 
@@ -124,6 +124,6 @@ At build (Phase 0.a / the cannibalization visual pass, ROADMAP v1.0 4.x):
 
 ## 9. Open items
 
-- 🟡 **Lastik cut + license confirm** (free vs purchased Commercial) — §1.
+- ✅ **Lastik cut confirmed** — Lastik-Free, purchased (Commercial EULA; web=woff/woff2, no-repo, single-operator stand) — §1.
 - ⬜ **AA contrast gate** over all token pairs (impeccable) — §7/§9; verify accent-vs-running near-hue.
 - ⬜ React→Svelte 5 component port at build.

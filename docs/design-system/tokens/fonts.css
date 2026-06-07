@@ -15,9 +15,10 @@
 
 @font-face {
   font-family: 'Lastik';
-  /* WOFF2/WOFF only (license). Files provisioned at build into ./assets/fonts/ — NOT in repo. */
-  src: url('../assets/fonts/Lastik.woff2') format('woff2'),
-       url('../assets/fonts/Lastik.woff') format('woff');
+  /* WOFF2/WOFF only (license). Files provisioned at build into ./assets/fonts/ — NOT in repo.
+     Cut: Lastik-Free (purchased) — That That Type Commercial EULA applies. */
+  src: url('../assets/fonts/Lastik-Free.woff2') format('woff2'),
+       url('../assets/fonts/Lastik-Free.woff') format('woff');
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;

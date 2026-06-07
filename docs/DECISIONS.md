@@ -430,7 +430,7 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 - **(a) Web = WOFF2/WOFF only** via `@font-face`. **TTF/OTF on the web is prohibited** (`fonts.css` corrected).
 - **(b) Font binaries MUST NOT be committed to the public repo** — provisioned at build into `dashboard/static/fonts/` (or equiv), **gitignored, never tracked**. This repo tracks zero `.woff/.woff2/.ttf/.otf`; `.gitignore` guards it.
 - **(c) Single-operator / local serving only** — no SAS/public exposure that serves the font to unlicensed third parties; **re-verify before any public or multi-user deploy.**
-- **(d) 🟡 Confirm the cut:** the system wired `Lastik-Free` while `uploads/` holds the purchased **Commercial** Lastik + EULA — confirm which ships and that its terms match (a)–(c). Treat as Commercial (strictest) until confirmed.
+- **(d) ✅ Cut confirmed:** ships **Lastik-Free**, **purchased** by the operator — the That That Type **Commercial EULA** applies (use rights, not redistribution), so (a)–(c) stand.
 - **Fallback:** `--font-sans` falls back to `system-ui` — the UI works without Lastik (license/offline-safe). JetBrains Mono is OFL, unconstrained.
 
 **Consequences:** values resolved; a **build-time AA/contrast gate** (impeccable) over the token pairs remains (esp. the near-hue accent `#8ab0ab` vs running `#3fb6ac`, §9); a font-provisioning step that never commits the binaries (carry as a fails-style rule). The accent is teal, kept distinct from the green success/running status by lightness — color is always paired with icon/label (UI-SPEC §9).

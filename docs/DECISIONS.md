@@ -31,7 +31,7 @@ Status legend: 🔒 Locked · 🟡 Open (needs spike/decision) · ⚪ Proposed (
 
 ---
 
-## D-002 🔒 (runtime = Claude Code locked; SDK/CLI mechanism pending spike S.1) Agent runtime = Claude Code (the product is a Claude Code harness)
+## D-002 🔒 Agent runtime = Claude Code — SDK primary, CLI needs isolated config (S1 RESOLVED)
 
 **Context:** v1 routed agent work through the **OpenClaw gateway** (WSS, Ed25519, TLS 1.3, DM pairing, exec/read/write ACLs, Ollama fallback) — heavy, with a concurrent-`chat()` hang bug. The owner clarified that **v2 is also a Claude Code harness**: Claude Code is the execution backend, the cross-project config control surface, the session orchestrator, and a headless workflow runner.
 
@@ -48,7 +48,10 @@ Likely **both**: SDK for programmatic/headless execution + workflows; controlled
 - Tool gating, hooks, and MCP are handled by Claude Code itself (we configure them — see D-010), so we don't reimplement a tool sandbox.
 - Offline: Claude Code needs the Anthropic API; the local Ollama slot (D-003) remains for cheap/offline non-CC paths via the provider adapters.
 
-**Spike deliverable (S.1):** confirm SDK vs CLI split on Windows + Node 22; verify streaming transcript events, interject, stop, resume, and headless run; then this stays 🔒 with the mechanism recorded.
+**S1 spike RESULT (2026-06-07, Windows + Node 24):** runtime proven — **2 concurrent runs completed with no hang** (the v1 bug does not reproduce); the **Agent SDK ran clean headless** (deterministic output); the CLI streamed `system/assistant/result`, yielded a `session_id`, and `--resume` continued the session. **Finding:** a spawned **`claude` CLI inherits the operator's GLOBAL config** (the box had caveman/kongcode/peers/routing plugins → polluted, nondeterministic agents + injected hook turns blew `--max-turns`); the SDK did not. **Resolved mechanism:**
+- **SDK is the primary runtime** for headless/programmatic + workflows (clean, no inherited personal config).
+- The **CLI** (used for interactive parity: interject/resume) **MUST be spawned with an ISOLATED config** — a dedicated `CLAUDE_CONFIG_DIR` / `--settings` carrying only the harness's own gate/hook set (D-018/D-019), no inherited operator plugins/hooks. This is a **build requirement** for the `AgentRuntime` impl (carried to IMPLEMENTATION-PLAN v0.1 task 1.4 / 1.4a).
+- **Interject (D-011)** uses Claude Code's **`claude/channel` push** protocol — proven by claude-peers (see D-035).
 
 ---
 
@@ -151,7 +154,7 @@ Triggers and interval live in `config` and a settings page.
 
 **Decision:** Model a Claude Code session as a first-class entity with: live **transcript event stream** (assistant/tool/usage events) surfaced over the one SSE stream; **interject** (send a message into a running session); **stop** (cancel); **resume** (by Claude Code session id). Interactive parity (interject/resume) is the main reason the CLI may be used alongside the SDK (D-002). Mirrors v1 feedback "stop, restart, interject into running agents".
 
-**Consequences:** `session` records carry a `cc_session_id`; transcript persisted as `message` rows; a control channel maps dashboard actions → runtime calls. Fleet view = query of running sessions.
+**Consequences:** `session` records carry a `cc_session_id`; transcript persisted as `message` rows; a control channel maps dashboard actions → runtime calls. Fleet view = query of running sessions. **Interject** is implemented via Claude Code's **`claude/channel` push** (proven by claude-peers — D-035): a message injected into a *running* session, seen immediately. Operator-origin interjects may steer; any agent→agent message is fenced as data (D-026).
 
 ---
 
@@ -175,7 +178,7 @@ Triggers and interval live in `config` and a settings page.
 
 ---
 
-## D-014 🟡 Embedding source (KongCode-informed) — pick local-via-Ollama / node-llama-cpp / API
+## D-014 🔒 Embedding source = Ollama `qwen3-embedding:0.6b` (1024-dim) — RESOLVED by S0 spike
 
 **Context:** Memory needs embeddings + a vector dimension fixed in the HNSW index. KongCode runs **BGE-M3 GGUF (1024-dim) locally via `node-llama-cpp`** — $0, offline, no API. We already keep **Ollama** (D-003), which can serve embedding models (e.g. `bge-m3`) over its existing API — reusing infra KongCode lacks.
 
@@ -183,7 +186,7 @@ Triggers and interval live in `config` and a settings page.
 
 **Consequence (cannibalize foundry):** the foundry independently validated **`qwen3-embedding:0.6b` served via Ollama (1024-dim, HNSW COSINE in SurrealDB)** as a proven local embedder — a concrete candidate alongside `bge-m3`. **Both are 1024-dim, so the HNSW index `DIMENSION` is unaffected either way** — the choice between them is a quality/throughput call, not an index-locking one. *Verify against v2 constraints before build.* Stays 🟡.
 
-**Revisit:** confirm with owner (see open questions). Dimension must be set before writing the index.
+**RESOLVED (S0 spike, 2026-06-07):** the Phase-0 SurrealDB spike confirmed **`qwen3-embedding:0.6b` via Ollama returns 1024-dim** vectors that index + KNN-query cleanly in SurrealDB 2.6.5 (HNSW DIMENSION 1024 DIST COSINE). It's already pulled (639 MB), smaller than bge-m3, cannibalize-validated. **Locked: `qwen3-embedding:0.6b`, 1024-dim.** bge-m3 remains a drop-in alt (also 1024-dim → no index change); node-llama-cpp/API stay documented fallbacks. Index `DIMENSION` = 1024.
 
 ---
 
@@ -437,13 +440,32 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 
 ---
 
+## D-035 🟡 Inter-session communication layer (claude-peers patterns) — channel-interject now, fleet message bus deferred
+
+**Source:** **claude-peers-mcp** (`F:/code/tools/claude-peers-mcp`, the operator's own tool — ideas/lift OK). Lets multiple Claude Code sessions discover each other + message each other; inbound messages **pushed into a running session via Claude Code's `claude/channel` protocol** (arrive immediately), via a localhost broker daemon + SQLite registry/inbox. See CANNIBALIZE-BRIEF §7.
+
+**Context:** v2 is a **fleet** harness (drives many Claude Code sessions). claude-peers' design splits into two reusable ideas: (a) the **channel push = how you interject into a running session**; (b) an **inter-session message layer** (registry + send-by-id + inbox + scoped discovery + summary) for fleet coordination.
+
+**Decision:**
+- **(a) Channel-interject — adopt now.** v2's session control **interject** (D-011) is implemented via Claude Code's **`claude/channel` push** (the mechanism claude-peers proves). Folds into D-011 + the `AgentRuntime` impl (IMPLEMENTATION-PLAN 1.4/2.10). Not a new feature — it's the concrete answer to a D-011 unknown.
+- **(b) Fleet message bus — candidate, DEFERRED to ~v0.2.** An inter-session / agent↔agent + operator↔agent message channel (registry, send, inbox, scoped-by-project discovery, live "what's each session doing" summary) built on **v2's existing substrate** — SurrealDB (`session` registry + a `peer_message` table) + the `events` bus + SSE — **not** a second broker daemon/SQLite/MCP.
+
+**Build on v2's substrate, do NOT copy:**
+- ❌ the broker daemon + separate SQLite — v2 has one store + one bus (D-001/D-005, "lighter").
+- ❌ `process.kill(pid, 0)` for peer liveness — **unreliable on Windows** (F-001; use `tasklist`).
+- ❌ the localhost-no-auth trust model — peer messages are **untrusted agent content**: fence per **D-026** (message = data, never instructions, unless operator-origin) + gate the channel behind the **D-025** control-plane token. Only operator-origin messages may steer; agent→agent messages are data.
+
+**Consequences:** (a) unblocks D-011 interject; (b) a net-new fleet-coordination capability (operator interject, agent↔agent coordination, sub-agent fan-out, broadcast summaries to the fleet view) — scoped, fenced, on the existing engine. Deferred because it's coordination + a security surface beyond the v0.1 MVP. Revisit scope at v0.2.
+
+---
+
 ## Decision index
 
 | ID | Status | Topic |
 |----|--------|-------|
 | D-000 | 🟡 | Product name |
 | D-001 | 🔒 | Single SurrealDB datastore (product state) |
-| D-002 | 🔒 (runtime = Claude Code locked; SDK/CLI mechanism pending spike S.1) | Agent runtime = Claude Code (harness); SDK/CLI split via S.1 |
+| D-002 | 🔒 | Agent runtime = Claude Code; SDK primary, CLI needs isolated config (S1-resolved) |
 | D-003 | 🔒 | Keep gpt-oss:20b as swappable slot |
 | D-004 | 🔒 | Configurable event-driven orchestration |
 | D-005 | 🔒 | Keep SvelteKit, trim pages/endpoints |
@@ -455,7 +477,7 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 | D-011 | 🔒 | Session orchestration (interject/stop/resume) |
 | D-012 | 🟡 | OpenClaw cannibalization audit (S.2) |
 | D-013 | 🔒 | Headless workflow runner |
-| D-014 | 🟡 | Embedding source (default: Ollama bge-m3, 1024-dim; qwen3-embedding:0.6b candidate) |
+| D-014 | 🔒 | Embedding = Ollama qwen3-embedding:0.6b, 1024-dim (S0-proven) |
 | D-015 | 🔒 | Append-only / soft-archive for knowledge tables |
 | D-016 | 🔒 | Record-id validation guard (injection) |
 | D-017 | 🔒 | Maintenance on trigger, not a loop (confirms D-004) |
@@ -476,5 +498,6 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 | D-032 | 🔒 | Single SurrealDB stands (no polyglot); authored skills already files (D-010) |
 | D-033 | 🔒 | Design skills seed + gate UI-SPEC (superseded by D-034 for values) |
 | D-034 | 🔒 | Design system delivered (teal/Lastik) + font-license constraints |
+| D-035 | 🟡 | Inter-session comms (claude-peers): channel-interject now; fleet bus deferred v0.2 |
 
-> **Provenance:** **D-006–D-008 (in part)** and **D-014–D-023** are **KongCode-informed** — derived from studying KongCode v0.7.113 (`C:/Users/11sos/.claude/plugins/cache/kongcode-marketplace/kongcode/0.7.113/`), a production SurrealDB knowledge-graph + Claude Code harness (D-006 server-binary path is the biggest borrow; D-007 SurrealKV, D-008 dedup correction). ARCHITECTURE §9 "Lessons from KongCode" is the authoritative map. **D-024–D-026** are **security hardening surfaced by the pre-commit audit**. **D-027–D-033** (and the D-014 `qwen3-embedding:0.6b` embedding candidate) are sourced from the **cannibalize foundry** (`docs/CANNIBALIZE-BRIEF.md`) — distilled from **hermes-agent** (Nous Research, MIT), **mem0** (Apache-2.0), and **kongcode** (friend's plugin — ideas fine, code-lift needs consent). Each is a **candidate with provenance, to be verified against v2 constraints before build** — not a mandate. The three originally-OPEN items were **resolved by the owner 2026-06-06**: D-030 (utilization loop → ranking only, not pruning), D-031 (diversity → both novelty gate + consolidation), D-032 (single SurrealDB stands — reaffirms D-001; authored skills are already files per D-010). No locked decision was overridden. **D-034** is operator-authored (the delivered design system), not foundry-sourced; it supersedes the D-033 seed for concrete values and adds the Lastik font-license constraints.
+> **Provenance:** **D-006–D-008 (in part)** and **D-014–D-023** are **KongCode-informed** — derived from studying KongCode v0.7.113 (`C:/Users/11sos/.claude/plugins/cache/kongcode-marketplace/kongcode/0.7.113/`), a production SurrealDB knowledge-graph + Claude Code harness (D-006 server-binary path is the biggest borrow; D-007 SurrealKV, D-008 dedup correction). ARCHITECTURE §9 "Lessons from KongCode" is the authoritative map. **D-024–D-026** are **security hardening surfaced by the pre-commit audit**. **D-027–D-033** (and the D-014 `qwen3-embedding:0.6b` embedding candidate) are sourced from the **cannibalize foundry** (`docs/CANNIBALIZE-BRIEF.md`) — distilled from **hermes-agent** (Nous Research, MIT), **mem0** (Apache-2.0), and **kongcode** (friend's plugin — ideas fine, code-lift needs consent). Each is a **candidate with provenance, to be verified against v2 constraints before build** — not a mandate. The three originally-OPEN items were **resolved by the owner 2026-06-06**: D-030 (utilization loop → ranking only, not pruning), D-031 (diversity → both novelty gate + consolidation), D-032 (single SurrealDB stands — reaffirms D-001; authored skills are already files per D-010). No locked decision was overridden. **D-034** is operator-authored (the delivered design system), not foundry-sourced; it supersedes the D-033 seed for concrete values and adds the Lastik font-license constraints. **Phase-0 spikes (2026-06-07)** resolved **D-014** (→ qwen3-embedding:0.6b, 1024-dim, S0-proven) and the **D-002** mechanism (SDK primary; CLI needs isolated config — S1). **D-035** folds **claude-peers-mcp** (operator's own tool): adopt the `claude/channel` interject now (D-011), defer the fleet message bus to v0.2.

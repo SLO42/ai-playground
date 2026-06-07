@@ -155,4 +155,25 @@ No action — recorded for traceability. Folded in:
 
 ---
 
-*Generated from the cannibalize foundry, 2026-06-06. 37 sources, 154 findings, 14 components, 4 decisions, 3 questions, 176 embedded. To regenerate or go deeper: `F:\code\cannibalize\scripts\find-relevant.ps1 -Query "<topic>" -Semantic -Hydrate`.*
+## 7. claude-peers-mcp — inter-session communication (→ D-035)
+
+*(Added 2026-06-07. Source: `F:/code/tools/claude-peers-mcp` — the operator's OWN tool, ideas/lift OK.)*
+
+**What it is:** lets multiple Claude Code sessions on one machine discover + message each other. A **broker daemon** (localhost:7899 + SQLite) holds a peer registry (id, pid, cwd, git_root, summary, last_seen) + a message inbox (from/to/text/delivered). Each session's MCP server registers, heartbeats, polls every 1s, and **pushes inbound messages into the running session via Claude Code's `claude/channel` protocol** so the agent sees them *immediately*. Tools: `list_peers` (scoped machine/directory/repo), `send_message` (by id), `set_summary`, `check_messages`.
+
+**Patterns worth stealing (for the v2 fleet harness):**
+- **`claude/channel` push = the interject transport.** This is how you inject a message into a *running* Claude Code session — exactly what v2's **interject** (D-011) needs. **Adopt now.**
+- **Session registry + scoped discovery** (machine/dir/repo → for v2: project/global) = the fleet view (D-011) — v2 already has `session` rows; add live discovery + a compact "what's this session doing" summary.
+- **Inbox + delivered-flag + peek-vs-poll** (auto-read peeks without consuming; explicit `check_messages` marks delivered) — clean delivery semantics for a message channel.
+- **Auto-cleanup of dead peers** + heartbeat liveness.
+
+**Build on v2's substrate, do NOT copy:**
+- ❌ broker daemon + separate SQLite → v2 has one SurrealDB + one events bus (D-001/D-005); model peers as `session` rows + a `peer_message` table on the bus.
+- ❌ `process.kill(pid, 0)` for liveness → **unreliable on Windows** (F-001; use `tasklist`).
+- ❌ localhost-no-auth trust → peer messages are **untrusted agent content**: fence (D-026, data-not-instructions unless operator-origin) + control-plane token (D-025).
+
+**v2 take (D-035):** **(a)** channel-interject — adopt now (D-011); **(b)** agent↔agent + operator↔agent **fleet message bus** — candidate, **deferred to ~v0.2** (coordination + security surface beyond MVP), on SurrealDB + the events bus, fenced.
+
+---
+
+*Generated from the cannibalize foundry, 2026-06-06 (claude-peers added 2026-06-07). To regenerate or go deeper: `F:\code\cannibalize\scripts\find-relevant.ps1 -Query "<topic>" -Semantic -Hydrate`.*

@@ -1,0 +1,26 @@
+<!-- @dsCard group="Colors" viewport="700x190" name="Brand palette" subtitle="The operator-supplied teal/slate seed" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { padding: 20px; }
+  .row { display: grid; grid-template-columns: repeat(5, 1fr); gap: 10px; }
+  .sw { border-radius: var(--radius-md); overflow: hidden; border: 1px solid var(--color-border); }
+  .chip { height: 76px; }
+  .meta { padding: 8px 10px; background: var(--color-surface-card); }
+  .nm { font: var(--weight-semibold) var(--text-xs)/1.3 var(--font-sans); color: var(--color-text); }
+  .hex { font: var(--type-mono-sm); color: var(--color-text-muted); margin-top: 2px; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="sw"><div class="chip" style="background:var(--muted-teal)"></div><div class="meta"><div class="nm">muted-teal</div><div class="hex">#8AB0AB</div></div></div>
+    <div class="sw"><div class="chip" style="background:var(--charcoal-blue)"></div><div class="meta"><div class="nm">charcoal-blue</div><div class="hex">#3E505B</div></div></div>
+    <div class="sw"><div class="chip" style="background:var(--dark-slate-grey)"></div><div class="meta"><div class="nm">dark-slate-grey</div><div class="hex">#26413C</div></div></div>
+    <div class="sw"><div class="chip" style="background:var(--carbon-black)"></div><div class="meta"><div class="nm">carbon-black</div><div class="hex">#1A1D1A</div></div></div>
+    <div class="sw"><div class="chip" style="background:var(--onyx)"></div><div class="meta"><div class="nm">onyx</div><div class="hex">#03120E</div></div></div>
+  </div>
+</body>
+</html>

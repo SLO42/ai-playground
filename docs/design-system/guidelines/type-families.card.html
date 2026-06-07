@@ -1,0 +1,29 @@
+<!-- @dsCard group="Type" viewport="700x210" name="Font families" subtitle="Lastik (UI / display) + JetBrains Mono (code, ids, transcripts)" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { padding: 22px; display: grid; gap: 18px; }
+  .blk .lbl { display: flex; align-items: baseline; gap: 10px; margin-bottom: 6px; }
+  .fam { font: var(--weight-semibold) var(--text-md) var(--font-sans); color: var(--color-text); }
+  .role { font: var(--type-mono-sm); color: var(--color-text-subtle); }
+  .sans-spec { font: 400 26px var(--font-sans); color: var(--color-text); }
+  .mono-spec { font: 400 22px var(--font-mono); color: var(--color-text); font-variant-ligatures: none; }
+  .wts { font: var(--text-xs) var(--font-sans); color: var(--color-text-muted); margin-top: 6px; }
+</style>
+</head>
+<body>
+  <div class="blk">
+    <div class="lbl"><span class="fam">Lastik</span><span class="role">--font-sans</span></div>
+    <div class="sans-spec">Drive Claude Code across your portfolio</div>
+    <div class="wts">Brand display / UI typeface · self-hosted</div>
+  </div>
+  <div class="blk">
+    <div class="lbl"><span class="fam">JetBrains Mono</span><span class="role">--font-mono</span></div>
+    <div class="mono-spec">session:7fa2 → SELECT * FROM task WHERE status</div>
+    <div class="wts">Code · ids · paths · SurrealQL · tabular numerics</div>
+  </div>
+</body>
+</html>

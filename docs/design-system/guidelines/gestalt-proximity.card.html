@@ -1,0 +1,26 @@
+<!-- @dsCard group="Gestalt" viewport="700x180" name="Proximity" subtitle="Spacing groups related controls; distance separates unrelated ones" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { padding: 22px; display: flex; align-items: center; }
+  .row { display: flex; align-items: center; gap: 44px; }
+  .grp { display: flex; gap: 6px; }
+  .lbl { font: var(--type-label); color: var(--color-text-subtle); margin-bottom: 8px; }
+  .chip { padding: 7px 12px; background: var(--color-surface-card); border: 1px solid var(--color-border); border-radius: var(--radius-sm); font: var(--type-mono-sm); color: var(--color-text-2); }
+  .gap-note { font: var(--type-mono-sm); color: var(--color-text-faint); align-self: center; }
+</style>
+</head>
+<body>
+  <div>
+    <div class="row">
+      <div><div class="lbl">Filters</div><div class="grp"><span class="chip">status</span><span class="chip">tier</span><span class="chip">project</span></div></div>
+      <span class="gap-note">└ 44px ┘</span>
+      <div><div class="lbl">View</div><div class="grp"><span class="chip">board</span><span class="chip">list</span></div></div>
+    </div>
+    <p style="font:var(--text-sm) var(--font-sans);color:var(--color-text-muted);margin-top:22px;max-width:560px">Tight 6px within a group, wide 44px between — the eye reads two units, not five chips. One spacing scale carries all grouping.</p>
+  </div>
+</body>
+</html>

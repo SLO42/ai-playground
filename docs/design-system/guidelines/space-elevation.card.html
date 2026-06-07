@@ -1,0 +1,23 @@
+<!-- @dsCard group="Spacing" viewport="700x180" name="Elevation" subtitle="Dark UI — borders carry weight; shadows stay soft & near-black" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { padding: 24px; background: var(--color-surface); }
+  .row { display: flex; gap: 22px; align-items: center; }
+  .item { display: flex; flex-direction: column; align-items: center; gap: 12px; }
+  .box { width: 120px; height: 70px; background: var(--color-surface-card); border: 1px solid var(--color-border); border-radius: var(--radius-md); }
+  .tok { font: var(--type-mono-sm); color: var(--color-text-muted); }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="item"><div class="box" style="box-shadow:var(--shadow-sm)"></div><span class="tok">shadow-sm</span></div>
+    <div class="item"><div class="box" style="box-shadow:var(--shadow-card)"></div><span class="tok">shadow-card</span></div>
+    <div class="item"><div class="box" style="box-shadow:var(--shadow-raised)"></div><span class="tok">shadow-raised</span></div>
+    <div class="item"><div class="box" style="box-shadow:var(--shadow-overlay)"></div><span class="tok">shadow-overlay</span></div>
+  </div>
+</body>
+</html>

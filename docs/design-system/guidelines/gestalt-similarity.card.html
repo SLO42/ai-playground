@@ -1,0 +1,29 @@
+<!-- @dsCard group="Gestalt" viewport="700x210" name="Similarity" subtitle="Same shape + role color = same kind; like items pop out across a list" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { padding: 22px; }
+  .list { display: grid; gap: 7px; }
+  .row { display: flex; align-items: center; gap: 12px; font: var(--type-mono-sm); color: var(--color-text-2); }
+  .id { color: var(--color-text-subtle); width: 46px; }
+  .pill { display: inline-flex; align-items: center; gap: 6px; padding: 3px 9px; border-radius: var(--radius-xs); font: var(--weight-medium) var(--text-2xs) var(--font-sans); }
+  .dot { width: 6px; height: 6px; border-radius: 999px; }
+  .running { background: var(--color-running-bg); color: var(--color-running); }
+  .blocked { background: var(--color-blocked-bg); color: var(--color-blocked); }
+  .done { background: var(--color-success-bg); color: var(--color-success); }
+</style>
+</head>
+<body>
+  <div class="list">
+    <div class="row"><span class="id">T-236</span><span class="pill running"><span class="dot" style="background:currentColor"></span>in progress</span> wire SSE backpressure</div>
+    <div class="row"><span class="id">T-233</span><span class="pill blocked"><span class="dot" style="background:currentColor"></span>blocked</span> git push gate</div>
+    <div class="row"><span class="id">T-230</span><span class="pill done"><span class="dot" style="background:currentColor"></span>done</span> resolveRoute override</div>
+    <div class="row"><span class="id">T-239</span><span class="pill running"><span class="dot" style="background:currentColor"></span>in progress</span> hook-proxy timeout</div>
+    <div class="row"><span class="id">T-228</span><span class="pill done"><span class="dot" style="background:currentColor"></span>done</span> binary checksum verify</div>
+  </div>
+  <p style="font:var(--text-sm) var(--font-sans);color:var(--color-text-muted);margin-top:18px;max-width:560px">All "in progress" share one shape + one role color, so they group perceptually even when scattered. Status is the system's visual language.</p>
+</body>
+</html>

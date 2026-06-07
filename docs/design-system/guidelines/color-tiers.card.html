@@ -1,0 +1,25 @@
+<!-- @dsCard group="Colors" viewport="700x130" name="Agent tiers" subtitle="Cheap → powerful escalation ramp: local · Haiku · Sonnet · Opus" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { padding: 20px; }
+  .row { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .tier { border: 1px solid var(--color-border); border-radius: var(--radius-md); overflow: hidden; }
+  .bar { height: 6px; }
+  .body { padding: 11px 12px; background: var(--color-surface-card); }
+  .nm { font: var(--weight-semibold) var(--text-sm) var(--font-sans); color: var(--color-text); }
+  .sub { font: var(--type-mono-sm); color: var(--color-text-muted); margin-top: 3px; }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="tier"><div class="bar" style="background:var(--color-tier-local)"></div><div class="body"><div class="nm">local</div><div class="sub">gpt-oss:20b · $0</div></div></div>
+    <div class="tier"><div class="bar" style="background:var(--color-tier-haiku)"></div><div class="body"><div class="nm">Haiku</div><div class="sub">fast · cheap</div></div></div>
+    <div class="tier"><div class="bar" style="background:var(--color-tier-sonnet)"></div><div class="body"><div class="nm">Sonnet</div><div class="sub">balanced</div></div></div>
+    <div class="tier"><div class="bar" style="background:var(--color-tier-opus)"></div><div class="body"><div class="nm">Opus</div><div class="sub">deep · escalation</div></div></div>
+  </div>
+</body>
+</html>

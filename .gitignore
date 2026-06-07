@@ -6,3 +6,11 @@
 /*
 !/docs/
 !/.gitignore
+
+# Lastik font is license-restricted (That That Type Commercial, DECISIONS D-034):
+# font binaries MUST NOT be committed to this public repo, even under docs/.
+# Re-exclude them everywhere (a later rule overrides the !/docs/ inclusion above).
+*.woff
+*.woff2
+*.ttf
+*.otf

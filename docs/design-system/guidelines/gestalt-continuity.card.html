@@ -1,0 +1,27 @@
+<!-- @dsCard group="Gestalt" viewport="700x190" name="Continuity & alignment" subtitle="Shared edges + tabular numerals create clean scan-lines" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { padding: 22px; }
+  .tbl { width: 100%; border-collapse: collapse; }
+  .tbl td { padding: 8px 0; border-bottom: 1px solid var(--color-border-faint); font: var(--type-mono-sm); color: var(--color-text-2); }
+  .tbl tr:last-child td { border-bottom: none; }
+  .id { color: var(--color-text-subtle); }
+  .num { text-align: right; font-variant-numeric: tabular-nums; color: var(--color-text); }
+  .cost { text-align: right; font-variant-numeric: tabular-nums; color: var(--color-success); width: 90px; }
+  .tier { width: 70px; color: var(--color-text-muted); }
+</style>
+</head>
+<body>
+  <table class="tbl">
+    <tr><td class="id">7fa2e1b9</td><td class="tier">sonnet</td><td>wire SSE backpressure</td><td class="num">1,310</td><td class="cost">$0.0642</td></tr>
+    <tr><td class="id">b3c8d04a</td><td class="tier">haiku</td><td>bge-m3 assertion test</td><td class="num">410</td><td class="cost">$0.0031</td></tr>
+    <tr><td class="id">0192af55</td><td class="tier">opus</td><td>resolveRoute design</td><td class="num">3,920</td><td class="cost">$0.4210</td></tr>
+    <tr><td class="id">cc41e7d2</td><td class="tier">local</td><td>summarize changelog</td><td class="num">880</td><td class="cost">$0.0000</td></tr>
+  </table>
+  <p style="font:var(--text-sm) var(--font-sans);color:var(--color-text-muted);margin-top:16px;max-width:560px">Columns align to shared edges; tabular numerals keep digits on a continuous axis — the eye scans down without re-anchoring.</p>
+</body>
+</html>

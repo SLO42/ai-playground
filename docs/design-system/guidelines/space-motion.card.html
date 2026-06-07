@@ -1,0 +1,31 @@
+<!-- @dsCard group="Spacing" viewport="700x170" name="Motion & live" subtitle="GPU-only, bounce:0; reduced-motion keeps the end-state" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { padding: 20px; display: grid; grid-template-columns: 1fr 1fr; gap: 18px; align-items: center; }
+  .durs { display: grid; gap: 7px; }
+  .d { display: flex; align-items: center; gap: 10px; font: var(--type-mono-sm); color: var(--color-text-muted); }
+  .track { height: 4px; background: var(--color-border); border-radius: 999px; position: relative; flex: 1; overflow: hidden; }
+  .fill { position: absolute; inset: 0; width: 40%; background: var(--color-accent); border-radius: 999px; animation: slide 2.4s var(--ease-in-out) infinite; }
+  @keyframes slide { 0%,100% { transform: translateX(-110%); } 50% { transform: translateX(260%); } }
+  .demo { display: flex; flex-direction: column; gap: 10px; }
+  .liverow { display: flex; align-items: center; gap: 9px; padding: 9px 11px; background: var(--color-surface-card); border: 1px solid var(--color-border); border-radius: var(--radius-sm); font: var(--type-mono-sm); color: var(--color-text-2); }
+  @media (prefers-reduced-motion: reduce) { .fill { animation: none; transform: translateX(60%); } }
+</style>
+</head>
+<body>
+  <div class="durs">
+    <div class="d"><span style="width:70px">instant</span><span class="track"></span>80ms</div>
+    <div class="d"><span style="width:70px">fast</span><span class="track"></span>140ms</div>
+    <div class="d"><span style="width:70px">normal</span><span class="track"><span class="fill"></span></span>240ms</div>
+    <div class="d"><span style="width:70px">slow</span><span class="track"></span>420ms</div>
+  </div>
+  <div class="demo">
+    <div class="liverow"><span class="live-dot"></span>session:7fa2 streaming…</div>
+    <div class="liverow row-enter"><span style="color:var(--color-success)">✓</span> task moved → done</div>
+  </div>
+</body>
+</html>

@@ -1,0 +1,52 @@
+/* ============================================================================
+   ai-playground v2 — TYPOGRAPHY TOKENS
+   Mono is first-class (UI-SPEC §4). Sans for UI prose; mono for code,
+   transcripts, record ids, paths, SurrealQL, numerics.
+   ============================================================================ */
+
+:root {
+  /* ---- Families ------------------------------------------------------- */
+  --font-sans: 'Lastik', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+
+  /* ---- Size scale (role-named; desktop-dense) ------------------------- */
+  --text-2xs:   11px;   /* badges, tier chips, dense table meta            */
+  --text-xs:    12px;   /* labels, captions, status pills                  */
+  --text-sm:    13px;   /* secondary body, table cells, transcript meta    */
+  --text-base:  14px;   /* DEFAULT body / UI text                          */
+  --text-md:    16px;   /* emphasised body, card titles                    */
+  --text-lg:    18px;   /* heading-sm / section titles                     */
+  --text-xl:    22px;   /* heading-md / page titles                        */
+  --text-2xl:   28px;   /* heading-lg                                      */
+  --text-3xl:   36px;   /* display (metric values, hero numerics)          */
+  --text-4xl:   48px;   /* display-lg (rare — splash / big KPI)            */
+
+  /* ---- Line heights --------------------------------------------------- */
+  --leading-tight:   1.2;
+  --leading-snug:    1.35;
+  --leading-normal:  1.5;
+  --leading-relaxed: 1.65;   /* prose / markdown bodies                    */
+
+  /* ---- Weights -------------------------------------------------------- */
+  --weight-regular:  400;
+  --weight-medium:   500;
+  --weight-semibold: 600;
+  --weight-bold:     700;
+
+  /* ---- Letter spacing ------------------------------------------------- */
+  --tracking-tight:  -0.01em;  /* large display sizes                      */
+  --tracking-normal: 0;
+  --tracking-wide:   0.02em;   /* small-caps labels                        */
+  --tracking-caps:   0.08em;   /* UPPERCASE micro-labels / eyebrows        */
+
+  /* ---- Semantic type aliases ----------------------------------------- */
+  --type-display:    var(--weight-semibold) var(--text-3xl)/var(--leading-tight) var(--font-sans);
+  --type-h1:         var(--weight-semibold) var(--text-2xl)/var(--leading-tight) var(--font-sans);
+  --type-h2:         var(--weight-semibold) var(--text-xl)/var(--leading-snug) var(--font-sans);
+  --type-h3:         var(--weight-semibold) var(--text-lg)/var(--leading-snug) var(--font-sans);
+  --type-body:       var(--weight-regular) var(--text-base)/var(--leading-normal) var(--font-sans);
+  --type-body-sm:    var(--weight-regular) var(--text-sm)/var(--leading-normal) var(--font-sans);
+  --type-label:      var(--weight-medium) var(--text-xs)/var(--leading-snug) var(--font-sans);
+  --type-mono:       var(--weight-regular) var(--text-sm)/var(--leading-normal) var(--font-mono);
+  --type-mono-sm:    var(--weight-regular) var(--text-xs)/var(--leading-normal) var(--font-mono);
+}

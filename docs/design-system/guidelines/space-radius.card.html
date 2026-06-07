@@ -1,0 +1,24 @@
+<!-- @dsCard group="Spacing" viewport="700x150" name="Radius" subtitle="Tight corners — chips to panels" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { padding: 20px; }
+  .row { display: flex; gap: 16px; align-items: flex-end; }
+  .item { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .box { width: 70px; height: 56px; background: var(--color-surface-overlay); border: 1px solid var(--color-border-strong); }
+  .tok { font: var(--type-mono-sm); color: var(--color-text-muted); }
+</style>
+</head>
+<body>
+  <div class="row">
+    <div class="item"><div class="box" style="border-radius:var(--radius-xs)"></div><span class="tok">xs · 3</span></div>
+    <div class="item"><div class="box" style="border-radius:var(--radius-sm)"></div><span class="tok">sm · 5</span></div>
+    <div class="item"><div class="box" style="border-radius:var(--radius-md)"></div><span class="tok">md · 8</span></div>
+    <div class="item"><div class="box" style="border-radius:var(--radius-lg)"></div><span class="tok">lg · 12</span></div>
+    <div class="item"><div class="box" style="border-radius:var(--radius-pill)"></div><span class="tok">pill</span></div>
+  </div>
+</body>
+</html>

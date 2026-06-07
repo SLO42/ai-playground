@@ -1,0 +1,88 @@
+/* ============================================================================
+   ai-playground v2 — SPACING, RADIUS, ELEVATION, MOTION, Z-INDEX
+   One spacing scale; calm density (UI-SPEC §1.5). Subtle elevation for a
+   dark UI (borders carry more weight than shadows). Motion: GPU-only,
+   bounce:0, reduced-motion keeps the end-state (UI-SPEC §7).
+   ============================================================================ */
+
+:root {
+  /* ---- Spacing scale (4px base) -------------------------------------- */
+  --space-0:  0;
+  --space-1:  2px;
+  --space-2:  4px;
+  --space-3:  8px;
+  --space-4:  12px;
+  --space-5:  16px;
+  --space-6:  20px;
+  --space-7:  24px;
+  --space-8:  32px;
+  --space-9:  40px;
+  --space-10: 48px;
+  --space-12: 64px;
+
+  /* Semantic spacing */
+  --gap-inline:   var(--space-3);  /* between inline controls / chips      */
+  --gap-stack:    var(--space-5);  /* between stacked blocks               */
+  --pad-control:  var(--space-3);  /* inner padding of buttons/inputs      */
+  --pad-card:     var(--space-6);  /* card interior                        */
+  --pad-panel:    var(--space-7);  /* panel / page region                  */
+
+  /* ---- Radius -------------------------------------------------------- */
+  --radius-xs:   3px;   /* chips, badges, tags          */
+  --radius-sm:   5px;   /* buttons, inputs, table cells */
+  --radius-md:   8px;   /* cards, popovers              */
+  --radius-lg:   12px;  /* panels, modals              */
+  --radius-pill: 999px; /* pills, avatars              */
+
+  /* ---- Borders ------------------------------------------------------- */
+  --border-width:        1px;
+  --border-width-strong: 1.5px;
+
+  /* ---- Elevation (dark UI: soft, low-spread, near-black) ------------- */
+  --shadow-none:    none;
+  --shadow-sm:      0 1px 2px rgba(0, 0, 0, 0.4);
+  --shadow-card:    0 1px 0 rgba(255,255,255,0.02) inset, 0 2px 6px rgba(0, 0, 0, 0.45);
+  --shadow-raised:  0 8px 24px -6px rgba(0, 0, 0, 0.6);
+  --shadow-overlay: 0 18px 48px -12px rgba(0, 0, 0, 0.7);
+  --shadow-focus:   0 0 0 2px var(--color-bg), 0 0 0 4px var(--color-focus-ring);
+
+  /* Status glow (for the running/animated state) */
+  --glow-running: 0 0 0 1px var(--color-running), 0 0 12px -2px var(--color-running);
+
+  /* ---- Motion -------------------------------------------------------- */
+  --motion-instant: 80ms;  /* @kind other */
+  --motion-fast:    140ms; /* @kind other */
+  --motion-normal:  240ms; /* @kind other */
+  --motion-slow:    420ms; /* @kind other */
+  --ease-out:       cubic-bezier(0.22, 1, 0.36, 1);   /* @kind other */
+  --ease-in-out:    cubic-bezier(0.45, 0, 0.55, 1);   /* @kind other */
+  --ease-standard:  cubic-bezier(0.4, 0, 0.2, 1);     /* @kind other */
+
+  /* ---- Z-index ladder ------------------------------------------------ */
+  --z-base:     0;     /* @kind other */
+  --z-sticky:   100;   /* @kind other */
+  --z-sidebar:  200;   /* @kind other */
+  --z-topbar:   300;   /* @kind other */
+  --z-tray:     400;   /* @kind other */
+  --z-overlay:  500;   /* @kind other */
+  --z-modal:    510;   /* @kind other */
+  --z-popover:  600;   /* @kind other */
+  --z-toast:    700;   /* @kind other */
+  --z-tooltip:  800;   /* @kind other */
+
+  /* ---- Layout dimensions (the app shell) ----------------------------- */
+  --shell-sidebar-w:    248px;   /* @kind spacing */
+  --shell-sidebar-w-sm: 56px;    /* @kind spacing */
+  --shell-topbar-h:     48px;    /* @kind spacing */
+  --shell-statusbar-h:  28px;    /* @kind spacing */
+  --shell-tray-w:       360px;   /* @kind spacing */
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-instant: 0ms; /* @kind other */
+    --motion-fast:    0ms; /* @kind other */
+    --motion-normal:  0ms; /* @kind other */
+    --motion-slow:    0ms; /* @kind other */
+  }
+}

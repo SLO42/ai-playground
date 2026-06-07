@@ -1,0 +1,24 @@
+<!-- @dsCard group="Type" viewport="700x340" name="Type scale" subtitle="Role-named size steps, desktop-dense" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { padding: 22px; display: grid; gap: 12px; }
+  .line { display: flex; align-items: baseline; gap: 14px; border-bottom: 1px solid var(--color-border-faint); padding-bottom: 9px; }
+  .spec { color: var(--color-text); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .tok { margin-left: auto; font: var(--type-mono-sm); color: var(--color-text-subtle); flex: none; }
+</style>
+</head>
+<body>
+  <div class="line"><span class="spec" style="font:var(--weight-semibold) var(--text-3xl) var(--font-sans)">Display</span><span class="tok">3xl / 36</span></div>
+  <div class="line"><span class="spec" style="font:var(--weight-semibold) var(--text-2xl) var(--font-sans)">Heading large</span><span class="tok">2xl / 28</span></div>
+  <div class="line"><span class="spec" style="font:var(--weight-semibold) var(--text-xl) var(--font-sans)">Page title</span><span class="tok">xl / 22</span></div>
+  <div class="line"><span class="spec" style="font:var(--weight-semibold) var(--text-lg) var(--font-sans)">Section heading</span><span class="tok">lg / 18</span></div>
+  <div class="line"><span class="spec" style="font:var(--weight-medium) var(--text-md) var(--font-sans)">Emphasised body</span><span class="tok">md / 16</span></div>
+  <div class="line"><span class="spec" style="font:var(--text-base) var(--font-sans)">Body — default UI text</span><span class="tok">base / 14</span></div>
+  <div class="line"><span class="spec" style="font:var(--text-sm) var(--font-sans);color:var(--color-text-muted)">Secondary / table cells</span><span class="tok">sm / 13</span></div>
+  <div class="line"><span class="spec eyebrow" style="margin:0">Micro label · eyebrow</span><span class="tok">xs / 12</span></div>
+</body>
+</html>

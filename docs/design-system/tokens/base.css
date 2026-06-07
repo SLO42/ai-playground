@@ -1,0 +1,90 @@
+/* ============================================================================
+   ai-playground v2 — BASE / RESET
+   Dark-first global defaults + a handful of shared primitives used across
+   cards, components, and UI kits. Kept lean; tokens carry the values.
+   ============================================================================ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  background: var(--color-bg);
+  color: var(--color-text);
+  font: var(--type-body);
+  font-feature-settings: 'cv02', 'cv03', 'cv04';
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+h1, h2, h3, h4, p, figure { margin: 0; }
+
+a {
+  color: var(--color-text-link);
+  text-decoration: none;
+}
+a:hover { color: var(--color-accent-hover); }
+
+code, kbd, pre, samp { font-family: var(--font-mono); }
+
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb {
+  background: var(--color-border-strong);
+  border-radius: var(--radius-pill);
+  border: 2px solid var(--color-bg);
+}
+::-webkit-scrollbar-thumb:hover { background: var(--neutral-500); }
+
+:focus-visible {
+  outline: none;
+  box-shadow: var(--shadow-focus);
+  border-radius: var(--radius-sm);
+}
+
+/* ---- Shared primitives -------------------------------------------------- */
+
+/* Monospace data: ids, paths, numerics, SurrealQL */
+.mono { font-family: var(--font-mono); font-variant-ligatures: none; }
+
+/* Uppercase micro-label / eyebrow */
+.eyebrow {
+  font: var(--weight-semibold) var(--text-2xs)/1 var(--font-sans);
+  letter-spacing: var(--tracking-caps);
+  text-transform: uppercase;
+  color: var(--color-text-subtle);
+}
+
+/* Tabular numerals for aligned metrics */
+.tnum { font-variant-numeric: tabular-nums; }
+
+/* A live "running" dot that pulses (respects reduced-motion) */
+.live-dot {
+  width: 7px; height: 7px; border-radius: var(--radius-pill);
+  background: var(--color-running);
+  box-shadow: 0 0 0 0 var(--color-running);
+  animation: ds-pulse 1.8s var(--ease-in-out) infinite;
+}
+@keyframes ds-pulse {
+  0%   { box-shadow: 0 0 0 0 color-mix(in oklch, var(--color-running) 60%, transparent); }
+  70%  { box-shadow: 0 0 0 6px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .live-dot { animation: none; }
+}
+
+/* New-row enter (UI-SPEC §7: opacity + translateY + blur, bounce:0).
+   Resting state is the VISIBLE base style; the keyframe only animates FROM
+   hidden. We deliberately avoid `fill-mode: both` — a backwards-fill can pin
+   an element at the 0% (opacity:0) frame when it mounts in a not-yet-painted
+   subtree (e.g. an inactive tab), leaving rows permanently invisible. */
+@keyframes ds-row-enter {
+  from { opacity: 0; transform: translateY(8px); filter: blur(4px); }
+  to   { opacity: 1; transform: translateY(0);   filter: blur(0); }
+}
+.row-enter { animation: ds-row-enter var(--motion-slow) var(--ease-out); }
+@media (prefers-reduced-motion: reduce) {
+  .row-enter { animation: none; }
+}

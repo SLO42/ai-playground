@@ -1,0 +1,28 @@
+<!-- @dsCard group="Colors" viewport="700x160" name="Status colors" subtitle="Load-bearing semantic hues — always paired with an icon/label" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { padding: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+  .pill { display: flex; align-items: center; gap: 8px; padding: 9px 11px; border-radius: var(--radius-sm); font: var(--weight-medium) var(--text-sm) var(--font-sans); }
+  .dot { width: 8px; height: 8px; border-radius: 999px; flex: none; }
+  .nm { color: var(--color-text); }
+  .en { margin-left: auto; font: var(--type-mono-sm); color: var(--color-text-subtle); }
+</style>
+</head>
+<body>
+  <div class="grid">
+    <div class="pill" style="background:var(--color-running-bg)"><span class="dot" style="background:var(--color-running)"></span><span class="nm">running</span></div>
+    <div class="pill" style="background:var(--color-success-bg)"><span class="dot" style="background:var(--color-success)"></span><span class="nm">success</span></div>
+    <div class="pill" style="background:var(--color-info-bg)"><span class="dot" style="background:var(--color-info)"></span><span class="nm">info</span></div>
+    <div class="pill" style="background:var(--color-warn-bg)"><span class="dot" style="background:var(--color-warn)"></span><span class="nm">warn</span></div>
+    <div class="pill" style="background:var(--color-error-bg)"><span class="dot" style="background:var(--color-error)"></span><span class="nm">error</span></div>
+    <div class="pill" style="background:var(--color-blocked-bg)"><span class="dot" style="background:var(--color-blocked)"></span><span class="nm">blocked</span></div>
+    <div class="pill" style="background:var(--color-neutral-bg)"><span class="dot" style="background:var(--color-neutral)"></span><span class="nm">neutral</span></div>
+    <div class="pill" style="background:var(--color-accent-muted)"><span class="dot" style="background:var(--color-accent)"></span><span class="nm">accent</span></div>
+  </div>
+</body>
+</html>

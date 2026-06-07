@@ -89,9 +89,9 @@ Density: desktop-first. Comfortable default; an optional compact mode (tighter r
 
 ---
 
-## 4. Design tokens — structure (VALUES DEFERRED, §15)
+## 4. Design tokens — structure (VALUES RESOLVED → [DESIGN-SYSTEM.md](./DESIGN-SYSTEM.md))
 
-Tailwind v4, CSS-first via `@theme` (D-005). Define **roles**, not raw values here; values are harvested from cannibalized sources later. Tokens are CSS custom properties so a later palette swap is one file.
+Tailwind v4, CSS-first via `@theme` (D-005). This section defines the token **roles**; the concrete **values are now delivered** — a dark teal/slate system (accent `#8ab0ab`, bg onyx `#03120e`, **Lastik** sans + **JetBrains Mono**) in **[DESIGN-SYSTEM.md](./DESIGN-SYSTEM.md)** + the CSS in [`docs/design-system/`](./design-system/) (D-034). The §15.1 blue seed is **superseded** by this system. Roles below still govern; values fill them 1:1. A palette swap is one file.
 
 **Color roles** (semantic, not literal):
 - Surface: `--color-bg` (app), `--color-surface` (panels/cards), `--color-surface-raised` (popovers/modals), `--color-border`.
@@ -127,11 +127,11 @@ Tailwind v4, CSS-first via `@theme` (D-005). Define **roles**, not raw values he
 | | `high` | `--color-warn` |
 | | `critical` | `--color-error` |
 
-**Type scale**: `--font-sans` (UI), `--font-mono` (code/transcripts/ids). Size steps `--text-xs … --text-2xl` (role-named: body, label, heading-sm/md/lg, display). Mono is first-class — transcripts, record ids, paths, SurrealQL all render mono.
+**Type scale**: `--font-sans` = **Lastik** (brand, license-gated — D-034), `--font-mono` = **JetBrains Mono** (OFL). Role-named sizes 2xs 11 → 4xl 48 (base 14). Mono is first-class — transcripts, record ids, paths, SurrealQL, numerics. (Values: DESIGN-SYSTEM §4.)
 
-**Spacing / radius / elevation / motion**: a single spacing scale (`--space-1…8`), radius (`--radius-sm/md/lg`), elevation (shadow tokens for surface/raised/overlay), motion (`--motion-fast/normal`, and a `prefers-reduced-motion` path). Live updates use subtle motion (fade/slide-in of new rows), never jarring.
+**Spacing / radius / elevation / motion**: 4px spacing scale, radius xs–pill, dark-UI elevation (borders over shadows), motion 80/140/240/420ms with `--ease-out` and a `prefers-reduced-motion`→0ms path that keeps the end-state. Row-enter (opacity+translateY+blur, bounce:0) is implemented in `tokens/base.css`. (Values: DESIGN-SYSTEM §5.)
 
-> Concrete values (hex, px, ms) are NOT set here. Placeholder = inherit v1's existing `@theme` tokens until the cannibalization pass tunes them (§15).
+> **Values resolved (D-034).** Concrete hex/px/ms live in [DESIGN-SYSTEM.md](./DESIGN-SYSTEM.md) + [`docs/design-system/tokens/`](./design-system/tokens/). Roles here ↔ values there are 1:1; the status-enum→role table above is realized by the DESIGN-SYSTEM §3.5 status hues (incl. `--color-blocked` = rust).
 
 ---
 
@@ -339,21 +339,21 @@ Design the screens in release order, not all at once:
 
 ---
 
-## 15. Deferred: visual styling from cannibalized sources
+## 15. Visual styling — RESOLVED ([DESIGN-SYSTEM.md](./DESIGN-SYSTEM.md))
 
-The concrete look is intentionally **not** designed here. Plan:
-1. **Harvest** the v1 dashboard's existing `@theme` tokens (it's already SvelteKit + Svelte 5 + Tailwind v4) as the starting palette/type/spacing — closest, zero-cost source.
-2. **Cannibalize** other harvested UIs for patterns worth adopting (note them as we study each source).
-3. Fill in this doc's token *values* (§6) from that harvest, then run a `frontend-design` pass on the high-traffic screens.
-4. Re-verify contrast/a11y (§9) once values are real.
+**Done (D-034).** The concrete look is delivered — an operator-built dark teal/slate system (accent `#8ab0ab`, onyx bg, **Lastik** + **JetBrains Mono**, three-layer tokens), captured in [DESIGN-SYSTEM.md](./DESIGN-SYSTEM.md) with the source CSS in [`docs/design-system/`](./design-system/). It fills the §4 roles 1:1 (incl. `--color-blocked` + tier accents) and implements §7 motion + §9 focus.
 
-Until then: token **roles + structure + screen behavior** (this doc) are the contract; **values inherit v1** as a placeholder so the UI is buildable and consistent now, restyleable later in one token file.
+The original deferral plan is superseded:
+- ~~Harvest v1's `@theme`~~ — moot (v1 was a placeholder; the operator delivered an original system, not on this branch anyway).
+- **Remaining build-time steps:** run the **impeccable** AA/contrast gate over the token pairs (esp. the near-hue accent vs running, §9), port the React component primitives to Svelte 5, and **provision the Lastik webfonts WITHOUT committing them** (license D-034 — woff2/woff only, gitignored, single-operator). See DESIGN-SYSTEM §8.
 
-### 15.1 Cannibalized design inputs (harvested 2026-06-06)
+### 15.1 Cannibalized design inputs (harvested 2026-06-06) — SUPERSEDED by DESIGN-SYSTEM.md
 
-Two design skills were studied via the `cannibalize` foundry; they power steps 2–4 above. **Use them, don't reinvent.**
+> **Historical / provenance.** The blue `ui-ux-pro-max` seed below was the *placeholder* before the operator delivered the actual teal/Lastik system (DESIGN-SYSTEM.md). It is **not** the final palette — kept only to record where the seed came from. **`impeccable` is still the live a11y/contrast gate** (last paragraph). The **JetBrains Mono** choice carried through; the sans went to **Lastik** (not IBM Plex), and the accent went **teal `#8ab0ab`** (not blue `#3B82F6`).
 
-**SEED — `ui-ux-pro-max`** (license: repo `src/` is MIT → liftable; its `cli/` is CC-BY-NC-4.0 → **do not** lift, v2 may go commercial). Closest reference rows for this app (product register: dense, dark, keyboard-driven):
+Two design skills were studied via the `cannibalize` foundry; they powered the seed + gate. **Use them, don't reinvent.**
+
+**SEED (superseded) — `ui-ux-pro-max`** (license: repo `src/` is MIT → liftable; its `cli/` is CC-BY-NC-4.0 → **do not** lift, v2 may go commercial). Closest reference rows for this app (product register: dense, dark, keyboard-driven):
 - **Developer Tool / IDE** *(primary lens)* — dark + minimalism, blue focus, **monospace + functional typography**, command palette, keyboard shortcuts. Maps to §1.6 / §3 / §4 (mono first-class).
 - **Financial + Analytics Dashboard** *(data-dense screens)* — dark bg, red/green status alerts, real-time number animation, drill-down. Maps to §4 status-enum roles + §7 live updates.
 

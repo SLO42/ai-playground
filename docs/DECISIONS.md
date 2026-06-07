@@ -414,7 +414,26 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 
 **Context / Decision:** `ui-ux-pro-max` **seeds** UI foundations (dev-tool/dashboard palette + JetBrains Mono / IBM Plex Sans); `impeccable` **gates** via its anti-pattern detector + critique, and its **bans are frozen as UI-SPEC §9 acceptance criteria**; seed tokens live in **UI-SPEC §15.1**.
 
-**Status:** **already applied** to `UI-SPEC.md` (§7 motion, §8.1 charts, §9 a11y/bans, §11 microcopy, §15.1) — recorded here for traceability. **No further action.**
+**Status:** **already applied** to `UI-SPEC.md` (§7 motion, §8.1 charts, §9 a11y/bans, §11 microcopy, §15.1) — recorded here for traceability. **Superseded by D-034** for the concrete palette/type (the seed was a placeholder; the operator delivered the real system). `impeccable` remains the live a11y gate.
+
+---
+
+## D-034 🔒 Design system delivered (teal/Lastik) + font-license constraints
+
+**Source:** operator-built design system (`ai-playground Design System.zip`, Claude design + the `ai-playground-design` skill), imported 2026-06. Captured in **[DESIGN-SYSTEM.md](./DESIGN-SYSTEM.md)** + CSS in [`docs/design-system/`](./design-system/). Supersedes the D-033 / UI-SPEC §15.1 blue seed.
+
+**Context:** UI-SPEC §4 deferred token *values* to §15. The operator produced an original, complete system: dark **teal/slate** (accent `#8ab0ab`, onyx bg `#03120e`), three-layer tokens (primitive→semantic→component), **Lastik** sans + **JetBrains Mono**, full status + tier roles (incl. a dedicated `--color-blocked` rust), and the §7 motion / §9 focus baked into `tokens/base.css`.
+
+**Decision:** Adopt it as the v2 design system. It fills the UI-SPEC §4 roles + status-enum→role table 1:1; §15 is now **resolved**. The CSS tokens/components are tracked under `docs/design-system/` (the build's `styles.css` entry point); they port to Svelte 5 at scaffold.
+
+**Font license (load-bearing) — Lastik = That That Type Commercial EULA:**
+- **(a) Web = WOFF2/WOFF only** via `@font-face`. **TTF/OTF on the web is prohibited** (`fonts.css` corrected).
+- **(b) Font binaries MUST NOT be committed to the public repo** — provisioned at build into `dashboard/static/fonts/` (or equiv), **gitignored, never tracked**. This repo tracks zero `.woff/.woff2/.ttf/.otf`; `.gitignore` guards it.
+- **(c) Single-operator / local serving only** — no SAS/public exposure that serves the font to unlicensed third parties; **re-verify before any public or multi-user deploy.**
+- **(d) 🟡 Confirm the cut:** the system wired `Lastik-Free` while `uploads/` holds the purchased **Commercial** Lastik + EULA — confirm which ships and that its terms match (a)–(c). Treat as Commercial (strictest) until confirmed.
+- **Fallback:** `--font-sans` falls back to `system-ui` — the UI works without Lastik (license/offline-safe). JetBrains Mono is OFL, unconstrained.
+
+**Consequences:** values resolved; a **build-time AA/contrast gate** (impeccable) over the token pairs remains (esp. the near-hue accent `#8ab0ab` vs running `#3fb6ac`, §9); a font-provisioning step that never commits the binaries (carry as a fails-style rule). The accent is teal, kept distinct from the green success/running status by lightness — color is always paired with icon/label (UI-SPEC §9).
 
 ---
 
@@ -455,6 +474,7 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 | D-030 | 🔒 | Utilization loop feeds ranking, NOT pruning (prune stays time-based) |
 | D-031 | 🔒 | Diversity = BOTH query-time novelty gate + periodic consolidation |
 | D-032 | 🔒 | Single SurrealDB stands (no polyglot); authored skills already files (D-010) |
-| D-033 | 🔒 | Design skills seed + gate UI-SPEC (already applied) |
+| D-033 | 🔒 | Design skills seed + gate UI-SPEC (superseded by D-034 for values) |
+| D-034 | 🔒 | Design system delivered (teal/Lastik) + font-license constraints |
 
-> **Provenance:** **D-006–D-008 (in part)** and **D-014–D-023** are **KongCode-informed** — derived from studying KongCode v0.7.113 (`C:/Users/11sos/.claude/plugins/cache/kongcode-marketplace/kongcode/0.7.113/`), a production SurrealDB knowledge-graph + Claude Code harness (D-006 server-binary path is the biggest borrow; D-007 SurrealKV, D-008 dedup correction). ARCHITECTURE §9 "Lessons from KongCode" is the authoritative map. **D-024–D-026** are **security hardening surfaced by the pre-commit audit**. **D-027–D-033** (and the D-014 `qwen3-embedding:0.6b` embedding candidate) are sourced from the **cannibalize foundry** (`docs/CANNIBALIZE-BRIEF.md`) — distilled from **hermes-agent** (Nous Research, MIT), **mem0** (Apache-2.0), and **kongcode** (friend's plugin — ideas fine, code-lift needs consent). Each is a **candidate with provenance, to be verified against v2 constraints before build** — not a mandate. The three originally-OPEN items were **resolved by the owner 2026-06-06**: D-030 (utilization loop → ranking only, not pruning), D-031 (diversity → both novelty gate + consolidation), D-032 (single SurrealDB stands — reaffirms D-001; authored skills are already files per D-010). No locked decision was overridden.
+> **Provenance:** **D-006–D-008 (in part)** and **D-014–D-023** are **KongCode-informed** — derived from studying KongCode v0.7.113 (`C:/Users/11sos/.claude/plugins/cache/kongcode-marketplace/kongcode/0.7.113/`), a production SurrealDB knowledge-graph + Claude Code harness (D-006 server-binary path is the biggest borrow; D-007 SurrealKV, D-008 dedup correction). ARCHITECTURE §9 "Lessons from KongCode" is the authoritative map. **D-024–D-026** are **security hardening surfaced by the pre-commit audit**. **D-027–D-033** (and the D-014 `qwen3-embedding:0.6b` embedding candidate) are sourced from the **cannibalize foundry** (`docs/CANNIBALIZE-BRIEF.md`) — distilled from **hermes-agent** (Nous Research, MIT), **mem0** (Apache-2.0), and **kongcode** (friend's plugin — ideas fine, code-lift needs consent). Each is a **candidate with provenance, to be verified against v2 constraints before build** — not a mandate. The three originally-OPEN items were **resolved by the owner 2026-06-06**: D-030 (utilization loop → ranking only, not pruning), D-031 (diversity → both novelty gate + consolidation), D-032 (single SurrealDB stands — reaffirms D-001; authored skills are already files per D-010). No locked decision was overridden. **D-034** is operator-authored (the delivered design system), not foundry-sourced; it supersedes the D-033 seed for concrete values and adds the Lastik font-license constraints.

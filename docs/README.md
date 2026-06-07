@@ -18,9 +18,11 @@ These are **planning documents only**. No code yet. The build happens later, pha
 | 4 | [DEVELOPMENT.md](./DEVELOPMENT.md) | Repo layout, stack versions, build/test/lint, conventions, Windows rules |
 | 5 | [ROADMAP.md](./ROADMAP.md) | Phased build plan, releases, milestones, and the open spikes |
 | 6 | [DECISIONS.md](./DECISIONS.md) | ADR-style log: locked decisions + tracked OPEN decisions |
-| 7 | [UI-SPEC.md](./UI-SPEC.md) | UI/UX design contract: IA, layout, per-screen specs, components, live-update UX, states (visual styling values deferred) |
+| 7 | [UI-SPEC.md](./UI-SPEC.md) | UI/UX design contract: IA, layout, per-screen specs, components, live-update UX, states (token values now resolved → DESIGN-SYSTEM) |
 | 8 | [MEMORY-SPEC.md](./MEMORY-SPEC.md) | Memory & learning engine design (two-tier loop, extraction, recall, lifecycle, SurrealDB gotchas) — folded from the cannibalize research |
 | 9 | [AGENTS.md](./AGENTS.md) | Agent & skill authoring conventions (description-as-classifier, agentskills.io SKILL.md, model tiers) |
+| 10 | [IMPLEMENTATION-PLAN.md](./IMPLEMENTATION-PLAN.md) | How to build it: de-risking spikes, build waves, foundational spine, test strategy, exit gates |
+| 11 | [DESIGN-SYSTEM.md](./DESIGN-SYSTEM.md) | The concrete design system (teal/Lastik tokens, components, font-license) — fills UI-SPEC §4/§15. CSS in [`design-system/`](./design-system/) |
 
 > [CANNIBALIZE-BRIEF.md](./CANNIBALIZE-BRIEF.md) is a research **INPUT**, not part of the read-order — it holds the provenance for D-027..D-033 and the design folds, kept for traceability.
 

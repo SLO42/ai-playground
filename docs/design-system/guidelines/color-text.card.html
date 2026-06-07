@@ -1,0 +1,33 @@
+<!-- @dsCard group="Colors" viewport="700x180" name="Text & borders" subtitle="Cool ink ramp + hairline / strong borders on dark" -->
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<link rel="stylesheet" href="../styles.css">
+<style>
+  body { padding: 20px; display: grid; grid-template-columns: 1.4fr 1fr; gap: 18px; align-items: start; }
+  .stack > div { padding: 4px 0; }
+  .l1 { font: var(--weight-semibold) var(--text-md) var(--font-sans); color: var(--color-text); }
+  .l2 { font: var(--text-base) var(--font-sans); color: var(--color-text-2); }
+  .l3 { font: var(--text-sm) var(--font-sans); color: var(--color-text-muted); }
+  .l4 { font: var(--text-sm) var(--font-sans); color: var(--color-text-subtle); }
+  .l5 { font: var(--text-xs) var(--font-sans); color: var(--color-text-faint); }
+  .borders { display: flex; flex-direction: column; gap: 10px; }
+  .b { height: 30px; border-radius: var(--radius-sm); background: var(--color-surface-card); display: flex; align-items: center; padding: 0 10px; font: var(--type-mono-sm); color: var(--color-text-muted); }
+</style>
+</head>
+<body>
+  <div class="stack">
+    <div class="l1">text — primary ink</div>
+    <div class="l2">text-2 — high-emphasis secondary</div>
+    <div class="l3">text-muted — captions, meta</div>
+    <div class="l4">text-subtle — disabled, hints</div>
+    <div class="l5">text-faint — faint dividers</div>
+  </div>
+  <div class="borders">
+    <div class="b" style="border:1px solid var(--color-border-faint)">border-faint</div>
+    <div class="b" style="border:1px solid var(--color-border)">border (hairline)</div>
+    <div class="b" style="border:1px solid var(--color-border-strong)">border-strong</div>
+  </div>
+</body>
+</html>

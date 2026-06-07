@@ -1,0 +1,24 @@
+/* ============================================================================
+   ai-playground v2 — WEBFONTS
+   Lastik (self-hosted, the operator's brand display/UI typeface) for sans/UI.
+   JetBrains Mono (Google) stays for code/ids/paths/transcripts/SurrealQL —
+   monospacing is functional there (alignment, tabular numerals).
+
+   ⚠ LICENSE (That That Type, Commercial — see ../../DESIGN-SYSTEM.md / DECISIONS D-034):
+     - Web serving is WOFF2/WOFF ONLY via @font-face. TTF/OTF on the web is PROHIBITED.
+     - Font binaries MUST NOT be committed to the (public) repo — provisioned at
+       build time into ./assets/fonts/ (gitignored), never tracked.
+     - Single-operator/local serving only; re-check before any public/multi-user expose.
+   ============================================================================ */
+
+@import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,400;0,500;0,600;0,700;1,400&display=swap');
+
+@font-face {
+  font-family: 'Lastik';
+  /* WOFF2/WOFF only (license). Files provisioned at build into ./assets/fonts/ — NOT in repo. */
+  src: url('../assets/fonts/Lastik.woff2') format('woff2'),
+       url('../assets/fonts/Lastik.woff') format('woff');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}

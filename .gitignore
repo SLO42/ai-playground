@@ -1,16 +1,41 @@
-# v2-main is a docs-only orphan branch.
-# The v1 working tree (dashboard/, CLAUDE.md, .env, node_modules/, etc.) is
-# present on disk but is NOT part of this branch. Ignore everything at the
-# repo root except docs/ and this file, so an accidental `git add -A` can
-# never commit secrets (.env) or the v1 codebase onto v2-main.
-/*
-!/docs/
-!/.gitignore
+# ai-playground v2 — build branch. Track source + docs + config; ignore the rest.
 
-# Lastik font is license-restricted (That That Type Commercial, DECISIONS D-034):
-# font binaries MUST NOT be committed to this public repo, even under docs/.
-# Re-exclude them everywhere (a later rule overrides the !/docs/ inclusion above).
+# Dependencies / build output
+node_modules/
+**/node_modules/
+.svelte-kit/
+**/.svelte-kit/
+build/
+dist/
+*.tsbuildinfo
+
+# Secrets & runtime data (D-025/D-026)
+.env
+.env.*
+!.env.example
+/.data/
+**/.data/
+*.log
+
+# SurrealDB server binary + cache (D-006: provisioned at build, NOT committed)
+/bin/surreal*
+/.surreal/
+/.cache/
+
+# Lastik font is license-restricted (That That Type Commercial, D-034):
+# font binaries MUST NOT be committed to this public repo. Provisioned at build.
 *.woff
 *.woff2
 *.ttf
 *.otf
+
+# Throwaway spike artifacts
+/spikes/**/node_modules/
+/spikes/.data/
+/spikes/*.tmp
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

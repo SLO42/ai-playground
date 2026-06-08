@@ -1,0 +1,41 @@
+// TASK 6.6 — /memory global knowledge-graph + recall explorer (UI-SPEC §43/§204; F-008; D-019).
+//
+// Serves the global memory explorer: a recall LIST of recent active memory rows + the
+// knowledge-GRAPH (entity nodes + typed edges), all from REAL rows (F-008 — nothing
+// fabricated). Degrades honestly (D-019): DB not connected → connected:false + empty,
+// never a fake graph. Live (UI-SPEC §1.2): the SSE `memory`/`entity` watchers re-invalidate
+// this loader so the list + graph update in place.
+
+import { tryGetDb } from '$lib/server/db/runtime-init';
+import { listMemories, listGraph } from '$lib/server/memory';
+import type { MemoryRow, MemoryGraph } from '$lib/server/memory';
+import type { PageServerLoad } from './$types';
+
+export interface MemoryData {
+	connected: boolean;
+	memories: MemoryRow[];
+	graph: MemoryGraph;
+	error?: string;
+}
+
+export const load: PageServerLoad = async ({ depends }): Promise<MemoryData> => {
+	// Live re-invalidation keys: a memory or entity row change re-runs this loader.
+	depends('app:memory');
+	depends('app:graph');
+
+	const db = tryGetDb();
+	if (!db) {
+		return { connected: false, memories: [], graph: { nodes: [], edges: [] } };
+	}
+	try {
+		const [memories, graph] = await Promise.all([listMemories(db, 100), listGraph(db, 300)]);
+		return { connected: true, memories, graph };
+	} catch (err) {
+		return {
+			connected: false,
+			memories: [],
+			graph: { nodes: [], edges: [] },
+			error: (err as Error).message
+		};
+	}
+};

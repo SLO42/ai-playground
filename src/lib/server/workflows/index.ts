@@ -8,6 +8,9 @@ export {
 	createWorkflow,
 	getWorkflow,
 	getWorkflowRun,
+	listWorkflows,
+	listWorkflowRuns,
+	getWorkflowRunDetail,
 	validateSteps,
 	type WorkflowStep,
 	type WorkflowTrigger,
@@ -15,7 +18,11 @@ export {
 	type WorkflowRow,
 	type WorkflowRunRow,
 	type StepStatus,
-	type WorkflowRunStatus
+	type WorkflowRunStatus,
+	type WorkflowListItem,
+	type WorkflowRunListItem,
+	type WorkflowStepSession,
+	type WorkflowRunDetail
 } from './repo';
 
 export { runWorkflow, type RunWorkflowDeps, type RunWorkflowResult } from './runner';

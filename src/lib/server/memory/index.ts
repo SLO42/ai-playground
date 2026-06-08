@@ -44,6 +44,14 @@ export {
 	type SalienceBand
 } from './briefing';
 export {
+	listMemories,
+	listGraph,
+	type MemoryRow,
+	type GraphNodeRow,
+	type GraphEdgeRow,
+	type MemoryGraph
+} from './explorer';
+export {
 	parseAutoMemoryFile,
 	parseMemoryLinks,
 	entityIdForFile,

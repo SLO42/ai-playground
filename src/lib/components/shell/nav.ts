@@ -26,17 +26,17 @@ export const navGroups: NavGroup[] = [
     title: 'Harness',
     items: [
       { label: 'Agents', href: '/agents' },
-      { label: 'Claude Code', href: '/claude-code' }
+      { label: 'Claude Code', href: '/claude-code' },
+      { label: 'Workflows', href: '/workflows' }
     ]
   },
   {
     title: 'Knowledge & system',
     items: [
-      // NOTE: /memory, /services, /workflows are UI-SPEC §43/45/47 surfaces not yet
-      // built. They are deliberately omitted here rather than linked dead — task 4.3
-      // forbids orphaned nav links (a href with no +page.svelte → 404). Services
-      // health is currently surfaced on the Statusbar; the standalone pages are
-      // tracked as a UI coverage gap for a follow-up wave.
+      // NOTE: /services (UI-SPEC §45) is not yet built — service health is currently
+      // surfaced on the Statusbar; the standalone page is tracked as a UI coverage gap
+      // for a follow-up wave (task 4.3 forbids orphaned nav links → no dead href here).
+      { label: 'Memory', href: '/memory' },
       { label: 'Reports', href: '/reports' }
     ]
   }

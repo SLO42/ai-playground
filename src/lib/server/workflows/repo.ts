@@ -219,3 +219,155 @@ export async function getWorkflowRun(db: Db, id: string): Promise<WorkflowRunRow
 	if (!r) return null;
 	return { ...r, id: String(r.id), workflow: String(r.workflow) };
 }
+
+// ── List / detail reads for the /workflows UI (TASK 6.6) ──────────────────────────
+//
+// Read-only projections for the UI list + detail. Pure reads, no LLM. The UI renders
+// LIVE rows or an honest empty state (F-008) — these helpers never fabricate a row.
+
+/** A workflow definition + its step count, for the list view. */
+export interface WorkflowListItem {
+	id: string;
+	name: string;
+	project?: string;
+	trigger: WorkflowTrigger;
+	stepCount: number;
+	createdAt?: string;
+}
+
+/** A run summary for the run-history list (joined with its workflow name). */
+export interface WorkflowRunListItem {
+	id: string;
+	workflow: string;
+	workflowName?: string;
+	status: WorkflowRunStatus;
+	stepState: Record<string, StepStatus>;
+	startedAt?: string;
+	endedAt?: string;
+}
+
+/** One step's session record on a run-detail view (DATA-MODEL §4.3, §4.11). */
+export interface WorkflowStepSession {
+	stepId: string;
+	status: StepStatus;
+	sessionId?: string;
+	sessionStatus?: string;
+	provider?: string;
+	modelId?: string;
+	tier?: string;
+}
+
+/** Detail of one run: the run row, its workflow's steps, and each step's session record. */
+export interface WorkflowRunDetail {
+	run: WorkflowRunListItem;
+	steps: WorkflowStepSession[];
+}
+
+/** List workflow definitions, newest first. Empty array when none exist (honest empty). */
+export async function listWorkflows(db: Db, limit = 100): Promise<WorkflowListItem[]> {
+	const [rows] = await db.query<
+		[Array<{ id: unknown; name: string; project?: unknown; trigger: WorkflowTrigger; steps: unknown[]; created_at?: unknown }>]
+	>(
+		`SELECT id, name, project, trigger, steps, created_at FROM workflow
+		  ORDER BY created_at DESC LIMIT $limit;`,
+		{ limit }
+	);
+	return rows.map((r) => ({
+		id: String(r.id),
+		name: r.name,
+		...(r.project != null ? { project: String(r.project) } : {}),
+		trigger: r.trigger,
+		stepCount: Array.isArray(r.steps) ? r.steps.length : 0,
+		...(r.created_at != null ? { createdAt: String(r.created_at) } : {})
+	}));
+}
+
+/** List workflow runs, newest first, joined with the parent workflow's name. */
+export async function listWorkflowRuns(db: Db, limit = 100): Promise<WorkflowRunListItem[]> {
+	const [rows] = await db.query<
+		[Array<{ id: unknown; workflow: unknown; status: WorkflowRunStatus; step_state: Record<string, StepStatus>; started_at?: unknown; ended_at?: unknown; workflow_name?: string }>]
+	>(
+		`SELECT id, workflow, status, step_state, started_at, ended_at,
+		        workflow.name AS workflow_name
+		   FROM workflow_run
+		  ORDER BY started_at DESC LIMIT $limit;`,
+		{ limit }
+	);
+	return rows.map((r) => ({
+		id: String(r.id),
+		workflow: String(r.workflow),
+		...(r.workflow_name != null ? { workflowName: String(r.workflow_name) } : {}),
+		status: r.status,
+		stepState: r.step_state ?? {},
+		...(r.started_at != null ? { startedAt: String(r.started_at) } : {}),
+		...(r.ended_at != null ? { endedAt: String(r.ended_at) } : {})
+	}));
+}
+
+/**
+ * Full detail for one run: the run summary plus, for EACH step, its current status and the
+ * `session` record launched for it (§4.11 "each executing step is a session"). The step set
+ * comes from the parent workflow's definition; the session join is on `session.workflow_run`.
+ */
+export async function getWorkflowRunDetail(db: Db, id: string): Promise<WorkflowRunDetail | null> {
+	const rid = new StringRecordId(assertRecordId(id));
+	const [runRows] = await db.query<
+		[Array<{ id: unknown; workflow: unknown; status: WorkflowRunStatus; step_state: Record<string, StepStatus>; started_at?: unknown; ended_at?: unknown; workflow_name?: string }>]
+	>(
+		`SELECT id, workflow, status, step_state, started_at, ended_at,
+		        workflow.name AS workflow_name
+		   FROM $rid;`,
+		{ rid }
+	);
+	const r = runRows[0];
+	if (!r) return null;
+	const run: WorkflowRunListItem = {
+		id: String(r.id),
+		workflow: String(r.workflow),
+		...(r.workflow_name != null ? { workflowName: String(r.workflow_name) } : {}),
+		status: r.status,
+		stepState: r.step_state ?? {},
+		...(r.started_at != null ? { startedAt: String(r.started_at) } : {}),
+		...(r.ended_at != null ? { endedAt: String(r.ended_at) } : {})
+	};
+
+	// Sessions launched for this run, keyed back to their step via the run's step_state order.
+	// A step session carries kind="workflow-step"; we surface model + status per session row.
+	const [sessRows] = await db.query<
+		[Array<{ id: unknown; status: string; model?: { provider?: string; model_id?: string; tier?: string } }>]
+	>(
+		`SELECT id, status, model FROM session
+		  WHERE workflow_run = $rid
+		  ORDER BY started_at ASC;`,
+		{ rid }
+	);
+
+	// Map steps (declared in step_state) to sessions positionally where possible; the run
+	// records per-step status authoritatively in step_state, so that drives the rows.
+	const stepIds = Object.keys(run.stepState);
+	const sessions = sessRows.map((s) => ({
+		id: String(s.id),
+		status: s.status,
+		provider: s.model?.provider,
+		modelId: s.model?.model_id,
+		tier: s.model?.tier
+	}));
+	const steps: WorkflowStepSession[] = stepIds.map((stepId, i) => {
+		const sess = sessions[i];
+		return {
+			stepId,
+			status: run.stepState[stepId],
+			...(sess
+				? {
+						sessionId: sess.id,
+						sessionStatus: sess.status,
+						...(sess.provider ? { provider: sess.provider } : {}),
+						...(sess.modelId ? { modelId: sess.modelId } : {}),
+						...(sess.tier ? { tier: sess.tier } : {})
+					}
+				: {})
+		};
+	});
+
+	return { run, steps };
+}

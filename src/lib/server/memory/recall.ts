@@ -192,10 +192,13 @@ export async function recall(opts: RecallOptions, query: string): Promise<Recall
 	if (!candidates.length) return { items: [], contextText: '' };
 
 	// historical_utility from retrieval_outcome (§4.5, D-030 — ranking input only).
+	// Count UTILIZED outcome rows per memory. NB: SurrealDB 2.x `math::sum(<bool>)` does NOT
+	// coerce bool→int (it errors / yields 0 — engine truth, surfaced by 2.16), so we count
+	// rows matching `utilized = true` via a WHERE-filtered count() instead.
 	const idList = candidates.map((c) => link(c.id));
 	const [orows] = await db.query<[Array<{ memory: unknown; util: number }>]>(
-		`SELECT memory, math::sum(utilized) AS util FROM retrieval_outcome
-		  WHERE memory IN $ids GROUP BY memory;`,
+		`SELECT memory, count() AS util FROM retrieval_outcome
+		  WHERE memory IN $ids AND utilized = true GROUP BY memory;`,
 		{ ids: idList }
 	);
 	const utilByMem = new Map<string, number>();

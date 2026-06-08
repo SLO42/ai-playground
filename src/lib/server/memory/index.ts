@@ -22,12 +22,14 @@ import { CachedEmbedder } from './embed';
 import { fence, assembleContext, type FencedItem, type InjectionSource } from './fence';
 import { gateCandidate } from './screen';
 import { recall, recordOutcomes, type RecallOptions, type RecallResult, type OutcomeInput } from './recall';
+import { recordTurnOutcomes, type RecordTurnOutcomesInput } from './outcomes';
 import { extractAndStore, storeMemories, type StoreOptions, type MemoryCandidate, type StoredMemory, type ExtractFn, type ExtractInput } from './store';
 
 export { screen, captureGate, gateCandidate, type ScreenStatus, type ScreenResult } from './screen';
 export { fence, fenceAll, assembleContext, StreamScrubber, scrubComplete, FENCE_OPEN, FENCE_CLOSE, type InjectionSource, type FencedItem } from './fence';
 export { OllamaEmbedder, CachedEmbedder, FakeEmbedder, EmbeddingError, EMBEDDING_DIM, cacheKey, distanceToSimilarity, type Embedder, type EmbedRole } from './embed';
 export { recall, recordOutcomes, parseCitations, WMR_WEIGHTS, NOVELTY_COSINE_CUT, type RecallItem, type RecallResult } from './recall';
+export { recordTurnOutcomes, summarizeTurnTools, type RecordTurnOutcomesInput, type TurnToolOutcome } from './outcomes';
 export { storeMemory, storeMemories, extractAndStore, buildExtraction, type MemoryCandidate, type StoredMemory, type ExtractFn, type ExtractInput } from './store';
 export { dueReview, bumpCounters, enqueueReview, consolidate, DEFAULT_CADENCE, type ReviewKind, type ReviewCadence } from './loop';
 export {
@@ -204,6 +206,15 @@ export class MemoryService {
 	/** Record retrieval outcomes for the ranker (§4.5, D-030 — ranking input only). */
 	recordOutcomes(input: OutcomeInput): Promise<string[]> {
 		return recordOutcomes(this.db, input);
+	}
+
+	/**
+	 * Record turn outcomes (2.16): link each injected citation to the AGGREGATED success/
+	 * failure of the turn's subsequent tool calls (folds a runtime event stream). Ranker
+	 * input ONLY (D-030) — never drives pruning. The richer successor to recordOutcomes.
+	 */
+	recordTurnOutcomes(input: RecordTurnOutcomesInput): Promise<string[]> {
+		return recordTurnOutcomes(this.db, input);
 	}
 
 	/** Load the fenced Tier-0 directive set (§6.8). */

@@ -48,3 +48,20 @@ export {
 	archiveActiveDependencyFindings,
 	type ScanDependencyOptions
 } from './dep-repo';
+
+export {
+	inspectUx,
+	type UxInspectionSource,
+	type UxSnapshot,
+	type UxImage,
+	type UxControl,
+	type UxFinding
+} from './ux-inspect';
+
+export {
+	inspectProjectUx,
+	runUxInspection,
+	archiveActiveUxFindings,
+	type InspectUxOptions,
+	type InspectUxHandle
+} from './ux-repo';

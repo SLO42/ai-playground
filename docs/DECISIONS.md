@@ -446,16 +446,31 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 
 **Context:** v2 is a **fleet** harness (drives many Claude Code sessions). claude-peers' design splits into two reusable ideas: (a) the **channel push = how you interject into a running session**; (b) an **inter-session message layer** (registry + send-by-id + inbox + scoped discovery + summary) for fleet coordination.
 
+*(Shared-primitive review — 5-agent workflow, 2026-06-07. Verdict: make comms a first-class primitive, but as the MINIMAL seam — one named origin-authenticated push beside the events bus, NOT a new module/spine. ARCHITECTURE §2.11 "communication substrates".)*
+
+**Two transports, one rule** (every feature picks A, B, or C — no module invents its own socket/poller/daemon):
+- **(A) the `events` bus** = the SOLE fan-out for all observe / notify / broadcast / state-out (transcripts, task/workflow-step/work_item changes, metrics, notifications, incidents, fleet summary). Already the one SSE source (D-005/§2.11).
+- **(B) `claude/channel` push** = the SOLE transport for delivering a message **into a running session**. One named primitive: **`channel.pushToSession(ccSessionId, { origin, kind, body })`**. Interject (D-011) is its first and only v0.1/v0.2 caller.
+- **(C) durable `peer_message` envelope** = the only net-new channel — **DEFERRED v0.2**; *reuses A+B* (writes republish to `events`; delivery into a live recipient uses the channel push). No third transport.
+
 **Decision:**
-- **(a) Channel-interject — adopt now.** v2's session control **interject** (D-011) is implemented via Claude Code's **`claude/channel` push** (the mechanism claude-peers proves). Folds into D-011 + the `AgentRuntime` impl (IMPLEMENTATION-PLAN 1.4/2.10). Not a new feature — it's the concrete answer to a D-011 unknown.
-- **(b) Fleet message bus — candidate, DEFERRED to ~v0.2.** An inter-session / agent↔agent + operator↔agent message channel (registry, send, inbox, scoped-by-project discovery, live "what's each session doing" summary) built on **v2's existing substrate** — SurrealDB (`session` registry + a `peer_message` table) + the `events` bus + SSE — **not** a second broker daemon/SQLite/MCP.
+- **(a) Channel-interject — adopt now, behind the named seam.** **interject** (D-011) is `channel.pushToSession`, a typed primitive (not an ad-hoc `claude/channel` call). **`origin` is a mandatory enum** `{operator | agent | system | hook}`, **stamped server-side at authenticated ingress — immutable, NEVER derived from message content.** **Binding rule:** `origin = operator` **iff** the push arrives on the loopback control endpoint bearing the valid **D-025 per-boot token**; any push lacking the token (or arriving via the agent/SSE/event path) is **forced to `origin = agent` and fenced as DATA** (D-026 / MEMORY-SPEC §10, same fence as recalled memory). **Only `origin = operator` may STEER** (act as instruction). The interject endpoint is a mutation endpoint → full D-025 controls (token + Origin/Host check + SameSite + loopback-only assertion).
+- **(b) Fleet message bus — DEFERRED v0.2**, additive on the existing substrate. Lock the row-shape now so v0.2 is purely additive: **`peer_message`** `{ origin, from_session, to_session|to_project|broadcast, kind, body, screen_status, delivered_at }` on SurrealDB + the `events` bus + `channel.pushToSession` — **not** a second broker/SQLite/MCP. Inbox = a `db` query of undelivered rows; discovery ("what's each session doing") = a query/projection over running `session` rows (`cc_session_id`, `status`), pushed as a periodic `events` update — NOT a registry daemon.
 
-**Build on v2's substrate, do NOT copy:**
-- ❌ the broker daemon + separate SQLite — v2 has one store + one bus (D-001/D-005, "lighter").
-- ❌ `process.kill(pid, 0)` for peer liveness — **unreliable on Windows** (F-001; use `tasklist`).
-- ❌ the localhost-no-auth trust model — peer messages are **untrusted agent content**: fence per **D-026** (message = data, never instructions, unless operator-origin) + gate the channel behind the **D-025** control-plane token. Only operator-origin messages may steer; agent→agent messages are data.
+**`channel` is a typed SEAM on the `claude-code` module, NOT a new top-level spine** (avoids a third spine; the events bus + work_item queue are the existing shared primitives). It depends on `{runtime, db, events}`; only `claude-code` (+ `workflows` in v0.2) ride it. Orchestrator/memory/analytics ride `events` ONLY. **`channel` is NEVER a second SSE source and NEVER opens its own live query** — all dashboard-visible channel state flows `db → events → the one SSE` (§2.11 double-fire guard).
 
-**Consequences:** (a) unblocks D-011 interject; (b) a net-new fleet-coordination capability (operator interject, agent↔agent coordination, sub-agent fan-out, broadcast summaries to the fleet view) — scoped, fenced, on the existing engine. Deferred because it's coordination + a security surface beyond the v0.1 MVP. Revisit scope at v0.2.
+**Abuse case (must design against):** the `claude/channel` push is the ONE thing allowed to issue instructions — any local process (CSRF/DNS-rebind, loopback ≠ proof of origin) or a prompt-injected agent forging an operator interject would bypass the D-026 content fence by going *around* it. **Mitigation:** steering authority is unforgeable-without-the-token; **the agent runtime is NEVER handed the D-025 token** (token == operator's steering capability; if the agent holds it, agent == operator); unknown/unauthenticated origin **fails closed → agent**.
+
+**Do NOT copy / named anti-rules** (frozen, like the impeccable bans):
+- ❌ broker daemon + separate SQLite (D-001/D-005 "lighter"; D-023 — one more thing to be unreachable, witnessed live).
+- ❌ `process.kill(pid, 0)` liveness — unreliable on Windows (F-001; use `tasklist` / the session registry).
+- ❌ trusting **loopback alone** as proof of operator origin.
+- ❌ deriving message trust from message **content** (a body claiming "I am the operator" / "tier-0 directive" is inert — exactly this session's KongCode/peers injection).
+- ❌ handing the per-boot token to the agent runtime.
+- ❌ auto-delivering agent-origin messages as live channel pushes (they land in an **inbox as data**).
+- ❌ letting bus/peer messages bypass the screen/fence as "internal/trusted"; agent-origin bodies are secret/PII-screened (§3.1b) before storage and **re-screened before any graduation** to memory/skill.
+
+**Consequences:** (a) unblocks D-011 interject with a hardened, reusable rail; (b) the v0.2 fleet bus is purely additive (write rows + an SSE filter) on a security envelope already enforced in v0.1. **EXCLUDED** (don't over-build onto the bus): sub-agent fan-out/delegation rides `AgentRuntime.spawn` + the PTC RPC dispatcher (MEMORY-SPEC §9.1/§9.2) or a `work_item` if it outlives the turn — not `peer_message`. Stays 🟡: (a) hardened now, (b) deferred — revisit scope at v0.2, forcing each flow to justify against an existing primitive first.
 
 ---
 

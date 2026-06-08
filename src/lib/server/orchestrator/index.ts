@@ -34,9 +34,17 @@ export {
 	claimNext,
 	complete,
 	countByStatus,
+	pendingDepth,
+	spawnsSince,
+	gcStale,
+	writeHandoff,
+	recoverHandoffs,
+	DAY_MS,
 	type EnqueueInput,
 	type ClaimedItem,
-	type WorkStatus
+	type WorkStatus,
+	type GcResult,
+	type HandoffRow
 } from './workqueue';
 
 export {

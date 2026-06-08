@@ -15,7 +15,7 @@ import {
 	type RuntimeEvent
 } from '../runtime/index';
 import { Orchestrator, type StubRoute } from './index';
-import { countByStatus } from './workqueue';
+import { claimNext, complete, countByStatus } from './workqueue';
 
 // TASK 2.2 VERIFY (ARCHITECTURE §2.2/§2.11; D-004; DATA-MODEL §4.12) against the
 // MOCKED runtime (NO live API/creds/network — the 1.4 contract pattern):
@@ -316,6 +316,76 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 		perOn.stop();
 		expect(perOn.periodicArmed).toBe(false);
 	});
+
+	it('TASK 2.15 — daily spawn cap: drain stops claiming once the rolling cap is hit', async () => {
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = gatedBackend();
+		const runtime = new ClaudeCodeRuntime({ backend });
+		// cap=2: at most TWO items may be claimed/spawned in the (wide) rolling window.
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 8, // interactive cap is NOT the limiter here — the daily cap is
+			mode: 'manual',
+			route: stubRoute(),
+			dailySpawnCap: 2
+		});
+		orch.start();
+		try {
+			// Enqueue FIVE distinct background items directly (manual: no auto-trigger).
+			// Real task rows so launchSession resolves them (the cap, not a launch error,
+			// must be what stops the drain at 2).
+			for (let i = 0; i < 5; i++) {
+				const t = await createTask(db, {
+					project: projectId,
+					title: `cap ${i}`,
+					description: 'daily-cap parked'
+				});
+				await orch.enqueueTask(t.id, projectId);
+			}
+			await orch.drain();
+			// Only TWO were claimed/spawned despite five queued + ample interactive permits.
+			await waitFor(() => backend.plans.length >= 2);
+			await new Promise((r) => setTimeout(r, 300));
+			expect(backend.plans.length).toBe(2);
+			// The other three remain parked as pending (cap, not lost).
+			expect(await countByStatus(db, 'pending')).toBe(3);
+			expect(await countByStatus(db, 'processing')).toBe(2);
+
+			// Release the two in flight; even after they finish, the cap (anchored on
+			// claimed_at) keeps the rest parked — the rolling window still holds 2 claims.
+			for (const g of backend.gates) g.release();
+			await waitFor(() => orch.semaphore.inUse === 0, 10_000);
+			await new Promise((r) => setTimeout(r, 200));
+			expect(backend.plans.length).toBe(2); // STILL capped at 2 in the window
+			expect(await countByStatus(db, 'pending')).toBe(3);
+		} finally {
+			orch.stop();
+		}
+	}, 30_000);
+
+	it('TASK 2.15 — orch.gc() reaps aged terminal rows (fire-and-forget maintenance, D-017)', async () => {
+		await clearQueue();
+		const bus = new EventBus();
+		const runtime = new ClaudeCodeRuntime({ backend: gatedBackend() });
+		const orch = new Orchestrator({ db, bus, runtime, maxConcurrent: 1, mode: 'manual', route: stubRoute() });
+		try {
+			// One terminal row aged past the window.
+			const gt = await createTask(db, { project: projectId, title: 'gc', description: 'gc me' });
+			await orch.enqueueTask(gt.id, projectId);
+			const c = await claimNext(db, 'gc_tok');
+			await complete(db, c!.id, 'gc_tok', 'done');
+			const old = new Date(Date.now() - 10 * 24 * 60 * 60 * 1000).toISOString();
+			await db.query(`UPDATE type::thing($a) SET completed_at = <datetime>$t;`, { a: c!.id, t: old });
+			const res = await orch.gc();
+			expect(res.deletedTerminal).toBe(1);
+			expect(await countByStatus(db, 'done')).toBe(0);
+		} finally {
+			orch.stop();
+		}
+	}, 30_000);
 
 	it('manual mode: no bus subscription — a ready task does NOT auto-spawn; runOnce drains', async () => {
 		await clearQueue();

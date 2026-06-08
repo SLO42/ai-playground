@@ -633,6 +633,22 @@ const m0019_work_item_dedup_scope: Migration = {
 	`
 };
 
+// ── §4.12 (TASK 2.15) — claimed_at anchor for the daily-cap rolling window (D-021) ──
+//
+// The daily spawn cap counts items DRAINED (claimed → spawned) per rolling day; that
+// window must anchor on WHEN the item was claimed, not when it was produced (a backlog
+// produced earlier but drained today still counts). claimNext stamps `claimed_at` on the
+// atomic claim; gcStale also reaps stuck `processing` rows by their claim age. option<…>
+// (NONE until first claimed) — never read back on a RETURN AFTER `WHERE = value` claim,
+// so the §4.16 NONE-missed-match rule does not bite (we filter `claimed_at != NONE`).
+// Additive + idempotent.
+const m0020_work_item_claimed_at: Migration = {
+	id: '0020_work_item_claimed_at',
+	up: `
+		DEFINE FIELD claimed_at ON work_item TYPE option<datetime>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -658,5 +674,6 @@ export const schemaMigrations: Migration[] = [
 	m0016_cc_flexible,
 	m0017_transcript_flexible,
 	m0018_work_item_flexible,
-	m0019_work_item_dedup_scope
+	m0019_work_item_dedup_scope,
+	m0020_work_item_claimed_at
 ];

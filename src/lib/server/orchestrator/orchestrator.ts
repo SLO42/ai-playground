@@ -33,7 +33,7 @@ import { launchSession, type LaunchResult } from '../sessions/launch';
 import { getProject } from '../projects/repo';
 import { Semaphore } from './semaphore';
 import { runPostTask, type CommandRunner } from './post-task';
-import { claimNext, complete, enqueue } from './workqueue';
+import { claimNext, complete, enqueue, gcStale, spawnsSince, DAY_MS } from './workqueue';
 
 export type OrchMode = 'event' | 'manual' | 'periodic';
 
@@ -64,6 +64,17 @@ export interface OrchestratorOptions {
 	route: (taskId: string, projectId: string) => StubRoute;
 	/** Statuses that make a task spawn-ready. Default: 'ready'. */
 	spawnReadyStatuses?: readonly string[];
+	/**
+	 * TASK 2.15 — the D-021 DAILY SPAWN CAP. The max number of work_items that may be
+	 * CLAIMED (drained → spawned) within a rolling 24h window. Once reached, the drain
+	 * stops claiming and parks the rest of the queue until the window rolls forward (a
+	 * later trigger re-checks). 0 / undefined = uncapped (the cap is opt-in, like periodic).
+	 * The window is anchored on each item's claimed_at (workqueue.spawnsSince), so it
+	 * survives restarts and isn't fooled by a backlog produced earlier.
+	 */
+	dailySpawnCap?: number;
+	/** Rolling cap window in ms. Default 24h (workqueue.DAY_MS). */
+	dailyCapWindowMs?: number;
 	/**
 	 * Enable the post-task loop (TASK 2.7): on a session that ends, run the commit +
 	 * project test command + optional follow-up and record the outcome (DATA-MODEL §3
@@ -102,6 +113,8 @@ export class Orchestrator {
 	readonly #route: OrchestratorOptions['route'];
 	readonly #spawnReady: ReadonlySet<string>;
 	readonly #postTask?: OrchestratorOptions['postTask'];
+	readonly #dailyCap?: number;
+	readonly #capWindowMs: number;
 
 	#unsub?: Unsubscribe;
 	#timer?: ReturnType<typeof setInterval>;
@@ -126,6 +139,8 @@ export class Orchestrator {
 		this.#route = opts.route;
 		this.#spawnReady = new Set(opts.spawnReadyStatuses ?? ['ready']);
 		this.#postTask = opts.postTask;
+		this.#dailyCap = opts.dailySpawnCap && opts.dailySpawnCap > 0 ? opts.dailySpawnCap : undefined;
+		this.#capWindowMs = opts.dailyCapWindowMs ?? DAY_MS;
 	}
 
 	/** The interactive semaphore (read-only view for tests/diagnostics). */
@@ -208,6 +223,19 @@ export class Orchestrator {
 	}
 
 	/**
+	 * TASK 2.15 — GC the queue (D-021). A fire-and-forget maintenance trigger (D-017),
+	 * NOT a loop: deletes aged terminal rows and resets crashed `processing` rows back to
+	 * pending so they re-drain. Call from a SessionStart / idle maintenance trigger. Returns
+	 * the GcResult counts. Delegates to the pure workqueue primitive (D-016 boundary).
+	 */
+	async gc(opts?: { terminalMaxAgeMs?: number; stuckMaxAgeMs?: number }): Promise<{
+		deletedTerminal: number;
+		recoveredStuck: number;
+	}> {
+		return gcStale(this.#db, opts ?? {});
+	}
+
+	/**
 	 * Enqueue a task_run `work_item` for one task. Idempotent within the active window
 	 * via the dedup_key UNIQUE index (§4.12) — a second enqueue of the same active task
 	 * is a no-op. Returns whether a NEW row was created.
@@ -246,6 +274,13 @@ export class Orchestrator {
 				// Spawn while we have BOTH a free interactive permit AND claimable work.
 				for (;;) {
 					if (this.#stopped) break; // shutdown mid-drain — stop claiming
+					// TASK 2.15 — daily spawn cap (D-021): once the rolling-window claim count
+					// reaches the cap, stop claiming and PARK the rest. The window rolls forward
+					// on its own; a later trigger re-checks. Threshold-gated, NOT a busy loop.
+					if (this.#dailyCap !== undefined) {
+						const drained = await spawnsSince(this.#db, this.#capWindowMs);
+						if (drained >= this.#dailyCap) break; // cap reached — leave work parked
+					}
 					const permit = this.#sem.tryAcquire();
 					if (!permit) break; // interactive cap reached — leave work parked
 					const item = await claimNext(this.#db, nextClaimToken());

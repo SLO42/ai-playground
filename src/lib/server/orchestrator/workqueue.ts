@@ -151,7 +151,8 @@ export async function claimNext(
 					   ORDER BY priority ASC LIMIT 1)[0].id;
 					 IF $cand != NONE {
 					   RETURN UPDATE $cand
-					     SET claim_token = $t, status = "processing", attempts += 1
+					     SET claim_token = $t, status = "processing", attempts += 1,
+					         claimed_at = time::now()
 					     WHERE claim_token IS NONE
 					     RETURN AFTER;
 					 } ELSE {
@@ -246,4 +247,155 @@ export async function countByStatus(db: Db, status: WorkStatus): Promise<number>
 		{ status }
 	);
 	return Number(rows?.[0]?.c ?? 0);
+}
+
+/** Count rows whose status remains pending+unclaimed — the threshold-drain signal. */
+export async function pendingDepth(db: Db): Promise<number> {
+	const [rows] = await db.query<[Array<{ c: number }>]>(
+		`SELECT count() AS c FROM work_item
+		   WHERE status = "pending" AND claim_token IS NONE GROUP ALL;`
+	);
+	return Number(rows?.[0]?.c ?? 0);
+}
+
+// ── TASK 2.15 — daily spawn cap (D-021) ──────────────────────────────────────────
+//
+// KongCode caps how many heavy items are drained per rolling day so a burst of
+// producers (D-017 maintenance, post-task extraction, follow-ups) can't run the host
+// agent CLI unbounded. We count the items that have been CLAIMED (status moved off
+// "pending" → attempts >= 1) within the rolling 24h window. `claimed_at` is stamped on
+// the atomic claim (see claimNext) so the window is anchored to when work actually
+// SPAWNED, not when it was produced — a backlog produced days ago but drained today
+// still counts against today's cap. Optionally scope the cap to one work_type.
+
+/** The default rolling cap window (24h). */
+export const DAY_MS = 24 * 60 * 60 * 1000;
+
+/**
+ * How many work_items have been CLAIMED (drained → spawned) within the rolling window
+ * (default 24h). This is the daily-cap counter the orchestrator checks BEFORE claiming
+ * the next background item. Anchored on `claimed_at` (stamped on the atomic claim), so
+ * re-running the migration or producing a backlog earlier never inflates the count.
+ */
+export async function spawnsSince(
+	db: Db,
+	windowMs: number = DAY_MS,
+	workType?: string
+): Promise<number> {
+	const since = new Date(Date.now() - windowMs).toISOString();
+	const filter = workType ? `AND work_type = $wt` : '';
+	const [rows] = await db.query<[Array<{ c: number }>]>(
+		`SELECT count() AS c FROM work_item
+		   WHERE claimed_at != NONE AND claimed_at >= <datetime>$since ${filter}
+		   GROUP ALL;`,
+		workType ? { since, wt: workType } : { since }
+	);
+	return Number(rows?.[0]?.c ?? 0);
+}
+
+// ── TASK 2.15 — stale-item GC (D-021: "7-day GC of stale items") ──────────────────
+//
+// Old terminal rows (done/failed) accumulate; KongCode GC's them after ~7 days. Per
+// D-015 the GC of an OPERATIONAL queue row is a hard delete (the work_item table is NOT
+// a knowledge table — it carries no durable knowledge; the knowledge it PRODUCED lives
+// in memory/skill rows that GC never touches). We ALSO reap orphaned `processing` rows
+// whose worker crashed (a stale claim older than the window with no terminal write) by
+// RESETTING them to pending+unclaimed so they can be re-drained — crash recovery, not
+// deletion. Both are gated on age so a re-run is a no-op once nothing is stale.
+
+export interface GcResult {
+	/** Terminal (done/failed) rows older than the window that were deleted. */
+	deletedTerminal: number;
+	/** Stuck `processing` rows (crashed worker) older than the window, reset to pending. */
+	recoveredStuck: number;
+}
+
+/**
+ * GC the queue (D-021). Deletes terminal rows older than `terminalMaxAgeMs` (default 7d)
+ * and resets `processing` rows whose claim is older than `stuckMaxAgeMs` (default 1h) back
+ * to pending+unclaimed so a crashed worker's item is re-drained. Idempotent: once nothing
+ * is stale it deletes/recovers zero. Time math runs in SurrealQL via a bound ISO cutoff.
+ */
+export async function gcStale(
+	db: Db,
+	opts: { terminalMaxAgeMs?: number; stuckMaxAgeMs?: number } = {}
+): Promise<GcResult> {
+	const termCut = new Date(Date.now() - (opts.terminalMaxAgeMs ?? 7 * DAY_MS)).toISOString();
+	const stuckCut = new Date(Date.now() - (opts.stuckMaxAgeMs ?? 60 * 60 * 1000)).toISOString();
+	// 1) reap crashed `processing` rows → pending+unclaimed (clear the lease + claimed_at so
+	//    the re-claim re-stamps the window). 2) delete aged terminal rows. Two statements,
+	//    one round-trip; RETURN BEFORE counts the affected rows per statement.
+	const res = await db.query<[Array<unknown>, Array<unknown>]>(
+		`UPDATE work_item
+		   SET status = "pending", claim_token = NONE, claimed_at = NONE
+		   WHERE status = "processing" AND claimed_at != NONE
+		     AND claimed_at < <datetime>$stuckCut
+		   RETURN BEFORE;
+		 DELETE work_item
+		   WHERE status IN ["done","failed"] AND completed_at != NONE
+		     AND completed_at < <datetime>$termCut
+		   RETURN BEFORE;`,
+		{ stuckCut, termCut }
+	);
+	return {
+		recoveredStuck: res[0]?.length ?? 0,
+		deletedTerminal: res[1]?.length ?? 0
+	};
+}
+
+// ── TASK 2.15 — crash-safe handoff (D-021: "crash-safe handoff written on session end") ─
+//
+// KongCode writes a handoff record SYNCHRONOUSLY on session end so an item interrupted
+// mid-flight can be resumed by another worker after a crash. We persist the handoff state
+// onto the work_item row's `handoff` object (FLEXIBLE, schema §4.12). Guarded by the
+// claim_token lease so only the current holder may write its handoff (a stale worker that
+// lost the lease can't clobber the row that was re-claimed). recoverHandoffs surfaces the
+// handoff state of items still mid-flight so a freshly-booted orchestrator can resume them.
+
+/**
+ * Persist crash-recovery handoff state onto a claimed item, SYNCHRONOUSLY on session end
+ * (D-021). Lease-guarded: only the current `claim_token` holder writes. Returns whether
+ * the row was matched (false ⇒ the lease moved / the row is gone — caller must not assume
+ * the handoff persisted).
+ */
+export async function writeHandoff(
+	db: Db,
+	id: string,
+	claimToken: string,
+	handoff: Record<string, unknown>
+): Promise<boolean> {
+	const rid = link(id);
+	const [rows] = await db.query<[Array<{ id: unknown }>]>(
+		`UPDATE $rid SET handoff = $handoff
+		   WHERE claim_token = $t RETURN AFTER;`,
+		{ rid, handoff, t: claimToken }
+	);
+	return (rows?.length ?? 0) > 0;
+}
+
+/** A mid-flight item plus its persisted handoff state (crash-recovery surface). */
+export interface HandoffRow {
+	id: string;
+	workType: string;
+	payload: Record<string, unknown>;
+	handoff: Record<string, unknown>;
+	claimToken: string;
+}
+
+/**
+ * Surface every `processing` item that carries handoff state — the crash-recovery view a
+ * freshly-booted orchestrator reads to resume interrupted work (D-021). Read-only.
+ */
+export async function recoverHandoffs(db: Db): Promise<HandoffRow[]> {
+	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+		`SELECT id, work_type, payload, handoff, claim_token FROM work_item
+		   WHERE status = "processing" AND handoff != NONE;`
+	);
+	return (rows ?? []).map((r) => ({
+		id: str(r.id),
+		workType: str(r.work_type),
+		payload: (r.payload as Record<string, unknown>) ?? {},
+		handoff: (r.handoff as Record<string, unknown>) ?? {},
+		claimToken: str(r.claim_token)
+	}));
 }

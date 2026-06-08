@@ -541,6 +541,34 @@ const m0015_embedding_cache: Migration = {
 	`
 };
 
+// ── §4.10 fix — FLEXIBLE object fields + cc_settings.sync_digest (TASK 1.8) ───
+//
+// A SCHEMAFULL `TYPE object` field WITHOUT `FLEXIBLE` discards all nested keys on
+// write — it stores `{}` (SurrealDB 2.x). The §4.10 mirror's arbitrary-shape JSON
+// columns (settings permissions/env/enabled_plugins, the verbatim `raw`, agent
+// `frontmatter`, mcp `env`) therefore lost their contents, breaking the D-010
+// round-trip contract ("raw preserves full JSON"). OVERWRITE them as FLEXIBLE so
+// nested keys round-trip. Additive + idempotent (OVERWRITE re-applies cleanly).
+//
+// Also add `cc_settings.sync_digest` — the per-scope content digest stamped at
+// sync time. Drift detection (synced / out-of-sync, UI-SPEC §214) compares the
+// live disk digest against this stored value; a dedicated typed field is cleaner
+// than smuggling the digest inside `raw`.
+const m0016_cc_flexible: Migration = {
+	id: '0016_cc_flexible',
+	up: `
+		DEFINE FIELD OVERWRITE permissions     ON cc_settings FLEXIBLE TYPE option<object>;
+		DEFINE FIELD OVERWRITE env             ON cc_settings FLEXIBLE TYPE option<object>;
+		DEFINE FIELD OVERWRITE enabled_plugins ON cc_settings FLEXIBLE TYPE option<object>;
+		DEFINE FIELD OVERWRITE raw             ON cc_settings FLEXIBLE TYPE object;
+		DEFINE FIELD OVERWRITE sync_digest     ON cc_settings TYPE option<string>;
+
+		DEFINE FIELD OVERWRITE frontmatter ON cc_agent FLEXIBLE TYPE object;
+
+		DEFINE FIELD OVERWRITE env ON cc_mcp_server FLEXIBLE TYPE option<object>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -562,5 +590,6 @@ export const schemaMigrations: Migration[] = [
 	m0012_work_item,
 	m0013_retrieval_outcome,
 	m0014_skill_causal,
-	m0015_embedding_cache
+	m0015_embedding_cache,
+	m0016_cc_flexible
 ];

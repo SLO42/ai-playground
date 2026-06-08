@@ -20,7 +20,8 @@ export interface WorkflowsData {
 	runs: WorkflowRunListItem[];
 	detail: WorkflowRunDetail | null;
 	selectedRun: string | null;
-	error?: string;
+	/** A query/load failure while the DB IS connected (distinct from connection loss). */
+	queryError?: string;
 }
 
 export const load: PageServerLoad = async ({ depends, url }): Promise<WorkflowsData> => {
@@ -51,13 +52,16 @@ export const load: PageServerLoad = async ({ depends, url }): Promise<WorkflowsD
 		]);
 		return { connected: true, workflows, runs, detail, selectedRun };
 	} catch (err) {
+		// The DB handle IS live (tryGetDb succeeded) — this is a QUERY/load failure,
+		// NOT connection loss. Stay `connected: true` and surface an honest query-error
+		// state so the UI does not mislabel a bad query as "database disconnected".
 		return {
-			connected: false,
+			connected: true,
 			workflows: [],
 			runs: [],
 			detail: null,
-			selectedRun: null,
-			error: (err as Error).message
+			selectedRun,
+			queryError: (err as Error).message
 		};
 	}
 };

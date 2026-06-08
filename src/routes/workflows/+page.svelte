@@ -23,7 +23,9 @@
   const runs = $derived(data.runs ?? []);
   const detail = $derived(data.detail);
   const selectedRun = $derived(data.selectedRun);
-  const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
+  // A query/load failure while the DB is still connected — distinct from the
+  // disconnected state below (honest operator messaging, not "database disconnected").
+  const queryError = $derived('queryError' in data ? (data.queryError as string | undefined) : undefined);
 
   const hasWorkflows = $derived(workflows.length > 0);
   const hasRuns = $derived(runs.length > 0);
@@ -71,10 +73,20 @@
       <span class="eyebrow">disconnected</span>
       <p class="state-body">
         The database is not connected — showing no workflows rather than fabricated runs.
-        {#if error}<span class="mono">{error}</span>{:else}Start SurrealDB and reload.{/if}
+        Start SurrealDB and reload.
       </p>
     </div>
   {:else}
+    {#if queryError}
+      <!-- DB IS connected; a query/load failed. Say THAT — not "disconnected". -->
+      <div class="card state" data-state="query-error">
+        <span class="eyebrow">query failed</span>
+        <p class="state-body">
+          The database is connected, but loading workflows failed. Retry, or check the
+          query logs. <span class="mono">{queryError}</span>
+        </p>
+      </div>
+    {/if}
     <!-- Workflow definitions -->
     <div class="card">
       <span class="eyebrow">definitions · {workflows.length}</span>

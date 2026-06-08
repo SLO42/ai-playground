@@ -18,8 +18,16 @@
 @font-face {
   font-family: 'Lastik';
   /* D-034: web = WOFF2/WOFF only. TTF/OTF on the web is PROHIBITED by the
-     Lastik (That That Type, Commercial) EULA — never reference them here. */
-  src: url('/fonts/Lastik-Free.woff2') format('woff2'),
+     Lastik (That That Type, Commercial) EULA — never reference them here.
+
+     The binary is operator-supplied and gitignored, so it is ABSENT by default.
+     `local()` is listed FIRST so an operator who has Lastik installed system-wide
+     loads it with ZERO network request (no 404 at all). The `url()` sources are a
+     progressive enhancement: when the operator drops the woff2 into static/fonts/
+     they are served; when absent, font-display:swap + the --font-sans system
+     fallback chain render text cleanly with no FOIT lockup and no layout break. */
+  src: local('Lastik'),
+       url('/fonts/Lastik-Free.woff2') format('woff2'),
        url('/fonts/Lastik-Free.woff') format('woff');
   font-weight: 100 900;
   font-style: normal;

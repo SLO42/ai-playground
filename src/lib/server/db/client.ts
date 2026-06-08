@@ -107,10 +107,42 @@ export class Db {
 		return this.query<T>(`RELATE ${f}->${e}->${t} CONTENT $data;`, { data });
 	}
 
+	/**
+	 * Open a SurrealDB live query on a single table and return a consumable
+	 * subscription (surrealdb 2.x). The table name is VALIDATED (D-016) before it
+	 * is interpolated — `LIVE SELECT FROM` requires a literal table identifier and
+	 * rejects `type::table($t)`, so binding is impossible here; validation is the
+	 * guard. The returned object exposes `.subscribe(handler)` (handler receives
+	 * `{ action, recordId, value }`) and `.kill()`.
+	 *
+	 * This is the LOW-LEVEL primitive. The events module's `watchTable` is the ONLY
+	 * sanctioned caller (ARCHITECTURE §2.11: `db` owns all live queries).
+	 */
+	async liveTable(table: string): Promise<LiveTableSubscription> {
+		const t = assertTableName(table);
+		// LIVE SELECT returns the live-query UUID; liveOf() attaches a consumer to it.
+		const [uuid] = await this.handle.query<[unknown]>(`LIVE SELECT * FROM ${t};`);
+		return this.handle.liveOf(uuid as Parameters<Surreal['liveOf']>[0]);
+	}
+
 	/** Close the underlying connection. Idempotent / best-effort. */
 	async close(): Promise<void> {
 		await this.handle.close().catch(() => {});
 	}
+}
+
+/** Minimal shape of the surrealdb 2.x live subscription we depend on. */
+export interface LiveTableSubscription {
+	subscribe(handler: (msg: LiveMessage) => void): () => void;
+	kill(): Promise<void>;
+}
+
+/** A live-query notification as surrealdb 2.x delivers it over WS. */
+export interface LiveMessage {
+	queryId: unknown;
+	action: 'CREATE' | 'UPDATE' | 'DELETE' | 'KILLED';
+	recordId: unknown;
+	value: unknown;
 }
 
 // ── Process-wide singleton ───────────────────────────────────────────────────

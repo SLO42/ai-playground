@@ -17,6 +17,19 @@ export {
 export { Semaphore, type Permit } from './semaphore';
 
 export {
+	runPostTask,
+	splitCommand,
+	execFileRunner,
+	type CommandRunner,
+	type CommandResult,
+	type PostTaskInput,
+	type PostTaskOptions,
+	type PostTaskResult,
+	type CommitOutcome,
+	type TestOutcome
+} from './post-task';
+
+export {
 	enqueue,
 	claimNext,
 	complete,

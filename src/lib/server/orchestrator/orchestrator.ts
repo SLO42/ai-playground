@@ -30,7 +30,9 @@ import type { BusEvent, EventBus, Unsubscribe } from '../events/bus';
 import type { DbChange } from '../events/db-source';
 import type { AgentRuntime, Intent, ModelSelection, SpawnBudgets, ToolPolicy } from '../runtime/index';
 import { launchSession, type LaunchResult } from '../sessions/launch';
+import { getProject } from '../projects/repo';
 import { Semaphore } from './semaphore';
+import { runPostTask, type CommandRunner } from './post-task';
 import { claimNext, complete, enqueue } from './workqueue';
 
 export type OrchMode = 'event' | 'manual' | 'periodic';
@@ -62,6 +64,20 @@ export interface OrchestratorOptions {
 	route: (taskId: string, projectId: string) => StubRoute;
 	/** Statuses that make a task spawn-ready. Default: 'ready'. */
 	spawnReadyStatuses?: readonly string[];
+	/**
+	 * Enable the post-task loop (TASK 2.7): on a session that ends, run the commit +
+	 * project test command + optional follow-up and record the outcome (DATA-MODEL §3
+	 * step 7). OFF by default so a degenerate orchestrator never touches git/the FS. When
+	 * enabled, an injectable `runner` lets tests drive it without a live process (the
+	 * default is execFile arrays — D-008).
+	 */
+	postTask?: {
+		enabled: boolean;
+		/** Injectable command runner (test seam); defaults to execFile arrays. */
+		runner?: CommandRunner;
+		/** Auto-enqueue a follow_up when the run succeeded but tests failed (default true). */
+		followUpOnTestFail?: boolean;
+	};
 }
 
 /** What one drain pass did (diagnostics / tests). */
@@ -85,6 +101,7 @@ export class Orchestrator {
 	readonly #intervalMs?: number;
 	readonly #route: OrchestratorOptions['route'];
 	readonly #spawnReady: ReadonlySet<string>;
+	readonly #postTask?: OrchestratorOptions['postTask'];
 
 	#unsub?: Unsubscribe;
 	#timer?: ReturnType<typeof setInterval>;
@@ -108,6 +125,7 @@ export class Orchestrator {
 		this.#intervalMs = opts.intervalMs;
 		this.#route = opts.route;
 		this.#spawnReady = new Set(opts.spawnReadyStatuses ?? ['ready']);
+		this.#postTask = opts.postTask;
 	}
 
 	/** The interactive semaphore (read-only view for tests/diagnostics). */
@@ -281,6 +299,35 @@ export class Orchestrator {
 			});
 			this.spawnCount++;
 			ok = res.status === 'done';
+
+			// TASK 2.7 — the post-task loop (DATA-MODEL §3 step 7). OFF by default; when
+			// enabled, commit + run the project test command + optional follow-up and record
+			// the outcome atomically. A post-task failure must NOT crash the drain or flip the
+			// work_item terminal status (the SPAWN succeeded) — it is best-effort and logged
+			// via its own agent_event. Runs only when the session actually ended (done/failed).
+			if (this.#postTask?.enabled) {
+				try {
+					const project = await getProject(this.#db, projectId);
+					await runPostTask(
+						this.#db,
+						{
+							projectId,
+							taskId,
+							sessionId: res.sessionId,
+							cwd: project?.root_path ?? '.',
+							commitMessage: `chore(agent): task ${taskId}`,
+							testCommand: project?.test_command,
+							runOk: res.status === 'done'
+						},
+						{
+							run: this.#postTask.runner,
+							followUpOnTestFail: this.#postTask.followUpOnTestFail
+						}
+					);
+				} catch {
+					// best-effort: never let post-task failure crash the drain or the spawn verdict
+				}
+			}
 		} catch {
 			ok = false; // a spawn failure marks the work_item failed; never crash the drain
 		} finally {

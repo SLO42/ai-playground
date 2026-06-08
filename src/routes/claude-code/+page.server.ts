@@ -12,8 +12,8 @@
 
 import { readFileSync } from 'node:fs';
 import { fail } from '@sveltejs/kit';
-import { getDb, type Db } from '$lib/server/db/client';
 import { tryGetDb } from '$lib/server/db/runtime-init';
+import { classifyDbError } from '$lib/server/db/classify';
 import {
 	readCatalog,
 	syncState,
@@ -34,38 +34,58 @@ function isConfigKind(v: unknown): v is ConfigKind {
 	return typeof v === 'string' && (EDITABLE_KINDS as string[]).includes(v);
 }
 
-export const load: PageServerLoad = async () => {
-	let db: Db;
-	try {
-		db = getDb();
-	} catch {
-		// DB singleton not initialised (no startup wiring yet) — honest empty state.
+export const load: PageServerLoad = async ({ depends }) => {
+	// SCOPED dep (DEFECT 2): the page re-runs this loader only on `app:claude-code`,
+	// NOT on every table change. Previously the page invalidated on a `project` row
+	// change with `invalidate(() => true)` — an "invalidate storm" that re-pulled the
+	// whole catalog whenever any project row moved. The dep below is the surgical knob.
+	depends('app:claude-code');
+
+	// DEFECT 2: use `tryGetDb()` (never throws) instead of strict `getDb()`. A non-null
+	// handle does NOT prove liveness — the SDK keeps handing back a CACHED-but-DEAD
+	// handle after the socket drops, so every read below is wrapped + classified
+	// (parity with /workflows, commit 8ed7659). On a dead socket this returns an honest
+	// `connected:false` rather than throwing an unhandled 500 that silently aborts the
+	// client navigation.
+	const db = tryGetDb();
+	if (!db) {
 		return { connected: false, scopes: [] as CatalogScope[] };
 	}
 
-	const scopes = await readCatalog(db);
+	try {
+		const scopes = await readCatalog(db);
 
-	// Overlay the LIVE disk-vs-mirror status per scope (the mirror alone can only
-	// say "synced if a digest exists"; the real check needs disk access). A scope
-	// whose path is unreadable keeps its mirror-derived status.
-	const withStatus = await Promise.all(
-		scopes.map(async (sc) => {
-			if (sc.kind !== 'project' && sc.kind !== 'global') return sc;
-			try {
-				const st = await syncState(db, {
-					kind: sc.kind,
-					// cc_scope.path is the abs path to the .claude dir.
-					claudeDir: sc.path,
-					...(sc.project ? { project: sc.project } : {})
-				});
-				return { ...sc, status: st.status };
-			} catch {
-				return sc;
-			}
-		})
-	);
+		// Overlay the LIVE disk-vs-mirror status per scope (the mirror alone can only
+		// say "synced if a digest exists"; the real check needs disk access). A scope
+		// whose path is unreadable keeps its mirror-derived status.
+		const withStatus = await Promise.all(
+			scopes.map(async (sc) => {
+				if (sc.kind !== 'project' && sc.kind !== 'global') return sc;
+				try {
+					const st = await syncState(db, {
+						kind: sc.kind,
+						// cc_scope.path is the abs path to the .claude dir.
+						claudeDir: sc.path,
+						...(sc.project ? { project: sc.project } : {})
+					});
+					return { ...sc, status: st.status };
+				} catch {
+					return sc;
+				}
+			})
+		);
 
-	return { connected: true, scopes: withStatus };
+		return { connected: true, scopes: withStatus };
+	} catch (err) {
+		// Classify the thrown error (shared with /workflows + /projects + home, D-019):
+		// a genuine connection loss is reported as DISCONNECTED — the same honest state
+		// as a server that booted with the DB down — and ONLY a true query/parse failure
+		// keeps `connected:true` + the queryError state. Never an unhandled 500.
+		if (classifyDbError(err) === 'disconnected') {
+			return { connected: false, scopes: [] as CatalogScope[] };
+		}
+		return { connected: true, scopes: [] as CatalogScope[], queryError: (err as Error).message };
+	}
 };
 
 /** Resolve the edit target from form fields, validating the kind at the boundary (D-016). */

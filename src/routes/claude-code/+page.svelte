@@ -16,6 +16,7 @@
 
   const scopes = $derived(data.scopes ?? []);
   const connected = $derived(data.connected);
+  const queryError = $derived(data.queryError);
 
   // The editor is a single shared panel; `editing` identifies which scope+kind it's open for
   // so only that scope's card shows the panel. The action phases (editing → confirming →
@@ -60,10 +61,11 @@
   });
 
   // Live: a cc_* re-sync after an apply changes the catalog — re-invalidate so the synced
-  // badge updates in place. The catalog isn't a watched table, so we re-run the loader on
-  // any saved apply directly (below) AND on session/project changes the SSE already carries.
+  // badge updates in place. SCOPED (DEFECT 2): invalidate ONLY this page's `app:claude-code`
+  // dep, never `() => true`. A `project` row change must NOT re-pull the whole catalog
+  // through every loader on the page (the "invalidate storm") — it nudges just this loader.
   $effect(() => {
-    const off = stream.onDbChange('project', () => void invalidate(() => true));
+    const off = stream.onDbChange('project', () => void invalidate('app:claude-code'));
     return off;
   });
 
@@ -106,6 +108,13 @@
       <p class="card-body">
         The database is not connected — no mirror to read yet. Run a config sync
         once the runtime is wired.
+      </p>
+    </div>
+  {:else if queryError}
+    <div class="card empty">
+      <span class="eyebrow">error</span>
+      <p class="card-body">
+        Connected, but the config mirror failed to load — <span class="mono">{queryError}</span>.
       </p>
     </div>
   {:else if scopes.length === 0}

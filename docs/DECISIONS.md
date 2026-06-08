@@ -494,6 +494,22 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 
 ---
 
+## D-038 🔒 Definition of Done — every feature ships complete (operator standard, 2026-06-08)
+
+**Context:** The audits proved the failure mode: modules passed unit tests yet shipped as shells — incomplete, unwired, off-spec, purposeless on screen. The operator set the bar: *"every feature needs to be complete, fleshed out, fully tested, up to our design-system standards, functional, and have purpose."* This is non-negotiable and supersedes any "verify = build green" shortcut.
+
+**Decision — a feature is DONE only when ALL six hold (acceptance gate on every task, every wave):**
+1. **Complete & fleshed-out** — the whole feature, not a stub/placeholder/happy-path; edge + empty + error states handled (honest, F-008).
+2. **Fully tested** — comprehensive automated tests (unit + integration against the real SurrealDB), not a single smoke; covers the failure modes.
+3. **Design-system standard** — uses the tokens (no hardcoded color/spacing), passes the a11y/contrast gate (`contrast-gate.ts`, no `outline:none`), respects reduced-motion, matches UI-SPEC/DESIGN-SYSTEM for that surface.
+4. **Functional & live-verified** — actually works in a REAL browser (agent-browser), wired end-to-end to live data/services — not just unit-green. (Builds on the post-audit lesson.)
+5. **Has purpose** — a stated reason-to-exist; reachable in the UI; serves a PRODUCT §4 job or a named operator need. No dead controls, no orphan routes.
+6. **Honest** — no fabricated data; degraded/empty states tell the truth.
+
+**Consequences:** every gap-closure wave (v1.3→v1.8) runs each feature through a **build → DoD-review** pipeline — a second agent independently certifies all six (tests thorough? tokens/a11y? live-functional? purpose? honest?) and the wave does NOT pass a feature that misses any. The end-of-track gate re-checks the whole set against this DoD. Applies retroactively: v1.3's in-flight output is held to D-038 at the gate and patched if short. (Owner standard; governs all of v2 going forward.)
+
+---
+
 ## Decision index
 
 | ID | Status | Topic |
@@ -536,5 +552,6 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 | D-035 | 🟡 | Inter-session comms (claude-peers): channel-interject now; fleet bus deferred v0.2 |
 | D-036 | 🟡 | Per-task capability provisioning — auto-compose skills/agents/MCP into driven sessions (v1.1) |
 | D-037 | 🟡 | Extensible deploy/publish/sync adapter framework (Thunderstore/npm/GitHub + custom per-project; v1.8). Create-with-AI deferred to its own future feature |
+| D-038 | 🔒 | Definition of Done — every feature: complete · fully tested · design-system standard · live-functional · purposeful · honest |
 
 > **Provenance:** **D-006–D-008 (in part)** and **D-014–D-023** are **KongCode-informed** — derived from studying KongCode v0.7.113 (`C:/Users/11sos/.claude/plugins/cache/kongcode-marketplace/kongcode/0.7.113/`), a production SurrealDB knowledge-graph + Claude Code harness (D-006 server-binary path is the biggest borrow; D-007 SurrealKV, D-008 dedup correction). ARCHITECTURE §9 "Lessons from KongCode" is the authoritative map. **D-024–D-026** are **security hardening surfaced by the pre-commit audit**. **D-027–D-033** (and the D-014 `qwen3-embedding:0.6b` embedding candidate) are sourced from the **cannibalize foundry** (`docs/CANNIBALIZE-BRIEF.md`) — distilled from **hermes-agent** (Nous Research, MIT), **mem0** (Apache-2.0), and **kongcode** (friend's plugin — ideas fine, code-lift needs consent). Each is a **candidate with provenance, to be verified against v2 constraints before build** — not a mandate. The three originally-OPEN items were **resolved by the owner 2026-06-06**: D-030 (utilization loop → ranking only, not pruning), D-031 (diversity → both novelty gate + consolidation), D-032 (single SurrealDB stands — reaffirms D-001; authored skills are already files per D-010). No locked decision was overridden. **D-034** is operator-authored (the delivered design system), not foundry-sourced; it supersedes the D-033 seed for concrete values and adds the Lastik font-license constraints. **Phase-0 spikes (2026-06-07)** resolved **D-014** (→ qwen3-embedding:0.6b, 1024-dim, S0-proven) and the **D-002** mechanism (SDK primary; CLI needs isolated config — S1). **D-035** folds **claude-peers-mcp** (operator's own tool): adopt the `claude/channel` interject now (D-011), defer the fleet message bus to v0.2.

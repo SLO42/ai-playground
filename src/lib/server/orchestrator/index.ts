@@ -56,3 +56,18 @@ export {
 	type ReviewDecisionOptions,
 	type CountChangedOptions
 } from './review';
+
+// TASK 4.2 — resource-profile detection (optional perf knob): detect CPU/RAM at boot →
+// default concurrency caps. Pure recommender; operator config always wins (ARCHITECTURE §388).
+export {
+	detectHostSnapshot,
+	detectResourceProfile,
+	recommendCaps,
+	classifyTier,
+	resolveBootCaps,
+	RESOURCE_TUNING,
+	type HostSnapshot,
+	type ConcurrencyCaps,
+	type ResourceTier,
+	type ResourceProfile
+} from './resource-profile';

@@ -30,6 +30,20 @@ export { OllamaEmbedder, CachedEmbedder, FakeEmbedder, EmbeddingError, EMBEDDING
 export { recall, recordOutcomes, parseCitations, WMR_WEIGHTS, NOVELTY_COSINE_CUT, type RecallItem, type RecallResult } from './recall';
 export { storeMemory, storeMemories, extractAndStore, buildExtraction, type MemoryCandidate, type StoredMemory, type ExtractFn, type ExtractInput } from './store';
 export { dueReview, bumpCounters, enqueueReview, consolidate, DEFAULT_CADENCE, type ReviewKind, type ReviewCadence } from './loop';
+export {
+	parseAutoMemoryFile,
+	parseMemoryLinks,
+	entityIdForFile,
+	importAutoMemory,
+	importAutoMemoryFromDir,
+	traverse,
+	type AutoMemoryFile,
+	type ParsedAutoMemory,
+	type ImportAutoMemoryOptions,
+	type ImportAutoMemoryResult,
+	type GraphNode,
+	type TraverseOptions
+} from './bridge';
 
 function link(id: string): StringRecordId {
 	return new StringRecordId(assertRecordId(id));

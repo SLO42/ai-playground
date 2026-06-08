@@ -6,12 +6,12 @@ Status legend: 🔒 Locked · 🟡 Open (needs spike/decision) · ⚪ Proposed (
 
 ---
 
-## D-000 🟡 Product name
+## D-000 🔒 Product name = **Atelier** (RESOLVED 2026-06-08)
 
-**Context:** Working title is "ai-playground v2". A cleaner product name may be wanted.
-**Decision:** Defer. Use `ai-playground-v2` as the repo/dir name for now.
-**Consequence:** The working name is already baked into the SurrealDB namespace `playground` and the data dir, so a v1.0 rename carries a **data-layer cost** (NS migration + data-dir move), not purely cosmetic.
-**Revisit:** Before v1.0, or whenever the owner picks a name.
+**Context:** Working title was "ai-playground v2". The owner picked a product name at the v1.0 closeout gate (task 4.6).
+**Decision:** The product is named **Atelier** — a studio/workshop where projects are crafted across their whole lifecycle (create → develop → maintain → release); fits the calm teal/Lastik design system and the craft-forward identity. Stamp it across UI (app title/shell), docs, and `package.json` metadata (task 4.6).
+**Consequence:** The **display/brand name is Atelier**; the SurrealDB namespace `playground` + data dir keep their existing internal identifiers (no NS migration — the rename is brand/presentation, not a data-layer move, so the documented data-layer cost is avoided by NOT renaming the namespace). Repo/worktree dirs may stay `ai-playground` / `ai-playground-v2` internally; "Atelier" is the product name users see.
+**Status:** RESOLVED — closes the last OPEN v1.0 item.
 
 ---
 
@@ -488,7 +488,7 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 
 | ID | Status | Topic |
 |----|--------|-------|
-| D-000 | 🟡 | Product name |
+| D-000 | 🔒 | Product name = **Atelier** (resolved 2026-06-08) |
 | D-001 | 🔒 | Single SurrealDB datastore (product state) |
 | D-002 | 🔒 | Agent runtime = Claude Code; SDK primary, CLI needs isolated config (S1-resolved) |
 | D-003 | 🔒 | Keep gpt-oss:20b as swappable slot |

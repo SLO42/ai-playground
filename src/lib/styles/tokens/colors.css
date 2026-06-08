@@ -63,6 +63,7 @@
   --color-surface-raised: var(--teal-750);   /* popovers, modals        */
   --color-surface-overlay:var(--teal-700);   /* hover surface           */
   --color-surface-selected:var(--accent-faint);
+  --color-overlay-scrim:  rgb(0 0 0 / 0.55);   /* drawer / modal backdrop */
 
   /* Borders */
   --color-border:         var(--dark-slate-grey);  /* subtle hairline   */

@@ -76,6 +76,11 @@
   --shell-topbar-h:     48px;    /* @kind spacing */
   --shell-statusbar-h:  28px;    /* @kind spacing */
   --shell-tray-w:       360px;   /* @kind spacing */
+
+  /* ---- Responsive breakpoints (task 6.3) ----------------------------- */
+  /* Below this width the sidebar collapses to a drawer + hamburger so the
+     fixed nav never pushes content off-screen at 375px. */
+  --bp-narrow:          768px;   /* @kind other */
 }
 
 @media (prefers-reduced-motion: reduce) {

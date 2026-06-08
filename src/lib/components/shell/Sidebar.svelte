@@ -6,10 +6,21 @@
    */
   import { navGroups as groups } from './nav';
 
-  let { pathname = '/' }: { pathname?: string } = $props();
+  // `open` drives the drawer state at narrow viewports (task 6.3); it is inert
+  // at >=768px where the sidebar is a static rail. `onnavigate` lets the shell
+  // close the drawer when a link is followed.
+  let {
+    pathname = '/',
+    open = false,
+    onnavigate
+  }: {
+    pathname?: string;
+    open?: boolean;
+    onnavigate?: () => void;
+  } = $props();
 </script>
 
-<aside class="sidebar">
+<aside id="app-sidebar" class="sidebar" class:open>
   <div class="brand">
     <span class="brand-mark mono">Atelier</span>
   </div>
@@ -23,6 +34,7 @@
             class:active={pathname === item.href}
             href={item.href}
             aria-current={pathname === item.href ? 'page' : undefined}
+            onclick={() => onnavigate?.()}
           >
             {item.label}
           </a>
@@ -41,6 +53,26 @@
     display: flex;
     flex-direction: column;
     overflow-y: auto;
+  }
+
+  /* Narrow viewports (task 6.3): the rail leaves the flex flow and becomes a
+     fixed off-canvas drawer. Closed = translated fully off the left edge so it
+     never reserves width or pushes content off-screen; `.open` slides it in
+     above the scrim. */
+  @media (max-width: 767px) {
+    .sidebar {
+      position: fixed;
+      top: 0;
+      bottom: 0;
+      left: 0;
+      z-index: var(--z-overlay);
+      transform: translateX(-100%);
+      box-shadow: var(--shadow-overlay);
+      transition: transform var(--motion-normal) var(--ease-out);
+    }
+    .sidebar.open {
+      transform: translateX(0);
+    }
   }
   .brand {
     display: flex;

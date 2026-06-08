@@ -13,9 +13,18 @@
 // side-effecting init below runs at module-eval time, awaited via a shared promise
 // so the SSE route + loaders can observe the startup result without racing it.
 
+import { env } from '$env/dynamic/private';
 import { initDbFromEnv, tryGetDb, type DbInitResult } from '$lib/server/db/runtime-init';
 import { getEventBus, watchTable, type DbSourceHandle } from '$lib/server/events';
 import { bootstrapControlPlane, type ListenerSpec } from '$lib/server/config/loopback';
+
+// Runtime env source (TASK 6.8). SvelteKit's `$env/dynamic/private` loads `.env` in
+// BOTH dev SSR (which Vite does NOT inject into `process.env`) and the prod Node
+// adapter, falling through to `process.env`. Reading the boot config from here — not
+// bare `process.env` — is what makes a plain `npm run dev` (no shell-exported env)
+// boot CONNECTED instead of degrading on a missing SURREAL_WS. The test harness is
+// unaffected: tests call the pure resolvers with explicit env objects, and
+// runtime-init.ts keeps its `process.env` default for non-SSR callers.
 
 // ── D-025 control-plane: loopback gate + per-boot token (TASK 6.1) ───────────────
 //
@@ -31,8 +40,8 @@ import { bootstrapControlPlane, type ListenerSpec } from '$lib/server/config/loo
 /** The listeners the D-025 startup gate asserts are loopback. Hosts come from env
  *  (SvelteKit HOST + the loopback service urls), defaulting to 127.0.0.1. */
 function bootListeners(): ListenerSpec[] {
-	const svelteHost = (process.env.HOST || '127.0.0.1').trim();
-	const sveltePort = Number((process.env.PORT || '5173').trim()) || 5173;
+	const svelteHost = (env.HOST || '127.0.0.1').trim();
+	const sveltePort = Number((env.PORT || '5173').trim()) || 5173;
 	const hostOf = (url: string | undefined, fallback: string): string => {
 		if (!url) return fallback;
 		try {
@@ -43,8 +52,8 @@ function bootListeners(): ListenerSpec[] {
 	};
 	return [
 		{ name: 'sveltekit', host: svelteHost, port: sveltePort },
-		{ name: 'surrealdb', host: hostOf(process.env.SURREAL_WS, '127.0.0.1'), port: 8000 },
-		{ name: 'ollama', host: hostOf(process.env.OLLAMA_HOST, '127.0.0.1'), port: 11434 }
+		{ name: 'surrealdb', host: hostOf(env.SURREAL_WS, '127.0.0.1'), port: 8000 },
+		{ name: 'ollama', host: hostOf(env.OLLAMA_HOST, '127.0.0.1'), port: 11434 }
 	];
 }
 
@@ -52,12 +61,14 @@ function bootListeners(): ListenerSpec[] {
  *  (fail-closed) if any listener is routable — the process must not boot. */
 function bootstrapControlPlaneEnv(): void {
 	const cp = bootstrapControlPlane(bootListeners());
-	// Surface the token to THIS process so the hook ingest endpoint authorizes against
-	// it (D-025). Respect an operator-provided token if one is already set.
-	if (!process.env.HOOK_TOKEN?.trim()) process.env.HOOK_TOKEN = cp.token;
-	if (!process.env.HOOK_URL?.trim()) {
-		const host = process.env.HOST?.trim() || '127.0.0.1';
-		const port = process.env.PORT?.trim() || '5173';
+	// Surface the token to THIS process's `process.env` so the hook ingest endpoint
+	// authorizes against it AND a spawned hook-proxy (which inherits process env) sees
+	// it (D-025). Reads consult `env` ($env/dynamic/private) so an operator value set
+	// in `.env` — not just a shell export — is respected.
+	if (!env.HOOK_TOKEN?.trim()) process.env.HOOK_TOKEN = cp.token;
+	if (!env.HOOK_URL?.trim()) {
+		const host = env.HOST?.trim() || '127.0.0.1';
+		const port = env.PORT?.trim() || '5173';
 		process.env.HOOK_URL = `http://${host}:${port}`;
 	}
 	console.log('[startup] control-plane: loopback gate passed; per-boot HOOK_TOKEN minted (D-025).');
@@ -81,7 +92,9 @@ async function bootstrap(): Promise<DbInitResult> {
 	// before anything opens a connection. Fail-closed on a routable bind (throws).
 	bootstrapControlPlaneEnv();
 
-	const result = await initDbFromEnv();
+	// Read the connection params from `$env/dynamic/private` (loaded from `.env` in dev
+	// SSR + prod) — NOT bare `process.env`, which Vite dev SSR leaves empty (TASK 6.8).
+	const result = await initDbFromEnv(env);
 	if (!result.connected) {
 		// Honest degraded boot (D-019): log once, keep serving disconnected states.
 		console.warn(`[startup] DB not connected — ${result.reason ?? 'unknown'}. Serving disconnected.`);

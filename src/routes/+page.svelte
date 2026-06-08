@@ -1,8 +1,25 @@
 <script lang="ts">
   /**
-   * Home — minimal scaffold so the design-system tokens visibly resolve.
-   * Honest states: no fabricated metrics (F-008). Real data lands at 1.5.
+   * Home — portfolio overview (UI-SPEC §6). Renders LIVE counts from the DB
+   * (F-008 — no fabricated metrics); unknown values render as "—" when the DB is
+   * disconnected (honest states, §1.3). Live by default: a project row change on
+   * the one SSE stream re-invalidates the loader. Svelte 5 runes only.
    */
+  import { invalidate } from '$app/navigation';
+  import { stream } from '$lib/client/stream.svelte';
+  import type { PageData } from './$types';
+
+  let { data }: { data: PageData } = $props();
+
+  const connected = $derived(data.connected);
+  const projectCount = $derived(data.projectCount);
+
+  $effect(() => {
+    const off = stream.onDbChange('project', () => {
+      void invalidate('app:projects');
+    });
+    return off;
+  });
 </script>
 
 <section class="home">
@@ -10,20 +27,32 @@
     <span class="eyebrow">portfolio</span>
     <h1 class="title">Dashboard</h1>
     <p class="lede">
-      Scaffold online. Design-system tokens resolved — sidebar, top bar, and
-      status bar shells render. Live data wires in at task 1.5.
+      At-a-glance health of the portfolio and engine. Live from the database over
+      one event stream — no manual refresh.
     </p>
   </header>
 
-  <div class="card">
-    <div class="card-head">
-      <span class="eyebrow">status</span>
+  <div class="metrics">
+    <div class="card metric">
+      <span class="eyebrow">projects</span>
+      <span class="metric-value tnum mono" data-unknown={projectCount === null}>
+        {projectCount ?? '—'}
+      </span>
+      <span class="metric-foot">
+        {connected ? 'under management' : 'database disconnected'}
+      </span>
     </div>
-    <p class="card-body">
-      No projects yet — register one. <span class="mono">CODE_ROOT</span> scan
-      and the SSE stream are not wired in this foundation scaffold.
-    </p>
   </div>
+
+  {#if !connected}
+    <div class="card state">
+      <span class="eyebrow">disconnected</span>
+      <p class="state-body">
+        The database is not connected — metrics show <span class="mono">—</span>
+        instead of a fabricated number. Start SurrealDB and reload.
+      </p>
+    </div>
+  {/if}
 </section>
 
 <style>
@@ -47,17 +76,45 @@
     color: var(--color-text-muted);
     max-width: 60ch;
   }
+  .mono {
+    font-family: var(--font-mono, ui-monospace, monospace);
+  }
+  .metrics {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+    gap: var(--space-4, 1rem);
+  }
   .card {
     background: var(--color-surface-card);
-    border: var(--border-width) solid var(--color-border);
-    border-radius: var(--radius-md);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-md, 10px);
     box-shadow: var(--shadow-card);
-    padding: var(--pad-card);
+    padding: var(--pad-card, 1rem);
+  }
+  .metric {
     display: flex;
     flex-direction: column;
-    gap: var(--space-3);
+    gap: var(--space-2, 0.5rem);
   }
-  .card-body {
+  .metric-value {
+    font-size: var(--text-3xl, 2rem);
+    font-weight: 600;
+    color: var(--color-text);
+    line-height: 1;
+  }
+  .metric-value[data-unknown='true'] {
+    color: var(--color-text-muted);
+  }
+  .metric-foot {
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
+  }
+  .state {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  .state-body {
     font: var(--type-body-sm);
     color: var(--color-text-2);
   }

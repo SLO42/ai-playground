@@ -3,16 +3,29 @@
   import Sidebar from '$lib/components/shell/Sidebar.svelte';
   import Topbar from '$lib/components/shell/Topbar.svelte';
   import Statusbar from '$lib/components/shell/Statusbar.svelte';
+  import { stream } from '$lib/client/stream.svelte';
   import { page } from '$app/state';
 
   let { children } = $props();
   const pathname = $derived(page.url.pathname);
+
+  // Breadcrumb from the path (UI-SPEC §3). Root → "Home".
+  const breadcrumb = $derived(
+    pathname === '/' ? 'Home' : pathname.split('/').filter(Boolean).join(' / ')
+  );
+
+  // Open the one SSE stream once, in the browser only ($effect never runs on the
+  // server). The Topbar/Statusbar read `stream.connection` reactively (D-019).
+  $effect(() => {
+    stream.start();
+    return () => stream.stop();
+  });
 </script>
 
 <div class="shell">
   <Sidebar {pathname} />
   <div class="shell-main">
-    <Topbar />
+    <Topbar {breadcrumb} connection={stream.connection} />
     <main class="content">
       {@render children?.()}
     </main>

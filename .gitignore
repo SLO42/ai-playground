@@ -29,6 +29,11 @@ dist/
 *.ttf
 *.otf
 
+# Playwright e2e output
+/test-results/
+/playwright-report/
+/.playwright/
+
 # Throwaway spike artifacts
 /spikes/**/node_modules/
 /spikes/.data/

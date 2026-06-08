@@ -124,6 +124,19 @@ Notation per task: **[module(s)]** · *(deps)* · `verify` · (decision refs). �
 
 **v1.1 exit:** creating a task auto-composes the task-appropriate toolkit (skills/agents/MCP) into the driven Claude Code session — "use all the tools" is automatic, isolated, and gated.
 
+### v1.2 — UI completeness & boot ergonomics (from the 2026-06-08 live browser audit)
+
+The backend + runtime are complete and proven live; the **live-browser audit surfaced that the UI is largely read-only shells, the app doesn't boot to a live state out of the box, and several UI-SPEC screens are unbuilt.** Remediation (severity-ordered; each verify-gated, prefer a real agent-browser smoke against the running dev server):
+- **6.1 [BLOCKER] boot & env →** **[scripts, config, db]** — a `npm run db:up`/dev-boot entry point that spawns the provisioned `SurrealServer` (loopback) + runs `runMigrations(schemaMigrations)`; a COMPLETE `.env.example` (SURREAL_WS/NS/DB/USER/PASS defaults + HOOK_TOKEN + CLAUDE_CODE_OAUTH_TOKEN) the operator copies to `.env`; mint + surface the per-boot control-plane token (D-025) and wire `HOOK_TOKEN` so the hook→`agent_event` pipeline is live. Fix DEVELOPMENT.md to match real scripts. `verify: a fresh checkout → documented commands → app serves CONNECTED (not degraded) with migrations applied`.
+- **6.2 [HIGH] Job-1 scan/register UI →** **[routes/projects]** — a register/scan form action on `/projects` calling the built `scanProject`/`createProject`. `verify: scanning a real dir under CODE_ROOT from the UI creates a project row + it appears live`.
+- **6.3 [HIGH] responsive app shell →** **[routes/+layout, shell]** — breakpoints; sidebar collapses to a drawer/hamburger; usable at 375px. `verify: no horizontal overflow / off-screen content at 375px`.
+- **6.4 [HIGH] `/projects/[id]` detail →** **[routes/projects/[id]]** — project detail (plan/sessions/release tabs); project cards link to it. `verify: a project card navigates to a working detail page (no 404)`.
+- **6.5 [MED] SSE prime + heartbeat →** **[events]** — `sseStream` enqueues an initial `: ready` frame + periodic heartbeat so `EventSource.onopen` fires immediately. `verify: the connection indicator reads "live" on load before any DB change`.
+- **6.6 [MED] build `/memory` (§43) + `/workflows` (§47) →** **[routes]** — the two unbuilt UI-SPEC screens over their existing backends (memory recall/graph; workflow_run list/detail). `verify: both routes load live data + honest empty states`.
+- **6.7 [MED] action-wire Jobs 8/9/10 →** **[routes]** — session launch/stream/interject/stop controls (Job 8), CC config sync/edit (Job 9), release/workflow run triggers (Job 10) — UI entry points to the already-built backends. `verify: each job is initiable from the UI and reflects live`.
+
+**v1.2 exit:** a fresh checkout boots to a connected live app; every PRODUCT §4 job is reachable + functional from the UI; all UI-SPEC screens exist; responsive; SSE indicator honest.
+
 ---
 
 ## 5. Foundational layer ordering (the spine — strict)

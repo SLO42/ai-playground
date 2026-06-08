@@ -297,6 +297,9 @@ DEFINE FIELD updated_at ON memory TYPE datetime DEFAULT time::now();
 -- HNSW vector index. DIMENSION must match the embedding model.
 -- 1024-dim — D-014 🟡: `bge-m3` (default) or `qwen3-embedding:0.6b` (cannibalize-validated); both 1024-dim so the index is unaffected.
 -- DIST COSINE for normalized text embeddings.
+-- NEVER author `M0` — it is not a valid DDL clause in 2.x. (The engine DERIVES a layer-0
+-- connection count and ECHOES it as `M0 24` in `INFO FOR TABLE`; that echo is valid and
+-- expected. Migration tests assert "no AUTHORED M0" — scan the DDL source, not the INFO echo.)
 DEFINE INDEX memory_vec ON memory FIELDS embedding
   HNSW DIMENSION 1024 DIST COSINE TYPE F32 EFC 150 M 12;
 
@@ -594,15 +597,24 @@ DEFINE INDEX work_item_dedup ON work_item FIELDS dedup_key UNIQUE;
 DEFINE INDEX work_item_by_status_priority ON work_item FIELDS status, priority;
 ```
 
-**Atomic claim** (one worker wins the row; the `claim_token IS NONE` guard prevents double-claim):
+**Atomic claim** (one worker wins the row; the `claim_token IS NONE` guard prevents double-claim).
+SurrealDB 2.6.5 **rejects `UPDATE … ORDER BY …`** (`Unexpected token ORDER`), so priority-order
+the candidate first in a `SELECT`, then claim that specific id under the guard — the
+record-targeted `WHERE claim_token IS NONE` makes the write atomic (surrealkv isolation;
+**proven single-winner in S0**), so only one concurrent worker's UPDATE returns a row:
 ```sql
-UPDATE work_item
-  SET claim_token = $t, status = "processing", attempts += 1
+-- 1. pick the highest-priority unclaimed candidate (read; ORDER BY is legal in SELECT)
+LET $next = (SELECT id FROM work_item
   WHERE status = "pending" AND claim_token IS NONE
-  ORDER BY priority ASC
-  LIMIT 1
+  ORDER BY priority ASC LIMIT 1)[0].id;
+-- 2. claim THAT id under the guard — atomic compare-and-set; returns [] to every loser
+UPDATE $next
+  SET claim_token = $t, status = "processing", attempts += 1
+  WHERE claim_token IS NONE
   RETURN AFTER;
 ```
+> Task 2.15 author: use this SELECT-then-claim-by-id form, **not** `UPDATE…ORDER BY`. If the
+> claim returns `[]` (lost the race / token re-set), re-`SELECT` the next candidate and retry.
 
 ### 4.13 Retrieval outcomes (D-022 groundwork)
 

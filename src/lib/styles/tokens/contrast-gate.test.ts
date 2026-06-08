@@ -23,7 +23,7 @@ import {
   gatePairs,
   evaluatePair,
   findBannedOutline
-} from './contrast-gate.ts';
+} from './contrast-gate';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 

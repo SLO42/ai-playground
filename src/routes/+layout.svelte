@@ -4,10 +4,17 @@
   import Topbar from '$lib/components/shell/Topbar.svelte';
   import Statusbar from '$lib/components/shell/Statusbar.svelte';
   import { stream } from '$lib/client/stream.svelte';
+  import { invalidate } from '$app/navigation';
   import { page } from '$app/state';
+  import type { Snippet } from 'svelte';
+  import type { LayoutData } from './$types';
 
-  let { children } = $props();
+  let { children, data }: { children?: Snippet; data: LayoutData } = $props();
   const pathname = $derived(page.url.pathname);
+
+  // Live shell tickers (TASK 7.1): real values from the layout loader, served over the
+  // one SSE stream. Honest "—" sentinels (null) flow straight through to the components.
+  const shell = $derived(data.shell);
 
   // Breadcrumb from the path (UI-SPEC §3). Root → "Home".
   const breadcrumb = $derived(
@@ -31,6 +38,17 @@
     stream.start();
     return () => stream.stop();
   });
+
+  // Live shell tickers (TASK 7.1): re-invalidate the layout load whenever a row that
+  // moves a ticker changes — a session starting/ending (running-agent count), an
+  // agent_event landing (today's tokens/cost), or a service health flip. All over the
+  // ONE SSE stream (§2.11). The loader recomputes from real rows; no fabrication.
+  $effect(() => {
+    const offs = ['session', 'agent_event', 'service'].map((table) =>
+      stream.onDbChange(table, () => void invalidate('app:shell'))
+    );
+    return () => offs.forEach((off) => off());
+  });
 </script>
 
 <div class="shell" class:nav-open={navOpen}>
@@ -47,6 +65,8 @@
   <div class="shell-main">
     <Topbar
       {breadcrumb}
+      mode={shell.mode}
+      runningAgents={shell.runningAgents}
       connection={stream.connection}
       navOpen={navOpen}
       ontoggleNav={() => (navOpen = !navOpen)}
@@ -54,7 +74,13 @@
     <main class="content">
       {@render children?.()}
     </main>
-    <Statusbar />
+    <Statusbar
+      services={shell.services}
+      activeAgents={shell.runningAgents}
+      tokensToday={shell.tokensToday}
+      costToday={shell.costToday}
+      mode={shell.mode}
+    />
   </div>
 </div>
 

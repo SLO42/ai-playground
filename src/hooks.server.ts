@@ -79,8 +79,9 @@ function bootstrapControlPlaneEnv(): void {
  *  rollups and the live fleet/cost ticker (UI-SPEC §229/§230) update in place as
  *  agent_event / routing_event rows arrive — over the ONE SSE stream (§2.11).
  *  3.1 adds security_finding so the /reports Maintain rollup updates in place as a
- *  scan writes findings (UI-SPEC §207/§315). */
-const WATCHED_TABLES = ['project', 'task', 'session', 'agent_event', 'routing_event', 'security_finding'] as const;
+ *  scan writes findings (UI-SPEC §207/§315). 7.1 adds `service` so the always-visible
+ *  Statusbar service-health token updates live as a service row flips state (UI-SPEC §3). */
+const WATCHED_TABLES = ['project', 'task', 'session', 'agent_event', 'routing_event', 'security_finding', 'service'] as const;
 
 const watchers: DbSourceHandle[] = [];
 

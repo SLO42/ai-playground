@@ -1,19 +1,23 @@
 <script lang="ts">
   /**
-   * Topbar — breadcrumb · live-status pill · command-palette · connection state
-   * (UI-SPEC §3). Placeholder; live wiring lands with the SSE stream (1.5/2.1).
-   * Connection state defaults to `unknown` — honest states are first-class,
-   * never fabricate a "live" badge before a stream exists (F-008).
+   * Topbar — breadcrumb · live-status pill (mode + running-agent count) ·
+   * connection state (UI-SPEC §3). Wired to LIVE data via the root layout
+   * (+layout.server.ts) over the one SSE stream. Connection + counts are honest
+   * states — never fabricate a "live" badge or an agent count before a real
+   * source exists (F-008); `runningAgents` null ⇒ "—".
    */
   let {
     breadcrumb = 'Home',
     mode = 'manual',
+    runningAgents = null,
     connection = 'unknown',
     navOpen = false,
     ontoggleNav
   }: {
     breadcrumb?: string;
     mode?: 'event' | 'periodic' | 'manual';
+    /** Live count of running sessions; null ⇒ unknown ⇒ "—". */
+    runningAgents?: number | null;
     connection?: 'live' | 'reconnecting' | 'offline' | 'unknown';
     // task 6.3: hamburger toggle, only shown at narrow viewports.
     navOpen?: boolean;
@@ -39,6 +43,9 @@
     <span class="pill" data-mode={mode}>
       <span class="eyebrow">mode</span>
       <span class="mono">{mode}</span>
+      <span class="sep" aria-hidden="true">·</span>
+      <span class="eyebrow">agents</span>
+      <span class="mono tnum">{runningAgents ?? '—'}</span>
     </span>
     <span class="conn" data-conn={connection} aria-label={`connection ${connection}`}>
       <span class="conn-dot"></span>
@@ -136,6 +143,9 @@
     border-radius: var(--radius-pill);
     font-size: var(--text-xs);
     color: var(--color-text-muted);
+  }
+  .pill .sep {
+    opacity: 0.5;
   }
   .conn {
     display: inline-flex;

@@ -10,6 +10,7 @@ import {
 	detectAnomalies,
 	buildReportSummary,
 	buildTierUsage,
+	buildShellMetrics,
 	type DailyRollup
 } from './rollup';
 
@@ -174,5 +175,34 @@ describe('buildReportSummary / buildTierUsage (DB-backed; F-008)', () => {
 		expect(opus!.runs).toBe(1); // one spawn
 		expect(opus!.tokensIn).toBe(200);
 		expect(opus!.costUsd).toBeCloseTo(0.05, 5);
+	});
+
+	// TASK 7.1 — shell tickers: real counts, no fabrication (F-008).
+	it('builds shell metrics from real rows (today tokens/cost, running agents)', async () => {
+		const m = await buildShellMetrics(db);
+		// Seeded completion carried 200 in + 80 out = 280 tokens, priced at $0.05.
+		expect(m.tokensToday).toBe(280);
+		expect(m.costToday).toBeCloseTo(0.05, 5);
+		// No `session` rows were seeded → honest zero running agents (not a fake number).
+		expect(m.runningAgents).toBe(0);
+	});
+
+	it('leaves cost null when no priced run exists today (no fake $0)', async () => {
+		// Fresh isolated DB in the same namespace: only an UNPRICED spawn → tokens 0,
+		// cost stays null (F-008 — never a fabricated $0).
+		const fresh = await Db.connect({
+			url: tdb.wsUrl,
+			username: tdb.root.username,
+			password: tdb.root.password,
+			namespace: tdb.namespace,
+			database: `shell_unpriced_${Date.now()}`
+		});
+		await runMigrations(fresh, schemaMigrations);
+		await writeAgentEvent(fresh, { type: 'spawn' });
+		const m = await buildShellMetrics(fresh);
+		expect(m.tokensToday).toBe(0);
+		expect(m.costToday).toBeNull(); // F-008: never a fabricated $0
+		expect(m.runningAgents).toBe(0);
+		await fresh.close().catch(() => {});
 	});
 });

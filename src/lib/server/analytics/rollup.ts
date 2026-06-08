@@ -366,3 +366,56 @@ export async function buildTierUsage(db: Db, opts: RollupOptions = {}): Promise<
 		}))
 		.sort((a, b) => b.runs - a.runs);
 }
+
+// ── Shell tickers (Statusbar/Topbar always-on awareness strip, UI-SPEC §3) ─────────
+//
+// The always-visible shell shows: running agents · today's tokens · today's cost. These
+// are the live counters the operator glances at on EVERY screen, so they MUST be REAL
+// (F-008) — a count from real `session`/`agent_event` rows, or an honest null → "—" when
+// the figure has no real source yet (e.g. no priced run ⇒ cost stays null, never a fake $0).
+//
+// "running agents" = sessions whose status is exactly 'running' (the same liveness source
+// the fleet grid uses — §199, never agent_slot.busy). "today" = the current UTC day, the
+// same day bucket the daily rollup uses, so the ticker and /reports agree.
+
+/** The live shell counters (all from real rows; null ⇒ render "—", never a fake number). */
+export interface ShellMetrics {
+	/** Sessions with status='running' right now (live agent count). */
+	runningAgents: number;
+	/** Σ (tokens_in + tokens_out) across today's agent_event rows. */
+	tokensToday: number;
+	/** Σ cost_usd across today's PRICED rows; null when none were priced (never a fake $0). */
+	costToday: number | null;
+}
+
+/**
+ * Read the live shell tickers from REAL rows (F-008). One round-trip, two cheap reads:
+ *   • running-agent count   — COUNT(session WHERE status='running')
+ *   • today's token + cost   — Σ over agent_event rows whose `at` is in the current UTC day
+ * Cost stays null until a priced row appears in the window (we never dress an unpriced
+ * day as $0). The current-day window binds via $since so the scan is bounded to today.
+ */
+export async function buildShellMetrics(db: Db): Promise<ShellMetrics> {
+	// Start of the current UTC day (matches dayKey's UTC bucketing so the ticker == /reports).
+	const startOfDay = new Date();
+	startOfDay.setUTCHours(0, 0, 0, 0);
+
+	const [running, todays] = await db.query<[Array<{ c: number }>, RawEvent[]]>(
+		`SELECT count() AS c FROM session WHERE status = 'running' GROUP ALL;
+		 SELECT type, at, tokens_in, tokens_out, cost_usd FROM agent_event
+		   WHERE at >= $since LIMIT 50000;`,
+		{ since: startOfDay }
+	);
+
+	const runningAgents = running?.[0]?.c ?? 0;
+
+	let tokensToday = 0;
+	let costToday: number | null = null;
+	for (const ev of todays ?? []) {
+		if (typeof ev.tokens_in === 'number') tokensToday += ev.tokens_in;
+		if (typeof ev.tokens_out === 'number') tokensToday += ev.tokens_out;
+		if (typeof ev.cost_usd === 'number') costToday = (costToday ?? 0) + ev.cost_usd;
+	}
+
+	return { runningAgents, tokensToday, costToday };
+}

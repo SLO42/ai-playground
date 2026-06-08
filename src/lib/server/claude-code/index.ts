@@ -13,3 +13,18 @@ export {
 	type SlotTier,
 	type AgentSlotRow
 } from './slots';
+
+// TASK 1.4a — PRIMARY safety guardrail (D-024/D-018): seed per-project
+// .claude/settings.json deny rules + explicit cwd BEFORE any agent spawns, and the
+// server-independent fail-closed path-confinement resolver.
+export {
+	buildGuardrailSettings,
+	writeProjectGuardrails,
+	resolveConfinedTarget,
+	PathConfinementError,
+	CONFIG_PROTECTION_DENY,
+	DANGEROUS_BASH_DENY,
+	GUARDRAIL_SETTINGS_VERSION,
+	type GuardrailInput,
+	type GuardrailSettings
+} from './guardrails';

@@ -38,3 +38,13 @@ export {
 	type ClaimedItem,
 	type WorkStatus
 } from './workqueue';
+
+export {
+	maybeEnqueueReview,
+	countChangedFiles,
+	DEFAULT_REVIEW_THRESHOLD,
+	type ReviewDecision,
+	type ReviewDecisionInput,
+	type ReviewDecisionOptions,
+	type CountChangedOptions
+} from './review';

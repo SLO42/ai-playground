@@ -589,6 +589,50 @@ const m0017_transcript_flexible: Migration = {
 	`
 };
 
+// ── §4.12 fix — FLEXIBLE work_item object fields (TASK 2.2) ──────────────────────
+//
+// Same SCHEMAFULL `TYPE object` defect class as 0016/0017: a free-form object WITHOUT
+// `FLEXIBLE` stores `{}` — all nested keys stripped on write (SurrealDB 2.x). The
+// orchestrator's work_item rows carry arbitrary-shape JSON in two columns:
+//   • payload — e.g. { taskId, projectId } the worker needs to run the item
+//   • handoff — cross-worker handoff state (D-021 crash recovery)
+// Without FLEXIBLE the claim queue would claim rows whose payload silently round-trips
+// to {} — the worker would have no taskId to spawn. OVERWRITE both as FLEXIBLE.
+// Additive + idempotent (OVERWRITE re-applies cleanly).
+const m0018_work_item_flexible: Migration = {
+	id: '0018_work_item_flexible',
+	up: `
+		DEFINE FIELD OVERWRITE payload ON work_item FLEXIBLE TYPE object;
+		DEFINE FIELD OVERWRITE handoff ON work_item FLEXIBLE TYPE option<object>;
+	`
+};
+
+// ── §4.12 fix — dedup_scope so multiple session-less items of one work_type coexist ──
+//
+// The original dedup_key (work_type|session|status) over-collapses work_types that have
+// NO session: e.g. two task_run items (no session at enqueue) both compute
+// `task_run||processing` once claimed → a UNIQUE violation that prevents more than ONE
+// such item being processed at a time (breaking the orchestrator's interactive cap of
+// N>1). The active-window dedup intent (D-008) for these is per-UNIT (per task), not
+// global-per-work_type. Add an explicit `dedup_scope` (DEFAULT '' so session-keyed
+// items are unchanged) and fold it into the key: work_type|session|dedup_scope|status.
+// The orchestrator sets dedup_scope = the task id for task_run, so different tasks get
+// distinct keys (coexist) while a re-enqueue of the SAME pending task still dedups.
+const m0019_work_item_dedup_scope: Migration = {
+	id: '0019_work_item_dedup_scope',
+	up: `
+		DEFINE FIELD dedup_scope ON work_item TYPE string DEFAULT "";
+		-- Coalesce dedup_scope with '' INSIDE the VALUE: a computed VALUE field evaluates
+		-- before the column DEFAULT is applied, so an enqueue that omits dedup_scope would
+		-- otherwise feed NONE into the '+' and throw ("Cannot perform addition … NONE").
+		-- <string>(dedup_scope OR '') is null-safe regardless of DEFAULT timing.
+		DEFINE FIELD OVERWRITE dedup_key ON work_item VALUE
+			(IF status IN ["pending","processing"]
+				THEN work_type + '|' + <string>(session OR '') + '|' + <string>(dedup_scope OR '') + '|' + status
+				ELSE <string>id END);
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -612,5 +656,7 @@ export const schemaMigrations: Migration[] = [
 	m0014_skill_causal,
 	m0015_embedding_cache,
 	m0016_cc_flexible,
-	m0017_transcript_flexible
+	m0017_transcript_flexible,
+	m0018_work_item_flexible,
+	m0019_work_item_dedup_scope
 ];

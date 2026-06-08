@@ -1,0 +1,109 @@
+/* ============================================================================
+   ai-playground v2 — COLOR TOKENS
+   Dark-first, status-bearing. The operator's palette (teal/slate) maps onto the
+   UI-SPEC §4 color roles. Status hues stay semantically distinct; color is
+   ALWAYS paired with an icon/label (never color-only) per UI-SPEC §9.
+   ============================================================================ */
+
+:root {
+  /* ---- Brand palette (the operator-supplied seed) ---------------------- */
+  --muted-teal:       #8ab0ab;   /* hsl(172 19% 62%) — accent / muted text  */
+  --charcoal-blue:    #3e505b;   /* hsl(203 19% 30%) — strong border / slate */
+  --dark-slate-grey:  #26413c;   /* hsl(169 26% 20%) — subtle border        */
+  --carbon-black:     #1a1d1a;   /* hsl(120  5% 11%) — neutral dark         */
+  --onyx:             #03120e;   /* hsl(164 71%  4%) — deepest app bg        */
+
+  /* ---- Derived dark teal surface ramp (onyx → raised) ------------------ */
+  --teal-950: #03120e;  /* onyx                     */
+  --teal-900: #071914;  /* app chrome / inset       */
+  --teal-850: #0b201a;  /* panel                    */
+  --teal-800: #102822;  /* card / surface           */
+  --teal-750: #16322b;  /* raised / popover         */
+  --teal-700: #1d3d35;  /* overlay / hover surface  */
+  --teal-650: #26413c;  /* dark-slate-grey          */
+  --teal-600: #32524a;  /* selected surface         */
+
+  /* ---- Neutral text ramp (cool, slightly teal) ------------------------- */
+  --ink-50:  #eef3f1;   /* primary text on dark     */
+  --ink-200: #c3d0cc;   /* high-emphasis secondary  */
+  --ink-400: #93a7a2;   /* muted text               */
+  --ink-500: #6f857f;   /* subtle / disabled label  */
+  --ink-600: #51635e;   /* faint dividers, hints    */
+
+  /* ---- Accent (muted-teal, brightened for action) --------------------- */
+  --accent-bright: #a6c9c2;  /* hover / active accent  */
+  --accent:        #8ab0ab;  /* primary accent         */
+  --accent-dim:    #5a7f78;  /* pressed / muted accent */
+  --accent-faint:  #16302a;  /* accent-tinted surface  */
+
+  /* ---- Status hues (load-bearing, UI-SPEC §4) ------------------------- */
+  --running-500:  #3fb6ac;  --running-faint:  #0f2b29;  /* cyan-teal, animated  */
+  --success-500:  #5fb87a;  --success-faint:  #122a1c;  /* green                */
+  --warn-500:     #d6a44e;  --warn-faint:     #2c2310;  /* amber                */
+  --error-500:    #e0655f;  --error-faint:    #2e1413;  /* red                  */
+  --info-500:     #5e9bd6;  --info-faint:     #11202e;  /* blue                 */
+  --blocked-500:  #cf7a45;  --blocked-faint:  #2c1a0f;  /* rust — own role      */
+  --neutral-500:  #7c918b;  --neutral-faint:  #1a2420;  /* slate / idle         */
+
+  /* ---- Agent-tier accents (cheap → powerful escalation ramp) ----------- */
+  --tier-local:   #7c918b;  /* slate  — local gpt-oss */
+  --tier-haiku:   #5e9bd6;  /* blue   — Haiku         */
+  --tier-sonnet:  #3fb6ac;  /* teal   — Sonnet        */
+  --tier-opus:    #d8b76a;  /* gold   — Opus          */
+
+  /* ========================================================================
+     SEMANTIC ALIASES — components reference these, not the raw ramps above.
+     ======================================================================== */
+
+  /* Surfaces */
+  --color-bg:             var(--teal-950);   /* app background          */
+  --color-bg-inset:       var(--teal-900);   /* wells, code blocks      */
+  --color-surface:        var(--teal-850);   /* panels                  */
+  --color-surface-card:   var(--teal-800);   /* cards                   */
+  --color-surface-raised: var(--teal-750);   /* popovers, modals        */
+  --color-surface-overlay:var(--teal-700);   /* hover surface           */
+  --color-surface-selected:var(--accent-faint);
+
+  /* Borders */
+  --color-border:         var(--dark-slate-grey);  /* subtle hairline   */
+  --color-border-strong:  var(--charcoal-blue);    /* emphasised        */
+  --color-border-faint:   #112721;                 /* barely-there      */
+  --color-focus-ring:     var(--accent-bright);
+
+  /* Text */
+  --color-text:         var(--ink-50);
+  --color-text-2:       var(--ink-200);
+  --color-text-muted:   var(--ink-400);
+  --color-text-subtle:  var(--ink-500);
+  --color-text-faint:   var(--ink-600);
+  --color-text-inverse: var(--onyx);
+  --color-text-accent:  var(--accent-bright);
+  --color-text-link:    var(--accent-bright);
+
+  /* Accent (primary actions / active nav) */
+  --color-accent:        var(--accent);
+  --color-accent-hover:  var(--accent-bright);
+  --color-accent-active: var(--accent-dim);
+  --color-accent-muted:  var(--accent-faint);
+  --color-on-accent:     var(--onyx);          /* text on a filled accent button */
+
+  /* Status (paired with icon/label everywhere) */
+  --color-running: var(--running-500);  --color-running-bg: var(--running-faint);
+  --color-success: var(--success-500);  --color-success-bg: var(--success-faint);
+  --color-warn:    var(--warn-500);     --color-warn-bg:    var(--warn-faint);
+  --color-error:   var(--error-500);    --color-error-bg:   var(--error-faint);
+  --color-info:    var(--info-500);     --color-info-bg:    var(--info-faint);
+  --color-blocked: var(--blocked-500);  --color-blocked-bg: var(--blocked-faint);
+  --color-neutral: var(--neutral-500);  --color-neutral-bg: var(--neutral-faint);
+
+  /* Agent tiers */
+  --color-tier-local:  var(--tier-local);
+  --color-tier-haiku:  var(--tier-haiku);
+  --color-tier-sonnet: var(--tier-sonnet);
+  --color-tier-opus:   var(--tier-opus);
+
+  /* Selection */
+  --color-selection-bg: #2a4a43;
+}
+
+::selection { background: var(--color-selection-bg); color: var(--color-text); }

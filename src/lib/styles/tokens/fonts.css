@@ -1,0 +1,26 @@
+/* ============================================================================
+   ai-playground v2 — WEBFONTS
+   Lastik (self-hosted, the operator's brand display/UI typeface) for sans/UI.
+   JetBrains Mono (Google) stays for code/ids/paths/transcripts/SurrealQL —
+   monospacing is functional there (alignment, tabular numerals).
+
+   D-034 license: Lastik font binaries MUST NOT be committed. They are
+   provisioned at build into an UNCOMMITTED `static/fonts/` (gitignored), and
+   referenced here at the served path `/fonts/*`. If absent, the
+   --font-sans fallback chain (system sans) resolves cleanly — no FOIT lockup.
+   ============================================================================ */
+
+/* JetBrains Mono is imported from the app.css entry (hoisted above Tailwind so
+   the bare @import stays spec-valid). This file carries only the Lastik
+   @font-face — the license-restricted binary (D-034) served from an
+   uncommitted static/fonts/ path. */
+
+@font-face {
+  font-family: 'Lastik';
+  src: url('/fonts/Lastik-Free.woff2') format('woff2'),
+       url('/fonts/Lastik-Free.woff') format('woff'),
+       url('/fonts/Lastik-Free.ttf') format('truetype');
+  font-weight: 100 900;
+  font-style: normal;
+  font-display: swap;
+}

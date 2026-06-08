@@ -7,15 +7,23 @@
    * default (§1.2): a `project` row change on the one SSE stream re-invalidates the
    * loader so the list updates in place — no manual refresh. Svelte 5 runes only.
    */
+  import { enhance } from '$app/forms';
   import { invalidate } from '$app/navigation';
   import { stream } from '$lib/client/stream.svelte';
-  import type { PageData } from './$types';
+  import type { ActionData, PageData } from './$types';
 
-  let { data }: { data: PageData } = $props();
+  let { data, form }: { data: PageData; form: ActionData } = $props();
 
   const projects = $derived(data.projects ?? []);
   const connected = $derived(data.connected);
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
+
+  // Register form: live submit state + honest result (error / registered) from the action.
+  let scanning = $state(false);
+  let pathInput = $state('');
+  const scanResult = $derived(form && 'scan' in form ? form.scan : undefined);
+  const scanError = $derived(scanResult && 'error' in scanResult ? scanResult.error : undefined);
+  const scanOk = $derived(scanResult && 'ok' in scanResult ? scanResult : undefined);
 
   // Live updates: when a `project` row changes, re-run the server loader. SSR-safe —
   // $effect runs only in the browser, and the handler is torn down on unmount.
@@ -46,6 +54,54 @@
       one by scanning a path under <span class="mono">CODE_ROOT</span>.
     </p>
   </header>
+
+  <form
+    class="card register"
+    method="POST"
+    action="?/scan"
+    use:enhance={() => {
+      scanning = true;
+      return async ({ update }) => {
+        // Keep the typed value on validation errors; clear it on a successful register.
+        await update({ reset: false });
+        scanning = false;
+      };
+    }}
+  >
+    <label class="field">
+      <span class="field-label">Register a project</span>
+      <span class="field-help"
+        >Scan a directory under <span class="mono">CODE_ROOT</span> to detect and register it.</span
+      >
+      <div class="field-row">
+        <input
+          class="input mono"
+          type="text"
+          name="path"
+          bind:value={pathInput}
+          placeholder="F:/code/my-project"
+          autocomplete="off"
+          spellcheck="false"
+          aria-label="Project directory path under CODE_ROOT"
+          aria-invalid={scanError ? 'true' : undefined}
+        />
+        <button class="btn" type="submit" disabled={scanning}>
+          {scanning ? 'Scanning…' : 'Scan & register'}
+        </button>
+      </div>
+    </label>
+
+    <div class="status-line" aria-live="polite">
+      {#if scanError}
+        <p class="msg error" role="alert">{scanError}</p>
+      {:else if scanOk}
+        <p class="msg ok">
+          Registered <span class="mono">{scanOk.name}</span> from
+          <span class="mono">{scanOk.root_path}</span>.
+        </p>
+      {/if}
+    </div>
+  </form>
 
   {#if !connected}
     <div class="card state">
@@ -206,5 +262,83 @@
   .purpose {
     font: var(--type-body-sm);
     color: var(--color-text-2);
+  }
+  .register {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+  }
+  .field-label {
+    font-weight: 600;
+    color: var(--color-text);
+  }
+  .field-help {
+    font: var(--type-body-sm);
+    color: var(--color-text-muted);
+  }
+  .field-row {
+    display: flex;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+  }
+  .input {
+    flex: 1 1 18rem;
+    min-width: 0;
+    font-size: 0.85rem;
+    color: var(--color-text);
+    background: var(--color-surface-overlay, var(--color-bg));
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.5rem 0.65rem;
+  }
+  .input:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+    border-color: var(--color-accent);
+  }
+  .input[aria-invalid='true'] {
+    border-color: var(--color-error);
+  }
+  .btn {
+    flex: 0 0 auto;
+    min-height: 2.25rem;
+    font-weight: 600;
+    font-size: 0.85rem;
+    color: var(--color-text-inverse, var(--color-bg));
+    background: var(--color-accent);
+    border: var(--border-width, 1px) solid var(--color-accent);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0 0.9rem;
+    cursor: pointer;
+    transition: opacity var(--motion-fast, 140ms) var(--ease-out, ease);
+  }
+  .btn:hover {
+    opacity: 0.9;
+  }
+  .btn:disabled {
+    opacity: 0.55;
+    cursor: progress;
+  }
+  .btn:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  .status-line {
+    min-height: 1.25rem;
+  }
+  .msg {
+    font: var(--type-body-sm);
+    margin: 0;
+  }
+  .msg.error {
+    color: var(--color-error);
+  }
+  .msg.ok {
+    color: var(--color-success, var(--color-running));
   }
 </style>

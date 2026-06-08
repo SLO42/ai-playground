@@ -1,7 +1,8 @@
 {
-  "name": "ai-playground-v2",
+  "name": "atelier",
   "version": "0.0.1",
   "private": true,
+  "description": "Atelier — a local-first project lifecycle platform and Claude Code harness: create, develop, maintain, and release projects across their whole lifecycle.",
   "type": "module",
   "engines": {
     "node": ">=24"

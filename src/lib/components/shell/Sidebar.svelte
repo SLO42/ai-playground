@@ -11,8 +11,7 @@
 
 <aside class="sidebar">
   <div class="brand">
-    <span class="brand-mark mono">ai-playground</span>
-    <span class="eyebrow">v2</span>
+    <span class="brand-mark mono">Atelier</span>
   </div>
   <nav class="nav">
     {#each groups as group (group.title)}

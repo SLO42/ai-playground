@@ -1,4 +1,4 @@
-# ai-playground v2 (build worktree)
+# Atelier (build worktree)
 
 This is the **v2 build worktree** (branch `v2`). The app is scaffolded here
 alongside `spikes/` (throwaway proofs) and `bin/` (provisioned binaries).

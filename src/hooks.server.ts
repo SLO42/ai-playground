@@ -17,6 +17,7 @@ import { env } from '$env/dynamic/private';
 import { initDbFromEnv, tryGetDb, type DbInitResult } from '$lib/server/db/runtime-init';
 import { getEventBus, watchTable, type DbSourceHandle } from '$lib/server/events';
 import { bootstrapControlPlane, type ListenerSpec } from '$lib/server/config/loopback';
+import { startOrchestrator, type Orchestrator } from '$lib/server/orchestrator';
 
 // Runtime env source (TASK 6.8). SvelteKit's `$env/dynamic/private` loads `.env` in
 // BOTH dev SSR (which Vite does NOT inject into `process.env`) and the prod Node
@@ -95,6 +96,14 @@ const WATCHED_TABLES = ['project', 'task', 'session', 'agent_event', 'routing_ev
 
 const watchers: DbSourceHandle[] = [];
 
+/**
+ * TASK 8.1 — the live orchestrator, started once at boot (event-driven, D-004/§2.11). Held at
+ * module scope so it is NOT garbage-collected for the life of the server process (its bus
+ * subscription is what drives task→ready → spawn). null when the DB is down or the Claude Code
+ * credential is absent (honest degraded boot — F-008): the dashboard still serves.
+ */
+let orchestrator: Orchestrator | null = null;
+
 /** The startup promise — loaders/routes can await it to know the DB state. */
 export const startup: Promise<DbInitResult> = bootstrap();
 
@@ -121,6 +130,29 @@ async function bootstrap(): Promise<DbInitResult> {
 			} catch (err) {
 				console.warn(`[startup] live query on "${table}" failed: ${(err as Error).message}`);
 			}
+		}
+
+		// TASK 8.1 — start the live orchestrator AFTER the watchTable live queries are open, so
+		// the events bus already carries `task` row changes when the orchestrator subscribes. It
+		// reacts to a task entering a spawn-ready status (task→ready) by enqueuing one work_item
+		// and draining → spawning a real Claude Code session, with NO manual launch. It is
+		// event-driven + idle-cheap (D-004/§2.11): subscriptions only, no poller, ~zero idle CPU,
+		// and it consumes the SAME bus (never its own live query — the no-double-fire guard). It
+		// skips honestly (started:false) when the Claude Code credential is absent (F-008) so the
+		// dashboard still boots; the queue then waits for a credentialed boot.
+		try {
+			const boot = await startOrchestrator(db, bus);
+			if (boot.started) {
+				orchestrator = boot.orchestrator;
+				console.log(
+					`[startup] orchestrator started (mode=${boot.mode}, maxConcurrent=${boot.maxConcurrent}) — task→ready auto-drives a session (D-004).`
+				);
+			} else {
+				console.warn(`[startup] orchestrator NOT started — ${boot.reason}`);
+			}
+		} catch (err) {
+			// A boot failure must never crash the server boot (D-019 honest degrade).
+			console.warn(`[startup] orchestrator boot failed: ${(err as Error).message}`);
 		}
 	}
 	return result;

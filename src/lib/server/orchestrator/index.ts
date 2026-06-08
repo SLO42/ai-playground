@@ -16,6 +16,10 @@ export {
 
 export { Semaphore, type Permit } from './semaphore';
 
+// TASK 8.1 — the live boot seam: build + start the orchestrator from hooks.server.ts
+// (event-driven, idle-cheap, bus-only — D-004/§2.11). Honest skip when no credential (F-008).
+export { startOrchestrator, type OrchestratorBootResult } from './boot';
+
 export {
 	runPostTask,
 	splitCommand,

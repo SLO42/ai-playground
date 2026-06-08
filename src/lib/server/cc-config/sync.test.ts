@@ -6,7 +6,7 @@ import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
-import { readCatalog, syncScope, syncState, type SyncScope } from './sync';
+import { catalogIds, readCatalog, syncScope, syncState, type SyncScope } from './sync';
 
 // TASK 1.8 VERIFY (D-010, DATA-MODEL §4.10; UI-SPEC §214/§313): config-sync mirrors
 // a project's .claude/ + .mcp.json into the cc_* tables, and the catalog read backs
@@ -85,6 +85,17 @@ describe('syncScope — disk → cc_* mirror (D-010)', () => {
 		expect(sc.agents[0]).toMatchObject({ name: 'coder', category: 'dev' });
 		expect(sc.skills[0]).toMatchObject({ name: 'demo', description: 'a demo skill' });
 		expect(sc.mcpServers[0]).toMatchObject({ name: 'fs', type: 'stdio', command: 'npx' });
+	});
+
+	// TASK 5.1 (D-036): the catalog id allow-list backing per-task capability validation.
+	it('catalogIds reads the live skill/agent/mcp id allow-list from the mirror', async () => {
+		await syncScope(db, scope);
+		const ids = await catalogIds(db);
+		expect(ids.skills.has('demo')).toBe(true);
+		expect(ids.agents.has('coder')).toBe(true);
+		expect(ids.mcp.has('fs')).toBe(true);
+		// Fail-closed source: an id NOT on disk is absent from the allow-list.
+		expect(ids.skills.has('no-such-skill')).toBe(false);
 	});
 
 	it('is idempotent — re-sync does not duplicate scope or child rows', async () => {

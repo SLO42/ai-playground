@@ -398,3 +398,32 @@ export async function readCatalog(db: Db): Promise<CatalogScope[]> {
 	}
 	return out;
 }
+
+// ── Catalog id allow-list (the D-036 capability validator source) ─────────────────────
+
+/**
+ * The flat id allow-list drawn from the mirror — the source of truth a per-task
+ * capability set (D-036 / task 5.1) is validated against. Each set is the union of
+ * cc_skill / cc_agent / cc_mcp_server names across ALL synced scopes (project + global);
+ * the runtime's composeCapabilities() rejects any declared id not in these sets (fail
+ * closed). Shape matches the runtime's CapabilityCatalog so it feeds straight in.
+ *
+ * Pure read of the mirror (no disk, no spawn). LIVE DB only (F-008) — never hard-coded.
+ */
+export interface CatalogIds {
+	skills: Set<string>;
+	agents: Set<string>;
+	mcp: Set<string>;
+}
+
+export async function catalogIds(db: Db): Promise<CatalogIds> {
+	const [skills] = await db.query<[Array<{ name: unknown }>]>(`SELECT name FROM cc_skill;`);
+	const [agents] = await db.query<[Array<{ name: unknown }>]>(`SELECT name FROM cc_agent;`);
+	const [mcp] = await db.query<[Array<{ name: unknown }>]>(`SELECT name FROM cc_mcp_server;`);
+	const toSet = (rows: Array<{ name: unknown }>): Set<string> => {
+		const set = new Set<string>();
+		for (const r of rows) if (typeof r.name === 'string' && r.name) set.add(r.name);
+		return set;
+	};
+	return { skills: toSet(skills), agents: toSet(agents), mcp: toSet(mcp) };
+}

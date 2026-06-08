@@ -79,6 +79,22 @@ export const THINKING_LEVELS = ['none', 'low', 'medium', 'high'] as const;
 export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
 
 /**
+ * A per-task capability selection (D-036 / task 5.1): the allow-listed skills/agents/mcp
+ * an intent's driven session may wield, drawn from the cc-config catalog (1.8/2.11). The
+ * runtime composes harness-base ⊕ THIS set into the isolated config, catalog-validated
+ * (an unknown id fails closed). Each list is OPTIONAL (absent ⇒ empty) so a bundle may
+ * declare only the dimensions it needs.
+ */
+export interface CapabilityBundle {
+	/** Skill ids (cc_skill.name) to provision. */
+	skills?: string[];
+	/** Agent ids (cc_agent.name) to provision. */
+	agents?: string[];
+	/** MCP server ids (cc_mcp_server.name) to provision. */
+	mcp?: string[];
+}
+
+/**
  * A per-intent adaptive config (D-020): thinking level + tool/concurrency budget +
  * memory-retrieval depth/share + token budget. All knobs are OPTIONAL (an absent knob
  * falls through to the runtime/memory default); the map stays open (`[k]`) so operators
@@ -98,6 +114,12 @@ export interface ConfigBundle {
 	concurrency?: number;
 	/** Token budget for the spawn — non-negative integer. */
 	tokenBudget?: number;
+	/**
+	 * D-036 per-task capability set: the allow-listed skills/agents/mcp this intent's
+	 * driven session may wield (catalog-validated by the runtime, not here — the config
+	 * boundary only checks SHAPE; the cc-config catalog is the id allow-list at spawn time).
+	 */
+	capabilities?: CapabilityBundle;
 	[k: string]: unknown;
 }
 export interface Orchestration {
@@ -314,7 +336,39 @@ export function validateBundles(bundles: unknown, file: string): void {
 				);
 			}
 		}
+		// TASK 5.1 (D-036): the capability block — SHAPE only at this boundary. Each of
+		// skills/agents/mcp must be a list of string ids. The cc-config CATALOG allow-list
+		// (id is real / fails closed) is enforced by the runtime at spawn time, where the
+		// (DB-backed, drift-tracked) catalog actually lives.
+		if (b.capabilities !== undefined) {
+			validateCapabilityBundle(b.capabilities, intent, file);
+		}
 	}
+}
+
+/** A skills/agents/mcp dimension must be a list of strings, or absent. */
+function assertIdList(value: unknown, intent: string, dim: string, file: string): void {
+	if (value === undefined) return;
+	if (!Array.isArray(value) || value.some((x) => typeof x !== 'string')) {
+		throw new ConfigError(
+			`orchestration: bundle "${intent}".capabilities.${dim} must be a list of string ids`,
+			file
+		);
+	}
+}
+
+/** Validate the SHAPE of a bundle's capability block (D-036). Catalog id-validation is runtime-side. */
+export function validateCapabilityBundle(caps: unknown, intent: string, file: string): void {
+	if (caps === null || typeof caps !== 'object' || Array.isArray(caps)) {
+		throw new ConfigError(
+			`orchestration: bundle "${intent}".capabilities must be a mapping { skills, agents, mcp }`,
+			file
+		);
+	}
+	const c = caps as Record<string, unknown>;
+	assertIdList(c.skills, intent, 'skills', file);
+	assertIdList(c.agents, intent, 'agents', file);
+	assertIdList(c.mcp, intent, 'mcp', file);
 }
 
 // --- intent → bundle resolution (D-020 — the canonical map, TASK 2.12) ------

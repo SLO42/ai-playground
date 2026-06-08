@@ -30,6 +30,7 @@ export {
 	syncState,
 	mirrorDigest,
 	readCatalog,
+	catalogIds,
 	scopeIdOf,
 	confineScope,
 	ScopeConfinementError,
@@ -37,7 +38,8 @@ export {
 	type SyncResult,
 	type SyncStatus,
 	type ScopeState,
-	type CatalogScope
+	type CatalogScope,
+	type CatalogIds
 } from './sync';
 
 // TASK 2.11 — read-WRITE config manager (D-010): validate → diff + confirm → write →

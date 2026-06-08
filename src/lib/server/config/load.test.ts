@@ -129,6 +129,37 @@ describe('loadOrchestration — YAML + enum validation', () => {
 		expect(() => validateBundles([], 'x.yaml')).toThrow(/must be a mapping/);
 		expect(() => validateBundles({ 'code-write': 7 }, 'x.yaml')).toThrow(/must be a mapping/);
 	});
+
+	// TASK 5.1 (D-036): the capability block — SHAPE validation at the config boundary.
+	it('accepts a well-shaped capabilities block { skills, agents, mcp }', () => {
+		expect(() =>
+			validateBundles(
+				{ 'code-write': { capabilities: { skills: ['svelte5-patterns'], agents: ['coder'], mcp: ['context7'] } } },
+				'x.yaml'
+			)
+		).not.toThrow();
+	});
+
+	it('accepts a partial capabilities block (only the declared dimensions)', () => {
+		expect(() =>
+			validateBundles({ 'code-read': { capabilities: { skills: ['design'] } } }, 'x.yaml')
+		).not.toThrow();
+	});
+
+	it('rejects a non-mapping capabilities block', () => {
+		expect(() =>
+			validateBundles({ 'code-write': { capabilities: ['svelte5-patterns'] } }, 'x.yaml')
+		).toThrow(/capabilities must be a mapping/);
+	});
+
+	it('rejects a capabilities dimension that is not a list of string ids', () => {
+		expect(() =>
+			validateBundles({ 'code-write': { capabilities: { skills: 'svelte5-patterns' } } }, 'x.yaml')
+		).toThrow(/capabilities\.skills must be a list of string ids/);
+		expect(() =>
+			validateBundles({ 'code-write': { capabilities: { mcp: [42] } } }, 'x.yaml')
+		).toThrow(/capabilities\.mcp must be a list of string ids/);
+	});
 });
 
 describe('intent → bundle resolution (D-020 — TASK 2.12)', () => {

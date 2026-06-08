@@ -22,6 +22,22 @@
 // for spawn; never process.kill(pid,0) (use tasklist); taskkill to stop.
 
 import type { ProviderHealth } from '../providers/index';
+import {
+	composeCapabilities,
+	type CapabilitySet,
+	type CapabilityCatalog
+} from './capabilities';
+
+// Re-export the D-036 capability surface so the whole system imports it from `runtime`.
+export {
+	composeCapabilities,
+	CapabilityValidationError,
+	type CapabilitySet,
+	type CapabilityCatalog,
+	type CapabilityKind,
+	type ComposedCapabilitySettings,
+	type HarnessBase
+} from './capabilities';
 
 // ── Public contract types (ARCHITECTURE §2.3) ───────────────────────────────────
 
@@ -66,6 +82,13 @@ export interface SpawnRequest {
 	context?: ContextBundle; // never mutates task
 	budgets: SpawnBudgets;
 	toolPolicy: ToolPolicy;
+	/**
+	 * Per-task capability set from the intent bundle (D-036 / task 5.1). The runtime
+	 * composes harness-base ⊕ THIS set into the isolated config (catalog-validated, fail
+	 * closed). Absent ⇒ no extra capabilities (the harness base only). It NEVER carries
+	 * the operator's whole plugin set — D-002 isolation is preserved (see capabilities.ts).
+	 */
+	capabilities?: CapabilitySet;
 	workflowRunId?: string; // set when this spawn is a workflow step (D-013)
 }
 
@@ -121,6 +144,13 @@ export interface HarnessSettings {
 	plugins?: string[];
 	/** ALWAYS empty — no inherited marketplaces. */
 	marketplaces?: string[];
+	/**
+	 * D-036 per-task capability set composed onto this harness base — the EXACT, catalog-
+	 * validated skills/agents/mcp the driven session may wield. NEVER the operator's whole
+	 * plugin set (plugins/marketplaces stay empty). Absent when no catalog was supplied
+	 * (legacy spawns / no capability provisioning).
+	 */
+	capabilities?: CapabilitySet;
 	[k: string]: unknown;
 }
 
@@ -141,6 +171,13 @@ export interface IsolatedConfigOptions {
 	gates?: Record<string, string>;
 	/** Harness hooks (D-019). */
 	hooks?: Record<string, string>;
+	/**
+	 * The cc-config catalog id-set (1.8/2.11) the request's capability set is validated
+	 * against (D-036). When present, `req.capabilities` is catalog-validated + composed
+	 * onto the harness base; an unknown id throws (fail closed). When ABSENT, no capability
+	 * provisioning happens (the harness base only) — legacy/no-catalog spawns are unchanged.
+	 */
+	catalog?: CapabilityCatalog;
 }
 
 /** Sanitize an agent id into a filesystem-safe segment for the isolated config dir. */
@@ -166,13 +203,22 @@ export function isolatedConfigFor(
 	// the isolation is that the driven agent never sees the operator's global config.
 	const env: Record<string, string> = { CLAUDE_CONFIG_DIR: configDir };
 
-	const settings: HarnessSettings = {
-		gates: opts.gates ?? {},
-		hooks: opts.hooks ?? {},
-		// Explicitly empty — the S1-proven determinism guard.
-		plugins: [],
-		marketplaces: []
-	};
+	// D-036: when a catalog is supplied, compose harness-base ⊕ the request's capability
+	// set (catalog-validated, fail closed). composeCapabilities forces plugins/marketplaces
+	// empty (D-002), so the composed settings can never leak the operator's plugin set.
+	// No catalog ⇒ the legacy harness-only bundle (no capability provisioning).
+	const settings: HarnessSettings = opts.catalog
+		? composeCapabilities(req.capabilities, opts.catalog, {
+				gates: opts.gates,
+				hooks: opts.hooks
+			})
+		: {
+				gates: opts.gates ?? {},
+				hooks: opts.hooks ?? {},
+				// Explicitly empty — the S1-proven determinism guard.
+				plugins: [],
+				marketplaces: []
+			};
 
 	return { configDir, env, settings };
 }
@@ -238,6 +284,13 @@ export interface ClaudeCodeRuntimeOptions {
 	gates?: Record<string, string>;
 	/** Harness hooks (D-019) carried into every isolated --settings. */
 	hooks?: Record<string, string>;
+	/**
+	 * The cc-config catalog id-set (1.8/2.11) used to validate + compose each spawn's
+	 * per-task capability set (D-036). When set, every spawn's isolated config is
+	 * harness-base ⊕ its (catalog-validated) capability set; an unknown id fails the
+	 * spawn closed. When unset, capability provisioning is OFF (harness base only).
+	 */
+	catalog?: CapabilityCatalog;
 	/** Provider health source — read from the providers single owner (§2.5). */
 	providerHealth?: () => Promise<ProviderHealth[]>;
 	/** Tool surface the runtime exposes; defaults to the standard CC tool set. */
@@ -259,6 +312,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 	private readonly harnessConfigRoot: string;
 	private readonly gates?: Record<string, string>;
 	private readonly hooks?: Record<string, string>;
+	private readonly catalog?: CapabilityCatalog;
 	private readonly providerHealth?: () => Promise<ProviderHealth[]>;
 	private readonly toolSurface: ToolDescriptor[];
 	/** In-flight runs by agentId — so cancel(agentId) reaches the right backend run. */
@@ -269,6 +323,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 		this.harnessConfigRoot = opts.harnessConfigRoot ?? '.harness/claude-config';
 		this.gates = opts.gates;
 		this.hooks = opts.hooks;
+		this.catalog = opts.catalog;
 		this.providerHealth = opts.providerHealth;
 		this.toolSurface = opts.toolSurface ?? DEFAULT_TOOLS;
 	}
@@ -278,7 +333,8 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 		const isolated = isolatedConfigFor(req, {
 			harnessConfigRoot: this.harnessConfigRoot,
 			gates: this.gates,
-			hooks: this.hooks
+			hooks: this.hooks,
+			catalog: this.catalog
 		});
 		return {
 			agentId: req.agentId,
@@ -309,16 +365,29 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 	}
 
 	spawn(req: SpawnRequest): AsyncIterable<RuntimeEvent> {
-		const run = this.backend.run(this.plan(req));
+		// Build the plan (incl. D-036 capability composition) BEFORE the backend run. A
+		// fail-closed CapabilityValidationError (unknown id) must surface as an error event,
+		// never an unhandled throw — and the backend is NEVER reached with a bad config.
+		let plan: CcSpawnPlan;
+		try {
+			plan = this.plan(req);
+		} catch (err) {
+			return failClosed(err);
+		}
+		const run = this.backend.run(plan);
 		return this.consume(req.agentId, run);
 	}
 
 	/** Resume an existing Claude Code session (CLI parity, D-011) — same isolation. */
 	async *resume(ccSessionId: string, req: SpawnRequest): AsyncIterable<RuntimeEvent> {
-		const run = await this.backend.resume({
-			ccSessionId,
-			plan: this.plan(req, ccSessionId)
-		});
+		let plan: CcSpawnPlan;
+		try {
+			plan = this.plan(req, ccSessionId);
+		} catch (err) {
+			yield { type: 'error', error: (err as Error).message };
+			return;
+		}
+		const run = await this.backend.resume({ ccSessionId, plan });
 		yield* this.consume(req.agentId, run);
 	}
 
@@ -359,6 +428,11 @@ export class ClaudeCodeRuntime implements AgentRuntime {
  * description is NEVER mutated in place (D-008); recalled context is appended as a
  * distinct, labelled block — groundwork for the D-026 injection fence wired in 2.5.
  */
+/** A one-shot async iterable that yields a single error event (fail-closed spawn). */
+async function* failClosed(err: unknown): AsyncIterable<RuntimeEvent> {
+	yield { type: 'error', error: (err as Error).message };
+}
+
 function buildPrompt(req: SpawnRequest): string {
 	const parts = [`# Task: ${req.task.title}`, '', req.task.description];
 	if (req.context?.items.length) {

@@ -18,21 +18,35 @@
   const anomalies = $derived(data.anomalies ?? []);
   const totals = $derived(data.totals);
   const usage = $derived(data.usage ?? []);
+  const findings = $derived(data.findings ?? []);
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
   const hasData = $derived(days.length > 0);
+
+  // Maintain rollup: counts per severity for the header + the grouped list.
+  const SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
+  const severityCounts = $derived(
+    SEVERITIES.map((sev) => ({ sev, n: findings.filter((f) => f.severity === sev).length }))
+  );
 
   // Peak day metric for the bar chart scale.
   const peakRuns = $derived(Math.max(1, ...days.map((d) => d.spawns)));
 
-  // Live updates: an agent_event (or routing_event) row change re-runs the loader.
+  // Live updates: an agent_event (or routing_event) row change re-runs the loader;
+  // a security_finding row change re-runs the Maintain rollup in place (UI-SPEC §1.2).
   $effect(() => {
     const off1 = stream.onDbChange('agent_event', () => void invalidate('app:analytics'));
     const off2 = stream.onDbChange('routing_event', () => void invalidate('app:analytics'));
+    const off3 = stream.onDbChange('security_finding', () => void invalidate('app:findings'));
     return () => {
       off1();
       off2();
+      off3();
     };
   });
+
+  function shortProject(id: string | undefined): string {
+    return id ? id.replace(/^project:/, '') : '—';
+  }
 
   function fmtCost(c: number | null): string {
     return c == null ? '—' : `$${c.toFixed(2)}`;
@@ -157,6 +171,44 @@
         </table>
       </div>
     {/if}
+
+    <!-- Maintain rollup: security_finding rows across all projects (UI-SPEC §207/§315) -->
+    <div class="card findings-card">
+      <span class="eyebrow">maintain · security findings</span>
+      <h2 class="chart-title">
+        {findings.length} open {findings.length === 1 ? 'finding' : 'findings'} across all projects
+      </h2>
+      {#if findings.length}
+        <ul class="sev-summary" aria-label="findings by severity">
+          {#each severityCounts as s (s.sev)}
+            <li class="sev-chip" data-sev={s.sev} data-empty={s.n === 0}>
+              <span class="sev-n">{s.n}</span><span class="sev-label">{s.sev}</span>
+            </li>
+          {/each}
+        </ul>
+        <table class="rollup-table">
+          <thead>
+            <tr><th>severity</th><th>project</th><th>rule</th><th>location</th><th>detail</th></tr>
+          </thead>
+          <tbody>
+            {#each findings as f (f.id)}
+              <tr>
+                <td><span class="sev-tag" data-sev={f.severity}>{f.severity}</span></td>
+                <td class="mono">{shortProject(f.project)}</td>
+                <td class="mono">{f.rule}</td>
+                <td class="mono">{f.file ?? '—'}{#if f.line}:{f.line}{/if}</td>
+                <td>{f.detail ?? '—'}</td>
+              </tr>
+            {/each}
+          </tbody>
+        </table>
+      {:else}
+        <p class="state-body">
+          No open security findings — every scanned project is clean, or no project has been
+          scanned yet. Findings appear here the moment a scan writes them.
+        </p>
+      {/if}
+    </div>
   {/if}
 </section>
 
@@ -339,5 +391,63 @@
   }
   .tier-tag[data-tier='local'] {
     color: var(--color-tier-local, var(--color-text-muted));
+  }
+  .findings-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  .sev-summary {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+  }
+  .sev-chip {
+    display: flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    padding: 0.2rem 0.55rem;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+    border: 1px solid var(--color-border);
+  }
+  .sev-chip[data-empty='true'] {
+    opacity: 0.45;
+  }
+  .sev-n {
+    font-weight: 700;
+    color: var(--color-text);
+  }
+  .sev-label {
+    font-size: 0.7rem;
+    text-transform: lowercase;
+    color: var(--color-text-muted);
+  }
+  .sev-tag {
+    font-size: 0.68rem;
+    padding: 0.05rem 0.45rem;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+    text-transform: lowercase;
+    font-weight: 600;
+  }
+  .sev-tag[data-sev='critical'],
+  .sev-chip[data-sev='critical'] .sev-n {
+    color: var(--color-danger, #d33b3b);
+  }
+  .sev-tag[data-sev='high'],
+  .sev-chip[data-sev='high'] .sev-n {
+    color: var(--color-warning, #d08200);
+  }
+  .sev-tag[data-sev='medium'],
+  .sev-chip[data-sev='medium'] .sev-n {
+    color: var(--color-accent, #4f7cff);
+  }
+  .sev-tag[data-sev='low'],
+  .sev-chip[data-sev='low'] .sev-n {
+    color: var(--color-text-muted);
   }
 </style>

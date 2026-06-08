@@ -17,3 +17,20 @@ export {
 	type ProjectRow,
 	type ScanOptions
 } from './registry';
+
+export {
+	scanSecurity,
+	type SecurityFinding,
+	type Severity,
+	type SecurityScanOptions
+} from './security';
+
+export {
+	scanProjectSecurity,
+	writeFindings,
+	listFindings,
+	listAllFindings,
+	archiveActiveFindings,
+	type FindingRow,
+	type ScanSecurityOptions
+} from './findings-repo';

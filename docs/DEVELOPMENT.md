@@ -8,7 +8,7 @@ How to build it. Repo layout, stack, commands, conventions, and the hard rules c
 
 | Layer | Choice | Notes |
 |-------|--------|-------|
-| Runtime | **Node 22+** | ESM throughout (`"type": "module"`). |
+| Runtime | **Node 24+** | ESM throughout (`"type": "module"`). `engines.node` is `>=24`. |
 | Dashboard | **SvelteKit 2.x + Svelte 5 (runes)** | `$state`/`$derived`/`$effect`, not stores. Node adapter, SSR. |
 | Styling | **Tailwind v4** | CSS-first `@theme`, `@import "tailwindcss"`. No `tailwind.config.js`. |
 | UI primitives | bits-ui (as v1) | Only pull in what's used. |
@@ -74,15 +74,23 @@ ai-playground-v2/
 
 ```bash
 npm install              # installs the `surrealdb` JS SDK only (no native addon); the SurrealDB server binary is provisioned + checksum-verified separately — see D-006
-npm run dev              # SvelteKit dev server
+npm run db:up            # spawn SurrealDB on loopback + apply ALL schema migrations (idempotent). Leave running; Ctrl-C to stop.
+npm run dev              # SvelteKit dev server (separate terminal). Mints the per-boot control-plane token (D-025).
 npm run build            # production build (Node adapter)
 npm test                 # vitest
 npm run test:e2e         # playwright
 npm run lint             # eslint
-npm run typecheck        # tsc --noEmit
-npm run db:migrate       # apply SurrealDB schema migrations
-npm run db:import        # one-time import of v1 data (Phase 1)
+npm run typecheck        # svelte-kit sync && svelte-check
+npm run db:migrate       # alias of db:up — (re)apply schema migrations idempotently against the datastore
+npm run db:import        # one-time import of v1 data (scripts/import-v1.ts)
 ```
+
+**First boot (clean state):**
+1. `cp .env.example .env` and fill `SURREAL_USER`/`SURREAL_PASS` (dev default `root`/`root`) + `CLAUDE_CODE_OAUTH_TOKEN`.
+2. `npm run db:up` — brings SurrealDB up on `127.0.0.1:8000`, applies all migrations, asserts the migrated state, then parks (Ctrl-C to stop).
+3. `npm run dev` in a second terminal — the dashboard boots CONNECTED (not degraded), runs the D-025 loopback gate, and mints the per-boot control-plane token. `HOOK_TOKEN`/`HOOK_URL` are set by the server itself — never committed.
+
+`db:up`/`db:migrate`/`db:import` run via `vite-node` (Vite's resolver) so the real `src/lib/server/db` modules resolve without a separate TS build step.
 
 **Verification gate:** build must pass + tests must pass before any task is "done" (CLAUDE.md). Playwright-verify UI changes before marking done (v1 feedback).
 
@@ -129,11 +137,11 @@ Copy these into v2's `docs/fails.md` on day one — they are prevention rules, n
 
 ## 6. Environment & secrets
 
-- Secrets only in `.env` (gitignored). `.env.example` lists keys: `ANTHROPIC_API_KEY`, `OLLAMA_HOST`, feature flags (`FF_*`), `CODE_ROOT`, etc.
+- Secrets only in `.env` (gitignored). `.env.example` is the authoritative key list: `CODE_ROOT`, `SURREAL_WS`/`SURREAL_NS`/`SURREAL_DB`/`SURREAL_USER`/`SURREAL_PASS`, `HOST`/`PORT`, `OLLAMA_HOST`, and ONE of `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`.
 - SurrealDB file lives in `.data/` (gitignored). Back up by copying that directory.
 - Feature flags gate dashboard pages (env-based, as v1).
 - **Loopback-only bind (D-025).** Set `HOST=127.0.0.1` for SvelteKit; keep Ollama, SurrealDB, and the embeddings endpoint on loopback (`127.0.0.1`). A **startup assertion** must refuse to boot if any bind is non-loopback.
-- **Per-boot control-plane token (D-025).** Mint a fresh token on each boot; the loopback API/SSE requires it. Never commit it; surface it to the dashboard process only.
+- **Per-boot control-plane token (D-025).** `npm run dev` (hooks.server.ts) mints a fresh token each boot via `bootstrapControlPlane`, runs the loopback gate over the SvelteKit/SurrealDB/Ollama listeners, and surfaces the token into the dashboard process env as `HOOK_TOKEN` (+ `HOOK_URL` for the loopback hook-proxy). Never committed; never set in `.env.example`. The hook ingest endpoint authorizes the hook→`agent_event` pipeline against this token.
 
 ---
 

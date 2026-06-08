@@ -15,6 +15,53 @@
 
 import { initDbFromEnv, tryGetDb, type DbInitResult } from '$lib/server/db/runtime-init';
 import { getEventBus, watchTable, type DbSourceHandle } from '$lib/server/events';
+import { bootstrapControlPlane, type ListenerSpec } from '$lib/server/config/loopback';
+
+// ── D-025 control-plane: loopback gate + per-boot token (TASK 6.1) ───────────────
+//
+// The whole control plane (this SvelteKit server + the loopback SurrealDB/Ollama
+// endpoints) must bind loopback ONLY, asserted at boot — fail closed otherwise.
+// We then mint a fresh per-boot token and surface it INTO this process's env as
+// HOOK_TOKEN, so the hook ingest endpoint (api/hooks/[event]) can authorize the
+// hook→agent_event pipeline against it (D-025), and HOOK_URL so a spawned
+// hook-proxy (which inherits this env) knows where to POST. Minting at boot — never
+// committing it to .env — is the D-025 contract. If the operator pre-set HOOK_TOKEN
+// (e.g. to share one token across a manual proxy), we keep theirs.
+
+/** The listeners the D-025 startup gate asserts are loopback. Hosts come from env
+ *  (SvelteKit HOST + the loopback service urls), defaulting to 127.0.0.1. */
+function bootListeners(): ListenerSpec[] {
+	const svelteHost = (process.env.HOST || '127.0.0.1').trim();
+	const sveltePort = Number((process.env.PORT || '5173').trim()) || 5173;
+	const hostOf = (url: string | undefined, fallback: string): string => {
+		if (!url) return fallback;
+		try {
+			return new URL(url.trim()).hostname;
+		} catch {
+			return fallback;
+		}
+	};
+	return [
+		{ name: 'sveltekit', host: svelteHost, port: sveltePort },
+		{ name: 'surrealdb', host: hostOf(process.env.SURREAL_WS, '127.0.0.1'), port: 8000 },
+		{ name: 'ollama', host: hostOf(process.env.OLLAMA_HOST, '127.0.0.1'), port: 11434 }
+	];
+}
+
+/** Run the D-025 gate + mint/surface the per-boot control-plane token. Throws
+ *  (fail-closed) if any listener is routable — the process must not boot. */
+function bootstrapControlPlaneEnv(): void {
+	const cp = bootstrapControlPlane(bootListeners());
+	// Surface the token to THIS process so the hook ingest endpoint authorizes against
+	// it (D-025). Respect an operator-provided token if one is already set.
+	if (!process.env.HOOK_TOKEN?.trim()) process.env.HOOK_TOKEN = cp.token;
+	if (!process.env.HOOK_URL?.trim()) {
+		const host = process.env.HOST?.trim() || '127.0.0.1';
+		const port = process.env.PORT?.trim() || '5173';
+		process.env.HOOK_URL = `http://${host}:${port}`;
+	}
+	console.log('[startup] control-plane: loopback gate passed; per-boot HOOK_TOKEN minted (D-025).');
+}
 
 /** Tables whose row changes feed the dashboard's live regions.
  *  v0.1: project/task/session. 2.4 adds the analytics tables so /reports + /agents
@@ -30,6 +77,10 @@ const watchers: DbSourceHandle[] = [];
 export const startup: Promise<DbInitResult> = bootstrap();
 
 async function bootstrap(): Promise<DbInitResult> {
+	// D-025 FIRST: assert loopback + mint/surface the per-boot control-plane token
+	// before anything opens a connection. Fail-closed on a routable bind (throws).
+	bootstrapControlPlaneEnv();
+
 	const result = await initDbFromEnv();
 	if (!result.connected) {
 		// Honest degraded boot (D-019): log once, keep serving disconnected states.

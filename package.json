@@ -9,6 +9,9 @@
   },
   "scripts": {
     "dev": "vite dev",
+    "db:up": "vite-node -c vite.node.config.mts scripts/db-up.ts",
+    "db:migrate": "vite-node -c vite.node.config.mts scripts/db-up.ts",
+    "db:import": "vite-node -c vite.node.config.mts scripts/import-v1.ts",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",

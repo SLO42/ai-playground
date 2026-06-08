@@ -9,6 +9,7 @@
 
 import { fail } from '@sveltejs/kit';
 import { tryGetDb } from '$lib/server/db/runtime-init';
+import { classifyDbError } from '$lib/server/db/classify';
 import { listProjects } from '$lib/server/projects/repo';
 import { scanProject, PathConfinementError } from '$lib/server/scanner';
 import type { Actions, PageServerLoad } from './$types';
@@ -45,11 +46,15 @@ export const load: PageServerLoad = async ({ depends }) => {
 		}));
 		return { connected: true, projects };
 	} catch (err) {
-		// DB reachable at boot but the query failed now — degrade this panel, stay honest.
+		// A cached handle can be DEAD (server killed mid-session). Classify via the shared
+		// classifier so this surface stays uniform with /workflows + home (D-019): a true
+		// connection loss is reported with no error detail (plain DISCONNECTED), while a
+		// genuine query failure (DB still up) degrades this panel with its honest reason.
+		const error = classifyDbError(err) === 'disconnected' ? undefined : (err as Error).message;
 		return {
 			connected: false,
 			projects: [] as ProjectCard[],
-			error: (err as Error).message
+			...(error ? { error } : {})
 		};
 	}
 };

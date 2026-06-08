@@ -105,7 +105,21 @@ export async function initDbFromEnv(env: DbEnv = process.env): Promise<DbInitRes
 	}
 }
 
-/** Get the runtime Db if connected, else null (honest — never throws). */
+/**
+ * Get the runtime Db if the singleton was initialised, else null (honest — never throws).
+ *
+ * NOTE (TASK 6.11): a non-null handle does NOT prove LIVENESS. The SDK keeps handing
+ * back the singleton after the SurrealDB process is killed / the socket drops, so a
+ * subsequent query throws a connection-loss error rather than a real query failure.
+ * Callers MUST classify that thrown error via `db/classify.ts` (`classifyDbError`) to
+ * render an honest DISCONNECTED state — every distinguishing surface now does.
+ *
+ * A synchronous cheap-liveness signal here is non-trivial (the SDK exposes only an
+ * async/ping-style status, and this is a sync getter), and a fresh boot recovers the
+ * connection — so we keep classification at the call site rather than bolt on
+ * auto-reconnect. TODO(6.11+): if reconnect becomes a requirement, expose an async
+ * `tryGetLiveDb()` that pings + re-`initDbFromEnv()` on a dead handle.
+ */
 export function tryGetDb(): Db | null {
 	try {
 		return getDb();

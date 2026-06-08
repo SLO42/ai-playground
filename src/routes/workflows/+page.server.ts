@@ -8,6 +8,7 @@
 
 import { fail } from '@sveltejs/kit';
 import { tryGetDb } from '$lib/server/db/runtime-init';
+import { classifyDbError } from '$lib/server/db/classify';
 import { assertRecordId } from '$lib/server/db/validate';
 import { listWorkflows, listWorkflowRuns, getWorkflowRunDetail, runWorkflow } from '$lib/server/workflows';
 import type { WorkflowListItem, WorkflowRunListItem, WorkflowRunDetail } from '$lib/server/workflows';
@@ -52,9 +53,15 @@ export const load: PageServerLoad = async ({ depends, url }): Promise<WorkflowsD
 		]);
 		return { connected: true, workflows, runs, detail, selectedRun };
 	} catch (err) {
-		// The DB handle IS live (tryGetDb succeeded) — this is a QUERY/load failure,
-		// NOT connection loss. Stay `connected: true` and surface an honest query-error
-		// state so the UI does not mislabel a bad query as "database disconnected".
+		// `tryGetDb()` can return a CACHED-but-DEAD handle (the SurrealDB process was
+		// killed / the socket dropped mid-session), so a non-null handle does NOT prove
+		// liveness. Classify the thrown error (shared with /projects + home): a genuine
+		// connection loss is reported as DISCONNECTED — the same honest state as a server
+		// that booted with the DB down — and ONLY a true query/parse/validation failure
+		// keeps `connected: true` + the queryError "query failed" state (D-019).
+		if (classifyDbError(err) === 'disconnected') {
+			return { connected: false, workflows: [], runs: [], detail: null, selectedRun };
+		}
 		return {
 			connected: true,
 			workflows: [],

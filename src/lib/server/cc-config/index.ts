@@ -39,3 +39,31 @@ export {
 	type ScopeState,
 	type CatalogScope
 } from './sync';
+
+// TASK 2.11 — read-WRITE config manager (D-010): validate → diff + confirm → write →
+// re-sync, plus a watcher for external edits.
+export {
+	planEdit,
+	applyEdit,
+	validateContent,
+	validateSettings,
+	validateMcpJson,
+	projectSettings,
+	ConfigValidationError,
+	StaleConfirmError,
+	type ConfigKind,
+	type ValidationIssue,
+	type ValidationResult,
+	type ConfigDiff,
+	type PlanEditInput,
+	type EditPlan,
+	type ApplyEditInput,
+	type ApplyEditResult
+} from './write';
+
+export {
+	watchScope,
+	type WatchOptions,
+	type WatchHandle,
+	type ConfigChangeEvent
+} from './watch';

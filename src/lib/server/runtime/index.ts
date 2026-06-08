@@ -213,8 +213,19 @@ export interface CcBackend {
 	run(plan: CcSpawnPlan): CcBackendRun;
 	/** Resume an existing Claude Code session by id (CLI parity, D-011). */
 	resume(req: { ccSessionId: string; plan: CcSpawnPlan }): Promise<CcBackendRun>;
-	/** Push a message INTO a running session (claude/channel; D-011/D-035). */
-	interject(msg: { ccSessionId: string; origin: string; body: string }): Promise<void>;
+	/**
+	 * Push a message INTO a running session (claude/channel; D-011/D-035). `origin` is
+	 * server-stamped + immutable by the time it reaches here; `steer` is true ONLY for an
+	 * authenticated operator push (D-035a) — the backend delivers a steering push as an
+	 * instruction and a non-steering one (agent-origin) as already-fenced DATA. The
+	 * backend NEVER sees the D-025 token (the seam resolves origin/steer before this).
+	 */
+	interject(msg: {
+		ccSessionId: string;
+		origin: string;
+		body: string;
+		steer: boolean;
+	}): Promise<void>;
 }
 
 // ── The default Claude Code runtime ──────────────────────────────────────────────
@@ -311,12 +322,21 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 		yield* this.consume(req.agentId, run);
 	}
 
-	/** Push a message into a running session (interject seam, D-011/D-035). */
+	/**
+	 * Push a message into a running session (interject seam, D-011/D-035). The CALLER
+	 * (the channel seam) has already resolved + stamped `origin` and `steer` per the
+	 * D-035a binding rule; this method never inspects a token (it is never handed one).
+	 */
 	async interject(
 		ccSessionId: string,
-		msg: { origin: string; body: string }
+		msg: { origin: string; body: string; steer: boolean }
 	): Promise<void> {
-		await this.backend.interject({ ccSessionId, origin: msg.origin, body: msg.body });
+		await this.backend.interject({
+			ccSessionId,
+			origin: msg.origin,
+			body: msg.body,
+			steer: msg.steer
+		});
 	}
 
 	async health(): Promise<RuntimeHealth> {

@@ -28,7 +28,12 @@ function mockBackend(opts?: {
 	events?: RuntimeEvent[];
 	onSpawn?: (plan: CcSpawnPlan) => void;
 	resumeRecorder?: (req: { ccSessionId: string; plan: CcSpawnPlan }) => void;
-	interjectRecorder?: (msg: { ccSessionId: string; origin: string; body: string }) => void;
+	interjectRecorder?: (msg: {
+		ccSessionId: string;
+		origin: string;
+		body: string;
+		steer: boolean;
+	}) => void;
 }): CcBackend & { spawns: RecordedSpawn[]; cancelled: string[] } {
 	const spawns: RecordedSpawn[] = [];
 	const cancelled: string[] = [];
@@ -242,11 +247,16 @@ describe('isolated config — S1-mandated determinism (D-002)', () => {
 
 describe('interject seam — origin is carried (D-035 groundwork)', () => {
 	it('interject routes through the backend with an explicit origin', async () => {
-		let seen: { ccSessionId: string; origin: string; body: string } | undefined;
+		let seen: { ccSessionId: string; origin: string; body: string; steer: boolean } | undefined;
 		const rt = new ClaudeCodeRuntime({
 			backend: mockBackend({ interjectRecorder: (m) => (seen = m) })
 		});
-		await rt.interject('cc_mock_1', { origin: 'agent', body: 'hello' });
-		expect(seen).toMatchObject({ ccSessionId: 'cc_mock_1', origin: 'agent', body: 'hello' });
+		await rt.interject('cc_mock_1', { origin: 'agent', body: 'hello', steer: false });
+		expect(seen).toMatchObject({
+			ccSessionId: 'cc_mock_1',
+			origin: 'agent',
+			body: 'hello',
+			steer: false
+		});
 	});
 });

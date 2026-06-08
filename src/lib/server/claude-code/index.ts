@@ -28,3 +28,20 @@ export {
 	type GuardrailInput,
 	type GuardrailSettings
 } from './guardrails';
+
+// TASK 2.10 — session control: the channel.pushToSession seam + interject/stop/resume
+// + fleet view (D-011/D-035/D-025/D-026). Origin is server-stamped + immutable; only an
+// authenticated operator (D-025 token on the loopback control endpoint) may steer.
+export {
+	createChannel,
+	type Channel,
+	type ChannelDeps,
+	type Origin,
+	type InterjectRequest,
+	type InterjectResult,
+	type StopRequest,
+	type StopResult,
+	type ResumeRequest,
+	type ResumeResult,
+	type FleetRow
+} from './channel';

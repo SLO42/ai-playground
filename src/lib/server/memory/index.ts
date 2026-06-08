@@ -31,6 +31,17 @@ export { recall, recordOutcomes, parseCitations, WMR_WEIGHTS, NOVELTY_COSINE_CUT
 export { storeMemory, storeMemories, extractAndStore, buildExtraction, type MemoryCandidate, type StoredMemory, type ExtractFn, type ExtractInput } from './store';
 export { dueReview, bumpCounters, enqueueReview, consolidate, DEFAULT_CADENCE, type ReviewKind, type ReviewCadence } from './loop';
 export {
+	buildBriefing,
+	estimateTokens,
+	bandForScore,
+	BRIEFING_INJECTION_SOURCES,
+	BAND_THRESHOLDS,
+	type Briefing,
+	type BriefingItem,
+	type BriefingOptions,
+	type SalienceBand
+} from './briefing';
+export {
 	parseAutoMemoryFile,
 	parseMemoryLinks,
 	entityIdForFile,

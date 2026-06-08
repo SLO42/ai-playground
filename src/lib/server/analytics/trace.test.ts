@@ -8,6 +8,10 @@ import { createTask } from '../tasks/repo';
 import { launchSession, type LaunchInput } from '../sessions/launch';
 import { writeRoutingEvent } from '../routing/resolve';
 import { writeAgentEvent } from './events';
+import { recordTurnOutcomes } from '../memory/outcomes';
+import type { RecallItem } from '../memory/recall';
+import { storeMemory } from '../memory/store';
+import { FakeEmbedder } from '../memory/embed';
 import { EventBus } from '../events/bus';
 import {
 	ClaudeCodeRuntime,
@@ -115,6 +119,39 @@ describe('traceAction — the how/why chain for one action (2.4 VERIFY)', () => 
 			detail: { from: 'sonnet', to: 'opus', reason: 'sonnet stalled on the test suite' }
 		});
 
+		// 3a. The recall link (4.4 closeout): a REAL recalled memory tied to the session via a
+		// REAL retrieval_outcome — the rung that answers WHY the agent had its context. Store a
+		// memory through the screen→embed pipeline (FakeEmbedder; no Ollama), then record the turn
+		// outcome from a tool stream so tool_success is REAL, not a hand boolean (F-008).
+		const mem = await storeMemory(
+			{ db, embedder: new FakeEmbedder() },
+			{
+				content: 'The widget API uses POST /widgets with an idempotency key.',
+				kind: 'semantic',
+				project: projectId
+			}
+		);
+		expect(mem.persisted).toBe(true);
+		const injected: RecallItem[] = [
+			{
+				id: mem.id,
+				citationId: '1',
+				score: 0.82,
+				wasNeighbor: false,
+				explain: { cosine: 0.82, utility: 0, recency: 0.5 },
+				fenced: { source: 'recall', citationId: '1', text: 'ref' }
+			}
+		];
+		await recordTurnOutcomes(db, {
+			session: res.sessionId,
+			responseText: 'I will call the widget API [#1].',
+			injected,
+			events: [
+				{ type: 'tool_call', name: 'Edit', args: {}, needsConfirm: false },
+				{ type: 'tool_result', name: 'Edit', ok: true, output: 'edited' }
+			]
+		});
+
 		// ── Trace it. ──
 		const trace = await traceAction(db, taskId);
 		expect(trace.taskId).toBe(taskId);
@@ -122,6 +159,7 @@ describe('traceAction — the how/why chain for one action (2.4 VERIFY)', () => 
 		const sources = trace.steps.map((s) => s.source);
 		expect(sources).toContain('routing_event'); // WHY this model
 		expect(sources).toContain('session'); // the run
+		expect(sources).toContain('retrieval_outcome'); // WHY it had its context (4.4 closeout)
 		expect(sources).toContain('agent_event'); // WHAT happened
 
 		// The route step explains the model choice.
@@ -138,6 +176,16 @@ describe('traceAction — the how/why chain for one action (2.4 VERIFY)', () => 
 		// The completion step carries the run's summary.
 		const completion = trace.steps.find((s) => s.label === 'completion')!;
 		expect(completion.why).toContain('widget added');
+
+		// The recall step (4.4) answers WHY the agent had its context: it surfaces the recalled
+		// memory's content, that it was cited, and that the turn's tools succeeded.
+		const recall = trace.steps.find((s) => s.source === 'retrieval_outcome')!;
+		expect(recall.label).toBe('recall');
+		expect(recall.why).toContain('widget API'); // the recalled content preview
+		expect(recall.why).toContain('cited'); // measured utility — it was cited [#1]
+		expect(recall.why).toContain('tools succeeded'); // REAL tool outcome, not fabricated
+		expect(recall.detail.memory).toBe(mem.id); // joins back to the memory row
+		expect(recall.detail.tool_success).toBe(true);
 
 		// Chain is time-ordered: routing first, completion before escalation we wrote last.
 		const ats = trace.steps.map((s) => s.at);

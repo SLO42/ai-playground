@@ -37,8 +37,14 @@ code, kbd, pre, samp { font-family: var(--font-mono); }
 }
 ::-webkit-scrollbar-thumb:hover { background: var(--neutral-500); }
 
+/* Two-color focus ring via box-shadow (§9). We do NOT use `outline:none`
+   (banned — it can silently kill the only focus indicator in forced-colors /
+   Windows high-contrast mode, where box-shadow is dropped). A transparent
+   outline keeps a real, visible ring in those modes while the box-shadow ring
+   renders normally elsewhere. */
 :focus-visible {
-  outline: none;
+  outline: 2px solid transparent;
+  outline-offset: 2px;
   box-shadow: var(--shadow-focus);
   border-radius: var(--radius-sm);
 }

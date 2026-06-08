@@ -1,0 +1,5 @@
+# Invalid orchestration — mode is not one of event/periodic/manual.
+mode: chaos
+concurrency:
+  maxAgents: 8
+  perProject: 3

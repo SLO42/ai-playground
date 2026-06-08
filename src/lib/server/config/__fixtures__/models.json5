@@ -1,0 +1,15 @@
+// Test fixture — model slots (provider endpoints + model ids), D-003.
+// JSON5 so endpoints/notes can carry comments and trailing commas.
+{
+  providers: {
+    ollama: {
+      // Local model — NO /v1 suffix (project rule).
+      endpoint: 'http://127.0.0.1:11434',
+      models: ['gpt-oss:20b'],
+    },
+    anthropic: {
+      endpoint: 'https://api.anthropic.com',
+      models: ['claude-haiku', 'claude-sonnet', 'claude-opus'],
+    },
+  },
+}

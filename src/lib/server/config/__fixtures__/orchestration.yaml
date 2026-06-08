@@ -1,0 +1,15 @@
+# Test fixture — orchestration (mode, triggers, interval, concurrency caps).
+mode: event
+triggers: [task_created, task_unblocked]
+intervalMs: 60000
+concurrency:
+  maxAgents: 8
+  perProject: 3
+# Intent-adaptive config bundles (D-020): intent -> bundle.
+bundles:
+  simple-question:
+    thinking: none
+    retrievalDepth: 0
+  code-debug:
+    thinking: high
+    retrievalDepth: 8

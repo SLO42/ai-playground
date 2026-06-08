@@ -1,0 +1,57 @@
+// server/config — public barrel (TASK 0.e; ARCHITECTURE §5/§6, D-025).
+//
+// This module depends on NOTHING (the leaf of the dependency graph). It loads
+// the operator config files and runs the D-025 control-plane startup gate:
+// assert every listener binds loopback (fail to boot otherwise) + mint the
+// per-boot token. Other modules read config from here; none re-parse the files.
+
+export {
+	ConfigError,
+	loadConfig,
+	loadAgentPool,
+	loadModels,
+	loadOrchestration,
+	ORCH_MODES,
+	type AppConfig,
+	type AgentPool,
+	type AgentSlot,
+	type Tier,
+	type ModelsConfig,
+	type ProviderSpec,
+	type Orchestration,
+	type OrchMode,
+	type ConfigBundle
+} from './load';
+
+export {
+	isLoopbackHost,
+	assertLoopback,
+	mintBootToken,
+	bootstrapControlPlane,
+	LoopbackBindError,
+	type ListenerSpec,
+	type ControlPlane
+} from './loopback';
+
+import { loadConfig, type AppConfig } from './load';
+import { bootstrapControlPlane, type ControlPlane, type ListenerSpec } from './loopback';
+
+/** The fully bootstrapped runtime config: files + control-plane gate result. */
+export interface BootstrappedConfig {
+	config: AppConfig;
+	controlPlane: ControlPlane;
+}
+
+/**
+ * One-shot boot entry: load the config files, then run the D-025 startup gate
+ * over the supplied listeners. Throws (fail-closed) if any listener is routable
+ * or any config file is malformed — the process must not boot in either case.
+ */
+export function bootstrapConfig(
+	configDir: string,
+	listeners: readonly ListenerSpec[]
+): BootstrappedConfig {
+	const config = loadConfig(configDir);
+	const controlPlane = bootstrapControlPlane(listeners);
+	return { config, controlPlane };
+}

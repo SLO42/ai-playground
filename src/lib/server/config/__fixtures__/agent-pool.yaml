@@ -1,0 +1,29 @@
+# Test fixture — agent pool (tiers, roles, escalation/delegation). Carried from v1 shape.
+tiers:
+  local:
+    provider: ollama
+    model: gpt-oss:20b
+  haiku:
+    provider: anthropic
+    model: claude-haiku
+  sonnet:
+    provider: anthropic
+    model: claude-sonnet
+  opus:
+    provider: anthropic
+    model: claude-opus
+slots:
+  - id: coder-1
+    tier: opus
+    role: coder
+  - id: tester-1
+    tier: sonnet
+    role: tester
+  - id: scout-1
+    tier: local
+    role: scout
+escalation:
+  order: [haiku, sonnet, opus]
+delegation:
+  from: opus
+  to: sonnet

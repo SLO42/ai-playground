@@ -21,6 +21,7 @@
     "@sveltejs/kit": "^2.16.0",
     "@sveltejs/vite-plugin-svelte": "^5.0.3",
     "@tailwindcss/vite": "^4.0.0",
+    "@types/js-yaml": "^4.0.9",
     "@types/node": "^22.10.0",
     "eslint": "^9.18.0",
     "eslint-plugin-svelte": "^2.46.1",
@@ -34,6 +35,8 @@
     "vitest": "^3.0.0"
   },
   "dependencies": {
+    "js-yaml": "^4.2.0",
+    "json5": "^2.2.3",
     "surrealdb": "2.0.3"
   }
 }

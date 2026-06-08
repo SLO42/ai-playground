@@ -569,6 +569,26 @@ const m0016_cc_flexible: Migration = {
 	`
 };
 
+// ── §4.3/§4.4 fix — FLEXIBLE transcript/analytics object fields (TASK 1.6b) ──────
+//
+// Same SCHEMAFULL `TYPE object` defect class the 0016 cc_* fix addressed: a
+// free-form `option<object>` WITHOUT `FLEXIBLE` stores `{}` (all nested keys are
+// stripped on write — SurrealDB 2.x). The transcript + analytics rows persisted by
+// the session launch path (1.6b) carry arbitrary-shape JSON in two columns:
+//   • message.tool_call  — { name, args, needs_confirm } / { name, ok, phase }
+//   • agent_event.detail — e.g. { error } / { ok, summary }
+// OVERWRITE them as FLEXIBLE so the persisted transcript round-trips intact (without
+// this the tool-call name/args and error detail are silently lost). The model/chosen
+// objects already declare their sub-fields, so they round-trip and are left as-is.
+// Additive + idempotent (OVERWRITE re-applies cleanly).
+const m0017_transcript_flexible: Migration = {
+	id: '0017_transcript_flexible',
+	up: `
+		DEFINE FIELD OVERWRITE tool_call ON message     FLEXIBLE TYPE option<object>;
+		DEFINE FIELD OVERWRITE detail    ON agent_event FLEXIBLE TYPE option<object>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -591,5 +611,6 @@ export const schemaMigrations: Migration[] = [
 	m0013_retrieval_outcome,
 	m0014_skill_causal,
 	m0015_embedding_cache,
-	m0016_cc_flexible
+	m0016_cc_flexible,
+	m0017_transcript_flexible
 ];

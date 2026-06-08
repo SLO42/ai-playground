@@ -8,6 +8,7 @@ export {
 	getBus,
 	getBootToken,
 	getRuntime,
+	getProviderHealth,
 	resolveCapabilitiesForIntent,
 	DEFAULT_MODEL,
 	DEFAULT_AGENT,

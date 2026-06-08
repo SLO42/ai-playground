@@ -30,6 +30,7 @@ import {
 	type CapabilityCatalog,
 	type CapabilitySet
 } from '../runtime/index';
+import { OllamaProvider, type ProviderHealth } from '../providers/index';
 import { ClaudeCliBackend } from '../claude-code/cli-backend';
 import { catalogIds } from '../cc-config/index';
 import { DEFAULT_GATE_POLICY } from '../claude-code/gates';
@@ -122,6 +123,39 @@ export async function getRuntime(db?: Db): Promise<RuntimeAvailability> {
 		catalog
 	});
 	return { available: true, runtime: cachedRuntime };
+}
+
+/**
+ * The provider-health source resolveRoute reads to decide fallback (TASK 2.3; §2.5; F-005).
+ * Routing READS health here and never probes a provider itself — this is the single owner.
+ *
+ * HONEST mapping (F-008):
+ *   • `claude` — the spawn backend for every claude-tier is the Claude Code CLI (driven by
+ *     CLAUDE_CODE_OAUTH_TOKEN), NOT the Anthropic direct-chat API. The orchestrator only
+ *     starts once getRuntime() confirmed that credential (boot.ts gate), so `claude` is up
+ *     exactly when a live spawn is possible. We report it `up` to reflect the REAL backend
+ *     that will run the session — using the direct-chat ClaudeProvider.health() (a separate
+ *     ANTHROPIC_API_KEY probe) here would falsely fail every credentialed CLI spawn.
+ *   • `ollama` — the local-tier floor: probed LIVE against OLLAMA_HOST (no /v1, D-003). A
+ *     real GET /api/tags decides up/down; an unreachable Ollama honestly reports down so a
+ *     local-tier route falls back up the ladder.
+ */
+export async function getProviderHealth(): Promise<ProviderHealth[]> {
+	const claudeUp = !!process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
+	const claude: ProviderHealth = {
+		provider: 'claude',
+		up: claudeUp,
+		detail: claudeUp ? undefined : 'Claude Code credential not configured'
+	};
+
+	const endpoint = process.env.OLLAMA_HOST?.trim() || 'http://127.0.0.1:11434';
+	let ollama: ProviderHealth;
+	try {
+		ollama = await new OllamaProvider({ endpoint, model: 'gpt-oss:20b' }).health();
+	} catch (err) {
+		ollama = { provider: 'ollama', up: false, detail: (err as Error).message };
+	}
+	return [claude, ollama];
 }
 
 /**

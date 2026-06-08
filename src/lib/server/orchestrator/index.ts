@@ -11,6 +11,7 @@ export {
 	type OrchestratorOptions,
 	type OrchMode,
 	type StubRoute,
+	type RouteResolver,
 	type DrainSummary
 } from './orchestrator';
 

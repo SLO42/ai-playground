@@ -1,0 +1,45 @@
+# Agent pool config (D-020 routing tiers; D-037 per-task provisioning).
+#
+# `tiers` is the model ladder routing (resolveRoute) selects from: a task's classified
+# intent → complexity → the CHEAPEST capable tier (escalation.order, with `local` as the
+# $0 floor), falling UP the ladder when a tier's provider is unhealthy (F-005). Each tier
+# names a PROVIDER (must match a registered provider: `claude` = the Claude Code CLI
+# backend, `ollama` = the local model) and a model id the runtime spawns with.
+#
+# The loader validates shape at boot (fail-closed). Edit the model ids to match what your
+# Claude Code credential / local Ollama actually serve.
+tiers:
+  local:
+    provider: ollama
+    model: gpt-oss:20b
+  haiku:
+    provider: claude
+    model: claude-haiku-4-5
+  sonnet:
+    provider: claude
+    model: claude-sonnet-4-5
+  opus:
+    provider: claude
+    model: claude-opus-4-8
+
+# Agent slots — the named roles a spawn runs as (carried into the isolated config dir).
+# A spawn picks the slot whose tier matches the resolved tier; an unmatched tier falls
+# back to the first slot.
+slots:
+  - id: opus-1
+    tier: opus
+    role: coder
+  - id: sonnet-1
+    tier: sonnet
+    role: builder
+  - id: haiku-1
+    tier: haiku
+    role: scout
+  - id: local-1
+    tier: local
+    role: local
+
+# Cheapest → dearest escalation order (the routing ladder above `local`). Routing prepends
+# the `local` floor automatically, so the effective ladder is: local → haiku → sonnet → opus.
+escalation:
+  order: [haiku, sonnet, opus]

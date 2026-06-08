@@ -28,7 +28,14 @@
 import type { Db } from '../db/client';
 import type { BusEvent, EventBus, Unsubscribe } from '../events/bus';
 import type { DbChange } from '../events/db-source';
-import type { AgentRuntime, Intent, ModelSelection, SpawnBudgets, ToolPolicy } from '../runtime/index';
+import type {
+	AgentRuntime,
+	CapabilitySet,
+	Intent,
+	ModelSelection,
+	SpawnBudgets,
+	ToolPolicy
+} from '../runtime/index';
 import { launchSession, type LaunchResult } from '../sessions/launch';
 import { getProject } from '../projects/repo';
 import { Semaphore } from './semaphore';
@@ -37,7 +44,13 @@ import { claimNext, complete, enqueue, gcStale, spawnsSince, DAY_MS } from './wo
 
 export type OrchMode = 'event' | 'manual' | 'periodic';
 
-/** The DEGENERATE stub route (2.3 replaces this with real routing). */
+/**
+ * The resolved spawn plan the route seam hands the drain (TASK 2.3 — real routing now
+ * fills this from resolveRoute; the field set is unchanged so the orchestrator shape is
+ * routing-agnostic). The `route` seam may be sync (a degenerate stub / a test) OR async
+ * (production resolveRoute, which awaits intent classification + provider health + writes
+ * the routing_event) — the orchestrator awaits it either way.
+ */
 export interface StubRoute {
 	model: ModelSelection;
 	intent: Intent;
@@ -45,7 +58,17 @@ export interface StubRoute {
 	toolPolicy: ToolPolicy;
 	/** Agent slot id to run the spawn as (a real slot picker lands with the pool wave). */
 	agentId: string;
+	/**
+	 * Per-task capability set from the resolved intent bundle (D-036 / TASK 5.1). Forwarded
+	 * onto the SpawnRequest so the runtime composes harness-base ⊕ THIS set (catalog-validated).
+	 * Absent ⇒ the harness base only.
+	 */
+	capabilities?: CapabilitySet;
 }
+
+/** The route seam: maps a triggering task → a resolved spawn plan. Sync (degenerate stub /
+ *  test) or async (production resolveRoute — content-dependent + writes the routing_event). */
+export type RouteResolver = (taskId: string, projectId: string) => StubRoute | Promise<StubRoute>;
 
 export interface OrchestratorOptions {
 	db: Db;
@@ -58,10 +81,12 @@ export interface OrchestratorOptions {
 	/** Periodic interval; ONLY armed when mode==='periodic' (off by default, D-004). */
 	intervalMs?: number;
 	/**
-	 * The DEGENERATE route resolver: maps a triggering task → a stub spawn plan. 2.3
-	 * swaps a real `resolveRoute` in here with NO change to the orchestrator shape.
+	 * The route resolver: maps a triggering task → a resolved spawn plan. TASK 2.3 wired the
+	 * real async `resolveRoute` in here (it classifies intent + selects tier + reads provider
+	 * health + WRITES the routing_event with rationale) — with NO change to the orchestrator
+	 * shape. May be sync (a degenerate stub / a test) or async; the drain awaits it either way.
 	 */
-	route: (taskId: string, projectId: string) => StubRoute;
+	route: RouteResolver;
 	/** Statuses that make a task spawn-ready. Default: 'ready'. */
 	spawnReadyStatuses?: readonly string[];
 	/**
@@ -110,7 +135,7 @@ export class Orchestrator {
 	readonly #sem: Semaphore;
 	readonly #mode: OrchMode;
 	readonly #intervalMs?: number;
-	readonly #route: OrchestratorOptions['route'];
+	readonly #route: RouteResolver;
 	readonly #spawnReady: ReadonlySet<string>;
 	readonly #postTask?: OrchestratorOptions['postTask'];
 	readonly #dailyCap?: number;
@@ -206,6 +231,13 @@ export class Orchestrator {
 	 * then a drain is triggered. CREATE rows in a spawn-ready status also enqueue (a
 	 * task created directly as 'ready'). This is the single trigger seam — one bus
 	 * event ⇒ at most one enqueue ⇒ at most one spawn.
+	 *
+	 * Crash-safe: this is invoked fire-and-forget (`void this.#onTrigger`), so any error in
+	 * the enqueue/drain MUST be caught here — an unhandled rejection would take down the whole
+	 * server process. A trigger failure (e.g. a transient DB error, or a dedup race when more
+	 * than one writer briefly overlaps) is logged and swallowed; the orchestrator is event-
+	 * driven, so a later trigger re-checks. This never weakens the dedup/no-double-fire guard:
+	 * enqueueTask still collapses a duplicate via the work_item UNIQUE dedup_key.
 	 */
 	async #onTrigger(e: BusEvent): Promise<void> {
 		const change = e.data as DbChange;
@@ -218,8 +250,14 @@ export class Orchestrator {
 		const projectId = row.project != null ? String(row.project) : '';
 		if (!taskId || !projectId) return;
 
-		await this.enqueueTask(taskId, projectId);
-		await this.drain();
+		try {
+			await this.enqueueTask(taskId, projectId);
+			await this.drain();
+		} catch (err) {
+			console.warn(
+				`[orchestrator] trigger for ${taskId} failed (will re-check on the next trigger): ${(err as Error).message}`
+			);
+		}
 	}
 
 	/**
@@ -303,10 +341,15 @@ export class Orchestrator {
 	}
 
 	/**
-	 * Run one claimed work_item as a spawn, then mark it terminal and release the
-	 * permit. The DEGENERATE route supplies a stub model/intent/budgets/toolPolicy
-	 * (no routing 2.3, no recall 2.5). The spawn goes through launchSession (1.6b),
-	 * which attaches the 1.4a isolated-config + permissions.deny guardrail.
+	 * Run one claimed work_item as a spawn, then mark it terminal and release the permit.
+	 * The route seam (TASK 2.3) resolves the spawn plan — in production it AWAITS resolveRoute,
+	 * which picks the provider+model through the canonical order (override→intent→tier→adaptive
+	 * →health→fallback) and WRITES the routing_event with rationale+intent BEFORE the spawn, so
+	 * the how/why is recorded the instant the model is chosen. The route is resolved exactly once
+	 * per claimed item (one claim ⇒ one route ⇒ one spawn — the exactly-one-spawn guarantee). A
+	 * route failure throws into the catch below → the work_item is marked failed (NO fabricated
+	 * route, no spawn). The spawn goes through launchSession (1.6b), which attaches the 1.4a
+	 * isolated-config + permissions.deny guardrail.
 	 */
 	async #runItem(
 		item: { id: string; payload: Record<string, unknown>; claimToken: string },
@@ -317,7 +360,10 @@ export class Orchestrator {
 		let ok = false;
 		try {
 			if (!taskId || !projectId) return;
-			const route = this.#route(taskId, projectId);
+			// Resolve the route (production: awaits resolveRoute → writes the routing_event with
+			// rationale+intent). Awaiting a sync stub return is a no-op, so test/degenerate seams
+			// keep working unchanged. Resolved once per claim — the exactly-one-spawn invariant.
+			const route = await this.#route(taskId, projectId);
 			const res: LaunchResult = await launchSession({
 				db: this.#db,
 				bus: this.#bus,
@@ -329,7 +375,8 @@ export class Orchestrator {
 					model: route.model,
 					intent: route.intent,
 					budgets: route.budgets,
-					toolPolicy: route.toolPolicy
+					toolPolicy: route.toolPolicy,
+					capabilities: route.capabilities
 				}
 			});
 			this.spawnCount++;

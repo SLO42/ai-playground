@@ -23,48 +23,138 @@
 // work_item then fail every spawn). We log the honest reason and skip; the dashboard still
 // boots and the queue waits for a credentialed boot. This mirrors the UI-action wiring seam.
 //
-// The production `route` seam: the Orchestrator's `route` is the DEGENERATE stub seam (2.2);
-// real routing (resolveRoute, 2.3) wires in separately and is async + needs task content,
-// which this synchronous seam can't host. Until that lands, the boot route uses the same
-// harness defaults the manual UI launch uses (DEFAULT_MODEL/INTENT/BUDGETS/TOOL_POLICY/AGENT)
-// — a real, valid spawn plan, not a fabricated one.
+// The production `route` seam (TASK 2.3 — WIRE ROUTING): the Orchestrator's `route` is now the
+// REAL router. `resolveRoute` (src/lib/server/routing) is async + task-content-dependent (it
+// classifies intent → selects the cheapest capable tier → reads provider health → falls back),
+// which the old SYNCHRONOUS stub seam could not host. TASK 8.1 left the seam degenerate (a
+// constant DEFAULT_MODEL) because the seam was sync; TASK 2.3 widened the seam to async (see
+// orchestrator.ts RouteResolver) and this boot wires resolveRoute in. On every spawn the route
+// is resolved from the TASK's content and a `routing_event` carrying the rationale + intent is
+// written (the trace) — so the engine picks the right-tier model per task AND the how/why is
+// recorded (the operator's core requirement). No fabricated route: a routing failure throws and
+// the work_item is marked failed (orchestrator #runItem), never silently downgraded to a constant.
 
 import type { Db } from '../db/client';
 import type { EventBus } from '../events/bus';
-import { getRuntime, getBus, DEFAULT_MODEL, DEFAULT_INTENT, DEFAULT_BUDGETS, DEFAULT_TOOL_POLICY, DEFAULT_AGENT } from '../harness';
-import { loadOrchestration, type OrchMode } from '../config/index';
-import { Orchestrator, type StubRoute } from './orchestrator';
+import { StringRecordId } from 'surrealdb';
+import { assertRecordId } from '../db/validate';
+import {
+	getRuntime,
+	getBus,
+	getProviderHealth,
+	resolveCapabilitiesForIntent,
+	DEFAULT_TOOL_POLICY,
+	DEFAULT_AGENT
+} from '../harness';
+import { loadOrchestration, loadAgentPool, type OrchMode, type AgentPool, type Orchestration } from '../config/index';
+import { resolveRoute, type RouteTask } from '../routing/index';
+import { Orchestrator, type StubRoute, type RouteResolver } from './orchestrator';
 
 /** What the boot wire did — so hooks.server.ts can log it and tests can assert it. */
 export type OrchestratorBootResult =
 	| { started: true; orchestrator: Orchestrator; mode: OrchMode; maxConcurrent: number }
 	| { started: false; reason: string };
 
-/** Load the orchestration config (mode + concurrency cap), degrading to safe defaults on a
- *  read/parse failure so a missing/edited config never blocks the live spawn path. */
-function readOrchestrationConfig(): { mode: OrchMode; maxConcurrent: number; intervalMs?: number } {
+/** Load the orchestration config (mode + concurrency cap + the full bundle for routing),
+ *  degrading to safe defaults on a read/parse failure so a missing/edited config never blocks
+ *  the live boot. `orchestration` is null only on a read failure (routing then has no adaptive
+ *  bundles — the route resolver surfaces that as a per-spawn failure, not a fabricated plan). */
+function readOrchestrationConfig(): {
+	mode: OrchMode;
+	maxConcurrent: number;
+	intervalMs?: number;
+	orchestration: Orchestration | null;
+} {
 	try {
 		const dir = process.env.CONFIG_DIR?.trim() || 'config';
 		const orch = loadOrchestration(`${dir}/orchestration.yaml`);
-		return { mode: orch.mode, maxConcurrent: orch.concurrency.maxAgents, intervalMs: orch.intervalMs };
+		return {
+			mode: orch.mode,
+			maxConcurrent: orch.concurrency.maxAgents,
+			intervalMs: orch.intervalMs,
+			orchestration: orch
+		};
 	} catch (err) {
 		console.warn(
 			`[startup] orchestration config unreadable — defaulting to event mode, maxConcurrent=4: ${(err as Error).message}`
 		);
-		return { mode: 'event', maxConcurrent: 4 };
+		return { mode: 'event', maxConcurrent: 4, orchestration: null };
 	}
 }
 
-/** The production route seam (degenerate, 2.2): a real, valid spawn plan from the same
- *  harness defaults the manual UI launch uses. 2.3 swaps real routing in with no shape change. */
-function bootRoute(): (taskId: string, projectId: string) => StubRoute {
-	return () => ({
-		agentId: DEFAULT_AGENT,
-		model: DEFAULT_MODEL,
-		intent: DEFAULT_INTENT,
-		budgets: DEFAULT_BUDGETS,
-		toolPolicy: DEFAULT_TOOL_POLICY
-	});
+/** Load the agent-pool tiers + slots (the routing ladder). Returns null on a read failure so
+ *  the boot can decide to skip starting the orchestrator (a router with no tiers can't spawn). */
+function readAgentPool(): AgentPool | null {
+	try {
+		const dir = process.env.CONFIG_DIR?.trim() || 'config';
+		return loadAgentPool(`${dir}/agent-pool.yaml`);
+	} catch (err) {
+		console.warn(`[startup] agent-pool config unreadable: ${(err as Error).message}`);
+		return null;
+	}
+}
+
+/** Read the task's content (the input resolveRoute classifies). LIVE DB only (F-008) — the
+ *  intent + tier come from the real title/description, never a constant. Throws if the task
+ *  is gone (the route then fails honestly rather than spawning a fabricated plan). */
+async function readRouteTask(db: Db, taskId: string, projectId: string): Promise<RouteTask> {
+	const tid = new StringRecordId(assertRecordId(taskId));
+	const [rows] = await db.query<[Array<{ id: unknown; title?: string; description?: string }>]>(
+		`SELECT id, title, description FROM ONLY $tid;`,
+		{ tid }
+	);
+	const row = (Array.isArray(rows) ? rows[0] : rows) as
+		| { id: unknown; title?: string; description?: string }
+		| undefined;
+	if (!row) throw new Error(`routing: task not found: ${taskId}`);
+	return {
+		id: String(row.id),
+		project: projectId,
+		title: row.title ?? '',
+		description: row.description ?? ''
+	};
+}
+
+/** Pick the agent slot to run as for the resolved tier; fall back to DEFAULT_AGENT when no
+ *  slot matches (the slot list is advisory — a missing tier slot must not block the spawn). */
+function agentForTier(pool: AgentPool, tier: string | undefined): string {
+	if (tier) {
+		const slot = pool.slots.find((s) => s.tier === tier);
+		if (slot) return slot.id;
+	}
+	return pool.slots[0]?.id ?? DEFAULT_AGENT;
+}
+
+/**
+ * The production route seam (TASK 2.3): the REAL router. For each triggering task it reads
+ * the task content, runs `resolveRoute` (override→intent→tier→adaptive→health→fallback) which
+ * PICKS the provider+model AND writes a `routing_event` with the rationale + intent (the
+ * trace), then maps the ResolvedPlan onto the orchestrator's spawn-plan shape. The pool +
+ * orchestration config are loaded ONCE per boot (the orchestrator is a per-boot singleton); a
+ * config re-edit takes effect on the next boot. Provider health is read from the harness single
+ * owner (getProviderHealth). NO fabricated route — a read/resolve failure rejects and the
+ * work_item is marked failed by the orchestrator.
+ */
+function bootRoute(db: Db, pool: AgentPool, orchestration: Orchestration): RouteResolver {
+	return async (taskId: string, projectId: string): Promise<StubRoute> => {
+		const task = await readRouteTask(db, taskId, projectId);
+		const plan = await resolveRoute({
+			db,
+			task,
+			pool,
+			orchestration,
+			providerHealth: getProviderHealth
+		});
+		return {
+			agentId: agentForTier(pool, plan.model.tier),
+			model: plan.model,
+			intent: plan.intent,
+			budgets: plan.budgets,
+			toolPolicy: DEFAULT_TOOL_POLICY,
+			// D-036: the resolved intent's capability set from the live orchestration config.
+			capabilities: resolveCapabilitiesForIntent(plan.intent)
+		};
+	};
 }
 
 /**
@@ -84,7 +174,19 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		return { started: false, reason: avail.reason };
 	}
 
-	const { mode, maxConcurrent, intervalMs } = readOrchestrationConfig();
+	const { mode, maxConcurrent, intervalMs, orchestration } = readOrchestrationConfig();
+
+	// The router needs BOTH the tier ladder (agent-pool) and the adaptive bundles
+	// (orchestration). Without them resolveRoute cannot pick a tier or apply D-020 — a started
+	// orchestrator would claim work then fail every route. Skip honestly (F-008) so the queue
+	// waits for a fixed config, rather than spawning on a fabricated constant.
+	const pool = readAgentPool();
+	if (!pool || pool.slots.length === 0 || Object.keys(pool.tiers).length === 0) {
+		return { started: false, reason: 'agent-pool config missing or empty (no routing tiers/slots)' };
+	}
+	if (!orchestration) {
+		return { started: false, reason: 'orchestration config unreadable (no adaptive bundles for routing)' };
+	}
 
 	const orchestrator = new Orchestrator({
 		db,
@@ -96,7 +198,9 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		// event mode is harmless (the timer is only armed when mode==='periodic'), but we keep
 		// the orchestration.yaml intent faithful by forwarding it.
 		intervalMs,
-		route: bootRoute()
+		// TASK 2.3 — the REAL router: resolveRoute picks the tier from task content + writes the
+		// routing_event with rationale on every spawn (no constant DEFAULT_MODEL).
+		route: bootRoute(db, pool, orchestration)
 	});
 	orchestrator.start();
 

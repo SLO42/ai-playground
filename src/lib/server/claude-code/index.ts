@@ -29,6 +29,28 @@ export {
 	type GuardrailSettings
 } from './guardrails';
 
+// TASK 2.13 — the GATE layer (defense-in-depth ON TOP of 1.4a's primary
+// permissions.deny, D-024/D-018): one pure evaluator consulted by BOTH the SDK
+// canUseTool callback and the CLI PreToolUse hook. config-protection, read-before-edit,
+// dangerous-bash, path-confinement; safety-critical families fail CLOSED.
+export {
+	evaluateGate,
+	createGateSession,
+	gateCanUseTool,
+	gatePreToolUse,
+	DEFAULT_GATE_POLICY,
+	type GateName,
+	type GateMode,
+	type GatePolicy,
+	type ToolCall,
+	type GateContext,
+	type GateDecision,
+	type GateSession,
+	type CanUseToolResult,
+	type PreToolUsePayload,
+	type PreToolUseOutput
+} from './gates';
+
 // TASK 2.10 — session control: the channel.pushToSession seam + interject/stop/resume
 // + fleet view (D-011/D-035/D-025/D-026). Origin is server-stamped + immutable; only an
 // authenticated operator (D-025 token on the loopback control endpoint) may steer.

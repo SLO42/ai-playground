@@ -27,8 +27,8 @@
      they are served; when absent, font-display:swap + the --font-sans system
      fallback chain render text cleanly with no FOIT lockup and no layout break. */
   src: local('Lastik'),
-       url('/fonts/Lastik-Free.woff2') format('woff2'),
-       url('/fonts/Lastik-Free.woff') format('woff');
+       url('/fonts/LastikFreeFont-Free.woff2') format('woff2'),
+       url('/fonts/LastikFreeFont-Free.woff') format('woff');
   font-weight: 100 900;
   font-style: normal;
   font-display: swap;

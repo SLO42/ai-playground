@@ -7,12 +7,16 @@
    * default (§1.2): a `workflow`/`workflow_run`/`session` row change on the one SSE stream
    * re-invalidates the loader so list + detail update in place. Svelte 5 runes only.
    */
+  import { enhance } from '$app/forms';
   import { invalidate } from '$app/navigation';
   import { page } from '$app/state';
   import { stream } from '$lib/client/stream.svelte';
-  import type { PageData } from './$types';
+  import type { PageData, ActionData } from './$types';
 
-  let { data }: { data: PageData } = $props();
+  let { data, form }: { data: PageData; form: ActionData } = $props();
+
+  // Which workflow row is mid-run (disables its button + shows progress).
+  let runningId = $state<string | null>(null);
 
   const connected = $derived(data.connected);
   const workflows = $derived(data.workflows ?? []);
@@ -81,7 +85,7 @@
       {:else}
         <table class="rollup-table">
           <thead>
-            <tr><th>name</th><th>trigger</th><th>steps</th><th>project</th><th>created</th></tr>
+            <tr><th>name</th><th>trigger</th><th>steps</th><th>project</th><th>created</th><th></th></tr>
           </thead>
           <tbody>
             {#each workflows as w (w.id)}
@@ -91,10 +95,34 @@
                 <td class="mono">{w.stepCount}</td>
                 <td class="mono">{shortProject(w.project)}</td>
                 <td class="mono">{fmtTime(w.createdAt)}</td>
+                <td>
+                  <!-- Job 10: run this workflow (PRODUCT §4.10). -->
+                  <form
+                    method="POST"
+                    action="?/run"
+                    use:enhance={() => {
+                      runningId = w.id;
+                      return async ({ update }) => {
+                        await update({ reset: false });
+                        runningId = null;
+                      };
+                    }}
+                  >
+                    <input type="hidden" name="workflowId" value={w.id} />
+                    <button class="run-btn" type="submit" disabled={runningId === w.id}>
+                      {runningId === w.id ? 'running…' : 'run'}
+                    </button>
+                  </form>
+                </td>
               </tr>
             {/each}
           </tbody>
         </table>
+      {/if}
+      {#if form?.run && 'error' in form.run}
+        <p class="form-error" role="alert">{form.run.error}</p>
+      {:else if form?.run && 'ok' in form.run}
+        <p class="form-ok">Run {shortId(form.run.runId)} started · {form.run.status}</p>
       {/if}
     </div>
 
@@ -298,5 +326,36 @@
   .status-tag[data-status='cancelled'],
   .status-tag[data-status='pending'] {
     color: var(--color-text-muted);
+  }
+  .run-btn {
+    appearance: none;
+    background: var(--color-accent);
+    color: var(--color-text-inverse, var(--color-bg, #03120e));
+    border: var(--border-width, 1px) solid var(--color-accent);
+    border-radius: var(--radius-sm, 6px);
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.2rem 0.7rem;
+    cursor: pointer;
+    min-height: 24px;
+  }
+  .run-btn:hover:not(:disabled) {
+    filter: brightness(1.08);
+  }
+  .run-btn:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  .run-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .form-error {
+    font: var(--type-body-sm);
+    color: var(--color-error, var(--color-danger, crimson));
+  }
+  .form-ok {
+    font: var(--type-body-sm);
+    color: var(--color-success, var(--color-running, var(--color-accent)));
   }
 </style>

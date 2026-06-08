@@ -6,11 +6,13 @@
 // honestly (D-019): DB not connected → connected:false + empty. Live (UI-SPEC §1.2): the
 // SSE `workflow`/`workflow_run`/`session` watchers re-invalidate this loader.
 
+import { fail } from '@sveltejs/kit';
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import { assertRecordId } from '$lib/server/db/validate';
-import { listWorkflows, listWorkflowRuns, getWorkflowRunDetail } from '$lib/server/workflows';
+import { listWorkflows, listWorkflowRuns, getWorkflowRunDetail, runWorkflow } from '$lib/server/workflows';
 import type { WorkflowListItem, WorkflowRunListItem, WorkflowRunDetail } from '$lib/server/workflows';
-import type { PageServerLoad } from './$types';
+import { getBus, getRuntime } from '$lib/server/harness';
+import type { Actions, PageServerLoad } from './$types';
 
 export interface WorkflowsData {
 	connected: boolean;
@@ -57,5 +59,50 @@ export const load: PageServerLoad = async ({ depends, url }): Promise<WorkflowsD
 			selectedRun: null,
 			error: (err as Error).message
 		};
+	}
+};
+
+export const actions: Actions = {
+	/**
+	 * Job-10 run trigger (PRODUCT §4.10): execute a workflow definition as a tracked
+	 * workflow_run via the 2.17 DAG runner. Each step is a real session linked to the run,
+	 * streamed live over the one SSE (§2.11). Honest when the credential is absent (F-008):
+	 * returns the real reason rather than faking a run. The workflow id is validated at the
+	 * boundary (D-016).
+	 */
+	run: async ({ request }) => {
+		const form = await request.formData();
+		const raw = form.get('workflowId');
+		const workflowId = typeof raw === 'string' ? raw.trim() : '';
+		if (!workflowId) {
+			return fail(400, { run: { error: 'Pick a workflow to run.' } });
+		}
+		try {
+			assertRecordId(workflowId);
+		} catch {
+			return fail(400, { run: { error: 'invalid workflow id' } });
+		}
+
+		const db = tryGetDb();
+		if (!db) {
+			return fail(503, { run: { error: 'Database not connected — start SurrealDB and retry.' } });
+		}
+
+		const runtimeAvail = getRuntime();
+		if (!runtimeAvail.available) {
+			return fail(503, { run: { error: runtimeAvail.reason } });
+		}
+
+		try {
+			const result = await runWorkflow({
+				db,
+				bus: getBus(),
+				runtime: runtimeAvail.runtime,
+				workflow: workflowId
+			});
+			return { run: { ok: true as const, runId: result.runId, status: result.status } };
+		} catch (err) {
+			return fail(500, { run: { error: (err as Error).message } });
+		}
 	}
 };

@@ -24,9 +24,19 @@ import {
 } from '$lib/server/projects/repo';
 import { listTasksByProject } from '$lib/server/tasks/repo';
 import { listFleetByProject, type FleetSession } from '$lib/server/analytics';
+import { listSessionMessages, launchSession, type TranscriptMessage } from '$lib/server/sessions';
+import {
+	getBus,
+	getRuntime,
+	DEFAULT_MODEL,
+	DEFAULT_AGENT,
+	DEFAULT_BUDGETS,
+	DEFAULT_TOOL_POLICY,
+	DEFAULT_INTENT
+} from '$lib/server/harness';
 import { assertRecordId } from '$lib/server/db/validate';
-import { error } from '@sveltejs/kit';
-import type { PageServerLoad } from './$types';
+import { error, fail } from '@sveltejs/kit';
+import type { Actions, PageServerLoad } from './$types';
 
 /** A task row reduced to what the detail page renders (plain, serializable). */
 export interface TaskSummary {
@@ -57,10 +67,14 @@ export interface ProjectDetailData {
 	sprints: SprintRow[];
 	tasks: TaskSummary[];
 	sessions: FleetSession[];
+	/** The `?session=` selected session id (validated), or null. */
+	selectedSession: string | null;
+	/** Persisted transcript of the selected session (historical; live streams via SSE). */
+	transcript: TranscriptMessage[];
 	error?: string;
 }
 
-export const load: PageServerLoad = async ({ params, depends }): Promise<ProjectDetailData> => {
+export const load: PageServerLoad = async ({ params, depends, url }): Promise<ProjectDetailData> => {
 	// Live re-invalidation keys: the SSE watchers for these tables re-run this loader.
 	depends('app:projects');
 	depends('app:tasks');
@@ -75,6 +89,18 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<Project
 		throw error(404, 'invalid project id');
 	}
 
+	// The `?session=` selected session id — validated at the boundary (D-016). A malformed
+	// value is ignored (no transcript fetched), never interpolated.
+	const sessionParam = url.searchParams.get('session');
+	let selectedSession: string | null = null;
+	if (sessionParam) {
+		try {
+			selectedSession = assertRecordId(sessionParam);
+		} catch {
+			selectedSession = null;
+		}
+	}
+
 	const db = tryGetDb();
 	if (!db) {
 		return {
@@ -85,7 +111,9 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<Project
 			features: [],
 			sprints: [],
 			tasks: [],
-			sessions: []
+			sessions: [],
+			selectedSession,
+			transcript: []
 		};
 	}
 
@@ -95,13 +123,14 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<Project
 			throw error(404, 'project not found');
 		}
 
-		const [releases, phases, features, sprints, taskRows, sessions] = await Promise.all([
+		const [releases, phases, features, sprints, taskRows, sessions, transcript] = await Promise.all([
 			listReleases(db, projectId),
 			listPhases(db, projectId),
 			listFeatures(db, projectId),
 			listSprints(db, projectId),
 			listTasksByProject(db, projectId),
-			listFleetByProject(db, projectId, 30)
+			listFleetByProject(db, projectId, 30),
+			selectedSession ? listSessionMessages(db, selectedSession) : Promise.resolve([])
 		]);
 
 		const tasks: TaskSummary[] = taskRows.map((t) => ({
@@ -130,7 +159,9 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<Project
 			features,
 			sprints,
 			tasks,
-			sessions
+			sessions,
+			selectedSession,
+			transcript
 		};
 	} catch (err) {
 		// A 404 thrown above is a SvelteKit HttpError — rethrow it, don't swallow.
@@ -144,7 +175,72 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<Project
 			sprints: [],
 			tasks: [],
 			sessions: [],
+			selectedSession,
+			transcript: [],
 			error: (err as Error).message
 		};
+	}
+};
+
+export const actions: Actions = {
+	/**
+	 * Job-8 manual session launch (PRODUCT §4.8): launch a Claude Code session for this
+	 * project against an existing task (the task seeds the prompt; D-008). Drives the real
+	 * runtime via launchSession, republishing each transcript event onto the one bus → SSE
+	 * (§2.11) so the Sessions tab streams it live. Honest when the credential is absent
+	 * (F-008): returns the real reason rather than spawning a fake run. Validates at the
+	 * boundary (D-016): the task id is validated; the project id is the route param.
+	 */
+	launch: async ({ params, request }) => {
+		let projectId: string;
+		try {
+			projectId = assertRecordId(`project:${params.id}`);
+		} catch {
+			return fail(400, { launch: { error: 'invalid project id' } });
+		}
+
+		const form = await request.formData();
+		const rawTask = form.get('taskId');
+		const taskId = typeof rawTask === 'string' ? rawTask.trim() : '';
+		if (!taskId) {
+			return fail(400, { launch: { error: 'Pick a task to launch a session against.' } });
+		}
+		try {
+			assertRecordId(taskId);
+		} catch {
+			return fail(400, { launch: { error: 'invalid task id' } });
+		}
+
+		const db = tryGetDb();
+		if (!db) {
+			return fail(503, { launch: { error: 'Database not connected — start SurrealDB and retry.' } });
+		}
+
+		const runtimeAvail = getRuntime();
+		if (!runtimeAvail.available) {
+			return fail(503, { launch: { error: runtimeAvail.reason } });
+		}
+
+		try {
+			const result = await launchSession({
+				db,
+				bus: getBus(),
+				runtime: runtimeAvail.runtime,
+				input: {
+					projectId,
+					taskId,
+					agentId: DEFAULT_AGENT,
+					model: DEFAULT_MODEL,
+					intent: DEFAULT_INTENT,
+					budgets: DEFAULT_BUDGETS,
+					toolPolicy: DEFAULT_TOOL_POLICY
+				}
+			});
+			return {
+				launch: { ok: true as const, sessionId: result.sessionId, status: result.status }
+			};
+		} catch (err) {
+			return fail(500, { launch: { error: (err as Error).message } });
+		}
 	}
 };

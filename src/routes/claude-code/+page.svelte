@@ -7,17 +7,84 @@
    * is LIVE from the cc_* mirror (F-008 — no fabricated rows); honest empty states
    * when nothing is synced or the DB isn't connected yet. Svelte 5 runes only.
    */
-  import type { PageData } from './$types';
+  import { enhance } from '$app/forms';
+  import { invalidate } from '$app/navigation';
+  import { stream } from '$lib/client/stream.svelte';
+  import type { PageData, ActionData } from './$types';
 
-  let { data }: { data: PageData } = $props();
+  let { data, form }: { data: PageData; form: ActionData } = $props();
 
   const scopes = $derived(data.scopes ?? []);
   const connected = $derived(data.connected);
+
+  // The editor is a single shared panel; `editing` identifies which scope+kind it's open for
+  // so only that scope's card shows the panel. The action phases (editing → confirming →
+  // saved) flow through `form.edit` (D-010 diff-and-confirm).
+  let editing = $state<{ scopeId: string; kind: string } | null>(null);
+
+  // The `form.edit` action result is a union across loadFile/planEdit/applyEdit (+ their
+  // fail returns). Narrow it ONCE here into a plain, fully-typed view the template reads —
+  // so the markup never wrestles the union (D-010 phases: editing → confirming → saved).
+  interface EditView {
+    phase: 'editing' | 'confirming' | 'saved' | 'error';
+    error?: string;
+    issues?: Array<{ path: string; message: string }>;
+    claudeDir?: string;
+    kind?: string;
+    filePath?: string;
+    content?: string;
+    bytesWritten?: number;
+    status?: string;
+    validation?: { ok: boolean; issues: Array<{ path: string; message: string }> };
+    diff?: { unchanged: boolean; hunks: Array<{ op: string; line: string }> };
+    confirmToken?: string;
+  }
+  const edit = $derived.by((): EditView | null => {
+    const e = form?.edit as Record<string, unknown> | null | undefined;
+    if (!e) return null;
+    const out: EditView = { phase: 'editing' };
+    if ('error' in e) out.phase = 'error';
+    if (typeof e.phase === 'string') out.phase = e.phase as EditView['phase'];
+    if (typeof e.error === 'string') out.error = e.error;
+    if (Array.isArray(e.issues)) out.issues = e.issues as EditView['issues'];
+    if (typeof e.claudeDir === 'string') out.claudeDir = e.claudeDir;
+    if (typeof e.kind === 'string') out.kind = e.kind;
+    if (typeof e.filePath === 'string') out.filePath = e.filePath;
+    if (typeof e.content === 'string') out.content = e.content;
+    if (typeof e.bytesWritten === 'number') out.bytesWritten = e.bytesWritten;
+    if (typeof e.status === 'string') out.status = e.status;
+    if (e.validation) out.validation = e.validation as EditView['validation'];
+    if (e.diff) out.diff = e.diff as EditView['diff'];
+    if (typeof e.confirmToken === 'string') out.confirmToken = e.confirmToken;
+    return out;
+  });
+
+  // Live: a cc_* re-sync after an apply changes the catalog — re-invalidate so the synced
+  // badge updates in place. The catalog isn't a watched table, so we re-run the loader on
+  // any saved apply directly (below) AND on session/project changes the SSE already carries.
+  $effect(() => {
+    const off = stream.onDbChange('project', () => void invalidate(() => true));
+    return off;
+  });
 
   function statusLabel(s: string): string {
     if (s === 'synced') return 'synced';
     if (s === 'out_of_sync') return 'out of sync · edited on disk';
     return 'not synced';
+  }
+
+  // Which editable file kinds a scope offers (settings + the two siblings — the common set).
+  const FILE_KINDS = [
+    { kind: 'settings', label: 'settings.json' },
+    { kind: 'claude_md', label: 'CLAUDE.md' },
+    { kind: 'mcp_json', label: '.mcp.json' }
+  ] as const;
+
+  function openEditor(scopeId: string, kind: string): void {
+    editing = { scopeId, kind };
+  }
+  function closeEditor(): void {
+    editing = null;
   }
 </script>
 
@@ -146,6 +213,127 @@
               {/if}
             </div>
           </div>
+
+          <!-- Job 9: config edit (D-010 diff + confirm). Filesystem stays authoritative. -->
+          {#if scope.kind === 'project' || scope.kind === 'global'}
+            <div class="edit-bar">
+              <span class="eyebrow">edit config</span>
+              {#each FILE_KINDS as fk (fk.kind)}
+                <form
+                  method="POST"
+                  action="?/loadFile"
+                  use:enhance={() => {
+                    openEditor(scope.scopeId, fk.kind);
+                    return async ({ update }) => update({ reset: false });
+                  }}
+                >
+                  <input type="hidden" name="kind" value={fk.kind} />
+                  <input type="hidden" name="claudeDir" value={scope.path} />
+                  <input type="hidden" name="scopeKind" value={scope.kind} />
+                  {#if scope.project}<input type="hidden" name="project" value={scope.project} />{/if}
+                  <button
+                    class="edit-btn"
+                    type="submit"
+                    aria-pressed={editing?.scopeId === scope.scopeId && editing?.kind === fk.kind}
+                    >{fk.label}</button
+                  >
+                </form>
+              {/each}
+            </div>
+
+            {#if (editing?.scopeId === scope.scopeId) || (edit?.claudeDir === scope.path)}
+              {@const k = edit?.kind ?? editing?.kind ?? 'settings'}
+              <div class="editor" aria-label="config editor">
+                <div class="editor-head">
+                  <span class="mono">{k}</span>
+                  {#if edit && 'filePath' in edit && edit.filePath}
+                    <span class="path mono" title={edit.filePath}>{edit.filePath}</span>
+                  {/if}
+                  <button class="edit-btn" type="button" onclick={closeEditor}>close</button>
+                </div>
+
+                {#if edit?.error}
+                  <p class="form-error" role="alert">{edit.error}</p>
+                  {#if edit.issues}
+                    <ul class="issues">
+                      {#each edit.issues as iss (iss.path + iss.message)}
+                        <li class="mono"><b>{iss.path}</b> — {iss.message}</li>
+                      {/each}
+                    </ul>
+                  {/if}
+                {/if}
+
+                {#if edit?.phase === 'saved'}
+                  <p class="form-ok">
+                    Config saved — {edit.bytesWritten} bytes · mirror {edit.status}
+                  </p>
+                {/if}
+
+                <!-- The edit form: textarea content → planEdit (diff) → applyEdit (confirm). -->
+                {#if edit && edit.phase !== 'saved'}
+                  <form
+                    method="POST"
+                    action="?/planEdit"
+                    use:enhance={() => async ({ update }) => update({ reset: false })}
+                  >
+                    <input type="hidden" name="kind" value={k} />
+                    <input type="hidden" name="claudeDir" value={scope.path} />
+                    <input type="hidden" name="scopeKind" value={scope.kind} />
+                    {#if scope.project}<input type="hidden" name="project" value={scope.project} />{/if}
+                    {#if edit.filePath}<input type="hidden" name="filePath" value={edit.filePath} />{/if}
+                    <textarea class="editor-area mono" name="content" rows="12">{edit.content ?? ''}</textarea>
+                    <div class="editor-actions">
+                      <button class="edit-btn primary" type="submit">Review diff</button>
+                    </div>
+                  </form>
+                {/if}
+
+                <!-- The confirm step: show the diff + a confirm button bound to the token. -->
+                {#if edit?.phase === 'confirming' && edit.diff && edit.validation}
+                  <div class="diff" aria-label="config diff">
+                    {#if edit.diff.unchanged}
+                      <p class="state-body">No changes — the proposed content matches disk.</p>
+                    {:else}
+                      <pre class="diff-pre mono">{#each edit.diff.hunks as h, i (i)}<span
+                            class="hunk"
+                            data-op={h.op}>{h.op} {h.line}
+</span>{/each}</pre>
+                    {/if}
+                  </div>
+                  {#if !edit.validation.ok}
+                    <p class="form-error" role="alert">
+                      Validation failed — fix the issues before saving:
+                    </p>
+                    <ul class="issues">
+                      {#each edit.validation.issues as iss (iss.path + iss.message)}
+                        <li class="mono"><b>{iss.path}</b> — {iss.message}</li>
+                      {/each}
+                    </ul>
+                  {/if}
+                  <form
+                    method="POST"
+                    action="?/applyEdit"
+                    use:enhance={() => async ({ update }) => update({ reset: false })}
+                  >
+                    <input type="hidden" name="kind" value={k} />
+                    <input type="hidden" name="claudeDir" value={scope.path} />
+                    <input type="hidden" name="scopeKind" value={scope.kind} />
+                    {#if scope.project}<input type="hidden" name="project" value={scope.project} />{/if}
+                    {#if edit.filePath}<input type="hidden" name="filePath" value={edit.filePath} />{/if}
+                    <input type="hidden" name="content" value={edit.content ?? ''} />
+                    <input type="hidden" name="confirmToken" value={edit.confirmToken ?? ''} />
+                    <div class="editor-actions">
+                      <button
+                        class="edit-btn primary"
+                        type="submit"
+                        disabled={!edit.validation.ok || edit.diff.unchanged}>Confirm &amp; save</button
+                      >
+                    </div>
+                  </form>
+                {/if}
+              </div>
+            {/if}
+          {/if}
         </article>
       {/each}
     </div>
@@ -322,5 +510,140 @@
     font-size: 0.75rem;
     color: var(--color-text-muted);
     font-style: italic;
+  }
+
+  /* ── Job-9 config editor (D-010 diff + confirm) ──────────────────────────── */
+  .edit-bar {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+    border-top: 1px solid var(--color-border-faint, var(--color-border));
+    padding-top: var(--space-3, 0.75rem);
+  }
+  .edit-bar form {
+    display: contents;
+  }
+  .edit-btn {
+    appearance: none;
+    background: var(--color-surface-overlay);
+    color: var(--color-text);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.2rem 0.6rem;
+    cursor: pointer;
+    min-height: 24px;
+  }
+  .edit-btn:hover {
+    background: var(--color-surface-card);
+  }
+  .edit-btn:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  .edit-btn[aria-pressed='true'] {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+  .edit-btn.primary {
+    background: var(--color-accent);
+    color: var(--color-text-inverse, var(--color-bg, #03120e));
+    border-color: var(--color-accent);
+  }
+  .edit-btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .editor {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: var(--space-3, 0.75rem);
+    background: var(--color-surface-overlay);
+  }
+  .editor-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2, 0.5rem);
+  }
+  .editor-head .path {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .editor-area {
+    width: 100%;
+    box-sizing: border-box;
+    resize: vertical;
+    background: var(--color-bg, #03120e);
+    color: var(--color-text);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.6rem 0.7rem;
+    font-size: 0.78rem;
+    line-height: 1.4;
+  }
+  .editor-area:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  .editor-actions {
+    display: flex;
+    gap: var(--space-2, 0.5rem);
+    margin-top: var(--space-2, 0.5rem);
+  }
+  .diff {
+    max-height: 18rem;
+    overflow: auto;
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-bg, #03120e);
+  }
+  .diff-pre {
+    margin: 0;
+    padding: 0.5rem 0.7rem;
+    font-size: 0.76rem;
+    line-height: 1.4;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .hunk[data-op='+'] {
+    color: var(--color-success, #6fae6f);
+  }
+  .hunk[data-op='-'] {
+    color: var(--color-error, var(--color-danger, crimson));
+  }
+  .hunk[data-op=' '] {
+    color: var(--color-text-muted);
+  }
+  .issues {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font-size: 0.74rem;
+    color: var(--color-error, var(--color-danger, crimson));
+  }
+  .form-error {
+    font: var(--type-body-sm);
+    color: var(--color-error, var(--color-danger, crimson));
+  }
+  .form-ok {
+    font: var(--type-body-sm);
+    color: var(--color-success, var(--color-running, var(--color-accent)));
+  }
+  .state-body {
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
   }
 </style>

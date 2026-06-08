@@ -9,10 +9,11 @@
 
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import { getProject } from '$lib/server/projects/repo';
-import { listReleaseRuns, RELEASE_STAGES, type ReleaseRunSummary } from '$lib/server/release';
+import { listReleaseRuns, runRelease, RELEASE_STAGES, type ReleaseRunSummary } from '$lib/server/release';
+import { getBus, getRuntime, DEFAULT_MODEL } from '$lib/server/harness';
 import { assertRecordId } from '$lib/server/db/validate';
-import { error } from '@sveltejs/kit';
-import type { PageServerLoad } from './$types';
+import { error, fail } from '@sveltejs/kit';
+import type { Actions, PageServerLoad } from './$types';
 
 export interface ReleaseData {
 	connected: boolean;
@@ -52,5 +53,64 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<Release
 		};
 	} catch (err) {
 		return { connected: false, projectId, stages, runs: [], error: (err as Error).message };
+	}
+};
+
+export const actions: Actions = {
+	/**
+	 * Job-10 release run (PRODUCT §4.10 / §4.5): run the canonical dry-run → test → changelog
+	 * → version → tag → publish pipeline as a tracked workflow_run, each stage a real session
+	 * streamed live over the one SSE (§2.11). Honest when the credential is absent (F-008).
+	 * The project id is the route param (validated); the target version is validated here.
+	 */
+	run: async ({ params, request }) => {
+		let projectId: string;
+		try {
+			projectId = assertRecordId(`project:${params.id}`);
+		} catch {
+			return fail(400, { release: { error: 'invalid project id' } });
+		}
+
+		const formData = await request.formData();
+		const raw = formData.get('version');
+		const version = typeof raw === 'string' ? raw.trim() : '';
+		if (!version) {
+			return fail(400, { release: { error: 'Enter a target version, e.g. v0.4.' } });
+		}
+		if (version.length > 64) {
+			return fail(400, { release: { error: 'Version is too long.' } });
+		}
+
+		const db = tryGetDb();
+		if (!db) {
+			return fail(503, { release: { error: 'Database not connected — start SurrealDB and retry.' } });
+		}
+
+		const project = await getProject(db, projectId);
+		if (!project) {
+			return fail(404, { release: { error: 'project not found' } });
+		}
+
+		const runtimeAvail = getRuntime();
+		if (!runtimeAvail.available) {
+			return fail(503, { release: { error: runtimeAvail.reason } });
+		}
+
+		try {
+			const result = await runRelease({
+				db,
+				bus: getBus(),
+				runtime: runtimeAvail.runtime,
+				projectId,
+				version,
+				cwd: project.root_path,
+				model: DEFAULT_MODEL
+			});
+			return {
+				release: { ok: true as const, runId: result.runId, status: result.status, version }
+			};
+		} catch (err) {
+			return fail(500, { release: { error: (err as Error).message } });
+		}
 	}
 };

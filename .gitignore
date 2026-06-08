@@ -17,6 +17,10 @@ dist/
 **/.data/
 *.log
 
+# Per-session isolated Claude Code config dirs (S1/D-002) — runtime artifacts, never tracked
+/.harness/
+**/.harness/
+
 # SurrealDB server binary + cache (D-006: provisioned at build, NOT committed)
 /bin/surreal*
 /.surreal/

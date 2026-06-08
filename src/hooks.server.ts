@@ -16,8 +16,11 @@
 import { initDbFromEnv, tryGetDb, type DbInitResult } from '$lib/server/db/runtime-init';
 import { getEventBus, watchTable, type DbSourceHandle } from '$lib/server/events';
 
-/** Tables whose row changes feed the dashboard's live regions (v0.1 set). */
-const WATCHED_TABLES = ['project', 'task', 'session'] as const;
+/** Tables whose row changes feed the dashboard's live regions.
+ *  v0.1: project/task/session. 2.4 adds the analytics tables so /reports + /agents
+ *  rollups and the live fleet/cost ticker (UI-SPEC §229/§230) update in place as
+ *  agent_event / routing_event rows arrive — over the ONE SSE stream (§2.11). */
+const WATCHED_TABLES = ['project', 'task', 'session', 'agent_event', 'routing_event'] as const;
 
 const watchers: DbSourceHandle[] = [];
 

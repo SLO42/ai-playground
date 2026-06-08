@@ -27,6 +27,7 @@ import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import type { EventBus } from '../events/bus';
+import { writeAgentEvent } from '../analytics/events';
 import { getProject } from '../projects/repo';
 import type {
 	AgentRuntime,
@@ -177,12 +178,15 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	const sessionId = String(created[0].id);
 	const sid = link(sessionId);
 
-	// A spawn agent_event the moment the session starts (analytics first-class).
-	await insertAgentEvent(db, {
-		session: sid,
-		project: link(input.projectId),
+	// A spawn agent_event the moment the session starts (analytics first-class). The
+	// shared writer (2.4) is the one chokepoint; the detail carries the how/why (intent
+	// + spawn reason) so the action's decision chain is traceable end-to-end.
+	await writeAgentEvent(db, {
+		session: sessionId,
+		project: input.projectId,
 		type: 'spawn',
-		model: input.model
+		model: input.model,
+		detail: { intent: input.intent, reason: `spawn for ${input.intent}` }
 	});
 
 	// 3. Spawn the runtime and consume the stream.
@@ -253,9 +257,9 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 			});
 		} else if (ev.type === 'error') {
 			ok = false;
-			await insertAgentEvent(db, {
-				session: sid,
-				project: link(input.projectId),
+			await writeAgentEvent(db, {
+				session: sessionId,
+				project: input.projectId,
 				type: 'error',
 				detail: { error: ev.error }
 			});
@@ -282,9 +286,9 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	});
 
 	// A completion agent_event with token totals + duration (analytics first-class).
-	await insertAgentEvent(db, {
-		session: sid,
-		project: link(input.projectId),
+	await writeAgentEvent(db, {
+		session: sessionId,
+		project: input.projectId,
 		type: 'completion',
 		model: input.model,
 		tokensIn,
@@ -296,32 +300,6 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	return { sessionId, ccSessionId, status, summary };
 }
 
-// ── agent_event writer (DATA-MODEL §4.4) ─────────────────────────────────────────
-
-interface AgentEventInput {
-	session: StringRecordId;
-	project: StringRecordId;
-	type: 'spawn' | 'completion' | 'escalation' | 'cancel' | 'error';
-	model?: ModelSelection;
-	tokensIn?: number;
-	tokensOut?: number;
-	durationMs?: number;
-	detail?: Record<string, unknown>;
-}
-
-/** Insert one `agent_event` row. Optional columns omitted, not nulled (§6.1). */
-async function insertAgentEvent(db: Db, e: AgentEventInput): Promise<void> {
-	const content = omitUndefined({
-		session: e.session,
-		project: e.project,
-		type: e.type,
-		model: e.model
-			? { provider: e.model.provider, model_id: e.model.modelId, tier: e.model.tier }
-			: undefined,
-		tokens_in: e.tokensIn,
-		tokens_out: e.tokensOut,
-		duration_ms: e.durationMs,
-		detail: e.detail
-	});
-	await db.query(`CREATE agent_event CONTENT $content;`, { content });
-}
+// agent_event rows are written via the shared analytics writer (writeAgentEvent,
+// analytics/events.ts — the one chokepoint, TASK 2.4). The old local insertAgentEvent
+// helper was folded into it so every producer shares one shape + the how/why contract.

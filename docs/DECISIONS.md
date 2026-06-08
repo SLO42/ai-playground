@@ -474,6 +474,16 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 
 ---
 
+## D-036 🟡 Per-task capability provisioning — auto-compose the toolkit into driven sessions
+
+**Context:** The product is *meant to enable agentic development by utilizing the tools we built*. It **catalogs + manages** the full Claude Code toolkit (hooks, skills, agents, MCP) per-project + global (PRODUCT job 9; cc-config 1.8/2.11) and **drives** Claude Code (jobs 8/10). BUT driven sessions start with an **isolated config** (D-002 — only the harness's own gates/hooks, *not* the operator's plugins, for determinism), and the intent→config bundles (D-020 / task 2.12) tune only **thinking/retrieval/budget** knobs — **not which skills/agents/MCP a task should wield**. So "use all the tools" is today a *manual* config-manager act, not automatic per-task composition. The owner wants it automatic (2026-06-08).
+
+**Decision:** Extend the intent→config bundle (orchestration.yaml, D-020) with a **capability set** — an explicit, **allow-listed** selection `{ skills:[], agents:[], mcp:[] }` drawn from the cc-config **catalog** (1.8/2.11) and provisioned into the driven session's isolated config per task-intent. **D-002 isolation is preserved**: the session receives *exactly* the declared set composed onto the harness base — never the operator's whole plugin soup. The set is **data-driven** (config, not code), **catalog-validated** (an unknown skill/agent/MCP id fails closed), and write-gated like any CC config (D-010 diff+confirm). **Security unchanged:** provisioned skills/MCP still execute under the gate layer (D-018/D-024) + `permissions.deny` (1.4a) — a capability set can never grant a tool the gates would deny.
+
+**Consequences:** bundles gain a `capabilities` block; the runtime composes session config = harness-base ⊕ intent capability set; catalog-validation at the boundary (D-016 discipline). Net: agentic development *automatically* wields the task-appropriate toolkit without sacrificing isolation/determinism or the security envelope. **Scope:** lands as a **v1.1** task (post-v1.0 closeout) — does not gate v1.0. Stays 🟡 until built. (Owner-requested, builds on D-002/D-010/D-018/D-020.)
+
+---
+
 ## Decision index
 
 | ID | Status | Topic |
@@ -514,5 +524,6 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 | D-033 | 🔒 | Design skills seed + gate UI-SPEC (superseded by D-034 for values) |
 | D-034 | 🔒 | Design system delivered (teal/Lastik) + font-license constraints |
 | D-035 | 🟡 | Inter-session comms (claude-peers): channel-interject now; fleet bus deferred v0.2 |
+| D-036 | 🟡 | Per-task capability provisioning — auto-compose skills/agents/MCP into driven sessions (v1.1) |
 
 > **Provenance:** **D-006–D-008 (in part)** and **D-014–D-023** are **KongCode-informed** — derived from studying KongCode v0.7.113 (`C:/Users/11sos/.claude/plugins/cache/kongcode-marketplace/kongcode/0.7.113/`), a production SurrealDB knowledge-graph + Claude Code harness (D-006 server-binary path is the biggest borrow; D-007 SurrealKV, D-008 dedup correction). ARCHITECTURE §9 "Lessons from KongCode" is the authoritative map. **D-024–D-026** are **security hardening surfaced by the pre-commit audit**. **D-027–D-033** (and the D-014 `qwen3-embedding:0.6b` embedding candidate) are sourced from the **cannibalize foundry** (`docs/CANNIBALIZE-BRIEF.md`) — distilled from **hermes-agent** (Nous Research, MIT), **mem0** (Apache-2.0), and **kongcode** (friend's plugin — ideas fine, code-lift needs consent). Each is a **candidate with provenance, to be verified against v2 constraints before build** — not a mandate. The three originally-OPEN items were **resolved by the owner 2026-06-06**: D-030 (utilization loop → ranking only, not pruning), D-031 (diversity → both novelty gate + consolidation), D-032 (single SurrealDB stands — reaffirms D-001; authored skills are already files per D-010). No locked decision was overridden. **D-034** is operator-authored (the delivered design system), not foundry-sourced; it supersedes the D-033 seed for concrete values and adds the Lastik font-license constraints. **Phase-0 spikes (2026-06-07)** resolved **D-014** (→ qwen3-embedding:0.6b, 1024-dim, S0-proven) and the **D-002** mechanism (SDK primary; CLI needs isolated config — S1). **D-035** folds **claude-peers-mcp** (operator's own tool): adopt the `claude/channel` interject now (D-011), defer the fleet message bus to v0.2.

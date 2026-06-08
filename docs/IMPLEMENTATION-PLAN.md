@@ -119,6 +119,11 @@ Notation per task: **[module(s)]** · *(deps)* · `verify` · (decision refs). �
 
 **v1.0 exit:** portfolio runs on v2, benchmarked lighter than v1, all OPEN items resolved, no known critical debt.
 
+### v1.1 — Capability provisioning (post-v1.0)
+- **5.1 per-task capability sets →** **[routing, config, cc-config, runtime]** *(2.11,2.12,1.4)* — extend the intent→config bundle (orchestration.yaml, D-020) with a `capabilities { skills:[], agents:[], mcp:[] }` block; the runtime composes a driven session's isolated config as **harness-base ⊕ intent capability set** (D-002 isolation preserved — exactly the declared set, never the operator's whole plugin set). Catalog-validated against the cc-config mirror (1.8/2.11) — an unknown id **fails closed**; write-gated (D-010 diff+confirm). Provisioned skills/MCP still run under the gate layer (D-018/D-024) + `permissions.deny` (1.4a) — a capability set cannot grant what the gates deny. `verify: an intent resolves to a capability set; a driven session is spawned carrying EXACTLY that set of skills/agents/MCP composed onto the harness base (no operator-plugin bleed); an unknown capability id fails closed; a provisioned tool the gates deny is still blocked`. (D-036)
+
+**v1.1 exit:** creating a task auto-composes the task-appropriate toolkit (skills/agents/MCP) into the driven Claude Code session — "use all the tools" is automatic, isolated, and gated.
+
 ---
 
 ## 5. Foundational layer ordering (the spine — strict)

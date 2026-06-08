@@ -87,6 +87,67 @@ describe('SseClient — backpressure', () => {
 		client.close();
 	});
 
+	it('stays bounded under SUSTAINED token_usage backpressure (latest-wins, no unbounded buffer)', () => {
+		// Production scenario: a slow client never drains while a session streams tens of
+		// thousands of token_usage updates on ONE stream. The coalescing slot must collapse
+		// them to a single queued entry regardless of volume — no O(n) reindex blowup, no
+		// unbounded buffer. This is the core TASK 2.1 verify against sustained pressure.
+		const client = SseClient.from(bus);
+		for (let i = 1; i <= 10_000; i++) {
+			bus.publish({ type: 'token_usage', topic: 's:1', key: 's:1', data: { t: i } });
+		}
+		expect(client.queued).toBe(1);
+		client.close();
+	});
+
+	it('coalesces correctly ACROSS a partial drain (no stale-index overwrite of a flushed slot)', async () => {
+		// Hardening: enqueue, drain one frame (flushing the coalesced slot), then publish
+		// MORE same-key events. The post-drain events must start a FRESH slot and still be
+		// delivered latest-wins — never silently dropped by a dangling index pointing at an
+		// already-flushed position.
+		const client = SseClient.from(bus);
+		bus.publish({ type: 'token_usage', topic: 's:1', key: 's:1', data: { t: 1 } });
+		const it = client[Symbol.asyncIterator]();
+		const first = (await it.next()).value as string;
+		expect(JSON.parse(first.match(/data: (.*)\n\n$/)![1]).data.t).toBe(1);
+		// queue now empty; the coalesce slot for s:1 was flushed.
+		expect(client.queued).toBe(0);
+		bus.publish({ type: 'token_usage', topic: 's:1', key: 's:1', data: { t: 2 } });
+		bus.publish({ type: 'token_usage', topic: 's:1', key: 's:1', data: { t: 3 } });
+		expect(client.queued).toBe(1); // fresh slot, coalesced
+		const second = (await it.next()).value as string;
+		expect(JSON.parse(second.match(/data: (.*)\n\n$/)![1]).data.t).toBe(3); // latest wins
+		client.close();
+	});
+
+	it('coalesces token_usage WITHOUT dropping interleaved non-coalesced transcript frames (FIFO)', async () => {
+		// A real session interleaves high-frequency token_usage with transcript messages
+		// that MUST NOT be lost. token_usage collapses latest-wins; every transcript frame
+		// survives and keeps FIFO order relative to other transcripts.
+		const client = SseClient.from(bus);
+		bus.publish({ type: 'transcript', topic: 's:1', key: 's:1:0', data: { seq: 0 } });
+		bus.publish({ type: 'token_usage', topic: 's:1', key: 's:1', data: { t: 1 } });
+		bus.publish({ type: 'transcript', topic: 's:1', key: 's:1:1', data: { seq: 1 } });
+		bus.publish({ type: 'token_usage', topic: 's:1', key: 's:1', data: { t: 2 } });
+		bus.publish({ type: 'transcript', topic: 's:1', key: 's:1:2', data: { seq: 2 } });
+		// 3 transcripts kept + 1 coalesced token_usage = 4 queued.
+		expect(client.queued).toBe(4);
+		const it = client[Symbol.asyncIterator]();
+		const drained: Array<{ type: string; payload: Record<string, unknown> }> = [];
+		for (let i = 0; i < 4; i++) {
+			const f = (await it.next()).value as string;
+			const type = f.match(/event: (\w+)\n/)![1];
+			const payload = JSON.parse(f.match(/data: (.*)\n\n$/)![1]).data;
+			drained.push({ type, payload });
+		}
+		const transcripts = drained.filter((d) => d.type === 'transcript');
+		expect(transcripts.map((t) => t.payload.seq)).toEqual([0, 1, 2]); // FIFO, none lost
+		const usage = drained.filter((d) => d.type === 'token_usage');
+		expect(usage).toHaveLength(1);
+		expect(usage[0].payload.t).toBe(2); // latest-wins
+		client.close();
+	});
+
 	it('a slow client never blocks the bus or other clients', () => {
 		// "Slow" client: never drains. "Fast" client: drains immediately.
 		const slow = SseClient.from(bus, { maxQueue: 3 });

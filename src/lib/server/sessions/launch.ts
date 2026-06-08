@@ -238,6 +238,19 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		if (ev.type === 'token_usage') {
 			tokensIn += ev.input;
 			tokensOut += ev.output;
+			// TASK 2.1 (harden): besides the per-seq `transcript` event above (which the
+			// message log must never lose), publish a dedicated high-frequency `token_usage`
+			// event keyed by the SESSION id (stable). The stable key is what lets the SSE
+			// fan-out coalesce latest-wins under backpressure (§2.11) — a slow client gets
+			// only the newest cumulative figure per session, never a stalling backlog. The
+			// transcript event's key is sessionId:seq (every one distinct), so it is the
+			// WRONG carrier for coalescing; this is the right one.
+			bus.publish({
+				type: 'token_usage',
+				topic: sessionId,
+				key: sessionId,
+				data: { tokensIn, tokensOut }
+			});
 		} else if (ev.type === 'error') {
 			ok = false;
 			await insertAgentEvent(db, {

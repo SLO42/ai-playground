@@ -208,6 +208,39 @@ describe('launchSession — persistence plumbing (1.6b; D-011)', () => {
 		expect(kinds).toEqual(['log', 'tool_call', 'tool_result', 'token_usage', 'done']);
 	});
 
+	it('emits a COALESCABLE token_usage bus event keyed by session id (latest-wins, not per-seq)', async () => {
+		// TASK 2.1 (harden): the render-live transcript stream keeps a per-seq `transcript`
+		// event (must never be lost), but token_usage is ALSO published as a dedicated
+		// `token_usage` bus event keyed by the SESSION id (stable) carrying running totals.
+		// A stable key is what lets the SSE layer coalesce latest-wins under backpressure;
+		// the per-seq transcript key (sessionId:order) would make every event distinct and
+		// never coalesce — that is the production bug this task closes.
+		const bus = new EventBus();
+		const usage: BusEvent[] = [];
+		bus.subscribe(
+			(e) => usage.push(e),
+			(e) => e.type === 'token_usage'
+		);
+		// Two token_usage events so we can prove the key is stable across them.
+		const events: RuntimeEvent[] = [
+			{ type: 'log', message: 'go' },
+			{ type: 'token_usage', input: 100, output: 10 },
+			{ type: 'token_usage', input: 50, output: 5 },
+			{ type: 'done', result: { ok: true, summary: 'ok', ccSessionId: 'cc_usage_1' } }
+		];
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(events, 'cc_usage_1') });
+		const res = await launchSession({ db, bus, runtime, input: baseInput() });
+
+		expect(usage.length).toBe(2);
+		// Stable coalesce key = session id for BOTH events (not sessionId:seq).
+		expect(usage.every((e) => e.topic === res.sessionId)).toBe(true);
+		expect(usage.every((e) => e.key === res.sessionId)).toBe(true);
+		// Running totals accumulate (latest event carries the cumulative figures).
+		const last = usage[usage.length - 1].data as { tokensIn: number; tokensOut: number };
+		expect(last.tokensIn).toBe(150);
+		expect(last.tokensOut).toBe(15);
+	});
+
 	it('a failed runtime done marks the session failed and records an error completion', async () => {
 		const fail: RuntimeEvent[] = [
 			{ type: 'log', message: 'working' },

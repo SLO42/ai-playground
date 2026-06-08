@@ -34,3 +34,17 @@ export {
 	type FindingRow,
 	type ScanSecurityOptions
 } from './findings-repo';
+
+export {
+	scanDependencies,
+	type Advisory,
+	type AdvisoryRecord,
+	type AdvisorySource,
+	type DependencyFinding
+} from './dependencies';
+
+export {
+	scanProjectDependencies,
+	archiveActiveDependencyFindings,
+	type ScanDependencyOptions
+} from './dep-repo';

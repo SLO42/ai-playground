@@ -10,7 +10,9 @@
 // These are plain READS off the DB singleton — NOT a second live query (§2.11). The page
 // stays live by re-invalidating on the `session` watcher that hooks.server already runs.
 
+import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
+import { assertRecordId } from '../db/validate';
 
 /** A pool slot DEFINITION (config mirror — not live allocation). */
 export interface PoolSlot {
@@ -78,6 +80,48 @@ export async function listFleet(db: Db, limit = 30): Promise<FleetSession[]> {
 		};
 	});
 	// Running sessions float to the top (active grid), recent finished below.
+	return sessions.sort((a, b) => {
+		const ar = a.status === 'running' ? 0 : 1;
+		const br = b.status === 'running' ? 0 : 1;
+		if (ar !== br) return ar - br;
+		return b.startedAt.localeCompare(a.startedAt);
+	});
+}
+
+/**
+ * Read the fleet scoped to ONE project — the same shape/ordering as {@link listFleet}
+ * but only sessions whose `project` link matches. Used by the project detail page's
+ * Sessions tab. Liveness = `session.status`, never `agent_slot.busy` (§199); every row
+ * is a REAL session (F-008). The `project` id is validated/bound as a record link at the
+ * D-016 chokepoint by the caller-supplied StringRecordId.
+ */
+export async function listFleetByProject(
+	db: Db,
+	projectId: string,
+	limit = 30
+): Promise<FleetSession[]> {
+	const project = new StringRecordId(assertRecordId(projectId));
+	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+		`SELECT id, status, model, project, task, started_at, ended_at
+		   FROM session
+		   WHERE project = $project
+		   ORDER BY started_at DESC LIMIT $lim;`,
+		{ project, lim: limit }
+	);
+	const sessions = (rows ?? []).map((r) => {
+		const m = (r.model ?? {}) as Record<string, unknown>;
+		return {
+			id: String(r.id),
+			status: String(r.status ?? 'running'),
+			provider: String(m.provider ?? 'unknown'),
+			modelId: String(m.model_id ?? 'unknown'),
+			tier: (m.tier as string) ?? null,
+			projectId: r.project ? String(r.project) : null,
+			taskId: r.task ? String(r.task) : null,
+			startedAt: iso(r.started_at),
+			endedAt: r.ended_at ? iso(r.ended_at) : null
+		};
+	});
 	return sessions.sort((a, b) => {
 		const ar = a.status === 'running' ? 0 : 1;
 		const br = b.status === 'running' ? 0 : 1;

@@ -29,6 +29,12 @@
   function statusOf(p: { status?: string }): string {
     return p.status ?? 'unknown';
   }
+
+  // The detail route's [id] param is the bare slug (the loader re-prefixes `project:`).
+  function detailHref(id: string): string {
+    const i = id.indexOf(':');
+    return `/projects/${i >= 0 ? id.slice(i + 1) : id}`;
+  }
 </script>
 
 <section class="page">
@@ -58,22 +64,24 @@
   {:else}
     <ul class="grid" aria-label="projects">
       {#each projects as p (p.id)}
-        <li class="card project">
-          <div class="project-head">
-            <span class="name">{p.name}</span>
-            <span class="status" data-status={statusOf(p)}>{statusOf(p)}</span>
-          </div>
-          <div class="path mono" title={p.root_path}>{p.root_path}</div>
-          {#if p.ecosystem?.length}
-            <ul class="eco">
-              {#each p.ecosystem as e (e)}
-                <li class="tag mono">{e}</li>
-              {/each}
-            </ul>
-          {/if}
-          {#if p.purpose}
-            <p class="purpose">{p.purpose}</p>
-          {/if}
+        <li class="project-item">
+          <a class="card project" href={detailHref(p.id)} aria-label={`Open ${p.name}`}>
+            <div class="project-head">
+              <span class="name">{p.name}</span>
+              <span class="status" data-status={statusOf(p)}>{statusOf(p)}</span>
+            </div>
+            <div class="path mono" title={p.root_path}>{p.root_path}</div>
+            {#if p.ecosystem?.length}
+              <ul class="eco">
+                {#each p.ecosystem as e (e)}
+                  <li class="tag mono">{e}</li>
+                {/each}
+              </ul>
+            {/if}
+            {#if p.purpose}
+              <p class="purpose">{p.purpose}</p>
+            {/if}
+          </a>
         </li>
       {/each}
     </ul>
@@ -128,11 +136,24 @@
     grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
     gap: var(--space-4, 1rem);
   }
+  .project-item {
+    min-width: 0;
+  }
   .project {
     display: flex;
     flex-direction: column;
     gap: var(--space-3, 0.75rem);
     min-width: 0;
+    text-decoration: none;
+    color: inherit;
+    transition: border-color var(--motion-fast, 140ms) var(--ease-out, ease);
+  }
+  .project:hover {
+    border-color: var(--color-accent);
+  }
+  .project:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
   }
   .project-head {
     display: flex;

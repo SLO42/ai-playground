@@ -32,6 +32,7 @@ export { traceAction, type ActionTrace, type TraceStep } from './trace';
 export {
 	listPoolSlots,
 	listFleet,
+	listFleetByProject,
 	type PoolSlot,
 	type FleetSession
 } from './fleet';

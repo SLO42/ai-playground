@@ -1,0 +1,56 @@
+# Orchestration config (D-004 / D-017 / D-020).
+#
+# mode: how the orchestrator drains the task queue.
+#   event    — react to task lifecycle events / live queries (default; no busy loop)
+#   periodic — also sweep every intervalMs as a safety net
+#   manual   — only on explicit trigger
+mode: event
+triggers: [task_created, task_unblocked]
+intervalMs: 60000
+
+# Interactive concurrency caps (orchestrator semaphore).
+concurrency:
+  maxAgents: 8        # total simultaneous interactive spawns
+  perProject: 3       # simultaneous spawns within one project
+
+# Intent-adaptive config bundles (D-020). KongCode classifies each task's intent;
+# routing (resolveRoute) looks the intent up here and applies the bundle: thinking
+# tier, tool-call budget, memory-retrieval depth + share, token budget. A trivial
+# question stays cheap; a debug/explore task gets deep retrieval + a higher budget.
+# Tunable — edit the values; the loader validates shape/range at boot (fail-closed).
+#
+# Knobs (all optional; an absent knob = runtime/memory default):
+#   thinking        none | low | medium | high   (spawn thinking tier)
+#   retrievalDepth  non-negative int             (vector KNN limit for recall)
+#   retrievalShare  0..1                          (context-window share for retrieval)
+#   toolCalls       non-negative int             (per-spawn tool-call budget)
+#   concurrency     non-negative int             (per-spawn concurrency hint)
+#   tokenBudget     non-negative int             (per-spawn token budget)
+bundles:
+  simple-question:
+    thinking: none
+    retrievalDepth: 0
+    retrievalShare: 0.0
+    toolCalls: 4
+  code-read:
+    thinking: low
+    retrievalDepth: 4
+    retrievalShare: 0.25
+    toolCalls: 15
+  code-write:
+    thinking: medium
+    retrievalDepth: 6
+    retrievalShare: 0.4
+    toolCalls: 40
+    concurrency: 2
+  code-debug:
+    thinking: high
+    retrievalDepth: 10
+    retrievalShare: 0.5
+    toolCalls: 60
+  deep-explore:
+    thinking: high
+    retrievalDepth: 16
+    retrievalShare: 0.6
+    toolCalls: 80
+    tokenBudget: 200000

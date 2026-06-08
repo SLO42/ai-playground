@@ -29,6 +29,7 @@ import { assertRecordId } from '../db/validate';
 import type { Intent, ModelSelection, SpawnBudgets } from '../runtime/index';
 import type { ProviderHealth } from '../providers/index';
 import type { AgentPool, Orchestration, ConfigBundle, Tier } from '../config/load';
+import { resolveAdaptiveConfig, bundleToBudgets } from '../config/load';
 
 // ── routing_event.method enum (DATA-MODEL §4.4 — kept in lock-step with the schema) ─
 export const ROUTING_METHODS = ['explicit', 'classify', 'tier', 'fallback'] as const;
@@ -161,21 +162,16 @@ function selectionForTier(name: string, tier: Tier): ModelSelection {
 	return { provider: tier.provider, modelId: tier.model, tier: name };
 }
 
-// ── Adaptive config (D-020) ──────────────────────────────────────────────────────
+// ── Adaptive config (D-020 — TASK 2.12) ───────────────────────────────────────────
+//
+// The intent→bundle map and bundle→budgets derivation are OWNED by the config layer
+// (config/load.ts: resolveAdaptiveConfig / bundleToBudgets) — the same module that
+// validates the bundle shape at the boundary. Routing reuses them so the mapping lives
+// in exactly one place (DRY) and a config-validated bundle is the only thing routing
+// ever feeds to AgentRuntime. Intent is structurally a config IntentClass.
 
-/** Lookup the intent's config bundle (D-020); empty bundle when none is configured. */
-function adaptiveConfigFor(orchestration: Orchestration, intent: Intent): ConfigBundle {
-	return orchestration.bundles?.[intent] ?? {};
-}
-
-/** Derive spawn budgets from the adaptive config (thinking → budgets.thinking). */
-function budgetsFromConfig(cfg: ConfigBundle): SpawnBudgets {
-	const out: SpawnBudgets = {};
-	if (typeof cfg.thinking === 'string') out.thinking = cfg.thinking;
-	if (typeof cfg.toolCalls === 'number') out.toolCalls = cfg.toolCalls;
-	if (typeof cfg.concurrency === 'number') out.concurrency = cfg.concurrency;
-	return out;
-}
+const adaptiveConfigFor = resolveAdaptiveConfig;
+const budgetsFromConfig = (cfg: ConfigBundle): SpawnBudgets => bundleToBudgets(cfg);
 
 // ── resolveRoute (the one entry — order is enforced here) ─────────────────────────
 

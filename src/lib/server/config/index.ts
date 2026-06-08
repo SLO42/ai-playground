@@ -11,7 +11,12 @@ export {
 	loadAgentPool,
 	loadModels,
 	loadOrchestration,
+	validateBundles,
+	resolveAdaptiveConfig,
+	bundleToBudgets,
 	ORCH_MODES,
+	INTENT_CLASSES,
+	THINKING_LEVELS,
 	type AppConfig,
 	type AgentPool,
 	type AgentSlot,
@@ -20,7 +25,10 @@ export {
 	type ProviderSpec,
 	type Orchestration,
 	type OrchMode,
-	type ConfigBundle
+	type ConfigBundle,
+	type BundleBudgets,
+	type IntentClass,
+	type ThinkingLevel
 } from './load';
 
 export {

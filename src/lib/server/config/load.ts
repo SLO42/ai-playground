@@ -55,9 +55,49 @@ export interface ModelsConfig {
 export const ORCH_MODES = ['event', 'periodic', 'manual'] as const;
 export type OrchMode = (typeof ORCH_MODES)[number];
 
+// --- intent-adaptive config bundles (D-020) --------------------------------
+//
+// TASK 2.12: the five intents KongCode classifies (mirrors runtime `Intent` and
+// routing's INTENTS — kept in lock-step). Each intent maps to a tunable, operator-
+// authored ConfigBundle in orchestration.yaml. The map is validated HERE — config is
+// untrusted-on-disk and `config` is the sole boundary it crosses (ARCHITECTURE §6) —
+// so a typo'd intent key or a negative budget fails to boot rather than silently
+// mis-routing a live spawn.
+
+/** The five intent classes a task routes into (lock-step with runtime Intent / routing INTENTS). */
+export const INTENT_CLASSES = [
+	'simple-question',
+	'code-read',
+	'code-write',
+	'code-debug',
+	'deep-explore'
+] as const;
+export type IntentClass = (typeof INTENT_CLASSES)[number];
+
+/** Valid `thinking` levels for a bundle (the spawn budget's thinking tier — D-020). */
+export const THINKING_LEVELS = ['none', 'low', 'medium', 'high'] as const;
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
+/**
+ * A per-intent adaptive config (D-020): thinking level + tool/concurrency budget +
+ * memory-retrieval depth/share + token budget. All knobs are OPTIONAL (an absent knob
+ * falls through to the runtime/memory default); the map stays open (`[k]`) so operators
+ * can add forward-compat tunables (e.g. per-table vector-search limits) without a code
+ * change — but the KNOWN knobs below are type-checked AND boundary-validated.
+ */
 export interface ConfigBundle {
-	thinking?: string;
+	/** Thinking tier fed to SpawnBudgets.thinking (none|low|medium|high). */
+	thinking?: ThinkingLevel;
+	/** Memory-recall depth (vector KNN limit) — non-negative integer. */
 	retrievalDepth?: number;
+	/** Share of the context window given to retrieval, 0..1. */
+	retrievalShare?: number;
+	/** Per-spawn tool-call budget — non-negative integer. */
+	toolCalls?: number;
+	/** Per-spawn concurrency hint — non-negative integer. */
+	concurrency?: number;
+	/** Token budget for the spawn — non-negative integer. */
+	tokenBudget?: number;
 	[k: string]: unknown;
 }
 export interface Orchestration {
@@ -65,7 +105,19 @@ export interface Orchestration {
 	triggers?: string[];
 	intervalMs?: number;
 	concurrency: { maxAgents: number; perProject: number };
-	bundles?: Record<string, ConfigBundle>;
+	/**
+	 * intent → adaptive config (D-020). Validated at the boundary (loadOrchestration).
+	 * Partial: an unconfigured intent resolves to an empty bundle (all-defaults), so a
+	 * sparsely-tuned orchestration.yaml still routes every intent (resolveAdaptiveConfig).
+	 */
+	bundles?: Partial<Record<IntentClass, ConfigBundle>>;
+}
+
+/** Spawn budgets derived from a bundle — the subset routing hands to AgentRuntime (D-020). */
+export interface BundleBudgets {
+	thinking?: ThinkingLevel;
+	toolCalls?: number;
+	concurrency?: number;
 }
 
 /** The full loaded config tree. */
@@ -198,7 +250,92 @@ export function loadOrchestration(file: string, opts: LoadOpts = {}): Orchestrat
 	if (!Number.isInteger(c.perProject) || (c.perProject as number) < 1) {
 		throw new ConfigError('orchestration: concurrency.perProject must be a positive integer', file);
 	}
+	// TASK 2.12: validate the intent-adaptive bundles at the boundary (D-020). Each key
+	// MUST be one of the five intents; each known knob MUST be the right shape/range.
+	if (raw.bundles !== undefined) {
+		validateBundles(raw.bundles, file);
+	}
 	return raw as unknown as Orchestration;
+}
+
+/** A non-negative-integer knob check shared across the numeric bundle fields. */
+function assertNonNegInt(value: unknown, intent: string, knob: string, file: string): void {
+	if (!Number.isInteger(value) || (value as number) < 0) {
+		throw new ConfigError(
+			`orchestration: bundle "${intent}".${knob} must be a non-negative integer`,
+			file
+		);
+	}
+}
+
+/**
+ * Validate orchestration.bundles (D-020) at the config boundary. Rejects:
+ *   • a non-mapping `bundles`
+ *   • any key that is not one of the five INTENT_CLASSES (a typo would silently
+ *     mis-route — fail closed instead)
+ *   • a non-mapping bundle value
+ *   • an unknown `thinking` level
+ *   • a negative / non-integer numeric knob (retrievalDepth/toolCalls/concurrency/tokenBudget)
+ *   • a retrievalShare outside [0,1]
+ * Unknown extra keys are PERMITTED (forward-compat tunables — the type keeps `[k]` open).
+ */
+export function validateBundles(bundles: unknown, file: string): void {
+	if (bundles === null || typeof bundles !== 'object' || Array.isArray(bundles)) {
+		throw new ConfigError('orchestration: "bundles" must be a mapping of intent → config', file);
+	}
+	const valid = new Set<string>(INTENT_CLASSES);
+	for (const [intent, bundle] of Object.entries(bundles as Record<string, unknown>)) {
+		if (!valid.has(intent)) {
+			throw new ConfigError(
+				`orchestration: bundle key "${intent}" is not a known intent (${INTENT_CLASSES.join(' | ')})`,
+				file
+			);
+		}
+		if (bundle === null || typeof bundle !== 'object' || Array.isArray(bundle)) {
+			throw new ConfigError(`orchestration: bundle "${intent}" must be a mapping`, file);
+		}
+		const b = bundle as Record<string, unknown>;
+		if (b.thinking !== undefined && !(THINKING_LEVELS as readonly string[]).includes(b.thinking as string)) {
+			throw new ConfigError(
+				`orchestration: bundle "${intent}".thinking must be one of ${THINKING_LEVELS.join(' | ')} (got ${String(b.thinking)})`,
+				file
+			);
+		}
+		if (b.retrievalDepth !== undefined) assertNonNegInt(b.retrievalDepth, intent, 'retrievalDepth', file);
+		if (b.toolCalls !== undefined) assertNonNegInt(b.toolCalls, intent, 'toolCalls', file);
+		if (b.concurrency !== undefined) assertNonNegInt(b.concurrency, intent, 'concurrency', file);
+		if (b.tokenBudget !== undefined) assertNonNegInt(b.tokenBudget, intent, 'tokenBudget', file);
+		if (b.retrievalShare !== undefined) {
+			const s = b.retrievalShare;
+			if (typeof s !== 'number' || Number.isNaN(s) || s < 0 || s > 1) {
+				throw new ConfigError(
+					`orchestration: bundle "${intent}".retrievalShare must be a number in [0,1] (got ${String(s)})`,
+					file
+				);
+			}
+		}
+	}
+}
+
+// --- intent → bundle resolution (D-020 — the canonical map, TASK 2.12) ------
+//
+// resolveRoute (2.3) consumes these so the intent→config mapping lives in ONE place
+// (the config layer that owns the bundle shape), not duplicated in routing. An intent
+// with no configured bundle resolves to an empty bundle (all-defaults) — never throws,
+// so a sparsely-configured orchestration.yaml still routes every intent.
+
+/** The adaptive config bundle for an intent (D-020). Empty bundle when none is configured. */
+export function resolveAdaptiveConfig(orchestration: Orchestration, intent: IntentClass): ConfigBundle {
+	return orchestration.bundles?.[intent] ?? {};
+}
+
+/** Derive the spawn-budget subset from a bundle (thinking/toolCalls/concurrency → SpawnBudgets). */
+export function bundleToBudgets(bundle: ConfigBundle): BundleBudgets {
+	const out: BundleBudgets = {};
+	if (bundle.thinking !== undefined) out.thinking = bundle.thinking;
+	if (typeof bundle.toolCalls === 'number') out.toolCalls = bundle.toolCalls;
+	if (typeof bundle.concurrency === 'number') out.concurrency = bundle.concurrency;
+	return out;
 }
 
 /**

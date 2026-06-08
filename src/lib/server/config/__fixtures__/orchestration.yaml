@@ -5,11 +5,32 @@ intervalMs: 60000
 concurrency:
   maxAgents: 8
   perProject: 3
-# Intent-adaptive config bundles (D-020): intent -> bundle.
+# Intent-adaptive config bundles (D-020): intent -> bundle. All five intents.
 bundles:
   simple-question:
     thinking: none
     retrievalDepth: 0
+    retrievalShare: 0.0
+    toolCalls: 4
+  code-read:
+    thinking: low
+    retrievalDepth: 3
+    retrievalShare: 0.25
+    toolCalls: 12
+  code-write:
+    thinking: medium
+    retrievalDepth: 5
+    retrievalShare: 0.4
+    toolCalls: 30
+    concurrency: 2
   code-debug:
     thinking: high
     retrievalDepth: 8
+    retrievalShare: 0.5
+    toolCalls: 40
+  deep-explore:
+    thinking: high
+    retrievalDepth: 12
+    retrievalShare: 0.6
+    toolCalls: 60
+    tokenBudget: 200000

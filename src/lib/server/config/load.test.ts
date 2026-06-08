@@ -6,7 +6,12 @@ import {
 	loadModels,
 	loadOrchestration,
 	loadConfig,
-	ConfigError
+	validateBundles,
+	resolveAdaptiveConfig,
+	bundleToBudgets,
+	INTENT_CLASSES,
+	ConfigError,
+	type Orchestration
 } from './load';
 
 const FIX = join(dirname(fileURLToPath(import.meta.url)), '__fixtures__');
@@ -58,11 +63,105 @@ describe('loadOrchestration — YAML + enum validation', () => {
 		expect(orch.mode).toBe('event');
 		expect(orch.concurrency.maxAgents).toBe(8);
 		expect(orch.concurrency.perProject).toBe(3);
-		expect(orch.bundles?.['code-debug'].retrievalDepth).toBe(8);
+		expect(orch.bundles!['code-debug']!.retrievalDepth).toBe(8);
 	});
 
 	it('rejects an invalid mode (boundary validation)', () => {
 		expect(() => loadOrchestration(join(FIX, 'bad-mode.yaml'))).toThrow(ConfigError);
+	});
+
+	// TASK 2.12 — intent-adaptive bundle validation at the config boundary (D-020).
+	it('parses ALL FIVE intent bundles with their adaptive knobs', () => {
+		const orch = loadOrchestration(join(FIX, 'orchestration.yaml'));
+		for (const intent of INTENT_CLASSES) {
+			expect(orch.bundles?.[intent]).toBeDefined();
+		}
+		expect(orch.bundles!['simple-question']!.thinking).toBe('none');
+		expect(orch.bundles!['simple-question']!.retrievalShare).toBe(0);
+		expect(orch.bundles!['deep-explore']!.thinking).toBe('high');
+		expect(orch.bundles!['deep-explore']!.tokenBudget).toBe(200000);
+	});
+
+	it('rejects a bundle key that is not a known intent (typo fails closed)', () => {
+		expect(() =>
+			loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { bundles: { 'code-wrte': { thinking: 'low' } } }
+			})
+		).toThrow(/not a known intent/);
+	});
+
+	it('rejects an unknown thinking level', () => {
+		expect(() =>
+			loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { bundles: { 'code-write': { thinking: 'ultra' } } }
+			})
+		).toThrow(/thinking must be one of/);
+	});
+
+	it('rejects a negative retrievalDepth and a non-integer toolCalls', () => {
+		expect(() =>
+			loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { bundles: { 'code-read': { retrievalDepth: -1 } } }
+			})
+		).toThrow(/retrievalDepth must be a non-negative integer/);
+		expect(() =>
+			loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { bundles: { 'code-read': { toolCalls: 2.5 } } }
+			})
+		).toThrow(/toolCalls must be a non-negative integer/);
+	});
+
+	it('rejects a retrievalShare outside [0,1]', () => {
+		expect(() =>
+			loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { bundles: { 'deep-explore': { retrievalShare: 1.5 } } }
+			})
+		).toThrow(/retrievalShare must be a number in \[0,1\]/);
+	});
+
+	it('permits unknown forward-compat knobs (open bundle)', () => {
+		expect(() =>
+			validateBundles({ 'code-write': { thinking: 'medium', vectorLimits: { task: 5 } } }, 'x.yaml')
+		).not.toThrow();
+	});
+
+	it('rejects a non-mapping bundles and a non-mapping bundle value', () => {
+		expect(() => validateBundles([], 'x.yaml')).toThrow(/must be a mapping/);
+		expect(() => validateBundles({ 'code-write': 7 }, 'x.yaml')).toThrow(/must be a mapping/);
+	});
+});
+
+describe('intent → bundle resolution (D-020 — TASK 2.12)', () => {
+	const orch = loadOrchestration(join(FIX, 'orchestration.yaml'));
+
+	it('resolveAdaptiveConfig returns the configured bundle for each intent', () => {
+		expect(resolveAdaptiveConfig(orch, 'code-debug').retrievalDepth).toBe(8);
+		expect(resolveAdaptiveConfig(orch, 'code-debug').thinking).toBe('high');
+		expect(resolveAdaptiveConfig(orch, 'simple-question').thinking).toBe('none');
+	});
+
+	it('resolveAdaptiveConfig returns an empty bundle for an unconfigured intent (never throws)', () => {
+		const sparse: Orchestration = {
+			mode: 'event',
+			concurrency: { maxAgents: 1, perProject: 1 },
+			bundles: { 'code-write': { thinking: 'medium' } }
+		};
+		expect(resolveAdaptiveConfig(sparse, 'deep-explore')).toEqual({});
+		const none: Orchestration = { mode: 'event', concurrency: { maxAgents: 1, perProject: 1 } };
+		expect(resolveAdaptiveConfig(none, 'code-read')).toEqual({});
+	});
+
+	it('bundleToBudgets derives thinking/toolCalls/concurrency only', () => {
+		const b = bundleToBudgets({
+			thinking: 'high',
+			toolCalls: 40,
+			concurrency: 2,
+			retrievalDepth: 8,
+			retrievalShare: 0.5
+		});
+		expect(b).toEqual({ thinking: 'high', toolCalls: 40, concurrency: 2 });
+		// retrievalDepth/Share are NOT budgets — they feed memory.recall, not the spawn budget.
+		expect('retrievalDepth' in b).toBe(false);
 	});
 });
 

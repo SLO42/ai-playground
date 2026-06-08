@@ -30,7 +30,8 @@ import {
 	type CapabilityCatalog,
 	type CapabilitySet
 } from '../runtime/index';
-import { OllamaProvider, type ProviderHealth } from '../providers/index';
+import { OllamaProvider, collectText, type ProviderHealth } from '../providers/index';
+import { MemoryService, OllamaEmbedder, type ExtractFn, type MemoryCandidate } from '../memory/index';
 import { ClaudeCliBackend } from '../claude-code/cli-backend';
 import { catalogIds } from '../cc-config/index';
 import { DEFAULT_GATE_POLICY } from '../claude-code/gates';
@@ -205,3 +206,136 @@ export const DEFAULT_TOOL_POLICY: ToolPolicy = { allow: ['Read', 'Edit', 'Bash']
 
 /** Default intent for a manually-launched session. */
 export const DEFAULT_INTENT: Intent = 'code-write';
+
+// ── Memory loop wiring (TASK 8.3) — the live recall/extract surface ─────────────────────
+//
+// The MemoryService (recall / extractAndStore / buildBriefing) is built + unit/live tested
+// but had ZERO production callers. This is the single seam that constructs it for the live
+// loop: a real Ollama embedder (qwen3-embedding:0.6b, 1024-dim — D-014) wired to the runtime
+// DB, plus the ADD-only extraction LLM call (D-028) driven by the same local Ollama generate
+// path. Both degrade HONESTLY (F-008): when Ollama is unreachable, getMemoryService returns
+// unavailable and the launch path skips recall/extract rather than fabricating a vector or a
+// memory. The memory loop is best-effort (D-019) — it NEVER blocks a spawn.
+
+/** The locked embedding model id (D-014). The dimension is fixed at EMBEDDING_DIM in embed.ts. */
+export const EMBEDDING_MODEL = 'qwen3-embedding:0.6b';
+
+/** The local model the ADD-only extraction LLM call runs on (D-028 — one cheap local call). */
+export const EXTRACTION_MODEL = 'gpt-oss:20b';
+
+/** The wired memory service, or an honest reason it is unavailable (F-008). */
+export type MemoryAvailability =
+	| { available: true; memory: MemoryService; extract: ExtractFn }
+	| { available: false; reason: string };
+
+let cachedMemory: MemoryService | null = null;
+
+/** The Ollama base host (no /v1 — D-003). Shared by the embedder + the extraction call. A
+ *  scheme-less OLLAMA_HOST (e.g. the daemon's bind form `0.0.0.0:11434`) is normalized to a
+ *  loopback http URL — a bind address is not a reachable client URL; default to 127.0.0.1. */
+function ollamaEndpoint(): string {
+	let host = process.env.OLLAMA_HOST?.trim() || 'http://127.0.0.1:11434';
+	if (!/^https?:\/\//i.test(host)) {
+		// A scheme-less value is a bind/host:port form. 0.0.0.0 is a listen address, not a
+		// dialable client target — map it to loopback so the client can actually connect.
+		host = `http://${host.replace(/^0\.0\.0\.0/, '127.0.0.1')}`;
+	}
+	return host;
+}
+
+/**
+ * Probe the local Ollama for the embedding model. The memory loop needs LIVE embeddings to
+ * recall/extract; an unreachable Ollama (or a missing model) means we honestly skip the loop
+ * rather than embed nothing / fabricate a vector (F-008). A short timeout keeps the spawn path
+ * snappy — a stalled Ollama never wedges a launch.
+ */
+async function embeddingModelReady(endpoint: string): Promise<boolean> {
+	try {
+		const res = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(2500) });
+		if (!res.ok) return false;
+		const j = (await res.json()) as { models?: { name?: string }[] };
+		return (j.models ?? []).some((m) => m.name === EMBEDDING_MODEL);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * The ADD-only extraction LLM call (D-028 / MEMORY-SPEC §3.2). ONE cheap local Ollama call
+ * over the just-finished turn → additive candidates only (it NEVER decides update/delete —
+ * that is the deterministic consolidator's job, D-028). The model is asked for a strict JSON
+ * array of `{content, kind}`; a non-JSON / empty reply yields zero candidates (best-effort,
+ * never throws into the launch path). The screen-before-embed gate (store.ts) still runs on
+ * every returned candidate, so a poisoned/secret-bearing extraction is screened before storage.
+ */
+function makeExtractFn(endpoint: string): ExtractFn {
+	const provider = new OllamaProvider({ endpoint, model: EXTRACTION_MODEL });
+	return async (prompt: string): Promise<MemoryCandidate[]> => {
+		const sys =
+			'You extract durable, additive memories from a coding-agent session transcript. ' +
+			'Return ONLY a JSON array of objects {"content": string, "kind": "semantic"|"episodic"|"procedural"}. ' +
+			'Each content is one concise, durable fact/decision/procedure worth remembering across sessions. ' +
+			'Never restate transient state or the prompt itself. If nothing is worth keeping, return [].';
+		let text = '';
+		try {
+			const chunks = [];
+			for await (const c of provider.stream([
+				{ role: 'system', content: sys },
+				{ role: 'user', content: prompt }
+			])) {
+				chunks.push(c);
+			}
+			text = collectText(chunks);
+		} catch {
+			return []; // best-effort: an extraction-model failure never breaks the loop
+		}
+		return parseExtraction(text);
+	};
+}
+
+/** Parse the extraction model's reply into ADD-only candidates. Tolerant: finds the first JSON
+ *  array, ignores malformed entries, caps the batch. A non-array / empty reply ⇒ []. */
+export function parseExtraction(text: string): MemoryCandidate[] {
+	const start = text.indexOf('[');
+	const end = text.lastIndexOf(']');
+	if (start < 0 || end <= start) return [];
+	let arr: unknown;
+	try {
+		arr = JSON.parse(text.slice(start, end + 1));
+	} catch {
+		return [];
+	}
+	if (!Array.isArray(arr)) return [];
+	const out: MemoryCandidate[] = [];
+	for (const raw of arr) {
+		if (out.length >= 12) break; // cap one turn's additive batch
+		if (!raw || typeof raw !== 'object') continue;
+		const r = raw as { content?: unknown; kind?: unknown };
+		const content = typeof r.content === 'string' ? r.content.trim() : '';
+		if (!content) continue;
+		const kind = r.kind === 'episodic' || r.kind === 'procedural' ? r.kind : 'semantic';
+		out.push({ content, kind, source: 'session-extract' });
+	}
+	return out;
+}
+
+/**
+ * Assemble the live memory service for the loop (TASK 8.3). Builds an OllamaEmbedder over the
+ * local host (no /v1, D-003) wrapped in the two-tier cache (store/recall hot path, §7.1), plus
+ * the ADD-only extraction call. Returns an honest unavailable result when Ollama / the embedding
+ * model is not reachable — the launch path then skips recall+extract (F-008), never fabricating
+ * a vector or a memory. Cached per process (the embedder is stateless; the cache lives in the DB).
+ */
+export async function getMemoryService(db: Db): Promise<MemoryAvailability> {
+	const endpoint = ollamaEndpoint();
+	if (!(await embeddingModelReady(endpoint))) {
+		return {
+			available: false,
+			reason: `local embeddings unavailable (Ollama at ${endpoint} has no ${EMBEDDING_MODEL}) — memory loop skipped`
+		};
+	}
+	if (!cachedMemory) {
+		cachedMemory = new MemoryService({ db, embedder: new OllamaEmbedder({ endpoint, model: EMBEDDING_MODEL }) });
+	}
+	return { available: true, memory: cachedMemory, extract: makeExtractFn(endpoint) };
+}

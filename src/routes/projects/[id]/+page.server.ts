@@ -28,6 +28,7 @@ import { listSessionMessages, launchSession, type TranscriptMessage } from '$lib
 import {
 	getBus,
 	getRuntime,
+	getMemoryService,
 	resolveCapabilitiesForIntent,
 	DEFAULT_MODEL,
 	DEFAULT_AGENT,
@@ -224,11 +225,19 @@ export const actions: Actions = {
 			return fail(503, { launch: { error: runtimeAvail.reason } });
 		}
 
+		// TASK 8.3 — the live memory loop on a manual launch too: recall a fenced wake-up
+		// briefing on spawn + extract durable memories on session-end. Honest (F-008): if local
+		// Ollama embeddings are down, memAvail is unavailable and the launch runs WITHOUT the
+		// loop rather than fabricating a vector/memory. Best-effort (D-019) — never blocks launch.
+		const memAvail = await getMemoryService(db);
+		const memory = memAvail.available ? { service: memAvail.memory, extract: memAvail.extract } : undefined;
+
 		try {
 			const result = await launchSession({
 				db,
 				bus: getBus(),
 				runtime: runtimeAvail.runtime,
+				memory,
 				input: {
 					projectId,
 					taskId,

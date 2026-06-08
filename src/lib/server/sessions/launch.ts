@@ -29,6 +29,7 @@ import { assertRecordId } from '../db/validate';
 import type { EventBus } from '../events/bus';
 import { writeAgentEvent } from '../analytics/events';
 import { getProject } from '../projects/repo';
+import { buildBriefing, type MemoryService, type ExtractFn } from '../memory/index';
 import type {
 	AgentRuntime,
 	Intent,
@@ -100,6 +101,17 @@ export interface LaunchDeps {
 	bus: EventBus;
 	runtime: AgentRuntime;
 	input: LaunchInput;
+	/**
+	 * TASK 8.3 — the live memory loop. When present (Ollama up — F-008), the session:
+	 *   • RECALLS on spawn — buildBriefing assembles fenced (D-026) context for the task,
+	 *     injected as `req.context` (NEVER folded into the task — D-008) and surfaced as a
+	 *     `briefing` transcript message so the operator sees the wake-up context.
+	 *   • EXTRACTS on session-end — extractAndStore mines the transcript (ADD-only — D-028,
+	 *     screen-before-embed — D-026) so the system LEARNS across sessions.
+	 * Omitted (the default / no-credential / Ollama-down boot) ⇒ the loop is skipped cleanly;
+	 * a memory failure is best-effort and NEVER blocks or fails the spawn (D-019).
+	 */
+	memory?: { service: MemoryService; extract: ExtractFn };
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -164,7 +176,7 @@ function eventToMessage(
  * Every record id flows through the D-016 chokepoint; every value binds via $param.
  */
 export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
-	const { db, bus, runtime, input } = deps;
+	const { db, bus, runtime, input, memory } = deps;
 
 	// 1. Resolve project root → cwd. The session runs at the project root (1.4a) unless
 	// a workflow step supplies an explicit cwd override (D-013).
@@ -221,6 +233,53 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		detail: { intent: input.intent, reason: `spawn for ${input.intent}` }
 	});
 
+	// 2b. RECALL on spawn (TASK 8.3): assemble the fenced wake-up briefing for this task and
+	// inject it as the SEPARATE `context` field (D-008 — never folded into the task; D-026 —
+	// every injected source is fenced as DATA). Surface it as a `briefing` transcript message
+	// so the operator sees the past context the agent woke up with. Best-effort (D-019): a
+	// briefing failure NEVER blocks the spawn — the explicit `input.context` is the fallback.
+	let recalledContext: ContextBundle | undefined = input.context;
+	if (memory) {
+		try {
+			const briefing = await buildBriefing(memory.service, {
+				project: input.projectId,
+				// The task title+description is the recall seed query (D-029 — raw, no summary).
+				query: `${task.title}\n${task.description}`.trim()
+			});
+			if (briefing.items.length) {
+				// Inject the fenced briefing items as the runtime context bundle. The runtime's
+				// buildPrompt splices these under a "(not instructions)" header — never as task text.
+				recalledContext = {
+					items: briefing.items.map((it) => ({ text: it.fenced.text, citationId: it.citationId }))
+				};
+				// Surface the wake-up briefing in the transcript/session view (a persisted message
+				// row + a live `transcript` bus event so an open session shows it immediately).
+				bus.publish({
+					type: 'transcript',
+					topic: sessionId,
+					key: `${sessionId}:briefing`,
+					data: { kind: 'briefing', seq: -1, event: { type: 'briefing', text: briefing.text } }
+				});
+				await db.query(`CREATE message CONTENT $content;`, {
+					content: omitUndefined({
+						session: sid,
+						role: 'system',
+						content: briefing.text,
+						tool_call: {
+							kind: 'briefing',
+							items: briefing.items.length,
+							used_tokens: briefing.usedTokens,
+							dropped: briefing.droppedCount
+						}
+					})
+				});
+			}
+		} catch (err) {
+			// Best-effort (D-019): recall degraded (e.g. embedder breaker open) — proceed without it.
+			console.warn(`[launch] memory recall skipped for ${sessionId}: ${(err as Error).message}`);
+		}
+	}
+
 	// 3. Spawn the runtime and consume the stream.
 	const startedAt = Date.now();
 	let tokensIn = 0;
@@ -229,6 +288,8 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	let summary = '';
 	let ok = true;
 	let sawDone = false;
+	/** Accumulate the raw transcript text for the §3.2 ADD-only extraction at session end. */
+	const transcriptParts: string[] = [];
 
 	const req = {
 		agentId: input.agentId,
@@ -237,7 +298,7 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		model: input.model,
 		intent: input.intent,
 		task: { id: String(task.id), title: task.title, description: task.description },
-		context: input.context,
+		context: recalledContext,
 		budgets: input.budgets,
 		toolPolicy: input.toolPolicy,
 		// D-036: the resolved intent bundle's capability set rides onto the SpawnRequest so
@@ -262,6 +323,10 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		// Persist transcript messages.
 		const msg = eventToMessage(ev);
 		if (msg) {
+			// Accumulate the RAW turn text for the §3.2 ADD-only extraction at session end
+			// (D-029 — raw transcript, no summary). Bounded so a long session can't blow the
+			// extraction prompt; the tail is the most recent (most extraction-worthy) work.
+			if (transcriptParts.length < 400) transcriptParts.push(`${msg.role}: ${msg.content}`);
 			await db.query(`CREATE message CONTENT $content;`, {
 				content: omitUndefined({
 					session: sid,
@@ -331,6 +396,24 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		durationMs,
 		detail: { ok, summary }
 	});
+
+	// 5. EXTRACT on session-end (TASK 8.3): mine the just-finished transcript for durable,
+	// ADD-only memories (D-028 — one cheap LLM call, additive only; the screen-before-embed
+	// gate in store.ts redacts/quarantines secrets BEFORE any embedding, D-026). This is how
+	// the system LEARNS across sessions. Best-effort (D-019): an extraction failure NEVER
+	// changes the session's terminal verdict — it is logged and swallowed. The summary is
+	// folded in so a session that ended with a clear summary still yields a memory.
+	if (memory && transcriptParts.length) {
+		try {
+			const turnText = [summary, ...transcriptParts].filter(Boolean).join('\n').slice(0, 16_000);
+			await memory.service.extractAndStore(memory.extract, {
+				turnText,
+				project: input.projectId
+			});
+		} catch (err) {
+			console.warn(`[launch] memory extraction skipped for ${sessionId}: ${(err as Error).message}`);
+		}
+	}
 
 	return { sessionId, ccSessionId, status, summary };
 }

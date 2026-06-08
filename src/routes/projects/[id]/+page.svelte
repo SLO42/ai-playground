@@ -81,7 +81,11 @@
         const ev = d.event as Record<string, unknown> | undefined;
         if (!ev) return;
         const t = ev.type as string;
-        if (t === 'log') liveLines = [...liveLines, { role: 'assistant', content: String(ev.message ?? '') }];
+        // TASK 8.3 — the wake-up briefing (recalled fenced memory) leads the transcript so the
+        // operator sees the past context the agent woke up with.
+        if (t === 'briefing')
+          liveLines = [{ role: 'system', content: String(ev.text ?? ''), toolCall: { kind: 'briefing' } }, ...liveLines];
+        else if (t === 'log') liveLines = [...liveLines, { role: 'assistant', content: String(ev.message ?? '') }];
         else if (t === 'tool_call')
           liveLines = [
             ...liveLines,

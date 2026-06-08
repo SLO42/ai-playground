@@ -9,11 +9,16 @@ export {
 	getBootToken,
 	getRuntime,
 	getProviderHealth,
+	getMemoryService,
+	parseExtraction,
 	resolveCapabilitiesForIntent,
 	DEFAULT_MODEL,
 	DEFAULT_AGENT,
 	DEFAULT_BUDGETS,
 	DEFAULT_TOOL_POLICY,
 	DEFAULT_INTENT,
-	type RuntimeAvailability
+	EMBEDDING_MODEL,
+	EXTRACTION_MODEL,
+	type RuntimeAvailability,
+	type MemoryAvailability
 } from './wiring';

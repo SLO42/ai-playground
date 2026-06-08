@@ -36,7 +36,7 @@ import type {
 	SpawnBudgets,
 	ToolPolicy
 } from '../runtime/index';
-import { launchSession, type LaunchResult } from '../sessions/launch';
+import { launchSession, type LaunchResult, type LaunchDeps } from '../sessions/launch';
 import { getProject } from '../projects/repo';
 import { Semaphore } from './semaphore';
 import { runPostTask, type CommandRunner } from './post-task';
@@ -87,6 +87,13 @@ export interface OrchestratorOptions {
 	 * shape. May be sync (a degenerate stub / a test) or async; the drain awaits it either way.
 	 */
 	route: RouteResolver;
+	/**
+	 * TASK 8.3 — the live memory loop, forwarded onto every spawn's launchSession. When present
+	 * (Ollama up — F-008), each session RECALLS a fenced wake-up briefing on spawn and EXTRACTS
+	 * durable memories on session-end. Omitted ⇒ the loop is skipped (no recall/extract). The
+	 * loop is best-effort (D-019) — it never blocks a spawn nor changes its verdict.
+	 */
+	memory?: LaunchDeps['memory'];
 	/** Statuses that make a task spawn-ready. Default: 'ready'. */
 	spawnReadyStatuses?: readonly string[];
 	/**
@@ -136,6 +143,7 @@ export class Orchestrator {
 	readonly #mode: OrchMode;
 	readonly #intervalMs?: number;
 	readonly #route: RouteResolver;
+	readonly #memory?: LaunchDeps['memory'];
 	readonly #spawnReady: ReadonlySet<string>;
 	readonly #postTask?: OrchestratorOptions['postTask'];
 	readonly #dailyCap?: number;
@@ -162,6 +170,7 @@ export class Orchestrator {
 		this.#mode = opts.mode ?? 'event';
 		this.#intervalMs = opts.intervalMs;
 		this.#route = opts.route;
+		this.#memory = opts.memory;
 		this.#spawnReady = new Set(opts.spawnReadyStatuses ?? ['ready']);
 		this.#postTask = opts.postTask;
 		this.#dailyCap = opts.dailySpawnCap && opts.dailySpawnCap > 0 ? opts.dailySpawnCap : undefined;
@@ -368,6 +377,9 @@ export class Orchestrator {
 				db: this.#db,
 				bus: this.#bus,
 				runtime: this.#runtime,
+				// TASK 8.3 — the memory loop rides every orchestrator-driven spawn (recall on
+				// spawn, extract on session-end). Undefined ⇒ the loop is skipped (Ollama down).
+				memory: this.#memory,
 				input: {
 					projectId,
 					taskId,

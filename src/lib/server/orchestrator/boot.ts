@@ -42,6 +42,7 @@ import {
 	getRuntime,
 	getBus,
 	getProviderHealth,
+	getMemoryService,
 	resolveCapabilitiesForIntent,
 	DEFAULT_TOOL_POLICY,
 	DEFAULT_AGENT
@@ -188,12 +189,24 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		return { started: false, reason: 'orchestration config unreadable (no adaptive bundles for routing)' };
 	}
 
+	// TASK 8.3 — wire the LIVE memory loop onto every orchestrator-driven spawn (recall on
+	// spawn, extract on session-end). Honest availability (F-008): if local Ollama embeddings
+	// are unreachable, getMemoryService is unavailable and the loop is simply OFF — the
+	// orchestrator still starts and spawns run WITHOUT recall/extract rather than fabricating
+	// a vector or a memory. The loop is best-effort (D-019) — it never blocks a spawn.
+	const memAvail = await getMemoryService(db);
+	const memory = memAvail.available ? { service: memAvail.memory, extract: memAvail.extract } : undefined;
+	if (!memAvail.available) {
+		console.warn(`[startup] memory loop OFF: ${memAvail.reason}`);
+	}
+
 	const orchestrator = new Orchestrator({
 		db,
 		bus,
 		runtime: avail.runtime,
 		maxConcurrent,
 		mode,
+		memory,
 		// intervalMs ONLY matters in 'periodic' mode (off by default, D-004). Passing it in
 		// event mode is harmless (the timer is only armed when mode==='periodic'), but we keep
 		// the orchestration.yaml intent faithful by forwarding it.

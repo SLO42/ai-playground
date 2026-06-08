@@ -44,8 +44,23 @@ import type {
 export interface LaunchInput {
 	/** Project record id — its root_path becomes the session cwd (D-002 / 1.4a). */
 	projectId: string;
-	/** Task record id — the work the session performs; its title/description seed the prompt. */
-	taskId: string;
+	/**
+	 * Task record id — the work the session performs; its title/description seed the
+	 * prompt. OPTIONAL: a workflow STEP (D-013) has no task — its prompt comes from the
+	 * step definition via `promptTask`. Exactly one of `taskId` / `promptTask` must be set.
+	 */
+	taskId?: string;
+	/**
+	 * A synthetic task shape supplying the prompt when there is no `taskId` (workflow
+	 * steps, D-013). Title/description seed the runtime prompt exactly as a real task
+	 * would; the session row carries no task link. Never mutated in place (D-008).
+	 */
+	promptTask?: { id: string; title: string; description: string };
+	/**
+	 * Project working dir override (D-013): a workflow step may run in a `cwd` distinct
+	 * from the project root. When absent, the project root is used (D-002 / 1.4a default).
+	 */
+	cwd?: string;
 	/** Agent slot id this session runs as (carried into the isolated config dir). */
 	agentId: string;
 	/** Chosen model (from Routing in a later wave; explicit here). */
@@ -143,25 +158,34 @@ function eventToMessage(
 export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	const { db, bus, runtime, input } = deps;
 
-	// 1. Resolve project root → cwd. The session MUST run at the project root (1.4a).
+	// 1. Resolve project root → cwd. The session runs at the project root (1.4a) unless
+	// a workflow step supplies an explicit cwd override (D-013).
 	const project = await getProject(db, input.projectId);
 	if (!project) throw new Error(`project not found: ${input.projectId}`);
-	const cwd = project.root_path;
+	const cwd = input.cwd ?? project.root_path;
 
-	// Read the task so its title/description seed the runtime prompt (never mutated, D-008).
-	const [taskRows] = await db.query<[Array<{ id: unknown; title: string; description: string }>]>(
-		`SELECT id, title, description FROM ONLY $tid;`,
-		{ tid: link(input.taskId) }
-	);
-	const task = (Array.isArray(taskRows) ? taskRows[0] : taskRows) as
-		| { id: unknown; title: string; description: string }
-		| undefined;
-	if (!task) throw new Error(`task not found: ${input.taskId}`);
+	// Resolve the prompt source. Exactly one of taskId / promptTask drives the prompt:
+	//   • taskId    — read the real task; its title/description seed the prompt (D-008).
+	//   • promptTask — a workflow step (D-013) with no task row; its prompt is supplied.
+	let task: { id: unknown; title: string; description: string } | undefined;
+	if (input.taskId) {
+		const [taskRows] = await db.query<
+			[Array<{ id: unknown; title: string; description: string }>]
+		>(`SELECT id, title, description FROM ONLY $tid;`, { tid: link(input.taskId) });
+		task = (Array.isArray(taskRows) ? taskRows[0] : taskRows) as typeof task;
+		if (!task) throw new Error(`task not found: ${input.taskId}`);
+	} else if (input.promptTask) {
+		task = input.promptTask;
+	} else {
+		throw new Error('launchSession requires either taskId or promptTask');
+	}
 
 	// 2. CREATE the session row (status "running") — first-class from the instant it starts.
 	const sessionContent = omitUndefined({
 		project: link(input.projectId),
-		task: link(input.taskId),
+		// A workflow step (D-013) has no task link — task is option<record<task>>, so omit
+		// it rather than nulling (§6.1). The workflow_run link below ties the step to its run.
+		task: input.taskId ? link(input.taskId) : undefined,
 		kind: 'task',
 		model: {
 			provider: input.model.provider,

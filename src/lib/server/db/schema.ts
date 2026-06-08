@@ -649,6 +649,28 @@ const m0020_work_item_claimed_at: Migration = {
 	`
 };
 
+// ── §4.11 fix — FLEXIBLE workflow object fields (TASK 2.17, D-013) ───────────────
+//
+// SAME SurrealDB 2.x engine-truth as m0016/m0017/m0018: on a SCHEMAFULL table a
+// `TYPE object` / `TYPE array<object>` field WITHOUT `FLEXIBLE` discards ALL nested
+// keys on write — the value round-trips to `{}` (or `[{}]`). The workflow runner
+// persists:
+//   • workflow.steps      — array of free-form step objects {id, prompt, agent, model,
+//                           cwd, depends_on, parallel}; without FLEXIBLE every step
+//                           stores as `{}`, so a read-back step has no model/prompt and
+//                           the runner cannot launch it (the exact failure this fixes).
+//   • workflow_run.step_state — a {stepId: status} map with arbitrary stepId keys; without
+//                           FLEXIBLE it stores `{}` and the tracked per-step state is lost.
+// OVERWRITE both as FLEXIBLE so the runner's pipeline definition + per-step tracking
+// round-trip intact. Forward-only + idempotent (OVERWRITE) — never edits m0011.
+const m0021_workflow_flexible: Migration = {
+	id: '0021_workflow_flexible',
+	up: `
+		DEFINE FIELD OVERWRITE steps      ON workflow     FLEXIBLE TYPE array<object>;
+		DEFINE FIELD OVERWRITE step_state ON workflow_run FLEXIBLE TYPE object DEFAULT {};
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -675,5 +697,6 @@ export const schemaMigrations: Migration[] = [
 	m0017_transcript_flexible,
 	m0018_work_item_flexible,
 	m0019_work_item_dedup_scope,
-	m0020_work_item_claimed_at
+	m0020_work_item_claimed_at,
+	m0021_workflow_flexible
 ];

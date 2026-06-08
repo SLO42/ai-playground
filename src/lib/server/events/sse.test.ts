@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { EventBus, type BusEvent } from './bus';
 import { SseClient, formatFrame, sseStream } from './sse';
 
@@ -163,15 +163,62 @@ describe('SseClient — backpressure', () => {
 describe('sseStream — ReadableStream body for the one SSE endpoint', () => {
 	it('emits encoded frames and cancel() unsubscribes from the bus', async () => {
 		const bus = new EventBus();
-		const stream = sseStream(bus, {});
+		const stream = sseStream(bus, { heartbeatMs: 0 });
 		expect(bus.size).toBe(1); // exactly one per-client subscription
 		bus.publish(ev({ data: { hi: true } }));
 		const reader = stream.getReader();
+		// First frame is the prime comment (see below); the event follows.
+		await reader.read();
 		const { value } = await reader.read();
 		const text = new TextDecoder().decode(value!);
 		expect(text).toContain('event: db_change');
 		await reader.cancel();
 		expect(bus.size).toBe(0); // cancel unsubscribed
+	});
+
+	it('primes with a `: ready` comment on open BEFORE any bus event (so onopen fires immediately)', async () => {
+		const bus = new EventBus();
+		const stream = sseStream(bus, { heartbeatMs: 0 });
+		// NOTHING published yet — the first readable chunk must already be available.
+		const reader = stream.getReader();
+		const { value, done } = await reader.read();
+		expect(done).toBe(false);
+		const text = new TextDecoder().decode(value!);
+		expect(text).toBe(': ready\n\n'); // SSE comment frame — flushes the head, ignored as data
+		await reader.cancel();
+	});
+
+	it('emits a periodic heartbeat comment to keep the connection warm', async () => {
+		vi.useFakeTimers();
+		try {
+			const bus = new EventBus();
+			const stream = sseStream(bus, { heartbeatMs: 50 });
+			const reader = stream.getReader();
+			// Drain the prime frame first.
+			expect(new TextDecoder().decode((await reader.read()).value!)).toBe(': ready\n\n');
+			// Advance past one heartbeat interval — a heartbeat comment must arrive.
+			await vi.advanceTimersByTimeAsync(60);
+			const { value } = await reader.read();
+			expect(new TextDecoder().decode(value!)).toBe(': heartbeat\n\n');
+			await reader.cancel();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('stops the heartbeat timer on cancel (no leak)', async () => {
+		vi.useFakeTimers();
+		try {
+			const clearSpy = vi.spyOn(globalThis, 'clearInterval');
+			const bus = new EventBus();
+			const stream = sseStream(bus, { heartbeatMs: 50 });
+			const reader = stream.getReader();
+			await reader.read(); // prime
+			await reader.cancel();
+			expect(clearSpy).toHaveBeenCalled();
+		} finally {
+			vi.useRealTimers();
+		}
 	});
 });
 

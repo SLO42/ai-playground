@@ -141,27 +141,70 @@ export function formatFrame(e: BusEvent): string {
 }
 
 /**
+ * A comment frame (`: text\n\n`) the browser EventSource silently ignores as data
+ * but which still flushes bytes down the wire. We use one to PRIME the connection
+ * (so the HTTP head flushes and `onopen`/readyState=1 fires before any bus event)
+ * and again as a periodic HEARTBEAT (keeps the connection from idling out and lets
+ * a client distinguish "connected, quiet" from "stalled"). Comments never touch the
+ * SseClient queue, so backpressure/coalescing (TASK 2.1) is untouched.
+ */
+function commentFrame(text: string): string {
+	return `: ${text}\n\n`;
+}
+
+/** Heartbeat cadence. A comment every 15s keeps proxies/load-balancers from idling. */
+const HEARTBEAT_MS = 15_000;
+
+/**
  * Build a `ReadableStream<Uint8Array>` for a SvelteKit SSE Response body, fed by a
  * per-client {@link SseClient} off the bus. Closing the stream closes the client
  * (unsubscribes from the bus). This is the ONE place the bus reaches the dashboard.
+ *
+ * On open we IMMEDIATELY enqueue a `: ready` comment so the response head flushes and
+ * the browser's `EventSource` fires `onopen` (readyState=1) on connect — BEFORE any DB
+ * change — and a periodic heartbeat keeps the stream warm. Event frames still come
+ * exclusively from the backpressured {@link SseClient} queue (TASK 2.1 unchanged).
  */
-export function sseStream(bus: EventBus, opts: SseClientOptions = {}): ReadableStream<Uint8Array> {
-	const client = SseClient.from(bus, opts);
+export function sseStream(
+	bus: EventBus,
+	opts: SseClientOptions & { heartbeatMs?: number } = {}
+): ReadableStream<Uint8Array> {
+	const { heartbeatMs = HEARTBEAT_MS, ...clientOpts } = opts;
+	const client = SseClient.from(bus, clientOpts);
 	const encoder = new TextEncoder();
 	let iterator: AsyncIterator<string>;
+	let heartbeat: ReturnType<typeof setInterval> | undefined;
 	return new ReadableStream<Uint8Array>({
-		start() {
+		start(controller) {
 			iterator = client[Symbol.asyncIterator]();
+			// Prime: flush the head NOW so onopen fires before the first bus event.
+			controller.enqueue(encoder.encode(commentFrame('ready')));
+			if (heartbeatMs > 0) {
+				heartbeat = setInterval(() => {
+					try {
+						controller.enqueue(encoder.encode(commentFrame('heartbeat')));
+					} catch {
+						// Controller already closed (cancel raced the timer) — stop ticking.
+						if (heartbeat) clearInterval(heartbeat);
+						heartbeat = undefined;
+					}
+				}, heartbeatMs);
+				// Don't keep the process alive solely for a heartbeat timer.
+				(heartbeat as { unref?: () => void }).unref?.();
+			}
 		},
 		async pull(controller) {
 			const { value, done } = await iterator.next();
 			if (done) {
+				if (heartbeat) clearInterval(heartbeat);
 				controller.close();
 				return;
 			}
 			controller.enqueue(encoder.encode(value));
 		},
 		cancel() {
+			if (heartbeat) clearInterval(heartbeat);
+			heartbeat = undefined;
 			client.close();
 		}
 	});

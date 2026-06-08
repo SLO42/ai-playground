@@ -99,7 +99,7 @@ export const actions: Actions = {
 			return fail(503, { run: { error: 'Database not connected — start SurrealDB and retry.' } });
 		}
 
-		const runtimeAvail = getRuntime();
+		const runtimeAvail = await getRuntime(db);
 		if (!runtimeAvail.available) {
 			return fail(503, { run: { error: runtimeAvail.reason } });
 		}

@@ -71,6 +71,16 @@ function bootstrapControlPlaneEnv(): void {
 		const port = env.PORT?.trim() || '5173';
 		process.env.HOOK_URL = `http://${host}:${port}`;
 	}
+	// Surface the DRIVEN-session Claude Code credential (D-002/S1) from $env/dynamic/private
+	// into process.env, so the harness wiring (getRuntime, plain server code reading
+	// process.env) sees a `.env`-set token under `npm run dev` — where Vite does NOT inject
+	// .env into process.env. Without this the live spawn path degrades to honest-unavailable
+	// (F-008) on every dev boot even when the operator HAS configured the credential. We
+	// never overwrite an existing shell-exported value, and the token is never logged.
+	const ccToken = env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
+	if (ccToken && !process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim()) {
+		process.env.CLAUDE_CODE_OAUTH_TOKEN = ccToken;
+	}
 	console.log('[startup] control-plane: loopback gate passed; per-boot HOOK_TOKEN minted (D-025).');
 }
 

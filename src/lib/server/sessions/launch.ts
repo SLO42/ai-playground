@@ -36,7 +36,8 @@ import type {
 	RuntimeEvent,
 	SpawnBudgets,
 	ToolPolicy,
-	ContextBundle
+	ContextBundle,
+	CapabilitySet
 } from '../runtime/index';
 
 // ── Input / result shapes ──────────────────────────────────────────────────────
@@ -70,6 +71,13 @@ export interface LaunchInput {
 	toolPolicy: ToolPolicy;
 	/** Recalled context — a SEPARATE field, never folded into the task (D-008). */
 	context?: ContextBundle;
+	/**
+	 * Per-task capability set from the resolved intent bundle (D-036 / TASK 5.1). Passed
+	 * straight onto the SpawnRequest so the runtime composes harness-base ⊕ THIS set into
+	 * the isolated config (catalog-validated, fail closed). Absent ⇒ the harness base only.
+	 * NEVER the operator's whole plugin set — D-002 isolation is preserved in the composer.
+	 */
+	capabilities?: CapabilitySet;
 	/** Set when this session is a workflow step (D-013). */
 	workflowRunId?: string;
 }
@@ -232,6 +240,9 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		context: input.context,
 		budgets: input.budgets,
 		toolPolicy: input.toolPolicy,
+		// D-036: the resolved intent bundle's capability set rides onto the SpawnRequest so
+		// the runtime's composeCapabilities validates + composes it against the live catalog.
+		capabilities: input.capabilities,
 		workflowRunId: input.workflowRunId
 	};
 

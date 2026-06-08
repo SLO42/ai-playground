@@ -43,6 +43,15 @@ bundles:
     retrievalShare: 0.4
     toolCalls: 40
     concurrency: 2
+    # D-036 per-task capability provisioning (TASK 5.1). An explicit, allow-listed
+    # selection from the cc-config catalog (cc_skill/cc_agent/cc_mcp_server names) the
+    # driven code-write session may wield. The runtime catalog-validates these at spawn
+    # (fail closed on an unknown id) and composes them onto the harness base — operator
+    # plugins/marketplaces stay empty (D-002 isolation). Edit to match the live catalog.
+    capabilities:
+      skills:
+        - svelte5-patterns
+        - error-learning
   code-debug:
     thinking: high
     retrievalDepth: 10

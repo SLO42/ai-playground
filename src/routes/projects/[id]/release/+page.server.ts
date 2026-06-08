@@ -91,7 +91,7 @@ export const actions: Actions = {
 			return fail(404, { release: { error: 'project not found' } });
 		}
 
-		const runtimeAvail = getRuntime();
+		const runtimeAvail = await getRuntime(db);
 		if (!runtimeAvail.available) {
 			return fail(503, { release: { error: runtimeAvail.reason } });
 		}

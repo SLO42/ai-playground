@@ -28,6 +28,7 @@ import { listSessionMessages, launchSession, type TranscriptMessage } from '$lib
 import {
 	getBus,
 	getRuntime,
+	resolveCapabilitiesForIntent,
 	DEFAULT_MODEL,
 	DEFAULT_AGENT,
 	DEFAULT_BUDGETS,
@@ -216,7 +217,9 @@ export const actions: Actions = {
 			return fail(503, { launch: { error: 'Database not connected — start SurrealDB and retry.' } });
 		}
 
-		const runtimeAvail = getRuntime();
+		// getRuntime reads the LIVE cc-config catalog from this db so composeCapabilities
+		// runs against the real allow-list (D-036 dead-branch fix).
+		const runtimeAvail = await getRuntime(db);
 		if (!runtimeAvail.available) {
 			return fail(503, { launch: { error: runtimeAvail.reason } });
 		}
@@ -233,7 +236,10 @@ export const actions: Actions = {
 					model: DEFAULT_MODEL,
 					intent: DEFAULT_INTENT,
 					budgets: DEFAULT_BUDGETS,
-					toolPolicy: DEFAULT_TOOL_POLICY
+					toolPolicy: DEFAULT_TOOL_POLICY,
+					// D-036: the resolved intent bundle's capability set, validated + composed
+					// against the live catalog inside the runtime (fail closed on an unknown id).
+					capabilities: resolveCapabilitiesForIntent(DEFAULT_INTENT)
 				}
 			});
 			return {

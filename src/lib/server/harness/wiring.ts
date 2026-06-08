@@ -26,9 +26,15 @@ import {
 	type ModelSelection,
 	type SpawnBudgets,
 	type ToolPolicy,
-	type Intent
+	type Intent,
+	type CapabilityCatalog,
+	type CapabilitySet
 } from '../runtime/index';
 import { ClaudeCliBackend } from '../claude-code/cli-backend';
+import { catalogIds } from '../cc-config/index';
+import { DEFAULT_GATE_POLICY } from '../claude-code/gates';
+import { loadOrchestration, resolveAdaptiveConfig, type IntentClass } from '../config/index';
+import type { Db } from '../db/client';
 
 /** The events bus the SSE fan-out reads — the SOLE source (§2.11). */
 export function getBus(): EventBus {
@@ -55,14 +61,42 @@ export type RuntimeAvailability =
 let cachedRuntime: ClaudeCodeRuntime | null = null;
 
 /**
+ * Read the LIVE cc-config catalog id-set (the D-036 allow-list, cc-config/sync.catalogIds)
+ * from the runtime DB. This is the source of truth `composeCapabilities` validates each
+ * spawn's per-task capability set against (fail closed on an unknown id). LIVE DB ONLY
+ * (F-008) — never hard-coded. Returns undefined if the read fails, so the runtime still
+ * builds (capability provisioning OFF rather than blocking the whole spawn path).
+ */
+async function resolveCatalog(db: Db): Promise<CapabilityCatalog | undefined> {
+	try {
+		const ids = await catalogIds(db);
+		return { skills: ids.skills, agents: ids.agents, mcp: ids.mcp };
+	} catch (err) {
+		console.warn(
+			'[harness] cc-config catalog read failed — spawning with capability provisioning OFF (harness base only):',
+			(err as Error).message
+		);
+		return undefined;
+	}
+}
+
+/**
  * Assemble the Claude Code runtime for UI actions. Real CLI backend when
  * CLAUDE_CODE_OAUTH_TOKEN is present (the credentialed live path); otherwise honestly
  * unavailable (no fake run, F-008). Constructed once and cached for the process.
  *
- * The runtime is built with the harness-only isolated config (D-002) — gates/hooks ride
- * the per-session --settings the backend writes; no operator plugins are inherited.
+ * The runtime is built with the harness-only isolated config (D-002): the harness's OWN
+ * gates (DEFAULT_GATE_POLICY, D-018) ride the per-session --settings, and the LIVE
+ * cc-config catalog (D-036 / TASK 5.1) is wired in so `composeCapabilities` actually RUNS
+ * on every spawn — validating the task's `req.capabilities` against the real catalog and
+ * composing harness-base ⊕ the (catalog-validated) set into the isolated config. Without
+ * the catalog this was a DEAD BRANCH (composeCapabilities never ran); passing it here is
+ * the fix. `plugins`/`marketplaces` stay empty regardless (D-002 isolation preserved).
+ *
+ * The catalog is read once at first credentialed construction (the runtime is a per-boot
+ * singleton; a cc-config re-sync takes effect on the next process boot / runtime rebuild).
  */
-export function getRuntime(): RuntimeAvailability {
+export async function getRuntime(db?: Db): Promise<RuntimeAvailability> {
 	if (cachedRuntime) return { available: true, runtime: cachedRuntime };
 
 	const oauthToken = process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim();
@@ -75,11 +109,41 @@ export function getRuntime(): RuntimeAvailability {
 	}
 
 	const backend = new ClaudeCliBackend({ oauthToken });
+	// The live catalog is the D-036 allow-list. When a db is supplied, read it so
+	// composeCapabilities runs against the REAL catalog (the dead-branch fix). When no db
+	// is in hand (e.g. a non-DB caller), capability provisioning stays OFF for that boot.
+	const catalog = db ? await resolveCatalog(db) : undefined;
 	cachedRuntime = new ClaudeCodeRuntime({
 		backend,
-		harnessConfigRoot: process.env.HARNESS_CONFIG_ROOT?.trim() || '.harness/claude-config'
+		harnessConfigRoot: process.env.HARNESS_CONFIG_ROOT?.trim() || '.harness/claude-config',
+		// D-018 harness gates ride every isolated --settings (the gate layer still evaluates
+		// each tool call regardless; this seeds the composed settings' gate map).
+		gates: { ...DEFAULT_GATE_POLICY },
+		catalog
 	});
 	return { available: true, runtime: cachedRuntime };
+}
+
+/**
+ * Resolve the per-task capability set (D-036) for an intent from the live orchestration
+ * config's intent→bundle map (D-020). The bundle's `capabilities` block is an explicit,
+ * allow-listed `{ skills, agents, mcp }` selection; the runtime catalog-validates it at
+ * spawn (fail closed). An intent with no configured bundle/capabilities yields undefined
+ * (⇒ the harness base only, no extra capabilities). Degrades to undefined if the config
+ * is unreadable — never throws into the launch path.
+ */
+export function resolveCapabilitiesForIntent(intent: Intent): CapabilitySet | undefined {
+	try {
+		const dir = process.env.CONFIG_DIR?.trim() || 'config';
+		const orch = loadOrchestration(`${dir}/orchestration.yaml`);
+		const bundle = resolveAdaptiveConfig(orch, intent as IntentClass);
+		const caps = bundle.capabilities;
+		if (!caps) return undefined;
+		// Normalize the optional-array bundle shape → the runtime's required-array CapabilitySet.
+		return { skills: caps.skills ?? [], agents: caps.agents ?? [], mcp: caps.mcp ?? [] };
+	} catch {
+		return undefined;
+	}
 }
 
 // ── Sensible defaults the UI actions seed a manual run with ──────────────────────────────

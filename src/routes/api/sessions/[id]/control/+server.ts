@@ -40,7 +40,7 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	const db = tryGetDb();
 	if (!db) throw error(503, 'database not connected');
 
-	const runtimeAvail = getRuntime();
+	const runtimeAvail = await getRuntime(db);
 	if (!runtimeAvail.available) {
 		// Honest: control actions drive the real runtime; without a credential there is no
 		// live session to steer (F-008 — never pretend it worked).

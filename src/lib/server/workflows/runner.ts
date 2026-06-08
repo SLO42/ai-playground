@@ -104,9 +104,24 @@ export async function runWorkflow(deps: RunWorkflowDeps): Promise<RunWorkflowRes
 
 	const sessions: Record<string, string> = {};
 
-	/** Persist the current step_state map (rewritten wholesale via a bound $param). */
+	/** Persist the current step_state map (rewritten wholesale via a bound $param).
+	 * Retries on a SurrealDB write-conflict (D-008 file-race class): the wholesale
+	 * UPDATE can collide with a concurrent writer on the same row under load — the
+	 * engine flags it retryable ("read or write conflict ... can be retried"). */
 	const persistStepState = async (): Promise<void> => {
-		await db.query(`UPDATE $rid SET step_state = $state;`, { rid, state: { ...stepState } });
+		for (let attempt = 0; ; attempt++) {
+			try {
+				await db.query(`UPDATE $rid SET step_state = $state;`, { rid, state: { ...stepState } });
+				return;
+			} catch (e) {
+				const msg = e instanceof Error ? e.message : String(e);
+				if (attempt < 4 && /read or write conflict|can be retried/i.test(msg)) {
+					await new Promise((r) => setTimeout(r, 10 * (attempt + 1)));
+					continue;
+				}
+				throw e;
+			}
+		}
 	};
 
 	/** A step is ready when it is pending AND every dependency is "done". */

@@ -13,7 +13,13 @@ import {
 	type CcSpawnPlan,
 	type RuntimeEvent
 } from '../runtime/index';
-import { createWorkflow, getWorkflowRun, validateSteps, type WorkflowStep } from './repo';
+import {
+	createWorkflow,
+	getWorkflowRun,
+	getWorkflowRunDetail,
+	validateSteps,
+	type WorkflowStep
+} from './repo';
 import { runWorkflow } from './runner';
 
 // TASK 2.17 VERIFY (D-013; DATA-MODEL §4.11) — a multi-step pipeline runs as a tracked
@@ -246,6 +252,39 @@ describe('runWorkflow — multi-step pipeline as a tracked workflow_run (D-013)'
 		const topics = new Set(transcripts.map((e) => e.topic));
 		expect(topics.has(res.sessions.a)).toBe(true);
 		expect(topics.has(res.sessions.b)).toBe(true);
+	});
+
+	it('getWorkflowRunDetail returns the run + per-step session records ordered by started_at (6.9)', async () => {
+		// REGRESSION (6.9): the session subquery does ORDER BY started_at — SurrealDB 2.x
+		// requires `started_at` to be in the SELECT projection, else it throws "Missing order
+		// idiom" and the run-detail / ?run=<id> page misrenders as "disconnected".
+		const wf = await createWorkflow(db, {
+			name: 'detail',
+			project: projectId,
+			steps: [step({ id: 'a' }), step({ id: 'b', depends_on: ['a'] }), step({ id: 'c', depends_on: ['b'] })]
+		});
+		const res = await runWorkflow({ db, bus: new EventBus(), runtime: rt(), workflow: wf.id });
+		expect(res.status).toBe('done');
+
+		// The read must NOT throw (the ORDER BY started_at projection bug) and must return data.
+		const detail = await getWorkflowRunDetail(db, res.runId);
+		expect(detail).not.toBeNull();
+		expect(detail!.run.id).toBe(res.runId);
+		expect(detail!.run.status).toBe('done');
+		expect(detail!.run.workflow).toBe(wf.id);
+
+		// One row per declared step, each carrying the per-step session it launched.
+		expect(detail!.steps.map((s) => s.stepId).sort()).toEqual(['a', 'b', 'c']);
+		for (const st of detail!.steps) {
+			expect(st.status).toBe('done');
+			expect(st.sessionId).toBeDefined();
+			expect(st.modelId).toBe(M.modelId);
+		}
+		// Every reported session id is a real session linked to this run (read back live).
+		const ids = detail!.steps.map((s) => s.sessionId);
+		for (const sid of Object.values(res.sessions)) {
+			expect(ids).toContain(sid);
+		}
 	});
 
 	it('uses the workflow project when no projectId override is given', async () => {

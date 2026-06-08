@@ -334,9 +334,11 @@ export async function getWorkflowRunDetail(db: Db, id: string): Promise<Workflow
 	// Sessions launched for this run, keyed back to their step via the run's step_state order.
 	// A step session carries kind="workflow-step"; we surface model + status per session row.
 	const [sessRows] = await db.query<
-		[Array<{ id: unknown; status: string; model?: { provider?: string; model_id?: string; tier?: string } }>]
+		[Array<{ id: unknown; started_at?: unknown; status: string; model?: { provider?: string; model_id?: string; tier?: string } }>]
 	>(
-		`SELECT id, status, model FROM session
+		// SurrealDB 2.x: any field used in ORDER BY MUST appear in the SELECT projection
+		// (the 6.9 bug) — `started_at` is selected here, matching analytics/trace.ts.
+		`SELECT id, started_at, status, model FROM session
 		  WHERE workflow_run = $rid
 		  ORDER BY started_at ASC;`,
 		{ rid }

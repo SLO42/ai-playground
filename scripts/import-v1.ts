@@ -15,6 +15,11 @@
 
 import { Db } from '../src/lib/server/db/client.ts';
 import { importV1FromFiles } from '../src/lib/server/importer/v1.ts';
+import {
+	importGraphStateFromFile,
+	importSwarmMemoryFromDb
+} from '../src/lib/server/importer/v1-stores.ts';
+import { CachedEmbedder, OllamaEmbedder } from '../src/lib/server/memory/embed.ts';
 
 /** Parse `--flag value` pairs into a plain map (no external dep). */
 function parseFlags(argv: readonly string[]): Record<string, string> {
@@ -45,8 +50,10 @@ function requireEnv(name: string): string {
 
 async function main(): Promise<void> {
 	const flags = parseFlags(process.argv.slice(2));
-	if (!flags.registry && !flags.tasks) {
-		throw new Error('nothing to import: pass --registry <path> and/or --tasks <path>');
+	if (!flags.registry && !flags.tasks && !flags['swarm-db'] && !flags.graph) {
+		throw new Error(
+			'nothing to import: pass --registry/--tasks (1.7) and/or --swarm-db/--graph (2.9)'
+		);
 	}
 
 	const db = await Db.connect({
@@ -57,15 +64,41 @@ async function main(): Promise<void> {
 		database: requireEnv('SURREAL_DB')
 	});
 	try {
-		const counts = await importV1FromFiles(db, {
-			registryPath: flags.registry,
-			tasksPath: flags.tasks,
-			taskProjectId: flags.project
-		});
-		process.stdout.write(
-			`v1 import complete: ${counts.projects} project(s), ${counts.tasks} task(s) ` +
-				`(re-run is idempotent — no duplicate rows)\n`
-		);
+		if (flags.registry || flags.tasks) {
+			const counts = await importV1FromFiles(db, {
+				registryPath: flags.registry,
+				tasksPath: flags.tasks,
+				taskProjectId: flags.project
+			});
+			process.stdout.write(
+				`v1 import complete: ${counts.projects} project(s), ${counts.tasks} task(s) ` +
+					`(re-run is idempotent — no duplicate rows)\n`
+			);
+		}
+
+		// TASK 2.9 — remaining stores. The swarm memory import RE-EMBEDS every row to 1024
+		// (the v1 vectors are 384-dim), so it needs a live embedder: the local Ollama server
+		// (D-014, no /v1 suffix). Endpoint/model come from env so no secrets are baked in.
+		if (flags['swarm-db']) {
+			const inner = new OllamaEmbedder({
+				endpoint: requireEnv('OLLAMA_ENDPOINT'),
+				model: requireEnv('EMBEDDING_MODEL')
+			});
+			const embedder = new CachedEmbedder({ embedder: inner, db });
+			const r = await importSwarmMemoryFromDb({ db, embedder }, flags['swarm-db']);
+			process.stdout.write(
+				`swarm memory import: ${r.imported} new, ${r.skipped} skipped, ` +
+					`${r.reEmbedded} re-embedded to 1024, ${r.dropped} screened-out (idempotent)\n`
+			);
+		}
+
+		if (flags.graph) {
+			const g = await importGraphStateFromFile(db, flags.graph);
+			process.stdout.write(
+				`graph-state import: ${g.entities} entit(ies), ${g.edges} edge(s), ` +
+					`${g.skippedEdges} dangling edge(s) skipped (idempotent)\n`
+			);
+		}
 	} finally {
 		await db.close().catch(() => {});
 	}

@@ -23,3 +23,25 @@ export {
 	type ImportTasksOptions,
 	type ImportV1Options
 } from './v1';
+
+export {
+	// remaining-store importers (TASK 2.9)
+	importSwarmMemory,
+	importSwarmMemoryFromDb,
+	importGraphState,
+	importGraphStateFromFile,
+	// mappers + predicates
+	mapSwarmKind,
+	mapEdgeKind,
+	parseSwarmEmbedding,
+	needsReEmbed,
+	swarmMemoryDedupKey,
+	graphEntityId,
+	// types
+	type SwarmMemoryRow,
+	type V1GraphState,
+	type V1GraphNode,
+	type V1GraphEdge,
+	type ImportSwarmResult,
+	type ImportGraphResult
+} from './v1-stores';

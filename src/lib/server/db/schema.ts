@@ -26,57 +26,57 @@ import { backfillValueField, guardedScan, type Migration } from './migrate';
 const m0001_project_plan: Migration = {
 	id: '0001_project_plan',
 	up: `
-		DEFINE TABLE project SCHEMAFULL;
-		DEFINE FIELD slug         ON project TYPE string;
-		DEFINE FIELD name         ON project TYPE string;
-		DEFINE FIELD root_path    ON project TYPE string;
-		DEFINE FIELD ecosystem    ON project TYPE array<string> DEFAULT [];
-		DEFINE FIELD build_tool   ON project TYPE option<string>;
-		DEFINE FIELD test_command ON project TYPE option<string>;
-		DEFINE FIELD repo_url     ON project TYPE option<string>;
-		DEFINE FIELD status       ON project TYPE string DEFAULT "active"
+		DEFINE TABLE OVERWRITE project SCHEMAFULL;
+		DEFINE FIELD OVERWRITE slug         ON project TYPE string;
+		DEFINE FIELD OVERWRITE name         ON project TYPE string;
+		DEFINE FIELD OVERWRITE root_path    ON project TYPE string;
+		DEFINE FIELD OVERWRITE ecosystem    ON project TYPE array<string> DEFAULT [];
+		DEFINE FIELD OVERWRITE build_tool   ON project TYPE option<string>;
+		DEFINE FIELD OVERWRITE test_command ON project TYPE option<string>;
+		DEFINE FIELD OVERWRITE repo_url     ON project TYPE option<string>;
+		DEFINE FIELD OVERWRITE status       ON project TYPE string DEFAULT "active"
 			ASSERT $value IN ["active","paused","archived"];
-		DEFINE FIELD created_at   ON project TYPE datetime DEFAULT time::now();
-		DEFINE FIELD updated_at   ON project TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE created_at   ON project TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE updated_at   ON project TYPE datetime DEFAULT time::now();
 
-		DEFINE FIELD plan                    ON project TYPE option<object>;
-		DEFINE FIELD plan.purpose            ON project TYPE option<string>;
-		DEFINE FIELD plan.long_term_vision   ON project TYPE option<string>;
-		DEFINE FIELD plan.role               ON project TYPE option<string>;
-		DEFINE FIELD plan.definition_of_done ON project TYPE option<string>;
+		DEFINE FIELD OVERWRITE plan                    ON project TYPE option<object>;
+		DEFINE FIELD OVERWRITE plan.purpose            ON project TYPE option<string>;
+		DEFINE FIELD OVERWRITE plan.long_term_vision   ON project TYPE option<string>;
+		DEFINE FIELD OVERWRITE plan.role               ON project TYPE option<string>;
+		DEFINE FIELD OVERWRITE plan.definition_of_done ON project TYPE option<string>;
 
-		DEFINE TABLE release SCHEMAFULL;
-		DEFINE FIELD project    ON release TYPE record<project>;
-		DEFINE FIELD version    ON release TYPE string;
-		DEFINE FIELD title      ON release TYPE option<string>;
-		DEFINE FIELD status     ON release TYPE string DEFAULT "planned"
+		DEFINE TABLE OVERWRITE release SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project    ON release TYPE record<project>;
+		DEFINE FIELD OVERWRITE version    ON release TYPE string;
+		DEFINE FIELD OVERWRITE title      ON release TYPE option<string>;
+		DEFINE FIELD OVERWRITE status     ON release TYPE string DEFAULT "planned"
 			ASSERT $value IN ["planned","active","shipped"];
-		DEFINE FIELD shipped_at ON release TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE shipped_at ON release TYPE option<datetime>;
 
-		DEFINE TABLE phase SCHEMAFULL;
-		DEFINE FIELD project ON phase TYPE record<project>;
-		DEFINE FIELD release ON phase TYPE option<record<release>>;
-		DEFINE FIELD name    ON phase TYPE string;
-		DEFINE FIELD order   ON phase TYPE int DEFAULT 0;
-		DEFINE FIELD status  ON phase TYPE string DEFAULT "todo"
+		DEFINE TABLE OVERWRITE phase SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project ON phase TYPE record<project>;
+		DEFINE FIELD OVERWRITE release ON phase TYPE option<record<release>>;
+		DEFINE FIELD OVERWRITE name    ON phase TYPE string;
+		DEFINE FIELD OVERWRITE order   ON phase TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE status  ON phase TYPE string DEFAULT "todo"
 			ASSERT $value IN ["todo","in_progress","done"];
 
-		DEFINE TABLE feature SCHEMAFULL;
-		DEFINE FIELD project ON feature TYPE record<project>;
-		DEFINE FIELD release ON feature TYPE option<record<release>>;
-		DEFINE FIELD title   ON feature TYPE string;
-		DEFINE FIELD detail  ON feature TYPE option<string>;
-		DEFINE FIELD status  ON feature TYPE string DEFAULT "planned"
+		DEFINE TABLE OVERWRITE feature SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project ON feature TYPE record<project>;
+		DEFINE FIELD OVERWRITE release ON feature TYPE option<record<release>>;
+		DEFINE FIELD OVERWRITE title   ON feature TYPE string;
+		DEFINE FIELD OVERWRITE detail  ON feature TYPE option<string>;
+		DEFINE FIELD OVERWRITE status  ON feature TYPE string DEFAULT "planned"
 			ASSERT $value IN ["planned","in_progress","done","dropped"];
 
-		DEFINE TABLE sprint SCHEMAFULL;
-		DEFINE FIELD project ON sprint TYPE record<project>;
-		DEFINE FIELD name    ON sprint TYPE string;
-		DEFINE FIELD starts  ON sprint TYPE option<datetime>;
-		DEFINE FIELD ends    ON sprint TYPE option<datetime>;
+		DEFINE TABLE OVERWRITE sprint SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project ON sprint TYPE record<project>;
+		DEFINE FIELD OVERWRITE name    ON sprint TYPE string;
+		DEFINE FIELD OVERWRITE starts  ON sprint TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE ends    ON sprint TYPE option<datetime>;
 
-		DEFINE INDEX project_slug      ON project FIELDS slug UNIQUE;
-		DEFINE INDEX release_by_project ON release FIELDS project;
+		DEFINE INDEX OVERWRITE project_slug      ON project FIELDS slug UNIQUE;
+		DEFINE INDEX OVERWRITE release_by_project ON release FIELDS project;
 	`
 };
 
@@ -84,23 +84,23 @@ const m0001_project_plan: Migration = {
 const m0002_task: Migration = {
 	id: '0002_task',
 	up: `
-		DEFINE TABLE task SCHEMAFULL;
-		DEFINE FIELD project     ON task TYPE record<project>;
-		DEFINE FIELD title       ON task TYPE string;
-		DEFINE FIELD description  ON task TYPE string;
-		DEFINE FIELD status      ON task TYPE string DEFAULT "backlog"
+		DEFINE TABLE OVERWRITE task SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project     ON task TYPE record<project>;
+		DEFINE FIELD OVERWRITE title       ON task TYPE string;
+		DEFINE FIELD OVERWRITE description  ON task TYPE string;
+		DEFINE FIELD OVERWRITE status      ON task TYPE string DEFAULT "backlog"
 			ASSERT $value IN ["backlog","ready","in_progress","review","blocked","done","failed"];
-		DEFINE FIELD priority    ON task TYPE string DEFAULT "normal"
+		DEFINE FIELD OVERWRITE priority    ON task TYPE string DEFAULT "normal"
 			ASSERT $value IN ["low","normal","high","critical"];
-		DEFINE FIELD origin      ON task TYPE string DEFAULT "manual"
+		DEFINE FIELD OVERWRITE origin      ON task TYPE string DEFAULT "manual"
 			ASSERT $value IN ["manual","scanner","follow_up","review","release"];
-		DEFINE FIELD parent      ON task TYPE option<record<task>>;
-		DEFINE FIELD created_at  ON task TYPE datetime DEFAULT time::now();
-		DEFINE FIELD updated_at  ON task TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE parent      ON task TYPE option<record<task>>;
+		DEFINE FIELD OVERWRITE created_at  ON task TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE updated_at  ON task TYPE datetime DEFAULT time::now();
 
-		DEFINE INDEX task_by_project        ON task FIELDS project;
-		DEFINE INDEX task_by_status         ON task FIELDS status;
-		DEFINE INDEX task_by_project_status ON task FIELDS project, status;
+		DEFINE INDEX OVERWRITE task_by_project        ON task FIELDS project;
+		DEFINE INDEX OVERWRITE task_by_status         ON task FIELDS status;
+		DEFINE INDEX OVERWRITE task_by_project_status ON task FIELDS project, status;
 	`
 };
 
@@ -112,48 +112,48 @@ const m0002_task: Migration = {
 const m0003_session_message: Migration = {
 	id: '0003_session_message',
 	up: `
-		DEFINE TABLE agent_slot SCHEMAFULL;
-		DEFINE FIELD name ON agent_slot TYPE string;
-		DEFINE FIELD tier ON agent_slot TYPE string ASSERT $value IN ["local","haiku","sonnet","opus"];
-		DEFINE FIELD role ON agent_slot TYPE string;
-		DEFINE FIELD busy ON agent_slot TYPE bool DEFAULT false;
+		DEFINE TABLE OVERWRITE agent_slot SCHEMAFULL;
+		DEFINE FIELD OVERWRITE name ON agent_slot TYPE string;
+		DEFINE FIELD OVERWRITE tier ON agent_slot TYPE string ASSERT $value IN ["local","haiku","sonnet","opus"];
+		DEFINE FIELD OVERWRITE role ON agent_slot TYPE string;
+		DEFINE FIELD OVERWRITE busy ON agent_slot TYPE bool DEFAULT false;
 
-		DEFINE TABLE session SCHEMAFULL;
-		DEFINE FIELD project        ON session TYPE option<record<project>>;
-		DEFINE FIELD task           ON session TYPE option<record<task>>;
-		DEFINE FIELD kind           ON session TYPE string
+		DEFINE TABLE OVERWRITE session SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project        ON session TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE task           ON session TYPE option<record<task>>;
+		DEFINE FIELD OVERWRITE kind           ON session TYPE string
 			ASSERT $value IN ["chat","task","review","release","discussion"];
-		DEFINE FIELD model          ON session TYPE object;
-		DEFINE FIELD model.provider ON session TYPE string;
-		DEFINE FIELD model.model_id ON session TYPE string;
-		DEFINE FIELD model.tier     ON session TYPE option<string>;
-		DEFINE FIELD status         ON session TYPE string DEFAULT "running"
+		DEFINE FIELD OVERWRITE model          ON session TYPE object;
+		DEFINE FIELD OVERWRITE model.provider ON session TYPE string;
+		DEFINE FIELD OVERWRITE model.model_id ON session TYPE string;
+		DEFINE FIELD OVERWRITE model.tier     ON session TYPE option<string>;
+		DEFINE FIELD OVERWRITE status         ON session TYPE string DEFAULT "running"
 			ASSERT $value IN ["running","done","failed","cancelled"];
-		DEFINE FIELD pid            ON session TYPE option<int>;
-		DEFINE FIELD runtime        ON session TYPE string DEFAULT "claude-code"
+		DEFINE FIELD OVERWRITE pid            ON session TYPE option<int>;
+		DEFINE FIELD OVERWRITE runtime        ON session TYPE string DEFAULT "claude-code"
 			ASSERT $value IN ["claude-code","ollama","claude-direct"];
-		DEFINE FIELD cc_session_id  ON session TYPE option<string>;
-		DEFINE FIELD workflow_run   ON session TYPE option<record<workflow_run>>;
-		DEFINE FIELD started_at     ON session TYPE datetime DEFAULT time::now();
-		DEFINE FIELD ended_at       ON session TYPE option<datetime>;
-		DEFINE FIELD user_turn_count ON session TYPE int DEFAULT 0;
-		DEFINE FIELD tool_iter_count ON session TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE cc_session_id  ON session TYPE option<string>;
+		DEFINE FIELD OVERWRITE workflow_run   ON session TYPE option<record<workflow_run>>;
+		DEFINE FIELD OVERWRITE started_at     ON session TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE ended_at       ON session TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE user_turn_count ON session TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE tool_iter_count ON session TYPE int DEFAULT 0;
 
-		DEFINE TABLE message SCHEMAFULL;
-		DEFINE FIELD session   ON message TYPE record<session>;
-		DEFINE FIELD role      ON message TYPE string ASSERT $value IN ["user","assistant","tool","system"];
-		DEFINE FIELD content   ON message TYPE string;
-		DEFINE FIELD tool_call ON message TYPE option<object>;
-		DEFINE FIELD at        ON message TYPE datetime DEFAULT time::now();
+		DEFINE TABLE OVERWRITE message SCHEMAFULL;
+		DEFINE FIELD OVERWRITE session   ON message TYPE record<session>;
+		DEFINE FIELD OVERWRITE role      ON message TYPE string ASSERT $value IN ["user","assistant","tool","system"];
+		DEFINE FIELD OVERWRITE content   ON message TYPE string;
+		DEFINE FIELD OVERWRITE tool_call ON message TYPE option<object>;
+		DEFINE FIELD OVERWRITE at        ON message TYPE datetime DEFAULT time::now();
 
-		DEFINE INDEX message_by_session ON message FIELDS session;
-		DEFINE INDEX session_by_project ON session FIELDS project;
+		DEFINE INDEX OVERWRITE message_by_session ON message FIELDS session;
+		DEFINE INDEX OVERWRITE session_by_project ON session FIELDS project;
 		-- dedup_key VALUE pattern (D-008): fall back to id when cc_session_id is NONE.
-		DEFINE FIELD dedup_key ON session VALUE (cc_session_id OR id);
-		DEFINE INDEX session_dedup           ON session FIELDS dedup_key UNIQUE;
-		DEFINE INDEX session_cc              ON session FIELDS cc_session_id;
-		DEFINE INDEX session_by_status       ON session FIELDS status;
-		DEFINE INDEX session_by_workflow_run ON session FIELDS workflow_run;
+		DEFINE FIELD OVERWRITE dedup_key ON session VALUE (cc_session_id OR id);
+		DEFINE INDEX OVERWRITE session_dedup           ON session FIELDS dedup_key UNIQUE;
+		DEFINE INDEX OVERWRITE session_cc              ON session FIELDS cc_session_id;
+		DEFINE INDEX OVERWRITE session_by_status       ON session FIELDS status;
+		DEFINE INDEX OVERWRITE session_by_workflow_run ON session FIELDS workflow_run;
 		${backfillValueField('session', 'dedup_key')}
 	`
 };
@@ -162,40 +162,40 @@ const m0003_session_message: Migration = {
 const m0004_analytics: Migration = {
 	id: '0004_analytics',
 	up: `
-		DEFINE TABLE routing_event SCHEMAFULL;
-		DEFINE FIELD task          ON routing_event TYPE option<record<task>>;
-		DEFINE FIELD project       ON routing_event TYPE option<record<project>>;
-		DEFINE FIELD chosen        ON routing_event TYPE object;
-		DEFINE FIELD chosen.provider ON routing_event TYPE string;
-		DEFINE FIELD chosen.model_id ON routing_event TYPE string;
-		DEFINE FIELD chosen.tier   ON routing_event TYPE option<string>;
-		DEFINE FIELD method        ON routing_event TYPE string;
-		DEFINE FIELD reason        ON routing_event TYPE string;
-		DEFINE FIELD complexity    ON routing_event TYPE option<float>;
-		DEFINE FIELD alternatives  ON routing_event TYPE option<array<object>>;
-		DEFINE FIELD at            ON routing_event TYPE datetime DEFAULT time::now();
+		DEFINE TABLE OVERWRITE routing_event SCHEMAFULL;
+		DEFINE FIELD OVERWRITE task          ON routing_event TYPE option<record<task>>;
+		DEFINE FIELD OVERWRITE project       ON routing_event TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE chosen        ON routing_event TYPE object;
+		DEFINE FIELD OVERWRITE chosen.provider ON routing_event TYPE string;
+		DEFINE FIELD OVERWRITE chosen.model_id ON routing_event TYPE string;
+		DEFINE FIELD OVERWRITE chosen.tier   ON routing_event TYPE option<string>;
+		DEFINE FIELD OVERWRITE method        ON routing_event TYPE string;
+		DEFINE FIELD OVERWRITE reason        ON routing_event TYPE string;
+		DEFINE FIELD OVERWRITE complexity    ON routing_event TYPE option<float>;
+		DEFINE FIELD OVERWRITE alternatives  ON routing_event TYPE option<array<object>>;
+		DEFINE FIELD OVERWRITE at            ON routing_event TYPE datetime DEFAULT time::now();
 
-		DEFINE INDEX routing_event_by_project ON routing_event FIELDS project;
-		DEFINE INDEX routing_event_by_task    ON routing_event FIELDS task;
+		DEFINE INDEX OVERWRITE routing_event_by_project ON routing_event FIELDS project;
+		DEFINE INDEX OVERWRITE routing_event_by_task    ON routing_event FIELDS task;
 
-		DEFINE TABLE agent_event SCHEMAFULL;
-		DEFINE FIELD session        ON agent_event TYPE option<record<session>>;
-		DEFINE FIELD project        ON agent_event TYPE option<record<project>>;
-		DEFINE FIELD type           ON agent_event TYPE string
+		DEFINE TABLE OVERWRITE agent_event SCHEMAFULL;
+		DEFINE FIELD OVERWRITE session        ON agent_event TYPE option<record<session>>;
+		DEFINE FIELD OVERWRITE project        ON agent_event TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE type           ON agent_event TYPE string
 			ASSERT $value IN ["spawn","completion","escalation","cancel","error"];
-		DEFINE FIELD model          ON agent_event TYPE option<object>;
-		DEFINE FIELD model.provider ON agent_event TYPE option<string>;
-		DEFINE FIELD model.model_id ON agent_event TYPE option<string>;
-		DEFINE FIELD model.tier     ON agent_event TYPE option<string>;
-		DEFINE FIELD tokens_in      ON agent_event TYPE option<int>;
-		DEFINE FIELD tokens_out     ON agent_event TYPE option<int>;
-		DEFINE FIELD cost_usd       ON agent_event TYPE option<float>;
-		DEFINE FIELD duration_ms    ON agent_event TYPE option<int>;
-		DEFINE FIELD detail         ON agent_event TYPE option<object>;
-		DEFINE FIELD at             ON agent_event TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE model          ON agent_event TYPE option<object>;
+		DEFINE FIELD OVERWRITE model.provider ON agent_event TYPE option<string>;
+		DEFINE FIELD OVERWRITE model.model_id ON agent_event TYPE option<string>;
+		DEFINE FIELD OVERWRITE model.tier     ON agent_event TYPE option<string>;
+		DEFINE FIELD OVERWRITE tokens_in      ON agent_event TYPE option<int>;
+		DEFINE FIELD OVERWRITE tokens_out     ON agent_event TYPE option<int>;
+		DEFINE FIELD OVERWRITE cost_usd       ON agent_event TYPE option<float>;
+		DEFINE FIELD OVERWRITE duration_ms    ON agent_event TYPE option<int>;
+		DEFINE FIELD OVERWRITE detail         ON agent_event TYPE option<object>;
+		DEFINE FIELD OVERWRITE at             ON agent_event TYPE datetime DEFAULT time::now();
 
-		DEFINE INDEX agent_event_by_project ON agent_event FIELDS project;
-		DEFINE INDEX agent_event_by_type    ON agent_event FIELDS type;
+		DEFINE INDEX OVERWRITE agent_event_by_project ON agent_event FIELDS project;
+		DEFINE INDEX OVERWRITE agent_event_by_type    ON agent_event FIELDS type;
 	`
 };
 
@@ -203,69 +203,69 @@ const m0004_analytics: Migration = {
 const m0005_memory: Migration = {
 	id: '0005_memory',
 	up: `
-		DEFINE TABLE memory SCHEMAFULL;
-		DEFINE FIELD project   ON memory TYPE option<record<project>>;
-		DEFINE FIELD kind      ON memory TYPE string DEFAULT "semantic"
+		DEFINE TABLE OVERWRITE memory SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project   ON memory TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE kind      ON memory TYPE string DEFAULT "semantic"
 			ASSERT $value IN ["semantic","episodic","procedural"];
-		DEFINE FIELD namespace ON memory TYPE string DEFAULT "default";
-		DEFINE FIELD key       ON memory TYPE option<string>;
-		DEFINE FIELD content   ON memory TYPE string;
-		DEFINE FIELD embedding ON memory TYPE array<float>;
-		DEFINE FIELD tags      ON memory TYPE option<array<string>>;
-		DEFINE FIELD source    ON memory TYPE option<string>;
-		DEFINE FIELD scope     ON memory TYPE string DEFAULT "project"
+		DEFINE FIELD OVERWRITE namespace ON memory TYPE string DEFAULT "default";
+		DEFINE FIELD OVERWRITE key       ON memory TYPE option<string>;
+		DEFINE FIELD OVERWRITE content   ON memory TYPE string;
+		DEFINE FIELD OVERWRITE embedding ON memory TYPE array<float>;
+		DEFINE FIELD OVERWRITE tags      ON memory TYPE option<array<string>>;
+		DEFINE FIELD OVERWRITE source    ON memory TYPE option<string>;
+		DEFINE FIELD OVERWRITE scope     ON memory TYPE string DEFAULT "project"
 			ASSERT $value IN ["project","global"];
-		DEFINE FIELD importance   ON memory TYPE float DEFAULT 5.0;
-		DEFINE FIELD confidence   ON memory TYPE float DEFAULT 1.0;
-		DEFINE FIELD access_count ON memory TYPE int DEFAULT 0;
-		DEFINE FIELD last_accessed ON memory TYPE option<datetime>;
-		DEFINE FIELD embedding_truncated ON memory TYPE bool DEFAULT false;
+		DEFINE FIELD OVERWRITE importance   ON memory TYPE float DEFAULT 5.0;
+		DEFINE FIELD OVERWRITE confidence   ON memory TYPE float DEFAULT 1.0;
+		DEFINE FIELD OVERWRITE access_count ON memory TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE last_accessed ON memory TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE embedding_truncated ON memory TYPE bool DEFAULT false;
 		-- Tiered memory (tier 0 = always-loaded directive, no KNN; 1 = long-term).
-		DEFINE FIELD tier ON memory TYPE int DEFAULT 1;
+		DEFINE FIELD OVERWRITE tier ON memory TYPE int DEFAULT 1;
 		-- Fibonacci/backoff resurfacing.
-		DEFINE FIELD surfaceable     ON memory TYPE bool DEFAULT false;
-		DEFINE FIELD next_surface_at ON memory TYPE option<datetime>;
-		DEFINE FIELD fib_index       ON memory TYPE int DEFAULT 0;
-		DEFINE FIELD surface_count   ON memory TYPE int DEFAULT 0;
-		DEFINE FIELD last_surfaced   ON memory TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE surfaceable     ON memory TYPE bool DEFAULT false;
+		DEFINE FIELD OVERWRITE next_surface_at ON memory TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE fib_index       ON memory TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE surface_count   ON memory TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE last_surfaced   ON memory TYPE option<datetime>;
 		-- Append-only soft-archive (D-015).
-		DEFINE FIELD status ON memory TYPE string DEFAULT "active"
+		DEFINE FIELD OVERWRITE status ON memory TYPE string DEFAULT "active"
 			ASSERT $value IN ["active","archived","superseded"];
-		DEFINE FIELD archived_at    ON memory TYPE option<datetime>;
-		DEFINE FIELD archive_reason ON memory TYPE option<string>;
-		DEFINE FIELD superseded_by  ON memory TYPE option<record<memory>>;
+		DEFINE FIELD OVERWRITE archived_at    ON memory TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE archive_reason ON memory TYPE option<string>;
+		DEFINE FIELD OVERWRITE superseded_by  ON memory TYPE option<record<memory>>;
 		-- Consolidation umbrella forwarding (D-031).
-		DEFINE FIELD absorbed_into  ON memory TYPE option<record<memory>>;
+		DEFINE FIELD OVERWRITE absorbed_into  ON memory TYPE option<record<memory>>;
 		-- D-026 secret/PII screen.
-		DEFINE FIELD screen_status ON memory TYPE string DEFAULT "clean"
+		DEFINE FIELD OVERWRITE screen_status ON memory TYPE string DEFAULT "clean"
 			ASSERT $value IN ["clean","redacted","quarantined"];
-		DEFINE FIELD screened_at ON memory TYPE option<datetime>;
-		DEFINE FIELD created_at ON memory TYPE datetime DEFAULT time::now();
-		DEFINE FIELD updated_at ON memory TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE screened_at ON memory TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE created_at ON memory TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE updated_at ON memory TYPE datetime DEFAULT time::now();
 
 		-- HNSW vector index. 1024-dim (D-014). 2.x syntax — NO M0.
-		DEFINE INDEX memory_vec ON memory FIELDS embedding
+		DEFINE INDEX OVERWRITE memory_vec ON memory FIELDS embedding
 			HNSW DIMENSION 1024 DIST COSINE TYPE F32 EFC 150 M 12;
 
 		-- dedup_key VALUE pattern (D-008): namespace + key, fall back to id.
-		DEFINE FIELD dedup_key ON memory VALUE (namespace + '|' + (key OR <string>id));
-		DEFINE INDEX memory_dedup ON memory FIELDS dedup_key UNIQUE;
+		DEFINE FIELD OVERWRITE dedup_key ON memory VALUE (namespace + '|' + (key OR <string>id));
+		DEFINE INDEX OVERWRITE memory_dedup ON memory FIELDS dedup_key UNIQUE;
 
-		DEFINE INDEX memory_by_project ON memory FIELDS project;
-		DEFINE INDEX memory_resurface  ON memory FIELDS surfaceable, next_surface_at;
+		DEFINE INDEX OVERWRITE memory_by_project ON memory FIELDS project;
+		DEFINE INDEX OVERWRITE memory_resurface  ON memory FIELDS surfaceable, next_surface_at;
 
 		${backfillValueField('memory', 'dedup_key')}
 
 		-- §4.5a Memory audit log (mem0 three-table split). Append-only.
-		DEFINE TABLE memory_history SCHEMAFULL;
-		DEFINE FIELD memory ON memory_history TYPE option<record<memory>>;
-		DEFINE FIELD op     ON memory_history TYPE string
+		DEFINE TABLE OVERWRITE memory_history SCHEMAFULL;
+		DEFINE FIELD OVERWRITE memory ON memory_history TYPE option<record<memory>>;
+		DEFINE FIELD OVERWRITE op     ON memory_history TYPE string
 			ASSERT $value IN ["add","supersede","archive"];
-		DEFINE FIELD before ON memory_history TYPE option<object>;
-		DEFINE FIELD after  ON memory_history TYPE option<object>;
-		DEFINE FIELD at     ON memory_history TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE before ON memory_history TYPE option<object>;
+		DEFINE FIELD OVERWRITE after  ON memory_history TYPE option<object>;
+		DEFINE FIELD OVERWRITE at     ON memory_history TYPE datetime DEFAULT time::now();
 
-		DEFINE INDEX memory_history_by_memory ON memory_history FIELDS memory;
+		DEFINE INDEX OVERWRITE memory_history_by_memory ON memory_history FIELDS memory;
 	`
 };
 
@@ -275,10 +275,10 @@ const m0005_memory: Migration = {
 const m0006_memory_fts: Migration = {
 	id: '0006_memory_fts',
 	up: `
-		DEFINE ANALYZER text_an TOKENIZERS blank, class, camel, punct
+		DEFINE ANALYZER OVERWRITE text_an TOKENIZERS blank, class, camel, punct
 			FILTERS lowercase, ascii, snowball(english);
 
-		DEFINE INDEX memory_fts ON memory FIELDS content
+		DEFINE INDEX OVERWRITE memory_fts ON memory FIELDS content
 			SEARCH ANALYZER text_an BM25 HIGHLIGHTS;
 	`
 };
@@ -287,18 +287,18 @@ const m0006_memory_fts: Migration = {
 const m0007_graph: Migration = {
 	id: '0007_graph',
 	up: `
-		DEFINE TABLE entity SCHEMAFULL;
-		DEFINE FIELD label   ON entity TYPE string;
-		DEFINE FIELD type    ON entity TYPE string;
-		DEFINE FIELD project ON entity TYPE option<record<project>>;
-		DEFINE FIELD status  ON entity TYPE string DEFAULT "active"
+		DEFINE TABLE OVERWRITE entity SCHEMAFULL;
+		DEFINE FIELD OVERWRITE label   ON entity TYPE string;
+		DEFINE FIELD OVERWRITE type    ON entity TYPE string;
+		DEFINE FIELD OVERWRITE project ON entity TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE status  ON entity TYPE string DEFAULT "active"
 			ASSERT $value IN ["active","archived","superseded"];
 
-		DEFINE TABLE references TYPE RELATION IN memory|entity OUT memory|entity SCHEMAFULL;
-		DEFINE FIELD kind   ON references TYPE string
+		DEFINE TABLE OVERWRITE references TYPE RELATION IN memory|entity OUT memory|entity SCHEMAFULL;
+		DEFINE FIELD OVERWRITE kind   ON references TYPE string
 			ASSERT $value IN ["supports","contradicts","derived_from","mentions","relates_to"];
-		DEFINE FIELD weight ON references TYPE float DEFAULT 1.0;
-		DEFINE FIELD at     ON references TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE weight ON references TYPE float DEFAULT 1.0;
+		DEFINE FIELD OVERWRITE at     ON references TYPE datetime DEFAULT time::now();
 	`
 };
 
@@ -306,32 +306,32 @@ const m0007_graph: Migration = {
 const m0008_services: Migration = {
 	id: '0008_services',
 	up: `
-		DEFINE TABLE service SCHEMAFULL;
-		DEFINE FIELD name       ON service TYPE string;
-		DEFINE FIELD status     ON service TYPE string DEFAULT "unknown"
+		DEFINE TABLE OVERWRITE service SCHEMAFULL;
+		DEFINE FIELD OVERWRITE name       ON service TYPE string;
+		DEFINE FIELD OVERWRITE status     ON service TYPE string DEFAULT "unknown"
 			ASSERT $value IN ["running","stopped","crashed","unknown"];
-		DEFINE FIELD pid        ON service TYPE option<int>;
-		DEFINE FIELD checked_at ON service TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE pid        ON service TYPE option<int>;
+		DEFINE FIELD OVERWRITE checked_at ON service TYPE datetime DEFAULT time::now();
 
-		DEFINE TABLE process SCHEMAFULL;
-		DEFINE FIELD pid        ON process TYPE int;
-		DEFINE FIELD kind       ON process TYPE string;
-		DEFINE FIELD session    ON process TYPE option<record<session>>;
-		DEFINE FIELD started_at ON process TYPE datetime DEFAULT time::now();
+		DEFINE TABLE OVERWRITE process SCHEMAFULL;
+		DEFINE FIELD OVERWRITE pid        ON process TYPE int;
+		DEFINE FIELD OVERWRITE kind       ON process TYPE string;
+		DEFINE FIELD OVERWRITE session    ON process TYPE option<record<session>>;
+		DEFINE FIELD OVERWRITE started_at ON process TYPE datetime DEFAULT time::now();
 
-		DEFINE INDEX process_by_pid ON process FIELDS pid UNIQUE;
+		DEFINE INDEX OVERWRITE process_by_pid ON process FIELDS pid UNIQUE;
 
-		DEFINE TABLE incident SCHEMAFULL;
-		DEFINE FIELD title    ON incident TYPE string;
-		DEFINE FIELD detail   ON incident TYPE option<string>;
-		DEFINE FIELD severity ON incident TYPE string DEFAULT "info"
+		DEFINE TABLE OVERWRITE incident SCHEMAFULL;
+		DEFINE FIELD OVERWRITE title    ON incident TYPE string;
+		DEFINE FIELD OVERWRITE detail   ON incident TYPE option<string>;
+		DEFINE FIELD OVERWRITE severity ON incident TYPE string DEFAULT "info"
 			ASSERT $value IN ["info","warn","error","critical"];
-		DEFINE FIELD at       ON incident TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE at       ON incident TYPE datetime DEFAULT time::now();
 
-		DEFINE TABLE notification SCHEMAFULL;
-		DEFINE FIELD message ON notification TYPE string;
-		DEFINE FIELD read    ON notification TYPE bool DEFAULT false;
-		DEFINE FIELD at      ON notification TYPE datetime DEFAULT time::now();
+		DEFINE TABLE OVERWRITE notification SCHEMAFULL;
+		DEFINE FIELD OVERWRITE message ON notification TYPE string;
+		DEFINE FIELD OVERWRITE read    ON notification TYPE bool DEFAULT false;
+		DEFINE FIELD OVERWRITE at      ON notification TYPE datetime DEFAULT time::now();
 	`
 };
 
@@ -339,19 +339,19 @@ const m0008_services: Migration = {
 const m0009_security: Migration = {
 	id: '0009_security',
 	up: `
-		DEFINE TABLE security_finding SCHEMAFULL;
-		DEFINE FIELD project  ON security_finding TYPE option<record<project>>;
-		DEFINE FIELD rule     ON security_finding TYPE string;
-		DEFINE FIELD severity ON security_finding TYPE string
+		DEFINE TABLE OVERWRITE security_finding SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project  ON security_finding TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE rule     ON security_finding TYPE string;
+		DEFINE FIELD OVERWRITE severity ON security_finding TYPE string
 			ASSERT $value IN ["low","medium","high","critical"];
-		DEFINE FIELD file     ON security_finding TYPE option<string>;
-		DEFINE FIELD detail   ON security_finding TYPE option<string>;
-		DEFINE FIELD status   ON security_finding TYPE string DEFAULT "active"
+		DEFINE FIELD OVERWRITE file     ON security_finding TYPE option<string>;
+		DEFINE FIELD OVERWRITE detail   ON security_finding TYPE option<string>;
+		DEFINE FIELD OVERWRITE status   ON security_finding TYPE string DEFAULT "active"
 			ASSERT $value IN ["active","archived","superseded"];
-		DEFINE FIELD archived_at    ON security_finding TYPE option<datetime>;
-		DEFINE FIELD archive_reason ON security_finding TYPE option<string>;
-		DEFINE FIELD superseded_by  ON security_finding TYPE option<record<security_finding>>;
-		DEFINE FIELD at       ON security_finding TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE archived_at    ON security_finding TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE archive_reason ON security_finding TYPE option<string>;
+		DEFINE FIELD OVERWRITE superseded_by  ON security_finding TYPE option<record<security_finding>>;
+		DEFINE FIELD OVERWRITE at       ON security_finding TYPE datetime DEFAULT time::now();
 	`
 };
 
@@ -359,54 +359,54 @@ const m0009_security: Migration = {
 const m0010_cc_mirror: Migration = {
 	id: '0010_cc_mirror',
 	up: `
-		DEFINE TABLE cc_scope SCHEMAFULL;
-		DEFINE FIELD kind    ON cc_scope TYPE string ASSERT $value IN ["project","global"];
-		DEFINE FIELD project ON cc_scope TYPE option<record<project>>;
-		DEFINE FIELD path    ON cc_scope TYPE string;
+		DEFINE TABLE OVERWRITE cc_scope SCHEMAFULL;
+		DEFINE FIELD OVERWRITE kind    ON cc_scope TYPE string ASSERT $value IN ["project","global"];
+		DEFINE FIELD OVERWRITE project ON cc_scope TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE path    ON cc_scope TYPE string;
 
-		DEFINE TABLE cc_settings SCHEMAFULL;
-		DEFINE FIELD scope           ON cc_settings TYPE record<cc_scope>;
-		DEFINE FIELD file_path       ON cc_settings TYPE string;
-		DEFINE FIELD permissions     ON cc_settings TYPE option<object>;
-		DEFINE FIELD env             ON cc_settings TYPE option<object>;
-		DEFINE FIELD enabled_plugins ON cc_settings TYPE option<object>;
-		DEFINE FIELD raw             ON cc_settings TYPE object;
-		DEFINE FIELD synced_at       ON cc_settings TYPE datetime DEFAULT time::now();
+		DEFINE TABLE OVERWRITE cc_settings SCHEMAFULL;
+		DEFINE FIELD OVERWRITE scope           ON cc_settings TYPE record<cc_scope>;
+		DEFINE FIELD OVERWRITE file_path       ON cc_settings TYPE string;
+		DEFINE FIELD OVERWRITE permissions     ON cc_settings TYPE option<object>;
+		DEFINE FIELD OVERWRITE env             ON cc_settings TYPE option<object>;
+		DEFINE FIELD OVERWRITE enabled_plugins ON cc_settings TYPE option<object>;
+		DEFINE FIELD OVERWRITE raw             ON cc_settings TYPE object;
+		DEFINE FIELD OVERWRITE synced_at       ON cc_settings TYPE datetime DEFAULT time::now();
 
-		DEFINE TABLE cc_hook SCHEMAFULL;
-		DEFINE FIELD scope   ON cc_hook TYPE record<cc_scope>;
-		DEFINE FIELD event   ON cc_hook TYPE string;
-		DEFINE FIELD matcher ON cc_hook TYPE option<string>;
-		DEFINE FIELD command ON cc_hook TYPE string;
-		DEFINE FIELD timeout ON cc_hook TYPE option<int>;
+		DEFINE TABLE OVERWRITE cc_hook SCHEMAFULL;
+		DEFINE FIELD OVERWRITE scope   ON cc_hook TYPE record<cc_scope>;
+		DEFINE FIELD OVERWRITE event   ON cc_hook TYPE string;
+		DEFINE FIELD OVERWRITE matcher ON cc_hook TYPE option<string>;
+		DEFINE FIELD OVERWRITE command ON cc_hook TYPE string;
+		DEFINE FIELD OVERWRITE timeout ON cc_hook TYPE option<int>;
 
-		DEFINE TABLE cc_agent SCHEMAFULL;
-		DEFINE FIELD scope       ON cc_agent TYPE record<cc_scope>;
-		DEFINE FIELD file_path   ON cc_agent TYPE string;
-		DEFINE FIELD name        ON cc_agent TYPE string;
-		DEFINE FIELD description ON cc_agent TYPE option<string>;
-		DEFINE FIELD frontmatter ON cc_agent TYPE object;
-		DEFINE FIELD category    ON cc_agent TYPE option<string>;
+		DEFINE TABLE OVERWRITE cc_agent SCHEMAFULL;
+		DEFINE FIELD OVERWRITE scope       ON cc_agent TYPE record<cc_scope>;
+		DEFINE FIELD OVERWRITE file_path   ON cc_agent TYPE string;
+		DEFINE FIELD OVERWRITE name        ON cc_agent TYPE string;
+		DEFINE FIELD OVERWRITE description ON cc_agent TYPE option<string>;
+		DEFINE FIELD OVERWRITE frontmatter ON cc_agent TYPE object;
+		DEFINE FIELD OVERWRITE category    ON cc_agent TYPE option<string>;
 
-		DEFINE TABLE cc_skill SCHEMAFULL;
-		DEFINE FIELD scope       ON cc_skill TYPE record<cc_scope>;
-		DEFINE FIELD file_path   ON cc_skill TYPE string;
-		DEFINE FIELD name        ON cc_skill TYPE string;
-		DEFINE FIELD description ON cc_skill TYPE option<string>;
-		DEFINE FIELD plugin      ON cc_skill TYPE option<string>;
+		DEFINE TABLE OVERWRITE cc_skill SCHEMAFULL;
+		DEFINE FIELD OVERWRITE scope       ON cc_skill TYPE record<cc_scope>;
+		DEFINE FIELD OVERWRITE file_path   ON cc_skill TYPE string;
+		DEFINE FIELD OVERWRITE name        ON cc_skill TYPE string;
+		DEFINE FIELD OVERWRITE description ON cc_skill TYPE option<string>;
+		DEFINE FIELD OVERWRITE plugin      ON cc_skill TYPE option<string>;
 
-		DEFINE TABLE cc_mcp_server SCHEMAFULL;
-		DEFINE FIELD scope   ON cc_mcp_server TYPE record<cc_scope>;
-		DEFINE FIELD name    ON cc_mcp_server TYPE string;
-		DEFINE FIELD type    ON cc_mcp_server TYPE string ASSERT $value IN ["stdio","http","sse"];
-		DEFINE FIELD command ON cc_mcp_server TYPE option<string>;
-		DEFINE FIELD args    ON cc_mcp_server TYPE option<array<string>>;
-		DEFINE FIELD url     ON cc_mcp_server TYPE option<string>;
-		DEFINE FIELD env     ON cc_mcp_server TYPE option<object>;
+		DEFINE TABLE OVERWRITE cc_mcp_server SCHEMAFULL;
+		DEFINE FIELD OVERWRITE scope   ON cc_mcp_server TYPE record<cc_scope>;
+		DEFINE FIELD OVERWRITE name    ON cc_mcp_server TYPE string;
+		DEFINE FIELD OVERWRITE type    ON cc_mcp_server TYPE string ASSERT $value IN ["stdio","http","sse"];
+		DEFINE FIELD OVERWRITE command ON cc_mcp_server TYPE option<string>;
+		DEFINE FIELD OVERWRITE args    ON cc_mcp_server TYPE option<array<string>>;
+		DEFINE FIELD OVERWRITE url     ON cc_mcp_server TYPE option<string>;
+		DEFINE FIELD OVERWRITE env     ON cc_mcp_server TYPE option<object>;
 
-		DEFINE INDEX cc_scope_by_project ON cc_scope FIELDS project;
-		DEFINE INDEX cc_agent_by_scope   ON cc_agent FIELDS scope;
-		DEFINE INDEX cc_skill_by_scope   ON cc_skill FIELDS scope;
+		DEFINE INDEX OVERWRITE cc_scope_by_project ON cc_scope FIELDS project;
+		DEFINE INDEX OVERWRITE cc_agent_by_scope   ON cc_agent FIELDS scope;
+		DEFINE INDEX OVERWRITE cc_skill_by_scope   ON cc_skill FIELDS scope;
 	`
 };
 
@@ -414,23 +414,23 @@ const m0010_cc_mirror: Migration = {
 const m0011_workflows: Migration = {
 	id: '0011_workflows',
 	up: `
-		DEFINE TABLE workflow SCHEMAFULL;
-		DEFINE FIELD name       ON workflow TYPE string;
-		DEFINE FIELD project    ON workflow TYPE option<record<project>>;
-		DEFINE FIELD steps      ON workflow TYPE array<object>;
-		DEFINE FIELD trigger    ON workflow TYPE string DEFAULT "manual"
+		DEFINE TABLE OVERWRITE workflow SCHEMAFULL;
+		DEFINE FIELD OVERWRITE name       ON workflow TYPE string;
+		DEFINE FIELD OVERWRITE project    ON workflow TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE steps      ON workflow TYPE array<object>;
+		DEFINE FIELD OVERWRITE trigger    ON workflow TYPE string DEFAULT "manual"
 			ASSERT $value IN ["manual","event","periodic"];
-		DEFINE FIELD created_at ON workflow TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE created_at ON workflow TYPE datetime DEFAULT time::now();
 
-		DEFINE TABLE workflow_run SCHEMAFULL;
-		DEFINE FIELD workflow   ON workflow_run TYPE record<workflow>;
-		DEFINE FIELD status     ON workflow_run TYPE string DEFAULT "running"
+		DEFINE TABLE OVERWRITE workflow_run SCHEMAFULL;
+		DEFINE FIELD OVERWRITE workflow   ON workflow_run TYPE record<workflow>;
+		DEFINE FIELD OVERWRITE status     ON workflow_run TYPE string DEFAULT "running"
 			ASSERT $value IN ["running","done","failed","cancelled"];
-		DEFINE FIELD step_state ON workflow_run TYPE object DEFAULT {};
-		DEFINE FIELD started_at ON workflow_run TYPE datetime DEFAULT time::now();
-		DEFINE FIELD ended_at   ON workflow_run TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE step_state ON workflow_run TYPE object DEFAULT {};
+		DEFINE FIELD OVERWRITE started_at ON workflow_run TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE ended_at   ON workflow_run TYPE option<datetime>;
 
-		DEFINE INDEX wfrun_by_workflow ON workflow_run FIELDS workflow;
+		DEFINE INDEX OVERWRITE wfrun_by_workflow ON workflow_run FIELDS workflow;
 	`
 };
 
@@ -438,26 +438,26 @@ const m0011_workflows: Migration = {
 const m0012_work_item: Migration = {
 	id: '0012_work_item',
 	up: `
-		DEFINE TABLE work_item SCHEMAFULL;
-		DEFINE FIELD work_type    ON work_item TYPE string;
-		DEFINE FIELD session      ON work_item TYPE option<record<session>>;
-		DEFINE FIELD project      ON work_item TYPE option<record<project>>;
-		DEFINE FIELD priority     ON work_item TYPE int DEFAULT 5;
-		DEFINE FIELD status       ON work_item TYPE string DEFAULT "pending"
+		DEFINE TABLE OVERWRITE work_item SCHEMAFULL;
+		DEFINE FIELD OVERWRITE work_type    ON work_item TYPE string;
+		DEFINE FIELD OVERWRITE session      ON work_item TYPE option<record<session>>;
+		DEFINE FIELD OVERWRITE project      ON work_item TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE priority     ON work_item TYPE int DEFAULT 5;
+		DEFINE FIELD OVERWRITE status       ON work_item TYPE string DEFAULT "pending"
 			ASSERT $value IN ["pending","processing","done","failed"];
-		DEFINE FIELD payload      ON work_item TYPE object;
-		DEFINE FIELD attempts     ON work_item TYPE int DEFAULT 0;
-		DEFINE FIELD claim_token  ON work_item TYPE option<string>;
-		DEFINE FIELD handoff      ON work_item TYPE option<object>;
-		DEFINE FIELD created_at   ON work_item TYPE datetime DEFAULT time::now();
-		DEFINE FIELD completed_at ON work_item TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE payload      ON work_item TYPE object;
+		DEFINE FIELD OVERWRITE attempts     ON work_item TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE claim_token  ON work_item TYPE option<string>;
+		DEFINE FIELD OVERWRITE handoff      ON work_item TYPE option<object>;
+		DEFINE FIELD OVERWRITE created_at   ON work_item TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE completed_at ON work_item TYPE option<datetime>;
 		-- Dedup the active window (dedup_key VALUE pattern, D-008).
-		DEFINE FIELD dedup_key    ON work_item VALUE
+		DEFINE FIELD OVERWRITE dedup_key    ON work_item VALUE
 			(IF status IN ["pending","processing"]
 				THEN work_type + '|' + <string>(session OR '') + '|' + status
 				ELSE <string>id END);
-		DEFINE INDEX work_item_dedup ON work_item FIELDS dedup_key UNIQUE;
-		DEFINE INDEX work_item_by_status_priority ON work_item FIELDS status, priority;
+		DEFINE INDEX OVERWRITE work_item_dedup ON work_item FIELDS dedup_key UNIQUE;
+		DEFINE INDEX OVERWRITE work_item_by_status_priority ON work_item FIELDS status, priority;
 
 		${backfillValueField('work_item', 'dedup_key')}
 	`
@@ -467,20 +467,20 @@ const m0012_work_item: Migration = {
 const m0013_retrieval_outcome: Migration = {
 	id: '0013_retrieval_outcome',
 	up: `
-		DEFINE TABLE retrieval_outcome SCHEMAFULL;
-		DEFINE FIELD session      ON retrieval_outcome TYPE option<record<session>>;
-		DEFINE FIELD query_turn   ON retrieval_outcome TYPE option<record<message>>;
-		DEFINE FIELD memory       ON retrieval_outcome TYPE option<record<memory>>;
-		DEFINE FIELD citation_id  ON retrieval_outcome TYPE option<string>;
-		DEFINE FIELD utilized     ON retrieval_outcome TYPE bool DEFAULT false;
-		DEFINE FIELD cited        ON retrieval_outcome TYPE bool DEFAULT false;
-		DEFINE FIELD tool_success ON retrieval_outcome TYPE option<bool>;
-		DEFINE FIELD score        ON retrieval_outcome TYPE float;
-		DEFINE FIELD was_neighbor ON retrieval_outcome TYPE bool DEFAULT false;
-		DEFINE FIELD created_at   ON retrieval_outcome TYPE datetime DEFAULT time::now();
+		DEFINE TABLE OVERWRITE retrieval_outcome SCHEMAFULL;
+		DEFINE FIELD OVERWRITE session      ON retrieval_outcome TYPE option<record<session>>;
+		DEFINE FIELD OVERWRITE query_turn   ON retrieval_outcome TYPE option<record<message>>;
+		DEFINE FIELD OVERWRITE memory       ON retrieval_outcome TYPE option<record<memory>>;
+		DEFINE FIELD OVERWRITE citation_id  ON retrieval_outcome TYPE option<string>;
+		DEFINE FIELD OVERWRITE utilized     ON retrieval_outcome TYPE bool DEFAULT false;
+		DEFINE FIELD OVERWRITE cited        ON retrieval_outcome TYPE bool DEFAULT false;
+		DEFINE FIELD OVERWRITE tool_success ON retrieval_outcome TYPE option<bool>;
+		DEFINE FIELD OVERWRITE score        ON retrieval_outcome TYPE float;
+		DEFINE FIELD OVERWRITE was_neighbor ON retrieval_outcome TYPE bool DEFAULT false;
+		DEFINE FIELD OVERWRITE created_at   ON retrieval_outcome TYPE datetime DEFAULT time::now();
 
-		DEFINE INDEX retrieval_outcome_by_session ON retrieval_outcome FIELDS session;
-		DEFINE INDEX retrieval_outcome_by_memory  ON retrieval_outcome FIELDS memory;
+		DEFINE INDEX OVERWRITE retrieval_outcome_by_session ON retrieval_outcome FIELDS session;
+		DEFINE INDEX OVERWRITE retrieval_outcome_by_memory  ON retrieval_outcome FIELDS memory;
 	`
 };
 
@@ -488,41 +488,41 @@ const m0013_retrieval_outcome: Migration = {
 const m0014_skill_causal: Migration = {
 	id: '0014_skill_causal',
 	up: `
-		DEFINE TABLE causal_chain SCHEMAFULL;
-		DEFINE FIELD session      ON causal_chain TYPE option<record<session>>;
-		DEFINE FIELD trigger      ON causal_chain TYPE string;
-		DEFINE FIELD outcome      ON causal_chain TYPE string;
-		DEFINE FIELD kind         ON causal_chain TYPE string
+		DEFINE TABLE OVERWRITE causal_chain SCHEMAFULL;
+		DEFINE FIELD OVERWRITE session      ON causal_chain TYPE option<record<session>>;
+		DEFINE FIELD OVERWRITE trigger      ON causal_chain TYPE string;
+		DEFINE FIELD OVERWRITE outcome      ON causal_chain TYPE string;
+		DEFINE FIELD OVERWRITE kind         ON causal_chain TYPE string
 			ASSERT $value IN ["debug","refactor","feature","fix"];
-		DEFINE FIELD success      ON causal_chain TYPE bool;
-		DEFINE FIELD confidence   ON causal_chain TYPE float;
-		DEFINE FIELD graduated_at ON causal_chain TYPE option<datetime>;
-		DEFINE FIELD created_at   ON causal_chain TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE success      ON causal_chain TYPE bool;
+		DEFINE FIELD OVERWRITE confidence   ON causal_chain TYPE float;
+		DEFINE FIELD OVERWRITE graduated_at ON causal_chain TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE created_at   ON causal_chain TYPE datetime DEFAULT time::now();
 
-		DEFINE TABLE skill SCHEMAFULL;
-		DEFINE FIELD name           ON skill TYPE string;
-		DEFINE FIELD description    ON skill TYPE string;
-		DEFINE FIELD embedding      ON skill TYPE array<float>;
-		DEFINE FIELD preconditions  ON skill TYPE option<string>;
-		DEFINE FIELD steps          ON skill TYPE array<string>;
-		DEFINE FIELD postconditions ON skill TYPE option<string>;
-		DEFINE FIELD success_count  ON skill TYPE int DEFAULT 0;
-		DEFINE FIELD failure_count  ON skill TYPE int DEFAULT 0;
-		DEFINE FIELD graduated_at   ON skill TYPE option<datetime>;
-		DEFINE FIELD source_causal_chain ON skill TYPE option<record<causal_chain>>;
-		DEFINE FIELD status         ON skill TYPE string DEFAULT "active"
+		DEFINE TABLE OVERWRITE skill SCHEMAFULL;
+		DEFINE FIELD OVERWRITE name           ON skill TYPE string;
+		DEFINE FIELD OVERWRITE description    ON skill TYPE string;
+		DEFINE FIELD OVERWRITE embedding      ON skill TYPE array<float>;
+		DEFINE FIELD OVERWRITE preconditions  ON skill TYPE option<string>;
+		DEFINE FIELD OVERWRITE steps          ON skill TYPE array<string>;
+		DEFINE FIELD OVERWRITE postconditions ON skill TYPE option<string>;
+		DEFINE FIELD OVERWRITE success_count  ON skill TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE failure_count  ON skill TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE graduated_at   ON skill TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE source_causal_chain ON skill TYPE option<record<causal_chain>>;
+		DEFINE FIELD OVERWRITE status         ON skill TYPE string DEFAULT "active"
 			ASSERT $value IN ["active","archived","superseded"];
-		DEFINE FIELD archived_at    ON skill TYPE option<datetime>;
-		DEFINE FIELD archive_reason ON skill TYPE option<string>;
-		DEFINE FIELD superseded_by  ON skill TYPE option<record<skill>>;
-		DEFINE FIELD created_at     ON skill TYPE datetime DEFAULT time::now();
-		DEFINE FIELD last_used      ON skill TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE archived_at    ON skill TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE archive_reason ON skill TYPE option<string>;
+		DEFINE FIELD OVERWRITE superseded_by  ON skill TYPE option<record<skill>>;
+		DEFINE FIELD OVERWRITE created_at     ON skill TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE last_used      ON skill TYPE option<datetime>;
 
 		-- HNSW over skill embeddings. Same 1024-dim/COSINE as memory_vec (D-014). No M0.
-		DEFINE INDEX skill_vec ON skill FIELDS embedding
+		DEFINE INDEX OVERWRITE skill_vec ON skill FIELDS embedding
 			HNSW DIMENSION 1024 DIST COSINE TYPE F32 EFC 150 M 12;
-		DEFINE INDEX skill_by_status        ON skill FIELDS status;
-		DEFINE INDEX causal_chain_by_session ON causal_chain FIELDS session;
+		DEFINE INDEX OVERWRITE skill_by_status        ON skill FIELDS status;
+		DEFINE INDEX OVERWRITE causal_chain_by_session ON causal_chain FIELDS session;
 	`
 };
 
@@ -530,14 +530,14 @@ const m0014_skill_causal: Migration = {
 const m0015_embedding_cache: Migration = {
 	id: '0015_embedding_cache',
 	up: `
-		DEFINE TABLE embedding_cache SCHEMAFULL;
-		DEFINE FIELD hash          ON embedding_cache TYPE string;
-		DEFINE FIELD vector        ON embedding_cache TYPE array<float>;
-		DEFINE FIELD model_version ON embedding_cache TYPE string;
-		DEFINE FIELD created_at    ON embedding_cache TYPE datetime DEFAULT time::now();
-		DEFINE FIELD pruned_at     ON embedding_cache TYPE option<datetime>;
+		DEFINE TABLE OVERWRITE embedding_cache SCHEMAFULL;
+		DEFINE FIELD OVERWRITE hash          ON embedding_cache TYPE string;
+		DEFINE FIELD OVERWRITE vector        ON embedding_cache TYPE array<float>;
+		DEFINE FIELD OVERWRITE model_version ON embedding_cache TYPE string;
+		DEFINE FIELD OVERWRITE created_at    ON embedding_cache TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE pruned_at     ON embedding_cache TYPE option<datetime>;
 
-		DEFINE INDEX embedding_cache_hash ON embedding_cache FIELDS hash UNIQUE;
+		DEFINE INDEX OVERWRITE embedding_cache_hash ON embedding_cache FIELDS hash UNIQUE;
 	`
 };
 
@@ -621,7 +621,7 @@ const m0018_work_item_flexible: Migration = {
 const m0019_work_item_dedup_scope: Migration = {
 	id: '0019_work_item_dedup_scope',
 	up: `
-		DEFINE FIELD dedup_scope ON work_item TYPE string DEFAULT "";
+		DEFINE FIELD OVERWRITE dedup_scope ON work_item TYPE string DEFAULT "";
 		-- Coalesce dedup_scope with '' INSIDE the VALUE: a computed VALUE field evaluates
 		-- before the column DEFAULT is applied, so an enqueue that omits dedup_scope would
 		-- otherwise feed NONE into the '+' and throw ("Cannot perform addition … NONE").
@@ -645,7 +645,7 @@ const m0019_work_item_dedup_scope: Migration = {
 const m0020_work_item_claimed_at: Migration = {
 	id: '0020_work_item_claimed_at',
 	up: `
-		DEFINE FIELD claimed_at ON work_item TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE claimed_at ON work_item TYPE option<datetime>;
 	`
 };
 
@@ -700,41 +700,41 @@ const m0022_agent_event_hook: Migration = {
 const m0023_pm: Migration = {
 	id: '0023_pm',
 	up: `
-		DEFINE TABLE pm_memory SCHEMAFULL;
-		DEFINE FIELD project    ON pm_memory TYPE record<project>;
-		DEFINE FIELD kind       ON pm_memory TYPE string DEFAULT "observation"
+		DEFINE TABLE OVERWRITE pm_memory SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project    ON pm_memory TYPE record<project>;
+		DEFINE FIELD OVERWRITE kind       ON pm_memory TYPE string DEFAULT "observation"
 			ASSERT $value IN ["observation","learning","risk","pattern","decision"];
-		DEFINE FIELD content    ON pm_memory TYPE string;
-		DEFINE FIELD source     ON pm_memory TYPE string DEFAULT "pm";
-		DEFINE FIELD confidence ON pm_memory TYPE float DEFAULT 0.8;
-		DEFINE FIELD importance ON pm_memory TYPE float DEFAULT 5.0;
-		DEFINE FIELD status     ON pm_memory TYPE string DEFAULT "active"
+		DEFINE FIELD OVERWRITE content    ON pm_memory TYPE string;
+		DEFINE FIELD OVERWRITE source     ON pm_memory TYPE string DEFAULT "pm";
+		DEFINE FIELD OVERWRITE confidence ON pm_memory TYPE float DEFAULT 0.8;
+		DEFINE FIELD OVERWRITE importance ON pm_memory TYPE float DEFAULT 5.0;
+		DEFINE FIELD OVERWRITE status     ON pm_memory TYPE string DEFAULT "active"
 			ASSERT $value IN ["active","archived"];
-		DEFINE FIELD related_to ON pm_memory TYPE option<string>;
-		DEFINE FIELD created_at ON pm_memory TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE related_to ON pm_memory TYPE option<string>;
+		DEFINE FIELD OVERWRITE created_at ON pm_memory TYPE datetime DEFAULT time::now();
 
-		DEFINE INDEX pm_memory_by_project ON pm_memory FIELDS project;
-		DEFINE INDEX pm_memory_by_kind    ON pm_memory FIELDS kind;
+		DEFINE INDEX OVERWRITE pm_memory_by_project ON pm_memory FIELDS project;
+		DEFINE INDEX OVERWRITE pm_memory_by_kind    ON pm_memory FIELDS kind;
 		-- Reuse the shared analyzer (text_an, defined in 0006) so the PM can FTS its memory.
-		DEFINE INDEX pm_memory_fts ON pm_memory FIELDS content SEARCH ANALYZER text_an BM25 HIGHLIGHTS;
+		DEFINE INDEX OVERWRITE pm_memory_fts ON pm_memory FIELDS content SEARCH ANALYZER text_an BM25 HIGHLIGHTS;
 
-		DEFINE TABLE decision SCHEMAFULL;
-		DEFINE FIELD project   ON decision TYPE record<project>;
-		DEFINE FIELD sprint    ON decision TYPE option<record<sprint>>;
-		DEFINE FIELD title     ON decision TYPE string;
-		DEFINE FIELD context   ON decision TYPE option<string>;
-		DEFINE FIELD rationale ON decision TYPE option<string>;
-		DEFINE FIELD status    ON decision TYPE string DEFAULT "accepted"
+		DEFINE TABLE OVERWRITE decision SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project   ON decision TYPE record<project>;
+		DEFINE FIELD OVERWRITE sprint    ON decision TYPE option<record<sprint>>;
+		DEFINE FIELD OVERWRITE title     ON decision TYPE string;
+		DEFINE FIELD OVERWRITE context   ON decision TYPE option<string>;
+		DEFINE FIELD OVERWRITE rationale ON decision TYPE option<string>;
+		DEFINE FIELD OVERWRITE status    ON decision TYPE string DEFAULT "accepted"
 			ASSERT $value IN ["proposed","accepted","superseded","rejected"];
-		DEFINE FIELD created_at ON decision TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE created_at ON decision TYPE datetime DEFAULT time::now();
 
-		DEFINE INDEX decision_by_project ON decision FIELDS project;
+		DEFINE INDEX OVERWRITE decision_by_project ON decision FIELDS project;
 
 		-- Sprint lifecycle: a concrete non-NONE DEFAULT (§6.2) so a status read-back on a
 		-- RETURN AFTER write never lands in NONE; backfill pre-existing sprint rows.
-		DEFINE FIELD status      ON sprint TYPE string DEFAULT "active"
+		DEFINE FIELD OVERWRITE status      ON sprint TYPE string DEFAULT "active"
 			ASSERT $value IN ["active","completed"];
-		DEFINE FIELD completed_at ON sprint TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE completed_at ON sprint TYPE option<datetime>;
 		${guardedScan('sprint', 'status IS NONE', 'status = "active"')}
 	`
 };
@@ -753,34 +753,34 @@ const m0023_pm: Migration = {
 const m0024_task_sync: Migration = {
 	id: '0024_task_sync',
 	up: `
-		DEFINE TABLE task_sync SCHEMAFULL;
-		DEFINE FIELD task        ON task_sync TYPE record<task>;
-		DEFINE FIELD project     ON task_sync TYPE record<project>;
-		DEFINE FIELD provider    ON task_sync TYPE string DEFAULT "github"
+		DEFINE TABLE OVERWRITE task_sync SCHEMAFULL;
+		DEFINE FIELD OVERWRITE task        ON task_sync TYPE record<task>;
+		DEFINE FIELD OVERWRITE project     ON task_sync TYPE record<project>;
+		DEFINE FIELD OVERWRITE provider    ON task_sync TYPE string DEFAULT "github"
 			ASSERT $value IN ["github"];
-		DEFINE FIELD repo        ON task_sync TYPE string;
+		DEFINE FIELD OVERWRITE repo        ON task_sync TYPE string;
 		-- The external counterpart id (GitHub issue number, as a string for provider-agnosticism).
-		DEFINE FIELD external_id ON task_sync TYPE string;
-		DEFINE FIELD external_url ON task_sync TYPE option<string>;
+		DEFINE FIELD OVERWRITE external_id ON task_sync TYPE string;
+		DEFINE FIELD OVERWRITE external_url ON task_sync TYPE option<string>;
 		-- The last direction this mapping was synced in, for the surface.
-		DEFINE FIELD direction   ON task_sync TYPE string DEFAULT "both"
+		DEFINE FIELD OVERWRITE direction   ON task_sync TYPE string DEFAULT "both"
 			ASSERT $value IN ["push","pull","both"];
-		DEFINE FIELD last_synced ON task_sync TYPE datetime DEFAULT time::now();
-		DEFINE FIELD created_at  ON task_sync TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE last_synced ON task_sync TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE created_at  ON task_sync TYPE datetime DEFAULT time::now();
 
 		-- Dedup by the external counterpart: a concrete non-NONE VALUE (§6.2) + UNIQUE index,
 		-- so two callers that both miss the SELECT collide on CREATE rather than duplicating
 		-- (D-008 — the dedup TOCTOU class transactions alone do NOT solve).
-		DEFINE FIELD dedup_key   ON task_sync VALUE
+		DEFINE FIELD OVERWRITE dedup_key   ON task_sync VALUE
 			provider + '|' + repo + '|' + external_id;
 		-- Dedup by the Atelier task within a repo: one task ↔ one issue per repo.
-		DEFINE FIELD task_dedup  ON task_sync VALUE
+		DEFINE FIELD OVERWRITE task_dedup  ON task_sync VALUE
 			provider + '|' + repo + '|' + <string>task;
 
-		DEFINE INDEX task_sync_dedup   ON task_sync FIELDS dedup_key  UNIQUE;
-		DEFINE INDEX task_sync_task    ON task_sync FIELDS task_dedup UNIQUE;
-		DEFINE INDEX task_sync_by_task    ON task_sync FIELDS task;
-		DEFINE INDEX task_sync_by_project ON task_sync FIELDS project;
+		DEFINE INDEX OVERWRITE task_sync_dedup   ON task_sync FIELDS dedup_key  UNIQUE;
+		DEFINE INDEX OVERWRITE task_sync_task    ON task_sync FIELDS task_dedup UNIQUE;
+		DEFINE INDEX OVERWRITE task_sync_by_task    ON task_sync FIELDS task;
+		DEFINE INDEX OVERWRITE task_sync_by_project ON task_sync FIELDS project;
 		${backfillValueField('task_sync', 'dedup_key')}
 		${backfillValueField('task_sync', 'task_dedup')}
 	`
@@ -801,43 +801,72 @@ const m0024_task_sync: Migration = {
 //     show an honest last-error instead of swallowing it.
 const m0025_pm_review_board: Migration = {
 	id: '0025_pm_review_board',
+	// IDEMPOTENT (D-006): every DEFINE carries OVERWRITE so re-running is clean over a
+	// FRESH db AND over a HALF-APPLIED state (F: m0025 once half-applied — table existed
+	// with fields:{} but was never recorded — wedging `db:up` with "table already exists").
+	// OVERWRITE redefines-if-exists / defines-if-not, so the recorded ledger gate + this
+	// DDL together recover the half-applied table on the next run.
 	up: `
-		DEFINE TABLE pm_review SCHEMAFULL;
-		DEFINE FIELD project     ON pm_review TYPE record<project>;
+		DEFINE TABLE OVERWRITE pm_review SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project     ON pm_review TYPE record<project>;
 		-- What kicked the review off (D-004 honors mode): manual | periodic | event.
-		DEFINE FIELD trigger     ON pm_review TYPE string DEFAULT "manual"
+		DEFINE FIELD OVERWRITE trigger     ON pm_review TYPE string DEFAULT "manual"
 			ASSERT $value IN ["manual","periodic","event"];
-		DEFINE FIELD summary     ON pm_review TYPE string;
+		DEFINE FIELD OVERWRITE summary     ON pm_review TYPE string;
 		-- Honest counts of what the pass examined + wrote (every number a real action, F-008).
-		DEFINE FIELD tasks_examined    ON pm_review TYPE int DEFAULT 0;
-		DEFINE FIELD findings_examined ON pm_review TYPE int DEFAULT 0;
-		DEFINE FIELD risks_open        ON pm_review TYPE int DEFAULT 0;
-		DEFINE FIELD memories_written  ON pm_review TYPE int DEFAULT 0;
-		DEFINE FIELD created_at  ON pm_review TYPE datetime DEFAULT time::now();
-		DEFINE INDEX pm_review_by_project ON pm_review FIELDS project;
+		DEFINE FIELD OVERWRITE tasks_examined    ON pm_review TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE findings_examined ON pm_review TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE risks_open        ON pm_review TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE memories_written  ON pm_review TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE created_at  ON pm_review TYPE datetime DEFAULT time::now();
+		DEFINE INDEX OVERWRITE pm_review_by_project ON pm_review FIELDS project;
+		-- Half-applied recovery (two honest cases, F-008 — no fabricated data):
+		--  (a) UNSALVAGEABLE rows: the wedge left the table SCHEMAFULL-with-fields:{}, which DROPS
+		--      every undefined column on write — so any row written then kept ONLY its id (no
+		--      project, no summary). Such a row can never satisfy the now-required project/summary
+		--      and is pure corruption: DELETE it rather than invent a fake project/summary.
+		--  (b) RECOVERABLE rows (the addPmReview shape: project + summary + counts all set, but
+		--      created_at relied on the DEFAULT the bare table dropped): backfill the DEFAULT-bearing
+		--      columns. A DEFAULT only fires on CREATE, never on a later UPDATE (MEMORY-SPEC §6.5),
+		--      and touching the row re-validates its SCHEMAFULL fields — so coalesce EVERY
+		--      DEFAULT-bearing column in the SAME UPDATE (else "Found NONE for field, expected int").
+		LET $corrupt = (SELECT count() AS n FROM pm_review WHERE (project IS NONE) OR (summary IS NONE) GROUP ALL)[0].n ?? 0;
+		IF $corrupt > 0 { DELETE pm_review WHERE (project IS NONE) OR (summary IS NONE); };
+		${guardedScan(
+			'pm_review',
+			'created_at IS NONE',
+			[
+				'created_at = time::now()',
+				'trigger = (trigger ?? "manual")',
+				'tasks_examined = (tasks_examined ?? 0)',
+				'findings_examined = (findings_examined ?? 0)',
+				'risks_open = (risks_open ?? 0)',
+				'memories_written = (memories_written ?? 0)'
+			].join(', ')
+		)}
 
-		DEFINE TABLE board_sync_config SCHEMAFULL;
-		DEFINE FIELD project   ON board_sync_config TYPE record<project>;
-		DEFINE FIELD enabled   ON board_sync_config TYPE bool DEFAULT false;
+		DEFINE TABLE OVERWRITE board_sync_config SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project   ON board_sync_config TYPE record<project>;
+		DEFINE FIELD OVERWRITE enabled   ON board_sync_config TYPE bool DEFAULT false;
 		-- The GitHub Projects (v2) board number for the repo owner. Optional until configured.
-		DEFINE FIELD board_number ON board_sync_config TYPE option<int>;
+		DEFINE FIELD OVERWRITE board_number ON board_sync_config TYPE option<int>;
 		-- status → board-column map (SCHEMAFULL-FLEXIBLE object so the map round-trips intact).
-		DEFINE FIELD mapping   ON board_sync_config FLEXIBLE TYPE object DEFAULT {};
-		DEFINE FIELD last_synced ON board_sync_config TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE mapping   ON board_sync_config FLEXIBLE TYPE object DEFAULT {};
+		DEFINE FIELD OVERWRITE last_synced ON board_sync_config TYPE option<datetime>;
 		-- The last run's honest status: never-run (NONE) | ok | error.
-		DEFINE FIELD last_status ON board_sync_config TYPE option<string>
+		DEFINE FIELD OVERWRITE last_status ON board_sync_config TYPE option<string>
 			ASSERT $value = NONE OR $value IN ["ok","error"];
-		DEFINE FIELD last_error  ON board_sync_config TYPE option<string>;
-		DEFINE FIELD created_at  ON board_sync_config TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE last_error  ON board_sync_config TYPE option<string>;
+		DEFINE FIELD OVERWRITE created_at  ON board_sync_config TYPE datetime DEFAULT time::now();
 		-- One config per project (the opt-in is per-project) — UNIQUE so an upsert is a no-dup.
-		DEFINE INDEX board_sync_config_project ON board_sync_config FIELDS project UNIQUE;
+		DEFINE INDEX OVERWRITE board_sync_config_project ON board_sync_config FIELDS project UNIQUE;
 
-		DEFINE TABLE sync_incident SCHEMAFULL;
-		DEFINE FIELD project   ON sync_incident TYPE record<project>;
-		DEFINE FIELD adapter   ON sync_incident TYPE string;
-		DEFINE FIELD message   ON sync_incident TYPE string;
-		DEFINE FIELD at        ON sync_incident TYPE datetime DEFAULT time::now();
-		DEFINE INDEX sync_incident_by_project ON sync_incident FIELDS project;
+		DEFINE TABLE OVERWRITE sync_incident SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project   ON sync_incident TYPE record<project>;
+		DEFINE FIELD OVERWRITE adapter   ON sync_incident TYPE string;
+		DEFINE FIELD OVERWRITE message   ON sync_incident TYPE string;
+		DEFINE FIELD OVERWRITE at        ON sync_incident TYPE datetime DEFAULT time::now();
+		DEFINE INDEX OVERWRITE sync_incident_by_project ON sync_incident FIELDS project;
 	`
 };
 

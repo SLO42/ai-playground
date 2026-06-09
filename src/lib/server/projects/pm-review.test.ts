@@ -61,9 +61,10 @@ describe('runPmReview', () => {
 		expect(res.written.length).toBeGreaterThanOrEqual(1);
 		expect(res.written.every((m) => m.kind !== 'risk')).toBe(true);
 
-		// created_at is an ISO string (F-013 — datetime coerced in the normalizer).
+		// created_at is an ISO string (F-013 — datetime coerced in the normalizer); a freshly
+		// CREATEd row always carries the DEFAULT time::now(), so it is never the null fallback.
 		expect(typeof res.review.created_at).toBe('string');
-		expect(Number.isNaN(new Date(res.review.created_at).getTime())).toBe(false);
+		expect(Number.isNaN(new Date(res.review.created_at as string).getTime())).toBe(false);
 
 		const reviews = await listPmReviews(db, projectId);
 		expect(reviews).toHaveLength(1);

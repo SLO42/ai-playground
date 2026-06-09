@@ -9,6 +9,7 @@ import {
 	type Migration
 } from './migrate';
 import { startTestDb, type TestDb } from './testserver';
+import { schemaMigrations } from './schema';
 
 // TASK 0.b VERIFY (migrate half): schema applies to a throwaway test DB
 // (namespace dropped per run); migrations are idempotent (re-run = no-op); the
@@ -154,5 +155,134 @@ describe('guardedScan (§6.4) + backfillValueField (§6.5)', () => {
 		expect(after[0].length).toBe(0); // all backfilled
 		const all = await root.query<[{ dedup_key: string }[]]>('SELECT dedup_key FROM vrow;');
 		expect(all[0].map((r) => r.dedup_key).sort()).toEqual(['g1:k', 'g2:k']);
+	});
+});
+
+// TASK 11.4-FIX — the real schema migrations must be idempotent over BOTH a fresh DB
+// and the HALF-APPLIED state that wedged the live `db:up` (m0025 once created `pm_review`
+// with fields:{} but was never recorded → "table already exists" on every subsequent run).
+// Each sub-test gets its OWN throwaway namespace/database so they cannot interfere.
+describe('schemaMigrations — idempotent over fresh + half-applied state (11.4-FIX)', () => {
+	let tdb2: TestDb;
+
+	beforeAll(async () => {
+		tdb2 = await startTestDb();
+	}, 60_000);
+
+	afterAll(async () => {
+		await tdb2?.teardown();
+	});
+
+	async function freshDb(ns: string) {
+		const db = await Db.connect({
+			url: tdb2.wsUrl,
+			username: tdb2.root.username,
+			password: tdb2.root.password,
+			namespace: ns,
+			database: ns
+		});
+		return db;
+	}
+
+	it('applies the full schema TWICE against a fresh DB with no error (re-run = no-op)', async () => {
+		const db = await freshDb('mig_fresh');
+		try {
+			const first = await runMigrations(db, schemaMigrations);
+			expect(first).toEqual(schemaMigrations.map((m) => m.id)); // all applied once
+
+			const second = await runMigrations(db, schemaMigrations);
+			expect(second).toEqual([]); // ledger gate → nothing re-applied, no throw
+
+			// m0025's tables landed with their FIELD definitions (not the bare fields:{} state).
+			const info = await db.query<[{ fields: Record<string, string> }]>(
+				'INFO FOR TABLE pm_review;'
+			);
+			expect(Object.keys(info[0].fields)).toContain('created_at');
+			expect(await isApplied(db, '0025_pm_review_board')).toBe(true);
+		} finally {
+			await db.close().catch(() => {});
+		}
+	});
+
+	it('RECOVERS the half-applied wedge: bare pm_review table, then full migrations apply clean', async () => {
+		const db = await freshDb('mig_wedge');
+		try {
+			// Reproduce the exact half-applied state: the table exists but is BARE (fields:{}),
+			// and 0025 was NEVER recorded as applied (migrate.ts only records on a clean run).
+			await db.query('DEFINE TABLE pm_review SCHEMAFULL;');
+			const before = await db.query<[{ fields: Record<string, string> }]>(
+				'INFO FOR TABLE pm_review;'
+			);
+			expect(Object.keys(before[0].fields)).toHaveLength(0); // bare — the wedge
+			expect(await isApplied(db, '0025_pm_review_board')).toBe(false);
+
+			// The full schema must apply cleanly OVER the half-applied table (OVERWRITE recovers it).
+			const applied = await runMigrations(db, schemaMigrations);
+			expect(applied).toContain('0025_pm_review_board');
+
+			// The bare table now carries its real field definitions + the migration is recorded.
+			const after = await db.query<[{ fields: Record<string, string> }]>(
+				'INFO FOR TABLE pm_review;'
+			);
+			expect(Object.keys(after[0].fields)).toContain('created_at');
+			expect(Object.keys(after[0].fields)).toContain('trigger');
+			expect(await isApplied(db, '0025_pm_review_board')).toBe(true);
+
+			// And a re-run is still a clean no-op.
+			expect(await runMigrations(db, schemaMigrations)).toEqual([]);
+		} finally {
+			await db.close().catch(() => {});
+		}
+	});
+
+	it('recovers half-applied pm_review rows: backfills the salvageable, deletes the corrupt (F-008)', async () => {
+		const db = await freshDb('mig_backfill');
+		try {
+			// Stand up the table WITH its fields but WITHOUT the created_at DEFAULT — the exact
+			// recoverable shape an addPmReview row was left in (project + summary + counts set,
+			// created_at relied on the DEFAULT the bare table dropped → NONE).
+			await db.query('DEFINE TABLE project SCHEMAFULL;');
+			await db.query('DEFINE FIELD slug ON project TYPE string;');
+			await db.query('CREATE project:wedge SET slug = "wedge";');
+			await db.query(`
+				DEFINE TABLE pm_review SCHEMAFULL;
+				DEFINE FIELD project ON pm_review TYPE option<record<project>>;
+				DEFINE FIELD trigger ON pm_review TYPE option<string>;
+				DEFINE FIELD summary ON pm_review TYPE option<string>;
+				DEFINE FIELD tasks_examined ON pm_review TYPE option<int>;
+			`);
+			// (b) RECOVERABLE: complete addPmReview-shape row, only created_at missing.
+			await db.query(
+				'CREATE pm_review:salvage SET project = project:wedge, summary = "real pass", trigger = "periodic", tasks_examined = 3;'
+			);
+			// (a) UNSALVAGEABLE: an id-only row (the fields:{} state dropped all columns on write).
+			await db.query('CREATE pm_review:corrupt;');
+
+			const before = await db.query<[{ n: number }[]]>(
+				'SELECT count() AS n FROM pm_review GROUP ALL;'
+			);
+			expect(before[0][0].n).toBe(2);
+
+			await runMigrations(db, schemaMigrations);
+
+			// The corrupt id-only row is gone (DELETEd, not fabricated); the salvageable row stays.
+			const ids = await db.query<[{ id: string }[]]>('SELECT id FROM pm_review;');
+			const idStrs = ids[0].map((r) => String(r.id));
+			expect(idStrs).toContain('pm_review:salvage');
+			expect(idStrs).not.toContain('pm_review:corrupt');
+
+			// The salvageable row was backfilled: created_at present, prior values preserved.
+			const fixed = await db.query<[{ created_at: unknown }[]]>(
+				'SELECT created_at FROM pm_review WHERE created_at IS NONE;'
+			);
+			expect(fixed[0].length).toBe(0);
+			const salvaged = await db.query<[{ tasks_examined: number; trigger: string }[]]>(
+				'SELECT tasks_examined, trigger FROM pm_review:salvage;'
+			);
+			expect(salvaged[0][0].tasks_examined).toBe(3); // preserved, not reset to the default
+			expect(salvaged[0][0].trigger).toBe('periodic');
+		} finally {
+			await db.close().catch(() => {});
+		}
 	});
 });

@@ -44,7 +44,7 @@ export interface PmMemoryRow {
 	importance: number;
 	status: string;
 	related_to?: string;
-	created_at: string;
+	created_at: string | null;
 }
 
 export interface AddPmMemoryInput {
@@ -66,7 +66,7 @@ export interface DecisionRow {
 	context?: string;
 	rationale?: string;
 	status: string;
-	created_at: string;
+	created_at: string | null;
 }
 
 export interface AddDecisionInput {
@@ -94,7 +94,7 @@ export interface PmReviewRow {
 	findings_examined: number;
 	risks_open: number;
 	memories_written: number;
-	created_at: string;
+	created_at: string | null;
 }
 
 export interface AddPmReviewInput {
@@ -111,6 +111,20 @@ export interface AddPmReviewInput {
 
 function str(v: unknown): string {
 	return String(v);
+}
+
+/**
+ * F-013 + F-008: coerce a SurrealDB datetime (a non-POJO in 2.x) to an ISO string,
+ * but NEVER to the literal string 'undefined'/'null'. A field that is absent (e.g. a
+ * row half-applied before its DEFAULT existed) or unparseable yields `null`, so the
+ * surface renders an honest '—' (fmtTime('') / fmtTime(null) → '—') instead of the
+ * literal text 'undefined'.
+ */
+function strDate(v: unknown): string | null {
+	if (v === null || v === undefined) return null;
+	const s = String(v);
+	if (s === '' || s === 'undefined' || s === 'null') return null;
+	return s;
 }
 
 function link(id: string): StringRecordId {
@@ -130,7 +144,7 @@ function normPmMemory(row: PmMemoryRow & { id: unknown; project: unknown }): PmM
 		...row,
 		id: str(row.id),
 		project: str(row.project),
-		created_at: str(row.created_at)
+		created_at: strDate(row.created_at)
 	};
 }
 
@@ -142,7 +156,7 @@ function normDecision(
 		id: str(row.id),
 		project: str(row.project),
 		sprint: row.sprint != null ? str(row.sprint) : undefined,
-		created_at: str(row.created_at)
+		created_at: strDate(row.created_at)
 	};
 }
 
@@ -153,8 +167,9 @@ function normPmReview(
 		...row,
 		id: str(row.id),
 		project: str(row.project),
-		// F-013: SurrealDB 2.x datetime is a non-POJO — coerce to an ISO string for the loader.
-		created_at: str(row.created_at)
+		// F-013 + F-008: coerce the SurrealDB 2.x datetime (non-POJO) to an ISO string, but
+		// an absent/invalid created_at → null (honest '—' on the surface), never 'undefined'.
+		created_at: strDate(row.created_at)
 	};
 }
 

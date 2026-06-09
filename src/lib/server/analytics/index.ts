@@ -18,12 +18,14 @@ export {
 export {
 	buildReportSummary,
 	buildTierUsage,
+	buildShellMetrics,
 	foldDaily,
 	detectAnomalies,
 	type DailyRollup,
 	type Anomaly,
 	type ReportSummary,
 	type TierUsage,
+	type ShellMetrics,
 	type RollupOptions
 } from './rollup';
 

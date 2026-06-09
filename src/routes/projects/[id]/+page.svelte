@@ -41,6 +41,8 @@
   // TASK 11.4 — PM periodic review surface.
   const pmReviews = $derived(data.pmReviews ?? []);
   const pmAutoReviewAllowed = $derived(data.pmAutoReviewAllowed ?? false);
+  // TASK 11.5 — UX-inspection loop (the maintain-cycle UX inspector). Shares the D-004 gate.
+  const uxAutoAllowed = $derived(data.uxAutoAllowed ?? false);
   const selectedSession = $derived(data.selectedSession);
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
 
@@ -125,6 +127,13 @@
     if (rule.startsWith('ux.')) return 'ux';
     return 'security';
   }
+
+  // ── TASK 11.5 — UX-inspection trigger state (the maintain-cycle UX inspector loop).
+  let uxBusy = $state(false);
+  const uxFeedback = $derived(
+    form && 'ux' in form ? (form.ux as Record<string, unknown>) : undefined
+  );
+  const uxFindingCount = $derived(findings.filter((f) => f.rule.startsWith('ux.')).length);
 
   // ── Memory tab (TASK 10.4) — client-side recall filter + node focus (mirrors /memory).
   let memQuery = $state('');
@@ -508,6 +517,47 @@
             per-project view of the Maintain surface. Findings appear the moment a scan writes
             them; nothing here is fabricated.
           </p>
+
+          <!-- TASK 11.5 — the UX-inspector loop in the maintain cycle. A manual trigger
+               statically inspects this project's own UI source and writes ux.* findings that
+               surface here and roll up to /reports. Manual mode → button-only (D-004). -->
+          <div class="maintain-actions">
+            <form
+              method="POST"
+              action="?/uxInspect"
+              use:enhance={() => {
+                uxBusy = true;
+                return async ({ update }) => {
+                  await update({ reset: false });
+                  uxBusy = false;
+                };
+              }}
+            >
+              <input type="hidden" name="trigger" value="manual" />
+              <button class="btn" type="submit" disabled={uxBusy}>
+                {uxBusy ? 'Inspecting UX…' : 'Run UX inspection'}
+              </button>
+            </form>
+            <span class="ux-count mono">{uxFindingCount} UX finding{uxFindingCount === 1 ? '' : 's'}</span>
+            {#if uxAutoAllowed}
+              <span class="review-mode-hint">Periodic UX inspection is enabled in the current mode.</span>
+            {:else}
+              <span class="review-mode-hint">
+                Orchestration mode is <span class="mono">manual</span> — periodic UX inspection is off.
+              </span>
+            {/if}
+          </div>
+          {#if uxFeedback}
+            {#if uxFeedback.error}
+              <p class="form-error" role="alert">{String(uxFeedback.error)}</p>
+            {:else if uxFeedback.ok}
+              <p class="form-ok">
+                {String(uxFeedback.trigger)} UX inspection complete — wrote {String(uxFeedback.written)}
+                finding(s).
+              </p>
+            {/if}
+          {/if}
+
           {#if findings.length}
             <ul class="sev-summary" aria-label="findings by severity">
               {#each severityCounts as s (s.sev)}
@@ -2234,6 +2284,17 @@
   }
   .maintain-card {
     gap: var(--space-3, 0.75rem);
+  }
+  /* TASK 11.5 — UX-inspection trigger row in the Maintain panel. */
+  .maintain-actions {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: var(--space-3, 0.75rem);
+  }
+  .ux-count {
+    color: var(--color-text-muted, var(--color-text-secondary));
+    font-size: var(--font-size-sm, 0.8125rem);
   }
   .maintain-head {
     display: flex;

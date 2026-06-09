@@ -54,6 +54,12 @@ import {
 import { updateProject } from '$lib/server/projects/repo';
 import { listFindings, type FindingRow } from '$lib/server/scanner/findings-repo';
 import {
+	runProjectUxInspection,
+	uxInspectionAllowed,
+	readOrchestrationMode,
+	type UxInspectionTrigger
+} from '$lib/server/scanner/maintain-cycle';
+import {
 	listProjectMemories,
 	listProjectGraph,
 	type MemoryRow,
@@ -126,6 +132,8 @@ export interface ProjectDetailData {
 	pmReviews: PmReviewRow[];
 	/** Whether an automatic (periodic) review is permitted under the configured mode (D-004). */
 	pmAutoReviewAllowed: boolean;
+	/** Whether automatic (periodic) UX inspection is permitted under the configured mode (D-004). */
+	uxAutoAllowed: boolean;
 	/** Whether this project has any PM memory yet (drives the bootstrap CTA). */
 	pmBootstrapped: boolean;
 	/** The PM-memory taxonomy (for the add-memory form). */
@@ -189,6 +197,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			decisions: [],
 			pmReviews: [],
 			pmAutoReviewAllowed: false,
+			uxAutoAllowed: false,
 			pmBootstrapped: false,
 			pmKinds: PM_MEMORY_KINDS,
 			selectedSession,
@@ -237,12 +246,15 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 		// D-004: an AUTOMATIC (periodic) review is permitted only when the orchestration mode
 		// is NOT manual. Manual mode → the review is button-triggered only. Read honestly; a
 		// malformed/absent config falls back to manual (the most conservative gate).
-		let pmAutoReviewAllowed = false;
+		// Both the PM review (11.4) and the UX-inspection loop (11.5) share this D-004 policy.
+		let autoAllowed = false;
 		try {
-			pmAutoReviewAllowed = loadOrchestration(`${configDir()}/orchestration.yaml`).mode !== 'manual';
+			autoAllowed = loadOrchestration(`${configDir()}/orchestration.yaml`).mode !== 'manual';
 		} catch {
-			pmAutoReviewAllowed = false;
+			autoAllowed = false;
 		}
+		const pmAutoReviewAllowed = autoAllowed;
+		const uxAutoAllowed = autoAllowed;
 
 		const tasks: TaskSummary[] = taskRows.map((t) => ({
 			id: t.id,
@@ -283,6 +295,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			decisions,
 			pmReviews,
 			pmAutoReviewAllowed,
+			uxAutoAllowed,
 			pmBootstrapped: pmMemory.length > 0,
 			pmKinds: PM_MEMORY_KINDS,
 			selectedSession,
@@ -310,6 +323,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			decisions: [],
 			pmReviews: [],
 			pmAutoReviewAllowed: false,
+			uxAutoAllowed: false,
 			pmBootstrapped: false,
 			pmKinds: PM_MEMORY_KINDS,
 			selectedSession,
@@ -737,6 +751,57 @@ export const actions: Actions = {
 			};
 		} catch (err) {
 			return fail(500, { pm: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * TASK 11.5 — run a UX-inspection pass in the maintain cycle (the loop the original app
+	 * had). The inspector statically analyses this project's OWN UI source (`src/routes`) and
+	 * writes `ux.*` findings as `security_finding` rows (the SAME table the security + dep
+	 * scans use — 11.1's family convention, no parallel table). Findings surface on THIS
+	 * project's Maintain panel and roll up to /reports the moment they're written (both read
+	 * the shared table; the SSE `security_finding` watcher re-invalidates this loader live).
+	 *
+	 * D-004 (orchestration mode): a MANUAL trigger (the button) is always allowed; a PERIODIC
+	 * trigger is permitted ONLY when the configured mode is not "manual" — gated HERE so manual
+	 * mode means button-triggered-only. F-008: every finding is a real read of a real route
+	 * file; the browser-driven inspection variant is deferred honestly (static pass runs here).
+	 */
+	uxInspect: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { ux: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { ux: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const rawTrigger = String(form.get('trigger') ?? 'manual').trim();
+		const trigger: UxInspectionTrigger = rawTrigger === 'periodic' ? 'periodic' : 'manual';
+
+		// D-004: a non-manual (periodic) trigger is gated on the orchestration mode.
+		if (trigger === 'periodic') {
+			const mode = readOrchestrationMode(`${configDir()}/orchestration.yaml`);
+			if (!uxInspectionAllowed(trigger, mode)) {
+				return fail(409, {
+					ux: {
+						error:
+							'Orchestration mode is "manual" — periodic UX inspection is disabled. Trigger it manually or switch the mode in Settings.'
+					}
+				});
+			}
+		}
+
+		// The inspection reads the project's OWN UI source — look up its real root_path (F-008),
+		// then path-confine it under CODE_ROOT (D-018) inside runProjectUxInspection.
+		const project = await getProject(db, projectId);
+		if (!project) return fail(404, { ux: { error: 'project not found' } });
+
+		try {
+			const written = await runProjectUxInspection(db, projectId, project.root_path, {
+				codeRoot: process.env.CODE_ROOT?.trim() || 'F:/code'
+			});
+			return { ux: { ok: true as const, action: 'inspect', trigger, written: written.length } };
+		} catch (err) {
+			return fail(500, { ux: { error: (err as Error).message } });
 		}
 	}
 };

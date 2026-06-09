@@ -65,3 +65,18 @@ export {
 	type InspectUxOptions,
 	type InspectUxHandle
 } from './ux-repo';
+
+export {
+	createStaticUxSource,
+	snapshotForRoute,
+	routePathFor,
+	type StaticUxSourceOptions
+} from './ux-source';
+
+export {
+	runProjectUxInspection,
+	uxInspectionAllowed,
+	readOrchestrationMode,
+	type UxInspectionTrigger,
+	type UxMaintainOptions
+} from './maintain-cycle';

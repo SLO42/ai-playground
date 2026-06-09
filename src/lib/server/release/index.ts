@@ -10,6 +10,7 @@ export {
 	createReleaseWorkflow,
 	runRelease,
 	listReleaseRuns,
+	getReleaseChangelogHtml,
 	type ReleaseStage,
 	type BuildReleaseStepsInput,
 	type CreateReleaseWorkflowInput,

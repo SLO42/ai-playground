@@ -19,7 +19,8 @@ import {
 	buildReleaseSteps,
 	createReleaseWorkflow,
 	runRelease,
-	listReleaseRuns
+	listReleaseRuns,
+	getReleaseChangelogHtml
 } from './pipeline';
 
 // TASK 3.4 VERIFY (D-013; DATA-MODEL §4.11; dep 2.17) — a multi-step RELEASE runs as a
@@ -290,5 +291,111 @@ describe('listReleaseRuns — the Release tab read model', () => {
 		expect(rowB.status).toBe('done');
 		expect(rowB.stepState.publish).toBe('done');
 		expect(rowB.endedAt).toBeTruthy();
+		// Every run carries a changelogHtml string (honest — empty or real, never absent).
+		expect(typeof rowB.changelogHtml).toBe('string');
+	});
+});
+
+// TASK 11.2 — the REAL generated changelog renders on the Release page. The changelog STEP's
+// session assistant output is read back and rendered to SAFE HTML (markdown → sanitized).
+// A backend that emits a markdown changelog for the changelog step proves the round-trip
+// through the live DB + the page-load read model (F-008 — real session output, not fabricated).
+describe('changelog render — the REAL generated changelog (TASK 11.2)', () => {
+	// A backend that emits a real markdown changelog (including an injection attempt) for the
+	// changelog step, and a plain log line for every other step.
+	function changelogBackend(): CcBackend & { plans: CcSpawnPlan[] } {
+		const plans: CcSpawnPlan[] = [];
+		let seq = 0;
+		const CHANGELOG_MD = [
+			'# v3.0',
+			'',
+			'## Added',
+			'- **Release** changelog rendering on `/release`',
+			'- Step → session links on /workflows',
+			'',
+			'See [the docs](https://example.com/changelog).',
+			'',
+			'<script>alert(1)</script>'
+		].join('\n');
+		return {
+			plans,
+			kind: 'mock',
+			run(plan: CcSpawnPlan): CcBackendRun {
+				plans.push(plan);
+				const isChangelog = plan.prompt.includes('Generate the CHANGELOG entry');
+				const cc = `cc_cl_${Math.random().toString(36).slice(2, 8)}_${seq++}`;
+				const events: RuntimeEvent[] = [
+					{ type: 'log', message: isChangelog ? CHANGELOG_MD : `release step ${plan.agentId}` },
+					{ type: 'token_usage', input: 8, output: 4 },
+					{ type: 'done', result: { ok: true, summary: 'stage ok', ccSessionId: cc } }
+				];
+				return {
+					ccSessionId: cc,
+					async *stream() {
+						for (const e of events) yield e;
+					},
+					async cancel() {}
+				};
+			},
+			async resume(req) {
+				return {
+					ccSessionId: req.ccSessionId,
+					async *stream() {
+						yield { type: 'done', result: { ok: true, summary: 'resumed' } };
+					},
+					async cancel() {}
+				};
+			},
+			async interject() {}
+		};
+	}
+
+	it('renders the changelog step session output as safe HTML on the run summary', async () => {
+		const res = await runRelease({
+			db,
+			bus: new EventBus(),
+			runtime: new ClaudeCodeRuntime({
+				backend: changelogBackend(),
+				harnessConfigRoot: 'F:/code/rel/.harness-cc'
+			}),
+			projectId,
+			version: 'v3.0',
+			cwd: 'F:/code/rel',
+			model: M
+		});
+		expect(res.status).toBe('done');
+
+		// Direct read: the changelog step's session output rendered to HTML.
+		const html = await getReleaseChangelogHtml(db, res.runId);
+		expect(html).toContain('<h1>v3.0</h1>');
+		expect(html).toContain('<li><strong>Release</strong> changelog rendering on <code>/release</code></li>');
+		expect(html).toContain('<a href="https://example.com/changelog"');
+		// SAFETY: the injected <script> must be escaped, never passed through.
+		expect(html).not.toContain('<script>');
+		expect(html).toContain('&lt;script&gt;');
+
+		// Through the page-load read model: listReleaseRuns carries the same rendered HTML.
+		const runs = await listReleaseRuns(db, projectId);
+		const row = runs.find((r) => r.runId === res.runId);
+		expect(row).toBeTruthy();
+		expect(row!.changelogHtml).toContain('<h1>v3.0</h1>');
+		expect(row!.changelogHtml).not.toContain('<script>');
+	});
+
+	it('returns an empty changelog (honest) for a run with no changelog session', async () => {
+		// A run whose changelog stage never ran: a red "test" stage short-circuits changelog.
+		const res = await runRelease({
+			db,
+			bus: new EventBus(),
+			runtime: rt({ failPrompts: ['Run the full test suite'] }),
+			projectId,
+			version: 'v3.1',
+			cwd: 'F:/code/rel',
+			model: M
+		});
+		expect(res.status).toBe('failed');
+		expect(res.stepState.changelog).toBe('pending');
+		const html = await getReleaseChangelogHtml(db, res.runId);
+		expect(html).toBe('');
 	});
 });

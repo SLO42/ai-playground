@@ -123,6 +123,22 @@
               </li>
             {/each}
           </ol>
+
+          <!-- The REAL generated changelog (the changelog step's session output, rendered
+               markdown → sanitized HTML at the server boundary). Honest empty when none. -->
+          <div class="changelog">
+            <span class="eyebrow">changelog</span>
+            {#if run.changelogHtml}
+              <!-- Safe: changelogHtml is escape-first server-rendered (renderMarkdown);
+                   it contains only tags the renderer emits, never model-authored HTML. -->
+              <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+              <div class="prose">{@html run.changelogHtml}</div>
+            {:else}
+              <p class="changelog-empty">
+                No changelog yet — it appears here once the changelog step generates one.
+              </p>
+            {/if}
+          </div>
         </li>
       {/each}
     </ul>
@@ -248,6 +264,89 @@
   .stage-status {
     color: var(--color-text-2);
     text-transform: lowercase;
+  }
+  .changelog {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    border-top: var(--border-width, 1px) solid var(--color-border-subtle, var(--color-border));
+    padding-top: var(--space-3, 0.75rem);
+  }
+  .eyebrow {
+    font-size: 0.7rem;
+    text-transform: lowercase;
+    letter-spacing: 0.03em;
+    color: var(--color-text-muted);
+  }
+  .changelog-empty {
+    font: var(--type-body-sm);
+    color: var(--color-text-muted);
+  }
+  /* Prose: the rendered changelog. Tokens only; tight, readable vertical rhythm. */
+  .prose {
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+    line-height: 1.5;
+  }
+  .prose :global(h1),
+  .prose :global(h2),
+  .prose :global(h3),
+  .prose :global(h4),
+  .prose :global(h5),
+  .prose :global(h6) {
+    color: var(--color-text);
+    font-weight: 600;
+    margin: var(--space-4, 0.75rem) 0 var(--space-2, 0.5rem);
+    line-height: 1.3;
+  }
+  .prose :global(h1) { font-size: 1.05rem; }
+  .prose :global(h2) { font-size: 0.98rem; }
+  .prose :global(h3) { font-size: 0.9rem; }
+  .prose :global(p) { margin: var(--space-2, 0.5rem) 0; }
+  .prose :global(ul),
+  .prose :global(ol) {
+    margin: var(--space-2, 0.5rem) 0;
+    padding-left: 1.4rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .prose :global(li) { color: var(--color-text-2); }
+  .prose :global(strong) { color: var(--color-text); font-weight: 600; }
+  .prose :global(a) {
+    color: var(--color-text-link, var(--color-accent));
+    text-decoration: underline;
+  }
+  .prose :global(a:hover) { color: var(--color-accent-hover, var(--color-accent)); }
+  .prose :global(a:focus-visible) {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  .prose :global(code) {
+    font-family: var(--font-mono, ui-monospace, monospace);
+    font-size: 0.82em;
+    background: var(--color-surface-overlay);
+    padding: 0.05rem 0.3rem;
+    border-radius: var(--radius-sm, 6px);
+  }
+  .prose :global(pre) {
+    background: var(--color-surface-overlay);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: var(--space-3, 0.75rem);
+    overflow-x: auto;
+    margin: var(--space-2, 0.5rem) 0;
+  }
+  .prose :global(pre code) {
+    background: none;
+    padding: 0;
+    font-size: 0.8rem;
+  }
+  .prose :global(blockquote) {
+    border-left: 2px solid var(--color-border);
+    margin: var(--space-2, 0.5rem) 0;
+    padding-left: var(--space-3, 0.75rem);
+    color: var(--color-text-muted);
   }
   .cut {
     display: flex;

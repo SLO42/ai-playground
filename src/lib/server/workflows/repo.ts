@@ -255,6 +255,13 @@ export interface WorkflowStepSession {
 	provider?: string;
 	modelId?: string;
 	tier?: string;
+	/**
+	 * The project this step's session belongs to (`project:<slug>`), when set. The
+	 * transcript route is project-scoped (`/projects/<slug>?session=<id>`), so the UI needs
+	 * the project to build a REAL session link — without it the link degrades honestly to
+	 * an unlinked id rather than a dead click (the /claude-code dead-click was a prior FAIL).
+	 */
+	sessionProject?: string;
 }
 
 /** Detail of one run: the run row, its workflow's steps, and each step's session record. */
@@ -334,11 +341,12 @@ export async function getWorkflowRunDetail(db: Db, id: string): Promise<Workflow
 	// Sessions launched for this run, keyed back to their step via the run's step_state order.
 	// A step session carries kind="workflow-step"; we surface model + status per session row.
 	const [sessRows] = await db.query<
-		[Array<{ id: unknown; started_at?: unknown; status: string; model?: { provider?: string; model_id?: string; tier?: string } }>]
+		[Array<{ id: unknown; started_at?: unknown; status: string; project?: unknown; model?: { provider?: string; model_id?: string; tier?: string } }>]
 	>(
 		// SurrealDB 2.x: any field used in ORDER BY MUST appear in the SELECT projection
-		// (the 6.9 bug) — `started_at` is selected here, matching analytics/trace.ts.
-		`SELECT id, started_at, status, model FROM session
+		// (the 6.9 bug) — `started_at` is selected here, matching analytics/trace.ts. `project`
+		// is selected so the UI can build a real project-scoped transcript link per step.
+		`SELECT id, started_at, status, project, model FROM session
 		  WHERE workflow_run = $rid
 		  ORDER BY started_at ASC;`,
 		{ rid }
@@ -350,6 +358,7 @@ export async function getWorkflowRunDetail(db: Db, id: string): Promise<Workflow
 	const sessions = sessRows.map((s) => ({
 		id: String(s.id),
 		status: s.status,
+		project: s.project != null ? String(s.project) : undefined,
 		provider: s.model?.provider,
 		modelId: s.model?.model_id,
 		tier: s.model?.tier
@@ -363,6 +372,7 @@ export async function getWorkflowRunDetail(db: Db, id: string): Promise<Workflow
 				? {
 						sessionId: sess.id,
 						sessionStatus: sess.status,
+						...(sess.project ? { sessionProject: sess.project } : {}),
 						...(sess.provider ? { provider: sess.provider } : {}),
 						...(sess.modelId ? { modelId: sess.modelId } : {}),
 						...(sess.tier ? { tier: sess.tier } : {})

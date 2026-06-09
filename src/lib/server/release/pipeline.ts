@@ -32,6 +32,7 @@
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
+import { renderMarkdown } from '../markdown';
 import type { EventBus } from '../events/bus';
 import type { AgentRuntime, ModelSelection } from '../runtime/index';
 import {
@@ -185,6 +186,59 @@ export interface ReleaseRunSummary {
 	stepState: Record<string, string>;
 	startedAt: string;
 	endedAt?: string;
+	/**
+	 * The REAL generated changelog for this release, rendered to SAFE HTML (the `changelog`
+	 * step's session assistant output → renderMarkdown, sanitized at the boundary). Empty
+	 * string when the changelog step has not produced content yet — an honest empty state
+	 * (F-008), never a fabricated entry.
+	 */
+	changelogHtml: string;
+}
+
+/** The index of the `changelog` stage within the fixed release pipeline order. */
+const CHANGELOG_STEP_INDEX = RELEASE_STAGES.indexOf('changelog');
+
+/**
+ * Read the REAL generated changelog for one release run and render it to safe HTML.
+ *
+ * The changelog is the assistant output of the run's `changelog` STEP session (§4.11
+ * "each executing step is a session"). Each release step session is linked to the run via
+ * `session.workflow_run`; the release pipeline is a strict linear chain, so the sessions in
+ * `started_at` order line up positionally with RELEASE_STAGES — the changelog session is the
+ * one at CHANGELOG_STEP_INDEX. We concatenate that session's `assistant` messages (the model
+ * text it produced) and render the Markdown to sanitized HTML. Returns '' when there is no
+ * changelog session yet or it produced no assistant text (honest empty — never fabricated).
+ *
+ * Boundary discipline (D-016): the run id flows through assertRecordId → StringRecordId; no
+ * value is interpolated. SurrealDB 2.x datetime fields are non-POJO, so `started_at` is
+ * coerced to a sortable string only in the ORDER BY at the DB (F-013) — we never read it here.
+ */
+export async function getReleaseChangelogHtml(db: Db, runId: string): Promise<string> {
+	const rid = new StringRecordId(assertRecordId(runId));
+	// The step sessions for this run, oldest first (matches getWorkflowRunDetail's mapping).
+	// `started_at` MUST appear in the projection to be used in ORDER BY (SurrealDB 2.x, the 6.9
+	// bug) — selected here, sorted at the DB, never returned to JS as a non-POJO datetime.
+	const [sessRows] = await db.query<[Array<{ id: unknown; started_at: unknown }>]>(
+		`SELECT id, started_at FROM session WHERE workflow_run = $rid ORDER BY started_at ASC;`,
+		{ rid }
+	);
+	const changelogSession = sessRows[CHANGELOG_STEP_INDEX]?.id;
+	if (changelogSession == null) return '';
+
+	const sid = new StringRecordId(assertRecordId(String(changelogSession)));
+	// `at` MUST be in the projection to be used in ORDER BY (SurrealDB 2.x, the 6.9 bug) —
+	// selected here and sorted at the DB; we read only `content` off each row.
+	const [msgRows] = await db.query<[Array<{ content: string; at: unknown }>]>(
+		`SELECT content, at FROM message
+		  WHERE session = $sid AND role = 'assistant'
+		  ORDER BY at ASC;`,
+		{ sid }
+	);
+	const raw = (msgRows ?? [])
+		.map((m) => m.content)
+		.filter((c) => typeof c === 'string' && c.trim() !== '')
+		.join('\n\n');
+	return renderMarkdown(raw);
 }
 
 /**
@@ -215,15 +269,30 @@ export async function listReleaseRuns(db: Db, projectId: string): Promise<Releas
 		  ORDER BY started_at DESC;`,
 		{ pid }
 	);
-	return runs.map((r) => ({
-		runId: String(r.id),
-		workflowId: String(r.workflow.id),
-		workflowName: r.workflow.name,
-		// "release v0.4" → "v0.4"; the version is the part after the "release " prefix.
-		version: r.workflow.name.replace(/^release\s+/, ''),
-		status: r.status,
-		stepState: r.step_state,
-		startedAt: String(r.started_at),
-		...(r.ended_at != null ? { endedAt: String(r.ended_at) } : {})
-	}));
+	// Resolve each run's REAL generated changelog (the changelog step's session output)
+	// in parallel and render it to safe HTML. A changelog read failure for one run must not
+	// blank the whole list — degrade that run to an empty changelog (honest), not an error.
+	return Promise.all(
+		runs.map(async (r) => {
+			const runId = String(r.id);
+			let changelogHtml = '';
+			try {
+				changelogHtml = await getReleaseChangelogHtml(db, runId);
+			} catch {
+				changelogHtml = '';
+			}
+			return {
+				runId,
+				workflowId: String(r.workflow.id),
+				workflowName: r.workflow.name,
+				// "release v0.4" → "v0.4"; the version is the part after the "release " prefix.
+				version: r.workflow.name.replace(/^release\s+/, ''),
+				status: r.status,
+				stepState: r.step_state,
+				startedAt: String(r.started_at),
+				changelogHtml,
+				...(r.ended_at != null ? { endedAt: String(r.ended_at) } : {})
+			};
+		})
+	);
 }

@@ -279,6 +279,9 @@ describe('runWorkflow — multi-step pipeline as a tracked workflow_run (D-013)'
 			expect(st.status).toBe('done');
 			expect(st.sessionId).toBeDefined();
 			expect(st.modelId).toBe(M.modelId);
+			// TASK 11.2 — each step session surfaces its project so the UI can build a REAL
+			// project-scoped transcript link (/projects/<slug>?session=<id>), never a dead click.
+			expect(st.sessionProject).toBe(projectId);
 		}
 		// Every reported session id is a real session linked to this run (read back live).
 		const ids = detail!.steps.map((s) => s.sessionId);

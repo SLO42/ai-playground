@@ -56,6 +56,17 @@
   function runHref(id: string): string {
     return `${page.url.pathname}?run=${encodeURIComponent(id)}`;
   }
+  /**
+   * Build the REAL transcript link for a step's session: the project-scoped Sessions route
+   * `/projects/<slug>?session=<id>` (the same surface openSession uses). The slug is the bare
+   * project record id. Returns null when the session has no resolvable project — the row then
+   * shows the id as plain text rather than a DEAD link (the /claude-code dead-click FAIL).
+   */
+  function sessionHref(s: { sessionId?: string; sessionProject?: string }): string | null {
+    if (!s.sessionId || !s.sessionProject) return null;
+    const slug = s.sessionProject.replace(/^project:/, '');
+    return `/projects/${encodeURIComponent(slug)}?session=${encodeURIComponent(s.sessionId)}`;
+  }
 </script>
 
 <section class="page">
@@ -189,10 +200,22 @@
               </thead>
               <tbody>
                 {#each detail.steps as s (s.stepId)}
+                  {@const href = sessionHref(s)}
                   <tr>
                     <td class="mono">{s.stepId}</td>
                     <td><span class="status-tag" data-status={s.status}>{s.status}</span></td>
-                    <td class="mono">{s.sessionId ? shortId(s.sessionId) : '—'}</td>
+                    <td class="mono">
+                      {#if s.sessionId}
+                        {#if href}
+                          <!-- Real transcript link: the project-scoped Sessions route. -->
+                          <a class="detail-link" href={href}>{shortId(s.sessionId)} →</a>
+                        {:else}
+                          <!-- Session exists but has no resolvable project — show the id as
+                               plain text, never a dead click (honest degrade). -->
+                          <span title="no project — transcript not linkable">{shortId(s.sessionId)}</span>
+                        {/if}
+                      {:else}—{/if}
+                    </td>
                     <td>
                       {#if s.sessionStatus}
                         <span class="status-tag" data-status={s.sessionStatus}>{s.sessionStatus}</span>

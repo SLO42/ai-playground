@@ -24,6 +24,7 @@ import {
 	type CatalogScope,
 	type ConfigKind
 } from '$lib/server/cc-config';
+import { listFleetAcrossProjects, type FleetSessionXP } from '$lib/server/analytics';
 import { resolveConfigTarget, ConfigTargetError } from './config-target';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -40,6 +41,9 @@ export const load: PageServerLoad = async ({ depends }) => {
 	// change with `invalidate(() => true)` — an "invalidate storm" that re-pulled the
 	// whole catalog whenever any project row moved. The dep below is the surgical knob.
 	depends('app:claude-code');
+	// TASK 9.3 — the cross-project session FLEET re-runs on its own scoped dep so a `session`
+	// row change live-refreshes the fleet WITHOUT re-pulling the whole config catalog.
+	depends('app:fleet');
 
 	// DEFECT 2: use `tryGetDb()` (never throws) instead of strict `getDb()`. A non-null
 	// handle does NOT prove liveness — the SDK keeps handing back a CACHED-but-DEAD
@@ -49,10 +53,19 @@ export const load: PageServerLoad = async ({ depends }) => {
 	// client navigation.
 	const db = tryGetDb();
 	if (!db) {
-		return { connected: false, scopes: [] as CatalogScope[] };
+		return { connected: false, scopes: [] as CatalogScope[], fleet: [] as FleetSessionXP[] };
 	}
 
 	try {
+		// TASK 9.3 — the LIVE cross-project session fleet (portfolio-wide). A fleet-read failure
+		// must NOT blank the config catalog (and vice-versa), so this degrades to [] on its own.
+		let fleet: FleetSessionXP[] = [];
+		try {
+			fleet = await listFleetAcrossProjects(db, 40);
+		} catch {
+			fleet = [];
+		}
+
 		const scopes = await readCatalog(db);
 
 		// Overlay the LIVE disk-vs-mirror status per scope (the mirror alone can only
@@ -75,16 +88,21 @@ export const load: PageServerLoad = async ({ depends }) => {
 			})
 		);
 
-		return { connected: true, scopes: withStatus };
+		return { connected: true, scopes: withStatus, fleet };
 	} catch (err) {
 		// Classify the thrown error (shared with /workflows + /projects + home, D-019):
 		// a genuine connection loss is reported as DISCONNECTED — the same honest state
 		// as a server that booted with the DB down — and ONLY a true query/parse failure
 		// keeps `connected:true` + the queryError state. Never an unhandled 500.
 		if (classifyDbError(err) === 'disconnected') {
-			return { connected: false, scopes: [] as CatalogScope[] };
+			return { connected: false, scopes: [] as CatalogScope[], fleet: [] as FleetSessionXP[] };
 		}
-		return { connected: true, scopes: [] as CatalogScope[], queryError: (err as Error).message };
+		return {
+			connected: true,
+			scopes: [] as CatalogScope[],
+			fleet: [] as FleetSessionXP[],
+			queryError: (err as Error).message
+		};
 	}
 };
 

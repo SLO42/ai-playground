@@ -35,6 +35,8 @@ export {
 	listPoolSlots,
 	listFleet,
 	listFleetByProject,
+	listFleetAcrossProjects,
 	type PoolSlot,
-	type FleetSession
+	type FleetSession,
+	type FleetSessionXP
 } from './fleet';

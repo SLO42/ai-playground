@@ -18,6 +18,64 @@
   const connected = $derived(data.connected);
   const queryError = $derived(data.queryError);
 
+  // ── TASK 9.3 — the cross-project SESSION FLEET (portfolio-wide live session control). ──
+  // Every running/recent Claude Code session ACROSS ALL projects (F-008 live rows), with
+  // project label, model/tier, status, live liveness (session.status), and per-session
+  // controls (stop/interject/resume) over the loopback control endpoint (D-035).
+  const fleet = $derived(data.fleet ?? []);
+  const running = $derived(fleet.filter((s) => s.status === 'running'));
+  const recent = $derived(fleet.filter((s) => s.status !== 'running'));
+
+  // Per-session control state — keyed by session id so several rows can be in flight
+  // independently. `interjectMsg` is the open interject draft; `busy`/`err` track the
+  // last action's progress + failure per row (honest — never a fake success, F-008).
+  let openInterject = $state<string | null>(null);
+  let interjectMsg = $state('');
+  let busyId = $state<string | null>(null);
+  let controlErr = $state<Record<string, string>>({});
+
+  function shortId(id: string): string {
+    const i = id.indexOf(':');
+    return i >= 0 ? id.slice(i + 1) : id;
+  }
+
+  function fmtTime(iso: string): string {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+  }
+
+  async function sendControl(
+    sessionId: string,
+    action: 'interject' | 'stop' | 'resume'
+  ): Promise<void> {
+    busyId = sessionId;
+    controlErr = { ...controlErr, [sessionId]: '' };
+    try {
+      const sid = shortId(sessionId);
+      const res = await fetch(`/api/sessions/${encodeURIComponent(sid)}/control`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(
+          action === 'interject' ? { action, message: interjectMsg } : { action }
+        )
+      });
+      if (!res.ok) {
+        const j = (await res.json().catch(() => ({}))) as { message?: string };
+        controlErr = { ...controlErr, [sessionId]: j.message ?? `control failed (${res.status})` };
+      } else if (action === 'interject') {
+        interjectMsg = '';
+        openInterject = null;
+      }
+      // The session_status / db_change events republished by the control endpoint
+      // re-invalidate `app:fleet` below, so the row's live state updates in place.
+    } catch (e) {
+      controlErr = { ...controlErr, [sessionId]: (e as Error).message };
+    } finally {
+      busyId = null;
+    }
+  }
+
   // The editor is a single shared panel; `editing` identifies which scope+kind it's open for
   // so only that scope's card shows the panel. The action phases (editing → confirming →
   // saved) flow through `form.edit` (D-010 diff-and-confirm).
@@ -66,7 +124,14 @@
   // through every loader on the page (the "invalidate storm") — it nudges just this loader.
   $effect(() => {
     const off = stream.onDbChange('project', () => void invalidate('app:claude-code'));
-    return off;
+    // TASK 9.3 — a `session` row change (launch/stop/resume anywhere in the portfolio)
+    // live-refreshes the cross-project fleet via its OWN scoped dep (`app:fleet`), so a
+    // session moving never re-pulls the whole config catalog (no invalidate storm).
+    const offS = stream.onDbChange('session', () => void invalidate('app:fleet'));
+    return () => {
+      off();
+      offS();
+    };
   });
 
   function statusLabel(s: string): string {
@@ -101,6 +166,98 @@
       flags drift when a file is edited on disk.
     </p>
   </header>
+
+  <!-- ── TASK 9.3 — cross-project SESSION FLEET (portfolio-wide live session control). ──
+       Running/recent Claude Code sessions ACROSS ALL projects with project label, model/tier,
+       live status (session.status, not a pool flag), and per-session stop/interject/resume
+       over the loopback control endpoint (D-035). Live over the one SSE. -->
+  {#if connected}
+    <section class="card fleet" aria-label="cross-project session fleet">
+      <div class="fleet-head">
+        <span class="eyebrow">session fleet · all projects</span>
+        <span class="count mono">{running.length} running · {recent.length} recent</span>
+      </div>
+      {#if fleet.length === 0}
+        <p class="card-body none-body">
+          No sessions across the portfolio yet — launch a Claude Code session from any
+          project and it appears here, live.
+        </p>
+      {:else}
+        <ul class="fleet-rows" aria-label="sessions across all projects">
+          {#each [...running, ...recent] as s (s.id)}
+            {@const isRunning = s.status === 'running'}
+            <li class="fleet-row" class:running={isRunning}>
+              <div class="fleet-main">
+                <span class="sess-status" data-status={s.status}>{s.status}</span>
+                {#if s.projectName}
+                  {#if s.projectSlug}
+                    <a class="proj" href={`/projects/${s.projectSlug}`}>{s.projectName}</a>
+                  {:else}
+                    <span class="proj">{s.projectName}</span>
+                  {/if}
+                {:else}
+                  <span class="proj none-proj">no project</span>
+                {/if}
+                <span class="sess-model mono">{s.provider}/{s.modelId}</span>
+                {#if s.tier}<span class="tier-tag" data-tier={s.tier}>{s.tier}</span>{/if}
+                <span class="sess-id mono" title={s.id}>{shortId(s.id)}</span>
+                <span class="sess-when mono">{fmtTime(s.startedAt)}</span>
+              </div>
+
+              <!-- Per-session controls (D-035 loopback control endpoint, operator origin). -->
+              <div class="sess-controls">
+                {#if isRunning}
+                  <button
+                    class="ctl"
+                    type="button"
+                    aria-pressed={openInterject === s.id}
+                    disabled={busyId === s.id}
+                    onclick={() =>
+                      (openInterject = openInterject === s.id ? null : s.id)}>Interject</button
+                  >
+                  <button
+                    class="ctl warn"
+                    type="button"
+                    disabled={busyId === s.id}
+                    onclick={() => sendControl(s.id, 'stop')}>Stop</button
+                  >
+                {:else}
+                  <button
+                    class="ctl"
+                    type="button"
+                    disabled={busyId === s.id}
+                    onclick={() => sendControl(s.id, 'resume')}>Resume</button
+                  >
+                {/if}
+              </div>
+
+              {#if isRunning && openInterject === s.id}
+                <div class="interject-row">
+                  <input
+                    class="interject-input mono"
+                    type="text"
+                    bind:value={interjectMsg}
+                    placeholder="Interject a message into this session…"
+                    disabled={busyId === s.id}
+                  />
+                  <button
+                    class="ctl primary"
+                    type="button"
+                    disabled={busyId === s.id || !interjectMsg.trim()}
+                    onclick={() => sendControl(s.id, 'interject')}>Send</button
+                  >
+                </div>
+              {/if}
+
+              {#if controlErr[s.id]}
+                <p class="ctl-error" role="alert">{controlErr[s.id]}</p>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </section>
+  {/if}
 
   {#if !connected}
     <div class="card empty">
@@ -146,7 +303,7 @@
               </div>
               {#if scope.hooks.length}
                 <ul class="rows">
-                  {#each scope.hooks as h (h.event + h.command)}
+                  {#each scope.hooks as h, hi (h.event + '␟' + h.command + '␟' + hi)}
                     <li class="row">
                       <span class="tag mono">{h.event}</span>
                       {#if h.matcher}<span class="matcher mono">{h.matcher}</span>{/if}
@@ -654,5 +811,201 @@
   .state-body {
     font: var(--type-body-sm);
     color: var(--color-text-2);
+  }
+
+  /* ── TASK 9.3 — cross-project session fleet (tokens-only; a11y AA; reduced-motion safe) ── */
+  .fleet {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  .fleet-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3, 0.75rem);
+  }
+  .count {
+    font-size: 0.75rem;
+    color: var(--color-text-muted);
+  }
+  .none-body {
+    font-style: italic;
+  }
+  .fleet-rows {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+  }
+  .fleet-row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    padding: 0.55rem 0.7rem;
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+  }
+  .fleet-row.running {
+    border-color: var(--color-running, var(--color-success, #2a9d4a));
+  }
+  .fleet-main {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.55rem;
+    min-width: 0;
+  }
+  .sess-status {
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: lowercase;
+    padding: 0.1rem 0.5rem;
+    border-radius: var(--radius-sm, 6px);
+    color: var(--color-text-muted);
+    background: var(--color-surface-card);
+    white-space: nowrap;
+    flex: none;
+  }
+  .sess-status[data-status='running'] {
+    color: var(--color-running, var(--color-success, #2a9d4a));
+  }
+  .sess-status[data-status='done'],
+  .sess-status[data-status='shipped'] {
+    color: var(--color-success, var(--color-running));
+  }
+  .sess-status[data-status='failed'] {
+    color: var(--color-error, var(--color-danger, crimson));
+  }
+  .sess-status[data-status='cancelled'],
+  .sess-status[data-status='blocked'] {
+    color: var(--color-blocked, var(--color-warn, orange));
+  }
+  .proj {
+    font-size: 0.8rem;
+    font-weight: 600;
+    color: var(--color-text);
+    text-decoration: none;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    max-width: 16rem;
+  }
+  a.proj:hover {
+    color: var(--color-accent);
+    text-decoration: underline;
+  }
+  a.proj:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs, 3px);
+  }
+  .none-proj {
+    color: var(--color-text-muted);
+    font-style: italic;
+    font-weight: 400;
+  }
+  .sess-model {
+    font-size: 0.74rem;
+    color: var(--color-text-2);
+  }
+  .tier-tag {
+    font-size: 0.66rem;
+    padding: 0.05rem 0.45rem;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-card);
+    color: var(--color-text);
+    flex: none;
+  }
+  .tier-tag[data-tier='opus'] {
+    color: var(--color-tier-opus, var(--color-accent));
+  }
+  .tier-tag[data-tier='sonnet'] {
+    color: var(--color-tier-sonnet, var(--color-accent));
+  }
+  .tier-tag[data-tier='haiku'] {
+    color: var(--color-tier-haiku, var(--color-text-muted));
+  }
+  .tier-tag[data-tier='local'] {
+    color: var(--color-tier-local, var(--color-text-muted));
+  }
+  .sess-id {
+    font-size: 0.68rem;
+    color: var(--color-text-muted);
+  }
+  .sess-when {
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+    margin-left: auto;
+  }
+  .sess-controls {
+    display: flex;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+  }
+  .ctl {
+    appearance: none;
+    background: var(--color-surface-card);
+    color: var(--color-text);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    font-size: 0.72rem;
+    font-weight: 600;
+    padding: 0.2rem 0.7rem;
+    cursor: pointer;
+    min-height: 24px;
+  }
+  .ctl:hover:not(:disabled) {
+    background: var(--color-surface-overlay);
+  }
+  .ctl:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  .ctl:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
+  }
+  .ctl[aria-pressed='true'] {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+  .ctl.primary {
+    background: var(--color-accent);
+    color: var(--color-text-inverse, var(--color-bg, #03120e));
+    border-color: var(--color-accent);
+  }
+  .ctl.warn {
+    color: var(--color-error, var(--color-danger, crimson));
+    border-color: var(--color-error, var(--color-danger, crimson));
+  }
+  .interject-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2, 0.5rem);
+  }
+  .interject-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    appearance: none;
+    background: var(--color-bg, #03120e);
+    color: var(--color-text);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.35rem 0.6rem;
+    font-size: 0.76rem;
+    min-height: 24px;
+  }
+  .interject-input:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  .ctl-error {
+    font: var(--type-body-sm);
+    color: var(--color-error, var(--color-danger, crimson));
+    margin: 0;
   }
 </style>

@@ -14,7 +14,7 @@ import {
 	type CcSpawnPlan,
 	type RuntimeEvent
 } from '../runtime/index';
-import { listFleet, listPoolSlots } from './fleet';
+import { listFleet, listPoolSlots, listFleetAcrossProjects } from './fleet';
 
 // TASK 2.4 VERIFY (part 4) — the /agents read models from REAL rows (F-008). Liveness
 // comes from session.status, NEVER agent_slot.busy (UI-SPEC §199).
@@ -101,5 +101,53 @@ describe('fleet read models (2.4; UI-SPEC §198–200)', () => {
 		expect(mine!.tier).toBe('opus');
 		expect(mine!.provider).toBe('claude');
 		expect(mine!.projectId).toBe(projectId);
+	});
+
+	// TASK 9.3 — the cross-project fleet joins the owning project's LABEL (name/slug) and
+	// aggregates sessions ACROSS ALL projects, liveness from session.status (F-008 / §199).
+	it('listFleetAcrossProjects joins project label and spans projects', async () => {
+		// A second project with its own session — the fleet must surface both projects.
+		const p2 = await createProject(db, {
+			slug: 'fleet_two',
+			name: 'Second Host',
+			root_path: 'F:/code/fleet_two'
+		});
+		const t2 = await createTask(db, { project: p2.id, title: 'work2', description: 'do it' });
+		const events: RuntimeEvent[] = [
+			{ type: 'log', message: 'go' },
+			{ type: 'done', result: { ok: true, summary: 'ok', ccSessionId: 'cc_fleet_2' } }
+		];
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(events, 'cc_fleet_2') });
+		const res2 = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: {
+				projectId: p2.id,
+				taskId: t2.id,
+				agentId: 'agent_fleet_2',
+				model: { provider: 'claude', modelId: 'claude-haiku-4', tier: 'haiku' },
+				intent: 'code-write',
+				budgets: {},
+				toolPolicy: { allow: ['Read'] }
+			}
+		});
+
+		const xp = await listFleetAcrossProjects(db);
+		// Both projects' sessions appear in the one portfolio-wide fleet.
+		const fromP1 = xp.find((s) => s.projectId === projectId);
+		const fromP2 = xp.find((s) => s.id === res2.sessionId);
+		expect(fromP1).toBeTruthy();
+		expect(fromP2).toBeTruthy();
+		// The project LABEL is joined (name + slug), not just the id (F-008 honest label).
+		expect(fromP1!.projectName).toBe('Fleet Host');
+		expect(fromP1!.projectSlug).toBe('fleet');
+		expect(fromP2!.projectName).toBe('Second Host');
+		expect(fromP2!.projectSlug).toBe('fleet_two');
+		expect(fromP2!.tier).toBe('haiku');
+		// cc_session_id rides along for resume/interject parity.
+		expect(fromP2!.ccSessionId).toBe('cc_fleet_2');
+
+		await deleteProject(db, p2.id).catch(() => {});
 	});
 });

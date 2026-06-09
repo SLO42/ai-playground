@@ -26,6 +26,12 @@
   const sprints = $derived(data.sprints ?? []);
   const tasks = $derived(data.tasks ?? []);
   const sessions = $derived(data.sessions ?? []);
+  // ── PM (TASK 9.1) — the strategic layer above task execution.
+  const pmMemory = $derived(data.pmMemory ?? []);
+  const pmStats = $derived(data.pmStats);
+  const decisions = $derived(data.decisions ?? []);
+  const pmBootstrapped = $derived(data.pmBootstrapped ?? false);
+  const pmKinds = $derived(data.pmKinds ?? []);
   const selectedSession = $derived(data.selectedSession);
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
 
@@ -34,12 +40,31 @@
   const releaseHref = $derived(`/projects/${slug}/release`);
   const projectName = $derived(project?.name ?? slug);
 
-  type Tab = 'plan' | 'sessions' | 'release';
+  type Tab = 'plan' | 'pm' | 'sessions' | 'release';
   let tab = $state<Tab>('plan');
   // Default to the Sessions tab when a session is selected via ?session=.
   $effect(() => {
     if (selectedSession) tab = 'sessions';
   });
+
+  // PM form state.
+  let pmBusy = $state(false);
+  let newMemoryKind = $state('observation');
+  let newMemoryContent = $state('');
+  let newDecisionTitle = $state('');
+  let newDecisionContext = $state('');
+  let newDecisionRationale = $state('');
+  let newSprintName = $state('');
+  let pmChatMessage = $state('');
+
+  // The PM action feedback (shared `form?.pm` envelope for every PM sub-action).
+  const pmFeedback = $derived(
+    form && 'pm' in form ? (form.pm as Record<string, unknown>) : undefined
+  );
+
+  function memoryKindLabel(k: string): string {
+    return k.charAt(0).toUpperCase() + k.slice(1);
+  }
 
   // Live updates: a project/task/session row change re-runs the server loader. SSR-safe —
   // $effect runs only in the browser, and the handlers are torn down on unmount.
@@ -47,10 +72,17 @@
     const offP = stream.onDbChange('project', () => void invalidate('app:projects'));
     const offT = stream.onDbChange('task', () => void invalidate('app:tasks'));
     const offS = stream.onDbChange('session', () => void invalidate('app:fleet'));
+    // PM rows (typed memory + decisions) re-run the loader so the PM tab updates live.
+    const offM = stream.onDbChange('pm_memory', () => void invalidate('app:pm'));
+    const offD = stream.onDbChange('decision', () => void invalidate('app:pm'));
+    const offSp = stream.onDbChange('sprint', () => void invalidate('app:pm'));
     return () => {
       offP();
       offT();
       offS();
+      offM();
+      offD();
+      offSp();
     };
   });
 
@@ -239,6 +271,14 @@
       <button
         class="tab"
         type="button"
+        aria-pressed={tab === 'pm'}
+        data-active={tab === 'pm'}
+        onclick={() => (tab = 'pm')}
+        >PM{#if pmStats && pmStats.total > 0}<span class="count mono">{pmStats.total}</span>{/if}</button
+      >
+      <button
+        class="tab"
+        type="button"
         aria-pressed={tab === 'sessions'}
         data-active={tab === 'sessions'}
         onclick={() => (tab = 'sessions')}>Sessions</button
@@ -363,6 +403,311 @@
               {/each}
             </ul>
           {/if}
+        </div>
+      </div>
+    {:else if tab === 'pm'}
+      <!-- TASK 9.1 — Project Manager: the strategic layer above task execution. -->
+      <div class="tab-body">
+        <div class="card">
+          <div class="pm-head">
+            <h2 class="section-title">Project Manager</h2>
+            {#if pmBootstrapped}
+              <span class="pm-badge mono" data-on="true">active</span>
+            {:else}
+              <span class="pm-badge mono">not bootstrapped</span>
+            {/if}
+          </div>
+          <p class="state-body">
+            The per-project PM accumulates typed memory, records decisions, runs sprints, and
+            can be consulted directly. All persisted live on the project datastore.
+          </p>
+          {#if !pmBootstrapped}
+            <form
+              method="POST"
+              action="?/pmBootstrap"
+              use:enhance={() => {
+                pmBusy = true;
+                return async ({ update }) => {
+                  await update({ reset: false });
+                  pmBusy = false;
+                };
+              }}
+            >
+              <button class="btn primary" type="submit" disabled={pmBusy}>
+                {pmBusy ? 'Bootstrapping…' : 'Bootstrap PM from project state'}
+              </button>
+            </form>
+          {/if}
+          {#if pmFeedback}
+            {#if 'error' in pmFeedback}
+              <p class="form-error" role="alert">{pmFeedback.error}</p>
+            {:else if pmFeedback.action === 'bootstrap'}
+              <p class="form-ok">
+                {pmFeedback.bootstrapped
+                  ? `PM bootstrapped — seeded ${pmFeedback.seeded} observation(s) from live project state.`
+                  : 'PM already bootstrapped — existing memory left intact.'}
+              </p>
+            {:else if pmFeedback.action === 'memory'}
+              <p class="form-ok">Recorded a {String(pmFeedback.kind)} memory.</p>
+            {:else if pmFeedback.action === 'decision'}
+              <p class="form-ok">Recorded decision: {String(pmFeedback.title)}.</p>
+            {:else if pmFeedback.action === 'sprint-create'}
+              <p class="form-ok">Sprint created.</p>
+            {:else if pmFeedback.action === 'sprint-complete'}
+              <p class="form-ok">Sprint completed.</p>
+            {:else if pmFeedback.action === 'chat'}
+              <p class="form-ok">
+                PM session {shortId(String(pmFeedback.sessionId))} started · {String(pmFeedback.status)}.
+                <button class="link-inline" type="button" onclick={() => openSession(String(pmFeedback.sessionId))}
+                  >open transcript →</button
+                >
+              </p>
+            {/if}
+          {/if}
+        </div>
+
+        <!-- Typed PM memory ------------------------------------------------------ -->
+        <div class="card">
+          <h2 class="section-title">
+            PM memory
+            {#if pmStats}<span class="count mono">{pmStats.total}</span>{/if}
+          </h2>
+          {#if pmStats && pmStats.total > 0}
+            <div class="pm-kind-stats" aria-label="memory by kind">
+              {#each pmKinds as k (k)}
+                <span class="pm-kind-stat" data-kind={k}>
+                  <span class="pm-kind-name">{memoryKindLabel(k)}</span>
+                  <span class="pm-kind-count mono">{pmStats[k] ?? 0}</span>
+                </span>
+              {/each}
+            </div>
+          {/if}
+
+          <form
+            method="POST"
+            action="?/pmAddMemory"
+            class="pm-form"
+            use:enhance={() => {
+              pmBusy = true;
+              return async ({ update }) => {
+                await update({ reset: false });
+                pmBusy = false;
+                newMemoryContent = '';
+              };
+            }}
+          >
+            <div class="pm-form-row">
+              <label class="field pm-kind-field">
+                <span class="field-label">Kind</span>
+                <select name="kind" bind:value={newMemoryKind}>
+                  {#each pmKinds as k (k)}
+                    <option value={k}>{memoryKindLabel(k)}</option>
+                  {/each}
+                </select>
+              </label>
+              <label class="field pm-content-field">
+                <span class="field-label">Memory</span>
+                <input
+                  class="pm-input mono"
+                  type="text"
+                  name="content"
+                  bind:value={newMemoryContent}
+                  placeholder="An observation, learning, risk, pattern or decision…"
+                  required
+                />
+              </label>
+              <button class="btn" type="submit" disabled={pmBusy || !newMemoryContent.trim()}>Record</button>
+            </div>
+          </form>
+
+          {#if pmMemory.length === 0}
+            <p class="state-body">
+              No PM memory yet — bootstrap the PM or record the first observation above.
+            </p>
+          {:else}
+            <ul class="rows pm-memory" aria-label="pm memory">
+              {#each pmMemory as m (m.id)}
+                <li class="row pm-memory-row">
+                  <span class="pm-kind-tag mono" data-kind={m.kind}>{m.kind}</span>
+                  <span class="row-title pm-memory-content">{m.content}</span>
+                  <span class="pm-source mono">{m.source}</span>
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+
+        <!-- Decisions ------------------------------------------------------------ -->
+        <div class="card">
+          <h2 class="section-title">Decisions <span class="count mono">{decisions.length}</span></h2>
+          <form
+            method="POST"
+            action="?/pmAddDecision"
+            class="pm-form"
+            use:enhance={() => {
+              pmBusy = true;
+              return async ({ update }) => {
+                await update({ reset: false });
+                pmBusy = false;
+                newDecisionTitle = '';
+                newDecisionContext = '';
+                newDecisionRationale = '';
+              };
+            }}
+          >
+            <label class="field">
+              <span class="field-label">Decision</span>
+              <input
+                class="pm-input"
+                type="text"
+                name="title"
+                bind:value={newDecisionTitle}
+                placeholder="The decision (e.g. Use SurrealDB for PM memory)"
+                required
+              />
+            </label>
+            <div class="pm-form-row">
+              <label class="field pm-content-field">
+                <span class="field-label">Context</span>
+                <input
+                  class="pm-input"
+                  type="text"
+                  name="context"
+                  bind:value={newDecisionContext}
+                  placeholder="Why this came up (optional)"
+                />
+              </label>
+              <label class="field pm-content-field">
+                <span class="field-label">Rationale</span>
+                <input
+                  class="pm-input"
+                  type="text"
+                  name="rationale"
+                  bind:value={newDecisionRationale}
+                  placeholder="Why this choice (optional)"
+                />
+              </label>
+              <button class="btn" type="submit" disabled={pmBusy || !newDecisionTitle.trim()}>Record</button>
+            </div>
+          </form>
+
+          {#if decisions.length === 0}
+            <p class="state-body">No decisions recorded yet.</p>
+          {:else}
+            <ul class="rows pm-decisions" aria-label="decisions">
+              {#each decisions as d (d.id)}
+                <li class="pm-decision">
+                  <div class="pm-decision-head">
+                    <span class="row-title pm-decision-title">{d.title}</span>
+                    <span class="status" data-status={d.status}>{d.status}</span>
+                  </div>
+                  {#if d.context}<p class="pm-decision-line"><span class="pm-decision-lbl">Context</span> {d.context}</p>{/if}
+                  {#if d.rationale}<p class="pm-decision-line"><span class="pm-decision-lbl">Rationale</span> {d.rationale}</p>{/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+
+        <!-- Sprints -------------------------------------------------------------- -->
+        <div class="card">
+          <h2 class="section-title">Sprints <span class="count mono">{sprints.length}</span></h2>
+          <form
+            method="POST"
+            action="?/pmCreateSprint"
+            class="pm-form"
+            use:enhance={() => {
+              pmBusy = true;
+              return async ({ update }) => {
+                await update({ reset: false });
+                pmBusy = false;
+                newSprintName = '';
+              };
+            }}
+          >
+            <div class="pm-form-row">
+              <label class="field pm-content-field">
+                <span class="field-label">New sprint</span>
+                <input
+                  class="pm-input"
+                  type="text"
+                  name="name"
+                  bind:value={newSprintName}
+                  placeholder="Sprint name (e.g. v0.2 — PM core)"
+                  required
+                />
+              </label>
+              <button class="btn" type="submit" disabled={pmBusy || !newSprintName.trim()}>Create sprint</button>
+            </div>
+          </form>
+
+          {#if sprints.length === 0}
+            <p class="state-body">No sprints yet.</p>
+          {:else}
+            <ul class="rows" aria-label="sprints">
+              {#each sprints as s (s.id)}
+                <li class="row pm-sprint-row">
+                  <span class="row-title">{s.name}</span>
+                  <span class="status" data-status={s.status === 'completed' ? 'done' : 'active'}>
+                    {s.status ?? 'active'}
+                  </span>
+                  {#if s.status !== 'completed'}
+                    <form
+                      method="POST"
+                      action="?/pmCompleteSprint"
+                      use:enhance={() => {
+                        pmBusy = true;
+                        return async ({ update }) => {
+                          await update({ reset: false });
+                          pmBusy = false;
+                        };
+                      }}
+                    >
+                      <input type="hidden" name="sprintId" value={s.id} />
+                      <button class="open-btn" type="submit" disabled={pmBusy}>complete</button>
+                    </form>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+
+        <!-- Talk to the PM ------------------------------------------------------- -->
+        <div class="card">
+          <h2 class="section-title">Talk to the PM</h2>
+          <p class="state-body">
+            Drive a real Claude Code PM session seeded with this project's plan + PM memory. The
+            reply streams in the Sessions tab.
+          </p>
+          <form
+            method="POST"
+            action="?/pmChat"
+            class="pm-chat-form"
+            use:enhance={() => {
+              pmBusy = true;
+              return async ({ update }) => {
+                await update({ reset: false });
+                pmBusy = false;
+                pmChatMessage = '';
+              };
+            }}
+          >
+            <label class="field pm-content-field">
+              <span class="field-label">Message</span>
+              <input
+                class="pm-input"
+                type="text"
+                name="message"
+                bind:value={pmChatMessage}
+                placeholder="Ask the PM about strategy, risks, the roadmap…"
+                required
+              />
+            </label>
+            <button class="btn primary" type="submit" disabled={pmBusy || !pmChatMessage.trim()}>
+              {pmBusy ? 'Sending…' : 'Send to PM'}
+            </button>
+          </form>
         </div>
       </div>
     {:else if tab === 'sessions'}
@@ -1006,5 +1351,183 @@
   .interject-input {
     flex: 1 1 auto;
     min-width: 0;
+  }
+
+  /* ── TASK 9.1 — Project Manager surface (tokens-only; a11y AA; reduced-motion safe) ── */
+  .pm-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3, 0.75rem);
+  }
+  .pm-badge {
+    font-size: 0.66rem;
+    font-weight: 600;
+    text-transform: lowercase;
+    padding: 0.1rem 0.5rem;
+    border-radius: var(--radius-sm, 6px);
+    color: var(--color-text-muted);
+    background: var(--color-surface-overlay);
+    border: var(--border-width, 1px) solid var(--color-border);
+  }
+  .pm-badge[data-on='true'] {
+    color: var(--color-running, var(--color-accent));
+    border-color: var(--color-running, var(--color-accent));
+  }
+  .pm-kind-stats {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2, 0.5rem);
+  }
+  .pm-kind-stat {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    font-size: 0.72rem;
+    color: var(--color-text-2);
+    padding: 0.12rem 0.5rem;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+  }
+  .pm-kind-name {
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+    color: var(--color-text-muted);
+  }
+  .pm-kind-count {
+    color: var(--color-text);
+  }
+  .pm-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+  }
+  .pm-form-row {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-3, 0.75rem);
+    flex-wrap: wrap;
+  }
+  .pm-kind-field {
+    flex: 0 0 9rem;
+  }
+  .pm-content-field {
+    flex: 1 1 16rem;
+  }
+  .pm-input {
+    appearance: none;
+    background: var(--color-surface-overlay);
+    color: var(--color-text);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.4rem 0.6rem;
+    font: var(--type-body-sm);
+    min-height: 24px;
+    width: 100%;
+  }
+  .pm-input:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  .pm-memory {
+    gap: 0.45rem;
+  }
+  .pm-memory-row {
+    align-items: baseline;
+    flex-wrap: wrap;
+  }
+  .pm-memory-content {
+    white-space: normal;
+    overflow: visible;
+  }
+  .pm-kind-tag {
+    flex: none;
+    font-size: 0.64rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+    padding: 0.08rem 0.45rem;
+    border-radius: var(--radius-xs, 4px);
+    color: var(--color-on-accent, var(--color-bg));
+    background: var(--color-text-muted);
+  }
+  .pm-kind-tag[data-kind='risk'] {
+    background: var(--color-warn, var(--color-blocked, orange));
+  }
+  .pm-kind-tag[data-kind='learning'] {
+    background: var(--color-success, var(--color-running, var(--color-accent)));
+  }
+  .pm-kind-tag[data-kind='pattern'] {
+    background: var(--color-accent);
+  }
+  .pm-kind-tag[data-kind='decision'] {
+    background: var(--color-text-2, var(--color-text));
+  }
+  .pm-source {
+    flex: none;
+    font-size: 0.66rem;
+    color: var(--color-text-muted);
+    margin-left: auto;
+  }
+  .pm-decisions {
+    gap: 0.6rem;
+  }
+  .pm-decision {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    padding: 0.5rem 0.6rem;
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+  }
+  .pm-decision-head {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3, 0.75rem);
+  }
+  .pm-decision-title {
+    font-weight: 600;
+    white-space: normal;
+  }
+  .pm-decision-line {
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+    margin: 0;
+  }
+  .pm-decision-lbl {
+    font-size: 0.66rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-text-muted);
+    font-weight: 600;
+    margin-right: 0.35rem;
+  }
+  .pm-sprint-row {
+    gap: 0.6rem;
+  }
+  .pm-chat-form {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-3, 0.75rem);
+    flex-wrap: wrap;
+  }
+  .pm-chat-form .field {
+    flex: 1 1 18rem;
+  }
+  .link-inline {
+    appearance: none;
+    background: transparent;
+    border: 0;
+    padding: 0;
+    color: var(--color-accent);
+    font: inherit;
+    font-weight: 600;
+    cursor: pointer;
+    text-decoration: underline;
+  }
+  .link-inline:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
   }
 </style>

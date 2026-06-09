@@ -20,7 +20,7 @@
 // DDL runs under the ROOT/provisioning connection only (D-026c) — never the
 // least-priv runtime user (migrate.runMigrations takes a root Db).
 
-import { backfillValueField, type Migration } from './migrate';
+import { backfillValueField, guardedScan, type Migration } from './migrate';
 
 // ── §4.1 Project & plan ──────────────────────────────────────────────────────
 const m0001_project_plan: Migration = {
@@ -685,6 +685,60 @@ const m0022_agent_event_hook: Migration = {
 	`
 };
 
+// ── §4.1b Project Manager — typed PM memory + architectural decisions ─────────
+// TASK 9.1 — the strategic layer above task execution (GAP-ANALYSIS §1.1; the
+// operator-flagged #1 v1→v2 parity gap). Rebuilt LEAN on the SurrealDB spine —
+// NO per-feature SQLite (lighter-advocate principle): the v1 pm-memory-db.ts is a
+// dedicated SQLite file; here PM memory is a first-class SurrealDB table sharing
+// the same FTS analyzer (text_an, defined in 0006) and the same boundary/option<T>
+// discipline as the rest of §4. Two tables:
+//   • pm_memory  — the accumulated-learning store. `kind` ∈ the v1 taxonomy
+//     (observation/learning/risk/pattern/decision); confidence/importance carry
+//     the v1 fields; FTS over `content` so the PM can search its own memory.
+//   • decision   — the architectural-decisions surface (title/context/rationale/
+//     status), linked to the project (and optionally a sprint).
+const m0023_pm: Migration = {
+	id: '0023_pm',
+	up: `
+		DEFINE TABLE pm_memory SCHEMAFULL;
+		DEFINE FIELD project    ON pm_memory TYPE record<project>;
+		DEFINE FIELD kind       ON pm_memory TYPE string DEFAULT "observation"
+			ASSERT $value IN ["observation","learning","risk","pattern","decision"];
+		DEFINE FIELD content    ON pm_memory TYPE string;
+		DEFINE FIELD source     ON pm_memory TYPE string DEFAULT "pm";
+		DEFINE FIELD confidence ON pm_memory TYPE float DEFAULT 0.8;
+		DEFINE FIELD importance ON pm_memory TYPE float DEFAULT 5.0;
+		DEFINE FIELD status     ON pm_memory TYPE string DEFAULT "active"
+			ASSERT $value IN ["active","archived"];
+		DEFINE FIELD related_to ON pm_memory TYPE option<string>;
+		DEFINE FIELD created_at ON pm_memory TYPE datetime DEFAULT time::now();
+
+		DEFINE INDEX pm_memory_by_project ON pm_memory FIELDS project;
+		DEFINE INDEX pm_memory_by_kind    ON pm_memory FIELDS kind;
+		-- Reuse the shared analyzer (text_an, defined in 0006) so the PM can FTS its memory.
+		DEFINE INDEX pm_memory_fts ON pm_memory FIELDS content SEARCH ANALYZER text_an BM25 HIGHLIGHTS;
+
+		DEFINE TABLE decision SCHEMAFULL;
+		DEFINE FIELD project   ON decision TYPE record<project>;
+		DEFINE FIELD sprint    ON decision TYPE option<record<sprint>>;
+		DEFINE FIELD title     ON decision TYPE string;
+		DEFINE FIELD context   ON decision TYPE option<string>;
+		DEFINE FIELD rationale ON decision TYPE option<string>;
+		DEFINE FIELD status    ON decision TYPE string DEFAULT "accepted"
+			ASSERT $value IN ["proposed","accepted","superseded","rejected"];
+		DEFINE FIELD created_at ON decision TYPE datetime DEFAULT time::now();
+
+		DEFINE INDEX decision_by_project ON decision FIELDS project;
+
+		-- Sprint lifecycle: a concrete non-NONE DEFAULT (§6.2) so a status read-back on a
+		-- RETURN AFTER write never lands in NONE; backfill pre-existing sprint rows.
+		DEFINE FIELD status      ON sprint TYPE string DEFAULT "active"
+			ASSERT $value IN ["active","completed"];
+		DEFINE FIELD completed_at ON sprint TYPE option<datetime>;
+		${guardedScan('sprint', 'status IS NONE', 'status = "active"')}
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -713,5 +767,6 @@ export const schemaMigrations: Migration[] = [
 	m0019_work_item_dedup_scope,
 	m0020_work_item_claimed_at,
 	m0021_workflow_flexible,
-	m0022_agent_event_hook
+	m0022_agent_event_hook,
+	m0023_pm
 ];

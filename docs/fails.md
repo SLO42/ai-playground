@@ -58,3 +58,21 @@ The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
 - **What**: repeat of F-007 in a different wave.
 - **Prevention**: bake "commit before finishing, then merge back" into every
   dispatched implementation agent's prompt.
+
+## F-013: SurrealDB datetime fields break SvelteKit load serialization
+- **Date**: 2026-06-08
+- **What**: setting a new `option<datetime>` field (`sprint.completed_at`) and
+  returning the row from a `+page.server.ts` `load` threw a 500 — "Cannot
+  stringify arbitrary non-POJOs (data.sprints[0].completed_at)". Build/unit-tests
+  were green; it only surfaced on the live re-invalidation after the write.
+- **Why**: the SurrealDB 2.x SDK returns datetime columns as a non-POJO Date-like
+  the SvelteKit devalue serializer rejects. The table's `norm*()` only coerced
+  id/project; datetime fields were passed through raw and were NONE on every prior
+  row, so the gap was invisible until a row actually had the field SET.
+- **Fix**: coerce every datetime field to an ISO string in the row normalizer
+  (`isoOrUndef()` in projects/repo.ts `normSprint`); omit when absent (§6.1).
+- **Prevention**: when adding ANY `datetime` field to a table whose rows are
+  returned from a SvelteKit `load`, coerce it to a string in that table's
+  normalizer — never return a raw SDK datetime to the client. Unit tests that
+  read back rows where the field is NONE will NOT catch this; assert it on a row
+  where the field is SET, or live-verify after the write.

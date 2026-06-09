@@ -91,8 +91,10 @@ function bootstrapControlPlaneEnv(): void {
  *  agent_event / routing_event rows arrive — over the ONE SSE stream (§2.11).
  *  3.1 adds security_finding so the /reports Maintain rollup updates in place as a
  *  scan writes findings (UI-SPEC §207/§315). 7.1 adds `service` so the always-visible
- *  Statusbar service-health token updates live as a service row flips state (UI-SPEC §3). */
-const WATCHED_TABLES = ['project', 'task', 'session', 'agent_event', 'routing_event', 'security_finding', 'service'] as const;
+ *  Statusbar service-health token updates live as a service row flips state (UI-SPEC §3).
+ *  9.1 adds `pm_memory`, `decision`, `sprint` so the project-workspace PM tab updates in
+ *  place as the PM records memory/decisions or a sprint is created/completed (UI-SPEC §51). */
+const WATCHED_TABLES = ['project', 'task', 'session', 'agent_event', 'routing_event', 'security_finding', 'service', 'pm_memory', 'decision', 'sprint'] as const;
 
 const watchers: DbSourceHandle[] = [];
 

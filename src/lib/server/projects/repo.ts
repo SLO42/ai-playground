@@ -77,6 +77,9 @@ export interface SprintRow {
 	name: string;
 	starts?: string;
 	ends?: string;
+	/** Sprint lifecycle (migration 0023_pm): "active" | "completed". */
+	status?: string;
+	completed_at?: string;
 }
 
 // ── Input shapes ──────────────────────────────────────────────────────────────
@@ -179,8 +182,28 @@ function normFeature(
 		release: row.release != null ? str(row.release) : undefined
 	};
 }
-function normSprint(row: SprintRow & { id: unknown; project: unknown }): SprintRow {
-	return { ...row, id: str(row.id), project: str(row.project) };
+/** Coerce a SurrealDB datetime (Date / wrapped) to a plain ISO string, or omit it. */
+function isoOrUndef(v: unknown): string | undefined {
+	if (v == null) return undefined;
+	if (v instanceof Date) return v.toISOString();
+	return String(v);
+}
+function normSprint(
+	row: SprintRow & { id: unknown; project: unknown; starts?: unknown; ends?: unknown; completed_at?: unknown }
+): SprintRow {
+	const out: SprintRow = { ...(row as SprintRow), id: str(row.id), project: str(row.project) };
+	// SurrealDB returns datetime fields as non-POJO Date-likes; coerce to ISO strings so the
+	// row is SvelteKit-serializable (omit when absent — option<datetime> stays NONE, §6.1).
+	const starts = isoOrUndef(row.starts);
+	const ends = isoOrUndef(row.ends);
+	const completed = isoOrUndef(row.completed_at);
+	if (starts !== undefined) out.starts = starts;
+	else delete out.starts;
+	if (ends !== undefined) out.ends = ends;
+	else delete out.ends;
+	if (completed !== undefined) out.completed_at = completed;
+	else delete out.completed_at;
+	return out;
 }
 
 // ── Generic single-record fetch/delete (validated id, bound as $param) ─────────

@@ -54,3 +54,28 @@ export {
 	type CreateSprintInput,
 	type UpdateSprintInput
 } from './repo';
+
+export {
+	// PM memory
+	addPmMemory,
+	addPmMemories,
+	listPmMemory,
+	pmMemoryStats,
+	archivePmMemory,
+	// decisions
+	addDecision,
+	listDecisions,
+	// sprint lifecycle
+	completeSprint,
+	// bootstrap
+	bootstrapPm,
+	// taxonomy + types
+	PM_MEMORY_KINDS,
+	type PmMemoryKind,
+	type PmMemoryRow,
+	type AddPmMemoryInput,
+	type PmMemoryStats,
+	type DecisionRow,
+	type AddDecisionInput,
+	type PmBootstrapResult
+} from './pm-repo';

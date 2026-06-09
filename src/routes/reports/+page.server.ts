@@ -11,6 +11,7 @@ import { tryGetDb } from '$lib/server/db/runtime-init';
 import { buildReportSummary, buildTierUsage } from '$lib/server/analytics';
 import type { DailyRollup, Anomaly, ReportSummary, TierUsage } from '$lib/server/analytics';
 import { listAllFindings } from '$lib/server/scanner';
+import { buildTrayData, type NotificationItem } from '$lib/server/notifications/repo';
 import type { PageServerLoad } from './$types';
 
 /** A serializable finding DTO for the Maintain rollup (no SDK RecordId/Date objects). */
@@ -31,6 +32,8 @@ export interface ReportsData {
 	totals: ReportSummary['totals'];
 	usage: TierUsage[];
 	findings: FindingCard[];
+	/** Durable notifications history — the "see all" target from the RightTray (TASK 10.2). */
+	notifications: NotificationItem[];
 	error?: string;
 }
 
@@ -41,6 +44,10 @@ export const load: PageServerLoad = async ({ depends }): Promise<ReportsData> =>
 	// Live re-invalidation: a security_finding row change re-runs this loader too.
 	depends('app:findings');
 
+	// Live re-invalidation: a notification row change re-runs the history list (shares the
+	// shell key so the RightTray + this durable view track the same rows — TASK 10.2).
+	depends('app:shell');
+
 	const db = tryGetDb();
 	if (!db) {
 		return {
@@ -49,7 +56,8 @@ export const load: PageServerLoad = async ({ depends }): Promise<ReportsData> =>
 			anomalies: [],
 			totals: { spawns: 0, completions: 0, errors: 0, escalations: 0, tokensIn: 0, tokensOut: 0, costUsd: null },
 			usage: [],
-			findings: []
+			findings: [],
+			notifications: []
 		};
 	}
 	try {
@@ -66,13 +74,19 @@ export const load: PageServerLoad = async ({ depends }): Promise<ReportsData> =>
 			...(typeof f.line === 'number' ? { line: f.line } : {}),
 			...(f.detail ? { detail: f.detail } : {})
 		}));
+		// Durable notifications history (UI-SPEC §208): the RightTray "see all" target.
+		const tray = await buildTrayData(db, 50);
+		const notifications = tray.items.filter(
+			(i): i is NotificationItem => i.kind === 'notification'
+		);
 		return {
 			connected: true,
 			days: summary.days,
 			anomalies: summary.anomalies,
 			totals: summary.totals,
 			usage,
-			findings
+			findings,
+			notifications
 		};
 	} catch (err) {
 		return {
@@ -82,6 +96,7 @@ export const load: PageServerLoad = async ({ depends }): Promise<ReportsData> =>
 			totals: { spawns: 0, completions: 0, errors: 0, escalations: 0, tokensIn: 0, tokensOut: 0, costUsd: null },
 			usage: [],
 			findings: [],
+			notifications: [],
 			error: (err as Error).message
 		};
 	}

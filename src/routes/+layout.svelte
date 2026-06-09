@@ -7,9 +7,11 @@
   import ToastHost from '$lib/components/shell/ToastHost.svelte';
   import ConfirmDialog from '$lib/components/shell/ConfirmDialog.svelte';
   import GateBanner from '$lib/components/shell/GateBanner.svelte';
+  import RightTray from '$lib/components/shell/RightTray.svelte';
   import { stream } from '$lib/client/stream.svelte';
   import { toasts } from '$lib/client/toast.svelte';
   import { confirm } from '$lib/client/confirm.svelte';
+  import { tray } from '$lib/client/tray.svelte';
   import { goto, invalidate } from '$app/navigation';
   import { page } from '$app/state';
   import type { Snippet } from 'svelte';
@@ -20,6 +22,10 @@
 
   // Live project list for the CommandPalette "Open project" commands (real rows).
   const paletteProjects = $derived(data.paletteProjects ?? []);
+
+  // RightTray feed + unread badge (TASK 10.2): real notification/agent_event rows from the
+  // layout load, re-invalidated live over the one SSE stream (notification/agent_event).
+  const trayData = $derived(data.tray ?? { items: [], unread: 0 });
 
   // App-root aria-live region (UI-SPEC §283): ONE always-mounted polite region,
   // debounced so SSE/toast bursts produce a single announcement per item without
@@ -79,7 +85,7 @@
   // agent_event landing (today's tokens/cost), or a service health flip. All over the
   // ONE SSE stream (§2.11). The loader recomputes from real rows; no fabrication.
   $effect(() => {
-    const offs = ['session', 'agent_event', 'service', 'project'].map((table) =>
+    const offs = ['session', 'agent_event', 'service', 'project', 'notification'].map((table) =>
       stream.onDbChange(table, () => void invalidate('app:shell'))
     );
     return () => offs.forEach((off) => off());
@@ -104,7 +110,9 @@
       runningAgents={shell.runningAgents}
       connection={stream.connection}
       navOpen={navOpen}
+      unread={trayData.unread}
       ontoggleNav={() => (navOpen = !navOpen)}
+      ontoggletray={() => tray.toggle()}
     />
     <GateBanner />
     <main class="content">
@@ -127,6 +135,7 @@
   onstartrun={() => void goto('/projects')}
 />
 <ConfirmDialog />
+<RightTray items={trayData.items} unread={trayData.unread} />
 <ToastHost {announce} />
 
 <!-- Always-mounted polite live region (UI-SPEC §283) — never conditionally rendered. -->

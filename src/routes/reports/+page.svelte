@@ -19,6 +19,7 @@
   const totals = $derived(data.totals);
   const usage = $derived(data.usage ?? []);
   const findings = $derived(data.findings ?? []);
+  const notifications = $derived(data.notifications ?? []);
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
   const hasData = $derived(days.length > 0);
 
@@ -37,12 +38,29 @@
     const off1 = stream.onDbChange('agent_event', () => void invalidate('app:analytics'));
     const off2 = stream.onDbChange('routing_event', () => void invalidate('app:analytics'));
     const off3 = stream.onDbChange('security_finding', () => void invalidate('app:findings'));
+    // A notification row change re-runs the durable history list (TASK 10.2).
+    const off4 = stream.onDbChange('notification', () => void invalidate('app:shell'));
     return () => {
       off1();
       off2();
       off3();
+      off4();
     };
   });
+
+  /** Relative "time ago" for the notifications history (mirrors the tray/Home feed). */
+  function ago(iso: string): string {
+    if (!iso) return '—';
+    const t = new Date(iso).getTime();
+    if (Number.isNaN(t)) return '—';
+    const s = Math.max(0, Math.round((Date.now() - t) / 1000));
+    if (s < 60) return `${s}s ago`;
+    const m = Math.round(s / 60);
+    if (m < 60) return `${m}m ago`;
+    const h = Math.round(m / 60);
+    if (h < 24) return `${h}h ago`;
+    return `${Math.round(h / 24)}d ago`;
+  }
 
   function shortProject(id: string | undefined): string {
     return id ? id.replace(/^project:/, '') : '—';
@@ -206,6 +224,32 @@
         <p class="state-body">
           No open security findings — every scanned project is clean, or no project has been
           scanned yet. Findings appear here the moment a scan writes them.
+        </p>
+      {/if}
+    </div>
+
+    <!-- Notifications history (UI-SPEC §208): the durable counterpart to the transient
+         RightTray + Home feed; the tray's "see all" lands on this anchor (TASK 10.2). -->
+    <div class="card" id="notifications">
+      <span class="eyebrow">notifications · history</span>
+      <h2 class="chart-title">
+        {notifications.length}
+        {notifications.length === 1 ? 'notification' : 'notifications'}
+      </h2>
+      {#if notifications.length}
+        <ul class="notif-list" aria-label="notifications history">
+          {#each notifications as n (n.id)}
+            <li class="notif-row" class:unread={!n.read}>
+              <span class="notif-dot" aria-hidden="true"></span>
+              <span class="notif-msg">{n.message || '—'}</span>
+              <time class="notif-when" datetime={n.at}>{ago(n.at)}</time>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="state-body">
+          No notifications yet. Operator notices and engine alerts will appear here and in the
+          right-hand tray.
         </p>
       {/if}
     </div>
@@ -396,6 +440,46 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-3, 0.75rem);
+  }
+
+  /* Notifications history list (TASK 10.2). */
+  .notif-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+  }
+  .notif-row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3);
+    padding: var(--space-2) 0;
+    border-bottom: var(--border-width) solid var(--color-border);
+  }
+  .notif-row:last-child {
+    border-bottom: none;
+  }
+  .notif-dot {
+    flex: 0 0 auto;
+    width: 7px;
+    height: 7px;
+    border-radius: var(--radius-pill);
+    background: var(--color-neutral);
+  }
+  .notif-row.unread .notif-dot {
+    background: var(--color-accent);
+  }
+  .notif-msg {
+    flex: 1 1 auto;
+    min-width: 0;
+    font: var(--type-body-sm);
+    color: var(--color-text);
+  }
+  .notif-when {
+    flex: 0 0 auto;
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
   }
   .sev-summary {
     list-style: none;

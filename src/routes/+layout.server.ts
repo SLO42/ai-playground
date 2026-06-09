@@ -15,6 +15,7 @@ import { tryGetDb } from '$lib/server/db/runtime-init';
 import { classifyDbError } from '$lib/server/db/classify';
 import { buildShellMetrics } from '$lib/server/analytics/rollup';
 import { listProjects } from '$lib/server/projects/repo';
+import { buildTrayData, type TrayData } from '$lib/server/notifications/repo';
 import { loadOrchestration, type OrchMode } from '$lib/server/config';
 import type { ServiceStatus } from '$lib/server/services/manager';
 import type { LayoutServerLoad } from './$types';
@@ -63,6 +64,9 @@ export const load: LayoutServerLoad = async ({ depends }) => {
 
 	const mode = readMode();
 
+	// Honest empty tray when disconnected (F-008) — no fabricated notices.
+	const emptyTray: TrayData = { items: [], unread: 0 };
+
 	const db = tryGetDb();
 	if (!db) {
 		// Honest disconnected shell (D-019): no fabricated counters, no fake projects.
@@ -75,7 +79,8 @@ export const load: LayoutServerLoad = async ({ depends }) => {
 				costToday: null as number | null,
 				mode
 			},
-			paletteProjects: [] as PaletteProject[]
+			paletteProjects: [] as PaletteProject[],
+			tray: emptyTray
 		};
 	}
 
@@ -87,6 +92,8 @@ export const load: LayoutServerLoad = async ({ depends }) => {
 			id: String(p.id),
 			name: p.name
 		}));
+		// RightTray feed + unread badge (TASK 10.2) — real notification/agent_event rows.
+		const tray = await buildTrayData(db);
 		return {
 			shell: {
 				connected: true,
@@ -96,7 +103,8 @@ export const load: LayoutServerLoad = async ({ depends }) => {
 				costToday: metrics.costToday,
 				mode
 			},
-			paletteProjects
+			paletteProjects,
+			tray
 		};
 	} catch (err) {
 		// A dead cached handle or a live-query failure both mean "counters unknown" — run
@@ -111,7 +119,8 @@ export const load: LayoutServerLoad = async ({ depends }) => {
 				costToday: null as number | null,
 				mode
 			},
-			paletteProjects: [] as PaletteProject[]
+			paletteProjects: [] as PaletteProject[],
+			tray: emptyTray
 		};
 	}
 };

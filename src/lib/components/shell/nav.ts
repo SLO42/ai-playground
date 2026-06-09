@@ -37,7 +37,10 @@ export const navGroups: NavGroup[] = [
       // surfaced on the Statusbar; the standalone page is tracked as a UI coverage gap
       // for a follow-up wave (task 4.3 forbids orphaned nav links → no dead href here).
       { label: 'Memory', href: '/memory' },
-      { label: 'Reports', href: '/reports' }
+      { label: 'Reports', href: '/reports' },
+      // TASK 10.3 — /settings: orchestration mode (D-004), routing config view (D-020),
+      // API-key presence (D-026). The operator control surface for the running engine.
+      { label: 'Settings', href: '/settings' }
     ]
   }
 ];

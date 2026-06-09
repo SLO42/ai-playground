@@ -41,6 +41,30 @@ export {
 	type ControlPlane
 } from './loopback';
 
+// TASK 10.3 — the /settings WRITE side: orchestration.yaml mode write (D-004/D-010 diff+confirm)
+// + API-key presence/set (D-026, presence only — never a value).
+export {
+	planOrchestrationWrite,
+	applyOrchestrationWrite,
+	StaleConfirmError as OrchestrationStaleConfirmError,
+	OrchestrationWriteError,
+	type OrchestrationChange,
+	type OrchestrationDiff,
+	type OrchestrationPlan,
+	type ApplyResult as OrchestrationApplyResult
+} from './settings-write';
+
+export {
+	describeKeyPresence,
+	setEnvKey,
+	MANAGED_KEYS,
+	EnvWriteError,
+	type ManagedKey,
+	type KeyPresence,
+	type SetKeyResult,
+	type EnvLike
+} from './env-presence';
+
 import { loadConfig, type AppConfig } from './load';
 import { bootstrapControlPlane, type ControlPlane, type ListenerSpec } from './loopback';
 

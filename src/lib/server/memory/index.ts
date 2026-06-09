@@ -46,6 +46,8 @@ export {
 export {
 	listMemories,
 	listGraph,
+	listProjectMemories,
+	listProjectGraph,
 	type MemoryRow,
 	type GraphNodeRow,
 	type GraphEdgeRow,

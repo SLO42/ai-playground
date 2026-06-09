@@ -37,7 +37,24 @@ import {
 	type DecisionRow,
 	type PmMemoryStats
 } from '$lib/server/projects/pm-repo';
-import { listTasksByProject } from '$lib/server/tasks/repo';
+import {
+	listTasksByProject,
+	createTask,
+	setStatus,
+	canTransition,
+	TASK_STATUSES,
+	TASK_PRIORITIES,
+	type TaskStatus,
+	type TaskPriority
+} from '$lib/server/tasks/repo';
+import { updateProject } from '$lib/server/projects/repo';
+import { listFindings, type FindingRow } from '$lib/server/scanner/findings-repo';
+import {
+	listProjectMemories,
+	listProjectGraph,
+	type MemoryRow,
+	type MemoryGraph
+} from '$lib/server/memory';
 import { listFleetByProject, type FleetSession } from '$lib/server/analytics';
 import { listSessionMessages, launchSession, type TranscriptMessage } from '$lib/server/sessions';
 import {
@@ -59,8 +76,10 @@ import type { Actions, PageServerLoad } from './$types';
 export interface TaskSummary {
 	id: string;
 	title: string;
-	status: string;
-	priority: string;
+	status: TaskStatus;
+	priority: TaskPriority;
+	/** The statuses this task may legally move TO (the board's move targets). */
+	moves: TaskStatus[];
 }
 
 export interface ProjectDetailData {
@@ -84,6 +103,15 @@ export interface ProjectDetailData {
 	sprints: SprintRow[];
 	tasks: TaskSummary[];
 	sessions: FleetSession[];
+	/** The legal task statuses (board columns) + per-status priority/transition vocab. */
+	taskStatuses: readonly TaskStatus[];
+	taskPriorities: readonly TaskPriority[];
+	/** Project-scoped Maintain rollup: live security/dep-health/UX findings (UI-SPEC §189). */
+	findings: FindingRow[];
+	/** Project-scoped recall list for the Memory tab (UI-SPEC §195). */
+	memories: MemoryRow[];
+	/** Project-scoped knowledge graph for the Memory tab (UI-SPEC §195). */
+	graph: MemoryGraph;
 	/** PM typed memory (observation/learning/risk/pattern/decision), newest first. */
 	pmMemory: PmMemoryRow[];
 	/** Per-kind PM memory counts (honest real counts; null until the project loads). */
@@ -107,6 +135,9 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 	depends('app:tasks');
 	depends('app:fleet');
 	depends('app:pm');
+	depends('app:findings');
+	depends('app:memory');
+	depends('app:graph');
 
 	// Validate the project id at the boundary (D-016) — a malformed param is a 404,
 	// never an interpolated query.
@@ -140,6 +171,11 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			sprints: [],
 			tasks: [],
 			sessions: [],
+			taskStatuses: TASK_STATUSES,
+			taskPriorities: TASK_PRIORITIES,
+			findings: [],
+			memories: [],
+			graph: { nodes: [], edges: [] },
 			pmMemory: [],
 			pmStats: null,
 			decisions: [],
@@ -166,7 +202,10 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			transcript,
 			pmMemory,
 			pmStats,
-			decisions
+			decisions,
+			findings,
+			memories,
+			graph
 		] = await Promise.all([
 			listReleases(db, projectId),
 			listPhases(db, projectId),
@@ -177,14 +216,19 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			selectedSession ? listSessionMessages(db, selectedSession) : Promise.resolve([]),
 			listPmMemory(db, projectId),
 			pmMemoryStats(db, projectId),
-			listDecisions(db, projectId)
+			listDecisions(db, projectId),
+			listFindings(db, projectId),
+			listProjectMemories(db, projectId),
+			listProjectGraph(db, projectId)
 		]);
 
 		const tasks: TaskSummary[] = taskRows.map((t) => ({
 			id: t.id,
 			title: t.title,
 			status: t.status,
-			priority: t.priority
+			priority: t.priority,
+			// Legal move targets for the board (the state machine — D-008 task lifecycle).
+			moves: [...TASK_STATUSES].filter((s) => canTransition(t.status, s))
 		}));
 
 		return {
@@ -207,6 +251,11 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			sprints,
 			tasks,
 			sessions,
+			taskStatuses: TASK_STATUSES,
+			taskPriorities: TASK_PRIORITIES,
+			findings,
+			memories,
+			graph,
 			pmMemory,
 			pmStats,
 			decisions,
@@ -227,6 +276,11 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			sprints: [],
 			tasks: [],
 			sessions: [],
+			taskStatuses: TASK_STATUSES,
+			taskPriorities: TASK_PRIORITIES,
+			findings: [],
+			memories: [],
+			graph: { nodes: [], edges: [] },
 			pmMemory: [],
 			pmStats: null,
 			decisions: [],
@@ -311,6 +365,98 @@ export const actions: Actions = {
 			};
 		} catch (err) {
 			return fail(500, { launch: { error: (err as Error).message } });
+		}
+	},
+
+	// ── TASKS BOARD actions (TASK 10.4) — the kanban surface. Create + move live; every
+	// status move passes the task state machine (D-008) and a row change re-invalidates the
+	// loader so the board reorders in place (UI-SPEC §1.2). Boundary discipline (D-016).
+
+	/** Create a task on this project's board (starts in "backlog"; F-008 — a real row). */
+	createTask: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { task: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { task: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const title = String(form.get('title') ?? '').trim();
+		const description = String(form.get('description') ?? '').trim();
+		const priorityRaw = String(form.get('priority') ?? 'normal').trim();
+		if (!title) return fail(400, { task: { error: 'Task title is required.' } });
+		const priority = (TASK_PRIORITIES as readonly string[]).includes(priorityRaw)
+			? (priorityRaw as TaskPriority)
+			: 'normal';
+		try {
+			const t = await createTask(db, {
+				project: projectId,
+				title,
+				// D-008: the description is the immutable run seed; default to the title when blank.
+				description: description || title,
+				priority,
+				origin: 'manual'
+			});
+			return { task: { ok: true as const, action: 'create', taskId: t.id, title } };
+		} catch (err) {
+			return fail(500, { task: { error: (err as Error).message } });
+		}
+	},
+
+	/** Move a task to a new status (guarded by the state machine — illegal moves rejected). */
+	moveTask: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { task: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { task: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const taskId = String(form.get('taskId') ?? '').trim();
+		const to = String(form.get('to') ?? '').trim();
+		try {
+			assertRecordId(taskId);
+		} catch {
+			return fail(400, { task: { error: 'invalid task id' } });
+		}
+		if (!(TASK_STATUSES as readonly string[]).includes(to)) {
+			return fail(400, { task: { error: `Unknown status "${to}".` } });
+		}
+		try {
+			const row = await setStatus(db, taskId, to as TaskStatus);
+			if (!row) return fail(404, { task: { error: 'task not found' } });
+			return { task: { ok: true as const, action: 'move', taskId, to } };
+		} catch (err) {
+			return fail(400, { task: { error: (err as Error).message } });
+		}
+	},
+
+	// ── SETTINGS action (TASK 10.4) — project-level config (UI-SPEC §196). Persists the
+	// mutable project columns (name/status/build_tool/test_command/repo_url). The slug/id are
+	// immutable. Every value binds via $param (D-016); MERGE preserves untouched columns.
+	updateSettings: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { settings: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { settings: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const name = String(form.get('name') ?? '').trim();
+		const status = String(form.get('status') ?? '').trim();
+		const buildTool = String(form.get('build_tool') ?? '').trim();
+		const testCommand = String(form.get('test_command') ?? '').trim();
+		const repoUrl = String(form.get('repo_url') ?? '').trim();
+		if (!name) return fail(400, { settings: { error: 'Project name is required.' } });
+		try {
+			const updated = await updateProject(db, projectId, {
+				name,
+				...(status ? { status } : {}),
+				...(buildTool ? { build_tool: buildTool } : {}),
+				...(testCommand ? { test_command: testCommand } : {}),
+				...(repoUrl ? { repo_url: repoUrl } : {})
+			});
+			if (!updated) return fail(404, { settings: { error: 'project not found' } });
+			return { settings: { ok: true as const } };
+		} catch (err) {
+			return fail(500, { settings: { error: (err as Error).message } });
 		}
 	},
 

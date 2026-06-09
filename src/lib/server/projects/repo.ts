@@ -157,7 +157,18 @@ function link(id: string): StringRecordId {
 }
 
 function normProject(row: ProjectRow & { id: unknown }): ProjectRow {
-	return { ...row, id: str(row.id) };
+	// Coerce SurrealDB datetime fields (created_at/updated_at) to plain ISO strings — they are
+	// non-POJO Date-likes that break SvelteKit's load serializer if forwarded raw (F-013). The
+	// load forwards only a field subset today, but the normalized row must be serializable.
+	const out = { ...row, id: str(row.id) } as ProjectRow & {
+		created_at?: unknown;
+		updated_at?: unknown;
+	};
+	if (out.created_at != null) out.created_at = isoOrUndef(out.created_at);
+	else delete out.created_at;
+	if (out.updated_at != null) out.updated_at = isoOrUndef(out.updated_at);
+	else delete out.updated_at;
+	return out as ProjectRow;
 }
 function normRelease(row: ReleaseRow & { id: unknown; project: unknown }): ReleaseRow {
 	return { ...row, id: str(row.id), project: str(row.project) };

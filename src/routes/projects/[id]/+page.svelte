@@ -26,6 +26,12 @@
   const sprints = $derived(data.sprints ?? []);
   const tasks = $derived(data.tasks ?? []);
   const sessions = $derived(data.sessions ?? []);
+  // ── TASK 10.4 — the missing workspace surfaces (board / memory / settings / maintain).
+  const taskStatuses = $derived(data.taskStatuses ?? []);
+  const taskPriorities = $derived(data.taskPriorities ?? []);
+  const findings = $derived(data.findings ?? []);
+  const memories = $derived(data.memories ?? []);
+  const graph = $derived(data.graph ?? { nodes: [], edges: [] });
   // ── PM (TASK 9.1) — the strategic layer above task execution.
   const pmMemory = $derived(data.pmMemory ?? []);
   const pmStats = $derived(data.pmStats);
@@ -41,12 +47,104 @@
   const syncHref = $derived(`/projects/${slug}/sync`);
   const projectName = $derived(project?.name ?? slug);
 
-  type Tab = 'plan' | 'pm' | 'sessions' | 'release' | 'sync';
-  let tab = $state<Tab>('plan');
+  type Tab =
+    | 'overview'
+    | 'tasks'
+    | 'roadmap'
+    | 'pm'
+    | 'sessions'
+    | 'memory'
+    | 'release'
+    | 'sync'
+    | 'settings';
+  let tab = $state<Tab>('overview');
   // Default to the Sessions tab when a session is selected via ?session=.
   $effect(() => {
     if (selectedSession) tab = 'sessions';
   });
+
+  // ── Tasks board (TASK 10.4) — group the live task rows into kanban columns by status.
+  // The columns follow the canonical status vocab; honest empty columns render "—".
+  const tasksByStatus = $derived.by(() => {
+    const m = new Map<string, typeof tasks>();
+    for (const s of taskStatuses) m.set(s, []);
+    for (const t of tasks) {
+      const col = m.get(t.status) ?? [];
+      col.push(t);
+      m.set(t.status, col);
+    }
+    return m;
+  });
+  let newTaskTitle = $state('');
+  let newTaskPriority = $state('normal');
+  let taskBusy = $state(false);
+  const taskFeedback = $derived(
+    form && 'task' in form ? (form.task as Record<string, unknown>) : undefined
+  );
+
+  // ── Roadmap hierarchy (TASK 10.4) — release → phases → features, plus orphan rows that
+  // link to no release and the project's sprints. Pure client projection over live rows.
+  const roadmap = $derived.by(() => {
+    const phasesByRelease = new Map<string, typeof phases>();
+    const featuresByRelease = new Map<string, typeof features>();
+    const orphanPhases: typeof phases = [];
+    const orphanFeatures: typeof features = [];
+    for (const ph of phases) {
+      if (ph.release) {
+        const arr = phasesByRelease.get(ph.release) ?? [];
+        arr.push(ph);
+        phasesByRelease.set(ph.release, arr);
+      } else orphanPhases.push(ph);
+    }
+    for (const f of features) {
+      if (f.release) {
+        const arr = featuresByRelease.get(f.release) ?? [];
+        arr.push(f);
+        featuresByRelease.set(f.release, arr);
+      } else orphanFeatures.push(f);
+    }
+    const tree = releases.map((r) => ({
+      release: r,
+      phases: (phasesByRelease.get(r.id) ?? []).slice().sort((a, b) => a.order - b.order),
+      features: featuresByRelease.get(r.id) ?? []
+    }));
+    return { tree, orphanPhases, orphanFeatures };
+  });
+
+  // ── Maintain rollup (TASK 10.4) — project-scoped findings by severity (UI-SPEC §189).
+  const SEVERITIES = ['critical', 'high', 'medium', 'low'] as const;
+  const severityCounts = $derived(
+    SEVERITIES.map((sev) => ({ sev, n: findings.filter((f) => f.severity === sev).length }))
+  );
+
+  function findingFamily(rule: string): string {
+    if (rule.startsWith('dependency.')) return 'dependency';
+    if (rule.startsWith('ux.')) return 'ux';
+    return 'security';
+  }
+
+  // ── Memory tab (TASK 10.4) — client-side recall filter + node focus (mirrors /memory).
+  let memQuery = $state('');
+  const memFiltered = $derived(
+    memQuery.trim()
+      ? memories.filter((m) => m.content.toLowerCase().includes(memQuery.trim().toLowerCase()))
+      : memories
+  );
+  let focusId = $state<string | null>(null);
+  const focusedEdges = $derived(
+    focusId ? graph.edges.filter((e) => e.from === focusId || e.to === focusId) : []
+  );
+  const neighbours = $derived(
+    focusId
+      ? new Set(focusedEdges.map((e) => (e.from === focusId ? e.to : e.from)))
+      : new Set<string>()
+  );
+
+  // ── Settings tab (TASK 10.4) — project-level config form.
+  let settingsBusy = $state(false);
+  const settingsFeedback = $derived(
+    form && 'settings' in form ? (form.settings as Record<string, unknown>) : undefined
+  );
 
   // PM form state.
   let pmBusy = $state(false);
@@ -77,6 +175,10 @@
     const offM = stream.onDbChange('pm_memory', () => void invalidate('app:pm'));
     const offD = stream.onDbChange('decision', () => void invalidate('app:pm'));
     const offSp = stream.onDbChange('sprint', () => void invalidate('app:pm'));
+    // TASK 10.4 — the Maintain panel + Memory tab update live too.
+    const offF = stream.onDbChange('security_finding', () => void invalidate('app:findings'));
+    const offMem = stream.onDbChange('memory', () => void invalidate('app:memory'));
+    const offE = stream.onDbChange('entity', () => void invalidate('app:graph'));
     return () => {
       offP();
       offT();
@@ -84,6 +186,9 @@
       offM();
       offD();
       offSp();
+      offF();
+      offMem();
+      offE();
     };
   });
 
@@ -228,6 +333,14 @@
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
   }
 
+  /** Strip the `table:` prefix from a record id for compact display. */
+  function bareId(id: string): string {
+    return id.replace(/^\w+:/, '');
+  }
+  function focusNode(id: string): void {
+    focusId = focusId === id ? null : id;
+  }
+
   const selectedRow = $derived(sessions.find((s) => s.id === selectedSession));
   const selectedIsRunning = $derived((liveStatus ?? selectedRow?.status) === 'running');
 </script>
@@ -265,9 +378,24 @@
       <button
         class="tab"
         type="button"
-        aria-pressed={tab === 'plan'}
-        data-active={tab === 'plan'}
-        onclick={() => (tab = 'plan')}>Plan</button
+        aria-pressed={tab === 'overview'}
+        data-active={tab === 'overview'}
+        onclick={() => (tab = 'overview')}>Overview</button
+      >
+      <button
+        class="tab"
+        type="button"
+        aria-pressed={tab === 'tasks'}
+        data-active={tab === 'tasks'}
+        onclick={() => (tab = 'tasks')}
+        >Tasks{#if tasks.length > 0}<span class="count mono">{tasks.length}</span>{/if}</button
+      >
+      <button
+        class="tab"
+        type="button"
+        aria-pressed={tab === 'roadmap'}
+        data-active={tab === 'roadmap'}
+        onclick={() => (tab = 'roadmap')}>Roadmap</button
       >
       <button
         class="tab"
@@ -287,6 +415,14 @@
       <button
         class="tab"
         type="button"
+        aria-pressed={tab === 'memory'}
+        data-active={tab === 'memory'}
+        onclick={() => (tab = 'memory')}
+        >Memory{#if memories.length > 0}<span class="count mono">{memories.length}</span>{/if}</button
+      >
+      <button
+        class="tab"
+        type="button"
         aria-pressed={tab === 'release'}
         data-active={tab === 'release'}
         onclick={() => (tab = 'release')}>Release</button
@@ -298,9 +434,16 @@
         data-active={tab === 'sync'}
         onclick={() => (tab = 'sync')}>Sync</button
       >
+      <button
+        class="tab"
+        type="button"
+        aria-pressed={tab === 'settings'}
+        data-active={tab === 'settings'}
+        onclick={() => (tab = 'settings')}>Settings</button
+      >
     </nav>
 
-    {#if tab === 'plan'}
+    {#if tab === 'overview'}
       <div class="tab-body">
         <div class="card">
           <h2 class="section-title">Plan</h2>
@@ -328,85 +471,284 @@
           {/if}
         </div>
 
+        <!-- At-a-glance counts → the dedicated surfaces -->
+        <ul class="overview-stats" aria-label="project at a glance">
+          <li class="card stat">
+            <span class="stat-val">{tasks.length}</span>
+            <button class="stat-label link-inline" type="button" onclick={() => (tab = 'tasks')}>open tasks →</button>
+          </li>
+          <li class="card stat">
+            <span class="stat-val">{releases.length}</span>
+            <button class="stat-label link-inline" type="button" onclick={() => (tab = 'roadmap')}>releases →</button>
+          </li>
+          <li class="card stat">
+            <span class="stat-val">{sessions.length}</span>
+            <button class="stat-label link-inline" type="button" onclick={() => (tab = 'sessions')}>sessions →</button>
+          </li>
+          <li class="card stat">
+            <span class="stat-val" data-tone={findings.length > 0 ? 'warn' : ''}>{findings.length}</span>
+            <span class="stat-label">open findings</span>
+          </li>
+        </ul>
+
+        <!-- Maintain panel (UI-SPEC §189) — the per-project security/dep-health/UX rollup.
+             Reuses the SAME live security_finding rows the global /reports rollup reads. -->
+        <div class="card maintain-card">
+          <div class="maintain-head">
+            <h2 class="section-title">Maintain</h2>
+            <span class="count mono">{findings.length} open</span>
+          </div>
+          <p class="state-body">
+            Security, dependency-health and UX-inspection findings for this project — the
+            per-project view of the Maintain surface. Findings appear the moment a scan writes
+            them; nothing here is fabricated.
+          </p>
+          {#if findings.length}
+            <ul class="sev-summary" aria-label="findings by severity">
+              {#each severityCounts as s (s.sev)}
+                <li class="sev-chip" data-sev={s.sev} data-empty={s.n === 0}>
+                  <span class="sev-n">{s.n}</span><span class="sev-label">{s.sev}</span>
+                </li>
+              {/each}
+            </ul>
+            <ul class="rows finding-list" aria-label="findings">
+              {#each findings as f (f.id)}
+                <li class="finding-row">
+                  <span class="sev-tag" data-sev={f.severity}>{f.severity}</span>
+                  <span class="family-tag mono" data-family={findingFamily(f.rule)}>{findingFamily(f.rule)}</span>
+                  <span class="finding-rule mono">{f.rule}</span>
+                  <span class="finding-loc mono">{f.file ?? '—'}{#if f.line}:{f.line}{/if}</span>
+                  {#if f.detail}<span class="finding-detail">{f.detail}</span>{/if}
+                </li>
+              {/each}
+            </ul>
+          {:else}
+            <p class="state-body">
+              No open findings — this project is clean, or it has not been scanned yet.
+            </p>
+          {/if}
+        </div>
+      </div>
+    {:else if tab === 'tasks'}
+      <!-- TASK 10.4 — the Tasks BOARD: kanban by status; create + move live (UI-SPEC §190). -->
+      <div class="tab-body">
+        <div class="card">
+          <h2 class="section-title">New task</h2>
+          <form
+            method="POST"
+            action="?/createTask"
+            class="task-create-form"
+            use:enhance={() => {
+              taskBusy = true;
+              return async ({ update }) => {
+                await update({ reset: false });
+                taskBusy = false;
+                newTaskTitle = '';
+              };
+            }}
+          >
+            <label class="field task-title-field">
+              <span class="field-label">Title</span>
+              <input
+                class="pm-input"
+                type="text"
+                name="title"
+                bind:value={newTaskTitle}
+                placeholder="What needs doing…"
+                required
+              />
+            </label>
+            <label class="field task-prio-field">
+              <span class="field-label">Priority</span>
+              <select name="priority" bind:value={newTaskPriority}>
+                {#each taskPriorities as p (p)}
+                  <option value={p}>{p}</option>
+                {/each}
+              </select>
+            </label>
+            <button class="btn primary" type="submit" disabled={taskBusy || !newTaskTitle.trim()}>
+              {taskBusy ? 'Adding…' : 'Add task'}
+            </button>
+          </form>
+          {#if taskFeedback}
+            {#if 'error' in taskFeedback}
+              <p class="form-error" role="alert">{taskFeedback.error}</p>
+            {:else if taskFeedback.action === 'create'}
+              <p class="form-ok">Task created: {String(taskFeedback.title)}.</p>
+            {:else if taskFeedback.action === 'move'}
+              <p class="form-ok">Moved task to {String(taskFeedback.to)}.</p>
+            {/if}
+          {/if}
+        </div>
+
+        {#if tasks.length === 0}
+          <div class="card">
+            <p class="state-body">No tasks yet — add the first task above and it appears on the board, live.</p>
+          </div>
+        {:else}
+          <div class="board" aria-label="task board">
+            {#each taskStatuses as col (col)}
+              {@const colTasks = tasksByStatus.get(col) ?? []}
+              <section class="board-col" aria-label={`${col} column`}>
+                <header class="board-col-head">
+                  <span class="status" data-status={col}>{col}</span>
+                  <span class="count mono">{colTasks.length}</span>
+                </header>
+                {#if colTasks.length === 0}
+                  <p class="board-empty">—</p>
+                {:else}
+                  <ul class="board-cards">
+                    {#each colTasks as t (t.id)}
+                      <li class="board-card">
+                        <span class="board-card-title">{t.title}</span>
+                        <div class="board-card-foot">
+                          <span class="prio mono" data-prio={t.priority}>{t.priority}</span>
+                          {#if t.moves.length}
+                            <form
+                              method="POST"
+                              action="?/moveTask"
+                              class="move-form"
+                              use:enhance={() => {
+                                taskBusy = true;
+                                return async ({ update }) => {
+                                  await update({ reset: false });
+                                  taskBusy = false;
+                                };
+                              }}
+                            >
+                              <input type="hidden" name="taskId" value={t.id} />
+                              <label class="move-label">
+                                <span class="vh">Move task to…</span>
+                                <select
+                                  class="move-select"
+                                  name="to"
+                                  disabled={taskBusy}
+                                  onchange={(e) => {
+                                    const t2 = e.currentTarget;
+                                    if (t2.value) t2.form?.requestSubmit();
+                                  }}
+                                >
+                                  <option value="" selected>move →</option>
+                                  {#each t.moves as m (m)}
+                                    <option value={m}>{m}</option>
+                                  {/each}
+                                </select>
+                              </label>
+                            </form>
+                          {:else}
+                            <span class="terminal-tag mono">terminal</span>
+                          {/if}
+                        </div>
+                      </li>
+                    {/each}
+                  </ul>
+                {/if}
+              </section>
+            {/each}
+          </div>
+        {/if}
+      </div>
+    {:else if tab === 'roadmap'}
+      <!-- TASK 10.4 — hierarchical Roadmap: release → phases → features (+ sprints, orphans). -->
+      <div class="tab-body">
         <div class="card">
           <h2 class="section-title">Roadmap</h2>
           {#if releases.length === 0 && phases.length === 0 && features.length === 0 && sprints.length === 0}
             <p class="state-body">No plan hierarchy yet — releases, phases and features will appear here.</p>
           {:else}
-            <div class="grid-two">
-              <div class="col">
-                <h3 class="sub">Releases</h3>
-                {#if releases.length === 0}
-                  <p class="state-body">None.</p>
-                {:else}
-                  <ul class="rows">
-                    {#each releases as r (r.id)}
-                      <li class="row">
-                        <span class="mono">{r.version}</span>
-                        {#if r.title}<span class="row-title">{r.title}</span>{/if}
-                        <span class="status" data-status={r.status}>{r.status}</span>
-                      </li>
-                    {/each}
-                  </ul>
-                {/if}
-              </div>
-              <div class="col">
-                <h3 class="sub">Phases</h3>
-                {#if phases.length === 0}
-                  <p class="state-body">None.</p>
-                {:else}
-                  <ul class="rows">
-                    {#each phases as ph (ph.id)}
-                      <li class="row">
-                        <span class="row-title">{ph.name}</span>
-                        <span class="status" data-status={ph.status}>{ph.status}</span>
-                      </li>
-                    {/each}
-                  </ul>
-                {/if}
-              </div>
-              <div class="col">
-                <h3 class="sub">Features</h3>
-                {#if features.length === 0}
-                  <p class="state-body">None.</p>
-                {:else}
-                  <ul class="rows">
-                    {#each features as f (f.id)}
-                      <li class="row">
-                        <span class="row-title">{f.title}</span>
-                        <span class="status" data-status={f.status}>{f.status}</span>
-                      </li>
-                    {/each}
-                  </ul>
-                {/if}
-              </div>
-              <div class="col">
-                <h3 class="sub">Sprints</h3>
-                {#if sprints.length === 0}
-                  <p class="state-body">None.</p>
-                {:else}
-                  <ul class="rows">
-                    {#each sprints as s (s.id)}
-                      <li class="row"><span class="row-title">{s.name}</span></li>
-                    {/each}
-                  </ul>
-                {/if}
-              </div>
+            <div class="roadmap">
+              {#each roadmap.tree as node (node.release.id)}
+                <details class="release-node" open>
+                  <summary class="release-summary">
+                    <span class="mono release-ver">{node.release.version}</span>
+                    {#if node.release.title}<span class="release-title">{node.release.title}</span>{/if}
+                    <span class="status" data-status={node.release.status}>{node.release.status}</span>
+                    <span class="count mono">{node.phases.length}p · {node.features.length}f</span>
+                  </summary>
+                  <div class="release-body">
+                    {#if node.phases.length}
+                      <h3 class="sub">Phases</h3>
+                      <ul class="tree-list">
+                        {#each node.phases as ph (ph.id)}
+                          <li class="tree-row">
+                            <span class="tree-bullet" aria-hidden="true">▸</span>
+                            <span class="row-title">{ph.name}</span>
+                            <span class="status" data-status={ph.status}>{ph.status}</span>
+                          </li>
+                        {/each}
+                      </ul>
+                    {/if}
+                    {#if node.features.length}
+                      <h3 class="sub">Features</h3>
+                      <ul class="tree-list">
+                        {#each node.features as f (f.id)}
+                          <li class="tree-row">
+                            <span class="tree-bullet" aria-hidden="true">◦</span>
+                            <span class="row-title">{f.title}</span>
+                            <span class="status" data-status={f.status}>{f.status}</span>
+                          </li>
+                        {/each}
+                      </ul>
+                    {/if}
+                    {#if node.phases.length === 0 && node.features.length === 0}
+                      <p class="state-body">No phases or features under this release yet.</p>
+                    {/if}
+                  </div>
+                </details>
+              {/each}
+
+              {#if roadmap.orphanPhases.length || roadmap.orphanFeatures.length}
+                <details class="release-node" open>
+                  <summary class="release-summary">
+                    <span class="release-title">Unscheduled</span>
+                    <span class="count mono"
+                      >{roadmap.orphanPhases.length}p · {roadmap.orphanFeatures.length}f</span
+                    >
+                  </summary>
+                  <div class="release-body">
+                    {#if roadmap.orphanPhases.length}
+                      <h3 class="sub">Phases</h3>
+                      <ul class="tree-list">
+                        {#each roadmap.orphanPhases as ph (ph.id)}
+                          <li class="tree-row">
+                            <span class="tree-bullet" aria-hidden="true">▸</span>
+                            <span class="row-title">{ph.name}</span>
+                            <span class="status" data-status={ph.status}>{ph.status}</span>
+                          </li>
+                        {/each}
+                      </ul>
+                    {/if}
+                    {#if roadmap.orphanFeatures.length}
+                      <h3 class="sub">Features</h3>
+                      <ul class="tree-list">
+                        {#each roadmap.orphanFeatures as f (f.id)}
+                          <li class="tree-row">
+                            <span class="tree-bullet" aria-hidden="true">◦</span>
+                            <span class="row-title">{f.title}</span>
+                            <span class="status" data-status={f.status}>{f.status}</span>
+                          </li>
+                        {/each}
+                      </ul>
+                    {/if}
+                  </div>
+                </details>
+              {/if}
             </div>
           {/if}
         </div>
 
         <div class="card">
-          <h2 class="section-title">Open tasks <span class="count mono">{tasks.length}</span></h2>
-          {#if tasks.length === 0}
-            <p class="state-body">No tasks yet for this project.</p>
+          <h2 class="section-title">Sprints <span class="count mono">{sprints.length}</span></h2>
+          {#if sprints.length === 0}
+            <p class="state-body">No sprints yet — create one from the PM tab.</p>
           {:else}
-            <ul class="rows" aria-label="tasks">
-              {#each tasks as t (t.id)}
+            <ul class="rows" aria-label="sprints">
+              {#each sprints as s (s.id)}
                 <li class="row">
-                  <span class="row-title">{t.title}</span>
-                  <span class="status" data-status={t.status}>{t.status}</span>
-                  <span class="prio mono">{t.priority}</span>
+                  <span class="row-title">{s.name}</span>
+                  <span class="status" data-status={s.status === 'completed' ? 'done' : 'active'}>
+                    {s.status ?? 'active'}
+                  </span>
                 </li>
               {/each}
             </ul>
@@ -872,6 +1214,109 @@
           </div>
         {/if}
       </div>
+    {:else if tab === 'memory'}
+      <!-- TASK 10.4 — project-scoped Memory: recall list + knowledge graph (UI-SPEC §195). -->
+      <div class="tab-body">
+        <div class="mem-grid">
+          <div class="card recall">
+            <div class="recall-head">
+              <span class="eyebrow"
+                >recall · {memories.length} {memories.length === 1 ? 'memory' : 'memories'}</span
+              >
+              <input
+                class="mem-search"
+                type="search"
+                placeholder="Filter recall…"
+                bind:value={memQuery}
+                aria-label="Filter project memories by keyword"
+              />
+            </div>
+            {#if memories.length === 0}
+              <p class="state-body">
+                No memory for this project yet — memories accrue as its sessions run and the
+                memory loop extracts durable learnings.
+              </p>
+            {:else if memFiltered.length === 0}
+              <p class="state-body">No memories match “{memQuery}” — clear the filter.</p>
+            {:else}
+              <ul class="recall-list">
+                {#each memFiltered as m (m.id)}
+                  <li class="recall-row" data-status={m.status}>
+                    <div class="recall-meta">
+                      <span class="kind-tag mono" data-kind={m.kind}>{m.kind}</span>
+                      <span class="scope mono">{m.scope}</span>
+                      {#if m.tier === 0}<span class="tier0 mono">tier-0</span>{/if}
+                      {#if m.status !== 'active'}<span class="status-flag mono">{m.status}</span>{/if}
+                      <span class="imp mono" title="importance">{m.importance.toFixed(1)}</span>
+                    </div>
+                    <p class="recall-body">{m.content}</p>
+                    <div class="recall-foot">
+                      <span class="cite mono">{bareId(m.id)}</span>
+                      {#if m.tags}{#each m.tags as t (t)}<span class="tag mono">{t}</span>{/each}{/if}
+                    </div>
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </div>
+
+          <div class="card graph">
+            <span class="eyebrow">
+              knowledge graph · {graph.nodes.length} nodes · {graph.edges.length} edges
+            </span>
+            {#if graph.nodes.length === 0}
+              <p class="state-body">
+                No graph for this project yet — entities and links appear once its memory
+                references topics in the knowledge graph.
+              </p>
+            {:else}
+              <ul class="node-list" aria-label="graph entities">
+                {#each graph.nodes as n (n.id)}
+                  {@const isFocus = focusId === n.id}
+                  {@const isNeighbour = neighbours.has(n.id)}
+                  <li>
+                    <button
+                      type="button"
+                      class="node"
+                      data-status={n.status}
+                      data-focus={isFocus}
+                      data-neighbour={isNeighbour}
+                      data-dim={focusId !== null && !isFocus && !isNeighbour}
+                      onclick={() => focusNode(n.id)}
+                      aria-pressed={isFocus}
+                    >
+                      <span class="node-type mono" data-type={n.type}>{n.type}</span>
+                      <span class="node-label">{n.label}</span>
+                    </button>
+                  </li>
+                {/each}
+              </ul>
+              {#if focusId}
+                <div class="focus-panel" aria-live="polite">
+                  <span class="eyebrow">
+                    {focusedEdges.length} {focusedEdges.length === 1 ? 'link' : 'links'} from
+                    <span class="mono">{bareId(focusId)}</span>
+                  </span>
+                  {#if focusedEdges.length}
+                    <ul class="edge-list">
+                      {#each focusedEdges as e (e.from + e.kind + e.to)}
+                        <li class="edge">
+                          <span class="edge-kind mono">{e.kind}</span>
+                          <span class="edge-target mono"
+                            >{e.from === focusId ? bareId(e.to) : bareId(e.from)}</span
+                          >
+                        </li>
+                      {/each}
+                    </ul>
+                  {:else}
+                    <p class="state-body">No links from this node.</p>
+                  {/if}
+                </div>
+              {/if}
+            {/if}
+          </div>
+        </div>
+      </div>
     {:else if tab === 'release'}
       <div class="tab-body">
         <div class="card">
@@ -883,7 +1328,7 @@
           <a class="link-btn" href={releaseHref}>Open release pipeline →</a>
         </div>
       </div>
-    {:else}
+    {:else if tab === 'sync'}
       <div class="tab-body">
         <div class="card">
           <h2 class="section-title">Sync</h2>
@@ -893,6 +1338,93 @@
             sync adapter.
           </p>
           <a class="link-btn" href={syncHref}>Open GitHub sync →</a>
+        </div>
+      </div>
+    {:else}
+      <!-- TASK 10.4 — project Settings: project-level config (UI-SPEC §196). -->
+      <div class="tab-body">
+        <div class="card">
+          <h2 class="section-title">Project settings</h2>
+          <p class="state-body">
+            Project-level configuration. The slug (<span class="mono">{slug}</span>) and root path
+            are immutable; rescan to re-detect on-disk changes.
+          </p>
+          <form
+            method="POST"
+            action="?/updateSettings"
+            class="settings-form"
+            use:enhance={() => {
+              settingsBusy = true;
+              return async ({ update }) => {
+                await update({ reset: false });
+                settingsBusy = false;
+              };
+            }}
+          >
+            <label class="field settings-field">
+              <span class="field-label">Name</span>
+              <input class="pm-input" type="text" name="name" value={project.name} required />
+            </label>
+            <label class="field settings-field">
+              <span class="field-label">Status</span>
+              <input
+                class="pm-input"
+                type="text"
+                name="status"
+                value={project.status}
+                placeholder="active / paused / archived"
+              />
+            </label>
+            <label class="field settings-field">
+              <span class="field-label">Build tool</span>
+              <input
+                class="pm-input mono"
+                type="text"
+                name="build_tool"
+                value={project.build_tool ?? ''}
+                placeholder="npm / cargo / go …"
+              />
+            </label>
+            <label class="field settings-field">
+              <span class="field-label">Test command</span>
+              <input
+                class="pm-input mono"
+                type="text"
+                name="test_command"
+                value={project.test_command ?? ''}
+                placeholder="npm test"
+              />
+            </label>
+            <label class="field settings-field">
+              <span class="field-label">Repo URL</span>
+              <input
+                class="pm-input mono"
+                type="text"
+                name="repo_url"
+                value={project.repo_url ?? ''}
+                placeholder="https://github.com/owner/repo"
+              />
+            </label>
+            <button class="btn primary" type="submit" disabled={settingsBusy}>
+              {settingsBusy ? 'Saving…' : 'Save settings'}
+            </button>
+          </form>
+          {#if settingsFeedback}
+            {#if 'error' in settingsFeedback}
+              <p class="form-error" role="alert">{settingsFeedback.error}</p>
+            {:else}
+              <p class="form-ok">Project settings saved.</p>
+            {/if}
+          {/if}
+        </div>
+
+        <div class="card">
+          <h2 class="section-title">Model routing &amp; gates</h2>
+          <p class="state-body">
+            Routing tiers, intent→config mapping, and gate defaults are configured globally for
+            now; per-project overrides land with the routing override surface.
+          </p>
+          <a class="link-btn" href="/settings">Open global settings →</a>
         </div>
       </div>
     {/if}
@@ -1018,17 +1550,6 @@
     margin: 0;
     font: var(--type-body-sm);
     color: var(--color-text);
-  }
-  .grid-two {
-    display: grid;
-    grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-    gap: var(--space-4, 1rem);
-  }
-  .col {
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-2, 0.5rem);
-    min-width: 0;
   }
   .rows {
     list-style: none;
@@ -1549,5 +2070,511 @@
   .link-inline:focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
+  }
+
+  /* ── TASK 10.4 — Overview at-a-glance + Maintain panel ─────────────────────── */
+  .overview-stats {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(140px, 1fr));
+    gap: var(--space-3, 0.75rem);
+  }
+  .stat {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    align-items: flex-start;
+  }
+  .stat-val {
+    font-size: 1.5rem;
+    font-weight: 700;
+    color: var(--color-text);
+  }
+  .stat-val[data-tone='warn'] {
+    color: var(--color-warning, var(--color-blocked, orange));
+  }
+  .stat-label {
+    font-size: 0.72rem;
+    text-transform: lowercase;
+    color: var(--color-text-muted);
+  }
+  .maintain-card {
+    gap: var(--space-3, 0.75rem);
+  }
+  .maintain-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3);
+  }
+  .sev-summary {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+  }
+  .sev-chip {
+    display: flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    padding: 0.2rem 0.55rem;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+    border: var(--border-width, 1px) solid var(--color-border);
+  }
+  .sev-chip[data-empty='true'] {
+    opacity: 0.45;
+  }
+  .sev-n {
+    font-weight: 700;
+    color: var(--color-text);
+  }
+  .sev-label {
+    font-size: 0.7rem;
+    text-transform: lowercase;
+    color: var(--color-text-muted);
+  }
+  .finding-list {
+    gap: 0.45rem;
+  }
+  .finding-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+    font: var(--type-body-sm);
+    padding: 0.4rem 0.5rem;
+    border: var(--border-width, 1px) solid var(--color-border-subtle, var(--color-border));
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+  }
+  .sev-tag {
+    font-size: 0.68rem;
+    padding: 0.05rem 0.45rem;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-card);
+    text-transform: lowercase;
+    font-weight: 600;
+    flex: none;
+  }
+  .sev-tag[data-sev='critical'],
+  .sev-chip[data-sev='critical'] .sev-n {
+    color: var(--color-danger, var(--color-error, crimson));
+  }
+  .sev-tag[data-sev='high'],
+  .sev-chip[data-sev='high'] .sev-n {
+    color: var(--color-warning, var(--color-blocked, orange));
+  }
+  .sev-tag[data-sev='medium'],
+  .sev-chip[data-sev='medium'] .sev-n {
+    color: var(--color-accent);
+  }
+  .sev-tag[data-sev='low'],
+  .sev-chip[data-sev='low'] .sev-n {
+    color: var(--color-text-muted);
+  }
+  .family-tag {
+    font-size: 0.64rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-xs, 4px);
+    color: var(--color-text-muted);
+    background: var(--color-surface-card);
+    flex: none;
+  }
+  .family-tag[data-family='dependency'] {
+    color: var(--color-accent);
+  }
+  .finding-rule {
+    font-size: 0.72rem;
+    color: var(--color-text);
+  }
+  .finding-loc {
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+  }
+  .finding-detail {
+    flex: 1 1 100%;
+    font-size: 0.74rem;
+    color: var(--color-text-2);
+  }
+
+  /* ── TASK 10.4 — Tasks board (kanban) ──────────────────────────────────────── */
+  .task-create-form {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-3, 0.75rem);
+    flex-wrap: wrap;
+  }
+  .task-title-field {
+    flex: 1 1 18rem;
+  }
+  .task-prio-field {
+    flex: 0 0 9rem;
+  }
+  .task-prio-field select,
+  .move-select {
+    appearance: none;
+    background: var(--color-surface-overlay);
+    color: var(--color-text);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.3rem 0.5rem;
+    font: var(--type-body-sm);
+    min-height: 24px;
+  }
+  .task-prio-field select:focus-visible,
+  .move-select:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  .board {
+    display: grid;
+    grid-auto-flow: column;
+    grid-auto-columns: minmax(160px, 1fr);
+    gap: var(--space-3, 0.75rem);
+    overflow-x: auto;
+    padding-bottom: 0.4rem;
+  }
+  .board-col {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    background: var(--color-surface-overlay);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-md, 10px);
+    padding: var(--space-3, 0.6rem);
+    min-width: 0;
+  }
+  .board-col-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.4rem;
+  }
+  .board-empty {
+    font: var(--type-body-sm);
+    color: var(--color-text-muted);
+    text-align: center;
+    padding: 0.5rem 0;
+  }
+  .board-cards {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+  }
+  .board-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+    background: var(--color-surface-card);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.5rem 0.6rem;
+  }
+  .board-card-title {
+    font: var(--type-body-sm);
+    color: var(--color-text);
+    word-break: break-word;
+  }
+  .board-card-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 0.4rem;
+  }
+  .prio[data-prio='high'],
+  .prio[data-prio='critical'] {
+    color: var(--color-warning, var(--color-blocked, orange));
+  }
+  .move-form {
+    margin: 0;
+  }
+  .move-label {
+    display: inline-flex;
+  }
+  .terminal-tag {
+    font-size: 0.64rem;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .vh {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    margin: -1px;
+    padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    white-space: nowrap;
+    border: 0;
+  }
+
+  /* ── TASK 10.4 — hierarchical Roadmap ──────────────────────────────────────── */
+  .roadmap {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  .release-node {
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+  }
+  .release-summary {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.5rem 0.7rem;
+    cursor: pointer;
+    list-style: none;
+    flex-wrap: wrap;
+  }
+  .release-summary::-webkit-details-marker {
+    display: none;
+  }
+  .release-summary:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: -2px;
+    border-radius: var(--radius-sm, 6px);
+  }
+  .release-ver {
+    font-weight: 600;
+    color: var(--color-accent);
+  }
+  .release-title {
+    font: var(--type-body-sm);
+    font-weight: 600;
+    color: var(--color-text);
+    flex: 1 1 auto;
+  }
+  .release-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    padding: 0 0.7rem 0.6rem 1.4rem;
+  }
+  .tree-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .tree-row {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font: var(--type-body-sm);
+    color: var(--color-text);
+    min-width: 0;
+  }
+  .tree-bullet {
+    color: var(--color-text-muted);
+    flex: none;
+  }
+
+  /* ── TASK 10.4 — project Memory tab ────────────────────────────────────────── */
+  .mem-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    gap: var(--space-3, 0.75rem);
+    align-items: start;
+  }
+  @media (max-width: 900px) {
+    .mem-grid {
+      grid-template-columns: 1fr;
+    }
+  }
+  .recall,
+  .graph {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  .recall-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+  .eyebrow {
+    font-size: 0.7rem;
+    text-transform: lowercase;
+    letter-spacing: 0.03em;
+    color: var(--color-text-muted);
+  }
+  .mem-search {
+    flex: 1;
+    min-width: 12ch;
+    background: var(--color-surface-overlay);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    color: var(--color-text);
+    padding: 0.3rem 0.55rem;
+    font: var(--type-body-sm);
+  }
+  .mem-search:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  .recall-list,
+  .node-list,
+  .edge-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+  }
+  .recall-list {
+    max-height: 60vh;
+    overflow-y: auto;
+  }
+  .recall-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 0.5rem 0.6rem;
+    border: var(--border-width, 1px) solid var(--color-border-subtle, var(--color-border));
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+  }
+  .recall-row[data-status='archived'],
+  .recall-row[data-status='superseded'] {
+    opacity: 0.5;
+  }
+  .recall-meta,
+  .recall-foot {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+  .recall-body {
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  .kind-tag,
+  .node-type {
+    font-size: 0.66rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-card);
+    color: var(--color-text);
+    border: var(--border-width, 1px) solid var(--color-border);
+  }
+  .scope,
+  .imp,
+  .cite {
+    font-size: 0.68rem;
+    color: var(--color-text-muted);
+  }
+  .tier0 {
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    color: var(--color-accent);
+  }
+  .status-flag {
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    color: var(--color-warning, var(--color-blocked, orange));
+  }
+  .imp {
+    margin-left: auto;
+  }
+  .node {
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    width: 100%;
+    text-align: left;
+    padding: 0.35rem 0.55rem;
+    border: var(--border-width, 1px) solid var(--color-border-subtle, var(--color-border));
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+    color: var(--color-text-2);
+    cursor: pointer;
+    transition: border-color 0.14s ease, opacity 0.14s ease;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .node {
+      transition: none;
+    }
+  }
+  .node:hover {
+    border-color: var(--color-accent);
+  }
+  .node:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  .node[data-focus='true'] {
+    border-color: var(--color-accent);
+    color: var(--color-text);
+  }
+  .node[data-neighbour='true'] {
+    border-color: var(--color-accent-muted, var(--color-accent));
+  }
+  .node[data-dim='true'] {
+    opacity: 0.4;
+  }
+  .node[data-status='archived'],
+  .node[data-status='superseded'] {
+    opacity: 0.45;
+  }
+  .node-label {
+    font: var(--type-body-sm);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .node-list {
+    max-height: 50vh;
+    overflow-y: auto;
+  }
+  .focus-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    border-top: var(--border-width, 1px) solid var(--color-border);
+    padding-top: var(--space-2, 0.5rem);
+  }
+  .edge {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+  .edge-kind {
+    font-size: 0.66rem;
+    color: var(--color-accent);
+    min-width: 9ch;
+  }
+  .edge-target {
+    font-size: 0.72rem;
+    color: var(--color-text-2);
+  }
+
+  /* ── TASK 10.4 — Settings form ─────────────────────────────────────────────── */
+  .settings-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+    max-width: 36rem;
+  }
+  .settings-field {
+    flex: none;
   }
 </style>

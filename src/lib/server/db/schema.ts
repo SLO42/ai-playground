@@ -739,6 +739,53 @@ const m0023_pm: Migration = {
 	`
 };
 
+// ── §4.x — task↔external sync mappings (TASK 9.4 / D-037, the reference SyncAdapter) ──
+// One `task_sync` row maps an Atelier `task` to its external counterpart (a GitHub issue
+// today; any SyncAdapter `provider` tomorrow). It is the IDEMPOTENCY ledger: a re-sync
+// finds the existing mapping by (provider, repo, external_id) — or by (provider, task) —
+// and UPDATES instead of re-creating, so the same task never spawns two issues.
+//
+// dedup_key is a computed VALUE field (D-008 NONE-collision-dodging pattern, mirrors
+// session/memory/work_item) — `provider|repo|external_id` — with a UNIQUE index so two
+// concurrent syncs of the same issue collide on insert rather than duplicating. The
+// task link is also UNIQUE-per-provider-repo via task_dedup so one task maps to at most
+// one issue in a given repo (the "create-or-update" invariant).
+const m0024_task_sync: Migration = {
+	id: '0024_task_sync',
+	up: `
+		DEFINE TABLE task_sync SCHEMAFULL;
+		DEFINE FIELD task        ON task_sync TYPE record<task>;
+		DEFINE FIELD project     ON task_sync TYPE record<project>;
+		DEFINE FIELD provider    ON task_sync TYPE string DEFAULT "github"
+			ASSERT $value IN ["github"];
+		DEFINE FIELD repo        ON task_sync TYPE string;
+		-- The external counterpart id (GitHub issue number, as a string for provider-agnosticism).
+		DEFINE FIELD external_id ON task_sync TYPE string;
+		DEFINE FIELD external_url ON task_sync TYPE option<string>;
+		-- The last direction this mapping was synced in, for the surface.
+		DEFINE FIELD direction   ON task_sync TYPE string DEFAULT "both"
+			ASSERT $value IN ["push","pull","both"];
+		DEFINE FIELD last_synced ON task_sync TYPE datetime DEFAULT time::now();
+		DEFINE FIELD created_at  ON task_sync TYPE datetime DEFAULT time::now();
+
+		-- Dedup by the external counterpart: a concrete non-NONE VALUE (§6.2) + UNIQUE index,
+		-- so two callers that both miss the SELECT collide on CREATE rather than duplicating
+		-- (D-008 — the dedup TOCTOU class transactions alone do NOT solve).
+		DEFINE FIELD dedup_key   ON task_sync VALUE
+			provider + '|' + repo + '|' + external_id;
+		-- Dedup by the Atelier task within a repo: one task ↔ one issue per repo.
+		DEFINE FIELD task_dedup  ON task_sync VALUE
+			provider + '|' + repo + '|' + <string>task;
+
+		DEFINE INDEX task_sync_dedup   ON task_sync FIELDS dedup_key  UNIQUE;
+		DEFINE INDEX task_sync_task    ON task_sync FIELDS task_dedup UNIQUE;
+		DEFINE INDEX task_sync_by_task    ON task_sync FIELDS task;
+		DEFINE INDEX task_sync_by_project ON task_sync FIELDS project;
+		${backfillValueField('task_sync', 'dedup_key')}
+		${backfillValueField('task_sync', 'task_dedup')}
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -768,5 +815,6 @@ export const schemaMigrations: Migration[] = [
 	m0020_work_item_claimed_at,
 	m0021_workflow_flexible,
 	m0022_agent_event_hook,
-	m0023_pm
+	m0023_pm,
+	m0024_task_sync
 ];

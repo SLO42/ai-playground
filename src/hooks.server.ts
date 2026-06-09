@@ -94,7 +94,7 @@ function bootstrapControlPlaneEnv(): void {
  *  Statusbar service-health token updates live as a service row flips state (UI-SPEC §3).
  *  9.1 adds `pm_memory`, `decision`, `sprint` so the project-workspace PM tab updates in
  *  place as the PM records memory/decisions or a sprint is created/completed (UI-SPEC §51). */
-const WATCHED_TABLES = ['project', 'task', 'session', 'agent_event', 'routing_event', 'security_finding', 'service', 'pm_memory', 'decision', 'sprint'] as const;
+const WATCHED_TABLES = ['project', 'task', 'session', 'agent_event', 'routing_event', 'security_finding', 'service', 'pm_memory', 'decision', 'sprint', 'task_sync'] as const;
 
 const watchers: DbSourceHandle[] = [];
 

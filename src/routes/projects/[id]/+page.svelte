@@ -38,9 +38,10 @@
   // The slug segment for child routes (the [id] param is the bare slug, not `project:slug`).
   const slug = $derived(page.params.id);
   const releaseHref = $derived(`/projects/${slug}/release`);
+  const syncHref = $derived(`/projects/${slug}/sync`);
   const projectName = $derived(project?.name ?? slug);
 
-  type Tab = 'plan' | 'pm' | 'sessions' | 'release';
+  type Tab = 'plan' | 'pm' | 'sessions' | 'release' | 'sync';
   let tab = $state<Tab>('plan');
   // Default to the Sessions tab when a session is selected via ?session=.
   $effect(() => {
@@ -289,6 +290,13 @@
         aria-pressed={tab === 'release'}
         data-active={tab === 'release'}
         onclick={() => (tab = 'release')}>Release</button
+      >
+      <button
+        class="tab"
+        type="button"
+        aria-pressed={tab === 'sync'}
+        data-active={tab === 'sync'}
+        onclick={() => (tab = 'sync')}>Sync</button
       >
     </nav>
 
@@ -864,7 +872,7 @@
           </div>
         {/if}
       </div>
-    {:else}
+    {:else if tab === 'release'}
       <div class="tab-body">
         <div class="card">
           <h2 class="section-title">Release</h2>
@@ -873,6 +881,18 @@
             publish — runs on the dedicated Release surface.
           </p>
           <a class="link-btn" href={releaseHref}>Open release pipeline →</a>
+        </div>
+      </div>
+    {:else}
+      <div class="tab-body">
+        <div class="card">
+          <h2 class="section-title">Sync</h2>
+          <p class="state-body">
+            Reconcile this project's tasks with GitHub issues — idempotently, via your own
+            <span class="mono">gh</span> credentials (never stored). The reference task↔issue
+            sync adapter.
+          </p>
+          <a class="link-btn" href={syncHref}>Open GitHub sync →</a>
         </div>
       </div>
     {/if}

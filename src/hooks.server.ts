@@ -93,8 +93,10 @@ function bootstrapControlPlaneEnv(): void {
  *  scan writes findings (UI-SPEC §207/§315). 7.1 adds `service` so the always-visible
  *  Statusbar service-health token updates live as a service row flips state (UI-SPEC §3).
  *  9.1 adds `pm_memory`, `decision`, `sprint` so the project-workspace PM tab updates in
- *  place as the PM records memory/decisions or a sprint is created/completed (UI-SPEC §51). */
-const WATCHED_TABLES = ['project', 'task', 'session', 'agent_event', 'routing_event', 'security_finding', 'service', 'pm_memory', 'decision', 'sprint', 'task_sync', 'notification'] as const;
+ *  place as the PM records memory/decisions or a sprint is created/completed (UI-SPEC §51).
+ *  11.1 adds `incident` so the /reports incidents history (the RightTray "see all" target)
+ *  updates in place as a gate-denial / anomaly incident is recorded (UI-SPEC §208). */
+const WATCHED_TABLES = ['project', 'task', 'session', 'agent_event', 'routing_event', 'security_finding', 'service', 'pm_memory', 'decision', 'sprint', 'task_sync', 'notification', 'incident'] as const;
 
 const watchers: DbSourceHandle[] = [];
 

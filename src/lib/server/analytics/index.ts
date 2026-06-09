@@ -32,6 +32,17 @@ export {
 export { traceAction, type ActionTrace, type TraceStep } from './trace';
 
 export {
+	buildRoutingRationale,
+	aggregateDecisions,
+	type RoutingRationale,
+	type RoutingDecision,
+	type RationaleAggregate,
+	type RationaleBucket,
+	type RoutingRationaleOptions,
+	type DecisionOutcome
+} from './routing-rationale';
+
+export {
 	listPoolSlots,
 	listFleet,
 	listFleetByProject,

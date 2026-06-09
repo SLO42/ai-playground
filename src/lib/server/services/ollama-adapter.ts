@@ -29,6 +29,40 @@ const isWindows = process.platform === 'win32';
 /** Default loopback Ollama base url (D-003/D-025 — NO `/v1` suffix per CLAUDE.md). */
 const DEFAULT_OLLAMA_HOST = 'http://127.0.0.1:11434';
 
+/**
+ * Coerce a configured Ollama host into a valid CLIENT base url for the health probe.
+ *
+ * `OLLAMA_HOST` is OVERLOADED: Ollama itself uses it as the server's BIND address
+ * (commonly `0.0.0.0:11434`, often with no scheme), while this adapter uses it as the
+ * client URL it fetches. Two failure modes follow from feeding the bind value straight
+ * to global `fetch`:
+ *   1. NO SCHEME (`0.0.0.0:11434`) → global fetch treats it as a RELATIVE url and throws
+ *      "Cannot use relative URL … with global fetch" → health() catches → false negative.
+ *   2. `0.0.0.0` / `::` are bind-ALL addresses you cannot CONNECT to — they must be
+ *      rewritten to a loopback connect address (D-025 loopback-only).
+ * This normalizer makes the live probe tell the truth regardless of the bind-style env
+ * value: it adds an `http://` scheme when absent and rewrites unroutable bind hosts to
+ * `127.0.0.1`, then strips any trailing slash.
+ */
+export function normalizeClientHost(raw: string): string {
+	let h = (raw ?? '').trim();
+	if (!h) return DEFAULT_OLLAMA_HOST;
+	// Add a scheme if missing so the value parses as an absolute url (else fetch sees it
+	// as relative and throws). Default to http (loopback, plaintext — D-025).
+	if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(h)) h = `http://${h}`;
+	try {
+		const u = new URL(h);
+		// You cannot connect to a bind-all address — rewrite to loopback (D-025).
+		if (u.hostname === '0.0.0.0' || u.hostname === '::' || u.hostname === '[::]') {
+			u.hostname = '127.0.0.1';
+		}
+		return u.toString().replace(/\/$/, '');
+	} catch {
+		// Unparseable — fall back to the loopback default rather than probe a bad url.
+		return DEFAULT_OLLAMA_HOST;
+	}
+}
+
 export interface OllamaAdapterOptions {
 	/** Base url for the health probe (loopback). Defaults to 127.0.0.1:11434. */
 	host?: string;
@@ -53,7 +87,7 @@ export class OllamaServiceAdapter implements ServiceAdapter {
 	private spawnedPid: number | null = null;
 
 	constructor(opts: OllamaAdapterOptions = {}) {
-		this.host = (opts.host ?? DEFAULT_OLLAMA_HOST).replace(/\/$/, '');
+		this.host = normalizeClientHost(opts.host ?? DEFAULT_OLLAMA_HOST);
 		this.binary = opts.binary ?? 'ollama';
 		this.probeTimeoutMs = opts.probeTimeoutMs ?? 2000;
 	}

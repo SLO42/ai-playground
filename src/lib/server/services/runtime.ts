@@ -115,14 +115,27 @@ export async function readServices(db: Db): Promise<ServicesData> {
 		const row = byName.get(name);
 		// Live health probe for adapters that expose one (Ollama). Bounded + best-effort.
 		let liveHealthy: boolean | null = null;
+		let livePid: number | undefined;
 		if (name === 'ollama' && ollama) {
 			liveHealthy = await ollama.health().catch(() => null);
+			if (liveHealthy === true) {
+				// Discover the live pid so a probe-true service shows a truthful pid even
+				// when the persisted row is stale (e.g. left 'stopped' after a host restart).
+				livePid = (await ollama.discoverPid().catch(() => null)) ?? undefined;
+			}
 		}
+		// RECONCILE persisted status with the live probe (F-008 — never present a stale
+		// 'stopped'/'crashed' as current truth for a service the probe sees healthy). The
+		// live probe is ground truth for liveness; when it says healthy the displayed
+		// status is 'running' regardless of what the (lagging) persisted row last wrote.
+		let status = row ? row.status : 'unknown';
+		if (liveHealthy === true) status = 'running';
+		else if (liveHealthy === false && status === 'running') status = 'stopped';
 		const view: ServiceView = {
 			id: row ? row.id : null,
 			name,
-			status: row ? row.status : 'unknown',
-			pid: row?.pid,
+			status,
+			pid: livePid ?? row?.pid,
 			checked_at: row ? row.checked_at : '',
 			controllable: meta.controllable,
 			liveHealthy

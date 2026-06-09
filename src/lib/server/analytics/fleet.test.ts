@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { StringRecordId } from 'surrealdb';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
@@ -14,7 +15,7 @@ import {
 	type CcSpawnPlan,
 	type RuntimeEvent
 } from '../runtime/index';
-import { listFleet, listPoolSlots, listFleetAcrossProjects } from './fleet';
+import { listFleet, listPoolSlots, listFleetAcrossProjects, listAgentCatalog } from './fleet';
 
 // TASK 2.4 VERIFY (part 4) — the /agents read models from REAL rows (F-008). Liveness
 // comes from session.status, NEVER agent_slot.busy (UI-SPEC §199).
@@ -149,5 +150,59 @@ describe('fleet read models (2.4; UI-SPEC §198–200)', () => {
 		expect(fromP2!.ccSessionId).toBe('cc_fleet_2');
 
 		await deleteProject(db, p2.id).catch(() => {});
+	});
+
+	// TASK 11.3 — the agent-TYPE catalog reads the cc_agent MIRROR (F-008), grouping the same
+	// agent name across scopes and joining each scope's kind + owning project (UI-SPEC §198).
+	it('listAgentCatalog groups agent types by name and joins their scopes', async () => {
+		// Two scopes: a global one and a project one. Same agent name "coder" defined in both
+		// (must collapse to ONE catalog entry carrying both scopes); a global-only "reviewer".
+		const [g] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE cc_scope CONTENT { kind: "global", path: "/home/u/.claude" } RETURN id;`
+		);
+		const globalScope = String(g[0].id);
+		const [pr] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE cc_scope CONTENT { kind: "project", path: "F:/code/fleet/.claude", project: $project } RETURN id;`,
+			{ project: new StringRecordId(projectId) }
+		);
+		const projScope = String(pr[0].id);
+
+		await db.query(
+			`CREATE cc_agent CONTENT { scope: $s, file_path: "f1", name: "coder", description: "writes code", frontmatter: {}, category: "core" };`,
+			{ s: new StringRecordId(globalScope) }
+		);
+		await db.query(
+			`CREATE cc_agent CONTENT { scope: $s, file_path: "f2", name: "coder", description: "writes code", frontmatter: {} };`,
+			{ s: new StringRecordId(projScope) }
+		);
+		await db.query(
+			`CREATE cc_agent CONTENT { scope: $s, file_path: "f3", name: "reviewer", description: "reviews", frontmatter: {}, category: "swarm" };`,
+			{ s: new StringRecordId(globalScope) }
+		);
+
+		const cat = await listAgentCatalog(db);
+		const coder = cat.find((c) => c.name === 'coder');
+		const reviewer = cat.find((c) => c.name === 'reviewer');
+
+		expect(coder).toBeTruthy();
+		expect(reviewer).toBeTruthy();
+		// "coder" collapses to ONE entry with BOTH scopes (global + project).
+		expect(coder!.scopes.length).toBe(2);
+		const kinds = new Set(coder!.scopes.map((s) => s.kind));
+		expect(kinds.has('global')).toBe(true);
+		expect(kinds.has('project')).toBe(true);
+		// The project scope joins the owning project id (honest "where it's defined").
+		const projEntry = coder!.scopes.find((s) => s.kind === 'project');
+		expect(projEntry!.projectId).toBe(projectId);
+		expect(coder!.description).toBe('writes code');
+		// First non-null metadata wins (category came from the global scope row).
+		expect(coder!.category).toBe('core');
+		// reviewer is global-only.
+		expect(reviewer!.scopes.length).toBe(1);
+		expect(reviewer!.scopes[0].kind).toBe('global');
+		expect(reviewer!.category).toBe('swarm');
+		// Sorted by name (coder < reviewer).
+		const names = cat.map((c) => c.name);
+		expect(names.indexOf('coder')).toBeLessThan(names.indexOf('reviewer'));
 	});
 });

@@ -49,6 +49,73 @@ export interface FleetSessionXP extends FleetSession {
 	ccSessionId: string | null;
 }
 
+/** One scope (global / a project) that defines an agent type — the honest "where it lives". */
+export interface AgentCatalogScope {
+	/** 'global' or 'project'. */
+	kind: string;
+	/** The owning project's record id, or null for global / unlinked scopes. */
+	projectId: string | null;
+}
+
+/**
+ * One agent-TYPE catalog entry (UI-SPEC §198 "catalog of available agents"). Aggregated from
+ * the cc_agent MIRROR (cc-config sync, 1.8/7.3): the same agent name may be defined in more
+ * than one scope (global + a project), so entries are keyed by name and carry every scope that
+ * defines it. `description`/`category` come from the agent file's frontmatter; capability-bundle
+ * membership (which orchestration intents may provision this agent, D-036) is overlaid by the
+ * loader from orchestration.yaml — it is NOT a session-attribution claim (the data model does
+ * not record which cc_agent drove a given session, so we never fabricate per-session usage; F-008).
+ */
+export interface AgentCatalogEntry {
+	/** The agent type name (cc_agent.name) — the catalog key. */
+	name: string;
+	/** Role / one-line description from the agent file frontmatter, or null if none. */
+	description: string | null;
+	/** Category from frontmatter (e.g. "swarm", "github"), or null. */
+	category: string | null;
+	/** Every scope (global / project) whose .claude defines this agent type. */
+	scopes: AgentCatalogScope[];
+}
+
+/**
+ * Read the agent-TYPE catalog from the cc_agent MIRROR (UI-SPEC §198). Every row is a REAL
+ * synced agent definition (F-008) — no fabricated agents. Rows are grouped by `name` so an
+ * agent defined in both global and a project scope is ONE catalog entry carrying both scopes
+ * (the honest "where it's defined"). Sorted by name. Pure read of the mirror — no disk, no spawn.
+ */
+export async function listAgentCatalog(db: Db): Promise<AgentCatalogEntry[]> {
+	// Join the agent's scope so each row carries its scope kind + owning project id. The mirror
+	// is small (catalog), so the FETCH is cheap and there is no N+1.
+	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+		`SELECT name, description, category,
+		        scope.kind AS scope_kind, scope.project AS scope_project
+		   FROM cc_agent
+		   ORDER BY name
+		   FETCH scope;`
+	);
+	const byName = new Map<string, AgentCatalogEntry>();
+	for (const r of rows ?? []) {
+		const name = String(r.name ?? '').trim();
+		if (!name) continue;
+		const entry = byName.get(name) ?? {
+			name,
+			description: r.description == null ? null : String(r.description),
+			category: r.category == null ? null : String(r.category),
+			scopes: [] as AgentCatalogScope[]
+		};
+		// First non-null description/category wins (an entry seen in a later scope keeps the
+		// first meaningful metadata rather than clobbering it with a null).
+		if (entry.description == null && r.description != null) entry.description = String(r.description);
+		if (entry.category == null && r.category != null) entry.category = String(r.category);
+		entry.scopes.push({
+			kind: String(r.scope_kind ?? 'unknown'),
+			projectId: r.scope_project == null ? null : String(r.scope_project)
+		});
+		byName.set(name, entry);
+	}
+	return [...byName.values()].sort((a, b) => a.name.localeCompare(b.name));
+}
+
 /** Read the pool slot definitions (config/stat mirror, UI-SPEC §199). */
 export async function listPoolSlots(db: Db): Promise<PoolSlot[]> {
 	const [rows] = await db.query<[Array<Record<string, unknown>>]>(

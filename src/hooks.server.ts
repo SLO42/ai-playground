@@ -95,8 +95,10 @@ function bootstrapControlPlaneEnv(): void {
  *  9.1 adds `pm_memory`, `decision`, `sprint` so the project-workspace PM tab updates in
  *  place as the PM records memory/decisions or a sprint is created/completed (UI-SPEC §51).
  *  11.1 adds `incident` so the /reports incidents history (the RightTray "see all" target)
- *  updates in place as a gate-denial / anomaly incident is recorded (UI-SPEC §208). */
-const WATCHED_TABLES = ['project', 'task', 'session', 'agent_event', 'routing_event', 'security_finding', 'service', 'pm_memory', 'decision', 'sprint', 'task_sync', 'notification', 'incident'] as const;
+ *  updates in place as a gate-denial / anomaly incident is recorded (UI-SPEC §208).
+ *  11.3 adds `cc_agent` so the /agents catalog (and /claude-code catalog) live-refreshes
+ *  in place when a project's `.claude/agents` is re-synced into the cc_* mirror (UI-SPEC §198/§214). */
+const WATCHED_TABLES = ['project', 'task', 'session', 'agent_event', 'routing_event', 'security_finding', 'service', 'pm_memory', 'decision', 'sprint', 'task_sync', 'notification', 'incident', 'cc_agent'] as const;
 
 const watchers: DbSourceHandle[] = [];
 

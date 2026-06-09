@@ -47,7 +47,10 @@ export {
 	listFleet,
 	listFleetByProject,
 	listFleetAcrossProjects,
+	listAgentCatalog,
 	type PoolSlot,
 	type FleetSession,
-	type FleetSessionXP
+	type FleetSessionXP,
+	type AgentCatalogEntry,
+	type AgentCatalogScope
 } from './fleet';

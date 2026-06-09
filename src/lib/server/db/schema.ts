@@ -786,6 +786,61 @@ const m0024_task_sync: Migration = {
 	`
 };
 
+// ── §4.x — PM periodic review + GitHub project-board sync (TASK 11.4 / wave v1.7) ──
+//
+// Three tables land the deferred 9.1/9.4 review machinery + board sync:
+//   • pm_review        — one row per PM review pass (manual or periodic, D-004). It is the
+//     summary surfaced in the PM tab: the trigger, a human summary, and honest counts of
+//     the signals examined + typed memories the pass wrote. Append-only history.
+//   • board_sync_config — the per-project, opt-in column mapping for the GitHub project-BOARD
+//     sync adapter (D-037 extension): task-status → board-column. One row per project (the
+//     project link is UNIQUE). `enabled` gates the push; the JSON `mapping` is the
+//     SCHEMAFULL-FLEXIBLE status→column map.
+//   • sync_incident    — a recorded sync FAILURE (never silent, F-008): which adapter/project
+//     failed, when, and why. The board adapter writes one per failed run so the surface can
+//     show an honest last-error instead of swallowing it.
+const m0025_pm_review_board: Migration = {
+	id: '0025_pm_review_board',
+	up: `
+		DEFINE TABLE pm_review SCHEMAFULL;
+		DEFINE FIELD project     ON pm_review TYPE record<project>;
+		-- What kicked the review off (D-004 honors mode): manual | periodic | event.
+		DEFINE FIELD trigger     ON pm_review TYPE string DEFAULT "manual"
+			ASSERT $value IN ["manual","periodic","event"];
+		DEFINE FIELD summary     ON pm_review TYPE string;
+		-- Honest counts of what the pass examined + wrote (every number a real action, F-008).
+		DEFINE FIELD tasks_examined    ON pm_review TYPE int DEFAULT 0;
+		DEFINE FIELD findings_examined ON pm_review TYPE int DEFAULT 0;
+		DEFINE FIELD risks_open        ON pm_review TYPE int DEFAULT 0;
+		DEFINE FIELD memories_written  ON pm_review TYPE int DEFAULT 0;
+		DEFINE FIELD created_at  ON pm_review TYPE datetime DEFAULT time::now();
+		DEFINE INDEX pm_review_by_project ON pm_review FIELDS project;
+
+		DEFINE TABLE board_sync_config SCHEMAFULL;
+		DEFINE FIELD project   ON board_sync_config TYPE record<project>;
+		DEFINE FIELD enabled   ON board_sync_config TYPE bool DEFAULT false;
+		-- The GitHub Projects (v2) board number for the repo owner. Optional until configured.
+		DEFINE FIELD board_number ON board_sync_config TYPE option<int>;
+		-- status → board-column map (SCHEMAFULL-FLEXIBLE object so the map round-trips intact).
+		DEFINE FIELD mapping   ON board_sync_config FLEXIBLE TYPE object DEFAULT {};
+		DEFINE FIELD last_synced ON board_sync_config TYPE option<datetime>;
+		-- The last run's honest status: never-run (NONE) | ok | error.
+		DEFINE FIELD last_status ON board_sync_config TYPE option<string>
+			ASSERT $value = NONE OR $value IN ["ok","error"];
+		DEFINE FIELD last_error  ON board_sync_config TYPE option<string>;
+		DEFINE FIELD created_at  ON board_sync_config TYPE datetime DEFAULT time::now();
+		-- One config per project (the opt-in is per-project) — UNIQUE so an upsert is a no-dup.
+		DEFINE INDEX board_sync_config_project ON board_sync_config FIELDS project UNIQUE;
+
+		DEFINE TABLE sync_incident SCHEMAFULL;
+		DEFINE FIELD project   ON sync_incident TYPE record<project>;
+		DEFINE FIELD adapter   ON sync_incident TYPE string;
+		DEFINE FIELD message   ON sync_incident TYPE string;
+		DEFINE FIELD at        ON sync_incident TYPE datetime DEFAULT time::now();
+		DEFINE INDEX sync_incident_by_project ON sync_incident FIELDS project;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -816,5 +871,6 @@ export const schemaMigrations: Migration[] = [
 	m0021_workflow_flexible,
 	m0022_agent_event_hook,
 	m0023_pm,
-	m0024_task_sync
+	m0024_task_sync,
+	m0025_pm_review_board
 ];

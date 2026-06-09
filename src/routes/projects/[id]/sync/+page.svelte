@@ -20,6 +20,8 @@
   let direction = $state<'push' | 'pull' | 'both'>('both');
   let dryRun = $state(false);
   let syncing = $state(false);
+  let boardBusy = $state(false);
+  let boardSyncing = $state(false);
 
   const connected = $derived(data.connected);
   const probe = $derived(data.probe);
@@ -30,9 +32,28 @@
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
   const available = $derived(probe?.available ?? false);
 
+  // ── Board sync (TASK 11.4) ──────────────────────────────────────────────────────
+  const taskStatuses = $derived(data.taskStatuses ?? []);
+  const boardConfig = $derived(data.boardConfig);
+  const boardProbe = $derived(data.boardProbe);
+  const incidents = $derived(data.incidents ?? []);
+  const boardAvailable = $derived(boardProbe?.available ?? false);
+  // Local editable copies seeded from the persisted config (live rows, F-008).
+  let boardEnabled = $state(false);
+  let boardNumber = $state('');
+  let boardMap = $state<Record<string, string>>({});
+  $effect(() => {
+    boardEnabled = boardConfig?.enabled ?? false;
+    boardNumber = boardConfig?.boardNumber != null ? String(boardConfig.boardNumber) : '';
+    boardMap = { ...(boardConfig?.mapping ?? {}) };
+  });
+
   const slug = $derived(page.params.id);
 
   const result = $derived(form && 'sync' in form ? (form.sync as Record<string, unknown>) : undefined);
+  const boardResult = $derived(
+    form && 'board' in form ? (form.board as Record<string, unknown>) : undefined
+  );
 
   function shortId(id: string): string {
     const i = id.indexOf(':');
@@ -48,9 +69,13 @@
   $effect(() => {
     const offT = stream.onDbChange('task', () => void invalidate('app:tasks'));
     const offS = stream.onDbChange('task_sync', () => void invalidate('app:sync'));
+    const offB = stream.onDbChange('board_sync_config', () => void invalidate('app:sync'));
+    const offI = stream.onDbChange('sync_incident', () => void invalidate('app:sync'));
     return () => {
       offT();
       offS();
+      offB();
+      offI();
     };
   });
 </script>
@@ -186,6 +211,134 @@
             </li>
           {/each}
         </ul>
+      {/if}
+    </div>
+
+    <!-- ── Board sync (TASK 11.4): per-project opt-in status → column mapping ─────── -->
+    <div class="card board">
+      <div class="target-head">
+        <h2 class="section-title">Project board sync</h2>
+        <span class="badge" data-on={boardAvailable}>{boardAvailable ? 'ready' : 'unavailable'}</span>
+      </div>
+      <p class="state-body">
+        One-way push: each synced task's <em>status</em> sets its issue's column on a GitHub
+        Projects board. Per-project, opt-in. Requires the <span class="mono">project</span> gh scope
+        and that the task↔issue sync above has run (the board item is the issue).
+      </p>
+      {#if boardProbe && !boardAvailable}
+        <p class="hint" role="status">{boardProbe.reason}</p>
+      {:else if boardProbe?.target}
+        <p class="target-repo mono">{boardProbe.target}</p>
+      {/if}
+
+      <form
+        method="POST"
+        action="?/saveBoard"
+        class="board-form"
+        use:enhance={() => {
+          boardBusy = true;
+          return async ({ update }) => {
+            await update({ reset: false });
+            boardBusy = false;
+          };
+        }}
+      >
+        <label class="check">
+          <input type="checkbox" name="enabled" bind:checked={boardEnabled} disabled={boardBusy} />
+          <span class="check-label">Enable board sync for this project</span>
+        </label>
+        <label class="field board-num">
+          <span class="field-label">Board number</span>
+          <input
+            class="pm-input mono"
+            type="number"
+            name="boardNumber"
+            min="1"
+            bind:value={boardNumber}
+            placeholder="e.g. 3"
+            disabled={boardBusy}
+          />
+        </label>
+        <fieldset class="map-field" disabled={boardBusy}>
+          <legend class="field-label">Status → board column</legend>
+          <div class="map-grid">
+            {#each taskStatuses as s (s)}
+              <label class="map-row">
+                <span class="map-status mono">{s}</span>
+                <input
+                  class="pm-input mono"
+                  type="text"
+                  name={`map_${s}`}
+                  bind:value={boardMap[s]}
+                  placeholder="column name (e.g. Todo)"
+                />
+              </label>
+            {/each}
+          </div>
+        </fieldset>
+        <button class="btn" type="submit" disabled={boardBusy}>
+          {boardBusy ? 'Saving…' : 'Save board config'}
+        </button>
+      </form>
+
+      <!-- Run the board push -->
+      <form
+        method="POST"
+        action="?/syncBoard"
+        use:enhance={() => {
+          boardSyncing = true;
+          return async ({ update }) => {
+            await update({ reset: false });
+            boardSyncing = false;
+          };
+        }}
+      >
+        <button class="btn primary" type="submit" disabled={!boardAvailable || boardSyncing}>
+          {boardSyncing ? 'Pushing…' : 'Push to board'}
+        </button>
+      </form>
+
+      <!-- Honest last-run status (F-008) -->
+      {#if boardConfig?.lastStatus}
+        <p class="board-status" data-status={boardConfig.lastStatus} role="status">
+          Last sync:
+          <span class="mono">{boardConfig.lastStatus}</span>
+          {#if boardConfig.lastSynced}· {fmtTime(boardConfig.lastSynced)}{/if}
+          {#if boardConfig.lastStatus === 'error' && boardConfig.lastError}
+            — <span class="mono">{boardConfig.lastError}</span>
+          {/if}
+        </p>
+      {:else}
+        <p class="state-body">No board sync has run yet.</p>
+      {/if}
+
+      {#if boardResult}
+        {#if 'error' in boardResult}
+          <p class="form-error" role="alert">{boardResult.error}</p>
+        {:else if boardResult.action === 'config'}
+          <p class="result-head">Board config saved ({boardResult.enabled ? 'enabled' : 'disabled'}).</p>
+        {:else if boardResult.action === 'sync'}
+          <p class="result-head">
+            Board push · <span class="mono">{boardResult.target}</span> —
+            {boardResult.updated} updated, {boardResult.skipped} skipped.
+          </p>
+        {/if}
+      {/if}
+
+      <!-- Sync incidents (failures — never silent) -->
+      {#if incidents.length > 0}
+        <div class="incidents">
+          <h3 class="incidents-title">Sync incidents <span class="count mono">{incidents.length}</span></h3>
+          <ul class="rows" aria-label="sync incidents">
+            {#each incidents as inc (inc.id)}
+              <li class="row incident">
+                <span class="when mono">{fmtTime(inc.at)}</span>
+                <span class="inc-adapter mono">{inc.adapter}</span>
+                <span class="inc-msg">{inc.message}</span>
+              </li>
+            {/each}
+          </ul>
+        </div>
       {/if}
     </div>
   {/if}
@@ -454,5 +607,94 @@
     font-size: 0.72rem;
     color: var(--color-text-muted);
     margin-left: auto;
+  }
+  /* ── Board sync (TASK 11.4) ─────────────────────────────────────────────── */
+  .board-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  .field {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+  }
+  .board-num {
+    max-width: 9rem;
+  }
+  .pm-input {
+    appearance: none;
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.35rem 0.55rem;
+    font: var(--type-body-sm);
+    color: var(--color-text);
+    background: var(--color-surface-overlay);
+    border: var(--border-width, 1px) solid var(--color-border);
+    min-height: 24px;
+  }
+  .pm-input:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  .map-field {
+    border: 0;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+  }
+  .map-grid {
+    display: grid;
+    grid-template-columns: 1fr;
+    gap: 0.4rem;
+  }
+  .map-row {
+    display: grid;
+    grid-template-columns: 7rem 1fr;
+    align-items: center;
+    gap: 0.6rem;
+  }
+  .map-status {
+    font-size: 0.74rem;
+    color: var(--color-text-muted);
+    text-transform: lowercase;
+  }
+  .board-status {
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+  }
+  .board-status[data-status='ok'] {
+    color: var(--color-success, var(--color-running, var(--color-accent)));
+  }
+  .board-status[data-status='error'] {
+    color: var(--color-error, var(--color-danger, crimson));
+  }
+  .incidents {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    border-top: var(--border-width, 1px) solid var(--color-border);
+    padding-top: var(--space-3, 0.75rem);
+  }
+  .incidents-title {
+    font: var(--type-body-sm);
+    font-weight: 600;
+    color: var(--color-text);
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+  }
+  .incident {
+    align-items: baseline;
+  }
+  .inc-adapter {
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
+  }
+  .inc-msg {
+    font-size: 0.78rem;
+    color: var(--color-error, var(--color-danger, crimson));
+    flex: 1;
   }
 </style>

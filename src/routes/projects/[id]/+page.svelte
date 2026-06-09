@@ -38,6 +38,9 @@
   const decisions = $derived(data.decisions ?? []);
   const pmBootstrapped = $derived(data.pmBootstrapped ?? false);
   const pmKinds = $derived(data.pmKinds ?? []);
+  // TASK 11.4 — PM periodic review surface.
+  const pmReviews = $derived(data.pmReviews ?? []);
+  const pmAutoReviewAllowed = $derived(data.pmAutoReviewAllowed ?? false);
   const selectedSession = $derived(data.selectedSession);
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
 
@@ -175,6 +178,7 @@
     const offM = stream.onDbChange('pm_memory', () => void invalidate('app:pm'));
     const offD = stream.onDbChange('decision', () => void invalidate('app:pm'));
     const offSp = stream.onDbChange('sprint', () => void invalidate('app:pm'));
+    const offRv = stream.onDbChange('pm_review', () => void invalidate('app:pm'));
     // TASK 10.4 — the Maintain panel + Memory tab update live too.
     const offF = stream.onDbChange('security_finding', () => void invalidate('app:findings'));
     const offMem = stream.onDbChange('memory', () => void invalidate('app:memory'));
@@ -186,6 +190,7 @@
       offM();
       offD();
       offSp();
+      offRv();
       offF();
       offMem();
       offE();
@@ -812,7 +817,77 @@
                   >open transcript →</button
                 >
               </p>
+            {:else if pmFeedback.action === 'review'}
+              <p class="form-ok">
+                {String(pmFeedback.trigger)} review complete — wrote {String(pmFeedback.written)}
+                memory entry(ies).
+              </p>
             {/if}
+          {/if}
+        </div>
+
+        <!-- PM periodic review (TASK 11.4) -------------------------------------- -->
+        <div class="card">
+          <div class="pm-head">
+            <h2 class="section-title">
+              Periodic review
+              {#if pmReviews.length > 0}<span class="count mono">{pmReviews.length}</span>{/if}
+            </h2>
+          </div>
+          <p class="state-body">
+            A review pass examines this project's live activity (tasks, findings, open risks) and
+            writes typed PM memory + a summary. Manual mode → button-triggered only (D-004);
+            periodic mode lets the orchestrator run it on schedule.
+          </p>
+          <div class="review-actions">
+            <form
+              method="POST"
+              action="?/pmReview"
+              use:enhance={() => {
+                pmBusy = true;
+                return async ({ update }) => {
+                  await update({ reset: false });
+                  pmBusy = false;
+                };
+              }}
+            >
+              <input type="hidden" name="trigger" value="manual" />
+              <button class="btn primary" type="submit" disabled={pmBusy || !pmBootstrapped}>
+                {pmBusy ? 'Reviewing…' : 'Run review now'}
+              </button>
+            </form>
+            {#if !pmAutoReviewAllowed}
+              <span class="review-mode-hint">
+                Orchestration mode is <span class="mono">manual</span> — periodic reviews are off.
+              </span>
+            {:else}
+              <span class="review-mode-hint">Periodic reviews are enabled in the current mode.</span>
+            {/if}
+          </div>
+          {#if !pmBootstrapped}
+            <p class="hint">Bootstrap the PM first to enable reviews.</p>
+          {/if}
+
+          {#if pmReviews.length === 0}
+            <p class="state-body">No review passes yet — run one to capture the first snapshot.</p>
+          {:else}
+            <ul class="rows review-list" aria-label="PM review history">
+              {#each pmReviews as r (r.id)}
+                <li class="review-row">
+                  <div class="review-row-head">
+                    <span class="review-trigger mono" data-trigger={r.trigger}>{r.trigger}</span>
+                    <span class="review-when mono">{fmtTime(r.created_at)}</span>
+                  </div>
+                  <p class="review-summary">{r.summary}</p>
+                  <div class="review-counts mono">
+                    <span>{r.tasks_examined} tasks</span>
+                    <span>{r.findings_examined} findings</span>
+                    <span>{r.risks_open} risks</span>
+                    <span>{r.memories_written} written</span>
+                  </div>
+                </li>
+              {/each}
+            </ul>
           {/if}
         </div>
 
@@ -1899,6 +1974,63 @@
     display: flex;
     align-items: center;
     gap: var(--space-3, 0.75rem);
+  }
+  /* ── PM periodic review (TASK 11.4) ─────────────────────────────────────── */
+  .review-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3, 0.75rem);
+    flex-wrap: wrap;
+  }
+  .review-mode-hint {
+    font: var(--type-body-sm);
+    color: var(--color-text-muted);
+  }
+  .review-list {
+    gap: var(--space-3, 0.75rem);
+  }
+  .review-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: var(--space-3, 0.75rem);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+  }
+  .review-row-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .review-trigger {
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: lowercase;
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm, 6px);
+    color: var(--color-text-muted);
+    border: var(--border-width, 1px) solid var(--color-border);
+  }
+  .review-trigger[data-trigger='periodic'] {
+    color: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+  .review-when {
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
+  }
+  .review-summary {
+    font: var(--type-body-sm);
+    color: var(--color-text);
+  }
+  .review-counts {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.75rem;
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
   }
   .pm-badge {
     font-size: 0.66rem;

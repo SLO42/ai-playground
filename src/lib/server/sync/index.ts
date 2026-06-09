@@ -14,9 +14,21 @@ export {
 	listMappings,
 	type GitHubSyncAdapterOptions
 } from './github';
+export { GitHubBoardSyncAdapter, type GitHubBoardSyncAdapterOptions } from './github-board';
+export {
+	getBoardConfig,
+	saveBoardConfig,
+	recordBoardSyncResult,
+	recordSyncIncident,
+	listSyncIncidents,
+	type BoardSyncConfigRow,
+	type SaveBoardConfigInput,
+	type SyncIncidentRow
+} from './board-repo';
 
 import { SyncRegistry } from './adapter';
 import { GitHubSyncAdapter } from './github';
+import { GitHubBoardSyncAdapter } from './github-board';
 
 let registry: SyncRegistry | null = null;
 
@@ -25,6 +37,7 @@ export function getSyncRegistry(): SyncRegistry {
 	if (!registry) {
 		registry = new SyncRegistry();
 		registry.register(new GitHubSyncAdapter());
+		registry.register(new GitHubBoardSyncAdapter());
 	}
 	return registry;
 }

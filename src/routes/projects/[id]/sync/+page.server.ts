@@ -13,7 +13,20 @@
 
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import { getProject } from '$lib/server/projects/repo';
-import { getSyncRegistry, listMappings, type SyncProbe, type SyncResult } from '$lib/server/sync';
+import { TASK_STATUSES } from '$lib/server/tasks/repo';
+import {
+	getSyncRegistry,
+	listMappings,
+	getBoardConfig,
+	saveBoardConfig,
+	recordSyncIncident,
+	listSyncIncidents,
+	GitHubBoardSyncAdapter,
+	type SyncProbe,
+	type SyncResult,
+	type BoardSyncConfigRow,
+	type SyncIncidentRow
+} from '$lib/server/sync';
 import { assertRecordId } from '$lib/server/db/validate';
 import { error, fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
@@ -39,6 +52,14 @@ export interface SyncPageData {
 	probe?: SyncProbe;
 	mappings: MappingView[];
 	directions: readonly Direction[];
+	/** The set of task statuses — the rows of the board-column mapping form. */
+	taskStatuses: readonly string[];
+	/** The project's board-sync config (opt-in mapping + honest last-run status), or null. */
+	boardConfig: BoardSyncConfigRow | null;
+	/** The board adapter's honest probe (available + target, or unavailable + reason). */
+	boardProbe?: SyncProbe;
+	/** Recent sync incidents (failures — never silent, F-008). */
+	incidents: SyncIncidentRow[];
 	error?: string;
 }
 
@@ -55,7 +76,15 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<SyncPag
 
 	const db = tryGetDb();
 	if (!db) {
-		return { connected: false, projectId, mappings: [], directions: DIRECTIONS };
+		return {
+			connected: false,
+			projectId,
+			mappings: [],
+			directions: DIRECTIONS,
+			taskStatuses: TASK_STATUSES,
+			boardConfig: null,
+			incidents: []
+		};
 	}
 
 	try {
@@ -71,6 +100,17 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<SyncPag
 		const repo = probe.target ?? repoFromUrl(project.repo_url);
 		const mappings = repo ? await listMappings(db, projectId, repo) : [];
 
+		// Board sync (TASK 11.4): the per-project opt-in config + an honest board probe + the
+		// recorded incidents (failures, never silent — F-008).
+		const boardConfig = await getBoardConfig(db, projectId);
+		const boardAdapter = new GitHubBoardSyncAdapter();
+		const boardProbe = await boardAdapter.probe({
+			cwd: project.root_path,
+			...(repo ? { repo } : {}),
+			config: boardConfig
+		});
+		const incidents = await listSyncIncidents(db, projectId);
+
 		return {
 			connected: true,
 			projectId,
@@ -84,7 +124,11 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<SyncPag
 				direction: m.direction,
 				lastSynced: m.last_synced
 			})),
-			directions: DIRECTIONS
+			directions: DIRECTIONS,
+			taskStatuses: TASK_STATUSES,
+			boardConfig,
+			boardProbe,
+			incidents
 		};
 	} catch (err) {
 		if (err && typeof err === 'object' && 'status' in err) throw err;
@@ -93,6 +137,9 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<SyncPag
 			projectId,
 			mappings: [],
 			directions: DIRECTIONS,
+			taskStatuses: TASK_STATUSES,
+			boardConfig: null,
+			incidents: [],
 			error: (err as Error).message
 		};
 	}
@@ -164,6 +211,121 @@ export const actions: Actions = {
 			};
 		} catch (err) {
 			return fail(500, { sync: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * Save the per-project board-sync config (TASK 11.4): the opt-in `enabled` gate, the board
+	 * number, and the task-status → board-column NAME mapping. Validated at the boundary — the
+	 * project id (route param), the board number (positive int when set), and the mapping keys
+	 * (only known task statuses are persisted; an unknown key is dropped). Idempotent upsert.
+	 */
+	saveBoard: async ({ params, request }) => {
+		let projectId: string;
+		try {
+			projectId = assertRecordId(`project:${params.id}`);
+		} catch {
+			return fail(400, { board: { error: 'invalid project id' } });
+		}
+
+		const db = tryGetDb();
+		if (!db) {
+			return fail(503, { board: { error: 'Database not connected — start SurrealDB and retry.' } });
+		}
+
+		const form = await request.formData();
+		const enabled = form.get('enabled') === 'on';
+		const rawBoard = String(form.get('boardNumber') ?? '').trim();
+		let boardNumber: number | undefined;
+		if (rawBoard) {
+			const n = Number(rawBoard);
+			if (!Number.isInteger(n) || n <= 0) {
+				return fail(400, { board: { error: 'Board number must be a positive integer.' } });
+			}
+			boardNumber = n;
+		}
+		// One mapping value per task status (column name). Empty values are omitted.
+		const mapping: Record<string, string> = {};
+		for (const status of TASK_STATUSES) {
+			const col = String(form.get(`map_${status}`) ?? '').trim();
+			if (col) mapping[status] = col;
+		}
+
+		try {
+			const saved = await saveBoardConfig(db, {
+				project: projectId,
+				enabled,
+				...(boardNumber != null ? { boardNumber } : {}),
+				mapping
+			});
+			return { board: { ok: true as const, action: 'config', enabled: saved.enabled } };
+		} catch (err) {
+			return fail(500, { board: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * Run a GitHub project-BOARD sync (TASK 11.4 — one-way push: task status → board column).
+	 * Honest precheck via the board adapter probe; a failed run RECORDS an incident (never
+	 * silent, F-008). Idempotent (adding to a board + setting Status are safe to repeat).
+	 */
+	syncBoard: async ({ params }) => {
+		let projectId: string;
+		try {
+			projectId = assertRecordId(`project:${params.id}`);
+		} catch {
+			return fail(400, { board: { error: 'invalid project id' } });
+		}
+
+		const db = tryGetDb();
+		if (!db) {
+			return fail(503, { board: { error: 'Database not connected — start SurrealDB and retry.' } });
+		}
+
+		const project = await getProject(db, projectId);
+		if (!project) return fail(404, { board: { error: 'project not found' } });
+
+		// Resolve the repo via the issue adapter's probe (the board owner derives from it).
+		const issueAdapter = getSyncRegistry().get(ADAPTER_ID);
+		const issueProbe = await issueAdapter.probe({ cwd: project.root_path });
+		const repo = issueProbe.target ?? repoFromUrl(project.repo_url);
+
+		const boardConfig = await getBoardConfig(db, projectId);
+		const boardAdapter = new GitHubBoardSyncAdapter();
+		const probe = await boardAdapter.probe({
+			cwd: project.root_path,
+			...(repo ? { repo } : {}),
+			config: boardConfig
+		});
+		if (!probe.available) {
+			// Record the unavailable reason as an incident so it is never silent.
+			await recordSyncIncident(db, {
+				project: projectId,
+				adapter: 'github-board',
+				message: probe.reason ?? 'board sync unavailable'
+			}).catch(() => {});
+			return fail(409, { board: { error: probe.reason ?? 'Board sync is not available.' } });
+		}
+
+		try {
+			const result = await boardAdapter.sync(db, {
+				projectId,
+				cwd: project.root_path,
+				direction: 'push',
+				...(repo ? { repo } : {})
+			});
+			return {
+				board: {
+					ok: true as const,
+					action: 'sync',
+					target: result.target,
+					updated: result.updated,
+					skipped: result.skipped,
+					errors: result.errors
+				}
+			};
+		} catch (err) {
+			return fail(500, { board: { error: (err as Error).message } });
 		}
 	}
 };

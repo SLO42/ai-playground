@@ -53,6 +53,53 @@ export interface GitHubClient {
 	): Promise<void>;
 }
 
+// ── GitHub Projects (v2) board operations (TASK 11.4 — project-BOARD sync) ─────────
+// The board sync maps an Atelier task's STATUS to a GitHub Projects (v2) board column (a
+// single-select "Status" field option). One-way push: it ensures each synced task's issue is
+// an item on the board and sets the item's Status field to the configured column. All the
+// real gh calls go through runGh (array args, no shell — D-008); creds are operator-supplied
+// (D-026). The full op set is small and injectable so the contract suite exercises the
+// adapter against a fake board with NO network.
+
+/** A board column option (a single-select field option on the project board). */
+export interface BoardColumn {
+	/** The option's stable node id (used to set an item's status). */
+	id: string;
+	/** The human column name (e.g. "Todo", "In Progress", "Done") — what the config maps to. */
+	name: string;
+}
+
+/** The resolved board: its node id, the Status field id, and its column options. */
+export interface BoardInfo {
+	/** The Projects (v2) board node id. */
+	projectId: string;
+	/** The single-select "Status" field node id (null if the board has no Status field). */
+	statusFieldId: string | null;
+	columns: BoardColumn[];
+}
+
+/** A board item — the link between an issue and its row on the board. */
+export interface BoardItem {
+	/** The board item node id (the thing whose Status we set). */
+	itemId: string;
+}
+
+/** The GitHub Projects (v2) board operations the board-sync adapter depends on. */
+export interface GitHubBoardClient {
+	/** Resolve a board (by owner + number) — its Status field + columns. Null if not found. */
+	resolveBoard(owner: string, number: number, cwd: string): Promise<BoardInfo | null>;
+	/** Ensure an issue is an item on the board (idempotent); returns the item id. */
+	addIssueToBoard(boardId: string, issueUrl: string, cwd: string): Promise<BoardItem>;
+	/** Set a board item's single-select Status to the given option id (idempotent). */
+	setItemStatus(
+		boardId: string,
+		itemId: string,
+		statusFieldId: string,
+		optionId: string,
+		cwd: string
+	): Promise<void>;
+}
+
 const SYNC_LABEL = 'atelier-task';
 const LABEL_COLOR = '8ab0ab'; // the design-system accent — Atelier-owned labels are visually ours.
 
@@ -175,4 +222,115 @@ export class GitHubCliClient implements GitHubClient {
 			).catch(() => {});
 		}
 	}
+}
+
+/** An `owner` login — the only board-adjacent string we interpolate; validated at ingress. */
+const OWNER_RE = /^[A-Za-z0-9][A-Za-z0-9-]{0,38}$/;
+
+/** Validate a GitHub owner login at the boundary (D-008). @throws on a malformed login. */
+export function assertOwner(owner: string): string {
+	if (typeof owner !== 'string' || !OWNER_RE.test(owner)) {
+		throw new Error(`invalid GitHub owner login: ${JSON.stringify(owner)}`);
+	}
+	return owner;
+}
+
+/**
+ * The real GitHub Projects (v2) board client (production). Uses `gh project` subcommands
+ * (which speak the v2 GraphQL API under the hood) through the runGh boundary — array args,
+ * no shell (D-008). Credentials are the operator's gh auth / GH_TOKEN (D-026); a board needs
+ * the `project` scope, so an unauthorized token surfaces an honest gh error (F-008).
+ */
+export class GitHubBoardCliClient implements GitHubBoardClient {
+	readonly #bin: string | undefined;
+	constructor(opts: { bin?: string } = {}) {
+		this.#bin = opts.bin;
+	}
+
+	async resolveBoard(owner: string, number: number, cwd: string): Promise<BoardInfo | null> {
+		assertOwner(owner);
+		if (!Number.isInteger(number) || number <= 0) {
+			throw new Error(`invalid board number: ${String(number)}`);
+		}
+		// `gh project view` gives the board node id; `field-list` gives the Status options.
+		let boardId: string;
+		try {
+			const viewOut = await runGh(
+				['project', 'view', String(number), '--owner', owner, '--format', 'json'],
+				{ cwd, bin: this.#bin }
+			);
+			boardId = String((JSON.parse(viewOut) as { id?: string }).id ?? '');
+			if (!boardId) return null;
+		} catch {
+			return null;
+		}
+		try {
+			const fieldsOut = await runGh(
+				['project', 'field-list', String(number), '--owner', owner, '--format', 'json'],
+				{ cwd, bin: this.#bin }
+			);
+			const fields = (JSON.parse(fieldsOut) as { fields?: GhField[] }).fields ?? [];
+			const status = fields.find((f) => f.name === 'Status' && Array.isArray(f.options));
+			return {
+				projectId: boardId,
+				statusFieldId: status?.id ?? null,
+				columns: (status?.options ?? []).map((o) => ({ id: o.id, name: o.name }))
+			};
+		} catch {
+			return { projectId: boardId, statusFieldId: null, columns: [] };
+		}
+	}
+
+	async addIssueToBoard(boardId: string, issueUrl: string, cwd: string): Promise<BoardItem> {
+		// `gh project item-add` is idempotent on the API side (a same-url add returns the item).
+		const out = await runGh(
+			['project', 'item-add', '--owner', '@me', '--url', issueUrl, '--format', 'json'],
+			{ cwd, bin: this.#bin }
+		).catch(async () => {
+			// `--owner @me` may not match an org board; retry letting gh resolve from the url.
+			return runGh(['project', 'item-add', '--url', issueUrl, '--format', 'json'], {
+				cwd,
+				bin: this.#bin
+			});
+		});
+		const itemId = String((JSON.parse(out) as { id?: string }).id ?? '');
+		if (!itemId) throw new Error(`could not resolve board item id for ${issueUrl}`);
+		return { itemId };
+	}
+
+	async setItemStatus(
+		boardId: string,
+		itemId: string,
+		statusFieldId: string,
+		optionId: string,
+		cwd: string
+	): Promise<void> {
+		await runGh(
+			[
+				'project',
+				'item-edit',
+				'--id',
+				itemId,
+				'--project-id',
+				boardId,
+				'--field-id',
+				statusFieldId,
+				'--single-select-option-id',
+				optionId,
+				'--format',
+				'json'
+			],
+			{ cwd, bin: this.#bin }
+		);
+	}
+}
+
+interface GhFieldOption {
+	id: string;
+	name: string;
+}
+interface GhField {
+	id: string;
+	name: string;
+	options?: GhFieldOption[];
 }

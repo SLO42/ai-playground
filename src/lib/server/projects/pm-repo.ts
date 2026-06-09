@@ -81,6 +81,32 @@ export interface AddDecisionInput {
 /** Per-kind counts for the PM surface header (honest — real counts, F-008). */
 export type PmMemoryStats = Record<PmMemoryKind, number> & { total: number };
 
+/** What kicked off a PM review pass (D-004 honors the orchestration mode). */
+export type PmReviewTrigger = 'manual' | 'periodic' | 'event';
+
+/** A persisted `pm_review` row — one PM review pass, surfaced in the PM tab (migration 0025). */
+export interface PmReviewRow {
+	id: string;
+	project: string;
+	trigger: PmReviewTrigger;
+	summary: string;
+	tasks_examined: number;
+	findings_examined: number;
+	risks_open: number;
+	memories_written: number;
+	created_at: string;
+}
+
+export interface AddPmReviewInput {
+	project: string;
+	trigger: PmReviewTrigger;
+	summary: string;
+	tasks_examined: number;
+	findings_examined: number;
+	risks_open: number;
+	memories_written: number;
+}
+
 // ── Helpers (mirror projects/repo.ts) ───────────────────────────────────────────
 
 function str(v: unknown): string {
@@ -116,6 +142,18 @@ function normDecision(
 		id: str(row.id),
 		project: str(row.project),
 		sprint: row.sprint != null ? str(row.sprint) : undefined,
+		created_at: str(row.created_at)
+	};
+}
+
+function normPmReview(
+	row: PmReviewRow & { id: unknown; project: unknown; created_at: unknown }
+): PmReviewRow {
+	return {
+		...row,
+		id: str(row.id),
+		project: str(row.project),
+		// F-013: SurrealDB 2.x datetime is a non-POJO — coerce to an ISO string for the loader.
 		created_at: str(row.created_at)
 	};
 }
@@ -230,6 +268,42 @@ export async function listDecisions(db: Db, projectId: string): Promise<Decision
 		{ project }
 	);
 	return rows.map(normDecision);
+}
+
+// ── PM review history (TASK 11.4) ────────────────────────────────────────────────
+
+/** Persist one PM review summary row. All values bind via $param; project is a record link. */
+export async function addPmReview(db: Db, input: AddPmReviewInput): Promise<PmReviewRow> {
+	const content = {
+		project: link(input.project),
+		trigger: input.trigger,
+		summary: input.summary,
+		tasks_examined: input.tasks_examined,
+		findings_examined: input.findings_examined,
+		risks_open: input.risks_open,
+		memories_written: input.memories_written
+	};
+	const [rows] = await db.query<
+		[(PmReviewRow & { id: unknown; project: unknown; created_at: unknown })[]]
+	>(`CREATE pm_review CONTENT $content RETURN AFTER;`, { content });
+	return normPmReview(rows[0]);
+}
+
+/** A project's PM review passes, newest first (the PM-tab review history surface). */
+export async function listPmReviews(
+	db: Db,
+	projectId: string,
+	limit = 50
+): Promise<PmReviewRow[]> {
+	const project = link(projectId);
+	const cap = Math.min(Math.max(limit, 1), 200);
+	const [rows] = await db.query<
+		[(PmReviewRow & { id: unknown; project: unknown; created_at: unknown })[]]
+	>(
+		`SELECT * FROM pm_review WHERE project = $project ORDER BY created_at DESC LIMIT ${cap};`,
+		{ project }
+	);
+	return rows.map(normPmReview);
 }
 
 // ── Sprint lifecycle (create lives in repo.ts; complete is a PM action) ──────────

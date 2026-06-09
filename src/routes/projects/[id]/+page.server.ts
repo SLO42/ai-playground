@@ -31,12 +31,16 @@ import {
 	addDecision,
 	listDecisions,
 	completeSprint,
+	listPmReviews,
 	PM_MEMORY_KINDS,
 	type PmMemoryKind,
 	type PmMemoryRow,
 	type DecisionRow,
-	type PmMemoryStats
+	type PmMemoryStats,
+	type PmReviewRow
 } from '$lib/server/projects/pm-repo';
+import { runPmReview } from '$lib/server/projects/pm-review';
+import { loadOrchestration } from '$lib/server/config';
 import {
 	listTasksByProject,
 	createTask,
@@ -118,6 +122,10 @@ export interface ProjectDetailData {
 	pmStats: PmMemoryStats | null;
 	/** Architectural decisions for this project, newest first. */
 	decisions: DecisionRow[];
+	/** PM review passes (manual/periodic), newest first — the review-history surface. */
+	pmReviews: PmReviewRow[];
+	/** Whether an automatic (periodic) review is permitted under the configured mode (D-004). */
+	pmAutoReviewAllowed: boolean;
 	/** Whether this project has any PM memory yet (drives the bootstrap CTA). */
 	pmBootstrapped: boolean;
 	/** The PM-memory taxonomy (for the add-memory form). */
@@ -179,6 +187,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pmMemory: [],
 			pmStats: null,
 			decisions: [],
+			pmReviews: [],
+			pmAutoReviewAllowed: false,
 			pmBootstrapped: false,
 			pmKinds: PM_MEMORY_KINDS,
 			selectedSession,
@@ -203,6 +213,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pmMemory,
 			pmStats,
 			decisions,
+			pmReviews,
 			findings,
 			memories,
 			graph
@@ -217,10 +228,21 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			listPmMemory(db, projectId),
 			pmMemoryStats(db, projectId),
 			listDecisions(db, projectId),
+			listPmReviews(db, projectId),
 			listFindings(db, projectId),
 			listProjectMemories(db, projectId),
 			listProjectGraph(db, projectId)
 		]);
+
+		// D-004: an AUTOMATIC (periodic) review is permitted only when the orchestration mode
+		// is NOT manual. Manual mode → the review is button-triggered only. Read honestly; a
+		// malformed/absent config falls back to manual (the most conservative gate).
+		let pmAutoReviewAllowed = false;
+		try {
+			pmAutoReviewAllowed = loadOrchestration(`${configDir()}/orchestration.yaml`).mode !== 'manual';
+		} catch {
+			pmAutoReviewAllowed = false;
+		}
 
 		const tasks: TaskSummary[] = taskRows.map((t) => ({
 			id: t.id,
@@ -259,6 +281,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pmMemory,
 			pmStats,
 			decisions,
+			pmReviews,
+			pmAutoReviewAllowed,
 			pmBootstrapped: pmMemory.length > 0,
 			pmKinds: PM_MEMORY_KINDS,
 			selectedSession,
@@ -284,6 +308,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pmMemory: [],
 			pmStats: null,
 			decisions: [],
+			pmReviews: [],
+			pmAutoReviewAllowed: false,
 			pmBootstrapped: false,
 			pmKinds: PM_MEMORY_KINDS,
 			selectedSession,
@@ -656,8 +682,69 @@ export const actions: Actions = {
 		} catch (err) {
 			return fail(500, { pm: { error: (err as Error).message } });
 		}
+	},
+
+	/**
+	 * Run a PM periodic review pass (TASK 11.4). The PM examines the project's LIVE activity
+	 * (tasks / findings / open risks), writes typed PM-memory entries (observation/risk), and
+	 * records a `pm_review` summary surfaced in the PM tab. F-008: every memory is derived from
+	 * a real row, never fabricated.
+	 *
+	 * D-004 (orchestration mode): a MANUAL trigger (the button) is always allowed. A PERIODIC
+	 * trigger is permitted ONLY when the configured mode is not "manual" — the gate enforced
+	 * HERE so manual mode means button-triggered-only. The trigger is read from the form and
+	 * validated against the enum.
+	 */
+	pmReview: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { pm: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { pm: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const rawTrigger = String(form.get('trigger') ?? 'manual').trim();
+		const trigger: 'manual' | 'periodic' =
+			rawTrigger === 'periodic' ? 'periodic' : 'manual';
+
+		// D-004: a non-manual (periodic) trigger is gated on the orchestration mode.
+		if (trigger === 'periodic') {
+			let mode = 'manual';
+			try {
+				mode = loadOrchestration(`${configDir()}/orchestration.yaml`).mode;
+			} catch {
+				mode = 'manual';
+			}
+			if (mode === 'manual') {
+				return fail(409, {
+					pm: {
+						error:
+							'Orchestration mode is "manual" — periodic reviews are disabled. Trigger the review manually or switch the mode in Settings.'
+					}
+				});
+			}
+		}
+
+		try {
+			const res = await runPmReview(db, projectId, trigger);
+			return {
+				pm: {
+					ok: true as const,
+					action: 'review',
+					trigger,
+					written: res.written.length,
+					reviewId: res.review.id
+				}
+			};
+		} catch (err) {
+			return fail(500, { pm: { error: (err as Error).message } });
+		}
 	}
 };
+
+/** The operator config dir (CONFIG_DIR override, else "config") — mirrors /settings. */
+function configDir(): string {
+	return process.env.CONFIG_DIR?.trim() || 'config';
+}
 
 /** Validate `project:<slug>` at the D-016 boundary; null on a malformed param. */
 function pmProjectId(idParam: string): string | null {

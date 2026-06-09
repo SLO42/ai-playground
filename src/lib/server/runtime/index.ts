@@ -138,8 +138,14 @@ export interface AgentRuntime {
 export interface HarnessSettings {
 	/** D-018 gates: gate-name → 'warn' | 'deny'. */
 	gates?: Record<string, string>;
-	/** D-019 hooks: hook-name → proxy script path (loopback POST, no-op on failure). */
-	hooks?: Record<string, string>;
+	/**
+	 * D-019 hooks: the Claude Code settings.json `hooks` block (event → command-hook groups,
+	 * the `buildHookSettings` shape) carried VERBATIM into the isolated settings.json so the
+	 * driven session's SessionStart/UserPromptSubmit/PostToolUse/Stop hooks invoke the loopback
+	 * proxy (analytics-only, no-op on failure). Opaque here — the value is JSON serialized as-is
+	 * (`Record<string, unknown>`) so this layer never has to know the exact CC hook schema.
+	 */
+	hooks?: Record<string, unknown>;
 	/** ALWAYS empty for driven agents — no inherited operator plugins (S1 finding). */
 	plugins?: string[];
 	/** ALWAYS empty — no inherited marketplaces. */
@@ -169,8 +175,8 @@ export interface IsolatedConfigOptions {
 	harnessConfigRoot: string;
 	/** Harness gates (D-018). */
 	gates?: Record<string, string>;
-	/** Harness hooks (D-019). */
-	hooks?: Record<string, string>;
+	/** Harness hooks (D-019) — the Claude Code settings.json hooks block (buildHookSettings shape). */
+	hooks?: Record<string, unknown>;
 	/**
 	 * The cc-config catalog id-set (1.8/2.11) the request's capability set is validated
 	 * against (D-036). When present, `req.capabilities` is catalog-validated + composed
@@ -282,8 +288,12 @@ export interface ClaudeCodeRuntimeOptions {
 	harnessConfigRoot?: string;
 	/** Harness gates (D-018) carried into every isolated --settings. */
 	gates?: Record<string, string>;
-	/** Harness hooks (D-019) carried into every isolated --settings. */
-	hooks?: Record<string, string>;
+	/**
+	 * Harness hooks (D-019) carried into every isolated --settings — the Claude Code
+	 * settings.json `hooks` block (buildHookSettings shape) so the driven session's
+	 * lifecycle hooks fire and POST the loopback analytics proxy (no-op on failure).
+	 */
+	hooks?: Record<string, unknown>;
 	/**
 	 * The cc-config catalog id-set (1.8/2.11) used to validate + compose each spawn's
 	 * per-task capability set (D-036). When set, every spawn's isolated config is
@@ -311,7 +321,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 	private readonly backend: CcBackend;
 	private readonly harnessConfigRoot: string;
 	private readonly gates?: Record<string, string>;
-	private readonly hooks?: Record<string, string>;
+	private readonly hooks?: Record<string, unknown>;
 	private readonly catalog?: CapabilityCatalog;
 	private readonly providerHealth?: () => Promise<ProviderHealth[]>;
 	private readonly toolSurface: ToolDescriptor[];

@@ -56,6 +56,13 @@ export interface HookCommandEntry {
 
 /** A matcher group: Claude Code runs every hook whose matcher applies. */
 export interface HookGroup {
+	/**
+	 * The matcher Claude Code tests a hook group against. For tool hooks (PostToolUse) it
+	 * filters by tool name; for the lifecycle hooks (SessionStart/UserPromptSubmit/Stop) it is
+	 * conventionally '*' (match-all). Claude Code's own examples ALWAYS carry it — a group with
+	 * no matcher is not reliably run, so we always emit '*' so EVERY wired event fires.
+	 */
+	matcher: string;
 	hooks: HookCommandEntry[];
 }
 
@@ -87,6 +94,9 @@ export function buildHookSettings(opts: BuildHookSettingsOptions): HookSettings 
 	for (const event of HOOK_EVENTS) {
 		out[event] = [
 			{
+				// Match-all — Claude Code's examples always carry a matcher; a group without one
+				// is not reliably run, so '*' ensures EVERY wired lifecycle event fires (8.4).
+				matcher: '*',
 				hooks: [
 					{
 						type: 'command',

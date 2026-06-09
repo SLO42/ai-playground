@@ -671,6 +671,20 @@ const m0021_workflow_flexible: Migration = {
 	`
 };
 
+// TASK 8.4 — admit `hook` lifecycle-capture rows into agent_event. The hook ingest
+// (api/hooks/[event] → ingest.ts) writes `type:'hook'` analytics rows for every driven
+// session's SessionStart/UserPromptSubmit/PostToolUse/Stop. The original assertion (m0004)
+// did not list 'hook', so EVERY hook write failed the SCHEMAFULL type assertion and was
+// silently swallowed (best-effort ingest, D-019) — the hook→agent_event path could never land
+// a row. OVERWRITE the assertion to include 'hook' (additive; the existing values are kept).
+const m0022_agent_event_hook: Migration = {
+	id: '0022_agent_event_hook',
+	up: `
+		DEFINE FIELD OVERWRITE type ON agent_event TYPE string
+			ASSERT $value IN ["spawn","completion","escalation","cancel","error","hook"];
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -698,5 +712,6 @@ export const schemaMigrations: Migration[] = [
 	m0018_work_item_flexible,
 	m0019_work_item_dedup_scope,
 	m0020_work_item_claimed_at,
-	m0021_workflow_flexible
+	m0021_workflow_flexible,
+	m0022_agent_event_hook
 ];

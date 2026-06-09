@@ -47,6 +47,9 @@ describe('buildHookSettings — the .claude settings.json hook map Claude Code r
 		for (const ev of HOOK_EVENTS) {
 			const group = settings[ev];
 			expect(group, `missing hook group for ${ev}`).toBeTruthy();
+			// Claude Code only reliably RUNS a hook group that carries a matcher (8.4 finding);
+			// every wired event gets '*' so all of them fire in a driven session.
+			expect(group[0].matcher).toBe('*');
 			const hook = group[0].hooks[0];
 			expect(hook.type).toBe('command');
 			expect(hook.command).toContain('hook-proxy.mjs');

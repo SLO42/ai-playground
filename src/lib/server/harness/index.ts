@@ -22,3 +22,9 @@ export {
 	type RuntimeAvailability,
 	type MemoryAvailability
 } from './wiring';
+
+export {
+	buildDrivenHookSettings,
+	type HookWiringEnv,
+	type BuildDrivenHookSettingsOptions
+} from './hooks-wiring';

@@ -43,13 +43,15 @@ export interface CapabilityCatalog {
 /** The harness's own base settings (gates/hooks) the capability set composes ONTO. */
 export interface HarnessBase {
 	gates?: Record<string, string>;
-	hooks?: Record<string, string>;
+	/** The Claude Code settings.json hooks block (buildHookSettings shape) — opaque, JSON-serialized as-is. */
+	hooks?: Record<string, unknown>;
 }
 
 /** The composed session settings: harness base + the validated capability set. */
 export interface ComposedCapabilitySettings {
 	gates: Record<string, string>;
-	hooks: Record<string, string>;
+	/** The Claude Code settings.json hooks block carried verbatim from the harness base. */
+	hooks: Record<string, unknown>;
 	/** EXACTLY the declared, catalog-validated set (never the operator's whole plugin set). */
 	capabilities: CapabilitySet;
 	/** ALWAYS empty — the S1/D-002 isolation guard (no inherited operator plugins). */

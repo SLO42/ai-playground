@@ -35,6 +35,7 @@ import { MemoryService, OllamaEmbedder, type ExtractFn, type MemoryCandidate } f
 import { ClaudeCliBackend } from '../claude-code/cli-backend';
 import { catalogIds } from '../cc-config/index';
 import { DEFAULT_GATE_POLICY } from '../claude-code/gates';
+import { buildDrivenHookSettings } from './hooks-wiring';
 import { loadOrchestration, resolveAdaptiveConfig, type IntentClass } from '../config/index';
 import type { Db } from '../db/client';
 
@@ -115,12 +116,26 @@ export async function getRuntime(db?: Db): Promise<RuntimeAvailability> {
 	// composeCapabilities runs against the REAL catalog (the dead-branch fix). When no db
 	// is in hand (e.g. a non-DB caller), capability provisioning stays OFF for that boot.
 	const catalog = db ? await resolveCatalog(db) : undefined;
+	// TASK 8.4 — the D-019 hook block. Built from the boot-minted loopback coordinates
+	// (HOOK_URL/HOOK_TOKEN, surfaced into process.env by hooks.server.ts) so EVERY driven
+	// session's isolated settings.json carries the lifecycle-hook commands that invoke the
+	// loopback proxy → ingest → agent_event. Without this the runtime built with NO hooks and
+	// the hook→agent_event path was dead for live sessions (the 8.4 gap). Honestly OFF (F-008)
+	// when the boot gate has not surfaced the coordinates — the session then spawns hook-less
+	// rather than half-wired. The proxy no-ops on any failure, so this never blocks a session.
+	const hooks = buildDrivenHookSettings({
+		env: process.env,
+		projectRoot: process.cwd()
+	});
 	cachedRuntime = new ClaudeCodeRuntime({
 		backend,
 		harnessConfigRoot: process.env.HARNESS_CONFIG_ROOT?.trim() || '.harness/claude-config',
 		// D-018 harness gates ride every isolated --settings (the gate layer still evaluates
 		// each tool call regardless; this seeds the composed settings' gate map).
 		gates: { ...DEFAULT_GATE_POLICY },
+		// D-019 lifecycle hooks (analytics-only) ride every isolated --settings so a driven
+		// session POSTs SessionStart/UserPromptSubmit/PostToolUse/Stop to the loopback ingest.
+		hooks,
 		catalog
 	});
 	return { available: true, runtime: cachedRuntime };

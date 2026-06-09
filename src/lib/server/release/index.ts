@@ -9,6 +9,7 @@ export {
 	buildReleaseSteps,
 	createReleaseWorkflow,
 	runRelease,
+	resolvePublishTarget,
 	listReleaseRuns,
 	getReleaseChangelogHtml,
 	type ReleaseStage,

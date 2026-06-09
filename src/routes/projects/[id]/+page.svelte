@@ -50,6 +50,7 @@
   const slug = $derived(page.params.id);
   const releaseHref = $derived(`/projects/${slug}/release`);
   const syncHref = $derived(`/projects/${slug}/sync`);
+  const targetsHref = $derived(`/projects/${slug}/targets`);
   const projectName = $derived(project?.name ?? slug);
 
   type Tab =
@@ -61,6 +62,7 @@
     | 'memory'
     | 'release'
     | 'sync'
+    | 'targets'
     | 'settings';
   let tab = $state<Tab>('overview');
   // Default to the Sessions tab when a session is selected via ?session=.
@@ -447,6 +449,13 @@
         aria-pressed={tab === 'sync'}
         data-active={tab === 'sync'}
         onclick={() => (tab = 'sync')}>Sync</button
+      >
+      <button
+        class="tab"
+        type="button"
+        aria-pressed={tab === 'targets'}
+        data-active={tab === 'targets'}
+        onclick={() => (tab = 'targets')}>Targets</button
       >
       <button
         class="tab"
@@ -1463,6 +1472,19 @@
             sync adapter.
           </p>
           <a class="link-btn" href={syncHref}>Open GitHub sync →</a>
+        </div>
+      </div>
+    {:else if tab === 'targets'}
+      <div class="tab-body">
+        <div class="card">
+          <h2 class="section-title">Deploy &amp; publish targets</h2>
+          <p class="state-body">
+            Declare how this project ships — choose a publish/deploy <em>adapter</em> per target
+            ({'{'}adapterId, config{'}'}) and the release pipeline drives that adapter, not a fixed
+            script. Credentials are referenced by name from <span class="mono">.env</span> (never
+            stored). The D-037 adapter framework.
+          </p>
+          <a class="link-btn" href={targetsHref}>Open targets →</a>
         </div>
       </div>
     {:else}

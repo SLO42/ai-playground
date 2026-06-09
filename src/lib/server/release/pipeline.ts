@@ -42,6 +42,7 @@ import {
 	type WorkflowRow,
 	type RunWorkflowResult
 } from '../workflows/index';
+import { resolveDefaultTarget } from '../adapters/registry';
 
 /** The canonical release stages, in pipeline order. Each is one workflow step. */
 export const RELEASE_STAGES = [
@@ -86,6 +87,13 @@ export interface BuildReleaseStepsInput {
 	model: ModelSelection;
 	/** Optional agent slot override (default `release-runner`). */
 	agent?: string;
+	/**
+	 * The project's CHOSEN publish target (D-037), if one is configured. When present, the
+	 * `publish` stage prompt drives THAT adapter (its id + a dry-run-first instruction) rather
+	 * than the fixed `npm publish` default — the release pipeline runs the project's adapter,
+	 * not a hardcoded script (D-037). Absent → the generic publish prompt (back-compat).
+	 */
+	publishTarget?: { adapterId: string; label: string };
 }
 
 /**
@@ -93,12 +101,16 @@ export interface BuildReleaseStepsInput {
  * Each step depends_on the previous one (so a red step aborts everything downstream) and
  * is NON-parallel (a release is inherently sequential). The returned WorkflowStep[] is
  * exactly what createWorkflow/validateSteps expect.
+ *
+ * D-037: when a `publishTarget` is supplied the publish stage's prompt names the CHOSEN adapter
+ * and instructs a dry-run-first gated publish through it — so the same pipeline drives npm,
+ * Thunderstore, or a project's custom target by swapping the declared adapter, not the code.
  */
 export function buildReleaseSteps(input: BuildReleaseStepsInput): WorkflowStep[] {
 	const agent = input.agent ?? RELEASE_AGENT;
 	return RELEASE_STAGES.map((stage, i) => ({
 		id: stage,
-		prompt: STAGE_PROMPT[stage].replaceAll('{version}', input.version),
+		prompt: promptForStage(stage, input),
 		agent,
 		model: input.model,
 		cwd: input.cwd,
@@ -107,6 +119,19 @@ export function buildReleaseSteps(input: BuildReleaseStepsInput): WorkflowStep[]
 		// A release is sequential — never run stages concurrently.
 		parallel: false
 	}));
+}
+
+/** The prompt for one stage, adapter-aware for the publish stage (D-037). */
+function promptForStage(stage: ReleaseStage, input: BuildReleaseStepsInput): string {
+	if (stage === 'publish' && input.publishTarget) {
+		return (
+			`Publish the {version} release through the project's chosen publish adapter ` +
+			`"${input.publishTarget.label}" (${input.publishTarget.adapterId}). Run a DRY-RUN first, ` +
+			`review the plan, and only then perform the gated publish. This is the only step with ` +
+			`external side effects; credentials come from .env (named-secret indirection, D-026).`
+		).replaceAll('{version}', input.version);
+	}
+	return STAGE_PROMPT[stage].replaceAll('{version}', input.version);
 }
 
 export interface CreateReleaseWorkflowInput extends BuildReleaseStepsInput {
@@ -143,18 +168,40 @@ export interface RunReleaseDeps {
 }
 
 /**
+ * Resolve the project's CHOSEN publish target (D-037) for the release pipeline — the default
+ * enabled `project_target` of kind "publish", or null when the project hasn't declared one. The
+ * pipeline uses this to drive the project's adapter instead of the fixed npm prompt. Pure read;
+ * never throws (a resolve failure degrades to "no chosen target" → the generic publish prompt).
+ */
+export async function resolvePublishTarget(
+	db: Db,
+	projectId: string
+): Promise<{ adapterId: string; label: string } | null> {
+	try {
+		const t = await resolveDefaultTarget(db, projectId, 'publish');
+		return t ? { adapterId: t.adapter_id, label: t.label } : null;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * Run a release: create the release workflow, then run it as a tracked workflow_run via
  * the reused 2.17 DAG runner. Each stage executes as one workflow-step session linked to
  * the run. Returns the runner result (runId + terminal status + per-stage step_state +
  * per-stage session ids). Never throws on a STAGE failure (the run records "failed").
+ *
+ * D-037: resolves the project's chosen publish target so the publish stage drives that adapter.
  */
 export async function runRelease(deps: RunReleaseDeps): Promise<RunReleaseResult> {
+	const publishTarget = await resolvePublishTarget(deps.db, deps.projectId);
 	const wf = await createReleaseWorkflow(deps.db, {
 		projectId: deps.projectId,
 		version: deps.version,
 		cwd: deps.cwd,
 		model: deps.model,
-		agent: deps.agent
+		agent: deps.agent,
+		...(publishTarget ? { publishTarget } : {})
 	});
 	const result = await runWorkflow({
 		db: deps.db,

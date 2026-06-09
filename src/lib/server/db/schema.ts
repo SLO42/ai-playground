@@ -870,6 +870,72 @@ const m0025_pm_review_board: Migration = {
 	`
 };
 
+// ── §4.x — per-project deploy/publish/sync TARGETS (TASK 12.1 / D-037 adapter framework) ──
+//
+// A `project_target` row is the per-project declaration the D-037 registry resolves: a project
+// names the adapter it ships through ({adapterId, config}) for one of the THREE families
+// (publish | deploy | sync). This is the EXTENSIBILITY point — a novel per-project process
+// plugs in by declaring a target with its adapter id + config, WITHOUT a core change.
+//
+// Credential confinement (D-026): a target's `config` may reference secrets by NAME only (an
+// env-var name), NEVER a value — the adapter framework resolves the value from .env at call
+// time and never persists it. This migration does NOT store a secret column; if a config blob
+// carried a raw value it would be a caller bug the adapters layer guards against on write.
+//
+// One target per (project, kind, adapter_id) — UNIQUE so a re-declare upserts rather than
+// duplicating (the dedup_key VALUE pattern, D-008; mirrors task_sync/session/memory). `enabled`
+// gates whether the pipeline drives it; `is_default` marks the one a kind defaults to.
+// IDEMPOTENT (D-006/F-015): every DEFINE carries OVERWRITE so re-running is clean over a fresh
+// DB AND a half-applied state.
+const m0026_project_target: Migration = {
+	id: '0026_project_target',
+	up: `
+		DEFINE TABLE OVERWRITE project_target SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project    ON project_target TYPE record<project>;
+		-- The adapter family this target belongs to (the three D-037 families).
+		DEFINE FIELD OVERWRITE kind       ON project_target TYPE string
+			ASSERT $value IN ["publish","deploy","sync"];
+		-- The registered adapter id the registry resolves (e.g. "npm","thunderstore","github").
+		DEFINE FIELD OVERWRITE adapter_id ON project_target TYPE string;
+		-- Human label for the surface (operator-set; defaults to the adapter id on write).
+		DEFINE FIELD OVERWRITE label      ON project_target TYPE string;
+		-- Adapter-specific config (SCHEMAFULL-FLEXIBLE so the blob round-trips intact). May
+		-- reference secrets by NAME only (D-026) — never a raw value.
+		DEFINE FIELD OVERWRITE config     ON project_target FLEXIBLE TYPE object DEFAULT {};
+		-- Gate: the pipeline drives a target only when enabled.
+		DEFINE FIELD OVERWRITE enabled    ON project_target TYPE bool DEFAULT true;
+		-- The default target for its kind (one per project+kind; the pipeline picks it).
+		DEFINE FIELD OVERWRITE is_default ON project_target TYPE bool DEFAULT false;
+		DEFINE FIELD OVERWRITE created_at ON project_target TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE updated_at ON project_target TYPE datetime DEFAULT time::now();
+
+		-- Dedup: one declaration per (project, kind, adapter_id). Concrete non-NONE VALUE (§6.2)
+		-- + UNIQUE so a concurrent double-declare collides rather than duplicating (D-008).
+		DEFINE FIELD OVERWRITE dedup_key  ON project_target VALUE
+			<string>project + '|' + kind + '|' + adapter_id;
+		DEFINE INDEX OVERWRITE project_target_dedup ON project_target FIELDS dedup_key UNIQUE;
+		DEFINE INDEX OVERWRITE project_target_by_project ON project_target FIELDS project;
+		DEFINE INDEX OVERWRITE project_target_by_kind    ON project_target FIELDS project, kind;
+		${backfillValueField('project_target', 'dedup_key')}
+
+		-- A recorded deploy/publish RUN through the framework (never silent — F-008). One row per
+		-- gated action attempt: which target/adapter, dry-run or real, ok/failed, an honest summary.
+		DEFINE TABLE OVERWRITE target_run SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project    ON target_run TYPE record<project>;
+		DEFINE FIELD OVERWRITE target     ON target_run TYPE option<record<project_target>>;
+		DEFINE FIELD OVERWRITE kind       ON target_run TYPE string
+			ASSERT $value IN ["publish","deploy","sync"];
+		DEFINE FIELD OVERWRITE adapter_id ON target_run TYPE string;
+		DEFINE FIELD OVERWRITE dry_run    ON target_run TYPE bool DEFAULT true;
+		DEFINE FIELD OVERWRITE ok         ON target_run TYPE bool DEFAULT false;
+		DEFINE FIELD OVERWRITE target_ref ON target_run TYPE option<string>;
+		DEFINE FIELD OVERWRITE summary    ON target_run TYPE string;
+		DEFINE FIELD OVERWRITE steps      ON target_run TYPE array<string> DEFAULT [];
+		DEFINE FIELD OVERWRITE at         ON target_run TYPE datetime DEFAULT time::now();
+		DEFINE INDEX OVERWRITE target_run_by_project ON target_run FIELDS project;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -901,5 +967,6 @@ export const schemaMigrations: Migration[] = [
 	m0022_agent_event_hook,
 	m0023_pm,
 	m0024_task_sync,
-	m0025_pm_review_board
+	m0025_pm_review_board,
+	m0026_project_target
 ];

@@ -48,3 +48,6 @@ dist/
 Thumbs.db
 .idea/
 .vscode/
+
+# runtime state (never commit)
+.playground/

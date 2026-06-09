@@ -33,11 +33,11 @@ export const navGroups: NavGroup[] = [
   {
     title: 'Knowledge & system',
     items: [
-      // NOTE: /services (UI-SPEC §45) is not yet built — service health is currently
-      // surfaced on the Statusbar; the standalone page is tracked as a UI coverage gap
-      // for a follow-up wave (task 4.3 forbids orphaned nav links → no dead href here).
       { label: 'Memory', href: '/memory' },
       { label: 'Reports', href: '/reports' },
+      // TASK 10.5 — /services: live health + start/stop/restart for the managed local
+      // services (Ollama/SurrealDB/engine) + incident history (UI-SPEC §45/§210).
+      { label: 'Services', href: '/services' },
       // TASK 10.3 — /settings: orchestration mode (D-004), routing config view (D-020),
       // API-key presence (D-026). The operator control surface for the running engine.
       { label: 'Settings', href: '/settings' }

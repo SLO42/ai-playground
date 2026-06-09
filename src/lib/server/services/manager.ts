@@ -41,6 +41,28 @@ export type ServiceName = (typeof SERVICE_NAMES)[number];
 
 export type ServiceStatus = 'running' | 'stopped' | 'crashed' | 'unknown';
 
+/** An operator-initiated lifecycle action from the control surface (UI-SPEC §210). */
+export type ServiceAction = 'start' | 'stop' | 'restart';
+
+/** Past-tense verbs for the operator-action notification message. */
+const PAST_TENSE: Record<ServiceAction, string> = {
+	start: 'started',
+	stop: 'stopped',
+	restart: 'restarted'
+};
+
+/** The outcome of an operator {@link ServicesManager.operate} call. */
+export interface OperateResult {
+	name: ServiceName;
+	action: ServiceAction;
+	/** True if the adapter action succeeded. */
+	ok: boolean;
+	/** The error message when ok=false (honest — surfaced to the operator). */
+	error?: string;
+	/** The audit incident row written for this action (info on success, error on failure). */
+	incident: IncidentRow;
+}
+
 /**
  * A pluggable service backend. The manager owns the supervision loop; the adapter
  * owns the spawn/kill specifics. `pid()` returns the current OS pid (or null if the
@@ -134,6 +156,16 @@ export class ServicesManager {
 		});
 	}
 
+	/** Is a service registered with a live adapter (so it can be controlled)? */
+	has(name: ServiceName): boolean {
+		return this.entries.has(name);
+	}
+
+	/** The registered service names (those with a live adapter — controllable). */
+	registered(): ServiceName[] {
+		return [...this.entries.keys()];
+	}
+
 	/** Start a registered service and mark it desired-up (so ticks supervise it). */
 	async start(name: ServiceName): Promise<void> {
 		const entry = this.require(name);
@@ -149,6 +181,46 @@ export class ServicesManager {
 		entry.desiredUp = false;
 		await entry.adapter.stop();
 		await this.writeService(name, 'stopped', null);
+	}
+
+	/**
+	 * OPERATOR action: start / stop / restart a service from the control surface
+	 * (UI-SPEC §210). Unlike the internal {@link tick} auto-restart (which logs an
+	 * `error`/`critical` incident on a CRASH), an operator action logs an `info`
+	 * incident + a notification recording WHO/WHAT changed — so the durable
+	 * incidents history (UI-SPEC §208) carries an honest audit trail of every manual
+	 * lifecycle action, success or failure. Returns the action result; throws ONLY on
+	 * an unregistered service (the caller validated the name at the boundary).
+	 */
+	async operate(name: ServiceName, action: ServiceAction): Promise<OperateResult> {
+		this.require(name);
+		try {
+			if (action === 'start') {
+				await this.start(name);
+			} else if (action === 'stop') {
+				await this.stop(name);
+			} else {
+				// restart = stop then start, leaving the service desired-up + supervised.
+				await this.stop(name);
+				await this.start(name);
+			}
+			const incident = await recordIncident(this.db, {
+				title: `Operator ${action} of service "${name}"`,
+				detail: `manual ${action} succeeded from the services control surface`,
+				severity: 'info'
+			});
+			await recordNotification(this.db, `Service "${name}" ${PAST_TENSE[action]} by operator`);
+			return { name, action, ok: true, incident };
+		} catch (err) {
+			const message = err instanceof Error ? err.message : String(err);
+			const incident = await recordIncident(this.db, {
+				title: `Operator ${action} of service "${name}" failed`,
+				detail: message,
+				severity: 'error'
+			});
+			await recordNotification(this.db, `Service "${name}" ${action} failed — ${message}`);
+			return { name, action, ok: false, error: message, incident };
+		}
 	}
 
 	/**

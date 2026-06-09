@@ -1,12 +1,8 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import {
-	scanDependencies,
-	type AdvisorySource,
-	type DependencyFinding
-} from './dependencies';
+import { scanDependencies, type AdvisorySource } from './dependencies';
 
 // TASK 3.2 — pure dependency-health detector. Builds a REAL temp project with a
 // package.json on disk and runs the detector against a MOCKED (offline) advisory source
@@ -66,8 +62,6 @@ const offlineSource: AdvisorySource = {
 		}
 	}
 };
-
-const ruleOf = (fs: DependencyFinding[]) => fs.map((f) => f.rule);
 
 describe('scanDependencies — pure detector', () => {
 	it('flags a vulnerable dependency with its advisory id, severity, and range', () => {

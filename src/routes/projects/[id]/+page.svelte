@@ -59,6 +59,39 @@
   // persisted historical transcript (data.transcript) and append each streamed event live.
   type LiveLine = { role: string; content: string; toolCall?: Record<string, unknown> };
   let liveLines = $state<LiveLine[]>([]);
+
+  // ── Wake-up briefing (TASK 8.3) — the recalled, fenced context the agent woke up with.
+  // A briefing transcript line carries `toolCall.kind === 'briefing'` and `content` = the
+  // raw fenced text (§10 sentinels). We PARSE it into its distinct items so the operator can
+  // SEE the past context as an unmistakable "woke up with" block — not a generic log line.
+  const FENCE_OPEN = '⎆BEGIN_REFERENCE⎆';
+  const FENCE_CLOSE = '⎆END_REFERENCE⎆';
+  type BriefingRecallItem = { source: string; citation: string | null; body: string };
+
+  function isBriefing(line: LiveLine): boolean {
+    return line.toolCall?.kind === 'briefing';
+  }
+
+  /** Split a fenced briefing string into its recalled items (source · citation · body). */
+  function parseBriefing(text: string): BriefingRecallItem[] {
+    const items: BriefingRecallItem[] = [];
+    const blocks = text.split(FENCE_OPEN).slice(1);
+    for (const raw of blocks) {
+      const block = raw.split(FENCE_CLOSE)[0] ?? '';
+      // First line: `[source] [#N] <note>`; body follows the `---` separator.
+      const sepIdx = block.indexOf('\n---\n');
+      const head = (sepIdx >= 0 ? block.slice(0, sepIdx) : block).trim();
+      const body = (sepIdx >= 0 ? block.slice(sepIdx + 5) : '').trim();
+      const sourceMatch = head.match(/^\[([^\]]+)\]/);
+      const citationMatch = head.match(/\[#([^\]]+)\]/);
+      items.push({
+        source: sourceMatch?.[1] ?? 'memory',
+        citation: citationMatch?.[1] ?? null,
+        body: body || head
+      });
+    }
+    return items;
+  }
   let liveTokens = $state<{ tokensIn: number; tokensOut: number } | null>(null);
   let liveStatus = $state<string | null>(null);
 
@@ -419,10 +452,33 @@
                 <p class="state-body">No transcript yet — output appears here as the session runs.</p>
               {:else}
                 {#each liveLines as line, i (i)}
-                  <div class="line" data-role={line.role}>
-                    <span class="line-role mono">{line.role}</span>
-                    <span class="line-content mono">{line.content}</span>
-                  </div>
+                  {#if isBriefing(line)}
+                    {@const items = parseBriefing(line.content)}
+                    <div class="briefing" role="note" aria-label="wake-up briefing — recalled context">
+                      <div class="briefing-lead">
+                        <span class="briefing-icon" aria-hidden="true">◆</span>
+                        <span class="briefing-title">woke up with</span>
+                        <span class="briefing-count mono"
+                          >{items.length} recalled {items.length === 1 ? 'item' : 'items'}</span
+                        >
+                      </div>
+                      <ul class="briefing-items">
+                        {#each items as it, j (j)}
+                          <li class="briefing-item">
+                            <span class="briefing-tag mono"
+                              >{it.source}{#if it.citation}&nbsp;[#{it.citation}]{/if}</span
+                            >
+                            <span class="briefing-body mono">{it.body}</span>
+                          </li>
+                        {/each}
+                      </ul>
+                    </div>
+                  {:else}
+                    <div class="line" data-role={line.role}>
+                      <span class="line-role mono">{line.role}</span>
+                      <span class="line-content mono">{line.content}</span>
+                    </div>
+                  {/if}
                 {/each}
               {/if}
             </div>
@@ -852,6 +908,88 @@
     color: var(--color-text);
     white-space: pre-wrap;
     word-break: break-word;
+  }
+
+  /* TASK 8.3 — the wake-up briefing: a DISTINCT, accent-bordered "woke up with" block so the
+     recalled context the agent started with is unmistakable, never a normal transcript line.
+     Token-driven; a11y — accent lead has AA contrast on the inset surface; motion is opt-in. */
+  .briefing {
+    border: var(--border-width, 1px) solid var(--color-accent);
+    border-left-width: 3px;
+    border-radius: var(--radius-sm, 5px);
+    background: var(--color-bg-inset, #03120e);
+    padding: var(--space-3, 8px) var(--space-4, 12px);
+    margin: var(--space-1, 2px) 0 var(--space-3, 8px);
+    animation: briefing-in 0.18s ease-out;
+  }
+  .briefing-lead {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3, 8px);
+    margin-bottom: var(--space-3, 8px);
+  }
+  .briefing-icon {
+    color: var(--color-accent);
+    font-size: 0.7rem;
+    line-height: 1;
+  }
+  .briefing-title {
+    color: var(--color-accent);
+    font-weight: 600;
+    font-size: 0.74rem;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+  }
+  .briefing-count {
+    color: var(--color-text-muted);
+    font-size: 0.7rem;
+    margin-left: auto;
+  }
+  .briefing-items {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 8px);
+  }
+  .briefing-item {
+    display: flex;
+    gap: var(--space-3, 8px);
+    align-items: baseline;
+    font-size: 0.76rem;
+  }
+  .briefing-tag {
+    flex: none;
+    align-self: flex-start;
+    color: var(--color-on-accent, #0a0f0d);
+    background: var(--color-accent);
+    border-radius: var(--radius-xs, 3px);
+    padding: 1px var(--space-3, 8px);
+    font-size: 0.66rem;
+    white-space: nowrap;
+  }
+  .briefing-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--color-text);
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  @keyframes briefing-in {
+    from {
+      opacity: 0;
+      transform: translateY(-2px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
+    }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .briefing {
+      animation: none;
+    }
   }
   .controls {
     display: flex;

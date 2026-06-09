@@ -97,12 +97,18 @@ const WATCHED_TABLES = ['project', 'task', 'session', 'agent_event', 'routing_ev
 const watchers: DbSourceHandle[] = [];
 
 /**
- * TASK 8.1 — the live orchestrator, started once at boot (event-driven, D-004/§2.11). Held at
- * module scope so it is NOT garbage-collected for the life of the server process (its bus
- * subscription is what drives task→ready → spawn). null when the DB is down or the Claude Code
- * credential is absent (honest degraded boot — F-008): the dashboard still serves.
+ * TASK 8.1 — the live orchestrator(s), started once at boot (event-driven, D-004/§2.11). Held in
+ * a module-scope registry (mirrors `watchers`) so the instance is NOT garbage-collected for the
+ * life of the server process — its bus subscription is what drives task→ready → spawn. Empty when
+ * the DB is down or the Claude Code credential is absent (honest degraded boot — F-008): the
+ * dashboard still serves. Exposed via {@link activeOrchestrator} for server-side introspection.
  */
-let orchestrator: Orchestrator | null = null;
+const orchestrators: Orchestrator[] = [];
+
+/** The live orchestrator, or null when none is running (honest degraded boot). */
+export function activeOrchestrator(): Orchestrator | null {
+	return orchestrators[0] ?? null;
+}
 
 /** The startup promise — loaders/routes can await it to know the DB state. */
 export const startup: Promise<DbInitResult> = bootstrap();
@@ -143,7 +149,7 @@ async function bootstrap(): Promise<DbInitResult> {
 		try {
 			const boot = await startOrchestrator(db, bus);
 			if (boot.started) {
-				orchestrator = boot.orchestrator;
+				orchestrators.push(boot.orchestrator);
 				console.log(
 					`[startup] orchestrator started (mode=${boot.mode}, maxConcurrent=${boot.maxConcurrent}) — task→ready auto-drives a session (D-004).`
 				);

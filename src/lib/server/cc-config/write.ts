@@ -199,7 +199,7 @@ export function validateMcpJson(text: string): ValidationResult {
 /** Validate a markdown-with-frontmatter file (agent or skill): fenced YAML + a `name`. */
 function validateFrontmatterDoc(text: string, kind: 'agent' | 'skill'): ValidationResult {
 	const issues: ValidationIssue[] = [];
-	const fence = /^﻿?\s*---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
+	const fence = /^\uFEFF?\s*---\r?\n([\s\S]*?)\r?\n---\r?\n?/.exec(text);
 	if (!fence) {
 		return {
 			ok: false,

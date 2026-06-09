@@ -28,10 +28,9 @@
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
 import { DatabaseSync } from 'node:sqlite';
-import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
-import { EMBEDDING_DIM, type Embedder } from '../memory/embed';
+import { EMBEDDING_DIM } from '../memory/embed';
 import { storeMemory, type MemoryKind, type StoreOptions } from '../memory/store';
 
 // ── v1 swarm memory shapes (`memory_entries` row, claude-flow SQLite) ────────────────
@@ -154,10 +153,6 @@ function omitUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
 	const out: Partial<T> = {};
 	for (const [k, v] of Object.entries(obj)) if (v !== undefined) (out as Record<string, unknown>)[k] = v;
 	return out;
-}
-
-function link(id: string): StringRecordId {
-	return new StringRecordId(assertRecordId(id));
 }
 
 /** Find an existing memory row by (namespace, key) — the idempotency probe (mirrors bridge.ts). */

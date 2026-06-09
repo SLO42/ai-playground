@@ -28,7 +28,8 @@
   let navOpen = $state(false);
   $effect(() => {
     // Re-runs when pathname changes — close the drawer after navigating.
-    pathname;
+    // `void` reads the rune so $effect tracks it without a bare-expression lint error.
+    void pathname;
     navOpen = false;
   });
 

@@ -14,9 +14,16 @@
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import { classifyDbError } from '$lib/server/db/classify';
 import { buildShellMetrics } from '$lib/server/analytics/rollup';
+import { listProjects } from '$lib/server/projects/repo';
 import { loadOrchestration, type OrchMode } from '$lib/server/config';
 import type { ServiceStatus } from '$lib/server/services/manager';
 import type { LayoutServerLoad } from './$types';
+
+/** Minimal project projection the CommandPalette needs for "Open project" commands. */
+export interface PaletteProject {
+	id: string;
+	name: string;
+}
 
 /** A single `service` row projection (only the fields the health rollup needs). */
 interface ServiceRow {
@@ -58,7 +65,7 @@ export const load: LayoutServerLoad = async ({ depends }) => {
 
 	const db = tryGetDb();
 	if (!db) {
-		// Honest disconnected shell (D-019): no fabricated counters.
+		// Honest disconnected shell (D-019): no fabricated counters, no fake projects.
 		return {
 			shell: {
 				connected: false,
@@ -67,13 +74,19 @@ export const load: LayoutServerLoad = async ({ depends }) => {
 				tokensToday: null as number | null,
 				costToday: null as number | null,
 				mode
-			}
+			},
+			paletteProjects: [] as PaletteProject[]
 		};
 	}
 
 	try {
 		const metrics = await buildShellMetrics(db);
 		const [svc] = await db.query<[ServiceRow[]]>(`SELECT status FROM service;`);
+		// Live project list for the CommandPalette "Open project" commands (real rows only).
+		const paletteProjects: PaletteProject[] = (await listProjects(db)).map((p) => ({
+			id: String(p.id),
+			name: p.name
+		}));
 		return {
 			shell: {
 				connected: true,
@@ -82,7 +95,8 @@ export const load: LayoutServerLoad = async ({ depends }) => {
 				tokensToday: metrics.tokensToday,
 				costToday: metrics.costToday,
 				mode
-			}
+			},
+			paletteProjects
 		};
 	} catch (err) {
 		// A dead cached handle or a live-query failure both mean "counters unknown" — run
@@ -96,7 +110,8 @@ export const load: LayoutServerLoad = async ({ depends }) => {
 				tokensToday: null as number | null,
 				costToday: null as number | null,
 				mode
-			}
+			},
+			paletteProjects: [] as PaletteProject[]
 		};
 	}
 };

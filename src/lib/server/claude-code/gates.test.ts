@@ -7,6 +7,8 @@ import {
 	createGateSession,
 	gateCanUseTool,
 	gatePreToolUse,
+	parseGatePolicy,
+	GatePolicyError,
 	DEFAULT_GATE_POLICY,
 	type GateContext,
 	type ToolCall
@@ -254,5 +256,31 @@ describe('canUseTool (SDK path) + PreToolUse (CLI hook path) — same gate confi
 		// @ts-expect-error — deliberately malformed external payload
 		const out = gatePreToolUse(ctx())(null);
 		expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+	});
+});
+
+// ── parseGatePolicy (13.3) — strict, fail-closed gate-config parsing ───────────────
+
+describe('parseGatePolicy — malformed gate config fails CLOSED (13.3, D-024)', () => {
+	it('parses a valid gate config into a GatePolicy', () => {
+		const p = parseGatePolicy({ 'read-before-edit': 'warn', 'dangerous-bash': 'deny' });
+		expect(p).toEqual({ 'read-before-edit': 'warn', 'dangerous-bash': 'deny' });
+	});
+
+	it('accepts the full DEFAULT_GATE_POLICY round-trip', () => {
+		expect(parseGatePolicy({ ...DEFAULT_GATE_POLICY })).toEqual(DEFAULT_GATE_POLICY);
+	});
+
+	it('throws GatePolicyError on an unknown gate name (never silently drops it)', () => {
+		expect(() => parseGatePolicy({ 'not-a-gate': 'deny' })).toThrow(GatePolicyError);
+	});
+
+	it('throws GatePolicyError on an invalid mode (e.g. "allow" — gates cannot be disabled)', () => {
+		expect(() => parseGatePolicy({ 'dangerous-bash': 'allow' })).toThrow(GatePolicyError);
+	});
+
+	it('an empty/absent config parses to the empty policy (defaults apply downstream)', () => {
+		expect(parseGatePolicy({})).toEqual({});
+		expect(parseGatePolicy(undefined)).toEqual({});
 	});
 });

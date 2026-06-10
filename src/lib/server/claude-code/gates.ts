@@ -1,8 +1,13 @@
-// TASK 2.13 — the GATE layer: defense-in-depth ON TOP of 1.4a's primary
+// TASK 2.13 (+13.3 wiring) — the GATE layer: defense-in-depth ON TOP of 1.4a's primary
 // permissions.deny (D-024/D-018). A single PURE evaluator (`evaluateGate`) is consulted
 // by BOTH enforcement paths so they share one gate config (ARCHITECTURE §2.10e):
-//   • SDK / headless path  → the `canUseTool` callback  (`gateCanUseTool`)
-//   • CLI / interactive path → the `PreToolUse` hook      (`gatePreToolUse`)
+//   • SDK / runtime path — `ClaudeCodeRuntime.plan()` builds `gateCanUseTool` onto every
+//     `CcSpawnPlan.canUseTool`; backends that execute tools programmatically (SDK/mock)
+//     consult it BEFORE running a tool (runtime/index.ts).
+//   • CLI path — `cli-backend.ts` registers a `PreToolUse` hook in the isolated settings
+//     it writes (gate-transport.ts → scripts/gate-hook.mjs → POST /api/gates/pretooluse →
+//     `gatePreToolUse`). The hook transport FAILS CLOSED: an unreachable/erroring gate
+//     endpoint denies the tool (ROADMAP 2.13 / D-024), unlike the analytics hook proxy.
 //
 // Four gate families (D-018):
 //   • config-protection — deny reads/edits of ANY .env/secret or ANY .claude/ across the
@@ -53,6 +58,36 @@ export const DEFAULT_GATE_POLICY: Readonly<Required<GatePolicy>> = Object.freeze
 	'dangerous-bash': 'deny',
 	'path-confinement': 'deny'
 });
+
+/** Thrown by {@link parseGatePolicy} on a malformed gate config — callers FAIL CLOSED. */
+export class GatePolicyError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'GatePolicyError';
+	}
+}
+
+/**
+ * STRICT gate-config parser (13.3, D-024): the raw `gates` record a spawn carries
+ * (gate-name → mode) is untrusted config. An unknown gate name or an invalid mode
+ * THROWS {@link GatePolicyError} — the caller must treat that as a hard block
+ * (fail the spawn / deny the tool), NEVER silently drop the bad entry and allow.
+ */
+export function parseGatePolicy(raw: Record<string, unknown> | undefined): GatePolicy {
+	const out: GatePolicy = {};
+	for (const [name, mode] of Object.entries(raw ?? {})) {
+		if (!(name in DEFAULT_GATE_POLICY)) {
+			throw new GatePolicyError(`unknown gate '${name}' in gate config — failing closed (D-024)`);
+		}
+		if (mode !== 'deny' && mode !== 'warn') {
+			throw new GatePolicyError(
+				`invalid mode '${String(mode)}' for gate '${name}' — failing closed (D-024)`
+			);
+		}
+		out[name as GateName] = mode;
+	}
+	return out;
+}
 
 // ── Tool-call shape (a normalized view over the SDK / hook payloads) ─────────────────
 

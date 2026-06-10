@@ -26,6 +26,7 @@ import type {
 	CcSpawnPlan,
 	RuntimeEvent
 } from '../runtime/index';
+import { buildGateHookGroup, encodeGateHookConfig } from './gate-transport';
 
 /**
  * Seed the per-session ISOLATED config dir so Claude Code TRUSTS this cwd and is allowed to
@@ -69,6 +70,38 @@ function toClaudeSettings(settings: Record<string, unknown>): Record<string, unk
 	const out: Record<string, unknown> = {};
 	for (const [k, v] of Object.entries(settings)) {
 		if (!HARNESS_ONLY_SETTINGS_KEYS.has(k)) out[k] = v;
+	}
+	return out;
+}
+
+/**
+ * TASK 13.3 — build the FINAL settings.json content for one spawn: the Claude-Code-valid
+ * subset of the harness settings, PLUS the D-018/D-024 `PreToolUse` GATE hook whenever the
+ * plan's config carries gates. Until 13.3 the harness `gates` key was (correctly) stripped
+ * from the settings file but NOTHING enforced it on the CLI path — the gate layer
+ * (gates.ts) had zero production callers. Now every gated spawn registers the gate hook
+ * (gate-transport.buildGateHookGroup → scripts/gate-hook.mjs → /api/gates/pretooluse →
+ * gatePreToolUse), with the session's gate config + project root pinned AT SPAWN TIME on
+ * the hook command (base64url — config, not a secret; the D-025 token rides env only).
+ * The hook transport fails CLOSED (an unreachable gate endpoint denies the tool). Exported
+ * for the 13.3 regression test (which fails without this wiring).
+ */
+export function buildCliSettings(
+	plan: CcSpawnPlan,
+	opts: { nodeBin: string; serverRoot: string }
+): Record<string, unknown> {
+	const out = toClaudeSettings(plan.isolated.settings);
+	const gates = plan.isolated.settings.gates as Record<string, string> | undefined;
+	if (gates && Object.keys(gates).length > 0) {
+		const group = buildGateHookGroup({
+			nodeBin: opts.nodeBin,
+			serverRoot: opts.serverRoot,
+			encodedConfig: encodeGateHookConfig({ gates, projectRoot: plan.cwd })
+		});
+		const hooks = { ...((out.hooks as Record<string, unknown>) ?? {}) };
+		const existing = hooks.PreToolUse;
+		hooks.PreToolUse = [...(Array.isArray(existing) ? existing : []), group];
+		out.hooks = hooks;
 	}
 	return out;
 }
@@ -201,14 +234,22 @@ export class ClaudeCliBackend implements CcBackend {
 		// NOT from emitting empty plugin arrays here — so we simply omit them. `capabilities` is
 		// likewise harness-internal (provisioned by other means), not a CC settings key. We keep
 		// `hooks` (D-019) and pass through any genuinely-valid keys (permissions/env/etc.).
-		writeFileSync(settingsPath, JSON.stringify(toClaudeSettings(plan.isolated.settings)), 'utf8');
+		// TASK 13.3 — buildCliSettings ALSO registers the D-018 PreToolUse GATE hook whenever the
+		// plan carries gates, so the gate layer is actually consulted on the CLI path (§2.10e).
+		const claudeSettings = buildCliSettings(plan, {
+			nodeBin: process.execPath,
+			serverRoot: process.cwd()
+		});
+		writeFileSync(settingsPath, JSON.stringify(claudeSettings), 'utf8');
 
-		// TASK 8.4 — when the isolated settings wire D-019 lifecycle hooks, pre-accept hook trust
-		// for THIS session's cwd in the isolated config dir, or Claude Code silently disables the
-		// `--settings` hooks (its per-project hook-trust gate) and no hook→agent_event row is ever
-		// written for a driven session. Seeded only when hooks are actually present; only for the
-		// one cwd this session runs in (isolation preserved). Best-effort — never blocks the spawn.
-		const hookMap = (plan.isolated.settings as { hooks?: Record<string, unknown> }).hooks;
+		// TASK 8.4 — when the isolated settings wire hooks (D-019 lifecycle and/or the 13.3 gate
+		// hook), pre-accept hook trust for THIS session's cwd in the isolated config dir, or
+		// Claude Code silently disables the `--settings` hooks (its per-project hook-trust gate)
+		// and no hook ever fires for a driven session. Checked against the FINAL merged map (the
+		// gate hook alone must also seed trust). Seeded only for the one cwd this session runs in
+		// (isolation preserved). Best-effort — never blocks the spawn; the gate hook's own
+		// fail-closed deny (and 1.4a's permissions.deny primary) carry the safety guarantee.
+		const hookMap = claudeSettings.hooks as Record<string, unknown> | undefined;
 		const configDir = plan.isolated.env.CLAUDE_CONFIG_DIR;
 		if (hookMap && Object.keys(hookMap).length > 0 && configDir) {
 			seedHookTrust(configDir, plan.cwd);

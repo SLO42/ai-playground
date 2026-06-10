@@ -27,6 +27,15 @@ import {
 	type CapabilitySet,
 	type CapabilityCatalog
 } from './capabilities';
+import {
+	gateCanUseTool,
+	parseGatePolicy,
+	createGateSession,
+	type CanUseToolResult
+} from '../claude-code/gates';
+
+// Re-export the gate callback result type so backends can type plan.canUseTool (13.3).
+export type { CanUseToolResult } from '../claude-code/gates';
 
 // Re-export the D-036 capability surface so the whole system imports it from `runtime`.
 export {
@@ -241,6 +250,17 @@ export interface CcSpawnPlan {
 	budgets: SpawnBudgets;
 	/** The S1-mandated isolated config — present on EVERY plan (SDK and CLI). */
 	isolated: IsolatedConfig;
+	/**
+	 * TASK 13.3 (D-018/D-024, ARCHITECTURE §2.10e) — the SDK/runtime-path gate callback,
+	 * built by `ClaudeCodeRuntime.plan()` from `gateCanUseTool` whenever the runtime is
+	 * configured with gates. A backend that executes tools PROGRAMMATICALLY (the SDK
+	 * `canUseTool` option, mock backends) MUST consult this before running each tool and
+	 * must NOT execute a tool it denies. The real CLI backend cannot intercept in-process —
+	 * it enforces the SAME gate config via the `PreToolUse` hook it registers in the
+	 * isolated settings (cli-backend.buildCliSettings → scripts/gate-hook.mjs). Absent when
+	 * the runtime has no gates configured.
+	 */
+	canUseTool?: (toolName: string, input: Record<string, unknown>) => Promise<CanUseToolResult>;
 	/** Set when resuming an existing Claude Code session (CLI parity path). */
 	resumeCcSessionId?: string;
 	workflowRunId?: string;
@@ -346,6 +366,20 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 			hooks: this.hooks,
 			catalog: this.catalog
 		});
+		// TASK 13.3 (D-018/D-024, §2.10e) — when gates are configured, every plan carries the
+		// SDK/runtime-path gate callback (gateCanUseTool over a per-session read-set), confined
+		// to THIS spawn's cwd. parseGatePolicy is STRICT: a malformed gate config THROWS here,
+		// so the spawn fails CLOSED (error event, backend never reached) — it never runs ungated.
+		let canUseTool: CcSpawnPlan['canUseTool'];
+		if (this.gates && Object.keys(this.gates).length > 0) {
+			const policy = parseGatePolicy(this.gates);
+			canUseTool = gateCanUseTool({
+				projectRoot: req.cwd,
+				codeRoot: req.cwd,
+				session: createGateSession(),
+				policy
+			});
+		}
 		return {
 			agentId: req.agentId,
 			cwd: req.cwd, // explicit project root (D-002 / 1.4a groundwork)
@@ -354,6 +388,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 			toolPolicy: req.toolPolicy,
 			budgets: req.budgets,
 			isolated,
+			canUseTool,
 			resumeCcSessionId,
 			workflowRunId: req.workflowRunId
 		};

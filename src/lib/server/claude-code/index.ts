@@ -38,6 +38,8 @@ export {
 	createGateSession,
 	gateCanUseTool,
 	gatePreToolUse,
+	parseGatePolicy,
+	GatePolicyError,
 	DEFAULT_GATE_POLICY,
 	type GateName,
 	type GateMode,
@@ -50,6 +52,13 @@ export {
 	type PreToolUsePayload,
 	type PreToolUseOutput
 } from './gates';
+
+// TASK 13.3 — the gate layer is WIRED into both production spawn paths (§2.10e):
+// the CLI backend registers a fail-closed PreToolUse hook (cli-backend.buildCliSettings →
+// gate-transport → scripts/gate-hook.mjs → routes/api/gates/pretooluse), and
+// ClaudeCodeRuntime.plan() builds gateCanUseTool onto every CcSpawnPlan.canUseTool for
+// programmatic backends. Those modules are imported directly by their callers (the route,
+// the backend, the runtime) — not re-exported here, to keep the barrel free of dead exports.
 
 // TASK 2.10 — session control: the channel.pushToSession seam + interject/stop/resume
 // + fleet view (D-011/D-035/D-025/D-026). Origin is server-stamped + immutable; only an

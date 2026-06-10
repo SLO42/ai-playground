@@ -133,6 +133,8 @@ The recall path returns **raw windowed messages + first/last bookends**, with **
 
 **No LLM summarization in recall.** Rationale: cheaper, no added latency, no summarization hallucination, and the live agent has its own reasoning budget — it prefers real excerpts over a lossy summary. Reserve LLM synthesis for an **explicit dialectic tool** (§8), never default recall. This complements ARCHITECTURE §2.6's pipeline: §2.6 ranks `memory` rows; this is the **session-transcript recall** path over `message`/`session` (DATA-MODEL §4.3).
 
+> **Workforce exclusion (additive, WORKFORCE-SPEC §4.2):** sessions with `kind='interview'` (role-gauntlet runs) are excluded from BOTH the D-027 fast-writer/transcript-mining AND this D-029 recall path — the recall query filters them. Gauntlet fixture content must never become recallable memory (answer-key leak channel).
+
 ### 4.2 FTS5 / FTS query sanitizer
 
 Before any full-text query, **sanitize** *(hermes, MIT — liftable near-verbatim)*: preserve quoted phrases, strip query operators the user didn't mean, **quote dotted/hyphenated terms** (`foo.bar`, `multi-word` would otherwise be parsed as operators), and a **CJK trigram fallback** for languages without whitespace tokenization. Lift hermes' SQLite-FTS5 sanitizer and **port it to SurrealDB's FTS** (DATA-MODEL §4.8 `@@`/`@1@` + `search::score`) — the *logic* lifts cleanly; the operator set differs, so re-target it. *(verify against v2 constraints: SurrealDB's analyzer/operator grammar ≠ SQLite FTS5; the sanitizer's intent transfers, the exact token list does not.)*

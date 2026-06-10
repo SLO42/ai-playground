@@ -44,10 +44,10 @@ The PM **summarizes, links to tasks, flags risk areas, and proposes spawning a r
 
 ## 7. Role workforce integration (HARVEST-GSTACK Lane D — builds with v2.1)
 
-- **Catalog roles**: five harvest-derived roles (`security-officer`, `code-reviewer`, `qa-lead`, `design-reviewer`, `investigator`) live in the D-036 capability catalog — prompt core (versioned) + capability bundle + default tier. Roles run as ordinary sessions (routed/gated/transcribed/evented).
-- **Track records (Lane D D6)**: per-role rollup of review verdicts, refutation outcomes, A1 calibration events, fix-loop rates, cost per certified outcome — surfaced on /agents + the PM dashboard; consumed by §4 panel composition and the PM's "hire <role>" proposals.
-- **Role interviews (Lane D D7)**: a role version is deployable only after passing its calibration gauntlet (golden tasks with planted defects); ANY prompt-core revision re-interviews before it touches real work. Results recorded with evidence (F-008).
-- The PM's §5 "proposes spawning a reviewer agent" = proposes hiring `code-reviewer` from the catalog; staffing/performance-review/tier-aware-hiring evolutions are HELD for a future WORKFORCE-SPEC once track records carry real data.
+- **Catalog roles**: five harvest-derived roles (`security-officer`, `code-reviewer`, `qa-lead`, `design-reviewer`, `investigator`) — capability bundle + default tier from the D-036 catalog; **prompt cores are PRODUCT rows (`role`/`role_version`, hash-bound) — superseded by WORKFORCE-SPEC header (the catalog supplies capability bundles only)**. Roles run as ordinary sessions (routed/gated/transcribed/evented).
+- **Track records (Lane D D6)**: per-role rollup of review verdicts, refutation outcomes, A1 calibration events, fix-loop rates, cost per certified outcome — surfaced on /agents + the PM dashboard; consumed by §4 panel composition and the PM's "hire <role>" proposals. Data plane + rollup: **WORKFORCE-SPEC.md §2**.
+- **Role interviews (Lane D D7)**: a role version is deployable only after passing its calibration gauntlet (golden tasks with planted defects); ANY prompt-core revision re-interviews before it touches real work. Results recorded with evidence (F-008). Full gauntlet spec: **WORKFORCE-SPEC.md §3**.
+- The PM's §5 "proposes spawning a reviewer agent" = proposes hiring `code-reviewer` from the catalog; staffing/performance-review/tier-aware-hiring evolutions are spec'd in **WORKFORCE-SPEC.md §5–§7** (build wave v2.3).
 
 ## 8. Build shape (wave v2.1 — after the v2.0 audits settle)
 

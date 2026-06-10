@@ -72,7 +72,7 @@
 
 The harvested role methodologies don't stay as inline prompt text — they graduate into **catalog roles** the platform can hire, completing the D-036 capability story:
 
-1. **Role = catalog entry**: prompt core (the harvested, G-guarded methodology) + capability bundle (D-036: skills/tools the role needs, nothing more) + default model tier. Stored in the existing agent/capability catalog (5.1/7.3) — surfaced on /agents (which currently shows 1 lonely cc_agent).
+1. **Role = catalog entry**: prompt core (the harvested, G-guarded methodology) + capability bundle (D-036: skills/tools the role needs, nothing more) + default model tier. *Storage superseded by WORKFORCE-SPEC header: prompt cores are PRODUCT rows (`role`/`role_version`, hash-bound); the catalog supplies capability bundles only.* Surfaced on /agents (which currently shows 1 lonely cc_agent).
 2. **Launch roles (five, all harvest-derived)**: `security-officer` (A8 methodology), `code-reviewer` (A1/A2/A15), `qa-lead` (A6), `design-reviewer` (A9), `investigator` (A10).
 3. **Consumers**: wave review panels compose role lenses instead of one generalist reviewer; the PM's D-039 validation panel draws its 1–2 validators from roles; PM PR-triage "proposes a reviewer" = proposes spawning `code-reviewer` (already in PM-SPEC §5); the periodic security-review wave runs `security-officer`; debug sessions get `investigator`.
 4. **Communication layer — no new machinery**: roles run as ordinary Atelier sessions — routed (D-020), gated (D-018), transcribed, analytics-evented, surfaced in the fleet/RightTray like every other agent. "Adding them to the workforce" is catalog rows + consumers, not a new runtime.
@@ -84,7 +84,7 @@ The harvested role methodologies don't stay as inline prompt text — they gradu
 
 **D7 — Role interviews / calibration gauntlet (operator-approved 2026-06-10, builds v2.1):** a role VERSION joins the workforce only after passing a gauntlet of golden tasks with planted, known defects (seeded vuln for `security-officer`, planted absence-defect + hallucination bait for `code-reviewer`, contrast/slop plants for `design-reviewer`, …). Prompt cores are VERSIONED; any revision re-interviews before deployment — gate integrity stops depending on prompts never changing. Gauntlet fixtures live with the catalog; results recorded like any review verdict (F-008: pass/fail with evidence, never vibes). This is the leak-harness positive-control principle applied to the workforce itself.
 
-**Held for a future WORKFORCE-SPEC (after v2.1 has real track-record data):** performance-review loop (PM proposes prompt-core revisions, new version interviews against the incumbent's record, operator gates the swap) · per-project staffing (`project_staff` shape mirroring `project_target`; PM proposes staffing from incident/finding history) · tier-aware hiring (cost-vs-quality per role feeding D-020 routing).
+**spec'd: docs/WORKFORCE-SPEC.md (builds v2.3):** performance-review loop (PM proposes prompt-core revisions, new version interviews against the incumbent's record, operator gates the swap) · per-project staffing (`project_staff` shape mirroring `project_target`; PM proposes staffing from incident/finding history) · tier-aware hiring (cost-vs-quality per role feeding D-020 routing).
 
 ## Sequencing
 

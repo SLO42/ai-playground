@@ -18,3 +18,5 @@ export {
 export { SseClient, sseStream, formatFrame, type SseClientOptions } from './sse';
 
 export { watchTable, type DbSourceHandle, type DbChange } from './db-source';
+
+export { WATCHED_TABLES, type WatchedTable } from './watched-tables';

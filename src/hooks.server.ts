@@ -15,7 +15,7 @@
 
 import { env } from '$env/dynamic/private';
 import { initDbFromEnv, tryGetDb, type DbInitResult } from '$lib/server/db/runtime-init';
-import { getEventBus, watchTable, type DbSourceHandle } from '$lib/server/events';
+import { getEventBus, watchTable, WATCHED_TABLES, type DbSourceHandle } from '$lib/server/events';
 import { bootstrapControlPlane, type ListenerSpec } from '$lib/server/config/loopback';
 import { startOrchestrator, type Orchestrator } from '$lib/server/orchestrator';
 
@@ -85,20 +85,13 @@ function bootstrapControlPlaneEnv(): void {
 	console.log('[startup] control-plane: loopback gate passed; per-boot HOOK_TOKEN minted (D-025).');
 }
 
-/** Tables whose row changes feed the dashboard's live regions.
- *  v0.1: project/task/session. 2.4 adds the analytics tables so /reports + /agents
- *  rollups and the live fleet/cost ticker (UI-SPEC §229/§230) update in place as
- *  agent_event / routing_event rows arrive — over the ONE SSE stream (§2.11).
- *  3.1 adds security_finding so the /reports Maintain rollup updates in place as a
- *  scan writes findings (UI-SPEC §207/§315). 7.1 adds `service` so the always-visible
- *  Statusbar service-health token updates live as a service row flips state (UI-SPEC §3).
- *  9.1 adds `pm_memory`, `decision`, `sprint` so the project-workspace PM tab updates in
- *  place as the PM records memory/decisions or a sprint is created/completed (UI-SPEC §51).
- *  11.1 adds `incident` so the /reports incidents history (the RightTray "see all" target)
- *  updates in place as a gate-denial / anomaly incident is recorded (UI-SPEC §208).
- *  11.3 adds `cc_agent` so the /agents catalog (and /claude-code catalog) live-refreshes
- *  in place when a project's `.claude/agents` is re-synced into the cc_* mirror (UI-SPEC §198/§214). */
-const WATCHED_TABLES = ['project', 'task', 'session', 'agent_event', 'routing_event', 'security_finding', 'service', 'pm_memory', 'decision', 'sprint', 'task_sync', 'notification', 'incident', 'cc_agent'] as const;
+// WATCHED_TABLES (13.1) lives in $lib/server/events/watched-tables.ts — the single
+// audited list of every table any route subscribes to via onDbChange, each entry
+// commented with the routes that need it. A static-scan test (watched-tables.test.ts)
+// asserts the list is a superset of every onDbChange table in the routes source, so a
+// future route subscribing to an unwatched table fails the suite instead of silently
+// never live-updating (the 13.1 finding: workflow_run was unwatched → the release
+// page's documented live step_state updates could never fire).
 
 const watchers: DbSourceHandle[] = [];
 

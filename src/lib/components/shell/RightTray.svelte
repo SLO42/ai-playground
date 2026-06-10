@@ -175,15 +175,21 @@
 							{#if item.kind === 'notification'}
 								<p class="item-msg">{item.message || '—'}</p>
 							{:else}
+								<!-- 14.4c: identifying content — model and/or the persisted how/why label;
+								     a row with neither gets an HONEST fallback, never a bare type. -->
 								<p class="item-msg">
 									<span class="ev-type mono">{item.type}</span>
 									{#if item.model}<span class="ev-model mono">{item.model}</span>{/if}
+									{#if item.label}<span class="ev-label" title={item.label}>{item.label}</span>{/if}
+									{#if !item.model && !item.label}<span class="ev-none">no context recorded</span>{/if}
 								</p>
 							{/if}
 							<div class="item-meta">
 								<time class="when" datetime={item.at}>{ago(item.at)}</time>
 								{#if item.kind === 'activity' && item.sessionId}
 									<span class="ref mono">session {shortId(item.sessionId)}</span>
+								{:else if item.kind === 'activity' && item.projectId}
+									<span class="ref mono">project {shortId(item.projectId)}</span>
 								{/if}
 							</div>
 						</div>
@@ -394,6 +400,20 @@
 	.ev-model {
 		font-size: var(--text-xs);
 		color: var(--color-text-muted);
+	}
+	.ev-label {
+		font-size: var(--text-xs);
+		color: var(--color-text-2);
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+		max-width: 100%;
+	}
+	.ev-none {
+		font-size: var(--text-xs);
+		color: var(--color-text-muted);
+		font-style: italic;
 	}
 	.item-meta {
 		display: flex;

@@ -19,7 +19,7 @@
 // (option<T> rejects NULL — MEMORY-SPEC §6.1).
 
 import { createHash } from 'node:crypto';
-import { realpathSync } from 'node:fs';
+import { existsSync, realpathSync, statSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
@@ -266,6 +266,164 @@ async function replaceSkills(
 		});
 		await db.query(`CREATE cc_skill CONTENT $content;`, { content });
 	}
+}
+
+// ── Scope derivation + catalog reconciliation (TASK 14.4d; D-016/D-018) ───────────
+//
+// AUDIT-CONFIRMED F-008 finding: the live catalog carried a cc_scope row claiming to be
+// a project's config mirror while its `path` pointed at a DIFFERENT repo's `.claude`
+// (the v1 repo) — /claude-code presented another project's config as this one's. The
+// fix is structural, not a one-off delete:
+//   • DERIVATION — a project scope's path is derived from the project's OWN registered
+//     root (`<project.root_path>/.claude`, projectScopeOf) — never from an arbitrary
+//     ingested path.
+//   • VALIDATION (fail-closed, D-018) — a project-kind cc_scope row is valid ONLY if it
+//     links a registered project AND its path realpath-confines under that project's
+//     root_path. Unverifiable rows (no project link, unknown project, missing root,
+//     unresolvable or out-of-root path) are removed WITH their child mirror rows —
+//     the mirror is a disk index (D-010), so removal loses nothing durable.
+//   • The global (~/.claude) scope is exempt from project confinement (it lives outside
+//     every project root by definition).
+
+/** Derive a project's OWN config scope from its registered root (14.4d). */
+export function projectScopeOf(projectId: string, rootPath: string): SyncScope {
+	return { kind: 'project', claudeDir: resolve(rootPath, '.claude'), project: projectId };
+}
+
+/** A raw cc_scope row as classified by {@link classifyScopes}. */
+export interface ScopeRowView {
+	id: string;
+	kind: 'project' | 'global';
+	path: string;
+	project?: string;
+}
+
+/** Canonical path key for dedup/lookup (Windows paths compare case-insensitively). */
+function canonPath(p: string): string {
+	const r = resolve(p);
+	return process.platform === 'win32' ? r.toLowerCase() : r;
+}
+
+/**
+ * Classify every cc_scope row as VALID (renderable + editable) or INVALID (fail-closed:
+ * provenance cannot be verified against a registered project root). Pure read — no
+ * deletes; the edit allow-list (/claude-code actions) consumes `valid` directly so a
+ * poisoned row can never anchor a config write even before a reconcile runs (D-018).
+ */
+export async function classifyScopes(
+	db: Db
+): Promise<{ valid: ScopeRowView[]; invalid: ScopeRowView[] }> {
+	const [scopes] = await db.query<
+		[Array<{ id: unknown; kind: unknown; path: unknown; project: unknown }>]
+	>(`SELECT id, kind, path, project FROM cc_scope;`);
+	const [projects] = await db.query<[Array<{ id: unknown; root_path: unknown }>]>(
+		`SELECT id, root_path FROM project;`
+	);
+	const rootById = new Map<string, string>();
+	for (const p of projects ?? []) {
+		if (typeof p.root_path === 'string' && p.root_path) rootById.set(String(p.id), p.root_path);
+	}
+
+	const valid: ScopeRowView[] = [];
+	const invalid: ScopeRowView[] = [];
+	for (const sc of scopes ?? []) {
+		const row: ScopeRowView = {
+			id: String(sc.id),
+			kind: sc.kind === 'global' ? 'global' : 'project',
+			path: typeof sc.path === 'string' ? sc.path : '',
+			...(sc.project != null ? { project: String(sc.project) } : {})
+		};
+		if (sc.kind === 'global') {
+			// The global ~/.claude scope is exempt from project confinement.
+			valid.push(row);
+			continue;
+		}
+		if (sc.kind !== 'project') {
+			invalid.push(row); // unknown kind — fail closed
+			continue;
+		}
+		const root = row.project ? rootById.get(row.project) : undefined;
+		if (!root || !row.path) {
+			invalid.push(row); // no registered project / no path — unverifiable, fail closed
+			continue;
+		}
+		try {
+			confineScope(row.path, root); // realpath + ..-normalized containment (D-018)
+			valid.push(row);
+		} catch {
+			invalid.push(row); // outside the registered project root — fail closed
+		}
+	}
+	return { valid, invalid };
+}
+
+export interface ScopeReconcileResult {
+	/** cc_scope ids removed because their provenance failed validation (fail-closed). */
+	removed: string[];
+	/** cc_scope ids synced fresh from a project's own `<root>/.claude`. */
+	synced: string[];
+}
+
+/** Delete a cc_scope row AND every child mirror row that hangs off it. */
+async function deleteScopeCascade(db: Db, scopeId: string): Promise<void> {
+	const rid = link(scopeId);
+	await db.query(
+		`DELETE cc_settings WHERE scope = $rid;
+		 DELETE cc_hook WHERE scope = $rid;
+		 DELETE cc_agent WHERE scope = $rid;
+		 DELETE cc_skill WHERE scope = $rid;
+		 DELETE cc_mcp_server WHERE scope = $rid;
+		 DELETE $rid;`,
+		{ rid }
+	);
+}
+
+/**
+ * Reconcile the cc_scope catalog against the REGISTERED project roots (14.4d):
+ *   1. remove (with children) every row {@link classifyScopes} marks invalid;
+ *   2. for each project whose own `<root_path>/.claude` EXISTS on disk but has no valid
+ *      catalog row, derive the scope from the project's own root and sync it.
+ * Projects sharing one root dedup onto a single scope (the oldest registrant wins).
+ * Steady-state (clean catalog, no missing scopes) performs NO writes — safe to run from
+ * the /claude-code loader. Returns what changed.
+ */
+export async function reconcileScopes(db: Db): Promise<ScopeReconcileResult> {
+	const { valid, invalid } = await classifyScopes(db);
+
+	const removed: string[] = [];
+	for (const row of invalid) {
+		await deleteScopeCascade(db, row.id);
+		removed.push(row.id);
+	}
+
+	// Paths already covered by a valid row (canonical compare).
+	const covered = new Set<string>();
+	for (const row of valid) {
+		if (row.kind === 'project') covered.add(canonPath(row.path));
+	}
+
+	// Derive missing scopes from each project's OWN root, oldest registrant first.
+	const [projects] = await db.query<[Array<{ id: unknown; root_path: unknown }>]>(
+		`SELECT id, root_path, created_at FROM project ORDER BY created_at ASC;`
+	);
+	const synced: string[] = [];
+	for (const p of projects ?? []) {
+		const id = String(p.id);
+		const root = typeof p.root_path === 'string' ? p.root_path : '';
+		if (!root) continue;
+		const claudeDir = resolve(root, '.claude');
+		const key = canonPath(claudeDir);
+		if (covered.has(key)) continue;
+		try {
+			if (!existsSync(claudeDir) || !statSync(claudeDir).isDirectory()) continue;
+		} catch {
+			continue;
+		}
+		covered.add(key);
+		const res = await syncScope(db, projectScopeOf(id, root));
+		synced.push(res.scopeId);
+	}
+	return { removed, synced };
 }
 
 // ── Drift detection (synced / out-of-sync) ───────────────────────────────────────

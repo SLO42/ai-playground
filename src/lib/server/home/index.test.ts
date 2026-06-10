@@ -7,6 +7,8 @@ import { createProject } from '../projects/repo';
 import { createTask, setStatus } from '../tasks/repo';
 import { writeAgentEvent } from '../analytics/events';
 import { buildShellMetrics, listFleet } from '../analytics';
+import { __resetServicesRuntime, __setOllamaAdapterForTest } from '../services/runtime';
+import type { ServiceAdapter, ServiceName } from '../services/manager';
 import {
 	readServicesHealth,
 	listRecentActivity,
@@ -39,10 +41,34 @@ afterAll(async () => {
 	await tdb?.teardown();
 });
 
+/** A deterministic probe double so readServicesHealth never depends on a real Ollama. */
+class FakeProbeAdapter implements ServiceAdapter {
+	readonly name: ServiceName = 'ollama';
+	constructor(
+		private readonly healthy: boolean,
+		private readonly pidVal: number | null = null
+	) {}
+	async start(): Promise<void> {}
+	async stop(): Promise<void> {}
+	async health(): Promise<boolean> {
+		return this.healthy;
+	}
+	pid(): number | null {
+		return this.pidVal;
+	}
+	async discoverPid(): Promise<number | null> {
+		return this.pidVal;
+	}
+}
+
 describe('home — empty portfolio (honest zero/empty, F-008)', () => {
 	it('reports empty/zero figures from real rows, never fabricated', async () => {
+		// No service rows; the probe says ollama is down — that is REAL knowledge, so the
+		// rollup reports 0/1 (probed-down), while the unprobed services stay excluded.
+		__resetServicesRuntime();
+		__setOllamaAdapterForTest(db, new FakeProbeAdapter(false));
 		const services = await readServicesHealth(db);
-		expect(services).toEqual({ up: 0, total: 0 });
+		expect(services).toEqual({ up: 0, total: 1 });
 
 		const activity = await listRecentActivity(db);
 		expect(activity).toEqual([]);
@@ -57,13 +83,38 @@ describe('home — empty portfolio (honest zero/empty, F-008)', () => {
 	});
 });
 
-describe('home — services health rollup', () => {
-	it('counts up vs total from real service rows', async () => {
-		await db.query(`UPSERT service:ollama CONTENT { name: 'ollama', status: 'running' };`);
-		await db.query(`UPSERT service:surrealdb CONTENT { name: 'surrealdb', status: 'running' };`);
-		await db.query(`UPSERT service:engine CONTENT { name: 'engine', status: 'stopped' };`);
+describe('home — services health rollup (probe-reconciled, 14.4a)', () => {
+	it('RED-GREEN: a stale row claiming running for a DEAD-probed service counts DOWN, not up', async () => {
+		// The audit fixture: ollama dead ~24h while its persisted row still says running.
+		// Pre-fix, readServicesHealth read the raw row and Home claimed "1/1 up" (F-008).
+		__resetServicesRuntime();
+		await db.query(
+			`UPSERT service:ollama CONTENT { name: 'ollama', status: 'running', pid: 999999, checked_at: time::now() };`
+		);
+		__setOllamaAdapterForTest(db, new FakeProbeAdapter(false));
 
 		const health = await readServicesHealth(db);
+		expect(health).toEqual({ up: 0, total: 1 });
+
+		// The stale row itself was corrected on probe (like /services does) — re-reading
+		// without any probe contradiction stays honest.
+		const [rows] = await db.query<[Array<{ status: string }>]>(
+			`SELECT status FROM service:ollama;`
+		);
+		expect(rows[0].status).toBe('stopped');
+	});
+
+	it('counts probe-healthy + unprobed self-reports honestly', async () => {
+		__resetServicesRuntime();
+		await db.query(
+			`UPSERT service:surrealdb CONTENT { name: 'surrealdb', status: 'running', checked_at: time::now() };
+			 UPSERT service:engine CONTENT { name: 'engine', status: 'stopped', checked_at: time::now() };`
+		);
+		__setOllamaAdapterForTest(db, new FakeProbeAdapter(true, 4242));
+
+		const health = await readServicesHealth(db);
+		// ollama (probe-true) + surrealdb (self-report, no probe to contradict) up;
+		// engine stopped; dashboard has no row and no probe → honest unknown, excluded.
 		expect(health.total).toBe(3);
 		expect(health.up).toBe(2);
 	});
@@ -120,6 +171,33 @@ describe('home — recent activity feed', () => {
 		expect(feed[0].type).toBe('completion');
 		expect(feed[0].model).toBe('anthropic/claude-opus-4-8');
 		expect(feed[0].projectId).toBe(p.id);
+	});
+
+	it('14.4c — a MODEL-LESS completion surfaces its persisted detail as an identifying label', async () => {
+		const p = await createProject(db, {
+			slug: 'home_label',
+			name: 'Home Label',
+			root_path: 'F:/code/home_label'
+		});
+		// The audit shape: a github-sync completion — no session, no model, but a real
+		// how/why summary persisted in detail. Pre-fix the feed dropped it and rendered "—".
+		await writeAgentEvent(db, {
+			type: 'completion',
+			project: p.id,
+			detail: { ok: true, summary: 'github sync both (dry-run) SLO42/ai-playground: +1 ~0', reason: 'task↔issue sync (D-037)' }
+		});
+
+		const feed = await listRecentActivity(db, 8);
+		expect(feed[0].type).toBe('completion');
+		expect(feed[0].model).toBeNull(); // honest — there was no model
+		expect(feed[0].label).toContain('github sync'); // …but the row IS identifiable
+		expect(feed[0].projectId).toBe(p.id);
+
+		// An event with NO detail keeps label null (the UI then renders an honest fallback).
+		await writeAgentEvent(db, { type: 'cancel', project: p.id });
+		const feed2 = await listRecentActivity(db, 8);
+		expect(feed2[0].type).toBe('cancel');
+		expect(feed2[0].label).toBeNull();
 	});
 });
 

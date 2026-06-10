@@ -135,7 +135,9 @@
       <span class="metric-value tnum mono" data-unknown={!services || services.total === 0}>
         {fmtServices(services)}
       </span>
-      <span class="metric-foot">self-reported health</span>
+      <!-- 14.4a: the figure is probe-reconciled (the same live probe /services uses),
+           so the label says so — never "self-reported" for a probed number (F-008). -->
+      <span class="metric-foot">probe-reconciled health</span>
     </li>
   </ul>
 
@@ -165,7 +167,18 @@
           {#each activity as ev (ev.id)}
             <li class="feed-item">
               <span class="ev-type" data-type={ev.type}>{ev.type}</span>
-              <span class="ev-model mono">{ev.model ?? '—'}</span>
+              <!-- 14.4c: identifying content — model and/or the persisted how/why label;
+                   when a row truly has neither, an HONEST fallback (never a bare "—"). -->
+              <span class="ev-what" title={ev.label ?? undefined}>
+                {#if ev.model}<span class="ev-model mono">{ev.model}</span>{/if}
+                {#if ev.label}<span class="ev-label">{ev.label}</span>{/if}
+                {#if !ev.model && !ev.label}<span class="ev-none">no context recorded</span>{/if}
+              </span>
+              {#if ev.sessionId}
+                <span class="ev-ref mono">s:{shortId(ev.sessionId)}</span>
+              {:else if ev.projectId}
+                <span class="ev-ref mono">p:{shortId(ev.projectId)}</span>
+              {/if}
               <span class="ev-when">{ago(ev.at)}</span>
             </li>
           {/each}
@@ -397,12 +410,34 @@
   .ev-type[data-type='error'] {
     color: var(--color-error);
   }
+  .ev-what {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2);
+    overflow: hidden;
+  }
   .ev-model {
     font-size: var(--text-xs, 0.74rem);
     color: var(--color-text-2);
-    flex: 1;
+    white-space: nowrap;
+  }
+  .ev-label {
+    font-size: var(--text-xs, 0.74rem);
+    color: var(--color-text-2);
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .ev-none {
+    font-size: var(--text-xs, 0.74rem);
+    color: var(--color-text-muted);
+    font-style: italic;
+  }
+  .ev-ref {
+    font-size: var(--text-xs, 0.7rem);
+    color: var(--color-text-muted);
     white-space: nowrap;
   }
   .ev-when {

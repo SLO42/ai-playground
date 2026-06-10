@@ -951,6 +951,23 @@ const m0027_run_note: Migration = {
 	`
 };
 
+// ── TASK 14.4a/b — honest "last seen" on probe-corrected service rows ────────────
+//
+// The /services probe reconciliation (10.5) can find a persisted `service` row still
+// claiming 'running' for a process that is actually gone (a stale self-report — the
+// F-008 audit's "services up 1/1 while ollama dead" finding). When the read path
+// corrects the row to the probed truth, the moment the service was LAST observed
+// running must survive the correction: the surface renders pid "—" plus an honest
+// "last seen <ago>" instead of presenting a dead pid as current. option<datetime> —
+// absent (NONE) until a service has ever been observed running (§6.1).
+// IDEMPOTENT (D-006/F-015): OVERWRITE only — clean over fresh AND half-applied state.
+const m0028_service_last_seen: Migration = {
+	id: '0028_service_last_seen',
+	up: `
+		DEFINE FIELD OVERWRITE last_seen_at ON service TYPE option<datetime>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -984,5 +1001,6 @@ export const schemaMigrations: Migration[] = [
 	m0024_task_sync,
 	m0025_pm_review_board,
 	m0026_project_target,
-	m0027_run_note
+	m0027_run_note,
+	m0028_service_last_seen
 ];

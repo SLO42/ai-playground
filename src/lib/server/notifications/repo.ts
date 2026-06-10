@@ -20,6 +20,7 @@
 
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
+import { activityLabel } from '../analytics/events';
 
 /** A durable operator notification (a real `notification` row; F-008). */
 export interface NotificationItem {
@@ -42,6 +43,8 @@ export interface ActivityEventItem {
 	at: string;
 	/** provider/model_id when the event carried a model, else null. */
 	model: string | null;
+	/** One-line identifying label from the persisted detail (summary/reason/error), else null (14.4c). */
+	label: string | null;
 	/** Linked session id (table:id) when present. */
 	sessionId: string | null;
 	/** Linked project id (table:id) when present. */
@@ -101,6 +104,9 @@ function toActivity(r: Record<string, unknown>): ActivityEventItem {
 		type: String(r.type ?? 'event'),
 		at: iso(r.at),
 		model,
+		// 14.4c — model-less events (e.g. a github-sync completion) DO persist their how/why
+		// in detail; surface it so the tray never renders an unidentifiable bare type.
+		label: activityLabel(r.detail),
 		sessionId: r.session ? String(r.session) : null,
 		projectId: r.project ? String(r.project) : null
 	};
@@ -125,7 +131,7 @@ export async function buildTrayData(db: Db, limit = 20): Promise<TrayData> {
 		[Array<Record<string, unknown>>, Array<Record<string, unknown>>]
 	>(
 		`SELECT id, message, read, at FROM notification ORDER BY at DESC LIMIT $lim;
-		 SELECT id, type, at, model, session, project FROM agent_event ORDER BY at DESC LIMIT $lim;`,
+		 SELECT id, type, at, model, session, project, detail FROM agent_event ORDER BY at DESC LIMIT $lim;`,
 		{ lim: limit }
 	);
 

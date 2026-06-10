@@ -8,6 +8,7 @@
 
 export {
 	writeAgentEvent,
+	activityLabel,
 	AGENT_EVENT_TYPES,
 	type AgentEventType,
 	type AgentEventModel,

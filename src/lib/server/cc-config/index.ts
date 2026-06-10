@@ -33,13 +33,18 @@ export {
 	catalogIds,
 	scopeIdOf,
 	confineScope,
+	projectScopeOf,
+	classifyScopes,
+	reconcileScopes,
 	ScopeConfinementError,
 	type SyncScope,
 	type SyncResult,
 	type SyncStatus,
 	type ScopeState,
 	type CatalogScope,
-	type CatalogIds
+	type CatalogIds,
+	type ScopeRowView,
+	type ScopeReconcileResult
 } from './sync';
 
 // TASK 2.11 — read-WRITE config manager (D-010): validate → diff + confirm → write →

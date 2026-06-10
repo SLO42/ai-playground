@@ -21,7 +21,15 @@ import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
 import { ServicesManager, type ServiceAdapter, type ServiceName } from './manager';
 import { listIncidents, listUnreadNotifications } from './incidents';
-import { readServices, operateService, ServiceControlError, getServicesManager, __resetServicesRuntime } from './runtime';
+import {
+	readServices,
+	summarizeServices,
+	operateService,
+	ServiceControlError,
+	getServicesManager,
+	__resetServicesRuntime,
+	__setOllamaAdapterForTest
+} from './runtime';
 
 let tdb: TestDb;
 let db: Db;
@@ -146,6 +154,89 @@ describe('§10.5 runtime.readServices — full set, honest controllability, F-01
 		expect(() => JSON.parse(JSON.stringify(ollama))).not.toThrow();
 		// And it round-trips as a valid date (real value, not a fabricated placeholder).
 		expect(Number.isNaN(new Date(ollama.checked_at).getTime())).toBe(false);
+	});
+});
+
+/** A deterministic probe double for readServices (health + discoverPid). */
+class FakeProbeAdapter implements ServiceAdapter {
+	readonly name: ServiceName = 'ollama';
+	constructor(
+		private readonly healthy: boolean,
+		private readonly pidVal: number | null = null
+	) {}
+	async start(): Promise<void> {}
+	async stop(): Promise<void> {}
+	async health(): Promise<boolean> {
+		return this.healthy;
+	}
+	pid(): number | null {
+		return this.pidVal;
+	}
+	async discoverPid(): Promise<number | null> {
+		return this.pidVal;
+	}
+}
+
+describe('§14.4a/b readServices — probe reconciliation corrects the STALE ROW, never renders a dead pid', () => {
+	it('RED-GREEN: a row claiming running with a DEAD probe reads stopped, pid hidden, last-seen honest — and the row itself is corrected', async () => {
+		// The exact audit fixture: ollama’s persisted self-report says running (with a pid)
+		// but the process has been gone for a day — the probe is the ground truth.
+		await db.query(
+			`UPSERT service:ollama CONTENT { name: 'ollama', status: 'running', pid: 76804, checked_at: d'2026-06-09T18:18:30Z' };`
+		);
+		__setOllamaAdapterForTest(db, new FakeProbeAdapter(false));
+
+		const { services } = await readServices(db);
+		const o = services.find((s) => s.name === 'ollama')!;
+		expect(o.status).toBe('stopped'); // pre-fix the home rollup read this row as "up"
+		expect(o.pid).toBeUndefined(); // 14.4b — NEVER the dead pid presented as current
+		expect(o.liveHealthy).toBe(false);
+		// "last seen" = the last instant the row claimed it was alive (honest).
+		expect(o.lastSeenAt).toContain('2026-06-09T18:18:30');
+
+		// The STALE ROW ITSELF got corrected (14.4a — F-008): status, pid UNSET, last_seen seeded.
+		const [rows] = await db.query<[Array<{ status: string; pid?: number; last_seen_at?: unknown }>]>(
+			`SELECT status, pid, last_seen_at FROM service:ollama;`
+		);
+		expect(rows[0].status).toBe('stopped');
+		expect(rows[0].pid).toBeUndefined();
+		expect(String(rows[0].last_seen_at)).toContain('2026-06-09T18:18:30');
+
+		// And the home-facing rollup over the SAME views counts it DOWN (the red-green core).
+		expect(summarizeServices(services)).toEqual({ up: 0, total: 1 });
+	});
+
+	it('a HEALTHY probe on a stale stopped row flips it back running with the LIVE pid (both view and row)', async () => {
+		await db.query(
+			`UPSERT service:ollama MERGE { name: 'ollama', status: 'stopped', checked_at: time::now() }; UPDATE service:ollama UNSET pid;`
+		);
+		__setOllamaAdapterForTest(db, new FakeProbeAdapter(true, 4321));
+
+		const { services } = await readServices(db);
+		const o = services.find((s) => s.name === 'ollama')!;
+		expect(o.status).toBe('running');
+		expect(o.pid).toBe(4321);
+		expect(o.lastSeenAt).toBeTruthy(); // seen RIGHT NOW
+
+		const [rows] = await db.query<[Array<{ status: string; pid?: number; last_seen_at?: unknown }>]>(
+			`SELECT status, pid, last_seen_at FROM service:ollama;`
+		);
+		expect(rows[0].status).toBe('running');
+		expect(rows[0].pid).toBe(4321);
+		expect(rows[0].last_seen_at).toBeTruthy();
+
+		expect(summarizeServices(services).up).toBe(1);
+	});
+
+	it('summarizeServices excludes honest-unknown services from the ratio (F-008)', async () => {
+		// dashboard/engine/surrealdb have no rows and no probe here → unknown → excluded.
+		await db.query(`DELETE service;`);
+		__setOllamaAdapterForTest(db, new FakeProbeAdapter(false));
+		const { services } = await readServices(db);
+		// probe-false is REAL knowledge even with no row: ollama reads stopped, not unknown.
+		expect(services.find((s) => s.name === 'ollama')!.status).toBe('stopped');
+		expect(services.find((s) => s.name === 'dashboard')!.status).toBe('unknown');
+		expect(summarizeServices(services)).toEqual({ up: 0, total: 1 });
 	});
 });
 

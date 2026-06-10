@@ -134,8 +134,15 @@
               ></span>
               <span class="svc-name">{s.name}</span>
               <span class="svc-status" data-status={s.status}>{statusLabel(s.status)}</span>
+              <!-- 14.4b: a down service NEVER shows its old pid as if current — the read
+                   model omits it (pid —) and we say when it was last seen instead. -->
               {#if s.pid != null}
                 <span class="svc-pid mono" title="process id">pid {s.pid}</span>
+              {:else if s.id !== null}
+                <span class="svc-pid mono" title="no live process id">pid —</span>
+              {/if}
+              {#if s.status !== 'running' && s.lastSeenAt}
+                <span class="svc-seen" title={s.lastSeenAt}>last seen {ago(s.lastSeenAt)}</span>
               {/if}
               {#if s.liveHealthy !== null}
                 <span class="svc-health" data-healthy={s.liveHealthy}
@@ -364,6 +371,10 @@
   }
   .svc-pid {
     font: var(--type-mono-sm);
+    color: var(--color-text-muted);
+  }
+  .svc-seen {
+    font: var(--type-label);
     color: var(--color-text-muted);
   }
   .svc-health {

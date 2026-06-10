@@ -308,8 +308,28 @@ function makeExtractFn(endpoint: string): ExtractFn {
 	};
 }
 
+/**
+ * Undo a DOUBLE-ENCODED backslash artifact in extracted memory content (TASK 14.4e —
+ * audit-confirmed F-008). Some local extraction models escape the JSON string contents
+ * one extra time (the raw reply carries `F:\\\\code\\\\…`), so even after the real
+ * JSON.parse the candidate still holds literal `\\` pairs — which then persist and
+ * render as `F:\\code\\…` on /memory, duplicating the clean fact.
+ *
+ * Targeted to exactly that artifact class: `\\` pairs collapse to `\` ONLY when every
+ * backslash in the text is part of a pair. A clean Windows path (`F:\code`) or prose
+ * containing a lone `\` (e.g. "split on \n") has unpaired backslashes and is returned
+ * untouched — we never "fix" legitimate content.
+ */
+export function unescapeDoubleEncoded(text: string): string {
+	if (!text.includes('\\')) return text;
+	// Strip all `\\` pairs; any backslash left over is a REAL single backslash → leave as-is.
+	if (text.replace(/\\\\/g, '').includes('\\')) return text;
+	return text.replace(/\\\\/g, '\\');
+}
+
 /** Parse the extraction model's reply into ADD-only candidates. Tolerant: finds the first JSON
- *  array, ignores malformed entries, caps the batch. A non-array / empty reply ⇒ []. */
+ *  array, ignores malformed entries, caps the batch. A non-array / empty reply ⇒ [].
+ *  14.4e: candidate content passes the doubled-backslash de-escape (write-path fix). */
 export function parseExtraction(text: string): MemoryCandidate[] {
 	const start = text.indexOf('[');
 	const end = text.lastIndexOf(']');
@@ -326,7 +346,7 @@ export function parseExtraction(text: string): MemoryCandidate[] {
 		if (out.length >= 12) break; // cap one turn's additive batch
 		if (!raw || typeof raw !== 'object') continue;
 		const r = raw as { content?: unknown; kind?: unknown };
-		const content = typeof r.content === 'string' ? r.content.trim() : '';
+		const content = typeof r.content === 'string' ? unescapeDoubleEncoded(r.content.trim()) : '';
 		if (!content) continue;
 		const kind = r.kind === 'episodic' || r.kind === 'procedural' ? r.kind : 'semantic';
 		out.push({ content, kind, source: 'session-extract' });

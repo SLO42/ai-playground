@@ -19,6 +19,8 @@ import {
 	syncState,
 	planEdit,
 	applyEdit,
+	classifyScopes,
+	reconcileScopes,
 	ConfigValidationError,
 	StaleConfirmError,
 	type CatalogScope,
@@ -72,6 +74,18 @@ export const load: PageServerLoad = async ({ depends }) => {
 			fleet = [];
 		}
 
+		// TASK 14.4d — reconcile the scope catalog against the REGISTERED project roots
+		// before rendering: a cc_scope row whose path lives outside its project's root
+		// (e.g. another repo's .claude ingested by mistake) is removed fail-closed with its
+		// child mirror rows (D-016/D-018), and any project whose own <root>/.claude exists
+		// but is missing from the catalog gets its scope derived from its OWN root.
+		// Steady-state this is a pure read; a reconcile failure never blanks the page.
+		try {
+			await reconcileScopes(db);
+		} catch {
+			/* keep serving the catalog as-is — the edit allow-list still fails closed */
+		}
+
 		const scopes = await readCatalog(db);
 
 		// Overlay the LIVE disk-vs-mirror status per scope (the mirror alone can only
@@ -117,18 +131,21 @@ export const load: PageServerLoad = async ({ depends }) => {
  * the SAME rows the loader renders — read fresh per action. The form's claudeDir is only a
  * lookup key into this set; kind/project of the matched scope come from the catalog row,
  * never the request. A claudeDir not in the catalog fails CLOSED (honest 400).
+ *
+ * TASK 14.4d hardening: only CONFINEMENT-VALID rows reach the allow-list (classifyScopes
+ * — a project scope must realpath-confine under its registered project root, D-018). A
+ * poisoned catalog row pointing outside the project can therefore never anchor a config
+ * write, even before a reconcile pass has cleaned it.
  */
 async function allowedScopes(db: Db): Promise<AllowedScope[]> {
-	const [rows] = await db.query<[Array<{ kind: unknown; path: unknown; project: unknown }>]>(
-		`SELECT kind, path, project FROM cc_scope;`
-	);
-	const out: AllowedScope[] = [];
-	for (const r of rows) {
-		const kind = r.kind === 'global' ? 'global' : r.kind === 'project' ? 'project' : null;
-		if (!kind || typeof r.path !== 'string' || !r.path) continue;
-		out.push({ kind, path: r.path, ...(r.project != null ? { project: String(r.project) } : {}) });
-	}
-	return out;
+	const { valid } = await classifyScopes(db);
+	return valid
+		.filter((r) => r.path)
+		.map((r) => ({
+			kind: r.kind,
+			path: r.path,
+			...(r.project ? { project: r.project } : {})
+		}));
 }
 
 /** Resolve the edit target from form fields, validating the kind at the boundary (D-016)

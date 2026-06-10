@@ -6,7 +6,18 @@ import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
-import { catalogIds, readCatalog, syncScope, syncState, type SyncScope } from './sync';
+import { createProject } from '../projects/repo';
+import {
+	catalogIds,
+	classifyScopes,
+	projectScopeOf,
+	readCatalog,
+	reconcileScopes,
+	scopeIdOf,
+	syncScope,
+	syncState,
+	type SyncScope
+} from './sync';
 
 // TASK 1.8 VERIFY (D-010, DATA-MODEL §4.10; UI-SPEC §214/§313): config-sync mirrors
 // a project's .claude/ + .mcp.json into the cc_* tables, and the catalog read backs
@@ -170,5 +181,126 @@ describe('drift — editing a file on disk shows out-of-sync, re-sync reflects i
 		expect(st.status).toBe('unsynced');
 		expect(st.mirrorDigest).toBeNull();
 		rmSync(other, { recursive: true, force: true });
+	});
+});
+
+// ── TASK 14.4d — fail-closed scope catalog (audit-confirmed F-008/D-018 finding) ──────
+//
+// The live catalog carried a cc_scope row claiming to mirror a project's config while its
+// path pointed at a DIFFERENT repo's .claude. These tests prove the structural fix:
+// classifyScopes fails such rows closed (so the edit allow-list never trusts them),
+// reconcileScopes removes them WITH their child mirror rows, and the project's scope is
+// re-derived from its OWN registered root — never from an arbitrary ingested path.
+describe('reconcileScopes / classifyScopes — scope provenance anchored to project roots (14.4d)', () => {
+	let goodRoot: string;
+	let evilRoot: string;
+	let projectId: string;
+
+	beforeAll(async () => {
+		// The project's REAL root, with its own .claude on disk.
+		goodRoot = mkdtempSync(join(tmpdir(), 'cc-good-'));
+		mkdirSync(join(goodRoot, '.claude', 'agents'), { recursive: true });
+		writeFileSync(join(goodRoot, '.claude', 'settings.json'), '{}');
+		writeFileSync(
+			join(goodRoot, '.claude', 'agents', 'own.md'),
+			'---\nname: own\ndescription: this project’s agent\n---\n'
+		);
+		// A real directory OUTSIDE the project root — the "v1 repo" of the audit finding.
+		evilRoot = mkdtempSync(join(tmpdir(), 'cc-evil-'));
+		mkdirSync(join(evilRoot, '.claude', 'agents'), { recursive: true });
+		writeFileSync(join(evilRoot, '.claude', 'settings.json'), '{}');
+		writeFileSync(
+			join(evilRoot, '.claude', 'agents', 'foreign.md'),
+			'---\nname: foreign\ndescription: someone else’s agent\n---\n'
+		);
+
+		const p = await createProject(db, { slug: 'cc_recon', name: 'Recon', root_path: goodRoot });
+		projectId = p.id;
+	});
+
+	afterAll(() => {
+		rmSync(goodRoot, { recursive: true, force: true });
+		rmSync(evilRoot, { recursive: true, force: true });
+	});
+
+	it('removes a project-kind scope whose path lives OUTSIDE its project root — children included — and keeps the confined one', async () => {
+		// Poison: a scope row claiming projectId but pointing at the OTHER repo's .claude
+		// (the exact audit shape), synced so it has child mirror rows.
+		const evilDir = join(evilRoot, '.claude');
+		await syncScope(db, { kind: 'project', claudeDir: evilDir, project: projectId });
+		// Legit: the project's own scope, derived from its own root.
+		await syncScope(db, projectScopeOf(projectId, goodRoot));
+
+		// classifyScopes fails the poisoned row CLOSED (this is the edit allow-list source).
+		const cls = await classifyScopes(db);
+		expect(cls.invalid.map((r) => r.id)).toContain(scopeIdOf('project', evilDir));
+		expect(cls.valid.map((r) => r.id)).toContain(scopeIdOf('project', join(goodRoot, '.claude')));
+
+		const res = await reconcileScopes(db);
+		expect(res.removed).toContain(scopeIdOf('project', evilDir));
+
+		// The poisoned scope AND its children are gone; the project's own scope remains.
+		const catalog = await readCatalog(db);
+		const paths = catalog.map((c) => c.path.toLowerCase());
+		expect(paths).not.toContain(evilDir.toLowerCase());
+		expect(paths).toContain(join(goodRoot, '.claude').toLowerCase());
+		const ids = await catalogIds(db);
+		expect(ids.agents.has('foreign')).toBe(false); // child rows cascaded
+		expect(ids.agents.has('own')).toBe(true);
+	});
+
+	it('a project-kind scope with NO registered project is unverifiable → fail-closed removed', async () => {
+		// A scope synced WITHOUT a project link (the legacy 1.8 shape): its provenance
+		// cannot be verified against any registered root → fail closed.
+		const orphanRoot = mkdtempSync(join(tmpdir(), 'cc-orphan-'));
+		const orphanDir = join(orphanRoot, '.claude');
+		mkdirSync(orphanDir, { recursive: true });
+		writeFileSync(join(orphanDir, 'settings.json'), '{}');
+		await syncScope(db, { kind: 'project', claudeDir: orphanDir });
+
+		const orphanId = scopeIdOf('project', orphanDir);
+		const cls = await classifyScopes(db);
+		expect(cls.invalid.map((r) => r.id)).toContain(orphanId);
+
+		const res = await reconcileScopes(db);
+		expect(res.removed).toContain(orphanId);
+		const catalog = await readCatalog(db);
+		expect(catalog.map((c) => c.scopeId)).not.toContain(orphanId);
+		rmSync(orphanRoot, { recursive: true, force: true });
+	});
+
+	it('derives a MISSING scope from the project’s OWN root (<root>/.claude)', async () => {
+		const root2 = mkdtempSync(join(tmpdir(), 'cc-derive-'));
+		mkdirSync(join(root2, '.claude'), { recursive: true });
+		writeFileSync(join(root2, '.claude', 'settings.json'), '{}');
+		const p2 = await createProject(db, { slug: 'cc_derive', name: 'Derive', root_path: root2 });
+
+		const res = await reconcileScopes(db);
+		const expected = scopeIdOf('project', join(root2, '.claude'));
+		expect(res.synced).toContain(expected);
+
+		const catalog = await readCatalog(db);
+		const sc = catalog.find((c) => c.scopeId === expected);
+		expect(sc).toBeTruthy();
+		expect(sc!.project).toBe(p2.id);
+
+		// Steady state: a second reconcile performs no writes (idempotent).
+		const again = await reconcileScopes(db);
+		expect(again.removed).toEqual([]);
+		expect(again.synced).toEqual([]);
+
+		rmSync(root2, { recursive: true, force: true });
+	});
+
+	it('a project whose root has NO .claude on disk gets NO fabricated scope (F-008)', async () => {
+		const root3 = mkdtempSync(join(tmpdir(), 'cc-none-'));
+		await createProject(db, { slug: 'cc_none', name: 'None', root_path: root3 });
+		const res = await reconcileScopes(db);
+		expect(res.synced).toEqual([]);
+		const catalog = await readCatalog(db);
+		expect(catalog.map((c) => c.path.toLowerCase())).not.toContain(
+			join(root3, '.claude').toLowerCase()
+		);
+		rmSync(root3, { recursive: true, force: true });
 	});
 });

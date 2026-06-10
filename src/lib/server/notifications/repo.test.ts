@@ -55,7 +55,8 @@ describe('notifications repo — tray read model (§3/§85/§147)', () => {
 			 CREATE notification:n3 SET message = 'read notice',  read = true,  at = d'2026-01-01T09:00:00Z';
 			 CREATE agent_event:e1 SET type = 'spawn',      at = d'2026-01-01T11:00:00Z',
 			   model = { provider: 'anthropic', model_id: 'opus' };
-			 CREATE agent_event:e2 SET type = 'completion', at = d'2026-01-01T13:00:00Z';`
+			 CREATE agent_event:e2 SET type = 'completion', at = d'2026-01-01T13:00:00Z',
+			   detail = { ok: true, summary: 'github sync both (dry-run) SLO42/x: +1 ~0' };`
 		);
 
 		const data = await buildTrayData(db);
@@ -84,9 +85,13 @@ describe('notifications repo — tray read model (§3/§85/§147)', () => {
 		expect(e1.kind).toBe('activity');
 		expect(e1.type).toBe('spawn');
 		expect(e1.model).toBe('anthropic/opus');
+		expect(e1.label).toBeNull(); // no detail on the row → honest null (UI shows the model)
 
 		const e2 = data.items.find((i) => i.id === 'agent_event:e2') as ActivityEventItem;
 		expect(e2.model).toBeNull(); // no model on the row → honest null, not a fabricated tier
+		// 14.4c — the MODEL-LESS completion is still identifiable: its persisted detail
+		// summary reaches the tray instead of rendering a bare "completion — —".
+		expect(e2.label).toContain('github sync');
 	});
 
 	it('F-013: a SET datetime reads back through the load projection as a plain ISO STRING', async () => {

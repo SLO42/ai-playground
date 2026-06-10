@@ -87,6 +87,8 @@ export interface ServiceRow {
 	status: ServiceStatus;
 	pid?: number;
 	checked_at: string;
+	/** ISO instant the service was LAST observed running (14.4b — survives a down-write). */
+	last_seen_at?: string;
 }
 
 /** What a single reconciliation pass did to one service. */
@@ -120,13 +122,14 @@ function serviceRecordId(name: ServiceName): StringRecordId {
 	return new StringRecordId(assertRecordId(`service:${name}`));
 }
 
-function normService(row: { id: unknown; name: ServiceName; status: ServiceStatus; pid?: unknown; checked_at?: unknown }): ServiceRow {
+function normService(row: { id: unknown; name: ServiceName; status: ServiceStatus; pid?: unknown; checked_at?: unknown; last_seen_at?: unknown }): ServiceRow {
 	return {
 		id: String(row.id),
 		name: row.name,
 		status: row.status,
 		pid: row.pid != null ? Number(row.pid) : undefined,
-		checked_at: row.checked_at != null ? String(row.checked_at) : ''
+		checked_at: row.checked_at != null ? String(row.checked_at) : '',
+		last_seen_at: row.last_seen_at != null ? String(row.last_seen_at) : undefined
 	};
 }
 
@@ -305,20 +308,49 @@ export class ServicesManager {
 	}
 
 	/**
-	 * Upsert the `service:<name>` row. `pid` is OMITTED (kept NONE) when null so the
-	 * `option<int>` column never receives a NULL (§6.1). checked_at = now via UPDATE.
+	 * OBSERVED-status corrector (TASK 14.4a — F-008). The /services read path probes a
+	 * service live; when the probe CONTRADICTS the persisted self-report (e.g. a row
+	 * still claiming 'running' for a process dead for a day), the stale row ITSELF is
+	 * corrected — never just the rendered view — so every other reader of the `service`
+	 * table (home rollup, statusbar) converges on the probed truth. `lastSeenAt` lets
+	 * the caller seed the last-observed-running instant (the stale row's checked_at)
+	 * on a running→down flip, so the surface can say "last seen <ago>" honestly.
 	 */
-	private async writeService(name: ServiceName, status: ServiceStatus, pid: number | null): Promise<void> {
+	async recordObservedStatus(
+		name: ServiceName,
+		status: ServiceStatus,
+		pid: number | null,
+		lastSeenAt?: Date
+	): Promise<void> {
+		await this.writeService(name, status, pid, lastSeenAt);
+	}
+
+	/**
+	 * Upsert the `service:<name>` row. `pid` is OMITTED (kept NONE) when null so the
+	 * `option<int>` column never receives a NULL (§6.1). checked_at = now. A 'running'
+	 * write IS a live observation, so it stamps `last_seen_at = now`; a down-write
+	 * PRESERVES the prior stamp (MERGE) unless the caller seeds an explicit one (14.4b).
+	 */
+	private async writeService(
+		name: ServiceName,
+		status: ServiceStatus,
+		pid: number | null,
+		lastSeenAt?: Date
+	): Promise<void> {
+		const now = new Date();
 		const content: Record<string, unknown> = {
 			name,
 			status,
-			checked_at: new Date()
+			checked_at: now
 		};
 		if (pid != null) content.pid = pid;
-		// UPSERT by stable id so re-ticks mutate the same row (not append). When pid is
-		// omitted the prior pid would persist on a plain merge — so we use CONTENT to
-		// fully replace the mutable fields, clearing pid back to NONE on stop/crash.
-		await this.db.query('UPSERT $id CONTENT $content;', {
+		if (status === 'running') content.last_seen_at = now;
+		else if (lastSeenAt) content.last_seen_at = lastSeenAt;
+		// UPSERT by stable id so re-ticks mutate the same row (not append). MERGE (not
+		// CONTENT) so `last_seen_at` survives a down-write; the stale pid is explicitly
+		// UNSET when absent so it can never linger on a stopped/crashed row (§6.1).
+		const sql = pid != null ? 'UPSERT $id MERGE $content;' : 'UPSERT $id MERGE $content; UPDATE $id UNSET pid;';
+		await this.db.query(sql, {
 			id: serviceRecordId(name),
 			content
 		});

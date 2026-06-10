@@ -12,31 +12,33 @@
 // watchers that hooks.server already runs.
 
 import type { Db } from '../db/client';
+import { activityLabel } from '../analytics/events';
+import { readServices, summarizeServices } from '../services/runtime';
 
 // ── Services health (portfolio-wide, for the "services up" MetricCard) ─────────────
 //
-// Home only needs a HEALTH ROLLUP, not the full ServicesManager control surface — a
-// cheap read of the `service` table's self-reported status. "up" = status 'running'.
+// TASK 14.4a (audit-confirmed F-008): the metric previously read the `service` table's
+// raw self-reported status, so a row left 'running' by a dead process kept Home claiming
+// "1/1 up" for a day. The rollup now REUSES the /services probe-reconciled read path
+// (runtime.readServices — same probe, same correction of the stale row) and counts only
+// services with a KNOWN state. The card labels itself "probed", not "self-reported".
 
-/** A compact services-health rollup for the Home metric (all from real `service` rows). */
+/** A compact services-health rollup for the Home metric (probe-reconciled; F-008). */
 export interface ServicesHealth {
-	/** Services whose last self-report was status='running'. */
+	/** Services whose PROBE-RECONCILED state is 'running'. */
 	up: number;
-	/** Total `service` rows known. */
+	/** Services with a known (probed or persisted) state; 0 ⇒ honest "—". */
 	total: number;
 }
 
 /**
- * Read the services-health rollup from REAL `service` rows (F-008). Returns up/total;
- * total=0 ⇒ the Home card renders an honest "—" (no rows yet), never a fake "0/0 up".
+ * Read the services-health rollup through the SAME probe-reconciled path /services uses
+ * (14.4a — reuse, not duplicate). total=0 ⇒ the Home card renders an honest "—" (no real
+ * signal yet), never a fake "0/0 up".
  */
 export async function readServicesHealth(db: Db): Promise<ServicesHealth> {
-	const [rows] = await db.query<[Array<{ status?: string }>]>(
-		`SELECT status FROM service;`
-	);
-	const list = rows ?? [];
-	const up = list.filter((r) => r.status === 'running').length;
-	return { up, total: list.length };
+	const { services } = await readServices(db);
+	return summarizeServices(services);
 }
 
 // ── Recent activity feed (sessions + agent events) ─────────────────────────────────
@@ -54,6 +56,8 @@ export interface ActivityItem {
 	at: string;
 	/** provider/model_id when the event carried a model, else null. */
 	model: string | null;
+	/** One-line identifying label from the persisted detail (summary/reason/error), else null (14.4c). */
+	label: string | null;
 	/** Linked session id (table:id) when present. */
 	sessionId: string | null;
 	/** Linked project id (table:id) when present. */
@@ -85,7 +89,7 @@ function iso(at: unknown): string {
  */
 export async function listRecentActivity(db: Db, limit = 8): Promise<ActivityItem[]> {
 	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
-		`SELECT id, type, at, model, session, project
+		`SELECT id, type, at, model, session, project, detail
 		   FROM agent_event ORDER BY at DESC LIMIT $lim;`,
 		{ lim: limit }
 	);
@@ -100,6 +104,9 @@ export async function listRecentActivity(db: Db, limit = 8): Promise<ActivityIte
 			type: String(r.type ?? 'event'),
 			at: iso(r.at),
 			model,
+			// 14.4c — the identifying content model-less events DO persist (detail.summary/
+			// reason/error) now reaches the feed instead of rendering a bare "—".
+			label: activityLabel(r.detail),
 			sessionId: r.session ? String(r.session) : null,
 			projectId: r.project ? String(r.project) : null
 		};

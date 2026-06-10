@@ -87,6 +87,29 @@ export interface WriteAgentEventInput {
 	detail?: AgentEventDetail;
 }
 
+/**
+ * Derive a human-readable one-line label for an agent_event from its persisted `detail`
+ * (TASK 14.4c — F-008). Events without a model/session (e.g. a github-sync completion)
+ * DO persist their how/why in `detail` (summary/reason/error) — but the feed projections
+ * dropped it, so the tray/home rendered a bare "completion — —" with no identifying
+ * content. This is the ONE place that turns the detail contract into a feed label:
+ * summary > reason > error, first line only, bounded. Returns null when the row truly
+ * carries no usable context (the renderer then shows an HONEST fallback, never blanks).
+ */
+export function activityLabel(detail: unknown, maxLen = 96): string | null {
+	if (!detail || typeof detail !== 'object') return null;
+	const d = detail as Record<string, unknown>;
+	const raw =
+		(typeof d.summary === 'string' && d.summary.trim()) ||
+		(typeof d.reason === 'string' && d.reason.trim()) ||
+		(typeof d.error === 'string' && d.error.trim()) ||
+		'';
+	if (!raw) return null;
+	const line = raw.split(/\r?\n/, 1)[0].trim();
+	if (!line) return null;
+	return line.length > maxLen ? `${line.slice(0, maxLen - 1)}…` : line;
+}
+
 /** Drop keys whose value is `undefined` so option<T> fields stay NONE (§6.1). */
 function omitUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
 	const out: Partial<T> = {};

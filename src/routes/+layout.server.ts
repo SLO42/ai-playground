@@ -17,6 +17,7 @@ import { buildShellMetrics } from '$lib/server/analytics/rollup';
 import { listProjects } from '$lib/server/projects/repo';
 import { buildTrayData, type TrayData } from '$lib/server/notifications/repo';
 import { loadOrchestration, type OrchMode } from '$lib/server/config';
+import { readServices } from '$lib/server/services/runtime';
 import type { ServiceStatus } from '$lib/server/services/manager';
 import type { LayoutServerLoad } from './$types';
 
@@ -26,23 +27,21 @@ export interface PaletteProject {
 	name: string;
 }
 
-/** A single `service` row projection (only the fields the health rollup needs). */
-interface ServiceRow {
-	status: ServiceStatus;
-}
-
 /**
  * Roll the per-service statuses up into one shell-level health token (F-008): all the
- * managed services healthy ⇒ 'up'; any crashed/down ⇒ 'down'; a mix (some stopped/unknown
- * alongside running) ⇒ 'degraded'; NO real service rows yet ⇒ 'unknown' (honest, never a
- * fabricated "up"). Pure so it stays testable.
+ * KNOWN services healthy ⇒ 'up'; any crashed/down ⇒ 'down'; a mix (some stopped
+ * alongside running) ⇒ 'degraded'; NO known service state yet ⇒ 'unknown' (honest,
+ * never a fabricated "up"). 14.4a: the statuses come from the SAME probe-reconciled
+ * read /services uses (readServices) — never the raw self-reported rows, so a stale
+ * 'running' claim for a dead process can no longer light the strip green. Services
+ * with no row AND no probe stay honest 'unknown' and are excluded from the verdict.
  */
-function rollupServiceHealth(rows: ServiceRow[]): 'up' | 'degraded' | 'down' | 'unknown' {
-	if (rows.length === 0) return 'unknown';
-	const statuses = rows.map((r) => r.status);
+function rollupServiceHealth(rows: Array<{ status: ServiceStatus }>): 'up' | 'degraded' | 'down' | 'unknown' {
+	const statuses = rows.map((r) => r.status).filter((s) => s !== 'unknown');
+	if (statuses.length === 0) return 'unknown';
 	if (statuses.some((s) => s === 'crashed')) return 'down';
 	if (statuses.every((s) => s === 'running')) return 'up';
-	// Some running, some stopped/unknown — partial availability.
+	// Some running, some stopped — partial availability.
 	if (statuses.some((s) => s === 'running')) return 'degraded';
 	return 'down';
 }
@@ -86,7 +85,9 @@ export const load: LayoutServerLoad = async ({ depends }) => {
 
 	try {
 		const metrics = await buildShellMetrics(db);
-		const [svc] = await db.query<[ServiceRow[]]>(`SELECT status FROM service;`);
+		// 14.4a — probe-reconciled service states (the same path /services renders), NOT the
+		// raw self-reported rows: a dead service can no longer keep the strip green.
+		const { services: svcViews } = await readServices(db);
 		// Live project list for the CommandPalette "Open project" commands (real rows only).
 		const paletteProjects: PaletteProject[] = (await listProjects(db)).map((p) => ({
 			id: String(p.id),
@@ -97,7 +98,7 @@ export const load: LayoutServerLoad = async ({ depends }) => {
 		return {
 			shell: {
 				connected: true,
-				services: rollupServiceHealth(svc ?? []),
+				services: rollupServiceHealth(svcViews),
 				runningAgents: metrics.runningAgents,
 				tokensToday: metrics.tokensToday,
 				costToday: metrics.costToday,

@@ -26,6 +26,7 @@ import type { Db } from '../db/client';
 import {
 	ServicesManager,
 	SERVICE_NAMES,
+	type ServiceAdapter,
 	type ServiceName,
 	type ServiceAction,
 	type OperateResult,
@@ -34,12 +35,14 @@ import {
 import { OllamaServiceAdapter } from './ollama-adapter';
 
 /** A service the page renders: persisted status + live capabilities (honest control). */
-export interface ServiceView extends Omit<ServiceRow, 'id'> {
+export interface ServiceView extends Omit<ServiceRow, 'id' | 'last_seen_at'> {
 	id: string | null;
 	/** True if the operator can start/stop/restart this service from the surface. */
 	controllable: boolean;
 	/** A live, bounded health-probe result (null when the adapter has no probe / errored). */
 	liveHealthy: boolean | null;
+	/** ISO instant the service was LAST observed running, or null (renders "—"; 14.4b). */
+	lastSeenAt: string | null;
 	/** Honest one-line note explaining WHY a service is not controllable (else undefined). */
 	note?: string;
 }
@@ -76,9 +79,15 @@ const META: Record<ServiceName, { label: string; purpose: string; controllable: 
 	}
 };
 
+/** The probe surface readServices needs (the real OllamaServiceAdapter, or a test double). */
+export interface OllamaProbe {
+	health(): Promise<boolean>;
+	discoverPid(): Promise<number | null>;
+}
+
 /** The runtime singleton (one per server process). */
 let manager: ServicesManager | null = null;
-let ollama: OllamaServiceAdapter | null = null;
+let ollama: (ServiceAdapter & OllamaProbe) | null = null;
 
 /**
  * Build (once) + return the process-wide ServicesManager with its real adapters
@@ -102,6 +111,17 @@ function ollamaHost(): string {
  * Read the live services view (F-008): persisted `service` rows merged with per-adapter
  * controllability + a bounded live health probe. Services with NO row yet still render
  * (status 'unknown') so the operator sees the full managed set, never a fabricated row.
+ *
+ * TASK 14.4a/b hardening (audit-confirmed F-008 findings):
+ *   • probe-false is REAL knowledge — a row-less or 'unknown' service the probe cannot
+ *     reach reads 'stopped', not 'unknown'.
+ *   • when the probe CONTRADICTS the persisted self-report, the stale row ITSELF is
+ *     corrected (recordObservedStatus) — so every other reader of the `service` table
+ *     (home "services up" rollup, statusbar) converges, not just this view. A
+ *     running→down flip seeds `last_seen_at` from the stale row's checked_at — the last
+ *     instant the service was reported alive.
+ *   • a probe-down service NEVER renders its old pid as if current — pid is omitted and
+ *     `lastSeenAt` carries the honest "last seen" instant instead.
  */
 export async function readServices(db: Db): Promise<ServicesData> {
 	getServicesManager(db);
@@ -127,23 +147,59 @@ export async function readServices(db: Db): Promise<ServicesData> {
 		// RECONCILE persisted status with the live probe (F-008 — never present a stale
 		// 'stopped'/'crashed' as current truth for a service the probe sees healthy). The
 		// live probe is ground truth for liveness; when it says healthy the displayed
-		// status is 'running' regardless of what the (lagging) persisted row last wrote.
+		// status is 'running' regardless of what the (lagging) persisted row last wrote,
+		// and when it says down a 'running'/'unknown' claim reads 'stopped' (14.4a).
 		let status = row ? row.status : 'unknown';
 		if (liveHealthy === true) status = 'running';
-		else if (liveHealthy === false && status === 'running') status = 'stopped';
+		else if (liveHealthy === false && (status === 'running' || status === 'unknown')) {
+			status = 'stopped';
+		}
+
+		// Honest "last seen": the persisted stamp, else — on the very flip where a stale
+		// 'running' row meets a dead probe — the row's checked_at (the last moment it was
+		// reported alive). Probe-true means it is seen RIGHT NOW.
+		let lastSeenAt: string | null = row?.last_seen_at ?? null;
+		if (!lastSeenAt && row?.status === 'running' && liveHealthy === false && row.checked_at) {
+			lastSeenAt = row.checked_at;
+		}
+		if (liveHealthy === true) lastSeenAt = new Date().toISOString();
+
+		// CORRECT THE STALE ROW ITSELF on a probe contradiction (14.4a — F-008). Best-effort:
+		// a failed corrective write degrades to the (still honest) reconciled view.
+		if (row && liveHealthy !== null && row.status !== status) {
+			const seed =
+				status !== 'running' && !row.last_seen_at && lastSeenAt ? new Date(lastSeenAt) : undefined;
+			await getServicesManager(db)
+				.recordObservedStatus(name, status, status === 'running' ? (livePid ?? null) : null, seed)
+				.catch(() => {});
+		}
+
 		const view: ServiceView = {
 			id: row ? row.id : null,
 			name,
 			status,
-			pid: livePid ?? row?.pid,
+			// NEVER a stale pid presented as current: a probe-down service shows no pid (14.4b).
+			pid: liveHealthy === false ? undefined : (livePid ?? row?.pid),
 			checked_at: row ? row.checked_at : '',
 			controllable: meta.controllable,
-			liveHealthy
+			liveHealthy,
+			lastSeenAt
 		};
 		if (meta.note) view.note = meta.note;
 		views.push(view);
 	}
 	return { services: views };
+}
+
+/**
+ * Roll the probe-reconciled views into the Home "services up" figure (14.4a). Only
+ * services with a KNOWN state count toward the ratio — a row-less, unprobed service is
+ * honestly 'unknown' and is EXCLUDED rather than dressed as up or down (F-008). total=0
+ * still means "no real signal yet" and renders "—" upstream.
+ */
+export function summarizeServices(views: ServiceView[]): { up: number; total: number } {
+	const known = views.filter((v) => v.status !== 'unknown');
+	return { up: known.filter((v) => v.status === 'running').length, total: known.length };
 }
 
 /**
@@ -186,7 +242,8 @@ function normRow(row: ServiceRow): ServiceRow {
 		name: row.name,
 		status: row.status,
 		pid: row.pid != null ? Number(row.pid) : undefined,
-		checked_at: isoString(row.checked_at)
+		checked_at: isoString(row.checked_at),
+		last_seen_at: row.last_seen_at != null ? isoString(row.last_seen_at) || undefined : undefined
 	};
 }
 
@@ -208,4 +265,15 @@ function isoString(at: unknown): string {
 export function __resetServicesRuntime(): void {
 	manager = null;
 	ollama = null;
+}
+
+/**
+ * TEST hook: replace the ollama probe adapter so readServices' live probe is
+ * deterministic in tests (no dependence on a real Ollama on the test host). Registers
+ * the double with the manager too, so operate/tick paths see the same adapter.
+ */
+export function __setOllamaAdapterForTest(db: Db, adapter: ServiceAdapter & OllamaProbe): void {
+	getServicesManager(db);
+	ollama = adapter;
+	manager!.register(adapter);
 }

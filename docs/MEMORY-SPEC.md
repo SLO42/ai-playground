@@ -302,7 +302,7 @@ These **complement DATA-MODEL** (they are engineering gotchas the schema must re
 
 ### 7.4 Validated stack (D-014)
 
-**Ollama embeddings = 1024-dim, HNSW `DIST COSINE` in SurrealDB** *(cannibalize — proven viable for v2)*. This matches DATA-MODEL's locked `DIMENSION 1024` HNSW index (§4.5/§7). Per **D-014 🟡 (unresolved)** the model is **either the default `bge-m3` or the cannibalize-validated `qwen3-embedding:0.6b`** — both are **1024-dim**, so the index dimension holds either way; which one ships is **not yet locked** (D-014 unresolved). **Keep the dimension as a single config constant** (DATA-MODEL §7), never a scattered literal; changing the model = re-embed all rows + redefine the index + bump `model_version` in the §7.1 cache key.
+**Ollama embeddings = 1024-dim, HNSW `DIST COSINE` in SurrealDB** *(cannibalize — proven viable for v2)*. This matches DATA-MODEL's locked `DIMENSION 1024` HNSW index (§4.5/§7). Per **D-014 🔒 (S0-resolved)** the model is **`qwen3-embedding:0.6b` via Ollama, 1024-dim** (hardcoded as `EMBEDDING_MODEL` in `harness/wiring.ts`; `bge-m3` was the pre-S0 alternative — both 1024-dim, so the index dimension was safe either way). **Keep the dimension as a single config constant** (DATA-MODEL §7), never a scattered literal; changing the model = re-embed all rows + redefine the index + bump `model_version` in the §7.1 cache key.
 
 ---
 

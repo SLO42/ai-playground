@@ -2,7 +2,7 @@
 
 The UI/UX **design contract** (planning level). Defines information architecture, layout system, per-screen specs, component inventory, the real-time interaction model, and state/feedback patterns for the dashboard.
 
-> **Scope of this doc (read first).** This is the *structural* design — what screens exist, what they show, how they behave, and what states they have. **Concrete visual styling — the actual color values, type scale, spacing numbers — is intentionally DEFERRED** and will be derived from cannibalized sources (the v1 dashboard, already SvelteKit + Tailwind v4, plus other harvested UIs). Token *roles* and the system *structure* are defined here as placeholders; their values come later (see §6 and §15). No mockups, no component code, no `frontend-design` pass yet.
+> **Scope of this doc (read first).** This is the *structural* design — what screens exist, what they show, how they behave, and what states they have. Concrete visual styling — color values, type scale, spacing numbers — **was deferred at planning time and is now RESOLVED**: the operator-delivered system lives in [DESIGN-SYSTEM.md](./DESIGN-SYSTEM.md) (D-034, see §4/§15), and the full build exists on branch `v2` with the contrast gate implemented (`contrast-gate.test.ts`). Token *roles* and the system *structure* are defined here; values live in DESIGN-SYSTEM.
 
 ## References (inputs)
 
@@ -48,12 +48,12 @@ Two navigation contexts, switchable from the sidebar:
 /settings        general, routing, model slots, orchestration mode, memory, API keys
 ```
 
-**Project context** (`/projects/[id]/…`) — tabs:
+**Project context** (`/projects/[id]/…`) — tabs (built — 10; PM/Sync/Targets added by gap-closure v1.5–v1.8):
 ```
-Overview · Tasks · Roadmap · Sessions · Memory · Release · Settings
+Overview · Tasks · Roadmap · PM · Sessions · Memory · Release · Sync · Targets · Settings
 ```
 
-Navigation model: a persistent **left sidebar** lists global nav; entering a project swaps the sidebar's lower region to the project tabs + shows the active project in a context switcher at the top of the sidebar. A **command palette** (Ctrl/Cmd-K) jumps to any page, project, task, or action.
+Navigation model (as built): a persistent **left sidebar** carries brand + the global nav groups; **project tabs render in-page** as a `nav.tabs` strip inside the project workspace page — the sidebar does NOT swap to a project region, and there is no sidebar context switcher (the originally-specced sidebar-swap pattern was not built; the in-page pattern is canonical). A **command palette** (Ctrl/Cmd-K) jumps to any page, project, task, or action.
 
 IA rule: global pages aggregate across projects; project pages are scoped to one. The same component (e.g. TaskList, AgentGrid) renders in both, parameterized by scope.
 
@@ -79,10 +79,10 @@ IA rule: global pages aggregate across projects; project pages are scoped to one
 └────────────┴─────────────────────────────────────────────┴───────────┘
 ```
 
-- **Sidebar** (collapsible): global nav + project context switcher + project tabs. Active item highlighted.
-- **Top bar**: breadcrumb (context), a **live-status pill** (orchestration mode: event/periodic/manual + running-agent count), command-palette trigger, and the **connection state** indicator (green live / amber reconnecting / grey offline — D-019 made visible).
+- **Sidebar**: global nav (brand + three nav groups); active item highlighted. As built: static 248px rail at/above 768px, **off-canvas drawer + hamburger below 768px** (task 6.3); project tabs are in-page (§2), not a sidebar region; the 56px collapsed rail is unbuilt future work (DESIGN-SYSTEM §5).
+- **Top bar**: breadcrumb (context), a **live-status pill** (orchestration mode: event/periodic/manual + running-agent count), notifications bell (tray toggle), and the **connection state** indicator (green live / amber reconnecting / grey offline — D-019 made visible). The command palette is **keyboard-invoked only** (Ctrl/Cmd-K window keydown) — the built Topbar has no visible palette trigger button; adding one (for §1.6 "mouse optional") is a recorded gap.
 - **Status bar** (bottom, persistent): services up/down, active agent count, running token/cost ticker, orchestration mode. The "always-on awareness" strip.
-- **Right tray** (slide-over, not pinned by default): notifications + recent activity feed (transient). Keeps the main region focused; opens on demand or on new high-severity event. A **"see all"** link opens the durable incidents/notifications history view (§6 `/reports`) for per-item detail + acknowledge.
+- **Right tray** (slide-over, not pinned by default): notifications + recent activity feed (transient). Keeps the main region focused; **opens on demand** (Topbar bell toggle — the unread bell badge + toast are the high-severity affordance; auto-open-on-high-severity was not built and is dropped from the contract). A **"see all"** link opens the durable incidents/notifications history view (§6 `/reports`) for per-item detail + acknowledge.
 - **Main region**: page content. Single scroll owner; sub-panels scroll independently only where necessary (e.g. a transcript pane).
 
 Density: desktop-first. Comfortable default; an optional compact mode (tighter rows) for data-heavy tables. (Mode is a token toggle, §4.)
@@ -91,7 +91,7 @@ Density: desktop-first. Comfortable default; an optional compact mode (tighter r
 
 ## 4. Design tokens — structure (VALUES RESOLVED → [DESIGN-SYSTEM.md](./DESIGN-SYSTEM.md))
 
-Tailwind v4, CSS-first via `@theme` (D-005). This section defines the token **roles**; the concrete **values are now delivered** — a dark teal/slate system (accent `#8ab0ab`, bg onyx `#03120e`, **Lastik** sans + **JetBrains Mono**) in **[DESIGN-SYSTEM.md](./DESIGN-SYSTEM.md)** + the CSS in [`docs/design-system/`](./design-system/) (D-034). The §15.1 blue seed is **superseded** by this system. Roles below still govern; values fill them 1:1. A palette swap is one file.
+Tailwind v4, CSS-first via `@theme` (D-005). This section defines the token **roles**; the concrete **values are now delivered** — a dark teal/slate system (accent `#8ab0ab`, bg onyx `#03120e`, **Lastik display (headings only) + JetBrains Mono body** — DESIGN-SYSTEM §4 mono-body rule) in **[DESIGN-SYSTEM.md](./DESIGN-SYSTEM.md)**; live token CSS at the app's `src/lib/styles/tokens/` (D-034). The §15.1 blue seed is **superseded** by this system. Roles below still govern; values fill them 1:1. A palette swap is one file.
 
 **Color roles** (semantic, not literal):
 - Surface: `--color-bg` (app), `--color-surface` (panels/cards), `--color-surface-raised` (popovers/modals), `--color-border`.
@@ -100,7 +100,7 @@ Tailwind v4, CSS-first via `@theme` (D-005). This section defines the token **ro
 - **Status** (load-bearing — used consistently everywhere): `--color-running`, `--color-success`, `--color-warn`, `--color-error`, `--color-idle/neutral`, `--color-info`, plus a dedicated `--color-blocked` (blocked is central to constrained-autonomy, §1.7 — give it its own role rather than reusing `--color-warn`, even if values coincide initially). These map to the entity status enums in DATA-MODEL per the table below.
 - Agent-tier accents: `--color-tier-local | -haiku | -sonnet | -opus` (so the fleet view reads tier at a glance).
 
-**Status enum → color-role map** (covers every DATA-MODEL enum; status is never color-only — always paired with icon/label per §9):
+**Status enum → color-role map** (covers the load-bearing DATA-MODEL enums — task, session, service, release, security_finding, incident; the remaining enums — `phase.status`, `feature.status`, `project.status`, `workflow_run.status`, `task.priority` — map by the same conventions. Status is never color-only — always paired with icon/label per §9):
 
 | Entity (DATA-MODEL) | Enum value | Color role |
 |---------------------|-----------|------------|
@@ -126,8 +126,12 @@ Tailwind v4, CSS-first via `@theme` (D-005). This section defines the token **ro
 | | `medium` | `--color-warn` |
 | | `high` | `--color-warn` |
 | | `critical` | `--color-error` |
+| `incident` severity (§4.7) | `info` | `--color-info` |
+| | `warn` | `--color-warn` |
+| | `error` | `--color-error` |
+| | `critical` | `--color-error` (NOTE: the built incidents history styles only info/warn/error — `critical` currently renders with no color role; fix to this row) |
 
-**Type scale**: `--font-sans` = **Lastik** (brand, license-gated — D-034), `--font-mono` = **JetBrains Mono** (OFL). Role-named sizes 2xs 11 → 4xl 48 (base 14). Mono is first-class — transcripts, record ids, paths, SurrealQL, numerics. (Values: DESIGN-SYSTEM §4.)
+**Type scale**: `--font-display` = **Lastik** (brand, license-gated — D-034) for **headings/titles/brand ONLY**; `--font-body` = `--font-mono` = **JetBrains Mono** (OFL) — the **default body/UI face** (DESIGN-SYSTEM §4 mono-body rule, operator 2026-06-10); `--font-sans` = deprecated alias (never use in new code — DESIGN-SYSTEM §1). Role-named sizes 2xs 11 → 4xl 48 (base 14). Mono IS the body face (DESIGN-SYSTEM §4) — not merely first-class for transcripts/ids/paths/SurrealQL/numerics. (Values: DESIGN-SYSTEM §4.)
 
 **Spacing / radius / elevation / motion**: 4px spacing scale, radius xs–pill, dark-UI elevation (borders over shadows), motion 80/140/240/420ms with `--ease-out` and a `prefers-reduced-motion`→0ms path that keeps the end-state. Row-enter (opacity+translateY+blur, bounce:0) is implemented in `tokens/base.css`. (Values: DESIGN-SYSTEM §5.)
 
@@ -166,7 +170,7 @@ Shared components (scope-parameterized; rendered in both global + project contex
 | `ConnectionState` | SSE live indicator — a primitive USED BY `TopBar`/`StatusBar`, not a standalone page region | live / reconnecting / offline |
 | `EmptyState`, `ErrorState`, `Skeleton` | the honest-state primitives | — |
 
-Primitives: from bits-ui (button, dialog, table, tabs, select, tooltip, badge, etc.) — styled via the §4 tokens. Keep custom components < 200 lines (carry v1 rule); extract sub-components past that.
+Primitives (as built): **hand-rolled, tokens-only Svelte 5 components** — ConfirmDialog, tab strips, badges, dialogs with manual focus traps — styled via the §4 tokens. (bits-ui was considered at planning time but **not adopted**; it is not a dependency — do not introduce it.) Keep custom components < 200 lines (carry v1 rule); extract sub-components past that.
 
 > *Historical note:* `KnowledgeGraph` was called `BubbleGraph` in v1. The v1 alias is dropped — no other v2 doc uses it; the canonical name is `KnowledgeGraph`.
 
@@ -190,9 +194,12 @@ For each: **purpose · primary data (DATA-MODEL) · layout · key components · 
   - **Overview** — plan macro (purpose/vision/role/DoD), current release, open tasks, recent sessions, health. Includes a **Maintain** panel (the per-project "/security-equivalent view" ROADMAP 3.1 promises — no separate `/security` page) rendering `FindingsList`/`MaintenancePanel`: `security_finding`s + dependency health + UX-inspection results for this project.
   - **Tasks** — `TaskList` board by status; create/edit; per-task routing rationale + linked sessions.
   - **Roadmap** — `RoadmapView`: releases→phases→features→sprints.
+  - **PM** *(added v1.5/v1.7 — the Project Manager layer, GAP-ANALYSIS §1.1)* — purpose: the strategic surface above task execution. Data: `pm_memory` (typed observations/learnings/risks/patterns/decisions, FTS-searchable), `decision` rows, `pm_review` history (trigger + summary + honest counts per pass). States: empty (no PM activity yet), live. Actions: run a review pass (manual trigger), record decisions, sprint create/complete; absent datetimes render '—' (F-015).
   - **Sessions** — history of this project's Claude Code sessions; open one → `TranscriptView` + `SessionControls`. The transcript view includes an **injected-context / wakeup-briefing panel** (ARCHITECTURE §2.6, ROADMAP 2.12–2.16): the session-start briefing's items shown with their retrieval **rationale + citation id + salience band** (analytics-first, §1.4) — so the operator sees *what* was injected and *why*.
   - **Memory** — project-scoped `MemorySearch` + `KnowledgeGraph`.
   - **Release** — release pipeline (dry-run/test/changelog/version/tag/publish) driven as a workflow run; changelog.
+  - **Sync** *(added v1.5/v1.7 — D-037 first SyncAdapter + board sync)* — purpose: GitHub task↔issue sync + project-board sync for this project. Data: `task_sync` mappings (external id/url, direction, last_synced), `board_sync_config` (enabled, board number, status→column mapping, last run status/error), `sync_incident` rows (honest failures, never silent — F-008). States: not-configured, enabled, last-run ok/error. Actions: configure/enable board sync, trigger a sync, inspect incidents.
+  - **Targets** *(added v1.8 — D-037 adapter framework, ARCHITECTURE §2.12)* — purpose: per-project deploy/publish/sync target declarations. Data: `project_target` rows (kind, adapter id from the registry catalog, config — secrets by env-var NAME only, enabled/default flags) + `target_run` history (dry-run/real, ok/failed, honest summary + steps). States: no targets, declared, last-run per target. Actions: declare/edit/enable a target, dry-run, drive via the gated pipeline (confirm token).
   - **Settings** — project config, model routing override, test command, gate config.
 
 **`/agents`** — pool/tier/usage analytics **LENS** (aggregate, tier-centric): pool, live `AgentFleetGrid`, usage analytics (per-tier cost/duration), catalog of available agents.
@@ -267,7 +274,7 @@ Cannibalized (`mckinsey-viz`, MIT — **logic only, NOT** its light/serif/boardr
 
 ## 9. Accessibility
 
-- Contrast meets WCAG AA (enforced once concrete colors land, §15).
+- Contrast meets WCAG AA — **enforced by the built vitest gate** (`src/lib/styles/tokens/contrast-gate.test.ts`: deterministic WCAG-luminance check over the token pairs + focus ring).
 - Full keyboard nav: every action reachable; visible focus rings; command palette as the keyboard backbone.
 - Live regions (transcripts, status) use `aria-live="polite"` so updates are announced without stealing focus.
 - `prefers-reduced-motion` disables slide/fade for live updates.
@@ -321,9 +328,6 @@ Design the screens in release order, not all at once:
 
 ## 13. Out of scope (this doc / this phase)
 
-- Concrete color/type/spacing **values** (deferred — §15).
-- Pixel mockups / hi-fi comps (none yet — will sketch/harvest later).
-- Component implementation code (no `frontend-design` pass yet).
 - Mobile/tablet layouts.
 - Marketing/onboarding/auth surfaces (single-operator, none).
 - **Background/groundwork tables have no dedicated UI in v2** — `retrieval_outcome` (D-022 groundwork), `work_item` (D-021 background queue), and `process` (pid registry) are intentionally **not** surfaced as their own screens. They feed other views (analytics, service health) but get no dedicated page. This is deliberate, not an oversight.
@@ -341,7 +345,7 @@ Design the screens in release order, not all at once:
 
 ## 15. Visual styling — RESOLVED ([DESIGN-SYSTEM.md](./DESIGN-SYSTEM.md))
 
-**Done (D-034).** The concrete look is delivered — an operator-built dark teal/slate system (accent `#8ab0ab`, onyx bg, **Lastik** + **JetBrains Mono**, three-layer tokens), captured in [DESIGN-SYSTEM.md](./DESIGN-SYSTEM.md) with the source CSS in [`docs/design-system/`](./design-system/). It fills the §4 roles 1:1 (incl. `--color-blocked` + tier accents) and implements §7 motion + §9 focus.
+**Done (D-034).** The concrete look is delivered — an operator-built dark teal/slate system (accent `#8ab0ab`, onyx bg, **Lastik display (headings only) + JetBrains Mono body** per the DESIGN-SYSTEM §4 mono-body rule, three-layer tokens), captured in [DESIGN-SYSTEM.md](./DESIGN-SYSTEM.md); live token CSS at the app's `src/lib/styles/tokens/` ([`docs/design-system/`](./design-system/) is the historical design-phase reference). It fills the §4 roles 1:1 (incl. `--color-blocked` + tier accents) and implements §7 motion + §9 focus.
 
 The original deferral plan is superseded:
 - ~~Harvest v1's `@theme`~~ — moot (v1 was a placeholder; the operator delivered an original system, not on this branch anyway).
@@ -349,7 +353,7 @@ The original deferral plan is superseded:
 
 ### 15.1 Cannibalized design inputs (harvested 2026-06-06) — SUPERSEDED by DESIGN-SYSTEM.md
 
-> **Historical / provenance.** The blue `ui-ux-pro-max` seed below was the *placeholder* before the operator delivered the actual teal/Lastik system (DESIGN-SYSTEM.md). It is **not** the final palette — kept only to record where the seed came from. **`impeccable` is still the live a11y/contrast gate** (last paragraph). The **JetBrains Mono** choice carried through; the sans went to **Lastik** (not IBM Plex), and the accent went **teal `#8ab0ab`** (not blue `#3B82F6`).
+> **Historical / provenance.** The blue `ui-ux-pro-max` seed below was the *placeholder* before the operator delivered the actual teal/Lastik system (DESIGN-SYSTEM.md). It is **not** the final palette — kept only to record where the seed came from. **`impeccable` is still the live a11y/contrast gate** (last paragraph). The **JetBrains Mono** choice carried through — and was later *promoted to the body face app-wide* (14.1 mono-body rule, DESIGN-SYSTEM §4); the sans role went to **Lastik** (not IBM Plex) and was subsequently **narrowed to display-only** (headings/titles/brand — `--font-display`); the accent went **teal `#8ab0ab`** (not blue `#3B82F6`).
 
 Two design skills were studied via the `cannibalize` foundry; they powered the seed + gate. **Use them, don't reinvent.**
 

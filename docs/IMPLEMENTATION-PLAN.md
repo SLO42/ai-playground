@@ -1,8 +1,8 @@
 # IMPLEMENTATION-PLAN — ai-playground v2
 
-How to **build** v2, in what order, with what verification. ROADMAP says *what ships when*; this doc says *how to get there, concretely* — the bridge from the planning docs to code. Read alongside ARCHITECTURE (modules/§5), DATA-MODEL (schema), DECISIONS (D-000–D-033), MEMORY-SPEC, UI-SPEC, AGENTS, DEVELOPMENT.
+How to **build** v2, in what order, with what verification. ROADMAP says *what ships when*; this doc says *how to get there, concretely* — the bridge from the planning docs to code. Read alongside ARCHITECTURE (modules/§5), DATA-MODEL (schema), DECISIONS (D-000–D-038), MEMORY-SPEC, UI-SPEC, AGENTS, DEVELOPMENT.
 
-> **Status:** planning-level. No code exists yet (v2-main is a docs-only orphan branch). This plan is executed on a *new* build branch/worktree once approved.
+> **Status: EXECUTED.** Waves Phase 0–v1.2 plus the gap-closure track v1.3–v1.9 are built on branch `v2` (worktree `F:\code\ai-playground-v2`). This doc is now the **historical build plan** (per its own task 4.5 — docs updated to built reality); the gap-closure waves v1.3–v1.9 are specified in GAP-ANALYSIS §4 + D-037/D-038.
 
 ---
 
@@ -19,7 +19,7 @@ How to **build** v2, in what order, with what verification. ROADMAP says *what s
 
 - **Runtime:** Node 22+, ESM throughout (`"type":"module"`).
 - **Datastore:** SurrealDB **server binary** (D-006) — provisioned per-platform, **SHA-256-verified before spawn**, spawned on loopback, `surrealkv` backend (D-007); connect via `surrealdb` JS SDK over `ws://127.0.0.1` (no `@surrealdb/node`).
-- **Local model + embeddings:** Ollama; chat = `gpt-oss:20b` (D-003, swappable slot); embeddings = **bge-m3** (default) or **qwen3-embedding:0.6b** (cannibalize-validated) — **1024-dim** either way (D-014 🟡 — pick during S0).
+- **Local model + embeddings:** Ollama; chat = `gpt-oss:20b` (D-003, swappable slot); embeddings = **qwen3-embedding:0.6b**, **1024-dim** (D-014 🔒 — S0-proven; hardcoded as `EMBEDDING_MODEL` in `harness/wiring.ts`).
 - **Agent runtime:** Claude Agent SDK + Claude Code CLI (D-002; SDK/CLI split fixed by S1).
 - **Tooling/skills:** **context7 MCP** (live SvelteKit/Svelte5/Tailwind4/SurrealDB/Agent-SDK docs — install), superpowers (TDD/plans/debugging/review), svelte5-patterns, frontend-design, playwright, claude-api.
 - **Security baseline (from day 0):** every listener binds `127.0.0.1` only with a startup assertion; hook/control/mutation endpoints require a per-boot token (D-025). Secrets in `.env` (gitignored).
@@ -137,6 +137,9 @@ The backend + runtime are complete and proven live; the **live-browser audit sur
 
 **v1.2 exit:** a fresh checkout boots to a connected live app; every PRODUCT §4 job is reachable + functional from the UI; all UI-SPEC screens exist; responsive; SSE indicator honest.
 
+### v1.3–v1.9 — gap-closure track (specified elsewhere; EXECUTED)
+The post-audit gap-closure waves **v1.3–v1.8 (+ v1.9 hardening)** are specified in **GAP-ANALYSIS §4** and **D-037/D-038** — fix/wire the dead backend, PM system, shell UX, `/settings`/`/services`, information depth, the D-037 adapter framework, and the D-038 DoD hardening pass. Executed on branch `v2`.
+
 ---
 
 ## 5. Foundational layer ordering (the spine — strict)
@@ -192,7 +195,7 @@ Nothing above a line builds before everything below it exists and is green.
 
 ## 9. Risks & open items
 
-- **D-014 embedding model** (🟡) — resolve at S0 (bge-m3 vs qwen3-embedding:0.6b; both 1024-dim so the index is safe either way).
+- **D-014 embedding model** — ~~resolve at S0~~ **RESOLVED at S0 (D-014 🔒: qwen3-embedding:0.6b, 1024-dim)** — see §3 results box.
 - **Verify-in-spike claims** — the ~26% prefix-cache cost-cut (S1); surrealkv transaction isolation + claim-token atomicity (S0). Do NOT build the in-use writer fork's economics or the queue's correctness on these until proven.
 - **Native/provisioned binary on Windows** — SurrealDB binary + Ollama; checksum + smoke test first (F-006).
 - **The in-use writer fork vs "lighter"** — gated cadence + prefix-cache; if S1 disproves the cache saving, fall back to end-of-session batch extraction (D-027 allows tuning the write cadence).
@@ -210,4 +213,4 @@ Nothing above a line builds before everything below it exists and is green.
 
 ---
 
-*Derived from the v2 doc set (README, PRODUCT, ARCHITECTURE, DATA-MODEL, DEVELOPMENT, ROADMAP, DECISIONS D-000–D-033, MEMORY-SPEC, UI-SPEC, AGENTS). Every task is constrained by the cited decisions; deviations get surfaced, not silently taken.*
+*Derived from the v2 doc set (README, PRODUCT, ARCHITECTURE, DATA-MODEL, DEVELOPMENT, ROADMAP, DECISIONS D-000–D-038, MEMORY-SPEC, UI-SPEC, AGENTS). Every task is constrained by the cited decisions; deviations get surfaced, not silently taken.*

@@ -61,24 +61,20 @@ This describes the **target** system. It is deliberately simpler than v1. Where 
 ## 2. Components
 
 ### 2.1 Datastore — SurrealDB (managed server binary)
-Single source of truth (for product state). Document tables for entities, graph edges for the knowledge graph, HNSW vector index for semantic memory, ACID transactions for safe writes. Runs as a **managed local server binary** over `ws://127.0.0.1` (`surrealkv` backend) — no native addon (D-006, KongCode's path). The services manager provisions/spawns/health-checks the binary; a small **`db` module** owns the single long-lived `Surreal` client (singleton), runs migrations on boot, and exposes typed query helpers. No other module opens the DB directly. See [DATA-MODEL.md](./DATA-MODEL.md).
+Single source of truth (for product state). Document tables for entities, graph edges for the knowledge graph, HNSW vector index for semantic memory, ACID transactions for safe writes. Runs as a **managed local server binary** over `ws://127.0.0.1` (`surrealkv` backend) — no native addon (D-006, KongCode's path). The services manager provisions/spawns/health-checks the binary; a small **`db` module** owns the single long-lived `Surreal` client (singleton — the least-privilege runtime user, D-026c) and exposes typed query helpers. **Migrations do NOT run at server boot**: DDL runs only via the separate `npm run db:up` provisioning script (`scripts/db-up.ts` → `db/migrate.ts`) under a dedicated **root** connection — root is reserved for provisioning/migrations, never the runtime path (D-026c; see also F-015: run `db:up` against the live dev DB as part of verify). No other module opens the DB directly. See [DATA-MODEL.md](./DATA-MODEL.md).
 
 ### 2.2 Orchestrator (configurable, event-driven)
 Replaces v1's always-on 60s loop. Responsibilities:
 - Subscribe to **triggers**: task created/updated (via SurrealDB live query or an internal event bus), manual run (API), optional file-watch, optional periodic timer.
 - For each trigger, build a **work item**, ask Routing to classify + pick a model tier, then call `AgentRuntime.spawn`.
-- Enforce concurrency limits via **two distinct queues** (see below) — **not** a busy loop.
-- Track lifecycle: spawn → running → complete/failed → post-task (commit/test/follow-up).
+- Enforce concurrency limits via the claim queue + semaphore (see below) — **not** a busy loop.
+- Track lifecycle: spawn → running → complete/failed → post-task (commit/test/follow-up). **Terminal-status guarantee:** every exit path of a run writes a terminal status in-process, and a **boot-time reaper** (`orchestrator/reaper.ts`, invoked from `hooks.server.ts` before the orchestrator starts) sweeps any pre-boot `running` session/`workflow_run` rows to `failed` with the honest note `reaped: server restarted mid-run` + an error `agent_event` — so a hard server death never leaves phantom-"running" rows.
 
-**Concurrency caps — two distinct queues.** There are two separate mechanisms; each kind of work uses exactly one:
-- **(a) Interactive spawns** — gated by an **in-process semaphore** living in the long-lived SvelteKit server. Caps (max concurrent agents, per-project caps) come from `config/orchestration.yaml`; per-project caps are counted by querying running `session` rows (or an in-memory map of in-flight spawns). This is the path for interactive agent runs via `AgentRuntime.spawn`.
-- **(b) Background heavy work** — drained off the interactive path via the DB `work_item` **claim-token queue** (D-021): post-task knowledge extraction, follow-up planning, maintenance.
-
-The two are **separate**: an interactive spawn never sits in the `work_item` queue, and a background job never consumes the interactive semaphore. An interactive agent never blocks on background extraction.
+**Concurrency caps — one queue, one semaphore (built flow).** Every task-triggered agent spawn routes **through** the `work_item` claim queue, and the queue drain is gated by the **in-process interactive semaphore** in the long-lived SvelteKit server: trigger → enqueue `work_item` (crash-safe handoff, UNIQUE dedup, **daily spawn cap** counted via claims) → semaphore-gated drain → `AgentRuntime.spawn` (`orchestrator/orchestrator.ts` + `workqueue.ts`/`semaphore.ts`). So task spawns DO sit in `work_item` and queue drains DO consume the semaphore — the queue is the crash-safe handoff record and the semaphore is the concurrency cap, layered, not parallel. Caps come from `config/orchestration.yaml`. An **operator-launched interactive session** (`sessions/launch.ts` called directly from a route action) bypasses the queue — it is not a task-triggered spawn and is bounded by the same launch-path guardrails.
 
 Modes (config, D-004): `event` (default), `periodic` (off by default), `manual`. Idle in `event` mode = subscriptions only, ~zero CPU.
 
-**Background work queue (D-021, KongCode-proven).** Heavy/non-interactive work (post-task knowledge extraction, follow-up planning, maintenance) goes to a `work_item` queue drained off the interactive path: **atomic claim** (`UPDATE … SET claim_token WHERE claim_token IS NONE RETURN count`), **UNIQUE dedup keys** (D-008) for exactly-once-ish semantics, **priority** ordering, a **drain trigger** (event/threshold, never a busy loop), a **daily spawn cap**, stale-item GC, and a **synchronous handoff record** for crash recovery. An interactive agent never blocks on extraction.
+**Background work queue (D-021, KongCode-proven).** The same `work_item` queue also carries heavy/non-interactive work (post-task knowledge extraction, follow-up planning, maintenance): **atomic claim** (SELECT-then-claim-by-id under a `claim_token IS NONE` guard — see DATA-MODEL §4.12), **UNIQUE dedup keys** (D-008, with `dedup_scope` so session-less items of one work_type coexist), **priority** ordering, a **drain trigger** (event/threshold, never a busy loop), a **daily spawn cap** (rolling window anchored on `claimed_at`), stale-item GC, and a **synchronous handoff record** for crash recovery. An interactive agent never blocks on extraction.
 
 ### 2.3 AgentRuntime (interface) — the OpenClaw replacement seam
 A narrow interface the whole system codes against, so the concrete runtime is swappable. Default impl = **Claude Code** (D-002); the interface keeps direct-provider chat or a future runtime pluggable.
@@ -170,15 +166,15 @@ The harness is three services (a–c) plus two cross-cutting mechanisms (d–e),
 
 **(c) Workflow runner** (`server/workflows`) — defines and executes headless multi-step Claude Code pipelines (steps = prompt + agent + model + cwd, with dependencies / parallel fan-out). Built on the Claude Agent SDK. Tracked as `workflow_run` + per-step `session` records, streamed live, with full analytics (D-013). Triggerable manually, by orchestrator events, or opt-in periodically.
 
-**(d) Hook transport + graceful degradation (D-019).** Claude Code hooks fire as **short-lived processes**; our state lives in the long-lived SvelteKit server. Bridge: a tiny **hook-proxy** script (registered in `.claude/settings.json`) that each hook invokes; it POSTs the hook payload to the local server over loopback with a **short, per-hook timeout** (SessionStart ~30s, UserPromptSubmit ~15s, tool hooks ~10s). On any failure/timeout/server-down it **no-ops** (returns empty, never blocks or errors the session). Memory injection, analytics capture, and gates are all best-effort. *(Validated live: KongCode's daemon was down this whole session and Claude Code was unaffected — exactly this design.)*
+**(d) Hook transport + graceful degradation (D-019).** Claude Code hooks fire as **short-lived processes**; our state lives in the long-lived SvelteKit server. Bridge: a tiny **hook-proxy** script (registered in `.claude/settings.json`) that each hook invokes; it POSTs the hook payload to the local server over loopback with a **short, per-hook timeout** (SessionStart ~30s, UserPromptSubmit ~15s, tool hooks ~10s). On any failure/timeout/server-down it **no-ops** (returns empty, never blocks or errors the session). **Memory injection and analytics capture are best-effort; GATES are NOT** — gates ride a separate **fail-closed** transport (see (e)); a safety decision must NEVER be wired through this best-effort no-op proxy (`hooks/proxy-config.ts` states this rule explicitly). *(Validated live: KongCode's daemon was down this whole session and Claude Code was unaffected — exactly this design.)*
 
-**(e) Gates — agent guardrails (D-018).** Evaluate the agent's pending tool call against configurable **gates**: config-protection (block edits to our `.claude/`, `.env`, secrets), read-before-edit, dangerous-bash. Soft-warn or hard-block per gate, per project. The runtime complement to D-008/D-016 for *agent-initiated* actions.
+**(e) Gates — agent guardrails (D-018).** Evaluate the agent's pending tool call against the **four gate families** (`claude-code/gates.ts`): **config-protection** (deny reads/edits of any `.env`/secret or any `.claude/` across the code root), **read-before-edit** (block Edit on a file not Read this session), **dangerous-bash** (`rm -rf`, `git push`, `git remote set-url`, any `--force`), and **path-confinement** (every fs/bash target must resolve UNDER the project root after symlink + `..` normalization — cross-ref §7.2/D-018). **Only `read-before-edit` is policy-downgradable to warn**; the other three families are SAFETY-CRITICAL and ALWAYS hard-deny — project policy can never downgrade them (D-024). A malformed gate config (unknown gate name, invalid mode) **throws → fail closed** (`parseGatePolicy`). The runtime complement to D-008/D-016 for *agent-initiated* actions.
 
-Both enforcement paths consult the **same gate config**:
+Both enforcement paths consult the **same pure evaluator** (`evaluateGate`):
 - The **SDK / headless path** enforces gates via the SDK tool-policy callback (`canUseTool`).
-- The **CLI / interactive path** enforces gates via the `PreToolUse` hook.
+- The **CLI / interactive path** enforces gates via the `PreToolUse` hook on a dedicated **fail-closed transport**: the session's gate config (policy + projectRoot, pinned at spawn time by the backend) rides the hook command as a **base64url** arg; `scripts/gate-hook.mjs` POSTs `{config, payload}` to **`/api/gates/pretooluse`** on the D-025 loopback control plane (`HOOK_TOKEN` in the spawned session's env, **8s timeout**); **ANY failure — missing env, non-loopback URL, timeout, non-OK response, garbage response, any throw — emits a DENY decision** (the OPPOSITE of the (d) analytics proxy).
 
-**Safety-critical gates fail CLOSED, enforced via Claude Code's own `permissions.deny`** (D-024) — locally enforced by Claude Code even if our server is down. The `canUseTool` callback and the `PreToolUse` network/hook gates are **defense-in-depth only**; they must not be the sole barrier for a safety-critical action.
+**Safety-critical gates also fail CLOSED via Claude Code's own `permissions.deny`** (D-024) — locally enforced by Claude Code even if our server is down. The `canUseTool` callback and the `PreToolUse` hook gates are **defense-in-depth on top of** that primary boundary; they must not be the sole barrier for a safety-critical action.
 
 ### 2.11 Event plumbing
 There is **one** path for live state to reach the dashboard, and it is the system's single biggest build-blocker if gotten wrong — so it is specified explicitly:
@@ -196,6 +192,11 @@ There is **one** path for live state to reach the dashboard, and it is the syste
 - **(C)** a future durable, addressable, fenced envelope (`peer_message`) is the **only net-new channel** — **deferred v0.2 (D-035)** — and it **reuses A+B** (rows republish to `events`; delivery into a live recipient uses the channel push). No third transport.
 
 **Invariant:** the `channel` is **NEVER a second SSE source and NEVER opens its own live query**. Directed delivery to a session uses `claude/channel`; all *dashboard-visible* channel state (message rows, inbox counts, fleet summaries) flows `db → events → the one SSE` like every other module. `channel` reads its inbox via `db`. (This is why D-035 bans copying claude-peers' broker daemon + separate SQLite.)
+
+**Shutdown teardown (built — the F-014/F-008 fixes).** `hooks.server.ts` registers SIGTERM/SIGINT teardown that stops the orchestrator(s), kills spawned `claude.exe` children, stops every live-query watcher, and closes the DB — a stopped server leaks nothing. Paired with the boot reaper (§2.2), a restart is clean on both edges.
+
+### 2.12 Deploy / publish / sync adapter framework (D-037)
+Release/deploy/publish AND external sync are a **pluggable adapter framework**, not hardcoded targets (mirrors the `AgentRuntime` seam, D-002). Built modules: `server/adapters/` — typed adapter **contract** (`contract.ts`/`types.ts`), **registry** + **catalog** (`registry.ts`/`catalog.ts`), built-in adapters (**Thunderstore, npm, GitHub releases**), a **gated driver** (`driver.ts`) with config-bound confirm tokens, and **secrets resolution by env-var NAME only** (`secrets.ts`, D-026 — a target's config never stores a credential value). `server/sync/` carries the first `SyncAdapter` (GitHub task↔issue, `github.ts`) plus project-board sync (`github-board.ts`/`board-repo.ts`/`gh-client.ts`). A project declares **per-project targets** (`project_target` rows, DATA-MODEL §4.19) naming an adapter id + config for one of the three families (publish | deploy | sync); the release pipeline (`server/release/pipeline.ts`) drives the *chosen adapter*. Every driven attempt records an honest `target_run` row; sync failures record `sync_incident` rows (never silent, F-008). Adapters execute under the gate layer (D-018/D-024) + path/credential confinement.
 
 ---
 
@@ -234,9 +235,9 @@ v1 had ~30 pages. v2 consolidates. Proposed global pages:
 | Page | Purpose | Consolidates (v1) |
 |------|---------|-------------------|
 | `/` | Home / portfolio overview | home |
-| `/projects` + `/projects/[id]/…` | Project workspace: overview, tasks, roadmap, sessions, memory, release, settings | most `/projects/[id]/*` |
+| `/projects` + `/projects/[id]/…` | Project workspace: overview, tasks, roadmap, PM, sessions, memory, release, sync, targets, settings | most `/projects/[id]/*` |
 | `/agents` | Pool, usage, catalog, live activity | agents, agents usage/catalog |
-| `/chat` | Multi-provider chat (global + project-scoped) | chat, sessions, channels |
+| `/chat` | Multi-provider chat (global + project-scoped) — **DEFERRED, not built** (no `/chat` route exists; not scheduled in ROADMAP; see PRODUCT §6.2) | chat, sessions, channels |
 | `/memory` | Knowledge graph + semantic search explorer | memory |
 | `/reports` | Analytics: routing, cost, outcomes | reports, models analytics |
 | `/services` | Health, logs, start/stop | services, diagnostics |
@@ -246,9 +247,9 @@ v1 had ~30 pages. v2 consolidates. Proposed global pages:
 
 Dropped/deferred: standalone `/channels` (Twitch), `/inbox`, `/notifications` as top-level (fold into a header tray), `/templates` and `/apps` (until needed), `/demo` (dev-only).
 
-Per-project tabs: **Overview · Tasks · Roadmap · Sessions · Memory · Release · Settings.**
+Per-project tabs (built — 10): **Overview · Tasks · Roadmap · PM · Sessions · Memory · Release · Sync · Targets · Settings.** (PM review, board sync, and D-037 targets were added by the gap-closure waves v1.5–v1.8.)
 
-Page count target: **~8 global + 7 project tabs**, down from 30. Endpoint count target: well under v1's 81, since one SSE stream replaces many polling endpoints.
+Page count target: **~8 global + 10 project tabs**, down from 30. Endpoint count target: well under v1's 81, since one SSE stream replaces many polling endpoints.
 
 ---
 
@@ -274,11 +275,24 @@ server/
   cc-config/       Claude Code config manager + mirror sync + watcher       (depends on: db, events)
                    (.claude/settings.json, agents, skills, .mcp.json, CLAUDE.md) (D-010)
   workflows/       headless multi-step CC pipeline runner (D-013)          (depends on: claude-code, db, events)
-  orchestrator/    triggers, queue, lifecycle, post-task/test/follow-up    (depends on: tasks, routing, runtime, memory, events)
+  orchestrator/    triggers, queue, lifecycle, post-task/test/follow-up,   (depends on: tasks, routing, runtime, memory, events)
+                   boot reaper (terminal-status sweep)
   memory/          store, recall (vector+graph+fts), bridge, graph edges   (depends on: db, providers)
   analytics/       rollups + query for reports (queries routing_event etc.; (depends on: db)
                    does NOT write routing decisions — routing is the producer)
   services/        process control, health, auto-restart (Windows-safe)    (depends on: db)
+  sessions/        session launch path (launchSession) + memory-loop wire  (depends on: claude-code, runtime, memory, db, events)
+  harness/         spawn wiring: capability composition (D-036),           (depends on: cc-config, claude-code, config)
+                   hooks-wiring, embedder/memory wiring
+  hooks/           hook ingest endpoint + best-effort proxy config (D-019)  (depends on: db, events)
+  adapters/        D-037 adapter contract, registry/catalog, built-ins      (depends on: db, config)
+                   (thunderstore/npm/github-releases), gated driver, secrets
+  sync/            SyncAdapters: GitHub task↔issue + project-board sync     (depends on: adapters, tasks, db)
+  release/         release pipeline driving a chosen adapter (D-037)        (depends on: adapters, workflows, db)
+  notifications/   notification rows + RightTray feed                       (depends on: db, events)
+  importer/        v1 data importer (db:import)                             (depends on: db)
+  home/            portfolio overview read-models                           (depends on: db, analytics)
+  perf/            perf counters/baseline helpers                           (depends on: db)
   config/          load agent-pool, models, orchestration settings         (depends on: nothing)
 ```
 
@@ -378,7 +392,7 @@ KongCode v0.7.113 is a shipping SurrealDB knowledge-graph for Claude Code. **It 
 |--------|----------------|
 | **Graceful degradation**: hooks are best-effort; if the backend is down they return empty and the session proceeds (witnessed live this session). | D-019, §2.10(d) |
 | **Hook transport**: short-lived hook → tiny proxy → POST to the long-lived server, short timeout, no-op on failure. (Fills a real gap.) | D-019, §2.10(d) |
-| **Gates**: evaluate agent tool calls in `PreToolUse` — config-protection, read-before-edit, dangerous-bash; soft-warn or hard-block. | D-018, §2.10(e) |
+| **Gates**: evaluate agent tool calls in `PreToolUse` — config-protection, read-before-edit, dangerous-bash, path-confinement; only read-before-edit is policy-downgradable to warn — the three safety-critical families always hard-deny, and malformed gate config denies. | D-018, §2.10(e) |
 | **Intent-adaptive config**: classify intent → per-intent thinking level, tool budget, retrieval depth/share. Keeps cheap requests cheap. | D-020, §2.5 |
 | **Session injection ("wakeup")**: inject a budgeted, salience-banded briefing at session start, each item with rationale + citation id. | §2.6 |
 | **Background job queue**: atomic claim, UNIQUE dedup, priority, threshold-drain (not a loop), daily cap, GC, crash-safe handoff. | D-021, §2.2 |

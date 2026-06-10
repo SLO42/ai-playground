@@ -1,6 +1,6 @@
 # DESIGN-SYSTEM — ai-playground v2
 
-The **concrete** design system — the values UI-SPEC §4 left as roles. Delivered by the operator (built in Claude design), dark-first teal/slate, three-layer tokens. This doc is the human-readable summary; the **source of truth is the CSS** in [`docs/design-system/`](./design-system/) (`tokens/*.css`, `styles.css`, `components/*`).
+The **concrete** design system — the values UI-SPEC §4 left as roles. Delivered by the operator (built in Claude design), dark-first teal/slate, three-layer tokens. This doc is the human-readable summary; the **live source of truth is the app's token CSS** at `src/lib/styles/tokens/` on branch `v2` (worktree `F:\code\ai-playground-v2`) — the build evolved the tokens (mono-body 14.1, caps tracking, contrast gate). [`docs/design-system/`](./design-system/) (`tokens/*.css`, `styles.css`, `components/*`) is the **historical design-phase reference** — do NOT copy its `tokens/typography.css` families verbatim; it pre-dates the §4 mono-body rule.
 
 > **Relationship to UI-SPEC:** UI-SPEC §4 defines the token *roles* + the status-enum→role map; this doc + `docs/design-system/` supply the *values*. UI-SPEC §15's deferral is now **resolved** — the blue §15.1 seed is superseded by this teal/Lastik system.
 
@@ -16,7 +16,8 @@ The **concrete** design system — the values UI-SPEC §4 left as roles. Deliver
   3. **Single-operator / local serving only.** No SAS/public exposure that serves the font to unlicensed third parties. Re-check before any public or multi-user deployment.
   4. **Cut confirmed (✅):** ships **Lastik-Free**, **purchased** — the That That Type **Commercial EULA** applies, so (1)–(3) above stand.
 - **JetBrains Mono** — OFL (open), Google Fonts; no constraint.
-- **Fallback:** `--font-sans` falls back to `ui-sans-serif, system-ui, …` so the UI is fully functional if Lastik can't load (license/offline).
+- **Fallback:** `--font-display` (Lastik) falls back to `ui-sans-serif, system-ui, …` — scoped to **headings/titles/brand only** (§4); the body never depends on Lastik (it is `--font-body` = mono), so the UI is fully functional if Lastik can't load (license/offline).
+- **`--font-sans` (DEPRECATED alias):** kept so stale consumers resolve, but it is intentionally dual-defined in the build — the token layer (`tokens/typography.css`) aliases it to `--font-display` (Lastik) so legacy `var(--font-sans)` consumers keep the brand face, while the Tailwind `@theme` (`app.css`) maps the `font-sans` *utility* to JetBrains Mono so utility-classed body text follows the mono-body rule. **New code must use `--font-display` (headings) or `--font-body` (everything else), never `--font-sans`**; retiring the alias reconciles the two definitions.
 
 ---
 
@@ -77,7 +78,7 @@ Maps onto UI-SPEC §4's status-enum→role table 1:1 (task/session/service/relea
 - **`--font-display` (was the body role of `--font-sans`): Lastik** (self-hosted brand, weights 100–900) → `ui-sans-serif, system-ui, …` fallback. **Headings/titles/brand ONLY** (h1–h6, page/card/modal titles, logo).
 - **`--font-mono`: JetBrains Mono** (Google/OFL) → `ui-monospace, SF Mono, …`. **Default body face** — body text, labels, buttons, inputs, ids, paths, costs, durations, transcripts, SurrealQL, numerics (`.tnum` tabular-nums for metrics). Tune size/line-height/tracking where mono runs wide on dense surfaces.
 - **Scale** (role-named, desktop-dense): 2xs 11 · xs 12 · sm 13 · **base 14 (default)** · md 16 · lg 18 · xl 22 · 2xl 28 · 3xl 36 · 4xl 48 px.
-- **Line-height** tight 1.2 / snug 1.35 / normal 1.5 / relaxed 1.65. **Weights** 400/500/600/700. **Tracking** tight −0.01 / wide 0.02 / caps 0.08em.
+- **Line-height** tight 1.2 / snug 1.35 / normal 1.5 / relaxed 1.65. **Weights** 400/500/600/700. **Tracking** tight −0.01 / wide 0.02 / caps **0.06em** (tightened for mono-width eyebrows, 14.1 — 0.08em pushed dense eyebrows past their columns).
 - **Semantic type**: `--type-display/h1/h2/h3/body/body-sm/label/mono/mono-sm`. Shared primitives: `.eyebrow` (uppercase micro-label), `.mono`, `.tnum`.
 
 ---
@@ -89,7 +90,7 @@ Maps onto UI-SPEC §4's status-enum→role table 1:1 (task/session/service/relea
 - **Elevation** (soft, near-black): `--shadow-sm/card/raised/overlay`, `--shadow-focus` (2px bg + 4px ring), `--glow-running` (status glow).
 - **Motion** (UI-SPEC §7): `--motion-instant 80 / fast 140 / normal 240 / slow 420` ms; `--ease-out` (enter), `--ease-in-out`, `--ease-standard`. **`prefers-reduced-motion` → all durations 0ms (keeps end-state).** Baked-in keyframes: `ds-row-enter` (opacity+translateY8+blur4, bounce:0 — §7), `ds-pulse` (live-dot). GPU-only (transform/opacity/filter).
 - **Z-ladder**: base 0 · sticky 100 · sidebar 200 · topbar 300 · tray 400 · overlay 500 · modal 510 · popover 600 · toast 700 · tooltip 800.
-- **App-shell dims** (UI-SPEC §3): sidebar 248px (collapsed 56) · topbar 48 · status bar 28 · right tray 360.
+- **App-shell dims** (UI-SPEC §3): sidebar 248px · topbar 48 · status bar 28 · right tray 360. **Built responsive behavior:** static 248px rail at/above `--bp-narrow` 768px; **off-canvas drawer + hamburger below 768px** (task 6.3). The 56px collapsed rail (`--shell-sidebar-w-sm`) is defined but **unbuilt — future work** (zero consumers).
 
 ---
 
@@ -109,7 +110,7 @@ Map onto UI-SPEC §5 inventory: `StatusBadge` → the status-pill (status-enum c
 - **§1 principles:** dark/dense/calm; honest states ("render `unknown`/`—`", skeletons not spinners); color = status/tier never decoration; voice terse/technical, buttons verb+object, status words == enums, no emoji.
 - **§4 roles:** full coverage incl. `--color-blocked` + tier accents. ✅
 - **§7 motion:** implemented (row-enter, reduced-motion end-state, GPU-only). ✅
-- **§9 a11y:** `:focus-visible` two-color ring; color-not-alone; tabular nums. **Contrast still to be CI-gated** (UI-SPEC §9) — run the impeccable detector over the `:root` token pairs before the v1.0 visual sign-off; the near-hue accent/running pair (§3.4) is the one to verify explicitly.
+- **§9 a11y:** `:focus-visible` two-color ring; color-not-alone; tabular nums. **Contrast IS CI-gated** — the deterministic WCAG gate is built (`src/lib/styles/tokens/contrast-gate.ts` resolves var() chains in `colors.css` to hex, AA_BODY 4.5 / AA_LARGE 3.0; `contrast-gate.test.ts` asserts 40+ token pairs + focus-ring checks in the vitest suite). The near-hue accent/running pair (§3.4) is not asserted as a dedicated distinguishability check — covered by the icon+label pairing rule (§3.4 note).
 
 ---
 
@@ -126,5 +127,5 @@ At build (Phase 0.a / the cannibalization visual pass, ROADMAP v1.0 4.x):
 ## 9. Open items
 
 - ✅ **Lastik cut confirmed** — Lastik-Free, purchased (Commercial EULA; web=woff/woff2, no-repo, single-operator stand) — §1.
-- ⬜ **AA contrast gate** over all token pairs (impeccable) — §7/§9; verify accent-vs-running near-hue.
-- ⬜ React→Svelte 5 component port at build.
+- ✅ **AA contrast gate** — built: `src/lib/styles/tokens/contrast-gate.test.ts` (deterministic WCAG check over 40+ token pairs + focus ring, in vitest). Narrow residual ⬜: an explicit accent-vs-running near-hue distinguishability assertion (currently covered by the §3.4 icon+label pairing rule).
+- ✅ **React→Svelte 5 component port** — satisfied by **native Svelte 5 components** in `src/lib/components/` (full shell suite: Sidebar/Topbar/Statusbar/RightTray/CommandPalette/ConfirmDialog/GateBanner/ToastHost + screens) built against the same tokens; the React kit remains design reference only — it was not ported 1:1.

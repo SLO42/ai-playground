@@ -98,8 +98,8 @@ The **primary user is the project owner** running this locally on their own mach
 - Routing telemetry + agent analytics persisted as queryable records.
 
 **Dashboard (SvelteKit)**
-- A trimmed page set (see ARCHITECTURE §dashboard) backed by one SSE/event stream rather than many pollers.
-- Multi-provider chat, services health, analytics/reports, settings.
+- A trimmed page set (see ARCHITECTURE.md §4, Dashboard page set) backed by one SSE/event stream rather than many pollers.
+- Services health, analytics/reports, settings. Multi-provider chat is **deferred** (see §6.2) — no `/chat` route was built or scheduled in ROADMAP.
 
 **Services**
 - Start/stop/health for the local model server and the engine, with auto-restart on failure.
@@ -111,6 +111,7 @@ The **primary user is the project owner** running this locally on their own mach
 - **Reimplementing tool sandboxing / hooks** — Claude Code owns tool execution, hooks, and MCP; the harness *configures* them, it does not rebuild them.
 - **Twitch / external channels** — drop unless explicitly wanted later.
 - **"Create with AI" generative project setup** — deferred to a release *after* v2 **v1.0** (it was also a future feature in **v1**, the predecessor product). Intentionally unscoped until promoted into a milestone. *(Note: "v1" = the predecessor product; "v1.0" = a v2 release.)*
+- **Multi-provider chat (`/chat`)** — deferred: scoped-in by early drafts but never scheduled in ROADMAP and not built through the gap-closure track (v1.3–v1.9). Promote into a milestone if a real need appears.
 - Speculative analytics dashboards beyond the core set.
 - Any feature that requires the **idle loop** (the mandatory always-on busy loop banned in §2) to keep running. **Carve-out:** an *opt-in periodic mode* (D-004) is allowed — it is off by default and is user-enabled, so it is not the banned idle loop.
 
@@ -129,7 +130,7 @@ Release detail lives in [ROADMAP.md](./ROADMAP.md); the product-level bar:
 - **v0.1 — Foundations.** SurrealDB datastore stands up; project registry + scanner work; dashboard shell renders live data; one **Claude Code** session can be launched manually against a project, its live transcript streamed, and its result recorded; the config mirror lists a project's Claude Code config (read-only); the hook transport degrades gracefully. *Success: register a real project and run one Claude Code agent end-to-end with the transcript + result persisted in SurrealDB; the config mirror lists a project's Claude Code config, and a Claude Code session is unaffected when the server is down (harness-pillar acceptance).*
 - **v0.2 — Orchestration & harness.** Event-driven engine spawns Claude Code agents on task creation; routing + analytics persisted; memory (vector + graph) queryable; review/test/commit loop works; session control (interject/stop/resume) and the Claude Code config manager (view/edit hooks, skills, agents, MCP) work. *Success: create a task, watch the engine pick a model, drive Claude Code to do the work, commit, and log full analytics — with the app idle-cheap when no tasks exist — and edit a project's Claude Code config from the dashboard. **Harness-pillar acceptance:** a round-trip test proves a config edit made in the dashboard is READ by an actual Claude Code session (not just written to a file).*
 - **v0.3 — Maintain & Release.** Security scan, dependency health, UX inspection, and the release pipeline operate per project. *Success: take a project through a real versioned release from the dashboard. **Harness-pillar acceptance:** the release is driven by a headless Claude Code workflow run, tracked end-to-end.*
-- **v1.0 — Feature-complete & hardened.** Claude Code runtime mechanism (D-002 spike S.1: SDK/CLI split) finalized & implemented; OpenClaw drop confirmed (D-012 / S.2); all v1 debt designed out; analytics/observability complete; docs current. The genuinely-open gating items at this bar are: **S.1** (SDK/CLI split), **D-012** (OpenClaw drop), **D-000** (product name), **D-007** (surrealkv vs RocksDB), **D-014** (embedding model/dimension) — all closed. *Success: v2 runs the owner's real project portfolio at lighter idle load than v1 (per ROADMAP 4.1/4.2 metrics), with no known critical debt. **Harness-pillar acceptance:** the full Claude Code control surface — runtime, config manager, session fleet, workflow runner — drives the real portfolio.*
+- **v1.0 — Feature-complete & hardened.** Claude Code runtime mechanism (D-002 spike S.1: SDK/CLI split) finalized & implemented; OpenClaw drop confirmed (D-012 / S.2); all v1 debt designed out; analytics/observability complete; docs current. The gating items that must all be 🔒 by this bar — **S.1** (SDK/CLI split), **D-012** (OpenClaw drop), **D-000** (product name), **D-007** (surrealkv vs RocksDB), **D-014** (embedding model/dimension) — **are all now closed** (S.1 + D-014 by the Phase-0 spikes; D-000 = Atelier; D-007/D-012 confirmed by the build — see DECISIONS.md). *Success: v2 runs the owner's real project portfolio at lighter idle load than v1 (per ROADMAP 4.1/4.2 metrics), with no known critical debt. **Harness-pillar acceptance:** the full Claude Code control surface — runtime, config manager, session fleet, workflow runner — drives the real portfolio.*
 
 ## 8. Non-goals reminder
 

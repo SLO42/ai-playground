@@ -3,6 +3,8 @@
 **Date:** 2026-06-08 · **Branch:** `v2-main` (docs) · **Code under audit:** `F:\code\ai-playground-v2\src` (branch `v2`)
 **Inputs:** v1 UI surface inventory · v1 systems inventory · v2 UI-vs-spec per-route diff · v2 server+wiring audit · parity-advocate + lighter-advocate deliberation.
 
+> **DELIVERY STATUS (2026-06-10): waves v1.3–v1.8 + the v1.9 hardening pass are EXECUTED on branch `v2`** (through `ecc9c4d`, plus the 14.1 typography wave). The matrices below are the **2026-06-08 audit snapshot** — MISSING/BUILT-UNWIRED/BUILT-SHELL rows describe audit-time state, and most now describe built, wired features (orchestrator/routing/memory wired at v1.4; PM system `5be3f2e`; `/settings` `f844e37`; RightTray/shell `e069c2d`; `/agents` catalog `c78d6ca`; UX-inspector loop `7569137`; gates wired into both spawn paths `0450691`; GitHub sync `883c660`; D-037 adapters `cb8484b`…`858e6f7`). Read §4 for the per-wave closing notes.
+
 This document answers three questions, honestly:
 1. **What exists, in what state** — a feature/page/system × design-element matrix with a per-item recommendation.
 2. **Why the gap exists** — one honest paragraph.
@@ -286,13 +288,13 @@ v2 was built **vision-forward and "lighter," with no v1 parity inventory as a ga
 
 These are **gap-remediation waves layered on the current v2 build** (the roadmap's own release line is v0.x; these v1.3+ waves are the post-audit close-out track). Priority order: **stop lying → restore identity → connect the dead backend → restore expected UX → restore information depth.** Intentional drops are listed separately in §5 so they remain decisions, not oversights.
 
-### Wave v1.3 — Stop lying + fix live defects (days, mostly wiring/bugfix)
+### Wave v1.3 — Stop lying + fix live defects (days, mostly wiring/bugfix) — ✅ EXECUTED
 **Why:** The app currently misrepresents its own state on every screen and has one route that silently fails on navigation. Lowest effort, highest perceived-quality delta. No new systems.
 - **FIX** Statusbar: pass live props from `analytics/rollup.ts` + SSE (services/agents/tok/cost/mode). Topbar: wire mode pill + running-agent count.
 - **FIX** `/claude-code` nav defect (DEFECT 2): switch loader to `tryGetDb()`, wrap `readCatalog`/`syncState` in `classifyDbError`; narrow `invalidate(() => true)` to a scoped dependency.
 - **FIX** Capability provisioning (DEFECT 1): `wiring.getRuntime()` must resolve and pass `catalog`/`gates`/`hooks` so `composeCapabilities` (D-036/5.1) runs live; populate `req.capabilities` in `launch.ts`.
 
-### Wave v1.4 — Connect the dead backend (wire-only; the biggest ROI)
+### Wave v1.4 — Connect the dead backend (wire-only; the biggest ROI) — ✅ EXECUTED
 **Why:** The orchestrator, routing, and memory loop are built and test-proven but inert. Wiring them restores v2's actual differentiators without building new systems.
 - **WIRE** Orchestrator (DEFECT 3): `hooks.server.ts` starts `new Orchestrator().start()` on the `task`-row event; keep it strictly event-sourced off `watchTable` (no idle-loop resurrection).
 - **WIRE** Routing: orchestrator calls `resolveRoute` (explicit-override-first); replace hardcoded `DEFAULT_MODEL`/`DEFAULT_AGENT`; write `routing_event` with rationale; wire `analytics/trace.ts`.
@@ -300,26 +302,32 @@ These are **gap-remediation waves layered on the current v2 build** (the roadmap
 - **WIRE** Hook→analytics end-to-end once a credential is present (proves hook-proxy → `agent_event`).
 - **Acceptance:** create a task → engine routes → recalls memory → spawns → commits → tests → logs full analytics, idle-cheap when no tasks.
 
-### Wave v1.5 — Restore product identity (PM + Home + cross-project fleet)
+### Wave v1.5 — Restore product identity (PM + Home + cross-project fleet) — ✅ EXECUTED (PM `5be3f2e`; GitHub task↔issue sync pulled into this wave per D-037, `883c660`)
 **Why:** Without these v2 is a task runner, not a project lifecycle platform; Home is near-empty; there's no portfolio-wide "what's running now."
 - **BUILD** PM system (lean, on SurrealDB spine): PM tab — bootstrap, talk-to-PM chat, typed PM memory (observation/learning/risk/pattern/decision), sprint create/complete, decisions surface. Defer periodic-review + GitHub board sync to v1.7.
 - **BUILD** Home: 4 MetricCards (active projects/running agents/today's cost/services up), recent-activity column, portfolio task summary, live AgentFleetGrid, "start a manual run."
 - **BUILD** `/claude-code` cross-project Session Fleet (live control hub; reuse wired `channel.ts` control seam + `messages.ts` transcript) + config round-trip evidence.
 
-### Wave v1.6 — Restore expected UX shell + missing control routes
+### Wave v1.6 — Restore expected UX shell + missing control routes — ✅ EXECUTED (`/settings` `f844e37`; RightTray/shell `e069c2d`; gates surfaced + wired `0450691`)
 **Why:** v1 had CommandPalette, Toast, live notifications; their absence makes v2 feel like a prototype. And orchestration mode currently cannot be changed from the UI.
 - **BUILD** CommandPalette (Cmd/Ctrl-K), RightTray (notifications + activity + unread + "see all"), Toast, GateBanner/ConfirmDialog (surface server-side `gates.ts`).
 - **BUILD** `/settings` (general/routing/model-slots/orchestration-mode/memory/API-keys/gate-defaults/feature-flags) — unblocks UI control of orchestration mode + routing.
 - **BUILD** Project workspace tabs: Tasks board (status columns, create/edit, routing rationale, linked sessions), Memory tab, Settings tab, Overview Maintain panel (security + dep-health + UX). Make Roadmap hierarchical.
 - **BUILD** `/services` page (start/stop/restart/logs) — wire `services/manager.ts`+`proc.ts` into the request loop.
 
-### Wave v1.7 — Information depth + completeness
+### Wave v1.7 — Information depth + completeness — ✅ EXECUTED (`/agents` catalog `c78d6ca`; UX-inspector loop `7569137`; PM review + board sync per m0025)
 **Why:** Depth on pages that already work; the operator's "how/why every decision" requirement (routing analytics) tops this wave.
 - **BUILD** `/reports`: routing-decision analytics + RoutingRationale aggregate; filters (project/time/model); Maintain rollup dep-health+UX; incidents/notifications history (RightTray "see all" target).
 - **BUILD** Changelog content render on `/release`; `/agents` catalog; AgentFleetGrid animation + §7 motion; step→session links on `/workflows`.
-- **BUILD** PM periodic review + GitHub task↔issue + board sync; GitHub sync.
+- **BUILD** PM periodic review + GitHub project-board sync. *(GitHub task↔issue sync was re-homed to **v1.5** by D-037 and shipped there, `883c660`.)*
 - **WIRE/BUILD** UX-inspector loop into the maintain cycle.
-- Visual KnowledgeGraph (graph-viz lib, deferred); `/chat`; WorkflowBuilder; "Create with AI"; multi-platform publishers (per real need).
+- Visual KnowledgeGraph (graph-viz lib, deferred); `/chat`; WorkflowBuilder. *(D-037 amendments: multi-platform **publishers** moved from §5 Deferred to a committed **v1.8** wave — delivered; **"Create with AI"** struck from this wave — scoped OUT of the gap-closure track entirely by the operator (commit `644da5f`), its own future feature.)*
+
+### Wave v1.8 — D-037 extensible deploy/publish/sync adapter framework — ✅ EXECUTED (`cb8484b`, `1aea383`, `308e7a1`, `858e6f7`)
+Added post-audit by D-037 (supersedes the audit's "publishers = DEFER" rows): typed adapter contract + registry/catalog, built-in **Thunderstore / npm / GitHub-releases** adapters, per-project custom targets (`project_target`/`target_run`, m0026), gated driver with config-bound confirm tokens, release pipeline driving the chosen adapter.
+
+### Wave v1.9 — Hardening / confirmed-findings fixes — ✅ EXECUTED (`67af096`, `ecc9c4d`)
+Closeout fixes: catalog-anchored config-edit scope, realpath confinement, bounded DB connect (F-014), SIGTERM teardown + tree-kill, strict lastRun attribution, honest-failure contract checks.
 
 ---
 
@@ -338,7 +346,7 @@ These are **gap-remediation waves layered on the current v2 build** (the roadmap
 | **Heartbeat phase toggles/intervals in settings** | Tied to the killed idle loop; orchestration-mode setting replaces it. |
 | **Reports composite vanity scores + GPU watt/kWh estimates** | Lighter advocate #12: decorative; defer/drop in favor of routing analytics. |
 
-**Deferred (real value, scheduled later — not dropped):** PM periodic-review + GitHub board sync (v1.7), multi-platform publishers, UX-inspector loop, `/chat`, WorkflowBuilder, visual KnowledgeGraph, "Create with AI", templates/apps catalog, deep import wizard, composite scoring.
+**Deferred (real value, scheduled later — not dropped), as amended by D-037 and delivery:** ~~PM periodic-review + GitHub board sync (v1.7)~~ **delivered v1.7** · ~~multi-platform publishers~~ **promoted to the committed v1.8 wave by D-037 and delivered** (Thunderstore/npm/GitHub-releases adapters) · ~~GitHub task↔issue sync~~ **re-homed to v1.5 by D-037 and delivered** · ~~UX-inspector loop~~ **delivered v1.7** · `/chat` · WorkflowBuilder · visual KnowledgeGraph · **"Create with AI" — scoped OUT of the gap-closure track entirely (operator, `644da5f`); its own future feature, not a deferred wave item** · templates/apps catalog · deep import wizard · composite scoring.
 
 ---
 

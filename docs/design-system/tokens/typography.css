@@ -1,7 +1,13 @@
 /* ============================================================================
    ai-playground v2 — TYPOGRAPHY TOKENS
-   Mono is first-class (UI-SPEC §4). Sans for UI prose; mono for code,
-   transcripts, record ids, paths, SurrealQL, numerics.
+   ⚠ HISTORICAL DESIGN-PHASE REFERENCE — DO NOT COPY VERBATIM (DESIGN-SYSTEM.md §4).
+   This file pre-dates the 14.1 mono-body rule: the LIVE tokens are
+   src/lib/styles/tokens/typography.css on branch v2 (--font-display Lastik
+   headings-only, --font-body: var(--font-mono), caps tracking 0.06em).
+   The families/aliases below encode the superseded sans-body system.
+   ----------------------------------------------------------------------------
+   Original note: Mono is first-class (UI-SPEC §4). Sans for UI prose; mono for
+   code, transcripts, record ids, paths, SurrealQL, numerics.
    ============================================================================ */
 
 :root {

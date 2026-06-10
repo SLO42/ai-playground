@@ -11,29 +11,27 @@ One datastore: **SurrealDB 2.x**, run as a **managed local server binary** over 
 SurrealDB runs as a **managed server binary** (D-006). The services manager provisions the platform binary (version-pinned, cached) and spawns it bound to loopback; the app connects with the JS SDK over `ws://`.
 
 ```ts
-// server/db/server.ts  — provision + spawn (Windows-safe: shell:true, taskkill on stop)
-//   surreal start --bind 127.0.0.1:8000 --user root --pass <local> surrealkv://./.data/playground.db
-//   (backend: surrealkv — KongCode runs this in production; rocksdb:// is the alt, D-007)
+// src/lib/server/db/provision.ts — provision + spawn (Windows-safe; SHA-256-verified binary)
+//   surreal start --bind 127.0.0.1:8000 --user root --pass <local> surrealkv://<dataDir>
+//   (backend: surrealkv — D-007; rocksdb:// is the documented fallback)
 
-// server/db/connect.ts  (ESM)
-import { Surreal } from "surrealdb";
-
-let _db: Surreal | null = null;
-
-export async function getDb(): Promise<Surreal> {
-  if (_db) return _db;
-  const db = new Surreal();
-  await db.connect("ws://127.0.0.1:8000/rpc");
-  await db.signin({ username: "root", password: process.env.SURREAL_PASS! }); // loopback-only
-  await db.use({ namespace: "playground", database: "main" });
-  await runMigrations(db);
-  _db = db;                       // single long-lived client, owned by the SvelteKit server
-  return db;
-}
-
-export async function closeDb(): Promise<void> {
-  if (_db) { await _db.close(); _db = null; }
-}
+// src/lib/server/db/client.ts (built shape — least-priv + bounded connect)
+// The long-lived runtime client signs in as the scoped LEAST-PRIVILEGE user (D-026c);
+// root is reserved for provisioning/migrations ONLY (npm run db:up → scripts/db-up.ts
+// → db/migrate.ts opens its own root connection — migrations NEVER run at boot).
+// connect+signin+use is raced against a hard wall-clock bound (DEFAULT_CONNECT_TIMEOUT_MS
+// = 5000): the SDK can hang ~90s on a dead socket (F-014), and connect() sits on the
+// boot path — on timeout it rejects honestly and the degraded-boot path
+// (db/runtime-init.ts initDbFromEnv) serves disconnected states instead of hanging.
+const db = await Db.connect({
+  url: env.SURREAL_WS,                  // ws://127.0.0.1:8000/rpc — loopback asserted (D-025)
+  username: env.SURREAL_USER,           // least-priv runtime user, NOT root (D-026c)
+  password: env.SURREAL_PASS,
+  namespace: "playground",
+  database: "main"
+  // connectTimeoutMs: 5000 (default)  — bounded boot, F-014
+});
+// single long-lived client, owned by the SvelteKit server; close() on shutdown teardown
 ```
 
 Packages — **only the SDK** (no native engine):
@@ -177,6 +175,9 @@ DEFINE FIELD cc_session_id ON session TYPE option<string>;  -- Claude Code sessi
 DEFINE FIELD workflow_run  ON session TYPE option<record<workflow_run>>;  -- set if part of a pipeline
 DEFINE FIELD started_at ON session TYPE datetime DEFAULT time::now();
 DEFINE FIELD ended_at   ON session TYPE option<datetime>;
+-- Honest terminal note (m0027, F-008): stamped on crash-path failures by launchSession
+-- and by the boot reaper ("reaped: server restarted mid-run"); NONE on clean runs.
+DEFINE FIELD note      ON session TYPE option<string>;
 -- Two-cadence learning-fork nudge (D-027, MEMORY-SPEC §2.2). Persisted counters so the
 -- modulo cadence (turn_index % N) survives Claude Code's per-message agent rebuilds —
 -- an in-memory tick would reset. Memory review fires on user_turn_count; skill review on tool_iter_count.
@@ -187,7 +188,7 @@ DEFINE TABLE message SCHEMAFULL;        -- chat/session messages (replaces chats
 DEFINE FIELD session ON message TYPE record<session>;
 DEFINE FIELD role    ON message TYPE string ASSERT $value IN ["user","assistant","tool","system"];
 DEFINE FIELD content ON message TYPE string;
-DEFINE FIELD tool_call ON message TYPE option<object>;  -- name/args/result; tool messages NOT dropped (D-008)
+DEFINE FIELD tool_call ON message FLEXIBLE TYPE option<object>;  -- name/args/result; tool messages NOT dropped (D-008). FLEXIBLE: free-form JSON (m0017 — see §4.16)
 DEFINE FIELD at      ON message TYPE datetime DEFAULT time::now();
 
 DEFINE INDEX message_by_session ON message FIELDS session;
@@ -227,7 +228,9 @@ DEFINE TABLE agent_event SCHEMAFULL;
 DEFINE FIELD session     ON agent_event TYPE option<record<session>>;
 DEFINE FIELD project     ON agent_event TYPE option<record<project>>;
 DEFINE FIELD type        ON agent_event TYPE string
-  ASSERT $value IN ["spawn","completion","escalation","cancel","error"];
+  ASSERT $value IN ["spawn","completion","escalation","cancel","error","hook"];
+  -- "hook" (m0022): hook lifecycle-capture rows (SessionStart/UserPromptSubmit/PostToolUse/Stop
+  -- via the ingest endpoint). Omitting it made every hook write silently fail the assertion.
 DEFINE FIELD model          ON agent_event TYPE option<object>;       -- {provider, model_id, tier}
 DEFINE FIELD model.provider ON agent_event TYPE option<string>;       -- join-critical for analytics/routing
 DEFINE FIELD model.model_id ON agent_event TYPE option<string>;
@@ -236,7 +239,7 @@ DEFINE FIELD tokens_in   ON agent_event TYPE option<int>;
 DEFINE FIELD tokens_out  ON agent_event TYPE option<int>;
 DEFINE FIELD cost_usd    ON agent_event TYPE option<float>;
 DEFINE FIELD duration_ms ON agent_event TYPE option<int>;
-DEFINE FIELD detail      ON agent_event TYPE option<object>;  -- escalation from/to + reason, error msg, etc.
+DEFINE FIELD detail      ON agent_event FLEXIBLE TYPE option<object>;  -- escalation from/to + reason, error msg, etc. FLEXIBLE: free-form JSON (m0017 — see §4.16)
 DEFINE FIELD at          ON agent_event TYPE datetime DEFAULT time::now();
 
 DEFINE INDEX agent_event_by_project ON agent_event FIELDS project;
@@ -253,7 +256,7 @@ DEFINE FIELD kind      ON memory TYPE string DEFAULT "semantic"
 DEFINE FIELD namespace ON memory TYPE string DEFAULT "default";
 DEFINE FIELD key       ON memory TYPE option<string>;            -- for dedup on import
 DEFINE FIELD content   ON memory TYPE string;
-DEFINE FIELD embedding ON memory TYPE array<float>;              -- 1024-dim — D-014 🟡: `bge-m3` (default) or `qwen3-embedding:0.6b` (cannibalize-validated); both 1024-dim so the index is unaffected. Must equal the memory_vec HNSW DIMENSION
+DEFINE FIELD embedding ON memory TYPE array<float>;              -- 1024-dim — D-014 🔒: `qwen3-embedding:0.6b` via Ollama (S0-proven; hardcoded as EMBEDDING_MODEL in harness/wiring.ts). Must equal the memory_vec HNSW DIMENSION
 DEFINE FIELD tags      ON memory TYPE option<array<string>>;
 DEFINE FIELD source    ON memory TYPE option<string>;           -- claude-auto-memory|agent|scanner
 DEFINE FIELD scope     ON memory TYPE string DEFAULT "project"  -- KongCode-style soft scoping
@@ -295,7 +298,7 @@ DEFINE FIELD created_at ON memory TYPE datetime DEFAULT time::now();
 DEFINE FIELD updated_at ON memory TYPE datetime DEFAULT time::now();
 
 -- HNSW vector index. DIMENSION must match the embedding model.
--- 1024-dim — D-014 🟡: `bge-m3` (default) or `qwen3-embedding:0.6b` (cannibalize-validated); both 1024-dim so the index is unaffected.
+-- 1024-dim — D-014 🔒: `qwen3-embedding:0.6b` via Ollama, 1024-dim (S0-proven; index written at m0005).
 -- DIST COSINE for normalized text embeddings.
 -- NEVER author `M0` — it is not a valid DDL clause in 2.x. (The engine DERIVES a layer-0
 -- connection count and ECHOES it as `M0 24` in `INFO FOR TABLE`; that echo is valid and
@@ -496,10 +499,13 @@ DEFINE FIELD path    ON cc_scope TYPE string;       -- abs path to the .claude d
 DEFINE TABLE cc_settings SCHEMAFULL;
 DEFINE FIELD scope        ON cc_settings TYPE record<cc_scope>;
 DEFINE FIELD file_path    ON cc_settings TYPE string;
-DEFINE FIELD permissions  ON cc_settings TYPE option<object>;   -- allow/deny/ask
-DEFINE FIELD env          ON cc_settings TYPE option<object>;
-DEFINE FIELD enabled_plugins ON cc_settings TYPE option<object>;
-DEFINE FIELD raw          ON cc_settings TYPE object;           -- full parsed json, for round-trip
+-- FLEXIBLE on every free-form JSON column (m0016 — see §4.16): without it a SCHEMAFULL
+-- TYPE object silently stores {}, breaking the D-010 round-trip contract.
+DEFINE FIELD permissions  ON cc_settings FLEXIBLE TYPE option<object>;   -- allow/deny/ask
+DEFINE FIELD env          ON cc_settings FLEXIBLE TYPE option<object>;
+DEFINE FIELD enabled_plugins ON cc_settings FLEXIBLE TYPE option<object>;
+DEFINE FIELD raw          ON cc_settings FLEXIBLE TYPE object;           -- full parsed json, for round-trip
+DEFINE FIELD sync_digest  ON cc_settings TYPE option<string>;   -- per-scope content digest stamped at sync time (m0016); drift detection compares live disk digest vs this
 DEFINE FIELD synced_at    ON cc_settings TYPE datetime DEFAULT time::now();
 
 -- hooks (flattened from settings.json for querying)
@@ -516,7 +522,7 @@ DEFINE FIELD scope       ON cc_agent TYPE record<cc_scope>;
 DEFINE FIELD file_path   ON cc_agent TYPE string;
 DEFINE FIELD name        ON cc_agent TYPE string;
 DEFINE FIELD description ON cc_agent TYPE option<string>;
-DEFINE FIELD frontmatter ON cc_agent TYPE object;   -- parsed YAML
+DEFINE FIELD frontmatter ON cc_agent FLEXIBLE TYPE object;   -- parsed YAML (FLEXIBLE: free-form, m0016)
 DEFINE FIELD category    ON cc_agent TYPE option<string>;
 
 -- skills (.claude/skills/*/SKILL.md)
@@ -535,7 +541,7 @@ DEFINE FIELD type     ON cc_mcp_server TYPE string ASSERT $value IN ["stdio","ht
 DEFINE FIELD command  ON cc_mcp_server TYPE option<string>;
 DEFINE FIELD args     ON cc_mcp_server TYPE option<array<string>>;
 DEFINE FIELD url      ON cc_mcp_server TYPE option<string>;
-DEFINE FIELD env      ON cc_mcp_server TYPE option<object>;
+DEFINE FIELD env      ON cc_mcp_server FLEXIBLE TYPE option<object>;  -- FLEXIBLE: free-form, m0016
 
 DEFINE INDEX cc_scope_by_project ON cc_scope FIELDS project;
 DEFINE INDEX cc_agent_by_scope   ON cc_agent FIELDS scope;
@@ -550,8 +556,9 @@ DEFINE INDEX cc_skill_by_scope   ON cc_skill FIELDS scope;
 DEFINE TABLE workflow SCHEMAFULL;
 DEFINE FIELD name    ON workflow TYPE string;
 DEFINE FIELD project ON workflow TYPE option<record<project>>;
-DEFINE FIELD steps   ON workflow TYPE array<object>;   -- [{id, prompt, agent, model, cwd, depends_on:[ids], parallel}]
+DEFINE FIELD steps   ON workflow FLEXIBLE TYPE array<object>;   -- [{id, prompt, agent, model, cwd, depends_on:[ids], parallel}]
 -- Step shape is untyped here; the runtime validates {id, prompt, agent, model, cwd, depends_on, parallel} before persist.
+-- FLEXIBLE (m0021 — see §4.16): without it every step stores as {} and the runner cannot launch it.
 DEFINE FIELD trigger ON workflow TYPE string DEFAULT "manual"
   ASSERT $value IN ["manual","event","periodic"];
 DEFINE FIELD created_at ON workflow TYPE datetime DEFAULT time::now();
@@ -560,7 +567,10 @@ DEFINE TABLE workflow_run SCHEMAFULL;
 DEFINE FIELD workflow  ON workflow_run TYPE record<workflow>;
 DEFINE FIELD status    ON workflow_run TYPE string DEFAULT "running"
   ASSERT $value IN ["running","done","failed","cancelled"];
-DEFINE FIELD step_state ON workflow_run TYPE object DEFAULT {};  -- {stepId: "pending|running|done|failed"}
+DEFINE FIELD step_state ON workflow_run FLEXIBLE TYPE object DEFAULT {};  -- {stepId: "pending|running|done|failed"} (FLEXIBLE: arbitrary stepId keys, m0021)
+-- Honest terminal note (m0027, F-008): stamped by runWorkflow on crash-path failures and by
+-- the boot reaper ("reaped: server restarted mid-run"); NONE on clean runs.
+DEFINE FIELD note       ON workflow_run TYPE option<string>;
 DEFINE FIELD started_at ON workflow_run TYPE datetime DEFAULT time::now();
 DEFINE FIELD ended_at   ON workflow_run TYPE option<datetime>;
 
@@ -581,17 +591,26 @@ DEFINE FIELD project      ON work_item TYPE option<record<project>>;
 DEFINE FIELD priority     ON work_item TYPE int DEFAULT 5;       -- lower = sooner
 DEFINE FIELD status       ON work_item TYPE string DEFAULT "pending"
   ASSERT $value IN ["pending","processing","done","failed"];
-DEFINE FIELD payload      ON work_item TYPE object;
+DEFINE FIELD payload      ON work_item FLEXIBLE TYPE object;     -- FLEXIBLE (m0018): without it the claimed payload round-trips to {} — no taskId to spawn
 DEFINE FIELD attempts     ON work_item TYPE int DEFAULT 0;
 DEFINE FIELD claim_token  ON work_item TYPE option<string>;      -- worker lease, set on atomic claim
-DEFINE FIELD handoff      ON work_item TYPE option<object>;      -- cross-worker handoff state
+DEFINE FIELD handoff      ON work_item FLEXIBLE TYPE option<object>;  -- cross-worker handoff state (D-021 crash recovery; FLEXIBLE, m0018)
+-- claimed_at (m0020): the daily-cap rolling-window anchor — stamped by claimNext on the
+-- atomic claim; gcStale also reaps stuck `processing` rows by claim age. NONE until claimed.
+DEFINE FIELD claimed_at   ON work_item TYPE option<datetime>;
 DEFINE FIELD created_at   ON work_item TYPE datetime DEFAULT time::now();
 DEFINE FIELD completed_at ON work_item TYPE option<datetime>;
--- Dedup the active window so the same unit isn't enqueued twice (dedup_key VALUE pattern, D-008):
--- active rows key on work_type|session|status; terminal rows fall back to the record id.
+-- Dedup the active window so the same unit isn't enqueued twice (dedup_key VALUE pattern, D-008).
+-- dedup_scope (m0019): the original work_type|session|status key OVER-COLLAPSED session-less
+-- items — two pending task_run items both computed `task_run||processing` once claimed →
+-- UNIQUE violation capping the orchestrator at ONE concurrent item. dedup_scope (DEFAULT ''
+-- so session-keyed items are unchanged; the orchestrator sets it to the task id for task_run)
+-- makes dedup per-UNIT. The coalesce `(dedup_scope OR '')` lives INSIDE the VALUE because a
+-- computed VALUE evaluates before the column DEFAULT — NONE would throw in the '+'.
+DEFINE FIELD dedup_scope  ON work_item TYPE string DEFAULT "";
 DEFINE FIELD dedup_key    ON work_item VALUE
   (IF status IN ["pending","processing"]
-    THEN work_type + '|' + <string>(session OR '') + '|' + status
+    THEN work_type + '|' + <string>(session OR '') + '|' + <string>(dedup_scope OR '') + '|' + status
     ELSE <string>id END);
 DEFINE INDEX work_item_dedup ON work_item FIELDS dedup_key UNIQUE;
 DEFINE INDEX work_item_by_status_priority ON work_item FIELDS status, priority;
@@ -607,9 +626,10 @@ record-targeted `WHERE claim_token IS NONE` makes the write atomic (surrealkv is
 LET $next = (SELECT id FROM work_item
   WHERE status = "pending" AND claim_token IS NONE
   ORDER BY priority ASC LIMIT 1)[0].id;
--- 2. claim THAT id under the guard — atomic compare-and-set; returns [] to every loser
+-- 2. claim THAT id under the guard — atomic compare-and-set; returns [] to every loser.
+--    claimed_at = time::now() anchors the daily-cap rolling window (m0020).
 UPDATE $next
-  SET claim_token = $t, status = "processing", attempts += 1
+  SET claim_token = $t, status = "processing", attempts += 1, claimed_at = time::now()
   WHERE claim_token IS NONE
   RETURN AFTER;
 ```
@@ -664,7 +684,7 @@ DEFINE FIELD created_at    ON causal_chain TYPE datetime DEFAULT time::now();
 DEFINE TABLE skill SCHEMAFULL;
 DEFINE FIELD name          ON skill TYPE string;
 DEFINE FIELD description   ON skill TYPE string;
-DEFINE FIELD embedding     ON skill TYPE array<float>;        -- 1024-dim — D-014 🟡: `bge-m3` (default) or `qwen3-embedding:0.6b` (cannibalize-validated); both 1024-dim so the index is unaffected. Must equal the skill_vec HNSW DIMENSION
+DEFINE FIELD embedding     ON skill TYPE array<float>;        -- 1024-dim — D-014 🔒: `qwen3-embedding:0.6b` via Ollama (S0-proven). Must equal the skill_vec HNSW DIMENSION
 DEFINE FIELD preconditions ON skill TYPE option<string>;
 DEFINE FIELD steps         ON skill TYPE array<string>;
 DEFINE FIELD postconditions ON skill TYPE option<string>;
@@ -715,6 +735,148 @@ Engineering gotchas the new tables above must respect (kongcode lessons, MEMORY-
 - **`option<bool>`/enum + `RETURN AFTER` missed-match / claim-starvation.** SurrealDB treats `NONE` as a distinct value that never matches `= true` (or any concrete enum value), so any boolean/enum field **read back on a `RETURN AFTER` write** (e.g. `causal_chain.success`, the `graduated_at` watermarks, `memory.surfaceable`) that can land in `NONE` is silently invisible to a `WHERE field = …` claim — the row is never matched and the work starves. This is NOT a lock deadlock; it is a silent missed match. Such a field **MUST EITHER be `option<T>`** (if it's legitimately absent on some rows) **OR carry a concrete non-NONE `DEFAULT`** (e.g. `surfaceable bool DEFAULT false`) so it can never default to `NONE` — never a bare typed field with no default that can land in `NONE`. Pre-existing rows must be backfilled in the same migration. This is the same class the `dedup_key VALUE` pattern (§4.3/§7a) already dodges; the general rule holds for every new boolean/enum.
 - **Idempotent migrations.** One-time table-scan `UPDATE`s must be gated behind `LET <count> = (SELECT …); IF count > 0 { … }` so re-running the migration is a no-op; use `OVERWRITE` to widen tables/indexes; annotate each one-time migration with its removal condition.
 - **Backfill `VALUE` fields.** A computed `VALUE` field (e.g. `dedup_key`) is only recomputed on write, so at schema-apply time **backfill it with a no-op touch-`UPDATE`** over existing rows; otherwise pre-existing rows carry a stale/empty key.
+- **`SCHEMAFULL` + `TYPE object` without `FLEXIBLE` silently stores `{}`.** On a SCHEMAFULL table, a `TYPE object` / `TYPE array<object>` field with no declared sub-fields and no `FLEXIBLE` strips ALL nested keys on write (SurrealDB 2.x) — the value round-trips as `{}` (or `[{}]`), with no error. This data-loss bug shipped FOUR times from transcribing the pre-fix DDL (fixed by m0016–m0018 and m0021; newer tables declare it from birth). Rule: **every free-form JSON column MUST be `FLEXIBLE`**; objects whose sub-fields are individually declared (e.g. `session.model.*`) are exempt — they round-trip via their declared fields.
+
+### 4.17 Project Manager layer — pm_memory, decision, pm_review (m0023/m0025)
+
+The strategic layer above task execution (GAP-ANALYSIS §1.1; built lean on the SurrealDB spine — NO per-feature SQLite). Mirrors `schema.ts` m0023 + m0025.
+
+```sql
+-- The PM's accumulated-learning store. kind = the v1 taxonomy; FTS over content
+-- (reuses the shared text_an analyzer from §4.8) so the PM can search its own memory.
+DEFINE TABLE pm_memory SCHEMAFULL;
+DEFINE FIELD project    ON pm_memory TYPE record<project>;
+DEFINE FIELD kind       ON pm_memory TYPE string DEFAULT "observation"
+  ASSERT $value IN ["observation","learning","risk","pattern","decision"];
+DEFINE FIELD content    ON pm_memory TYPE string;
+DEFINE FIELD source     ON pm_memory TYPE string DEFAULT "pm";
+DEFINE FIELD confidence ON pm_memory TYPE float DEFAULT 0.8;
+DEFINE FIELD importance ON pm_memory TYPE float DEFAULT 5.0;
+DEFINE FIELD status     ON pm_memory TYPE string DEFAULT "active"
+  ASSERT $value IN ["active","archived"];
+DEFINE FIELD related_to ON pm_memory TYPE option<string>;
+DEFINE FIELD created_at ON pm_memory TYPE datetime DEFAULT time::now();
+DEFINE INDEX pm_memory_by_project ON pm_memory FIELDS project;
+DEFINE INDEX pm_memory_by_kind    ON pm_memory FIELDS kind;
+DEFINE INDEX pm_memory_fts ON pm_memory FIELDS content SEARCH ANALYZER text_an BM25 HIGHLIGHTS;
+
+-- Architectural decisions surface, linked to the project (optionally a sprint).
+DEFINE TABLE decision SCHEMAFULL;
+DEFINE FIELD project   ON decision TYPE record<project>;
+DEFINE FIELD sprint    ON decision TYPE option<record<sprint>>;
+DEFINE FIELD title     ON decision TYPE string;
+DEFINE FIELD context   ON decision TYPE option<string>;
+DEFINE FIELD rationale ON decision TYPE option<string>;
+DEFINE FIELD status    ON decision TYPE string DEFAULT "accepted"
+  ASSERT $value IN ["proposed","accepted","superseded","rejected"];
+DEFINE FIELD created_at ON decision TYPE datetime DEFAULT time::now();
+DEFINE INDEX decision_by_project ON decision FIELDS project;
+
+-- One row per PM review pass (manual | periodic | event, D-004) — append-only history with
+-- HONEST counts of what the pass examined/wrote (F-008). m0025 is the F-015 case study:
+-- every DEFINE carries OVERWRITE + a half-applied-state recovery (delete unsalvageable
+-- rows, coalesce every DEFAULT-bearing column in ONE UPDATE).
+DEFINE TABLE pm_review SCHEMAFULL;
+DEFINE FIELD project           ON pm_review TYPE record<project>;
+DEFINE FIELD trigger           ON pm_review TYPE string DEFAULT "manual"
+  ASSERT $value IN ["manual","periodic","event"];
+DEFINE FIELD summary           ON pm_review TYPE string;
+DEFINE FIELD tasks_examined    ON pm_review TYPE int DEFAULT 0;
+DEFINE FIELD findings_examined ON pm_review TYPE int DEFAULT 0;
+DEFINE FIELD risks_open        ON pm_review TYPE int DEFAULT 0;
+DEFINE FIELD memories_written  ON pm_review TYPE int DEFAULT 0;
+DEFINE FIELD created_at        ON pm_review TYPE datetime DEFAULT time::now();
+DEFINE INDEX pm_review_by_project ON pm_review FIELDS project;
+```
+
+m0023 also adds the sprint lifecycle to §4.1: `sprint.status` (`active`/`completed`, concrete non-NONE DEFAULT per §4.16) + `sprint.completed_at option<datetime>`, with a guarded backfill of pre-existing rows.
+
+### 4.18 External sync layer — task_sync, board_sync_config, sync_incident (m0024/m0025, D-037)
+
+The first `SyncAdapter` (GitHub task↔issue) + project-board sync. Mirrors `schema.ts` m0024 + m0025.
+
+```sql
+-- The IDEMPOTENCY ledger: one row maps an Atelier task to its external counterpart.
+-- A re-sync finds the mapping and UPDATEs — the same task never spawns two issues.
+DEFINE TABLE task_sync SCHEMAFULL;
+DEFINE FIELD task         ON task_sync TYPE record<task>;
+DEFINE FIELD project      ON task_sync TYPE record<project>;
+DEFINE FIELD provider     ON task_sync TYPE string DEFAULT "github" ASSERT $value IN ["github"];
+DEFINE FIELD repo         ON task_sync TYPE string;
+DEFINE FIELD external_id  ON task_sync TYPE string;     -- issue number, as string (provider-agnostic)
+DEFINE FIELD external_url ON task_sync TYPE option<string>;
+DEFINE FIELD direction    ON task_sync TYPE string DEFAULT "both" ASSERT $value IN ["push","pull","both"];
+DEFINE FIELD last_synced  ON task_sync TYPE datetime DEFAULT time::now();
+DEFINE FIELD created_at   ON task_sync TYPE datetime DEFAULT time::now();
+-- Two computed dedup keys (D-008 VALUE pattern + UNIQUE): by external counterpart, and
+-- by task-within-repo (one task ↔ one issue per repo — the create-or-update invariant).
+DEFINE FIELD dedup_key  ON task_sync VALUE provider + '|' + repo + '|' + external_id;
+DEFINE FIELD task_dedup ON task_sync VALUE provider + '|' + repo + '|' + <string>task;
+DEFINE INDEX task_sync_dedup      ON task_sync FIELDS dedup_key  UNIQUE;
+DEFINE INDEX task_sync_task       ON task_sync FIELDS task_dedup UNIQUE;
+DEFINE INDEX task_sync_by_task    ON task_sync FIELDS task;
+DEFINE INDEX task_sync_by_project ON task_sync FIELDS project;
+
+-- Per-project, opt-in column mapping for the GitHub project-BOARD sync adapter.
+DEFINE TABLE board_sync_config SCHEMAFULL;
+DEFINE FIELD project      ON board_sync_config TYPE record<project>;
+DEFINE FIELD enabled      ON board_sync_config TYPE bool DEFAULT false;
+DEFINE FIELD board_number ON board_sync_config TYPE option<int>;
+DEFINE FIELD mapping      ON board_sync_config FLEXIBLE TYPE object DEFAULT {};  -- status → board-column map (FLEXIBLE, §4.16)
+DEFINE FIELD last_synced  ON board_sync_config TYPE option<datetime>;
+DEFINE FIELD last_status  ON board_sync_config TYPE option<string>
+  ASSERT $value = NONE OR $value IN ["ok","error"];
+DEFINE FIELD last_error   ON board_sync_config TYPE option<string>;
+DEFINE FIELD created_at   ON board_sync_config TYPE datetime DEFAULT time::now();
+DEFINE INDEX board_sync_config_project ON board_sync_config FIELDS project UNIQUE;  -- one config per project
+
+-- A recorded sync FAILURE (never silent, F-008): which adapter/project failed, when, why.
+DEFINE TABLE sync_incident SCHEMAFULL;
+DEFINE FIELD project ON sync_incident TYPE record<project>;
+DEFINE FIELD adapter ON sync_incident TYPE string;
+DEFINE FIELD message ON sync_incident TYPE string;
+DEFINE FIELD at      ON sync_incident TYPE datetime DEFAULT time::now();
+DEFINE INDEX sync_incident_by_project ON sync_incident FIELDS project;
+```
+
+### 4.19 D-037 adapter targets — project_target, target_run (m0026)
+
+Per-project deploy/publish/sync target declarations + honest run records (ARCHITECTURE §2.12). Mirrors `schema.ts` m0026.
+
+```sql
+-- A project's declaration of which adapter it ships through, for one of the THREE
+-- families (publish | deploy | sync). config may reference secrets by env-var NAME only
+-- (D-026) — the framework resolves values from .env at call time, never persists them.
+DEFINE TABLE project_target SCHEMAFULL;
+DEFINE FIELD project    ON project_target TYPE record<project>;
+DEFINE FIELD kind       ON project_target TYPE string ASSERT $value IN ["publish","deploy","sync"];
+DEFINE FIELD adapter_id ON project_target TYPE string;          -- registry id, e.g. "npm","thunderstore","github"
+DEFINE FIELD label      ON project_target TYPE string;
+DEFINE FIELD config     ON project_target FLEXIBLE TYPE object DEFAULT {};  -- adapter-specific (FLEXIBLE, §4.16)
+DEFINE FIELD enabled    ON project_target TYPE bool DEFAULT true;
+DEFINE FIELD is_default ON project_target TYPE bool DEFAULT false;
+DEFINE FIELD created_at ON project_target TYPE datetime DEFAULT time::now();
+DEFINE FIELD updated_at ON project_target TYPE datetime DEFAULT time::now();
+-- One declaration per (project, kind, adapter_id) — VALUE dedup + UNIQUE (D-008).
+DEFINE FIELD dedup_key  ON project_target VALUE <string>project + '|' + kind + '|' + adapter_id;
+DEFINE INDEX project_target_dedup      ON project_target FIELDS dedup_key UNIQUE;
+DEFINE INDEX project_target_by_project ON project_target FIELDS project;
+DEFINE INDEX project_target_by_kind    ON project_target FIELDS project, kind;
+
+-- One row per gated action attempt through the framework (never silent — F-008).
+DEFINE TABLE target_run SCHEMAFULL;
+DEFINE FIELD project    ON target_run TYPE record<project>;
+DEFINE FIELD target     ON target_run TYPE option<record<project_target>>;
+DEFINE FIELD kind       ON target_run TYPE string ASSERT $value IN ["publish","deploy","sync"];
+DEFINE FIELD adapter_id ON target_run TYPE string;
+DEFINE FIELD dry_run    ON target_run TYPE bool DEFAULT true;
+DEFINE FIELD ok         ON target_run TYPE bool DEFAULT false;
+DEFINE FIELD target_ref ON target_run TYPE option<string>;
+DEFINE FIELD summary    ON target_run TYPE string;
+DEFINE FIELD steps      ON target_run TYPE array<string> DEFAULT [];
+DEFINE FIELD at         ON target_run TYPE datetime DEFAULT time::now();
+DEFINE INDEX target_run_by_project ON target_run FIELDS project;
+```
 
 ---
 
@@ -749,7 +911,7 @@ If anything fails, `CANCEL TRANSACTION` (or `THROW`) rolls back all of it. No pa
 | `routing-log.json` / `routing-telemetry.db` | `routing_event` |
 | `chats/*.jsonl` | `session` + `message` |
 | `pid-registry.db` | `process` |
-| `pm-memory.db` | `memory` (project-scoped) + plan fields on `project` |
+| `pm-memory.db` | dedicated `pm_memory` table (§4.17, m0023) — TASK 9.1 deliberately built a first-class table, NOT folded into `memory` |
 | `.swarm/memory.db` (HNSW) | `memory` + `memory_vec` HNSW index |
 | `graph-state.json` | `entity` nodes + `references` edges |
 | `auto-memory-store.json` | `memory` (source=claude-auto-memory), dedup via `memory_dedup` (dedup_key) |
@@ -771,6 +933,11 @@ If anything fails, `CANCEL TRANSACTION` (or `THROW`) rolls back all of it. No pa
 | _(none — new)_ | `embedding_cache` table — L2 embed cache (new; kongcode shape, ideas-only) |
 | _(none — new)_ | `session.user_turn_count` / `tool_iter_count` fields (new, D-027 two-cadence nudge) |
 | _(none — new)_ | `memory` Tier-0 + resurfacing fields (`tier`, `surfaceable`, `next_surface_at`, `fib_index`, `surface_count`, `last_surfaced`) + `absorbed_into` (new, D-027/D-031) |
+| _(none — new)_ | `pm_memory` + `decision` tables — PM layer (new, m0023 / TASK 9.1; §4.17) |
+| _(none — new)_ | `pm_review` table — PM review-pass history (new, m0025 / TASK 11.4; §4.17) |
+| _(none — new)_ | `task_sync` table — task↔issue idempotency ledger (new, m0024 / D-037; §4.18) |
+| _(none — new)_ | `board_sync_config` + `sync_incident` tables — board sync + honest failures (new, m0025 / D-037; §4.18) |
+| _(none — new)_ | `project_target` + `target_run` tables — D-037 adapter targets + run records (new, m0026; §4.19) |
 
 A one-time **importer script** (Phase 1) reads each v1 file/DB and writes the mapped records in transactions. Embeddings in `.swarm/memory.db` can be re-used if dimensions match the chosen embedding model; otherwise re-embed `content`.
 
@@ -780,7 +947,7 @@ A one-time **importer script** (Phase 1) reads each v1 file/DB and writes the ma
 
 ## 7. Embedding model note
 
-1024-dim — D-014 🟡: `bge-m3` (default) or `qwen3-embedding:0.6b` (cannibalize-validated); both 1024-dim so the index is unaffected. Served by Ollama (reuses the local model server; KongCode proves BGE-M3 1024 works well, but runs it via `node-llama-cpp` because it has no Ollama — we do). HNSW `DIMENSION` is **locked to 1024** to match either model. Alternatives: `node-llama-cpp` + GGUF (self-contained, KongCode's path) or a hosted embedding API. Changing to a *different-dimension* model later = re-embed all rows + redefine the index. Keep the dimension as a single config constant, never a scattered magic number.
+1024-dim — D-014 🔒: **`qwen3-embedding:0.6b` via Ollama, 1024-dim (S0-proven; hardcoded as `EMBEDDING_MODEL` in `harness/wiring.ts`)**. (`bge-m3` was the pre-S0 candidate; KongCode proves BGE-M3 1024 works well, but runs it via `node-llama-cpp` because it has no Ollama — we do.) HNSW `DIMENSION` is **locked to 1024**. Alternatives: `node-llama-cpp` + GGUF (self-contained, KongCode's path) or a hosted embedding API. Changing to a *different-dimension* model later = re-embed all rows + redefine the index. Keep the dimension as a single config constant, never a scattered magic number.
 
 **Embedding input limit / truncation (KongCode lesson):** embedding models cap input (BGE-M3 ≈ 8192 tokens / ~6000 chars). For long `content`, the tail may not be embedded — set `embedding_truncated = true` so recall fidelity is auditable and reranking can compensate. Chunk very long content into multiple `memory` rows rather than silently truncating.
 
@@ -803,8 +970,8 @@ Design queries so "knowledge core" is cleanly separable from "transcript volume"
 
 ## 8. Open data-model items
 
-- **Isolation level** for the server (surrealkv) backend transaction isolation — verify (D-006).
-- **Embedding dimension/model** — pick before writing the index (above).
+- **Isolation level** for the server (surrealkv) backend transaction isolation — **resolved by S0**: claim-token race proved single-winner under surrealkv (see §4.12).
+- **Embedding dimension/model** — **resolved (D-014 🔒)**: `qwen3-embedding:0.6b` via Ollama, 1024-dim (S0-proven).
 - **`engine_metric`** table — resolved: heartbeat/orchestrator metrics fold into `agent_event` (cycle rows); no separate `engine_metric` table.
 - **Memory-engine schema deltas** (MEMORY-SPEC — "Schema deltas flagged for DATA-MODEL") — **resolved**: folded into the schema above — `session.user_turn_count`/`tool_iter_count` (§4.3), `memory` Tier-0 + Fibonacci-resurfacing fields + `absorbed_into` (§4.5), `memory_history` audit (§4.5a), `skill` + `causal_chain` (§4.14), `embedding_cache` (§4.15). Honors D-030 (utilization → ranking only), D-031 (novelty gate + consolidation), D-032 (learned skills + user-model in-store).
 - **User-model storage** — resolved by D-032: lives in SurrealDB (Honcho dropped). Exact `user_model` table shape is deferred to the user-modeling epic (MEMORY-SPEC §8, post-v1.0 candidate) — not declared here yet.

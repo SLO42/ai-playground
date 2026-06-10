@@ -105,11 +105,13 @@ Triggers and interval live in `config` and a settings page.
 
 ---
 
-## D-007 🟡 Server storage backend: SurrealKV (KongCode runs it in production)
+## D-007 🔒 Server storage backend: SurrealKV (KongCode runs it in production)
 
 **Context:** The SurrealDB server can store via `surrealkv://`, `rocksdb://`, or `memory`. SurrealKV is officially "beta", but **KongCode ships on SurrealKV** in production — strong real-world evidence it's viable for a single-operator local store, and it's pure-Rust (no RocksDB C++ dep) with optional versioning.
 
-**Decision (default):** Use **`surrealkv://`** for persistence (matches KongCode + the connection example); `memory` for tests. `rocksdb://` is the fallback if SurrealKV misbehaves. Note: SurrealKV/RocksDB hold a single-writer file lock — fine for our single long-lived server process.
+**Decision:** Use **`surrealkv://`** for persistence; `memory` for tests. `rocksdb://` remains the documented fallback. Note: SurrealKV/RocksDB hold a single-writer file lock — fine for our single long-lived server process.
+
+**Resolved (build):** the production provisioning path runs surrealkv (`db/provision.ts` spawns `surrealkv://<dataDir>`); the S0 spike proved surrealkv isolation + claim-token single-winner atomicity; the build is past the v1.0 gate that closes this item. 🟡 → 🔒.
 
 ---
 
@@ -158,13 +160,11 @@ Triggers and interval live in `config` and a settings page.
 
 ---
 
-## D-012 🟡 OpenClaw cannibalization — decide what (if anything) to salvage
+## D-012 🔒 OpenClaw cannibalization — dropped entirely (S.2/D-012 audit; empty salvage list)
 
 **Context:** OpenClaw is replaced by the Claude Code runtime. Some parts might still be worth extracting (provider routing logic, exec sandboxing patterns, audit logging).
 
-**Decision:** **Audit during Spike S.2.** Default assumption: drop OpenClaw entirely (WSS, Ed25519, TLS, DM pairing, gateway client). Salvage a part only with a concrete v2 need that Claude Code + provider adapters don't already cover.
-
-**Revisit:** Spike S.2 → 🔒 with the salvage list (likely empty).
+**Decision:** **Drop OpenClaw entirely** (WSS, Ed25519, TLS, DM pairing, gateway client). The S.2/D-012 audit outcome is recorded in GAP-ANALYSIS §5: the direct-subprocess `ClaudeCliBackend` supersedes it; local-cost routing relocated to `routing/resolve.ts`. **Salvage list: empty.** The built tree contains zero OpenClaw code (a descriptive comment in `runtime/index.ts` only). 🟡 → 🔒.
 
 ---
 
@@ -470,27 +470,33 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 - ❌ auto-delivering agent-origin messages as live channel pushes (they land in an **inbox as data**).
 - ❌ letting bus/peer messages bypass the screen/fence as "internal/trusted"; agent-origin bodies are secret/PII-screened (§3.1b) before storage and **re-screened before any graduation** to memory/skill.
 
-**Consequences:** (a) unblocks D-011 interject with a hardened, reusable rail; (b) the v0.2 fleet bus is purely additive (write rows + an SSE filter) on a security envelope already enforced in v0.1. **EXCLUDED** (don't over-build onto the bus): sub-agent fan-out/delegation rides `AgentRuntime.spawn` + the PTC RPC dispatcher (MEMORY-SPEC §9.1/§9.2) or a `work_item` if it outlives the turn — not `peer_message`. Stays 🟡: (a) hardened now, (b) deferred — revisit scope at v0.2, forcing each flow to justify against an existing primitive first.
+**Consequences:** (a) unblocks D-011 interject with a hardened, reusable rail; (b) the v0.2 fleet bus is purely additive (write rows + an SSE filter) on a security envelope already enforced in v0.1. **EXCLUDED** (don't over-build onto the bus): sub-agent fan-out/delegation rides `AgentRuntime.spawn` + the PTC RPC dispatcher (MEMORY-SPEC §9.1/§9.2) or a `work_item` if it outlives the turn — not `peer_message`. Stays 🟡: (a) hardened now, (b) deferred, forcing each flow to justify against an existing primitive first.
+
+**Status note (2026-06-10):** part (a) channel-interject is **built** (`claude-code/channel.ts`). Part (b)'s "revisit at v0.2" anchor has **passed without the bus being built** — no `peer_message` table exists in `schema.ts`; `channel.ts` still describes it as a future additive consumer. The peer_message fleet bus is **re-targeted to the post-v1.9 backlog**: no concrete flow has yet justified it over the existing primitives (events bus / channel push / work_item), which is the decision's own bar. Stays 🟡 on part (b) only.
 
 ---
 
-## D-036 🟡 Per-task capability provisioning — auto-compose the toolkit into driven sessions
+## D-036 🔒 Per-task capability provisioning — auto-compose the toolkit into driven sessions
 
 **Context:** The product is *meant to enable agentic development by utilizing the tools we built*. It **catalogs + manages** the full Claude Code toolkit (hooks, skills, agents, MCP) per-project + global (PRODUCT job 9; cc-config 1.8/2.11) and **drives** Claude Code (jobs 8/10). BUT driven sessions start with an **isolated config** (D-002 — only the harness's own gates/hooks, *not* the operator's plugins, for determinism), and the intent→config bundles (D-020 / task 2.12) tune only **thinking/retrieval/budget** knobs — **not which skills/agents/MCP a task should wield**. So "use all the tools" is today a *manual* config-manager act, not automatic per-task composition. The owner wants it automatic (2026-06-08).
 
 **Decision:** Extend the intent→config bundle (orchestration.yaml, D-020) with a **capability set** — an explicit, **allow-listed** selection `{ skills:[], agents:[], mcp:[] }` drawn from the cc-config **catalog** (1.8/2.11) and provisioned into the driven session's isolated config per task-intent. **D-002 isolation is preserved**: the session receives *exactly* the declared set composed onto the harness base — never the operator's whole plugin soup. The set is **data-driven** (config, not code), **catalog-validated** (an unknown skill/agent/MCP id fails closed), and write-gated like any CC config (D-010 diff+confirm). **Security unchanged:** provisioned skills/MCP still execute under the gate layer (D-018/D-024) + `permissions.deny` (1.4a) — a capability set can never grant a tool the gates would deny.
 
-**Consequences:** bundles gain a `capabilities` block; the runtime composes session config = harness-base ⊕ intent capability set; catalog-validation at the boundary (D-016 discipline). Net: agentic development *automatically* wields the task-appropriate toolkit without sacrificing isolation/determinism or the security envelope. **Scope:** lands as a **v1.1** task (post-v1.0 closeout) — does not gate v1.0. Stays 🟡 until built. (Owner-requested, builds on D-002/D-010/D-018/D-020.)
+**Consequences:** bundles gain a `capabilities` block; the runtime composes session config = harness-base ⊕ intent capability set; catalog-validation at the boundary (D-016 discipline). Net: agentic development *automatically* wields the task-appropriate toolkit without sacrificing isolation/determinism or the security envelope. **Scope:** landed as the **v1.1** task 5.1. (Owner-requested, builds on D-002/D-010/D-018/D-020.)
+
+**Resolved (build):** built at v1.1 task 5.1 (`runtime/capabilities.ts`), **live-wired at gap-closure v1.3** — `harness/wiring.ts` reads the live cc-config catalog so `composeCapabilities` runs on every spawn (the GAP-ANALYSIS DEFECT-1 dead branch was the fix), covered by `capability-wiring.live.test.ts`. 🟡 → 🔒.
 
 ---
 
-## D-037 🟡 Extensible deployment / publish / sync — adapter framework, not hardcoded targets
+## D-037 🔒 Extensible deployment / publish / sync — adapter framework, not hardcoded targets
 
 **Context:** The post-audit reclaim (2026-06-08) surfaced a strategic requirement, not just a feature: the operator ships to **Thunderstore** (SWIP/ROUNDS mods) today, wants **"Create with AI"** + **GitHub task↔issue/board sync**, and — critically — states that **at scale, new projects will arrive with their own custom deployment processes and hosting requirements**, and Atelier must handle that. A fixed set of publishers (the v1 `publishers/*` npm/CurseForge/Nexus/Thunderstore scaffolds) does NOT meet this; hardcoding targets re-creates the sprawl v2 shed.
 
 **Decision:** Model **release/deploy/publish AND external sync as a pluggable ADAPTER framework** on the existing seam pattern (mirrors `AgentRuntime` providers D-002, `ServiceAdapter` 3.5, `AdvisorySource`/`UxInspectionSource` 3.2/3.3, capability composer D-036): a typed `PublisherAdapter` / `DeployTarget` / `SyncAdapter` interface + a **registry** resolved per-project from config; built-in adapters (**Thunderstore, npm, GitHub releases**) ship first, and a **project declares its own deploy/host/sync target** (config + an adapter id) so a novel process plugs in WITHOUT core changes. The release pipeline (3.4) + workflow runner (2.17) drive a *chosen adapter*, not a fixed script. GitHub task↔issue/board **sync** is the first `SyncAdapter`. **"Create with AI"** is scoped OUT of this gap-closure track (operator, 2026-06-08) — it lands later as its own separate feature, NOT a v1.x wave here. Security unchanged: adapters run under the gate layer (D-018/D-024) + path/credential confinement; publish credentials are operator-supplied secrets (never committed, D-026).
 
-**Consequences:** new waves on the post-audit track — **v1.8 extensible deploy/publish/sync adapter framework** (interface + registry + Thunderstore/npm/GitHub adapters + per-project custom-target config + GitHub sync as first SyncAdapter) and **"Create with AI"** generative project setup — DEFERRED to its own future feature, out of this track (operator). Reclaims: **GitHub sync pulled earlier (into v1.5 with PM)**; Thunderstore/publishers + custom-target framework = v1.8 (no longer DEFER/DROP). The GAP-ANALYSIS §5 drop list is amended accordingly. Stays 🟡 until built. (Owner-requested; builds on D-002/D-010/D-013/D-018; supersedes the GAP-ANALYSIS "publishers = DEFER/DROP" rows.)
+**Consequences:** new waves on the post-audit track — **v1.8 extensible deploy/publish/sync adapter framework** (interface + registry + Thunderstore/npm/GitHub adapters + per-project custom-target config + GitHub sync as first SyncAdapter) and **"Create with AI"** generative project setup — DEFERRED to its own future feature, out of this track (operator). Reclaims: **GitHub sync pulled earlier (into v1.5 with PM)**; Thunderstore/publishers + custom-target framework = v1.8 (no longer DEFER/DROP). The GAP-ANALYSIS §5 drop list is amended accordingly. (Owner-requested; builds on D-002/D-010/D-013/D-018; supersedes the GAP-ANALYSIS "publishers = DEFER/DROP" rows.)
+
+**Resolved (build):** the framework is fully BUILT — typed interfaces + registry (`server/adapters/{types,registry,catalog,builtins,contract}.ts`), Thunderstore/npm/GitHub-releases adapters, GitHub `SyncAdapter` + board sync (`server/sync/`), per-project custom targets + gated pipeline (`release/pipeline.ts`); GitHub sync shipped at v1.5, the framework at v1.8, hardened at v1.9. The only remaining open piece is the **separately-scoped Create-with-AI feature** (its own future feature, not part of this decision's resolution condition). 🟡 → 🔒.
 
 ---
 
@@ -531,12 +537,12 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 | D-004 | 🔒 | Configurable event-driven orchestration |
 | D-005 | 🔒 | Keep SvelteKit, trim pages/endpoints |
 | D-006 | 🔒 | Run SurrealDB as managed server binary (ws://) |
-| D-007 | 🟡 | Server backend: SurrealKV (rocksdb fallback) |
+| D-007 | 🔒 | Server backend: SurrealKV — confirmed in production provisioning + S0-proven (rocksdb documented fallback) |
 | D-008 | 🔒 | Designed-out v1 debt |
 | D-009 | 🔒 | SurrealDB 2.x syntax target |
 | D-010 | 🔒 | Claude Code config filesystem-authoritative, DB mirrors |
 | D-011 | 🔒 | Session orchestration (interject/stop/resume) |
-| D-012 | 🟡 | OpenClaw cannibalization audit (S.2) |
+| D-012 | 🔒 | OpenClaw dropped entirely (S.2 audit, GAP-ANALYSIS §5; empty salvage list) |
 | D-013 | 🔒 | Headless workflow runner |
 | D-014 | 🔒 | Embedding = Ollama qwen3-embedding:0.6b, 1024-dim (S0-proven) |
 | D-015 | 🔒 | Append-only / soft-archive for knowledge tables |
@@ -559,9 +565,9 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 | D-032 | 🔒 | Single SurrealDB stands (no polyglot); authored skills already files (D-010) |
 | D-033 | 🔒 | Design skills seed + gate UI-SPEC (superseded by D-034 for values) |
 | D-034 | 🔒 | Design system delivered (teal/Lastik) + font-license constraints |
-| D-035 | 🟡 | Inter-session comms (claude-peers): channel-interject now; fleet bus deferred v0.2 |
-| D-036 | 🟡 | Per-task capability provisioning — auto-compose skills/agents/MCP into driven sessions (v1.1) |
-| D-037 | 🟡 | Extensible deploy/publish/sync adapter framework (Thunderstore/npm/GitHub + custom per-project; v1.8). Create-with-AI deferred to its own future feature |
+| D-035 | 🟡 | Inter-session comms (claude-peers): channel-interject built; fleet bus re-targeted post-v1.9 backlog |
+| D-036 | 🔒 | Per-task capability provisioning — built at v1.1 task 5.1, live-wired at gap-closure v1.3 |
+| D-037 | 🔒 | Extensible deploy/publish/sync adapter framework — built v1.5/v1.8, hardened v1.9; Create-with-AI separately scoped |
 | D-038 | 🔒 | Definition of Done — every feature: complete · fully tested · design-system standard · live-functional · purposeful · honest |
 
 > **Provenance:** **D-006–D-008 (in part)** and **D-014–D-023** are **KongCode-informed** — derived from studying KongCode v0.7.113 (`C:/Users/11sos/.claude/plugins/cache/kongcode-marketplace/kongcode/0.7.113/`), a production SurrealDB knowledge-graph + Claude Code harness (D-006 server-binary path is the biggest borrow; D-007 SurrealKV, D-008 dedup correction). ARCHITECTURE §9 "Lessons from KongCode" is the authoritative map. **D-024–D-026** are **security hardening surfaced by the pre-commit audit**. **D-027–D-033** (and the D-014 `qwen3-embedding:0.6b` embedding candidate) are sourced from the **cannibalize foundry** (`docs/CANNIBALIZE-BRIEF.md`) — distilled from **hermes-agent** (Nous Research, MIT), **mem0** (Apache-2.0), and **kongcode** (friend's plugin — ideas fine, code-lift needs consent). Each is a **candidate with provenance, to be verified against v2 constraints before build** — not a mandate. The three originally-OPEN items were **resolved by the owner 2026-06-06**: D-030 (utilization loop → ranking only, not pruning), D-031 (diversity → both novelty gate + consolidation), D-032 (single SurrealDB stands — reaffirms D-001; authored skills are already files per D-010). No locked decision was overridden. **D-034** is operator-authored (the delivered design system), not foundry-sourced; it supersedes the D-033 seed for concrete values and adds the Lastik font-license constraints. **Phase-0 spikes (2026-06-07)** resolved **D-014** (→ qwen3-embedding:0.6b, 1024-dim, S0-proven) and the **D-002** mechanism (SDK primary; CLI needs isolated config — S1). **D-035** folds **claude-peers-mcp** (operator's own tool): adopt the `claude/channel` interject now (D-011), defer the fleet message bus to v0.2.

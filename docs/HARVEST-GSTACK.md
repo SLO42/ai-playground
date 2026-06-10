@@ -80,6 +80,12 @@ The harvested role methodologies don't stay as inline prompt text — they gradu
 
 **Sequence within the plan**: Lane A inlines the methodologies as prompt text first (immediate value); **v2.1 promotes them to catalog roles + PM integration** (PM-SPEC amendment alongside Lane C); wave reviewer lenses then reference catalog roles instead of inlined text (single source).
 
+**D6 — Track records (operator-approved 2026-06-10, builds v2.1):** per-role rollup over data we ALREADY write — review verdicts, adversarial refutation outcomes, fix-loop rates caused, A1 calibration events, cost per certified feature. Surfaced on /agents (role card) + PM dashboard. The PM's §4 panel composition selects validators by **role fit + track record**, not role fit alone. No new collection — a rollup + UI.
+
+**D7 — Role interviews / calibration gauntlet (operator-approved 2026-06-10, builds v2.1):** a role VERSION joins the workforce only after passing a gauntlet of golden tasks with planted, known defects (seeded vuln for `security-officer`, planted absence-defect + hallucination bait for `code-reviewer`, contrast/slop plants for `design-reviewer`, …). Prompt cores are VERSIONED; any revision re-interviews before deployment — gate integrity stops depending on prompts never changing. Gauntlet fixtures live with the catalog; results recorded like any review verdict (F-008: pass/fail with evidence, never vibes). This is the leak-harness positive-control principle applied to the workforce itself.
+
+**Held for a future WORKFORCE-SPEC (after v2.1 has real track-record data):** performance-review loop (PM proposes prompt-core revisions, new version interviews against the incumbent's record, operator gates the swap) · per-project staffing (`project_staff` shape mirroring `project_target`; PM proposes staffing from incident/finding history) · tier-aware hiring (cost-vs-quality per role feeding D-020 routing).
+
 ## Sequencing
 
 1. **Resume + finish wave 14.4–14.7** — RESUMED 2026-06-10 (`wf_4cc0b816-4f2`).

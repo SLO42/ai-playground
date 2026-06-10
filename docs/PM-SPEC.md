@@ -28,7 +28,7 @@ Charter is injected into every PM session/review as fenced context (D-008/D-026)
 The PM **auto-creates** tasks/priorities/escalations — but nothing it creates is born actionable:
 
 1. Every PM-created artifact MUST carry: **objective** (clear, single), **purpose** (why this, why now — ties to plan/charter/finding), **full spec** (acceptance criteria a build agent could execute against), and provenance (which trigger/evidence produced it). Schema-enforced fields, not prose convention.
-2. PM-created tasks enter status **`proposed`** and are routed to a **validation panel: 1–2 independent validator agents** that judge purpose/spec/duplication/feasibility against the project plan + charter, then **approve → `ready`** or **push back → returned to the PM with reasons** (the PM revises or withdraws; pushback reasons become PM memory — the PM learns its team's bar).
+2. PM-created tasks enter status **`proposed`** and are routed to a **validation panel: 1–2 independent validator agents** that judge purpose/spec/duplication/feasibility against the project plan + charter, then **approve → `ready`** or **push back → returned to the PM with reasons** (the PM revises or withdraws; pushback reasons become PM memory — the PM learns its team's bar). **Panel composition is role-aware (HARVEST-GSTACK Lane D): validators are drawn from the role catalog by role fit to the artifact under review + TRACK RECORD** (per-role rollup of verdicts, refutation outcomes, calibration events, fix-loop rates — Lane D D6) — never just role name.
 3. Panel verdicts are recorded (validator id, verdict, reasons) — same build→independent-review ethos as D-038, applied to management artifacts.
 4. External/destructive actions (anything beyond creating proposed work) still hit the D-018/D-024 gates. Escalations to the operator go via the notification system per charter rules.
 
@@ -42,10 +42,18 @@ The PM **summarizes, links to tasks, flags risk areas, and proposes spawning a r
 - Strictly per-project (existing `WHERE project = $project` discipline). No cross-project PM reads.
 - All PM sessions route through the existing launch path (capabilities, gates, analytics events — analytics is first-class).
 
-## 7. Build shape (wave v2.1 — after the v2.0 audits settle)
+## 7. Role workforce integration (HARVEST-GSTACK Lane D — builds with v2.1)
+
+- **Catalog roles**: five harvest-derived roles (`security-officer`, `code-reviewer`, `qa-lead`, `design-reviewer`, `investigator`) live in the D-036 capability catalog — prompt core (versioned) + capability bundle + default tier. Roles run as ordinary sessions (routed/gated/transcribed/evented).
+- **Track records (Lane D D6)**: per-role rollup of review verdicts, refutation outcomes, A1 calibration events, fix-loop rates, cost per certified outcome — surfaced on /agents + the PM dashboard; consumed by §4 panel composition and the PM's "hire <role>" proposals.
+- **Role interviews (Lane D D7)**: a role version is deployable only after passing its calibration gauntlet (golden tasks with planted defects); ANY prompt-core revision re-interviews before it touches real work. Results recorded with evidence (F-008).
+- The PM's §5 "proposes spawning a reviewer agent" = proposes hiring `code-reviewer` from the catalog; staffing/performance-review/tier-aware-hiring evolutions are HELD for a future WORKFORCE-SPEC once track records carry real data.
+
+## 8. Build shape (wave v2.1 — after the v2.0 audits settle)
 
 1. `pm` table + hire flow + charter editor (extend PM tab)
 2. Trigger engine: per-project cron+offset + the four event hooks (reuse orchestrator bus)
 3. Proposed-task pipeline: schema fields + validation panel runner + PM revise loop
 4. GitHub issue/PR triage via SyncAdapter events
-5. Each feature: BUILD → independent D-038 DoD-review (v2-wave template)
+5. **Lane D workforce: catalog roles + track-record rollup + interview gauntlet + role-aware panel composition (§7)**
+6. Each feature: BUILD → independent D-038 DoD-review (v2-wave template)

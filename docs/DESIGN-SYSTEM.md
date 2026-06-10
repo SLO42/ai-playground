@@ -73,8 +73,9 @@ Maps onto UI-SPEC §4's status-enum→role table 1:1 (task/session/service/relea
 
 ## 4. Typography
 
-- **`--font-sans`: Lastik** (self-hosted brand, weights 100–900) → `ui-sans-serif, system-ui, …` fallback.
-- **`--font-mono`: JetBrains Mono** (Google/OFL) → `ui-monospace, SF Mono, …`. **Mono is first-class** — ids, paths, costs, durations, transcripts, SurrealQL, numerics (`.mono`, `.tnum` tabular-nums).
+- **🔒 Mono-body rule (operator, 2026-06-10): ALL text that is not a header/title is MONOSPACE.** Body, labels, controls, tables, data, transcripts — everything reads in `--font-mono`. The display face is reserved for headings/titles/brand only.
+- **`--font-display` (was the body role of `--font-sans`): Lastik** (self-hosted brand, weights 100–900) → `ui-sans-serif, system-ui, …` fallback. **Headings/titles/brand ONLY** (h1–h6, page/card/modal titles, logo).
+- **`--font-mono`: JetBrains Mono** (Google/OFL) → `ui-monospace, SF Mono, …`. **Default body face** — body text, labels, buttons, inputs, ids, paths, costs, durations, transcripts, SurrealQL, numerics (`.tnum` tabular-nums for metrics). Tune size/line-height/tracking where mono runs wide on dense surfaces.
 - **Scale** (role-named, desktop-dense): 2xs 11 · xs 12 · sm 13 · **base 14 (default)** · md 16 · lg 18 · xl 22 · 2xl 28 · 3xl 36 · 4xl 48 px.
 - **Line-height** tight 1.2 / snug 1.35 / normal 1.5 / relaxed 1.65. **Weights** 400/500/600/700. **Tracking** tight −0.01 / wide 0.02 / caps 0.08em.
 - **Semantic type**: `--type-display/h1/h2/h3/body/body-sm/label/mono/mono-sm`. Shared primitives: `.eyebrow` (uppercase micro-label), `.mono`, `.tnum`.

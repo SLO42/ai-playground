@@ -7,9 +7,11 @@ import { runPublisherContract, runDeployContract } from './contract';
 import {
 	NpmPublisherAdapter,
 	ThunderstorePublisherAdapter,
+	GitHubReleasesPublisherAdapter,
 	StaticHostDeployTarget
 } from './builtins';
 import { getAdapterRegistry, resetAdapterRegistry } from './index';
+import type { GitHubClient, AuthStatus } from '../sync/gh-client';
 
 // TASK 12.1 VERIFY — the contract harness (used by 12.2/12.3) + the built-in adapters. Each
 // built-in must PASS the contract: probe never throws, dry-run is non-mutating + honest, the
@@ -100,6 +102,32 @@ describe('thunderstore publisher — contract', () => {
 	});
 });
 
+describe('github-releases publisher — contract', () => {
+	it('passes the publisher contract (fake gh client, no network/creds)', async () => {
+		// A fake gh client — unauthenticated + a resolvable repo, so probe is dry-run-capable.
+		const fake: GitHubClient = {
+			async isAuthenticated(): Promise<AuthStatus> {
+				return { ok: false, reason: 'GitHub CLI is not authenticated' };
+			},
+			async resolveRepo() {
+				return 'acme/widget';
+			},
+			async listIssues() {
+				return [];
+			},
+			async createIssue() {
+				throw new Error('not used');
+			},
+			async updateIssue() {}
+		};
+		const report = await runPublisherContract(new GitHubReleasesPublisherAdapter(fake), {
+			cwd: tsDir // any dir works; config.repo not needed since resolveRepo returns one
+		});
+		expect(report.violations, JSON.stringify(report.violations)).toHaveLength(0);
+		expect(report.ok).toBe(true);
+	});
+});
+
 describe('static-host deploy target — contract', () => {
 	it('passes the deploy contract', async () => {
 		const report = await runDeployContract(new StaticHostDeployTarget(), {
@@ -124,6 +152,7 @@ describe('registry singleton', () => {
 		const reg = getAdapterRegistry();
 		expect(reg.getPublisher('npm').id).toBe('npm');
 		expect(reg.getPublisher('thunderstore').id).toBe('thunderstore');
+		expect(reg.getPublisher('github-releases').id).toBe('github-releases');
 		expect(reg.getDeployer('static-host').id).toBe('static-host');
 		expect(reg.has('publish', 'npm')).toBe(true);
 		expect(reg.has('publish', 'nope')).toBe(false);

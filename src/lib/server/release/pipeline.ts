@@ -261,6 +261,22 @@ const CHANGELOG_STEP_INDEX = RELEASE_STAGES.indexOf('changelog');
  * coerced to a sortable string only in the ORDER BY at the DB (F-013) — we never read it here.
  */
 export async function getReleaseChangelogHtml(db: Db, runId: string): Promise<string> {
+	return renderMarkdown(await getReleaseChangelogMarkdown(db, runId));
+}
+
+/**
+ * Read the REAL generated changelog for one release run as RAW Markdown (the single source
+ * `getReleaseChangelogHtml` renders, and the TASK 12.3 GitHub-releases PublisherAdapter reuses
+ * for the release BODY — REUSE, not a duplicate). Returns '' when there is no changelog session
+ * yet or it produced no assistant text (honest empty — never fabricated). The HTML render
+ * (`renderMarkdown`, sanitized at the boundary) is layered ON TOP of this by the HTML caller;
+ * a non-HTML caller (the GitHub release-body, which wants Markdown) uses this directly.
+ *
+ * Boundary discipline (D-016): the run id flows through assertRecordId → StringRecordId; no
+ * value is interpolated. SurrealDB 2.x datetime fields are non-POJO, so the ORDER BY sorts at
+ * the DB and we never coerce a datetime in JS (F-013).
+ */
+export async function getReleaseChangelogMarkdown(db: Db, runId: string): Promise<string> {
 	const rid = new StringRecordId(assertRecordId(runId));
 	// The step sessions for this run, oldest first (matches getWorkflowRunDetail's mapping).
 	// `started_at` MUST appear in the projection to be used in ORDER BY (SurrealDB 2.x, the 6.9
@@ -281,11 +297,10 @@ export async function getReleaseChangelogHtml(db: Db, runId: string): Promise<st
 		  ORDER BY at ASC;`,
 		{ sid }
 	);
-	const raw = (msgRows ?? [])
+	return (msgRows ?? [])
 		.map((m) => m.content)
 		.filter((c) => typeof c === 'string' && c.trim() !== '')
 		.join('\n\n');
-	return renderMarkdown(raw);
 }
 
 /**

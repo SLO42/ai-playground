@@ -14,6 +14,7 @@ export * from './contract';
 export {
 	NpmPublisherAdapter,
 	ThunderstorePublisherAdapter,
+	GitHubReleasesPublisherAdapter,
 	StaticHostDeployTarget
 } from './builtins';
 export {
@@ -28,6 +29,7 @@ import { AdapterRegistry } from './registry';
 import {
 	NpmPublisherAdapter,
 	ThunderstorePublisherAdapter,
+	GitHubReleasesPublisherAdapter,
 	StaticHostDeployTarget
 } from './builtins';
 
@@ -39,6 +41,7 @@ export function getAdapterRegistry(): AdapterRegistry {
 		registry = new AdapterRegistry();
 		registry.register(new NpmPublisherAdapter());
 		registry.register(new ThunderstorePublisherAdapter());
+		registry.register(new GitHubReleasesPublisherAdapter());
 		registry.register(new StaticHostDeployTarget());
 	}
 	return registry;

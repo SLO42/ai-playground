@@ -12,6 +12,7 @@ export {
 	resolvePublishTarget,
 	listReleaseRuns,
 	getReleaseChangelogHtml,
+	getReleaseChangelogMarkdown,
 	type ReleaseStage,
 	type BuildReleaseStepsInput,
 	type CreateReleaseWorkflowInput,

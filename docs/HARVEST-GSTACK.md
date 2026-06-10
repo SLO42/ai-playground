@@ -55,7 +55,8 @@
 | B4 | **RE-SCOPED (G4):** verify/implement MEMORY-SPEC §3.1b where code lags spec (pre-embed secret/PII screen, `screen_status`, recall exclusion, embedding-cache closure) + **the positive-control leak harness** (every fail-closed gate test gets a deliberate-leak control — the genuinely new part). Any never-partial-redaction change = explicit D-026 supersede decision, NOT a wave task | MEMORY-SPEC already specs the screen; audit's "nothing scans today" was spec-vs-code lag |
 | B5 | **RE-SCOPED (G4):** MEMORY-SPEC §7/§10 already mandate the untrusted-content fence + recall circuit breaker — harvest only the **2s wall-clock recall budget** + honest "(memory unavailable)" briefing wording | Verify code matches spec while there |
 | B6 | **Memory quarantine** — EXTENDS the existing `screen_status`/§5.4 graduation lifecycle for agent-authored rows (no parallel trust field) | Recall-filtered until validated |
-| B7 | **Capability-gated guidance** — round-trip-verify a tool before a briefing advertises it; actively REMOVE stale guidance | D-036 integration. *Note: a mid-session recall pull-tool is NOT in the audit — separate decision (it changes the D-026 injection surface); proposed independently, operator to rule* |
+| B7 | **Capability-gated guidance** — round-trip-verify a tool before a briefing advertises it; actively REMOVE stale guidance | D-036 integration; gates B10's advertisement |
+| B10 | **Memory pull-tool (operator-approved 2026-06-10)** — mid-session recall: a tiny MCP stdio server shipped with Atelier, registered in the session's ISOLATED CC config (the gbrain `claude mcp add` mechanism), proxying to the loopback memory API under the D-025 boot token. Push briefings + pull search. RAILS: advertised only per capability bundle (D-036) AND only after B7's round-trip verify; results wrapped in the MEMORY-SPEC §10 untrusted-content envelope (recall = data, never instructions — D-026 injection surface preserved); recall query wall-clock-bounded (B5's budget); project-scoped like all memory reads | v2.2b, paired with B7 |
 | B8 | **Baseline-relative verification** — console/perf/bundle baselines persisted; reviewers judge DELTAS vs baseline | End-gate + DoD #4 |
 
 ## Lane C — absorbed into already-planned waves (spec amendments only now)
@@ -67,14 +68,26 @@
 | AskUserQuestion decision-brief format (completeness score + dual effort label) | PM-SPEC PM-question format |
 | Anti-sycophancy banned-phrase/falsifier list → CREATE-SPEC; **full Six-Forcing-Questions interview → PM charter/hire interview ONLY** (CREATE-SPEC §2.1's "must not interrogate" rail wins — G4) | CREATE-SPEC + PM-SPEC §1 |
 
+## Lane D — role workforce (operator-approved 2026-06-10): harvested methodologies become hireable agents
+
+The harvested role methodologies don't stay as inline prompt text — they graduate into **catalog roles** the platform can hire, completing the D-036 capability story:
+
+1. **Role = catalog entry**: prompt core (the harvested, G-guarded methodology) + capability bundle (D-036: skills/tools the role needs, nothing more) + default model tier. Stored in the existing agent/capability catalog (5.1/7.3) — surfaced on /agents (which currently shows 1 lonely cc_agent).
+2. **Launch roles (five, all harvest-derived)**: `security-officer` (A8 methodology), `code-reviewer` (A1/A2/A15), `qa-lead` (A6), `design-reviewer` (A9), `investigator` (A10).
+3. **Consumers**: wave review panels compose role lenses instead of one generalist reviewer; the PM's D-039 validation panel draws its 1–2 validators from roles; PM PR-triage "proposes a reviewer" = proposes spawning `code-reviewer` (already in PM-SPEC §5); the periodic security-review wave runs `security-officer`; debug sessions get `investigator`.
+4. **Communication layer — no new machinery**: roles run as ordinary Atelier sessions — routed (D-020), gated (D-018), transcribed, analytics-evented, surfaced in the fleet/RightTray like every other agent. "Adding them to the workforce" is catalog rows + consumers, not a new runtime.
+5. **PM utilizes them**: PM-SPEC §4 panel composition becomes role-aware (the PM picks validators by role fit to the artifact under review); PM proposals can include "hire <role> for X" — validated like any other PM-created work (D-039).
+
+**Sequence within the plan**: Lane A inlines the methodologies as prompt text first (immediate value); **v2.1 promotes them to catalog roles + PM integration** (PM-SPEC amendment alongside Lane C); wave reviewer lenses then reference catalog roles instead of inlined text (single source).
+
 ## Sequencing
 
-1. **Resume + finish wave 14.4–14.7** (paused, `wf_4cc0b816-4f2`) — template must not change under a cached run.
+1. **Resume + finish wave 14.4–14.7** — RESUMED 2026-06-10 (`wf_4cc0b816-4f2`).
 2. **Lane A-docs batch** → independent review (it edits the review system; review mandatory).
 3. **Lane A-code batch** (A4/A7 wave-script logic) → reviewed as code.
-4. **Lane C spec amendments** — PM-SPEC/CREATE-SPEC edits, built with v2.1.
-5. **Wave v2.2a** (B1/B3/B9 — may run before or after v2.1 at operator's preference; recommended before, it protects v2.1's build).
-6. **v2.1 PM build** → then **wave v2.2b** (B2, B4–B8).
+4. **Lane C + Lane D spec amendments** — PM-SPEC (incl. role-aware panels) + CREATE-SPEC edits.
+5. **Wave v2.2a** (B1/B3/B9) — **OPERATOR-CONFIRMED: before v2.1** (protects v2.1's build).
+6. **v2.1 PM build** (incl. Lane D catalog roles + PM integration) → then **wave v2.2b** (B2, B4–B8, B10).
 
 ## Rails
 

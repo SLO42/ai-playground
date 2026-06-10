@@ -14,6 +14,7 @@
 //      unknown event) the response is the empty/continue object `{}`, so the session
 //      proceeds. No safety decision rides this best-effort path.
 
+import { timingSafeEqual } from 'node:crypto';
 import { isLoopbackHost } from '../config/loopback';
 import { normalizeHookEvent, isHookEvent, type HookEvent, type HookAgentEvent } from './proxy-config';
 
@@ -41,17 +42,37 @@ function bareHost(hostHeader: string): string {
 }
 
 /**
+ * Constant-time token check (TASK 13.5 finding 4 — the docstring claimed constant-ish but
+ * the compare was a plain `!==`). Length-guarded `crypto.timingSafeEqual`, matching the
+ * channel.ts tokenMatches pattern exactly: a length mismatch is an immediate non-match
+ * (timingSafeEqual throws on unequal lengths) and any throw is treated as a non-match,
+ * never surfaced to the caller.
+ */
+function tokenMatches(presented: string | undefined, serverToken: string): boolean {
+	if (!presented) return false;
+	const a = Buffer.from(presented);
+	const b = Buffer.from(serverToken);
+	if (a.length !== b.length) return false;
+	try {
+		return timingSafeEqual(a, b);
+	} catch {
+		return false;
+	}
+}
+
+/**
  * D-025 control-plane auth: the request MUST bear the per-boot token AND originate
  * from loopback. Fails CLOSED when no server token is configured (we cannot
- * authenticate → deny). A constant-ish token compare is used (length-guarded);
- * the token is high-entropy per-boot, so this is sufficient against forgery.
+ * authenticate → deny). The token compare is constant-time (length-guarded
+ * crypto.timingSafeEqual — same as channel.ts), so a forged token can never be
+ * narrowed byte-by-byte via timing.
  */
 export function authorizeHookRequest(headers: Headers, env: HookIngestEnv): AuthResult {
 	const serverToken = env.HOOK_TOKEN?.trim();
 	if (!serverToken) return { ok: false, reason: 'no server token configured (fail-closed)' };
 
 	const presented = headers.get('x-hook-token')?.trim();
-	if (!presented || presented !== serverToken) return { ok: false, reason: 'bad or missing token' };
+	if (!tokenMatches(presented, serverToken)) return { ok: false, reason: 'bad or missing token' };
 
 	// Host must be loopback (defeats DNS-rebind: a rebind hits a non-loopback Host).
 	const host = headers.get('host');

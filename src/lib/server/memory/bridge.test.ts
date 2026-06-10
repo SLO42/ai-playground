@@ -223,3 +223,19 @@ describe('§2.6 VERIFY — graph traversal returns LINKED ENTITIES from imported
 		expect(contents.some((c) => c.includes('routing'))).toBe(true);
 	});
 });
+
+// TASK 13.5 finding 3 — the derived edge id is INTERPOLATED into SurrealQL (SELECT/RELATE),
+// so it must flow through the D-016 chokepoint (assertRecordId) like every other interpolated
+// record id. Behaviorally indistinguishable (the digest id always validates), so this is a
+// source-level audit in the style of watched-tables.test.ts: it FAILS if the chokepoint call
+// is removed from the interpolation site.
+describe('relateUnique — D-016 chokepoint on the interpolated edge id (13.5 finding 3)', () => {
+	it('passes edgeId() output through assertRecordId before interpolation', async () => {
+		const { readFileSync } = await import('node:fs');
+		const { fileURLToPath } = await import('node:url');
+		const src = readFileSync(fileURLToPath(new URL('./bridge.ts', import.meta.url)), 'utf8');
+		expect(src).toMatch(/assertRecordId\(edgeId\(/);
+		// The unguarded form must not come back.
+		expect(src).not.toMatch(/const eid = edgeId\(/);
+	});
+});

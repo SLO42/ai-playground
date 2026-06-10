@@ -267,3 +267,17 @@ describe('v1-stores — filesystem edge reads a real node:sqlite memory.db', () 
 		}
 	});
 });
+
+// TASK 13.5 finding 3 — mirror of the bridge.ts audit: the derived graph edge id is
+// interpolated into SurrealQL, so it must pass the D-016 chokepoint (assertRecordId).
+// Source-level audit (the digest id always validates, so behavior cannot distinguish);
+// FAILS if the chokepoint call is removed from the interpolation site.
+describe('relateUnique — D-016 chokepoint on the interpolated edge id (13.5 finding 3)', () => {
+	it('passes graphEdgeId() output through assertRecordId before interpolation', async () => {
+		const { readFileSync } = await import('node:fs');
+		const { fileURLToPath } = await import('node:url');
+		const src = readFileSync(fileURLToPath(new URL('./v1-stores.ts', import.meta.url)), 'utf8');
+		expect(src).toMatch(/assertRecordId\(graphEdgeId\(/);
+		expect(src).not.toMatch(/const eid = graphEdgeId\(/);
+	});
+});

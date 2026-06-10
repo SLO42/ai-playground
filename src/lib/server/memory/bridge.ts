@@ -283,7 +283,9 @@ async function findMemoryByKey(db: Db, namespace: string, key: string): Promise<
 async function relateUnique(db: Db, from: string, to: string, kind: string): Promise<boolean> {
 	const f = assertRecordId(from);
 	const t = assertRecordId(to);
-	const eid = edgeId(from, to, kind);
+	// The edge id is interpolated below, so it MUST pass the D-016 chokepoint like every
+	// other interpolated record id (TASK 13.5 finding 3) — derived-or-not, no exceptions.
+	const eid = assertRecordId(edgeId(from, to, kind));
 	// Existence check on the deterministic edge id (idempotency without relying on a UNIQUE
 	// over an edge RELATION, which SurrealDB does not support directly).
 	const [existing] = await db.query<[Array<{ id: unknown }>]>(`SELECT id FROM ${eid};`);

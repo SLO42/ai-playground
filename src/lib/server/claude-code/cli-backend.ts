@@ -20,6 +20,7 @@ import { writeFileSync, readFileSync, rmSync, mkdtempSync, mkdirSync, existsSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
+import { killPid } from '../services/proc';
 import type {
 	CcBackend,
 	CcBackendRun,
@@ -145,6 +146,38 @@ function seedHookTrust(configDir: string, cwd: string): void {
 		// Best-effort (D-019): if we cannot seed trust the session still runs — hooks just stay
 		// off (analytics-only, never a gate), exactly as a down ingest server would behave.
 	}
+}
+
+// ── Windows-safe TREE kill + the live-children registry (TASK 13.5 findings 6+8) ─────────
+//
+// `child.kill()` sends ONE SIGTERM to the direct child — on Windows that leaves the
+// claude.exe process TREE alive (F-002), exactly the orphan storm F-014 documented.
+// services/proc.killPid is the existing Windows-safe primitive (`taskkill /F /PID <pid> /T`;
+// SIGTERM on POSIX) — reuse it for the run timeout, cancel(), and process shutdown.
+
+/** Every live claude child this process has spawned — drained by killAllClaudeChildren()
+ *  at process shutdown (hooks.server.ts SIGTERM/SIGINT teardown, finding 6). */
+const liveChildren = new Set<ChildProcessWithoutNullStreams>();
+
+/** Tree-kill ONE claude child, Windows-safe (taskkill /T via services/proc). Idempotent /
+ *  best-effort: an already-dead child is a no-op. Exported for the 13.5 regression tests. */
+export async function treeKillChild(child: ChildProcessWithoutNullStreams): Promise<void> {
+	if (child.pid != null && child.exitCode === null) {
+		await killPid(child.pid); // taskkill /F /T on Windows; SIGTERM on POSIX (never throws)
+	} else {
+		child.kill(); // no pid (spawn failed) — best-effort direct signal
+	}
+}
+
+/**
+ * Tree-kill EVERY live claude child this process spawned (the shutdown teardown's child
+ * sweep, finding 6). Returns how many children were swept. Safe to call repeatedly.
+ */
+export async function killAllClaudeChildren(): Promise<number> {
+	const children = [...liveChildren];
+	liveChildren.clear();
+	await Promise.all(children.map((c) => treeKillChild(c).catch(() => {})));
+	return children.length;
 }
 
 export interface CliBackendOptions {
@@ -285,6 +318,10 @@ export class ClaudeCliBackend implements CcBackend {
 			windowsHide: true
 		}) as ChildProcessWithoutNullStreams;
 		this.procs.set(plan.agentId, child);
+		// Track for the process-shutdown sweep (finding 6): every spawned claude child is
+		// tree-killed by killAllClaudeChildren() if the server goes down while it runs.
+		liveChildren.add(child);
+		child.once('close', () => liveChildren.delete(child));
 
 		const opts = this.opts;
 		const procs = this.procs;
@@ -294,7 +331,9 @@ export class ClaudeCliBackend implements CcBackend {
 		let reportedCc = '';
 
 		async function* stream(): AsyncIterable<RuntimeEvent> {
-			const timer = setTimeout(() => child.kill(), opts.timeoutMs);
+			// Timeout = Windows-safe TREE kill (finding 8/F-002): child.kill() alone leaves
+			// the claude.exe subtree alive on Windows — the documented orphan storm.
+			const timer = setTimeout(() => void treeKillChild(child), opts.timeoutMs);
 			const rl = createInterface({ input: child.stdout });
 			let stderr = '';
 			child.stderr.on('data', (d) => {
@@ -333,7 +372,8 @@ export class ClaudeCliBackend implements CcBackend {
 			},
 			stream,
 			async cancel() {
-				child.kill();
+				// Windows-safe TREE kill (finding 8/F-002) — same primitive as the timeout path.
+				await treeKillChild(child);
 			}
 		} as CcBackendRun;
 	}

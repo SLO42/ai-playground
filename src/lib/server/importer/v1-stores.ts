@@ -334,7 +334,9 @@ async function relateUnique(
 ): Promise<boolean> {
 	const f = assertRecordId(from);
 	const t = assertRecordId(to);
-	const eid = graphEdgeId(from, to, kind);
+	// Interpolated edge id ⇒ through the D-016 chokepoint (TASK 13.5 finding 3), exactly
+	// like the endpoints — a derived id is not exempt from the boundary rule.
+	const eid = assertRecordId(graphEdgeId(from, to, kind));
 	const [existing] = await db.query<[Array<{ id: unknown }>]>(`SELECT id FROM ${eid};`);
 	if (existing.length) return false;
 	// weight is optional<float> with a DEFAULT — OMIT when absent (option<T> rejects NULL §6.1).

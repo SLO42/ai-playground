@@ -25,7 +25,13 @@ import {
 	type ConfigKind
 } from '$lib/server/cc-config';
 import { listFleetAcrossProjects, type FleetSessionXP } from '$lib/server/analytics';
-import { resolveConfigTarget, ConfigTargetError } from './config-target';
+import type { Db } from '$lib/server/db/client';
+import {
+	resolveConfigTargetFromCatalog,
+	ConfigTargetError,
+	type AllowedScope,
+	type ResolvedTarget
+} from './config-target';
 import type { Actions, PageServerLoad } from './$types';
 
 /** The config kinds the editor accepts (validated at the boundary, D-016). */
@@ -106,32 +112,60 @@ export const load: PageServerLoad = async ({ depends }) => {
 	}
 };
 
-/** Resolve the edit target from form fields, validating the kind at the boundary (D-016). */
-function targetFromForm(form: FormData):
-	| { ok: true; kind: ConfigKind; claudeDir: string; filePath: string; scope: ReturnType<typeof resolveConfigTarget>['scope'] }
-	| { ok: false; error: string } {
+/**
+ * The server-side allow-list of edit scopes (TASK 13.5 finding 1): the cc_scope catalog —
+ * the SAME rows the loader renders — read fresh per action. The form's claudeDir is only a
+ * lookup key into this set; kind/project of the matched scope come from the catalog row,
+ * never the request. A claudeDir not in the catalog fails CLOSED (honest 400).
+ */
+async function allowedScopes(db: Db): Promise<AllowedScope[]> {
+	const [rows] = await db.query<[Array<{ kind: unknown; path: unknown; project: unknown }>]>(
+		`SELECT kind, path, project FROM cc_scope;`
+	);
+	const out: AllowedScope[] = [];
+	for (const r of rows) {
+		const kind = r.kind === 'global' ? 'global' : r.kind === 'project' ? 'project' : null;
+		if (!kind || typeof r.path !== 'string' || !r.path) continue;
+		out.push({ kind, path: r.path, ...(r.project != null ? { project: String(r.project) } : {}) });
+	}
+	return out;
+}
+
+/** Resolve the edit target from form fields, validating the kind at the boundary (D-016)
+ *  and the confinement anchor against the SERVER-SIDE catalog (D-018; TASK 13.5). */
+async function targetFromForm(
+	db: Db,
+	form: FormData
+): Promise<
+	| { ok: true; kind: ConfigKind; claudeDir: string; filePath: string; scope: ResolvedTarget['scope'] }
+	| { ok: false; status: number; error: string }
+> {
 	const kindRaw = form.get('kind');
-	if (!isConfigKind(kindRaw)) return { ok: false, error: 'invalid config kind' };
+	if (!isConfigKind(kindRaw)) return { ok: false, status: 400, error: 'invalid config kind' };
 	const claudeDir = typeof form.get('claudeDir') === 'string' ? String(form.get('claudeDir')).trim() : '';
-	if (!claudeDir) return { ok: false, error: 'missing scope path' };
-	const scopeKindRaw = form.get('scopeKind');
-	const scopeKind = scopeKindRaw === 'global' ? 'global' : 'project';
-	const project = typeof form.get('project') === 'string' ? String(form.get('project')).trim() : '';
+	if (!claudeDir) return { ok: false, status: 400, error: 'missing scope path' };
 	const explicitPath = typeof form.get('filePath') === 'string' ? String(form.get('filePath')).trim() : '';
+
+	let scopes: AllowedScope[];
 	try {
-		const resolved = resolveConfigTarget({
+		scopes = await allowedScopes(db);
+	} catch (err) {
+		// Could not read the allow-list ⇒ we cannot authorize the anchor ⇒ fail closed.
+		return { ok: false, status: 503, error: `config catalog unavailable — retry: ${(err as Error).message}` };
+	}
+
+	try {
+		const resolved = resolveConfigTargetFromCatalog(scopes, {
 			kind: kindRaw,
 			claudeDir,
-			scopeKind,
-			...(project ? { project } : {}),
 			...(explicitPath ? { explicitPath } : {})
 		});
 		// Echo claudeDir back so the page can match the shared editor panel to ITS scope card
 		// even on a native (non-enhanced) submit, where client state is reset.
 		return { ok: true, kind: resolved.kind, claudeDir, filePath: resolved.filePath, scope: resolved.scope };
 	} catch (err) {
-		if (err instanceof ConfigTargetError) return { ok: false, error: err.message };
-		return { ok: false, error: (err as Error).message };
+		if (err instanceof ConfigTargetError) return { ok: false, status: 400, error: err.message };
+		return { ok: false, status: 400, error: (err as Error).message };
 	}
 }
 
@@ -143,8 +177,12 @@ export const actions: Actions = {
 	 */
 	loadFile: async ({ request }) => {
 		const form = await request.formData();
-		const t = targetFromForm(form);
-		if (!t.ok) return fail(400, { edit: { error: t.error } });
+		// The catalog allow-list lives in the DB (13.5 finding 1): without it we cannot
+		// authorize the scope anchor, so the editor honestly refuses (fail closed).
+		const db = tryGetDb();
+		if (!db) return fail(503, { edit: { error: 'Database not connected — start SurrealDB and retry.' } });
+		const t = await targetFromForm(db, form);
+		if (!t.ok) return fail(t.status, { edit: { error: t.error } });
 		let content = '';
 		try {
 			content = readFileSync(t.filePath, 'utf8');
@@ -164,8 +202,10 @@ export const actions: Actions = {
 	 */
 	planEdit: async ({ request }) => {
 		const form = await request.formData();
-		const t = targetFromForm(form);
-		if (!t.ok) return fail(400, { edit: { error: t.error } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { edit: { error: 'Database not connected — start SurrealDB and retry.' } });
+		const t = await targetFromForm(db, form);
+		if (!t.ok) return fail(t.status, { edit: { error: t.error } });
 		const content = typeof form.get('content') === 'string' ? String(form.get('content')) : '';
 		const plan = planEdit({ kind: t.kind, filePath: t.filePath, content });
 		return {
@@ -191,14 +231,13 @@ export const actions: Actions = {
 	 */
 	applyEdit: async ({ request }) => {
 		const form = await request.formData();
-		const t = targetFromForm(form);
-		if (!t.ok) return fail(400, { edit: { error: t.error } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { edit: { error: 'Database not connected — start SurrealDB and retry.' } });
+		const t = await targetFromForm(db, form);
+		if (!t.ok) return fail(t.status, { edit: { error: t.error } });
 		const content = typeof form.get('content') === 'string' ? String(form.get('content')) : '';
 		const confirmToken = typeof form.get('confirmToken') === 'string' ? String(form.get('confirmToken')) : '';
 		if (!confirmToken) return fail(400, { edit: { error: 'missing confirm token — re-review the diff' } });
-
-		const db = tryGetDb();
-		if (!db) return fail(503, { edit: { error: 'Database not connected — start SurrealDB and retry.' } });
 
 		try {
 			const result = await applyEdit(db, {

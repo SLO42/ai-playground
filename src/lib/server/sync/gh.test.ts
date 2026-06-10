@@ -103,4 +103,26 @@ describe('runGh — array-args, no shell injection (D-008)', () => {
 			runGh(['auth', 'status'], { cwd: dir, bin: join(dir, 'does-not-exist-binary') })
 		).rejects.toBeInstanceOf(GhError);
 	});
+
+	// TASK 13.5 finding 7 — gh exiting BEFORE consuming stdin emits EPIPE on child.stdin.
+	// Without a stdin 'error' handler that is an UNCAUGHT stream error that crashes the whole
+	// server process (vitest fails this test with an unhandled exception against the old code).
+	// With the fix it settles as an ordinary GhError run failure.
+	it('treats gh exiting before consuming stdin (EPIPE) as a run failure, never a crash', async () => {
+		const fastExit = join(dir, 'fake-gh-exit-fast.js');
+		writeFileSync(fastExit, 'process.exit(7);', 'utf8');
+		// Large enough that the pipe write cannot complete before the child is gone.
+		const big = 'x'.repeat(8 * 1024 * 1024);
+		await expect(
+			runGh(['issue', 'create', '--body-file', '-'], {
+				cwd: dir,
+				bin: process.execPath,
+				prefixArgs: [fastExit],
+				stdin: big
+			})
+		).rejects.toBeInstanceOf(GhError);
+		// Give a late EPIPE a beat to surface — with the fix it is handled; without it,
+		// this is where the uncaught 'error' event would detonate the suite.
+		await new Promise((r) => setTimeout(r, 150));
+	});
 });

@@ -15,9 +15,12 @@
 
 import { env } from '$env/dynamic/private';
 import { initDbFromEnv, tryGetDb, type DbInitResult } from '$lib/server/db/runtime-init';
+import { closeDb } from '$lib/server/db/client';
 import { getEventBus, watchTable, WATCHED_TABLES, type DbSourceHandle } from '$lib/server/events';
 import { bootstrapControlPlane, type ListenerSpec } from '$lib/server/config/loopback';
 import { startOrchestrator, reapStaleRuns, type Orchestrator } from '$lib/server/orchestrator';
+import { killAllClaudeChildren } from '$lib/server/claude-code/cli-backend';
+import { registerShutdown } from '$lib/server/shutdown';
 
 // Runtime env source (TASK 6.8). SvelteKit's `$env/dynamic/private` loads `.env` in
 // BOTH dev SSR (which Vite does NOT inject into `process.env`) and the prod Node
@@ -116,6 +119,23 @@ async function bootstrap(): Promise<DbInitResult> {
 	// D-025 FIRST: assert loopback + mint/surface the per-boot control-plane token
 	// before anything opens a connection. Fail-closed on a routable bind (throws).
 	bootstrapControlPlaneEnv();
+
+	// TASK 13.5 finding 6 — process shutdown teardown. Until 13.5 NOTHING in src handled
+	// SIGTERM/SIGINT: a stopped server leaked 14+ live-query watchers, the orchestrator,
+	// the DB socket, and any live claude.exe children (the F-014 orphan-storm shape).
+	// Registered ONCE (global-flag guarded — survives dev HMR re-eval), BEFORE the early
+	// disconnected return so even a degraded boot tears down what it did open. The deps
+	// read the module-scope registries LIVE at signal time, not at registration time.
+	registerShutdown({
+		stopOrchestrators: () => {
+			for (const o of orchestrators) o.stop();
+		},
+		killChildren: () => killAllClaudeChildren(),
+		stopWatchers: () => Promise.all(watchers.map((w) => w.stop().catch(() => {}))),
+		closeDb: () => closeDb(),
+		exit: (code) => process.exit(code),
+		log: (m) => console.log(m)
+	});
 
 	// Read the connection params from `$env/dynamic/private` (loaded from `.env` in dev
 	// SSR + prod) — NOT bare `process.env`, which Vite dev SSR leaves empty (TASK 6.8).

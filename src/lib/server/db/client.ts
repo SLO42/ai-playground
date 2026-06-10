@@ -24,7 +24,18 @@ export interface DbConnectOptions {
 	namespace: string;
 	/** Database to USE after signin. */
 	database: string;
+	/**
+	 * Hard wall-clock bound on connect+signin+use (TASK 13.5 finding 5 / F-014). The
+	 * SurrealDB SDK can hang ~90s on a dead/black-holed socket, and connect() sits on
+	 * the BOOT path — unbounded, that wedges the whole server start. Default 5000ms;
+	 * on timeout connect() rejects honestly and the caller's degraded-boot path
+	 * (runtime-init initDbFromEnv) serves disconnected states instead of hanging.
+	 */
+	connectTimeoutMs?: number;
 }
+
+/** Default bound on connect+signin+use (F-014: never sit on a dead socket ~90s). */
+export const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
 
 /** A bound parameter set — every VALUE flows through here, never interpolation. */
 export type Bindings = Record<string, unknown>;
@@ -43,17 +54,41 @@ export class Db {
 
 	/**
 	 * Open a connection, sign in (least-priv by default — D-026c), and USE ns/db.
-	 * Throws if the server is unreachable or auth fails.
+	 * Throws if the server is unreachable or auth fails. The WHOLE sequence is raced
+	 * against a hard timeout (default {@link DEFAULT_CONNECT_TIMEOUT_MS}) so a dead /
+	 * black-holed socket can never wedge the boot path (F-014 — the SDK alone hangs
+	 * ~90s); on timeout this rejects honestly and the degraded-boot path takes over.
 	 */
 	static async connect(opts: DbConnectOptions): Promise<Db> {
 		const handle = new Surreal();
+		const timeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const deadline = new Promise<never>((_, reject) => {
+			timer = setTimeout(
+				() =>
+					reject(
+						new Error(`SurrealDB connect timed out after ${timeoutMs}ms (bounded boot — F-014): ${opts.url}`)
+					),
+				timeoutMs
+			);
+			timer.unref?.();
+		});
 		try {
-			await handle.connect(opts.url);
-			await handle.signin({ username: opts.username, password: opts.password });
-			await handle.use({ namespace: opts.namespace, database: opts.database });
+			await Promise.race([
+				(async () => {
+					await handle.connect(opts.url);
+					await handle.signin({ username: opts.username, password: opts.password });
+					await handle.use({ namespace: opts.namespace, database: opts.database });
+				})(),
+				deadline
+			]);
 		} catch (err) {
-			await handle.close().catch(() => {});
+			// Fire-and-forget: close() on the same dead socket can itself hang (F-014) —
+			// never await it on the failure path.
+			void handle.close().catch(() => {});
 			throw err;
+		} finally {
+			clearTimeout(timer);
 		}
 		return new Db(handle, opts.namespace, opts.database);
 	}

@@ -110,6 +110,17 @@ export function runGh(args: string[], opts: RunGhOptions): Promise<string> {
 			child.on('error', (err) =>
 				finish(() => reject(new GhError(`gh not available: ${err.message}`, null, stderr.trim())))
 			);
+			// TASK 13.5 finding 7: gh exiting before consuming stdin emits EPIPE on the stdin
+			// stream — with NO handler that is an uncaught 'error' event that CRASHES the whole
+			// server process. Treat it as a run failure (finish is idempotent; if 'close' with
+			// exit 0 already settled the promise, this is a no-op).
+			child.stdin.on('error', (err: Error) =>
+				finish(() =>
+					reject(
+						new GhError(`gh ${args[0] ?? ''} stdin write failed: ${err.message}`, null, stderr.trim())
+					)
+				)
+			);
 			child.on('close', (code) =>
 				finish(() => {
 					if (code === 0) resolve(stdout.trim());

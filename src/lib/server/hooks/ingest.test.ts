@@ -40,6 +40,31 @@ describe('authorizeHookRequest — D-025 control-plane auth (token + Origin/Host
 		const r = authorizeHookRequest(new Headers({ 'x-hook-token': TOKEN, host: '127.0.0.1' }), {});
 		expect(r.ok).toBe(false);
 	});
+
+	// TASK 13.5 finding 4 — the docstring claimed a "constant-ish" compare but the code was a
+	// plain `!==`. The compare must be the length-guarded crypto.timingSafeEqual (the same
+	// pattern channel.ts uses), so a forged token can never be narrowed byte-by-byte by timing.
+	// Constant-time behavior is not observable from a unit test, so this is a source audit
+	// (watched-tables.test.ts style): it FAILS if the direct compare comes back.
+	describe('token compare is constant-time (13.5 finding 4)', () => {
+		it('uses crypto.timingSafeEqual, never a direct string compare on the token', async () => {
+			const { readFileSync } = await import('node:fs');
+			const { fileURLToPath } = await import('node:url');
+			const src = readFileSync(fileURLToPath(new URL('./ingest.ts', import.meta.url)), 'utf8');
+			expect(src).toContain('timingSafeEqual');
+			expect(src).not.toMatch(/presented\s*!==\s*serverToken/);
+		});
+
+		it('still rejects prefix / length-mismatched / one-byte-off tokens (behavior intact)', () => {
+			for (const bad of [TOKEN.slice(0, -1), TOKEN + 'x', TOKEN.slice(0, -1) + '?', '']) {
+				const r = authorizeHookRequest(
+					new Headers({ 'x-hook-token': bad, host: '127.0.0.1:5173' }),
+					env
+				);
+				expect(r.ok).toBe(false);
+			}
+		});
+	});
 });
 
 describe('ingestHookEvent — analytics ONLY, never a gate decision (D-024)', () => {

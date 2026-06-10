@@ -143,6 +143,38 @@ describe('D-016 guard at the query boundary', () => {
 	});
 });
 
+// TASK 13.5 finding 5 / F-014 — Db.connect sits on the BOOT path and the SDK hangs ~90s on
+// a dead/black-holed socket. The whole connect+signin+use sequence must be raced against a
+// hard bound and reject HONESTLY (the degraded-boot path then serves disconnected states).
+// The fake server below accepts the TCP connection but never completes the WS handshake —
+// without the bound this test HANGS past its own timeout (the regression).
+describe('Db.connect — bounded against a black-holed socket (13.5 finding 5 / F-014)', () => {
+	it('rejects within the bound instead of hanging on a half-open server', async () => {
+		const { createServer } = await import('node:net');
+		const server = createServer(() => {
+			/* accept the socket, never speak — the F-014 dead-socket shape */
+		});
+		await new Promise<void>((res) => server.listen(0, '127.0.0.1', res));
+		const port = (server.address() as { port: number }).port;
+		const started = Date.now();
+		try {
+			await expect(
+				Db.connect({
+					url: `ws://127.0.0.1:${port}`,
+					username: 'x',
+					password: 'y',
+					namespace: 'n',
+					database: 'd',
+					connectTimeoutMs: 400
+				})
+			).rejects.toThrow(/timed out/i);
+			expect(Date.now() - started).toBeLessThan(3000);
+		} finally {
+			server.close();
+		}
+	}, 8000);
+});
+
 describe('process-wide singleton', () => {
 	it('initDb / getDb / closeDb lifecycle', async () => {
 		const s = await initDb({

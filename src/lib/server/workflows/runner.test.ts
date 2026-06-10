@@ -290,6 +290,50 @@ describe('runWorkflow — multi-step pipeline as a tracked workflow_run (D-013)'
 		}
 	});
 
+	it("a crash mid-run (step_state persist throws) still stamps the run 'failed' + ended_at + honest note (13.2)", async () => {
+		// FINDING (13.2b): workflow_run was CREATEd 'running' and the terminal UPDATE ran ONLY
+		// on clean completion — an infra throw escaping the wave loop (persistStepState
+		// exhausting its retries on a DB fault) wedged the row 'running' permanently
+		// (work_item has a reaper; workflow_run had none). FAILS without the runner.ts guard.
+		const wf = await createWorkflow(db, {
+			name: 'crash-mid-run',
+			project: projectId,
+			steps: [step({ id: 'a' })]
+		});
+
+		// A db facade that fails ONLY the step_state persist (a non-retryable infra fault);
+		// every other statement (CREATE workflow_run, the terminal UPDATE) passes through to
+		// the real DB — so the terminal write's success is itself proven against live SurrealDB.
+		const crashingDb = new Proxy(db, {
+			get(target, prop, receiver) {
+				if (prop === 'query') {
+					return (sql: string, vars?: Record<string, unknown>) => {
+						if (sql.includes('SET step_state')) {
+							throw new Error('simulated DB outage mid-run');
+						}
+						return target.query(sql, vars);
+					};
+				}
+				return Reflect.get(target, prop, receiver);
+			}
+		});
+
+		await expect(
+			runWorkflow({ db: crashingDb, bus: new EventBus(), runtime: rt(), workflow: wf.id })
+		).rejects.toThrow('simulated DB outage mid-run');
+
+		// The run row reached a terminal state regardless (read back via the REAL db):
+		// NOT wedged 'running' — failed + ended_at + the honest crash note (F-008).
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+			`SELECT status, ended_at, note FROM workflow_run WHERE workflow = $w;`,
+			{ w: new StringRecordId(wf.id) }
+		);
+		expect(rows.length).toBe(1);
+		expect(rows[0].status).toBe('failed');
+		expect(rows[0].ended_at).toBeTruthy();
+		expect(String(rows[0].note)).toContain('simulated DB outage mid-run');
+	});
+
 	it('uses the workflow project when no projectId override is given', async () => {
 		const wf = await createWorkflow(db, {
 			name: 'proj-default',

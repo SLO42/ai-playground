@@ -307,95 +307,141 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		workflowRunId: input.workflowRunId
 	};
 
-	let order = 0;
-	for await (const ev of runtime.spawn(req)) {
-		// Republish onto the bus for LIVE render — one transcript event per stream
-		// event, topic = the session id so the SSE layer routes it to that session's
-		// view; `key` = session id+seq so high-frequency events coalesce sanely (§2.11).
-		bus.publish({
-			type: 'transcript',
-			topic: sessionId,
-			key: `${sessionId}:${order}`,
-			data: { kind: ev.type, seq: order, event: ev }
-		});
-		order++;
-
-		// Persist transcript messages.
-		const msg = eventToMessage(ev);
-		if (msg) {
-			// Accumulate the RAW turn text for the §3.2 ADD-only extraction at session end
-			// (D-029 — raw transcript, no summary). Bounded so a long session can't blow the
-			// extraction prompt; the tail is the most recent (most extraction-worthy) work.
-			if (transcriptParts.length < 400) transcriptParts.push(`${msg.role}: ${msg.content}`);
-			await db.query(`CREATE message CONTENT $content;`, {
-				content: omitUndefined({
-					session: sid,
-					role: msg.role,
-					content: msg.content,
-					tool_call: msg.tool_call
-				})
-			});
-			continue;
-		}
-
-		// Lifecycle events.
-		if (ev.type === 'token_usage') {
-			tokensIn += ev.input;
-			tokensOut += ev.output;
-			// TASK 2.1 (harden): besides the per-seq `transcript` event above (which the
-			// message log must never lose), publish a dedicated high-frequency `token_usage`
-			// event keyed by the SESSION id (stable). The stable key is what lets the SSE
-			// fan-out coalesce latest-wins under backpressure (§2.11) — a slow client gets
-			// only the newest cumulative figure per session, never a stalling backlog. The
-			// transcript event's key is sessionId:seq (every one distinct), so it is the
-			// WRONG carrier for coalescing; this is the right one.
+	// TASK 13.2 — the terminal-status guarantee. The session row was CREATEd 'running';
+	// it MUST reach a terminal status on EVERY exit path. The stream loop below can throw
+	// (a message-persist DB hiccup, a bus consumer fault, an AgentRuntime whose iterator
+	// throws — the ClaudeCodeRuntime converts backend throws to `error` events, but other
+	// impls/SDK seams may not). Without this guard a mid-stream throw skipped the terminal
+	// UPDATE entirely, leaving the row 'running' forever (phantom running agents on every
+	// dashboard count). Any throw is captured here; the terminal write below runs on BOTH
+	// paths — 'failed' with the honest throw message as `note` (F-008) + ended_at — then
+	// the error is rethrown (callers already treat a throw as a failed spawn: orchestrator
+	// #runItem marks the work_item failed, runner runStep marks the step failed).
+	let streamError: Error | undefined;
+	try {
+		let order = 0;
+		for await (const ev of runtime.spawn(req)) {
+			// Republish onto the bus for LIVE render — one transcript event per stream
+			// event, topic = the session id so the SSE layer routes it to that session's
+			// view; `key` = session id+seq so high-frequency events coalesce sanely (§2.11).
 			bus.publish({
-				type: 'token_usage',
+				type: 'transcript',
 				topic: sessionId,
-				key: sessionId,
-				data: { tokensIn, tokensOut }
+				key: `${sessionId}:${order}`,
+				data: { kind: ev.type, seq: order, event: ev }
 			});
-		} else if (ev.type === 'error') {
-			ok = false;
+			order++;
+
+			// Persist transcript messages.
+			const msg = eventToMessage(ev);
+			if (msg) {
+				// Accumulate the RAW turn text for the §3.2 ADD-only extraction at session end
+				// (D-029 — raw transcript, no summary). Bounded so a long session can't blow the
+				// extraction prompt; the tail is the most recent (most extraction-worthy) work.
+				if (transcriptParts.length < 400) transcriptParts.push(`${msg.role}: ${msg.content}`);
+				await db.query(`CREATE message CONTENT $content;`, {
+					content: omitUndefined({
+						session: sid,
+						role: msg.role,
+						content: msg.content,
+						tool_call: msg.tool_call
+					})
+				});
+				continue;
+			}
+
+			// Lifecycle events.
+			if (ev.type === 'token_usage') {
+				tokensIn += ev.input;
+				tokensOut += ev.output;
+				// TASK 2.1 (harden): besides the per-seq `transcript` event above (which the
+				// message log must never lose), publish a dedicated high-frequency `token_usage`
+				// event keyed by the SESSION id (stable). The stable key is what lets the SSE
+				// fan-out coalesce latest-wins under backpressure (§2.11) — a slow client gets
+				// only the newest cumulative figure per session, never a stalling backlog. The
+				// transcript event's key is sessionId:seq (every one distinct), so it is the
+				// WRONG carrier for coalescing; this is the right one.
+				bus.publish({
+					type: 'token_usage',
+					topic: sessionId,
+					key: sessionId,
+					data: { tokensIn, tokensOut }
+				});
+			} else if (ev.type === 'error') {
+				ok = false;
+				await writeAgentEvent(db, {
+					session: sessionId,
+					project: input.projectId,
+					type: 'error',
+					detail: { error: ev.error }
+				});
+			} else if (ev.type === 'done') {
+				sawDone = true;
+				ok = ev.result.ok;
+				summary = ev.result.summary;
+				if (ev.result.ccSessionId) ccSessionId = ev.result.ccSessionId;
+			}
+		}
+	} catch (err) {
+		streamError = err instanceof Error ? err : new Error(String(err));
+		ok = false;
+	}
+
+	const status: SessionStatus = streamError ? 'failed' : sawDone ? (ok ? 'done' : 'failed') : 'failed';
+	const durationMs = Date.now() - startedAt;
+
+	// 4. Terminal update: status + ended_at + cc_session_id bridge (the session record
+	// carries cc_session_id — D-011). Optionals omitted, not nulled (§6.1). Runs on EVERY
+	// exit path (13.2); a throw path stamps the honest failure note (F-008). If the terminal
+	// write ITSELF fails (DB down — likely the same fault that broke the stream), the boot
+	// reaper (orchestrator/reaper.ts) recovers the still-'running' row on the next boot; we
+	// never mask the original stream error with the write error.
+	try {
+		await db.query(`UPDATE $sid MERGE $content;`, {
+			sid,
+			content: omitUndefined({
+				status,
+				ended_at: new Date(),
+				cc_session_id: ccSessionId,
+				note: streamError ? `failed mid-stream: ${streamError.message}` : undefined
+			})
+		});
+
+		// The terminal agent_event (analytics first-class): a completion with token totals on
+		// a consumed stream; an `error` carrying the throw on the crash path (the how/why of
+		// the failed verdict is recorded, not just the status flip).
+		if (streamError) {
 			await writeAgentEvent(db, {
 				session: sessionId,
 				project: input.projectId,
 				type: 'error',
-				detail: { error: ev.error }
+				model: input.model,
+				durationMs,
+				detail: {
+					error: streamError.message,
+					reason: 'stream threw mid-run — terminal status stamped by launchSession (13.2)'
+				}
 			});
-		} else if (ev.type === 'done') {
-			sawDone = true;
-			ok = ev.result.ok;
-			summary = ev.result.summary;
-			if (ev.result.ccSessionId) ccSessionId = ev.result.ccSessionId;
+		} else {
+			await writeAgentEvent(db, {
+				session: sessionId,
+				project: input.projectId,
+				type: 'completion',
+				model: input.model,
+				tokensIn,
+				tokensOut,
+				durationMs,
+				detail: { ok, summary }
+			});
 		}
+	} catch (writeErr) {
+		if (!streamError) throw writeErr;
+		console.warn(
+			`[launch] terminal-status write failed for ${sessionId} after a stream error (boot reaper will recover): ${(writeErr as Error).message}`
+		);
 	}
 
-	const status: SessionStatus = sawDone ? (ok ? 'done' : 'failed') : 'failed';
-	const durationMs = Date.now() - startedAt;
-
-	// 4. Terminal update: status + ended_at + cc_session_id bridge (the session record
-	// carries cc_session_id — D-011). Optionals omitted, not nulled (§6.1).
-	await db.query(`UPDATE $sid MERGE $content;`, {
-		sid,
-		content: omitUndefined({
-			status,
-			ended_at: new Date(),
-			cc_session_id: ccSessionId
-		})
-	});
-
-	// A completion agent_event with token totals + duration (analytics first-class).
-	await writeAgentEvent(db, {
-		session: sessionId,
-		project: input.projectId,
-		type: 'completion',
-		model: input.model,
-		tokensIn,
-		tokensOut,
-		durationMs,
-		detail: { ok, summary }
-	});
+	if (streamError) throw streamError;
 
 	// 5. EXTRACT on session-end (TASK 8.3): mine the just-finished transcript for durable,
 	// ADD-only memories (D-028 — one cheap LLM call, additive only; the screen-before-embed

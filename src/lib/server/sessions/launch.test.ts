@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { StringRecordId } from 'surrealdb';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
@@ -8,6 +9,7 @@ import { createTask } from '../tasks/repo';
 import { EventBus, type BusEvent } from '../events/bus';
 import {
 	ClaudeCodeRuntime,
+	type AgentRuntime,
 	type CcBackend,
 	type CcBackendRun,
 	type CcSpawnPlan,
@@ -261,5 +263,90 @@ describe('launchSession — persistence plumbing (1.6b; D-011)', () => {
 			{ sid }
 		);
 		expect(evs.length).toBeGreaterThanOrEqual(1);
+	});
+});
+
+// ── TASK 13.2 — the terminal-status guarantee (regression) ────────────────────────
+//
+// FINDING (13.2a): the session row is CREATEd 'running' and the terminal UPDATE only ran
+// after the stream loop — with NO try/catch, a mid-stream throw (a message-persist DB
+// hiccup, an SDK iterator throw) skipped it entirely, leaving the row 'running' forever
+// and dashboards counting phantom running agents. These tests FAIL without the
+// launch.ts try/catch + guaranteed terminal write.
+
+/** A bare AgentRuntime whose iterator THROWS mid-stream — the SDK-iterator-throw class.
+ *  (ClaudeCodeRuntime converts BACKEND throws into `error` events, but launchSession must
+ *  survive ANY AgentRuntime impl whose iterator itself throws — that is the wedge path.) */
+function throwingRuntime(events: RuntimeEvent[], err: Error): AgentRuntime {
+	return {
+		spawn: async function* () {
+			for (const e of events) yield e;
+			throw err;
+		},
+		async health() {
+			return { runtime: 'mock', providers: [] };
+		},
+		tools() {
+			return [];
+		},
+		async cancel() {}
+	};
+}
+
+describe('launchSession — terminal status on EVERY exit path (13.2)', () => {
+	it("a mid-stream throw still ends the session 'failed' with ended_at + honest note + error agent_event", async () => {
+		const bus = new EventBus();
+		// The throw means launchSession never returns a result — capture the session id
+		// from the live transcript republish (topic = session id, §2.11).
+		const topics: string[] = [];
+		bus.subscribe(
+			(e) => topics.push(e.topic),
+			(e) => e.type === 'transcript'
+		);
+		const runtime = throwingRuntime(
+			[{ type: 'log', message: 'about to die' }],
+			new Error('stream exploded mid-run')
+		);
+
+		await expect(launchSession({ db, bus, runtime, input: baseInput() })).rejects.toThrow(
+			'stream exploded mid-run'
+		);
+
+		const sessionId = topics[0];
+		expect(sessionId).toMatch(/^session:/);
+
+		const sid = new StringRecordId(sessionId);
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $rid;`, {
+			rid: sid
+		});
+		const sess = rows[0];
+		// NOT wedged 'running' — the 13.2 guarantee: terminal status + ended_at on a throw.
+		expect(sess.status).toBe('failed');
+		expect(sess.ended_at).toBeTruthy();
+		// The honest failure note carries the throw message (F-008).
+		expect(String(sess.note)).toContain('stream exploded mid-run');
+
+		// The crash is recorded as an `error` agent_event (analytics first-class).
+		const [evs] = await db.query<[Array<Record<string, unknown>>]>(
+			`SELECT * FROM agent_event WHERE session = $sid AND type = "error";`,
+			{ sid }
+		);
+		expect(evs.length).toBeGreaterThanOrEqual(1);
+		const detail = evs[0].detail as Record<string, unknown>;
+		expect(String(detail.error)).toContain('stream exploded mid-run');
+	});
+
+	it('a clean run is unaffected: terminal done, ended_at set, NO note', async () => {
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(transcript('cc_clean_132')) });
+		const res = await launchSession({ db, bus: new EventBus(), runtime, input: baseInput() });
+		expect(res.status).toBe('done');
+
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $rid;`, {
+			rid: new StringRecordId(res.sessionId)
+		});
+		expect(rows[0].status).toBe('done');
+		expect(rows[0].ended_at).toBeTruthy();
+		// option<string> stays NONE on a clean run (§6.1) — no fabricated note.
+		expect(rows[0].note ?? null).toBeNull();
 	});
 });

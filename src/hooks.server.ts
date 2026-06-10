@@ -17,7 +17,7 @@ import { env } from '$env/dynamic/private';
 import { initDbFromEnv, tryGetDb, type DbInitResult } from '$lib/server/db/runtime-init';
 import { getEventBus, watchTable, WATCHED_TABLES, type DbSourceHandle } from '$lib/server/events';
 import { bootstrapControlPlane, type ListenerSpec } from '$lib/server/config/loopback';
-import { startOrchestrator, type Orchestrator } from '$lib/server/orchestrator';
+import { startOrchestrator, reapStaleRuns, type Orchestrator } from '$lib/server/orchestrator';
 
 // Runtime env source (TASK 6.8). SvelteKit's `$env/dynamic/private` loads `.env` in
 // BOTH dev SSR (which Vite does NOT inject into `process.env`) and the prod Node
@@ -135,6 +135,23 @@ async function bootstrap(): Promise<DbInitResult> {
 			} catch (err) {
 				console.warn(`[startup] live query on "${table}" failed: ${(err as Error).message}`);
 			}
+		}
+
+		// TASK 13.2 — the boot-time reaper: a hard server death writes no terminal status, so
+		// session/workflow_run rows from a PREVIOUS boot can be wedged 'running' forever
+		// (phantom running agents on every dashboard). Sweep them to 'failed' with the honest
+		// note "reaped: server restarted mid-run" (F-008) BEFORE the orchestrator starts. Runs
+		// on every connected boot — credentialed or not (the wedge predates this process).
+		try {
+			const reaped = await reapStaleRuns(db);
+			if (reaped.sessions || reaped.workflowRuns) {
+				console.warn(
+					`[startup] reaped ${reaped.sessions} session(s) + ${reaped.workflowRuns} workflow_run(s) left 'running' by a previous boot.`
+				);
+			}
+		} catch (err) {
+			// A reaper failure must never crash the boot (D-019) — it retries next boot.
+			console.warn(`[startup] boot reaper failed: ${(err as Error).message}`);
 		}
 
 		// TASK 8.1 — start the live orchestrator AFTER the watchTable live queries are open, so

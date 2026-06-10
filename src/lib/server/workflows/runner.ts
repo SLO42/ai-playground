@@ -78,7 +78,9 @@ const DEFAULT_TOOL_POLICY: ToolPolicy = { allow: ['Read', 'Write', 'Edit', 'Glob
 /**
  * Run a workflow as a tracked workflow_run. Returns the terminal status + per-step state
  * + per-step session ids. Never throws on a STEP failure (the run records "failed"); it
- * throws only on a malformed/ missing workflow (a programming/data error at the boundary).
+ * throws on a malformed/missing workflow (a programming/data error at the boundary) and on
+ * an infra fault mid-run (e.g. a DB outage) — but ONLY after stamping the workflow_run
+ * terminal 'failed' + ended_at + an honest note (TASK 13.2 — no wedged 'running' rows).
  */
 export async function runWorkflow(deps: RunWorkflowDeps): Promise<RunWorkflowResult> {
 	const { db, bus, runtime } = deps;
@@ -160,33 +162,64 @@ export async function runWorkflow(deps: RunWorkflowDeps): Promise<RunWorkflowRes
 	};
 
 	// 2. Drive the DAG wave by wave until no step can make progress.
+	//
+	// TASK 13.2 — the terminal-status guarantee. The workflow_run row was CREATEd 'running';
+	// it MUST reach a terminal status on EVERY exit path. runStep already absorbs a STEP
+	// failure (launchSession throw → step 'failed'), but the drive itself can still throw —
+	// persistStepState exhausting its retries on a DB fault is the live path. Without this
+	// guard a mid-run crash skipped the terminal UPDATE and wedged the row 'running' forever
+	// (work_item has a reaper; workflow_run had none). Any throw is captured; the terminal
+	// write below runs on BOTH paths — 'failed' with the honest throw message as `note`
+	// (F-008) + ended_at — then the error is rethrown (an infra fault stays visible to the
+	// caller; it is NOT a step failure the run can absorb).
 	let anyFailed = false;
-	for (;;) {
-		// If any step has failed, its dependents can never become ready — stop scheduling.
-		if (Object.values(stepState).includes('failed')) {
-			anyFailed = true;
-			break;
-		}
-		const ready = steps.filter(isReady);
-		if (ready.length === 0) break; // nothing ready → either all done, or a stall
+	let runError: Error | undefined;
+	try {
+		for (;;) {
+			// If any step has failed, its dependents can never become ready — stop scheduling.
+			if (Object.values(stepState).includes('failed')) {
+				anyFailed = true;
+				break;
+			}
+			const ready = steps.filter(isReady);
+			if (ready.length === 0) break; // nothing ready → either all done, or a stall
 
-		// A non-parallel ready step is a serialization point: run it ALONE this wave so it
-		// fully completes before any peer starts. Parallel-ready steps run concurrently.
-		const parallelReady = ready.filter((s) => s.parallel !== false);
-		const wave = parallelReady.length > 0 ? parallelReady : [ready[0]];
-		await Promise.all(wave.map((s) => runStep(s)));
+			// A non-parallel ready step is a serialization point: run it ALONE this wave so it
+			// fully completes before any peer starts. Parallel-ready steps run concurrently.
+			const parallelReady = ready.filter((s) => s.parallel !== false);
+			const wave = parallelReady.length > 0 ? parallelReady : [ready[0]];
+			await Promise.all(wave.map((s) => runStep(s)));
+		}
+	} catch (err) {
+		runError = err instanceof Error ? err : new Error(String(err));
 	}
 
-	// 3. Terminal status: done iff EVERY step is done; else failed (a failure or a stall —
-	// e.g. an unreachable step left pending behind a failed dependency).
-	const allDone = steps.every((s) => stepState[s.id] === 'done');
+	// 3. Terminal status: done iff EVERY step is done; else failed (a failure, a stall —
+	// e.g. an unreachable step left pending behind a failed dependency — or a mid-run crash).
+	const allDone = !runError && steps.every((s) => stepState[s.id] === 'done');
 	const status: WorkflowRunStatus = allDone && !anyFailed ? 'done' : 'failed';
 
-	await db.query(`UPDATE $rid SET status = $status, ended_at = $ended;`, {
-		rid,
-		status,
-		ended: new Date()
-	});
+	// The terminal write runs on EVERY exit path (13.2); the crash path stamps the honest
+	// note. If the write ITSELF fails (DB down — likely the same fault that crashed the run),
+	// the boot reaper (orchestrator/reaper.ts) recovers the still-'running' row on the next
+	// boot; the original run error is never masked by the write error.
+	try {
+		await db.query(
+			runError
+				? `UPDATE $rid SET status = $status, ended_at = $ended, note = $note;`
+				: `UPDATE $rid SET status = $status, ended_at = $ended;`,
+			runError
+				? { rid, status, ended: new Date(), note: `failed mid-run: ${runError.message}` }
+				: { rid, status, ended: new Date() }
+		);
+	} catch (writeErr) {
+		if (!runError) throw writeErr;
+		console.warn(
+			`[workflow] terminal-status write failed for ${runId} after a mid-run crash (boot reaper will recover): ${(writeErr as Error).message}`
+		);
+	}
+
+	if (runError) throw runError;
 
 	return { runId, status, stepState: { ...stepState }, sessions };
 }

@@ -21,6 +21,11 @@ export { Semaphore, type Permit } from './semaphore';
 // (event-driven, idle-cheap, bus-only — D-004/§2.11). Honest skip when no credential (F-008).
 export { startOrchestrator, type OrchestratorBootResult } from './boot';
 
+// TASK 13.2 — the boot-time reaper: marks session/workflow_run rows wedged 'running' by a
+// previous boot as 'failed' ("reaped: server restarted mid-run" — F-008 honest), so a hard
+// server death never leaves phantom running agents. Wired from hooks.server.ts at boot.
+export { reapStaleRuns, processBootTime, REAPED_NOTE, type ReapResult } from './reaper';
+
 export {
 	runPostTask,
 	splitCommand,

@@ -936,6 +936,21 @@ const m0026_project_target: Migration = {
 	`
 };
 
+// ── TASK 13.2 — honest terminal note on session / workflow_run ──────────────────
+//
+// A run that ends 'failed' on a crash path must say WHY (F-008 honest): launchSession /
+// runWorkflow stamp the throw message on their guaranteed terminal write, and the boot
+// reaper stamps 'reaped: server restarted mid-run' on rows wedged 'running' by a hard
+// server death. option<string> — absent (NONE) on every clean run (§6.1).
+// IDEMPOTENT (D-006/F-015): OVERWRITE only — clean over a fresh DB AND a half-applied state.
+const m0027_run_note: Migration = {
+	id: '0027_run_note',
+	up: `
+		DEFINE FIELD OVERWRITE note ON session      TYPE option<string>;
+		DEFINE FIELD OVERWRITE note ON workflow_run TYPE option<string>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -968,5 +983,6 @@ export const schemaMigrations: Migration[] = [
 	m0023_pm,
 	m0024_task_sync,
 	m0025_pm_review_board,
-	m0026_project_target
+	m0026_project_target,
+	m0027_run_note
 ];

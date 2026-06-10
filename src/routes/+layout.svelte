@@ -59,8 +59,66 @@
     // Re-runs when pathname changes — close the drawer after navigating.
     // `void` reads the rune so $effect tracks it without a bare-expression lint error.
     void pathname;
+    // Navigation moves the reading context to the new page — drop the stored
+    // trigger instead of yanking focus back to the hamburger (14.2c).
+    navRestoreFocus = null;
     navOpen = false;
   });
+
+  // 14.2c — drawer keyboard + focus contract (matches the RightTray pattern):
+  // focus moves INTO the drawer on open, Esc closes it, focus RETURNS to the
+  // trigger (the hamburger) on close, and Tab cycles within while it overlays.
+  let navRestoreFocus: HTMLElement | null = null;
+  const drawerActive = () =>
+    typeof window !== 'undefined' && window.matchMedia('(max-width: 767px)').matches;
+
+  function sidebarFocusables(): HTMLElement[] {
+    const el = document.getElementById('app-sidebar');
+    if (!el) return [];
+    return Array.from(
+      el.querySelectorAll<HTMLElement>('a[href], button, [tabindex]:not([tabindex="-1"])')
+    ).filter((n) => !n.hasAttribute('disabled') && n.offsetParent !== null);
+  }
+
+  $effect(() => {
+    // Open transition: remember the trigger, then move focus in after paint.
+    // Only when the sidebar actually overlays (narrow viewports) — at >=768px
+    // it is a static rail and stealing focus would be wrong.
+    if (navOpen && drawerActive()) {
+      navRestoreFocus = (document.activeElement as HTMLElement) ?? null;
+      queueMicrotask(() => sidebarFocusables()[0]?.focus());
+    }
+  });
+
+  function closeNav() {
+    const target = navRestoreFocus;
+    navRestoreFocus = null;
+    navOpen = false;
+    queueMicrotask(() => target?.focus?.());
+  }
+
+  function onShellKeydown(e: KeyboardEvent) {
+    if (!navOpen || !drawerActive()) return;
+    if (e.key === 'Escape') {
+      e.preventDefault();
+      closeNav();
+      return;
+    }
+    if (e.key === 'Tab') {
+      const list = sidebarFocusables();
+      if (list.length === 0) return;
+      const first = list[0];
+      const last = list[list.length - 1];
+      const active = document.activeElement as HTMLElement;
+      if (e.shiftKey && (active === first || !list.includes(active))) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && (active === last || !list.includes(active))) {
+        e.preventDefault();
+        first.focus();
+      }
+    }
+  }
 
   // Open the one SSE stream once, in the browser only ($effect never runs on the
   // server). The Topbar/Statusbar read `stream.connection` reactively (D-019).
@@ -92,6 +150,8 @@
   });
 </script>
 
+<svelte:window onkeydown={onShellKeydown} />
+
 <div class="shell" class:nav-open={navOpen}>
   <!-- Backdrop: only interactive while the drawer is open (narrow viewports). -->
   <button
@@ -100,7 +160,7 @@
     aria-label="Close navigation"
     tabindex={navOpen ? 0 : -1}
     hidden={!navOpen}
-    onclick={() => (navOpen = false)}
+    onclick={closeNav}
   ></button>
   <Sidebar {pathname} open={navOpen} onnavigate={() => (navOpen = false)} />
   <div class="shell-main">
@@ -111,7 +171,7 @@
       connection={stream.connection}
       navOpen={navOpen}
       unread={trayData.unread}
-      ontoggleNav={() => (navOpen = !navOpen)}
+      ontoggleNav={() => (navOpen ? closeNav() : (navOpen = true))}
       ontoggletray={() => tray.toggle()}
     />
     <GateBanner />
@@ -157,7 +217,17 @@
   .content {
     flex: 1 1 auto;
     overflow-y: auto;
-    padding: var(--pad-panel);
+    /* 14.2a: ONE consistent gutter token between fluid full-width pages and
+       the shell edges (no per-page px caps — prose keeps ch-based measure). */
+    padding: var(--page-gutter);
+    /* Vertical fill: the page root stretches to the viewport height so short
+       pages don't strand dead space under the last region — boards/tables can
+       grow into it. Taller pages simply scroll as before. */
+    display: flex;
+    flex-direction: column;
+  }
+  .content > :global(*) {
+    flex: 1 0 auto;
   }
 
   /* Drawer scrim — hidden (and non-interactive) at wide viewports, shown only

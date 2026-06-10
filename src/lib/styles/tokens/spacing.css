@@ -26,6 +26,10 @@
   --pad-control:  var(--space-3);  /* inner padding of buttons/inputs      */
   --pad-card:     var(--space-6);  /* card interior                        */
   --pad-panel:    var(--space-7);  /* panel / page region                  */
+  /* 14.2: THE page gutter — pages are fluid full-width; this single token is
+     the consistent breathing room between content and the shell edges. Long
+     prose keeps its own readable measure via ch-based max-widths (ledes). */
+  --page-gutter:  var(--pad-panel);
 
   /* ---- Radius -------------------------------------------------------- */
   --radius-xs:   3px;   /* chips, badges, tags          */

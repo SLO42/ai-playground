@@ -511,7 +511,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--gap-stack);
-    max-width: 980px;
+    width: 100%; /* 14.2a: fluid full-width — the shell gutter (--page-gutter) frames it */
   }
   .page-head {
     display: flex;

@@ -1582,7 +1582,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--gap-stack);
-    max-width: 980px;
+    width: 100%; /* 14.2a: fluid full-width — the shell gutter (--page-gutter) frames it */
   }
   .page-head {
     display: flex;
@@ -1630,6 +1630,10 @@
     display: flex;
     gap: var(--space-2, 0.5rem);
     border-bottom: var(--border-width, 1px) solid var(--color-border);
+    /* 14.2b: the strip never clips tabs at narrow widths — it scrolls. The
+       browser keeps keyboard reachability (a focused tab scrolls into view). */
+    overflow-x: auto;
+    scrollbar-width: thin;
   }
   .tab {
     appearance: none;
@@ -1642,14 +1646,27 @@
     padding: 0.5rem 0.75rem;
     cursor: pointer;
     min-height: 24px;
+    /* 14.2b: tabs keep their natural width inside the scrollable strip. */
+    flex: 0 0 auto;
+    white-space: nowrap;
   }
   .tab:hover {
     color: var(--color-text);
   }
   .tab:focus-visible {
+    /* Inset ring: the strip is a scroll container, so an offset ring would be
+       clipped at its edges. Inset keeps the indicator fully visible. */
     outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
+    outline-offset: -2px;
     border-radius: var(--radius-sm, 6px);
+  }
+  /* 14.2b: visible affordance at narrow widths — the right edge fades while
+     more tabs are off-screen (mask only where overflow can occur). */
+  @media (max-width: 767px) {
+    .tabs {
+      -webkit-mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+      mask-image: linear-gradient(to right, #000 calc(100% - 28px), transparent);
+    }
   }
   .tab[data-active='true'] {
     color: var(--color-text);

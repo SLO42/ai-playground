@@ -65,6 +65,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Release · {projectName} — Atelier</title>
+</svelte:head>
+
 <section class="page">
   <header class="page-head">
     <span class="eyebrow">release</span>
@@ -351,7 +355,8 @@
     color: var(--color-success, var(--color-running));
   }
   .run-status[data-status='failed'] {
-    color: var(--color-error, var(--color-danger, crimson));
+    /* -on-overlay tint hits BODY AA on the overlay tag background (14.3) */
+    color: var(--color-error-on-overlay);
   }
   .pipeline {
     list-style: none;
@@ -385,7 +390,7 @@
     background: var(--color-success, var(--color-running));
   }
   .stage[data-status='failed'] .dot {
-    background: var(--color-error, var(--color-danger, crimson));
+    background: var(--color-error);
   }
   .stage-status {
     color: var(--color-text-2);
@@ -541,7 +546,7 @@
   }
   .form-error {
     font: var(--type-body-sm);
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error);
   }
   .form-ok {
     font: var(--type-body-sm);

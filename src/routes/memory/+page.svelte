@@ -68,6 +68,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Memory — Atelier</title>
+</svelte:head>
+
 <section class="page">
   <header class="page-head">
     <span class="eyebrow">knowledge</span>
@@ -345,7 +349,7 @@
   .status-flag {
     font-size: 0.62rem;
     text-transform: uppercase;
-    color: var(--color-warning, #d08200);
+    color: var(--color-warn);
   }
   .imp {
     margin-left: auto;

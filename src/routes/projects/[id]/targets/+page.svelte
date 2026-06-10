@@ -72,6 +72,10 @@
   });
 </script>
 
+<svelte:head>
+  <title>Targets · {projectName} — Atelier</title>
+</svelte:head>
+
 <section class="page">
   <header class="page-head">
     <span class="eyebrow">targets</span>
@@ -745,7 +749,8 @@
     background: var(--color-accent);
     border-color: var(--color-accent);
   }
-  .btn.danger { color: var(--color-error, var(--color-danger, crimson)); }
+  /* -on-overlay tint: BODY AA on the overlay button face (14.3) */
+  .btn.danger { color: var(--color-error-on-overlay); }
   .btn:hover:not(:disabled) { filter: brightness(1.08); }
   .btn:focus-visible {
     outline: 2px solid var(--color-accent);
@@ -769,7 +774,7 @@
   }
   .form-error {
     font: var(--type-body-sm);
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error);
   }
   .result-head {
     font: var(--type-body-sm);
@@ -777,7 +782,7 @@
     color: var(--color-success, var(--color-running, var(--color-accent)));
   }
   .result-head[data-bad='true'] {
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error);
   }
   .contents-title {
     font-size: 0.72rem;
@@ -797,7 +802,7 @@
   }
   .blocker {
     font: var(--type-body-sm);
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error);
   }
   .run-result {
     display: flex;

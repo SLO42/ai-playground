@@ -155,6 +155,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Claude Code — Atelier</title>
+</svelte:head>
+
 <section class="page">
   <header class="page-head">
     <span class="eyebrow">harness</span>
@@ -785,7 +789,7 @@
     color: var(--color-success, #6fae6f);
   }
   .hunk[data-op='-'] {
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error);
   }
   .hunk[data-op=' '] {
     color: var(--color-text-muted);
@@ -798,11 +802,11 @@
     flex-direction: column;
     gap: 0.2rem;
     font-size: 0.74rem;
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error);
   }
   .form-error {
     font: var(--type-body-sm);
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error);
   }
   .form-ok {
     font: var(--type-body-sm);
@@ -878,7 +882,7 @@
     color: var(--color-success, var(--color-running));
   }
   .sess-status[data-status='failed'] {
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error-on-overlay);
   }
   .sess-status[data-status='cancelled'],
   .sess-status[data-status='blocked'] {
@@ -979,8 +983,9 @@
     border-color: var(--color-accent);
   }
   .ctl.warn {
-    color: var(--color-error, var(--color-danger, crimson));
-    border-color: var(--color-error, var(--color-danger, crimson));
+    /* -on-overlay tint stays BODY AA even on the overlay hover face (14.3) */
+    color: var(--color-error-on-overlay);
+    border-color: var(--color-error);
   }
   .interject-row {
     display: flex;
@@ -1005,7 +1010,7 @@
   }
   .ctl-error {
     font: var(--type-body-sm);
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error);
     margin: 0;
   }
 </style>

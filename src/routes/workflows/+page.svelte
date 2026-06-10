@@ -69,6 +69,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Workflows — Atelier</title>
+</svelte:head>
+
 <section class="page">
   <header class="page-head">
     <span class="eyebrow">harness</span>
@@ -356,7 +360,9 @@
     color: var(--color-success, #6fae6f);
   }
   .status-tag[data-status='failed'] {
-    color: var(--color-danger, #d33b3b);
+    /* ONE failed red app-wide: --color-error; the -on-overlay tint hits
+       BODY AA on the overlay tag background (14.3). */
+    color: var(--color-error-on-overlay);
   }
   .status-tag[data-status='cancelled'],
   .status-tag[data-status='pending'] {
@@ -387,7 +393,7 @@
   }
   .form-error {
     font: var(--type-body-sm);
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error);
   }
   .form-ok {
     font: var(--type-body-sm);

@@ -124,6 +124,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Reports — Atelier</title>
+</svelte:head>
+
 <section class="page">
   <header class="page-head">
     <span class="eyebrow">analytics</span>
@@ -561,7 +565,7 @@
     color: var(--color-text);
   }
   .kpi-val[data-tone='warn'] {
-    color: var(--color-warning, #d08200);
+    color: var(--color-warn);
   }
   .kpi-label {
     font-size: 0.72rem;
@@ -592,7 +596,7 @@
     color: var(--color-text);
   }
   .agg-val[data-tone='warn'] {
-    color: var(--color-warning, #d08200);
+    color: var(--color-warn);
   }
   .agg-label {
     font-size: 0.72rem;
@@ -649,7 +653,7 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
-    border-color: var(--color-warning, #d08200);
+    border-color: var(--color-warn);
   }
   .anomaly-list {
     list-style: none;
@@ -669,7 +673,7 @@
     padding: 0.05rem 0.4rem;
     border-radius: var(--radius-sm, 6px);
     background: var(--color-surface-overlay);
-    color: var(--color-warning, #d08200);
+    color: var(--color-warn-on-overlay);
     white-space: nowrap;
   }
   .anomaly-msg {
@@ -710,7 +714,8 @@
     transition: height 0.3s ease;
   }
   .bar[data-error='true'] {
-    background: var(--color-warning, #d08200);
+    /* error bars are ERRORS — red, not amber (14.3 semantic fix) */
+    background: var(--color-error);
   }
   .bar-label {
     font-size: 0.6rem;
@@ -742,7 +747,7 @@
     vertical-align: top;
   }
   .rollup-table td[data-tone='warn'] {
-    color: var(--color-warning, #d08200);
+    color: var(--color-warn);
     font-weight: 600;
   }
   .decisions .why-cell {
@@ -769,16 +774,16 @@
     color: var(--color-text);
   }
   .tier-tag[data-tier='opus'] {
-    color: var(--color-tier-opus, var(--color-accent));
+    color: var(--color-tier-opus-on-overlay);
   }
   .tier-tag[data-tier='sonnet'] {
-    color: var(--color-tier-sonnet, var(--color-accent));
+    color: var(--color-tier-sonnet-on-overlay);
   }
   .tier-tag[data-tier='haiku'] {
-    color: var(--color-tier-haiku, var(--color-text-muted));
+    color: var(--color-tier-haiku-on-overlay);
   }
   .tier-tag[data-tier='local'] {
-    color: var(--color-tier-local, var(--color-text-muted));
+    color: var(--color-tier-local-on-overlay);
   }
   .method-tag {
     font-size: 0.68rem;
@@ -789,10 +794,10 @@
     color: var(--color-text-2);
   }
   .method-tag[data-method='explicit'] {
-    color: var(--color-warning, #d08200);
+    color: var(--color-warn-on-overlay);
   }
   .method-tag[data-method='fallback'] {
-    color: var(--color-danger, #d33b3b);
+    color: var(--color-error-on-overlay);
   }
   .method-tag[data-method='classify'] {
     color: var(--color-accent, #4f7cff);
@@ -809,7 +814,7 @@
     color: var(--color-success, #2f9e44);
   }
   .outcome-tag[data-outcome='failed'] {
-    color: var(--color-danger, #d33b3b);
+    color: var(--color-error-on-overlay);
   }
   .outcome-tag[data-outcome='running'] {
     color: var(--color-accent, #4f7cff);
@@ -830,8 +835,8 @@
     gap: var(--space-2, 0.5rem);
   }
   .family-title {
-    font: var(--type-body-sm);
-    font-weight: 600;
+    /* h3 = heading → display face (Lastik), never mono (14.3 / D-034 §4) */
+    font: var(--weight-semibold) var(--text-md) / var(--leading-snug) var(--font-display);
     color: var(--color-text);
     text-transform: lowercase;
     display: flex;

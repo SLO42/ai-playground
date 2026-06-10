@@ -45,6 +45,17 @@
   --blocked-500:  #cf7a45;  --blocked-faint:  #2c1a0f;  /* rust — own role      */
   --neutral-500:  #7c918b;  --neutral-faint:  #1a2420;  /* slate / idle         */
 
+  /* ---- Status TEXT tints for light surfaces (task 14.3) ----------------
+     Tag/badge text renders at ~11px on --color-surface-overlay (the app's
+     LIGHTEST surface), so it must hit BODY AA 4.5:1 there — the base -500
+     hues for error/info/blocked/neutral measure 3.50–4.03:1 and fail.
+     These -300 tints pass ≥4.5:1 on overlay (and therefore on every darker
+     surface). Roles whose -500 already passes on overlay have no -300. */
+  --error-300:    #f0958f;  /* 5.31:1 on overlay */
+  --info-300:     #85b5e3;  /* 5.49:1 on overlay */
+  --blocked-300:  #e59a6c;  /* 5.18:1 on overlay */
+  --neutral-300:  #a3b5b0;  /* 5.53:1 on overlay */
+
   /* ---- Agent-tier accents (cheap → powerful escalation ramp) ----------- */
   --tier-local:   #7c918b;  /* slate  — local gpt-oss */
   --tier-haiku:   #5e9bd6;  /* blue   — Haiku         */
@@ -96,6 +107,22 @@
   --color-info:    var(--info-500);     --color-info-bg:    var(--info-faint);
   --color-blocked: var(--blocked-500);  --color-blocked-bg: var(--blocked-faint);
   --color-neutral: var(--neutral-500);  --color-neutral-bg: var(--neutral-faint);
+
+  /* Status TEXT on the overlay surface (tags / badges / pills sit on
+     --color-surface-overlay) — every one ≥4.5:1 there, gated in
+     contrast-gate.ts. Roles whose base hue already passes alias the base, so
+     a tag reads the SAME hue ramp as every other status glyph. (14.3) */
+  --color-running-on-overlay: var(--running-500);
+  --color-success-on-overlay: var(--success-500);
+  --color-warn-on-overlay:    var(--warn-500);
+  --color-error-on-overlay:   var(--error-300);
+  --color-info-on-overlay:    var(--info-300);
+  --color-blocked-on-overlay: var(--blocked-300);
+  --color-neutral-on-overlay: var(--neutral-300);
+  --color-tier-local-on-overlay:  var(--neutral-300);
+  --color-tier-haiku-on-overlay:  var(--info-300);
+  --color-tier-sonnet-on-overlay: var(--tier-sonnet);
+  --color-tier-opus-on-overlay:   var(--tier-opus);
 
   /* Agent tiers */
   --color-tier-local:  var(--tier-local);

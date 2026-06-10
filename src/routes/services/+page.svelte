@@ -78,6 +78,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Services — Atelier</title>
+</svelte:head>
+
 <section class="page">
   <header class="page-head">
     <span class="eyebrow">system</span>
@@ -416,7 +420,8 @@
     cursor: not-allowed;
   }
   .btn.danger {
-    color: var(--color-error);
+    /* -on-overlay tint: 5.31:1 BODY AA on the overlay button face (14.3) */
+    color: var(--color-error-on-overlay);
     border-color: var(--color-error);
   }
   .btn.danger:hover:not(:disabled) {
@@ -488,7 +493,9 @@
   .inc-at,
   .note-at {
     font: var(--type-label);
-    color: var(--color-text-faint);
+    /* timestamps are READ, not decoration — faint (1.86:1) is decorative-only;
+       muted reads at 4.68:1 on the overlay row (14.3) */
+    color: var(--color-text-muted);
     flex: none;
     white-space: nowrap;
   }

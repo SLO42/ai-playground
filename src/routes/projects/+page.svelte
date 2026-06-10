@@ -45,6 +45,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Projects — Atelier</title>
+</svelte:head>
+
 <section class="page">
   <header class="page-head">
     <span class="eyebrow">portfolio</span>

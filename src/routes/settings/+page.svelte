@@ -66,6 +66,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Settings — Atelier</title>
+</svelte:head>
+
 <section class="page">
   <header class="page-head">
     <span class="eyebrow">system</span>
@@ -573,7 +577,7 @@
     color: var(--color-success, #6fae6f);
   }
   .hunk[data-op='-'] {
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error);
   }
   .hunk[data-op=' '] {
     color: var(--color-text-muted);
@@ -592,8 +596,8 @@
     min-width: 0;
   }
   .sub {
-    font-size: 0.8rem;
-    font-weight: 600;
+    /* h3 = heading → display face (Lastik), never mono (14.3 / D-034 §4) */
+    font: var(--weight-semibold) var(--text-md) / var(--leading-snug) var(--font-display);
     color: var(--color-text);
     border-bottom: 1px solid var(--color-border-faint, var(--color-border));
     padding-bottom: var(--space-1, 0.25rem);
@@ -749,7 +753,7 @@
 
   .form-error {
     font: var(--type-body-sm);
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error);
     margin: 0;
   }
   .form-ok {

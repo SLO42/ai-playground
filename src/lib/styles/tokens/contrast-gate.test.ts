@@ -109,7 +109,19 @@ describe('§15 token values are FILLED (no placeholders, all resolve)', () => {
     '--color-tier-local',
     '--color-tier-haiku',
     '--color-tier-sonnet',
-    '--color-tier-opus'
+    '--color-tier-opus',
+    // 14.3 — status/tier TEXT tokens for tags on the overlay surface.
+    '--color-running-on-overlay',
+    '--color-success-on-overlay',
+    '--color-warn-on-overlay',
+    '--color-error-on-overlay',
+    '--color-info-on-overlay',
+    '--color-blocked-on-overlay',
+    '--color-neutral-on-overlay',
+    '--color-tier-local-on-overlay',
+    '--color-tier-haiku-on-overlay',
+    '--color-tier-sonnet-on-overlay',
+    '--color-tier-opus-on-overlay'
   ];
 
   it.each(required)('%s is defined and resolves to a hex value', (tok) => {
@@ -182,6 +194,36 @@ describe('gate negative control', () => {
     // ink — well below BODY AA, which is exactly why it is NOT gated as body
     // text. Proves the gate's math would catch a real miss, not rubber-stamp.
     expect(contrastRatio('#51635e', '#03120e')).toBeLessThan(AA_BODY);
+  });
+
+  // 14.3 red→green: the audit measured BASE status hues failing BODY AA as
+  // ~11px tag text on --color-surface-overlay (error 3.50:1, blocked 3.68:1,
+  // info 4.03:1, neutral 3.55:1). RED: prove those base pairings really fail
+  // (i.e. the old gate hole was a genuine miss, not a false alarm). GREEN:
+  // the `-on-overlay` text tokens now used by tags pass — and are gated as
+  // pairs above, so a regression fails the suite.
+  it('base error/blocked/info/neutral hues genuinely FAIL body AA on overlay (the audit finding)', () => {
+    const decls = loadColorTokens();
+    const overlay = resolveToHex('--color-surface-overlay', decls);
+    for (const base of ['--color-error', '--color-blocked', '--color-info', '--color-neutral']) {
+      expect(
+        contrastRatio(resolveToHex(base, decls), overlay),
+        `${base} should fail BODY AA on overlay — if it passes, fold the -on-overlay alias back into the base`
+      ).toBeLessThan(AA_BODY);
+    }
+  });
+
+  it('the -on-overlay replacements PASS body AA on overlay', () => {
+    const decls = loadColorTokens();
+    const overlay = resolveToHex('--color-surface-overlay', decls);
+    for (const tok of [
+      '--color-error-on-overlay',
+      '--color-blocked-on-overlay',
+      '--color-info-on-overlay',
+      '--color-neutral-on-overlay'
+    ]) {
+      expect(contrastRatio(resolveToHex(tok, decls), overlay)).toBeGreaterThanOrEqual(AA_BODY);
+    }
   });
 
   it('flags a banned outline declaration', () => {

@@ -80,6 +80,10 @@
   });
 </script>
 
+<svelte:head>
+  <title>Sync · {projectName} — Atelier</title>
+</svelte:head>
+
 <section class="page">
   <header class="page-head">
     <span class="eyebrow">sync</span>
@@ -519,7 +523,7 @@
   }
   .form-error {
     font: var(--type-body-sm);
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error);
   }
   .result {
     display: flex;
@@ -556,7 +560,7 @@
   }
   .run-error {
     font-size: 0.74rem;
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error);
   }
   .count {
     font-size: 0.72rem;
@@ -668,7 +672,7 @@
     color: var(--color-success, var(--color-running, var(--color-accent)));
   }
   .board-status[data-status='error'] {
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error);
   }
   .incidents {
     display: flex;
@@ -678,8 +682,8 @@
     padding-top: var(--space-3, 0.75rem);
   }
   .incidents-title {
-    font: var(--type-body-sm);
-    font-weight: 600;
+    /* h3 = heading → display face (Lastik), never mono (14.3 / D-034 §4) */
+    font: var(--weight-semibold) var(--text-md) / var(--leading-snug) var(--font-display);
     color: var(--color-text);
     display: flex;
     align-items: baseline;
@@ -694,7 +698,7 @@
   }
   .inc-msg {
     font-size: 0.78rem;
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error);
     flex: 1;
   }
 </style>

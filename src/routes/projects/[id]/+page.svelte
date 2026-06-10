@@ -362,6 +362,10 @@
   const selectedIsRunning = $derived((liveStatus ?? selectedRow?.status) === 'running');
 </script>
 
+<svelte:head>
+  <title>{projectName} — Atelier</title>
+</svelte:head>
+
 <section class="page">
   <header class="page-head">
     <span class="eyebrow">project</span>
@@ -399,13 +403,17 @@
         data-active={tab === 'overview'}
         onclick={() => (tab = 'overview')}>Overview</button
       >
+      <!-- 14.3: the count badge would concatenate into the accessible name
+           ("Tasks2") — give the button an explicit name and hide the badge
+           from the accessibility tree. -->
       <button
         class="tab"
         type="button"
         aria-pressed={tab === 'tasks'}
+        aria-label={tasks.length > 0 ? `Tasks, ${tasks.length} ${tasks.length === 1 ? 'item' : 'items'}` : 'Tasks'}
         data-active={tab === 'tasks'}
         onclick={() => (tab = 'tasks')}
-        >Tasks{#if tasks.length > 0}<span class="count mono">{tasks.length}</span>{/if}</button
+        >Tasks{#if tasks.length > 0}<span class="count mono" aria-hidden="true">{tasks.length}</span>{/if}</button
       >
       <button
         class="tab"
@@ -418,9 +426,10 @@
         class="tab"
         type="button"
         aria-pressed={tab === 'pm'}
+        aria-label={pmStats && pmStats.total > 0 ? `PM, ${pmStats.total} ${pmStats.total === 1 ? 'item' : 'items'}` : 'PM'}
         data-active={tab === 'pm'}
         onclick={() => (tab = 'pm')}
-        >PM{#if pmStats && pmStats.total > 0}<span class="count mono">{pmStats.total}</span>{/if}</button
+        >PM{#if pmStats && pmStats.total > 0}<span class="count mono" aria-hidden="true">{pmStats.total}</span>{/if}</button
       >
       <button
         class="tab"
@@ -433,9 +442,10 @@
         class="tab"
         type="button"
         aria-pressed={tab === 'memory'}
+        aria-label={memories.length > 0 ? `Memory, ${memories.length} ${memories.length === 1 ? 'item' : 'items'}` : 'Memory'}
         data-active={tab === 'memory'}
         onclick={() => (tab = 'memory')}
-        >Memory{#if memories.length > 0}<span class="count mono">{memories.length}</span>{/if}</button
+        >Memory{#if memories.length > 0}<span class="count mono" aria-hidden="true">{memories.length}</span>{/if}</button
       >
       <button
         class="tab"
@@ -1686,11 +1696,11 @@
     gap: 0.5rem;
   }
   .sub {
-    font-size: 0.72rem;
+    /* h3 = heading → display face (Lastik), never mono (14.3 / D-034 §4) */
+    font: var(--weight-semibold) var(--text-xs) / var(--leading-snug) var(--font-display);
     text-transform: uppercase;
     letter-spacing: 0.05em;
     color: var(--color-text-muted);
-    font-weight: 600;
   }
   .count {
     font-size: 0.72rem;
@@ -1778,10 +1788,11 @@
     color: var(--color-success, var(--color-running));
   }
   .status[data-status='failed'] {
-    color: var(--color-error, var(--color-danger, crimson));
+    /* -on-overlay tints hit BODY AA on the overlay tag background (14.3) */
+    color: var(--color-error-on-overlay);
   }
   .status[data-status='blocked'] {
-    color: var(--color-blocked, var(--color-warn, orange));
+    color: var(--color-blocked-on-overlay);
   }
   .tag {
     font-size: 0.68rem;
@@ -1874,12 +1885,13 @@
     border-color: var(--color-accent);
   }
   .btn.warn {
-    color: var(--color-error, var(--color-danger, crimson));
-    border-color: var(--color-error, var(--color-danger, crimson));
+    /* -on-overlay tint: BODY AA on the overlay button face (14.3) */
+    color: var(--color-error-on-overlay);
+    border-color: var(--color-error);
   }
   .form-error {
     font: var(--type-body-sm);
-    color: var(--color-error, var(--color-danger, crimson));
+    color: var(--color-error);
   }
   .form-ok {
     font: var(--type-body-sm);
@@ -2313,7 +2325,7 @@
     color: var(--color-text);
   }
   .stat-val[data-tone='warn'] {
-    color: var(--color-warning, var(--color-blocked, orange));
+    color: var(--color-warn);
   }
   .stat-label {
     font-size: 0.72rem;
@@ -2523,7 +2535,7 @@
   }
   .prio[data-prio='high'],
   .prio[data-prio='critical'] {
-    color: var(--color-warning, var(--color-blocked, orange));
+    color: var(--color-warn);
   }
   .move-form {
     margin: 0;
@@ -2722,7 +2734,7 @@
   .status-flag {
     font-size: 0.62rem;
     text-transform: uppercase;
-    color: var(--color-warning, var(--color-blocked, orange));
+    color: var(--color-warn);
   }
   .imp {
     margin-left: auto;

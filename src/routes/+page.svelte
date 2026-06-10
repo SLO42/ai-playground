@@ -83,6 +83,10 @@
   );
 </script>
 
+<svelte:head>
+  <title>Dashboard — Atelier</title>
+</svelte:head>
+
 <section class="home">
   <header class="page-head">
     <span class="eyebrow">portfolio</span>

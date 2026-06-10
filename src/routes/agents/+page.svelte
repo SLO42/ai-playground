@@ -97,6 +97,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Agents — Atelier</title>
+</svelte:head>
+
 <section class="page">
   <header class="page-head">
     <span class="eyebrow">harness</span>
@@ -378,7 +382,9 @@
     color: var(--color-running, var(--color-success, #2a9d4a));
   }
   .agent-status[data-status='failed'] {
-    color: var(--color-warning, #d08200);
+    /* failed = ERROR red (not amber); -on-overlay tint hits BODY AA on the
+       overlay agent row (14.3). */
+    color: var(--color-error-on-overlay);
   }
   .agent-model {
     font-size: 0.74rem;

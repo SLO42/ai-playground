@@ -149,6 +149,38 @@ export function gatePairs(): TokenPair[] {
     }
   }
 
+  // Status/tier TEXT on the overlay surface → BODY AA (4.5:1). Tags, badges
+  // and pills render ~11px status text on --color-surface-overlay — the
+  // app's LIGHTEST surface — so the dedicated `-on-overlay` text tokens must
+  // hit BODY AA there (and overlay passing ⇒ every darker surface passes).
+  // This closes the 14.3 audit hole: the gate only tested glyph 3:1 on
+  // bg/surface/card/raised, which let 3.50:1 tag text ship.
+  for (const role of [
+    'running',
+    'success',
+    'warn',
+    'error',
+    'info',
+    'blocked',
+    'neutral',
+    'tier-local',
+    'tier-haiku',
+    'tier-sonnet',
+    'tier-opus'
+  ]) {
+    pairs.push({
+      label: `--color-${role}-on-overlay on overlay`,
+      fg: `--color-${role}-on-overlay`,
+      bg: '--color-surface-overlay',
+      min: AA_BODY
+    });
+  }
+  // The neutral text ramp + accent also render INSIDE overlay tags/rows
+  // (pending/cancelled tags, hover rows, tag labels) → BODY AA on overlay.
+  for (const t of ['--color-text', '--color-text-2', '--color-text-muted', '--color-accent', '--color-text-accent']) {
+    pairs.push({ label: `${t} on overlay`, fg: t, bg: '--color-surface-overlay', min: AA_BODY });
+  }
+
   // Text-on-accent (filled accent button) → BODY AA.
   pairs.push({ label: '--color-on-accent on --color-accent', fg: '--color-on-accent', bg: '--color-accent', min: AA_BODY });
   pairs.push({ label: '--color-text-inverse on --color-accent', fg: '--color-text-inverse', bg: '--color-accent', min: AA_BODY });

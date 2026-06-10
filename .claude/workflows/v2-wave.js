@@ -11,6 +11,7 @@ export const meta = {
 // maxFixAttempts  number  (optional, default 2) fix-loop bound per task
 // model           string  (optional) pin subagent model (e.g. 'opus'); omit to inherit session model
 // pushAtEnd       boolean (optional, default true) push origin v2 after a fully-green wave
+if (typeof args === 'string') { args = JSON.parse(args) } // tolerate JSON-encoded args
 if (!args || !args.waveName || !Array.isArray(args.tasks) || !args.tasks.length) {
   throw new Error('v2-wave requires args { waveName, tasks:[{id,title,build}] }')
 }

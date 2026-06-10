@@ -510,6 +510,16 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 
 ---
 
+## D-039 🟡 The PM is a hired, per-project manager with validated authority ("Act with Purpose")
+
+**Context:** The 9.1/11.4 PM is typed memory + stateless functions — project-scoped and honest, but with no identity, no operator-settable charter, and no autonomy. The operator's model (2026-06-10): a project-specific PM is *created using the given project*; it acts on its own, but **nothing it creates is exempt from review** — "when the PM auto-creates tasks, those tasks should be reviewed for validity by 1 or 2 agents that can approve or push back, like a team; each task/priority/escalation should have purpose, be fully spec'd, and clear on objective."
+
+**Decision:** Per **PM-SPEC.md**: ① a `pm` row per project (identity + **charter** + cron **cadence with per-project offset** + authority), created via an explicit **hire** flow that builds founding context from the real project; ② context = charter (manual, durable) + accumulated pm_memory (learned) + fresh live snapshot (computed per action — never stale); ③ wakes on per-project cron, on events (failed/blocked work, GitHub issue/PR arrival, security/UX findings, release events), and manually; ④ **Act-with-Purpose authority**: the PM auto-creates tasks born `proposed` with schema-enforced objective/purpose/spec/provenance, judged by a **1–2 agent validation panel** (approve → ready; push back → returned with reasons, which become PM memory); ⑤ PR/issue involvement is **triage-only** (summarize/link/flag; proposes a reviewer agent, never reviews diffs itself). D-004/D-018/F-008 rails throughout.
+
+**Consequences:** wave **v2.1** (after the v2.0 typography + audits settle) builds: pm table + hire/charter UI, trigger engine (cron+offset + 4 event hooks on the orchestrator bus), proposed-task validation pipeline, GitHub triage. Extends — does not regress — 9.1/11.4. Stays 🟡 until built. (Owner-shaped; builds on D-004/D-015/D-018/D-037/D-038.)
+
+---
+
 ## Decision index
 
 | ID | Status | Topic |

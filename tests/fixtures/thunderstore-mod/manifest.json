@@ -1,0 +1,7 @@
+{
+	"name": "SwipRounds",
+	"version_number": "1.4.0",
+	"website_url": "https://github.com/operator/swip-rounds",
+	"description": "SWIP balance tweaks and round-flow fixes for ROUNDS.",
+	"dependencies": ["BepInEx-BepInExPack-5.4.2100"]
+}

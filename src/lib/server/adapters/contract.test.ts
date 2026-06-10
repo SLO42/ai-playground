@@ -2,6 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deflateSync } from 'node:zlib';
 import { runPublisherContract, runDeployContract } from './contract';
 import {
 	NpmPublisherAdapter,
@@ -26,11 +27,21 @@ beforeAll(async () => {
 		'utf8'
 	);
 	tsDir = await mkdtemp(join(tmpdir(), 'atelier-ts-'));
+	// A COMPLETE valid Thunderstore package (12.2 deepened the rules: website_url + dependencies
+	// fields required, a 256×256 PNG icon, a README.md).
 	await writeFile(
 		join(tsDir, 'manifest.json'),
-		JSON.stringify({ name: 'MyMod', version_number: '0.4.0', description: 'a mod' }),
+		JSON.stringify({
+			name: 'MyMod',
+			version_number: '0.4.0',
+			website_url: '',
+			description: 'a mod',
+			dependencies: []
+		}),
 		'utf8'
 	);
+	await writeFile(join(tsDir, 'README.md'), '# MyMod\n', 'utf8');
+	await writeFile(join(tsDir, 'icon.png'), make256Png());
 	emptyDir = await mkdtemp(join(tmpdir(), 'atelier-empty-'));
 });
 
@@ -120,3 +131,34 @@ describe('registry singleton', () => {
 		expect(() => reg.getDeployer('does-not-exist')).toThrow(/no deploy adapter registered/);
 	});
 });
+
+/** Build a real 256×256 PNG (solid color) so the Thunderstore icon rule passes (12.2). */
+function make256Png(): Buffer {
+	const W = 256,
+		H = 256;
+	function crc32(buf: Buffer): number {
+		let c = ~0;
+		for (let i = 0; i < buf.length; i++) {
+			c ^= buf[i];
+			for (let k = 0; k < 8; k++) c = (c >>> 1) ^ (0xedb88320 & -(c & 1));
+		}
+		return ~c >>> 0;
+	}
+	function chunk(type: string, data: Buffer): Buffer {
+		const t = Buffer.from(type, 'ascii');
+		const len = Buffer.alloc(4);
+		len.writeUInt32BE(data.length, 0);
+		const crc = Buffer.alloc(4);
+		crc.writeUInt32BE(crc32(Buffer.concat([t, data])), 0);
+		return Buffer.concat([len, t, data, crc]);
+	}
+	const sig = Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]);
+	const ihdr = Buffer.alloc(13);
+	ihdr.writeUInt32BE(W, 0);
+	ihdr.writeUInt32BE(H, 4);
+	ihdr[8] = 8;
+	ihdr[9] = 6;
+	const row = Buffer.alloc(1 + W * 4);
+	const raw = Buffer.concat(Array.from({ length: H }, () => row));
+	return Buffer.concat([sig, chunk('IHDR', ihdr), chunk('IDAT', deflateSync(raw)), chunk('IEND', Buffer.alloc(0))]);
+}

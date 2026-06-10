@@ -30,6 +30,7 @@
 
   const declareResult = $derived(form && 'declare' in form ? (form.declare as Record<string, unknown>) : undefined);
   const runResult = $derived(form && 'run' in form ? (form.run as Record<string, unknown>) : undefined);
+  const pkgResult = $derived(form && 'pkg' in form ? (form.pkg as Record<string, unknown>) : undefined);
 
   // Declare-form local state.
   let declareKind = $state<'publish' | 'deploy'>('publish');
@@ -206,6 +207,25 @@
                 <pre class="config-view mono">{JSON.stringify(t.config, null, 2)}</pre>
               {/if}
               <div class="target-actions">
+                {#if t.kind === 'publish'}
+                  <!-- Package & validate: preflight + assemble the zip; show its contents (no upload). -->
+                  <form
+                    method="POST"
+                    action="?/packagePreview"
+                    use:enhance={() => {
+                      running = true;
+                      return async ({ update }) => {
+                        await update({ reset: false });
+                        running = false;
+                      };
+                    }}
+                  >
+                    <input type="hidden" name="targetId" value={t.id} />
+                    <button class="btn" type="submit" disabled={running || !t.enabled}>
+                      {running ? 'Working…' : 'Package & validate'}
+                    </button>
+                  </form>
+                {/if}
                 <!-- Dry-run: drive the gated driver in plan-only mode. -->
                 <form
                   method="POST"
@@ -238,6 +258,37 @@
             </li>
           {/each}
         </ul>
+      {/if}
+
+      <!-- Package & validate result: the preflight verdict + the produced zip CONTENTS listing. -->
+      {#if pkgResult}
+        {#if 'error' in pkgResult}
+          <p class="form-error" role="alert">{pkgResult.error}</p>
+        {:else if 'ok' in pkgResult}
+          <div class="run-result" role="status">
+            <p class="result-head" data-bad={pkgResult.valid === false}>
+              {pkgResult.valid ? 'Package valid' : 'Package has blockers'}
+              · <span class="mono">{pkgResult.adapterId}</span> → <span class="mono">{pkgResult.target}</span>
+            </p>
+            <p class="state-body">{pkgResult.summary}</p>
+            {#if Array.isArray(pkgResult.blockers) && pkgResult.blockers.length > 0}
+              <ul class="blockers" aria-label="validation blockers">
+                {#each pkgResult.blockers as b, i (i)}<li class="blocker">✗ {b}</li>{/each}
+              </ul>
+            {/if}
+            {#if Array.isArray(pkgResult.steps) && pkgResult.steps.length > 0}
+              <p class="contents-title">Package contents</p>
+              <ol class="plan">
+                {#each pkgResult.steps as step, i (i)}<li class="plan-step mono">{step}</li>{/each}
+              </ol>
+            {/if}
+            {#if Array.isArray(pkgResult.warnings) && pkgResult.warnings.length > 0}
+              <ul class="warnings">
+                {#each pkgResult.warnings as w, i (i)}<li class="warning mono">{w}</li>{/each}
+              </ul>
+            {/if}
+          </div>
+        {/if}
       {/if}
 
       <!-- The dry-run plan + the gated confirm (D-018). -->
@@ -581,6 +632,29 @@
     font: var(--type-body-sm);
     font-weight: 600;
     color: var(--color-success, var(--color-running, var(--color-accent)));
+  }
+  .result-head[data-bad='true'] {
+    color: var(--color-error, var(--color-danger, crimson));
+  }
+  .contents-title {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    font-weight: 600;
+    color: var(--color-text-muted);
+    margin: 0;
+  }
+  .blockers {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .blocker {
+    font: var(--type-body-sm);
+    color: var(--color-error, var(--color-danger, crimson));
   }
   .run-result {
     display: flex;

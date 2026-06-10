@@ -147,100 +147,10 @@ export class NpmPublisherAdapter implements PublisherAdapter {
 
 // ── Thunderstore publisher (SWIP/ROUNDS mods — the operator's live target) ──────────────
 //
-// Publishes a mod package to Thunderstore. Reads manifest.json (Thunderstore's manifest:
-// name/version_number/description/dependencies). Dry-run computes the package plan; a real
-// publish needs THUNDERSTORE_TOKEN (operator-supplied, never stored). 12.2 deepens this.
-
-export class ThunderstorePublisherAdapter implements PublisherAdapter {
-	readonly id = 'thunderstore';
-	readonly label = 'Thunderstore';
-	readonly kind = 'publish' as const;
-
-	secrets(): SecretRequirement[] {
-		return [
-			{
-				envVar: 'THUNDERSTORE_TOKEN',
-				label: 'Thunderstore service-account token',
-				purpose: 'Authenticates a Thunderstore package upload. Required for a real publish.',
-				required: true
-			}
-		];
-	}
-
-	async probe(opts: { cwd: string; secrets: SecretResolver }): Promise<AdapterProbe> {
-		const manifest = await readManifest(opts.cwd, 'manifest.json');
-		if (!manifest) return { available: false, reason: 'No Thunderstore manifest.json found in the project root.' };
-		const name = typeof manifest.name === 'string' ? manifest.name : undefined;
-		if (!name) return { available: false, reason: 'manifest.json has no "name".' };
-		const hasToken = opts.secrets.has('THUNDERSTORE_TOKEN');
-		return {
-			available: true,
-			target: `thunderstore:${name}`,
-			...(hasToken ? {} : { reason: 'THUNDERSTORE_TOKEN is not set — dry-run only until you supply it.' })
-		};
-	}
-
-	async validate(opts: AdapterRunOptions & { secrets: SecretResolver }): Promise<PublishValidation> {
-		const m = await readManifest(opts.cwd, 'manifest.json');
-		const blockers: string[] = [];
-		const warnings: string[] = [];
-		if (!m) blockers.push('No manifest.json found.');
-		else {
-			if (typeof m.name !== 'string' || !m.name) blockers.push('manifest.json has no "name".');
-			if (typeof m.version_number !== 'string' || !m.version_number) blockers.push('manifest.json has no "version_number".');
-			if (typeof m.description !== 'string') warnings.push('manifest.json has no "description".');
-			if (!opts.secrets.has('THUNDERSTORE_TOKEN')) warnings.push('THUNDERSTORE_TOKEN is not set — a real publish will fail.');
-		}
-		return { ok: blockers.length === 0, blockers, warnings };
-	}
-
-	async package(opts: AdapterRunOptions & { secrets: SecretResolver }): Promise<PackageResult> {
-		const m = await readManifest(opts.cwd, 'manifest.json');
-		const name = typeof m?.name === 'string' ? m.name : '(unknown)';
-		const version = typeof m?.version_number === 'string' ? m.version_number : '(unknown)';
-		return {
-			target: `thunderstore:${name}`,
-			dryRun: true,
-			ok: m != null,
-			summary: m ? `Would package ${name} ${version}` : 'No manifest.json to package.',
-			steps: [
-				`Read manifest.json (${name} ${version})`,
-				'Bundle mod files + icon.png + README.md into a zip',
-				`Compute Thunderstore package ${name}-${version}.zip`
-			],
-			warnings: [],
-			...(m ? { artifact: { name, version } } : {})
-		};
-	}
-
-	async publish(opts: AdapterRunOptions & { secrets: SecretResolver }): Promise<AdapterRunResult> {
-		const v = await this.validate(opts);
-		const m = await readManifest(opts.cwd, 'manifest.json');
-		const name = typeof m?.name === 'string' ? m.name : '(unknown)';
-		const version = typeof m?.version_number === 'string' ? m.version_number : '(unknown)';
-		const target = `thunderstore:${name}`;
-		const dryRun = opts.dryRun ?? true;
-		if (!v.ok) {
-			return { target, dryRun, ok: false, summary: `Not publishable: ${v.blockers.join('; ')}`, steps: [], warnings: v.warnings };
-		}
-		const plan = [
-			`Package ${name} ${version}`,
-			'Authenticate via THUNDERSTORE_TOKEN',
-			'Upload the package zip to Thunderstore'
-		];
-		if (dryRun) {
-			return { target, dryRun: true, ok: true, summary: `Dry-run: would publish ${name} ${version} to Thunderstore.`, steps: plan, warnings: v.warnings };
-		}
-		return {
-			target,
-			dryRun: false,
-			ok: false,
-			summary: `Publish of ${name} ${version} prepared but not executed.`,
-			steps: plan,
-			warnings: [...v.warnings, deferReal('THUNDERSTORE_TOKEN')]
-		};
-	}
-}
+// DEEPENED in TASK 12.2: the real packager + preflight validator + dry-run-by-default upload-API
+// request shape lives in ./thunderstore/. The class is re-exported here so the registry + the
+// barrel keep their existing import surface (index.ts imports it from builtins.ts).
+export { ThunderstorePublisherAdapter } from './thunderstore/adapter';
 
 // ── Static-host deploy target (the reference DeployTarget) ──────────────────────────────
 //

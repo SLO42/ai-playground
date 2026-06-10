@@ -25,6 +25,7 @@ import {
 	getAdapterRegistry,
 	declareTarget,
 	listTargets,
+	getTarget,
 	removeTarget,
 	listTargetRuns,
 	runTargetAction,
@@ -274,6 +275,66 @@ export const actions: Actions = {
 			};
 		} catch (err) {
 			return fail(409, { run: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * PACKAGE preflight (publishers only): run the chosen publisher's validate() + package() in
+	 * DRY-RUN (plan only — always safe, no creds, no upload). Surfaces the honest VALIDATION verdict
+	 * (blockers/warnings) + the produced ZIP CONTENTS listing (the package steps), so the operator
+	 * sees exactly what WOULD ship before any publish (D-038 honest, F-008). Never mutates anything.
+	 */
+	packagePreview: async ({ params, request }) => {
+		let projectId: string;
+		try {
+			projectId = assertRecordId(`project:${params.id}`);
+		} catch {
+			return fail(400, { pkg: { error: 'invalid project id' } });
+		}
+		const db = tryGetDb();
+		if (!db) return fail(503, { pkg: { error: 'Database not connected.' } });
+
+		const project = await getProject(db, projectId);
+		if (!project) return fail(404, { pkg: { error: 'project not found' } });
+
+		const form = await request.formData();
+		let targetId: string;
+		try {
+			targetId = assertRecordId(String(form.get('targetId') ?? ''));
+		} catch {
+			return fail(400, { pkg: { error: 'invalid target id' } });
+		}
+
+		const target = await getTarget(db, targetId);
+		if (!target || target.project !== projectId) return fail(404, { pkg: { error: 'target not found' } });
+		if (target.kind !== 'publish') return fail(400, { pkg: { error: 'package preview applies to publish targets only' } });
+
+		const registry = getAdapterRegistry();
+		if (!registry.has('publish', target.adapter_id)) {
+			return fail(400, { pkg: { error: new UnknownAdapterError(target.adapter_id, 'publish').message } });
+		}
+		const adapter = registry.getPublisher(target.adapter_id);
+		const secrets = resolverForAdapter(env, adapter);
+		const runOpts = { projectId, cwd: project.root_path, dryRun: true as const, config: target.config, secrets };
+
+		try {
+			const validation = await adapter.validate(runOpts);
+			const pkg = await adapter.package(runOpts);
+			return {
+				pkg: {
+					ok: true as const,
+					adapterId: target.adapter_id,
+					target: pkg.target,
+					valid: validation.ok,
+					blockers: validation.blockers,
+					warnings: [...new Set([...validation.warnings, ...pkg.warnings])],
+					artifact: pkg.artifact ?? null,
+					summary: pkg.summary,
+					steps: pkg.steps
+				}
+			};
+		} catch (err) {
+			return fail(500, { pkg: { error: (err as Error).message } });
 		}
 	},
 

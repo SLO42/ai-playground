@@ -212,7 +212,7 @@
 		padding: var(--pad-control) var(--space-5);
 		border: var(--border-width) solid transparent;
 		border-radius: var(--radius-sm);
-		font: var(--weight-medium) var(--text-sm) / 1 var(--font-sans);
+		font: var(--weight-medium) var(--text-sm) / 1 var(--font-body);
 		cursor: pointer;
 		background: var(--color-accent);
 		color: var(--color-on-accent);

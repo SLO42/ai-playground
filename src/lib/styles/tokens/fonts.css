@@ -1,13 +1,16 @@
 /* ============================================================================
    ai-playground v2 — WEBFONTS
-   Lastik (self-hosted, the operator's brand display/UI typeface) for sans/UI.
-   JetBrains Mono (Google) stays for code/ids/paths/transcripts/SurrealQL —
-   monospacing is functional there (alignment, tabular numerals).
+   Lastik (self-hosted, the operator's brand typeface) is the DISPLAY face —
+   headings/titles/brand only (--font-display, task 14.1). JetBrains Mono
+   (Google) is the body/UI face app-wide (--font-body = --font-mono): this is
+   a control-plane app, monospacing is functional (alignment, tabular
+   numerals, readability of ids/paths/transcripts/SurrealQL).
 
    D-034 license: Lastik font binaries MUST NOT be committed. They are
    provisioned at build into an UNCOMMITTED `static/fonts/` (gitignored), and
    referenced here at the served path `/fonts/*`. If absent, the
-   --font-sans fallback chain (system sans) resolves cleanly — no FOIT lockup.
+   --font-display fallback chain (system sans) resolves cleanly — no FOIT
+   lockup.
    ============================================================================ */
 
 /* JetBrains Mono is imported from the app.css entry (hoisted above Tailwind so
@@ -24,7 +27,7 @@
      `local()` is listed FIRST so an operator who has Lastik installed system-wide
      loads it with ZERO network request (no 404 at all). The `url()` sources are a
      progressive enhancement: when the operator drops the woff2 into static/fonts/
-     they are served; when absent, font-display:swap + the --font-sans system
+     they are served; when absent, font-display:swap + the --font-display system
      fallback chain render text cleanly with no FOIT lockup and no layout break. */
   src: local('Lastik'),
        url('/fonts/LastikFreeFont-Free.woff2') format('woff2'),

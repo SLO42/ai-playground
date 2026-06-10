@@ -1,13 +1,24 @@
 /* ============================================================================
    ai-playground v2 — TYPOGRAPHY TOKENS
-   Mono is first-class (UI-SPEC §4). Sans for UI prose; mono for code,
-   transcripts, record ids, paths, SurrealQL, numerics.
+   Mono is first-class (UI-SPEC §4) — and since task 14.1 (operator directive)
+   mono IS the body/UI face app-wide: this is a control-plane app, so all
+   non-heading text (body, labels, tables, buttons, inputs, statusbar) renders
+   monospace. Lastik (the operator-purchased display face, D-034) remains the
+   face for headings/titles/brand ONLY.
    ============================================================================ */
 
 :root {
   /* ---- Families ------------------------------------------------------- */
-  --font-sans: 'Lastik', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+  /* Display face: headings (h1–h6), page/card/modal titles, brand/logo. */
+  --font-display: 'Lastik', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  /* Mono face: code, transcripts, ids, paths, SurrealQL, numerics.
+     JetBrains Mono is OFL via the Google @import — no binaries committed. */
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+  /* Body/UI face: everything that is not a heading/title (14.1) = mono. */
+  --font-body: var(--font-mono);
+  /* DEPRECATED alias — kept so stale consumers/docs resolve; new code uses
+     --font-display (headings) or --font-body (everything else). */
+  --font-sans: var(--font-display);
 
   /* ---- Size scale (role-named; desktop-dense) ------------------------- */
   --text-2xs:   11px;   /* badges, tier chips, dense table meta            */
@@ -37,16 +48,20 @@
   --tracking-tight:  -0.01em;  /* large display sizes                      */
   --tracking-normal: 0;
   --tracking-wide:   0.02em;   /* small-caps labels                        */
-  --tracking-caps:   0.08em;   /* UPPERCASE micro-labels / eyebrows        */
+  --tracking-caps:   0.06em;   /* UPPERCASE micro-labels / eyebrows (mono
+                                  glyphs already run wide — 0.08em pushed
+                                  dense eyebrows past their columns, 14.1)  */
 
   /* ---- Semantic type aliases ----------------------------------------- */
-  --type-display:    var(--weight-semibold) var(--text-3xl)/var(--leading-tight) var(--font-sans);
-  --type-h1:         var(--weight-semibold) var(--text-2xl)/var(--leading-tight) var(--font-sans);
-  --type-h2:         var(--weight-semibold) var(--text-xl)/var(--leading-snug) var(--font-sans);
-  --type-h3:         var(--weight-semibold) var(--text-lg)/var(--leading-snug) var(--font-sans);
-  --type-body:       var(--weight-regular) var(--text-base)/var(--leading-normal) var(--font-sans);
-  --type-body-sm:    var(--weight-regular) var(--text-sm)/var(--leading-normal) var(--font-sans);
-  --type-label:      var(--weight-medium) var(--text-xs)/var(--leading-snug) var(--font-sans);
+  /* Headings/titles = display face (Lastik). */
+  --type-display:    var(--weight-semibold) var(--text-3xl)/var(--leading-tight) var(--font-display);
+  --type-h1:         var(--weight-semibold) var(--text-2xl)/var(--leading-tight) var(--font-display);
+  --type-h2:         var(--weight-semibold) var(--text-xl)/var(--leading-snug) var(--font-display);
+  --type-h3:         var(--weight-semibold) var(--text-lg)/var(--leading-snug) var(--font-display);
+  /* Body/UI/labels = mono body face (14.1). */
+  --type-body:       var(--weight-regular) var(--text-base)/var(--leading-normal) var(--font-body);
+  --type-body-sm:    var(--weight-regular) var(--text-sm)/var(--leading-normal) var(--font-body);
+  --type-label:      var(--weight-medium) var(--text-xs)/var(--leading-snug) var(--font-body);
   --type-mono:       var(--weight-regular) var(--text-sm)/var(--leading-normal) var(--font-mono);
   --type-mono-sm:    var(--weight-regular) var(--text-xs)/var(--leading-normal) var(--font-mono);
 }

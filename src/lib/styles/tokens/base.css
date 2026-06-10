@@ -20,6 +20,11 @@ body {
 
 h1, h2, h3, h4, p, figure { margin: 0; }
 
+/* 14.1: body text is mono app-wide; headings/titles keep the display face.
+   Guard ALL heading elements so an h* styled without an explicit `font:`
+   shorthand never inherits the mono body face. */
+h1, h2, h3, h4, h5, h6 { font-family: var(--font-display); }
+
 a {
   color: var(--color-text-link);
   text-decoration: none;
@@ -56,7 +61,7 @@ code, kbd, pre, samp { font-family: var(--font-mono); }
 
 /* Uppercase micro-label / eyebrow */
 .eyebrow {
-  font: var(--weight-semibold) var(--text-2xs)/1 var(--font-sans);
+  font: var(--weight-semibold) var(--text-2xs)/1 var(--font-body);
   letter-spacing: var(--tracking-caps);
   text-transform: uppercase;
   color: var(--color-text-subtle);

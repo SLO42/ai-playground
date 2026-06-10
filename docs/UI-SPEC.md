@@ -127,7 +127,7 @@ Tailwind v4, CSS-first via `@theme` (D-005). This section defines the token **ro
 | | `high` | `--color-warn` |
 | | `critical` | `--color-error` |
 
-**Type scale**: `--font-sans` = **Lastik** (brand, license-gated — D-034), `--font-mono` = **JetBrains Mono** (OFL). Role-named sizes 2xs 11 → 4xl 48 (base 14). Mono is first-class — transcripts, record ids, paths, SurrealQL, numerics. (Values: DESIGN-SYSTEM §4.)
+**Type scale**: `--font-display` = **Lastik** (brand, license-gated — D-034) for headings/titles/brand ONLY; `--font-body` = `--font-mono` = **JetBrains Mono** (OFL) for ALL non-heading text (operator directive, task 14.1 — mono body app-wide for this control-plane app). Role-named sizes 2xs 11 → 4xl 48 (base 14). Mono is first-class — transcripts, record ids, paths, SurrealQL, numerics. (Values: DESIGN-SYSTEM §4.)
 
 **Spacing / radius / elevation / motion**: 4px spacing scale, radius xs–pill, dark-UI elevation (borders over shadows), motion 80/140/240/420ms with `--ease-out` and a `prefers-reduced-motion`→0ms path that keeps the end-state. Row-enter (opacity+translateY+blur, bounce:0) is implemented in `tokens/base.css`. (Values: DESIGN-SYSTEM §5.)
 

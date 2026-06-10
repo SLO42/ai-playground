@@ -250,6 +250,6 @@
     border-radius: var(--radius-pill);
     background: var(--color-accent);
     color: var(--color-on-accent);
-    font: var(--weight-semibold) 10px / 1 var(--font-sans);
+    font: var(--weight-semibold) 10px / 1 var(--font-body);
   }
 </style>

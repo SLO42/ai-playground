@@ -29,6 +29,10 @@
   --color-surface: var(--teal-850);
   --color-accent: var(--muted-teal);
 
-  --font-sans: 'Lastik', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
-  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+  /* 14.1: mono is the body/UI face app-wide; Lastik is display-only
+     (headings/titles/brand). Token files above remain the source of truth —
+     these literals mirror them for Tailwind utility generation. */
+  --font-display: 'Lastik', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-sans: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'Cascadia Mono', 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
 }

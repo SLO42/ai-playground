@@ -22,7 +22,7 @@
 
 <aside id="app-sidebar" class="sidebar" class:open>
   <div class="brand">
-    <span class="brand-mark mono">Atelier</span>
+    <span class="brand-mark">Atelier</span>
   </div>
   <nav class="nav">
     {#each groups as group (group.title)}
@@ -83,6 +83,9 @@
     border-bottom: var(--border-width) solid var(--color-border);
   }
   .brand-mark {
+    /* Brand/logo keeps the display face (14.1 — mono is for body text only). */
+    font-family: var(--font-display);
+    font-weight: var(--weight-semibold);
     font-size: var(--text-sm);
     color: var(--color-text-accent);
   }

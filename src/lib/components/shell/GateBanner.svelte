@@ -67,7 +67,7 @@
 		flex: 0 0 auto;
 		padding: var(--space-1) var(--space-3);
 		border-radius: var(--radius-xs);
-		font: var(--weight-semibold) var(--text-2xs) / 1.4 var(--font-sans);
+		font: var(--weight-semibold) var(--text-2xs) / 1.4 var(--font-body);
 		letter-spacing: var(--tracking-caps);
 		text-transform: uppercase;
 		color: var(--color-text-inverse);

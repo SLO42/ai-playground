@@ -13,6 +13,11 @@
      3. Tab/count badges must not concatenate into the accessible name
         ("Tasks2"): any <button> whose content includes a count badge must
         carry an explicit aria-label, and the badge must be aria-hidden.
+     4. Error pages are title-gated too (14.3 DoD-review fix): app.html no
+        longer carries a static <title> fallback, so without a root
+        +error.svelte declaring its own <svelte:head><title>, 404/500
+        responses ship NO title at all (WCAG 2.4.2 Level A). The walker
+        therefore collects +error.svelte alongside +page.svelte.
    ============================================================================ */
 
 import { describe, it, expect } from 'vitest';
@@ -22,12 +27,13 @@ import { dirname, join, relative } from 'node:path';
 
 const ROUTES = dirname(fileURLToPath(import.meta.url));
 
-/** Every +page.svelte under src/routes (recursive). */
+/** Every +page.svelte AND +error.svelte under src/routes (recursive) — error
+ *  pages are user-facing routes too and must pass the same title gate. */
 function routePages(dir = ROUTES, acc: string[] = []): string[] {
   for (const name of readdirSync(dir)) {
     const p = join(dir, name);
     if (statSync(p).isDirectory()) routePages(p, acc);
-    else if (name === '+page.svelte') acc.push(p);
+    else if (name === '+page.svelte' || name === '+error.svelte') acc.push(p);
   }
   return acc;
 }
@@ -75,6 +81,36 @@ describe('per-route <title> (14.3f) — no route ships the bare static "Atelier"
   it('titles are unique across routes (each page is findable in history/tabs)', () => {
     const titles = pages.map((p) => titleOf(p.src));
     expect(new Set(titles).size).toBe(titles.length);
+  });
+});
+
+describe('error pages ship a <title> (14.3 DoD-review fix — WCAG 2.4.2)', () => {
+  // app.html intentionally has no static <title> (per-route titles own the
+  // head), so the root error boundary is the ONLY thing standing between a
+  // 404/500 response and an untitled document. Live-verified regression:
+  // GET /no-such-route returned 404 HTML with no <title> element at all.
+  const errorPage = pages.find((p) => p.rel === '+error.svelte');
+
+  it('root +error.svelte exists (deleting it untitles every 404/500 response)', () => {
+    expect(errorPage, 'src/routes/+error.svelte must exist').toBeTruthy();
+  });
+
+  it('its title is status-aware and on-pattern', () => {
+    expect(errorPage).toBeTruthy();
+    const title = titleOf(errorPage!.src);
+    expect(title, '+error.svelte must declare <svelte:head><title>').toBeTruthy();
+    expect(title!).toMatch(/ — Atelier$/);
+    // Status-aware: the title must be driven by page.status (404 vs failure),
+    // not a hardcoded string that lies about non-404 errors (F-008 honesty).
+    expect(title!).toMatch(/\{/);
+    expect(errorPage!.src).toMatch(/page\.status/);
+  });
+
+  it('app.html still has no static <title> (the per-route pattern owns the head)', () => {
+    // Guards the premise: if a static title ever returns to app.html it would
+    // double-title every page; if this fails, revisit the error-page gate.
+    const appHtml = readFileSync(join(ROUTES, '..', 'app.html'), 'utf8');
+    expect(appHtml).not.toMatch(/<title[\s>]/i);
   });
 });
 

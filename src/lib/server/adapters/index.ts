@@ -12,6 +12,13 @@ export * from './secrets';
 export * from './registry';
 export * from './contract';
 export {
+	buildAdapterCatalog,
+	installedIds,
+	isInstalled,
+	ADAPTER_KINDS,
+	type CatalogEntry
+} from './catalog';
+export {
 	NpmPublisherAdapter,
 	ThunderstorePublisherAdapter,
 	GitHubReleasesPublisherAdapter,
@@ -21,8 +28,11 @@ export {
 	runTargetAction,
 	confirmTokenFor,
 	GateConfirmError,
+	runSyncTarget,
 	type RunTargetActionInput,
-	type RunTargetActionResult
+	type RunTargetActionResult,
+	type RunSyncTargetInput,
+	type RunSyncTargetResult
 } from './driver';
 
 import { AdapterRegistry } from './registry';

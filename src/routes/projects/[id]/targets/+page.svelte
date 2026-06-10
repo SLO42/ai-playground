@@ -21,10 +21,11 @@
 
   const connected = $derived(data.connected);
   const projectName = $derived(data.projectName ?? data.projectId);
-  const kinds = $derived(data.kinds ?? (['publish', 'deploy'] as const));
+  const kinds = $derived(data.kinds ?? (['publish', 'deploy', 'sync'] as const));
   const catalog = $derived(data.catalog ?? []);
   const targets = $derived(data.targets ?? []);
   const runs = $derived(data.runs ?? []);
+  const incidents = $derived(data.incidents ?? []);
   const loadError = $derived('error' in data ? (data.error as string | undefined) : undefined);
   const slug = $derived(page.params.id);
 
@@ -33,13 +34,18 @@
   const pkgResult = $derived(form && 'pkg' in form ? (form.pkg as Record<string, unknown>) : undefined);
 
   // Declare-form local state.
-  let declareKind = $state<'publish' | 'deploy'>('publish');
+  let declareKind = $state<'publish' | 'deploy' | 'sync'>('publish');
   let declareAdapterId = $state('');
+  let declareCustomId = $state('');
   let declareLabel = $state('');
   let declareConfig = $state('');
+  let declareSecretRef = $state('');
   let declareDefault = $state(true);
   let declaring = $state(false);
   let running = $state(false);
+  // CUSTOM-id mode: declare an adapter id the core does not ship (the D-037 scale story). When on,
+  // the built-in picker is bypassed and the operator types a novel adapter id.
+  let useCustom = $state(false);
 
   // The adapters selectable for the chosen kind (the registry catalog, filtered).
   const adaptersForKind = $derived(catalog.filter((a) => a.kind === declareKind));
@@ -53,13 +59,15 @@
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
   }
 
-  // Live updates: a target or run row change re-runs the server loader.
+  // Live updates: a target / run / sync-incident row change re-runs the server loader.
   $effect(() => {
     const offT = stream.onDbChange('project_target', () => void invalidate('app:targets'));
     const offR = stream.onDbChange('target_run', () => void invalidate('app:targets'));
+    const offI = stream.onDbChange('sync_incident', () => void invalidate('app:targets'));
     return () => {
       offT();
       offR();
+      offI();
     };
   });
 </script>
@@ -144,14 +152,37 @@
               {#each kinds as k (k)}<option value={k}>{k}</option>{/each}
             </select>
           </label>
-          <label class="field grow">
-            <span class="field-label">Adapter</span>
-            <select class="pm-input mono" name="adapterId" bind:value={declareAdapterId} disabled={declaring}>
-              <option value="" disabled selected>Choose an adapter…</option>
-              {#each adaptersForKind as a (a.id)}<option value={a.id}>{a.label} ({a.id})</option>{/each}
-            </select>
-          </label>
+          {#if !useCustom}
+            <label class="field grow">
+              <span class="field-label">Adapter</span>
+              <select class="pm-input mono" name="adapterId" bind:value={declareAdapterId} disabled={declaring}>
+                <option value="" disabled selected>Choose an adapter…</option>
+                {#each adaptersForKind as a (a.id)}<option value={a.id}>{a.label} ({a.id})</option>{/each}
+              </select>
+            </label>
+          {:else}
+            <label class="field grow">
+              <span class="field-label">Custom adapter id</span>
+              <input
+                class="pm-input mono"
+                type="text"
+                name="customAdapterId"
+                bind:value={declareCustomId}
+                placeholder="my-cdn"
+                pattern="[a-z0-9][a-z0-9_\-]*"
+                disabled={declaring}
+              />
+            </label>
+          {/if}
         </div>
+        <label class="check custom-toggle">
+          <input type="checkbox" bind:checked={useCustom} disabled={declaring} />
+          <span class="check-label">
+            Declare a <strong>custom</strong> adapter id (a novel process the core does not ship —
+            the D-037 scale story). It will show <em>adapter not installed</em> until its adapter is
+            registered.
+          </span>
+        </label>
         <label class="field">
           <span class="field-label">Label (optional)</span>
           <input class="pm-input" type="text" name="label" bind:value={declareLabel} placeholder="defaults to the adapter id" disabled={declaring} />
@@ -159,6 +190,18 @@
         <label class="field">
           <span class="field-label">Config (JSON object — may reference secrets by NAME only)</span>
           <textarea class="pm-input mono config" name="config" rows="3" bind:value={declareConfig} placeholder={'{ "host": "static.example.com", "publishDir": "build" }'} disabled={declaring}></textarea>
+        </label>
+        <label class="field">
+          <span class="field-label">Named-secret reference (env-var NAME only — never a value, D-026)</span>
+          <input
+            class="pm-input mono"
+            type="text"
+            name="secretRef"
+            bind:value={declareSecretRef}
+            placeholder="THUNDERSTORE_TOKEN"
+            pattern="[A-Z][A-Z0-9_]*"
+            disabled={declaring}
+          />
         </label>
         <div class="field-row checks">
           <label class="check">
@@ -170,7 +213,11 @@
             <span class="check-label">Enabled</span>
           </label>
         </div>
-        <button class="btn primary" type="submit" disabled={declaring || !declareAdapterId}>
+        <button
+          class="btn primary"
+          type="submit"
+          disabled={declaring || (useCustom ? !declareCustomId.trim() : !declareAdapterId)}
+        >
           {declaring ? 'Declaring…' : 'Declare target'}
         </button>
       </form>
@@ -180,6 +227,9 @@
         {:else if 'ok' in declareResult}
           <p class="result-head" role="status">
             Declared <span class="mono">{declareResult.adapterId}</span> ({declareResult.kind}).
+            {#if declareResult.installed === false}
+              <span class="not-installed-note">Adapter not installed — runs fail closed honestly until it is registered.</span>
+            {/if}
           </p>
         {/if}
       {/if}
@@ -202,11 +252,63 @@
                 <span class="mono adapter-id">{t.adapter_id}</span>
                 {#if t.is_default}<span class="badge" data-on={true}>default</span>{/if}
                 {#if !t.enabled}<span class="badge">disabled</span>{/if}
+                {#if t.installed}
+                  <span class="badge" data-on={true}>installed</span>
+                {:else}
+                  <span class="badge" data-warn={true} title="No adapter registered for this id — the D-037 scale story.">adapter not installed</span>
+                {/if}
               </div>
               {#if Object.keys(t.config).length > 0}
                 <pre class="config-view mono">{JSON.stringify(t.config, null, 2)}</pre>
               {/if}
+              <!-- Per-target status: the most recent run + its honest result (F-008). -->
+              {#if t.lastRun}
+                <p class="target-status mono">
+                  last run {fmtTime(t.lastRun.at)} ·
+                  <span class="run-mode">{t.lastRun.dry_run ? 'dry-run' : 'real'}</span> ·
+                  <span class="run-state" data-ok={t.lastRun.ok}>{t.lastRun.ok ? 'ok' : 'incomplete'}</span>
+                </p>
+              {:else}
+                <p class="target-status mono muted">no runs yet</p>
+              {/if}
               <div class="target-actions">
+                {#if t.kind === 'sync'}
+                  <!-- Sync dry-run / real run through the registry + the unified ledger (12.4a). -->
+                  <form
+                    method="POST"
+                    action="?/syncRun"
+                    use:enhance={() => {
+                      running = true;
+                      return async ({ update }) => {
+                        await update({ reset: false });
+                        running = false;
+                      };
+                    }}
+                  >
+                    <input type="hidden" name="targetId" value={t.id} />
+                    <input type="hidden" name="dryRun" value="on" />
+                    <button class="btn" type="submit" disabled={running || !t.enabled || !t.installed}>
+                      {running ? 'Running…' : 'Dry-run sync'}
+                    </button>
+                  </form>
+                  <form
+                    method="POST"
+                    action="?/syncRun"
+                    use:enhance={() => {
+                      running = true;
+                      return async ({ update }) => {
+                        await update({ reset: false });
+                        running = false;
+                      };
+                    }}
+                  >
+                    <input type="hidden" name="targetId" value={t.id} />
+                    <input type="hidden" name="dryRun" value="off" />
+                    <button class="btn" type="submit" disabled={running || !t.enabled || !t.installed}>
+                      {running ? 'Running…' : 'Run sync'}
+                    </button>
+                  </form>
+                {/if}
                 {#if t.kind === 'publish'}
                   <!-- Package & validate: preflight + assemble the zip; show its contents (no upload). -->
                   <form
@@ -226,24 +328,26 @@
                     </button>
                   </form>
                 {/if}
-                <!-- Dry-run: drive the gated driver in plan-only mode. -->
-                <form
-                  method="POST"
-                  action="?/dryRun"
-                  use:enhance={() => {
-                    running = true;
-                    return async ({ update }) => {
-                      await update({ reset: false });
-                      running = false;
-                    };
-                  }}
-                >
-                  <input type="hidden" name="kind" value={t.kind} />
-                  <input type="hidden" name="targetId" value={t.id} />
-                  <button class="btn" type="submit" disabled={running || !t.enabled}>
-                    {running ? 'Running…' : `Dry-run ${t.kind}`}
-                  </button>
-                </form>
+                {#if t.kind === 'publish' || t.kind === 'deploy'}
+                  <!-- Dry-run: drive the gated driver in plan-only mode. -->
+                  <form
+                    method="POST"
+                    action="?/dryRun"
+                    use:enhance={() => {
+                      running = true;
+                      return async ({ update }) => {
+                        await update({ reset: false });
+                        running = false;
+                      };
+                    }}
+                  >
+                    <input type="hidden" name="kind" value={t.kind} />
+                    <input type="hidden" name="targetId" value={t.id} />
+                    <button class="btn" type="submit" disabled={running || !t.enabled}>
+                      {running ? 'Running…' : `Dry-run ${t.kind}`}
+                    </button>
+                  </form>
+                {/if}
                 <form
                   method="POST"
                   action="?/remove"
@@ -357,6 +461,25 @@
               <span class="run-mode mono">{r.dry_run ? 'dry-run' : 'real'}</span>
               <span class="run-state" data-ok={r.ok}>{r.ok ? 'ok' : 'incomplete'}</span>
               <span class="run-summary">{r.summary}</span>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+    </div>
+
+    <!-- Sync incidents (real sync_incident rows — failures, never silent, F-008). -->
+    <div class="card">
+      <h2 class="section-title">Incidents <span class="count mono">{incidents.length}</span></h2>
+      {#if incidents.length === 0}
+        <p class="state-body">No incidents — every sync run has completed cleanly, or none has run.</p>
+      {:else}
+        <ul class="rows" aria-label="sync incidents">
+          {#each incidents as inc (inc.id)}
+            <li class="run-row">
+              <span class="when mono">{fmtTime(inc.at)}</span>
+              <span class="mono adapter-id">{inc.adapter}</span>
+              <span class="run-state" data-ok={false}>incident</span>
+              <span class="run-summary">{inc.message}</span>
             </li>
           {/each}
         </ul>
@@ -491,6 +614,26 @@
     color: var(--color-success, var(--color-running, var(--color-accent)));
     border-color: var(--color-success, var(--color-running, var(--color-accent)));
   }
+  .badge[data-warn='true'] {
+    color: var(--color-blocked, var(--color-warn, var(--color-error, crimson)));
+    border-color: var(--color-blocked, var(--color-warn, var(--color-error, crimson)));
+  }
+  .not-installed-note {
+    color: var(--color-blocked, var(--color-warn, var(--color-text-muted)));
+    font-weight: 500;
+  }
+  .custom-toggle { align-items: flex-start; }
+  .custom-toggle .check-label { color: var(--color-text-muted); }
+  .target-status {
+    font-size: 0.72rem;
+    color: var(--color-text-2);
+    margin: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+  .target-status.muted { color: var(--color-text-muted); }
   /* Secret presence (D-026 — presence only) */
   .secrets {
     list-style: none;

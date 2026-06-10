@@ -29,60 +29,55 @@ import {
 	removeTarget,
 	listTargetRuns,
 	runTargetAction,
-	describeAdapterSecrets,
+	runSyncTarget,
 	resolverForAdapter,
+	buildAdapterCatalog,
+	isInstalled,
+	ADAPTER_KINDS,
 	GateConfirmError,
 	UnknownAdapterError,
 	type ProjectTargetRow,
 	type TargetRunRow,
-	type AdapterProbe,
-	type SecretPresence,
-	type AdapterKind,
-	type ActionAdapter
+	type CatalogEntry,
+	type AdapterKind
 } from '$lib/server/adapters';
+import { listSyncIncidents, type SyncIncidentRow } from '$lib/server/sync';
 import { error, fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
-const ACTION_KINDS = ['publish', 'deploy'] as const;
-type ActionKind = (typeof ACTION_KINDS)[number];
+/** All three D-037 families are declarable + driveable from this surface (12.4). */
+const KINDS = ADAPTER_KINDS;
+/** The GATED families (a confirm-token dry-run→publish flow); sync is idempotent, ungated. */
+const GATED_KINDS = ['publish', 'deploy'] as const;
+type GatedKind = (typeof GATED_KINDS)[number];
 
-interface AdapterCatalogEntry {
-	id: string;
-	label: string;
-	kind: AdapterKind;
-	probe: AdapterProbe;
-	secrets: SecretPresence[];
+/** A declared target enriched with its honest per-target status (last run + open incidents). */
+export interface TargetView extends ProjectTargetRow {
+	/** True iff the target's adapter id is a REGISTERED adapter (false → "adapter not installed"). */
+	installed: boolean;
+	/** The most recent run through this target, or null (honest — never fabricated). */
+	lastRun: TargetRunRow | null;
 }
 
 export interface TargetsData {
 	connected: boolean;
 	projectId: string;
 	projectName?: string;
-	kinds: readonly ActionKind[];
-	/** The registered adapters the project can choose from (built-ins + custom), with probes. */
-	catalog: AdapterCatalogEntry[];
-	/** The project's declared targets (real project_target rows). */
-	targets: ProjectTargetRow[];
-	/** Recent gated-action runs (real target_run rows — never silent, F-008). */
+	kinds: readonly AdapterKind[];
+	/** The registered adapters the project can choose from (all three families), with probes. */
+	catalog: CatalogEntry[];
+	/** The project's declared targets (real project_target rows) + per-target status. */
+	targets: TargetView[];
+	/** Recent runs across all families (real target_run rows — never silent, F-008). */
 	runs: TargetRunRow[];
+	/** Recent sync incidents (failures — never silent, F-008). */
+	incidents: SyncIncidentRow[];
 	error?: string;
-}
-
-/** Probe + secret-presence for one adapter (honest — never throws; D-026 presence only). */
-async function describeAdapter(adapter: ActionAdapter, cwd: string): Promise<AdapterCatalogEntry> {
-	const secrets = describeAdapterSecrets(env, adapter);
-	const resolver = resolverForAdapter(env, adapter);
-	let probe: AdapterProbe;
-	try {
-		probe = await adapter.probe({ cwd, secrets: resolver });
-	} catch (err) {
-		probe = { available: false, reason: (err as Error).message };
-	}
-	return { id: adapter.id, label: adapter.label, kind: adapter.kind, probe, secrets };
 }
 
 export const load: PageServerLoad = async ({ params, depends }): Promise<TargetsData> => {
 	depends('app:targets');
+	depends('app:sync');
 
 	let projectId: string;
 	try {
@@ -93,37 +88,47 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<Targets
 
 	const db = tryGetDb();
 	if (!db) {
-		return { connected: false, projectId, kinds: ACTION_KINDS, catalog: [], targets: [], runs: [] };
+		return { connected: false, projectId, kinds: KINDS, catalog: [], targets: [], runs: [], incidents: [] };
 	}
 
 	try {
 		const project = await getProject(db, projectId);
 		if (!project) throw error(404, 'project not found');
 
-		const registry = getAdapterRegistry();
-		const adapters: ActionAdapter[] = [...registry.listPublishers(), ...registry.listDeployers()];
-		const catalog = await Promise.all(adapters.map((a) => describeAdapter(a, project.root_path)));
-		const targets = await listTargets(db, projectId);
+		// The UNIFIED catalog across all three families — publish/deploy from the AdapterRegistry,
+		// sync from the SyncRegistry (the 12.4 retrofit). Each entry carries an honest probe.
+		const catalog = await buildAdapterCatalog({ env, cwd: project.root_path, db, projectId });
+		const declared = await listTargets(db, projectId);
 		const runs = await listTargetRuns(db, projectId);
+		const incidents = await listSyncIncidents(db, projectId);
+
+		// Per-target status: is the adapter installed (else honest "not installed"), and its last run.
+		const targets: TargetView[] = declared.map((t) => ({
+			...t,
+			installed: isInstalled(t.kind, t.adapter_id),
+			lastRun: runs.find((r) => r.target === t.id || r.adapter_id === t.adapter_id) ?? null
+		}));
 
 		return {
 			connected: true,
 			projectId,
 			projectName: project.name,
-			kinds: ACTION_KINDS,
+			kinds: KINDS,
 			catalog,
 			targets,
-			runs
+			runs,
+			incidents
 		};
 	} catch (err) {
 		if (err && typeof err === 'object' && 'status' in err) throw err;
 		return {
 			connected: false,
 			projectId,
-			kinds: ACTION_KINDS,
+			kinds: KINDS,
 			catalog: [],
 			targets: [],
 			runs: [],
+			incidents: [],
 			error: (err as Error).message
 		};
 	}
@@ -140,11 +145,18 @@ function parseConfig(raw: FormDataEntryValue | null): Record<string, unknown> {
 	return parsed as Record<string, unknown>;
 }
 
+/** A bare adapter id shape: lowercase, digits, dash/underscore — the D-016 id discipline. */
+const ADAPTER_ID_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
+/** A named-secret reference shape: an env-var NAME (UPPER_SNAKE), never a value (D-026). */
+const SECRET_NAME_RE = /^[A-Z][A-Z0-9_]{0,63}$/;
+
 export const actions: Actions = {
 	/**
-	 * Declare (upsert) a per-project target: {adapterId, config} for a kind. The adapter id is
-	 * validated against the registry — an UNKNOWN id fails CLOSED with an honest error (D-037).
-	 * Config is a JSON object; it may reference secrets by NAME only (D-026), never a value.
+	 * Declare (upsert) a per-project target: {adapterId, config} for a kind (publish · deploy ·
+	 * sync). The adapter id may be a BUILT-IN or a CUSTOM id the core does not ship — a custom id
+	 * is PERSISTED honestly (the D-037 scale story); the surface marks it "adapter not installed"
+	 * and the driver fails closed at run time. Config is a JSON object; it may reference secrets by
+	 * NAME only (D-026), captured in a dedicated `secret_ref` field — never a value.
 	 */
 	declare: async ({ params, request }) => {
 		let projectId: string;
@@ -157,16 +169,17 @@ export const actions: Actions = {
 		if (!db) return fail(503, { declare: { error: 'Database not connected — start SurrealDB and retry.' } });
 
 		const form = await request.formData();
-		const kind = String(form.get('kind') ?? '') as ActionKind;
-		if (!ACTION_KINDS.includes(kind)) return fail(400, { declare: { error: 'kind must be publish or deploy' } });
-		const adapterId = String(form.get('adapterId') ?? '').trim();
-		if (!adapterId) return fail(400, { declare: { error: 'choose an adapter' } });
+		const kind = String(form.get('kind') ?? '') as AdapterKind;
+		if (!KINDS.includes(kind)) return fail(400, { declare: { error: 'kind must be publish, deploy or sync' } });
 
-		// Fail CLOSED on an unknown adapter id (D-037) — surface it honestly, never persist a dud.
-		const registry = getAdapterRegistry();
-		if (!registry.has(kind, adapterId)) {
+		// The adapter id comes EITHER from the built-in picker OR the custom-id field (D-037 scale).
+		const builtinId = String(form.get('adapterId') ?? '').trim();
+		const customId = String(form.get('customAdapterId') ?? '').trim();
+		const adapterId = customId || builtinId;
+		if (!adapterId) return fail(400, { declare: { error: 'choose a built-in adapter or enter a custom adapter id' } });
+		if (!ADAPTER_ID_RE.test(adapterId)) {
 			return fail(400, {
-				declare: { error: new UnknownAdapterError(adapterId, kind).message }
+				declare: { error: 'adapter id must be lowercase letters, digits, dash or underscore (e.g. my-cdn)' }
 			});
 		}
 
@@ -176,10 +189,24 @@ export const actions: Actions = {
 		} catch (err) {
 			return fail(400, { declare: { error: `config: ${(err as Error).message}` } });
 		}
+
+		// Named-secret REFERENCE (D-026) — a NAME only. Stored in config.secret_ref so the adapter
+		// (and the operator) know which .env var powers a real action. A VALUE is never accepted.
+		const secretRef = String(form.get('secretRef') ?? '').trim();
+		if (secretRef) {
+			if (!SECRET_NAME_RE.test(secretRef)) {
+				return fail(400, {
+					declare: { error: 'secret reference must be an env-var NAME (UPPER_SNAKE_CASE) — never a value (D-026)' }
+				});
+			}
+			config = { ...config, secret_ref: secretRef };
+		}
+
 		const label = String(form.get('label') ?? '').trim() || undefined;
 		const isDefault = form.get('isDefault') === 'on';
 		const enabled = form.get('enabled') !== 'off';
 
+		const installed = isInstalled(kind, adapterId);
 		try {
 			const t = await declareTarget(db, {
 				project: projectId,
@@ -190,9 +217,66 @@ export const actions: Actions = {
 				enabled,
 				isDefault
 			});
-			return { declare: { ok: true as const, id: t.id, adapterId: t.adapter_id, kind: t.kind } };
+			return {
+				declare: { ok: true as const, id: t.id, adapterId: t.adapter_id, kind: t.kind, installed }
+			};
 		} catch (err) {
 			return fail(500, { declare: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * Run a project's CHOSEN sync target (D-037 retrofit, 12.4a) — GitHub task↔issue / board sync
+	 * driven through the registry + the unified `target_run` ledger. Idempotent; the adapter
+	 * degrades honestly (F-008). Default is a dry-run preview; `?dryRun=off` runs for real.
+	 */
+	syncRun: async ({ params, request }) => {
+		let projectId: string;
+		try {
+			projectId = assertRecordId(`project:${params.id}`);
+		} catch {
+			return fail(400, { run: { error: 'invalid project id' } });
+		}
+		const db = tryGetDb();
+		if (!db) return fail(503, { run: { error: 'Database not connected.' } });
+
+		const project = await getProject(db, projectId);
+		if (!project) return fail(404, { run: { error: 'project not found' } });
+
+		const form = await request.formData();
+		let targetId: string | undefined;
+		const rawTarget = String(form.get('targetId') ?? '').trim();
+		if (rawTarget) {
+			try {
+				targetId = assertRecordId(rawTarget);
+			} catch {
+				return fail(400, { run: { error: 'invalid target id' } });
+			}
+		}
+		const dryRun = form.get('dryRun') !== 'off';
+
+		try {
+			const out = await runSyncTarget({
+				db,
+				projectId,
+				cwd: project.root_path,
+				...(targetId ? { targetId } : {}),
+				dryRun
+			});
+			return {
+				run: {
+					ok: out.run.ok,
+					dryRun,
+					kind: 'sync' as const,
+					adapterId: out.target.adapter_id,
+					target: out.result.target,
+					summary: out.run.summary,
+					steps: out.run.steps,
+					warnings: out.result.errors
+				}
+			};
+		} catch (err) {
+			return fail(409, { run: { error: (err as Error).message } });
 		}
 	},
 
@@ -238,8 +322,8 @@ export const actions: Actions = {
 		if (!project) return fail(404, { run: { error: 'project not found' } });
 
 		const form = await request.formData();
-		const kind = String(form.get('kind') ?? '') as ActionKind;
-		if (!ACTION_KINDS.includes(kind)) return fail(400, { run: { error: 'kind must be publish or deploy' } });
+		const kind = String(form.get('kind') ?? '') as GatedKind;
+		if (!GATED_KINDS.includes(kind)) return fail(400, { run: { error: 'kind must be publish or deploy' } });
 		let targetId: string | undefined;
 		const rawTarget = String(form.get('targetId') ?? '').trim();
 		if (rawTarget) {
@@ -357,8 +441,8 @@ export const actions: Actions = {
 		if (!project) return fail(404, { run: { error: 'project not found' } });
 
 		const form = await request.formData();
-		const kind = String(form.get('kind') ?? '') as ActionKind;
-		if (!ACTION_KINDS.includes(kind)) return fail(400, { run: { error: 'kind must be publish or deploy' } });
+		const kind = String(form.get('kind') ?? '') as GatedKind;
+		if (!GATED_KINDS.includes(kind)) return fail(400, { run: { error: 'kind must be publish or deploy' } });
 		const confirmToken = String(form.get('confirmToken') ?? '').trim();
 		let targetId: string | undefined;
 		const rawTarget = String(form.get('targetId') ?? '').trim();

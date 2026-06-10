@@ -208,3 +208,97 @@ export async function runTargetAction(input: RunTargetActionInput): Promise<RunT
 
 	return { result, run, confirmToken: token, target };
 }
+
+// ── SYNC family driver (TASK 12.4) ──────────────────────────────────────────────────────
+//
+// Sync is the third D-037 family. It is NOT a gated publish/deploy (no confirm token — a sync is
+// idempotent + reversible, and the issue/board adapters already degrade honestly + record their
+// OWN incidents). But to FINISH the framework we drive a project's DECLARED sync target through
+// the SAME registry + the SAME `target_run` ledger as publish/deploy — so a sync run shows up in
+// the unified run history beside publishes, and an UNKNOWN sync adapter id fails CLOSED the same
+// way (D-037). This is the retrofit (12.4a): GitHub sync resolved + run as a registry adapter.
+
+import { getSyncRegistry } from '../sync';
+import type { SyncDirection, SyncResult } from '../sync/adapter';
+
+export interface RunSyncTargetInput {
+	db: Db;
+	projectId: string;
+	cwd: string;
+	/** A specific sync `project_target` id, OR omit to use the project's default sync target. */
+	targetId?: string;
+	direction?: SyncDirection;
+	dryRun?: boolean;
+}
+
+export interface RunSyncTargetResult {
+	result: SyncResult;
+	run: TargetRunRow;
+	target: ProjectTargetRow;
+}
+
+/**
+ * Drive a project's CHOSEN sync adapter (D-037) through the registry + the unified `target_run`
+ * ledger. Resolves the declared sync target (explicit or default), resolves the adapter from the
+ * SYNC registry (UNKNOWN id fails CLOSED — D-037), runs it idempotently, and RECORDS the attempt
+ * as a `target_run` row (F-008 — the run history is one machine across all three families). The
+ * adapter does its own honest degrade + incident recording, so this never gates with a token.
+ */
+export async function runSyncTarget(input: RunSyncTargetInput): Promise<RunSyncTargetResult> {
+	const dryRun = input.dryRun ?? true;
+	const direction = input.direction ?? 'both';
+	const target = await resolveTarget(input.db, input.projectId, 'sync', input.targetId);
+
+	// Resolve the adapter from the SYNC registry — an unknown id fails CLOSED (D-037).
+	const registry = getSyncRegistry();
+	if (!registry.has(target.adapter_id)) {
+		throw new Error(
+			`no sync adapter registered for id: ${JSON.stringify(target.adapter_id)} — ` +
+				`a project's configured sync target points at an unknown adapter (fail closed, D-037).`
+		);
+	}
+	const adapter = registry.get(target.adapter_id);
+
+	let result: SyncResult;
+	try {
+		result = await adapter.sync(input.db, {
+			projectId: input.projectId,
+			cwd: input.cwd,
+			direction,
+			dryRun
+		});
+	} catch (err) {
+		const summary = `sync via ${target.adapter_id} failed: ${(err as Error).message}`;
+		await recordTargetRun(input.db, {
+			project: input.projectId,
+			target: target.id,
+			kind: 'sync',
+			adapterId: target.adapter_id,
+			dryRun,
+			ok: false,
+			summary,
+			steps: []
+		}).catch(() => {});
+		await recordIncident(input.db, { title: summary, severity: 'error', detail: (err as Error).stack }).catch(() => {});
+		throw err;
+	}
+
+	const ok = result.errors.length === 0;
+	const summary =
+		`sync ${result.direction}${dryRun ? ' (dry-run)' : ''} ${result.target}: ` +
+		`+${result.created} ~${result.updated} ↓${result.pulled} ⇄${result.linked} ·${result.skipped}` +
+		(result.errors.length ? ` (${result.errors.length} error${result.errors.length === 1 ? '' : 's'})` : '');
+	const run = await recordTargetRun(input.db, {
+		project: input.projectId,
+		target: target.id,
+		kind: 'sync',
+		adapterId: target.adapter_id,
+		dryRun,
+		ok,
+		targetRef: result.target,
+		summary,
+		steps: result.items.map((i) => `${i.taskId}: ${i.action}${i.externalId ? ` → #${i.externalId}` : ''}`)
+	});
+
+	return { result, run, target };
+}

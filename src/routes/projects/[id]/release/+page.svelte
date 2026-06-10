@@ -30,14 +30,33 @@
   const connected = $derived(data.connected);
   const projectName = $derived(data.projectName ?? data.projectId);
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
+  const targets = $derived(data.targets ?? []);
+  const slug = $derived(shortId(data.projectId ?? ''));
 
-  // Live updates: when a `workflow_run` row changes, re-run the server loader. SSR-safe —
+  let targetBusy = $state(false);
+  const targetResult = $derived(
+    form && 'target' in form ? (form.target as Record<string, unknown>) : undefined
+  );
+  // The dry-run plan's confirm token is held so the operator can confirm the SAME plan (D-018).
+  const targetDryOk = $derived(targetResult && 'ok' in targetResult && targetResult.dryRun === true);
+
+  function fmtTime(iso: string): string {
+    if (!iso) return '—';
+    const d = new Date(iso);
+    return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
+  }
+
+  // Live updates: a `workflow_run` / target / run row change re-runs the server loader. SSR-safe —
   // $effect runs only in the browser, and the handler is torn down on unmount.
   $effect(() => {
-    const off = stream.onDbChange('workflow_run', () => {
-      void invalidate('app:releases');
-    });
-    return off;
+    const off = stream.onDbChange('workflow_run', () => void invalidate('app:releases'));
+    const offT = stream.onDbChange('project_target', () => void invalidate('app:targets'));
+    const offR = stream.onDbChange('target_run', () => void invalidate('app:targets'));
+    return () => {
+      off();
+      offT();
+      offR();
+    };
   });
 
   /** A stage's status for a run: the step_state value, defaulting to pending. */
@@ -87,6 +106,113 @@
         <p class="form-ok">
           Release {form.release.version} started · run {shortId(form.release.runId)} · {form.release.status}
         </p>
+      {/if}
+    </div>
+
+    <!-- Release targets (D-037) — what this project ships through + the gated dry-run → publish flow. -->
+    <div class="card targets-card">
+      <div class="targets-head">
+        <h2 class="cut-title">Release targets</h2>
+        <a class="manage-link" href={`/projects/${slug}/targets`}>manage targets →</a>
+      </div>
+      <p class="lede targets-lede">
+        The release pipeline drives the project's <em>chosen</em> publish/deploy adapter — not a
+        fixed script. Run a dry-run, review the plan, then confirm the gated publish. A real
+        external publish is deferred until you supply the named credential in
+        <span class="mono">.env</span> (D-026).
+      </p>
+      {#if targets.length === 0}
+        <p class="state-body">
+          No publish or deploy target configured — <a class="inline-link" href={`/projects/${slug}/targets`}>declare one</a>
+          and the pipeline will drive its adapter.
+        </p>
+      {:else}
+        <ul class="target-list" aria-label="release targets">
+          {#each targets as t (t.id)}
+            <li class="target-item">
+              <div class="target-head">
+                <span class="target-label">{t.label}</span>
+                <span class="kind-pill mono">{t.kind}</span>
+                <span class="mono adapter-id">{t.adapter_id}</span>
+                {#if t.is_default}<span class="badge" data-on={true}>default</span>{/if}
+                {#if !t.installed}<span class="badge" data-warn={true}>adapter not installed</span>{/if}
+              </div>
+              {#if t.lastRun}
+                <p class="target-status mono">
+                  last run {fmtTime(t.lastRun.at)} ·
+                  <span class="run-mode">{t.lastRun.dry_run ? 'dry-run' : 'real'}</span> ·
+                  <span class="run-state" data-ok={t.lastRun.ok}>{t.lastRun.ok ? 'ok' : 'incomplete'}</span>
+                </p>
+              {/if}
+              <form
+                method="POST"
+                action="?/targetDryRun"
+                use:enhance={() => {
+                  targetBusy = true;
+                  return async ({ update }) => {
+                    await update({ reset: false });
+                    targetBusy = false;
+                  };
+                }}
+              >
+                <input type="hidden" name="kind" value={t.kind} />
+                <input type="hidden" name="targetId" value={t.id} />
+                <button class="btn outline" type="submit" disabled={targetBusy || !t.enabled || !t.installed}>
+                  {targetBusy ? 'Running…' : `Dry-run ${t.kind}`}
+                </button>
+              </form>
+            </li>
+          {/each}
+        </ul>
+      {/if}
+
+      {#if targetResult}
+        {#if 'error' in targetResult}
+          <p class="form-error" role="alert">{targetResult.error}</p>
+        {:else if 'ok' in targetResult}
+          <div class="run-result" role="status">
+            <p class="result-head">
+              {targetResult.dryRun ? 'Dry-run plan' : targetResult.ok ? 'Action complete' : 'Action did not complete'}
+              · <span class="mono">{targetResult.adapterId}</span> → <span class="mono">{targetResult.targetRef}</span>
+            </p>
+            <p class="state-body">{targetResult.summary}</p>
+            {#if Array.isArray(targetResult.steps) && targetResult.steps.length > 0}
+              <ol class="plan">
+                {#each targetResult.steps as step, i (i)}<li class="plan-step">{step}</li>{/each}
+              </ol>
+            {/if}
+            {#if Array.isArray(targetResult.warnings) && targetResult.warnings.length > 0}
+              <ul class="warnings">
+                {#each targetResult.warnings as w, i (i)}<li class="warning mono">{w}</li>{/each}
+              </ul>
+            {/if}
+            {#if targetDryOk && targetResult.confirmToken}
+              <form
+                method="POST"
+                action="?/targetConfirm"
+                class="confirm-form"
+                use:enhance={() => {
+                  targetBusy = true;
+                  return async ({ update }) => {
+                    await update({ reset: false });
+                    targetBusy = false;
+                  };
+                }}
+              >
+                <input type="hidden" name="kind" value={targetResult.kind} />
+                <input type="hidden" name="confirmToken" value={targetResult.confirmToken} />
+                <p class="confirm-note">
+                  This is a <strong>gated action</strong> (D-018). Confirm to perform the real
+                  {targetResult.kind}. A real external publish/deploy is deferred until you supply
+                  the named credential in <span class="mono">.env</span> (D-026).
+                </p>
+                <button class="btn primary" type="submit" disabled={targetBusy}>
+                  {targetBusy ? 'Confirming…' : `Confirm ${targetResult.kind}`}
+                </button>
+              </form>
+            {/if}
+          </div>
+        {/if}
       {/if}
     </div>
   {/if}
@@ -421,4 +547,145 @@
     font: var(--type-body-sm);
     color: var(--color-success, var(--color-running, var(--color-accent)));
   }
+  /* Release targets (D-037) */
+  .targets-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  .targets-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3, 0.75rem);
+    flex-wrap: wrap;
+  }
+  .manage-link,
+  .inline-link {
+    font: var(--type-body-sm);
+    font-weight: 600;
+    color: var(--color-accent);
+    text-decoration: none;
+  }
+  .manage-link:hover,
+  .inline-link:hover { text-decoration: underline; }
+  .manage-link:focus-visible,
+  .inline-link:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-sm, 6px);
+  }
+  .targets-lede { max-width: 72ch; margin: 0; }
+  .target-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+  }
+  .target-item {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    padding: var(--space-3, 0.6rem);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+  }
+  .target-head {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .target-label {
+    font: var(--type-body-sm);
+    font-weight: 600;
+    color: var(--color-text);
+  }
+  .adapter-id { font-size: 0.74rem; color: var(--color-text-muted); }
+  .kind-pill {
+    font-size: 0.66rem;
+    font-weight: 600;
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm, 6px);
+    color: var(--color-text-2);
+    background: var(--color-surface-card);
+    border: var(--border-width, 1px) solid var(--color-border);
+  }
+  .badge {
+    font-size: 0.66rem;
+    font-weight: 600;
+    padding: 0.1rem 0.5rem;
+    border-radius: var(--radius-sm, 6px);
+    color: var(--color-text-muted);
+    background: var(--color-surface-card);
+    border: var(--border-width, 1px) solid var(--color-border);
+  }
+  .badge[data-on='true'] {
+    color: var(--color-success, var(--color-running, var(--color-accent)));
+    border-color: var(--color-success, var(--color-running, var(--color-accent)));
+  }
+  .badge[data-warn='true'] {
+    color: var(--color-blocked, var(--color-warn, var(--color-error, crimson)));
+    border-color: var(--color-blocked, var(--color-warn, var(--color-error, crimson)));
+  }
+  .target-status {
+    font-size: 0.72rem;
+    color: var(--color-text-2);
+    margin: 0;
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    flex-wrap: wrap;
+  }
+  .run-mode { color: var(--color-text-muted); text-transform: lowercase; }
+  .run-state { font-weight: 600; color: var(--color-text-muted); text-transform: lowercase; }
+  .run-state[data-ok='true'] { color: var(--color-success, var(--color-running, var(--color-accent))); }
+  .btn.outline {
+    color: var(--color-text);
+    background: var(--color-surface-overlay);
+    border-color: var(--color-border);
+  }
+  .run-result {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    border-top: var(--border-width, 1px) solid var(--color-border);
+    padding-top: var(--space-3, 0.75rem);
+  }
+  .result-head {
+    font: var(--type-body-sm);
+    font-weight: 600;
+    color: var(--color-success, var(--color-running, var(--color-accent)));
+  }
+  .plan {
+    margin: 0;
+    padding-left: 1.25rem;
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .warnings {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .warning { font-size: 0.74rem; color: var(--color-warn, var(--color-text-muted)); }
+  .confirm-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: var(--space-3, 0.6rem);
+    background: var(--color-surface-card);
+  }
+  .confirm-note { font: var(--type-body-sm); color: var(--color-text-2); }
 </style>

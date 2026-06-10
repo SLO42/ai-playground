@@ -7,13 +7,35 @@
 // empty, never zero-dressed-as-real. Live: the SSE `workflow_run` watcher re-invalidates
 // this loader so a running release's step_state updates in place (UI-SPEC §1.2).
 
+import { env } from '$env/dynamic/private';
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import { getProject } from '$lib/server/projects/repo';
 import { listReleaseRuns, runRelease, RELEASE_STAGES, type ReleaseRunSummary } from '$lib/server/release';
 import { getBus, getRuntime, DEFAULT_MODEL } from '$lib/server/harness';
 import { assertRecordId } from '$lib/server/db/validate';
+import {
+	listTargets,
+	listTargetRuns,
+	runTargetAction,
+	buildAdapterCatalog,
+	isInstalled,
+	GateConfirmError,
+	type ProjectTargetRow,
+	type TargetRunRow,
+	type CatalogEntry
+} from '$lib/server/adapters';
 import { error, fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
+
+/** The GATED families the release pipeline drives end-to-end (sync lives on the Sync surface). */
+const GATED_KINDS = ['publish', 'deploy'] as const;
+type GatedKind = (typeof GATED_KINDS)[number];
+
+/** A release-relevant target (publish/deploy) + whether its adapter is installed + its last run. */
+export interface ReleaseTargetView extends ProjectTargetRow {
+	installed: boolean;
+	lastRun: TargetRunRow | null;
+}
 
 export interface ReleaseData {
 	connected: boolean;
@@ -21,12 +43,17 @@ export interface ReleaseData {
 	projectName?: string;
 	stages: string[];
 	runs: ReleaseRunSummary[];
+	/** The project's declared publish/deploy targets — what this release ships through (D-037). */
+	targets: ReleaseTargetView[];
+	/** The unified adapter catalog (probe + secret presence) for the publish/deploy families. */
+	catalog: CatalogEntry[];
 	error?: string;
 }
 
 export const load: PageServerLoad = async ({ params, depends }): Promise<ReleaseData> => {
 	// Live re-invalidation key: the SSE workflow_run watcher calls invalidate('app:releases').
 	depends('app:releases');
+	depends('app:targets');
 
 	// Validate the project id at the boundary (D-016) — a malformed param is a 404, not a query.
 	let projectId: string;
@@ -39,20 +66,46 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<Release
 	const stages = [...RELEASE_STAGES];
 	const db = tryGetDb();
 	if (!db) {
-		return { connected: false, projectId, stages, runs: [] };
+		return { connected: false, projectId, stages, runs: [], targets: [], catalog: [] };
 	}
 	try {
 		const project = await getProject(db, projectId);
 		const runs = await listReleaseRuns(db, projectId);
+
+		// The project's publish/deploy targets + per-target status, and the catalog (probe/secrets)
+		// so the release tab shows what it ships through and can drive the gated flow (D-037).
+		const cwd = project?.root_path ?? '';
+		const allTargets = await listTargets(db, projectId);
+		const targetRuns = await listTargetRuns(db, projectId);
+		const catalogAll = await buildAdapterCatalog({ env, cwd, db, projectId });
+		const targets: ReleaseTargetView[] = allTargets
+			.filter((t) => t.kind === 'publish' || t.kind === 'deploy')
+			.map((t) => ({
+				...t,
+				installed: isInstalled(t.kind, t.adapter_id),
+				lastRun: targetRuns.find((r) => r.target === t.id || r.adapter_id === t.adapter_id) ?? null
+			}));
+		const catalog = catalogAll.filter((c) => c.kind === 'publish' || c.kind === 'deploy');
+
 		return {
 			connected: true,
 			projectId,
 			projectName: project?.name,
 			stages,
-			runs
+			runs,
+			targets,
+			catalog
 		};
 	} catch (err) {
-		return { connected: false, projectId, stages, runs: [], error: (err as Error).message };
+		return {
+			connected: false,
+			projectId,
+			stages,
+			runs: [],
+			targets: [],
+			catalog: [],
+			error: (err as Error).message
+		};
 	}
 };
 
@@ -111,6 +164,124 @@ export const actions: Actions = {
 			};
 		} catch (err) {
 			return fail(500, { release: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * Drive the project's CHOSEN publish/deploy target through the gated driver in DRY-RUN (plan
+	 * only — always safe, no creds). The release tab's end-to-end gated flow (D-037/D-018): returns
+	 * the honest plan + the confirm token a follow-up REAL publish needs.
+	 */
+	targetDryRun: async ({ params, request }) => {
+		let projectId: string;
+		try {
+			projectId = assertRecordId(`project:${params.id}`);
+		} catch {
+			return fail(400, { target: { error: 'invalid project id' } });
+		}
+		const db = tryGetDb();
+		if (!db) return fail(503, { target: { error: 'Database not connected.' } });
+		const project = await getProject(db, projectId);
+		if (!project) return fail(404, { target: { error: 'project not found' } });
+
+		const form = await request.formData();
+		const kind = String(form.get('kind') ?? '') as GatedKind;
+		if (!GATED_KINDS.includes(kind)) return fail(400, { target: { error: 'kind must be publish or deploy' } });
+		let targetId: string | undefined;
+		const rawTarget = String(form.get('targetId') ?? '').trim();
+		if (rawTarget) {
+			try {
+				targetId = assertRecordId(rawTarget);
+			} catch {
+				return fail(400, { target: { error: 'invalid target id' } });
+			}
+		}
+
+		try {
+			const out = await runTargetAction({
+				db,
+				env,
+				projectId,
+				cwd: project.root_path,
+				kind,
+				...(targetId ? { targetId } : {}),
+				dryRun: true
+			});
+			return {
+				target: {
+					ok: true as const,
+					dryRun: true,
+					kind,
+					adapterId: out.target.adapter_id,
+					targetRef: out.result.target,
+					summary: out.result.summary,
+					steps: out.result.steps,
+					warnings: out.result.warnings,
+					confirmToken: out.confirmToken
+				}
+			};
+		} catch (err) {
+			return fail(409, { target: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * The gated REAL publish/deploy from the release tab (D-018): requires the confirm token from a
+	 * prior dry-run. The built-in adapters perform NO real external call in this track — they return
+	 * an honest "deferred to operator credentials". A missing/stale token fails CLOSED.
+	 */
+	targetConfirm: async ({ params, request }) => {
+		let projectId: string;
+		try {
+			projectId = assertRecordId(`project:${params.id}`);
+		} catch {
+			return fail(400, { target: { error: 'invalid project id' } });
+		}
+		const db = tryGetDb();
+		if (!db) return fail(503, { target: { error: 'Database not connected.' } });
+		const project = await getProject(db, projectId);
+		if (!project) return fail(404, { target: { error: 'project not found' } });
+
+		const form = await request.formData();
+		const kind = String(form.get('kind') ?? '') as GatedKind;
+		if (!GATED_KINDS.includes(kind)) return fail(400, { target: { error: 'kind must be publish or deploy' } });
+		const confirmToken = String(form.get('confirmToken') ?? '').trim();
+		let targetId: string | undefined;
+		const rawTarget = String(form.get('targetId') ?? '').trim();
+		if (rawTarget) {
+			try {
+				targetId = assertRecordId(rawTarget);
+			} catch {
+				return fail(400, { target: { error: 'invalid target id' } });
+			}
+		}
+
+		try {
+			const out = await runTargetAction({
+				db,
+				env,
+				projectId,
+				cwd: project.root_path,
+				kind,
+				...(targetId ? { targetId } : {}),
+				dryRun: false,
+				confirmToken
+			});
+			return {
+				target: {
+					ok: out.result.ok,
+					dryRun: false,
+					kind,
+					adapterId: out.target.adapter_id,
+					targetRef: out.result.target,
+					summary: out.result.summary,
+					steps: out.result.steps,
+					warnings: out.result.warnings
+				}
+			};
+		} catch (err) {
+			if (err instanceof GateConfirmError) return fail(403, { target: { error: err.message } });
+			return fail(500, { target: { error: (err as Error).message } });
 		}
 	}
 };

@@ -11,6 +11,7 @@ import {
 	StaticHostDeployTarget
 } from './builtins';
 import { getAdapterRegistry, resetAdapterRegistry } from './index';
+import type { AdapterRunResult, PublisherAdapter } from './types';
 import type { GitHubClient, AuthStatus } from '../sync/gh-client';
 
 // TASK 12.1 VERIFY — the contract harness (used by 12.2/12.3) + the built-in adapters. Each
@@ -143,6 +144,58 @@ describe('static-host deploy target — contract', () => {
 		const { resolverForAdapter } = await import('./secrets');
 		const s = await a.status({ cwd: emptyDir, secrets: resolverForAdapter({}, a) });
 		expect(s.state).toBe('unknown');
+	});
+});
+
+describe('contract harness — a FAILED dry-run must explain why (13.4c regression)', () => {
+	/**
+	 * A fixture publisher whose dry-runs FAIL (ok:false) with the given warnings. Every other
+	 * contract obligation is met (honest probe reason, honest validate blockers, a plan, a
+	 * summary) so the ONLY thing under test is the :honest-failure rule.
+	 */
+	function failingPublisher(warnings: string[]): PublisherAdapter {
+		const result: AdapterRunResult = {
+			target: 'example:pkg',
+			dryRun: true,
+			ok: false,
+			summary: 'publish failed', // generic, non-empty — satisfies :honest-summary on its own
+			steps: ['resolve target', 'attempt publish'],
+			warnings
+		};
+		return {
+			id: 'failing-fixture',
+			label: 'Failing Fixture',
+			kind: 'publish',
+			secrets: () => [],
+			probe: async () => ({ available: false, reason: 'fixture adapter — never available' }),
+			validate: async () => ({ ok: false, blockers: ['fixture: not publishable'], warnings: [] }),
+			package: async () => ({ ...result }),
+			publish: async () => ({ ...result })
+		};
+	}
+
+	it('REJECTS a dishonest failing adapter — ok:false with NO failure reason in warnings', async () => {
+		// Before 13.4c the :honest-failure check was dominated by :honest-summary (a non-empty
+		// summary made it vacuously pass), so this dishonest adapter sailed through the harness.
+		const report = await runPublisherContract(failingPublisher([]), { cwd: emptyDir });
+		expect(report.ok).toBe(false);
+		const names = report.violations.map((v) => v.name);
+		expect(names).toContain('package:honest-failure');
+		expect(names).toContain('publish:honest-failure');
+	});
+
+	it('a whitespace-only warning is NOT an explanation', async () => {
+		const report = await runPublisherContract(failingPublisher(['   ']), { cwd: emptyDir });
+		expect(report.violations.map((v) => v.name)).toContain('publish:honest-failure');
+	});
+
+	it('PASSES an honest failing adapter — ok:false + a real failure reason in warnings', async () => {
+		const report = await runPublisherContract(
+			failingPublisher(['EXAMPLE_TOKEN is not set — the registry target cannot be resolved']),
+			{ cwd: emptyDir }
+		);
+		expect(report.violations, JSON.stringify(report.violations)).toHaveLength(0);
+		expect(report.ok).toBe(true);
 	});
 });
 

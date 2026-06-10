@@ -16,6 +16,7 @@ import { assertRecordId } from '$lib/server/db/validate';
 import {
 	listTargets,
 	listTargetRuns,
+	lastRunFor,
 	runTargetAction,
 	buildAdapterCatalog,
 	isInstalled,
@@ -83,7 +84,8 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<Release
 			.map((t) => ({
 				...t,
 				installed: isInstalled(t.kind, t.adapter_id),
-				lastRun: targetRuns.find((r) => r.target === t.id || r.adapter_id === t.adapter_id) ?? null
+				// STRICT target-link match (13.4a) — an adapter_id fallback cross-attributes runs.
+				lastRun: lastRunFor(targetRuns, t.id)
 			}));
 		const catalog = catalogAll.filter((c) => c.kind === 'publish' || c.kind === 'deploy');
 

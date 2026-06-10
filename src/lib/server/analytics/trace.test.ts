@@ -20,7 +20,7 @@ import {
 	type CcSpawnPlan,
 	type RuntimeEvent
 } from '../runtime/index';
-import { traceAction } from './trace';
+import { traceAction, iso } from './trace';
 
 // TASK 2.4 VERIFY (part 3) — "pick an action and trace its how/why chain."
 // We build ONE real action end-to-end (no live model: a routing decision + a
@@ -197,5 +197,53 @@ describe('traceAction — the how/why chain for one action (2.4 VERIFY)', () => 
 		const t = await createTask(db, { project: projectId, title: 'untouched', description: 'never run' });
 		const trace = await traceAction(db, t.id);
 		expect(trace.steps).toEqual([]);
+	});
+
+	it('every step carries the REAL row datetime — never a fabricated "now" (13.4b)', async () => {
+		// Before the 13.4b fix iso() stamped new Date().toISOString() for anything that was not a
+		// JS Date or string — which is EVERY datetime the surrealdb SDK returns (its DateTime
+		// wrapper), so the whole chain carried fake per-call timestamps (the F-008/F-013 class).
+		const trace = await traceAction(db, taskId);
+		expect(trace.steps.length).toBeGreaterThan(0);
+		for (const s of trace.steps) {
+			expect(s.at, `${s.source} ${s.id}`).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}/);
+			expect(Number.isNaN(Date.parse(s.at)), `${s.source} ${s.id} parseable`).toBe(false);
+		}
+
+		// The session step's `at` is the ROW's started_at, verbatim — not a minted value.
+		const sessionStep = trace.steps.find((s) => s.source === 'session')!;
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+			`SELECT started_at FROM session ORDER BY started_at ASC LIMIT 1;`
+		);
+		expect(sessionStep.at).toBe(String(rows[0].started_at));
+
+		// And the chain is STABLE across calls: a fabricated "now" changes per invocation.
+		await new Promise((r) => setTimeout(r, 10));
+		const again = await traceAction(db, taskId);
+		expect(again.steps.map((s) => s.at)).toEqual(trace.steps.map((s) => s.at));
+	});
+});
+
+describe('iso — datetime coercion never fabricates (13.4b regression)', () => {
+	it('absent → empty string, NEVER a fake "now" (F-008/F-013)', () => {
+		expect(iso(undefined)).toBe('');
+		expect(iso(null)).toBe('');
+		expect(iso(42)).toBe('');
+		expect(iso({})).toBe(''); // stringifies to garbage, not a datetime → honest ''
+		expect(iso('not a datetime')).toBe('');
+	});
+
+	it('an invalid Date → empty string', () => {
+		expect(iso(new Date('not-a-date'))).toBe('');
+	});
+
+	it('a real datetime round-trips exactly', () => {
+		const d = new Date('2026-06-10T12:34:56.789Z');
+		expect(iso(d)).toBe('2026-06-10T12:34:56.789Z');
+		// An already-ISO string passes through unchanged.
+		expect(iso('2026-06-10T12:34:56.789Z')).toBe('2026-06-10T12:34:56.789Z');
+		// The SDK DateTime wrapper shape (nanosecond ISO toString) passes through verbatim.
+		const wrapper = { toString: () => '2026-06-10T16:39:38.2374435Z' };
+		expect(iso(wrapper)).toBe('2026-06-10T16:39:38.2374435Z');
 	});
 });

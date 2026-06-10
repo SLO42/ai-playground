@@ -8,7 +8,8 @@
 //   • dry-run NEVER mutates externally — it returns dryRun:true and a non-empty plan.
 //   • the SecretResolver is CONFINED — reading an undeclared secret throws (D-026).
 //   • declared secrets() are well-formed (env-var name + label + purpose).
-//   • a result envelope is honest — ok:false carries a reason in the summary/warnings.
+//   • a result envelope is honest — ok:false carries a non-empty failure reason in warnings
+//     (beyond the always-required summary — 13.4c).
 //
 // It uses a no-op env + a confined resolver built from the adapter's own declarations, so the
 // harness performs NO real publish/deploy and needs no credentials.
@@ -99,11 +100,16 @@ function checkDryRunResult(name: string, r: AdapterRunResult): ContractCheck[] {
 		{ name: `${name}:dryRun-flag`, ok: r.dryRun === true, detail: 'dry-run must set dryRun:true' },
 		{ name: `${name}:has-plan`, ok: Array.isArray(r.steps) && r.steps.length > 0, detail: 'dry-run must return a non-empty plan' },
 		{ name: `${name}:honest-summary`, ok: typeof r.summary === 'string' && r.summary.length > 0 },
-		// When ok:false the result must carry a reason somewhere (summary or warnings) — F-008.
+		// When ok:false the result must EXPLAIN the failure BEYOND the (always-required) summary:
+		// at least one non-empty warning carrying the failure reason (F-008). The summary alone
+		// does not satisfy this — :honest-summary already enforces summary presence for EVERY
+		// result, so a summary-presence disjunct here could never fail (13.4c).
 		{
 			name: `${name}:honest-failure`,
-			ok: r.ok || r.summary.length > 0 || r.warnings.length > 0,
-			detail: 'a failed result must explain why'
+			ok:
+				r.ok !== false ||
+				(Array.isArray(r.warnings) && r.warnings.some((w) => typeof w === 'string' && w.trim().length > 0)),
+			detail: 'a FAILED result (ok:false) must carry a non-empty failure reason in warnings'
 		}
 	];
 }

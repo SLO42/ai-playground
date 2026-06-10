@@ -13,7 +13,9 @@ import {
 	getTarget,
 	resolveDefaultTarget,
 	removeTarget,
-	listTargetRuns
+	listTargetRuns,
+	lastRunFor,
+	recordTargetRun
 } from './registry';
 import { runTargetAction, confirmTokenFor, GateConfirmError } from './driver';
 import { resetAdapterRegistry } from './index';
@@ -108,6 +110,51 @@ describe('per-project target store (project_target)', () => {
 	it('resolveDefaultTarget skips disabled targets', async () => {
 		await declareTarget(db, { project: projectId, kind: 'publish', adapterId: 'npm', enabled: false });
 		expect(await resolveDefaultTarget(db, projectId, 'publish')).toBeNull();
+	});
+});
+
+describe('lastRunFor — per-target last run (13.4a regression)', () => {
+	it('two targets sharing an adapter_id do NOT steal each other\'s runs', async () => {
+		// The same CUSTOM adapter id declared for BOTH gated families — legal (the dedup index is
+		// per (project, kind, adapter_id)), and exactly the shape the old adapter_id fallback
+		// cross-attributed: a deploy run would show up as the publish target's lastRun.
+		const pub = await declareTarget(db, { project: projectId, kind: 'publish', adapterId: 'my-cdn' });
+		const dep = await declareTarget(db, { project: projectId, kind: 'deploy', adapterId: 'my-cdn' });
+		expect(pub.id).not.toBe(dep.id);
+
+		// One REAL run, recorded through the DEPLOY target only (the driver always stamps target.id).
+		const run = await recordTargetRun(db, {
+			project: projectId,
+			target: dep.id,
+			kind: 'deploy',
+			adapterId: 'my-cdn',
+			dryRun: true,
+			ok: true,
+			summary: 'deploy plan computed'
+		});
+
+		const runs = await listTargetRuns(db, projectId);
+		expect(runs).toHaveLength(1);
+
+		// The deploy target owns its run; the publish target has honestly NEVER run (null —
+		// the adapter_id fallback would have stolen the deploy run here).
+		expect(lastRunFor(runs, dep.id)?.id).toBe(run.id);
+		expect(lastRunFor(runs, pub.id)).toBeNull();
+	});
+
+	it('a legacy run with NO target link is attributed to no target (never guessed)', async () => {
+		const pub = await declareTarget(db, { project: projectId, kind: 'publish', adapterId: 'npm' });
+		await recordTargetRun(db, {
+			project: projectId,
+			kind: 'publish',
+			adapterId: 'npm',
+			dryRun: true,
+			ok: true,
+			summary: 'legacy run without a target link'
+		});
+		const runs = await listTargetRuns(db, projectId);
+		expect(runs).toHaveLength(1);
+		expect(lastRunFor(runs, pub.id)).toBeNull();
 	});
 });
 

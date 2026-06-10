@@ -310,6 +310,18 @@ export async function recordTargetRun(db: Db, input: RecordTargetRunInput): Prom
 	return normTargetRun(rows[0]);
 }
 
+/**
+ * The most recent run THROUGH one specific target, or null (honest — never fabricated). Matches
+ * STRICTLY on the run's `target` link: the driver always stamps `target.id` when it records a
+ * run (driver.ts), so a looser adapter_id fallback would CROSS-ATTRIBUTE another target's run —
+ * two targets sharing an adapter id (e.g. one custom adapter declared for both publish and
+ * deploy) must never steal each other's run history (13.4a). Expects `runs` newest-first
+ * (the listTargetRuns order).
+ */
+export function lastRunFor(runs: TargetRunRow[], targetId: string): TargetRunRow | null {
+	return runs.find((r) => r.target === targetId) ?? null;
+}
+
 /** Recent target runs for a project, newest first (the surface's run history). */
 export async function listTargetRuns(db: Db, projectId: string, limit = 25): Promise<TargetRunRow[]> {
 	const project = link(projectId);

@@ -32,7 +32,7 @@ export interface TraceStep {
 	source: 'routing_event' | 'session' | 'retrieval_outcome' | 'agent_event';
 	/** The row id. */
 	id: string;
-	/** When it happened (ISO). */
+	/** When it happened (ISO), or '' when the row carries no datetime (rendered as '—'). */
 	at: string;
 	/** A short label (e.g. 'route: classify', 'spawn', 'completion'). */
 	label: string;
@@ -49,9 +49,22 @@ export interface ActionTrace {
 	steps: TraceStep[];
 }
 
-function iso(at: unknown): string {
-	if (at instanceof Date) return at.toISOString();
-	return typeof at === 'string' ? at : new Date().toISOString();
+/**
+ * Coerce a SurrealDB datetime (a JS Date or the SDK's DateTime wrapper) to a plain ISO string
+ * (F-013). Absent/unparseable → '' — NEVER a fabricated "now" (F-008/13.4b: a missing
+ * started_at/created_at/at must surface as missing, matching the other normalizers; the UI
+ * renders '' as '—'). Exported for the regression test.
+ */
+export function iso(at: unknown): string {
+	if (at == null) return '';
+	if (at instanceof Date) return Number.isNaN(at.getTime()) ? '' : at.toISOString();
+	if (typeof at === 'string' || typeof at === 'object') {
+		// The surrealdb SDK returns datetimes as its own DateTime wrapper (nanosecond ISO via
+		// toString). Accept anything that stringifies to a REAL parseable datetime; '' otherwise.
+		const s = String(at);
+		return Number.isNaN(Date.parse(s)) ? '' : s;
+	}
+	return '';
 }
 
 /**

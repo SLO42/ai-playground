@@ -28,6 +28,7 @@ import {
 	getTarget,
 	removeTarget,
 	listTargetRuns,
+	lastRunFor,
 	runTargetAction,
 	runSyncTarget,
 	resolverForAdapter,
@@ -102,11 +103,13 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<Targets
 		const runs = await listTargetRuns(db, projectId);
 		const incidents = await listSyncIncidents(db, projectId);
 
-		// Per-target status: is the adapter installed (else honest "not installed"), and its last run.
+		// Per-target status: is the adapter installed (else honest "not installed"), and its last
+		// run — matched STRICTLY on the run's target link (13.4a: an adapter_id fallback would
+		// cross-attribute another target's run; the driver always stamps target.id).
 		const targets: TargetView[] = declared.map((t) => ({
 			...t,
 			installed: isInstalled(t.kind, t.adapter_id),
-			lastRun: runs.find((r) => r.target === t.id || r.adapter_id === t.adapter_id) ?? null
+			lastRun: lastRunFor(runs, t.id)
 		}));
 
 		return {

@@ -42,18 +42,36 @@ export class GateConfirmError extends Error {
 }
 
 /**
+ * Canonical JSON: object keys sorted recursively so two semantically-equal configs hash to the
+ * SAME string regardless of key order (a re-serialised config must derive the same token), while
+ * ANY value change produces a different string (so an edit invalidates outstanding tokens).
+ */
+function canonicalJson(value: unknown): string {
+	if (value === null || typeof value !== 'object') return JSON.stringify(value ?? null);
+	if (Array.isArray(value)) return `[${value.map(canonicalJson).join(',')}]`;
+	const obj = value as Record<string, unknown>;
+	const entries = Object.keys(obj)
+		.sort()
+		.map((k) => `${JSON.stringify(k)}:${canonicalJson(obj[k])}`);
+	return `{${entries.join(',')}}`;
+}
+
+/**
  * The confirm token binding a real action to the dry-run it followed. A sha256 of the
- * (project, kind, adapterId, target-ref) tuple — deterministic so a dry-run and its confirm
- * derive the SAME token, but specific enough that a token from one target can't confirm another.
+ * (project, kind, adapterId, sha256(canonical-JSON of the resolved target config)) tuple —
+ * deterministic so a dry-run and its confirm derive the SAME token, but specific enough that
+ * a token from one target can't confirm another AND a CONFIG EDIT between dry-run and confirm
+ * changes the config hash → invalidates the outstanding token (fail closed, D-018).
  */
 export function confirmTokenFor(input: {
 	projectId: string;
 	kind: AdapterKind;
 	adapterId: string;
-	targetRef: string;
+	config: Record<string, unknown>;
 }): string {
+	const configHash = createHash('sha256').update(canonicalJson(input.config), 'utf8').digest('hex');
 	return createHash('sha256')
-		.update(`${input.projectId}|${input.kind}|${input.adapterId}|${input.targetRef}`, 'utf8')
+		.update(`${input.projectId}|${input.kind}|${input.adapterId}|${configHash}`, 'utf8')
 		.digest('hex');
 }
 
@@ -135,12 +153,13 @@ export async function runTargetAction(input: RunTargetActionInput): Promise<RunT
 	const registry = getAdapterRegistry();
 	const adapter = registry.get(input.kind, target.adapter_id);
 
-	// The token binds confirm→dry-run for THIS (project, kind, adapter, target).
+	// The token binds confirm→dry-run for THIS (project, kind, adapter, RESOLVED CONFIG) — a
+	// config edit between dry-run and confirm changes the hash and invalidates the token (D-018).
 	const token = confirmTokenFor({
 		projectId: input.projectId,
 		kind: input.kind,
 		adapterId: target.adapter_id,
-		targetRef: target.adapter_id // the adapter id is the stable target ref pre-probe
+		config: target.config
 	});
 
 	// GATE (D-018): a real action requires a matching confirm token; fail CLOSED otherwise.

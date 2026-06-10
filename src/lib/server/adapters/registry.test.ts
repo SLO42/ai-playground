@@ -120,7 +120,7 @@ describe('gated driver — dry-run, confirm gate, recording (D-018/F-008)', () =
 		expect(out.result.target).toBe('npm:atelier-demo');
 		expect(out.result.steps.length).toBeGreaterThan(0);
 		expect(out.confirmToken).toBe(
-			confirmTokenFor({ projectId, kind: 'publish', adapterId: 'npm', targetRef: 'npm' })
+			confirmTokenFor({ projectId, kind: 'publish', adapterId: 'npm', config: out.target.config })
 		);
 		const runs = await listTargetRuns(db, projectId);
 		expect(runs).toHaveLength(1);
@@ -151,8 +151,8 @@ describe('gated driver — dry-run, confirm gate, recording (D-018/F-008)', () =
 	});
 
 	it('a REAL action with the MATCHING token runs (honest-deferred) + records ok:false + an incident', async () => {
-		await declareTarget(db, { project: projectId, kind: 'publish', adapterId: 'npm', isDefault: true });
-		const token = confirmTokenFor({ projectId, kind: 'publish', adapterId: 'npm', targetRef: 'npm' });
+		const tgt = await declareTarget(db, { project: projectId, kind: 'publish', adapterId: 'npm', isDefault: true });
+		const token = confirmTokenFor({ projectId, kind: 'publish', adapterId: 'npm', config: tgt.config });
 		const out = await runTargetAction({
 			db,
 			env: { NPM_TOKEN: 'tok' },
@@ -169,6 +169,71 @@ describe('gated driver — dry-run, confirm gate, recording (D-018/F-008)', () =
 		// A failed real action raises an incident (never silent — D-018/F-008).
 		const [incidents] = await db.query<[Array<{ title: string }>]>('SELECT title FROM incident;');
 		expect(incidents.length).toBeGreaterThan(0);
+	});
+
+	it('the confirm token is bound to the resolved config — a config EDIT invalidates it (D-018)', async () => {
+		// Dry-run against config A → get the token the operator would carry into the confirm form.
+		await declareTarget(db, {
+			project: projectId,
+			kind: 'publish',
+			adapterId: 'npm',
+			config: { registry: 'https://registry.npmjs.org' },
+			isDefault: true
+		});
+		const dry = await runTargetAction({ db, env: {}, projectId, cwd: projectDir, kind: 'publish', dryRun: true });
+		const staleToken = dry.confirmToken;
+
+		// Operator edits the target config (B) between dry-run and confirm (re-declare upserts in place).
+		await declareTarget(db, {
+			project: projectId,
+			kind: 'publish',
+			adapterId: 'npm',
+			config: { registry: 'https://evil.example.com' },
+			isDefault: true
+		});
+
+		// The stale token no longer matches the re-derived (config-bound) token → fail CLOSED.
+		await expect(
+			runTargetAction({
+				db,
+				env: { NPM_TOKEN: 'tok' },
+				projectId,
+				cwd: projectDir,
+				kind: 'publish',
+				dryRun: false,
+				confirmToken: staleToken
+			})
+		).rejects.toBeInstanceOf(GateConfirmError);
+	});
+
+	it('the token is stable across key-order — a re-serialised but equal config confirms (happy path)', async () => {
+		await declareTarget(db, {
+			project: projectId,
+			kind: 'publish',
+			adapterId: 'npm',
+			config: { registry: 'https://registry.npmjs.org', access: 'public' },
+			isDefault: true
+		});
+		const dry = await runTargetAction({ db, env: {}, projectId, cwd: projectDir, kind: 'publish', dryRun: true });
+		// Same config values, different key order — the canonical hash is identical, so the token holds.
+		const equivalent = confirmTokenFor({
+			projectId,
+			kind: 'publish',
+			adapterId: 'npm',
+			config: { access: 'public', registry: 'https://registry.npmjs.org' }
+		});
+		expect(dry.confirmToken).toBe(equivalent);
+		// And the confirm with the dry-run token runs end-to-end (honest-deferred, not a gate error).
+		const out = await runTargetAction({
+			db,
+			env: { NPM_TOKEN: 'tok' },
+			projectId,
+			cwd: projectDir,
+			kind: 'publish',
+			dryRun: false,
+			confirmToken: dry.confirmToken
+		});
+		expect(out.result.dryRun).toBe(false);
 	});
 
 	it('fails CLOSED with an honest error when NO target is configured', async () => {

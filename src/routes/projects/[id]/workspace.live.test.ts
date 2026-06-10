@@ -37,7 +37,8 @@ import {
 	listPhases,
 	listFeatures,
 	listSprints,
-	updateProject
+	updateProject,
+	PROJECT_STATUSES
 } from '$lib/server/projects/repo';
 import {
 	createTask,
@@ -199,6 +200,18 @@ describe('Settings — project config persists; slug/id immutable (UI-SPEC §196
 		const reread = await getProject(db, PID);
 		expect(reread?.build_tool).toBe('npm');
 		expect(reread?.slug).toBe('wsdemo'); // slug never changes
+	});
+
+	it('the canonical status enum matches the schema ASSERT, and an out-of-enum status is rejected', async () => {
+		if (!available || !db) return;
+		// The boundary validates against this exact list (the updateSettings action gates on it).
+		expect([...PROJECT_STATUSES]).toEqual(['active', 'paused', 'archived']);
+		// Proof the enum IS the gate: a value outside it is rejected by the DB ASSERT — exactly
+		// the raw failure the boundary guard pre-empts with an honest action error (TASK 10.4 fix).
+		await expect(updateProject(db, PID, { status: 'shipping-it' })).rejects.toThrow();
+		// And the project's status is unchanged by the rejected write.
+		const reread = await getProject(db, PID);
+		expect([...PROJECT_STATUSES]).toContain(reread?.status);
 	});
 });
 

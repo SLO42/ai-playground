@@ -6,10 +6,8 @@ import { startTestDb, type TestDb } from '../db/testserver';
 import { createProject, createSprint, updateProjectPlan } from './repo';
 import {
 	addPmMemory,
-	addPmMemories,
 	listPmMemory,
 	pmMemoryStats,
-	archivePmMemory,
 	addDecision,
 	listDecisions,
 	completeSprint,
@@ -90,11 +88,9 @@ describe('pm typed memory', () => {
 
 	it('computes honest per-kind stats', async () => {
 		const p = await freshProject('pm_mem_stats');
-		await addPmMemories(db, [
-			{ project: p.id, kind: 'observation', content: 'o1' },
-			{ project: p.id, kind: 'observation', content: 'o2' },
-			{ project: p.id, kind: 'risk', content: 'r1' }
-		]);
+		await addPmMemory(db, { project: p.id, kind: 'observation', content: 'o1' });
+		await addPmMemory(db, { project: p.id, kind: 'observation', content: 'o2' });
+		await addPmMemory(db, { project: p.id, kind: 'risk', content: 'r1' });
 		const stats = await pmMemoryStats(db, p.id);
 		expect(stats.observation).toBe(2);
 		expect(stats.risk).toBe(1);
@@ -102,15 +98,6 @@ describe('pm typed memory', () => {
 		expect(stats.total).toBe(3);
 	});
 
-	it('soft-archives memory (excluded from active list + stats)', async () => {
-		const p = await freshProject('pm_mem_archive');
-		const m = await addPmMemory(db, { project: p.id, kind: 'pattern', content: 'a pattern' });
-		expect((await listPmMemory(db, p.id)).length).toBe(1);
-		const ok = await archivePmMemory(db, m.id);
-		expect(ok).toBe(true);
-		expect((await listPmMemory(db, p.id)).length).toBe(0);
-		expect((await pmMemoryStats(db, p.id)).total).toBe(0);
-	});
 });
 
 describe('decisions', () => {

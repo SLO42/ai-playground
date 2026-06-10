@@ -58,10 +58,8 @@ export {
 export {
 	// PM memory
 	addPmMemory,
-	addPmMemories,
 	listPmMemory,
 	pmMemoryStats,
-	archivePmMemory,
 	// decisions
 	addDecision,
 	listDecisions,

@@ -908,11 +908,11 @@
     background: var(--color-accent);
   }
   .hist-dot[data-sev='warn'] {
-    background: var(--color-warning, #d08200);
+    background: var(--color-warn);
   }
   .hist-dot[data-sev='error'],
   .hist-dot[data-sev='critical'] {
-    background: var(--color-danger, #d33b3b);
+    background: var(--color-error);
   }
   .hist-row:not(.unread)[data-kind='notification'] .hist-dot {
     background: var(--color-neutral);
@@ -979,24 +979,29 @@
     text-transform: lowercase;
     font-weight: 600;
   }
+  /* Finding severity → color role per UI-SPEC §103: critical→error, high/medium→warn, low→info. */
   .sev-tag[data-sev='critical'],
-  .sev-chip[data-sev='critical'] .sev-n,
-  .sev-tag[data-isev='critical'] {
-    color: var(--color-danger, #d33b3b);
+  .sev-chip[data-sev='critical'] .sev-n {
+    color: var(--color-error);
   }
   .sev-tag[data-sev='high'],
   .sev-chip[data-sev='high'] .sev-n,
-  .sev-tag[data-isev='error'] {
-    color: var(--color-warning, #d08200);
-  }
   .sev-tag[data-sev='medium'],
-  .sev-chip[data-sev='medium'] .sev-n,
-  .sev-tag[data-isev='warn'] {
-    color: var(--color-accent, #4f7cff);
+  .sev-chip[data-sev='medium'] .sev-n {
+    color: var(--color-warn);
   }
   .sev-tag[data-sev='low'],
-  .sev-chip[data-sev='low'] .sev-n,
+  .sev-chip[data-sev='low'] .sev-n {
+    color: var(--color-info);
+  }
+  /* Incident severity (`incident.severity` enum) → its own status role: error→error, warn→warn. */
+  .sev-tag[data-isev='error'] {
+    color: var(--color-error);
+  }
+  .sev-tag[data-isev='warn'] {
+    color: var(--color-warn);
+  }
   .sev-tag[data-isev='info'] {
-    color: var(--color-text-muted);
+    color: var(--color-info);
   }
 </style>

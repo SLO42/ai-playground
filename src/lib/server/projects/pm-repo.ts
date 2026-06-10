@@ -193,16 +193,6 @@ export async function addPmMemory(db: Db, input: AddPmMemoryInput): Promise<PmMe
 	return normPmMemory(rows[0]);
 }
 
-/** Add several PM memories in one round-trip (bootstrap seeding). */
-export async function addPmMemories(
-	db: Db,
-	inputs: AddPmMemoryInput[]
-): Promise<PmMemoryRow[]> {
-	const out: PmMemoryRow[] = [];
-	for (const input of inputs) out.push(await addPmMemory(db, input));
-	return out;
-}
-
 /**
  * List a project's active PM memories, newest first. Optionally filtered by kind
  * (validated against the taxonomy — never interpolated; bound as $param).
@@ -246,16 +236,6 @@ export async function pmMemoryStats(db: Db, projectId: string): Promise<PmMemory
 		}
 	}
 	return stats;
-}
-
-/** Soft-archive a PM memory (append-only spirit — never a hard delete of learning). */
-export async function archivePmMemory(db: Db, id: string): Promise<boolean> {
-	const rid = link(id);
-	const [rows] = await db.query<[unknown[]]>(
-		`UPDATE $rid SET status = "archived" RETURN AFTER;`,
-		{ rid }
-	);
-	return rows.length > 0;
 }
 
 // ── Decisions ────────────────────────────────────────────────────────────────────
@@ -441,6 +421,8 @@ export async function bootstrapPm(db: Db, projectId: string): Promise<PmBootstra
 		});
 	}
 
-	const memories = await addPmMemories(db, seeds);
+	// Seed via the single-add path (the only wired write path) — one round-trip per seed.
+	const memories: PmMemoryRow[] = [];
+	for (const seed of seeds) memories.push(await addPmMemory(db, seed));
 	return { bootstrapped: true, alreadyBootstrapped: false, memories };
 }

@@ -17,6 +17,7 @@ import {
 	listFeatures,
 	listSprints,
 	createSprint,
+	PROJECT_STATUSES,
 	type ProjectPlan,
 	type ReleaseRow,
 	type PhaseRow,
@@ -116,6 +117,8 @@ export interface ProjectDetailData {
 	/** The legal task statuses (board columns) + per-status priority/transition vocab. */
 	taskStatuses: readonly TaskStatus[];
 	taskPriorities: readonly TaskPriority[];
+	/** The canonical project status vocabulary for the Settings select (DATA-MODEL §4.1). */
+	projectStatuses: readonly string[];
 	/** Project-scoped Maintain rollup: live security/dep-health/UX findings (UI-SPEC §189). */
 	findings: FindingRow[];
 	/** Project-scoped recall list for the Memory tab (UI-SPEC §195). */
@@ -189,6 +192,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			sessions: [],
 			taskStatuses: TASK_STATUSES,
 			taskPriorities: TASK_PRIORITIES,
+			projectStatuses: PROJECT_STATUSES,
 			findings: [],
 			memories: [],
 			graph: { nodes: [], edges: [] },
@@ -287,6 +291,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			sessions,
 			taskStatuses: TASK_STATUSES,
 			taskPriorities: TASK_PRIORITIES,
+			projectStatuses: PROJECT_STATUSES,
 			findings,
 			memories,
 			graph,
@@ -315,6 +320,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			sessions: [],
 			taskStatuses: TASK_STATUSES,
 			taskPriorities: TASK_PRIORITIES,
+			projectStatuses: PROJECT_STATUSES,
 			findings: [],
 			memories: [],
 			graph: { nodes: [], edges: [] },
@@ -485,6 +491,15 @@ export const actions: Actions = {
 		const testCommand = String(form.get('test_command') ?? '').trim();
 		const repoUrl = String(form.get('repo_url') ?? '').trim();
 		if (!name) return fail(400, { settings: { error: 'Project name is required.' } });
+		// Validate status at the boundary against the canonical enum (DATA-MODEL §4.1) — an
+		// invalid value fails honestly here instead of surfacing the raw DB ASSERT error.
+		if (status && !(PROJECT_STATUSES as readonly string[]).includes(status)) {
+			return fail(400, {
+				settings: {
+					error: `Invalid status "${status}". Must be one of: ${PROJECT_STATUSES.join(', ')}.`
+				}
+			});
+		}
 		try {
 			const updated = await updateProject(db, projectId, {
 				name,

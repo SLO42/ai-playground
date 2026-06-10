@@ -89,20 +89,37 @@ let db: Db | null = null;
 let catalog: CapabilityCatalog | null = null;
 let available = false;
 
+/**
+ * Connect with a hard wall-clock bound (F-014): the SurrealDB SDK hangs ~90s on a dead
+ * socket, so a bare `Db.connect()` would burn the whole beforeAll timeout (30s) and then
+ * fail instead of skipping cleanly. Race the connect against a short timeout — on timeout
+ * or refusal the live DB is treated as unavailable and the suite SKIPS.
+ */
+async function connectBounded(ms = 3_000): Promise<Db> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		return await Promise.race([
+			Db.connect({ url: WS, username: USER, password: PASS, namespace: NS, database: DBN }),
+			new Promise<never>((_, reject) => {
+				timer = setTimeout(() => reject(new Error(`db connect timed out after ${ms}ms`)), ms);
+			})
+		]);
+	} finally {
+		if (timer) clearTimeout(timer);
+	}
+}
+
 beforeAll(async () => {
 	try {
-		db = await Db.connect({
-			url: WS,
-			username: USER,
-			password: PASS,
-			namespace: NS,
-			database: DBN
-		});
+		db = await connectBounded();
 		const ids = await catalogIds(db);
 		catalog = { skills: ids.skills, agents: ids.agents, mcp: ids.mcp };
 		available = catalog.skills.size + catalog.agents.size + catalog.mcp.size > 0;
 	} catch {
 		available = false;
+		// If the timeout fired after a socket actually opened, don't leak it.
+		await db?.close().catch(() => {});
+		db = null;
 	}
 }, 30_000);
 

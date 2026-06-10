@@ -29,6 +29,7 @@
   // ── TASK 10.4 — the missing workspace surfaces (board / memory / settings / maintain).
   const taskStatuses = $derived(data.taskStatuses ?? []);
   const taskPriorities = $derived(data.taskPriorities ?? []);
+  const projectStatuses = $derived(data.projectStatuses ?? []);
   const findings = $derived(data.findings ?? []);
   const memories = $derived(data.memories ?? []);
   const graph = $derived(data.graph ?? { nodes: [], edges: [] });
@@ -1514,13 +1515,11 @@
             </label>
             <label class="field settings-field">
               <span class="field-label">Status</span>
-              <input
-                class="pm-input"
-                type="text"
-                name="status"
-                value={project.status}
-                placeholder="active / paused / archived"
-              />
+              <select class="pm-input" name="status" value={project.status}>
+                {#each projectStatuses as s (s)}
+                  <option value={s}>{s}</option>
+                {/each}
+              </select>
             </label>
             <label class="field settings-field">
               <span class="field-label">Build tool</span>
@@ -2376,21 +2375,22 @@
     font-weight: 600;
     flex: none;
   }
+  /* Severity → color role per UI-SPEC §103: critical→error, high/medium→warn, low→info. */
   .sev-tag[data-sev='critical'],
   .sev-chip[data-sev='critical'] .sev-n {
-    color: var(--color-danger, var(--color-error, crimson));
+    color: var(--color-error);
   }
   .sev-tag[data-sev='high'],
   .sev-chip[data-sev='high'] .sev-n {
-    color: var(--color-warning, var(--color-blocked, orange));
+    color: var(--color-warn);
   }
   .sev-tag[data-sev='medium'],
   .sev-chip[data-sev='medium'] .sev-n {
-    color: var(--color-accent);
+    color: var(--color-warn);
   }
   .sev-tag[data-sev='low'],
   .sev-chip[data-sev='low'] .sev-n {
-    color: var(--color-text-muted);
+    color: var(--color-info);
   }
   .family-tag {
     font-size: 0.64rem;

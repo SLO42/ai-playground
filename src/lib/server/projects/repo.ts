@@ -22,6 +22,14 @@ import { assertRecordId, assertTableName } from '../db/validate';
 
 // ── Row shapes (what the DB persists/returns; SDK RecordId/Date coerced to JSON) ──
 
+/**
+ * The canonical `project.status` vocabulary (DATA-MODEL §4.1 — the schema ASSERTs
+ * $value IN this set). The settings boundary validates against this list so an invalid
+ * status fails honestly at the app edge instead of relying on the DB ASSERT's raw error.
+ */
+export const PROJECT_STATUSES = ['active', 'paused', 'archived'] as const;
+export type ProjectStatus = (typeof PROJECT_STATUSES)[number];
+
 /** A persisted `project` row including the embedded Project-Plan-v3 object. */
 export interface ProjectRow {
 	id: string;

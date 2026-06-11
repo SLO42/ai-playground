@@ -101,7 +101,10 @@ async function gatedReview(prompt, opts){
   return defects2.length ? forceFail(r2, defects2) : r2
 }
 
-const stopRegex=/\b(CONFLICT|BLOCK(?:ED|ER)?|cannot proceed|hard stop)\b/i
+// Case-SENSITIVE markers: a stop is a deliberate ALL-CAPS flag by the builder, never prose.
+// (F-019: /BLOCK(ED)?/i false-matched "blocked tool_result events" in an advisory deviation and
+// spuriously stopped wave v2.2a after a fully-green build. Lowercase prose never stops a wave.)
+const stopRegex=/\b(CONFLICT|BLOCKED|BLOCKER)\b|cannot proceed|hard stop/
 const results=[]
 for (const t of args.tasks){
   phase(`${t.id} ${t.title}`)

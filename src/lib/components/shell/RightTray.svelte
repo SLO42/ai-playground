@@ -17,8 +17,13 @@
 	import { tray } from '$lib/client/tray.svelte';
 	import { invalidate } from '$app/navigation';
 	import type { TrayItem } from '$lib/server/notifications/repo';
+	import type { DecisionBriefRow } from '$lib/server/projects/briefs';
 
-	let { items = [], unread = 0 }: { items?: TrayItem[]; unread?: number } = $props();
+	let {
+		items = [],
+		unread = 0,
+		briefs = []
+	}: { items?: TrayItem[]; unread?: number; briefs?: DecisionBriefRow[] } = $props();
 
 	let panelEl = $state<HTMLElement | null>(null);
 	let closeBtn = $state<HTMLButtonElement | null>(null);
@@ -95,6 +100,39 @@
 	const markOne = (id: string) => post({ action: 'read', id });
 	const markAll = () => post({ action: 'read-all' });
 
+	// ── TASK 16.4 — decision briefs (WORKFORCE-SPEC §8): the tray IS the decisions
+	// inbox. A decide POST applies the mechanical effects server-side; failure is
+	// surfaced honestly (the brief stays open — the live state stands).
+	let briefError = $state<string | null>(null);
+	async function decide(id: string, action: 'approve' | 'reject' | 'defer') {
+		busy = true;
+		briefError = null;
+		try {
+			const res = await fetch('/api/briefs', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ id, action })
+			});
+			if (!res.ok) {
+				const detail = (await res.json().catch(() => null)) as { message?: string } | null;
+				briefError = detail?.message ?? `decision failed (${res.status})`;
+			}
+			await invalidate('app:shell');
+		} catch (err) {
+			briefError = (err as Error).message;
+		} finally {
+			busy = false;
+		}
+	}
+
+	/** Completeness rendered from REAL panel rows — or the honest kind-differs note. */
+	function completenessLine(b: DecisionBriefRow): string | null {
+		const c = b.completeness;
+		if (!c) return null;
+		if ('kind_differs' in c) return c.note;
+		return `${c.validators}/${c.expected} validator verdict(s) · ${c.approve} approve / ${c.pushback} pushback`;
+	}
+
 	/** Relative "time ago" — deterministic, tokens-free copy (mirrors the Home feed). */
 	function ago(iso: string): string {
 		if (!iso) return '—';
@@ -154,6 +192,63 @@
 			</button>
 			<a class="link-btn see-all" href="/reports#notifications" onclick={close}>See all →</a>
 		</div>
+
+		{#if briefs.length > 0}
+			<!-- TASK 16.4 — open decision briefs (WORKFORCE-SPEC §8 canonical format).
+			     A brief is a QUESTION: the matter does not proceed while it is open. -->
+			<section class="briefs" aria-label="Open decision briefs">
+				<h3 class="briefs-title">
+					Decisions <span class="count mono">{briefs.length}</span>
+				</h3>
+				{#if briefError}
+					<p class="brief-error" role="alert">{briefError}</p>
+				{/if}
+				{#each briefs as b (b.id)}
+					<article class="brief" data-class={b.classification}>
+						<p class="brief-class mono">{b.classification.replace('_', ' ')}</p>
+						<p class="brief-ask">{b.ask}</p>
+						<p class="brief-issue">{b.issue}</p>
+						{#if completenessLine(b)}
+							<p class="brief-meta"><span class="brief-k">completeness</span> {completenessLine(b)}</p>
+						{/if}
+						<p class="brief-meta">
+							<span class="brief-k">effort</span>
+							apply: {b.effort.apply} · if wrong: {b.effort.wrongness}
+						</p>
+						<p class="brief-meta">
+							<span class="brief-k">evidence</span>
+							{#each b.evidence as ev (ev)}<span class="mono brief-ev">{ev}</span>{/each}
+						</p>
+						<p class="brief-meta"><span class="brief-k">falsifier</span> {b.falsifier}</p>
+						<ul class="brief-options">
+							{#each b.options as o (o.id)}
+								<li class="brief-option" class:recommended={!!o.recommended}>
+									<span class="brief-option-label">
+										{o.label}
+										{#if o.recommended}<span class="rec-tag">recommended</span>{/if}
+									</span>
+									<span class="brief-pro">+ {o.pro}</span>
+									<span class="brief-con">− {o.con}</span>
+									{#if o.recommended}<span class="brief-why">{o.recommended}</span>{/if}
+								</li>
+							{/each}
+						</ul>
+						{#if b.net_tradeoff}<p class="brief-net">{b.net_tradeoff}</p>{/if}
+						<div class="brief-actions">
+							<button class="brief-btn approve" type="button" disabled={busy} onclick={() => decide(b.id, 'approve')}>
+								Approve
+							</button>
+							<button class="brief-btn" type="button" disabled={busy} onclick={() => decide(b.id, 'reject')}>
+								Reject
+							</button>
+							<button class="brief-btn" type="button" disabled={busy} onclick={() => decide(b.id, 'defer')}>
+								Defer
+							</button>
+						</div>
+					</article>
+				{/each}
+			</section>
+		{/if}
 
 		<div class="feed" role="list" aria-label="Notifications and recent activity">
 			{#if items.length === 0}
@@ -329,6 +424,149 @@
 	}
 	.link-btn:disabled {
 		color: var(--color-text-muted);
+		cursor: default;
+	}
+
+	/* ── TASK 16.4 — decision briefs (the decisions inbox) ─────────────────────── */
+	.briefs {
+		flex: 0 1 auto;
+		overflow-y: auto;
+		border-bottom: var(--border-width) solid var(--color-border-strong);
+		padding: var(--space-3) var(--pad-card);
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-3);
+	}
+	.briefs-title {
+		font: var(--type-h3);
+		color: var(--color-text);
+		display: flex;
+		align-items: baseline;
+		gap: var(--space-2);
+	}
+	.count {
+		font-size: var(--text-xs);
+		color: var(--color-text-muted);
+	}
+	.brief-error {
+		font: var(--type-body-sm);
+		color: var(--color-error);
+	}
+	.brief {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+		padding: var(--space-3);
+		border: var(--border-width) solid var(--color-border);
+		border-radius: var(--radius-md);
+		background: var(--color-bg-inset);
+	}
+	.brief[data-class='operator_challenge'] {
+		border-color: var(--color-warn);
+	}
+	.brief-class {
+		font-size: var(--text-xs);
+		color: var(--color-text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+	}
+	.brief-ask {
+		font: var(--type-body);
+		font-weight: var(--weight-semibold);
+		color: var(--color-text);
+	}
+	.brief-issue {
+		font: var(--type-body-sm);
+		color: var(--color-text-2);
+	}
+	.brief-meta {
+		font-size: var(--text-xs);
+		color: var(--color-text-2);
+		display: flex;
+		flex-wrap: wrap;
+		gap: var(--space-1) var(--space-2);
+		align-items: baseline;
+	}
+	.brief-k {
+		color: var(--color-text-muted);
+		text-transform: uppercase;
+		letter-spacing: 0.06em;
+	}
+	.brief-ev {
+		color: var(--color-text-muted);
+		overflow: hidden;
+		text-overflow: ellipsis;
+		max-width: 100%;
+	}
+	.brief-options {
+		display: flex;
+		flex-direction: column;
+		gap: var(--space-2);
+		list-style: none;
+		padding: 0;
+		margin: 0;
+	}
+	.brief-option {
+		display: flex;
+		flex-direction: column;
+		gap: 2px;
+		padding: var(--space-2);
+		border: var(--border-width) solid var(--color-border);
+		border-radius: var(--radius-sm);
+	}
+	.brief-option.recommended {
+		border-color: var(--color-accent);
+	}
+	.brief-option-label {
+		font: var(--type-body-sm);
+		font-weight: var(--weight-semibold);
+		color: var(--color-text);
+		display: flex;
+		gap: var(--space-2);
+		align-items: baseline;
+	}
+	.rec-tag {
+		font-size: var(--text-xs);
+		font-weight: var(--weight-semibold);
+		color: var(--color-accent);
+	}
+	.brief-pro,
+	.brief-con,
+	.brief-why {
+		font-size: var(--text-xs);
+		color: var(--color-text-2);
+	}
+	.brief-why {
+		color: var(--color-text-muted);
+		font-style: italic;
+	}
+	.brief-net {
+		font-size: var(--text-xs);
+		color: var(--color-text-muted);
+	}
+	.brief-actions {
+		display: flex;
+		gap: var(--space-2);
+	}
+	.brief-btn {
+		padding: var(--space-1) var(--space-3);
+		border: var(--border-width) solid var(--color-border-strong);
+		border-radius: var(--radius-sm);
+		background: transparent;
+		color: var(--color-text-2);
+		font: var(--type-body-sm);
+		cursor: pointer;
+	}
+	.brief-btn.approve {
+		border-color: var(--color-accent);
+		color: var(--color-accent);
+	}
+	.brief-btn:hover:not(:disabled) {
+		background: var(--color-surface-overlay);
+		color: var(--color-text);
+	}
+	.brief-btn:disabled {
+		opacity: 0.5;
 		cursor: default;
 	}
 

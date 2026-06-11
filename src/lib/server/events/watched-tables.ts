@@ -63,6 +63,10 @@ export const WATCHED_TABLES = [
 	'references',
 	// notification — shell layout ticker; /services; /reports
 	'notification',
+	// decision_brief — shell layout (RightTray decisions inbox); /projects/[id] (PM tab) — TASK 16.4
+	'decision_brief',
+	// panel_verdict — /projects/[id] (PM tab proposals queue) — TASK 16.4
+	'panel_verdict',
 	// incident — /reports (incidents history)
 	'incident',
 	// cc_agent — /agents (catalog) + /claude-code catalog

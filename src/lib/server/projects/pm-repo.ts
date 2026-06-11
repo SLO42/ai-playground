@@ -456,6 +456,30 @@ export async function updatePmCharter(
 }
 
 /**
+ * TASK 16.4 (PM-SPEC §4) — set the PM's authority rung (observe < propose < act).
+ * Operator-set on the PM tab; validated at the boundary against the ladder. The rung
+ * governs the Act-with-Purpose pipeline: 'observe' never proposes; 'propose' needs
+ * the operator's proposal-gate brief to promote; 'act' promotes on panel approval.
+ * Returns null when the project has no hired PM.
+ */
+export async function updatePmAuthority(
+	db: Db,
+	projectId: string,
+	authority: PmAuthority
+): Promise<PmRow | null> {
+	if (!(PM_AUTHORITIES as readonly string[]).includes(authority)) {
+		throw new Error(`invalid PM authority: ${String(authority)}`);
+	}
+	const existing = await getPm(db, projectId);
+	if (!existing) return null;
+	const [rows] = await db.query<[(PmRow & { id: unknown; project: unknown })[]]>(
+		`UPDATE $rid MERGE { authority: $authority } RETURN AFTER;`,
+		{ rid: link(existing.id), authority }
+	);
+	return rows.length ? normPm(rows[0]) : null;
+}
+
+/**
  * TASK 16.2 (PM-SPEC §3) — set/clear the PM's periodic schedule: `cadence` (a 5-field
  * cron expression) + `cadence_offset` (a duration stagger). null/empty CLEARS a field
  * to NONE (option<T> — absent, surfaced as the honest '—'). The ROUTE action validates

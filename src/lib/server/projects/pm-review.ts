@@ -23,12 +23,14 @@
 
 import type { Db } from './../db/client';
 import { listTasksByProject, type TaskRow, type TaskStatus } from '../tasks/repo';
-import { listFindings } from '../scanner/findings-repo';
+import { listFindings, type FindingRow } from '../scanner/findings-repo';
 import { getProject } from './repo';
 import { assemblePmContext, type PmContextBundle } from './pm-session';
+import { proposeTask, type ProposalOpts, type ProposeTaskResult } from './pm-proposals';
 import {
 	addPmMemory,
 	addPmReview,
+	getPm,
 	listPmMemory,
 	type AddPmMemoryInput,
 	type PmMemoryRow,
@@ -50,6 +52,16 @@ export interface PmReviewResult {
 	 * session-driven review (PM-SPEC §3, trigger-engine task) hands to its PM session.
 	 */
 	context: PmContextBundle;
+	/**
+	 * TASK 16.4 (PM-SPEC §4 "Act with Purpose"): the proposals this pass made — tasks
+	 * BORN 'proposed' through the proposeTask chokepoint (full §4.1 contract; anti-spam
+	 * absorbed: 'capped'/'defer_suppressed' outcomes carry the pm_memory written
+	 * instead). Empty when no real signal warranted one, or when the project has no
+	 * hired PM / an observe-only PM (`proposalsSkipped` carries the honest reason).
+	 */
+	proposals: ProposeTaskResult[];
+	/** Why proposal derivation did not run, when it didn't (F-008 — named, not silent). */
+	proposalsSkipped?: string;
 }
 
 /** Group a project's tasks by status (for the review's activity read). */
@@ -86,7 +98,8 @@ export async function runPmReview(
 	db: Db,
 	projectId: string,
 	trigger: PmReviewTrigger = 'manual',
-	provenance?: PmReviewProvenance
+	provenance?: PmReviewProvenance,
+	opts: ProposalOpts = {}
 ): Promise<PmReviewResult> {
 	const project = await getProject(db, projectId);
 	if (!project) throw new Error(`project not found: ${projectId}`);
@@ -235,7 +248,126 @@ export async function runPmReview(
 		...(provenance !== undefined ? { provenance } : {})
 	});
 
-	return { review, written, context };
+	// ── TASK 16.4 — Act with Purpose (PM-SPEC §4): derive PROPOSALS from the same
+	// real signals. Every proposal goes through the proposeTask chokepoint (full
+	// §4.1 contract, structural-fingerprint anti-spam — repeat reviews ABSORB the
+	// open proposal instead of duplicating it). Gated on the hired identity +
+	// authority ladder: no PM / observe-only ⇒ derivation is skipped with the
+	// honest reason, never silently.
+	const { proposals, proposalsSkipped } = await deriveProposals(db, {
+		projectId,
+		tasks,
+		severe,
+		provenance,
+		opts
+	});
+
+	return {
+		review,
+		written,
+		context,
+		proposals,
+		...(proposalsSkipped !== undefined ? { proposalsSkipped } : {})
+	};
+}
+
+// ── TASK 16.4 — proposal derivation (every rule keyed off REAL rows, F-008) ───────
+
+async function deriveProposals(
+	db: Db,
+	args: {
+		projectId: string;
+		tasks: TaskRow[];
+		severe: FindingRow[];
+		provenance?: PmReviewProvenance;
+		opts: ProposalOpts;
+	}
+): Promise<{ proposals: ProposeTaskResult[]; proposalsSkipped?: string }> {
+	const { projectId, tasks, severe, provenance, opts } = args;
+
+	const pm = await getPm(db, projectId);
+	if (!pm) {
+		return { proposals: [], proposalsSkipped: 'no hired PM — proposals require the hired identity (PM-SPEC §1)' };
+	}
+	if (pm.authority !== 'propose' && pm.authority !== 'act') {
+		return {
+			proposals: [],
+			proposalsSkipped: `PM authority is '${pm.authority}' — an observe-only PM does not propose (PM-SPEC §4)`
+		};
+	}
+
+	const proposals: ProposeTaskResult[] = [];
+
+	// ① A FAILED release run (the §3 event-④ retro) → a diagnose-and-retry proposal.
+	if (provenance?.kind === 'release' && String(provenance.detail?.status ?? '') === 'failed') {
+		const runRef = provenance.evidence[0] ?? 'unknown run';
+		proposals.push(
+			await proposeTask(
+				db,
+				{
+					project: projectId,
+					title: `Diagnose failed release run ${runRef}`,
+					objective: `Identify the failing stage of release run ${runRef} and restore a releasable state.`,
+					purpose:
+						'The release pipeline is the project’s delivery path (plan DoD); a failed run blocks shipping until diagnosed.',
+					acceptance_criteria: [
+						`The failing stage of ${runRef} is named with its real error evidence (log/step state).`,
+						'A fix or a follow-up task for the root cause exists.',
+						'A re-run of the release workflow completes, or the blocker is escalated with the named reason.'
+					],
+					provenance: { kind: 'release', evidence: [...provenance.evidence] },
+					priority: 'high'
+				},
+				opts
+			)
+		);
+	}
+
+	// ② Blocked tasks (real rows) → an unblock proposal carrying their ids as evidence.
+	const blockedRows = tasks.filter((t) => t.status === 'blocked').slice(0, 10);
+	if (blockedRows.length > 0) {
+		proposals.push(
+			await proposeTask(
+				db,
+				{
+					project: projectId,
+					title: `Unblock ${blockedRows.length} stalled task(s)`,
+					objective: `Resolve or re-scope the ${blockedRows.length} blocked task(s) so delivery flow resumes.`,
+					purpose: 'Blocked work stalls the plan; every blocked row is dead inventory until unblocked or re-scoped.',
+					acceptance_criteria: [
+						'Each listed task is moved out of "blocked" (ready/in_progress) or re-scoped with a recorded decision.',
+						'The blocker cause for each is recorded as PM memory.'
+					],
+					provenance: { kind: 'task_blocked', evidence: blockedRows.map((t) => t.id) }
+				},
+				opts
+			)
+		);
+	}
+
+	// ③ Critical/high findings (real rows) → a triage proposal.
+	if (severe.length > 0) {
+		proposals.push(
+			await proposeTask(
+				db,
+				{
+					project: projectId,
+					title: `Triage ${severe.length} critical/high finding(s)`,
+					objective: `Triage the ${severe.length} unresolved critical/high finding(s) before the next release.`,
+					purpose: 'Unresolved severe findings are security/quality debt that gates the plan’s Definition of Done.',
+					acceptance_criteria: [
+						'Each listed finding is resolved, suppressed-with-justification, or converted to a scoped fix task.',
+						'No critical finding remains unreviewed.'
+					],
+					provenance: { kind: 'finding', evidence: severe.slice(0, 10).map((f) => f.id) },
+					priority: 'high'
+				},
+				opts
+			)
+		);
+	}
+
+	return { proposals };
 }
 
 /** Re-export for callers that gate on a status set without importing tasks/repo directly. */

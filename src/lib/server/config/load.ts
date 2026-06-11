@@ -238,7 +238,7 @@ export function loadGatesConfig(file: string, opts: LoadOpts = {}): GatesConfig 
 // This loader validates the keys IT serves and keeps the rest open (forward-compat,
 // same posture as orchestration bundles' unknown keys).
 
-/** The validated shape of config/workforce.yaml (the keys 16.1 + 16.2 consume). */
+/** The validated shape of config/workforce.yaml (the keys 16.1 + 16.2 + 16.4 consume). */
 export interface WorkforceConfig {
 	pm: {
 		/** Registered provider name (`claude` = the Claude Code CLI backend). */
@@ -254,6 +254,23 @@ export interface WorkforceConfig {
 			 */
 			failure_threshold: number | null;
 		};
+		[k: string]: unknown;
+	};
+	/** TASK 16.4 (PM-SPEC §4.6.3) — panel Step-0 complexity tripwires. null = UNARMED
+	 *  (G5/F-008): complexity is raised as an evidenced judgment finding, never a
+	 *  numeric verdict, until the operator sets these from our own wave history. */
+	panel: {
+		scope: {
+			max_files: number | null;
+			max_new_services: number | null;
+		};
+		[k: string]: unknown;
+	};
+	/** TASK 16.4 (PM-SPEC §4 / WORKFORCE-SPEC §5 anti-spam) — proposal caps. */
+	workforce: {
+		/** Max OPEN PM proposals per key (per project for tasks); at cap the PM
+		 *  records to pm_memory instead. Default 2 — the §5 conservative start. */
+		max_open_proposals: number;
 		[k: string]: unknown;
 	};
 	[k: string]: unknown;
@@ -297,6 +314,61 @@ export function loadWorkforce(file: string, opts: LoadOpts = {}): WorkforceConfi
 			failureThreshold = t;
 		}
 	}
+
+	// TASK 16.4 — panel.scope.* tripwires (PM-SPEC §4.6.3). Optional block (older files
+	// ship unarmed); when present each bound must be null (unarmed) or a non-negative
+	// integer — fail closed on anything else (no imported magic numbers, G5).
+	const scopeBound = (block: Record<string, unknown>, key: string): number | null => {
+		const v = block[key];
+		if (v === undefined || v === null) return null;
+		if (typeof v !== 'number' || !Number.isInteger(v) || v < 0) {
+			throw new ConfigError(
+				`workforce: panel.scope.${key} must be null (unarmed) or a non-negative integer`,
+				file
+			);
+		}
+		return v;
+	};
+	let scopeMaxFiles: number | null = null;
+	let scopeMaxNewServices: number | null = null;
+	const panelRaw = raw.panel;
+	if (panelRaw !== undefined) {
+		if (panelRaw === null || typeof panelRaw !== 'object' || Array.isArray(panelRaw)) {
+			throw new ConfigError('workforce: "panel" must be a mapping when set', file);
+		}
+		const scope = (panelRaw as Record<string, unknown>).scope;
+		if (scope !== undefined) {
+			if (scope === null || typeof scope !== 'object' || Array.isArray(scope)) {
+				throw new ConfigError('workforce: panel.scope must be a mapping when set', file);
+			}
+			const s = scope as Record<string, unknown>;
+			scopeMaxFiles = scopeBound(s, 'max_files');
+			scopeMaxNewServices = scopeBound(s, 'max_new_services');
+		}
+	}
+
+	// TASK 16.4 — workforce.max_open_proposals (anti-spam cap, WORKFORCE-SPEC §5).
+	// Default 2 (the §5 conservative starting point, shipped in config — not invented
+	// here); when present it must be a positive integer (a 0/negative cap would
+	// silently kill the Act-with-Purpose pipeline — fail closed instead).
+	let maxOpenProposals = 2;
+	const wfRaw = raw.workforce;
+	if (wfRaw !== undefined) {
+		if (wfRaw === null || typeof wfRaw !== 'object' || Array.isArray(wfRaw)) {
+			throw new ConfigError('workforce: "workforce" must be a mapping when set', file);
+		}
+		const cap = (wfRaw as Record<string, unknown>).max_open_proposals;
+		if (cap !== undefined && cap !== null) {
+			if (typeof cap !== 'number' || !Number.isInteger(cap) || cap < 1) {
+				throw new ConfigError(
+					'workforce: workforce.max_open_proposals must be a positive integer',
+					file
+				);
+			}
+			maxOpenProposals = cap;
+		}
+	}
+
 	return {
 		...raw,
 		pm: {
@@ -306,6 +378,18 @@ export function loadWorkforce(file: string, opts: LoadOpts = {}): WorkforceConfi
 			// claude-* tier in agent-pool.yaml names; the justified default, not magic.
 			provider: typeof p.provider === 'string' && p.provider.trim() ? p.provider.trim() : 'claude',
 			triggers: { failure_threshold: failureThreshold }
+		},
+		panel: {
+			...(panelRaw && typeof panelRaw === 'object' && !Array.isArray(panelRaw)
+				? (panelRaw as Record<string, unknown>)
+				: {}),
+			scope: { max_files: scopeMaxFiles, max_new_services: scopeMaxNewServices }
+		},
+		workforce: {
+			...(wfRaw && typeof wfRaw === 'object' && !Array.isArray(wfRaw)
+				? (wfRaw as Record<string, unknown>)
+				: {}),
+			max_open_proposals: maxOpenProposals
 		}
 	};
 }

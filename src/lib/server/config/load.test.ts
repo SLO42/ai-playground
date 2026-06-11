@@ -319,4 +319,44 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 	])('rejects %s at the trigger boundary (fail closed)', (_label, inject) => {
 		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
 	});
+
+	// ── TASK 16.4 — panel.scope.* + workforce.max_open_proposals (PM-SPEC §4.6/§4) ──
+	it('the SHIPPED config ships panel.scope tripwires UNARMED (null, G5/F-008)', () => {
+		const wf = loadWorkforce(REAL_WF);
+		expect(wf.panel.scope.max_files).toBeNull();
+		expect(wf.panel.scope.max_new_services).toBeNull();
+	});
+
+	it('the SHIPPED config ships max_open_proposals = 2 (the §5 conservative start)', () => {
+		const wf = loadWorkforce(REAL_WF);
+		expect(wf.workforce.max_open_proposals).toBe(2);
+	});
+
+	it('absent panel/workforce blocks default honestly (unarmed scope, cap 2)', () => {
+		const wf = loadWorkforce(REAL_WF, {
+			_inject: { pm: { model_id: 'm' }, panel: undefined, workforce: undefined }
+		});
+		expect(wf.panel.scope.max_files).toBeNull();
+		expect(wf.workforce.max_open_proposals).toBe(2);
+	});
+
+	it('accepts armed integer scope bounds', () => {
+		const wf = loadWorkforce(REAL_WF, {
+			_inject: { pm: { model_id: 'm' }, panel: { scope: { max_files: 9 } } }
+		});
+		expect(wf.panel.scope.max_files).toBe(9);
+		expect(wf.panel.scope.max_new_services).toBeNull();
+	});
+
+	it.each([
+		['non-mapping panel', { pm: { model_id: 'm' }, panel: 'big' }],
+		['non-mapping scope', { pm: { model_id: 'm' }, panel: { scope: 7 } }],
+		['negative max_files', { pm: { model_id: 'm' }, panel: { scope: { max_files: -1 } } }],
+		['float max_new_services', { pm: { model_id: 'm' }, panel: { scope: { max_new_services: 1.5 } } }],
+		['non-mapping workforce', { pm: { model_id: 'm' }, workforce: 3 }],
+		['zero cap', { pm: { model_id: 'm' }, workforce: { max_open_proposals: 0 } }],
+		['string cap', { pm: { model_id: 'm' }, workforce: { max_open_proposals: '2' } }]
+	])('rejects %s at the 16.4 boundary (fail closed)', (_label, inject) => {
+		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
+	});
 });

@@ -25,7 +25,7 @@
 
   // RightTray feed + unread badge (TASK 10.2): real notification/agent_event rows from the
   // layout load, re-invalidated live over the one SSE stream (notification/agent_event).
-  const trayData = $derived(data.tray ?? { items: [], unread: 0 });
+  const trayData = $derived(data.tray ?? { items: [], unread: 0, briefs: [] });
 
   // App-root aria-live region (UI-SPEC §283): ONE always-mounted polite region,
   // debounced so SSE/toast bursts produce a single announcement per item without
@@ -143,9 +143,15 @@
   // agent_event landing (today's tokens/cost), or a service health flip. All over the
   // ONE SSE stream (§2.11). The loader recomputes from real rows; no fabrication.
   $effect(() => {
-    const offs = ['session', 'agent_event', 'service', 'project', 'notification'].map((table) =>
-      stream.onDbChange(table, () => void invalidate('app:shell'))
-    );
+    // decision_brief: the RightTray decisions inbox (TASK 16.4) re-derives live.
+    const offs = [
+      'session',
+      'agent_event',
+      'service',
+      'project',
+      'notification',
+      'decision_brief'
+    ].map((table) => stream.onDbChange(table, () => void invalidate('app:shell')));
     return () => offs.forEach((off) => off());
   });
 </script>
@@ -195,7 +201,7 @@
   onstartrun={() => void goto('/projects')}
 />
 <ConfirmDialog />
-<RightTray items={trayData.items} unread={trayData.unread} />
+<RightTray items={trayData.items} unread={trayData.unread} briefs={trayData.briefs} />
 <ToastHost {announce} />
 
 <!-- Always-mounted polite live region (UI-SPEC §283) — never conditionally rendered. -->

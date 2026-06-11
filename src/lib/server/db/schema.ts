@@ -1217,6 +1217,85 @@ const m0031_workforce: Migration = {
 	`
 };
 
+// ── TASK 16.4 — proposed-task pipeline + decision briefs (PM-SPEC §4; D-039) ─────
+// Additive on `task`: the Act-with-Purpose artifact fields (objective / purpose /
+// acceptance_criteria / provenance — schema fields, enforced at the proposeTask
+// chokepoint since a DDL ASSERT cannot reference sibling fields), the proposal
+// linkage (proposed_by / revision_of / superseded_by), and the structural anti-spam
+// fingerprint. The status/origin enums are WIDENED with their FULL value sets
+// (the m0022 lesson: a missing enum value silently fails every write).
+// Additive on `panel_verdict` (0031): the §4.5 decision class is logged ON the
+// verdict ("log decision + class on the artifact/verdict").
+// New `decision_brief`: the WORKFORCE-SPEC §8 canonical operator brief (PM-SPEC
+// §4.7 references it — one format, never forked), surfaced via RightTray.
+// All DDL idempotent (OVERWRITE — F-015); apply-twice + half-applied recovery
+// tests live in projects/pm-proposals.test.ts.
+const m0032_proposed_tasks: Migration = {
+	id: '0032_proposed_tasks',
+	up: `
+		-- task: widened enums (FULL sets — m0022) -------------------------------------
+		DEFINE FIELD OVERWRITE status ON task TYPE string DEFAULT "backlog"
+			ASSERT $value IN ["proposed","backlog","ready","in_progress","review","blocked","done","failed","withdrawn"];
+		DEFINE FIELD OVERWRITE origin ON task TYPE string DEFAULT "manual"
+			ASSERT $value IN ["manual","scanner","follow_up","review","release","pm"];
+
+		-- task: Act-with-Purpose artifact fields (PM-SPEC §4.1) -----------------------
+		DEFINE FIELD OVERWRITE objective           ON task TYPE option<string>;
+		DEFINE FIELD OVERWRITE purpose             ON task TYPE option<string>;
+		DEFINE FIELD OVERWRITE acceptance_criteria ON task TYPE option<array<string>>;
+		DEFINE FIELD OVERWRITE provenance          ON task FLEXIBLE TYPE option<object>;
+		DEFINE FIELD OVERWRITE proposed_by         ON task TYPE option<record<pm>>;
+		-- Revise loop (§2.2 'revised' closure): a revision is a NEW row; the pair of
+		-- links makes the succession honest in both directions.
+		DEFINE FIELD OVERWRITE revision_of         ON task TYPE option<record<task>>;
+		DEFINE FIELD OVERWRITE superseded_by       ON task TYPE option<record<task>>;
+		-- Structural anti-spam fingerprint (PM-SPEC §4 (d)): sha256 over (project,
+		-- artifact kind, trigger kind, sorted evidence ids) — cosmetic re-wording
+		-- cannot dodge the defer window.
+		DEFINE FIELD OVERWRITE proposal_fingerprint ON task TYPE option<string>;
+		DEFINE INDEX OVERWRITE task_by_fingerprint ON task FIELDS proposal_fingerprint;
+
+		-- panel_verdict: the §4.5 decision class, additive on the 0031 table ----------
+		DEFINE FIELD OVERWRITE classification ON panel_verdict TYPE option<string>
+			ASSERT $value = NONE OR $value IN ["mechanical","taste","operator_challenge"];
+
+		-- decision_brief: WORKFORCE-SPEC §8 canonical operator brief ------------------
+		DEFINE TABLE OVERWRITE decision_brief SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project        ON decision_brief TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE artifact       ON decision_brief TYPE record;
+		DEFINE FIELD OVERWRITE artifact_kind  ON decision_brief TYPE string
+			ASSERT $value IN ["task","review_proposal","fixture_proposal"];
+		-- WHY the operator is being asked (PM-SPEC §4.7's brief sources).
+		DEFINE FIELD OVERWRITE classification ON decision_brief TYPE string
+			ASSERT $value IN ["operator_challenge","taste","proposal_gate","confirm"];
+		DEFINE FIELD OVERWRITE ask            ON decision_brief TYPE string;   -- one-sentence ask
+		DEFINE FIELD OVERWRITE issue          ON decision_brief TYPE string;   -- plain-language stakes
+		-- Completeness from REAL panel rows; {kind_differs:true, note} when options
+		-- differ in KIND (F-008 — never a fabricated score).
+		DEFINE FIELD OVERWRITE completeness   ON decision_brief FLEXIBLE TYPE option<object>;
+		DEFINE FIELD OVERWRITE effort         ON decision_brief FLEXIBLE TYPE object DEFAULT {}; -- {apply, wrongness} dual label
+		DEFINE FIELD OVERWRITE evidence       ON decision_brief TYPE array<string> DEFAULT [];
+		DEFINE FIELD OVERWRITE falsifier      ON decision_brief TYPE string;   -- strongest reason NOT to approve
+		-- [{id,label,pro,con,recommended?}] — exactly ONE recommended (assembler-enforced).
+		DEFINE FIELD OVERWRITE options        ON decision_brief FLEXIBLE TYPE array<object> DEFAULT [];
+		DEFINE FIELD OVERWRITE net_tradeoff   ON decision_brief TYPE option<string>;
+		-- Operator-challenge payload (§4.5): {operator_said, recommendation, why,
+		-- context_we_might_be_missing, cost_if_wrong}.
+		DEFINE FIELD OVERWRITE challenge      ON decision_brief FLEXIBLE TYPE option<object>;
+		-- 'superseded' = the underlying proposal was withdrawn/revised while the brief
+		-- was open (mechanical close — never recorded as an operator decision).
+		DEFINE FIELD OVERWRITE status         ON decision_brief TYPE string DEFAULT "open"
+			ASSERT $value IN ["open","approved","rejected","deferred","superseded"];
+		DEFINE FIELD OVERWRITE fingerprint    ON decision_brief TYPE option<string>;
+		DEFINE FIELD OVERWRITE defer_until    ON decision_brief TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE decided_at     ON decision_brief TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE created_at     ON decision_brief TYPE datetime DEFAULT time::now();
+		DEFINE INDEX OVERWRITE brief_by_status      ON decision_brief FIELDS status;
+		DEFINE INDEX OVERWRITE brief_by_artifact    ON decision_brief FIELDS artifact;
+		DEFINE INDEX OVERWRITE brief_by_fingerprint ON decision_brief FIELDS fingerprint;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1254,5 +1333,6 @@ export const schemaMigrations: Migration[] = [
 	m0028_service_last_seen,
 	m0029_pm_identity,
 	m0030_pm_review_provenance,
-	m0031_workforce
+	m0031_workforce,
+	m0032_proposed_tasks
 ];

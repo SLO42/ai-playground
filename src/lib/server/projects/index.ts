@@ -71,6 +71,7 @@ export {
 	getPm,
 	createPm,
 	updatePmCharter,
+	updatePmAuthority,
 	PM_AUTHORITIES,
 	// taxonomy + types
 	PM_MEMORY_KINDS,
@@ -124,3 +125,51 @@ export {
 	type CronSpec
 } from './pm-triggers';
 export { listPmsWithCadence, type PmReviewProvenance } from './pm-repo';
+
+// TASK 16.4 — the proposed-task pipeline + validation panel (PM-SPEC §4; D-039).
+export {
+	proposeTask,
+	revisePmProposal,
+	withdrawPmProposal,
+	proposalFingerprint,
+	ProposalContractError,
+	type ProposeTaskInput,
+	type ProposeTaskResult,
+	type ProposeOutcome,
+	type ReviseProposalInput,
+	type ReviseProposalResult,
+	type WithdrawProposalResult
+} from './pm-proposals';
+export {
+	runValidationPanel,
+	applyBriefDecision,
+	listProposalQueue,
+	parseValidatorVerdict,
+	buildValidatorPrompt,
+	ValidatorContractError,
+	PanelInputError,
+	type PanelDecision,
+	type PanelRunResult,
+	type PanelDeps,
+	type PanelRunOpts,
+	type ProposalQueueEntry,
+	type BriefAction,
+	type ValidatorVerdict
+} from './pm-panel';
+export {
+	createDecisionBrief,
+	getBrief,
+	getOpenBriefForArtifact,
+	listOpenBriefs,
+	listBriefsForProject,
+	markBriefDecided,
+	supersedeOpenBrief,
+	isFingerprintDeferred,
+	BriefError,
+	type DecisionBriefRow,
+	type BriefOption,
+	type BriefChallenge,
+	type BriefStatus,
+	type BriefClassification,
+	type BriefCompleteness
+} from './briefs';

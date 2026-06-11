@@ -175,6 +175,22 @@
 
   // ── TASK 16.1 — PM identity: the hired PM row + the hire-interview wizard. ──────
   const pm = $derived(data.pm ?? null);
+  // ── TASK 16.4 — the proposals queue (PM-SPEC §4 Act with Purpose). ──────────────
+  const proposals = $derived(data.proposals ?? []);
+  const pmAuthorities = $derived(data.pmAuthorities ?? []);
+  let reviseOpenFor = $state<string | null>(null);
+  let reviseTitle = $state('');
+  let reviseObjective = $state('');
+  let revisePurpose = $state('');
+  let reviseCriteria = $state('');
+
+  function startRevise(entry: (typeof proposals)[number]): void {
+    reviseOpenFor = entry.task.id;
+    reviseTitle = entry.task.title;
+    reviseObjective = entry.task.objective ?? '';
+    revisePurpose = entry.task.purpose ?? '';
+    reviseCriteria = (entry.task.acceptance_criteria ?? []).join('\n');
+  }
   const hireQuestions = $derived(data.hireQuestions ?? []);
   // Smart-skip (PM-SPEC §1): questions the project scan already answers are shown as
   // pre-answered evidence, never asked; the rest are asked ONE AT A TIME.
@@ -326,6 +342,9 @@
     const offRv = stream.onDbChange('pm_review', () => void invalidate('app:pm'));
     // TASK 16.1 — the hired PM identity (charter edits, hire) updates live.
     const offPm = stream.onDbChange('pm', () => void invalidate('app:pm'));
+    // TASK 16.4 — proposals queue: panel verdicts + decision briefs update live.
+    const offPv = stream.onDbChange('panel_verdict', () => void invalidate('app:pm'));
+    const offDb = stream.onDbChange('decision_brief', () => void invalidate('app:pm'));
     // TASK 10.4 — the Maintain panel + Memory tab update live too.
     const offF = stream.onDbChange('security_finding', () => void invalidate('app:findings'));
     const offMem = stream.onDbChange('memory', () => void invalidate('app:memory'));
@@ -339,6 +358,8 @@
       offSp();
       offRv();
       offPm();
+      offPv();
+      offDb();
       offF();
       offMem();
       offE();
@@ -1000,6 +1021,42 @@
               accumulates typed memory, records decisions, runs sprints, and can be consulted
               directly — every session runs under the charter below.
             </p>
+            <!-- TASK 16.4 — the authority ladder (PM-SPEC §4): observe = never proposes;
+                 propose = panel-approved proposals still need your gate brief; act =
+                 panel approval promotes straight to ready. -->
+            <form
+              method="POST"
+              action="?/pmAuthority"
+              class="authority-form"
+              use:enhance={() => {
+                pmBusy = true;
+                return async ({ update }) => {
+                  await update({ reset: false });
+                  pmBusy = false;
+                };
+              }}
+            >
+              <label class="authority-label">
+                <span>Authority</span>
+                <select
+                  class="move-select"
+                  name="authority"
+                  disabled={pmBusy}
+                  onchange={(e) => e.currentTarget.form?.requestSubmit()}
+                >
+                  {#each pmAuthorities as a (a)}
+                    <option value={a} selected={a === pm.authority}>{a}</option>
+                  {/each}
+                </select>
+              </label>
+              <span class="hint">
+                {pm.authority === 'act'
+                  ? 'panel approval promotes proposals straight to ready'
+                  : pm.authority === 'propose'
+                    ? 'panel-approved proposals wait for your decision brief'
+                    : 'the PM observes and records — it does not propose'}
+              </span>
+            </form>
           {:else}
             <p class="state-body">
               No PM has been hired for this project yet. Hiring builds the PM's founding context:
@@ -1177,7 +1234,25 @@
             {:else if pmFeedback.action === 'review'}
               <p class="form-ok">
                 {String(pmFeedback.trigger)} review complete — wrote {String(pmFeedback.written)}
-                memory entry(ies).
+                memory entry(ies){#if typeof pmFeedback.proposed === 'number' && pmFeedback.proposed > 0},
+                  proposed {String(pmFeedback.proposed)} task(s) (see Proposals below){/if}.
+              </p>
+            {:else if pmFeedback.action === 'authority'}
+              <p class="form-ok">PM authority set to {String(pmFeedback.authority)}.</p>
+            {:else if pmFeedback.action === 'panel'}
+              <p class="form-ok">
+                Panel done — {String(pmFeedback.verdicts)} verdict(s), decision:
+                {String(pmFeedback.decision)}; task is {String(pmFeedback.taskStatus)}{#if pmFeedback.briefId}{' '}—
+                  a decision brief is waiting in the notifications tray{/if}.
+              </p>
+            {:else if pmFeedback.action === 'revise'}
+              <p class="form-ok">
+                Revision submitted as a new proposal ({String(pmFeedback.successorId)});
+                {String(pmFeedback.verdictsClosed)} verdict(s) closed as revised.
+              </p>
+            {:else if pmFeedback.action === 'withdraw'}
+              <p class="form-ok">
+                Proposal withdrawn; {String(pmFeedback.verdictsClosed)} verdict(s) closed.
               </p>
             {/if}
           {/if}
@@ -1227,6 +1302,185 @@
               <pre class="charter-text">{pm.charter}</pre>
             {:else}
               <p class="state-body">— no charter written yet. The PM runs without operator directives until you write one.</p>
+            {/if}
+          </div>
+        {/if}
+
+        {#if pm}
+          <!-- TASK 16.4 — proposals queue (PM-SPEC §4 "Act with Purpose"): tasks the PM
+               proposed, each carrying the schema-enforced objective / purpose / spec /
+               provenance, traversing the 1–2 validator panel before becoming ready. -->
+          <div class="card">
+            <div class="pm-head">
+              <h2 class="section-title">
+                Proposals
+                {#if proposals.length > 0}<span class="count mono">{proposals.length}</span>{/if}
+              </h2>
+            </div>
+            <p class="state-body">
+              PM-created tasks are born <span class="mono">proposed</span> — nothing is actionable
+              until an independent validation panel approves it (purpose · spec · duplication ·
+              feasibility, judged against plan + charter).
+            </p>
+            {#if proposals.length === 0}
+              <p class="state-body">
+                No open proposals — the PM proposes from real review signals (blocked work,
+                failed releases, severe findings).
+              </p>
+            {:else}
+              <ul class="rows proposal-list" aria-label="open proposals">
+                {#each proposals as entry (entry.task.id)}
+                  <li class="proposal">
+                    <div class="proposal-head">
+                      <span class="row-title">{entry.task.title}</span>
+                      <span class="status" data-status={entry.task.status}>{entry.task.status}</span>
+                    </div>
+                    <dl class="proposal-fields">
+                      <dt>objective</dt>
+                      <dd>{entry.task.objective ?? '—'}</dd>
+                      <dt>purpose</dt>
+                      <dd>{entry.task.purpose ?? '—'}</dd>
+                      <dt>acceptance criteria</dt>
+                      <dd>
+                        {#if entry.task.acceptance_criteria?.length}
+                          <ol class="criteria-list">
+                            {#each entry.task.acceptance_criteria as c, i (i)}
+                              <li>{c}</li>
+                            {/each}
+                          </ol>
+                        {:else}
+                          —
+                        {/if}
+                      </dd>
+                      <dt>provenance</dt>
+                      <dd>
+                        {#if entry.task.provenance}
+                          <span class="mono">{entry.task.provenance.kind}</span>
+                          — {entry.task.provenance.evidence.join(', ')}
+                        {:else}
+                          —
+                        {/if}
+                      </dd>
+                    </dl>
+
+                    {#if entry.verdicts.length > 0}
+                      <div class="verdicts" aria-label="panel verdicts">
+                        {#each entry.verdicts as v (v.id)}
+                          <details class="verdict">
+                            <summary class="verdict-summary">
+                              <span class="status" data-status={v.verdict === 'approve' ? 'done' : 'blocked'}>
+                                {v.verdict}
+                              </span>
+                              <span class="mono verdict-meta">
+                                {v.validator_kind}
+                                {#if v.classification}· {v.classification}{/if}
+                                {#if v.confidence}· {v.confidence}{/if}
+                                {#if v.outcome}· closed: {v.outcome}{/if}
+                              </span>
+                            </summary>
+                            <ul class="verdict-reasons">
+                              {#each v.reasons as r, i (i)}
+                                <li>{r}</li>
+                              {/each}
+                            </ul>
+                          </details>
+                        {/each}
+                      </div>
+                    {:else}
+                      <p class="hint">No panel verdicts yet — run the validation panel.</p>
+                    {/if}
+
+                    {#if entry.openBrief}
+                      <p class="hint brief-open-hint">
+                        A decision brief is open on this proposal — answer it in the
+                        notifications tray (the matter does not proceed while it is open).
+                      </p>
+                    {/if}
+
+                    <div class="proposal-actions">
+                      <form
+                        method="POST"
+                        action="?/pmPanel"
+                        use:enhance={() => {
+                          pmBusy = true;
+                          return async ({ update }) => {
+                            await update({ reset: false });
+                            pmBusy = false;
+                          };
+                        }}
+                      >
+                        <input type="hidden" name="taskId" value={entry.task.id} />
+                        <input type="hidden" name="validators" value="1" />
+                        <button class="btn primary" type="submit" disabled={pmBusy || !!entry.openBrief}>
+                          {pmBusy ? 'Panel running…' : 'Run validation panel'}
+                        </button>
+                      </form>
+                      <button class="btn" type="button" onclick={() => startRevise(entry)}>
+                        Revise
+                      </button>
+                      <form
+                        method="POST"
+                        action="?/pmWithdraw"
+                        use:enhance={() => {
+                          pmBusy = true;
+                          return async ({ update }) => {
+                            await update({ reset: false });
+                            pmBusy = false;
+                          };
+                        }}
+                      >
+                        <input type="hidden" name="taskId" value={entry.task.id} />
+                        <button class="btn" type="submit" disabled={pmBusy}>Withdraw</button>
+                      </form>
+                    </div>
+
+                    {#if reviseOpenFor === entry.task.id}
+                      <form
+                        method="POST"
+                        action="?/pmRevise"
+                        class="revise-form"
+                        use:enhance={() => {
+                          pmBusy = true;
+                          return async ({ update }) => {
+                            await update({ reset: false });
+                            pmBusy = false;
+                            reviseOpenFor = null;
+                          };
+                        }}
+                      >
+                        <input type="hidden" name="taskId" value={entry.task.id} />
+                        <label class="field">
+                          <span class="field-label">Title</span>
+                          <input class="pm-input" type="text" name="title" bind:value={reviseTitle} />
+                        </label>
+                        <label class="field">
+                          <span class="field-label">Objective</span>
+                          <textarea class="pm-input" rows="2" name="objective" bind:value={reviseObjective}
+                          ></textarea>
+                        </label>
+                        <label class="field">
+                          <span class="field-label">Purpose</span>
+                          <textarea class="pm-input" rows="2" name="purpose" bind:value={revisePurpose}
+                          ></textarea>
+                        </label>
+                        <label class="field">
+                          <span class="field-label">Acceptance criteria (one per line)</span>
+                          <textarea class="pm-input" rows="4" name="criteria" bind:value={reviseCriteria}
+                          ></textarea>
+                        </label>
+                        <div class="hire-actions">
+                          <button class="btn primary" type="submit" disabled={pmBusy}>
+                            Submit revision (new proposal)
+                          </button>
+                          <button class="btn" type="button" onclick={() => (reviseOpenFor = null)}>
+                            Cancel
+                          </button>
+                        </div>
+                      </form>
+                    {/if}
+                  </li>
+                {/each}
+              </ul>
             {/if}
           </div>
         {/if}
@@ -2212,6 +2466,13 @@
   .status[data-status='blocked'] {
     color: var(--color-blocked-on-overlay);
   }
+  /* TASK 16.4 — the proposed-task pipeline states (PM-SPEC §4). */
+  .status[data-status='proposed'] {
+    color: var(--color-info-on-overlay);
+  }
+  .status[data-status='withdrawn'] {
+    color: var(--color-text-muted);
+  }
   .tag {
     font-size: 0.68rem;
     color: var(--color-accent);
@@ -2570,6 +2831,112 @@
     gap: 0.25rem;
     font-size: 0.72rem;
     color: var(--color-text-muted);
+  }
+  /* TASK 16.4 — the proposals queue (PM-SPEC §4 Act with Purpose). */
+  .authority-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-3, 0.75rem);
+    margin-block: var(--space-2, 0.5rem);
+  }
+  .authority-label {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
+  }
+  .proposal-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  .proposal {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    padding: var(--space-3, 0.75rem);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-md, 8px);
+    background: var(--color-bg-inset);
+  }
+  .proposal-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .proposal-fields {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 0.25rem 0.75rem;
+    margin: 0;
+  }
+  .proposal-fields dt {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-text-muted);
+  }
+  .proposal-fields dd {
+    margin: 0;
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+    min-width: 0;
+    overflow-wrap: anywhere;
+  }
+  .criteria-list {
+    margin: 0;
+    padding-left: 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .verdicts {
+    display: flex;
+    flex-direction: column;
+    gap: 0.35rem;
+  }
+  .verdict {
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.35rem 0.5rem;
+  }
+  .verdict-summary {
+    display: flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    cursor: pointer;
+  }
+  .verdict-meta {
+    font-size: 0.68rem;
+    color: var(--color-text-muted);
+  }
+  .verdict-reasons {
+    margin: 0.4rem 0 0;
+    padding-left: 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+  }
+  .proposal-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    align-items: center;
+  }
+  .brief-open-hint {
+    color: var(--color-warn-on-overlay, var(--color-warn));
+  }
+  .revise-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    border-top: var(--border-width, 1px) solid var(--color-border);
+    padding-top: var(--space-2, 0.5rem);
   }
   /* TASK 16.2 — trigger provenance line (what woke the PM). */
   .review-prov {

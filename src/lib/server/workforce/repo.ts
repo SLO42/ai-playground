@@ -152,6 +152,9 @@ export interface GauntletKeyRow {
 	created_at: string | null;
 }
 
+/** PM-SPEC §4.5 decision class, logged ON the verdict (migration 0032 additive). */
+export type PanelClassification = 'mechanical' | 'taste' | 'operator_challenge';
+
 export interface PanelVerdictRow {
 	id: string;
 	/** null for project-less workforce artifacts (global role revisions). */
@@ -165,6 +168,8 @@ export interface PanelVerdictRow {
 	verdict: PanelVerdictValue;
 	reasons: string[];
 	confidence?: 'low' | 'medium' | 'high';
+	/** §4.5 decision class (TASK 16.4) — absent on pre-0032 rows (honest). */
+	classification?: PanelClassification;
 	/** Closed later, mechanically (§2.2). null = still open. */
 	outcome: PanelOutcome | null;
 	at: string | null;
@@ -383,6 +388,9 @@ function normPanelVerdict(row: Raw): PanelVerdictRow {
 		verdict: row.verdict as PanelVerdictValue,
 		reasons: (row.reasons ?? []) as string[],
 		...(row.confidence != null ? { confidence: row.confidence as PanelVerdictRow['confidence'] } : {}),
+		...(row.classification != null
+			? { classification: row.classification as PanelClassification }
+			: {}),
 		outcome: row.outcome != null ? (row.outcome as PanelOutcome) : null,
 		at: strDate(row.at)
 	};
@@ -882,6 +890,8 @@ export interface AddPanelVerdictInput {
 	verdict: PanelVerdictValue;
 	reasons?: string[];
 	confidence?: 'low' | 'medium' | 'high';
+	/** §4.5 — the decision class the validator took (TASK 16.4). */
+	classification?: PanelClassification;
 }
 
 /** Record one validator's verdict on one artifact. Dedup: ONE verdict per
@@ -904,7 +914,8 @@ export async function addPanelVerdict(db: Db, input: AddPanelVerdictInput): Prom
 		role_version: input.role_version ? link(input.role_version) : undefined,
 		verdict: input.verdict,
 		reasons: input.reasons,
-		confidence: input.confidence
+		confidence: input.confidence,
+		classification: input.classification
 	});
 	const [rows] = await db.query<[Raw[]]>(`CREATE panel_verdict CONTENT $content RETURN AFTER;`, {
 		content
@@ -916,6 +927,38 @@ export async function getPanelVerdict(db: Db, verdictId: string): Promise<PanelV
 	const rid = link(verdictId);
 	const [rows] = await db.query<[Raw[]]>(`SELECT * FROM $rid;`, { rid });
 	return rows.length ? normPanelVerdict(rows[0]) : null;
+}
+
+/** Every verdict recorded against one artifact (the panel history of a proposal),
+ *  oldest first (F-022: the ORDER BY field is in the SELECT * projection). */
+export async function listPanelVerdictsForArtifact(
+	db: Db,
+	artifactId: string
+): Promise<PanelVerdictRow[]> {
+	const aid = link(artifactId);
+	const [rows] = await db.query<[Raw[]]>(
+		`SELECT * FROM panel_verdict WHERE artifact = $aid ORDER BY at ASC LIMIT 200;`,
+		{ aid }
+	);
+	return rows.map(normPanelVerdict);
+}
+
+/**
+ * §2.2 bulk closure (TASK 16.4): close every still-OPEN verdict on one artifact with
+ * the same mechanical outcome. Harness-only, like {@link closePanelVerdictOutcome}
+ * (the per-row writer it composes — already-closed rows are skipped, so a crash
+ * mid-loop re-runs clean: interrupt contract). Returns the number newly closed.
+ */
+export async function closeOpenPanelVerdictsForArtifact(
+	db: Db,
+	artifactId: string,
+	outcome: PanelOutcome
+): Promise<number> {
+	const open = (await listPanelVerdictsForArtifact(db, artifactId)).filter(
+		(v) => v.outcome == null
+	);
+	for (const v of open) await closePanelVerdictOutcome(db, v.id, outcome);
+	return open.length;
 }
 
 /**

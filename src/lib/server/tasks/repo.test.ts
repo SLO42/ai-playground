@@ -133,16 +133,27 @@ describe('task — CRUD round-trip (§4.2)', () => {
 });
 
 describe('status state machine', () => {
-	it('exposes the canonical enum (locked to the schema ASSERT)', () => {
+	it('exposes the canonical enum (locked to the schema ASSERT — 0032 widened)', () => {
 		expect([...TASK_STATUSES]).toEqual([
+			'proposed',
 			'backlog',
 			'ready',
 			'in_progress',
 			'review',
 			'blocked',
 			'done',
-			'failed'
+			'failed',
+			'withdrawn'
 		]);
+	});
+
+	it('16.4 pipeline states: proposed is born-only; withdrawn is a sink', () => {
+		// proposed leaves ONLY via approval (→ ready) or the revise/withdraw loop.
+		expect(nextStatuses('proposed')).toEqual(['ready', 'withdrawn']);
+		// NOTHING transitions INTO proposed — PM-created tasks are born there.
+		for (const s of TASK_STATUSES) expect(canTransition(s, 'proposed')).toBe(false);
+		expect(nextStatuses('withdrawn')).toEqual([]);
+		expect(canTransition('withdrawn', 'ready')).toBe(false);
 	});
 
 	it('canTransition / nextStatuses encode the legal graph; terminals are sinks', () => {

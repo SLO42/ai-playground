@@ -44,7 +44,45 @@ describe('notifications repo — tray read model (§3/§85/§147)', () => {
 		const data = await buildTrayData(db);
 		expect(data.items).toEqual([]);
 		expect(data.unread).toBe(0);
+		expect(data.briefs).toEqual([]); // TASK 16.4 — an empty decisions inbox is honestly empty
 		expect(await unreadCount(db)).toBe(0);
+	});
+
+	it('TASK 16.4 — surfaces OPEN decision briefs only (the decided leave the inbox)', async () => {
+		const [projRows] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE project SET slug = 'traybrief', name = 'Tray Brief', root_path = 'F:/code/traybrief',
+			   ecosystem = [], status = 'active' RETURN id;`
+		);
+		const projectId = String(projRows[0].id);
+		const { createDecisionBrief, markBriefDecided } = await import('../projects/briefs');
+		const mk = (artifact: string) =>
+			createDecisionBrief(db, {
+				project: projectId,
+				artifact,
+				artifact_kind: 'task',
+				classification: 'proposal_gate',
+				ask: 'Promote?',
+				issue: 'stakes',
+				effort: { apply: '—', wrongness: '—' },
+				evidence: [artifact, 'panel_verdict:x'],
+				falsifier: 'f',
+				options: [
+					{ id: 'approve', label: 'a', pro: 'p', con: 'c', recommended: 'r' },
+					{ id: 'reject', label: 'b', pro: 'p', con: 'c' }
+				]
+			});
+		const open = await mk('task:traybrief_open');
+		const decided = await mk('task:traybrief_done');
+		await markBriefDecided(db, decided.id, 'approved');
+
+		const data = await buildTrayData(db);
+		expect(data.briefs.some((b) => b.id === open.id)).toBe(true);
+		expect(data.briefs.some((b) => b.id === decided.id)).toBe(false);
+		// The serialized brief is load-safe (F-013): datetimes are strings/null.
+		const row = data.briefs.find((b) => b.id === open.id);
+		expect(typeof row?.created_at).toBe('string');
+		expect(row?.decided_at).toBeNull();
+		await db.query(`DELETE decision_brief; DELETE project;`);
 	});
 
 	it('merges real notification + agent_event rows newest-first with an unread count', async () => {

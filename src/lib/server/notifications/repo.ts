@@ -21,6 +21,7 @@
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import { activityLabel } from '../analytics/events';
+import { listOpenBriefs, type DecisionBriefRow } from '../projects/briefs';
 
 /** A durable operator notification (a real `notification` row; F-008). */
 export interface NotificationItem {
@@ -60,6 +61,13 @@ export interface TrayData {
 	items: TrayItem[];
 	/** Count of UNREAD `notification` rows — drives the Topbar badge. */
 	unread: number;
+	/**
+	 * TASK 16.4 — OPEN decision briefs (WORKFORCE-SPEC §8): the RightTray IS the
+	 * single decisions inbox; each brief renders the canonical format with
+	 * Approve / Reject / Defer. Real `decision_brief` rows only — an empty inbox
+	 * is honestly empty.
+	 */
+	briefs: DecisionBriefRow[];
 }
 
 /**
@@ -148,7 +156,10 @@ export async function buildTrayData(db: Db, limit = 20): Promise<TrayData> {
 	// count so the badge never under-reports beyond the page (honest; F-008).
 	const unreadTotal = notifications.length >= limit ? await unreadCount(db) : unread;
 
-	return { items, unread: unreadTotal };
+	// TASK 16.4 — the open decisions inbox (bounded; real rows only).
+	const briefs = await listOpenBriefs(db, 10);
+
+	return { items, unread: unreadTotal, briefs };
 }
 
 /**

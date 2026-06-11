@@ -21,18 +21,23 @@
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
+import { closeOpenPanelVerdictsForArtifact } from '../workforce/repo';
 
 // ── Enums (DATA-MODEL §4.2 ASSERTs — kept in lock-step with the schema) ─────────
 
-/** Allowed `task.status` values (schema ASSERT, §4.2). */
+/** Allowed `task.status` values (schema ASSERT, §4.2 + TASK 16.4 / PM-SPEC §4:
+ *  `proposed` is the BORN-ONLY state of PM-created tasks — nothing transitions INTO
+ *  it; `withdrawn` is the terminal exit of the propose/revise/withdraw loop). */
 export const TASK_STATUSES = [
+	'proposed',
 	'backlog',
 	'ready',
 	'in_progress',
 	'review',
 	'blocked',
 	'done',
-	'failed'
+	'failed',
+	'withdrawn'
 ] as const;
 export type TaskStatus = (typeof TASK_STATUSES)[number];
 
@@ -40,8 +45,8 @@ export type TaskStatus = (typeof TASK_STATUSES)[number];
 export const TASK_PRIORITIES = ['low', 'normal', 'high', 'critical'] as const;
 export type TaskPriority = (typeof TASK_PRIORITIES)[number];
 
-/** Allowed `task.origin` values (schema ASSERT, §4.2). */
-export const TASK_ORIGINS = ['manual', 'scanner', 'follow_up', 'review', 'release'] as const;
+/** Allowed `task.origin` values (schema ASSERT, §4.2 + 'pm' for TASK 16.4 / D-039). */
+export const TASK_ORIGINS = ['manual', 'scanner', 'follow_up', 'review', 'release', 'pm'] as const;
 export type TaskOrigin = (typeof TASK_ORIGINS)[number];
 
 // ── Status state machine ────────────────────────────────────────────────────
@@ -54,13 +59,18 @@ export type TaskOrigin = (typeof TASK_ORIGINS)[number];
 
 /** For each status, the set of statuses it may transition TO. */
 const ALLOWED_TRANSITIONS: Readonly<Record<TaskStatus, readonly TaskStatus[]>> = {
+	// TASK 16.4 (PM-SPEC §4): a proposal leaves `proposed` ONLY via panel approval /
+	// operator decision (→ ready) or the PM revise/withdraw loop (→ withdrawn).
+	// Nothing transitions INTO `proposed` — PM-created tasks are BORN there.
+	proposed: ['ready', 'withdrawn'],
 	backlog: ['ready', 'blocked', 'failed'],
 	ready: ['in_progress', 'blocked', 'backlog', 'failed'],
 	in_progress: ['review', 'blocked', 'done', 'failed'],
 	review: ['done', 'in_progress', 'blocked', 'failed'],
 	blocked: ['ready', 'in_progress', 'backlog', 'failed'],
 	done: [], // terminal
-	failed: [] // terminal
+	failed: [], // terminal
+	withdrawn: [] // terminal (PM withdrew / revision superseded the proposal)
 };
 
 /** True if `from → to` is a legal status transition (identity is a no-op, not a move). */
@@ -90,6 +100,15 @@ function isTaskStatus(v: unknown): v is TaskStatus {
 
 // ── Row + input shapes ─────────────────────────────────────────────────────────
 
+/** Trigger provenance carried on a PM-proposed task (PM-SPEC §4.1 — which trigger/
+ *  evidence produced it; the same honest shape pm_review.provenance carries). */
+export interface TaskProvenance {
+	kind: string;
+	evidence: string[];
+	authority?: string;
+	detail?: Record<string, unknown>;
+}
+
 /** A persisted `task` row (SDK RecordId/Date coerced to plain strings). */
 export interface TaskRow {
 	id: string;
@@ -101,6 +120,16 @@ export interface TaskRow {
 	origin: TaskOrigin;
 	/** Follow-ups link to their parent task; absent (NONE) for top-level tasks. */
 	parent?: string;
+	// ── TASK 16.4 — Act-with-Purpose artifact fields (PM-SPEC §4.1; absent on
+	//    non-proposal tasks — an honest absence, never ''). ──────────────────────
+	objective?: string;
+	purpose?: string;
+	acceptance_criteria?: string[];
+	provenance?: TaskProvenance;
+	proposed_by?: string;
+	revision_of?: string;
+	superseded_by?: string;
+	proposal_fingerprint?: string;
 	created_at: string;
 	updated_at: string;
 }
@@ -115,6 +144,15 @@ export interface CreateTaskInput {
 	parent?: string;
 	/** Initial status; defaults to the schema DEFAULT ("backlog") when omitted. */
 	status?: TaskStatus;
+	// ── TASK 16.4 — proposal fields. ONLY the pm-proposals chokepoint sets these
+	//    (it enforces the §4.1 contract); they pass through here unchanged. ───────
+	objective?: string;
+	purpose?: string;
+	acceptance_criteria?: string[];
+	provenance?: TaskProvenance;
+	proposed_by?: string;
+	revision_of?: string;
+	proposal_fingerprint?: string;
 }
 
 /** Mutable task columns. `description` is intentionally absent (D-008 — immutable). */
@@ -143,12 +181,25 @@ function link(id: string): StringRecordId {
 	return new StringRecordId(assertRecordId(id));
 }
 
-function normTask(row: TaskRow & { id: unknown; project: unknown; parent?: unknown }): TaskRow {
+function normTask(
+	row: TaskRow & {
+		id: unknown;
+		project: unknown;
+		parent?: unknown;
+		proposed_by?: unknown;
+		revision_of?: unknown;
+		superseded_by?: unknown;
+	}
+): TaskRow {
 	return {
 		...row,
 		id: str(row.id),
 		project: str(row.project),
 		parent: row.parent != null ? str(row.parent) : undefined,
+		// TASK 16.4 — proposal links → plain strings; absent stays absent (honest).
+		proposed_by: row.proposed_by != null ? str(row.proposed_by) : undefined,
+		revision_of: row.revision_of != null ? str(row.revision_of) : undefined,
+		superseded_by: row.superseded_by != null ? str(row.superseded_by) : undefined,
 		created_at: str(row.created_at),
 		updated_at: str(row.updated_at)
 	};
@@ -173,7 +224,16 @@ export async function createTask(db: Db, input: CreateTaskInput): Promise<TaskRo
 		priority: input.priority,
 		origin: input.origin,
 		parent: input.parent ? link(input.parent) : undefined,
-		status: input.status
+		status: input.status,
+		// TASK 16.4 — Act-with-Purpose fields (set only via the pm-proposals chokepoint;
+		// absent fields are OMITTED so option<T> stays NONE, §6.1).
+		objective: input.objective,
+		purpose: input.purpose,
+		acceptance_criteria: input.acceptance_criteria,
+		provenance: input.provenance,
+		proposed_by: input.proposed_by ? link(input.proposed_by) : undefined,
+		revision_of: input.revision_of ? link(input.revision_of) : undefined,
+		proposal_fingerprint: input.proposal_fingerprint
 	});
 	const [rows] = await db.query<[(TaskRow & { id: unknown; project: unknown })[]]>(
 		`CREATE task CONTENT $content RETURN AFTER;`,
@@ -311,5 +371,14 @@ export async function setStatus(db: Db, id: string, to: TaskStatus): Promise<Tas
 	const row = result[result.length - 1] as
 		| (TaskRow & { id: unknown; project: unknown })
 		| null;
+
+	// TASK 16.4 — §2.2 mechanical outcome closure (WORKFORCE-SPEC, harness-only,
+	// D-035): a task reaching its terminal DONE state — unmodified, since the §4.1
+	// artifact fields are immutable after creation (D-008) — closes every still-open
+	// panel verdict on it as 'upheld'. setStatus is the single transition chokepoint,
+	// so this cannot be bypassed; tasks that never met a panel close zero rows.
+	if (row && to === 'done') {
+		await closeOpenPanelVerdictsForArtifact(db, str(row.id), 'upheld');
+	}
 	return row ? normTask(row) : null;
 }

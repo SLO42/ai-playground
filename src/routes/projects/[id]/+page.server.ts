@@ -35,7 +35,10 @@ import {
 	getPm,
 	updatePmCharter,
 	updatePmSchedule,
+	updatePmAuthority,
 	PM_MEMORY_KINDS,
+	PM_AUTHORITIES,
+	type PmAuthority,
 	type PmMemoryKind,
 	type PmMemoryRow,
 	type DecisionRow,
@@ -43,6 +46,19 @@ import {
 	type PmReviewRow,
 	type PmRow
 } from '$lib/server/projects/pm-repo';
+// TASK 16.4 — the proposed-task pipeline + validation panel (PM-SPEC §4 / D-039).
+import {
+	listProposalQueue,
+	runValidationPanel,
+	ValidatorContractError,
+	PanelInputError,
+	type ProposalQueueEntry
+} from '$lib/server/projects/pm-panel';
+import {
+	revisePmProposal,
+	withdrawPmProposal,
+	ProposalContractError
+} from '$lib/server/projects/pm-proposals';
 import {
 	hirePm,
 	hireInterviewFor,
@@ -156,6 +172,10 @@ export interface ProjectDetailData {
 	pmBootstrapped: boolean;
 	/** TASK 16.1 — the hired PM identity row, or null (the honest empty state + hire CTA). */
 	pm: PmRow | null;
+	/** TASK 16.4 — open proposals with their panel verdicts + any open brief (PM-SPEC §4). */
+	proposals: ProposalQueueEntry[];
+	/** The PM authority ladder vocabulary (for the operator's authority control). */
+	pmAuthorities: readonly PmAuthority[];
 	/** The Six Forcing Questions resolved against this project (smart-skip evidence). */
 	hireQuestions: HireInterviewQuestion[];
 	/** The PM-memory taxonomy (for the add-memory form). */
@@ -241,6 +261,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			uxAutoAllowed: false,
 			pmBootstrapped: false,
 			pm: null,
+			proposals: [],
+			pmAuthorities: PM_AUTHORITIES,
 			hireQuestions: [],
 			pmKinds: PM_MEMORY_KINDS,
 			selectedSession,
@@ -288,6 +310,9 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			listProjectGraph(db, projectId),
 			getPm(db, projectId)
 		]);
+
+		// TASK 16.4 — the proposals queue (open proposals + verdicts + open briefs).
+		const proposals = await listProposalQueue(db, projectId);
 
 		// D-004: an AUTOMATIC (periodic) review is permitted only when the orchestration mode
 		// is NOT manual. Manual mode → the review is button-triggered only. Read honestly; a
@@ -345,6 +370,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			uxAutoAllowed,
 			pmBootstrapped: pmMemory.length > 0,
 			pm: pmRow,
+			proposals,
+			pmAuthorities: PM_AUTHORITIES,
 			// Smart-skip resolved server-side against the live plan macro (PM-SPEC §1).
 			hireQuestions: hireInterviewFor(project),
 			pmKinds: PM_MEMORY_KINDS,
@@ -378,6 +405,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			uxAutoAllowed: false,
 			pmBootstrapped: false,
 			pm: null,
+			proposals: [],
+			pmAuthorities: PM_AUTHORITIES,
 			hireQuestions: [],
 			pmKinds: PM_MEMORY_KINDS,
 			selectedSession,
@@ -904,7 +933,9 @@ export const actions: Actions = {
 					action: 'review',
 					trigger,
 					written: res.written.length,
-					reviewId: res.review.id
+					reviewId: res.review.id,
+					// TASK 16.4 — proposals this pass created (anti-spam outcomes excluded).
+					proposed: res.proposals.filter((p) => p.outcome === 'created').length
 				}
 			};
 		} catch (err) {
@@ -963,6 +994,181 @@ export const actions: Actions = {
 				}
 			};
 		} catch (err) {
+			return fail(500, { pm: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * TASK 16.4 — set the PM's authority rung (observe < propose < act; PM-SPEC §4).
+	 * Operator control; validated against the ladder at the boundary.
+	 */
+	pmAuthority: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { pm: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { pm: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const authority = String(form.get('authority') ?? '').trim();
+		if (!(PM_AUTHORITIES as readonly string[]).includes(authority)) {
+			return fail(400, {
+				pm: { error: `Authority must be one of: ${PM_AUTHORITIES.join(', ')}.` }
+			});
+		}
+		try {
+			const updated = await updatePmAuthority(db, projectId, authority as PmAuthority);
+			if (!updated) {
+				return fail(409, { pm: { error: 'No PM hired for this project yet — hire one first.' } });
+			}
+			return { pm: { ok: true as const, action: 'authority', authority: updated.authority } };
+		} catch (err) {
+			return fail(500, { pm: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * TASK 16.4 — run the VALIDATION PANEL over one proposed task (PM-SPEC §4.2).
+	 * Operator-triggered (a manual act — always allowed under D-004). Launches 1–2
+	 * REAL independent validator sessions (inline prompts — WORKFORCE §9 bridge),
+	 * records their verdicts, and closes the panel mechanically: approve→ready (or a
+	 * proposal-gate brief when authority='propose'), pushback→PM memory,
+	 * operator-challenge→a blocking decision brief in the RightTray. Honest (F-008):
+	 * a missing credential or a verdict-contract violation returns the named reason.
+	 */
+	pmPanel: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { pm: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { pm: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const taskId = String(form.get('taskId') ?? '').trim();
+		try {
+			assertRecordId(taskId);
+		} catch {
+			return fail(400, { pm: { error: 'invalid task id' } });
+		}
+		const validators = String(form.get('validators') ?? '2') === '1' ? 1 : 2;
+
+		const runtimeAvail = await getRuntime(db);
+		if (!runtimeAvail.available) {
+			return fail(503, { pm: { error: runtimeAvail.reason } });
+		}
+
+		try {
+			const result = await runValidationPanel(
+				{
+					db,
+					bus: getBus(),
+					runtime: runtimeAvail.runtime,
+					fallbackModel: DEFAULT_MODEL,
+					budgets: DEFAULT_BUDGETS
+				},
+				taskId,
+				{ validators }
+			);
+			return {
+				pm: {
+					ok: true as const,
+					action: 'panel',
+					decision: result.decision,
+					verdicts: result.verdicts.length,
+					taskStatus: result.task.status,
+					briefId: result.brief?.id ?? null,
+					pushbackMemories: result.pushbackMemories
+				}
+			};
+		} catch (err) {
+			if (
+				err instanceof ValidatorContractError ||
+				err instanceof PanelInputError ||
+				err instanceof ProposalContractError
+			) {
+				return fail(409, { pm: { error: err.message } });
+			}
+			return fail(500, { pm: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * TASK 16.4 — PM REVISES a proposal after pushback (PM-SPEC §4 (c)): a successor
+	 * row is born 'proposed' (full §4.1 contract re-enforced), the predecessor is
+	 * superseded (withdrawn + linked) and its verdicts close 'revised' (§2.2).
+	 */
+	pmRevise: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { pm: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { pm: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const taskId = String(form.get('taskId') ?? '').trim();
+		try {
+			assertRecordId(taskId);
+		} catch {
+			return fail(400, { pm: { error: 'invalid task id' } });
+		}
+		const title = String(form.get('title') ?? '').trim();
+		const objective = String(form.get('objective') ?? '').trim();
+		const purpose = String(form.get('purpose') ?? '').trim();
+		// One criterion per line; blank lines dropped (boundary-validated; the §4.1
+		// contract inside revisePmProposal rejects an empty set with the named error).
+		const criteria = String(form.get('criteria') ?? '')
+			.split('\n')
+			.map((c) => c.trim())
+			.filter(Boolean);
+		if ([title, objective, purpose].some((s) => s.length > 4_000) || criteria.length > 50) {
+			return fail(400, { pm: { error: 'Revision fields are too long.' } });
+		}
+		try {
+			const res = await revisePmProposal(db, taskId, {
+				...(title ? { title } : {}),
+				objective,
+				purpose,
+				acceptance_criteria: criteria
+			});
+			return {
+				pm: {
+					ok: true as const,
+					action: 'revise',
+					successorId: res.successor.id,
+					verdictsClosed: res.verdictsClosed
+				}
+			};
+		} catch (err) {
+			if (err instanceof ProposalContractError) {
+				return fail(409, { pm: { error: err.message } });
+			}
+			return fail(500, { pm: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * TASK 16.4 — PM WITHDRAWS a proposal (PM-SPEC §4 (c)): status → 'withdrawn',
+	 * open verdicts close 'withdrawn' (§2.2), any open brief is superseded.
+	 */
+	pmWithdraw: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { pm: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { pm: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const taskId = String(form.get('taskId') ?? '').trim();
+		try {
+			assertRecordId(taskId);
+		} catch {
+			return fail(400, { pm: { error: 'invalid task id' } });
+		}
+		try {
+			const res = await withdrawPmProposal(db, taskId);
+			return {
+				pm: { ok: true as const, action: 'withdraw', taskId, verdictsClosed: res.verdictsClosed }
+			};
+		} catch (err) {
+			if (err instanceof ProposalContractError) {
+				return fail(409, { pm: { error: err.message } });
+			}
 			return fail(500, { pm: { error: (err as Error).message } });
 		}
 	},

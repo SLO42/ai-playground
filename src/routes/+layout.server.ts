@@ -63,8 +63,8 @@ export const load: LayoutServerLoad = async ({ depends }) => {
 
 	const mode = readMode();
 
-	// Honest empty tray when disconnected (F-008) — no fabricated notices.
-	const emptyTray: TrayData = { items: [], unread: 0 };
+	// Honest empty tray when disconnected (F-008) — no fabricated notices/briefs.
+	const emptyTray: TrayData = { items: [], unread: 0, briefs: [] };
 
 	const db = tryGetDb();
 	if (!db) {

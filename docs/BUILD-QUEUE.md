@@ -9,8 +9,8 @@
 
 | status | id | what | gate |
 |---|---|---|---|
-| running | wave-14.x | v2.0 audit remediation + full-viewport (14.2–14.7; resumed run wf_4cc0b816-4f2) | auto |
-| queued | lane-A-docs | HARVEST Lane A-docs: 14 prompt/doc harvests into v2-wave template + governing docs (guards G1–G5) → independent review | auto |
+| done | wave-14.x | v2.0 audit remediation + full-viewport ✅ 6/6 (d7f0506, 4995d58+edf4ff4, 3a48c7c, 487b5a6, 16e8283, eab1961 — pushed) | auto |
+| running | lane-A-docs | HARVEST Lane A-docs: 14 prompt/doc harvests into v2-wave template + governing docs (guards G1–G5) → independent review | auto |
 | queued | lane-A-code | HARVEST A4/A7: wave-script escalation tier + verdict self-check — reviewed as code | auto |
 | queued | lane-CD-specs | Lane C+D spec amendments: PM-SPEC decision-classification/scope-challenge/brief-format; CREATE-SPEC anti-sycophancy list | auto |
 | queued | wave-v2.2a | B1 scope-lock gate · B3 browser live-verify daemon · B9 verify-flow codification | auto |

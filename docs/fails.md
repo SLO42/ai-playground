@@ -4,9 +4,9 @@ Carried-forward failure patterns + prevention rules. Scan this BEFORE starting a
 task (error-learning protocol). Append a new `F-NNN` entry whenever build/test
 did not pass on the first try; escalate recurrences per the protocol.
 
-This is the UNIFIED F-001–F-015 log (2026-06-10): F-001..F-013 were carried on
+This is the UNIFIED log (F-001 onward; 2026-06-10): F-001..F-013 were carried on
 the build branch (`v2`), F-014/F-015 were logged on `v2-main` — merged here and
-synced to both branches so every agent sees the full set.
+synced to both branches so every agent sees the full set. New entries append here.
 
 The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
 — the prevention rules apply to v2 from day 0.

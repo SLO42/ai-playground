@@ -11,8 +11,8 @@
 |---|---|---|---|
 | done | wave-14.x | v2.0 audit remediation + full-viewport ✅ 6/6 (d7f0506, 4995d58+edf4ff4, 3a48c7c, 487b5a6, 16e8283, eab1961 — pushed) | auto |
 | done | lane-A-docs | HARVEST Lane A-docs ✅ 14/14 applied, review PASS (dc7239b pushed) | auto |
-| running | lane-A-code | HARVEST A4/A7: wave-script escalation tier + verdict self-check — reviewed as code | auto |
-| queued | lane-CD-specs | Lane C+D spec amendments: PM-SPEC decision-classification/scope-challenge/brief-format; CREATE-SPEC anti-sycophancy list | auto |
+| done | lane-A-code | HARVEST A4/A7 ✅ red-team pass + verdict artifact gate (3cd2755; reviewer caught F-016 host-load brick via real-loader extraction) | auto |
+| running | lane-C-specs | Lane C spec amendments: PM-SPEC decision-classification/scope-challenge/brief-format; CREATE-SPEC anti-sycophancy list (Lane D specs already shipped via WORKFORCE-SPEC) | auto |
 | queued | wave-v2.2a | B1 scope-lock gate · B3 browser live-verify daemon · B9 verify-flow codification | auto |
 | queued | wave-v2.1 | PM build (PM-SPEC §8): pm table+hire+charter · trigger engine · proposed-task pipeline+panel · GitHub triage · W-D7a/W-D7b/W-D7c workforce (WORKFORCE-SPEC) | auto |
 | queued | wave-v2.2b | B2 review memory · B4 §3.1b verify + leak harness · B5 recall budget · B6 quarantine · B7 capability-gated guidance · B8 baselines · B10 memory pull-tool | auto |

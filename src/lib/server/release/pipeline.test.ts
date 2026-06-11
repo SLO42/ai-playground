@@ -107,7 +107,7 @@ afterAll(async () => {
 });
 
 describe('buildReleaseSteps — the canonical pipeline shape', () => {
-	it('is the 6-stage linear chain dry-run → … → publish', () => {
+	it('is the 7-stage linear chain dry-run → … → publish → verify (14.7)', () => {
 		const steps = buildReleaseSteps({ version: 'v0.4', cwd: 'F:/code/rel', model: M });
 		expect(steps.map((s) => s.id)).toEqual([...RELEASE_STAGES]);
 		// First stage has no dependency; every later stage depends on exactly its predecessor.
@@ -124,7 +124,7 @@ describe('buildReleaseSteps — the canonical pipeline shape', () => {
 });
 
 describe('createReleaseWorkflow — persisted, DAG-validated (§4.11)', () => {
-	it('persists a manual "release <version>" workflow with the 6 ordered steps', async () => {
+	it('persists a manual "release <version>" workflow with the 7 ordered steps', async () => {
 		const wf = await createReleaseWorkflow(db, {
 			projectId,
 			version: 'v0.9',
@@ -139,7 +139,7 @@ describe('createReleaseWorkflow — persisted, DAG-validated (§4.11)', () => {
 });
 
 describe('runRelease — a multi-step release as a tracked workflow_run (D-013, dep 2.17)', () => {
-	it('runs all 6 stages to "done" with one per-stage session linked to the run', async () => {
+	it('runs all 7 stages to "done" with one per-stage session linked to the run', async () => {
 		const res = await runRelease({
 			db,
 			bus: new EventBus(),
@@ -204,8 +204,8 @@ describe('runRelease — a multi-step release as a tracked workflow_run (D-013, 
 	});
 
 	it('a red stage aborts the release and short-circuits every later stage', async () => {
-		// "test" fails → changelog/version/tag/publish can never become ready (stay pending);
-		// dry-run (before it) still ran. The release run = failed (abort on first red gate).
+		// "test" fails → changelog/version/tag/publish/verify can never become ready (stay
+		// pending); dry-run (before it) still ran. The run = failed (abort on first red gate).
 		const res = await runRelease({
 			db,
 			bus: new EventBus(),
@@ -220,7 +220,7 @@ describe('runRelease — a multi-step release as a tracked workflow_run (D-013, 
 		expect(res.stepState['dry-run']).toBe('done');
 		expect(res.stepState.test).toBe('failed');
 		// Everything downstream of the failed stage stayed pending (never spawned a session).
-		for (const stage of ['changelog', 'version', 'tag', 'publish'] as const) {
+		for (const stage of ['changelog', 'version', 'tag', 'publish', 'verify'] as const) {
 			expect(res.stepState[stage]).toBe('pending');
 			expect(res.sessions[stage]).toBeUndefined();
 		}

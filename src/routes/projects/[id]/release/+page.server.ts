@@ -18,8 +18,10 @@ import {
 	listTargetRuns,
 	lastRunFor,
 	runTargetAction,
+	runTargetVerify,
 	buildAdapterCatalog,
 	isInstalled,
+	getAdapterRegistry,
 	GateConfirmError,
 	type ProjectTargetRow,
 	type TargetRunRow,
@@ -36,6 +38,18 @@ type GatedKind = (typeof GATED_KINDS)[number];
 export interface ReleaseTargetView extends ProjectTargetRow {
 	installed: boolean;
 	lastRun: TargetRunRow | null;
+	/** TASK 14.7: true iff this is a publish target whose adapter implements verify(). */
+	canVerify: boolean;
+}
+
+/** True iff a registered PUBLISH adapter implements the optional verify() (14.7). Never throws. */
+function adapterHasVerify(kind: string, adapterId: string): boolean {
+	if (kind !== 'publish') return false;
+	try {
+		return typeof getAdapterRegistry().getPublisher(adapterId).verify === 'function';
+	} catch {
+		return false;
+	}
 }
 
 export interface ReleaseData {
@@ -85,7 +99,8 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<Release
 				...t,
 				installed: isInstalled(t.kind, t.adapter_id),
 				// STRICT target-link match (13.4a) — an adapter_id fallback cross-attributes runs.
-				lastRun: lastRunFor(targetRuns, t.id)
+				lastRun: lastRunFor(targetRuns, t.id),
+				canVerify: adapterHasVerify(t.kind, t.adapter_id)
 			}));
 		const catalog = catalogAll.filter((c) => c.kind === 'publish' || c.kind === 'deploy');
 
@@ -114,7 +129,7 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<Release
 export const actions: Actions = {
 	/**
 	 * Job-10 release run (PRODUCT §4.10 / §4.5): run the canonical dry-run → test → changelog
-	 * → version → tag → publish pipeline as a tracked workflow_run, each stage a real session
+	 * → version → tag → publish → verify pipeline as a tracked workflow_run, each stage a real session
 	 * streamed live over the one SSE (§2.11). Honest when the credential is absent (F-008).
 	 * The project id is the route param (validated); the target version is validated here.
 	 */
@@ -229,8 +244,9 @@ export const actions: Actions = {
 
 	/**
 	 * The gated REAL publish/deploy from the release tab (D-018): requires the confirm token from a
-	 * prior dry-run. The built-in adapters perform NO real external call in this track — they return
-	 * an honest "deferred to operator credentials". A missing/stale token fails CLOSED.
+	 * prior dry-run. Thunderstore EXECUTES its real 4-step upload when THUNDERSTORE_TOKEN is set
+	 * (TASK 14.7); a missing credential — and the npm/GitHub/static-host built-ins — return an
+	 * honest "deferred to operator credentials". A missing/stale token fails CLOSED.
 	 */
 	targetConfirm: async ({ params, request }) => {
 		let projectId: string;
@@ -284,6 +300,60 @@ export const actions: Actions = {
 		} catch (err) {
 			if (err instanceof GateConfirmError) return fail(403, { target: { error: err.message } });
 			return fail(500, { target: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * Post-publish VERIFY (TASK 14.7): drive the publish adapter's verify() — poll the external
+	 * target until the published version is visible. Read-only (no gate needed), bounded in
+	 * wall-clock, ledgered to target_run; an unconfirmed verify raises an incident (never silent).
+	 */
+	targetVerify: async ({ params, request }) => {
+		let projectId: string;
+		try {
+			projectId = assertRecordId(`project:${params.id}`);
+		} catch {
+			return fail(400, { target: { error: 'invalid project id' } });
+		}
+		const db = tryGetDb();
+		if (!db) return fail(503, { target: { error: 'Database not connected.' } });
+		const project = await getProject(db, projectId);
+		if (!project) return fail(404, { target: { error: 'project not found' } });
+
+		const form = await request.formData();
+		let targetId: string | undefined;
+		const rawTarget = String(form.get('targetId') ?? '').trim();
+		if (rawTarget) {
+			try {
+				targetId = assertRecordId(rawTarget);
+			} catch {
+				return fail(400, { target: { error: 'invalid target id' } });
+			}
+		}
+
+		try {
+			const out = await runTargetVerify({
+				db,
+				env,
+				projectId,
+				cwd: project.root_path,
+				...(targetId ? { targetId } : {})
+			});
+			return {
+				target: {
+					ok: out.result.ok,
+					dryRun: false,
+					verify: true as const,
+					kind: 'publish' as const,
+					adapterId: out.target.adapter_id,
+					targetRef: out.result.target,
+					summary: out.result.summary,
+					steps: out.result.steps,
+					warnings: out.result.warnings
+				}
+			};
+		} catch (err) {
+			return fail(409, { target: { error: (err as Error).message } });
 		}
 	}
 };

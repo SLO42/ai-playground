@@ -26,11 +26,14 @@ export {
 } from './builtins';
 export {
 	runTargetAction,
+	runTargetVerify,
 	confirmTokenFor,
 	GateConfirmError,
 	runSyncTarget,
 	type RunTargetActionInput,
 	type RunTargetActionResult,
+	type RunTargetVerifyInput,
+	type RunTargetVerifyResult,
 	type RunSyncTargetInput,
 	type RunSyncTargetResult
 } from './driver';

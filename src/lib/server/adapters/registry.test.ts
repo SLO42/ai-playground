@@ -17,7 +17,7 @@ import {
 	lastRunFor,
 	recordTargetRun
 } from './registry';
-import { runTargetAction, confirmTokenFor, GateConfirmError } from './driver';
+import { runTargetAction, runTargetVerify, confirmTokenFor, GateConfirmError } from './driver';
 import { resetAdapterRegistry } from './index';
 import { resolvePublishTarget, buildReleaseSteps } from '../release/pipeline';
 
@@ -300,11 +300,18 @@ describe('gated driver — dry-run, confirm gate, recording (D-018/F-008)', () =
 });
 
 describe('release pipeline wiring (D-037)', () => {
-	it('resolvePublishTarget returns the chosen target; null when none', async () => {
+	it('resolvePublishTarget returns the chosen target (+hasVerify, 14.7); null when none', async () => {
 		expect(await resolvePublishTarget(db, projectId)).toBeNull();
 		await declareTarget(db, { project: projectId, kind: 'publish', adapterId: 'thunderstore', label: 'TS', isDefault: true });
 		const chosen = await resolvePublishTarget(db, projectId);
-		expect(chosen).toEqual({ adapterId: 'thunderstore', label: 'TS' });
+		// Thunderstore implements verify() (14.7), so the pipeline learns it can drive it.
+		expect(chosen).toEqual({ adapterId: 'thunderstore', label: 'TS', hasVerify: true });
+	});
+
+	it('resolvePublishTarget reports hasVerify:false for an adapter without verify()', async () => {
+		await declareTarget(db, { project: projectId, kind: 'publish', adapterId: 'npm', label: 'npm', isDefault: true });
+		const chosen = await resolvePublishTarget(db, projectId);
+		expect(chosen).toEqual({ adapterId: 'npm', label: 'npm', hasVerify: false });
 	});
 
 	it('the publish STEP prompt names the chosen adapter when a target is set', async () => {
@@ -324,5 +331,65 @@ describe('release pipeline wiring (D-037)', () => {
 			model: { provider: 'anthropic', model_id: 'claude' } as never
 		});
 		expect(generic.find((s) => s.id === 'publish')!.prompt).not.toMatch(/Thunderstore/);
+	});
+
+	it('the verify STEP prompt drives the adapter verify() when the adapter has one (14.7)', () => {
+		const withVerify = buildReleaseSteps({
+			version: 'v0.4',
+			cwd: projectDir,
+			model: { provider: 'anthropic', model_id: 'claude' } as never,
+			publishTarget: { adapterId: 'thunderstore', label: 'Thunderstore', hasVerify: true }
+		});
+		const verifyStep = withVerify.find((s) => s.id === 'verify')!;
+		expect(verifyStep.prompt).toMatch(/Thunderstore/);
+		expect(verifyStep.prompt).toMatch(/verify\(\)/);
+		// The verify stage sits AFTER publish in the strict linear chain.
+		expect(verifyStep.depends_on).toEqual(['publish']);
+
+		// An adapter WITHOUT verify() (or no target at all) falls back to the generic prompt.
+		const without = buildReleaseSteps({
+			version: 'v0.4',
+			cwd: projectDir,
+			model: { provider: 'anthropic', model_id: 'claude' } as never,
+			publishTarget: { adapterId: 'npm', label: 'npm', hasVerify: false }
+		});
+		expect(without.find((s) => s.id === 'verify')!.prompt).not.toMatch(/npm/);
+		expect(without.find((s) => s.id === 'verify')!.prompt).toMatch(/actually live/);
+	});
+});
+
+describe('runTargetVerify — the post-publish verify driver (14.7)', () => {
+	it('drives the adapter verify(), records the target_run, and raises an incident when unconfirmed', async () => {
+		// projectDir has NO Thunderstore manifest → verify() returns an HONEST ok:false (a real
+		// poll against a stub is proven in thunderstore.test.ts; here we prove the DRIVER ledger).
+		const tgt = await declareTarget(db, {
+			project: projectId,
+			kind: 'publish',
+			adapterId: 'thunderstore',
+			isDefault: true
+		});
+		const out = await runTargetVerify({ db, env: {}, projectId, cwd: projectDir });
+		expect(out.result.ok).toBe(false);
+		expect(out.result.summary).toMatch(/Verify not possible/);
+		expect(out.target.id).toBe(tgt.id);
+
+		// The attempt is LEDGERED (F-008): a real (non-dry-run) target_run row, verify-labelled.
+		const runs = await listTargetRuns(db, projectId);
+		expect(runs).toHaveLength(1);
+		expect(runs[0].dry_run).toBe(false);
+		expect(runs[0].ok).toBe(false);
+		expect(runs[0].summary).toMatch(/^verify: /);
+		expect(runs[0].target).toBe(tgt.id);
+
+		// An unconfirmed verify raises an incident — never silent (14.7).
+		const [incidents] = await db.query<[Array<{ title: string }>]>('SELECT title FROM incident;');
+		expect(incidents.some((i) => i.title.includes('verify via thunderstore did not confirm'))).toBe(true);
+	});
+
+	it('fails HONESTLY (throws) when the publish adapter declares no verify()', async () => {
+		await declareTarget(db, { project: projectId, kind: 'publish', adapterId: 'npm', isDefault: true });
+		await expect(runTargetVerify({ db, env: {}, projectId, cwd: projectDir })).rejects.toThrow(
+			/does not implement verify\(\)/
+		);
 	});
 });

@@ -1,7 +1,7 @@
 // TASK 3.4 — the release pipeline (workflows + runtime; D-013; DATA-MODEL §4.11; dep 2.17).
 //
-// A release is the canonical 6-step pipeline:
-//   dry-run → test → changelog → version → tag → publish
+// A release is the canonical 7-step pipeline (verify added in TASK 14.7, runbook §9):
+//   dry-run → test → changelog → version → tag → publish → verify
 // driven as a tracked `workflow_run` (reusing the 2.17 DAG runner) — each step is one
 // `launchSession` with `workflowRunId` set (the §4.11 "each executing step is a session"
 // contract), so every step's transcript + analytics + live SSE flow through the SAME
@@ -43,6 +43,7 @@ import {
 	type RunWorkflowResult
 } from '../workflows/index';
 import { resolveDefaultTarget } from '../adapters/registry';
+import { getAdapterRegistry } from '../adapters/index';
 
 /** The canonical release stages, in pipeline order. Each is one workflow step. */
 export const RELEASE_STAGES = [
@@ -51,7 +52,8 @@ export const RELEASE_STAGES = [
 	'changelog',
 	'version',
 	'tag',
-	'publish'
+	'publish',
+	'verify'
 ] as const;
 
 export type ReleaseStage = (typeof RELEASE_STAGES)[number];
@@ -75,7 +77,9 @@ const STAGE_PROMPT: Record<ReleaseStage, string> = {
 		'Bump the project version to {version} in the manifest (package.json or equivalent) and commit the version bump.',
 	tag: 'Create the annotated git tag for {version} on the version-bump commit.',
 	publish:
-		'Publish the {version} release (npm publish / push the tag to the remote). This is the only step with external side effects.'
+		'Publish the {version} release (npm publish / push the tag to the remote). This is the only step with external side effects.',
+	verify:
+		'Verify the {version} release is actually live at its publish target (the registry/package page shows the new version). Read-only — do NOT republish. Report honestly what you observed; fail the step (non-zero) if visibility cannot be confirmed.'
 };
 
 export interface BuildReleaseStepsInput {
@@ -92,8 +96,10 @@ export interface BuildReleaseStepsInput {
 	 * `publish` stage prompt drives THAT adapter (its id + a dry-run-first instruction) rather
 	 * than the fixed `npm publish` default — the release pipeline runs the project's adapter,
 	 * not a hardcoded script (D-037). Absent → the generic publish prompt (back-compat).
+	 * `hasVerify` (TASK 14.7): when the adapter implements verify(), the `verify` stage prompt
+	 * drives THAT bounded visibility check instead of the generic instruction.
 	 */
-	publishTarget?: { adapterId: string; label: string };
+	publishTarget?: { adapterId: string; label: string; hasVerify?: boolean };
 }
 
 /**
@@ -121,7 +127,7 @@ export function buildReleaseSteps(input: BuildReleaseStepsInput): WorkflowStep[]
 	}));
 }
 
-/** The prompt for one stage, adapter-aware for the publish stage (D-037). */
+/** The prompt for one stage, adapter-aware for the publish + verify stages (D-037 / 14.7). */
 function promptForStage(stage: ReleaseStage, input: BuildReleaseStepsInput): string {
 	if (stage === 'publish' && input.publishTarget) {
 		return (
@@ -129,6 +135,15 @@ function promptForStage(stage: ReleaseStage, input: BuildReleaseStepsInput): str
 			`"${input.publishTarget.label}" (${input.publishTarget.adapterId}). Run a DRY-RUN first, ` +
 			`review the plan, and only then perform the gated publish. This is the only step with ` +
 			`external side effects; credentials come from .env (named-secret indirection, D-026).`
+		).replaceAll('{version}', input.version);
+	}
+	if (stage === 'verify' && input.publishTarget?.hasVerify) {
+		return (
+			`Verify the {version} publish through the project's chosen publish adapter ` +
+			`"${input.publishTarget.label}" (${input.publishTarget.adapterId}): drive its verify() ` +
+			`(the release tab's "Verify publish" action / runTargetVerify), which polls the external ` +
+			`target until the new version is visible — bounded, read-only, and ledgered to target_run. ` +
+			`An honest timeout means NOT confirmed: fail the step (non-zero) and report what was observed.`
 		).replaceAll('{version}', input.version);
 	}
 	return STAGE_PROMPT[stage].replaceAll('{version}', input.version);
@@ -172,14 +187,23 @@ export interface RunReleaseDeps {
  * enabled `project_target` of kind "publish", or null when the project hasn't declared one. The
  * pipeline uses this to drive the project's adapter instead of the fixed npm prompt. Pure read;
  * never throws (a resolve failure degrades to "no chosen target" → the generic publish prompt).
+ * `hasVerify` (14.7) reports whether the registered adapter implements verify() — an unknown /
+ * uninstalled adapter id degrades honestly to false (the generic verify prompt).
  */
 export async function resolvePublishTarget(
 	db: Db,
 	projectId: string
-): Promise<{ adapterId: string; label: string } | null> {
+): Promise<{ adapterId: string; label: string; hasVerify: boolean } | null> {
 	try {
 		const t = await resolveDefaultTarget(db, projectId, 'publish');
-		return t ? { adapterId: t.adapter_id, label: t.label } : null;
+		if (!t) return null;
+		let hasVerify = false;
+		try {
+			hasVerify = typeof getAdapterRegistry().getPublisher(t.adapter_id).verify === 'function';
+		} catch {
+			hasVerify = false;
+		}
+		return { adapterId: t.adapter_id, label: t.label, hasVerify };
 	} catch {
 		return null;
 	}

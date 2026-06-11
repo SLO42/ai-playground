@@ -3,6 +3,8 @@ import { mkdtemp, writeFile, rm, cp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createServer, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { ThunderstorePublisherAdapter, THUNDERSTORE_SECRET } from './adapter';
 import { runPublisherContract } from '../contract';
 import { resolverForAdapter } from '../secrets';
@@ -20,6 +22,9 @@ import { buildUploadPlan, planToSteps, REDACTED_SECRET, DEFAULT_API_BASE } from 
 
 // TASK 12.2 VERIFY — the deepened Thunderstore publisher. Comprehensive unit + integration tests
 // against a REALISTIC fixture mod (tests/fixtures/thunderstore-mod). No real external call occurs.
+// TASK 14.7 — the REAL 4-step upload + verify() are proven against a LOCAL stub HTTP server that
+// plays the Thunderstore API (happy path, mid-step failure, verify-poll success + honest timeout).
+// The real credentialed run remains the operator's runbook moment — never a test.
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const FIXTURE = join(__dirname, '../../../../../tests/fixtures/thunderstore-mod');
@@ -36,6 +41,92 @@ beforeAll(async () => {
 afterAll(async () => {
 	await rm(work, { recursive: true, force: true }).catch(() => {});
 });
+
+// ── TASK 14.7 — a local stub server playing the 4-step Thunderstore API ────────────────
+// Loopback-only, started per test, ALWAYS closed (F-014 process discipline). Records every
+// request (method/url/auth/bodyLength) so tests assert the REAL wire behavior — auth header on
+// the Thunderstore calls, none on the presigned PUT, the exact step order, no secret leak.
+
+interface StubCall {
+	method: string;
+	url: string;
+	auth: string | null;
+	bodyLength: number;
+}
+
+interface StubOpts {
+	/** Make this step fail (HTTP error) so the mid-step failure path is provable. */
+	failAt?: 'initiate-upload' | 'upload-parts' | 'finish-upload' | 'submit';
+	/** The package-version GET turns 200 after this many polls (absent → never visible). */
+	visibleAfterAttempts?: number;
+}
+
+interface Stub {
+	base: string;
+	calls: StubCall[];
+	polls: () => number;
+	close: () => Promise<void>;
+}
+
+function startStub(opts: StubOpts = {}): Promise<Stub> {
+	const calls: StubCall[] = [];
+	let pollCount = 0;
+	let base = '';
+	const server: Server = createServer((req, res) => {
+		const chunks: Buffer[] = [];
+		req.on('data', (c: Buffer) => chunks.push(c));
+		req.on('end', () => {
+			const body = Buffer.concat(chunks);
+			const url = req.url ?? '';
+			const method = req.method ?? '';
+			calls.push({ method, url, auth: req.headers.authorization ?? null, bodyLength: body.length });
+			const send = (status: number, payload: unknown, headers: Record<string, string> = {}) => {
+				res.writeHead(status, { 'Content-Type': 'application/json', ...headers });
+				res.end(JSON.stringify(payload));
+			};
+			if (method === 'POST' && url === '/api/experimental/usermedia/initiate-upload/') {
+				if (opts.failAt === 'initiate-upload') return send(500, { detail: 'stub initiate exploded' });
+				const size = (JSON.parse(body.toString('utf8')) as { file_size_bytes: number }).file_size_bytes;
+				return send(200, {
+					user_media: { uuid: 'u-stub-1' },
+					upload_urls: [{ part_number: 1, url: `${base}/s3/part/1`, offset: 0, length: size }]
+				});
+			}
+			if (method === 'PUT' && url === '/s3/part/1') {
+				if (opts.failAt === 'upload-parts') return send(403, { detail: 'stub presigned PUT rejected' });
+				return send(200, {}, { ETag: '"stub-etag-1"' });
+			}
+			if (method === 'POST' && url === '/api/experimental/usermedia/u-stub-1/finish-upload/') {
+				if (opts.failAt === 'finish-upload') return send(400, { detail: 'stub says: invalid parts' });
+				return send(200, {});
+			}
+			if (method === 'POST' && url === '/api/experimental/submission/submit/') {
+				if (opts.failAt === 'submit') return send(400, { detail: 'stub says: version already exists' });
+				return send(200, { package_version: { namespace: 'OperatorTeam', name: 'SwipRounds', version_number: '1.4.0' } });
+			}
+			if (method === 'GET' && url.startsWith('/api/experimental/package/')) {
+				pollCount++;
+				if (opts.visibleAfterAttempts != null && pollCount >= opts.visibleAfterAttempts) {
+					return send(200, { version_number: '1.4.0' });
+				}
+				return send(404, { detail: 'Not found.' });
+			}
+			return send(404, { detail: `stub has no route for ${method} ${url}` });
+		});
+	});
+	return new Promise((resolve) => {
+		server.listen(0, '127.0.0.1', () => {
+			const addr = server.address() as AddressInfo;
+			base = `http://127.0.0.1:${addr.port}`;
+			resolve({
+				base,
+				calls,
+				polls: () => pollCount,
+				close: () => new Promise<void>((r) => server.close(() => r()))
+			});
+		});
+	});
+}
 
 // ── spec.ts: manifest validation ──────────────────────────────────────────────
 describe('spec — version + dependency formats', () => {
@@ -339,23 +430,188 @@ describe('ThunderstorePublisherAdapter — publish (dry-run + honest deferral)',
 		// No real secret value can leak.
 		expect(JSON.stringify(res)).not.toMatch(/Bearer tok_/);
 	});
-	it('a real (non-dry-run) publish is HONEST-deferred — no external call, ok:false', async () => {
+	it('a real (non-dry-run) publish with NO token is HONEST-deferred — no external call, ok:false', async () => {
 		const res = await adapter().publish({
 			projectId: 'project:x',
 			cwd: work,
 			dryRun: false,
 			config: { namespace: 'OperatorTeam' },
-			secrets: resolver({ THUNDERSTORE_TOKEN: 'tok_live_value' })
+			secrets: resolver() // THUNDERSTORE_TOKEN absent → the deferral stays (14.7)
 		});
 		expect(res.dryRun).toBe(false);
 		expect(res.ok).toBe(false);
-		expect(res.warnings.join(' ')).toMatch(/not performed in this track/);
-		// The live secret value must NEVER appear in the result.
-		expect(JSON.stringify(res)).not.toContain('tok_live_value');
+		expect(res.summary).toMatch(/deferred to operator credentials/);
+		expect(res.warnings.join(' ')).toMatch(/not performed/);
+		expect(res.warnings.join(' ')).toMatch(new RegExp(THUNDERSTORE_SECRET));
 	});
 	it('warns when config.namespace is missing (required to submit)', async () => {
 		const res = await adapter().publish({ projectId: 'project:x', cwd: work, dryRun: true, secrets: resolver() });
 		expect(res.warnings.join()).toMatch(/namespace/);
+	});
+});
+
+// ── TASK 14.7 — the REAL gated upload, proven against the local stub server ─────────────
+describe('ThunderstorePublisherAdapter — REAL publish executes the 4-step upload (14.7)', () => {
+	it('happy path: initiate → PUT part (no bearer) → finish → submit, ok:true, secret never leaks', async () => {
+		const stub = await startStub();
+		try {
+			const res = await adapter().publish({
+				projectId: 'project:x',
+				cwd: work,
+				dryRun: false,
+				config: { namespace: 'OperatorTeam', communities: ['rounds'], apiBase: stub.base },
+				secrets: resolver({ THUNDERSTORE_TOKEN: 'tok_live_value' })
+			});
+			expect(res.dryRun).toBe(false);
+			expect(res.ok, JSON.stringify(res)).toBe(true);
+			expect(res.summary).toMatch(/Published SwipRounds 1\.4\.0 to Thunderstore \(OperatorTeam\)/);
+			const text = res.steps.join('\n');
+			expect(text).toMatch(/✓ initiate-upload/);
+			expect(text).toMatch(/✓ upload-parts/);
+			expect(text).toMatch(/✓ finish-upload/);
+			expect(text).toMatch(/✓ submit/);
+			// The live secret value must NEVER appear in any returned field (D-026).
+			expect(JSON.stringify(res)).not.toContain('tok_live_value');
+
+			// The REAL wire behavior, observed by the stub:
+			const urls = stub.calls.map((c) => `${c.method} ${c.url}`);
+			expect(urls).toEqual([
+				'POST /api/experimental/usermedia/initiate-upload/',
+				'PUT /s3/part/1',
+				'POST /api/experimental/usermedia/u-stub-1/finish-upload/',
+				'POST /api/experimental/submission/submit/'
+			]);
+			// Bearer auth on the Thunderstore calls; NONE on the presigned PUT.
+			expect(stub.calls[0].auth).toBe('Bearer tok_live_value');
+			expect(stub.calls[1].auth).toBeNull();
+			expect(stub.calls[2].auth).toBe('Bearer tok_live_value');
+			expect(stub.calls[3].auth).toBe('Bearer tok_live_value');
+			// The PUT carried the actual zip bytes (non-empty body).
+			expect(stub.calls[1].bodyLength).toBeGreaterThan(0);
+		} finally {
+			await stub.close();
+		}
+	});
+
+	it('mid-step failure: finish-upload 400 → ok:false names the step + response; submit NEVER fires', async () => {
+		const stub = await startStub({ failAt: 'finish-upload' });
+		try {
+			const res = await adapter().publish({
+				projectId: 'project:x',
+				cwd: work,
+				dryRun: false,
+				config: { namespace: 'OperatorTeam', apiBase: stub.base },
+				secrets: resolver({ THUNDERSTORE_TOKEN: 'tok_live_value' })
+			});
+			expect(res.ok).toBe(false);
+			expect(res.summary).toMatch(/FAILED at step "finish-upload"/);
+			const text = res.steps.join('\n');
+			expect(text).toMatch(/✓ initiate-upload/);
+			expect(text).toMatch(/✓ upload-parts/);
+			// The failing step carries the HTTP status + the honest response excerpt.
+			expect(text).toMatch(/✗ finish-upload: HTTP 400.*invalid parts/);
+			// The runbook §8 bump-don't-retry guidance lands in the warnings.
+			expect(res.warnings.join(' ')).toMatch(/bump version_number/);
+			// A failed step SHORT-CIRCUITS the rest — no submit ever reached the wire.
+			expect(stub.calls.some((c) => c.url.includes('/submission/submit/'))).toBe(false);
+			expect(JSON.stringify(res)).not.toContain('tok_live_value');
+		} finally {
+			await stub.close();
+		}
+	});
+
+	it('a real publish with NO namespace fails honestly BEFORE any external call', async () => {
+		const stub = await startStub();
+		try {
+			const res = await adapter().publish({
+				projectId: 'project:x',
+				cwd: work,
+				dryRun: false,
+				config: { apiBase: stub.base }, // token present, namespace missing
+				secrets: resolver({ THUNDERSTORE_TOKEN: 'tok_live_value' })
+			});
+			expect(res.ok).toBe(false);
+			expect(res.summary).toMatch(/config\.namespace/);
+			// Nothing hit the wire — an unsubmittable upload is never even initiated.
+			expect(stub.calls).toHaveLength(0);
+		} finally {
+			await stub.close();
+		}
+	});
+});
+
+// ── TASK 14.7 — verify(): poll the package endpoint until the version is visible ─────────
+describe('ThunderstorePublisherAdapter — verify (bounded visibility poll, 14.7)', () => {
+	it('polls until the version is visible → ok:true with the honest attempt count', async () => {
+		const stub = await startStub({ visibleAfterAttempts: 3 });
+		try {
+			const res = await adapter().verify({
+				projectId: 'project:x',
+				cwd: work,
+				config: { namespace: 'OperatorTeam', apiBase: stub.base, verifyTimeoutMs: 10_000, verifyIntervalMs: 25 },
+				secrets: resolver()
+			});
+			expect(res.ok, JSON.stringify(res)).toBe(true);
+			expect(res.summary).toMatch(/Verified: OperatorTeam\/SwipRounds 1\.4\.0 is LIVE/);
+			expect(stub.polls()).toBeGreaterThanOrEqual(3);
+			// The polled endpoint is the PUBLIC package-version URL (no auth anywhere).
+			expect(res.steps.join('\n')).toContain('/api/experimental/package/OperatorTeam/SwipRounds/1.4.0/');
+			expect(stub.calls.every((c) => c.auth === null)).toBe(true);
+		} finally {
+			await stub.close();
+		}
+	});
+
+	it('times out HONESTLY when the version never appears (bounded — no spin)', async () => {
+		const stub = await startStub(); // never visible
+		try {
+			const startedAt = Date.now();
+			const res = await adapter().verify({
+				projectId: 'project:x',
+				cwd: work,
+				config: { namespace: 'OperatorTeam', apiBase: stub.base, verifyTimeoutMs: 1000, verifyIntervalMs: 50 },
+				secrets: resolver()
+			});
+			const elapsed = Date.now() - startedAt;
+			expect(res.ok).toBe(false);
+			expect(res.summary).toMatch(/Verify TIMED OUT/);
+			expect(res.summary).toMatch(/not visible yet/);
+			// Honest failure detail: the last observed response.
+			expect(res.steps.join('\n')).toMatch(/HTTP 404/);
+			expect(res.warnings.join(' ')).toMatch(/re-run verify/);
+			// The wall-clock bound held (1s configured; generous ceiling for CI jitter).
+			expect(elapsed).toBeLessThan(10_000);
+			expect(stub.polls()).toBeGreaterThanOrEqual(2);
+		} finally {
+			await stub.close();
+		}
+	});
+
+	it('is honest when config.namespace is missing (cannot derive the package page)', async () => {
+		const res = await adapter().verify({
+			projectId: 'project:x',
+			cwd: work,
+			config: {},
+			secrets: resolver()
+		});
+		expect(res.ok).toBe(false);
+		expect(res.summary).toMatch(/config\.namespace/);
+	});
+
+	it('is honest when the manifest is missing/invalid', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'atelier-verify-bad-'));
+		try {
+			const res = await adapter().verify({
+				projectId: 'project:x',
+				cwd: dir,
+				config: { namespace: 'OperatorTeam' },
+				secrets: resolver()
+			});
+			expect(res.ok).toBe(false);
+			expect(res.summary).toMatch(/Verify not possible/);
+		} finally {
+			await rm(dir, { recursive: true, force: true }).catch(() => {});
+		}
 	});
 });
 

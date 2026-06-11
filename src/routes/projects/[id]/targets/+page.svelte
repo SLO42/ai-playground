@@ -7,7 +7,8 @@
    *     its named-secret PRESENCE (D-026 — never a value);
    *   • the project's DECLARED targets ({adapterId, config}) with a default/enabled badge;
    *   • a DRY-RUN runner that drives the chosen adapter through the gate and shows the plan +
-   *     the gated CONFIRM (D-018) — a real publish/deploy is deferred to operator credentials;
+   *     the gated CONFIRM (D-018) — Thunderstore executes its REAL upload when its token is set
+   *     (14.7); other built-ins / a missing credential defer honestly to operator credentials;
    *   • the run HISTORY (real target_run rows — never silent).
    * Tokens-only, a11y AA, reduced-motion safe. Svelte 5 RUNES only.
    */
@@ -437,8 +438,10 @@
                 <input type="hidden" name="confirmToken" value={runResult.confirmToken} />
                 <p class="confirm-note">
                   This is a <strong>gated action</strong> (D-018). Confirm to perform the real
-                  {runResult.kind}. Real external publish/deploy is deferred until you supply the
-                  named credential in <span class="mono">.env</span> (D-026).
+                  {runResult.kind}. With the adapter's named credential set in
+                  <span class="mono">.env</span> this EXECUTES the real external action
+                  (Thunderstore: the live 4-step upload); without it — or for adapters whose live
+                  execution isn't wired yet — it defers honestly (D-026).
                 </p>
                 <button class="btn primary" type="submit" disabled={running}>
                   {running ? 'Confirming…' : `Confirm ${runResult.kind}`}

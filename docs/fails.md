@@ -120,3 +120,22 @@ The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
   process, and unit tests with valid fixtures will not catch it. When a child's exit
   is awaited, resolve the wait on `'error'` as well as `'close'`. Validate
   operator-supplied / DB-derived cwd paths with `existsSync` BEFORE spawning.
+
+## F-017: full-suite 5s-timeout flakes — OS/process-heavy tests starve under concurrency
+- **Date**: 2026-06-10
+- **What**: Three consecutive full `npm test` runs each failed a DIFFERENT 1–3 tests
+  (ollama-adapter discoverPid; catalog.test "spans publish+deploy+sync"; manager.test
+  "healthy tick"), every failure an exact ~5000ms default-timeout hit. All passed
+  isolated (0.5–1.4s).
+- **Why**: ~120 suites run concurrently, several booting real SurrealDB test servers
+  + spawning real CLIs (`tasklist`, `npm`, `claude`). Under that load an OS probe
+  that takes <1.5s alone can exceed vitest's 5s default testTimeout. The failing set
+  varies run to run — it is scheduler starvation, not a code defect.
+- **Fix**: None needed in code under test — re-ran the implicated suites isolated and
+  confirmed green before judging the change (14.7).
+- **Prevention**: A full-suite failure that (a) is an exact default-timeout hit, (b)
+  lands in a test spawning OS processes / probing services, and (c) passes isolated,
+  is ENV NOISE — verify isolated, do not chase it in the feature diff. Extends the
+  known cc-config readback.live / capability-wiring.live concurrency-flake class. If
+  a specific test joins this class repeatedly, give IT a larger explicit timeout
+  rather than raising the global default.

@@ -5,7 +5,7 @@
    * Renders this project's release runs LIVE from the DB (F-008 — no fabricated runs):
    * each run is a tracked `workflow_run` of a "release <version>" workflow, driven by the
    * 2.17 runner, shown as the canonical dry-run → test → changelog → version → tag →
-   * publish stage chain with each stage's live status. The four honest states
+   * publish → verify stage chain with each stage's live status. The four honest states
    * (loading / empty / error / live, UI-SPEC §1.3/§8). Live by default (§1.2): a
    * `workflow_run` row change on the one SSE stream re-invalidates the loader so a running
    * release's step_state updates in place. Svelte 5 runes only.
@@ -63,6 +63,17 @@
   function stageStatus(run: { stepState: Record<string, string> }, stage: string): string {
     return run.stepState?.[stage] ?? 'pending';
   }
+
+  /**
+   * The stages THIS run actually has (honest, F-008): older runs were created before the
+   * `verify` stage existed (14.7) — rendering the global stage list against them would show a
+   * phantom forever-"pending" verify. step_state is fully initialized at run creation, so the
+   * run's own keys are the truth; fall back to the global list only if step_state is absent.
+   */
+  function runStages(run: { stepState: Record<string, string> }): string[] {
+    const own = stages.filter((s) => run.stepState && s in run.stepState);
+    return own.length > 0 ? own : stages;
+  }
 </script>
 
 <svelte:head>
@@ -75,8 +86,8 @@
     <h1 class="title">Release — {projectName}</h1>
     <p class="lede">
       Every release runs the same pipeline — <span class="mono">dry-run → test → changelog
-      → version → tag → publish</span> — as a tracked workflow, each stage a real Claude Code
-      session. Served live from the database.
+      → version → tag → publish → verify</span> — as a tracked workflow, each stage a real
+      Claude Code session. Served live from the database.
     </p>
   </header>
 
@@ -121,9 +132,10 @@
       </div>
       <p class="lede targets-lede">
         The release pipeline drives the project's <em>chosen</em> publish/deploy adapter — not a
-        fixed script. Run a dry-run, review the plan, then confirm the gated publish. A real
-        external publish is deferred until you supply the named credential in
-        <span class="mono">.env</span> (D-026).
+        fixed script. Run a dry-run, review the plan, then confirm the gated publish. With the
+        adapter's named credential set in <span class="mono">.env</span> (D-026) the confirm is a
+        REAL external publish (Thunderstore runs its live 4-step upload); without it — or for
+        adapters whose live execution isn't wired yet — it defers honestly.
       </p>
       {#if targets.length === 0}
         <p class="state-body">
@@ -148,23 +160,45 @@
                   <span class="run-state" data-ok={t.lastRun.ok}>{t.lastRun.ok ? 'ok' : 'incomplete'}</span>
                 </p>
               {/if}
-              <form
-                method="POST"
-                action="?/targetDryRun"
-                use:enhance={() => {
-                  targetBusy = true;
-                  return async ({ update }) => {
-                    await update({ reset: false });
-                    targetBusy = false;
-                  };
-                }}
-              >
-                <input type="hidden" name="kind" value={t.kind} />
-                <input type="hidden" name="targetId" value={t.id} />
-                <button class="btn outline" type="submit" disabled={targetBusy || !t.enabled || !t.installed}>
-                  {targetBusy ? 'Running…' : `Dry-run ${t.kind}`}
-                </button>
-              </form>
+              <div class="target-actions">
+                <form
+                  method="POST"
+                  action="?/targetDryRun"
+                  use:enhance={() => {
+                    targetBusy = true;
+                    return async ({ update }) => {
+                      await update({ reset: false });
+                      targetBusy = false;
+                    };
+                  }}
+                >
+                  <input type="hidden" name="kind" value={t.kind} />
+                  <input type="hidden" name="targetId" value={t.id} />
+                  <button class="btn outline" type="submit" disabled={targetBusy || !t.enabled || !t.installed}>
+                    {targetBusy ? 'Running…' : `Dry-run ${t.kind}`}
+                  </button>
+                </form>
+                {#if t.canVerify}
+                  <!-- 14.7: poll the external target until the published version is visible
+                       (read-only, bounded; an unconfirmed verify raises an incident). -->
+                  <form
+                    method="POST"
+                    action="?/targetVerify"
+                    use:enhance={() => {
+                      targetBusy = true;
+                      return async ({ update }) => {
+                        await update({ reset: false });
+                        targetBusy = false;
+                      };
+                    }}
+                  >
+                    <input type="hidden" name="targetId" value={t.id} />
+                    <button class="btn outline" type="submit" disabled={targetBusy || !t.enabled || !t.installed}>
+                      {targetBusy ? 'Running…' : 'Verify publish'}
+                    </button>
+                  </form>
+                {/if}
+              </div>
             </li>
           {/each}
         </ul>
@@ -175,8 +209,16 @@
           <p class="form-error" role="alert">{targetResult.error}</p>
         {:else if 'ok' in targetResult}
           <div class="run-result" role="status">
-            <p class="result-head">
-              {targetResult.dryRun ? 'Dry-run plan' : targetResult.ok ? 'Action complete' : 'Action did not complete'}
+            <p class="result-head" data-ok={targetResult.dryRun === true || targetResult.ok === true}>
+              {targetResult.dryRun
+                ? 'Dry-run plan'
+                : targetResult.verify
+                  ? targetResult.ok
+                    ? 'Verify confirmed'
+                    : 'Verify did not confirm'
+                  : targetResult.ok
+                    ? 'Action complete'
+                    : 'Action did not complete'}
               · <span class="mono">{targetResult.adapterId}</span> → <span class="mono">{targetResult.targetRef}</span>
             </p>
             <p class="state-body">{targetResult.summary}</p>
@@ -207,8 +249,10 @@
                 <input type="hidden" name="confirmToken" value={targetResult.confirmToken} />
                 <p class="confirm-note">
                   This is a <strong>gated action</strong> (D-018). Confirm to perform the real
-                  {targetResult.kind}. A real external publish/deploy is deferred until you supply
-                  the named credential in <span class="mono">.env</span> (D-026).
+                  {targetResult.kind}. With the adapter's named credential set in
+                  <span class="mono">.env</span> this EXECUTES the real external action
+                  (Thunderstore: the live 4-step upload); without it — or for adapters whose live
+                  execution isn't wired yet — it defers honestly (D-026).
                 </p>
                 <button class="btn primary" type="submit" disabled={targetBusy}>
                   {targetBusy ? 'Confirming…' : `Confirm ${targetResult.kind}`}
@@ -245,7 +289,7 @@
             <span class="run-status" data-status={run.status}>{run.status}</span>
           </div>
           <ol class="pipeline" aria-label="release stages">
-            {#each stages as stage (stage)}
+            {#each runStages(run) as stage (stage)}
               <li class="stage" data-status={stageStatus(run, stage)}>
                 <span class="dot" aria-hidden="true"></span>
                 <span class="stage-name mono">{stage}</span>
@@ -664,6 +708,16 @@
     font: var(--type-body-sm);
     font-weight: 600;
     color: var(--color-success, var(--color-running, var(--color-accent)));
+  }
+  /* Honest tint: a failed real action / unconfirmed verify is never dressed as success. */
+  .result-head[data-ok='false'] {
+    color: var(--color-error);
+  }
+  .target-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
   }
   .plan {
     margin: 0;

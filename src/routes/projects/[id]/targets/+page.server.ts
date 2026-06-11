@@ -10,9 +10,10 @@
 //   • remove   — remove a target declaration.
 //   • dryRun   — drive the CHOSEN adapter through the gated driver in DRY-RUN (plan only, always
 //                safe). Returns the plan + the confirm token a real action would need.
-//   • confirm  — the gated REAL action (D-018): requires the confirm token from the dry-run; in
-//                this track the built-ins return an honest "deferred to operator credentials"
-//                (NO real external call) — the gate + recording machinery is fully exercised.
+//   • confirm  — the gated REAL action (D-018): requires the confirm token from the dry-run.
+//                Thunderstore EXECUTES its real 4-step upload when THUNDERSTORE_TOKEN is set
+//                (TASK 14.7); a missing credential — and the npm/GitHub/static-host built-ins —
+//                return an honest "deferred to operator credentials" (no real external call).
 //
 // Credentials are resolved from `$env/dynamic/private` into a CONFINED resolver at call time
 // (D-026); the value never enters the DB, a log, or this surface.
@@ -426,9 +427,10 @@ export const actions: Actions = {
 	},
 
 	/**
-	 * The gated REAL action (D-018): requires the confirm token from a prior dry-run. In this
-	 * track the built-in adapters perform NO real external call — they return an honest "deferred
-	 * to operator credentials". A missing/stale token fails CLOSED (GateConfirmError → 403).
+	 * The gated REAL action (D-018): requires the confirm token from a prior dry-run. Thunderstore
+	 * EXECUTES its real 4-step upload when THUNDERSTORE_TOKEN is set (TASK 14.7); a missing
+	 * credential — and the npm/GitHub/static-host built-ins — return an honest "deferred to
+	 * operator credentials". A missing/stale token fails CLOSED (GateConfirmError → 403).
 	 */
 	confirm: async ({ params, request }) => {
 		let projectId: string;

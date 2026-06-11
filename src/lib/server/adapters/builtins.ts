@@ -1,12 +1,14 @@
 // TASK 12.1 — the BUILT-IN D-037 adapters barrel. Publishers (npm, Thunderstore, GitHub releases)
 // + a static-host deploy target. These prove the framework end-to-end against the contract harness
-// + dry-run; this track performs NO real external publish/deploy — a real push needs
-// operator-supplied creds (D-026) and lands later.
+// + dry-run. Live execution status (TASK 14.7): THUNDERSTORE executes its REAL gated 4-step
+// upload when THUNDERSTORE_TOKEN is present (and implements verify()); npm / GitHub releases /
+// static-host still defer their real action to operator credentials and land later.
 //
 // Each adapter is HONEST (F-008): probe() reports availability + the named secrets it needs
 // (presence only, D-026); package()/publish()/deploy() compute a real plan from the project
-// manifest; a real (non-dry-run) action is GATED by the caller (D-018) and, in this track,
-// returns an honest "real publish deferred — supply <SECRET> and confirm" rather than calling out.
+// manifest; a real (non-dry-run) action is GATED by the caller (D-018) and, when its live
+// execution isn't wired or its credential is missing, returns an honest "real publish deferred —
+// supply <SECRET> and confirm" rather than calling out (or fabricating success).
 //
 // The publishers are DEEPENED into their own modules (./npm, ./thunderstore, ./github-releases):
 //   • npm (TASK 12.3)           — real `npm pack` selection + name/version/private/registry rules

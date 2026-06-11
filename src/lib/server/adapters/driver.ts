@@ -15,9 +15,10 @@
 //   • Credentials are resolved per-call from the runtime env into a CONFINED SecretResolver
 //     scoped to the adapter's declared secrets (D-026) — the value never enters the DB/a log.
 //
-// This track performs NO real external publish/deploy: a built-in's real branch returns ok:false
-// with an honest "deferred to operator credentials" — the gate + recording machinery is fully
-// exercised regardless (the real call lands when operator creds + the operator's confirm arrive).
+// Live execution status (TASK 14.7): Thunderstore's real branch EXECUTES the 4-step upload when
+// the gate confirm passed and THUNDERSTORE_TOKEN is present (missing token → honest deferral).
+// The npm / GitHub-releases / static-host built-ins still return an honest "deferred to operator
+// credentials" — the gate + recording machinery is fully exercised either way.
 
 import { createHash } from 'node:crypto';
 import type { Db } from '../db/client';
@@ -226,6 +227,95 @@ export async function runTargetAction(input: RunTargetActionInput): Promise<RunT
 	}
 
 	return { result, run, confirmToken: token, target };
+}
+
+// ── Post-publish VERIFY (TASK 14.7) ─────────────────────────────────────────────────────
+//
+// Drives a publish adapter's OPTIONAL verify() (poll the external target until the published
+// version is visible). READ-ONLY — no external mutation, so no confirm gate (D-018 gates
+// mutations); but it is still RECORDED to the unified target_run ledger (F-008) and an honest
+// verify failure (timeout / not visible) raises an incident — never silent.
+
+export interface RunTargetVerifyInput {
+	db: Db;
+	env: EnvLike;
+	projectId: string;
+	cwd: string;
+	/** A specific publish `project_target` id, OR omit to use the project's default publish target. */
+	targetId?: string;
+}
+
+export interface RunTargetVerifyResult {
+	result: AdapterRunResult;
+	run: TargetRunRow;
+	target: ProjectTargetRow;
+}
+
+/**
+ * Verify a publish target's last-published version is live, via the adapter's verify(). Resolves
+ * the target (explicit or default publish), fails CLOSED on an unknown adapter id (D-037), and
+ * fails HONESTLY when the adapter declares no verify(). Records every attempt as a target_run
+ * row; an unconfirmed verify (ok:false — e.g. the bounded poll timed out) raises an incident.
+ */
+export async function runTargetVerify(input: RunTargetVerifyInput): Promise<RunTargetVerifyResult> {
+	const target = await resolveTarget(input.db, input.projectId, 'publish', input.targetId);
+	const adapter = getAdapterRegistry().getPublisher(target.adapter_id);
+	if (typeof adapter.verify !== 'function') {
+		throw new Error(
+			`publish adapter "${target.adapter_id}" does not implement verify() — ` +
+				`no automatic visibility check is available; verify manually per the runbook.`
+		);
+	}
+
+	const secrets = resolverForAdapter(input.env, adapter);
+	let result: AdapterRunResult;
+	try {
+		result = await adapter.verify({
+			projectId: input.projectId,
+			cwd: input.cwd,
+			dryRun: false,
+			config: target.config,
+			secrets
+		});
+	} catch (err) {
+		// An adapter throw is a failed verify — record it + raise an incident (never silent, F-008).
+		const summary = `publish verify via ${target.adapter_id} failed: ${(err as Error).message}`;
+		await recordTargetRun(input.db, {
+			project: input.projectId,
+			target: target.id,
+			kind: 'publish',
+			adapterId: target.adapter_id,
+			dryRun: false,
+			ok: false,
+			summary,
+			steps: []
+		}).catch(() => {});
+		await recordIncident(input.db, { title: summary, severity: 'error', detail: (err as Error).stack }).catch(() => {});
+		throw err;
+	}
+
+	const run = await recordTargetRun(input.db, {
+		project: input.projectId,
+		target: target.id,
+		kind: 'publish',
+		adapterId: target.adapter_id,
+		dryRun: false,
+		ok: result.ok,
+		targetRef: result.target,
+		summary: `verify: ${result.summary}`,
+		steps: result.steps
+	});
+
+	// An unconfirmed verify (honest timeout / not visible) raises an incident (TASK 14.7).
+	if (!result.ok) {
+		await recordIncident(input.db, {
+			title: `publish verify via ${target.adapter_id} did not confirm`,
+			severity: 'warn',
+			detail: [result.summary, ...result.warnings].join('\n')
+		}).catch(() => {});
+	}
+
+	return { result, run, target };
 }
 
 // ── SYNC family driver (TASK 12.4) ──────────────────────────────────────────────────────

@@ -167,6 +167,15 @@ export interface PublisherAdapter extends BaseAdapter {
 	 * via the resolver. Returns an honest result; collects non-fatal warnings.
 	 */
 	publish(opts: AdapterRunOptions & { secrets: SecretResolver }): Promise<AdapterRunResult>;
+	/**
+	 * OPTIONAL post-publish verification (TASK 14.7): confirm the published artifact is ACTUALLY
+	 * visible/live at the external target — e.g. poll the registry/package endpoint until the new
+	 * version appears. Read-only (NEVER mutates externally), bounded in wall-clock (an honest
+	 * timeout returns ok:false — it never spins, F-014 discipline), and honest about what it
+	 * observed (F-008). Adapters with no cheap visibility check simply omit the method; the
+	 * driver/pipeline degrade honestly (verify manually per the runbook).
+	 */
+	verify?(opts: AdapterRunOptions & { secrets: SecretResolver }): Promise<AdapterRunResult>;
 }
 
 // ── DeployTarget (deploy + status) ─────────────────────────────────────────────────────

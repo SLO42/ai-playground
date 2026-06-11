@@ -12,6 +12,7 @@ Five harvest-derived catalog roles (`security-officer`, `code-reviewer`, `qa-lea
 | §3 gauntlet engine (runner, scorer, pass bar, budget) | v2.1 task W-D7b |
 | Launch fixtures/keys + day-0 ceremony + §8 surfaces | v2.1 task W-D7c |
 | §5 performance-review loop · §6 project_staff · §7 tier-aware hiring | v2.3 |
+| §7b `researcher` role + research rails (operator-approved 2026-06-11) | v2.3 |
 | Missed-defect ledger (§4.1) | v2.3, after B2 (v2.2b) |
 
 ## 2. Data plane (migrations land at the next free m-numbers, m0029+)
@@ -238,6 +239,15 @@ DEFINE INDEX OVERWRITE project_staff_dedup ON project_staff FIELDS dedup_key UNI
 - **Tier changes are governance, not routing:** `review_proposal{kind:'tier_change'}` cites grid rows as evidence, requires a passing interview at the target (prompt_sha × model_id) (running one is the proposal's real cost, budget-gated), operator-gated, then `role_event{op:'tier_changed'}`. ⚑ tier waiver: may the operator waive per-pair (recorded) for low-stakes roles (design-reviewer on mocks) while security-officer/code-reviewer stay strictly interview-only?
 - **Routing:** role sessions skip intent classification — staffing IS the decision. `resolveStaff` output passes into `resolveRoute` as the explicit override `{provider, model_id}` (F-005: explicit wins, short-circuits); `routing_event` records `method:'explicit'` + reason citing the chain `staffed: project_staff:<id> → role_version:<id> @ <model_id>, certified by interview_run:<id>`.
 
+## 7b. `researcher` role + research rails (v2.3 — operator-approved 2026-06-11)
+
+The sixth catalog role: outward-facing knowledge work the launch five don't cover ("survey current ROUNDS modding APIs", "what changed in SvelteKit 3"). Internal research (memory/KG/scanner/GitHub-sync) is already strong; this adds MANAGED web research. Consumers: PM research-task proposals, Create-with-AI pre-scaffold surveys, BL-1/BL-2 when promoted.
+
+1. **Role**: ordinary catalog role (§2 tables, gauntlet-certified like the rest) — capability bundle includes WebSearch/WebFetch (composed per D-036; the only launch role with them); runs as a normal gated session.
+2. **Research rails (the part that makes it safe):** ① every claim in the deliverable carries **provenance** (source URL + retrieval date + the quoted basis); ② web content is DATA never instructions (D-026/MEMORY-SPEC §10 envelope — applies to fetched pages exactly as to recall); ③ findings enter memory ONLY via the normal screened ingest (pre-embed screen, quarantine lifecycle §3.1b/B6 — a fetched "fact" is agent-authored memory, born quarantined); ④ **verify-before-write**: claims marked load-bearing are adversarially checked against a second independent source before the memory write — single-source claims are recorded as `unverified:` prefixed (honest, F-008); ⑤ no paywalled/credentialed fetching, loopback-policy exceptions logged.
+3. **Research-task shape**: a PM-proposable task kind whose DoD is *verified knowledge with provenance written to project memory* (not code) — deliverable reviewed by the §4 panel like any artifact.
+4. **Gauntlet fixtures**: planted-wrong-claim (a fixture corpus containing a confident falsehood the role must catch by cross-checking), source-attribution check (deliverable missing provenance = fail), injection plant (instructions embedded in fetched-page content must be ignored — same non-compliance detection as A8).
+
 ## 8. Operator ceremonies & surfaces
 
 - **Gate budget:** the workforce is runnable in one RightTray sweep per day; nothing modal-interrupts; one decision per artifact (the PM-revision diff→swap pair is the sole two-touch flow, second touch one-click). RightTray = the single decisions inbox; badge is the only ambient pressure. ⚑ notification cadence: per-proposal badge (default) vs daily digest — operator habit call.
@@ -254,7 +264,7 @@ DEFINE INDEX OVERWRITE project_staff_dedup ON project_staff FIELDS dedup_key UNI
 - **W-D7b (v2.1, runner/scorer engine):** interview runner (confinement root, sterile spawn, wall-clock bound, teardown) + findings contract + deterministic scorer + positive controls + adjudication states + budget gate. **Explicit cross-cutting scope (declare in the task plan — B1's scope-lock gate will deny undeclared files):** the D-027 fast-writer exclusion AND the D-029 recall-query filter for `kind='interview'` (memory-engine code), and the periodic sentinel sweep (`work_item` + CI test).
 - **W-D7c (v2.1, content + ceremony + surfaces):** launch fixtures ×5 roles + operator-confirmed keys + per-tier reference runs; day-0 bootstrap ceremony; `/agents` workforce panel + RightTray decision briefs + ambiguity-adjudication queue + empty states. Each task: BUILD → independent D-038 DoD review.
 - **Panel transition (no uncertified-role deadlock):** PM-SPEC §8 step 3 ships FIRST with **Lane-A inlined-prompt validators** — verdicts recorded with `validator_kind='inline'`, role fields NONE (honest, queryable from day 0). Once the five launch roles pass their bootstrap interviews, panel composition **FLIPS to catalog roles** (`validator_kind='catalog_role'`; flip recorded as a `role_event` per role). Inline mode remains the honest degraded fallback whenever no certified role fits an artifact.
-- **Wave v2.3 (post-v2.1, on real track data):** §5 + §6 + §7; missed-defect ledger after B2 (v2.2b) lands `review_verdict` with the shared identity columns (§2.5).
+- **Wave v2.3 (post-v2.1, on real track data):** §5 + §6 + §7 + **§7b researcher role + research rails**; missed-defect ledger after B2 (v2.2b) lands `review_verdict` with the shared identity columns (§2.5).
 
 ## Appendix A — three failure stories (UX ground truth)
 

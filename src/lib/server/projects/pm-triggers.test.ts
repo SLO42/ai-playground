@@ -509,6 +509,12 @@ describe('PmTriggerEngine — githubArrival (persistent dedup)', () => {
 		expect(reviews[0].provenance?.evidence).toEqual(['issue#12', 'pr#13']);
 		expect(reviews[0].provenance?.detail?.issues).toBe(1);
 		expect(reviews[0].provenance?.detail?.prs).toBe(1);
+		// TASK 16.5: the fresh arrivals' REAL metadata rides in detail.arrivals so the
+		// review pass can triage (summary + dup-check) without re-reaching GitHub.
+		expect(reviews[0].provenance?.detail?.arrivals).toEqual([
+			{ kind: 'issue', externalId: '12', title: 'Bug: crash on save' },
+			{ kind: 'pr', externalId: '13', title: 'Fix crash' }
+		]);
 	});
 
 	it('dedups the SAME arrivals within a boot (no second wake)', async () => {

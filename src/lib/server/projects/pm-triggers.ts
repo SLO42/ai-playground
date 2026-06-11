@@ -514,6 +514,11 @@ export class PmTriggerEngine {
 	 * PERSISTENTLY: the seen-set seeds from prior pm_review github_arrival provenance,
 	 * so a re-sync (or a restart) never wakes the PM twice for the same issue/PR.
 	 * Returns true when a review fired. Mode/PM/authority gates apply as everywhere.
+	 *
+	 * TASK 16.5 (PM-SPEC §5): the fresh arrivals' REAL metadata (kind/externalId/
+	 * title/url, bounded) rides in `detail.arrivals` so the review pass can TRIAGE
+	 * them (summary + task_sync dup-check + risk flags + §4 proposals) without ever
+	 * re-reaching GitHub — the PM triages from what the SyncAdapter already saw.
 	 */
 	async githubArrival(projectId: string, arrivals: PmGithubArrival[]): Promise<boolean> {
 		if (this.#stopped || arrivals.length === 0) return false;
@@ -525,7 +530,14 @@ export class PmTriggerEngine {
 			evidence: fresh.map(arrivalRef),
 			detail: {
 				issues: fresh.filter((a) => a.kind === 'issue').length,
-				prs: fresh.filter((a) => a.kind === 'pr').length
+				prs: fresh.filter((a) => a.kind === 'pr').length,
+				// TASK 16.5 — the triage payload (bounded; real SyncAdapter metadata only).
+				arrivals: fresh.slice(0, 20).map((a) => ({
+					kind: a.kind,
+					externalId: a.externalId,
+					...(a.title !== undefined ? { title: a.title } : {}),
+					...(a.url !== undefined ? { url: a.url } : {})
+				}))
 			}
 		});
 		if (fired) for (const a of fresh) seen.add(arrivalRef(a));

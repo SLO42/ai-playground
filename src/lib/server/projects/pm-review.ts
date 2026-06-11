@@ -26,7 +26,8 @@ import { listTasksByProject, type TaskRow, type TaskStatus } from '../tasks/repo
 import { listFindings, type FindingRow } from '../scanner/findings-repo';
 import { getProject } from './repo';
 import { assemblePmContext, type PmContextBundle } from './pm-session';
-import { proposeTask, type ProposalOpts, type ProposeTaskResult } from './pm-proposals';
+import { proposeTask, type ProposalOpts, type ProposeTaskResult, type ProposeTaskInput } from './pm-proposals';
+import { deriveGithubTriage, type GithubTriageResult } from './pm-triage';
 import {
 	addPmMemory,
 	addPmReview,
@@ -227,6 +228,21 @@ export async function runPmReview(
 		}
 	}
 
+	// ── TASK 16.5 — GitHub issue/PR TRIAGE (PM-SPEC §5, triage-only) ─────────────────
+	// A github_arrival wake triages each arrival the SyncAdapter detected: an honest
+	// summary from the REAL arrival metadata, a link/duplicate-check against the 9.4
+	// task_sync ledger + open-task titles, and risk flags — persisted as pm_memory
+	// notes (source 'pm-triage') with the issue/PR provenance. The §4 proposals the
+	// triage derives (issue → triage task; PR → spawn a code-reviewer, INLINE shape)
+	// run through deriveProposals below — same hired-PM/authority gate as every
+	// proposal. The PM NEVER fetches the issue body or the PR diff here (role
+	// separation — pm-triage.ts imports nothing from the sync/gh boundary).
+	let triage: GithubTriageResult | null = null;
+	if (provenance?.kind === 'github_arrival') {
+		triage = await deriveGithubTriage(db, { projectId, tasks, provenance });
+		seeds.push(...triage.notes);
+	}
+
 	const written: PmMemoryRow[] = [];
 	for (const seed of seeds) written.push(await addPmMemory(db, seed));
 
@@ -259,6 +275,9 @@ export async function runPmReview(
 		tasks,
 		severe,
 		provenance,
+		// TASK 16.5 — the triage-derived proposals lead the queue on an arrival wake
+		// (they are the trigger's own purpose; order matters under the open-proposal cap).
+		triageProposals: triage?.proposals ?? [],
 		opts
 	});
 
@@ -280,10 +299,12 @@ async function deriveProposals(
 		tasks: TaskRow[];
 		severe: FindingRow[];
 		provenance?: PmReviewProvenance;
+		/** TASK 16.5 — GitHub-triage proposals (already §4.1-shaped), run first. */
+		triageProposals?: ProposeTaskInput[];
 		opts: ProposalOpts;
 	}
 ): Promise<{ proposals: ProposeTaskResult[]; proposalsSkipped?: string }> {
-	const { projectId, tasks, severe, provenance, opts } = args;
+	const { projectId, tasks, severe, provenance, triageProposals = [], opts } = args;
 
 	const pm = await getPm(db, projectId);
 	if (!pm) {
@@ -297,6 +318,15 @@ async function deriveProposals(
 	}
 
 	const proposals: ProposeTaskResult[] = [];
+
+	// ⓪ TASK 16.5 — GitHub-triage proposals (PM-SPEC §5): one per triaged arrival
+	// (an UNLINKED issue → a triage task; a PR → spawn-a-code-reviewer, INLINE shape).
+	// Run FIRST on an arrival wake — they are the trigger's purpose, and order
+	// matters under the open-proposal cap. proposeTask absorbs structural duplicates
+	// (a re-fired arrival returns the standing proposal — interrupt contract).
+	for (const input of triageProposals) {
+		proposals.push(await proposeTask(db, input, opts));
+	}
 
 	// ① A FAILED release run (the §3 event-④ retro) → a diagnose-and-retry proposal.
 	if (provenance?.kind === 'release' && String(provenance.detail?.status ?? '') === 'failed') {

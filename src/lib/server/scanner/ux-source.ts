@@ -1,10 +1,37 @@
-// TASK 11.5 — static-analysis UX inspection source (the real seam for ux-inspect.ts).
+// TASK 11.5 / 14.5 — static-analysis UX inspection source (the real seam for ux-inspect.ts).
 //
 // The UX inspector detector (ux-inspect.ts, TASK 3.3) is a pure function over a
 // `UxInspectionSource.inspect()` seam — it never touches a browser. This module is the REAL
 // implementation of that seam for a SvelteKit project: it walks the project's own
-// `src/routes/**/+page.svelte` route source and STATICALLY analyses each into a `UxSnapshot`
-// (page title, images + resolved alt, ARIA landmarks, button labels, a contrast-issue proxy).
+// `src/routes/**/+page.svelte` route source and STATICALLY analyses each into a `UxSnapshot`.
+//
+// WHAT THE STATIC VARIANT PERFORMS vs DEFERS (14.5 — the contract that keeps stored findings
+// TRUE; a browser-driven PlaywrightUxSource drops into the SAME seam with zero detector change
+// and performs everything):
+//
+//   PERFORMS (provable from source, layout-aware where rendering is layout-composed):
+//   • missing-title    — LAYOUT-AWARE: a route renders inside its +layout.svelte ancestor
+//                        chain, so an inherited <svelte:head><title> counts (14.5; per-page
+//                        analysis alone fabricated false findings the rendered app disproved).
+//   • missing-landmark — LAYOUT-AWARE: an inherited <main> (the app-shell pattern) counts.
+//   • image-missing-alt / unlabeled-control — genuinely page-local markup checks.
+//
+//   PROVE-OR-SILENT (14.5 — F-008/D-038): missing-title/missing-landmark are only emitted
+//   when ABSENCE IS PROVABLE — i.e. neither the page nor its layout chain supplies the
+//   title/<main> AND the chain renders no opaque markup (component tags / <svelte:component> /
+//   <svelte:element> / {@html}) that could supply it at render time. When absence is
+//   unprovable the snapshot declares the check `unverifiable` and the detector emits NOTHING —
+//   a finding the source cannot prove would be FALSE data, which is worse than no data.
+//
+//   DEFERS to the browser-driven variant (cannot be made truthful statically):
+//   • low-contrast        — computed contrast needs a rendered page; the proxy is an honest 0,
+//                           so the rule NEVER fires from this source.
+//   • component interiors — issues INSIDE imported components (their images/buttons/landmarks)
+//                           are invisible here: this source UNDER-reports them (an honest gap,
+//                           never a false row).
+//   • layout resets       — `+page@`/`+layout@` routes: reset pages are not discovered, and a
+//                           reset layout's ancestors are still credited (over-credit ⇒ at worst
+//                           a missed finding, never a fabricated one).
 //
 // WHY STATIC, NOT BROWSER (honest — F-008 / D-019): a full browser-driven inspection (drive a
 // real Playwright headless run over the LIVE dashboard and read computed contrast/AT tree) is
@@ -20,8 +47,14 @@
 // maintain-cycle entry does this via confineToRoot) BEFORE constructing this source.
 
 import { readFileSync, readdirSync, statSync } from 'node:fs';
-import { join, relative, sep } from 'node:path';
-import type { UxInspectionSource, UxSnapshot, UxImage, UxControl } from './ux-inspect';
+import { dirname, join, relative, resolve, sep } from 'node:path';
+import type {
+	UxInspectionSource,
+	UxSnapshot,
+	UxImage,
+	UxControl,
+	UxUnverifiableCheck
+} from './ux-inspect';
 
 /** Directories never worth walking for routes (vendored / build / vcs). */
 const SKIP_DIRS = new Set([
@@ -182,10 +215,55 @@ function extractButtons(tmpl: string): UxControl[] {
 }
 
 /**
- * Build ONE snapshot for a single route file from its static source. The `contrastIssues`
- * proxy is HONESTLY 0: computed-contrast measurement requires a real rendered page (the
- * browser-driven variant — deferred). We never invent a contrast count, so this static source
- * simply reports 0 and the contrast rule stays silent rather than fabricating a number.
+ * Markup the static pass cannot see into: component tags (capitalized / svelte:component /
+ * svelte:element) and `{@html}` injection. Any of these could supply a title or a <main> at
+ * render time, so their presence makes ABSENCE of title/landmark unprovable (14.5).
+ * `{@render}` is NOT opaque: snippet bodies live in the same file (or are the page itself,
+ * for a layout's `{@render children()}`), so their markup is already in the analysed set.
+ */
+function hasOpaqueMarkup(tmpl: string): boolean {
+	return (
+		/<[A-Z]/.test(tmpl) || /<svelte:(component|element)\b/i.test(tmpl) || /\{@html\b/.test(tmpl)
+	);
+}
+
+/**
+ * Resolve the route's LAYOUT CHAIN (14.5): every `+layout.svelte` / `+layout@*.svelte` from
+ * the page's own directory up to (and including) `routesRoot`. A SvelteKit page renders
+ * INSIDE these, so a title/<main> declared there is genuinely present on the rendered route —
+ * per-page analysis that ignores them fabricates false missing-title/missing-landmark
+ * findings. Returns absolute file paths, nearest layout first. Bounded by the same walk depth
+ * as route discovery; a chain that wanders outside `routesRoot` stops (defensive).
+ */
+export function layoutChainFor(routesRoot: string, pageFile: string, maxDepth = 12): string[] {
+	const chain: string[] = [];
+	const root = resolve(routesRoot);
+	let dir = dirname(resolve(pageFile));
+	for (let i = 0; i <= maxDepth; i++) {
+		if (!dir.startsWith(root)) break; // escaped the routes tree — stop (defensive)
+		let entries: string[] = [];
+		try {
+			entries = readdirSync(dir);
+		} catch {
+			// Unreadable dir — skip its layouts; the caller treats missing chain info honestly.
+		}
+		for (const name of entries.sort()) {
+			if (/^\+layout(@[^.]*)?\.svelte$/.test(name)) chain.push(join(dir, name));
+		}
+		if (dir === root) break;
+		const parent = dirname(dir);
+		if (parent === dir) break;
+		dir = parent;
+	}
+	return chain;
+}
+
+/**
+ * Build ONE snapshot for a single route file from its static source, resolving the route's
+ * layout chain for the title/landmark checks (14.5). The `contrastIssues` proxy is HONESTLY
+ * 0: computed-contrast measurement requires a real rendered page (the browser-driven
+ * variant — deferred). We never invent a contrast count, so this static source simply
+ * reports 0 and the contrast rule stays silent rather than fabricating a number.
  */
 export function snapshotForRoute(routesRoot: string, file: string): UxSnapshot {
 	const route = routePathFor(routesRoot, file);
@@ -193,18 +271,63 @@ export function snapshotForRoute(routesRoot: string, file: string): UxSnapshot {
 	try {
 		src = readFileSync(file, 'utf8');
 	} catch {
-		// Unreadable — return an empty-but-honest snapshot (the detector tolerates it).
-		return { route, title: '', images: [], landmarks: [], buttons: [], contrastIssues: 0 };
+		// Unreadable — we cannot prove ANYTHING about this route. Declare the absence checks
+		// unverifiable instead of fabricating missing-title/missing-landmark (14.5 — F-008).
+		return {
+			route,
+			title: '',
+			images: [],
+			landmarks: [],
+			buttons: [],
+			contrastIssues: 0,
+			unverifiable: ['title', 'landmark']
+		};
 	}
 	const tmpl = templateOnly(src);
+
+	// Layout-aware title + landmarks (14.5): the rendered route includes its layout chain, so
+	// an inherited <svelte:head><title> / <main> counts as present. Opaque markup anywhere in
+	// the chain (components, {@html}) makes ABSENCE unprovable — record that honestly.
+	let title = extractTitle(src);
+	const landmarks = new Set(extractLandmarks(tmpl));
+	let opaque = hasOpaqueMarkup(tmpl);
+	for (const layoutFile of layoutChainFor(routesRoot, file)) {
+		let lsrc = '';
+		try {
+			const st = statSync(layoutFile);
+			if (!st.isFile() || st.size > MAX_FILE_BYTES) {
+				opaque = true; // a layout we will not read could supply title/main — unprovable
+				continue;
+			}
+			lsrc = readFileSync(layoutFile, 'utf8');
+		} catch {
+			opaque = true;
+			continue;
+		}
+		const ltmpl = templateOnly(lsrc);
+		if (!title) title = extractTitle(lsrc);
+		for (const role of extractLandmarks(ltmpl)) landmarks.add(role);
+		if (hasOpaqueMarkup(ltmpl)) opaque = true;
+	}
+
+	// Prove-or-silent (14.5): only when the FULL statically-visible chain lacks the marker AND
+	// contains opaque markup is the check unverifiable. A proven-present marker needs no flag;
+	// a fully-transparent chain proves absence, so the finding is TRUE.
+	const unverifiable: UxUnverifiableCheck[] = [];
+	if (opaque) {
+		if (!title) unverifiable.push('title');
+		if (!landmarks.has('main')) unverifiable.push('landmark');
+	}
+
 	return {
 		route,
-		title: extractTitle(src),
+		title,
 		images: extractImages(tmpl),
-		landmarks: extractLandmarks(tmpl),
+		landmarks: [...landmarks],
 		buttons: extractButtons(tmpl),
 		// Static analysis cannot measure rendered contrast — honest 0 (browser variant deferred).
-		contrastIssues: 0
+		contrastIssues: 0,
+		...(unverifiable.length > 0 ? { unverifiable } : {})
 	};
 }
 

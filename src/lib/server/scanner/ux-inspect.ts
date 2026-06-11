@@ -34,6 +34,12 @@ export interface UxControl {
 }
 
 /**
+ * A check the PRODUCING source could not truthfully evaluate for a route (14.5).
+ * `title` ⇒ skip ux.missing-title; `landmark` ⇒ skip ux.missing-landmark.
+ */
+export type UxUnverifiableCheck = 'title' | 'landmark';
+
+/**
  * A structured snapshot of a single route, as a real browser inspection would produce it.
  * This is the inspector INPUT — keeping it a plain serializable shape means the same
  * detector runs over a live Playwright snapshot or a mocked one with zero code change.
@@ -49,6 +55,15 @@ export interface UxSnapshot {
 	buttons: UxControl[];
 	/** Count of computed-contrast failures the inspector measured (0 = none). */
 	contrastIssues: number;
+	/**
+	 * Checks the producing source could NOT truthfully evaluate for this route (14.5 —
+	 * F-008/D-038): e.g. the static source cannot prove a title/<main> ABSENT when an
+	 * imported component might supply it at render time. The detector emits NO finding for
+	 * an unverifiable check — a finding it cannot prove would be fabricated (false) data.
+	 * A browser-driven source (PlaywrightUxSource) omits this entirely: it observes the
+	 * RENDERED page, so every check is verifiable there.
+	 */
+	unverifiable?: UxUnverifiableCheck[];
 }
 
 /**
@@ -84,9 +99,12 @@ export function inspectUx(source: UxInspectionSource): UxFinding[] {
 		const add = (rule: string, severity: Severity, detail: string): void => {
 			findings.push({ rule, severity, file: route, line: 1, detail, route });
 		};
+		// Checks the source declared it cannot truthfully evaluate (14.5): SKIP them — no
+		// finding, not a hedged one. Wrong data is wrong (F-008/D-038).
+		const unverifiable = new Set(s.unverifiable ?? []);
 
 		// (1) Missing page title — orientation + a11y (medium).
-		if (!s.title || s.title.trim() === '') {
+		if (!unverifiable.has('title') && (!s.title || s.title.trim() === '')) {
 			add('ux.missing-title', 'medium', `Route ${route} has no page title.`);
 		}
 
@@ -113,7 +131,7 @@ export function inspectUx(source: UxInspectionSource): UxFinding[] {
 
 		// (4) Missing main landmark — keyboard/AT navigation (medium).
 		const landmarks = s.landmarks ?? [];
-		if (!landmarks.includes('main')) {
+		if (!unverifiable.has('landmark') && !landmarks.includes('main')) {
 			add('ux.missing-landmark', 'medium', `Route ${route} has no "main" ARIA landmark.`);
 		}
 

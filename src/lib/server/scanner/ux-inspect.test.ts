@@ -119,4 +119,26 @@ describe('§3.3 inspectUx — pure UX detector', () => {
 	it('an inspector that returns no snapshots yields no findings (never throws)', () => {
 		expect(inspectUx(mockSource([]))).toEqual([]);
 	});
+
+	it('emits NO finding for a check the source declared unverifiable (14.5 — F-008)', () => {
+		// A source that cannot truthfully evaluate a check (e.g. the static source when a
+		// component may supply the title/main) declares it unverifiable; a finding it cannot
+		// prove would be fabricated data, so the detector stays silent for that rule only.
+		const src = mockSource([
+			{
+				route: '/maybe',
+				title: '',
+				images: [{ src: '/m.png', alt: '' }],
+				landmarks: [],
+				buttons: [],
+				contrastIssues: 0,
+				unverifiable: ['title', 'landmark']
+			}
+		]);
+		const rules = inspectUx(src).map((f) => f.rule);
+		expect(rules).not.toContain('ux.missing-title');
+		expect(rules).not.toContain('ux.missing-landmark');
+		// Verifiable checks on the same snapshot still fire.
+		expect(rules).toContain('ux.image-missing-alt');
+	});
 });

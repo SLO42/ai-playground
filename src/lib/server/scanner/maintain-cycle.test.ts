@@ -42,6 +42,18 @@ beforeAll(async () => {
 	mkdirSync(broken, { recursive: true });
 	writeFileSync(join(broken, '+page.svelte'), `<section><img src="/x.png" /><button><svg /></button></section>`);
 
+	// 14.5 — a route whose title + <main> live ONLY in its +layout.svelte (the rendered page
+	// HAS both): the layout-aware static source must not fabricate missing-title/landmark.
+	const inherits = join(routes, 'inherits');
+	mkdirSync(inherits, { recursive: true });
+	writeFileSync(
+		join(inherits, '+layout.svelte'),
+		`<script>let { children } = $props();</script>
+<svelte:head><title>Shell</title></svelte:head>
+<main>{@render children?.()}</main>`
+	);
+	writeFileSync(join(inherits, '+page.svelte'), `<section><button>Run</button></section>`);
+
 	tdb = await startTestDb();
 	db = await Db.connect({
 		url: tdb.wsUrl,
@@ -110,6 +122,18 @@ describe('§11.5 runProjectUxInspection — static inspect over the project UI, 
 		expect(rules).toContain('ux.missing-landmark');
 		const titleFinding = live.find((r) => r.rule === 'ux.missing-title')!;
 		expect(titleFinding.file).toBe('/broken'); // route rides in the `file` column
+	});
+
+	it('never fabricates missing-title/landmark for a route covered by its layout (14.5)', async () => {
+		await runProjectUxInspection(db, projectId, projDir, { codeRoot });
+		const live = await listFindings(db, projectId);
+		// The /inherits page is bare but its +layout.svelte supplies <title> and <main> —
+		// exactly what the rendered app shows, so NO finding may exist for it.
+		expect(live.filter((r) => r.file === '/inherits').length).toBe(0);
+		// Truth-preserving, not vacuous: /broken (nothing supplies title/main) is still flagged.
+		const broken = live.filter((r) => r.file === '/broken').map((r) => r.rule);
+		expect(broken).toContain('ux.missing-title');
+		expect(broken).toContain('ux.missing-landmark');
 	});
 
 	it('is idempotent — re-inspecting replaces the live ux set, never doubles it (D-015)', async () => {

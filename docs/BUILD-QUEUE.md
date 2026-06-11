@@ -13,8 +13,8 @@
 | done | lane-A-docs | HARVEST Lane A-docs ✅ 14/14 applied, review PASS (dc7239b pushed) | auto |
 | done | lane-A-code | HARVEST A4/A7 ✅ red-team pass + verdict artifact gate (3cd2755; reviewer caught F-016 host-load brick via real-loader extraction) | auto |
 | done | lane-C-specs | Lane C ✅ 4/4 (80ed54c): decision classification w/ Operator-Challenge supremacy, scope challenge (null tunables), ONE canonical brief format, anti-sycophancy in-rail | auto |
-| running | wave-v2.2a | RESUMED 2026-06-11 (run wf_b78e42e4-474): 15.1 build cached `dde4f1c` → review + red-team fresh → 15.2 browser daemon → 15.3 verify-flows → push | auto |
-| queued | wave-v2.1 | PM build (PM-SPEC §8): pm table+hire+charter · trigger engine · proposed-task pipeline+panel · GitHub triage · W-D7a/W-D7b/W-D7c workforce (WORKFORCE-SPEC) | auto |
+| done | wave-v2.2a | ✅ 3/3 (pushed, tip `fa69d4a`): 15.1 scope-lock gate (`dde4f1c`+fix `231f411` — red-team's FIRST outing caught 3 fail-open bypasses incl. `..`-in-rm-exception + `>|` clobber; re-review ran 15 novel probes) · 15.2 browser daemon `464b815` · 15.3 verify-flows `6031bbe`+fix `fa69d4a` | auto |
+| running | wave-v2.1 | THE PM + WORKFORCE (run wf_3750eae5-068, 7 tasks): 16.1 pm identity/hire/charter (Fable 5) · 16.2 trigger engine · 16.3 W-D7a data plane · 16.4 proposed-task pipeline + panel (redTeam) · 16.5 GitHub triage · 16.6 W-D7b gauntlet engine (redTeam) · 16.7 W-D7c roles/fixtures/ceremony-prep/UI. Day-0 ceremony itself = gate:operator after the wave | auto |
 | queued | wave-v2.2b | B2 review memory · B4 §3.1b verify + leak harness · B5 recall budget · B6 quarantine · B7 capability-gated guidance · B8 baselines · B10 memory pull-tool | auto |
 | queued | wave-v2.3 | WORKFORCE-SPEC §5 performance loop · §6 project_staff · §7 tier hiring · **§7b researcher role + research rails** (+ missed-defect ledger after B2) | auto |
 | queued | self-hosting | D-040: ingest the docs suite into Atelier's own memory for project atelier_self + hire its PM (fable-5) — Atelier maintains itself | operator |

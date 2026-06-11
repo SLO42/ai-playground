@@ -67,6 +67,11 @@ export {
 	completeSprint,
 	// bootstrap
 	bootstrapPm,
+	// PM identity (TASK 16.1 / PM-SPEC §1)
+	getPm,
+	createPm,
+	updatePmCharter,
+	PM_AUTHORITIES,
 	// taxonomy + types
 	PM_MEMORY_KINDS,
 	type PmMemoryKind,
@@ -75,5 +80,29 @@ export {
 	type PmMemoryStats,
 	type DecisionRow,
 	type AddDecisionInput,
-	type PmBootstrapResult
+	type PmBootstrapResult,
+	type PmRow,
+	type PmAuthority,
+	type CreatePmInput
 } from './pm-repo';
+
+// TASK 16.1 — the hire flow (Six Forcing Questions) + the PM session seams.
+export {
+	hirePm,
+	hireInterviewFor,
+	HIRE_QUESTIONS,
+	type HireQuestion,
+	type HireQuestionId,
+	type HireInterviewQuestion,
+	type HireAnswer,
+	type HirePmInput,
+	type HirePmResult
+} from './pm-hire';
+
+export {
+	assemblePmContext,
+	resolvePmRoute,
+	type PmContextBundle,
+	type PmContextItem,
+	type PmRoute
+} from './pm-session';

@@ -285,4 +285,75 @@ describe('schemaMigrations — idempotent over fresh + half-applied state (11.4-
 			await db.close().catch(() => {});
 		}
 	});
+
+	// ── TASK 16.1 — m0029 pm identity: the F-015 discipline pair for the new table. ──
+	// (Apply-twice over a FRESH db is covered by the 'applies the full schema TWICE' case
+	// above, which includes 0029; these cover the half-applied states specifically.)
+
+	it('m0029 RECOVERS a half-applied bare `pm` table (OVERWRITE re-defines, ledger records)', async () => {
+		const db = await freshDb('mig_pm_wedge');
+		try {
+			// The exact F-015 wedge shape: table exists bare (fields:{}), migration unrecorded.
+			await db.query('DEFINE TABLE pm SCHEMAFULL;');
+			const before = await db.query<[{ fields: Record<string, string> }]>('INFO FOR TABLE pm;');
+			expect(Object.keys(before[0].fields)).toHaveLength(0);
+			expect(await isApplied(db, '0029_pm_identity')).toBe(false);
+
+			const applied = await runMigrations(db, schemaMigrations);
+			expect(applied).toContain('0029_pm_identity');
+
+			const after = await db.query<[{ fields: Record<string, string> }]>('INFO FOR TABLE pm;');
+			for (const f of ['project', 'name', 'charter', 'persona', 'cadence', 'cadence_offset', 'authority', 'created_at']) {
+				expect(Object.keys(after[0].fields)).toContain(f);
+			}
+			const info = await db.query<[{ indexes: Record<string, string> }]>('INFO FOR TABLE pm;');
+			expect(Object.keys(info[0].indexes)).toContain('pm_by_project');
+			expect(await isApplied(db, '0029_pm_identity')).toBe(true);
+
+			// Re-run is a clean no-op (apply-twice over the recovered state).
+			expect(await runMigrations(db, schemaMigrations)).toEqual([]);
+		} finally {
+			await db.close().catch(() => {});
+		}
+	});
+
+	it('m0029 recovers half-applied pm ROWS: backfills authority/created_at, deletes id-only corruption', async () => {
+		const db = await freshDb('mig_pm_backfill');
+		try {
+			// Stand the table up WITHOUT the DEFAULTs (the bare-table write shape).
+			await db.query('DEFINE TABLE project SCHEMAFULL;');
+			await db.query('DEFINE FIELD slug ON project TYPE string;');
+			await db.query('CREATE project:pmwedge SET slug = "pmwedge";');
+			await db.query(`
+				DEFINE TABLE pm SCHEMAFULL;
+				DEFINE FIELD project ON pm TYPE option<record<project>>;
+				DEFINE FIELD name    ON pm TYPE option<string>;
+				DEFINE FIELD charter ON pm TYPE option<string>;
+				DEFINE FIELD authority ON pm TYPE option<string>;
+			`);
+			// (b) RECOVERABLE: project + name (+ charter) set; DEFAULT-bearing columns missing.
+			await db.query(
+				'CREATE pm:salvage SET project = project:pmwedge, name = "Vesper", charter = "ship the wedge";'
+			);
+			// (a) UNSALVAGEABLE: an id-only row (fields:{} dropped every column on write).
+			await db.query('CREATE pm:corrupt;');
+
+			await runMigrations(db, schemaMigrations);
+
+			const ids = await db.query<[{ id: string }[]]>('SELECT id FROM pm;');
+			const idStrs = ids[0].map((r) => String(r.id));
+			expect(idStrs).toContain('pm:salvage');
+			expect(idStrs).not.toContain('pm:corrupt'); // deleted, never fabricated
+
+			const fixed = await db.query<
+				[{ authority: string; created_at: unknown; charter: string; name: string }[]]
+			>('SELECT * FROM pm:salvage;');
+			expect(fixed[0][0].authority).toBe('act'); // backfilled to the PM-SPEC §4 default
+			expect(fixed[0][0].created_at).toBeTruthy(); // backfilled, row re-validates clean
+			expect(fixed[0][0].name).toBe('Vesper'); // preserved
+			expect(fixed[0][0].charter).toBe('ship the wedge'); // preserved
+		} finally {
+			await db.close().catch(() => {});
+		}
+	});
 });

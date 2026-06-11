@@ -33,6 +33,35 @@ export interface ConfirmRequest {
 	diff?: DiffLine[];
 }
 
+/**
+ * Build a unified line diff between two texts (TASK 16.1 — the D-010 diff the
+ * charter editor shows before confirming). Pure + dependency-free: common prefix/
+ * suffix lines collapse to up to `contextLines` of context on each side; the changed
+ * middle renders as removes (before) then adds (after). Identical texts → [].
+ */
+export function lineDiff(before: string, after: string, contextLines = 2): DiffLine[] {
+	if (before === after) return [];
+	const a = before.split('\n');
+	const b = after.split('\n');
+
+	// Common prefix / suffix (non-overlapping).
+	let p = 0;
+	while (p < a.length && p < b.length && a[p] === b[p]) p++;
+	let s = 0;
+	while (s < a.length - p && s < b.length - p && a[a.length - 1 - s] === b[b.length - 1 - s]) s++;
+
+	const lines: DiffLine[] = [];
+	for (const text of a.slice(Math.max(0, p - contextLines), p)) {
+		lines.push({ kind: 'context', text });
+	}
+	for (const text of a.slice(p, a.length - s)) lines.push({ kind: 'remove', text });
+	for (const text of b.slice(p, b.length - s)) lines.push({ kind: 'add', text });
+	for (const text of a.slice(a.length - s, Math.min(a.length, a.length - s + contextLines))) {
+		lines.push({ kind: 'context', text });
+	}
+	return lines;
+}
+
 /** The active confirm dialog (request + the resolver to settle the promise). */
 interface ActiveConfirm {
 	request: ConfirmRequest;

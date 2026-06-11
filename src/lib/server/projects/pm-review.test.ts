@@ -39,7 +39,7 @@ afterAll(async () => {
 
 beforeEach(async () => {
 	await db
-		.query('DELETE pm_review; DELETE pm_memory; DELETE security_finding; DELETE task; DELETE project;')
+		.query('DELETE pm; DELETE pm_review; DELETE pm_memory; DELETE security_finding; DELETE task; DELETE project;')
 		.catch(() => {});
 	const p = await createProject(db, {
 		slug: 'pmrevtest',
@@ -118,5 +118,30 @@ describe('runPmReview', () => {
 
 	it('throws honestly for an unknown project', async () => {
 		await expect(runPmReview(db, 'project:nope', 'manual')).rejects.toThrow(/not found/i);
+	});
+});
+
+// ── TASK 16.1 — charter injection (PM-SPEC §2): the review runs under the ONE
+// assemblePmContext bundle — charter (when hired + in force) FIRST, alongside plan
+// + memory. The deterministic pass derives from live rows; the bundle is the seam
+// the session-driven review (PM-SPEC §3) consumes.
+describe('runPmReview — charter-bearing context assembly (16.1)', () => {
+	it('assembles the charter into the review context when a hired PM has one', async () => {
+		const { createPm } = await import('./pm-repo');
+		await createPm(db, {
+			project: projectId,
+			name: 'Vesper',
+			charter: 'Reviews escalate anything blocked > 2 days.'
+		});
+		const res = await runPmReview(db, projectId, 'manual');
+		expect(res.context.charter).toBe('Reviews escalate anything blocked > 2 days.');
+		expect(res.context.items[0].text).toContain('PM charter');
+		expect(res.context.items[0].text).toContain('escalate anything blocked');
+	});
+
+	it('shadow: no PM hired → context assembles with charter:null (no fabricated fence)', async () => {
+		const res = await runPmReview(db, projectId, 'manual');
+		expect(res.context.charter).toBeNull();
+		expect(res.context.items.some((i) => i.text.includes('PM charter'))).toBe(false);
 	});
 });

@@ -163,6 +163,13 @@ The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
   conservative deny from an earlier layer is correct behaviour, never a regression to
   "fix" by reordering.
 
+## F-019: wave stop-regex false positive on prose "blocked"
+- **Date**: 2026-06-10
+- **What**: wave v2.2a stopped after task 15.1's fully-green build (committed, live-verified) without ever running its review. No defect existed.
+- **Why**: the v2-wave template's deviation stop-guard `/\bBLOCK(?:ED|ER)?\b/i` was case-insensitive, so the builder's *advisory* deviation prose — "SDK-path denies surface as **blocked** tool_result events" (describing the gate working correctly) — matched the BLOCKED marker.
+- **Fix**: stop markers are now case-SENSITIVE all-caps flags (`CONFLICT|BLOCKED|BLOCKER` exact + the literal phrases "cannot proceed"/"hard stop"); resumed the wave via resumeFromRunId (green build returned cached).
+- **Prevention**: machine-parsed control flags embedded in free prose must be syntactically distinguishable from prose — all-caps exact markers, dedicated fields, or sentinel prefixes. Never case-insensitive word-match a control signal against text agents write naturally. (When adding any new verdict-field regex to the template: test it against REAL past verdict texts first.)
+
 ## F-020: dev-server keyboard/SSE assertions race client hydration
 - **Date**: 2026-06-11 (renumbered from F-019 on 2026-06-11 — the unified log on
   `v2-main` already carries "F-019: wave stop-regex false positive" (2026-06-10);

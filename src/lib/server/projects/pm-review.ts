@@ -25,6 +25,7 @@ import type { Db } from './../db/client';
 import { listTasksByProject, type TaskRow, type TaskStatus } from '../tasks/repo';
 import { listFindings } from '../scanner/findings-repo';
 import { getProject } from './repo';
+import { assemblePmContext, type PmContextBundle } from './pm-session';
 import {
 	addPmMemory,
 	addPmReview,
@@ -40,6 +41,14 @@ export interface PmReviewResult {
 	review: PmReviewRow;
 	/** The typed PM-memory rows this pass wrote (observation / risk / decision). */
 	written: PmMemoryRow[];
+	/**
+	 * TASK 16.1 (PM-SPEC §2): the fenced context bundle this pass ran under — the
+	 * charter (when a PM is hired and a charter is in force) + plan macro + accumulated
+	 * memory, assembled by the SAME assemblePmContext pmChat uses. The deterministic
+	 * derivation below consumes live rows directly; this bundle is the seam the
+	 * session-driven review (PM-SPEC §3, trigger-engine task) hands to its PM session.
+	 */
+	context: PmContextBundle;
 }
 
 /** Group a project's tasks by status (for the review's activity read). */
@@ -72,6 +81,10 @@ export async function runPmReview(
 ): Promise<PmReviewResult> {
 	const project = await getProject(db, projectId);
 	if (!project) throw new Error(`project not found: ${projectId}`);
+
+	// TASK 16.1 (PM-SPEC §2): assemble the durable context layers (charter + plan +
+	// memory) BEFORE deriving — the bundle the pass woke up with, charter first.
+	const context = await assemblePmContext(db, projectId);
 
 	const tasks = await listTasksByProject(db, projectId);
 	const findings = await listFindings(db, projectId);
@@ -173,7 +186,7 @@ export async function runPmReview(
 		memories_written: written.length
 	});
 
-	return { review, written };
+	return { review, written, context };
 }
 
 /** Re-export for callers that gate on a status set without importing tasks/repo directly. */

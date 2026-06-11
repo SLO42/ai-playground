@@ -39,6 +39,8 @@ export const WATCHED_TABLES = [
 	'sprint',
 	// pm_review — /projects/[id] (PM tab)
 	'pm_review',
+	// pm — /projects/[id] (PM tab: hired identity + charter, TASK 16.1)
+	'pm',
 	// task_sync — /projects/[id]/sync
 	'task_sync',
 	// board_sync_config — /projects/[id]/sync

@@ -228,6 +228,59 @@ export function loadGatesConfig(file: string, opts: LoadOpts = {}): GatesConfig 
 	};
 }
 
+// --- workforce.yaml (TASK 16.1 / PM-SPEC §1 + WORKFORCE-SPEC) ----------------
+//
+// THE single config namespace for ALL workforce keys (pm.*, panel.*, gauntlet.*,
+// budget.*, drift.*, workforce.* — one file, one loader). 16.1 consumes ONLY the
+// pm.{provider, model_id} pair (the PM's explicit model override — F-005); the
+// other namespaces ship with justified/null defaults in config/workforce.yaml and
+// are boundary-validated by their consuming wave tasks (W-D7a/b) when they land.
+// This loader validates the keys IT serves and keeps the rest open (forward-compat,
+// same posture as orchestration bundles' unknown keys).
+
+/** The validated shape of config/workforce.yaml (the keys 16.1 consumes). */
+export interface WorkforceConfig {
+	pm: {
+		/** Registered provider name (`claude` = the Claude Code CLI backend). */
+		provider: string;
+		/** The PM's model id — default Fable 5 (PM-SPEC §1, operator 2026-06-10). */
+		model_id: string;
+		[k: string]: unknown;
+	};
+	[k: string]: unknown;
+}
+
+/**
+ * Load + validate config/workforce.yaml. FAIL CLOSED on shape: a missing file, a
+ * non-mapping root/pm block, or a missing/empty pm.model_id throws ConfigError —
+ * callers choose their honest degradation (resolvePmRoute records an explicit
+ * "fallback" routing_event rather than spawning on a silent constant).
+ */
+export function loadWorkforce(file: string, opts: LoadOpts = {}): WorkforceConfig {
+	const raw = { ...asObject(parseYaml(file), file), ...(opts._inject ?? {}) };
+	const pm = raw.pm;
+	if (pm === null || pm === undefined || typeof pm !== 'object' || Array.isArray(pm)) {
+		throw new ConfigError('workforce: "pm" must be a mapping with model_id (PM-SPEC §1)', file);
+	}
+	const p = pm as Record<string, unknown>;
+	if (typeof p.model_id !== 'string' || !p.model_id.trim()) {
+		throw new ConfigError('workforce: pm.model_id must be a non-empty string', file);
+	}
+	if (p.provider !== undefined && (typeof p.provider !== 'string' || !p.provider.trim())) {
+		throw new ConfigError('workforce: pm.provider must be a non-empty string when set', file);
+	}
+	return {
+		...raw,
+		pm: {
+			...p,
+			model_id: p.model_id.trim(),
+			// `claude` is the registered Claude Code CLI backend — the provider every
+			// claude-* tier in agent-pool.yaml names; the justified default, not magic.
+			provider: typeof p.provider === 'string' && p.provider.trim() ? p.provider.trim() : 'claude'
+		}
+	};
+}
+
 /** The full loaded config tree. */
 export interface AppConfig {
 	agentPool: AgentPool;

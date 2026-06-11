@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { ConfirmCore } from './confirm-core';
+import { ConfirmCore, lineDiff } from './confirm-core';
 
 describe('ConfirmCore — blocking confirm', () => {
 	it('opens a confirm and resolves true on accept', async () => {
@@ -92,5 +92,57 @@ describe('ConfirmCore — non-blocking gate banners (D-018/D-024)', () => {
 		core.accept();
 		await expect(p).resolves.toBe(true);
 		expect(core.gates).toHaveLength(1); // banner unaffected
+	});
+});
+
+// ── TASK 16.1 — lineDiff (the D-010 unified diff the charter editor confirms over) ──
+describe('lineDiff', () => {
+	it('identical texts produce an empty diff (editor closes without a confirm)', () => {
+		expect(lineDiff('a\nb', 'a\nb')).toEqual([]);
+	});
+
+	it('a pure addition renders adds with surrounding context', () => {
+		const d = lineDiff('one\ntwo', 'one\ntwo\nthree');
+		expect(d).toEqual([
+			{ kind: 'context', text: 'one' },
+			{ kind: 'context', text: 'two' },
+			{ kind: 'add', text: 'three' }
+		]);
+	});
+
+	it('a replacement renders remove-then-add between context lines', () => {
+		const d = lineDiff('keep\nold line\ntail', 'keep\nnew line\ntail');
+		expect(d).toEqual([
+			{ kind: 'context', text: 'keep' },
+			{ kind: 'remove', text: 'old line' },
+			{ kind: 'add', text: 'new line' },
+			{ kind: 'context', text: 'tail' }
+		]);
+	});
+
+	it('clearing all text renders every line as a remove (the danger confirm)', () => {
+		const d = lineDiff('a\nb', '');
+		expect(d.filter((l) => l.kind === 'remove').map((l) => l.text)).toEqual(['a', 'b']);
+		expect(d.some((l) => l.kind === 'add' && l.text !== '')).toBe(false);
+	});
+
+	it('nil/empty input shadow paths: empty → text is all adds; both empty → empty', () => {
+		expect(lineDiff('', '')).toEqual([]);
+		const d = lineDiff('', 'first\nsecond');
+		expect(d.filter((l) => l.kind === 'add').map((l) => l.text)).toEqual(['first', 'second']);
+	});
+
+	it('caps context at contextLines on each side of the change', () => {
+		const before = ['c1', 'c2', 'c3', 'X', 'c4', 'c5', 'c6'].join('\n');
+		const after = ['c1', 'c2', 'c3', 'Y', 'c4', 'c5', 'c6'].join('\n');
+		const d = lineDiff(before, after, 2);
+		expect(d).toEqual([
+			{ kind: 'context', text: 'c2' },
+			{ kind: 'context', text: 'c3' },
+			{ kind: 'remove', text: 'X' },
+			{ kind: 'add', text: 'Y' },
+			{ kind: 'context', text: 'c4' },
+			{ kind: 'context', text: 'c5' }
+		]);
 	});
 });

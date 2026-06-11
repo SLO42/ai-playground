@@ -968,6 +968,54 @@ const m0028_service_last_seen: Migration = {
 	`
 };
 
+// ── TASK 16.1 — PM IDENTITY (PM-SPEC §1): the PM is hired, not implicit ──────────
+//
+// One `pm` row per project (UNIQUE project link) carries the hired manager's
+// identity: name, the operator-written `charter` (priorities / tone / escalation
+// rules — injected as fenced context into every PM session/review, D-026), an
+// optional `persona`, the periodic-trigger `cadence` (cron expr) + `cadence_offset`
+// (per-project stagger so PMs don't fire simultaneously — PM-SPEC §3), and the
+// `authority` ladder (observe | propose | act; default "act" per PM-SPEC §4).
+//
+// IDEMPOTENT (D-006/F-015): every DEFINE carries OVERWRITE — clean over a fresh DB
+// AND a half-applied state; assume the migration can die mid-apply and re-run.
+const m0029_pm_identity: Migration = {
+	id: '0029_pm_identity',
+	up: `
+		DEFINE TABLE OVERWRITE pm SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project        ON pm TYPE record<project>;
+		DEFINE FIELD OVERWRITE name           ON pm TYPE string;
+		-- Operator-written directives (PM-SPEC §1/§2). Absent until written (§6.1).
+		DEFINE FIELD OVERWRITE charter        ON pm TYPE option<string>;
+		DEFINE FIELD OVERWRITE persona        ON pm TYPE option<string>;
+		-- Periodic trigger: cron expr + per-project stagger (PM-SPEC §3; consumed by the
+		-- trigger-engine task — stored now so hiring captures the full identity row).
+		DEFINE FIELD OVERWRITE cadence        ON pm TYPE option<string>;
+		DEFINE FIELD OVERWRITE cadence_offset ON pm TYPE option<duration>;
+		-- "Act with Purpose" (PM-SPEC §4): default act — a concrete non-NONE DEFAULT (§6.2).
+		DEFINE FIELD OVERWRITE authority      ON pm TYPE string DEFAULT "act"
+			ASSERT $value IN ["observe","propose","act"];
+		DEFINE FIELD OVERWRITE created_at     ON pm TYPE datetime DEFAULT time::now();
+		-- ONE PM per project: UNIQUE so a concurrent double-hire collides rather than
+		-- duplicating (D-008 — the dedup TOCTOU class transactions alone do not solve).
+		DEFINE INDEX OVERWRITE pm_by_project ON pm FIELDS project UNIQUE;
+		-- Half-applied recovery (the m0025 case study, F-015 — no fabricated data):
+		--  (a) UNSALVAGEABLE rows: a bare fields:{} table drops every undefined column on
+		--      write, leaving id-only rows that can never satisfy the required project/name.
+		--      Pure corruption — DELETE rather than invent a fake project/name.
+		--  (b) RECOVERABLE rows (project + name set, but the DEFAULT-bearing columns relied
+		--      on DEFAULTs the bare table dropped): backfill authority + created_at in the
+		--      SAME UPDATE (touching a row re-validates every SCHEMAFULL field — §6.5).
+		LET $corrupt = (SELECT count() AS n FROM pm WHERE (project IS NONE) OR (name IS NONE) GROUP ALL)[0].n ?? 0;
+		IF $corrupt > 0 { DELETE pm WHERE (project IS NONE) OR (name IS NONE); };
+		${guardedScan(
+			'pm',
+			'(created_at IS NONE) OR (authority IS NONE)',
+			'created_at = (created_at ?? time::now()), authority = (authority ?? "act")'
+		)}
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1002,5 +1050,6 @@ export const schemaMigrations: Migration[] = [
 	m0025_pm_review_board,
 	m0026_project_target,
 	m0027_run_note,
-	m0028_service_last_seen
+	m0028_service_last_seen,
+	m0029_pm_identity
 ];

@@ -1,0 +1,63 @@
+# config/workforce.yaml — THE single config namespace for ALL workforce keys
+# (PM-SPEC §1/§4.5; WORKFORCE-SPEC §3.5/§3.7/§5). Loaded + validated at the config
+# boundary (src/lib/server/config/load.ts loadWorkforce — fail closed on shape).
+#
+# Defaults policy (G5 / F-008): every value here is either JUSTIFIED by its spec or
+# ships UNARMED (null) until the operator sets it from our own real history — no
+# imported magic numbers. null ≠ 0: an unarmed bound means "surface, don't enforce".
+
+pm:
+  # The PM runs on a strong frontier model — default Fable 5 (PM-SPEC §1, operator
+  # 2026-06-10). PM sessions route with this as the EXPLICIT {provider, model_id}
+  # override (F-005 short-circuit), recorded in routing_event. Operator-tunable;
+  # per-project overrides may land on the pm row later if needed.
+  provider: claude
+  model_id: claude-fable-5
+  # PM-SPEC §4.5 decision bounds — ship unarmed: until the operator sets a bound
+  # from our own history, anything that would need it classifies as Taste and
+  # surfaces on the next decision brief (never silently self-decided).
+  decide:
+    blast_radius_max_files: null
+    effort_ceiling_minutes: null
+
+panel:
+  scope:
+    # PM-SPEC §4.6.3 complexity tripwires — operator-tunable, never imported. null =
+    # unarmed: complexity is raised as an evidenced judgment finding, not a numeric
+    # verdict, until the operator sets these from our own wave history.
+    max_files: null
+    max_new_services: null
+
+gauntlet:
+  # WORKFORCE-SPEC §3.5 pass bar — ARMED at launch, justified (not invented):
+  # admission reference-runs prove every plant findable and every clean section
+  # clean, so a miss or a false positive is a real error, not a statistic.
+  pass_recall: 1.0
+  max_false_positives: 0
+  # §3.1 candidate-session wall-clock bound (minutes) — a conservative starting
+  # point sized to the launch fixtures (F-014 discipline), operator-tunable.
+  session_timeout_minutes: 15
+
+budget:
+  # §3.7 spend caps — null = NOTHING auto-runs; auto-triggers only count-and-surface
+  # until the operator sets a cap (F-008: no invented spend number).
+  max_auto_interviews_per_day: null
+  allowed_auto_tiers: []
+
+drift:
+  # §5 drift triggers: categorical signals armed (an escaped defect or operator
+  # feedback is a real event, and the consequence is only a panel-validated,
+  # operator-gated proposal); RATE signals ship unarmed (null) until post-B2 data
+  # lets the operator set a justified bound.
+  escaped_defect: true
+  operator_feedback: true
+  refutation_rate: null
+  fixloop_rate: null
+
+workforce:
+  # §5 — conservative starting points, NOT derived truths; operator-tunable,
+  # revisit on real data. Below min_events_for_claim the PM must not claim
+  # degradation.
+  track_window_days: 14
+  min_events_for_claim: 5
+  max_open_proposals: 2

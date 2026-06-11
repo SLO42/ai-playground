@@ -319,6 +319,105 @@ export async function completeSprint(db: Db, id: string): Promise<SprintRow | nu
 	} as SprintRow;
 }
 
+// ── PM identity (TASK 16.1 / PM-SPEC §1 — the PM is hired, not implicit) ─────────
+
+/** The PM authority ladder (PM-SPEC §4 "Act with Purpose"; default "act"). */
+export type PmAuthority = 'observe' | 'propose' | 'act';
+
+export const PM_AUTHORITIES: readonly PmAuthority[] = ['observe', 'propose', 'act'];
+
+/** A persisted `pm` row — one hired manager per project (migration 0029, UNIQUE project). */
+export interface PmRow {
+	id: string;
+	project: string;
+	name: string;
+	/** Operator-written directives (priorities/tone/escalation). Absent until written. */
+	charter?: string;
+	persona?: string;
+	/** Periodic-trigger cron expr (PM-SPEC §3; consumed by the trigger-engine task). */
+	cadence?: string;
+	/** Per-project stagger (duration, coerced to its string form for the surface). */
+	cadence_offset?: string;
+	authority: PmAuthority;
+	created_at: string | null;
+}
+
+export interface CreatePmInput {
+	project: string;
+	name: string;
+	charter?: string;
+	persona?: string;
+	authority?: PmAuthority;
+}
+
+function normPm(row: PmRow & { id: unknown; project: unknown; cadence_offset?: unknown }): PmRow {
+	return {
+		...row,
+		id: str(row.id),
+		project: str(row.project),
+		// duration is a non-POJO in the 2.x SDK — coerce to its string form (F-013 class).
+		...(row.cadence_offset != null ? { cadence_offset: str(row.cadence_offset) } : {}),
+		created_at: strDate(row.created_at)
+	};
+}
+
+/** The project's hired PM row, or null when no PM has been hired (the honest empty state). */
+export async function getPm(db: Db, projectId: string): Promise<PmRow | null> {
+	const project = link(projectId);
+	const [rows] = await db.query<[(PmRow & { id: unknown; project: unknown })[]]>(
+		`SELECT * FROM pm WHERE project = $project LIMIT 1;`,
+		{ project }
+	);
+	return rows.length ? normPm(rows[0]) : null;
+}
+
+/**
+ * Create the project's `pm` row. ONE per project — the UNIQUE pm_by_project index makes a
+ * concurrent double-hire collide rather than duplicate (D-008); callers absorb the existing
+ * row via getPm first (interrupt-safe re-run). All values bind via $param (D-016).
+ */
+export async function createPm(db: Db, input: CreatePmInput): Promise<PmRow> {
+	const content = omitUndefined({
+		project: link(input.project),
+		name: input.name,
+		charter: input.charter,
+		persona: input.persona,
+		authority: input.authority
+	});
+	const [rows] = await db.query<[(PmRow & { id: unknown; project: unknown })[]]>(
+		`CREATE pm CONTENT $content RETURN AFTER;`,
+		{ content }
+	);
+	return normPm(rows[0]);
+}
+
+/**
+ * Update the PM's charter (the D-010 diff+confirm editor's write path — the diff+confirm
+ * ceremony renders client-side; this persists the confirmed text). An empty charter clears
+ * the field to NONE (option<string> — absent, surfaced as the honest '—', never "").
+ * MERGE preserves every untouched column. Returns null when the project has no PM.
+ */
+export async function updatePmCharter(
+	db: Db,
+	projectId: string,
+	charter: string
+): Promise<PmRow | null> {
+	const existing = await getPm(db, projectId);
+	if (!existing) return null;
+	const rid = link(existing.id);
+	const trimmed = charter.trim();
+	const [rows] = trimmed
+		? await db.query<[(PmRow & { id: unknown; project: unknown })[]]>(
+				`UPDATE $rid MERGE { charter: $charter } RETURN AFTER;`,
+				{ rid, charter: trimmed }
+			)
+		: await db.query<[(PmRow & { id: unknown; project: unknown })[]]>(
+				`UPDATE $rid SET charter = NONE RETURN AFTER;`,
+				{ rid }
+			);
+	return rows.length ? normPm(rows[0]) : null;
+}
+
 // ── PM bootstrap ───────────────────────────────────────────────────────────────
 
 export interface PmBootstrapResult {

@@ -14,6 +14,8 @@
   import { invalidate, goto } from '$app/navigation';
   import { page } from '$app/state';
   import { stream } from '$lib/client/stream.svelte';
+  import { confirm } from '$lib/client/confirm.svelte';
+  import { lineDiff } from '$lib/client/confirm-core';
   import type { PageData, ActionData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -171,6 +173,137 @@
   let newSprintName = $state('');
   let pmChatMessage = $state('');
 
+  // ── TASK 16.1 — PM identity: the hired PM row + the hire-interview wizard. ──────
+  const pm = $derived(data.pm ?? null);
+  const hireQuestions = $derived(data.hireQuestions ?? []);
+  // Smart-skip (PM-SPEC §1): questions the project scan already answers are shown as
+  // pre-answered evidence, never asked; the rest are asked ONE AT A TIME.
+  const hireAskable = $derived(hireQuestions.filter((q) => !q.preAnswered));
+  const hirePreAnswered = $derived(hireQuestions.filter((q) => q.preAnswered));
+
+  type HireDraft = { id: string; answer: string; push: string; skipped: boolean };
+  let hireOpen = $state(false);
+  let hirePhase = $state<'questions' | 'charter'>('questions');
+  let hireStep = $state(0);
+  let hireDrafts = $state<HireDraft[]>([]);
+  let hireAnswerDraft = $state('');
+  let hirePushDraft = $state('');
+  // Push-once (PM-SPEC §1): after the first polished answer we push exactly once.
+  let hirePushOpen = $state(false);
+  let hireName = $state('');
+  let hirePersona = $state('');
+  let hireCharter = $state('');
+
+  const hireCurrent = $derived(hireAskable[hireStep] ?? null);
+  const hireAnswered = $derived(hireDrafts.filter((d) => !d.skipped).length);
+  const hireSkipped = $derived(hireDrafts.filter((d) => d.skipped).length);
+  const hireAnswersJson = $derived(
+    JSON.stringify(
+      hireDrafts.map((d) => ({
+        id: d.id,
+        ...(d.answer ? { answer: d.answer } : {}),
+        ...(d.push ? { push: d.push } : {}),
+        ...(d.skipped ? { skipped: true } : {})
+      }))
+    )
+  );
+
+  function startHire(): void {
+    hireOpen = true;
+    hirePhase = hireAskable.length > 0 ? 'questions' : 'charter';
+    hireStep = 0;
+    hireDrafts = [];
+    hireAnswerDraft = '';
+    hirePushDraft = '';
+    hirePushOpen = false;
+    hireName = '';
+    hirePersona = '';
+    hireCharter = '';
+  }
+
+  function hireAdvance(): void {
+    hireStep += 1;
+    hireAnswerDraft = '';
+    hirePushDraft = '';
+    hirePushOpen = false;
+    if (hireStep >= hireAskable.length) hirePhase = 'charter';
+  }
+
+  /** Commit the current answer. First commit of a non-empty answer opens the
+   *  push-once follow-up; the second commit (with or without it) advances. */
+  function hireContinue(): void {
+    if (!hireCurrent) return;
+    const answer = hireAnswerDraft.trim();
+    if (!answer) {
+      hireSkipCurrent();
+      return;
+    }
+    if (!hirePushOpen) {
+      hirePushOpen = true; // push once past the first polished answer
+      return;
+    }
+    hireDrafts = [
+      ...hireDrafts,
+      { id: hireCurrent.id, answer, push: hirePushDraft.trim(), skipped: false }
+    ];
+    hireAdvance();
+  }
+
+  /** Operator escape hatch — respected immediately, recorded as an honest gap. */
+  function hireSkipCurrent(): void {
+    if (!hireCurrent) return;
+    hireDrafts = [...hireDrafts, { id: hireCurrent.id, answer: '', push: '', skipped: true }];
+    hireAdvance();
+  }
+
+  /** Skip ALL remaining questions (the operator may skip any or all — PM-SPEC §1). */
+  function hireSkipRest(): void {
+    const rest = hireAskable.slice(hireStep).map((q) => ({
+      id: q.id,
+      answer: '',
+      push: '',
+      skipped: true
+    }));
+    hireDrafts = [...hireDrafts, ...rest];
+    hireStep = hireAskable.length;
+    hirePhase = 'charter';
+    hireAnswerDraft = '';
+    hirePushDraft = '';
+    hirePushOpen = false;
+  }
+
+  // ── Charter editor (D-010 diff+confirm — WORKFORCE-SPEC §8) ─────────────────────
+  let charterEditing = $state(false);
+  let charterDraft = $state('');
+  let charterFormEl = $state<HTMLFormElement | null>(null);
+
+  function startCharterEdit(): void {
+    charterDraft = pm?.charter ?? '';
+    charterEditing = true;
+  }
+
+  /** D-010: show the unified diff of the charter change and require an explicit
+   *  confirm BEFORE the write is submitted. No change → just close the editor. */
+  async function reviewAndSaveCharter(): Promise<void> {
+    const before = pm?.charter ?? '';
+    const next = charterDraft.trim();
+    const diff = lineDiff(before, next);
+    if (diff.length === 0) {
+      charterEditing = false;
+      return;
+    }
+    const ok = await confirm.confirm({
+      title: 'Update PM charter',
+      message: next
+        ? 'The charter is injected into every PM session and review — review the change before it persists.'
+        : 'This CLEARS the charter — PM sessions and reviews will run without operator directives.',
+      confirmLabel: next ? 'Save charter' : 'Clear charter',
+      danger: !next,
+      diff
+    });
+    if (ok) charterFormEl?.requestSubmit();
+  }
+
   // The PM action feedback (shared `form?.pm` envelope for every PM sub-action).
   const pmFeedback = $derived(
     form && 'pm' in form ? (form.pm as Record<string, unknown>) : undefined
@@ -191,6 +324,8 @@
     const offD = stream.onDbChange('decision', () => void invalidate('app:pm'));
     const offSp = stream.onDbChange('sprint', () => void invalidate('app:pm'));
     const offRv = stream.onDbChange('pm_review', () => void invalidate('app:pm'));
+    // TASK 16.1 — the hired PM identity (charter edits, hire) updates live.
+    const offPm = stream.onDbChange('pm', () => void invalidate('app:pm'));
     // TASK 10.4 — the Maintain panel + Memory tab update live too.
     const offF = stream.onDbChange('security_finding', () => void invalidate('app:findings'));
     const offMem = stream.onDbChange('memory', () => void invalidate('app:memory'));
@@ -203,6 +338,7 @@
       offD();
       offSp();
       offRv();
+      offPm();
       offF();
       offMem();
       offE();
@@ -845,46 +981,182 @@
         </div>
       </div>
     {:else if tab === 'pm'}
-      <!-- TASK 9.1 — Project Manager: the strategic layer above task execution. -->
+      <!-- TASK 9.1/16.1 — Project Manager: hired identity + the strategic layer. -->
       <div class="tab-body">
         <div class="card">
           <div class="pm-head">
             <h2 class="section-title">Project Manager</h2>
-            {#if pmBootstrapped}
-              <span class="pm-badge mono" data-on="true">active</span>
+            {#if pm}
+              <span class="pm-badge mono" data-on="true">hired · {pm.name}</span>
             {:else}
-              <span class="pm-badge mono">not bootstrapped</span>
+              <span class="pm-badge mono">not hired</span>
             {/if}
           </div>
-          <p class="state-body">
-            The per-project PM accumulates typed memory, records decisions, runs sprints, and
-            can be consulted directly. All persisted live on the project datastore.
-          </p>
-          {#if !pmBootstrapped}
-            <form
-              method="POST"
-              action="?/pmBootstrap"
-              use:enhance={() => {
-                pmBusy = true;
-                return async ({ update }) => {
-                  await update({ reset: false });
-                  pmBusy = false;
-                };
-              }}
-            >
-              <button class="btn primary" type="submit" disabled={pmBusy}>
-                {pmBusy ? 'Bootstrapping…' : 'Bootstrap PM from project state'}
-              </button>
-            </form>
+          {#if pm}
+            <p class="state-body">
+              <strong>{pm.name}</strong> manages this project
+              {#if pm.persona}— persona: {pm.persona}{/if}. Authority:
+              <span class="mono">{pm.authority}</span> · hired {fmtTime(pm.created_at)}. The PM
+              accumulates typed memory, records decisions, runs sprints, and can be consulted
+              directly — every session runs under the charter below.
+            </p>
+          {:else}
+            <p class="state-body">
+              No PM has been hired for this project yet. Hiring builds the PM's founding context:
+              a live project scan, a recent-history digest, and a short interview — the Six
+              Forcing Questions — whose answers become founding PM memory. You write the charter
+              in the same flow.
+            </p>
+            {#if pmBootstrapped}
+              <p class="hint">
+                This project carries PM memory from the earlier bootstrap flow — hiring keeps it
+                and adds the identity, interview, and charter on top.
+              </p>
+            {/if}
+            {#if !hireOpen}
+              <button class="btn primary" type="button" onclick={startHire}>Hire PM</button>
+            {/if}
           {/if}
+
+          {#if !pm && hireOpen}
+            <!-- TASK 16.1 — the hire interview (Six Forcing Questions, one at a time). -->
+            <div class="hire-wizard" role="group" aria-label="Hire PM interview">
+              {#if hirePreAnswered.length > 0}
+                <div class="hire-preanswered">
+                  <p class="hint">
+                    Pre-answered by the project scan (smart-skip — evidence quoted, not asked):
+                  </p>
+                  <ul class="rows">
+                    {#each hirePreAnswered as q (q.id)}
+                      <li class="hire-pre-row">
+                        <span class="pm-kind-tag mono">{q.label}</span>
+                        <span class="hire-pre-evidence">
+                          <span class="mono">{q.preAnswered?.source}</span>: “{q.preAnswered?.evidence}”
+                        </span>
+                      </li>
+                    {/each}
+                  </ul>
+                </div>
+              {/if}
+
+              {#if hirePhase === 'questions' && hireCurrent}
+                <div class="hire-question">
+                  <p class="hire-progress mono" aria-live="polite">
+                    Question {hireStep + 1} of {hireAskable.length} · {hireCurrent.label}
+                  </p>
+                  <p class="hire-question-text">{hireCurrent.question}</p>
+                  <label class="field">
+                    <span class="field-label">Your answer (recorded in your words)</span>
+                    <textarea
+                      class="pm-input"
+                      rows="3"
+                      bind:value={hireAnswerDraft}
+                      placeholder="Answer, or leave empty and skip — a skip is recorded as an honest gap."
+                    ></textarea>
+                  </label>
+                  {#if hirePushOpen}
+                    <p class="hire-push-text">{hireCurrent.push}</p>
+                    <label class="field">
+                      <span class="field-label">Follow-up (optional)</span>
+                      <textarea
+                        class="pm-input"
+                        rows="2"
+                        bind:value={hirePushDraft}
+                        placeholder="Sharpen the answer — or continue without."
+                      ></textarea>
+                    </label>
+                  {/if}
+                  <div class="hire-actions">
+                    <button
+                      class="btn primary"
+                      type="button"
+                      onclick={hireContinue}
+                      disabled={!hirePushOpen && !hireAnswerDraft.trim()}
+                    >
+                      {hirePushOpen ? 'Record answer & continue' : 'Continue'}
+                    </button>
+                    {#if !hirePushOpen}
+                      <button class="btn" type="button" onclick={hireSkipCurrent}>Skip question</button>
+                    {/if}
+                    <button class="btn" type="button" onclick={hireSkipRest}>
+                      Skip the rest → charter
+                    </button>
+                  </div>
+                </div>
+              {:else if hirePhase === 'charter'}
+                <div class="hire-charter">
+                  <p class="hire-progress mono">
+                    Interview done — {hireAnswered} answered, {hireSkipped} skipped
+                    {hireSkipped > 0 ? '(recorded as honest gaps)' : ''}.
+                  </p>
+                  <form
+                    method="POST"
+                    action="?/pmHire"
+                    use:enhance={() => {
+                      pmBusy = true;
+                      return async ({ update }) => {
+                        await update({ reset: false });
+                        pmBusy = false;
+                        hireOpen = false;
+                      };
+                    }}
+                  >
+                    <input type="hidden" name="answers" value={hireAnswersJson} />
+                    <label class="field">
+                      <span class="field-label">PM name</span>
+                      <input
+                        class="pm-input"
+                        type="text"
+                        name="name"
+                        bind:value={hireName}
+                        placeholder="e.g. Vesper"
+                        required
+                      />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">Persona (optional)</span>
+                      <input
+                        class="pm-input"
+                        type="text"
+                        name="persona"
+                        bind:value={hirePersona}
+                        placeholder="e.g. blunt, evidence-first, allergic to scope creep"
+                      />
+                    </label>
+                    <label class="field">
+                      <span class="field-label">Charter — your directives (priorities, tone, escalation rules)</span>
+                      <textarea
+                        class="pm-input"
+                        rows="5"
+                        name="charter"
+                        bind:value={hireCharter}
+                        placeholder="Injected into every PM session and review as fenced context. Editable any time."
+                      ></textarea>
+                    </label>
+                    <div class="hire-actions">
+                      <button class="btn primary" type="submit" disabled={pmBusy || !hireName.trim()}>
+                        {pmBusy ? 'Hiring…' : 'Hire PM'}
+                      </button>
+                      <button class="btn" type="button" onclick={() => (hireOpen = false)}>Cancel</button>
+                    </div>
+                  </form>
+                </div>
+              {/if}
+            </div>
+          {/if}
+
           {#if pmFeedback}
             {#if 'error' in pmFeedback}
               <p class="form-error" role="alert">{pmFeedback.error}</p>
-            {:else if pmFeedback.action === 'bootstrap'}
+            {:else if pmFeedback.action === 'hire'}
               <p class="form-ok">
-                {pmFeedback.bootstrapped
-                  ? `PM bootstrapped — seeded ${pmFeedback.seeded} observation(s) from live project state.`
-                  : 'PM already bootstrapped — existing memory left intact.'}
+                {pmFeedback.alreadyHired
+                  ? `PM already hired — absorbed; wrote ${pmFeedback.seeded} missing founding memory(ies).`
+                  : `${String(pmFeedback.pmName)} hired — ${pmFeedback.seeded} founding memory(ies) from the live scan + interview.`}
+              </p>
+            {:else if pmFeedback.action === 'charter'}
+              <p class="form-ok">
+                {pmFeedback.cleared ? 'Charter cleared.' : 'Charter saved — it now rides every PM session and review.'}
               </p>
             {:else if pmFeedback.action === 'memory'}
               <p class="form-ok">Recorded a {String(pmFeedback.kind)} memory.</p>
@@ -896,7 +1168,8 @@
               <p class="form-ok">Sprint completed.</p>
             {:else if pmFeedback.action === 'chat'}
               <p class="form-ok">
-                PM session {shortId(String(pmFeedback.sessionId))} started · {String(pmFeedback.status)}.
+                PM session {shortId(String(pmFeedback.sessionId))} started · {String(pmFeedback.status)}
+                · {String(pmFeedback.model)} ({String(pmFeedback.routeMethod)} route).
                 <button class="link-inline" type="button" onclick={() => openSession(String(pmFeedback.sessionId))}
                   >open transcript →</button
                 >
@@ -909,6 +1182,54 @@
             {/if}
           {/if}
         </div>
+
+        {#if pm}
+          <!-- Charter (TASK 16.1) — operator directives; D-010 diff+confirm on edit. -->
+          <div class="card">
+            <div class="pm-head">
+              <h2 class="section-title">Charter</h2>
+              {#if !charterEditing}
+                <button class="btn" type="button" onclick={startCharterEdit}>Edit charter</button>
+              {/if}
+            </div>
+            <p class="state-body">
+              Your durable directives — priorities, tone, escalation rules. Injected into every
+              PM session and review as fenced reference context (never instructions).
+            </p>
+            {#if charterEditing}
+              <label class="field">
+                <span class="field-label">Charter</span>
+                <textarea class="pm-input" rows="6" bind:value={charterDraft}></textarea>
+              </label>
+              <div class="hire-actions">
+                <button class="btn primary" type="button" disabled={pmBusy} onclick={() => void reviewAndSaveCharter()}>
+                  Review changes & save
+                </button>
+                <button class="btn" type="button" onclick={() => (charterEditing = false)}>Cancel</button>
+              </div>
+              <form
+                method="POST"
+                action="?/pmCharter"
+                bind:this={charterFormEl}
+                class="charter-form-hidden"
+                use:enhance={() => {
+                  pmBusy = true;
+                  return async ({ update }) => {
+                    await update({ reset: false });
+                    pmBusy = false;
+                    charterEditing = false;
+                  };
+                }}
+              >
+                <input type="hidden" name="charter" value={charterDraft.trim()} />
+              </form>
+            {:else if pm.charter}
+              <pre class="charter-text">{pm.charter}</pre>
+            {:else}
+              <p class="state-body">— no charter written yet. The PM runs without operator directives until you write one.</p>
+            {/if}
+          </div>
+        {/if}
 
         <!-- PM periodic review (TASK 11.4) -------------------------------------- -->
         <div class="card">
@@ -949,7 +1270,7 @@
             {/if}
           </div>
           {#if !pmBootstrapped}
-            <p class="hint">Bootstrap the PM first to enable reviews.</p>
+            <p class="hint">Hire the PM first to enable reviews.</p>
           {/if}
 
           {#if pmReviews.length === 0}
@@ -1186,9 +1507,13 @@
         <div class="card">
           <h2 class="section-title">Talk to the PM</h2>
           <p class="state-body">
-            Drive a real Claude Code PM session seeded with this project's plan + PM memory. The
-            reply streams in the Sessions tab.
+            Drive a real Claude Code PM session seeded with this project's charter + plan + PM
+            memory, on the configured PM model (config/workforce.yaml). The reply streams in the
+            Sessions tab.
           </p>
+          {#if !pm}
+            <p class="hint">Hire the PM first — the chat speaks as your hired PM, under its charter.</p>
+          {/if}
           <form
             method="POST"
             action="?/pmChat"
@@ -1213,7 +1538,7 @@
                 required
               />
             </label>
-            <button class="btn primary" type="submit" disabled={pmBusy || !pmChatMessage.trim()}>
+            <button class="btn primary" type="submit" disabled={pmBusy || !pm || !pmChatMessage.trim()}>
               {pmBusy ? 'Sending…' : 'Send to PM'}
             </button>
           </form>
@@ -2181,6 +2506,71 @@
   .pm-badge[data-on='true'] {
     color: var(--color-running, var(--color-accent));
     border-color: var(--color-running, var(--color-accent));
+  }
+  /* ── TASK 16.1 — hire wizard + charter editor ───────────────────────────── */
+  .hint {
+    font: var(--type-body-sm);
+    color: var(--color-text-muted);
+  }
+  .hire-wizard {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+    margin-top: var(--space-3, 0.75rem);
+    padding: var(--space-3, 0.75rem);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+  }
+  .hire-pre-row {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+  }
+  .hire-pre-evidence {
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+  }
+  .hire-question,
+  .hire-charter {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+  }
+  .hire-progress {
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .hire-question-text {
+    font: var(--type-body);
+    color: var(--color-text);
+  }
+  .hire-push-text {
+    font: var(--type-body-sm);
+    color: var(--color-accent);
+  }
+  .hire-actions {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+  }
+  .charter-text {
+    font: var(--type-body-sm);
+    color: var(--color-text);
+    background: var(--color-surface-overlay);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: var(--space-3, 0.75rem);
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    margin: 0;
+  }
+  .charter-form-hidden {
+    display: none;
   }
   .pm-kind-stats {
     display: flex;

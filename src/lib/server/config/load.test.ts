@@ -6,6 +6,7 @@ import {
 	loadModels,
 	loadOrchestration,
 	loadGatesConfig,
+	loadWorkforce,
 	loadConfig,
 	validateBundles,
 	resolveAdaptiveConfig,
@@ -254,5 +255,41 @@ describe('loadGatesConfig — the scope-lock destructive-bash pattern lists (15.
 		['UNCOMPILABLE pattern', { destructiveBash: { deny: [{ id: 'bad', pattern: '(' }], allow: [] } }]
 	])('rejects %s at the boundary', (_label, inject) => {
 		expect(() => loadGatesConfig(REAL, { _inject: inject as never })).toThrow(ConfigError);
+	});
+});
+
+// ── TASK 16.1 — loadWorkforce (config/workforce.yaml, PM-SPEC §1) ──────────────────
+describe('loadWorkforce — the single workforce config namespace', () => {
+	const REAL_WF = join(process.cwd(), 'config', 'workforce.yaml');
+
+	it('parses the fixture: pm.model_id + the justified provider default ("claude")', () => {
+		const wf = loadWorkforce(join(FIX, 'workforce.yaml'));
+		expect(wf.pm.model_id).toBe('claude-test-9');
+		expect(wf.pm.provider).toBe('claude'); // omitted ⇒ the registered CLI backend
+		// Forward-compat: other namespaces pass through untouched for their consumers.
+		expect((wf.gauntlet as Record<string, unknown>).pass_recall).toBe(1.0);
+	});
+
+	it('the SHIPPED config/workforce.yaml routes the PM to Fable 5 (PM-SPEC §1)', () => {
+		const wf = loadWorkforce(REAL_WF);
+		expect(wf.pm.provider).toBe('claude');
+		expect(wf.pm.model_id).toBe('claude-fable-5');
+		// Unarmed bounds ship null, never 0 (G5/F-008 — null ≠ a dressed-up zero).
+		const budget = wf.budget as Record<string, unknown>;
+		expect(budget.max_auto_interviews_per_day).toBeNull();
+	});
+
+	it('throws ConfigError (not a raw fs error) for a missing file', () => {
+		expect(() => loadWorkforce(join(FIX, 'no-such-workforce.yaml'))).toThrow(ConfigError);
+	});
+
+	it.each([
+		['missing pm block', { pm: undefined }],
+		['non-mapping pm', { pm: 'fable' }],
+		['missing model_id', { pm: {} }],
+		['empty model_id', { pm: { model_id: '   ' } }],
+		['non-string provider', { pm: { model_id: 'claude-fable-5', provider: 5 } }]
+	])('rejects %s at the boundary', (_label, inject) => {
+		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
 	});
 });

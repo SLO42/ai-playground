@@ -13,6 +13,9 @@ import {
 	completeSprint,
 	bootstrapPm,
 	listPmReviews,
+	createPm,
+	getPm,
+	updatePmCharter,
 	PM_MEMORY_KINDS
 } from './pm-repo';
 
@@ -236,5 +239,68 @@ describe('normPmReview — honest datetime (no "undefined" on absent created_at)
 		expect(typeof reviews[0].created_at).toBe('string');
 		expect(fmtTime(reviews[0].created_at)).not.toBe('—');
 		expect(reviews[0].created_at).not.toBe('undefined');
+	});
+});
+
+// ── TASK 16.1 — PM identity (`pm` row, PM-SPEC §1) against the real DB ─────────────
+describe('pm identity row', () => {
+	it('creates + reads the hired PM; created_at is a real ISO string on a SET row (F-013)', async () => {
+		const p = await freshProject('pm_id_create');
+		const created = await createPm(db, {
+			project: p.id,
+			name: 'Vesper',
+			charter: 'Priorities: ship the wedge. Escalate releases to the operator.',
+			persona: 'blunt, evidence-first'
+		});
+		expect(created.name).toBe('Vesper');
+		expect(created.authority).toBe('act'); // PM-SPEC §4 default
+		// F-013: assert the datetime on a row where it IS set — a parseable ISO string.
+		expect(typeof created.created_at).toBe('string');
+		expect(Number.isNaN(new Date(created.created_at as string).getTime())).toBe(false);
+
+		const read = await getPm(db, p.id);
+		expect(read).not.toBeNull();
+		expect(read?.id).toBe(created.id);
+		expect(read?.charter).toContain('ship the wedge');
+		expect(read?.persona).toBe('blunt, evidence-first');
+	});
+
+	it('getPm is null for a project with no PM (the honest empty state)', async () => {
+		const p = await freshProject('pm_id_none');
+		expect(await getPm(db, p.id)).toBeNull();
+	});
+
+	it('ONE PM per project — a second create collides on the UNIQUE index (D-008)', async () => {
+		const p = await freshProject('pm_id_unique');
+		await createPm(db, { project: p.id, name: 'First' });
+		await expect(createPm(db, { project: p.id, name: 'Second' })).rejects.toThrow();
+	});
+
+	it('updatePmCharter sets, replaces, and clears (NONE → absent, never "")', async () => {
+		const p = await freshProject('pm_id_charter');
+		await createPm(db, { project: p.id, name: 'Vesper' });
+
+		const set = await updatePmCharter(db, p.id, 'v1 charter');
+		expect(set?.charter).toBe('v1 charter');
+
+		const replaced = await updatePmCharter(db, p.id, 'v2 charter — tone: terse');
+		expect(replaced?.charter).toBe('v2 charter — tone: terse');
+		expect(replaced?.name).toBe('Vesper'); // MERGE preserved untouched columns
+
+		const cleared = await updatePmCharter(db, p.id, '   ');
+		expect(cleared?.charter).toBeUndefined(); // absent, surfaced as '—'
+	});
+
+	it('updatePmCharter is null when no PM is hired (named caller error path)', async () => {
+		const p = await freshProject('pm_id_charter_none');
+		expect(await updatePmCharter(db, p.id, 'text')).toBeNull();
+	});
+
+	it('rejects an out-of-enum authority (ASSERT fires)', async () => {
+		const p = await freshProject('pm_id_auth');
+		await expect(
+			// @ts-expect-error — deliberately invalid authority to prove the ASSERT fires.
+			createPm(db, { project: p.id, name: 'X', authority: 'dictate' })
+		).rejects.toThrow();
 	});
 });

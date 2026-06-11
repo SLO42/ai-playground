@@ -350,3 +350,67 @@ describe('launchSession — terminal status on EVERY exit path (13.2)', () => {
 		expect(rows[0].note ?? null).toBeNull();
 	});
 });
+
+// ── TASK 15.1 (B1 scope-lock) — editScope rides the launch path ──────────────────────
+
+describe('launchSession — editScope wiring (15.1; real throwaway SurrealDB)', () => {
+	it('merges the operator pattern lists (config/gates.yaml) onto the declared scope and pins it on the SpawnRequest', async () => {
+		const backend = scriptedBackend(transcript('cc_scope_151'));
+		const runtime = new ClaudeCodeRuntime({ backend });
+		await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput({ editScope: { scopeRoots: ['src'], scopeAllow: ['**/docs/fails.md'] } })
+		});
+
+		const plan = backend.plans[0];
+		expect(plan).toBeTruthy();
+		const scope = plan.isolated.settings.editScope;
+		expect(scope).toBeTruthy();
+		expect(scope!.scopeRoots).toEqual(['src']);
+		expect(scope!.scopeAllow).toEqual(['**/docs/fails.md']);
+		// the destructive-bash lists came from CONFIG, not the caller (requirement (b))
+		expect(scope!.destructiveBash?.deny?.length).toBeGreaterThan(0);
+		expect(scope!.destructiveBash?.deny?.map((d) => d.id)).toContain('git-discard-worktree');
+		expect(scope!.destructiveBash?.allow?.map((a) => a.id)).toContain('rm-build-artifacts');
+		// and the SDK-path gate callback is armed (a declared scope forces it on)
+		expect(typeof plan.canUseTool).toBe('function');
+	});
+
+	it('REFUSES a scoped launch when gates.yaml is missing — fail closed, backend never reached', async () => {
+		const saved = process.env.CONFIG_DIR;
+		process.env.CONFIG_DIR = 'F:/definitely/no/such/config-dir';
+		try {
+			const backend = scriptedBackend(transcript('cc_scope_151b'));
+			const runtime = new ClaudeCodeRuntime({ backend });
+			await expect(
+				launchSession({
+					db,
+					bus: new EventBus(),
+					runtime,
+					input: baseInput({ editScope: { scopeRoots: ['src'] } })
+				})
+			).rejects.toThrow(/cannot read config file/);
+			expect(backend.plans).toHaveLength(0); // never spawned silently unscoped
+		} finally {
+			if (saved === undefined) delete process.env.CONFIG_DIR;
+			else process.env.CONFIG_DIR = saved;
+		}
+	});
+
+	it('an UNSCOPED launch never touches gates.yaml (opt-in) — still launches with no editScope', async () => {
+		const saved = process.env.CONFIG_DIR;
+		process.env.CONFIG_DIR = 'F:/definitely/no/such/config-dir'; // would throw IF read
+		try {
+			const backend = scriptedBackend(transcript('cc_scope_151c'));
+			const runtime = new ClaudeCodeRuntime({ backend });
+			const res = await launchSession({ db, bus: new EventBus(), runtime, input: baseInput() });
+			expect(res.status).toBe('done');
+			expect(backend.plans[0].isolated.settings.editScope).toBeUndefined();
+		} finally {
+			if (saved === undefined) delete process.env.CONFIG_DIR;
+			else process.env.CONFIG_DIR = saved;
+		}
+	});
+});

@@ -24,12 +24,14 @@
 // ride on the SpawnRequest the runtime turns into a plan (1.4 / 1.4a).
 
 import { StringRecordId } from 'surrealdb';
+import { join } from 'node:path';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import type { EventBus } from '../events/bus';
 import { writeAgentEvent } from '../analytics/events';
 import { getProject } from '../projects/repo';
 import { buildBriefing, type MemoryService, type ExtractFn } from '../memory/index';
+import { loadGatesConfig } from '../config/index';
 import type {
 	AgentRuntime,
 	Intent,
@@ -38,7 +40,8 @@ import type {
 	SpawnBudgets,
 	ToolPolicy,
 	ContextBundle,
-	CapabilitySet
+	CapabilitySet,
+	EditScopeInput
 } from '../runtime/index';
 
 // ── Input / result shapes ──────────────────────────────────────────────────────
@@ -79,6 +82,21 @@ export interface LaunchInput {
 	 * NEVER the operator's whole plugin set — D-002 isolation is preserved in the composer.
 	 */
 	capabilities?: CapabilitySet;
+	/**
+	 * TASK 15.1 (HARVEST B1 / D-018) — the session's declared SCOPE-LOCK: the file roots
+	 * it may WRITE under, plus optional glob exceptions for shared files. The launch path
+	 * merges the operator-editable destructive-bash pattern lists (config/gates.yaml) onto
+	 * this before it rides the SpawnRequest, so the patterns ship in CONFIG (15.1 (b)) and
+	 * a malformed/missing gates.yaml REFUSES the scoped launch (fail closed, D-024).
+	 *
+	 * WHO POPULATES IT (15.1 (d)): callers that already declare a file scope —
+	 *   • the v2-wave workflow template: each wave task's "files to modify" scope lock maps
+	 *     verbatim onto scopeRoots (+ scopeAllow for shared files like docs/fails.md);
+	 *   • D-039 PM proposed-tasks: the PM's validated task shape carries a declared file
+	 *     scope; the orchestrator copies it here when launching the implementing session.
+	 * Absent ⇒ no scope gating (the gate is opt-in per session policy — 15.1 (c)).
+	 */
+	editScope?: Pick<EditScopeInput, 'scopeRoots' | 'scopeAllow'>;
 	/** Set when this session is a workflow step (D-013). */
 	workflowRunId?: string;
 }
@@ -202,6 +220,18 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		throw new Error('launchSession requires either taskId or promptTask');
 	}
 
+	// 1b. TASK 15.1 — resolve the declared scope-lock BEFORE any row is written: merge the
+	// operator-editable destructive-bash pattern lists (config/gates.yaml) onto the caller's
+	// declared roots. FAIL CLOSED (D-024): a missing/malformed gates.yaml throws HERE and the
+	// scoped launch is refused outright — a declared scope is never silently downgraded to
+	// "no destructive-bash list". Unscoped launches never touch the file (opt-in, 15.1 (c)).
+	let editScope: EditScopeInput | undefined;
+	if (input.editScope) {
+		const configDir = process.env.CONFIG_DIR?.trim() || 'config';
+		const gatesConfig = loadGatesConfig(join(configDir, 'gates.yaml'));
+		editScope = { ...input.editScope, destructiveBash: gatesConfig.destructiveBash };
+	}
+
 	// 2. CREATE the session row (status "running") — first-class from the instant it starts.
 	const sessionContent = omitUndefined({
 		project: link(input.projectId),
@@ -306,6 +336,9 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		// D-036: the resolved intent bundle's capability set rides onto the SpawnRequest so
 		// the runtime's composeCapabilities validates + composes it against the live catalog.
 		capabilities: input.capabilities,
+		// TASK 15.1: the resolved scope-lock (declared roots + config-merged patterns) rides
+		// onto the SpawnRequest; the runtime enforces it on BOTH paths (canUseTool + hook).
+		editScope,
 		workflowRunId: input.workflowRunId
 	};
 

@@ -9,16 +9,22 @@
 //     `gatePreToolUse`). The hook transport FAILS CLOSED: an unreachable/erroring gate
 //     endpoint denies the tool (ROADMAP 2.13 / D-024), unlike the analytics hook proxy.
 //
-// Four gate families (D-018):
+// Five gate families (D-018):
 //   • config-protection — deny reads/edits of ANY .env/secret or ANY .claude/ across the
 //     whole code root (the same rule globs 1.4a seeds into permissions.deny).
 //   • read-before-edit  — block Edit on a file not Read this session (session read-set).
 //   • dangerous-bash    — deny rm -rf / git push / git remote set-url / any --force.
 //   • path-confinement  — every fs/bash target must resolve UNDER the project root AFTER
 //     symlink + ".." normalization — reusing 1.4a's resolveConfinedTarget (fail closed).
+//   • edit-scope        — TASK 15.1 (HARVEST B1): the SCOPE-LOCK edit gate. When a session
+//     declares an editScope ({scopeRoots, scopeAllow, destructiveBash}), file-WRITING
+//     tools (Edit/Write/NotebookEdit/MultiEdit) and detectable bash write redirections
+//     targeting paths outside the declared scope are DENIED, and a configurable
+//     destructive-bash deny-list (with full-command safe exceptions) is enforced.
+//     Opt-in per session: an ABSENT editScope means no scope gating (c).
 //
-// D-024 fail-closed: the three SAFETY-CRITICAL families (config-protection,
-// dangerous-bash, path-confinement) ALWAYS hard-deny — policy may NOT downgrade them to
+// D-024 fail-closed: the SAFETY-CRITICAL families (config-protection, dangerous-bash,
+// path-confinement, edit-scope) ALWAYS hard-deny — policy may NOT downgrade them to
 // warn — and ANY evaluator error (bad input, unresolvable root, internal throw) returns
 // DENY, never allow. read-before-edit is non-safety-critical and IS policy-downgradable.
 //
@@ -26,7 +32,8 @@
 // as 1.4a. It reuses the 1.4a deny-rule constants + resolver (DRY, single source of truth).
 
 import { resolveConfinedTarget, PathConfinementError } from './guardrails';
-import { resolve } from 'node:path';
+import { resolve, dirname, join, sep } from 'node:path';
+import { realpathSync, lstatSync } from 'node:fs';
 
 // ── Gate names + policy ────────────────────────────────────────────────────────────
 
@@ -34,7 +41,8 @@ export type GateName =
 	| 'config-protection'
 	| 'read-before-edit'
 	| 'dangerous-bash'
-	| 'path-confinement';
+	| 'path-confinement'
+	| 'edit-scope';
 
 export type GateMode = 'deny' | 'warn';
 
@@ -48,7 +56,8 @@ export type GatePolicy = Partial<Record<GateName, GateMode>>;
 const SAFETY_CRITICAL: ReadonlySet<GateName> = new Set([
 	'config-protection',
 	'dangerous-bash',
-	'path-confinement'
+	'path-confinement',
+	'edit-scope'
 ]);
 
 /** Built-in defaults: everything hard-blocks unless a project policy says warn. */
@@ -56,7 +65,8 @@ export const DEFAULT_GATE_POLICY: Readonly<Required<GatePolicy>> = Object.freeze
 	'config-protection': 'deny',
 	'read-before-edit': 'deny',
 	'dangerous-bash': 'deny',
-	'path-confinement': 'deny'
+	'path-confinement': 'deny',
+	'edit-scope': 'deny'
 });
 
 /** Thrown by {@link parseGatePolicy} on a malformed gate config — callers FAIL CLOSED. */
@@ -107,6 +117,11 @@ export interface GateContext {
 	session: GateSession;
 	/** Per-project gate modes; missing gates fall back to DEFAULT_GATE_POLICY. */
 	policy?: GatePolicy;
+	/**
+	 * TASK 15.1 (B1 scope-lock) — the session's COMPILED edit scope ({@link parseEditScope}).
+	 * Absent ⇒ no scope gating (the feature is opt-in per session policy, requirement (c)).
+	 */
+	editScope?: EditScope;
 }
 
 export interface GateDecision {
@@ -149,7 +164,7 @@ const CONFIG_PROTECTION_GLOBS: readonly string[] = [
 ];
 
 /** Compile a Claude-Code-style glob (`**`, `*`) to a full-match RegExp over a POSIX path. */
-function globToRegExp(glob: string): RegExp {
+function globToRegExp(glob: string, flags = ''): RegExp {
 	let re = '';
 	for (let i = 0; i < glob.length; i++) {
 		const c = glob[i];
@@ -172,10 +187,10 @@ function globToRegExp(glob: string): RegExp {
 			re += c;
 		}
 	}
-	return new RegExp('^' + re + '$');
+	return new RegExp('^' + re + '$', flags);
 }
 
-const CONFIG_PROTECTION_RE = CONFIG_PROTECTION_GLOBS.map(globToRegExp);
+const CONFIG_PROTECTION_RE = CONFIG_PROTECTION_GLOBS.map((g) => globToRegExp(g));
 
 function isProtectedConfigPath(absPosix: string): boolean {
 	return CONFIG_PROTECTION_RE.some((re) => re.test(absPosix));
@@ -183,9 +198,21 @@ function isProtectedConfigPath(absPosix: string): boolean {
 
 // ── dangerous-bash: the SAME family 1.4a denies (rm -rf / push / set-url / --force) ──
 
+/** Normalize a bash command for pattern matching: lower-cased, whitespace-collapsed. */
+function normalizeBashCommand(command: string): string {
+	return command.toLowerCase().replace(/\s+/g, ' ').trim();
+}
+
+/**
+ * The recursive-rm rule, SEPARATED from the rest (TASK 15.1): a session-scoped
+ * editScope may carry FULL-COMMAND safe-exception patterns (destructiveBash.allow —
+ * e.g. `rm -rf node_modules`) that bypass THIS rule and only this rule. The push /
+ * set-url / --force / reset-hard rules below are never exception-able (D-024).
+ */
+const DANGEROUS_BASH_RM_RE = /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r/; // rm -rf / -fr in any flag clustering
+
 /** Each entry tests against the raw command string (lower-cased, whitespace-collapsed). */
 const DANGEROUS_BASH_RE: readonly RegExp[] = [
-	/\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r/, // rm -rf / -fr in any flag clustering
 	/\bgit\s+push\b/,
 	/\bgit\s+remote\s+set-url\b/,
 	/--force\b/,
@@ -193,9 +220,384 @@ const DANGEROUS_BASH_RE: readonly RegExp[] = [
 	/-f\s+--hard\b/
 ];
 
-function isDangerousBash(command: string): boolean {
-	const norm = command.toLowerCase().replace(/\s+/g, ' ').trim();
+function isDangerousBash(command: string, skipRmRule = false): boolean {
+	const norm = normalizeBashCommand(command);
+	if (!skipRmRule && DANGEROUS_BASH_RM_RE.test(norm)) return true;
 	return DANGEROUS_BASH_RE.some((re) => re.test(norm));
+}
+
+// ── edit-scope (TASK 15.1 / HARVEST B1): the SCOPE-LOCK edit gate ────────────────────
+//
+// Mechanizes CLAUDE.md's advisory "files to modify is your scope lock" + the fix-loop's
+// "fix cited defects ONLY" as a real D-018 gate. A session DECLARES its edit scope
+// ({scopeRoots, scopeAllow}); the gate then DENIES Edit/Write/NotebookEdit/MultiEdit and
+// detectable bash write redirections (`>`, `>>`, `tee`) targeting paths outside it, plus
+// a CONFIG-DRIVEN destructive-bash deny-list with full-command safe exceptions.
+//
+// PROVENANCE: the boundary-check shape is harvested from gstack freeze/bin/check-freeze.sh
+// and the destructive-pattern/safe-exception shape from gstack careful/bin/check-careful.sh
+// (MIT, github.com/sublayerapp/gstack via the local audit clone). Both gstack mechanisms
+// fail OPEN (unparseable path/command ⇒ allow — a D-024 violation), so the MECHANISM here
+// is reimplemented FAIL-CLOSED: an unresolvable/ambiguous target or a malformed scope
+// config DENIES, never allows. The destructive pattern LISTS ship in operator-editable
+// gate config (config/gates.yaml), not hardcoded (requirement (b)).
+//
+// Windows-safe path comparison (requirement (a), 13.5 symlink discipline): separators
+// normalized + `..` resolved via `resolve`, realpath where the path exists (a symlink
+// whose REAL target is out of scope is denied; broken symlinks are unresolvable ⇒ deny),
+// nearest-existing-ancestor realpath for not-yet-created targets, and the comparison is
+// case-INSENSITIVE on win32 (drive letters AND segments — NTFS is case-insensitive, so a
+// case-gamed path is the same file).
+//
+// KNOWN DETECTION BOUNDARY (named, not hidden): bash file writes that are NOT a
+// redirection/tee (cp/mv/sed -i/plain rm of an in-scope-root file) are not per-target
+// detectable here — they remain covered by dangerous-bash, path-confinement and the 1.4a
+// permissions.deny layer. A `>` INSIDE a quoted string can false-POSITIVE (deny) — the
+// fail-closed direction (D-024).
+
+/** Thrown on a malformed editScope config — callers FAIL CLOSED (requirement (c)). */
+export class EditScopeError extends Error {
+	override readonly name = 'EditScopeError';
+}
+
+/** One operator-authored destructive-bash pattern (ships in config/gates.yaml). */
+export interface DestructiveBashPatternInput {
+	/** Stable pattern id — names WHICH pattern fired in the deny reason. */
+	id: string;
+	/** A RegExp source, matched against the lower-cased, whitespace-collapsed command. */
+	pattern: string;
+	/** Operator-readable reason surfaced in the deny message. */
+	reason?: string;
+}
+
+/** The RAW (JSON-serializable) edit scope a session declares — validated by parseEditScope. */
+export interface EditScopeInput {
+	/** Paths (absolute, or relative to the project root) the session MAY write under. */
+	scopeRoots: string[];
+	// Glob exceptions (Claude-Code-style ** and *, matched against the canonical POSIX
+	// absolute path) allowed OUTSIDE the scope roots — e.g. "**" + "/docs/fails.md".
+	scopeAllow?: string[];
+	/** Operator-editable destructive-bash pattern lists (from config/gates.yaml). */
+	destructiveBash?: {
+		/** Substring-matched deny patterns. */
+		deny?: DestructiveBashPatternInput[];
+		/** FULL-COMMAND-anchored safe exceptions (e.g. `rm -rf node_modules`). */
+		allow?: DestructiveBashPatternInput[];
+	};
+}
+
+interface CompiledBashPattern {
+	id: string;
+	re: RegExp;
+	reason?: string;
+}
+
+/** The COMPILED edit scope the evaluator consumes (regexes pre-compiled at parse time). */
+export interface EditScope {
+	scopeRoots: string[];
+	scopeAllow: { glob: string; re: RegExp }[];
+	destructiveDeny: CompiledBashPattern[];
+	/** Full-command anchored (`^(?:pattern)$`) — an exception must describe the WHOLE
+	 *  command, so `rm -rf node_modules && git checkout .` never rides an exception. */
+	destructiveAllow: CompiledBashPattern[];
+}
+
+const IS_WINDOWS = process.platform === 'win32';
+
+function compileBashPatterns(
+	raw: unknown,
+	kind: 'deny' | 'allow',
+	fullMatch: boolean
+): CompiledBashPattern[] {
+	if (raw === undefined) return [];
+	if (!Array.isArray(raw)) {
+		throw new EditScopeError(
+			`editScope.destructiveBash.${kind} must be a list — failing closed (D-024)`
+		);
+	}
+	return raw.map((entry, i) => {
+		if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+			throw new EditScopeError(
+				`editScope.destructiveBash.${kind}[${i}] must be an object {id, pattern, reason?} — failing closed (D-024)`
+			);
+		}
+		const { id, pattern, reason } = entry as Record<string, unknown>;
+		if (typeof id !== 'string' || !id.trim()) {
+			throw new EditScopeError(
+				`editScope.destructiveBash.${kind}[${i}] needs a non-empty string id — failing closed (D-024)`
+			);
+		}
+		if (typeof pattern !== 'string' || !pattern.trim()) {
+			throw new EditScopeError(
+				`editScope.destructiveBash.${kind} '${id}' needs a non-empty string pattern — failing closed (D-024)`
+			);
+		}
+		if (reason !== undefined && typeof reason !== 'string') {
+			throw new EditScopeError(
+				`editScope.destructiveBash.${kind} '${id}' reason must be a string — failing closed (D-024)`
+			);
+		}
+		let re: RegExp;
+		try {
+			re = new RegExp(fullMatch ? `^(?:${pattern})$` : pattern);
+		} catch (err) {
+			throw new EditScopeError(
+				`editScope.destructiveBash.${kind} '${id}' pattern does not compile — failing closed (D-024): ${(err as Error).message}`
+			);
+		}
+		return { id, re, ...(reason !== undefined ? { reason } : {}) };
+	});
+}
+
+/**
+ * STRICT editScope parser (requirement (c), D-024): `undefined`/`null` ⇒ no scope gating
+ * (opt-in feature, returns undefined). ANY malformed shape — non-object, empty/non-string
+ * scopeRoots, bad scopeAllow, an uncompilable destructive pattern — THROWS
+ * {@link EditScopeError}; callers MUST treat that as a hard block (fail the spawn / deny
+ * the tool), never silently drop the scope and run unscoped.
+ */
+export function parseEditScope(raw: unknown): EditScope | undefined {
+	if (raw === undefined || raw === null) return undefined;
+	if (typeof raw !== 'object' || Array.isArray(raw)) {
+		throw new EditScopeError('editScope must be an object — failing closed (D-024)');
+	}
+	const o = raw as Record<string, unknown>;
+	const roots = o.scopeRoots;
+	if (
+		!Array.isArray(roots) ||
+		roots.length === 0 ||
+		roots.some((r) => typeof r !== 'string' || !r.trim())
+	) {
+		throw new EditScopeError(
+			'editScope.scopeRoots must be a non-empty list of non-empty path strings — failing closed (D-024)'
+		);
+	}
+	const allowGlobs = o.scopeAllow ?? [];
+	if (!Array.isArray(allowGlobs) || allowGlobs.some((g) => typeof g !== 'string' || !g.trim())) {
+		throw new EditScopeError(
+			'editScope.scopeAllow must be a list of non-empty glob strings — failing closed (D-024)'
+		);
+	}
+	const db = o.destructiveBash;
+	if (db !== undefined && (db === null || typeof db !== 'object' || Array.isArray(db))) {
+		throw new EditScopeError(
+			'editScope.destructiveBash must be an object with deny/allow lists — failing closed (D-024)'
+		);
+	}
+	const dbo = (db ?? {}) as Record<string, unknown>;
+	return {
+		scopeRoots: [...(roots as string[])],
+		// Case-insensitive on win32 only — a case-insensitive exception on POSIX would
+		// over-allow (a fail-OPEN direction we never take).
+		scopeAllow: (allowGlobs as string[]).map((glob) => ({
+			glob,
+			re: globToRegExp(glob, IS_WINDOWS ? 'i' : '')
+		})),
+		destructiveDeny: compileBashPatterns(dbo.deny, 'deny', false),
+		destructiveAllow: compileBashPatterns(dbo.allow, 'allow', true)
+	};
+}
+
+/** Case-fold for path comparison — win32 paths are case-insensitive (NTFS). */
+function casefoldPath(p: string): string {
+	return IS_WINDOWS ? p.toLowerCase() : p;
+}
+
+/** True iff `child` is `root` itself or strictly under it (boundary-aware, no prefix bug). */
+function isUnderPath(child: string, root: string): boolean {
+	if (child === root) return true;
+	const r = root.endsWith(sep) ? root : root + sep;
+	return child.startsWith(r);
+}
+
+/**
+ * Canonicalize an absolute path for scope comparison, 13.5 symlink discipline:
+ * realpath when it exists (a symlink's REAL location is what gets compared); for a
+ * not-yet-created target, realpath the nearest EXISTING ancestor and append the
+ * normalized suffix. THROWS (fail closed) on a broken/dangling symlink — leaf or
+ * intermediate — or a path with no resolvable ancestor at all.
+ */
+function canonicalForScope(abs: string): string {
+	try {
+		return realpathSync(abs);
+	} catch {
+		/* not (fully) existing — fall through to the ancestor walk */
+	}
+	// A dangling-symlink LEAF is unresolvable — deny, never treat as a fresh create.
+	try {
+		if (lstatSync(abs).isSymbolicLink()) {
+			throw new EditScopeError(`target is a broken/unresolvable symlink — failing closed: ${abs}`);
+		}
+	} catch (err) {
+		if (err instanceof EditScopeError) throw err;
+		// lstat failed ⇒ the leaf does not exist at all — a legitimate create target.
+	}
+	let cursor = abs;
+	for (;;) {
+		const parent = dirname(cursor);
+		if (parent === cursor) break;
+		let real: string | undefined;
+		try {
+			real = realpathSync(parent);
+		} catch {
+			real = undefined;
+		}
+		if (real !== undefined) return join(real, abs.slice(parent.length));
+		// A dangling symlink as an INTERMEDIATE component is unresolvable — fail closed.
+		try {
+			if (lstatSync(parent).isSymbolicLink()) {
+				throw new EditScopeError(
+					`path component is a broken/unresolvable symlink — failing closed: ${parent}`
+				);
+			}
+		} catch (err) {
+			if (err instanceof EditScopeError) throw err;
+		}
+		cursor = parent;
+	}
+	throw new EditScopeError(`target is unresolvable (no existing ancestor) — failing closed: ${abs}`);
+}
+
+/** Canonicalize a scope ROOT: realpath when it exists; a not-yet-created root confines by
+ *  its normalized absolute path; a dangling-symlink root is unresolvable ⇒ throw. */
+function canonicalScopeRoot(abs: string): string {
+	try {
+		return realpathSync(abs);
+	} catch {
+		try {
+			if (lstatSync(abs).isSymbolicLink()) {
+				throw new EditScopeError(
+					`scope root is a broken/unresolvable symlink — failing closed: ${abs}`
+				);
+			}
+		} catch (err) {
+			if (err instanceof EditScopeError) throw err;
+		}
+		return abs;
+	}
+}
+
+/** File tools that WRITE — the set the scope-lock gates. Read deliberately stays free:
+ *  the scope lock is an EDIT gate; reads are governed by config-protection/confinement. */
+const WRITE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
+
+/**
+ * Extract the file targets a bash command DETECTABLY writes: `>` / `>>` redirections
+ * (incl. `N>` / `&>` forms) and `tee` arguments. fd-duplication (`2>&1`) and the null
+ * sinks (/dev/null, nul, $null) are skipped. Conservative by design — see the detection
+ * boundary note above; a false positive denies (fail closed), never allows.
+ */
+function bashWriteTargets(command: string): string[] {
+	const out: string[] = [];
+	const redir = /(?:\d|&)?>{1,2}\s*("[^"]*"|'[^']*'|[^\s;|&)]+)/g;
+	let m: RegExpExecArray | null;
+	while ((m = redir.exec(command)) !== null) {
+		const t = m[1].replace(/^["']|["']$/g, '');
+		if (!t || /^&\d*$/.test(t)) continue; // 2>&1 — fd duplication, not a file
+		if (/^(\/dev\/null|nul|\$null)$/i.test(t)) continue;
+		out.push(t);
+	}
+	const tee = /\btee\s+([^;|&]+)/g;
+	while ((m = tee.exec(command)) !== null) {
+		for (const arg of m[1].match(/"[^"]*"|'[^']*'|[^\s]+/g) ?? []) {
+			const t = arg.replace(/^["']|["']$/g, '');
+			if (!t || t.startsWith('-')) continue;
+			if (/^(\/dev\/null|nul|\$null)$/i.test(t)) continue;
+			out.push(t);
+		}
+	}
+	return out;
+}
+
+/** A write target whose expansion we cannot resolve ($VAR, backticks, ~) is AMBIGUOUS —
+ *  fail closed (requirement (a): deny on unresolvable/ambiguous paths). */
+function isAmbiguousBashTarget(target: string): boolean {
+	return /[$`]/.test(target) || target.startsWith('~');
+}
+
+/** Scope-check ONE write target. Returns a deny decision, or undefined when in scope. */
+function checkScopeTarget(
+	target: string,
+	context: GateContext,
+	scope: EditScope,
+	label: string
+): GateDecision | undefined {
+	const abs = resolve(context.projectRoot, target);
+	const canon = canonicalForScope(abs); // throws ⇒ caught by evaluateEditScope ⇒ deny
+	const cmp = casefoldPath(canon);
+	for (const r of scope.scopeRoots) {
+		const rootCanon = canonicalScopeRoot(resolve(context.projectRoot, r));
+		if (isUnderPath(cmp, casefoldPath(rootCanon))) return undefined;
+	}
+	const posix = canon.replace(/\\/g, '/');
+	if (scope.scopeAllow.some((a) => a.re.test(posix))) return undefined;
+	return {
+		decision: 'deny',
+		gate: 'edit-scope',
+		reason:
+			`${label} outside the declared edit scope (D-018 scope-lock): ${canon} ` +
+			`is under none of [${scope.scopeRoots.join(', ')}] and matches no scopeAllow exception`
+	};
+}
+
+/**
+ * The edit-scope family evaluator. Returns undefined when no editScope is declared
+ * (feature off — requirement (c)) or everything is in scope; otherwise a deny carrying
+ * WHICH check fired (out-of-scope write / ambiguous redirection / destructive pattern id).
+ * ANY internal resolution error fails CLOSED as an edit-scope deny.
+ */
+function evaluateEditScope(
+	call: ToolCall,
+	filePath: string | undefined,
+	command: string | undefined,
+	context: GateContext
+): GateDecision | undefined {
+	const scope = context.editScope;
+	if (!scope) return undefined;
+	try {
+		if (command !== undefined) {
+			const norm = normalizeBashCommand(command);
+			// (b) destructive-bash deny-list, unless the WHOLE command matches a configured
+			// safe exception (gstack careful's safe-target shape, reimplemented fail-closed).
+			if (!scope.destructiveAllow.some((a) => a.re.test(norm))) {
+				const hit = scope.destructiveDeny.find((d) => d.re.test(norm));
+				if (hit) {
+					return {
+						decision: 'deny',
+						gate: 'edit-scope',
+						reason:
+							`destructive command blocked by configured pattern '${hit.id}'` +
+							`${hit.reason ? ` (${hit.reason})` : ''}: ${command}`
+					};
+				}
+			}
+			// (a) detectable file-writing bash redirections must stay in scope.
+			for (const target of bashWriteTargets(command)) {
+				if (isAmbiguousBashTarget(target)) {
+					return {
+						decision: 'deny',
+						gate: 'edit-scope',
+						reason: `ambiguous bash write target (unresolvable expansion) — failing closed (D-024): ${target}`
+					};
+				}
+				const denied = checkScopeTarget(target, context, scope, 'bash write redirection');
+				if (denied) return denied;
+			}
+		}
+		// (a) file-WRITING tools must stay in scope (Read deliberately ungated here).
+		if (filePath !== undefined && WRITE_TOOLS.has(call.name)) {
+			const denied = checkScopeTarget(filePath, context, scope, `${call.name} target`);
+			if (denied) return denied;
+		}
+		return undefined;
+	} catch (err) {
+		// Unresolvable/broken-symlink/internal error ⇒ DENY under THIS family's name.
+		return {
+			decision: 'deny',
+			gate: 'edit-scope',
+			reason: `edit-scope could not resolve the target — failing closed (D-024): ${(err as Error).message}`
+		};
+	}
 }
 
 // ── path extraction (untrusted input → candidate fs targets) ─────────────────────────
@@ -321,9 +723,25 @@ function evaluateGateInner(call: ToolCall, context: GateContext): GateDecision {
 	//    Evaluated BEFORE path-confinement so the MORE SPECIFIC gate claims the deny: a
 	//    command like `rm -rf /` would otherwise be caught by confinement on the `/` token.
 	//    Both gates are safety-critical (deny either way) — this only sharpens the label.
-	if (command !== undefined && isDangerousBash(command)) {
-		return block('dangerous-bash', `dangerous command blocked: ${command}`, policy);
+	//    TASK 15.1: when the session's editScope carries a FULL-COMMAND safe exception
+	//    (destructiveBash.allow, e.g. `rm -rf node_modules`) matching the whole command,
+	//    the recursive-rm rule — and ONLY that rule — is bypassed so the configured
+	//    build-artifact cleanup passes silently. Sessions without an editScope keep
+	//    today's exact behaviour (no exception path exists).
+	if (command !== undefined) {
+		const safeRmException =
+			context.editScope !== undefined &&
+			context.editScope.destructiveAllow.some((a) => a.re.test(normalizeBashCommand(command)));
+		if (isDangerousBash(command, safeRmException)) {
+			return block('dangerous-bash', `dangerous command blocked: ${command}`, policy);
+		}
 	}
+
+	// 2b) edit-scope (TASK 15.1 / B1) — the scope-lock: out-of-scope writes, detectable
+	//     write redirections, and the config-driven destructive-bash list. Before
+	//     path-confinement so the more specific gate claims the deny (both fail closed).
+	const scoped = evaluateEditScope(call, filePath, command, context);
+	if (scoped) return scoped;
 
 	// 3) path-confinement — symlink + ".." resolved FIRST, fail closed. Reuses 1.4a's
 	//    resolver, the single source of truth shared with the primary boundary.

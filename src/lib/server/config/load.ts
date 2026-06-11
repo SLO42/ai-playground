@@ -142,6 +142,92 @@ export interface BundleBudgets {
 	concurrency?: number;
 }
 
+// --- gates.yaml (TASK 15.1 / HARVEST B1 — the scope-lock edit gate's pattern lists) ---
+//
+// The destructive-bash deny/allow pattern lists the edit-scope gate enforces ship HERE,
+// operator-editable, NOT hardcoded in the gate evaluator (requirement (b)). The launch
+// path merges these into a session's declared editScope; the gate layer compiles them
+// fail-closed (a pattern that does not compile DENIES the spawn/tool — D-024).
+// PROVENANCE of the default list: gstack careful/bin/check-careful.sh + freeze (MIT),
+// adapted to this stack (SurrealDB/git/npm/docker/taskkill; kubectl dropped).
+
+/** One operator-authored bash pattern entry in gates.yaml. */
+export interface GatePatternEntry {
+	/** Stable id — names WHICH pattern fired in a deny reason. */
+	id: string;
+	/** RegExp source matched against the lower-cased, whitespace-collapsed command. */
+	pattern: string;
+	/** Operator-readable reason surfaced in the deny message. */
+	reason?: string;
+}
+
+/** The validated shape of config/gates.yaml. */
+export interface GatesConfig {
+	destructiveBash: {
+		/** Substring-matched deny patterns. */
+		deny: GatePatternEntry[];
+		/** FULL-COMMAND-anchored safe exceptions (rm -rf of build artifacts etc.). */
+		allow: GatePatternEntry[];
+	};
+}
+
+function validateGatePatternList(raw: unknown, kind: 'deny' | 'allow', file: string): GatePatternEntry[] {
+	if (raw === undefined) return [];
+	if (!Array.isArray(raw)) {
+		throw new ConfigError(`gates: destructiveBash.${kind} must be a list`, file);
+	}
+	return raw.map((entry, i) => {
+		if (!entry || typeof entry !== 'object' || Array.isArray(entry)) {
+			throw new ConfigError(`gates: destructiveBash.${kind}[${i}] must be a mapping {id, pattern, reason?}`, file);
+		}
+		const e = entry as Record<string, unknown>;
+		if (typeof e.id !== 'string' || !e.id.trim()) {
+			throw new ConfigError(`gates: destructiveBash.${kind}[${i}] needs a non-empty string id`, file);
+		}
+		if (typeof e.pattern !== 'string' || !e.pattern.trim()) {
+			throw new ConfigError(`gates: destructiveBash.${kind} "${e.id}" needs a non-empty string pattern`, file);
+		}
+		if (e.reason !== undefined && typeof e.reason !== 'string') {
+			throw new ConfigError(`gates: destructiveBash.${kind} "${e.id}" reason must be a string`, file);
+		}
+		// The pattern must COMPILE — a malformed regex fails the load (fail closed at the
+		// boundary), not the first tool call. (`^(?:p)$` anchoring compiles iff `p` does.)
+		try {
+			new RegExp(e.pattern);
+		} catch (err) {
+			throw new ConfigError(
+				`gates: destructiveBash.${kind} "${e.id}" pattern does not compile: ${(err as Error).message}`,
+				file
+			);
+		}
+		return {
+			id: e.id,
+			pattern: e.pattern,
+			...(e.reason !== undefined ? { reason: e.reason as string } : {})
+		};
+	});
+}
+
+/**
+ * Load + validate config/gates.yaml (the scope-lock pattern lists). FAIL CLOSED: a
+ * missing/unreadable/malformed file throws ConfigError — callers that need an editScope
+ * must refuse the launch rather than spawn with the destructive-bash list silently empty.
+ */
+export function loadGatesConfig(file: string, opts: LoadOpts = {}): GatesConfig {
+	const raw = { ...asObject(parseYaml(file), file), ...(opts._inject ?? {}) };
+	const db = raw.destructiveBash;
+	if (db === null || db === undefined || typeof db !== 'object' || Array.isArray(db)) {
+		throw new ConfigError('gates: "destructiveBash" must be a mapping with deny/allow lists', file);
+	}
+	const d = db as Record<string, unknown>;
+	return {
+		destructiveBash: {
+			deny: validateGatePatternList(d.deny, 'deny', file),
+			allow: validateGatePatternList(d.allow, 'allow', file)
+		}
+	};
+}
+
 /** The full loaded config tree. */
 export interface AppConfig {
 	agentPool: AgentPool;

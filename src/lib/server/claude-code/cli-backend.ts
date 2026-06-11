@@ -34,6 +34,7 @@ import type {
 	RuntimeEvent
 } from '../runtime/index';
 import { buildGateHookGroup, encodeGateHookConfig } from './gate-transport';
+import type { EditScopeInput } from './gates';
 
 /**
  * Seed the per-session ISOLATED config dir so Claude Code TRUSTS this cwd and is allowed to
@@ -68,7 +69,8 @@ const HARNESS_ONLY_SETTINGS_KEYS = new Set([
 	'marketplaces',
 	'enabledPlugins',
 	'capabilities',
-	'gates'
+	'gates',
+	'editScope'
 ]);
 
 /** Project the harness settings down to the Claude-Code-schema-valid subset (keeps `hooks` and
@@ -99,11 +101,19 @@ export function buildCliSettings(
 ): Record<string, unknown> {
 	const out = toClaudeSettings(plan.isolated.settings);
 	const gates = plan.isolated.settings.gates as Record<string, string> | undefined;
-	if (gates && Object.keys(gates).length > 0) {
+	// TASK 15.1 (B1 scope-lock): a declared editScope rides the SAME pinned hook config.
+	// It also FORCES the hook on — a session that declared a scope must never spawn with
+	// the scope silently dropped (D-024), even if no gate modes were configured.
+	const editScope = plan.isolated.settings.editScope as EditScopeInput | undefined;
+	if ((gates && Object.keys(gates).length > 0) || editScope !== undefined) {
 		const group = buildGateHookGroup({
 			nodeBin: opts.nodeBin,
 			serverRoot: opts.serverRoot,
-			encodedConfig: encodeGateHookConfig({ gates, projectRoot: plan.cwd })
+			encodedConfig: encodeGateHookConfig({
+				gates: gates ?? {},
+				projectRoot: plan.cwd,
+				...(editScope !== undefined ? { editScope } : {})
+			})
 		});
 		const hooks = { ...((out.hooks as Record<string, unknown>) ?? {}) };
 		const existing = hooks.PreToolUse;

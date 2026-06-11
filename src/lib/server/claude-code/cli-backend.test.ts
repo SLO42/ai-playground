@@ -94,4 +94,40 @@ describe('buildCliSettings — the 13.3 gate-hook wiring on the CLI path', () =>
 		// Genuinely-valid CC settings keys pass through.
 		expect(out.permissions).toEqual({ deny: ['WebFetch'] });
 	});
+
+	// ── TASK 15.1 (B1 scope-lock) — editScope pinned onto the hook config ─────────────
+
+	it('pins a declared editScope onto the PreToolUse hook config (15.1)', () => {
+		const editScope = { scopeRoots: ['src'], scopeAllow: ['**/docs/fails.md'] };
+		const out = buildCliSettings(
+			plan({ gates: { ...DEFAULT_GATE_POLICY }, editScope, hooks: {} }),
+			OPTS
+		);
+		const pre = (out.hooks as Record<string, unknown>).PreToolUse as Array<{
+			hooks: Array<{ command: string }>;
+		}>;
+		const arg = pre[0].hooks[0].command.split(' ').at(-1)!;
+		expect(decodeGateHookConfig(arg)).toEqual({
+			gates: { ...DEFAULT_GATE_POLICY },
+			projectRoot: 'F:/code/demo',
+			editScope
+		});
+		// …and the harness-internal editScope key never lands in the CC settings file.
+		expect(out.editScope).toBeUndefined();
+	});
+
+	it('a declared editScope FORCES the gate hook on even with no gates configured (15.1)', () => {
+		const editScope = { scopeRoots: ['src'] };
+		const out = buildCliSettings(plan({ editScope, hooks: {} }), OPTS);
+		const pre = (out.hooks as Record<string, unknown>).PreToolUse as Array<{
+			hooks: Array<{ command: string }>;
+		}>;
+		expect(Array.isArray(pre)).toBe(true);
+		const arg = pre[0].hooks[0].command.split(' ').at(-1)!;
+		expect(decodeGateHookConfig(arg)).toEqual({
+			gates: {},
+			projectRoot: 'F:/code/demo',
+			editScope
+		});
+	});
 });

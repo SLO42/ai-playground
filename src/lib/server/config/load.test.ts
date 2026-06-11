@@ -5,6 +5,7 @@ import {
 	loadAgentPool,
 	loadModels,
 	loadOrchestration,
+	loadGatesConfig,
 	loadConfig,
 	validateBundles,
 	resolveAdaptiveConfig,
@@ -208,5 +209,50 @@ describe('loadConfig — composite loader', () => {
 		const cfg = loadConfig(FIX);
 		// fixture dir has models.json5
 		expect(cfg.models.providers.anthropic.models).toContain('claude-opus');
+	});
+});
+
+// ── gates.yaml (TASK 15.1 / B1 scope-lock) — operator-editable pattern lists ─────────
+
+describe('loadGatesConfig — the scope-lock destructive-bash pattern lists (15.1)', () => {
+	const REAL = join(process.cwd(), 'config', 'gates.yaml');
+
+	it('loads the SHIPPED config/gates.yaml — every default pattern compiles', () => {
+		const cfg = loadGatesConfig(REAL);
+		expect(cfg.destructiveBash.deny.length).toBeGreaterThan(0);
+		expect(cfg.destructiveBash.allow.length).toBeGreaterThan(0);
+		// every entry is well-shaped (id + compiling pattern — validated by the loader)
+		for (const e of [...cfg.destructiveBash.deny, ...cfg.destructiveBash.allow]) {
+			expect(e.id).toBeTruthy();
+			expect(() => new RegExp(e.pattern)).not.toThrow();
+		}
+		// the task-mandated families are present in the shipped defaults
+		const ids = cfg.destructiveBash.deny.map((e) => e.id);
+		for (const required of [
+			'surreal-remove-ddl',
+			'sql-drop',
+			'sql-truncate',
+			'git-discard-worktree',
+			'git-clean-force',
+			'rm-recursive',
+			'docker-prune'
+		]) {
+			expect(ids).toContain(required);
+		}
+	});
+
+	it('throws ConfigError (not a raw fs error) for a missing file — scoped launches fail closed', () => {
+		expect(() => loadGatesConfig(join(FIX, 'no-such-gates.yaml'))).toThrow(ConfigError);
+	});
+
+	it.each([
+		['non-mapping destructiveBash', { destructiveBash: 'nope' }],
+		['non-list deny', { destructiveBash: { deny: 'x', allow: [] } }],
+		['entry missing id', { destructiveBash: { deny: [{ pattern: 'x' }], allow: [] } }],
+		['entry missing pattern', { destructiveBash: { deny: [{ id: 'x' }], allow: [] } }],
+		['non-string reason', { destructiveBash: { deny: [{ id: 'x', pattern: 'y', reason: 1 }], allow: [] } }],
+		['UNCOMPILABLE pattern', { destructiveBash: { deny: [{ id: 'bad', pattern: '(' }], allow: [] } }]
+	])('rejects %s at the boundary', (_label, inject) => {
+		expect(() => loadGatesConfig(REAL, { _inject: inject as never })).toThrow(ConfigError);
 	});
 });

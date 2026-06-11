@@ -139,3 +139,26 @@ The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
   known cc-config readback.live / capability-wiring.live concurrency-flake class. If
   a specific test joins this class repeatedly, give IT a larger explicit timeout
   rather than raising the global default.
+
+## F-018: new-gate-family tests must expect the EARLIER family's deny label
+- **Date**: 2026-06-10
+- **What**: 4/57 first-run failures in the new edit-scope (15.1/B1) unit matrix — every
+  one a wrong EXPECTATION, not an implementation bug: tests asserted `allow` (or the new
+  gate's label) where a PRE-EXISTING family already denies first. Concretely:
+  NotebookEdit-without-Read (read-before-edit denies), `> /dev/null` and `taskkill /F
+  /PID` (path-confinement conservatively denies `/`-rooted tokens), and a case-respelled
+  in-scope TARGET (the 13.5 confinement resolver compares case-sensitively and denies).
+- **Why**: the gate evaluator is LAYERED (config-protection → dangerous-bash →
+  edit-scope → path-confinement → read-before-edit) and several earlier families are
+  deliberately conservative (false-positive deny is the fail-closed direction). A test
+  for a NEW family that only thinks about that family's logic mis-predicts the composed
+  decision.
+- **Fix**: assert the LAYER, not just the decision — for conservative-deny collisions
+  assert `r.gate !== 'edit-scope'` (the new family stays silent) or test the new
+  family's pattern/comparator directly; satisfy earlier families' preconditions (Read
+  before NotebookEdit) when asserting a composed allow.
+- **Prevention**: when adding a gate family to a layered fail-closed evaluator, write
+  the test matrix against the COMPOSED evaluator order, and for any input an earlier
+  family already denies, pin WHICH gate fires rather than expecting allow. A
+  conservative deny from an earlier layer is correct behaviour, never a regression to
+  "fix" by reordering.

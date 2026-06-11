@@ -8,7 +8,7 @@
 // every assertion here fails.
 
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -168,5 +168,88 @@ describe('13.3 — gateCanUseTool is WIRED onto CcSpawnPlan.canUseTool (mock-bac
 		expect((err as { error: string }).error).toMatch(/unknown gate/i);
 		expect(backend.plans).toHaveLength(0); // never spawned ungated
 		expect(backend.executed).toEqual([]);
+	});
+});
+
+// ── TASK 15.1 (B1 scope-lock) — editScope on the SDK/runtime path ─────────────────────
+
+describe('15.1 — SpawnRequest.editScope is enforced through plan.canUseTool', () => {
+	it('an out-of-scope Write is blocked BEFORE execution; an in-scope Write runs', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'v2-scope-wire-'));
+		try {
+			mkdirSync(join(root, 'src'), { recursive: true });
+			const outside = { file_path: join(root, 'docs', 'notes.md') };
+			const inside = { file_path: join(root, 'src', 'ok.ts') };
+			const backend = gatedMockBackend([
+				{ name: 'Write', input: outside },
+				{ name: 'Write', input: inside }
+			]);
+			const runtime = new ClaudeCodeRuntime({
+				backend,
+				gates: { ...DEFAULT_GATE_POLICY }
+			});
+			const events = await drain(
+				runtime.spawn(req(root, { editScope: { scopeRoots: ['src'] } }))
+			);
+
+			// THE PROOF: only the in-scope write executed.
+			expect(backend.executed).toEqual(['Write:' + JSON.stringify(inside)]);
+			const blocked = events.find((e) => e.type === 'tool_result' && !e.ok) as Extract<
+				RuntimeEvent,
+				{ type: 'tool_result' }
+			>;
+			expect(blocked).toBeDefined();
+			expect(blocked.output).toContain('[gate:edit-scope]');
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it('a declared editScope forces the gate callback ON even with no gate modes configured', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'v2-scope-wire-nogates-'));
+		try {
+			mkdirSync(join(root, 'src'), { recursive: true });
+			const backend = gatedMockBackend([
+				{ name: 'Write', input: { file_path: join(root, 'outside.md') } }
+			]);
+			const runtime = new ClaudeCodeRuntime({ backend }); // NO gates
+			await drain(runtime.spawn(req(root, { editScope: { scopeRoots: ['src'] } })));
+			expect(backend.plans).toHaveLength(1);
+			expect(typeof backend.plans[0].canUseTool).toBe('function'); // scope is never dropped
+			expect(backend.executed).toEqual([]); // and it enforced
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
+	});
+
+	it('a MALFORMED editScope fails the spawn CLOSED — backend never reached (D-024)', async () => {
+		const backend = gatedMockBackend([{ name: 'Bash', input: { command: 'echo ok' } }]);
+		const runtime = new ClaudeCodeRuntime({
+			backend,
+			gates: { ...DEFAULT_GATE_POLICY }
+		});
+		const events = await drain(
+			runtime.spawn(
+				req('F:/code/demo', { editScope: { scopeRoots: [] } }) // empty roots — malformed
+			)
+		);
+		const err = events.find((e) => e.type === 'error');
+		expect(err).toBeDefined();
+		expect((err as { error: string }).error).toMatch(/scopeRoots/);
+		expect(backend.plans).toHaveLength(0); // never spawned unscoped
+		expect(backend.executed).toEqual([]);
+	});
+
+	it('NO editScope ⇒ unchanged 13.3 behaviour (gates only, no scope denials)', async () => {
+		const root = mkdtempSync(join(tmpdir(), 'v2-scope-wire-absent-'));
+		try {
+			const anywhere = { file_path: join(root, 'docs', 'free.md') };
+			const backend = gatedMockBackend([{ name: 'Write', input: anywhere }]);
+			const runtime = new ClaudeCodeRuntime({ backend, gates: { ...DEFAULT_GATE_POLICY } });
+			await drain(runtime.spawn(req(root)));
+			expect(backend.executed).toEqual(['Write:' + JSON.stringify(anywhere)]);
+		} finally {
+			rmSync(root, { recursive: true, force: true });
+		}
 	});
 });

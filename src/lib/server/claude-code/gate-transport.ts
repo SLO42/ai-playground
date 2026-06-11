@@ -25,10 +25,14 @@ import {
 	createGateSession,
 	gatePreToolUse,
 	parseGatePolicy,
+	parseEditScope,
+	type EditScopeInput,
 	type GateSession,
 	type PreToolUseOutput
 } from './gates';
 import type { HookGroup } from '../hooks/index';
+import type { Db } from '../db/client';
+import { recordIncident } from '../services/incidents';
 
 // ── Per-session gate config (pinned at spawn, carried on the hook command) ───────────
 
@@ -38,6 +42,12 @@ export interface GateHookConfig {
 	gates: Record<string, string>;
 	/** Absolute project root — the confinement boundary the session was spawned into. */
 	projectRoot: string;
+	/**
+	 * TASK 15.1 (B1 scope-lock) — the session's declared edit scope, pinned at spawn time.
+	 * Raw/untrusted here; validated server-side by parseEditScope (a MALFORMED scope
+	 * DENIES every tool, requirement (c)/D-024). Absent ⇒ no scope gating (opt-in).
+	 */
+	editScope?: EditScopeInput;
 }
 
 /** Encode the per-session gate config as a base64url JSON arg (shell-safe on Windows). */
@@ -57,7 +67,13 @@ export function decodeGateHookConfig(encoded: string): GateHookConfig {
 	if (typeof cfg.projectRoot !== 'string' || !cfg.projectRoot.trim()) {
 		throw new Error('gate config has no projectRoot');
 	}
-	return { gates: cfg.gates as Record<string, string>, projectRoot: cfg.projectRoot };
+	return {
+		gates: cfg.gates as Record<string, string>,
+		projectRoot: cfg.projectRoot,
+		// Carried RAW (15.1): parseEditScope is the strict validator at the decision point —
+		// the handler denies (never silently un-scopes) when this is malformed.
+		...(cfg.editScope !== undefined ? { editScope: cfg.editScope as EditScopeInput } : {})
+	};
 }
 
 // ── The settings.json PreToolUse hook group the CLI backend registers ────────────────
@@ -161,13 +177,26 @@ export function handleGatePreToolUse(body: unknown): PreToolUseOutput {
 		// STRICT policy parse — an unknown gate / invalid mode blocks the tool (13.3 finding).
 		const policy = parseGatePolicy(cfg.gates);
 
+		// STRICT editScope parse (15.1, requirement (c)): a MALFORMED scope config DENIES
+		// every tool — it must never be silently dropped (which would run the session
+		// unscoped, a fail-open). Absent ⇒ undefined ⇒ no scope gating (opt-in).
+		let editScope;
+		try {
+			editScope = parseEditScope(cfg.editScope);
+		} catch (err) {
+			return gateDenyOutput(
+				`malformed editScope config — failing closed (D-024): ${(err as Error).message}`
+			);
+		}
+
 		const p = (payload ?? {}) as GateRequestBody['payload'];
 		const sid = typeof p.session_id === 'string' && p.session_id ? p.session_id : '__no_session__';
 		const decide = gatePreToolUse({
 			projectRoot: cfg.projectRoot,
 			codeRoot: cfg.projectRoot,
 			session: sessionFor(sid),
-			policy
+			policy,
+			editScope
 		});
 		// gatePreToolUse itself fails closed on a malformed payload (tool_name not a string).
 		return decide({
@@ -179,4 +208,30 @@ export function handleGatePreToolUse(body: unknown): PreToolUseOutput {
 			`gate handler failed — failing closed (D-024): ${(err as Error).message}`
 		);
 	}
+}
+
+// ── Deny → incident (TASK 15.1 live-verify contract: "see the deny + incident") ──────
+
+/**
+ * Record an `incident` row (services/incidents, DATA-MODEL §4.7) for a SAFETY-CRITICAL
+ * gate deny so the operator surface shows WHAT was blocked and WHY. Called by the
+ * /api/gates/pretooluse route AFTER the decision is computed — strictly observability:
+ * a DB failure here never alters the (already fail-closed) decision, and the route
+ * invokes it best-effort. read-before-edit denies are deliberately NOT incidents — they
+ * are the normal, self-correcting part of an agent's loop (it Reads, then retries).
+ */
+export async function recordGateDenyIncident(
+	db: Db,
+	out: PreToolUseOutput,
+	payload: { session_id?: string; tool_name?: string }
+): Promise<void> {
+	const d = out.hookSpecificOutput;
+	if (d.permissionDecision !== 'deny') return;
+	const reason = d.permissionDecisionReason ?? '';
+	if (reason.includes('[gate:read-before-edit]')) return;
+	await recordIncident(db, {
+		title: `gate denied ${payload.tool_name ?? '(unknown tool)'}`,
+		severity: 'warn',
+		detail: `${reason || 'no reason recorded'} (cc session: ${payload.session_id ?? 'unknown'})`
+	});
 }

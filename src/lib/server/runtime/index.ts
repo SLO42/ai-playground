@@ -30,12 +30,15 @@ import {
 import {
 	gateCanUseTool,
 	parseGatePolicy,
+	parseEditScope,
 	createGateSession,
-	type CanUseToolResult
+	type CanUseToolResult,
+	type EditScopeInput
 } from '../claude-code/gates';
 
-// Re-export the gate callback result type so backends can type plan.canUseTool (13.3).
-export type { CanUseToolResult } from '../claude-code/gates';
+// Re-export the gate callback result type so backends can type plan.canUseTool (13.3),
+// and the raw edit-scope shape so launch-path callers can type SpawnRequest.editScope (15.1).
+export type { CanUseToolResult, EditScopeInput } from '../claude-code/gates';
 
 // Re-export the D-036 capability surface so the whole system imports it from `runtime`.
 export {
@@ -98,6 +101,22 @@ export interface SpawnRequest {
 	 * the operator's whole plugin set — D-002 isolation is preserved (see capabilities.ts).
 	 */
 	capabilities?: CapabilitySet;
+	/**
+	 * TASK 15.1 (HARVEST B1 / D-018) — the session's declared SCOPE-LOCK: the file roots
+	 * this session may WRITE under ({scopeRoots, scopeAllow glob exceptions}) plus the
+	 * operator-configured destructive-bash pattern lists (config/gates.yaml, merged in by
+	 * the launch path). Enforced fail-closed on BOTH paths: the SDK canUseTool callback and
+	 * the CLI PreToolUse hook deny Edit/Write/NotebookEdit + detectable bash write
+	 * redirections outside the scope. A MALFORMED scope fails the spawn closed; an ABSENT
+	 * scope means no scope gating (opt-in, requirement (c)).
+	 *
+	 * HOW IT IS POPULATED (requirement (d)): callers that already DECLARE a file scope pass
+	 * it here — the v2-wave workflow template's per-task "files to modify" scope lock, and
+	 * D-039 PM proposed-tasks (whose validated task shape carries the declared file scope),
+	 * map their declared paths onto `scopeRoots` (+ `scopeAllow` for shared-file exceptions
+	 * like docs/fails.md) when building the LaunchInput → SpawnRequest.
+	 */
+	editScope?: EditScopeInput;
 	workflowRunId?: string; // set when this spawn is a workflow step (D-013)
 }
 
@@ -166,6 +185,12 @@ export interface HarnessSettings {
 	 * (legacy spawns / no capability provisioning).
 	 */
 	capabilities?: CapabilitySet;
+	/**
+	 * TASK 15.1 — the spawn's declared scope-lock (SpawnRequest.editScope), carried RAW so
+	 * the CLI backend pins it onto the PreToolUse hook config. A harness-internal key:
+	 * cli-backend strips it from the Claude-Code-schema settings file (like `gates`).
+	 */
+	editScope?: EditScopeInput;
 	[k: string]: unknown;
 }
 
@@ -234,6 +259,11 @@ export function isolatedConfigFor(
 				plugins: [],
 				marketplaces: []
 			};
+
+	// TASK 15.1 — a declared scope-lock rides the isolated settings (both compose paths)
+	// so the CLI backend pins it onto the PreToolUse hook config. Only set when declared:
+	// legacy/unscoped spawns keep a byte-identical settings shape.
+	if (req.editScope !== undefined) settings.editScope = req.editScope;
 
 	return { configDir, env, settings };
 }
@@ -378,14 +408,20 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 		// SDK/runtime-path gate callback (gateCanUseTool over a per-session read-set), confined
 		// to THIS spawn's cwd. parseGatePolicy is STRICT: a malformed gate config THROWS here,
 		// so the spawn fails CLOSED (error event, backend never reached) — it never runs ungated.
+		// TASK 15.1 — likewise parseEditScope: a MALFORMED declared scope fails the spawn
+		// closed here (never spawns silently unscoped), and a VALID declared scope forces the
+		// gate callback on even when no gate modes were configured (a declared scope is never
+		// dropped). Absent editScope ⇒ unchanged legacy behaviour (opt-in, requirement (c)).
+		const editScope = parseEditScope(req.editScope);
 		let canUseTool: CcSpawnPlan['canUseTool'];
-		if (this.gates && Object.keys(this.gates).length > 0) {
-			const policy = parseGatePolicy(this.gates);
+		if ((this.gates && Object.keys(this.gates).length > 0) || editScope !== undefined) {
+			const policy = parseGatePolicy(this.gates ?? {});
 			canUseTool = gateCanUseTool({
 				projectRoot: req.cwd,
 				codeRoot: req.cwd,
 				session: createGateSession(),
-				policy
+				policy,
+				...(editScope !== undefined ? { editScope } : {})
 			});
 		}
 		return {

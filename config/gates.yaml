@@ -1,0 +1,69 @@
+# config/gates.yaml — destructive-bash pattern lists for the SCOPE-LOCK edit gate
+# (TASK 15.1 / HARVEST B1; D-018/D-024). OPERATOR-EDITABLE: these lists ship in config,
+# not hardcoded in the gate evaluator (src/lib/server/claude-code/gates.ts).
+#
+# PROVENANCE: harvested from gstack careful/bin/check-careful.sh (destructive-pattern +
+# safe-exception shape) and freeze/bin/check-freeze.sh (boundary shape) — MIT,
+# github.com/sublayerapp/gstack. The gstack bash hooks fail OPEN (an unparseable command
+# allows); the MECHANISM here is reimplemented FAIL-CLOSED in the TS gate layer (D-024):
+# a malformed entry/pattern fails the config load, an unresolvable target denies.
+# Adapted to THIS stack: SurrealDB / git / npm / docker / taskkill (kubectl dropped).
+#
+# Matching contract (see gates.ts):
+#   - `deny` patterns are RegExp sources, SUBSTRING-matched against the LOWER-CASED,
+#     whitespace-collapsed bash command. Any match denies (named by its id).
+#   - `allow` patterns are FULL-COMMAND safe exceptions: the gate anchors them as
+#     ^(?:pattern)$ — an exception must describe the WHOLE command, so
+#     `rm -rf node_modules && git checkout .` can never ride an exception.
+#     A full-command allow match bypasses ONLY the recursive-rm rules (config + the
+#     static dangerous-bash rm rule); git-push/--force/set-url are never exception-able.
+#   - These lists only apply to sessions that DECLARE an editScope (opt-in per session
+#     policy); unscoped sessions keep the static dangerous-bash family unchanged.
+
+destructiveBash:
+  deny:
+    # --- db CLIs (SurrealDB is our store; generic SQL verbs kept for other db CLIs) ---
+    - id: surreal-remove-ddl
+      pattern: '\bremove\s+(table|database|namespace)\b'
+      reason: SurrealDB destructive DDL (REMOVE TABLE/DATABASE/NAMESPACE) permanently deletes schema + data
+    - id: sql-drop
+      pattern: '\bdrop\s+(table|database)\b'
+      reason: SQL DROP permanently deletes database objects # provenance: gstack careful drop_table
+    - id: sql-truncate
+      pattern: '\btruncate\b'
+      reason: SQL TRUNCATE deletes all rows from a table # provenance: gstack careful truncate
+    # --- git working-tree wipes (the scope-lock's reason to exist: uncommitted work) ---
+    - id: git-discard-worktree
+      pattern: '\bgit\s+(checkout|restore)\b[^;|&]*\s\.([/\\][^\s]*)?($|\s)'
+      reason: git checkout/restore of . or a ./path discards uncommitted changes in the working tree # provenance: gstack careful git_discard
+    - id: git-clean-force
+      pattern: '\bgit\s+clean\b[^;|&]*-[a-z]*f'
+      reason: git clean -f* permanently deletes untracked files (often the agent's own un-added work)
+    - id: git-reset-hard
+      pattern: '\bgit\s+reset\s+--hard\b'
+      reason: git reset --hard discards all uncommitted changes # provenance: gstack careful git_reset_hard (also statically denied)
+    # --- recursive rm (the broad rule the allow-list excepts) ---
+    - id: rm-recursive
+      pattern: '\brm\s+(-[a-z]*r|--recursive)\b'
+      reason: recursive delete permanently removes files (repo roots included) # provenance: gstack careful rm_recursive
+    # --- docker ---
+    - id: docker-prune
+      pattern: '\bdocker\s+system\s+prune\b'
+      reason: docker system prune deletes containers/images/volumes # provenance: gstack careful docker_destructive
+    - id: docker-rm-force
+      pattern: '\bdocker\s+rm\s+-[a-z]*f'
+      reason: docker rm -f force-removes running containers # provenance: gstack careful docker_destructive
+    # --- our stack extras (npm / taskkill on Windows) ---
+    - id: npm-publish
+      pattern: '\bnpm\s+publish\b'
+      reason: publishing a package is a release action, never a scoped build task
+    - id: taskkill-image
+      pattern: '\btaskkill\b[^;|&]*\s/im\b'
+      reason: taskkill /IM kills EVERY process of an image (e.g. all node.exe — the F-014 orphan-storm hazard); use /PID for targeted kills
+  allow:
+    # FULL-COMMAND safe exceptions: rm -r/-rf of well-known build artifacts passes
+    # silently (one or more artifact targets, optionally ./-prefixed or a subpath).
+    # provenance: gstack careful safe-target case list, adapted (.svelte-kit, test-results).
+    - id: rm-build-artifacts
+      pattern: 'rm\s+(-[a-z]+\s+)+((\./)?(node_modules|dist|build|\.svelte-kit|\.next|coverage|__pycache__|\.cache|\.turbo|test-results)([/\\][^\s]*)?(\s+|$))+'
+      reason: cleaning regenerable build artifacts is safe

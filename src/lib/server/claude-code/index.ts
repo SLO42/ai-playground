@@ -33,13 +33,17 @@ export {
 // permissions.deny, D-024/D-018): one pure evaluator consulted by BOTH the SDK
 // canUseTool callback and the CLI PreToolUse hook. config-protection, read-before-edit,
 // dangerous-bash, path-confinement; safety-critical families fail CLOSED.
+// TASK 15.1 (HARVEST B1) adds the fifth family: edit-scope — the SCOPE-LOCK edit gate
+// (declared scopeRoots/scopeAllow + config-driven destructive-bash lists, fail closed).
 export {
 	evaluateGate,
 	createGateSession,
 	gateCanUseTool,
 	gatePreToolUse,
 	parseGatePolicy,
+	parseEditScope,
 	GatePolicyError,
+	EditScopeError,
 	DEFAULT_GATE_POLICY,
 	type GateName,
 	type GateMode,
@@ -50,7 +54,10 @@ export {
 	type GateSession,
 	type CanUseToolResult,
 	type PreToolUsePayload,
-	type PreToolUseOutput
+	type PreToolUseOutput,
+	type EditScope,
+	type EditScopeInput,
+	type DestructiveBashPatternInput
 } from './gates';
 
 // TASK 13.3 — the gate layer is WIRED into both production spawn paths (§2.10e):

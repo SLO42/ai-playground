@@ -6,7 +6,7 @@
 // fail-closed cases assert a malformed gate config BLOCKS the tool, never silently allows.
 
 import { describe, it, expect, beforeEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -168,5 +168,103 @@ describe('handleGatePreToolUse — fail-closed gate decisions (13.3, D-024)', ()
 		expect(out.hookSpecificOutput.hookEventName).toBe('PreToolUse');
 		expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
 		expect(out.hookSpecificOutput.permissionDecisionReason).toBe('why');
+	});
+});
+
+// ── TASK 15.1 (B1 scope-lock) — editScope through the SAME transport ─────────────────
+
+describe('handleGatePreToolUse — the scope-lock editScope rides the pinned config (15.1)', () => {
+	const SCOPED_PATTERNS = {
+		deny: [{ id: 'git-discard-worktree', pattern: 'git\\s+(checkout|restore)\\b[^;|&]*\\s\\.($|\\s)', reason: 'discards work' }],
+		allow: [{ id: 'rm-build-artifacts', pattern: 'rm\\s+(-[a-z]+\\s+)+node_modules' }]
+	};
+
+	function scopedConfig(editScope: unknown): string {
+		return encodeGateHookConfig({
+			gates: { ...DEFAULT_GATE_POLICY },
+			projectRoot: root,
+			editScope: editScope as never
+		});
+	}
+
+	it('round-trips a config WITH an editScope (and keeps one WITHOUT byte-compatible)', () => {
+		const editScope = { scopeRoots: ['src'], scopeAllow: ['**/docs/fails.md'] };
+		const cfg = { gates: { ...DEFAULT_GATE_POLICY }, projectRoot: root, editScope };
+		expect(decodeGateHookConfig(encodeGateHookConfig(cfg))).toEqual(cfg);
+		// absent editScope stays ABSENT after decode (no phantom key).
+		const plain = { gates: { ...DEFAULT_GATE_POLICY }, projectRoot: root };
+		expect(decodeGateHookConfig(encodeGateHookConfig(plain))).toEqual(plain);
+	});
+
+	it('DENIES a real Edit OUTSIDE the declared scope through the transport', () => {
+		mkdirSync(join(root, 'src'), { recursive: true });
+		const out = handleGatePreToolUse({
+			config: scopedConfig({ scopeRoots: ['src'], destructiveBash: SCOPED_PATTERNS }),
+			payload: {
+				session_id: 'cc_scope',
+				tool_name: 'Write',
+				tool_input: { file_path: join(root, 'outside.md') }
+			}
+		});
+		expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+		expect(out.hookSpecificOutput.permissionDecisionReason).toContain('edit-scope');
+	});
+
+	it('ALLOWS an in-scope Write through the transport', () => {
+		mkdirSync(join(root, 'src'), { recursive: true });
+		const out = handleGatePreToolUse({
+			config: scopedConfig({ scopeRoots: ['src'], destructiveBash: SCOPED_PATTERNS }),
+			payload: {
+				session_id: 'cc_scope',
+				tool_name: 'Write',
+				tool_input: { file_path: join(root, 'src', 'in.ts') }
+			}
+		});
+		expect(out.hookSpecificOutput.permissionDecision).toBe('allow');
+	});
+
+	it('enforces the CONFIG-DRIVEN destructive list + full-command safe exception', () => {
+		mkdirSync(join(root, 'src'), { recursive: true });
+		const config = scopedConfig({ scopeRoots: ['src'], destructiveBash: SCOPED_PATTERNS });
+		const run = (command: string) =>
+			handleGatePreToolUse({
+				config,
+				payload: { session_id: 'cc_scope', tool_name: 'Bash', tool_input: { command } }
+			}).hookSpecificOutput;
+
+		const denied = run('git checkout .');
+		expect(denied.permissionDecision).toBe('deny');
+		expect(denied.permissionDecisionReason).toContain('git-discard-worktree');
+		// the safe exception passes silently THROUGH the transport…
+		expect(run('rm -rf node_modules').permissionDecision).toBe('allow');
+		// …but never a chained command (full-command anchoring).
+		expect(run('rm -rf node_modules && git checkout .').permissionDecision).toBe('deny');
+	});
+
+	it('a MALFORMED editScope DENIES even a benign call — never silently un-scopes (D-024)', () => {
+		for (const bad of [
+			{ scopeRoots: [] }, // empty roots
+			{ scopeRoots: 'src' }, // wrong type
+			{ scopeRoots: ['src'], destructiveBash: { deny: [{ id: 'x', pattern: '(' }] } } // bad regex
+		]) {
+			const out = handleGatePreToolUse({
+				config: scopedConfig(bad),
+				payload: { session_id: 'cc_scope', tool_name: 'Bash', tool_input: { command: 'echo hi' } }
+			});
+			expect(out.hookSpecificOutput.permissionDecision, JSON.stringify(bad)).toBe('deny');
+			expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/editScope|edit-scope/i);
+		}
+	});
+
+	it('NO editScope in the config ⇒ no scope gating (13.3 behaviour unchanged)', () => {
+		const out = handleGatePreToolUse({
+			config: encoded(),
+			payload: {
+				session_id: 'cc_scope',
+				tool_name: 'Write',
+				tool_input: { file_path: join(root, 'anywhere.ts') }
+			}
+		});
+		expect(out.hookSpecificOutput.permissionDecision).toBe('allow');
 	});
 });

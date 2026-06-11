@@ -13,7 +13,12 @@
 
 import { json } from '@sveltejs/kit';
 import { authorizeHookRequest } from '$lib/server/hooks';
-import { handleGatePreToolUse, gateDenyOutput } from '$lib/server/claude-code/gate-transport';
+import {
+	handleGatePreToolUse,
+	gateDenyOutput,
+	recordGateDenyIncident
+} from '$lib/server/claude-code/gate-transport';
+import { tryGetDb } from '$lib/server/db/runtime-init';
 import type { RequestHandler } from './$types';
 
 export const POST: RequestHandler = async ({ request }) => {
@@ -32,5 +37,18 @@ export const POST: RequestHandler = async ({ request }) => {
 	} catch {
 		body = null; // handleGatePreToolUse denies a malformed body (fail closed)
 	}
-	return json(handleGatePreToolUse(body));
+	const decision = handleGatePreToolUse(body);
+
+	// TASK 15.1 — a safety-critical deny is an OPERATOR-VISIBLE incident ("the deny + the
+	// incident"). Strictly best-effort observability AFTER the decision: a missing DB or a
+	// write failure never alters the (already fail-closed) decision returned to the hook.
+	if (decision.hookSpecificOutput.permissionDecision === 'deny') {
+		const db = tryGetDb();
+		if (db) {
+			const payload = (body as { payload?: { session_id?: string; tool_name?: string } } | null)
+				?.payload;
+			await recordGateDenyIncident(db, decision, payload ?? {}).catch(() => {});
+		}
+	}
+	return json(decision);
 };

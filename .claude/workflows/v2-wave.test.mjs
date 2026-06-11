@@ -31,7 +31,7 @@ test('pure-helper block is host-free (no agent/phase/log/parallel/pipeline/args)
   assert.ok(!/\bargs\b/.test(block), 'helper block must not reference the host args global')
 })
 
-const { checkVerdict, shouldRedTeam } = new Function(`${block}; return { checkVerdict, shouldRedTeam }`)()
+const { checkVerdict, shouldRedTeam, modelFor } = new Function(`${block}; return { checkVerdict, shouldRedTeam, modelFor }`)()
 
 const allTrue = { complete: true, tested: true, designSystem: true, functional: true, purpose: true, honest: true }
 const evidenceVerdict = 'Ran npm test (14 files green), npm run lint clean, svelte-check 0 errors; drove the live app in the browser and verified the flow. Recommendation: ship.'
@@ -133,6 +133,43 @@ test('shouldRedTeam: null/undefined inputs → false, and always returns a boole
   assert.equal(shouldRedTeam(undefined, undefined), false)
   assert.equal(typeof shouldRedTeam(null, { redTeamAll: true }), 'boolean')
   assert.equal(shouldRedTeam(null, { redTeamAll: true }), true)
+})
+
+// ---- modelFor matrix (cost discipline, 2026-06-11) ----
+
+test('modelFor: no config anywhere → inherit (undefined) for build/review/fix/redTeam', () => {
+  for (const kind of ['build', 'review', 'fix', 'redTeam']) {
+    assert.equal(modelFor(kind, { id: '1' }, {}), undefined)
+    assert.equal(modelFor(kind, null, null), undefined)
+  }
+})
+
+test('modelFor: push defaults to haiku, overridable by models.push and blanket model', () => {
+  assert.equal(modelFor('push', null, {}), 'haiku')
+  assert.equal(modelFor('push', null, { models: { push: 'sonnet' } }), 'sonnet')
+  assert.equal(modelFor('push', null, { model: 'opus' }), 'opus')
+})
+
+test('modelFor: per-kind map beats blanket pin', () => {
+  assert.equal(modelFor('review', { id: '1' }, { model: 'opus', models: { review: 'sonnet' } }), 'sonnet')
+  assert.equal(modelFor('build', { id: '1' }, { model: 'opus', models: { review: 'sonnet' } }), 'opus')
+})
+
+test('modelFor: task tier applies ONLY to that task\'s build/fix — never review/redTeam', () => {
+  const t = { id: '1', tier: 'sonnet' }
+  const a = { models: { review: 'opus' } }
+  assert.equal(modelFor('build', t, a), 'sonnet')
+  assert.equal(modelFor('fix', t, a), 'sonnet')
+  assert.equal(modelFor('review', t, a), 'opus')
+  assert.equal(modelFor('redTeam', t, a), undefined)
+})
+
+test('modelFor: garbage shapes fail safe to inherit/defaults', () => {
+  assert.equal(modelFor('build', { id: '1', tier: 42 }, {}), undefined)
+  assert.equal(modelFor('build', { id: '1', tier: '' }, {}), undefined)
+  assert.equal(modelFor('review', { id: '1' }, { models: 'opus' }), undefined)
+  assert.equal(modelFor('review', { id: '1' }, { models: { review: 7 } }), undefined)
+  assert.equal(modelFor('push', null, { models: { review: 'sonnet' } }), 'haiku')
 })
 
 // ---- host-load regression (F-016) ----

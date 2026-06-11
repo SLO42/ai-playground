@@ -162,3 +162,27 @@ The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
   family already denies, pin WHICH gate fires rather than expecting allow. A
   conservative deny from an earlier layer is correct behaviour, never a regression to
   "fix" by reordering.
+
+## F-019: dev-server keyboard/SSE assertions race client hydration
+- **Date**: 2026-06-11
+- **What**: the 15.3 shell-primitives verify-flow pressed Ctrl+K immediately after
+  the daemon's `nav` resolved ('load') and asserted the command palette opened — it
+  hadn't: the press diff showed only live-data noise (and, tellingly, the statusbar
+  "connection live" indicator APPEARING during the press's settle window). Manual
+  replay seconds later worked.
+- **Why**: `waitUntil:'load'` fires before Svelte hydration on a vite DEV server
+  (first-load module compile makes the window seconds wide). The Ctrl+K
+  `<svelte:window onkeydown>` listener — and the SSE stream the live-row assertions
+  depend on — only exist after hydration, so a keypress/SSE assertion straight after
+  'load' is a coin flip. e2e never hit it because Playwright drives the BUILT app
+  (fast hydration) with auto-waiting locators.
+- **Fix**: deterministic gate in the flow harness (`awaitLive`): bounded poll until
+  the Topbar `aria-label="connection live"` node exists — that label flips from the
+  SSR'd 'unknown' only after hydration AND the SSE stream attaches. Flows gate after
+  their first nav before any keyboard/live-update step.
+- **Prevention**: against a dev server, never assert client-side behaviour
+  (keyboard listeners, SSE-driven updates) straight after 'load' — gate on an
+  observable post-hydration signal (`connection live`) first. Related predicate trap
+  fixed in the same task: when a tag string appears in MULTIPLE table rows (a
+  workflow's name carries the tag too), match rows with per-condition `.some()`,
+  never `.find()` — the first matching row shadows the one under test.

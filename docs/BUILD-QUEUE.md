@@ -4,6 +4,8 @@
 >
 > Maintained by the orchestrating session. One line per item: `status | id | what | gate`.
 > status: done / running / queued / blocked. gate: auto (chain through) / operator (stop and ask).
+>
+> **Why a doc and not the database (operator-discussed 2026-06-10):** the build factory must not store its control state inside the thing it is building — waves migrate/reset/wedge the dev SurrealDB (F-015 wedged `db:up` itself), and D-001's boundary cuts both ways (product never parses harness files; harness doesn't write product tables). Git-tracked markdown needs zero infrastructure and versions with the decisions behind each item. **End state = D-040 self-hosting:** this queue becomes `task`/`sprint` rows in `atelier_self`, owned by the PM inside the product; this doc then retires to a read-only cold-boot projection.
 
 | status | id | what | gate |
 |---|---|---|---|

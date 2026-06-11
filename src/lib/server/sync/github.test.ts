@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { StringRecordId } from 'surrealdb';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
@@ -240,6 +241,105 @@ describe('push — task → issue, idempotent (the create-or-update invariant)',
 		expect(r.created).toBe(1);
 		expect(gh.createdCalls).toBe(0);
 		expect((await listMappings(db, projectId, REPO)).length).toBe(0);
+	});
+});
+
+// ── TASK 16.4 DoD-review fix — the proposal ceremony never leaks to GitHub ──────────
+// The push loop selected every project task UNFILTERED, so an undecided 'proposed'
+// task became a real open issue on the operator's next sync (bypassing the validation
+// panel + operator brief at the external boundary), and terminal 'withdrawn' mapped to
+// issue-state OPEN forever. These gates lock the boundary.
+describe('proposal ceremony at the sync boundary (16.4)', () => {
+	it('a proposed task is NEVER pushed — no issue created, no same-title link, no mapping', async () => {
+		const gh = new FakeGitHub();
+		// Even a same-title issue must not be LINKED to an undecided proposal.
+		gh.seedIssue({ number: 42, title: 'PM idea', url: `https://github.com/${REPO}/issues/42` });
+		const adapter = new GitHubSyncAdapter({ client: gh });
+		const t = await createTask(db, {
+			project: projectId,
+			title: 'PM idea',
+			description: 'undecided proposal',
+			status: 'proposed',
+			origin: 'pm'
+		});
+
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		expect(r.created).toBe(0);
+		expect(r.linked).toBe(0);
+		expect(r.skipped).toBeGreaterThanOrEqual(1);
+		expect(r.items.some((i) => i.taskId === t.id && i.action === 'skipped')).toBe(true);
+		expect(gh.createdCalls).toBe(0);
+		expect((await listMappings(db, projectId, REPO)).length).toBe(0);
+	});
+
+	it('an UNMAPPED withdrawn proposal stays off the mirror (no posthumous open issue)', async () => {
+		const gh = new FakeGitHub();
+		const adapter = new GitHubSyncAdapter({ client: gh });
+		const t = await createTask(db, {
+			project: projectId,
+			title: 'Dead idea',
+			description: 'withdrawn before ever syncing',
+			status: 'proposed',
+			origin: 'pm'
+		});
+		await setStatus(db, t.id, 'withdrawn');
+
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		expect(r.created).toBe(0);
+		expect(gh.createdCalls).toBe(0);
+		expect((await listMappings(db, projectId, REPO)).length).toBe(0);
+	});
+
+	it('a MAPPED task that becomes withdrawn CLOSES its issue (terminal, never re-opened)', async () => {
+		const gh = new FakeGitHub();
+		const adapter = new GitHubSyncAdapter({ client: gh });
+		const t = await createTask(db, { project: projectId, title: 'Was live', description: 'x' });
+		await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' }); // mapped + open
+		expect([...gh.issues.values()][0].state).toBe('open');
+		// Simulate the pre-fix legacy state: a mapped task reaches terminal 'withdrawn'
+		// (raw write — the machine only allows proposed→withdrawn; the mapping predates the fix).
+		await db.query(`UPDATE $rid SET status = 'withdrawn';`, { rid: new StringRecordId(t.id) });
+
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		expect(r.updated).toBe(1);
+		const issue = [...gh.issues.values()][0];
+		expect(issue.state).toBe('closed');
+		expect(issue.labels.map((l) => l.name)).toContain('status:withdrawn');
+	});
+
+	it('pull never decides a proposal: a status:ready label on a mapped issue is SKIPPED', async () => {
+		const gh = new FakeGitHub();
+		gh.seedIssue({
+			number: 77,
+			title: 'Drive-by promote',
+			labels: [{ name: 'atelier-task' }, { name: 'status:ready' }],
+			url: `https://github.com/${REPO}/issues/77`
+		});
+		const adapter = new GitHubSyncAdapter({ client: gh });
+		const t = await createTask(db, {
+			project: projectId,
+			title: 'Drive-by promote',
+			description: 'proposal with a legacy mapping',
+			status: 'proposed',
+			origin: 'pm'
+		});
+		// Legacy mapping (created pre-fix while the task was proposed).
+		await db.query(`CREATE task_sync CONTENT $c;`, {
+			c: {
+				task: new StringRecordId(t.id),
+				project: new StringRecordId(projectId),
+				provider: 'github',
+				repo: REPO,
+				external_id: '77',
+				direction: 'both',
+				last_synced: new Date()
+			}
+		});
+
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'pull' });
+		expect(r.pulled).toBe(0);
+		expect(r.skipped).toBeGreaterThanOrEqual(1);
+		expect((await getTask(db, t.id))?.status).toBe('proposed'); // the ceremony holds
 	});
 });
 

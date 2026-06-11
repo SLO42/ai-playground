@@ -153,6 +153,24 @@ describe('headings render the display face (14.3d) — no mono h3/h4 via font: s
   });
 });
 
+describe('Home portfolio summary mirrors the canonical task-status enum (16.4 DoD-review fix)', () => {
+  // LIVE-MEASURED defect: the Home page keeps an INLINE copy of TASK_STATUSES (so the
+  // client component never imports server-only code), and the 16.4 enum widening
+  // ('proposed'/'withdrawn') never reached it — with any PM proposal present, the page
+  // showed "7 total" while the rendered columns summed to 6 (the server total is an
+  // unfiltered GROUP BY over every status). This gate locks the inline list to the
+  // canonical enum, in the same board order, so the total always equals the visible sum.
+  it('the inline TASK_STATUSES list in +page.svelte equals tasks/repo TASK_STATUSES (same order)', async () => {
+    const { TASK_STATUSES } = await import('../lib/server/tasks/repo');
+    const home = pages.find((p) => p.rel === '+page.svelte');
+    expect(home, 'src/routes/+page.svelte must exist').toBeTruthy();
+    const m = /const TASK_STATUSES = \[([\s\S]*?)\]\s*as const/.exec(home!.src);
+    expect(m, 'Home must declare its inline `const TASK_STATUSES = [...] as const` list').toBeTruthy();
+    const inline = [...m![1].matchAll(/'([a-z_]+)'/g)].map((x) => x[1]);
+    expect(inline).toEqual([...TASK_STATUSES]);
+  });
+});
+
 describe('count badges never concatenate into accessible names (14.3e)', () => {
   it.each(pages.map((p) => [p.rel, p] as const))('%s buttons with count badges are named', (_rel, p) => {
     const tmpl = templateOnly(p.src);

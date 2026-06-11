@@ -13,16 +13,21 @@
   import type { PageData } from './$types';
 
   // The known task statuses, in board order (mirrors TASK_STATUSES in the tasks repo —
-  // kept inline so this client component never imports server-only code). Drives a stable
-  // summary board: every status shows, 0 when absent.
+  // kept inline so this client component never imports server-only code; a source gate in
+  // route-head-a11y.test.ts locks the two lists together so the server total always equals
+  // the sum of the rendered columns). Drives a stable summary board: every status shows,
+  // 0 when absent. 16.4 fix: 'proposed'/'withdrawn' were missing, so the rendered columns
+  // summed to less than the server-counted total whenever a PM proposal existed.
   const TASK_STATUSES = [
+    'proposed',
     'backlog',
     'ready',
     'in_progress',
     'review',
     'blocked',
     'done',
-    'failed'
+    'failed',
+    'withdrawn'
   ] as const;
 
   let { data }: { data: PageData } = $props();

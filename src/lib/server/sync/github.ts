@@ -26,6 +26,7 @@ import { writeAgentEvent } from '../analytics/events';
 import {
 	canTransition,
 	setStatus,
+	TASK_STATUSES,
 	type TaskStatus,
 	type TaskRow
 } from '../tasks/repo';
@@ -53,10 +54,31 @@ function labelsForTask(task: Pick<TaskRow, 'status' | 'priority'>): string[] {
 	return [SYNC_LABEL, `status:${task.status}`, `priority:${task.priority}`];
 }
 
-/** True iff a task status should present as a CLOSED issue (terminal states). */
+/** True iff a task status should present as a CLOSED issue (terminal states —
+ *  including 16.4's terminal 'withdrawn': a withdrawn proposal that somehow holds a
+ *  mapping must close its issue, never be (re-)asserted as OPEN on every sync). */
 function isClosedStatus(status: TaskStatus): boolean {
-	return status === 'done' || status === 'failed';
+	return status === 'done' || status === 'failed' || status === 'withdrawn';
 }
+
+// ── TASK 16.4 fix — the proposal ceremony is INTERNAL (PM-SPEC §4) ───────────────
+// pm-proposals' rail: a 'proposed' task "touches nothing external". The push loop
+// previously selected EVERY project task unfiltered, so an undecided proposal became
+// a real open GitHub issue on the operator's next sync — bypassing the validation/
+// brief ceremony at the external boundary. The pull side is fenced for the same
+// reason: a GitHub label edit must never decide a proposal (promote/withdraw runs
+// verdict-closure + brief ceremony that a bare status write would orphan).
+
+/** Statuses that exist on GitHub at all. 'proposed' is invisible until decided;
+ *  an unmapped 'withdrawn' proposal died before ever reaching the mirror. Derived
+ *  from the canonical enum so a future widening cannot silently drift past sync. */
+const CEREMONY_STATUSES: readonly TaskStatus[] = ['proposed', 'withdrawn'];
+
+/** The statuses a pull may propose onto a task (the lossless `status:<s>` label
+ *  round-trip) — the canonical enum MINUS the internal ceremony states. */
+const PULLABLE_STATUSES: readonly TaskStatus[] = TASK_STATUSES.filter(
+	(s) => !CEREMONY_STATUSES.includes(s)
+);
 
 /**
  * Map a GitHub issue back to the task status it implies. Prefer the explicit `status:<s>`
@@ -68,16 +90,10 @@ export function issueToTaskStatus(issue: GitHubIssue): TaskStatus {
 		.map((l) => l.name)
 		.find((n) => n.startsWith('status:'))
 		?.slice('status:'.length);
-	const known: readonly TaskStatus[] = [
-		'backlog',
-		'ready',
-		'in_progress',
-		'review',
-		'blocked',
-		'done',
-		'failed'
-	];
-	if (fromLabel && (known as readonly string[]).includes(fromLabel)) {
+	// 16.4 fix: derived from TASK_STATUSES (the inline copy here had drifted from the
+	// widened enum); 'proposed'/'withdrawn' stay DELIBERATELY unpullable — a GitHub
+	// label edit must not drive the internal proposal ceremony.
+	if (fromLabel && (PULLABLE_STATUSES as readonly string[]).includes(fromLabel)) {
 		return fromLabel as TaskStatus;
 	}
 	return issue.state === 'closed' ? 'done' : 'in_progress';
@@ -353,6 +369,18 @@ export class GitHubSyncAdapter implements SyncAdapter {
 	): Promise<SyncItemResult> {
 		const { task, repo, cwd, dryRun, existing } = ctx;
 
+		// 16.4 fix: an undecided proposal NEVER touches GitHub (create, link, or
+		// update) — the ceremony is internal until the panel/operator decides it.
+		if (task.status === 'proposed') {
+			return { taskId: task.id, action: 'skipped' };
+		}
+		// 16.4 fix: a withdrawn proposal that never reached the mirror stays off it —
+		// creating a brand-new OPEN issue for a dead proposal would be pure noise.
+		// (A MAPPED withdrawn task falls through: its issue must close, below.)
+		if (!existing && task.status === 'withdrawn') {
+			return { taskId: task.id, action: 'skipped' };
+		}
+
 		if (existing) {
 			// Idempotent UPDATE: reflect the task's current state onto the mapped issue.
 			const issue = ctx.issueByNumber.get(existing.external_id);
@@ -432,6 +460,17 @@ export class GitHubSyncAdapter implements SyncAdapter {
 		const task = await getTaskRow(db, mapping.task);
 		if (!task) {
 			return { taskId: mapping.task, action: 'skipped', externalId: mapping.external_id };
+		}
+		// 16.4 fix: a 'proposed' task is decided ONLY by the validation panel / the
+		// operator's brief — never by a GitHub edit (which would skip verdict closure
+		// and brief supersession). Honest skip, like an illegal transition.
+		if (task.status === 'proposed') {
+			return {
+				taskId: task.id,
+				action: 'skipped',
+				externalId: mapping.external_id,
+				externalUrl: mapping.external_url ?? issue.url
+			};
 		}
 		const proposed = issueToTaskStatus(issue);
 		// Identity or an illegal transition → honest skip (never force an out-of-machine move).

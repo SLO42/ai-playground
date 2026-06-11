@@ -340,6 +340,17 @@ export async function setStatus(db: Db, id: string, to: TaskStatus): Promise<Tas
 	if (current.status === to) {
 		// Identity is a no-op, never a transition — do not touch the row, so no
 		// spurious db_change fires. Return the row unchanged.
+		//
+		// 16.4 fix (interrupt contract): EXCEPT that the §2.2 upheld-on-done closure
+		// below runs AFTER the committed transition — a crash in that window leaves
+		// open panel verdicts on a done task, and this early-return previously made
+		// the closure unreachable forever (no caller path ever re-reached it). Re-run
+		// the closure on the identity-done path so a re-issued setStatus(id,'done')
+		// converges: already-closed rows absorb (closePanelVerdictOutcome no-ops on
+		// the same outcome), tasks that never met a panel close zero rows.
+		if (to === 'done') {
+			await closeOpenPanelVerdictsForArtifact(db, current.id, 'upheld');
+		}
 		return current;
 	}
 	if (!canTransition(current.status, to)) {

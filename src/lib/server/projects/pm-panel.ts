@@ -743,8 +743,15 @@ export async function applyBriefDecision(
 	const task = await getTask(db, brief.artifact);
 	if (!task) throw new BriefError(`brief artifact vanished: ${brief.artifact}`);
 
+	// 16.4 fix (interrupt contract): EFFECT first, ceremony LAST. The original order
+	// (markBriefDecided → setStatus) meant a crash between the two stranded a DECIDED
+	// brief with an untouched 'proposed' task — and because the tray lists only OPEN
+	// briefs, the decide affordance vanished with no way to converge. Effect-first
+	// keeps the brief OPEN (re-POSTable) through every crash window: on re-run the
+	// status guard absorbs the already-moved task, the verdict closures absorb
+	// (same-outcome no-op), and the ceremony write completes the decision.
+
 	if (action === 'approve') {
-		const decided = await markBriefDecided(db, brief.id, 'approved');
 		const ready = task.status === 'proposed' ? await setStatus(db, task.id, 'ready') : task;
 		// The operator moved PAST any pushback verdicts (none exist on gate briefs;
 		// challenge briefs may carry them) — close them honestly.
@@ -752,11 +759,11 @@ export async function applyBriefDecision(
 		for (const v of open) {
 			if (v.verdict === 'pushback') await closePanelVerdictOutcome(db, v.id, 'overridden_by_operator');
 		}
+		const decided = await markBriefDecided(db, brief.id, 'approved');
 		return { brief: decided, taskStatus: ready?.status ?? task.status };
 	}
 
 	if (action === 'reject') {
-		const decided = await markBriefDecided(db, brief.id, 'rejected');
 		const withdrawn = task.status === 'proposed' ? await setStatus(db, task.id, 'withdrawn') : task;
 		const open = (await listPanelVerdictsForArtifact(db, task.id)).filter((v) => v.outcome == null);
 		for (const v of open) {
@@ -766,23 +773,29 @@ export async function applyBriefDecision(
 				v.verdict === 'approve' ? 'overridden_by_operator' : 'upheld'
 			);
 		}
+		const decided = await markBriefDecided(db, brief.id, 'rejected');
 		return { brief: decided, taskStatus: withdrawn?.status ?? task.status };
 	}
 
-	// defer
+	// defer — the ceremony IS the effect here (the task stays 'proposed').
 	const pm = await getPm(db, task.project);
 	const until = new Date(Date.now() + deferWindowMs(pm, opts));
+	const wasOpen = brief.status === 'open';
 	const decided = await markBriefDecided(db, brief.id, 'deferred', { deferUntil: until });
-	// Defer is first-class and feeds pm_memory (WORKFORCE §8 one-click list).
-	await addPmMemory(db, {
-		project: task.project,
-		kind: 'observation',
-		content:
-			`Operator DEFERRED the brief on "${task.title}" until ${until.toISOString()} — ` +
-			`the matter is suppressed (structural fingerprint) until the window lapses.`,
-		source: 'decision-brief',
-		confidence: 1.0
-	});
+	// Defer is first-class and feeds pm_memory (WORKFORCE §8 one-click list) — but
+	// ONLY on the actual open→deferred transition (16.4 fix): a repeat defer POST is
+	// absorbed by markBriefDecided and must not append another observation each time.
+	if (wasOpen) {
+		await addPmMemory(db, {
+			project: task.project,
+			kind: 'observation',
+			content:
+				`Operator DEFERRED the brief on "${task.title}" until ${until.toISOString()} — ` +
+				`the matter is suppressed (structural fingerprint) until the window lapses.`,
+			source: 'decision-brief',
+			confidence: 1.0
+		});
+	}
 	return { brief: decided, taskStatus: task.status };
 }
 

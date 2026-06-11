@@ -415,6 +415,40 @@ describe('revise / withdraw — §2.2 outcome closure + supersession links', () 
 		expect(verdicts[0].outcome).toBe('upheld');
 	});
 
+	it('a crash between the done-commit and the §2.2 closure converges on re-run (16.4 DoD-review fix)', async () => {
+		// Defect: closeOpenPanelVerdictsForArtifact ran AFTER the committed status
+		// transaction, and the identity no-op early-return made the closure
+		// unreachable on a re-run — a crash in that window orphaned open verdicts on
+		// a done task forever (invisible: the queue lists 'proposed' tasks only).
+		await hire();
+		const res = await proposeTask(db, validInput());
+		const taskId = res.task!.id;
+		const session = await freshSession();
+		await addPanelVerdict(db, {
+			project: projectId,
+			artifact: taskId,
+			artifact_kind: 'task',
+			validator_session: session,
+			verdict: 'approve',
+			reasons: ['sound'],
+			classification: 'mechanical'
+		});
+		// Simulate the crash window: the transition committed (raw write — exactly
+		// what the transaction persists), the process died before the closure ran.
+		await db.query(`UPDATE $rid SET status = 'done', updated_at = time::now();`, {
+			rid: new StringRecordId(taskId)
+		});
+		expect((await listPanelVerdictsForArtifact(db, taskId))[0].outcome).toBeNull(); // orphaned
+		// Interrupt contract: the RE-RUN of the same operation absorbs the prior
+		// partial work — the identity-done path now reaches the closure.
+		const same = await setStatus(db, taskId, 'done');
+		expect(same?.status).toBe('done');
+		expect((await listPanelVerdictsForArtifact(db, taskId))[0].outcome).toBe('upheld');
+		// …and a second re-run stays a clean absorb (no relabel, no error).
+		await setStatus(db, taskId, 'done');
+		expect((await listPanelVerdictsForArtifact(db, taskId))[0].outcome).toBe('upheld');
+	});
+
 	it('closeOpenPanelVerdictsForArtifact is idempotent over a re-run (interrupt contract)', async () => {
 		await hire();
 		const res = await proposeTask(db, validInput());

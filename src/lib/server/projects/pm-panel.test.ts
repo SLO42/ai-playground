@@ -411,6 +411,48 @@ describe('applyBriefDecision — approve / reject / defer with §2.2 closure', (
 		expect(verdicts.every((v) => v.outcome === 'overridden_by_operator')).toBe(true);
 	});
 
+	it('effect-first ordering: a crash AFTER the task moved but BEFORE the ceremony converges on re-POST (16.4 DoD-review fix)', async () => {
+		// Defect: applyBriefDecision wrote ceremony-before-effect (markBriefDecided →
+		// setStatus); a crash between them stranded a DECIDED brief with an untouched
+		// 'proposed' task — and the tray lists only OPEN briefs, so the decide
+		// affordance vanished. Effect-first keeps the brief OPEN through every crash
+		// window; the re-POST absorbs the moved task and completes the ceremony.
+		const { task, brief } = await gateBrief();
+		// Simulate the (new) crash window: the effect landed, the ceremony did not.
+		await setStatus(db, task.id, 'ready');
+		// The decide affordance is still there (the brief is still open).
+		expect((await listOpenBriefs(db)).some((b) => b.id === brief.id)).toBe(true);
+		// Re-POST converges: status guard absorbs, ceremony completes.
+		const out = await applyBriefDecision(db, brief.id, 'approve');
+		expect(out.brief.status).toBe('approved');
+		expect(out.taskStatus).toBe('ready');
+		expect((await listOpenBriefs(db)).some((b) => b.id === brief.id)).toBe(false);
+	});
+
+	it('effect-first ordering holds for reject too (withdrawn task + open brief re-POST converges)', async () => {
+		const { task, brief } = await gateBrief();
+		// Simulate the crash window: only the status effect landed.
+		await setStatus(db, task.id, 'withdrawn');
+		expect((await listOpenBriefs(db)).some((b) => b.id === brief.id)).toBe(true);
+		const out = await applyBriefDecision(db, brief.id, 'reject');
+		expect(out.brief.status).toBe('rejected');
+		expect(out.taskStatus).toBe('withdrawn');
+		const verdicts = await listPanelVerdictsForArtifact(db, task.id);
+		expect(verdicts.every((v) => v.outcome === 'overridden_by_operator')).toBe(true);
+	});
+
+	it('a repeat defer POST absorbs WITHOUT a duplicate pm_memory observation (16.4 DoD-review fix)', async () => {
+		const { brief } = await gateBrief();
+		await applyBriefDecision(db, brief.id, 'defer');
+		// Same answer re-POSTed (double-click / retry after a timeout): absorbed.
+		const again = await applyBriefDecision(db, brief.id, 'defer');
+		expect(again.brief.status).toBe('deferred');
+		const mem = (await listPmMemory(db, projectId)).filter(
+			(m) => m.source === 'decision-brief' && m.content.includes('DEFERRED')
+		);
+		expect(mem).toHaveLength(1); // exactly one — the ceremony happened once
+	});
+
 	it('defer → brief deferred with a real window; the structural fingerprint suppresses re-proposals', async () => {
 		const { task, brief } = await gateBrief();
 		const out = await applyBriefDecision(db, brief.id, 'defer');

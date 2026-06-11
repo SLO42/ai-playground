@@ -152,6 +152,20 @@ Copy these into v2's `docs/fails.md` on day one — they are prevention rules, n
 - **E2E (Playwright):** core flows — register a project, create a task, run an agent (mocked runtime), see live UI update. Remember F-010 (no `networkidle`).
 - **Runtime contract tests:** a shared test suite every `AgentRuntime` impl must pass — so swapping impls (D-002) is safe.
 
+### 7.1 Verify flows — codified live-verify (TASK 15.3)
+
+Proven browser live-verifies are CODIFIED, not re-explored (F-014). One deterministic script per feature in `tests/verify-flows/<feature>.mjs`, driven through the 15.2 singleton browser daemon (`scripts/browser-verify/cli.mjs`: `nav` / `snapshot` / `act` / `press` / `text`), asserting via **snapshot-diff and structured text — never screenshots**. Run them all with:
+
+```bash
+npm run verify:flows                      # all ACTIVE flows, one reused browser, bounded
+node tests/verify-flows/<feature>.mjs     # one flow directly (same JSON result protocol)
+```
+
+- **When you build a feature, ADD a flow for it** — codify the live-verify you just proved so the next wave replays it instead of rediscovering it. Use `lib/harness.mjs` (`runFlow`, `bv`, `assert`, `skip`, `pollUntil`); see the three seeds (`shell-primitives`, `services-health`, `workflows-live`) as templates.
+- **Atomic draft→active discipline (F-015 class):** a new flow lands as `<name>.draft.mjs` (the runner IGNORES drafts but lists them). It must pass ONCE against the live app, then `npm run verify:flows -- --graduate <name>` renames it (atomic) to active. A skip never graduates; there is no half-state.
+- **Honest report:** per-flow `pass` / `fail` / `skip` + evidence. Env-unavailable (app/daemon/DB down) is a SKIP with the reason named, never a fake pass and never a defect. Exit codes: `0` all executed passed · `1` any fail · `2` nothing verified (all skipped / no flows) — an end gate must not read `2` as green.
+- **Bounds + cleanup (F-014):** every flow runs as a child process under a wall-clock bound (default 180s, `--bound`/`VF_FLOW_BOUND_MS`); the runner reuses a running daemon and stops only a daemon it caused to start; it never boots the dev server (reuse the ONE running server). Flows clean up anything they create (e.g. `workflows-live` deletes its tagged test rows in `finally`).
+
 ---
 
 ## 8. Workflow (per CLAUDE.md: Plan → Implement → Verify)

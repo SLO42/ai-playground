@@ -7,7 +7,13 @@ export default defineConfig({
   test: {
     // scripts/** added in 15.2: the browser-verify daemon (dev/verify tooling,
     // not product runtime) lives in scripts/ and carries its own unit + live suites.
-    include: ['src/**/*.{test,spec}.{js,ts}', 'scripts/**/*.{test,spec}.{js,ts}'],
+    // tests/verify-flows/** added in 15.3: the verify-flow runner's own unit suite
+    // (the flows themselves are NOT vitest — they run via `npm run verify:flows`).
+    include: [
+      'src/**/*.{test,spec}.{js,ts}',
+      'scripts/**/*.{test,spec}.{js,ts}',
+      'tests/verify-flows/**/*.{test,spec}.{js,ts}'
+    ],
     environment: 'node',
     // Suite-wide teardown bound (14.6): under full-suite concurrency the per-file
     // SurrealDB testserver teardown (deleteProject + db.close + process kill) can

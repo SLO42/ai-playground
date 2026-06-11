@@ -19,6 +19,7 @@
     "test:e2e": "playwright test",
     "verify": "vite build && vitest run && playwright test",
     "verify:browser": "node scripts/browser-verify/cli.mjs",
+    "verify:flows": "node tests/verify-flows/lib/runner.mjs",
     "lint": "eslint .",
     "typecheck": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json"
   },

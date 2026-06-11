@@ -15,8 +15,8 @@
 //   - EVERY op is wall-clock-bounded client-side (AbortSignal.timeout) on
 //     top of the daemon's own bound — no channel can hang a wave verify step.
 //
-// Commands: start | status | nav <url> | snapshot | act <ref> |
-//           screenshot <path> | stop
+// Commands: start | status | nav <url> | snapshot | act <ref> | press <key> |
+//           text <selector> | screenshot <path> | stop
 // Options:  --timeout <ms>  --state-dir <dir>  --idle-ms <ms>
 
 import { parseArgs } from 'node:util';
@@ -40,7 +40,7 @@ const POLL_MS = 200;
 
 function usage() {
 	console.error(
-		'usage: node scripts/browser-verify/cli.mjs <start|status|nav <url>|snapshot|act <ref>|screenshot <path>|stop> [--timeout ms] [--state-dir dir] [--idle-ms ms]'
+		'usage: node scripts/browser-verify/cli.mjs <start|status|nav <url>|snapshot|act <ref>|press <key>|text <selector>|screenshot <path>|stop> [--timeout ms] [--state-dir dir] [--idle-ms ms]'
 	);
 	process.exit(2);
 }
@@ -253,6 +253,8 @@ async function main() {
 			case 'nav':
 			case 'snapshot':
 			case 'act':
+			case 'press':
+			case 'text':
 			case 'screenshot': {
 				const crash = readAndClearCrashMarker(stateDir);
 				const { state, notes } = await ensureDaemon(stateDir, idleMs, workspace);
@@ -289,6 +291,26 @@ async function main() {
 						removed: out.removed,
 						summary: out.summary
 					});
+				}
+				if (cmd === 'press') {
+					const key = positionals[1];
+					if (!key) usage();
+					const out = await postOp(state, '/press', { key, timeoutMs: opTimeout }, clientBound);
+					emit({
+						ok: true,
+						...base,
+						key: out.key,
+						changed: out.changed,
+						added: out.added,
+						removed: out.removed,
+						summary: out.summary
+					});
+				}
+				if (cmd === 'text') {
+					const selector = positionals[1];
+					if (!selector) usage();
+					const out = await postOp(state, '/text', { selector, timeoutMs: opTimeout }, clientBound);
+					emit({ ok: true, ...base, selector: out.selector, count: out.count, texts: out.texts });
 				}
 				if (cmd === 'screenshot') {
 					const path = positionals[1];

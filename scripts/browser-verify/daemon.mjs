@@ -35,6 +35,7 @@ import {
 import { createIdleMonitor } from './idle.mjs';
 import { captureNodes, diffSnapshots, MAX_NODES } from './snapshot.mjs';
 import { isPidAlive } from './pid-live.mjs';
+import { validatePressKey, validateTextSelector } from './op-validate.mjs';
 
 const STATE_DIR = process.env.BV_STATE_DIR || resolve(process.cwd(), '.playground');
 const IDLE_MS = Number(process.env.BV_IDLE_MS || 10 * 60 * 1000); // default 10 min quiet
@@ -242,6 +243,71 @@ async function opAct(params) {
 	};
 }
 
+/**
+ * Keyboard press with the SAME snapshot-diff action proof as act() (TASK 15.3
+ * B9 — codified verify-flows need the keyboard backbone: the Cmd/Ctrl-K
+ * command palette has no pointer-only open path). Key validated at the
+ * boundary (op-validate.mjs); proof captures are ref-less like act's.
+ */
+async function opPress(params) {
+	const key = validatePressKey(params.key);
+	const p = requirePage();
+	const capOpts = { assignRefs: false, generation, maxNodes: MAX_NODES };
+	const before = await p.evaluate(captureNodes, capOpts);
+	await p.keyboard.press(key);
+	// If the press navigated/toggled, bound the settle wait (same as act).
+	await p.waitForLoadState('load', { timeout: 3_000 }).catch(() => {
+		/* still loading past the bound — capture what is there now, honestly */
+	});
+	await p.waitForTimeout(350);
+	const after = await p.evaluate(captureNodes, capOpts);
+	const diff = diffSnapshots(before, after);
+	return {
+		key,
+		changed: diff.changed,
+		added: diff.added,
+		removed: diff.removed,
+		summary:
+			diff.changed > 0
+				? `pressed ${key} and ${diff.changed} things changed (+${diff.added.length}/-${diff.removed.length})`
+				: `pressed ${key} and NOTHING observable changed — treat as a failure signal, not success`
+	};
+}
+
+/**
+ * READ-ONLY text extraction (TASK 15.3 B9): visible innerText of elements
+ * matching a CSS selector, bounded (60 elements × 600 chars). The a11y
+ * snapshot captures interactive/landmark nodes only — verify-flows assert
+ * page TRUTH (e.g. the /services "probe: healthy" claim, a run row's status)
+ * from this, never from screenshots. Mutates nothing.
+ */
+async function opText(params) {
+	const selector = validateTextSelector(params.selector);
+	const p = requirePage();
+	const out = await p.evaluate(
+		(args) => {
+			let list;
+			try {
+				list = Array.from(document.querySelectorAll(args.selector));
+			} catch {
+				return { invalid: true, total: 0, texts: [] };
+			}
+			const texts = [];
+			for (const el of list) {
+				if (texts.length >= args.maxEls) break;
+				if (!(el instanceof HTMLElement)) continue;
+				texts.push((el.innerText || '').replace(/\s+/g, ' ').trim().slice(0, args.maxLen));
+			}
+			return { invalid: false, total: list.length, texts };
+		},
+		{ selector, maxEls: 60, maxLen: 600 }
+	);
+	if (out.invalid) {
+		throw namedError('text-selector-invalid', `text: not a valid CSS selector: ${JSON.stringify(selector)}`);
+	}
+	return { selector, count: out.total, texts: out.texts };
+}
+
 async function opScreenshot(params) {
 	const rawPath = typeof params.path === 'string' ? params.path : '';
 	if (!rawPath) throw namedError('screenshot-path-invalid', 'screenshot: path is required');
@@ -356,6 +422,16 @@ async function handle(req, res) {
 				return send(res, 200, {
 					ok: true,
 					...(await enqueue(() => withTimeout(opAct(params), OP_CEILING_MS, 'act')))
+				});
+			case '/press':
+				return send(res, 200, {
+					ok: true,
+					...(await enqueue(() => withTimeout(opPress(params), OP_CEILING_MS, 'press')))
+				});
+			case '/text':
+				return send(res, 200, {
+					ok: true,
+					...(await enqueue(() => withTimeout(opText(params), OP_CEILING_MS, 'text')))
 				});
 			case '/screenshot':
 				return send(res, 200, {

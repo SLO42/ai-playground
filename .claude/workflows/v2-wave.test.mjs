@@ -3,8 +3,12 @@
 //
 // v2-wave.js is a workflow-host script (top-level `await agent(...)` / top-level `return`),
 // so it is NOT importable as a standard ES module — `import` throws "Illegal return statement".
-// The helpers are still marked `export` (host tolerates exports, per the existing meta export);
-// here we extract the sentinel-delimited pure-helper block from the source and evaluate it.
+// The helpers are PLAIN function declarations, NOT exported (F-016): the host loader special-cases
+// ONLY the leading `export const meta` — it AST-requires it as the FIRST statement, slices it off
+// verbatim, then pre-checks the remaining body with
+//   Function("async function _check() {'use strict';\n" + body + "\n}")
+// where any `export` is a load-time SyntaxError. Nothing else export-shaped is tolerated.
+// So we extract the sentinel-delimited pure-helper block from the source and evaluate it.
 // The block is host-free by contract (no agent/phase/log/args), asserted below.
 
 import { readFileSync } from 'node:fs'
@@ -129,4 +133,37 @@ test('shouldRedTeam: null/undefined inputs → false, and always returns a boole
   assert.equal(shouldRedTeam(undefined, undefined), false)
   assert.equal(typeof shouldRedTeam(null, { redTeamAll: true }), 'boolean')
   assert.equal(shouldRedTeam(null, { redTeamAll: true }), true)
+})
+
+// ---- host-load regression (F-016) ----
+// Reproduce the workflow host's EXACT load pipeline in pure Node: the loader AST-requires
+// `export const meta` as the FIRST statement, slices it off verbatim (scriptBody = src.slice(meta.end)),
+// then pre-checks the remaining body with V8 via Function("async function _check() {'use strict';\n"+body+"\n}").
+// Any `export` (or anything else illegal inside a function body) left in that body means EVERY future
+// wave invocation dies at load, before any BUILD agent spawns. node --check, ESM dynamic import, and
+// extract-and-eval all bypass this pipeline — only this repro catches the class.
+
+function bodyAfterMeta(source) {
+  assert.ok(source.startsWith('export const meta'), 'host loader requires `export const meta` as the first statement')
+  // find the end of the meta object literal: brace-match, honoring quotes and escapes
+  let depth = 0, quote = null
+  for (let k = source.indexOf('{'); k < source.length; k++) {
+    const c = source[k]
+    if (quote) {
+      if (c === '\\') k++
+      else if (c === quote) quote = null
+    } else if (c === "'" || c === '"' || c === '`') quote = c
+    else if (c === '{') depth++
+    else if (c === '}' && --depth === 0) return source.slice(k + 1)
+  }
+  assert.fail('meta object literal never closes')
+}
+
+test('host-load regression (F-016): body after meta passes the host V8 pre-check', () => {
+  const body = bodyAfterMeta(src)
+  assert.ok(!/^\s*export\b/m.test(body), 'no export statements may remain after the leading meta export')
+  assert.doesNotThrow(
+    () => new Function("async function _check() {'use strict';\n" + body + "\n}"),
+    'v2-wave.js body must compile inside the host async-function wrapper — only the leading `export const meta` is tolerated (F-016)'
+  )
 })

@@ -20,9 +20,13 @@ const MAX_FIX = args.maxFixAttempts ?? 2
 const OPTS = (extra) => args.model ? { ...extra, model: args.model } : extra
 
 // ---- pure helpers (self-contained — extracted + unit-tested by v2-wave.test.mjs; keep host-free) ----
+// PLAIN declarations, NOT exported (F-016): the workflow host special-cases ONLY the leading
+// `export const meta` (AST-required first statement, sliced off before load); any other `export`
+// is a load-time SyntaxError — the remaining body is pre-checked inside an async-function wrapper
+// where `export` is illegal. v2-wave.test.mjs extracts this sentinel block from source instead.
 // A7 (harvested: gstack EXIT-PLAN-MODE artifact gate, MIT — Lane A-code A4/A7): machine-validate every
 // review-shaped return BEYOND the schema. Returns [] when structurally sound, else the named defects.
-export function checkVerdict(r){
+function checkVerdict(r){
   if(!r || typeof r!=='object' || Array.isArray(r)) return ['verdict is not an object']
   const defects=[]
   const gaps=Array.isArray(r.gaps)?r.gaps:[]
@@ -44,7 +48,7 @@ export function checkVerdict(r){
 // A4 (harvested: gstack review/SKILL.md red-team pass, MIT — Lane A-code A4/A7): trigger is EXPLICIT
 // only — the wave author flags risky tasks. No invented automatic heuristics (diff-size thresholds
 // would be invented numbers, F-008).
-export function shouldRedTeam(task, waveArgs){
+function shouldRedTeam(task, waveArgs){
   return (task!=null && task.redTeam===true) || (waveArgs!=null && waveArgs.redTeamAll===true)
 }
 // ---- end pure helpers ----
@@ -142,7 +146,8 @@ for (const t of args.tasks){
   }
 
   results.push({build:b, review:r, redTeam, fixes})
-  if(!r||r.passed===false) return {stoppedAt:`${t.id} DoD-review (after ${attempt} fix attempts)`, results}
+  // name the actual failing gate: when the red team failed with the fix budget already spent, r IS the red-team verdict
+  if(!r||r.passed===false) return {stoppedAt:`${t.id} ${r&&r===redTeam?'red-team review':'DoD-review'} (after ${attempt} fix attempts)`, results}
 }
 
 if(args.pushAtEnd!==false){

@@ -5,6 +5,7 @@
 ## 1. Identity — the PM is hired, not implicit
 
 - New `pm` table, **one row per project** (UNIQUE project link): `project`, `name`, `charter: option<string>` (operator-written directives: priorities, tone, escalation rules), `persona: option<string>`, `cadence: option<string>` (cron expr), `cadence_offset: option<duration>` (per-project stagger so PMs don't fire simultaneously), `authority: 'observe' | 'propose' | 'act'` (default **act** — see §4), `created_at`. Migration per F-015 (OVERWRITE, apply-twice + half-applied tests).
+- **PM model (operator, 2026-06-10): the PM runs on a strong frontier model — default Fable 5 (`claude-fable-5`)**, set via `config/workforce.yaml pm.model_id` (operator-tunable, per-project overridable on the pm row later if needed). PM sessions route with the explicit `{provider, model_id}` override (F-005 short-circuit) — the PM is the conductor, not a gauntleted workforce role; its model choice is config, not certification (WORKFORCE-SPEC roles still certify per (prompt_sha × model_id)).
 - **Hiring = context-building.** Creating a PM (PM tab → "Hire PM", replaces bare bootstrap) runs: project scan + plan-macro read + recent-history digest → founding `pm_memory` rows (extends the existing `bootstrapPm`) + the operator writes the charter in the same flow. A project with no PM renders the honest empty state + hire CTA (current behavior preserved).
 
 ## 2. Context — three layers, one manual

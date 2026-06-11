@@ -528,6 +528,16 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 
 ---
 
+## D-040 🟡 Self-hosting: Atelier maintains Atelier (docs → product memory, PM-run)
+
+**Context:** The v2 docs suite (DECISIONS, the SPEC family, fails.md, GAP-ANALYSIS, BUILD-QUEUE) lives on git branch `v2-main` and is consumed by build agents via file reads — the orchestrating Claude session is the only thing that "knows" the project. The operator's goal (2026-06-10): *"move all of these docs eventually into Atelier's memory for this project, that way it can maintain itself after this session and in the future."*
+
+**Decision:** After v2.1 ships, **project `atelier_self` becomes a fully managed Atelier project**: ① the docs suite is ingested into Atelier's memory/knowledge for `atelier_self` through the NORMAL ingest path (D-026 screen, quarantine lifecycle, provenance per doc + section; git stays the canonical SOURCE — memory is the queryable, recallable projection; a sync step keeps them honest, never two diverging truths); ② the BUILD-QUEUE becomes real `task`/`sprint` rows; ③ **`atelier_self` hires its own PM** (PM-SPEC), running on a strong model — **operator-designated: Fable 5 (`claude-fable-5`)**, set via `config/workforce.yaml pm.model_id`, operator-tunable; ④ the PM's triggers + the D-004 orchestration loop take over the maintenance duties this session performs manually (fails.md staleness proposals, doc-drift checks vs the codebase, queue advancement proposals) — all through Act-with-Purpose validation + operator gates (D-039).
+
+**Consequences:** queued in BUILD-QUEUE (`self-hosting`, gate:operator) after v2.1 — needs the PM + memory-hygiene waves (v2.2b B4/B5/B6) before doc ingest is safe. The orchestrating-session memory remains the bridge until then. Stays 🟡 until built.
+
+---
+
 ## Decision index
 
 | ID | Status | Topic |
@@ -571,5 +581,7 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 | D-036 | 🔒 | Per-task capability provisioning — built at v1.1 task 5.1, live-wired at gap-closure v1.3 |
 | D-037 | 🔒 | Extensible deploy/publish/sync adapter framework — built v1.5/v1.8, hardened v1.9; Create-with-AI separately scoped |
 | D-038 | 🔒 | Definition of Done — every feature: complete · fully tested · design-system standard · live-functional · purposeful · honest |
+| D-039 | 🟡 | Hired per-project PM with validated authority ("Act with Purpose"; PM-SPEC.md + WORKFORCE-SPEC.md; builds v2.1) |
+| D-040 | 🟡 | Self-hosting: docs → Atelier memory for atelier_self; PM (Fable 5, `claude-fable-5`) runs maintenance (post-v2.1) |
 
 > **Provenance:** **D-006–D-008 (in part)** and **D-014–D-023** are **KongCode-informed** — derived from studying KongCode v0.7.113 (`C:/Users/11sos/.claude/plugins/cache/kongcode-marketplace/kongcode/0.7.113/`), a production SurrealDB knowledge-graph + Claude Code harness (D-006 server-binary path is the biggest borrow; D-007 SurrealKV, D-008 dedup correction). ARCHITECTURE §9 "Lessons from KongCode" is the authoritative map. **D-024–D-026** are **security hardening surfaced by the pre-commit audit**. **D-027–D-033** (and the D-014 `qwen3-embedding:0.6b` embedding candidate) are sourced from the **cannibalize foundry** (`docs/CANNIBALIZE-BRIEF.md`) — distilled from **hermes-agent** (Nous Research, MIT), **mem0** (Apache-2.0), and **kongcode** (friend's plugin — ideas fine, code-lift needs consent). Each is a **candidate with provenance, to be verified against v2 constraints before build** — not a mandate. The three originally-OPEN items were **resolved by the owner 2026-06-06**: D-030 (utilization loop → ranking only, not pruning), D-031 (diversity → both novelty gate + consolidation), D-032 (single SurrealDB stands — reaffirms D-001; authored skills are already files per D-010). No locked decision was overridden. **D-034** is operator-authored (the delivered design system), not foundry-sourced; it supersedes the D-033 seed for concrete values and adds the Lastik font-license constraints. **Phase-0 spikes (2026-06-07)** resolved **D-014** (→ qwen3-embedding:0.6b, 1024-dim, S0-proven) and the **D-002** mechanism (SDK primary; CLI needs isolated config — S1). **D-035** folds **claude-peers-mcp** (operator's own tool): adopt the `claude/channel` interject now (D-011), defer the fleet message bus to v0.2.

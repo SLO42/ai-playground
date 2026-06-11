@@ -46,6 +46,9 @@ function mockBackend(opts?: {
 		spawns,
 		cancelled,
 		kind: 'mock',
+		// HONEST declaration (14.6): this mock genuinely implements both methods below.
+		supportsInterject: true,
+		supportsResume: true,
 		run(plan: CcSpawnPlan): CcBackendRun {
 			spawns.push({ plan });
 			opts?.onSpawn?.(plan);
@@ -258,6 +261,60 @@ describe('interject seam — origin is carried (D-035 groundwork)', () => {
 			body: 'hello',
 			steer: false
 		});
+	});
+});
+
+// ── TASK 14.6 — the HONEST backend capability matrix (F-008) ──────────────────────
+//
+// REGRESSION: the production CLI backend shipped interject/resume as throw-only stubs
+// while the runtime forwarded blindly. Now a backend DECLARES what it really supports;
+// an undeclared capability fails CLOSED at the runtime seam with an honest 'not
+// supported' — never a stub reached at all.
+
+describe('backend capability matrix — fail-closed honesty (14.6/F-008)', () => {
+	/** A backend that (like the old stub) implements nothing — and declares nothing. */
+	function undeclaredBackend(): CcBackend {
+		return {
+			kind: 'mock',
+			run(): CcBackendRun {
+				return {
+					ccSessionId: 'cc_x',
+					async *stream(): AsyncGenerator<RuntimeEvent> {
+						yield { type: 'done', result: { ok: true, summary: 'ran' } };
+					},
+					async cancel() {}
+				};
+			},
+			async resume() {
+				throw new Error('stub reached — capability gate failed');
+			},
+			async interject() {
+				throw new Error('stub reached — capability gate failed');
+			}
+		};
+	}
+
+	it('capabilities() reports exactly what the backend declared', () => {
+		expect(new ClaudeCodeRuntime({ backend: mockBackend() }).capabilities()).toEqual({
+			interject: true,
+			resume: true
+		});
+		expect(new ClaudeCodeRuntime({ backend: undeclaredBackend() }).capabilities()).toEqual({
+			interject: false,
+			resume: false
+		});
+	});
+
+	it('interject on an undeclared backend throws an honest not-supported (stub never reached)', async () => {
+		const rt = new ClaudeCodeRuntime({ backend: undeclaredBackend() });
+		await expect(
+			rt.interject('cc_x', { origin: 'operator', body: 'steer', steer: true })
+		).rejects.toThrow(/not supported/i);
+	});
+
+	it('resume on an undeclared backend throws an honest not-supported (stub never reached)', async () => {
+		const rt = new ClaudeCodeRuntime({ backend: undeclaredBackend() });
+		await expect(drain(rt.resume('cc_x', baseReq()))).rejects.toThrow(/not supported/i);
 	});
 });
 

@@ -309,6 +309,20 @@
   let controlBusy = $state(false);
   let controlError = $state<string | null>(null);
 
+  // TASK 14.6 — the HONEST backend capability matrix (F-008): a control the wired backend
+  // cannot really perform renders DISABLED with its reason, never a dead/deceptive button.
+  const caps = $derived(
+    data.controlCaps ?? { available: false, interject: false, resume: false, stop: false }
+  );
+  const capsNote = $derived.by((): string | null => {
+    if (!caps.available) return caps.reason ?? 'session controls unavailable — no runtime';
+    const off: string[] = [];
+    if (!caps.interject) off.push('interject');
+    if (!caps.resume) off.push('resume');
+    if (!caps.stop) off.push('stop');
+    return off.length ? `${off.join(' + ')} not supported by this backend` : null;
+  });
+
   async function sendControl(action: 'interject' | 'stop' | 'resume'): Promise<void> {
     if (!selectedSession) return;
     controlBusy = true;
@@ -1323,7 +1337,9 @@
               {/if}
             </div>
 
-            <!-- D-035: control actions ride the loopback control endpoint (operator origin). -->
+            <!-- D-035: control actions ride the loopback control endpoint (operator origin).
+                 14.6: each control is enabled ONLY when the backend really supports it
+                 (honest capability matrix) — disabled-with-reason, never a dead button. -->
             <div class="controls" aria-label="session controls">
               <div class="interject">
                 <input
@@ -1331,28 +1347,42 @@
                   type="text"
                   bind:value={interjectMsg}
                   placeholder="Interject a message…"
-                  disabled={!selectedIsRunning || controlBusy}
+                  disabled={!selectedIsRunning || controlBusy || !caps.interject}
                 />
                 <button
                   class="btn"
                   type="button"
                   onclick={() => sendControl('interject')}
-                  disabled={!selectedIsRunning || controlBusy || !interjectMsg.trim()}>Interject</button
+                  title={caps.interject
+                    ? undefined
+                    : (caps.reason ?? 'interject not supported by this backend')}
+                  disabled={!selectedIsRunning ||
+                    controlBusy ||
+                    !caps.interject ||
+                    !interjectMsg.trim()}>Interject</button
                 >
               </div>
               <button
                 class="btn warn"
                 type="button"
                 onclick={() => sendControl('stop')}
-                disabled={!selectedIsRunning || controlBusy}>Stop</button
+                title={caps.stop ? undefined : (caps.reason ?? 'stop not supported by this backend')}
+                disabled={!selectedIsRunning || controlBusy || !caps.stop}>Stop</button
               >
               <button
                 class="btn"
                 type="button"
                 onclick={() => sendControl('resume')}
-                disabled={selectedIsRunning || controlBusy}>Resume</button
+                title={caps.resume
+                  ? undefined
+                  : (caps.reason ?? 'resume not supported by this backend')}
+                disabled={selectedIsRunning || controlBusy || !caps.resume}>Resume</button
               >
             </div>
+            {#if capsNote}
+              <!-- HONEST capability state (14.6/F-008): why some controls are disabled. -->
+              <p class="caps-note mono">controls limited — {capsNote}</p>
+            {/if}
             {#if controlError}
               <p class="form-error" role="alert">{controlError}</p>
             {/if}
@@ -2057,6 +2087,12 @@
     align-items: center;
     gap: var(--space-3, 0.75rem);
     flex-wrap: wrap;
+  }
+  /* 14.6 — honest capability note: why some controls render disabled (F-008). */
+  .caps-note {
+    margin: var(--space-2, 0.5rem) 0 0;
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
   }
   .interject {
     display: flex;

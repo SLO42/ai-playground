@@ -27,6 +27,7 @@ import {
 	type ConfigKind
 } from '$lib/server/cc-config';
 import { listFleetAcrossProjects, type FleetSessionXP } from '$lib/server/analytics';
+import { getControlCapabilities, type ControlCapabilities } from '$lib/server/harness';
 import type { Db } from '$lib/server/db/client';
 import {
 	resolveConfigTargetFromCatalog,
@@ -59,9 +60,32 @@ export const load: PageServerLoad = async ({ depends }) => {
 	// (parity with /workflows, commit 8ed7659). On a dead socket this returns an honest
 	// `connected:false` rather than throwing an unhandled 500 that silently aborts the
 	// client navigation.
+	// TASK 14.6 — the HONEST session-control capability matrix (F-008): what the wired
+	// backend REALLY supports, so the fleet controls below render disabled-with-reason
+	// instead of buttons that claim to work and do nothing. Never throws (degrades to
+	// all-off with the honest reason).
+	let controlCaps: ControlCapabilities;
+
 	const db = tryGetDb();
+	try {
+		controlCaps = await getControlCapabilities(db ?? undefined);
+	} catch (err) {
+		controlCaps = {
+			available: false,
+			reason: (err as Error).message,
+			interject: false,
+			resume: false,
+			stop: false
+		};
+	}
+
 	if (!db) {
-		return { connected: false, scopes: [] as CatalogScope[], fleet: [] as FleetSessionXP[] };
+		return {
+			connected: false,
+			scopes: [] as CatalogScope[],
+			fleet: [] as FleetSessionXP[],
+			controlCaps
+		};
 	}
 
 	try {
@@ -108,19 +132,25 @@ export const load: PageServerLoad = async ({ depends }) => {
 			})
 		);
 
-		return { connected: true, scopes: withStatus, fleet };
+		return { connected: true, scopes: withStatus, fleet, controlCaps };
 	} catch (err) {
 		// Classify the thrown error (shared with /workflows + /projects + home, D-019):
 		// a genuine connection loss is reported as DISCONNECTED — the same honest state
 		// as a server that booted with the DB down — and ONLY a true query/parse failure
 		// keeps `connected:true` + the queryError state. Never an unhandled 500.
 		if (classifyDbError(err) === 'disconnected') {
-			return { connected: false, scopes: [] as CatalogScope[], fleet: [] as FleetSessionXP[] };
+			return {
+				connected: false,
+				scopes: [] as CatalogScope[],
+				fleet: [] as FleetSessionXP[],
+				controlCaps
+			};
 		}
 		return {
 			connected: true,
 			scopes: [] as CatalogScope[],
 			fleet: [] as FleetSessionXP[],
+			controlCaps,
 			queryError: (err as Error).message
 		};
 	}

@@ -65,6 +65,7 @@ export {
 // authenticated operator (D-025 token on the loopback control endpoint) may steer.
 export {
 	createChannel,
+	ControlNotSupportedError,
 	type Channel,
 	type ChannelDeps,
 	type Origin,

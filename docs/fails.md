@@ -94,3 +94,29 @@ The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
 - **Why**: (1) The migration wasn't idempotent, and the runner records a migration only on success — any partial apply wedges every future `db:up`. (2) Tests ran migrations against a FRESH throwaway DB where m0025 applies cleanly, so the half-applied live-DB state was unreachable by the suite. (3) The normalizer did `str(row.created_at)` — stringifying `undefined` into fake-looking UI text instead of coercing absent datetimes to null/'—'.
 - **Fix**: Made m0025 idempotent (IF NOT EXISTS/OVERWRITE pattern), unwedged the live DB + backfilled created_at, hardened normPmReview (absent datetime → null → '—'), added idempotency tests incl. the half-applied recovery path, swept other migrations for the same pattern.
 - **Prevention**: Every SurrealDB migration statement must be idempotent (IF NOT EXISTS / OVERWRITE) — assume it can die mid-apply and will re-run. Migration tests must cover: apply twice, and apply over a simulated half-applied state. Never `str()` a possibly-absent datetime in a normalizer — absent → null, UI renders '—' (extends F-013). Run `npm run db:up` against the LIVE dev DB as part of verify, not only fresh test DBs.
+
+## F-016: unhandled ChildProcess 'error' event crashed the whole dev server
+- **Date**: 2026-06-10
+- **What**: The first REAL session resume (14.6) anchored at a project root that no
+  longer existed (a cleaned-up temp fixture). `spawn()` emitted the ChildProcess
+  `'error'` event (ENOENT) with NO listener registered — an EventEmitter `'error'`
+  with no listener is an UNCAUGHT EXCEPTION, so the entire SvelteKit dev server
+  process died mid-request (browser dropped to chrome-error://). All unit tests were
+  green; it only surfaced clicking Resume in the live browser verify.
+- **Why**: cli-backend.ts only consumed the child's stdout/close; the `'error'` event
+  path was unreachable while resume/interject were stubs (every production spawn used
+  an existing project root), so the missing listener was latent until a real resume
+  could target a vanished cwd.
+- **Fix**: (1) `child.once('error', …)` captures the spawn failure; the stream yields
+  an honest `error` event ("claude CLI failed to start: …") and the exit-wait promise
+  also resolves on `'error'` (a failed spawn may never emit `'close'`). (2)
+  channel.resume refuses a vanished root PRE-spawn (`existsSync` check → honest
+  "project root no longer exists"). Regression tests: proto suite spawns a
+  nonexistent binary and asserts an error EVENT (not a crash); channel suite resumes
+  a session whose project root is gone and asserts the pre-spawn refusal with no
+  state flip.
+- **Prevention**: EVERY `spawn()` call must register a `'error'` listener in the same
+  change that adds it — an unhandled ChildProcess `'error'` kills the whole server
+  process, and unit tests with valid fixtures will not catch it. When a child's exit
+  is awaited, resolve the wait on `'error'` as well as `'close'`. Validate
+  operator-supplied / DB-derived cwd paths with `existsSync` BEFORE spawning.

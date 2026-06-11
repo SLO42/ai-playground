@@ -8,6 +8,7 @@ export {
 	getBus,
 	getBootToken,
 	getRuntime,
+	getControlCapabilities,
 	getProviderHealth,
 	getMemoryService,
 	parseExtraction,
@@ -20,7 +21,8 @@ export {
 	EMBEDDING_MODEL,
 	EXTRACTION_MODEL,
 	type RuntimeAvailability,
-	type MemoryAvailability
+	type MemoryAvailability,
+	type ControlCapabilities
 } from './wiring';
 
 export {

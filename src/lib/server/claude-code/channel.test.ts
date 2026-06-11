@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { tmpdir } from 'node:os';
 import { StringRecordId } from 'surrealdb';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
@@ -10,10 +11,11 @@ import {
 	ClaudeCodeRuntime,
 	type CcBackend,
 	type CcBackendRun,
-	type CcSpawnPlan
+	type CcSpawnPlan,
+	type RuntimeEvent
 } from '../runtime/index';
 import { FENCE_OPEN, FENCE_CLOSE } from '../memory/fence';
-import { createChannel, type InterjectRequest } from './channel';
+import { createChannel, ControlNotSupportedError, type InterjectRequest } from './channel';
 
 // TASK 2.10 VERIFY (D-011 / D-035 / D-025 / D-026) — session control, mocked runtime.
 //
@@ -37,7 +39,15 @@ interface RecordedInterject {
 	body: string;
 	steer: boolean;
 }
-function scriptedBackend(): CcBackend & {
+function scriptedBackend(opts?: {
+	/** Declared capability flags (default: both true — this mock really implements them). */
+	supportsInterject?: boolean;
+	supportsResume?: boolean;
+	/** Simulate a real delivery failure (e.g. the live child died before the ack). */
+	failInterject?: boolean;
+	/** Events the scripted resume stream yields (default: a clean done). */
+	resumeEvents?: RuntimeEvent[];
+}): CcBackend & {
 	interjects: RecordedInterject[];
 	cancelled: string[];
 	resumed: string[];
@@ -50,6 +60,9 @@ function scriptedBackend(): CcBackend & {
 		cancelled,
 		resumed,
 		kind: 'mock',
+		// HONEST capability matrix (14.6): the channel refuses up front when undeclared.
+		supportsInterject: opts?.supportsInterject ?? true,
+		supportsResume: opts?.supportsResume ?? true,
 		run(plan: CcSpawnPlan): CcBackendRun {
 			return {
 				ccSessionId: 'cc_unused',
@@ -66,7 +79,10 @@ function scriptedBackend(): CcBackend & {
 			return {
 				ccSessionId: req.ccSessionId,
 				async *stream() {
-					yield { type: 'done', result: { ok: true, summary: 'resumed' } };
+					const events: RuntimeEvent[] = opts?.resumeEvents ?? [
+						{ type: 'done', result: { ok: true, summary: 'resumed' } }
+					];
+					for (const ev of events) yield ev;
 				},
 				async cancel() {}
 			};
@@ -75,6 +91,9 @@ function scriptedBackend(): CcBackend & {
 		// message the seam built — the scripted backend records whether it was a steering
 		// instruction (operator) or fenced data (agent).
 		async interject(msg: { ccSessionId: string; origin: string; body: string; steer?: boolean }) {
+			if (opts?.failInterject) {
+				throw new Error('scripted delivery failure: session child died before the ack');
+			}
 			interjects.push({
 				ccSessionId: msg.ccSessionId,
 				origin: msg.origin,
@@ -100,7 +119,12 @@ beforeAll(async () => {
 		database: tdb.database
 	});
 	await runMigrations(db, schemaMigrations);
-	const p = await createProject(db, { slug: 'sc', name: 'SessCtl', root_path: 'F:/code/sc' });
+	// The root must REALLY exist: channel.resume refuses a vanished root pre-spawn (F-016).
+	const p = await createProject(db, {
+		slug: 'sc',
+		name: 'SessCtl',
+		root_path: tmpdir().replace(/\\/g, '/')
+	});
 	projectId = p.id;
 }, 90_000);
 
@@ -110,8 +134,9 @@ afterAll(async () => {
 	await tdb?.teardown();
 });
 
-/** Create a running session row with a cc_session_id bridge. */
-async function makeRunningSession(ccSessionId: string): Promise<string> {
+/** Create a running session row with a cc_session_id bridge (omitted when undefined —
+ *  the not-yet-bridged state a session is in before the CLI reports its id). */
+async function makeRunningSession(ccSessionId?: string): Promise<string> {
 	const [created] = await db.query<[Array<{ id: unknown }>]>(
 		`CREATE session CONTENT $c RETURN AFTER;`,
 		{
@@ -121,11 +146,20 @@ async function makeRunningSession(ccSessionId: string): Promise<string> {
 				model: { provider: 'claude', model_id: 'claude-opus-4-8', tier: 'opus' },
 				runtime: 'claude-code',
 				status: 'running',
-				cc_session_id: ccSessionId
+				...(ccSessionId ? { cc_session_id: ccSessionId } : {})
 			}
 		}
 	);
 	return String(created[0].id);
+}
+
+/** Count the message rows persisted for one session. */
+async function messageCount(sessionId: string): Promise<number> {
+	const [msgs] = await db.query<[Array<Record<string, unknown>>]>(
+		`SELECT id FROM message WHERE session = $sid;`,
+		{ sid: new StringRecordId(sessionId) }
+	);
+	return msgs.length;
 }
 
 function makeChannel(backend: ReturnType<typeof scriptedBackend>) {
@@ -367,6 +401,207 @@ describe('channel stop / resume — session record transitions (D-011)', () => {
 				toolPolicy: { allow: [] }
 			})
 		).rejects.toThrow(/cc_session_id|bridge/i);
+	});
+});
+
+// ── TASK 14.6 — false-success regressions (F-008) ───────────────────────────────────
+//
+// The audit finding: interject/resume were throw-only STUBS in the only production
+// backend, and the channel (a) skipped delivery silently when the cc bridge was missing
+// yet still returned success, and (b) flipped a session to 'running' before a resume
+// that could never run. Every path below must now be an HONEST error with NO phantom
+// state — a message row exists IFF delivery really happened; a session row never stays
+// 'running' for a run that didn't.
+
+describe('14.6 — no false success: interject', () => {
+	it('REGRESSION: a backend that does not declare interject support is refused honestly — nothing persisted', async () => {
+		const backend = scriptedBackend({ supportsInterject: false });
+		const { channel, bus } = makeChannel(backend);
+		const sessionId = await makeRunningSession('cc_nosupport_1');
+		const seen: BusEvent[] = [];
+		bus.subscribe(
+			(e) => seen.push(e),
+			(e) => e.type === 'interject'
+		);
+
+		await expect(
+			channel.interject(
+				baseInterject({ sessionId, presentedToken: BOOT_TOKEN, viaControlEndpoint: true })
+			)
+		).rejects.toThrow(ControlNotSupportedError);
+
+		// The stub path is never reached and NOTHING claims success: no delivery, no
+		// message row, no bus event (the old path returned ok + a persisted row).
+		expect(backend.interjects.length).toBe(0);
+		expect(await messageCount(sessionId)).toBe(0);
+		expect(seen.length).toBe(0);
+	});
+
+	it('REGRESSION: a running session with NO cc bridge is an honest error (was a silent false success)', async () => {
+		const backend = scriptedBackend();
+		const { channel } = makeChannel(backend);
+		const sessionId = await makeRunningSession(); // no cc_session_id yet
+
+		await expect(
+			channel.interject(
+				baseInterject({ sessionId, presentedToken: BOOT_TOKEN, viaControlEndpoint: true })
+			)
+		).rejects.toThrow(/cc_session_id|bridge/i);
+
+		// Old behaviour: message row persisted + ok returned while NOTHING was delivered.
+		expect(backend.interjects.length).toBe(0);
+		expect(await messageCount(sessionId)).toBe(0);
+	});
+
+	it('REGRESSION: a failed delivery persists NOTHING — the message row is evidence of real delivery', async () => {
+		const backend = scriptedBackend({ failInterject: true });
+		const { channel } = makeChannel(backend);
+		const sessionId = await makeRunningSession('cc_deadchild_1');
+
+		await expect(
+			channel.interject(
+				baseInterject({ sessionId, presentedToken: BOOT_TOKEN, viaControlEndpoint: true })
+			)
+		).rejects.toThrow(/delivery failure/i);
+		expect(await messageCount(sessionId)).toBe(0);
+	});
+});
+
+describe('14.6 — no false success: resume', () => {
+	it('REGRESSION: an unsupported resume is refused BEFORE any state flip — the row never goes running', async () => {
+		const backend = scriptedBackend({ supportsResume: false });
+		const { channel } = makeChannel(backend);
+		const sessionId = await makeRunningSession('cc_noresume_1');
+		await db.query(`UPDATE $sid SET status = "cancelled", ended_at = time::now();`, {
+			sid: new StringRecordId(sessionId)
+		});
+
+		await expect(
+			channel.resume({
+				sessionId,
+				agentId: 'agent_coder_1',
+				model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+				intent: 'code-write',
+				budgets: {},
+				toolPolicy: { allow: ['Read'] }
+			})
+		).rejects.toThrow(ControlNotSupportedError);
+
+		// The old path flipped the row to 'running' and THEN hit the stub throw — a
+		// phantom running session. Now the row is untouched.
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $sid;`, {
+			sid: new StringRecordId(sessionId)
+		});
+		expect(rows[0].status).toBe('cancelled');
+		expect(backend.resumed.length).toBe(0);
+	});
+
+	it('REGRESSION (F-016): a resume anchored at a vanished project root is refused pre-spawn', async () => {
+		const backend = scriptedBackend();
+		const { channel } = makeChannel(backend);
+		const gone = await createProject(db, {
+			slug: 'gone_root',
+			name: 'GoneRoot',
+			root_path: 'F:/code/definitely-gone-xyz-1446'
+		});
+		const [created] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE session CONTENT $c RETURN AFTER;`,
+			{
+				c: {
+					project: new StringRecordId(gone.id),
+					kind: 'task',
+					model: { provider: 'claude', model_id: 'claude-opus-4-8', tier: 'opus' },
+					runtime: 'claude-code',
+					status: 'done',
+					cc_session_id: 'cc_gone_1'
+				}
+			}
+		);
+		const sessionId = String(created[0].id);
+
+		await expect(
+			channel.resume({
+				sessionId,
+				agentId: 'agent_coder_1',
+				model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+				intent: 'code-write',
+				budgets: {},
+				toolPolicy: { allow: ['Read'] }
+			})
+		).rejects.toThrow(/no longer exists/i);
+		// Refused BEFORE any state flip or backend spawn.
+		expect(backend.resumed.length).toBe(0);
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $sid;`, {
+			sid: new StringRecordId(sessionId)
+		});
+		expect(rows[0].status).toBe('done');
+		await deleteProject(db, gone.id).catch(() => {});
+	});
+
+	it('a resume stream that ends WITHOUT done reconciles the row to failed — never left running', async () => {
+		const backend = scriptedBackend({
+			resumeEvents: [{ type: 'error', error: 'No conversation found with session ID' }]
+		});
+		const { channel } = makeChannel(backend);
+		const sessionId = await makeRunningSession('cc_failresume_1');
+		await db.query(`UPDATE $sid SET status = "done", ended_at = time::now();`, {
+			sid: new StringRecordId(sessionId)
+		});
+
+		const res = await channel.resume({
+			sessionId,
+			agentId: 'agent_coder_1',
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+			intent: 'code-write',
+			budgets: {},
+			toolPolicy: { allow: ['Read'] }
+		});
+		expect(res.status).toBe('failed');
+
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $sid;`, {
+			sid: new StringRecordId(sessionId)
+		});
+		expect(rows[0].status).toBe('failed');
+		expect(rows[0].ended_at).toBeTruthy();
+	});
+
+	it('a resumed turn persists its transcript messages and updates the cc bridge (14.6)', async () => {
+		const backend = scriptedBackend({
+			resumeEvents: [
+				{ type: 'log', message: 'resumed work output' },
+				{ type: 'done', result: { ok: true, summary: 'resumed', ccSessionId: 'cc_forked_2' } }
+			]
+		});
+		const { channel } = makeChannel(backend);
+		const sessionId = await makeRunningSession('cc_forkme_1');
+		await db.query(`UPDATE $sid SET status = "done", ended_at = time::now();`, {
+			sid: new StringRecordId(sessionId)
+		});
+
+		const res = await channel.resume({
+			sessionId,
+			agentId: 'agent_coder_1',
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+			intent: 'code-write',
+			budgets: {},
+			toolPolicy: { allow: ['Read'] },
+			message: 'pick the task back up'
+		});
+		expect(res.status).toBe('done');
+
+		// The resumed turn's output is a persisted message row (visible work, not an
+		// invisible status flip) …
+		const [msgs] = await db.query<[Array<Record<string, unknown>>]>(
+			`SELECT * FROM message WHERE session = $sid;`,
+			{ sid: new StringRecordId(sessionId) }
+		);
+		expect(msgs.some((m) => String(m.content).includes('resumed work output'))).toBe(true);
+		// … and the cc bridge follows the conversation fork so the NEXT control reaches it.
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $sid;`, {
+			sid: new StringRecordId(sessionId)
+		});
+		expect(rows[0].cc_session_id).toBe('cc_forked_2');
+		expect(rows[0].status).toBe('done');
 	});
 });
 

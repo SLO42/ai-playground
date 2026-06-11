@@ -26,6 +26,21 @@
   const running = $derived(fleet.filter((s) => s.status === 'running'));
   const recent = $derived(fleet.filter((s) => s.status !== 'running'));
 
+  // TASK 14.6 — the HONEST backend capability matrix (F-008): a control the wired
+  // backend cannot really perform renders DISABLED with its reason, never a button
+  // that claims to work and does nothing.
+  const caps = $derived(
+    data.controlCaps ?? { available: false, interject: false, resume: false, stop: false }
+  );
+  const capsNote = $derived.by((): string | null => {
+    if (!caps.available) return caps.reason ?? 'session controls unavailable — no runtime';
+    const off: string[] = [];
+    if (!caps.interject) off.push('interject');
+    if (!caps.resume) off.push('resume');
+    if (!caps.stop) off.push('stop');
+    return off.length ? `${off.join(' + ')} not supported by this backend` : null;
+  });
+
   // Per-session control state — keyed by session id so several rows can be in flight
   // independently. `interjectMsg` is the open interject draft; `busy`/`err` track the
   // last action's progress + failure per row (honest — never a fake success, F-008).
@@ -181,6 +196,10 @@
         <span class="eyebrow">session fleet · all projects</span>
         <span class="count mono">{running.length} running · {recent.length} recent</span>
       </div>
+      {#if capsNote && fleet.length > 0}
+        <!-- HONEST capability state (14.6/F-008): why some controls are disabled. -->
+        <p class="caps-note mono">controls limited — {capsNote}</p>
+      {/if}
       {#if fleet.length === 0}
         <p class="card-body none-body">
           No sessions across the portfolio yet — launch a Claude Code session from any
@@ -209,27 +228,38 @@
               </div>
 
               <!-- Per-session controls (D-035 loopback control endpoint, operator origin). -->
+              <!-- 14.6: each control is enabled ONLY when the backend really supports it
+                   (honest capability matrix) — disabled-with-reason, never a dead button. -->
               <div class="sess-controls">
                 {#if isRunning}
                   <button
                     class="ctl"
                     type="button"
                     aria-pressed={openInterject === s.id}
-                    disabled={busyId === s.id}
+                    disabled={busyId === s.id || !caps.interject}
+                    title={caps.interject
+                      ? undefined
+                      : (caps.reason ?? 'interject not supported by this backend')}
                     onclick={() =>
                       (openInterject = openInterject === s.id ? null : s.id)}>Interject</button
                   >
                   <button
                     class="ctl warn"
                     type="button"
-                    disabled={busyId === s.id}
+                    disabled={busyId === s.id || !caps.stop}
+                    title={caps.stop
+                      ? undefined
+                      : (caps.reason ?? 'stop not supported by this backend')}
                     onclick={() => sendControl(s.id, 'stop')}>Stop</button
                   >
                 {:else}
                   <button
                     class="ctl"
                     type="button"
-                    disabled={busyId === s.id}
+                    disabled={busyId === s.id || !caps.resume}
+                    title={caps.resume
+                      ? undefined
+                      : (caps.reason ?? 'resume not supported by this backend')}
                     onclick={() => sendControl(s.id, 'resume')}>Resume</button
                   >
                 {/if}
@@ -949,6 +979,12 @@
     display: flex;
     gap: var(--space-2, 0.5rem);
     flex-wrap: wrap;
+  }
+  /* 14.6 — honest capability note: why some controls render disabled (F-008). */
+  .caps-note {
+    margin: var(--space-2, 0.5rem) 0 0;
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
   }
   .ctl {
     appearance: none;

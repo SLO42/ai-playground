@@ -71,13 +71,15 @@ import { listSessionMessages, launchSession, type TranscriptMessage } from '$lib
 import {
 	getBus,
 	getRuntime,
+	getControlCapabilities,
 	getMemoryService,
 	resolveCapabilitiesForIntent,
 	DEFAULT_MODEL,
 	DEFAULT_AGENT,
 	DEFAULT_BUDGETS,
 	DEFAULT_TOOL_POLICY,
-	DEFAULT_INTENT
+	DEFAULT_INTENT,
+	type ControlCapabilities
 } from '$lib/server/harness';
 import { assertRecordId } from '$lib/server/db/validate';
 import { error, fail } from '@sveltejs/kit';
@@ -145,6 +147,9 @@ export interface ProjectDetailData {
 	selectedSession: string | null;
 	/** Persisted transcript of the selected session (historical; live streams via SSE). */
 	transcript: TranscriptMessage[];
+	/** HONEST session-control capability matrix (14.6/F-008) — what the wired backend
+	 *  REALLY supports; the controls render disabled-with-reason when off. */
+	controlCaps: ControlCapabilities;
 	error?: string;
 }
 
@@ -179,7 +184,22 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 		}
 	}
 
+	// TASK 14.6 — the honest control capability matrix (never throws; degrades to all-off
+	// with the reason so the session controls explain themselves instead of dead buttons).
 	const db = tryGetDb();
+	let controlCaps: ControlCapabilities;
+	try {
+		controlCaps = await getControlCapabilities(db ?? undefined);
+	} catch (err) {
+		controlCaps = {
+			available: false,
+			reason: (err as Error).message,
+			interject: false,
+			resume: false,
+			stop: false
+		};
+	}
+
 	if (!db) {
 		return {
 			connected: false,
@@ -205,7 +225,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pmBootstrapped: false,
 			pmKinds: PM_MEMORY_KINDS,
 			selectedSession,
-			transcript: []
+			transcript: [],
+			controlCaps
 		};
 	}
 
@@ -304,7 +325,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pmBootstrapped: pmMemory.length > 0,
 			pmKinds: PM_MEMORY_KINDS,
 			selectedSession,
-			transcript
+			transcript,
+			controlCaps
 		};
 	} catch (err) {
 		// A 404 thrown above is a SvelteKit HttpError — rethrow it, don't swallow.
@@ -334,6 +356,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pmKinds: PM_MEMORY_KINDS,
 			selectedSession,
 			transcript: [],
+			controlCaps,
 			error: (err as Error).message
 		};
 	}

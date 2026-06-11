@@ -15,7 +15,7 @@
 import { json, error } from '@sveltejs/kit';
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import { assertRecordId } from '$lib/server/db/validate';
-import { createChannel } from '$lib/server/claude-code';
+import { createChannel, ControlNotSupportedError } from '$lib/server/claude-code';
 import {
 	getBus,
 	getBootToken,
@@ -86,13 +86,16 @@ export const POST: RequestHandler = async ({ params, request }) => {
 		}
 
 		if (action === 'resume') {
+			const message = typeof body.message === 'string' ? body.message.trim() : '';
 			const result = await channel.resume({
 				sessionId,
 				agentId: DEFAULT_AGENT,
 				model: DEFAULT_MODEL,
 				intent: DEFAULT_INTENT,
 				budgets: DEFAULT_BUDGETS,
-				toolPolicy: DEFAULT_TOOL_POLICY
+				toolPolicy: DEFAULT_TOOL_POLICY,
+				// The optional operator instruction the resumed conversation receives (14.6).
+				...(message ? { message } : {})
 			});
 			return json({ ok: true, action, status: result.status });
 		}
@@ -101,6 +104,9 @@ export const POST: RequestHandler = async ({ params, request }) => {
 	} catch (err) {
 		// Rethrow SvelteKit HttpErrors; wrap real failures with their honest message (§11).
 		if (err && typeof err === 'object' && 'status' in err) throw err;
+		// TASK 14.6 (F-008): a backend that genuinely cannot perform the control is an
+		// HONEST 501 ("not supported by this backend"), distinct from a real failure.
+		if (err instanceof ControlNotSupportedError) throw error(501, err.message);
 		throw error(500, (err as Error).message);
 	}
 };

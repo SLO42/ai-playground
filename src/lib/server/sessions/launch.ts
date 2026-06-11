@@ -130,8 +130,10 @@ function omitUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
 	return out;
 }
 
-/** Map a RuntimeEvent → the `message` row it persists (or null if it is not a message). */
-function eventToMessage(
+/** Map a RuntimeEvent → the `message` row it persists (or null if it is not a message).
+ *  Exported for reuse by the channel seam's resume path (14.6) so a resumed turn's
+ *  transcript persists with the SAME shape a launched turn does. */
+export function eventToMessage(
 	ev: RuntimeEvent
 ): { role: 'assistant' | 'tool'; content: string; tool_call?: Record<string, unknown> } | null {
 	switch (ev.type) {

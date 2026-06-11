@@ -10,9 +10,15 @@
 // message + agent_event rows identically to the mocked path.
 //
 // Windows note (MEMORY/CLAUDE.md): `claude` is a native .exe, so it is spawned DIRECTLY
-// (NOT shell:true) — Node escapes args itself, so the prompt + the --settings path never
-// pass through a shell that would mangle the JSON. Settings ride a temp FILE (not an inline
+// (NOT shell:true) — Node escapes args itself, so the --settings path never passes
+// through a shell that would mangle the JSON. Settings ride a temp FILE (not an inline
 // JSON arg) for the same reason. Stop via the run's own kill; no process.kill(pid,0) probing.
+//
+// TASK 14.6 — io is `--input-format stream-json` + `--output-format stream-json`: the
+// prompt is the FIRST stdin user message and stdin stays open during the turn, so
+// interject() is a REAL mid-run user message (replay-acknowledged), and resume() is a
+// REAL `--resume <session-id>` continuation. supportsInterject/supportsResume declare
+// the honest capability matrix the channel/UI consume (F-008 — no stubbed controls).
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import { createInterface } from 'node:readline';
@@ -183,12 +189,26 @@ export async function killAllClaudeChildren(): Promise<number> {
 export interface CliBackendOptions {
 	/** Path/command for the claude CLI (default: `claude` on PATH). */
 	claudeBin?: string;
+	/**
+	 * TEST SEAM (14.6): args prepended BEFORE the protocol args — lets the protocol tests
+	 * drive the REAL spawn/stdin/stdout path against a scripted stand-in
+	 * (`claudeBin: process.execPath, claudeArgPrefix: [fakeCliScript]`). Never set in
+	 * production wiring.
+	 */
+	claudeArgPrefix?: string[];
 	/** OAuth token — passed via env only, never logged. */
 	oauthToken: string;
 	/** Hard ceiling on turns for a driven session (default 1 — a single bounded turn). */
 	maxTurns?: number;
 	/** Overall timeout in ms (default 180s). */
 	timeoutMs?: number;
+	/**
+	 * Bound on waiting for the CLI to ACKNOWLEDGE an interjected message (default 10s).
+	 * Delivery is only reported once the CLI replays the message back
+	 * (`--replay-user-messages`) — un-acknowledged ⇒ an honest error, never false success
+	 * (14.6/F-008). Bounded, no spin (F-014).
+	 */
+	interjectAckMs?: number;
 }
 
 /** Map a stream-json CLI line (already parsed) → zero-or-more RuntimeEvents. */
@@ -239,21 +259,163 @@ function mapCliEvent(obj: Record<string, unknown>): RuntimeEvent[] {
 	return out;
 }
 
+// ── Live-run registry for REAL interjection (TASK 14.6) ──────────────────────────────
+//
+// The CLI is driven with `--input-format stream-json`: the prompt is the FIRST user
+// message written to stdin, and stdin stays open while the turn runs — so an operator
+// interjection (channel.pushToSession → runtime.interject → here) is a REAL additional
+// user message written into the live session's stdin, not a stub. Delivery is only
+// reported once the CLI ACKNOWLEDGES the message by replaying it on stdout
+// (`--replay-user-messages`) — bounded by interjectAckMs, honest error otherwise (F-008).
+
+/** One stdin-written user message awaiting its replay acknowledgment (or, for the
+ *  initial prompt, just its replay-suppression slot — no waiter). */
+interface PendingStdinMessage {
+	text: string;
+	resolve?: () => void;
+	reject?: (err: Error) => void;
+	timer?: NodeJS.Timeout;
+}
+
+/** The live state of one spawned claude child the backend can still interject into. */
+interface LiveCliRun {
+	agentId: string;
+	child: ChildProcessWithoutNullStreams;
+	/** The CLI-reported session id ('' until the init line arrives). */
+	ccSessionId: string;
+	/** False once the final result landed / stdin closed — interjects then refuse. */
+	acceptingInput: boolean;
+	/** stdin-written messages not yet replayed back by the CLI (FIFO). */
+	pending: PendingStdinMessage[];
+}
+
+/** Join the text blocks of a stream-json `user` message (string or block-array form). */
+function userMessageText(obj: Record<string, unknown>): string {
+	const message = obj.message as { content?: unknown } | undefined;
+	const content = message?.content;
+	if (typeof content === 'string') return content;
+	if (!Array.isArray(content)) return '';
+	return (content as Array<Record<string, unknown>>)
+		.filter((b) => b.type === 'text' && typeof b.text === 'string')
+		.map((b) => String(b.text))
+		.join('');
+}
+
 export class ClaudeCliBackend implements CcBackend {
 	readonly kind = 'cli';
-	private readonly opts: Required<Omit<CliBackendOptions, 'claudeBin'>> & { claudeBin: string };
+	// HONEST capability matrix (14.6/F-008): both are REALLY implemented below — interject
+	// via live stream-json stdin (replay-acknowledged), resume via `--resume <session-id>`.
+	readonly supportsInterject = true;
+	readonly supportsResume = true;
+	private readonly opts: Required<Omit<CliBackendOptions, 'claudeBin' | 'claudeArgPrefix'>> & {
+		claudeBin: string;
+		claudeArgPrefix: string[];
+	};
 	private readonly procs = new Map<string, ChildProcessWithoutNullStreams>();
+	/** Every live (still-accepting) run, scanned by ccSessionId on interject. */
+	private readonly liveRuns = new Set<LiveCliRun>();
 
 	constructor(opts: CliBackendOptions) {
 		this.opts = {
 			claudeBin: opts.claudeBin ?? 'claude',
+			claudeArgPrefix: opts.claudeArgPrefix ?? [],
 			oauthToken: opts.oauthToken,
 			maxTurns: opts.maxTurns ?? 1,
-			timeoutMs: opts.timeoutMs ?? 180_000
+			timeoutMs: opts.timeoutMs ?? 180_000,
+			interjectAckMs: opts.interjectAckMs ?? 10_000
 		};
 	}
 
 	run(plan: CcSpawnPlan): CcBackendRun {
+		return this.start(plan);
+	}
+
+	/**
+	 * REAL resume (TASK 14.6 — replaces the 'not implemented' stub that made the UI's
+	 * Resume control a lie). Continues the SAME Claude Code conversation via
+	 * `--resume <session-id>`, with the plan prompt as the next user message. Requires
+	 * the SAME isolated config dir + cwd the original run used (that is where the CLI
+	 * stores the transcript) — a missing conversation is an HONEST error event from the
+	 * CLI's own exit, never a fabricated success.
+	 */
+	async resume(req: { ccSessionId: string; plan: CcSpawnPlan }): Promise<CcBackendRun> {
+		return this.start(req.plan, req.ccSessionId);
+	}
+
+	/**
+	 * REAL interject (TASK 14.6 — replaces the 'not implemented' stub). Writes the
+	 * already-origin-stamped message (raw operator steering, or fenced agent DATA — the
+	 * channel resolved that, D-035a) into the live session's stdin as a stream-json user
+	 * message, then waits (bounded) for the CLI to replay it back as receipt. Resolves
+	 * ONLY on real acknowledgment; every other path is an honest throw — no live child
+	 * for the session, input no longer accepted (turn already finished), write failure,
+	 * or ack timeout. Never false success (F-008); never unbounded (F-014).
+	 */
+	async interject(msg: {
+		ccSessionId: string;
+		origin: string;
+		body: string;
+		steer: boolean;
+	}): Promise<void> {
+		const live = [...this.liveRuns].find(
+			(r) => r.ccSessionId === msg.ccSessionId && r.acceptingInput && r.child.exitCode === null
+		);
+		if (!live) {
+			throw new Error(
+				`no live claude session '${msg.ccSessionId}' is accepting input — interjection NOT delivered (the session may have finished its turn)`
+			);
+		}
+		await this.writeUserMessage(live, msg.body, this.opts.interjectAckMs);
+	}
+
+	/** Write one stream-json user message to a live child's stdin. With `ackMs` set the
+	 *  promise resolves only when the CLI replays the message back (real receipt); the
+	 *  initial prompt passes ackMs=0 (registered for replay-suppression only). */
+	private writeUserMessage(live: LiveCliRun, text: string, ackMs: number): Promise<void> {
+		return new Promise<void>((resolve, reject) => {
+			const entry: PendingStdinMessage = { text };
+			const drop = () => {
+				const i = live.pending.indexOf(entry);
+				if (i >= 0) live.pending.splice(i, 1);
+			};
+			if (ackMs > 0) {
+				entry.resolve = resolve;
+				entry.reject = reject;
+				entry.timer = setTimeout(() => {
+					drop();
+					reject(
+						new Error(
+							`interjection was written but NOT acknowledged by the claude CLI within ${ackMs}ms — delivery unconfirmed`
+						)
+					);
+				}, ackMs);
+			}
+			live.pending.push(entry);
+			const line =
+				JSON.stringify({
+					type: 'user',
+					message: { role: 'user', content: [{ type: 'text', text }] }
+				}) + '\n';
+			try {
+				live.child.stdin.write(line, (err) => {
+					if (err) {
+						if (entry.timer) clearTimeout(entry.timer);
+						drop();
+						reject(new Error(`stdin write to claude session failed: ${err.message}`));
+					} else if (ackMs <= 0) {
+						resolve();
+					}
+				});
+			} catch (err) {
+				if (entry.timer) clearTimeout(entry.timer);
+				drop();
+				reject(new Error(`stdin write to claude session failed: ${(err as Error).message}`));
+			}
+		});
+	}
+
+	/** Spawn one driven session (fresh run, or `--resume <id>` continuation). */
+	private start(plan: CcSpawnPlan, resumeCcSessionId?: string): CcBackendRun {
 		// Write the harness-only settings to a temp FILE and pass its path (D-002). Passing
 		// the JSON inline as an arg is fragile under shell quoting on Windows; a file path has
 		// no special chars. The CLI accepts a file path OR a JSON string for --settings.
@@ -288,11 +450,19 @@ export class ClaudeCliBackend implements CcBackend {
 			seedHookTrust(configDir, plan.cwd);
 		}
 
+		// TASK 14.6 — stream-json INPUT io. The prompt is NOT an argv string anymore: it is
+		// the first stream-json user message written to stdin, and stdin stays OPEN while
+		// the turn runs so a REAL interjection can be written into the live session.
+		// `--replay-user-messages` makes the CLI echo every stdin user message back on
+		// stdout — the honest delivery acknowledgment interject() waits (bounded) for.
 		const args = [
+			...this.opts.claudeArgPrefix,
 			'-p',
-			plan.prompt,
 			'--output-format',
 			'stream-json',
+			'--input-format',
+			'stream-json',
+			'--replay-user-messages',
 			'--verbose',
 			'--max-turns',
 			String(this.opts.maxTurns),
@@ -301,7 +471,9 @@ export class ClaudeCliBackend implements CcBackend {
 			'--permission-mode',
 			'default',
 			'--settings',
-			settingsPath
+			settingsPath,
+			// REAL resume (14.6): continue the SAME conversation by its Claude Code session id.
+			...(resumeCcSessionId ? ['--resume', resumeCcSessionId] : [])
 		];
 
 		const env: NodeJS.ProcessEnv = {
@@ -311,7 +483,7 @@ export class ClaudeCliBackend implements CcBackend {
 		};
 
 		// claude is a native .exe — spawn it DIRECTLY (no shell:true) so Node escapes args
-		// itself and the prompt/settings path never pass through a shell that would mangle them.
+		// itself and the settings path never passes through a shell that would mangle it.
 		const child = spawn(this.opts.claudeBin, args, {
 			cwd: plan.cwd,
 			env,
@@ -322,13 +494,41 @@ export class ClaudeCliBackend implements CcBackend {
 		// tree-killed by killAllClaudeChildren() if the server goes down while it runs.
 		liveChildren.add(child);
 		child.once('close', () => liveChildren.delete(child));
+		// CRITICAL (F-016): a ChildProcess 'error' event (spawn ENOENT — e.g. a resume
+		// anchored at a project root that no longer exists — or a missing claude binary)
+		// with NO listener is an UNCAUGHT EXCEPTION that kills the whole server process.
+		// Capture it; the stream below surfaces it as an honest `error` event instead.
+		let spawnError: Error | undefined;
+		child.once('error', (err) => {
+			spawnError = err;
+			liveChildren.delete(child);
+		});
+		// A dying child can EPIPE a pending stdin write — surfaced via the write callback /
+		// pending-ack rejection, never as an unhandled 'error' crash.
+		child.stdin.on('error', () => {});
+
+		// Register the live run so interject() can reach THIS child by its session id.
+		const live: LiveCliRun = {
+			agentId: plan.agentId,
+			child,
+			ccSessionId: resumeCcSessionId ?? '',
+			acceptingInput: true,
+			pending: []
+		};
+		this.liveRuns.add(live);
+
+		// The PROMPT rides stdin as the first user message (ackMs=0: registered only so its
+		// replay echo is suppressed below — never duplicated into the transcript). A write
+		// failure surfaces on the stream as the child's own exit/error path.
+		void this.writeUserMessage(live, plan.prompt, 0).catch(() => {});
 
 		const opts = this.opts;
 		const procs = this.procs;
+		const liveRuns = this.liveRuns;
 		const agentId = plan.agentId;
-		// ccSessionId is reported by the result event; we expose the plan-derived placeholder
-		// until then (launchSession reads the authoritative one off the done event).
-		let reportedCc = '';
+		// ccSessionId is reported by the CLI's init/result lines; we expose '' (or the
+		// resume id) until then (launchSession reads the authoritative one off `done`).
+		let reportedCc = resumeCcSessionId ?? '';
 
 		async function* stream(): AsyncIterable<RuntimeEvent> {
 			// Timeout = Windows-safe TREE kill (finding 8/F-002): child.kill() alone leaves
@@ -349,19 +549,65 @@ export class ClaudeCliBackend implements CcBackend {
 					} catch {
 						continue; // non-JSON noise
 					}
-					if (typeof obj.session_id === 'string') reportedCc = obj.session_id;
-					for (const ev of mapCliEvent(obj)) yield ev;
+					if (typeof obj.session_id === 'string') {
+						reportedCc = obj.session_id;
+						live.ccSessionId = obj.session_id;
+					}
+					// A replayed stdin message (--replay-user-messages) is the CLI's RECEIPT for
+					// something WE wrote (the prompt or an interjection): resolve its waiter and
+					// suppress it from the event stream — the interjection's transcript presence
+					// is the channel's own message row (single source), and the prompt is the
+					// task text, not an assistant turn. Genuine user events (tool_results) have
+					// no matching pending text and flow through to mapCliEvent untouched.
+					if (obj.type === 'user') {
+						const text = userMessageText(obj);
+						const idx = live.pending.findIndex((p) => p.text === text);
+						if (idx >= 0) {
+							const [entry] = live.pending.splice(idx, 1);
+							if (entry.timer) clearTimeout(entry.timer);
+							entry.resolve?.();
+							continue;
+						}
+					}
+					for (const ev of mapCliEvent(obj)) {
+						if (ev.type === 'done') {
+							// The turn's final result landed: stop accepting interjections and close
+							// stdin so the CLI exits (stream-json input keeps it alive otherwise).
+							// The loop keeps reading — a message queued BEFORE the result may still
+							// produce a trailing turn + result (last `done` wins downstream).
+							live.acceptingInput = false;
+							child.stdin.end();
+						}
+						yield ev;
+					}
 				}
 				const code: number | null = await new Promise((resolve) => {
-					if (child.exitCode !== null) resolve(child.exitCode);
-					else child.once('close', (c) => resolve(c));
+					if (spawnError || child.exitCode !== null) return resolve(child.exitCode);
+					child.once('close', (c) => resolve(c));
+					// A failed spawn may never emit 'close' — resolve on 'error' too (F-016).
+					child.once('error', () => setImmediate(() => resolve(child.exitCode)));
 				});
-				if (code && code !== 0) {
+				if (spawnError) {
+					yield {
+						type: 'error',
+						error: `claude CLI failed to start: ${spawnError.message}`
+					};
+				} else if (code && code !== 0) {
 					yield { type: 'error', error: `claude CLI exited ${code}: ${stderr.slice(0, 500)}` };
 				}
 			} finally {
 				clearTimeout(timer);
 				procs.delete(agentId);
+				liveRuns.delete(live);
+				live.acceptingInput = false;
+				// Any interjection still awaiting its ack can no longer be confirmed — reject
+				// honestly (the caller persisted nothing; no false success).
+				for (const entry of live.pending.splice(0)) {
+					if (entry.timer) clearTimeout(entry.timer);
+					entry.reject?.(
+						new Error('claude session ended before the interjection was acknowledged')
+					);
+				}
 				rmSync(settingsDir, { recursive: true, force: true });
 			}
 		}
@@ -376,24 +622,5 @@ export class ClaudeCliBackend implements CcBackend {
 				await treeKillChild(child);
 			}
 		} as CcBackendRun;
-	}
-
-	async resume(req: { ccSessionId: string; plan: CcSpawnPlan }): Promise<CcBackendRun> {
-		// Resume parity is out of scope for the live capstone proof; the run() path is the
-		// proven one. Resume would add `--resume <id>`; not exercised here.
-		throw new Error(
-			`ClaudeCliBackend.resume not implemented for the live proof (${req.ccSessionId})`
-		);
-	}
-
-	async interject(msg: {
-		ccSessionId: string;
-		origin: string;
-		body: string;
-		steer: boolean;
-	}): Promise<void> {
-		throw new Error(
-			`ClaudeCliBackend.interject not implemented for the live proof (${msg.ccSessionId})`
-		);
 	}
 }

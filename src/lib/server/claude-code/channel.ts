@@ -27,12 +27,14 @@
 // assertRecordId chokepoint and bind as StringRecordId. Optionals OMITTED, never NULLed.
 
 import { timingSafeEqual } from 'node:crypto';
+import { existsSync } from 'node:fs';
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import type { EventBus } from '../events/bus';
 import { writeAgentEvent } from '../analytics/events';
 import { fence } from '../memory/fence';
+import { eventToMessage } from '../sessions/launch';
 import type {
 	ClaudeCodeRuntime,
 	Intent,
@@ -41,6 +43,19 @@ import type {
 	ToolPolicy,
 	ContextBundle
 } from '../runtime/index';
+
+/**
+ * TASK 14.6 — an honest "this backend cannot do that" refusal (F-008). Thrown BEFORE any
+ * state is written when the wired backend did not declare the capability; the control
+ * endpoint maps it to 501 so the UI can disable/explain the control instead of a stub
+ * reporting false success.
+ */
+export class ControlNotSupportedError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'ControlNotSupportedError';
+	}
+}
 
 // ── origin enum (D-035a) ────────────────────────────────────────────────────────────
 
@@ -92,9 +107,12 @@ export interface ResumeRequest {
 	budgets: SpawnBudgets;
 	toolPolicy: ToolPolicy;
 	context?: ContextBundle;
+	/** The operator's resume instruction — the next user message the resumed conversation
+	 *  receives. Absent ⇒ a neutral "continue" instruction. */
+	message?: string;
 }
 export interface ResumeResult {
-	status: 'running' | 'done' | 'failed';
+	status: 'done' | 'failed';
 	sessionId: string;
 }
 
@@ -172,20 +190,37 @@ function resolveOrigin(req: InterjectRequest, bootToken: string): { origin: Orig
 	return { origin: 'agent', steer: false };
 }
 
-/** Read a session's status + cc_session_id (for the running-state + resume checks). */
+/** Read a session's status + cc_session_id + project link (running-state/resume checks). */
 async function readSession(
 	db: Db,
 	sessionId: string
-): Promise<{ id: string; status: string; cc_session_id?: string } | undefined> {
-	const [rows] = await db.query<[Array<{ id: unknown; status: string; cc_session_id?: string }>]>(
-		`SELECT id, status, cc_session_id FROM ONLY $sid;`,
-		{ sid: link(sessionId) }
-	);
+): Promise<
+	{ id: string; status: string; cc_session_id?: string; project?: string } | undefined
+> {
+	const [rows] = await db.query<
+		[Array<{ id: unknown; status: string; cc_session_id?: string; project?: unknown }>]
+	>(`SELECT id, status, cc_session_id, project FROM ONLY $sid;`, { sid: link(sessionId) });
 	const row = (Array.isArray(rows) ? rows[0] : rows) as
-		| { id: unknown; status: string; cc_session_id?: string }
+		| { id: unknown; status: string; cc_session_id?: string; project?: unknown }
 		| undefined;
 	if (!row) return undefined;
-	return { id: String(row.id), status: row.status, cc_session_id: row.cc_session_id };
+	return {
+		id: String(row.id),
+		status: row.status,
+		cc_session_id: row.cc_session_id,
+		...(row.project ? { project: String(row.project) } : {})
+	};
+}
+
+/** Read a project's root_path (the cwd a resumed session must run in — the CLI keys its
+ *  conversation transcripts by cwd, so resume MUST re-anchor at the original root). */
+async function readProjectRoot(db: Db, projectId: string): Promise<string | undefined> {
+	const [rows] = await db.query<[Array<{ root_path?: string }>]>(
+		`SELECT root_path FROM ONLY $pid;`,
+		{ pid: link(projectId) }
+	);
+	const row = (Array.isArray(rows) ? rows[0] : rows) as { root_path?: string } | undefined;
+	return row?.root_path || undefined;
 }
 
 /**
@@ -204,6 +239,22 @@ export function createChannel(deps: ChannelDeps): Channel {
 				throw new Error(`session ${req.sessionId} is not running (status=${session.status})`);
 			}
 
+			// TASK 14.6 (F-008) — fail-closed capability + bridge prechecks BEFORE any write.
+			// The old path skipped delivery silently when the bridge was missing and still
+			// returned success (and the only production backend was an unimplemented stub):
+			// the UI showed a control that "worked" and did nothing. Now: not supported ⇒ an
+			// honest refusal; no bridge ⇒ an honest "cannot reach the session" error.
+			if (!runtime.capabilities().interject) {
+				throw new ControlNotSupportedError(
+					'interject is not supported by this backend — nothing was delivered'
+				);
+			}
+			if (!session.cc_session_id) {
+				throw new Error(
+					`session ${req.sessionId} has no cc_session_id bridge yet — the interjection cannot reach the live session (retry once the session has reported its id)`
+				);
+			}
+
 			// D-035a: stamp origin server-side. NEVER from content. Fail closed → agent.
 			const { origin, steer } = resolveOrigin(req, bootToken);
 
@@ -213,7 +264,14 @@ export function createChannel(deps: ChannelDeps): Channel {
 			// STORE is the same fenced/raw body, with the immutable origin recorded beside it.
 			const deliverBody = steer ? req.body : fence({ source: 'channel', body: req.body }).text;
 
-			// Persist the message row FIRST (db → events → SSE; never a 2nd source). Operator
+			// DELIVER FIRST (14.6/F-008): the persisted message row is the UI's evidence the
+			// interjection reached the session, so it must exist IFF delivery really happened.
+			// The runtime resolves only on real, acknowledged delivery (and is handed ONLY the
+			// resolved { origin, body, steer } — never the token); a failed/unconfirmed push
+			// throws here and NOTHING is persisted or published — never a false success.
+			await runtime.interject(session.cc_session_id, { origin, body: deliverBody, steer });
+
+			// Persist the message row (db → events → SSE; never a 2nd source). Operator
 			// steering is a `user` turn (it acts as instruction); agent-origin lands as `system`
 			// DATA. The immutable, server-stamped origin is recorded on the meta object — it is
 			// the AUTHORITY for downstream readers, never re-derived.
@@ -230,12 +288,6 @@ export function createChannel(deps: ChannelDeps): Channel {
 				}
 			);
 			const messageId = String(created[0].id);
-
-			// Push INTO the running session via the runtime (claude/channel). The runtime is
-			// handed ONLY the resolved { origin, body, steer } — never the token.
-			if (session.cc_session_id) {
-				await runtime.interject(session.cc_session_id, { origin, body: deliverBody, steer });
-			}
 
 			// Republish onto the ONE events bus for live render (topic = session id, §2.11).
 			bus.publish({
@@ -287,9 +339,36 @@ export function createChannel(deps: ChannelDeps): Channel {
 					`session ${req.sessionId} has no cc_session_id bridge — cannot resume (D-011).`
 				);
 			}
+			// TASK 14.6 (F-008) — fail-closed capability precheck BEFORE any state flip. The
+			// old path flipped the row to 'running' and THEN hit the backend stub's throw,
+			// stranding a phantom "running" session that never ran.
+			if (!runtime.capabilities().resume) {
+				throw new ControlNotSupportedError(
+					'resume is not supported by this backend — the session was not restarted'
+				);
+			}
+			// The CLI keys conversation transcripts by cwd: a resume MUST re-anchor at the
+			// original project root or the conversation is unfindable (an honest error, but a
+			// pointless spawn — refuse up front instead).
+			if (!session.project) {
+				throw new Error(
+					`session ${req.sessionId} has no project link — no project root to resume in`
+				);
+			}
+			const root = await readProjectRoot(db, session.project);
+			if (!root) {
+				throw new Error(
+					`project ${session.project} has no root_path — cannot anchor the resumed session`
+				);
+			}
+			// Honest pre-spawn check (F-016): a vanished root (e.g. a cleaned-up temp project)
+			// is refused HERE — before any state flip, before a doomed spawn.
+			if (!existsSync(root)) {
+				throw new Error(`project root '${root}' no longer exists — cannot resume there`);
+			}
 
 			// Flip the record back to running so the fleet view shows it immediately. The
-			// terminal status is reconciled by the resumed run's own lifecycle write below.
+			// terminal status is reconciled on EVERY exit path below (incl. throws — 14.6).
 			await db.query(`UPDATE $sid MERGE $c;`, {
 				sid: link(req.sessionId),
 				c: omitUndefined({ status: 'running', ended_at: undefined })
@@ -300,38 +379,95 @@ export function createChannel(deps: ChannelDeps): Channel {
 				key: req.sessionId,
 				data: { status: 'running' }
 			});
+			// Analytics first-class: the resume is a lifecycle step with its how/why recorded.
+			await writeAgentEvent(db, {
+				session: req.sessionId,
+				project: session.project,
+				type: 'spawn',
+				model: req.model,
+				detail: { reason: 'resume', cc_session_id: session.cc_session_id }
+			});
 
 			// Drive the resume through the runtime's resume path (CLI parity, same isolation).
 			// We reuse the runtime.resume stream directly rather than launchSession (which
-			// CREATES a fresh session); resume continues the SAME cc session in place.
+			// CREATES a fresh session); resume continues the SAME cc session in place — and
+			// (14.6) persists the resumed turn's transcript exactly like a launched turn, so
+			// the resumed work is visible/honest, not a status flip with an invisible run.
 			let ok = true;
 			let sawDone = false;
-			for await (const ev of runtime.resume(session.cc_session_id, {
-				agentId: req.agentId,
-				projectId: 'project:resume', // not persisted here; resume continues an existing run
-				cwd: '.',
-				model: req.model,
-				intent: req.intent,
-				task: { id: 'task:resume', title: 'resume', description: '' },
-				context: req.context,
-				budgets: req.budgets,
-				toolPolicy: req.toolPolicy
-			})) {
-				if (ev.type === 'done') {
-					sawDone = true;
-					ok = ev.result.ok;
+			let newCc: string | undefined;
+			let streamError: Error | undefined;
+			try {
+				let order = 0;
+				for await (const ev of runtime.resume(session.cc_session_id, {
+					agentId: req.agentId,
+					projectId: session.project,
+					cwd: root,
+					model: req.model,
+					intent: req.intent,
+					task: {
+						id: req.sessionId,
+						title: 'resume',
+						description:
+							req.message ?? 'Continue working on the task from where the session left off.'
+					},
+					context: req.context,
+					budgets: req.budgets,
+					toolPolicy: req.toolPolicy
+				})) {
+					// Live render via the ONE bus (§2.11), keyed like launchSession's transcript.
+					bus.publish({
+						type: 'transcript',
+						topic: req.sessionId,
+						key: `${req.sessionId}:resume:${order}`,
+						data: { kind: ev.type, seq: order, event: ev }
+					});
+					order++;
+					const msg = eventToMessage(ev);
+					if (msg) {
+						await db.query(`CREATE message CONTENT $c;`, {
+							c: omitUndefined({
+								session: link(req.sessionId),
+								role: msg.role,
+								content: msg.content,
+								tool_call: msg.tool_call
+							})
+						});
+					}
+					if (ev.type === 'done') {
+						sawDone = true;
+						ok = ev.result.ok;
+						if (ev.result.ccSessionId) newCc = ev.result.ccSessionId;
+					} else if (ev.type === 'error') {
+						ok = false;
+					}
 				}
+			} catch (err) {
+				streamError = err instanceof Error ? err : new Error(String(err));
+				ok = false;
 			}
 
-			// Reconcile the terminal status from the resumed run.
-			const status: ResumeResult['status'] = sawDone ? (ok ? 'done' : 'failed') : 'running';
+			// Reconcile the terminal status on EVERY path (14.6): a stream that ended without
+			// `done` (CLI exit/`--resume` miss) or threw is an HONEST 'failed' — never a row
+			// left 'running' forever. A resumed conversation may report a NEW cc session id
+			// (the CLI forks on resume) — update the bridge so the NEXT control reaches it.
+			const status: ResumeResult['status'] = sawDone && ok && !streamError ? 'done' : 'failed';
 			await db.query(`UPDATE $sid MERGE $c;`, {
 				sid: link(req.sessionId),
 				c: omitUndefined({
-					status: status === 'running' ? 'running' : status,
-					ended_at: status === 'running' ? undefined : new Date()
+					status,
+					ended_at: new Date(),
+					cc_session_id: newCc,
+					note: streamError ? `resume failed: ${streamError.message}` : undefined
 				})
 			});
+			bus.publish({
+				type: 'session_status',
+				topic: req.sessionId,
+				key: req.sessionId,
+				data: { status }
+			});
+			if (streamError) throw streamError;
 
 			return { status, sessionId: req.sessionId };
 		},

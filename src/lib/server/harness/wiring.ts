@@ -142,6 +142,41 @@ export async function getRuntime(db?: Db): Promise<RuntimeAvailability> {
 }
 
 /**
+ * TASK 14.6 — the HONEST session-control capability matrix the UI consumes (F-008).
+ * Derived from the REAL wired backend's declared flags (ClaudeCodeRuntime.capabilities),
+ * never assumed: a control the backend cannot really perform is surfaced as disabled-
+ * with-reason instead of a button that claims to work and does nothing. `stop` is the
+ * runtime's own cancel (always implemented when a runtime exists). When the runtime is
+ * unavailable (no credential) every control is off, with the honest reason.
+ */
+export interface ControlCapabilities {
+	/** Whether a runtime exists at all (credential present). */
+	available: boolean;
+	/** Honest reason when unavailable / a control is off. */
+	reason?: string;
+	interject: boolean;
+	resume: boolean;
+	stop: boolean;
+}
+
+export async function getControlCapabilities(db?: Db): Promise<ControlCapabilities> {
+	const avail = await getRuntime(db);
+	if (!avail.available) {
+		return { available: false, reason: avail.reason, interject: false, resume: false, stop: false };
+	}
+	const caps = avail.runtime.capabilities();
+	return {
+		available: true,
+		interject: caps.interject,
+		resume: caps.resume,
+		stop: true,
+		...(caps.interject && caps.resume
+			? {}
+			: { reason: 'not supported by this backend' })
+	};
+}
+
+/**
  * The provider-health source resolveRoute reads to decide fallback (TASK 2.3; §2.5; F-005).
  * Routing READS health here and never probes a provider itself — this is the single owner.
  *

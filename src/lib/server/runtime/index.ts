@@ -281,6 +281,14 @@ export interface CcBackendRun {
 export interface CcBackend {
 	/** 'sdk' | 'cli' | 'mock' — which transport this backend drives. */
 	readonly kind: string;
+	/**
+	 * HONEST capability matrix (TASK 14.6 / F-008). A backend DECLARES what it really
+	 * implements; absent/false fails CLOSED — the channel/UI refuse the control up front
+	 * ("not supported by this backend") instead of a stub reporting false success. A
+	 * backend MUST NOT set a flag true unless the method genuinely delivers.
+	 */
+	readonly supportsInterject?: boolean;
+	readonly supportsResume?: boolean;
 	/** Start a fresh headless run from a resolved plan. */
 	run(plan: CcSpawnPlan): CcBackendRun;
 	/** Resume an existing Claude Code session by id (CLI parity, D-011). */
@@ -423,8 +431,26 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 		return this.consume(req.agentId, run);
 	}
 
+	/**
+	 * HONEST backend capability matrix (TASK 14.6 / F-008): what the wired backend REALLY
+	 * implements. Fail-closed — a backend that did not explicitly declare support is
+	 * reported unsupported, so the channel/UI refuse the control up front rather than a
+	 * stub reporting false success.
+	 */
+	capabilities(): { interject: boolean; resume: boolean } {
+		return {
+			interject: this.backend.supportsInterject === true,
+			resume: this.backend.supportsResume === true
+		};
+	}
+
 	/** Resume an existing Claude Code session (CLI parity, D-011) — same isolation. */
 	async *resume(ccSessionId: string, req: SpawnRequest): AsyncIterable<RuntimeEvent> {
+		// Fail closed (14.6/F-008): an undeclared backend capability is an honest refusal,
+		// never a stub that pretends to resume.
+		if (this.backend.supportsResume !== true) {
+			throw new Error(`resume is not supported by the '${this.backend.kind}' backend`);
+		}
 		let plan: CcSpawnPlan;
 		try {
 			plan = this.plan(req, ccSessionId);
@@ -440,11 +466,16 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 	 * Push a message into a running session (interject seam, D-011/D-035). The CALLER
 	 * (the channel seam) has already resolved + stamped `origin` and `steer` per the
 	 * D-035a binding rule; this method never inspects a token (it is never handed one).
+	 * Resolves ONLY when the backend really delivered (14.6/F-008) — an unsupported
+	 * backend or an undelivered push throws, never a silent no-op.
 	 */
 	async interject(
 		ccSessionId: string,
 		msg: { origin: string; body: string; steer: boolean }
 	): Promise<void> {
+		if (this.backend.supportsInterject !== true) {
+			throw new Error(`interject is not supported by the '${this.backend.kind}' backend`);
+		}
 		await this.backend.interject({
 			ccSessionId,
 			origin: msg.origin,

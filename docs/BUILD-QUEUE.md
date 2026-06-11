@@ -10,8 +10,8 @@
 | status | id | what | gate |
 |---|---|---|---|
 | done | wave-14.x | v2.0 audit remediation + full-viewport ✅ 6/6 (d7f0506, 4995d58+edf4ff4, 3a48c7c, 487b5a6, 16e8283, eab1961 — pushed) | auto |
-| running | lane-A-docs | HARVEST Lane A-docs: 14 prompt/doc harvests into v2-wave template + governing docs (guards G1–G5) → independent review | auto |
-| queued | lane-A-code | HARVEST A4/A7: wave-script escalation tier + verdict self-check — reviewed as code | auto |
+| done | lane-A-docs | HARVEST Lane A-docs ✅ 14/14 applied, review PASS (dc7239b pushed) | auto |
+| running | lane-A-code | HARVEST A4/A7: wave-script escalation tier + verdict self-check — reviewed as code | auto |
 | queued | lane-CD-specs | Lane C+D spec amendments: PM-SPEC decision-classification/scope-challenge/brief-format; CREATE-SPEC anti-sycophancy list | auto |
 | queued | wave-v2.2a | B1 scope-lock gate · B3 browser live-verify daemon · B9 verify-flow codification | auto |
 | queued | wave-v2.1 | PM build (PM-SPEC §8): pm table+hire+charter · trigger engine · proposed-task pipeline+panel · GitHub triage · W-D7a/W-D7b/W-D7c workforce (WORKFORCE-SPEC) | auto |

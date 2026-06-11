@@ -34,6 +34,7 @@ import {
 	listPmReviews,
 	getPm,
 	updatePmCharter,
+	updatePmSchedule,
 	PM_MEMORY_KINDS,
 	type PmMemoryKind,
 	type PmMemoryRow,
@@ -52,6 +53,7 @@ import {
 } from '$lib/server/projects/pm-hire';
 import { assemblePmContext, resolvePmRoute } from '$lib/server/projects/pm-session';
 import { runPmReview } from '$lib/server/projects/pm-review';
+import { parseCron, parseDurationMs } from '$lib/server/projects/pm-triggers';
 import { loadOrchestration } from '$lib/server/config';
 import {
 	listTasksByProject,
@@ -903,6 +905,61 @@ export const actions: Actions = {
 					trigger,
 					written: res.written.length,
 					reviewId: res.review.id
+				}
+			};
+		} catch (err) {
+			return fail(500, { pm: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * TASK 16.2 (PM-SPEC §3) — set/clear the PM's periodic review schedule: `cadence`
+	 * (5-field cron) + `cadence_offset` (duration stagger, e.g. "5m"). Validated at the
+	 * boundary with the SAME parsers the trigger engine fires with (parseCron /
+	 * parseDurationMs) — an expression that saves is an expression that fires; a
+	 * malformed one is a NAMED 400, never a silently-dead schedule. Empty values clear
+	 * the field (the honest "no schedule"). Requires a hired PM (409 otherwise).
+	 */
+	pmSchedule: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { pm: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { pm: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const cadence = String(form.get('cadence') ?? '').trim();
+		const offset = String(form.get('cadenceOffset') ?? '').trim();
+
+		if (cadence && !parseCron(cadence)) {
+			return fail(400, {
+				pm: {
+					error:
+						'Cadence must be a 5-field cron expression (minute hour day month weekday), e.g. "0 9 * * 1-5". Leave empty to clear.'
+				}
+			});
+		}
+		if (offset && parseDurationMs(offset) === null) {
+			return fail(400, {
+				pm: {
+					error: 'Offset must be a duration like "5m", "90s" or "1h30m". Leave empty to clear.'
+				}
+			});
+		}
+
+		try {
+			const updated = await updatePmSchedule(db, projectId, {
+				cadence: cadence || null,
+				cadenceOffset: offset || null
+			});
+			if (!updated) {
+				return fail(409, { pm: { error: 'No PM hired for this project yet — hire one first.' } });
+			}
+			return {
+				pm: {
+					ok: true as const,
+					action: 'schedule',
+					cadence: updated.cadence ?? null,
+					cadenceOffset: updated.cadence_offset ?? null
 				}
 			};
 		} catch (err) {

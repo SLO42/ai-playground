@@ -28,6 +28,7 @@ import {
 	type SyncIncidentRow
 } from '$lib/server/sync';
 import { assertRecordId } from '$lib/server/db/validate';
+import { activePmTriggerEngine } from '$lib/server/projects/pm-triggers';
 import { error, fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -195,6 +196,20 @@ export const actions: Actions = {
 				direction,
 				dryRun
 			});
+
+			// TASK 16.2 (PM-SPEC §3 event ②): forward detected GitHub issue/PR arrivals to
+			// the live PM trigger engine. The engine applies EVERY gate itself (D-004 mode,
+			// hired PM, authority, persistent dedup); no engine (degraded boot / manual-only
+			// mode) is an honest no-op. A dry-run previews — it never wakes the PM.
+			if (!dryRun && result.arrivals?.length) {
+				const engine = activePmTriggerEngine();
+				if (engine) {
+					await engine
+						.githubArrival(projectId, result.arrivals)
+						.catch((err) => console.warn(`[sync] pm arrival trigger failed: ${(err as Error).message}`));
+				}
+			}
+
 			return {
 				sync: {
 					ok: true as const,

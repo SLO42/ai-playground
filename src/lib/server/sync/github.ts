@@ -297,6 +297,28 @@ export class GitHubSyncAdapter implements SyncAdapter {
 			}
 		}
 
+		// ── TASK 16.2 — arrival detection (PM-SPEC §3 event ②) ─────────────────────────
+		// An OPEN issue with NO task mapping was born on GitHub (everything pushed from
+		// here is mapped the moment it is created/linked above); every OPEN PR is external
+		// work arriving (the adapter never creates PRs). Read-only + best-effort: when the
+		// client cannot list (or has no listOpenItems), the run records the reason / omits
+		// `arrivals` honestly — a detection failure never fails the sync itself.
+		if (this.#client.listOpenItems) {
+			try {
+				const open = await this.#client.listOpenItems(repo, opts.cwd);
+				const fresh = await listMappings(db, projectId, repo);
+				const mappedIds = new Set(fresh.map((m) => m.external_id));
+				result.arrivals = [
+					...open.issues
+						.filter((i) => !mappedIds.has(String(i.number)))
+						.map((i) => ({ kind: 'issue' as const, externalId: String(i.number), title: i.title, url: i.url })),
+					...open.prs.map((p) => ({ kind: 'pr' as const, externalId: String(p.number), title: p.title, url: p.url }))
+				];
+			} catch (err) {
+				result.errors.push(`arrival detection: ${(err as Error).message}`);
+			}
+		}
+
 		// Analytics (first-class): one completion row carrying the how/why of this run.
 		await writeAgentEvent(db, {
 			type: 'completion',

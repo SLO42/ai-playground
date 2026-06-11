@@ -51,6 +51,22 @@ export interface GitHubClient {
 		number: number,
 		input: { labels: string[]; state: 'open' | 'closed'; cwd: string }
 	): Promise<void>;
+	/**
+	 * TASK 16.2 — ALL open issues + PRs (NO label filter): the arrival-detection read
+	 * (PM-SPEC §3 event ②). OPTIONAL: a client without it performs no arrival
+	 * detection (the adapter then omits SyncResult.arrivals — an honest absence).
+	 */
+	listOpenItems?(
+		repo: string,
+		cwd: string
+	): Promise<{ issues: OpenItem[]; prs: OpenItem[] }>;
+}
+
+/** One open issue/PR head — the minimal arrival-detection shape (TASK 16.2). */
+export interface OpenItem {
+	number: number;
+	title: string;
+	url: string;
 }
 
 // ── GitHub Projects (v2) board operations (TASK 11.4 — project-BOARD sync) ─────────
@@ -211,6 +227,26 @@ export class GitHubCliClient implements GitHubClient {
 		const args = ['issue', 'edit', String(number), '--repo', repo];
 		for (const l of input.labels) args.push('--add-label', l);
 		await runGh(args, { cwd: input.cwd, bin: this.#bin }).catch(() => {});
+	}
+
+	/**
+	 * TASK 16.2 — ALL open issues + PRs (no label filter), for arrival detection.
+	 * Two bounded reads (`gh issue list` / `gh pr list`, --limit 200), array args via
+	 * runGh (no shell — D-008). A failure THROWS — the adapter catches and records it
+	 * as a non-fatal run error (detection failure must not fail the sync).
+	 */
+	async listOpenItems(repo: string, cwd: string): Promise<{ issues: OpenItem[]; prs: OpenItem[] }> {
+		assertRepoSlug(repo);
+		const list = async (cmd: 'issue' | 'pr'): Promise<OpenItem[]> => {
+			const out = await runGh(
+				[cmd, 'list', '--repo', repo, '--state', 'open', '--limit', '200', '--json', 'number,title,url'],
+				{ cwd, bin: this.#bin }
+			);
+			if (!out) return [];
+			const raw = JSON.parse(out) as Array<{ number: number; title: string; url: string }>;
+			return raw.map((i) => ({ number: i.number, title: i.title, url: i.url }));
+		};
+		return { issues: await list('issue'), prs: await list('pr') };
 	}
 
 	/** Create any missing labels (idempotent — `--force` upserts). Best-effort. */

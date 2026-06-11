@@ -32,6 +32,7 @@ import {
 	listPmMemory,
 	type AddPmMemoryInput,
 	type PmMemoryRow,
+	type PmReviewProvenance,
 	type PmReviewRow,
 	type PmReviewTrigger
 } from './pm-repo';
@@ -66,6 +67,13 @@ const SOURCE = 'pm-review';
  * `pm_review` summary row, and returns both. `trigger` records WHAT kicked the pass off
  * (manual / periodic / event — D-004); the caller enforces the mode policy.
  *
+ * TASK 16.2 (PM-SPEC §3): `provenance` is the trigger-engine variant seam — when present,
+ * the pass is SCOPED to the trigger evidence: the provenance (kind + real evidence ids +
+ * pm.authority at fire time) is stamped onto the pm_review row (migration 0030), and
+ * trigger-specific memory seeds are derived from that evidence (a release completion
+ * writes a retro LEARNING; a failed release additionally writes a follow-up RISK).
+ * Manual button passes pass no provenance — an honest absence.
+ *
  * The derivation rules (every one keyed off a real row):
  *   • blocked tasks (> 0)            → a RISK memory (work is stuck).
  *   • critical/high findings (> 0)   → a RISK memory (security debt).
@@ -77,7 +85,8 @@ const SOURCE = 'pm-review';
 export async function runPmReview(
 	db: Db,
 	projectId: string,
-	trigger: PmReviewTrigger = 'manual'
+	trigger: PmReviewTrigger = 'manual',
+	provenance?: PmReviewProvenance
 ): Promise<PmReviewResult> {
 	const project = await getProject(db, projectId);
 	if (!project) throw new Error(`project not found: ${projectId}`);
@@ -168,6 +177,43 @@ export async function runPmReview(
 		});
 	}
 
+	// ── TASK 16.2 — trigger-scoped seeds (PM-SPEC §3 event ④: release retro) ─────────
+	// Derived from the REAL trigger evidence the engine passed in (F-008): a completed/
+	// failed release writes a retro LEARNING naming the run; a FAILED release additionally
+	// writes a follow-up-proposal RISK. Other trigger kinds add no extra seed — their
+	// signals (blocked tasks, findings) are already derived from the live rows above, and
+	// the wake reason is recorded as pm_review.provenance, not duplicated into memory.
+	if (provenance?.kind === 'release') {
+		const runRef = provenance.evidence[0] ?? 'unknown run';
+		const runStatus = String(provenance.detail?.status ?? 'done');
+		const failedRelease = runStatus === 'failed';
+		seeds.push({
+			project: projectId,
+			kind: 'learning',
+			content:
+				`Release retro: workflow run ${runRef} ended "${runStatus}". ` +
+				(failedRelease
+					? 'Capture what broke before the next attempt.'
+					: 'Record what worked so the next release repeats it.'),
+			source: SOURCE,
+			confidence: 1.0,
+			related_to: provenance.evidence[0]
+		});
+		if (failedRelease) {
+			seeds.push({
+				project: projectId,
+				kind: 'risk',
+				content:
+					`Release run ${runRef} FAILED — propose a follow-up task to diagnose the failing ` +
+					`stage and re-attempt the release.`,
+				source: SOURCE,
+				confidence: 0.95,
+				importance: 8,
+				related_to: provenance.evidence[0]
+			});
+		}
+	}
+
 	const written: PmMemoryRow[] = [];
 	for (const seed of seeds) written.push(await addPmMemory(db, seed));
 
@@ -183,7 +229,10 @@ export async function runPmReview(
 		tasks_examined: tasks.length,
 		findings_examined: findings.length,
 		risks_open: openRisks.length + risksWrittenNow,
-		memories_written: written.length
+		memories_written: written.length,
+		// TASK 16.2: the trigger engine's provenance (kind + real evidence + authority)
+		// lands on the row; manual passes omit it (honest absence — F-008).
+		...(provenance !== undefined ? { provenance } : {})
 	});
 
 	return { review, written, context };

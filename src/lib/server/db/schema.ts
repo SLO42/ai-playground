@@ -1016,6 +1016,26 @@ const m0029_pm_identity: Migration = {
 	`
 };
 
+// ── §4.x — PM review trigger provenance (TASK 16.2 / PM-SPEC §3) ────────────────
+//
+// The trigger engine (projects/pm-triggers.ts) fires runPmReview variants scoped to
+// trigger evidence; each pass records WHAT woke the PM — the trigger kind (periodic /
+// session_failed / task_blocked / github_arrival / finding / release), the REAL
+// evidence row ids (F-008), and the pm.authority in force at fire time — on the
+// pm_review row itself. FLEXIBLE option<object> (DATA-MODEL §4.16 free-form JSON):
+// absent on every pre-16.2 row and on manual button passes (honest absence, never a
+// fabricated provenance).
+//
+// IDEMPOTENT (D-006/F-015): single OVERWRITE DEFINE — clean over a fresh DB, a
+// half-applied state, and a re-run. Adding an option<> field needs no row backfill
+// (absent IS the honest value for prior rows).
+const m0030_pm_review_provenance: Migration = {
+	id: '0030_pm_review_provenance',
+	up: `
+		DEFINE FIELD OVERWRITE provenance ON pm_review FLEXIBLE TYPE option<object>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1051,5 +1071,6 @@ export const schemaMigrations: Migration[] = [
 	m0026_project_target,
 	m0027_run_note,
 	m0028_service_last_seen,
-	m0029_pm_identity
+	m0029_pm_identity,
+	m0030_pm_review_provenance
 ];

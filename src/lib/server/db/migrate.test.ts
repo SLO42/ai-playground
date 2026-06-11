@@ -317,6 +317,45 @@ describe('schemaMigrations — idempotent over fresh + half-applied state (11.4-
 		}
 	});
 
+	// ── TASK 16.2 — m0030 pm_review.provenance: the F-015 discipline pair. ──
+	// (Apply-twice over a FRESH db is covered by the 'applies the full schema TWICE'
+	// case above, which now includes 0030.)
+
+	it('m0030 applies over the HALF-APPLIED state (field already defined, migration unrecorded) and round-trips provenance', async () => {
+		const db = await freshDb('mig_prov_wedge');
+		try {
+			// The wedge shape for a field-only migration: the DEFINE ran but the ledger
+			// insert never landed (the runner records only on a clean full run).
+			await db.query('DEFINE TABLE pm_review SCHEMAFULL;');
+			await db.query('DEFINE FIELD provenance ON pm_review FLEXIBLE TYPE option<object>;');
+			expect(await isApplied(db, '0030_pm_review_provenance')).toBe(false);
+
+			const applied = await runMigrations(db, schemaMigrations);
+			expect(applied).toContain('0030_pm_review_provenance');
+			expect(await isApplied(db, '0030_pm_review_provenance')).toBe(true);
+
+			// Round-trip: a provenance-bearing row keeps its nested object intact, and a
+			// row WITHOUT provenance reads back absent (honest absence, never {}).
+			await db.query('CREATE project:provhost SET slug = "provhost", name = "P", root_path = "F:/x";');
+			await db.query(
+				`CREATE pm_review:withprov SET project = project:provhost, summary = "s", trigger = "event",
+					provenance = { kind: 'finding', evidence: ['security_finding:a'], authority: 'act', detail: { findings: 1 } };`
+			);
+			await db.query('CREATE pm_review:noprov SET project = project:provhost, summary = "s2";');
+			const rows = await db.query<
+				[{ provenance?: { kind: string; evidence: string[] } }[], { provenance?: unknown }[]]
+			>('SELECT provenance FROM pm_review:withprov; SELECT provenance FROM pm_review:noprov;');
+			expect(rows[0][0].provenance?.kind).toBe('finding');
+			expect(rows[0][0].provenance?.evidence).toEqual(['security_finding:a']);
+			expect(rows[1][0].provenance ?? null).toBeNull();
+
+			// Re-run is still a clean no-op (apply-twice over the recovered state).
+			expect(await runMigrations(db, schemaMigrations)).toEqual([]);
+		} finally {
+			await db.close().catch(() => {});
+		}
+	});
+
 	it('m0029 recovers half-applied pm ROWS: backfills authority/created_at, deletes id-only corruption', async () => {
 		const db = await freshDb('mig_pm_backfill');
 		try {

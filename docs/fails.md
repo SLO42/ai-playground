@@ -222,3 +222,25 @@ The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
   by a test importing both — never re-derive it from the env by hand. And when a
   flow declares "both worlds are valid" (up/down), it must be EXECUTED in both
   worlds before graduation; an unexercised branch is an untested claim.
+
+## F-022: SurrealDB 2.x ORDER BY requires the order field in the SELECT projection
+- **Date**: 2026-06-11
+- **What**: 16.2's github-arrival persistent-dedup seed query
+  (`SELECT provenance FROM pm_review … ORDER BY created_at DESC`) threw
+  `Parse error: Missing order idiom 'created_at' in statement selection`; the
+  surrounding best-effort catch degraded it to in-memory-only dedup, so the
+  cross-restart dedup test failed (a re-fire the feature promised to prevent).
+- **Why**: SurrealDB 2.x rejects `ORDER BY <field>` when that field is not in the
+  SELECT projection. Every prior query in the codebase happened to `SELECT *` or
+  already project the order field, so the constraint was invisible until the
+  first narrow projection + ORDER BY combination. The silent part: a broad
+  try/catch around a "best-effort" read turned a hard parse error into wrong
+  behavior instead of a loud failure.
+- **Fix**: project the order field too (`SELECT provenance, created_at … ORDER BY
+  created_at DESC`); confirmed by reproducing the exact query against a real
+  test DB before fixing (Iron Law).
+- **Prevention**: in SurrealDB 2.x, any `ORDER BY` field MUST appear in the SELECT
+  projection — when narrowing a projection, keep (or add) the order field. And a
+  catch that downgrades a read to "best-effort" must still `console.warn` the
+  real error — a parse error spotted in logs is a 1-minute fix; swallowed, it is
+  a wrong-behavior hunt.

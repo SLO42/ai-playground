@@ -19,6 +19,11 @@ pm:
   decide:
     blast_radius_max_files: null
     effort_ceiling_minutes: null
+  # PM-SPEC §3 event ① (TASK 16.2): session-failed/task-blocked distress must EXCEED
+  # this count (since the PM's last review) to auto-fire a review. Ships UNARMED
+  # (null, F-008): no invented bound — set it from real project history to arm.
+  triggers:
+    failure_threshold: null
 
 panel:
   scope:

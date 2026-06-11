@@ -21,6 +21,11 @@ import { bootstrapControlPlane, type ListenerSpec } from '$lib/server/config/loo
 import { startOrchestrator, reapStaleRuns, type Orchestrator } from '$lib/server/orchestrator';
 import { killAllClaudeChildren } from '$lib/server/claude-code/cli-backend';
 import { registerShutdown } from '$lib/server/shutdown';
+import { loadWorkforce, loadOrchestration, type OrchMode } from '$lib/server/config/index';
+import {
+	PmTriggerEngine,
+	setActivePmTriggerEngine
+} from '$lib/server/projects/pm-triggers';
 
 // Runtime env source (TASK 6.8). SvelteKit's `$env/dynamic/private` loads `.env` in
 // BOTH dev SSR (which Vite does NOT inject into `process.env`) and the prod Node
@@ -112,6 +117,15 @@ export function activeOrchestrator(): Orchestrator | null {
 	return orchestrators[0] ?? null;
 }
 
+/**
+ * TASK 16.2 — the PM trigger engine(s) (PM-SPEC §3), held like `orchestrators` so the
+ * instance survives for the life of the process and shutdown can stop it. The engine
+ * needs only the DB + bus (its review pass is deterministic — no Claude credential),
+ * so it starts on every CONNECTED boot; in manual orchestration mode it subscribes to
+ * nothing (D-004: no automatic fires) and the registry handle stays for route lookups.
+ */
+const pmTriggerEngines: PmTriggerEngine[] = [];
+
 /** The startup promise — loaders/routes can await it to know the DB state. */
 export const startup: Promise<DbInitResult> = bootstrap();
 
@@ -129,6 +143,9 @@ async function bootstrap(): Promise<DbInitResult> {
 	registerShutdown({
 		stopOrchestrators: () => {
 			for (const o of orchestrators) o.stop();
+			// The PM trigger engine is orchestration machinery too (TASK 16.2): same
+			// teardown step — its bus subscription + tick timer must not outlive the boot.
+			for (const e of pmTriggerEngines) e.stop();
 		},
 		killChildren: () => killAllClaudeChildren(),
 		stopWatchers: () => Promise.all(watchers.map((w) => w.stop().catch(() => {}))),
@@ -195,6 +212,40 @@ async function bootstrap(): Promise<DbInitResult> {
 		} catch (err) {
 			// A boot failure must never crash the server boot (D-019 honest degrade).
 			console.warn(`[startup] orchestrator boot failed: ${(err as Error).message}`);
+		}
+
+		// TASK 16.2 — the PM trigger engine (PM-SPEC §3), AFTER the watchers so the bus
+		// already carries session/task/security_finding/workflow_run row changes. It is
+		// bus-only (§2.11 — never its own live query) and needs no Claude credential (the
+		// review pass is deterministic), so it starts on every connected boot. D-004: the
+		// orchestration mode gates it — manual mode subscribes to nothing / arms no timer.
+		// The failure threshold ships UNARMED (null) and reads from workforce.yaml; an
+		// unreadable config degrades honestly to unarmed (F-008), never an invented bound.
+		try {
+			const dir = process.env.CONFIG_DIR?.trim() || 'config';
+			let mode: OrchMode = 'manual';
+			try {
+				mode = loadOrchestration(`${dir}/orchestration.yaml`).mode;
+			} catch {
+				mode = 'manual'; // most conservative gate on a bad config (11.5 pattern)
+			}
+			let failureThreshold: number | null = null;
+			try {
+				failureThreshold = loadWorkforce(`${dir}/workforce.yaml`).pm.triggers.failure_threshold;
+			} catch (err) {
+				console.warn(
+					`[startup] workforce.yaml unreadable — pm failure trigger stays UNARMED: ${(err as Error).message}`
+				);
+			}
+			const engine = new PmTriggerEngine({ db, bus, mode, failureThreshold });
+			engine.start();
+			pmTriggerEngines.push(engine);
+			setActivePmTriggerEngine(engine);
+			console.log(
+				`[startup] pm trigger engine started (mode=${mode}, failure_threshold=${failureThreshold ?? 'unarmed'}) — PM-SPEC §3 periodic+event triggers (D-004).`
+			);
+		} catch (err) {
+			console.warn(`[startup] pm trigger engine boot failed: ${(err as Error).message}`);
 		}
 	}
 	return result;

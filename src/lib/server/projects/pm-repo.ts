@@ -84,6 +84,24 @@ export type PmMemoryStats = Record<PmMemoryKind, number> & { total: number };
 /** What kicked off a PM review pass (D-004 honors the orchestration mode). */
 export type PmReviewTrigger = 'manual' | 'periodic' | 'event';
 
+/**
+ * TASK 16.2 (PM-SPEC §3) — WHAT woke the PM, recorded on the pm_review row itself
+ * (migration 0030, FLEXIBLE option<object>). Every entry is REAL (F-008): `evidence`
+ * carries the actual row ids / external refs that produced the fire; `authority` is
+ * the pm row's authority at fire time. Absent on pre-16.2 rows and manual button
+ * passes — an honest absence, never a fabricated provenance.
+ */
+export interface PmReviewProvenance {
+	/** The trigger kind (periodic | session_failed | task_blocked | github_arrival | finding | release). */
+	kind: string;
+	/** The real evidence rows/refs the fire derived from (record ids, issue/PR refs). */
+	evidence: string[];
+	/** The pm.authority in force when the trigger fired (PM-SPEC §4). */
+	authority?: string;
+	/** Trigger-specific detail (counts, threshold, run status…). Free-form, honest. */
+	detail?: Record<string, unknown>;
+}
+
 /** A persisted `pm_review` row — one PM review pass, surfaced in the PM tab (migration 0025). */
 export interface PmReviewRow {
 	id: string;
@@ -94,6 +112,8 @@ export interface PmReviewRow {
 	findings_examined: number;
 	risks_open: number;
 	memories_written: number;
+	/** Trigger provenance (TASK 16.2) — absent on manual/pre-16.2 rows. */
+	provenance?: PmReviewProvenance;
 	created_at: string | null;
 }
 
@@ -105,6 +125,8 @@ export interface AddPmReviewInput {
 	findings_examined: number;
 	risks_open: number;
 	memories_written: number;
+	/** Trigger provenance (TASK 16.2) — omitted entirely when absent (option<object>). */
+	provenance?: PmReviewProvenance;
 }
 
 // ── Helpers (mirror projects/repo.ts) ───────────────────────────────────────────
@@ -276,7 +298,9 @@ export async function addPmReview(db: Db, input: AddPmReviewInput): Promise<PmRe
 		tasks_examined: input.tasks_examined,
 		findings_examined: input.findings_examined,
 		risks_open: input.risks_open,
-		memories_written: input.memories_written
+		memories_written: input.memories_written,
+		// TASK 16.2: trigger provenance — OMITTED when absent (option<object> rejects NULL).
+		...(input.provenance !== undefined ? { provenance: input.provenance } : {})
 	};
 	const [rows] = await db.query<
 		[(PmReviewRow & { id: unknown; project: unknown; created_at: unknown })[]]
@@ -372,6 +396,19 @@ export async function getPm(db: Db, projectId: string): Promise<PmRow | null> {
 }
 
 /**
+ * TASK 16.2 (PM-SPEC §3) — every hired PM with a periodic cadence set. The trigger
+ * engine's tick reads THIS list (live rows, F-008) and evaluates each cadence cron +
+ * cadence_offset stagger. A PM without a cadence never appears here (honest: no
+ * schedule means no periodic fires — not a default schedule).
+ */
+export async function listPmsWithCadence(db: Db): Promise<PmRow[]> {
+	const [rows] = await db.query<[(PmRow & { id: unknown; project: unknown })[]]>(
+		`SELECT * FROM pm WHERE cadence != NONE AND cadence != "";`
+	);
+	return rows.map(normPm);
+}
+
+/**
  * Create the project's `pm` row. ONE per project — the UNIQUE pm_by_project index makes a
  * concurrent double-hire collide rather than duplicate (D-008); callers absorb the existing
  * row via getPm first (interrupt-safe re-run). All values bind via $param (D-016).
@@ -415,6 +452,46 @@ export async function updatePmCharter(
 				`UPDATE $rid SET charter = NONE RETURN AFTER;`,
 				{ rid }
 			);
+	return rows.length ? normPm(rows[0]) : null;
+}
+
+/**
+ * TASK 16.2 (PM-SPEC §3) — set/clear the PM's periodic schedule: `cadence` (a 5-field
+ * cron expression) + `cadence_offset` (a duration stagger). null/empty CLEARS a field
+ * to NONE (option<T> — absent, surfaced as the honest '—'). The ROUTE action validates
+ * the cron/duration shapes at the boundary (parseCron/parseDurationMs — pm-triggers);
+ * this write path binds values via $param and casts the offset to a real duration.
+ * Returns null when the project has no hired PM (no row to schedule).
+ */
+export async function updatePmSchedule(
+	db: Db,
+	projectId: string,
+	input: { cadence: string | null; cadenceOffset: string | null }
+): Promise<PmRow | null> {
+	const existing = await getPm(db, projectId);
+	if (!existing) return null;
+	const rid = link(existing.id);
+	const cadence = input.cadence?.trim() || null;
+	const offset = input.cadenceOffset?.trim() || null;
+	const sets: string[] = [];
+	const binds: Record<string, unknown> = { rid };
+	if (cadence) {
+		sets.push('cadence = $cadence');
+		binds.cadence = cadence;
+	} else {
+		sets.push('cadence = NONE');
+	}
+	if (offset) {
+		// The column is TYPE option<duration> — cast the validated string to a duration.
+		sets.push('cadence_offset = <duration>$offset');
+		binds.offset = offset;
+	} else {
+		sets.push('cadence_offset = NONE');
+	}
+	const [rows] = await db.query<[(PmRow & { id: unknown; project: unknown })[]]>(
+		`UPDATE $rid SET ${sets.join(', ')} RETURN AFTER;`,
+		binds
+	);
 	return rows.length ? normPm(rows[0]) : null;
 }
 

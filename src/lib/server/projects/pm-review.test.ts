@@ -145,3 +145,44 @@ describe('runPmReview — charter-bearing context assembly (16.1)', () => {
 		expect(res.context.items.some((i) => i.text.includes('PM charter'))).toBe(false);
 	});
 });
+
+// ── TASK 16.2 — trigger provenance (PM-SPEC §3): the engine's runPmReview variant
+// stamps WHAT woke the PM onto the pm_review row; a manual pass omits it honestly.
+describe('runPmReview — trigger provenance (16.2)', () => {
+	it('persists provenance on the review row and reads it back through the load path', async () => {
+		await createTask(db, { project: projectId, title: 'T', description: '' });
+		const res = await runPmReview(db, projectId, 'event', {
+			kind: 'finding',
+			evidence: ['security_finding:abc'],
+			authority: 'act',
+			detail: { findings: 1 }
+		});
+		expect(res.review.provenance?.kind).toBe('finding');
+
+		const [row] = await listPmReviews(db, projectId);
+		expect(row.provenance?.kind).toBe('finding');
+		expect(row.provenance?.evidence).toEqual(['security_finding:abc']);
+		expect(row.provenance?.authority).toBe('act');
+		expect(row.provenance?.detail).toEqual({ findings: 1 });
+	});
+
+	it('a manual pass writes NO provenance (honest absence, not an empty object)', async () => {
+		await runPmReview(db, projectId, 'manual');
+		const [row] = await listPmReviews(db, projectId);
+		expect(row.provenance ?? null).toBeNull();
+	});
+
+	it('a release-failure provenance writes the retro LEARNING + follow-up RISK from the evidence', async () => {
+		const res = await runPmReview(db, projectId, 'event', {
+			kind: 'release',
+			evidence: ['workflow_run:r1'],
+			authority: 'act',
+			detail: { status: 'failed', workflow: 'release 1.0.0' }
+		});
+		const learning = res.written.find((m) => m.kind === 'learning');
+		expect(learning?.content).toMatch(/release retro/i);
+		expect(learning?.content).toContain('workflow_run:r1');
+		expect(learning?.related_to).toBe('workflow_run:r1');
+		expect(res.written.some((m) => m.kind === 'risk' && /FAILED/.test(m.content))).toBe(true);
+	});
+});

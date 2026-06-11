@@ -106,3 +106,21 @@ export {
 	type PmContextItem,
 	type PmRoute
 } from './pm-session';
+
+// TASK 16.2 — the PM trigger engine (PM-SPEC §3).
+export {
+	PmTriggerEngine,
+	pmTriggerAllowed,
+	reviewAllowedByAuthority,
+	parseCron,
+	cronMatches,
+	parseDurationMs,
+	periodicDue,
+	activePmTriggerEngine,
+	setActivePmTriggerEngine,
+	type PmTriggerEngineOptions,
+	type PmTriggerKind,
+	type PmGithubArrival,
+	type CronSpec
+} from './pm-triggers';
+export { listPmsWithCadence, type PmReviewProvenance } from './pm-repo';

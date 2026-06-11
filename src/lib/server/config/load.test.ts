@@ -292,4 +292,31 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 	])('rejects %s at the boundary', (_label, inject) => {
 		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
 	});
+
+	// ── TASK 16.2 — pm.triggers.failure_threshold (PM-SPEC §3 event ①) ────────────
+	it('the SHIPPED config ships the failure trigger UNARMED (null — F-008, no invented bound)', () => {
+		const wf = loadWorkforce(REAL_WF);
+		expect(wf.pm.triggers.failure_threshold).toBeNull();
+	});
+
+	it('an absent triggers block defaults to unarmed (older files stay valid)', () => {
+		const wf = loadWorkforce(REAL_WF, { _inject: { pm: { model_id: 'claude-fable-5' } } });
+		expect(wf.pm.triggers.failure_threshold).toBeNull();
+	});
+
+	it('accepts an armed non-negative integer threshold', () => {
+		const wf = loadWorkforce(REAL_WF, {
+			_inject: { pm: { model_id: 'claude-fable-5', triggers: { failure_threshold: 3 } } }
+		});
+		expect(wf.pm.triggers.failure_threshold).toBe(3);
+	});
+
+	it.each([
+		['non-mapping triggers', { pm: { model_id: 'm', triggers: 'lots' } }],
+		['negative threshold', { pm: { model_id: 'm', triggers: { failure_threshold: -1 } } }],
+		['non-integer threshold', { pm: { model_id: 'm', triggers: { failure_threshold: 1.5 } } }],
+		['string threshold', { pm: { model_id: 'm', triggers: { failure_threshold: '3' } } }]
+	])('rejects %s at the trigger boundary (fail closed)', (_label, inject) => {
+		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
+	});
 });

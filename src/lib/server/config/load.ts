@@ -238,13 +238,22 @@ export function loadGatesConfig(file: string, opts: LoadOpts = {}): GatesConfig 
 // This loader validates the keys IT serves and keeps the rest open (forward-compat,
 // same posture as orchestration bundles' unknown keys).
 
-/** The validated shape of config/workforce.yaml (the keys 16.1 consumes). */
+/** The validated shape of config/workforce.yaml (the keys 16.1 + 16.2 consume). */
 export interface WorkforceConfig {
 	pm: {
 		/** Registered provider name (`claude` = the Claude Code CLI backend). */
 		provider: string;
 		/** The PM's model id — default Fable 5 (PM-SPEC §1, operator 2026-06-10). */
 		model_id: string;
+		/** TASK 16.2 (PM-SPEC §3 event ①) — trigger-engine bounds. */
+		triggers: {
+			/**
+			 * Distress threshold (failed sessions + freshly-blocked tasks since the last
+			 * review must EXCEED this to auto-fire). null = UNARMED (F-008): the trigger
+			 * never auto-fires until the operator sets a bound from real history.
+			 */
+			failure_threshold: number | null;
+		};
 		[k: string]: unknown;
 	};
 	[k: string]: unknown;
@@ -269,6 +278,25 @@ export function loadWorkforce(file: string, opts: LoadOpts = {}): WorkforceConfi
 	if (p.provider !== undefined && (typeof p.provider !== 'string' || !p.provider.trim())) {
 		throw new ConfigError('workforce: pm.provider must be a non-empty string when set', file);
 	}
+	// TASK 16.2 — pm.triggers.* (PM-SPEC §3 event ①). The block is optional (an older
+	// file simply ships unarmed); when present it must be a mapping, and the threshold
+	// must be null (unarmed) or a non-negative integer — fail closed on anything else.
+	let failureThreshold: number | null = null;
+	if (p.triggers !== undefined) {
+		if (p.triggers === null || typeof p.triggers !== 'object' || Array.isArray(p.triggers)) {
+			throw new ConfigError('workforce: pm.triggers must be a mapping when set', file);
+		}
+		const t = (p.triggers as Record<string, unknown>).failure_threshold;
+		if (t !== undefined && t !== null) {
+			if (typeof t !== 'number' || !Number.isInteger(t) || t < 0) {
+				throw new ConfigError(
+					'workforce: pm.triggers.failure_threshold must be null (unarmed) or a non-negative integer',
+					file
+				);
+			}
+			failureThreshold = t;
+		}
+	}
 	return {
 		...raw,
 		pm: {
@@ -276,7 +304,8 @@ export function loadWorkforce(file: string, opts: LoadOpts = {}): WorkforceConfi
 			model_id: p.model_id.trim(),
 			// `claude` is the registered Claude Code CLI backend — the provider every
 			// claude-* tier in agent-pool.yaml names; the justified default, not magic.
-			provider: typeof p.provider === 'string' && p.provider.trim() ? p.provider.trim() : 'claude'
+			provider: typeof p.provider === 'string' && p.provider.trim() ? p.provider.trim() : 'claude',
+			triggers: { failure_threshold: failureThreshold }
 		}
 	};
 }

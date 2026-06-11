@@ -59,6 +59,19 @@ export interface SyncItemResult {
 	error?: string;
 }
 
+/**
+ * TASK 16.2 (PM-SPEC §3 event ②) — one EXTERNAL arrival a sync run detected: an open
+ * issue with no task mapping (born on GitHub, not pushed from here) or an open PR.
+ * The PM trigger engine consumes these (deduped against prior review provenance).
+ */
+export interface SyncArrival {
+	kind: 'issue' | 'pr';
+	/** The external id (issue/PR number as a string). */
+	externalId: string;
+	title?: string;
+	url?: string;
+}
+
 /** The aggregate result of one sync run. Honest counts — every number is a real action. */
 export interface SyncResult {
 	/** The external target the run reconciled against (e.g. "owner/repo"). */
@@ -74,6 +87,12 @@ export interface SyncResult {
 	items: SyncItemResult[];
 	/** Non-fatal per-item errors collected during the run (the run still completes). */
 	errors: string[];
+	/**
+	 * External issue/PR arrivals detected during the run (TASK 16.2 — the PM trigger
+	 * engine's event ② source). OPTIONAL: absent when an adapter performs no arrival
+	 * detection (an honest absence, never a fabricated empty claim of "no arrivals").
+	 */
+	arrivals?: SyncArrival[];
 }
 
 /**

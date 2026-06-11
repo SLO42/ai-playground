@@ -6,7 +6,7 @@ import { startTestDb, type TestDb } from '../db/testserver';
 import { createProject } from '../projects/repo';
 import { createTask, setStatus, getTask } from '../tasks/repo';
 import { GitHubSyncAdapter, issueToTaskStatus, issueBodyForTask, listMappings } from './github';
-import type { GitHubClient, GitHubIssue, CreatedIssue, AuthStatus } from './gh-client';
+import type { GitHubClient, GitHubIssue, CreatedIssue, AuthStatus, OpenItem } from './gh-client';
 
 // TASK 9.4 VERIFY (D-037 reference SyncAdapter; D-038) — the FULL adapter reconcile logic
 // runs against a REAL throwaway SurrealDB (the real task_sync ledger + the real task status
@@ -279,6 +279,59 @@ describe('pull — issue → task, through the status state machine', () => {
 		expect(r.pulled).toBe(0);
 		expect(r.skipped).toBeGreaterThanOrEqual(1);
 		expect((await getTask(db, t.id))?.status).toBe('done');
+	});
+});
+
+// ── TASK 16.2 — arrival detection (PM-SPEC §3 event ②) ──────────────────────────────
+describe('arrivals — external open issues/PRs detected during a sync run', () => {
+	/** The fake extended with the optional arrival read (open issues + PRs, no label). */
+	class FakeGitHubWithOpen extends FakeGitHub {
+		openIssues: OpenItem[] = [];
+		openPrs: OpenItem[] = [];
+		async listOpenItems(): Promise<{ issues: OpenItem[]; prs: OpenItem[] }> {
+			return { issues: this.openIssues, prs: this.openPrs };
+		}
+	}
+
+	it('reports unmapped open issues + all open PRs as arrivals; mapped issues are NOT arrivals', async () => {
+		const gh = new FakeGitHubWithOpen();
+		const adapter = new GitHubSyncAdapter({ client: gh });
+		// One task pushed from here → mapped issue 100 (NOT an arrival).
+		await createTask(db, { project: projectId, title: 'Ours', description: 'x' });
+		await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		// Externally-born work: an unmapped open issue + an open PR.
+		gh.openIssues = [
+			{ number: 100, title: 'Ours', url: `https://github.com/${REPO}/issues/100` },
+			{ number: 7, title: 'External bug', url: `https://github.com/${REPO}/issues/7` }
+		];
+		gh.openPrs = [{ number: 8, title: 'External fix', url: `https://github.com/${REPO}/pull/8` }];
+
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		expect(r.arrivals).toBeDefined();
+		expect(r.arrivals).toEqual([
+			{ kind: 'issue', externalId: '7', title: 'External bug', url: `https://github.com/${REPO}/issues/7` },
+			{ kind: 'pr', externalId: '8', title: 'External fix', url: `https://github.com/${REPO}/pull/8` }
+		]);
+	});
+
+	it('a client WITHOUT listOpenItems omits arrivals entirely (honest absence)', async () => {
+		const gh = new FakeGitHub(); // no listOpenItems
+		const adapter = new GitHubSyncAdapter({ client: gh });
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		expect(r.arrivals).toBeUndefined();
+	});
+
+	it('an arrival-detection failure records a run error but the sync still completes', async () => {
+		const gh = new FakeGitHubWithOpen();
+		gh.listOpenItems = async () => {
+			throw new Error('rate limited');
+		};
+		const adapter = new GitHubSyncAdapter({ client: gh });
+		await createTask(db, { project: projectId, title: 'Still works', description: 'x' });
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		expect(r.created).toBe(1); // the sync itself succeeded
+		expect(r.arrivals).toBeUndefined();
+		expect(r.errors.some((e) => /arrival detection: rate limited/.test(e))).toBe(true);
 	});
 });
 

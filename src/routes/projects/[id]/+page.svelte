@@ -1273,6 +1273,57 @@
             <p class="hint">Hire the PM first to enable reviews.</p>
           {/if}
 
+          <!-- TASK 16.2 (PM-SPEC §3): the periodic schedule — per-project cron cadence +
+               stagger offset on the pm row; the trigger engine fires reviews from these.
+               Reachable only with a hired PM (no PM → no schedule to edit). -->
+          {#if pm}
+            <form
+              method="POST"
+              action="?/pmSchedule"
+              class="schedule-form"
+              use:enhance={() => {
+                pmBusy = true;
+                return async ({ update }) => {
+                  await update({ reset: false });
+                  pmBusy = false;
+                };
+              }}
+            >
+              <label class="schedule-field">
+                <span>Cadence (cron)</span>
+                <input
+                  class="pm-input mono"
+                  type="text"
+                  name="cadence"
+                  value={pm.cadence ?? ''}
+                  placeholder="0 9 * * 1-5"
+                  aria-describedby="schedule-hint"
+                />
+              </label>
+              <label class="schedule-field">
+                <span>Offset (stagger)</span>
+                <input
+                  class="pm-input mono"
+                  type="text"
+                  name="cadenceOffset"
+                  value={pm.cadence_offset ?? ''}
+                  placeholder="5m"
+                  aria-describedby="schedule-hint"
+                />
+              </label>
+              <button class="btn" type="submit" disabled={pmBusy}>Save schedule</button>
+            </form>
+            <p class="hint" id="schedule-hint">
+              {#if pm.cadence}
+                Periodic cadence <span class="mono">{pm.cadence}</span>
+                {#if pm.cadence_offset}&nbsp;staggered by <span class="mono">{pm.cadence_offset}</span>{/if}
+                — fires only when the orchestration mode permits automatic reviews (D-004).
+              {:else}
+                No cadence set — periodic reviews are off for this project. Empty fields clear.
+              {/if}
+            </p>
+          {/if}
+
           {#if pmReviews.length === 0}
             <p class="state-body">No review passes yet — run one to capture the first snapshot.</p>
           {:else}
@@ -1290,6 +1341,18 @@
                     <span>{r.risks_open} risks</span>
                     <span>{r.memories_written} written</span>
                   </div>
+                  <!-- TASK 16.2: trigger provenance — what woke the PM + the real evidence
+                       (PM-SPEC §3). Absent on manual/pre-16.2 rows (honest absence). -->
+                  {#if r.provenance}
+                    <div class="review-prov mono" data-kind={r.provenance.kind}>
+                      <span class="review-prov-kind">woke on {r.provenance.kind}</span>
+                      <span>
+                        {r.provenance.evidence.length} evidence
+                        {r.provenance.evidence.length === 1 ? 'row' : 'rows'}
+                        · authority {r.provenance.authority ?? '—'}
+                      </span>
+                    </div>
+                  {/if}
                 </li>
               {/each}
             </ul>
@@ -2492,6 +2555,33 @@
     gap: 0.75rem;
     font-size: 0.72rem;
     color: var(--color-text-muted);
+  }
+  /* TASK 16.2 — the periodic-schedule editor (cadence cron + stagger offset). */
+  .schedule-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: var(--space-3, 0.75rem);
+    margin-block: var(--space-3, 0.75rem);
+  }
+  .schedule-field {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
+  }
+  /* TASK 16.2 — trigger provenance line (what woke the PM). */
+  .review-prov {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem;
+    font-size: 0.68rem;
+    color: var(--color-text-muted);
+  }
+  .review-prov-kind {
+    font-weight: 600;
+    color: var(--color-accent);
   }
   .pm-badge {
     font-size: 0.66rem;

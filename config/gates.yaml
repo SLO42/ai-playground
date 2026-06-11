@@ -64,6 +64,9 @@ destructiveBash:
     # FULL-COMMAND safe exceptions: rm -r/-rf of well-known build artifacts passes
     # silently (one or more artifact targets, optionally ./-prefixed or a subpath).
     # provenance: gstack careful safe-target case list, adapted (.svelte-kit, test-results).
+    # The artifact subpath is matched SEGMENT-by-SEGMENT and a `..` segment is FORBIDDEN
+    # (negative lookahead) — so `rm -rf node_modules/../src` does NOT ride this exception
+    # and falls through to the recursive-rm deny (fail-closed; F-019/D-024 scope-lock fix).
     - id: rm-build-artifacts
-      pattern: 'rm\s+(-[a-z]+\s+)+((\./)?(node_modules|dist|build|\.svelte-kit|\.next|coverage|__pycache__|\.cache|\.turbo|test-results)([/\\][^\s]*)?(\s+|$))+'
+      pattern: 'rm\s+(-[a-z]+\s+)+((\./)?(node_modules|dist|build|\.svelte-kit|\.next|coverage|__pycache__|\.cache|\.turbo|test-results)(?:[/\\](?!\.\.(?:[/\\]|$))[^\s/\\]+)*[/\\]?(\s+|$))+'
       reason: cleaning regenerable build artifacts is safe

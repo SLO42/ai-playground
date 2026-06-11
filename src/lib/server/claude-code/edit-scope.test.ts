@@ -298,6 +298,25 @@ describe('edit-scope — detectable bash write redirections', () => {
 		expect(r.decision).toBe('allow');
 	});
 
+	// REGRESSION (fix 15.1 gap-2, fail-OPEN): the `>|` clobber-override operator is a real
+	// write redirection — its target must be scope-checked. Previously the target char-class
+	// aborted on the `|`, extracting NO target, so an out-of-scope `>|` write slipped through.
+	it('denies the `>|` clobber-override redirection targeting outside the scope', () => {
+		for (const cmd of [
+			`echo malicious >| ${join(root, 'docs', 'out.txt')}`,
+			`echo malicious >>| ${join(root, 'docs', 'out.txt')}`
+		]) {
+			const r = evaluateGate(bash(cmd), ctx(scope()));
+			expect(r.decision, cmd).toBe('deny');
+			expect(r.gate, cmd).toBe('edit-scope');
+		}
+	});
+
+	it('allows a `>|` clobber-override into the scope', () => {
+		const r = evaluateGate(bash(`echo hi >| ${join(root, 'src', 'log.txt')}`), ctx(scope()));
+		expect(r.decision).toBe('allow');
+	});
+
 	it('denies tee writing outside the scope; allows tee -a inside', () => {
 		const denied = evaluateGate(
 			bash(`echo x | tee ${join(root, 'docs', 'out.txt')}`),
@@ -371,6 +390,33 @@ describe('edit-scope — destructive-bash patterns (from config/gates.yaml) + sa
 	it('the exception is FULL-COMMAND: a chained destructive command still denies', () => {
 		const r = evaluateGate(bash('rm -rf node_modules && git checkout .'), ctx(scope()));
 		expect(r.decision).toBe('deny');
+	});
+
+	// REGRESSION (fix 15.1 gap-1, fail-OPEN): the artifact safe-exception must NOT permit a
+	// `..` traversal suffix after a whitelisted artifact name — `rm -rf node_modules/../src`
+	// resolves OUT of scope and previously rode the allow anchor (skipping the deny list AND
+	// the static rm rule), defeating the scope-lock. It must now DENY (the allow no longer
+	// matches ⇒ the recursive-rm rule fires).
+	it.each([
+		'rm -rf node_modules/../src',
+		'rm -rf dist/../src/lib',
+		'rm -rf node_modules/../../etc',
+		'rm -rf .svelte-kit/..',
+		'rm -rf node_modules\\..\\src'
+	])('DENIES `..` traversal smuggled past the artifact exception: %s', (cmd) => {
+		const r = evaluateGate(bash(cmd), ctx(scope()));
+		expect(r.decision, cmd).toBe('deny');
+	});
+
+	it('legitimate artifact SUBPATHS (no `..`) still pass the exception', () => {
+		for (const cmd of [
+			'rm -rf node_modules/.cache',
+			'rm -rf node_modules/.vite/deps',
+			'rm -rf coverage/tmp',
+			'rm -rf node_modules/' // trailing separator
+		]) {
+			expect(evaluateGate(bash(cmd), ctx(scope())).decision, cmd).toBe('allow');
+		}
 	});
 
 	it('rm -rf of a NON-artifact still denies (the static dangerous-bash family)', () => {

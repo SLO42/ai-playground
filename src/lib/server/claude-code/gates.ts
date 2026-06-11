@@ -483,13 +483,17 @@ const WRITE_TOOLS = new Set(['Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
 
 /**
  * Extract the file targets a bash command DETECTABLY writes: `>` / `>>` redirections
- * (incl. `N>` / `&>` forms) and `tee` arguments. fd-duplication (`2>&1`) and the null
- * sinks (/dev/null, nul, $null) are skipped. Conservative by design — see the detection
- * boundary note above; a false positive denies (fail closed), never allows.
+ * (incl. `N>` / `&>` and the `>|` clobber-override forms) and `tee` arguments.
+ * fd-duplication (`2>&1`) and the null sinks (/dev/null, nul, $null) are skipped.
+ * Conservative by design — see the detection boundary note above; a false positive
+ * denies (fail closed), never allows.
  */
 function bashWriteTargets(command: string): string[] {
 	const out: string[] = [];
-	const redir = /(?:\d|&)?>{1,2}\s*("[^"]*"|'[^']*'|[^\s;|&)]+)/g;
+	// `\|?` after the `>`/`>>` captures the `>|` clobber-override operator (bash, even
+	// under `set -o noclobber`) — without it `>| path` extracted NO target and the
+	// out-of-scope write slipped through (a fail-OPEN; F-019/D-024 scope-lock fix).
+	const redir = /(?:\d|&)?>{1,2}\|?\s*("[^"]*"|'[^']*'|[^\s;|&)]+)/g;
 	let m: RegExpExecArray | null;
 	while ((m = redir.exec(command)) !== null) {
 		const t = m[1].replace(/^["']|["']$/g, '');

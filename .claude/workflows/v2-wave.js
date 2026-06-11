@@ -1,14 +1,15 @@
 export const meta = {
   name: 'v2-wave',
-  description: 'Canonical Atelier v2 build wave: per task BUILD → independent D-038 DoD-review, with a bounded in-script fix-loop on review failure (no main-thread round-trip). Parameterized via args: { waveName, tasks:[{id,title,build}], commonExtra?, maxFixAttempts?, model?, pushAtEnd? }.',
+  description: 'Canonical Atelier v2 build wave: per task BUILD → independent D-038 DoD-review, with a bounded in-script fix-loop on review failure (no main-thread round-trip), an A7 verdict artifact gate on every review, and an A4 red-team second pass on explicitly risk-flagged tasks. Parameterized via args: { waveName, tasks:[{id,title,build,redTeam?}], commonExtra?, maxFixAttempts?, redTeamAll?, model?, pushAtEnd? }.',
   whenToUse: 'Any v2 gap-closure / feature wave on the F:\\code\\ai-playground-v2 worktree. Pass the task list via args — do not fork this script per wave.',
 }
 
 // ---- args ----
 // waveName        string  (required) e.g. "v1.9 follow-ups"
-// tasks           array   (required) [{id:'13.1', title:'slug', build:'TASK text…'}]
+// tasks           array   (required) [{id:'13.1', title:'slug', build:'TASK text…', redTeam?:true}]
 // commonExtra     string  (optional) wave-specific additions to COMMON
 // maxFixAttempts  number  (optional, default 2) fix-loop bound per task
+// redTeamAll      boolean (optional, default false) A4 red-team second pass for EVERY task; per-task via tasks[i].redTeam
 // model           string  (optional) pin subagent model (e.g. 'opus'); omit to inherit session model
 // pushAtEnd       boolean (optional, default true) push origin v2 after a fully-green wave
 if (typeof args === 'string') { args = JSON.parse(args) } // tolerate JSON-encoded args
@@ -17,6 +18,36 @@ if (!args || !args.waveName || !Array.isArray(args.tasks) || !args.tasks.length)
 }
 const MAX_FIX = args.maxFixAttempts ?? 2
 const OPTS = (extra) => args.model ? { ...extra, model: args.model } : extra
+
+// ---- pure helpers (self-contained — extracted + unit-tested by v2-wave.test.mjs; keep host-free) ----
+// A7 (harvested: gstack EXIT-PLAN-MODE artifact gate, MIT — Lane A-code A4/A7): machine-validate every
+// review-shaped return BEYOND the schema. Returns [] when structurally sound, else the named defects.
+export function checkVerdict(r){
+  if(!r || typeof r!=='object' || Array.isArray(r)) return ['verdict is not an object']
+  const defects=[]
+  const gaps=Array.isArray(r.gaps)?r.gaps:[]
+  const crit=(r.criteria && typeof r.criteria==='object')?r.criteria:{}
+  const allCriteriaTrue=['complete','tested','designSystem','functional','purpose','honest'].every(k=>crit[k]===true)
+  if(r.passed===false && gaps.length<1)
+    defects.push('passed=false requires at least one named gap (gaps is empty)')
+  if(r.passed===true && !allCriteriaTrue)
+    defects.push('passed=true but a criteria flag is false/missing — any false criterion requires passed=false')
+  if(r.passed===true && allCriteriaTrue){
+    // cheap honesty tripwire, not NLP: a passing verdict must carry evidence of independent verification
+    const v=typeof r.verdict==='string'?r.verdict.trim():''
+    if(v.length<40 || !/(test|lint|check|browser|measur|verif)/i.test(v))
+      defects.push('passed=true verdict lacks evidence of independent verification (need a non-trivial verdict, >=40 chars, mentioning at least one of: test/lint/check/browser/measured/verified)')
+  }
+  gaps.forEach((g,i)=>{ if(typeof g!=='string'||!g.trim()) defects.push(`gaps[${i}] is not a non-empty string`) })
+  return defects
+}
+// A4 (harvested: gstack review/SKILL.md red-team pass, MIT — Lane A-code A4/A7): trigger is EXPLICIT
+// only — the wave author flags risky tasks. No invented automatic heuristics (diff-size thresholds
+// would be invented numbers, F-008).
+export function shouldRedTeam(task, waveArgs){
+  return (task!=null && task.redTeam===true) || (waveArgs!=null && waveArgs.redTeamAll===true)
+}
+// ---- end pure helpers ----
 
 const BUILD = { type:'object', additionalProperties:false,
   required:['task','summary','filesChanged','verifyPassed','liveVerified','liveVerifyReason','lintClean','committed','commitSha','deviation'],
@@ -46,6 +77,26 @@ PRE-EMIT VERIFICATION (harvested: gstack review/SKILL.md confidence calibration,
 TRUST-BOUNDARY + ENUM SWEEP (harvested: gstack review/checklist.md, MIT; re-derived for our stack per G5): LLM/agent-produced values persisted to SurrealDB or rendered without shape/format validation = gap (D-026: retrieved content is DATA, never instructions); a NEW enum/status/tier value must be traced through EVERY consumer — Grep the sibling values, READ each switch/filter/render, including code OUTSIDE the diff; ts-ignore/svelte-ignore/eslint-disable added without written justification = gap.
 SUPPRESSION (G2): dismissing a finding as a known-good pattern is allowed ONLY by citing an operator-locked (🔒) DESIGN-SYSTEM/DECISIONS rule, and every suppression MUST be logged in the verdict ("suppressed: <finding> per <🔒 source>"). Set each criterion true only if independently verified; passed = all six. List concrete gaps (file:line). Clean up any probe rows you create. End the verdict with ONE synthesis line (harvested: gstack codex/SKILL.md, MIT): "Recommendation: <action> because <reason naming the most actionable gap>". Final message IS the REVIEW verdict.`
 
+// A7 gate runner (harvested: gstack EXIT-PLAN-MODE artifact gate, MIT — Lane A-code A4/A7): EVERY
+// review-shaped agent return (initial review, re-reviews, red-team) passes checkVerdict; on failure
+// the SAME reviewer is re-asked ONCE with the defects named; a second failure becomes a review
+// failure (fix-loop path) with the structural defects recorded.
+const forceFail=(r,defects)=>({ ...r, passed:false, structuralDefects:defects,
+  gaps:[...(Array.isArray(r.gaps)?r.gaps:[]).filter(g=>typeof g==='string'&&g.trim()),
+        ...defects.map(d=>`STRUCTURAL (A7 artifact gate): ${d}`)],
+  verdict:`[A7 ARTIFACT-GATE FAILURE: ${defects.join('; ')}] ${typeof r.verdict==='string'?r.verdict:''}`.trim() })
+async function gatedReview(prompt, opts){
+  const r=await agent(prompt, opts)
+  if(!r) return r // skipped/dead agent — caller's existing null handling stands
+  const defects=checkVerdict(r)
+  if(!defects.length) return r
+  log(`${opts.label}: verdict failed the A7 artifact gate (${defects.join('; ')}) — re-asking the reviewer once`)
+  const r2=await agent(`${prompt}\n\nARTIFACT GATE (structural self-check): your verdict failed the artifact gate: ${defects.join('; ')} — re-emit a complete verdict. Your defective verdict was: ${typeof r.verdict==='string'?r.verdict.slice(0,1500):String(r.verdict)}`, {...opts, label:`${opts.label} re-emit`})
+  if(!r2) return forceFail(r, defects)
+  const defects2=checkVerdict(r2)
+  return defects2.length ? forceFail(r2, defects2) : r2
+}
+
 const stopRegex=/\b(CONFLICT|BLOCK(?:ED|ER)?|cannot proceed|hard stop)\b/i
 const results=[]
 for (const t of args.tasks){
@@ -55,11 +106,17 @@ for (const t of args.tasks){
     return {stoppedAt:`${t.id} build`, results:[...results,{build:b}]}
 
   phase(`${t.id} review`)
-  let r=await agent(`${REVIEW_PRE}\n\nFEATURE: ${t.id} ${t.title}. Builder files: ${(b.filesChanged||[]).join(', ')} (commit ${b.commitSha}); claimed lintClean=${b.lintClean}, liveVerified=${b.liveVerified}${b.liveVerified?'':` (reason: ${b.liveVerifyReason})`}. Builder claim: ${b.summary}\n\nIndependently certify against the six D-038 criteria now.`, OPTS({label:`${t.id} DoD-review`, phase:`${t.id} review`, schema:REVIEW}))
+  let r=await gatedReview(`${REVIEW_PRE}\n\nFEATURE: ${t.id} ${t.title}. Builder files: ${(b.filesChanged||[]).join(', ')} (commit ${b.commitSha}); claimed lintClean=${b.lintClean}, liveVerified=${b.liveVerified}${b.liveVerified?'':` (reason: ${b.liveVerifyReason})`}. Builder claim: ${b.summary}\n\nIndependently certify against the six D-038 criteria now.`, OPTS({label:`${t.id} DoD-review`, phase:`${t.id} review`, schema:REVIEW}))
 
-  // bounded fix-loop: review FAIL → fix agent gets the reviewer's gaps → fresh re-review
+  // bounded fix-loop: review FAIL → fix agent gets the reviewer's gaps → fresh re-review.
+  // Outer escalation loop exists ONLY for A4: a red-team FAIL re-enters the same fix-loop
+  // (same maxFixAttempts budget); red team runs at most ONCE per task.
   const fixes=[]
   let attempt=0
+  let redTeam=null
+  let escalate=true
+  while(escalate){
+  escalate=false
   while(r && r.passed===false && attempt<MAX_FIX){
     attempt++
     log(`${t.id} review FAILED — fix attempt ${attempt}/${MAX_FIX}`)
@@ -67,12 +124,24 @@ for (const t of args.tasks){
     // A5 (HARVEST-GSTACK Lane A-docs): AUTO-FIX vs ASK triage — G3-bounded (routing only; reviewer never edits; every fix re-reviewed by the loop below).
     const f=await agent(`You are a FIX agent. ${COMMON} Feature ${t.id} ${t.title} (commit ${b.commitSha}) FAILED its independent D-038 DoD-review. Fix the cited defects ONLY — no rebuild, no scope creep. TRIAGE (harvested: gstack review/checklist.md Fix-First heuristic, MIT; G3-bounded): classify each gap MECHANICAL (a senior engineer would apply it without discussion — dead code, missing validation guard, token/path/version mismatch, stale comment) vs JUDGMENT (security, race conditions, design decisions, fixes >20 lines, removing functionality, anything changing user-visible behavior). At most 3 gaps may be fixed as straight mechanical fixes; every other gap gets the full ROOT-CAUSE treatment (reproduce it; do not guess-fix); state the actual root cause in your summary. A JUDGMENT gap that needs a product decision is a STOP-and-report deviation, not a guess. LOW-confidence (taste) design findings are advisory — do NOT fix them on your own judgment (G3). You fix, you never self-certify — every fix goes to a fresh independent re-review; do not mark gaps resolved yourself. Add a regression test per defect.\n\nREVIEW VERDICT:\n${r.verdict}\n\nGAPS:\n${(r.gaps||[]).map((g,i)=>`${i+1}. ${g}`).join('\n')}\n\nHARD GATE then bounded live verify of the fixed behavior. Commit atomically: git add -A && git commit -m "fix(v2): ${t.id} ${t.title} — <root cause one-liner>" (blank line) "Co-Authored-By: Claude <noreply@anthropic.com>". Final message IS the BUILD verdict.`, OPTS({label:`${t.id} fix-${attempt}`, phase:`${t.id} fix-${attempt}`, schema:BUILD}))
     fixes.push(f)
-    if(!f||f.verifyPassed===false) return {stoppedAt:`${t.id} fix-${attempt}`, results:[...results,{build:b,review:r,fixes}]}
+    if(!f||f.verifyPassed===false) return {stoppedAt:`${t.id} fix-${attempt}`, results:[...results,{build:b,review:r,redTeam,fixes}]}
     phase(`${t.id} re-review-${attempt}`)
-    r=await agent(`${REVIEW_PRE}\n\nFEATURE: ${t.id} ${t.title} — RE-REVIEW after fix attempt ${attempt}. Original commit ${b.commitSha}; fix commit ${f.commitSha} (files: ${(f.filesChanged||[]).join(', ')}). PRIOR FAIL verdict: ${String(r.verdict).slice(0,1500)}\n\nFixer claim: ${f.summary}\n\nVerify each previously-cited gap is GENUINELY resolved (not papered over), then re-certify ALL six D-038 criteria.`, OPTS({label:`${t.id} re-review-${attempt}`, phase:`${t.id} re-review-${attempt}`, schema:REVIEW}))
+    r=await gatedReview(`${REVIEW_PRE}\n\nFEATURE: ${t.id} ${t.title} — RE-REVIEW after fix attempt ${attempt}. Original commit ${b.commitSha}; fix commit ${f.commitSha} (files: ${(f.filesChanged||[]).join(', ')}). PRIOR FAIL verdict: ${String(r.verdict).slice(0,1500)}\n\nFixer claim: ${f.summary}\n\nVerify each previously-cited gap is GENUINELY resolved (not papered over), then re-certify ALL six D-038 criteria.`, OPTS({label:`${t.id} re-review-${attempt}`, phase:`${t.id} re-review-${attempt}`, schema:REVIEW}))
   }
 
-  results.push({build:b, review:r, fixes})
+  // A4 (harvested: gstack review/SKILL.md red-team pass + review/specialists/red-team.md, MIT — Lane
+  // A-code A4/A7): AFTER the review PASSES, explicitly risk-flagged tasks get ONE adversarial second
+  // pass fed the prior reviewer's findings verbatim; passed=false re-enters the fix-loop above.
+  if(r && r.passed===true && redTeam===null && shouldRedTeam(t, args)){
+    phase(`${t.id} red-team`)
+    const fixShas=fixes.filter(x=>x&&x.commitSha).map(x=>x.commitSha)
+    redTeam=await gatedReview(`${REVIEW_PRE}\n\nFEATURE: ${t.id} ${t.title} — RED-TEAM SECOND PASS. A first independent DoD-review already PASSED this risk-flagged feature. This is NOT a checklist re-run — it is adversarial analysis: your job is to find what the first reviewer MISSED, not to re-find the same things. Think like an attacker, a chaos engineer, and a hostile QA tester at once: attack the happy path (load, concurrent writes, slow DB, garbage from upstream); hunt silent failures (swallowed exceptions, partial completion, inconsistent state after a crash); exploit trust assumptions (frontend-only validation, unvalidated config, paths/URLs built from user input); break edge cases (max-size input, zero/empty/null, first-run-ever, double-submit); and probe the seams the first pass didn't cover — cross-cutting and integration-boundary issues. Builder files: ${(b.filesChanged||[]).join(', ')} (commit ${b.commitSha}${fixShas.length?`; fix commits ${fixShas.join(', ')}`:''}).\n\nPRIOR REVIEW (PASSED) — findings/gaps VERBATIM, hunt what it MISSED:\nverdict: ${r.verdict}\ngaps: ${(r.gaps&&r.gaps.length)?r.gaps.map((g,i)=>`${i+1}. ${g}`).join('; '):'(none listed)'}\n\nRe-certify ALL six D-038 criteria with fresh adversarial eyes; set passed=false ONLY for real, evidenced gaps the first pass missed.`, OPTS({label:`${t.id} red-team`, phase:`${t.id} red-team`, schema:REVIEW}))
+    if(!redTeam) return {stoppedAt:`${t.id} red-team (agent skipped/died — required gate, fail closed)`, results:[...results,{build:b,review:r,redTeam:null,fixes}]}
+    if(redTeam.passed===false){ log(`${t.id} red-team FAILED — feeding its gaps into the fix-loop`); r=redTeam; escalate=true }
+  }
+  }
+
+  results.push({build:b, review:r, redTeam, fixes})
   if(!r||r.passed===false) return {stoppedAt:`${t.id} DoD-review (after ${attempt} fix attempts)`, results}
 }
 

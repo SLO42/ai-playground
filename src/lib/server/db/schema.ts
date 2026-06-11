@@ -1036,6 +1036,187 @@ const m0030_pm_review_provenance: Migration = {
 	`
 };
 
+// ── TASK 16.3 — W-D7a WORKFORCE DATA PLANE (WORKFORCE-SPEC §2.1) ─────────────────
+//
+// The role-workforce tables: five harvest-derived catalog roles become hireable,
+// CERTIFIED workers. The DDL below is the §2.1 spec text implemented as WRITTEN
+// (it was adversarially reviewed — G4: do not re-decide its rulings). Conventions
+// (spec §2): every DEFINE carries OVERWRITE (F-015), free-form JSON columns are
+// FLEXIBLE, enums that can be absent are option<T> or carry a non-NONE DEFAULT,
+// dedup uses the D-008 VALUE+UNIQUE pattern, record ids pass the db/validate.ts
+// chokepoint (D-016 — slug-derived ids use underscores: `role:code_reviewer`).
+//
+// No half-applied row-recovery scans are needed here: these tables are NEW and no
+// production write path exists until this migration has applied (the m0025 wedge
+// required racing writers); OVERWRITE-only DDL re-applies cleanly over a fresh DB
+// AND any half-applied state — proven by the apply-twice + half-applied tests in
+// workforce/repo.test.ts.
+const m0031_workforce: Migration = {
+	id: '0031_workforce',
+	up: `
+		-- §2.1 role — the hireable identity. active_version is THE incumbency pointer
+		-- (§2.3: single source of truth; NONE = not deployable).
+		DEFINE TABLE OVERWRITE role SCHEMAFULL;
+		DEFINE FIELD OVERWRITE slug           ON role TYPE string;
+		DEFINE FIELD OVERWRITE name           ON role TYPE string;
+		DEFINE FIELD OVERWRITE purpose        ON role TYPE string;
+		DEFINE FIELD OVERWRITE provenance     ON role TYPE option<string>;
+		DEFINE FIELD OVERWRITE active_version ON role TYPE option<record<role_version>>;
+		DEFINE FIELD OVERWRITE preferred_tier ON role TYPE option<string>
+			ASSERT $value = NONE OR $value IN ["local","haiku","sonnet","opus"];
+		DEFINE FIELD OVERWRITE status         ON role TYPE string DEFAULT "active" ASSERT $value IN ["active","archived"];
+		DEFINE FIELD OVERWRITE created_at     ON role TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE updated_at     ON role TYPE datetime DEFAULT time::now();
+		-- NOTE: an archived role holds its slug (no reuse); fine at operator-managed scale.
+		DEFINE INDEX OVERWRITE role_slug ON role FIELDS slug UNIQUE;
+
+		-- Content fields (prompt_core, prompt_sha, capabilities, version, source) are
+		-- IMMUTABLE after creation; lifecycle/timestamps are the mutable state machine.
+		-- A revision is a NEW row — failed verdicts can't be laundered.
+		DEFINE TABLE OVERWRITE role_version SCHEMAFULL;
+		DEFINE FIELD OVERWRITE role         ON role_version TYPE record<role>;
+		DEFINE FIELD OVERWRITE version      ON role_version TYPE int;
+		DEFINE FIELD OVERWRITE prompt_core  ON role_version TYPE string;
+		DEFINE FIELD OVERWRITE prompt_sha   ON role_version TYPE string;
+		DEFINE FIELD OVERWRITE capabilities ON role_version FLEXIBLE TYPE object DEFAULT {};
+		DEFINE FIELD OVERWRITE default_tier ON role_version TYPE string ASSERT $value IN ["local","haiku","sonnet","opus"];
+		DEFINE FIELD OVERWRITE source       ON role_version TYPE string DEFAULT "operator" ASSERT $value IN ["operator","pm_proposal","import"];
+		DEFINE FIELD OVERWRITE proposal     ON role_version TYPE option<record<review_proposal>>;
+		DEFINE FIELD OVERWRITE lifecycle    ON role_version TYPE string DEFAULT "draft"
+			ASSERT $value IN ["draft","interviewing","passed","failed","error","withdrawn","retired"];
+		-- INFORMATIONAL stamp on swap; never read for incumbency (§2.3).
+		DEFINE FIELD OVERWRITE activated_at ON role_version TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE retired_at   ON role_version TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE created_at   ON role_version TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE dedup_key    ON role_version VALUE <string>role + '|' + <string>version;
+		DEFINE INDEX OVERWRITE role_version_dedup   ON role_version FIELDS dedup_key UNIQUE;
+		DEFINE INDEX OVERWRITE role_version_by_role ON role_version FIELDS role;
+		DEFINE INDEX OVERWRITE role_version_by_sha  ON role_version FIELDS prompt_sha;
+
+		-- One gauntlet execution of one version at one resolved model. Hashes are
+		-- COPIED at run start (defense in depth). model_id is the certification axis
+		-- (§2.4); stamped from launch config (D-035), never agent-supplied.
+		DEFINE TABLE OVERWRITE interview_run SCHEMAFULL;
+		DEFINE FIELD OVERWRITE role            ON interview_run TYPE record<role>;
+		DEFINE FIELD OVERWRITE role_version    ON interview_run TYPE record<role_version>;
+		DEFINE FIELD OVERWRITE prompt_sha      ON interview_run TYPE string;
+		DEFINE FIELD OVERWRITE tier            ON interview_run TYPE string ASSERT $value IN ["local","haiku","sonnet","opus"];
+		DEFINE FIELD OVERWRITE provider        ON interview_run TYPE string;
+		DEFINE FIELD OVERWRITE model_id        ON interview_run TYPE string;
+		DEFINE FIELD OVERWRITE fixture_set_sha ON interview_run TYPE string;
+		DEFINE FIELD OVERWRITE bundle_digest   ON interview_run TYPE string DEFAULT "unhashed";
+		DEFINE FIELD OVERWRITE session         ON interview_run TYPE option<record<session>>;
+		-- adjudicating = scorer done, operator queue non-empty (§3.4).
+		DEFINE FIELD OVERWRITE status          ON interview_run TYPE string DEFAULT "running"
+			ASSERT $value IN ["running","adjudicating","passed","failed","error"];
+		-- REQUIRED when status='error'; classified mechanically by the runner (§3.6).
+		DEFINE FIELD OVERWRITE error_reason    ON interview_run TYPE option<string>
+			ASSERT $value = NONE OR $value IN ["env_timeout","spawn_failure","scorer_error"];
+		DEFINE FIELD OVERWRITE retry_of        ON interview_run TYPE option<record<interview_run>>;
+		DEFINE FIELD OVERWRITE planted_total   ON interview_run TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE planted_found   ON interview_run TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE false_positives ON interview_run TYPE int DEFAULT 0;
+		-- Operator adjudication queue (§3.4) / per-fixture results / pass-bar SNAPSHOT.
+		DEFINE FIELD OVERWRITE ambiguous       ON interview_run FLEXIBLE TYPE array<object> DEFAULT [];
+		DEFINE FIELD OVERWRITE results         ON interview_run FLEXIBLE TYPE array<object> DEFAULT [];
+		DEFINE FIELD OVERWRITE pass_criteria   ON interview_run FLEXIBLE TYPE object DEFAULT {};
+		-- Fixture pool changed since this run (§3.7); honest flag, NOT revocation.
+		DEFINE FIELD OVERWRITE stale           ON interview_run TYPE bool DEFAULT false;
+		-- Summed from PRICED agent_event rows only (F-008).
+		DEFINE FIELD OVERWRITE cost_usd        ON interview_run TYPE option<float>;
+		DEFINE FIELD OVERWRITE started_at      ON interview_run TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE ended_at        ON interview_run TYPE option<datetime>;
+		DEFINE INDEX OVERWRITE interview_by_version ON interview_run FIELDS role_version;
+		DEFINE INDEX OVERWRITE interview_by_role    ON interview_run FIELDS role;
+
+		-- Candidate-visible work ONLY. Work trees are DB rows materialized into the
+		-- run workspace at run start (§3.1). NO answer-key material, EVER.
+		DEFINE TABLE OVERWRITE gauntlet_fixture SCHEMAFULL;
+		DEFINE FIELD OVERWRITE role        ON gauntlet_fixture TYPE record<role>;
+		DEFINE FIELD OVERWRITE slug        ON gauntlet_fixture TYPE string;
+		DEFINE FIELD OVERWRITE kind        ON gauntlet_fixture TYPE string
+			ASSERT $value IN ["planted_defect","planted_absence","hallucination_bait","clean_control","scorer_control"];
+		DEFINE FIELD OVERWRITE work        ON gauntlet_fixture FLEXIBLE TYPE object;
+		DEFINE FIELD OVERWRITE content_sha ON gauntlet_fixture TYPE string;
+		-- Unique ULID embedded in work; leak tripwire (§4.2).
+		DEFINE FIELD OVERWRITE sentinel    ON gauntlet_fixture TYPE string;
+		DEFINE FIELD OVERWRITE provenance  ON gauntlet_fixture TYPE option<string>;
+		DEFINE FIELD OVERWRITE status      ON gauntlet_fixture TYPE string DEFAULT "proposed" ASSERT $value IN ["proposed","active","retired"];
+		DEFINE FIELD OVERWRITE created_at  ON gauntlet_fixture TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE dedup_key   ON gauntlet_fixture VALUE <string>role + '|' + slug;
+		DEFINE INDEX OVERWRITE gauntlet_fixture_dedup ON gauntlet_fixture FIELDS dedup_key UNIQUE;
+
+		-- ANSWER KEYS. Content-addressed to the work they answer. READ PATH: exactly
+		-- one — the deterministic scorer (§3.4), product code running OUTSIDE any
+		-- session (workforce/repo.ts readGauntletKeyForScoring). No session, briefing,
+		-- recall, PM snapshot, or export path reads this table; the PM has NO read
+		-- path to keys (§4.4). Enforced by a unit fixture.
+		DEFINE TABLE OVERWRITE gauntlet_key SCHEMAFULL;
+		DEFINE FIELD OVERWRITE fixture          ON gauntlet_key TYPE record<gauntlet_fixture>;
+		-- Must equal the fixture's content_sha (binding).
+		DEFINE FIELD OVERWRITE content_sha      ON gauntlet_key TYPE string;
+		-- [{id, class, location, detection, severity}] machine-checkable.
+		DEFINE FIELD OVERWRITE plants           ON gauntlet_key FLEXIBLE TYPE array<object> DEFAULT [];
+		-- Per-fixture, operator-authored (§3.5).
+		DEFINE FIELD OVERWRITE fp_tolerance     ON gauntlet_key TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE fp_justification ON gauntlet_key TYPE option<string>;
+		-- §4.4: keys are operator-authored or mechanically derived; never PM/agent.
+		DEFINE FIELD OVERWRITE author           ON gauntlet_key TYPE string DEFAULT "operator"
+			ASSERT $value IN ["operator","fixing_commit_diff"];
+		-- Admission proofs per tier: [{tier, model_id, interview_run, at}] (§3.8).
+		DEFINE FIELD OVERWRITE reference_runs   ON gauntlet_key FLEXIBLE TYPE array<object> DEFAULT [];
+		DEFINE FIELD OVERWRITE created_at       ON gauntlet_key TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE dedup_key        ON gauntlet_key VALUE <string>fixture;
+		DEFINE INDEX OVERWRITE gauntlet_key_dedup ON gauntlet_key FIELDS dedup_key UNIQUE;
+
+		-- PM-SPEC §4.3 'verdicts recorded'. Management-validation artifacts ONLY
+		-- (§2.5 boundary with B2). project is NONE for project-less workforce
+		-- artifacts (global role revisions).
+		DEFINE TABLE OVERWRITE panel_verdict SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project           ON panel_verdict TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE artifact          ON panel_verdict TYPE record;
+		DEFINE FIELD OVERWRITE artifact_kind     ON panel_verdict TYPE string ASSERT $value IN ["task","review_proposal","fixture_proposal"];
+		DEFINE FIELD OVERWRITE validator_session ON panel_verdict TYPE record<session>;
+		-- §9 bootstrap bridge: inline-prompt validators until the launch five pass.
+		DEFINE FIELD OVERWRITE validator_kind    ON panel_verdict TYPE string DEFAULT "inline" ASSERT $value IN ["inline","catalog_role"];
+		DEFINE FIELD OVERWRITE role              ON panel_verdict TYPE option<record<role>>;
+		DEFINE FIELD OVERWRITE role_version      ON panel_verdict TYPE option<record<role_version>>;
+		DEFINE FIELD OVERWRITE verdict           ON panel_verdict TYPE string ASSERT $value IN ["approve","pushback"];
+		DEFINE FIELD OVERWRITE reasons           ON panel_verdict TYPE array<string> DEFAULT [];
+		-- A1 calibration tier.
+		DEFINE FIELD OVERWRITE confidence        ON panel_verdict TYPE option<string> ASSERT $value = NONE OR $value IN ["low","medium","high"];
+		-- Closed LATER, mechanically (§2.2 — harness-only, D-035 server-stamped).
+		DEFINE FIELD OVERWRITE outcome           ON panel_verdict TYPE option<string>
+			ASSERT $value = NONE OR $value IN ["upheld","overridden_by_operator","revised","withdrawn"];
+		DEFINE FIELD OVERWRITE at                ON panel_verdict TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE dedup_key         ON panel_verdict VALUE <string>artifact + '|' + <string>validator_session;
+		DEFINE INDEX OVERWRITE panel_verdict_dedup      ON panel_verdict FIELDS dedup_key UNIQUE;
+		DEFINE INDEX OVERWRITE panel_verdict_by_version ON panel_verdict FIELDS role_version;
+		DEFINE INDEX OVERWRITE panel_verdict_by_project ON panel_verdict FIELDS project;
+
+		-- Append-only workforce audit feed; single producer = the harness functions
+		-- that mutate the source rows (workforce/repo.ts).
+		DEFINE TABLE OVERWRITE role_event SCHEMAFULL;
+		DEFINE FIELD OVERWRITE role         ON role_event TYPE record<role>;
+		DEFINE FIELD OVERWRITE role_version ON role_event TYPE option<record<role_version>>;
+		DEFINE FIELD OVERWRITE op           ON role_event TYPE string
+			ASSERT $value IN ["created","interviewed","swap","retired","archived","tier_changed","staffed","unstaffed","fixture_activated","stale_marked"];
+		-- swap: {from, to, operator_confirmed: true}.
+		DEFINE FIELD OVERWRITE detail       ON role_event FLEXIBLE TYPE option<object>;
+		DEFINE FIELD OVERWRITE at           ON role_event TYPE datetime DEFAULT time::now();
+		DEFINE INDEX OVERWRITE role_event_by_role ON role_event FIELDS role;
+
+		-- Additive on session (same migration — §2.1 footer): role identity columns +
+		-- kind widened to include 'interview'. OVERWRITE redefine with the FULL value
+		-- set (the m0022 lesson: a missing enum value silently fails every write).
+		DEFINE FIELD OVERWRITE role         ON session TYPE option<record<role>>;
+		DEFINE FIELD OVERWRITE role_version ON session TYPE option<record<role_version>>;
+		DEFINE INDEX OVERWRITE session_by_role_version ON session FIELDS role_version;
+		DEFINE FIELD OVERWRITE kind ON session TYPE string
+			ASSERT $value IN ["chat","task","review","release","discussion","interview"];
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1072,5 +1253,6 @@ export const schemaMigrations: Migration[] = [
 	m0027_run_note,
 	m0028_service_last_seen,
 	m0029_pm_identity,
-	m0030_pm_review_provenance
+	m0030_pm_review_provenance,
+	m0031_workforce
 ];

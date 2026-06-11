@@ -8,7 +8,7 @@ The operator describes a project in plain language ("a ROUNDS mod that …", "a 
 
 ## 2. Flow
 
-1. **Brief** — `/projects` → "Create with AI": name + free-text description + optional hints (ecosystem, repo URL to mirror, target platform). The agent asks 2–4 clarifiers ONLY where the brief genuinely forks (it must not interrogate).
+1. **Brief** — `/projects` → "Create with AI": name + free-text description + optional hints (ecosystem, repo URL to mirror, target platform). The agent asks 2–4 clarifiers ONLY where the brief genuinely forks (it must not interrogate). Clarifiers take positions per the §3 anti-sycophancy rail.
 2. **Proposal** — the agent produces a creation plan: directory layout, stack + tooling, plan macro draft, initial task list (each with objective/purpose per D-039 standards), suggested targets ({adapterId, config} drafts), and—if requested—a PM charter draft. Rendered as a reviewable diff-style proposal.
 3. **Confirm (D-010/D-018)** — creation is a gated action: the operator reviews the proposal and confirms. Nothing touches disk before this.
 4. **Execute** — a build agent scaffolds under `CODE_ROOT/<slug>` (D-018 path confinement), `git init` + first commit, registers the project (scanner ingest path — the project row derives from the REAL scaffold, F-008), writes the plan macro, creates the tasks as `proposed` (validated by the D-039 panel when a PM exists, else born `ready` — ⚑ see fork 3), declares the targets.
@@ -19,6 +19,7 @@ The operator describes a project in plain language ("a ROUNDS mod that …", "a 
 - **Honest creation (F-008):** the registered project state derives from what was actually scaffolded (re-scan after execute), never from the proposal text. If a step fails mid-create, the project row reflects reality (partial scaffold = status honest + incident), no phantom tasks.
 - **Confinement (D-016/D-018):** slug-validated record ids; scaffold strictly under `CODE_ROOT`; no writes outside the new project dir; the execute agent runs through the normal session launch path (capabilities, gates, analytics).
 - **No secrets in scaffolds (D-026):** generated configs reference env names only; generated `.gitignore` covers `.env` from commit zero.
+- **Anti-sycophancy (harvested: gstack office-hours/SKILL.md, MIT) — within the §2 step 1 rail:** the create agent's clarifiers and proposal take positions. Banned phrases: "that's an interesting approach" · "there are many ways to think about this" · "you might want to consider…" · "that could work" · "I can see why you'd think that". Instead: state what WILL or WON'T work on the evidence in the brief, and pair every position with its **falsifier** — the evidence that would change it (e.g. "single package, unless you expect independent release cadences"). Each clarifier challenges the strongest version of the brief, not a strawman. This rule changes the QUALITY of the 2–4 clarifiers, never their NUMBER — §2 step 1's must-not-interrogate rail wins (G4); the full Six-Forcing-Questions interview lives ONLY in the PM hire flow (PM-SPEC §1). This is also the single source of the banned-phrase list (PM-SPEC §1 references it).
 - **Idempotent-ish:** re-running create with the same slug fails closed ("project exists — open it") rather than overwriting.
 - **D-038:** the feature itself ships through BUILD → independent DoD-review like everything else.
 

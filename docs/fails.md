@@ -108,6 +108,7 @@ the operator retires them.
 - **Why**: the v2-wave template's deviation stop-guard `/\bBLOCK(?:ED|ER)?\b/i` was case-insensitive, so the builder's *advisory* deviation prose — "SDK-path denies surface as **blocked** tool_result events" (describing the gate working correctly) — matched the BLOCKED marker.
 - **Fix**: stop markers are now case-SENSITIVE all-caps flags (`CONFLICT|BLOCKED|BLOCKER` exact + the literal phrases "cannot proceed"/"hard stop"); resumed the wave via resumeFromRunId (green build returned cached).
 - **Prevention**: machine-parsed control flags embedded in free prose must be syntactically distinguishable from prose — all-caps exact markers, dedicated fields, or sentinel prefixes. Never case-insensitive word-match a control signal against text agents write naturally. (When adding any new verdict-field regex to the template: test it against REAL past verdict texts first.)
+- **Recurrence (2026-06-11)**: the case-sensitive fix false-matched AGAIN on a NEGATED caps mention — 16.6's green build wrote "No BLOCKED/CONFLICT items" in its deviation and stopped wave v2.1. Escalated to the structural fix the entry already prescribed: **sentinel prefix** — markers count only at the START of the deviation (`/^\s*(CONFLICT|BLOCKED|...)/`), and BUILD_PRE now instructs builders to BEGIN the deviation with "BLOCKED:"/"CONFLICT:" when a stop is intended. Lesson: substring presence is never intent; only position + convention is.
 
 ## F-015: non-idempotent migration wedged db:up; tests green on fresh DB, broken on live DB
 - **Date**: 2026-06-09

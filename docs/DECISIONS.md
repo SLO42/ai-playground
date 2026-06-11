@@ -325,6 +325,8 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 
 **Implemented by:** (b) the `memory.screen_status` (clean/redacted/quarantined) + `screened_at` fields run as a pre-embed screen step (MEMORY-SPEC §3.1b "step 2.0", DATA-MODEL `memory`); recall excludes `quarantined` and the knowledge-only export emits only `clean` (DATA-MODEL §7b). (a) Fencing covers **every** injection path — recall, Tier-0, user-model, graduated skills (MEMORY-SPEC §10). (c) least-priv DB user (MEMORY-SPEC §6).
 
+**Additive note (2026-06-10, operator-discussed): cloud secret managers (Infisical/Doppler/Vault) deliberately DEFERRED.** The D-037 named-secret indirection (config stores secret NAMES; adapters get a confined `SecretResolver`; UI shows presence only) makes the resolver pluggable — a cloud backend is a small future adapter, not a migration. Adopting one now would put a network dependency in the boot path (against local-first + the F-014 bounded-boot discipline), move secrets off the machine, and not solve secret-zero (a local token still unlocks the store). Revisit triggers: a second machine, CI performing real publishes, a collaborator, or rotation pain. Until one fires, secrets stay in the gitignored `.env`.
+
 ---
 
 ## D-027 🔒 Two-tier learning loop: fast in-use writer + slow periodic consolidator

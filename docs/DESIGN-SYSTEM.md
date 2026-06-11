@@ -129,3 +129,42 @@ At build (Phase 0.a / the cannibalization visual pass, ROADMAP v1.0 4.x):
 - ✅ **Lastik cut confirmed** — Lastik-Free, purchased (Commercial EULA; web=woff/woff2, no-repo, single-operator stand) — §1.
 - ✅ **AA contrast gate** — built: `src/lib/styles/tokens/contrast-gate.test.ts` (deterministic WCAG check over 40+ token pairs + focus ring, in vitest). Narrow residual ⬜: an explicit accent-vs-running near-hue distinguishability assertion (currently covered by the §3.4 icon+label pairing rule).
 - ✅ **React→Svelte 5 component port** — satisfied by **native Svelte 5 components** in `src/lib/components/` (full shell suite: Sidebar/Topbar/Statusbar/RightTray/CommandPalette/ConfirmDialog/GateBanner/ToastHost + screens) built against the same tokens; the React kit remains design reference only — it was not ported 1:1.
+
+---
+
+## 10. Design review — DoD #3/#5 reviewer checklist (Lane A-docs harvest A9, 2026-06-10)
+
+How wave reviewers judge **"design-system standard" (D-038 #3)** and **"has purpose/reachable" (D-038 #5)** beyond the token/contrast gates. (harvested: gstack design-review/SKILL.md — Krug trunk test + AI-slop blacklist + fix discipline, MIT; adapted to Atelier's dark/dense app UI.)
+
+### 10.1 Trunk test (run on every screen under review)
+
+Land on the screen cold — no context. Without hunting, you must be able to answer:
+1. What app/area is this? 2. What screen am I on? 3. What are the major sections? 4. What are my options at this level? 5. Where am I in the scheme of things (active nav state)? 6. How do I reach search/command (palette)?
+
+Score PASS (all 6) / PARTIAL (4–5) / FAIL (≤3). A FAIL is a **HIGH-impact finding regardless of visual polish** — a screen that fails orientation fails #5.
+
+### 10.2 AI-slop blacklist (patterns that fail #3 on sight)
+
+The test: would the designer who built §3–§5 ship this? Flag any of —
+- Off-token colors or decorative gradients (anything not from the §3 ramps; gradients have no role in this system)
+- The icon-in-colored-circle 3-column feature grid; icons-in-circles as section decoration
+- Centered-everything (this is a dense, left-aligned app UI)
+- Uniform bubbly border-radius on every element (we have a radius hierarchy — §5)
+- Decorative blobs, floating shapes, wavy dividers (an empty-feeling section needs better content, not decoration)
+- Emoji as UI elements (UI-SPEC §1 voice rule: no emoji)
+- Colored left-border as card accent (borders carry hierarchy via §3.2 tokens, not accent stripes)
+- Generic copy ("Welcome to…", "Unlock the power of…") — voice is terse/technical, buttons verb+object
+- Dashboard-card mosaics where layout should organize — cards only when the card IS the interaction
+- Default font stacks on new surfaces (body = `--font-body` mono, headings = `--font-display` — §4 🔒 mono-body rule)
+
+### 10.3 Detection-confidence tiers + guards
+
+Tag every design finding by how measurable it is:
+- **HIGH** — objective and measured: contrast below AA, console error, missing `:focus-visible`, off-token hex, reduced-motion ignored. Cite the measurement.
+- **MEDIUM** — pattern match: a §10.2 blacklist hit, trunk-test PARTIAL, spacing off the §5 scale. Cite the element/screenshot.
+- **LOW** — taste: "feels cramped", hierarchy preference. Advisory only.
+
+Guards (HARVEST-GSTACK G2/G3):
+- **LOW findings are NEVER auto-fixed** — they go into the verdict as advisory; an operator or product decision routes them (G3).
+- **Suppression is 🔒-only and logged**: dismissing a finding as a blessed pattern is honored ONLY when it cites an operator-locked (🔒) rule in this doc or DECISIONS.md, and every applied suppression is logged in the review verdict ("suppressed: <finding> per <🔒 source>") (G2). No agent creates its own suppression list.
+- **Fix discipline** (harvested: gstack design-review/SKILL.md fix loop, MIT): minimal fix, prefer token/CSS-level over structural change, one commit per finding, before/after screenshot evidence, re-test the affected screen after each fix.

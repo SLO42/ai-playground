@@ -11,6 +11,20 @@ synced to both branches so every agent sees the full set.
 The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
 — the prevention rules apply to v2 from day 0.
 
+**Iron Law (harvested: gstack investigate/SKILL.md, MIT):** no fix without an
+instrumented root cause — reproduce the failure and confirm the cause with
+evidence (log/assertion at the suspected cause) BEFORE fixing; lock debug edits
+to the affected module; 3 failed hypotheses = STOP and escalate. A recurring
+F-entry in the same files is an **architectural smell**, not a coincidence —
+escalate per the error-learning protocol instead of re-patching.
+
+**Staleness/contradiction marking (harvested: gstack learn/SKILL.md, MIT — G2:
+agents propose, operator retires):** if an entry looks obsolete (its files/
+commands no longer exist — cite the search that proved it) or two entries
+contradict, append a dated `> STALE-PROPOSED:` / `> CONFLICT:` line under the
+entry with the evidence. **MARK, never delete** — entries stay in force until
+the operator retires them.
+
 ## F-001: process.kill(pid, 0) unreliable on Windows/MINGW
 - **What**: liveness checks via `process.kill(pid, 0)` give wrong answers on
   Windows.

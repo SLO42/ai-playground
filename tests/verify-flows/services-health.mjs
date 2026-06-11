@@ -14,9 +14,12 @@ import { runFlow, urlUp, ollamaHost } from './lib/harness.mjs';
 
 await runFlow('services-health', async ({ base, bv, step, assert, skip }) => {
 	// 1. Independent truth: is Ollama actually answering right now? LIKE-FOR-LIKE
-	//    with the page's own probe (OllamaServiceAdapter): same raw OLLAMA_HOST
-	//    string, same GET /api/version, fetch-throw counts as down — so the flow
-	//    compares the page's claim against the exact probe it promises.
+	//    with the page's own probe (OllamaServiceAdapter): the SAME
+	//    normalizeClientHost semantics over OLLAMA_HOST (the env value is often
+	//    Ollama's bind form `0.0.0.0:11434`, which the page rewrites to a loopback
+	//    connect url — probing the RAW string instead read permanently DOWN and
+	//    false-failed this flow whenever Ollama was up), same GET /api/version,
+	//    fetch-throw counts as down.
 	const host = ollamaHost();
 	const ollamaUp = await urlUp(`${host}/api/version`);
 	step(`independent probe: ${host} is ${ollamaUp ? 'UP' : 'DOWN'}`);

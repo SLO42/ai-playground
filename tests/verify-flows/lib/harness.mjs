@@ -214,10 +214,51 @@ export function dbEnv() {
 	};
 }
 
-/** Ollama base URL (truth source for the services-health flow). */
+/** Default loopback Ollama base url (D-003/D-025 — NO `/v1` suffix per CLAUDE.md). */
+const DEFAULT_OLLAMA_HOST = 'http://127.0.0.1:11434';
+
+/**
+ * LIKE-FOR-LIKE port of the page's own probe-host normalizer
+ * (src/lib/server/services/ollama-adapter.ts `normalizeClientHost`). The flow
+ * layer is plain node (no TS loader), so it carries this JS port — parity with
+ * the page's implementation is LOCKED by the 'normalizeClientHost parity' unit
+ * suite in runner.test.ts; change BOTH together.
+ *
+ * Why it exists (15.3 DoD-review HIGH gap): `OLLAMA_HOST` is overloaded —
+ * Ollama itself uses it as a BIND address (commonly `0.0.0.0:11434`, no
+ * scheme), the page uses the normalized CLIENT url. Feeding the raw bind form
+ * to global fetch throws ("relative URL"), so the flow's "independent truth"
+ * probe read permanently DOWN and false-failed the gate whenever Ollama was
+ * actually up.
+ * @param {string} raw @returns {string}
+ */
+export function normalizeClientHost(raw) {
+	let h = (raw ?? '').trim();
+	if (!h) return DEFAULT_OLLAMA_HOST;
+	// Add a scheme if missing so the value parses as an absolute url (else fetch
+	// sees it as relative and throws). http: loopback plaintext, D-025.
+	if (!/^[a-z][a-z0-9+.-]*:\/\//i.test(h)) h = `http://${h}`;
+	try {
+		const u = new URL(h);
+		// You cannot connect to a bind-all address — rewrite to loopback (D-025).
+		if (u.hostname === '0.0.0.0' || u.hostname === '::' || u.hostname === '[::]') {
+			u.hostname = '127.0.0.1';
+		}
+		return u.toString().replace(/\/$/, '');
+	} catch {
+		// Unparseable — fall back to the loopback default rather than probe a bad url.
+		return DEFAULT_OLLAMA_HOST;
+	}
+}
+
+/**
+ * Ollama base URL (truth source for the services-health flow), normalized with
+ * the page's OWN `normalizeClientHost` semantics so the flow probes the same
+ * CONNECT url the page probes — never the raw (possibly bind-form) env string.
+ */
 export function ollamaHost() {
 	const dot = loadDotEnv();
-	return process.env.OLLAMA_HOST ?? dot.OLLAMA_HOST ?? 'http://127.0.0.1:11434';
+	return normalizeClientHost(process.env.OLLAMA_HOST ?? dot.OLLAMA_HOST ?? DEFAULT_OLLAMA_HOST);
 }
 
 /**

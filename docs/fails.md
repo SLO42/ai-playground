@@ -163,8 +163,11 @@ The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
   conservative deny from an earlier layer is correct behaviour, never a regression to
   "fix" by reordering.
 
-## F-019: dev-server keyboard/SSE assertions race client hydration
-- **Date**: 2026-06-11
+## F-020: dev-server keyboard/SSE assertions race client hydration
+- **Date**: 2026-06-11 (renumbered from F-019 on 2026-06-11 — the unified log on
+  `v2-main` already carries "F-019: wave stop-regex false positive" (2026-06-10);
+  keeping both F-019s would have made the promised cross-branch sync yield two
+  different entries under one id)
 - **What**: the 15.3 shell-primitives verify-flow pressed Ctrl+K immediately after
   the daemon's `nav` resolved ('load') and asserted the command palette opened — it
   hadn't: the press diff showed only live-data noise (and, tellingly, the statusbar
@@ -186,3 +189,29 @@ The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
   fixed in the same task: when a tag string appears in MULTIPLE table rows (a
   workflow's name carries the tag too), match rows with per-condition `.some()`,
   never `.find()` — the first matching row shadows the one under test.
+
+## F-021: services-health verify-flow false-failed the gate when Ollama was UP — "like-for-like" probe wasn't
+- **Date**: 2026-06-11
+- **What**: `npm run verify:flows` exited 1 accusing the /services page of "probe
+  DISHONESTY" whenever Ollama was actually running — the documented-normal dev
+  state. The page was honest ("probe: healthy"); the flow's "independent truth"
+  probe was the liar. The builder's 3/3 PASS was world-dependent: Ollama happened
+  to be down during the build, so the up-branch (`expected='healthy'`) was never
+  executed before graduation. Caught by the independent 15.3 DoD review.
+- **Why**: the flow comment claimed LIKE-FOR-LIKE with the page's probe ("same
+  raw OLLAMA_HOST string"), but the page's adapter normalizes bind-form hosts
+  (`ollama-adapter.ts normalizeClientHost`: `0.0.0.0:11434` →
+  `http://127.0.0.1:11434`) while `harness.mjs ollamaHost()` returned the raw env
+  string — global fetch throws on the scheme-less bind form, so `urlUp()` read
+  permanently DOWN. The same OLLAMA_HOST bind/connect overload already bit the
+  page itself in 10.5 (that's WHY normalizeClientHost exists); the flow re-derived
+  the probe instead of reusing the page's semantics and re-introduced the bug.
+- **Fix**: `harness.mjs` now carries a JS port of `normalizeClientHost` applied in
+  `ollamaHost()` (the plain-node flow layer can't import the TS module); parity
+  with the page implementation is LOCKED by a unit suite in runner.test.ts; the
+  flow re-proven live in the Ollama-UP world.
+- **Prevention**: a flow that claims LIKE-FOR-LIKE with a page probe must REUSE
+  the page's own normalization/predicate — or carry a port whose parity is pinned
+  by a test importing both — never re-derive it from the env by hand. And when a
+  flow declares "both worlds are valid" (up/down), it must be EXECUTED in both
+  worlds before graduation; an unexercised branch is an untested claim.

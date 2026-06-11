@@ -10,7 +10,8 @@ import { mkdtempSync, rmSync, writeFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { splitFlows, parseFlowResult, summarize, runOneFlow } from './runner.mjs';
-import { classifyBvFailure } from './harness.mjs';
+import { classifyBvFailure, normalizeClientHost as flowNormalize, ollamaHost } from './harness.mjs';
+import { normalizeClientHost as pageNormalize } from '../../../src/lib/server/services/ollama-adapter';
 
 const RUNNER = join(process.cwd(), 'tests', 'verify-flows', 'lib', 'runner.mjs');
 
@@ -99,6 +100,46 @@ describe('classifyBvFailure — honest skip on daemon-unavailable', () => {
 		expect(classifyBvFailure('stale-ref')).toBe('defect');
 		expect(classifyBvFailure('flow-assert')).toBe('defect');
 		expect(classifyBvFailure(undefined as unknown as string)).toBe('defect');
+	});
+});
+
+describe('normalizeClientHost parity — flow probe is LIKE-FOR-LIKE with the page (15.3 DoD-review HIGH gap)', () => {
+	// The services-health flow promises to probe the SAME connect url the page's
+	// OllamaServiceAdapter probes. harness.mjs carries a plain-JS port of the
+	// page's normalizeClientHost (the flow layer runs under plain node, no TS
+	// loader) — this suite LOCKS the two implementations together. If you change
+	// one, this fails until you change both.
+	const inputs = [
+		'0.0.0.0:11434', // Ollama's own bind form — the exact live false-fail input
+		'127.0.0.1:11434', // scheme-less loopback
+		'http://0.0.0.0:11434',
+		'http://[::]:11434',
+		'http://127.0.0.1:11434',
+		'http://127.0.0.1:11434/', // trailing slash
+		'http://localhost:11434',
+		'', // empty → default
+		'   ', // blank → default
+		'http://' // unparseable → default
+	];
+	it('matches the page implementation on every representative OLLAMA_HOST shape', () => {
+		for (const input of inputs) {
+			expect(flowNormalize(input), `input ${JSON.stringify(input)}`).toBe(pageNormalize(input));
+		}
+	});
+
+	it('REGRESSION: the bind form 0.0.0.0:11434 becomes a fetchable loopback url (was: raw string → fetch throws → flow read DOWN with Ollama UP)', () => {
+		expect(flowNormalize('0.0.0.0:11434')).toBe('http://127.0.0.1:11434');
+	});
+
+	it('ollamaHost() applies the normalization to the env value (never returns the raw bind string)', () => {
+		const prev = process.env.OLLAMA_HOST;
+		try {
+			process.env.OLLAMA_HOST = '0.0.0.0:11434';
+			expect(ollamaHost()).toBe('http://127.0.0.1:11434');
+		} finally {
+			if (prev === undefined) delete process.env.OLLAMA_HOST;
+			else process.env.OLLAMA_HOST = prev;
+		}
 	});
 });
 

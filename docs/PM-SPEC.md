@@ -31,6 +31,7 @@ Charter is injected into every PM session/review as fenced context (D-008/D-026)
 - **Periodic**: per-project **configurable cron + offset** (pm row). Periodic respects orchestration mode (manual mode = no automatic fires; existing `uxInspectionAllowed`-style gate pattern).
 - **Event** (all four, operator 2026-06-10): ① session failed / task blocked > threshold; ② **GitHub issue/PR arrives** (via the 9.4/12.4 SyncAdapter; needs per-project creds — degrade honestly when absent); ③ new security/UX finding lands; ④ release completes/fails (retro memory + follow-up proposals).
 - **Manual**: chat + "run review" (exist today; keep).
+- **⑤ Watches (v2.3, operator-directed 2026-06-11 — needs WORKFORCE-SPEC §7b researcher):** per-project watch declarations `{what: package|game|upstream-repo|api, source, cadence}` checked on schedule by a BOUNDED §7b researcher task (provenance + verify-before-write rails); a detected CHANGE becomes a pm_memory observation with provenance → the PM judges relevance against charter/plan and proposes work through §4 like any evidence. Watch origins, all three: operator-set; **PM-proposed** (the PM reads its own dependencies and proposes its watches — §4-validated, operator-approved once, then standing); Create-with-AI-seeded (a new project's proposal includes its obvious watches). Watch checks respect D-004 mode + the research.* budgets; no watch fires for an un-hired project. No-change checks write NOTHING (F-008 — silence is the honest result).
 
 ## 4. Authority — "Act with Purpose" (operator standard)
 

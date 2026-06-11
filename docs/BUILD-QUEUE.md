@@ -23,3 +23,10 @@
 | blocked | first-publish | SWIP first real Thunderstore publish — **STAGED AT GATE 2026-06-10, deferred by operator until swip-develop ships real changes.** Prepared state: project registered (`project:thunderstore`, "SWIP (ROUNDS mod)", root F:\code\mods\rounds-mod\thunderstore), target `project_target:szn709rvw27ypyotpv0d` (BasicallyCoding/rounds/custom-cards, default), token present, manifest bumped 2.3.2→2.3.3 (SWIP-repo-local commit `9b470f6`, NOT pushed), dll staged at thunderstore\plugins\SWIP.dll (untracked, includes uncommitted src/Cards changes — REBUILD from committed code before shipping), dry-run green 0-blockers. Re-bump version if SWIP develops further before publishing. Old GitHub CI diverges (stale tracked SWIP.dll) — retire or update before any v-tag push. | operator |
 
 Standing rails for every autonomous stretch: v2-wave template only (fix-loops + auto-push), F-014 server discipline, no real external publishes without the operator's gate confirm, docs commits to v2-main / code to v2, memory + this file updated at every wave boundary.
+
+## Backlog (unscheduled, in operator-set order — spec before build, none scheduled)
+
+| # | item | notes |
+|---|---|---|
+| BL-1 | **Image-generation addition** | Operator-referenced as already backlogged (2026-06-11) but no prior written record found in queue/docs/memory — recorded here so it exists. Scope unspec'd: likely a capability/adapter for generating images (mod icons, store assets, UI art?) consumable by projects + Create-with-AI. Needs a spec when promoted. |
+| BL-2 | **Marketing features** | Operator (2026-06-11): hook in marketing features for maintained projects that need them — "a massive lift to even consider." Ordered explicitly AFTER BL-1. Natural shape when its time comes: a D-037-style adapter/capability family (channels as adapters, content as artifacts, PM proposes campaigns through D-039 validation) + likely new roles (copywriter?) via WORKFORCE-SPEC. Needs a full spec + deliberation when promoted; do NOT scope-creep it into earlier waves. |

@@ -26,6 +26,7 @@ import {
 	PmTriggerEngine,
 	setActivePmTriggerEngine
 } from '$lib/server/projects/pm-triggers';
+import { runSentinelSweep } from '$lib/server/workforce/index';
 
 // Runtime env source (TASK 6.8). SvelteKit's `$env/dynamic/private` loads `.env` in
 // BOTH dev SSR (which Vite does NOT inject into `process.env`) and the prod Node
@@ -246,6 +247,23 @@ async function bootstrap(): Promise<DbInitResult> {
 			);
 		} catch (err) {
 			console.warn(`[startup] pm trigger engine boot failed: ${(err as Error).message}`);
+		}
+
+		// TASK 16.6 — the §4.2 gauntlet SENTINEL SWEEP, once per connected boot (the
+		// periodic vehicle: every boot leaves a completed work_item audit row; a hit
+		// writes a notification — fixture retirement stays an OPERATOR act, never
+		// auto-burn). Read-only + bounded; a sweep failure never blocks boot (D-019).
+		try {
+			const sweep = await runSentinelSweep(db);
+			if (sweep.hits.length) {
+				console.warn(
+					`[startup] gauntlet sentinel sweep: ${sweep.hits.length} LEAK hit(s) across ${sweep.checked} sentinel(s) — notification written (operator decides retirement, §4.2).`
+				);
+			} else if (sweep.checked) {
+				console.log(`[startup] gauntlet sentinel sweep clean (${sweep.checked} sentinel(s)).`);
+			}
+		} catch (err) {
+			console.warn(`[startup] gauntlet sentinel sweep failed: ${(err as Error).message}`);
 		}
 	}
 	return result;

@@ -65,6 +65,48 @@ export interface ComposedCapabilitySettings {
 /** Which catalog dimension an id failed validation against — for fail-closed telemetry. */
 export type CapabilityKind = 'skill' | 'agent' | 'mcp';
 
+// ── TASK 16.6 (WORKFORCE-SPEC §3.2) — STERILE composition for interview sessions ──
+//
+// A gauntlet interview session (kind='interview') must compose STERILE: no memory
+// briefing, no pm_memory, no Tier-0 beyond the harness base, and a capability bundle
+// that EXCLUDES any memory pull-tool (the HARVEST B10 surface). The exclusion is
+// FORCED here at the compose seam — not left to caller discipline — and it FAILS
+// CLOSED: a bundle that declares a memory-pull id REFUSES the whole compose (throws
+// SterileCompositionError) rather than silently dropping the id (silently dropping
+// would launder a non-sterile bundle into a certification run).
+//
+// The id list is the RESERVED name set for the memory pull surface. B10 has not
+// landed yet (v2.2b); reserving the names now means the rail exists BEFORE the tool
+// does — when B10 lands under one of these ids, interviews reject it from day 0. A
+// B10 landing under a different id must extend this list (capability-wiring review).
+
+/** Reserved capability ids of the memory pull surface (B10) — never sterile-composable. */
+export const MEMORY_PULL_CAPABILITY_IDS: ReadonlySet<string> = new Set([
+	'memory-pull',
+	'memory_pull',
+	'memory-recall',
+	'memory_recall',
+	'memory'
+]);
+
+/** Thrown when a sterile (interview) compose declares a memory-pull capability id —
+ *  the compose is REFUSED whole (fail closed, §3.2/§4.2). */
+export class SterileCompositionError extends Error {
+	override readonly name = 'SterileCompositionError';
+	constructor(readonly id: string) {
+		super(
+			`capability id "${id}" is a memory pull-tool — refused in a sterile interview ` +
+				`composition (WORKFORCE-SPEC §3.2, fail closed)`
+		);
+	}
+}
+
+/** Options for {@link composeCapabilities}. */
+export interface ComposeOptions {
+	/** Force the §3.2 sterile interview composition (memory-pull ids refused, output marked). */
+	sterile?: boolean;
+}
+
 /** Thrown when a declared capability id is not in the catalog (fail closed, D-036/D-016). */
 export class CapabilityValidationError extends Error {
 	override readonly name = 'CapabilityValidationError';
@@ -122,13 +164,28 @@ function validateDimension(
  * - Each declared id is CATALOG-VALIDATED against `catalog`; an unknown skill/agent/mcp
  *   id throws CapabilityValidationError (FAIL CLOSED — reject the whole compose).
  * - `plugins`/`marketplaces` are forced EMPTY (D-002 isolation — no operator-plugin bleed).
+ * - TASK 16.6: `opts.sterile` forces the §3.2 interview composition — a declared
+ *   memory-pull id (MEMORY_PULL_CAPABILITY_IDS) throws SterileCompositionError
+ *   (FAIL CLOSED, refuse the whole compose — never silently dropped), and the
+ *   composed settings carry `sterile: true` so the proof is asserted downstream.
  */
 export function composeCapabilities(
 	set: CapabilitySet | undefined,
 	catalog: CapabilityCatalog,
-	base: HarnessBase
+	base: HarnessBase,
+	opts: ComposeOptions = {}
 ): ComposedCapabilitySettings {
 	const src = set ?? EMPTY_SET;
+
+	// §3.2 sterile rail FIRST — before catalog validation, so a memory-pull id is
+	// refused with ITS named error even when the catalog does not (yet) carry it.
+	if (opts.sterile) {
+		for (const id of [...(src.skills ?? []), ...(src.agents ?? []), ...(src.mcp ?? [])]) {
+			if (typeof id === 'string' && MEMORY_PULL_CAPABILITY_IDS.has(id)) {
+				throw new SterileCompositionError(id);
+			}
+		}
+	}
 
 	const skills = validateDimension(assertStringArray(src.skills, 'skill'), catalog.skills, 'skill');
 	const agents = validateDimension(assertStringArray(src.agents, 'agent'), catalog.agents, 'agent');
@@ -140,6 +197,9 @@ export function composeCapabilities(
 		capabilities: { skills, agents, mcp },
 		// The S1/D-002 determinism guard — never inherit the operator's plugins/marketplaces.
 		plugins: [],
-		marketplaces: []
+		marketplaces: [],
+		// §3.2: the sterile marker rides the composed settings ONLY when forced — legacy
+		// spawns keep a byte-identical shape.
+		...(opts.sterile ? { sterile: true } : {})
 	};
 }

@@ -356,6 +356,51 @@ describe('schemaMigrations — idempotent over fresh + half-applied state (11.4-
 		}
 	});
 
+	// ── TASK 16.6 — m0033 memory.session provenance: the F-015 discipline pair. ──
+	// (Apply-twice over a FRESH db is covered by the 'applies the full schema TWICE'
+	// case above, which now includes 0033.)
+
+	it('m0033 applies over the HALF-APPLIED state (field+index defined, migration unrecorded) and round-trips the session link', async () => {
+		const db = await freshDb('mig_memsess_wedge');
+		try {
+			// The wedge: the DEFINEs ran but the ledger insert never landed.
+			await db.query('DEFINE TABLE memory SCHEMAFULL;');
+			await db.query('DEFINE FIELD session ON memory TYPE option<record<session>>;');
+			await db.query('DEFINE INDEX memory_by_session ON memory FIELDS session;');
+			expect(await isApplied(db, '0033_memory_session_provenance')).toBe(false);
+
+			const applied = await runMigrations(db, schemaMigrations);
+			expect(applied).toContain('0033_memory_session_provenance');
+			expect(await isApplied(db, '0033_memory_session_provenance')).toBe(true);
+
+			// Round-trip: a session-bearing memory keeps the link; a session-less row
+			// reads back absent (honest absence — the D-029 filter's NONE branch).
+			await db.query(
+				`CREATE session:memhost CONTENT { kind: "interview", model: { provider: "x", model_id: "y" }, runtime: "claude-code" };`
+			);
+			// Unit vectors at the indexed 1024-dim (the HNSW index rejects other shapes).
+			const v1 = new Array(1024).fill(0);
+			v1[0] = 1;
+			const v2 = new Array(1024).fill(0);
+			v2[1] = 1;
+			await db.query(
+				`CREATE memory:withsess SET content = "c", namespace = "default", embedding = $v1, session = session:memhost;
+				 CREATE memory:nosess   SET content = "c2", namespace = "default", embedding = $v2;`,
+				{ v1, v2 }
+			);
+			const rows = await db.query<[Array<{ session?: unknown }>, Array<{ session?: unknown }>]>(
+				'SELECT session FROM memory:withsess; SELECT session FROM memory:nosess;'
+			);
+			expect(String(rows[0][0].session)).toBe('session:memhost');
+			expect(rows[1][0].session ?? null).toBeNull();
+
+			// Re-run is still a clean no-op (apply-twice over the recovered state).
+			expect(await runMigrations(db, schemaMigrations)).toEqual([]);
+		} finally {
+			await db.close().catch(() => {});
+		}
+	});
+
 	it('m0029 recovers half-applied pm ROWS: backfills authority/created_at, deletes id-only corruption', async () => {
 		const db = await freshDb('mig_pm_backfill');
 		try {

@@ -10,3 +10,10 @@ export * from './lifecycle';
 export * from './repo';
 export * from './deployability';
 export * from './track-record';
+// TASK 16.6 (W-D7b) — the gauntlet engine: findings contract (§3.3), deterministic
+// scorer (§3.4 — the sanctioned gauntlet_key consumer), runner/budget/adjudication
+// (§3.1/§3.6/§3.7), fixture activation + sentinel sweep (§3.7/§4.2).
+export * from './findings';
+export * from './scorer';
+export * from './gauntlet';
+export * from './activation';

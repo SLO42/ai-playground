@@ -1296,6 +1296,23 @@ const m0032_proposed_tasks: Migration = {
 	`
 };
 
+// ── TASK 16.6 (W-D7b) — memory session provenance (WORKFORCE-SPEC §4.2) ──────────
+// Additive on `memory`: the originating session link, written by the memory write
+// path (store.ts) whenever the candidate came out of a session transcript. This is
+// what makes the D-029 recall-query exclusion REAL: recall filters out rows whose
+// originating session is kind='interview' (gauntlet leak rail — fixture work must
+// never re-enter context via memory), and the §4.2 sentinel sweep can attribute a
+// hit to its source session. Absent (NONE) for non-session memories (imports,
+// operator-authored rows) — those recall unchanged. OVERWRITE (F-015); apply-twice
+// + half-applied recovery tests live in db/migrate.test.ts.
+const m0033_memory_session_provenance: Migration = {
+	id: '0033_memory_session_provenance',
+	up: `
+		DEFINE FIELD OVERWRITE session ON memory TYPE option<record<session>>;
+		DEFINE INDEX OVERWRITE memory_by_session ON memory FIELDS session;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1334,5 +1351,6 @@ export const schemaMigrations: Migration[] = [
 	m0029_pm_identity,
 	m0030_pm_review_provenance,
 	m0031_workforce,
-	m0032_proposed_tasks
+	m0032_proposed_tasks,
+	m0033_memory_session_provenance
 ];

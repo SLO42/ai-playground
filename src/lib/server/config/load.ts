@@ -266,6 +266,24 @@ export interface WorkforceConfig {
 		};
 		[k: string]: unknown;
 	};
+	/** TASK 16.6 (WORKFORCE-SPEC §3.5/§3.1) — the gauntlet pass bar + session bound.
+	 *  Defaults are the spec-justified launch values (ARMED — admission reference-runs
+	 *  prove every plant findable, so a miss/FP is a real error), not invented numbers. */
+	gauntlet: {
+		/** Required recall over planted defects ([0,1]). Spec-armed launch value 1.0. */
+		pass_recall: number;
+		/** Max operator-confirmed false positives beyond per-fixture tolerances (int ≥ 0). */
+		max_false_positives: number;
+		/** §3.1 candidate-session wall-clock bound (minutes, > 0 — F-014 discipline). */
+		session_timeout_minutes: number;
+	};
+	/** TASK 16.6 (WORKFORCE-SPEC §3.7) — auto-interview spend caps. */
+	budget: {
+		/** null = NOTHING auto-runs; auto-triggers only count-and-surface (F-008). */
+		max_auto_interviews_per_day: number | null;
+		/** Tiers an auto-triggered interview may spend at. Empty = none. */
+		allowed_auto_tiers: string[];
+	};
 	/** TASK 16.4 (PM-SPEC §4 / WORKFORCE-SPEC §5 anti-spam) — proposal caps. */
 	workforce: {
 		/** Max OPEN PM proposals per key (per project for tasks); at cap the PM
@@ -369,6 +387,88 @@ export function loadWorkforce(file: string, opts: LoadOpts = {}): WorkforceConfi
 		}
 	}
 
+	// TASK 16.6 — gauntlet.* (WORKFORCE-SPEC §3.5 pass bar + §3.1 session bound). The
+	// block is optional; defaults are the SPEC-justified launch values (armed pass bar:
+	// reference-runs prove every plant findable, so a miss/FP is a real error — §3.5).
+	// Anything present must be well-shaped — fail closed (no silently-ignored knob).
+	let passRecall = 1.0;
+	let maxFalsePositives = 0;
+	let sessionTimeoutMinutes = 15;
+	const gauntletRaw = raw.gauntlet;
+	if (gauntletRaw !== undefined) {
+		if (gauntletRaw === null || typeof gauntletRaw !== 'object' || Array.isArray(gauntletRaw)) {
+			throw new ConfigError('workforce: "gauntlet" must be a mapping when set', file);
+		}
+		const g = gauntletRaw as Record<string, unknown>;
+		if (g.pass_recall !== undefined) {
+			if (typeof g.pass_recall !== 'number' || g.pass_recall < 0 || g.pass_recall > 1) {
+				throw new ConfigError('workforce: gauntlet.pass_recall must be a number in [0,1]', file);
+			}
+			passRecall = g.pass_recall;
+		}
+		if (g.max_false_positives !== undefined) {
+			if (
+				typeof g.max_false_positives !== 'number' ||
+				!Number.isInteger(g.max_false_positives) ||
+				g.max_false_positives < 0
+			) {
+				throw new ConfigError(
+					'workforce: gauntlet.max_false_positives must be a non-negative integer',
+					file
+				);
+			}
+			maxFalsePositives = g.max_false_positives;
+		}
+		if (g.session_timeout_minutes !== undefined) {
+			if (
+				typeof g.session_timeout_minutes !== 'number' ||
+				!Number.isFinite(g.session_timeout_minutes) ||
+				g.session_timeout_minutes <= 0
+			) {
+				throw new ConfigError(
+					'workforce: gauntlet.session_timeout_minutes must be a positive number (minutes)',
+					file
+				);
+			}
+			sessionTimeoutMinutes = g.session_timeout_minutes;
+		}
+	}
+
+	// TASK 16.6 — budget.* (WORKFORCE-SPEC §3.7). Default null/[] = nothing auto-runs;
+	// auto-triggers only count-and-surface until the operator sets a cap (F-008).
+	let maxAutoInterviewsPerDay: number | null = null;
+	let allowedAutoTiers: string[] = [];
+	const budgetRaw = raw.budget;
+	if (budgetRaw !== undefined) {
+		if (budgetRaw === null || typeof budgetRaw !== 'object' || Array.isArray(budgetRaw)) {
+			throw new ConfigError('workforce: "budget" must be a mapping when set', file);
+		}
+		const b = budgetRaw as Record<string, unknown>;
+		const capDay = b.max_auto_interviews_per_day;
+		if (capDay !== undefined && capDay !== null) {
+			if (typeof capDay !== 'number' || !Number.isInteger(capDay) || capDay < 0) {
+				throw new ConfigError(
+					'workforce: budget.max_auto_interviews_per_day must be null (unarmed) or a non-negative integer',
+					file
+				);
+			}
+			maxAutoInterviewsPerDay = capDay;
+		}
+		const tiers = b.allowed_auto_tiers;
+		if (tiers !== undefined && tiers !== null) {
+			if (
+				!Array.isArray(tiers) ||
+				tiers.some((t) => !['local', 'haiku', 'sonnet', 'opus'].includes(t as string))
+			) {
+				throw new ConfigError(
+					'workforce: budget.allowed_auto_tiers must be a list drawn from [local, haiku, sonnet, opus]',
+					file
+				);
+			}
+			allowedAutoTiers = tiers as string[];
+		}
+	}
+
 	return {
 		...raw,
 		pm: {
@@ -384,6 +484,21 @@ export function loadWorkforce(file: string, opts: LoadOpts = {}): WorkforceConfi
 				? (panelRaw as Record<string, unknown>)
 				: {}),
 			scope: { max_files: scopeMaxFiles, max_new_services: scopeMaxNewServices }
+		},
+		gauntlet: {
+			...(gauntletRaw && typeof gauntletRaw === 'object' && !Array.isArray(gauntletRaw)
+				? (gauntletRaw as Record<string, unknown>)
+				: {}),
+			pass_recall: passRecall,
+			max_false_positives: maxFalsePositives,
+			session_timeout_minutes: sessionTimeoutMinutes
+		},
+		budget: {
+			...(budgetRaw && typeof budgetRaw === 'object' && !Array.isArray(budgetRaw)
+				? (budgetRaw as Record<string, unknown>)
+				: {}),
+			max_auto_interviews_per_day: maxAutoInterviewsPerDay,
+			allowed_auto_tiers: allowedAutoTiers
 		},
 		workforce: {
 			...(wfRaw && typeof wfRaw === 'object' && !Array.isArray(wfRaw)

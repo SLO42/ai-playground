@@ -290,6 +290,68 @@ describe('§7.1 two-tier embedding cache (L1 + L2 over the live DB)', () => {
 	});
 });
 
+// ── TASK 16.6 — the WORKFORCE-SPEC §4.2 interview exclusions (D-027 + D-029) ────
+
+describe("16.6 §4.2 — kind='interview' sessions are excluded from the memory engine", () => {
+	async function makeInterviewSession(): Promise<string> {
+		const [rows] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE session CONTENT {
+			   kind: "interview", model: { provider: "claude", model_id: "claude-sonnet-x" }, runtime: "claude-code"
+			 } RETURN AFTER;`
+		);
+		return String(rows[0].id);
+	}
+
+	it('D-027 fast-writer exclusion: enqueueReview REFUSES an interview session (null, nothing enqueued)', async () => {
+		const interviewSid = await makeInterviewSession();
+		const id = await enqueueReview(db, {
+			session: interviewSid,
+			kind: 'memory',
+			turnText: 'fixture work that must never be mined'
+		});
+		expect(id).toBeNull();
+		const [items] = await db.query<[Array<{ c: number }>]>(
+			`SELECT count() AS c FROM work_item WHERE session = $sid GROUP ALL;`,
+			{ sid: rid(interviewSid) }
+		);
+		expect(items[0]?.c ?? 0).toBe(0);
+		// Control: a task session of the same shape DOES enqueue.
+		const taskSid = await makeSession();
+		expect(await enqueueReview(db, { session: taskSid, kind: 'memory', turnText: 't' })).toBeTruthy();
+	});
+
+	it('D-029 recall filter: a memory born in an interview session is NEVER recalled; provenance-less rows recall unchanged', async () => {
+		const interviewSid = await makeInterviewSession();
+		// Two near-identical rows so the vector query would surface both: one
+		// interview-born (m0033 session provenance), one session-less control.
+		await mem.store([
+			{
+				content: 'gauntlet leak probe: the planted SurrealDB datetime defect detail',
+				project: projectId,
+				session: interviewSid
+			},
+			{
+				content: 'gauntlet leak probe: the planted SurrealDB datetime defect detail (control)',
+				project: projectId
+			}
+		]);
+		// Wide net (k=50, limit 50): the FakeEmbedder's hash-cosine ranks arbitrarily vs
+		// the suite's other rows — the assertion is about the FILTER, not the ranking.
+		const res = await mem.recall('gauntlet leak probe planted defect', {
+			project: projectId,
+			k: 50,
+			limit: 50
+		});
+		const texts = res.items.map((i) => i.fenced.text).join('\n');
+		expect(texts).toContain('(control)');
+		// The interview-born row is excluded even though it matches at least as well.
+		const leaked = res.items.filter(
+			(i) => i.fenced.text.includes('gauntlet leak probe') && !i.fenced.text.includes('(control)')
+		);
+		expect(leaked).toEqual([]);
+	});
+});
+
 // ── helpers ────────────────────────────────────────────────────────────────────
 
 /** Wrap a `table:id` string as a record link (the D-016 binding the SDK needs). */

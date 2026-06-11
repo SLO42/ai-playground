@@ -96,6 +96,18 @@ export interface EnqueueReviewInput {
  * (the dedup_key UNIQUE constraint coalesces it).
  */
 export async function enqueueReview(db: Db, input: EnqueueReviewInput): Promise<string | null> {
+	// TASK 16.6 (WORKFORCE-SPEC §4.2) — the D-027 FAST-WRITER EXCLUSION for gauntlet
+	// interviews: a kind='interview' session is NEVER mined for memories (its transcript
+	// contains fixture work — planted defects that must not re-enter any context). The
+	// exclusion lives HERE in the memory engine (not in runner discipline) so no future
+	// caller can enqueue an interview review by accident. Refusal is a null return (the
+	// same shape as the dedup no-op): nothing enqueued, nothing thrown — the interview
+	// path is not an error, it is out of scope for the writer fork by design.
+	const [krows] = await db.query<[Array<{ kind?: string }>]>(`SELECT kind FROM $sid;`, {
+		sid: link(input.session)
+	});
+	if (krows[0]?.kind === 'interview') return null;
+
 	const content: Record<string, unknown> = {
 		work_type: 'memory_review',
 		session: link(input.session),

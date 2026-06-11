@@ -44,10 +44,13 @@ export type { CanUseToolResult, EditScopeInput } from '../claude-code/gates';
 export {
 	composeCapabilities,
 	CapabilityValidationError,
+	SterileCompositionError,
+	MEMORY_PULL_CAPABILITY_IDS,
 	type CapabilitySet,
 	type CapabilityCatalog,
 	type CapabilityKind,
 	type ComposedCapabilitySettings,
+	type ComposeOptions,
 	type HarnessBase
 } from './capabilities';
 
@@ -118,6 +121,15 @@ export interface SpawnRequest {
 	 */
 	editScope?: EditScopeInput;
 	workflowRunId?: string; // set when this spawn is a workflow step (D-013)
+	/**
+	 * TASK 16.6 (WORKFORCE-SPEC §3.2) — the session kind this spawn runs as, when the
+	 * kind changes COMPOSITION semantics. `'interview'` forces the STERILE composition
+	 * at the composeCapabilities seam (fail closed): a declared memory-pull capability
+	 * id refuses the spawn (SterileCompositionError → error event, backend never
+	 * reached), and the isolated settings carry `sterile: true` as the assertable
+	 * proof. Absent ⇒ unchanged legacy composition.
+	 */
+	sessionKind?: 'interview';
 }
 
 /** Final result of an agent run. */
@@ -247,17 +259,28 @@ export function isolatedConfigFor(
 	// set (catalog-validated, fail closed). composeCapabilities forces plugins/marketplaces
 	// empty (D-002), so the composed settings can never leak the operator's plugin set.
 	// No catalog ⇒ the legacy harness-only bundle (no capability provisioning).
+	// TASK 16.6: an interview spawn (§3.2) FORCES the sterile composition at this seam —
+	// a memory-pull capability id throws (fail closed), and `sterile: true` rides the
+	// settings on BOTH branches (the no-catalog branch provisions nothing, which is
+	// trivially sterile — the marker still makes the proof assertable downstream).
+	const sterile = req.sessionKind === 'interview';
 	const settings: HarnessSettings = opts.catalog
-		? composeCapabilities(req.capabilities, opts.catalog, {
-				gates: opts.gates,
-				hooks: opts.hooks
-			})
+		? composeCapabilities(
+				req.capabilities,
+				opts.catalog,
+				{
+					gates: opts.gates,
+					hooks: opts.hooks
+				},
+				{ sterile }
+			)
 		: {
 				gates: opts.gates ?? {},
 				hooks: opts.hooks ?? {},
 				// Explicitly empty — the S1-proven determinism guard.
 				plugins: [],
-				marketplaces: []
+				marketplaces: [],
+				...(sterile ? { sterile: true } : {})
 			};
 
 	// TASK 15.1 — a declared scope-lock rides the isolated settings (both compose paths)

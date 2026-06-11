@@ -244,3 +244,45 @@ The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
   catch that downgrades a read to "best-effort" must still `console.warn` the
   real error — a parse error spotted in logs is a 1-minute fix; swallowed, it is
   a wrong-behavior hunt.
+
+## F-023: env-level gate denial laundered into a TERMINAL candidate verdict
+- **Date**: 2026-06-11
+- **What**: 16.6's first live gauntlet run scored the candidate `failed:
+  "findings contract violated: findings.json absent"` — a terminal capability
+  verdict for the version's certification campaign (§2.2) — when the candidate
+  had in fact done nothing wrong: the test env lacked HOOK_URL/HOOK_TOKEN, so
+  the CLI PreToolUse gate hook denied EVERY tool call fail-closed (D-024) and
+  the session could neither read fixtures nor write findings.json.
+- **Why**: the runner's §3.6 classification treated "session completed but no
+  findings.json" as a capability failure unconditionally. A fail-closed env
+  denial produces exactly that shape — the env failure wore a candidate-verdict
+  costume. (Found only because the live verify logged `run.results` and the
+  transcript was read back; the structural assertions all passed.)
+- **Fix**: (1) the live test stands up the in-process loopback gate endpoint
+  (the 13.3/15.1 live-harness shape) so tool calls really flow; (2) product
+  rail in gauntlet.ts: any tool_result carrying the gate hook's literal
+  fail-closed marker ('gate control plane not configured') reclassifies the run
+  mechanically as `error_reason='spawn_failure'` — an env outage can never
+  terminally fail a version. Regression-tested.
+- **Prevention**: when a verdict path infers "the agent failed to deliver X",
+  enumerate the ENV reasons X can be absent and detect them mechanically before
+  issuing a capability verdict — fail-closed infrastructure makes innocent
+  agents look incompetent. Any CLI-spawning live test whose agent must USE
+  TOOLS needs the loopback gate endpoint up (launch.live.test.ts gets away
+  without one only because its task says "do not use any tools").
+
+## F-024: recall-filter test asserted through FakeEmbedder RANKING — flaky by construction
+- **Date**: 2026-06-11
+- **What**: 16.6's D-029 recall-exclusion test passed in isolation but failed in
+  the full memory suite: with the suite's other rows present, the control memory
+  ranked below the `limit: 10` cut (FakeEmbedder hash-cosine is arbitrary), so
+  "control recalled, interview row not" failed for a ranking reason, not a
+  filter reason.
+- **Why**: the assertion target was the FILTER, but the test observed it through
+  the RANKER. Two mechanisms, one assertion — the weaker one (mock-embedder
+  ranking under unrelated suite rows) decided the outcome.
+- **Fix**: widened the net (`k: 50, limit: 50`) so ranking can't evict the
+  control; the assertion now isolates the filter.
+- **Prevention**: when testing a recall/query FILTER with a mock embedder, take
+  ranking out of the equation (limit ≥ row count, or query by id) — never let a
+  top-N cut stand between the assertion and the mechanism under test.

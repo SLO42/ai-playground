@@ -130,6 +130,13 @@ export async function recall(opts: RecallOptions, query: string): Promise<Recall
 	// redacted (NEVER quarantined). The HNSW <|K,COSINE|> exact form keeps the test
 	// deterministic; production may switch to <|K,EF|> by budget. dist → similarity at
 	// the §7.2 boundary (the scorer never sees a raw distance).
+	//
+	// TASK 16.6 (WORKFORCE-SPEC §4.2) — the D-029 RECALL EXCLUSION for gauntlet
+	// interviews: a memory row whose originating session (m0033 provenance) is
+	// kind='interview' is NEVER recalled — second rail behind the D-027 writer
+	// exclusion, so even a row that somehow got written from an interview transcript
+	// cannot re-enter context. Provenance-less rows (session NONE) recall unchanged.
+	const interviewFilter = `AND (session IS NONE OR session.kind != "interview")`;
 	const projFilter = opts.project ? `AND project = $project` : '';
 	const [vrows] = await db.query<[MemoryRow[]]>(
 		`SELECT id, content, embedding, updated_at,
@@ -138,6 +145,7 @@ export async function recall(opts: RecallOptions, query: string): Promise<Recall
 		  WHERE embedding <|${k},COSINE|> $qvec
 		    AND (status = "active" OR status IS NONE)
 		    AND screen_status != "quarantined"
+		    ${interviewFilter}
 		    ${projFilter}
 		  ORDER BY dist ASC;`,
 		opts.project ? { qvec, project: link(opts.project) } : { qvec }
@@ -167,6 +175,7 @@ export async function recall(opts: RecallOptions, query: string): Promise<Recall
 			`SELECT id, content, embedding, updated_at FROM memory
 			  WHERE (status = "active" OR status IS NONE)
 			    AND screen_status != "quarantined"
+			    AND (session IS NONE OR session.kind != "interview")
 			    AND id IN (
 			      SELECT VALUE ->references->memory FROM $seeds
 			    );`,

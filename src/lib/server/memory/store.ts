@@ -35,6 +35,13 @@ export interface MemoryCandidate {
 	source?: string;
 	importance?: number;
 	project?: string; // table:id
+	/**
+	 * TASK 16.6 (WORKFORCE-SPEC §4.2) — the ORIGINATING session (table:id, m0033
+	 * provenance). Set by transcript-derived write paths (launch-end extraction, the
+	 * D-027 writer fork) so the D-029 recall filter can exclude rows born in
+	 * kind='interview' sessions. Omit for non-session memories.
+	 */
+	session?: string;
 }
 
 /** A persisted memory row id + how it was screened (clean/redacted/quarantined). */
@@ -83,6 +90,9 @@ export async function storeMemory(opts: StoreOptions, c: MemoryCandidate): Promi
 
 	const content = omitUndefined({
 		project: c.project ? link(c.project) : undefined,
+		// m0033 provenance (16.6): the originating session, when known — the D-029
+		// recall filter's input. Omitted (NONE) for non-session memories (§6.1).
+		session: c.session ? link(c.session) : undefined,
 		kind: c.kind ?? 'semantic',
 		namespace: c.namespace ?? 'default',
 		key: c.key,
@@ -146,6 +156,8 @@ export interface ExtractInput {
 	/** Existing rows the LLM may link/merge against — handed as ORDINALS, never ids (§3.3). */
 	existing?: { id: string; content: string }[];
 	project?: string;
+	/** The transcript's session (table:id) — m0033 provenance onto every stored row (16.6). */
+	session?: string;
 }
 
 /** The injected extraction call. Returns ADD-only candidates (no id references). */
@@ -186,7 +198,11 @@ export async function extractAndStore(
 ): Promise<StoredMemory[]> {
 	const { prompt, ordinals } = buildExtraction(input);
 	const candidates = await opts.extract(prompt, ordinals);
-	// Carry the project through to each candidate if not already set.
-	const withProject = candidates.map((c) => ({ ...c, project: c.project ?? input.project }));
+	// Carry the project + originating-session provenance through to each candidate.
+	const withProject = candidates.map((c) => ({
+		...c,
+		project: c.project ?? input.project,
+		session: c.session ?? input.session
+	}));
 	return storeMemories(opts, withProject);
 }

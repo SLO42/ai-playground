@@ -359,4 +359,57 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 	])('rejects %s at the 16.4 boundary (fail closed)', (_label, inject) => {
 		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
 	});
+
+	// ── TASK 16.6 — gauntlet.* + budget.* (WORKFORCE-SPEC §3.5/§3.1/§3.7) ──────────
+	it('the SHIPPED config arms the §3.5 pass bar (1.0 recall / 0 FP) + the 15-min bound', () => {
+		const wf = loadWorkforce(REAL_WF);
+		expect(wf.gauntlet.pass_recall).toBe(1.0);
+		expect(wf.gauntlet.max_false_positives).toBe(0);
+		expect(wf.gauntlet.session_timeout_minutes).toBe(15);
+	});
+
+	it('the SHIPPED budget is UNARMED: null cap + empty auto tiers (§3.7, F-008)', () => {
+		const wf = loadWorkforce(REAL_WF);
+		expect(wf.budget.max_auto_interviews_per_day).toBeNull();
+		expect(wf.budget.allowed_auto_tiers).toEqual([]);
+	});
+
+	it('absent gauntlet/budget blocks fall back to the spec-justified defaults (older files stay valid)', () => {
+		const wf = loadWorkforce(REAL_WF, {
+			_inject: { pm: { model_id: 'm' }, gauntlet: undefined, budget: undefined }
+		});
+		expect(wf.gauntlet.pass_recall).toBe(1.0);
+		expect(wf.gauntlet.max_false_positives).toBe(0);
+		expect(wf.gauntlet.session_timeout_minutes).toBe(15);
+		expect(wf.budget.max_auto_interviews_per_day).toBeNull();
+		expect(wf.budget.allowed_auto_tiers).toEqual([]);
+	});
+
+	it('accepts an armed budget (integer cap + valid tier list)', () => {
+		const wf = loadWorkforce(REAL_WF, {
+			_inject: {
+				pm: { model_id: 'm' },
+				budget: { max_auto_interviews_per_day: 3, allowed_auto_tiers: ['sonnet', 'haiku'] }
+			}
+		});
+		expect(wf.budget.max_auto_interviews_per_day).toBe(3);
+		expect(wf.budget.allowed_auto_tiers).toEqual(['sonnet', 'haiku']);
+	});
+
+	it.each([
+		['non-mapping gauntlet', { pm: { model_id: 'm' }, gauntlet: 'hard' }],
+		['recall above 1', { pm: { model_id: 'm' }, gauntlet: { pass_recall: 1.2 } }],
+		['negative recall', { pm: { model_id: 'm' }, gauntlet: { pass_recall: -0.1 } }],
+		['string recall', { pm: { model_id: 'm' }, gauntlet: { pass_recall: '1.0' } }],
+		['float max_false_positives', { pm: { model_id: 'm' }, gauntlet: { max_false_positives: 0.5 } }],
+		['negative max_false_positives', { pm: { model_id: 'm' }, gauntlet: { max_false_positives: -1 } }],
+		['zero timeout', { pm: { model_id: 'm' }, gauntlet: { session_timeout_minutes: 0 } }],
+		['non-mapping budget', { pm: { model_id: 'm' }, budget: [] }],
+		['float day cap', { pm: { model_id: 'm' }, budget: { max_auto_interviews_per_day: 1.5 } }],
+		['negative day cap', { pm: { model_id: 'm' }, budget: { max_auto_interviews_per_day: -1 } }],
+		['unknown tier', { pm: { model_id: 'm' }, budget: { allowed_auto_tiers: ['mega'] } }],
+		['non-array tiers', { pm: { model_id: 'm' }, budget: { allowed_auto_tiers: 'sonnet' } }]
+	])('rejects %s at the 16.6 boundary (fail closed)', (_label, inject) => {
+		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
+	});
 });

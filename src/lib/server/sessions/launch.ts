@@ -489,7 +489,10 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 			const turnText = [summary, ...transcriptParts].filter(Boolean).join('\n').slice(0, 16_000);
 			await memory.service.extractAndStore(memory.extract, {
 				turnText,
-				project: input.projectId
+				project: input.projectId,
+				// m0033 provenance (16.6): every transcript-derived row records its originating
+				// session, so the D-029 recall filter can exclude interview-born rows.
+				session: sessionId
 			});
 		} catch (err) {
 			console.warn(`[launch] memory extraction skipped for ${sessionId}: ${(err as Error).message}`);

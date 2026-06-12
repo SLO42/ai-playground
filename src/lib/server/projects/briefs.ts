@@ -184,6 +184,15 @@ export async function createDecisionBrief(db: Db, input: CreateBriefInput): Prom
 	const existing = await getOpenBriefForArtifact(db, input.artifact);
 	if (existing) return existing;
 
+	// PM-SPEC §4 (d) suppress-until-lapse (16.4 re-review DEFECT 4): a matter the
+	// operator DEFERRED is not re-asked while the window stands — re-running the
+	// ceremony that raised the brief (e.g. a panel re-run) absorbs the standing
+	// deferred brief instead of opening a fresh ask inside the active window.
+	if (input.fingerprint) {
+		const deferred = await getActiveDeferredBriefForFingerprint(db, input.fingerprint);
+		if (deferred) return deferred;
+	}
+
 	const content = omitUndefined({
 		project: input.project ? link(input.project) : undefined,
 		artifact: link(input.artifact),
@@ -249,17 +258,27 @@ export async function listBriefsForProject(
 	return rows.map(normBrief);
 }
 
+/** The standing DEFERRED brief whose fingerprint sits inside an ACTIVE defer
+ *  window, newest decision first, or null. (PM-SPEC §4 (d): the operator's defer
+ *  is a structural decision on the MATTER — the row that recorded it.) */
+export async function getActiveDeferredBriefForFingerprint(
+	db: Db,
+	fingerprint: string
+): Promise<DecisionBriefRow | null> {
+	const [rows] = await db.query<[Raw[]]>(
+		`SELECT * FROM decision_brief
+			WHERE fingerprint = $fp AND status = "deferred" AND defer_until != NONE AND defer_until > time::now()
+			ORDER BY decided_at DESC LIMIT 1;`,
+		{ fp: fingerprint }
+	);
+	return rows.length ? normBrief(rows[0]) : null;
+}
+
 /** Is a fingerprint inside an ACTIVE defer window? (Anti-spam, PM-SPEC §4 (d):
  *  structural fingerprints — a deferred matter is not re-asked until the window
  *  lapses; cosmetic re-wording cannot dodge it.) */
 export async function isFingerprintDeferred(db: Db, fingerprint: string): Promise<boolean> {
-	const [rows] = await db.query<[Raw[]]>(
-		`SELECT id FROM decision_brief
-			WHERE fingerprint = $fp AND status = "deferred" AND defer_until != NONE AND defer_until > time::now()
-			LIMIT 1;`,
-		{ fp: fingerprint }
-	);
-	return rows.length > 0;
+	return (await getActiveDeferredBriefForFingerprint(db, fingerprint)) !== null;
 }
 
 /**
@@ -291,7 +310,21 @@ export async function markBriefDecided(
 		sets.push('defer_until = $until');
 		binds.until = opts.deferUntil;
 	}
-	const [rows] = await db.query<[Raw[]]>(`UPDATE $rid SET ${sets.join(', ')} RETURN AFTER;`, binds);
+	// Status-GUARDED write (16.4 re-review gap 6): the read above can race a
+	// concurrent decide, so the UPDATE itself re-checks 'open' — a decided row is
+	// never relabeled by a lost race. An empty result means we lost: re-read and
+	// absorb/refuse exactly like the pre-check above.
+	const [rows] = await db.query<[Raw[]]>(
+		`UPDATE $rid SET ${sets.join(', ')} WHERE status = "open" RETURN AFTER;`,
+		binds
+	);
+	if (rows.length === 0) {
+		const raced = await getBrief(db, brief.id);
+		if (raced && raced.status === status) return raced; // interrupt-contract absorb
+		throw new BriefError(
+			`decision brief ${briefId} already '${raced?.status ?? '(missing)'}' — refusing relabel to '${status}' (a concurrent decide landed first)`
+		);
+	}
 	return normBrief(rows[0]);
 }
 

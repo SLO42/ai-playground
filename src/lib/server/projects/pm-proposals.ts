@@ -339,24 +339,35 @@ export async function revisePmProposal(
 	};
 	assertContract(input);
 
-	// Create the successor FIRST (a crash between steps leaves both rows visible and
-	// honest: an open successor + a still-open predecessor whose fingerprint matches —
-	// the duplicate_open absorb makes the re-run converge instead of double-creating).
-	const successor = await createTask(db, {
-		project: input.project,
-		title: input.title,
-		description: composeDescription(input),
-		priority: input.priority,
-		origin: 'pm',
-		status: 'proposed',
-		objective: input.objective.trim(),
-		purpose: input.purpose.trim(),
-		acceptance_criteria: input.acceptance_criteria.map((c) => c.trim()),
-		provenance: { ...input.provenance, authority: pm.authority },
-		proposed_by: pm.id,
-		revision_of: old.id,
-		proposal_fingerprint: proposalFingerprint(input.project, input.provenance)
-	});
+	// Create the successor FIRST, so a crash between steps leaves both rows visible
+	// and honest (an open successor + a still-open predecessor). Re-run convergence
+	// (16.4 re-review gap 5): this path calls createTask DIRECTLY — proposeTask's
+	// duplicate_open absorb never runs here (and would match the PREDECESSOR anyway,
+	// whose fingerprint is usually identical) — so the retry must absorb the crashed
+	// run's successor itself: a still-'proposed' row already stamped revision_of=THIS
+	// predecessor with the same structural fingerprint IS that successor.
+	const fingerprint = proposalFingerprint(input.project, input.provenance);
+	const openRows = await listTasksByProject(db, old.project, 'proposed');
+	const crashed = openRows.find(
+		(t) => t.revision_of === old.id && t.proposal_fingerprint === fingerprint
+	);
+	const successor =
+		crashed ??
+		(await createTask(db, {
+			project: input.project,
+			title: input.title,
+			description: composeDescription(input),
+			priority: input.priority,
+			origin: 'pm',
+			status: 'proposed',
+			objective: input.objective.trim(),
+			purpose: input.purpose.trim(),
+			acceptance_criteria: input.acceptance_criteria.map((c) => c.trim()),
+			provenance: { ...input.provenance, authority: pm.authority },
+			proposed_by: pm.id,
+			revision_of: old.id,
+			proposal_fingerprint: fingerprint
+		}));
 
 	// Retire the predecessor: link, then terminal status, then mechanical closures.
 	await db.query(`UPDATE $rid MERGE { superseded_by: $sid, updated_at: time::now() };`, {

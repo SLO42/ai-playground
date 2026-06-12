@@ -374,6 +374,44 @@ describe('revise / withdraw — §2.2 outcome closure + supersession links', () 
 		expect(verdicts[0].outcome).toBe('revised');
 	});
 
+	it('a retried revise after a crash ABSORBS the already-created successor — never a double-create (16.4 re-review gap 5)', async () => {
+		// Code-read defect: the comment claimed proposeTask's duplicate_open absorb made
+		// the re-run converge, but revisePmProposal calls createTask DIRECTLY — a retry
+		// after a crash between the successor CREATE and the predecessor retirement
+		// created a second identical-fingerprint successor.
+		const pm = await hire();
+		const res = await proposeTask(db, validInput());
+		const oldId = res.task!.id;
+		const revision = {
+			objective: 'Resolve the finding with a narrower scope.',
+			purpose: 'Same trigger, tightened after panel pushback.',
+			acceptance_criteria: ['The single named finding is resolved.']
+		};
+		// Simulate the crash window exactly: the successor row landed (revision_of +
+		// fingerprint stamped), the retirement steps never ran.
+		const orphan = await createTask(db, {
+			project: projectId,
+			title: res.task!.title,
+			description: 'crashed-run successor',
+			origin: 'pm',
+			status: 'proposed',
+			objective: revision.objective,
+			purpose: revision.purpose,
+			acceptance_criteria: revision.acceptance_criteria,
+			provenance: { ...provenance(), authority: pm.authority },
+			proposed_by: pm.id,
+			revision_of: oldId,
+			proposal_fingerprint: proposalFingerprint(projectId, provenance())
+		});
+		// The RE-RUN of the same revise must absorb the orphan and finish the retirement.
+		const out = await revisePmProposal(db, oldId, revision);
+		expect(out.successor.id).toBe(orphan.id);
+		expect(out.predecessor.status).toBe('withdrawn');
+		expect((await getTask(db, oldId))?.superseded_by).toBe(orphan.id);
+		const [proposed] = await db.query<[unknown[]]>(`SELECT id FROM task WHERE status = 'proposed';`);
+		expect(proposed).toHaveLength(1); // exactly ONE successor — the absorbed one
+	});
+
 	it('revise enforces the full §4.1 contract on the successor (missing purpose = fail)', async () => {
 		await hire();
 		const res = await proposeTask(db, validInput());

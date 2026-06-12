@@ -55,7 +55,7 @@ import {
 	type BriefChallenge,
 	type DecisionBriefRow
 } from './briefs';
-import { addPmMemory, getPm, type PmRow } from './pm-repo';
+import { addPmMemory, getPm, hasPmMemoryRelatedTo, type PmRow } from './pm-repo';
 import { resolvePmRoute } from './pm-session';
 import { parseCron, cronMatches } from './pm-triggers';
 import { ProposalContractError } from './pm-proposals';
@@ -577,9 +577,13 @@ async function decidePanel(
 	}
 
 	// 2. Pushback — returned to the PM; reasons become pm_memory (the PM learns).
+	// Idempotent over panel re-runs (16.4 re-review DEFECT 3): absorbed seats
+	// re-enter this closure, so each learning row is keyed by related_to = the
+	// verdict id — a row already written for that verdict absorbs, never duplicates.
 	if (pushbacks.length > 0) {
 		let written = 0;
 		for (const v of pushbacks) {
+			if (await hasPmMemoryRelatedTo(db, v.id, 'validation-panel')) continue;
 			await addPmMemory(db, {
 				project: task.project,
 				kind: 'learning',
@@ -715,6 +719,30 @@ function deferWindowMs(pm: PmRow | null, opts: { configDir?: string }): number {
 	return FALLBACK_DEFER_WINDOW_MS;
 }
 
+// In-process per-brief ceremony serialization (16.4 re-review gap 6). Probe-proven
+// on the real engine: SurrealDB executes concurrent same-connection queries against
+// snapshots — two status-guarded UPDATEs AND two THROW-guarded transactions on one
+// open brief BOTH committed — so no query-level guard alone stops two simultaneous
+// cross-action decides from both passing the status pre-check and running their
+// effects. This module is the single decide write path (D-035 server-side), so a
+// keyed promise chain serializes ceremonies per brief: the loser re-reads AFTER the
+// winner committed and the pre-check refuses it with zero effects.
+const briefLocks = new Map<string, Promise<void>>();
+
+async function withBriefLock<T>(briefId: string, fn: () => Promise<T>): Promise<T> {
+	const prev = briefLocks.get(briefId) ?? Promise.resolve();
+	const run = prev.then(fn);
+	const tail = run.then(
+		() => undefined,
+		() => undefined
+	);
+	briefLocks.set(briefId, tail);
+	void tail.then(() => {
+		if (briefLocks.get(briefId) === tail) briefLocks.delete(briefId);
+	});
+	return run;
+}
+
 /**
  * Apply the operator's answer to an OPEN brief — the single write path the
  * RightTray actions hit. Effects are mechanical (§2.2, D-035 server-side):
@@ -732,6 +760,15 @@ export async function applyBriefDecision(
 	action: BriefAction,
 	opts: { configDir?: string } = {}
 ): Promise<BriefDecisionResult> {
+	return withBriefLock(briefId, () => applyBriefDecisionInner(db, briefId, action, opts));
+}
+
+async function applyBriefDecisionInner(
+	db: Db,
+	briefId: string,
+	action: BriefAction,
+	opts: { configDir?: string } = {}
+): Promise<BriefDecisionResult> {
 	const brief = await getBrief(db, briefId);
 	if (!brief) throw new BriefError(`decision brief not found: ${briefId}`);
 	if (brief.artifact_kind !== 'task') {
@@ -742,6 +779,26 @@ export async function applyBriefDecision(
 
 	const task = await getTask(db, brief.artifact);
 	if (!task) throw new BriefError(`brief artifact vanished: ${brief.artifact}`);
+
+	// 16.4 re-review fix (DEFECTS 1+2): the ceremony state is checked BEFORE any
+	// effect. The effect-first reorder below is only safe when the ceremony cannot
+	// refuse — markBriefDecided's relabel guard threw AFTER setStatus/verdict-closures
+	// had already run, so a different-action POST on a decided/deferred brief told the
+	// operator "refused" (409) while having promoted the refused task into the
+	// orchestrator's spawn-ready set, or closed the deliberately-open approve-verdicts.
+	// Same action on a decided brief → pure absorb (the original decision's effects
+	// stand; re-running them is what the interrupt contract absorbs). Different
+	// action → refuse with ZERO effects.
+	if (brief.status !== 'open') {
+		const terminal = action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'deferred';
+		if (brief.status === terminal) {
+			return { brief, taskStatus: task.status };
+		}
+		throw new BriefError(
+			`decision brief ${briefId} already '${brief.status}' — refusing '${action}' ` +
+				`(no effect was applied; the ceremony record is append-once)`
+		);
+	}
 
 	// 16.4 fix (interrupt contract): EFFECT first, ceremony LAST. The original order
 	// (markBriefDecided → setStatus) meant a crash between the two stranded a DECIDED
@@ -780,22 +837,19 @@ export async function applyBriefDecision(
 	// defer — the ceremony IS the effect here (the task stays 'proposed').
 	const pm = await getPm(db, task.project);
 	const until = new Date(Date.now() + deferWindowMs(pm, opts));
-	const wasOpen = brief.status === 'open';
 	const decided = await markBriefDecided(db, brief.id, 'deferred', { deferUntil: until });
-	// Defer is first-class and feeds pm_memory (WORKFORCE §8 one-click list) — but
-	// ONLY on the actual open→deferred transition (16.4 fix): a repeat defer POST is
-	// absorbed by markBriefDecided and must not append another observation each time.
-	if (wasOpen) {
-		await addPmMemory(db, {
-			project: task.project,
-			kind: 'observation',
-			content:
-				`Operator DEFERRED the brief on "${task.title}" until ${until.toISOString()} — ` +
-				`the matter is suppressed (structural fingerprint) until the window lapses.`,
-			source: 'decision-brief',
-			confidence: 1.0
-		});
-	}
+	// Defer is first-class and feeds pm_memory (WORKFORCE §8 one-click list) — ONLY
+	// on the actual open→deferred transition (16.4 fix): a repeat defer POST is
+	// absorbed by the status pre-check above and never reaches this write.
+	await addPmMemory(db, {
+		project: task.project,
+		kind: 'observation',
+		content:
+			`Operator DEFERRED the brief on "${task.title}" until ${until.toISOString()} — ` +
+			`the matter is suppressed (structural fingerprint) until the window lapses.`,
+		source: 'decision-brief',
+		confidence: 1.0
+	});
 	return { brief: decided, taskStatus: task.status };
 }
 

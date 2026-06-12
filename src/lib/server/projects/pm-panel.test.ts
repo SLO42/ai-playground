@@ -15,7 +15,7 @@ import { createProject } from './repo';
 import { getTask, setStatus } from '../tasks/repo';
 import { listPanelVerdictsForArtifact } from '../workforce/repo';
 import { createPm, listPmMemory } from './pm-repo';
-import { listOpenBriefs } from './briefs';
+import { listOpenBriefs, getBrief, BriefError } from './briefs';
 import { proposeTask, type ProposeTaskInput } from './pm-proposals';
 import {
 	runValidationPanel,
@@ -26,7 +26,8 @@ import {
 	listProposalQueue,
 	ValidatorContractError,
 	PanelInputError,
-	type PanelDeps
+	type PanelDeps,
+	type BriefDecisionResult
 } from './pm-panel';
 
 // TASK 16.4 VERIFY — the validation panel against a REAL throwaway SurrealDB and a
@@ -361,6 +362,32 @@ describe('runValidationPanel — verdict recording + mechanical closure (§2.2/�
 		expect((await getTask(db, task.id))?.status).toBe('proposed'); // unjudged, unharmed
 	});
 
+	it('panel re-run after a pushback decision does NOT duplicate the pm_memory learning rows (16.4 re-review DEFECT 3)', async () => {
+		const task = await propose('act');
+		const pushback = baseVerdict({
+			verdict: 'pushback',
+			reasons: ['duplicates the standing triage task', 'criteria not executable']
+		});
+		const first = await runValidationPanel(
+			deps([verdictRun(baseVerdict()), verdictRun(pushback)]),
+			task.id
+		);
+		expect(first.decision).toBe('pushback');
+		expect(first.pushbackMemories).toBe(1);
+		const panelMemories = async () =>
+			(await listPmMemory(db, projectId, { kind: 'learning' })).filter(
+				(m) => m.source === 'validation-panel'
+			);
+		expect(await panelMemories()).toHaveLength(1);
+		// Operator re-click of pmPanel: zero scripted runs — every seat absorbs, the
+		// closure re-derives. The ceremony must be idempotent (probe measured 2→4
+		// duplicate rows here before the fix).
+		const again = await runValidationPanel(deps([]), task.id);
+		expect(again.decision).toBe('pushback');
+		expect(again.pushbackMemories).toBe(0); // absorbed, not re-written
+		expect(await panelMemories()).toHaveLength(1);
+	});
+
 	it('re-run ABSORBS recorded verdicts (interrupt contract): no new sessions spawn', async () => {
 		const task = await propose('act');
 		await runValidationPanel(deps([verdictRun(baseVerdict()), verdictRun(baseVerdict())]), task.id);
@@ -451,6 +478,84 @@ describe('applyBriefDecision — approve / reject / defer with §2.2 closure', (
 			(m) => m.source === 'decision-brief' && m.content.includes('DEFERRED')
 		);
 		expect(mem).toHaveLength(1); // exactly one — the ceremony happened once
+	});
+
+	it('a DIFFERENT action on a DEFERRED brief is refused with ZERO side-effects — the task is NOT promoted (16.4 re-review DEFECT 2)', async () => {
+		// Probe-proven defect: approve-on-deferred ran setStatus BEFORE markBriefDecided's
+		// relabel guard threw — a 409 to the operator, yet the refused task entered the
+		// orchestrator's spawn-ready set ('ready') and got BUILT. The status pre-check
+		// must refuse BEFORE any effect.
+		const { task, brief } = await gateBrief();
+		await applyBriefDecision(db, brief.id, 'defer');
+		await expect(applyBriefDecision(db, brief.id, 'approve')).rejects.toBeInstanceOf(BriefError);
+		// The refused approve effected NOTHING: still 'proposed', never 'ready'.
+		expect((await getTask(db, task.id))?.status).toBe('proposed');
+		expect((await getBrief(db, brief.id))?.status).toBe('deferred');
+		// Reject on the same deferred brief is equally effect-free.
+		await expect(applyBriefDecision(db, brief.id, 'reject')).rejects.toBeInstanceOf(BriefError);
+		expect((await getTask(db, task.id))?.status).toBe('proposed');
+	});
+
+	it('reject on an already-APPROVED brief is refused with the approve-verdicts left OPEN — upheld-on-done survives (16.4 re-review DEFECT 1)', async () => {
+		// Probe-proven defect: the verdict-closure loop ran before markBriefDecided threw,
+		// closing the deliberately-still-open approve-verdicts 'overridden_by_operator' —
+		// corrupting the §2.2/D-039 calibration record and killing the upheld-on-done path.
+		const { task, brief } = await gateBrief();
+		await applyBriefDecision(db, brief.id, 'approve');
+		await expect(applyBriefDecision(db, brief.id, 'reject')).rejects.toBeInstanceOf(BriefError);
+		expect((await getTask(db, task.id))?.status).toBe('ready'); // not withdrawn
+		const verdicts = await listPanelVerdictsForArtifact(db, task.id);
+		expect(verdicts).toHaveLength(2);
+		expect(verdicts.every((v) => v.outcome === null)).toBe(true); // §2.2 record intact
+		// The upheld-on-done closure the defect permanently disabled still fires.
+		await setStatus(db, task.id, 'in_progress');
+		await setStatus(db, task.id, 'done');
+		const closed = await listPanelVerdictsForArtifact(db, task.id);
+		expect(closed.every((v) => v.outcome === 'upheld')).toBe(true);
+	});
+
+	it('SIMULTANEOUS cross-action decides serialize: one wins, the loser is refused with ZERO effects (16.4 re-review gap 6)', async () => {
+		// Probe-proven engine reality: SurrealDB runs concurrent same-connection queries
+		// against snapshots, so two simultaneous decides could both read 'open' and both
+		// run their (different!) effect sets. The per-brief ceremony lock serializes
+		// them; the §2.2 record and the task always carry exactly the winner's decision.
+		const { task, brief } = await gateBrief();
+		const results = await Promise.allSettled([
+			applyBriefDecision(db, brief.id, 'approve'),
+			applyBriefDecision(db, brief.id, 'reject')
+		]);
+		const fulfilled = results.filter(
+			(r): r is PromiseFulfilledResult<BriefDecisionResult> => r.status === 'fulfilled'
+		);
+		const refused = results.filter((r): r is PromiseRejectedResult => r.status === 'rejected');
+		expect(fulfilled).toHaveLength(1);
+		expect(refused).toHaveLength(1);
+		expect(refused[0].reason).toBeInstanceOf(BriefError);
+		const winner = fulfilled[0].value;
+		expect((await getBrief(db, brief.id))?.status).toBe(winner.brief.status);
+		// The task carries ONLY the winner's effect — never the loser's.
+		const expectedTask = winner.brief.status === 'approved' ? 'ready' : 'withdrawn';
+		expect((await getTask(db, task.id))?.status).toBe(expectedTask);
+		// …and the §2.2 verdict record matches the winner.
+		const verdicts = await listPanelVerdictsForArtifact(db, task.id);
+		if (winner.brief.status === 'approved') {
+			expect(verdicts.every((v) => v.outcome === null)).toBe(true);
+		} else {
+			expect(verdicts.every((v) => v.outcome === 'overridden_by_operator')).toBe(true);
+		}
+	});
+
+	it('panel re-run on a DEFERRED matter raises NO new open brief inside the defer window (PM-SPEC §4(d); 16.4 re-review DEFECT 4)', async () => {
+		const { task, brief } = await gateBrief();
+		await applyBriefDecision(db, brief.id, 'defer');
+		// Re-run the panel: verdicts absorb, the closure re-derives operator_gate — but
+		// the operator's defer stands: the standing DEFERRED brief is absorbed, never a
+		// fresh open ask during the active window (suppress-until-lapse).
+		const rerun = await runValidationPanel(deps([]), task.id);
+		expect(rerun.decision).toBe('operator_gate');
+		expect(rerun.brief?.id).toBe(brief.id);
+		expect(rerun.brief?.status).toBe('deferred');
+		expect((await listOpenBriefs(db)).filter((b) => b.artifact === task.id)).toHaveLength(0);
 	});
 
 	it('defer → brief deferred with a real window; the structural fingerprint suppresses re-proposals', async () => {

@@ -215,6 +215,22 @@ export async function addPmMemory(db: Db, input: AddPmMemoryInput): Promise<PmMe
 	return normPmMemory(rows[0]);
 }
 
+/** Does an ACTIVE pm_memory row already reference this related_to id (optionally
+ *  from a given source)? The idempotency key for ceremony re-runs (16.4 re-review
+ *  DEFECT 3): a re-entered closure absorbs its already-written learning rows. */
+export async function hasPmMemoryRelatedTo(
+	db: Db,
+	relatedTo: string,
+	source?: string
+): Promise<boolean> {
+	const sourceClause = source ? ' AND source = $source' : '';
+	const [rows] = await db.query<[unknown[]]>(
+		`SELECT id FROM pm_memory WHERE related_to = $rel AND status = "active"${sourceClause} LIMIT 1;`,
+		source ? { rel: relatedTo, source } : { rel: relatedTo }
+	);
+	return rows.length > 0;
+}
+
 /**
  * List a project's active PM memories, newest first. Optionally filtered by kind
  * (validated against the taxonomy — never interpolated; bound as $param).

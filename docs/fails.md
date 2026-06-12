@@ -139,6 +139,19 @@ The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
   known cc-config readback.live / capability-wiring.live concurrency-flake class. If
   a specific test joins this class repeatedly, give IT a larger explicit timeout
   rather than raising the global default.
+- **Recurrence (2026-06-11, 16.6 re-run)**: thunderstore.test "times out HONESTLY"
+  joined the class — failed 2/2 full-suite (its 1000ms verify window expired before
+  ONE poll's HTTP 404 was processed under load, so the last-observed-response
+  assertion found nothing), passed isolated 2/2. Applied the prescribed remedy:
+  that test's verifyTimeoutMs raised 1000→4000 (its 10s wall-clock ceiling
+  assertion unchanged). Note the variant: the starved bound can be a bound INSIDE
+  the code under test (a configured poll window), not only vitest's testTimeout.
+  Same session: perf/idle.test "burns ~zero CPU" joined too (2/4 full-suite fails,
+  isolated green) — process.cpuUsage() is WHOLE-process, so worker GC under
+  saturation exceeded the 15ms budget (300ms @ 5%); widened to 1000ms @ 20%,
+  still ~5x below a real busy-loop burn; poller case stays locked by the
+  periodicArmed assertions. Third variant of the class: a RATIO/measurement
+  assertion (not a timeout) whose noise floor scales with machine load.
 
 ## F-018: new-gate-family tests must expect the EARLIER family's deny label
 - **Date**: 2026-06-10

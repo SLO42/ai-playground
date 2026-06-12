@@ -76,7 +76,14 @@ describe('idle CPU≈0 — event mode is subscriptions-only, no always-on loop (
 		const before = process.cpuUsage();
 		const wallStart = Date.now();
 		// Quiescent window: no triggers published, so the orchestrator should do nothing.
-		await new Promise((r) => setTimeout(r, 300));
+		// F-017 recurrence (2026-06-11): 300ms @ 5% (= 15ms CPU) failed 2/4 full-suite
+		// runs (passed isolated) — process.cpuUsage() is WHOLE-process, so worker GC /
+		// harness activity under 144-suite scheduler saturation alone exceeds 15ms.
+		// Per F-017's prevention rule this TEST gets explicit headroom: a 1s window
+		// (amortizes GC spikes) and a 20% ceiling — still 5x below what a busy-loop
+		// drain (~100% of wall) or any real idle burn would register, and the
+		// poller-reintroduction case is locked by the periodicArmed assertions above.
+		await new Promise((r) => setTimeout(r, 1000));
 		const wallMs = Date.now() - wallStart;
 		const used = process.cpuUsage(before);
 		orch.stop();
@@ -84,9 +91,7 @@ describe('idle CPU≈0 — event mode is subscriptions-only, no always-on loop (
 		const cpuMs = (used.user + used.system) / 1000; // microseconds → ms
 		// Idle CPU≈0: the orchestrator must consume a negligible fraction of the wall
 		// window. A reawakening 60s-style poller or a busy-loop drain would blow past this.
-		// Generous ceiling (5% of wall) to stay non-flaky under CI scheduler noise while
-		// still catching any real idle CPU burn.
-		expect(cpuMs).toBeLessThan(wallMs * 0.05);
+		expect(cpuMs).toBeLessThan(wallMs * 0.2);
 		expect(orch.spawnCount).toBe(0); // nothing spawned at idle
 	});
 });

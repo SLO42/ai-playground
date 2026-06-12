@@ -569,7 +569,12 @@ describe('ThunderstorePublisherAdapter — verify (bounded visibility poll, 14.7
 			const res = await adapter().verify({
 				projectId: 'project:x',
 				cwd: work,
-				config: { namespace: 'OperatorTeam', apiBase: stub.base, verifyTimeoutMs: 1000, verifyIntervalMs: 50 },
+				// F-017 recurrence (2026-06-11): verifyTimeoutMs was 1000 — under full-suite
+				// concurrency the window expired before even ONE poll's HTTP 404 response was
+				// processed, so the "last observed response" assertion below found nothing
+				// (failed 2/2 full-suite, passed isolated). Per F-017's prevention rule this
+				// TEST gets a larger explicit window; the 10s wall-clock ceiling still holds.
+				config: { namespace: 'OperatorTeam', apiBase: stub.base, verifyTimeoutMs: 4000, verifyIntervalMs: 50 },
 				secrets: resolver()
 			});
 			const elapsed = Date.now() - startedAt;
@@ -579,7 +584,7 @@ describe('ThunderstorePublisherAdapter — verify (bounded visibility poll, 14.7
 			// Honest failure detail: the last observed response.
 			expect(res.steps.join('\n')).toMatch(/HTTP 404/);
 			expect(res.warnings.join(' ')).toMatch(/re-run verify/);
-			// The wall-clock bound held (1s configured; generous ceiling for CI jitter).
+			// The wall-clock bound held (4s configured; generous ceiling for CI jitter).
 			expect(elapsed).toBeLessThan(10_000);
 			expect(stub.polls()).toBeGreaterThanOrEqual(2);
 		} finally {

@@ -1383,6 +1383,19 @@
                                 <li>{r}</li>
                               {/each}
                             </ul>
+                            <!-- TASK 16.8 — panel-composition rationale (WORKFORCE-SPEC §8):
+                                 inline validators are the honest degraded mode — no certified
+                                 catalog role fit this artifact yet, so the panel was composed
+                                 by role fit alone (track records are empty). A catalog_role
+                                 verdict instead names the certified role that sat. -->
+                            <p class="verdict-rationale">
+                              {#if v.validator_kind === 'inline'}
+                                composed by role fit alone — no certified role yet, track records empty
+                              {:else if v.validator_kind === 'catalog_role'}
+                                validated by a certified catalog role{#if v.role}
+                                  <span class="mono">({bareId(v.role)})</span>{/if}
+                              {/if}
+                            </p>
                           </details>
                         {/each}
                       </div>
@@ -2921,6 +2934,13 @@
     gap: 0.2rem;
     font: var(--type-body-sm);
     color: var(--color-text-2);
+  }
+  /* TASK 16.8 — panel-composition rationale (WORKFORCE-SPEC §8). */
+  .verdict-rationale {
+    margin: 0.35rem 0 0;
+    font-size: 0.68rem;
+    font-style: italic;
+    color: var(--color-text-muted);
   }
   .proposal-actions {
     display: flex;

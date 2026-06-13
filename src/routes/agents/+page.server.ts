@@ -18,6 +18,16 @@ import {
 } from '$lib/server/analytics';
 import type { PoolSlot, FleetSession, TierUsage, AgentCatalogEntry } from '$lib/server/analytics';
 import { loadOrchestration } from '$lib/server/config';
+// TASK 16.8 — W-D7c workforce surfaces (WORKFORCE-SPEC §8). Read-only panel aggregator
+// + the §3.4 adjudication write-path (reuses 16.6's adjudicateInterviewRun — not forked).
+import {
+	loadWorkforcePanel,
+	adjudicateInterviewRun,
+	WorkforceInputError,
+	type WorkforcePanelData,
+	type AmbiguousResolution
+} from '$lib/server/workforce';
+import { fail, type Actions } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 
 /** One agent-type catalog entry enriched with the capability bundles that may provision it. */
@@ -32,6 +42,9 @@ export interface AgentsData {
 	fleet: FleetSession[];
 	usage: TierUsage[];
 	catalog: CatalogAgent[];
+	/** TASK 16.8 — the workforce panel (role cards + §3.4 adjudication queue); honest
+	 *  null when disconnected (the page degrades to its existing disconnected state). */
+	workforce: WorkforcePanelData | null;
 	error?: string;
 }
 
@@ -68,24 +81,26 @@ export const load: PageServerLoad = async ({ depends }): Promise<AgentsData> => 
 	depends('app:fleet');
 	depends('app:analytics');
 	depends('app:claude-code'); // cc_agent mirror changes refresh the catalog
+	depends('app:workforce'); // role/role_version/interview_run/panel_verdict/role_event
 
 	const db = tryGetDb();
 	if (!db) {
-		return { connected: false, pool: [], fleet: [], usage: [], catalog: [] };
+		return { connected: false, pool: [], fleet: [], usage: [], catalog: [], workforce: null };
 	}
 	try {
-		const [pool, fleet, usage, catalogRows] = await Promise.all([
+		const [pool, fleet, usage, catalogRows, workforce] = await Promise.all([
 			listPoolSlots(db),
 			listFleet(db, 30),
 			buildTierUsage(db, { windowDays: 30 }),
-			listAgentCatalog(db)
+			listAgentCatalog(db),
+			loadWorkforcePanel(db)
 		]);
 		const bundles = agentBundleMap();
 		const catalog: CatalogAgent[] = catalogRows.map((a) => ({
 			...a,
 			bundles: bundles.get(a.name) ?? []
 		}));
-		return { connected: true, pool, fleet, usage, catalog };
+		return { connected: true, pool, fleet, usage, catalog, workforce };
 	} catch (err) {
 		return {
 			connected: false,
@@ -93,7 +108,65 @@ export const load: PageServerLoad = async ({ depends }): Promise<AgentsData> => 
 			fleet: [],
 			usage: [],
 			catalog: [],
+			workforce: null,
 			error: (err as Error).message
 		};
+	}
+};
+
+// ── TASK 16.8 — §3.4 ambiguous-match adjudication (the operator is the judge; there is
+// no judge agent). One ceremony resolves ALL queued items of one run; the write-path is
+// 16.6's adjudicateInterviewRun, reused verbatim. The live SSE interview_run watcher
+// re-invalidates the loader, so the queue empties in place on success.
+const VALID_RESOLUTIONS = new Set<AmbiguousResolution>(['confirm_hit', 'false_positive', 'dismiss']);
+
+export const actions: Actions = {
+	adjudicate: async ({ request }) => {
+		const db = tryGetDb();
+		if (!db) return fail(503, { workforce: { error: 'database not connected' } });
+		const form = await request.formData();
+		const run = String(form.get('run') ?? '').trim();
+		const raw = String(form.get('resolutions') ?? '');
+		if (!run) return fail(400, { workforce: { error: 'missing run id' } });
+
+		// resolutions arrive as JSON: [{ index, resolution, note? }]. Validate at the
+		// boundary (every field has a name) before the engine sees it.
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return fail(400, { workforce: { error: 'resolutions must be valid JSON' } });
+		}
+		if (!Array.isArray(parsed)) {
+			return fail(400, { workforce: { error: 'resolutions must be an array' } });
+		}
+		const resolutions: Array<{ index: number; resolution: AmbiguousResolution; note?: string }> = [];
+		for (const r of parsed) {
+			const o = r as Record<string, unknown>;
+			const index = Number(o.index);
+			const resolution = String(o.resolution) as AmbiguousResolution;
+			if (!Number.isInteger(index) || !VALID_RESOLUTIONS.has(resolution)) {
+				return fail(400, {
+					workforce: { error: 'each resolution needs an integer index and a valid resolution' }
+				});
+			}
+			resolutions.push({
+				index,
+				resolution,
+				...(typeof o.note === 'string' && o.note.trim() ? { note: o.note.trim() } : {})
+			});
+		}
+
+		try {
+			const updated = await adjudicateInterviewRun(db, run, { resolutions });
+			return { workforce: { ok: true, run: updated.id, status: updated.status } };
+		} catch (err) {
+			// WorkforceInputError = a named operator/validation error (bad index, wrong
+			// status, partial queue) — surface its message; anything else is a 500-class.
+			if (err instanceof WorkforceInputError) {
+				return fail(400, { workforce: { error: err.message } });
+			}
+			return fail(500, { workforce: { error: (err as Error).message } });
+		}
 	}
 };

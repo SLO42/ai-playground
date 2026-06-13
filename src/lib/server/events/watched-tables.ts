@@ -70,7 +70,15 @@ export const WATCHED_TABLES = [
 	// incident — /reports (incidents history)
 	'incident',
 	// cc_agent — /agents (catalog) + /claude-code catalog
-	'cc_agent'
+	'cc_agent',
+	// role — /agents (workforce panel role cards) — TASK 16.8 (W-D7c surfaces)
+	'role',
+	// role_version — /agents (workforce panel version chip + lifecycle) — TASK 16.8
+	'role_version',
+	// interview_run — /agents (interview line + §3.4 adjudication queue) — TASK 16.8
+	'interview_run',
+	// role_event — /agents (workforce audit feed re-derives the panel) — TASK 16.8
+	'role_event'
 ] as const;
 
 /** One of the boot-watched table names. */

@@ -24,3 +24,7 @@ export * from './activation';
 // write-path from gauntlet.ts — not forked).
 export * from './launch-fixtures';
 export * from './ceremony';
+// TASK 16.8 (W-D7c surfaces) — the read-only workforce panel aggregator feeding the
+// /agents workforce surface (§8 'Surfaces' + 'Degraded/empty states'). Read-only:
+// reuses repo/deployability/track-record, no row writes, no gauntlet_key read.
+export * from './panel';

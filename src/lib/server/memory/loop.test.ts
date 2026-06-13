@@ -9,6 +9,8 @@ import { FakeEmbedder } from './embed';
 import {
 	runReviewFork,
 	makeWriteSurface,
+	enqueueReview,
+	ReviewForkShapeError,
 	type MemoryWriteSurface,
 	type SkillCandidate,
 	type WrittenSkill
@@ -301,6 +303,169 @@ describe('shadow paths — nil / empty / upstream error', () => {
 		});
 		expect(skillOnly.stored).toEqual([]);
 		expect(skillOnly.memoryCandidates).toBe(0);
+	});
+});
+
+// ── RED-TEAM follow-ups (wave-v2.2b-b deferral ledger) ───────────────────────────
+
+describe('RT-1 (F-008) enqueueReview dedup catch — swallow ONLY the unique-violation, re-raise the rest', () => {
+	it('a real dedup collision (UNIQUE index already contains) coalesces to a null no-op', async () => {
+		// Enqueue once, then again with the SAME session ⇒ the work_item_dedup UNIQUE index
+		// (dedup_key = the session id) collides; the second call returns null, not a throw.
+		const s = await makeSession();
+		const first = await enqueueReview(db, { session: s, kind: 'memory', turnText: 'first' });
+		expect(first).not.toBeNull();
+		const second = await enqueueReview(db, { session: s, kind: 'memory', turnText: 'second' });
+		expect(second).toBeNull(); // dedup no-op — the real unique-violation signal
+		// Exactly ONE pending review for the session (the dedup actually coalesced).
+		const [rows] = await db.query<[Array<{ c: number }>]>(
+			`SELECT count() AS c FROM work_item WHERE session = $sid GROUP ALL;`,
+			{ sid: new StringRecordId(s) }
+		);
+		expect(rows[0]?.c).toBe(1);
+	});
+
+	it('a CREATE error containing the substring "index" but NOT the unique phrase re-raises (the F-008 core)', async () => {
+		// Direct unit-level proof of the regex tightening: simulate the SurrealDB layer throwing
+		// an HNSW/index-build style error (contains "index", is NOT "already contains/exists").
+		const throwingDb = {
+			query: async (sql: string) => {
+				if (/SELECT kind FROM/.test(sql)) return [[{ kind: 'task' }]];
+				throw new Error('There was a problem with the database: the index `memory_vec` is being built');
+			}
+		} as unknown as Db;
+		await expect(
+			enqueueReview(throwingDb, { session: sessionId, kind: 'memory', turnText: 't' })
+		).rejects.toThrow(/index `memory_vec` is being built/);
+	});
+
+	it('a CREATE error in the "already contains"/"already exists" shape coalesces to null', async () => {
+		for (const msg of [
+			"Database index `work_item_dedup` already contains 'session:abc', with record 'work_item:x'",
+			'Database record `work_item:dup` already exists'
+		]) {
+			const dupDb = {
+				query: async (sql: string) => {
+					if (/SELECT kind FROM/.test(sql)) return [[{ kind: 'task' }]];
+					throw new Error(msg);
+				}
+			} as unknown as Db;
+			expect(await enqueueReview(dupDb, { session: sessionId, kind: 'memory', turnText: 't' })).toBeNull();
+		}
+	});
+});
+
+describe('RT-2 (D-026) screenSkill — the skill NAME is screened too (no raw secret/injection in skill.name)', () => {
+	it('a secret in skill.name is REDACTED in the persisted row (never stored raw)', async () => {
+		const SECRET = 'sk-ant-abcdefghij1234567890';
+		const proposeSkills = async (): Promise<SkillCandidate[]> => [
+			{ name: `deploy with ${SECRET}`, description: 'a fine description', steps: ['do a thing'] }
+		];
+		const out = await runReviewFork({
+			payload: { kind: 'skill', turnText: 'turn', session: sessionId },
+			surface,
+			extract: noExtract,
+			proposeSkills
+		});
+		expect(out.skills[0].persisted).toBe(true);
+		const [rows] = await db.query<[Array<{ name: string }>]>(`SELECT name FROM $id;`, {
+			id: rid(out.skills[0].id)
+		});
+		expect(rows[0].name).not.toContain(SECRET); // raw secret gone from the name
+		expect(rows[0].name).toContain('[REDACTED:anthropic-key]');
+	});
+
+	it('a private key pasted into skill.name QUARANTINES the skill (does NOT graduate)', async () => {
+		const before = await countSkills();
+		const proposeSkills = async (): Promise<SkillCandidate[]> => [
+			{
+				name: '-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----',
+				description: 'a fine description',
+				steps: ['do a thing']
+			}
+		];
+		const out = await runReviewFork({
+			payload: { kind: 'skill', turnText: 'turn', session: sessionId },
+			surface,
+			extract: noExtract,
+			proposeSkills
+		});
+		expect(out.skills[0].persisted).toBe(false);
+		expect(out.skills[0].dropReason).toMatch(/quarantine/);
+		expect(await countSkills()).toBe(before); // nothing graduated
+	});
+
+	it('a name that is ONLY a redactable secret (empty after redaction)… still has a placeholder so it graduates; a DO-NOT-CAPTURE name drops', async () => {
+		// A DO-NOT-CAPTURE phrase in the name (capture:false) blocks graduation — the name is an
+		// LLM-authored field and a "the daemon is down" name must not persist.
+		const before = await countSkills();
+		const proposeSkills = async (): Promise<SkillCandidate[]> => [
+			{ name: 'the gateway is unreachable right now', description: 'd', steps: ['s'] }
+		];
+		const out = await runReviewFork({
+			payload: { kind: 'skill', turnText: 'turn', session: sessionId },
+			surface,
+			extract: noExtract,
+			proposeSkills
+		});
+		expect(out.skills[0].persisted).toBe(false);
+		expect(await countSkills()).toBe(before);
+	});
+});
+
+describe('RT-3 (D-026) runReviewFork — the injected LLM return is shape-validated (named error, not raw TypeError)', () => {
+	it('extract returning a non-array (object) throws a NAMED ReviewForkShapeError', async () => {
+		const badExtract = (async () => ({ not: 'an array' })) as unknown as ExtractFn;
+		await expect(
+			runReviewFork({ payload: { kind: 'memory', turnText: 'turn', session: sessionId }, surface, extract: badExtract })
+		).rejects.toBeInstanceOf(ReviewForkShapeError);
+	});
+
+	it('extract returning null is NAMED with the seam + received shape (not "map is not a function")', async () => {
+		const nullExtract = (async () => null) as unknown as ExtractFn;
+		await runReviewFork({
+			payload: { kind: 'memory', turnText: 'turn', session: sessionId },
+			surface,
+			extract: nullExtract
+		}).then(
+			() => {
+				throw new Error('expected throw');
+			},
+			(err) => {
+				expect(err).toBeInstanceOf(ReviewForkShapeError);
+				expect((err as ReviewForkShapeError).seam).toBe('extract');
+				expect((err as ReviewForkShapeError).received).toBe('null');
+				expect((err as Error).message).not.toMatch(/is not a function/);
+			}
+		);
+	});
+
+	it('proposeSkills returning a non-array (string) throws a NAMED ReviewForkShapeError(proposeSkills)', async () => {
+		const badSkills = (async () => '[]') as unknown as () => Promise<SkillCandidate[]>;
+		await runReviewFork({
+			payload: { kind: 'skill', turnText: 'turn', session: sessionId },
+			surface,
+			extract: noExtract,
+			proposeSkills: badSkills
+		}).then(
+			() => {
+				throw new Error('expected throw');
+			},
+			(err) => {
+				expect(err).toBeInstanceOf(ReviewForkShapeError);
+				expect((err as ReviewForkShapeError).seam).toBe('proposeSkills');
+			}
+		);
+	});
+
+	it('a well-formed array still works (positive control — the guard does not reject valid returns)', async () => {
+		const out = await runReviewFork({
+			payload: { kind: 'memory', turnText: 'turn', session: sessionId, project: projectId },
+			surface,
+			extract: async () => [{ content: 'a valid candidate survives the shape guard' }]
+		});
+		expect(out.memoryCandidates).toBe(1);
+		expect(out.stored[0].persisted).toBe(true);
 	});
 });
 

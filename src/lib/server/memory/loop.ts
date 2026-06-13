@@ -128,8 +128,19 @@ export async function enqueueReview(db: Db, input: EnqueueReviewInput): Promise<
 		);
 		return String(rows[0].id);
 	} catch (err) {
-		// dedup_key UNIQUE violation ⇒ a pending review already queued for this session.
-		if (/already (contains|exists)|index|unique/i.test((err as Error).message)) return null;
+		// dedup_key UNIQUE violation ⇒ a pending review already queued for this session
+		// (coalesce to a null no-op). Match ONLY the real dedup signal — the work_item_dedup
+		// UNIQUE-index "already contains" shape, or the (table:id) primary-key "already exists"
+		// shape — both SurrealDB 2.x raises on the dedup_key collision (precedent: ceremony.ts
+		// isDedupCollision). The OLD bare `|index|`/`|unique|` alternation swallowed ANY error
+		// whose message merely CONTAINS "index"/"unique" (e.g. an HNSW-index build error, an
+		// "index out of range", a malformed-unique-field error) as a silent dedup no-op — a
+		// real write failure on the work_item path was eaten, F-008 silent failure. RE-RAISE
+		// everything that is not the unique-violation phrase.
+		const msg = (err as Error).message;
+		if (/index `?[^`']*`? already contains/i.test(msg) || /record `?[^`']*`? already exists/i.test(msg)) {
+			return null;
+		}
 		throw err;
 	}
 }
@@ -257,13 +268,22 @@ function screenSkill(skill: SkillCandidate): ScreenedSkill | null {
 	const dgate = gateCandidate(skill.description);
 	if (!dgate.capture || dgate.screen!.status === 'quarantined') return null;
 	if (!skill.name.trim() || skill.steps.length === 0) return null;
+	// D-026 — the NAME is an LLM-authored field too: an injected secret or DO-NOT-CAPTURE
+	// payload in skill.name must NOT persist unredacted in the skill row (the prior code put
+	// the raw name straight onto the output and into the skill_vec embed body). Run it through
+	// the SAME §3.1b screen as the description/steps: a quarantined name (e.g. a pasted private
+	// key) blocks graduation; a redactable secret is redacted in place before the row is written.
+	const ngate = gateCandidate(skill.name);
+	if (!ngate.capture || ngate.screen!.status === 'quarantined') return null;
+	const screenedName = ngate.screen!.text;
+	if (!screenedName.trim()) return null;
 	const steps: string[] = [];
 	for (const step of skill.steps) {
 		const sgate = gateCandidate(step);
 		if (!sgate.capture || sgate.screen!.status === 'quarantined') return null;
 		steps.push(sgate.screen!.text);
 	}
-	const out: ScreenedSkill = { name: skill.name, description: dgate.screen!.text, steps };
+	const out: ScreenedSkill = { name: screenedName, description: dgate.screen!.text, steps };
 	if (skill.preconditions !== undefined) {
 		const pg = gateCandidate(skill.preconditions);
 		if (!pg.capture || pg.screen!.status === 'quarantined') return null;
@@ -289,6 +309,33 @@ export interface ReviewForkPayload {
 
 /** The injected skill-proposal LLM call (skill/combined kinds). Mocked in tests, like ExtractFn. */
 export type ProposeSkillsFn = (turnText: string) => Promise<SkillCandidate[]>;
+
+/**
+ * Raised when an injected LLM seam (`extract` / `proposeSkills`) returns a value that is not
+ * the contracted array shape (D-026: an LLM return is UNTRUSTED input crossing into the fork —
+ * it must be shape-validated at the boundary, not duck-typed downstream). The OLD code passed
+ * the raw return straight into `.length`/`.map`, so a non-array (the model returned an object,
+ * a JSON string, null, or a bare error envelope) threw an anonymous `TypeError: candidates.map
+ * is not a function` with no name for what triggered it. This names the trigger (which seam),
+ * the catcher (this guard), and what the caller sees (a typed, attributable failure the
+ * orchestrator marks the work_item failed on — never a fake-success swallow, F-008).
+ */
+export class ReviewForkShapeError extends Error {
+	constructor(
+		public readonly seam: 'extract' | 'proposeSkills',
+		public readonly received: string
+	) {
+		super(`review fork ${seam} returned a non-array (${received}); LLM output is untrusted (D-026)`);
+		this.name = 'ReviewForkShapeError';
+	}
+}
+
+/** Describe an untrusted value for the error message without leaking its (possibly poisoned) body. */
+function shapeOf(v: unknown): string {
+	if (v === null) return 'null';
+	if (Array.isArray(v)) return 'array';
+	return typeof v;
+}
 
 export interface RunReviewForkInput {
 	payload: ReviewForkPayload;
@@ -355,7 +402,12 @@ export async function runReviewFork(input: RunReviewForkInput): Promise<RunRevie
 		// The ONE LLM call (mem0-style ADD-only prompt). buildExtraction owns the prompt +
 		// ordinal map (§3.3); we pass no existing rows here (the fork is additive-only).
 		const { prompt, ordinals } = buildExtraction({ turnText: turn, project: payload.project, session: payload.session });
-		const candidates = await extract(prompt, ordinals);
+		const raw = await extract(prompt, ordinals);
+		// D-026 trust boundary: the LLM return is untrusted — validate the contracted array
+		// shape BEFORE touching .length/.map (a non-array would otherwise throw an anonymous
+		// TypeError). Fail with a NAMED, attributable error the orchestrator can act on.
+		if (!Array.isArray(raw)) throw new ReviewForkShapeError('extract', shapeOf(raw));
+		const candidates = raw;
 		result.memoryCandidates = candidates.length;
 		// Carry project + originating-session provenance onto every candidate (m0033). store.ts
 		// screens BEFORE embed, so a candidate carrying a secret is redacted/quarantined here.
@@ -370,6 +422,9 @@ export async function runReviewFork(input: RunReviewForkInput): Promise<RunRevie
 	// ── skill write path (synthesis-screened) ──
 	if (wantSkill && proposeSkills && turn.trim()) {
 		const proposed = await proposeSkills(turn);
+		// Same D-026 trust boundary as `extract` above — the proposer is the identical
+		// untrusted LLM seam; a non-array must fail NAMED, not anonymous-TypeError downstream.
+		if (!Array.isArray(proposed)) throw new ReviewForkShapeError('proposeSkills', shapeOf(proposed));
 		result.skillCandidates = proposed.length;
 		for (const s of proposed) {
 			// Per-item isolation — one un-graduatable (poisoned) skill never drops the rest.

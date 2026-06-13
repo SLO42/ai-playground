@@ -18,7 +18,7 @@ import {
 } from '$lib/server/analytics';
 import type { PoolSlot, FleetSession, TierUsage, AgentCatalogEntry } from '$lib/server/analytics';
 import { loadOrchestration } from '$lib/server/config';
-// TASK 16.8 — W-D7c workforce surfaces (WORKFORCE-SPEC §8). Read-only panel aggregator
+// TASK 16.7b — W-D7c workforce surfaces (WORKFORCE-SPEC §8). Read-only panel aggregator
 // + the §3.4 adjudication write-path (reuses 16.6's adjudicateInterviewRun — not forked).
 import {
 	loadWorkforcePanel,
@@ -42,7 +42,7 @@ export interface AgentsData {
 	fleet: FleetSession[];
 	usage: TierUsage[];
 	catalog: CatalogAgent[];
-	/** TASK 16.8 — the workforce panel (role cards + §3.4 adjudication queue); honest
+	/** TASK 16.7b — the workforce panel (role cards + §3.4 adjudication queue); honest
 	 *  null when disconnected (the page degrades to its existing disconnected state). */
 	workforce: WorkforcePanelData | null;
 	error?: string;
@@ -114,7 +114,7 @@ export const load: PageServerLoad = async ({ depends }): Promise<AgentsData> => 
 	}
 };
 
-// ── TASK 16.8 — §3.4 ambiguous-match adjudication (the operator is the judge; there is
+// ── TASK 16.7b — §3.4 ambiguous-match adjudication (the operator is the judge; there is
 // no judge agent). One ceremony resolves ALL queued items of one run; the write-path is
 // 16.6's adjudicateInterviewRun, reused verbatim. The live SSE interview_run watcher
 // re-invalidates the loader, so the queue empties in place on success.

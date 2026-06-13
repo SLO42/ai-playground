@@ -11,6 +11,7 @@
   import { invalidate } from '$app/navigation';
   import { enhance } from '$app/forms';
   import { stream } from '$lib/client/stream.svelte';
+  import { isRunBusy, setRunBusy, type AdjBusyMap } from './adj-busy';
   import type { PageData, ActionData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -138,7 +139,11 @@
   // Adjudication: one resolution selector per ambiguous item, keyed by `${run}:${idx}`.
   // partial_match items may be confirmed as a HIT; everything else is FP or dismiss.
   let resChoice = $state<Record<string, 'confirm_hit' | 'false_positive' | 'dismiss'>>({});
-  let adjBusy = $state(false);
+  // Busy is scoped PER RUN (keyed by run id), not a single shared flag: submitting one
+  // run's adjudication must disable ONLY that run's button, leaving every other queued
+  // run resolvable (16.7b — shared-flag cross-form coupling fix). Transition/lookup via
+  // the rune-free helpers in ./adj-busy (unit-tested for the isolation contract).
+  let adjBusy = $state<AdjBusyMap>({});
 
   function itemType(item: Record<string, unknown>): string {
     return typeof item.type === 'string' ? item.type : 'unknown';
@@ -387,10 +392,10 @@
                 method="POST"
                 action="?/adjudicate"
                 use:enhance={() => {
-                  adjBusy = true;
+                  adjBusy = setRunBusy(adjBusy, a.run, true);
                   return async ({ update }) => {
                     await update({ reset: false });
-                    adjBusy = false;
+                    adjBusy = setRunBusy(adjBusy, a.run, false);
                   };
                 }}
               >
@@ -440,8 +445,8 @@
                     </li>
                   {/each}
                 </ul>
-                <button type="submit" class="adj-submit" disabled={adjBusy}>
-                  {adjBusy ? 'Resolving…' : 'Resolve all & finalize'}
+                <button type="submit" class="adj-submit" disabled={isRunBusy(adjBusy, a.run)}>
+                  {isRunBusy(adjBusy, a.run) ? 'Resolving…' : 'Resolve all & finalize'}
                 </button>
               </form>
             </li>

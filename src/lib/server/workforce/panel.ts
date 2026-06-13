@@ -1,4 +1,4 @@
-// TASK 16.8 — W-D7c SURFACES (UI half): the read-only AGGREGATOR feeding the
+// TASK 16.7b — W-D7c SURFACES (UI half): the read-only AGGREGATOR feeding the
 // `/agents` workforce panel (WORKFORCE-SPEC §8 'Surfaces' + 'Degraded/empty states').
 //
 // This is a computed service-level VIEW (rollup discipline: bounded SELECTs, fold in

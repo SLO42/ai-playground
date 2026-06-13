@@ -31,7 +31,24 @@ export { OllamaEmbedder, CachedEmbedder, FakeEmbedder, EmbeddingError, EMBEDDING
 export { recall, recordOutcomes, parseCitations, WMR_WEIGHTS, NOVELTY_COSINE_CUT, RECALL_BUDGET, budgetCapsFor, type RecallItem, type RecallResult, type RecallOptions } from './recall';
 export { recordTurnOutcomes, summarizeTurnTools, type RecordTurnOutcomesInput, type TurnToolOutcome } from './outcomes';
 export { storeMemory, storeMemories, extractAndStore, buildExtraction, type MemoryCandidate, type StoredMemory, type ExtractFn, type ExtractInput } from './store';
-export { dueReview, bumpCounters, enqueueReview, consolidate, DEFAULT_CADENCE, type ReviewKind, type ReviewCadence } from './loop';
+export {
+	dueReview,
+	bumpCounters,
+	enqueueReview,
+	consolidate,
+	runReviewFork,
+	makeWriteSurface,
+	DEFAULT_CADENCE,
+	type ReviewKind,
+	type ReviewCadence,
+	type MemoryWriteSurface,
+	type SkillCandidate,
+	type WrittenSkill,
+	type ReviewForkPayload,
+	type ProposeSkillsFn,
+	type RunReviewForkInput,
+	type RunReviewForkResult
+} from './loop';
 export {
 	buildBriefing,
 	estimateTokens,

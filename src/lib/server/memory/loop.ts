@@ -20,6 +20,9 @@
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
+import type { Embedder } from './embed';
+import { storeMemories, type MemoryCandidate, type StoredMemory, type ExtractFn, buildExtraction } from './store';
+import { gateCandidate } from './screen';
 
 function link(id: string): StringRecordId {
 	return new StringRecordId(assertRecordId(id));
@@ -129,6 +132,256 @@ export async function enqueueReview(db: Db, input: EnqueueReviewInput): Promise<
 		if (/already (contains|exists)|index|unique/i.test((err as Error).message)) return null;
 		throw err;
 	}
+}
+
+// ── §2.1 the review-memory WRITER FORK — ADD-only, tool-whitelisted to memory/skill ──
+//
+// This is the WRITE half of the D-027 FAST tier (D-022's self-improvement front half).
+// `enqueueReview` (above) puts a `memory_review` work_item on the D-021 queue; the
+// orchestrator drains it (shelling the host agent CLI, §9.3 — the review LLM call is the
+// injected `extract`/`proposeSkills` seam, mocked in tests). THIS function is what the
+// drain runs: it mines the just-finished raw turn (D-029 — raw, no summary-LLM) and writes
+// ADDITIVELY (D-028).
+//
+// ── THE TOOL WHITELIST (§2.1) IS STRUCTURAL, NOT ADVISORY ──
+// The fork can call the memory-write and skill-write tools and NOTHING else — no file
+// edits, no exec, no git, no raw DB. We enforce this by CAPABILITY, not by a denylist:
+// the fork is handed ONE narrow object, `MemoryWriteSurface`, whose only methods are
+// `writeMemories` (→ store.ts §3.4, screen-before-embed) and `writeSkill` (→ §5.4a
+// synthesis screen, then a screened skill row). The fork closure never receives the `Db`,
+// a process/exec handle, a git runner, or an fs handle — so there is no surface on which
+// it COULD reach outside the whitelist. A denylist can be bypassed by a path nobody listed;
+// a capability the closure was never given cannot be reached at all (D-026 runtime
+// complement to the D-018 gates, scoped to the writer).
+//
+// EVERY fork-written candidate is transcript-derived ⇒ potentially POISONED (D-026), so it
+// MUST pass the §3.1b screen-before-embed gate. The memory path inherits that gate from
+// store.ts (`gateCandidate` runs inside `storeMemories` BEFORE any embed/insert). The skill
+// path runs the SAME gate at synthesis (`screenSkillForGraduation` shape, inlined here to
+// avoid an index.ts import cycle): a skill whose description or any step is quarantined does
+// NOT graduate — a poisoned chain cannot launder injected instructions into a skill.
+
+/** A skill candidate the review fork proposes (pre-screen, transcript-derived). */
+export interface SkillCandidate {
+	name: string;
+	description: string;
+	steps: string[];
+	preconditions?: string;
+	postconditions?: string;
+	/** The causal_chain this skill graduates from (table:id), when known. Omit otherwise. */
+	sourceChain?: string;
+}
+
+/** A persisted skill row id + the screened body, or a drop reason (quarantine/empty). */
+export interface WrittenSkill {
+	id: string;
+	persisted: boolean;
+	dropReason?: string;
+}
+
+/**
+ * The ONLY capability the writer fork is given (§2.1 tool whitelist). Two methods, both
+ * write-scoped to the knowledge stores; NO db/exec/git/fs is reachable through it. The
+ * orchestrator constructs the real surface (over a Db + Embedder); tests can hand a fake.
+ */
+export interface MemoryWriteSurface {
+	/** ADD-only memory write — each candidate passes screen-before-embed (store.ts §3.4). */
+	writeMemories(candidates: MemoryCandidate[]): Promise<StoredMemory[]>;
+	/** Skill write — screened at synthesis (§5.4a); a quarantined part blocks graduation. */
+	writeSkill(skill: SkillCandidate): Promise<WrittenSkill>;
+}
+
+/**
+ * Build the real {@link MemoryWriteSurface} over a live Db + Embedder. This is the bridge
+ * the orchestrator passes into {@link runReviewFork}. It is deliberately the ONLY place a
+ * Db is bound for the fork — and even here the Db is captured in TWO closures
+ * (`writeMemories`, `writeSkill`) that expose no raw-query escape hatch. The fork closure
+ * receives the SURFACE, never `db` itself, so it cannot author an arbitrary query.
+ */
+export function makeWriteSurface(db: Db, embedder: Embedder): MemoryWriteSurface {
+	return {
+		writeMemories(candidates: MemoryCandidate[]): Promise<StoredMemory[]> {
+			// store.ts runs gateCandidate (DO-NOT-CAPTURE + secret/PII screen) BEFORE embed
+			// for every candidate — the screen-before-embed invariant the fork relies on.
+			return storeMemories({ db, embedder }, candidates);
+		},
+		async writeSkill(skill: SkillCandidate): Promise<WrittenSkill> {
+			// §5.4a synthesis screen: description + every step pass the SAME §3.1b gate before
+			// graduation. A quarantined (or DO-NOT-CAPTURE-dropped) part ⇒ the skill does NOT
+			// graduate raw — a poisoned causal_chain cannot launder injected text into a skill.
+			const screened = screenSkill(skill);
+			if (!screened) {
+				return { id: '', persisted: false, dropReason: 'skill-quarantined-or-empty' };
+			}
+			// Embed the SCREENED skill body (description + steps) — never the raw candidate
+			// (§3.1b: the same screen-before-embed invariant as memory; the skill_vec HNSW
+			// index requires a 1024-dim vector, D-014). A raw secret in the body was already
+			// redacted/blocked by screenSkill above, so this only ever embeds safe text.
+			const embedBody = `${screened.description}\n${screened.steps.join('\n')}`;
+			const embedding = await embedder.embed(embedBody, 'add');
+			const content: Record<string, unknown> = {
+				name: screened.name,
+				description: screened.description,
+				steps: screened.steps,
+				embedding,
+				status: 'active'
+			};
+			if (screened.preconditions !== undefined) content.preconditions = screened.preconditions;
+			if (screened.postconditions !== undefined) content.postconditions = screened.postconditions;
+			if (skill.sourceChain) content.source_causal_chain = link(skill.sourceChain);
+			const [rows] = await db.query<[Array<{ id: unknown }>]>(
+				`CREATE skill CONTENT $content RETURN AFTER;`,
+				{ content }
+			);
+			return { id: String(rows[0].id), persisted: true };
+		}
+	};
+}
+
+/** A screened skill (every part passed §3.1b), or null when any part is dropped/quarantined. */
+interface ScreenedSkill {
+	name: string;
+	description: string;
+	steps: string[];
+	preconditions?: string;
+	postconditions?: string;
+}
+
+/**
+ * §5.4a synthesis screen for a graduating skill (inlined from index.ts to avoid an import
+ * cycle: index.ts imports loop.ts). The description + each step + the optional pre/post
+ * conditions pass the DO-NOT-CAPTURE + secret/PII gate. Returns the SCREENED skill, or null
+ * if any part is dropped or quarantined (the skill does not graduate raw, D-026).
+ */
+function screenSkill(skill: SkillCandidate): ScreenedSkill | null {
+	const dgate = gateCandidate(skill.description);
+	if (!dgate.capture || dgate.screen!.status === 'quarantined') return null;
+	if (!skill.name.trim() || skill.steps.length === 0) return null;
+	const steps: string[] = [];
+	for (const step of skill.steps) {
+		const sgate = gateCandidate(step);
+		if (!sgate.capture || sgate.screen!.status === 'quarantined') return null;
+		steps.push(sgate.screen!.text);
+	}
+	const out: ScreenedSkill = { name: skill.name, description: dgate.screen!.text, steps };
+	if (skill.preconditions !== undefined) {
+		const pg = gateCandidate(skill.preconditions);
+		if (!pg.capture || pg.screen!.status === 'quarantined') return null;
+		out.preconditions = pg.screen!.text;
+	}
+	if (skill.postconditions !== undefined) {
+		const pg = gateCandidate(skill.postconditions);
+		if (!pg.capture || pg.screen!.status === 'quarantined') return null;
+		out.postconditions = pg.screen!.text;
+	}
+	return out;
+}
+
+/** The `memory_review` work_item payload the orchestrator drains (shape from enqueueReview). */
+export interface ReviewForkPayload {
+	kind: ReviewKind;
+	/** The raw turn text to mine (D-029 — raw, no summary). */
+	turnText: string;
+	/** The originating session (table:id) — stamped as m0033 provenance onto each row. */
+	session?: string;
+	project?: string;
+}
+
+/** The injected skill-proposal LLM call (skill/combined kinds). Mocked in tests, like ExtractFn. */
+export type ProposeSkillsFn = (turnText: string) => Promise<SkillCandidate[]>;
+
+export interface RunReviewForkInput {
+	payload: ReviewForkPayload;
+	/** The narrow write capability (§2.1) — the ONLY thing the fork may touch. */
+	surface: MemoryWriteSurface;
+	/** The review LLM call for memory candidates (ADD-only). Injected; mocked in tests. */
+	extract: ExtractFn;
+	/** The review LLM call for skill candidates. Injected; mocked in tests. Optional. */
+	proposeSkills?: ProposeSkillsFn;
+}
+
+export interface RunReviewForkResult {
+	stored: StoredMemory[];
+	skills: WrittenSkill[];
+	/** How many candidates the LLM proposed (memory) — for the explain/audit view. */
+	memoryCandidates: number;
+	/** How many skill candidates the LLM proposed. */
+	skillCandidates: number;
+}
+
+/**
+ * Run the §2.1 review-memory writer fork over one drained `memory_review` work_item. This is
+ * the WRITE-PATH the orchestrator invokes after it (the privileged side) makes the review LLM
+ * call (§9.3) — passed in as `extract` / `proposeSkills` so this module stays creds-free and
+ * deterministic under test. The fork:
+ *
+ *   1. (kind memory|combined) runs the ADD-only extractor over the RAW turn (D-029), then
+ *      writes each candidate through the surface → screen-before-embed (D-028 + §3.1b).
+ *   2. (kind skill|combined) runs the skill proposer, then writes each through the surface →
+ *      synthesis screen (a quarantined part blocks graduation).
+ *   3. Stamps m0033 provenance (originating session) onto every memory candidate so the D-029
+ *      recall filter can exclude interview-born rows.
+ *
+ * The fork CANNOT write outside memory/skill (it only has `surface`) and CANNOT launder an
+ * unscreened secret (every write routes through the §3.1b gate). Both are proven in tests.
+ *
+ * Shadow paths: nil/blank turnText ⇒ no extraction (returns empty, writes nothing); an
+ * extractor returning [] ⇒ empty result; an extractor/proposer THROW propagates (the
+ * orchestrator marks the work_item failed and the D-021 caps bound any retry) — the fork
+ * does NOT swallow an LLM error into a fake-success, F-008.
+ *
+ * MISSED-DEFECT LEDGER (B2b) — NAMED SEAM, NOT BUILT. The fork is also the natural place to
+ * record a "this turn missed defect X" signal for the slow-tier curator to learn from. Its
+ * schema (table/columns) is a DEFERRED operator/DATA-MODEL decision (tracked as B2b); it is
+ * deliberately NOT invented here. When it lands, it hooks in RIGHT HERE — after the writes,
+ * over the same screened candidate set — through the SAME `surface` (no new capability): do
+ * not add a Db/exec path to the fork to build it.
+ */
+export async function runReviewFork(input: RunReviewForkInput): Promise<RunReviewForkResult> {
+	const { payload, surface, extract, proposeSkills } = input;
+	const result: RunReviewForkResult = {
+		stored: [],
+		skills: [],
+		memoryCandidates: 0,
+		skillCandidates: 0
+	};
+
+	const turn = typeof payload.turnText === 'string' ? payload.turnText : '';
+	const wantMemory = payload.kind === 'memory' || payload.kind === 'combined';
+	const wantSkill = payload.kind === 'skill' || payload.kind === 'combined';
+
+	// ── memory write path (ADD-only, screen-before-embed) ──
+	if (wantMemory && turn.trim()) {
+		// The ONE LLM call (mem0-style ADD-only prompt). buildExtraction owns the prompt +
+		// ordinal map (§3.3); we pass no existing rows here (the fork is additive-only).
+		const { prompt, ordinals } = buildExtraction({ turnText: turn, project: payload.project, session: payload.session });
+		const candidates = await extract(prompt, ordinals);
+		result.memoryCandidates = candidates.length;
+		// Carry project + originating-session provenance onto every candidate (m0033). store.ts
+		// screens BEFORE embed, so a candidate carrying a secret is redacted/quarantined here.
+		const withProvenance: MemoryCandidate[] = candidates.map((c) => ({
+			...c,
+			project: c.project ?? payload.project,
+			session: c.session ?? payload.session
+		}));
+		result.stored = await surface.writeMemories(withProvenance);
+	}
+
+	// ── skill write path (synthesis-screened) ──
+	if (wantSkill && proposeSkills && turn.trim()) {
+		const proposed = await proposeSkills(turn);
+		result.skillCandidates = proposed.length;
+		for (const s of proposed) {
+			// Per-item isolation — one un-graduatable (poisoned) skill never drops the rest.
+			try {
+				result.skills.push(await surface.writeSkill(s));
+			} catch (err) {
+				result.skills.push({ id: '', persisted: false, dropReason: `skill-write-failed:${(err as Error).message}` });
+			}
+		}
+	}
+
+	return result;
 }
 
 // ── §5 slow consolidator (curator) — archive-not-delete + absorbed_into forwarding ──

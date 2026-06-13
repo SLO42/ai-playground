@@ -56,17 +56,39 @@ export interface FenceInput {
 }
 
 /**
+ * Strip any embedded fence sentinel from a body BEFORE it is wrapped. A recalled/channel
+ * body is attacker-influenceable (B10's agent-invoked mid-turn pull injects it), and the
+ * upstream §3.1b screen has NO sentinel rule — so a body literally containing
+ * `⎆END_REFERENCE⎆` would otherwise render a block with TWO close sentinels, letting a
+ * smuggled "SYSTEM: ignore the fence…" line land AFTER the first close, i.e. at an
+ * instruction position for any sentinel-boundary parser (briefing.ts stripFence and the
+ * StreamScrubber both treat the sentinel as a real delimiter). That defeats D-026 — the
+ * exact invariant this fence upholds. Stripping at ingress hardens EVERY injection path
+ * uniformly (recall, tier0, user-model, learned-skill, channel) with no behaviour change
+ * for clean bodies: a body that never contains a sentinel is returned unchanged.
+ */
+function stripEmbeddedSentinels(body: string): string {
+	let out = body;
+	for (const s of [FENCE_OPEN, FENCE_CLOSE]) out = out.split(s).join('');
+	return out;
+}
+
+/**
  * Wrap one already-screened body in the §10 "reference, not instructions" fence. The
  * SAME fence for every source — recalled memory, Tier-0, user-model, learned skill,
  * channel body. No source gets a position where its content can act as an instruction.
+ * Embedded fence sentinels are stripped from the body at ingress (stripEmbeddedSentinels)
+ * so the block always has EXACTLY one OPEN and one CLOSE — an attacker-supplied body can
+ * never forge a fence boundary and smuggle content into an instruction position (D-026).
  */
 export function fence(input: FenceInput): FencedItem {
 	const tag = input.citationId ? ` [#${input.citationId}]` : '';
+	const safeBody = stripEmbeddedSentinels(input.body);
 	const text =
 		`${FENCE_OPEN}\n` +
 		`[${input.source}]${tag} ${FENCE_NOTE}\n` +
 		`---\n` +
-		`${input.body}\n` +
+		`${safeBody}\n` +
 		`${FENCE_CLOSE}`;
 	return { source: input.source, text, citationId: input.citationId };
 }

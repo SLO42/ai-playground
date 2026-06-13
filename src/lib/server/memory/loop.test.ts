@@ -467,6 +467,72 @@ describe('RT-3 (D-026) runReviewFork — the injected LLM return is shape-valida
 		expect(out.memoryCandidates).toBe(1);
 		expect(out.stored[0].persisted).toBe(true);
 	});
+
+	// ── element-shape boundary (the array wrapper being valid does NOT make each element trusted) ──
+	// Regression for the pass-1-missed MEDIUM: extract→[null] previously hit the provenance spread
+	// (`c.project`) and threw an ANONYMOUS `TypeError: Cannot read properties of null (reading
+	// 'project')` — instanceof ReviewForkShapeError === false, the exact symptom the class exists to
+	// kill. Each malformed-element case must now fail NAMED, with the seam + the bad element index.
+	it('a null ELEMENT inside a valid array throws a NAMED ReviewForkShapeError (not a raw TypeError)', async () => {
+		const badExtract = (async () => [{ content: 'ok' }, null]) as unknown as ExtractFn;
+		await runReviewFork({
+			payload: { kind: 'memory', turnText: 'turn', session: sessionId, project: projectId },
+			surface,
+			extract: badExtract
+		}).then(
+			() => {
+				throw new Error('expected throw');
+			},
+			(err) => {
+				expect(err).toBeInstanceOf(ReviewForkShapeError);
+				expect((err as ReviewForkShapeError).seam).toBe('extract');
+				expect((err as ReviewForkShapeError).elementIndex).toBe(1);
+				expect((err as ReviewForkShapeError).received).toBe('null');
+				// The precise symptom the named guard eliminates — never the anonymous TypeError.
+				expect((err as Error).message).not.toMatch(/Cannot read properties/);
+				expect((err as Error).message).not.toMatch(/is not a function/);
+			}
+		);
+	});
+
+	it('a primitive ELEMENT (number) inside a valid array throws a NAMED ReviewForkShapeError', async () => {
+		const badExtract = (async () => [42]) as unknown as ExtractFn;
+		await expect(
+			runReviewFork({ payload: { kind: 'memory', turnText: 'turn', session: sessionId }, surface, extract: badExtract })
+		).rejects.toBeInstanceOf(ReviewForkShapeError);
+	});
+
+	it('an object ELEMENT missing the string `content` field throws a NAMED ReviewForkShapeError', async () => {
+		const badExtract = (async () => [{ kind: 'note' }]) as unknown as ExtractFn;
+		await runReviewFork({
+			payload: { kind: 'memory', turnText: 'turn', session: sessionId },
+			surface,
+			extract: badExtract
+		}).then(
+			() => {
+				throw new Error('expected throw');
+			},
+			(err) => {
+				expect(err).toBeInstanceOf(ReviewForkShapeError);
+				expect((err as ReviewForkShapeError).elementIndex).toBe(0);
+				expect((err as ReviewForkShapeError).received).toBe('object');
+			}
+		);
+	});
+
+	it('nothing is written when ANY element is malformed (the whole fork fails, no partial write)', async () => {
+		const before = await countMemories();
+		const badExtract = (async () => [{ content: 'would-be-stored' }, null]) as unknown as ExtractFn;
+		await expect(
+			runReviewFork({
+				payload: { kind: 'memory', turnText: 'turn', session: sessionId, project: projectId },
+				surface,
+				extract: badExtract
+			})
+		).rejects.toBeInstanceOf(ReviewForkShapeError);
+		// The guard runs BEFORE writeMemories, so the leading valid element is NOT persisted.
+		expect(await countMemories()).toBe(before);
+	});
 });
 
 // ── helpers ────────────────────────────────────────────────────────────────────

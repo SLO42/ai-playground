@@ -312,20 +312,35 @@ export type ProposeSkillsFn = (turnText: string) => Promise<SkillCandidate[]>;
 
 /**
  * Raised when an injected LLM seam (`extract` / `proposeSkills`) returns a value that is not
- * the contracted array shape (D-026: an LLM return is UNTRUSTED input crossing into the fork —
- * it must be shape-validated at the boundary, not duck-typed downstream). The OLD code passed
- * the raw return straight into `.length`/`.map`, so a non-array (the model returned an object,
- * a JSON string, null, or a bare error envelope) threw an anonymous `TypeError: candidates.map
- * is not a function` with no name for what triggered it. This names the trigger (which seam),
- * the catcher (this guard), and what the caller sees (a typed, attributable failure the
- * orchestrator marks the work_item failed on — never a fake-success swallow, F-008).
+ * the contracted shape (D-026: an LLM return is UNTRUSTED input crossing into the fork — it
+ * must be shape-validated at the boundary, not duck-typed downstream). The OLD code passed the
+ * raw return straight into `.length`/`.map`, so a non-array (the model returned an object, a
+ * JSON string, null, or a bare error envelope) threw an anonymous `TypeError: candidates.map
+ * is not a function` with no name for what triggered it.
+ *
+ * The boundary is BOTH halves of the shape: (1) the return must be an ARRAY, and (2) each
+ * ELEMENT must be the contracted record (an object with a string `content`). A malformed
+ * element — a `null`/`42`/`{}` inside an otherwise-valid array — would otherwise hit the
+ * downstream provenance spread (`{ ...c, project: c.project ?? … }`) and throw the SAME
+ * anonymous `TypeError: Cannot read properties of null (reading 'project')` this class exists
+ * to eliminate. `elementIndex` is set when the failure is a bad element (vs the whole return).
+ *
+ * This names the trigger (which seam, which element), the catcher (this guard), and what the
+ * caller sees (a typed, attributable failure the orchestrator marks the work_item failed on —
+ * never a fake-success swallow, F-008).
  */
 export class ReviewForkShapeError extends Error {
 	constructor(
 		public readonly seam: 'extract' | 'proposeSkills',
-		public readonly received: string
+		public readonly received: string,
+		/** Set when the failure is a malformed ELEMENT inside a valid array (vs a non-array return). */
+		public readonly elementIndex?: number
 	) {
-		super(`review fork ${seam} returned a non-array (${received}); LLM output is untrusted (D-026)`);
+		super(
+			elementIndex === undefined
+				? `review fork ${seam} returned a non-array (${received}); LLM output is untrusted (D-026)`
+				: `review fork ${seam} returned a malformed element at [${elementIndex}] (${received}); LLM output is untrusted (D-026)`
+		);
 		this.name = 'ReviewForkShapeError';
 	}
 }
@@ -335,6 +350,18 @@ function shapeOf(v: unknown): string {
 	if (v === null) return 'null';
 	if (Array.isArray(v)) return 'array';
 	return typeof v;
+}
+
+/**
+ * Element-shape guard for the extract seam (D-026). A {@link MemoryCandidate} MUST be a plain
+ * object with a string `content` — that is the only field the downstream provenance spread and
+ * the store.ts §3.1b screen rely on. A `null`/primitive/`{}`-missing-content element inside an
+ * otherwise-valid array is NOT the contracted shape; it would throw an anonymous TypeError at
+ * the spread (`c.project`) — the exact class {@link ReviewForkShapeError} eliminates. Validates
+ * at the boundary; does NOT duck-type downstream.
+ */
+function isMemoryCandidate(v: unknown): v is MemoryCandidate {
+	return typeof v === 'object' && v !== null && !Array.isArray(v) && typeof (v as { content?: unknown }).content === 'string';
 }
 
 export interface RunReviewForkInput {
@@ -409,6 +436,17 @@ export async function runReviewFork(input: RunReviewForkInput): Promise<RunRevie
 		if (!Array.isArray(raw)) throw new ReviewForkShapeError('extract', shapeOf(raw));
 		const candidates = raw;
 		result.memoryCandidates = candidates.length;
+		// D-026 element-shape boundary: the array wrapper being valid does NOT make each ELEMENT
+		// trusted. A null/primitive/missing-content element would hit the provenance spread below
+		// (`c.project`) and throw an anonymous `TypeError: Cannot read properties of null` — the
+		// exact symptom ReviewForkShapeError exists to eliminate. Validate the shape of every
+		// element at the boundary (raise a NAMED, attributable error the orchestrator can act on)
+		// instead of duck-typing it downstream. One garbage element fails NAMED with its index.
+		for (let i = 0; i < candidates.length; i++) {
+			if (!isMemoryCandidate(candidates[i])) {
+				throw new ReviewForkShapeError('extract', shapeOf(candidates[i]), i);
+			}
+		}
 		// Carry project + originating-session provenance onto every candidate (m0033). store.ts
 		// screens BEFORE embed, so a candidate carrying a secret is redacted/quarantined here.
 		const withProvenance: MemoryCandidate[] = candidates.map((c) => ({

@@ -23,7 +23,7 @@ import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import type { Embedder } from './embed';
 import { distanceToSimilarity } from './embed';
-import { fence, type FencedItem } from './fence';
+import { fence, estimateTokens, type FencedItem } from './fence';
 
 /** WMR weights (§4.3) — tunable starting points (kongcode defaults), not locked. */
 export const WMR_WEIGHTS = { cosine: 0.5, utility: 0.35, recency: 0.15 } as const;
@@ -36,6 +36,58 @@ const RECENCY_HALF_LIFE_DAYS = 30;
  * ALREADY-SELECTED item exceeds this, it is a near-dup and is dropped. Tunable.
  */
 export const NOVELTY_COSINE_CUT = 0.97;
+
+/**
+ * Recall injected-size budget (§4.3 step 4 "tail-drop noise filter … before it reaches the
+ * prompt budget"). Applied as the FINAL cull — AFTER the active-set filter + WMR ranking +
+ * novelty gate + lineage dedup, BEFORE fencing — so the highest-WMR-ranked, non-quarantined,
+ * novel, lineage-deduped items fill the budget and the low-salience tail drops.
+ *
+ * Two independent caps (an item can be cut by EITHER):
+ *   • `maxItems`  — hard cap on the number of injected items.
+ *   • `maxTokens` — token budget (estimateTokens unit, shared with the briefing budget).
+ *
+ * DOCUMENTED NULL-TUNABLE (Lane-C null-tunable rail), NOT a locked magic constant — like
+ * WMR_WEIGHTS / NOVELTY_COSINE_CUT, these are JUSTIFIED STARTING POINTS to be re-validated on
+ * v2's real corpus in B8, never treated as tuned. They are exported so a caller (e.g. the §2.6
+ * briefing) and B8 can measure against them, not hardcoded inline at a call site.
+ *
+ * IMPORTANT — the default is OFF (null), not these values. `recall()` applies NO extra cap
+ * unless a caller passes a `budget` opt; when a caller asks for the budget but omits a field,
+ * THESE starting points fill it in (see `budgetCapsFor`). This mirrors the WMR_WEIGHTS posture:
+ * the starting point is documented and available, but a bare `recall()` with only `limit` is
+ * not silently re-truncated by an engine-side magic number. B8 decides whether to wire these on
+ * by default once measured. Rationale for the starting points: maxTokens 1500 ≈ a recall slice
+ * that fits comfortably inside the §2.6 briefing's ~15–20% context allocation alongside Tier-0
+ * + tasks; maxItems 6 mirrors the existing `limit` default.
+ *
+ * D-024 FAIL-CLOSED: token cost is an over-estimate (estimateTokens rounds UP), so an
+ * ambiguous count UNDER-fills rather than over-injects. The FIRST item is always admitted
+ * even if it alone exceeds maxTokens (returning zero context when the top hit is merely
+ * large would be a worse failure than one slightly-over slice); every SUBSEQUENT item is
+ * strictly budget-gated.
+ */
+export const RECALL_BUDGET: { maxItems: number | null; maxTokens: number | null } = {
+	maxItems: 6,
+	maxTokens: 1500
+};
+
+/**
+ * Resolve the effective budget caps for a recall call. `undefined` budget ⇒ OFF (both null —
+ * no extra cap beyond `limit`). A present budget object ⇒ each omitted field falls back to its
+ * RECALL_BUDGET starting point; an explicit `null` keeps that cap OFF. Exported for the test
+ * harness + B8 to assert the resolution rule directly.
+ */
+export function budgetCapsFor(budget: RecallOptions['budget']): {
+	maxItems: number | null;
+	maxTokens: number | null;
+} {
+	if (!budget) return { maxItems: null, maxTokens: null };
+	return {
+		maxItems: budget.maxItems === undefined ? RECALL_BUDGET.maxItems : budget.maxItems,
+		maxTokens: budget.maxTokens === undefined ? RECALL_BUDGET.maxTokens : budget.maxTokens
+	};
+}
 
 /** A scored, ranked recall candidate (internal). */
 interface ScoredCandidate {
@@ -80,6 +132,16 @@ export interface RecallOptions {
 	project?: string;
 	/** Include 1-hop graph neighbours of the top vector hits (§4.3 step 2). Default true. */
 	expandGraph?: boolean;
+	/**
+	 * Injected-size budget (§4.3 tail-drop), applied AFTER ranking + novelty + lineage dedup
+	 * and BEFORE fencing. OMIT the whole object ⇒ budget OFF: only the `limit` selection bound
+	 * applies, no engine-side magic cap (the null-tunable default). PRESENT object ⇒ each
+	 * OMITTED field falls back to its RECALL_BUDGET starting point, while an explicit `null`
+	 * keeps that cap OFF (so `{ maxItems: 4 }` caps items at 4 and tokens at the 1500 starting
+	 * point; `{ maxItems: 4, maxTokens: null }` caps items only). D-024: token cost
+	 * over-estimates, so an ambiguous count under-fills. See `budgetCapsFor`.
+	 */
+	budget?: { maxItems?: number | null; maxTokens?: number | null };
 }
 
 /** cosine of two equal-length vectors (both already unit-normalized by the embedder). */
@@ -243,8 +305,40 @@ export async function recall(opts: RecallOptions, query: string): Promise<Recall
 		selected.push(c);
 	}
 
+	// Step 5b — INJECTED-SIZE BUDGET (§4.3 tail-drop), applied AFTER ranking + novelty +
+	// lineage dedup, BEFORE fencing. `selected` is already in descending WMR-score order, so
+	// filling the budget top-down keeps the highest-ranked items and drops the low-salience
+	// tail. The active-set filter (B6) ran UPSTREAM in the SQL, so nothing quarantined/archived
+	// can ever reach here — a tighter budget only DROPS already-clean rows, it cannot admit a
+	// quarantined one. The budget measures the FENCED cost (what actually lands in context), so
+	// it estimates over fence(...).text, not the raw body.
+	const { maxItems, maxTokens } = budgetCapsFor(opts.budget);
+	const budgeted: ScoredCandidate[] = [];
+	let usedTokens = 0;
+	for (const c of selected) {
+		// Item-count cap (either cap can cut an item).
+		if (maxItems != null && budgeted.length >= maxItems) break;
+		// Token cap — measured on the fenced text (the real injected cost). D-024 fail-closed:
+		// estimateTokens over-estimates, so an ambiguous count under-fills. The FIRST admitted
+		// item is exempt from the token cap (never return empty context just because the single
+		// top hit is large); every subsequent item is strictly gated and the tail drops.
+		if (maxTokens != null) {
+			// Cost the EXACT fenced text this item would emit: a survivor gets the next
+			// contiguous 1..N citation id, so cost with that id (not a citation-less fence) — the
+			// citation digits add length, and under-costing them would let the summed real cost
+			// drift OVER budget. Matching the final fence keeps the cap strictly fail-closed.
+			const citationId = String(budgeted.length + 1);
+			const cost = estimateTokens(fence({ source: 'recall', body: c.content, citationId }).text);
+			// First admitted item is exempt (never return empty context just because the single
+			// top hit is large); every subsequent item is strictly gated and the tail drops.
+			if (budgeted.length > 0 && usedTokens + cost > maxTokens) continue;
+			usedTokens += cost;
+		}
+		budgeted.push(c);
+	}
+
 	// Step 6 — FENCE every returned item (§10). citationId = 1-based position.
-	const items: RecallItem[] = selected.map((c, i) => {
+	const items: RecallItem[] = budgeted.map((c, i) => {
 		const citationId = String(i + 1);
 		return {
 			id: c.id,

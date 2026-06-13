@@ -86,6 +86,19 @@ export function assembleContext(items: FencedItem[]): string {
 	return items.map((i) => i.text).join('\n\n');
 }
 
+/**
+ * Approximate token cost of a context block — the budget unit shared by the recall
+ * budget (§4.3 tail-drop) and the briefing budget (ARCHITECTURE §2.6). No real tokenizer
+ * ships in this sandbox, so this is the canonical ~4-chars-per-token heuristic used by
+ * every context-budget admission stage. `Math.ceil` rounds the estimate UP on purpose:
+ * an over-estimate of cost causes the budget to UNDER-fill, which is the D-024 fail-closed
+ * direction (never over-inject on an ambiguous count). Centralized here so recall and
+ * briefing measure cost identically — a single source of truth, not two drifting copies.
+ */
+export function estimateTokens(text: string): number {
+	return Math.ceil(text.length / 4);
+}
+
 // ── §10.2 Streaming scrubber — fail-closed, bounded, chunk-boundary aware ───────────
 
 /** Default cap on the straddle buffer (bytes). Past this, drop+reset (no exhaustion). */

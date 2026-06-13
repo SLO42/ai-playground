@@ -26,7 +26,7 @@
 
 import type { MemoryService } from './index';
 import { fenceSkill, ingestChannelBody, type SkillRow } from './index';
-import { fence, FENCE_CLOSE, type FencedItem, type InjectionSource } from './fence';
+import { fence, estimateTokens, FENCE_CLOSE, type FencedItem, type InjectionSource } from './fence';
 
 /** The four canonical injection paths a briefing composes. (channel is a 5th, fenced too.) */
 export const BRIEFING_INJECTION_SOURCES: readonly InjectionSource[] = [
@@ -50,10 +50,10 @@ export function bandForScore(score: number): SalienceBand {
 	return 'background';
 }
 
-/** Cheap token estimate (~chars/4) — good enough to BOUND the prompt; never under-counts wildly. */
-export function estimateTokens(text: string): number {
-	return Math.ceil(text.length / 4);
-}
+// Token estimate is the shared context-budget unit — defined once in fence.ts and imported
+// above for local use; re-exported here so briefing's existing importers keep their import
+// path while recall and briefing measure cost identically (single source of truth).
+export { estimateTokens };
 
 /** One briefing item: a fenced block plus its provenance, band, rationale, and citation. */
 export interface BriefingItem {

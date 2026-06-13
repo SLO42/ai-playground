@@ -28,7 +28,7 @@ import { extractAndStore, storeMemories, type StoreOptions, type MemoryCandidate
 export { screen, captureGate, gateCandidate, type ScreenStatus, type ScreenResult } from './screen';
 export { fence, fenceAll, assembleContext, StreamScrubber, scrubComplete, FENCE_OPEN, FENCE_CLOSE, type InjectionSource, type FencedItem } from './fence';
 export { OllamaEmbedder, CachedEmbedder, FakeEmbedder, EmbeddingError, EMBEDDING_DIM, cacheKey, distanceToSimilarity, type Embedder, type EmbedRole } from './embed';
-export { recall, recordOutcomes, parseCitations, WMR_WEIGHTS, NOVELTY_COSINE_CUT, type RecallItem, type RecallResult } from './recall';
+export { recall, recordOutcomes, parseCitations, WMR_WEIGHTS, NOVELTY_COSINE_CUT, RECALL_BUDGET, budgetCapsFor, type RecallItem, type RecallResult, type RecallOptions } from './recall';
 export { recordTurnOutcomes, summarizeTurnTools, type RecordTurnOutcomesInput, type TurnToolOutcome } from './outcomes';
 export { storeMemory, storeMemories, extractAndStore, buildExtraction, type MemoryCandidate, type StoredMemory, type ExtractFn, type ExtractInput } from './store';
 export { dueReview, bumpCounters, enqueueReview, consolidate, DEFAULT_CADENCE, type ReviewKind, type ReviewCadence } from './loop';

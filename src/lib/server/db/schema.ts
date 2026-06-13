@@ -261,8 +261,12 @@ const m0005_memory: Migration = {
 		DEFINE FIELD OVERWRITE memory ON memory_history TYPE option<record<memory>>;
 		DEFINE FIELD OVERWRITE op     ON memory_history TYPE string
 			ASSERT $value IN ["add","supersede","archive"];
-		DEFINE FIELD OVERWRITE before ON memory_history TYPE option<object>;
-		DEFINE FIELD OVERWRITE after  ON memory_history TYPE option<object>;
+		-- FLEXIBLE: a SCHEMAFULL table silently DROPS the sub-keys of a plain TYPE object,
+		-- so the §6.9 audit snapshot persisted empty -- losing the already-screened
+		-- before/after body the spec §274 requires it hold (and the §5.2 curator audit / §3
+		-- conflict pass read). FLEXIBLE preserves the nested content + screen_status.
+		DEFINE FIELD OVERWRITE before ON memory_history FLEXIBLE TYPE option<object>;
+		DEFINE FIELD OVERWRITE after  ON memory_history FLEXIBLE TYPE option<object>;
 		DEFINE FIELD OVERWRITE at     ON memory_history TYPE datetime DEFAULT time::now();
 
 		DEFINE INDEX OVERWRITE memory_history_by_memory ON memory_history FIELDS memory;
@@ -1371,6 +1375,21 @@ const m0035_gauntlet_sentinel_ulid_shape: Migration = {
 	`
 };
 
+// §6.9 audit-snapshot fix. m0005 defined memory_history.before/after as a plain
+// `option<object>` on a SCHEMAFULL table, which silently DROPS the snapshot sub-keys
+// (content, screen_status, absorbed_into) at the DB boundary -- the audit row persisted
+// empty, losing the already-screened before/after body the spec §274 requires it hold
+// (read by the §5.2 curator audit / §3 conflict pass). Editing m0005 cannot fix an
+// already-migrated live DB (the runner skips applied ids -- F-015), so this re-DEFINEs
+// the fields FLEXIBLE via OVERWRITE. Idempotent: OVERWRITE re-runs safely; no row touched.
+const m0036_memory_history_flexible: Migration = {
+	id: '0036_memory_history_flexible',
+	up: `
+		DEFINE FIELD OVERWRITE before ON memory_history FLEXIBLE TYPE option<object>;
+		DEFINE FIELD OVERWRITE after  ON memory_history FLEXIBLE TYPE option<object>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1412,5 +1431,6 @@ export const schemaMigrations: Migration[] = [
 	m0032_proposed_tasks,
 	m0033_memory_session_provenance,
 	m0034_gauntlet_sentinel_nonempty,
-	m0035_gauntlet_sentinel_ulid_shape
+	m0035_gauntlet_sentinel_ulid_shape,
+	m0036_memory_history_flexible
 ];

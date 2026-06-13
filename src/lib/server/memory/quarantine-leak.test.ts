@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { readFileSync } from 'node:fs';
+import { readFileSync, readdirSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, join } from 'node:path';
+import { dirname, join, relative, sep } from 'node:path';
 import { StringRecordId } from 'surrealdb';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
@@ -49,8 +49,10 @@ const SRC = join(HERE, '..', '..', '..', '..', 'src', 'lib', 'server');
 // The enumeration below is the authoritative census of every NON-TEST source file that
 // runs `SELECT ... FROM memory`. Each is classified LEAK (an injection/recall/export
 // surface that MUST carry the quarantine filter) or EXEMPT (with the reason it cannot
-// leak quarantined content into model context or an export). If a new `FROM memory`
-// reader is added that this census does not cover, the coverage guard at the end fails.
+// leak quarantined content into model context or an export). The coverage guard at the
+// end GLOBS the whole `src/lib/server` source tree (excluding tests), so a new `FROM
+// memory` reader added in ANY file — including a brand-new uncatalogued file — that this
+// census does not classify makes the guard FAIL, forcing it to be classified LEAK/EXEMPT.
 
 interface ReaderPath {
 	file: string;
@@ -151,31 +153,84 @@ describe('PART A — static grep-and-assert: every `memory`-row reader is classi
 		});
 	}
 
-	it('coverage guard: the census covers EVERY non-test `FROM memory` reader in src/lib/server', () => {
-		// Walk the two source files that own non-test memory reads and assert the count of
-		// `FROM memory` occurrences in real query code matches what the census enumerates.
-		// (If a new reader is added without a census entry, this count diverges and fails —
-		// forcing the author to classify it LEAK or EXEMPT.)
-		// Count only entries that are actual `FROM memory` table reads. A by-id read
-		// (`FROM $m`, e.g. loop.ts consolidate) is a documented memory read but is NOT a
-		// table-scan surface, so it does not contribute to the `FROM memory` regex count.
-		const censusFiles = new Map<string, number>();
+	// Bare `FROM memory` table reads only — NOT `memory_history`, `memory:id`, `memory_entries`,
+	// `pm_memory`, nor by-id reads (`FROM $m`). This is the leak-surface regex the guard is built on.
+	const FROM_MEMORY = /FROM memory(?![A-Za-z0-9_:])/g;
+
+	// Recursively enumerate every NON-TEST .ts source file under src/lib/server, relative to SRC,
+	// using forward slashes so the paths match the READERS `file` keys on every platform.
+	function listServerSources(): string[] {
+		const out: string[] = [];
+		const walk = (absDir: string) => {
+			for (const ent of readdirSync(absDir, { withFileTypes: true })) {
+				const abs = join(absDir, ent.name);
+				if (ent.isDirectory()) {
+					walk(abs);
+				} else if (ent.isFile() && ent.name.endsWith('.ts') && !ent.name.endsWith('.test.ts')) {
+					out.push(relative(SRC, abs).split(sep).join('/'));
+				}
+			}
+		};
+		walk(SRC);
+		return out;
+	}
+
+	it('coverage guard: per catalogued file, the census count matches the real `FROM memory` read count', () => {
+		// Catches a SECOND unfiltered read sneaked into an ALREADY-CATALOGUED file: if recall.ts
+		// grows a 3rd `FROM memory` the count diverges from the census and this fails, forcing a
+		// new classification. (By-id `FROM $m` reads, e.g. loop.ts consolidate, never scan the
+		// table, so they do not contribute to the regex count and are skipped here.)
+		const censusCounts = new Map<string, number>();
 		for (const r of READERS) {
-			// Skip ONLY by-id reads (`SELECT ... FROM $m`, e.g. loop.ts consolidate) — those
-			// never scan the `memory` table so they do not contribute to the regex count.
 			if (r.marker.includes('tier, source FROM $')) continue;
-			censusFiles.set(r.file, (censusFiles.get(r.file) ?? 0) + 1);
+			censusCounts.set(r.file, (censusCounts.get(r.file) ?? 0) + 1);
 		}
-		for (const [file, expected] of censusFiles) {
-			const src = readSource(file);
-			// Count `FROM memory` not followed by another identifier char or `_` (so `memory_history`,
-			// `memory:id`, `pm_memory` do NOT match) — the bare `memory` table reads only.
-			const matches = src.match(/FROM memory(?![A-Za-z0-9_:])/g) ?? [];
+		for (const [file, expected] of censusCounts) {
+			const matches = readSource(file).match(FROM_MEMORY) ?? [];
 			expect(
 				matches.length,
 				`${file}: census expects ${expected} bare \`FROM memory\` reads but source has ${matches.length} — classify the new reader`
 			).toBe(expected);
 		}
+	});
+
+	// The forward-looking guard's core predicate, factored out so it can be exercised against a
+	// synthetic file set (regression test below) as well as the real tree.
+	function unclassifiedReaders(files: string[], read: (rel: string) => string): string[] {
+		const catalogued = new Set(READERS.map((r) => r.file));
+		return files.filter(
+			(rel) => (read(rel).match(FROM_MEMORY) ?? []).length > 0 && !catalogued.has(rel)
+		);
+	}
+
+	it('coverage guard: EVERY file in src/lib/server with a `FROM memory` read is classified in the census', () => {
+		// THE forward-looking guard: scan the whole source TREE — not just the catalogued files —
+		// so a brand-new, uncatalogued source file that adds an unfiltered `FROM memory` read is
+		// detected and FAILS here until it is classified LEAK or EXEMPT. (The earlier census-only
+		// loop could never see a new file; this Globs the filesystem.)
+		const unclassified = unclassifiedReaders(listServerSources(), readSource);
+		expect(
+			unclassified,
+			`uncatalogued \`FROM memory\` reader(s) found — classify each LEAK or EXEMPT in READERS: ${unclassified.join(', ')}`
+		).toEqual([]);
+	});
+
+	it('REGRESSION (the FAIL this fix closes): a NEW uncatalogued file with an unfiltered `FROM memory` is FLAGGED', () => {
+		// Before the fix the guard only iterated the hardcoded census, so a brand-new leaking file
+		// was invisible. Simulate that file and prove the filesystem-driven guard now flags it.
+		const SYNTH = 'memory/__synthetic_new_leak.ts';
+		const fakeRead = (rel: string): string =>
+			rel === SYNTH
+				? 'export async function leak(db){ return db.query(`SELECT content FROM memory WHERE 1=1;`); }'
+				: readSource(rel);
+		// The synthetic file is NOT in READERS → must be flagged.
+		expect(unclassifiedReaders([SYNTH], fakeRead)).toEqual([SYNTH]);
+		// Sanity: an already-catalogued real file with the same read is NOT flagged (no false positive).
+		expect(unclassifiedReaders(['memory/recall.ts'], fakeRead)).toEqual([]);
+		// Sanity: a new file WITHOUT a `FROM memory` read is NOT flagged.
+		const noRead = (rel: string): string =>
+			rel === SYNTH ? 'export const x = 1; // SELECT id FROM memory_history' : readSource(rel);
+		expect(unclassifiedReaders([SYNTH], noRead)).toEqual([]);
 	});
 });
 

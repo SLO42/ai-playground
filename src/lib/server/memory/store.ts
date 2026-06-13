@@ -63,6 +63,89 @@ function link(id: string): StringRecordId {
 	return new StringRecordId(assertRecordId(id));
 }
 
+// ── D-026 trust-boundary errors (untrusted extractor output) ────────────────────────
+//
+// The extracting LLM's return is untrusted DATA (D-026): it must be validated at THIS
+// boundary with a NAMED, attributable error — never duck-typed downstream into an
+// anonymous TypeError (the loop.ts sibling, ReviewForkShapeError, names the same class of
+// failure one module over). Two distinct seams, two distinct named errors.
+
+/** Describe an untrusted value for an error message without leaking its (possibly poisoned) body. */
+function shapeOf(v: unknown): string {
+	if (v === null) return 'null';
+	if (Array.isArray(v)) return 'array';
+	return typeof v;
+}
+
+/**
+ * D-026 — the §3.2 extractor returned a value that is NOT the contracted shape: either the
+ * whole return is a non-array, or an ELEMENT inside an otherwise-valid array is not a
+ * {@link MemoryCandidate} (a plain object with a string `content`). A malformed element would
+ * otherwise hit the downstream provenance spread (`{ ...c, project: c.project ?? … }`) and throw
+ * an anonymous `TypeError: Cannot read properties of null (reading 'project')` — the exact symptom
+ * this class exists to eliminate. `elementIndex` is set when the failure is a bad element.
+ *
+ * Names the trigger (which seam/element), the catcher (the boundary guard in extractAndStore),
+ * and what the caller sees (a typed, attributable failure — never a fake-success swallow, F-008).
+ */
+export class MemoryCandidateShapeError extends Error {
+	override readonly name = 'MemoryCandidateShapeError';
+	constructor(
+		public readonly received: string,
+		/** Set when the failure is a malformed ELEMENT inside a valid array (vs a non-array return). */
+		public readonly elementIndex?: number
+	) {
+		super(
+			elementIndex === undefined
+				? `extractor returned a non-array (${received}); extractor output is untrusted (D-026)`
+				: `extractor returned a malformed element at [${elementIndex}] (${received}); extractor output is untrusted (D-026)`
+		);
+	}
+}
+
+/**
+ * D-026 — a candidate's PROVENANCE field (`project` / `session`) survived the extract boundary
+ * with a non-string SHAPE. The upstream `isMemoryCandidate` validates only `content`; a number/
+ * object/array/boolean provenance field is NOT caught there and would either throw a generic
+ * D-016 `IdentifierError` deep in the CONTENT build (after screen + embed) on a truthy non-string,
+ * OR — for a FALSY non-string (`false`/`0`) — be silently treated as absent by the `c.project ?`
+ * ternary and OMITTED, losing provenance with no error (F-008). Validate the shape at the store
+ * boundary, BEFORE screen/embed/link, and fail NAMED here instead.
+ */
+export class MemoryProvenanceShapeError extends Error {
+	override readonly name = 'MemoryProvenanceShapeError';
+	constructor(
+		public readonly field: 'project' | 'session',
+		public readonly received: string
+	) {
+		super(
+			`candidate provenance field \`${field}\` has a non-string shape (${received}); ` +
+				`provenance is untrusted extractor output (D-026) — must be a string id or absent`
+		);
+	}
+}
+
+/** A {@link MemoryCandidate} is a plain object with a string `content` (the only field the screen relies on). */
+function isMemoryCandidate(v: unknown): v is MemoryCandidate {
+	return typeof v === 'object' && v !== null && !Array.isArray(v) && typeof (v as { content?: unknown }).content === 'string';
+}
+
+/**
+ * D-026 provenance-shape boundary: each provenance field (`project`, `session`) must be a string
+ * (a `table:id`, further validated by assertRecordId at link time) or absent (`undefined`). ANY
+ * other type — including a FALSY non-string (`false`, `0`, `''` is a string so allowed) — fails
+ * NAMED here, before the screen/embed/link, instead of throwing an anonymous IdentifierError mid-
+ * pipeline (truthy) or being silently omitted (falsy non-string). Mutates nothing; throws or returns.
+ */
+function assertProvenanceShape(c: MemoryCandidate): void {
+	for (const field of ['project', 'session'] as const) {
+		const v = c[field];
+		if (v !== undefined && typeof v !== 'string') {
+			throw new MemoryProvenanceShapeError(field, shapeOf(v));
+		}
+	}
+}
+
 export interface StoreOptions {
 	db: Db;
 	embedder: Embedder;
@@ -77,6 +160,12 @@ export interface StoreOptions {
  */
 export async function storeMemory(opts: StoreOptions, c: MemoryCandidate): Promise<StoredMemory> {
 	const { db, embedder } = opts;
+
+	// D-026 provenance-shape boundary — validate the (untrusted-extractor-sourced) `project` /
+	// `session` field SHAPES BEFORE any screen/embed/link. A non-string provenance would otherwise
+	// throw a generic IdentifierError deep in the CONTENT build (truthy) or be silently omitted
+	// (falsy non-string); fail NAMED + attributable here, writing nothing.
+	assertProvenanceShape(c);
 
 	// Step 2.0 — screen BEFORE embed (§3.4). Both gates, in order.
 	const gate = gateCandidate(c.content);
@@ -133,8 +222,11 @@ export async function storeMemories(opts: StoreOptions, candidates: MemoryCandid
 		try {
 			out.push(await storeMemory(opts, c));
 		} catch (err) {
-			// Per-item fallback (§3.4 step 4) — one bad candidate never drops the rest.
-			out.push({ id: '', screenStatus: 'quarantined', persisted: false, dropReason: `insert-failed:${(err as Error).message}` });
+			// Per-item fallback (§3.4 step 4) — one bad candidate never drops the rest. Attribute
+			// the failure by its NAMED class (D-026 provenance-shape rejections surface as
+			// MemoryProvenanceShapeError, not the misleading "insert-failed") — every error has a name.
+			const e = err as Error;
+			out.push({ id: '', screenStatus: 'quarantined', persisted: false, dropReason: `${e.name || 'insert-failed'}:${e.message}` });
 		}
 	}
 	return out;
@@ -197,9 +289,22 @@ export async function extractAndStore(
 	input: ExtractInput
 ): Promise<StoredMemory[]> {
 	const { prompt, ordinals } = buildExtraction(input);
-	const candidates = await opts.extract(prompt, ordinals);
+	const raw = await opts.extract(prompt, ordinals);
+	// D-026 trust boundary: the extractor return is untrusted. Validate the ARRAY shape BEFORE
+	// touching .map (a non-array would otherwise throw an anonymous `TypeError: candidates.map is
+	// not a function`). Fail NAMED + attributable here — no partial write.
+	if (!Array.isArray(raw)) throw new MemoryCandidateShapeError(shapeOf(raw));
+	// D-026 element-shape boundary: a valid array wrapper does NOT make each ELEMENT trusted. A
+	// null/primitive/missing-content element would hit the provenance spread below (`c.project`)
+	// and throw an anonymous `TypeError: Cannot read properties of null` (null) or silently spread
+	// into a content-less garbage candidate (primitive). Validate every element at the boundary —
+	// raise a NAMED error with its index — instead of duck-typing it downstream. One garbage
+	// element fails NAMED with NO partial write (the guard runs fully before any storeMemory call).
+	for (let i = 0; i < raw.length; i++) {
+		if (!isMemoryCandidate(raw[i])) throw new MemoryCandidateShapeError(shapeOf(raw[i]), i);
+	}
 	// Carry the project + originating-session provenance through to each candidate.
-	const withProject = candidates.map((c) => ({
+	const withProject = raw.map((c) => ({
 		...c,
 		project: c.project ?? input.project,
 		session: c.session ?? input.session

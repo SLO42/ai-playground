@@ -326,7 +326,7 @@ The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
   refuses an empty-sentinel fixture with a named `WorkforceInputError` before the
   proposed→active transition; (b) migration `m0034_gauntlet_sentinel_nonempty`
   (OVERWRITE-idempotent) redefines `sentinel` with a sibling-field assert
-  `status = "proposed" OR string::len($value) > 0`; (c) `sentinelSweep` skips
+  `status = NONE OR status = "proposed" OR string::len($value) > 0`; (c) `sentinelSweep` skips
   empty sentinels (never calls `string::contains` with an empty needle). Defect 2
   — moved `recordAutoToken` to AFTER the pre-flight succeeds, so a no-run never
   consumes a slot; regression tests for `trigger:'auto'` hitting each pre-flight

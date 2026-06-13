@@ -363,6 +363,7 @@ describe('F-025 — an active/retired fixture can never carry an empty sentinel 
 		// the only way to reach this state is a direct ROOT write with the assert dropped.
 		// We simulate the dangerous legacy row by temporarily removing the field assert,
 		// writing the row, then restoring the assert. The sweep must still not match-all.
+		const checkedBefore = (await sentinelSweep(db)).checked;
 		await db.query(`DEFINE FIELD OVERWRITE sentinel ON gauntlet_fixture TYPE string;`);
 		const leaked = await createGauntletFixture(db, {
 			role: roleId,
@@ -389,6 +390,9 @@ describe('F-025 — an active/retired fixture can never carry an empty sentinel 
 		// The empty-sentinel fixture contributes ZERO hits (skipped), so no surface is
 		// match-alled by it. Defect would have produced a hit for every memory row.
 		expect(result.hits.filter((h) => h.fixtureSlug === 'f025-sweep-empty')).toEqual([]);
+		// And it was NOT counted as `checked` — an uncheckable (skipped) sentinel was never
+		// swept, so the count is unchanged by adding it (no proposed/uninjected over-count).
+		expect(result.checked).toBe(checkedBefore);
 
 		// Cleanup: retire-by-delete the synthetic row so it never pollutes later sweeps.
 		await db.query(`DELETE $f;`, { f: rid(leaked.id) });

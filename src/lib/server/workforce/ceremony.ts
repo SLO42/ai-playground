@@ -356,7 +356,7 @@ function assertHasTeeth(
  *  operator did not re-author it), so it never counts as drift. */
 function keyDrift(input: LaunchKeyConfirmInput, existing: GauntletKeyRow): string | null {
 	const drifts: string[] = [];
-	if (input.plants !== undefined && canon(input.plants) !== canon(existing.plants)) {
+	if (input.plants !== undefined && canon(normPlants(input.plants)) !== canon(normPlants(existing.plants))) {
 		drifts.push('plants');
 	}
 	if (input.fp_tolerance !== undefined && input.fp_tolerance !== existing.fp_tolerance) {
@@ -369,6 +369,27 @@ function keyDrift(input: LaunchKeyConfirmInput, existing: GauntletKeyRow): strin
 		drifts.push('fp_justification');
 	}
 	return drifts.length ? drifts.join('+') : null;
+}
+
+/** Normalize the path-shaped fields of each plant the SAME way parsePlant does before a
+ *  drift compare, so a path-separator (`\` vs `/`) or surrounding-whitespace-only diff in
+ *  `detection.file` never false-reports changed:true. parsePlant canonicalizes
+ *  `detection.file` as `trim().replace(/\\/g, '/')` (scorer.ts) and persists the operator's
+ *  RAW plants, so a stored `f.ts` vs a re-confirmed `f\ts` / `f.ts ` are scoring-identical.
+ *  Path-only: every other field is left byte-identical so a REAL plant change still drifts.
+ *  Non-object / nil entries pass through untouched (shadow paths: empty array, nil, malformed
+ *  plant) so canon still compares them faithfully. */
+function normPlants(plants: unknown): unknown {
+	if (!Array.isArray(plants)) return plants;
+	return plants.map((p) => {
+		if (!p || typeof p !== 'object' || Array.isArray(p)) return p;
+		const plant = p as Record<string, unknown>;
+		const det = plant.detection;
+		if (!det || typeof det !== 'object' || Array.isArray(det)) return plant;
+		const d = det as Record<string, unknown>;
+		if (typeof d.file !== 'string') return plant;
+		return { ...plant, detection: { ...d, file: d.file.trim().replace(/\\/g, '/') } };
+	});
 }
 
 /** Stable canonical JSON (object keys sorted) so plant-equality is order-insensitive on

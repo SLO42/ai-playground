@@ -23,7 +23,7 @@
   const catalog = $derived(data.catalog ?? []);
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
 
-  // ── TASK 16.8 — W-D7c workforce surfaces (WORKFORCE-SPEC §8). Role cards + the §3.4
+  // ── TASK 16.7b — W-D7c workforce surfaces (WORKFORCE-SPEC §8). Role cards + the §3.4
   //    adjudication queue. Live via the existing SSE onDbChange watchers (no second SSE
   //    source, D-035). Day-one reality: no interview data → every role is honest empty.
   const workforce = $derived(data.workforce ?? null);
@@ -84,7 +84,7 @@
     const off1 = stream.onDbChange('session', () => void invalidate('app:fleet'));
     const off2 = stream.onDbChange('agent_event', () => void invalidate('app:analytics'));
     const off3 = stream.onDbChange('cc_agent', () => void invalidate('app:claude-code'));
-    // TASK 16.8 — workforce surfaces re-derive live off the ONE SSE stream (D-035): a
+    // TASK 16.7b — workforce surfaces re-derive live off the ONE SSE stream (D-035): a
     // role/version create, an interview_run finalize/adjudicate, a panel_verdict, or a
     // role_event all re-invalidate the workforce slice. No second SSE source.
     const wf = ['role', 'role_version', 'interview_run', 'panel_verdict', 'role_event'].map(
@@ -115,7 +115,7 @@
     return projectId.split(':').pop() ?? projectId;
   }
 
-  // ── TASK 16.8 — workforce formatters (honest '—'; '—' is NEVER the digit 0, §4.5) ──
+  // ── TASK 16.7b — workforce formatters (honest '—'; '—' is NEVER the digit 0, §4.5) ──
   /** Calendar date for the interview line ('2026-06-14'); '—' when absent. */
   function fmtDate(iso: string | null): string {
     if (!iso) return '—';
@@ -200,7 +200,7 @@
       </p>
     </div>
   {:else}
-    <!-- ── TASK 16.8 — WORKFORCE PANEL (WORKFORCE-SPEC §8 'Surfaces') ──────────────
+    <!-- ── TASK 16.7b — WORKFORCE PANEL (WORKFORCE-SPEC §8 'Surfaces') ──────────────
          Role cards: version chip + lifecycle badge, the interview line (found N/T
          plants · k FP · <tier> (<model_id>) · <date>, linking the transcript), stale
          flag, track-record stats EACH with its inline sample size, '—' for no data.
@@ -884,7 +884,7 @@
     font-style: italic;
   }
 
-  /* ── TASK 16.8 — workforce panel + adjudication queue ──────────────────────── */
+  /* ── TASK 16.7b — workforce panel + adjudication queue ──────────────────────── */
   .sr-only {
     position: absolute;
     width: 1px;

@@ -1383,7 +1383,7 @@
                                 <li>{r}</li>
                               {/each}
                             </ul>
-                            <!-- TASK 16.8 — panel-composition rationale (WORKFORCE-SPEC §8):
+                            <!-- TASK 16.7b — panel-composition rationale (WORKFORCE-SPEC §8):
                                  inline validators are the honest degraded mode — no certified
                                  catalog role fit this artifact yet, so the panel was composed
                                  by role fit alone (track records are empty). A catalog_role
@@ -2935,7 +2935,7 @@
     font: var(--type-body-sm);
     color: var(--color-text-2);
   }
-  /* TASK 16.8 — panel-composition rationale (WORKFORCE-SPEC §8). */
+  /* TASK 16.7b — panel-composition rationale (WORKFORCE-SPEC §8). */
   .verdict-rationale {
     margin: 0.35rem 0 0;
     font-size: 0.68rem;

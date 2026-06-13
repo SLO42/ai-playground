@@ -16,7 +16,7 @@ import {
 import { loadWorkforcePanel } from './panel';
 import { newSentinelUlid } from './activation';
 
-// TASK 16.8 VERIFY — the read-only workforce-panel aggregator (WORKFORCE-SPEC §8) against
+// TASK 16.7b VERIFY — the read-only workforce-panel aggregator (WORKFORCE-SPEC §8) against
 // a REAL throwaway SurrealDB. The FOUR data paths the §8 surfaces depend on:
 //   happy   — a certified role with a passing run + verdicts → deployable card + line;
 //   nil     — a role with NO version → 'no version', NOT DEPLOYABLE, null track;

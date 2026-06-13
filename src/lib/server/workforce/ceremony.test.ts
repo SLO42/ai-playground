@@ -340,6 +340,27 @@ describe('confirmLaunchKey hardening — day-0 key-authoring trust boundary', ()
 		expect(clean.changed).toBeUndefined();
 	});
 
+	it('DEFECT 2 (over-warn): a re-confirm differing ONLY by path separator / whitespace is NOT drift', async () => {
+		const fx = await keylessFixture();
+		const first = await confirmLaunchKey(db, {
+			fixture: fx.id,
+			plants: [{ id: 'p1', detection: { file: 'src/x.ts', evidence_pattern: 'process\\.kill' } }],
+			operatorConfirmed: true
+		});
+		expect(first.created).toBe(true);
+		// Re-confirm with the SAME plant but a backslash separator + surrounding whitespace in the
+		// path — parsePlant normalizes both to 'src/x.ts', so this is scoring-identical, NOT a
+		// correction. keyDrift must normalize paths the same way and report NO change.
+		const reconfirm = await confirmLaunchKey(db, {
+			fixture: fx.id,
+			plants: [{ id: 'p1', detection: { file: '  src\\x.ts  ', evidence_pattern: 'process\\.kill' } }],
+			operatorConfirmed: true
+		});
+		expect(reconfirm.created).toBe(false);
+		expect(reconfirm.changed).toBeUndefined();
+		expect(reconfirm.reason).toBeUndefined();
+	});
+
 	// DEFECT 3 — concurrent double-submit untyped error.
 	it('DEFECT 3: concurrent confirm never leaks a raw error AND never persists a duplicate key', async () => {
 		// Run the concurrent double-confirm several times — the race is timing-dependent

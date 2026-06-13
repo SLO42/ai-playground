@@ -255,7 +255,11 @@ export interface SentinelHit {
 }
 
 export interface SentinelSweepResult {
-	/** Sentinels checked (activated/retired fixtures only — proposed work is uninjected). */
+	/**
+	 * Sentinels actually swept — activated/retired fixtures with a non-empty needle.
+	 * Proposed work is uninjected (excluded by the query); an empty/uncheckable sentinel
+	 * is skipped by the F-025 guard and is NOT counted here (it was never checked).
+	 */
 	checked: number;
 	hits: SentinelHit[];
 }
@@ -272,13 +276,16 @@ export async function sentinelSweep(db: Db): Promise<SentinelSweepResult> {
 		`SELECT id, slug, role, sentinel FROM gauntlet_fixture WHERE status != 'proposed' LIMIT 500;`
 	);
 	const hits: SentinelHit[] = [];
+	let checked = 0;
 	for (const f of fixtures) {
 		const sentinel = str(f.sentinel);
 		// Empty-needle guard (F-025): SurrealDB 2.x `string::contains(content, '')` matches
 		// EVERY row, so an empty sentinel would fabricate a leak hit on every memory/pm_memory/
 		// transcript row. Layers (a)+(b) make an active/retired empty sentinel impossible, but
 		// the sweep stays defense-in-depth: an empty sentinel is uncheckable, never match-all.
+		// An uncheckable (empty) sentinel is NOT counted in `checked` — it was never swept.
 		if (sentinel.length === 0) continue;
+		checked += 1;
 		const base = {
 			sentinel,
 			fixture: str(f.id),
@@ -306,7 +313,7 @@ export async function sentinelSweep(db: Db): Promise<SentinelSweepResult> {
 		);
 		if (msgs.length) hits.push({ ...base, surface: 'transcript', rows: msgs.map((r) => str(r.id)) });
 	}
-	return { checked: fixtures.length, hits };
+	return { checked, hits };
 }
 
 /** Sweep work-item type — the periodic vehicle's audit row (§4.2). */

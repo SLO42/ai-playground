@@ -111,11 +111,16 @@ const SECRET_RULES: SecretRule[] = [
 		placeholder: '[REDACTED:private-key]',
 		quarantineOnHit: true
 	},
-	// A bare BEGIN header with no matching END (truncated paste) — still quarantine + redact
-	// the header so a partial key never lands in the row body.
+	// A bare BEGIN header with no matching END (truncated/malformed paste) — redact the
+	// header AND everything after it to end-of-text. The full-block rule above already
+	// consumed every well-formed BEGIN…END pair, so by the time this rule runs any
+	// surviving BEGIN header is unterminated: the base64 key material is on the lines
+	// FOLLOWING the header (a header-line-only redaction left it raw — the truncated-paste
+	// leak). Once an unterminated private-key header appears, the remainder of the text is
+	// presumed key material and is redacted wholesale so no partial key lands in the row body.
 	{
 		id: 'private-key-header',
-		re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----/g,
+		re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----[\s\S]*$/g,
 		placeholder: '[REDACTED:private-key]',
 		quarantineOnHit: true
 	},

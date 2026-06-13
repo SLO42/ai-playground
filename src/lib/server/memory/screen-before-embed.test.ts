@@ -248,6 +248,76 @@ describe('PART 2 — quarantine: raw key material never reaches the embedder', (
 });
 
 // ─────────────────────────────────────────────────────────────────────────────────
+// PART 2b — TRUNCATED / MALFORMED private-key paste (red-team "garbage from upstream").
+// A full BEGIN…END block (PART 2) is the easy case. The leak the 1st pass missed: a
+// TRUNCATED header (no END marker) where the full-block rule cannot fire, so a header-
+// line-only redaction left the base64 key MATERIAL raw in screen().text — and store.ts
+// then embeds + persists that text (§7.1 embed side channel + at-rest/audit). The fix
+// redacts an unterminated header through end-of-text. These assertions prove the
+// no-embedder-leak invariant is UNIVERSAL across malformed shapes, not just well-formed.
+// ─────────────────────────────────────────────────────────────────────────────────
+describe('PART 2b — truncated/malformed key paste: material never reaches embedder or at-rest body', () => {
+	// header, then base64 material, NO -----END----- (the exact truncated paste).
+	const TRUNC_SENTINEL = 'TRUNCMATERIAL_LEAKS_a91f_must_never_embed';
+	const TRUNCATED =
+		'pasted from upstream:\n-----BEGIN OPENSSH PRIVATE KEY-----\n' +
+		TRUNC_SENTINEL +
+		'\nb3BlbnNzaC1rZXktdjEAAAACmFlczI1Ni1jdHI';
+
+	// END appears BEFORE a later BEGIN, so the non-greedy full-block rule cannot pair them;
+	// the trailing material after the orphan BEGIN must still be redacted to EOF.
+	const END_FIRST_SENTINEL = 'ENDFIRST_TAILMATERIAL_c30d_must_never_embed';
+	const END_BEFORE_BEGIN =
+		'-----END RSA PRIVATE KEY-----\norphan footer\n-----BEGIN RSA PRIVATE KEY-----\n' + END_FIRST_SENTINEL;
+
+	it('pre-flight: a truncated header-only paste is quarantined AND the key material is stripped (not just the header line)', () => {
+		const gate = gateCandidate(TRUNCATED);
+		expect(gate.screen!.status).toBe('quarantined');
+		// The regression core: the base64 body following an unterminated header must NOT survive.
+		expect(gate.screen!.text).not.toContain(TRUNC_SENTINEL);
+		expect(gate.screen!.text).not.toContain('b3BlbnNzaC1rZXktdjEAAAACmFlczI1Ni1jdHI');
+		expect(gate.screen!.text).toContain('[REDACTED:private-key]');
+	});
+
+	it('pre-flight: END-before-BEGIN still strips the trailing material after the orphan header', () => {
+		const gate = gateCandidate(END_BEFORE_BEGIN);
+		expect(gate.screen!.status).toBe('quarantined');
+		expect(gate.screen!.text).not.toContain(END_FIRST_SENTINEL);
+		expect(gate.screen!.text).toContain('[REDACTED:private-key]');
+	});
+
+	it('store: a truncated paste is embedded + persisted over key-free text — embedder never sees the material', async () => {
+		const seenBefore = rec.seen.length;
+		const [r] = await mem.store([{ content: TRUNCATED, project: projectId }]);
+		expect(r.persisted).toBe(true);
+		expect(r.screenStatus).toBe('quarantined');
+
+		// The embed call for this write was over the screened (key-stripped) body.
+		const newCalls = rec.seen.slice(seenBefore);
+		expect(newCalls.length).toBe(1);
+		expect(newCalls[0]).not.toContain(TRUNC_SENTINEL);
+		// Across the WHOLE run the embedder has never once seen the truncated key material.
+		expect(rec.seen.some((t) => t.includes(TRUNC_SENTINEL))).toBe(false);
+
+		// At-rest body (memory.content) is key-free — the §7.1 / at-rest leak is closed.
+		const [rows] = await db.query<[Array<{ content: string; screen_status: string }>]>(
+			`SELECT content, screen_status FROM $id;`,
+			{ id: rid(r.id) }
+		);
+		expect(rows[0].screen_status).toBe('quarantined');
+		expect(rows[0].content).not.toContain(TRUNC_SENTINEL);
+
+		// And the §6.9 audit snapshot is key-free too (audit is not a raw-secret sink).
+		const [hist] = await db.query<[Array<{ after: { content?: string } }>]>(
+			`SELECT after FROM memory_history WHERE memory = $id AND op = "add";`,
+			{ id: rid(r.id) }
+		);
+		expect(hist.length).toBeGreaterThanOrEqual(1);
+		expect(hist[0].after.content).not.toContain(TRUNC_SENTINEL);
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────────
 // PART 3 — §5.4(a) GRADUATION re-screen: a skill graduated from a poisoned/secret-bearing
 // causal_chain does NOT graduate raw — the bus is not a laundering path (§10).
 // ─────────────────────────────────────────────────────────────────────────────────

@@ -125,6 +125,12 @@ const READERS: ReaderPath[] = [
 		marker: 'SELECT tier, source FROM $m',
 		kind: 'EXEMPT',
 		why: 'consolidate §5.2 guard — by-id curator read of an explicitly-passed member; not a query surface and never injects'
+	},
+	{
+		file: 'memory/eval/harness.ts',
+		marker: 'embedding <|${k},COSINE|>',
+		kind: 'LEAK',
+		why: 'B8 §11 eval harness fetchCandidates — mirrors recall step-1 read-only for the weight/novelty sweep; classified LEAK so the guard enforces the same active-set filter, ensuring a sweep can never surface a quarantined row (measurement-only; never injects to a live model)'
 	}
 ];
 

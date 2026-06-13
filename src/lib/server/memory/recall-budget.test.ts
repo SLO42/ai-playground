@@ -411,3 +411,42 @@ describe('§4.3 budget × invalid input — a NaN budget cannot fail-OPEN over a
 		expect(negRes.items.length).toBeLessThanOrEqual(RECALL_BUDGET.maxItems as number);
 	});
 });
+
+describe('LOW-2 (wave-v2.2b-c) RECALL_BUDGET is FROZEN — a mutated budget cannot fail-OPEN the cap', () => {
+	it('RECALL_BUDGET is frozen (a mutation does not land)', () => {
+		expect(Object.isFrozen(RECALL_BUDGET)).toBe(true);
+		// A write to a frozen object is a silent no-op (non-strict) or throws (strict). Either way
+		// the value must not change — so even code that tries `RECALL_BUDGET.maxItems = NaN` fails
+		// to install the fail-open value the fallback would otherwise read.
+		const tryMutate = () => {
+			(RECALL_BUDGET as { maxItems: number | null }).maxItems = NaN;
+		};
+		try {
+			tryMutate();
+		} catch {
+			/* strict-mode TypeError is acceptable — the point is the value is unchanged */
+		}
+		expect(RECALL_BUDGET.maxItems).toBe(6);
+		expect(Number.isNaN(RECALL_BUDGET.maxItems as number)).toBe(false);
+	});
+
+	it('budgetCapsFor never emits a NaN/negative cap regardless of input (fallback is re-validated)', () => {
+		// Defense in depth: even if the fallback path were somehow fed a bad value, resolveCap
+		// re-validates it. An omitted field falls back to the (frozen, valid) starting point and
+		// the resolved caps are always finite, non-negative, or explicit null — never NaN.
+		for (const input of [
+			{},
+			{ maxItems: NaN },
+			{ maxTokens: NaN },
+			{ maxItems: -1, maxTokens: -1 },
+			{ maxItems: Infinity, maxTokens: -Infinity }
+		]) {
+			const caps = budgetCapsFor(input);
+			for (const v of [caps.maxItems, caps.maxTokens]) {
+				if (v === null) continue;
+				expect(Number.isFinite(v)).toBe(true);
+				expect(v).toBeGreaterThanOrEqual(0);
+			}
+		}
+	});
+});

@@ -22,7 +22,7 @@ import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import type { Embedder } from './embed';
 import { storeMemories, type MemoryCandidate, type StoredMemory, type ExtractFn, buildExtraction } from './store';
-import { gateCandidate } from './screen';
+import { gateCandidate, captureGate, screen } from './screen';
 
 function link(id: string): StringRecordId {
 	return new StringRecordId(assertRecordId(id));
@@ -270,12 +270,24 @@ function screenSkill(skill: SkillCandidate): ScreenedSkill | null {
 	if (!skill.name.trim() || skill.steps.length === 0) return null;
 	// D-026 — the NAME is an LLM-authored field too: an injected secret or DO-NOT-CAPTURE
 	// payload in skill.name must NOT persist unredacted in the skill row (the prior code put
-	// the raw name straight onto the output and into the skill_vec embed body). Run it through
-	// the SAME §3.1b screen as the description/steps: a quarantined name (e.g. a pasted private
-	// key) blocks graduation; a redactable secret is redacted in place before the row is written.
-	const ngate = gateCandidate(skill.name);
-	if (!ngate.capture || ngate.screen!.status === 'quarantined') return null;
-	const screenedName = ngate.screen!.text;
+	// the raw name straight onto the output and into the skill_vec embed body). The secret/PII
+	// §3.1b screen ALWAYS runs on the name: a quarantined name (e.g. a pasted private key)
+	// blocks graduation; a redactable secret is redacted in place before the row is written.
+	//
+	// CORRECTNESS (wave-v2.2b-c LOW ledger): the DO-NOT-CAPTURE prose gate (captureGate) was
+	// authored to screen PROSE memory claims ("the daemon is down", "connection refused") — its
+	// single-word triggers (`down`, `timeout`, `unreachable`) over-fire on ordinary hyphenated
+	// SKILL-NAME tokens (`down-detector`, `retry-on-timeout`, `recover-from-down-stream`), which
+	// are legit kebab-case identifiers, not negative claims. A skill name is a single identifier
+	// token (no internal whitespace) — the prose gate therefore applies ONLY when the name reads
+	// like prose (contains whitespace, e.g. "the gateway is unreachable right now", which STILL
+	// drops). The secret screen runs regardless, so a secret/injection embedded in a token-form
+	// name (`sk-ant-…`) is STILL caught and redacted/quarantined.
+	const nameIsProse = /\s/.test(skill.name.trim());
+	if (nameIsProse && !captureGate(skill.name).capture) return null; // prose DO-NOT-CAPTURE drop
+	const nameScreen = screen(skill.name); // §3.1b secret/PII — always, even for token names
+	if (nameScreen.status === 'quarantined') return null;
+	const screenedName = nameScreen.text;
 	if (!screenedName.trim()) return null;
 	const steps: string[] = [];
 	for (const step of skill.steps) {

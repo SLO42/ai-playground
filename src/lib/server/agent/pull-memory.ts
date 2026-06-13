@@ -111,7 +111,12 @@ export const MAX_PULL_LIMIT = 12;
  * over-inject into the live turn — so it passes a present object to opt into the token cap.
  * D-024 fail-closed: estimateTokens over-estimates, so an ambiguous count UNDER-fills.
  */
-const PULL_BUDGET: { maxItems?: number | null; maxTokens?: number | null } = {};
+// FROZEN (wave-v2.2b-c LOW ledger) — analogous to recall.ts RECALL_BUDGET: a budget tunable a
+// fail-closed cap reads must not be mutable into a fail-open state (a later `PULL_BUDGET.maxItems
+// = NaN` would flow through budgetCapsFor/resolveCap). Empty today (omitted ⇒ frozen RECALL_BUDGET
+// starting points), frozen so it stays a controlled opt-in, never a mutation surface.
+const PULL_BUDGET: Readonly<{ maxItems?: number | null; maxTokens?: number | null }> =
+	Object.freeze({});
 
 /**
  * Clamp the agent-requested limit into [1, MAX_PULL_LIMIT]. A nil/NaN/zero/negative request

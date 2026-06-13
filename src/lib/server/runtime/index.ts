@@ -311,10 +311,14 @@ export function isolatedConfigFor(
 	// set, so the legacy/no-catalog branch registers nothing; an interview spawn already had
 	// the memory-pull id REFUSED at composeCapabilities, so its `capabilities` can never carry
 	// it (no tool is registered for a sterile session — by construction, not by a second gate).
-	// The seam returns undefined ⇒ default deny ⇒ no registration. `mcpServers` is a real
-	// Claude-Code settings key (NOT a HARNESS_ONLY strip key), so it flows through to the
-	// isolated --settings unchanged. This adds ONLY a registration — every fence/screen/budget
-	// chokepoint stays in the engine the registered tool's proxy ultimately calls (pullMemory).
+	// The seam returns undefined ⇒ default deny ⇒ no registration. `mcpServers` is composed onto
+	// the isolated settings HERE, but it is a HARNESS_ONLY strip key (cli-backend.ts
+	// HARNESS_ONLY_SETTINGS_KEYS): Claude Code does NOT load MCP servers from the `--settings`
+	// file (that path silently ignores an mcpServers block — the B10 fix finding), so the CLI
+	// backend STRIPS it from `--settings` and delivers it via `--mcp-config <.mcp.json>`
+	// (+ `--strict-mcp-config`) instead (cli-backend.buildMcpConfigArgs). This adds ONLY a
+	// registration — every fence/screen/budget chokepoint stays in the engine the registered
+	// tool's proxy ultimately calls (pullMemory).
 	if (opts.mcpToolWiring && settings.capabilities) {
 		const granted = opts.mcpToolWiring(settings.capabilities);
 		if (granted && Object.keys(granted).length > 0) {

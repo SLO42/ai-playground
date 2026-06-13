@@ -67,10 +67,20 @@ export const NOVELTY_COSINE_CUT = 0.97;
  * large would be a worse failure than one slightly-over slice); every SUBSEQUENT item is
  * strictly budget-gated.
  */
-export const RECALL_BUDGET: { maxItems: number | null; maxTokens: number | null } = {
-	maxItems: 6,
-	maxTokens: 1500
-};
+// FROZEN (wave-v2.2b-c LOW ledger): RECALL_BUDGET is a documented null-tunable that the
+// fail-CLOSED `resolveCap` fallback reads. As a MUTABLE export it was a fail-OPEN hole — any
+// code (or a poisoned path) could set `RECALL_BUDGET.maxItems = NaN`, which `budgetCapsFor`
+// then handed to `resolveCap` AS THE FALLBACK; the old fallback was returned UNVALIDATED, so a
+// NaN cap flowed downstream where `len >= NaN` / `used+cost > NaN` is always false — the cap
+// silently never fires and the budget FAILS OPEN to unbounded injection (the exact D-024
+// failure). `Object.freeze` makes the starting points immutable (a mutation throws in strict
+// mode / is a silent no-op otherwise — never lands); `resolveCap` ALSO re-validates the
+// fallback (defense in depth) so even a hypothetical bad constant can't fail open.
+export const RECALL_BUDGET: Readonly<{ maxItems: number | null; maxTokens: number | null }> =
+	Object.freeze({
+		maxItems: 6,
+		maxTokens: 1500
+	});
 
 /**
  * Resolve the effective budget caps for a recall call. `undefined` budget ⇒ OFF (both null —
@@ -89,10 +99,17 @@ export const RECALL_BUDGET: { maxItems: number | null; maxTokens: number | null 
  * exact. Only `null` (explicit operator opt-out) and a finite `>= 0` number reach the consumer.
  */
 function resolveCap(value: number | null | undefined, fallback: number): number | null {
-	if (value === undefined) return fallback; // omitted ⇒ documented starting point
+	// Re-validate the FALLBACK first (wave-v2.2b-c LOW ledger): RECALL_BUDGET is now frozen, but
+	// resolveCap must NEVER emit an invalid cap regardless of where the fallback came from — an
+	// invalid fallback (NaN / ±Infinity / negative) returned raw would make the downstream guards
+	// (`len >= cap`, `used+cost > cap`) compare against NaN, which is always false ⇒ the cap never
+	// fires ⇒ FAIL OPEN to unbounded injection (D-024 forbids this). Collapse an invalid fallback
+	// to 0 — the most conservative cap (drops the budgeted tail entirely), fail-CLOSED not open.
+	const safeFallback = Number.isFinite(fallback) && fallback >= 0 ? Math.floor(fallback) : 0;
+	if (value === undefined) return safeFallback; // omitted ⇒ documented starting point
 	if (value === null) return null; // explicit opt-out ⇒ cap OFF
 	// Invalid number (NaN / ±Infinity / negative) ⇒ fail CLOSED to the safe default, never open.
-	if (!Number.isFinite(value) || value < 0) return fallback;
+	if (!Number.isFinite(value) || value < 0) return safeFallback;
 	return Math.floor(value); // finite, >= 0 ⇒ honour it (floor keeps count/token units integral)
 }
 

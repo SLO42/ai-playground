@@ -413,6 +413,102 @@ describe('RT-2 (D-026) screenSkill — the skill NAME is screened too (no raw se
 	});
 });
 
+describe('LOW-1 (wave-v2.2b-c) screenSkill name gate — hyphenated identifier names are NOT over-dropped', () => {
+	// The DO-NOT-CAPTURE prose gate (captureGate) was authored for PROSE memory claims; its
+	// single-word triggers (`down`, `timeout`, `unreachable`) over-fired on legit kebab-case
+	// SKILL-NAME tokens, dropping `down-detector` / `retry-on-timeout` etc. The fix: the prose
+	// gate applies ONLY to a name that reads like prose (contains whitespace); the secret/PII
+	// screen still runs on every name, so an injected secret in a token name is STILL caught.
+
+	it('legit hyphenated names graduate (handle-connection-refused, fix-cannot-resolve, down-detector, retry-on-timeout)', async () => {
+		const before = await countSkills();
+		const names = [
+			'handle-connection-refused',
+			'fix-cannot-resolve',
+			'down-detector',
+			'retry-on-timeout',
+			'recover-from-down-stream',
+			'resolve-unreachable-host'
+		];
+		const proposeSkills = async (): Promise<SkillCandidate[]> =>
+			names.map((name) => ({ name, description: 'a fine description', steps: ['do a thing'] }));
+		const out = await runReviewFork({
+			payload: { kind: 'skill', turnText: 'turn', session: sessionId },
+			surface,
+			extract: noExtract,
+			proposeSkills
+		});
+		// Every legit hyphenated name graduated (none dropped by the prose gate).
+		expect(out.skills.every((s) => s.persisted)).toBe(true);
+		expect(out.skills.map((s) => Boolean(s.persisted))).toEqual(names.map(() => true));
+		expect(await countSkills()).toBe(before + names.length);
+		// The names persisted unredacted (they carry no secret/PII).
+		const [rows] = await db.query<[Array<{ name: string }>]>(`SELECT name FROM skill WHERE id IN $ids;`, {
+			ids: out.skills.map((s) => rid(s.id))
+		});
+		const stored = new Set(rows.map((r) => r.name));
+		for (const n of names) expect(stored.has(n)).toBe(true);
+	});
+
+	it('a secret in a TOKEN-form name (no whitespace) is STILL caught by the secret screen', async () => {
+		// Token-form names skip the PROSE gate — but the secret/PII screen runs regardless,
+		// so a no-whitespace secret name is redacted in the persisted row (never stored raw).
+		const SECRET = 'sk-ant-abcdefghij1234567890';
+		const proposeSkills = async (): Promise<SkillCandidate[]> => [
+			{ name: SECRET, description: 'a fine description', steps: ['do a thing'] }
+		];
+		const out = await runReviewFork({
+			payload: { kind: 'skill', turnText: 'turn', session: sessionId },
+			surface,
+			extract: noExtract,
+			proposeSkills
+		});
+		expect(out.skills[0].persisted).toBe(true);
+		const [rows] = await db.query<[Array<{ name: string }>]>(`SELECT name FROM $id;`, {
+			id: rid(out.skills[0].id)
+		});
+		expect(rows[0].name).not.toContain(SECRET);
+		expect(rows[0].name).toContain('[REDACTED:anthropic-key]');
+	});
+
+	it('an injection/private-key TOKEN name still QUARANTINES (does NOT graduate)', async () => {
+		// A private-key block is multi-token (has whitespace) but the point holds: a real secret
+		// in the name blocks graduation even though the prose-gate narrowing landed.
+		const before = await countSkills();
+		const proposeSkills = async (): Promise<SkillCandidate[]> => [
+			{
+				name: '-----BEGIN RSA PRIVATE KEY-----\nMIIabc\n-----END RSA PRIVATE KEY-----',
+				description: 'a fine description',
+				steps: ['do a thing']
+			}
+		];
+		const out = await runReviewFork({
+			payload: { kind: 'skill', turnText: 'turn', session: sessionId },
+			surface,
+			extract: noExtract,
+			proposeSkills
+		});
+		expect(out.skills[0].persisted).toBe(false);
+		expect(out.skills[0].dropReason).toMatch(/quarantine/);
+		expect(await countSkills()).toBe(before);
+	});
+
+	it('a PROSE negative-claim name (whitespace) STILL drops (prose gate preserved)', async () => {
+		const before = await countSkills();
+		const proposeSkills = async (): Promise<SkillCandidate[]> => [
+			{ name: 'the gateway is unreachable right now', description: 'd', steps: ['s'] }
+		];
+		const out = await runReviewFork({
+			payload: { kind: 'skill', turnText: 'turn', session: sessionId },
+			surface,
+			extract: noExtract,
+			proposeSkills
+		});
+		expect(out.skills[0].persisted).toBe(false);
+		expect(await countSkills()).toBe(before);
+	});
+});
+
 describe('RT-3 (D-026) runReviewFork — the injected LLM return is shape-validated (named error, not raw TypeError)', () => {
 	it('extract returning a non-array (object) throws a NAMED ReviewForkShapeError', async () => {
 		const badExtract = (async () => ({ not: 'an array' })) as unknown as ExtractFn;

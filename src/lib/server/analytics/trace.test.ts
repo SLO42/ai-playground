@@ -139,6 +139,7 @@ describe('traceAction — the how/why chain for one action (2.4 VERIFY)', () => 
 				score: 0.82,
 				wasNeighbor: false,
 				explain: { cosine: 0.82, utility: 0, recency: 0.5 },
+				body: 'The widget API uses POST /widgets with an idempotency key.',
 				fenced: { source: 'recall', citationId: '1', text: 'ref' }
 			}
 		];

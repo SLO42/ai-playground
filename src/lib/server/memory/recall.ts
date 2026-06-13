@@ -111,6 +111,16 @@ export interface RecallItem {
 	wasNeighbor: boolean;
 	/** Explain-mode breakdown (§4.4) for the /memory recall-explain view. */
 	explain: { cosine: number; utility: number; recency: number };
+	/**
+	 * The already-screened (§3.1b), active-set-filtered, novelty-/budget-survived body —
+	 * the RAW content of the row (D-029 raw-windowed; NO summary-LLM ran over it). It is
+	 * the SAME text wrapped inside `fenced`, exposed so a downstream injection path (e.g.
+	 * the agent-callable pull tool) can re-route it through the §10 `assembleInjection()`
+	 * chokepoint rather than reaching for the row body itself. Reading this is NOT a fence
+	 * bypass: it is post-screen, post-quarantine-filter content; any path that injects it
+	 * MUST still fence it (that is exactly what `assembleInjection()` does).
+	 */
+	body: string;
 	/** The FENCED block ready to splice into context (§10). */
 	fenced: FencedItem;
 }
@@ -346,6 +356,9 @@ export async function recall(opts: RecallOptions, query: string): Promise<Recall
 			score: c.score,
 			wasNeighbor: c.wasNeighbor,
 			explain: { cosine: c.cosine, utility: c.utility, recency: c.recency },
+			// `c.content` is the screened (§3.1b), active-set-filtered row body — exposed raw
+			// (D-029) so a downstream injection path can re-fence it via assembleInjection().
+			body: c.content,
 			fenced: fence({ source: 'recall', body: c.content, citationId })
 		};
 	});

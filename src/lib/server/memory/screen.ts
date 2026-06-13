@@ -91,6 +91,35 @@ interface SecretRule {
 	placeholder: string;
 	/** If true, a hit quarantines the whole candidate rather than redacting a span. */
 	quarantineOnHit?: boolean;
+	/**
+	 * Optional per-match guard. A regex match is only treated as a real hit (and
+	 * redacted) when this returns true; when it returns false the matched span is left
+	 * verbatim. Used to add a semantic check a regex alone can't express (e.g. a Luhn
+	 * gate on a digit run) so legitimate look-alikes (build IDs, version strings) are
+	 * NOT destroyed — F-008. Absent ⇒ every regex match is a hit (the prior behaviour).
+	 */
+	validate?: (match: string) => boolean;
+}
+
+/** Luhn (mod-10) checksum — a real payment-card number passes; an arbitrary digit run
+ *  (build artifact id, version string, phone, ordinal sequence) almost never does. Used
+ *  to gate the card-number rule so legit numeric strings are not redacted (F-008). */
+function luhnValid(raw: string): boolean {
+	const digits = raw.replace(/\D/g, '');
+	if (digits.length < 13 || digits.length > 19) return false;
+	let sum = 0;
+	let alt = false;
+	for (let i = digits.length - 1; i >= 0; i--) {
+		let d = digits.charCodeAt(i) - 48; // '0' = 48
+		if (d < 0 || d > 9) return false;
+		if (alt) {
+			d *= 2;
+			if (d > 9) d -= 9;
+		}
+		sum += d;
+		alt = !alt;
+	}
+	return sum % 10 === 0;
 }
 
 const SECRET_RULES: SecretRule[] = [
@@ -105,9 +134,14 @@ const SECRET_RULES: SecretRule[] = [
 	// A private-key PEM block — quarantine the candidate AND redact the WHOLE block
 	// (header → footer, multiline) so no key material survives even though the row is
 	// quarantined (a quarantined row is still written for audit; its body must be safe).
+	// Marker matching is case-INSENSITIVE (/i): a lowercase PEM header
+	// (`-----begin rsa private key-----`) or a lowercase OpenSSH header is still a
+	// private key — case-sensitive markers let a lowercase paste evade the screen and
+	// embed/store raw key material (the wave-v2.2b-a key-material leak). The literal
+	// `-----`/whitespace/`[\s\S]` body is case-agnostic, so /i adds no false positives.
 	{
 		id: 'private-key',
-		re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----/g,
+		re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----[\s\S]*?-----END (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----/gi,
 		placeholder: '[REDACTED:private-key]',
 		quarantineOnHit: true
 	},
@@ -120,7 +154,7 @@ const SECRET_RULES: SecretRule[] = [
 	// presumed key material and is redacted wholesale so no partial key lands in the row body.
 	{
 		id: 'private-key-header',
-		re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----[\s\S]*$/g,
+		re: /-----BEGIN (?:RSA |EC |OPENSSH |DSA |PGP )?PRIVATE KEY-----[\s\S]*$/gi,
 		placeholder: '[REDACTED:private-key]',
 		quarantineOnHit: true
 	},
@@ -130,9 +164,18 @@ const SECRET_RULES: SecretRule[] = [
 		re: /\b(pass(word|wd)?|secret|api[_-]?key|access[_-]?token|auth[_-]?token|client[_-]?secret)\b\s*[:=]\s*["']?[^\s"']{6,}/gi,
 		placeholder: '[REDACTED:credential]'
 	},
-	// PII: email addresses + obvious card-like 16-digit runs.
+	// PII: email addresses + payment-card numbers.
 	{ id: 'email', re: /\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, placeholder: '[REDACTED:email]' },
-	{ id: 'card-number', re: /\b(?:\d[ -]?){13,16}\b/g, placeholder: '[REDACTED:card]' }
+	// A 13–16 digit run is only redacted when it passes the Luhn checksum — a raw
+	// `\b(?:\d[ -]?){13,16}\b` match mangled legit build artifact ids / version strings
+	// (F-008 data destruction). Luhn keeps real cards (Visa/Stripe test numbers pass)
+	// while letting arbitrary numeric strings through verbatim.
+	{
+		id: 'card-number',
+		re: /\b(?:\d[ -]?){13,16}\b/g,
+		placeholder: '[REDACTED:card]',
+		validate: luhnValid
+	}
 ];
 
 // Private/home filesystem paths — operator-private, redacted not quarantined.
@@ -160,13 +203,29 @@ export function screen(text: string): ScreenResult {
 		let quarantine = false;
 
 		for (const rule of ALL_RULES) {
-			// Use a fresh test against the source slice; replace globally.
 			rule.re.lastIndex = 0;
-			if (rule.re.test(out)) {
-				reasons.push(rule.id);
-				if (rule.quarantineOnHit) quarantine = true;
+			let hit = false;
+			if (rule.validate) {
+				// Per-match guard: only matches that pass `validate` are redacted; a
+				// failing match is left verbatim (so a legit look-alike is not destroyed,
+				// F-008). `hit` becomes true only if at least one match was actually
+				// redacted — a rule that matches but validates-false is NOT a hit.
+				const validate = rule.validate;
+				out = out.replace(rule.re, (m) => {
+					if (validate(m)) {
+						hit = true;
+						return rule.placeholder;
+					}
+					return m;
+				});
+			} else if (rule.re.test(out)) {
+				hit = true;
 				rule.re.lastIndex = 0;
 				out = out.replace(rule.re, rule.placeholder);
+			}
+			if (hit) {
+				reasons.push(rule.id);
+				if (rule.quarantineOnHit) quarantine = true;
 			}
 		}
 

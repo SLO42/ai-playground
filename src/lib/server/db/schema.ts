@@ -1313,6 +1313,32 @@ const m0033_memory_session_provenance: Migration = {
 	`
 };
 
+// ── F-025 — gauntlet_fixture sentinel non-empty for active/retired status ───────
+//
+// The §4.2 sentinel sweep runs `string::contains(content, sentinel)` on every leak
+// surface. In SurrealDB 2.x an EMPTY needle matches EVERY row, so an ACTIVATED or
+// RETIRED fixture carrying sentinel='' would make the boot sweep flag every memory/
+// transcript row as a leak (fabricated F-008 notifications + a work_item flood). The
+// sentinel is EMPTY BY DESIGN while status='proposed' (it is injected mechanically at
+// activation — workforce/activation.ts), so the assert is CONDITIONAL: empty is legal
+// ONLY for a proposed fixture; an active/retired fixture must carry a non-empty
+// sentinel. The ASSERT reads the sibling `status` field (SurrealDB 2.x DEFINE FIELD
+// asserts can reference other fields of the same record by name).
+//
+// IDEMPOTENT (F-015): a single OVERWRITE FIELD redefine — clean over a fresh DB, a
+// half-applied state, and a re-run. Redefining a field does NOT re-validate existing
+// rows in SurrealDB 2.x (asserts fire only on writes), so no row backfill/scan is
+// needed: the existing pool (all sentinels minted non-empty by activation, layer a)
+// is already conformant, and the assert gates every future write. Apply-twice +
+// half-applied recovery proven by workforce/repo.test.ts (gauntlet migration suite).
+const m0034_gauntlet_sentinel_nonempty: Migration = {
+	id: '0034_gauntlet_sentinel_nonempty',
+	up: `
+		DEFINE FIELD OVERWRITE sentinel ON gauntlet_fixture TYPE string
+			ASSERT status = NONE OR status = "proposed" OR string::len($value) > 0;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1352,5 +1378,6 @@ export const schemaMigrations: Migration[] = [
 	m0030_pm_review_provenance,
 	m0031_workforce,
 	m0032_proposed_tasks,
-	m0033_memory_session_provenance
+	m0033_memory_session_provenance,
+	m0034_gauntlet_sentinel_nonempty
 ];

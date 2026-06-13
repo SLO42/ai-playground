@@ -358,10 +358,13 @@ export async function runGauntlet(deps: GauntletDeps, input: RunGauntletInput): 
 			});
 			return { kind: 'queued', reason: verdict.detail, workItemId: q.enqueued ? q.id : null };
 		}
-		await recordAutoToken(db, { role_version: version.id, tier: input.tier, model_id: input.modelId });
 	}
 
-	// Pre-spend pre-flight (fail BEFORE any session): sample + keys + plant floor + control.
+	// Pre-spend pre-flight (fail BEFORE any session AND before any day-cap token is
+	// spent): sample + keys + plant floor + control. A WorkforceInputError here aborts
+	// the run with NO side effects — for trigger:'auto' that means NO counting token is
+	// recorded, so a no-run never burns a day-cap slot (a slot is spent only when a run
+	// actually starts — the recordAutoToken below runs strictly AFTER this block).
 	const fixtures = await sampleFixtures(db, role, version);
 	const keys = await loadScoringKeys(db, fixtures);
 	let plantedTotal = 0;
@@ -372,6 +375,14 @@ export async function runGauntlet(deps: GauntletDeps, input: RunGauntletInput): 
 		);
 	}
 	const control = await loadScorerControl(db, role);
+
+	// §3.7 — the day-cap counting token is recorded ONLY now that the pre-flight has
+	// passed and a real run is about to start. Recording it before the pre-flight
+	// (the original bug) let an uncaught pre-flight WorkforceInputError consume a slot
+	// with no interview ever running.
+	if (input.trigger === 'auto') {
+		await recordAutoToken(db, { role_version: version.id, tier: input.tier, model_id: input.modelId });
+	}
 
 	const first = await attemptGauntlet(deps, { role, version, fixtures, keys, plantedTotal, control, input });
 	if (first.status !== 'error') return { kind: 'ran', run: first };

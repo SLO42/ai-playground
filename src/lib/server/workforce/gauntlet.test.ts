@@ -788,6 +788,103 @@ describe('§3.7 budget gate — auto triggers count-and-surface until armed', ()
 		expect(verdict.allowed).toBe(false);
 		if (!verdict.allowed) expect(verdict.reason).toBe('tier_not_allowed');
 	}, 45_000);
+
+	// F-025 defect 2: the day-cap counting token must be recorded ONLY when a run
+	// actually starts — i.e. AFTER the pre-flight (sample / keys / plant-floor) passes.
+	// The original code recorded it BEFORE the pre-flight, so an ARMED auto trigger that
+	// then hit an uncaught pre-flight WorkforceInputError burned a day-cap slot for a
+	// run that never happened. Each sub-case arms the budget (cap=1, sonnet allowed) so
+	// the budget gate ALLOWS — the ONLY thing that can stop the run is the pre-flight.
+	describe('F-025 — an ARMED auto trigger that fails pre-flight consumes NO day-cap token', () => {
+		async function tokensSpent(): Promise<number> {
+			const [rows] = await db.query<[Array<{ c: number }>]>(
+				`SELECT count() AS c FROM work_item WHERE work_type = $wt GROUP ALL;`,
+				{ wt: AUTO_INTERVIEW_TOKEN_TYPE }
+			);
+			return rows[0]?.c ?? 0;
+		}
+
+		// Cap set high so the budget gate ALWAYS allows regardless of tokens other tests
+		// in this file recorded today (the day-cap count is shared on the one test DB);
+		// the ONLY thing that can stop these runs is the pre-flight under test.
+		const armedConfig = () => testConfig({ max_auto_interviews_per_day: 1000, allowed_auto_tiers: ['sonnet'] });
+
+		it('no active fixtures: refuses (sampleFixtures), token unspent', async () => {
+			const before = await tokensSpent();
+			const bare = await createRole(db, { slug: 'auto-bare', name: 'Auto Bare', purpose: 'no fixtures' });
+			const bareVersion = await createRoleVersion(db, {
+				role: bare.id,
+				prompt_core: 'x',
+				default_tier: 'sonnet'
+			});
+			const backend = candidateBackend(null, { role: bare, version: bareVersion, defectSlug: '', controlSlug: '' });
+			await expect(
+				runGauntlet(depsFor(backend, armedConfig()), {
+					roleVersionId: bareVersion.id,
+					tier: 'sonnet',
+					provider: 'claude',
+					modelId: 'claude-sonnet-x',
+					trigger: 'auto'
+				})
+			).rejects.toThrow(WorkforceInputError);
+			expect(backend.plans).toHaveLength(0); // refused before any session
+			expect(await tokensSpent()).toBe(before); // NO day-cap slot burned
+		});
+
+		it('a keyless active fixture: refuses (loadScoringKeys), token unspent', async () => {
+			const before = await tokensSpent();
+			const role = await createRole(db, { slug: 'auto-keyless', name: 'Auto Keyless', purpose: 'fixture w/o key' });
+			const version = await createRoleVersion(db, { role: role.id, prompt_core: 'x', default_tier: 'sonnet' });
+			const fixture = await createGauntletFixture(db, {
+				role: role.id,
+				slug: 'auto-keyless-fx',
+				kind: 'planted_defect',
+				work: { 'a.ts': 'process.kill(pid, 0);\n' },
+				sentinel: newSentinelUlid()
+			});
+			// NO createGauntletKey — activate the keyless fixture so it is sampled.
+			await activateGauntletFixture(db, fixture.id);
+			const backend = candidateBackend(null, { role, version, defectSlug: 'auto-keyless-fx', controlSlug: '' });
+			await expect(
+				runGauntlet(depsFor(backend, armedConfig()), {
+					roleVersionId: version.id,
+					tier: 'sonnet',
+					provider: 'claude',
+					modelId: 'claude-sonnet-x',
+					trigger: 'auto'
+				})
+			).rejects.toThrow(WorkforceInputError);
+			expect(backend.plans).toHaveLength(0);
+			expect(await tokensSpent()).toBe(before);
+		});
+
+		it('a plantless pool (key with zero plants): refuses (plant floor §3.5), token unspent', async () => {
+			const before = await tokensSpent();
+			const role = await createRole(db, { slug: 'auto-plantless', name: 'Auto Plantless', purpose: 'zero plants' });
+			const version = await createRoleVersion(db, { role: role.id, prompt_core: 'x', default_tier: 'sonnet' });
+			const fixture = await createGauntletFixture(db, {
+				role: role.id,
+				slug: 'auto-plantless-fx',
+				kind: 'clean_control',
+				work: { 'a.ts': 'clean code\n' },
+				sentinel: newSentinelUlid()
+			});
+			await createGauntletKey(db, { fixture: fixture.id, plants: [] }); // zero plants
+			await activateGauntletFixture(db, fixture.id);
+			const backend = candidateBackend(null, { role, version, defectSlug: 'auto-plantless-fx', controlSlug: '' });
+			await expect(
+				runGauntlet(depsFor(backend, armedConfig()), {
+					roleVersionId: version.id,
+					tier: 'sonnet',
+					provider: 'claude',
+					modelId: 'claude-sonnet-x',
+					trigger: 'auto'
+				})
+			).rejects.toThrow(/ZERO plants/);
+			expect(backend.plans).toHaveLength(0);
+			expect(await tokensSpent()).toBe(before);
+		});
+	});
 });
 
 describe('sampling rails (§3.8/§4.4) + path boundary', () => {

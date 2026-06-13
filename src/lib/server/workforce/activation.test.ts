@@ -207,6 +207,101 @@ describe('activateGauntletFixture — atomic injection + re-address + key re-bin
 	});
 });
 
+// ── F-025: empty-sentinel match-all defense-in-depth (3 layers) ─────────────────────
+
+describe('F-025 — an active/retired fixture can never carry an empty sentinel (3-layer defense)', () => {
+	it('LAYER (a) activation boundary: activating an empty-sentinel fixture is refused (named)', async () => {
+		// A fixture authored with an empty sentinel (proposed state — legal at rest).
+		const fixture = await createGauntletFixture(db, {
+			role: roleId,
+			slug: 'f025-empty-activate',
+			kind: 'clean_control',
+			work: { 'g.ts': 'clean\n' },
+			sentinel: ''
+		});
+		expect(fixture.status).toBe('proposed'); // proposed + empty sentinel is legal
+		await expect(activateGauntletFixture(db, fixture.id)).rejects.toThrow(WorkforceInputError);
+		await expect(activateGauntletFixture(db, fixture.id)).rejects.toThrow(/empty sentinel/i);
+		// It stayed proposed — the boundary refused the transition, no half-state.
+		const [after] = await db.query<[Array<{ status: string }>]>(`SELECT status FROM $f;`, {
+			f: rid(fixture.id)
+		});
+		expect(after[0].status).toBe('proposed');
+	});
+
+	it('LAYER (b) schema assert: proposed+empty is allowed; active/retired+empty is rejected by the DDL', async () => {
+		// proposed + empty sentinel: the DDL assert permits it (empty by design pre-activation).
+		const ok = await createGauntletFixture(db, {
+			role: roleId,
+			slug: 'f025-schema-proposed',
+			kind: 'clean_control',
+			work: { 'h.ts': 'clean\n' },
+			sentinel: ''
+		});
+		expect(ok.sentinel).toBe('');
+		// Forcing status='active' while sentinel stays '' must be rejected by the field assert
+		// (the write re-validates every SCHEMAFULL field — §6.5). Bypasses the activation
+		// boundary deliberately to prove the schema layer stands on its own.
+		await expect(
+			db.query(`UPDATE $f SET status = 'active';`, { f: rid(ok.id) })
+		).rejects.toThrow();
+		// retired + empty is likewise rejected.
+		await expect(
+			db.query(`UPDATE $f SET status = 'retired';`, { f: rid(ok.id) })
+		).rejects.toThrow();
+		// The row stayed proposed (the rejected writes did not partially apply the status).
+		const [after] = await db.query<[Array<{ status: string }>]>(`SELECT status FROM $f;`, {
+			f: rid(ok.id)
+		});
+		expect(after[0].status).toBe('proposed');
+		// A non-empty sentinel write to active is accepted (the assert only blocks empty).
+		await db.query(`UPDATE $f SET sentinel = $s, status = 'active';`, {
+			f: rid(ok.id),
+			s: newSentinelUlid()
+		});
+		const [active] = await db.query<[Array<{ status: string }>]>(`SELECT status FROM $f;`, {
+			f: rid(ok.id)
+		});
+		expect(active[0].status).toBe('active');
+	});
+
+	it('LAYER (c) sweep: an empty sentinel is SKIPPED, never string::contains-matched against all rows', async () => {
+		// Force an empty-sentinel active fixture into the DB BY-PASSING both guards above —
+		// the only way to reach this state is a direct ROOT write with the assert dropped.
+		// We simulate the dangerous legacy row by temporarily removing the field assert,
+		// writing the row, then restoring the assert. The sweep must still not match-all.
+		await db.query(`DEFINE FIELD OVERWRITE sentinel ON gauntlet_fixture TYPE string;`);
+		const leaked = await createGauntletFixture(db, {
+			role: roleId,
+			slug: 'f025-sweep-empty',
+			kind: 'planted_defect',
+			work: { 'i.ts': 'x\n' },
+			sentinel: ''
+		});
+		await db.query(`UPDATE $f SET status = 'active';`, { f: rid(leaked.id) });
+		// Restore the real assert immediately (leave the schema as the migration defines it).
+		await db.query(
+			`DEFINE FIELD OVERWRITE sentinel ON gauntlet_fixture TYPE string
+				ASSERT status = NONE OR status = "proposed" OR string::len($value) > 0;`
+		);
+		// Ensure there is at least one row on each surface that the empty needle WOULD match.
+		const v = new Array(1024).fill(0);
+		v[0] = 1;
+		await db.query(`CREATE memory SET content = $c, namespace = 'default', embedding = $v;`, {
+			c: 'unrelated memory row that an empty needle would falsely match',
+			v
+		});
+
+		const result = await sentinelSweep(db);
+		// The empty-sentinel fixture contributes ZERO hits (skipped), so no surface is
+		// match-alled by it. Defect would have produced a hit for every memory row.
+		expect(result.hits.filter((h) => h.fixtureSlug === 'f025-sweep-empty')).toEqual([]);
+
+		// Cleanup: retire-by-delete the synthetic row so it never pollutes later sweeps.
+		await db.query(`DELETE $f;`, { f: rid(leaked.id) });
+	});
+});
+
 // ── Sentinel sweep (§4.2) — the CI red-green tripwire ───────────────────────────────
 
 describe('sentinelSweep — fixture ULIDs absent from every leak surface (§4.2)', () => {

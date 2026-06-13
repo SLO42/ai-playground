@@ -152,6 +152,20 @@ export async function activateGauntletFixture(db: Db, fixtureId: string): Promis
 		return { fixture, activated: false, staleMarked: 0, reinterviewQueued: false };
 	}
 
+	// Empty-sentinel guard (§4.2 / F-025): an ACTIVATED fixture must carry a non-empty
+	// sentinel. The sentinel is legitimately empty while status='proposed' (it is the
+	// activation step that injects it), but `sentinelSweep` runs `string::contains(content, sentinel)`
+	// and in SurrealDB 2.x an EMPTY needle matches EVERY row — an active/retired fixture
+	// with sentinel='' would make the boot sweep flag every memory/transcript row as a
+	// leak (fabricated F-008 notifications + a work_item flood). Refuse activation of an
+	// unguarded fixture with a NAMED error rather than mint a match-all sentinel.
+	if (str(fixture.sentinel).length === 0) {
+		throw new WorkforceInputError(
+			`gauntlet_fixture ${fixture.slug} has an empty sentinel — cannot activate (an active fixture's ` +
+				`sentinel is the leak tripwire and must be non-empty; an empty needle match-alls the sweep, F-025)`
+		);
+	}
+
 	// 1. Server-side sentinel injection (AFTER all agent authoring — §4.2) + atomic
 	//    re-address: work, content_sha, status, and the key re-bind in ONE transaction.
 	const injected = injectSentinel(fixture.work, fixture.sentinel);
@@ -241,6 +255,11 @@ export async function sentinelSweep(db: Db): Promise<SentinelSweepResult> {
 	const hits: SentinelHit[] = [];
 	for (const f of fixtures) {
 		const sentinel = str(f.sentinel);
+		// Empty-needle guard (F-025): SurrealDB 2.x `string::contains(content, '')` matches
+		// EVERY row, so an empty sentinel would fabricate a leak hit on every memory/pm_memory/
+		// transcript row. Layers (a)+(b) make an active/retired empty sentinel impossible, but
+		// the sweep stays defense-in-depth: an empty sentinel is uncheckable, never match-all.
+		if (sentinel.length === 0) continue;
 		const base = {
 			sentinel,
 			fixture: str(f.id),

@@ -299,3 +299,45 @@ The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
 - **Prevention**: when testing a recall/query FILTER with a mock embedder, take
   ranking out of the equation (limit ≥ row count, or query by id) — never let a
   top-N cut stand between the assertion and the mechanism under test.
+
+## F-025: SurrealDB string::contains(field, "") matches ALL rows — an empty-needle leak/scan filter match-alls (sibling of F-022)
+- **Date**: 2026-06-13
+- **What**: red-team found two W-D7b gauntlet latent defects. (1) The §4.2
+  sentinel sweep runs `string::contains(content, sentinel)` over memory/pm_memory/
+  non-interview transcripts. In SurrealDB 2.x an EMPTY needle matches EVERY row
+  (probe: 2/2), and an activated/retired `gauntlet_fixture` with `sentinel=''`
+  was possible — `createGauntletFixture` had no non-empty guard and the schema
+  field was a bare `DEFINE FIELD sentinel TYPE string`. So one empty-sentinel
+  active fixture would flag EVERY memory/transcript row as a leak → fabricated
+  leak notification (F-008) + a work_item flood at every connected boot
+  (`runSentinelSweep` is wired in hooks.server.ts). (2) `runGauntlet` recorded
+  the auto day-cap counting token (`recordAutoToken`) BEFORE the pre-flight
+  (sampleFixtures/loadScoringKeys/zero-plant floor), which can throw an uncaught
+  `WorkforceInputError` — so a `trigger:'auto'` run that failed pre-flight burned
+  a day-cap slot for a run that never started. The existing 'refuses BEFORE
+  spend' test used `trigger:'operator'` (bypasses the budget gate) so the AUTO
+  spend path was untested.
+- **Why**: the sentinel is empty BY DESIGN while `status='proposed'` (injected at
+  activation), so a blanket non-empty rule was wrong — the gap was a CONDITIONAL
+  invariant (empty allowed only for proposed) enforced nowhere. And the token was
+  ordered as "gate passed ⇒ spend" instead of "run actually starts ⇒ spend";
+  the pre-flight sits between the two and can abort.
+- **Fix**: defect 1 — defense-in-depth at 3 layers: (a) `activateGauntletFixture`
+  refuses an empty-sentinel fixture with a named `WorkforceInputError` before the
+  proposed→active transition; (b) migration `m0034_gauntlet_sentinel_nonempty`
+  (OVERWRITE-idempotent) redefines `sentinel` with a sibling-field assert
+  `status = "proposed" OR string::len($value) > 0`; (c) `sentinelSweep` skips
+  empty sentinels (never calls `string::contains` with an empty needle). Defect 2
+  — moved `recordAutoToken` to AFTER the pre-flight succeeds, so a no-run never
+  consumes a slot; regression tests for `trigger:'auto'` hitting each pre-flight
+  failure (no active fixtures / keyless fixture / plantless pool) assert NO token
+  consumed.
+- **Prevention**: NEVER build a leak/scan filter on an unguarded empty needle —
+  `string::contains(field, "")` (and the `string::*` family) match-all in
+  SurrealDB 2.x; guard the needle (`if (!needle) continue;`) AND make the empty
+  state structurally unreachable at the write boundary + schema (conditional
+  assert when empty is legal only in a known state). And meter a budget/quota
+  token at the point the metered work ACTUALLY STARTS, never at "the gate
+  allowed it" — anything that can throw between the gate and the work (a
+  pre-flight) will spend a slot for nothing; test the spend path through the
+  trigger that actually exercises the gate, not a bypassing trigger.

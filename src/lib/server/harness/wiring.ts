@@ -36,6 +36,7 @@ import { ClaudeCliBackend } from '../claude-code/cli-backend';
 import { catalogIds } from '../cc-config/index';
 import { DEFAULT_GATE_POLICY } from '../claude-code/gates';
 import { buildDrivenHookSettings } from './hooks-wiring';
+import { buildMemoryPullMcpServer, memoryPullGranted } from '../agent/tool-catalog';
 import { loadOrchestration, resolveAdaptiveConfig, type IntentClass } from '../config/index';
 import type { Db } from '../db/client';
 
@@ -127,6 +128,18 @@ export async function getRuntime(db?: Db): Promise<RuntimeAvailability> {
 		env: process.env,
 		projectRoot: process.cwd()
 	});
+	// TASK B10 — the capability-gated agent-tool wiring seam. The runtime calls this with each
+	// spawn's COMPOSED, catalog-validated capability set; it registers the B10 memory pull-tool
+	// (an isolated-config MCP stdio server) ONLY when the bundle granted `memory-pull` AND the
+	// loopback control plane is wired (HOOK_URL/HOOK_TOKEN — D-025). FAIL CLOSED: a non-granted
+	// set ⇒ undefined ⇒ no registration (a non-capability'd session can never invoke the tool).
+	// The token is NEVER baked into the command — the MCP server reads it from the inherited
+	// spawn env, like the hook proxy (hooks-wiring). serverRoot resolves scripts/ under cwd.
+	const serverRoot = process.cwd();
+	const mcpToolWiring = (capabilities: CapabilitySet): Record<string, unknown> | undefined => {
+		if (!memoryPullGranted(capabilities)) return undefined;
+		return buildMemoryPullMcpServer({ env: process.env, serverRoot });
+	};
 	cachedRuntime = new ClaudeCodeRuntime({
 		backend,
 		harnessConfigRoot: process.env.HARNESS_CONFIG_ROOT?.trim() || '.harness/claude-config',
@@ -136,7 +149,8 @@ export async function getRuntime(db?: Db): Promise<RuntimeAvailability> {
 		// D-019 lifecycle hooks (analytics-only) ride every isolated --settings so a driven
 		// session POSTs SessionStart/UserPromptSubmit/PostToolUse/Stop to the loopback ingest.
 		hooks,
-		catalog
+		catalog,
+		mcpToolWiring
 	});
 	return { available: true, runtime: cachedRuntime };
 }

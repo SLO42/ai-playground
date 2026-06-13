@@ -230,6 +230,22 @@ export interface IsolatedConfigOptions {
 	 * provisioning happens (the harness base only) — legacy/no-catalog spawns are unchanged.
 	 */
 	catalog?: CapabilityCatalog;
+	/**
+	 * TASK B10 (capability-gated agent tools) — the tool-catalog wiring seam. Given the
+	 * COMPOSED, catalog-validated capability set for this spawn, returns the isolated-config
+	 * `mcpServers` block that REGISTERS any capability-granted agent tool (e.g. the B10
+	 * memory pull-tool), or undefined when nothing is granted / the control plane is not wired.
+	 *
+	 * Why an injected callback (not a direct import): the concrete builder lives in
+	 * `agent/tool-catalog.ts`, which imports from `runtime/`. Injecting it at the boot seam
+	 * (harness/wiring.getRuntime) keeps the runtime layer free of a back-edge to `agent/`
+	 * (no cycle) while keeping the GRANT decision at this compose seam — where the validated
+	 * capability set actually lives. FAIL CLOSED: absent seam OR a seam that returns undefined
+	 * ⇒ NO tool registered (default deny — a non-capability'd session can never invoke it). The
+	 * returned map is MERGED into any pre-existing `mcpServers` (it never clobbers the operator's
+	 * — the isolated config carries none, D-002 — but the merge is defensive).
+	 */
+	mcpToolWiring?: (capabilities: CapabilitySet) => Record<string, unknown> | undefined;
 }
 
 /** Sanitize an agent id into a filesystem-safe segment for the isolated config dir. */
@@ -287,6 +303,25 @@ export function isolatedConfigFor(
 	// so the CLI backend pins it onto the PreToolUse hook config. Only set when declared:
 	// legacy/unscoped spawns keep a byte-identical settings shape.
 	if (req.editScope !== undefined) settings.editScope = req.editScope;
+
+	// TASK B10 — capability-gated AGENT-TOOL registration. When a tool-wiring seam is
+	// supplied, ask it for the `mcpServers` block this spawn's COMPOSED, catalog-validated
+	// capability set grants (the B10 memory pull-tool registers here iff the bundle granted
+	// `memory-pull`). FAIL CLOSED: only the catalog path produces a validated `capabilities`
+	// set, so the legacy/no-catalog branch registers nothing; an interview spawn already had
+	// the memory-pull id REFUSED at composeCapabilities, so its `capabilities` can never carry
+	// it (no tool is registered for a sterile session — by construction, not by a second gate).
+	// The seam returns undefined ⇒ default deny ⇒ no registration. `mcpServers` is a real
+	// Claude-Code settings key (NOT a HARNESS_ONLY strip key), so it flows through to the
+	// isolated --settings unchanged. This adds ONLY a registration — every fence/screen/budget
+	// chokepoint stays in the engine the registered tool's proxy ultimately calls (pullMemory).
+	if (opts.mcpToolWiring && settings.capabilities) {
+		const granted = opts.mcpToolWiring(settings.capabilities);
+		if (granted && Object.keys(granted).length > 0) {
+			const existing = (settings.mcpServers as Record<string, unknown> | undefined) ?? {};
+			settings.mcpServers = { ...existing, ...granted };
+		}
+	}
 
 	return { configDir, env, settings };
 }
@@ -382,6 +417,13 @@ export interface ClaudeCodeRuntimeOptions {
 	 * spawn closed. When unset, capability provisioning is OFF (harness base only).
 	 */
 	catalog?: CapabilityCatalog;
+	/**
+	 * TASK B10 — the capability-gated agent-tool wiring seam (see IsolatedConfigOptions).
+	 * Injected at the boot seam (harness/wiring.getRuntime) so a capability-granted agent tool
+	 * (the B10 memory pull-tool) registers as an isolated-config MCP server. Absent ⇒ no
+	 * agent-tool registration (fail closed). Threaded onto every plan's isolated config.
+	 */
+	mcpToolWiring?: (capabilities: CapabilitySet) => Record<string, unknown> | undefined;
 	/** Provider health source — read from the providers single owner (§2.5). */
 	providerHealth?: () => Promise<ProviderHealth[]>;
 	/** Tool surface the runtime exposes; defaults to the standard CC tool set. */
@@ -404,6 +446,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 	private readonly gates?: Record<string, string>;
 	private readonly hooks?: Record<string, unknown>;
 	private readonly catalog?: CapabilityCatalog;
+	private readonly mcpToolWiring?: (capabilities: CapabilitySet) => Record<string, unknown> | undefined;
 	private readonly providerHealth?: () => Promise<ProviderHealth[]>;
 	private readonly toolSurface: ToolDescriptor[];
 	/** In-flight runs by agentId — so cancel(agentId) reaches the right backend run. */
@@ -415,6 +458,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 		this.gates = opts.gates;
 		this.hooks = opts.hooks;
 		this.catalog = opts.catalog;
+		this.mcpToolWiring = opts.mcpToolWiring;
 		this.providerHealth = opts.providerHealth;
 		this.toolSurface = opts.toolSurface ?? DEFAULT_TOOLS;
 	}
@@ -425,7 +469,8 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 			harnessConfigRoot: this.harnessConfigRoot,
 			gates: this.gates,
 			hooks: this.hooks,
-			catalog: this.catalog
+			catalog: this.catalog,
+			mcpToolWiring: this.mcpToolWiring
 		});
 		// TASK 13.3 (D-018/D-024, §2.10e) — when gates are configured, every plan carries the
 		// SDK/runtime-path gate callback (gateCanUseTool over a per-session read-set), confined

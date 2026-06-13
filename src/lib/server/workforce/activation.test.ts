@@ -8,6 +8,7 @@ import { createProject } from '../projects/repo';
 import {
 	activateGauntletFixture,
 	injectSentinel,
+	isSentinelShape,
 	newSentinelUlid,
 	runSentinelSweep,
 	sentinelMarker,
@@ -88,6 +89,26 @@ describe('newSentinelUlid + injectSentinel', () => {
 
 	it('refuses non-string work content (named)', () => {
 		expect(() => injectSentinel({ 'a.ts': 42 }, newSentinelUlid())).toThrow(WorkforceInputError);
+	});
+});
+
+describe('isSentinelShape (pure 26-char Crockford guard)', () => {
+	it('accepts every freshly-minted ULID', () => {
+		for (let i = 0; i < 50; i++) expect(isSentinelShape(newSentinelUlid())).toBe(true);
+		expect(isSentinelShape('01JXJ0000000000000000TEST1')).toBe(true);
+	});
+	it('rejects empty / whitespace / wrong-length / non-Crockford / non-string', () => {
+		expect(isSentinelShape('')).toBe(false); // empty
+		expect(isSentinelShape('                          ')).toBe(false); // 26 spaces
+		expect(isSentinelShape('01JXJ')).toBe(false); // too short
+		expect(isSentinelShape('01JXJ0000000000000000TEST123')).toBe(false); // too long
+		expect(isSentinelShape('01jxj0000000000000000test1')).toBe(false); // lowercase
+		expect(isSentinelShape('01JXJ000000000000000ILOU01')).toBe(false); // I/L/O/U not in Crockford
+		expect(isSentinelShape('01JXJ-000000000000000TEST1')).toBe(false); // hyphen
+		// nil / non-string shadow paths
+		expect(isSentinelShape(undefined)).toBe(false);
+		expect(isSentinelShape(null)).toBe(false);
+		expect(isSentinelShape(42)).toBe(false);
 	});
 });
 
@@ -221,12 +242,50 @@ describe('F-025 — an active/retired fixture can never carry an empty sentinel 
 		});
 		expect(fixture.status).toBe('proposed'); // proposed + empty sentinel is legal
 		await expect(activateGauntletFixture(db, fixture.id)).rejects.toThrow(WorkforceInputError);
-		await expect(activateGauntletFixture(db, fixture.id)).rejects.toThrow(/empty sentinel/i);
+		await expect(activateGauntletFixture(db, fixture.id)).rejects.toThrow(/malformed sentinel/i);
 		// It stayed proposed — the boundary refused the transition, no half-state.
 		const [after] = await db.query<[Array<{ status: string }>]>(`SELECT status FROM $f;`, {
 			f: rid(fixture.id)
 		});
 		expect(after[0].status).toBe('proposed');
+	});
+
+	it('LAYER (a) activation boundary: a NON-EMPTY but MALFORMED sentinel is refused too (len>0 is not enough)', async () => {
+		// The shadow path m0034 missed: a sentinel that passes `len>0` but is whitespace /
+		// short / non-Crockford still near-match-alls the §4.2 sweep (same F-025 class).
+		// Each must be refused at the activation boundary with the SAME named error.
+		const cases: Array<[string, string]> = [
+			['whitespace', '                          '], // 26 spaces — len OK, all non-Crockford
+			['short', '01JXJ'], // valid chars, wrong length
+			['lowercase', '01jxj0000000000000000test1'], // 26 chars but lowercase (not Crockford caps)
+			['non-crockford-ILOU', '01JXJ000000000000000ILOU01'], // 26 chars, contains I/L/O/U
+			['too-long', '01JXJ0000000000000000TEST123'] // 28 chars
+		];
+		for (const [label, bad] of cases) {
+			const fx = await createGauntletFixture(db, {
+				role: roleId,
+				slug: `f025-malformed-${label}`,
+				kind: 'clean_control',
+				work: { 'g.ts': 'clean\n' },
+				sentinel: bad
+			});
+			await expect(activateGauntletFixture(db, fx.id), label).rejects.toThrow(/malformed sentinel/i);
+			const [after] = await db.query<[Array<{ status: string }>]>(`SELECT status FROM $f;`, {
+				f: rid(fx.id)
+			});
+			expect(after[0].status, `${label} stayed proposed`).toBe('proposed');
+		}
+		// A genuine ULID activates cleanly — proves the guard accepts the mint-shape (no
+		// behavior change for valid ULIDs, day-0-safe).
+		const good = await createGauntletFixture(db, {
+			role: roleId,
+			slug: 'f025-malformed-control-valid',
+			kind: 'clean_control',
+			work: { 'g.ts': 'clean\n' },
+			sentinel: newSentinelUlid()
+		});
+		const res = await activateGauntletFixture(db, good.id);
+		expect(res.activated).toBe(true);
 	});
 
 	it('LAYER (b) schema assert: proposed+empty is allowed; active/retired+empty is rejected by the DDL', async () => {
@@ -263,6 +322,40 @@ describe('F-025 — an active/retired fixture can never carry an empty sentinel 
 			f: rid(ok.id)
 		});
 		expect(active[0].status).toBe('active');
+	});
+
+	it('LAYER (b) schema assert (m0035 shape): a NON-EMPTY but MALFORMED sentinel is rejected by the DDL', async () => {
+		// proposed + a malformed sentinel is legal at rest (assert only fires on active/
+		// retired). Forcing active while the sentinel is whitespace/short/non-Crockford must
+		// be rejected by the m0035 shape assert — the DB layer stands on its own (a direct
+		// ROOT write that bypasses the activation boundary cannot arm a match-all sweep).
+		const malformed = [
+			'                          ', // 26 spaces
+			'01JXJ', // too short
+			'01jxj0000000000000000test1', // lowercase
+			'01JXJ000000000000000ILOU01' // contains I/L/O/U
+		];
+		for (const bad of malformed) {
+			const row = await createGauntletFixture(db, {
+				role: roleId,
+				slug: `f025-ddl-malformed-${bad.trim().slice(0, 6) || 'ws'}-${Math.random().toString(36).slice(2, 6)}`,
+				kind: 'clean_control',
+				work: { 'm.ts': 'clean\n' },
+				sentinel: bad
+			});
+			await expect(
+				db.query(`UPDATE $f SET status = 'active';`, { f: rid(row.id) }),
+				`active+${JSON.stringify(bad)} rejected`
+			).rejects.toThrow();
+			await expect(
+				db.query(`UPDATE $f SET status = 'retired';`, { f: rid(row.id) }),
+				`retired+${JSON.stringify(bad)} rejected`
+			).rejects.toThrow();
+			const [after] = await db.query<[Array<{ status: string }>]>(`SELECT status FROM $f;`, {
+				f: rid(row.id)
+			});
+			expect(after[0].status).toBe('proposed');
+		}
 	});
 
 	it('LAYER (c) sweep: an empty sentinel is SKIPPED, never string::contains-matched against all rows', async () => {
@@ -383,5 +476,91 @@ describe('sentinelSweep — fixture ULIDs absent from every leak surface (§4.2)
 		);
 		const green = await sentinelSweep(db);
 		expect(green.hits.filter((h) => h.sentinel === sentinel)).toEqual([]);
+	});
+});
+
+// ── m0035 — sentinel ULID-shape assert migration (idempotency, F-015) ───────────────
+
+describe('m0035_gauntlet_sentinel_ulid_shape — apply-twice + half-applied recovery (F-015)', () => {
+	const MIG = '0035_gauntlet_sentinel_ulid_shape';
+
+	it('the migration is registered and ordered after m0034', () => {
+		const ids = schemaMigrations.map((m) => m.id);
+		expect(ids).toContain(MIG);
+		expect(ids.indexOf(MIG)).toBeGreaterThan(ids.indexOf('0034_gauntlet_sentinel_nonempty'));
+	});
+
+	it('apply-twice: the runner skips it AND the raw OVERWRITE DDL re-applies cleanly', async () => {
+		const again = await runMigrations(db, schemaMigrations);
+		expect(again).toEqual([]); // already applied in beforeAll — runner is idempotent
+		const mig = schemaMigrations.find((m) => m.id === MIG);
+		expect(mig).toBeDefined();
+		// The F-015 hard case: the DDL itself re-runs over the already-applied state.
+		await expect(db.query(mig!.up)).resolves.toBeDefined();
+		await expect(db.query(mig!.up)).resolves.toBeDefined(); // third apply — still clean
+		// And the shape assert is still in force after the re-applies.
+		const probe = await createGauntletFixture(db, {
+			role: roleId,
+			slug: `m0035-reapply-${Math.random().toString(36).slice(2, 8)}`,
+			kind: 'clean_control',
+			work: { 'r.ts': 'clean\n' },
+			sentinel: '01JXJ' // malformed
+		});
+		await expect(db.query(`UPDATE $f SET status = 'active';`, { f: rid(probe.id) })).rejects.toThrow();
+	});
+
+	it('half-applied recovery: a fresh namespace with the pre-m0035 (m0034) field is absorbed by the full re-run', async () => {
+		// Simulate the mid-apply death: a brand-new namespace that has the EARLIER (m0034,
+		// len>0) sentinel field defined but m0035 never recorded. Running the full set must
+		// recover — re-define the field with the tighter shape assert, idempotently.
+		const half = await Db.connect({
+			url: tdb.wsUrl,
+			username: tdb.root.username,
+			password: tdb.root.password,
+			namespace: `${tdb.namespace}_m0035half`,
+			database: tdb.database
+		});
+		try {
+			// Apply everything EXCEPT m0035 (the state right before the death).
+			const withoutShape = schemaMigrations.filter((m) => m.id !== MIG);
+			await runMigrations(half, withoutShape);
+			// Under m0034 a non-empty-but-malformed active sentinel is ALLOWED (the bug).
+			const role = await createRole(half, {
+				slug: 'm0035-half-role',
+				name: 'H',
+				purpose: 'half-applied recovery bed'
+			});
+			const fx = await createGauntletFixture(half, {
+				role: role.id,
+				slug: 'm0035-half-fx',
+				kind: 'clean_control',
+				work: { 'h.ts': 'clean\n' },
+				sentinel: '01JXJ' // short — passes m0034's len>0
+			});
+			await expect(
+				half.query(`UPDATE $f SET status = 'active';`, { f: new StringRecordId(fx.id) })
+			).resolves.toBeDefined(); // m0034 lets this through
+
+			// Reset that row to proposed so the recovery re-define doesn't have to scan/heal
+			// existing rows (asserts fire only on writes — the migration is a pure redefine).
+			await half.query(`UPDATE $f SET status = 'proposed';`, { f: new StringRecordId(fx.id) });
+
+			// Now run the FULL set — m0035 lands and tightens the assert.
+			const applied = await runMigrations(half, schemaMigrations);
+			expect(applied).toContain(MIG);
+			// The malformed sentinel can no longer be activated.
+			await expect(
+				half.query(`UPDATE $f SET status = 'active';`, { f: new StringRecordId(fx.id) })
+			).rejects.toThrow();
+			// A re-run is a no-op (recorded), and re-applying the raw DDL is still clean.
+			expect(await runMigrations(half, schemaMigrations)).toEqual([]);
+			const mig = schemaMigrations.find((m) => m.id === MIG)!;
+			await expect(half.query(mig.up)).resolves.toBeDefined();
+		} finally {
+			await half.query('REMOVE NAMESPACE IF EXISTS type::namespace($ns);', {
+				ns: `${tdb.namespace}_m0035half`
+			}).catch(() => {});
+			await half.close().catch(() => {});
+		}
 	});
 });

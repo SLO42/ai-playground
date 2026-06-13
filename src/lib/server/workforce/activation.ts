@@ -61,6 +61,20 @@ export function newSentinelUlid(now = Date.now()): string {
 	return out;
 }
 
+/** Strict shape predicate for an ACTIVATED fixture sentinel (§4.2 / F-025): exactly
+ *  26 Crockford-base32 chars — the shape `newSentinelUlid` mints. A whitespace/short/
+ *  low-entropy sentinel is NOT merely len>0: it still near-match-alls the §4.2
+ *  `string::contains(content, sentinel)` sweep (same F-025 class), so a non-empty but
+ *  malformed sentinel is just as dangerous as an empty one. Reuses the single CROCKFORD
+ *  alphabet (above) so the accept-set is identical to the mint-set by construction. */
+export function isSentinelShape(value: unknown): value is string {
+	if (typeof value !== 'string' || value.length !== 26) return false;
+	for (let i = 0; i < 26; i++) {
+		if (!CROCKFORD.includes(value[i])) return false;
+	}
+	return true;
+}
+
 /** The marker line embedded into each work file at activation. Inert trailing text:
  *  appended at EOF so plant line numbers never shift, comment-prefixed so code-shaped
  *  work stays parseable to a reader. */
@@ -152,17 +166,22 @@ export async function activateGauntletFixture(db: Db, fixtureId: string): Promis
 		return { fixture, activated: false, staleMarked: 0, reinterviewQueued: false };
 	}
 
-	// Empty-sentinel guard (§4.2 / F-025): an ACTIVATED fixture must carry a non-empty
-	// sentinel. The sentinel is legitimately empty while status='proposed' (it is the
-	// activation step that injects it), but `sentinelSweep` runs `string::contains(content, sentinel)`
-	// and in SurrealDB 2.x an EMPTY needle matches EVERY row — an active/retired fixture
-	// with sentinel='' would make the boot sweep flag every memory/transcript row as a
-	// leak (fabricated F-008 notifications + a work_item flood). Refuse activation of an
-	// unguarded fixture with a NAMED error rather than mint a match-all sentinel.
-	if (str(fixture.sentinel).length === 0) {
+	// Sentinel SHAPE guard (§4.2 / F-025): an ACTIVATED fixture must carry a strict
+	// 26-char Crockford ULID — the shape `newSentinelUlid` mints. The sentinel is
+	// legitimately empty while status='proposed' (it is the activation step that injects
+	// it), but `sentinelSweep` runs `string::contains(content, sentinel)`. An EMPTY needle
+	// match-alls every row in SurrealDB 2.x, AND a whitespace/short/low-entropy needle
+	// near-match-alls the same surfaces (same F-025 class) — so len>0 is NOT enough; only
+	// a well-formed ULID is a safe, attributable tripwire. Refuse activation of any
+	// malformed-sentinel fixture with a NAMED error rather than arm a match-all sweep.
+	// (Day-0 safe: production mints sentinels server-side via newSentinelUlid, always
+	// valid — zero behavior change for valid ULIDs; re-run of an active fixture returns
+	// the idempotent absorb above before reaching here.)
+	if (!isSentinelShape(fixture.sentinel)) {
 		throw new WorkforceInputError(
-			`gauntlet_fixture ${fixture.slug} has an empty sentinel — cannot activate (an active fixture's ` +
-				`sentinel is the leak tripwire and must be non-empty; an empty needle match-alls the sweep, F-025)`
+			`gauntlet_fixture ${fixture.slug} has a malformed sentinel ${JSON.stringify(str(fixture.sentinel))} — ` +
+				`cannot activate (an active fixture's sentinel is the leak tripwire and must be a 26-char Crockford ` +
+				`base32 ULID; an empty or low-entropy needle match-alls the sweep, F-025)`
 		);
 	}
 

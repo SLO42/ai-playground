@@ -1339,6 +1339,38 @@ const m0034_gauntlet_sentinel_nonempty: Migration = {
 	`
 };
 
+// ── F-025 (tighten) — gauntlet_fixture sentinel must be a 26-char Crockford ULID ─
+//
+// m0034 enforced merely `len>0` for active/retired sentinels. That is INCOMPLETE: a
+// whitespace / short / non-Crockford sentinel passes `len>0` yet still near-match-alls
+// the §4.2 `string::contains(content, sentinel)` sweep (same F-025 class — a 1-char or
+// all-spaces needle is in nearly every row). The COMPLETE invariant is the SHAPE the
+// activation boundary mints (newSentinelUlid): exactly 26 chars from the Crockford
+// base32 alphabet (0-9 A-Z minus I L O U). This migration tightens the DB-layer assert
+// to that shape for active/retired status; proposed-empty stays legal (m0034's rule —
+// the sentinel is injected mechanically AT activation, so a proposed fixture has none).
+//
+// SHAPE assert (SurrealDB 2.x): `string::len = 26` AND `string::matches($value, regex)`
+// against the Crockford char-class (verified live on 2.0.3 — accepts a real ULID,
+// rejects short/non-Crockford/whitespace). The char class mirrors the CROCKFORD const
+// in workforce/activation.ts (kept in sync by the activation.test layer-(a)/(b) pair).
+//
+// IDEMPOTENT (F-015): a single OVERWRITE FIELD redefine — clean over a fresh DB, a
+// half-applied state, and a re-run. Redefining a field does NOT re-validate existing
+// rows in SurrealDB 2.x (asserts fire only on writes), so NO table scan / row backfill
+// is needed: every active/retired sentinel in the live pool was minted by
+// newSentinelUlid (layer a — always a valid 26-char ULID) and is already conformant;
+// the assert gates every future write. No table-scan to gate behind a count check
+// because there is none. Apply-twice + half-applied recovery proven in activation.test.
+const m0035_gauntlet_sentinel_ulid_shape: Migration = {
+	id: '0035_gauntlet_sentinel_ulid_shape',
+	up: `
+		DEFINE FIELD OVERWRITE sentinel ON gauntlet_fixture TYPE string
+			ASSERT status = NONE OR status = "proposed"
+				OR (string::len($value) = 26 AND string::matches($value, "^[0-9ABCDEFGHJKMNPQRSTVWXYZ]{26}$"));
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1379,5 +1411,6 @@ export const schemaMigrations: Migration[] = [
 	m0031_workforce,
 	m0032_proposed_tasks,
 	m0033_memory_session_provenance,
-	m0034_gauntlet_sentinel_nonempty
+	m0034_gauntlet_sentinel_nonempty,
+	m0035_gauntlet_sentinel_ulid_shape
 ];

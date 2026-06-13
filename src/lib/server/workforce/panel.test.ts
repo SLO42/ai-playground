@@ -14,6 +14,7 @@ import {
 	swapActiveVersion
 } from './repo';
 import { loadWorkforcePanel } from './panel';
+import { newSentinelUlid } from './activation';
 
 // TASK 16.8 VERIFY — the read-only workforce-panel aggregator (WORKFORCE-SPEC §8) against
 // a REAL throwaway SurrealDB. The FOUR data paths the §8 surfaces depend on:
@@ -234,7 +235,9 @@ describe('loadWorkforcePanel — §8 surfaces', () => {
 				slug: nextSlug(fxSlug),
 				kind: 'planted_defect',
 				work: { 'x.ts': 'code' },
-				sentinel: `SENT-${nextSlug('s')}`
+				// A valid 26-char Crockford ULID — the m0035 shape assert rejects malformed
+				// sentinels on the active flip below, so seed the mint-shape (matches prod).
+				sentinel: newSentinelUlid()
 			});
 		}
 		await db.query(`UPDATE gauntlet_fixture SET status = 'active' WHERE role = $r;`, {

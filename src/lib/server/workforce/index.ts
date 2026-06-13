@@ -17,3 +17,10 @@ export * from './findings';
 export * from './scorer';
 export * from './gauntlet';
 export * from './activation';
+// TASK 16.7 (W-D7c) — launch content (5 role definitions + draft prompt cores + fixture
+// WORK sets, HONEST: proposed/no-keys/draft) and the day-0 bootstrap ceremony MECHANISM
+// (§8 — prompt-core review, key diff+confirm, admission reference-run + bootstrap-
+// interview triggers, all operator-gated + INERT; re-exports the §3.4 adjudication
+// write-path from gauntlet.ts — not forked).
+export * from './launch-fixtures';
+export * from './ceremony';

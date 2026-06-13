@@ -16,10 +16,14 @@
 // the `mcpServers` settings entry, mirroring the EXISTING hooks-wiring transport
 // (harness/hooks-wiring.ts) and gate-transport (claude-code/gate-transport.ts): a quoted
 // `node <script>` command, loopback coordinates from the boot env, the D-025 token carried
-// via ENV (never serialized into the command string, readable off disk). It does NOT
-// invent a parallel registration path — `mcpServers` is the SAME isolated-settings key the
-// cc-config mirror already models (cc_mcp_server) and the CLI backend already passes through
-// (it is NOT a HARNESS_ONLY_SETTINGS_KEYS strip key).
+// via ENV (never serialized into the command string, readable off disk). The `mcpServers`
+// shape this produces is the SAME one the cc-config mirror models (cc_mcp_server) and that a
+// `.mcp.json` carries. DELIVERY (B10 fix): Claude Code does NOT load MCP servers from the
+// --settings file — only from --mcp-config / .mcp.json / ~/.claude.json (CLI reference). So the
+// CLI backend writes this block to a `.mcp.json` in the isolated config dir and passes it with
+// `--mcp-config` + `--strict-mcp-config` (cli-backend.buildMcpConfigArgs); `mcpServers` is a
+// HARNESS_ONLY strip key in the --settings file (inert there). The runtime seam still composes it
+// into settings.mcpServers — the CLI backend is the seam that routes it to the load-path.
 //
 // SCOPE LOCK (this task). This is the registration + capability-gating seam + its tests.
 // The runtime PROXY this registration points at — the `scripts/memory-pull-mcp.mjs` stdio
@@ -134,7 +138,8 @@ export function buildMemoryPullMcpServer(
 	const node = opts.nodeBin?.trim() || process.execPath;
 	const script = join(opts.serverRoot, 'scripts', MEMORY_PULL_MCP_SCRIPT);
 	// stdio MCP server: Claude Code spawns `command args...`. The token rides ENV (D-025), so
-	// the command string is config-only and safe to land on disk in settings.json.
+	// the command string is config-only and safe to land on disk in the isolated `.mcp.json`
+	// the CLI backend writes (cli-backend.buildMcpConfigArgs → --mcp-config --strict-mcp-config).
 	return {
 		[MEMORY_PULL_MCP_NAME]: {
 			type: 'stdio',

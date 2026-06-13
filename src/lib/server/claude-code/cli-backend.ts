@@ -70,7 +70,15 @@ const HARNESS_ONLY_SETTINGS_KEYS = new Set([
 	'enabledPlugins',
 	'capabilities',
 	'gates',
-	'editScope'
+	'editScope',
+	// TASK B10 (fix) — `mcpServers` is NOT a load-path key in the --settings file. Claude Code
+	// loads MCP servers ONLY from --mcp-config / .mcp.json / ~/.claude.json; an mcpServers block
+	// placed in a settings.json is SILENTLY IGNORED (CLI reference: --settings carries settings.json
+	// keys; --mcp-config "Load MCP servers from JSON files or strings"). Leaving it in the --settings
+	// file made the granted registration inert (F-016/F-008 class: a config key inferred-honored
+	// without testing the real consumer). It is now delivered via buildMcpConfigArgs → a .mcp.json
+	// passed with --mcp-config (+ --strict-mcp-config for D-002 isolation), and stripped from here.
+	'mcpServers'
 ]);
 
 /** Project the harness settings down to the Claude-Code-schema-valid subset (keeps `hooks` and
@@ -121,6 +129,40 @@ export function buildCliSettings(
 		out.hooks = hooks;
 	}
 	return out;
+}
+
+/**
+ * TASK B10 (fix) — deliver the plan's GRANTED `mcpServers` to a CLI-honored load path.
+ *
+ * The B10 capability-wiring seam composes a granted `mcpServers` block into the isolated
+ * settings (runtime/index.isolatedConfigFor). But Claude Code does NOT read MCP servers from
+ * the settings.json the harness passes with `--settings` — per the CLI reference, `--settings`
+ * carries settings.json keys, while MCP servers load ONLY from `--mcp-config` (".mcp.json" /
+ * "~/.claude.json" / the `--mcp-config` flag). So the granted block was silently inert on the
+ * real CLI path (F-016/F-008): looked live, never reachable by a granted session.
+ *
+ * This writes the granted servers to a `.mcp.json` in the per-session settings dir (the SAME
+ * dir we already own for `--settings`, so it is torn down with the session) and returns the
+ * spawn args that load it: `--mcp-config <path>` + `--strict-mcp-config`. `--strict-mcp-config`
+ * makes the CLI use ONLY this file's servers and ignore every other MCP source — preserving the
+ * D-002 isolation guarantee (no operator `~/.claude.json` / project `.mcp.json` servers leak in),
+ * exactly as the isolated CLAUDE_CONFIG_DIR does for the rest of the config.
+ *
+ * Honest OFF (F-008): when the plan grants NO servers (the default-deny path — no `memory-pull`
+ * capability, or the control plane is unwired so buildMemoryPullMcpServer returned undefined),
+ * NOTHING is written and NO flag is added — a non-granted session spawns byte-identically to a
+ * legacy spawn. Exported for the B10 delivery-path regression test (asserts the registration
+ * reaches a load-path the CLI honors, not merely that the object was built).
+ */
+export function buildMcpConfigArgs(plan: CcSpawnPlan, settingsDir: string): string[] {
+	const servers = plan.isolated.settings.mcpServers as Record<string, unknown> | undefined;
+	// Default deny / honest OFF: nothing granted ⇒ no file, no flag (byte-identical legacy spawn).
+	if (!servers || typeof servers !== 'object' || Object.keys(servers).length === 0) return [];
+	const mcpJsonPath = join(settingsDir, '.mcp.json');
+	// Claude Code's --mcp-config file is `{ "mcpServers": { name: entry, ... } }` — the same shape
+	// .mcp.json uses (cc-config/parse.parseSettings reads servers from exactly this key).
+	writeFileSync(mcpJsonPath, JSON.stringify({ mcpServers: servers }), 'utf8');
+	return ['--mcp-config', mcpJsonPath, '--strict-mcp-config'];
 }
 
 function seedHookTrust(configDir: string, cwd: string): void {
@@ -460,6 +502,12 @@ export class ClaudeCliBackend implements CcBackend {
 			seedHookTrust(configDir, plan.cwd);
 		}
 
+		// TASK B10 (fix) — deliver any GRANTED mcpServers via a CLI-honored --mcp-config file
+		// (the --settings file does NOT load MCP servers — see buildMcpConfigArgs). Written into
+		// the same per-session settings dir so it is torn down with the session; [] when nothing
+		// is granted (honest OFF — a non-granted session keeps a byte-identical legacy spawn).
+		const mcpConfigArgs = buildMcpConfigArgs(plan, settingsDir);
+
 		// TASK 14.6 — stream-json INPUT io. The prompt is NOT an argv string anymore: it is
 		// the first stream-json user message written to stdin, and stdin stays OPEN while
 		// the turn runs so a REAL interjection can be written into the live session.
@@ -482,6 +530,9 @@ export class ClaudeCliBackend implements CcBackend {
 			'default',
 			'--settings',
 			settingsPath,
+			// TASK B10 (fix): load the granted memory-pull MCP server from a CLI-honored config
+			// (--mcp-config + --strict-mcp-config); empty when nothing was granted.
+			...mcpConfigArgs,
 			// REAL resume (14.6): continue the SAME conversation by its Claude Code session id.
 			...(resumeCcSessionId ? ['--resume', resumeCcSessionId] : [])
 		];

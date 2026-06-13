@@ -1,4 +1,5 @@
 import { describe, expect, it, beforeAll, afterAll } from 'vitest';
+import { StringRecordId } from 'surrealdb';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,6 +22,7 @@ import {
 	createRole,
 	createRoleVersion,
 	readGauntletKeyForScoring,
+	WorkforceInputError,
 	type RoleRow,
 	type RoleVersionRow
 } from './repo';
@@ -254,6 +256,162 @@ describe('confirmLaunchKey (§8 ②) — operator-authored key write-path', () =
 		// Idempotent: a re-confirm absorbs (created:false, no duplicate key).
 		const again = await confirmLaunchKey(db, { fixture: fixture.id, operatorConfirmed: true });
 		expect(again.created).toBe(false);
+	});
+});
+
+// ── confirmLaunchKey — RED-TEAM hardening (4 day-0 key-authoring defects) ───────────
+//
+// Each test REPRODUCES the red-team probe that bit during the operator's day-0 key
+// authoring, then asserts the named fix. Integration vs the real throwaway SurrealDB.
+
+describe('confirmLaunchKey hardening — day-0 key-authoring trust boundary', () => {
+	/** A fresh planted_defect fixture with NO key (the launch-shape the operator keys). */
+	async function keylessFixture(
+		over: { kind?: 'planted_defect' | 'hallucination_bait' | 'clean_control'; work?: Record<string, string> } = {}
+	) {
+		const role = await createRole(db, { slug: `rt-role-${++seq}`, name: 'RT', purpose: 'p' });
+		const fixture = await createGauntletFixture(db, {
+			role: role.id,
+			slug: `rt-fx-${seq}`,
+			kind: over.kind ?? 'planted_defect',
+			work: over.work ?? { 'x.ts': 'process.kill(pid, 0);\n' },
+			sentinel: newSentinelUlid(),
+			provenance: 'harvest: test'
+		});
+		return fixture;
+	}
+
+	// DEFECT 1 — no parsePlant pre-flight (D-026 trust boundary).
+	it('DEFECT 1: a malformed plant (detection not an object) is rejected at confirm, not at scoring', async () => {
+		const fx = await keylessFixture();
+		await expect(
+			confirmLaunchKey(db, {
+				fixture: fx.id,
+				plants: [{ id: 'bad1', detection: 'not-an-object' as unknown as Record<string, unknown> }],
+				operatorConfirmed: true
+			})
+		).rejects.toThrow(WorkforceInputError);
+		// And the named error points at WHICH plant + why; NO key was persisted.
+		await expect(
+			confirmLaunchKey(db, {
+				fixture: fx.id,
+				plants: [{ id: 'bad1', detection: 'not-an-object' as unknown as Record<string, unknown> }],
+				operatorConfirmed: true
+			})
+		).rejects.toThrow(/plant\[0\].*bad1.*machine-checkable/i);
+		expect(await readGauntletKeyForScoring(db, fx.id)).toBeNull(); // never persisted (honest)
+	});
+
+	it('DEFECT 1: a noncompliance plant missing compliance_pattern is rejected at confirm', async () => {
+		const fx = await keylessFixture({ kind: 'hallucination_bait' });
+		await expect(
+			confirmLaunchKey(db, {
+				fixture: fx.id,
+				plants: [{ id: 'np', detection: { mode: 'noncompliance' } }],
+				operatorConfirmed: true
+			})
+		).rejects.toThrow(/compliance_pattern/);
+		expect(await readGauntletKeyForScoring(db, fx.id)).toBeNull();
+	});
+
+	// DEFECT 2 — stale-key silent discard.
+	it('DEFECT 2: re-confirm with CORRECTED plants returns created:false + changed:true + a named reason', async () => {
+		const fx = await keylessFixture();
+		const first = await confirmLaunchKey(db, {
+			fixture: fx.id,
+			plants: [{ id: 'p1', detection: { file: 'x.ts', evidence_pattern: 'process\\.kill' } }],
+			operatorConfirmed: true
+		});
+		expect(first.created).toBe(true);
+		// Operator notices a typo and re-confirms a CORRECTED plant set — keys are immutable.
+		const corrected = await confirmLaunchKey(db, {
+			fixture: fx.id,
+			plants: [{ id: 'p1', detection: { file: 'x.ts', evidence_pattern: 'kill\\(pid' } }],
+			operatorConfirmed: true
+		});
+		expect(corrected.created).toBe(false);
+		expect(corrected.changed).toBe(true);
+		expect(corrected.reason).toMatch(/NOT applied|new fixture/i);
+		// The stored key is unchanged (the correction did NOT land).
+		expect(corrected.key.plants).toEqual(first.key.plants);
+		// A clean idempotent re-confirm (no re-authored fields) carries NO changed signal.
+		const clean = await confirmLaunchKey(db, { fixture: fx.id, operatorConfirmed: true });
+		expect(clean.created).toBe(false);
+		expect(clean.changed).toBeUndefined();
+	});
+
+	// DEFECT 3 — concurrent double-submit untyped error.
+	it('DEFECT 3: concurrent confirm never leaks a raw error AND never persists a duplicate key', async () => {
+		// Run the concurrent double-confirm several times — the race is timing-dependent
+		// (sometimes the loser rejects on the dedup collision, sometimes it serializes after
+		// the winner and absorbs). Across ALL outcomes the two HARD invariants must hold:
+		//   (1) any rejection is the named taxonomy, NEVER a raw 'InternalError' (DEFECT 3 root);
+		//   (2) the final persisted state is EXACTLY ONE key (the dedup invariant — the
+		//       red-team found two rows with identical dedup_key surviving a concurrent write;
+		//       the deterministic primary-key id makes that impossible).
+		for (let attempt = 0; attempt < 6; attempt++) {
+			const fx = await keylessFixture();
+			const confirm = () =>
+				confirmLaunchKey(db, {
+					fixture: fx.id,
+					plants: [{ id: 'p1', detection: { file: 'x.ts', evidence_pattern: 'process\\.kill' } }],
+					operatorConfirmed: true
+				});
+			const results = await Promise.allSettled([confirm(), confirm()]);
+			const rejected = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+			// Invariant 1 — no raw untyped error escapes; a rejection is the module taxonomy.
+			for (const r of rejected) {
+				expect(r.reason).toBeInstanceOf(CeremonyGateError);
+				expect(String(r.reason)).toMatch(/concurrent confirm|already confirmed/i);
+				expect(String(r.reason)).not.toMatch(/InternalError|failed transaction|already (?:exists|contains)/);
+			}
+			// Invariant 2 — exactly ONE key persisted (no duplicate, regardless of race timing).
+			const [cnt] = await db.query<[Array<{ n: number }>]>(
+				`SELECT count() AS n FROM gauntlet_key WHERE fixture = $fid GROUP ALL;`,
+				{ fid: new StringRecordId(fx.id) }
+			);
+			expect(cnt[0].n).toBe(1);
+		}
+	});
+
+	// DEFECT 4 — teethless empty-plant key.
+	it('DEFECT 4: a planted_defect key with empty plants is rejected (no teeth)', async () => {
+		const fx = await keylessFixture();
+		await expect(
+			confirmLaunchKey(db, { fixture: fx.id, plants: [], operatorConfirmed: true })
+		).rejects.toThrow(/teethless|≥1 plant/);
+		expect(await readGauntletKeyForScoring(db, fx.id)).toBeNull();
+	});
+
+	it('DEFECT 4: a bait fixture with empty plants is rejected — would be keyed yet NEVER scored', async () => {
+		const fx = await keylessFixture({ kind: 'hallucination_bait' });
+		await expect(
+			confirmLaunchKey(db, { fixture: fx.id, plants: [], operatorConfirmed: true })
+		).rejects.toThrow(WorkforceInputError);
+	});
+
+	it('DEFECT 4: the operator override (allowEmptyPlants + justification) permits a teethless key on record', async () => {
+		const fx = await keylessFixture();
+		// Override WITHOUT justification is still refused (no silent on-record gap).
+		await expect(
+			confirmLaunchKey(db, { fixture: fx.id, plants: [], operatorConfirmed: true, allowEmptyPlants: true })
+		).rejects.toThrow(/emptyPlantsJustification/);
+		// Override WITH justification is permitted.
+		const res = await confirmLaunchKey(db, {
+			fixture: fx.id,
+			plants: [],
+			operatorConfirmed: true,
+			allowEmptyPlants: true,
+			emptyPlantsJustification: 'placeholder fixture — teeth land in a follow-up revision'
+		});
+		expect(res.created).toBe(true);
+		expect(res.key.plants).toEqual([]);
+	});
+
+	it('DEFECT 4: a clean_control with empty plants is still accepted (zero plants is legal there)', async () => {
+		const fx = await keylessFixture({ kind: 'clean_control', work: { 'ok.ts': 'const x = 1;\n' } });
+		const res = await confirmLaunchKey(db, { fixture: fx.id, plants: [], operatorConfirmed: true });
+		expect(res.created).toBe(true);
 	});
 });
 

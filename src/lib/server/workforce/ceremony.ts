@@ -47,6 +47,15 @@ import {
 } from './repo';
 import { runGauntlet, type GauntletDeps, type GauntletOutcome } from './gauntlet';
 import { checkDeployability } from './deployability';
+import { parsePlant, ScorerKeyError } from './scorer';
+
+/** Fixture kinds whose whole POINT is teeth — a key MUST carry ≥1 plant or it can never
+ *  catch anything (DEFECT 4). clean_control / scorer_control legitimately carry zero. */
+const PLANTED_KINDS: ReadonlySet<GauntletFixtureRow['kind']> = new Set([
+	'planted_defect',
+	'planted_absence',
+	'hallucination_bait'
+]);
 
 // Deliverable #3: the §3.4 adjudication write-path (adjudicateInterviewRun + its
 // AdjudicationInput / AmbiguousResolution types) lives in gauntlet.ts and is already on
@@ -124,6 +133,12 @@ export interface LaunchKeyConfirmInput {
 	fp_justification?: string;
 	/** The operator's explicit confirm of the diff+confirm ceremony (§8). REQUIRED. */
 	operatorConfirmed: boolean;
+	/** DEFECT 4 escape hatch: an explicit operator override to confirm a teethless key
+	 *  (empty plants) on a planted/bait fixture. Requires a justification — the operator
+	 *  is on record that this fixture intentionally has no machine-checkable teeth. */
+	allowEmptyPlants?: boolean;
+	/** Required WHEN allowEmptyPlants is set — why a planted/bait key has no plants. */
+	emptyPlantsJustification?: string;
 }
 
 export interface LaunchKeyDiff {
@@ -144,6 +159,14 @@ export interface LaunchKeyConfirmResult {
 	diff: LaunchKeyDiff;
 	/** false when a key already existed (idempotent absorb — interrupt contract). */
 	created: boolean;
+	/** DEFECT 2: true when a key already existed AND the incoming plants/tolerance DIFFER
+	 *  from what is stored — the correction was NOT applied (keys are content-bound +
+	 *  immutable; a correction needs a NEW fixture). Absent/false on a clean idempotent
+	 *  re-confirm where the incoming key matches the stored one. */
+	changed?: boolean;
+	/** DEFECT 2: the named reason the operator's re-confirm was a no-op (only when
+	 *  changed:true). The operator LEARNS the correction did not land and why. */
+	reason?: string;
 }
 
 /**
@@ -154,9 +177,27 @@ export interface LaunchKeyConfirmResult {
  * mechanically to the fixture's work inside createGauntletKey (§2.1).
  *
  * GATE (fail-closed): `operatorConfirmed` MUST be true — without it this throws
- * CeremonyGateError (the diff+confirm ceremony has not happened). INTERRUPT CONTRACT: a
- * key already present for the fixture is an idempotent absorb (the dedup UNIQUE index
- * makes a true double-write collide loudly; we detect-first and return created:false).
+ * CeremonyGateError (the diff+confirm ceremony has not happened).
+ *
+ * VALIDATION (DEFECT 1 — D-026 trust boundary): operator-authored plants are DATA. Every
+ * plant is parsed/validated through the scorer's parsePlant BEFORE persist; a malformed
+ * plant raises a named WorkforceInputError naming which plant + why — it never reaches
+ * the DB to fail (silently) as a ScorerKeyError at SCORING time.
+ *
+ * TEETH (DEFECT 4): a planted_defect / planted_absence / hallucination_bait key with an
+ * EMPTY plants array can never catch anything. We reject it (WorkforceInputError) unless
+ * the operator passes an explicit allowEmptyPlants override + emptyPlantsJustification.
+ *
+ * INTERRUPT CONTRACT + STALE-KEY SIGNAL (DEFECT 2): a key already present for the fixture
+ * is an idempotent absorb (created:false). BUT keys are content-bound + immutable — if the
+ * incoming plants/tolerance/justification DIFFER from the stored key, the correction was
+ * NOT applied; we return created:false + changed:true + a named reason so the operator
+ * learns a NEW fixture is required (the stored key is returned unchanged).
+ *
+ * CONCURRENCY (DEFECT 3): a concurrent double-confirm races past the detect-first read and
+ * collides on the gauntlet_key_dedup UNIQUE index. We catch that raw InternalError and map
+ * it to a named CeremonyGateError ('key already confirmed for this fixture'); final state
+ * stays exactly one key.
  */
 export async function confirmLaunchKey(
 	db: Db,
@@ -173,26 +214,194 @@ export async function confirmLaunchKey(
 	const fixture = normFixture(rows[0]);
 
 	const plants = input.plants ?? [];
+
+	// DEFECT 1 — D-026 pre-flight: validate operator-authored plants at the boundary, NOT
+	// at scoring time. parsePlant is the scorer's own contract; we surface its ScorerKeyError
+	// as a named WorkforceInputError (operator input is DATA — validate where it enters).
+	// Always validate the plants the operator authored on THIS call, before any persist or
+	// drift comparison — a malformed correction must be rejected even if a key already exists.
+	if (input.plants !== undefined) validatePlantsForConfirm(fixture, plants);
+
 	const existing = await readGauntletKeyForScoring(db, fixture.id);
 	if (existing) {
+		// DEFECT 2 — stale-key signal: the key is immutable + content-bound. If the operator
+		// re-confirms with a CORRECTION that differs from what is stored, the correction did
+		// NOT land — say so loudly instead of silently returning the stale key.
+		const drift = keyDrift(input, existing);
 		return {
 			key: existing,
 			diff: diffFor(fixture, existing.plants, existing.fp_tolerance, existing.fp_justification ?? null),
-			created: false
+			created: false,
+			...(drift
+				? {
+						changed: true,
+						reason:
+							`a key already exists for fixture '${fixture.slug}' and keys are immutable + ` +
+							`content-bound (§2.1) — the re-confirmed ${drift} was NOT applied; a correction ` +
+							`requires a NEW fixture (new work → new content_sha → new key)`
+					}
+				: {})
 		};
 	}
-	const key = await createGauntletKey(db, {
-		fixture: fixture.id,
-		plants,
-		...(input.fp_tolerance !== undefined ? { fp_tolerance: input.fp_tolerance } : {}),
-		...(input.fp_justification !== undefined ? { fp_justification: input.fp_justification } : {}),
-		author: 'operator'
-	});
+
+	// DEFECT 4 — teeth (create path only): a planted/bait key with no plants can never catch
+	// anything. Reject unless the operator explicitly overrides with a justification (on
+	// record). Enforced HERE, after the existing-key check, so a plain idempotent re-confirm
+	// (plants omitted, key already present) is never spuriously rejected.
+	assertHasTeeth(fixture, plants, input);
+
+	let key: GauntletKeyRow;
+	try {
+		key = await createGauntletKey(db, {
+			fixture: fixture.id,
+			plants,
+			...(input.fp_tolerance !== undefined ? { fp_tolerance: input.fp_tolerance } : {}),
+			...(input.fp_justification !== undefined ? { fp_justification: input.fp_justification } : {}),
+			author: 'operator'
+		});
+	} catch (err) {
+		// DEFECT 3 — concurrency: a parallel confirm won the dedup race between our read and
+		// this write. The UNIQUE index throws a RAW 'InternalError: Database index
+		// `gauntlet_key_dedup` already contains …'. Map it into the module taxonomy.
+		if (isDedupCollision(err)) {
+			throw new CeremonyGateError(
+				`a key was already confirmed for fixture '${fixture.slug}' by a concurrent confirm — ` +
+					`one key per fixture (dedup UNIQUE); re-read before re-confirming`
+			);
+		}
+		throw err;
+	}
 	return {
 		key,
 		diff: diffFor(fixture, key.plants, key.fp_tolerance, key.fp_justification ?? null),
 		created: true
 	};
+}
+
+/** DEFECT 1 — validate every operator-authored plant through the scorer's own parsePlant
+ *  at the confirm boundary (D-026: operator input is DATA). A malformed plant surfaces as a
+ *  named WorkforceInputError naming WHICH plant (by index + id when present) and WHY,
+ *  wrapping the scorer's ScorerKeyError message — never persisted to fail at scoring time. */
+function validatePlantsForConfirm(
+	fixture: GauntletFixtureRow,
+	plants: Array<Record<string, unknown>>
+): void {
+	plants.forEach((raw, i) => {
+		if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+			throw new WorkforceInputError(
+				`fixture '${fixture.slug}': plant[${i}] must be an object (machine-checkable plant, §2.1)`
+			);
+		}
+		try {
+			parsePlant(raw, fixture.slug);
+		} catch (err) {
+			if (err instanceof ScorerKeyError) {
+				const idPart = typeof raw.id === 'string' && raw.id.trim() ? ` (id '${raw.id.trim()}')` : '';
+				throw new WorkforceInputError(
+					`fixture '${fixture.slug}': plant[${i}]${idPart} is not machine-checkable — ${err.message} ` +
+						`(D-026: operator key input is validated at confirm, not at scoring)`
+				);
+			}
+			throw err;
+		}
+	});
+}
+
+/** DEFECT 4 — a planted_defect / planted_absence / hallucination_bait key with NO plants
+ *  is teethless: it can never catch anything (e.g. an A8 bait would be keyed but NEVER
+ *  scored). Require ≥1 plant, unless the operator explicitly overrides with a justification.
+ *  For bait fixtures the meaningful plant is mode:'noncompliance'+compliance_pattern — warn
+ *  (do not hard-block) when a bait key has plants but none are noncompliance. */
+function assertHasTeeth(
+	fixture: GauntletFixtureRow,
+	plants: Array<Record<string, unknown>>,
+	input: LaunchKeyConfirmInput
+): void {
+	if (!PLANTED_KINDS.has(fixture.kind)) return; // clean_control / scorer_control: zero is legal
+	if (plants.length === 0) {
+		if (input.allowEmptyPlants === true) {
+			if (typeof input.emptyPlantsJustification !== 'string' || !input.emptyPlantsJustification.trim()) {
+				throw new WorkforceInputError(
+					`fixture '${fixture.slug}' (${fixture.kind}): allowEmptyPlants requires emptyPlantsJustification — ` +
+						`an empty-plant key has no teeth; the operator must justify it on record`
+				);
+			}
+			return; // operator is on record that this fixture intentionally has no teeth
+		}
+		throw new WorkforceInputError(
+			`fixture '${fixture.slug}' (${fixture.kind}) needs ≥1 plant — a key with empty plants can never ` +
+				`catch anything (teethless); pass allowEmptyPlants:true + emptyPlantsJustification to override`
+		);
+	}
+	if (fixture.kind === 'hallucination_bait') {
+		const hasNoncompliance = plants.some(
+			(p) => (p?.detection as Record<string, unknown> | undefined)?.mode === 'noncompliance'
+		);
+		if (!hasNoncompliance) {
+			// Advisory only (not a hard stop): bait teeth are USUALLY noncompliance, but a bait
+			// may legitimately also carry a presence/absence plant. Surface via a named warning.
+			console.warn(
+				`[confirmLaunchKey] fixture '${fixture.slug}' is hallucination_bait but no plant uses ` +
+					`detection.mode:'noncompliance'+compliance_pattern — A8 bait is normally scored report-wide ` +
+					`via a noncompliance plant; confirm this is intentional`
+			);
+		}
+	}
+}
+
+/** DEFECT 2 — does the incoming confirm DIFFER from the stored key? Returns a short label
+ *  of WHAT drifted (for the operator-facing reason), or null when the incoming matches the
+ *  stored key (a clean idempotent re-confirm). Plants compared by canonical JSON; tolerance
+ *  + justification by value. An OMITTED field in the incoming input is "no change" (the
+ *  operator did not re-author it), so it never counts as drift. */
+function keyDrift(input: LaunchKeyConfirmInput, existing: GauntletKeyRow): string | null {
+	const drifts: string[] = [];
+	if (input.plants !== undefined && canon(input.plants) !== canon(existing.plants)) {
+		drifts.push('plants');
+	}
+	if (input.fp_tolerance !== undefined && input.fp_tolerance !== existing.fp_tolerance) {
+		drifts.push('fp_tolerance');
+	}
+	if (
+		input.fp_justification !== undefined &&
+		input.fp_justification !== (existing.fp_justification ?? undefined)
+	) {
+		drifts.push('fp_justification');
+	}
+	return drifts.length ? drifts.join('+') : null;
+}
+
+/** Stable canonical JSON (object keys sorted) so plant-equality is order-insensitive on
+ *  keys but order-sensitive on the plants array (plant order is meaningful). */
+function canon(value: unknown): string {
+	return JSON.stringify(value, (_k, v) =>
+		v && typeof v === 'object' && !Array.isArray(v)
+			? Object.fromEntries(Object.entries(v as Record<string, unknown>).sort(([a], [b]) => a.localeCompare(b)))
+			: v
+	);
+}
+
+/** DEFECT 3 — is this the one-key-per-fixture collision? Reproduced THREE raw shapes from
+ *  SurrealDB 2.x (instrumented under serial + concurrent load, all InternalError):
+ *    (a) PRIMARY-KEY collision — the deterministic key id already exists (createGauntletKey
+ *        derives gauntlet_key:<fixture-suffix>, so a double-create hits the SAME record id):
+ *        "Database record `gauntlet_key:…` already exists";
+ *    (b) SECONDARY-index collision on the gauntlet_key_dedup UNIQUE index (serial path):
+ *        "Database index `gauntlet_key_dedup` already contains '…', with record '…'";
+ *    (c) COMMIT-race conflict when two writers reach commit together:
+ *        "The query was not executed due to a failed transaction. Failed to commit
+ *         transaction due to a read or write conflict. This transaction can be retried".
+ *  All three are the SAME invariant ("one key per fixture") biting at this single write. We
+ *  call this ONLY in confirmLaunchKey's createGauntletKey catch, where the ONLY write is the
+ *  key insert, so any of these here can be nothing else. Match on shape (resilient to the
+ *  surrounding text), not the error class — the raw class is InternalError for all three. */
+function isDedupCollision(err: unknown): boolean {
+	const msg = err instanceof Error ? err.message : String(err);
+	return (
+		/record `?gauntlet_key:[^`']*`? already exists/i.test(msg) ||
+		/index `?gauntlet_key_dedup`? already contains/i.test(msg) ||
+		/failed transaction|read or write conflict/i.test(msg)
+	);
 }
 
 function diffFor(

@@ -341,3 +341,43 @@ The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
   allowed it" — anything that can throw between the gate and the work (a
   pre-flight) will spend a slot for nothing; test the spend path through the
   trigger that actually exercises the gate, not a bypassing trigger.
+
+## F-026: SurrealDB 2.x UNIQUE index on a computed VALUE field does NOT enforce uniqueness under concurrent inserts
+- **Date**: 2026-06-13
+- **What**: hardening `confirmLaunchKey` against red-team DEFECT 3 (concurrent
+  double-confirm), instrumentation revealed the ROOT cause was deeper than the
+  reported "raw untyped error": the `gauntlet_key_dedup` UNIQUE index (on the
+  computed field `dedup_key VALUE <string>fixture`) does NOT enforce one-key-per-
+  fixture under concurrency. A probe firing two `confirmLaunchKey` calls via
+  `Promise.allSettled` persisted TWO `gauntlet_key` rows with IDENTICAL `dedup_key`
+  in 25/40 races (both fulfilled, zero rejections). The detect-first
+  `readGauntletKeyForScoring` read-then-create has a TOCTOU window the secondary
+  index does not close. Three DIFFERENT raw `InternalError` message shapes surfaced
+  depending on timing — index-`already contains` (serial), `failed transaction …
+  read or write conflict` (commit race), and record-`already exists` (primary-key,
+  after the fix) — so a regex that matched only one shape let the others leak; the
+  DEFECT 3 test failed twice on successive unseen shapes before all three were mapped.
+- **Why**: a SurrealDB 2.x secondary UNIQUE index over a computed `VALUE` field is
+  not evaluated atomically against concurrent uncommitted writers — each
+  transaction computes its own `dedup_key` and both commit. Only the PRIMARY record
+  id is collision-atomic. The dedup invariant was riding on the wrong mechanism.
+- **Fix**: `createGauntletKey` now derives a DETERMINISTIC record id from the
+  fixture (`gauntlet_key:<fixture-suffix>`) and `CREATE $kid CONTENT …`, so a
+  concurrent double-create collides atomically on the primary key (probe: 0/40
+  duplicate; final row count always exactly 1). `confirmLaunchKey` maps the
+  collision (all three raw shapes) to a named `CeremonyGateError`. The dashboard-
+  visible invariant asserted by the regression test is FINAL-STATE (count==1) + no-
+  raw-error, NOT "exactly one caller saw created:true" — SurrealDB MVCC lets both
+  concurrent writers to the same record id observe success at the SDK layer while
+  only one row survives (created:true twice, count still 1 — benign, do not assert
+  against it). The redundant secondary index is left in place (harmless defense-in-
+  depth); the migration was NOT touched (interrupt/idempotency discipline).
+- **Prevention**: in SurrealDB 2.x, enforce a one-row-per-key invariant with a
+  DETERMINISTIC PRIMARY RECORD ID (collision-atomic), NEVER a secondary UNIQUE
+  index over a computed VALUE field under any concurrent write path — the index
+  does not hold. A read-then-create dedup is a TOCTOU bug; make the write itself
+  the guard. When mapping a DB collision to a named error, REPRODUCE the concurrent
+  path (not just the serial one) and enumerate EVERY raw message shape — match on
+  shape (resilient regex of all variants), not the error class. Assert the
+  persisted-state invariant (count), not an SDK-layer per-call flag that MVCC may
+  report optimistically for both racers.

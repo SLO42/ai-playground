@@ -830,8 +830,18 @@ export interface CreateGauntletKeyInput {
 
 /** Create the fixture's ANSWER KEY. content_sha is bound mechanically from the
  * fixture row (content-addressed to the work it answers — §2.1); one key per
- * fixture (dedup UNIQUE). Authorship is operator/fixing_commit_diff only (§4.4 —
- * the DDL ASSERT enforces it; the PM has no write OR read path here). */
+ * fixture. Authorship is operator/fixing_commit_diff only (§4.4 — the DDL ASSERT
+ * enforces it; the PM has no write OR read path here).
+ *
+ * DEDUP IS PRIMARY-KEY-ENFORCED (red-team DEFECT 3, instrumented): the key's record id
+ * is derived DETERMINISTICALLY from the fixture (`gauntlet_key:<fixture-suffix>`), so a
+ * concurrent double-create collides ATOMICALLY on the primary record id. The secondary
+ * `gauntlet_key_dedup` UNIQUE index on a computed VALUE field was reproduced NOT enforcing
+ * uniqueness under concurrent inserts in SurrealDB 2.x (25/40 races persisted TWO rows with
+ * identical dedup_key); the primary-key collision is the atomic guarantee (0/40 races
+ * duplicate). One fixture maps to exactly one key id — re-running is idempotent-by-collision
+ * (interrupt contract). The collision surfaces as a raw transaction-conflict; callers that
+ * must absorb it map it to a named error (see ceremony.confirmLaunchKey). */
 export async function createGauntletKey(
 	db: Db,
 	input: CreateGauntletKeyInput
@@ -851,7 +861,10 @@ export async function createGauntletKey(
 		author: input.author,
 		reference_runs: input.reference_runs
 	});
-	const [rows] = await db.query<[Raw[]]>(`CREATE gauntlet_key CONTENT $content RETURN AFTER;`, {
+	// Deterministic key id bound to the fixture — the atomic one-key-per-fixture guarantee.
+	const keyId = link(`gauntlet_key:${assertRecordId(fixture.id).split(':')[1]}`);
+	const [rows] = await db.query<[Raw[]]>(`CREATE $kid CONTENT $content RETURN AFTER;`, {
+		kid: keyId,
 		content
 	});
 	return normGauntletKey(rows[0]);

@@ -5,6 +5,7 @@ import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
 import { createProject, deleteProject } from '../projects/repo';
 import { MemoryService, FakeEmbedder, RECALL_BUDGET, estimateTokens, FENCE_OPEN } from './index';
+import { budgetCapsFor } from './recall';
 
 // MEMORY-SPEC §4.3 step 4 (tail-drop "before it reaches the prompt budget") — the RECALL
 // INJECTED-SIZE BUDGET, applied AFTER the active-set filter + WMR ranking + novelty gate +
@@ -271,5 +272,142 @@ describe('§4.3 budget × quarantine — the active-set exclusion HOLDS under a 
 		expect(res.items.length).toBe(1);
 		expect(res.items[0].fenced.text).not.toContain(SENTINEL);
 		expect(res.items.map((i) => i.fenced.text).join('\n')).toContain('(control)');
+	});
+});
+
+// ─────────────────────────────────────────────────────────────────────────────
+// RED-TEAM (wave-v2.2b-b ledger): budgetCapsFor input validation — a NaN/negative/
+// non-finite cap must FAIL CLOSED to the documented safe default, NEVER fail-open to
+// unbounded injection (D-024). Pure-function tests (no DB) plus a live recall() proof
+// that an invalid budget cannot re-admit the dropped tail. Shadow paths per §4.3 (5):
+// NaN, negative, ±Infinity, 0 (honest-empty), valid N, and absent (default).
+// ─────────────────────────────────────────────────────────────────────────────
+describe('budgetCapsFor input validation — fail CLOSED on NaN/negative/non-finite (D-024, red-team)', () => {
+	it('absent budget object ⇒ both caps OFF (null) — unchanged baseline', () => {
+		expect(budgetCapsFor(undefined)).toEqual({ maxItems: null, maxTokens: null });
+	});
+
+	it('explicit null ⇒ cap OFF (operator opt-out is preserved, NOT coerced to a default)', () => {
+		expect(budgetCapsFor({ maxItems: null, maxTokens: null })).toEqual({
+			maxItems: null,
+			maxTokens: null
+		});
+	});
+
+	it('omitted field ⇒ falls back to the RECALL_BUDGET starting point (documented default)', () => {
+		expect(budgetCapsFor({})).toEqual({
+			maxItems: RECALL_BUDGET.maxItems,
+			maxTokens: RECALL_BUDGET.maxTokens
+		});
+		// one present, one omitted → omitted fills from the default
+		expect(budgetCapsFor({ maxItems: 3 })).toEqual({
+			maxItems: 3,
+			maxTokens: RECALL_BUDGET.maxTokens
+		});
+	});
+
+	it('valid finite N ⇒ honoured exactly; fractional floors toward the integral count/token unit', () => {
+		expect(budgetCapsFor({ maxItems: 4, maxTokens: 800 })).toEqual({
+			maxItems: 4,
+			maxTokens: 800
+		});
+		expect(budgetCapsFor({ maxItems: 0, maxTokens: 0 })).toEqual({ maxItems: 0, maxTokens: 0 });
+		expect(budgetCapsFor({ maxItems: 2.9, maxTokens: 100.7 })).toEqual({
+			maxItems: 2,
+			maxTokens: 100
+		});
+	});
+
+	it('NaN cap ⇒ fails CLOSED to the documented default (NEVER passes NaN through to fail-open)', () => {
+		const r = budgetCapsFor({ maxItems: NaN, maxTokens: NaN });
+		expect(r).toEqual({ maxItems: RECALL_BUDGET.maxItems, maxTokens: RECALL_BUDGET.maxTokens });
+		// the bug being fixed: NaN must NOT reach the consumer (where `len >= NaN` / `x > NaN`
+		// are always false and the cap silently never fires → unbounded injection).
+		expect(Number.isNaN(r.maxItems as number)).toBe(false);
+		expect(Number.isNaN(r.maxTokens as number)).toBe(false);
+	});
+
+	it('negative cap ⇒ fails CLOSED to the documented default (no incoherent negative comparison)', () => {
+		expect(budgetCapsFor({ maxItems: -5, maxTokens: -100 })).toEqual({
+			maxItems: RECALL_BUDGET.maxItems,
+			maxTokens: RECALL_BUDGET.maxTokens
+		});
+	});
+
+	it('±Infinity cap ⇒ fails CLOSED to the documented default (Infinity is not a finite bound)', () => {
+		expect(budgetCapsFor({ maxItems: Infinity, maxTokens: Infinity })).toEqual({
+			maxItems: RECALL_BUDGET.maxItems,
+			maxTokens: RECALL_BUDGET.maxTokens
+		});
+		expect(budgetCapsFor({ maxItems: -Infinity, maxTokens: -Infinity })).toEqual({
+			maxItems: RECALL_BUDGET.maxItems,
+			maxTokens: RECALL_BUDGET.maxTokens
+		});
+	});
+
+	it('mixed: one field invalid, the other valid ⇒ only the invalid one collapses to its default', () => {
+		expect(budgetCapsFor({ maxItems: NaN, maxTokens: 200 })).toEqual({
+			maxItems: RECALL_BUDGET.maxItems,
+			maxTokens: 200
+		});
+		expect(budgetCapsFor({ maxItems: 2, maxTokens: -1 })).toEqual({
+			maxItems: 2,
+			maxTokens: RECALL_BUDGET.maxTokens
+		});
+	});
+});
+
+describe('§4.3 budget × invalid input — a NaN budget cannot fail-OPEN over a live recall (D-024, red-team)', () => {
+	let vProjectId: string;
+	let vmem: MemoryService;
+
+	beforeAll(async () => {
+		const p = await createProject(db, {
+			slug: 'recall_budget_validate',
+			name: 'Recall Budget Validate',
+			root_path: 'F:/code/recall-budget-validate'
+		});
+		vProjectId = p.id;
+		vmem = new MemoryService({ db, embedder: new FakeEmbedder() });
+		await vmem.store(CLEAN_ROWS.map((content) => ({ content, project: vProjectId })));
+	});
+
+	afterAll(async () => {
+		if (vProjectId) await deleteProject(db, vProjectId).catch(() => {});
+	});
+
+	it('a NaN budget behaves EXACTLY like the documented default cap — bounded, not unbounded', async () => {
+		// Before the fix, NaN sailed past the != null guards and the cap never fired, so this
+		// would have returned the FULL candidate set (fail-open). After the fix it collapses to
+		// the RECALL_BUDGET starting point (maxItems 6), so the result is BOUNDED.
+		const nanRes = await vmem.recall(QUERY, {
+			project: vProjectId,
+			k: 50,
+			limit: 50,
+			budget: { maxItems: NaN, maxTokens: NaN }
+		});
+		const defaultRes = await vmem.recall(QUERY, {
+			project: vProjectId,
+			k: 50,
+			limit: 50,
+			budget: {} // documented default caps (6 / 1500)
+		});
+		// NaN ≡ default: same bounded item set, in the same order.
+		expect(nanRes.items.map((i) => i.id)).toEqual(defaultRes.items.map((i) => i.id));
+		// Bounded by the default maxItems (6), strictly fewer than all 8 clean rows ⇒ NOT fail-open.
+		expect(nanRes.items.length).toBeLessThanOrEqual(RECALL_BUDGET.maxItems as number);
+		expect(nanRes.items.length).toBeLessThan(CLEAN_ROWS.length);
+	});
+
+	it('a negative budget also stays bounded (fails closed to the default, never cuts to chaos)', async () => {
+		const negRes = await vmem.recall(QUERY, {
+			project: vProjectId,
+			k: 50,
+			limit: 50,
+			budget: { maxItems: -3, maxTokens: -50 }
+		});
+		// Bounded to the default cap, never unbounded and never an incoherent negative cut.
+		expect(negRes.items.length).toBeGreaterThan(0);
+		expect(negRes.items.length).toBeLessThanOrEqual(RECALL_BUDGET.maxItems as number);
 	});
 });

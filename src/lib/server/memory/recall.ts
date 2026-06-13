@@ -77,15 +77,33 @@ export const RECALL_BUDGET: { maxItems: number | null; maxTokens: number | null 
  * no extra cap beyond `limit`). A present budget object ⇒ each omitted field falls back to its
  * RECALL_BUDGET starting point; an explicit `null` keeps that cap OFF. Exported for the test
  * harness + B8 to assert the resolution rule directly.
+ *
+ * D-024 FAIL-CLOSED on invalid input (red-team, wave-v2.2b-b ledger): a cap value that is a
+ * number but NOT a finite, non-negative integer-or-zero (NaN, ±Infinity, negative) is INVALID
+ * and must NEVER pass through to the consumer. If it did, the downstream guards (`len >= cap`,
+ * `used+cost > cap`) compare against NaN — every comparison is `false`, the cap silently never
+ * fires, and the budget FAILS OPEN to unbounded injection (the exact failure D-024 forbids).
+ * An invalid value therefore COLLAPSES to the documented safe default (the RECALL_BUDGET starting
+ * point) — the same posture as an omitted field — so the cap stays bounded, never unbounded. A
+ * fractional finite cap (e.g. 2.5) floors toward zero to keep the integer-count/token semantics
+ * exact. Only `null` (explicit operator opt-out) and a finite `>= 0` number reach the consumer.
  */
+function resolveCap(value: number | null | undefined, fallback: number): number | null {
+	if (value === undefined) return fallback; // omitted ⇒ documented starting point
+	if (value === null) return null; // explicit opt-out ⇒ cap OFF
+	// Invalid number (NaN / ±Infinity / negative) ⇒ fail CLOSED to the safe default, never open.
+	if (!Number.isFinite(value) || value < 0) return fallback;
+	return Math.floor(value); // finite, >= 0 ⇒ honour it (floor keeps count/token units integral)
+}
+
 export function budgetCapsFor(budget: RecallOptions['budget']): {
 	maxItems: number | null;
 	maxTokens: number | null;
 } {
 	if (!budget) return { maxItems: null, maxTokens: null };
 	return {
-		maxItems: budget.maxItems === undefined ? RECALL_BUDGET.maxItems : budget.maxItems,
-		maxTokens: budget.maxTokens === undefined ? RECALL_BUDGET.maxTokens : budget.maxTokens
+		maxItems: resolveCap(budget.maxItems, RECALL_BUDGET.maxItems ?? 0),
+		maxTokens: resolveCap(budget.maxTokens, RECALL_BUDGET.maxTokens ?? 0)
 	};
 }
 

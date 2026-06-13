@@ -31,7 +31,7 @@ test('pure-helper block is host-free (no agent/phase/log/parallel/pipeline/args)
   assert.ok(!/\bargs\b/.test(block), 'helper block must not reference the host args global')
 })
 
-const { checkVerdict, shouldRedTeam, modelFor } = new Function(`${block}; return { checkVerdict, shouldRedTeam, modelFor }`)()
+const { checkVerdict, shouldRedTeam, modelFor, collectDeferred } = new Function(`${block}; return { checkVerdict, shouldRedTeam, modelFor, collectDeferred }`)()
 
 const allTrue = { complete: true, tested: true, designSystem: true, functional: true, purpose: true, honest: true }
 const evidenceVerdict = 'Ran npm test (14 files green), npm run lint clean, svelte-check 0 errors; drove the live app in the browser and verified the flow. Recommendation: ship.'
@@ -170,6 +170,45 @@ test('modelFor: garbage shapes fail safe to inherit/defaults', () => {
   assert.equal(modelFor('review', { id: '1' }, { models: 'opus' }), undefined)
   assert.equal(modelFor('review', { id: '1' }, { models: { review: 7 } }), undefined)
   assert.equal(modelFor('push', null, { models: { review: 'sonnet' } }), 'haiku')
+})
+
+// ---- collectDeferred matrix (deferral ledger, operator directive 2026-06-13) ----
+
+test('collectDeferred: pulls scope=deferred followUps from BOTH review and redTeam, tagged with the feature', () => {
+  const results = [
+    { build: {}, review: { feature: 'H1 x', followUps: [{ severity: 'MEDIUM', scope: 'deferred', title: 'a' }] },
+      redTeam: { feature: 'H1 x', followUps: [{ severity: 'HIGH', scope: 'deferred', title: 'b' }] }, fixes: [] },
+  ]
+  const led = collectDeferred(results)
+  assert.equal(led.length, 2)
+  assert.deepEqual(led[0], { task: 'H1 x', severity: 'MEDIUM', title: 'a' })
+  assert.deepEqual(led[1], { task: 'H1 x', severity: 'HIGH', title: 'b' })
+})
+
+test('collectDeferred: scope=in-scope findings are NOT collected (those flip passed=false and are fixed in-task)', () => {
+  const results = [
+    { review: { feature: 'f', followUps: [{ severity: 'HIGH', scope: 'in-scope', title: 'fixed-now' }] }, redTeam: null },
+  ]
+  assert.deepEqual(collectDeferred(results), [])
+})
+
+test('collectDeferred: missing/empty/non-array followUps and empty-title entries are ignored, never throw', () => {
+  const results = [
+    { review: { feature: 'a' }, redTeam: null },
+    { review: { feature: 'b', followUps: [] }, redTeam: { feature: 'b', followUps: 'nope' } },
+    { review: { feature: 'c', followUps: [{ severity: 'LOW', scope: 'deferred', title: '   ' }] }, redTeam: null },
+    null,
+  ]
+  assert.deepEqual(collectDeferred(results), [])
+})
+
+test('collectDeferred: non-array input → [] (never throws)', () => {
+  for (const bad of [null, undefined, {}, 'x', 7]) assert.deepEqual(collectDeferred(bad), [])
+})
+
+test('collectDeferred: a verdict with no feature string falls back to "(unknown)"', () => {
+  const results = [{ review: { followUps: [{ severity: 'MEDIUM', scope: 'deferred', title: 't' }] }, redTeam: null }]
+  assert.deepEqual(collectDeferred(results), [{ task: '(unknown)', severity: 'MEDIUM', title: 't' }])
 })
 
 // ---- host-load regression (F-016) ----

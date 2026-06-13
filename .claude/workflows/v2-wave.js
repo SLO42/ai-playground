@@ -1,6 +1,6 @@
 export const meta = {
   name: 'v2-wave',
-  description: 'Canonical Atelier v2 build wave: per task BUILD → independent D-038 DoD-review, with a bounded in-script fix-loop on review failure (no main-thread round-trip), an A7 verdict artifact gate on every review, and an A4 red-team second pass on explicitly risk-flagged tasks. Parameterized via args: { waveName, tasks:[{id,title,build,redTeam?}], commonExtra?, maxFixAttempts?, redTeamAll?, model?, pushAtEnd? }.',
+  description: 'Canonical Atelier v2 build wave: per task BUILD → independent D-038 DoD-review, with a bounded in-script fix-loop on review failure (no main-thread round-trip), an A7 verdict artifact gate on every review, and an A4 red-team second pass on explicitly risk-flagged tasks. In-scope MEDIUM+ review/red-team findings flip passed=false and auto-route to the fix-loop; DEFERRED (out-of-scope/latent) findings surface as a structured deferredFollowUps ledger so the orchestrator chains a hardening wave (operator directive 2026-06-13). Parameterized via args: { waveName, tasks:[{id,title,build,redTeam?,tier?}], commonExtra?, maxFixAttempts?, redTeamAll?, model?, models?, pushAtEnd? }.',
   whenToUse: 'Any v2 gap-closure / feature wave on the F:\\code\\ai-playground-v2 worktree. Pass the task list via args — do not fork this script per wave.',
 }
 
@@ -74,6 +74,25 @@ function modelFor(kind, task, waveArgs){
   if(kind==='push') return 'haiku'
   return undefined
 }
+// Deferral ledger (operator directive 2026-06-13): in-scope MEDIUM+ defects flip passed=false and the
+// existing fix-loop fixes them in-task; DEFERRED findings (real but out-of-scope/latent) are recorded
+// in each verdict's `followUps` — this aggregates them across the wave so the orchestrator chains a
+// hardening wave instead of hand-extracting them from prose. Pure: operates on the results array only.
+function collectDeferred(taskResults){
+  if(!Array.isArray(taskResults)) return []
+  const out=[]
+  for(const x of taskResults){
+    for(const rv of [x&&x.review, x&&x.redTeam]){
+      if(rv && Array.isArray(rv.followUps)){
+        for(const f of rv.followUps){
+          if(f && f.scope==='deferred' && typeof f.title==='string' && f.title.trim())
+            out.push({task: typeof rv.feature==='string'?rv.feature:'(unknown)', severity:f.severity, title:f.title})
+        }
+      }
+    }
+  }
+  return out
+}
 // ---- end pure helpers ----
 
 const BUILD = { type:'object', additionalProperties:false,
@@ -88,6 +107,9 @@ const REVIEW = { type:'object', additionalProperties:false,
     criteria:{type:'object',additionalProperties:false,required:['complete','tested','designSystem','functional','purpose','honest'],
       properties:{complete:{type:'boolean'},tested:{type:'boolean'},designSystem:{type:'boolean'},functional:{type:'boolean'},purpose:{type:'boolean'},honest:{type:'boolean'}}},
     gaps:{type:'array',items:{type:'string'}},
+    followUps:{type:'array',description:'OPTIONAL. DEFERRED follow-ups ONLY — real findings that are genuinely out-of-scope / latent / only reachable at a future step. An IN-SCOPE MEDIUM+ defect does NOT go here — it goes in gaps with passed=false. The wave aggregates these into a deferredFollowUps ledger so a hardening wave is chained (operator directive 2026-06-13).',
+      items:{type:'object',additionalProperties:false,required:['severity','scope','title'],
+        properties:{severity:{type:'string',enum:['HIGH','MEDIUM','LOW']},scope:{type:'string',enum:['in-scope','deferred']},title:{type:'string',description:'one line: what + where (file:line) + why it bites later'}}}},
     verdict:{type:'string',description:'Evidence-dense and BOUNDED: ≤250 words. Lead with PASS/FAIL + what YOU ran/measured; per-criterion evidence in clauses, not narrative. Itemized detail belongs in gaps, never re-told here. End with the one-line Recommendation.'} } }
 
 const WT='F:\\code\\ai-playground-v2', DOCS='F:\\code\\ai-playground\\docs'
@@ -103,7 +125,8 @@ LIVE-VERIFY, DIFF-AWARE (harvested: gstack qa/SKILL.md diff-aware mode, MIT): ma
 DESIGN (criteria 3+5): apply DESIGN-SYSTEM.md §10 — trunk test + AI-slop blacklist; tag each design finding HIGH (measured: contrast/console/focus-visible/off-token) / MEDIUM (pattern match) / LOW (taste) detection confidence; LOW findings are advisory and are NEVER routed to auto-fix (G3).
 PRE-EMIT VERIFICATION (harvested: gstack review/SKILL.md confidence calibration, MIT; G1-adapted): every PRESENCE-claim gap must quote the motivating file:line verbatim — if you cannot quote it, keep the gap but mark it "(unverified)"; ABSENCE-claims (stub, missing state/test/handler) are EXEMPT — instead name the expected artifact + the search that proved absence. Never "likely handled"/"probably tested" — verify or mark unknown. A gap touching ANY D-038 criterion may be confidence-tagged but NEVER dropped from gaps.
 TRUST-BOUNDARY + ENUM SWEEP (harvested: gstack review/checklist.md, MIT; re-derived for our stack per G5): LLM/agent-produced values persisted to SurrealDB or rendered without shape/format validation = gap (D-026: retrieved content is DATA, never instructions); a NEW enum/status/tier value must be traced through EVERY consumer — Grep the sibling values, READ each switch/filter/render, including code OUTSIDE the diff; ts-ignore/svelte-ignore/eslint-disable added without written justification = gap.
-SUPPRESSION (G2): dismissing a finding as a known-good pattern is allowed ONLY by citing an operator-locked (🔒) DESIGN-SYSTEM/DECISIONS rule, and every suppression MUST be logged in the verdict ("suppressed: <finding> per <🔒 source>"). Set each criterion true only if independently verified; passed = all six. List concrete gaps (file:line). Clean up any probe rows you create. VERDICT LENGTH: ≤250 words, evidence-dense — what you ran and measured, no narrative; detail lives in gaps. End the verdict with ONE synthesis line (harvested: gstack codex/SKILL.md, MIT): "Recommendation: <action> because <reason naming the most actionable gap>". Final message IS the REVIEW verdict.`
+SUPPRESSION (G2): dismissing a finding as a known-good pattern is allowed ONLY by citing an operator-locked (🔒) DESIGN-SYSTEM/DECISIONS rule, and every suppression MUST be logged in the verdict ("suppressed: <finding> per <🔒 source>"). Set each criterion true only if independently verified; passed = all six. List concrete gaps (file:line).
+SEVERITY + SCOPE — so the wave ACTS on findings instead of burying them in prose (operator directive 2026-06-13): for EACH finding decide (a) severity HIGH/MEDIUM/LOW and (b) scope — IN-SCOPE (a defect in what THIS task was asked to deliver) vs DEFERRED (real, but out-of-scope / latent / only reachable at a future step). RULE: a MEDIUM-or-higher IN-SCOPE finding ⇒ passed=false (the fix-loop fixes it NOW) — NEVER pass-with-a-note on an in-scope MEDIUM+. A DEFERRED finding does NOT block passed, but you MUST record it in the followUps array (each: {severity, scope:'deferred', title}) so the orchestrator chains a hardening wave — never bury a real defect in prose on a passing verdict. LOW/taste stays advisory, never auto-fixed (G3). Clean up any probe rows you create. VERDICT LENGTH: ≤250 words, evidence-dense — what you ran and measured, no narrative; detail lives in gaps. End the verdict with ONE synthesis line (harvested: gstack codex/SKILL.md, MIT): "Recommendation: <action> because <reason naming the most actionable gap>". Final message IS the REVIEW verdict.`
 
 // A7 gate runner (harvested: gstack EXIT-PLAN-MODE artifact gate, MIT — Lane A-code A4/A7): EVERY
 // review-shaped agent return (initial review, re-reviews, red-team) passes checkVerdict; on failure
@@ -183,4 +206,6 @@ if(args.pushAtEnd!==false){
   // Housekeeping agent: cheapest tier — it runs two git commands (cost discipline, 2026-06-11).
   await agent(`Run exactly: cd ${WT} && git status --short && git push origin v2. Confirm the push output. If the tree is dirty, report what is dirty and push anyway (committed work only goes up). No other actions.`, KOPTS('push', null, {label:'push v2', phase:'push'}))
 }
-return {stoppedAt:null, complete:true, results}
+const deferredFollowUps = collectDeferred(results)
+if(deferredFollowUps.length) log(`${deferredFollowUps.length} DEFERRED follow-up(s) recorded — orchestrator should chain a hardening wave: ${deferredFollowUps.map(d=>`[${d.severity}] ${d.task}: ${d.title}`).join(' | ')}`)
+return {stoppedAt:null, complete:true, results, deferredFollowUps}

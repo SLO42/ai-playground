@@ -32,7 +32,12 @@ import { join } from 'node:path';
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
-import { storeMemory, type StoreOptions } from './store';
+import {
+	storeMemory,
+	MemoryCandidateFieldError,
+	MemoryCandidateShapeError,
+	type StoreOptions
+} from './store';
 
 // ── Parse: frontmatter + body + cross-links ────────────────────────────────────────
 
@@ -147,7 +152,13 @@ export interface ImportAutoMemoryOptions {
 export interface ImportAutoMemoryResult {
 	/** Memory rows persisted (DO-NOT-CAPTURE drops are excluded). */
 	imported: number;
-	/** Candidates dropped by the §3.1 DO-NOT-CAPTURE guard (no memory row). */
+	/**
+	 * Files that persisted NO memory row: either DO-NOT-CAPTURE-screened (§3.1) OR rejected at
+	 * the D-026 candidate boundary (a {@link MemoryCandidateFieldError}/{@link
+	 * MemoryCandidateShapeError} — e.g. an empty-after-trim content). Both are ISOLATED per-file
+	 * (counted here, skipped; the entity node still exists) — one malformed .md NEVER aborts the
+	 * rest of the import.
+	 */
 	dropped: number;
 	/** Entity nodes upserted (one per file, even when its memory row was dropped). */
 	entities: number;
@@ -227,15 +238,31 @@ export async function importAutoMemory(
 		// Store the memory row through the 2.5 pipeline (screen BEFORE embed). A transient
 		// negative note ("daemon is down") is DROPPED here and persists no row, but the
 		// entity node above still exists so the topic remains in the graph.
-		const stored = await storeMemory(opts, {
-			content: p.content,
-			kind: 'semantic',
-			namespace,
-			key: memKey,
-			tags: [p.kind, 'auto-memory'],
-			source: 'claude-auto-memory',
-			project: options.project
-		});
+		// PER-FILE ISOLATION (D-038 / wave-v2.2b-e widened throwing surface): storeMemory now
+		// validates the candidate against the FULL `memory` schema contract and THROWS a named
+		// MemoryCandidateFieldError/MemoryCandidateShapeError on a malformed file (e.g. an
+		// empty-after-trim content). That ONE file is junk to import, not a fatal import error:
+		// catch it, count it as a NAMED drop (the entity node already exists, so the topic stays
+		// in the graph), and continue — one bad .md NEVER aborts the rest of the batch. Any OTHER
+		// error (DB/embedder failure) is a real fault and re-thrown — never swallowed (F-008).
+		let stored: { persisted: boolean; id: string };
+		try {
+			stored = await storeMemory(opts, {
+				content: p.content,
+				kind: 'semantic',
+				namespace,
+				key: memKey,
+				tags: [p.kind, 'auto-memory'],
+				source: 'claude-auto-memory',
+				project: options.project
+			});
+		} catch (err) {
+			if (err instanceof MemoryCandidateFieldError || err instanceof MemoryCandidateShapeError) {
+				result.dropped++;
+				continue;
+			}
+			throw err;
+		}
 
 		if (stored.persisted) {
 			result.imported++;

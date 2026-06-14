@@ -184,6 +184,63 @@ describe('v1-stores — .swarm/memory.db → memory (RE-EMBED if dim≠1024)', (
 	});
 });
 
+// D-026 / wave-v2.2b-e — storeMemory's WIDENED throwing surface (assertCandidateShape now
+// throws a named MemoryCandidateFieldError on empty/whitespace content + any malformed
+// schema-constrained field). The importer calls storeMemory ONE row at a time, so an
+// un-isolated throw would abort the WHOLE migration on a single junk legacy row. v1's
+// `.swarm/memory.db` schema is `content TEXT NOT NULL` — which PERMITS the empty string —
+// so a real legacy DB can contain an empty-content row the v2 non-empty contract rejects.
+// SUCCESS BAR: the junk row is ISOLATED (counted in `dropped`), the VALID rows in the SAME
+// batch still import, and the import does NOT throw (no batch-abort, F-008 honest counts).
+describe('v1-stores — a malformed legacy row is ISOLATED, never aborts the batch (D-026)', () => {
+	it('an empty/whitespace-content row is dropped while the valid rows in the same batch import', async () => {
+		const rows: SwarmMemoryRow[] = [
+			{ id: 'iso_good_1', key: 'iso-good-1', namespace: 'isolate', content: 'A durable fact about widgets.', type: 'semantic' },
+			// empty after trim — v1 `content TEXT NOT NULL` permits '   '; v2 non-empty rejects it.
+			{ id: 'iso_empty', key: 'iso-empty', namespace: 'isolate', content: '   ', type: 'semantic' },
+			{ id: 'iso_good_2', key: 'iso-good-2', namespace: 'isolate', content: 'Another durable fact.', type: 'episodic' }
+		];
+
+		// MUST NOT throw — the bad row is isolated, not fatal.
+		const res = await importSwarmMemory({ db, embedder }, rows);
+		expect(res.imported).toBe(2); // both valid rows persisted
+		expect(res.dropped).toBe(1); // the empty-content row counted as a named drop
+
+		// Live read-back (F-008): the two valid rows are really in the DB; the junk one is not.
+		expect(await countMemory('isolate')).toBe(2);
+		const [present] = await db.query<[Array<{ key: string }>]>(
+			'SELECT key FROM memory WHERE namespace = "isolate";'
+		);
+		const keys = present.map((r) => r.key).sort();
+		expect(keys).toEqual(['swarm:iso-good-1', 'swarm:iso-good-2']);
+	});
+
+	it('a malformed non-content field (e.g. empty-after-trim) is also isolated, valid rows survive', async () => {
+		// Empty-string content is the schema-constrained field most reachable from real v1 data;
+		// prove a second now-rejected shape in the SAME batch ALSO isolates rather than aborting.
+		const rows: SwarmMemoryRow[] = [
+			{ id: 'iso2_good', key: 'iso2-good', namespace: 'isolate2', content: 'Valid content survives.', type: 'semantic' },
+			{ id: 'iso2_bad', key: 'iso2-bad', namespace: 'isolate2', content: '', type: 'semantic' }
+		];
+		const res = await importSwarmMemory({ db, embedder }, rows);
+		expect(res.imported).toBe(1);
+		expect(res.dropped).toBe(1);
+		expect(await countMemory('isolate2')).toBe(1);
+	});
+
+	it('a REAL fault (not a candidate rejection) still propagates — failures are not swallowed (F-008)', async () => {
+		// A throwing embedder is a genuine infra fault, NOT a malformed candidate. It must NOT be
+		// absorbed into the per-row drop path — it propagates so the import surfaces the failure.
+		const boomEmbedder = {
+			embed: () => Promise.reject(new Error('embedder offline'))
+		} as unknown as typeof embedder;
+		const rows: SwarmMemoryRow[] = [
+			{ id: 'iso3', key: 'iso3', namespace: 'isolate3', content: 'Triggers a real embedder fault.', type: 'semantic' }
+		];
+		await expect(importSwarmMemory({ db, embedder: boomEmbedder }, rows)).rejects.toThrow('embedder offline');
+	});
+});
+
 describe('v1-stores — graph-state.json → entity + references', () => {
 	it('imports nodes as entities and edges as references (mapped kind)', async () => {
 		const res = await importGraphState(db, GRAPH);

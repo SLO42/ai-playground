@@ -31,7 +31,13 @@ import { DatabaseSync } from 'node:sqlite';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import { EMBEDDING_DIM } from '../memory/embed';
-import { storeMemory, type MemoryKind, type StoreOptions } from '../memory/store';
+import {
+	storeMemory,
+	MemoryCandidateFieldError,
+	MemoryCandidateShapeError,
+	type MemoryKind,
+	type StoreOptions
+} from '../memory/store';
 
 // ── v1 swarm memory shapes (`memory_entries` row, claude-flow SQLite) ────────────────
 
@@ -173,7 +179,13 @@ export interface ImportSwarmResult {
 	skipped: number;
 	/** Rows whose embedding was recomputed to 1024 (the §2.9 verify counter). */
 	reEmbedded: number;
-	/** Candidates dropped by the §3.1 DO-NOT-CAPTURE screen (no memory row). */
+	/**
+	 * Rows that did NOT persist a memory: either DO-NOT-CAPTURE-screened (§3.1) OR rejected
+	 * at the D-026 candidate boundary (a {@link MemoryCandidateFieldError}/{@link
+	 * MemoryCandidateShapeError} — e.g. a legacy row whose `content` is empty/whitespace, which
+	 * the `memory` schema's non-empty contract rejects). Both are ISOLATED per-row (the bad row
+	 * is counted here and SKIPPED) — one junk legacy row NEVER aborts the rest of the import.
+	 */
 	dropped: number;
 }
 
@@ -215,14 +227,32 @@ export async function importSwarmMemory(
 
 		// storeMemory re-embeds (screen-before-embed §3.4) the SCREENED content to 1024 via the
 		// injected embedder. We pass key/namespace so the dedup probe above matches a re-run.
-		const res = await storeMemory(opts, {
-			content: row.content,
-			kind: mapSwarmKind(row.type),
-			namespace,
-			key: memKey,
-			tags,
-			source: 'swarm-memory'
-		});
+		//
+		// PER-ROW ISOLATION (D-038 / wave-v2.2b-e widened throwing surface): storeMemory validates
+		// the candidate against the FULL `memory` schema contract and THROWS a named
+		// MemoryCandidateFieldError/MemoryCandidateShapeError on a malformed legacy row (e.g.
+		// empty/whitespace content — v1's `content TEXT NOT NULL` permits an empty string, which
+		// the v2 non-empty contract correctly rejects). Such a row is JUNK to migrate, not a fatal
+		// import error: catch it, count it as a NAMED drop, and continue so one bad legacy row
+		// never aborts the whole batch. Any OTHER error (DB/embedder failure) is a real fault and
+		// re-thrown — we do NOT swallow it as a silent skip (F-008).
+		let res: { persisted: boolean };
+		try {
+			res = await storeMemory(opts, {
+				content: row.content,
+				kind: mapSwarmKind(row.type),
+				namespace,
+				key: memKey,
+				tags,
+				source: 'swarm-memory'
+			});
+		} catch (err) {
+			if (err instanceof MemoryCandidateFieldError || err instanceof MemoryCandidateShapeError) {
+				result.dropped++;
+				continue;
+			}
+			throw err;
+		}
 
 		if (res.persisted) result.imported++;
 		else result.dropped++;

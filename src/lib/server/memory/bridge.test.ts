@@ -166,6 +166,37 @@ describe('§2.6 import — memory rows + entity nodes + references edges (reuses
 	});
 });
 
+// D-026 / wave-v2.2b-e — storeMemory's WIDENED throwing surface (assertCandidateShape throws a
+// named MemoryCandidateFieldError on empty/whitespace content). importAutoMemory calls storeMemory
+// ONE file at a time, so an un-isolated throw would abort the WHOLE auto-memory import on a single
+// malformed .md. A file whose name+body both reduce to empty after trim (e.g. a whitespace-named
+// stub with an empty body) yields empty content the v2 non-empty contract rejects. SUCCESS BAR:
+// the malformed file is ISOLATED (counted in `dropped`, its entity node still created), the VALID
+// files in the SAME batch still import, and importAutoMemory does NOT throw (no batch-abort).
+describe('§2.6 — a malformed file is ISOLATED, never aborts the import (D-026 widened surface)', () => {
+	it('a file with empty-after-trim content is dropped while valid files in the same batch import', async () => {
+		const files: AutoMemoryFile[] = [
+			{ path: 'good-1.md', raw: '---\nname: Good one\ntype: reference\n---\nA durable fact about routing.' },
+			// Whitespace-only basename + empty body → content === '' → MemoryCandidateFieldError.
+			{ path: '   .md', raw: '---\nname:    \ntype: note\n---\n   ' },
+			{ path: 'good-2.md', raw: '---\nname: Good two\ntype: feedback\n---\nAnother durable fact.' }
+		];
+
+		// MUST NOT throw — the malformed file is isolated, not fatal.
+		const res = await importAutoMemory({ db, embedder }, files, { project: projectId, namespace: 'iso-bridge' });
+		expect(res.imported).toBe(2); // both valid files persisted a memory row
+		expect(res.dropped).toBe(1); // the empty-content file counted as a named drop
+		// All three entity nodes still exist (the topic stays navigable even when its row dropped).
+		expect(res.entities).toBe(3);
+
+		// Live read-back (F-008): exactly the two valid rows are in the DB.
+		const [mrows] = await db.query<[Array<{ c: number }>]>(
+			'SELECT count() AS c FROM memory WHERE namespace = "iso-bridge" GROUP ALL;'
+		);
+		expect(mrows.length ? mrows[0].c : 0).toBe(2);
+	});
+});
+
 describe('§2.6 VERIFY — graph traversal returns LINKED ENTITIES from imported memory', () => {
 	it('traverse(index) returns the entities the index links to (1-hop)', async () => {
 		const files: AutoMemoryFile[] = [

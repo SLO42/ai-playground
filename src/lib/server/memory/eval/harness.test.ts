@@ -195,24 +195,32 @@ describe('runEval — live integration, MEASUREMENT ONLY', () => {
 		expect(baseline!.macro.ndcgAt5).toBeGreaterThan(0.5);
 	});
 
-	it('measures novelty-gate suppression as a function of the cut (the §4.6 re-validation finding)', () => {
+	it('the operator-blessed 0.90 cut suppresses the near-dup family that the retired 0.97 cut leaked (§4.6 re-validation finding)', () => {
 		const fams = dupFamilies();
 		expect(fams['gateway-loopback'].length).toBe(4);
 		// The gateway query has all 4 near-dups as candidates; suppression is MEASURABLE.
+		// Family pairwise cosines on the LexicalEmbedder corpus: dup-a↔{b,c,d} ≈ 0.91,
+		// the rest ≈ 0.83 (see corpus.ts) — straddling the 0.90↔0.97 band exactly.
 		const baseline = report.weightSweep.find((v) => v.label.startsWith('baseline'))!;
 		const gwDefault = baseline.perQuery.find((m) => m.queryId === 'q-gateway')!;
 		expect(gwDefault.dupSuppression).not.toBeNull();
-		// MEASURED FINDING (recorded, not asserted as "correct"): on this corpus the near-dup
-		// paraphrases sit at cosine ~0.83–0.91, BELOW the spec §4.6 default cut of 0.97 — so the
-		// DEFAULT cut does NOT collapse them. The harness surfaces exactly this so B8 can lower
-		// the cut. We assert the harness REPORTS a number (0..1), not a particular value.
-		expect(gwDefault.dupSuppression!).toBeGreaterThanOrEqual(0);
-		expect(gwDefault.dupSuppression!).toBeLessThanOrEqual(1);
-		// A TIGHTER cut DOES suppress — proves the gate works and the sweep can find a better cut.
+		// OPERATOR-BLESSED DEFAULT (2026-06-13) is 0.90 (== NOVELTY_COSINE_CUT). At 0.90 the
+		// 0.91-cosine paraphrase pair is caught, so the family is FULLY suppressed (≤1 survivor):
+		// dupSuppression == 1 on this single-family corpus. This is the behaviour the lowering bought.
+		expect(NOVELTY_COSINE_CUT).toBe(0.9);
+		expect(gwDefault.dupSuppression!).toBe(1);
+		// EVIDENCE FOR THE CHANGE: at the RETIRED prior default 0.97 the same paraphrase pair sits
+		// BELOW the cut, so the family LEAKS (more than one survivor) ⇒ suppression < 1. The sweep
+		// keeps 0.97 so this regression is visible in one report.
+		const retired = report.noveltySweep.find((v) => v.noveltyCut === 0.97)!;
+		const gwRetired = retired.perQuery.find((m) => m.queryId === 'q-gateway')!;
+		expect(gwRetired.dupSuppression).not.toBeNull();
+		expect(gwRetired.dupSuppression!).toBeLessThan(gwDefault.dupSuppression!);
+		// And a still-tighter cut (0.85) also suppresses — the gate is monotone in the cut.
 		const tight = report.noveltySweep.find((v) => v.noveltyCut === 0.85)!;
 		const gwTight = tight.perQuery.find((m) => m.queryId === 'q-gateway')!;
 		expect(gwTight.dupSuppression).not.toBeNull();
-		expect(gwTight.dupSuppression!).toBeGreaterThan(gwDefault.dupSuppression!);
+		expect(gwTight.dupSuppression!).toBeGreaterThanOrEqual(gwDefault.dupSuppression!);
 	});
 
 	it('the budget probe tail-drops live recall without ever exceeding the cap', () => {

@@ -312,11 +312,14 @@ export async function runEval(mem: MemoryService): Promise<EvalReport> {
 		scoreVariant(v.label, v.w, baseCut, limit, perQueryCands, families)
 	);
 
-	// Novelty-cut sweep at baseline weights: lower cut = more aggressive dedup.
-	const cuts = [0.85, 0.9, 0.95, baseCut, 0.99];
+	// Novelty-cut sweep at baseline weights: lower cut = more aggressive dedup. baseCut is the
+	// OPERATOR-BLESSED 0.90 (2026-06-13); 0.97 stays in the sweep as the RETIRED prior default so
+	// the evidence for the change (0.97 leaked, 0.90 catches the 0.91-cosine paraphrase) is visible
+	// in one report. Dedup so baseCut never appears twice.
+	const cuts = [...new Set([0.85, baseCut, 0.95, 0.97, 0.99])];
 	const noveltySweep = cuts.map((cut) =>
 		scoreVariant(
-			`novelty cut ${cut}${cut === baseCut ? ' (spec §4.6 default)' : ''}`,
+			`novelty cut ${cut}${cut === baseCut ? ' (operator-blessed §4.6 default)' : ''}${cut === 0.97 ? ' (retired prior default)' : ''}`,
 			baseWeights,
 			cut,
 			limit,
@@ -362,7 +365,7 @@ export async function runEval(mem: MemoryService): Promise<EvalReport> {
 			'Numbers are on the controlled LexicalEmbedder eval corpus, NOT live qwen3 — they re-validate the SHAPE of the §11 tunables, they are not an achieved production metric (F-008).',
 			'The §11 ~26% prefix-cache figure is NOT measured here (it is an Agent-SDK-path spike S.1 item, out of scope for the recall-ranking harness) — left UNKNOWN, not asserted.',
 			'historical_utility is 0 across the corpus (no retrieval_outcome rows seeded) AND all rows share a near-identical seed timestamp (flat recency) — so cosine dominates the WMR score and the weight variants score IDENTICALLY here. This is itself a re-validation finding: the weights cannot be discriminated without a corpus that carries real outcome signal + age spread (a B8 follow-up corpus). The harness is the instrument; B8 supplies that corpus.',
-			'Read the noveltySweep dupSuppression column: realistic near-dup PARAPHRASES on this corpus sit BELOW the §4.6 default cut (0.97), so the default does not collapse them — a lower cut suppresses more. This is a re-validation INPUT for B8 (record, do not change the default here).'
+			'Read the noveltySweep dupSuppression column: realistic near-dup PARAPHRASES on this corpus sit at pairwise cosine ~0.83–0.91. The RETIRED 0.97 cut left them ABOVE the cut → not collapsed (~0.4 suppression); the OPERATOR-BLESSED 0.90 cut (2026-06-13) catches the 0.91-cosine paraphrase pair → higher suppression. This is the EVIDENCE for the 0.97→0.90 change (B8), now recorded against the live default.'
 		]
 	};
 }

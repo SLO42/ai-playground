@@ -33,9 +33,18 @@ const RECENCY_HALF_LIFE_DAYS = 30;
 
 /**
  * Hard novelty-gate band (§4.6, D-031): if a candidate's cosine similarity to an
- * ALREADY-SELECTED item exceeds this, it is a near-dup and is dropped. Tunable.
+ * ALREADY-SELECTED item is >= this, it is a near-dup and is dropped.
+ *
+ * OPERATOR-BLESSED VALUE 0.90 (2026-06-13) — no longer a §11 "starting point to
+ * re-validate". B8's eval harness (src/lib/server/memory/eval/) MEASURED paraphrase
+ * dup-suppression on the gateway-loopback near-dup family: at the old 0.97 default the
+ * near-dup paraphrases (pairwise cosine ~0.83–0.91 on the LexicalEmbedder corpus) sat
+ * BELOW the cut, so it left ~0.4 suppression — they leaked into the top-k. At <= 0.90 the
+ * 0.91-cosine paraphrase pair is correctly caught (suppression rises to 1.0), so 0.90
+ * drops true near-dupes far better while still keeping topically-distinct items (which sit
+ * well below 0.90). The operator adopted 0.90 on that evidence.
  */
-export const NOVELTY_COSINE_CUT = 0.97;
+export const NOVELTY_COSINE_CUT = 0.9;
 
 /**
  * Recall injected-size budget (§4.3 step 4 "tail-drop noise filter … before it reaches the

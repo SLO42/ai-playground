@@ -11,29 +11,33 @@ import {
 	storeMemories,
 	extractAndStore,
 	MemoryCandidateShapeError,
-	MemoryProvenanceShapeError,
+	MemoryCandidateFieldError,
 	type ExtractFn,
 	type MemoryCandidate,
 	type StoreOptions
 } from './store';
 
-// TASK (RT follow-up, wave-v2.2b-c deferral ledger) — the two D-026 sibling seams in store.ts,
-// the same untrusted-extractor-input class T1 fixed in loop.ts runReviewFork, one module over.
-// Against a LIVE throwaway SurrealDB with the real §4 schema (D-038 integration); the embedder is
-// the deterministic FakeEmbedder (no Ollama in this sandbox); the extractor is the injected
-// `extract` seam (a mock in a TEST is allowed, F-008).
+// TASK (wave-v2.2b-e, error-learning architectural-smell escalation) — close the ENTIRE
+// untrusted-extractor-output shape class in store.ts in ONE structural move. Prior waves guarded
+// SOME fields (content, then project/session); the red-team immediately reproduced the SAME class on
+// the NEXT schema field (kind/tags/importance) as a generic SurrealDB type error at CREATE. The fix
+// is the LAYER: `assertCandidateShape` validates the FULL `memory` schema contract ONCE at the store
+// boundary, raising ONE named MemoryCandidateFieldError. Against a LIVE throwaway SurrealDB with the
+// real §4 schema (D-038 integration); the embedder is the deterministic FakeEmbedder (no Ollama in
+// this sandbox); the extractor is the injected `extract` seam (a mock in a TEST is allowed, F-008).
 //
 // Two seams, both untrusted-extractor-output trust boundaries (D-026):
-//   (1) PROVENANCE shape — storeMemory → link()/assertRecordId trusted c.project / c.session SHAPE.
-//       isMemoryCandidate validates only `content`, so a non-string provenance field survives the
-//       extract boundary. Must fail with a NAMED MemoryProvenanceShapeError at the store boundary,
-//       BEFORE screen/embed/link — never a generic IdentifierError mid-pipeline, never silent omit.
+//   (1) FULL candidate shape — storeMemory → assertCandidateShape validates EVERY schema-constrained
+//       LLM-authored field (content/project/session/kind/namespace/key/tags/source/importance). A
+//       malformed value in ANY of them must fail with a NAMED MemoryCandidateFieldError at the store
+//       boundary, BEFORE screen/embed/link/CREATE — never a generic SurrealDB type error at CREATE,
+//       never a silent omit (F-008). The class is CLOSED, not the next field.
 //   (2) ARRAY + per-ELEMENT shape — extractAndStore: the injected extractor return's array wrapper
 //       and per-element shape are untrusted. A non-array / null element / primitive element must
 //       fail NAMED (MemoryCandidateShapeError) BEFORE the provenance spread — no partial write.
 //
-// D-038 proof obligations: a non-array, a null element, and a non-string provenance each yield a
-// NAMED error with NO partial write (memory count unchanged across the throwing call).
+// D-038 proof obligations: a malformed value in EACH schema-constrained field yields its NAMED error
+// with countMemories() unchanged, and a fully-valid candidate still stores.
 
 let tdb: TestDb;
 let db: Db;
@@ -95,66 +99,102 @@ describe('storeMemory — happy path (well-shaped candidate)', () => {
 	});
 });
 
-// ── SEAM 1 — provenance shape (D-026 MemoryProvenanceShapeError) ───────────────────────
-describe('SEAM 1 — storeMemory rejects a non-string PROVENANCE shape with a NAMED error (D-026)', () => {
-	// REPRO (pre-fix): a TRUTHY non-string project (42 / {} / []) threw a generic D-016
-	// IdentifierError deep in the CONTENT build (AFTER screen + embed); a FALSY non-string
-	// (false / 0) was silently treated as absent by the `c.project ?` ternary and OMITTED.
-	// Both are now a NAMED MemoryProvenanceShapeError raised at the store boundary, no write.
+// ── SEAM 1 — FULL candidate shape (D-026 MemoryCandidateFieldError), the CLOSED class ──
+describe('SEAM 1 — storeMemory rejects a malformed value in ANY schema-constrained field (D-026)', () => {
+	// REPRO (pre-fix, the recurring class): a TRUTHY non-string project threw a generic D-016
+	// IdentifierError deep in the CONTENT build; a FALSY non-string was silently OMITTED; and the
+	// red-team's NEXT-field probes (kind=42, tags=non-array, importance="hot") reached CREATE and
+	// died as a generic SurrealDB type error ("Found 42 for field kind … expected a string").
+	// All now fail with ONE NAMED MemoryCandidateFieldError at the store boundary, no write.
 
-	it('a number project throws MemoryProvenanceShapeError BEFORE any write (no partial row)', async () => {
-		const before = await countMemories();
-		const bad = { content: 'ok', project: 42 } as unknown as MemoryCandidate;
-		await expect(storeMemory(opts, bad)).rejects.toBeInstanceOf(MemoryProvenanceShapeError);
-		await storeMemory(opts, bad).catch((err: MemoryProvenanceShapeError) => {
-			expect(err.field).toBe('project');
-			expect(err.received).toBe('number');
-			expect(err.message).toContain('D-026');
+	// ── per-field regression matrix: malformed value in EACH schema-constrained field → NAMED
+	//    MemoryCandidateFieldError, countMemories() unchanged (the D-038 "class is CLOSED" proof) ──
+	const malformed: Array<{ name: string; field: string; received: string; candidate: unknown }> = [
+		{ name: 'content (number, not a string)', field: 'content', received: 'number', candidate: { content: 42 } },
+		{ name: 'content (empty string)', field: 'content', received: 'empty string', candidate: { content: '   ' } },
+		{ name: 'project (number)', field: 'project', received: 'number', candidate: { content: 'ok', project: 42 } },
+		{ name: 'project (FALSY non-string false — not silently omitted, F-008)', field: 'project', received: 'boolean', candidate: { content: 'ok', project: false } },
+		{ name: 'session (object)', field: 'session', received: 'object', candidate: { content: 'ok', session: { table: 's', id: 'x' } } },
+		{ name: 'kind (number — the red-team repro)', field: 'kind', received: 'number', candidate: { content: 'ok', kind: 42 } },
+		{ name: 'kind (string outside the ASSERT set)', field: 'kind', received: '"wisdom"', candidate: { content: 'ok', kind: 'wisdom' } },
+		{ name: 'namespace (number)', field: 'namespace', received: 'number', candidate: { content: 'ok', namespace: 7 } },
+		{ name: 'namespace (empty string)', field: 'namespace', received: 'empty string', candidate: { content: 'ok', namespace: '' } },
+		{ name: 'key (number)', field: 'key', received: 'number', candidate: { content: 'ok', key: 7 } },
+		{ name: 'source (object)', field: 'source', received: 'object', candidate: { content: 'ok', source: {} } },
+		{ name: 'tags (non-array string — the red-team repro)', field: 'tags', received: 'string', candidate: { content: 'ok', tags: 'a,b' } },
+		{ name: 'tags (array with a non-string element)', field: 'tags[1]', received: 'number', candidate: { content: 'ok', tags: ['a', 2] } },
+		{ name: 'importance (string — the red-team repro)', field: 'importance', received: 'string', candidate: { content: 'ok', importance: 'hot' } },
+		{ name: 'importance (NaN)', field: 'importance', received: 'number', candidate: { content: 'ok', importance: NaN } },
+		{ name: 'importance (out of [0,10] range)', field: 'importance', received: '99', candidate: { content: 'ok', importance: 99 } }
+	];
+
+	for (const m of malformed) {
+		it(`rejects malformed ${m.name} with a NAMED error (field=${m.field}), no partial write`, async () => {
+			const before = await countMemories();
+			const bad = m.candidate as unknown as MemoryCandidate;
+			await expect(storeMemory(opts, bad)).rejects.toBeInstanceOf(MemoryCandidateFieldError);
+			await storeMemory(opts, bad).catch((err: MemoryCandidateFieldError) => {
+				expect(err).toBeInstanceOf(MemoryCandidateFieldError);
+				expect(err.field).toBe(m.field);
+				expect(err.received).toBe(m.received);
+				expect(err.message).toContain('D-026');
+			});
+			expect(await countMemories()).toBe(before); // NO partial write — the class is CLOSED
 		});
-		expect(await countMemories()).toBe(before); // NO partial write
-	});
+	}
 
-	it('an object session throws MemoryProvenanceShapeError naming the `session` field', async () => {
-		const bad = { content: 'ok', session: { table: 'session', id: 'x' } } as unknown as MemoryCandidate;
-		await storeMemory(opts, bad).then(
-			() => {
-				throw new Error('expected throw');
-			},
-			(err) => {
-				expect(err).toBeInstanceOf(MemoryProvenanceShapeError);
-				expect((err as MemoryProvenanceShapeError).field).toBe('session');
-				expect((err as MemoryProvenanceShapeError).received).toBe('object');
-			}
-		);
-	});
-
-	it('a FALSY non-string provenance (false) ALSO throws NAMED — not silently omitted (F-008)', async () => {
-		const before = await countMemories();
-		const bad = { content: 'ok', project: false } as unknown as MemoryCandidate;
-		await expect(storeMemory(opts, bad)).rejects.toBeInstanceOf(MemoryProvenanceShapeError);
-		expect(await countMemories()).toBe(before); // not silently written without provenance
-	});
-
-	it('rejection happens BEFORE embed — the embedder is never called on a bad-provenance candidate', async () => {
+	it('rejection happens BEFORE embed — the embedder is never called on a malformed candidate', async () => {
 		const spyEmbedder = new FakeEmbedder(); // FakeEmbedder counts its own .embed() calls
-		const bad = { content: 'ok', project: ['array'] } as unknown as MemoryCandidate;
-		await expect(storeMemory({ db, embedder: spyEmbedder }, bad)).rejects.toBeInstanceOf(MemoryProvenanceShapeError);
+		const bad = { content: 'ok', tags: 'not-an-array' } as unknown as MemoryCandidate;
+		await expect(storeMemory({ db, embedder: spyEmbedder }, bad)).rejects.toBeInstanceOf(MemoryCandidateFieldError);
 		expect(spyEmbedder.embedCalls).toBe(0); // boundary guard runs BEFORE screen/embed/link
 	});
 
-	it('storeMemories isolates a bad-provenance candidate (NAMED dropReason) without dropping the rest', async () => {
+	it('a fully-valid candidate with EVERY constrained field set still stores', async () => {
+		const before = await countMemories();
+		const out = await storeMemory(opts, {
+			content: 'use $param binding at the SurrealDB boundary',
+			project: projectId,
+			session: sessionId,
+			kind: 'procedural',
+			namespace: 'rules',
+			key: `k_${Date.now()}`,
+			tags: ['db', 'boundary'],
+			source: 'extractor',
+			importance: 8
+		});
+		expect(out.persisted).toBe(true);
+		expect(await countMemories()).toBe(before + 1);
+	});
+
+	it('storeMemories isolates a malformed candidate (NAMED dropReason) without dropping the rest', async () => {
 		const before = await countMemories();
 		const out = await storeMemories(opts, [
 			{ content: 'good one', project: projectId },
-			{ content: 'bad provenance', project: 99 } as unknown as MemoryCandidate,
+			{ content: 'bad kind', kind: 42 } as unknown as MemoryCandidate,
 			{ content: 'good two' }
 		]);
 		expect(out[0].persisted).toBe(true);
 		expect(out[1].persisted).toBe(false);
-		expect(out[1].dropReason).toContain('MemoryProvenanceShapeError'); // attributed by NAME, not "insert-failed"
+		expect(out[1].dropReason).toContain('MemoryCandidateFieldError'); // attributed by NAME, not "insert-failed"
 		expect(out[2].persisted).toBe(true);
 		// Exactly the two good candidates were written — the bad one wrote nothing.
 		expect(await countMemories()).toBe(before + 2);
+	});
+
+	it('a SurrealDB CREATE error reason is sanitized — no `memory:<id>` record id leaks into the audit drop reason', async () => {
+		// Force an insert-time failure (UNIQUE dedup clash) so the captured SurrealDB message can carry
+		// the un-persisted row's internal `memory:<id>`; the dropReason must redact it (field name only).
+		const ns = 'dropreason_probe';
+		const key = `dup_${Date.now()}`;
+		const first = await storeMemory(opts, { content: 'first', namespace: ns, key });
+		expect(first.persisted).toBe(true);
+		const out = await storeMemories(opts, [{ content: 'dup', namespace: ns, key }]);
+		expect(out[0].persisted).toBe(false);
+		// Whatever the underlying message, the audit reason must carry NO raw record id — any
+		// `memory:<token>` must have been redacted to the literal sentinel `memory:<redacted>`.
+		const reason = out[0].dropReason ?? '';
+		expect(reason.replace(/memory:<redacted>/g, '')).not.toMatch(/\bmemory:[A-Za-z0-9_⟨⟩-]+/);
 	});
 });
 

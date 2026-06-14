@@ -381,3 +381,37 @@ The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
   shape (resilient regex of all variants), not the error class. Assert the
   persisted-state invariant (count), not an SDK-layer per-call flag that MVCC may
   report optimistically for both racers.
+
+## F-027: field-by-field trust-boundary guards on untrusted-LLM/extractor output recur as an architectural smell — validate the COMPLETE shape against the schema contract ONCE
+- **Date**: 2026-06-13
+- **What**: `memory/store.ts` validated untrusted-extractor candidate fields one at a
+  time across successive waves: first `content` (`isMemoryCandidate`), then a follow-up
+  added `assertProvenanceShape` for `project`/`session`. Each time, the red-team
+  IMMEDIATELY reproduced the SAME class on the NEXT schema-constrained field that had no
+  guard — `kind` ("Found 42 for field kind … expected a string"), `tags` ("expected
+  option<array<string>>"), `importance` (a string reaching the float column) — surfacing
+  as a generic SurrealDB type error at CREATE (AFTER screen+embed), not a named D-026
+  rejection. The guard family was always one field behind the schema.
+- **Why**: the boundary was modeled as "guard the field we just got burned on" instead of
+  "validate the candidate against the FULL `memory` schema contract". Every LLM-authored
+  field the schema constrains (TYPE/ASSERT/range) is an attack surface; guarding a subset
+  leaves the complement open, and the next schema field added is open by default. A
+  field-by-field family is structurally incapable of closing the class — it's whack-a-mole
+  by construction (Iron Law: recurring same-area defect = fix the LAYER, not another patch).
+- **Fix**: replaced the per-field `assertProvenanceShape` + `MemoryProvenanceShapeError`
+  with a SINGLE `assertCandidateShape` raising ONE named `MemoryCandidateFieldError` (field
+  + received shape via `shapeOf`, never the body) that validates EVERY schema-constrained
+  field at the store boundary BEFORE screen/embed/link/CREATE: content (non-empty string),
+  project/session (string id or absent), kind (in the ASSERT set), namespace (non-empty),
+  key/source (string), tags (array<string>), importance (finite number in [0,10]). Regression
+  test asserts a malformed value in EACH field → its NAMED error with `countMemories()`
+  unchanged, and a fully-valid candidate still stores. Also sanitized the storeMemories
+  dropReason (stripped the un-persisted `memory:<id>` from captured CREATE-error messages).
+- **Prevention**: when validating untrusted LLM/extractor output destined for a schema-backed
+  table, validate the COMPLETE candidate against the FULL schema contract ONCE at the boundary
+  (one validator, one named error enumerating offending field + received shape) — do NOT add a
+  guard per field as each one gets exploited. The trigger to escalate: the SAME class
+  reproduces on a sibling field a guard didn't cover → that is the architectural smell, fix the
+  LAYER. Derive the field list + constraints (TYPE/ASSERT/range) FROM the schema so a newly-
+  added schema field is covered by default, and keep any inlined allowed-set/range in lock-step
+  with the migration. Reject falsy non-strings (never silently treat as absent — F-008).

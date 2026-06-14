@@ -78,6 +78,17 @@ function shapeOf(v: unknown): string {
 }
 
 /**
+ * Sanitize a per-item drop reason for the audit trail: a SurrealDB CREATE error (e.g. a UNIQUE
+ * index clash) can embed the un-persisted row's internal record id `memory:<id>` into its message.
+ * The audit reason should name the FAILURE (field/class), not a transient internal id — replace any
+ * `memory:<id>` token with the bare table name (`memory:<redacted>`). Keeps the named class + message
+ * meaning while never persisting a record id that was never committed.
+ */
+function sanitizeDropReason(reason: string): string {
+	return reason.replace(/\bmemory:[A-Za-z0-9_⟨⟩-]+/g, 'memory:<redacted>');
+}
+
+/**
  * D-026 — the §3.2 extractor returned a value that is NOT the contracted shape: either the
  * whole return is a non-array, or an ELEMENT inside an otherwise-valid array is not a
  * {@link MemoryCandidate} (a plain object with a string `content`). A malformed element would
@@ -104,23 +115,37 @@ export class MemoryCandidateShapeError extends Error {
 }
 
 /**
- * D-026 — a candidate's PROVENANCE field (`project` / `session`) survived the extract boundary
- * with a non-string SHAPE. The upstream `isMemoryCandidate` validates only `content`; a number/
- * object/array/boolean provenance field is NOT caught there and would either throw a generic
- * D-016 `IdentifierError` deep in the CONTENT build (after screen + embed) on a truthy non-string,
- * OR — for a FALSY non-string (`false`/`0`) — be silently treated as absent by the `c.project ?`
- * ternary and OMITTED, losing provenance with no error (F-008). Validate the shape at the store
- * boundary, BEFORE screen/embed/link, and fail NAMED here instead.
+ * D-026 — a candidate field authored by the untrusted extractor violated the `memory` table's
+ * schema contract for that field's TYPE/ASSERT. This is the ONE error for the WHOLE
+ * untrusted-extractor-output shape class (not a field-by-field family): {@link assertCandidateShape}
+ * checks every schema-constrained candidate field at the store boundary and raises THIS — naming the
+ * offending `field` and its `received` shape (via {@link shapeOf}, never the possibly-poisoned body) —
+ * BEFORE screen/embed/link/CREATE.
+ *
+ * Why one validator, not one guard per field (error-learning architectural-smell escalation): each
+ * prior wave guarded SOME fields (content, then project/session); the red-team immediately reproduced
+ * the SAME class on the NEXT schema field (`kind` → "Found 42 for field kind … expected a string`;
+ * `tags` → "expected option<array<string>>") as a generic SurrealDB type error at CREATE. The fix is
+ * the LAYER: validate the candidate against the FULL schema contract ONCE, so a malformed value in ANY
+ * constrained field is a NAMED D-026 rejection at the boundary — the class is CLOSED, not the next field.
+ *
+ * Names the trigger (which schema-constrained field + its received shape), the catcher (assertCandidateShape
+ * in storeMemory, before any side effect), and what the caller sees (a typed, attributable failure —
+ * surfaced by name in the storeMemories per-item dropReason; never a fake-success swallow, F-008).
  */
-export class MemoryProvenanceShapeError extends Error {
-	override readonly name = 'MemoryProvenanceShapeError';
+export class MemoryCandidateFieldError extends Error {
+	override readonly name = 'MemoryCandidateFieldError';
 	constructor(
-		public readonly field: 'project' | 'session',
-		public readonly received: string
+		/** The schema-constrained candidate field that violated its contract. */
+		public readonly field: string,
+		/** The received shape (shapeOf — type/array/null), or a contract descriptor; never the raw body. */
+		public readonly received: string,
+		/** The schema contract the value failed (e.g. `non-empty string`, `option<array<string>>`). */
+		public readonly expected: string
 	) {
 		super(
-			`candidate provenance field \`${field}\` has a non-string shape (${received}); ` +
-				`provenance is untrusted extractor output (D-026) — must be a string id or absent`
+			`candidate field \`${field}\` violates its schema contract: received ${received}, ` +
+				`expected ${expected}; extractor output is untrusted (D-026)`
 		);
 	}
 }
@@ -130,18 +155,99 @@ function isMemoryCandidate(v: unknown): v is MemoryCandidate {
 	return typeof v === 'object' && v !== null && !Array.isArray(v) && typeof (v as { content?: unknown }).content === 'string';
 }
 
+/** The `kind` ASSERT set from the `memory` schema (m0005). Keep in lock-step with schema.ts. */
+const MEMORY_KINDS: readonly MemoryKind[] = ['semantic', 'episodic', 'procedural'];
+/** `importance` documented range (DATA-MODEL §4.5: 0..10; schema DEFAULT 5.0). */
+const IMPORTANCE_MIN = 0;
+const IMPORTANCE_MAX = 10;
+
 /**
- * D-026 provenance-shape boundary: each provenance field (`project`, `session`) must be a string
- * (a `table:id`, further validated by assertRecordId at link time) or absent (`undefined`). ANY
- * other type — including a FALSY non-string (`false`, `0`, `''` is a string so allowed) — fails
- * NAMED here, before the screen/embed/link, instead of throwing an anonymous IdentifierError mid-
- * pipeline (truthy) or being silently omitted (falsy non-string). Mutates nothing; throws or returns.
+ * D-026 FULL-shape boundary: validate the COMPLETE untrusted-extractor candidate against the `memory`
+ * table's schema contract (m0005 + m0033) ONCE, BEFORE any screen/embed/link/CREATE. Every LLM-authored
+ * field the schema constrains is checked here so a malformed value in ANY of them fails NAMED at the
+ * boundary ({@link MemoryCandidateFieldError}) instead of as a generic SurrealDB type error at CREATE.
+ *
+ * Contract (offending field → schema constraint):
+ *   - content     non-empty string                          (TYPE string; screen/embed depend on it)
+ *   - project     string id or absent                       (option<record<project>>; format → assertRecordId at link)
+ *   - session     string id or absent                       (option<record<session>>; format → assertRecordId at link)
+ *   - kind        one of MEMORY_KINDS or absent             (string ASSERT IN [...])
+ *   - namespace   non-empty string or absent                (string DEFAULT "default")
+ *   - key         string or absent                          (option<string>)
+ *   - tags        array of strings or absent                (option<array<string>>)
+ *   - source      string or absent                          (option<string>)
+ *   - importance  finite number in [0,10] or absent         (float; DATA-MODEL §4.5 range)
+ *
+ * A falsy non-string (`false`/`0`) is rejected too (never silently treated as absent — F-008). The
+ * empty string `''` is a valid string shape but rejected for content/namespace as non-empty is required.
+ * Mutates nothing; throws {@link MemoryCandidateFieldError} or returns.
  */
-function assertProvenanceShape(c: MemoryCandidate): void {
+function assertCandidateShape(c: MemoryCandidate): void {
+	// content — required non-empty string (the screen + embed read it; an empty row is useless).
+	// A non-string reports its shape; a string that is empty or whitespace-only reports "empty string".
+	if (typeof c.content !== 'string') {
+		throw new MemoryCandidateFieldError('content', shapeOf(c.content), 'non-empty string');
+	}
+	if (c.content.trim() === '') {
+		throw new MemoryCandidateFieldError('content', 'empty string', 'non-empty string');
+	}
+
+	// provenance links — string id (format validated at link()) or absent. A non-string (incl. a
+	// FALSY non-string) is NAMED here, never an anonymous IdentifierError mid-pipeline nor a silent omit.
 	for (const field of ['project', 'session'] as const) {
 		const v = c[field];
 		if (v !== undefined && typeof v !== 'string') {
-			throw new MemoryProvenanceShapeError(field, shapeOf(v));
+			throw new MemoryCandidateFieldError(field, shapeOf(v), 'string record id or absent');
+		}
+	}
+
+	// kind — must be in the schema ASSERT set when present (else SurrealDB rejects at CREATE).
+	if (c.kind !== undefined && (typeof c.kind !== 'string' || !MEMORY_KINDS.includes(c.kind as MemoryKind))) {
+		throw new MemoryCandidateFieldError(
+			'kind',
+			typeof c.kind === 'string' ? `"${c.kind}"` : shapeOf(c.kind),
+			`one of ${JSON.stringify(MEMORY_KINDS)} or absent`
+		);
+	}
+
+	// namespace — non-empty string or absent (it feeds the dedup_key VALUE; an empty/non-string breaks it).
+	if (c.namespace !== undefined) {
+		if (typeof c.namespace !== 'string') {
+			throw new MemoryCandidateFieldError('namespace', shapeOf(c.namespace), 'non-empty string or absent');
+		}
+		if (c.namespace.trim() === '') {
+			throw new MemoryCandidateFieldError('namespace', 'empty string', 'non-empty string or absent');
+		}
+	}
+
+	// key / source — option<string>: a string or absent.
+	for (const field of ['key', 'source'] as const) {
+		const v = c[field];
+		if (v !== undefined && typeof v !== 'string') {
+			throw new MemoryCandidateFieldError(field, shapeOf(v), 'string or absent');
+		}
+	}
+
+	// tags — option<array<string>>: an array whose every element is a string, or absent.
+	if (c.tags !== undefined) {
+		if (!Array.isArray(c.tags)) {
+			throw new MemoryCandidateFieldError('tags', shapeOf(c.tags), 'option<array<string>> (array or absent)');
+		}
+		for (let i = 0; i < c.tags.length; i++) {
+			if (typeof c.tags[i] !== 'string') {
+				throw new MemoryCandidateFieldError(`tags[${i}]`, shapeOf(c.tags[i]), 'string (every tags element)');
+			}
+		}
+	}
+
+	// importance — float in the documented 0..10 range, or absent. Non-number / NaN / Infinity / out-of-range
+	// all fail NAMED here rather than as a SurrealDB type error (non-number) or a silent bad score (out-of-range).
+	if (c.importance !== undefined) {
+		if (typeof c.importance !== 'number' || !Number.isFinite(c.importance)) {
+			throw new MemoryCandidateFieldError('importance', shapeOf(c.importance), `finite number in [${IMPORTANCE_MIN},${IMPORTANCE_MAX}] or absent`);
+		}
+		if (c.importance < IMPORTANCE_MIN || c.importance > IMPORTANCE_MAX) {
+			throw new MemoryCandidateFieldError('importance', `${c.importance}`, `number in [${IMPORTANCE_MIN},${IMPORTANCE_MAX}]`);
 		}
 	}
 }
@@ -161,11 +267,11 @@ export interface StoreOptions {
 export async function storeMemory(opts: StoreOptions, c: MemoryCandidate): Promise<StoredMemory> {
 	const { db, embedder } = opts;
 
-	// D-026 provenance-shape boundary — validate the (untrusted-extractor-sourced) `project` /
-	// `session` field SHAPES BEFORE any screen/embed/link. A non-string provenance would otherwise
-	// throw a generic IdentifierError deep in the CONTENT build (truthy) or be silently omitted
-	// (falsy non-string); fail NAMED + attributable here, writing nothing.
-	assertProvenanceShape(c);
+	// D-026 FULL-shape boundary — validate the WHOLE untrusted-extractor candidate against the
+	// `memory` schema contract (every constrained field, not just provenance) BEFORE any
+	// screen/embed/link/CREATE. A malformed value in ANY field fails NAMED + attributable here,
+	// writing nothing — never a generic SurrealDB type error at CREATE (the closed shape class).
+	assertCandidateShape(c);
 
 	// Step 2.0 — screen BEFORE embed (§3.4). Both gates, in order.
 	const gate = gateCandidate(c.content);
@@ -223,10 +329,17 @@ export async function storeMemories(opts: StoreOptions, candidates: MemoryCandid
 			out.push(await storeMemory(opts, c));
 		} catch (err) {
 			// Per-item fallback (§3.4 step 4) — one bad candidate never drops the rest. Attribute
-			// the failure by its NAMED class (D-026 provenance-shape rejections surface as
-			// MemoryProvenanceShapeError, not the misleading "insert-failed") — every error has a name.
+			// the failure by its NAMED class (D-026 full-shape rejections surface as
+			// MemoryCandidateFieldError, not the misleading "insert-failed") — every error has a name.
+			// Sanitize the reason: a SurrealDB CREATE error can embed the un-persisted row's internal
+			// `memory:<id>` — strip it (field/class name only, never a never-committed record id).
 			const e = err as Error;
-			out.push({ id: '', screenStatus: 'quarantined', persisted: false, dropReason: `${e.name || 'insert-failed'}:${e.message}` });
+			out.push({
+				id: '',
+				screenStatus: 'quarantined',
+				persisted: false,
+				dropReason: sanitizeDropReason(`${e.name || 'insert-failed'}:${e.message}`)
+			});
 		}
 	}
 	return out;

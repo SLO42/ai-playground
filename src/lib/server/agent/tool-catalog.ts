@@ -149,25 +149,27 @@ export function buildMemoryPullMcpServer(
 	};
 }
 
-// ── DEFERRED (named, in-scope-adjacent — see task summary) ───────────────────────────────
+// ── BACKING TRANSPORT (DELIVERED — was deferred D-B10-1/2, landed in the B10-transport wave) ──
 //
-// This module makes the tool REGISTERABLE + GATED. Two runtime pieces are the broader build
-// the scope-lock excludes and are written down here so they are not a silent punt:
+// This module makes the tool REGISTERABLE + GATED. The two runtime pieces it pointed at — the
+// stdio MCP server and the loopback endpoint — are now BUILT (the dead tool is reachable):
 //
 //   D-B10-1  scripts/memory-pull-mcp.mjs — the stdio MCP server the registration points at.
-//            It exposes ONE tool (`pull`: {query, project?, limit?}), reads HOOK_URL/HOOK_TOKEN
-//            from env (D-025), and POSTs the loopback `/api/memory/pull` endpoint. Until it
-//            lands, a granted session registers the server but an invocation has no backing
-//            transport (the proxy no-ops / the server fails to start) — honestly absent, never
-//            a fabricated result (F-008). It must wall-clock-bound the call (B5 budget is the
-//            engine's; the transport adds its own fetch timeout like gate-hook.mjs's 8s).
+//            Exposes ONE tool (`pull`: {query, project?, limit?}), reads HOOK_URL/HOOK_TOKEN
+//            from env (D-025 — never the command string), loopback-verifies, and POSTs the
+//            loopback `/api/memory/pull` endpoint with an 8s fetch bound (like gate-hook.mjs).
+//            Plain ESM speaking NDJSON JSON-RPC 2.0 (initialize/tools/list/tools/call). On any
+//            transport failure it returns an honest NAMED error to the agent, never a fabricated
+//            result (F-008). Unit + subprocess-round-trip tests: scripts/memory-pull-mcp.test.js.
 //
 //   D-B10-2  routes/api/memory/pull/+server.ts — the loopback endpoint the MCP server calls.
-//            It authorizes the D-025 token (like /api/gates/pretooluse), resolves the wired
-//            MemoryService (harness/wiring.getMemoryService), calls pullMemory(mem, input), and
-//            returns its already-fenced result. EVERY chokepoint stays the engine's — the
-//            endpoint is a thin auth+dispatch shell, it re-implements NO recall/fence/budget.
+//            Authorizes the D-025 token (authorizeHookRequest, like /api/gates/pretooluse),
+//            resolves the wired MemoryService (harness/wiring.getMemoryService), calls
+//            pullMemory(mem, input), and returns its already-fenced result verbatim. EVERY
+//            chokepoint stays the engine's — a thin auth+dispatch shell, re-implements NO
+//            recall/fence/budget. Tests: src/routes/api/memory/pull/server.test.ts.
 //
-// When D-B10-1/2 land, the live red-team (planted secret + planted injection over a real
-// corpus, invoked by a granted session) runs end-to-end; today it runs at the engine seam
-// (agent/pull-memory.test.ts) and the GATING runs here (tool-catalog.test.ts).
+// The fence/screen/quarantine/budget red-team runs at the engine seam against a REAL corpus
+// (agent/pull-memory.test.ts: planted secret EXCLUDED, planted injection FENCED); the GATING +
+// CLI load-path delivery run here + in cli-backend.test.ts. The transport owns no guard, so it
+// cannot bypass one — a live invocation routes through pullMemory → recall() + assembleInjection().

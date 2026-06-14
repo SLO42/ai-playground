@@ -221,9 +221,26 @@ export async function handleMessage(msg, env = process.env, fetchImpl = fetch) {
 	}
 }
 
-/** Read NDJSON JSON-RPC from stdin, dispatch each line, write responses to stdout. */
+/**
+ * Read NDJSON JSON-RPC from stdin, dispatch each line, write responses to stdout.
+ *
+ * A `tools/call` handler awaits a loopback fetch (the recall round-trip is hundreds of ms — an
+ * Ollama embed). Clients commonly send a request then close stdin; a SYNCHRONOUS `process.exit(0)`
+ * on close would kill that in-flight fetch and DROP the response (silence-as-success — exactly the
+ * failure modes 28-31/F-008 forbid). So we TRACK every dispatched handler promise and, on close,
+ * DRAIN the in-flight set before exiting. Each handler resolves once its response is written, so
+ * draining guarantees pending responses reach stdout before the process ends.
+ */
 function main() {
 	const rl = createInterface({ input: process.stdin });
+	const inFlight = new Set();
+	let closed = false;
+
+	const maybeExit = () => {
+		// Exit only once stdin is closed AND no handler is still mid-flight (response unwritten).
+		if (closed && inFlight.size === 0) process.exit(0);
+	};
+
 	rl.on('line', (line) => {
 		const trimmed = line.trim();
 		if (!trimmed) return;
@@ -238,11 +255,20 @@ function main() {
 		}
 		// Each message is handled independently; a handler throw becomes an honest stderr note
 		// (a tools/call already degrades to an isError result inside the handler, never throws).
-		Promise.resolve(handleMessage(msg))
-			.catch((err) => process.stderr.write(`memory-pull-mcp: handler error: ${String(err?.message ?? err)}\n`));
+		const p = Promise.resolve(handleMessage(msg))
+			.catch((err) => process.stderr.write(`memory-pull-mcp: handler error: ${String(err?.message ?? err)}\n`))
+			.finally(() => {
+				inFlight.delete(p);
+				maybeExit(); // a late-finishing handler triggers the deferred close-exit
+			});
+		inFlight.add(p);
 	});
-	// stdin closing (client disconnected) ends the server — clean exit, nothing to tear down.
-	rl.on('close', () => process.exit(0));
+	// stdin closing (client disconnected) ends the server — but DRAIN in-flight handlers first so a
+	// response whose fetch is still pending is not dropped by a synchronous exit (F-008 / F-014).
+	rl.on('close', () => {
+		closed = true;
+		maybeExit(); // no in-flight work ⇒ exit now; otherwise the last `finally` above exits.
+	});
 }
 
 // Run main() ONLY when executed as a script (not when imported by the unit test). Compare the

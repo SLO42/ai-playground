@@ -15,7 +15,13 @@
 // the TRANSPORT half only — it must not be able to bypass a guard because it owns none.
 
 import { describe, it, expect, vi } from 'vitest';
+import { spawn } from 'node:child_process';
+import { createServer } from 'node:http';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 import { callPullEndpoint, renderResult, handleMessage } from './memory-pull-mcp.mjs';
+
+const SCRIPT_PATH = resolve(dirname(fileURLToPath(import.meta.url)), 'memory-pull-mcp.mjs');
 
 const WIRED = { HOOK_URL: 'http://127.0.0.1:5099', HOOK_TOKEN: 'boot-token-xyz' };
 
@@ -209,4 +215,110 @@ describe('handleMessage — MCP stdio protocol', () => {
 		expect(sent).toHaveLength(1);
 		expect(sent[0].error.code).toBe(-32601);
 	});
+});
+
+// ── main() lifecycle: REAL subprocess stdio round-trip (the transport actually delivered) ────
+// The prior verdict CLAIMED a subprocess round-trip but none existed (gap-2). This drives the
+// real `main()` NDJSON loop in a spawned child against a SLOW loopback endpoint, then closes
+// stdin while the fetch is still in flight — the exact close-race that DROPPED the response
+// (gap-1). The fix drains in-flight handlers before exit; this test fails on the old code.
+describe('main() lifecycle — real subprocess NDJSON stdio (gap-1 close-race, gap-2 untested loop)', () => {
+	/** Start a loopback HTTP endpoint that delays its /api/memory/pull response by `delayMs`. */
+	function startSlowEndpoint(delayMs, payload) {
+		return new Promise((res) => {
+			const srv = createServer((req, sink) => {
+				let buf = '';
+				req.on('data', (c) => (buf += c));
+				req.on('end', () => {
+					setTimeout(() => {
+						sink.writeHead(200, { 'content-type': 'application/json' });
+						sink.end(JSON.stringify(payload));
+					}, delayMs);
+				});
+			});
+			srv.listen(0, '127.0.0.1', () => res({ srv, port: srv.address().port }));
+		});
+	}
+
+	/**
+	 * Spawn the script, feed it `lines` (each a JSON-RPC object), then END stdin. Collect stdout
+	 * NDJSON until the child exits. `closeAfterMs` lets the request land before stdin closes.
+	 */
+	function driveChild(lines, env, closeAfterMs = 50) {
+		return new Promise((res, rej) => {
+			const child = spawn(process.execPath, [SCRIPT_PATH], {
+				env: { ...process.env, ...env },
+				stdio: ['pipe', 'pipe', 'pipe']
+			});
+			let out = '';
+			let err = '';
+			child.stdout.on('data', (c) => (out += c));
+			child.stderr.on('data', (c) => (err += c));
+			child.on('error', rej);
+			child.on('close', (code) => {
+				const msgs = out
+					.split('\n')
+					.map((l) => l.trim())
+					.filter(Boolean)
+					.map((l) => JSON.parse(l));
+				res({ code, msgs, err });
+			});
+			for (const line of lines) child.stdin.write(JSON.stringify(line) + '\n');
+			// Close stdin shortly after writing — while the slow fetch is still in flight.
+			setTimeout(() => child.stdin.end(), closeAfterMs);
+		});
+	}
+
+	it('DELIVERS the tools/call response even when stdin closes mid-fetch (no silent drop)', async () => {
+		const { srv, port } = await startSlowEndpoint(200, {
+			ok: true,
+			text: '⎆BEGIN_REFERENCE⎆ delayed hit ⎆END_REFERENCE⎆',
+			items: [],
+			droppedCount: 0,
+			error: null
+		});
+		try {
+			const env = { HOOK_URL: `http://127.0.0.1:${port}`, HOOK_TOKEN: 'boot-token-xyz' };
+			const { code, msgs } = await driveChild(
+				[{ jsonrpc: '2.0', id: 7, method: 'tools/call', params: { name: 'pull', arguments: { query: 'auth' } } }],
+				env,
+				50 // close stdin at ~50ms, long before the 200ms endpoint responds
+			);
+			expect(code).toBe(0);
+			const reply = msgs.find((m) => m.id === 7);
+			expect(reply, 'tools/call response for id:7 was DROPPED (gap-1 regression)').toBeDefined();
+			expect(reply.result.isError).toBe(false);
+			expect(reply.result.content[0].text).toContain('delayed hit');
+		} finally {
+			await new Promise((r) => srv.close(r));
+		}
+	}, 15_000);
+
+	it('completes a full initialize → tools/list → tools/call round-trip over real stdio', async () => {
+		const { srv, port } = await startSlowEndpoint(10, {
+			ok: true,
+			text: '⎆BEGIN_REFERENCE⎆ ok ⎆END_REFERENCE⎆',
+			items: [],
+			droppedCount: 0,
+			error: null
+		});
+		try {
+			const env = { HOOK_URL: `http://127.0.0.1:${port}`, HOOK_TOKEN: 'boot-token-xyz' };
+			const { code, msgs } = await driveChild(
+				[
+					{ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2025-11-25' } },
+					{ jsonrpc: '2.0', id: 2, method: 'tools/list' },
+					{ jsonrpc: '2.0', id: 3, method: 'tools/call', params: { name: 'pull', arguments: { query: 'x' } } }
+				],
+				env,
+				80
+			);
+			expect(code).toBe(0);
+			expect(msgs.find((m) => m.id === 1).result.protocolVersion).toBe('2025-11-25');
+			expect(msgs.find((m) => m.id === 2).result.tools[0].name).toBe('pull');
+			expect(msgs.find((m) => m.id === 3).result.content[0].text).toContain('ok');
+		} finally {
+			await new Promise((r) => srv.close(r));
+		}
+	}, 15_000);
 });

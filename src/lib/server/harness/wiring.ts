@@ -308,20 +308,64 @@ function ollamaEndpoint(): string {
 }
 
 /**
- * Probe the local Ollama for the embedding model. The memory loop needs LIVE embeddings to
- * recall/extract; an unreachable Ollama (or a missing model) means we honestly skip the loop
- * rather than embed nothing / fabricate a vector (F-008). A short timeout keeps the spawn path
- * snappy — a stalled Ollama never wedges a launch.
+ * The THREE distinct probe outcomes — never conflated (F-008). The earlier code returned a
+ * bare boolean, so a cold-boot fetch timeout (Ollama busy loading a large model from a custom
+ * OLLAMA_MODELS path) was indistinguishable from a genuinely-absent model and surfaced the
+ * MISLEADING 'has no <model>' reason while latching the memory loop OFF. Distinguishing the
+ * three lets `getMemoryService` report an honest, actionable reason for each:
+ *   • 'present'     — Ollama reachable AND the embedding model exact-matches EMBEDDING_MODEL.
+ *   • 'absent'      — Ollama reachable (a real /api/tags response) but the model is NOT listed.
+ *   • 'unreachable' — the probe could not get a verdict: connection refused, DNS/socket error,
+ *                     a non-OK HTTP status, OR the request TIMED OUT. This is TRANSIENT — the
+ *                     memory loop must retry next call, NOT latch off with a 'no model' lie.
  */
-async function embeddingModelReady(endpoint: string): Promise<boolean> {
+export type EmbeddingProbeOutcome = 'present' | 'absent' | 'unreachable';
+
+/** Cold-boot tolerance (task fix #2): a warm Ollama answers /api/tags instantly, but a cold one
+ *  loading a large model can exceed a couple seconds. 8s is forgiving without wedging the spawn
+ *  path; combined with ONE retry on a transient failure (timeout/refused), a slow cold boot is
+ *  given a fair chance before we conclude unavailable. */
+const EMBED_PROBE_TIMEOUT_MS = 8000;
+
+/** One single /api/tags probe attempt. Returns the verdict, or 'unreachable' for ANY failure to
+ *  obtain one (throw — connection refused / DNS / TimeoutError from AbortSignal.timeout — or a
+ *  non-OK status). NEVER reports a transient failure as 'absent'. */
+async function probeOnce(endpoint: string): Promise<EmbeddingProbeOutcome> {
+	let res: Response;
 	try {
-		const res = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(2500) });
-		if (!res.ok) return false;
-		const j = (await res.json()) as { models?: { name?: string }[] };
-		return (j.models ?? []).some((m) => m.name === EMBEDDING_MODEL);
+		res = await fetch(`${endpoint}/api/tags`, { signal: AbortSignal.timeout(EMBED_PROBE_TIMEOUT_MS) });
 	} catch {
-		return false;
+		// Connection refused (TypeError), DNS/socket error, or AbortSignal.timeout → TimeoutError.
+		// All are transient/unreachable — the caller retries / surfaces the retry reason, never 'absent'.
+		return 'unreachable';
 	}
+	// A reachable Ollama that answers with a non-OK status is also treated as no-verdict (transient),
+	// not as proof the model is absent — we only conclude 'absent' from a real, parsed model list.
+	if (!res.ok) return 'unreachable';
+	let j: { models?: { name?: string }[] };
+	try {
+		j = (await res.json()) as { models?: { name?: string }[] };
+	} catch {
+		return 'unreachable'; // a truncated/garbled body is not proof of absence
+	}
+	return (j.models ?? []).some((m) => m.name === EMBEDDING_MODEL) ? 'present' : 'absent';
+}
+
+/**
+ * Probe the local Ollama for the embedding model, distinguishing the three honest outcomes
+ * above. The memory loop needs LIVE embeddings to recall/extract; we only skip it on a true
+ * 'absent' (with a pull hint) — never on a transient 'unreachable', which the loop retries.
+ *
+ * Cold-boot tolerance + ONE retry (task fix #2/#3): on a transient 'unreachable' first attempt
+ * we probe ONCE more before concluding, so an Ollama still loading a large model at cold boot
+ * gets a second chance instead of latching the loop off. A definitive 'absent' (Ollama clearly
+ * answered, model not listed) is NOT retried — retrying a clear answer would only add latency.
+ */
+export async function embeddingModelReady(endpoint: string): Promise<EmbeddingProbeOutcome> {
+	const first = await probeOnce(endpoint);
+	if (first !== 'unreachable') return first; // 'present' or definitive 'absent' — no retry needed
+	// Transient on the first attempt — retry ONCE (cold Ollama may have just finished loading).
+	return await probeOnce(endpoint);
 }
 
 /**
@@ -412,11 +456,17 @@ export function parseExtraction(text: string): MemoryCandidate[] {
  */
 export async function getMemoryService(db: Db): Promise<MemoryAvailability> {
 	const endpoint = ollamaEndpoint();
-	if (!(await embeddingModelReady(endpoint))) {
-		return {
-			available: false,
-			reason: `local embeddings unavailable (Ollama at ${endpoint} has no ${EMBEDDING_MODEL}) — memory loop skipped`
-		};
+	const outcome = await embeddingModelReady(endpoint);
+	if (outcome !== 'present') {
+		// HONEST, OUTCOME-SPECIFIC reason (F-008) — NEVER conflate "model absent" with "couldn't
+		// reach Ollama / probe timed out". The latter is transient: because we DON'T cache on this
+		// path, the very next getMemoryService call re-probes and can enable the loop once a cold
+		// Ollama finishes loading — it never latches the loop off for the process (task fix #3).
+		const reason =
+			outcome === 'absent'
+				? `Ollama at ${endpoint} has no ${EMBEDDING_MODEL} — run: ollama pull ${EMBEDDING_MODEL}`
+				: `Ollama probe at ${endpoint} timed out/unreachable — memory loop will retry`;
+		return { available: false, reason };
 	}
 	if (!cachedMemory) {
 		cachedMemory = new MemoryService({ db, embedder: new OllamaEmbedder({ endpoint, model: EMBEDDING_MODEL }) });

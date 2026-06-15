@@ -4,6 +4,13 @@ import { defineConfig } from 'vite';
 
 export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
+  // Bind the dev server to IPv4 loopback (127.0.0.1), NOT vite's default `localhost`
+  // which resolves to IPv6 `::1`. The whole loopback control plane — HOOK_URL (built
+  // from HOST default 127.0.0.1), the gate hook POST, SurrealDB, and the D-024/D-025
+  // loopback assertions — speaks 127.0.0.1. A `::1`-only dev server makes every driven
+  // session's gate hook POST to http://127.0.0.1:PORT fail connection-refused → tools
+  // deny closed → a real CLI spawn can never use a tool (the live-gauntlet gap, F-030).
+  server: { host: '127.0.0.1' },
   test: {
     // scripts/** added in 15.2: the browser-verify daemon (dev/verify tooling,
     // not product runtime) lives in scripts/ and carries its own unit + live suites.

@@ -112,7 +112,12 @@ export async function getRuntime(db?: Db): Promise<RuntimeAvailability> {
 		};
 	}
 
-	const backend = new ClaudeCliBackend({ oauthToken });
+	// maxTurns: the backend default is 1 (a single assistant turn) — fine for a one-shot
+	// reply but FATAL for any agentic driven session (orchestrator task, workflow, gauntlet
+	// interview): after the FIRST tool call the CLI exits `error_max_turns`. Give every
+	// driven session a real agentic budget; the per-spawn wall-clock (timeoutMs) and the
+	// gauntlet's own bound remain the runaway guards (F-030).
+	const backend = new ClaudeCliBackend({ oauthToken, maxTurns: 80 });
 	// The live catalog is the D-036 allow-list. When a db is supplied, read it so
 	// composeCapabilities runs against the REAL catalog (the dead-branch fix). When no db
 	// is in hand (e.g. a non-DB caller), capability provisioning stays OFF for that boot.

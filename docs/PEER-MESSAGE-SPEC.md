@@ -122,14 +122,19 @@ secret leakage between agents (screen). No new SSE spine (rides the one bus).
 
 ## 9. OPEN DECISIONS — operator sign-off before build
 
-- **D1 Addressing:** session-id-direct only (simplest) · + role-addressing · + project
-  broadcast? — *recommend: session + role, project-scoped default.*
+- **D1 Addressing (identity classes — see §11):** `session` (running peer) · `role@project`
+  (resolve→session) · `pm@project` (the project's PM identity — inbox-backed, usually offline)
+  · `atelier` (the platform identity — §11). — *recommend: all four; `pm@project` and `atelier`
+  are inbox-backed by construction (rarely running), which is WHY D2 must be the durable inbox.*
 - **D2 Offline delivery:** running-only (mirror interject, drop-with-honest-error; less
   build) · OR the durable `peer_message` inbox (the real fleet bus; more build)? —
   *recommend: durable inbox — "fleet bus" implies durability.*
-- **D3 Topology/authorization:** free capability-gated peer-to-peer · OR **PM-hub-mediated**
-  (agents talk via the PM) · OR project-scoped mesh? — *recommend: project-scoped mesh +
-  PM as a first-class hub; cross-project operator-gated.*
+- **D3 Topology/authorization:** the identity HIERARCHY (§11) — operator > atelier(platform)
+  > project PM > roles/sessions. Within a project: a mesh (roles ↔ their PM). ACROSS projects:
+  flows THROUGH the atelier (it holds the global view via the brain), never project↔project
+  direct (isolation). — *recommend: in-project mesh + PM hub; cross-project only via the
+  atelier identity; the atelier reaches projects via the brain (ambient) + directed peer
+  messages; cross-project direct is forbidden, not just gated.*
 - **D4 Timing:** now · OR after the day-0 ceremony + as part of/just before **new-mod-test**
   (where a PM coordinating staffed roles is the first real consumer)? — *recommend: after
   the ceremony; it has no real consumer until multi-agent project work exists, and the
@@ -150,3 +155,47 @@ secret leakage between agents (screen). No new SSE spine (rides the one bus).
    surfaces the cross-agent flow.
 7. Red-team: a peer message must never steer; sender identity un-forgeable; bounds hold;
    no cross-project leak; fence un-escapable.
+
+## 11. Actor identities & the atelier (operator-clarified 2026-06-15)
+
+The addressing model has FOUR identity classes, in a hierarchy:
+
+```
+operator (human)              ── the ONLY identity that STEERS (origin=operator + token)
+  └─ atelier (PLATFORM agent)  ── orchestral layer ON the global memory (the brain);
+  │                               maintains itself (D-040 self-hosting / atelier_self's PM),
+  │                               creates projects (Create-with-AI), ingests content into the
+  │                               ecosystem for cross-project reuse + self-improvement.
+  │                               origin=agent → DATA, NON-STEERING.
+  └─── project PM (per project) ── coordinator; event/periodic-triggered → usually OFFLINE,
+  │                               so `pm@project` is inbox-backed. origin=agent.
+  └────── roles / sessions      ── workers. origin=agent (their own turns) / addressable by session.
+```
+
+**The atelier has TWO channels to projects:**
+1. **The brain (ambient, primary):** atelier ingests → global memory; project agents RECALL
+   (screened + fenced, MEMORY-SPEC). Cross-ecosystem knowledge propagates here WITHOUT a
+   message — shared substrate. This is the atelier's main reach into projects.
+2. **The peer bus (directed):** a specific message to a specific `pm@project` — point-to-point
+   coordination on top of the brain. This spec's subject.
+
+**THE STEERING INVARIANT HOLDS EVEN FOR THE ATELIER (load-bearing).** The platform layer is
+the HIGHEST-CAPABILITY agent (global memory, self-modification, cross-project) → it must have
+the LEAST unchecked steering authority. So:
+- The atelier's **communication is DATA** (origin=agent, fenced) — a project PM *weighs* it,
+  is never *commanded* by it. No agent commands another agent.
+- The atelier's **orchestration power is the GATED CONTROL PLANE** — Create-with-AI, the
+  orchestrator/task system, D-039 PM-validation, the operator gates on real spend / publish.
+  Projects are created and work dispatched THERE, not via steering messages.
+- **Only the operator's token steers** a session directly. A compromised brain layer that could
+  *command* every project would be catastrophic; DATA-only + gated-control-plane is the
+  safe-by-construction containment.
+
+**Cross-project isolation:** projects never message each other directly. Cross-project flow
+(prior art, shared patterns, "project A's finding is relevant to project B") routes THROUGH
+the atelier — which alone holds the global view (the brain). This keeps projects isolated and
+the atelier the sole cross-project coordinator (D-001/D-002 spirit, extended to the agent layer).
+
+**Open (folds into D1/D3):** whether `atelier` is realized as atelier_self's PM (D-040) acting
+as the platform identity, or a distinct platform-coordinator identity above all project PMs.
+Resolve when D-040 self-hosting composes — until then `atelier` ≈ atelier_self's PM + the brain.

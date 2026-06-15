@@ -17,6 +17,7 @@ import {
 import { FENCE_OPEN, FENCE_CLOSE } from '../memory/fence';
 import { createChannel, ControlNotSupportedError, type InterjectRequest } from './channel';
 import { listSessionMessages } from '../sessions/messages';
+import { rowTurnKind, rowToTurn, communicationLabel } from '../../client/transcript-core';
 
 // TASK 2.10 VERIFY (D-011 / D-035 / D-025 / D-026) — session control, mocked runtime.
 //
@@ -516,6 +517,82 @@ describe('channel stop / resume — session record transitions (D-011)', () => {
 		const resumeRows = await listSessionMessages(db, sessionId);
 		const seqs = resumeRows.map((m) => m.seq);
 		expect(seqs).toEqual([0, 1, 2, 3, 4]);
+	});
+
+	it('REGRESSION (GA1 interject seq continuation): an interject is APPENDED after the launch turns, not interleaved at the top', async () => {
+		// The GA1 red-team defect: channel.interject CREATEd a message row WITHOUT seq/kind, so the
+		// schema DEFAULT seq=0 + kind='assistant_text' applied. seq 0 collided with launch turn 0 and
+		// `ORDER BY seq ASC, at ASC` wove the interject to the TOP of the transcript
+		// ([INTERJECT, launch-0, launch-1, launch-2]) AND it rendered as the agent's own assistant prose.
+		// FIX: stamp seq = MAX(existing seq)+1 (mirrors the resume fix) + a role-shaped kind; origin
+		// classifies it as a communication. This mirrors the resume seq-continuation regression above.
+		const backend = scriptedBackend();
+		const { channel } = makeChannel(backend);
+		const sessionId = await makeRunningSession('cc_interject_seq_1');
+		const sid = new StringRecordId(sessionId);
+		// Seed the launch transcript exactly as launchSession would: seq 0,1,2, same `at` instant.
+		for (const seq of [0, 1, 2]) {
+			await db.query(`CREATE message CONTENT $c;`, {
+				c: { session: sid, role: 'assistant', kind: 'assistant_text', seq, content: `launch-${seq}` }
+			});
+		}
+
+		// An operator interject (the steering case) AFTER the launch turns.
+		await channel.interject(
+			baseInterject({
+				sessionId,
+				body: 'operator: pivot to the auth bug',
+				presentedToken: BOOT_TOKEN,
+				viaControlEndpoint: true
+			})
+		);
+
+		// Read back through the production read-side (the exact path the transcript renders).
+		const replay = await listSessionMessages(db, sessionId);
+		// APPENDED, not interleaved: the interject lands AFTER all launch turns.
+		expect(replay.map((m) => m.content)).toEqual([
+			'launch-0',
+			'launch-1',
+			'launch-2',
+			'operator: pivot to the auth bug'
+		]);
+		// Its seq continued past the launch max (no collision at 0).
+		expect(replay.map((m) => m.seq)).toEqual([0, 1, 2, 3]);
+
+		// And it classifies as a COMMUNICATION turn (operator), NOT the agent's own assistant prose:
+		// origin is the authority — even though kind is the role-shaped 'user'/default-prone field.
+		const interjectRow = replay.find((m) => m.content === 'operator: pivot to the auth bug')!;
+		expect(interjectRow.origin).toBe('operator');
+		expect(rowTurnKind(interjectRow)).toBe('communication');
+		const turn = rowToTurn(interjectRow, replay.length - 1);
+		expect(turn.kind).toBe('communication');
+		expect(turn.origin).toBe('operator');
+		expect(communicationLabel(turn.origin!).tag).toBe('operator interjected');
+	});
+
+	it('REGRESSION (GA1): a non-operator (fenced) interject also appends and classifies as a communication', async () => {
+		// The fail-closed landing: a tokenless push is forced origin=agent, fenced as DATA, role
+		// 'system'. It must still APPEND (seq continuation) and render as a (honest-unknown)
+		// communication via role — never the agent's own prose at the top of the transcript.
+		const backend = scriptedBackend();
+		const { channel } = makeChannel(backend);
+		const sessionId = await makeRunningSession('cc_interject_seq_2');
+		const sid = new StringRecordId(sessionId);
+		for (const seq of [0, 1]) {
+			await db.query(`CREATE message CONTENT $c;`, {
+				c: { session: sid, role: 'assistant', kind: 'assistant_text', seq, content: `launch-${seq}` }
+			});
+		}
+		await channel.interject(baseInterject({ sessionId, body: 'unauthenticated push', presentedToken: undefined }));
+
+		const replay = await listSessionMessages(db, sessionId);
+		expect(replay.map((m) => m.seq)).toEqual([0, 1, 2]);
+		const pushed = replay[2];
+		expect(pushed.origin).toBe('agent');
+		expect(pushed.role).toBe('system');
+		expect(pushed.content).not.toBe('launch-0'); // appended, not at the front
+		expect(rowTurnKind(pushed)).toBe('communication');
+		expect(communicationLabel(rowToTurn(pushed, 2).origin ?? 'agent').tag).toBe('communication');
 	});
 
 	it('refuses to resume a session with no cc_session_id bridge', async () => {

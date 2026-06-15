@@ -212,6 +212,30 @@ async function readSession(
 	};
 }
 
+/**
+ * The per-session continuation offset = MAX(existing seq for this session) + 1, so an APPENDED
+ * turn (a resumed turn, an operator/agent interject) replays AFTER everything already persisted
+ * instead of colliding at seq 0 and interleaving (m0037; the resume fix shipped at 6a22906).
+ * `seq IS NOT NONE` excludes legacy pre-m0037 rows (their NONE seq must not anchor the offset);
+ * math::max over [] is NONE → base 0. FAIL-OPEN (F-014): any read error falls back to 0 and logs
+ * — a continuation-offset read must never break the append; worst case a turn sorts to the front.
+ */
+async function nextSeq(db: Db, sessionId: string): Promise<number> {
+	try {
+		const [maxRows] = await db.query<[Array<{ m: number | null }>]>(
+			`SELECT math::max(seq) AS m FROM message WHERE session = $sid AND seq IS NOT NONE GROUP ALL;`,
+			{ sid: link(sessionId) }
+		);
+		const prevMax = maxRows?.[0]?.m;
+		if (typeof prevMax === 'number' && Number.isFinite(prevMax)) return prevMax + 1;
+	} catch (seqErr) {
+		console.warn(
+			`[channel] seq continuation read failed for ${sessionId} (fail-open, base 0): ${(seqErr as Error).message}`
+		);
+	}
+	return 0;
+}
+
 /** Read a project's root_path (the cwd a resumed session must run in — the CLI keys its
  *  conversation transcripts by cwd, so resume MUST re-anchor at the original root). */
 async function readProjectRoot(db: Db, projectId: string): Promise<string | undefined> {
@@ -276,12 +300,25 @@ export function createChannel(deps: ChannelDeps): Channel {
 			// DATA. The immutable, server-stamped origin is recorded on the meta object — it is
 			// the AUTHORITY for downstream readers, never re-derived.
 			const role: 'user' | 'system' = steer ? 'user' : 'system';
+			// APPEND, do not interleave (m0037; GA1 red-team): an interject MUST stamp a
+			// continuation seq = MAX(existing seq)+1 — the old path omitted seq, so the schema
+			// DEFAULT 0 collided with launch turn 0 and the interject sorted to the TOP of the
+			// transcript (`ORDER BY seq ASC, at ASC` wove it in). MIRRORS the resume fix (6a22906).
+			const seq = await nextSeq(db, req.sessionId);
+			// Stamp `kind` EXPLICITLY rather than leaning on the schema DEFAULT 'assistant_text':
+			// the interject is a pushed-in channel turn whose render authority is `origin` (the
+			// classifier maps a non-agent origin → 'communication' regardless of kind), so we
+			// record the row's role-shaped kind ('user' for an operator steer, 'system' for fenced
+			// data) — NEVER the agent-prose default the bug relied on to look like the agent.
+			const kind: 'user' | 'system' = role;
 			const [created] = await db.query<[Array<{ id: unknown }>]>(
 				`CREATE message CONTENT $c RETURN AFTER;`,
 				{
 					c: omitUndefined({
 						session: link(req.sessionId),
 						role,
+						kind,
+						seq,
 						// m0038: stamp the server-RESOLVED origin as a FIRST-CLASS, immutable field —
 						// the authority for downstream readers (it also stays in tool_call for the
 						// existing render path). origin came from resolveOrigin (D-035a): operator IFF
@@ -406,27 +443,11 @@ export function createChannel(deps: ChannelDeps): Channel {
 			let streamError: Error | undefined;
 			// m0037 replay order is PER-SESSION and monotonic. The launch path already filled
 			// this session with seq 0,1,2,…; a resumed turn is APPENDED, so its seq MUST continue
-			// from MAX(existing seq)+1 — NOT restart at 0. Restarting collided every resumed turn
-			// with a launch turn of the same seq, and messages.ts `ORDER BY seq ASC, at ASC` then
-			// interleaved the resume INTO the launch (the `at` tiebreak is exactly the same-ms tie
-			// seq was added to defeat, so it could not save the order). We read the continuation
-			// offset ONCE here, before the stream; `seq IS NOT NONE` excludes legacy pre-m0037 rows
-			// (their NONE seq must not anchor the continuation). math::max over [] is NONE → base 0.
-			let baseSeq = 0;
-			try {
-				const [maxRows] = await db.query<[Array<{ m: number | null }>]>(
-					`SELECT math::max(seq) AS m FROM message WHERE session = $sid AND seq IS NOT NONE GROUP ALL;`,
-					{ sid: link(req.sessionId) }
-				);
-				const prevMax = maxRows?.[0]?.m;
-				if (typeof prevMax === 'number' && Number.isFinite(prevMax)) baseSeq = prevMax + 1;
-			} catch (seqErr) {
-				// FAIL-OPEN (F-014): a continuation-offset read error must not break the resume.
-				// We fall back to baseSeq 0 and log — worst case the live work still streams.
-				console.warn(
-					`[channel] resume seq continuation read failed for ${req.sessionId} (fail-open, base 0): ${(seqErr as Error).message}`
-				);
-			}
+			// from MAX(existing seq)+1 — NOT restart at 0 (which collided with a launch turn of the
+			// same seq and let messages.ts `ORDER BY seq ASC, at ASC` interleave the resume INTO the
+			// launch). Read the continuation offset ONCE here, before the stream — shared with the
+			// interject path via nextSeq (same MAX+1, fail-open-to-0 rule, F-014).
+			const baseSeq = await nextSeq(db, req.sessionId);
 			try {
 				let order = 0;
 				for await (const ev of runtime.resume(session.cc_session_id, {

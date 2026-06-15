@@ -54,6 +54,29 @@ describe('rowTurnKind — persisted row → render kind', () => {
 	it('SHADOW: legacy briefing carried only on toolCall.kind is detected without a kind', () => {
 		expect(rowTurnKind({ role: 'system', toolCall: { kind: 'briefing' } })).toBe('briefing');
 	});
+
+	it('REGRESSION (GA1/GA2): a non-agent ORIGIN wins → communication REGARDLESS of a defaulted/prose kind', () => {
+		// The interject persist bug omitted `kind`, so the schema DEFAULT 'assistant_text' applied.
+		// origin is the AUTHORITY (D-035a, server-stamped/immutable): operator/system/hook → always
+		// a communication, never the agent's own prose — even when the kind looks like agent prose.
+		expect(rowTurnKind({ role: 'user', kind: 'assistant_text', origin: 'operator' })).toBe('communication');
+		expect(rowTurnKind({ role: 'system', kind: 'assistant_text', origin: 'system' })).toBe('communication');
+		expect(rowTurnKind({ role: 'system', kind: 'assistant_text', origin: 'hook' })).toBe('communication');
+		// even a (hypothetical) pushed row mis-stamped role 'assistant' cannot pose as own prose
+		// once origin is non-agent — origin overrides role too.
+		expect(rowTurnKind({ role: 'assistant', kind: 'assistant_text', origin: 'operator' })).toBe('communication');
+	});
+
+	it('an AGENT origin classifies by kind/role (own turns keep their kind; agent prose stays prose)', () => {
+		// 'agent' origin is NOT pushed-by-origin — the driven agent's own turns keep their kind, and
+		// the read-time legacy/coalesce default stays role-driven (a pushed user/system row is still a
+		// communication via role; an assistant row is the agent's own prose).
+		expect(rowTurnKind({ role: 'assistant', kind: 'thinking', origin: 'agent' })).toBe('thinking');
+		expect(rowTurnKind({ role: 'assistant', kind: 'assistant_text', origin: 'agent' })).toBe('assistant');
+		// fail-closed honest-unknown: a fenced non-operator push lands role 'system', origin 'agent'
+		// → still a communication (by role), labelled unknown (never operator).
+		expect(rowTurnKind({ role: 'system', kind: 'system', origin: 'agent' })).toBe('communication');
+	});
 });
 
 describe('rowToTurn — persisted row → normalized Turn', () => {

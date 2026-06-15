@@ -87,6 +87,18 @@ function isPushedRole(role: string): boolean {
 	return role === 'user' || role === 'system';
 }
 
+/** A non-agent server-stamped origin (operator/system/hook) is, by definition, a pushed-in
+ *  communication — the driven agent's OWN turns are always origin 'agent'. This is the
+ *  AUTHORITATIVE signal (D-035a): origin is server-stamped + immutable + never content-derived,
+ *  so it WINS over role/kind for classification. A defaulted/omitted `kind` (e.g. the interject
+ *  persist path that relied on the schema DEFAULT 'assistant_text') can therefore never make an
+ *  operator/system/hook push masquerade as the agent's own prose. 'agent' is NOT pushed here —
+ *  a legacy/coalesced 'agent' origin still classifies by role (so a legacy user/system row stays
+ *  a communication), preserving the fail-closed honest-unknown path. */
+function isPushedOrigin(origin: string | undefined): boolean {
+	return origin === 'operator' || origin === 'system' || origin === 'hook';
+}
+
 /** Coalesce a possibly-absent origin string to the honest default (legacy rows → 'agent'),
  *  clamped to the known enum. NEVER promotes to operator — an unrecognised/absent origin on a
  *  pushed row is an HONEST 'agent' (renders as 'unknown' communication), never steering. */
@@ -103,16 +115,25 @@ export function normOrigin(origin: string | undefined): MessageOrigin {
  * rows) fall back by role: a 'tool' row is a tool result, a briefing-tagged toolCall is a
  * briefing, otherwise prose.
  *
- * COMMUNICATION classification (D-035a-safe): a prose turn (one that would otherwise be
- * 'assistant') on a PUSHED role (user/system) is a pushed-in CHANNEL communication — an
- * operator interject lands as role 'user', a fenced non-operator/peer push as role 'system'.
- * The driven agent's OWN turns arrive as role 'assistant' (prose/thinking) or 'tool', and the
- * wake-up `briefing` keeps its own framed kind — none of those become 'communication'. The
- * classifier reads ONLY the server-set role + kind, NEVER content, so content can never claim
- * the communication treatment (and 'communication' carries no steering power — origin does,
- * and that is the server stamp the renderer only LABELS).
+ * COMMUNICATION classification (D-035a-safe): ORIGIN is the authority. A non-agent origin
+ * (operator/system/hook) is, by definition, a pushed-in CHANNEL communication and classifies
+ * as 'communication' REGARDLESS of role or a defaulted/omitted `kind` — origin is the
+ * server-stamped, immutable, never-content-derived stamp (D-035a), so an interject that relied
+ * on the schema DEFAULT kind 'assistant_text' can never masquerade as the agent's own prose.
+ * For an 'agent' origin (the driven agent's OWN turns, AND the legacy/coalesced read-time
+ * default), the row falls back to its kind/role: a prose turn on a PUSHED role (user/system) is
+ * still a communication (the honest-unknown landing — a fenced non-operator push, a legacy
+ * pushed row), the agent's framed turns (thinking/tool_use/tool_result/briefing) keep their
+ * kind, and ordinary assistant prose stays 'assistant'. The classifier reads ONLY the
+ * server-set origin + role + kind, NEVER content, so content can never claim the communication
+ * treatment (and 'communication' carries no steering power — origin does, and that is the
+ * server stamp the renderer only LABELS).
  */
 export function rowTurnKind(row: PersistedRowLike): TurnKind {
+	// ORIGIN WINS (D-035a / GA2): a non-agent origin is a pushed-in communication no matter what
+	// kind/role the row carries — this is the regression-proofing for an interject persisted with a
+	// defaulted kind. 'agent' origin (own turns + legacy default) falls through to kind/role below.
+	if (isPushedOrigin(row.origin)) return 'communication';
 	const k = row.kind;
 	if (k) {
 		if (k === 'briefing') return 'briefing';

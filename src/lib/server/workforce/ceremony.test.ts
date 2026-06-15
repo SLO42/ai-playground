@@ -26,7 +26,7 @@ import {
 	type RoleRow,
 	type RoleVersionRow
 } from './repo';
-import { activateGauntletFixture, newSentinelUlid } from './activation';
+import { activateGauntletFixture, isSentinelShape, newSentinelUlid } from './activation';
 import { KNOWN_FAIL_PATH, KNOWN_PASS_PATH, runPositiveControl } from './scorer';
 import { adjudicateInterviewRun, type GauntletDeps, QUEUED_INTERVIEW_TYPE } from './gauntlet';
 import {
@@ -723,7 +723,10 @@ describe('ensureScorerControlReady (§3.4) — mechanical control key derivation
 				),
 				[KNOWN_FAIL_PATH]: JSON.stringify(over?.knownFail ?? [])
 			},
-			sentinel: newSentinelUlid()
+			// The REAL seedLaunchPool shape: launch fixtures ship with an EMPTY sentinel
+			// (the leak-tripwire ULID is minted server-side AT activation, after authoring —
+			// §4.2). ensureScorerControlReady must mint it before activating, else F-025 rejects.
+			sentinel: ''
 		});
 		return { role, control, ctrlSlug };
 	}
@@ -757,8 +760,10 @@ describe('ensureScorerControlReady (§3.4) — mechanical control key derivation
 
 	it('derives the key from the known-pass report and activates the fixture', async () => {
 		const { role, control } = await seedProposedControl();
-		// Precondition: the bug shape — proposed, no key.
+		// Precondition: the REAL bug shape — proposed, no key, EMPTY sentinel (seedLaunchPool).
 		expect(await readGauntletKeyForScoring(db, control.id)).toBeNull();
+		expect(control.sentinel).toBe('');
+		expect(isSentinelShape(control.sentinel)).toBe(false);
 
 		await ensureScorerControlReady(db, role.id);
 
@@ -779,12 +784,10 @@ describe('ensureScorerControlReady (§3.4) — mechanical control key derivation
 		expect(det.lines).toEqual([3, 3]);
 		expect(det.evidence_pattern).toBeUndefined(); // file+lines ONLY — zero ambiguity
 
-		// The fixture is now active.
-		const [rows] = await db.query<[Array<{ status: unknown }>]>(
-			`SELECT status FROM gauntlet_fixture WHERE id = $id LIMIT 1;`,
-			{ id: new StringRecordId(control.id) }
-		);
-		expect(String(rows[0].status)).toBe('active');
+		// The fixture is now active AND carries a freshly-minted valid ULID sentinel (§4.2 /
+		// F-025): the empty seedLaunchPool sentinel was re-minted before activation.
+		expect(activated.status).toBe('active');
+		expect(isSentinelShape(activated.sentinel)).toBe(true);
 	});
 
 	it('is idempotent on re-run — no duplicate-key crash, no double activation', async () => {

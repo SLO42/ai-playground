@@ -48,7 +48,7 @@ import {
 } from './repo';
 import { runGauntlet, type GauntletDeps, type GauntletOutcome } from './gauntlet';
 import { checkDeployability } from './deployability';
-import { activateGauntletFixture } from './activation';
+import { activateGauntletFixture, isSentinelShape, newSentinelUlid } from './activation';
 import { parsePlant, ScorerKeyError, KNOWN_PASS_PATH } from './scorer';
 import { parseFindingsFile } from './findings';
 
@@ -540,6 +540,18 @@ export async function ensureScorerControlReady(db: Db, roleId: string): Promise<
 			plants,
 			author: 'fixing_commit_diff'
 		});
+	}
+
+	// Mint the leak-tripwire sentinel BEFORE activating (§4.2 / F-025). seedLaunchPool ships
+	// every launch fixture with sentinel='' so an authoring transcript can never trip its own
+	// sweep; the ULID is minted server-side AT activation, after all authoring. activation
+	// REJECTS a malformed (empty/short/low-entropy) sentinel — an empty needle match-alls the
+	// sweep — so a proposed control with no valid ULID must be re-minted here. This mirrors the
+	// candidate-activate route's ensureSentinel exactly (the route mints before activating; this
+	// direct caller must too). Idempotent: skip if already active (sentinel is immutable once
+	// active — the engine's idempotent-absorb returns first) or already a valid ULID.
+	if (control.status !== 'active' && !isSentinelShape(control.sentinel)) {
+		await db.query(`UPDATE $fid SET sentinel = $s;`, { fid: link(control.id), s: newSentinelUlid() });
 	}
 
 	// Activation is idempotent (an already-active fixture absorbs it — §3.7/§4.2).

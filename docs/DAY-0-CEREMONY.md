@@ -1,6 +1,6 @@
 # Day-0 bootstrap ceremony — operator checklist (gate:operator)
 
-> **Status (2026-06-13):** mechanism BUILT + hardened + INERT (waves v2.1 + v2.1-harden, v2 tip `95e34d5`). Nothing runs until you drive these steps. This is the `day-0-ceremony` row in `BUILD-QUEUE.md`. Source of truth: `WORKFORCE-SPEC.md §8` ("Day-0 bootstrap ceremony" + "Surfaces"). One ceremony, five steps.
+> **Status (2026-06-13):** mechanism built + hardened, BUT the operator-clickable DRIVER UI was missing (decomposition gap — found live: `seedLaunchPool` had no caller, the `/agents` "Run interview" CTA pointed at a dead `/?ceremony=bootstrap`). **`wave-ceremony-ui` is building the driver now** (entry → seed → review cores → author keys → reference-runs → bootstrap interviews → flip). Once it lands, the entry is a **"Begin day-0 ceremony" button on `/agents`** (NOT the old `/?ceremony=bootstrap` link). Steps below are unchanged; only the entry point is being wired. Source of truth: `WORKFORCE-SPEC.md §8`.
 
 ## Why this is yours (not automatable)
 - Answer **keys** are operator-authored — the PM has no read path to keys (§4.4 independence). An agent authoring its own test answers defeats the gauntlet.

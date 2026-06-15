@@ -78,7 +78,10 @@ export const WATCHED_TABLES = [
 	// interview_run — /agents (interview line + §3.4 adjudication queue) — TASK 16.7b
 	'interview_run',
 	// role_event — /agents (workforce audit feed re-derives the panel) — TASK 16.7b
-	'role_event'
+	'role_event',
+	// gauntlet_fixture — /agents/ceremony (day-0 ceremony DRIVER: a seed creates proposed
+	// fixtures, re-deriving the authoring flow live) — TASK W-D7c CER1
+	'gauntlet_fixture'
 ] as const;
 
 /** One of the boot-watched table names. */

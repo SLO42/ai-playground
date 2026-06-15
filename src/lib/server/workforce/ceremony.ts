@@ -36,6 +36,7 @@ import {
 	createGauntletKey,
 	getRole,
 	getRoleVersion,
+	listRoles,
 	listRoleVersions,
 	readGauntletKeyForScoring,
 	WorkforceInputError,
@@ -668,6 +669,129 @@ export async function ceremonyReadiness(
 		roles,
 		allCertified: roles.length > 0 && roles.every((r) => r.certified)
 	};
+}
+
+// ── Authoring state (read-only) — the DRIVER UI's steps ①+② substrate ────────────────
+//
+// The day-0 ceremony DRIVER (W-D7c CER1) authoring half renders, per launch role: its
+// prompt-core review (step ①) and every candidate-facing fixture's key-authoring state
+// (step ②). This is a READ-ONLY aggregator over the existing mechanism — promptCoreDiffStep
+// for ①, the role's proposed/active fixtures + readGauntletKeyForScoring for ② — so the UI
+// never re-implements gate logic (G4). Honest empties throughout (F-008): a role with no
+// version surfaces null; a fixture with no key surfaces keyed:false.
+
+export interface FixtureAuthoringState {
+	fixture: string;
+	slug: string;
+	kind: GauntletFixtureRow['kind'];
+	status: GauntletFixtureRow['status'];
+	provenance: string | null;
+	/** The fixture's GENUINE work (the diff's left side the operator keys against). NO key
+	 *  material — the work never carries plants (§2.1). */
+	work: Record<string, unknown>;
+	content_sha: string;
+	/** True once the operator has confirmed a key for this fixture (idempotent surface). */
+	keyed: boolean;
+	/** The confirmed key's diff, when present — work + key + tolerance + justification (§8). */
+	keyDiff: LaunchKeyDiff | null;
+	/** This fixture kind REQUIRES ≥1 plant to have teeth (DEFECT 4) — drives the UI guard. */
+	requiresPlants: boolean;
+	/** hallucination_bait fixtures want a mode:'noncompliance'+compliance_pattern plant (A8) —
+	 *  the UI surfaces this affordance so the operator authors a scoreable bait key. */
+	isBait: boolean;
+}
+
+export interface RoleAuthoringState {
+	role: string;
+	roleSlug: string;
+	name: string;
+	purpose: string;
+	/** The launch role_version's prompt-core review (step ①), or null when none. */
+	promptCore: PromptCoreDiffStep | null;
+	/** Every candidate-facing fixture (scorer_control excluded — it is the scorer's own
+	 *  substrate, not an operator-keyed admission fixture) with its key-authoring state. */
+	fixtures: FixtureAuthoringState[];
+}
+
+export interface CeremonyAuthoringState {
+	/** True once seedLaunchPool has run (≥1 launch role exists). The empty surface (no
+	 *  roles) is the DRIVER's day-0 entry point — the operator seeds from there. */
+	seeded: boolean;
+	roles: RoleAuthoringState[];
+	/** Count of fixtures still awaiting an operator key (across all roles) — the step-②
+	 *  progress figure. 0 with seeded:true = every launch key authored. */
+	keysOutstanding: number;
+}
+
+/**
+ * Read the authoring half of the day-0 ceremony (steps ①+②) for the DRIVER UI. READ-ONLY:
+ * no writes, no gauntlet_key WRITE — only readGauntletKeyForScoring (the sanctioned read
+ * path) to surface whether each fixture is already keyed. Reuses promptCoreDiffStep for ①.
+ * Honest day-0 empties (F-008): before seeding, `seeded:false` + no roles.
+ */
+export async function ceremonyAuthoringState(db: Db): Promise<CeremonyAuthoringState> {
+	const roles = await listRoles(db);
+	// Only the launch roles (the day-0 pool). A role with no version is still surfaced so
+	// the operator sees an honest 'no draft version' rather than a silently dropped role.
+	const out: RoleAuthoringState[] = [];
+	let keysOutstanding = 0;
+	for (const role of roles) {
+		const versions = await listRoleVersions(db, role.id);
+		const launch = pickLaunchVersion(versions);
+		const promptCore = launch ? await promptCoreDiffStep(db, launch.id) : null;
+		const fixtures = await listCandidateFixtures(db, role.id);
+		const fixtureStates: FixtureAuthoringState[] = [];
+		for (const f of fixtures) {
+			const key = await readGauntletKeyForScoring(db, f.id);
+			const keyed = key !== null;
+			if (!keyed) keysOutstanding += 1;
+			fixtureStates.push({
+				fixture: f.id,
+				slug: f.slug,
+				kind: f.kind,
+				status: f.status,
+				provenance: f.provenance ?? null,
+				work: f.work,
+				content_sha: f.content_sha,
+				keyed,
+				keyDiff: key
+					? diffFor(f, key.plants, key.fp_tolerance, key.fp_justification ?? null)
+					: null,
+				requiresPlants: PLANTED_KINDS.has(f.kind),
+				isBait: f.kind === 'hallucination_bait'
+			});
+		}
+		out.push({
+			role: role.id,
+			roleSlug: role.slug,
+			name: role.name,
+			purpose: role.purpose,
+			promptCore,
+			fixtures: fixtureStates
+		});
+	}
+	return { seeded: roles.length > 0, roles: out, keysOutstanding };
+}
+
+/** The launch version = the role's earliest non-withdrawn version (mirrors panel.ts §8:
+ *  each launch role has exactly one draft campaign at day 0). Returns null honestly. */
+function pickLaunchVersion(versions: RoleVersionRow[]): RoleVersionRow | null {
+	const usable = versions.filter((v) => v.lifecycle !== 'withdrawn');
+	if (usable.length === 0) return null;
+	return [...usable].sort((a, b) => a.version - b.version)[0];
+}
+
+/** The role's candidate-facing fixtures the operator keys at step ② — scorer_control is
+ *  EXCLUDED (its key is the scorer's own control substrate, authored separately, §3.4).
+ *  Stable slug order for reviewability. */
+async function listCandidateFixtures(db: Db, roleId: string): Promise<GauntletFixtureRow[]> {
+	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+		`SELECT * FROM gauntlet_fixture
+		  WHERE role = $role AND kind != 'scorer_control'
+		  ORDER BY slug ASC LIMIT 200;`,
+		{ role: link(roleId) }
+	);
+	return rows.map(normFixture);
 }
 
 // ── shared normalizer ───────────────────────────────────────────────────────────────

@@ -220,6 +220,10 @@
           No catalog roles yet — the five launch roles seed during the day-0 bootstrap
           ceremony. Showing nothing rather than fabricated roles.
         </p>
+        <!-- The DRIVER entry (W-D7c CER1): a real, reachable control from the EMPTY panel.
+             Routes to the day-0 ceremony where the operator seeds the launch pool, reviews
+             each prompt core, and authors the answer keys. No spend (F-008). -->
+        <a class="cta-link primary" href="/agents/ceremony">Begin day-0 ceremony</a>
       {:else}
         <ul class="role-cards" aria-label="workforce roles">
           {#each roleCards as r (r.role)}
@@ -283,12 +287,11 @@
                     <span class="iv-sub">· {r.interviewRuns} run(s) in flight</span>
                   {/if}
                 </p>
-                <form method="POST" action="/agents" class="run-interview-cta">
-                  <!-- The day-0 interview runs via the bootstrap ceremony (operator-gated,
-                       INERT until armed). The CTA points the operator at the PM ceremony;
-                       it does not auto-spend (F-008 budget = null = nothing auto-runs). -->
-                  <a class="cta-link" href="/?ceremony=bootstrap">Run interview</a>
-                </form>
+                <!-- The day-0 interview runs via the bootstrap ceremony (operator-gated,
+                     INERT until armed). The CTA routes to the real ceremony DRIVER where the
+                     operator seeds, reviews prompt cores, and authors keys; it does not
+                     auto-spend (F-008 budget = null = nothing auto-runs). -->
+                <a class="cta-link" href="/agents/ceremony">Day-0 ceremony</a>
               {/if}
 
               <!-- Track-record stats — EACH with its inline sample size; '—' for no data. -->
@@ -1040,9 +1043,6 @@
     text-transform: uppercase;
     letter-spacing: 0.04em;
   }
-  .run-interview-cta {
-    margin: 0;
-  }
   .cta-link {
     display: inline-block;
     font-size: var(--text-xs);
@@ -1054,6 +1054,19 @@
   }
   .cta-link:hover {
     background: var(--color-surface-overlay);
+  }
+  .cta-link.primary {
+    align-self: flex-start;
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+    border-color: var(--color-accent);
+  }
+  .cta-link.primary:hover {
+    background: var(--color-accent-hover, var(--color-accent));
+  }
+  .cta-link:focus-visible {
+    outline: 2px solid var(--color-focus-ring, var(--color-accent));
+    outline-offset: 2px;
   }
   .track {
     display: flex;

@@ -48,7 +48,9 @@ import {
 } from './repo';
 import { runGauntlet, type GauntletDeps, type GauntletOutcome } from './gauntlet';
 import { checkDeployability } from './deployability';
-import { parsePlant, ScorerKeyError } from './scorer';
+import { activateGauntletFixture } from './activation';
+import { parsePlant, ScorerKeyError, KNOWN_PASS_PATH } from './scorer';
+import { parseFindingsFile } from './findings';
 
 /** Fixture kinds whose whole POINT is teeth — a key MUST carry ≥1 plant or it can never
  *  catch anything (DEFECT 4). clean_control / scorer_control legitimately carry zero. */
@@ -442,6 +444,110 @@ function diffFor(
 	};
 }
 
+// ── scorer_control readiness (§3.4) — mechanically-derived control key + activation ──
+
+/** Escape a literal string so it matches itself when compiled as a RegExp source. The
+ *  absence plant's artifact_pattern is a regex (scorer compiles it); the control's
+ *  known-fail report carries the literal artifact name, so we escape it to a FULL,
+ *  unambiguous literal match (no accidental metacharacter behavior). */
+function escapeRegex(literal: string): string {
+	return literal.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * §3.4 PER-BATCH POSITIVE CONTROL READINESS. Make the role's scorer_control fixture
+ * keyed + active so every gauntlet run can control-verify the scorer BEFORE it judges a
+ * candidate (runGauntlet → runPositiveControl). Idempotent — safe to call before every run.
+ *
+ * WHY THE CONTROL KEY IS MECHANICALLY DERIVED (not operator-authored): a scorer_control's
+ * key is NOT a matter of operator judgment. The fixture SHIPS its own answer — its static
+ * `known-pass.findings.json` IS, by construction, the report a correct scorer must score as
+ * "all plants found". So the control's plants are mechanically derivable FROM that report:
+ * each known-pass finding becomes the plant it must match. §4.4 explicitly blesses such
+ * mechanically-derived keys (author:'fixing_commit_diff'). This closes the ceremony/§3.4
+ * CONTRADICTION: the operator key-authoring + activation flow (confirmLaunchKey /
+ * ceremonyAuthoringState / activeKeyedFixtures) deliberately EXCLUDES scorer_control
+ * (kind != 'scorer_control'), which left every control 'proposed' with no key, so every
+ * interview failed scorer_error ("no active scorer_control fixture (with key)"). Deriving
+ * the key here — outside the operator flow, from the fixture's own shipped report — is the
+ * correct authorship and makes the control ready without operator action.
+ *
+ * Detection is FILE+LINES ONLY for presence (no evidence_pattern): the control demands a
+ * FULL match against the known-pass finding with ZERO ambiguity (runPositiveControl rejects
+ * any ambiguous/partial), and the known-fail (empty report) must miss it. file+lines gives a
+ * clean full match on known-pass and no match on known-fail; an extra evidence_pattern would
+ * risk a partial match and break the control.
+ */
+export async function ensureScorerControlReady(db: Db, roleId: string): Promise<void> {
+	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+		`SELECT * FROM gauntlet_fixture
+		  WHERE role = $role AND kind = 'scorer_control'
+		  ORDER BY slug ASC LIMIT 1;`,
+		{ role: link(roleId) }
+	);
+	if (!rows.length) {
+		throw new WorkforceInputError(
+			`role '${roleId}' has no scorer_control fixture — the scorer cannot be control-verified (§3.4)`
+		);
+	}
+	const control = normFixture(rows[0]);
+
+	// CHECK-THEN-CREATE (idempotency): only derive+create when there is no key yet. We do
+	// NOT rely on createGauntletKey's deterministic-id collision to skip — we skip cleanly.
+	const existingKey = await readGauntletKeyForScoring(db, control.id);
+	if (!existingKey) {
+		const passRaw = control.work[KNOWN_PASS_PATH];
+		if (typeof passRaw !== 'string') {
+			throw new WorkforceInputError(
+				`scorer_control '${control.slug}' carries no ${KNOWN_PASS_PATH} in its work — ` +
+					`cannot mechanically derive the control key (§3.4)`
+			);
+		}
+		const parsed = parseFindingsFile(passRaw);
+		if (!parsed.ok) {
+			throw new WorkforceInputError(
+				`scorer_control '${control.slug}' ${KNOWN_PASS_PATH} is unparseable: ${parsed.reason}`
+			);
+		}
+		const plants: Array<Record<string, unknown>> = parsed.findings.map((f, i) => {
+			const id = (f.kind === 'presence' && f.class) || `control-${i}`;
+			if (f.kind === 'absence') {
+				return {
+					id,
+					detection: { mode: 'absence', artifact_pattern: escapeRegex(f.artifact) }
+				};
+			}
+			// presence — file + lines ONLY (zero-ambiguity full match; no evidence_pattern).
+			return {
+				id,
+				...(f.class ? { class: f.class } : {}),
+				detection: {
+					mode: 'presence',
+					...(f.file ? { file: f.file } : {}),
+					...(f.lines ? { lines: f.lines } : {})
+				}
+			};
+		});
+		if (plants.length === 0) {
+			throw new WorkforceInputError(
+				`scorer_control '${control.slug}' ${KNOWN_PASS_PATH} has no findings — ` +
+					`a control with no plants has no teeth (§3.4)`
+			);
+		}
+		// Mechanically derived from the fixture's own shipped known-pass report (§4.4).
+		await createGauntletKey(db, {
+			fixture: control.id,
+			plants,
+			author: 'fixing_commit_diff'
+		});
+	}
+
+	// Activation is idempotent (an already-active fixture absorbs it — §3.7/§4.2).
+	if (control.status !== 'active') {
+		await activateGauntletFixture(db, control.id);
+	}
+}
+
 // ── Steps ③/④ — admission reference-run + bootstrap-interview triggers ──────────────
 
 export interface CeremonyRunInput {
@@ -471,6 +577,13 @@ export async function triggerBootstrapInterview(
 	input: CeremonyRunInput
 ): Promise<GauntletOutcome> {
 	assertSpendAuthority(input);
+	const { db } = deps;
+	// §3.4: guarantee a keyed+active scorer_control BEFORE the run, so the scorer is
+	// control-verified for this batch (else runGauntlet records scorer_error). Resolve the
+	// roleId from the role_version being interviewed. A failure here is a named, honest stop.
+	const version = await getRoleVersion(db, input.roleVersionId);
+	if (!version) throw new WorkforceInputError(`role_version not found: ${input.roleVersionId}`);
+	await ensureScorerControlReady(db, version.role);
 	return runGauntlet(deps, {
 		roleVersionId: input.roleVersionId,
 		tier: input.tier,
@@ -510,6 +623,10 @@ export async function triggerAdmissionReferenceRun(
 	if (!version) throw new WorkforceInputError(`role_version not found: ${input.roleVersionId}`);
 	const role = await getRole(db, version.role);
 	if (!role) throw new WorkforceInputError(`role not found: ${version.role}`);
+
+	// §3.4: guarantee a keyed+active scorer_control BEFORE the run (else runGauntlet records
+	// scorer_error). A failure here is a named, honest stop — never silently swallowed.
+	await ensureScorerControlReady(db, role.id);
 
 	// Provisional iff the role has no certified incumbent at this (prompt_sha × model_id).
 	const provisional = await isProvisionalProver(db, role, input.modelId);

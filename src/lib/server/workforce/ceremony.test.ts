@@ -27,13 +27,14 @@ import {
 	type RoleVersionRow
 } from './repo';
 import { activateGauntletFixture, newSentinelUlid } from './activation';
-import { KNOWN_FAIL_PATH, KNOWN_PASS_PATH } from './scorer';
+import { KNOWN_FAIL_PATH, KNOWN_PASS_PATH, runPositiveControl } from './scorer';
 import { adjudicateInterviewRun, type GauntletDeps, QUEUED_INTERVIEW_TYPE } from './gauntlet';
 import {
 	CeremonyGateError,
 	ceremonyExecutionState,
 	ceremonyReadiness,
 	confirmLaunchKey,
+	ensureScorerControlReady,
 	promptCoreDiffStep,
 	triggerAdmissionReferenceRun,
 	triggerBootstrapInterview
@@ -687,5 +688,150 @@ describe('ceremonyExecutionState (§8 ③/④/⑤) — proofs, interview line, r
 		expect(me.notRunnableReason).toMatch(/key\(s\) outstanding/i);
 		expect(me.certified).toBe(false);
 		expect(me.notCertifiedReason).toBe('not yet interviewed');
+	});
+});
+
+// ── ensureScorerControlReady (§3.4) — mechanically-derived control key + activation ──
+//
+// Reproduces the ceremony/§3.4 contradiction the bug exposed: the operator key-authoring +
+// activation flow EXCLUDES scorer_control fixtures (kind != 'scorer_control'), so a
+// scorer_control shipped 'proposed' with NO key, and every interview failed scorer_error
+// ("no active scorer_control fixture (with key)"). ensureScorerControlReady derives the
+// control's key MECHANICALLY from its own shipped known-pass report (§4.4
+// author:'fixing_commit_diff') and activates it — idempotently.
+
+describe('ensureScorerControlReady (§3.4) — mechanical control key derivation + activation', () => {
+	/** Seed a role carrying a PROPOSED, UNKEYED scorer_control (the buggy launch shape). */
+	async function seedProposedControl(over?: { knownPass?: unknown; knownFail?: unknown }) {
+		const n = ++seq;
+		const role = await createRole(db, {
+			slug: `escr-role-${n}`,
+			name: `ESCR ${n}`,
+			purpose: 'control readiness test bed'
+		});
+		const ctrlSlug = `escr-cc-${n}`;
+		const control = await createGauntletFixture(db, {
+			role: role.id,
+			slug: ctrlSlug,
+			kind: 'scorer_control',
+			work: {
+				'c.ts': 'l1\nl2\nconst r = eval(input);\n',
+				[KNOWN_PASS_PATH]: JSON.stringify(
+					over?.knownPass ?? [
+						{ fixture: ctrlSlug, file: 'c.ts', lines: [3, 3], class: 'injection', evidence: 'eval(input)' }
+					]
+				),
+				[KNOWN_FAIL_PATH]: JSON.stringify(over?.knownFail ?? [])
+			},
+			sentinel: newSentinelUlid()
+		});
+		return { role, control, ctrlSlug };
+	}
+
+	/** Re-read a fixture row from the DB (activation injects the sentinel + recomputes
+	 *  content_sha, so the row captured at creation is stale post-ensure). */
+	async function reloadFixture(fixtureId: string) {
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+			`SELECT * FROM gauntlet_fixture WHERE id = $id LIMIT 1;`,
+			{ id: new StringRecordId(fixtureId) }
+		);
+		const r = rows[0];
+		return {
+			id: String(r.id),
+			role: String(r.role),
+			slug: String(r.slug),
+			kind: r.kind as 'scorer_control',
+			work: (r.work ?? {}) as Record<string, unknown>,
+			content_sha: String(r.content_sha),
+			sentinel: String(r.sentinel),
+			status: r.status as 'proposed' | 'active' | 'retired',
+			created_at: null
+		};
+	}
+
+	it('throws a named WorkforceInputError when the role has no scorer_control fixture', async () => {
+		const role = await createRole(db, { slug: `escr-none-${++seq}`, name: 'N', purpose: 'p' });
+		await expect(ensureScorerControlReady(db, role.id)).rejects.toThrow(WorkforceInputError);
+		await expect(ensureScorerControlReady(db, role.id)).rejects.toThrow(/no scorer_control fixture/i);
+	});
+
+	it('derives the key from the known-pass report and activates the fixture', async () => {
+		const { role, control } = await seedProposedControl();
+		// Precondition: the bug shape — proposed, no key.
+		expect(await readGauntletKeyForScoring(db, control.id)).toBeNull();
+
+		await ensureScorerControlReady(db, role.id);
+
+		// A key was mechanically derived (§4.4 author), bound to the work, plant = known-pass.
+		// Re-read the fixture: activation injected the sentinel + recomputed content_sha and
+		// RE-BOUND the key in the same transaction (§2.1), so compare against the live row.
+		const activated = await reloadFixture(control.id);
+		const key = await readGauntletKeyForScoring(db, control.id);
+		expect(key).not.toBeNull();
+		expect(key!.author).toBe('fixing_commit_diff'); // mechanically derived, not operator
+		expect(key!.content_sha).toBe(activated.content_sha); // re-bound to the activated work (§2.1)
+		expect(key!.plants).toHaveLength(1);
+		const plant = key!.plants[0] as Record<string, unknown>;
+		expect(plant.id).toBe('injection'); // derived from the finding's class
+		const det = plant.detection as Record<string, unknown>;
+		expect(det.mode).toBe('presence');
+		expect(det.file).toBe('c.ts');
+		expect(det.lines).toEqual([3, 3]);
+		expect(det.evidence_pattern).toBeUndefined(); // file+lines ONLY — zero ambiguity
+
+		// The fixture is now active.
+		const [rows] = await db.query<[Array<{ status: unknown }>]>(
+			`SELECT status FROM gauntlet_fixture WHERE id = $id LIMIT 1;`,
+			{ id: new StringRecordId(control.id) }
+		);
+		expect(String(rows[0].status)).toBe('active');
+	});
+
+	it('is idempotent on re-run — no duplicate-key crash, no double activation', async () => {
+		const { role, control } = await seedProposedControl();
+		await ensureScorerControlReady(db, role.id);
+		const firstKey = await readGauntletKeyForScoring(db, control.id);
+		// Re-run twice more: must not throw (no deterministic-id collision surfaced).
+		await expect(ensureScorerControlReady(db, role.id)).resolves.toBeUndefined();
+		await expect(ensureScorerControlReady(db, role.id)).resolves.toBeUndefined();
+		const againKey = await readGauntletKeyForScoring(db, control.id);
+		expect(againKey!.id).toBe(firstKey!.id); // same key id — never duplicated
+		// Still exactly ONE active control fixture for the role.
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+			`SELECT id FROM gauntlet_fixture
+			  WHERE role = $role AND kind = 'scorer_control' AND status = 'active';`,
+			{ role: new StringRecordId(role.id) }
+		);
+		expect(rows).toHaveLength(1);
+	});
+
+	it('the derived key makes runPositiveControl return {ok:true} for the control fixture', async () => {
+		const { role, control } = await seedProposedControl();
+		await ensureScorerControlReady(db, role.id);
+		const key = await readGauntletKeyForScoring(db, control.id);
+		expect(key).not.toBeNull();
+		// Re-read the activated row (post sentinel-injection + key re-bind) — this is exactly
+		// the (fixture, key) pair runGauntlet feeds runPositiveControl at scoring time.
+		const activated = await reloadFixture(control.id);
+		const verdict = runPositiveControl(activated, key!);
+		expect(verdict).toEqual({ ok: true });
+	});
+
+	it('derives an absence plant (regex-escaped artifact) for an absence known-pass finding', async () => {
+		const n = seq + 1; // the slug seedProposedControl will mint
+		const { role, control, ctrlSlug } = await seedProposedControl({
+			knownPass: [
+				{ fixture: `escr-cc-${n}`, absence: { artifact: 'rate-limit.guard.ts', search: 'grep rate-limit' } }
+			],
+			knownFail: []
+		});
+		expect(ctrlSlug).toBe(`escr-cc-${n}`); // the fixture slug the finding targets
+		await ensureScorerControlReady(db, role.id);
+		const key = await readGauntletKeyForScoring(db, control.id);
+		const plant = key!.plants[0] as Record<string, unknown>;
+		const det = plant.detection as Record<string, unknown>;
+		expect(det.mode).toBe('absence');
+		// '.' in the literal artifact is escaped so it matches a literal dot, not any-char.
+		expect(det.artifact_pattern).toBe('rate-limit\\.guard\\.ts');
 	});
 });

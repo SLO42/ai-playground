@@ -12,7 +12,14 @@
    *                    recorded)" — an elided thinking turn, NEVER blank-as-assistant.
    *   • tool_use     → tool name + compact one-line input (honest — no fabricated "{}").
    *   • tool_result  → result block with an ok/error badge (omitted when the outcome is unknown).
-   *   • assistant    → prose (also the honest fallback for result/system/user/legacy rows).
+   *   • assistant    → the agent's OWN prose (also the honest fallback for result/legacy rows).
+   *   • communication→ a PUSHED-IN channel turn (operator interject; future peer bus), visually
+   *                    SEPARATED from the agent's own turns and labelled BY its server-stamped
+   *                    origin ("operator interjected" / "system message" / "hook message" /
+   *                    honest "communication" for an unknown/legacy origin — NEVER faked as
+   *                    operator). The origin is the server stamp (D-035a), only LABELLED here;
+   *                    nothing the agent says can claim it. The agent's own assistant/thinking/
+   *                    tool turns are NEVER given this treatment.
    *
    * Tokens-only; a11y — the thinking toggle is a real <button> with aria-expanded + a
    * focus-visible ring; the log is a role="log" region the parent labels. Reduced-motion safe.
@@ -21,6 +28,7 @@
   import {
     parseBriefing,
     compactToolInput,
+    communicationLabel,
     toolName,
     toolOk,
     type Turn
@@ -106,9 +114,33 @@
       {/if}
       {#if t.content.trim()}<span class="tp-body mono">{t.content}</span>{/if}
     </div>
+  {:else if t.kind === 'communication'}
+    {@const label = communicationLabel(t.origin ?? 'agent')}
+    {@const operator = t.origin === 'operator'}
+    <!-- A PUSHED-IN channel communication (operator interject; future peer bus) — set apart
+         from the agent's own turns by a left rail + its own surface, and labelled by the
+         server-stamped origin. Operator (the only steering origin) reads in the accent hue;
+         every other origin is a non-steering, muted "data" communication. a11y: a labelled
+         role="note" region so a screen reader announces what was pushed in and from where. -->
+    <div
+      class="tp-comm"
+      class:operator
+      role="note"
+      aria-label={label.aria}
+    >
+      <span class="tp-comm-label" data-operator={operator ? 'true' : 'false'}>
+        <span class="tp-comm-dot" aria-hidden="true">⮞</span>
+        <span class="tp-comm-tag">{label.tag}</span>
+      </span>
+      {#if t.content.trim()}
+        <span class="tp-body tp-comm-body">{t.content}</span>
+      {:else}
+        <span class="tp-empty">(empty communication)</span>
+      {/if}
+    </div>
   {:else}
-    <!-- assistant prose (also the honest fallback for result/system/user/legacy rows). The
-         tag reflects the row role so a user/system row is labelled honestly, not "assistant". -->
+    <!-- the agent's OWN prose (also the honest fallback for result/legacy assistant-role rows).
+         The tag reflects the row role so a stray user/system prose row is still labelled honestly. -->
     <div class="tp-turn assistant">
       <span class="tp-tag">{t.tag ?? 'assistant'}</span>
       <span class="tp-body">{t.content}</span>
@@ -214,6 +246,50 @@
   .tp-ok[data-ok='false'] {
     color: var(--color-error-on-overlay);
     background: var(--color-error-bg, transparent);
+  }
+
+  /* A PUSHED-IN channel communication — visually SEPARATED from the agent's own turns by a
+     left rail + a distinct inset surface, so "something was pushed into the session" can never
+     read as the agent's own voice. Operator (the only steering origin) carries the accent hue;
+     all other origins are a quieter, muted "data" communication. Tokens only. */
+  .tp-comm {
+    display: flex;
+    flex-direction: column;
+    align-items: stretch;
+    gap: var(--space-2, 0.4rem);
+    padding: 0.4rem 0.55rem 0.45rem;
+    border-left: 3px solid var(--color-border-strong);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-card);
+    min-width: 0;
+    margin: var(--space-1, 2px) 0;
+  }
+  .tp-comm.operator {
+    border-left-color: var(--color-accent);
+    background: var(--color-accent-muted, var(--color-surface-card));
+  }
+  .tp-comm-label {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    color: var(--color-text-muted);
+    flex: none;
+  }
+  .tp-comm-label[data-operator='true'] {
+    color: var(--color-accent);
+  }
+  .tp-comm-dot {
+    font-size: 0.66rem;
+    line-height: 1;
+  }
+  .tp-comm-tag {
+    font-size: 0.64rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+  }
+  .tp-comm-body {
+    color: var(--color-text);
   }
 
   /* TASK 8.3 — the wake-up briefing: a DISTINCT, accent-bordered "woke up with" block so the

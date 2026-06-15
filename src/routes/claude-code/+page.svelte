@@ -26,6 +26,53 @@
   const running = $derived(fleet.filter((s) => s.status === 'running'));
   const recent = $derived(fleet.filter((s) => s.status !== 'running'));
 
+  // ── TASK (transcript-panel) — the LIVE read-only transcript the fleet's `transcript →`
+  // link (/claude-code?session=<id>) lands on. The PERSISTED LT1 conversation (`message`
+  // rows, oldest-first by seq) replays here, and a new persisted turn live-appends via the
+  // `message` onDbChange below (scoped `app:transcript` dep — no invalidate storm). Read-only:
+  // session controls already live on the fleet rows above; this introduces NO new control.
+  const selectedSession = $derived(data.selectedSession ?? null);
+  const transcript = $derived(data.transcript ?? []);
+  const sessionMeta = $derived(data.sessionMeta ?? null);
+  // `sessionMeta === null` while a session id IS selected = the session row was not found
+  // (an unknown / never-launched id) — an honest state, not a fabricated header (F-008).
+  const sessionUnknown = $derived(!!selectedSession && sessionMeta === null && transcript.length === 0);
+
+  // Per-row collapsible THINKING state, keyed by message id (default collapsed — thinking is
+  // secondary to the prose). Honest-empty: a thinking turn with no content shows "(empty)".
+  let thinkingOpen = $state<Record<string, boolean>>({});
+  function toggleThinking(id: string): void {
+    thinkingOpen = { ...thinkingOpen, [id]: !thinkingOpen[id] };
+  }
+
+  /** Compact one-line view of a tool call's input object (name shown separately). Honest —
+   *  an empty/absent args object renders nothing, never a fabricated "{}". */
+  function compactToolInput(tc: Record<string, unknown> | undefined): string {
+    const args = (tc?.args ?? null) as Record<string, unknown> | null;
+    if (!args || typeof args !== 'object') return '';
+    const parts: string[] = [];
+    for (const [k, v] of Object.entries(args)) {
+      const sv =
+        v == null
+          ? ''
+          : typeof v === 'string'
+            ? v
+            : typeof v === 'object'
+              ? JSON.stringify(v)
+              : String(v);
+      const trimmed = sv.length > 120 ? sv.slice(0, 117) + '…' : sv;
+      parts.push(`${k}: ${trimmed}`);
+    }
+    return parts.join('  ·  ');
+  }
+
+  function toolName(tc: Record<string, unknown> | undefined): string {
+    return typeof tc?.name === 'string' ? tc.name : 'tool';
+  }
+  function toolOk(tc: Record<string, unknown> | undefined): boolean | null {
+    return typeof tc?.ok === 'boolean' ? (tc.ok as boolean) : null;
+  }
+
   // TASK 14.6 — the HONEST backend capability matrix (F-008): a control the wired
   // backend cannot really perform renders DISABLED with its reason, never a button
   // that claims to work and does nothing.
@@ -143,11 +190,28 @@
     // live-refreshes the cross-project fleet via its OWN scoped dep (`app:fleet`), so a
     // session moving never re-pulls the whole config catalog (no invalidate storm).
     const offS = stream.onDbChange('session', () => void invalidate('app:fleet'));
+    // TASK (transcript-panel) — a `message` row change (a new persisted turn from the driven
+    // session, OR a status change on it) live-refreshes ONLY the transcript via its OWN scoped
+    // dep (`app:transcript`); it never re-pulls the config catalog or the fleet (no storm).
+    // `message` is in WATCHED_TABLES (the static-scan test enforces every onDbChange table is).
+    const offMsg = stream.onDbChange('message', () => void invalidate('app:transcript'));
     return () => {
       off();
       offS();
+      offMsg();
     };
   });
+
+  // ── Transcript replay grouping ──────────────────────────────────────────────────────────
+  // The persisted rows carry a `kind` discriminator (m0037). We render each row by kind:
+  //   assistant_text → prose · thinking → collapsible (honest-empty) · tool_use → name+input ·
+  //   tool_result → result block · result → final status badge. A legacy row that predates
+  //   m0037 reads kind 'assistant_text' (the migration DEFAULT) and renders as prose — honest.
+  function rowKind(m: { kind?: string; role: string }): string {
+    if (m.kind) return m.kind;
+    // Pre-m0037 fallback by role (kind absent): a 'tool' row is a tool turn, else prose.
+    return m.role === 'tool' ? 'tool_result' : 'assistant_text';
+  }
 
   function statusLabel(s: string): string {
     if (s === 'synced') return 'synced';
@@ -289,6 +353,118 @@
             </li>
           {/each}
         </ul>
+      {/if}
+    </section>
+  {/if}
+
+  <!-- ── TASK (transcript-panel) — the LIVE read-only transcript the fleet's `transcript →`
+       link (/claude-code?session=<id>) lands on. Renders the persisted LT1 conversation
+       (`message` rows, oldest-first by seq): assistant prose, collapsible thinking (honest
+       empty), tool calls (name + compact input) + their results, and the final result/status
+       badge. Read-only — NO new control surface (stop/interject already live on the fleet).
+       Live-appends a new turn via the `message` onDbChange → scoped `app:transcript` dep. -->
+  {#if connected && selectedSession}
+    <section class="card transcript-panel" aria-label="session transcript">
+      <div class="tp-head">
+        <div class="tp-id">
+          <span class="eyebrow">transcript</span>
+          <span class="tp-sid mono" title={selectedSession}>{shortId(selectedSession)}</span>
+        </div>
+        <div class="tp-meta">
+          {#if sessionMeta}
+            <span class="sess-status" data-status={sessionMeta.status}>{sessionMeta.status}</span>
+            {#if sessionMeta.projectName}
+              {#if sessionMeta.projectSlug}
+                <a class="proj" href={`/projects/${sessionMeta.projectSlug}`}>{sessionMeta.projectName}</a>
+              {:else}
+                <span class="proj">{sessionMeta.projectName}</span>
+              {/if}
+            {/if}
+            <span class="sess-model mono">{sessionMeta.provider}/{sessionMeta.modelId}</span>
+            {#if sessionMeta.tier}
+              <span class="tier-tag" data-tier={sessionMeta.tier}>{sessionMeta.tier}</span>
+            {/if}
+            <span class="sess-when mono">{fmtTime(sessionMeta.startedAt)}</span>
+          {/if}
+        </div>
+      </div>
+
+      <div class="transcript-log" role="log" aria-live="polite" aria-label="conversation transcript">
+        {#if sessionUnknown}
+          <!-- Honest unknown-session state (F-008): a valid-shaped id with no session row + no
+               messages — never a fabricated transcript. -->
+          <p class="tp-state">
+            No session found for <span class="mono">{shortId(selectedSession)}</span> — it may have
+            been cleared, or the id is stale.
+          </p>
+        {:else if transcript.length === 0}
+          <!-- Honest empty: a real session that has not yet persisted any turn. -->
+          <p class="tp-state">No transcript yet — turns appear here as the session runs.</p>
+        {:else}
+          {#each transcript as m (m.id)}
+            {@const k = rowKind(m)}
+            {#if k === 'briefing'}
+              <!-- Wake-up briefing carried in the transcript (recalled context). -->
+              <div class="tp-turn briefing" role="note" aria-label="wake-up briefing">
+                <span class="tp-tag">woke up with</span>
+                <span class="tp-body mono">{m.content}</span>
+              </div>
+            {:else if k === 'thinking'}
+              <!-- Collapsible thinking (default collapsed; honest-empty). -->
+              <div class="tp-turn thinking">
+                <button
+                  class="tp-think-toggle"
+                  type="button"
+                  aria-expanded={!!thinkingOpen[m.id]}
+                  onclick={() => toggleThinking(m.id)}
+                >
+                  <span class="tp-tag">thinking</span>
+                  <span class="tp-caret" aria-hidden="true">{thinkingOpen[m.id] ? '▾' : '▸'}</span>
+                  {#if !m.content.trim()}<span class="tp-empty">(empty)</span>{/if}
+                </button>
+                {#if thinkingOpen[m.id]}
+                  <div class="tp-body mono tp-think-body">
+                    {#if m.content.trim()}{m.content}{:else}<span class="tp-empty">(no thinking recorded for this turn)</span>{/if}
+                  </div>
+                {/if}
+              </div>
+            {:else if k === 'tool_use'}
+              {@const tc = m.toolCall}
+              {@const input = compactToolInput(tc)}
+              <div class="tp-turn tool-use">
+                <span class="tp-tag tool">tool</span>
+                <span class="tp-tool-name mono">{toolName(tc)}</span>
+                {#if input}<span class="tp-tool-input mono">{input}</span>{/if}
+              </div>
+            {:else if k === 'tool_result'}
+              {@const tc = m.toolCall}
+              {@const ok = toolOk(tc)}
+              <div class="tp-turn tool-result" data-ok={ok === null ? '' : String(ok)}>
+                <span class="tp-tag result">result</span>
+                {#if tc && typeof tc.name === 'string'}<span class="tp-tool-name mono">{tc.name}</span>{/if}
+                {#if ok !== null}
+                  <span class="tp-ok" data-ok={String(ok)}>{ok ? 'ok' : 'error'}</span>
+                {/if}
+                {#if m.content.trim()}<span class="tp-body mono">{m.content}</span>{/if}
+              </div>
+            {:else}
+              <!-- assistant_text (and any other persisted prose kind: result/system/user) → prose.
+                   The session's FINAL result/status is the badge in the panel header (sessionMeta
+                   .status) — the launch path persists done/error as session lifecycle, NOT as a
+                   transcript `message` row (launch.ts), so there is no separate result turn here. -->
+              <div class="tp-turn assistant">
+                <span class="tp-tag">{m.role === 'user' ? 'user' : m.role === 'system' ? 'system' : 'assistant'}</span>
+                <span class="tp-body">{m.content}</span>
+              </div>
+            {/if}
+          {/each}
+        {/if}
+      </div>
+
+      {#if sessionMeta?.status === 'running'}
+        <p class="tp-foot mono" aria-live="polite">live — new turns append as the session runs</p>
+      {:else if transcript.length > 0}
+        <p class="tp-foot mono">{transcript.length} turn{transcript.length === 1 ? '' : 's'} · read-only replay</p>
       {/if}
     </section>
   {/if}
@@ -1048,5 +1224,166 @@
     font: var(--type-body-sm);
     color: var(--color-error);
     margin: 0;
+  }
+
+  /* ── TASK (transcript-panel) — live read-only transcript (tokens-only; a11y AA; reduced-motion safe) ── */
+  .transcript-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  .tp-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3, 0.75rem);
+    flex-wrap: wrap;
+  }
+  .tp-id {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2, 0.5rem);
+    min-width: 0;
+  }
+  .tp-sid {
+    font-size: 0.8rem;
+    color: var(--color-text);
+  }
+  .tp-meta {
+    display: flex;
+    align-items: center;
+    gap: 0.55rem;
+    flex-wrap: wrap;
+    min-width: 0;
+  }
+  .tp-state {
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+    font-style: italic;
+    margin: 0;
+  }
+  .transcript-log {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    max-height: 32rem;
+    overflow: auto;
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-bg, #03120e);
+    padding: var(--space-3, 0.75rem);
+  }
+  .tp-turn {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.5rem;
+    padding: 0.4rem 0.55rem;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+    min-width: 0;
+  }
+  .tp-tag {
+    font-size: 0.64rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--color-text-muted);
+    flex: none;
+  }
+  .tp-turn.assistant .tp-tag {
+    color: var(--color-accent);
+  }
+  .tp-tag.tool,
+  .tp-tag.result {
+    color: var(--color-tier-sonnet, var(--color-accent));
+  }
+  .tp-body {
+    font: var(--type-body-sm);
+    color: var(--color-text);
+    white-space: pre-wrap;
+    word-break: break-word;
+    min-width: 0;
+    flex: 1 1 100%;
+  }
+  .tp-turn.thinking {
+    flex-direction: column;
+    align-items: stretch;
+    background: var(--color-surface-card);
+  }
+  .tp-think-toggle {
+    appearance: none;
+    display: flex;
+    align-items: center;
+    gap: 0.4rem;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    color: var(--color-text-muted);
+    text-align: left;
+  }
+  .tp-think-toggle:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs, 3px);
+  }
+  .tp-caret {
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+  }
+  .tp-think-body {
+    margin-top: var(--space-2, 0.5rem);
+    color: var(--color-text-2);
+    font-size: 0.76rem;
+  }
+  .tp-empty {
+    color: var(--color-text-muted);
+    font-style: italic;
+    font-size: 0.72rem;
+  }
+  .tp-tool-name {
+    font-size: 0.76rem;
+    color: var(--color-text);
+    font-weight: 600;
+    flex: none;
+  }
+  .tp-tool-input {
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .tp-ok {
+    font-size: 0.66rem;
+    font-weight: 600;
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm, 6px);
+    flex: none;
+  }
+  .tp-ok[data-ok='true'] {
+    color: var(--color-success, var(--color-running));
+    background: var(--color-success-bg, transparent);
+  }
+  .tp-ok[data-ok='false'] {
+    color: var(--color-error-on-overlay);
+    background: var(--color-error-bg, transparent);
+  }
+  .tp-turn.briefing {
+    flex-direction: column;
+    align-items: stretch;
+    border-left: 2px solid var(--color-accent);
+  }
+  .tp-foot {
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+    margin: 0;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .transcript-log {
+      scroll-behavior: auto;
+    }
   }
 </style>

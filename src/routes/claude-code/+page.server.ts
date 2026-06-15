@@ -26,8 +26,10 @@ import {
 	type CatalogScope,
 	type ConfigKind
 } from '$lib/server/cc-config';
-import { listFleetAcrossProjects, type FleetSessionXP } from '$lib/server/analytics';
+import { listFleetAcrossProjects, getFleetSession, type FleetSessionXP } from '$lib/server/analytics';
+import { listSessionMessages, type TranscriptMessage } from '$lib/server/sessions';
 import { getControlCapabilities, type ControlCapabilities } from '$lib/server/harness';
+import { assertRecordId } from '$lib/server/db/validate';
 import type { Db } from '$lib/server/db/client';
 import {
 	resolveConfigTargetFromCatalog,
@@ -44,7 +46,7 @@ function isConfigKind(v: unknown): v is ConfigKind {
 	return typeof v === 'string' && (EDITABLE_KINDS as string[]).includes(v);
 }
 
-export const load: PageServerLoad = async ({ depends }) => {
+export const load: PageServerLoad = async ({ depends, url }) => {
 	// SCOPED dep (DEFECT 2): the page re-runs this loader only on `app:claude-code`,
 	// NOT on every table change. Previously the page invalidated on a `project` row
 	// change with `invalidate(() => true)` — an "invalidate storm" that re-pulled the
@@ -53,6 +55,24 @@ export const load: PageServerLoad = async ({ depends }) => {
 	// TASK 9.3 — the cross-project session FLEET re-runs on its own scoped dep so a `session`
 	// row change live-refreshes the fleet WITHOUT re-pulling the whole config catalog.
 	depends('app:fleet');
+	// TASK (transcript-panel) — the LIVE transcript panel re-runs on its OWN scoped dep so a
+	// `message` row change (a new persisted turn from the driven session) re-pulls ONLY the
+	// transcript, never the whole config catalog or the fleet (no invalidate storm, DEFECT 2).
+	depends('app:transcript');
+
+	// The `?session=` selected session id — validated at the boundary (D-016). A malformed
+	// value is ignored (no transcript fetched), never interpolated into a query. SHADOW PATHS:
+	// a nil param → null (no panel); an empty string → null; a non-record-id string → caught
+	// by assertRecordId → null (the panel renders the honest "unknown session" state).
+	const sessionParam = url.searchParams.get('session');
+	let selectedSession: string | null = null;
+	if (sessionParam) {
+		try {
+			selectedSession = assertRecordId(sessionParam);
+		} catch {
+			selectedSession = null;
+		}
+	}
 
 	// DEFECT 2: use `tryGetDb()` (never throws) instead of strict `getDb()`. A non-null
 	// handle does NOT prove liveness — the SDK keeps handing back a CACHED-but-DEAD
@@ -84,7 +104,10 @@ export const load: PageServerLoad = async ({ depends }) => {
 			connected: false,
 			scopes: [] as CatalogScope[],
 			fleet: [] as FleetSessionXP[],
-			controlCaps
+			controlCaps,
+			selectedSession,
+			transcript: [] as TranscriptMessage[],
+			sessionMeta: null as FleetSessionXP | null
 		};
 	}
 
@@ -96,6 +119,25 @@ export const load: PageServerLoad = async ({ depends }) => {
 			fleet = await listFleetAcrossProjects(db, 40);
 		} catch {
 			fleet = [];
+		}
+
+		// TASK (transcript-panel) — the selected session's PERSISTED transcript (LT1 `message`
+		// rows, oldest-first via seq) + its fleet metadata for the panel header. Both degrade to
+		// honest empties on their own: a transcript-read failure must NOT blank the catalog/fleet
+		// (and vice-versa), so each is wrapped independently. An unknown/never-launched session
+		// reads back [] / null (honest "no transcript yet" / "unknown session", never fabricated).
+		let transcript: TranscriptMessage[] = [];
+		let sessionMeta: FleetSessionXP | null = null;
+		if (selectedSession) {
+			try {
+				[transcript, sessionMeta] = await Promise.all([
+					listSessionMessages(db, selectedSession),
+					getFleetSession(db, selectedSession)
+				]);
+			} catch {
+				transcript = [];
+				sessionMeta = null;
+			}
 		}
 
 		// TASK 14.4d — reconcile the scope catalog against the REGISTERED project roots
@@ -132,7 +174,15 @@ export const load: PageServerLoad = async ({ depends }) => {
 			})
 		);
 
-		return { connected: true, scopes: withStatus, fleet, controlCaps };
+		return {
+			connected: true,
+			scopes: withStatus,
+			fleet,
+			controlCaps,
+			selectedSession,
+			transcript,
+			sessionMeta
+		};
 	} catch (err) {
 		// Classify the thrown error (shared with /workflows + /projects + home, D-019):
 		// a genuine connection loss is reported as DISCONNECTED — the same honest state
@@ -143,7 +193,10 @@ export const load: PageServerLoad = async ({ depends }) => {
 				connected: false,
 				scopes: [] as CatalogScope[],
 				fleet: [] as FleetSessionXP[],
-				controlCaps
+				controlCaps,
+				selectedSession,
+				transcript: [] as TranscriptMessage[],
+				sessionMeta: null as FleetSessionXP | null
 			};
 		}
 		return {
@@ -151,7 +204,10 @@ export const load: PageServerLoad = async ({ depends }) => {
 			scopes: [] as CatalogScope[],
 			fleet: [] as FleetSessionXP[],
 			controlCaps,
-			queryError: (err as Error).message
+			queryError: (err as Error).message,
+			selectedSession,
+			transcript: [] as TranscriptMessage[],
+			sessionMeta: null as FleetSessionXP | null
 		};
 	}
 };

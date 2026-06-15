@@ -23,6 +23,9 @@ export const WATCHED_TABLES = [
 	'task',
 	// session — shell layout ticker; / (home); /workflows; /agents; /claude-code; /projects/[id]
 	'session',
+	// message — /claude-code (live transcript panel: the persisted LT1 conversation rows
+	// replay + live-append as the driven session writes turns) — TASK (transcript-panel)
+	'message',
 	// agent_event — shell layout ticker; / (home); /agents; /reports
 	'agent_event',
 	// routing_event — /reports

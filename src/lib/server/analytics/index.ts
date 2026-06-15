@@ -48,6 +48,7 @@ export {
 	listFleet,
 	listFleetByProject,
 	listFleetAcrossProjects,
+	getFleetSession,
 	listAgentCatalog,
 	type PoolSlot,
 	type FleetSession,

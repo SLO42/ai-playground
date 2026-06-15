@@ -15,7 +15,13 @@ import {
 	type CcSpawnPlan,
 	type RuntimeEvent
 } from '../runtime/index';
-import { listFleet, listPoolSlots, listFleetAcrossProjects, listAgentCatalog } from './fleet';
+import {
+	listFleet,
+	listPoolSlots,
+	listFleetAcrossProjects,
+	getFleetSession,
+	listAgentCatalog
+} from './fleet';
 
 // TASK 2.4 VERIFY (part 4) — the /agents read models from REAL rows (F-008). Liveness
 // comes from session.status, NEVER agent_slot.busy (UI-SPEC §199).
@@ -204,5 +210,56 @@ describe('fleet read models (2.4; UI-SPEC §198–200)', () => {
 		// Sorted by name (coder < reviewer).
 		const names = cat.map((c) => c.name);
 		expect(names.indexOf('coder')).toBeLessThan(names.indexOf('reviewer'));
+	});
+});
+
+// TASK (transcript-panel) — getFleetSession backs the /claude-code?session=<id> transcript-panel
+// header (one session's status/model/project label). SHADOW PATHS: happy (a real session) +
+// unknown id (→ null, honest "no session found") + malformed id (→ throws at the D-016
+// assertRecordId chokepoint; the loader catches and renders null, never interpolates).
+describe('getFleetSession — single-session header metadata (transcript-panel)', () => {
+	it('returns the launched session metadata (status/model/project label) by id', async () => {
+		const events: RuntimeEvent[] = [
+			{ type: 'log', message: 'go' },
+			{ type: 'done', result: { ok: true, summary: 'ok', ccSessionId: 'cc_one_1' } }
+		];
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(events, 'cc_one_1') });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: {
+				projectId,
+				taskId,
+				agentId: 'agent_one',
+				model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+				intent: 'code-write',
+				budgets: {},
+				toolPolicy: { allow: ['Read'] }
+			}
+		});
+
+		const meta = await getFleetSession(db, res.sessionId);
+		expect(meta).toBeTruthy();
+		expect(meta!.id).toBe(res.sessionId);
+		expect(meta!.status).toBe('done'); // terminal status from the real session row (F-008)
+		expect(meta!.provider).toBe('claude');
+		expect(meta!.tier).toBe('opus');
+		// The owning project's LABEL is joined (not just the id) — honest header.
+		expect(meta!.projectName).toBe('Fleet Host');
+		expect(meta!.projectSlug).toBe('fleet');
+		expect(meta!.ccSessionId).toBe('cc_one_1');
+	});
+
+	it('returns null for an unknown (never-launched) session id — honest, never fabricated', async () => {
+		// A well-FORMED record id that does not exist → null (the panel shows "no session found").
+		const meta = await getFleetSession(db, 'session:does_not_exist_xyz');
+		expect(meta).toBeNull();
+	});
+
+	it('rejects a malformed session id at the D-016 boundary (assertRecordId), never interpolates', async () => {
+		// The loader wraps this in try/catch and renders null; here we assert the chokepoint
+		// throws rather than building a query string from untrusted input.
+		await expect(getFleetSession(db, 'not a record id !! { DROP }')).rejects.toThrow();
 	});
 });

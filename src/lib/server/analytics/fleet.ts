@@ -258,3 +258,40 @@ export async function listFleetAcrossProjects(db: Db, limit = 40): Promise<Fleet
 		return b.startedAt.localeCompare(a.startedAt);
 	});
 }
+
+/**
+ * Read ONE session's fleet metadata (status/model/project label) for the transcript-panel
+ * header — the same projection as listFleetAcrossProjects, scoped to a single id so a session
+ * OLDER than the recent-40 fleet window still gets an honest header. Returns null for an
+ * unknown session (the panel renders the transcript with id-only meta, never a fabricated row,
+ * F-008). The id flows through assertRecordId and binds as a StringRecordId (D-016 chokepoint);
+ * no value is interpolated into the query.
+ */
+export async function getFleetSession(db: Db, sessionId: string): Promise<FleetSessionXP | null> {
+	const sid = new StringRecordId(assertRecordId(sessionId));
+	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+		`SELECT id, status, model, project, task, cc_session_id, started_at, ended_at,
+		        project.id AS project_id, project.name AS project_name, project.slug AS project_slug
+		   FROM session WHERE id = $sid LIMIT 1
+		   FETCH project;`,
+		{ sid }
+	);
+	const r = (rows ?? [])[0];
+	if (!r) return null;
+	const m = (r.model ?? {}) as Record<string, unknown>;
+	const projectId = r.project_id ? String(r.project_id) : r.project ? String(r.project) : null;
+	return {
+		id: String(r.id),
+		status: String(r.status ?? 'running'),
+		provider: String(m.provider ?? 'unknown'),
+		modelId: String(m.model_id ?? 'unknown'),
+		tier: (m.tier as string) ?? null,
+		projectId,
+		projectName: r.project_name ? String(r.project_name) : null,
+		projectSlug: r.project_slug ? String(r.project_slug) : null,
+		taskId: r.task ? String(r.task) : null,
+		ccSessionId: r.cc_session_id ? String(r.cc_session_id) : null,
+		startedAt: iso(r.started_at),
+		endedAt: r.ended_at ? iso(r.ended_at) : null
+	};
+}

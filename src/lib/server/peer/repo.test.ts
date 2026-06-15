@@ -17,6 +17,8 @@ import {
 	loadFleetSnapshot,
 	pendingInbox,
 	PeerRepoError,
+	IdempotencyError,
+	PEER_CLIENT_KEY_MAX,
 	sendPeerMessage
 } from './repo';
 
@@ -209,14 +211,44 @@ describe('peer_message CRUD', () => {
 		expect(row.body).not.toContain('MIIEbadkeycontent');
 	});
 
-	it('dedup_key de-duplicates a retried send by client_key (D-008 UNIQUE collide)', async () => {
+	it('dedup_key de-duplicates a retried send by the SAME sender + client_key → named IdempotencyError', async () => {
 		const sender = await freshSession();
 		const target = await freshSession();
 		const key = `idem_${++seq}`;
 		await sendPeerMessage(db, { from_session: sender, to_kind: 'session', to_session: target, body: 'once', client_key: key });
+		// The collision is now a NAMED IdempotencyError (not a raw SurrealDB index-violation leak).
 		await expect(
 			sendPeerMessage(db, { from_session: sender, to_kind: 'session', to_session: target, body: 'twice', client_key: key })
-		).rejects.toThrow(); // UNIQUE index collision on dedup_key
+		).rejects.toThrow(IdempotencyError);
+	});
+
+	it('REGRESSION (Gap 2): dedup_key is SENDER-NAMESPACED — a DIFFERENT sender reusing the same client_key does NOT collide (no cross-session poisoning DoS)', async () => {
+		const senderA = await freshSession();
+		const senderB = await freshSession(); // a different session (could be a different project)
+		const target = await freshSession();
+		const key = `shared_${++seq}`;
+		// A sends with `key`.
+		await sendPeerMessage(db, { from_session: senderA, to_kind: 'session', to_session: target, body: 'from A', client_key: key });
+		// B replays the SAME client_key — pre-fix this collided on the GLOBALLY-unique index and
+		// griefed A's idempotency token. With the sender-namespaced key it must persist cleanly.
+		const rowB = await sendPeerMessage(db, {
+			from_session: senderB,
+			to_kind: 'session',
+			to_session: target,
+			body: 'from B',
+			client_key: key
+		});
+		expect(rowB.from_session).toBe(senderB);
+		expect(rowB.body).toContain('from B');
+	});
+
+	it('REGRESSION (Gap 2): an over-long client_key is rejected with a NAMED PeerRepoError (index-bloat cap)', async () => {
+		const sender = await freshSession();
+		const target = await freshSession();
+		const huge = 'x'.repeat(PEER_CLIENT_KEY_MAX + 1);
+		await expect(
+			sendPeerMessage(db, { from_session: sender, to_kind: 'session', to_session: target, body: 'x', client_key: huge })
+		).rejects.toThrow(PeerRepoError);
 	});
 
 	it('missing from_session → PeerRepoError (named)', async () => {

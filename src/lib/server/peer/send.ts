@@ -47,7 +47,8 @@ import {
 	sendPeerMessage,
 	loadFleetSnapshot,
 	type PeerMessageRow,
-	PeerRepoError
+	PeerRepoError,
+	IdempotencyError
 } from './repo';
 
 // ── Named errors — every error has a name (what triggers it is in the message) ──
@@ -364,4 +365,4 @@ async function markDelivered(db: Db, messageId: string): Promise<void> {
 }
 
 // Re-export the named errors callers map to honest statuses.
-export { PeerAddressError, CrossProjectError, PeerRepoError };
+export { PeerAddressError, CrossProjectError, PeerRepoError, IdempotencyError };

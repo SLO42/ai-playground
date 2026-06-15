@@ -24,6 +24,7 @@ import { authorizeHookRequest } from '$lib/server/hooks';
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import { getBus, getBootToken, getRuntime } from '$lib/server/harness';
 import { createChannel } from '$lib/server/claude-code';
+import { screen } from '$lib/server/memory/screen';
 import {
 	sendPeer,
 	type SendPeerResult,
@@ -33,8 +34,10 @@ import {
 	SenderResolutionError,
 	PeerAddressError,
 	CrossProjectError,
-	PeerRepoError
+	PeerRepoError,
+	IdempotencyError
 } from '$lib/server/peer/send';
+import { PEER_CLIENT_KEY_MAX } from '$lib/server/peer/repo';
 import type { PeerAddress, ToKind } from '$lib/server/peer/resolve';
 import type { RequestHandler } from './$types';
 
@@ -109,6 +112,14 @@ export const POST: RequestHandler = async ({ request }) => {
 	const rawBody = typeof b.body === 'string' ? b.body : '';
 	const hops = typeof b.hops === 'number' ? b.hops : undefined;
 	const clientKey = typeof b.client_key === 'string' ? b.client_key : undefined;
+	// Length-cap the agent-supplied idempotency token at the boundary (it lands in the indexed
+	// dedup_key VALUE — an unbounded key bloats the UNIQUE index). A clean 400, not a deep throw.
+	if (clientKey !== undefined && clientKey.length > PEER_CLIENT_KEY_MAX) {
+		return json(
+			errorResult(`peer send: client_key exceeds the ${PEER_CLIENT_KEY_MAX}-char cap`),
+			{ status: 400 }
+		);
+	}
 
 	const db = tryGetDb();
 	if (!db) {
@@ -132,12 +143,19 @@ export const POST: RequestHandler = async ({ request }) => {
 		});
 		deliver = async (recipientSessionId: string): Promise<boolean> => {
 			// NON-STEERING by construction: no presentedToken, viaControlEndpoint:false ⇒ origin=agent,
-			// steer=false. The channel re-fences the body itself (its own D-026 fence), so we hand it
-			// the raw text for the recipient turn; both the persisted-here row and the delivered row
-			// are fenced DATA. A throw/!running is fail-open at the call site (sendPeer swallows it).
+			// steer=false. The channel FENCES the body (its own D-026 §10 envelope) but it does NOT
+			// screen() — channel.ts has no secret/PII screen. The persisted peer_message row is
+			// screen()→fence() (repo.buildPeerBody), but a raw delivery here would leak a redact-class
+			// secret into the recipient's LIVE context AND its G-A `message` row (the durable envelope
+			// would be safe, the delivered turn would not). So we screen() the body on THIS leg too —
+			// D-026 invariant: every delivered peer body passes screen() THEN fence() (channel fences).
+			// Quarantine-class bodies never reach here (sendPeer skips delivery when persisted.status==
+			// 'quarantined'); redact-class is redacted-in-place. A throw/!running is fail-open at the
+			// call site (sendPeer swallows it).
+			const screenedBody = screen(rawBody).text;
 			const res = await channel.interject({
 				sessionId: recipientSessionId,
-				body: rawBody,
+				body: screenedBody,
 				viaControlEndpoint: false
 			});
 			return res.origin === 'agent'; // delivered as a non-steering agent turn
@@ -158,6 +176,9 @@ export const POST: RequestHandler = async ({ request }) => {
 		if (err instanceof SendBudgetError) return json(errorResult(err.message), { status: 429 });
 		if (err instanceof HopsExhaustedError) return json(errorResult(err.message), { status: 400 });
 		if (err instanceof PeerAddressError) return json(errorResult(err.message), { status: 400 });
+		// A duplicate send (the sender's OWN client_key retry collided on the dedup index) is an
+		// idempotent no-op the agent can treat as already-sent — a named 409, never a raw index leak.
+		if (err instanceof IdempotencyError) return json(errorResult(err.message), { status: 409 });
 		if (err instanceof PeerRepoError) return json(errorResult(err.message));
 		return json(errorResult(`peer send failed: ${(err as Error).message}`));
 	}

@@ -16,6 +16,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 const sendPeerMock = vi.fn();
 const tryGetDbMock = vi.fn();
 const getRuntimeMock = vi.fn();
+// Records the body the production deliver fn actually hands channel.interject (Gap 1 regression).
+type InterjectArg = { sessionId: string; body: string; viaControlEndpoint: boolean };
+const interjectMock = vi.fn<
+	(req: InterjectArg) => Promise<{ origin: 'agent'; steered: boolean; messageId: string }>
+>(async () => ({ origin: 'agent', steered: false, messageId: 'message:x' }));
 
 vi.mock('$lib/server/db/runtime-init', () => ({ tryGetDb: () => tryGetDbMock() }));
 vi.mock('$lib/server/harness', () => ({
@@ -24,7 +29,7 @@ vi.mock('$lib/server/harness', () => ({
 	getRuntime: (...a: unknown[]) => getRuntimeMock(...a)
 }));
 vi.mock('$lib/server/claude-code', () => ({
-	createChannel: () => ({ interject: async () => ({ origin: 'agent', steered: false, messageId: 'message:x' }) })
+	createChannel: () => ({ interject: interjectMock })
 }));
 // Mock the engine but keep the REAL named-error classes so `instanceof` mapping works.
 vi.mock('$lib/server/peer/send', async (orig) => {
@@ -38,7 +43,8 @@ import {
 	SendBudgetError,
 	HopsExhaustedError,
 	SenderResolutionError,
-	PeerAddressError
+	PeerAddressError,
+	IdempotencyError
 } from '$lib/server/peer/send';
 
 const TOKEN = 'boot-token-xyz';
@@ -153,7 +159,8 @@ describe('POST /api/peer/send — named errors map to honest statuses', () => {
 		[new SendBudgetError('budget'), 429],
 		[new HopsExhaustedError('hops'), 400],
 		[new SenderResolutionError('sender'), 400],
-		[new PeerAddressError('addr'), 400]
+		[new PeerAddressError('addr'), 400],
+		[new IdempotencyError('dup'), 409] // Gap 2: a duplicate send is a named 409, not a raw leak
 	];
 	for (const [err, expected] of cases) {
 		it(`${err.name} → ${expected}`, async () => {
@@ -195,5 +202,28 @@ describe('POST /api/peer/send — shadow paths (honest, F-008)', () => {
 		expect(body.ok).toBe(false);
 		expect(body.error).toMatch(/no database connection/i);
 		expect(sendPeerMock).not.toHaveBeenCalled();
+	});
+});
+
+describe('POST /api/peer/send — D-026 live-delivery leg is SCREENED (Gap 1 regression)', () => {
+	it('the deliver fn screens the body before channel.interject — a redact-class secret never reaches the recipient turn', async () => {
+		// Runtime available ⇒ the endpoint wires the production deliver fn into sendPeer.
+		getRuntimeMock.mockResolvedValue({ available: true, runtime: { __rt: true } });
+		const secret = 'my api_key=supersecretvalue123 please use it';
+		await invoke(req({ to: { kind: 'session', ref: 'session:r1' }, body: secret }));
+
+		// Pull the deliver fn the endpoint handed the (mocked) engine and invoke it directly — this
+		// is the exact callback the engine runs per live recipient.
+		const [, deps] = sendPeerMock.mock.calls[0];
+		expect(typeof deps.deliver).toBe('function');
+		await deps.deliver('session:r1', 'IGNORED_FENCED_ARG');
+
+		// channel.interject MUST receive the SCREENED body — the raw secret is gone (pre-fix it got
+		// the raw rawBody, leaking the secret into the recipient context + its G-A message row).
+		expect(interjectMock).toHaveBeenCalledTimes(1);
+		const arg = interjectMock.mock.calls[0][0];
+		expect(arg.viaControlEndpoint).toBe(false); // NON-STEERING (D-035a)
+		expect(arg.body).not.toContain('supersecretvalue123'); // the secret was redacted
+		expect(arg.body).toContain('[REDACTED:credential]');
 	});
 });

@@ -1524,8 +1524,42 @@ const m0039_peer_message: Migration = {
 
 		-- Drain query index (§spec: scan a recipient's pending inbox by (to_session,status)).
 		DEFINE INDEX OVERWRITE peer_message_inbox ON peer_message FIELDS to_session, status;
-		-- Dedup/idempotency: prefer the ingress client_key, fall back to id (D-008 VALUE pattern).
-		DEFINE FIELD OVERWRITE dedup_key ON peer_message VALUE (client_key OR id);
+		-- Dedup/idempotency, NAMESPACED BY SENDER (D-008 VALUE pattern). The key is
+		-- (from_session|client_key) so a retried ingress write FROM THE SAME SENDER collides on the
+		-- UNIQUE index (idempotent retry) while a DIFFERENT sender (any session/project) reusing the
+		-- same client_key string can NOT collide — closing the cross-session/cross-project dedup-
+		-- poisoning DoS (a globally-unique key let agent B grief agent A by replaying A's client_key).
+		-- Falls back to the row id when no client_key (every row is then unique by id). client_key is
+		-- length-capped at the ingress (PEER_CLIENT_KEY_MAX) so it cannot bloat the indexed value.
+		-- Mirrors the memory.dedup_key idiom (namespace + '|' + (key OR <string>id)): the INNER
+		-- (client_key OR <string>id) resolves to a string FIRST (SurrealDB rejects string-plus-NONE,
+		-- so the OR must absorb the NONE before the concat), then it is sender-prefixed. With a
+		-- client_key it is from_session-pipe-client_key (idempotent only for the SAME sender); without
+		-- one it is from_session-pipe-id (unique by id). Either way the key is sender-namespaced, so a
+		-- different session/project replaying another sender client_key can NEVER collide (poison-safe).
+		DEFINE FIELD OVERWRITE dedup_key ON peer_message
+			VALUE (<string>from_session + '|' + (client_key OR <string>id));
+		DEFINE INDEX OVERWRITE peer_message_dedup ON peer_message FIELDS dedup_key UNIQUE;
+		${backfillValueField('peer_message', 'dedup_key')}
+	`
+};
+
+// m0040 — RE-APPLY the sender-namespaced peer_message dedup_key on ALREADY-MIGRATED dev DBs.
+//
+// WHY A NEW MIGRATION (F-015 discipline). The runner records each migration id and SKIPS it on
+// re-run (migrate.ts: `if (already.has(m.id)) continue`). The live mid-ceremony dev DB already has
+// m0039 recorded, so editing m0039's body in place would NEVER re-apply there — the live DB would
+// keep the OLD globally-unique dedup_key (the cross-session/cross-project poisoning DoS the
+// red-team flagged). This NEW id re-applies on the live DB while staying ADDITIVE: it OVERWRITEs
+// only the peer_message dedup_key VALUE + its index (no table reset, no row touch beyond the
+// guarded VALUE re-backfill). On a FRESH DB m0039 already defines the namespaced value, so this is
+// a harmless idempotent no-op OVERWRITE — both ids converge on the SAME final field, never drift.
+// Idempotent + apply-twice + half-applied safe by construction (every DEFINE carries OVERWRITE).
+const m0040_peer_message_dedup_namespace: Migration = {
+	id: '0040_peer_message_dedup_namespace',
+	up: `
+		DEFINE FIELD OVERWRITE dedup_key ON peer_message
+			VALUE (<string>from_session + '|' + (client_key OR <string>id));
 		DEFINE INDEX OVERWRITE peer_message_dedup ON peer_message FIELDS dedup_key UNIQUE;
 		${backfillValueField('peer_message', 'dedup_key')}
 	`
@@ -1576,5 +1610,6 @@ export const schemaMigrations: Migration[] = [
 	m0036_memory_history_flexible,
 	m0037_message_kind_seq,
 	m0038_message_origin,
-	m0039_peer_message
+	m0039_peer_message,
+	m0040_peer_message_dedup_namespace
 ];

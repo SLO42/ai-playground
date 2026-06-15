@@ -31,6 +31,20 @@ export class PeerRepoError extends Error {
 	override readonly name = 'PeerRepoError';
 }
 
+/** A retried ingress write collided on the (sender|client_key) dedup UNIQUE index — the SAME
+ *  sender already sent with this client_key. NAMED (the contract: every error has a name) so the
+ *  endpoint maps it to an honest, idempotent ok:false rather than leaking the raw SurrealDB index
+ *  violation. With the sender-namespaced dedup_key this can ONLY be the sender's own retry — a
+ *  different session/project reusing the same client_key string no longer collides (poisoning-safe). */
+export class IdempotencyError extends Error {
+	override readonly name = 'IdempotencyError';
+}
+
+/** Max length of an agent-supplied client_key (the ingress idempotency token). Caps the indexed
+ *  dedup_key VALUE so a hostile caller cannot bloat the UNIQUE index with a giant key. A UUID/short
+ *  token is ~36 chars; 200 is generous headroom without being an index-size foot-gun. */
+export const PEER_CLIENT_KEY_MAX = 200;
+
 // ── Enums (mirror the m0039 DDL asserts) ────────────────────────────────────────
 
 export type PeerStatus = 'pending' | 'delivered' | 'expired' | 'quarantined';
@@ -156,6 +170,18 @@ export async function sendPeerMessage(db: Db, input: SendPeerMessageInput): Prom
 	if (typeof input.body !== 'string') {
 		throw new PeerRepoError('sendPeerMessage: body must be a string');
 	}
+	// Length-cap the agent-supplied idempotency token: it lands in the indexed dedup_key VALUE, so an
+	// unbounded key would bloat the UNIQUE index. A bad shape is the caller's error (named, fail-loud).
+	if (input.client_key !== undefined) {
+		if (typeof input.client_key !== 'string') {
+			throw new PeerRepoError('sendPeerMessage: client_key must be a string when present');
+		}
+		if (input.client_key.length > PEER_CLIENT_KEY_MAX) {
+			throw new PeerRepoError(
+				`sendPeerMessage: client_key exceeds the ${PEER_CLIENT_KEY_MAX}-char cap (got ${input.client_key.length})`
+			);
+		}
+	}
 	const envelope = buildPeerBody(input.body);
 
 	const content: Record<string, unknown> = {
@@ -171,9 +197,25 @@ export async function sendPeerMessage(db: Db, input: SendPeerMessageInput): Prom
 	if (input.project) content.project = link(input.project);
 	if (input.client_key) content.client_key = input.client_key;
 
-	const [rows] = await db.query<[Raw[]]>(`CREATE peer_message CONTENT $content RETURN AFTER;`, {
-		content
-	});
+	let rows: Raw[] | undefined;
+	try {
+		[rows] = await db.query<[Raw[]]>(`CREATE peer_message CONTENT $content RETURN AFTER;`, {
+			content
+		});
+	} catch (err) {
+		// Map the dedup UNIQUE-index violation to a NAMED IdempotencyError so the raw SurrealDB index
+		// message never leaks (the 'every error has a name' contract). SurrealDB surfaces a unique-
+		// index breach by mentioning the index name (peer_message_dedup) or "already contains"/
+		// "Database index"; match defensively and re-throw everything else verbatim.
+		const msg = (err as Error)?.message ?? '';
+		if (/peer_message_dedup|already contains|Database index|index .* already/i.test(msg)) {
+			throw new IdempotencyError(
+				`sendPeerMessage: duplicate send — this sender already sent with client_key ` +
+					`${JSON.stringify(input.client_key)} (idempotent retry collided on the dedup index)`
+			);
+		}
+		throw err;
+	}
 	const row = rows?.[0];
 	if (!row) throw new PeerRepoError('sendPeerMessage: insert returned no row');
 	return normPeerMessage(row);

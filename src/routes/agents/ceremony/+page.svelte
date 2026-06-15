@@ -28,6 +28,54 @@
   const keysOutstanding = $derived(authoring?.keysOutstanding ?? 0);
   const loadError = $derived('error' in data ? (data.error as string | undefined) : undefined);
 
+  // ── CER2 — the EXECUTION half (steps ③/④/⑤). Real-spend triggers + readiness/flip.
+  const execution = $derived(data.execution);
+  const execRoles = $derived(execution?.roles ?? []);
+  const allCertified = $derived(execution?.allCertified ?? false);
+  const certifiedCount = $derived(execution?.certifiedCount ?? 0);
+  const runtimeAvailable = $derived(data.runtimeAvailable);
+  const runtimeReason = $derived(data.runtimeReason);
+
+  /** A human effort/cost label for a real-spend trigger at a tier — the operator sees what
+   *  the click costs before confirming (F-008: no fabricated figure; effort by tier). */
+  function effortLabel(tier: string | null): string {
+    if (!tier) return 'unknown tier';
+    return `runs a real gauntlet at the ${tier} tier`;
+  }
+  function fmtUsd(v: unknown): string {
+    return typeof v === 'number' ? `$${v.toFixed(4)}` : '—';
+  }
+  function fmtDate(at: string | null): string {
+    if (!at) return '—';
+    const d = new Date(at);
+    return Number.isNaN(d.getTime()) ? '—' : d.toISOString().slice(0, 10);
+  }
+
+  // Per-role confirm-tick state for the real-spend triggers (the click IS the budget
+  // decision — the button stays disabled until the operator ticks the spend confirm).
+  let spendConfirm = $state<Record<string, boolean>>({});
+  let activateConfirm = $state<Record<string, boolean>>({});
+  let flipConfirm = $state(false);
+  function setSpend(rv: string, v: boolean) {
+    spendConfirm = { ...spendConfirm, [rv]: v };
+  }
+  function setActivate(fx: string, v: boolean) {
+    activateConfirm = { ...activateConfirm, [fx]: v };
+  }
+
+  // Per-role busy guard: a submitted trigger disables that role's buttons until the action
+  // returns (no double-spend on a slow gauntlet). Cleared by enhance's completion callback.
+  let busy = $state<Record<string, boolean>>({});
+  function busyEnhance(key: string) {
+    return () => {
+      busy = { ...busy, [key]: true };
+      return async ({ update }: { update: () => Promise<void> }) => {
+        await update();
+        busy = { ...busy, [key]: false };
+      };
+    };
+  }
+
   // The action feedback (named, per-fixture where relevant).
   const fb = $derived(
     form && 'ceremony' in form ? (form.ceremony as Record<string, unknown>) : undefined
@@ -35,13 +83,21 @@
   function fbFor(fixture: string): Record<string, unknown> | undefined {
     return fb && fb.fixture === fixture ? fb : undefined;
   }
+  /** CER2 — per-role execution feedback, keyed by the role version the action carried. */
+  function execFb(roleVersion: string): Record<string, unknown> | undefined {
+    return fb && fb.roleVersion === roleVersion ? fb : undefined;
+  }
+  /** The panel-flip feedback (no fixture / no roleVersion — keyed by the flip flag). */
+  const flipFb = $derived(fb && fb.flip === true ? fb : undefined);
 
   // Live re-derive off the ONE SSE stream (D-035): a seed (role/role_version/fixture create)
   // refreshes the flow in place. A key confirm re-loads via its own form action response (the
   // answer-key table is NEVER watched from the UI — §4.4 keeps that table server-internal).
+  // CER2 adds interview_run (live results from the EXISTING SSE watcher — NO 2nd source,
+  // D-035) and role_event (activation/fixture events) so steps ③/④ update in place.
   $effect(() => {
-    const offs = ['role', 'role_version', 'gauntlet_fixture'].map((t) =>
-      stream.onDbChange(t, () => void invalidate('app:workforce'))
+    const offs = ['role', 'role_version', 'gauntlet_fixture', 'interview_run', 'role_event'].map(
+      (t) => stream.onDbChange(t, () => void invalidate('app:workforce'))
     );
     return () => offs.forEach((off) => off());
   });
@@ -404,13 +460,256 @@
         {/each}
       </div>
 
-      <div class="card next-up">
-        <span class="eyebrow">next</span>
+      <!-- ── Steps ③/④ — ADMISSION REFERENCE-RUNS + BOOTSTRAP INTERVIEWS (REAL SPEND) ── -->
+      <div class="card" aria-labelledby="exec-title">
+        <div class="panel-head">
+          <span class="eyebrow" id="exec-title">step ③/④ · reference-runs &amp; bootstrap interviews</span>
+          <span class="count mono" data-done={allCertified}>{certifiedCount}/{execRoles.length} certified</span>
+        </div>
         <p class="state-body">
-          Once every prompt core is reviewed and every key confirmed, the admission
-          reference-runs and bootstrap interviews (step ③/④) run at each role's tier/model —
-          a later ceremony that does spend. This authoring step never does.
+          For each role: activate its fixture pool (injects the leak sentinel, flips fixtures
+          live), then run the admission reference-run (proves every plant findable at the
+          role's tier/model) and the bootstrap interview (the certification gauntlet). These
+          spend real tokens — every run is operator-confirmed; the click is the budget decision
+          (§3.7). An ambiguous interview routes to the adjudication queue on
+          <a href="/agents">/agents</a>.
         </p>
+
+        {#if !runtimeAvailable}
+          <p class="guard-note" data-kind="teeth" role="status">
+            Live spend unavailable — {runtimeReason ?? 'Claude Code credential not configured'}.
+            Activation and the readiness gate still work; reference-runs and interviews are
+            disabled until the credential is set (F-008: no fake runs).
+          </p>
+        {/if}
+
+        <ul class="role-list" aria-label="execution roles">
+          {#each execRoles as r (r.role)}
+            {@const xfb = r.roleVersion ? execFb(r.roleVersion) : undefined}
+            <li class="role-item">
+              <div class="role-head">
+                <span class="role-name">{r.name}</span>
+                <span class="role-slug mono">{r.roleSlug}</span>
+                {#if r.version != null}<span class="ver-chip mono">v{r.version}</span>{/if}
+                {#if r.defaultTier}<span class="tier-tag mono" data-tier={r.defaultTier}>{r.defaultTier}</span>{/if}
+                {#if r.certified}
+                  <span class="deploy-badge ok">CERTIFIED</span>
+                {:else}
+                  <span class="deploy-badge blocked">NOT CERTIFIED</span>
+                {/if}
+              </div>
+
+              <!-- Fixture-pool activation state (the §3.8 precondition for ③/④). -->
+              <p class="exec-line">
+                <span class="exec-label">fixtures</span>
+                <span>{r.fixturesActive} active</span>
+                {#if r.fixturesProposed > 0}<span class="warn-text">· {r.fixturesProposed} proposed</span>{/if}
+                {#if r.fixturesUnkeyed > 0}<span class="warn-text">· {r.fixturesUnkeyed} unkeyed</span>{/if}
+              </p>
+
+              <!-- Latest interview line (real data only; honest 'not yet interviewed'). -->
+              {#if r.interview}
+                <p class="interview-line" data-status={r.interview.status}>
+                  {#if r.interview.status === 'error'}
+                    <span class="iv-verdict">interview error</span>
+                    <span class="iv-reason mono">{r.interview.errorReason ?? '—'}</span>
+                  {:else}
+                    <span class="iv-verdict" data-status={r.interview.status}>{r.interview.status}</span>
+                    <span>found {r.interview.plantedFound}/{r.interview.plantedTotal} plants</span>
+                    <span>· {r.interview.falsePositives} FP</span>
+                  {/if}
+                  <span class="tier-tag mono" data-tier={r.interview.tier}>{r.interview.tier}</span>
+                  <span class="iv-model mono">({r.interview.model_id})</span>
+                  <time datetime={r.interview.at ?? ''}>{fmtDate(r.interview.at)}</time>
+                  {#if r.interview.session}
+                    <a class="iv-transcript" href={`/claude-code?session=${r.interview.session}`}>transcript →</a>
+                  {/if}
+                  {#if r.interview.stale}<span class="stale-flag">stale</span>{/if}
+                </p>
+              {:else}
+                <p class="interview-line empty">
+                  {#if r.version != null}v{r.version} · {/if}not yet interviewed
+                  {#if r.interviewRuns > 0}<span class="iv-sub">· {r.interviewRuns} run(s) in flight</span>{/if}
+                </p>
+              {/if}
+
+              <!-- Admission reference-run proofs recorded on the keys (§3.8). -->
+              {#if r.referenceProofs.length > 0}
+                <div class="proofs" role="group" aria-label="admission reference-run proofs">
+                  <span class="exec-label">admission proofs</span>
+                  <ul class="proof-list">
+                    {#each r.referenceProofs as p (p.fixtureSlug + p.interview_run)}
+                      <li class="proof-item">
+                        <span class="mono">{p.fixtureSlug}</span>
+                        <span class="tier-tag mono" data-tier={p.tier}>{p.tier}</span>
+                        <span class="iv-model mono">({p.model_id})</span>
+                        <time datetime={p.at ?? ''}>{fmtDate(p.at)}</time>
+                        {#if p.provisional}
+                          <span class="provisional-flag" title="plants proven findable by the draft itself — the recall floor's justification is only as strong as its prover (§3.8)">
+                            provisional
+                          </span>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ul>
+                </div>
+              {/if}
+
+              <!-- Activation gate (no real spend — flips fixtures live). Per-proposed fixture. -->
+              {#if r.fixturesProposed > 0 || r.fixturesUnkeyed > 0}
+                <p class="guard-note" data-kind="teeth">
+                  {#if r.fixturesUnkeyed > 0}
+                    {r.fixturesUnkeyed} fixture key(s) outstanding — finish step ② above before activating.
+                  {:else}
+                    {r.fixturesProposed} fixture(s) still proposed — activate the pool to make it
+                    interviewable (injects the §4.2 leak sentinel).
+                  {/if}
+                </p>
+              {/if}
+
+              {#if xfb?.error}
+                <p class="brief-error" role="alert">{String(xfb.error)}</p>
+              {:else if xfb?.ok && xfb?.activated}
+                <p class="brief-ok" role="status">
+                  Fixture activated{#if Number(xfb.staleMarked) > 0} · {String(xfb.staleMarked)} run(s) marked stale{/if}.
+                </p>
+              {:else if xfb?.ok && xfb?.kind === 'reference'}
+                <p class="brief-ok" role="status">
+                  Reference-run {String(xfb.status)}{#if xfb.provisional} (provisional){/if}
+                  {#if Array.isArray(xfb.recordedFor) && xfb.recordedFor.length > 0}
+                    · proof recorded for {(xfb.recordedFor as string[]).length} fixture(s){/if}
+                  {#if xfb.costUsd != null} · {fmtUsd(xfb.costUsd)}{/if}.
+                </p>
+              {:else if xfb?.ok && xfb?.kind === 'interview'}
+                <p class="brief-ok" role="status">
+                  Interview {String(xfb.status)} · found {String(xfb.plantedFound)}/{String(xfb.plantedTotal)}
+                  · {String(xfb.falsePositives)} FP{#if xfb.costUsd != null} · {fmtUsd(xfb.costUsd)}{/if}.
+                  {#if xfb.status === 'adjudicating'}Routed to the adjudication queue on /agents.{/if}
+                </p>
+              {:else if xfb?.queued}
+                <p class="brief-warn" role="status">Queued (budget gate): {String(xfb.reason)}</p>
+              {/if}
+
+              <!-- Real-spend trigger row (operator-gated, confirm + effort label). -->
+              {#if r.roleVersion}
+                {@const rv = r.roleVersion}
+                {@const tier = r.defaultTier ?? ''}
+                <div class="trigger-row">
+                  <!-- Activate proposed fixtures (no spend). One control per role; activates the
+                       first still-proposed candidate fixture; re-click to activate the next. -->
+                  {#if r.fixturesProposed > 0 && r.fixturesUnkeyed === 0}
+                    <form method="POST" action="?/activate" class="trigger-form" use:enhance={busyEnhance(`act-${rv}`)}>
+                      <!-- The server activates by fixture id; we surface a role-level control that
+                           activates each proposed candidate fixture in turn via its hidden id. -->
+                      <input type="hidden" name="fixture" value={r.firstProposedFixture ?? ''} />
+                      <label class="confirm-check inline">
+                        <input
+                          type="checkbox"
+                          checked={activateConfirm[rv] ?? false}
+                          onchange={(e) => setActivate(rv, (e.currentTarget as HTMLInputElement).checked)}
+                        />
+                        confirm activation
+                      </label>
+                      <button
+                        type="submit"
+                        class="btn ghost small"
+                        disabled={!activateConfirm[rv] || busy[`act-${rv}`] || !r.firstProposedFixture}
+                      >
+                        Activate fixture
+                      </button>
+                    </form>
+                  {/if}
+
+                  {#if r.runnable}
+                    <div class="spend-group">
+                      <label class="confirm-check inline">
+                        <input
+                          type="checkbox"
+                          checked={spendConfirm[rv] ?? false}
+                          onchange={(e) => setSpend(rv, (e.currentTarget as HTMLInputElement).checked)}
+                        />
+                        confirm spend — {effortLabel(tier)}
+                      </label>
+                      <div class="spend-buttons">
+                        <form method="POST" action="?/referenceRun" use:enhance={busyEnhance(`ref-${rv}`)}>
+                          <input type="hidden" name="roleVersion" value={rv} />
+                          <input type="hidden" name="tier" value={tier} />
+                          <input type="hidden" name="operatorConfirmed" value={spendConfirm[rv] ? 'on' : ''} />
+                          <button
+                            type="submit"
+                            class="btn ghost small"
+                            disabled={!spendConfirm[rv] || !runtimeAvailable || busy[`ref-${rv}`]}
+                            title={!runtimeAvailable ? (runtimeReason ?? 'credential not configured') : ''}
+                          >
+                            {busy[`ref-${rv}`] ? 'Running…' : 'Reference-run'}
+                          </button>
+                        </form>
+                        <form method="POST" action="?/interview" use:enhance={busyEnhance(`iv-${rv}`)}>
+                          <input type="hidden" name="roleVersion" value={rv} />
+                          <input type="hidden" name="tier" value={tier} />
+                          <input type="hidden" name="operatorConfirmed" value={spendConfirm[rv] ? 'on' : ''} />
+                          <button
+                            type="submit"
+                            class="btn primary small"
+                            disabled={!spendConfirm[rv] || !runtimeAvailable || busy[`iv-${rv}`]}
+                            title={!runtimeAvailable ? (runtimeReason ?? 'credential not configured') : ''}
+                          >
+                            {busy[`iv-${rv}`] ? 'Interviewing…' : 'Bootstrap interview'}
+                          </button>
+                        </form>
+                      </div>
+                    </div>
+                  {:else if r.notRunnableReason}
+                    <p class="empty-cell">— not runnable: {r.notRunnableReason}</p>
+                  {/if}
+                </div>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      </div>
+
+      <!-- ── Step ⑤ — PANEL-FLIP gate (operator-confirmed, never automatic) ──────────── -->
+      <div class="card" aria-labelledby="flip-title">
+        <div class="panel-head">
+          <span class="eyebrow" id="flip-title">step ⑤ · panel composition flip</span>
+        </div>
+        <p class="state-body">
+          When all five launch roles pass their bootstrap interviews, the PM panel composition
+          flips from inline-prompt validators to the certified catalog roles (§9). It NEVER
+          flips automatically — the operator confirms (D-010).
+        </p>
+
+        {#if flipFb?.error}
+          <p class="brief-error" role="alert">{String(flipFb.error)}</p>
+        {:else if flipFb?.ok}
+          <p class="brief-ok" role="status">
+            Panel-flip confirmed ({String(flipFb.certifiedCount)}/5 certified) — the composition
+            switch to catalog roles lands with the v2.1 panel work.
+          </p>
+        {/if}
+
+        {#if allCertified}
+          <form method="POST" action="?/flip" use:enhance={busyEnhance('flip')}>
+            <label class="confirm-check">
+              <input
+                type="checkbox"
+                name="operatorConfirmed"
+                checked={flipConfirm}
+                onchange={(e) => (flipConfirm = (e.currentTarget as HTMLInputElement).checked)}
+              />
+              I confirm the panel composition flip to certified catalog roles (D-010)
+            </label>
+            <button type="submit" class="btn primary" disabled={!flipConfirm || busy.flip}>
+              Confirm panel flip
+            </button>
+          </form>
+        {:else}
+          <p class="empty-cell">
+            — precondition not met: {certifiedCount}/{execRoles.length} roles certified. The flip
+            unlocks once all five pass.
+          </p>
+        {/if}
       </div>
     {/if}
   {/if}
@@ -808,7 +1107,145 @@
     font-size: var(--text-xs);
     margin: 0;
   }
-  .next-up {
-    background: var(--color-surface-overlay);
+  /* ── CER2 — execution (steps ③/④/⑤) ─────────────────────────────────────────── */
+  .tier-tag {
+    font-size: var(--text-xs);
+    padding: 0.05rem 0.4rem;
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-2);
+  }
+  .deploy-badge {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.05rem 0.45rem;
+    border-radius: var(--radius-sm);
+    border: var(--border-width) solid var(--color-border);
+  }
+  .deploy-badge.ok {
+    color: var(--color-success);
+    border-color: var(--color-success);
+  }
+  .deploy-badge.blocked {
+    color: var(--color-text-muted);
+  }
+  .exec-line,
+  .interview-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--color-text-2);
+    margin: 0;
+  }
+  .exec-label {
+    color: var(--color-text-muted);
+    text-transform: lowercase;
+  }
+  .warn-text {
+    color: var(--color-warn-on-overlay, var(--color-warn));
+  }
+  .interview-line.empty {
+    color: var(--color-text-muted);
+    font-style: italic;
+  }
+  .iv-sub {
+    color: var(--color-text-muted);
+  }
+  .iv-verdict {
+    font-weight: var(--weight-semibold);
+    text-transform: lowercase;
+  }
+  .iv-verdict[data-status='passed'] {
+    color: var(--color-success);
+  }
+  .iv-verdict[data-status='failed'] {
+    color: var(--color-error);
+  }
+  .interview-line[data-status='error'] .iv-verdict {
+    color: var(--color-warn-on-overlay, var(--color-warn));
+  }
+  .iv-reason,
+  .iv-model {
+    color: var(--color-text-muted);
+  }
+  .iv-transcript {
+    color: var(--color-accent);
+    text-decoration: none;
+  }
+  .iv-transcript:hover {
+    text-decoration: underline;
+  }
+  .iv-transcript:focus-visible {
+    outline: 2px solid var(--color-focus-ring, var(--color-accent));
+    outline-offset: 2px;
+  }
+  .stale-flag,
+  .provisional-flag {
+    font-size: var(--text-xs);
+    color: var(--color-warn-on-overlay, var(--color-warn));
+    border: var(--border-width) solid var(--color-warn, var(--color-border-strong));
+    border-radius: var(--radius-sm);
+    padding: 0 0.35rem;
+  }
+  .proofs {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-2);
+    background: var(--color-bg-inset);
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-sm);
+  }
+  .proof-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+  }
+  .proof-item {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+  }
+  .trigger-row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding-top: var(--space-2);
+    border-top: var(--border-width) solid var(--color-border);
+  }
+  .trigger-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2);
+  }
+  .spend-group {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  .spend-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2);
+  }
+  .spend-buttons form {
+    margin: 0;
+  }
+  .confirm-check.inline {
+    align-items: center;
+  }
+  .btn:disabled {
+    opacity: 0.5;
+    cursor: not-allowed;
   }
 </style>

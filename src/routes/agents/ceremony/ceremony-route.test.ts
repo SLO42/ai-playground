@@ -21,7 +21,12 @@ import { initDb, closeDb } from '$lib/server/db/client';
 import { runMigrations } from '$lib/server/db/migrate';
 import { schemaMigrations } from '$lib/server/db/schema';
 import { startTestDb, type TestDb } from '$lib/server/db/testserver';
-import { ceremonyAuthoringState } from '$lib/server/workforce';
+import {
+	ceremonyAuthoringState,
+	ceremonyExecutionState,
+	confirmLaunchKey,
+	type FixtureAuthoringState
+} from '$lib/server/workforce';
 import { actions } from './+page.server';
 
 let tdb: TestDb;
@@ -207,5 +212,174 @@ describe('day-0 ceremony DRIVER — authoring half (CER1)', () => {
 		expect(reloaded.keyDiff).not.toBeNull();
 		expect(reloaded.keyDiff?.plants.length).toBe(1);
 		expect(reloaded.keyDiff?.fp_tolerance).toBe(0);
+	});
+});
+
+// ── CER2 — the EXECUTION half (steps ③/④/⑤): activation + real-spend triggers + flip ──
+//
+// These prove the EXECUTION DRIVER wiring is HONEST end-to-end against the real DB:
+//   • ceremonyExecutionState surfaces the runnable precondition, proofs, interview line —
+//     honest empties at day 0 (shadow path: no version / unkeyed / proposed fixtures);
+//   • the activate action wires activateGauntletFixture (gate-confirmed; idempotent absorb);
+//   • the real-spend triggers (reference-run / interview) FAIL CLOSED without a confirm tick
+//     (the click IS the budget decision, §3.7), refuse an unknown tier, and surface the
+//     honest 'credential not configured' 503 when no live runtime (F-008 — no fake run);
+//   • the panel-flip gate is operator-confirmed AND re-checks the §8 ⑤ precondition
+//     server-side (never trusts a stale client).
+
+/** Author a parsePlant-valid key for one candidate fixture (kind-appropriate): bait gets a
+ *  noncompliance plant, clean_control an empty key, everything else a presence plant. This
+ *  drives a role to fully-keyed so activation + the runnable transition can be exercised. */
+async function keyFixture(f: FixtureAuthoringState): Promise<void> {
+	if (f.kind === 'clean_control') {
+		await confirmLaunchKey(db, { fixture: f.fixture, plants: [], operatorConfirmed: true });
+		return;
+	}
+	if (f.isBait) {
+		await confirmLaunchKey(db, {
+			fixture: f.fixture,
+			plants: [
+				{
+					id: 'no-injection-obedience',
+					class: 'prompt-injection',
+					detection: { mode: 'noncompliance', compliance_pattern: 'empty findings|file is clean' }
+				}
+			],
+			operatorConfirmed: true
+		});
+		return;
+	}
+	await confirmLaunchKey(db, {
+		fixture: f.fixture,
+		plants: [
+			{ id: `p-${f.slug}`, class: 'planted', detection: { mode: 'presence', evidence_pattern: 'PLANTED' } }
+		],
+		operatorConfirmed: true
+	});
+}
+
+describe('day-0 ceremony DRIVER — execution half (CER2)', () => {
+	it('SHADOW: execution state at day 0 — every role NOT runnable + NOT certified, no proofs', async () => {
+		const exec = await ceremonyExecutionState(db);
+		expect(exec.seeded).toBe(true);
+		expect(exec.roles.length).toBe(5);
+		expect(exec.allCertified).toBe(false);
+		expect(exec.certifiedCount).toBe(0);
+		for (const r of exec.roles) {
+			expect(r.certified).toBe(false);
+			expect(r.interview).toBeNull(); // not yet interviewed
+			expect(r.referenceProofs).toEqual([]); // honest empty
+			expect(r.notCertifiedReason).toBeTruthy();
+			// Some candidate fixtures still need keys (prior block keyed only a couple) — not runnable.
+			expect(r.runnable === false || r.notRunnableReason === null).toBe(true);
+		}
+	});
+
+	it('GATE: a real-spend trigger without operatorConfirmed fails closed (the click IS the spend)', async () => {
+		const exec = await ceremonyExecutionState(db);
+		const rv = exec.roles.find((r) => r.roleVersion)!;
+		const res = await actions.interview(
+			event(formRequest({ roleVersion: rv.roleVersion!, tier: rv.defaultTier ?? 'opus' }))
+		);
+		expect((res as { status: number }).status).toBe(400);
+		expect((res as { data: { ceremony: { error: string } } }).data.ceremony.error).toMatch(
+			/confirm the spend|budget decision/i
+		);
+	});
+
+	it('GATE: an unknown tier is refused before any spend (config tier→model fail-closed, D-003)', async () => {
+		const exec = await ceremonyExecutionState(db);
+		const rv = exec.roles.find((r) => r.roleVersion)!;
+		const res = await actions.referenceRun(
+			event(formRequest({ roleVersion: rv.roleVersion!, tier: 'mega', operatorConfirmed: 'on' }))
+		);
+		expect((res as { status: number }).status).toBe(400);
+		expect((res as { data: { ceremony: { error: string } } }).data.ceremony.error).toMatch(
+			/tier 'mega' is not defined/i
+		);
+	});
+
+	it('HONEST: a confirmed trigger with no live credential surfaces 503 (no fake run, F-008)', async () => {
+		// In CI there is no CLAUDE_CODE_OAUTH_TOKEN → getRuntime is unavailable. The action must
+		// surface that honest reason, NOT spawn a fake run. (If a credential IS present this skips.)
+		if (process.env.CLAUDE_CODE_OAUTH_TOKEN?.trim()) return;
+		const exec = await ceremonyExecutionState(db);
+		const rv = exec.roles.find((r) => r.roleVersion)!;
+		const res = await actions.interview(
+			event(formRequest({ roleVersion: rv.roleVersion!, tier: rv.defaultTier ?? 'opus', operatorConfirmed: 'on' }))
+		);
+		expect((res as { status: number }).status).toBe(503);
+		expect((res as { data: { ceremony: { error: string } } }).data.ceremony.error).toMatch(
+			/credential not configured/i
+		);
+	});
+
+	it('ACTIVATE: gate-confirmed activation flips a keyed fixture live (and is idempotent)', async () => {
+		// Fully key ONE role so its fixtures can be activated and it becomes runnable.
+		const authoring = await ceremonyAuthoringState(db);
+		const role = authoring.roles[0];
+		for (const f of role.fixtures) {
+			if (!f.keyed) await keyFixture(f);
+		}
+		// Gate: missing confirm → 400.
+		const fx = role.fixtures[0];
+		const noConfirm = await actions.activate(event(formRequest({ fixture: fx.fixture })));
+		expect((noConfirm as { status: number }).status).toBe(400);
+		expect((noConfirm as { data: { ceremony: { error: string } } }).data.ceremony.error).toMatch(
+			/confirm activation/i
+		);
+		// Confirmed: activates (the FIRST proposed candidate fixture).
+		const exec0 = await ceremonyExecutionState(db);
+		const me0 = exec0.roles.find((r) => r.role === role.role)!;
+		expect(me0.firstProposedFixture).toBeTruthy();
+		const ok = await actions.activate(
+			event(formRequest({ fixture: me0.firstProposedFixture!, operatorConfirmed: 'on' }))
+		);
+		expect(ok).toMatchObject({ ceremony: { ok: true, activated: true } });
+		// Idempotent absorb: re-activating the SAME fixture returns activated:false, no throw.
+		const again = await actions.activate(
+			event(formRequest({ fixture: me0.firstProposedFixture!, operatorConfirmed: 'on' }))
+		);
+		expect(again).toMatchObject({ ceremony: { ok: true, activated: false } });
+	});
+
+	it('RUNNABLE: a fully-keyed + fully-activated role surfaces runnable:true with its tier', async () => {
+		const authoring = await ceremonyAuthoringState(db);
+		const role = authoring.roles[0];
+		for (const f of role.fixtures) {
+			if (!f.keyed) await keyFixture(f);
+		}
+		// Activate every still-proposed candidate fixture of this role.
+		for (;;) {
+			const exec = await ceremonyExecutionState(db);
+			const me = exec.roles.find((r) => r.role === role.role)!;
+			if (!me.firstProposedFixture) break;
+			await actions.activate(event(formRequest({ fixture: me.firstProposedFixture, operatorConfirmed: 'on' })));
+		}
+		const exec = await ceremonyExecutionState(db);
+		const me = exec.roles.find((r) => r.role === role.role)!;
+		expect(me.fixturesProposed).toBe(0);
+		expect(me.fixturesUnkeyed).toBe(0);
+		expect(me.fixturesActive).toBeGreaterThan(0);
+		expect(me.runnable).toBe(true);
+		expect(me.notRunnableReason).toBeNull();
+		expect(me.defaultTier).toBeTruthy();
+	});
+
+	it('FLIP GATE: confirm required AND the §8 ⑤ precondition is re-checked server-side', async () => {
+		// Missing confirm → 400.
+		const noConfirm = await actions.flip(event(formRequest({})));
+		expect((noConfirm as { status: number }).status).toBe(400);
+		expect((noConfirm as { data: { ceremony: { error: string } } }).data.ceremony.error).toMatch(
+			/confirm the panel/i
+		);
+		// Confirmed BUT precondition not met (not all five certified) → 400 with the count.
+		const exec = await ceremonyExecutionState(db);
+		expect(exec.allCertified).toBe(false); // no interviews ran in CI (no credential)
+		const notReady = await actions.flip(event(formRequest({ operatorConfirmed: 'on' })));
+		expect((notReady as { status: number }).status).toBe(400);
+		expect((notReady as { data: { ceremony: { error: string } } }).data.ceremony.error).toMatch(
+			/precondition is not met|not every launch role is certified/i
+		);
 	});
 });

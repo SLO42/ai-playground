@@ -31,6 +31,7 @@ import { KNOWN_FAIL_PATH, KNOWN_PASS_PATH } from './scorer';
 import { adjudicateInterviewRun, type GauntletDeps, QUEUED_INTERVIEW_TYPE } from './gauntlet';
 import {
 	CeremonyGateError,
+	ceremonyExecutionState,
 	ceremonyReadiness,
 	confirmLaunchKey,
 	promptCoreDiffStep,
@@ -611,5 +612,80 @@ describe('ceremonyReadiness (§8 ⑤) — reports the panel-flip precondition, n
 		expect(me!.certified).toBe(false);
 		expect(me!.reason).toBeTruthy(); // honest named reason (§2.4)
 		expect(readiness.allCertified).toBe(false); // not all five passed
+	});
+});
+
+// ── ceremonyExecutionState (§8 ③/④/⑤) — the EXECUTION DRIVER read substrate ──────────
+
+describe('ceremonyExecutionState (§8 ③/④/⑤) — proofs, interview line, runnable, certified', () => {
+	it('a seeded role surfaces runnable:true once keyed+activated, then certified + proof after a passing run', async () => {
+		const seed = await seedRole(); // keys + activates a planted_defect + scorer_control
+		// The seeded role has its candidate fixtures keyed + ACTIVE — it is runnable.
+		const pre = await ceremonyExecutionState(db);
+		const mePre = pre.roles.find((r) => r.role === seed.role.id)!;
+		expect(mePre.runnable).toBe(true);
+		expect(mePre.notRunnableReason).toBeNull();
+		expect(mePre.fixturesActive).toBeGreaterThan(0);
+		expect(mePre.fixturesProposed).toBe(0);
+		expect(mePre.fixturesUnkeyed).toBe(0);
+		expect(mePre.certified).toBe(false); // not yet interviewed
+		expect(mePre.interview).toBeNull();
+		expect(mePre.referenceProofs).toEqual([]);
+
+		// Run an admission reference-run (operator-confirmed) → records a provisional proof.
+		await triggerAdmissionReferenceRun(depsFor(candidateBackend(perfectFindings(seed.defectSlug), seed)), {
+			roleVersionId: seed.version.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: 'test-model',
+			trigger: 'operator',
+			operatorConfirmed: true
+		});
+		// Run a bootstrap interview (operator-confirmed) → passes → certified.
+		await triggerBootstrapInterview(depsFor(candidateBackend(perfectFindings(seed.defectSlug), seed)), {
+			roleVersionId: seed.version.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: 'test-model',
+			trigger: 'operator',
+			operatorConfirmed: true
+		});
+
+		const post = await ceremonyExecutionState(db);
+		const mePost = post.roles.find((r) => r.role === seed.role.id)!;
+		expect(mePost.certified).toBe(true);
+		expect(mePost.interview).not.toBeNull();
+		expect(mePost.interview!.status).toBe('passed');
+		expect(mePost.interview!.model_id).toBe('test-model'); // from the row, not hardcoded
+		expect(mePost.interview!.plantedFound).toBe(mePost.interview!.plantedTotal);
+		// The admission proof is surfaced, provisional-aware (brand-new role proves itself).
+		expect(mePost.referenceProofs.length).toBeGreaterThanOrEqual(1);
+		expect(mePost.referenceProofs.some((p) => p.provisional && p.model_id === 'test-model')).toBe(true);
+	});
+
+	it('SHADOW: a role with candidate fixtures but no keys is NOT runnable, with a named reason', async () => {
+		const role = await createRole(db, { slug: `exec-unkeyed-${++seq}`, name: 'U', purpose: 'p' });
+		await createRoleVersion(db, {
+			role: role.id,
+			prompt_core: 'm',
+			default_tier: 'opus',
+			source: 'operator'
+		});
+		// A proposed, UNKEYED candidate fixture.
+		await createGauntletFixture(db, {
+			role: role.id,
+			slug: `uf-${seq}`,
+			kind: 'planted_defect',
+			work: { 'x.ts': 'bad();\n' },
+			sentinel: '',
+			provenance: 'harvest: test'
+		});
+		const exec = await ceremonyExecutionState(db);
+		const me = exec.roles.find((r) => r.role === role.id)!;
+		expect(me.runnable).toBe(false);
+		expect(me.fixturesUnkeyed).toBeGreaterThan(0);
+		expect(me.notRunnableReason).toMatch(/key\(s\) outstanding/i);
+		expect(me.certified).toBe(false);
+		expect(me.notCertifiedReason).toBe('not yet interviewed');
 	});
 });

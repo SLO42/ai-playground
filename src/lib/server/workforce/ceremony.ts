@@ -794,6 +794,286 @@ async function listCandidateFixtures(db: Db, roleId: string): Promise<GauntletFi
 	return rows.map(normFixture);
 }
 
+// ── Execution state (read-only) — the DRIVER UI's steps ③+④+⑤ substrate ───────────────
+//
+// The day-0 ceremony DRIVER (W-D7c CER2) execution half renders, per launch role: whether
+// the role is RUNNABLE (every candidate fixture active + keyed — the §3.8 precondition the
+// gauntlet sampler enforces), the admission reference-run proofs recorded on its keys
+// (§3.8, provisional-aware), the latest TERMINAL interview line (found N/T · k FP · status),
+// and its §2.4 deployability. Plus the §8 step ⑤ readiness echo (all five certified) for
+// the panel-flip gate. READ-ONLY aggregator over the existing engine (no writes, no fork,
+// G4); honest empties throughout (F-008): no runs → 'not yet interviewed', no proofs → [].
+
+/** One admission reference-run proof recorded on a fixture's key (§3.8), surfaced for the
+ *  operator. The `provisional` caveat ('plants proven findable by the draft itself') rides
+ *  along so the recall floor's justification is rendered as strong as its prover. */
+export interface ReferenceProof {
+	/** The fixture slug this proof was recorded against. */
+	fixtureSlug: string;
+	tier: string;
+	model_id: string;
+	interview_run: string;
+	at: string | null;
+	/** §3.8 — true when the draft itself proved (brand-new role, no certified incumbent). */
+	provisional: boolean;
+}
+
+/** The latest TERMINAL interview_run distilled to the execution-line fields (mirrors the
+ *  §8 interview line on the role card — model_id rendered straight from the row, never
+ *  hardcoded). null = 'not yet interviewed' (honest day-0 empty). */
+export interface CeremonyInterviewLine {
+	run: string;
+	status: 'passed' | 'failed' | 'error';
+	/** 'env_timeout' | 'spawn_failure' | 'scorer_error' when status='error'; else null. */
+	errorReason: string | null;
+	tier: string;
+	model_id: string;
+	provider: string;
+	plantedFound: number;
+	plantedTotal: number;
+	falsePositives: number;
+	/** §3.7 honest flag — the certifying run predates a fixture-pool change. */
+	stale: boolean;
+	/** The candidate session (kind='interview') for the transcript link; null if none. */
+	session: string | null;
+	at: string | null;
+}
+
+export interface RoleExecutionState {
+	role: string;
+	roleSlug: string;
+	name: string;
+	/** The launch role_version row id, or null when the role has no non-withdrawn version. */
+	roleVersion: string | null;
+	version: number | null;
+	lifecycle: RoleVersionRow['lifecycle'] | null;
+	/** The role's default tier (the §3.8 admission runs execute at this) — drives the UI's
+	 *  effort/cost label and the tier→model resolve the route does. null when no version. */
+	defaultTier: Tier | null;
+	/** Candidate fixtures still PROPOSED (not yet activated) — the §3.8 sampler refuses to
+	 *  interview until they are active. The UI surfaces 'activate N fixture(s)' before ③/④. */
+	fixturesProposed: number;
+	/** The id of the FIRST still-proposed candidate fixture (slug order) — the activation
+	 *  control acts on it; the operator re-clicks to activate each in turn. null when none. */
+	firstProposedFixture: string | null;
+	/** Candidate fixtures ACTIVE (sentinel-injected, keyed) — the runnable substrate. */
+	fixturesActive: number;
+	/** Candidate fixtures still missing an operator key (§8 ② not done) — interviewing is
+	 *  blocked until every candidate fixture is keyed (the sampler's plant floor). */
+	fixturesUnkeyed: number;
+	/** RUNNABLE iff ≥1 active candidate fixture AND zero unkeyed/proposed candidate fixtures
+	 *  — the honest precondition for steps ③/④ (the sampler refuses otherwise). */
+	runnable: boolean;
+	/** Honest reason when not runnable (named: 'no version' | 'N fixture(s) not activated' |
+	 *  'N key(s) outstanding'); null when runnable. */
+	notRunnableReason: string | null;
+	/** Admission reference-run proofs recorded on this role's keys (§3.8); [] = none yet. */
+	referenceProofs: ReferenceProof[];
+	/** The latest TERMINAL interview line; null = 'not yet interviewed'. */
+	interview: CeremonyInterviewLine | null;
+	/** Total interview_run rows for the launch version (any status) — sample-size context. */
+	interviewRuns: number;
+	/** §2.4 existential deployability over REAL runs (a passing run at this prompt_sha). */
+	certified: boolean;
+	/** Named honest reason when not certified; null when certified. */
+	notCertifiedReason: string | null;
+}
+
+export interface CeremonyExecutionState {
+	/** True once seedLaunchPool has run (≥1 launch role exists) — the day-0 entry gate. */
+	seeded: boolean;
+	roles: RoleExecutionState[];
+	/** §8 step ⑤ precondition: every launch role is certified (all five passed). The panel
+	 *  composition flip is operator-confirmed (D-010), NEVER automatic — this only REPORTS. */
+	allCertified: boolean;
+	/** Convenience for the step-③/④ progress figure: roles with a certified version. */
+	certifiedCount: number;
+}
+
+/**
+ * Read the execution half of the day-0 ceremony (steps ③+④+⑤) for the DRIVER UI. READ-ONLY:
+ * no writes, no gauntlet_key WRITE — only readGauntletKeyForScoring (the sanctioned read
+ * path, §4.4) to surface each fixture's key + reference-run proofs, and a bounded
+ * interview_run SELECT for the line. Honest day-0 empties (F-008): before seeding,
+ * `seeded:false` + no roles; a role with no runs surfaces interview:null ('not yet
+ * interviewed'); a key with no proofs surfaces [].
+ */
+export async function ceremonyExecutionState(db: Db): Promise<CeremonyExecutionState> {
+	const roles = await listRoles(db);
+	const out: RoleExecutionState[] = [];
+	for (const role of roles) {
+		const versions = await listRoleVersions(db, role.id);
+		const launch = pickLaunchVersion(versions);
+		const fixtures = await listCandidateFixtures(db, role.id);
+
+		let fixturesProposed = 0;
+		let fixturesActive = 0;
+		let fixturesUnkeyed = 0;
+		let firstProposedFixture: string | null = null;
+		const referenceProofs: ReferenceProof[] = [];
+		for (const f of fixtures) {
+			if (f.status === 'active') fixturesActive += 1;
+			else if (f.status === 'proposed') {
+				fixturesProposed += 1;
+				if (firstProposedFixture === null) firstProposedFixture = f.id; // slug order (listCandidateFixtures)
+			}
+			const key = await readGauntletKeyForScoring(db, f.id);
+			if (!key) {
+				fixturesUnkeyed += 1;
+			} else {
+				for (const proof of key.reference_runs) referenceProofs.push(refProof(f.slug, proof));
+			}
+		}
+
+		const runnable =
+			launch !== null && fixturesActive > 0 && fixturesUnkeyed === 0 && fixturesProposed === 0;
+		const notRunnableReason = runnable
+			? null
+			: !launch
+				? 'no version'
+				: fixturesUnkeyed > 0
+					? `${fixturesUnkeyed} key(s) outstanding — author every fixture key first (§8 ②)`
+					: fixturesProposed > 0
+						? `${fixturesProposed} fixture(s) not activated — activate the pool before interviewing (§3.8)`
+						: 'no active candidate fixtures';
+
+		let interview: CeremonyInterviewLine | null = null;
+		let interviewRuns = 0;
+		let certified = false;
+		let notCertifiedReason: string | null = launch ? 'not yet interviewed' : 'no version';
+		if (launch) {
+			const runs = await launchRuns(db, launch.id);
+			interviewRuns = runs.length;
+			interview = latestTerminalLine(runs);
+			const verdict = certifiedFromRuns(launch, runs);
+			certified = verdict.certified;
+			notCertifiedReason = verdict.reason;
+		}
+
+		out.push({
+			role: role.id,
+			roleSlug: role.slug,
+			name: role.name,
+			roleVersion: launch?.id ?? null,
+			version: launch?.version ?? null,
+			lifecycle: launch?.lifecycle ?? null,
+			defaultTier: launch?.default_tier ?? null,
+			fixturesProposed,
+			firstProposedFixture,
+			fixturesActive,
+			fixturesUnkeyed,
+			runnable,
+			notRunnableReason,
+			referenceProofs,
+			interview,
+			interviewRuns,
+			certified,
+			notCertifiedReason
+		});
+	}
+	const certifiedCount = out.filter((r) => r.certified).length;
+	return {
+		seeded: roles.length > 0,
+		roles: out,
+		allCertified: out.length > 0 && out.every((r) => r.certified),
+		certifiedCount
+	};
+}
+
+/** Distill one stored reference_runs entry into the operator-facing proof shape. Every
+ *  field defends against a malformed stored entry (shadow path: nil/partial proof). */
+function refProof(fixtureSlug: string, raw: Record<string, unknown>): ReferenceProof {
+	const at = raw.at;
+	return {
+		fixtureSlug,
+		tier: typeof raw.tier === 'string' ? raw.tier : '—',
+		model_id: typeof raw.model_id === 'string' ? raw.model_id : '—',
+		interview_run: raw.interview_run != null ? str(raw.interview_run) : '—',
+		at: typeof at === 'string' && at.trim() ? at : null,
+		provisional: raw.provisional === true
+	};
+}
+
+/** Bounded read of the launch version's interview_run rows (newest-first) — the execution
+ *  line + deployability source. Mirrors panel.ts (no fork of the row shape; only the fields
+ *  the line needs). */
+async function launchRuns(db: Db, versionId: string): Promise<RawCeremonyRun[]> {
+	const [rows] = await db.query<[RawCeremonyRun[]]>(
+		`SELECT id, status, error_reason, tier, model_id, provider, prompt_sha,
+		        planted_found, planted_total, false_positives, stale, session, started_at
+		   FROM interview_run WHERE role_version = $vid
+		  ORDER BY started_at DESC LIMIT 500;`,
+		{ vid: link(versionId) }
+	);
+	return rows ?? [];
+}
+
+interface RawCeremonyRun {
+	id: unknown;
+	status: string;
+	error_reason?: string | null;
+	tier: string;
+	model_id: string;
+	provider: string;
+	prompt_sha: string;
+	planted_found: number;
+	planted_total: number;
+	false_positives: number;
+	stale: boolean;
+	session?: unknown;
+	started_at: unknown;
+}
+
+const TERMINAL_RUN = new Set(['passed', 'failed', 'error']);
+
+function isoOrNull(v: unknown): string | null {
+	if (v === null || v === undefined) return null;
+	const s = v instanceof Date ? v.toISOString() : String(v);
+	return s === '' || s === 'undefined' || s === 'null' ? null : s;
+}
+
+/** Latest TERMINAL run → the execution interview line; null = 'not yet interviewed'. */
+function latestTerminalLine(runs: RawCeremonyRun[]): CeremonyInterviewLine | null {
+	const term = runs.find((r) => TERMINAL_RUN.has(r.status));
+	if (!term) return null;
+	return {
+		run: str(term.id),
+		status: term.status as CeremonyInterviewLine['status'],
+		errorReason: term.error_reason ?? null,
+		tier: term.tier,
+		model_id: term.model_id,
+		provider: term.provider,
+		plantedFound: term.planted_found,
+		plantedTotal: term.planted_total,
+		falsePositives: term.false_positives,
+		stale: term.stale,
+		session: term.session != null ? str(term.session) : null,
+		at: isoOrNull(term.started_at)
+	};
+}
+
+/** §2.4 existential deployability over REAL rows (a passing run at the version's current
+ *  prompt_sha). The honest day-0 surface: no passing run → not certified, named reason. */
+function certifiedFromRuns(
+	version: RoleVersionRow,
+	runs: RawCeremonyRun[]
+): { certified: boolean; reason: string | null } {
+	if (version.lifecycle === 'failed' || version.lifecycle === 'withdrawn') {
+		return { certified: false, reason: `lifecycle '${version.lifecycle}' — a fix is a new version (§2.2)` };
+	}
+	const passing = runs.filter((r) => r.status === 'passed' && r.prompt_sha === version.prompt_sha);
+	if (passing.length === 0) {
+		if (runs.some((r) => r.status === 'passed')) {
+			return {
+				certified: false,
+				reason: 'prompt core changed since the last passing interview — re-interview required (§2.4)'
+			};
+		}
+		return { certified: false, reason: 'not yet interviewed' };
+	}
+	return { certified: true, reason: null };
+}
+
 // ── shared normalizer ───────────────────────────────────────────────────────────────
 
 function normFixture(row: Record<string, unknown>): GauntletFixtureRow {

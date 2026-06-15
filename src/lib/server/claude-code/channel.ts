@@ -459,6 +459,8 @@ export function createChannel(deps: ChannelDeps): Channel {
 				for await (const ev of runtime.resume(session.cc_session_id, {
 					agentId: req.agentId,
 					projectId: session.project,
+					// G-B (D-035a): a resumed session can also peer-send — pin its id into the spawn env.
+					sessionId: req.sessionId,
 					cwd: root,
 					model: req.model,
 					intent: req.intent,

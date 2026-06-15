@@ -379,6 +379,9 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	const req = {
 		agentId: input.agentId,
 		projectId: input.projectId,
+		// G-B (D-035a): pin this session's record id into the isolated spawn env (ATELIER_SESSION_ID)
+		// so a granted peer-send tool can stamp the SENDER server-side — never from the agent body.
+		sessionId,
 		cwd, // EXPLICIT project root (D-002 / 1.4a)
 		model: input.model,
 		intent: input.intent,

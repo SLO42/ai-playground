@@ -149,6 +149,101 @@ export function buildMemoryPullMcpServer(
 	};
 }
 
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// G-B — PEER_SEND fleet-bus tool (PEER-MESSAGE-SPEC; D-035a/D-026/D-036). MIRRORS the B10
+// memory-pull surface above exactly: a reserved capability id, a `*Granted()` scan, and a
+// `build*McpServer` registration builder. The two surfaces are independent (a session may be
+// granted one, both, or neither); the runtime merges whichever blocks are granted.
+//
+// THE NON-NEGOTIABLE INVARIANT (D-035a). Registering this tool grants NO steering: a sent
+// peer message is origin=agent → FENCED as DATA, NON-STEERING, with the sender stamped
+// SERVER-SIDE at the ingress (NEVER from the tool-call body). This module owns ONLY the
+// registration + capability-gating; every guard (screen→fence, the PM1 recipient policy, the
+// cross-project isolation, the per-session/recipient/hops bounds) lives behind the loopback
+// /api/peer/send endpoint the registration points at. A registration entry carries a command
+// to run, not message content — it cannot, by construction, move a guard.
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+/** The canonical MCP server NAME the peer-send tool registers under. A granted session sees the
+ *  tool as `mcp__atelier-peer__peer_send`. Atelier-namespaced, distinct from the operator's
+ *  servers (D-002 isolation). */
+export const PEER_SEND_MCP_NAME = 'atelier-peer';
+
+/** The PRIMARY reserved capability id the peer-send tool is gated on. */
+export const PEER_SEND_CAPABILITY_ID = 'peer-send';
+
+/**
+ * The reserved capability-id alias set for the peer-send surface. A grant marker is ANY of these
+ * appearing in any dimension of the (composed, catalog-validated) bundle. Mirrors
+ * MEMORY_PULL_CAPABILITY_IDS so "granted here" is decided against ONE id set, never a drifting
+ * copy. (The fleet bus has no sterile-interview rail of its own — an interview session simply
+ * never declares a peer-send id; if that ever changes, mirror the §3.2 refusal.)
+ */
+export const PEER_SEND_CAPABILITY_IDS: ReadonlySet<string> = new Set([
+	'peer-send',
+	'peer_send',
+	'peer-message',
+	'peer_message',
+	'fleet-message'
+]);
+
+/** The stdio MCP server script the peer-send registration points at (plain ESM, like memory-pull). */
+export const PEER_SEND_MCP_SCRIPT = 'peer-send-mcp.mjs';
+
+/**
+ * Is the peer-send tool GRANTED by a (composed, catalog-validated) capability set? The grant
+ * marker is a reserved `peer-send` alias in ANY dimension (skills/agents/mcp). FAIL CLOSED: an
+ * absent/empty/malformed set grants nothing (default deny — the tool is reachable ONLY when
+ * explicitly composed in). Shadow paths mirror memoryPullGranted exactly: nil set → false; a
+ * non-array dimension contributes nothing (never throws); a non-string entry is ignored.
+ */
+export function peerSendGranted(capabilities: CapabilitySet | undefined): boolean {
+	if (!capabilities || typeof capabilities !== 'object') return false;
+	const dims = [capabilities.skills, capabilities.agents, capabilities.mcp];
+	for (const dim of dims) {
+		if (!Array.isArray(dim)) continue;
+		for (const id of dim) {
+			if (typeof id === 'string' && PEER_SEND_CAPABILITY_IDS.has(id)) return true;
+		}
+	}
+	return false;
+}
+
+/** Options for {@link buildPeerSendMcpServer} — identical shape to the memory-pull builder. */
+export interface BuildPeerSendServerOptions {
+	/** Boot-minted loopback control-plane coordinates (D-025). HONEST-OFF: absent ⇒ no registration. */
+	env: { HOOK_URL?: string; HOOK_TOKEN?: string };
+	/** Server root the MCP script resolves under (`<root>/scripts/<script>`). Injected for tests. */
+	serverRoot: string;
+	/** Override the node binary that runs the MCP server (default: the current process's node). */
+	nodeBin?: string;
+}
+
+/**
+ * Build the isolated-config `mcpServers` block that REGISTERS the peer-send tool for a session, or
+ * undefined when the control plane is not wired (honest OFF — never a dead half-block; F-008).
+ * Mirrors buildMemoryPullMcpServer byte-for-byte in posture: a quoted `node <script>` command (a
+ * space in the install dir is safe — Windows/MINGW lesson), and the D-025 token is NEVER in the
+ * command string (the MCP server reads HOOK_URL/HOOK_TOKEN from the inherited spawn ENV).
+ *
+ * GATE-AGNOSTIC by design: it does NOT check the grant — the caller (wiring.mcpToolWiring) gates
+ * on {@link peerSendGranted} FIRST and only calls this when granted.
+ */
+export function buildPeerSendMcpServer(opts: BuildPeerSendServerOptions): McpServers | undefined {
+	const baseUrl = opts.env.HOOK_URL?.trim();
+	const token = opts.env.HOOK_TOKEN?.trim();
+	if (!baseUrl || !token) return undefined; // honest OFF — no coordinates ⇒ register nothing
+	const node = opts.nodeBin?.trim() || process.execPath;
+	const script = join(opts.serverRoot, 'scripts', PEER_SEND_MCP_SCRIPT);
+	return {
+		[PEER_SEND_MCP_NAME]: {
+			type: 'stdio',
+			command: node,
+			args: [script]
+		}
+	};
+}
+
 // ── BACKING TRANSPORT (DELIVERED — was deferred D-B10-1/2, landed in the B10-transport wave) ──
 //
 // This module makes the tool REGISTERABLE + GATED. The two runtime pieces it pointed at — the

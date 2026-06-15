@@ -36,7 +36,12 @@ import { ClaudeCliBackend } from '../claude-code/cli-backend';
 import { catalogIds } from '../cc-config/index';
 import { DEFAULT_GATE_POLICY } from '../claude-code/gates';
 import { buildDrivenHookSettings } from './hooks-wiring';
-import { buildMemoryPullMcpServer, memoryPullGranted } from '../agent/tool-catalog';
+import {
+	buildMemoryPullMcpServer,
+	memoryPullGranted,
+	buildPeerSendMcpServer,
+	peerSendGranted
+} from '../agent/tool-catalog';
 import { loadOrchestration, resolveAdaptiveConfig, type IntentClass } from '../config/index';
 import type { Db } from '../db/client';
 
@@ -141,9 +146,22 @@ export async function getRuntime(db?: Db): Promise<RuntimeAvailability> {
 	// The token is NEVER baked into the command — the MCP server reads it from the inherited
 	// spawn env, like the hook proxy (hooks-wiring). serverRoot resolves scripts/ under cwd.
 	const serverRoot = process.cwd();
+	// Both capability-gated agent tools register through this ONE seam. They are independent:
+	// a session may be granted memory-pull, peer-send, both, or neither. FAIL CLOSED per tool
+	// (a non-granted tool is never registered); the two granted blocks MERGE (distinct server
+	// names — 'atelier-memory' vs 'atelier-peer' — so the merge never clobbers). undefined when
+	// nothing is granted (the runtime then registers no mcpServers block for this spawn).
 	const mcpToolWiring = (capabilities: CapabilitySet): Record<string, unknown> | undefined => {
-		if (!memoryPullGranted(capabilities)) return undefined;
-		return buildMemoryPullMcpServer({ env: process.env, serverRoot });
+		let merged: Record<string, unknown> | undefined;
+		if (memoryPullGranted(capabilities)) {
+			const m = buildMemoryPullMcpServer({ env: process.env, serverRoot });
+			if (m) merged = { ...(merged ?? {}), ...m };
+		}
+		if (peerSendGranted(capabilities)) {
+			const p = buildPeerSendMcpServer({ env: process.env, serverRoot });
+			if (p) merged = { ...(merged ?? {}), ...p };
+		}
+		return merged;
 	};
 	cachedRuntime = new ClaudeCodeRuntime({
 		backend,

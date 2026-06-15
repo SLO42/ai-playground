@@ -4,7 +4,12 @@ import {
 	buildMemoryPullMcpServer,
 	MEMORY_PULL_MCP_NAME,
 	MEMORY_PULL_MCP_SCRIPT,
-	MEMORY_PULL_CAPABILITY_ID
+	MEMORY_PULL_CAPABILITY_ID,
+	peerSendGranted,
+	buildPeerSendMcpServer,
+	PEER_SEND_MCP_NAME,
+	PEER_SEND_MCP_SCRIPT,
+	PEER_SEND_CAPABILITY_ID
 } from './tool-catalog';
 import {
 	isolatedConfigFor,
@@ -206,5 +211,114 @@ describe('isolatedConfigFor — capability-gated memory-pull registration (B10)'
 		expect(composed.capabilities.skills).toEqual([MEMORY_PULL_CAPABILITY_ID]);
 		// memoryPullGranted reads the composed set the same way the seam does.
 		expect(memoryPullGranted(composed.capabilities)).toBe(true);
+	});
+});
+
+// ════════════════════════════════════════════════════════════════════════════════════════════
+// G-B — the peer-send tool gating + registration seam (mirrors the memory-pull seam above).
+// ════════════════════════════════════════════════════════════════════════════════════════════
+
+describe('peerSendGranted — the reserved peer-send capability gate (FAIL CLOSED)', () => {
+	it('grants on any reserved alias in any dimension', () => {
+		expect(peerSendGranted({ skills: ['peer-send'], agents: [], mcp: [] })).toBe(true);
+		expect(peerSendGranted({ skills: [], agents: ['peer_send'], mcp: [] })).toBe(true);
+		expect(peerSendGranted({ skills: [], agents: [], mcp: ['peer-message'] })).toBe(true);
+		expect(peerSendGranted({ skills: [], agents: [], mcp: ['fleet-message'] })).toBe(true);
+	});
+	it('denies an ordinary bundle (default deny)', () => {
+		expect(peerSendGranted({ skills: ['design'], agents: ['coder'], mcp: ['context7'] })).toBe(false);
+		// the memory-pull grant does NOT grant peer-send (independent surfaces)
+		expect(peerSendGranted({ skills: ['memory-pull'], agents: [], mcp: [] })).toBe(false);
+	});
+	it('FAIL CLOSED on nil/empty/malformed sets', () => {
+		expect(peerSendGranted(undefined)).toBe(false);
+		expect(peerSendGranted({ skills: [], agents: [], mcp: [] })).toBe(false);
+		// a non-array dimension contributes nothing, never throws
+		expect(peerSendGranted({ skills: 'peer-send' as unknown as string[], agents: [], mcp: [] })).toBe(false);
+	});
+});
+
+describe('buildPeerSendMcpServer — registration (honest OFF, token rides env)', () => {
+	it('registers the atelier-peer stdio server when the control plane is wired', () => {
+		const servers = buildPeerSendMcpServer({ env: WIRED_ENV, serverRoot: SERVER_ROOT });
+		expect(servers).toBeDefined();
+		const entry = servers![PEER_SEND_MCP_NAME];
+		expect(entry.type).toBe('stdio');
+		expect(entry.args[0]).toContain(PEER_SEND_MCP_SCRIPT);
+		// D-025: the token is NEVER in the command/args — it rides the inherited spawn env.
+		expect(JSON.stringify(entry)).not.toContain('boot-token-xyz');
+	});
+	it('honest OFF: no HOOK_URL/HOOK_TOKEN ⇒ undefined (no dead half-wire, F-008)', () => {
+		expect(buildPeerSendMcpServer({ env: {}, serverRoot: SERVER_ROOT })).toBeUndefined();
+		expect(buildPeerSendMcpServer({ env: { HOOK_URL: 'http://127.0.0.1:5099' }, serverRoot: SERVER_ROOT })).toBeUndefined();
+	});
+	it('uses a DISTINCT server name from memory-pull (the merge never clobbers)', () => {
+		expect(PEER_SEND_MCP_NAME).not.toBe(MEMORY_PULL_MCP_NAME);
+	});
+});
+
+describe('isolatedConfigFor — peer-send registers ONLY when granted (default deny)', () => {
+	const catalog: CapabilityCatalog = {
+		skills: new Set([PEER_SEND_CAPABILITY_ID, 'design']),
+		agents: new Set(['coder']),
+		mcp: new Set(['context7'])
+	};
+	const base = { harnessConfigRoot: 'F:/code/ai-playground-v2/.harness/cfg', serverRoot: SERVER_ROOT };
+	function reqWith(caps: CapabilitySet | undefined): SpawnRequest {
+		return {
+			agentId: 'opus-peer',
+			projectId: 'project:demo',
+			cwd: '/tmp',
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+			intent: 'code-write',
+			task: { id: 'session:demo', title: 't', description: 'd' },
+			budgets: { thinking: 'high', toolCalls: 5, concurrency: 1 },
+			toolPolicy: { allow: ['Read'] },
+			...(caps ? { capabilities: caps } : {})
+		};
+	}
+	const wiring = (caps: CapabilitySet) =>
+		peerSendGranted(caps) ? buildPeerSendMcpServer({ env: WIRED_ENV, serverRoot: SERVER_ROOT }) : undefined;
+
+	it('a NON-granted session registers NO peer-send server', () => {
+		const iso = isolatedConfigFor(reqWith({ skills: ['design'], agents: ['coder'], mcp: ['context7'] }), {
+			harnessConfigRoot: base.harnessConfigRoot,
+			catalog,
+			mcpToolWiring: wiring
+		});
+		const servers = iso.settings.mcpServers as Record<string, unknown> | undefined;
+		expect(servers?.[PEER_SEND_MCP_NAME]).toBeUndefined();
+	});
+	it('a GRANTED session registers the peer-send server', () => {
+		const iso = isolatedConfigFor(reqWith({ skills: [PEER_SEND_CAPABILITY_ID], agents: [], mcp: [] }), {
+			harnessConfigRoot: base.harnessConfigRoot,
+			catalog,
+			mcpToolWiring: wiring
+		});
+		const servers = iso.settings.mcpServers as Record<string, unknown> | undefined;
+		expect(servers?.[PEER_SEND_MCP_NAME]).toBeDefined();
+	});
+});
+
+describe('isolatedConfigFor — ATELIER_SESSION_ID pins into the spawn env (D-035a)', () => {
+	function baseReq(): SpawnRequest {
+		return {
+			agentId: 'opus-x',
+			projectId: 'project:demo',
+			cwd: '/tmp',
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+			intent: 'code-write',
+			task: { id: 'session:demo', title: 't', description: 'd' },
+			budgets: { thinking: 'high', toolCalls: 5, concurrency: 1 },
+			toolPolicy: { allow: ['Read'] }
+		};
+	}
+	it('pins the session id into the isolated env when supplied', () => {
+		const iso = isolatedConfigFor({ ...baseReq(), sessionId: 'session:abc' }, { harnessConfigRoot: 'F:/x' });
+		expect(iso.env.ATELIER_SESSION_ID).toBe('session:abc');
+	});
+	it('omits it for a legacy spawn (no sessionId) — byte-identical env', () => {
+		const iso = isolatedConfigFor(baseReq(), { harnessConfigRoot: 'F:/x' });
+		expect('ATELIER_SESSION_ID' in iso.env).toBe(false);
 	});
 });

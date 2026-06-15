@@ -130,6 +130,15 @@ export interface SpawnRequest {
 	 * proof. Absent ⇒ unchanged legacy composition.
 	 */
 	sessionKind?: 'interview';
+	/**
+	 * G-B (PEER-MESSAGE-SPEC / D-035a) — the persisted `session` record id this spawn IS. When
+	 * present, the runtime pins it into the isolated spawn env as ATELIER_SESSION_ID so the
+	 * capability-gated peer-send MCP server (scripts/peer-send-mcp.mjs) can stamp the SENDER
+	 * SERVER-SIDE (the agent cannot set its own env — same trust basis as CLAUDE_CONFIG_DIR). A
+	 * spawn WITHOUT it simply cannot peer-send (the endpoint 400s a sender-less request) — honest,
+	 * never fabricated. Absent ⇒ no ATELIER_SESSION_ID (legacy spawns unchanged).
+	 */
+	sessionId?: string;
 }
 
 /** Final result of an agent run. */
@@ -273,6 +282,11 @@ export function isolatedConfigFor(
 	// Strip the operator's inherited CLAUDE_CONFIG_DIR; pin ours. The whole point of
 	// the isolation is that the driven agent never sees the operator's global config.
 	const env: Record<string, string> = { CLAUDE_CONFIG_DIR: configDir };
+
+	// G-B (D-035a) — pin THIS session's record id into the isolated env so the granted peer-send
+	// MCP server can stamp the SENDER server-side (the agent cannot forge its own env). Only when
+	// the caller supplied it; a legacy spawn keeps a byte-identical env.
+	if (req.sessionId) env.ATELIER_SESSION_ID = req.sessionId;
 
 	// D-036: when a catalog is supplied, compose harness-base ⊕ the request's capability
 	// set (catalog-validated, fail closed). composeCapabilities forces plugins/marketplaces

@@ -602,6 +602,9 @@
                       <!-- The server activates by fixture id; we surface a role-level control that
                            activates each proposed candidate fixture in turn via its hidden id. -->
                       <input type="hidden" name="fixture" value={r.firstProposedFixture ?? ''} />
+                      <!-- The confirm checkbox drives client state only; this hidden input is what
+                           actually posts the gate to the action (mirrors the spend-confirm forms). -->
+                      <input type="hidden" name="operatorConfirmed" value={activateConfirm[rv] ? 'on' : ''} />
                       <label class="confirm-check inline">
                         <input
                           type="checkbox"

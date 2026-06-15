@@ -16,6 +16,8 @@
   import { stream } from '$lib/client/stream.svelte';
   import { confirm } from '$lib/client/confirm.svelte';
   import { lineDiff } from '$lib/client/confirm-core';
+  import SessionTranscript from '$lib/components/shell/SessionTranscript.svelte';
+  import { rowToTurn, liveEventToTurn, type Turn } from '$lib/client/transcript-core';
   import type { PageData, ActionData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -369,75 +371,37 @@
   // ── Live transcript (PRODUCT §4.8): stream the selected session's transcript over the one
   // SSE bus (`transcript`/`token_usage`/`session_status` events, §2.11). We seed from the
   // persisted historical transcript (data.transcript) and append each streamed event live.
-  type LiveLine = { role: string; content: string; toolCall?: Record<string, unknown> };
-  let liveLines = $state<LiveLine[]>([]);
-
-  // ── Wake-up briefing (TASK 8.3) — the recalled, fenced context the agent woke up with.
-  // A briefing transcript line carries `toolCall.kind === 'briefing'` and `content` = the
-  // raw fenced text (§10 sentinels). We PARSE it into its distinct items so the operator can
-  // SEE the past context as an unmistakable "woke up with" block — not a generic log line.
-  const FENCE_OPEN = '⎆BEGIN_REFERENCE⎆';
-  const FENCE_CLOSE = '⎆END_REFERENCE⎆';
-  type BriefingRecallItem = { source: string; citation: string | null; body: string };
-
-  function isBriefing(line: LiveLine): boolean {
-    return line.toolCall?.kind === 'briefing';
-  }
-
-  /** Split a fenced briefing string into its recalled items (source · citation · body). */
-  function parseBriefing(text: string): BriefingRecallItem[] {
-    const items: BriefingRecallItem[] = [];
-    const blocks = text.split(FENCE_OPEN).slice(1);
-    for (const raw of blocks) {
-      const block = raw.split(FENCE_CLOSE)[0] ?? '';
-      // First line: `[source] [#N] <note>`; body follows the `---` separator.
-      const sepIdx = block.indexOf('\n---\n');
-      const head = (sepIdx >= 0 ? block.slice(0, sepIdx) : block).trim();
-      const body = (sepIdx >= 0 ? block.slice(sepIdx + 5) : '').trim();
-      const sourceMatch = head.match(/^\[([^\]]+)\]/);
-      const citationMatch = head.match(/\[#([^\]]+)\]/);
-      items.push({
-        source: sourceMatch?.[1] ?? 'memory',
-        citation: citationMatch?.[1] ?? null,
-        body: body || head
-      });
-    }
-    return items;
-  }
+  // Both the seed and each live event are normalized to the SHARED `Turn` shape (transcript-
+  // core) so this view is KIND-AWARE — thinking/tool turns render distinctly, identical to
+  // the /claude-code replay (the <SessionTranscript> component renders the framing). The old
+  // by-role model dropped the `thinking` event entirely and showed thinking as assistant prose.
+  let liveTurns = $state<Turn[]>([]);
   let liveTokens = $state<{ tokensIn: number; tokensOut: number } | null>(null);
   let liveStatus = $state<string | null>(null);
 
   $effect(() => {
     // Reset the live buffer to the historical transcript whenever the selection changes.
     const sid = selectedSession;
-    liveLines = (data.transcript ?? []).map((m) => ({
-      role: m.role,
-      content: m.content,
-      ...(m.toolCall ? { toolCall: m.toolCall } : {})
-    }));
+    liveTurns = (data.transcript ?? []).map((m, i) => rowToTurn(m, i));
     liveTokens = null;
     liveStatus = null;
     if (!sid) return;
+
+    // Monotonic key for live-appended turns (stable {#each} keys, never colliding with the
+    // historical rows' own ids). Starts past the seeded rows.
+    let liveSeq = liveTurns.length;
 
     const offT = stream.subscribeTopic<{ kind: string; event: unknown }>(
       'transcript',
       sid,
       (d) => {
         const ev = d.event as Record<string, unknown> | undefined;
-        if (!ev) return;
-        const t = ev.type as string;
-        // TASK 8.3 — the wake-up briefing (recalled fenced memory) leads the transcript so the
-        // operator sees the past context the agent woke up with.
-        if (t === 'briefing')
-          liveLines = [{ role: 'system', content: String(ev.text ?? ''), toolCall: { kind: 'briefing' } }, ...liveLines];
-        else if (t === 'log') liveLines = [...liveLines, { role: 'assistant', content: String(ev.message ?? '') }];
-        else if (t === 'tool_call')
-          liveLines = [
-            ...liveLines,
-            { role: 'tool', content: `→ ${String(ev.name ?? 'tool')}`, toolCall: ev }
-          ];
-        else if (t === 'tool_result')
-          liveLines = [...liveLines, { role: 'tool', content: String(ev.output ?? ''), toolCall: ev }];
+        const turn = liveEventToTurn(ev, liveSeq);
+        if (!turn) return; // lifecycle (token_usage/done/error) or shapeless event — not a turn
+        liveSeq += 1;
+        // TASK 8.3 — the wake-up briefing (recalled fenced memory) LEADS the transcript so the
+        // operator sees the past context the agent woke up with; every other turn appends.
+        liveTurns = turn.kind === 'briefing' ? [turn, ...liveTurns] : [...liveTurns, turn];
       }
     );
     const offU = stream.subscribeTopic<{ tokensIn: number; tokensOut: number }>(
@@ -1957,38 +1921,13 @@
             </div>
 
             <div class="transcript" role="log" aria-live="polite" aria-label="session transcript">
-              {#if liveLines.length === 0}
+              {#if liveTurns.length === 0}
                 <p class="state-body">No transcript yet — output appears here as the session runs.</p>
               {:else}
-                {#each liveLines as line, i (i)}
-                  {#if isBriefing(line)}
-                    {@const items = parseBriefing(line.content)}
-                    <div class="briefing" role="note" aria-label="wake-up briefing — recalled context">
-                      <div class="briefing-lead">
-                        <span class="briefing-icon" aria-hidden="true">◆</span>
-                        <span class="briefing-title">woke up with</span>
-                        <span class="briefing-count mono"
-                          >{items.length} recalled {items.length === 1 ? 'item' : 'items'}</span
-                        >
-                      </div>
-                      <ul class="briefing-items">
-                        {#each items as it, j (j)}
-                          <li class="briefing-item">
-                            <span class="briefing-tag mono"
-                              >{it.source}{#if it.citation}&nbsp;[#{it.citation}]{/if}</span
-                            >
-                            <span class="briefing-body mono">{it.body}</span>
-                          </li>
-                        {/each}
-                      </ul>
-                    </div>
-                  {:else}
-                    <div class="line" data-role={line.role}>
-                      <span class="line-role mono">{line.role}</span>
-                      <span class="line-content mono">{line.content}</span>
-                    </div>
-                  {/if}
-                {/each}
+                <!-- KIND-AWARE render via the shared component: thinking → collapsible turn,
+                     tool_use/tool_result → tool turns, briefing → "woke up with" block, the
+                     rest → prose. Identical framing to the /claude-code replay (no divergence). -->
+                <SessionTranscript turns={liveTurns} />
               {/if}
             </div>
 
@@ -2640,110 +2579,9 @@
     border-radius: var(--radius-sm, 6px);
     padding: 0.6rem 0.75rem;
   }
-  .line {
-    display: flex;
-    gap: 0.6rem;
-    align-items: baseline;
-    font-size: 0.78rem;
-  }
-  .line-role {
-    flex: none;
-    width: 5rem;
-    color: var(--color-text-muted);
-    text-transform: lowercase;
-  }
-  .line[data-role='tool'] .line-role {
-    color: var(--color-accent);
-  }
-  .line-content {
-    flex: 1 1 auto;
-    min-width: 0;
-    color: var(--color-text);
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-
-  /* TASK 8.3 — the wake-up briefing: a DISTINCT, accent-bordered "woke up with" block so the
-     recalled context the agent started with is unmistakable, never a normal transcript line.
-     Token-driven; a11y — accent lead has AA contrast on the inset surface; motion is opt-in. */
-  .briefing {
-    border: var(--border-width, 1px) solid var(--color-accent);
-    border-left-width: 3px;
-    border-radius: var(--radius-sm, 5px);
-    background: var(--color-bg-inset, #03120e);
-    padding: var(--space-3, 8px) var(--space-4, 12px);
-    margin: var(--space-1, 2px) 0 var(--space-3, 8px);
-    animation: briefing-in 0.18s ease-out;
-  }
-  .briefing-lead {
-    display: flex;
-    align-items: center;
-    gap: var(--space-3, 8px);
-    margin-bottom: var(--space-3, 8px);
-  }
-  .briefing-icon {
-    color: var(--color-accent);
-    font-size: 0.7rem;
-    line-height: 1;
-  }
-  .briefing-title {
-    color: var(--color-accent);
-    font-weight: 600;
-    font-size: 0.74rem;
-    letter-spacing: 0.04em;
-    text-transform: uppercase;
-  }
-  .briefing-count {
-    color: var(--color-text-muted);
-    font-size: 0.7rem;
-    margin-left: auto;
-  }
-  .briefing-items {
-    list-style: none;
-    margin: 0;
-    padding: 0;
-    display: flex;
-    flex-direction: column;
-    gap: var(--space-3, 8px);
-  }
-  .briefing-item {
-    display: flex;
-    gap: var(--space-3, 8px);
-    align-items: baseline;
-    font-size: 0.76rem;
-  }
-  .briefing-tag {
-    flex: none;
-    align-self: flex-start;
-    color: var(--color-on-accent, #0a0f0d);
-    background: var(--color-accent);
-    border-radius: var(--radius-xs, 3px);
-    padding: 1px var(--space-3, 8px);
-    font-size: 0.66rem;
-    white-space: nowrap;
-  }
-  .briefing-body {
-    flex: 1 1 auto;
-    min-width: 0;
-    color: var(--color-text);
-    white-space: pre-wrap;
-    word-break: break-word;
-  }
-  @keyframes briefing-in {
-    from {
-      opacity: 0;
-      transform: translateY(-2px);
-    }
-    to {
-      opacity: 1;
-      transform: none;
-    }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .briefing {
-      animation: none;
-    }
-  }
+  /* The kind-aware turn framing (prose / thinking / tool / briefing) lives in the shared
+     <SessionTranscript> component (src/lib/components/shell/SessionTranscript.svelte) — both
+     this view and /claude-code render through it, so the per-line CSS is owned there. */
   .controls {
     display: flex;
     align-items: center;

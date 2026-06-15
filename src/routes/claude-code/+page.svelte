@@ -10,6 +10,8 @@
   import { enhance } from '$app/forms';
   import { invalidate } from '$app/navigation';
   import { stream } from '$lib/client/stream.svelte';
+  import SessionTranscript from '$lib/components/shell/SessionTranscript.svelte';
+  import { rowToTurn } from '$lib/client/transcript-core';
   import type { PageData, ActionData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -38,40 +40,11 @@
   // (an unknown / never-launched id) — an honest state, not a fabricated header (F-008).
   const sessionUnknown = $derived(!!selectedSession && sessionMeta === null && transcript.length === 0);
 
-  // Per-row collapsible THINKING state, keyed by message id (default collapsed — thinking is
-  // secondary to the prose). Honest-empty: a thinking turn with no content shows "(empty)".
-  let thinkingOpen = $state<Record<string, boolean>>({});
-  function toggleThinking(id: string): void {
-    thinkingOpen = { ...thinkingOpen, [id]: !thinkingOpen[id] };
-  }
-
-  /** Compact one-line view of a tool call's input object (name shown separately). Honest —
-   *  an empty/absent args object renders nothing, never a fabricated "{}". */
-  function compactToolInput(tc: Record<string, unknown> | undefined): string {
-    const args = (tc?.args ?? null) as Record<string, unknown> | null;
-    if (!args || typeof args !== 'object') return '';
-    const parts: string[] = [];
-    for (const [k, v] of Object.entries(args)) {
-      const sv =
-        v == null
-          ? ''
-          : typeof v === 'string'
-            ? v
-            : typeof v === 'object'
-              ? JSON.stringify(v)
-              : String(v);
-      const trimmed = sv.length > 120 ? sv.slice(0, 117) + '…' : sv;
-      parts.push(`${k}: ${trimmed}`);
-    }
-    return parts.join('  ·  ');
-  }
-
-  function toolName(tc: Record<string, unknown> | undefined): string {
-    return typeof tc?.name === 'string' ? tc.name : 'tool';
-  }
-  function toolOk(tc: Record<string, unknown> | undefined): boolean | null {
-    return typeof tc?.ok === 'boolean' ? (tc.ok as boolean) : null;
-  }
+  // The persisted rows → the shared kind-aware Turn shape (transcript-core). The collapsible
+  // thinking state, tool-input formatting and briefing parse all live in <SessionTranscript>,
+  // so this view and projects/[id] render identical framing — one kind-aware renderer, no
+  // divergence (the projects/[id] view used to render `thinking` as assistant prose).
+  const transcriptTurns = $derived(transcript.map((m, i) => rowToTurn(m, i)));
 
   // TASK 14.6 — the HONEST backend capability matrix (F-008): a control the wired
   // backend cannot really perform renders DISABLED with its reason, never a button
@@ -203,15 +176,9 @@
   });
 
   // ── Transcript replay grouping ──────────────────────────────────────────────────────────
-  // The persisted rows carry a `kind` discriminator (m0037). We render each row by kind:
-  //   assistant_text → prose · thinking → collapsible (honest-empty) · tool_use → name+input ·
-  //   tool_result → result block · result → final status badge. A legacy row that predates
-  //   m0037 reads kind 'assistant_text' (the migration DEFAULT) and renders as prose — honest.
-  function rowKind(m: { kind?: string; role: string }): string {
-    if (m.kind) return m.kind;
-    // Pre-m0037 fallback by role (kind absent): a 'tool' row is a tool turn, else prose.
-    return m.role === 'tool' ? 'tool_result' : 'assistant_text';
-  }
+  // The kind→turn mapping (incl. the pre-m0037 by-role fallback) lives in transcript-core's
+  // rowToTurn / rowTurnKind; this view maps `transcript` → `transcriptTurns` above and renders
+  // them through the shared <SessionTranscript> component.
 
   function statusLabel(s: string): string {
     if (s === 'synced') return 'synced';
@@ -401,63 +368,12 @@
           <!-- Honest empty: a real session that has not yet persisted any turn. -->
           <p class="tp-state">No transcript yet — turns appear here as the session runs.</p>
         {:else}
-          {#each transcript as m (m.id)}
-            {@const k = rowKind(m)}
-            {#if k === 'briefing'}
-              <!-- Wake-up briefing carried in the transcript (recalled context). -->
-              <div class="tp-turn briefing" role="note" aria-label="wake-up briefing">
-                <span class="tp-tag">woke up with</span>
-                <span class="tp-body mono">{m.content}</span>
-              </div>
-            {:else if k === 'thinking'}
-              <!-- Collapsible thinking (default collapsed; honest-empty). -->
-              <div class="tp-turn thinking">
-                <button
-                  class="tp-think-toggle"
-                  type="button"
-                  aria-expanded={!!thinkingOpen[m.id]}
-                  onclick={() => toggleThinking(m.id)}
-                >
-                  <span class="tp-tag">thinking</span>
-                  <span class="tp-caret" aria-hidden="true">{thinkingOpen[m.id] ? '▾' : '▸'}</span>
-                  {#if !m.content.trim()}<span class="tp-empty">(empty)</span>{/if}
-                </button>
-                {#if thinkingOpen[m.id]}
-                  <div class="tp-body mono tp-think-body">
-                    {#if m.content.trim()}{m.content}{:else}<span class="tp-empty">(no thinking recorded for this turn)</span>{/if}
-                  </div>
-                {/if}
-              </div>
-            {:else if k === 'tool_use'}
-              {@const tc = m.toolCall}
-              {@const input = compactToolInput(tc)}
-              <div class="tp-turn tool-use">
-                <span class="tp-tag tool">tool</span>
-                <span class="tp-tool-name mono">{toolName(tc)}</span>
-                {#if input}<span class="tp-tool-input mono">{input}</span>{/if}
-              </div>
-            {:else if k === 'tool_result'}
-              {@const tc = m.toolCall}
-              {@const ok = toolOk(tc)}
-              <div class="tp-turn tool-result" data-ok={ok === null ? '' : String(ok)}>
-                <span class="tp-tag result">result</span>
-                {#if tc && typeof tc.name === 'string'}<span class="tp-tool-name mono">{tc.name}</span>{/if}
-                {#if ok !== null}
-                  <span class="tp-ok" data-ok={String(ok)}>{ok ? 'ok' : 'error'}</span>
-                {/if}
-                {#if m.content.trim()}<span class="tp-body mono">{m.content}</span>{/if}
-              </div>
-            {:else}
-              <!-- assistant_text (and any other persisted prose kind: result/system/user) → prose.
-                   The session's FINAL result/status is the badge in the panel header (sessionMeta
-                   .status) — the launch path persists done/error as session lifecycle, NOT as a
-                   transcript `message` row (launch.ts), so there is no separate result turn here. -->
-              <div class="tp-turn assistant">
-                <span class="tp-tag">{m.role === 'user' ? 'user' : m.role === 'system' ? 'system' : 'assistant'}</span>
-                <span class="tp-body">{m.content}</span>
-              </div>
-            {/if}
-          {/each}
+          <!-- KIND-AWARE replay via the shared component (briefing / thinking-collapsible /
+               tool_use / tool_result / prose). The session's FINAL result/status is the badge
+               in the panel header (sessionMeta.status) — the launch path persists done/error as
+               session lifecycle, NOT a transcript `message` row (launch.ts), so there is no
+               separate result turn here. This is the SAME renderer projects/[id] uses. -->
+          <SessionTranscript turns={transcriptTurns} />
         {/if}
       </div>
 
@@ -1273,109 +1189,8 @@
     background: var(--color-bg, #03120e);
     padding: var(--space-3, 0.75rem);
   }
-  .tp-turn {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 0.5rem;
-    padding: 0.4rem 0.55rem;
-    border-radius: var(--radius-sm, 6px);
-    background: var(--color-surface-overlay);
-    min-width: 0;
-  }
-  .tp-tag {
-    font-size: 0.64rem;
-    font-weight: 600;
-    text-transform: uppercase;
-    letter-spacing: 0.05em;
-    color: var(--color-text-muted);
-    flex: none;
-  }
-  .tp-turn.assistant .tp-tag {
-    color: var(--color-accent);
-  }
-  .tp-tag.tool,
-  .tp-tag.result {
-    color: var(--color-tier-sonnet, var(--color-accent));
-  }
-  .tp-body {
-    font: var(--type-body-sm);
-    color: var(--color-text);
-    white-space: pre-wrap;
-    word-break: break-word;
-    min-width: 0;
-    flex: 1 1 100%;
-  }
-  .tp-turn.thinking {
-    flex-direction: column;
-    align-items: stretch;
-    background: var(--color-surface-card);
-  }
-  .tp-think-toggle {
-    appearance: none;
-    display: flex;
-    align-items: center;
-    gap: 0.4rem;
-    background: none;
-    border: none;
-    padding: 0;
-    cursor: pointer;
-    color: var(--color-text-muted);
-    text-align: left;
-  }
-  .tp-think-toggle:focus-visible {
-    outline: 2px solid var(--color-accent);
-    outline-offset: 2px;
-    border-radius: var(--radius-xs, 3px);
-  }
-  .tp-caret {
-    font-size: 0.7rem;
-    color: var(--color-text-muted);
-  }
-  .tp-think-body {
-    margin-top: var(--space-2, 0.5rem);
-    color: var(--color-text-2);
-    font-size: 0.76rem;
-  }
-  .tp-empty {
-    color: var(--color-text-muted);
-    font-style: italic;
-    font-size: 0.72rem;
-  }
-  .tp-tool-name {
-    font-size: 0.76rem;
-    color: var(--color-text);
-    font-weight: 600;
-    flex: none;
-  }
-  .tp-tool-input {
-    font-size: 0.72rem;
-    color: var(--color-text-muted);
-    overflow: hidden;
-    text-overflow: ellipsis;
-    min-width: 0;
-    flex: 1 1 auto;
-  }
-  .tp-ok {
-    font-size: 0.66rem;
-    font-weight: 600;
-    padding: 0.05rem 0.4rem;
-    border-radius: var(--radius-sm, 6px);
-    flex: none;
-  }
-  .tp-ok[data-ok='true'] {
-    color: var(--color-success, var(--color-running));
-    background: var(--color-success-bg, transparent);
-  }
-  .tp-ok[data-ok='false'] {
-    color: var(--color-error-on-overlay);
-    background: var(--color-error-bg, transparent);
-  }
-  .tp-turn.briefing {
-    flex-direction: column;
-    align-items: stretch;
-    border-left: 2px solid var(--color-accent);
-  }
+  /* The kind-aware turn framing (.tp-turn / .tp-tag / thinking / tool / briefing) lives in the
+     shared <SessionTranscript> component — both this view and projects/[id] render through it. */
   .tp-foot {
     font-size: 0.7rem;
     color: var(--color-text-muted);

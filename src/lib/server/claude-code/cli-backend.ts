@@ -600,10 +600,40 @@ export class ClaudeCliBackend implements CcBackend {
 			child.stderr.on('data', (d) => {
 				stderr += String(d);
 			});
+			// Diagnostic tail (F-029): a non-zero exit often carries its reason on STDOUT (a
+			// stream-json is_error result) with EMPTY stderr — keep the last raw lines so the
+			// exit-error surfaces something actionable instead of "exited 1: ".
+			const stdoutTail: string[] = [];
 			try {
 				for await (const line of rl) {
 					const trimmed = line.trim();
 					if (!trimmed) continue;
+					stdoutTail.push(trimmed);
+					if (stdoutTail.length > 12) stdoutTail.shift();
+					// GAUNTLET_TRACE=1 mirrors every stream-json line to the server log so an
+					// operator can watch a driven session's thinking / tools / result live. Off by
+					// default (loopback dev aid; a persisted transcript view is the real follow-up).
+					if (process.env.GAUNTLET_TRACE === '1') {
+						try {
+							const o = JSON.parse(trimmed) as Record<string, any>;
+							const m = o?.message;
+							if (o?.type === 'assistant' && Array.isArray(m?.content)) {
+								for (const b of m.content) {
+									if (b?.type === 'thinking' && b.thinking) console.error(`[trace] 🧠 ${b.thinking}`);
+									else if (b?.type === 'text' && b.text) console.error(`[trace] 💬 ${b.text}`);
+									else if (b?.type === 'tool_use') console.error(`[trace] 🔧 ${b.name} ${JSON.stringify(b.input).slice(0, 300)}`);
+								}
+							} else if (o?.type === 'user' && Array.isArray(m?.content)) {
+								for (const b of m.content) {
+									if (b?.type === 'tool_result') console.error(`[trace] ↩️  ${(typeof b.content === 'string' ? b.content : JSON.stringify(b.content)).slice(0, 300)}`);
+								}
+							} else if (o?.type === 'result') {
+								console.error(`[trace] ✅ result: ${o.subtype} (${o.num_turns} turns, $${o.total_cost_usd})`);
+							}
+						} catch {
+							/* non-JSON noise — skip in trace */
+						}
+					}
 					let obj: Record<string, unknown>;
 					try {
 						obj = JSON.parse(trimmed);
@@ -654,7 +684,14 @@ export class ClaudeCliBackend implements CcBackend {
 						error: `claude CLI failed to start: ${spawnError.message}`
 					};
 				} else if (code && code !== 0) {
-					yield { type: 'error', error: `claude CLI exited ${code}: ${stderr.slice(0, 500)}` };
+					// A non-zero exit often carries its reason on STDOUT (a stream-json is_error
+					// result) with EMPTY stderr — surface the stdout tail so the error is not blank
+					// (F-029: a blank "exited 1:" hid a 401, then a gate-deny, then error_max_turns).
+					const detail =
+						stderr.trim() ||
+						stdoutTail.slice(-3).join(' ⏎ ').slice(0, 800) ||
+						'(no stdout/stderr captured)';
+					yield { type: 'error', error: `claude CLI exited ${code}: ${detail}` };
 				}
 			} finally {
 				clearTimeout(timer);

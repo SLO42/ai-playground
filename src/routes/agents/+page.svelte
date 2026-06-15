@@ -258,6 +258,14 @@
                   {#if r.interview.status === 'error'}
                     <span class="iv-verdict">interview error</span>
                     <span class="iv-reason mono">{r.interview.errorReason ?? '—'}</span>
+                  {:else if r.interview.status === 'running'}
+                    <span class="iv-verdict">running…</span>
+                  {:else if r.interview.status === 'adjudicating'}
+                    <span class="iv-verdict">adjudicating</span>
+                    <span class="iv-sep">·</span>
+                    <span>found {r.interview.plantedFound}/{r.interview.plantedTotal} plants</span>
+                    <span class="iv-sep">·</span>
+                    <span class="iv-resolve">resolve on /agents</span>
                   {:else}
                     <span class="iv-verdict">
                       found {r.interview.plantedFound}/{r.interview.plantedTotal} plants
@@ -1019,6 +1027,18 @@
   .interview-line[data-status='passed'] .iv-verdict {
     color: var(--color-success);
     font-weight: var(--weight-semibold);
+  }
+  /* Non-terminal latest run: honest, NOT error-styled (the stale-error fix). */
+  .interview-line[data-status='adjudicating'] .iv-verdict {
+    color: var(--color-warn-on-overlay, var(--color-warn));
+    font-weight: var(--weight-semibold);
+  }
+  .interview-line[data-status='running'] .iv-verdict {
+    color: var(--color-text-muted);
+    font-weight: var(--weight-semibold);
+  }
+  .iv-resolve {
+    color: var(--color-warn-on-overlay, var(--color-warn));
   }
   .iv-sep {
     color: var(--color-text-muted);

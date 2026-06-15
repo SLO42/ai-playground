@@ -186,6 +186,84 @@ describe('loadWorkforcePanel — §8 surfaces', () => {
 		expect(card.notDeployableReason).toBe('not yet interviewed');
 	});
 
+	it('STALE-ERROR fix: older error + NEWER adjudicating run → line reflects the NEWER run, deployability unchanged', async () => {
+		// Operator scenario: a role had old failing runs (status='error', scorer_error) from
+		// before a fix, then a NEWER successful run that is status='adjudicating' (found 5/5).
+		// The card must headline the LATEST run (adjudicating), NOT the stale error.
+		const slug = nextSlug('stalerole');
+		const role = await createRole(db, { slug, name: slug, purpose: 'stale-error masking' });
+		const v = await createRoleVersion(db, {
+			role: role.id,
+			prompt_core: 'stale core',
+			default_tier: 'sonnet'
+		});
+		// OLDER run → error (scorer_error), explicitly stamped earlier so ordering is deterministic.
+		const errRun = await createInterviewRun(db, {
+			role_version: v.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			model_id: MODEL,
+			fixture_set_sha: 'fsha-stale-err'
+		});
+		await finalizeInterviewRun(db, errRun.id, { status: 'error', error_reason: 'scorer_error' });
+		await db.query(`UPDATE $rid SET started_at = d'2026-06-14T00:00:00Z';`, {
+			rid: new StringRecordId(errRun.id)
+		});
+		// NEWER run → adjudicating (found 5/5), stamped later → it is runs[0] (newest-first).
+		const adjRun = await createInterviewRun(db, {
+			role_version: v.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			model_id: MODEL,
+			fixture_set_sha: 'fsha-stale-adj'
+		});
+		await finalizeInterviewRun(db, adjRun.id, {
+			status: 'adjudicating',
+			planted_total: 5,
+			planted_found: 5,
+			ambiguous: [{ type: 'partial_match', plant: 'p1', fixture: 'fx-a', file: 'a.ts', lines: '10' }]
+		});
+		await db.query(`UPDATE $rid SET started_at = d'2026-06-15T00:00:00Z';`, {
+			rid: new StringRecordId(adjRun.id)
+		});
+
+		const card = cardFor(await loadWorkforcePanel(db), slug);
+		// The line reflects the NEWER adjudicating run — NOT the stale error.
+		expect(card.interview?.status).toBe('adjudicating');
+		expect(card.interview?.run).toBe(adjRun.id);
+		expect(card.interview?.errorReason).toBeNull();
+		expect(card.interview?.plantedFound).toBe(5);
+		expect(card.interview?.plantedTotal).toBe(5);
+		// Deployability is UNCHANGED: an adjudicating run is not a pass → still not deployable.
+		expect(card.deployable).toBe(false);
+		expect(card.notDeployableReason).toBe('not yet interviewed');
+		// Both runs still counted for sample-size context.
+		expect(card.interviewRuns).toBe(2);
+	});
+
+	it('RUNNING latest run surfaces as running (in-progress), not deployable', async () => {
+		const slug = nextSlug('runningrole');
+		const role = await createRole(db, { slug, name: slug, purpose: 'in-flight run' });
+		const v = await createRoleVersion(db, {
+			role: role.id,
+			prompt_core: 'running core',
+			default_tier: 'haiku'
+		});
+		// A run left in flight (never finalized) stays status='running'.
+		const run = await createInterviewRun(db, {
+			role_version: v.id,
+			tier: 'haiku',
+			provider: 'claude',
+			model_id: 'claude-haiku-test-1',
+			fixture_set_sha: 'fsha-running'
+		});
+		const card = cardFor(await loadWorkforcePanel(db), slug);
+		expect(card.interview?.status).toBe('running');
+		expect(card.interview?.run).toBe(run.id);
+		expect(card.deployable).toBe(false);
+		expect(card.notDeployableReason).toBe('not yet interviewed');
+	});
+
 	it('§3.4 adjudication queue: an adjudicating run surfaces with its ambiguous items', async () => {
 		const slug = nextSlug('adjrole');
 		const role = await createRole(db, { slug, name: slug, purpose: 'adjudication' });

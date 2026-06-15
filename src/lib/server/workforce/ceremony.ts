@@ -952,7 +952,9 @@ export interface ReferenceProof {
  *  hardcoded). null = 'not yet interviewed' (honest day-0 empty). */
 export interface CeremonyInterviewLine {
 	run: string;
-	status: 'passed' | 'failed' | 'error';
+	/** Full interview_run status set (schema: running|adjudicating|passed|failed|error) so a
+	 *  newer non-terminal run is shown honestly, not masked by a stale terminal error. */
+	status: 'running' | 'adjudicating' | 'passed' | 'failed' | 'error';
 	/** 'env_timeout' | 'spawn_failure' | 'scorer_error' when status='error'; else null. */
 	errorReason: string | null;
 	tier: string;
@@ -998,7 +1000,7 @@ export interface RoleExecutionState {
 	notRunnableReason: string | null;
 	/** Admission reference-run proofs recorded on this role's keys (§3.8); [] = none yet. */
 	referenceProofs: ReferenceProof[];
-	/** The latest TERMINAL interview line; null = 'not yet interviewed'. */
+	/** The latest interview line (any status); null = 'not yet interviewed'. */
 	interview: CeremonyInterviewLine | null;
 	/** Total interview_run rows for the launch version (any status) — sample-size context. */
 	interviewRuns: number;
@@ -1073,7 +1075,7 @@ export async function ceremonyExecutionState(db: Db): Promise<CeremonyExecutionS
 		if (launch) {
 			const runs = await launchRuns(db, launch.id);
 			interviewRuns = runs.length;
-			interview = latestTerminalLine(runs);
+			interview = latestRunLine(runs);
 			const verdict = certifiedFromRuns(launch, runs);
 			certified = verdict.certified;
 			notCertifiedReason = verdict.reason;
@@ -1153,31 +1155,35 @@ interface RawCeremonyRun {
 	started_at: unknown;
 }
 
-const TERMINAL_RUN = new Set(['passed', 'failed', 'error']);
-
 function isoOrNull(v: unknown): string | null {
 	if (v === null || v === undefined) return null;
 	const s = v instanceof Date ? v.toISOString() : String(v);
 	return s === '' || s === 'undefined' || s === 'null' ? null : s;
 }
 
-/** Latest TERMINAL run → the execution interview line; null = 'not yet interviewed'. */
-function latestTerminalLine(runs: RawCeremonyRun[]): CeremonyInterviewLine | null {
-	const term = runs.find((r) => TERMINAL_RUN.has(r.status));
-	if (!term) return null;
+/**
+ * Latest run → the execution interview line, regardless of status. `runs` is newest-first
+ * (launchRuns ORDERs BY started_at DESC), so it is runs[0]; the status maps straight through
+ * so a newer adjudicating/running run is shown honestly instead of being masked by an older
+ * terminal error. Display only — certification stays gated on a passing run
+ * (certifiedFromRuns, unchanged). null = zero runs ('not yet interviewed').
+ */
+function latestRunLine(runs: RawCeremonyRun[]): CeremonyInterviewLine | null {
+	const r = runs[0];
+	if (!r) return null;
 	return {
-		run: str(term.id),
-		status: term.status as CeremonyInterviewLine['status'],
-		errorReason: term.error_reason ?? null,
-		tier: term.tier,
-		model_id: term.model_id,
-		provider: term.provider,
-		plantedFound: term.planted_found,
-		plantedTotal: term.planted_total,
-		falsePositives: term.false_positives,
-		stale: term.stale,
-		session: term.session != null ? str(term.session) : null,
-		at: isoOrNull(term.started_at)
+		run: str(r.id),
+		status: r.status as CeremonyInterviewLine['status'],
+		errorReason: r.error_reason ?? null,
+		tier: r.tier,
+		model_id: r.model_id,
+		provider: r.provider,
+		plantedFound: r.planted_found,
+		plantedTotal: r.planted_total,
+		falsePositives: r.false_positives,
+		stale: r.stale,
+		session: r.session != null ? str(r.session) : null,
+		at: isoOrNull(r.started_at)
 	};
 }
 

@@ -38,10 +38,12 @@ import {
 } from './repo';
 import { roleTrackRecord, type RoleTrackRecord } from './track-record';
 
-/** The latest terminal interview_run distilled to the §8 interview-line fields. */
+/** The LATEST interview_run distilled to the §8 interview-line fields. Carries the full
+ *  interview_run status set (schema: running|adjudicating|passed|failed|error) so a newer
+ *  non-terminal run is shown honestly instead of being masked by a stale terminal error. */
 export interface InterviewLine {
 	run: string;
-	status: 'passed' | 'failed' | 'error';
+	status: 'running' | 'adjudicating' | 'passed' | 'failed' | 'error';
 	/** 'env_timeout' | 'spawn_failure' | 'scorer_error' when status='error'; else null. */
 	errorReason: string | null;
 	tier: string;
@@ -75,7 +77,7 @@ export interface WorkforceRoleCard {
 	deployable: boolean;
 	/** Named honest reason when not deployable; null when deployable. */
 	notDeployableReason: string | null;
-	/** Latest TERMINAL run → the §8 interview line; null = 'not yet interviewed'. */
+	/** The LATEST run → the §8 interview line; null = 'not yet interviewed'. */
 	interview: InterviewLine | null;
 	/** Total interview_run rows for this version (any status) — sample-size context. */
 	interviewRuns: number;
@@ -108,8 +110,6 @@ export interface WorkforcePanelData {
 	/** §3.4 — every 'adjudicating' run awaiting the operator's judgment. */
 	adjudication: AdjudicationCard[];
 }
-
-const TERMINAL = new Set(['passed', 'failed', 'error']);
 
 interface RawRun {
 	id: unknown;
@@ -148,23 +148,30 @@ function pickLaunchVersion(versions: RoleVersionRow[]): RoleVersionRow | null {
 	return [...usable].sort((a, b) => a.version - b.version)[0];
 }
 
-/** Distill the latest TERMINAL run (passed|failed|error) into the interview line. */
-function latestTerminal(runs: RawRun[]): InterviewLine | null {
-	const term = runs.find((r) => TERMINAL.has(r.status));
-	if (!term) return null;
+/**
+ * Distill the SINGLE most-recent run into the interview line, regardless of status —
+ * `runs` is newest-first (runsForVersion ORDERs BY started_at DESC), so it is runs[0].
+ * The status maps straight through (running|adjudicating|passed|failed|error) so a newer
+ * adjudicating/running run is shown honestly instead of being masked by an older terminal
+ * error (the operator-reported stale-error bug). Display only — deployability is still
+ * gated on a passing terminal run (deployabilityFromRuns, unchanged). null = zero runs.
+ */
+function latestRun(runs: RawRun[]): InterviewLine | null {
+	const r = runs[0];
+	if (!r) return null;
 	return {
-		run: String(term.id),
-		status: term.status as InterviewLine['status'],
-		errorReason: term.error_reason ?? null,
-		tier: term.tier,
-		modelId: term.model_id,
-		provider: term.provider,
-		plantedFound: term.planted_found,
-		plantedTotal: term.planted_total,
-		falsePositives: term.false_positives,
-		stale: term.stale,
-		session: term.session != null ? String(term.session) : null,
-		at: strOrNull(term.started_at)
+		run: String(r.id),
+		status: r.status as InterviewLine['status'],
+		errorReason: r.error_reason ?? null,
+		tier: r.tier,
+		modelId: r.model_id,
+		provider: r.provider,
+		plantedFound: r.planted_found,
+		plantedTotal: r.planted_total,
+		falsePositives: r.false_positives,
+		stale: r.stale,
+		session: r.session != null ? String(r.session) : null,
+		at: strOrNull(r.started_at)
 	};
 }
 
@@ -260,7 +267,7 @@ async function buildCard(db: Db, role: RoleRow): Promise<WorkforceRoleCard> {
 	}
 	const runs = await runsForVersion(db, launch.id);
 	const { deployable, reason } = deployabilityFromRuns(launch, runs);
-	const interview = latestTerminal(runs);
+	const interview = latestRun(runs);
 	// Track record is per-version; only meaningful once the version exists. Always
 	// fetch (it is null-honest internally) so stat lines have their source counts.
 	const track = await roleTrackRecord(db, launch.id);

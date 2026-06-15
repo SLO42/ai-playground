@@ -31,6 +31,7 @@ import type { EventBus } from '../events/bus';
 import { writeAgentEvent } from '../analytics/events';
 import { getProject } from '../projects/repo';
 import { buildBriefing, type MemoryService, type ExtractFn } from '../memory/index';
+import { screen } from '../memory/screen';
 import { loadGatesConfig } from '../config/index';
 import type {
 	AgentRuntime,
@@ -148,25 +149,68 @@ function omitUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
 	return out;
 }
 
-/** Map a RuntimeEvent → the `message` row it persists (or null if it is not a message).
- *  Exported for reuse by the channel seam's resume path (14.6) so a resumed turn's
- *  transcript persists with the SAME shape a launched turn does. */
-export function eventToMessage(
-	ev: RuntimeEvent
-): { role: 'assistant' | 'tool'; content: string; tool_call?: Record<string, unknown> } | null {
+/** The persisted transcript message shape: a role (m0003), a `kind` discriminator
+ *  (m0037), the screened content, and optional screened tool_call metadata. The persist
+ *  caller stamps the monotonic `seq` (per-session order). */
+export interface PersistedMessage {
+	role: 'assistant' | 'tool';
+	/** Replay discriminator (m0037) — what kind of turn this row is. */
+	kind: 'assistant_text' | 'thinking' | 'tool_use' | 'tool_result';
+	content: string;
+	tool_call?: Record<string, unknown>;
+}
+
+/**
+ * D-026 BOUNDARY SCREEN for persisted transcript chunks. EVERY string that lands in a
+ * `message` row (assistant text, thinking, tool_result output) and every string nested in
+ * a persisted tool_call (args/output) passes through the §3.1b secret/PII `screen()` here —
+ * the SAME engine the memory write path uses — so a secret the agent echoed (a token in an
+ * assistant turn, a key in a tool result, a password in a Bash arg) is REDACTED before it is
+ * ever written or replayed. Fails CLOSED via screen() (a scan error quarantines → empty text).
+ */
+function screenText(s: string): string {
+	return screen(s).text;
+}
+
+/** Recursively screen every string value inside a tool_call's args/output blob (D-026). A
+ *  secret can hide in a nested Bash arg or a structured tool result, not just a top-level
+ *  string — so the screen walks the whole structure. Non-string leaves pass through. */
+function screenDeep(v: unknown): unknown {
+	if (typeof v === 'string') return screenText(v);
+	if (Array.isArray(v)) return v.map(screenDeep);
+	if (v && typeof v === 'object') {
+		const out: Record<string, unknown> = {};
+		for (const [k, val] of Object.entries(v as Record<string, unknown>)) out[k] = screenDeep(val);
+		return out;
+	}
+	return v;
+}
+
+/** Map a RuntimeEvent → the SCREENED `message` row it persists (or null if it is not a
+ *  message). The single transcript-persistence chokepoint: every content chunk + every
+ *  nested tool_call value is D-026-screened HERE, so all three consumers (launchSession,
+ *  the channel resume path, the gauntlet runner) persist secret-screened rows by construction
+ *  — no consumer can forget the screen. Exported for reuse by those paths (14.6 parity). */
+export function eventToMessage(ev: RuntimeEvent): PersistedMessage | null {
 	switch (ev.type) {
 		case 'log':
-			return { role: 'assistant', content: ev.message };
+			return { role: 'assistant', kind: 'assistant_text', content: screenText(ev.message) };
+		case 'thinking':
+			// HONEST empty thinking (F-008): an empty thinking block persists as an empty string,
+			// NEVER invented or backfilled. screen('') === '' (clean), so an empty stays empty.
+			return { role: 'assistant', kind: 'thinking', content: screenText(ev.text) };
 		case 'tool_call':
 			return {
 				role: 'tool',
+				kind: 'tool_use',
 				content: `→ ${ev.name}`,
-				tool_call: { name: ev.name, args: ev.args, needs_confirm: ev.needsConfirm }
+				tool_call: { name: ev.name, args: screenDeep(ev.args), needs_confirm: ev.needsConfirm }
 			};
 		case 'tool_result':
 			return {
 				role: 'tool',
-				content: ev.output,
+				kind: 'tool_result',
+				content: screenText(ev.output),
 				tool_call: { name: ev.name, ok: ev.ok, phase: 'result' }
 			};
 		default:
@@ -296,6 +340,11 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 					content: omitUndefined({
 						session: sid,
 						role: 'system',
+						// m0037: the wake-up briefing is its own replay kind; seq -1 sorts it BEFORE
+						// the first runtime turn (order starts at 0). The briefing body was already
+						// D-026-fenced upstream (buildBriefing), so it is safe to persist as-is.
+						kind: 'briefing',
+						seq: -1,
 						content: briefing.text,
 						tool_call: {
 							kind: 'briefing',
@@ -367,21 +416,39 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 			});
 			order++;
 
-			// Persist transcript messages.
+			// Persist transcript messages. `seq` = the per-session monotonic order index (this
+			// event's `order`, already assigned above) so the read side replays turns in the
+			// exact order they streamed — independent of same-millisecond `at` ties (m0037). The
+			// content + nested tool_call values are D-026-screened inside eventToMessage.
+			const seq = order - 1; // `order` was post-incremented after the bus publish above
 			const msg = eventToMessage(ev);
 			if (msg) {
 				// Accumulate the RAW turn text for the §3.2 ADD-only extraction at session end
 				// (D-029 — raw transcript, no summary). Bounded so a long session can't blow the
 				// extraction prompt; the tail is the most recent (most extraction-worthy) work.
+				// The screened content is what we accumulate (the screen already ran in
+				// eventToMessage) — a secret never reaches the extraction prompt either.
 				if (transcriptParts.length < 400) transcriptParts.push(`${msg.role}: ${msg.content}`);
-				await db.query(`CREATE message CONTENT $content;`, {
-					content: omitUndefined({
-						session: sid,
-						role: msg.role,
-						content: msg.content,
-						tool_call: msg.tool_call
-					})
-				});
+				// FAIL-OPEN persistence (F-014): a transcript write error must NEVER break or fail
+				// the driven session — it is observability, not the work. A failed message insert is
+				// logged and swallowed so the stream keeps flowing (the live bus event already fired
+				// above, and the terminal status write / reaper still guarantee an honest verdict).
+				try {
+					await db.query(`CREATE message CONTENT $content;`, {
+						content: omitUndefined({
+							session: sid,
+							role: msg.role,
+							kind: msg.kind,
+							seq,
+							content: msg.content,
+							tool_call: msg.tool_call
+						})
+					});
+				} catch (persistErr) {
+					console.warn(
+						`[launch] transcript message persist failed for ${sessionId} seq ${seq} (fail-open, session continues): ${(persistErr as Error).message}`
+					);
+				}
 				continue;
 			}
 

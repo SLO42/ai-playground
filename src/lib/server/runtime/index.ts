@@ -142,6 +142,9 @@ export interface AgentResult {
 /** The streamed progress union (ARCHITECTURE §2.3). */
 export type RuntimeEvent =
 	| { type: 'log'; message: string }
+	// Extended-thinking block surfaced verbatim (F-008 HONEST: an empty thinking
+	// block is an empty string — never invented/backfilled; absence ⇒ no event at all).
+	| { type: 'thinking'; text: string }
 	| { type: 'tool_call'; name: string; args: unknown; needsConfirm: boolean }
 	| { type: 'tool_result'; name: string; ok: boolean; output: string }
 	| { type: 'token_usage'; input: number; output: number }

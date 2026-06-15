@@ -275,6 +275,12 @@ function mapCliEvent(obj: Record<string, unknown>): RuntimeEvent[] {
 		for (const block of content as Array<Record<string, unknown>>) {
 			if (block.type === 'text' && typeof block.text === 'string' && block.text.trim()) {
 				out.push({ type: 'log', message: block.text });
+			} else if (block.type === 'thinking') {
+				// HONEST thinking (F-008): surface the extended-thinking block VERBATIM, including
+				// an empty one (stored honestly as empty downstream — never invented). A block with
+				// a non-string/absent `thinking` is normalized to '' so the persist layer records
+				// an honest empty thinking turn rather than dropping the fact that the model thought.
+				out.push({ type: 'thinking', text: typeof block.thinking === 'string' ? block.thinking : '' });
 			} else if (block.type === 'tool_use') {
 				out.push({
 					type: 'tool_call',
@@ -615,20 +621,23 @@ export class ClaudeCliBackend implements CcBackend {
 					// default (loopback dev aid; a persisted transcript view is the real follow-up).
 					if (process.env.GAUNTLET_TRACE === '1') {
 						try {
-							const o = JSON.parse(trimmed) as Record<string, any>;
-							const m = o?.message;
-							if (o?.type === 'assistant' && Array.isArray(m?.content)) {
-								for (const b of m.content) {
-									if (b?.type === 'thinking' && b.thinking) console.error(`[trace] 🧠 ${b.thinking}`);
-									else if (b?.type === 'text' && b.text) console.error(`[trace] 💬 ${b.text}`);
-									else if (b?.type === 'tool_use') console.error(`[trace] 🔧 ${b.name} ${JSON.stringify(b.input).slice(0, 300)}`);
+							const o = JSON.parse(trimmed) as Record<string, unknown>;
+							const m = o.message as { content?: unknown } | undefined;
+							const blocks = Array.isArray(m?.content)
+								? (m!.content as Array<Record<string, unknown>>)
+								: [];
+							if (o.type === 'assistant' && blocks.length) {
+								for (const b of blocks) {
+									if (b.type === 'thinking' && b.thinking) console.error(`[trace] 🧠 ${String(b.thinking)}`);
+									else if (b.type === 'text' && b.text) console.error(`[trace] 💬 ${String(b.text)}`);
+									else if (b.type === 'tool_use') console.error(`[trace] 🔧 ${String(b.name)} ${JSON.stringify(b.input).slice(0, 300)}`);
 								}
-							} else if (o?.type === 'user' && Array.isArray(m?.content)) {
-								for (const b of m.content) {
-									if (b?.type === 'tool_result') console.error(`[trace] ↩️  ${(typeof b.content === 'string' ? b.content : JSON.stringify(b.content)).slice(0, 300)}`);
+							} else if (o.type === 'user' && blocks.length) {
+								for (const b of blocks) {
+									if (b.type === 'tool_result') console.error(`[trace] ↩️  ${(typeof b.content === 'string' ? b.content : JSON.stringify(b.content)).slice(0, 300)}`);
 								}
-							} else if (o?.type === 'result') {
-								console.error(`[trace] ✅ result: ${o.subtype} (${o.num_turns} turns, $${o.total_cost_usd})`);
+							} else if (o.type === 'result') {
+								console.error(`[trace] ✅ result: ${String(o.subtype)} (${String(o.num_turns)} turns, $${String(o.total_cost_usd)})`);
 							}
 						} catch {
 							/* non-JSON noise — skip in trace */

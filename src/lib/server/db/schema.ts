@@ -1390,6 +1390,43 @@ const m0036_memory_history_flexible: Migration = {
 	`
 };
 
+// ── TASK (transcript-persistence) — message.kind discriminator + message.seq order ──
+//
+// Promote the driven-session transcript persisted into `message` (sessions/launch.ts
+// eventToMessage) into a REPLAYABLE stream: every persisted turn now carries
+//   • kind — the chunk discriminator (assistant_text | thinking | tool_use |
+//             tool_result | result | briefing | system). The original m0003 message
+//             carried only role (user|assistant|tool|system), which cannot tell an
+//             assistant TEXT turn from a THINKING turn — both are role 'assistant'.
+//             A typed `kind` makes the replay honest (a thinking turn renders as
+//             thinking, not as assistant prose).
+//   • seq  — a per-session MONOTONIC order index stamped by the persist path. The read
+//             side (sessions/messages.ts) currently orders by `at` (a datetime), which
+//             ties on same-millisecond writes (a fast scripted/CLI stream emits several
+//             turns in the same ms — the exact in-order-replay guarantee this task needs).
+//             seq is the authoritative replay order; `at` stays as the wall-clock stamp.
+//
+// Both carry a concrete non-NONE DEFAULT (§6.2 — read-back-safe on a RETURN AFTER write):
+//   • kind DEFAULT "assistant_text" — the legacy role 'assistant'|'tool' rows that predate
+//     this field read back as a sane non-NONE value (no UI "undefined"); new writes set it.
+//   • seq  DEFAULT 0 — a pre-existing row (or a producer that omits seq) sorts to the front
+//     deterministically rather than reading back NONE.
+//
+// No row reset / no destructive scan (F-015): adding two DEFAULT-bearing fields needs no
+// backfill — the DEFAULT only fires on CREATE, and the read path coalesces a NONE seq to 0,
+// so existing rows keep their content and fall back to `at` order via the secondary sort.
+// IDEMPOTENT (F-015): every DEFINE carries OVERWRITE — clean over a fresh DB, a half-applied
+// state, and a re-run. The mid-ceremony LIVE dev DB's existing message rows are untouched.
+const m0037_message_kind_seq: Migration = {
+	id: '0037_message_kind_seq',
+	up: `
+		DEFINE FIELD OVERWRITE kind ON message TYPE string DEFAULT "assistant_text"
+			ASSERT $value IN ["assistant_text","thinking","tool_use","tool_result","result","briefing","system","user"];
+		DEFINE FIELD OVERWRITE seq  ON message TYPE int DEFAULT 0;
+		DEFINE INDEX OVERWRITE message_by_session_seq ON message FIELDS session, seq;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1432,5 +1469,6 @@ export const schemaMigrations: Migration[] = [
 	m0033_memory_session_provenance,
 	m0034_gauntlet_sentinel_nonempty,
 	m0035_gauntlet_sentinel_ulid_shape,
-	m0036_memory_history_flexible
+	m0036_memory_history_flexible,
+	m0037_message_kind_seq
 ];

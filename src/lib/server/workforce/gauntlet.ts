@@ -552,6 +552,8 @@ async function attemptGauntlet(deps: GauntletDeps, ctx: AttemptContext): Promise
 			setTimeout(() => res(DEADLINE), timeoutMs).unref?.()
 		);
 		const it = runtime.spawn(req)[Symbol.asyncIterator]();
+		// m0037: per-session monotonic replay order for the persisted transcript turns.
+		let seq = 0;
 		try {
 			for (;;) {
 				const step = await Promise.race([it.next(), deadline]);
@@ -567,14 +569,25 @@ async function attemptGauntlet(deps: GauntletDeps, ctx: AttemptContext): Promise
 				}
 				const msg = eventToMessage(ev);
 				if (msg) {
-					await db.query(`CREATE message CONTENT $content;`, {
-						content: {
-							session: link(sessionId),
-							role: msg.role,
-							content: msg.content,
-							...(msg.tool_call ? { tool_call: msg.tool_call } : {})
-						}
-					});
+					// kind + seq (m0037); content/tool_call already D-026-screened inside
+					// eventToMessage. FAIL-OPEN (F-014): a persist error never breaks the run.
+					const thisSeq = seq++;
+					try {
+						await db.query(`CREATE message CONTENT $content;`, {
+							content: {
+								session: link(sessionId),
+								role: msg.role,
+								kind: msg.kind,
+								seq: thisSeq,
+								content: msg.content,
+								...(msg.tool_call ? { tool_call: msg.tool_call } : {})
+							}
+						});
+					} catch (persistErr) {
+						console.warn(
+							`[gauntlet] transcript persist failed for ${sessionId} seq ${thisSeq} (fail-open): ${(persistErr as Error).message}`
+						);
+					}
 				} else if (ev.type === 'token_usage') {
 					tokensIn += ev.input;
 					tokensOut += ev.output;

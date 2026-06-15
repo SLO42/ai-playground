@@ -425,14 +425,26 @@ export function createChannel(deps: ChannelDeps): Channel {
 					order++;
 					const msg = eventToMessage(ev);
 					if (msg) {
-						await db.query(`CREATE message CONTENT $c;`, {
-							c: omitUndefined({
-								session: link(req.sessionId),
-								role: msg.role,
-								content: msg.content,
-								tool_call: msg.tool_call
-							})
-						});
+						// m0037: stamp kind + the monotonic seq so a resumed turn replays in order
+						// alongside the original launch's turns (its content/tool_call were already
+						// D-026-screened inside eventToMessage). FAIL-OPEN (F-014): a transcript write
+						// error never breaks the resumed session — log + swallow, the live bus already fired.
+						try {
+							await db.query(`CREATE message CONTENT $c;`, {
+								c: omitUndefined({
+									session: link(req.sessionId),
+									role: msg.role,
+									kind: msg.kind,
+									seq: order - 1,
+									content: msg.content,
+									tool_call: msg.tool_call
+								})
+							});
+						} catch (persistErr) {
+							console.warn(
+								`[channel] resume transcript persist failed for ${req.sessionId} (fail-open): ${(persistErr as Error).message}`
+							);
+						}
 					}
 					if (ev.type === 'done') {
 						sawDone = true;

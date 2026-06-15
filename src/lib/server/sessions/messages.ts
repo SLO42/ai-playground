@@ -17,6 +17,11 @@ import { assertRecordId } from '../db/validate';
 export interface TranscriptMessage {
 	id: string;
 	role: string;
+	/** Replay discriminator (m0037): assistant_text | thinking | tool_use | tool_result |
+	 *  result | briefing | system | user. Absent on rows written before m0037. */
+	kind?: string;
+	/** Per-session monotonic replay order (m0037). 0 for legacy rows that predate the field. */
+	seq?: number;
 	content: string;
 	/** Tool-call metadata when the message is a tool turn (name/args/ok/origin/steer). */
 	toolCall?: Record<string, unknown>;
@@ -33,23 +38,31 @@ export async function listSessionMessages(
 	limit = 500
 ): Promise<TranscriptMessage[]> {
 	const sid = new StringRecordId(assertRecordId(sessionId));
+	// Order by seq (m0037 — the authoritative per-session replay order, immune to
+	// same-millisecond `at` ties a fast stream produces) then `at` as a stable tiebreaker that
+	// also preserves the order of legacy rows written before seq existed (their seq reads NONE,
+	// which sorts together — `at` keeps them in wall-clock order).
 	const [rows] = await db.query<
 		[
 			Array<{
 				id: unknown;
 				role: string;
+				kind?: string;
+				seq?: number;
 				content: string;
 				tool_call?: Record<string, unknown>;
 				at: unknown;
 			}>
 		]
-	>(`SELECT id, role, content, tool_call, at FROM message WHERE session = $sid ORDER BY at ASC LIMIT $lim;`, {
-		sid,
-		lim: limit
-	});
+	>(
+		`SELECT id, role, kind, seq, content, tool_call, at FROM message WHERE session = $sid ORDER BY seq ASC, at ASC LIMIT $lim;`,
+		{ sid, lim: limit }
+	);
 	return (rows ?? []).map((r) => ({
 		id: String(r.id),
 		role: r.role,
+		...(r.kind != null ? { kind: r.kind } : {}),
+		...(r.seq != null ? { seq: r.seq } : {}),
 		content: r.content,
 		...(r.tool_call ? { toolCall: r.tool_call } : {}),
 		at: r.at != null ? String(r.at) : ''

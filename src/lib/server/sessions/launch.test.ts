@@ -243,6 +243,118 @@ describe('launchSession — persistence plumbing (1.6b; D-011)', () => {
 		expect(last.tokensOut).toBe(15);
 	});
 
+	// ── transcript-persistence promotion: kind + seq + thinking + D-026 screen ──────────
+
+	it('persists turns IN ORDER with a kind discriminator + monotonic seq (replayable)', async () => {
+		const events: RuntimeEvent[] = [
+			{ type: 'log', message: 'first assistant turn' },
+			{ type: 'thinking', text: 'let me reason about this' },
+			{ type: 'tool_call', name: 'Read', args: { file: 'a.ts' }, needsConfirm: false },
+			{ type: 'tool_result', name: 'Read', ok: true, output: 'contents' },
+			{ type: 'log', message: 'final assistant turn' },
+			{ type: 'done', result: { ok: true, summary: 'done', ccSessionId: 'cc_order_1' } }
+		];
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(events, 'cc_order_1') });
+		const res = await launchSession({ db, bus: new EventBus(), runtime, input: baseInput() });
+
+		const sid = new StringRecordId(res.sessionId);
+		const [msgs] = await db.query<[Array<Record<string, unknown>>]>(
+			`SELECT role, kind, seq, content FROM message WHERE session = $sid ORDER BY seq ASC;`,
+			{ sid }
+		);
+		// Replay order is exactly the stream order, by the monotonic seq (m0037).
+		expect(msgs.map((m) => m.kind)).toEqual([
+			'assistant_text',
+			'thinking',
+			'tool_use',
+			'tool_result',
+			'assistant_text'
+		]);
+		// seq is strictly increasing.
+		const seqs = msgs.map((m) => m.seq as number);
+		expect(seqs).toEqual([...seqs].sort((a, b) => a - b));
+		expect(new Set(seqs).size).toBe(seqs.length);
+		// the thinking turn persisted its text honestly.
+		const think = msgs.find((m) => m.kind === 'thinking');
+		expect(think!.content).toBe('let me reason about this');
+	});
+
+	it('persists EMPTY thinking honestly — empty stays empty, never invented (F-008)', async () => {
+		const events: RuntimeEvent[] = [
+			{ type: 'thinking', text: '' },
+			{ type: 'log', message: 'ok' },
+			{ type: 'done', result: { ok: true, summary: 'done', ccSessionId: 'cc_empty_think_1' } }
+		];
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(events, 'cc_empty_think_1') });
+		const res = await launchSession({ db, bus: new EventBus(), runtime, input: baseInput() });
+
+		const sid = new StringRecordId(res.sessionId);
+		const [msgs] = await db.query<[Array<Record<string, unknown>>]>(
+			`SELECT kind, content FROM message WHERE session = $sid AND kind = "thinking";`,
+			{ sid }
+		);
+		expect(msgs).toHaveLength(1);
+		// Honest empty — the field is the empty string, not a fabricated placeholder.
+		expect(msgs[0].content).toBe('');
+	});
+
+	it('SCREENS a planted secret out of assistant text + tool args before persist (D-026)', async () => {
+		const SECRET = 'sk-ant-abcdEFGH1234secretvalue';
+		const events: RuntimeEvent[] = [
+			{ type: 'log', message: `here is the token ${SECRET} you asked for` },
+			{ type: 'thinking', text: `I will use ${SECRET} to authenticate` },
+			{
+				type: 'tool_call',
+				name: 'Bash',
+				args: { command: `curl -H "Authorization: Bearer ${SECRET}" https://x` },
+				needsConfirm: false
+			},
+			{ type: 'tool_result', name: 'Bash', ok: true, output: `auth used ${SECRET}` },
+			{ type: 'done', result: { ok: true, summary: 'done', ccSessionId: 'cc_secret_1' } }
+		];
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(events, 'cc_secret_1') });
+		const res = await launchSession({ db, bus: new EventBus(), runtime, input: baseInput() });
+
+		const sid = new StringRecordId(res.sessionId);
+		const [msgs] = await db.query<[Array<Record<string, unknown>>]>(
+			`SELECT content, tool_call FROM message WHERE session = $sid;`,
+			{ sid }
+		);
+		// The raw secret survives in NO persisted column (content or nested tool_call).
+		const blob = JSON.stringify(msgs);
+		expect(blob).not.toContain(SECRET);
+		// And the redaction marker IS present (it was caught, not silently dropped).
+		expect(blob).toContain('REDACTED');
+	});
+
+	it('a transcript-persist ERROR does NOT propagate into the session (fail-open, F-014)', async () => {
+		// A db wrapper whose `CREATE message` throws, but every other query succeeds — the
+		// transcript write is observability, never the work; the session must still complete.
+		const failingDb = new Proxy(db, {
+			get(target, prop, recv) {
+				if (prop === 'query') {
+					return async (sql: string, vars?: unknown) => {
+						if (/CREATE message/i.test(sql)) throw new Error('simulated message write failure');
+						return (target.query as (s: string, v?: unknown) => Promise<unknown>).call(target, sql, vars);
+					};
+				}
+				return Reflect.get(target, prop, recv);
+			}
+		}) as typeof db;
+
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(transcript('cc_failopen_1')) });
+		// Must NOT throw — the message-persist failure is swallowed.
+		const res = await launchSession({ db: failingDb, bus: new EventBus(), runtime, input: baseInput() });
+		// The session still reached a terminal DONE status (the work succeeded).
+		expect(res.status).toBe('done');
+
+		// And the session row itself persisted (its CREATE/UPDATE are not message writes).
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $rid;`, {
+			rid: new StringRecordId(res.sessionId)
+		});
+		expect(rows[0].status).toBe('done');
+	});
+
 	it('a failed runtime done marks the session failed and records an error completion', async () => {
 		const fail: RuntimeEvent[] = [
 			{ type: 'log', message: 'working' },

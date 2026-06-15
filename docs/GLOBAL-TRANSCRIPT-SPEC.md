@@ -44,6 +44,18 @@ Bounded query (time window + page size) — never an unbounded atelier-wide scan
 - **D3 window:** last-N / last-24h default? — *default: paginated, newest-first, page size ~50, time-filterable.*
 - **D4 live vs historical:** live-tail + scrollback? — *default: live-tail (SSE) + paginated scrollback.*
 
+## 5b. Inbox / comms lens (operator-raised 2026-06-15)
+
+Today there is NO UI for the agent fleet's `peer_message` inbox — delivered peer messages
+appear in the transcript (G-A communication turns), but **pending / expired / quarantined**
+messages have no surface (`pendingInbox` is read only by the spawn-time drain). G-C MUST add
+an **inbox lens**: per-agent and fleet-wide, the `peer_message` rows filterable by `status`
+(pending / delivered / expired / quarantined), showing from→to (sender/recipient identity),
+the screened+fenced body, and age/hops. Honest about the D-040 placeholder (pm/atelier rows
+sit `pending` until the `session.pm` seam lands — show them as "awaiting recipient identity",
+not silently). This is the operational view ("what's queued / stuck / dropped") that the
+timeline (reasoning/actions) doesn't give. Reuses the same `peer_message` substrate.
+
 ## 6. Build decomposition
 
 1. The aggregate read: merge `message`/`peer_message`/`panel_verdict`/`role_event` (+ session/

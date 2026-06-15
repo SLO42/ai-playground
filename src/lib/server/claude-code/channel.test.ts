@@ -311,7 +311,12 @@ describe('channel.pushToSession — origin binding (D-035a / D-025)', () => {
 		);
 		expect(seen.length).toBe(1);
 		expect(seen[0].topic).toBe(sessionId);
-		expect((seen[0].data as { origin: string }).origin).toBe('operator');
+		const payload = seen[0].data as { origin: string; content: string; messageId: string };
+		expect(payload.origin).toBe('operator');
+		// GA2: the bus payload carries the EXACT delivered body + the server message id so the
+		// transcript pages can append a communication turn live (no 2nd DB round-trip, no fabrication).
+		expect(payload.content).toBe(baseInterject({ sessionId }).body);
+		expect(payload.messageId).toMatch(/^message:/);
 	});
 
 	it('refuses an interject into a session that is not running', async () => {

@@ -11,7 +11,7 @@
   import { invalidate } from '$app/navigation';
   import { stream } from '$lib/client/stream.svelte';
   import SessionTranscript from '$lib/components/shell/SessionTranscript.svelte';
-  import { rowToTurn } from '$lib/client/transcript-core';
+  import { rowToTurn, interjectEventToTurn, type Turn } from '$lib/client/transcript-core';
   import type { PageData, ActionData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -44,7 +44,45 @@
   // thinking state, tool-input formatting and briefing parse all live in <SessionTranscript>,
   // so this view and projects/[id] render identical framing — one kind-aware renderer, no
   // divergence (the projects/[id] view used to render `thinking` as assistant prose).
-  const transcriptTurns = $derived(transcript.map((m, i) => rowToTurn(m, i)));
+  const persistedTurns = $derived(transcript.map((m, i) => rowToTurn(m, i)));
+
+  // GA2 — LIVE operator interjects pushed into the selected session. A channel push is
+  // republished on the one bus as an `interject` event; we append it IMMEDIATELY as a
+  // communication turn (shared `interjectEventToTurn` — same mapping projects/[id] uses) so a
+  // pushed message appears the instant it streams, not only when the `message` db_change reload
+  // lands. Keyed by the server message id, so once the reload brings the PERSISTED row (same id)
+  // the live copy is de-duped away below — no double render, no fabrication (D-035a/F-008).
+  let liveInterjects = $state<Turn[]>([]);
+  // Subscribe per selected session; reset the live buffer on every selection change (a stale
+  // session's interjects must never bleed into another transcript).
+  $effect(() => {
+    const sid = selectedSession;
+    liveInterjects = [];
+    if (!sid) return;
+    let seq = 0;
+    const off = stream.subscribeTopic<{
+      origin?: string;
+      steer?: boolean;
+      messageId?: string;
+      content?: string;
+    }>('interject', sid, (d) => {
+      const turn = interjectEventToTurn(d as Record<string, unknown>, seq);
+      if (!turn) return;
+      if (liveInterjects.some((t) => t.id === turn.id)) return; // idempotent (re-fire-safe)
+      seq += 1;
+      liveInterjects = [...liveInterjects, turn];
+    });
+    return off;
+  });
+
+  // The rendered turns: the persisted replay, then any live interject NOT yet in the persisted
+  // set (deduped by the server message id — the reload-merge collapses the live copy once the
+  // db_change pulls the persisted row).
+  const transcriptTurns = $derived.by(() => {
+    if (liveInterjects.length === 0) return persistedTurns;
+    const seen = new Set(persistedTurns.map((t) => t.id));
+    return [...persistedTurns, ...liveInterjects.filter((t) => !seen.has(t.id))];
+  });
 
   // TASK 14.6 — the HONEST backend capability matrix (F-008): a control the wired
   // backend cannot really perform renders DISABLED with its reason, never a button
@@ -364,8 +402,8 @@
             No session found for <span class="mono">{shortId(selectedSession)}</span> — it may have
             been cleared, or the id is stale.
           </p>
-        {:else if transcript.length === 0}
-          <!-- Honest empty: a real session that has not yet persisted any turn. -->
+        {:else if transcriptTurns.length === 0}
+          <!-- Honest empty: a real session that has not yet persisted (or live-streamed) any turn. -->
           <p class="tp-state">No transcript yet — turns appear here as the session runs.</p>
         {:else}
           <!-- KIND-AWARE replay via the shared component (briefing / thinking-collapsible /
@@ -379,8 +417,8 @@
 
       {#if sessionMeta?.status === 'running'}
         <p class="tp-foot mono" aria-live="polite">live — new turns append as the session runs</p>
-      {:else if transcript.length > 0}
-        <p class="tp-foot mono">{transcript.length} turn{transcript.length === 1 ? '' : 's'} · read-only replay</p>
+      {:else if transcriptTurns.length > 0}
+        <p class="tp-foot mono">{transcriptTurns.length} turn{transcriptTurns.length === 1 ? '' : 's'} · read-only replay</p>
       {/if}
     </section>
   {/if}

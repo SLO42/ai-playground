@@ -11,6 +11,7 @@ import {
 	rowTurnKind,
 	rowToTurn,
 	liveEventToTurn,
+	interjectEventToTurn,
 	communicationLabel,
 	normOrigin,
 	toolName,
@@ -228,6 +229,68 @@ describe('liveEventToTurn — one streamed runtime event → Turn (live append)'
 		expect(liveEventToTurn(undefined, 0)).toBeNull();
 		expect(liveEventToTurn({}, 0)).toBeNull();
 		expect(liveEventToTurn({ notype: 1 } as Record<string, unknown>, 0)).toBeNull();
+	});
+});
+
+describe('interjectEventToTurn — one live `interject` bus event → a communication Turn (GA2)', () => {
+	it('maps an OPERATOR interject → a communication turn carrying origin + the verbatim body', () => {
+		const t = interjectEventToTurn(
+			{ origin: 'operator', steer: true, messageId: 'message:op1', content: 'pivot to X' },
+			0
+		);
+		expect(t).toEqual({
+			id: 'message:op1',
+			kind: 'communication',
+			content: 'pivot to X',
+			origin: 'operator'
+		});
+		// the same server-stamped origin the persisted row carries → the same operator label.
+		expect(communicationLabel(t!.origin!).tag).toBe('operator interjected');
+	});
+
+	it('keys by the server messageId (so a later reload-merge de-dupes by the same id)', () => {
+		const t = interjectEventToTurn({ origin: 'system', messageId: 'message:abc', content: 'x' }, 7);
+		expect(t!.id).toBe('message:abc');
+	});
+
+	it('falls back to a live-<seq> key when no messageId is carried', () => {
+		const t = interjectEventToTurn({ origin: 'hook', content: 'h' }, 4);
+		expect(t!.id).toBe('live-4');
+		expect(communicationLabel(t!.origin!).tag).toBe('hook message');
+	});
+
+	it('D-035a: an absent/unknown origin coalesces to the honest agent/unknown label, NEVER operator', () => {
+		const t = interjectEventToTurn({ messageId: 'message:leg', content: 'old' }, 0);
+		expect(t!.kind).toBe('communication');
+		expect(t!.origin).toBe('agent');
+		expect(communicationLabel(t!.origin!).tag).toBe('communication'); // honest unknown
+		// a forged uppercase claim can never read back as operator (binding rule).
+		expect(interjectEventToTurn({ origin: 'OPERATOR', content: 'x' }, 0)!.origin).not.toBe(
+			'operator'
+		);
+	});
+
+	it('SHADOW: empty/absent content → an empty communication (F-008 — never fabricated)', () => {
+		expect(interjectEventToTurn({ origin: 'operator', messageId: 'message:e' }, 0)).toEqual({
+			id: 'message:e',
+			kind: 'communication',
+			content: '',
+			origin: 'operator'
+		});
+		expect(
+			interjectEventToTurn({ origin: 'operator', content: 42 } as Record<string, unknown>, 1)!.content
+		).toBe('');
+	});
+
+	it('SHADOW: nil / shapeless payload → null (no throw)', () => {
+		expect(interjectEventToTurn(undefined, 0)).toBeNull();
+		expect(interjectEventToTurn(null as unknown as Record<string, unknown>, 0)).toBeNull();
+	});
+
+	it('SHADOW: an empty object payload still yields an honest unknown-origin empty communication', () => {
+		// the seam always sends origin+content, but a degraded/old frame must not crash the stream.
+		const t = interjectEventToTurn({}, 3);
+		expect(t).toEqual({ id: 'live-3', kind: 'communication', content: '', origin: 'agent' });
 	});
 });
 

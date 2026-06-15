@@ -17,7 +17,12 @@
   import { confirm } from '$lib/client/confirm.svelte';
   import { lineDiff } from '$lib/client/confirm-core';
   import SessionTranscript from '$lib/components/shell/SessionTranscript.svelte';
-  import { rowToTurn, liveEventToTurn, type Turn } from '$lib/client/transcript-core';
+  import {
+    rowToTurn,
+    liveEventToTurn,
+    interjectEventToTurn,
+    type Turn
+  } from '$lib/client/transcript-core';
   import type { PageData, ActionData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -404,6 +409,26 @@
         liveTurns = turn.kind === 'briefing' ? [turn, ...liveTurns] : [...liveTurns, turn];
       }
     );
+    // GA2 — a LIVE operator interject (a channel push into this running session) is republished
+    // on the one bus as an `interject` event (`{ origin, steer, messageId, content }`, D-035 /
+    // §2.11). Append it IMMEDIATELY as a COMMUNICATION turn (shared `interjectEventToTurn` — the
+    // live twin of the persisted row's `rowToTurn` path) so a pushed message appears the instant it
+    // streams, not only on reload (the gap: the live transcript subscribed to `transcript` only).
+    // HONEST: the rendered origin is the server stamp (D-035a) — the client only LABELS it; content
+    // is the verbatim delivered body. Idempotent (re-fire-safe): a messageId already shown is not
+    // appended twice (the persisted reload-merge on selection change uses the same row id).
+    const offI = stream.subscribeTopic<{
+      origin?: string;
+      steer?: boolean;
+      messageId?: string;
+      content?: string;
+    }>('interject', sid, (d) => {
+      const turn = interjectEventToTurn(d as Record<string, unknown>, liveSeq);
+      if (!turn) return;
+      if (liveTurns.some((t) => t.id === turn.id)) return; // already appended (idempotent)
+      liveSeq += 1;
+      liveTurns = [...liveTurns, turn];
+    });
     const offU = stream.subscribeTopic<{ tokensIn: number; tokensOut: number }>(
       'token_usage',
       sid,
@@ -416,6 +441,7 @@
     );
     return () => {
       offT();
+      offI();
       offU();
       offS();
     };

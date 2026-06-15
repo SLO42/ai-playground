@@ -234,6 +234,38 @@ export function liveEventToTurn(ev: Record<string, unknown> | undefined, seq: nu
 	}
 }
 
+/**
+ * Map ONE live `interject` bus event (`data`, the payload the channel seam republishes when a
+ * push reaches a running session — `{ origin, steer, messageId, content }`, §2.11 / D-035) → a
+ * COMMUNICATION Turn, or null when the payload is nil/shapeless. This is the LIVE twin of the
+ * persisted interject row's `rowToTurn` path: BOTH classify a pushed-in channel turn as
+ * 'communication' and carry the SERVER-STAMPED origin (the renderer only LABELS it) — so a live
+ * interject appends the INSTANT it streams, identical to what a reload would show, instead of
+ * only surfacing on reload (the GA2 gap on projects/[id], where the live transcript subscribed to
+ * the `transcript` topic only and the `interject` topic was unwired).
+ *
+ * D-035a-safe: the origin is the immutable server stamp (`normOrigin` coalesces an absent/unknown
+ * value → the honest 'agent'/unknown label, NEVER promoting to operator); content is rendered
+ * VERBATIM as the bus delivered it (the same fenced/raw body that was persisted) — never
+ * fabricated. F-008: an absent/non-string content renders as an empty communication ('(empty
+ * communication)' in the renderer), never invented text. `seq` keys the live-appended turn so it
+ * stays stably ordered and never collides with the seeded historical rows' ids.
+ */
+export function interjectEventToTurn(
+	data: Record<string, unknown> | undefined,
+	seq: number
+): Turn | null {
+	if (!data || typeof data !== 'object') return null;
+	const origin = normOrigin(typeof data.origin === 'string' ? data.origin : undefined);
+	return {
+		// Prefer the server message id (stable across a later reload-merge); fall back to a live key.
+		id: typeof data.messageId === 'string' && data.messageId ? data.messageId : `live-${seq}`,
+		kind: 'communication',
+		content: typeof data.content === 'string' ? data.content : '',
+		origin
+	};
+}
+
 /** The tool's display name. Honest default 'tool' when the name is absent/non-string. */
 export function toolName(tc: Record<string, unknown> | undefined): string {
 	return typeof tc?.name === 'string' ? tc.name : 'tool';

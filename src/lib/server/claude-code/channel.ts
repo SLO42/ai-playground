@@ -333,12 +333,18 @@ export function createChannel(deps: ChannelDeps): Channel {
 			);
 			const messageId = String(created[0].id);
 
-			// Republish onto the ONE events bus for live render (topic = session id, §2.11).
+			// Republish onto the ONE events bus for live render (topic = session id, §2.11). The
+			// payload carries the SERVER-STAMPED origin + the EXACT delivered body so the transcript
+			// pages can append the interject as a communication turn the instant it streams (GA2),
+			// identical to what a reload of the persisted row would show — never fabricated, never a
+			// 2nd DB round-trip. `content` is `deliverBody` (raw for an operator steer, fenced-as-data
+			// otherwise): the same body that was just persisted. origin is the authority (D-035a) — the
+			// client only LABELS it, never re-derives.
 			bus.publish({
 				type: 'interject',
 				topic: req.sessionId,
 				key: messageId,
-				data: { origin, steer, messageId }
+				data: { origin, steer, messageId, content: deliverBody }
 			});
 
 			return { origin, steered: steer, messageId };

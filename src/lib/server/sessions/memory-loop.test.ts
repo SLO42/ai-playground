@@ -16,6 +16,7 @@ import {
 } from '../runtime/index';
 import { MemoryService, FakeEmbedder, type ExtractFn, type MemoryCandidate } from '../memory/index';
 import { assertRecordId } from '../db/validate';
+import { sendPeerMessage, getPeerMessage } from '../peer/repo';
 import { launchSession } from './launch';
 
 // TASK 8.3 VERIFY — WIRE THE MEMORY LOOP into the live session path (D-026/D-028/D-029; D-019).
@@ -206,6 +207,65 @@ describe('TASK 8.3 — memory loop wired into the live session path', () => {
 			{ pid: new StringRecordId(assertRecordId(projectId)), c: extracted }
 		);
 		expect(rows.length, 'the extracted memory was stored').toBe(1);
+	});
+
+	// ── G-B: the offline-drain wired into the spawn path ──────────────────────────────
+	//
+	// At a recipient session's SPAWN, launchSession drains its pending peer_message inbox, folds the
+	// drained (already-fenced) bodies into the briefing (channelBodies), and writes an origin=agent
+	// transcript row per delivered message (→ G-A 'communication' turn). These tests prove the WIRING
+	// through the real launch path against real SurrealDB. (The drain ENGINE — TTL/idempotency/role —
+	// is exhaustively covered in peer/drain.test.ts; here we prove launchSession invokes it correctly.)
+	//
+	// NOTE (documented limitation, NOT a silent cut): launchSession CREATEs a fresh session WITHOUT a
+	// role (role is stamped later by workforce activation), so a freshly-launched session drains only
+	// messages addressed to its OWN session id, plus role@project messages once the session carries a
+	// role. The full offline→drain→deliver→render end-to-end (incl. the launch-shaped transcript row +
+	// the G-A 'communication' classification) is exhaustively covered against real SurrealDB in
+	// peer/drain.test.ts; HERE we prove launchSession actually INVOKES the drain leg at spawn and that
+	// it is fail-open (a non-matching message is left pending; the spawn is unaffected).
+
+	it('(G-B) launchSession runs the drain leg at spawn and leaves a non-matching role message pending; the spawn completes (fail-open wiring)', async () => {
+		// A role-addressed message in this project; the launched task session carries NO role → the drain
+		// leg runs, matches nothing, and the spawn completes cleanly (the drain is best-effort, F-014).
+		const { id: roleId } = (
+			await db.query<[Array<{ id: unknown }>]>(
+				`CREATE type::thing('role', 'pdrain_launch_role') SET slug='pdrain_launch_role', name='r', purpose='t', status='active' RETURN id;`
+			)
+		)[0][0] as { id: string };
+		const sender2 = (
+			await db.query<[Array<{ id: unknown }>]>(`CREATE session SET kind='task', model={ provider:'claude', model_id:'x' } RETURN id;`)
+		)[0][0].id as string;
+		const otherMsg = await sendPeerMessage(db, {
+			from_session: String(sender2),
+			to_kind: 'role',
+			to_role: String(roleId),
+			project: projectId,
+			body: 'role-addressed; not for a role-less task session'
+		});
+
+		const taskId = await makeTask('Role-less spawn', 'A task session with no role.');
+		const { rt } = runtimeFor('cc_drain_norole');
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime: rt,
+			memory: { service: mem, extract: async () => [] },
+			input: {
+				projectId,
+				taskId,
+				agentId: 'opus-1',
+				model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+				intent: 'code-write',
+				budgets: { thinking: 'high', toolCalls: 20, concurrency: 1 },
+				toolPolicy: { allow: ['Read'] }
+			}
+		});
+		expect(res.status).toBe('done'); // drain ran, matched nothing, spawn unaffected
+		// The non-matching role message is STILL pending (the role-less session's drain left it for the
+		// right recipient) — proving the drain leg ran correctly and did not over-deliver.
+		const still = await getPeerMessage(db, otherMsg.id);
+		expect(still!.status).toBe('pending');
 	});
 
 	it('(4) a THROWING memory loop never blocks or fails the spawn (best-effort, D-019)', async () => {

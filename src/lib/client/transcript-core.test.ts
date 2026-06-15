@@ -142,6 +142,29 @@ describe('communication turns — pushed-in channel rows carry their server-stam
 		expect(communicationLabel(t.origin!).tag).toBe('communication'); // honest unknown, never "operator"
 	});
 
+	it('G-B: a DRAINED peer message (role system, origin agent, tool_call.kind peer_message) → communication, labelled honest unknown', () => {
+		// The offline-drain (sessions/launch.ts) writes the delivered peer message as role='system',
+		// origin='agent' (D-035a: a peer message is agent-origin DATA, non-steering), carrying the
+		// fenced envelope as content + peer_message provenance in tool_call. It MUST render as a
+		// 'communication' turn (transcript visibility is free, G-A) — distinct from the agent's own
+		// prose — and NEVER be promoted to the operator label (it is non-steering reference data).
+		const t = rowToTurn(
+			{
+				id: 'm:peer',
+				role: 'system',
+				kind: 'system',
+				origin: 'agent',
+				content: '⎆BEGIN_REFERENCE⎆\n[channel]\n---\nI found the auth bug.\n⎆END_REFERENCE⎆',
+				toolCall: { kind: 'peer_message', from_session: 'session:abc', to_kind: 'role' }
+			},
+			0
+		);
+		expect(t.kind).toBe('communication');
+		expect(t.origin).toBe('agent');
+		expect(communicationLabel(t.origin!).tag).toBe('communication'); // never "operator"
+		expect(t.content).toContain('⎆BEGIN_REFERENCE⎆'); // delivered as fenced DATA
+	});
+
 	it('a hook push (origin hook) and a system push (origin system) get their own labels', () => {
 		const h = rowToTurn({ id: 'm:h', role: 'system', kind: 'system', content: 'hook', origin: 'hook' }, 0);
 		expect(h.kind).toBe('communication');

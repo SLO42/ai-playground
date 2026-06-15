@@ -32,6 +32,7 @@ import { writeAgentEvent } from '../analytics/events';
 import { getProject } from '../projects/repo';
 import { buildBriefing, type MemoryService, type ExtractFn } from '../memory/index';
 import { screen } from '../memory/screen';
+import { drainInbox } from '../peer/drain';
 import { loadGatesConfig } from '../config/index';
 import type {
 	AgentRuntime,
@@ -309,6 +310,71 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		detail: { intent: input.intent, reason: `spawn for ${input.intent}` }
 	});
 
+	// 2a. G-B OFFLINE DRAIN (PEER-MESSAGE-SPEC §7/§5 D2). At THIS recipient session's spawn, drain
+	// the pending peer_message rows addressed to it (direct to_session, or its role@project), expire
+	// the stale ones (TTL/hops — honest, never silently dropped), mark the rest delivered IDEMPOTENTLY
+	// (guarded WHERE status='pending' → the live PM2 path / a re-run never double-delivers), and WRITE
+	// the transcript `message` row (origin=agent, role=system) for each so G-A renders it as a
+	// 'communication' turn (transcript visibility is FREE). The drained, already-fenced bodies are
+	// folded into the briefing below (channelBodies) so they also reach the agent's context as DATA.
+	// FAIL-OPEN (F-014): a drain fault NEVER blocks the spawn — the undelivered rows stay pending for
+	// the NEXT spawn. The recipient's role is read from the just-created session row (the authoritative
+	// identity — never the launch input, which carries no role; role is stamped by workforce activation).
+	const drainedChannelBodies: { origin: string; body: string }[] = [];
+	try {
+		const [roleRows] = await db.query<[Array<{ role?: unknown }>]>(
+			`SELECT role FROM ONLY $sid;`,
+			{ sid }
+		);
+		const roleRow = (Array.isArray(roleRows) ? roleRows[0] : roleRows) as { role?: unknown } | undefined;
+		const recipientRole = roleRow?.role != null ? String(roleRow.role) : null;
+		const drain = await drainInbox(db, {
+			sessionId,
+			role: recipientRole,
+			project: input.projectId
+		});
+		// Transcript row per drained message (origin=agent, server-stamped — D-035a). seq is the
+		// pre-launch continuation band: seq -2 sorts the drained communications BEFORE the wake-up
+		// briefing (seq -1) and the first runtime turn (seq 0). Multiple drained rows share seq -2 and
+		// fall back to the `at` tie-break (messages.ts ORDER BY seq ASC, at ASC) — arrival order. The
+		// body is the repo's already-fenced envelope — persisted as-is (a delivered peer message renders
+		// as a 'communication' turn because role='system' + origin='agent' classifies that way, GA1).
+		for (const m of drain.delivered) {
+			drainedChannelBodies.push({ origin: 'agent', body: m.body });
+			try {
+				await db.query(`CREATE message CONTENT $content;`, {
+					content: omitUndefined({
+						session: sid,
+						role: 'system',
+						// m0038: a drained peer message is a PUSHED-IN communication, NOT the agent's own
+						// prose. origin='agent' (D-035a: a peer message is agent-origin DATA, non-steering)
+						// is stamped HERE server-side, never derived from the body. The transcript-core
+						// classifier maps role='system' + origin='agent' → 'communication' (GA1), so it
+						// renders as a labelled inbound communication, distinct from the agent's turns.
+						origin: 'agent',
+						kind: 'system',
+						seq: -2,
+						content: m.body,
+						tool_call: { kind: 'peer_message', from_session: m.fromSession, from_role: m.fromRole, to_kind: m.toKind }
+					})
+				});
+			} catch (persistErr) {
+				console.warn(
+					`[launch] drained peer-message transcript persist failed for ${sessionId} msg ${m.id} (fail-open): ${(persistErr as Error).message}`
+				);
+			}
+		}
+		if (drain.delivered.length || drain.expiredCount) {
+			console.info(
+				`[launch] peer-drain for ${sessionId}: ${drain.delivered.length} delivered, ${drain.expiredCount} expired`
+			);
+		}
+	} catch (drainErr) {
+		// Best-effort / fail-open (F-014): the drain is delivery+observability, NEVER liveness — a
+		// fault here must not block or fail the spawn. The pending rows simply drain at the next spawn.
+		console.warn(`[launch] peer-message drain skipped for ${sessionId}: ${(drainErr as Error).message}`);
+	}
+
 	// 2b. RECALL on spawn (TASK 8.3): assemble the fenced wake-up briefing for this task and
 	// inject it as the SEPARATE `context` field (D-008 — never folded into the task; D-026 —
 	// every injected source is fenced as DATA). Surface it as a `briefing` transcript message
@@ -320,7 +386,13 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 			const briefing = await buildBriefing(memory.service, {
 				project: input.projectId,
 				// The task title+description is the recall seed query (D-029 — raw, no summary).
-				query: `${task.title}\n${task.description}`.trim()
+				query: `${task.title}\n${task.description}`.trim(),
+				// G-B: the offline-drained peer messages, folded in as channel bodies (fenced as DATA,
+				// D-026 §10). Their `body` is the repo's ALREADY-fenced envelope; buildBriefing's
+				// channel path re-screens (idempotent) + re-fences, collapsing the inner sentinels
+				// (stripEmbeddedSentinels) to a single clean DATA block — so the agent woke up WITH the
+				// messages it missed while offline, as reference data it weighs, never an instruction.
+				...(drainedChannelBodies.length ? { channelBodies: drainedChannelBodies } : {})
 			});
 			if (briefing.items.length) {
 				// Inject the fenced briefing items as the runtime context bundle. The runtime's

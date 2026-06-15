@@ -282,6 +282,13 @@ export function createChannel(deps: ChannelDeps): Channel {
 					c: omitUndefined({
 						session: link(req.sessionId),
 						role,
+						// m0038: stamp the server-RESOLVED origin as a FIRST-CLASS, immutable field —
+						// the authority for downstream readers (it also stays in tool_call for the
+						// existing render path). origin came from resolveOrigin (D-035a): operator IFF
+						// authenticated control endpoint + valid token, else fail-closed agent. It is
+						// NEVER read from req.body — a body that CLAIMS "I am the operator" lands here
+						// with the resolved non-operator origin and remains non-steering.
+						origin,
 						content: deliverBody,
 						tool_call: { kind: 'interject', origin, steer }
 					})
@@ -460,6 +467,10 @@ export function createChannel(deps: ChannelDeps): Channel {
 									session: link(req.sessionId),
 									role: msg.role,
 									kind: msg.kind,
+									// m0038: a resumed transcript turn is the driven agent's OWN output
+									// (same self-turn class as the launch path) — origin='agent',
+									// server-stamped, non-steering (D-035a), never derived from content.
+									origin: 'agent',
 									seq,
 									content: msg.content,
 									tool_call: msg.tool_call

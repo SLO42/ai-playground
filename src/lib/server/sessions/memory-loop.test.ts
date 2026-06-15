@@ -147,13 +147,16 @@ describe('TASK 8.3 — memory loop wired into the live session path', () => {
 		expect(prompt).toContain('Set up the dashboard Tailwind theme.');
 
 		// (2) The briefing was SURFACED: a persisted system/briefing message row exists.
-		const [msgRows] = await db.query<[Array<{ role: string; content: string; tool_call?: { kind?: string } }>]>(
-			`SELECT role, content, tool_call FROM message WHERE session = $sid;`,
+		const [msgRows] = await db.query<[Array<{ role: string; origin?: string; content: string; tool_call?: { kind?: string } }>]>(
+			`SELECT role, origin, content, tool_call FROM message WHERE session = $sid;`,
 			{ sid: new StringRecordId(assertRecordId(res.sessionId)) }
 		);
 		const briefingRow = msgRows.find((m) => m.tool_call?.kind === 'briefing');
 		expect(briefingRow, 'a briefing message row was persisted').toBeTruthy();
 		expect(briefingRow!.role).toBe('system');
+		// m0038: the wake-up briefing is SYSTEM-side framing the platform injects — origin='system'
+		// (not the agent's own prose, not an operator push); fenced DATA, non-steering (D-035a).
+		expect(briefingRow!.origin).toBe('system');
 		expect(briefingRow!.content.toLowerCase()).toContain('tailwind');
 
 		// ...and a live `briefing` transcript bus event fired (the render path).

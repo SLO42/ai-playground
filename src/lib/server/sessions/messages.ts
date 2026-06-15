@@ -22,6 +22,13 @@ export interface TranscriptMessage {
 	kind?: string;
 	/** Per-session monotonic replay order (m0037). 0 for legacy rows that predate the field. */
 	seq?: number;
+	/** Server-authoritative, immutable origin (m0038 / D-035a): operator | agent | system |
+	 *  hook. Stamped at the authenticated ingress, NEVER derived from content; only `operator`
+	 *  steers. ALWAYS present — legacy rows predating the field coalesce to the honest `agent`
+	 *  default at read time. This is the AUTHORITY a reader uses to distinguish a pushed-in
+	 *  communication from the agent's own prose — exposing it adds NO steering/forgery path
+	 *  (the value is the server stamp, period). */
+	origin: string;
 	content: string;
 	/** Tool-call metadata when the message is a tool turn (name/args/ok/origin/steer). */
 	toolCall?: Record<string, unknown>;
@@ -49,13 +56,19 @@ export async function listSessionMessages(
 				role: string;
 				kind?: string;
 				seq?: number;
+				origin?: string;
 				content: string;
 				tool_call?: Record<string, unknown>;
 				at: unknown;
 			}>
 		]
 	>(
-		`SELECT id, role, kind, seq, content, tool_call, at FROM message WHERE session = $sid ORDER BY seq ASC, at ASC LIMIT $lim;`,
+		// m0038: COALESCE origin → "agent" in the projection. The schema DEFAULT only fires on
+		// CREATE, so the ~178 rows that predate m0038 store NO origin and read back NONE; `??`
+		// stamps the honest `agent` default at read time (a legacy row is the agent's OWN
+		// transcript turn — NEVER operator/steering). Same shape as the seq/kind NONE handling;
+		// this is the F-013/F-015 rule — never return a raw NONE that the UI renders as absent.
+		`SELECT id, role, kind, seq, origin ?? "agent" AS origin, content, tool_call, at FROM message WHERE session = $sid ORDER BY seq ASC, at ASC LIMIT $lim;`,
 		{ sid, lim: limit }
 	);
 	return (rows ?? []).map((r) => ({
@@ -63,6 +76,8 @@ export async function listSessionMessages(
 		role: r.role,
 		...(r.kind != null ? { kind: r.kind } : {}),
 		...(r.seq != null ? { seq: r.seq } : {}),
+		// origin is always present after the `?? "agent"` coalesce above (legacy NONE → agent).
+		origin: r.origin ?? 'agent',
 		content: r.content,
 		...(r.tool_call ? { toolCall: r.tool_call } : {}),
 		at: r.at != null ? String(r.at) : ''

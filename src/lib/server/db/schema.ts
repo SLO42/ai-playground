@@ -1427,6 +1427,49 @@ const m0037_message_kind_seq: Migration = {
 	`
 };
 
+// ── TASK (message origin) — server-authoritative `origin` on every message (D-035a) ──
+//
+// The PROBLEM m0003+m0037 left open: a `message` row carries role ∈
+// {user,assistant,tool,system} + kind, but NO origin — so a channel PUSH (an operator
+// interject; the future peer-agent bus) is indistinguishable from the driven agent's OWN
+// prose once persisted. channel.interject ALREADY resolves an immutable server-stamped
+// origin (resolveOrigin, D-035a) but only buried it inside tool_call; the read side could
+// not surface it as a first-class, authoritative attribute.
+//
+// The TAXONOMY (the binding rule, D-035a — origin is SERVER-stamped, IMMUTABLE, NEVER
+// derived from content; only `operator` may STEER):
+//   • agent    — the driven agent's OWN turns (assistant_text | thinking | tool_use |
+//                tool_result persisted by launch.ts/resume from the runtime stream). A
+//                self-turn is the agent itself producing output — NOT a pushed-in
+//                communication. ALSO the fail-closed landing for a non-operator interject
+//                (fenced DATA, non-steering). NEVER steers.
+//   • operator — an authenticated operator interject (loopback control endpoint + valid
+//                D-025 boot token, resolved server-side). The ONLY steering origin.
+//   • system   — system-side framing the platform injects: the wake-up `briefing` message
+//                and the task-prompt/system context. Fenced as DATA, non-steering.
+//   • hook     — reserved for hook-origin pushes (lifecycle hooks). Fenced, non-steering.
+//
+// DEFAULT "agent" (NOT operator) is the load-bearing choice (F-015 §6.2 read-back-safe):
+//   the ~178 legacy rows on the LIVE mid-ceremony dev DB are overwhelmingly the driven
+//   agent's OWN transcript turns (assistant/thinking/tool) — they read back HONESTLY as
+//   `agent`, and CRUCIALLY a default of `operator` would FALSELY grant legacy content a
+//   steering origin (the exact forgery the binding rule forbids). Pre-existing interject
+//   rows already recorded their resolved origin in tool_call.origin, so the agent default
+//   never mislabels an operator push as agent in a way that grants it power — an `agent`
+//   row can never steer regardless. New writes set origin explicitly on every path.
+//
+// ADDITIVE + IDEMPOTENT (F-015): a single DEFAULT-bearing DEFINE FIELD with OVERWRITE — no
+// row reset, no backfill scan (the DEFAULT fires only on CREATE; existing rows keep their
+// content and read back `agent`). Clean over a fresh DB, a half-applied state, and a re-run.
+// The mid-ceremony LIVE dev DB's existing rows are UNTOUCHED.
+const m0038_message_origin: Migration = {
+	id: '0038_message_origin',
+	up: `
+		DEFINE FIELD OVERWRITE origin ON message TYPE string DEFAULT "agent"
+			ASSERT $value IN ["operator","agent","system","hook"];
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1470,5 +1513,6 @@ export const schemaMigrations: Migration[] = [
 	m0034_gauntlet_sentinel_nonempty,
 	m0035_gauntlet_sentinel_ulid_shape,
 	m0036_memory_history_flexible,
-	m0037_message_kind_seq
+	m0037_message_kind_seq,
+	m0038_message_origin
 ];

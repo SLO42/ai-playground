@@ -172,6 +172,10 @@ describe('launchSession — persistence plumbing (1.6b; D-011)', () => {
 		const toolMsg = msgs.find((m) => m.role === 'tool' && m.tool_call);
 		expect(toolMsg).toBeTruthy();
 		expect((toolMsg!.tool_call as Record<string, unknown>).name).toBe('Read');
+		// m0038: EVERY launched transcript turn is the driven agent's OWN output — a SELF-turn,
+		// server-stamped origin='agent', NEVER operator (a self-turn can never become steering).
+		expect(msgs.every((m) => m.origin === 'agent')).toBe(true);
+		expect(msgs.some((m) => m.origin === 'operator')).toBe(false);
 	});
 
 	it('persists agent_event rows: a spawn and a completion with token totals', async () => {

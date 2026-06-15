@@ -340,6 +340,10 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 					content: omitUndefined({
 						session: sid,
 						role: 'system',
+						// m0038: the wake-up briefing is SYSTEM-side framing the platform injects —
+						// NOT the agent's own prose and NOT an operator push. origin='system', fenced
+						// DATA, non-steering (D-035a). Server-stamped here, never derived from content.
+						origin: 'system',
 						// m0037: the wake-up briefing is its own replay kind; seq -1 sorts it BEFORE
 						// the first runtime turn (order starts at 0). The briefing body was already
 						// D-026-fenced upstream (buildBriefing), so it is safe to persist as-is.
@@ -439,6 +443,11 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 							session: sid,
 							role: msg.role,
 							kind: msg.kind,
+							// m0038: a launched transcript turn is the driven agent's OWN output
+							// (assistant_text/thinking/tool_use/tool_result) — a SELF-turn, not a
+							// pushed-in communication. origin='agent', server-stamped, non-steering
+							// (D-035a). It is NEVER derived from the turn's content.
+							origin: 'agent',
 							seq,
 							content: msg.content,
 							tool_call: msg.tool_call

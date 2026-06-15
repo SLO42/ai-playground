@@ -1470,6 +1470,67 @@ const m0038_message_origin: Migration = {
 	`
 };
 
+// ── G-B — PEER_MESSAGE FLEET BUS (PEER-MESSAGE-SPEC §2 data plane; D-035a) ───────
+//
+// The agent↔agent communication bus. A peer message is ALWAYS origin=agent →
+// FENCED as DATA, NON-STEERING (D-035a locked): no agent commands another agent.
+// The `body` column stores the ALREADY screened+fenced envelope (D-026) — the raw
+// agent text NEVER lands here; peer/repo.ts screen()s then fence()s before write.
+//
+// ROUTING ENVELOPE:
+//   from_session  — the authenticated sender session (stamped server-side at ingress;
+//                   NEVER derived from content — D-035a immutability lives in the
+//                   ingress writer, this column just records the stamped value).
+//   from_role     — the sender's role identity when it has one (option — chat/task
+//                   sessions with no role read back NONE → null → '—', F-013).
+//   to_kind       — the 4 address classes the resolver fans out (§spec): a direct
+//                   session, a role@project, a project pm, or the atelier identity.
+//   to_session/to_role/project — the class-specific target coordinates (all option;
+//                   which are SET depends on to_kind, enforced in the repo writer).
+//   body          — screened+fenced envelope string (never raw — see above).
+//   status        — pending→delivered drain lifecycle; expired (TTL) / quarantined
+//                   (screen tripped a quarantineOnHit rule at write — D-026 fail-closed).
+//   hops          — relay TTL (1 = single hop default; 0 = terminal, no further relay).
+//   created_at/delivered_at — F-013 datetimes (ISO in the normalizer; absent → null).
+//
+// IDEMPOTENT + ADDITIVE (F-015): the table is NEW; every DEFINE carries OVERWRITE so a
+// re-run or a half-applied state re-applies cleanly. No row-recovery scan is needed (no
+// production write path exists until this migration lands — proven by the apply-twice +
+// half-applied tests in peer/repo.test.ts). The LIVE mid-ceremony dev DB is UNTOUCHED:
+// this adds a fresh table and touches no existing row.
+//
+// Dedup/idempotency: `dedup_key` is a VALUE that prefers a caller-supplied client_key
+// (the ingress idempotency token) and falls back to the row id (D-008 pattern — same as
+// session.dedup_key) so a retried ingress write collides on the UNIQUE index rather than
+// double-delivering. The drain query reads (to_session, status), so that pair is indexed.
+const m0039_peer_message: Migration = {
+	id: '0039_peer_message',
+	up: `
+		DEFINE TABLE OVERWRITE peer_message SCHEMAFULL;
+		DEFINE FIELD OVERWRITE from_session  ON peer_message TYPE record<session>;
+		DEFINE FIELD OVERWRITE from_role     ON peer_message TYPE option<record<role>>;
+		DEFINE FIELD OVERWRITE to_kind       ON peer_message TYPE string
+			ASSERT $value IN ["session","role","pm","atelier"];
+		DEFINE FIELD OVERWRITE to_session    ON peer_message TYPE option<record<session>>;
+		DEFINE FIELD OVERWRITE to_role       ON peer_message TYPE option<record<role>>;
+		DEFINE FIELD OVERWRITE project       ON peer_message TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE body          ON peer_message TYPE string;
+		DEFINE FIELD OVERWRITE status        ON peer_message TYPE string DEFAULT "pending"
+			ASSERT $value IN ["pending","delivered","expired","quarantined"];
+		DEFINE FIELD OVERWRITE hops          ON peer_message TYPE int DEFAULT 1;
+		DEFINE FIELD OVERWRITE client_key    ON peer_message TYPE option<string>;
+		DEFINE FIELD OVERWRITE created_at    ON peer_message TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE delivered_at  ON peer_message TYPE option<datetime>;
+
+		-- Drain query index (§spec: scan a recipient's pending inbox by (to_session,status)).
+		DEFINE INDEX OVERWRITE peer_message_inbox ON peer_message FIELDS to_session, status;
+		-- Dedup/idempotency: prefer the ingress client_key, fall back to id (D-008 VALUE pattern).
+		DEFINE FIELD OVERWRITE dedup_key ON peer_message VALUE (client_key OR id);
+		DEFINE INDEX OVERWRITE peer_message_dedup ON peer_message FIELDS dedup_key UNIQUE;
+		${backfillValueField('peer_message', 'dedup_key')}
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1514,5 +1575,6 @@ export const schemaMigrations: Migration[] = [
 	m0035_gauntlet_sentinel_ulid_shape,
 	m0036_memory_history_flexible,
 	m0037_message_kind_seq,
-	m0038_message_origin
+	m0038_message_origin,
+	m0039_peer_message
 ];

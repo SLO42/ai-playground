@@ -24,7 +24,6 @@ import { authorizeHookRequest } from '$lib/server/hooks';
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import { getBus, getBootToken, getRuntime } from '$lib/server/harness';
 import { createChannel } from '$lib/server/claude-code';
-import { screen } from '$lib/server/memory/screen';
 import {
 	sendPeer,
 	type SendPeerResult,
@@ -141,22 +140,22 @@ export const POST: RequestHandler = async ({ request }) => {
 			runtime: runtimeAvail.runtime,
 			bootToken: getBootToken()
 		});
-		deliver = async (recipientSessionId: string): Promise<boolean> => {
+		deliver = async (recipientSessionId: string, fencedBody: string): Promise<boolean> => {
 			// NON-STEERING by construction: no presentedToken, viaControlEndpoint:false ⇒ origin=agent,
-			// steer=false. The channel FENCES the body (its own D-026 §10 envelope) but it does NOT
-			// screen() — channel.ts has no secret/PII screen. The persisted peer_message row is
-			// screen()→fence() (repo.buildPeerBody), but a raw delivery here would leak a redact-class
-			// secret into the recipient's LIVE context AND its G-A `message` row (the durable envelope
-			// would be safe, the delivered turn would not). So we screen() the body on THIS leg too —
-			// D-026 invariant: every delivered peer body passes screen() THEN fence() (channel fences).
-			// Quarantine-class bodies never reach here (sendPeer skips delivery when persisted.status==
-			// 'quarantined'); redact-class is redacted-in-place. A throw/!running is fail-open at the
-			// call site (sendPeer swallows it).
-			const screenedBody = screen(rawBody).text;
+			// steer=false. The body delivered is the EXACT screen()→fence() envelope the engine already
+			// persisted (peer_message.body via repo.buildPeerBody — the ONE D-026 write-time chokepoint),
+			// handed to us as `fencedBody`. We deliver it preFenced:true so the channel does NOT re-fence
+			// (a second fence would nest two DATA blocks) — the delivered turn is BYTE-IDENTICAL to the
+			// durable row. PM2: this removes the old second screen() call-site on the live path (the
+			// divergence risk) — there is now ONE chokepoint, so a redact-class secret is redacted
+			// identically in BOTH the recipient delivery AND the persisted row, with no path that can
+			// drift. Quarantine-class bodies never reach here (sendPeer skips delivery when
+			// persisted.status=='quarantined'). A throw/!running is fail-open at the call site.
 			const res = await channel.interject({
 				sessionId: recipientSessionId,
-				body: screenedBody,
-				viaControlEndpoint: false
+				body: fencedBody,
+				viaControlEndpoint: false,
+				preFenced: true
 			});
 			return res.origin === 'agent'; // delivered as a non-steering agent turn
 		};

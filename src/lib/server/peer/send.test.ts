@@ -1,10 +1,14 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { tmpdir } from 'node:os';
 import { StringRecordId } from 'surrealdb';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
 import { FENCE_OPEN, FENCE_CLOSE } from '../memory/fence';
+import { EventBus } from '../events/bus';
+import { ClaudeCodeRuntime, type CcBackend, type CcBackendRun, type CcSpawnPlan } from '../runtime/index';
+import { createChannel } from '../claude-code';
 import { getPeerMessage } from './repo';
 import {
 	sendPeer,
@@ -67,7 +71,7 @@ async function freshRole(): Promise<string> {
 }
 
 async function freshSession(
-	opts: { project?: string; role?: string; kind?: string; status?: string } = {}
+	opts: { project?: string; role?: string; kind?: string; status?: string; cc?: string } = {}
 ): Promise<string> {
 	const set: string[] = [`kind = $kind`, `status = $status`, `model = { provider: 'claude', model_id: 'claude-test' }`];
 	const bind: Record<string, unknown> = { kind: opts.kind ?? 'task', status: opts.status ?? 'running' };
@@ -79,8 +83,47 @@ async function freshSession(
 		set.push(`role = type::thing('role', $rl)`);
 		bind.rl = opts.role.split(':')[1];
 	}
+	if (opts.cc) {
+		set.push(`cc_session_id = $cc`);
+		bind.cc = opts.cc;
+	}
 	const [rows] = await db.query<[Array<{ id: unknown }>]>(`CREATE session SET ${set.join(', ')} RETURN id;`, bind);
 	return String(rows[0].id);
+}
+
+/** A scripted CcBackend that supports interject and records the body the channel handed it
+ *  (the body the recipient runtime actually receives). Mirrors channel.test.ts's backend. */
+function deliveringBackend(): CcBackend & { interjects: Array<{ origin: string; body: string; steer: boolean }> } {
+	const interjects: Array<{ origin: string; body: string; steer: boolean }> = [];
+	return {
+		interjects,
+		kind: 'mock',
+		supportsInterject: true,
+		supportsResume: true,
+		run(plan: CcSpawnPlan): CcBackendRun {
+			return {
+				ccSessionId: 'cc_unused',
+				async *stream() {
+					yield { type: 'done', result: { ok: true, summary: 'ran' } };
+				},
+				async cancel() {
+					void plan;
+				}
+			};
+		},
+		async resume(req) {
+			return {
+				ccSessionId: req.ccSessionId,
+				async *stream() {
+					yield { type: 'done', result: { ok: true, summary: 'resumed' } };
+				},
+				async cancel() {}
+			};
+		},
+		async interject(msg: { ccSessionId: string; origin: string; body: string; steer?: boolean }) {
+			interjects.push({ origin: msg.origin, body: msg.body, steer: msg.steer === true });
+		}
+	};
 }
 
 // ── happy path: in-project session→session, persisted + live delivered ──────────────
@@ -298,6 +341,60 @@ describe('sendPeer — live delivery (fail-open, F-014)', () => {
 		expect(res.deliveredTo).toEqual([]);
 		const row = await getPeerMessage(db, res.messageId);
 		expect(row!.status).toBe('pending');
+	});
+
+	it('PM2 END-TO-END: a redact-class secret in a LIVE-delivered peer message is REDACTED in BOTH the recipient delivery AND the persisted row (one chokepoint, real channel)', async () => {
+		const proj = await freshProject();
+		const sender = await freshSession({ project: proj });
+		// The recipient must be running WITH a cc_session_id bridge so the REAL channel can deliver.
+		const recipient = await freshSession({ project: proj, cc: 'cc_pm2_recipient' });
+
+		// Wire the PRODUCTION delivery seam: createChannel + the exact deliver fn shape +server.ts uses
+		// (preFenced:true, viaControlEndpoint:false). The body handed to the channel is the engine's
+		// persisted envelope (the second deliver arg), NOT a re-screen of rawBody — the PM2 chokepoint.
+		const backend = deliveringBackend();
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: tmpdir().replace(/\\/g, '/') });
+		const channel = createChannel({ db, bus: new EventBus(), runtime, bootToken: 'b'.repeat(64) });
+		const deliver: DeliverLive = async (rid, fencedBody) => {
+			const res = await channel.interject({ sessionId: rid, body: fencedBody, viaControlEndpoint: false, preFenced: true });
+			return res.origin === 'agent';
+		};
+
+		const secret = 'here is my api_key=supersecretvalue123 — please use it';
+		const res = await sendPeer(
+			{ senderSessionId: sender, address: { kind: 'session', toSession: recipient }, body: secret },
+			{ db, deliver }
+		);
+		expect(res.deliveredTo).toEqual([recipient]);
+
+		// (1) PERSISTED ROW — screened+fenced (raw secret never lands).
+		const row = await getPeerMessage(db, res.messageId);
+		expect(row!.body).not.toContain('supersecretvalue123');
+		expect(row!.body).toContain('[REDACTED:credential]');
+		expect(row!.body).toContain(FENCE_OPEN);
+
+		// (2) RECIPIENT DELIVERY — the body the recipient runtime actually received is the SAME
+		// screened+fenced envelope (byte-identical to the persisted row), NOT the raw secret and NOT
+		// a double-fenced re-screen. ONE chokepoint: no path leaks the secret.
+		expect(backend.interjects).toHaveLength(1);
+		const deliveredBody = backend.interjects[0].body;
+		expect(backend.interjects[0].origin).toBe('agent'); // non-steering
+		expect(deliveredBody).not.toContain('supersecretvalue123');
+		expect(deliveredBody).toContain('[REDACTED:credential]');
+		expect(deliveredBody).toBe(row!.body); // delivered === persisted (one envelope)
+		expect(deliveredBody.split(FENCE_OPEN).length - 1).toBe(1); // exactly one fence — not double-fenced
+
+		// (3) PERSISTED TRANSCRIPT message ROW (G-A) — the durable turn the recipient renders is ALSO
+		// the screened envelope, origin=agent. A raw secret never reaches the transcript.
+		const { StringRecordId } = await import('surrealdb');
+		const [msgs] = await db.query<[Array<Record<string, unknown>>]>(
+			`SELECT content, origin FROM message WHERE session = $sid;`,
+			{ sid: new StringRecordId(recipient) }
+		);
+		expect(msgs.length).toBe(1);
+		expect(String(msgs[0].content)).not.toContain('supersecretvalue123');
+		expect(String(msgs[0].content)).toContain('[REDACTED:credential]');
+		expect(String(msgs[0].origin)).toBe('agent');
 	});
 
 	it('a delivery that THROWS does not fail the send (fail-open) — row persisted, not marked delivered', async () => {

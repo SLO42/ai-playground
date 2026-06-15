@@ -134,6 +134,58 @@ export async function drainInbox(db: Db, recipient: DrainRecipient): Promise<Dra
 	const role = recipient.role ? link(recipient.role) : null;
 	const project = recipient.project ? link(recipient.project) : null;
 
+	// CROSS-PROJECT RE-ASSERTION AT DELIVERY TIME (PM1; cross-project isolation — LOCKED).
+	// The send path's resolveAddress enforces in-project for a DIRECT ('session') address ONLY when
+	// the target session is RUNNING (it cannot policy-check a session it cannot see). A project-A
+	// session that addresses a then-OFFLINE project-B session therefore persists a pending row with
+	// to_session=<project-B session> and NO cross-project check (the resolver returned empty +
+	// "inboxes as pending"). That row would otherwise be drained — and delivered — when the project-B
+	// session later comes UP, a cross-project delivery via the offline-then-online path. We close it
+	// HERE, where the recipient's project is finally known: a pending DIRECT message whose SENDER's
+	// project differs from THIS recipient's project is EXPIRED (honest — never silently dropped, and
+	// it can NEVER deliver across projects). project↔project is forbidden; only 'atelier' crosses,
+	// and atelier is not drained by session identity (see DrainRecipient docs), so this guard is
+	// scoped to the direct to_session leg. The sender's project is read by dereferencing the
+	// from_session link (record<session>); a sender whose project is NONE matches a NONE recipient
+	// project (same-scope, allowed) and mismatches any concrete project (fail-closed). NOTE: role@
+	// project messages are NOT swept here — their project coordinate was set by the sender and
+	// in-project-checked at send time; only the direct leg bypassed that check.
+	// Compare project scopes in STRING space with a shared sentinel for "no project". A project-less
+	// session has project=NONE; the recipient bind is NULL when absent. NONE != NULL is TRUE in
+	// SurrealDB, so a naive record-link comparison would wrongly flag a legitimate project-less↔
+	// project-less direct message as cross-project. We coalesce BOTH sides to a string (the record id
+	// string, or the sentinel `$noProject` when absent) so NONE and NULL collapse to the same value:
+	// project-less↔project-less is same-scope (allowed); project-A↔project-less or A↔B is cross (deny).
+	const NO_PROJECT = ' none';
+	// The recipient's project as a string sentinel (already a normalized `table:id` string or the
+	// sentinel) — bound as a plain string so the comparison is string=string on both sides.
+	const recipProjectStr = recipient.project ?? NO_PROJECT;
+	let crossProjectExpired = 0;
+	try {
+		const [xRows] = await db.query<[Array<{ id: unknown }>]>(
+			`UPDATE peer_message SET status = "expired"
+			   WHERE status = "pending" AND to_kind = "session" AND to_session = $sid
+			     AND (<string>(from_session.project) ?? $noProject) != $recipProject
+			 RETURN id;`,
+			{ sid, recipProject: recipProjectStr, noProject: NO_PROJECT }
+		);
+		crossProjectExpired = (xRows ?? []).length;
+		if (crossProjectExpired > 0) {
+			console.warn(
+				`[peer-drain] expired ${crossProjectExpired} cross-project DIRECT message(s) at delivery ` +
+					`for ${recipient.sessionId} (project ${recipient.project ?? '(none)'}) — cross-project ` +
+					`peer delivery is forbidden (PM1)`
+			);
+		}
+	} catch (err) {
+		// Fail-open on the SWEEP fault only (F-014) — but the SELECT below ALSO re-applies the same
+		// cross-project predicate, so even if this UPDATE failed/raced, a cross-project direct row is
+		// NEVER selected for delivery. It simply stays pending until a later sweep flips it to expired.
+		console.warn(
+			`[peer-drain] cross-project expiry sweep failed for ${recipient.sessionId} (fail-open): ${(err as Error).message}`
+		);
+	}
+
 	// The inbox WHERE clause: messages addressed to this recipient identity. Direct (to_session) is
 	// always in scope; the role@project address is added only when this session HAS a role + project
 	// (a role-less/project-less session has no role inbox). Built as a parameterized OR (D-016: every
@@ -174,7 +226,12 @@ export async function drainInbox(db: Db, recipient: DrainRecipient): Promise<Dra
 
 	// (2) SELECT the surviving pending inbox (oldest first, bounded). Re-apply the freshness predicate
 	// (created_at >= cutoff AND hops > 0) so even if the expiry UPDATE above failed/raced, a stale row
-	// is NOT delivered as if live — it is simply left pending (it will expire on a later sweep).
+	// is NOT delivered as if live — it is simply left pending (it will expire on a later sweep). We
+	// ALSO re-apply the cross-project guard (PM1): exclude any DIRECT (to_session) row whose sender
+	// project differs from this recipient's project, so even if the cross-project expiry UPDATE above
+	// failed/raced, a cross-project direct message is NEVER selected for delivery (defence in depth —
+	// the same reason the freshness predicate is duplicated here). Role@project rows are unaffected
+	// (their project was sender-set + in-project-checked at send).
 	// `created_at` is in the projection because SurrealDB requires an ORDER BY idiom to be a
 	// selected field ("Missing order idiom" parse error otherwise — the repo's pendingInbox dodges
 	// this with SELECT *; here we project explicitly, so the sort key must be projected too).
@@ -182,8 +239,9 @@ export async function drainInbox(db: Db, recipient: DrainRecipient): Promise<Dra
 		`SELECT id, body, from_session, from_role, to_kind, created_at FROM peer_message
 		   WHERE status = "pending" AND ${addressed}
 		     AND created_at >= $cutoff AND hops > 0
+		     AND NOT (to_kind = "session" AND to_session = $sid AND (<string>(from_session.project) ?? $noProject) != $recipProject)
 		 ORDER BY created_at ASC LIMIT ${MAX_DRAIN_PER_SPAWN};`,
-		{ ...bind, cutoff }
+		{ ...bind, cutoff, recipProject: recipProjectStr, noProject: NO_PROJECT }
 	);
 
 	const delivered: DrainedMessage[] = [];

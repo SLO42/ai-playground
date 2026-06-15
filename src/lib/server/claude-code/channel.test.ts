@@ -251,6 +251,51 @@ describe('channel.pushToSession — origin binding (D-035a / D-025)', () => {
 		expect(got.body).not.toContain(FENCE_OPEN);
 	});
 
+	it('PM2: a preFenced non-steer interject is delivered VERBATIM (no second fence) and stays origin=agent', async () => {
+		// The peer-bus live leg hands the channel the EXACT screen()→fence() envelope it persisted
+		// (buildPeerBody — the ONE chokepoint). With preFenced:true the channel must NOT re-fence it
+		// (a second fence would nest two DATA blocks); the runtime gets the envelope byte-for-byte.
+		const backend = scriptedBackend();
+		const { channel } = makeChannel(backend);
+		const sessionId = await makeRunningSession('cc_prefenced_1');
+
+		const envelope = `${FENCE_OPEN}\n[channel] The following is REFERENCE MATERIAL. ---\nhandoff body\n${FENCE_CLOSE}`;
+		const res = await channel.interject(
+			baseInterject({ sessionId, body: envelope, presentedToken: undefined, viaControlEndpoint: false, preFenced: true })
+		);
+
+		expect(res.origin).toBe('agent'); // preFenced NEVER elevates origin — still fail-closed agent
+		expect(res.steered).toBe(false);
+		const got = backend.interjects[0];
+		expect(got.origin).toBe('agent');
+		expect(got.steer).toBe(false);
+		// Delivered VERBATIM — exactly one fence pair (not nested/double-fenced).
+		expect(got.body).toBe(envelope);
+		expect(got.body.split(FENCE_OPEN).length - 1).toBe(1);
+		expect(got.body.split(FENCE_CLOSE).length - 1).toBe(1);
+	});
+
+	it('PM2: preFenced is IGNORED for an operator steer — a steer is the raw instruction, never a peer envelope', async () => {
+		// preFenced must NOT change steering semantics. An operator steer (valid token on the control
+		// endpoint) rides the RAW body regardless of the flag — origin is resolved independently (D-035a).
+		const backend = scriptedBackend();
+		const { channel } = makeChannel(backend);
+		const sessionId = await makeRunningSession('cc_prefenced_op_1');
+
+		const res = await channel.interject(
+			baseInterject({
+				sessionId,
+				body: 'Steer: focus on auth.',
+				presentedToken: BOOT_TOKEN,
+				viaControlEndpoint: true,
+				preFenced: true // ignored on the steer path
+			})
+		);
+		expect(res.origin).toBe('operator');
+		expect(res.steered).toBe(true);
+		expect(backend.interjects[0].body).toBe('Steer: focus on auth.'); // raw, unfenced
+	});
+
 	it('persists every interject as a message row carrying the SERVER-STAMPED origin', async () => {
 		const backend = scriptedBackend();
 		const { channel } = makeChannel(backend);

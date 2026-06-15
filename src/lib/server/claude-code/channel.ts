@@ -76,6 +76,19 @@ export interface InterjectRequest {
 	/** True iff the push arrived on the loopback CONTROL endpoint. A push off the
 	 *  agent/SSE/event path can NEVER be operator even if a token leaked (D-035a). */
 	viaControlEndpoint?: boolean;
+	/**
+	 * The body is ALREADY the screen()→fence() DATA envelope (D-026) built by the ONE write-time
+	 * chokepoint (peer/repo.buildPeerBody — the persisted peer_message.body). The peer-bus live
+	 * leg passes the SAME envelope it persisted so the delivered turn is byte-identical to the
+	 * durable row (one chokepoint, no second screen call-site that could drift — PM2). When set,
+	 * a NON-STEER push is delivered VERBATIM (no second fence — fencing twice would nest two DATA
+	 * blocks). IGNORED for an operator steer (a steer is the raw instruction and is never a peer
+	 * body). Absent/false ⇒ the legacy behaviour: a non-steer body is screened-upstream-then-fenced
+	 * HERE. Security: a pre-fenced body has already passed screen() at the chokepoint, so no raw
+	 * secret is delivered; the channel never trusts the flag to STEER (origin is resolved
+	 * independently, D-035a).
+	 */
+	preFenced?: boolean;
 }
 
 export interface InterjectResult {
@@ -286,7 +299,18 @@ export function createChannel(deps: ChannelDeps): Channel {
 			// as DATA (D-026 / §10 — the same fence as recalled memory) so it can be CONSULTED
 			// but never OBEYED. The body the runtime receives differs by origin; the body we
 			// STORE is the same fenced/raw body, with the immutable origin recorded beside it.
-			const deliverBody = steer ? req.body : fence({ source: 'channel', body: req.body }).text;
+			// preFenced (D-026, PM2): the peer-bus live leg hands us the EXACT screen() then fence()
+			// envelope it persisted (buildPeerBody -- the ONE write-time chokepoint), so the delivered
+			// turn is byte-identical to the durable peer_message.body and there is only ONE screen
+			// call-site (no second, drift-prone screen on the live path -- PM2). Re-fencing it here
+			// would nest two DATA blocks; for a non-steer pre-fenced push we deliver it VERBATIM. The
+			// flag NEVER affects steering (origin is resolved independently above) -- a pre-fenced body
+			// still lands origin=agent, non-steering, exactly like any peer body.
+			const deliverBody = steer
+				? req.body
+				: req.preFenced
+					? req.body
+					: fence({ source: 'channel', body: req.body }).text;
 
 			// DELIVER FIRST (14.6/F-008): the persisted message row is the UI's evidence the
 			// interjection reached the session, so it must exist IFF delivery really happened.

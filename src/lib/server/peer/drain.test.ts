@@ -286,6 +286,66 @@ describe('drainInbox — role@project address', () => {
 	});
 });
 
+// ── (e) CROSS-PROJECT RE-ASSERTION AT DELIVERY TIME (PM1) ────────────────────────────
+
+describe('drainInbox — cross-project isolation re-asserted at delivery (PM1)', () => {
+	it('a pending DIRECT message from project-A to a then-OFFLINE project-B session is NOT delivered when that session comes up — it EXPIRES', async () => {
+		const projA = await freshProject();
+		const projB = await freshProject();
+		const senderA = await freshSession({ project: projA });
+		// The project-B recipient is OFFLINE at send time: sendPeer's resolver returns empty + pending
+		// (it cannot policy-check a session it cannot see). We persist that exact row directly (the
+		// send path would have written it identically, with NO cross-project check, because the target
+		// was not running). Then the project-B session COMES UP and drains.
+		const recipientB = await freshSession({ project: projB });
+		const leak = await sendPeerMessage(db, {
+			from_session: senderA,
+			to_kind: 'session',
+			to_session: recipientB,
+			body: 'cross-project secret you should never see'
+		});
+		expect(leak.status).toBe('pending');
+
+		const res = await drainInbox(db, { sessionId: recipientB, project: projB });
+		// The forbidden cross-project delivery NEVER happens — and it is EXPIRED, not silently dropped.
+		expect(res.delivered).toEqual([]);
+		const after = await getPeerMessage(db, leak.id);
+		expect(after!.status).toBe('expired'); // honest, never delivered cross-project
+	});
+
+	it('an in-project DIRECT message to a then-offline same-project session STILL drains (the guard is scoped to cross-project)', async () => {
+		const proj = await freshProject();
+		const sender = await freshSession({ project: proj });
+		const recipient = await freshSession({ project: proj });
+		const msg = await sendPeerMessage(db, {
+			from_session: sender,
+			to_kind: 'session',
+			to_session: recipient,
+			body: 'in-project handoff'
+		});
+		const res = await drainInbox(db, { sessionId: recipient, project: proj });
+		expect(res.delivered.map((d) => d.id)).toEqual([msg.id]); // same project → delivers normally
+		const after = await getPeerMessage(db, msg.id);
+		expect(after!.status).toBe('delivered');
+	});
+
+	it('the cross-project guard does NOT touch role@project messages (their scope was checked at send)', async () => {
+		const proj = await freshProject();
+		const role = await freshRole();
+		const sender = await freshSession({ project: proj });
+		const recipient = await freshSession({ project: proj, role });
+		const msg = await sendPeerMessage(db, {
+			from_session: sender,
+			to_kind: 'role',
+			to_role: role,
+			project: proj,
+			body: 'role handoff'
+		});
+		const res = await drainInbox(db, { sessionId: recipient, role, project: proj });
+		expect(res.delivered.map((d) => d.id)).toEqual([msg.id]);
+	});
+});
+
 // ── shadow paths ────────────────────────────────────────────────────────────────────
 
 describe('drainInbox — shadow paths', () => {
@@ -297,14 +357,15 @@ describe('drainInbox — shadow paths', () => {
 		expect(res.expiredCount).toBe(0);
 	});
 
-	it('a role-less / project-less session drains only its direct to_session inbox', async () => {
-		const proj = await freshProject();
+	it('a role-less / project-less session drains only its direct to_session inbox (same-scope sender)', async () => {
 		const role = await freshRole();
-		const sender = await freshSession({ project: proj });
-		// A session with NO role/project (e.g. a global/atelier-ish session) — only direct messages drain.
+		// SAME-SCOPE: both sender and recipient are project-less (e.g. two global/atelier-ish sessions).
+		// project-less↔project-less is in-scope (the cross-project guard treats NONE==NONE as same-scope),
+		// so the direct message MUST still drain — only the role address has no identity to match.
+		const sender = await freshSession({});
 		const recipient = await freshSession({});
 
-		// A direct message reaches it.
+		// A direct message reaches it (same project scope — both NONE).
 		const direct = await sendPeerMessage(db, {
 			from_session: sender,
 			to_kind: 'session',
@@ -316,7 +377,7 @@ describe('drainInbox — shadow paths', () => {
 			from_session: sender,
 			to_kind: 'role',
 			to_role: role,
-			project: proj,
+			project: await freshProject(),
 			body: 'role'
 		});
 

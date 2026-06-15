@@ -397,6 +397,29 @@ export function createChannel(deps: ChannelDeps): Channel {
 			let sawDone = false;
 			let newCc: string | undefined;
 			let streamError: Error | undefined;
+			// m0037 replay order is PER-SESSION and monotonic. The launch path already filled
+			// this session with seq 0,1,2,…; a resumed turn is APPENDED, so its seq MUST continue
+			// from MAX(existing seq)+1 — NOT restart at 0. Restarting collided every resumed turn
+			// with a launch turn of the same seq, and messages.ts `ORDER BY seq ASC, at ASC` then
+			// interleaved the resume INTO the launch (the `at` tiebreak is exactly the same-ms tie
+			// seq was added to defeat, so it could not save the order). We read the continuation
+			// offset ONCE here, before the stream; `seq IS NOT NONE` excludes legacy pre-m0037 rows
+			// (their NONE seq must not anchor the continuation). math::max over [] is NONE → base 0.
+			let baseSeq = 0;
+			try {
+				const [maxRows] = await db.query<[Array<{ m: number | null }>]>(
+					`SELECT math::max(seq) AS m FROM message WHERE session = $sid AND seq IS NOT NONE GROUP ALL;`,
+					{ sid: link(req.sessionId) }
+				);
+				const prevMax = maxRows?.[0]?.m;
+				if (typeof prevMax === 'number' && Number.isFinite(prevMax)) baseSeq = prevMax + 1;
+			} catch (seqErr) {
+				// FAIL-OPEN (F-014): a continuation-offset read error must not break the resume.
+				// We fall back to baseSeq 0 and log — worst case the live work still streams.
+				console.warn(
+					`[channel] resume seq continuation read failed for ${req.sessionId} (fail-open, base 0): ${(seqErr as Error).message}`
+				);
+			}
 			try {
 				let order = 0;
 				for await (const ev of runtime.resume(session.cc_session_id, {
@@ -425,17 +448,19 @@ export function createChannel(deps: ChannelDeps): Channel {
 					order++;
 					const msg = eventToMessage(ev);
 					if (msg) {
-						// m0037: stamp kind + the monotonic seq so a resumed turn replays in order
-						// alongside the original launch's turns (its content/tool_call were already
-						// D-026-screened inside eventToMessage). FAIL-OPEN (F-014): a transcript write
-						// error never breaks the resumed session — log + swallow, the live bus already fired.
+						// m0037: stamp kind + the CONTINUED monotonic seq (baseSeq + this turn's local
+						// index) so a resumed turn replays AFTER the original launch's turns instead of
+						// colliding with them (its content/tool_call were already D-026-screened inside
+						// eventToMessage). FAIL-OPEN (F-014): a transcript write error never breaks the
+						// resumed session — log + swallow, the live bus already fired.
+						const seq = baseSeq + (order - 1); // `order` was post-incremented after the bus publish
 						try {
 							await db.query(`CREATE message CONTENT $c;`, {
 								c: omitUndefined({
 									session: link(req.sessionId),
 									role: msg.role,
 									kind: msg.kind,
-									seq: order - 1,
+									seq,
 									content: msg.content,
 									tool_call: msg.tool_call
 								})

@@ -16,6 +16,7 @@ import {
 } from '../runtime/index';
 import { FENCE_OPEN, FENCE_CLOSE } from '../memory/fence';
 import { createChannel, ControlNotSupportedError, type InterjectRequest } from './channel';
+import { listSessionMessages } from '../sessions/messages';
 
 // TASK 2.10 VERIFY (D-011 / D-035 / D-025 / D-026) — session control, mocked runtime.
 //
@@ -373,6 +374,51 @@ describe('channel stop / resume — session record transitions (D-011)', () => {
 		// no longer cancelled — the record followed the resumed run out of its stopped state.
 		expect(rows[0].status).toBe('done');
 		expect(rows[0].status).not.toBe('cancelled');
+	});
+
+	it('REGRESSION (m0037 resume seq continuation): a resumed turn is APPENDED after the launch turns, not interleaved into them', async () => {
+		// The defect: the resume path stamped seq restarting at 0, colliding with the launch
+		// turns the session already held (seq 0,1,2). messages.ts `ORDER BY seq ASC, at ASC`
+		// then wove the resume INTO the launch by shared seq value — exactly the same-ms `at`
+		// tie seq exists to defeat. Replay came out launch-0,resume-0,launch-1,resume-1,launch-2.
+		// FIX: resume continues seq from MAX(existing seq)+1, so it replays AFTER the launch.
+		const backend = scriptedBackend({
+			resumeEvents: [
+				{ type: 'log', message: 'resume-0' },
+				{ type: 'log', message: 'resume-1' },
+				{ type: 'done', result: { ok: true, summary: 'resumed' } }
+			]
+		});
+		const { channel } = makeChannel(backend);
+		const sessionId = await makeRunningSession('cc_resume_seq_1');
+		// Seed the launch transcript exactly as launchSession would: seq 0,1,2 with the SAME
+		// `at` instant (the same-ms tie that broke the legacy `at`-only ordering). content
+		// encodes the expected replay position so the assertion reads naturally.
+		const sid = new StringRecordId(sessionId);
+		for (const seq of [0, 1, 2]) {
+			await db.query(`CREATE message CONTENT $c;`, {
+				c: { session: sid, role: 'assistant', kind: 'assistant_text', seq, content: `launch-${seq}` }
+			});
+		}
+		await db.query(`UPDATE $sid SET status = "cancelled", ended_at = time::now();`, { sid });
+
+		await channel.resume({
+			sessionId,
+			agentId: 'agent_coder_1',
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+			intent: 'code-write',
+			budgets: { toolCalls: 10 },
+			toolPolicy: { allow: ['Read', 'Edit'] }
+		});
+
+		// Read back through the production read-side (the exact path projects/[id] renders).
+		const replay = (await listSessionMessages(db, sessionId)).map((m) => m.content);
+		// APPENDED, not interleaved: all launch turns precede all resume turns.
+		expect(replay).toEqual(['launch-0', 'launch-1', 'launch-2', 'resume-0', 'resume-1']);
+		// And the resumed turns' seq continued past the launch max (no collision).
+		const resumeRows = await listSessionMessages(db, sessionId);
+		const seqs = resumeRows.map((m) => m.seq);
+		expect(seqs).toEqual([0, 1, 2, 3, 4]);
 	});
 
 	it('refuses to resume a session with no cc_session_id bridge', async () => {

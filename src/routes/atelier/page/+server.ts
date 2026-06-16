@@ -10,7 +10,7 @@
 import { json, error } from '@sveltejs/kit';
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import { IdentifierError } from '$lib/server/db/validate';
-import { readAtelierTimeline, type TimelineScope } from '$lib/server/atelier';
+import { readAtelierTimeline, readInbox, isInboxStatus, type TimelineScope } from '$lib/server/atelier';
 import type { RequestHandler } from './$types';
 
 const PROJECT_ID = /^project:[A-Za-z0-9_]+$/;
@@ -19,6 +19,7 @@ export const GET: RequestHandler = async ({ url }) => {
 	const db = tryGetDb();
 	if (!db) throw error(503, 'database not connected');
 
+	const lens = url.searchParams.get('lens') === 'inbox' ? 'inbox' : 'timeline';
 	const rawProject = url.searchParams.get('project');
 	const scope: TimelineScope =
 		rawProject && PROJECT_ID.test(rawProject)
@@ -34,6 +35,17 @@ export const GET: RequestHandler = async ({ url }) => {
 	const pageSize = Number.isFinite(rawSize) && rawSize > 0 ? rawSize : undefined;
 
 	try {
+		if (lens === 'inbox') {
+			const rawStatus = url.searchParams.get('status');
+			const status = isInboxStatus(rawStatus) ? rawStatus : null;
+			const inbox = await readInbox(db, {
+				scope,
+				status,
+				...(before ? { before } : {}),
+				...(pageSize ? { pageSize } : {})
+			});
+			return json(inbox);
+		}
 		const page = await readAtelierTimeline(db, {
 			scope,
 			...(before ? { before } : {}),

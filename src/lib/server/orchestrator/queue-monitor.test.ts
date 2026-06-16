@@ -154,7 +154,13 @@ describe('listWorkItems', () => {
 		// before-cursor: rows enqueued strictly before the oldest of the first page.
 		const cursor = firstTwo[firstTwo.length - 1].enqueuedAt!;
 		const older = await listWorkItems(db, { status: 'pending', limit: 10, before: cursor });
-		expect(older.every((r) => new Date(r.enqueuedAt!).getTime() < new Date(cursor).getTime())).toBe(true);
+		// SurrealDB stamps created_at at 100ns precision (`...32.3589883Z`); three enqueues in a
+		// tight loop share the same MILLISECOND, so `new Date(iso).getTime()` (ms-truncated)
+		// collapses their order. The cursor preserves full precision, so compare the ISO STRINGS
+		// lexicographically (fixed-width zero-padded UTC ⇒ string order == chronological order) —
+		// proving the SQL `< <datetime>$before` filter narrowed to strictly-earlier rows.
+		expect(older.length).toBeGreaterThan(0);
+		expect(older.every((r) => r.enqueuedAt! < cursor)).toBe(true);
 	});
 
 	it('getWorkItem returns one row by id, or null for a missing id (shadow path)', async () => {
@@ -165,4 +171,40 @@ describe('listWorkItems', () => {
 		const missing = await getWorkItem(db, 'work_item:doesnotexist');
 		expect(missing).toBeNull();
 	});
+});
+
+describe('read-only invariant (spec §2.1/§6.3)', () => {
+	it('queueStats + listWorkItems mutate NOTHING — even over rows the GC would reap', async () => {
+		await clearQueue();
+		// A stale `processing` row (gcStale WOULD reset it → pending) and an aged terminal row
+		// (gcStale WOULD delete it). If any reader invoked the reaper, these would change.
+		const staleClaim = new Date(Date.now() - DEFAULT_STUCK_MS - 60_000).toISOString();
+		const oldTerminal = new Date(Date.now() - 8 * 24 * 60 * 60 * 1000).toISOString();
+		await db.query(
+			`CREATE work_item CONTENT { work_type: "review", payload: {}, status: "processing", claim_token: "stale-tok", attempts: 1, claimed_at: <datetime>$sc, dedup_scope: "ro-stale" };
+			 CREATE work_item CONTENT { work_type: "task_run", payload: {}, status: "done", attempts: 1, completed_at: <datetime>$ot, dedup_scope: "ro-done" };`,
+			{ sc: staleClaim, ot: oldTerminal }
+		);
+		const before = await snapshot();
+
+		// Exercise every read path the monitor uses.
+		await queueStats(db);
+		await listWorkItems(db, { status: ['pending', 'processing'] });
+		await listWorkItems(db, { status: ['done', 'failed'] });
+
+		const after = await snapshot();
+		// Exact same rows, ids, statuses, claim tokens — proving no enqueue/claim/complete/gc ran.
+		expect(after).toEqual(before);
+		expect(before.length).toBe(2);
+	});
+
+	/** Stable snapshot of the whole queue (id+status+claim_token), sorted, for an equality diff. */
+	async function snapshot(): Promise<Array<{ id: string; status: string; claim: string }>> {
+		const [rows] = await db.query<[Array<{ id: unknown; status: string; claim_token: unknown }>]>(
+			`SELECT id, status, claim_token FROM work_item;`
+		);
+		return (rows ?? [])
+			.map((r) => ({ id: String(r.id), status: r.status, claim: r.claim_token == null ? '' : String(r.claim_token) }))
+			.sort((a, b) => a.id.localeCompare(b.id));
+	}
 });

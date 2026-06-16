@@ -43,14 +43,26 @@ export interface QueueData {
 	error?: string;
 }
 
-/** Loose ISO-8601 guard for the ?before= cursor (anything else ⇒ no cursor). */
+/** Loose ISO-8601 SHAPE guard for the ?before= cursor (anything else ⇒ no cursor). */
 const ISO = /^\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})$/;
+
+/**
+ * Accept a `?before=` cursor only if it is BOTH shape-valid (ISO) AND a real calendar date.
+ * The shape regex alone admits e.g. `2024-99-99T00:00:00.000Z`, which would then hit the
+ * `<datetime>$before` cast in queue-monitor and THROW inside SurrealDB — turning a healthy DB
+ * into a false 'disconnected' card (F-008 honest-state violation). Mirrors the fmtTime guard
+ * (`Number.isNaN(new Date(iso).getTime())`) already used in this feature's +page.svelte.
+ * Anything that fails either check ⇒ no cursor (drop to the unfiltered newest page).
+ */
+export function _validCursor(raw: string | null): string | undefined {
+	if (!raw || !ISO.test(raw)) return undefined;
+	return Number.isNaN(new Date(raw).getTime()) ? undefined : raw;
+}
 
 export const load: PageServerLoad = async ({ url, depends }): Promise<QueueData> => {
 	depends('app:work-queue');
 
-	const beforeRaw = url.searchParams.get('before');
-	const before = beforeRaw && ISO.test(beforeRaw) ? beforeRaw : undefined;
+	const before = _validCursor(url.searchParams.get('before'));
 	const COMPLETED_PAGE = 25;
 
 	const db = tryGetDb();

@@ -194,11 +194,36 @@
           {#if p.nextAction === 'review_diff'}
             <details class="stage">
               <summary>Review prompt-core diff & author challenger (D-010)</summary>
-              {#if p.diff}
-                <pre class="diff" aria-label="prompt-core diff">{#each p.diff.lines as l (l.text + l.op)}<span class="dl" data-op={l.op}>{l.op === 'add' ? '+' : l.op === 'del' ? '-' : ' '} {l.text}
+              <!-- Live D-010 preview: the operator inspects the REAL incumbent-vs-draft delta
+                   BEFORE authoring. At review_diff there is no challenger yet, so the only honest
+                   diff is the one computed from the draft via the previewDiff action. -->
+              {#if f?.previewDiff}
+                {@const pv = f.previewDiff as { lines: { op: string; text: string }[]; added: number; removed: number; unchanged: number }}
+                <pre class="diff" aria-label="prompt-core diff preview">{#each pv.lines as l, i (l.op + '·' + i)}<span class="dl" data-op={l.op}>{l.op === 'add' ? '+' : l.op === 'del' ? '-' : ' '} {l.text}
+</span>{/each}</pre>
+                <p class="diff-sum mono">+{pv.added} −{pv.removed} · {pv.unchanged} unchanged</p>
+              {:else if p.diff}
+                <pre class="diff" aria-label="prompt-core diff">{#each p.diff.lines as l, i (l.op + '·' + i)}<span class="dl" data-op={l.op}>{l.op === 'add' ? '+' : l.op === 'del' ? '-' : ' '} {l.text}
 </span>{/each}</pre>
                 <p class="diff-sum mono">+{p.diff.added} −{p.diff.removed} · {p.diff.unchanged} unchanged</p>
+              {:else}
+                <p class="diff-hint">
+                  Enter the challenger prompt core below, then preview the diff to see exactly what
+                  changes vs the incumbent before you approve (D-010).
+                </p>
               {/if}
+              <!-- ① PREVIEW the diff (read-only, no write, no gate) — wires the previewDiff action. -->
+              <form method="POST" action="?/previewDiff" use:enhance={busyEnhance(p.proposal)} class="preview-form">
+                <input type="hidden" name="proposal" value={p.proposal} />
+                <input type="hidden" name="promptCore" value={draft[p.proposal] ?? ''} />
+                <button
+                  class="btn ghost"
+                  type="submit"
+                  disabled={busy[p.proposal] || !((draft[p.proposal] ?? '').trim())}
+                >
+                  Preview diff
+                </button>
+              </form>
               <form
                 method="POST"
                 action="?/author"
@@ -341,7 +366,7 @@
 
           {#if f?.error}
             <p class="action-err" role="alert">{f.error}</p>
-          {:else if f?.ok}
+          {:else if f?.ok && (f.authored || f.regauntlet || f.swapped || f.rejected)}
             <p class="action-ok" role="status">
               {#if f.authored}Challenger authored{f.created === false ? ' (already existed)' : ''}.{/if}
               {#if f.regauntlet}{f.ran ? `Re-gauntlet ${f.status}` : 'Re-gauntlet queued'}{f.comparable === true ? ' · comparable' : ''}.{/if}
@@ -512,6 +537,14 @@
     font-size: var(--text-xs);
     color: var(--color-text-muted);
     margin: 0;
+  }
+  .diff-hint {
+    font: var(--type-body-sm);
+    color: var(--color-text-muted);
+    margin: 0;
+  }
+  .preview-form {
+    display: flex;
   }
   .field {
     display: flex;

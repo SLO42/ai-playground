@@ -37,6 +37,7 @@ import {
 } from './repo';
 import {
 	authorChallenger,
+	buildProposalCard,
 	diffLines,
 	proposalDiff,
 	regauntletChallenger,
@@ -272,6 +273,45 @@ describe('diffLines — the D-010 substrate is computed over real text', () => {
 		expect(diffLines('', 'x\ny').every((l) => l.op === 'add')).toBe(true);
 		expect(diffLines('x\ny', '').every((l) => l.op === 'del')).toBe(true);
 		expect(diffLines('', '')).toEqual([]);
+	});
+
+	// REGRESSION (review gap 3): diffLines emits structurally-DUPLICATE lines (same op+text)
+	// for repeated blank lines. The surface keyed `{#each lines as l (l.text + l.op)}`, which
+	// throws Svelte each_key_duplicate (client crash, dev+prod) once the block is reachable.
+	// The fix keys by index; this asserts the duplicates that forced it actually occur, so the
+	// (l.op + '·' + i) key is provably load-bearing — not a cosmetic change.
+	it('emits non-unique (op,text) lines for repeated blanks → key must be index-based', () => {
+		const lines = diffLines('head\n\n\ntail', 'head\n\n\n\ntail');
+		const composite = lines.map((l) => l.text + l.op);
+		expect(new Set(composite).size).toBeLessThan(composite.length); // duplicate composite keys exist
+		const indexed = lines.map((l, i) => l.op + '·' + i);
+		expect(new Set(indexed).size).toBe(indexed.length); // index key is unique → no crash
+	});
+});
+
+// ── review_diff reachability (review gaps 1+2): the operator is NOT blind ────────────
+
+describe('§5 review_diff stage — the D-010 diff is reachable BEFORE authoring', () => {
+	it('proposed card carries no server diff, but the previewDiff path yields the real delta', async () => {
+		const seed = await seedRole();
+		await certifyIncumbent(seed);
+		const proposal = await openProposal(seed);
+
+		// The card at the proposed/review_diff stage: challenger is null, so the server-card
+		// `diff` is null and nextAction is the author/diff stage. (This is exactly why the old
+		// `{#if p.diff}` block never rendered — the operator authored blind.)
+		const card = await buildProposalCard(db, proposal);
+		expect(card.nextAction).toBe('review_diff');
+		expect(card.challenger).toBeNull();
+		expect(card.diff).toBeNull();
+
+		// The wired previewDiff path (resolution.proposalDiff with a draft) IS the honest diff the
+		// operator now inspects before approving — non-empty, computed over the REAL incumbent text.
+		const draft = `You are reviewer #X.\nHunt platform bugs AND injection.\nQuote verbatim evidence.`;
+		const preview = await proposalDiff(db, proposal.id, draft);
+		expect(preview.lines.length).toBeGreaterThan(0);
+		expect(preview.added + preview.removed).toBeGreaterThan(0);
+		expect(preview.incumbentPromptCore).toBe((await getRoleVersion(db, seed.incumbent.id))!.prompt_core);
 	});
 });
 

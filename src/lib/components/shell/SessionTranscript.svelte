@@ -29,6 +29,8 @@
     parseBriefing,
     compactToolInput,
     communicationLabel,
+    verdictLabel,
+    roleEventLabel,
     toolName,
     toolOk,
     type Turn
@@ -137,6 +139,38 @@
       {:else}
         <span class="tp-empty">(empty communication)</span>
       {/if}
+    </div>
+  {:else if t.kind === 'verdict'}
+    {@const v = t.verdict ?? { decision: 'verdict', confidence: null, reasons: [] }}
+    {@const vl = verdictLabel(v.decision)}
+    <!-- G-C only — a PM/panel validation artifact (panel_verdict). Harness-authored + safe;
+         framed distinctly from the agent's own turns and labelled by actor + project. a11y:
+         a labelled role="note" region so a reader announces the verdict + who issued it. -->
+    <div class="tp-verdict" data-tone={vl.tone} role="note" aria-label={`panel verdict: ${vl.tag}`}>
+      <span class="tp-verdict-head">
+        <span class="tp-verdict-badge" data-tone={vl.tone}>{vl.tag}</span>
+        {#if v.confidence}<span class="tp-verdict-conf mono">{v.confidence} confidence</span>{/if}
+        {#if t.actor}<span class="tp-meta mono">{t.actor}</span>{/if}
+        {#if t.project}<span class="tp-meta mono">· {t.project}</span>{/if}
+      </span>
+      {#if v.reasons.length}
+        <ul class="tp-verdict-reasons">
+          {#each v.reasons as r, j (j)}
+            <li class="tp-body">{r}</li>
+          {/each}
+        </ul>
+      {:else}
+        <span class="tp-empty">(no reasons recorded)</span>
+      {/if}
+    </div>
+  {:else if t.kind === 'role_event'}
+    <!-- G-C only — a workforce lifecycle event (role_event). Harness-authored + safe; an
+         append-only audit turn labelled by op + actor (role slug) + project. -->
+    <div class="tp-role-event" role="note" aria-label={`workforce event: ${roleEventLabel(t.op ?? '')}`}>
+      <span class="tp-role-op">◇ {roleEventLabel(t.op ?? '')}</span>
+      {#if t.actor}<span class="tp-role-actor mono">{t.actor}</span>{/if}
+      {#if t.project}<span class="tp-meta mono">· {t.project}</span>{/if}
+      {#if t.content.trim()}<span class="tp-body tp-role-detail mono">{t.content}</span>{/if}
     </div>
   {:else}
     <!-- the agent's OWN prose (also the honest fallback for result/legacy assistant-role rows).
@@ -290,6 +324,101 @@
   }
   .tp-comm-body {
     color: var(--color-text);
+  }
+
+  /* G-C — a PM/panel VERDICT artifact: a distinct bordered note, toned by outcome (approve =
+     affirm hue / pushback = dissent hue / other = muted). Tokens only; not a session turn. */
+  .tp-verdict {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.4rem);
+    padding: 0.4rem 0.55rem 0.45rem;
+    border-left: 3px solid var(--color-border-strong);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-card);
+    min-width: 0;
+    margin: var(--space-1, 2px) 0;
+  }
+  .tp-verdict[data-tone='approve'] {
+    border-left-color: var(--color-success, var(--color-running));
+  }
+  .tp-verdict[data-tone='pushback'] {
+    border-left-color: var(--color-error-on-overlay);
+  }
+  .tp-verdict-head {
+    display: flex;
+    align-items: baseline;
+    flex-wrap: wrap;
+    gap: 0.45rem;
+  }
+  .tp-verdict-badge {
+    font-size: 0.64rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm, 6px);
+    color: var(--color-text-muted);
+    flex: none;
+  }
+  .tp-verdict-badge[data-tone='approve'] {
+    color: var(--color-success, var(--color-running));
+    background: var(--color-success-bg, transparent);
+  }
+  .tp-verdict-badge[data-tone='pushback'] {
+    color: var(--color-error-on-overlay);
+    background: var(--color-error-bg, transparent);
+  }
+  .tp-verdict-conf {
+    font-size: 0.66rem;
+    color: var(--color-text-muted);
+  }
+  .tp-meta {
+    font-size: 0.66rem;
+    color: var(--color-text-muted);
+  }
+  .tp-verdict-reasons {
+    list-style: disc;
+    margin: 0;
+    padding-left: 1.1rem;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .tp-verdict-reasons .tp-body {
+    flex: 1 1 100%;
+  }
+
+  /* G-C — a workforce ROLE_EVENT (hire/swap/staffing/retire/flip): a quiet, single-line audit
+     turn so the lifecycle change is visible inline without competing with prose. Tokens only. */
+  .tp-role-event {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0.45rem;
+    padding: 0.35rem 0.55rem;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+    min-width: 0;
+    margin: var(--space-1, 2px) 0;
+  }
+  .tp-role-op {
+    font-size: 0.66rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-tier-sonnet, var(--color-accent));
+    flex: none;
+  }
+  .tp-role-actor {
+    font-size: 0.72rem;
+    color: var(--color-text);
+    font-weight: 600;
+  }
+  .tp-role-detail {
+    flex: 1 1 100%;
+    color: var(--color-text-2, var(--color-text-muted));
+    font-size: 0.72rem;
   }
 
   /* TASK 8.3 — the wake-up briefing: a DISTINCT, accent-bordered "woke up with" block so the

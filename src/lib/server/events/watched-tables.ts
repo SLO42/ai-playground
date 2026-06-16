@@ -24,8 +24,12 @@ export const WATCHED_TABLES = [
 	// session — shell layout ticker; / (home); /workflows; /agents; /claude-code; /projects/[id]
 	'session',
 	// message — /claude-code (live transcript panel: the persisted LT1 conversation rows
-	// replay + live-append as the driven session writes turns) — TASK (transcript-panel)
+	// replay + live-append as the driven session writes turns) — TASK (transcript-panel);
+	// /atelier (G-C global timeline — message turns + pushed-in communications)
 	'message',
+	// peer_message — /atelier (G-C global timeline + inbox lens: agent↔agent comms incl.
+	// pending/expired/quarantined that never reached a transcript row) — GLOBAL-TRANSCRIPT-SPEC §5b
+	'peer_message',
 	// agent_event — shell layout ticker; / (home); /agents; /reports
 	'agent_event',
 	// routing_event — /reports
@@ -68,7 +72,7 @@ export const WATCHED_TABLES = [
 	'notification',
 	// decision_brief — shell layout (RightTray decisions inbox); /projects/[id] (PM tab) — TASK 16.4
 	'decision_brief',
-	// panel_verdict — /projects/[id] (PM tab proposals queue) — TASK 16.4
+	// panel_verdict — /projects/[id] (PM tab proposals queue) — TASK 16.4; /atelier (G-C verdicts)
 	'panel_verdict',
 	// incident — /reports (incidents history)
 	'incident',
@@ -80,7 +84,8 @@ export const WATCHED_TABLES = [
 	'role_version',
 	// interview_run — /agents (interview line + §3.4 adjudication queue) — TASK 16.7b
 	'interview_run',
-	// role_event — /agents (workforce audit feed re-derives the panel) — TASK 16.7b
+	// role_event — /agents (workforce audit feed re-derives the panel) — TASK 16.7b;
+	// /atelier (G-C global timeline — workforce lifecycle turns)
 	'role_event',
 	// gauntlet_fixture — /agents/ceremony (day-0 ceremony DRIVER: a seed creates proposed
 	// fixtures, re-deriving the authoring flow live) — TASK W-D7c CER1

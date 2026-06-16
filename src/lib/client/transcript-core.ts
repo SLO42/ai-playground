@@ -35,7 +35,16 @@ export type TurnKind =
 	| 'tool_use'
 	| 'tool_result'
 	| 'assistant'
-	| 'communication';
+	| 'communication'
+	// G-C (GLOBAL-TRANSCRIPT-SPEC §6.2): the atelier-wide timeline folds two HARNESS-AUTHORED
+	// artifact streams into the SAME renderer so the global view never forks the per-session one:
+	//   • 'verdict'     → a PM/panel validation artifact (panel_verdict — approve/pushback + reasons).
+	//   • 'role_event'  → a workforce lifecycle event (role_event — hire/swap/staffing/retire/flip).
+	// These are NOT session turns (no agent prose); they are safe, server-stamped records the
+	// timeline LABELS by actor + project. The per-session transcript never emits them (its rows are
+	// only `message`), so the existing two surfaces are unchanged — this is purely additive.
+	| 'verdict'
+	| 'role_event';
 
 /** The server-stamped, immutable message origin (D-035a / m0038): the AUTHORITY for whether a
  *  turn is the agent's own output or a pushed-in communication, and how it is labelled. NEVER
@@ -63,6 +72,18 @@ export interface Turn {
 	origin?: MessageOrigin;
 	/** Tool metadata for tool_use / tool_result turns (name/args/ok). */
 	toolCall?: Record<string, unknown>;
+	/** G-C only — the human-readable ACTOR label for a timeline entry (the originating
+	 *  session role / PM / "operator" / sender→recipient for a comm / the role slug for a
+	 *  role_event). Absent on per-session turns (the session header already names the actor).
+	 *  Display-only; NEVER a steering signal (origin/role/op carry the authority). */
+	actor?: string;
+	/** G-C only — the project label a timeline entry is scoped to ('—' for atelier-wide /
+	 *  project-less artifacts). Absent on per-session turns. Display-only. */
+	project?: string;
+	/** G-C 'verdict' only — the verdict outcome and its supporting reasons (panel_verdict). */
+	verdict?: { decision: string; confidence: string | null; reasons: string[] };
+	/** G-C 'role_event' only — the lifecycle op (created/swap/staffed/retired/…) for framing. */
+	op?: string;
 }
 
 /** A persisted row as it arrives from listSessionMessages (TranscriptMessage) — only the
@@ -298,6 +319,51 @@ export function compactToolInput(tc: Record<string, unknown> | undefined): strin
 		parts.push(`${k}: ${trimmed}`);
 	}
 	return parts.join('  ·  ');
+}
+
+// ── G-C verdict / role_event display helpers (GLOBAL-TRANSCRIPT-SPEC §6.2) ──────────────
+// Pure label/styling helpers for the two atelier-timeline-only turn kinds. They read ONLY
+// the harness-authored fields the timeline carries (decision/op) — never content — so a
+// verdict/role_event can never claim another kind's treatment. HONEST defaults throughout:
+// an unknown decision/op is shown verbatim (never coerced to a friendlier label it isn't).
+
+/** The label + a11y description for a 'verdict' turn. A 'pushback' is the dissent hue, an
+ *  'approve' the affirm hue; any other (defensive) value shows verbatim, muted. */
+export function verdictLabel(decision: string): { tag: string; tone: 'approve' | 'pushback' | 'other' } {
+	if (decision === 'approve') return { tag: 'approved', tone: 'approve' };
+	if (decision === 'pushback') return { tag: 'pushback', tone: 'pushback' };
+	// Honest: an unrecognised verdict string is shown as-is, never relabelled.
+	return { tag: decision || 'verdict', tone: 'other' };
+}
+
+/** The human label for a workforce lifecycle op (role_event.op). Unknown ops show verbatim
+ *  (honest — the op enum can grow; we never silently drop or rename one). */
+export function roleEventLabel(op: string): string {
+	switch (op) {
+		case 'created':
+			return 'role created';
+		case 'interviewed':
+			return 'role interviewed';
+		case 'swap':
+			return 'version swapped';
+		case 'retired':
+			return 'role retired';
+		case 'archived':
+			return 'role archived';
+		case 'tier_changed':
+			return 'tier changed';
+		case 'staffed':
+			return 'staffed';
+		case 'unstaffed':
+			return 'unstaffed';
+		case 'fixture_activated':
+			return 'fixture activated';
+		case 'stale_marked':
+			return 'marked stale';
+		default:
+			// Honest verbatim fallback for a not-yet-known op.
+			return op || 'role event';
+	}
 }
 
 // ── Wake-up briefing parse (TASK 8.3) ──────────────────────────────────────────────────

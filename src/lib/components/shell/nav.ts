@@ -33,6 +33,8 @@ export const navGroups: NavGroup[] = [
   {
     title: 'Knowledge & system',
     items: [
+      // G-C — the atelier-wide reasoning/actions/communications timeline (GLOBAL-TRANSCRIPT-SPEC).
+      { label: 'Atelier', href: '/atelier' },
       { label: 'Memory', href: '/memory' },
       { label: 'Reports', href: '/reports' },
       // TASK 10.5 — /services: live health + start/stop/restart for the managed local

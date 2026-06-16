@@ -13,6 +13,8 @@ import {
 	liveEventToTurn,
 	interjectEventToTurn,
 	communicationLabel,
+	verdictLabel,
+	roleEventLabel,
 	normOrigin,
 	toolName,
 	toolOk,
@@ -384,5 +386,36 @@ describe('parseBriefing — fenced recall → items', () => {
 
 	it('SHADOW: unfenced text → [] (no throw)', () => {
 		expect(parseBriefing('plain text with no fences')).toEqual([]);
+	});
+});
+
+// ── G-C: verdict + role_event turn-kind display helpers (GLOBAL-TRANSCRIPT-SPEC §6.2) ──
+
+describe('verdictLabel — G-C verdict outcome → tag + tone', () => {
+	it('maps approve / pushback to their tones', () => {
+		expect(verdictLabel('approve')).toEqual({ tag: 'approved', tone: 'approve' });
+		expect(verdictLabel('pushback')).toEqual({ tag: 'pushback', tone: 'pushback' });
+	});
+	it('shows an UNKNOWN verdict verbatim, muted (honest — never relabelled)', () => {
+		expect(verdictLabel('revised')).toEqual({ tag: 'revised', tone: 'other' });
+	});
+	it('SHADOW: empty decision → a safe "verdict" label', () => {
+		expect(verdictLabel('')).toEqual({ tag: 'verdict', tone: 'other' });
+	});
+});
+
+describe('roleEventLabel — G-C workforce op → human label', () => {
+	it('maps each known lifecycle op', () => {
+		expect(roleEventLabel('created')).toBe('role created');
+		expect(roleEventLabel('swap')).toBe('version swapped');
+		expect(roleEventLabel('staffed')).toBe('staffed');
+		expect(roleEventLabel('retired')).toBe('role retired');
+		expect(roleEventLabel('fixture_activated')).toBe('fixture activated');
+	});
+	it('shows an UNKNOWN op verbatim (honest — the enum can grow)', () => {
+		expect(roleEventLabel('frobnicated')).toBe('frobnicated');
+	});
+	it('SHADOW: empty op → a safe "role event" label', () => {
+		expect(roleEventLabel('')).toBe('role event');
 	});
 });

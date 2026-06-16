@@ -9,6 +9,7 @@
    * (§155/§156). Svelte 5 runes only.
    */
   import { invalidate } from '$app/navigation';
+  import { page } from '$app/stores';
   import { stream } from '$lib/client/stream.svelte';
   import type { PageData } from './$types';
 
@@ -20,10 +21,15 @@
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
 
   // Keyword recall filter (client-side over the live list — honest: filters real rows only).
-  let query = $state('');
+  // Seeded from ?q= so a deep link (e.g. the /cannibalize "recall →" link, which passes a
+  // memory row id) lands pre-filtered on the target finding. Matches content OR the row id.
+  let query = $state($page.url.searchParams.get('q') ?? '');
   const filtered = $derived(
     query.trim()
-      ? memories.filter((m) => m.content.toLowerCase().includes(query.trim().toLowerCase()))
+      ? memories.filter((m) => {
+          const q = query.trim().toLowerCase();
+          return m.content.toLowerCase().includes(q) || m.id.toLowerCase().includes(q);
+        })
       : memories
   );
 

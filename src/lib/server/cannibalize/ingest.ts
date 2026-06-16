@@ -355,3 +355,108 @@ export async function ingestCaptured(deps: IngestDeps, req: IngestRequest): Prom
 	await setIngestStatus(db, source.id, status, ingestedCount);
 	return { sourceId: source.id, status, ingestedCount, findings };
 }
+
+// ── Read side — list ingest runs for the UI (§5 front door) ──────────────────────────────
+
+/**
+ * A read-only view of an ingest_source row for the UI (§5). Every datetime is coerced to an
+ * ISO string or null at the read boundary (F-013 — a raw SDK datetime would break SvelteKit
+ * load serialization); an absent license/completed_at is null (rendered '—', NEVER str(undefined)).
+ * `ref`/`intent` are the already-screened NON-secret locator/intent (D-026) the write path stored.
+ */
+export interface IngestSourceView {
+	id: string;
+	kind: IngestKind;
+	ref: string;
+	intent: string;
+	license: string | null;
+	status: IngestStatus;
+	findingCount: number;
+	createdAt: string | null;
+	completedAt: string | null;
+}
+
+/** F-013/F-008: SurrealDB 2.x datetime (non-POJO) → ISO string; absent/unparseable → null. */
+function isoOrNull(v: unknown): string | null {
+	if (v == null) return null;
+	const s = v instanceof Date ? v.toISOString() : String(v);
+	if (s === '' || s === 'undefined' || s === 'null') return null;
+	return s;
+}
+
+function strOrNull(v: unknown): string | null {
+	if (v == null) return null;
+	const s = String(v);
+	return s === '' || s === 'undefined' || s === 'null' ? null : s;
+}
+
+interface IngestSourceDbRow {
+	id: unknown;
+	kind: string;
+	ref: unknown;
+	intent: unknown;
+	license: unknown;
+	status: string;
+	finding_count: number;
+	created_at: unknown;
+	completed_at: unknown;
+}
+
+/** Normalize a raw ingest_source DB row into the serialization-safe UI view (F-013). */
+function normIngestSource(r: IngestSourceDbRow): IngestSourceView {
+	return {
+		id: String(r.id),
+		kind: r.kind as IngestKind,
+		ref: r.ref == null ? '' : String(r.ref),
+		intent: r.intent == null ? '' : String(r.intent),
+		license: strOrNull(r.license),
+		status: r.status as IngestStatus,
+		findingCount: typeof r.finding_count === 'number' ? r.finding_count : Number(r.finding_count ?? 0),
+		createdAt: isoOrNull(r.created_at),
+		completedAt: isoOrNull(r.completed_at)
+	};
+}
+
+/**
+ * List the most recent ingest runs (newest first) for the §5 front door — the live "runs"
+ * feed the page subscribes to via the `ingest_source` SSE watcher. Read-only. `limit` is
+ * clamped to a sane bound so a malformed caller cannot ask for an unbounded scan.
+ */
+export async function listIngestSources(db: Db, limit = 50): Promise<IngestSourceView[]> {
+	const lim = Math.min(Math.max(1, Math.trunc(Number.isFinite(limit) ? limit : 50)), 200);
+	const [rows] = await db.query<[IngestSourceDbRow[]]>(
+		`SELECT id, kind, ref, intent, license, status, finding_count, created_at, completed_at
+		 FROM ingest_source ORDER BY created_at DESC LIMIT $lim;`,
+		{ lim }
+	);
+	return (rows ?? []).map(normIngestSource);
+}
+
+// ── The default distiller (D2: a plain bounded extraction pass; NO live model this wave) ──
+
+/**
+ * The D2-default DistillFn: a DETERMINISTIC, model-free extraction pass that splits the
+ * captured content into discrete findings on blank-line / heading boundaries. NO live model
+ * and NO creds this wave (the spec's D2 default — swap in the §7b `researcher` role later;
+ * the call site is unchanged). Honest by construction:
+ *   • empty/whitespace-only content → [] (the empty shadow path — an honest zero-finding run,
+ *     NOT a fabricated finding, F-008).
+ *   • a non-string raw blob → runBoundedDistill rejects it as DistillFailedError('shape').
+ * Each finding is trimmed and capped at `maxFindingChars` so one giant paragraph cannot
+ * produce a single unbounded memory row; the run-level count cap (runBoundedDistill) still
+ * truncates a flood. The finding text is UNTRUSTED — it is screened+fenced downstream.
+ */
+export function plainDistill(opts: { maxFindingChars?: number } = {}): DistillFn {
+	const maxFindingChars = opts.maxFindingChars ?? 4_000;
+	return async (input: DistillInput): Promise<DistilledFinding[]> => {
+		const raw = typeof input.raw === 'string' ? input.raw : '';
+		// Split on blank lines (paragraph/section boundaries) — the simplest honest segmentation.
+		const segments = raw
+			.split(/\r?\n\s*\r?\n/)
+			.map((s) => s.replace(/\s+/g, ' ').trim())
+			.filter((s) => s.length > 0);
+		return segments.map((s) => ({
+			content: s.length > maxFindingChars ? s.slice(0, maxFindingChars) : s
+		}));
+	};
+}

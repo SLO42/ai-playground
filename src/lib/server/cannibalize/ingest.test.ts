@@ -10,6 +10,8 @@ import { captureText } from './capture';
 import {
 	ingestCaptured,
 	runBoundedDistill,
+	listIngestSources,
+	plainDistill,
 	DistillTimeoutError,
 	DistillFailedError,
 	type DistillFn,
@@ -303,5 +305,94 @@ describe('utilization loop — applied_count increments when a recalled ingested
 		expect(mrow).toHaveLength(1);
 		expect(String(mrow[0].provenance)).toBe(res.sourceId); // the real server-side id, not the forged one
 		expect(String(mrow[0].provenance)).not.toContain('fake_forged_id');
+	});
+});
+
+// ── plainDistill (D2 default) — model-free segmentation, honest empty ──────────────────
+describe('plainDistill — the D2-default model-free extractor', () => {
+	it('splits content into findings on blank-line boundaries', async () => {
+		const distill = plainDistill();
+		const out = await distill({
+			raw: 'First finding paragraph.\n\nSecond finding paragraph.\n\nThird.',
+			kind: 'text',
+			ref: 'r',
+			intent: 'i'
+		});
+		expect(out).toHaveLength(3);
+		expect(out[0].content).toBe('First finding paragraph.');
+		expect(out[2].content).toBe('Third.');
+	});
+
+	it('whitespace-only content → [] (empty shadow path — no fabricated finding, F-008)', async () => {
+		const distill = plainDistill();
+		expect(await distill({ raw: '   \n\n  \t  ', kind: 'text', ref: 'r', intent: 'i' })).toEqual([]);
+		expect(await distill({ raw: '', kind: 'text', ref: 'r', intent: 'i' })).toEqual([]);
+	});
+
+	it('caps a single huge segment at maxFindingChars (no unbounded row)', async () => {
+		const distill = plainDistill({ maxFindingChars: 10 });
+		const out = await distill({ raw: 'x'.repeat(5000), kind: 'text', ref: 'r', intent: 'i' });
+		expect(out).toHaveLength(1);
+		expect(out[0].content.length).toBe(10);
+	});
+
+	it('drives a full ingest end-to-end via captureText (live integration)', async () => {
+		const cap = captureText('Build with npm run build.\n\nLint must be clean.', 'plain-doc');
+		const res = await ingestCaptured(deps(plainDistill()), { capture: cap, intent: 'learn the build' });
+		expect(res.status).toBe('done');
+		expect(res.ingestedCount).toBe(2);
+	});
+});
+
+// ── listIngestSources — the §5 read side (serialization-safe, newest-first, shadows) ───
+describe('listIngestSources — UI read side', () => {
+	it('returns [] on an empty table (empty shadow path)', async () => {
+		const fresh = await startTestDb();
+		const fdb = await Db.connect({
+			url: fresh.wsUrl,
+			username: fresh.root.username,
+			password: fresh.root.password,
+			namespace: fresh.namespace,
+			database: fresh.database
+		});
+		await runMigrations(fdb, schemaMigrations);
+		expect(await listIngestSources(fdb)).toEqual([]);
+		await fdb.close().catch(() => {});
+		await fresh.teardown();
+	});
+
+	it('lists runs newest-first with ISO/null-coerced datetimes (F-013) and honest license null', async () => {
+		// Ingest two sources so there are real rows to read back.
+		await ingestCaptured(deps(plainDistill()), {
+			capture: captureText('A finding.\n\nB finding.', 'list-doc-1'),
+			intent: 'first',
+			license: 'MIT'
+		});
+		await ingestCaptured(deps(plainDistill()), {
+			capture: captureText('C finding.', 'list-doc-2'),
+			intent: 'second'
+		});
+		const rows = await listIngestSources(db, 50);
+		expect(rows.length).toBeGreaterThanOrEqual(2);
+
+		// Newest-first: list-doc-2 precedes list-doc-1.
+		const refs = rows.map((r) => r.ref);
+		expect(refs.indexOf('list-doc-2')).toBeLessThan(refs.indexOf('list-doc-1'));
+
+		const r1 = rows.find((r) => r.ref === 'list-doc-1')!;
+		expect(r1.status).toBe('done');
+		expect(r1.findingCount).toBe(2);
+		expect(r1.license).toBe('MIT');
+		// Datetimes are ISO strings or null — NEVER a raw SDK datetime / 'undefined' (F-013).
+		expect(typeof r1.createdAt === 'string' && !Number.isNaN(Date.parse(r1.createdAt))).toBe(true);
+		expect(r1.completedAt === null || !Number.isNaN(Date.parse(r1.completedAt))).toBe(true);
+
+		const r2 = rows.find((r) => r.ref === 'list-doc-2')!;
+		expect(r2.license).toBeNull(); // honest null (absent), NEVER str(undefined)
+	});
+
+	it('clamps the limit to a sane bound (no unbounded scan)', async () => {
+		const rows = await listIngestSources(db, 99999);
+		expect(rows.length).toBeLessThanOrEqual(200);
 	});
 });

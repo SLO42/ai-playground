@@ -36,6 +36,9 @@ export const navGroups: NavGroup[] = [
       // G-C — the atelier-wide reasoning/actions/communications timeline (GLOBAL-TRANSCRIPT-SPEC).
       { label: 'Atelier', href: '/atelier' },
       { label: 'Memory', href: '/memory' },
+      // BL-6 — /cannibalize: the Ingest front door (capture→distill→screen→fence→embed→ingest
+      // external content into the brain, with provenance + license) — CANNIBALIZE-SPEC §5.
+      { label: 'Cannibalize', href: '/cannibalize' },
       { label: 'Reports', href: '/reports' },
       // TASK 10.5 — /services: live health + start/stop/restart for the managed local
       // services (Ollama/SurrealDB/engine) + incident history (UI-SPEC §45/§210).

@@ -89,7 +89,11 @@ export const WATCHED_TABLES = [
 	'role_event',
 	// gauntlet_fixture — /agents/ceremony (day-0 ceremony DRIVER: a seed creates proposed
 	// fixtures, re-deriving the authoring flow live) — TASK W-D7c CER1
-	'gauntlet_fixture'
+	'gauntlet_fixture',
+	// ingest_source — /cannibalize (BL-6 Ingest front door: a run walks capturing→distilling→
+	// ingesting→done|quarantined|failed; the page live-updates progress + the runs feed off
+	// this watcher) — CANNIBALIZE-SPEC §5
+	'ingest_source'
 ] as const;
 
 /** One of the boot-watched table names. */

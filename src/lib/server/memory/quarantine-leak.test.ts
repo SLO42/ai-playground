@@ -101,6 +101,12 @@ const READERS: ReaderPath[] = [
 		kind: 'LEAK',
 		why: 'listProjectGraph entity sub-select — graph export of project memory (D-026)'
 	},
+	{
+		file: 'memory/observability.ts',
+		marker: 'SELECT id, content FROM memory WHERE screen_status',
+		kind: 'LEAK',
+		why: 'loadMemoryContent — the utilization lens (listRetrievalOutcomes) surfaces memory CONTENT to the UI; must exclude quarantined so a quarantined memory with persisted retrieval_outcome rows never surfaces its body (D-026, UI-SPEC §43)'
+	},
 	// ── EXEMPT readers — cannot leak quarantined content into context or an export ──
 	{
 		file: 'workforce/activation.ts',

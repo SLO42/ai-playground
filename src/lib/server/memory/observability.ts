@@ -410,17 +410,22 @@ export async function listRetrievalOutcomes(
 }
 
 /**
- * Resolve screened display content for a set of memory ids (one bounded read). Quarantined
- * rows are EXCLUDED from recall elsewhere but their outcome rows persist; here we screen the
- * stored content for display anyway (defence-in-depth) so no raw secret surfaces (D-026).
- * Returns a Map id→screened-content; ids with no matching live memory are simply absent.
+ * Resolve screened display content for a set of memory ids (one bounded read). This is the
+ * utilization lens's only memory-table content read, so it is a D-026 LEAK surface and MUST
+ * carry the active-set quarantine filter: a quarantined row's content is EXCLUDED here
+ * (`screen_status != "quarantined"` in the statement), so a quarantined memory whose
+ * retrieval_outcome rows persisted (e.g. it was recalled before being quarantined, or
+ * adversarially promoted to a tier) surfaces as content '' on the leaderboard — never its body.
+ * Defence-in-depth: the surviving (non-quarantined) rows are STILL display-screened, so a
+ * redacted/clean body that smuggled a secret renders inert (D-026). Returns a Map
+ * id→screened-content; ids with no matching live (non-quarantined) memory are simply absent.
  */
 async function loadMemoryContent(db: Db, ids: string[]): Promise<Map<string, string>> {
 	const map = new Map<string, string>();
 	if (ids.length === 0) return map;
 	const links = ids.map((id) => link(id));
 	const [rows] = await db.query<[Array<{ id: unknown; content: unknown }>]>(
-		`SELECT id, content FROM memory WHERE id IN $ids;`,
+		`SELECT id, content FROM memory WHERE screen_status != "quarantined" AND id IN $ids;`,
 		{ ids: links }
 	);
 	for (const r of rows ?? []) {

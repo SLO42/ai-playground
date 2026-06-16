@@ -236,4 +236,35 @@ describe('listRetrievalOutcomes (utilization / D-030 signal)', () => {
 		expect(rows[0].content).not.toContain(PLANTED_SECRET);
 		expect(rows[0].content).toContain('[REDACTED:anthropic-key]');
 	});
+
+	it('RED-TEAM (D-026 leak boundary): a QUARANTINED memory row never surfaces its content via the utilization lens', async () => {
+		// A quarantined row whose retrieval_outcome rows persisted (it was recalled before being
+		// quarantined, or adversarially tier-promoted). loadMemoryContent MUST exclude it
+		// (screen_status != "quarantined" in the statement) → content resolves to '' (honest),
+		// NEVER the stored body. Plant a quarantine-bearing body with a unique sentinel.
+		const SENTINEL = 'QUARANTINE_LEAK_SENTINEL_observ_must_never_escape';
+		const [rows0] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE memory CONTENT {
+				content: $content, kind: "semantic", scope: "global", tier: 1, importance: 0.5,
+				embedding: $emb, screen_status: "quarantined", namespace: "default"
+			} RETURN id;`,
+			{ content: `quarantined audit body ${SENTINEL}`, emb: ZERO_VEC }
+		);
+		const qId = rows0[0].id;
+		const qIdStr = String(qId);
+		await db.query(`CREATE retrieval_outcome CONTENT { memory: $m, cited: false, utilized: false, score: 0.9 };`, { m: qId });
+
+		// The outcome row IS surfaced (we report the id + counts honestly), but content is '' —
+		// the quarantined body (and its sentinel) never reaches the lens.
+		const rows = await listRetrievalOutcomes(db, { memoryId: qIdStr });
+		expect(rows.length).toBe(1);
+		expect(rows[0].memory).toBe(qIdStr);
+		expect(rows[0].recalled).toBe(1);
+		expect(rows[0].content).toBe('');
+		expect(rows[0].content).not.toContain(SENTINEL);
+
+		// And across the whole leaderboard the sentinel never appears in any surfaced content.
+		const all = await listRetrievalOutcomes(db, { limit: 500 });
+		expect(all.some((r) => r.content.includes(SENTINEL))).toBe(false);
+	});
 });

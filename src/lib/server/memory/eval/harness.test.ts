@@ -6,7 +6,14 @@ import { startTestDb, type TestDb } from '../../db/testserver';
 import { MemoryService, WMR_WEIGHTS, NOVELTY_COSINE_CUT, RECALL_BUDGET } from '../index';
 import { LexicalEmbedder, tokenize } from './embedder';
 import { CORPUS, QUERIES, dupFamilies } from './corpus';
-import { runEval, formatReport, rankRefs, type Weights } from './harness';
+import {
+	runEval,
+	formatReport,
+	rankRefs,
+	noteHasCiteDirective,
+	RETIRED_FENCE_NOTE_NO_CITE,
+	type Weights
+} from './harness';
 import {
 	precisionAtK,
 	recallAtK,
@@ -221,6 +228,33 @@ describe('runEval — live integration, MEASUREMENT ONLY', () => {
 		const gwTight = tight.perQuery.find((m) => m.queryId === 'q-gateway')!;
 		expect(gwTight.dupSuppression).not.toBeNull();
 		expect(gwTight.dupSuppression!).toBeGreaterThanOrEqual(gwDefault.dupSuppression!);
+	});
+
+	it('cite-signal probe (Part A): the use-and-cite directive lifts coverage, ids parse, BOUND honest', () => {
+		const cs = report.citeSignal;
+		// The probe ran over the live recall set (corpus has citable items).
+		expect(cs.totalItems).toBeGreaterThan(0);
+		// BEFORE (retired consult-only note) carries NO cite directive → 0 coverage.
+		expect(cs.citeDirectiveCoverageBefore).toBe(0);
+		// AFTER (the strengthened live note) cues citing on EVERY surfaced block → full coverage.
+		expect(cs.citeDirectiveCoverageAfter).toBe(1);
+		// The measured lift is real and positive (F-008 — not an unmeasured "it's better").
+		expect(cs.citeDirectiveLift).toBeGreaterThan(0);
+		expect(cs.citeDirectiveLift).toBe(
+			Number((cs.citeDirectiveCoverageAfter - cs.citeDirectiveCoverageBefore).toFixed(4))
+		);
+		// The rendered [#N] ids parse fully through the shared D-030 grammar (parse path intact).
+		expect(cs.citeIdParseRate).toBe(1);
+	});
+
+	it('noteHasCiteDirective discriminates the live note from the retired consult-only note', () => {
+		// The retired baseline note has NO cite cue (this is what makes BEFORE == 0).
+		expect(noteHasCiteDirective(RETIRED_FENCE_NOTE_NO_CITE)).toBe(false);
+		// A note with both a "cite" verb and a [# id cue is detected.
+		expect(noteHasCiteDirective('When an item informs your work, cite it by its [#N] id.')).toBe(true);
+		// Either half alone is NOT enough (guards against a false positive on stray text).
+		expect(noteHasCiteDirective('please cite your sources')).toBe(false);
+		expect(noteHasCiteDirective('see [#3] above')).toBe(false);
 	});
 
 	it('the budget probe tail-drops live recall without ever exceeding the cap', () => {

@@ -37,6 +37,53 @@ describe('parseFindingsFile — the §3.3 contract (shadow paths named)', () => 
 		}
 	});
 
+	// Robustness fix (Investigator gauntlet): a 1-element [n] is an unambiguous single
+	// line and MUST coerce to [n, n] — exactly as the number n / the string "n" already do.
+	it('accepts a 1-element [n] lines array → coerced to [n, n]', () => {
+		const r = parseFindingsFile(
+			JSON.stringify([{ fixture: 'fx', file: 'a.ts', lines: [5], class: 'bug', evidence: 'const x = y;' }])
+		);
+		expect(r.ok).toBe(true);
+		if (r.ok) {
+			const f = r.findings[0];
+			expect(f.kind).toBe('presence');
+			if (f.kind === 'presence') expect(f.lines).toEqual([5, 5]);
+		}
+	});
+
+	it('[n] coerces identically to the number n and the string "n"', () => {
+		const shapes = [5, '5', [5]] as const;
+		const out = shapes.map((lines) => {
+			const r = parseFindingsFile(
+				JSON.stringify([{ fixture: 'fx', file: 'a.ts', lines, class: 'bug', evidence: 'e' }])
+			);
+			return r.ok && r.findings[0].kind === 'presence' ? r.findings[0].lines : 'err';
+		});
+		expect(out).toEqual([
+			[5, 5],
+			[5, 5],
+			[5, 5]
+		]);
+	});
+
+	// Regression for the EXACT Investigator run: 4 valid finds, one using [n], all parse.
+	it('parses a full 4-finding submission where one finding uses lines:[n]', () => {
+		const r = parseFindingsFile(
+			JSON.stringify([
+				{ fixture: 'fx', file: 'a.ts', lines: [5], class: 'swallowed-error', evidence: 'catch {}' },
+				{ fixture: 'fx', file: 'b.ts', lines: 12, class: 'injection', evidence: 'eval(x)' },
+				{ fixture: 'fx', file: 'c.ts', lines: '20-24', class: 'race', evidence: 'await none' },
+				{ fixture: 'fx', file: 'd.ts', lines: [30, 33], class: 'leak', evidence: 'no close()' }
+			])
+		);
+		expect(r.ok).toBe(true);
+		if (r.ok) {
+			expect(r.findings).toHaveLength(4);
+			const first = r.findings[0];
+			if (first.kind === 'presence') expect(first.lines).toEqual([5, 5]);
+		}
+	});
+
 	it('accepts an absence finding (artifact + the proving search — G1)', () => {
 		const r = parseFindingsFile(
 			JSON.stringify([{ fixture: 'fx', absence: { artifact: 'rollback handler', search: 'grep -r rollback' } }])
@@ -69,6 +116,15 @@ describe('parseFindingsFile — the §3.3 contract (shadow paths named)', () => 
 		['missing class', '[{"fixture":"fx","file":"a","evidence":"c"}]', /class/],
 		['missing evidence', '[{"fixture":"fx","file":"a","class":"b"}]', /evidence/],
 		['bad lines', '[{"fixture":"fx","file":"a","class":"b","evidence":"c","lines":"x-y"}]', /lines/],
+		// Red-team: the [n] leniency must NOT let genuinely-invalid array shapes through.
+		['empty lines array', '[{"fixture":"fx","file":"a","class":"b","evidence":"c","lines":[]}]', /lines/],
+		['three-element lines', '[{"fixture":"fx","file":"a","class":"b","evidence":"c","lines":[5,8,9]}]', /lines/],
+		['non-numeric [n]', '[{"fixture":"fx","file":"a","class":"b","evidence":"c","lines":["a"]}]', /lines/],
+		['end<start lines', '[{"fixture":"fx","file":"a","class":"b","evidence":"c","lines":[8,4]}]', /lines/],
+		['non-integer [n]', '[{"fixture":"fx","file":"a","class":"b","evidence":"c","lines":[1.5]}]', /lines/],
+		['zero [n]', '[{"fixture":"fx","file":"a","class":"b","evidence":"c","lines":[0]}]', /lines/],
+		['negative [n]', '[{"fixture":"fx","file":"a","class":"b","evidence":"c","lines":[-3]}]', /lines/],
+		['null [n]', '[{"fixture":"fx","file":"a","class":"b","evidence":"c","lines":[null]}]', /lines/],
 		['absence missing search', '[{"fixture":"fx","absence":{"artifact":"a"}}]', /search/],
 		['absence missing artifact', '[{"fixture":"fx","absence":{"search":"s"}}]', /artifact/]
 	])('rejects %s with a named reason', (_label, raw, re) => {
@@ -167,6 +223,34 @@ describe('scoreFindings — deterministic matrix (§3.4)', () => {
 		expect(s.plantedFound).toBe(1);
 		expect(s.ambiguous).toEqual([]);
 		expect(s.results[0].found).toEqual(['p1']);
+	});
+
+	// Match-outcome invariance: a [n] finding (post-parse [n,n]) must match a plant iff
+	// the number n would. linesOverlap is unchanged; this proves the [n] leniency cannot
+	// flip a match/no-match outcome. End-to-end through parseFindingsFile + scoreFindings.
+	it('a lines:[n] finding matches a plant iff the bare number n would', () => {
+		const lk = key('lf', [{ id: 'p1', detection: { file: 'a.ts', lines: [10, 12] } }]);
+		for (const [n, shouldHit] of [
+			[11, true], // inside the plant range → full match for both shapes
+			[12, true], // boundary inclusive
+			[20, false] // outside the range → partial (file only), never a hit, for both
+		] as Array<[number, boolean]>) {
+			const viaArray = parseFindingsFile(
+				JSON.stringify([{ fixture: 'lf', file: 'a.ts', lines: [n], class: 'bug', evidence: 'x' }])
+			);
+			const viaNumber = parseFindingsFile(
+				JSON.stringify([{ fixture: 'lf', file: 'a.ts', lines: n, class: 'bug', evidence: 'x' }])
+			);
+			expect(viaArray.ok && viaNumber.ok).toBe(true);
+			if (!viaArray.ok || !viaNumber.ok) continue;
+			const sArr = scoreFindings(new Map([['lf', lk]]), viaArray.findings);
+			const sNum = scoreFindings(new Map([['lf', lk]]), viaNumber.findings);
+			// Identical match outcome for both lines shapes.
+			expect(sArr.plantedFound).toBe(sNum.plantedFound);
+			expect(sArr.plantedFound).toBe(shouldHit ? 1 : 0);
+			expect(sArr.results[0].found).toEqual(sNum.results[0].found);
+			expect(sArr.ambiguous.length).toBe(sNum.ambiguous.length);
+		}
 	});
 
 	it('MISS: no related finding — plant missed, nothing ambiguous', () => {

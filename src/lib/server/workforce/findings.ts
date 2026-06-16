@@ -60,7 +60,10 @@ function nonEmptyString(v: unknown): v is string {
 	return typeof v === 'string' && v.trim().length > 0;
 }
 
-/** Normalize `lines` input: a single number, "12" / "12-18" strings, or [start, end]. */
+/** Normalize `lines` input: a single number, "12" / "12-18" strings, a 1-element
+ *  `[n]` (single line — unambiguous, coerced to [n, n] exactly like the number `n`),
+ *  or a 2-element [start, end]. Empty / >2-element / non-integer / NaN / end<start
+ *  arrays are genuinely invalid and rejected. */
 function parseLines(v: unknown): [number, number] | null | 'invalid' {
 	if (v === undefined || v === null) return null;
 	if (typeof v === 'number' && Number.isInteger(v) && v > 0) return [v, v];
@@ -71,8 +74,9 @@ function parseLines(v: unknown): [number, number] | null | 'invalid' {
 		const b = m[2] ? Number(m[2]) : a;
 		return a > 0 && b >= a ? [a, b] : 'invalid';
 	}
-	if (Array.isArray(v) && v.length === 2) {
-		const [a, b] = v;
+	if (Array.isArray(v) && (v.length === 1 || v.length === 2)) {
+		// A 1-element [n] is an unambiguous single line → [n, n] (same as the number n).
+		const [a, b = a] = v;
 		if (
 			typeof a === 'number' &&
 			typeof b === 'number' &&

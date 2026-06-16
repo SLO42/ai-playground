@@ -31,6 +31,7 @@ import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import {
+	listOpenProposals,
 	listRoles,
 	listRoleVersions,
 	type RoleRow,
@@ -110,6 +111,9 @@ export interface WorkforcePanelData {
 	allCertified: boolean;
 	/** §3.4 — every 'adjudicating' run awaiting the operator's judgment. */
 	adjudication: AdjudicationCard[];
+	/** §5 — count of OPEN review_proposals (the /agents/proposals surface badge). Honest 0
+	 *  when none (a count is a real number — 0 here means "no open proposals", not '—'). */
+	openProposals: number;
 }
 
 interface RawRun {
@@ -366,9 +370,11 @@ export async function loadWorkforcePanel(db: Db): Promise<WorkforcePanelData> {
 	const roleRows = await listRoles(db);
 	const cards = await Promise.all(roleRows.map((r) => buildCard(db, r)));
 	const adjudication = await buildAdjudicationQueue(db);
+	const open = await listOpenProposals(db);
 	return {
 		roles: cards,
 		allCertified: cards.length > 0 && cards.every((c) => c.deployable),
-		adjudication
+		adjudication,
+		openProposals: open.length
 	};
 }

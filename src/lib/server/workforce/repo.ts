@@ -24,10 +24,13 @@ import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import {
+	assertProposalTransition,
 	assertRunTransition,
 	assertTransition,
 	INTERVIEWABLE_LIFECYCLES,
+	isProposalTerminal,
 	type InterviewRunStatus,
+	type ProposalStatus,
 	type RoleVersionLifecycle
 } from './lifecycle';
 
@@ -1074,16 +1077,9 @@ export async function currentBundleDigest(db: Db): Promise<string> {
 // that consumes these rows; this module only OPENS and READS them.
 
 export type ReviewProposalKind = 'prompt_revision' | 'tier_change' | 'retire' | 'staffing';
-export type ReviewProposalStatus =
-	| 'proposed'
-	| 'validated'
-	| 'rejected_by_panel'
-	| 'diff_review'
-	| 'interviewing'
-	| 'compared'
-	| 'swapped'
-	| 'rejected_by_operator'
-	| 'withdrawn';
+/** Aliased to the lifecycle module's ProposalStatus — the §5 status machine (m0046 enum)
+ *  lives in lifecycle.ts as the single transition table; this is the same set of names. */
+export type ReviewProposalStatus = ProposalStatus;
 
 /** The OPEN statuses (an in-flight proposal the operator has not yet disposed of).
  *  The anti-spam cap (§5 max_open_proposals) counts these; a row in any other status
@@ -1199,4 +1195,82 @@ export async function listReviewProposalsForRole(
 		{ role }
 	);
 	return rows.map(normReviewProposal);
+}
+
+/** Every OPEN proposal across ALL roles (the §8 RightTray decisions-inbox feed). Newest
+ *  first (F-022: ORDER BY field projected by SELECT *); bounded. Open = any non-terminal
+ *  status (proposed/validated/diff_review/interviewing/compared). */
+export async function listOpenProposals(db: Db, limit = 200): Promise<ReviewProposalRow[]> {
+	const cap = Math.min(Math.max(limit, 1), 500);
+	const [rows] = await db.query<[Raw[]]>(
+		`SELECT * FROM review_proposal
+		  WHERE status IN $open ORDER BY created_at DESC LIMIT ${cap};`,
+		{ open: OPEN_PROPOSAL_STATUSES as unknown as string[] }
+	);
+	return rows.map(normReviewProposal);
+}
+
+// ── review_proposal status machine writers (§5 governance — resolution.ts consumes) ─
+//
+// These are the SOLE status-mutation path for a review_proposal. Each move is checked
+// against the §5 transition table (lifecycle.ts assertProposalTransition — the single
+// source of legal moves) BEFORE the write, so an illegal jump (e.g. proposed→swapped,
+// skipping the diff + re-gauntlet + comparison) is refused with a NAMED ProposalStatusError.
+// Terminal moves stamp decided_at server-side (D-035). NONE of these mutate a role, swap a
+// version, or author a prompt — that governance lives in resolution.ts which composes them
+// with createRoleVersion / runGauntlet / swapActiveVersion.
+
+/**
+ * Move a proposal to a new status, transition-checked (§5). Optionally set the
+ * challenger (on diff approval) and/or the comparison (after the re-gauntlet) in the
+ * SAME write — a partial write can never leave the row in a status whose required field
+ * is missing (interrupt contract). A terminal target stamps decided_at. Idempotent
+ * re-target to the SAME status is an absorbed no-op (interrupt-safe re-run).
+ */
+export interface SetProposalStatusInput {
+	to: ProposalStatus;
+	/** Set when moving into diff_review/interviewing: the freshly-authored challenger. */
+	challenger?: string;
+	/** Set when moving into 'compared': the re-gauntlet comparison object (§5). */
+	comparison?: Record<string, unknown>;
+}
+
+export async function setProposalStatus(
+	db: Db,
+	proposalId: string,
+	input: SetProposalStatusInput
+): Promise<ReviewProposalRow> {
+	const p = await getReviewProposal(db, proposalId);
+	if (!p) throw new WorkforceInputError(`review_proposal not found: ${proposalId}`);
+	if (p.status === input.to) {
+		// Idempotent absorb (interrupt contract): re-applying the same status, optionally
+		// folding in a challenger/comparison the prior partial write missed.
+		const sets: string[] = [];
+		const binds: Record<string, unknown> = { rid: link(p.id) };
+		if (input.challenger && p.challenger == null) {
+			sets.push('challenger = $challenger');
+			binds.challenger = link(input.challenger);
+		}
+		if (input.comparison !== undefined && p.comparison == null) {
+			sets.push('comparison = $comparison');
+			binds.comparison = input.comparison;
+		}
+		if (sets.length === 0) return p;
+		const [rows] = await db.query<[Raw[]]>(`UPDATE $rid SET ${sets.join(', ')} RETURN AFTER;`, binds);
+		return normReviewProposal(rows[0]);
+	}
+	assertProposalTransition(p.status, input.to);
+	const sets: string[] = ['status = $to'];
+	const binds: Record<string, unknown> = { rid: link(p.id), to: input.to };
+	if (input.challenger !== undefined) {
+		sets.push('challenger = $challenger');
+		binds.challenger = link(input.challenger);
+	}
+	if (input.comparison !== undefined) {
+		sets.push('comparison = $comparison');
+		binds.comparison = input.comparison;
+	}
+	if (isProposalTerminal(input.to)) sets.push('decided_at = time::now()');
+	const [rows] = await db.query<[Raw[]]>(`UPDATE $rid SET ${sets.join(', ')} RETURN AFTER;`, binds);
+	return normReviewProposal(rows[0]);
 }

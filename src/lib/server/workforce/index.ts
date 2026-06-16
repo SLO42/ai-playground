@@ -34,3 +34,9 @@ export * from './panel';
 // events) and idempotently/boundedly auto-creates review_proposal{status:'proposed'}
 // rows. NEVER swaps/mutates/authors a prompt — operator-gated (D-010/D-039).
 export * from './drift';
+// WORKFORCE-SPEC §5 — the OPERATOR-GATED RESOLUTION half on top of drift's auto-raised
+// proposals: the prompt-core DIFF (D-010), authorChallenger (createRoleVersion path),
+// regauntletChallenger (reuse runGauntlet at the incumbent's certified tier × model_id +
+// record the comparison), swapFromProposal (D-039 operator-confirmed swap), rejectProposal
+// (close + cooldown). NEVER auto-swaps, NEVER auto-authors-and-deploys (operator-gated).
+export * from './resolution';

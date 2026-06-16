@@ -156,3 +156,101 @@ export function canRunTransition(from: string, to: string): boolean {
 export function assertRunTransition(from: string, to: string): void {
 	if (!canRunTransition(from, to)) throw new RunStatusError(from, to);
 }
+
+// ── review_proposal status machine (§5 performance-review loop) ──────────────────
+// The §5 two-operator-touch lifecycle (m0046 status enum), as PURE code — one
+// transition table, so the governance rulings live in exactly one place (the DB
+// write path in resolution.ts consults THIS; nothing else encodes the moves).
+//
+// §5 gate order (PM-authored path):
+//   proposed → validated (the §4 panel approved) | rejected_by_panel
+//   validated → diff_review (operator opens the D-010 prompt-core diff) | withdrawn
+//   diff_review → interviewing (operator approved the diff; the challenger was
+//                 authored + the re-gauntlet started) | rejected_by_operator | withdrawn
+//   interviewing → compared (the re-gauntlet finished + comparison recorded) | rejected_by_operator
+//   compared → swapped (operator D-039 confirm) | rejected_by_operator
+// Operator-authored proposals SKIP the panel (the operator IS the authority the
+// panel protects, §5) — they are BORN at 'proposed' and the operator opens the diff
+// directly: proposed → diff_review is therefore also legal (the §4 panel is bypassed).
+// 'withdrawn' (PM withdrawal) is legal from any non-terminal pre-interview state.
+// swapped / rejected_by_panel / rejected_by_operator / withdrawn are TERMINAL.
+
+export type ProposalStatus =
+	| 'proposed'
+	| 'validated'
+	| 'rejected_by_panel'
+	| 'diff_review'
+	| 'interviewing'
+	| 'compared'
+	| 'swapped'
+	| 'rejected_by_operator'
+	| 'withdrawn';
+
+export const PROPOSAL_STATUSES: readonly ProposalStatus[] = [
+	'proposed',
+	'validated',
+	'rejected_by_panel',
+	'diff_review',
+	'interviewing',
+	'compared',
+	'swapped',
+	'rejected_by_operator',
+	'withdrawn'
+];
+
+const PROPOSAL_TRANSITIONS: Record<ProposalStatus, readonly ProposalStatus[]> = {
+	// §4 panel verdict, OR (operator-authored) the operator opens the diff directly, OR the
+	// operator declines the auto-raised proposal outright (rejected_by_operator at the source).
+	proposed: ['validated', 'rejected_by_panel', 'diff_review', 'rejected_by_operator', 'withdrawn'],
+	// Operator opens the D-010 prompt-core diff (security before spend, §5 touch ①), or declines.
+	validated: ['diff_review', 'rejected_by_operator', 'withdrawn'],
+	// Operator approved the diff → challenger authored → re-gauntlet launched.
+	diff_review: ['interviewing', 'rejected_by_operator', 'withdrawn'],
+	// The re-gauntlet runs; on finish the comparison is recorded (or the operator rejects).
+	interviewing: ['compared', 'rejected_by_operator', 'withdrawn'],
+	// Touch ②: the one-click operator swap confirm (D-039), or a reject.
+	compared: ['swapped', 'rejected_by_operator', 'withdrawn'],
+	// Terminal exits.
+	swapped: [],
+	rejected_by_panel: [],
+	rejected_by_operator: [],
+	withdrawn: []
+};
+
+/** Named error for an illegal review_proposal status move (names from/to + legal set). */
+export class ProposalStatusError extends Error {
+	override readonly name = 'ProposalStatusError';
+	constructor(
+		readonly from: string,
+		readonly to: string
+	) {
+		const legal = (PROPOSAL_TRANSITIONS as Record<string, readonly string[]>)[from];
+		super(
+			`illegal review_proposal status transition '${from}' → '${to}'` +
+				(legal
+					? ` (legal from '${from}': ${legal.length ? legal.join(', ') : 'none — terminal'})`
+					: '')
+		);
+	}
+}
+
+export function canProposalTransition(from: string, to: string): boolean {
+	const legal = (PROPOSAL_TRANSITIONS as Record<string, readonly ProposalStatus[]>)[from];
+	return !!legal && (legal as readonly string[]).includes(to);
+}
+
+export function assertProposalTransition(from: string, to: string): void {
+	if (!canProposalTransition(from, to)) throw new ProposalStatusError(from, to);
+}
+
+/** Terminal proposal statuses (the proposal is disposed; the (role,kind) slot is free). */
+export const TERMINAL_PROPOSAL_STATUSES: readonly ProposalStatus[] = [
+	'swapped',
+	'rejected_by_panel',
+	'rejected_by_operator',
+	'withdrawn'
+];
+
+export function isProposalTerminal(status: string): boolean {
+	return (TERMINAL_PROPOSAL_STATUSES as readonly string[]).includes(status);
+}

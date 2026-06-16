@@ -209,11 +209,19 @@
     <div class="card workforce" aria-labelledby="wf-title">
       <div class="panel-head">
         <span class="eyebrow" id="wf-title">workforce (certified roles)</span>
-        {#if roleCards.length > 0}
-          <span class="count mono">
-            {roleCards.filter((r) => r.deployable).length}/{roleCards.length} deployable
-          </span>
-        {/if}
+        <span class="head-meta">
+          {#if roleCards.length > 0}
+            <span class="count mono">
+              {roleCards.filter((r) => r.deployable).length}/{roleCards.length} deployable
+            </span>
+          {/if}
+          <!-- §5 — the performance-review proposal surface (drift-raised + operator-initiated
+               role revisions). The badge surfaces the open count; the link is the decisions
+               inbox where the operator reviews the diff, re-gauntlets, and swaps/rejects. -->
+          <a class="cta-link" href="/agents/proposals">
+            Proposals{#if (workforce?.openProposals ?? 0) > 0}<span class="badge mono">{workforce?.openProposals}</span>{/if}
+          </a>
+        </span>
       </div>
       {#if roleCards.length === 0}
         <p class="state-body">
@@ -640,6 +648,22 @@
   .count {
     font-size: 0.75rem;
     color: var(--color-text-muted);
+  }
+  .head-meta {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3, 0.75rem);
+  }
+  .badge {
+    display: inline-block;
+    margin-left: var(--space-2, 0.5rem);
+    padding: 0 var(--space-2, 0.5rem);
+    min-width: 1.2rem;
+    text-align: center;
+    border-radius: var(--radius-pill, 999px);
+    background: var(--color-accent);
+    color: var(--color-on-accent);
+    font-size: var(--text-xs);
   }
   .state {
     gap: var(--space-2);

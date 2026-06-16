@@ -284,11 +284,38 @@ export interface WorkforceConfig {
 		/** Tiers an auto-triggered interview may spend at. Empty = none. */
 		allowed_auto_tiers: string[];
 	};
-	/** TASK 16.4 (PM-SPEC §4 / WORKFORCE-SPEC §5 anti-spam) — proposal caps. */
+	/** WORKFORCE-SPEC §5 drift triggers (operator decision 4, 2026-06-16). An ARMED
+	 *  signal crossing threshold AUTO-RAISES a review_proposal{status:proposed}; the
+	 *  prompt-authoring/re-gauntlet/SWAP stay operator-gated (D-010/D-039). RATE
+	 *  signals ship UNARMED (null) until v2.2b's B2 review_verdict (rendered
+	 *  '— (needs B2)', F-008). Categorical + miscalibration signals are bool-armed. */
+	drift: {
+		/** §5: an escaped defect (a positive-control failure) — armed at launch. */
+		escaped_defect: boolean;
+		/** §5: a manual operator-feedback signal — armed at launch. */
+		operator_feedback: boolean;
+		/** A1-calibration signal: high-confidence verdicts trending to bad outcomes. */
+		confidence_miscalibration: boolean;
+		/** The high-confidence-wrong RATE at/above which miscalibration fires
+		 *  ([0,1]). null = the signal is disarmed even if the bool is true. */
+		confidence_miscalibration_rate: number | null;
+		/** Post-B2 RATE signal — null until v2.2b lands review_verdict (F-008). */
+		refutation_rate: number | null;
+		/** Post-B2 RATE signal — null until v2.2b lands review_verdict (F-008). */
+		fixloop_rate: number | null;
+		[k: string]: unknown;
+	};
+	/** TASK 16.4 (PM-SPEC §4 / WORKFORCE-SPEC §5 anti-spam) — proposal caps + the §5
+	 *  track-window / claim-floor (conservative starting points, operator-tunable). */
 	workforce: {
 		/** Max OPEN PM proposals per key (per project for tasks); at cap the PM
 		 *  records to pm_memory instead. Default 2 — the §5 conservative start. */
 		max_open_proposals: number;
+		/** §5 drift track window in days (default 14 — a conservative start). */
+		track_window_days: number;
+		/** §5 claim floor: below this many events the PM must not claim degradation
+		 *  (default 5 — a conservative start). */
+		min_events_for_claim: number;
 		[k: string]: unknown;
 	};
 	[k: string]: unknown;
@@ -370,12 +397,15 @@ export function loadWorkforce(file: string, opts: LoadOpts = {}): WorkforceConfi
 	// here); when present it must be a positive integer (a 0/negative cap would
 	// silently kill the Act-with-Purpose pipeline — fail closed instead).
 	let maxOpenProposals = 2;
+	let trackWindowDays = 14;
+	let minEventsForClaim = 5;
 	const wfRaw = raw.workforce;
 	if (wfRaw !== undefined) {
 		if (wfRaw === null || typeof wfRaw !== 'object' || Array.isArray(wfRaw)) {
 			throw new ConfigError('workforce: "workforce" must be a mapping when set', file);
 		}
-		const cap = (wfRaw as Record<string, unknown>).max_open_proposals;
+		const w = wfRaw as Record<string, unknown>;
+		const cap = w.max_open_proposals;
 		if (cap !== undefined && cap !== null) {
 			if (typeof cap !== 'number' || !Number.isInteger(cap) || cap < 1) {
 				throw new ConfigError(
@@ -385,6 +415,66 @@ export function loadWorkforce(file: string, opts: LoadOpts = {}): WorkforceConfi
 			}
 			maxOpenProposals = cap;
 		}
+		// §5 track window / claim floor — conservative defaults; when present each must
+		// be a POSITIVE integer (a 0/negative window or floor is meaningless — fail closed).
+		const posInt = (v: unknown, key: string): number | null => {
+			if (v === undefined || v === null) return null;
+			if (typeof v !== 'number' || !Number.isInteger(v) || v < 1) {
+				throw new ConfigError(`workforce: workforce.${key} must be a positive integer`, file);
+			}
+			return v;
+		};
+		trackWindowDays = posInt(w.track_window_days, 'track_window_days') ?? trackWindowDays;
+		minEventsForClaim = posInt(w.min_events_for_claim, 'min_events_for_claim') ?? minEventsForClaim;
+	}
+
+	// WORKFORCE-SPEC §5 — drift.* (operator decision 4). Optional block (older files ship
+	// the categorical signals armed + rate signals unarmed). Bool signals must be booleans;
+	// the miscalibration rate + the post-B2 rate signals must be null (UNARMED — F-008, no
+	// invented bound) or a number in [0,1]. Fail closed on anything else (no silent knob).
+	let driftEscapedDefect = true;
+	let driftOperatorFeedback = true;
+	let driftConfidenceMiscalibration = true;
+	let driftConfidenceMiscalibrationRate: number | null = null;
+	let driftRefutationRate: number | null = null;
+	let driftFixloopRate: number | null = null;
+	const driftRaw = raw.drift;
+	if (driftRaw !== undefined) {
+		if (driftRaw === null || typeof driftRaw !== 'object' || Array.isArray(driftRaw)) {
+			throw new ConfigError('workforce: "drift" must be a mapping when set', file);
+		}
+		const d = driftRaw as Record<string, unknown>;
+		const bool = (v: unknown, key: string, dflt: boolean): boolean => {
+			if (v === undefined) return dflt;
+			if (typeof v !== 'boolean') {
+				throw new ConfigError(`workforce: drift.${key} must be a boolean (armed/disarmed)`, file);
+			}
+			return v;
+		};
+		// A rate bound: null = UNARMED (G5/F-008 — never auto-derived), else a number in [0,1].
+		const rate = (v: unknown, key: string): number | null => {
+			if (v === undefined || v === null) return null;
+			if (typeof v !== 'number' || Number.isNaN(v) || v < 0 || v > 1) {
+				throw new ConfigError(
+					`workforce: drift.${key} must be null (unarmed) or a number in [0,1]`,
+					file
+				);
+			}
+			return v;
+		};
+		driftEscapedDefect = bool(d.escaped_defect, 'escaped_defect', true);
+		driftOperatorFeedback = bool(d.operator_feedback, 'operator_feedback', true);
+		driftConfidenceMiscalibration = bool(
+			d.confidence_miscalibration,
+			'confidence_miscalibration',
+			true
+		);
+		driftConfidenceMiscalibrationRate = rate(
+			d.confidence_miscalibration_rate,
+			'confidence_miscalibration_rate'
+		);
+		driftRefutationRate = rate(d.refutation_rate, 'refutation_rate');
+		driftFixloopRate = rate(d.fixloop_rate, 'fixloop_rate');
 	}
 
 	// TASK 16.6 — gauntlet.* (WORKFORCE-SPEC §3.5 pass bar + §3.1 session bound). The
@@ -500,11 +590,24 @@ export function loadWorkforce(file: string, opts: LoadOpts = {}): WorkforceConfi
 			max_auto_interviews_per_day: maxAutoInterviewsPerDay,
 			allowed_auto_tiers: allowedAutoTiers
 		},
+		drift: {
+			...(driftRaw && typeof driftRaw === 'object' && !Array.isArray(driftRaw)
+				? (driftRaw as Record<string, unknown>)
+				: {}),
+			escaped_defect: driftEscapedDefect,
+			operator_feedback: driftOperatorFeedback,
+			confidence_miscalibration: driftConfidenceMiscalibration,
+			confidence_miscalibration_rate: driftConfidenceMiscalibrationRate,
+			refutation_rate: driftRefutationRate,
+			fixloop_rate: driftFixloopRate
+		},
 		workforce: {
 			...(wfRaw && typeof wfRaw === 'object' && !Array.isArray(wfRaw)
 				? (wfRaw as Record<string, unknown>)
 				: {}),
-			max_open_proposals: maxOpenProposals
+			max_open_proposals: maxOpenProposals,
+			track_window_days: trackWindowDays,
+			min_events_for_claim: minEventsForClaim
 		}
 	};
 }

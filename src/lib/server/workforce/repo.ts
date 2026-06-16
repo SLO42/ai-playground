@@ -1061,3 +1061,139 @@ export async function currentBundleDigest(db: Db): Promise<string> {
 	if (digests.length === 0) return 'unhashed';
 	return `settings:${createHash('sha256').update(digests.join('\n'), 'utf8').digest('hex')}`;
 }
+
+// ── review_proposal (§5 performance-review loop — the m0046 table CRUD) ────────────
+//
+// The m0046 migration made the table real but shipped NO row-creation path. This is
+// it: createReviewProposal (the auto-raise + operator-initiated entry point) plus the
+// bounded reads the §5 anti-spam cap (open-per-(role,kind)) and cooldown depend on.
+// A proposal is ONLY ever born status='proposed' here — it NEVER mutates a role,
+// swaps a version, or authors a challenger prompt (§5: the challenger is created later,
+// on panel validation; the swap is a separate operator-gated act, §2.3). The status
+// state machine (validated/diff_review/…/swapped) lives in the v2.3 governance code
+// that consumes these rows; this module only OPENS and READS them.
+
+export type ReviewProposalKind = 'prompt_revision' | 'tier_change' | 'retire' | 'staffing';
+export type ReviewProposalStatus =
+	| 'proposed'
+	| 'validated'
+	| 'rejected_by_panel'
+	| 'diff_review'
+	| 'interviewing'
+	| 'compared'
+	| 'swapped'
+	| 'rejected_by_operator'
+	| 'withdrawn';
+
+/** The OPEN statuses (an in-flight proposal the operator has not yet disposed of).
+ *  The anti-spam cap (§5 max_open_proposals) counts these; a row in any other status
+ *  is disposed (swapped/rejected/withdrawn) and no longer occupies the (role,kind) slot. */
+export const OPEN_PROPOSAL_STATUSES: readonly ReviewProposalStatus[] = [
+	'proposed',
+	'validated',
+	'diff_review',
+	'interviewing',
+	'compared'
+] as const;
+
+/** A terminal REJECTION (cooldown anchor — §5: don't re-raise the same trigger right
+ *  after the operator rejected it). rejected_by_panel/rejected_by_operator/withdrawn. */
+export const REJECTED_PROPOSAL_STATUSES: readonly ReviewProposalStatus[] = [
+	'rejected_by_panel',
+	'rejected_by_operator',
+	'withdrawn'
+] as const;
+
+export interface ReviewProposalRow {
+	id: string;
+	role: string;
+	kind: ReviewProposalKind;
+	/** The incumbent version the proposal targets. null = none (e.g. a fresh staffing). */
+	incumbent: string | null;
+	/** Created later (draft, source=pm_proposal) on validation (§5). null until then. */
+	challenger: string | null;
+	/** null = operator-initiated (§5). */
+	pm: string | null;
+	/** {signal, evidence:[ids], config_snapshot} — PM-SPEC §4.1 provenance (§5). */
+	trigger: Record<string, unknown>;
+	status: ReviewProposalStatus;
+	comparison: Record<string, unknown> | null;
+	decided_at: string | null;
+	created_at: string | null;
+}
+
+function normReviewProposal(row: Raw): ReviewProposalRow {
+	return {
+		id: str(row.id),
+		role: str(row.role),
+		kind: row.kind as ReviewProposalKind,
+		incumbent: row.incumbent != null ? str(row.incumbent) : null,
+		challenger: row.challenger != null ? str(row.challenger) : null,
+		pm: row.pm != null ? str(row.pm) : null,
+		trigger: (row.trigger ?? {}) as Record<string, unknown>,
+		status: row.status as ReviewProposalStatus,
+		comparison: row.comparison != null ? (row.comparison as Record<string, unknown>) : null,
+		decided_at: strDate(row.decided_at),
+		created_at: strDate(row.created_at)
+	};
+}
+
+export interface CreateReviewProposalInput {
+	role: string;
+	kind?: ReviewProposalKind;
+	incumbent?: string;
+	pm?: string;
+	/** PM-SPEC §4.1 provenance: {signal, evidence:[real ids], config_snapshot}. The
+	 *  evidence MUST be real cited rows (F-008) — the caller composes it; this layer
+	 *  stores it verbatim (it is harness-authored, never agent free-text → no screen). */
+	trigger?: Record<string, unknown>;
+}
+
+/**
+ * OPEN a review_proposal at status='proposed' (§5). This is the SOLE creation path —
+ * the auto-raise (drift.ts) and operator-initiated flows both land here. It NEVER
+ * mutates the role/version, NEVER swaps, NEVER authors a challenger prompt; it records
+ * the TRIGGER for the operator. Concurrent identical opens collide on the m0046
+ * dedup_key UNIQUE index (role|kind|incumbent, D-008) — the caller absorbs that as
+ * "a proposal already stands" (idempotent auto-raise), never a duplicate row.
+ */
+export async function createReviewProposal(
+	db: Db,
+	input: CreateReviewProposalInput
+): Promise<ReviewProposalRow> {
+	const content = omitUndefined({
+		role: link(input.role),
+		kind: input.kind,
+		incumbent: input.incumbent ? link(input.incumbent) : undefined,
+		pm: input.pm ? link(input.pm) : undefined,
+		trigger: input.trigger
+	});
+	const [rows] = await db.query<[Raw[]]>(`CREATE review_proposal CONTENT $content RETURN AFTER;`, {
+		content
+	});
+	return normReviewProposal(rows[0]);
+}
+
+export async function getReviewProposal(
+	db: Db,
+	proposalId: string
+): Promise<ReviewProposalRow | null> {
+	const rid = link(proposalId);
+	const [rows] = await db.query<[Raw[]]>(`SELECT * FROM $rid;`, { rid });
+	return rows.length ? normReviewProposal(rows[0]) : null;
+}
+
+/** Every proposal for a role, newest first (F-022: ORDER BY field is in SELECT *). */
+export async function listReviewProposalsForRole(
+	db: Db,
+	roleId: string,
+	limit = 200
+): Promise<ReviewProposalRow[]> {
+	const role = link(roleId);
+	const cap = Math.min(Math.max(limit, 1), 500);
+	const [rows] = await db.query<[Raw[]]>(
+		`SELECT * FROM review_proposal WHERE role = $role ORDER BY created_at DESC LIMIT ${cap};`,
+		{ role }
+	);
+	return rows.map(normReviewProposal);
+}

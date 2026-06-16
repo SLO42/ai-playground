@@ -28,3 +28,9 @@ export * from './ceremony';
 // /agents workforce surface (§8 'Surfaces' + 'Degraded/empty states'). Read-only:
 // reuses repo/deployability/track-record, no row writes, no gauntlet_key read.
 export * from './panel';
+// WORKFORCE-SPEC §5 (operator decision 4, 2026-06-16) — drift detection + auto-raise:
+// computes the armed drift signals per role_version over the track window (confidence-
+// miscalibration from the A1 calibration; escaped_defect / operator_feedback observed
+// events) and idempotently/boundedly auto-creates review_proposal{status:'proposed'}
+// rows. NEVER swaps/mutates/authors a prompt — operator-gated (D-010/D-039).
+export * from './drift';

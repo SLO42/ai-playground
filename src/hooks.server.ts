@@ -231,19 +231,25 @@ async function bootstrap(): Promise<DbInitResult> {
 				mode = 'manual'; // most conservative gate on a bad config (11.5 pattern)
 			}
 			let failureThreshold: number | null = null;
+			let driftConfig: import('$lib/server/config/index').WorkforceConfig | null = null;
 			try {
-				failureThreshold = loadWorkforce(`${dir}/workforce.yaml`).pm.triggers.failure_threshold;
+				const wf = loadWorkforce(`${dir}/workforce.yaml`);
+				failureThreshold = wf.pm.triggers.failure_threshold;
+				// WORKFORCE-SPEC §5: pass the full config so the periodic tick can run the
+				// bounded drift auto-raise pass (operator decision 4). null on a bad config
+				// → drift never auto-raises (the count-and-surface posture).
+				driftConfig = wf;
 			} catch (err) {
 				console.warn(
-					`[startup] workforce.yaml unreadable — pm failure trigger stays UNARMED: ${(err as Error).message}`
+					`[startup] workforce.yaml unreadable — pm failure trigger + §5 drift stay UNARMED: ${(err as Error).message}`
 				);
 			}
-			const engine = new PmTriggerEngine({ db, bus, mode, failureThreshold });
+			const engine = new PmTriggerEngine({ db, bus, mode, failureThreshold, driftConfig });
 			engine.start();
 			pmTriggerEngines.push(engine);
 			setActivePmTriggerEngine(engine);
 			console.log(
-				`[startup] pm trigger engine started (mode=${mode}, failure_threshold=${failureThreshold ?? 'unarmed'}) — PM-SPEC §3 periodic+event triggers (D-004).`
+				`[startup] pm trigger engine started (mode=${mode}, failure_threshold=${failureThreshold ?? 'unarmed'}, drift=${driftConfig && mode !== 'manual' ? 'armed' : 'unarmed'}) — PM-SPEC §3 + WORKFORCE-SPEC §5 (D-004).`
 			);
 		} catch (err) {
 			console.warn(`[startup] pm trigger engine boot failed: ${(err as Error).message}`);

@@ -52,6 +52,8 @@ import { assertRecordId } from '../db/validate';
 import type { BusEvent, EventBus, Unsubscribe } from '../events/bus';
 import type { DbChange } from '../events/db-source';
 import type { OrchMode } from '../config/index';
+import type { WorkforceConfig } from '../config/load';
+import { evaluateDriftAndAutoRaise } from '../workforce/drift';
 import { getPm, listPmsWithCadence, PM_AUTHORITIES, type PmReviewTrigger } from './pm-repo';
 import { runPmReview } from './pm-review';
 
@@ -235,6 +237,15 @@ export interface PmTriggerEngineOptions {
 	tickMs?: number;
 	/** Finding-burst coalescing window (a scan writes findings row-by-row). */
 	coalesceMs?: number;
+	/**
+	 * WORKFORCE-SPEC §5 drift wiring (operator decision 4). When supplied (and mode
+	 * permits automatic fires — D-004), each periodic tick ALSO runs a BOUNDED
+	 * drift-evaluation pass that auto-raises review_proposal{status:'proposed'} rows for
+	 * fired armed signals. null/absent = drift never auto-raises (the count-and-surface
+	 * posture). Raising a TRIGGER costs nothing (no gauntlet/swap — those stay operator-
+	 * gated), so it is mode-gated only, not budget-gated.
+	 */
+	driftConfig?: WorkforceConfig | null;
 	/** Clock seam (tests). */
 	now?: () => Date;
 }
@@ -250,6 +261,7 @@ export class PmTriggerEngine {
 	readonly #threshold: number | null;
 	readonly #tickMs: number;
 	readonly #coalesceMs: number;
+	readonly #driftConfig: WorkforceConfig | null;
 	readonly #now: () => Date;
 
 	#unsub?: Unsubscribe;
@@ -274,6 +286,8 @@ export class PmTriggerEngine {
 
 	/** Reviews this engine has fired (diagnostics / the verify count). */
 	reviewCount = 0;
+	/** §5 drift proposals this engine has auto-raised (diagnostics / the verify count). */
+	driftRaiseCount = 0;
 
 	constructor(opts: PmTriggerEngineOptions) {
 		this.#db = opts.db;
@@ -282,7 +296,13 @@ export class PmTriggerEngine {
 		this.#threshold = opts.failureThreshold;
 		this.#tickMs = opts.tickMs ?? DEFAULT_TICK_MS;
 		this.#coalesceMs = opts.coalesceMs ?? DEFAULT_COALESCE_MS;
+		this.#driftConfig = opts.driftConfig ?? null;
 		this.#now = opts.now ?? (() => new Date());
+	}
+
+	/** True only when the §5 drift auto-raise is wired (config supplied + mode permits). */
+	get driftArmed(): boolean {
+		return this.#driftConfig !== null && this.#mode !== 'manual';
 	}
 
 	get mode(): OrchMode {
@@ -390,7 +410,29 @@ export class PmTriggerEngine {
 			});
 			if (ok) fired++;
 		}
+		// WORKFORCE-SPEC §5 — the BOUNDED drift auto-raise pass rides the SAME periodic
+		// cadence (no separate loop, no live query). It auto-raises 'proposed' rows only;
+		// the swap/prompt-authoring stay operator-gated (D-010/D-039). A drift failure must
+		// never break the PM cadence — it is awaited but its error is logged + swallowed.
+		if (this.driftArmed) await this.#driftPass();
 		return fired;
+	}
+
+	/** One bounded §5 drift evaluation across active incumbents (auto-raise on fired
+	 *  signals). Errors are logged + swallowed (a drift hiccup never breaks the cadence). */
+	async #driftPass(): Promise<void> {
+		if (this.#stopped || this.#driftConfig === null) return;
+		try {
+			const res = await evaluateDriftAndAutoRaise(this.#db, this.#driftConfig, { now: this.#now });
+			if (res.raised > 0) {
+				this.driftRaiseCount += res.raised;
+				console.log(
+					`[pm-triggers] §5 drift pass: raised ${res.raised} proposal(s) over ${res.evaluated} incumbent(s).`
+				);
+			}
+		} catch (err) {
+			console.warn(`[pm-triggers] §5 drift pass failed (cadence unaffected): ${(err as Error).message}`);
+		}
 	}
 
 	// ── Event triggers (bus) ────────────────────────────────────────────────────────

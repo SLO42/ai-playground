@@ -50,12 +50,23 @@ budget:
   allowed_auto_tiers: []
 
 drift:
-  # §5 drift triggers: categorical signals armed (an escaped defect or operator
-  # feedback is a real event, and the consequence is only a panel-validated,
-  # operator-gated proposal); RATE signals ship unarmed (null) until post-B2 data
-  # lets the operator set a justified bound.
+  # §5 drift triggers (operator decision 4, 2026-06-16): an ARMED signal crossing
+  # its threshold AUTO-RAISES a review_proposal{status:proposed} — but prompt
+  # authoring, re-gauntlet, and the SWAP stay operator-gated (D-010 diff + D-039).
+  # NEVER auto-swaps, NEVER auto-authors a prompt. Categorical signals armed (an
+  # escaped defect or operator feedback is a real event); the confidence-
+  # miscalibration signal derives from the EXISTING A1 calibration (high-confidence
+  # verdicts trending to bad/overridden/revised outcomes). RATE signals
+  # (refutation/fixloop) ship unarmed (null) until v2.2b's B2 + review_verdict —
+  # rendered '— (needs B2)', no placeholder math (F-008).
   escaped_defect: true
   operator_feedback: true
+  # Confidence-miscalibration (the A1 calibration source): a role version whose
+  # HIGH-confidence verdicts go bad (overridden_by_operator | revised) at or above
+  # this rate is miscalibrated. ARMED with a conservative spec default (0.5 = half
+  # its confident calls were wrong) — operator-tunable; null disarms it entirely.
+  confidence_miscalibration: true
+  confidence_miscalibration_rate: 0.5
   refutation_rate: null
   fixloop_rate: null
 

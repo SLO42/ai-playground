@@ -412,4 +412,62 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 	])('rejects %s at the 16.6 boundary (fail closed)', (_label, inject) => {
 		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
 	});
+
+	// ── WORKFORCE-SPEC §5 — drift.* + workforce.{track_window_days,min_events_for_claim} ──
+	it('the SHIPPED config arms the categorical + miscalibration drift signals; rate signals UNARMED', () => {
+		const wf = loadWorkforce(REAL_WF);
+		expect(wf.drift.escaped_defect).toBe(true);
+		expect(wf.drift.operator_feedback).toBe(true);
+		expect(wf.drift.confidence_miscalibration).toBe(true);
+		expect(wf.drift.confidence_miscalibration_rate).toBe(0.5);
+		// Post-B2 rate signals ship null (F-008 — '— (needs B2)', never a fabricated bound).
+		expect(wf.drift.refutation_rate).toBeNull();
+		expect(wf.drift.fixloop_rate).toBeNull();
+	});
+
+	it('the SHIPPED config carries the §5 track window + claim floor (14 / 5)', () => {
+		const wf = loadWorkforce(REAL_WF);
+		expect(wf.workforce.track_window_days).toBe(14);
+		expect(wf.workforce.min_events_for_claim).toBe(5);
+	});
+
+	it('an absent drift block defaults to armed categorical + null rate signals (older files stay valid)', () => {
+		const wf = loadWorkforce(REAL_WF, { _inject: { pm: { model_id: 'm' }, drift: undefined } });
+		expect(wf.drift.escaped_defect).toBe(true);
+		expect(wf.drift.operator_feedback).toBe(true);
+		expect(wf.drift.confidence_miscalibration).toBe(true);
+		expect(wf.drift.confidence_miscalibration_rate).toBeNull(); // unarmed until set
+		expect(wf.drift.refutation_rate).toBeNull();
+	});
+
+	it('an operator may DISARM the miscalibration signal (bool false) or its rate (null)', () => {
+		const off = loadWorkforce(REAL_WF, {
+			_inject: { pm: { model_id: 'm' }, drift: { confidence_miscalibration: false } }
+		});
+		expect(off.drift.confidence_miscalibration).toBe(false);
+		const noRate = loadWorkforce(REAL_WF, {
+			_inject: { pm: { model_id: 'm' }, drift: { confidence_miscalibration_rate: null } }
+		});
+		expect(noRate.drift.confidence_miscalibration_rate).toBeNull();
+	});
+
+	it('absent workforce block defaults the window + floor honestly (14 / 5)', () => {
+		const wf = loadWorkforce(REAL_WF, { _inject: { pm: { model_id: 'm' }, workforce: undefined } });
+		expect(wf.workforce.track_window_days).toBe(14);
+		expect(wf.workforce.min_events_for_claim).toBe(5);
+	});
+
+	it.each([
+		['non-mapping drift', { pm: { model_id: 'm' }, drift: 'on' }],
+		['non-boolean escaped_defect', { pm: { model_id: 'm' }, drift: { escaped_defect: 'yes' } }],
+		['non-boolean miscalibration', { pm: { model_id: 'm' }, drift: { confidence_miscalibration: 1 } }],
+		['rate above 1', { pm: { model_id: 'm' }, drift: { confidence_miscalibration_rate: 1.2 } }],
+		['negative rate', { pm: { model_id: 'm' }, drift: { confidence_miscalibration_rate: -0.1 } }],
+		['string rate', { pm: { model_id: 'm' }, drift: { refutation_rate: '0.5' } }],
+		['zero track window', { pm: { model_id: 'm' }, workforce: { track_window_days: 0 } }],
+		['float track window', { pm: { model_id: 'm' }, workforce: { track_window_days: 1.5 } }],
+		['negative min events', { pm: { model_id: 'm' }, workforce: { min_events_for_claim: -1 } }]
+	])('rejects %s at the §5 drift/window boundary (fail closed)', (_label, inject) => {
+		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
+	});
 });

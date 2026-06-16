@@ -81,7 +81,15 @@ function liveConfig(): WorkforceConfig {
 		// 4-minute session bound: the F-014 "bounded live-verify" discipline.
 		gauntlet: { pass_recall: 1.0, max_false_positives: 0, session_timeout_minutes: 4 },
 		budget: { max_auto_interviews_per_day: null, allowed_auto_tiers: [] },
-		workforce: { max_open_proposals: 2 }
+		drift: {
+			escaped_defect: true,
+			operator_feedback: true,
+			confidence_miscalibration: true,
+			confidence_miscalibration_rate: 0.5,
+			refutation_rate: null,
+			fixloop_rate: null
+		},
+		workforce: { max_open_proposals: 2, track_window_days: 14, min_events_for_claim: 5 }
 	};
 }
 

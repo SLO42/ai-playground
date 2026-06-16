@@ -101,7 +101,15 @@ function testConfig(over: Partial<WorkforceConfig['budget']> = {}, gauntletOver:
 			...gauntletOver
 		},
 		budget: { max_auto_interviews_per_day: null, allowed_auto_tiers: [], ...over },
-		workforce: { max_open_proposals: 2 }
+		drift: {
+			escaped_defect: true,
+			operator_feedback: true,
+			confidence_miscalibration: true,
+			confidence_miscalibration_rate: 0.5,
+			refutation_rate: null,
+			fixloop_rate: null
+		},
+		workforce: { max_open_proposals: 2, track_window_days: 14, min_events_for_claim: 5 }
 	};
 }
 

@@ -86,7 +86,15 @@ function testConfig(over: Partial<WorkforceConfig['budget']> = {}): WorkforceCon
 		panel: { scope: { max_files: null, max_new_services: null } },
 		gauntlet: { pass_recall: 1.0, max_false_positives: 0, session_timeout_minutes: 15 },
 		budget: { max_auto_interviews_per_day: null, allowed_auto_tiers: [], ...over },
-		workforce: { max_open_proposals: 2 }
+		drift: {
+			escaped_defect: true,
+			operator_feedback: true,
+			confidence_miscalibration: true,
+			confidence_miscalibration_rate: 0.5,
+			refutation_rate: null,
+			fixloop_rate: null
+		},
+		workforce: { max_open_proposals: 2, track_window_days: 14, min_events_for_claim: 5 }
 	};
 }
 

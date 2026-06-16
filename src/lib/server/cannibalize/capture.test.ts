@@ -50,6 +50,22 @@ describe('isBlockedIp — SSRF classification', () => {
 			expect(isBlockedIp(ip), `${ip} should be blocked`).toBe(true);
 		}
 	});
+	it('blocks HEX-COMPRESSED IPv4-mapped IPv6 (SSRF bypass regression — ::ffff:7f00:1 == 127.0.0.1)', () => {
+		// The dotted form (::ffff:127.0.0.1) and the hex form (::ffff:7f00:1) decode to the SAME
+		// loopback/private/metadata target; a dotted-only de-map let the hex form through as public.
+		for (const ip of [
+			'::ffff:7f00:1', // 127.0.0.1 loopback
+			'::ffff:a00:1', // 10.0.0.1 RFC1918
+			'::ffff:a9fe:a9fe', // 169.254.169.254 cloud metadata
+			'::ffff:c0a8:1', // 192.168.0.1 RFC1918
+			'::ffff:ac10:1' // 172.16.0.1 RFC1918
+		]) {
+			expect(isBlockedIp(ip), `${ip} should be blocked`).toBe(true);
+		}
+	});
+	it('still allows a HEX-COMPRESSED mapped PUBLIC v4 (::ffff:808:808 == 8.8.8.8)', () => {
+		expect(isBlockedIp('::ffff:808:808'), '::ffff:808:808 == 8.8.8.8 should be allowed').toBe(false);
+	});
 	it('allows public addresses', () => {
 		for (const ip of ['8.8.8.8', '93.184.216.34', '1.1.1.1', '2606:4700:4700::1111']) {
 			expect(isBlockedIp(ip), `${ip} should be allowed`).toBe(false);
@@ -71,6 +87,11 @@ describe('parseFetchTarget — scheme + literal-host guard', () => {
 		expect(() => parseFetchTarget('http://169.254.169.254/latest/meta-data')).toThrow(SsrfBlockedError);
 		expect(() => parseFetchTarget('http://[::1]/x')).toThrow(SsrfBlockedError);
 	});
+	it('refuses a HEX-COMPRESSED IPv4-mapped literal host (end-to-end SSRF bypass regression)', () => {
+		// http://[::ffff:7f00:1]/x reaches the brain's fetcher; ::ffff:7f00:1 == 127.0.0.1 loopback.
+		expect(() => parseFetchTarget('http://[::ffff:7f00:1]/x')).toThrow(SsrfBlockedError);
+		expect(() => parseFetchTarget('http://[::ffff:a9fe:a9fe]/latest/meta-data')).toThrow(SsrfBlockedError);
+	});
 	it('accepts a public http(s) URL', () => {
 		expect(parseFetchTarget('https://example.com/p').hostname).toBe('example.com');
 	});
@@ -87,6 +108,10 @@ describe('resolvePublicAddresses — DNS-rebind defense (resolve then re-check)'
 	it('refuses if ANY resolved address is internal (split-horizon attack)', async () => {
 		const mixed: ResolveAll = async () => ['93.184.216.34', '10.0.0.1'];
 		await expect(resolvePublicAddresses('evil.example.com', 'http://evil.example.com', mixed)).rejects.toThrow(SsrfBlockedError);
+	});
+	it('refuses a NAME whose AAAA is a HEX-COMPRESSED IPv4-mapped internal addr (rebind via mapped IPv6)', async () => {
+		const rebindV6: ResolveAll = async () => ['::ffff:7f00:1']; // 127.0.0.1 in hex-mapped form
+		await expect(resolvePublicAddresses('evil.example.com', 'http://evil.example.com', rebindV6)).rejects.toThrow(SsrfBlockedError);
 	});
 	it('returns the address list when every resolved address is public', async () => {
 		const ok: ResolveAll = async () => ['93.184.216.34'];

@@ -152,10 +152,52 @@ function isBlockedIpv6(ip: string): boolean {
 	}
 	if (ip.startsWith('fc') || ip.startsWith('fd')) return true; // unique-local fc00::/7
 	if (ip.startsWith('ff')) return true; // multicast
-	// IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible — re-check the embedded v4.
-	const mapped = ip.match(/(?:::ffff:|::)(\d+\.\d+\.\d+\.\d+)$/);
-	if (mapped) return isBlockedIpv4(mapped[1]);
+	// IPv4-mapped (::ffff:a.b.c.d) and IPv4-compatible — re-check the embedded v4. The embedded
+	// v4 may appear in DOTTED form (::ffff:127.0.0.1) OR HEX-COMPRESSED form (::ffff:7f00:1) —
+	// both decode to the same address, so both must be de-mapped or an SSRF target slips through
+	// classified as public (a hex-form ::ffff:7f00:1 = 127.0.0.1 loopback). embeddedMappedIpv4
+	// handles BOTH; we then classify the recovered dotted v4.
+	const embedded = embeddedMappedIpv4(ip);
+	if (embedded) return isBlockedIpv4(embedded);
 	return false;
+}
+
+/**
+ * If `ip` is an IPv4-mapped (`::ffff:0:0/96`) or deprecated IPv4-compatible (`::0:0/96`) IPv6
+ * literal, return the embedded address in dotted-quad form; otherwise null. Handles BOTH the
+ * dotted tail (`::ffff:127.0.0.1`) and the hex-compressed tail (`::ffff:7f00:1`) — the latter
+ * was the SSRF bypass: the kernel treats them identically but a dotted-only regex misses the
+ * hex form, classifying loopback/RFC1918/metadata as public. `::`/`::1` are NOT treated as
+ * compat here — they are loopback/unspecified, already refused by the caller.
+ */
+function embeddedMappedIpv4(ip: string): string | null {
+	// Fast path: an embedded v4 already written in dotted form.
+	const dotted = ip.match(/(?:::ffff:|::)(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+	if (dotted) return dotted[1];
+	// Hex-compressed form: expand the `::` to 8 groups and read the low 32 bits.
+	if (!ip.includes(':')) return null;
+	if (ip.indexOf('::') !== ip.lastIndexOf('::')) return null; // invalid (multiple `::`)
+	let groups: string[];
+	if (ip.includes('::')) {
+		const [h, t] = ip.split('::');
+		const head = h ? h.split(':') : [];
+		const tail = t ? t.split(':') : [];
+		const fill = 8 - head.length - tail.length;
+		if (fill < 0) return null;
+		groups = [...head, ...Array(fill).fill('0'), ...tail];
+	} else {
+		groups = ip.split(':');
+	}
+	if (groups.length !== 8) return null;
+	const n = groups.map((g) => parseInt(g || '0', 16));
+	if (n.some((x) => !Number.isInteger(x) || x < 0 || x > 0xffff)) return null;
+	const mapped = n[0] === 0 && n[1] === 0 && n[2] === 0 && n[3] === 0 && n[4] === 0 && n[5] === 0xffff;
+	// IPv4-compatible (::0:0/96), excluding ::/::1 (unspecified/loopback, refused above).
+	const compat = n[0] === 0 && n[1] === 0 && n[2] === 0 && n[3] === 0 && n[4] === 0 && n[5] === 0 && (n[6] !== 0 || n[7] > 1);
+	if (!mapped && !compat) return null;
+	const hi = n[6];
+	const lo = n[7];
+	return [(hi >>> 8) & 255, hi & 255, (lo >>> 8) & 255, lo & 255].join('.');
 }
 
 /**

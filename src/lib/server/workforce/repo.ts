@@ -1153,9 +1153,12 @@ export interface CreateReviewProposalInput {
  * OPEN a review_proposal at status='proposed' (§5). This is the SOLE creation path —
  * the auto-raise (drift.ts) and operator-initiated flows both land here. It NEVER
  * mutates the role/version, NEVER swaps, NEVER authors a challenger prompt; it records
- * the TRIGGER for the operator. Concurrent identical opens collide on the m0046
- * dedup_key UNIQUE index (role|kind|incumbent, D-008) — the caller absorbs that as
- * "a proposal already stands" (idempotent auto-raise), never a duplicate row.
+ * the TRIGGER for the operator. NOTE: m0046 stores `dedup_key` (role|kind|incumbent) as
+ * a VALUE field but does NOT add a UNIQUE index on it — a hard UNIQUE would forbid the
+ * legitimate post-cooldown re-raise (the fingerprint repeats over the version's lifetime
+ * by design). The §5 anti-spam guarantee is therefore enforced by the auto-raise caller's
+ * in-pass + cross-pass open-check + cooldown (drift.ts autoRaiseForVersion), NOT by a DB
+ * constraint. This function performs no dedup of its own.
  */
 export async function createReviewProposal(
 	db: Db,

@@ -10,6 +10,16 @@ import { createProject } from './repo';
 import { createTask, setStatus } from '../tasks/repo';
 import { writeFindings } from '../scanner/findings-repo';
 import { createPm, listPmMemory, listPmReviews, updatePmSchedule } from './pm-repo';
+import type { WorkforceConfig } from '../config/load';
+import {
+	addPanelVerdict,
+	closePanelVerdictOutcome,
+	createRole,
+	createRoleVersion,
+	listReviewProposalsForRole,
+	swapActiveVersion,
+	transitionLifecycle
+} from '../workforce/repo';
 import {
 	PmTriggerEngine,
 	pmTriggerAllowed,
@@ -53,7 +63,7 @@ let engines: PmTriggerEngine[] = [];
 beforeEach(async () => {
 	await db
 		.query(
-			'DELETE pm; DELETE pm_review; DELETE pm_memory; DELETE security_finding; DELETE task; DELETE session; DELETE workflow_run; DELETE workflow; DELETE project;'
+			'DELETE pm; DELETE pm_review; DELETE pm_memory; DELETE security_finding; DELETE task; DELETE session; DELETE workflow_run; DELETE workflow; DELETE project; DELETE review_proposal; DELETE panel_verdict; DELETE role_version; DELETE role;'
 		)
 		.catch(() => {});
 	const p = await createProject(db, {
@@ -572,5 +582,116 @@ describe('PmTriggerEngine — manual mode is inert (D-004)', () => {
 		});
 		await engine.idle();
 		expect(await listPmReviews(db, projectId)).toHaveLength(0);
+	});
+});
+
+// ── WORKFORCE-SPEC §5 drift auto-raise wiring (engine-level) ──────────────────────────
+// REGRESSION (red-team gap #2): the #driftPass / get driftArmed / tickOnce integration had
+// no engine-level test. These assert the periodic-tick fire, the manual-mode skip
+// (driftArmed excludes manual — D-004), and the error-swallow (a drift hiccup never breaks
+// the cadence). The §5 unit behaviour itself is covered by workforce/drift.test.ts.
+
+/** A WorkforceConfig with miscalibration armed @ 0.5, window 14d, floor 5 (shipped defaults). */
+function driftCfg(): WorkforceConfig {
+	return {
+		pm: { provider: 'claude', model_id: 'm', triggers: { failure_threshold: null } },
+		panel: { scope: { max_files: null, max_new_services: null } },
+		gauntlet: { pass_recall: 1.0, max_false_positives: 0, session_timeout_minutes: 15 },
+		budget: { max_auto_interviews_per_day: null, allowed_auto_tiers: [] },
+		drift: {
+			escaped_defect: true,
+			operator_feedback: true,
+			confidence_miscalibration: true,
+			confidence_miscalibration_rate: 0.5,
+			refutation_rate: null,
+			fixloop_rate: null
+		},
+		workforce: { max_open_proposals: 2, track_window_days: 14, min_events_for_claim: 5 }
+	};
+}
+
+let driftSeq = 0;
+/** Seed a role with an ACTIVE incumbent that has 6 high-confidence-WRONG closed verdicts
+ *  (miscalibration rate 1.0 ≥ 0.5 over ≥ floor) → the §5 pass will auto-raise for it. */
+async function seedDriftingIncumbent(): Promise<{ roleId: string; versionId: string }> {
+	const slug = `pmtrig-drift-${++driftSeq}`;
+	const role = await createRole(db, { slug, name: `Role ${slug}`, purpose: 'drift wiring test' });
+	const version = await createRoleVersion(db, { role: role.id, prompt_core: 'Review.', default_tier: 'sonnet' });
+	for (let i = 0; i < 6; i++) {
+		const validator = await createFailedSession();
+		const artifact = await createFailedSession();
+		const v = await addPanelVerdict(db, {
+			artifact,
+			artifact_kind: 'task',
+			validator_session: validator,
+			validator_kind: 'catalog_role',
+			role: role.id,
+			role_version: version.id,
+			verdict: 'pushback',
+			confidence: 'high'
+		});
+		await closePanelVerdictOutcome(db, v.id, 'overridden_by_operator');
+	}
+	await transitionLifecycle(db, version.id, 'interviewing');
+	await transitionLifecycle(db, version.id, 'passed');
+	await swapActiveVersion(db, role.id, version.id);
+	return { roleId: role.id, versionId: version.id };
+}
+
+describe('PmTriggerEngine — §5 drift auto-raise wiring', () => {
+	it('a periodic tick runs the bounded drift pass and auto-raises a proposal', async () => {
+		const { roleId } = await seedDriftingIncumbent();
+		const { engine } = makeEngine({ mode: 'periodic', driftConfig: driftCfg() });
+		expect(engine.driftArmed).toBe(true);
+		await engine.tickOnce(new Date());
+		await engine.idle();
+		const props = await listReviewProposalsForRole(db, roleId);
+		expect(props.filter((p) => p.status === 'proposed' && p.kind === 'prompt_revision')).toHaveLength(1);
+		expect(engine.driftRaiseCount).toBeGreaterThanOrEqual(1);
+	});
+
+	it('is idempotent across two ticks (no proposal storm under persistent drift)', async () => {
+		const { roleId } = await seedDriftingIncumbent();
+		const { engine } = makeEngine({ mode: 'periodic', driftConfig: driftCfg() });
+		await engine.tickOnce(new Date());
+		await engine.idle();
+		await engine.tickOnce(new Date());
+		await engine.idle();
+		const props = await listReviewProposalsForRole(db, roleId);
+		expect(props.filter((p) => p.kind === 'prompt_revision')).toHaveLength(1);
+	});
+
+	it('D-004: manual mode is NOT driftArmed and a tick raises nothing', async () => {
+		const { roleId } = await seedDriftingIncumbent();
+		const { engine } = makeEngine({ mode: 'manual', driftConfig: driftCfg() });
+		expect(engine.driftArmed).toBe(false);
+		expect(await engine.tickOnce(new Date())).toBe(0);
+		await engine.idle();
+		expect(await listReviewProposalsForRole(db, roleId)).toHaveLength(0);
+	});
+
+	it('no driftConfig → not driftArmed (drift pass never runs)', async () => {
+		const { roleId } = await seedDriftingIncumbent();
+		const { engine } = makeEngine({ mode: 'periodic' });
+		expect(engine.driftArmed).toBe(false);
+		await engine.tickOnce(new Date());
+		await engine.idle();
+		expect(await listReviewProposalsForRole(db, roleId)).toHaveLength(0);
+	});
+
+	it('a drift-pass failure is swallowed and never breaks the periodic cadence', async () => {
+		await createPm(db, { project: projectId, name: 'Vesper' });
+		await updatePmSchedule(db, projectId, { cadence: '* * * * *', cadenceOffset: null });
+		// A drifting incumbent exists so the per-version auto-raise actually runs and hits the
+		// broken config (reading cfg.workforce.* on null throws inside autoRaiseForVersion).
+		await seedDriftingIncumbent();
+		const broken = { ...driftCfg(), workforce: null } as unknown as WorkforceConfig;
+		const { engine } = makeEngine({ mode: 'periodic', driftConfig: broken });
+		expect(engine.driftArmed).toBe(true);
+		const fired = await engine.tickOnce(new Date());
+		await engine.idle();
+		expect(fired).toBe(1); // the PM cadence review still fired despite the drift error
+		// And no proposal leaked from the failed pass.
+		expect(engine.driftRaiseCount).toBe(0);
 	});
 });

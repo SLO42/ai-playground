@@ -345,6 +345,15 @@ export async function autoRaiseForVersion(
 	const open = new Set(OPEN_PROPOSAL_STATUSES);
 	const rejected = new Set(REJECTED_PROPOSAL_STATUSES);
 
+	// In-pass anti-spam: SIGNAL_KIND maps all three signals to the SAME kind
+	// 'prompt_revision', so two armed signals firing for ONE version in ONE pass share
+	// the IDENTICAL dedup fingerprint (role|kind|incumbent). `existing` is a snapshot read
+	// ONCE before the loop, so the second signal would not see the row the first just
+	// created → a DUPLICATE 'proposed' row, defeating the §5 anti-spam guarantee (the DB
+	// has no UNIQUE backstop — see the dedup note above). Track fingerprints raised THIS
+	// pass and treat a repeat as the standing open proposal (idempotent within the pass).
+	const raisedThisPass = new Map<string, ReviewProposalRow>();
+
 	const raises: RaiseResult[] = [];
 	for (const sig of report.signals) {
 		const kind = SIGNAL_KIND[sig.signal];
@@ -354,6 +363,19 @@ export async function autoRaiseForVersion(
 		}
 		// Match the m0046 dedup_key fingerprint: role|kind|incumbent (this version).
 		const fingerprint = dedupFingerprint(version.role, kind, version.id);
+		// A row already raised earlier in THIS pass occupies the slot just as a pre-existing
+		// open row does — collapse it to 'open_exists' so we never create a second.
+		const raisedHere = raisedThisPass.get(fingerprint);
+		if (raisedHere) {
+			raises.push({
+				signal: sig.signal,
+				kind,
+				disposition: 'open_exists',
+				proposal: raisedHere,
+				reason: `a ${kind} proposal was already raised this pass for this version (${raisedHere.id})`
+			});
+			continue;
+		}
 		const sameSlot = existing.filter(
 			(p) => dedupFingerprint(p.role, p.kind, p.incumbent) === fingerprint
 		);
@@ -388,6 +410,9 @@ export async function autoRaiseForVersion(
 				incumbent: version.id,
 				trigger
 			});
+			// Record the freshly-created row so a later same-kind signal in THIS pass sees
+			// the slot as occupied (the stale-snapshot anti-spam fix).
+			raisedThisPass.set(fingerprint, proposal);
 			raises.push({
 				signal: sig.signal,
 				kind,

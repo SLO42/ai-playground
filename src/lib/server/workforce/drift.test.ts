@@ -403,6 +403,32 @@ describe('autoRaiseForVersion — idempotent + bounded', () => {
 		expect(miscal.disposition).toBe('raised');
 	});
 
+	it('TWO same-kind signals firing in ONE pass raise EXACTLY ONE proposal (in-pass anti-spam)', async () => {
+		// REGRESSION (red-team gap #1): confidence_miscalibration AND an observed escaped_defect
+		// both map to kind 'prompt_revision' (SIGNAL_KIND). They share the IDENTICAL dedup
+		// fingerprint role|prompt_revision|incumbent. Before the fix, `existing` was a snapshot
+		// read ONCE before the loop, so the second signal never saw the row the first created →
+		// a DUPLICATE 'proposed' row (the §5 anti-spam invariant violated; no DB UNIQUE backstop).
+		const role = await freshRole();
+		const version = await freshVersion(role.id);
+		await seedMiscalibrated(role.id, version.id); // miscalibration fires
+		const observed: ObservedDriftEvent[] = [
+			{ roleVersion: version.id, signal: 'escaped_defect', evidence: [await freshSession()] }
+		];
+		const { raises } = await autoRaiseForVersion(db, version.id, cfg(), { now, observed });
+		// Both signals fired; exactly ONE created a row, the second collapsed to open_exists.
+		const dispositions = raises.map((r) => r.disposition).sort();
+		const raisedCount = raises.filter((r) => r.disposition === 'raised').length;
+		const openExistsCount = raises.filter((r) => r.disposition === 'open_exists').length;
+		expect(raisedCount).toBe(1);
+		expect(openExistsCount).toBe(1);
+		// And the DB carries exactly ONE proposed prompt_revision row (no duplicate fingerprint).
+		const props = await listReviewProposalsForRole(db, role.id);
+		expect(props.filter((p) => p.kind === 'prompt_revision' && p.status === 'proposed')).toHaveLength(1);
+		expect(dispositions).toContain('raised');
+		expect(dispositions).toContain('open_exists');
+	});
+
 	it('SHADOW (no drift): a healthy version raises nothing (not_fired)', async () => {
 		const role = await freshRole();
 		const version = await freshVersion(role.id);

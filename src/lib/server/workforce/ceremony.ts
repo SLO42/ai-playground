@@ -408,25 +408,30 @@ function canon(value: unknown): string {
 	);
 }
 
-/** DEFECT 3 — is this the one-key-per-fixture collision? Reproduced THREE raw shapes from
- *  SurrealDB 2.x (instrumented under serial + concurrent load, all InternalError):
- *    (a) PRIMARY-KEY collision — the deterministic key id already exists (createGauntletKey
+/** Is this a SurrealDB 2.x UNIQUE / primary-key / commit-race collision? Reproduced THREE
+ *  raw shapes (instrumented under serial + concurrent load, all InternalError):
+ *    (a) PRIMARY-KEY collision — a deterministic record id already exists (e.g. createGauntletKey
  *        derives gauntlet_key:<fixture-suffix>, so a double-create hits the SAME record id):
- *        "Database record `gauntlet_key:…` already exists";
- *    (b) SECONDARY-index collision on the gauntlet_key_dedup UNIQUE index (serial path):
- *        "Database index `gauntlet_key_dedup` already contains '…', with record '…'";
+ *        "Database record `<table>:…` already exists";
+ *    (b) SECONDARY-index collision on a UNIQUE index (serial path) — gauntlet_key_dedup for the
+ *        key insert; role_version_dedup (dedup_key=role|version) for the reversion version insert:
+ *        "Database index `<index>` already contains '…', with record '…'";
  *    (c) COMMIT-race conflict when two writers reach commit together:
  *        "The query was not executed due to a failed transaction. Failed to commit
  *         transaction due to a read or write conflict. This transaction can be retried".
- *  All three are the SAME invariant ("one key per fixture") biting at this single write. We
- *  call this ONLY in confirmLaunchKey's createGauntletKey catch, where the ONLY write is the
- *  key insert, so any of these here can be nothing else. Match on shape (resilient to the
- *  surrounding text), not the error class — the raw class is InternalError for all three. */
+ *  All three are the SAME class — a UNIQUE invariant biting at this single write. This matcher
+ *  is INTENTIONALLY table/index-agnostic so it serves BOTH the one-key-per-fixture invariant
+ *  (confirmLaunchKey) AND the one-role|version-per-role invariant (reversionFailedRole). It
+ *  matches ONLY the real unique-violation phrases (`already contains` / `already exists` /
+ *  the commit-race phrasing) — NEVER an unrelated DB error whose message merely mentions
+ *  "index"/"unique" (precedent: memory/loop.ts enqueueReview, F-008: re-raise everything that
+ *  is not the unique-violation phrase). Callers MUST invoke this ONLY where the SOLE possible
+ *  write is the dedup-guarded insert, so a match here can be nothing but that invariant. */
 function isDedupCollision(err: unknown): boolean {
 	const msg = err instanceof Error ? err.message : String(err);
 	return (
-		/record `?gauntlet_key:[^`']*`? already exists/i.test(msg) ||
-		/index `?gauntlet_key_dedup`? already contains/i.test(msg) ||
+		/record `?[^`']*`? already exists/i.test(msg) ||
+		/index `?[^`']*`? already contains/i.test(msg) ||
 		/failed transaction|read or write conflict/i.test(msg)
 	);
 }
@@ -813,13 +818,49 @@ export async function reversionFailedRole(db: Db, roleId: string): Promise<Rever
 	// Correct-by-construction recovery: a NEW version cloning the failed version's CONTENT.
 	// createRoleVersion auto-increments version (max+1) and computes prompt_sha mechanically
 	// (D-035). source:'operator' (an operator-initiated recovery). The failed row is untouched.
-	const created = await createRoleVersion(db, {
-		role: role.id,
-		prompt_core: newest.prompt_core,
-		capabilities: newest.capabilities,
-		default_tier: newest.default_tier,
-		source: 'operator'
-	});
+	//
+	// CONCURRENCY (deferred MEDIUM from the reversion wave red-team, 79f9b19): the
+	// pickLaunchVersion read above and this write are NOT one transaction. Two operator
+	// submits racing PAST the read both compute version=max+1 and the loser collides on the
+	// role_version_dedup UNIQUE index (dedup_key=role|version, schema.ts). The UNIQUE index
+	// PREVENTS a duplicate version (the integrity backstop holds — never weakened), but the
+	// loser's createRoleVersion raises a RAW InternalError that the route maps to a 500. We
+	// catch ONLY that collision (isDedupCollision — the real unique-violation phrases, never
+	// an unrelated error, F-008) and resolve it as a BENIGN no-op: the winner already created
+	// the fresh version, so the operator's intent (an interviewable version exists) is already
+	// satisfied. Re-read and return the newest selectable version — IDENTICAL shape + outcome
+	// to the serial double-submit no-op (at most ONE new version regardless of concurrency).
+	// This is a no-op, NOT a retry loop, so it cannot spin: one createRoleVersion attempt, one
+	// re-read on collision. A NON-dedup error propagates unchanged (the route surfaces it).
+	let created: RoleVersionRow;
+	try {
+		created = await createRoleVersion(db, {
+			role: role.id,
+			prompt_core: newest.prompt_core,
+			capabilities: newest.capabilities,
+			default_tier: newest.default_tier,
+			source: 'operator'
+		});
+	} catch (err) {
+		if (isDedupCollision(err)) {
+			// The concurrent winner already created the recovery version — re-read and return it
+			// (benign no-op; the winner also wrote the provenance role_event). NOT reversioned by
+			// THIS caller. If the re-read finds nothing selectable (the winner's row is somehow
+			// not yet visible / a non-version collision slipped the matcher), surface the named
+			// reason rather than inventing a version (F-008: honest empty, never fabricated).
+			const after = await listRoleVersions(db, role.id);
+			const winner = pickLaunchVersion(after);
+			return {
+				reversioned: false,
+				version: winner,
+				from: newest,
+				reason: winner
+					? `role ${role.slug} was re-versioned concurrently (v${winner.version}, ${winner.lifecycle}) — this submit was a benign no-op (the UNIQUE index kept it to one new version)`
+					: `role ${role.slug} hit a concurrent-write conflict on re-version and no drivable version is visible yet — retry the re-version`
+			};
+		}
+		throw err;
+	}
 
 	// Append-only provenance: this version is a re-version of the failed prior (audit feed).
 	await addRoleEvent(db, {

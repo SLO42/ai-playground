@@ -1033,4 +1033,135 @@ describe('reversionFailedRole (§8 recovery) — a NEW version, never a failed-v
 		const role = await createRole(db, { slug: `rev-empty-${++seq}`, name: 'E', purpose: 'p' });
 		await expect(reversionFailedRole(db, role.id)).rejects.toThrow(/no versions/i);
 	});
+
+	it('CONCURRENCY: the loser of a re-version race is a benign no-op returning the winner v2 (no raw 500, exactly ONE new version)', async () => {
+		// The deferred-MEDIUM race (79f9b19): two operator submits both pass the pickLaunchVersion
+		// read (only the failed v1, nothing selectable), then BOTH compute version=max+1 against
+		// the SAME max and collide on the role_version_dedup UNIQUE index (dedup_key=role|version).
+		// The UNIQUE index keeps it to ONE new version; the loser must NOT surface a raw 500.
+		//
+		// Modelled DETERMINISTICALLY as the LOSER's path: the WINNER has already created the fresh
+		// v2 (we create it for real). The loser is then driven through a db proxy that reproduces
+		// exactly what the loser saw: its PRE-WRITE selectable read raced in BEFORE the winner's v2
+		// was visible (so pickLaunchVersion sees nothing selectable → it proceeds to create), and
+		// its math::max read ALSO predates the winner's insert (so it computes version=2 — which the
+		// winner already took). The real UNIQUE index then rejects the loser's CREATE. The loser's
+		// POST-collision re-read sees the real, committed v2 (the winner's). No interleaving luck.
+		const { role, failed } = await roleWithFailedVersion();
+		expect(failed.version).toBe(1);
+
+		// The WINNER's recovery version — created for real (this is the one v2 that must survive).
+		const winnerV2 = await createRoleVersion(db, {
+			role: role.id,
+			prompt_core: failed.prompt_core,
+			capabilities: failed.capabilities,
+			default_tier: failed.default_tier,
+			source: 'operator'
+		});
+		expect(winnerV2.version).toBe(2);
+
+		// Drive the LOSER. Its first `SELECT * FROM role_version` (the pickLaunchVersion read) must
+		// hide v2 (raced in before the winner committed → nothing selectable → loser proceeds); its
+		// `math::max(version)` must return 1 (predates the winner's insert → loser computes v2). The
+		// real CREATE then collides on the UNIQUE index. Every SUBSEQUENT read (the post-collision
+		// re-read) is real → it sees the winner's committed v2.
+		let listReads = 0;
+		const loserDb = new Proxy(db, {
+			get(target, prop, receiver) {
+				if (prop === 'query') {
+					return async (sql: string, ...rest: unknown[]) => {
+						const real = (target.query as (s: string, ...a: unknown[]) => Promise<unknown>).bind(target);
+						if (typeof sql === 'string' && /SELECT \* FROM role_version WHERE role/i.test(sql)) {
+							listReads += 1;
+							if (listReads === 1) {
+								// pre-write read: hide v2 — only the failed v1 is visible to the loser.
+								const out = (await real(sql, ...rest)) as [Array<{ version: number }>];
+								return [out[0].filter((r) => r.version < 2)] as unknown;
+							}
+							// post-collision re-read: real (the winner's v2 is visible).
+							return real(sql, ...rest);
+						}
+						if (typeof sql === 'string' && /math::max\(version\)/i.test(sql)) {
+							return [[{ v: 1 }]]; // loser's max read predates the winner's insert.
+						}
+						return real(sql, ...rest);
+					};
+				}
+				return Reflect.get(target, prop, receiver);
+			}
+		}) as typeof db;
+
+		// The loser does NOT throw a raw 500 — the UNIQUE collision is caught + resolved as a no-op.
+		const loser = await reversionFailedRole(loserDb, role.id);
+		expect(loser.reversioned).toBe(false); // benign no-op — the winner already created v2
+		expect(loser.version!.id).toBe(winnerV2.id); // returns the winner's version (operator intent met)
+		expect(loser.version!.version).toBe(2);
+		expect(loser.version!.lifecycle).toBe('draft'); // fresh draft — NEVER a fabricated cert
+		expect(loser.from!.id).toBe(failed.id);
+		expect(loser.reason).toMatch(/concurrent/i);
+
+		// Exactly ONE new version survives despite the race (the UNIQUE index held — never weakened).
+		const versions = await listRoleVersions(db, role.id);
+		expect(versions.filter((v) => v.version >= 2)).toHaveLength(1);
+
+		// The failed v1 is STILL failed — the race never un-failed the terminal (cert-integrity §2.2).
+		const failedAfter = await getRoleVersion(db, failed.id);
+		expect(failedAfter!.lifecycle).toBe('failed');
+
+		// The loser wrote NO duplicate provenance role_event (it short-circuited before addRoleEvent).
+		const events = await listRoleEvents(db, role.id);
+		const revEvents = events.filter(
+			(e) => e.op === 'created' && (e.detail as Record<string, unknown>)?.reason === 'reversion'
+		);
+		// (the winner here was created via the raw createRoleVersion helper, not reversionFailedRole,
+		//  so it has no reversion event — the loser must add NONE either: assert zero from the loser.)
+		expect(revEvents).toHaveLength(0);
+	});
+
+	it('SERIAL double-submit (the common double-click): the second submit is a benign no-op, never a raw error', async () => {
+		// The dominant real-world shape of the race: an operator double-clicks, the two form
+		// submits SERIALIZE (the second reaches the DB after the first committed). The first
+		// creates v2; the second's pickLaunchVersion read now SEES v2 (selectable) → guarded no-op
+		// BEFORE any create — so it never even reaches the dedup collision. Already covered by the
+		// 'double-submit safe' test above against the createRoleVersion path; this asserts the
+		// route-facing property explicitly: neither submit throws, exactly one new version.
+		const { role } = await roleWithFailedVersion();
+		const first = await reversionFailedRole(db, role.id);
+		const second = await reversionFailedRole(db, role.id);
+		expect(first.reversioned).toBe(true);
+		expect(second.reversioned).toBe(false); // guarded no-op (sees v2 selectable)
+		expect(second.version!.id).toBe(first.version!.id);
+		const versions = await listRoleVersions(db, role.id);
+		expect(versions.filter((v) => v.version >= 2)).toHaveLength(1);
+	});
+
+	it('RED-TEAM: the collision matcher does NOT swallow an unrelated DB error — it propagates', async () => {
+		// Feed reversionFailedRole a db whose role_version CREATE fails with a NON-dedup error.
+		// The fix must re-raise it (F-008: never eat a real write failure as a benign no-op).
+		// Build the failed-v1 substrate on the real db, then drive the create through a proxy db
+		// whose .query throws an unrelated error on the role_version CREATE only.
+		const { role } = await roleWithFailedVersion();
+		const unrelated = new Error('Some other DB failure: connection reset by peer');
+		const proxyDb = new Proxy(db, {
+			get(target, prop, receiver) {
+				if (prop === 'query') {
+					return async (sql: string, ...rest: unknown[]) => {
+						if (typeof sql === 'string' && /CREATE role_version/i.test(sql)) {
+							throw unrelated;
+						}
+						return (target.query as (s: string, ...a: unknown[]) => unknown)(sql, ...rest);
+					};
+				}
+				return Reflect.get(target, prop, receiver);
+			}
+		}) as typeof db;
+
+		// The unrelated error propagates unchanged — NOT mapped to a no-op, NOT swallowed.
+		await expect(reversionFailedRole(proxyDb, role.id)).rejects.toThrow(/connection reset by peer/i);
+
+		// And it did NOT create a version (the write genuinely failed) — exactly the failed v1 remains.
+		const versions = await listRoleVersions(db, role.id);
+		expect(versions).toHaveLength(1);
+		expect(versions[0].version).toBe(1);
+	});
 });

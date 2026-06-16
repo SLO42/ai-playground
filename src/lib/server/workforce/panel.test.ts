@@ -1,3 +1,5 @@
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { StringRecordId } from 'surrealdb';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Db } from '../db/client';
@@ -11,7 +13,9 @@ import {
 	createRoleVersion,
 	finalizeInterviewRun,
 	createGauntletFixture,
-	swapActiveVersion
+	swapActiveVersion,
+	transitionLifecycle,
+	withdrawRoleVersion
 } from './repo';
 import { loadWorkforcePanel } from './panel';
 import { newSentinelUlid } from './activation';
@@ -337,5 +341,189 @@ describe('loadWorkforcePanel — §8 surfaces', () => {
 		const card = cardFor(await loadWorkforcePanel(db), slug);
 		expect(card.deployable).toBe(true);
 		expect(card.poolGeneration).toMatch(/passed launch pool/);
+	});
+});
+
+// ── pickLaunchVersion — newest-selectable (the investigator/qa_lead/security_officer bug) ──
+// The panel picker MUST mirror ceremony.ts: pick the NEWEST ceremony-selectable version
+// (draft/interviewing/error/passed), never a failed/withdrawn/retired terminal. The old
+// "lowest non-withdrawn" rule surfaced a re-versioned role's dead v1 (failed) as the launch
+// version → the card read v1-FAILED even though a passing v2 existed. CERT-INTEGRITY: picking
+// newest-selectable + the UNCHANGED deployability gate must never show a non-passed version
+// as certified.
+
+/** Drive a fresh version draft→interviewing→passed via a passing interview_run (the lifecycle
+ *  couple in finalizeInterviewRun only fires when the version is 'interviewing'). */
+async function makePassedVersion(roleId: string, model: string, core: string) {
+	const v = await createRoleVersion(db, { role: roleId, prompt_core: core, default_tier: 'sonnet' });
+	await transitionLifecycle(db, v.id, 'interviewing');
+	const run = await createInterviewRun(db, {
+		role_version: v.id,
+		tier: 'sonnet',
+		provider: 'claude',
+		model_id: model,
+		fixture_set_sha: `fsha-${core}`
+	});
+	await finalizeInterviewRun(db, run.id, {
+		status: 'passed',
+		planted_total: 4,
+		planted_found: 4,
+		false_positives: 0
+	});
+	return { v, run };
+}
+
+/** Drive a fresh version draft→interviewing→failed via a failing interview_run. */
+async function makeFailedVersion(roleId: string, model: string, core: string) {
+	const v = await createRoleVersion(db, { role: roleId, prompt_core: core, default_tier: 'sonnet' });
+	await transitionLifecycle(db, v.id, 'interviewing');
+	const run = await createInterviewRun(db, {
+		role_version: v.id,
+		tier: 'sonnet',
+		provider: 'claude',
+		model_id: model,
+		fixture_set_sha: `fsha-${core}`
+	});
+	await finalizeInterviewRun(db, run.id, {
+		status: 'failed',
+		planted_total: 4,
+		planted_found: 1,
+		false_positives: 2
+	});
+	return { v, run };
+}
+
+describe('loadWorkforcePanel — newest-selectable launch picker (cert-integrity)', () => {
+	it('[v1 failed, v2 passed]: picks v2, version=2, CERTIFIED (the investigator/qa_lead/security_officer case)', async () => {
+		const slug = nextSlug('reversioned');
+		const role = await createRole(db, { slug, name: slug, purpose: 'failed v1, passed v2' });
+		const { v: v1 } = await makeFailedVersion(role.id, MODEL, 'reversion-v1');
+		const { v: v2, run: v2run } = await makePassedVersion(role.id, MODEL, 'reversion-v2');
+		expect(v1.version).toBe(1);
+		expect(v2.version).toBe(2);
+
+		const card = cardFor(await loadWorkforcePanel(db), slug);
+		// Picks the NEWEST selectable version — NOT the dead failed v1.
+		expect(card.version).toBe(2);
+		expect(card.roleVersion).toBe(v2.id);
+		expect(card.lifecycle).toBe('passed');
+		// Certified off v2's passing run (deployability gate unchanged).
+		expect(card.deployable).toBe(true);
+		expect(card.notDeployableReason).toBeNull();
+		expect(card.interview?.run).toBe(v2run.id);
+		expect(card.interview?.status).toBe('passed');
+	});
+
+	it('[v1 failed] only: picks v1, version=1, lifecycle=failed, NOT certified (unchanged)', async () => {
+		const slug = nextSlug('failedonly');
+		const role = await createRole(db, { slug, name: slug, purpose: 'only a failed version' });
+		const { v: v1 } = await makeFailedVersion(role.id, MODEL, 'failedonly-v1');
+
+		const card = cardFor(await loadWorkforcePanel(db), slug);
+		// failed is NOT ceremony-selectable → no selectable version → null launch → 'no version'.
+		// (A role whose ONLY version is terminal failed has no drivable launch candidate; the
+		// reversion affordance lives in ceremony.ts. The card honestly shows NOT DEPLOYABLE.)
+		expect(card.version).toBeNull();
+		expect(card.roleVersion).toBeNull();
+		expect(card.deployable).toBe(false);
+		expect(card.notDeployableReason).toBe('no version');
+		void v1;
+	});
+
+	it('[v1 passed, v2 draft]: picks v2 draft, NOT-yet-certified (newest selectable, honest — never falsely certified off v1)', async () => {
+		const slug = nextSlug('passedthendraft');
+		const role = await createRole(db, { slug, name: slug, purpose: 'passed v1, draft v2' });
+		const { v: v1 } = await makePassedVersion(role.id, MODEL, 'ptd-v1');
+		const v2 = await createRoleVersion(db, {
+			role: role.id,
+			prompt_core: 'ptd-v2-draft',
+			default_tier: 'sonnet'
+		});
+		expect(v1.version).toBe(1);
+		expect(v2.version).toBe(2);
+
+		const card = cardFor(await loadWorkforcePanel(db), slug);
+		// Newest selectable = the v2 draft, NOT the older passed v1.
+		expect(card.version).toBe(2);
+		expect(card.roleVersion).toBe(v2.id);
+		expect(card.lifecycle).toBe('draft');
+		// CERT-INTEGRITY: a draft has no passing run at its prompt_sha → NOT certified, even
+		// though v1 passed. The deployability gate runs off the PICKED version (v2), so v1's
+		// pass can never leak certification onto the draft.
+		expect(card.deployable).toBe(false);
+		expect(card.notDeployableReason).toBe('not yet interviewed');
+		expect(card.interview).toBeNull();
+	});
+
+	it('withdrawn versions are excluded: [v1 passed, v2 withdrawn] → picks v1 passed (certified)', async () => {
+		const slug = nextSlug('withdrawnnewest');
+		const role = await createRole(db, { slug, name: slug, purpose: 'passed v1, withdrawn v2' });
+		const { v: v1 } = await makePassedVersion(role.id, MODEL, 'wn-v1');
+		const v2 = await createRoleVersion(db, {
+			role: role.id,
+			prompt_core: 'wn-v2',
+			default_tier: 'sonnet'
+		});
+		await withdrawRoleVersion(db, v2.id); // draft → withdrawn (legal §2.2)
+
+		const card = cardFor(await loadWorkforcePanel(db), slug);
+		// v2 withdrawn is NOT selectable → newest selectable is v1 (passed).
+		expect(card.version).toBe(1);
+		expect(card.roleVersion).toBe(v1.id);
+		expect(card.lifecycle).toBe('passed');
+		expect(card.deployable).toBe(true);
+	});
+
+	it('all-withdrawn role → null launch, honest NOT DEPLOYABLE (no version)', async () => {
+		const slug = nextSlug('allwithdrawn');
+		const role = await createRole(db, { slug, name: slug, purpose: 'every version withdrawn' });
+		const v1 = await createRoleVersion(db, {
+			role: role.id,
+			prompt_core: 'aw-v1',
+			default_tier: 'sonnet'
+		});
+		await withdrawRoleVersion(db, v1.id);
+
+		const card = cardFor(await loadWorkforcePanel(db), slug);
+		expect(card.version).toBeNull();
+		expect(card.roleVersion).toBeNull();
+		expect(card.deployable).toBe(false);
+		expect(card.notDeployableReason).toBe('no version');
+		expect(card.interview).toBeNull();
+		expect(card.track).toBeNull();
+	});
+});
+
+// ── RED-TEAM: panel.ts and ceremony.ts MUST share the selection predicate (no divergence) ──
+// The original bug was a DIVERGENT copy of pickLaunchVersion. Statically prove (no DB) that
+// both modules now import and use the SAME shared lifecycle.ts predicate so they can never
+// disagree about the launch version again. Pure source-read assertion.
+describe('RED-TEAM: panel.ts / ceremony.ts launch-picker convergence', () => {
+	const here = fileURLToPath(import.meta.url);
+	const sep = Math.max(here.lastIndexOf('/'), here.lastIndexOf('\\'));
+	const dir = here.slice(0, sep + 1);
+	const read = (f: string) => readFileSync(dir + f, 'utf8');
+
+	it('both modules import isCeremonySelectable from ./lifecycle (single source of truth)', () => {
+		const panelSrc = read('panel.ts');
+		const ceremonySrc = read('ceremony.ts');
+		const importRe = /import\s*\{[^}]*\bisCeremonySelectable\b[^}]*\}\s*from\s*'\.\/lifecycle'/;
+		expect(panelSrc).toMatch(importRe);
+		expect(ceremonySrc).toMatch(importRe);
+	});
+
+	it('both pickLaunchVersion filter on the SAME predicate expression (no third divergent copy)', () => {
+		const filterExpr = 'versions.filter((v) => isCeremonySelectable(v.lifecycle))';
+		expect(read('panel.ts')).toContain(filterExpr);
+		expect(read('ceremony.ts')).toContain(filterExpr);
+	});
+
+	it('panel.ts no longer contains the OLD divergent lowest-version sort', () => {
+		const panelSrc = read('panel.ts');
+		// The bug was `.sort((a, b) => a.version - b.version)[0]` (lowest-first). The fixed
+		// picker sorts newest-first `(b.version - a.version)`. Assert the lowest-first picker
+		// is gone from panel.ts.
+		expect(panelSrc).not.toContain('.sort((a, b) => a.version - b.version)');
+		expect(panelSrc).toContain('.sort((a, b) => b.version - a.version)');
 	});
 });

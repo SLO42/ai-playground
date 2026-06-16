@@ -36,6 +36,7 @@ import {
 	type RoleRow,
 	type RoleVersionRow
 } from './repo';
+import { isCeremonySelectable } from './lifecycle';
 import { roleTrackRecord, type RoleTrackRecord } from './track-record';
 
 /** The LATEST interview_run distilled to the §8 interview-line fields. Carries the full
@@ -135,17 +136,28 @@ function strOrNull(v: unknown): string | null {
 }
 
 /**
- * The launch version is the role's earliest non-withdrawn version (§8 bootstrap: each
- * launch role has exactly one draft campaign at day 0). listRoleVersions returns
- * newest-first; we pick the lowest version that isn't withdrawn so a later revision
- * never hides the launch campaign on the card. Returns null when the role has no
- * usable version (honest 'not yet interviewed' / NOT DEPLOYABLE).
+ * The launch version is the role's NEWEST still-drivable version — highest `version`
+ * among the ceremony-selectable lifecycles (draft/interviewing/error/passed; never a
+ * failed/withdrawn/retired terminal). This MIRRORS ceremony.ts pickLaunchVersion EXACTLY
+ * by reusing the SAME shared predicate (lifecycle.ts isCeremonySelectable) — so the panel
+ * card and the ceremony driver can never disagree about which version is the launch
+ * candidate (the divergence that made the panel show a re-versioned role's dead v1).
+ *
+ * Why newest-selectable (not lowest): once a failed v1 is re-versioned (§2.2), the fresh
+ * v2 (passed/draft) is the live campaign; the old failed v1 is terminal and must NEVER be
+ * surfaced as the launch version. The old "lowest non-withdrawn" rule picked the dead v1
+ * and dragged its failed/not-certified state onto the card (the investigator/qa_lead/
+ * security_officer bug). CERT-INTEGRITY is preserved by deployabilityFromRuns (below),
+ * UNCHANGED: picking newest-selectable surfaces an honest 'not yet certified' for a role
+ * whose newest is an un-passed draft, and a 'certified' ONLY when that picked version has a
+ * passing terminal run at its own prompt_sha — a failed/draft version can never read as
+ * certified. Returns null when the role has NO selectable version (only failed/withdrawn/
+ * retired) — the honest 'no version'/'not yet interviewed' / NOT DEPLOYABLE empty.
  */
 function pickLaunchVersion(versions: RoleVersionRow[]): RoleVersionRow | null {
-	const usable = versions.filter((v) => v.lifecycle !== 'withdrawn');
-	if (usable.length === 0) return null;
-	// Prefer the active/passed campaign; else the lowest version number.
-	return [...usable].sort((a, b) => a.version - b.version)[0];
+	const selectable = versions.filter((v) => isCeremonySelectable(v.lifecycle));
+	if (selectable.length === 0) return null;
+	return [...selectable].sort((a, b) => b.version - a.version)[0];
 }
 
 /**

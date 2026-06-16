@@ -1708,6 +1708,75 @@ const m0045_ingest_source_dropped_status: Migration = {
 	`
 };
 
+// m0046 — WORKFORCE-SPEC §5 review_proposal (wave v2.3 data plane). RESOLVES the dangling
+// role_version.proposal forward-ref (m0031 ~:1088 references review_proposal before it existed;
+// the field worked because SurrealDB record<T> does not require the referent table to be defined,
+// but no review_proposal row could ever be created — this migration makes the table real).
+// NO governance logic lands in this wave — just the table + its DDL. The kind/status enums are
+// the §5 set verbatim; comparison is FLEXIBLE option<object>; dedup_key uses the D-008 VALUE+UNIQUE
+// pattern keyed per the anti-spam fingerprint (role, kind, incumbent) so a cosmetic re-word cannot
+// dodge a defer window (§5; incumbent NONE → empty string segment, still a concrete non-NONE VALUE).
+// ADDITIVE OVERWRITE, IDEMPOTENT (F-015): a brand-new table — apply-twice = ledger no-op + raw DDL
+// re-runs clean over a half-applied bare table; no existing rows to backfill or mutate.
+const m0046_review_proposal: Migration = {
+	id: '0046_review_proposal',
+	up: `
+		DEFINE TABLE OVERWRITE review_proposal SCHEMAFULL;
+		DEFINE FIELD OVERWRITE role       ON review_proposal TYPE record<role>;
+		DEFINE FIELD OVERWRITE kind       ON review_proposal TYPE string DEFAULT "prompt_revision"
+			ASSERT $value IN ["prompt_revision","tier_change","retire","staffing"];
+		DEFINE FIELD OVERWRITE incumbent  ON review_proposal TYPE option<record<role_version>>;
+		-- created (draft, source=pm_proposal) on validation (§5).
+		DEFINE FIELD OVERWRITE challenger ON review_proposal TYPE option<record<role_version>>;
+		-- NONE = operator-initiated (§5).
+		DEFINE FIELD OVERWRITE pm         ON review_proposal TYPE option<record<pm>>;
+		-- {signal, evidence:[ids], config_snapshot} — PM-SPEC §4.1 provenance.
+		DEFINE FIELD OVERWRITE trigger    ON review_proposal FLEXIBLE TYPE object DEFAULT {};
+		DEFINE FIELD OVERWRITE status     ON review_proposal TYPE string DEFAULT "proposed"
+			ASSERT $value IN ["proposed","validated","rejected_by_panel","diff_review","interviewing","compared","swapped","rejected_by_operator","withdrawn"];
+		DEFINE FIELD OVERWRITE comparison ON review_proposal FLEXIBLE TYPE option<object>;
+		DEFINE FIELD OVERWRITE decided_at ON review_proposal TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE created_at ON review_proposal TYPE datetime DEFAULT time::now();
+		-- D-008 anti-spam fingerprint (§5: per role+kind+incumbent_version). incumbent NONE → '' segment.
+		DEFINE FIELD OVERWRITE dedup_key  ON review_proposal VALUE
+			<string>role + '|' + kind + '|' + (IF incumbent != NONE THEN <string>incumbent ELSE '' END);
+		DEFINE INDEX OVERWRITE review_proposal_by_role ON review_proposal FIELDS role;
+	`
+};
+
+// m0047 — WORKFORCE-SPEC §6 project_staff (wave v2.3 data plane). MUTABLE declaration rows that
+// mirror project_target (m0026): one row per (project, role); history lives in role_event, not in
+// duplicate soft-archived rows. POLARITY: opt-IN, FAIL-CLOSED — `enabled` DEFAULTs to FALSE (the
+// task lock overrides the §6 DDL's display `DEFAULT true`: the data layer must default to NOT-staffed
+// so a row materialized without an explicit enable can never accidentally staff a role; staffRole
+// sets enabled=true explicitly). resolveStaff returns null for no row OR enabled=false. ADDITIVE
+// OVERWRITE, IDEMPOTENT (F-015): brand-new table, no existing rows; dedup_key is a concrete non-NONE
+// VALUE (§6.2) + UNIQUE so a concurrent double-staff collides rather than duplicating (D-008).
+const m0047_project_staff: Migration = {
+	id: '0047_project_staff',
+	up: `
+		DEFINE TABLE OVERWRITE project_staff SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project        ON project_staff TYPE record<project>;
+		DEFINE FIELD OVERWRITE role           ON project_staff TYPE record<role>;
+		-- NONE = follow role.active_version (§6).
+		DEFINE FIELD OVERWRITE pinned_version ON project_staff TYPE option<record<role_version>>;
+		DEFINE FIELD OVERWRITE tier_override  ON project_staff TYPE option<string>
+			ASSERT $value = NONE OR $value IN ["local","haiku","sonnet","opus"];
+		-- FAIL-CLOSED polarity (task lock): default NOT-staffed; staffRole flips it true.
+		DEFINE FIELD OVERWRITE enabled        ON project_staff TYPE bool DEFAULT false;
+		DEFINE FIELD OVERWRITE source         ON project_staff TYPE string DEFAULT "operator"
+			ASSERT $value IN ["operator","pm_validated"];
+		-- Operator-supplied free text — SCREENED at the repo boundary (D-026), never stored raw.
+		DEFINE FIELD OVERWRITE charter_note   ON project_staff TYPE option<string>;
+		DEFINE FIELD OVERWRITE created_at     ON project_staff TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE updated_at     ON project_staff TYPE datetime DEFAULT time::now();
+		-- ONE row per (project, role). Concrete non-NONE VALUE + UNIQUE (D-008).
+		DEFINE FIELD OVERWRITE dedup_key      ON project_staff VALUE <string>project + '|' + <string>role;
+		DEFINE INDEX OVERWRITE project_staff_dedup ON project_staff FIELDS dedup_key UNIQUE;
+		DEFINE INDEX OVERWRITE project_staff_by_project ON project_staff FIELDS project;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1759,5 +1828,7 @@ export const schemaMigrations: Migration[] = [
 	m0042_ingest_source,
 	m0043_memory_provenance,
 	m0044_memory_license,
-	m0045_ingest_source_dropped_status
+	m0045_ingest_source_dropped_status,
+	m0046_review_proposal,
+	m0047_project_staff
 ];

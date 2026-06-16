@@ -177,9 +177,14 @@ export async function runBoundedDistill(
 //                   because the offending finding(s) were quarantined. The ONLY status that may
 //                   render the SECURITY badge in the /cannibalize UI.
 //   • dropped     — an all-noise run: every finding was DROPPED by the DO-NOT-CAPTURE / empty /
-//                   not-useful gate and NO secret/PII ever fired. Nothing worth keeping — NOT a
-//                   security event. Rendered as a NEUTRAL state, never the security badge.
-//   • failed      — a distill error (timeout/throw/bad-shape); nothing partial reached the brain.
+//                   not-useful gate and NO secret/PII ever fired AND no finding failed to WRITE.
+//                   Nothing worth keeping — NOT a security event. Rendered as a NEUTRAL state,
+//                   never the security badge.
+//   • failed      — a distill error (timeout/throw/bad-shape) OR (CB-H1) a count-0 run where at
+//                   least one finding failed to WRITE (embed/insert threw) and no real screen
+//                   quarantine fired; nothing partial reached the brain. A write failure is NEVER
+//                   reported as `dropped` — the failing finding may have been a real screened
+//                   secret, and the neutral drop badge would falsely deny it (F-008).
 export type IngestStatus =
 	| 'capturing'
 	| 'distilling'
@@ -188,6 +193,19 @@ export type IngestStatus =
 	| 'failed'
 	| 'quarantined'
 	| 'dropped';
+
+/**
+ * CB-H1 (F-008): is THIS persisted:false finding a WRITE FAILURE (embed/insert threw) rather than
+ * a DO-NOT-CAPTURE / empty gate drop? The signal is `dropReason`: the screen gate produces exactly
+ * `empty` or `do-not-capture:<id>` (memory/screen.ts), whereas storeMemories' per-item catch stamps
+ * a NAMED-error reason (`EmbeddingError:…`, `insert-failed:…`, `MemoryCandidateFieldError:…`). So a
+ * persisted:false finding whose dropReason is neither absent nor a gate reason is a write failure —
+ * its run must terminate `failed`, never the neutral `dropped` (which would deny a screened secret).
+ */
+function isWriteFailureReason(dropReason: string | undefined): boolean {
+	if (dropReason === undefined) return false; // no reason recorded ⇒ not an attributable write error.
+	return dropReason !== 'empty' && !dropReason.startsWith('do-not-capture:');
+}
 
 /** A created/updated ingest_source row (the run record). */
 export interface IngestSourceRow {
@@ -368,20 +386,37 @@ export async function ingestCaptured(deps: IngestDeps, req: IngestRequest): Prom
 	}));
 	const ingestedCount = findings.filter((f) => f.ingested).length;
 
-	// (4) Terminal status (honest, CB2 red-team §7 — distinguish a SECURITY quarantine from an
-	//     all-noise drop, F-008). A genuine `screen()` secret/PII hit produces a PERSISTED row
-	//     (written for audit) stamped screenStatus 'quarantined' — that, and ONLY that, is the
-	//     security-bearing outcome. A finding the DO-NOT-CAPTURE / empty / not-useful gate dropped
-	//     returns persisted:false (no row); a per-item insert FAILURE also returns persisted:false
-	//     (its screenStatus is a placeholder 'quarantined' from the storeMemories catch — NOT a
-	//     screen hit). So "a real screen quarantine fired" ⇔ at least one PERSISTED quarantined row.
-	//       • some ingested            → `done`.
-	//       • none ingested, a real screen quarantine fired → `quarantined` (security badge stays).
-	//       • none ingested, NO screen quarantine (all dropped/empty)        → `dropped` (neutral —
-	//         nothing worth keeping; must NOT show the security badge).
+	// (4) Terminal status (honest, CB2 red-team §7 + CB-H1 — distinguish a SECURITY quarantine
+	//     from an all-noise DROP from a WRITE FAILURE, F-008). The three count-0 causes are NOT
+	//     interchangeable; collapsing any of them into `dropped` would let the neutral "Nothing
+	//     kept … No secret or PII was detected" badge affirmatively DENY a secret that genuinely
+	//     screened (CB-H1's whole purpose). A finding's StoredMemory disambiguates by persistence
+	//     + dropReason:
+	//       • PERSISTED quarantined row        → a genuine screen() secret/PII hit (security event).
+	//       • persisted:false, dropReason = a GATE reason (`empty` / `do-not-capture:*`) → the
+	//         DO-NOT-CAPTURE / empty / not-useful gate dropped it — nothing worth keeping (neutral).
+	//       • persisted:false, dropReason = a NAMED ERROR (EmbeddingError/insert-failed/…, NOT a
+	//         gate reason) → a per-item WRITE FAILURE (embed/insert threw). storeMemories stamps a
+	//         PLACEHOLDER screenStatus 'quarantined' here that is NOT a screen hit — the only honest
+	//         way to tell it from a real screen quarantine is persisted===false. A run that wrote
+	//         NOTHING because every finding failed to WRITE is `failed`, NEVER `dropped`: the finding
+	//         may have been a real screened secret that then failed to embed/insert, and `dropped`
+	//         would falsely claim no secret was detected.
+	//     Decision (count 0):
+	//       • a real screen quarantine fired                    → `quarantined` (security badge stays).
+	//       • no screen quarantine, ≥1 write failure            → `failed` (a write error, not a drop).
+	//       • no screen quarantine, no write failure (all gated) → `dropped` (neutral — nothing kept).
 	//     finding_count = the ingested count (§6 contract: findings that entered the brain).
 	const quarantinedByScreen = stored.some((s) => s.persisted && s.screenStatus === 'quarantined');
-	const status: IngestStatus = ingestedCount > 0 ? 'done' : quarantinedByScreen ? 'quarantined' : 'dropped';
+	const hadWriteFailure = stored.some((s) => !s.persisted && isWriteFailureReason(s.dropReason));
+	const status: IngestStatus =
+		ingestedCount > 0
+			? 'done'
+			: quarantinedByScreen
+				? 'quarantined'
+				: hadWriteFailure
+					? 'failed'
+					: 'dropped';
 	await setIngestStatus(db, source.id, status, ingestedCount);
 	return { sourceId: source.id, status, ingestedCount, findings };
 }

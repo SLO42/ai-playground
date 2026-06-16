@@ -3,7 +3,7 @@ import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
-import { FakeEmbedder } from '../memory/embed';
+import { FakeEmbedder, EmbeddingError, type Embedder } from '../memory/embed';
 import { recall, recordOutcomes } from '../memory/recall';
 import { recordTurnOutcomes } from '../memory/outcomes';
 import { captureText } from './capture';
@@ -251,6 +251,80 @@ describe('ingestCaptured — CB2 red-team: all-noise drop is `dropped`, not the 
 		expect(res.ingestedCount).toBe(0);
 		expect(res.status).toBe('quarantined'); // a real secret fired — security badge stays correct
 		expect(res.findings.some((f) => f.screenStatus === 'quarantined')).toBe(true);
+	});
+});
+
+// ── CB-H1 (deferred MEDIUM): a count-0 run whose drops are WRITE FAILURES is `failed`, NOT `dropped` ──
+//
+// The CB-H1 honest-badge fix must hold on the WRITE-FAILURE seam, not just the happy gate path.
+// When a finding screen()s as a real secret but then fails to EMBED/INSERT, storeMemories' per-item
+// catch returns persisted:false with a PLACEHOLDER screenStatus 'quarantined' and an error-named
+// dropReason. That row is NOT a screen quarantine (persisted:false), so the old code routed the run
+// to `dropped` → the UI affirmatively claims "No secret or PII was detected" for a run that DID screen
+// a secret (the exact F-008 conflation CB-H1 exists to eliminate). A count-0 run with a write failure
+// (and no real screen quarantine) must terminate `failed`, never `dropped`.
+describe('ingestCaptured — CB-H1: a write-failure count-0 run is `failed`, never the neutral `dropped`', () => {
+	// An embedder that always throws — simulates Ollama unreachable / breaker-open AFTER the readiness
+	// probe passed (the post-probe per-item failure the route 503 gate cannot cover).
+	const throwingEmbedder: Embedder = {
+		modelVersion: 'throwing-test',
+		async embed() {
+			throw new EmbeddingError('Ollama unreachable (breaker open)');
+		}
+	};
+	const failDeps = (distill: DistillFn): IngestDeps => ({ db, embedder: throwingEmbedder, distill });
+
+	it('a real SECRET that fails to embed → status `failed`, NOT `dropped` (no false "no secret" claim)', async () => {
+		const cap = captureText('secret that fails to write', 'doc-secret-writefail');
+		// A single finding carrying a real private key — screen() WOULD quarantine it, but embed() throws
+		// first, so it lands in the storeMemories catch (persisted:false, placeholder screenStatus).
+		const distill: DistillFn = async () => [{ content: `here is the key:\n${PLANTED_SECRET}` }];
+		const res = await ingestCaptured(failDeps(distill), { capture: cap, intent: 'i' });
+
+		expect(res.ingestedCount).toBe(0);
+		expect(res.status).toBe('failed'); // a WRITE failure — never the neutral 'dropped'.
+		expect(res.status).not.toBe('dropped');
+		// The finding did not persist and names an embed error (NOT a do-not-capture gate reason).
+		expect(res.findings).toHaveLength(1);
+		expect(res.findings[0].ingested).toBe(false);
+		expect(res.findings[0].dropReason).toMatch(/EmbeddingError/);
+
+		// The ingest_source row persisted the honest `failed` terminal — finding_count 0, completed stamped.
+		const [srow] = await db.query<[Array<{ status: string; finding_count: number; completed_at: unknown }>]>(
+			`SELECT status, finding_count, completed_at FROM type::thing("ingest_source", $sid);`,
+			{ sid: res.sourceId.split(':')[1] }
+		);
+		expect(srow[0].status).toBe('failed');
+		expect(srow[0].finding_count).toBe(0);
+		expect(srow[0].completed_at != null).toBe(true);
+
+		// Nothing reached the brain.
+		const [mrows] = await db.query<[Array<{ id: unknown }>]>(
+			`SELECT id FROM memory WHERE provenance = type::thing("ingest_source", $sid);`,
+			{ sid: res.sourceId.split(':')[1] }
+		);
+		expect(mrows).toHaveLength(0);
+	});
+
+	it('a CLEAN finding that fails to embed (no secret) → still `failed`, never `dropped` (a write error, not all-noise)', async () => {
+		const cap = captureText('clean finding that fails to write', 'doc-clean-writefail');
+		// A benign, capture-worthy finding — the gate would KEEP it; only embed() failing drops it.
+		const distill: DistillFn = async () => [{ content: 'use the OVERWRITE keyword for idempotent SurrealDB migrations' }];
+		const res = await ingestCaptured(failDeps(distill), { capture: cap, intent: 'i' });
+
+		expect(res.ingestedCount).toBe(0);
+		expect(res.status).toBe('failed'); // masking a write error as 'dropped' (nothing worth keeping) is dishonest.
+		expect(res.findings[0].dropReason).toMatch(/EmbeddingError/);
+	});
+
+	it('regression guard: a genuine all-noise gate drop (working embedder) is STILL `dropped`', async () => {
+		// The fix must NOT over-route — a true DO-NOT-CAPTURE drop with a working embedder stays neutral.
+		const cap = captureText('all noise, working embedder', 'doc-allnoise-guard');
+		const distill: DistillFn = async () => [{ content: 'the daemon is down right now' }, { content: 'the gateway is unreachable' }];
+		const res = await ingestCaptured(deps(distill), { capture: cap, intent: 'i' });
+		expect(res.ingestedCount).toBe(0);
+		expect(res.status).toBe('dropped');
+		expect(res.findings.every((f) => f.dropReason?.startsWith('do-not-capture:'))).toBe(true);
 	});
 });
 

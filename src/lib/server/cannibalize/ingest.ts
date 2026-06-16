@@ -171,7 +171,23 @@ export async function runBoundedDistill(
 
 // ── ingest_source row lifecycle ──────────────────────────────────────────────────────────
 
-export type IngestStatus = 'capturing' | 'distilling' | 'ingesting' | 'done' | 'failed' | 'quarantined';
+// The terminal statuses are DISTINCT and HONEST (CB2 red-team §7, F-008):
+//   • done        — at least one finding entered the brain.
+//   • quarantined — a screen() SECRET/PII hit fired (a real security event); nothing was ingested
+//                   because the offending finding(s) were quarantined. The ONLY status that may
+//                   render the SECURITY badge in the /cannibalize UI.
+//   • dropped     — an all-noise run: every finding was DROPPED by the DO-NOT-CAPTURE / empty /
+//                   not-useful gate and NO secret/PII ever fired. Nothing worth keeping — NOT a
+//                   security event. Rendered as a NEUTRAL state, never the security badge.
+//   • failed      — a distill error (timeout/throw/bad-shape); nothing partial reached the brain.
+export type IngestStatus =
+	| 'capturing'
+	| 'distilling'
+	| 'ingesting'
+	| 'done'
+	| 'failed'
+	| 'quarantined'
+	| 'dropped';
 
 /** A created/updated ingest_source row (the run record). */
 export interface IngestSourceRow {
@@ -216,7 +232,7 @@ export async function setIngestStatus(
 	status: IngestStatus,
 	findingCount?: number
 ): Promise<void> {
-	const terminal = status === 'done' || status === 'failed' || status === 'quarantined';
+	const terminal = status === 'done' || status === 'failed' || status === 'quarantined' || status === 'dropped';
 	const set: string[] = ['status = $status'];
 	const params: Record<string, unknown> = { src: link(sourceId), status };
 	if (findingCount !== undefined) {
@@ -277,8 +293,12 @@ export interface IngestResult {
  *   • nil/empty distill: a distiller that returns [] → run is `done`, finding_count 0 (honest — no
  *     fabricated findings; a source with no extractable knowledge is a legitimate empty result).
  *   • quarantine: a finding carrying a secret is screened OUT (storeMemory → screenStatus
- *     'quarantined', persisted:false-for-recall) → NOT counted as ingested; if EVERY finding is
- *     quarantined, the run status is `quarantined` (honest — nothing reached the brain).
+ *     'quarantined', persisted:true-for-audit / excluded-from-recall) → NOT counted as ingested;
+ *     if nothing ingested AND a real screen() secret/PII hit fired, the run status is `quarantined`
+ *     (honest security event — nothing reached the brain).
+ *   • all-noise drop: every finding was DROPPED by the DO-NOT-CAPTURE / empty / not-useful gate
+ *     and NO secret/PII fired → status `dropped` (honest — nothing worth keeping; distinct from the
+ *     security `quarantined`, F-008/CB2 red-team §7, so the UI shows a neutral state not a security badge).
  *   • upstream error: a distiller that THREW or TIMED OUT → DistillFailedError / DistillTimeoutError,
  *     run status `failed`, NOTHING partial in the brain (the source row is created first, so a crash
  *     mid-run leaves a `distilling`/`failed` row — never a silent half-state; re-run is idempotent
@@ -348,10 +368,20 @@ export async function ingestCaptured(deps: IngestDeps, req: IngestRequest): Prom
 	}));
 	const ingestedCount = findings.filter((f) => f.ingested).length;
 
-	// (4) Terminal status (honest): nothing ingested → `quarantined` (every finding screened out /
-	//     dropped — nothing reached the brain); otherwise `done`. finding_count = the ingested count
-	//     (the §6 contract: findings that entered the brain, not the raw distilled count).
-	const status: IngestStatus = ingestedCount === 0 ? 'quarantined' : 'done';
+	// (4) Terminal status (honest, CB2 red-team §7 — distinguish a SECURITY quarantine from an
+	//     all-noise drop, F-008). A genuine `screen()` secret/PII hit produces a PERSISTED row
+	//     (written for audit) stamped screenStatus 'quarantined' — that, and ONLY that, is the
+	//     security-bearing outcome. A finding the DO-NOT-CAPTURE / empty / not-useful gate dropped
+	//     returns persisted:false (no row); a per-item insert FAILURE also returns persisted:false
+	//     (its screenStatus is a placeholder 'quarantined' from the storeMemories catch — NOT a
+	//     screen hit). So "a real screen quarantine fired" ⇔ at least one PERSISTED quarantined row.
+	//       • some ingested            → `done`.
+	//       • none ingested, a real screen quarantine fired → `quarantined` (security badge stays).
+	//       • none ingested, NO screen quarantine (all dropped/empty)        → `dropped` (neutral —
+	//         nothing worth keeping; must NOT show the security badge).
+	//     finding_count = the ingested count (§6 contract: findings that entered the brain).
+	const quarantinedByScreen = stored.some((s) => s.persisted && s.screenStatus === 'quarantined');
+	const status: IngestStatus = ingestedCount > 0 ? 'done' : quarantinedByScreen ? 'quarantined' : 'dropped';
 	await setIngestStatus(db, source.id, status, ingestedCount);
 	return { sourceId: source.id, status, ingestedCount, findings };
 }

@@ -52,13 +52,16 @@
     return i === -1 ? STAGES.length : i; // terminal → all stages behind it are done
   }
   function isTerminal(status: string): boolean {
-    return status === 'done' || status === 'failed' || status === 'quarantined';
+    return status === 'done' || status === 'failed' || status === 'quarantined' || status === 'dropped';
   }
 
   /** Human label for a run status (paired with the color tag — never color-only, §9). */
   function statusLabel(s: string): string {
     if (s === 'done') return 'Done';
     if (s === 'quarantined') return 'Quarantined';
+    // 'dropped' is the all-noise terminal (CB2 §7): nothing worth keeping, NO secret/PII fired —
+    // honest + NEUTRAL, never the security 'Quarantined' badge (F-008).
+    if (s === 'dropped') return 'Nothing kept';
     if (s === 'failed') return 'Failed';
     if (s === 'capturing') return 'Capturing';
     if (s === 'distilling') return 'Distilling';
@@ -146,6 +149,9 @@
           {:else if resultOk.status === 'quarantined'}
             Nothing ingested — every finding from <span class="mono">{resultOk.ref}</span> was
             screened out (secret/PII). The source was quarantined; the brain is untouched.
+          {:else if resultOk.status === 'dropped'}
+            Nothing kept — no durable findings from <span class="mono">{resultOk.ref}</span> were
+            worth ingesting (nothing useful to extract). No secret or PII was detected; the brain is untouched.
           {:else}
             Run {resultOk.status} for <span class="mono">{resultOk.ref}</span>.
           {/if}
@@ -573,6 +579,12 @@
     color: var(--color-error);
     border-color: var(--color-error);
   }
+  /* 'dropped' (all-noise, NO secret) is NEUTRAL — explicitly NOT the security/error styling
+     (CB2 §7, F-008). Muted text + default border, distinct from the quarantined security badge. */
+  .tag[data-state='dropped'] {
+    color: var(--color-text-muted);
+    border-color: var(--color-border);
+  }
 
   .recall-link {
     margin-left: auto;
@@ -624,6 +636,11 @@
   .stage.terminal[data-state='failed'] {
     color: var(--color-error);
     border-color: var(--color-error);
+  }
+  /* 'dropped' terminal stage chip — NEUTRAL, never the security/error color (CB2 §7, F-008). */
+  .stage.terminal[data-state='dropped'] {
+    color: var(--color-text-2);
+    border-color: var(--color-text-2);
   }
 
   @media (prefers-reduced-motion: reduce) {

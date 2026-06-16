@@ -77,6 +77,18 @@ describe('m0042 ingest_source — table + schema (CANNIBALIZE-SPEC §6)', () => 
 			root.query(`CREATE ingest_source SET kind = "url", ref = "r", intent = "i", status = "weird";`)
 		).rejects.toThrow();
 	});
+
+	// m0045 (CB2 red-team hardening) widened the status ASSERT with the NEW neutral terminal
+	// 'dropped' (all-noise run, no secret) — distinct from the security 'quarantined' (F-008).
+	it('m0045: status ASSERT accepts the NEW "dropped" terminal (and still all prior values)', async () => {
+		for (const status of ['capturing', 'distilling', 'ingesting', 'done', 'failed', 'quarantined', 'dropped']) {
+			const rows = await root.query<[{ id: unknown }[]]>(
+				`CREATE ingest_source SET kind = "text", ref = "r", intent = "i", status = $s RETURN AFTER;`,
+				{ s: status }
+			);
+			expect(rows[0].length, `status ${status} should be accepted`).toBe(1);
+		}
+	});
 });
 
 describe('m0043 memory provenance/utilization — additive, no row reset (F-015)', () => {

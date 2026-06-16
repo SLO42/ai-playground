@@ -195,6 +195,65 @@ describe('ingestCaptured — RED-TEAM: planted secret screened out (§7)', () =>
 	});
 });
 
+// ── CB2 RED-TEAM (deferred MEDIUM): an ALL-NOISE run (no secret) is `dropped`, NOT `quarantined` ──
+//
+// The fix distinguishes a screen() secret/PII quarantine (a real security event → status
+// 'quarantined', the only one the UI renders as a SECURITY badge) from an all-noise run where
+// every finding was DROPPED by the DO-NOT-CAPTURE gate and NO secret ever fired (→ status
+// 'dropped', a NEUTRAL state). Conflating them was dishonest (F-008).
+describe('ingestCaptured — CB2 red-team: all-noise drop is `dropped`, not the security `quarantined`', () => {
+	it('every finding dropped by DO-NOT-CAPTURE (NO secret) → status `dropped`, count 0, NOT quarantined', async () => {
+		const cap = captureText('all noise doc', 'doc-allnoise');
+		// Every finding is a transient negative claim the DO-NOT-CAPTURE gate DROPS (persisted:false,
+		// screenStatus 'clean') — NO secret/PII rule ever fires, so this is NOT a security event.
+		const distill: DistillFn = async () => [
+			{ content: 'the daemon is down right now' },
+			{ content: 'the gateway is unreachable' },
+			{ content: "the build server cannot connect to the database" }
+		];
+		const res = await ingestCaptured(deps(distill), { capture: cap, intent: 'i' });
+
+		expect(res.ingestedCount).toBe(0);
+		expect(res.status).toBe('dropped'); // NEW neutral terminal — NOT the security 'quarantined'
+		expect(res.status).not.toBe('quarantined');
+		// Every finding was dropped (not persisted), and none was a screen() quarantine.
+		expect(res.findings.every((f) => !f.ingested)).toBe(true);
+		expect(res.findings.every((f) => f.screenStatus !== 'quarantined')).toBe(true);
+
+		// The ingest_source row persisted the NEW terminal status (schema ASSERT widened, m0045) —
+		// finding_count 0, completed_at stamped, status exactly 'dropped'.
+		const [srow] = await db.query<[Array<{ status: string; finding_count: number; completed_at: unknown }>]>(
+			`SELECT status, finding_count, completed_at FROM type::thing("ingest_source", $sid);`,
+			{ sid: res.sourceId.split(':')[1] }
+		);
+		expect(srow[0].status).toBe('dropped');
+		expect(srow[0].finding_count).toBe(0);
+		expect(srow[0].completed_at != null).toBe(true);
+
+		// Nothing reached the brain — no memory row links to this run.
+		const [mrows] = await db.query<[Array<{ id: unknown }>]>(
+			`SELECT id FROM memory WHERE provenance = type::thing("ingest_source", $sid);`,
+			{ sid: res.sourceId.split(':')[1] }
+		);
+		expect(mrows).toHaveLength(0);
+	});
+
+	it('a MIXED noise+secret run with NO ingest still reports `quarantined` (the secret wins the badge)', async () => {
+		// One finding dropped as noise, one a real planted secret → a genuine screen quarantine fired,
+		// so the security badge MUST stay (regression guard — a real secret never slips to `dropped`).
+		const cap = captureText('noise plus secret doc', 'doc-noise-secret');
+		const distill: DistillFn = async () => [
+			{ content: 'the service is offline' }, // dropped by DO-NOT-CAPTURE
+			{ content: `here is the key:\n${PLANTED_SECRET}` } // screen() quarantine
+		];
+		const res = await ingestCaptured(deps(distill), { capture: cap, intent: 'i' });
+
+		expect(res.ingestedCount).toBe(0);
+		expect(res.status).toBe('quarantined'); // a real secret fired — security badge stays correct
+		expect(res.findings.some((f) => f.screenStatus === 'quarantined')).toBe(true);
+	});
+});
+
 // ── an ingested finding is RECALLABLE, carries provenance, and is fenced as un-escapable DATA ──
 describe('ingestCaptured + recall — ingested findings recall as fenced DATA carrying provenance', () => {
 	it('an ingested finding is recallable AND surfaces its provenance', async () => {

@@ -1684,6 +1684,30 @@ const m0044_memory_license: Migration = {
 	`
 };
 
+// ── BL-6 CANNIBALIZE-SPEC §4/§7 (CB2 red-team hardening) — a DISTINCT terminal status for an
+// all-noise run ──────────────────────────────────────────────────────────────────────────
+//
+// The CB2 terminal-status decision conflated two outcomes into "quarantined": (a) a screen()
+// secret/PII hit (a real security event) and (b) an all-noise run where every finding was
+// DROPPED by the DO-NOT-CAPTURE / empty / not-useful gate and NO secret ever fired. Surfacing
+// (b) as "quarantined" was dishonest (F-008) — the /cannibalize UI renders that as a SECURITY
+// badge. ingest.ts now emits the NEW terminal status "dropped" for (b); this migration ADDS
+// "dropped" to the ingest_source.status ASSERT set so the write does not violate the schema.
+//
+// A SEPARATE additive migration (NOT an edit to the already-applied m0042 — editing an applied
+// migration's body is a silent no-op on the live DB via the _migration ledger, F-015). One
+// OVERWRITE field redefine widening an ASSERT IN [...] set: every pre-existing row already holds
+// a value in the OLD (subset) set, so it stays conformant — NO backfill, NO data touched.
+// IDEMPOTENT (F-015): apply-twice = no-op (ledger); re-defining over a half-applied state is a
+// no-op (OVERWRITE). The DEFAULT/TYPE are re-stated verbatim so the OVERWRITE is a pure widen.
+const m0045_ingest_source_dropped_status: Migration = {
+	id: '0045_ingest_source_dropped_status',
+	up: `
+		DEFINE FIELD OVERWRITE status ON ingest_source TYPE string DEFAULT "capturing"
+			ASSERT $value IN ["capturing","distilling","ingesting","done","failed","quarantined","dropped"];
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1734,5 +1758,6 @@ export const schemaMigrations: Migration[] = [
 	m0041_session_peer_send_budget,
 	m0042_ingest_source,
 	m0043_memory_provenance,
-	m0044_memory_license
+	m0044_memory_license,
+	m0045_ingest_source_dropped_status
 ];

@@ -29,6 +29,7 @@ import {
 	CeremonyGateError,
 	isSentinelShape,
 	newSentinelUlid,
+	reversionFailedRole,
 	seedLaunchPool,
 	triggerAdmissionReferenceRun,
 	triggerBootstrapInterview,
@@ -391,6 +392,48 @@ export const actions: Actions = {
 			return { ceremony: { ok: true, flip: true, certifiedCount: exec.certifiedCount } };
 		} catch (err) {
 			return fail(500, { ceremony: { flip: true, error: (err as Error).message } });
+		}
+	},
+
+	// RECOVERY — RE-VERSION a role whose newest version is terminally FAILED (§2.2). NO real
+	// spend: this only creates a fresh DRAFT version cloning the failed version's content (new
+	// prompt_sha by construction, computed mechanically — never hand-rolled). The failed
+	// version is NEVER mutated/un-failed (cert-integrity). Operator-gated by the confirm tick.
+	// Idempotent/guarded: a role that already has a drivable version (incl. a just-created one)
+	// no-ops rather than spawning an unbounded version chain — double-submit safe.
+	reversion: async ({ request }) => {
+		const db = tryGetDb();
+		if (!db) return fail(503, { ceremony: { error: 'database not connected' } });
+		const form = await request.formData();
+		const role = String(form.get('role') ?? '').trim();
+		if (!role) return fail(400, { ceremony: { error: 'missing role id' } });
+		if (form.get('operatorConfirmed') !== 'on') {
+			return fail(400, {
+				ceremony: {
+					role,
+					reversion: true,
+					error: 'confirm the re-version — it creates a NEW draft version cloning the failed one (the failed version stays failed and immutable, §2.2)'
+				}
+			});
+		}
+		try {
+			const result = await reversionFailedRole(db, role);
+			return {
+				ceremony: {
+					ok: true,
+					role,
+					reversion: true,
+					reversioned: result.reversioned,
+					...(result.version ? { newVersion: result.version.version } : {}),
+					...(result.from ? { fromVersion: result.from.version } : {}),
+					...(result.reason ? { reason: result.reason } : {})
+				}
+			};
+		} catch (err) {
+			if (err instanceof WorkforceInputError) {
+				return fail(400, { ceremony: { role, reversion: true, error: err.message } });
+			}
+			return fail(500, { ceremony: { role, reversion: true, error: (err as Error).message } });
 		}
 	}
 };

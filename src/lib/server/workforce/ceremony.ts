@@ -33,7 +33,9 @@ import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import {
+	addRoleEvent,
 	createGauntletKey,
+	createRoleVersion,
 	getRole,
 	getRoleVersion,
 	listRoles,
@@ -46,6 +48,7 @@ import {
 	type RoleVersionRow,
 	type Tier
 } from './repo';
+import { isCeremonySelectable } from './lifecycle';
 import { runGauntlet, type GauntletDeps, type GauntletOutcome } from './gauntlet';
 import { checkDeployability } from './deployability';
 import { activateGauntletFixture, isSentinelShape, newSentinelUlid } from './activation';
@@ -729,6 +732,143 @@ function assertSpendAuthority(input: CeremonyRunInput): void {
 	}
 }
 
+// ── Recovery — re-version a role whose newest version is terminally FAILED ──────────
+//
+// §2.2: a 'failed' role_version is TERMINAL and IMMUTABLE — a verdict can never be
+// laundered by mutating/un-failing the row. The legitimate recovery path is a NEW version
+// (correct-by-construction): createRoleVersion clones the failed version's CONTENT
+// (prompt_core + capabilities + default_tier) into the role's next version, which starts at
+// the §2.2 INITIAL state ('draft'). The new prompt_sha is computed mechanically by
+// createRoleVersion (D-035 — NEVER hand-rolled here); since the prompt_core+capabilities are
+// identical, the sha is identical BY CONSTRUCTION (intended — content-address stability).
+// The fresh version is UN-certified and must EARN its own passing run; the failed version is
+// left exactly as it was. The provenance ('re-version of the failed vN') is recorded as an
+// append-only role_event{op:'created'} — there is no free-text provenance field on
+// role_version (SCHEMAFULL), so the audit row carries it.
+
+export interface ReversionResult {
+	/** true when a NEW version was created; false when reversion was a guarded no-op (the
+	 *  role already has a newer selectable version, or its newest version is not failed). */
+	reversioned: boolean;
+	/** The newly-created version (when reversioned); else the existing newest selectable
+	 *  version the operator should drive instead. null only when the role has no version. */
+	version: RoleVersionRow | null;
+	/** The terminal failed version this recovers from (when reversioned); null otherwise. */
+	from: RoleVersionRow | null;
+	/** Honest named reason for a no-op (else null). */
+	reason: string | null;
+}
+
+/**
+ * §8 RECOVERY: when a role's NEWEST version is terminally 'failed' (the scorer-bug case —
+ * a now-fixed bug left v1 failed, terminal), create a fresh version cloning its content so
+ * the ceremony has a drivable target again. Guards (idempotent / fail-closed):
+ *   • role not found / no versions          → WorkforceInputError (named).
+ *   • role already has a selectable version  → NO-OP (reversioned:false) — the picker is
+ *     already targeting a live version; a second click does not spawn an unbounded chain.
+ *   • newest version is NOT failed           → NO-OP (reversioned:false) — only a failed
+ *     newest is the recovery trigger (a draft/error/passed newest is already drivable, and a
+ *     withdrawn/retired newest is an explicit operator end-state, not a scorer accident).
+ * The double-submit guard is the "already has a selectable version" check: the first
+ * reversion creates v2(draft) → selectable, so the second click no-ops.
+ * NEVER mutates the failed version (§2.2 immutability) — only createRoleVersion + addRoleEvent.
+ */
+export async function reversionFailedRole(db: Db, roleId: string): Promise<ReversionResult> {
+	const role = await getRole(db, roleId);
+	if (!role) throw new WorkforceInputError(`role not found: ${roleId}`);
+	const versions = await listRoleVersions(db, role.id);
+	if (versions.length === 0) {
+		throw new WorkforceInputError(
+			`role ${role.slug} has no versions to re-version — seed a draft first (§8 ①)`
+		);
+	}
+
+	// Double-submit / no-op guard: if a drivable version already exists, the picker is
+	// targeting it — do NOT create another (bounds the version chain; interrupt-safe).
+	const existingSelectable = pickLaunchVersion(versions);
+	if (existingSelectable) {
+		return {
+			reversioned: false,
+			version: existingSelectable,
+			from: null,
+			reason: `role ${role.slug} already has a drivable version (v${existingSelectable.version}, ${existingSelectable.lifecycle}) — no re-version needed`
+		};
+	}
+
+	const newest = newestVersion(versions);
+	// existingSelectable is null ⇒ newest is failed/withdrawn/retired. Recovery applies ONLY
+	// to a FAILED newest (the scorer-bug case). A withdrawn/retired newest is an operator
+	// end-state — surfaced honestly, not silently re-versioned.
+	if (!newest || newest.lifecycle !== 'failed') {
+		return {
+			reversioned: false,
+			version: null,
+			from: newest,
+			reason: newest
+				? `role ${role.slug} newest version (v${newest.version}) is '${newest.lifecycle}', not 'failed' — re-version applies only to a failed terminal`
+				: `role ${role.slug} has no version to recover`
+		};
+	}
+
+	// Correct-by-construction recovery: a NEW version cloning the failed version's CONTENT.
+	// createRoleVersion auto-increments version (max+1) and computes prompt_sha mechanically
+	// (D-035). source:'operator' (an operator-initiated recovery). The failed row is untouched.
+	const created = await createRoleVersion(db, {
+		role: role.id,
+		prompt_core: newest.prompt_core,
+		capabilities: newest.capabilities,
+		default_tier: newest.default_tier,
+		source: 'operator'
+	});
+
+	// Append-only provenance: this version is a re-version of the failed prior (audit feed).
+	await addRoleEvent(db, {
+		role: role.id,
+		role_version: created.id,
+		op: 'created',
+		detail: {
+			reason: 'reversion',
+			of_version: newest.version,
+			of_role_version: newest.id,
+			of_lifecycle: newest.lifecycle,
+			of_prompt_sha: newest.prompt_sha
+		}
+	});
+
+	return { reversioned: true, version: created, from: newest, reason: null };
+}
+
+/** Read-only: the reversion AFFORDANCE state for a role — whether the operator should be
+ *  offered a 're-version & retry'. reversionable iff the role has NO ceremony-selectable
+ *  version AND its newest version is terminally 'failed'. Honest empties: a role with a live
+ *  version, or whose newest is withdrawn/retired, is NOT reversionable (null reason). */
+export interface ReversionState {
+	reversionable: boolean;
+	/** The failed version being recovered from (id + version), or null. */
+	failedVersion: { id: string; version: number } | null;
+	/** Honest reason when not reversionable; null when reversionable. */
+	reason: string | null;
+}
+
+function reversionStateFor(versions: RoleVersionRow[]): ReversionState {
+	if (pickLaunchVersion(versions)) {
+		return { reversionable: false, failedVersion: null, reason: 'has a drivable version' };
+	}
+	const newest = newestVersion(versions);
+	if (newest && newest.lifecycle === 'failed') {
+		return {
+			reversionable: true,
+			failedVersion: { id: newest.id, version: newest.version },
+			reason: null
+		};
+	}
+	return {
+		reversionable: false,
+		failedVersion: null,
+		reason: newest ? `newest version is '${newest.lifecycle}'` : 'no version'
+	};
+}
+
 // ── Step ⑤ — ceremony readiness (the panel-flip precondition, read-only) ────────────
 
 export interface RoleCeremonyState {
@@ -769,7 +909,10 @@ export async function ceremonyReadiness(
 		const roleId = str(r.id);
 		const slug = str(r.slug);
 		const versions = await listRoleVersions(db, roleId);
-		const launch = versions.find((v) => v.lifecycle !== 'withdrawn') ?? null;
+		// Newest ceremony-selectable version (never a failed/withdrawn/retired terminal) —
+		// the same picker the execution card + triggers use, so readiness can never count a
+		// terminally-failed version as the launch candidate (cert-integrity §2.2).
+		const launch = pickLaunchVersion(versions);
 		if (!launch) {
 			roles.push({
 				role: roleId,
@@ -902,12 +1045,29 @@ export async function ceremonyAuthoringState(db: Db): Promise<CeremonyAuthoringS
 	return { seeded: roles.length > 0, roles: out, keysOutstanding };
 }
 
-/** The launch version = the role's earliest non-withdrawn version (mirrors panel.ts §8:
- *  each launch role has exactly one draft campaign at day 0). Returns null honestly. */
+/**
+ * The ceremony TARGET version = the role's NEWEST still-drivable version (highest `version`
+ * among the ceremony-selectable lifecycles: draft/interviewing/error/passed — never
+ * failed/withdrawn/retired). This is the version every ceremony control (reference-run,
+ * interview, flip) operates on. The newest-selectable rule is what makes recovery work: a
+ * role whose v1 is terminally FAILED has no selectable version until reversion creates a
+ * fresh v2 (draft); the moment it exists, v2 (higher version) becomes the target and the
+ * dead v1 is NEVER re-driven (cert-integrity: a failed version can never be flipped to
+ * certified — §2.2). Returns null honestly when the role has NO selectable version (its
+ * only versions are failed/withdrawn/retired) — that null is the reversion affordance's
+ * trigger, surfaced via reversionStateFor.
+ */
 function pickLaunchVersion(versions: RoleVersionRow[]): RoleVersionRow | null {
-	const usable = versions.filter((v) => v.lifecycle !== 'withdrawn');
-	if (usable.length === 0) return null;
-	return [...usable].sort((a, b) => a.version - b.version)[0];
+	const selectable = versions.filter((v) => isCeremonySelectable(v.lifecycle));
+	if (selectable.length === 0) return null;
+	return [...selectable].sort((a, b) => b.version - a.version)[0];
+}
+
+/** The role's NEWEST version overall (any lifecycle), or null when it has none. Used to
+ *  detect the reversion trigger: a failed/terminal newest with no selectable version. */
+function newestVersion(versions: RoleVersionRow[]): RoleVersionRow | null {
+	if (versions.length === 0) return null;
+	return [...versions].sort((a, b) => b.version - a.version)[0];
 }
 
 /** The role's candidate-facing fixtures the operator keys at step ② — scorer_control is
@@ -1008,6 +1168,12 @@ export interface RoleExecutionState {
 	certified: boolean;
 	/** Named honest reason when not certified; null when certified. */
 	notCertifiedReason: string | null;
+	/** RECOVERY (§8): true when the role has NO drivable version AND its newest version is
+	 *  terminally 'failed' — the operator should be offered a 're-version & retry' (a NEW
+	 *  version cloning the failed content; the failed row is never mutated, §2.2). */
+	reversionable: boolean;
+	/** The failed version being recovered from (id + version) when reversionable; else null. */
+	reversionFrom: { id: string; version: number } | null;
 }
 
 export interface CeremonyExecutionState {
@@ -1035,6 +1201,7 @@ export async function ceremonyExecutionState(db: Db): Promise<CeremonyExecutionS
 	for (const role of roles) {
 		const versions = await listRoleVersions(db, role.id);
 		const launch = pickLaunchVersion(versions);
+		const reversion = reversionStateFor(versions);
 		const fixtures = await listCandidateFixtures(db, role.id);
 
 		let fixturesProposed = 0;
@@ -1061,7 +1228,9 @@ export async function ceremonyExecutionState(db: Db): Promise<CeremonyExecutionS
 		const notRunnableReason = runnable
 			? null
 			: !launch
-				? 'no version'
+				? reversion.reversionable
+					? `latest version (v${reversion.failedVersion?.version}) failed — re-version to retry (§2.2: a new version, not a reset)`
+					: 'no version'
 				: fixturesUnkeyed > 0
 					? `${fixturesUnkeyed} key(s) outstanding — author every fixture key first (§8 ②)`
 					: fixturesProposed > 0
@@ -1071,7 +1240,11 @@ export async function ceremonyExecutionState(db: Db): Promise<CeremonyExecutionS
 		let interview: CeremonyInterviewLine | null = null;
 		let interviewRuns = 0;
 		let certified = false;
-		let notCertifiedReason: string | null = launch ? 'not yet interviewed' : 'no version';
+		let notCertifiedReason: string | null = launch
+			? 'not yet interviewed'
+			: reversion.reversionable
+				? `latest version (v${reversion.failedVersion?.version}) failed — re-version to retry`
+				: 'no version';
 		if (launch) {
 			const runs = await launchRuns(db, launch.id);
 			interviewRuns = runs.length;
@@ -1099,7 +1272,9 @@ export async function ceremonyExecutionState(db: Db): Promise<CeremonyExecutionS
 			interview,
 			interviewRuns,
 			certified,
-			notCertifiedReason
+			notCertifiedReason,
+			reversionable: reversion.reversionable,
+			reversionFrom: reversion.failedVersion
 		});
 	}
 	const certifiedCount = out.filter((r) => r.certified).length;

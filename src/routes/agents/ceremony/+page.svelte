@@ -55,12 +55,16 @@
   // decision — the button stays disabled until the operator ticks the spend confirm).
   let spendConfirm = $state<Record<string, boolean>>({});
   let activateConfirm = $state<Record<string, boolean>>({});
+  let reversionConfirm = $state<Record<string, boolean>>({});
   let flipConfirm = $state(false);
   function setSpend(rv: string, v: boolean) {
     spendConfirm = { ...spendConfirm, [rv]: v };
   }
   function setActivate(fx: string, v: boolean) {
     activateConfirm = { ...activateConfirm, [fx]: v };
+  }
+  function setReversion(role: string, v: boolean) {
+    reversionConfirm = { ...reversionConfirm, [role]: v };
   }
 
   // Per-role busy guard: a submitted trigger disables that role's buttons until the action
@@ -86,6 +90,10 @@
   /** CER2 — per-role execution feedback, keyed by the role version the action carried. */
   function execFb(roleVersion: string): Record<string, unknown> | undefined {
     return fb && fb.roleVersion === roleVersion ? fb : undefined;
+  }
+  /** CER2 — per-role RE-VERSION feedback (recovery), keyed by the role id the action carried. */
+  function reversionFb(role: string): Record<string, unknown> | undefined {
+    return fb && fb.reversion === true && fb.role === role ? fb : undefined;
   }
   /** The panel-flip feedback (no fixture / no roleVersion — keyed by the flip flag). */
   const flipFb = $derived(fb && fb.flip === true ? fb : undefined);
@@ -594,6 +602,52 @@
                 </p>
               {:else if xfb?.queued}
                 <p class="brief-warn" role="status">Queued (budget gate): {String(xfb.reason)}</p>
+              {/if}
+
+              <!-- RECOVERY — re-version & retry a role whose newest version FAILED (§2.2). -->
+              {#if r.reversionable}
+                {@const rfb = reversionFb(r.role)}
+                <div class="reversion" role="group" aria-label="re-version and retry">
+                  <p class="guard-note" data-kind="teeth">
+                    The latest version{#if r.reversionFrom} (v{r.reversionFrom.version}){/if} failed
+                    its interview — and a failed version is terminal (§2.2): it can never be un-failed
+                    or flipped to certified. Re-versioning creates a NEW draft version cloning the same
+                    prompt core, which must earn its own passing run. The failed version stays on record,
+                    unchanged.
+                  </p>
+
+                  {#if rfb?.error}
+                    <p class="brief-error" role="alert">{String(rfb.error)}</p>
+                  {:else if rfb?.ok && rfb?.reversioned}
+                    <p class="brief-ok" role="status">
+                      Re-versioned: new draft v{String(rfb.newVersion)} created from the failed
+                      v{String(rfb.fromVersion)}. Activate its fixtures, then run the reference-run
+                      and bootstrap interview against the new version.
+                    </p>
+                  {:else if rfb?.ok && !rfb?.reversioned}
+                    <p class="brief-warn" role="status">No re-version: {String(rfb.reason)}</p>
+                  {/if}
+
+                  <form method="POST" action="?/reversion" class="trigger-form" use:enhance={busyEnhance(`rev-${r.role}`)}>
+                    <input type="hidden" name="role" value={r.role} />
+                    <input type="hidden" name="operatorConfirmed" value={reversionConfirm[r.role] ? 'on' : ''} />
+                    <label class="confirm-check inline">
+                      <input
+                        type="checkbox"
+                        checked={reversionConfirm[r.role] ?? false}
+                        onchange={(e) => setReversion(r.role, (e.currentTarget as HTMLInputElement).checked)}
+                      />
+                      confirm re-version (new draft; the failed version is not touched)
+                    </label>
+                    <button
+                      type="submit"
+                      class="btn primary small"
+                      disabled={!reversionConfirm[r.role] || busy[`rev-${r.role}`]}
+                    >
+                      {busy[`rev-${r.role}`] ? 'Re-versioning…' : 'Re-version & retry'}
+                    </button>
+                  </form>
+                </div>
               {/if}
 
               <!-- Real-spend trigger row (operator-gated, confirm + effort label). -->
@@ -1235,6 +1289,13 @@
     font-size: var(--text-xs);
   }
   .trigger-row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding-top: var(--space-2);
+    border-top: var(--border-width) solid var(--color-border);
+  }
+  .reversion {
     display: flex;
     flex-direction: column;
     gap: var(--space-2);

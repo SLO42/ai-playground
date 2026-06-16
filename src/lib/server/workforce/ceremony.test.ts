@@ -21,6 +21,9 @@ import {
 	createGauntletKey,
 	createRole,
 	createRoleVersion,
+	getRoleVersion,
+	listRoleEvents,
+	listRoleVersions,
 	readGauntletKeyForScoring,
 	WorkforceInputError,
 	type RoleRow,
@@ -36,6 +39,7 @@ import {
 	confirmLaunchKey,
 	ensureScorerControlReady,
 	promptCoreDiffStep,
+	reversionFailedRole,
 	triggerAdmissionReferenceRun,
 	triggerBootstrapInterview
 } from './ceremony';
@@ -836,5 +840,197 @@ describe('ensureScorerControlReady (§3.4) — mechanical control key derivation
 		expect(det.mode).toBe('absence');
 		// '.' in the literal artifact is escaped so it matches a literal dot, not any-char.
 		expect(det.artifact_pattern).toBe('rate-limit\\.guard\\.ts');
+	});
+});
+
+// ── RECOVERY — re-version a role whose newest version is terminally FAILED (§2.2) ─────
+//
+// The day-0 gauntlet scenario: a now-fixed scorer bug marked the only version 'failed'
+// (terminal, §2.2), leaving the ceremony with no drivable version. The recovery path is a
+// NEW version cloning the failed content (createRoleVersion → fresh sha by construction;
+// lifecycle starts 'draft') — NEVER a mutation/reset of the failed row (cert-integrity).
+
+describe('reversionFailedRole (§8 recovery) — a NEW version, never a failed-version reset', () => {
+	/** Drive a role's draft version to terminal 'failed' via a real failing interview (the
+	 *  candidate writes NO findings → findings contract violated → failed, which finalizes the
+	 *  campaign draft→interviewing→failed). Returns the role + the now-failed version row. */
+	async function roleWithFailedVersion(): Promise<{ role: RoleRow; failed: RoleVersionRow }> {
+		const seed = await seedRole();
+		const out = await triggerBootstrapInterview(depsFor(candidateBackend(null, seed)), {
+			roleVersionId: seed.version.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: 'test-model',
+			trigger: 'operator',
+			operatorConfirmed: true
+		});
+		expect(out.kind).toBe('ran');
+		if (out.kind === 'ran') expect(out.run.status).toBe('failed');
+		const failed = await getRoleVersion(db, seed.version.id);
+		expect(failed!.lifecycle).toBe('failed'); // §2.2 terminal — the recovery trigger
+		return { role: seed.role, failed: failed! };
+	}
+
+	it('creates a NEW draft v2 cloning the failed v1 content; the failed v1 is UNCHANGED (immutable)', async () => {
+		const { role, failed } = await roleWithFailedVersion();
+		expect(failed.version).toBe(1);
+
+		const res = await reversionFailedRole(db, role.id);
+		expect(res.reversioned).toBe(true);
+		expect(res.from!.id).toBe(failed.id);
+		const v2 = res.version!;
+		expect(v2.version).toBe(2); // auto-incremented (max+1), NOT a hand-rolled row
+		expect(v2.lifecycle).toBe('draft'); // §2.2 initial state — un-certified, must earn its run
+		expect(v2.prompt_core).toBe(failed.prompt_core); // content cloned
+		expect(v2.capabilities).toEqual(failed.capabilities);
+		expect(v2.default_tier).toBe(failed.default_tier);
+		// Identical prompt_core+capabilities ⇒ IDENTICAL sha BY CONSTRUCTION (intended; the sha is
+		// a content address, and createRoleVersion computes it — never the caller).
+		expect(v2.prompt_sha).toBe(failed.prompt_sha);
+		expect(v2.source).toBe('operator');
+
+		// The failed version is byte-for-byte unchanged — NEVER mutated/un-failed (cert-integrity).
+		const failedAfter = await getRoleVersion(db, failed.id);
+		expect(failedAfter!.lifecycle).toBe('failed');
+		expect(failedAfter!.version).toBe(1);
+		expect(failedAfter!.prompt_sha).toBe(failed.prompt_sha);
+		expect(failedAfter!.retired_at).toBe(failed.retired_at);
+	});
+
+	it('records an append-only role_event provenance noting the re-version of the failed prior', async () => {
+		const { role, failed } = await roleWithFailedVersion();
+		const res = await reversionFailedRole(db, role.id);
+		const events = await listRoleEvents(db, role.id);
+		const rev = events.find(
+			(e) => e.op === 'created' && (e.detail as Record<string, unknown>)?.reason === 'reversion'
+		);
+		expect(rev).toBeTruthy();
+		expect(rev!.role_version).toBe(res.version!.id);
+		const detail = rev!.detail as Record<string, unknown>;
+		expect(detail.of_version).toBe(failed.version);
+		expect(detail.of_lifecycle).toBe('failed');
+		expect(detail.of_role_version).toBe(failed.id);
+	});
+
+	it('the ceremony picker + execution state now target the NEW version, never the failed one', async () => {
+		const { role, failed } = await roleWithFailedVersion();
+
+		// BEFORE reversion: no drivable version; the role is surfaced as reversionable.
+		let exec = await ceremonyExecutionState(db);
+		let line = exec.roles.find((r) => r.role === role.id)!;
+		expect(line.roleVersion).toBeNull(); // failed v1 is NOT selectable
+		expect(line.reversionable).toBe(true);
+		expect(line.reversionFrom).toEqual({ id: failed.id, version: 1 });
+		expect(line.certified).toBe(false);
+
+		// AFTER reversion: the picker targets the fresh v2, NOT the failed v1.
+		const res = await reversionFailedRole(db, role.id);
+		exec = await ceremonyExecutionState(db);
+		line = exec.roles.find((r) => r.role === role.id)!;
+		expect(line.roleVersion).toBe(res.version!.id);
+		expect(line.version).toBe(2);
+		expect(line.lifecycle).toBe('draft');
+		expect(line.reversionable).toBe(false); // a drivable version exists again
+		expect(line.certified).toBe(false); // un-certified — must earn its own run
+	});
+
+	it('a full referenceRun→interview path runs against the NEW version (recovery completes)', async () => {
+		const { role } = await roleWithFailedVersion();
+		const res = await reversionFailedRole(db, role.id);
+		const v2 = res.version!;
+
+		// The fixtures from seedRole are already active+keyed (shared substrate) — interview v2.
+		// A passing candidate must find the planted defect; reuse the seed's defect slug.
+		const [fx] = await db.query<[Array<{ slug: string }>]>(
+			`SELECT slug FROM gauntlet_fixture WHERE role = $role AND kind = 'planted_defect' LIMIT 1;`,
+			{ role: new StringRecordId(role.id) }
+		);
+		const defectSlug = fx[0].slug;
+		const writer: FindingsWriter = (cwd) => {
+			writeFileSync(
+				join(cwd, 'findings.json'),
+				JSON.stringify([
+					{ fixture: defectSlug, file: 'a.ts', lines: [3, 3], class: 'platform-bug', evidence: 'process.kill(pid, 0)' }
+				]),
+				'utf8'
+			);
+		};
+		const fakeSeed = { defectSlug } as unknown as Seed;
+		const ref = await triggerAdmissionReferenceRun(depsFor(candidateBackend(writer, fakeSeed)), {
+			roleVersionId: v2.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: 'test-model',
+			trigger: 'operator',
+			operatorConfirmed: true
+		});
+		expect(ref.outcome.kind).toBe('ran');
+
+		const iv = await triggerBootstrapInterview(depsFor(candidateBackend(writer, fakeSeed)), {
+			roleVersionId: v2.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: 'test-model',
+			trigger: 'operator',
+			operatorConfirmed: true
+		});
+		expect(iv.kind).toBe('ran');
+		if (iv.kind === 'ran') expect(iv.run.status).toBe('passed');
+		// v2 earned its OWN passing run; the failed v1 is still failed.
+		const v2After = await getRoleVersion(db, v2.id);
+		expect(v2After!.lifecycle).toBe('passed');
+	});
+
+	it('is double-submit safe: a second reversion does NOT spawn a third version (guarded no-op)', async () => {
+		const { role } = await roleWithFailedVersion();
+		const first = await reversionFailedRole(db, role.id);
+		expect(first.reversioned).toBe(true);
+		expect(first.version!.version).toBe(2);
+
+		// A second click: the role already has a drivable v2 (draft) → no-op, no v3.
+		const second = await reversionFailedRole(db, role.id);
+		expect(second.reversioned).toBe(false);
+		expect(second.reason).toMatch(/already has a drivable version/i);
+		expect(second.version!.version).toBe(2); // points at the existing v2, not a new one
+		const versions = await listRoleVersions(db, role.id);
+		expect(versions.filter((v) => v.version >= 2)).toHaveLength(1); // exactly ONE new version
+	});
+
+	it('a NON-failed role (still draft, drivable) is NOT reversioned (guarded no-op)', async () => {
+		const seed = await seedRole(); // fresh draft, never interviewed → drivable
+		const res = await reversionFailedRole(db, seed.role.id);
+		expect(res.reversioned).toBe(false);
+		expect(res.version!.id).toBe(seed.version.id); // points at the live draft
+		expect(res.reason).toMatch(/already has a drivable version/i);
+		// No new version was created.
+		const versions = await listRoleVersions(db, seed.role.id);
+		expect(versions).toHaveLength(1);
+	});
+
+	it('RED-TEAM: reversion can never un-fail the terminal version nor fabricate a passing cert', async () => {
+		const { role, failed } = await roleWithFailedVersion();
+		const res = await reversionFailedRole(db, role.id);
+		// (1) The failed version is still failed — reversion did NOT touch its lifecycle.
+		const failedAfter = await getRoleVersion(db, failed.id);
+		expect(failedAfter!.lifecycle).toBe('failed');
+		// (2) The new version is un-certified — it did NOT inherit any passing status.
+		expect(res.version!.lifecycle).toBe('draft');
+		// (3) The picker can never select the failed version for a flip — it's not selectable.
+		const exec = await ceremonyExecutionState(db);
+		const line = exec.roles.find((r) => r.role === role.id)!;
+		expect(line.roleVersion).not.toBe(failed.id);
+		expect(line.certified).toBe(false);
+		// (4) No hand-rolled sha: the new sha equals computePromptSha over the SAME content
+		//     (createRoleVersion is the sole sha author) — assert it matches the failed prior's
+		//     (identical content ⇒ identical address), proving it was computed, not invented.
+		expect(res.version!.prompt_sha).toBe(failed.prompt_sha);
+	});
+
+	it('shadow paths: a missing role is a named error; a role with no versions is a named error', async () => {
+		// nil/upstream error: nonexistent role id.
+		await expect(reversionFailedRole(db, 'role:does_not_exist')).rejects.toThrow(WorkforceInputError);
+		// empty: a role that exists but has zero versions.
+		const role = await createRole(db, { slug: `rev-empty-${++seq}`, name: 'E', purpose: 'p' });
+		await expect(reversionFailedRole(db, role.id)).rejects.toThrow(/no versions/i);
 	});
 });

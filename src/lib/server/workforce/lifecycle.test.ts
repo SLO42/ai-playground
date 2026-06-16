@@ -4,7 +4,10 @@ import {
 	assertTransition,
 	canRunTransition,
 	canTransition,
+	CEREMONY_SELECTABLE_LIFECYCLES,
 	INTERVIEWABLE_LIFECYCLES,
+	isCeremonySelectable,
+	isCeremonyTerminal,
 	LifecycleError,
 	ROLE_VERSION_LIFECYCLES,
 	RunStatusError
@@ -78,6 +81,36 @@ describe('role_version lifecycle matrix (§2.2 — one enum, exhaustive)', () =>
 		expect([...INTERVIEWABLE_LIFECYCLES].sort()).toEqual(
 			['draft', 'error', 'interviewing', 'passed', 'retired'].sort()
 		);
+	});
+
+	it('ceremony-selectable set: draft/interviewing/error/passed — never failed/withdrawn/retired', () => {
+		expect([...CEREMONY_SELECTABLE_LIFECYCLES].sort()).toEqual(
+			['draft', 'error', 'interviewing', 'passed'].sort()
+		);
+	});
+
+	it('isCeremonySelectable is true for exactly the selectable set, fail-closed on unknown', () => {
+		for (const lc of ROLE_VERSION_LIFECYCLES) {
+			const expected = (['draft', 'interviewing', 'error', 'passed'] as string[]).includes(lc);
+			expect(isCeremonySelectable(lc)).toBe(expected);
+		}
+		expect(isCeremonySelectable('bogus')).toBe(false);
+	});
+
+	it('isCeremonyTerminal flags failed/withdrawn/retired (the non-drivable terminals)', () => {
+		expect(isCeremonyTerminal('failed')).toBe(true);
+		expect(isCeremonyTerminal('withdrawn')).toBe(true);
+		expect(isCeremonyTerminal('retired')).toBe(true);
+		expect(isCeremonyTerminal('draft')).toBe(false);
+		expect(isCeremonyTerminal('interviewing')).toBe(false);
+		expect(isCeremonyTerminal('error')).toBe(false);
+		expect(isCeremonyTerminal('passed')).toBe(false);
+	});
+
+	it('selectable and terminal partition the failed/withdrawn/retired boundary (never both)', () => {
+		for (const lc of ROLE_VERSION_LIFECYCLES) {
+			expect(isCeremonySelectable(lc) && isCeremonyTerminal(lc)).toBe(false);
+		}
 	});
 });
 

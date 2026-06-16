@@ -91,6 +91,34 @@ export const INTERVIEWABLE_LIFECYCLES: readonly RoleVersionLifecycle[] = [
 	'retired'
 ];
 
+/** Lifecycles a version is in when it can still be DRIVEN through the day-0 ceremony
+ * (reference-run → interview → adjudicate → flip-to-certified). This is NARROWER than
+ * INTERVIEWABLE_LIFECYCLES: it excludes 'retired' (terminal operator act, no longer the
+ * launch candidate) on top of 'failed'/'withdrawn'. The ceremony's version picker targets
+ * the NEWEST such version per role (§8) — so once a failed v1 is re-versioned, the fresh
+ * v2 (draft) becomes the target and the dead v1 is never re-driven. A role whose ONLY
+ * version is failed/withdrawn/retired has no ceremony-selectable version (→ honest empty,
+ * the reversion affordance). NB: 'failed' is TERMINAL (§2.2) — reversion is a NEW version,
+ * NEVER a lifecycle reset on the failed row. */
+export const CEREMONY_SELECTABLE_LIFECYCLES: readonly RoleVersionLifecycle[] = [
+	'draft',
+	'interviewing',
+	'error',
+	'passed'
+];
+
+/** True iff a version in this lifecycle can still be DRIVEN through the ceremony (the
+ * picker selects the newest such version per role). Fail-closed on unknown states. */
+export function isCeremonySelectable(lifecycle: string): boolean {
+	return (CEREMONY_SELECTABLE_LIFECYCLES as readonly string[]).includes(lifecycle);
+}
+
+/** True iff a version is in a TERMINAL non-selectable state (failed/withdrawn/retired) —
+ * the ceremony can never drive it. 'failed' specifically is the reversion trigger. */
+export function isCeremonyTerminal(lifecycle: string): boolean {
+	return lifecycle === 'failed' || lifecycle === 'withdrawn' || lifecycle === 'retired';
+}
+
 // ── interview_run status machine (§2.1/§3.4) ─────────────────────────────────────
 // running → adjudicating (scorer done, ambiguous queue non-empty) | passed | failed | error
 // adjudicating → passed | failed (operator resolution against the snapshot pass bar)

@@ -11,6 +11,7 @@
   import { invalidate } from '$app/navigation';
   import { page } from '$app/stores';
   import { stream } from '$lib/client/stream.svelte';
+  import MemoryTabs from '$lib/components/shell/MemoryTabs.svelte';
   import type { PageData } from './$types';
 
   let { data }: { data: PageData } = $props();
@@ -87,6 +88,8 @@
       and their typed links. Everything here is real stored memory; nothing is fabricated.
     </p>
   </header>
+
+  <MemoryTabs />
 
   {#if !connected}
     <div class="card state">

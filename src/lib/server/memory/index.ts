@@ -71,6 +71,18 @@ export {
 	type MemoryGraph
 } from './explorer';
 export {
+	screenForDisplay,
+	listMemoryHistory,
+	listSkills,
+	listCausalChains,
+	listCausalChainsByIds,
+	listRetrievalOutcomes,
+	type MemoryHistoryRow,
+	type SkillRow as ObservabilitySkillRow,
+	type CausalChainRow,
+	type UtilizationRow
+} from './observability';
+export {
 	parseAutoMemoryFile,
 	parseMemoryLinks,
 	entityIdForFile,

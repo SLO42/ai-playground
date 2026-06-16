@@ -218,7 +218,11 @@
 <section class="page">
   <header class="page-head">
     <span class="eyebrow">{lens === 'inbox' ? 'fleet inbox' : 'global timeline'}</span>
-    <h1 class="title">Atelier</h1>
+    <div class="title-row">
+      <h1 class="title">Atelier</h1>
+      <!-- BL-9: discoverable link to the read-only background work-queue monitor. -->
+      <a class="queue-link" href="/atelier/queue">Work queue →</a>
+    </div>
     {#if lens === 'inbox'}
       <p class="lede">
         The fleet's agent-to-agent comms bus — what is queued, delivered, expired, or quarantined.
@@ -442,6 +446,28 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2, 0.35rem);
+  }
+  .title-row {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3, 0.75rem);
+    flex-wrap: wrap;
+  }
+  .queue-link {
+    font-size: 0.78rem;
+    color: var(--color-accent, #8ab0ab);
+    text-decoration: none;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.2rem 0.55rem;
+  }
+  .queue-link:hover {
+    border-color: var(--color-accent, #8ab0ab);
+  }
+  .queue-link:focus-visible {
+    outline: 2px solid var(--color-accent, #8ab0ab);
+    outline-offset: 2px;
   }
   .eyebrow {
     font-size: 0.7rem;

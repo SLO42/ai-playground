@@ -68,6 +68,19 @@ export const WATCHED_TABLES = [
 	'entity',
 	// references — /memory (graph edges; RELATION table)
 	'references',
+	// memory_history — /memory/history (BL-8 brain-observability History lens: the
+	// append-only add/supersede/archive audit feed live-updates) — BRAIN-OBSERVABILITY-SPEC §4
+	'memory_history',
+	// skill — /memory/skills (BL-8 Learned-skills lens: graduated-skill list live-updates) — §4
+	'skill',
+	// causal_chain — /memory/skills (BL-8 expand-to-chain drill-down) — BRAIN-OBSERVABILITY-SPEC §4
+	'causal_chain',
+	// retrieval_outcome — /memory/outcomes (BL-8 Utilization lens: recall→cite→utilize signal
+	// re-aggregates live as outcomes land) — BRAIN-OBSERVABILITY-SPEC §4 (D-030)
+	'retrieval_outcome',
+	// work_item — /atelier/queue (BL-9 work-queue monitor: backlog depth / cap / stale items
+	// live-update as the orchestrator drains) — WORK-QUEUE-MONITOR-SPEC §3
+	'work_item',
 	// notification — shell layout ticker; /services; /reports
 	'notification',
 	// decision_brief — shell layout (RightTray decisions inbox); /projects/[id] (PM tab) — TASK 16.4

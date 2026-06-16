@@ -1,0 +1,81 @@
+// BL-9 — /atelier/queue: the work-queue monitor (WORK-QUEUE-MONITOR-SPEC §4).
+//
+// READ-ONLY (spec §2.1): surfaces the work_item background claim queue — headline stats
+// (pending depth · processing · today's spawns vs the D-021 daily cap · stale count), the active
+// list (pending + processing, with a DERIVED STALE flag), and a paginated recent-completed list.
+// NO enqueue/cancel/retry/GC is ever invoked here — queueStats/listWorkItems are pure SELECTs and
+// staleCount is a derived read against the same threshold gcStale uses (never the reaper). Honest
+// (F-008/D-019): DB down → connected:false + zeroed/empty + honest banner; a failing read →
+// honest error, never a fabricated row. Bounded (F-014): the completed list is LIMIT-paged with a
+// `?before=` cursor. Live (§4): a work_item row change re-invalidates this loader.
+
+import { tryGetDb } from '$lib/server/db/runtime-init';
+import {
+	queueStats,
+	listWorkItems,
+	type QueueStats,
+	type WorkItemRow
+} from '$lib/server/orchestrator/queue-monitor';
+import type { PageServerLoad } from './$types';
+
+/** A safe zeroed stats block for the disconnected/error path (honest, not fabricated). */
+const ZERO_STATS: QueueStats = {
+	pendingDepth: 0,
+	processing: 0,
+	done: 0,
+	failed: 0,
+	spawnsToday: 0,
+	dailyCap: 0,
+	capRemaining: 0,
+	throttled: false,
+	staleCount: 0
+};
+
+export interface QueueData {
+	connected: boolean;
+	stats: QueueStats;
+	/** pending + processing items (the active list). */
+	active: WorkItemRow[];
+	/** done + failed items, newest-first, paginated (the recent-completed list). */
+	completed: WorkItemRow[];
+	/** The cursor for the next older completed page (ISO), or null when exhausted. */
+	completedBefore: string | null;
+	error?: string;
+}
+
+/** Loose ISO-8601 guard for the ?before= cursor (anything else ⇒ no cursor). */
+const ISO = /^\d{4}-\d{2}-\d{2}T[\d:.]+(?:Z|[+-]\d{2}:\d{2})$/;
+
+export const load: PageServerLoad = async ({ url, depends }): Promise<QueueData> => {
+	depends('app:work-queue');
+
+	const beforeRaw = url.searchParams.get('before');
+	const before = beforeRaw && ISO.test(beforeRaw) ? beforeRaw : undefined;
+	const COMPLETED_PAGE = 25;
+
+	const db = tryGetDb();
+	if (!db) {
+		return { connected: false, stats: ZERO_STATS, active: [], completed: [], completedBefore: null };
+	}
+	try {
+		const [stats, active, completed] = await Promise.all([
+			queueStats(db),
+			listWorkItems(db, { status: ['pending', 'processing'], limit: 100 }),
+			listWorkItems(db, { status: ['done', 'failed'], limit: COMPLETED_PAGE, before })
+		]);
+		// Cursor for the next page = the enqueue time of the last completed row (when the page
+		// filled). When the page is short there are no older rows → null (honest end-of-list).
+		const completedBefore =
+			completed.length === COMPLETED_PAGE ? (completed[completed.length - 1].enqueuedAt ?? null) : null;
+		return { connected: true, stats, active, completed, completedBefore };
+	} catch (err) {
+		return {
+			connected: false,
+			stats: ZERO_STATS,
+			active: [],
+			completed: [],
+			completedBefore: null,
+			error: (err as Error).message
+		};
+	}
+};

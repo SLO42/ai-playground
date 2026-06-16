@@ -40,6 +40,15 @@ export class IdempotencyError extends Error {
 	override readonly name = 'IdempotencyError';
 }
 
+/** The per-session lifetime send budget was exhausted (abuse cap). Fail-closed + named. Lives HERE
+ *  (not in send.ts) because the budget is now enforced ATOMICALLY at the write — the count and the
+ *  insert are ONE SurrealDB transaction (PM2 finding c: the old read-then-create was a TOCTOU race
+ *  N concurrent sends could each pass before any inserted, blowing past the cap). send.ts re-exports
+ *  this as the public name so the endpoint mapping (→ 429) is unchanged. */
+export class SendBudgetError extends Error {
+	override readonly name = 'SendBudgetError';
+}
+
 /** Max length of an agent-supplied client_key (the ingress idempotency token). Caps the indexed
  *  dedup_key VALUE so a hostile caller cannot bloat the UNIQUE index with a giant key. A UUID/short
  *  token is ~36 chars; 200 is generous headroom without being an index-size foot-gun. */
@@ -153,6 +162,13 @@ export interface SendPeerMessageInput {
 	hops?: number;
 	/** Ingress idempotency token → dedup_key (a retried send collides rather than double-sends). */
 	client_key?: string;
+	/**
+	 * The per-session lifetime send cap. When set, the count+insert run as ONE transaction (the
+	 * budget is checked INSIDE the write so concurrent sends cannot each pass a stale read and then
+	 * all insert — PM2 finding c). Omit ⇒ no budget gate at the write (the caller did not request
+	 * one). A breach throws SendBudgetError and the row is NOT written (the transaction rolls back).
+	 */
+	max_sends?: number;
 }
 
 /**
@@ -197,28 +213,165 @@ export async function sendPeerMessage(db: Db, input: SendPeerMessageInput): Prom
 	if (input.project) content.project = link(input.project);
 	if (input.client_key) content.client_key = input.client_key;
 
-	let rows: Raw[] | undefined;
-	try {
-		[rows] = await db.query<[Raw[]]>(`CREATE peer_message CONTENT $content RETURN AFTER;`, {
-			content
-		});
-	} catch (err) {
-		// Map the dedup UNIQUE-index violation to a NAMED IdempotencyError so the raw SurrealDB index
-		// message never leaks (the 'every error has a name' contract). SurrealDB surfaces a unique-
-		// index breach by mentioning the index name (peer_message_dedup) or "already contains"/
-		// "Database index"; match defensively and re-throw everything else verbatim.
-		const msg = (err as Error)?.message ?? '';
-		if (/peer_message_dedup|already contains|Database index|index .* already/i.test(msg)) {
-			throw new IdempotencyError(
-				`sendPeerMessage: duplicate send — this sender already sent with client_key ` +
-					`${JSON.stringify(input.client_key)} (idempotent retry collided on the dedup index)`
+	// Every send is assigned a per-sender monotonic SEQUENCE (peer_seq) from the session counter, set
+	// AT CREATE inside ONE transaction (PM2 finding c). Two enforcement layers make the per-session
+	// SEND BUDGET a HARD, DB-enforced invariant rather than a TOCTOU-racy read-then-write:
+	//   (1) the counter: `UPDATE ONLY session SET peer_sends_count += 1 RETURN …` yields $new; when a
+	//       cap is requested and $new > max we are over budget → DECREMENT back (the counter never
+	//       drifts above the cap) and write NO row, returning an empty set (a CLEAN COMMIT — we avoid
+	//       THROW because the JS SDK masks a multi-statement THROW as a generic "failed transaction").
+	//   (2) the UNIQUE (from_session, peer_seq) index: the counter alone is INSUFFICIENT — this
+	//       SurrealDB build MERGES concurrent `+= 1` deltas instead of aborting, so the counter stays
+	//       correct but extra ROWS would leak. Stamping peer_seq=$new AT CREATE under the composite
+	//       UNIQUE means two racing sends that landed the same $new collide and ONE transaction aborts
+	//       — so AT MOST `max` rows can EVER exist per sender. A conflict/seq-collision surfaces as a
+	//       transaction failure → bounded retry (F-014: no unbounded spin). When NO cap is requested
+	//       (max_sends omitted) the same transaction runs WITHOUT the over-budget branch — it still
+	//       assigns a unique peer_seq so a peer_seq-less NONE row never collides on the index.
+	const hasCap =
+		typeof input.max_sends === 'number' && Number.isFinite(input.max_sends) && input.max_sends >= 0;
+
+	// Build the row's SET clause from the present content fields (+ peer_seq=$new). Keys are a fixed
+	// internal allow-list (never agent-derived), values bind via $param (D-016) — no interpolation of
+	// values, only of these literal column names.
+	const setParts = Object.keys(content).map((k) => `${k} = $content.${k}`);
+	setParts.push('peer_seq = $new');
+	const createRow = `(CREATE ONLY peer_message SET ${setParts.join(', ')} RETURN AFTER)`;
+
+	const budgetSql = `BEGIN;
+		 LET $new = (UPDATE ONLY $from SET peer_sends_count += 1 RETURN peer_sends_count).peer_sends_count;
+		 LET $row = ${
+				hasCap
+					? `IF $new <= $max { ${createRow} } ELSE { UPDATE ONLY $from SET peer_sends_count -= 1; NONE }`
+					: createRow
+			};
+		 RETURN $row;
+		 COMMIT;`;
+	const bind: Record<string, unknown> = hasCap
+		? { content, from: content.from_session, max: input.max_sends }
+		: { content, from: content.from_session };
+
+	// Bounded retry ONLY for a transaction failure (optimistic-concurrency conflict or a racing
+	// seq-collision). A clean over-budget COMMIT (empty result) and a dedup collision are TERMINAL.
+	// The spin is hard-capped (F-014: never an unbounded retry).
+	const maxRetries = hasCap ? Math.min(Math.max(8, (input.max_sends as number) * 2), 32) : 16;
+	for (let attempt = 0; ; attempt++) {
+		let res: unknown[];
+		try {
+			res = await db.query<unknown[]>(budgetSql, bind);
+		} catch (err) {
+			const msg = (err as Error)?.message ?? '';
+			// A dedup-key collision is a TERMINAL idempotent replay (SAME sender+client_key). The index
+			// name surfaces directly on the plain path; INSIDE the budget transaction the JS SDK MASKS it
+			// as a generic "failed transaction", so when a client_key is present and the tx failed, probe
+			// for an existing (sender,client_key) row and map THAT to IdempotencyError before retrying —
+			// otherwise an honest idempotent replay would be mis-reported as a budget/contention deny.
+			if (/peer_message_dedup/i.test(msg)) mapWriteError(err, input.client_key);
+			if (
+				input.client_key &&
+				/failed transaction|read or write conflict|retry/i.test(msg) &&
+				(await dedupRowExists(db, str(content.from_session as object), input.client_key))
+			) {
+				throw new IdempotencyError(
+					`sendPeerMessage: duplicate send — this sender already sent with client_key ` +
+						`${JSON.stringify(input.client_key)} (idempotent retry collided on the dedup index)`
+				);
+			}
+			// Transaction failure (concurrency conflict or a peer_seq race) → retry, bounded.
+			if (/failed transaction|read or write conflict|retry|peer_message_seq/i.test(msg) && attempt < maxRetries) {
+				continue;
+			}
+			// Retries exhausted on a seq/conflict failure under a cap: the cap is why it can't land.
+			if (hasCap && /failed transaction|peer_message_seq|read or write conflict/i.test(msg)) {
+				throw new SendBudgetError(
+					`sendPeerMessage: per-session send budget contention exceeded retries (max ${input.max_sends}) — refused (abuse cap)`
+				);
+			}
+			// Anything else → mapped to a named error or re-thrown verbatim (terminal).
+			mapWriteError(err, input.client_key);
+		}
+		// RETURN $row is the last statement → its value is the last element of the response.
+		const last = res[res.length - 1];
+		const row =
+			last && typeof last === 'object' && !Array.isArray(last) ? (last as Raw) : undefined;
+		if (!row) {
+			// Empty/NONE result. Under a cap this is the honest over-budget deny ($new > max, the
+			// increment was rolled back, NO row written, a clean COMMIT). Without a cap it should never
+			// happen — a missing row is then a real fault.
+			if (hasCap) {
+				throw new SendBudgetError(
+					`sendPeerMessage: per-session send budget exhausted (max ${input.max_sends}) — refused (abuse cap)`
+				);
+			}
+			throw new PeerRepoError('sendPeerMessage: insert returned no row');
+		}
+		// HONESTY GUARD (F-008). The SurrealDB 2.0.3 JS SDK sometimes RESOLVES a transaction that
+		// actually ABORTED on the seq-collision, returning the pre-abort `CREATE … RETURN AFTER` value
+		// — a PHANTOM row that never committed. (A direct `SELECT … FROM <id>` even returns the phantom,
+		// so a by-id read is NOT a reliable check; only an INDEX scan reflects the committed table.) We
+		// confirm the row is the committed owner of its (from_session, peer_seq) slot via a scan: if a
+		// DIFFERENT row owns that seq (or none does), THIS transaction lost the race → retry (bounded),
+		// then an honest budget/no-row deny. Runs only after a (rare) racing send.
+		const seq = (row as { peer_seq?: unknown }).peer_seq;
+		const committedId = await committedSeqOwner(db, str(content.from_session as object), seq);
+		if (committedId && committedId === str(row.id)) return normPeerMessage(row);
+		if (attempt < maxRetries) continue;
+		if (hasCap) {
+			throw new SendBudgetError(
+				`sendPeerMessage: per-session send budget contention exceeded retries (max ${input.max_sends}) — refused (abuse cap)`
 			);
 		}
-		throw err;
+		throw new PeerRepoError('sendPeerMessage: insert did not persist (lost a write race)');
 	}
-	const row = rows?.[0];
-	if (!row) throw new PeerRepoError('sendPeerMessage: insert returned no row');
-	return normPeerMessage(row);
+}
+
+/** The committed row id that OWNS a (from_session, peer_seq) slot per an INDEX scan, or null. Used by
+ *  the honesty guard to reject a phantom row the SDK returned for an aborted transaction (a direct
+ *  by-id read would see the phantom; an index scan reflects only committed rows). */
+async function committedSeqOwner(
+	db: Db,
+	fromSession: string,
+	seq: unknown
+): Promise<string | null> {
+	if (typeof seq !== 'number' || !Number.isFinite(seq)) return null;
+	const sid = link(fromSession);
+	const [rows] = await db.query<[Array<{ id: unknown }>]>(
+		`SELECT id FROM peer_message WHERE from_session = $sid AND peer_seq = $seq LIMIT 1;`,
+		{ sid, seq }
+	);
+	const id = rows?.[0]?.id;
+	return id != null ? str(id) : null;
+}
+
+/**
+ * Map a peer_message write error to a NAMED error (every error has a name). A dedup UNIQUE-index
+ * breach → IdempotencyError (the raw SurrealDB index message never leaks). Everything else is
+ * re-thrown verbatim. ALWAYS throws (return type `never`) — the call sites rely on that.
+ */
+/** Does a row already exist for this (sender, client_key)? Used to recognize an idempotent replay
+ *  when the budget transaction MASKED the dedup-index collision as a generic "failed transaction". */
+async function dedupRowExists(db: Db, fromSession: string, clientKey: string): Promise<boolean> {
+	try {
+		const sid = link(fromSession);
+		const [rows] = await db.query<[Array<{ c: number }>]>(
+			`SELECT count() AS c FROM peer_message WHERE from_session = $sid AND client_key = $ck GROUP ALL;`,
+			{ sid, ck: clientKey }
+		);
+		return (rows?.[0]?.c ?? 0) > 0;
+	} catch {
+		return false; // a probe fault must never mis-fire idempotency; fall through to retry/deny.
+	}
+}
+
+function mapWriteError(err: unknown, clientKey: string | undefined): never {
+	const msg = (err as Error)?.message ?? '';
+	if (/peer_message_dedup|already contains|Database index|index .* already/i.test(msg)) {
+		throw new IdempotencyError(
+			`sendPeerMessage: duplicate send — this sender already sent with client_key ` +
+				`${JSON.stringify(clientKey)} (idempotent retry collided on the dedup index)`
+		);
+	}
+	throw err as Error;
 }
 
 /** Read one peer_message by id (normalized). Returns null when absent (honest empty, not throw). */

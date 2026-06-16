@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Surreal } from 'surrealdb';
+import { Surreal, StringRecordId } from 'surrealdb';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
@@ -18,6 +18,7 @@ import {
 	pendingInbox,
 	PeerRepoError,
 	IdempotencyError,
+	SendBudgetError,
 	PEER_CLIENT_KEY_MAX,
 	sendPeerMessage
 } from './repo';
@@ -134,6 +135,33 @@ describe('0039_peer_message migration — table, indexes, apply-twice, half-appl
 		);
 		expect(Object.keys(tinfo.fields)).toContain('body');
 		expect(Object.keys(tinfo.fields)).toContain('to_kind');
+	});
+});
+
+// ── (PM2 finding c) m0041 budget migration — fields/index + F-015 idempotency ──
+describe('0041_session_peer_send_budget migration (PM2 finding c)', () => {
+	const M41 = '0041_session_peer_send_budget';
+
+	it('defines session.peer_sends_count + peer_message.peer_seq + the UNIQUE seq index', async () => {
+		const [sess] = await db.query<[{ fields: Record<string, string> }]>('INFO FOR TABLE session;');
+		expect(Object.keys(sess.fields)).toContain('peer_sends_count');
+		const [pm] = await db.query<[{ fields: Record<string, string>; indexes: Record<string, string> }]>(
+			'INFO FOR TABLE peer_message;'
+		);
+		expect(Object.keys(pm.fields)).toContain('peer_seq');
+		expect(Object.keys(pm.indexes)).toContain('peer_message_seq');
+	});
+
+	it('apply-twice is a no-op (already recorded → not re-applied)', async () => {
+		const second = await runMigrations(db, schemaMigrations);
+		expect(second).not.toContain(M41);
+	});
+
+	it('re-applying the m0041 DDL over the live state is idempotent (OVERWRITE — no "already exists")', async () => {
+		const mig = schemaMigrations.find((m) => m.id === M41)!;
+		await db.query(mig.up); // half-applied recovery: every DEFINE carries OVERWRITE
+		const [pm] = await db.query<[{ indexes: Record<string, string> }]>('INFO FOR TABLE peer_message;');
+		expect(Object.keys(pm.indexes)).toContain('peer_message_seq');
 	});
 });
 
@@ -255,6 +283,114 @@ describe('peer_message CRUD', () => {
 		await expect(
 			sendPeerMessage(db, { from_session: '', to_kind: 'atelier', body: 'x' })
 		).rejects.toThrow(PeerRepoError);
+	});
+
+	// ── (PM2 finding c) atomic per-session budget — count+insert in ONE transaction ──
+	describe('atomic send budget (PM2 finding c — no count-then-create race)', () => {
+		it('max_sends gates the write: the (cap+1)th send → named SendBudgetError, and NO extra row lands', async () => {
+			const sender = await freshSession();
+			const target = await freshSession();
+			const CAP = 3;
+			for (let i = 0; i < CAP; i++) {
+				await sendPeerMessage(db, { from_session: sender, to_kind: 'session', to_session: target, body: `m${i}`, max_sends: CAP });
+			}
+			await expect(
+				sendPeerMessage(db, { from_session: sender, to_kind: 'session', to_session: target, body: 'one too many', max_sends: CAP })
+			).rejects.toThrow(SendBudgetError);
+			// fail-closed: the rejected send rolled back — exactly CAP rows exist for this sender.
+			const sid = new StringRecordId(sender);
+			const [rows] = await db.query<[Array<{ c: number }>]>(
+				`SELECT count() AS c FROM peer_message WHERE from_session = $sid GROUP ALL;`,
+				{ sid }
+			);
+			expect(rows?.[0]?.c ?? 0).toBe(CAP);
+		});
+
+		it('CONCURRENCY: with cap N and 3N concurrent sends EXACTLY N persist, N succeed (no phantom), the rest are denied — the atomic gate holds under contention', async () => {
+			const sender = await freshSession();
+			const target = await freshSession();
+			const CAP = 5;
+			const ATTEMPTS = CAP * 3; // heavy contention — many racers per slot
+			const results = await Promise.allSettled(
+				Array.from({ length: ATTEMPTS }, (_, i) =>
+					sendPeerMessage(db, { from_session: sender, to_kind: 'session', to_session: target, body: `c${i}`, max_sends: CAP })
+				)
+			);
+			const fulfilledIds = results
+				.filter((r): r is PromiseFulfilledResult<Awaited<ReturnType<typeof sendPeerMessage>>> => r.status === 'fulfilled')
+				.map((r) => r.value.id);
+			const budgetDenied = results.filter(
+				(r) => r.status === 'rejected' && r.reason instanceof SendBudgetError
+			).length;
+			const otherRejections = results.filter(
+				(r) => r.status === 'rejected' && !(r.reason instanceof SendBudgetError)
+			);
+			// Ground truth: EXACTLY CAP rows persist (the UNIQUE (from_session, peer_seq) is the DB-
+			// enforced hard cap — this build merges concurrent counter deltas, so the seq index, not the
+			// counter, is what bounds the rows).
+			const sid = new StringRecordId(sender);
+			const [persisted] = await db.query<[Array<{ id: unknown }>]>(
+				`SELECT id FROM peer_message WHERE from_session = $sid;`,
+				{ sid }
+			);
+			const persistedIds = new Set((persisted ?? []).map((r) => String(r.id)));
+			expect(persistedIds.size).toBe(CAP);
+			// HONESTY (F-008): every id sendPeer RETURNED must actually be persisted — no phantom row from
+			// an SDK-masked aborted transaction. And exactly CAP succeeded; everyone else was denied.
+			for (const id of fulfilledIds) expect(persistedIds.has(id)).toBe(true);
+			expect(fulfilledIds.length).toBe(CAP);
+			expect(otherRejections).toHaveLength(0); // every loser is a NAMED SendBudgetError, never a raw leak
+			expect(budgetDenied).toBe(ATTEMPTS - CAP);
+		});
+
+		it('peer_seq is a per-sender monotonic sequence 1..N (the budget allocator)', async () => {
+			const sender = await freshSession();
+			const target = await freshSession();
+			for (let i = 0; i < 4; i++) {
+				await sendPeerMessage(db, { from_session: sender, to_kind: 'session', to_session: target, body: `s${i}`, max_sends: 10 });
+			}
+			const sid = new StringRecordId(sender);
+			const [rows] = await db.query<[Array<{ peer_seq: number }>]>(
+				`SELECT peer_seq FROM peer_message WHERE from_session = $sid ORDER BY peer_seq;`,
+				{ sid }
+			);
+			expect((rows ?? []).map((r) => r.peer_seq)).toEqual([1, 2, 3, 4]);
+		});
+
+		it('max_sends:0 refuses the FIRST send (degenerate cap) — fail-closed, no row', async () => {
+			const sender = await freshSession();
+			const target = await freshSession();
+			await expect(
+				sendPeerMessage(db, { from_session: sender, to_kind: 'session', to_session: target, body: 'x', max_sends: 0 })
+			).rejects.toThrow(SendBudgetError);
+			const sid = new StringRecordId(sender);
+			const [rows] = await db.query<[Array<{ c: number }>]>(
+				`SELECT count() AS c FROM peer_message WHERE from_session = $sid GROUP ALL;`,
+				{ sid }
+			);
+			expect(rows?.[0]?.c ?? 0).toBe(0);
+		});
+
+		it('SHADOW: omitting max_sends keeps the plain (un-gated) write path working', async () => {
+			const sender = await freshSession();
+			const target = await freshSession();
+			const row = await sendPeerMessage(db, { from_session: sender, to_kind: 'session', to_session: target, body: 'ungated' });
+			expect(row.from_session).toBe(sender);
+			expect(row.status).toBe('pending');
+		});
+
+		it('a same-sender client_key REPLAY under a budget is a NAMED IdempotencyError (not a budget/raw-500 leak)', async () => {
+			// The dedup-index collision is MASKED inside the budget transaction as a generic "failed
+			// transaction"; the engine must still recognize the idempotent replay and surface
+			// IdempotencyError — never mis-report it as a budget deny or leak a raw index error.
+			const sender = await freshSession();
+			const target = await freshSession();
+			const key = `idem_budget_${++seq}`;
+			await sendPeerMessage(db, { from_session: sender, to_kind: 'session', to_session: target, body: 'once', client_key: key, max_sends: 50 });
+			await expect(
+				sendPeerMessage(db, { from_session: sender, to_kind: 'session', to_session: target, body: 'twice', client_key: key, max_sends: 50 })
+			).rejects.toThrow(IdempotencyError);
+		});
 	});
 
 	it('pendingInbox returns a recipient inbox oldest-first; empty inbox → []', async () => {

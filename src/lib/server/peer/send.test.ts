@@ -267,13 +267,12 @@ describe('sendPeer — bounds (abuse caps)', () => {
 		const proj = await freshProject();
 		const sender = await freshSession({ project: proj });
 		const recipient = await freshSession({ project: proj });
-		// Pre-seed the meter to the cap by writing budget-count rows directly (fast, deterministic).
-		for (let i = 0; i < MAX_SENDS_PER_SESSION; i++) {
-			await db.query(
-				`CREATE peer_message SET from_session = $s, to_kind = "session", to_session = $r, body = "seed", status = "pending", hops = 1;`,
-				{ s: new StringRecordId(sender), r: new StringRecordId(recipient) }
-			);
-		}
+		// Pre-seed the meter to the cap by setting the session's monotonic peer-send counter directly
+		// (the gate is the counter, not a row re-count — PM2 finding c). Fast + deterministic.
+		await db.query(`UPDATE $s SET peer_sends_count = $n;`, {
+			s: new StringRecordId(sender),
+			n: MAX_SENDS_PER_SESSION
+		});
 		await expect(
 			sendPeer({ senderSessionId: sender, address: { kind: 'session', toSession: recipient }, body: 'one too many' }, { db })
 		).rejects.toBeInstanceOf(SendBudgetError);

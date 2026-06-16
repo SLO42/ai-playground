@@ -48,15 +48,15 @@ import {
 	loadFleetSnapshot,
 	type PeerMessageRow,
 	PeerRepoError,
-	IdempotencyError
+	IdempotencyError,
+	SendBudgetError
 } from './repo';
 
 // ── Named errors — every error has a name (what triggers it is in the message) ──
 
-/** The per-session lifetime send budget was exhausted (abuse cap). Fail-closed + named. */
-export class SendBudgetError extends Error {
-	override readonly name = 'SendBudgetError';
-}
+// SendBudgetError now lives in repo.ts (the budget is enforced ATOMICALLY at the write — count and
+// insert in one transaction; PM2 finding c). It is re-exported below so the endpoint mapping (→429)
+// and existing importers are unchanged.
 
 /** hops < 1 at ingress, or a relay of a hops-0 (terminal) message. Prevents A→B→A ping-pong. */
 export class HopsExhaustedError extends Error {
@@ -192,17 +192,6 @@ async function resolveSender(db: Db, senderSessionId: string): Promise<SenderRow
 	};
 }
 
-/** Count the sender's lifetime peer-send rows (the budget meter). Live from persisted rows. */
-async function countSends(db: Db, senderSessionId: string): Promise<number> {
-	const sid = new StringRecordId(assertRecordId(senderSessionId));
-	const [rows] = await db.query<[Array<{ c: number }>]>(
-		`SELECT count() AS c FROM peer_message WHERE from_session = $sid GROUP ALL;`,
-		{ sid }
-	);
-	const c = rows?.[0]?.c;
-	return typeof c === 'number' && Number.isFinite(c) ? c : 0;
-}
-
 // ── The send engine ───────────────────────────────────────────────────────────────
 
 /**
@@ -242,13 +231,12 @@ export async function sendPeer(input: SendPeerInput, deps: SendPeerDeps): Promis
 			`peer send: hops ${requestedHops} exceeds the relay cap MAX_HOPS=${MAX_HOPS}`
 		);
 	}
-	const priorSends = await countSends(db, sender.session);
-	if (priorSends >= MAX_SENDS_PER_SESSION) {
-		throw new SendBudgetError(
-			`peer send: session ${sender.session} has exhausted its lifetime send budget ` +
-				`(${priorSends}/${MAX_SENDS_PER_SESSION}) — refused (abuse cap)`
-		);
-	}
+	// The per-session SEND BUDGET is NOT pre-checked here anymore (PM2 finding c): a separate
+	// count-then-create is a TOCTOU race — N concurrent sends each read "under budget" then all
+	// insert, blowing past MAX_SENDS_PER_SESSION. The cap is now enforced ATOMICALLY inside the
+	// persist (sendPeerMessage with max_sends: count + CREATE in ONE transaction), which throws
+	// SendBudgetError and rolls back when at the cap. So the (N+1)th concurrent send is refused even
+	// under contention. (We pass MAX_SENDS_PER_SESSION below.)
 
 	// (3) Resolve the destination + enforce the recipient policy over the LIVE fleet snapshot. A
 	// cross-project DIRECT flow throws CrossProjectError HERE (fail-closed) before any write. The
@@ -274,7 +262,9 @@ export async function sendPeer(input: SendPeerInput, deps: SendPeerDeps): Promis
 		...destinationCoords(input.address),
 		body: input.body,
 		hops: requestedHops,
-		...(input.clientKey ? { client_key: input.clientKey } : {})
+		...(input.clientKey ? { client_key: input.clientKey } : {}),
+		// Atomic budget gate (PM2 finding c): the count+insert run in ONE transaction inside the repo.
+		max_sends: MAX_SENDS_PER_SESSION
 	});
 
 	// (5) Best-effort LIVE delivery into each up recipient — fail-OPEN (F-014). The body delivered
@@ -364,5 +354,7 @@ async function markDelivered(db: Db, messageId: string): Promise<void> {
 	});
 }
 
-// Re-export the named errors callers map to honest statuses.
-export { PeerAddressError, CrossProjectError, PeerRepoError, IdempotencyError };
+// Re-export the named errors callers map to honest statuses. SendBudgetError now originates in
+// repo.ts (atomic budget enforcement, PM2 finding c) but is re-exported here so the endpoint's
+// import from this module — and the →429 mapping — is unchanged.
+export { PeerAddressError, CrossProjectError, PeerRepoError, IdempotencyError, SendBudgetError };

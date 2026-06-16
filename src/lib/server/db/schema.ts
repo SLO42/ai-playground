@@ -1565,6 +1565,40 @@ const m0040_peer_message_dedup_namespace: Migration = {
 	`
 };
 
+// m0041 — atomic per-session SEND BUDGET (PM2 finding c). Two pieces that together make the cap a
+// HARD, SurrealDB-enforced invariant rather than a TOCTOU-racy read-then-write:
+//
+//   (1) session.peer_sends_count — a monotonic per-session send counter (mirrors user_turn_count /
+//       tool_iter_count). The atomic send increments it (UPDATE … += 1 RETURN n) and stamps the new
+//       value as the message's peer_seq.
+//   (2) peer_message.peer_seq + a UNIQUE index on (from_session, peer_seq) — THE enforcement. The
+//       original bug: a plain `count() then CREATE` is a TOCTOU race (a SELECT-count is not a write
+//       conflict, so N concurrent sends each read "under budget" and all insert). Even an in-tx
+//       counter is insufficient here — this SurrealDB build MERGES concurrent `+= 1` deltas instead
+//       of aborting, so the counter stays correct but extra ROWS leak. The UNIQUE (from_session,
+//       peer_seq) closes that: two transactions that race to the same sequence number collide on the
+//       index and ONE aborts — so AT MOST `cap` rows can ever exist per sender, enforced by the DB.
+//
+// ADDITIVE + idempotent (OVERWRITE, DEFAULT 0, peer_seq is option<int> for any pre-existing rows):
+// safe to apply-twice and over a half-applied state (F-015). peer_seq is OPTIONAL so the index does
+// not reject legacy rows that predate it (NONE values are not indexed for uniqueness).
+const m0041_session_peer_send_budget: Migration = {
+	id: '0041_session_peer_send_budget',
+	up: `
+		DEFINE FIELD OVERWRITE peer_sends_count ON session TYPE int DEFAULT 0;
+		-- Per-sender monotonic SEQUENCE, assigned from peer_sends_count AT CREATE by every send through
+		-- sendPeerMessage (so it is never NONE on a real row). The composite UNIQUE (from_session,
+		-- peer_seq) is THE hard budget guard: two racing sends that landed the same seq number collide
+		-- and ONE transaction aborts — so AT MOST cap rows can EVER exist per sender, DB-enforced.
+		-- (The counter alone is insufficient: this SurrealDB build MERGES concurrent += 1 deltas
+		-- rather than aborting, so the counter stays correct but extra rows would leak; the UNIQUE seq
+		-- closes that.) peer_seq is option<int> so a legacy/test row that predates this field (peer_seq
+		-- NONE) is permitted — at most ONE NONE row per sender, which the budget path never writes.
+		DEFINE FIELD OVERWRITE peer_seq ON peer_message TYPE option<int>;
+		DEFINE INDEX OVERWRITE peer_message_seq ON peer_message FIELDS from_session, peer_seq UNIQUE;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1611,5 +1645,6 @@ export const schemaMigrations: Migration[] = [
 	m0037_message_kind_seq,
 	m0038_message_origin,
 	m0039_peer_message,
-	m0040_peer_message_dedup_namespace
+	m0040_peer_message_dedup_namespace,
+	m0041_session_peer_send_budget
 ];

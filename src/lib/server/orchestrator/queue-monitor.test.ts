@@ -8,7 +8,6 @@ import {
 	listWorkItems,
 	getWorkItem,
 	queueStats,
-	DEFAULT_DAILY_CAP,
 	DEFAULT_STUCK_MS
 } from './queue-monitor';
 
@@ -44,7 +43,7 @@ async function clearQueue(): Promise<void> {
 }
 
 describe('queueStats', () => {
-	it('empty queue → all-zero honest stats (F-008)', async () => {
+	it('empty queue → all-zero honest stats, UNCAPPED by default (F-008 — the boot reality)', async () => {
 		await clearQueue();
 		const s = await queueStats(db);
 		expect(s.pendingDepth).toBe(0);
@@ -53,12 +52,44 @@ describe('queueStats', () => {
 		expect(s.failed).toBe(0);
 		expect(s.spawnsToday).toBe(0);
 		expect(s.staleCount).toBe(0);
-		expect(s.dailyCap).toBe(DEFAULT_DAILY_CAP);
-		expect(s.capRemaining).toBe(DEFAULT_DAILY_CAP);
+		// No dailyCap is wired (boot.ts passes none) ⇒ honest uncapped surface: no denominator,
+		// no throttle, no remaining count. NEVER a fabricated /N (F-008).
+		expect(s.capped).toBe(false);
 		expect(s.throttled).toBe(false);
+		expect(s.dailyCap).toBeUndefined();
+		expect(s.capRemaining).toBeUndefined();
 	});
 
-	it('aggregates depth / processing / terminal counts + spawns-today against the cap', async () => {
+	it('UNCAPPED never throttles even when spawnsToday is high (no fabricated cap)', async () => {
+		await clearQueue();
+		// Drain several items so spawnsToday is well above any plausible old default (50).
+		for (let n = 0; n < 4; n++) {
+			await enqueue(db, { workType: 'review', payload: { n }, dedupScope: `u${n}` });
+			const c = await claimNext(db, `tokU${n}`);
+			await complete(db, c!.id, `tokU${n}`, 'done');
+		}
+		const s = await queueStats(db); // no dailyCap
+		expect(s.spawnsToday).toBeGreaterThanOrEqual(4);
+		expect(s.capped).toBe(false);
+		expect(s.throttled).toBe(false);
+		expect(s.dailyCap).toBeUndefined();
+		expect(s.capRemaining).toBeUndefined();
+	});
+
+	it('a 0/negative/NaN cap is treated as UNCAPPED (matches orchestrator dailySpawnCap>0 gate)', async () => {
+		await clearQueue();
+		await enqueue(db, { workType: 'maintenance', payload: {}, dedupScope: 'z' });
+		await claimNext(db, 'tokZ');
+		for (const bad of [0, -5, Number.NaN]) {
+			const s = await queueStats(db, { dailyCap: bad });
+			expect(s.capped).toBe(false);
+			expect(s.throttled).toBe(false);
+			expect(s.dailyCap).toBeUndefined();
+			expect(s.capRemaining).toBeUndefined();
+		}
+	});
+
+	it('aggregates depth / processing / terminal counts + spawns-today (uncapped default)', async () => {
 		await clearQueue();
 		// 2 pending (distinct dedup scope so both land), 1 claimed→processing, 1 claimed→done.
 		await enqueue(db, { workType: 'review', payload: { a: 1 }, dedupScope: 'one' });
@@ -76,17 +107,36 @@ describe('queueStats', () => {
 		expect(s.done).toBe(1);
 		// Both claims happened within the cap window → spawnsToday counts them.
 		expect(s.spawnsToday).toBeGreaterThanOrEqual(2);
-		expect(s.capRemaining).toBe(Math.max(0, DEFAULT_DAILY_CAP - s.spawnsToday));
+		expect(s.capped).toBe(false);
 	});
 
-	it('throttled flips true when a tiny cap is exceeded (cap display honest)', async () => {
+	it('WHEN a real cap is supplied: spawnsToday/cap + throttled boundary (just under / at / over)', async () => {
 		await clearQueue();
-		await enqueue(db, { workType: 'maintenance', payload: {}, dedupScope: 'm' });
-		await claimNext(db, 'tokM');
-		const s = await queueStats(db, { dailyCap: 1 });
-		expect(s.spawnsToday).toBeGreaterThanOrEqual(1);
-		expect(s.throttled).toBe(true);
-		expect(s.capRemaining).toBe(0);
+		// Drain exactly 2 spawns.
+		await enqueue(db, { workType: 'maintenance', payload: {}, dedupScope: 'b1' });
+		await claimNext(db, 'tokB1');
+		await enqueue(db, { workType: 'maintenance', payload: {}, dedupScope: 'b2' });
+		await claimNext(db, 'tokB2');
+
+		// JUST UNDER the cap (cap 3, 2 spawned): capped, not throttled, 1 remaining.
+		const under = await queueStats(db, { dailyCap: 3 });
+		expect(under.spawnsToday).toBe(2);
+		expect(under.capped).toBe(true);
+		expect(under.dailyCap).toBe(3);
+		expect(under.capRemaining).toBe(1);
+		expect(under.throttled).toBe(false);
+
+		// AT the cap (cap 2, 2 spawned): throttled true, 0 remaining.
+		const at = await queueStats(db, { dailyCap: 2 });
+		expect(at.capped).toBe(true);
+		expect(at.capRemaining).toBe(0);
+		expect(at.throttled).toBe(true);
+
+		// OVER the cap (cap 1, 2 spawned): throttled true, remaining floored at 0.
+		const over = await queueStats(db, { dailyCap: 1 });
+		expect(over.capped).toBe(true);
+		expect(over.capRemaining).toBe(0);
+		expect(over.throttled).toBe(true);
 	});
 
 	it('flags a processing item past the stuck window as STALE — derived read, GC never invoked', async () => {

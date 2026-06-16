@@ -17,9 +17,14 @@
 //      an optional `before` cursor; the live counts are cheap GROUP aggregates.
 //   5. F-013. Every datetime ISO-coerced; absent → undefined (UI '—').
 //
-// The daily cap constant lives with the orchestrator (D-021); we surface "X remaining /
-// throttled" against it. The stuck/stale window mirrors gcStale's default so the monitor and
-// the GC agree (spec §7 D2).
+// The daily cap is the orchestrator's `dailySpawnCap` (D-021) — but it is OPT-IN: the cap is
+// undefined unless the operator wires one. boot.ts (the live wire) passes NO dailySpawnCap, so
+// the running orchestrator is UNCAPPED. This monitor must report that reality (F-008): when no
+// cap is enforced we surface "N spawned today · no cap enforced" and NEVER a fake /denominator
+// or a false `throttled`. We only show "X remaining / throttled" when a real cap is supplied —
+// the cap denominator must come from the same value the orchestrator enforces, never a view-local
+// literal that the orchestrator does not actually apply. The stuck/stale window mirrors gcStale's
+// default so the monitor and the GC agree (spec §7 D2).
 
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
@@ -37,13 +42,6 @@ function isoOrUndef(v: unknown): string | undefined {
 	const s = String(v);
 	return s && s !== 'undefined' && s !== 'null' ? s : undefined;
 }
-
-/**
- * The default daily spawn cap (D-021). The orchestrator throttles heavy drains to this many
- * claims per rolling 24h. Surfaced as the denominator of the "X remaining / throttled" stat.
- * A view-local default — the monitor reports against it; it does not enforce it.
- */
-export const DEFAULT_DAILY_CAP = 50;
 
 /**
  * The default stuck/stale window for a `processing` claim — MIRRORS gcStale's stuckMaxAgeMs
@@ -189,13 +187,22 @@ export interface QueueStats {
 	/** done + failed terminal counts. */
 	done: number;
 	failed: number;
-	/** Items CLAIMED within the rolling cap window (today's spawns, D-021). */
+	/** Items CLAIMED within the rolling cap window (today's spawns, D-021). Always real. */
 	spawnsToday: number;
-	/** The daily cap (D-021 denominator). */
-	dailyCap: number;
-	/** max(cap - spawnsToday, 0). */
-	capRemaining: number;
-	/** Whether today's spawns have reached/exceeded the cap (throttled). */
+	/**
+	 * Whether a daily spawn cap is ENFORCED by the orchestrator. When false (the live boot
+	 * reality — boot.ts passes no dailySpawnCap), there is no denominator and no throttle:
+	 * the UI shows "N spawned today · no cap enforced" (F-008 — no fabricated /N).
+	 */
+	capped: boolean;
+	/** The daily cap (D-021 denominator) — ONLY present when `capped`; undefined when uncapped. */
+	dailyCap?: number;
+	/** max(cap - spawnsToday, 0) — ONLY present when `capped`; undefined when uncapped. */
+	capRemaining?: number;
+	/**
+	 * Whether today's spawns have reached/exceeded the cap (throttled). ALWAYS false when
+	 * uncapped — an uncapped orchestrator never throttles, so we never show a false throttle.
+	 */
 	throttled: boolean;
 	/** DERIVED count of `processing` items older than the stuck window (honest STALE — not
 	 *  reaped). */
@@ -207,12 +214,18 @@ export interface QueueStats {
  * READ-ONLY: depth/counts/spawns come from countByStatus/pendingDepth/spawnsSince; the stale
  * count is a SELECT against the SAME stuck threshold gcStale uses — the reaper is NEVER called.
  * Each aggregate is a cheap GROUP read. Throws bubble to the loader's honest-error path (F-008).
+ *
+ * HONEST CAP (F-008): `dailyCap` is OPT-IN — pass it ONLY when the orchestrator is actually wired
+ * with that same `dailySpawnCap`. When omitted (the current live-boot reality — boot.ts wires no
+ * cap), the orchestrator is UNCAPPED, so we report `capped:false`, no denominator, no throttle.
+ * A cap is honored only when it is a positive finite number; a 0/negative/NaN value is treated as
+ * "no cap" (matching the orchestrator's own `dailySpawnCap > 0` gate) — never a fake /0 denominator.
  */
 export async function queueStats(
 	db: Db,
 	opts: { dailyCap?: number; stuckMs?: number; windowMs?: number } = {}
 ): Promise<QueueStats> {
-	const dailyCap = opts.dailyCap ?? DEFAULT_DAILY_CAP;
+	const capped = typeof opts.dailyCap === 'number' && Number.isFinite(opts.dailyCap) && opts.dailyCap > 0;
 	const stuckMs = opts.stuckMs ?? DEFAULT_STUCK_MS;
 	const windowMs = opts.windowMs ?? DAY_MS;
 	const [depth, processing, done, failed, spawnsToday, staleCount] = await Promise.all([
@@ -223,17 +236,25 @@ export async function queueStats(
 		spawnsSince(db, windowMs),
 		staleProcessingCount(db, stuckMs)
 	]);
-	const capRemaining = Math.max(0, dailyCap - spawnsToday);
-	return {
+	const base = {
 		pendingDepth: depth,
 		processing,
 		done,
 		failed,
 		spawnsToday,
-		dailyCap,
-		capRemaining,
-		throttled: spawnsToday >= dailyCap,
 		staleCount
+	};
+	if (!capped) {
+		// UNCAPPED (boot reality): no denominator, never throttled (F-008 — no fabricated /N).
+		return { ...base, capped: false, throttled: false };
+	}
+	const dailyCap = opts.dailyCap as number;
+	return {
+		...base,
+		capped: true,
+		dailyCap,
+		capRemaining: Math.max(0, dailyCap - spawnsToday),
+		throttled: spawnsToday >= dailyCap
 	};
 }
 

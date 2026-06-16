@@ -84,10 +84,15 @@
         <span class="stat-label">processing</span>
       </div>
       <div class="stat" data-flag={stats.throttled ? 'warn' : undefined}>
-        <span class="stat-val mono">{stats.spawnsToday} / {stats.dailyCap}</span>
-        <span class="stat-label">
-          {#if stats.throttled}throttled{:else}{stats.capRemaining} remaining today{/if}
-        </span>
+        {#if stats.capped}
+          <span class="stat-val mono">{stats.spawnsToday} / {stats.dailyCap}</span>
+          <span class="stat-label">
+            {#if stats.throttled}throttled{:else}{stats.capRemaining} remaining today{/if}
+          </span>
+        {:else}
+          <span class="stat-val mono">{stats.spawnsToday}</span>
+          <span class="stat-label">spawned today · no cap enforced</span>
+        {/if}
       </div>
       <div class="stat" data-flag={stats.staleCount > 0 ? 'warn' : undefined}>
         <span class="stat-val mono">{stats.staleCount}</span>

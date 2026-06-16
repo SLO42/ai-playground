@@ -18,15 +18,16 @@ import {
 } from '$lib/server/orchestrator/queue-monitor';
 import type { PageServerLoad } from './$types';
 
-/** A safe zeroed stats block for the disconnected/error path (honest, not fabricated). */
+/** A safe zeroed stats block for the disconnected/error path (honest, not fabricated). The cap
+ *  is reported as UNENFORCED here — matching the live boot reality (boot.ts wires no daily cap),
+ *  so the UI never shows a fabricated /denominator or a false throttle when the DB is down. */
 const ZERO_STATS: QueueStats = {
 	pendingDepth: 0,
 	processing: 0,
 	done: 0,
 	failed: 0,
 	spawnsToday: 0,
-	dailyCap: 0,
-	capRemaining: 0,
+	capped: false,
 	throttled: false,
 	staleCount: 0
 };

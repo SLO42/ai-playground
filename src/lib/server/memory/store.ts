@@ -42,6 +42,22 @@ export interface MemoryCandidate {
 	 * kind='interview' sessions. Omit for non-session memories.
 	 */
 	session?: string;
+	/**
+	 * BL-6 CANNIBALIZE-SPEC §6/§2.2 — the originating ingest_source (table:id, m0043
+	 * `provenance`). Set ONLY by the cannibalize ingest pipeline (ingest.ts) so an
+	 * ingested finding is traceable to its source (url/repo/path) and a bad source can be
+	 * purged (§7). Un-forgeable: it is the server-side ingest_source id the orchestrator
+	 * just created — NEVER derived from the (untrusted) captured content. Omit for normal
+	 * (non-ingested) memories → provenance stays NONE (no behaviour change).
+	 */
+	provenance?: string; // ingest_source table:id
+	/**
+	 * BL-6 CANNIBALIZE-SPEC §2.2 — the declared/derived license/consent note for a lifted
+	 * finding (the foundry/AGENTS.md discipline: ideas are adoptable, code-lifting needs
+	 * consent). Stored on the memory row as `source` provenance text alongside `provenance`.
+	 * Optional — unknown until distilled. Omit for normal memories.
+	 */
+	license?: string;
 }
 
 /** A persisted memory row id + how it was screened (clean/redacted/quarantined). */
@@ -194,7 +210,9 @@ function assertCandidateShape(c: MemoryCandidate): void {
 
 	// provenance links — string id (format validated at link()) or absent. A non-string (incl. a
 	// FALSY non-string) is NAMED here, never an anonymous IdentifierError mid-pipeline nor a silent omit.
-	for (const field of ['project', 'session'] as const) {
+	// `provenance` (BL-6, ingest_source id) joins this set — the cannibalize pipeline sets it server-side;
+	// a non-string is rejected NAMED here so a poisoned candidate can never forge it into a bad link.
+	for (const field of ['project', 'session', 'provenance'] as const) {
 		const v = c[field];
 		if (v !== undefined && typeof v !== 'string') {
 			throw new MemoryCandidateFieldError(field, shapeOf(v), 'string record id or absent');
@@ -220,8 +238,9 @@ function assertCandidateShape(c: MemoryCandidate): void {
 		}
 	}
 
-	// key / source — option<string>: a string or absent.
-	for (const field of ['key', 'source'] as const) {
+	// key / source / license — option<string>: a string or absent. `license` (BL-6) is the
+	// declared/derived consent note for a lifted finding (§2.2).
+	for (const field of ['key', 'source', 'license'] as const) {
 		const v = c[field];
 		if (v !== undefined && typeof v !== 'string') {
 			throw new MemoryCandidateFieldError(field, shapeOf(v), 'string or absent');
@@ -295,6 +314,11 @@ export async function storeMemory(opts: StoreOptions, c: MemoryCandidate): Promi
 		embedding,
 		tags: c.tags,
 		source: c.source,
+		// BL-6 (m0043): the originating ingest_source — un-forgeable (server-side id), links
+		// the finding to its source for tracing/purge (§7). Omitted (NONE) for normal memories.
+		provenance: c.provenance ? link(c.provenance) : undefined,
+		// BL-6 (m0043): the consent/license note for a lifted finding (§2.2), denormalized.
+		license: c.license,
 		importance: c.importance,
 		screen_status: scr.status,
 		// Pass a Date OBJECT — the SDK serializes it as a SurrealDB datetime. An ISO

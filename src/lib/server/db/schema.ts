@@ -1665,6 +1665,25 @@ const m0043_memory_provenance: Migration = {
 	`
 };
 
+// ── BL-6 CANNIBALIZE-SPEC §2.2 — denormalize the lifted-finding license onto the memory row ──
+//
+// A SEPARATE additive migration (NOT an edit to the already-applied m0043 — editing an applied
+// migration's body is a silent no-op on the live DB via the _migration ledger, F-015). The
+// canonical license lives on the ingest_source row; this denormalizes it onto each ingested
+// finding so a recalled/queried finding carries its consent note (the foundry/AGENTS.md
+// discipline: code-lifting needs consent) WITHOUT a join.
+//
+// IDEMPOTENT + ADDITIVE (F-015): one OVERWRITE field on an existing table. option<string> →
+// NONE for EVERY pre-existing memory row (NO backfill scan; NONE is legal), coerced to NULL/'—'
+// in normalizers (F-013). Apply-twice = no-op (ledger); re-defining over a half-applied state is
+// a no-op (OVERWRITE).
+const m0044_memory_license: Migration = {
+	id: '0044_memory_license',
+	up: `
+		DEFINE FIELD OVERWRITE license ON memory TYPE option<string>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1714,5 +1733,6 @@ export const schemaMigrations: Migration[] = [
 	m0040_peer_message_dedup_namespace,
 	m0041_session_peer_send_budget,
 	m0042_ingest_source,
-	m0043_memory_provenance
+	m0043_memory_provenance,
+	m0044_memory_license
 ];

@@ -144,6 +144,8 @@ interface ScoredCandidate {
 	score: number;
 	sessionLineage?: string;
 	wasNeighbor: boolean;
+	/** BL-6 (m0043): originating ingest_source id when this is an ingested finding; undefined otherwise. */
+	provenance?: string;
 }
 
 /** One recalled item as returned to the caller — already FENCED (§10). */
@@ -167,6 +169,13 @@ export interface RecallItem {
 	body: string;
 	/** The FENCED block ready to splice into context (§10). */
 	fenced: FencedItem;
+	/**
+	 * BL-6 (m0043): the originating ingest_source id when this recalled row is an INGESTED
+	 * finding (undefined for a normal memory). The utilization loop (recordOutcomes /
+	 * recordTurnOutcomes) reads this to `mark-applied` — bump applied_count/last_applied_at
+	 * on the finding when it contributed to a good outcome (RANKING input only, never prune; G3).
+	 */
+	provenance?: string;
 }
 
 export interface RecallResult {
@@ -226,6 +235,8 @@ interface MemoryRow {
 	embedding: number[];
 	updated_at?: string;
 	dist?: number;
+	/** BL-6 (m0043): the originating ingest_source id when this row is an ingested finding (NONE otherwise). */
+	provenance?: unknown;
 }
 
 /**
@@ -255,7 +266,7 @@ export async function recall(opts: RecallOptions, query: string): Promise<Recall
 	const interviewFilter = `AND (session IS NONE OR session.kind != "interview")`;
 	const projFilter = opts.project ? `AND project = $project` : '';
 	const [vrows] = await db.query<[MemoryRow[]]>(
-		`SELECT id, content, embedding, updated_at,
+		`SELECT id, content, embedding, updated_at, provenance,
 		        vector::distance::knn() AS dist
 		   FROM memory
 		  WHERE embedding <|${k},COSINE|> $qvec
@@ -280,7 +291,8 @@ export async function recall(opts: RecallOptions, query: string): Promise<Recall
 			utility: 0,
 			recency: recencyDecay(r.updated_at),
 			score: 0,
-			wasNeighbor: false
+			wasNeighbor: false,
+			provenance: r.provenance != null ? String(r.provenance) : undefined
 		});
 	}
 
@@ -288,7 +300,7 @@ export async function recall(opts: RecallOptions, query: string): Promise<Recall
 	if ((opts.expandGraph ?? true) && byId.size) {
 		const seedIds = [...byId.keys()].slice(0, 5).map(link);
 		const [nrows] = await db.query<[MemoryRow[]]>(
-			`SELECT id, content, embedding, updated_at FROM memory
+			`SELECT id, content, embedding, updated_at, provenance FROM memory
 			  WHERE (status = "active" OR status IS NONE)
 			    AND screen_status != "quarantined"
 			    AND (session IS NONE OR session.kind != "interview")
@@ -308,7 +320,8 @@ export async function recall(opts: RecallOptions, query: string): Promise<Recall
 				utility: 0,
 				recency: recencyDecay(r.updated_at),
 				score: 0,
-				wasNeighbor: true
+				wasNeighbor: true,
+				provenance: r.provenance != null ? String(r.provenance) : undefined
 			});
 		}
 	}
@@ -403,7 +416,10 @@ export async function recall(opts: RecallOptions, query: string): Promise<Recall
 			// `c.content` is the screened (§3.1b), active-set-filtered row body — exposed raw
 			// (D-029) so a downstream injection path can re-fence it via assembleInjection().
 			body: c.content,
-			fenced: fence({ source: 'recall', body: c.content, citationId })
+			fenced: fence({ source: 'recall', body: c.content, citationId }),
+			// BL-6: surface the ingest_source provenance so the outcome path can mark-applied an
+			// ingested finding. undefined for a normal memory (no utilization increment).
+			provenance: c.provenance
 		};
 	});
 
@@ -434,6 +450,39 @@ export function parseCitations(text: string): Set<string> {
 }
 
 /**
+ * BL-6 CANNIBALIZE-SPEC §4/§5 — the `mark-applied` utilization loop. When a RECALLED INGESTED
+ * finding (an item carrying `provenance`) was UTILIZED in a good outcome, increment its
+ * `applied_count` and stamp `last_applied_at` (m0043). This is RANKING input ONLY (it feeds the
+ * WMR historical_utility curve + the curator's keep ranking) — it NEVER auto-deletes a finding
+ * (G3: ingested knowledge is pruned by the operator/curator, not by a low count). A non-ingested
+ * item (no provenance) is skipped — applied_count is the cannibalize-finding signal, not a general
+ * memory counter. RETURN-AFTER `applied_count += 1` is safe because the field carries a concrete
+ * DEFAULT 0 (§6.2 — never NONE → no `NONE + 1` starvation). Best-effort + isolated per item: a
+ * mark-applied failure NEVER fails the outcome write (the ranker rows are the contract; the
+ * utilization bump is an enrichment). Returns the ids actually bumped.
+ */
+export async function markIngestedFindingsApplied(
+	db: Db,
+	items: { id: string; provenance?: string; utilized: boolean }[]
+): Promise<string[]> {
+	const bumped: string[] = [];
+	for (const it of items) {
+		if (!it.utilized || !it.provenance) continue;
+		try {
+			await db.query(
+				`UPDATE $mem SET applied_count += 1, last_applied_at = time::now();`,
+				{ mem: link(it.id) }
+			);
+			bumped.push(it.id);
+		} catch {
+			// Best-effort enrichment — a bad id / transient write never fails the outcome record
+			// (the retrieval_outcome rows already landed). Honest: the finding simply is not bumped.
+		}
+	}
+	return bumped;
+}
+
+/**
  * Record one `retrieval_outcome` row per injected item (DATA-MODEL §4.13). Marks `cited`
  * from [#N] parsing and `utilized` from cited-OR-implicit-path-hit. This is the RANKER's
  * future input ONLY (D-030) — it never drives pruning. Records rows even when nothing was
@@ -442,6 +491,8 @@ export function parseCitations(text: string): Set<string> {
 export async function recordOutcomes(db: Db, input: OutcomeInput): Promise<string[]> {
 	const cited = parseCitations(input.responseText);
 	const ids: string[] = [];
+	// BL-6: collect utilized ingested findings to mark-applied after the outcome rows land.
+	const applied: { id: string; provenance?: string; utilized: boolean }[] = [];
 	for (const item of input.injected) {
 		const isCited = cited.has(item.citationId);
 		// Implicit-path-hit rescue (§4.5): a high-scoring neighbour that clearly shaped the
@@ -449,6 +500,7 @@ export async function recordOutcomes(db: Db, input: OutcomeInput): Promise<strin
 		// strong score + a successful downstream tool call.
 		const implicit = !isCited && input.toolSuccess === true && item.score >= 0.6;
 		const utilized = isCited || implicit;
+		applied.push({ id: item.id, provenance: item.provenance, utilized });
 		const content: Record<string, unknown> = {
 			memory: link(item.id),
 			cited: isCited,
@@ -466,5 +518,8 @@ export async function recordOutcomes(db: Db, input: OutcomeInput): Promise<strin
 		);
 		ids.push(String(rows[0].id));
 	}
+	// BL-6 utilization loop: bump applied_count on the ingested findings that were utilized
+	// (after the ranker rows are durable — the bump is enrichment, never a precondition).
+	await markIngestedFindingsApplied(db, applied);
 	return ids;
 }

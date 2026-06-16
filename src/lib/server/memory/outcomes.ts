@@ -24,7 +24,7 @@ import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import type { RuntimeEvent } from '../runtime/index';
-import { parseCitations, type RecallItem } from './recall';
+import { parseCitations, markIngestedFindingsApplied, type RecallItem } from './recall';
 
 /** Validate a `table:id` link at the D-016 chokepoint, then wrap as a record link. */
 function link(id: string): StringRecordId {
@@ -104,6 +104,8 @@ export async function recordTurnOutcomes(
 	const cited = parseCitations(input.responseText);
 
 	const ids: string[] = [];
+	// BL-6: collect utilized ingested findings to mark-applied after the outcome rows land.
+	const applied: { id: string; provenance?: string; utilized: boolean }[] = [];
 	for (const item of input.injected) {
 		const isCited = cited.has(item.citationId);
 		// Implicit-path-hit rescue (§4.5): a high-scoring neighbour that clearly shaped the
@@ -111,6 +113,7 @@ export async function recordTurnOutcomes(
 		// strong recall score AND the turn's tools cleanly succeeded.
 		const implicit = !isCited && toolSuccess === true && item.score >= 0.6;
 		const utilized = isCited || implicit;
+		applied.push({ id: item.id, provenance: item.provenance, utilized });
 
 		const content: Record<string, unknown> = {
 			memory: link(item.id),
@@ -131,5 +134,8 @@ export async function recordTurnOutcomes(
 		);
 		ids.push(String(rows[0].id));
 	}
+	// BL-6 utilization loop: bump applied_count on the utilized ingested findings (enrichment
+	// after the durable ranker rows — never a precondition; RANKING input only, never prunes, G3).
+	await markIngestedFindingsApplied(db, applied);
 	return ids;
 }

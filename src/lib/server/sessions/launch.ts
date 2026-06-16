@@ -30,7 +30,17 @@ import { assertRecordId } from '../db/validate';
 import type { EventBus } from '../events/bus';
 import { writeAgentEvent } from '../analytics/events';
 import { getProject } from '../projects/repo';
-import { buildBriefing, type MemoryService, type ExtractFn } from '../memory/index';
+import {
+	buildBriefing,
+	bumpCounters,
+	dueReview,
+	enqueueReview,
+	DEFAULT_CADENCE,
+	type MemoryService,
+	type ExtractFn,
+	type ReviewCadence,
+	type ProposeSkillsFn
+} from '../memory/index';
 import { screen } from '../memory/screen';
 import { drainInbox } from '../peer/drain';
 import { loadGatesConfig } from '../config/index';
@@ -130,8 +140,30 @@ export interface LaunchDeps {
 	 *     screen-before-embed — D-026) so the system LEARNS across sessions.
 	 * Omitted (the default / no-credential / Ollama-down boot) ⇒ the loop is skipped cleanly;
 	 * a memory failure is best-effort and NEVER blocks or fails the spawn (D-019).
+	 *
+	 * BL-7 Part B (D-027 FAST tier): when `fastTier` is not explicitly false, this session ALSO
+	 * runs the per-turn in-use writer fork ENQUEUE leg — every Nth user turn / Mth tool iteration
+	 * (cadence from PERSISTED session counters, §2.2) it screens (D-026) the recent raw turn text
+	 * and enqueues a `memory_review` work_item the orchestrator drains (loop.ts runReviewFork).
+	 * The interview-exclusion (loop.ts enqueueReview) is the structural guard — a kind='interview'
+	 * session is NEVER enqueued. The enqueue is best-effort (D-019): a fault NEVER blocks/fails the
+	 * spawn, and the per-session dedup coalesces to ONE pending review (no per-turn storm).
 	 */
-	memory?: { service: MemoryService; extract: ExtractFn };
+	memory?: {
+		service: MemoryService;
+		extract: ExtractFn;
+		/** Set false to skip the D-027 fast-tier per-turn enqueue leg (default: enabled). */
+		fastTier?: boolean;
+		/** Cadence override (turns/tools); defaults to DEFAULT_CADENCE (5 turns / 10 tools). */
+		cadence?: ReviewCadence;
+		/**
+		 * BL-7 Part B — the skill-proposal LLM seam the orchestrator DRAIN uses when it runs the
+		 * fork on a `memory_review` work_item (loop.ts runReviewFork). Not used by the enqueue leg
+		 * here (launchSession only counts cadence + queues turn text); carried on the shared shape
+		 * so the orchestrator can forward it into the drain. Optional — omitted ⇒ memory-only fork.
+		 */
+		proposeSkills?: ProposeSkillsFn;
+	};
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -448,6 +480,14 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	/** Accumulate the raw transcript text for the §3.2 ADD-only extraction at session end. */
 	const transcriptParts: string[] = [];
 
+	// BL-7 Part B (D-027 FAST tier) — the per-turn in-use writer fork ENQUEUE leg. Enabled when
+	// a memory loop is present and `fastTier` is not explicitly false. On each persisted turn we
+	// bump the PERSISTED session counters (§2.2 — survive the per-message rebuild) and, at cadence,
+	// SCREEN (D-026) the recent raw turn text and enqueue a `memory_review` work_item the
+	// orchestrator drains. Entirely best-effort (D-019): a fault never blocks/fails the spawn.
+	const fastTierOn = !!memory && memory.fastTier !== false;
+	const cadence: ReviewCadence = memory?.cadence ?? DEFAULT_CADENCE;
+
 	const req = {
 		agentId: input.agentId,
 		projectId: input.projectId,
@@ -532,6 +572,43 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 					console.warn(
 						`[launch] transcript message persist failed for ${sessionId} seq ${seq} (fail-open, session continues): ${(persistErr as Error).message}`
 					);
+				}
+
+				// BL-7 Part B (D-027 FAST tier ENQUEUE) — count this turn against the PERSISTED
+				// cadence counters and, when due, enqueue a screened `memory_review` work_item.
+				// We map the runtime stream to the two cadence axes (§2.2): an assistant TEXT turn
+				// is a "user turn" tick; a tool USE is a "tool iteration" tick. The fork mines the
+				// recent RAW turn text (D-029), so we SCREEN it (D-026) here — BEFORE it is queued —
+				// reusing the same screen() the persist path uses; a planted secret in a turn is
+				// redacted/quarantined and NEVER queued raw. Best-effort (D-019): any fault is
+				// logged + swallowed so the stream keeps flowing and the spawn verdict is unchanged.
+				if (fastTierOn && (msg.kind === 'assistant_text' || msg.kind === 'tool_use')) {
+					try {
+						const delta = msg.kind === 'tool_use' ? { toolIters: 1 } : { userTurns: 1 };
+						const { userTurnCount, toolIterCount } = await bumpCounters(db, sessionId, delta);
+						const kind = dueReview(userTurnCount, toolIterCount, cadence);
+						if (kind) {
+							// Mine the recent raw turn tail (already-screened transcript parts) + re-screen
+							// the assembled text so the QUEUED payload can never carry a raw secret (D-026).
+							// The interview-exclusion lives in enqueueReview (loop.ts) — a kind='interview'
+							// session returns null (never enqueued); the per-session dedup coalesces to ONE
+							// pending review so rapid turns cannot spawn a storm (bounded by D-021 caps too).
+							const recent = transcriptParts.slice(-40).join('\n').slice(0, 16_000);
+							const turnText = screen(recent).text;
+							if (turnText.trim()) {
+								await enqueueReview(db, {
+									session: sessionId,
+									kind,
+									project: input.projectId,
+									turnText
+								});
+							}
+						}
+					} catch (fastErr) {
+						console.warn(
+							`[launch] fast-tier enqueue skipped for ${sessionId} (best-effort): ${(fastErr as Error).message}`
+						);
+					}
 				}
 				continue;
 			}

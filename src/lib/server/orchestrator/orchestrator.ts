@@ -41,6 +41,7 @@ import { getProject } from '../projects/repo';
 import { Semaphore } from './semaphore';
 import { runPostTask, type CommandRunner } from './post-task';
 import { claimNext, complete, enqueue, gcStale, spawnsSince, DAY_MS } from './workqueue';
+import { runReviewFork, makeWriteSurface, type ReviewKind } from '../memory/index';
 
 export type OrchMode = 'event' | 'manual' | 'periodic';
 
@@ -361,9 +362,44 @@ export class Orchestrator {
 	 * isolated-config + permissions.deny guardrail.
 	 */
 	async #runItem(
-		item: { id: string; payload: Record<string, unknown>; claimToken: string },
+		item: {
+			id: string;
+			workType?: string;
+			payload: Record<string, unknown>;
+			claimToken: string;
+			projectId?: string;
+			sessionId?: string;
+		},
 		permit: { release(): void }
 	): Promise<void> {
+		// BL-7 Part B (D-027 FAST tier DRAIN) — a `memory_review` work_item is the in-use writer
+		// fork, NOT a task spawn. It carries no taskId; the OLD #runItem read only payload.taskId
+		// and early-returned → the fork never ran. Dispatch it HERE, BEFORE the task-spawn path,
+		// so the fork drains under the SAME D-021 cap + claim-token + stale-GC the drain already
+		// enforces (no new uncapped spawn path). Best-effort: a fork failure marks the item failed
+		// and is logged, NEVER crashes the drain — mirroring the post-task best-effort pattern.
+		// The work_type is read from the row (claimNext.workType) OR the payload, whichever is set.
+		const workType = item.workType ?? (item.payload.work_type as string | undefined);
+		if (workType === 'memory_review') {
+			let reviewOk = false;
+			try {
+				// session/project are TOP-LEVEL work_item columns (enqueueReview wrote them there),
+				// surfaced by claimNext as item.sessionId/projectId — NOT inside payload. Forward both
+				// so the fork stamps m0033 provenance (originating session) onto every written row.
+				await this.#runReviewItem(item.payload, item.sessionId, item.projectId);
+				reviewOk = true;
+			} catch (err) {
+				console.warn(
+					`[orchestrator] memory_review ${item.id} fork failed (best-effort, item marked failed): ${(err as Error).message}`
+				);
+			} finally {
+				await complete(this.#db, item.id, item.claimToken, reviewOk ? 'done' : 'failed').catch(() => {});
+				permit.release();
+				void this.drain();
+			}
+			return;
+		}
+
 		const taskId = String(item.payload.taskId ?? '');
 		const projectId = String(item.payload.projectId ?? '');
 		let ok = false;
@@ -431,5 +467,44 @@ export class Orchestrator {
 			permit.release();
 			void this.drain();
 		}
+	}
+
+	/**
+	 * BL-7 Part B (D-027 FAST tier DRAIN) — run the in-use writer fork over one drained
+	 * `memory_review` work_item (loop.ts runReviewFork). ADD-only (D-028): the fork writes
+	 * memory/skill rows through the tool-whitelisted MemoryWriteSurface and NOTHING else (no
+	 * Db/exec/git/fs is reachable — the surface is the only capability it is handed). The review
+	 * LLM seam (extract / proposeSkills) comes from the orchestrator's memory dep — the SAME way
+	 * launchSession obtains it; in tests it is the injected mock. A missing memory dep (Ollama
+	 * down / no-credential boot) is an HONEST hard error (F-008): the fork CANNOT run without the
+	 * review LLM, so the item is marked failed — never silently completed as a fake success.
+	 *
+	 * The payload shape is the one enqueueReview wrote: `{ kind, turnText }` plus the row's
+	 * `session`/`project` links (carried as record-id strings). The turnText was ALREADY screened
+	 * at enqueue (launchSession), and store.ts re-screens every candidate BEFORE embed — so a
+	 * planted secret cannot be written raw on either side.
+	 */
+	async #runReviewItem(
+		payload: Record<string, unknown>,
+		sessionId?: string,
+		projectId?: string
+	): Promise<void> {
+		if (!this.#memory) {
+			throw new Error('memory_review drained but no memory loop is configured (review LLM unavailable)');
+		}
+		const { service, extract, proposeSkills } = this.#memory;
+		const kind = (payload.kind as ReviewKind | undefined) ?? 'memory';
+		const turnText = typeof payload.turnText === 'string' ? payload.turnText : '';
+		// session/project come from the work_item's top-level columns (claimNext), falling back to
+		// any value the payload happens to carry — never fabricated.
+		const session = sessionId ?? (payload.session != null ? String(payload.session) : undefined);
+		const project = projectId ?? (payload.project != null ? String(payload.project) : undefined);
+		const surface = makeWriteSurface(service.db, service.embedder);
+		await runReviewFork({
+			payload: { kind, turnText, session, project },
+			surface,
+			extract,
+			proposeSkills
+		});
 	}
 }

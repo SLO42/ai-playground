@@ -1599,6 +1599,72 @@ const m0041_session_peer_send_budget: Migration = {
 	`
 };
 
+// ── BL-6 CANNIBALIZE-SPEC §6 — runtime content-ingest source tracking ───────────────
+//
+// One row per ingest RUN / source (a URL fetch, a repo read, a file/text intake). The
+// capture→distill→screen→fence→embed→ingest pipeline (CANNIBALIZE-SPEC §4) creates a row
+// in `capturing` and walks it through the status enum; each ingested finding is a memory
+// row whose `provenance` (m0043) links back here, so a bad source can be traced + purged
+// (§7). `ref` is the url/repo/path — a NON-secret locator (D-026: secrets never land here);
+// `intent` is the operator's NL intent, SCREENED at the write boundary by the capture layer
+// (not the DB) before it is stored. `license` carries the declared/derived consent for
+// code-lifting (the foundry/AGENTS.md discipline, §2.2) — option<string> as it is unknown
+// for a pasted-text/URL source until distilled.
+//
+// IDEMPOTENT + ADDITIVE (F-015): a brand-new table, all DEFINE OVERWRITE, so it is clean
+// over a fresh DB, a re-run (apply-twice = no-op via the _migration ledger), and a
+// half-applied state (every statement is OVERWRITE → re-defining is a no-op). No row scan /
+// backfill (new table → no pre-existing rows). status/finding_count carry concrete non-NONE
+// DEFAULTs (§6.2) so a RETURN-AFTER write never reads NONE.
+const m0042_ingest_source: Migration = {
+	id: '0042_ingest_source',
+	up: `
+		DEFINE TABLE OVERWRITE ingest_source SCHEMAFULL;
+		DEFINE FIELD OVERWRITE kind   ON ingest_source TYPE string
+			ASSERT $value IN ["url","repo","file","text"];
+		-- The url / repo / path locator — NOT a secret (D-026; secrets never persist here).
+		DEFINE FIELD OVERWRITE ref    ON ingest_source TYPE string;
+		-- The operator's NL intent, SCREENED at the capture write boundary before it lands here.
+		DEFINE FIELD OVERWRITE intent ON ingest_source TYPE string;
+		-- Declared/derived license/consent for code-lifting (§2.2). Unknown until distilled → option.
+		DEFINE FIELD OVERWRITE license ON ingest_source TYPE option<string>;
+		DEFINE FIELD OVERWRITE status ON ingest_source TYPE string DEFAULT "capturing"
+			ASSERT $value IN ["capturing","distilling","ingesting","done","failed","quarantined"];
+		DEFINE FIELD OVERWRITE finding_count ON ingest_source TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE created_at   ON ingest_source TYPE datetime DEFAULT time::now();
+		-- Absent until the run reaches a terminal status — option (§6.1, coerced to ISO/NULL in the normalizer, F-013).
+		DEFINE FIELD OVERWRITE completed_at ON ingest_source TYPE option<datetime>;
+
+		DEFINE INDEX OVERWRITE ingest_source_status ON ingest_source FIELDS status;
+	`
+};
+
+// ── BL-6 CANNIBALIZE-SPEC §6 — provenance + utilization on the memory write path ────
+//
+// ADDITIVELY extend the memory row (NEVER a row reset, F-015) so an ingested finding
+// carries: (1) `provenance` → the originating ingest_source (untraceable knowledge is
+// forbidden, §2.2); (2) `applied_count` — the utilization signal (the `mark-applied` loop,
+// §4/§5: when a recalled ingested finding contributes to a good outcome it is incremented,
+// feeding recall ranking + the curator keep/prune); (3) `last_applied_at` — when it last
+// helped. A normal (non-ingested) memory simply leaves `provenance`/`last_applied_at` NONE
+// and `applied_count` at its DEFAULT 0 — no behaviour change for existing rows.
+//
+// IDEMPOTENT + ADDITIVE (F-015): three OVERWRITE field redefines on an existing table.
+// provenance/last_applied_at are option<…> so EVERY pre-existing memory row is already
+// conformant (NONE is legal) with NO backfill scan; applied_count carries a concrete
+// DEFAULT 0 (§6.2 — never read NONE on a RETURN-AFTER increment). Apply-twice = no-op
+// (ledger) and re-defining over a half-applied state is a no-op (OVERWRITE).
+const m0043_memory_provenance: Migration = {
+	id: '0043_memory_provenance',
+	up: `
+		DEFINE FIELD OVERWRITE provenance     ON memory TYPE option<record<ingest_source>>;
+		DEFINE FIELD OVERWRITE applied_count  ON memory TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE last_applied_at ON memory TYPE option<datetime>;
+
+		DEFINE INDEX OVERWRITE memory_by_provenance ON memory FIELDS provenance;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1646,5 +1712,7 @@ export const schemaMigrations: Migration[] = [
 	m0038_message_origin,
 	m0039_peer_message,
 	m0040_peer_message_dedup_namespace,
-	m0041_session_peer_send_budget
+	m0041_session_peer_send_budget,
+	m0042_ingest_source,
+	m0043_memory_provenance
 ];

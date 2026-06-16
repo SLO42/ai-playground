@@ -388,7 +388,7 @@
   }
   .warn {
     font: var(--type-body-sm);
-    color: var(--color-warning, var(--color-text-2));
+    color: var(--color-warn);
     margin: 0;
   }
   .empty {
@@ -506,7 +506,7 @@
     color: var(--color-success, #2e7d32);
   }
   .dl[data-op='del'] {
-    color: var(--color-danger, #c62828);
+    color: var(--color-error);
   }
   .diff-sum {
     font-size: var(--text-xs);
@@ -607,7 +607,7 @@
   }
   .action-err {
     font: var(--type-body-sm);
-    color: var(--color-danger, #c62828);
+    color: var(--color-error);
     margin: 0;
   }
   .action-ok {

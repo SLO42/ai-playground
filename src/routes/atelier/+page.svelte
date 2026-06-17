@@ -212,7 +212,7 @@
 </script>
 
 <svelte:head>
-  <title>Atelier — {lens === 'inbox' ? 'inbox' : 'timeline'}</title>
+  <title>{lens === 'inbox' ? 'Inbox' : 'Timeline'} — Atelier</title>
 </svelte:head>
 
 <section class="page">
@@ -300,11 +300,12 @@
               data-status={s}
               data-active={inboxStatus === s}
               aria-pressed={inboxStatus === s}
+              aria-label={counts ? `${STATUS_LABEL[s]}, ${counts[s]}` : STATUS_LABEL[s]}
               disabled={!connected}
               onclick={() => setStatus(s)}
             >
               {STATUS_LABEL[s]}
-              {#if counts}<span class="chip-count mono">{counts[s]}</span>{/if}
+              {#if counts}<span class="chip-count mono" aria-hidden="true">{counts[s]}</span>{/if}
             </button>
           {/each}
         </div>
@@ -476,7 +477,7 @@
     color: var(--color-text-muted);
   }
   .title {
-    font: var(--type-title, 600 1.5rem/1.2 inherit);
+    font: var(--type-h1);
     color: var(--color-text);
     margin: 0;
   }

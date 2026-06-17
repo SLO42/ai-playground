@@ -77,6 +77,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Staffing — Atelier</title>
+</svelte:head>
+
 <section class="page">
   <header class="page-head">
     <span class="eyebrow">workforce · BL-3 capability matching</span>

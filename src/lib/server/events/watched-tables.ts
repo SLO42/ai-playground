@@ -106,7 +106,14 @@ export const WATCHED_TABLES = [
 	// ingest_source — /cannibalize (BL-6 Ingest front door: a run walks capturing→distilling→
 	// ingesting→done|quarantined|failed; the page live-updates progress + the runs feed off
 	// this watcher) — CANNIBALIZE-SPEC §5
-	'ingest_source'
+	'ingest_source',
+	// review_proposal — /agents/proposals (§5 drift→proposal queue: author challenger /
+	// re-gauntlet / swap lifecycle live-updates); /agents/staffing (BL-3 staffing proposals) —
+	// WORKFORCE-SPEC §5
+	'review_proposal',
+	// project_staff — /agents/staffing (BL-3 capability-matching: staff/un-staff decisions
+	// re-derive the staffing board live) — WORKFORCE-SPEC §6 / BL-3
+	'project_staff'
 ] as const;
 
 /** One of the boot-watched table names. */

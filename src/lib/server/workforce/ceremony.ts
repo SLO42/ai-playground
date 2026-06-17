@@ -1044,8 +1044,10 @@ export interface CeremonyAuthoringState {
  */
 export async function ceremonyAuthoringState(db: Db): Promise<CeremonyAuthoringState> {
 	const roles = await listRoles(db);
-	// Only the launch roles (the day-0 pool). A role with no version is still surfaced so
-	// the operator sees an honest 'no draft version' rather than a silently dropped role.
+	// Every seeded catalog role — the 5 §8 launch roles AND the §7b researcher (6th role).
+	// The researcher MUST surface here: ceremony step ② is the only key-confirm surface, so
+	// its DRAFT keys can only be confirmed via authoring. A role with no version is still
+	// surfaced so the operator sees an honest 'no draft version' rather than a dropped role.
 	const out: RoleAuthoringState[] = [];
 	let keysOutstanding = 0;
 	for (const role of roles) {

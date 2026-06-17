@@ -79,8 +79,18 @@ const TASK_DESC =
 	`Run the bash command: echo ${BASH_MARKER}. ` +
 	`If you are not permitted to run Bash, reply with exactly the single word DENIED and do nothing else.`;
 
-// Run one real session on the throwaway project+task and return the joined transcript text.
-async function runSessionTranscript(): Promise<string> {
+/** One session's transcript, split by the m0037 `kind` discriminator. `toolOutput` is the
+ *  joined content of `tool_result` rows ONLY — the actual Bash execution output. `text` is the
+ *  full joined transcript (assistant prose + thinking + tools). The marker lives in the TASK
+ *  prompt, so a denied agent echoes it in its assistant_text narration; the read-back proof must
+ *  therefore hinge on `toolOutput` (did Bash actually run?), never on the whole transcript. */
+interface SessionTranscript {
+	text: string;
+	toolOutput: string;
+}
+
+// Run one real session on the throwaway project+task and return its transcript, kind-split.
+async function runSessionTranscript(): Promise<SessionTranscript> {
 	const backend = new ClaudeCliBackend({ oauthToken: TOKEN!, maxTurns: 3, timeoutMs: 180_000 });
 	const runtime = new ClaudeCodeRuntime({
 		backend,
@@ -105,11 +115,16 @@ async function runSessionTranscript(): Promise<string> {
 	});
 	expect(res.status).toBe('done');
 	const sid = new StringRecordId(res.sessionId);
-	const [msgs] = await db.query<[Array<Record<string, unknown>>]>(
+	const [msgs] = await db.query<[Array<{ content?: unknown; kind?: unknown }>]>(
 		`SELECT * FROM message WHERE session = $sid ORDER BY at ASC;`,
 		{ sid }
 	);
-	return msgs.map((m) => String(m.content ?? '')).join('\n');
+	const text = msgs.map((m) => String(m.content ?? '')).join('\n');
+	const toolOutput = msgs
+		.filter((m) => m.kind === 'tool_result')
+		.map((m) => String(m.content ?? ''))
+		.join('\n');
+	return { text, toolOutput };
 }
 
 beforeAll(async () => {
@@ -158,7 +173,9 @@ live('LIVE 2.11 — a dashboard config edit is ACTIVE in a real launched session
 		async () => {
 			// ── A: baseline — project config allows Bash; the real session RUNS Bash ──────────
 			const before = await runSessionTranscript();
-			expect(before).toContain(BASH_MARKER); // the bash command actually ran
+			// The bash command actually RAN — its output (the marker) is in a tool_result row,
+			// not merely the model echoing the prompt. This is the execution evidence.
+			expect(before.toolOutput).toContain(BASH_MARKER);
 
 			// ── The dashboard edit, through the BUILT config MANAGER (D-010 contract) ─────────
 			// validate → diff + confirm token → write file → re-sync the cc_* mirror.
@@ -192,10 +209,13 @@ live('LIVE 2.11 — a dashboard config edit is ACTIVE in a real launched session
 
 			// ── B: after the edit — the SAME task in a fresh real session is DENIED Bash ───────
 			const after = await runSessionTranscript();
-			// The read-back: the newly-added deny is ACTIVE — the marker can no longer appear
-			// (the command was blocked) and the agent reports the denial.
-			expect(after).not.toContain(BASH_MARKER);
-			expect(after.toUpperCase()).toContain('DENIED');
+			// The read-back: the newly-added deny is ACTIVE — Bash was BLOCKED, so the command's
+			// output (the marker) can never reach a tool_result row. The marker may still appear in
+			// the assistant's prose (the denied agent quotes the prompt's `echo HELLO_FROM_BASH_2_11`
+			// while explaining the refusal), so the proof hinges on tool_result, NOT the whole
+			// transcript — and the agent reports the denial.
+			expect(after.toolOutput).not.toContain(BASH_MARKER);
+			expect(after.text.toUpperCase()).toContain('DENIED');
 		},
 		400_000
 	);

@@ -89,7 +89,11 @@ describe('day-0 ceremony DRIVER — authoring half (CER1)', () => {
 
 		const state = await ceremonyAuthoringState(db);
 		expect(state.seeded).toBe(true);
-		expect(state.roles.length).toBe(5);
+		// 5 §8 LAUNCH roles + the §7b researcher (6th catalog role, seeded by the same action,
+		// draft/un-certified). It MUST surface here: ceremony step ② is the only key-confirm
+		// surface, so the researcher's 4 DRAFT keys can only be confirmed via authoring.
+		expect(state.roles.length).toBe(6);
+		expect(state.roles.some((r) => r.roleSlug === 'researcher')).toBe(true);
 		// Every role has a draft prompt core (step ①) + ≥1 candidate fixture (scorer_control
 		// excluded), all UNKEYED at day 0 (honest: keysOutstanding > 0).
 		for (const r of state.roles) {
@@ -262,7 +266,8 @@ describe('day-0 ceremony DRIVER — execution half (CER2)', () => {
 	it('SHADOW: execution state at day 0 — every role NOT runnable + NOT certified, no proofs', async () => {
 		const exec = await ceremonyExecutionState(db);
 		expect(exec.seeded).toBe(true);
-		expect(exec.roles.length).toBe(5);
+		// 5 §8 LAUNCH roles + the §7b researcher (6th catalog role) — all un-certified at day 0.
+		expect(exec.roles.length).toBe(6);
 		expect(exec.allCertified).toBe(false);
 		expect(exec.certifiedCount).toBe(0);
 		for (const r of exec.roles) {

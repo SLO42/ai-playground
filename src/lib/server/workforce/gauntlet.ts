@@ -69,6 +69,8 @@ import {
 	type ScoringKey
 } from './scorer';
 import { parseFindingsFile } from './findings';
+import { RESEARCHER_BASE_TOOLS, RESEARCHER_WEB_TOOLS } from './research';
+import { serveStubWeb, stubCorpusOf, type StubPage, type StubWeb } from './stub-web';
 
 function link(id: string): StringRecordId {
 	return new StringRecordId(assertRecordId(id));
@@ -270,9 +272,25 @@ export function materializeWorkspace(
 export function buildInterviewPrompt(
 	role: RoleRow,
 	version: RoleVersionRow,
-	fixtures: GauntletFixtureRow[]
+	fixtures: GauntletFixtureRow[],
+	/** §7b.4 — when set, the loopback stub-web origin the researcher's fetch is allowlisted
+	 *  to. The candidate may fetch this origin ONLY (the live internet is unreachable). */
+	stubOrigin?: string
 ): string {
 	const slugs = fixtures.map((f) => `- ${f.slug}/`).join('\n');
+	const webBlock = stubOrigin
+		? [
+				'',
+				'## Web research (allowlisted)',
+				'',
+				`This is a MANAGED web-research interview. A controlled stub-web is served at`,
+				`${stubOrigin} — your WebFetch is ALLOWLISTED to that origin ONLY (the live internet`,
+				`is not reachable here). Each fixture folder also contains the stub pages as local`,
+				`files (page-*.md) carrying their canonical URL in a stub-source comment; you may read`,
+				`them directly or fetch them at the stub origin. Cross-check claims across pages; a`,
+				`claim with no corroborating second source is reported, never asserted as fact.`
+			]
+		: [];
 	return [
 		version.prompt_core.trim(),
 		'',
@@ -280,6 +298,7 @@ export function buildInterviewPrompt(
 		'',
 		`You are reviewing the work under your working directory. Each fixture is a folder:`,
 		slugs,
+		...webBlock,
 		'',
 		'Apply your methodology above to EVERY fixture, then write your findings to a file',
 		'named `findings.json` at the WORKSPACE ROOT (your working directory). The file must',
@@ -487,9 +506,22 @@ async function attemptGauntlet(deps: GauntletDeps, ctx: AttemptContext): Promise
 	let ws: string | undefined;
 	let sessionId: string | undefined;
 	let sessionTerminal = false;
+	// §7b.4 — a web-capable researcher interview serves a LOOPBACK stub-web; torn down in
+	// finally (F-014). undefined for every non-web role (the common code-read path).
+	let stub: StubWeb | undefined;
 
 	try {
 		ws = materializeWorkspace(workspaceRoot, run.id, fixtures);
+
+		// §7b.4 — for a web-capable researcher, stand up the loopback stub-web from the
+		// fixtures' stub pages. The candidate's WebFetch is allowlisted to this origin only;
+		// the live internet is unreachable in the gauntlet. Non-web roles skip this entirely.
+		const stubPages: StubPage[] = isWebCapable(version)
+			? stubCorpusOf(fixtures.map((f) => ({ slug: f.slug, work: f.work })))
+			: [];
+		if (isWebCapable(version) && stubPages.length > 0) {
+			stub = await serveStubWeb(stubPages);
+		}
 
 		// The candidate session row: kind='interview', role identity links, NO project.
 		const [created] = await db.query<[Array<{ id: unknown }>]>(
@@ -521,6 +553,12 @@ async function attemptGauntlet(deps: GauntletDeps, ctx: AttemptContext): Promise
 		const gatesConfig = loadGatesConfig(join(configDir, 'gates.yaml'));
 
 		const capabilities = capabilitySetOf(version);
+		// §7b.4 — a web-capable researcher interview adds the research base + web tools to the
+		// code-read allow-list; the candidate fetches the loopback stub-web (allowlisted to it
+		// ONLY). A non-web role keeps the existing code-read allow-list unchanged.
+		const toolAllow = stub
+			? [...new Set([...RESEARCHER_BASE_TOOLS, ...declaredWebTools(version)])]
+			: ['Read', 'Glob', 'Grep', 'Write'];
 		const req: SpawnRequest = {
 			agentId,
 			projectId: run.id, // identifier only — the session has NO project link (§3.1)
@@ -530,10 +568,10 @@ async function attemptGauntlet(deps: GauntletDeps, ctx: AttemptContext): Promise
 			task: {
 				id: run.id,
 				title: `Interview: ${role.name} v${version.version}`,
-				description: buildInterviewPrompt(role, version, fixtures)
+				description: buildInterviewPrompt(role, version, fixtures, stub?.origin)
 			},
 			budgets: { thinking: 'high', toolCalls: 50, concurrency: 1 },
-			toolPolicy: { allow: ['Read', 'Glob', 'Grep', 'Write'] },
+			toolPolicy: { allow: toolAllow },
 			...(capabilities ? { capabilities } : {}),
 			editScope: { scopeRoots: [ws], destructiveBash: gatesConfig.destructiveBash },
 			sessionKind: 'interview' // §3.2 — forces the sterile composition (fail closed)
@@ -804,7 +842,35 @@ async function attemptGauntlet(deps: GauntletDeps, ctx: AttemptContext): Promise
 				console.warn(`[gauntlet] workspace teardown failed for ${ws}: ${(err as Error).message}`);
 			}
 		}
+		// §7b.4 — MANDATORY stub-web teardown (F-014): close the loopback server on EVERY
+		// exit path so no interview ever leaks a listening socket. Tolerates a half-state.
+		if (stub) {
+			await stub.close().catch((err) => {
+				console.warn(`[gauntlet] stub-web teardown failed: ${(err as Error).message}`);
+			});
+		}
 	}
+}
+
+// ── §7b.4 researcher interview substrate (web-capable versions only) ────────────────
+//
+// The researcher is the only role whose capabilities carry web tools (WebSearch/WebFetch,
+// recorded under `tools` per research.RESEARCHER_CAPABILITIES). For such a version the
+// interview substrate is a LOOPBACK STUB-WEB (the live web is non-deterministic and cannot
+// be the substrate, §7b.4): the fixtures' stub pages are served on 127.0.0.1 and the
+// candidate's web fetch is ALLOWLISTED to that stub origin ONLY. A non-web role gets the
+// existing code-read toolPolicy unchanged (no stub, no web tools).
+
+/** The web tools a role_version declares under capabilities.tools (research grant). */
+function declaredWebTools(version: RoleVersionRow): string[] {
+	const t = (version.capabilities as Record<string, unknown>).tools;
+	if (!Array.isArray(t)) return [];
+	return t.filter((x): x is string => typeof x === 'string' && RESEARCHER_WEB_TOOLS.includes(x));
+}
+
+/** True when this version is a web-capable researcher (its interview needs the stub-web). */
+function isWebCapable(version: RoleVersionRow): boolean {
+	return declaredWebTools(version).length > 0;
 }
 
 /** Normalize a role_version's FLEXIBLE capabilities object into the runtime shape. */

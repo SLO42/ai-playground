@@ -31,6 +31,12 @@ export * from './ceremony';
 // Option-A independent cheap-tier verifier orchestration (author≠checker). Seeds nothing,
 // certifies nothing — the engine a research task + the gauntlet call.
 export * from './research';
+// WORKFORCE-SPEC §7b.4 — the researcher INTERVIEW SUBSTRATE: the loopback stub-web (a
+// controlled mini-web served on 127.0.0.1, mirroring the Thunderstore stub precedent) and
+// the fail-closed fetch ALLOWLIST (the interview fetch reaches the stub ONLY — the live
+// internet is unreachable in the gauntlet, §7b.4). Serves DATA only; research.fencePage
+// fences the bytes (D-026); neither executes page content.
+export * from './stub-web';
 // TASK 16.7b (W-D7c surfaces) — the read-only workforce panel aggregator feeding the
 // /agents workforce surface (§8 'Surfaces' + 'Degraded/empty states'). Read-only:
 // reuses repo/deployability/track-record, no row writes, no gauntlet_key read.

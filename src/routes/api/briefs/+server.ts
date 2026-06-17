@@ -12,7 +12,12 @@ import { json, error } from '@sveltejs/kit';
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import { IdentifierError } from '$lib/server/db/validate';
 import { applyBriefDecision, BriefError, getBrief, type BriefAction } from '$lib/server/projects';
-import { applyHireDecision, HireGateError } from '$lib/server/workforce';
+import {
+	applyHireDecision,
+	HireGateError,
+	StaffingGateError,
+	WorkforceInputError
+} from '$lib/server/workforce';
 import type { RequestHandler } from './$types';
 
 const ACTIONS: readonly BriefAction[] = ['approve', 'reject', 'defer'];
@@ -70,6 +75,13 @@ export const POST: RequestHandler = async ({ request }) => {
 		// Boundary errors are 4xx with their honest names, never a masked 500.
 		if (err instanceof IdentifierError) throw error(400, 'invalid brief id');
 		if (err instanceof HireGateError) throw error(409, err.message);
+		// HR-5 staffing feed: an approve with a STALE/wrong-kind/disposed staffingProposal makes
+		// confirmStaffing throw StaffingGateError / WorkforceInputError — a fail-closed boundary
+		// violation, not a server fault. Surface it as a clean 409 (never a masked 500). The cert
+		// flip already landed (effect-then-ceremony); the brief stays open until a valid proposal
+		// re-confirms (or the operator certifies-only by omitting it).
+		if (err instanceof StaffingGateError) throw error(409, err.message);
+		if (err instanceof WorkforceInputError) throw error(409, err.message);
 		if (err instanceof BriefError) throw error(409, err.message);
 		if (err && typeof err === 'object' && 'status' in err) throw err;
 		throw error(500, (err as Error).message);

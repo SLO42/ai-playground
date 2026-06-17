@@ -32,7 +32,7 @@ import { seedRecruiterRole, RECRUITER_DRAFT_KEYS } from './launch-fixtures';
 import { runCertificationGauntlet, RECRUITER_SLUG } from './recruiter';
 import { type GauntletDeps } from './gauntlet';
 import { setCapabilityNeeds } from './capability-match';
-import { proposeStaffing } from './staffing-proposal';
+import { proposeStaffing, rejectStaffing, StaffingGateError } from './staffing-proposal';
 import { getProjectStaff } from './staff';
 import {
 	buildHireDecision,
@@ -444,6 +444,28 @@ describe('applyHireDecision — approve flips/feeds, reject neither (B4)', () =>
 		const staff = await getProjectStaff(db, project, seed.role.id);
 		expect(staff?.enabled).toBe(true);
 		expect(staff?.source).toBe('pm_validated');
+	}, 40_000);
+
+	it('approve with a STALE (disposed) staffingProposal throws the NAMED StaffingGateError (route → 409, not a masked 500)', async () => {
+		// GAP-2 regression: confirmStaffing fail-closes on a disposed proposal with StaffingGateError /
+		// WorkforceInputError — NOT a generic Error. The /api/briefs handler maps those to a clean 409.
+		// Here we assert applyHireDecision propagates the NAMED error verbatim (the route's catch keys on
+		// the class), so a stale proposal can never surface as a raw 500.
+		const seed = await seedTarget();
+		const runId = await runToTerminal(seed, perfectFindings);
+		await swapActiveVersion(db, seed.role.id, seed.version.id);
+		const project = await freshProject(seed.defectClass);
+		const { proposal } = await proposeStaffing(db, { project, role: seed.role.id });
+		// Dispose the proposal so it is no longer 'proposed' (the operator rejected/withdrew it).
+		await rejectStaffing(db, { proposal: proposal.id, reason: 'stale' });
+
+		const brief = await raiseHireBrief(db, runId);
+		await expect(
+			applyHireDecision(db, brief.id, 'approve', {
+				operatorConfirmed: true,
+				staffingProposal: proposal.id
+			})
+		).rejects.toBeInstanceOf(StaffingGateError);
 	}, 40_000);
 
 	it('RED-TEAM B4: REJECT flips NO cert and staffs NOTHING', async () => {

@@ -103,15 +103,27 @@
 	// ── TASK 16.4 — decision briefs (WORKFORCE-SPEC §8): the tray IS the decisions
 	// inbox. A decide POST applies the mechanical effects server-side; failure is
 	// surfaced honestly (the brief stays open — the live state stands).
+	//
+	// HR-5 (HR-RECRUITER-SPEC §7.5) — a `cert_hire` brief is the OPERATOR HIRE-GATE (B4):
+	// its APPROVE flips a cert, so the server REQUIRES an explicit operator confirm
+	// (operatorConfirmed:true) and refuses anything else with a 409. It has NO defer
+	// (approve/reject only — the candidate stays open until decided). The generic decide()
+	// alone would always 409 on approve and 400 on defer, so the kind drives the wiring.
+	const isCertHire = (b: DecisionBriefRow) => b.artifact_kind === 'cert_hire';
 	let briefError = $state<string | null>(null);
-	async function decide(id: string, action: 'approve' | 'reject' | 'defer') {
+	async function decide(b: DecisionBriefRow, action: 'approve' | 'reject' | 'defer') {
 		busy = true;
 		briefError = null;
 		try {
+			const body: Record<string, unknown> = { id: b.id, action };
+			// B4 — an approve on the hire-gate carries the operator's explicit confirm; without it
+			// the server fail-closes (HireGateError → 409) and the cert never flips. Staffing is a
+			// SEPARATE D-039 act on the staffing board (optional staffingProposal omitted here).
+			if (isCertHire(b) && action === 'approve') body.operatorConfirmed = true;
 			const res = await fetch('/api/briefs', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ id, action })
+				body: JSON.stringify(body)
 			});
 			if (!res.ok) {
 				const detail = (await res.json().catch(() => null)) as { message?: string } | null;
@@ -235,15 +247,19 @@
 						</ul>
 						{#if b.net_tradeoff}<p class="brief-net">{b.net_tradeoff}</p>{/if}
 						<div class="brief-actions">
-							<button class="brief-btn approve" type="button" disabled={busy} onclick={() => decide(b.id, 'approve')}>
+							<button class="brief-btn approve" type="button" disabled={busy} onclick={() => decide(b, 'approve')}>
 								Approve
 							</button>
-							<button class="brief-btn" type="button" disabled={busy} onclick={() => decide(b.id, 'reject')}>
+							<button class="brief-btn" type="button" disabled={busy} onclick={() => decide(b, 'reject')}>
 								Reject
 							</button>
-							<button class="brief-btn" type="button" disabled={busy} onclick={() => decide(b.id, 'defer')}>
-								Defer
-							</button>
+							{#if !isCertHire(b)}
+								<!-- HR-5 (B4): a hire-gate brief is approve/reject only — there is no defer
+								     (the candidate stays open until decided), so the control is omitted. -->
+								<button class="brief-btn" type="button" disabled={busy} onclick={() => decide(b, 'defer')}>
+									Defer
+								</button>
+							{/if}
 						</div>
 					</article>
 				{/each}

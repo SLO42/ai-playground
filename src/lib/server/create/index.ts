@@ -22,6 +22,7 @@ export {
 	ProposalContractError,
 	SecretEchoError,
 	StaleProposalError,
+	ProposalPathError,
 	type CreateBrief,
 	type CreateHints,
 	type CreationProposal,
@@ -47,6 +48,8 @@ export {
 	ScaffoldPathError,
 	ScaffoldSecretError,
 	ScaffoldFailedError,
+	ConcurrentCreateError,
+	PostRegisterWriterError,
 	type ExecuteCreationOptions,
 	type ExecuteCreationResult
 } from './execute';

@@ -12,6 +12,7 @@ import {
 	resolveAdaptiveConfig,
 	bundleToBudgets,
 	INTENT_CLASSES,
+	MODEL_IDS,
 	ConfigError,
 	type Orchestration
 } from './load';
@@ -39,6 +40,60 @@ describe('loadAgentPool — YAML', () => {
 	it('throws ConfigError (not a raw fs error) for a missing file', () => {
 		expect(() => loadAgentPool(join(FIX, 'does-not-exist.yaml'))).toThrow(ConfigError);
 	});
+
+	// ── CA-H3 — fail closed on a retired/unknown CLAUDE-provider tier model id ─────────
+	const REAL_POOL = join(process.cwd(), 'config', 'agent-pool.yaml');
+
+	it('SHIPPED agent-pool.yaml loads clean (claude tiers carry canonical MODEL_IDS)', () => {
+		const pool = loadAgentPool(REAL_POOL);
+		expect(pool.tiers.opus.model).toBe('claude-opus-4-8');
+		// every claude-provider tier in the shipped config is a known model id
+		for (const t of Object.values(pool.tiers)) {
+			if (t.provider === 'claude') expect(MODEL_IDS).toContain(t.model);
+		}
+	});
+
+	it('rejects a retired claude tier model id (fable-5) at the boundary', () => {
+		expect(() =>
+			loadAgentPool(REAL_POOL, {
+				_inject: { tiers: { opus: { provider: 'claude', model: 'claude-fable-5' } }, slots: [] }
+			})
+		).toThrow(ConfigError);
+	});
+
+	it('rejects an unknown/typo claude tier model id at the boundary', () => {
+		expect(() =>
+			loadAgentPool(REAL_POOL, {
+				_inject: { tiers: { opus: { provider: 'claude', model: 'claude-made-up-9' } }, slots: [] }
+			})
+		).toThrow(ConfigError);
+	});
+
+	it('rejects an empty claude tier model id (shadow: empty input)', () => {
+		expect(() =>
+			loadAgentPool(REAL_POOL, {
+				_inject: { tiers: { opus: { provider: 'claude', model: '   ' } }, slots: [] }
+			})
+		).toThrow(ConfigError);
+	});
+
+	it('rejects a tier with a non-string model (shadow: nil/wrong-type input)', () => {
+		expect(() =>
+			loadAgentPool(REAL_POOL, {
+				_inject: { tiers: { opus: { provider: 'claude' } }, slots: [] }
+			})
+		).toThrow(ConfigError);
+	});
+
+	it('does NOT bind a non-claude provider tier to the Claude allowlist (ollama gpt-oss)', () => {
+		const pool = loadAgentPool(REAL_POOL, {
+			_inject: {
+				tiers: { local: { provider: 'ollama', model: 'gpt-oss:20b' } },
+				slots: [{ id: 'l', tier: 'local', role: 'local' }]
+			}
+		});
+		expect(pool.tiers.local.model).toBe('gpt-oss:20b');
+	});
 });
 
 describe('loadModels — JSON5', () => {
@@ -56,6 +111,51 @@ describe('loadModels — JSON5', () => {
 				}
 			})
 		).toThrow(/\/v1/);
+	});
+
+	// ── CA-H3 — fail closed on a retired/unknown id in the `claude` provider's models list
+	it('accepts a claude provider whose models are all canonical MODEL_IDS', () => {
+		const models = loadModels(join(FIX, 'models.json5'), {
+			_inject: {
+				providers: {
+					claude: { endpoint: 'https://api.anthropic.com', models: [...MODEL_IDS] }
+				}
+			}
+		});
+		expect(models.providers.claude.models).toEqual([...MODEL_IDS]);
+	});
+
+	it('rejects a retired (fable-5) id in the claude provider models list', () => {
+		expect(() =>
+			loadModels(join(FIX, 'models.json5'), {
+				_inject: {
+					providers: {
+						claude: { endpoint: 'https://api.anthropic.com', models: ['claude-opus-4-8', 'claude-fable-5'] }
+					}
+				}
+			})
+		).toThrow(ConfigError);
+	});
+
+	it('rejects an unknown/typo id in the claude provider models list', () => {
+		expect(() =>
+			loadModels(join(FIX, 'models.json5'), {
+				_inject: {
+					providers: {
+						claude: { endpoint: 'https://api.anthropic.com', models: ['claude-made-up-9'] }
+					}
+				}
+			})
+		).toThrow(ConfigError);
+	});
+
+	it('does NOT bind a non-claude provider models list to the Claude allowlist (ollama)', () => {
+		const models = loadModels(join(FIX, 'models.json5'), {
+			_inject: {
+				providers: { ollama: { endpoint: 'http://127.0.0.1:11434', models: ['gpt-oss:20b'] } }
+			}
+		});
+		expect(models.providers.ollama.models).toContain('gpt-oss:20b');
 	});
 });
 

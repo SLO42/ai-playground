@@ -751,6 +751,27 @@ export function loadAgentPool(file: string, opts: LoadOpts = {}): AgentPool {
 	if (!Array.isArray(slots)) {
 		throw new ConfigError('agent-pool: "slots" must be a list', file);
 	}
+	// CA-H3 — fail closed on a retired/unknown Claude model id (claude-fable-5 RETIRED).
+	// Mirrors loadWorkforce's CA-0 allowlist check: a spawn on a non-existent model is
+	// worse than a boot failure. Scope: ONLY the `claude` provider (the registered Claude
+	// Code backend, providers/index.ts) is bound to MODEL_IDS; non-Claude providers
+	// (e.g. ollama → gpt-oss:20b) legitimately carry ids outside the Claude allowlist, so
+	// they are left to their own provider's validation rather than false-rejected here.
+	for (const [name, tier] of Object.entries(tiers as Record<string, unknown>)) {
+		if (!tier || typeof tier !== 'object') {
+			throw new ConfigError(`agent-pool: tier "${name}" must be a mapping`, file);
+		}
+		const t = tier as Record<string, unknown>;
+		if (typeof t.provider !== 'string' || typeof t.model !== 'string') {
+			throw new ConfigError(`agent-pool: tier "${name}" needs string provider/model`, file);
+		}
+		if (t.provider === 'claude' && !isValidModelId(t.model.trim())) {
+			throw new ConfigError(
+				`agent-pool: tier "${name}" model "${t.model.trim()}" is not a known model id (one of: ${MODEL_IDS.join(', ')})`,
+				file
+			);
+		}
+	}
 	const tierNames = new Set(Object.keys(tiers as object));
 	for (const slot of slots) {
 		if (!slot || typeof slot !== 'object') {
@@ -789,6 +810,20 @@ export function loadModels(file: string, opts: LoadOpts = {}): ModelsConfig {
 		}
 		if (!Array.isArray(p.models) || p.models.some((m) => typeof m !== 'string')) {
 			throw new ConfigError(`models: provider "${name}" needs a list of model ids`, file);
+		}
+		// CA-H3 — for the `claude` provider, every advertised model id must be a known,
+		// non-retired MODEL_IDS member (fable-5 RETIRED). A retired/typo'd id here would let
+		// routing pick a model that no longer exists; fail closed instead. Other providers
+		// (e.g. ollama → gpt-oss:20b) carry non-Claude ids and are not bound to this allowlist.
+		if (name === 'claude') {
+			for (const m of p.models as string[]) {
+				if (!isValidModelId(m.trim())) {
+					throw new ConfigError(
+						`models: provider "claude" model "${m.trim()}" is not a known model id (one of: ${MODEL_IDS.join(', ')})`,
+						file
+					);
+				}
+			}
 		}
 		// Project rule: the local Ollama endpoint must NOT carry a /v1 suffix.
 		if (name === 'ollama' && /\/v1\/?$/.test(p.endpoint)) {

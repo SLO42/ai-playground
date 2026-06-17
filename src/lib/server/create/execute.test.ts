@@ -18,7 +18,8 @@ import {
 	generateCreationProposal,
 	type CreateBrief,
 	type ProposalGenerator,
-	StaleProposalError
+	StaleProposalError,
+	ProposalPathError
 } from './plan';
 import {
 	executeCreation,
@@ -27,6 +28,8 @@ import {
 	ScaffoldPathError,
 	ScaffoldSecretError,
 	ScaffoldFailedError,
+	ConcurrentCreateError,
+	PostRegisterWriterError,
 	type ExecuteCreationOptions
 } from './execute';
 import { slugify } from '../scanner/detect';
@@ -215,33 +218,66 @@ describe('executeCreation — gate (D-010 stale token)', () => {
 });
 
 describe('executeCreation — red-team D-018 path escape', () => {
-	it('a dirLayout entry that escapes the project root fails closed (ScaffoldPathError), no row, no escape', async () => {
-		const env = await makeEnvelope('ca2 escape', {
-			dirLayout: ['src/', '../../etc/pwned.txt']
-		});
-		await expect(executeCreation(db, env, { codeRoot })).rejects.toBeInstanceOf(ScaffoldPathError);
-		// No phantom row, and the partial dir was removed (cleanup) — nothing escaped.
+	// CA-H1: a `..`-traversal dirLayout entry is now rejected at the PLAN trust boundary
+	// (ProposalPathError, in generateCreationProposal) BEFORE it can earn a confirmToken or reach
+	// executeCreation — so the escape never gets near disk. The executor's resolveEntry remains the
+	// second line of defense (its own unit covers it); here we prove the proposal can't even be built.
+	it('a dirLayout entry that escapes the project root is rejected at proposal time (ProposalPathError), no envelope, no escape', async () => {
+		await expect(makeEnvelope('ca2 escape', { dirLayout: ['src/', '../../etc/pwned.txt'] })).rejects.toBeInstanceOf(
+			ProposalPathError
+		);
+		// No phantom row, no scaffold dir, nothing escaped — the escape never reached execute.
 		expect(await getProject(db, 'project:ca2_escape')).toBeNull();
 		expect(await exists(join(codeRoot, 'ca2_escape'))).toBe(false);
 		expect(await exists(join(codeRoot, '..', '..', 'etc', 'pwned.txt'))).toBe(false);
 	}, 60_000);
+
+	// Defense in depth: if an escaping entry somehow bypassed the plan boundary and a fresh-token
+	// envelope reached the executor directly, resolveEntry STILL fails closed (ScaffoldPathError).
+	it('the executor still fails closed (ScaffoldPathError) if an escaping entry reaches it directly', async () => {
+		const env = await makeEnvelope('ca2 escape2');
+		// Inject the escape AND re-mint a matching confirmToken so the D-010 gate passes and the
+		// dirLayout reaches resolveEntry — isolating the executor's own second-line check.
+		const proposal = { ...env.proposal, dirLayout: ['src/', '../../etc/pwned2.txt'] };
+		const { computeConfirmToken } = await import('./plan');
+		const tampered = { ...env, proposal, confirmToken: computeConfirmToken(env.brief, proposal) };
+		await expect(executeCreation(db, tampered, { codeRoot })).rejects.toBeInstanceOf(ScaffoldPathError);
+		expect(await getProject(db, 'project:ca2_escape2')).toBeNull();
+		expect(await exists(join(codeRoot, 'ca2_escape2'))).toBe(false);
+		expect(await exists(join(codeRoot, '..', '..', 'etc', 'pwned2.txt'))).toBe(false);
+	}, 60_000);
 });
 
 describe('executeCreation — red-team D-026 secret in scaffold content', () => {
-	it('a literal secret in a field that reaches a written file fails closed (ScaffoldSecretError), no row', async () => {
-		// purpose flows into README content; CA-1 screens TARGET CONFIGS for secrets but not the macro
-		// — so a planted key here is caught at the scaffold-write boundary (defense in depth, D-026).
-		const env = await makeEnvelope('ca2 secret', {
-			planMacro: {
-				purpose: 'Use the key sk-ant-deadbeefdeadbeef for auth.',
-				vision: 'A tool reached for when tuning a run.',
-				role: 'Solo maintainer.',
-				definition_of_done: 'Runs without crash.'
-			}
-		});
-		await expect(executeCreation(db, env, { codeRoot })).rejects.toBeInstanceOf(ScaffoldSecretError);
+	const SECRET_MACRO = {
+		// Token assembled at runtime so the source carries no contiguous provider-token pattern
+		// (GitHub push-protection) — runtime value is full-format so the scaffold-write screen fires.
+		purpose: 'Use the key ' + ('sk-' + 'ant-' + 'deadbeefdeadbeef') + ' for auth.',
+		vision: 'A tool reached for when tuning a run.',
+		role: 'Solo maintainer.',
+		definition_of_done: 'Runs without crash.'
+	};
+
+	// CA-H1 Gap-2: the plan macro (and every agent-authored free-text field) is now secret-screened at
+	// the PLAN trust boundary, so a key planted in purpose is caught BEFORE the proposal earns a
+	// confirmToken (SecretEchoError) — earlier than the old scaffold-write catch.
+	it('a literal secret in the plan macro is rejected at proposal time (SecretEchoError), no envelope', async () => {
+		const { SecretEchoError } = await import('./plan');
+		await expect(makeEnvelope('ca2 secret', { planMacro: SECRET_MACRO })).rejects.toBeInstanceOf(SecretEchoError);
 		expect(await getProject(db, 'project:ca2_secret')).toBeNull();
 		expect(await exists(join(codeRoot, 'ca2_secret'))).toBe(false);
+	}, 60_000);
+
+	// Defense in depth: if a macro secret somehow bypassed the plan boundary and a fresh-token envelope
+	// reached the executor directly, the scaffold-write screen STILL fails closed (ScaffoldSecretError).
+	it('the executor still fails closed (ScaffoldSecretError) if a macro secret reaches it directly', async () => {
+		const env = await makeEnvelope('ca2 secret2');
+		const proposal = { ...env.proposal, planMacro: SECRET_MACRO };
+		const { computeConfirmToken } = await import('./plan');
+		const tampered = { ...env, proposal, confirmToken: computeConfirmToken(env.brief, proposal) };
+		await expect(executeCreation(db, tampered, { codeRoot })).rejects.toBeInstanceOf(ScaffoldSecretError);
+		expect(await getProject(db, 'project:ca2_secret2')).toBeNull();
+		expect(await exists(join(codeRoot, 'ca2_secret2'))).toBe(false);
 	}, 60_000);
 });
 
@@ -331,10 +367,101 @@ describe('executeCreation — slug-stability gate (D-016/F-008 regression)', () 
 	}, 60_000);
 });
 
+describe('executeCreation — CA-H2 post-register writer failure (F-008 honest, no wedge, no phantom)', () => {
+	// A writer that throws AFTER the scanProject register (the PM hand-off is the LAST writer, step 5):
+	// passing a blank PM name makes hirePm throw ('a PM name is required') only after plan/needs/tasks/
+	// targets have landed. The project is real on disk + registered, so it must NOT be deleted — it is
+	// MARKED honestly (create_status=incomplete) + an incident logged, and the slug is NOT wedged.
+	it('a post-register writer throw → incident + create_status=incomplete + project survives (not deleted, not wedged)', async () => {
+		const env = await makeEnvelope('ca2 postreg');
+		const before = await countIncidents();
+		await expect(
+			executeCreation(db, env, { codeRoot, pm: { name: '   ' } }) // blank → hirePm throws post-register.
+		).rejects.toBeInstanceOf(PostRegisterWriterError);
+
+		// The project row SURVIVES (real on disk — deleting it would orphan a live scaffold dir).
+		const row = await getProject(db, 'project:ca2_postreg');
+		expect(row).not.toBeNull();
+		// Marked HONESTLY incomplete (clearly-marked, never a silent half-built phantom).
+		expect(row!.create_status).toBe('incomplete');
+		// The scaffold dir + .git survive on disk (NOT rm -rf'd).
+		expect(await exists(join(codeRoot, 'ca2_postreg', '.git'))).toBe(true);
+		expect(await exists(join(codeRoot, 'ca2_postreg', 'src', 'index.ts'))).toBe(true);
+		// The earlier writers DID land (plan persisted) — a real, partially-wired project.
+		expect(row!.plan?.purpose).toBe('A small CLI that prints the survival difficulty curve.');
+		const tasks = await listTasksByProject(db, 'project:ca2_postreg');
+		expect(tasks.length).toBe(3); // tasks ran before the PM hand-off.
+		// An incident was logged (NEVER silent).
+		expect(await countIncidents()).toBe(before + 1);
+		// The slug is NOT wedged: the create-lock was released, so the row can be inspected/handled.
+		expect(await lockRowCount('ca2_postreg')).toBe(0);
+	}, 60_000);
+
+	it('a fully successful create is marked create_status=complete and holds no lingering lock', async () => {
+		const env = await makeEnvelope('ca2 complete');
+		const res = await executeCreation(db, env, { codeRoot });
+		const row = await getProject(db, res.projectId);
+		expect(row!.create_status).toBe('complete');
+		expect(await lockRowCount('ca2_complete')).toBe(0); // lock released on success.
+	}, 60_000);
+});
+
+describe('executeCreation — CA-H2 TOCTOU concurrent same-slug (fail-closed lock + ownership-gated cleanup)', () => {
+	// Simulate the LOSER of a concurrent double-submit: stand up the WINNER's project, then hold the
+	// slug-keyed create-lock (as the winner-in-flight would) and fire a SECOND same-slug create. It must
+	// fail CLOSED (ConcurrentCreateError) and — critically — must NOT rm -rf the winner's live scaffold
+	// (ownership-gated cleanup: the loser never created that dir, so it never deletes it).
+	it('a second same-slug create while the lock is held fails closed and CANNOT delete the first scaffold', async () => {
+		// Winner: a real, committed project.
+		const winner = await makeEnvelope('ca2 toctou');
+		const wres = await executeCreation(db, winner, { codeRoot });
+		expect(wres.projectId).toBe('project:ca2_toctou');
+		expect(await exists(join(codeRoot, 'ca2_toctou', '.git'))).toBe(true);
+
+		// The winner already exists, so a same-slug create hits ProjectExistsError at the FIRST gate.
+		// To exercise the LOCK path (the TOCTOU window where the row does not yet exist but a create is
+		// in flight) we delete the row, re-hold the lock as an in-flight winner, then run the loser.
+		await db.query(`DELETE project:ca2_toctou;`); // simulate "row not yet registered" (TOCTOU window).
+		await db.query(
+			`CREATE create_lock:ca2_toctou CONTENT { holder: $h } RETURN AFTER;`,
+			{ h: 'winner-in-flight' }
+		);
+
+		const loser = await makeEnvelope('ca2 toctou');
+		await expect(executeCreation(db, loser, { codeRoot })).rejects.toBeInstanceOf(ConcurrentCreateError);
+
+		// The winner's live scaffold + .git SURVIVE — the loser's ownership-gated cleanup never touched
+		// a dir it did not create this run (the exact corruption CA-H2 forbids).
+		expect(await exists(join(codeRoot, 'ca2_toctou', '.git'))).toBe(true);
+		expect(await exists(join(codeRoot, 'ca2_toctou', 'src', 'index.ts'))).toBe(true);
+
+		// Cleanup the simulated in-flight lock so it does not wedge later tests.
+		await db.query(`DELETE create_lock:ca2_toctou;`);
+	}, 60_000);
+
+	it('register-collision fails CLOSED (ProjectExistsError) — last-writer never wins at the gate', async () => {
+		const first = await makeEnvelope('ca2 collide');
+		await executeCreation(db, first, { codeRoot });
+		const second = await makeEnvelope('ca2 collide');
+		await expect(executeCreation(db, second, { codeRoot })).rejects.toBeInstanceOf(ProjectExistsError);
+		// The first project's scaffold is untouched (no last-writer overwrite).
+		expect(await exists(join(codeRoot, 'ca2_collide', '.git'))).toBe(true);
+	}, 60_000);
+});
+
 /** Count `incident` rows (the honest-failure signal). */
 async function countIncidents(): Promise<number> {
 	const [rows] = await db.query<[Array<{ n: number }>]>(
 		`SELECT count() AS n FROM incident GROUP ALL;`
 	);
 	return rows.length ? rows[0].n : 0;
+}
+
+/** Count create_lock rows for a slug (0 = released / never held). */
+async function lockRowCount(slug: string): Promise<number> {
+	const [rows] = await db.query<[Array<{ id: unknown }>]>(
+		`SELECT id FROM type::thing('create_lock', $slug);`,
+		{ slug }
+	);
+	return rows.length;
 }

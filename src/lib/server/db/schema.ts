@@ -1798,6 +1798,33 @@ const m0048_capability_needs: Migration = {
 	`
 };
 
+// 0049 — Create-with-AI integrity (CA-H2). Two additions, both OVERWRITE-idempotent:
+//   • project.create_status — the HONEST materialization state of a project born via
+//     Create-with-AI. NONE = not created by CA (or a pre-CA-H2 project) — treated as complete.
+//     'complete' = all writers (plan/needs/tasks/targets/PM) succeeded. 'incomplete' = the
+//     scaffold + register succeeded but a POST-register writer threw → the project is REAL
+//     on disk + registered but only partially wired; it is CLEARLY MARKED (never a silent
+//     half-built phantom), an incident is logged, and the slug is NOT wedged. We do NOT widen
+//     project.status (active/paused/archived has lifecycle/UI semantics); create_status is a
+//     SEPARATE honest signal so the UI can surface "finishing setup / incomplete" without
+//     colliding with the operator's pause/archive controls.
+//   • create_lock — a slug-keyed advisory create-lock (id = create_lock:<slug>). A create
+//     acquires it with a FAIL-CLOSED `CREATE` (SurrealDB errors if the record already exists —
+//     last-writer does NOT win), closing the TOCTOU window where two parallel same-slug creates
+//     both pass the getProject null-gate. Released (DELETE) on completion OR failure. Holds the
+//     acquiring run's nonce so only the owner releases it.
+const m0049_create_integrity: Migration = {
+	id: '0049_create_integrity',
+	up: `
+		DEFINE FIELD OVERWRITE create_status ON project TYPE option<string>
+			ASSERT $value = NONE OR $value IN ["complete","incomplete"];
+
+		DEFINE TABLE OVERWRITE create_lock SCHEMAFULL;
+		DEFINE FIELD OVERWRITE holder ON create_lock TYPE string;
+		DEFINE FIELD OVERWRITE at     ON create_lock TYPE datetime DEFAULT time::now();
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1852,5 +1879,6 @@ export const schemaMigrations: Migration[] = [
 	m0045_ingest_source_dropped_status,
 	m0046_review_proposal,
 	m0047_project_staff,
-	m0048_capability_needs
+	m0048_capability_needs,
+	m0049_create_integrity
 ];

@@ -41,6 +41,12 @@ export interface ProjectRow {
 	test_command?: string;
 	repo_url?: string;
 	status: string;
+	/**
+	 * Create-with-AI materialization state (migration 0049, CA-H2). NONE/absent = not created via
+	 * Create-with-AI (or pre-CA-H2) — treat as complete. 'complete' = all writers landed. 'incomplete'
+	 * = registered + scaffolded but a post-register writer threw (honestly marked, NOT a wedged slug).
+	 */
+	create_status?: string;
 	plan?: ProjectPlan;
 }
 

@@ -14,10 +14,10 @@ tiers:
     model: gpt-oss:20b
   haiku:
     provider: claude
-    model: claude-haiku-4-5
+    model: claude-haiku-4-5-20251001
   sonnet:
     provider: claude
-    model: claude-sonnet-4-5
+    model: claude-sonnet-4-6
   opus:
     provider: claude
     model: claude-opus-4-8

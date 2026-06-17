@@ -17,6 +17,7 @@ import { listDefectClassVocabulary } from '../workforce/capability-match';
 import { screen } from '../memory/screen';
 import { stableStringify } from '../cc-config/index';
 import { createHash } from 'node:crypto';
+import { isAbsolute } from 'node:path';
 import { assertNoSycophancy, SycophancyError } from './anti-sycophancy';
 import type { AdapterKind } from '../adapters/types';
 
@@ -156,6 +157,21 @@ export class StaleProposalError extends Error {
 	}
 }
 
+/**
+ * A dirLayout[] entry tried to escape the project root (absolute path or `..`) at the PLAN trust
+ * boundary, BEFORE it could reach the scaffold (D-018, fail closed). The executor's resolveEntry
+ * is the second line of defense; this one rejects the escape before confirm so a path-traversal
+ * layout never even gets a confirmToken.
+ */
+export class ProposalPathError extends Error {
+	readonly entry: string;
+	constructor(message: string, entry: string) {
+		super(message);
+		this.name = 'ProposalPathError';
+		this.entry = entry;
+	}
+}
+
 // Re-export so callers catch §3 violations from this module's surface too.
 export { SycophancyError };
 
@@ -186,15 +202,198 @@ function reqStrArray(v: unknown, field: string): string[] {
 	return v.map((x, i) => reqStr(x, `${field}[${i}]`));
 }
 
+// ── D-026 ENV-NAME-POSITIVE credential detection (CREATE-SPEC §3) ────────────────────
+//
+// The isolation-screening screen() (memory/screen.ts) catches a literal secret only when it is
+// HIGH-CONFIDENCE in isolation: a known provider prefix, a JWT/PEM block, or an inline `key=value`
+// credential ASSIGNMENT that appears WITHIN one string. It MISSES the create-config case where the
+// secret IS the whole value, screened alone with no key context:
+//   • { password: 's3cr3tP@ssw0rd' }   → screen('s3cr3tP@ssw0rd')  is clean (no `key=` in the string)
+//   • { token:    'glpat-<gitlab-pat>' } → a GitLab PAT prefix screen() does not enumerate
+//   • { dbPass:   'no-prefix-but-secret' } → a bare password assigned to a secret-like KEY
+// Per CREATE-SPEC §3 a scaffold config value may reference an ENV NAME only — `${ENV_NAME}` or a
+// bare UPPER_SNAKE env-name token. So we enforce a POSITIVE rule keyed on the config KEY, plus a
+// prefix/entropy detector that fires regardless of key. This does NOT replace screen() — screen()
+// still runs first to catch the high-confidence cases; this closes the key=value gap it leaves.
+
+/** Known credential token prefixes that are ALWAYS a literal secret echo, whatever the key. */
+const LITERAL_CREDENTIAL_PREFIXES: readonly string[] = Object.freeze([
+	'glpat-', // GitLab personal access token
+	'ghp_',
+	'gho_',
+	'ghu_',
+	'ghs_',
+	'ghr_', // GitHub token family
+	'github_pat_',
+	'sk-ant-', // Anthropic
+	'sk-', // OpenAI / generic
+	'xoxb-',
+	'xoxp-',
+	'xoxa-',
+	'xoxr-',
+	'xoxs-', // Slack
+	'AKIA', // AWS access key id
+	'AIza', // Google API key
+	'ya29.', // Google OAuth token
+	'npm_', // npm token
+	'dop_v1_', // DigitalOcean
+	'shpat_', // Shopify
+	'pk_live_',
+	'sk_live_', // Stripe live keys
+	'SG.' // SendGrid
+]);
+
+// A secret-like config KEY is detected on its HEAD NOUN, not by substring — substring matching
+// over-rejected legitimate descriptive config (CA-H1 review): 'auth' is a substring of authMethod/
+// authProvider/authStrategy/oauth, 'token' of tokenExpiry, 'pass' of passwordPolicy, 'credential'
+// of credentialType — all plausible deploy/publish-adapter config keys that fail closed and destroy
+// legitimate config, contradicting F-008. We tokenize the key (snake_case / kebab-case / camelCase)
+// and require the SECRET WORD to be the head (last) token (or the whole key) — so dbPassword/dbPass/
+// clientSecret/accessToken/credential are secret, but tokenExpiry/passwordPolicy/authMethod are not.
+
+/** Standalone head tokens that make a key secret-like (the value must be an env-name reference). */
+const SECRET_HEAD_TOKENS: ReadonlySet<string> = new Set([
+	'password',
+	'passwd',
+	'passphrase',
+	'pass',
+	'secret',
+	'token',
+	'credential',
+	'credentials',
+	'apikey'
+]);
+
+/** Modifiers that, when followed by a `key`/`secret`/`token` head, make the key secret-like. */
+const SECRET_KEY_MODIFIERS: ReadonlySet<string> = new Set([
+	'api',
+	'access',
+	'private',
+	'secret',
+	'signing',
+	'encryption',
+	'client',
+	'refresh',
+	'auth',
+	'bearer',
+	'session',
+	'oauth'
+]);
+
+/** Tokenize a config key on snake/kebab separators and camelCase boundaries, lowercased. */
+function tokenizeKey(key: string): string[] {
+	return key
+		.replace(/([a-z0-9])([A-Z])/g, '$1 $2') // camelCase boundary
+		.replace(/([A-Z]+)([A-Z][a-z])/g, '$1 $2') // ACRONYMBoundary
+		.split(/[\s_-]+/)
+		.filter((t) => t.length > 0)
+		.map((t) => t.toLowerCase());
+}
+
 /**
- * D-026 secret-echo guard for a config blob: EVERY string value (recursively) is screened; if
- * screen() REDACTS it (status not 'clean'), a literal secret was echoed where only an env NAME is
- * allowed — reject with SecretEchoError (NAMED) instead of silently storing a redaction. This is
- * stricter than "redact and continue" on purpose: a scaffold config that names a value rather than
- * an env var is a brief/agent bug to surface, not to paper over.
+ * Is this a secret-like config KEY (its value must be an env-name reference, D-026)? Decided on the
+ * HEAD (last) token — not a substring — so descriptive compounds like authMethod/tokenExpiry/
+ * passwordPolicy/credentialType are NOT flagged, while dbPassword/dbPass/clientSecret/accessToken/
+ * apiKey/access_key/private_key/credential ARE. A `key`/`secret`/`token` head only counts as secret
+ * when preceded by a credential modifier (apiKey yes, sortKey/foreignKey no).
  */
-function assertNoSecretEcho(value: unknown, path: string): void {
+function isSecretLikeKey(key: string): boolean {
+	const tokens = tokenizeKey(key);
+	if (tokens.length === 0) return false;
+	const head = tokens[tokens.length - 1];
+	if (SECRET_HEAD_TOKENS.has(head)) return true;
+	// `key`/`secret`/`token` are only secret-like with a credential modifier in front (apiKey, but
+	// not sortKey/partitionKey); 'apikey' collapsed to one token is already covered above.
+	if ((head === 'key' || head === 'secret' || head === 'token') && tokens.length >= 2) {
+		if (SECRET_KEY_MODIFIERS.has(tokens[tokens.length - 2])) return true;
+	}
+	return false;
+}
+
+/**
+ * An ACCEPTED env-name reference for a config value: only an EXPLICIT interpolation form —
+ * `${ENV_NAME}`, `$ENV_NAME`, `{{ENV_NAME}}`, or `process.env.X` / `import.meta.env.X` / `env.X`.
+ * These are the ONLY value shapes permitted under a secret-like key (CREATE-SPEC §3). The whole
+ * value must BE the reference; mixed text that merely CONTAINS a placeholder is not accepted, so a
+ * literal smuggled alongside `${X}` cannot pass.
+ *
+ * CA-H1 review GAP-1 (root cause + closure): a BARE token (even UPPER_SNAKE) is NOT a reference — it
+ * is a literal string value, and a short high-entropy all-caps literal ('X7K9QZ2MPLW4') is
+ * byte-for-byte a valid bare token, so accepting bare tokens left a hole no length/entropy threshold
+ * could close (the fixer narrowed it twice and a 12–16 char literal still passed). A reference now
+ * REQUIRES explicit interpolation syntax; under a secret-like key the value must therefore BE an
+ * explicit `${ENV_NAME}` (the standard a generated config should emit anyway), so NO literal — short
+ * or long, any entropy — can be misread as a reference. No entropy guessing on this path.
+ */
+function isEnvNameReference(value: string): boolean {
+	const v = value.trim();
+	if (v === '') return false;
+	if (/^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(v)) return true; // ${ENV_NAME}
+	if (/^\$[A-Za-z_][A-Za-z0-9_]*$/.test(v)) return true; // $ENV_NAME
+	if (/^\{\{\s*[A-Za-z_][A-Za-z0-9_.]*\s*\}\}$/.test(v)) return true; // {{ ENV_NAME }} template
+	if (/^(?:process\.env|import\.meta\.env|env)\.[A-Za-z_][A-Za-z0-9_]*$/.test(v)) return true; // process.env.X
+	return false;
+}
+
+/** Shannon entropy (bits/char) of a string — a rough literal-token detector. */
+function shannonBitsPerChar(s: string): number {
+	if (s.length === 0) return 0;
+	const counts = new Map<string, number>();
+	for (const ch of s) counts.set(ch, (counts.get(ch) ?? 0) + 1);
+	let bits = 0;
+	for (const n of counts.values()) {
+		const p = n / s.length;
+		bits -= p * Math.log2(p);
+	}
+	return bits;
+}
+
+/**
+ * Does this string LOOK like a literal credential token (regardless of key)? True when it starts
+ * with a known credential prefix, OR it is a long high-entropy mixed-charset token (≥20 chars,
+ * ≥3.4 bits/char, contains BOTH letters and digits) that is NOT an env-name reference. The entropy
+ * gate is deliberately conservative so descriptive config strings ('us-east-1', 'thunderstore',
+ * 'production') do not trip — F-008: do not destroy legitimate config.
+ */
+function looksLikeLiteralCredential(value: string): boolean {
+	const v = value.trim();
+	if (v === '') return false;
+	// Known credential prefixes are ALWAYS a literal echo — checked UNCONDITIONALLY, even if the value
+	// otherwise looks env-name shaped (CA-H1 review GAP-1: env-ref classification must NOT suppress the
+	// prefix backstop; no real env name carries a glpat-/ghp_/sk- prefix anyway).
+	for (const p of LITERAL_CREDENTIAL_PREFIXES) {
+		if (v.startsWith(p)) return true;
+	}
+	// The entropy heuristic stays env-ref-aware so a legitimate UPPER_SNAKE env name is not over-flagged.
+	if (isEnvNameReference(v)) return false;
+	// High-entropy bare token: long, mixed charset, no whitespace — a key, not a sentence/name.
+	if (v.length >= 20 && !/\s/.test(v) && /[A-Za-z]/.test(v) && /[0-9]/.test(v)) {
+		if (shannonBitsPerChar(v) >= 3.4) return true;
+	}
+	return false;
+}
+
+/**
+ * D-026 secret-echo guard for a config blob. THREE gates, in order, recursively over every string:
+ *   1. isolation screen() — the high-confidence cases (provider prefixes screen knows, JWT/PEM,
+ *      inline `key=value`); a redact/quarantine ⇒ literal echo ⇒ reject (NAMED). This is the
+ *      original behaviour, kept as the first line.
+ *   2. KEY-POSITIVE — when the value sits under a secret-like KEY (password/token/secret/key/…),
+ *      it MUST be an env-name reference (`${ENV}` / `$ENV` / UPPER_SNAKE). ANYTHING else is a
+ *      literal echo and is rejected — this closes the gap where screen() missed a bare password
+ *      ('s3cr3tP@ssw0rd') because it screened the value in isolation with no key context.
+ *   3. PREFIX/ENTROPY — a value that LOOKS like a credential token (glpat-/ghp-/sk-/…, or a long
+ *      high-entropy mixed token) is rejected under ANY key, since no env-name reference looks like
+ *      that. Catches a secret smuggled under an innocuous key (`{ note: 'glpat-…' }`).
+ *
+ * Stricter than "redact and continue" on purpose: a scaffold config that names a value rather than
+ * an env var is a brief/agent bug to surface (CREATE-SPEC §3), not to paper over.
+ *
+ * `key` is the immediate field name the value sits under (undefined at array elements / the root).
+ */
+function assertNoSecretEcho(value: unknown, path: string, key?: string): void {
 	if (typeof value === 'string') {
+		// Gate 1 — isolation screen (high-confidence inline secrets).
 		const res = screen(value);
 		if (res.status !== 'clean') {
 			throw new SecretEchoError(
@@ -203,16 +402,71 @@ function assertNoSecretEcho(value: unknown, path: string): void {
 				path
 			);
 		}
+		// Gate 2 — KEY-POSITIVE: a non-empty value under a secret-like key must BE an EXPLICIT env-name
+		// reference (${ENV_NAME}/$ENV_NAME/…). A bare token or any literal is rejected — this is what
+		// closes GAP-1 for short high-entropy literals (an empty value echoes no secret, so it passes).
+		if (key !== undefined && isSecretLikeKey(key) && value.trim() !== '' && !isEnvNameReference(value)) {
+			throw new SecretEchoError(
+				`proposal '${path}' assigns a literal value to a secret-like key '${key}' ` +
+					`(D-026: config references env NAMES only — use an explicit \${ENV_NAME} reference)`,
+				path
+			);
+		}
+		// Gate 3 — PREFIX/ENTROPY: a credential-shaped token is rejected under any key.
+		if (looksLikeLiteralCredential(value)) {
+			throw new SecretEchoError(
+				`proposal '${path}' contains a literal credential token ` +
+					`(D-026: config references env NAMES only — never a literal secret value)`,
+				path
+			);
+		}
 		return;
 	}
 	if (Array.isArray(value)) {
-		value.forEach((v, i) => assertNoSecretEcho(v, `${path}[${i}]`));
+		value.forEach((v, i) => assertNoSecretEcho(v, `${path}[${i}]`, key));
 		return;
 	}
 	if (isObj(value)) {
-		for (const [k, v] of Object.entries(value)) assertNoSecretEcho(v, `${path}.${k}`);
+		for (const [k, v] of Object.entries(value)) assertNoSecretEcho(v, `${path}.${k}`, k);
 	}
 	// numbers/booleans/null pass through.
+}
+
+/**
+ * D-018 path-confinement for a dirLayout[] entry, enforced at the PLAN trust boundary (before the
+ * proposal can earn a confirmToken). REJECTS an absolute path or any `..` traversal segment — the
+ * same escape classes the executor's resolveEntry fails closed on, but caught here so a traversal
+ * layout never reaches scaffold. Throws ProposalPathError (NAMED). Reuses confineToRoot SEMANTICS
+ * (reject `..`/absolute) syntactically — confineToRoot itself does filesystem realpath resolution
+ * and cannot run here (the scaffold dirs do not exist yet and the project root is unknown at plan).
+ */
+function assertScaffoldPathSafe(entry: string, path: string): void {
+	const trimmed = entry.trim();
+	if (isAbsolute(trimmed)) {
+		throw new ProposalPathError(
+			`proposal '${path}' is an absolute path '${entry}' — scaffold entries must be relative ` +
+				`and confined under the project root (D-018, fail closed)`,
+			entry
+		);
+	}
+	// A drive-letter / UNC root that isAbsolute misses on the non-native platform, plus any `..`
+	// traversal segment (./ is fine, ../ is an escape). Normalize separators first.
+	const segments = trimmed.split(/[\\/]/);
+	if (segments.some((s) => s === '..')) {
+		throw new ProposalPathError(
+			`proposal '${path}' contains a '..' traversal segment ('${entry}') — scaffold entries must ` +
+				`stay under the project root (D-018, fail closed)`,
+			entry
+		);
+	}
+	// Windows drive-absolute (C:\...) and UNC (\\host\share) that POSIX isAbsolute may not flag.
+	if (/^[A-Za-z]:[\\/]/.test(trimmed) || /^[\\/]{2}/.test(trimmed)) {
+		throw new ProposalPathError(
+			`proposal '${path}' is a drive-absolute or UNC path ('${entry}') — scaffold entries must be ` +
+				`relative (D-018, fail closed)`,
+			entry
+		);
+	}
 }
 
 function validatePlanMacro(raw: unknown): PlanMacroDraft {
@@ -346,6 +600,10 @@ export async function validateProposal(db: Db, raw: unknown): Promise<CreationPr
 	if (dirLayout.length === 0) {
 		throw new ProposalContractError("proposal 'dirLayout' must be non-empty (F-008: derive from the brief)");
 	}
+	// D-018: reject an absolute or `..`-traversal dirLayout entry HERE, at the trust boundary, so a
+	// path escape never reaches scaffold (ProposalPathError, named). Second line of defense is the
+	// executor's resolveEntry; this one fails closed before the proposal earns a confirmToken.
+	dirLayout.forEach((e, i) => assertScaffoldPathSafe(e, `dirLayout[${i}]`));
 	const stack = reqStrArray(raw.stack, 'stack');
 	if (stack.length === 0) {
 		throw new ProposalContractError("proposal 'stack' must be non-empty (F-008: derive from the brief)");
@@ -356,10 +614,44 @@ export async function validateProposal(db: Db, raw: unknown): Promise<CreationPr
 	const capabilityNeeds = await validateCapabilityNeeds(db, raw.capabilityNeeds);
 	const clarifiers = validateClarifiers(raw.clarifiers);
 
+	// D-026: the agent-authored ARRAYS (dirLayout + stack) are screened for a literal secret echo
+	// too — a secret previously could ride a stack/dirLayout entry to the operator/disk unflagged
+	// (CA-1 red-team gap). targetDrafts[].config is screened inside validateTargetDrafts already.
+	dirLayout.forEach((e, i) => assertNoSecretEcho(e, `dirLayout[${i}]`));
+	stack.forEach((e, i) => assertNoSecretEcho(e, `stack[${i}]`));
+
 	let pmCharterDraft: string | undefined;
 	if (raw.pmCharterDraft !== undefined && raw.pmCharterDraft !== null) {
 		pmCharterDraft = reqStr(raw.pmCharterDraft, 'pmCharterDraft');
 	}
+
+	// D-026 — secret-echo across EVERY agent-authored FREE-TEXT string, not just configs/arrays
+	// (CA-H1 review Gap-2): a secret echoed in the plan macro, the PM charter (→ disk on hire), a
+	// task objective/purpose, or a clarifier reaches the operator/disk unflagged otherwise. No key
+	// context here, so this leans on the isolation screen() + prefix/entropy gates.
+	const secretScreened: ReadonlyArray<readonly [string, string | undefined]> = [
+		['planMacro.purpose', planMacro.purpose],
+		['planMacro.vision', planMacro.vision],
+		['planMacro.role', planMacro.role],
+		['planMacro.definition_of_done', planMacro.definition_of_done],
+		['pmCharterDraft', pmCharterDraft],
+		...foundingTasks.flatMap(
+			(t, i) =>
+				[
+					[`foundingTasks[${i}].objective`, t.objective],
+					[`foundingTasks[${i}].purpose`, t.purpose]
+				] as ReadonlyArray<readonly [string, string | undefined]>
+		),
+		...clarifiers.flatMap(
+			(c, i) =>
+				[
+					[`clarifiers[${i}].question`, c.question],
+					[`clarifiers[${i}].position`, c.position],
+					[`clarifiers[${i}].falsifier`, c.falsifier]
+				] as ReadonlyArray<readonly [string, string | undefined]>
+		)
+	];
+	for (const [p, s] of secretScreened) if (s !== undefined) assertNoSecretEcho(s, p);
 
 	// §3 ANTI-SYCOPHANCY across EVERY agent-authored string. One pass, named SycophancyError.
 	// dirLayout[] and stack[] are agent-authored descriptive free-text too, so they are screened

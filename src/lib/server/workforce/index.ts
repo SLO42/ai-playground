@@ -82,8 +82,14 @@ export * from './staffing-proposal';
 // (reversionFailedRole) + classify candidate-miss vs KEY-DEFECT + emit a propose-only key-fix.
 // PROPOSE+GATE: never confirms a key (B2), never flips a cert (B4), never certifies the
 // recruiter itself (B1), never rescores (B3). Pure/deterministic orchestration; the recruiter
-// AGENT drives it via launchSession.
+// AGENT drives it via launchSession. runRecruiterCampaign is the END-TO-END loop (run →
+// auto-adjudicate → raise the hire brief) — the single production entry the recruiter calls.
 export * from './recruiter';
+// HR-RECRUITER-SPEC §7.4 (HR-4) — the AUTO-ADJUDICATION policy over an 'adjudicating' run's ambiguous
+// queue: clear-cases-only (the SOLE auto-resolution is an injection-flag dismiss), escalate-on-doubt
+// with per-item pre-filled recommendations for the operator's HR-1 ceremony. B3: never rescores, never
+// auto-FPs a judgment, never auto-confirms a partial. Wired into runRecruiterCampaign.
+export * from './auto-adjudicate';
 
 // HR-RECRUITER-SPEC §7.5 (HR-5) — the OPERATOR HIRE-GATE: assemble the recruiter's hire decision
 // from a TERMINAL interview_run (B3 read-only), raise ONE decision_brief per candidate (PROPOSE-

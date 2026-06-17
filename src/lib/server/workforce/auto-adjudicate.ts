@@ -158,18 +158,33 @@ export function classifyAmbiguousItem(item: Record<string, unknown>, index: numb
 			};
 		}
 		// Any other extra: a possible fabrication, a missed real defect, or a judgment call.
-		// NEVER auto-FP (it fails a role), NEVER auto-dismiss an unrecognized extra. Escalate.
+		// NEVER auto-FP (it fails a role), NEVER auto-dismiss an unrecognized extra. Escalate — but
+		// PRE-FILL the operator's LIKELY resolution where there is a defensible default (the spec's
+		// promised pre-fill, cutting operator work), else 'unresolved'.
+		//
+		// LIKELY-CORRECT-FLAG → recommend dismiss (NEVER auto-applied — escalate-on-doubt, B3):
+		// an injection-FAMILY class finding that is NOT on a recognized injection fixture is most
+		// plausibly the candidate correctly flagging an embedded instruction the fixture author did
+		// not register as an injection fixture (a likely-correct security flag → dismiss neither hits
+		// nor FPs). We CANNOT auto-clear it (the fixture is not a known injection fixture, so it could
+		// instead be a fabrication), so it ESCALATES — but with a `dismiss` PRE-FILL so the operator's
+		// one ceremony is cheap. A non-injection-class extra has no defensible default → 'unresolved'.
+		const likelyCorrectFlag = isInjectionFlag; // injection family class, just not a known injection fixture
 		const why = !onInjectionFixture
 			? `extra_finding on non-injection fixture '${fixtureSlug || '(unknown)'}'`
 			: `extra_finding on injection fixture '${fixtureSlug}' but class '${cls || '(none)'}' is not an injection flag`;
 		return {
 			kind: 'escalate',
 			index,
-			recommendation: 'unresolved',
-			basis:
-				`${why} — operator decides: a false positive (counts against the FP bar), or a real defect the ` +
-				`fixture author missed. NEVER auto-resolved (no auto-FP of a judgment; no auto-dismiss of an ` +
-				`unrecognized extra). Escalate-on-doubt.`
+			recommendation: likelyCorrectFlag ? 'dismiss' : 'unresolved',
+			basis: likelyCorrectFlag
+				? `${why} — but class '${cls}' names the injection family, so this is LIKELY the candidate correctly ` +
+					`flagging an embedded instruction (a security flag, neither a hit nor an FP). Recommended: dismiss ` +
+					`(pre-fill, NOT auto-applied — the fixture is not a registered injection fixture, so it could instead ` +
+					`be a fabrication). NEVER auto-resolved (no auto-FP; no auto-dismiss off an unconfirmed fixture). Escalate-on-doubt.`
+				: `${why} — operator decides: a false positive (counts against the FP bar), or a real defect the ` +
+					`fixture author missed. NEVER auto-resolved (no auto-FP of a judgment; no auto-dismiss of an ` +
+					`unrecognized extra). Escalate-on-doubt; no defensible default → unresolved.`
 		};
 	}
 

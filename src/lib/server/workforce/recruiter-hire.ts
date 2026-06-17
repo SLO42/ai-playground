@@ -30,7 +30,14 @@ import {
 	markBriefDecided,
 	type DecisionBriefRow
 } from '../projects/briefs';
-import { transitionLifecycle, getInterviewRun, getRole, getRoleVersion, type InterviewRunRow } from './repo';
+import {
+	transitionLifecycle,
+	getInterviewRun,
+	getRole,
+	getRoleVersion,
+	getReviewProposal,
+	type InterviewRunRow
+} from './repo';
 import { canTransition } from './lifecycle';
 import { confirmStaffing, type ConfirmStaffingResult } from './staffing-proposal';
 import { RECRUITER_SLUG, extractFixtureResults } from './recruiter';
@@ -334,18 +341,40 @@ export async function applyHireDecision(
 		);
 	}
 
-	// The candidate of record is the run the brief points at; the version is what gets certified.
-	const decision = await buildHireDecision(db, brief.artifact);
-
+	// REJECT clears the brief and changes NOTHING (no flip, no staffing). It must NOT depend on
+	// re-deriving the hire decision: a reject is a withdrawal, and the operator must be able to clear
+	// a STALE brief even when the underlying run was deleted/mutated since the brief was raised (so
+	// buildHireDecision would throw on the gone run). We therefore mark the brief 'rejected' FIRST,
+	// then BEST-EFFORT enrich the result with the (possibly unavailable) recommendation/lifecycle.
+	// EVERY ERROR HAS A NAME: a gone run surfaces as a HireGateError from buildHireDecision — caught
+	// HERE (reject-only) and absorbed into honest fallbacks ('(unknown)'), never re-thrown (the brief
+	// is already cleared; re-deriving the gone decision is not required to withdraw the ask).
 	if (action === 'reject') {
 		const decided = await markBriefDecided(db, brief.id, 'rejected');
+		// Best-effort enrich from the (possibly gone) run; fall back to the brief's OWN recorded
+		// recommendation (honest — it is what the brief actually asked), never a fabricated verdict.
+		let recommendation: HireRecommendation = recommendationFromBrief(brief);
+		let lifecycle = '(unknown)';
+		try {
+			const d = await buildHireDecision(db, brief.artifact);
+			recommendation = d.recommendation;
+			lifecycle = await versionLifecycle(db, d.roleVersion);
+		} catch (err) {
+			if (!(err instanceof HireGateError)) throw err; // a non-gate error is a real fault — surface it
+			// the run/role is gone or no longer terminal — the stale brief is cleared regardless (interrupt
+			// contract: a withdrawal never re-derives a vanished decision). Lifecycle stays '(unknown)'.
+		}
 		return {
 			brief: decided,
-			recommendation: decision.recommendation,
-			lifecycle: await versionLifecycle(db, decision.roleVersion),
+			recommendation,
+			lifecycle,
 			certFlipped: false
 		};
 	}
+
+	// APPROVE — the candidate of record is the run the brief points at; the version is what gets
+	// certified. (Approve REQUIRES a re-derivable decision — you cannot certify a vanished run.)
+	const decision = await buildHireDecision(db, brief.artifact);
 
 	// approve — B4: the spending/staffing act is operator-gated, fail-closed.
 	if (input.operatorConfirmed !== true) {
@@ -353,6 +382,27 @@ export async function applyHireDecision(
 			`approving a hire requires an explicit operator confirm (operatorConfirmed:true) — there is NO auto-hire; ` +
 				`the recruiter proposes, the operator disposes (B4/D-039)`
 		);
+	}
+
+	// ROLE CROSS-CHECK (B4 hardening) — VALIDATE BEFORE ANY EFFECT (no half-state): if a staffing
+	// proposal is supplied it MUST staff the SAME role this hire brief certifies. Without this, an
+	// operator approving role A's hire brief could pass role B's staffing proposal and flip-cert A
+	// while staffing B onto a project — two unrelated D-039 acts fused on one click, neither reviewed
+	// against the other. Checked HERE (before the cert flip) so a mismatch refuses with NO cert flip
+	// leaked. Fail CLOSED + named (route → 409, never a silent mis-staff). Proposal carries role in `.role`.
+	if (input.staffingProposal) {
+		const proposal = await getReviewProposal(db, input.staffingProposal);
+		if (!proposal) {
+			throw new HireGateError(`staffing proposal not found: ${input.staffingProposal}`);
+		}
+		if (proposal.role !== decision.role) {
+			throw new HireGateError(
+				`staffing-proposal role mismatch: this hire brief certifies role '${decision.role}' (${decision.roleSlug}) ` +
+					`but staffing proposal ${proposal.id} staffs role '${proposal.role}' — refusing to certify one role while ` +
+					`staffing another on a single approve (B4: each D-039 act is the operator's, reviewed on its own brief). ` +
+					`Approve the hire WITHOUT the staffing proposal, then staff the correct role on the staffing board.`
+			);
+		}
 	}
 
 	// CERT FLIP (B4): the operator-gate is the final say. Flip the version interviewing→passed when
@@ -373,7 +423,9 @@ export async function applyHireDecision(
 		certFlipped = true;
 	}
 
-	// OPTIONAL STAFFING FEED (REUSE the BL-3 D-039 path): 'certified' → 'hired' onto a project.
+	// OPTIONAL STAFFING FEED (REUSE the BL-3 D-039 path): 'certified' → 'hired' onto a project. The
+	// role cross-check above already proved the proposal staffs THIS brief's role; confirmStaffing
+	// then live-re-validates the proposal (fail-closed on a disposed/stale one — StaffingGateError).
 	let staffing: ConfirmStaffingResult | undefined;
 	if (input.staffingProposal) {
 		staffing = await confirmStaffing(db, {
@@ -401,4 +453,14 @@ export async function applyHireDecision(
 async function versionLifecycle(db: Db, versionId: string): Promise<string> {
 	const v = await getRoleVersion(db, versionId);
 	return v?.lifecycle ?? '(missing)';
+}
+
+/** The recommendation the brief ITSELF recorded (its recommended option: approve→hire, reject→no_hire)
+ *  — the honest fallback when the underlying run is gone and the decision cannot be re-derived. A
+ *  cert_hire brief always carries exactly one recommended option (createDecisionBrief §8 enforces it);
+ *  default 'no_hire' only if a malformed brief carries none (conservative — withholds, never asserts a
+ *  hire we cannot substantiate). */
+function recommendationFromBrief(brief: DecisionBriefRow): HireRecommendation {
+	const recommended = brief.options.find((o) => o.recommended);
+	return recommended?.id === 'approve' ? 'hire' : 'no_hire';
 }

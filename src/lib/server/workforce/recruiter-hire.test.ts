@@ -504,6 +504,48 @@ describe('applyHireDecision — approve flips/feeds, reject neither (B4)', () =>
 		expect((await getBrief(db, brief.id))?.status).toBe('open'); // untouched
 	}, 40_000);
 
+	it('RED-TEAM B4: approve with a ROLE-MISMATCHED staffing proposal is REFUSED — no cert flip, no staffing (HR-H2 guard)', async () => {
+		// Brief certifies role A; the operator (by mistake) passes role B's staffing proposal. The guard
+		// must refuse BEFORE any effect — never certify A while staffing B on one click.
+		const seedA = await seedTarget();
+		const runA = await runToTerminal(seedA, perfectFindings);
+		// Role B — a DIFFERENT certified role with its own staffing proposal onto a project.
+		const seedB = await seedTarget();
+		await runToTerminal(seedB, perfectFindings); // certifies B (passed) so it is staffable
+		await swapActiveVersion(db, seedB.role.id, seedB.version.id);
+		const project = await freshProject(seedB.defectClass);
+		const { proposal: proposalB } = await proposeStaffing(db, { project, role: seedB.role.id });
+
+		const briefA = await raiseHireBrief(db, runA);
+		await expect(
+			applyHireDecision(db, briefA.id, 'approve', {
+				operatorConfirmed: true,
+				staffingProposal: proposalB.id // role B's proposal on role A's hire brief — MISMATCH
+			})
+		).rejects.toBeInstanceOf(HireGateError);
+		// No effect leaked: brief A still open, role B was NOT staffed onto the project.
+		expect((await getBrief(db, briefA.id))?.status).toBe('open');
+		const staffB = await getProjectStaff(db, project, seedB.role.id);
+		expect(staffB).toBeNull();
+	}, 60_000);
+
+	it('REJECT clears a STALE brief even when the run was deleted/mutated since (buildHireDecision would throw) — HR-H2 guard', async () => {
+		const seed = await seedTarget();
+		const runId = await runToTerminal(seed, perfectFindings);
+		const brief = await raiseHireBrief(db, runId);
+		// Mutate the run out from under the brief: delete it so buildHireDecision throws on re-derive.
+		await db.query(`DELETE $rid;`, { rid: new StringRecordId(runId) });
+		await expect(buildHireDecision(db, runId)).rejects.toBeInstanceOf(HireGateError); // sanity: gone
+		// REJECT must STILL clear the stale brief (a withdrawal never re-derives a vanished decision).
+		const res = await applyHireDecision(db, brief.id, 'reject', { operatorConfirmed: false });
+		expect(res.brief.status).toBe('rejected');
+		expect(res.certFlipped).toBe(false);
+		// The honest fallback: the brief's OWN recorded recommendation (a passing brief recommended hire).
+		expect(res.recommendation).toBe('hire');
+		expect(res.lifecycle).toBe('(unknown)'); // the gone run's version could not be re-derived — honest
+		expect((await getBrief(db, brief.id))?.status).toBe('rejected');
+	}, 60_000);
+
 	it('refuses a non-cert_hire brief id (named)', async () => {
 		// A task-kind brief id routed here must be refused (the route dispatches by kind, but the
 		// function itself fail-closes too).

@@ -46,6 +46,9 @@ import {
 import { runGauntlet, type GauntletDeps, type GauntletOutcome } from './gauntlet';
 import { reversionFailedRole, type ReversionResult } from './ceremony';
 import { type DraftKeySpec } from './launch-fixtures';
+import { autoAdjudicateRun, type AutoAdjudicationOutcome } from './auto-adjudicate';
+import { raiseHireBrief } from './recruiter-hire';
+import { type DecisionBriefRow } from '../projects/briefs';
 // NB (B4): the orchestrator NEVER flips a lifecycle. repo.transitionLifecycle (the cert-flip
 // write-path) is DELIBERATELY NOT imported here — certLifecycleOf only READS getRoleVersion.
 
@@ -184,6 +187,106 @@ export async function runCertificationGauntlet(
 		modelId: input.modelId,
 		trigger: 'operator' // §3.7 — the operator's key-SET approval is the spend decision
 	});
+}
+
+// ── §7.3 STEP 2→4 — the END-TO-END campaign (run → auto-adjudicate → raise the hire brief) ──
+
+/**
+ * The recruiter-driven cert campaign OUTCOME — exactly one terminal shape, all honest:
+ *   • 'queued'     — runGauntlet deferred the run on the budget gate (no run happened; never
+ *                    fabricated). The campaign stops here; nothing to adjudicate/hire.
+ *   • 'escalated'  — the run scored to 'adjudicating' AND ≥1 ambiguous item ESCALATED (B3 escalate-
+ *                    on-doubt): the run is surfaced to the operator queue (the HR-1 adjudication UI)
+ *                    with per-item pre-filled recommendations. NO premature hire brief (B4 — the
+ *                    operator resolves the queue first; a hire brief on an unresolved run would be a
+ *                    dishonest 'terminal' verdict).
+ *   • 'failed'     — the run finalized FAILED (directly, or auto-adjudicated to failed). NO hire
+ *                    brief is raised here (raiseHireBrief on a failed run WOULD be honest — a no_hire
+ *                    recommendation — but the campaign's job per spec is the HIRE path; a failed run
+ *                    is recovered via classifyCertificationFail, a separate operator surface). The
+ *                    terminal run is returned so the caller can classify it.
+ *   • 'hired_brief'— the run finalized PASSED (directly, or auto-adjudicated all-clear to passed):
+ *                    raiseHireBrief raised the ONE operator hire decision_brief. This is the path that
+ *                    today had ZERO callers — the hire-gate never fired. The brief is PROPOSE-ONLY
+ *                    (B4): the operator still approves it via applyHireDecision.
+ */
+export type RecruiterCampaignOutcome =
+	| { kind: 'queued'; reason: string; workItemId: string | null }
+	| { kind: 'escalated'; run: InterviewRunRow; adjudication: Extract<AutoAdjudicationOutcome, { kind: 'escalated' }> }
+	| { kind: 'failed'; run: InterviewRunRow }
+	| { kind: 'hired_brief'; run: InterviewRunRow; brief: DecisionBriefRow };
+
+/**
+ * §7.3 — DRIVE the recruiter's certification campaign END-TO-END (the loop that today had no
+ * production caller: runCertificationGauntlet returns a scored run but NOTHING then auto-adjudicated
+ * or raised a hire brief — the pieces were built but never invoked). This is the SINGLE production
+ * entry the recruiter agent calls after the operator approves the key-SET. It chains:
+ *
+ *   1. runCertificationGauntlet (B1/B2 gates inside) → a scored run (passed | failed | adjudicating)
+ *      or a 'queued' deferral;
+ *   2. if the run is 'adjudicating' → autoAdjudicateRun (HR-4, B3 clear-cases-only): ALL items CLEAR
+ *      → adjudicateInterviewRun finalizes it (passed/failed against its snapshot bar); ANY item
+ *      ESCALATES → surface 'escalated' for the operator's HR-1 queue (NO auto-finalize, B3) and raise
+ *      NO premature brief;
+ *   3. on a TERMINAL-PASS run → raiseHireBrief (HR-5, B4 propose-only): the ONE operator hire brief
+ *      now appears in the live app. On a terminal-FAIL run → return 'failed' (the recovery loop is
+ *      classifyCertificationFail, a separate surface — never a hire brief masquerading as recovery).
+ *
+ * PROPOSE+GATE preserved end-to-end: auto-adjudication NEVER auto-FPs / never auto-confirms a partial
+ * (B3 — both move a bar, they escalate); the hire brief is PROPOSE-ONLY (B4 — the operator approves
+ * via applyHireDecision); no cert flips without the operator (runGauntlet's own finalizer drives the
+ * campaign lifecycle; this orchestrator flips nothing).
+ *
+ * SHADOW PATHS, each named: 'queued' deferral → returned faithfully (no run, nothing to hire); a run
+ * that comes back already 'passed'/'failed' (no ambiguous queue) → skips adjudication, goes straight
+ * to hire-brief/failed; an 'adjudicating' run with an EMPTY queue → autoAdjudicateRun returns an
+ * 'escalated' outcome with zero recommendations (honest: nothing for the recruiter to do; the operator
+ * inspects) → surfaced 'escalated', never force-finalized.
+ *
+ * INTERRUPT CONTRACT: re-running a campaign on a run that already finalized is absorbed — a passed run
+ * re-raises the SAME open hire brief (createDecisionBrief one-open-per-artifact); a failed run returns
+ * 'failed' again; an already-resolved adjudicating run cannot re-enter autoAdjudicateRun (it guards
+ * non-'adjudicating' status). NB: this function does NOT itself re-enter from a fresh run id — the
+ * caller passes the same gauntlet input, and runGauntlet creates a new run; idempotency is per the
+ * downstream finalizers, not a campaign-level dedup (the operator's spend approval is the dedup gate).
+ */
+export async function runRecruiterCampaign(
+	deps: GauntletDeps,
+	input: RunCertificationInput
+): Promise<RecruiterCampaignOutcome> {
+	const outcome = await runCertificationGauntlet(deps, input);
+	if (outcome.kind === 'queued') {
+		return { kind: 'queued', reason: outcome.reason, workItemId: outcome.workItemId };
+	}
+
+	let run: InterviewRunRow = outcome.run;
+
+	// STEP 2 — auto-adjudicate an 'adjudicating' run (HR-4). ALL-clear → finalize; ANY escalate →
+	// surface for the operator (B3 escalate-on-doubt) and raise NO premature brief.
+	if (run.status === 'adjudicating') {
+		const adjudication = await autoAdjudicateRun(deps.db, run.id);
+		if (adjudication.kind === 'escalated') {
+			return { kind: 'escalated', run, adjudication };
+		}
+		run = adjudication.run; // finalized passed/failed against the snapshot bar (B4)
+	}
+
+	// STEP 3 — on a TERMINAL run, decide the campaign's terminal shape.
+	if (run.status === 'failed') {
+		return { kind: 'failed', run };
+	}
+	if (run.status === 'passed') {
+		const brief = await raiseHireBrief(deps.db, run.id); // HR-5 — the ONE operator hire brief (B4)
+		return { kind: 'hired_brief', run, brief };
+	}
+
+	// A run that is somehow neither terminal nor adjudicating after the above (e.g. still 'running'
+	// — never happens for a synchronous gauntlet, but never fabricate a verdict): surface it honestly
+	// as 'failed'-shaped recovery would be WRONG, so name the unexpected state loudly.
+	throw new RecruiterIntegrityError(
+		`runRecruiterCampaign: run ${run.id} is '${run.status}' after the gauntlet+adjudication step — ` +
+			`expected a terminal 'passed'/'failed' or an 'escalated' adjudication. Refusing to fabricate a hire verdict.`
+	);
 }
 
 // ── Step 4 — CLASSIFY a terminal FAIL + re-version + propose a fix ───────────────────

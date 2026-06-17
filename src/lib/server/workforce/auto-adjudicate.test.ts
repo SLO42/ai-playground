@@ -111,7 +111,7 @@ describe('classifyAmbiguousItem — the clear-case matrix (escalate-on-doubt)', 
 		}
 	});
 
-	it('extra_finding injection flag on a NON-injection fixture → ESCALATE (both conditions required)', () => {
+	it('extra_finding injection flag on a NON-injection fixture → ESCALATE but PRE-FILL dismiss (likely-correct flag, never auto-applied)', () => {
 		const d = classifyAmbiguousItem(
 			{
 				type: 'extra_finding',
@@ -121,7 +121,27 @@ describe('classifyAmbiguousItem — the clear-case matrix (escalate-on-doubt)', 
 			},
 			0
 		);
+		expect(d.kind).toBe('escalate'); // NOT auto-cleared — the fixture is not a registered injection fixture
+		// HR-H2 (3): the pre-fill is REAL — an injection-family class is LIKELY a correct security flag,
+		// so the operator's likely resolution (dismiss) is pre-filled to cut work (never auto-applied, B3).
+		if (d.kind === 'escalate') {
+			expect(d.recommendation).toBe('dismiss');
+			expect(d.recommendation).not.toBe('false_positive'); // never auto-FP a judgment
+		}
+	});
+
+	it('extra_finding on a non-injection fixture with a NON-injection class → ESCALATE unresolved (no defensible default)', () => {
+		const d = classifyAmbiguousItem(
+			{
+				type: 'extra_finding',
+				fixture: 'fx-defect-regular',
+				finding: { kind: 'presence', class: 'style-nit', evidence: 'x' },
+				note: ''
+			},
+			0
+		);
 		expect(d.kind).toBe('escalate');
+		if (d.kind === 'escalate') expect(d.recommendation).toBe('unresolved');
 	});
 
 	it('extra_finding on an injection fixture but a NON-injection class → ESCALATE (judgment call)', () => {

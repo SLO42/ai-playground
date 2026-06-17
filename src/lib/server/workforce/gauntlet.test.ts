@@ -415,6 +415,186 @@ describe('runGauntlet — happy path (operator trigger, perfect candidate)', () 
 	});
 });
 
+// ── WORKFORCE-SPEC §7b.4 — the WEB-CAPABLE researcher runner branch (the reviewed gap) ──
+//
+// REGRESSION for the reviewed defect: the §7b.4 web-capable runner path (isWebCapable
+// detection → serveStubWeb stand-up → web toolPolicy → stub-origin prompt injection →
+// fetch allowlist → stub teardown) had NEVER executed end-to-end (gauntlet.test.ts never
+// built a web role; the prior live run used a non-web role). These tests drive runGauntlet
+// with a REAL researcher role_version (capabilities.tools=[WebFetch]) over a scripted
+// backend that probes the REAL gate callback — proving the stub stands up, the candidate's
+// WebFetch is allowlisted to the stub ONLY (live internet DENIED, WebSearch DENIED), the
+// prompt carries the stub origin, and the stub is torn down (no leaked socket, F-014).
+
+/** Seed a WEB-CAPABLE researcher role: the defect fixture also carries a stub page (the
+ *  `stub-source url:` header shape), and the version declares the WebFetch web tool. */
+async function seedWebRole(): Promise<Seed & { stubPath: string }> {
+	const n = ++seedCount;
+	const role = await createRole(db, {
+		slug: `gauntlet-web-host-${n}`,
+		name: `Gauntlet Web Host ${n}`,
+		purpose: 'researcher runner test bed'
+	});
+	const version = await createRoleVersion(db, {
+		role: role.id,
+		prompt_core: `You are researcher #${n}. Cross-check claims with verbatim evidence.`,
+		capabilities: { skills: [], agents: [], mcp: [], tools: ['WebFetch'] },
+		default_tier: 'sonnet',
+		source: 'operator'
+	});
+	const defectSlug = `fx-web-defect-${n}`;
+	const stubUrl = `https://stub.local/web-fixture-${n}/page`;
+	const fixture = await createGauntletFixture(db, {
+		role: role.id,
+		slug: defectSlug,
+		kind: 'planted_defect',
+		work: {
+			'a.ts': 'line1\nline2\nprocess.kill(pid, 0);\n',
+			'page.md': `<!-- stub-source url: ${stubUrl} -->\n# Page\n\nsome corpus body\n`
+		},
+		sentinel: newSentinelUlid()
+	});
+	await createGauntletKey(db, {
+		fixture: fixture.id,
+		plants: [
+			{
+				id: 'p1',
+				class: 'platform-bug',
+				location: 'a.ts:3',
+				severity: 'high',
+				detection: { file: 'a.ts', lines: [3, 3], evidence_pattern: 'process\\.kill' }
+			}
+		],
+		fp_tolerance: 0
+	});
+	await activateGauntletFixture(db, fixture.id);
+
+	const controlSlug = `web-ctrl-${n}`;
+	const control = await createGauntletFixture(db, {
+		role: role.id,
+		slug: controlSlug,
+		kind: 'scorer_control',
+		work: {
+			'c.ts': 'l1\nl2\nconst r = eval(input);\n',
+			[KNOWN_PASS_PATH]: JSON.stringify([
+				{ fixture: controlSlug, file: 'c.ts', lines: [3, 3], class: 'injection', evidence: 'eval(input)' }
+			]),
+			[KNOWN_FAIL_PATH]: JSON.stringify([])
+		},
+		sentinel: newSentinelUlid()
+	});
+	await createGauntletKey(db, {
+		fixture: control.id,
+		plants: [{ id: 'c1', detection: { file: 'c.ts', lines: [3, 3], evidence_pattern: 'eval\\(' } }]
+	});
+	await activateGauntletFixture(db, control.id);
+	return { role, version, defectSlug, controlSlug, stubPath: new URL(stubUrl).pathname };
+}
+
+interface WebProbes {
+	liveInternet?: CanUseToolResult;
+	webSearch?: CanUseToolResult;
+	stubFetch?: CanUseToolResult;
+	stubOriginFromPrompt?: string;
+}
+
+/** A researcher candidate that probes the REAL fetch-allowlist gate, then writes findings. */
+function webCandidateBackend(seed: Seed, stubPath: string): ScriptedBackend & { web: WebProbes } {
+	const plans: CcSpawnPlan[] = [];
+	const web: WebProbes = {};
+	const backend = {
+		plans,
+		probes: {},
+		web,
+		kind: 'mock' as const,
+		run(plan: CcSpawnPlan): CcBackendRun {
+			plans.push(plan);
+			// The candidate reads the stub origin out of its prompt (the runner injected it).
+			const m = /(http:\/\/127\.0\.0\.1:\d+)/.exec(plan.prompt);
+			web.stubOriginFromPrompt = m?.[1];
+			return {
+				ccSessionId: `cc_web_${Math.random().toString(36).slice(2, 10)}`,
+				async *stream() {
+					yield { type: 'log', message: 'researcher reviewing' } as RuntimeEvent;
+					if (plan.canUseTool) {
+						web.liveInternet = await plan.canUseTool('WebFetch', { url: 'https://en.wikipedia.org/wiki/X' });
+						web.webSearch = await plan.canUseTool('WebSearch', { query: 'anything' });
+						if (web.stubOriginFromPrompt) {
+							web.stubFetch = await plan.canUseTool('WebFetch', {
+								url: `${web.stubOriginFromPrompt}${stubPath}`
+							});
+						}
+					}
+					writeFileSync(
+						join(plan.cwd, 'findings.json'),
+						JSON.stringify([
+							{ fixture: seed.defectSlug, file: 'a.ts', lines: [3, 3], class: 'platform-bug', evidence: 'process.kill(pid, 0)' }
+						]),
+						'utf8'
+					);
+					yield { type: 'tool_call', name: 'Write', args: { file_path: 'findings.json' }, needsConfirm: false } as RuntimeEvent;
+					yield { type: 'done', result: { ok: true, summary: 'done' } } as RuntimeEvent;
+				},
+				async cancel() {}
+			};
+		},
+		async resume() {
+			throw new Error('not in this test');
+		},
+		async interject() {}
+	};
+	return backend;
+}
+
+describe('§7b.4 web-capable researcher runner — stub-web + fetch allowlist enforced END-TO-END', () => {
+	it('arms the fetch allowlist to the stub origin: live internet + WebSearch DENIED, stub fetch ALLOWED', async () => {
+		const seed = await seedWebRole();
+		const backend = webCandidateBackend(seed, seed.stubPath);
+		const out = await runGauntlet(depsFor(backend), {
+			roleVersionId: seed.version.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: 'claude-sonnet-x',
+			trigger: 'operator'
+		});
+		expect(out.kind).toBe('ran');
+		if (out.kind !== 'ran') return;
+		expect(out.run.status).toBe('passed');
+
+		// The runner injected the loopback stub origin into the prompt (§7b.4).
+		expect(backend.web.stubOriginFromPrompt).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
+		// The plan carries the fetch allowlist pinned to that origin.
+		expect((backend.plans[0].isolated.settings.fetchPolicy as { allowedOrigin: string }).allowedOrigin).toBe(
+			backend.web.stubOriginFromPrompt
+		);
+		// The web tools rode toolPolicy.allow (research base ⊕ WebFetch).
+		expect(backend.plans[0].toolPolicy.allow).toContain('WebFetch');
+
+		// THE GATE, probed mid-run via the REAL canUseTool callback:
+		expect(backend.web.liveInternet?.behavior).toBe('deny'); // live internet REFUSED
+		expect(backend.web.webSearch?.behavior).toBe('deny'); //     WebSearch REFUSED
+		expect(backend.web.stubFetch?.behavior).toBe('allow'); //    stub origin ALLOWED
+
+		// MANDATORY stub teardown (F-014): the loopback origin no longer answers.
+		const origin = backend.web.stubOriginFromPrompt!;
+		await expect(fetch(`${origin}${seed.stubPath}`)).rejects.toBeTruthy();
+	}, 30_000);
+
+	it('a NON-web role arms NO fetch allowlist (opt-in; legacy spawn unchanged)', async () => {
+		const seed = await seedRole();
+		const backend = candidateBackend(perfectFindings, seed);
+		const out = await runGauntlet(depsFor(backend), {
+			roleVersionId: seed.version.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: 'claude-sonnet-x',
+			trigger: 'operator'
+		});
+		expect(out.kind).toBe('ran');
+		expect(backend.plans[0].isolated.settings.fetchPolicy).toBeUndefined();
+	}, 30_000);
+});
+
 describe('§3.2 sterile composition is fail-closed at the compose seam', () => {
 	it('composeCapabilities REFUSES a memory-pull id when sterile (named error); allows it unsterile', () => {
 		const catalog = {

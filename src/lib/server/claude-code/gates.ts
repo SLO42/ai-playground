@@ -42,7 +42,8 @@ export type GateName =
 	| 'read-before-edit'
 	| 'dangerous-bash'
 	| 'path-confinement'
-	| 'edit-scope';
+	| 'edit-scope'
+	| 'fetch-allowlist';
 
 export type GateMode = 'deny' | 'warn';
 
@@ -57,7 +58,8 @@ const SAFETY_CRITICAL: ReadonlySet<GateName> = new Set([
 	'config-protection',
 	'dangerous-bash',
 	'path-confinement',
-	'edit-scope'
+	'edit-scope',
+	'fetch-allowlist'
 ]);
 
 /** Built-in defaults: everything hard-blocks unless a project policy says warn. */
@@ -66,7 +68,8 @@ export const DEFAULT_GATE_POLICY: Readonly<Required<GatePolicy>> = Object.freeze
 	'read-before-edit': 'deny',
 	'dangerous-bash': 'deny',
 	'path-confinement': 'deny',
-	'edit-scope': 'deny'
+	'edit-scope': 'deny',
+	'fetch-allowlist': 'deny'
 });
 
 /** Thrown by {@link parseGatePolicy} on a malformed gate config — callers FAIL CLOSED. */
@@ -122,6 +125,14 @@ export interface GateContext {
 	 * Absent ⇒ no scope gating (the feature is opt-in per session policy, requirement (c)).
 	 */
 	editScope?: EditScope;
+	/**
+	 * WORKFORCE-SPEC §7b.4 (fix) — the session's COMPILED fetch allowlist
+	 * ({@link parseFetchAllowlist}). When present, WebFetch/WebSearch are gated fail-closed
+	 * to the single allowed origin (the loopback stub-web): a WebFetch to any other origin —
+	 * and EVERY WebSearch (it reaches the open web, no URL to scope) — is DENIED. Absent ⇒ no
+	 * fetch gating (the feature is opt-in: a non-web session never touches this branch).
+	 */
+	fetchAllowlist?: FetchAllowlist;
 }
 
 export interface GateDecision {
@@ -604,6 +615,142 @@ function evaluateEditScope(
 	}
 }
 
+// ── fetch-allowlist (WORKFORCE-SPEC §7b.4 fix): the WEB-FETCH allowlist gate ──────────
+//
+// The researcher interview substrate (workforce/stub-web.ts) serves a LOOPBACK stub-web
+// and the candidate's WebFetch is supposed to be ALLOWLISTED to that origin ONLY (§7b.4 —
+// the live internet must be unreachable so the interview is deterministic). The helper
+// `assertFetchAllowed` existed but had NO production caller — nothing constrained the
+// built-in WebFetch URL, so a candidate could fetch the live internet unimpeded (the
+// reviewed defect). THIS gate is the missing enforcement seam: it rides the SAME single
+// evaluator the SDK canUseTool and the CLI PreToolUse hook both consult, so the allowlist
+// is enforced on BOTH paths (and the determinism/safety property is real, not asserted).
+//
+// FAIL CLOSED (D-024, safety-critical — never downgradable): when an allowlist is armed,
+//   • WebFetch — its `url` input must parse AND its origin must EXACTLY equal the allowed
+//     origin; any other origin (the live internet, a credentialed user:pw@…, a different
+//     loopback port) or an unparseable url is DENIED;
+//   • WebSearch — has no URL to scope and inherently reaches the open web, so it is DENIED
+//     whenever an allowlist is armed (a researcher interview reads the served stub, never
+//     searches the live web).
+// The check is the SAME origin-equality semantics as workforce/stub-web.assertFetchAllowed
+// (kept local here so the low-level claude-code gate layer never back-imports workforce).
+
+/** Thrown on a malformed fetchAllowlist config — callers FAIL CLOSED. */
+export class FetchAllowlistError extends Error {
+	override readonly name = 'FetchAllowlistError';
+}
+
+/** The RAW (JSON-serializable) fetch allowlist a session declares — validated by
+ *  parseFetchAllowlist. `allowedOrigin` is the ONLY origin WebFetch may target. */
+export interface FetchAllowlistInput {
+	/** The single permitted fetch origin (e.g. the loopback stub-web `http://127.0.0.1:<port>`). */
+	allowedOrigin: string;
+}
+
+/** The COMPILED fetch allowlist the evaluator consumes (origin normalized at parse time). */
+export interface FetchAllowlist {
+	allowedOrigin: string;
+}
+
+/** Tools whose call reaches the WEB — gated by the fetch-allowlist when armed. */
+const WEB_TOOLS = new Set(['WebFetch', 'WebSearch']);
+
+/**
+ * STRICT fetchAllowlist parser (D-024): `undefined`/`null` ⇒ no fetch gating (opt-in,
+ * returns undefined). A non-object, a missing/empty allowedOrigin, or an allowedOrigin that
+ * is not a parseable URL whose own origin round-trips THROWS {@link FetchAllowlistError};
+ * callers MUST treat that as a hard block (fail the spawn / deny the tool), never run
+ * un-gated. The stored origin is the URL-normalized origin so the equality compare is exact.
+ */
+export function parseFetchAllowlist(raw: unknown): FetchAllowlist | undefined {
+	if (raw === undefined || raw === null) return undefined;
+	if (typeof raw !== 'object' || Array.isArray(raw)) {
+		throw new FetchAllowlistError('fetchAllowlist must be an object — failing closed (D-024)');
+	}
+	const o = raw as Record<string, unknown>;
+	if (typeof o.allowedOrigin !== 'string' || !o.allowedOrigin.trim()) {
+		throw new FetchAllowlistError(
+			'fetchAllowlist.allowedOrigin must be a non-empty string — failing closed (D-024)'
+		);
+	}
+	let origin: string;
+	try {
+		origin = new URL(o.allowedOrigin).origin;
+	} catch {
+		throw new FetchAllowlistError(
+			`fetchAllowlist.allowedOrigin ${JSON.stringify(o.allowedOrigin)} is not a parseable URL — failing closed (D-024)`
+		);
+	}
+	// A URL with an opaque origin (e.g. file:, data:) round-trips to the literal "null" — that
+	// can never equal a real loopback origin and is never a valid stub target; refuse it.
+	if (origin === 'null') {
+		throw new FetchAllowlistError(
+			`fetchAllowlist.allowedOrigin ${JSON.stringify(o.allowedOrigin)} has no real origin — failing closed (D-024)`
+		);
+	}
+	return { allowedOrigin: origin };
+}
+
+/** Pull the fetch URL off a WebFetch tool input (untrusted). undefined when absent/non-string. */
+function fetchUrlOf(call: ToolCall): string | undefined {
+	const input = call.input as Record<string, unknown> | null | undefined;
+	const u = input?.url;
+	return typeof u === 'string' ? u : undefined;
+}
+
+/**
+ * The fetch-allowlist family evaluator. Returns undefined when no allowlist is armed (feature
+ * off) or the call is not a web tool; otherwise an allow/deny for a web tool. FAIL CLOSED:
+ * WebSearch always denies (reaches the open web); WebFetch denies unless its url origin
+ * EXACTLY equals the allowed origin; an unparseable/absent url denies.
+ */
+function evaluateFetchAllowlist(call: ToolCall, context: GateContext): GateDecision | undefined {
+	const allow = context.fetchAllowlist;
+	if (!allow) return undefined;
+	if (!WEB_TOOLS.has(call.name)) return undefined;
+	if (call.name === 'WebSearch') {
+		return {
+			decision: 'deny',
+			gate: 'fetch-allowlist',
+			reason:
+				`WebSearch reaches the open web and cannot be allowlisted to a single origin — ` +
+				`DENIED (WORKFORCE-SPEC §7b.4 fail closed): the interview reads the served stub-web ` +
+				`(${allow.allowedOrigin}) only`
+		};
+	}
+	// WebFetch — its url origin must EXACTLY equal the allowed origin.
+	const url = fetchUrlOf(call);
+	if (url === undefined) {
+		return {
+			decision: 'deny',
+			gate: 'fetch-allowlist',
+			reason: 'WebFetch call has no resolvable url — failing closed (D-024)'
+		};
+	}
+	let origin: string;
+	try {
+		origin = new URL(url).origin;
+	} catch {
+		return {
+			decision: 'deny',
+			gate: 'fetch-allowlist',
+			reason: `WebFetch url is unparseable — failing closed (D-024): ${url}`
+		};
+	}
+	if (origin !== allow.allowedOrigin) {
+		return {
+			decision: 'deny',
+			gate: 'fetch-allowlist',
+			reason:
+				`WebFetch to ${origin} is REFUSED — a researcher interview fetch is allowlisted to the ` +
+				`loopback stub-web (${allow.allowedOrigin}) ONLY; the live internet is not reachable in ` +
+				`the gauntlet (WORKFORCE-SPEC §7b.4, fail closed)`
+		};
+	}
+	return undefined; // in-allowlist WebFetch — allowed by this gate
+}
+
 // ── path extraction (untrusted input → candidate fs targets) ─────────────────────────
 
 const FILE_TOOLS = new Set(['Read', 'Edit', 'Write', 'NotebookEdit', 'MultiEdit']);
@@ -705,6 +852,13 @@ function evaluateGateInner(call: ToolCall, context: GateContext): GateDecision {
 			reason: 'Bash call has no command string — failing closed (D-024)'
 		};
 	}
+
+	// 0) fetch-allowlist (§7b.4) — web tools (WebFetch/WebSearch) are gated to the armed
+	//    allowlist (the loopback stub-web) BEFORE the fs/bash families: a web tool has no
+	//    file_path/command, so the fs families pass it through; this is the only gate that
+	//    speaks to it. Fail-closed when armed; no-op when absent (non-web sessions unchanged).
+	const fetched = evaluateFetchAllowlist(call, context);
+	if (fetched) return fetched;
 
 	// 1) config-protection — applies BEFORE confinement (a protected .env may legitimately
 	//    sit under the root, yet must still be denied). Checks the post-normalization path.

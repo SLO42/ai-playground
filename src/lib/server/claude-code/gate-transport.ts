@@ -26,7 +26,9 @@ import {
 	gatePreToolUse,
 	parseGatePolicy,
 	parseEditScope,
+	parseFetchAllowlist,
 	type EditScopeInput,
+	type FetchAllowlistInput,
 	type GateSession,
 	type PreToolUseOutput
 } from './gates';
@@ -48,6 +50,12 @@ export interface GateHookConfig {
 	 * DENIES every tool, requirement (c)/D-024). Absent ⇒ no scope gating (opt-in).
 	 */
 	editScope?: EditScopeInput;
+	/**
+	 * WORKFORCE-SPEC §7b.4 (fix) — the session's declared fetch allowlist, pinned at spawn time.
+	 * Raw/untrusted here; validated server-side by parseFetchAllowlist (a MALFORMED allowlist
+	 * DENIES every tool, D-024). Absent ⇒ no fetch gating (opt-in; non-web sessions unchanged).
+	 */
+	fetchPolicy?: FetchAllowlistInput;
 }
 
 /** Encode the per-session gate config as a base64url JSON arg (shell-safe on Windows). */
@@ -72,7 +80,10 @@ export function decodeGateHookConfig(encoded: string): GateHookConfig {
 		projectRoot: cfg.projectRoot,
 		// Carried RAW (15.1): parseEditScope is the strict validator at the decision point —
 		// the handler denies (never silently un-scopes) when this is malformed.
-		...(cfg.editScope !== undefined ? { editScope: cfg.editScope as EditScopeInput } : {})
+		...(cfg.editScope !== undefined ? { editScope: cfg.editScope as EditScopeInput } : {}),
+		// Carried RAW (§7b.4 fix): parseFetchAllowlist validates at the decision point — the
+		// handler denies (never silently un-gates fetch) when this is malformed.
+		...(cfg.fetchPolicy !== undefined ? { fetchPolicy: cfg.fetchPolicy as FetchAllowlistInput } : {})
 	};
 }
 
@@ -189,6 +200,18 @@ export function handleGatePreToolUse(body: unknown): PreToolUseOutput {
 			);
 		}
 
+		// STRICT fetchAllowlist parse (§7b.4 fix): a MALFORMED allowlist DENIES every tool — it
+		// must never be silently dropped (which would un-gate the candidate's WebFetch, a
+		// fail-open). Absent ⇒ undefined ⇒ no fetch gating (opt-in).
+		let fetchAllowlist;
+		try {
+			fetchAllowlist = parseFetchAllowlist(cfg.fetchPolicy);
+		} catch (err) {
+			return gateDenyOutput(
+				`malformed fetchAllowlist config — failing closed (D-024): ${(err as Error).message}`
+			);
+		}
+
 		const p = (payload ?? {}) as GateRequestBody['payload'];
 		const sid = typeof p.session_id === 'string' && p.session_id ? p.session_id : '__no_session__';
 		const decide = gatePreToolUse({
@@ -196,7 +219,8 @@ export function handleGatePreToolUse(body: unknown): PreToolUseOutput {
 			codeRoot: cfg.projectRoot,
 			session: sessionFor(sid),
 			policy,
-			editScope
+			editScope,
+			fetchAllowlist
 		});
 		// gatePreToolUse itself fails closed on a malformed payload (tool_name not a string).
 		return decide({

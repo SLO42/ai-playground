@@ -34,7 +34,7 @@ import type {
 	RuntimeEvent
 } from '../runtime/index';
 import { buildGateHookGroup, encodeGateHookConfig } from './gate-transport';
-import type { EditScopeInput } from './gates';
+import type { EditScopeInput, FetchAllowlistInput } from './gates';
 
 /**
  * Seed the per-session ISOLATED config dir so Claude Code TRUSTS this cwd and is allowed to
@@ -71,6 +71,7 @@ const HARNESS_ONLY_SETTINGS_KEYS = new Set([
 	'capabilities',
 	'gates',
 	'editScope',
+	'fetchPolicy',
 	// TASK B10 (fix) — `mcpServers` is NOT a load-path key in the --settings file. Claude Code
 	// loads MCP servers ONLY from --mcp-config / .mcp.json / ~/.claude.json; an mcpServers block
 	// placed in a settings.json is SILENTLY IGNORED (CLI reference: --settings carries settings.json
@@ -113,14 +114,19 @@ export function buildCliSettings(
 	// It also FORCES the hook on — a session that declared a scope must never spawn with
 	// the scope silently dropped (D-024), even if no gate modes were configured.
 	const editScope = plan.isolated.settings.editScope as EditScopeInput | undefined;
-	if ((gates && Object.keys(gates).length > 0) || editScope !== undefined) {
+	// WORKFORCE-SPEC §7b.4 (fix): a declared fetch allowlist rides the SAME pinned hook config
+	// and ALSO forces the hook on — a session that declared a fetch allowlist must never spawn
+	// with it silently dropped (D-024), even if no gate modes / editScope were configured.
+	const fetchPolicy = plan.isolated.settings.fetchPolicy as FetchAllowlistInput | undefined;
+	if ((gates && Object.keys(gates).length > 0) || editScope !== undefined || fetchPolicy !== undefined) {
 		const group = buildGateHookGroup({
 			nodeBin: opts.nodeBin,
 			serverRoot: opts.serverRoot,
 			encodedConfig: encodeGateHookConfig({
 				gates: gates ?? {},
 				projectRoot: plan.cwd,
-				...(editScope !== undefined ? { editScope } : {})
+				...(editScope !== undefined ? { editScope } : {}),
+				...(fetchPolicy !== undefined ? { fetchPolicy } : {})
 			})
 		});
 		const hooks = { ...((out.hooks as Record<string, unknown>) ?? {}) };

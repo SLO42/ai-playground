@@ -31,14 +31,16 @@ import {
 	gateCanUseTool,
 	parseGatePolicy,
 	parseEditScope,
+	parseFetchAllowlist,
 	createGateSession,
 	type CanUseToolResult,
-	type EditScopeInput
+	type EditScopeInput,
+	type FetchAllowlistInput
 } from '../claude-code/gates';
 
 // Re-export the gate callback result type so backends can type plan.canUseTool (13.3),
 // and the raw edit-scope shape so launch-path callers can type SpawnRequest.editScope (15.1).
-export type { CanUseToolResult, EditScopeInput } from '../claude-code/gates';
+export type { CanUseToolResult, EditScopeInput, FetchAllowlistInput } from '../claude-code/gates';
 
 // Re-export the D-036 capability surface so the whole system imports it from `runtime`.
 export {
@@ -120,6 +122,16 @@ export interface SpawnRequest {
 	 * like docs/fails.md) when building the LaunchInput → SpawnRequest.
 	 */
 	editScope?: EditScopeInput;
+	/**
+	 * WORKFORCE-SPEC §7b.4 (fix) — the session's declared FETCH ALLOWLIST: the single origin
+	 * a built-in WebFetch may target ({allowedOrigin}). Set by the researcher gauntlet to the
+	 * loopback stub-web origin so the candidate's WebFetch is allowlisted to the stub ONLY and
+	 * the live internet is unreachable (the §7b.4 determinism/safety guarantee). Enforced
+	 * fail-closed on BOTH paths (SDK canUseTool + CLI PreToolUse hook) via the fetch-allowlist
+	 * gate family; WebSearch is denied entirely when armed. A MALFORMED policy fails the spawn
+	 * closed (never spawns un-gated); ABSENT ⇒ no fetch gating (non-web sessions unchanged).
+	 */
+	fetchPolicy?: FetchAllowlistInput;
 	workflowRunId?: string; // set when this spawn is a workflow step (D-013)
 	/**
 	 * TASK 16.6 (WORKFORCE-SPEC §3.2) — the session kind this spawn runs as, when the
@@ -215,6 +227,12 @@ export interface HarnessSettings {
 	 * cli-backend strips it from the Claude-Code-schema settings file (like `gates`).
 	 */
 	editScope?: EditScopeInput;
+	/**
+	 * WORKFORCE-SPEC §7b.4 (fix) — the spawn's declared fetch allowlist (SpawnRequest.fetchPolicy),
+	 * carried RAW so the CLI backend pins it onto the PreToolUse hook config. A harness-internal
+	 * key: cli-backend strips it from the Claude-Code-schema settings file (like `gates`/`editScope`).
+	 */
+	fetchPolicy?: FetchAllowlistInput;
 	[k: string]: unknown;
 }
 
@@ -320,6 +338,11 @@ export function isolatedConfigFor(
 	// so the CLI backend pins it onto the PreToolUse hook config. Only set when declared:
 	// legacy/unscoped spawns keep a byte-identical settings shape.
 	if (req.editScope !== undefined) settings.editScope = req.editScope;
+
+	// WORKFORCE-SPEC §7b.4 (fix) — a declared fetch allowlist rides the isolated settings (both
+	// compose paths) so the CLI backend pins it onto the PreToolUse hook config. Only set when
+	// declared: legacy/non-web spawns keep a byte-identical settings shape.
+	if (req.fetchPolicy !== undefined) settings.fetchPolicy = req.fetchPolicy;
 
 	// TASK B10 — capability-gated AGENT-TOOL registration. When a tool-wiring seam is
 	// supplied, ask it for the `mcpServers` block this spawn's COMPOSED, catalog-validated
@@ -502,15 +525,25 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 		// gate callback on even when no gate modes were configured (a declared scope is never
 		// dropped). Absent editScope ⇒ unchanged legacy behaviour (opt-in, requirement (c)).
 		const editScope = parseEditScope(req.editScope);
+		// WORKFORCE-SPEC §7b.4 (fix) — likewise parseFetchAllowlist: a MALFORMED declared fetch
+		// allowlist fails the spawn closed here (never spawns silently un-gated), and a VALID one
+		// forces the gate callback on even when no gate modes / editScope were configured (a
+		// declared fetch allowlist is never dropped). Absent ⇒ unchanged legacy behaviour.
+		const fetchAllowlist = parseFetchAllowlist(req.fetchPolicy);
 		let canUseTool: CcSpawnPlan['canUseTool'];
-		if ((this.gates && Object.keys(this.gates).length > 0) || editScope !== undefined) {
+		if (
+			(this.gates && Object.keys(this.gates).length > 0) ||
+			editScope !== undefined ||
+			fetchAllowlist !== undefined
+		) {
 			const policy = parseGatePolicy(this.gates ?? {});
 			canUseTool = gateCanUseTool({
 				projectRoot: req.cwd,
 				codeRoot: req.cwd,
 				session: createGateSession(),
 				policy,
-				...(editScope !== undefined ? { editScope } : {})
+				...(editScope !== undefined ? { editScope } : {}),
+				...(fetchAllowlist !== undefined ? { fetchAllowlist } : {})
 			});
 		}
 		return {

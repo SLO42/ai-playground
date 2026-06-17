@@ -13,11 +13,15 @@
 //      `<!-- stub-source url: … -->` header — the page's canonical URL). The server maps
 //      `GET <path-of-url>` → the page body, records every request (audit), and is closed by
 //      the caller (the gauntlet finally-teardown). It serves DATA only; it never executes.
-//   2. FETCH ALLOWLIST (assertFetchAllowed / stubFetchGate): the fail-closed gate proving an
-//      interview fetch cannot reach the live internet. A request URL is permitted ONLY when
-//      its origin equals the running stub's loopback origin; ANY other origin throws the
-//      named StubFetchRefusedError (never a silent allow — a silent allow would let a
-//      candidate researcher touch the real web mid-interview, defeating §7b.4).
+//   2. FETCH ALLOWLIST (assertFetchAllowed / stubFetchGate): the origin-equality predicate
+//      a fetch must satisfy — a request URL is permitted ONLY when its origin equals the
+//      running stub's loopback origin; ANY other origin throws the named StubFetchRefusedError.
+//      These helpers are the SEMANTICS; the ENFORCEMENT is the `fetch-allowlist` gate family
+//      (claude-code/gates.ts) the runner arms via SpawnRequest.fetchPolicy = {allowedOrigin:
+//      stub.origin}. That gate rides the SAME single evaluator the SDK canUseTool and the CLI
+//      PreToolUse hook both consult, so the candidate's built-in WebFetch is allowlisted to
+//      the stub on BOTH paths and the live internet is genuinely unreachable in the gauntlet
+//      (not merely a prompt sentence) — WebSearch is denied entirely (it reaches the open web).
 //
 // NON-EXECUTION (D-026): a stub page is DATA. The page bodies are the fixtures' planted
 // content; when they reach the candidate they ride the research-rail fence (research.fencePage
@@ -107,9 +111,21 @@ export interface StubWeb {
  */
 export function serveStubWeb(pages: StubPage[]): Promise<StubWeb> {
 	// Index pages by their canonical-url PATHNAME (the loopback path the candidate hits).
+	// One stub serves ONE corpus across all of a run's fixtures, so two pages mapping to the
+	// same loopback pathname would silently shadow each other (last-write-wins) — a fixture
+	// author could ship a gauntlet that serves the WRONG body. Detect the collision and throw
+	// (fail loud, never a silent wrong page).
 	const byPath = new Map<string, StubPage>();
 	for (const p of pages) {
 		const path = pathnameOf(p.url);
+		const prior = byPath.get(path);
+		if (prior) {
+			throw new WorkforceInputError(
+				`stub-web pathname collision at ${JSON.stringify(path)}: fixture '${prior.fixture}' page ` +
+					`${JSON.stringify(prior.url)} and fixture '${p.fixture}' page ${JSON.stringify(p.url)} map to the ` +
+					`same loopback path — give them distinct paths (a stub serves one corpus per run)`
+			);
+		}
 		byPath.set(path, p);
 	}
 	const requests: StubRequest[] = [];

@@ -284,11 +284,13 @@ export function buildInterviewPrompt(
 				'## Web research (allowlisted)',
 				'',
 				`This is a MANAGED web-research interview. A controlled stub-web is served at`,
-				`${stubOrigin} — your WebFetch is ALLOWLISTED to that origin ONLY (the live internet`,
-				`is not reachable here). Each fixture folder also contains the stub pages as local`,
-				`files (page-*.md) carrying their canonical URL in a stub-source comment; you may read`,
-				`them directly or fetch them at the stub origin. Cross-check claims across pages; a`,
-				`claim with no corroborating second source is reported, never asserted as fact.`
+				`${stubOrigin} — your WebFetch is ALLOWLISTED to that origin ONLY: a WebFetch to any`,
+				`other origin (the live internet) is REFUSED by the harness, and WebSearch is`,
+				`disabled. Each fixture folder also contains the stub pages as local files`,
+				`(page-*.md) carrying their canonical URL in a stub-source comment; read them as`,
+				`local files OR fetch them at the stub origin — both reach the same controlled`,
+				`corpus. Cross-check claims across pages; a claim with no corroborating second`,
+				`source is reported, never asserted as fact.`
 			]
 		: [];
 	return [
@@ -574,6 +576,11 @@ async function attemptGauntlet(deps: GauntletDeps, ctx: AttemptContext): Promise
 			toolPolicy: { allow: toolAllow },
 			...(capabilities ? { capabilities } : {}),
 			editScope: { scopeRoots: [ws], destructiveBash: gatesConfig.destructiveBash },
+			// §7b.4 (fix) — ENFORCE the fetch allowlist at the gate seam: when a stub-web is
+			// served, the candidate's WebFetch is allowlisted to that loopback origin ONLY and
+			// WebSearch is denied (fail-closed fetch-allowlist gate, both SDK + CLI paths). The
+			// live internet is genuinely unreachable now — not merely a prompt sentence.
+			...(stub ? { fetchPolicy: { allowedOrigin: stub.origin } } : {}),
 			sessionKind: 'interview' // §3.2 — forces the sterile composition (fail closed)
 		};
 

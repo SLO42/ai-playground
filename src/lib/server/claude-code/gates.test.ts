@@ -8,11 +8,14 @@ import {
 	gateCanUseTool,
 	gatePreToolUse,
 	parseGatePolicy,
+	parseFetchAllowlist,
+	FetchAllowlistError,
 	GatePolicyError,
 	DEFAULT_GATE_POLICY,
 	type GateContext,
 	type ToolCall
 } from './gates';
+import { assertFetchAllowed, StubFetchRefusedError } from '../workforce/stub-web';
 
 // TASK 2.13 — the defense-in-depth gate layer ON TOP of 1.4a's primary
 // permissions.deny. A single pure evaluator (`evaluateGate`) consulted by BOTH the SDK
@@ -282,5 +285,119 @@ describe('parseGatePolicy — malformed gate config fails CLOSED (13.3, D-024)',
 	it('an empty/absent config parses to the empty policy (defaults apply downstream)', () => {
 		expect(parseGatePolicy({})).toEqual({});
 		expect(parseGatePolicy(undefined)).toEqual({});
+	});
+});
+
+// ── fetch-allowlist gate (WORKFORCE-SPEC §7b.4 fix) ──────────────────────────────────
+//
+// REGRESSION for the reviewed defect: the §7b.4 fetch allowlist had a tested helper
+// (assertFetchAllowed) but ZERO enforcement at any tool-call seam, so a researcher
+// candidate's built-in WebFetch could reach the live internet unimpeded. The fix is the
+// fetch-allowlist gate family in the SAME single evaluator both the SDK canUseTool and
+// the CLI PreToolUse hook consult — so these tests assert enforcement AT the seam.
+
+const STUB_ORIGIN = 'http://127.0.0.1:54321';
+
+function webFetch(url: unknown): ToolCall {
+	return { name: 'WebFetch', input: { url } };
+}
+
+describe('fetch-allowlist gate — WebFetch allowlisted to the stub origin ONLY (§7b.4)', () => {
+	it('ALLOWS a WebFetch whose origin equals the allowed (stub) origin', () => {
+		const r = evaluateGate(webFetch(`${STUB_ORIGIN}/blog/x`), ctx({ fetchAllowlist: { allowedOrigin: STUB_ORIGIN } }));
+		expect(r.decision).toBe('allow');
+	});
+
+	it('DENIES a WebFetch to the live internet (a non-stub origin)', () => {
+		const r = evaluateGate(webFetch('https://en.wikipedia.org/wiki/X'), ctx({ fetchAllowlist: { allowedOrigin: STUB_ORIGIN } }));
+		expect(r.decision).toBe('deny');
+		expect(r.gate).toBe('fetch-allowlist');
+	});
+
+	it('DENIES a WebFetch to a DIFFERENT loopback port (origin includes the port)', () => {
+		const r = evaluateGate(webFetch('http://127.0.0.1:9999/blog/x'), ctx({ fetchAllowlist: { allowedOrigin: STUB_ORIGIN } }));
+		expect(r.decision).toBe('deny');
+		expect(r.gate).toBe('fetch-allowlist');
+	});
+
+	it('DENIES a WebFetch with an unparseable url (fail closed, D-024)', () => {
+		const r = evaluateGate(webFetch('not a url'), ctx({ fetchAllowlist: { allowedOrigin: STUB_ORIGIN } }));
+		expect(r.decision).toBe('deny');
+		expect(r.gate).toBe('fetch-allowlist');
+	});
+
+	it('DENIES a WebFetch with no url (fail closed, D-024)', () => {
+		const r = evaluateGate({ name: 'WebFetch', input: {} }, ctx({ fetchAllowlist: { allowedOrigin: STUB_ORIGIN } }));
+		expect(r.decision).toBe('deny');
+		expect(r.gate).toBe('fetch-allowlist');
+	});
+
+	it('DENIES WebSearch entirely when an allowlist is armed (it reaches the open web)', () => {
+		const r = evaluateGate({ name: 'WebSearch', input: { query: 'anything' } }, ctx({ fetchAllowlist: { allowedOrigin: STUB_ORIGIN } }));
+		expect(r.decision).toBe('deny');
+		expect(r.gate).toBe('fetch-allowlist');
+	});
+
+	it('safety-critical: a policy "warn" CANNOT downgrade the fetch-allowlist deny (D-024)', () => {
+		const r = evaluateGate(
+			webFetch('https://evil.example/x'),
+			ctx({ fetchAllowlist: { allowedOrigin: STUB_ORIGIN }, policy: { 'fetch-allowlist': 'warn' } })
+		);
+		expect(r.decision).toBe('deny');
+	});
+
+	it('is OPT-IN: with NO allowlist armed, WebFetch/WebSearch are not touched by this gate', () => {
+		expect(evaluateGate(webFetch('https://en.wikipedia.org/x'), ctx()).decision).toBe('allow');
+		expect(evaluateGate({ name: 'WebSearch', input: { query: 'x' } }, ctx()).decision).toBe('allow');
+	});
+
+	it('enforced identically on the SDK (canUseTool) AND CLI (PreToolUse) paths', async () => {
+		const sdk = gateCanUseTool(ctx({ fetchAllowlist: { allowedOrigin: STUB_ORIGIN } }));
+		const denied = await sdk('WebFetch', { url: 'https://en.wikipedia.org/x' });
+		expect(denied.behavior).toBe('deny');
+		const allowed = await sdk('WebFetch', { url: `${STUB_ORIGIN}/x` });
+		expect(allowed.behavior).toBe('allow');
+
+		const cli = gatePreToolUse(ctx({ fetchAllowlist: { allowedOrigin: STUB_ORIGIN } }));
+		expect(cli({ tool_name: 'WebFetch', tool_input: { url: 'https://en.wikipedia.org/x' } }).hookSpecificOutput.permissionDecision).toBe('deny');
+		expect(cli({ tool_name: 'WebFetch', tool_input: { url: `${STUB_ORIGIN}/x` } }).hookSpecificOutput.permissionDecision).toBe('allow');
+	});
+
+	it('the gate semantics MATCH workforce/stub-web.assertFetchAllowed (no drift between the two)', () => {
+		// Bind the gate to the workforce-facing predicate so a future change to either is caught.
+		for (const url of [`${STUB_ORIGIN}/a`, 'https://evil.example/x', 'http://127.0.0.1:9999/x']) {
+			const gateDeny = evaluateGate(webFetch(url), ctx({ fetchAllowlist: { allowedOrigin: STUB_ORIGIN } })).decision === 'deny';
+			let helperRefused = false;
+			try {
+				assertFetchAllowed(url, STUB_ORIGIN);
+			} catch (e) {
+				helperRefused = e instanceof StubFetchRefusedError;
+			}
+			expect(gateDeny).toBe(helperRefused);
+		}
+	});
+});
+
+describe('parseFetchAllowlist — malformed config fails CLOSED (§7b.4 fix, D-024)', () => {
+	it('returns undefined for absent/null (opt-in: no fetch gating)', () => {
+		expect(parseFetchAllowlist(undefined)).toBeUndefined();
+		expect(parseFetchAllowlist(null)).toBeUndefined();
+	});
+
+	it('normalizes a valid origin (strips path) and stores the URL origin', () => {
+		expect(parseFetchAllowlist({ allowedOrigin: 'http://127.0.0.1:5/x/y' })).toEqual({ allowedOrigin: 'http://127.0.0.1:5' });
+	});
+
+	it('throws FetchAllowlistError on a non-object', () => {
+		expect(() => parseFetchAllowlist('http://x')).toThrow(FetchAllowlistError);
+	});
+
+	it('throws FetchAllowlistError on a missing/empty allowedOrigin', () => {
+		expect(() => parseFetchAllowlist({})).toThrow(FetchAllowlistError);
+		expect(() => parseFetchAllowlist({ allowedOrigin: '  ' })).toThrow(FetchAllowlistError);
+	});
+
+	it('throws FetchAllowlistError on an unparseable origin', () => {
+		expect(() => parseFetchAllowlist({ allowedOrigin: 'not a url' })).toThrow(FetchAllowlistError);
 	});
 });

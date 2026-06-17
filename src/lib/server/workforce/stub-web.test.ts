@@ -16,7 +16,7 @@ import { scoreFindings, validateKey, parsePlant, type ScoringKey } from './score
 import { parseFindingsFile, type Finding } from './findings';
 import { RESEARCHER_DRAFT_KEYS, RESEARCHER_ROLE, seedResearcherRole } from './launch-fixtures';
 import { confirmLaunchKey } from './ceremony';
-import { computeWorkSha, getRoleBySlug, readGauntletKeyForScoring, type GauntletFixtureRow } from './repo';
+import { computeWorkSha, getRoleBySlug, readGauntletKeyForScoring, WorkforceInputError, type GauntletFixtureRow } from './repo';
 
 // WORKFORCE-SPEC §7b.4 VERIFY — the researcher gauntlet SUBSTRATE: the loopback stub-web +
 // the fetch allowlist, and the four fixtures' DRAFT keys (drafted-from-source, NOT activated).
@@ -113,6 +113,30 @@ describe('§7b.4 serveStubWeb — loopback mini-web (F-014 process discipline)',
 		const hit = stub.requests.find((r) => r.path === '/forum/post-42');
 		expect(hit).toBeTruthy();
 		expect(hit!.status).toBe(200);
+	});
+});
+
+describe('§7b.4 serveStubWeb — pathname collision is loud, never silent last-write-wins', () => {
+	it('throws WorkforceInputError when two pages map to the SAME loopback pathname', async () => {
+		const pages = [
+			{ url: 'https://stub.local/control', body: 'A', fixture: 'fx-one' },
+			{ url: 'https://other.example/control', body: 'B', fixture: 'fx-two' } // same /control pathname
+		];
+		// Fail-fast: the collision is detected BEFORE any socket is bound (no resource leaked).
+		expect(() => serveStubWeb(pages)).toThrow(WorkforceInputError);
+	});
+
+	it('distinct pathnames across fixtures stand up fine (no false collision)', async () => {
+		const stub = await serveStubWeb([
+			{ url: 'https://stub.local/a', body: 'A', fixture: 'fx-one' },
+			{ url: 'https://stub.local/b', body: 'B', fixture: 'fx-two' }
+		]);
+		try {
+			expect((await fetch(stub.loopbackUrlFor('https://stub.local/a'))).status).toBe(200);
+			expect((await fetch(stub.loopbackUrlFor('https://stub.local/b'))).status).toBe(200);
+		} finally {
+			await stub.close();
+		}
 	});
 });
 

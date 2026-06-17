@@ -32,6 +32,7 @@ import {
 	newSentinelUlid,
 	reversionFailedRole,
 	seedLaunchPool,
+	seedRecruiterRole,
 	seedResearcherRole,
 	triggerAdmissionReferenceRun,
 	triggerBootstrapInterview,
@@ -334,6 +335,10 @@ export const actions: Actions = {
 			const created = result.roles.filter((r) => r.createdRole).length;
 			// §7b — seed the sixth catalog role alongside the launch pool (idempotent, separate).
 			const researcher = await seedResearcherRole(db);
+			// HR-RECRUITER-SPEC §7b.2 — seed the SEVENTH catalog role (recruiter) alongside, the
+			// SAME way the researcher is (separate seed, NEVER added to LAUNCH_ROLES, idempotent).
+			// It lands DRAFT/uncertified — NOT auto-certified (B1); the operator bootstrap-certifies it.
+			const recruiter = await seedRecruiterRole(db);
 			return {
 				ceremony: {
 					ok: true,
@@ -341,7 +346,9 @@ export const actions: Actions = {
 					rolesTotal: result.roles.length,
 					rolesCreated: created,
 					researcherSeeded: true,
-					researcherCreated: researcher.createdRole
+					researcherCreated: researcher.createdRole,
+					recruiterSeeded: true,
+					recruiterCreated: recruiter.createdRole
 				}
 			};
 		} catch (err) {

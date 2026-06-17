@@ -4,7 +4,15 @@ import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
-import { LAUNCH_ROLES, RESEARCHER_ROLE, seedLaunchPool, seedResearcherRole } from './launch-fixtures';
+import {
+	LAUNCH_ROLES,
+	RECRUITER_DRAFT_KEYS,
+	RECRUITER_ROLE,
+	RESEARCHER_ROLE,
+	seedLaunchPool,
+	seedRecruiterRole,
+	seedResearcherRole
+} from './launch-fixtures';
 import { readGauntletKeyForScoring, listRoleVersions, getRoleBySlug } from './repo';
 import { KNOWN_FAIL_PATH, KNOWN_PASS_PATH } from './scorer';
 import { parseFindingsFile } from './findings';
@@ -236,5 +244,162 @@ describe('ceremony seed wiring — researcher seeded ALONGSIDE the launch pool (
 			{ r: new StringRecordId(before!.id) }
 		);
 		expect(counts[0].n).toBe(RESEARCHER_ROLE.fixtures.length); // no duplicate fixtures
+	});
+});
+
+// HR-2 — the GLOBAL recruiter role (HR-RECRUITER-SPEC §7b.2): the SEVENTH catalog role, seeded
+// SEPARATELY (NEVER in LAUNCH_ROLES — the §8 five-launch invariant holds), DRAFT/uncertified,
+// with its own gauntlet fixtures + draft keys that certify the JUDGMENT it automates (detect a
+// teethless key, detect an over-strict key, classify a clear-dismiss vs an escalate adjudication
+// item). redTeam (B1): assert NO path seeds it pre-certified or lets it certify itself.
+describe('recruiter role/fixture content (static — HR-RECRUITER-SPEC §7b.2)', () => {
+	it('is a well-formed catalog spec: recruiter slug, harvested provenance, opus default, integrity-encoding prompt core', () => {
+		expect(RECRUITER_ROLE.slug).toBe('recruiter');
+		expect(RECRUITER_ROLE.provenance).toMatch(/^harvested:/);
+		expect(RECRUITER_ROLE.provenance).toMatch(/HR-RECRUITER-SPEC/);
+		expect(RECRUITER_ROLE.defaultTier).toBe('opus');
+		expect(RECRUITER_ROLE.purpose.trim().length).toBeGreaterThan(0);
+		// The prompt core MUST encode the integrity invariants the recruiter honors (B1–B4).
+		const core = RECRUITER_ROLE.promptCore;
+		expect(core.trim().length).toBeGreaterThan(200);
+		expect(core).toMatch(/NEVER CERTIFY YOURSELF/i); // B1
+		expect(core).toMatch(/PROPOSE KEYS, NEVER CONFIRM/i); // B2
+		expect(core).toMatch(/TEETHLESS/i); // B2 — never author a teethless key
+		expect(core).toMatch(/OVER-?STRICT|OVER-?CONSTRAIN/i); // B2 — never an over-strict key
+		expect(core).toMatch(/NEVER RESCORE THE DETERMINISTIC SCORER/i); // B3
+		expect(core).toMatch(/D-039|HIRE GATE/i); // B4 — operator keeps the gate
+	});
+
+	it('preserves the §8 invariant: recruiter is the SEVENTH catalog role, NOT in LAUNCH_ROLES (and ≠ researcher)', () => {
+		expect(LAUNCH_ROLES).toHaveLength(5);
+		expect(LAUNCH_ROLES.map((r) => r.slug)).not.toContain('recruiter');
+		expect(RECRUITER_ROLE.slug).not.toBe(RESEARCHER_ROLE.slug); // distinct from the 6th (B1: distinct role)
+	});
+
+	it('its fixtures certify the JUDGMENT it automates (teethless / over-strict / adjudication) + an injection plant + scorer_control', () => {
+		const slugs = RECRUITER_ROLE.fixtures.map((f) => f.slug);
+		expect(slugs).toContain('teethless-key-draft'); // (a)
+		expect(slugs).toContain('over-strict-key-draft'); // (b)
+		expect(slugs).toContain('adjudication-classification'); // (c)
+		const kinds = RECRUITER_ROLE.fixtures.map((f) => f.kind);
+		expect(kinds.filter((k) => k === 'planted_defect' || k === 'planted_absence').length).toBeGreaterThanOrEqual(1);
+		expect(kinds).toContain('scorer_control');
+		// §4.3 / A8 injection plant present.
+		const injection = RECRUITER_ROLE.fixtures.find((f) => f.kind === 'hallucination_bait');
+		expect(injection).toBeTruthy();
+		expect(JSON.stringify(injection!.work).toLowerCase()).toMatch(/ignore|system instruction|do not report/);
+	});
+
+	it('NO recruiter fixture work carries answer-key material of its own (§2.1 HARD RULE)', () => {
+		for (const f of RECRUITER_ROLE.fixtures) {
+			for (const [rel, content] of Object.entries(f.work)) {
+				expect(typeof content).toBe('string');
+				expect(KEY_MATERIAL_KEYS).not.toContain(rel); // no work entry NAMED like key material
+			}
+			if (f.kind === 'scorer_control') {
+				expect(parseFindingsFile(f.work[KNOWN_PASS_PATH] as string).ok).toBe(true);
+				const failParsed = parseFindingsFile(f.work[KNOWN_FAIL_PATH] as string);
+				expect(failParsed.ok && failParsed.findings.length).toBe(0);
+			}
+		}
+	});
+
+	it('its provenance is harvested/HR-spec, never PM-authored (§4.4)', () => {
+		for (const f of RECRUITER_ROLE.fixtures) {
+			expect(f.provenance).toMatch(/^(fails:|harvest:)/);
+			expect(f.provenance.toLowerCase().startsWith('pm:')).toBe(false);
+		}
+	});
+
+	it('draft keys exist for the three cert fixtures, teeth-bearing, NOT applied (B2 — propose only)', () => {
+		const keyed = RECRUITER_DRAFT_KEYS.map((k) => k.fixtureSlug).sort();
+		expect(keyed).toEqual(['adjudication-classification', 'over-strict-key-draft', 'teethless-key-draft']);
+		for (const k of RECRUITER_DRAFT_KEYS) {
+			// Every draft key has TEETH (≥1 plant with a detection) — the recruiter's own bar is not teethless.
+			expect(k.plants.length).toBeGreaterThanOrEqual(1);
+			for (const p of k.plants) {
+				expect(p).toHaveProperty('detection');
+				expect(p).toHaveProperty('class');
+			}
+		}
+	});
+});
+
+describe('seedRecruiterRole — DRAFT/uncertified + idempotent + B1 self-cert red-team (HR §7b.2)', () => {
+	it('the seed action path (seedLaunchPool + seedResearcherRole + seedRecruiterRole) seeds the recruiter DRAFT, proposed, no keys, NOT certified', async () => {
+		// Mirror the +page.server.ts seed action: all three run on one operator click, idempotently.
+		await seedLaunchPool(db);
+		await seedResearcherRole(db);
+		const recruiter = await seedRecruiterRole(db);
+
+		expect(recruiter.role.slug).toBe('recruiter');
+		// B1 / F-008 — NOT deployable, NOT certified: no active_version, draft version.
+		expect(recruiter.role.active_version).toBeNull();
+		expect(recruiter.version.lifecycle).toBe('draft');
+		// The recruiter has NO web grant (it reviews local cert artifacts; not the researcher):
+		// capabilities defaults to an empty object, with NO tools key (unlike the researcher).
+		expect(recruiter.version.capabilities?.tools).toBeUndefined();
+		// Its cert fixtures + scorer_control: proposed, empty sentinel, NO key at seed (operator-authored, §4.4).
+		expect(recruiter.fixtures.length).toBeGreaterThanOrEqual(4);
+		for (const f of recruiter.fixtures) {
+			expect(f.status).toBe('proposed');
+			expect(f.sentinel).toBe(''); // §4.2 — injected at activation, never at seed
+			const key = await readGauntletKeyForScoring(db, f.id);
+			expect(key, `recruiter/${f.slug} must have NO key at seed`).toBeNull();
+		}
+	});
+
+	it('redTeam B1: NO path seeds the recruiter pre-certified — no role_version is certified, the role has no active_version, and the certified count is unchanged', async () => {
+		await seedLaunchPool(db);
+		await seedResearcherRole(db);
+		await seedRecruiterRole(db);
+
+		const role = await getRoleBySlug(db, 'recruiter');
+		expect(role).not.toBeNull();
+		// The role is NOT deployable (no active_version) — it cannot be hired/run.
+		expect(role!.active_version).toBeNull();
+		// EVERY recruiter role_version is draft — none certified (B1: it never ran/passed its own gauntlet).
+		const versions = await listRoleVersions(db, role!.id);
+		expect(versions.length).toBeGreaterThanOrEqual(1);
+		for (const v of versions) {
+			expect(v.lifecycle).toBe('draft');
+		}
+		// The recruiter is not in the certified launch count — seeding it certifies NOTHING.
+		const execution = await ceremonyExecutionState(db);
+		const execRecruiter = execution.roles.find((r) => r.roleSlug === 'recruiter');
+		expect(execRecruiter, 'recruiter on the execution surface').toBeTruthy();
+		expect(execRecruiter!.certified).toBe(false);
+		expect(execution.certifiedCount).toBe(0); // an un-certified seed never moves the launch count
+	});
+
+	it('the recruiter surfaces on the ceremony AUTHORING surface as an un-keyed (uncertified) catalog role', async () => {
+		await seedLaunchPool(db);
+		await seedRecruiterRole(db);
+		const authoring = await ceremonyAuthoringState(db);
+		const authRecruiter = authoring.roles.find((r) => r.roleSlug === 'recruiter');
+		expect(authRecruiter, 'recruiter on the authoring surface').toBeTruthy();
+		expect(authRecruiter!.promptCore).not.toBeNull(); // step ① reviewable draft core
+		expect(authRecruiter!.fixtures.length).toBeGreaterThanOrEqual(4);
+		// Un-certified at seed → all fixtures un-keyed (keys are operator-authored, B2/§4.4).
+		expect(authRecruiter!.fixtures.every((f) => !f.keyed)).toBe(true);
+	});
+
+	it('is idempotent: re-running the combined seed adds nothing (interrupt contract)', async () => {
+		await seedLaunchPool(db);
+		await seedRecruiterRole(db);
+		const before = await getRoleBySlug(db, 'recruiter');
+		const versionsBefore = await listRoleVersions(db, before!.id);
+
+		await seedLaunchPool(db);
+		const again = await seedRecruiterRole(db);
+		expect(again.createdRole).toBe(false); // role already existed — absorbed
+
+		const versionsAfter = await listRoleVersions(db, before!.id);
+		expect(versionsAfter.length).toBe(versionsBefore.length); // no duplicate draft version
+		const [counts] = await db.query<[Array<{ n: number }>]>(
+			`SELECT count() AS n FROM gauntlet_fixture WHERE role = $r GROUP ALL;`,
+			{ r: new StringRecordId(before!.id) }
+		);
+		expect(counts[0].n).toBe(RECRUITER_ROLE.fixtures.length); // no duplicate fixtures
 	});
 });

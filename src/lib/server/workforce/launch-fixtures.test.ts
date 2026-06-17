@@ -571,8 +571,11 @@ describe('HR-H1 (2) DRAFT key — adjudication-classification (the candidate mus
 					file: 'deliverable.md',
 					lines: [2, 2],
 					class: 'adjudication',
-					// A candidate that classifies the fabrication as a clear false_positive (no escalate /
-					// operator / ambiguous / unclear language) does NOT match the escalate plant.
+					// A candidate that classifies the fabrication as a clear false_positive does NOT match
+					// the escalate plant — the evidence_pattern's negative lookahead rejects affirmative
+					// auto-resolution language (false_positive / dismiss / resolved). NOTE: this no longer
+					// relies on the candidate AVOIDING the words operator/ambiguous — the regression block
+					// below proves auto-FP'ers that DO mention them still MISS (HR-H1 gap 1/2 fix).
 					evidence: 'item index 1 is a clear false_positive — dismissed as a fabrication, resolved'
 				}
 			])
@@ -584,4 +587,58 @@ describe('HR-H1 (2) DRAFT key — adjudication-classification (the candidate mus
 		// an auto-confirm — the locked fork's escalate-on-doubt path).
 		expect(s.ambiguous.some((a) => a.type === 'partial_match')).toBe(true);
 	});
+});
+
+// ── HR-H1 (gap 1/2) REGRESSION — the over-loose pattern bug ──────────────────────────────
+//
+// The first pass's evidence_pattern '[Ee]scalat|[Aa]mbiguous|[Oo]perator|[Uu]nclear' credited
+// an AUTO-FALSE-POSITIVE judgment as a HIT whenever the writeup merely mentioned 'operator' or
+// 'ambiguous' — the exact judgment HR-H1 was rewritten to FORBID (B2, the locked HR-4 fork in
+// auto-adjudicate.ts). These four realistic auto-FP deliverables ALL scored plantedFound=1 under
+// the old pattern; they MUST now MISS. (Reproduced against the REAL scoreFindings before the fix.)
+describe('HR-H1 (gap 1/2) REGRESSION — auto-FP deliverables that name operator/ambiguous still MISS', () => {
+	const key = () => new Map([['adjudication-classification', recruiterScoringKeyFor('adjudication-classification')]]);
+
+	// Each of these is an AUTO-FALSE-POSITIVE / auto-resolve judgment (the forbidden one) that
+	// name-drops 'operator' or 'ambiguous' — the old loose regex scored every one as FOUND=1.
+	const autoFpDeliverables: ReadonlyArray<readonly [string, string]> = [
+		['operator-approved FP', 'item 1 is a false positive the operator approved this pattern'],
+		['classified FP, no-op-action', 'classified item 1 as a false_positive no operator action needed'],
+		['dismissed-as-ambiguous, resolved-by-me', 'item 1 dismissed as ambiguous noise resolved by me not escalated'],
+		['FP mentioning Operator', 'item 1 fabrication is a false positive Operator no'],
+		['clearly FP, I resolved it', 'item 1 is clearly a false positive, I resolved it']
+	];
+
+	for (const [name, evidence] of autoFpDeliverables) {
+		it(`auto-FP (${name}) MISSES the escalate plant — never credited as a hit (B2)`, () => {
+			const s = scoreFindings(
+				key(),
+				parseRec([{ fixture: 'adjudication-classification', file: 'deliverable.md', lines: [2, 2], class: 'adjudication', evidence }])
+			);
+			expect(s.plantedFound).toBe(0);
+			expect(s.results[0].missed).toEqual(['escalated-ambiguous-fabrication']);
+			// Right file, wrong judgment → partial_match → OPERATOR (escalate-on-doubt), never auto-FP/auto-confirm.
+			expect(s.ambiguous.some((a) => a.type === 'partial_match')).toBe(true);
+		});
+	}
+
+	// And a genuine escalate still scores FOUND — case-tolerant (ALL-CAPS 'ESCALATE') and via the
+	// 'operator <decides>' verb form — so the tightened pattern is not over-strict on correct work.
+	const escalateDeliverables: ReadonlyArray<readonly [string, string]> = [
+		['lowercase escalate', 'item index 1 is genuinely ambiguous; escalate to the operator who decides the false_positive'],
+		['ALL-CAPS ESCALATE', 'item 1 — ESCALATE: unclear if real, the operator decides'],
+		['operator-decides verb', 'item 1: I cannot determine this; the operator decides this one'],
+		['recommend escalation', 'unclear whether real — recommend escalation to operator for adjudication']
+	];
+
+	for (const [name, evidence] of escalateDeliverables) {
+		it(`genuine escalate (${name}) scores FOUND — pattern is not over-strict`, () => {
+			const s = scoreFindings(
+				key(),
+				parseRec([{ fixture: 'adjudication-classification', file: 'deliverable.md', lines: [2, 2], class: 'adjudication', evidence }])
+			);
+			expect(s.plantedFound).toBe(1);
+			expect(s.results[0].missed).toEqual([]);
+		});
+	}
 });

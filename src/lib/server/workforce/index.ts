@@ -76,3 +76,11 @@ export * from './capability-match';
 // PROPOSE-ONLY creation; the project_staff row is written ONLY on the operator confirm. Reuses
 // the §5 createReviewProposal + setProposalStatus lifecycle — it does NOT fork it.
 export * from './staffing-proposal';
+// HR-RECRUITER-SPEC §7.3 (HR-3) — the recruiter-driven CERT-LIFECYCLE ORCHESTRATOR: draft a
+// target role's key-SET into ONE operator approve-surface (PROPOSE-ONLY, B2), run the gauntlet
+// on approval (reuse runGauntlet, operator-triggered), and on a terminal FAIL re-version
+// (reversionFailedRole) + classify candidate-miss vs KEY-DEFECT + emit a propose-only key-fix.
+// PROPOSE+GATE: never confirms a key (B2), never flips a cert (B4), never certifies the
+// recruiter itself (B1), never rescores (B3). Pure/deterministic orchestration; the recruiter
+// AGENT drives it via launchSession.
+export * from './recruiter';

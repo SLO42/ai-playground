@@ -52,10 +52,13 @@
 <section class="page">
   <header class="page-head">
     <span class="eyebrow">portfolio</span>
-    <h1 class="title">Projects</h1>
+    <div class="head-row">
+      <h1 class="title">Projects</h1>
+      <a class="btn create-ai" href="/projects/create">Create with AI</a>
+    </div>
     <p class="lede">
-      Every project under management, served live from the database. Register a new
-      one by scanning a path under <span class="mono">CODE_ROOT</span>.
+      Every project under management, served live from the database. Create a new one
+      with AI, or register an existing path under <span class="mono">CODE_ROOT</span>.
     </p>
   </header>
 
@@ -159,6 +162,19 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
+  }
+  .head-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3, 0.75rem);
+    flex-wrap: wrap;
+  }
+  .create-ai {
+    flex: 0 0 auto;
+    text-decoration: none;
+    display: inline-flex;
+    align-items: center;
   }
   .title {
     font: var(--type-h1);

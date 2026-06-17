@@ -52,6 +52,23 @@ export function navCommands(): Command[] {
 	);
 }
 
+/**
+ * The Create-with-AI palette entry (CREATE-SPEC §5.1 — "Create project with AI"). It is a route
+ * navigation but NOT a sidebar nav item, so it lives outside navCommands (which is strictly derived
+ * from navGroups) and is assembled into the "Actions" section by buildCommands.
+ */
+export function createWithAiCommand(): Command {
+	return {
+		id: 'action:create-with-ai',
+		label: 'Create project with AI',
+		section: 'Actions',
+		kind: 'navigate',
+		href: '/projects/create',
+		hint: '/projects/create',
+		keywords: ['create', 'new', 'project', 'generate', 'scaffold', 'ai']
+	};
+}
+
 /** Build the per-project "open" commands from the live project list. */
 export function projectCommands(projects: readonly PaletteProject[]): Command[] {
 	return projects.map((p) => ({
@@ -93,5 +110,10 @@ export function buildCommands(
 	projects: readonly PaletteProject[],
 	handlers: ActionHandlers
 ): Command[] {
-	return [...navCommands(), ...projectCommands(projects), ...actionCommands(handlers)];
+	return [
+		...navCommands(),
+		...projectCommands(projects),
+		createWithAiCommand(),
+		...actionCommands(handlers)
+	];
 }

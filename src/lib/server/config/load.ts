@@ -22,6 +22,29 @@ export class ConfigError extends Error {
 	}
 }
 
+// --- model-id vocabulary (CA-0, 2026-06-17) --------------------------------
+//
+// The valid Claude model-id literals the system may resolve to. Defined HERE (the
+// validation boundary that depends on nothing) so the config loader can fail closed
+// on an unknown/retired id; `runtime/index.ts` re-exports it next to ModelSelection
+// for the rest of the system. claude-fable-5 is RETIRED (opus-everywhere) and is
+// INTENTIONALLY excluded — a retired id must fail closed rather than spawn an agent
+// on a model that no longer exists. Operator-extended as new tiers land.
+
+/** Canonical set of valid Claude model-id literals (fable-5 RETIRED → excluded). */
+export const MODEL_IDS = [
+	'claude-opus-4-8',
+	'claude-sonnet-4-6',
+	'claude-haiku-4-5-20251001'
+] as const;
+
+export type ModelId = (typeof MODEL_IDS)[number];
+
+/** True iff `id` is a known, non-retired Claude model id (MODEL_IDS membership). */
+export function isValidModelId(id: string): id is ModelId {
+	return (MODEL_IDS as readonly string[]).includes(id);
+}
+
 // --- agent-pool.yaml -------------------------------------------------------
 
 export interface Tier {
@@ -243,7 +266,7 @@ export interface WorkforceConfig {
 	pm: {
 		/** Registered provider name (`claude` = the Claude Code CLI backend). */
 		provider: string;
-		/** The PM's model id — default Fable 5 (PM-SPEC §1, operator 2026-06-10). */
+		/** The PM's model id — Opus (PM-SPEC §1; opus-everywhere, Fable 5 RETIRED). */
 		model_id: string;
 		/** TASK 16.2 (PM-SPEC §3 event ①) — trigger-engine bounds. */
 		triggers: {
@@ -345,6 +368,14 @@ export function loadWorkforce(file: string, opts: LoadOpts = {}): WorkforceConfi
 	const p = pm as Record<string, unknown>;
 	if (typeof p.model_id !== 'string' || !p.model_id.trim()) {
 		throw new ConfigError('workforce: pm.model_id must be a non-empty string', file);
+	}
+	// CA-0 — fail closed on an unknown/retired model id (claude-fable-5 is RETIRED).
+	// A spawn on a non-existent model is worse than a boot failure, so reject here.
+	if (!isValidModelId(p.model_id.trim())) {
+		throw new ConfigError(
+			`workforce: pm.model_id "${p.model_id.trim()}" is not a known model id (one of: ${MODEL_IDS.join(', ')})`,
+			file
+		);
 	}
 	if (p.provider !== undefined && (typeof p.provider !== 'string' || !p.provider.trim())) {
 		throw new ConfigError('workforce: pm.provider must be a non-empty string when set', file);

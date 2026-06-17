@@ -76,7 +76,7 @@ function rid(id: string): StringRecordId {
 
 function liveConfig(): WorkforceConfig {
 	return {
-		pm: { provider: 'claude', model_id: 'claude-fable-5', triggers: { failure_threshold: null } },
+		pm: { provider: 'claude', model_id: 'claude-opus-4-8', triggers: { failure_threshold: null } },
 		panel: { scope: { max_files: null, max_new_services: null } },
 		// 4-minute session bound: the F-014 "bounded live-verify" discipline.
 		gauntlet: { pass_recall: 1.0, max_false_positives: 0, session_timeout_minutes: 4 },

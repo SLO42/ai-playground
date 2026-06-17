@@ -264,16 +264,16 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 
 	it('parses the fixture: pm.model_id + the justified provider default ("claude")', () => {
 		const wf = loadWorkforce(join(FIX, 'workforce.yaml'));
-		expect(wf.pm.model_id).toBe('claude-test-9');
+		expect(wf.pm.model_id).toBe('claude-opus-4-8');
 		expect(wf.pm.provider).toBe('claude'); // omitted ⇒ the registered CLI backend
 		// Forward-compat: other namespaces pass through untouched for their consumers.
 		expect((wf.gauntlet as Record<string, unknown>).pass_recall).toBe(1.0);
 	});
 
-	it('the SHIPPED config/workforce.yaml routes the PM to Fable 5 (PM-SPEC §1)', () => {
+	it('the SHIPPED config/workforce.yaml routes the PM to Opus (PM-SPEC §1; opus-everywhere)', () => {
 		const wf = loadWorkforce(REAL_WF);
 		expect(wf.pm.provider).toBe('claude');
-		expect(wf.pm.model_id).toBe('claude-fable-5');
+		expect(wf.pm.model_id).toBe('claude-opus-4-8');
 		// Unarmed bounds ship null, never 0 (G5/F-008 — null ≠ a dressed-up zero).
 		const budget = wf.budget as Record<string, unknown>;
 		expect(budget.max_auto_interviews_per_day).toBeNull();
@@ -288,7 +288,10 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 		['non-mapping pm', { pm: 'fable' }],
 		['missing model_id', { pm: {} }],
 		['empty model_id', { pm: { model_id: '   ' } }],
-		['non-string provider', { pm: { model_id: 'claude-fable-5', provider: 5 } }]
+		['non-string provider', { pm: { model_id: 'claude-opus-4-8', provider: 5 } }],
+		// CA-0 — fail closed on a retired/unknown model id (claude-fable-5 RETIRED).
+		['retired model_id (fable-5)', { pm: { model_id: 'claude-fable-5' } }],
+		['unknown model_id', { pm: { model_id: 'claude-made-up-9' } }]
 	])('rejects %s at the boundary', (_label, inject) => {
 		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
 	});
@@ -300,22 +303,22 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 	});
 
 	it('an absent triggers block defaults to unarmed (older files stay valid)', () => {
-		const wf = loadWorkforce(REAL_WF, { _inject: { pm: { model_id: 'claude-fable-5' } } });
+		const wf = loadWorkforce(REAL_WF, { _inject: { pm: { model_id: 'claude-opus-4-8' } } });
 		expect(wf.pm.triggers.failure_threshold).toBeNull();
 	});
 
 	it('accepts an armed non-negative integer threshold', () => {
 		const wf = loadWorkforce(REAL_WF, {
-			_inject: { pm: { model_id: 'claude-fable-5', triggers: { failure_threshold: 3 } } }
+			_inject: { pm: { model_id: 'claude-opus-4-8', triggers: { failure_threshold: 3 } } }
 		});
 		expect(wf.pm.triggers.failure_threshold).toBe(3);
 	});
 
 	it.each([
-		['non-mapping triggers', { pm: { model_id: 'm', triggers: 'lots' } }],
-		['negative threshold', { pm: { model_id: 'm', triggers: { failure_threshold: -1 } } }],
-		['non-integer threshold', { pm: { model_id: 'm', triggers: { failure_threshold: 1.5 } } }],
-		['string threshold', { pm: { model_id: 'm', triggers: { failure_threshold: '3' } } }]
+		['non-mapping triggers', { pm: { model_id: 'claude-opus-4-8', triggers: 'lots' } }],
+		['negative threshold', { pm: { model_id: 'claude-opus-4-8', triggers: { failure_threshold: -1 } } }],
+		['non-integer threshold', { pm: { model_id: 'claude-opus-4-8', triggers: { failure_threshold: 1.5 } } }],
+		['string threshold', { pm: { model_id: 'claude-opus-4-8', triggers: { failure_threshold: '3' } } }]
 	])('rejects %s at the trigger boundary (fail closed)', (_label, inject) => {
 		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
 	});
@@ -334,7 +337,7 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 
 	it('absent panel/workforce blocks default honestly (unarmed scope, cap 2)', () => {
 		const wf = loadWorkforce(REAL_WF, {
-			_inject: { pm: { model_id: 'm' }, panel: undefined, workforce: undefined }
+			_inject: { pm: { model_id: 'claude-opus-4-8' }, panel: undefined, workforce: undefined }
 		});
 		expect(wf.panel.scope.max_files).toBeNull();
 		expect(wf.workforce.max_open_proposals).toBe(2);
@@ -342,20 +345,20 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 
 	it('accepts armed integer scope bounds', () => {
 		const wf = loadWorkforce(REAL_WF, {
-			_inject: { pm: { model_id: 'm' }, panel: { scope: { max_files: 9 } } }
+			_inject: { pm: { model_id: 'claude-opus-4-8' }, panel: { scope: { max_files: 9 } } }
 		});
 		expect(wf.panel.scope.max_files).toBe(9);
 		expect(wf.panel.scope.max_new_services).toBeNull();
 	});
 
 	it.each([
-		['non-mapping panel', { pm: { model_id: 'm' }, panel: 'big' }],
-		['non-mapping scope', { pm: { model_id: 'm' }, panel: { scope: 7 } }],
-		['negative max_files', { pm: { model_id: 'm' }, panel: { scope: { max_files: -1 } } }],
-		['float max_new_services', { pm: { model_id: 'm' }, panel: { scope: { max_new_services: 1.5 } } }],
-		['non-mapping workforce', { pm: { model_id: 'm' }, workforce: 3 }],
-		['zero cap', { pm: { model_id: 'm' }, workforce: { max_open_proposals: 0 } }],
-		['string cap', { pm: { model_id: 'm' }, workforce: { max_open_proposals: '2' } }]
+		['non-mapping panel', { pm: { model_id: 'claude-opus-4-8' }, panel: 'big' }],
+		['non-mapping scope', { pm: { model_id: 'claude-opus-4-8' }, panel: { scope: 7 } }],
+		['negative max_files', { pm: { model_id: 'claude-opus-4-8' }, panel: { scope: { max_files: -1 } } }],
+		['float max_new_services', { pm: { model_id: 'claude-opus-4-8' }, panel: { scope: { max_new_services: 1.5 } } }],
+		['non-mapping workforce', { pm: { model_id: 'claude-opus-4-8' }, workforce: 3 }],
+		['zero cap', { pm: { model_id: 'claude-opus-4-8' }, workforce: { max_open_proposals: 0 } }],
+		['string cap', { pm: { model_id: 'claude-opus-4-8' }, workforce: { max_open_proposals: '2' } }]
 	])('rejects %s at the 16.4 boundary (fail closed)', (_label, inject) => {
 		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
 	});
@@ -376,7 +379,7 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 
 	it('absent gauntlet/budget blocks fall back to the spec-justified defaults (older files stay valid)', () => {
 		const wf = loadWorkforce(REAL_WF, {
-			_inject: { pm: { model_id: 'm' }, gauntlet: undefined, budget: undefined }
+			_inject: { pm: { model_id: 'claude-opus-4-8' }, gauntlet: undefined, budget: undefined }
 		});
 		expect(wf.gauntlet.pass_recall).toBe(1.0);
 		expect(wf.gauntlet.max_false_positives).toBe(0);
@@ -388,7 +391,7 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 	it('accepts an armed budget (integer cap + valid tier list)', () => {
 		const wf = loadWorkforce(REAL_WF, {
 			_inject: {
-				pm: { model_id: 'm' },
+				pm: { model_id: 'claude-opus-4-8' },
 				budget: { max_auto_interviews_per_day: 3, allowed_auto_tiers: ['sonnet', 'haiku'] }
 			}
 		});
@@ -397,18 +400,18 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 	});
 
 	it.each([
-		['non-mapping gauntlet', { pm: { model_id: 'm' }, gauntlet: 'hard' }],
-		['recall above 1', { pm: { model_id: 'm' }, gauntlet: { pass_recall: 1.2 } }],
-		['negative recall', { pm: { model_id: 'm' }, gauntlet: { pass_recall: -0.1 } }],
-		['string recall', { pm: { model_id: 'm' }, gauntlet: { pass_recall: '1.0' } }],
-		['float max_false_positives', { pm: { model_id: 'm' }, gauntlet: { max_false_positives: 0.5 } }],
-		['negative max_false_positives', { pm: { model_id: 'm' }, gauntlet: { max_false_positives: -1 } }],
-		['zero timeout', { pm: { model_id: 'm' }, gauntlet: { session_timeout_minutes: 0 } }],
-		['non-mapping budget', { pm: { model_id: 'm' }, budget: [] }],
-		['float day cap', { pm: { model_id: 'm' }, budget: { max_auto_interviews_per_day: 1.5 } }],
-		['negative day cap', { pm: { model_id: 'm' }, budget: { max_auto_interviews_per_day: -1 } }],
-		['unknown tier', { pm: { model_id: 'm' }, budget: { allowed_auto_tiers: ['mega'] } }],
-		['non-array tiers', { pm: { model_id: 'm' }, budget: { allowed_auto_tiers: 'sonnet' } }]
+		['non-mapping gauntlet', { pm: { model_id: 'claude-opus-4-8' }, gauntlet: 'hard' }],
+		['recall above 1', { pm: { model_id: 'claude-opus-4-8' }, gauntlet: { pass_recall: 1.2 } }],
+		['negative recall', { pm: { model_id: 'claude-opus-4-8' }, gauntlet: { pass_recall: -0.1 } }],
+		['string recall', { pm: { model_id: 'claude-opus-4-8' }, gauntlet: { pass_recall: '1.0' } }],
+		['float max_false_positives', { pm: { model_id: 'claude-opus-4-8' }, gauntlet: { max_false_positives: 0.5 } }],
+		['negative max_false_positives', { pm: { model_id: 'claude-opus-4-8' }, gauntlet: { max_false_positives: -1 } }],
+		['zero timeout', { pm: { model_id: 'claude-opus-4-8' }, gauntlet: { session_timeout_minutes: 0 } }],
+		['non-mapping budget', { pm: { model_id: 'claude-opus-4-8' }, budget: [] }],
+		['float day cap', { pm: { model_id: 'claude-opus-4-8' }, budget: { max_auto_interviews_per_day: 1.5 } }],
+		['negative day cap', { pm: { model_id: 'claude-opus-4-8' }, budget: { max_auto_interviews_per_day: -1 } }],
+		['unknown tier', { pm: { model_id: 'claude-opus-4-8' }, budget: { allowed_auto_tiers: ['mega'] } }],
+		['non-array tiers', { pm: { model_id: 'claude-opus-4-8' }, budget: { allowed_auto_tiers: 'sonnet' } }]
 	])('rejects %s at the 16.6 boundary (fail closed)', (_label, inject) => {
 		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
 	});
@@ -432,7 +435,7 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 	});
 
 	it('an absent drift block defaults to armed categorical + null rate signals (older files stay valid)', () => {
-		const wf = loadWorkforce(REAL_WF, { _inject: { pm: { model_id: 'm' }, drift: undefined } });
+		const wf = loadWorkforce(REAL_WF, { _inject: { pm: { model_id: 'claude-opus-4-8' }, drift: undefined } });
 		expect(wf.drift.escaped_defect).toBe(true);
 		expect(wf.drift.operator_feedback).toBe(true);
 		expect(wf.drift.confidence_miscalibration).toBe(true);
@@ -442,31 +445,31 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 
 	it('an operator may DISARM the miscalibration signal (bool false) or its rate (null)', () => {
 		const off = loadWorkforce(REAL_WF, {
-			_inject: { pm: { model_id: 'm' }, drift: { confidence_miscalibration: false } }
+			_inject: { pm: { model_id: 'claude-opus-4-8' }, drift: { confidence_miscalibration: false } }
 		});
 		expect(off.drift.confidence_miscalibration).toBe(false);
 		const noRate = loadWorkforce(REAL_WF, {
-			_inject: { pm: { model_id: 'm' }, drift: { confidence_miscalibration_rate: null } }
+			_inject: { pm: { model_id: 'claude-opus-4-8' }, drift: { confidence_miscalibration_rate: null } }
 		});
 		expect(noRate.drift.confidence_miscalibration_rate).toBeNull();
 	});
 
 	it('absent workforce block defaults the window + floor honestly (14 / 5)', () => {
-		const wf = loadWorkforce(REAL_WF, { _inject: { pm: { model_id: 'm' }, workforce: undefined } });
+		const wf = loadWorkforce(REAL_WF, { _inject: { pm: { model_id: 'claude-opus-4-8' }, workforce: undefined } });
 		expect(wf.workforce.track_window_days).toBe(14);
 		expect(wf.workforce.min_events_for_claim).toBe(5);
 	});
 
 	it.each([
-		['non-mapping drift', { pm: { model_id: 'm' }, drift: 'on' }],
-		['non-boolean escaped_defect', { pm: { model_id: 'm' }, drift: { escaped_defect: 'yes' } }],
-		['non-boolean miscalibration', { pm: { model_id: 'm' }, drift: { confidence_miscalibration: 1 } }],
-		['rate above 1', { pm: { model_id: 'm' }, drift: { confidence_miscalibration_rate: 1.2 } }],
-		['negative rate', { pm: { model_id: 'm' }, drift: { confidence_miscalibration_rate: -0.1 } }],
-		['string rate', { pm: { model_id: 'm' }, drift: { refutation_rate: '0.5' } }],
-		['zero track window', { pm: { model_id: 'm' }, workforce: { track_window_days: 0 } }],
-		['float track window', { pm: { model_id: 'm' }, workforce: { track_window_days: 1.5 } }],
-		['negative min events', { pm: { model_id: 'm' }, workforce: { min_events_for_claim: -1 } }]
+		['non-mapping drift', { pm: { model_id: 'claude-opus-4-8' }, drift: 'on' }],
+		['non-boolean escaped_defect', { pm: { model_id: 'claude-opus-4-8' }, drift: { escaped_defect: 'yes' } }],
+		['non-boolean miscalibration', { pm: { model_id: 'claude-opus-4-8' }, drift: { confidence_miscalibration: 1 } }],
+		['rate above 1', { pm: { model_id: 'claude-opus-4-8' }, drift: { confidence_miscalibration_rate: 1.2 } }],
+		['negative rate', { pm: { model_id: 'claude-opus-4-8' }, drift: { confidence_miscalibration_rate: -0.1 } }],
+		['string rate', { pm: { model_id: 'claude-opus-4-8' }, drift: { refutation_rate: '0.5' } }],
+		['zero track window', { pm: { model_id: 'claude-opus-4-8' }, workforce: { track_window_days: 0 } }],
+		['float track window', { pm: { model_id: 'claude-opus-4-8' }, workforce: { track_window_days: 1.5 } }],
+		['negative min events', { pm: { model_id: 'claude-opus-4-8' }, workforce: { min_events_for_claim: -1 } }]
 	])('rejects %s at the §5 drift/window boundary (fail closed)', (_label, inject) => {
 		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
 	});
@@ -479,26 +482,26 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 	});
 
 	it('an absent research block defaults UNARMED (older files stay valid)', () => {
-		const wf = loadWorkforce(REAL_WF, { _inject: { pm: { model_id: 'm' }, research: undefined } });
+		const wf = loadWorkforce(REAL_WF, { _inject: { pm: { model_id: 'claude-opus-4-8' }, research: undefined } });
 		expect(wf.research.max_wall_clock_minutes).toBeNull();
 		expect(wf.research.max_fetches).toBeNull();
 	});
 
 	it('an operator may ARM the research budget (positive minutes + a fetch cap)', () => {
 		const wf = loadWorkforce(REAL_WF, {
-			_inject: { pm: { model_id: 'm' }, research: { max_wall_clock_minutes: 10, max_fetches: 20 } }
+			_inject: { pm: { model_id: 'claude-opus-4-8' }, research: { max_wall_clock_minutes: 10, max_fetches: 20 } }
 		});
 		expect(wf.research.max_wall_clock_minutes).toBe(10);
 		expect(wf.research.max_fetches).toBe(20);
 	});
 
 	it.each([
-		['non-mapping research', { pm: { model_id: 'm' }, research: 'on' }],
-		['zero wall-clock', { pm: { model_id: 'm' }, research: { max_wall_clock_minutes: 0 } }],
-		['negative wall-clock', { pm: { model_id: 'm' }, research: { max_wall_clock_minutes: -5 } }],
-		['float fetches', { pm: { model_id: 'm' }, research: { max_fetches: 1.5 } }],
-		['negative fetches', { pm: { model_id: 'm' }, research: { max_fetches: -1 } }],
-		['string fetches', { pm: { model_id: 'm' }, research: { max_fetches: '5' } }]
+		['non-mapping research', { pm: { model_id: 'claude-opus-4-8' }, research: 'on' }],
+		['zero wall-clock', { pm: { model_id: 'claude-opus-4-8' }, research: { max_wall_clock_minutes: 0 } }],
+		['negative wall-clock', { pm: { model_id: 'claude-opus-4-8' }, research: { max_wall_clock_minutes: -5 } }],
+		['float fetches', { pm: { model_id: 'claude-opus-4-8' }, research: { max_fetches: 1.5 } }],
+		['negative fetches', { pm: { model_id: 'claude-opus-4-8' }, research: { max_fetches: -1 } }],
+		['string fetches', { pm: { model_id: 'claude-opus-4-8' }, research: { max_fetches: '5' } }]
 	])('rejects %s at the §7b research boundary (fail closed)', (_label, inject) => {
 		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
 	});

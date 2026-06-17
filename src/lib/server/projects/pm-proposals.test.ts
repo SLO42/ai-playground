@@ -251,7 +251,7 @@ describe('proposeTask — anti-spam (structural fingerprints, caps, defer window
 		try {
 			writeFileSync(
 				join(dir, 'workforce.yaml'),
-				'pm:\n  model_id: claude-fable-5\nworkforce:\n  max_open_proposals: 1\n'
+				'pm:\n  model_id: claude-opus-4-8\nworkforce:\n  max_open_proposals: 1\n'
 			);
 			await hire();
 			await proposeTask(db, validInput({ provenance: provenance(['b:1']) }), { configDir: dir });

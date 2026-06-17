@@ -104,11 +104,11 @@ describe('resolvePmRoute — the explicit workforce.yaml override (F-005)', () =
 
 	it('routes the PM to the configured model, method "explicit", routing_event persisted', async () => {
 		const p = await freshProject('route_explicit');
-		const dir = tempConfigDir('pm:\n  provider: claude\n  model_id: claude-fable-5\n');
+		const dir = tempConfigDir('pm:\n  provider: claude\n  model_id: claude-opus-4-8\n');
 		try {
 			const route = await resolvePmRoute(db, p.id, { configDir: dir, fallback: FALLBACK });
 			expect(route.method).toBe('explicit');
-			expect(route.model).toEqual({ provider: 'claude', modelId: 'claude-fable-5' });
+			expect(route.model).toEqual({ provider: 'claude', modelId: 'claude-opus-4-8' });
 			expect(route.reason).toContain('config/workforce.yaml pm.model_id');
 
 			// The decision is a REAL routing_event row (analytics first-class, F-008) —
@@ -123,7 +123,7 @@ describe('resolvePmRoute — the explicit workforce.yaml override (F-005)', () =
 			};
 			expect(row.method).toBe('explicit');
 			expect(row.chosen.provider).toBe('claude');
-			expect(row.chosen.model_id).toBe('claude-fable-5');
+			expect(row.chosen.model_id).toBe('claude-opus-4-8');
 			expect(row.reason).toContain('F-005 short-circuit');
 		} finally {
 			rmSync(dir, { recursive: true, force: true });

@@ -7,12 +7,12 @@
 # imported magic numbers. null ≠ 0: an unarmed bound means "surface, don't enforce".
 
 pm:
-  # The PM runs on a strong frontier model — default Fable 5 (PM-SPEC §1, operator
-  # 2026-06-10). PM sessions route with this as the EXPLICIT {provider, model_id}
-  # override (F-005 short-circuit), recorded in routing_event. Operator-tunable;
-  # per-project overrides may land on the pm row later if needed.
+  # The PM runs on a strong frontier model — Opus (PM-SPEC §1; opus-everywhere,
+  # Fable 5 RETIRED 2026-06-13). PM sessions route with this as the EXPLICIT
+  # {provider, model_id} override (F-005 short-circuit), recorded in routing_event.
+  # Operator-tunable; per-project overrides may land on the pm row later if needed.
   provider: claude
-  model_id: claude-fable-5
+  model_id: claude-opus-4-8
   # PM-SPEC §4.5 decision bounds — ship unarmed: until the operator sets a bound
   # from our own history, anything that would need it classifies as Taste and
   # surfaces on the next decision brief (never silently self-decided).

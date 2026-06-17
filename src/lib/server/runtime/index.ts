@@ -71,6 +71,12 @@ export interface ModelSelection {
 	tier?: string;
 }
 
+// Re-export the canonical model-id vocabulary (CA-0) so the rest of the system
+// imports it from `runtime` alongside ModelSelection. The source of truth lives in
+// `config/load.ts` (the validation boundary that depends on nothing) to avoid a
+// runtime→config layering edge; this is a value+type re-export only.
+export { MODEL_IDS, isValidModelId, type ModelId } from '../config/load';
+
 /** Thinking level / tool / concurrency budgets (D-020) — separate from toolPolicy. */
 export interface SpawnBudgets {
 	thinking?: string;

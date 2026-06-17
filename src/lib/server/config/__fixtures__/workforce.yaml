@@ -1,7 +1,7 @@
 # Test fixture for loadWorkforce (TASK 16.1). provider deliberately omitted to
 # prove the justified `claude` default; an extra namespace proves forward-compat.
 pm:
-  model_id: claude-test-9
+  model_id: claude-opus-4-8
   decide:
     blast_radius_max_files: null
 

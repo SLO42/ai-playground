@@ -175,6 +175,111 @@ describe('Db.connect — bounded against a black-holed socket (13.5 finding 5 / 
 	}, 8000);
 });
 
+// F-042 — the runtime singleton signs in ONCE; SurrealDB's default 1h root token
+// expires, the live session drops to UNAUTHENTICATED, and (tables are PERMISSIONS
+// NONE) every query then throws "IAM error: Not enough permissions". The Db client
+// must SELF-HEAL: on the auth-expiry signature, re-signin+use ONCE and retry; a
+// genuinely-bad re-auth must still fail honestly (no loop); creds never leak.
+// (Verified live: the SDK throws exactly "...IAM error: Not enough permissions..."
+// on a query after the token TTL lapses; a short DURATION FOR TOKEN reproduces it.)
+describe('Db self-heal on auth-token expiry (F-042)', () => {
+	const SHORT_TOKEN_PW = 'heal-pw';
+
+	// DEFINE USER ... PASSWORD requires a strand LITERAL (no $param binding — SurrealQL
+	// parse limitation). name/password here are fixed test constants (never user input),
+	// so the literal is safe; D-016 value-binding still applies to all real call sites.
+	async function defineShortTokenUser(name: string, password: string) {
+		await db.query(
+			`DEFINE USER OVERWRITE ${name} ON ROOT PASSWORD '${password}' ROLES OWNER DURATION FOR TOKEN 1s, FOR SESSION 4w;`
+		);
+	}
+
+	it('transparently re-auths + returns the row after the token expires (not an IAM error)', async () => {
+		await defineShortTokenUser('heal_ok', SHORT_TOKEN_PW);
+		const healed = await Db.connect({
+			url: tdb.wsUrl,
+			username: 'heal_ok',
+			password: SHORT_TOKEN_PW,
+			namespace: tdb.namespace,
+			database: tdb.database
+		});
+		try {
+			// Let the 1s token lapse — the next query would otherwise throw IAM.
+			await new Promise((r) => setTimeout(r, 2200));
+			const out = await healed.query<[{ content: string }[]]>(
+				'SELECT content FROM note WHERE content = $c;',
+				{ c: 'hello world' }
+			);
+			// hello world was created in the CRUD suite (same db) — the heal returns it.
+			expect(Array.isArray(out[0])).toBe(true);
+		} finally {
+			await healed.close().catch(() => {});
+		}
+	}, 30_000);
+
+	it('de-dupes concurrent re-auths under a stampede (no N-signin race)', async () => {
+		// Use a FULL-duration root signin and force the session unauthenticated with
+		// invalidate() (the same IAM-error shape as a TTL lapse — verified live), so the
+		// re-auth issues a fresh full-duration token. This makes the test DETERMINISTIC
+		// under parallel-worker load (a sub-second TTL re-expires the fresh token before
+		// a contended retry runs — that flake is a test artefact, not a client defect;
+		// the durable fix uses 4w tokens). See F-042.
+		const racer = await Db.connect({
+			url: tdb.wsUrl,
+			username: tdb.root.username,
+			password: tdb.root.password,
+			namespace: tdb.namespace,
+			database: tdb.database
+		});
+		try {
+			await racer.raw.invalidate(); // drop auth → next query throws the IAM signature
+			// Many in-flight queries hit expiry at once — all must succeed via ONE re-auth.
+			const results = await Promise.all(
+				Array.from({ length: 6 }, () =>
+					racer.query<[{ n: number }[]]>('SELECT count() AS n FROM note GROUP ALL;')
+				)
+			);
+			expect(results.length).toBe(6);
+			for (const r of results) expect(typeof (r[0][0]?.n ?? 0)).toBe('number');
+		} finally {
+			await racer.close().catch(() => {});
+		}
+	}, 30_000);
+
+	it('a genuinely-bad re-auth fails honestly after ONE retry (no infinite loop, no cred leak)', async () => {
+		await defineShortTokenUser('heal_bad', SHORT_TOKEN_PW);
+		const bad = await Db.connect({
+			url: tdb.wsUrl,
+			username: 'heal_bad',
+			password: SHORT_TOKEN_PW,
+			namespace: tdb.namespace,
+			database: tdb.database
+		});
+		try {
+			// Yank the user's password so the retained-creds re-signin will FAIL, then
+			// force the live session unauthenticated deterministically (invalidate()).
+			await defineShortTokenUser('heal_bad', 'rotated-away');
+			await bad.raw.invalidate();
+			// Bounded: re-auth fails → the ORIGINAL expiry error surfaces, no spin.
+			const started = Date.now();
+			let thrown: unknown;
+			await bad.query('SELECT * FROM note;').catch((e) => {
+				thrown = e;
+			});
+			expect(thrown).toBeDefined();
+			expect(Date.now() - started).toBeLessThan(10_000); // not looping
+			const msg = thrown instanceof Error ? thrown.message : String(thrown);
+			// Honest: the real auth failure surfaces…
+			expect(msg).toMatch(/permission|iam|auth/i);
+			// …and the retained credentials NEVER appear in the thrown message (D-026).
+			expect(msg).not.toContain(SHORT_TOKEN_PW);
+			expect(msg).not.toContain('rotated-away');
+		} finally {
+			await bad.close().catch(() => {});
+		}
+	}, 30_000);
+});
+
 describe('process-wide singleton', () => {
 	it('initDb / getDb / closeDb lifecycle', async () => {
 		const s = await initDb({

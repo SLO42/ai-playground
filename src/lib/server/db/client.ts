@@ -41,16 +41,56 @@ export const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
 export type Bindings = Record<string, unknown>;
 
 /**
+ * Auth-expiry fingerprint (F-042). SurrealDB provisions root with a default
+ * `DURATION FOR TOKEN 1h`; on a long-lived singleton the signin token expires and
+ * the live session silently drops to UNAUTHENTICATED. Because every table is
+ * `PERMISSIONS NONE` (owner/root bypasses, an expired/anon session does NOT), EVERY
+ * query then returns "IAM error: Not enough permissions". We match NARROWLY — only
+ * the not-authenticated / token-expired / IAM-permission wording — so a GENUINE
+ * permission error (e.g. a real least-priv grant gap) is NOT masked by a re-auth
+ * retry; it surfaces honestly (F-008). Distinct from db/classify.ts which matches
+ * connection-LOSS (a dead socket), a different failure that re-auth cannot fix.
+ */
+const AUTH_EXPIRED_RE =
+	/not enough permissions|token (?:has )?expired|expired token|not authenticated|invalid token|iam error/i;
+
+/** True when a thrown error looks like an expired/dropped auth session (F-042). */
+function isAuthExpiredError(err: unknown): boolean {
+	const message =
+		err instanceof Error
+			? err.message
+			: typeof err === 'string'
+				? err
+				: String((err as { message?: unknown })?.message ?? err ?? '');
+	return AUTH_EXPIRED_RE.test(message);
+}
+
+/**
  * A live, authenticated SurrealDB connection scoped to one ns/db. Wraps the SDK
  * `Surreal` handle and enforces the D-016 interpolation boundary. Construct via
  * {@link connect}; close via {@link close}.
  */
 export class Db {
+	/**
+	 * Re-auth credentials retained IN-MEMORY for the self-heal path (F-042). Never
+	 * logged / never thrown (D-026) — only fed back to `signin()`/`use()` on expiry.
+	 */
+	private readonly creds: { username: string; password: string };
+	/**
+	 * Single in-flight re-auth promise (F-042 stampede guard). When N concurrent
+	 * queries all hit expiry at once, they await ONE re-signin instead of firing N.
+	 * Cleared once it settles so a later expiry can re-auth again.
+	 */
+	private reauth: Promise<void> | null = null;
+
 	private constructor(
 		private readonly handle: Surreal,
 		readonly namespace: string,
-		readonly database: string
-	) {}
+		readonly database: string,
+		creds: { username: string; password: string }
+	) {
+		this.creds = creds;
+	}
 
 	/**
 	 * Open a connection, sign in (least-priv by default — D-026c), and USE ns/db.
@@ -90,7 +130,57 @@ export class Db {
 		} finally {
 			clearTimeout(timer);
 		}
-		return new Db(handle, opts.namespace, opts.database);
+		return new Db(handle, opts.namespace, opts.database, {
+			username: opts.username,
+			password: opts.password
+		});
+	}
+
+	/**
+	 * Re-establish auth on the EXISTING handle after token expiry (F-042). De-duped:
+	 * concurrent callers share one in-flight promise so we never stampede N signins.
+	 * Re-runs signin + use (USE must be re-asserted — a fresh signin resets the
+	 * selected ns/db). Throws on failure; the caller then propagates the ORIGINAL
+	 * error (no masking, F-008). Creds are never logged (D-026).
+	 */
+	private async reauthenticate(): Promise<void> {
+		if (this.reauth) return this.reauth;
+		this.reauth = (async () => {
+			await this.handle.signin({
+				username: this.creds.username,
+				password: this.creds.password
+			});
+			await this.handle.use({ namespace: this.namespace, database: this.database });
+		})();
+		try {
+			await this.reauth;
+		} finally {
+			this.reauth = null;
+		}
+	}
+
+	/**
+	 * Run a raw SDK query with the F-042 self-heal: if the call fails with the
+	 * auth-expiry signature, transparently re-authenticate ONCE and retry. Bounded —
+	 * AT MOST one retry per call (no loop); if the re-auth OR the retry also fails the
+	 * ORIGINAL error propagates honestly (F-008, no masking). A non-auth error (parse,
+	 * validation, connection-loss, a genuine permission gap that survives re-auth)
+	 * propagates immediately with no retry.
+	 */
+	private async runQuery<R>(surql: string, bindings: Bindings): Promise<R> {
+		try {
+			return (await this.handle.query(surql, bindings)) as R;
+		} catch (err) {
+			if (!isAuthExpiredError(err)) throw err;
+			// One transparent re-auth + retry. If anything here fails, surface the
+			// ORIGINAL expiry error — never the retry's error, never a masked success.
+			try {
+				await this.reauthenticate();
+				return (await this.handle.query(surql, bindings)) as R;
+			} catch {
+				throw err;
+			}
+		}
 	}
 
 	/** The raw SDK handle. Use the guarded helpers below in preference. */
@@ -105,10 +195,7 @@ export class Db {
 	 * (one entry per statement).
 	 */
 	query<T = unknown>(surql: string, bindings: Bindings = {}): Promise<T> {
-		return this.handle.query<T extends unknown[] ? T : [T]>(
-			surql,
-			bindings
-		) as Promise<T>;
+		return this.runQuery<T>(surql, bindings);
 	}
 
 	/**
@@ -156,7 +243,9 @@ export class Db {
 	async liveTable(table: string): Promise<LiveTableSubscription> {
 		const t = assertTableName(table);
 		// LIVE SELECT returns the live-query UUID; liveOf() attaches a consumer to it.
-		const [uuid] = await this.handle.query<[unknown]>(`LIVE SELECT * FROM ${t};`);
+		// Route the setup query through the F-042 self-heal so a stale-token session
+		// re-auths before the subscription is established (rather than silently failing).
+		const [uuid] = await this.runQuery<[unknown]>(`LIVE SELECT * FROM ${t};`, {});
 		return this.handle.liveOf(uuid as Parameters<Surreal['liveOf']>[0]);
 	}
 

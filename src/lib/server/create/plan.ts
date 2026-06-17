@@ -329,8 +329,9 @@ function validateClarifiers(raw: unknown): Clarifier[] {
  * Validate the raw agent output into a typed CreationProposal — the TRUST BOUNDARY. Every field
  * is shape-checked (ProposalContractError, named), then the cross-cutting rails run:
  *   • D-026 no-secret-echo across every target config (SecretEchoError, named);
- *   • §3 anti-sycophancy across EVERY agent-authored string (clarifiers + plan macro + charter +
- *     task objectives/purposes) — assertNoSycophancy throws SycophancyError (named).
+ *   • §3 anti-sycophancy across EVERY agent-authored string (dirLayout + stack + plan macro +
+ *     charter + task objectives/purposes + clarifiers) — assertNoSycophancy throws
+ *     SycophancyError (named).
  *
  * Shadow paths: nil → throw (named); empty object → throw on the first missing required field.
  */
@@ -361,7 +362,12 @@ export async function validateProposal(db: Db, raw: unknown): Promise<CreationPr
 	}
 
 	// §3 ANTI-SYCOPHANCY across EVERY agent-authored string. One pass, named SycophancyError.
+	// dirLayout[] and stack[] are agent-authored descriptive free-text too, so they are screened
+	// here alongside the macro/charter/tasks/clarifiers — "EVERY agent-authored string" is the
+	// contract, and a hedge in a stack/dirLayout entry must not slip past to the operator.
 	const authored: (string | undefined)[] = [
+		...dirLayout,
+		...stack,
 		planMacro.purpose,
 		planMacro.vision,
 		planMacro.role,

@@ -203,6 +203,16 @@ describe('anti-sycophancy enforcement (§3, redTeam)', () => {
 		});
 		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(SycophancyError);
 	});
+	// Regression (review gap 1): the §3 rail must cover EVERY agent-authored string, including the
+	// stack[] and dirLayout[] arrays — a banned hedge there previously reached the operator unflagged.
+	it('rejects a banned phrase inside a stack[] entry (regression: was uncovered)', async () => {
+		const raw = goodRaw({ stack: ['That could work', 'Node'] });
+		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(SycophancyError);
+	});
+	it('rejects a banned phrase inside a dirLayout[] entry (regression: was uncovered)', async () => {
+		const raw = goodRaw({ dirLayout: ['src/', 'You might want to consider this dir'] });
+		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(SycophancyError);
+	});
 });
 
 describe('D-026 no-secret-echo in target configs (redTeam)', () => {

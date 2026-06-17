@@ -1345,7 +1345,7 @@ export const RECRUITER_DRAFT_KEYS: readonly DraftKeySpec[] = [
 					// char classes (handles ALL-CAPS 'ESCALATE'); the negative lookahead rejects the
 					// auto-resolution language a correct escalate writeup never affirmatively states.
 					evidence_pattern:
-						'^(?![\\s\\S]*(?:(?:\\bis |\\bas a |\\ba clear |\\bclearly a |\\bclear )[A-Za-z _]*?false[ _-]?positive|\\b[Dd]ismiss(?:ed|es|ing)?\\b|\\bresolved by me\\b|\\bI resolved\\b|\\bresolved it\\b|\\bno operator action\\b|(?:\\b(?:[Nn]ot|[Nn]ever|[Nn]o)\\b)(?:[A-Za-z]+ ){0,2}[Ee][Ss][Cc][Aa][Ll][Aa][Tt]))[\\s\\S]*(?:[Ee][Ss][Cc][Aa][Ll][Aa][Tt]|[Oo]perator (?:decides|resolves|to (?:decide|resolve|adjudicate)|adjudicat|must))'
+						'^(?![\\s\\S]*(?:(?:\\bis |\\bas a |\\ba clear |\\bclearly a |\\bclear )[A-Za-z _]*?false[ _-]?positive|\\b[Dd]ismiss(?:ed|es|ing)?\\b|\\bresolved by me\\b|\\bI resolved\\b|\\bresolved it\\b|\\bno operator action\\b|(?:\\b(?:[Nn]ot|[Nn]ever|[Nn]o)\\b)\\s*(?:[A-Za-z]+\\s+){0,2}(?:to\\s+)?[Ee][Ss][Cc][Aa][Ll][Aa][Tt]))[\\s\\S]*(?:[Ee][Ss][Cc][Aa][Ll][Aa][Tt]|[Oo]perator (?:decides|resolves|to (?:decide|resolve|adjudicate)|adjudicat|must))'
 				}
 			}
 		],

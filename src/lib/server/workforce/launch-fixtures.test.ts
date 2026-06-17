@@ -622,6 +622,31 @@ describe('HR-H1 (gap 1/2) REGRESSION — auto-FP deliverables that name operator
 		});
 	}
 
+	// HR-H1 (gap 1/3) — DECLINE-TO-ESCALATE: a writeup that AFFIRMATIVELY declines to escalate
+	// (the negated-escalation arm) is an auto-resolve, NOT a correct escalate — it MUST MISS. The
+	// prior fix's negation arm was dead for these natural phrasings ('not <word> escalate' never
+	// consumed the trailing space), crediting a decline as a hit; these reproduce that bug and
+	// prove it is now rejected. (Exercised against the REAL scoreFindings.)
+	const declineToEscalateDeliverables: ReadonlyArray<readonly [string, string]> = [
+		['no need to escalate', 'item 1: this is fine, no need to escalate to the operator'],
+		['will not escalate', 'item 1 is real, will not escalate to operator'],
+		['do not escalate', 'I do not escalate item 1; it stands as written'],
+		['decided not to escalate', 'decided not to escalate item 1, leaving it in place']
+	];
+
+	for (const [name, evidence] of declineToEscalateDeliverables) {
+		it(`decline-to-escalate (${name}) MISSES the escalate plant — a refusal to escalate is not a hit (B2)`, () => {
+			const s = scoreFindings(
+				key(),
+				parseRec([{ fixture: 'adjudication-classification', file: 'deliverable.md', lines: [2, 2], class: 'adjudication', evidence }])
+			);
+			expect(s.plantedFound).toBe(0);
+			expect(s.results[0].missed).toEqual(['escalated-ambiguous-fabrication']);
+			// Right file, wrong judgment (declined to escalate) → partial_match → OPERATOR, never auto-FP.
+			expect(s.ambiguous.some((a) => a.type === 'partial_match')).toBe(true);
+		});
+	}
+
 	// And a genuine escalate still scores FOUND — case-tolerant (ALL-CAPS 'ESCALATE') and via the
 	// 'operator <decides>' verb form — so the tightened pattern is not over-strict on correct work.
 	const escalateDeliverables: ReadonlyArray<readonly [string, string]> = [

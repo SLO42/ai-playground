@@ -23,11 +23,13 @@ import {
 import {
 	executeCreation,
 	ProjectExistsError,
+	UnstableSlugError,
 	ScaffoldPathError,
 	ScaffoldSecretError,
 	ScaffoldFailedError,
 	type ExecuteCreationOptions
 } from './execute';
+import { slugify } from '../scanner/detect';
 import type { CommandRunner } from '../orchestrator/post-task';
 
 // CA-2 (CREATE-SPEC §2.4-2.5, §3 rails) — the EXECUTE half. Run vs a REAL throwaway SurrealDB +
@@ -283,6 +285,49 @@ describe('executeCreation — re-run after a partial failure (interrupt contract
 		const res = await executeCreation(db, env2, { codeRoot });
 		expect(res.projectId).toBe('project:ca2_rerun');
 		expect(await getProject(db, res.projectId)).not.toBeNull();
+	}, 60_000);
+});
+
+describe('executeCreation — slug-stability gate (D-016/F-008 regression)', () => {
+	// Regression for the CA-2 review FAIL: slugify is NOT idempotent for symbol-only names
+	// ('!!!','??? ','__' → 'p_', but re-slugifying 'p_' → 'p'). Before the fix, the gate validated
+	// project:p_ while scanProject registered project:p; a SECOND same-name create checked the wrong
+	// id, did NOT fail closed, re-entered the existing scaffold, and its failed first commit rm -rf'd
+	// the live project's dir → an F-008 phantom row pointing at a deleted dir. The fix fails CLOSED
+	// at the gate (UnstableSlugError) before any disk touch, so the corruption chain is unreachable.
+
+	it('a name whose slug is non-idempotent fails closed (UnstableSlugError), no row, no dir', async () => {
+		// Precondition: this name is genuinely non-idempotent (the bug's trigger), else the test is moot.
+		expect(slugify(slugify('!!!'))).not.toBe(slugify('!!!'));
+
+		const env = await makeEnvelope('!!!');
+		await expect(executeCreation(db, env, { codeRoot })).rejects.toBeInstanceOf(UnstableSlugError);
+
+		// Neither the gate id ('project:p_') nor the would-be registered id ('project:p') exists, and
+		// nothing was scaffolded under either basename — the failure was before any disk touch.
+		expect(await getProject(db, 'project:p_')).toBeNull();
+		expect(await getProject(db, 'project:p')).toBeNull();
+		expect(await exists(join(codeRoot, 'p_'))).toBe(false);
+		expect(await exists(join(codeRoot, 'p'))).toBe(false);
+	}, 60_000);
+
+	it('the gate fires BEFORE registering, so a real project is never corrupted by a degenerate re-create', async () => {
+		// Stand up a real, valid project first.
+		const real = await makeEnvelope('ca2 stable');
+		const realRes = await executeCreation(db, real, { codeRoot });
+		expect(realRes.projectId).toBe('project:ca2_stable');
+
+		// A degenerate-name create (twice) must NOT touch disk or the DB — the live project survives
+		// intact (the pre-fix bug deleted an existing project's scaffold on the second degenerate run).
+		for (let attempt = 0; attempt < 2; attempt++) {
+			const bad = await makeEnvelope('___');
+			await expect(executeCreation(db, bad, { codeRoot })).rejects.toBeInstanceOf(UnstableSlugError);
+		}
+
+		const survivor = await getProject(db, 'project:ca2_stable');
+		expect(survivor).not.toBeNull();
+		expect(await exists(join(codeRoot, 'ca2_stable', '.git'))).toBe(true);
+		expect(await exists(join(codeRoot, 'ca2_stable', 'src', 'index.ts'))).toBe(true);
 	}, 60_000);
 });
 

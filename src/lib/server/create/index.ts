@@ -43,6 +43,7 @@ export {
 export {
 	executeCreation,
 	ProjectExistsError,
+	UnstableSlugError,
 	ScaffoldPathError,
 	ScaffoldSecretError,
 	ScaffoldFailedError,

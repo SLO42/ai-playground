@@ -55,6 +55,30 @@ export class ProjectExistsError extends Error {
 	}
 }
 
+/**
+ * The brief name does not yield a STABLE slug — `slugify(slugify(name)) !== slugify(name)`
+ * (D-016 / F-008). slugify is not idempotent for degenerate, symbol-only names ('!!!','__','??? '):
+ * the gate would validate `project:p_` while scanProject (which re-derives the slug from the dir
+ * basename) registers `project:p`. That divergence breaks the existence gate (a second same-name
+ * create would not fail closed, would re-enter the existing scaffold, and its failed `git commit`
+ * would `rm -rf` the live project's dir — F-008 phantom). We fail CLOSED at the gate, before any
+ * disk touch: a name with no stable slug is rejected with a clear message instead of corrupting.
+ */
+export class UnstableSlugError extends Error {
+	readonly name = 'UnstableSlugError';
+	readonly slug: string;
+	readonly reSlug: string;
+	constructor(briefName: string, slug: string, reSlug: string) {
+		super(
+			`project name ${JSON.stringify(briefName)} has no stable slug ` +
+				`(slugify→${JSON.stringify(slug)}→${JSON.stringify(reSlug)}); ` +
+				`give it a name with at least one letter or digit (D-016).`
+		);
+		this.slug = slug;
+		this.reSlug = reSlug;
+	}
+}
+
 /** A dirLayout entry tried to escape the new project dir (D-018, fail closed). */
 export class ScaffoldPathError extends Error {
 	readonly entry: string;
@@ -266,6 +290,7 @@ async function recordIncident(db: Db, title: string, detail: string): Promise<st
  *
  * Returns the new project id + the rows it created. Throws (NAMED) and registers NO phantom row on:
  *   • a stale token (StaleProposalError) — gate, before any disk touch;
+ *   • a name with no stable slug (UnstableSlugError) — gate, before any disk touch (D-016/F-008);
  *   • an existing slug (ProjectExistsError) — idempotent fail-closed;
  *   • a path escape (ScaffoldPathError) / secret echo (ScaffoldSecretError) — before commit;
  *   • a mid-scaffold death (ScaffoldFailedError) — the partial dir is removed + an incident logged.
@@ -286,6 +311,17 @@ export async function executeCreation(
 	assertProposalFresh(brief, proposal, confirmToken);
 
 	const slug = slugify(brief.name);
+	// SLUG STABILITY (D-016 / F-008): slugify is NOT idempotent for degenerate symbol-only names
+	// ('!!!','__','??? ' → 'p_', but re-slugifying 'p_' → 'p'). The scaffold dir is named `slug`
+	// (below) and scanProject (step 3) RE-DERIVES the registered slug from that dir basename via
+	// slugify — so unless slugify(slug) === slug, the gate-id (`project:${slug}`) and the
+	// registered-id (`project:${slugify(slug)}`) DIVERGE. That divergence wedges the existence gate
+	// (a second same-name create checks the wrong id, never fails closed, re-enters the existing
+	// scaffold, and its failed first commit rm -rf's the live project's dir → F-008 phantom row
+	// pointing at a deleted dir). Fail CLOSED here, before any disk touch, so gate-id, dir-basename,
+	// and registered-id are guaranteed to be ONE source.
+	const reSlug = slugify(slug);
+	if (reSlug !== slug) throw new UnstableSlugError(brief.name, slug, reSlug);
 	const projectId = assertRecordIdOfTable(`project:${slug}`, 'project'); // D-016 — named on failure.
 
 	// Fail closed on an existing project (idempotent same-slug re-create — §2.4 (1)).
@@ -358,6 +394,31 @@ export async function executeCreation(
 	// ── 3. REGISTER HONESTLY — scanProject ingests the REAL on-disk scaffold (F-008). ──
 	// The row derives from disk (detected ecosystem/build tool), NEVER the proposal text.
 	const row = await scanProject(db, projectRoot, { codeRoot: opts.codeRoot });
+
+	// Defense in depth (D-016 / F-008): the gate's slug-stability guard guarantees the registered id
+	// equals the gate id, but assert it explicitly so any future slugify drift fails CLOSED here
+	// (clean up the scaffold + log an incident) instead of silently registering a row the existence
+	// gate can never find again. row.id is the single source the writers below all use.
+	if (row.id !== projectId) {
+		// Unreachable while the gate guard holds; if it ever fires, scanProject already UPSERTed a row
+		// at the diverged id — delete that row AND the scaffold dir so no phantom survives (F-008),
+		// then log an incident and fail closed. The id is validated through the D-016 chokepoint
+		// before interpolation.
+		await db
+			.query(`DELETE ${assertRecordIdOfTable(row.id, 'project')};`)
+			.catch(() => {});
+		await rm(projectRoot, { recursive: true, force: true }).catch(() => {});
+		const incidentId = await recordIncident(
+			db,
+			`Create-with-AI slug divergence: ${slug}`,
+			`Gate id ${projectId} but scanProject registered ${row.id} for ${projectRoot}. ` +
+				`Removed the row + scaffold to avoid an unfindable phantom (D-016/F-008).`
+		);
+		throw new ScaffoldFailedError(
+			`registered id ${row.id} diverged from gate id ${projectId} — scaffold removed (incident logged).`,
+			incidentId
+		);
+	}
 
 	// ── 4. WRITERS — plan macro · capability needs · founding tasks · targets. ──
 	await updateProjectPlan(db, row.id, {

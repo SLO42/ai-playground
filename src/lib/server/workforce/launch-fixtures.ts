@@ -1070,9 +1070,13 @@ const RECRUITER: LaunchRoleSpec = {
 		'     relied on — the authoritative-port-18789 over-constraint that failed a correct researcher)',
 		'     fails good agents. Flag it "over-constrains".',
 		'3. NEVER RESCORE THE DETERMINISTIC SCORER (B3). The scorer is the sole, confidence-blind key',
-		'   reader. Auto-adjudication is a SEPARATE layer over the AMBIGUOUS queue only — you resolve a',
-		'   CLEAR case (a correct injection-flag → dismiss; a fabricated/unsupported claim → false',
-		'   positive) and ESCALATE a genuinely-ambiguous one to the operator. You never rescore a plant.',
+		'   reader. Auto-adjudication is a SEPARATE layer over the AMBIGUOUS queue only. The ONLY clear',
+		'   auto-resolution is DISMISS (a correct security flag the key did not plant — e.g. a correct',
+		'   injection-flag on the injection fixture; neither a hit nor an FP, it moves no bar). A',
+		'   fabricated/unsupported claim is NOT a clear case — you ESCALATE it (the operator decides the',
+		'   false_positive; an auto-FP fails a role and is too consequential to automate). A partial_match',
+		'   ESCALATES too (a confirm_hit credits full recall — a judgment), with a recommendation pre-filled.',
+		'   You NEVER auto-false_positive and NEVER auto-confirm a judgment; you never rescore a plant.',
 		'4. THE OPERATOR KEEPS THE HIRE GATE (B4). You PROPOSE; the operator disposes (D-039). Surface',
 		'   one hire/no-hire decision with evidence; never flip a cert or staff a role yourself.',
 		'',
@@ -1171,8 +1175,8 @@ const RECRUITER: LaunchRoleSpec = {
 				'task.md': [
 					'# Adjudication task',
 					'Below is an interview_run AMBIGUOUS queue (two items the scorer could not auto-resolve).',
-					'Classify EACH item: an auto-resolvable CLEAR case → dismiss / false_positive (with',
-					'basis); a genuinely-ambiguous case → ESCALATE to the operator. You may NOT rescore the',
+					'Classify EACH item under the clear-cases-only policy. The ONLY auto-resolvable CLEAR case is a DISMISS (a correct security flag the key did not plant). A fabricated/unsupported finding is NOT clear — ESCALATE it (the operator',
+					'decides the false_positive; never auto-false_positive a judgment). You may NOT rescore the',
 					'plants (B3) — you only resolve the ambiguous queue.'
 				].join('\n'),
 				'ambiguous-queue.json': JSON.stringify(

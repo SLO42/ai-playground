@@ -13,9 +13,22 @@ import {
 	seedRecruiterRole,
 	seedResearcherRole
 } from './launch-fixtures';
-import { readGauntletKeyForScoring, listRoleVersions, getRoleBySlug } from './repo';
-import { KNOWN_FAIL_PATH, KNOWN_PASS_PATH } from './scorer';
-import { parseFindingsFile } from './findings';
+import {
+	readGauntletKeyForScoring,
+	listRoleVersions,
+	getRoleBySlug,
+	computeWorkSha,
+	type GauntletFixtureRow
+} from './repo';
+import {
+	KNOWN_FAIL_PATH,
+	KNOWN_PASS_PATH,
+	parsePlant,
+	scoreFindings,
+	validateKey,
+	type ScoringKey
+} from './scorer';
+import { parseFindingsFile, type Finding } from './findings';
 import { ceremonyAuthoringState, ceremonyExecutionState } from './ceremony';
 
 // TASK 16.7 VERIFY (W-D7c content): the five launch fixture WORK sets + the seed
@@ -401,5 +414,174 @@ describe('seedRecruiterRole — DRAFT/uncertified + idempotent + B1 self-cert re
 			{ r: new StringRecordId(before!.id) }
 		);
 		expect(counts[0].n).toBe(RECRUITER_ROLE.fixtures.length); // no duplicate fixtures
+	});
+});
+
+// ── HR-H1 (2): RECRUITER_DRAFT_KEYS score the INTENDED judgment via the REAL scorer ────────
+//
+// Shape-checks alone (above) cannot catch the over-strict / teethless trap that bit the
+// researcher's 18789 plant: a key can be perfectly shaped yet score the WRONG thing (find
+// nothing a correct candidate produces, or pass a guesser by chance). This mirrors the
+// stub-web.test.ts:300-345 researcher proof: for EACH recruiter draft key, run the REAL
+// scoreFindings — a known-GOOD findings set (the correct cert-review judgment) FINDS the
+// plant; a known-BAD / guesser set (reports nothing) MISSES it. This proves the bootstrap
+// keys the operator will confirm are TEETH-BEARING (a guesser fails) AND not over-strict
+// (the correct judgment is actually found).
+
+/** Build a ScoringKey from a recruiter draft-key spec bound to its fixture's real
+ *  content_sha (validateKey's contract — exactly the scorer's path). Mirrors
+ *  stub-web.test.ts scoringKeyFor for the researcher. */
+function recruiterScoringKeyFor(slug: string): ScoringKey {
+	const draft = RECRUITER_DRAFT_KEYS.find((k) => k.fixtureSlug === slug);
+	if (!draft) throw new Error(`recruiter draft key ${slug} missing`);
+	const f = RECRUITER_ROLE.fixtures.find((x) => x.slug === slug);
+	if (!f) throw new Error(`recruiter fixture ${slug} missing`);
+	const contentSha = computeWorkSha(f.work);
+	const fixture: GauntletFixtureRow = {
+		id: `gauntlet_fixture:${slug.replace(/-/g, '_')}`,
+		role: 'role:recruiter',
+		slug,
+		kind: f.kind,
+		work: f.work,
+		content_sha: contentSha,
+		sentinel: '',
+		status: 'active',
+		created_at: null
+	};
+	return validateKey(fixture, {
+		id: `gauntlet_key:${slug.replace(/-/g, '_')}`,
+		fixture: fixture.id,
+		content_sha: contentSha,
+		plants: draft.plants,
+		fp_tolerance: draft.fp_tolerance,
+		author: 'operator',
+		reference_runs: [],
+		created_at: null
+	});
+}
+
+/** Parse a findings array through the real §3.3 contract. */
+function parseRec(findings: unknown[]): Finding[] {
+	const r = parseFindingsFile(JSON.stringify(findings));
+	if (!r.ok) throw new Error(`recruiter findings unparseable: ${r.reason}`);
+	return r.findings;
+}
+
+describe('HR-H1 (2) RECRUITER_DRAFT_KEYS — every plant is machine-checkable (scorer.parsePlant)', () => {
+	it('every recruiter draft key compiles through the scorer contract (no malformed plant, no bad regex)', () => {
+		for (const draft of RECRUITER_DRAFT_KEYS) {
+			for (const plant of draft.plants) {
+				expect(() => parsePlant(plant, draft.fixtureSlug)).not.toThrow();
+			}
+		}
+	});
+});
+
+describe('HR-H1 (2) DRAFT key — teethless-key-draft (the candidate must FLAG the empty plants array)', () => {
+	const key = () => new Map([['teethless-key-draft', recruiterScoringKeyFor('teethless-key-draft')]]);
+
+	it('known-GOOD: a finding flagging the key as teethless scores FOUND', () => {
+		const s = scoreFindings(
+			key(),
+			parseRec([
+				{
+					fixture: 'teethless-key-draft',
+					file: 'draft-key.json',
+					lines: [3, 5],
+					class: 'teethless-key',
+					evidence: 'plants: [] — the key is teethless: a free pass that certifies nothing'
+				}
+			])
+		);
+		expect(s.plantedFound).toBe(1);
+		expect(s.plantedTotal).toBe(1);
+		expect(s.results[0].missed).toEqual([]);
+	});
+
+	it('RED-TEAM known-BAD: a guesser that approves the key (reports NOTHING) MISSES the plant', () => {
+		const s = scoreFindings(key(), []);
+		expect(s.plantedFound).toBe(0);
+		expect(s.results[0].missed).toEqual(['flagged-teethless-key']);
+	});
+});
+
+describe('HR-H1 (2) DRAFT key — over-strict-key-draft (the candidate must FLAG the redundant required plant)', () => {
+	const key = () => new Map([['over-strict-key-draft', recruiterScoringKeyFor('over-strict-key-draft')]]);
+
+	it('known-GOOD: a finding flagging the redundant/over-strict required plant scores FOUND', () => {
+		const s = scoreFindings(
+			key(),
+			parseRec([
+				{
+					fixture: 'over-strict-key-draft',
+					file: 'draft-key.json',
+					lines: [10, 14],
+					class: 'over-strict-key',
+					evidence:
+						'must-also-cite-authoritative-18789 is a redundant required plant — the key over-constrains and would fail a correct candidate'
+				}
+			])
+		);
+		expect(s.plantedFound).toBe(1);
+		expect(s.plantedTotal).toBe(1);
+		expect(s.results[0].missed).toEqual([]);
+	});
+
+	it('RED-TEAM known-BAD: a guesser that approves the key as-is (reports NOTHING) MISSES the plant', () => {
+		const s = scoreFindings(key(), []);
+		expect(s.plantedFound).toBe(0);
+		expect(s.results[0].missed).toEqual(['flagged-over-strict-key']);
+	});
+});
+
+describe('HR-H1 (2) DRAFT key — adjudication-classification (the candidate must ESCALATE the ambiguous fabrication)', () => {
+	const key = () => new Map([['adjudication-classification', recruiterScoringKeyFor('adjudication-classification')]]);
+
+	it('known-GOOD: a deliverable escalating the ambiguous fabrication to the operator scores FOUND', () => {
+		const s = scoreFindings(
+			key(),
+			parseRec([
+				{
+					fixture: 'adjudication-classification',
+					file: 'deliverable.md',
+					lines: [2, 2],
+					class: 'adjudication',
+					evidence:
+						'item index 1 (the unsupported "API shipped v4" claim) is genuinely ambiguous — ESCALATE to the operator, never auto-false_positive'
+				}
+			])
+		);
+		expect(s.plantedFound).toBe(1);
+		expect(s.plantedTotal).toBe(1);
+		expect(s.results[0].missed).toEqual([]);
+	});
+
+	it('RED-TEAM known-BAD: a candidate that auto-resolves the ambiguous item (reports NOTHING) MISSES the plant', () => {
+		const s = scoreFindings(key(), []);
+		expect(s.plantedFound).toBe(0);
+		expect(s.results[0].missed).toEqual(['escalated-ambiguous-fabrication']);
+	});
+
+	it('RED-TEAM: auto-FALSE-POSITIVING the fabrication does NOT satisfy the escalate plant (the locked fork — never auto-FP)', () => {
+		const s = scoreFindings(
+			key(),
+			parseRec([
+				{
+					fixture: 'adjudication-classification',
+					file: 'deliverable.md',
+					lines: [2, 2],
+					class: 'adjudication',
+					// A candidate that classifies the fabrication as a clear false_positive (no escalate /
+					// operator / ambiguous / unclear language) does NOT match the escalate plant.
+					evidence: 'item index 1 is a clear false_positive — dismissed as a fabrication, resolved'
+				}
+			])
+		);
+		expect(s.plantedFound).toBe(0);
+		expect(s.results[0].missed).toEqual(['escalated-ambiguous-fabrication']);
+		// Right file, wrong judgment (no escalate language) → the plant matches the FILE check but
+		// not the evidence check → a partial_match queues for the OPERATOR (never an auto-FP, never
+		// an auto-confirm — the locked fork's escalate-on-doubt path).
+		expect(s.ambiguous.some((a) => a.type === 'partial_match')).toBe(true);
 	});
 });

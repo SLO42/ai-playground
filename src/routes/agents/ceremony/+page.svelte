@@ -175,9 +175,10 @@
     <span class="eyebrow">workforce · day-0 bootstrap</span>
     <h1 class="title">Day-0 ceremony</h1>
     <p class="lede">
-      Author the five launch roles into existence: seed the pool, review each prompt core
-      against its harvested source, then author and confirm each fixture's answer key.
-      Nothing here spends — reference runs and interviews are a later step.
+      Author the five launch roles (plus the sixth catalog role, the researcher — seeded
+      separately) into existence: seed the pool, review each prompt core against its harvested
+      source, then author and confirm each fixture's answer key. Nothing here spends — reference
+      runs and interviews are a later step.
     </p>
     <a class="back-link" href="/agents">← back to agents</a>
   </header>
@@ -202,13 +203,15 @@
 
       {#if !seeded}
         <p class="state-body">
-          No launch roles yet. Seeding creates the five roles, their draft prompt cores, and
-          their proposed fixtures — all honest: nothing is keyed, interviewed, or certified.
-          Seeding is idempotent; re-running absorbs any prior partial work.
+          No launch roles yet. Seeding creates the five launch roles plus the sixth catalog
+          role (the researcher, seeded separately — §7b), their draft prompt cores, and their
+          proposed fixtures — all honest: nothing is keyed, interviewed, or certified. Seeding
+          is idempotent; re-running absorbs any prior partial work.
         </p>
       {:else}
         <p class="state-body">
-          The launch pool is seeded. Seeding again is safe (idempotent) — it only fills gaps.
+          The launch pool is seeded (the five launch roles + the researcher catalog role).
+          Seeding again is safe (idempotent) — it only fills gaps.
         </p>
       {/if}
 
@@ -216,8 +219,9 @@
         <p class="brief-error" role="alert">{String(fb.error)}</p>
       {:else if fb?.seeded}
         <p class="brief-ok" role="status">
-          Seeded {String(fb.rolesTotal)} role(s){#if Number(fb.rolesCreated) > 0}
-            · {String(fb.rolesCreated)} newly created{:else} · all already present{/if}.
+          Seeded {String(fb.rolesTotal)} launch role(s){#if Number(fb.rolesCreated) > 0}
+            · {String(fb.rolesCreated)} newly created{:else} · all already present{/if}{#if fb?.researcherSeeded}
+            · researcher {fb.researcherCreated ? 'created' : 'already present'}{/if}.
         </p>
       {/if}
 

@@ -4,10 +4,11 @@ import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
-import { LAUNCH_ROLES, seedLaunchPool } from './launch-fixtures';
+import { LAUNCH_ROLES, RESEARCHER_ROLE, seedLaunchPool, seedResearcherRole } from './launch-fixtures';
 import { readGauntletKeyForScoring, listRoleVersions, getRoleBySlug } from './repo';
 import { KNOWN_FAIL_PATH, KNOWN_PASS_PATH } from './scorer';
 import { parseFindingsFile } from './findings';
+import { ceremonyAuthoringState, ceremonyExecutionState } from './ceremony';
 
 // TASK 16.7 VERIFY (W-D7c content): the five launch fixture WORK sets + the seed
 // write-path land HONEST against a REAL throwaway SurrealDB (F-008):
@@ -155,5 +156,85 @@ describe('seedLaunchPool — lands HONEST + idempotent (§8, interrupt contract)
 			{ r: new StringRecordId(before!.id) }
 		);
 		expect(counts[0].n).toBe(LAUNCH_ROLES.find((r) => r.slug === 'code-reviewer')!.fixtures.length);
+	});
+});
+
+// MEDIUM (researcher-cert blocker): the ceremony seed action wires seedResearcherRole
+// ALONGSIDE seedLaunchPool — these tests exercise that exact wiring (the action calls both,
+// idempotently) and prove the researcher then flows through the SAME ceremony authoring/
+// execution surface as the launch five, ready for its own operator-run cert. The §8 'exactly
+// five LAUNCH roles' invariant is preserved (the researcher is the SIXTH catalog role, NOT in
+// LAUNCH_ROLES). seedLaunchPool already ran in the describe above (idempotent), so the DB here
+// carries the launch five; we add the researcher exactly as the seed action does.
+describe('ceremony seed wiring — researcher seeded ALONGSIDE the launch pool (§7b, MEDIUM)', () => {
+	it('preserves the §8 invariant: exactly five LAUNCH roles, researcher is the SIXTH (not in LAUNCH_ROLES)', () => {
+		expect(LAUNCH_ROLES).toHaveLength(5);
+		expect(RESEARCHER_ROLE.slug).toBe('researcher');
+		expect(LAUNCH_ROLES.map((r) => r.slug)).not.toContain('researcher');
+	});
+
+	it('the seed action path (seedLaunchPool + seedResearcherRole) seeds the researcher DRAFT, proposed, no keys, NOT certified', async () => {
+		// Mirror the +page.server.ts seed action: both run on one operator click, idempotently.
+		await seedLaunchPool(db);
+		const researcher = await seedResearcherRole(db);
+
+		expect(researcher.role.slug).toBe('researcher');
+		// NOT deployable / NOT certified — honest (F-008): no active_version, draft version.
+		expect(researcher.role.active_version).toBeNull();
+		expect(researcher.version.lifecycle).toBe('draft');
+		// The §7b web grant rides the version (D-036): WebSearch/WebFetch recorded so a verdict traces it.
+		expect(researcher.version.capabilities?.tools).toEqual(['WebSearch', 'WebFetch']);
+		// The four §7b.4 candidate fixtures + scorer_control; proposed, empty sentinel, NO key.
+		expect(researcher.fixtures.length).toBeGreaterThanOrEqual(4);
+		for (const f of researcher.fixtures) {
+			expect(f.status).toBe('proposed');
+			expect(f.sentinel).toBe(''); // §4.2 — injected at activation, never at seed
+			const key = await readGauntletKeyForScoring(db, f.id);
+			expect(key, `researcher/${f.slug} must have NO key at seed`).toBeNull();
+		}
+	});
+
+	it('the researcher surfaces on the ceremony AUTHORING + EXECUTION surface as an un-certified role (reuses the same infra)', async () => {
+		await seedLaunchPool(db);
+		await seedResearcherRole(db);
+
+		// Authoring (steps ①+②): the researcher appears with its draft prompt core + un-keyed fixtures.
+		const authoring = await ceremonyAuthoringState(db);
+		const authRoles = authoring.roles.map((r) => r.roleSlug);
+		expect(authRoles).toContain('researcher');
+		expect(authRoles).toEqual(expect.arrayContaining(LAUNCH_SLUGS));
+		const authResearcher = authoring.roles.find((r) => r.roleSlug === 'researcher')!;
+		expect(authResearcher.promptCore).not.toBeNull(); // draft core present (step ① reviewable)
+		expect(authResearcher.fixtures.length).toBeGreaterThanOrEqual(4);
+		// Un-certified at seed → its fixtures are all un-keyed (keys are operator-authored, §4.4).
+		expect(authResearcher.fixtures.every((f) => !f.keyed)).toBe(true);
+
+		// Execution (steps ③/④/⑤): the researcher appears NOT certified, ready for its own cert.
+		const execution = await ceremonyExecutionState(db);
+		const execResearcher = execution.roles.find((r) => r.roleSlug === 'researcher')!;
+		expect(execResearcher, 'researcher on the execution surface').toBeTruthy();
+		expect(execResearcher.certified).toBe(false);
+		// The 5-launch invariant echo: the certified count is unaffected by an un-certified seed.
+		expect(execution.certifiedCount).toBe(0);
+	});
+
+	it('is idempotent: re-running the combined seed adds nothing (interrupt contract)', async () => {
+		await seedLaunchPool(db);
+		await seedResearcherRole(db);
+		const before = await getRoleBySlug(db, 'researcher');
+		const versionsBefore = await listRoleVersions(db, before!.id);
+
+		// Re-run the whole seed-action path — both calls absorb prior work, no duplicates.
+		await seedLaunchPool(db);
+		const again = await seedResearcherRole(db);
+		expect(again.createdRole).toBe(false); // role already existed — absorbed
+
+		const versionsAfter = await listRoleVersions(db, before!.id);
+		expect(versionsAfter.length).toBe(versionsBefore.length); // no duplicate draft version
+		const [counts] = await db.query<[Array<{ n: number }>]>(
+			`SELECT count() AS n FROM gauntlet_fixture WHERE role = $r GROUP ALL;`,
+			{ r: new StringRecordId(before!.id) }
+		);
+		expect(counts[0].n).toBe(RESEARCHER_ROLE.fixtures.length); // no duplicate fixtures
 	});
 });

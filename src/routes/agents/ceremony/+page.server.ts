@@ -31,6 +31,7 @@ import {
 	newSentinelUlid,
 	reversionFailedRole,
 	seedLaunchPool,
+	seedResearcherRole,
 	triggerAdmissionReferenceRun,
 	triggerBootstrapInterview,
 	WorkforceInputError,
@@ -192,18 +193,31 @@ export const actions: Actions = {
 	// Step 0 — ENTRY + SEED. Idempotent: re-running absorbs prior partial work (F-015 /
 	// interrupt contract) and never duplicates. The would-be over-spend is impossible —
 	// seeding writes only draft/proposed rows, no keys, no interviews (F-008).
+	//
+	// Seeds BOTH the §8 five LAUNCH roles (seedLaunchPool) AND the §7b SIXTH catalog role
+	// (seedResearcherRole) — the researcher is seeded SEPARATELY (never added to LAUNCH_ROLES,
+	// preserving the 'exactly five launch roles' §8 invariant), but folded into the SAME
+	// operator click so the researcher's draft + 4 fixtures land ready for its own cert. Both
+	// are idempotent: a re-run (or a crash mid-seed) absorbs prior partial work. The researcher
+	// then surfaces on the ceremony/agents surface as an un-certified role via listRoles (it
+	// reuses the same authoring/execution infra) — it is NOT auto-certified; the operator runs
+	// its cert through the existing flow.
 	seed: async () => {
 		const db = tryGetDb();
 		if (!db) return fail(503, { ceremony: { error: 'database not connected' } });
 		try {
 			const result = await seedLaunchPool(db);
 			const created = result.roles.filter((r) => r.createdRole).length;
+			// §7b — seed the sixth catalog role alongside the launch pool (idempotent, separate).
+			const researcher = await seedResearcherRole(db);
 			return {
 				ceremony: {
 					ok: true,
 					seeded: true,
 					rolesTotal: result.roles.length,
-					rolesCreated: created
+					rolesCreated: created,
+					researcherSeeded: true,
+					researcherCreated: researcher.createdRole
 				}
 			};
 		} catch (err) {

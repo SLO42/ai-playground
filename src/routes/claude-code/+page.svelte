@@ -278,7 +278,8 @@
         <ul class="fleet-rows" aria-label="sessions across all projects">
           {#each [...running, ...recent] as s (s.id)}
             {@const isRunning = s.status === 'running'}
-            <li class="fleet-row" class:running={isRunning}>
+            {@const isSelected = selectedSession === s.id}
+            <li class="fleet-row" class:running={isRunning} class:selected={isSelected}>
               <div class="fleet-main">
                 <span class="sess-status" data-status={s.status}>{s.status}</span>
                 {#if s.projectName}
@@ -292,7 +293,17 @@
                 {/if}
                 <span class="sess-model mono">{s.provider}/{s.modelId}</span>
                 {#if s.tier}<span class="tier-tag" data-tier={s.tier}>{s.tier}</span>{/if}
-                <span class="sess-id mono" title={s.id}>{shortId(s.id)}</span>
+                <!-- TV-1 — open this session's read-only transcript (running AND ended both
+                     open). A native <a href> keeps it keyboard-focusable + Enter/Space-free of
+                     a div onclick; it is NOT wrapped around the control buttons below (no
+                     interactive nesting — the controls live in their own .sess-controls). -->
+                <a
+                  class="sess-id mono transcript-link"
+                  href={`/claude-code?session=${encodeURIComponent(s.id)}`}
+                  aria-current={isSelected ? 'true' : undefined}
+                  aria-label={`View transcript for session ${shortId(s.id)}`}
+                  title={s.id}>{shortId(s.id)}</a
+                >
                 <span class="sess-when mono">{fmtTime(s.startedAt)}</span>
               </div>
 
@@ -1016,6 +1027,13 @@
   .fleet-row.running {
     border-color: var(--color-running, var(--color-success, #2a9d4a));
   }
+  /* TV-1 — the row whose transcript is open below carries a clear active state
+     (tokens only; AA against the overlay face; no motion). */
+  .fleet-row.selected {
+    border-color: var(--color-accent);
+    background: var(--color-accent-muted, var(--color-surface-card));
+    box-shadow: inset 0 0 0 1px var(--color-accent);
+  }
   .fleet-main {
     display: flex;
     flex-wrap: wrap;
@@ -1099,6 +1117,23 @@
   .sess-id {
     font-size: 0.68rem;
     color: var(--color-text-muted);
+  }
+  /* TV-1 — the session id is a transcript link: a clear text affordance + AA focus ring. */
+  a.transcript-link {
+    color: var(--color-accent);
+    text-decoration: none;
+    border-radius: var(--radius-xs, 3px);
+  }
+  a.transcript-link:hover {
+    text-decoration: underline;
+  }
+  a.transcript-link:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  a.transcript-link[aria-current='true'] {
+    font-weight: 700;
+    text-decoration: underline;
   }
   .sess-when {
     font-size: 0.7rem;

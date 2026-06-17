@@ -25,9 +25,12 @@ import {
 	ceremonyAuthoringState,
 	ceremonyExecutionState,
 	confirmLaunchKey,
+	createInterviewRun,
+	finalizeInterviewRun,
+	getInterviewRun,
 	type FixtureAuthoringState
 } from '$lib/server/workforce';
-import { actions } from './+page.server';
+import { actions, load, type CeremonyPageData } from './+page.server';
 
 let tdb: TestDb;
 let db: Db;
@@ -386,5 +389,169 @@ describe('day-0 ceremony DRIVER — execution half (CER2)', () => {
 		expect((notReady as { data: { ceremony: { error: string } } }).data.ceremony.error).toMatch(
 			/precondition is not met|not every launch role is certified/i
 		);
+	});
+});
+
+// ── HR-1 — the ADJUDICATION SURFACE (the gap we hit live) ───────────────────────────
+//
+// Proves the ceremony loader UNPACKS an 'adjudicating' interview_run end-to-end — the data
+// the operator previously DB-spelunked: per ambiguous item the finding (file/class/verbatim
+// evidence) + scorer note + type; per run the per-fixture found/missed plant ids + basis (from
+// interview_run.results) + the snapshot pass bar. NO engine read change — we synthesize a real
+// adjudicating run (createInterviewRun → finalizeInterviewRun status:'adjudicating') with the
+// SAME shapes the scorer writes, then assert the loader surfaces them. Plus the adjudicate
+// action's boundary validation (named errors) and the batch-or-nothing finalize (reused 16.6).
+
+/** Invoke the loader with a minimal event stub (it only touches `depends`) and return the
+ *  concrete page data (SvelteKit widens the load return to include void in tests). */
+async function loadData(): Promise<CeremonyPageData> {
+	const ev = { depends: () => {} } as unknown as Parameters<typeof load>[0];
+	return (await load(ev)) as CeremonyPageData;
+}
+
+/** Create a real 'adjudicating' interview_run on the seeded researcher version, with crafted
+ *  ambiguous + results + pass_criteria matching the scorer's findingSummary / FixtureResult. */
+async function makeAdjudicatingRun(): Promise<string> {
+	await actions.seed(event(formRequest({}))); // idempotent
+	const exec = await ceremonyExecutionState(db);
+	const withVersion = exec.roles.find((r) => r.roleVersion);
+	if (!withVersion?.roleVersion) throw new Error('test setup: no seeded role version to run against');
+	const versionId = withVersion.roleVersion;
+	const run = await createInterviewRun(db, {
+		role_version: versionId,
+		tier: 'opus',
+		provider: 'anthropic',
+		model_id: 'claude-test',
+		fixture_set_sha: 'sha-test',
+		bundle_digest: 'bundle-test',
+		planted_total: 2,
+		pass_criteria: { pass_recall: 1, max_false_positives: 0, session_timeout_minutes: 10 }
+	});
+	const finalized = await finalizeInterviewRun(db, run.id, {
+		status: 'adjudicating',
+		planted_total: 2,
+		planted_found: 1,
+		results: [
+			{
+				fixture: 'fx-secret',
+				kind: 'planted_defect',
+				found: ['committed-secret'],
+				missed: ['weak-crypto'],
+				extra: 1,
+				evidence: [
+					{ plant: 'committed-secret', basis: 'full mechanical match' },
+					{ plant: 'weak-crypto', basis: 'no finding matched the plant location' }
+				]
+			},
+			// A synthetic verdict row the loader must FILTER OUT (no fixture/found/missed).
+			{ kind: 'verdict', recall: 0.5, reasons: ['below bar'] }
+		],
+		ambiguous: [
+			{
+				type: 'partial_match',
+				fixture: 'fx-secret',
+				plant: 'weak-crypto',
+				finding: {
+					kind: 'presence',
+					fixture: 'fx-secret',
+					file: 'src/crypto.ts',
+					lines: [42, 44],
+					class: 'weak-crypto',
+					evidence: 'md5(password)'
+				},
+				note: 'some detection criteria matched, others did not — operator adjudication required'
+			},
+			{
+				type: 'extra_finding',
+				fixture: 'fx-secret',
+				finding: { kind: 'presence', fixture: 'fx-secret', file: 'src/x.ts', class: 'sqli', evidence: 'raw query' },
+				note: 'finding matched no plant — operator decides'
+			}
+		]
+	});
+	return finalized.id;
+}
+
+describe('HR-1 — adjudication surface (loader unpack + adjudicate action)', () => {
+	it('SHADOW: with no adjudicating run, the loader returns an honest empty queue', async () => {
+		const data = await loadData();
+		expect(data.connected).toBe(true);
+		expect(Array.isArray(data.adjudication)).toBe(true);
+		// (Other suites may have left runs; assert the SHAPE — every card is well-formed.)
+		for (const c of data.adjudication) {
+			expect(typeof c.run).toBe('string');
+			expect(Array.isArray(c.ambiguous)).toBe(true);
+			expect(Array.isArray(c.results)).toBe(true);
+		}
+	});
+
+	it('UNPACK: the loader surfaces finding/plant/basis/pass-bar for an adjudicating run', async () => {
+		const runId = await makeAdjudicatingRun();
+		const data = await loadData();
+		const card = data.adjudication.find((c) => c.run === runId);
+		expect(card, 'the adjudicating run must appear on the ceremony surface').toBeTruthy();
+		// Pass bar (snapshot) surfaced.
+		expect(card!.passCriteria).toEqual({ passRecall: 1, maxFalsePositives: 0 });
+		expect(card!.plantedFound).toBe(1);
+		expect(card!.plantedTotal).toBe(2);
+		// Per-fixture results: synthetic verdict row FILTERED OUT; only the fixture row remains.
+		expect(card!.results.length).toBe(1);
+		const r = card!.results[0] as Record<string, unknown>;
+		expect(r.fixture).toBe('fx-secret');
+		expect(r.found).toEqual(['committed-secret']);
+		expect(r.missed).toEqual(['weak-crypto']);
+		expect(Array.isArray(r.evidence)).toBe(true);
+		// Ambiguous items: finding text + note + type all present.
+		expect(card!.ambiguous.length).toBe(2);
+		const partial = card!.ambiguous[0] as Record<string, unknown>;
+		expect(partial.type).toBe('partial_match');
+		expect(partial.plant).toBe('weak-crypto');
+		const finding = partial.finding as Record<string, unknown>;
+		expect(finding.file).toBe('src/crypto.ts');
+		expect(finding.evidence).toBe('md5(password)');
+		expect(String(partial.note)).toMatch(/adjudication required/);
+		// at is an ISO string (F-013 — never a raw SDK datetime, never str(undefined)).
+		expect(card!.at === null || /^\d{4}-\d{2}-\d{2}T/.test(card!.at)).toBe(true);
+	});
+
+	it('GATE: adjudicate rejects malformed payloads with NAMED errors (every shadow path)', async () => {
+		// missing run id
+		const noRun = await actions.adjudicate(event(formRequest({ resolutions: '[]' })));
+		expect((noRun as { status: number }).status).toBe(400);
+		expect((noRun as { data: { ceremony: { error: string } } }).data.ceremony.error).toMatch(/run id/i);
+		// non-JSON resolutions
+		const badJson = await actions.adjudicate(event(formRequest({ run: 'interview_run:x', resolutions: 'not-json' })));
+		expect((badJson as { status: number }).status).toBe(400);
+		expect((badJson as { data: { ceremony: { error: string } } }).data.ceremony.error).toMatch(/valid JSON/i);
+		// non-array resolutions
+		const notArr = await actions.adjudicate(event(formRequest({ run: 'interview_run:x', resolutions: '{}' })));
+		expect((notArr as { status: number }).status).toBe(400);
+		expect((notArr as { data: { ceremony: { error: string } } }).data.ceremony.error).toMatch(/array/i);
+		// bad resolution value
+		const badRes = await actions.adjudicate(
+			event(formRequest({ run: 'interview_run:x', resolutions: '[{"index":0,"resolution":"nope"}]' }))
+		);
+		expect((badRes as { status: number }).status).toBe(400);
+		expect((badRes as { data: { ceremony: { error: string } } }).data.ceremony.error).toMatch(
+			/integer index and a valid resolution/i
+		);
+	});
+
+	it('FINALIZE: resolving ALL items flips the run terminal (batch-or-nothing, reused 16.6)', async () => {
+		const runId = await makeAdjudicatingRun();
+		// Resolve both items: confirm the partial_match hit, dismiss the extra_finding.
+		const resolutions = JSON.stringify([
+			{ index: 0, resolution: 'confirm_hit' },
+			{ index: 1, resolution: 'dismiss' }
+		]);
+		const res = await actions.adjudicate(event(formRequest({ run: runId, resolutions })));
+		expect(res).toMatchObject({ ceremony: { ok: true, adjudicate: true } });
+		const after = await getInterviewRun(db, runId);
+		// Confirming the missed plant as a hit reaches the recall bar (1) → passed; either way it
+		// leaves 'adjudicating' (terminal), the integrity point: the operator's judgment finalized it.
+		expect(after?.status === 'passed' || after?.status === 'failed').toBe(true);
+		// The queue is now empty (resolved); re-loading drops it from the ceremony surface.
+		const data = await loadData();
+		expect(data.adjudication.find((c) => c.run === runId)).toBeUndefined();
 	});
 });

@@ -36,6 +36,11 @@
   const runtimeAvailable = $derived(data.runtimeAvailable);
   const runtimeReason = $derived(data.runtimeReason);
 
+  // ── HR-1 — the §3.4 adjudication queue (the operator is the judge; B4). Each run is
+  //    unpacked: per ambiguous item the finding (file/class/verbatim evidence), scorer note,
+  //    item type; per run the per-fixture found/missed plant ids + basis and the pass bar.
+  const adjudication = $derived(data.adjudication ?? []);
+
   /** A human effort/cost label for a real-spend trigger at a tier — the operator sees what
    *  the click costs before confirming (F-008: no fabricated figure; effort by tier). */
   function effortLabel(tier: string | null): string {
@@ -97,6 +102,71 @@
   }
   /** The panel-flip feedback (no fixture / no roleVersion — keyed by the flip flag). */
   const flipFb = $derived(fb && fb.flip === true ? fb : undefined);
+  /** HR-1 — adjudication feedback, keyed by the run id the action carried (per-run). */
+  function adjFb(run: string): Record<string, unknown> | undefined {
+    return fb && fb.adjudicate === true && fb.run === run ? fb : undefined;
+  }
+
+  // ── HR-1 — adjudication: one resolution per ambiguous item, keyed `${run}:${idx}`.
+  //    partial_match items may be confirmed as a HIT (they name a plant); extra_finding can
+  //    only be false_positive or dismiss. Batch-or-nothing: one ceremony resolves ALL items.
+  let adjChoice = $state<Record<string, 'confirm_hit' | 'false_positive' | 'dismiss'>>({});
+  // Per-run busy guard (keyed by run id) so resolving one run never disables another's button.
+  let adjBusy = $state<Record<string, boolean>>({});
+  function setAdjBusy(run: string, v: boolean) {
+    adjBusy = { ...adjBusy, [run]: v };
+  }
+
+  function adjItemType(item: Record<string, unknown>): string {
+    return typeof item.type === 'string' ? item.type : 'unknown';
+  }
+  function adjCanConfirmHit(item: Record<string, unknown>): boolean {
+    return item.type === 'partial_match' && typeof item.plant === 'string';
+  }
+  function adjChoiceFor(run: string, idx: number, item: Record<string, unknown>): string {
+    const key = `${run}:${idx}`;
+    // Default: confirm_hit when legal (it carries a matched plant), else false_positive.
+    return adjChoice[key] ?? (adjCanConfirmHit(item) ? 'confirm_hit' : 'false_positive');
+  }
+  function setAdjChoice(run: string, idx: number, v: 'confirm_hit' | 'false_positive' | 'dismiss') {
+    adjChoice = { ...adjChoice, [`${run}:${idx}`]: v };
+  }
+  /** Build the resolutions JSON payload for one adjudicating run (ALL items, batch-or-nothing). */
+  function adjResolutionsJson(run: string, items: Array<Record<string, unknown>>): string {
+    return JSON.stringify(
+      items.map((item, idx) => ({ index: idx, resolution: adjChoiceFor(run, idx, item) }))
+    );
+  }
+
+  /** The finding object on an ambiguous item (the scorer's findingSummary). Always a record. */
+  function adjFinding(item: Record<string, unknown>): Record<string, unknown> {
+    const f = item.finding;
+    return f && typeof f === 'object' ? (f as Record<string, unknown>) : {};
+  }
+  /** The verbatim evidence/search text of a finding (presence → evidence, absence → search). */
+  function adjEvidence(f: Record<string, unknown>): string {
+    if (typeof f.evidence === 'string' && f.evidence) return f.evidence;
+    if (typeof f.search === 'string' && f.search) return f.search;
+    return '';
+  }
+  /** A finding's location label (file + lines for presence; artifact for absence). '—' if none. */
+  function adjLocation(f: Record<string, unknown>): string {
+    if (typeof f.file === 'string' && f.file) {
+      return f.lines != null ? `${f.file} · L${String(f.lines)}` : f.file;
+    }
+    if (typeof f.artifact === 'string' && f.artifact) return f.artifact;
+    return '—';
+  }
+  function adjClass(f: Record<string, unknown>): string {
+    return typeof f.class === 'string' && f.class ? f.class : '—';
+  }
+  /** A per-fixture result row's evidence basis lines — {plant, basis, finding?}. */
+  function adjResultEvidence(r: Record<string, unknown>): Array<Record<string, unknown>> {
+    return Array.isArray(r.evidence) ? (r.evidence as Array<Record<string, unknown>>) : [];
+  }
+  function adjList(v: unknown): string[] {
+    return Array.isArray(v) ? v.map((x) => String(x)) : [];
+  }
 
   // Live re-derive off the ONE SSE stream (D-035): a seed (role/role_version/fixture create)
   // refreshes the flow in place. A key confirm re-loads via its own form action response (the
@@ -192,6 +262,193 @@
       </p>
     </div>
   {:else}
+    <!-- ── HR-1 — §3.4 ADJUDICATION QUEUE (the gap we hit live) ────────────────────
+         Every 'adjudicating' interview_run, fully unpacked: per ambiguous item the finding
+         (file + class + verbatim evidence), the scorer note, and the item type; per run the
+         per-fixture found/missed plant ids + basis (from interview_run.results) and the
+         snapshot pass bar. Resolve EVERY item of a run in one ceremony (batch-or-nothing).
+         The operator is the judge (B4) — no judge agent, no rescore of plants. -->
+    {#if adjudication.length > 0}
+      <div class="card adjudication" aria-labelledby="adj-title">
+        <div class="panel-head">
+          <span class="eyebrow" id="adj-title">adjudication queue</span>
+          <span class="count mono">{adjudication.length} run(s) awaiting judgment</span>
+        </div>
+        <p class="state-body">
+          The deterministic scorer matched every finding it could; the items below need the
+          operator's judgment (§3.4). For each run you see the finding text, the matched/missed
+          plants with the scorer's basis, and the snapshot pass bar. Resolve every item of a run
+          in one ceremony — the run then finalizes against its bar (batch-or-nothing).
+        </p>
+
+        <ul class="adj-runs" aria-label="adjudicating runs">
+          {#each adjudication as a (a.run)}
+            {@const afb = adjFb(a.run)}
+            <li class="adj-run">
+              <div class="adj-run-head">
+                <span class="role-slug mono">{a.roleSlug}</span>
+                <span class="tier-tag mono" data-tier={a.tier}>{a.tier}</span>
+                <span class="iv-model mono">({a.modelId})</span>
+                <span class="adj-progress mono">
+                  {a.plantedFound}/{a.plantedTotal} plants found · {a.falsePositives} FP
+                </span>
+                <time datetime={a.at ?? ''}>{fmtDate(a.at)}</time>
+              </div>
+
+              <!-- The SNAPSHOT pass bar this run finalizes against (§3.5). -->
+              <p class="adj-bar">
+                <span class="exec-label">pass bar</span>
+                {#if a.passCriteria}
+                  <span>recall ≥ <span class="mono">{a.passCriteria.passRecall ?? '—'}</span></span>
+                  <span>· max false positives <span class="mono">{a.passCriteria.maxFalsePositives ?? '—'}</span></span>
+                {:else}
+                  <span class="empty-cell">— no snapshot pass criteria on this run</span>
+                {/if}
+              </p>
+
+              <!-- Per-fixture scorer results: the matched/missed plant ids + the basis the
+                   scorer recorded (interview_run.results). The operator no longer DB-spelunks. -->
+              {#if a.results.length > 0}
+                <div class="adj-results" role="group" aria-label="per-fixture scorer results">
+                  <span class="exec-label">scorer results (per fixture)</span>
+                  <ul class="adj-result-list">
+                    {#each a.results as r (String(r.fixture))}
+                      {@const found = adjList(r.found)}
+                      {@const missed = adjList(r.missed)}
+                      <li class="adj-result">
+                        <div class="adj-result-head">
+                          <span class="fix-slug mono">{String(r.fixture)}</span>
+                          {#if r.kind}<span class="fix-kind mono">{kindLabel(String(r.kind))}</span>{/if}
+                          {#if Number(r.extra) > 0}<span class="warn-text">{Number(r.extra)} extra finding(s)</span>{/if}
+                        </div>
+                        <p class="plant-line">
+                          <span class="exec-label">found</span>
+                          {#if found.length > 0}
+                            {#each found as id (id)}<span class="plant-chip ok mono">{id}</span>{/each}
+                          {:else}<span class="empty-cell">— none</span>{/if}
+                        </p>
+                        <p class="plant-line">
+                          <span class="exec-label">missed</span>
+                          {#if missed.length > 0}
+                            {#each missed as id (id)}<span class="plant-chip miss mono">{id}</span>{/each}
+                          {:else}<span class="empty-cell">— none</span>{/if}
+                        </p>
+                        {#if adjResultEvidence(r).length > 0}
+                          <ul class="basis-list">
+                            {#each adjResultEvidence(r) as ev, ei (ei)}
+                              <li class="basis-item">
+                                {#if ev.plant}<span class="mono plant-ref">{String(ev.plant)}</span>{/if}
+                                <span class="basis-text">{ev.basis ? String(ev.basis) : '—'}</span>
+                              </li>
+                            {/each}
+                          </ul>
+                        {/if}
+                      </li>
+                    {/each}
+                  </ul>
+                </div>
+              {/if}
+
+              {#if afb?.error}
+                <p class="brief-error" role="alert">{String(afb.error)}</p>
+              {:else if afb?.ok}
+                <p class="brief-ok" role="status">
+                  Run finalized as <span class="mono">{String(afb.status)}</span>.
+                </p>
+              {/if}
+
+              <!-- The ambiguous queue — finding + note + type, with the resolution controls. -->
+              <form
+                method="POST"
+                action="?/adjudicate"
+                class="adj-form"
+                use:enhance={() => {
+                  setAdjBusy(a.run, true);
+                  return async ({ update }) => {
+                    await update({ reset: false });
+                    setAdjBusy(a.run, false);
+                  };
+                }}
+              >
+                <input type="hidden" name="run" value={a.run} />
+                <input type="hidden" name="resolutions" value={adjResolutionsJson(a.run, a.ambiguous)} />
+
+                <ul class="adj-items" aria-label="ambiguous items">
+                  {#each a.ambiguous as item, idx (idx)}
+                    {@const f = adjFinding(item)}
+                    <li class="adj-item">
+                      <div class="adj-item-head">
+                        <span class="adj-item-type mono" data-type={adjItemType(item)}>{kindLabel(adjItemType(item))}</span>
+                        {#if item.fixture}<span class="fix-slug mono">{String(item.fixture)}</span>{/if}
+                        {#if item.plant}<span class="plant-chip miss mono" title="the plant this finding partially matched">{String(item.plant)}</span>{/if}
+                      </div>
+
+                      <dl class="adj-finding">
+                        <div><dt>location</dt><dd class="mono">{adjLocation(f)}</dd></div>
+                        <div><dt>class</dt><dd class="mono">{adjClass(f)}</dd></div>
+                        <div class="adj-finding-evidence">
+                          <dt>evidence</dt>
+                          <dd>
+                            {#if adjEvidence(f)}
+                              <pre class="evidence-text mono">{adjEvidence(f)}</pre>
+                            {:else}
+                              <span class="empty-cell">— no verbatim evidence on this finding</span>
+                            {/if}
+                          </dd>
+                        </div>
+                      </dl>
+
+                      <p class="adj-note">
+                        <span class="exec-label">scorer note</span>
+                        <span>{item.note ? String(item.note) : '—'}</span>
+                      </p>
+
+                      <fieldset class="adj-choices">
+                        <legend class="field-label">resolution</legend>
+                        {#if adjCanConfirmHit(item)}
+                          <label class="adj-choice">
+                            <input
+                              type="radio"
+                              name={`r-${a.run}-${idx}`}
+                              checked={adjChoiceFor(a.run, idx, item) === 'confirm_hit'}
+                              onchange={() => setAdjChoice(a.run, idx, 'confirm_hit')}
+                            />
+                            confirm hit
+                          </label>
+                        {/if}
+                        <label class="adj-choice">
+                          <input
+                            type="radio"
+                            name={`r-${a.run}-${idx}`}
+                            checked={adjChoiceFor(a.run, idx, item) === 'false_positive'}
+                            onchange={() => setAdjChoice(a.run, idx, 'false_positive')}
+                          />
+                          false positive
+                        </label>
+                        <label class="adj-choice">
+                          <input
+                            type="radio"
+                            name={`r-${a.run}-${idx}`}
+                            checked={adjChoiceFor(a.run, idx, item) === 'dismiss'}
+                            onchange={() => setAdjChoice(a.run, idx, 'dismiss')}
+                          />
+                          dismiss
+                        </label>
+                      </fieldset>
+                    </li>
+                  {/each}
+                </ul>
+
+                <button type="submit" class="btn primary small" disabled={adjBusy[a.run]}>
+                  {adjBusy[a.run] ? 'Resolving…' : 'Resolve all & finalize'}
+                </button>
+              </form>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+
     <!-- ── Step 0 — ENTRY + SEED ──────────────────────────────────────────────── -->
     <div class="card" aria-labelledby="seed-title">
       <div class="panel-head">
@@ -1331,5 +1588,224 @@
   .btn:disabled {
     opacity: 0.5;
     cursor: not-allowed;
+  }
+
+  /* ── HR-1 — §3.4 adjudication queue ──────────────────────────────────────────── */
+  .adj-runs {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4);
+  }
+  .adj-run {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    padding: var(--space-3) var(--space-4);
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-overlay);
+  }
+  .adj-run-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--color-text-2);
+  }
+  .adj-progress {
+    color: var(--color-text-2);
+  }
+  .adj-bar {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--color-text-2);
+    margin: 0;
+  }
+  .adj-results {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-2) var(--space-3);
+    background: var(--color-bg-inset);
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-sm);
+  }
+  .adj-result-list,
+  .basis-list,
+  .adj-items {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  .adj-result {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding-top: var(--space-2);
+    border-top: var(--border-width) solid var(--color-border);
+  }
+  .adj-result:first-child {
+    padding-top: 0;
+    border-top: none;
+  }
+  .adj-result-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
+  }
+  .plant-line {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    margin: 0;
+  }
+  .plant-chip {
+    font-size: var(--text-xs);
+    padding: 0.05rem 0.4rem;
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-2);
+  }
+  .plant-chip.ok {
+    color: var(--color-success);
+    border-color: var(--color-success);
+  }
+  .plant-chip.miss {
+    color: var(--color-warn-on-overlay, var(--color-warn));
+    border-color: var(--color-warn, var(--color-border-strong));
+  }
+  .basis-list {
+    gap: var(--space-1);
+    padding-left: var(--space-2);
+  }
+  .basis-item {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-2);
+    align-items: baseline;
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+  }
+  .plant-ref {
+    color: var(--color-text-2);
+  }
+  .basis-text {
+    color: var(--color-text-muted);
+  }
+  .adj-item {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-inset);
+  }
+  .adj-item-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
+  }
+  .adj-item-type {
+    font-size: var(--text-xs);
+    text-transform: lowercase;
+    padding: 0.05rem 0.45rem;
+    border-radius: var(--radius-sm);
+    border: var(--border-width) solid var(--color-border);
+    color: var(--color-text-muted);
+  }
+  .adj-item-type[data-type='partial_match'] {
+    color: var(--color-warn-on-overlay, var(--color-warn));
+    border-color: var(--color-warn, var(--color-border-strong));
+  }
+  .adj-finding {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    margin: 0;
+  }
+  .adj-finding > div {
+    display: flex;
+    gap: var(--space-2);
+    align-items: baseline;
+    font-size: var(--text-xs);
+  }
+  .adj-finding dt {
+    color: var(--color-text-muted);
+    text-transform: lowercase;
+    flex: 0 0 4.5rem;
+  }
+  .adj-finding dd {
+    margin: 0;
+    color: var(--color-text-2);
+    min-width: 0;
+  }
+  .adj-finding-evidence {
+    flex-direction: column;
+    align-items: stretch !important;
+  }
+  .evidence-text {
+    margin: var(--space-1) 0 0;
+    padding: var(--space-2);
+    background: var(--color-surface-card);
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-sm);
+    font-size: var(--text-xs);
+    color: var(--color-text-2);
+    white-space: pre-wrap;
+    overflow-x: auto;
+    max-height: 12rem;
+  }
+  .adj-note {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-2);
+    align-items: baseline;
+    font-size: var(--text-xs);
+    color: var(--color-text-2);
+    margin: 0;
+  }
+  .adj-choices {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-2) var(--space-4);
+    align-items: center;
+    border: none;
+    margin: 0;
+    padding: 0;
+  }
+  .adj-choices .field-label {
+    flex: 0 0 auto;
+  }
+  .adj-choice {
+    display: flex;
+    align-items: center;
+    gap: var(--space-1);
+    font-size: var(--text-xs);
+    color: var(--color-text-2);
+    cursor: pointer;
+  }
+  .adj-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+  .adj-form input[type='radio']:focus-visible {
+    outline: 2px solid var(--color-focus-ring, var(--color-accent));
+    outline-offset: 1px;
   }
 </style>

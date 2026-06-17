@@ -23,6 +23,7 @@
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import {
 	activateGauntletFixture,
+	adjudicateInterviewRun,
 	ceremonyAuthoringState,
 	ceremonyExecutionState,
 	confirmLaunchKey,
@@ -35,6 +36,7 @@ import {
 	triggerAdmissionReferenceRun,
 	triggerBootstrapInterview,
 	WorkforceInputError,
+	type AmbiguousResolution,
 	type CeremonyAuthoringState,
 	type CeremonyExecutionState,
 	type GauntletOutcome,
@@ -47,16 +49,130 @@ import { loadAgentPool, loadWorkforce, type AgentPool } from '$lib/server/config
 import { fail, type Actions } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 
+/**
+ * HR-1 — one adjudicating interview_run, fully unpacked for the operator's judgment.
+ * This is the surface the operator HAD to query SurrealDB by hand for: per ambiguous item
+ * the finding (file/class/verbatim evidence) + the scorer note + the item type; per run the
+ * per-fixture found/missed plant ids + basis (from interview_run.results) and the snapshot
+ * pass bar. NO engine read change — the data is already populated on the run by the scorer /
+ * adjudicateInterviewRun; this loader surfaces what was always there (F-008: real rows only).
+ */
+export interface CeremonyAdjudicationCard {
+	run: string;
+	roleSlug: string;
+	tier: string;
+	modelId: string;
+	plantedFound: number;
+	plantedTotal: number;
+	falsePositives: number;
+	at: string | null;
+	/** Verbatim interview_run.ambiguous — each item {type, fixture, plant?, finding, note}. */
+	ambiguous: Array<Record<string, unknown>>;
+	/** Per-fixture scorer results: {fixture, kind, found[], missed[], extra, evidence[]}.
+	 *  Synthetic non-fixture rows (verdict/env/scorer_control) are filtered out — only the
+	 *  per-fixture found/missed/basis rows the operator needs to read the run are surfaced. */
+	results: Array<Record<string, unknown>>;
+	/** The SNAPSHOT pass bar the run will finalize against (§3.5) — honest null if absent. */
+	passCriteria: { passRecall: number | null; maxFalsePositives: number | null } | null;
+}
+
 export interface CeremonyPageData {
 	connected: boolean;
 	state: CeremonyAuthoringState | null;
 	/** CER2 — the step-③/④/⑤ execution substrate (proofs, interview lines, readiness). */
 	execution: CeremonyExecutionState | null;
+	/** HR-1 — the §3.4 adjudication queue, each run unpacked with finding/plant/basis/bar. */
+	adjudication: CeremonyAdjudicationCard[];
 	/** Honest live-spend availability (F-008): the Claude Code credential gates real runs.
 	 *  When false, the trigger buttons render disabled-with-reason rather than failing on click. */
 	runtimeAvailable: boolean;
 	runtimeReason: string | null;
 	error?: string;
+}
+
+/** F-013 — coerce a SurrealDB datetime (or anything) to an ISO string, never str(undefined).
+ *  Absent / the literal 'undefined'/'null'/'' → null (UI renders '—'). */
+function isoOrNull(v: unknown): string | null {
+	if (v === null || v === undefined) return null;
+	const s = v instanceof Date ? v.toISOString() : String(v);
+	return s === '' || s === 'undefined' || s === 'null' ? null : s;
+}
+
+/** Coerce a pass_criteria field to a finite number or null (honest '—' when absent/malformed). */
+function numOrNull(v: unknown): number | null {
+	const n = Number(v);
+	return Number.isFinite(n) ? n : null;
+}
+
+/**
+ * HR-1 — build the adjudication queue for the ceremony surface: every interview_run in
+ * status 'adjudicating', with its ambiguous queue, per-fixture results, and snapshot bar.
+ * Read-only; bounded (LIMIT 100, newest first). Shadow paths: an empty queue → [] (honest);
+ * a run whose ambiguous/results are absent/non-array → [] for that field (never a throw).
+ * The candidate role's slug is resolved per run (small N) for a human-readable header.
+ */
+async function buildCeremonyAdjudication(
+	db: NonNullable<ReturnType<typeof tryGetDb>>
+): Promise<CeremonyAdjudicationCard[]> {
+	const [rows] = await db.query<
+		[
+			Array<{
+				id: unknown;
+				role: unknown;
+				tier?: string;
+				model_id?: string;
+				planted_found?: number;
+				planted_total?: number;
+				false_positives?: number;
+				ambiguous?: unknown;
+				results?: unknown;
+				pass_criteria?: { pass_recall?: unknown; max_false_positives?: unknown } | null;
+				started_at?: unknown;
+			}>
+		]
+	>(
+		`SELECT id, role, tier, model_id, planted_found, planted_total, false_positives,
+		        ambiguous, results, pass_criteria, started_at
+		   FROM interview_run WHERE status = 'adjudicating'
+		  ORDER BY started_at DESC LIMIT 100;`
+	);
+
+	const cards: CeremonyAdjudicationCard[] = [];
+	const slugCache = new Map<string, string>();
+	for (const r of rows ?? []) {
+		const roleId = r.role != null ? String(r.role) : '';
+		let slug = roleId ? slugCache.get(roleId) : '';
+		if (roleId && slug === undefined) {
+			const [sr] = await db.query<[Array<{ slug?: string }>]>(`SELECT slug FROM $rid;`, {
+				rid: new StringRecordId(assertRecordId(roleId))
+			});
+			slug = sr?.[0]?.slug ?? roleId;
+			slugCache.set(roleId, slug);
+		}
+		// Per-fixture results only — drop the synthetic verdict/env/scorer_control audit rows
+		// (they carry no found/missed/fixture; surfacing them would be noise, not basis).
+		const rawResults = Array.isArray(r.results) ? (r.results as Array<Record<string, unknown>>) : [];
+		const results = rawResults.filter(
+			(x) => typeof x.fixture === 'string' && (Array.isArray(x.found) || Array.isArray(x.missed))
+		);
+		const pc = r.pass_criteria ?? null;
+		cards.push({
+			run: String(r.id),
+			roleSlug: slug || roleId || '—',
+			tier: r.tier ?? '—',
+			modelId: r.model_id ?? '—',
+			plantedFound: Number(r.planted_found ?? 0),
+			plantedTotal: Number(r.planted_total ?? 0),
+			falsePositives: Number(r.false_positives ?? 0),
+			at: isoOrNull(r.started_at),
+			ambiguous: Array.isArray(r.ambiguous) ? (r.ambiguous as Array<Record<string, unknown>>) : [],
+			results,
+			passCriteria: pc
+				? { passRecall: numOrNull(pc.pass_recall), maxFalsePositives: numOrNull(pc.max_false_positives) }
+				: null
+		});
+	}
+	return cards;
 }
 
 export const load: PageServerLoad = async ({ depends }): Promise<CeremonyPageData> => {
@@ -72,20 +188,23 @@ export const load: PageServerLoad = async ({ depends }): Promise<CeremonyPageDat
 			connected: false,
 			state: null,
 			execution: null,
+			adjudication: [],
 			runtimeAvailable: false,
 			runtimeReason: 'database not connected'
 		};
 	}
 	try {
-		const [state, execution, runtime] = await Promise.all([
+		const [state, execution, adjudication, runtime] = await Promise.all([
 			ceremonyAuthoringState(db),
 			ceremonyExecutionState(db),
+			buildCeremonyAdjudication(db),
 			getRuntime(db)
 		]);
 		return {
 			connected: true,
 			state,
 			execution,
+			adjudication,
 			runtimeAvailable: runtime.available,
 			runtimeReason: runtime.available ? null : runtime.reason
 		};
@@ -94,6 +213,7 @@ export const load: PageServerLoad = async ({ depends }): Promise<CeremonyPageDat
 			connected: false,
 			state: null,
 			execution: null,
+			adjudication: [],
 			runtimeAvailable: false,
 			runtimeReason: null,
 			error: (err as Error).message
@@ -188,6 +308,10 @@ function parsePlantsField(raw: string): { plants: Array<Record<string, unknown>>
 	}
 	return { plants: parsed as Array<Record<string, unknown>> };
 }
+
+/** HR-1 — the three legal §3.4 resolutions (matches AmbiguousResolution; validated at the
+ *  boundary so a hand-posted resolution can never reach the engine malformed). */
+const VALID_RESOLUTIONS = new Set<AmbiguousResolution>(['confirm_hit', 'false_positive', 'dismiss']);
 
 export const actions: Actions = {
 	// Step 0 — ENTRY + SEED. Idempotent: re-running absorbs prior partial work (F-015 /
@@ -448,6 +572,63 @@ export const actions: Actions = {
 				return fail(400, { ceremony: { role, reversion: true, error: err.message } });
 			}
 			return fail(500, { ceremony: { role, reversion: true, error: (err as Error).message } });
+		}
+	},
+
+	// HR-1 — §3.4 ADJUDICATE an 'adjudicating' run's ambiguous queue (the operator is the
+	// judge; there is no judge agent — B4). BATCH-OR-NOTHING: adjudicateInterviewRun resolves
+	// ALL items of one run in a single call and finalizes vs the SNAPSHOT pass bar, or fails;
+	// the write-path is REUSED verbatim from 16.6 (the same one /agents uses — not forked).
+	// Every field is validated at the boundary (named errors: bad JSON / non-array / bad
+	// index|resolution) before the engine sees it.
+	adjudicate: async ({ request }) => {
+		const db = tryGetDb();
+		if (!db) return fail(503, { ceremony: { adjudicate: true, error: 'database not connected' } });
+		const form = await request.formData();
+		const run = String(form.get('run') ?? '').trim();
+		const raw = String(form.get('resolutions') ?? '');
+		if (!run) return fail(400, { ceremony: { adjudicate: true, error: 'missing run id' } });
+
+		let parsed: unknown;
+		try {
+			parsed = JSON.parse(raw);
+		} catch {
+			return fail(400, { ceremony: { adjudicate: true, run, error: 'resolutions must be valid JSON' } });
+		}
+		if (!Array.isArray(parsed)) {
+			return fail(400, { ceremony: { adjudicate: true, run, error: 'resolutions must be an array' } });
+		}
+		const resolutions: Array<{ index: number; resolution: AmbiguousResolution; note?: string }> = [];
+		for (const r of parsed) {
+			const o = r as Record<string, unknown>;
+			const index = Number(o.index);
+			const resolution = String(o.resolution) as AmbiguousResolution;
+			if (!Number.isInteger(index) || !VALID_RESOLUTIONS.has(resolution)) {
+				return fail(400, {
+					ceremony: {
+						adjudicate: true,
+						run,
+						error: 'each resolution needs an integer index and a valid resolution (confirm_hit / false_positive / dismiss)'
+					}
+				});
+			}
+			resolutions.push({
+				index,
+				resolution,
+				...(typeof o.note === 'string' && o.note.trim() ? { note: o.note.trim() } : {})
+			});
+		}
+
+		try {
+			const updated = await adjudicateInterviewRun(db, run, { resolutions });
+			return { ceremony: { ok: true, adjudicate: true, run: updated.id, status: updated.status } };
+		} catch (err) {
+			// WorkforceInputError = a named operator/validation error (bad index, wrong status,
+			// partial queue) — surface its message; anything else is a 500-class.
+			if (err instanceof WorkforceInputError) {
+				return fail(400, { ceremony: { adjudicate: true, run, error: err.message } });
+			}
+			return fail(500, { ceremony: { adjudicate: true, run, error: (err as Error).message } });
 		}
 	}
 };

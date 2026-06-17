@@ -19,6 +19,7 @@ import {
 	RESEARCHER_WEB_TOOLS,
 	ResearchCapabilityError,
 	ResearchInputError,
+	ResearchStoreDiscardError,
 	startResearchBudget,
 	UNVERIFIED_PREFIX,
 	verifyAndStoreClaim,
@@ -247,6 +248,57 @@ describe('rails ③+④ — verifyAndStoreClaim', () => {
 		).rejects.toBeInstanceOf(ResearchInputError);
 		expect(spy).not.toHaveBeenCalled(); // verifier never ran
 		expect(await countMemories()).toBe(before);
+	});
+
+	// ── finding 2 — host-side structural source floor (≥2 sources to store as fact) ──────
+
+	it('RED-TEAM source floor: a SINGLE-source claim stays `unverified:` even on corroborated:true', async () => {
+		// The cheap-tier verifier is UNTRUSTED output (D-026): even if it wrongly returns
+		// corroborated:true, a claim that cites only ONE source can NEVER store as fact — the
+		// host-side floor `sources.length >= 2` is ANDed with the verdict.
+		const single: ResearchClaim = {
+			claim: 'the gateway binds to port 18789',
+			sources: [SOURCE('https://stub.local/docs')] // ONE source only
+		};
+		const lyingVerifier: VerifierFn = async () => ({ supported: true, corroborated: true });
+		const res = await verifyAndStoreClaim({ ...opts, verify: lyingVerifier }, single);
+		expect(res.verified).toBe(false); // the structural floor blocked the promotion
+		expect(res.content.startsWith(UNVERIFIED_PREFIX)).toBe(true);
+		const row = await readMemory(res.stored.id);
+		expect(row.content.startsWith(UNVERIFIED_PREFIX)).toBe(true);
+	});
+
+	// ── finding 1 — a VERIFIED finding is NEVER silently discarded (F-008) ───────────────
+
+	it('RED-TEAM no silent fact loss: a VERIFIED claim the DO-NOT-CAPTURE gate drops THROWS, never silently lost', async () => {
+		const before = await countMemories();
+		// A verified claim phrased as a transient negative ("the gateway is down") — the
+		// DO-NOT-CAPTURE gate drops it (persisted:false). A verified fact that the brain can never
+		// recall is exactly the F-008 failure: it must FAIL NAMED, not return {verified:true}.
+		const droppable: ResearchClaim = {
+			claim: 'the upstream API is down and unreachable',
+			sources: [SOURCE('https://stub.local/docs'), SOURCE('https://stub.local/blog', 'confirms')]
+		};
+		await expect(
+			verifyAndStoreClaim({ ...opts, verify: passVerifier }, droppable)
+		).rejects.toBeInstanceOf(ResearchStoreDiscardError);
+		// No fact was written — the failure is honest, not a half-state.
+		expect(await countMemories()).toBe(before);
+	});
+
+	it('an UNVERIFIED claim that is dropped is reported on .discarded (honest), NOT thrown', async () => {
+		// The same transient-negative content, but NOT verified (no 2nd source). A dropped
+		// UNVERIFIED finding was never going to be asserted as fact — it is reported honestly,
+		// never thrown (only a VERIFIED loss is fatal).
+		const droppableUnverified: ResearchClaim = {
+			claim: 'the upstream API is down and unreachable',
+			sources: [SOURCE('https://stub.local/docs')] // single source ⇒ unverified anyway
+		};
+		const res = await verifyAndStoreClaim({ ...opts, verify: noSecondSource }, droppableUnverified);
+		expect(res.verified).toBe(false);
+		expect(res.stored.persisted).toBe(false);
+		expect(res.discarded).toBeTruthy();
+		expect(res.discarded?.reason).toMatch(/do-not-capture/);
 	});
 });
 

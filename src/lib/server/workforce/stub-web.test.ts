@@ -116,22 +116,73 @@ describe('§7b.4 serveStubWeb — loopback mini-web (F-014 process discipline)',
 	});
 });
 
-describe('§7b.4 serveStubWeb — pathname collision is loud, never silent last-write-wins', () => {
-	it('throws WorkforceInputError when two pages map to the SAME loopback pathname', async () => {
+describe('§7b.4 serveStubWeb — pathname sharing is DISAMBIGUATED, not silently shadowed (finding 3)', () => {
+	it('two DISTINCT canonical URLs sharing a pathname are BOTH served (each its own body)', async () => {
+		// `https://a.example/control` and `https://b.example/control` are legitimately distinct
+		// pages with the SAME pathname — the old index THREW on this; the fix disambiguates them.
+		const stub = await serveStubWeb([
+			{ url: 'https://a.example/control', body: 'A', fixture: 'fx-one' },
+			{ url: 'https://b.example/control', body: 'B', fixture: 'fx-two' }
+		]);
+		try {
+			const ua = stub.loopbackUrlFor('https://a.example/control');
+			const ub = stub.loopbackUrlFor('https://b.example/control');
+			// Distinct loopback paths — no shadow (the whole bug class).
+			expect(ua).not.toBe(ub);
+			expect(await (await fetch(ua)).text()).toBe('A');
+			expect(await (await fetch(ub)).text()).toBe('B');
+		} finally {
+			await stub.close();
+		}
+	});
+
+	it('the SAME url with DIFFERENT bodies is a genuine conflict — throws (never a silent wrong page)', async () => {
 		const pages = [
 			{ url: 'https://stub.local/control', body: 'A', fixture: 'fx-one' },
-			{ url: 'https://other.example/control', body: 'B', fixture: 'fx-two' } // same /control pathname
+			{ url: 'https://stub.local/control', body: 'B', fixture: 'fx-two' } // identical URL, different body
 		];
-		// Fail-fast: the collision is detected BEFORE any socket is bound (no resource leaked).
+		// Detected BEFORE any socket is bound (no resource leaked).
 		expect(() => serveStubWeb(pages)).toThrow(WorkforceInputError);
 	});
 
-	it('distinct pathnames across fixtures stand up fine (no false collision)', async () => {
+	it('an identical (url + body) duplicate is idempotent — served once, no throw', async () => {
+		const stub = await serveStubWeb([
+			{ url: 'https://stub.local/dup', body: 'same', fixture: 'fx-one' },
+			{ url: 'https://stub.local/dup', body: 'same', fixture: 'fx-two' }
+		]);
+		try {
+			expect(await (await fetch(stub.loopbackUrlFor('https://stub.local/dup'))).text()).toBe('same');
+		} finally {
+			await stub.close();
+		}
+	});
+
+	it('two distinct MALFORMED (non-URL) page ids sharing a tail do NOT collapse onto one path', async () => {
+		// The old opaque fallback (`/${url}`) collapsed look-alike non-URLs; the encoded fallback
+		// keeps them distinct so neither shadows the other.
+		const stub = await serveStubWeb([
+			{ url: 'page-one', body: 'ONE', fixture: 'fx-one' },
+			{ url: 'page-two', body: 'TWO', fixture: 'fx-two' }
+		]);
+		try {
+			const u1 = stub.loopbackUrlFor('page-one');
+			const u2 = stub.loopbackUrlFor('page-two');
+			expect(u1).not.toBe(u2);
+			expect(await (await fetch(u1)).text()).toBe('ONE');
+			expect(await (await fetch(u2)).text()).toBe('TWO');
+		} finally {
+			await stub.close();
+		}
+	});
+
+	it('distinct pathnames across fixtures stand up fine (the common case is unchanged — bare pathname)', async () => {
 		const stub = await serveStubWeb([
 			{ url: 'https://stub.local/a', body: 'A', fixture: 'fx-one' },
 			{ url: 'https://stub.local/b', body: 'B', fixture: 'fx-two' }
 		]);
 		try {
+			// Unique pathnames keep the readable bare path (byte-identical to before).
+			expect(stub.loopbackUrlFor('https://stub.local/a')).toBe(`${stub.origin}/a`);
 			expect((await fetch(stub.loopbackUrlFor('https://stub.local/a'))).status).toBe(200);
 			expect((await fetch(stub.loopbackUrlFor('https://stub.local/b'))).status).toBe(200);
 		} finally {

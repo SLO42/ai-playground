@@ -57,6 +57,37 @@ export class ResearchCapabilityError extends Error {
 	}
 }
 
+/**
+ * Rail ③+④ honesty (F-008) — the INDEPENDENT verifier PASSED a claim (it is a fact), but the
+ * screened ingest did NOT keep it as a recallable fact: the DO-NOT-CAPTURE gate DROPPED it
+ * (`persisted:false`) or the secret/PII screen QUARANTINED it (written for audit, but excluded
+ * from the recall active-set, §3.1b). A VERIFIED finding that never becomes recallable is a
+ * fact silently lost — exactly the F-008 failure this whole path exists to prevent. We REFUSE
+ * loudly and named instead of returning a deceptive `{verified:true}` over a finding the brain
+ * can never recall. (An UNVERIFIED claim that is dropped/quarantined is NOT this error — it was
+ * never going to be asserted as fact; that outcome is reported honestly on the returned
+ * StoredClaim.discarded, not thrown.)
+ *
+ * Names the trigger (which screen outcome dropped a VERIFIED claim), the catcher
+ * (verifyAndStoreClaim post-store check), and what the caller sees (a typed, attributable
+ * failure — never a silent fact loss). The caller (a research task) surfaces this as a
+ * deliverable defect, not a stored fact.
+ */
+export class ResearchStoreDiscardError extends Error {
+	override readonly name = 'ResearchStoreDiscardError';
+	constructor(
+		readonly claim: string,
+		/** Why the verified finding failed to persist as a recallable fact. */
+		readonly discardReason: string
+	) {
+		super(
+			`VERIFIED claim "${truncate(claim)}" was NOT stored as a recallable fact ` +
+				`(${discardReason}) — a verified finding must persist as fact, never be silently ` +
+				`discarded (rail ③/④, F-008)`
+		);
+	}
+}
+
 // ── Rail ⑥ — the researcher web-capability allow-list (D-036, fail closed) ──────────
 //
 // The researcher is the ONLY launch role with web tools. WebSearch/WebFetch are Claude
@@ -238,12 +269,20 @@ export interface VerifyAndStoreOptions {
 export interface StoredClaim {
 	/** The persisted memory row (born quarantined via the screened ingest, rail ③). */
 	stored: StoredMemory;
-	/** true ⇒ the verifier passed (supported AND a 2nd source) — stored as fact. */
+	/** true ⇒ the verifier passed (supported AND a 2nd source AND ≥2 sources) — stored as fact. */
 	verified: boolean;
 	/** The content actually written (fact text, or `unverified: …`). */
 	content: string;
 	/** The verifier's verdict (audit). */
 	verdict: VerifierVerdict;
+	/**
+	 * F-008 honesty: set when the screened ingest did NOT keep this (UNVERIFIED) finding as a
+	 * recallable fact — the DO-NOT-CAPTURE gate dropped it or the screen quarantined it. The
+	 * caller surfaces this rather than treating a dropped finding as stored. For a VERIFIED
+	 * claim this same condition throws {@link ResearchStoreDiscardError} (a verified fact must
+	 * never be silently lost); for an unverified claim it is reported here, never thrown.
+	 */
+	discarded?: { reason: string };
 }
 
 /**
@@ -282,7 +321,20 @@ export async function verifyAndStoreClaim(
 	// Rail ④ classify (F-008): a claim is stored AS FACT only when the INDEPENDENT verifier
 	// found the sources support it AND a distinct second source corroborates it AND no source
 	// contradicts it. Anything short of that is honest `unverified:` — never asserted as fact.
-	const verified = verdict.supported === true && verdict.corroborated === true && verdict.contradicted !== true;
+	//
+	// HOST-SIDE STRUCTURAL FLOOR (defense-in-depth, §7b.4 finding 2): the verifier output is
+	// UNTRUSTED (D-026) — its SHAPE is validated above, but a buggy/over-eager cheap-tier verifier
+	// could still return corroborated:true for a claim that cites only ONE source. "A 2nd
+	// corroborating source exists" is structurally checkable host-side from the provenance the
+	// claim carries: require `claim.sources.length >= 2`. A single-source claim can therefore NEVER
+	// store as fact even if corroborated:true — the structural floor is independent of (and ANDed
+	// with) the untrusted verdict, so neither alone can promote a one-source claim to fact.
+	const hasSecondSource = claim.sources.length >= 2;
+	const verified =
+		verdict.supported === true &&
+		verdict.corroborated === true &&
+		verdict.contradicted !== true &&
+		hasSecondSource;
 	const factText = claim.claim.trim();
 	const content = verified ? factText : `${UNVERIFIED_PREFIX}${factText}`;
 
@@ -302,6 +354,32 @@ export async function verifyAndStoreClaim(
 			...(opts.provenance ? { provenance: opts.provenance } : {})
 		}
 	);
+
+	// F-008 — the finding must HONESTLY survive as a recallable fact, or we say so. The screened
+	// ingest has two non-fatal outcomes that drop a finding from the recall active-set:
+	//   • persisted:false — the DO-NOT-CAPTURE gate dropped the candidate (it phrased a transient
+	//     negative, e.g. "the gateway is down");
+	//   • screen_status:'quarantined' — the secret/PII screen could not safely redact it, so the
+	//     row is written for audit but EXCLUDED from recall (§3.1b, recall.ts).
+	// In EITHER case the finding is NOT a recallable fact. For a VERIFIED claim that is a silent
+	// fact loss — REFUSE loudly (a verified finding MUST persist as fact, never be discarded
+	// without a trace). For an UNVERIFIED claim the drop is legitimate (it was never going to be
+	// asserted) — report it honestly on the result instead of throwing.
+	const discardReason =
+		stored.persisted === false
+			? `do-not-capture gate dropped it${stored.dropReason ? ` (${stored.dropReason})` : ''}`
+			: stored.screenStatus === 'quarantined'
+				? 'secret/PII screen quarantined it (written for audit, excluded from recall, §3.1b)'
+				: undefined;
+
+	if (discardReason !== undefined) {
+		if (verified) {
+			// A verified fact that the brain can never recall is exactly the F-008 failure this
+			// path exists to prevent — fail named, never a deceptive {verified:true} over a lost fact.
+			throw new ResearchStoreDiscardError(factText, discardReason);
+		}
+		return { stored, verified, content, verdict, discarded: { reason: discardReason } };
+	}
 
 	return { stored, verified, content, verdict };
 }

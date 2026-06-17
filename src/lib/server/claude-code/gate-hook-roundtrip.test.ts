@@ -179,3 +179,80 @@ describe('15.1 — the scope-lock through the REAL gate-hook subprocess + loopba
 		expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
 	}, 30_000);
 });
+
+// ── §7b.4 fetch-allowlist — the fetchPolicy roundtrip (dead-code regression guard) ───────
+//
+// The bf5eb79 fix wired SpawnRequest.fetchPolicy → the gate seam (it had been DEAD CODE —
+// the allowlist helper existed but NOTHING constrained the built-in WebFetch, so the live
+// internet was reachable in the interview). This regression test proves the fetchPolicy a
+// gated spawn carries actually ENFORCES through the SAME production transport: a WebFetch to a
+// non-stub origin comes back DENY, an in-stub WebFetch ALLOW, and WebSearch is DENIED entirely.
+// If the wiring ever regresses to dead code (the allowlist dropped before the decision point),
+// the live-internet WebFetch would come back ALLOW and this test fails.
+
+const STUB_ORIGIN = 'http://127.0.0.1:54321';
+
+function fetchPolicyConfig(): string {
+	return encodeGateHookConfig({
+		gates: { ...DEFAULT_GATE_POLICY },
+		projectRoot: root,
+		fetchPolicy: { allowedOrigin: STUB_ORIGIN }
+	});
+}
+
+describe('§7b.4 — the fetchPolicy allowlist enforces through the REAL gate-hook subprocess', () => {
+	it('a WebFetch to the live internet (non-stub origin) is DENIED before execution', async () => {
+		const out = await runHook(fetchPolicyConfig(), {
+			session_id: 'cc_fetch_1',
+			tool_name: 'WebFetch',
+			tool_input: { url: 'https://en.wikipedia.org/wiki/Port' }
+		});
+		expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+		expect(out.hookSpecificOutput.permissionDecisionReason).toContain('fetch-allowlist');
+	}, 30_000);
+
+	it('a WebFetch to the allowlisted stub origin PASSES through the same wire', async () => {
+		const out = await runHook(fetchPolicyConfig(), {
+			session_id: 'cc_fetch_1',
+			tool_name: 'WebFetch',
+			tool_input: { url: `${STUB_ORIGIN}/blog/atelier-ports` }
+		});
+		expect(out.hookSpecificOutput.permissionDecision).toBe('allow');
+	}, 30_000);
+
+	it('WebSearch is DENIED entirely when an allowlist is armed (it reaches the open web)', async () => {
+		const out = await runHook(fetchPolicyConfig(), {
+			session_id: 'cc_fetch_2',
+			tool_name: 'WebSearch',
+			tool_input: { query: 'atelier gateway port' }
+		});
+		expect(out.hookSpecificOutput.permissionDecision).toBe('deny');
+		expect(out.hookSpecificOutput.permissionDecisionReason).toContain('fetch-allowlist');
+	}, 30_000);
+});
+
+// ── §7b.4 — handleGatePreToolUse-level deny (the decision-point seam, no subprocess) ──────
+//
+// A focused unit on the SAME handler the route + the roundtrip above both consult: prove the
+// decode→parseFetchAllowlist→evaluateGate seam denies a non-stub WebFetch and allows an
+// in-stub one. This is the cheap regression that fails INSTANTLY if the wiring goes dead,
+// without paying the subprocess cost.
+
+describe('§7b.4 — handleGatePreToolUse denies a non-stub WebFetch at the decision point', () => {
+	it('non-stub WebFetch → deny, in-stub WebFetch → allow, WebSearch → deny', () => {
+		const cfg = encodeGateHookConfig({
+			gates: { ...DEFAULT_GATE_POLICY },
+			projectRoot: root,
+			fetchPolicy: { allowedOrigin: STUB_ORIGIN }
+		});
+		const decide = (toolName: string, input: Record<string, unknown>) =>
+			handleGatePreToolUse({
+				config: cfg,
+				payload: { session_id: 'cc_dp_1', tool_name: toolName, tool_input: input }
+			}).hookSpecificOutput.permissionDecision;
+
+		expect(decide('WebFetch', { url: 'https://evil.example/x' })).toBe('deny');
+		expect(decide('WebFetch', { url: `${STUB_ORIGIN}/x` })).toBe('allow');
+		expect(decide('WebSearch', { query: 'anything' })).toBe('deny');
+	});
+});

@@ -30,6 +30,7 @@
 
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
+import { createHash } from 'node:crypto';
 import type { GauntletFixtureRow } from './repo';
 import { WorkforceInputError } from './repo';
 
@@ -98,36 +99,112 @@ export interface StubWeb {
 }
 
 /**
+ * Build the collision-free loopback-path map for a corpus. The candidate fetches the path
+ * `loopbackUrlFor` hands it and the server serves `byPath.get(<request path>)`, so the loopback
+ * path is the page's IDENTITY — it MUST be unique per distinct canonical URL.
+ *
+ * The earlier index keyed by PATHNAME alone (`/blog`), which (a) THREW when two legitimately
+ * distinct canonical URLs shared a pathname (`https://a.example/blog` vs `https://b.example/blog`
+ * — different pages, same pathname) and (b) let the opaque-path fallback collapse two different
+ * malformed URLs onto one path. The fix keys by the FULL canonical URL identity:
+ *   • the bare pathname is used WHEN it is unique across the corpus (the common case — readable
+ *     paths, byte-identical to before, no behaviour change for non-colliding corpora);
+ *   • when ≥2 DISTINCT canonical URLs share a bare pathname, EACH gets a deterministic
+ *     disambiguated path `<pathname>~<8-hex of sha256(full canonical url)>` so two distinct pages
+ *     can never collide on the wire;
+ *   • two pages with the IDENTICAL canonical URL but DIFFERENT bodies is a genuine authoring
+ *     conflict (the same url cannot serve two bodies) — that still throws WorkforceInputError.
+ *
+ * Returns { byPath, pathFor }: `pathFor(url)` is the same derivation `loopbackUrlFor` uses, so
+ * the served path and the fetched path are guaranteed identical. Pure (no I/O).
+ */
+function buildLoopbackIndex(pages: StubPage[]): {
+	byPath: Map<string, StubPage>;
+	pathFor: (canonicalUrl: string) => string;
+} {
+	// 1) Canonicalize each page's url to a stable identity + its bare pathname. Detect the
+	//    genuine conflict: the SAME canonical url carrying two DIFFERENT bodies.
+	const canonOf = (url: string): string => {
+		try {
+			return new URL(url).href;
+		} catch {
+			return `opaque:${url}`; // a non-URL is its own opaque identity (no collapse)
+		}
+	};
+	const byCanon = new Map<string, StubPage>();
+	const baseCount = new Map<string, number>();
+	const seenBaseForCanon = new Map<string, string>();
+	for (const p of pages) {
+		const canon = canonOf(p.url);
+		const prior = byCanon.get(canon);
+		if (prior) {
+			if (prior.body !== p.body) {
+				throw new WorkforceInputError(
+					`stub-web url conflict at ${JSON.stringify(p.url)}: fixture '${prior.fixture}' and fixture ` +
+						`'${p.fixture}' both register this exact URL with DIFFERENT bodies — one URL cannot serve ` +
+						`two pages (give them distinct URLs)`
+				);
+			}
+			continue; // identical (url + body) duplicate — idempotent, counts once
+		}
+		byCanon.set(canon, p);
+		const base = basePathnameOf(p.url);
+		seenBaseForCanon.set(canon, base);
+		baseCount.set(base, (baseCount.get(base) ?? 0) + 1);
+	}
+	// 2) Assign each distinct page a loopback path: bare pathname when unique, else disambiguated.
+	const loopbackPathFor = (canonicalUrl: string): string => {
+		const canon = canonOf(canonicalUrl);
+		const base = seenBaseForCanon.get(canon) ?? basePathnameOf(canonicalUrl);
+		if ((baseCount.get(base) ?? 0) <= 1) return base;
+		return disambiguate(base, canon);
+	};
+	const byPath = new Map<string, StubPage>();
+	for (const [canon, page] of byCanon) {
+		const path = loopbackPathFor(canon);
+		// Belt-and-suspenders: the hash suffix makes this collision-free, but never silently
+		// shadow if two distinct canon identities ever produced the same path.
+		const clash = byPath.get(path);
+		if (clash && clash.url !== page.url) {
+			throw new WorkforceInputError(
+				`stub-web loopback-path collision at ${JSON.stringify(path)}: ${JSON.stringify(clash.url)} and ` +
+					`${JSON.stringify(page.url)} — failing loud (never a silent wrong page)`
+			);
+		}
+		byPath.set(path, page);
+	}
+	return { byPath, pathFor: loopbackPathFor };
+}
+
+/** Disambiguated loopback path for a page whose bare pathname is shared: `<pathname>~<8-hex>`
+ *  of the sha256 of its full canonical identity. Deterministic + collision-free across distinct
+ *  URLs (the hash is over the WHOLE identity, including origin/query), readable enough for audit. */
+function disambiguate(base: string, canon: string): string {
+	const h = createHash('sha256').update(canon, 'utf8').digest('hex').slice(0, 8);
+	const sep = base.endsWith('/') ? '' : '~';
+	return `${base}${sep}${sep === '' ? `~${h}` : h}`;
+}
+
+/**
  * Serve a researcher interview corpus on LOOPBACK (mirrors the Thunderstore stub precedent).
  * The server binds 127.0.0.1:0 (ephemeral port, loopback ONLY — never a routable address,
- * D-024), maps `GET <pathname-of-the-page-url>` → the page body, and 404s everything else
+ * D-024), maps `GET <loopback-path-of-the-page-url>` → the page body, and 404s everything else
  * (an unknown path is honestly not-found — never a fabricated page). The page's CANONICAL
- * url (`https://stub.local/blog/x`) is served at the loopback origin under its PATHNAME
- * (`http://127.0.0.1:<port>/blog/x`); loopbackUrlFor() does that rewrite for the caller.
+ * url (`https://stub.local/blog/x`) is served at the loopback origin under a collision-free
+ * loopback path (its pathname, or a disambiguated `<pathname>~<hash>` when pathnames collide);
+ * loopbackUrlFor() does that rewrite for the caller using the SAME derivation the server indexes
+ * by, so the served path and the fetched path always match.
  *
  * The caller MUST close() it (F-014 — the gauntlet finally-teardown). Returns a recording
  * stub so a test can assert the EXACT pages the candidate fetched (red-team: prove the fetch
  * reached the stub and only the stub).
  */
 export function serveStubWeb(pages: StubPage[]): Promise<StubWeb> {
-	// Index pages by their canonical-url PATHNAME (the loopback path the candidate hits).
-	// One stub serves ONE corpus across all of a run's fixtures, so two pages mapping to the
-	// same loopback pathname would silently shadow each other (last-write-wins) — a fixture
-	// author could ship a gauntlet that serves the WRONG body. Detect the collision and throw
-	// (fail loud, never a silent wrong page).
-	const byPath = new Map<string, StubPage>();
-	for (const p of pages) {
-		const path = pathnameOf(p.url);
-		const prior = byPath.get(path);
-		if (prior) {
-			throw new WorkforceInputError(
-				`stub-web pathname collision at ${JSON.stringify(path)}: fixture '${prior.fixture}' page ` +
-					`${JSON.stringify(prior.url)} and fixture '${p.fixture}' page ${JSON.stringify(p.url)} map to the ` +
-					`same loopback path — give them distinct paths (a stub serves one corpus per run)`
-			);
-		}
-		byPath.set(path, p);
-	}
+	// Build the collision-free loopback index (full-URL identity, not pathname-only). Distinct
+	// canonical URLs sharing a pathname are DISAMBIGUATED (never rejected); the same URL with two
+	// different bodies is a genuine conflict that throws. Computed BEFORE any socket is bound, so a
+	// conflict leaks no resource.
+	const { byPath, pathFor } = buildLoopbackIndex(pages);
 	const requests: StubRequest[] = [];
 	let origin = '';
 
@@ -159,7 +236,7 @@ export function serveStubWeb(pages: StubPage[]): Promise<StubWeb> {
 				origin,
 				requests,
 				loopbackUrlFor(canonicalUrl: string): string {
-					return `${origin}${pathnameOf(canonicalUrl)}`;
+					return `${origin}${pathFor(canonicalUrl)}`;
 				},
 				close: () => new Promise<void>((r) => server.close(() => r()))
 			});
@@ -167,15 +244,20 @@ export function serveStubWeb(pages: StubPage[]): Promise<StubWeb> {
 	});
 }
 
-/** The pathname (+ no query/hash) of a URL — the loopback path a page is served under. A
- *  malformed URL falls back to a deterministic safe path so the server never throws on it. */
-function pathnameOf(url: string): string {
+/** The bare pathname (no query/hash) of a URL — the readable loopback path a page is served
+ *  under when its pathname is unique. A malformed URL falls back to a deterministic opaque path
+ *  that ENCODES the full string (never collapses two distinct malformed URLs); buildLoopbackIndex
+ *  then disambiguates any genuine pathname sharing, so the server never throws on a bad URL. */
+function basePathnameOf(url: string): string {
 	try {
 		const u = new URL(url);
 		return u.pathname === '' ? '/' : u.pathname;
 	} catch {
-		// Not a parseable URL — treat the whole thing as an opaque path (leading slash).
-		return url.startsWith('/') ? url : `/${url}`;
+		// Not a parseable URL — encode the WHOLE opaque string into a single safe segment so two
+		// different malformed URLs can never collapse onto one path (the old fallback widened the
+		// collision: `https://a/x` and `https://b/x` are NOT URLs to it, both became `/...`).
+		const enc = encodeURIComponent(url).replace(/%/g, '_');
+		return `/_opaque/${enc}`;
 	}
 }
 

@@ -55,6 +55,7 @@ function cfg(over: Partial<WorkforceConfig['drift']> = {}, wfOver: Partial<Workf
 			fixloop_rate: null,
 			...over
 		},
+		research: { max_wall_clock_minutes: null, max_fetches: null },
 		workforce: { max_open_proposals: 2, track_window_days: 14, min_events_for_claim: 5, ...wfOver }
 	};
 }

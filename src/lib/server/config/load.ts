@@ -305,6 +305,15 @@ export interface WorkforceConfig {
 		fixloop_rate: number | null;
 		[k: string]: unknown;
 	};
+	/** WORKFORCE-SPEC §7b (rail ⑤) — the bounded research budget. Ships UNARMED (null):
+	 *  with no bound the researcher is NOT permitted to fetch (honest partial, never silent
+	 *  crawling, F-008) — the operator arms it from real cost history. */
+	research: {
+		/** Wall-clock bound per research task (minutes). null = unarmed (no fetch). */
+		max_wall_clock_minutes: number | null;
+		/** Max page fetches per research task. null = unarmed (no fetch). */
+		max_fetches: number | null;
+	};
 	/** TASK 16.4 (PM-SPEC §4 / WORKFORCE-SPEC §5 anti-spam) — proposal caps + the §5
 	 *  track-window / claim-floor (conservative starting points, operator-tunable). */
 	workforce: {
@@ -559,6 +568,39 @@ export function loadWorkforce(file: string, opts: LoadOpts = {}): WorkforceConfi
 		}
 	}
 
+	// WORKFORCE-SPEC §7b (rail ⑤) — research.* budget. Optional block; ships UNARMED
+	// (null = no fetch — honest partial, F-008). When present each bound must be null or a
+	// POSITIVE number (minutes) / non-negative integer (fetch count) — fail closed otherwise.
+	let researchWallClockMinutes: number | null = null;
+	let researchMaxFetches: number | null = null;
+	const researchRaw = raw.research;
+	if (researchRaw !== undefined) {
+		if (researchRaw === null || typeof researchRaw !== 'object' || Array.isArray(researchRaw)) {
+			throw new ConfigError('workforce: "research" must be a mapping when set', file);
+		}
+		const r = researchRaw as Record<string, unknown>;
+		const wc = r.max_wall_clock_minutes;
+		if (wc !== undefined && wc !== null) {
+			if (typeof wc !== 'number' || !Number.isFinite(wc) || wc <= 0) {
+				throw new ConfigError(
+					'workforce: research.max_wall_clock_minutes must be null (unarmed) or a positive number (minutes)',
+					file
+				);
+			}
+			researchWallClockMinutes = wc;
+		}
+		const mf = r.max_fetches;
+		if (mf !== undefined && mf !== null) {
+			if (typeof mf !== 'number' || !Number.isInteger(mf) || mf < 0) {
+				throw new ConfigError(
+					'workforce: research.max_fetches must be null (unarmed) or a non-negative integer',
+					file
+				);
+			}
+			researchMaxFetches = mf;
+		}
+	}
+
 	return {
 		...raw,
 		pm: {
@@ -600,6 +642,13 @@ export function loadWorkforce(file: string, opts: LoadOpts = {}): WorkforceConfi
 			confidence_miscalibration_rate: driftConfidenceMiscalibrationRate,
 			refutation_rate: driftRefutationRate,
 			fixloop_rate: driftFixloopRate
+		},
+		research: {
+			...(researchRaw && typeof researchRaw === 'object' && !Array.isArray(researchRaw)
+				? (researchRaw as Record<string, unknown>)
+				: {}),
+			max_wall_clock_minutes: researchWallClockMinutes,
+			max_fetches: researchMaxFetches
 		},
 		workforce: {
 			...(wfRaw && typeof wfRaw === 'object' && !Array.isArray(wfRaw)

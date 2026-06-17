@@ -70,6 +70,15 @@ drift:
   refutation_rate: null
   fixloop_rate: null
 
+research:
+  # WORKFORCE-SPEC §7b rail ⑤ — the bounded research budget. Ships UNARMED (null):
+  # with no bound the researcher is NOT permitted to fetch — the task returns an
+  # honest partial deliverable rather than crawling silently (F-008: no invented
+  # bound). Arm both from real cost history (a positive minute budget + a fetch cap)
+  # to permit managed web research; null on either disarms fetching entirely.
+  max_wall_clock_minutes: null
+  max_fetches: null
+
 workforce:
   # §5 — conservative starting points, NOT derived truths; operator-tunable,
   # revisit on real data. Below min_events_for_claim the PM must not claim

@@ -606,6 +606,7 @@ function driftCfg(): WorkforceConfig {
 			refutation_rate: null,
 			fixloop_rate: null
 		},
+		research: { max_wall_clock_minutes: null, max_fetches: null },
 		workforce: { max_open_proposals: 2, track_window_days: 14, min_events_for_claim: 5 }
 	};
 }

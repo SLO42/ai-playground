@@ -470,4 +470,36 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 	])('rejects %s at the §5 drift/window boundary (fail closed)', (_label, inject) => {
 		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
 	});
+
+	// ── WORKFORCE-SPEC §7b rail ⑤ — research.* budget (ships UNARMED) ──
+	it('the SHIPPED config ships research.* UNARMED (null = no fetch, honest partial)', () => {
+		const wf = loadWorkforce(REAL_WF);
+		expect(wf.research.max_wall_clock_minutes).toBeNull();
+		expect(wf.research.max_fetches).toBeNull();
+	});
+
+	it('an absent research block defaults UNARMED (older files stay valid)', () => {
+		const wf = loadWorkforce(REAL_WF, { _inject: { pm: { model_id: 'm' }, research: undefined } });
+		expect(wf.research.max_wall_clock_minutes).toBeNull();
+		expect(wf.research.max_fetches).toBeNull();
+	});
+
+	it('an operator may ARM the research budget (positive minutes + a fetch cap)', () => {
+		const wf = loadWorkforce(REAL_WF, {
+			_inject: { pm: { model_id: 'm' }, research: { max_wall_clock_minutes: 10, max_fetches: 20 } }
+		});
+		expect(wf.research.max_wall_clock_minutes).toBe(10);
+		expect(wf.research.max_fetches).toBe(20);
+	});
+
+	it.each([
+		['non-mapping research', { pm: { model_id: 'm' }, research: 'on' }],
+		['zero wall-clock', { pm: { model_id: 'm' }, research: { max_wall_clock_minutes: 0 } }],
+		['negative wall-clock', { pm: { model_id: 'm' }, research: { max_wall_clock_minutes: -5 } }],
+		['float fetches', { pm: { model_id: 'm' }, research: { max_fetches: 1.5 } }],
+		['negative fetches', { pm: { model_id: 'm' }, research: { max_fetches: -1 } }],
+		['string fetches', { pm: { model_id: 'm' }, research: { max_fetches: '5' } }]
+	])('rejects %s at the §7b research boundary (fail closed)', (_label, inject) => {
+		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
+	});
 });

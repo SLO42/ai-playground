@@ -24,6 +24,13 @@ export * from './activation';
 // write-path from gauntlet.ts — not forked).
 export * from './launch-fixtures';
 export * from './ceremony';
+// WORKFORCE-SPEC §7b (operator-LOCKED 2026-06-16) — RESEARCH RAILS for the `researcher`
+// role: per-claim provenance, the D-026 fence on fetched pages (reuses memory/fence.ts),
+// born-quarantined ingest (reuses memory/store.storeMemory — no parallel write), the
+// bounded fetch/wall-clock budget (rail ⑤), the web-tool allow-list (fail closed), and the
+// Option-A independent cheap-tier verifier orchestration (author≠checker). Seeds nothing,
+// certifies nothing — the engine a research task + the gauntlet call.
+export * from './research';
 // TASK 16.7b (W-D7c surfaces) — the read-only workforce panel aggregator feeding the
 // /agents workforce surface (§8 'Surfaces' + 'Degraded/empty states'). Read-only:
 // reuses repo/deployability/track-record, no row writes, no gauntlet_key read.

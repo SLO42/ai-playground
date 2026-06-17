@@ -20,6 +20,8 @@
 
   const connected = $derived(data.connected);
   const proposals = $derived(data.proposals ?? []);
+  const tierGrids = $derived(data.tierGrids ?? {});
+  const tierGates = $derived(data.tierGates ?? {});
   const runtimeAvailable = $derived(data.runtimeAvailable);
   const runtimeReason = $derived(data.runtimeReason);
   const loadError = $derived('error' in data ? (data.error as string | undefined) : undefined);
@@ -50,10 +52,26 @@
   let spendConfirm = $state<Record<string, boolean>>({});
   let swapConfirm = $state<Record<string, boolean>>({});
   let rejectReason = $state<Record<string, string>>({});
-  function setTick(map: 'author' | 'spend' | 'swap', p: string, v: boolean) {
+  // §7 tier-change confirm ticks (interview at target / tier swap) + the propose-tier note.
+  let tierSpendConfirm = $state<Record<string, boolean>>({});
+  let tierSwapConfirm = $state<Record<string, boolean>>({});
+  function setTick(map: 'author' | 'spend' | 'swap' | 'tierSpend' | 'tierSwap', p: string, v: boolean) {
     if (map === 'author') authorConfirm = { ...authorConfirm, [p]: v };
     else if (map === 'spend') spendConfirm = { ...spendConfirm, [p]: v };
-    else swapConfirm = { ...swapConfirm, [p]: v };
+    else if (map === 'swap') swapConfirm = { ...swapConfirm, [p]: v };
+    else if (map === 'tierSpend') tierSpendConfirm = { ...tierSpendConfirm, [p]: v };
+    else tierSwapConfirm = { ...tierSwapConfirm, [p]: v };
+  }
+
+  // §7 grid formatters — every figure honest ('—' for null, never a dressed-up 0; F-008).
+  function gridFor(proposal: string) {
+    return tierGrids[proposal] ?? null;
+  }
+  function gateFor(proposal: string) {
+    return tierGates[proposal] ?? null;
+  }
+  function fp(v: number | null | undefined): string {
+    return typeof v === 'number' ? String(v) : '—';
   }
 
   // Per-proposal busy guard: a submitted action disables that proposal's controls until it
@@ -167,6 +185,8 @@
       {#each proposals as p (p.proposal)}
         {@const f = fbFor(p.proposal)}
         {@const c = comp(p.comparison)}
+        {@const grid = gridFor(p.proposal)}
+        {@const gate = gateFor(p.proposal)}
         <li class="proposal card" data-status={p.status}>
           <div class="p-head">
             <div class="p-id">
@@ -190,8 +210,127 @@
             <span class="trigger-ev">{evidenceCount(p.trigger)} evidence row(s)</span>
           </p>
 
-          <!-- Stage 1: review the D-010 prompt-core diff + author the challenger. -->
-          {#if p.nextAction === 'review_diff'}
+          <!-- §7 — the tier-hiring grid (two evidence planes, null-honest) + recommendation. -->
+          {#if grid}
+            <details class="stage tier-grid-stage">
+              <summary>Tier evidence grid (§7) · current: {grid.currentTier}</summary>
+              {#if grid.recommendation.emit}
+                <p class="tier-rec" role="note">{grid.recommendation.sentence}</p>
+              {:else}
+                <p class="tier-norec mono">No tier recommendation — {grid.recommendation.reason}.</p>
+              {/if}
+              <table class="tier-table" aria-label="tier evidence grid">
+                <thead>
+                  <tr>
+                    <th scope="col">tier</th>
+                    <th scope="col">model</th>
+                    <th scope="col">recall</th>
+                    <th scope="col">FP</th>
+                    <th scope="col">gauntlet $</th>
+                    <th scope="col">field $</th>
+                    <th scope="col">deployable</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {#each grid.cells as cell (cell.tier)}
+                    <tr class:current={cell.current}>
+                      <th scope="row">
+                        {cell.tier}{#if cell.current} <span class="cur-tag">current</span>{/if}
+                      </th>
+                      <td class="mono">{cell.modelId ?? '— unmapped'}</td>
+                      <td>{pct(cell.gauntlet?.recall)}</td>
+                      <td>{fp(cell.gauntlet?.falsePositives)}</td>
+                      <td class="mono">{fmtUsd(cell.gauntlet?.costUsd)}</td>
+                      <td class="mono">{fmtUsd(cell.field?.costUsd)}</td>
+                      <td>
+                        {#if cell.deployable}
+                          <span class="ok-mark" title="passing (prompt_sha × model_id) interview">✓ certified</span>
+                        {:else}
+                          <span class="no-mark" title={cell.notDeployableReason ?? ''}>—</span>
+                        {/if}
+                      </td>
+                    </tr>
+                  {/each}
+                </tbody>
+              </table>
+              <!-- Propose-tier-change affordance: only for a NON-tier_change proposal (a
+                   tier_change already owns this; §5 anti-spam allows one open per role+incumbent).
+                   The operator picks a target tier; STRICT gate is resolved on the new proposal. -->
+              {#if p.kind !== 'tier_change' && p.incumbent}
+                <form method="POST" action="?/proposeTier" use:enhance={busyEnhance(p.proposal)} class="propose-tier">
+                  <input type="hidden" name="roleVersion" value={p.incumbent} />
+                  <label class="tier-pick">
+                    <span class="field-label">Propose tier change to</span>
+                    <select name="targetTier">
+                      {#each grid.cells as cell (cell.tier)}
+                        {#if !cell.current}<option value={cell.tier}>{cell.tier}</option>{/if}
+                      {/each}
+                    </select>
+                  </label>
+                  <button class="btn ghost" type="submit" disabled={busy[p.proposal]}>Propose tier change</button>
+                </form>
+              {/if}
+            </details>
+          {/if}
+
+          <!-- §7 — the STRICT tier-change gate (only for tier_change proposals). -->
+          {#if p.kind === 'tier_change'}
+            <div class="stage tier-gate" data-state={gate?.state ?? 'unknown'}>
+              {#if !gate}
+                <p class="stage-note">Tier-change gate unavailable (the proposal carries no valid target tier).</p>
+              {:else}
+                <p class="gate-msg" role="status">
+                  Target tier <strong>{gate.targetTier}</strong>
+                  {#if gate.targetModelId}<span class="mono">({gate.targetModelId})</span>{/if}
+                  — {gate.message}
+                </p>
+                {#if gate.state === 'needs_interview'}
+                  <form method="POST" action="?/tierInterview" use:enhance={busyEnhance(p.proposal)}>
+                    <input type="hidden" name="proposal" value={p.proposal} />
+                    <label class="confirm">
+                      <input
+                        type="checkbox"
+                        name="operatorConfirmed"
+                        checked={tierSpendConfirm[p.proposal] ?? false}
+                        onchange={(e) => setTick('tierSpend', p.proposal, (e.currentTarget as HTMLInputElement).checked)}
+                      />
+                      Confirm the spend — run a real gauntlet at {gate.targetTier} to satisfy the strict gate.
+                    </label>
+                    <button
+                      class="btn primary"
+                      type="submit"
+                      disabled={!tierSpendConfirm[p.proposal] || busy[p.proposal] || !runtimeAvailable}
+                      title={runtimeAvailable ? '' : (runtimeReason ?? 'credential not configured')}
+                    >
+                      Run interview at {gate.targetTier}
+                    </button>
+                  </form>
+                {:else if gate.state === 'ready_to_swap'}
+                  <form method="POST" action="?/tierSwap" use:enhance={busyEnhance(p.proposal)} class="swap-form">
+                    <input type="hidden" name="proposal" value={p.proposal} />
+                    <label class="confirm">
+                      <input
+                        type="checkbox"
+                        name="operatorConfirmed"
+                        checked={tierSwapConfirm[p.proposal] ?? false}
+                        onchange={(e) => setTick('tierSwap', p.proposal, (e.currentTarget as HTMLInputElement).checked)}
+                      />
+                      Confirm the tier swap — {p.roleName} will operate at {gate.targetTier} (D-039).
+                    </label>
+                    <button class="btn primary" type="submit" disabled={!tierSwapConfirm[p.proposal] || busy[p.proposal]}>
+                      Swap to {gate.targetTier}
+                    </button>
+                  </form>
+                {:else}
+                  <p class="incomparable" role="note">This tier change is blocked: {gate.message}</p>
+                {/if}
+              {/if}
+            </div>
+          {/if}
+
+          <!-- Stage 1: review the D-010 prompt-core diff + author the challenger.
+               (prompt_revision proposals only; a tier_change has no challenger prompt.) -->
+          {#if p.kind !== 'tier_change' && p.nextAction === 'review_diff'}
             <details class="stage">
               <summary>Review prompt-core diff & author challenger (D-010)</summary>
               <!-- Live D-010 preview: the operator inspects the REAL incumbent-vs-draft delta
@@ -260,7 +399,7 @@
             </details>
 
           <!-- Stage 2: re-gauntlet the challenger (real spend). -->
-          {:else if p.nextAction === 'regauntlet'}
+          {:else if p.kind !== 'tier_change' && p.nextAction === 'regauntlet'}
             <div class="stage">
               <p class="stage-note">
                 The challenger (v{p.challengerVersion}) is authored. Run it through the gauntlet
@@ -293,7 +432,7 @@
             </div>
 
           <!-- Stage 3: the comparison + the D-039 swap (or reject). -->
-          {:else if p.nextAction === 'decide_swap'}
+          {:else if p.kind !== 'tier_change' && p.nextAction === 'decide_swap'}
             <div class="stage">
               {#if c}
                 <table class="comparison" aria-label="challenger vs incumbent">
@@ -366,11 +505,14 @@
 
           {#if f?.error}
             <p class="action-err" role="alert">{f.error}</p>
-          {:else if f?.ok && (f.authored || f.regauntlet || f.swapped || f.rejected)}
+          {:else if f?.ok && (f.authored || f.regauntlet || f.swapped || f.rejected || f.proposedTier || f.tierInterview || f.tierSwapped)}
             <p class="action-ok" role="status">
               {#if f.authored}Challenger authored{f.created === false ? ' (already existed)' : ''}.{/if}
               {#if f.regauntlet}{f.ran ? `Re-gauntlet ${f.status}` : 'Re-gauntlet queued'}{f.comparable === true ? ' · comparable' : ''}.{/if}
               {#if f.swapped}Swapped — challenger is now active.{/if}
+              {#if f.proposedTier}Tier-change proposed{f.created === false ? ' (already open)' : ''} → {String(f.targetTier)}.{/if}
+              {#if f.tierInterview}{f.alreadyReady ? 'Target tier already certified' : f.ran ? `Tier interview ${f.status}` : 'Tier interview queued'}.{/if}
+              {#if f.tierSwapped}Tier swapped — role now operates at {String(f.tier)}.{/if}
               {#if f.rejected}Closed: {statusLabel(String(f.status))}.{/if}
               {#if Array.isArray(f.screened) && f.screened.length}<span class="screened"> (screened: {f.screened.join(', ')})</span>{/if}
             </p>
@@ -653,6 +795,95 @@
   }
   .mono {
     font-family: var(--font-mono, monospace);
+  }
+  .tier-grid-stage summary {
+    font-weight: var(--weight-medium, 600);
+  }
+  .tier-rec {
+    font: var(--type-body-sm);
+    color: var(--color-success, #2e7d32);
+    margin: 0;
+    font-weight: var(--weight-medium, 600);
+  }
+  .tier-norec {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    margin: 0;
+  }
+  .tier-table {
+    border-collapse: collapse;
+    font: var(--type-body-sm);
+    color: var(--color-text);
+    width: 100%;
+  }
+  .tier-table th,
+  .tier-table td {
+    text-align: right;
+    padding: var(--space-1) var(--space-3);
+    border-bottom: var(--border-width, 1px) solid var(--color-border);
+  }
+  .tier-table th[scope='col'] {
+    color: var(--color-text-muted);
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .tier-table th[scope='row'] {
+    text-align: left;
+    color: var(--color-text-2);
+  }
+  .tier-table tr.current {
+    background: var(--color-surface-overlay, transparent);
+  }
+  .cur-tag {
+    font-size: var(--text-xs);
+    color: var(--color-accent);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+  }
+  .ok-mark {
+    color: var(--color-success, #2e7d32);
+  }
+  .no-mark {
+    color: var(--color-text-muted);
+  }
+  .propose-tier,
+  .tier-pick {
+    display: flex;
+    gap: var(--space-2);
+    align-items: flex-end;
+    flex-wrap: wrap;
+  }
+  .tier-pick {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: var(--space-1);
+  }
+  select {
+    font: var(--type-body-sm);
+    color: var(--color-text);
+    background: var(--color-surface-input, var(--color-surface-card));
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: var(--space-1) var(--space-2);
+  }
+  select:focus-visible {
+    outline: 2px solid var(--color-focus-ring, var(--color-accent));
+    outline-offset: 1px;
+  }
+  .tier-gate {
+    border: var(--border-width, 1px) solid var(--color-border);
+  }
+  .tier-gate[data-state='ready_to_swap'] {
+    border-color: var(--color-accent);
+  }
+  .tier-gate[data-state='blocked'] {
+    border-color: var(--color-error);
+  }
+  .gate-msg {
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+    margin: 0;
   }
   @media (prefers-reduced-motion: reduce) {
     * {

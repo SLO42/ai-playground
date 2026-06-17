@@ -40,3 +40,11 @@ export * from './drift';
 // record the comparison), swapFromProposal (D-039 operator-confirmed swap), rejectProposal
 // (close + cooldown). NEVER auto-swaps, NEVER auto-authors-and-deploys (operator-gated).
 export * from './resolution';
+// WORKFORCE-SPEC §7 (LOCKED operator decision 2026-06-16) — TIER-AWARE HIRING, STRICT (no
+// waiver): tierHiringGrid (two evidence planes per version × tier, null-honest, reusing the
+// track-record interview/panel planes + checkDeployability), the strict recommendation
+// (emit ONLY on same-fixture_set_sha + both-passing + cheaper-wins), and the STRICT
+// tier_change proposal (proposeTierChange via §5 createReviewProposal; resolveTierChangeGate
+// = the (prompt_sha × target-tier model_id) passing-interview gate; swapTierChange = the
+// D-039 operator-confirmed tier swap). NO auto-swap, NO waiver, NO inherited cert across tiers.
+export * from './tier-hiring';

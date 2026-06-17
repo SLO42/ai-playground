@@ -17,27 +17,61 @@ import {
 	authorChallenger,
 	loadProposalCards,
 	proposalDiff,
+	proposeTierChange,
 	regauntletChallenger,
 	rejectProposal,
 	resolveRegauntletTarget,
+	resolveTierChangeGate,
 	ResolutionGateError,
 	swapFromProposal,
+	swapTierChange,
+	TierGateError,
+	tierHiringGrid,
 	WorkforceInputError,
 	type GauntletOutcome,
-	type ProposalCard
+	type ProposalCard,
+	type Tier,
+	type TierChangeGate,
+	type TierHiringGrid,
+	type TierModelResolver
 } from '$lib/server/workforce';
 import { getRuntime } from '$lib/server/harness';
-import { loadWorkforce } from '$lib/server/config';
+import { loadAgentPool, loadWorkforce, type AgentPool } from '$lib/server/config';
 import { fail, type Actions } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 
 export interface ProposalsPageData {
 	connected: boolean;
 	proposals: ProposalCard[];
+	/** §7 — the tier-hiring grid for each OPEN proposal's incumbent version (null-honest),
+	 *  keyed by proposal id; plus, for tier_change proposals, the STRICT gate state. */
+	tierGrids: Record<string, TierHiringGrid>;
+	tierGates: Record<string, TierChangeGate>;
 	/** Honest live-spend availability (F-008): the re-gauntlet needs a real credential. */
 	runtimeAvailable: boolean;
 	runtimeReason: string | null;
 	error?: string;
+}
+
+/** Resolve a tier name → {provider, model_id} from agent-pool.yaml (D-003: the tier→model
+ *  map lives in config, never hard-coded). Fail-closed: an unknown tier or unreadable config
+ *  yields null so the §7 grid/gate render an honest '— (tier unmapped)' rather than a guessed
+ *  model. Reads the pool ONCE per request (the caller passes the memoized fn). */
+function makeTierResolver(): TierModelResolver {
+	let pool: AgentPool | null = null;
+	let loaded = false;
+	return (tier: Tier) => {
+		if (!loaded) {
+			loaded = true;
+			try {
+				pool = loadAgentPool(`${configDir()}/agent-pool.yaml`);
+			} catch {
+				pool = null;
+			}
+		}
+		const spec = pool?.tiers[tier];
+		return spec ? { provider: spec.provider, model_id: spec.model } : null;
+	};
 }
 
 export const load: PageServerLoad = async ({ depends }): Promise<ProposalsPageData> => {
@@ -47,13 +81,43 @@ export const load: PageServerLoad = async ({ depends }): Promise<ProposalsPageDa
 
 	const db = tryGetDb();
 	if (!db) {
-		return { connected: false, proposals: [], runtimeAvailable: false, runtimeReason: 'database not connected' };
+		return {
+			connected: false,
+			proposals: [],
+			tierGrids: {},
+			tierGates: {},
+			runtimeAvailable: false,
+			runtimeReason: 'database not connected'
+		};
 	}
 	try {
 		const [proposals, runtime] = await Promise.all([loadProposalCards(db), getRuntime(db)]);
+		// §7 — per-proposal tier grid (over the incumbent version) + the strict gate for
+		// tier_change proposals. Reuses the SAME tier→model resolver (D-003); null-honest on a
+		// missing incumbent / unmapped tier — a grid failure for one proposal never sinks the page.
+		const resolve = makeTierResolver();
+		const tierGrids: Record<string, TierHiringGrid> = {};
+		const tierGates: Record<string, TierChangeGate> = {};
+		for (const p of proposals) {
+			if (!p.incumbent) continue;
+			try {
+				tierGrids[p.proposal] = await tierHiringGrid(db, p.incumbent, resolve);
+			} catch {
+				/* a single broken grid is omitted — the surface renders the proposal without it. */
+			}
+			if (p.kind === 'tier_change') {
+				try {
+					tierGates[p.proposal] = await resolveTierChangeGate(db, p.proposal, resolve);
+				} catch {
+					/* a malformed tier_change (no target_tier) omits the gate; surface stays honest. */
+				}
+			}
+		}
 		return {
 			connected: true,
 			proposals,
+			tierGrids,
+			tierGates,
 			runtimeAvailable: runtime.available,
 			runtimeReason: runtime.available ? null : runtime.reason
 		};
@@ -61,6 +125,8 @@ export const load: PageServerLoad = async ({ depends }): Promise<ProposalsPageDa
 		return {
 			connected: false,
 			proposals: [],
+			tierGrids: {},
+			tierGates: {},
 			runtimeAvailable: false,
 			runtimeReason: null,
 			error: (err as Error).message
@@ -265,5 +331,150 @@ export const actions: Actions = {
 			if (err instanceof WorkforceInputError) return fail(400, { proposals: { proposal, error: err.message } });
 			return fail(500, { proposals: { proposal, error: (err as Error).message } });
 		}
+	},
+
+	// §7 — PROPOSE a tier change for a proposal's incumbent version. Opens a STRICT
+	// tier_change review_proposal (kind:'tier_change') via the EXISTING §5 lifecycle; it cites
+	// the grid evidence and does NOT mutate the role/swap. Anti-spam: idempotent per (role,
+	// incumbent). The targetTier comes from the grid affordance on the page.
+	proposeTier: async ({ request }) => {
+		const db = tryGetDb();
+		if (!db) return fail(503, { proposals: { error: 'database not connected' } });
+		const form = await request.formData();
+		const roleVersion = String(form.get('roleVersion') ?? '').trim();
+		const targetTier = String(form.get('targetTier') ?? '').trim() as Tier;
+		const note = String(form.get('note') ?? '').trim() || undefined;
+		if (!roleVersion) return fail(400, { proposals: { error: 'missing role version id' } });
+		if (!['local', 'haiku', 'sonnet', 'opus'].includes(targetTier)) {
+			return fail(400, { proposals: { error: `invalid target tier '${targetTier}'` } });
+		}
+		try {
+			const res = await proposeTierChange(
+				db,
+				{ roleVersion, targetTier, ...(note ? { note } : {}) },
+				makeTierResolver()
+			);
+			return {
+				proposals: {
+					ok: true,
+					proposal: res.proposal.id,
+					proposedTier: true,
+					created: res.created,
+					targetTier
+				}
+			};
+		} catch (err) {
+			if (err instanceof WorkforceInputError) return fail(400, { proposals: { error: err.message } });
+			return fail(500, { proposals: { error: (err as Error).message } });
+		}
+	},
+
+	// §7 STRICT GATE — run the interview at the TARGET tier (REAL SPEND, operator-gated). The
+	// strict gate refuses the swap until a passing (incumbent.prompt_sha × target model_id)
+	// interview exists; this action runs that interview. The confirm tick IS the budget decision
+	// (trigger='operator'). On a pass, the gate flips to ready_to_swap on the next load.
+	tierInterview: async ({ request }) => {
+		const db = tryGetDb();
+		if (!db) return fail(503, { proposals: { error: 'database not connected' } });
+		const form = await request.formData();
+		const proposal = String(form.get('proposal') ?? '').trim();
+		if (!proposal) return fail(400, { proposals: { error: 'missing proposal id' } });
+		if (form.get('operatorConfirmed') !== 'on') {
+			return fail(400, {
+				proposals: { proposal, error: 'confirm the spend — this runs a REAL gauntlet at the target tier to satisfy the §7 strict gate (the click IS the budget decision)' }
+			});
+		}
+		let gate;
+		try {
+			gate = await resolveTierChangeGate(db, proposal, makeTierResolver());
+		} catch (err) {
+			return fail(400, { proposals: { proposal, error: (err as Error).message } });
+		}
+		if (gate.state === 'ready_to_swap') {
+			return { proposals: { ok: true, proposal, tierInterview: true, alreadyReady: true } };
+		}
+		if (gate.state === 'blocked' || !gate.targetModelId) {
+			return fail(400, { proposals: { proposal, error: gate.message } });
+		}
+		const p = await getProposalIncumbent(db, proposal);
+		if (!p) return fail(400, { proposals: { proposal, error: 'proposal has no incumbent version to interview' } });
+
+		const runtime = await getRuntime(db);
+		if (!runtime.available) return fail(503, { proposals: { proposal, error: runtime.reason } });
+		let config;
+		try {
+			config = loadWorkforce(`${configDir()}/workforce.yaml`);
+		} catch (err) {
+			return fail(500, { proposals: { proposal, error: `workforce config unreadable: ${(err as Error).message}` } });
+		}
+		const pool = makeTierResolver();
+		const model = pool(gate.targetTier);
+		if (!model) return fail(400, { proposals: { proposal, error: `tier '${gate.targetTier}' is not mapped to a model (D-003)` } });
+		try {
+			const { runGauntlet } = await import('$lib/server/workforce');
+			const outcome = await runGauntlet(
+				{ db, runtime: runtime.runtime, config },
+				{
+					roleVersionId: p,
+					tier: gate.targetTier,
+					provider: model.provider,
+					modelId: model.model_id,
+					trigger: 'operator'
+				}
+			);
+			return {
+				proposals: {
+					ok: true,
+					proposal,
+					tierInterview: true,
+					...outcomeResult(outcome)
+				}
+			};
+		} catch (err) {
+			if (err instanceof WorkforceInputError) return fail(400, { proposals: { proposal, error: err.message } });
+			return fail(500, { proposals: { proposal, error: (err as Error).message } });
+		}
+	},
+
+	// §7 SWAP (operator-gated, D-039 — the tier swap). Sets role.preferred_tier to the target.
+	// swapTierChange fail-closes on a missing confirm AND on a target tier lacking a passing
+	// (incumbent.prompt_sha × target model_id) interview — NO auto-swap, NO waiver.
+	tierSwap: async ({ request }) => {
+		const db = tryGetDb();
+		if (!db) return fail(503, { proposals: { error: 'database not connected' } });
+		const form = await request.formData();
+		const proposal = String(form.get('proposal') ?? '').trim();
+		if (!proposal) return fail(400, { proposals: { error: 'missing proposal id' } });
+		if (form.get('operatorConfirmed') !== 'on') {
+			return fail(400, {
+				proposals: { proposal, error: 'confirm the tier swap — the role’s operating tier changes (D-039; there is no auto-swap)' }
+			});
+		}
+		try {
+			const res = await swapTierChange(db, { proposal, operatorConfirmed: true }, makeTierResolver());
+			return {
+				proposals: {
+					ok: true,
+					proposal,
+					tierSwapped: true,
+					tier: res.tier
+				}
+			};
+		} catch (err) {
+			if (err instanceof TierGateError || err instanceof WorkforceInputError) {
+				return fail(400, { proposals: { proposal, error: err.message } });
+			}
+			return fail(500, { proposals: { proposal, error: (err as Error).message } });
+		}
 	}
 };
+
+/** Bounded read of a proposal's incumbent version id (for the §7 tier interview). */
+async function getProposalIncumbent(
+	db: NonNullable<ReturnType<typeof tryGetDb>>,
+	proposalId: string
+): Promise<string | null> {
+	const { getReviewProposal } = await import('$lib/server/workforce');
+	const p = await getReviewProposal(db, proposalId);
+	return p?.incumbent ?? null;
+}

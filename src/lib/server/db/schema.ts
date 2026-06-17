@@ -1825,6 +1825,26 @@ const m0049_create_integrity: Migration = {
 	`
 };
 
+// ── HR-5 (HR-RECRUITER-SPEC §7.5) — the operator hire-gate brief artifact_kind ───
+//
+// The recruiter's cert-run outcome surfaces as ONE decision_brief per candidate (the
+// hire/no-hire gate, B4). The brief's `artifact` points at the candidate's interview_run
+// (the run is the candidate of record — role+tier+recall+FP+per-plant evidence all hang off
+// it); the existing artifact_kind ASSERT only admitted task/review_proposal/fixture_proposal,
+// so a cert-hire brief would be REJECTED by the CONTENT write. This ADDITIVELY widens the
+// enum to admit 'cert_hire' — no existing kind changes, no row is rewritten. OVERWRITE-only
+// (F-015 idempotent: re-running re-asserts the same widened set; apply-twice + half-applied
+// recovery are covered by db/migrate.test.ts's generic OVERWRITE sweep). The panel_verdict
+// ASSERT is left untouched (a hire brief raises no panel verdict — the recruiter proposes,
+// the operator disposes).
+const m0050_cert_hire_brief: Migration = {
+	id: '0050_cert_hire_brief',
+	up: `
+		DEFINE FIELD OVERWRITE artifact_kind ON decision_brief TYPE string
+			ASSERT $value IN ["task","review_proposal","fixture_proposal","cert_hire"];
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1880,5 +1900,6 @@ export const schemaMigrations: Migration[] = [
 	m0046_review_proposal,
 	m0047_project_staff,
 	m0048_capability_needs,
-	m0049_create_integrity
+	m0049_create_integrity,
+	m0050_cert_hire_brief
 ];

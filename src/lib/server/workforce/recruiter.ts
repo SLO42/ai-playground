@@ -333,7 +333,7 @@ function assertNotRecruiterSelf(role: RoleRow, action: string): void {
 	}
 }
 
-interface ExtractedFixtureResult {
+export interface ExtractedFixtureResult {
 	fixture: string;
 	found: string[];
 	missed: string[];
@@ -357,8 +357,10 @@ interface ExtractedFixtureResult {
  *  every confirm_hit plant from missed→found before classification reads the result.
  *
  *  Tolerates the SHADOW shapes (no results / malformed entry / a confirm_hit naming an unknown
- *  fixture or an already-found plant — both no-ops). */
-function extractFixtureResults(run: InterviewRunRow): ExtractedFixtureResult[] {
+ *  fixture or an already-found plant — both no-ops). EXPORTED so the HR-5 hire-gate (recruiter-
+ *  hire.ts) assembles the SAME adjudication-reconciled per-plant found/missed evidence (one
+ *  honest source of truth — never a second, divergent reader of the run results, F-008). */
+export function extractFixtureResults(run: InterviewRunRow): ExtractedFixtureResult[] {
 	const byFixture = new Map<string, ExtractedFixtureResult>();
 	const order: string[] = [];
 	for (const raw of run.results ?? []) {

@@ -84,3 +84,11 @@ export * from './staffing-proposal';
 // recruiter itself (B1), never rescores (B3). Pure/deterministic orchestration; the recruiter
 // AGENT drives it via launchSession.
 export * from './recruiter';
+
+// HR-RECRUITER-SPEC §7.5 (HR-5) — the OPERATOR HIRE-GATE: assemble the recruiter's hire decision
+// from a TERMINAL interview_run (B3 read-only), raise ONE decision_brief per candidate (PROPOSE-
+// ONLY, B4), and apply the operator's approve (flip the cert + optionally feed the BL-3 staffing
+// flow) / reject (neither). The recruiter PROPOSES; the operator DISPOSES (B4 — no flip/no staffing
+// without an explicit operator confirm). Reuses createDecisionBrief / confirmStaffing /
+// transitionLifecycle — does not duplicate them.
+export * from './recruiter-hire';

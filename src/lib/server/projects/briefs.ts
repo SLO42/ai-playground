@@ -28,7 +28,11 @@ export class BriefError extends Error {
 
 export type BriefClassification = 'operator_challenge' | 'taste' | 'proposal_gate' | 'confirm';
 export type BriefStatus = 'open' | 'approved' | 'rejected' | 'deferred' | 'superseded';
-export type BriefArtifactKind = 'task' | 'review_proposal' | 'fixture_proposal';
+// 'cert_hire' (HR-5) — the brief's artifact is a workforce interview_run (the candidate of
+// record). Its decide-effect (cert flip + staffing feed, B4) lives in workforce/recruiter-hire.ts
+// applyHireDecision, NOT pm-panel.ts applyBriefDecision (which is task-only) — the same
+// brief-row-records-the-ceremony / effects-live-elsewhere split documented at the top of this file.
+export type BriefArtifactKind = 'task' | 'review_proposal' | 'fixture_proposal' | 'cert_hire';
 
 /** One Approve/Reject/Defer option — each with its strongest pro AND con (§8). */
 export interface BriefOption {

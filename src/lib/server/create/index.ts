@@ -39,3 +39,13 @@ export {
 	parseProposalOutput,
 	type ProposalAgentDeps
 } from './agent';
+
+export {
+	executeCreation,
+	ProjectExistsError,
+	ScaffoldPathError,
+	ScaffoldSecretError,
+	ScaffoldFailedError,
+	type ExecuteCreationOptions,
+	type ExecuteCreationResult
+} from './execute';

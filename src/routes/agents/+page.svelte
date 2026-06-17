@@ -215,6 +215,10 @@
               {roleCards.filter((r) => r.deployable).length}/{roleCards.length} deployable
             </span>
           {/if}
+          <!-- BL-3 — the capability-matching PROJECT STAFFING decision board (operator-gated
+               REUSE/EXTEND/HIRE). Sibling surface to Proposals; reached the same way (in-page
+               CTA — the sidebar nav is a flat top-level rail with no /agents children). -->
+          <a class="cta-link" href="/agents/staffing">Staffing</a>
           <!-- §5 — the performance-review proposal surface (drift-raised + operator-initiated
                role revisions). The badge surfaces the open count; the link is the decisions
                inbox where the operator reviews the diff, re-gauntlets, and swaps/rejects. -->

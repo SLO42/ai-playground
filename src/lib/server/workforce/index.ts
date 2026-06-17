@@ -48,3 +48,18 @@ export * from './resolution';
 // = the (prompt_sha × target-tier model_id) passing-interview gate; swapTierChange = the
 // D-039 operator-confirmed tier swap). NO auto-swap, NO waiver, NO inherited cert across tiers.
 export * from './tier-hiring';
+// WORKFORCE-SPEC §6 (project_staff) — the opt-IN, FAIL-CLOSED staffing data plane:
+// staffRole/unstaffRole (the Hire ceremony + soft un-staff, idempotent + concurrency-safe),
+// resolveStaff (the fail-closed staffing resolver routing consumes for the §7 explicit
+// override), and the row reads. NO governance lands here — the matcher/proposal are above.
+export * from './staff';
+// CAPABILITY-MATCH-SPEC (BL-3) — the operator-curated defect-class vocabulary, the
+// project capability_needs (enum-closed set/get), roleProvenCoverage (§3.8 PROVEN coverage),
+// and the PROPOSE-ONLY matcher recommendStaffing (REUSE/EXTEND/HIRE, evidence-cited). The
+// matcher NEVER staffs/hires — staffing-proposal.ts gates it through the §5 lifecycle + D-039.
+export * from './capability-match';
+// CAPABILITY-MATCH-SPEC §4/§5 (BL-3) — the operator-gated STAFFING PROPOSAL bridge: a matcher
+// REUSE recommendation → review_proposal{kind:'staffing'} → operator D-039 confirm → staffRole.
+// PROPOSE-ONLY creation; the project_staff row is written ONLY on the operator confirm. Reuses
+// the §5 createReviewProposal + setProposalStatus lifecycle — it does NOT fork it.
+export * from './staffing-proposal';

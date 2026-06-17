@@ -18,6 +18,7 @@
 // absent → null → '—' (F-013, asserted on SET rows in staff.test.ts). D-026: charter_note is
 // operator-supplied free text — SCREENED at this boundary (memory/screen.ts), never stored raw.
 
+import { createHash } from 'node:crypto';
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
@@ -37,8 +38,11 @@ import { addRoleEvent, getRole, type Tier } from './repo';
 // fabricated model id — F-008).
 
 /** Resolve a tier label to its {provider, model_id}, or null when the tier is unknown
- *  (fail-closed — an unmapped tier must NOT spawn at a fabricated model). */
-export type TierModelResolver = (tier: Tier) => { provider: string; model_id: string } | null;
+ *  (fail-closed — an unmapped tier must NOT spawn at a fabricated model). Defined once in
+ *  tier-hiring.ts (§7) and re-exported here so callers importing from './staff' (and the
+ *  workforce barrel) get a SINGLE type — no duplicate-export ambiguity. */
+export type { TierModelResolver } from './tier-hiring';
+import type { TierModelResolver } from './tier-hiring';
 
 // ── Row type (normalized: ids/links → string, datetimes → ISO string | null) ──────
 
@@ -95,6 +99,26 @@ function link(id: string): StringRecordId {
 	return new StringRecordId(assertRecordId(id));
 }
 
+/**
+ * The DETERMINISTIC project_staff record id for a (project, role) — the ATOMIC one-row-per-pair
+ * guarantee. Mirrors createGauntletKey's proven pattern (repo.ts, instrumented red-team DEFECT 3):
+ * the secondary `project_staff_dedup` UNIQUE index on a computed VALUE field does NOT reliably
+ * enforce uniqueness under CONCURRENT inserts in SurrealDB 2.x (a race persisted TWO rows with
+ * identical dedup_key) — but a PRIMARY-key collision is atomic. So a new project_staff row is
+ * created at `project_staff:ps_<sha256(project|role)[:40]>`; a concurrent double-staff collides
+ * on the primary record id (caught by isDedupCollision → graceful no-op), never duplicating. The
+ * suffix is lowercase hex (valid under the D-016 record-id regex). The dedup_key VALUE + its
+ * UNIQUE index stay as a defense-in-depth backstop (they never hurt; they just aren't the primary
+ * guarantee). NOTE: pre-existing rows created with a random id (none exist in any real DB — m0047
+ * is a new table) are still found by getProjectStaff's (project, role) SELECT, so the re-staff
+ * UPDATE path is unaffected; only NEW creates use the deterministic id.
+ */
+function deterministicStaffId(projectId: string, roleId: string): string {
+	const key = `${assertRecordId(projectId)}|${assertRecordId(roleId)}`;
+	const suffix = createHash('sha256').update(key, 'utf8').digest('hex').slice(0, 40);
+	return `project_staff:ps_${suffix}`;
+}
+
 function omitUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
 	const out: Partial<T> = {};
 	for (const [k, v] of Object.entries(obj)) {
@@ -104,6 +128,29 @@ function omitUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
 }
 
 type Raw = Record<string, unknown>;
+
+/**
+ * Is this a SurrealDB 2.x UNIQUE / primary-key / commit-race collision on the
+ * project_staff_dedup index? Routing is the FIRST concurrent caller of staffRole (a recurring
+ * ceremony and an operator confirm can submit the SAME (project, role) at once), so the
+ * deferred-MEDIUM concurrency edge the §6 foundation flagged is now live. We reproduce the SAME
+ * three raw shapes the rest of the module already maps (ceremony.ts / resolution.ts
+ * isDedupCollision, d902ba8): (a) primary-key collision ("record `…` already exists"),
+ * (b) secondary UNIQUE-index collision ("index `…` already contains '…'"), (c) the commit-race
+ * read/write conflict. All three are the SAME class — the one-row-per-(project,role) invariant
+ * biting at this single dedup-guarded write. We match ONLY the real unique-violation phrases and
+ * re-raise everything else (F-008): an UNRELATED DB error must never be silently absorbed as a
+ * benign no-op. Callers invoke this ONLY where the sole possible write is the dedup-guarded
+ * project_staff insert, so a match here can be nothing but that invariant.
+ */
+function isDedupCollision(err: unknown): boolean {
+	const msg = err instanceof Error ? err.message : String(err);
+	return (
+		/record `?[^`']*`? already exists/i.test(msg) ||
+		/index `?[^`']*`? already contains/i.test(msg) ||
+		/failed transaction|read or write conflict/i.test(msg)
+	);
+}
 
 function normProjectStaff(row: Raw): ProjectStaffRow {
 	return {
@@ -213,11 +260,46 @@ export async function staffRole(
 		);
 		row = normProjectStaff(rows[0]);
 	} else {
-		const [rows] = await db.query<[Raw[]]>(
-			`CREATE project_staff CONTENT $content RETURN AFTER;`,
-			{ content }
-		);
-		row = normProjectStaff(rows[0]);
+		// CONCURRENCY (deferred MEDIUM from the §6 foundation red-team, folded here now that
+		// routing is the first concurrent caller): the getProjectStaff read above and this CREATE
+		// are NOT one transaction. Two callers racing PAST the read (an operator confirm + a
+		// recurring-ceremony route) both see no row and both CREATE; the loser collides on the
+		// project_staff_dedup UNIQUE index. The index PREVENTS the duplicate (the integrity
+		// backstop holds — never weakened); we catch ONLY that collision (isDedupCollision — the
+		// real unique-violation phrases, never an unrelated error, F-008) and resolve it as a
+		// BENIGN no-op: the winner already created the row, so re-read it and continue. At most ONE
+		// row exists regardless of concurrency. NOT a retry loop — one CREATE attempt, one re-read
+		// on collision (it cannot spin). A non-dedup error propagates unchanged.
+		try {
+			// Deterministic primary-key id (the atomic one-row-per-(project,role) guarantee — a
+			// concurrent double-create collides on THIS id, not the unreliable secondary index).
+			const sid = link(deterministicStaffId(projectId, roleId));
+			const [rows] = await db.query<[Raw[]]>(
+				`CREATE $sid CONTENT $content RETURN AFTER;`,
+				{ sid, content }
+			);
+			row = normProjectStaff(rows[0]);
+		} catch (err) {
+			if (!isDedupCollision(err)) throw err;
+			const winner = await getProjectStaff(db, projectId, roleId);
+			if (!winner) {
+				// The collision matched but the winner's row is not visible yet — surface the named
+				// error rather than inventing a row (F-008: honest, never fabricated).
+				throw new Error(
+					`staffRole(${projectId}, ${roleId}) hit a concurrent project_staff_dedup collision but the winning row is not visible — retry`
+				);
+			}
+			// The winner created (and audited) the row. The winner may have created it with
+			// enabled=false (a never-happens path) or different fields, but the dedup guarantees one
+			// row; re-staffing semantics (enabled=true + this call's fields) are re-applied via the
+			// existing-row UPDATE path so this caller's intent still lands deterministically.
+			const [, rows] = await db.query<[unknown, Raw[]]>(
+				`UPDATE $rid MERGE $merge;
+				 UPDATE $rid SET updated_at = time::now() RETURN AFTER;`,
+				{ rid: link(winner.id), merge: content }
+			);
+			row = normProjectStaff(rows[0]);
+		}
 	}
 	await addRoleEvent(db, {
 		role: roleId,

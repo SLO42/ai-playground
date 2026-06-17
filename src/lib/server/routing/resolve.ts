@@ -50,6 +50,18 @@ export interface RouteTask {
 	project: string;
 	title: string;
 	description: string;
+	/**
+	 * WORKFORCE-SPEC §6/§7 — the role this task runs AS, when it is a role-bound session (a
+	 * project's recurring ceremony: the A8 security wave runs as `security-officer`, a debug
+	 * session as `investigator`). When present AND that role is staffed to the project
+	 * (resolveStaff non-null), routing short-circuits to method:'explicit' at the staffed
+	 * version's model (§7: "role sessions skip intent classification — staffing IS the
+	 * decision"). ABSENT (the common case today — no task carries a role yet) ⇒ the route is
+	 * resolved exactly as before (byte-identical, additive). The PRODUCER that stamps a role
+	 * onto a recurring-ceremony task is the recurring-ceremony scheduler (a separate spec item,
+	 * NOT yet built — see the build summary's deferred-work note); this field is the seam it
+	 * will fill, exercised today via the /agents/staffing surface + tests. */
+	role?: string;
 }
 
 /** The resolved plan resolveRoute returns (ARCHITECTURE §2.5 ResolvedPlan). */
@@ -189,7 +201,39 @@ export interface ResolveRouteInput {
 	override?: ModelSelection;
 	/** Intent override (operator-forced); skips the keyword classifier when set. */
 	intent?: Intent;
+	/**
+	 * WORKFORCE-SPEC §7 — the STAFFING resolver seam. When the task carries a `role` (a role-bound
+	 * recurring-ceremony session), routing consults this BEFORE classification: a staffed
+	 * (project, role) returns {version, provider, model_id, certifiedBy} and routing short-circuits
+	 * to method:'explicit' at that model (staffing IS the decision — no intent classify, no tier
+	 * pick). FAIL-CLOSED + ADDITIVE: null (unstaffed / not-deployable / no role on the task / no
+	 * resolver injected) ⇒ the route falls through to the existing classify→tier→fallback order,
+	 * byte-identical to pre-wiring. The boot wiring injects the staff.resolveStaff-backed resolver;
+	 * tests inject a deterministic stub. NEVER staffs/mutates — it only READS the staffing decision. */
+	staffResolver?: StaffRouteResolver;
 }
+
+/** The staffing route resolution a §7 role-bound session resolves to, or null (fail-closed:
+ *  unstaffed / not-deployable / unknown role). Mirrors the workforce StaffResolution shape's
+ *  routing-relevant fields so resolve.ts need not import the workforce module (clean seam). */
+export interface StaffRouteResolution {
+	/** The staffed role_version id (the §7 chain's middle link). */
+	version: string;
+	provider: string;
+	modelId: string;
+	tier?: string;
+	/** The certifying interview_run id (§7 provenance chain); null on a stale-cert edge. */
+	certifiedBy: string | null;
+	/** The project_staff row id (the §7 chain's first link), for the rationale. */
+	staffId: string;
+}
+
+/** Resolve a (project, role) → its staffed routing target, or null when not staffed/deployable.
+ *  Sync or async (the boot resolver awaits resolveStaff + a getProjectStaff read). */
+export type StaffRouteResolver = (
+	projectId: string,
+	roleId: string
+) => StaffRouteResolution | null | Promise<StaffRouteResolution | null>;
 
 /**
  * Resolve a task to a ResolvedPlan through the canonical order and persist the
@@ -233,6 +277,55 @@ export async function resolveRoute(input: ResolveRouteInput): Promise<ResolvedPl
 			alternatives: [],
 			routingEventId
 		};
+	}
+
+	// ── 1b. STAFFING (WORKFORCE-SPEC §7) — a role-bound session: staffing IS the decision. ──
+	// AFTER the explicit operator override (F-005: an operator override still wins — staffing is
+	// the default for a role session, not an override of an operator's explicit pick), BEFORE
+	// classification. When the task carries a `role` AND that role is staffed to the project, the
+	// staffed (version × model_id) short-circuits the order as method:'explicit' — no intent
+	// classify, no tier pick. FAIL-CLOSED + ADDITIVE: a missing resolver, no role on the task, or
+	// a null resolution (unstaffed / not-deployable) falls through to step 2 UNCHANGED. We resolve
+	// intent for the analytics record only (the chosen model does NOT depend on it on this path).
+	if (input.staffResolver && task.role) {
+		const staffed = await input.staffResolver(task.project, task.role);
+		if (staffed && staffed.modelId?.trim()) {
+			const intent = input.intent ?? classifyIntent(task); // recorded for analytics only
+			const adaptiveConfig = adaptiveConfigFor(orchestration, intent);
+			const chosen: ModelSelection = {
+				provider: staffed.provider,
+				modelId: staffed.modelId,
+				...(staffed.tier ? { tier: staffed.tier } : {})
+			};
+			// §7 rationale: cite the chain staffed: project_staff:<id> → role_version:<id> @ <model_id>,
+			// certified by interview_run:<id> (the operator's how/why — analytics first-class, F-008).
+			const reason =
+				`staffed: ${staffed.staffId} → ${staffed.version} @ ${staffed.modelId}` +
+				(staffed.certifiedBy ? `, certified by ${staffed.certifiedBy}` : ', certified-by unknown (stale-cert edge)');
+			const routingEventId = await writeRoutingEvent(db, {
+				task: task.id,
+				project: task.project,
+				chosen,
+				method: 'explicit',
+				reason,
+				intent,
+				complexity: undefined, // staffing skips complexity scoring (staffing IS the decision)
+				alternatives: []
+			});
+			return {
+				model: chosen,
+				intent,
+				adaptiveConfig,
+				budgets: budgetsFromConfig(adaptiveConfig),
+				method: 'explicit',
+				reason,
+				complexity: undefined,
+				alternatives: [],
+				routingEventId
+			};
+		}
+		// staffed === null ⇒ NOT staffed / not deployable → fall through to the normal order
+		// (additive, fail-closed: the route is byte-identical to pre-wiring for an unstaffed role).
 	}
 
 	// ── 2. INTENT CLASSIFY. ───────────────────────────────────────────────────────

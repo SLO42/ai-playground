@@ -17,5 +17,7 @@ export {
 	type RouteTask,
 	type ResolvedPlan,
 	type ResolveRouteInput,
-	type WriteRoutingEventInput
+	type WriteRoutingEventInput,
+	type StaffRouteResolver,
+	type StaffRouteResolution
 } from './resolve';

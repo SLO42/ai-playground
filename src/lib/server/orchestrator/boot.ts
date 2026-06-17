@@ -48,7 +48,8 @@ import {
 	DEFAULT_AGENT
 } from '../harness';
 import { loadOrchestration, loadAgentPool, type OrchMode, type AgentPool, type Orchestration } from '../config/index';
-import { resolveRoute, type RouteTask } from '../routing/index';
+import { resolveRoute, type RouteTask, type StaffRouteResolver } from '../routing/index';
+import { resolveStaff, getProjectStaff, type Tier, type TierModelResolver } from '../workforce';
 import { Orchestrator, type StubRoute, type RouteResolver } from './orchestrator';
 
 /** What the boot wire did — so hooks.server.ts can log it and tests can assert it. */
@@ -126,17 +127,59 @@ function agentForTier(pool: AgentPool, tier: string | undefined): string {
 	return pool.slots[0]?.id ?? DEFAULT_AGENT;
 }
 
+/** Tier→model resolver from the loaded pool config (D-003: the map lives in config). Fail-closed:
+ *  an unknown tier yields null so resolveStaff returns an honest null rather than a guessed model. */
+function poolTierResolver(pool: AgentPool): TierModelResolver {
+	return (tier: Tier) => {
+		const spec = pool.tiers[tier];
+		return spec ? { provider: spec.provider, model_id: spec.model } : null;
+	};
+}
+
+/**
+ * WORKFORCE-SPEC §7 — the boot STAFFING resolver injected into resolveRoute. For a role-bound
+ * session (a task carrying a `role`), it resolves the staffed (version × model_id) via the
+ * fail-closed resolveStaff (§6) and reads the project_staff row id for the §7 rationale chain.
+ * FAIL-CLOSED: ANY error, an unstaffed/not-deployable (project, role), OR a missing staff row
+ * yields null → resolveRoute falls through to the normal order (additive, byte-identical). It
+ * never staffs/mutates — resolveStaff + getProjectStaff are pure reads.
+ */
+function bootStaffResolver(db: Db, pool: AgentPool): StaffRouteResolver {
+	const resolveTierModel = poolTierResolver(pool);
+	return async (projectId: string, roleId: string) => {
+		try {
+			const staffed = await resolveStaff(db, projectId, roleId, resolveTierModel);
+			if (!staffed) return null; // unstaffed / not-deployable → fall through (fail-closed).
+			const row = await getProjectStaff(db, projectId, roleId);
+			if (!row) return null; // resolved but no row (shouldn't happen) → honest null.
+			return {
+				version: staffed.version,
+				provider: staffed.provider,
+				modelId: staffed.model_id,
+				certifiedBy: staffed.certifiedBy,
+				staffId: row.id
+			};
+		} catch (err) {
+			// A staffing read failure must NEVER sink a spawn — it falls through to normal routing.
+			console.warn(`[routing] staff resolve for (${projectId}, ${roleId}) failed (falling through): ${(err as Error).message}`);
+			return null;
+		}
+	};
+}
+
 /**
  * The production route seam (TASK 2.3): the REAL router. For each triggering task it reads
- * the task content, runs `resolveRoute` (override→intent→tier→adaptive→health→fallback) which
- * PICKS the provider+model AND writes a `routing_event` with the rationale + intent (the
+ * the task content, runs `resolveRoute` (staffing→override→intent→tier→adaptive→health→fallback)
+ * which PICKS the provider+model AND writes a `routing_event` with the rationale + intent (the
  * trace), then maps the ResolvedPlan onto the orchestrator's spawn-plan shape. The pool +
  * orchestration config are loaded ONCE per boot (the orchestrator is a per-boot singleton); a
  * config re-edit takes effect on the next boot. Provider health is read from the harness single
- * owner (getProviderHealth). NO fabricated route — a read/resolve failure rejects and the
- * work_item is marked failed by the orchestrator.
+ * owner (getProviderHealth). The §7 staffResolver is wired so a role-bound session routes to its
+ * staffed model (today no task carries a role → the seam is inert + additive). NO fabricated
+ * route — a read/resolve failure rejects and the work_item is marked failed by the orchestrator.
  */
 function bootRoute(db: Db, pool: AgentPool, orchestration: Orchestration): RouteResolver {
+	const staffResolver = bootStaffResolver(db, pool);
 	return async (taskId: string, projectId: string): Promise<StubRoute> => {
 		const task = await readRouteTask(db, taskId, projectId);
 		const plan = await resolveRoute({
@@ -144,7 +187,8 @@ function bootRoute(db: Db, pool: AgentPool, orchestration: Orchestration): Route
 			task,
 			pool,
 			orchestration,
-			providerHealth: getProviderHealth
+			providerHealth: getProviderHealth,
+			staffResolver
 		});
 		return {
 			agentId: agentForTier(pool, plan.model.tier),

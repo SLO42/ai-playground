@@ -231,6 +231,109 @@ describe('routing — provider/health fallback (F-005)', () => {
 	});
 });
 
+// ── WORKFORCE-SPEC §7 — staffing short-circuit (BL-3) ──────────────────────────────
+//
+// resolveStaff output passes into resolveRoute as the §7 explicit-staffed decision: a role-bound
+// session routes to its staffed model (method:'explicit', the chain rationale), staffing IS the
+// decision. The seam is ADDITIVE + FAIL-CLOSED: no role / null resolution → the route is
+// byte-identical to pre-wiring. The resolver is a deterministic stub here (the staff.ts unit/
+// integration tests cover the real resolveStaff; this proves the ROUTING wiring).
+describe('routing — §7 staffing short-circuit (additive, fail-closed)', () => {
+	const STAFFED = {
+		version: 'role_version:v_staff_1',
+		provider: 'anthropic',
+		modelId: 'claude-opus',
+		tier: 'opus',
+		certifiedBy: 'interview_run:run_staff_1',
+		staffId: 'project_staff:ps_staff_1'
+	};
+
+	it('a staffed role-bound session routes method:explicit at the staffed model, citing the §7 chain', async () => {
+		const t = await createTask(db, {
+			project: projectId,
+			// A title that would normally classify simple/cheap — proving staffing OVERRIDES the classifier.
+			title: 'What is the status?',
+			description: ''
+		});
+		const plan = await resolveRoute({
+			db,
+			task: { id: t.id, project: projectId, title: t.title, description: t.description, role: 'role:security_officer' },
+			pool,
+			orchestration: orch,
+			providerHealth: async () => allUp,
+			staffResolver: async () => STAFFED
+		});
+		expect(plan.method).toBe('explicit');
+		expect(plan.model.provider).toBe('anthropic');
+		expect(plan.model.modelId).toBe('claude-opus'); // the STAFFED model, not the classifier's cheap tier
+		expect(plan.model.tier).toBe('opus');
+		expect(plan.complexity).toBeUndefined(); // staffing skips complexity scoring
+		// The §7 chain is in the rationale (operator how/why).
+		expect(plan.reason).toContain(STAFFED.staffId);
+		expect(plan.reason).toContain(STAFFED.version);
+		expect(plan.reason).toContain(STAFFED.certifiedBy);
+		const ev = await getRoutingEvent(db, plan.routingEventId);
+		expect(ev.method).toBe('explicit');
+		expect((ev.chosen as Record<string, unknown>).model_id).toBe('claude-opus');
+	});
+
+	it('an UNSTAFFED role (resolver → null) falls through to the normal order — byte-identical to no seam', async () => {
+		const task = { project: projectId, title: 'Investigate and evaluate the whole system architecture and its tradeoffs', description: 'deep dive' };
+		const t = await createTask(db, task);
+		const view = { id: t.id, project: projectId, title: t.title, description: t.description };
+
+		// WITHOUT a staffResolver (pre-wiring behavior):
+		const baseline = await resolveRoute({ db, task: view, pool, orchestration: orch, providerHealth: async () => allUp });
+		// WITH a staffResolver that returns null for this (unstaffed) role:
+		const withSeam = await resolveRoute({
+			db,
+			task: { ...view, role: 'role:not_staffed' },
+			pool,
+			orchestration: orch,
+			providerHealth: async () => allUp,
+			staffResolver: async () => null
+		});
+		// Byte-identical decision (the seam was inert): same method, intent, model, complexity.
+		expect(withSeam.method).toBe(baseline.method);
+		expect(withSeam.intent).toBe(baseline.intent);
+		expect(withSeam.model.tier).toBe(baseline.model.tier);
+		expect(withSeam.model.modelId).toBe(baseline.model.modelId);
+		expect(withSeam.complexity).toBe(baseline.complexity);
+	});
+
+	it('a task with NO role never consults the resolver (additive)', async () => {
+		let consulted = false;
+		const t = await createTask(db, { project: projectId, title: 'Implement the feature', description: 'add the endpoint' });
+		const plan = await resolveRoute({
+			db,
+			task: { id: t.id, project: projectId, title: t.title, description: t.description }, // no role
+			pool,
+			orchestration: orch,
+			providerHealth: async () => allUp,
+			staffResolver: async () => { consulted = true; return STAFFED; }
+		});
+		expect(consulted).toBe(false); // the seam is gated on task.role
+		expect(plan.method).not.toBe('explicit');
+	});
+
+	it('an explicit operator override STILL wins over staffing (F-005 precedence)', async () => {
+		const t = await createTask(db, { project: projectId, title: 'Anything', description: '' });
+		const plan = await resolveRoute({
+			db,
+			task: { id: t.id, project: projectId, title: t.title, description: t.description, role: 'role:security_officer' },
+			pool,
+			orchestration: orch,
+			providerHealth: async () => allUp,
+			override: { provider: 'ollama', modelId: 'gpt-oss:20b', tier: 'local' },
+			staffResolver: async () => STAFFED
+		});
+		// The operator's explicit pick wins; staffing is the DEFAULT for a role session, not an
+		// override of an explicit operator choice.
+		expect(plan.model.provider).toBe('ollama');
+		expect(plan.reason.toLowerCase()).toContain('override');
+	});
+});
+
 // ── helper: read a routing_event back by id ─────────────────────────────────────
 async function getRoutingEvent(db: Db, id: string): Promise<Record<string, unknown>> {
 	const { StringRecordId } = await import('surrealdb');

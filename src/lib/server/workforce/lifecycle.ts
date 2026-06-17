@@ -201,7 +201,14 @@ export const PROPOSAL_STATUSES: readonly ProposalStatus[] = [
 const PROPOSAL_TRANSITIONS: Record<ProposalStatus, readonly ProposalStatus[]> = {
 	// §4 panel verdict, OR (operator-authored) the operator opens the diff directly, OR the
 	// operator declines the auto-raised proposal outright (rejected_by_operator at the source).
-	proposed: ['validated', 'rejected_by_panel', 'diff_review', 'rejected_by_operator', 'withdrawn'],
+	// 'swapped' is ALSO legal directly from 'proposed' for a STAFFING proposal (CAPABILITY-MATCH
+	// BL-3): a kind:'staffing' proposal has NO challenger/diff/re-gauntlet — the operator's D-039
+	// confirm applies the project_staff write and closes the proposal in ONE terminal step. This is
+	// ADDITIVE (it only PERMITS a previously-rejected move; no existing legal move changes), and a
+	// prompt_revision/tier_change proposal NEVER requests proposed→swapped (resolution.ts only ever
+	// drives compared→swapped), so the §5 prompt-swap governance ('no swap without a passing
+	// challenger gauntlet + D-039') is untouched — that guard lives in swapFromProposal, not here.
+	proposed: ['validated', 'rejected_by_panel', 'diff_review', 'swapped', 'rejected_by_operator', 'withdrawn'],
 	// Operator opens the D-010 prompt-core diff (security before spend, §5 touch ①), or declines.
 	validated: ['diff_review', 'rejected_by_operator', 'withdrawn'],
 	// Operator approved the diff → challenger authored → re-gauntlet launched.

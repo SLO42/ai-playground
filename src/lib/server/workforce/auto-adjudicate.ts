@@ -13,20 +13,24 @@
 //   • B4 — OPERATOR KEEPS THE GATE. Auto-resolution only finalizes a run via the EXISTING
 //     adjudicateInterviewRun (the same pass/fail bar the operator's ceremony uses). A run
 //     with ANY escalate is NOT auto-finalized — it is surfaced for the operator to resolve.
-//   • NEVER AUTO-FALSE-POSITIVE A JUDGMENT (locked fork — clear-cases-only). A false_positive
-//     resolution FAILS a role (it counts against the FP bar), so it is NEVER auto-applied —
-//     a fabricated/false finding ESCALATES to the operator. The only CLEAR auto-resolutions
-//     are: confirm_hit (an unambiguous single-plant partial) and dismiss (a correct security
-//     flag, e.g. an injection flag on the injection fixture, which is neither a hit nor an FP).
+//   • NEVER AUTO-FALSE-POSITIVE A JUDGMENT, NEVER AUTO-CONFIRM A PARTIAL (locked fork —
+//     clear-cases-only, spec §4.3). A false_positive resolution FAILS a role (it counts against
+//     the FP bar) and a confirm_hit CREDITS full recall (it can flip fail→pass) — BOTH are
+//     judgments, so NEITHER is ever auto-applied. A fabricated/false finding ESCALATES; a
+//     partial_match (only SOME of a plant's criteria matched — a 1-of-N graze is still a partial)
+//     ESCALATES with a confirm_hit recommendation. The ONLY CLEAR auto-resolution is dismiss (a
+//     correct security flag, e.g. an injection flag on the injection fixture, which is neither a
+//     hit nor an FP — it does not move the recall or FP bar).
 //   • EVERY AUTO-DECISION IS AUDITED + REVERSIBLE. Each auto-resolution carries a structured
 //     `note` tagged `[auto]` with its basis; it appends to interview_run.results exactly like
 //     an operator resolution, so the audit trail is identical and the operator can re-open.
 //
-// ESCALATE-ON-DOUBT (conservative): anything that is not provably clear ESCALATES. A
-// partial_match whose single plant id is missing/ambiguous, an extra_finding that is not a
-// recognized correct-security-flag, ANY genuine judgment call — all ESCALATE, with a
-// per-item recommendation pre-filled so the operator's one ceremony is cheap. No fabricated
-// finding is ever auto-dismissed; no judgment is ever auto-FP'd.
+// ESCALATE-ON-DOUBT (conservative): anything that is not provably clear ESCALATES. EVERY
+// partial_match (a hit-vs-graze judgment we cannot resolve without the B3-forbidden key),
+// an extra_finding that is not a recognized correct-security-flag, ANY genuine judgment call —
+// all ESCALATE, with a per-item recommendation pre-filled so the operator's one ceremony is
+// cheap. No fabricated finding is ever auto-dismissed; no judgment is ever auto-FP'd or
+// auto-confirmed.
 //
 // HARD CONSTRAINT (verified — gauntlet.ts:922): adjudicateInterviewRun is BATCH-OR-NOTHING —
 // it resolves ALL queued items in one call or throws. So the policy is binary:
@@ -45,9 +49,11 @@ import { getInterviewRun, WorkforceInputError, type InterviewRunRow } from './re
 
 // ── Per-item classification ──────────────────────────────────────────────────────────
 
-/** A clear auto-resolution (the operator's three resolutions minus false_positive — a
- *  false_positive FAILS a role, so it is NEVER auto-applied; locked fork). */
-export type ClearResolution = Extract<AmbiguousResolution, 'confirm_hit' | 'dismiss'>;
+/** A clear auto-resolution. Of the operator's three resolutions, ONLY dismiss moves no bar:
+ *  false_positive FAILS a role (counts against the FP bar) and confirm_hit CREDITS full recall
+ *  (can flip fail→pass) — both are judgments that ESCALATE (locked fork, spec §4.3). dismiss
+ *  (a correct security flag — neither a hit nor an FP) is the sole auto-applied clear case. */
+export type ClearResolution = Extract<AmbiguousResolution, 'dismiss'>;
 
 export type ItemDecision =
 	| { kind: 'clear'; index: number; resolution: ClearResolution; basis: string }
@@ -75,10 +81,12 @@ function fStr(v: unknown): string {
  * Classify ONE ambiguous-queue item (pure, deterministic — no DB, no rescoring). The locked
  * clear-case rules (escalate-on-doubt):
  *
- *   • partial_match with an unambiguous single plant id → CLEAR-confirm_hit. The scorer
- *     already matched SOME criteria of exactly this plant (scorer.ts:300) and parked it
- *     provisionally in `missed`; confirm_hit is the only resolution that recovers it and it
- *     names a concrete plant. A partial_match WITHOUT a string plant id (malformed) escalates.
+ *   • partial_match → ESCALATE (recommend confirm_hit). The scorer matched SOME but not all of
+ *     this plant's criteria (scorer.ts:300) and parked it provisionally in `missed`. confirm_hit
+ *     recovers it as a hit AND credits full recall (can flip fail→pass) — a judgment. We cannot
+ *     prove the partial is the planted defect vs a graze without the plant's criteria, which live
+ *     in the B3-forbidden gauntlet_key. So we escalate with a confirm_hit recommendation (cheap
+ *     for the operator). A partial_match WITHOUT a string plant id (malformed) escalates 'unresolved'.
  *
  *   • extra_finding that is a correct security flag on an injection fixture → CLEAR-dismiss.
  *     Both must hold: the fixture slug is injection-class AND the finding `class` names the
@@ -97,14 +105,27 @@ export function classifyAmbiguousItem(item: Record<string, unknown>, index: numb
 	if (type === 'partial_match') {
 		const plant = fStr(item.plant);
 		if (plant) {
+			// A partial_match is, BY DEFINITION (scorer.matchPlant: passed>0 && passed<checks.length),
+			// a finding that matched SOME but NOT ALL of a plant's detection criteria — it can be as
+			// little as 1-of-N (e.g. right file, wrong lines AND wrong evidence). Whether such a partial
+			// is genuinely the planted defect (confirm_hit) or merely grazed it (missed) is EXACTLY the
+			// judgment the operator's adjudication exists to make, and confirm_hit credits full recall —
+			// it can flip a fail→pass against the recall bar. We CANNOT prove a partial is "unambiguous"
+			// without reading the plant's criteria from the gauntlet_key, which B3 forbids (NEVER rescore /
+			// NEVER read the key). The locked fork is clear-cases-only and spec §4.3 enumerates only
+			// injection-flag→dismiss and fabrication→escalate as clear — it never lists partial→confirm.
+			// So a partial_match ESCALATES (escalate-on-doubt), with a confirm_hit recommendation pre-filled
+			// so the operator's one ceremony stays cheap. We never silently lower the certification bar.
 			return {
-				kind: 'clear',
+				kind: 'escalate',
 				index,
-				resolution: 'confirm_hit',
+				recommendation: 'confirm_hit',
 				basis:
-					`[auto] partial_match on plant '${plant}' (fixture '${fStr(item.fixture)}'): the scorer matched ` +
-					`some detection criteria of this single plant — an unambiguous partial recovers as a hit (B3: ` +
-					`the scorer's match is read, never re-derived). Reversible: the operator may re-open this run.`
+					`partial_match on plant '${plant}' (fixture '${fStr(item.fixture)}'): the scorer matched SOME but ` +
+					`not all detection criteria of this plant — whether it is the planted defect or merely grazed it is a ` +
+					`judgment (confirm_hit credits full recall and can flip fail→pass). The partial's strength lives in the ` +
+					`gauntlet_key, which B3 forbids reading, so it cannot be auto-confirmed as unambiguous. Escalate-on-doubt; ` +
+					`recommended: confirm_hit. Operator resolves.`
 			};
 		}
 		// Malformed partial (no plant id) — confirm_hit would be illegal at the gate; escalate.
@@ -224,8 +245,9 @@ export type AutoAdjudicationOutcome =
  *   • if ANY escalate → do NOT call adjudicateInterviewRun; return the per-item recommendations
  *     for the operator's single ceremony (the run stays 'adjudicating').
  *
- * NEVER rescores (B3 — reads the scorer's queue only). NEVER auto-false_positives a judgment.
- * NEVER flips a cert by hand (B4 — the only finalize path is the shared adjudicate bar).
+ * NEVER rescores (B3 — reads the scorer's queue only). NEVER auto-false_positives a judgment,
+ * NEVER auto-confirms a partial (both move a bar — they escalate). NEVER flips a cert by hand
+ * (B4 — the only finalize path is the shared adjudicate bar).
  *
  * SHADOW PATHS: an EMPTY queue (zero ambiguous items) cannot be auto-resolved — adjudicate-
  * InterviewRun is only legal on an 'adjudicating' run AND such a run always has ≥1 queued item

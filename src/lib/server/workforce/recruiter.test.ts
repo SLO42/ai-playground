@@ -31,7 +31,7 @@ import {
 import { activateGauntletFixture, newSentinelUlid } from './activation';
 import { KNOWN_FAIL_PATH, KNOWN_PASS_PATH } from './scorer';
 import { seedRecruiterRole, RECRUITER_DRAFT_KEYS, type DraftKeySpec } from './launch-fixtures';
-import type { GauntletDeps } from './gauntlet';
+import { adjudicateInterviewRun, type GauntletDeps } from './gauntlet';
 import {
 	classifyCertificationFail,
 	draftCertificationSet,
@@ -192,6 +192,74 @@ async function seedTarget(): Promise<TargetSeed> {
 	return { role, version, defectSlug, controlSlug };
 }
 
+/**
+ * Seed a target whose defect fixture carries THREE plants — the POST-ADJUDICATION substrate:
+ *   • p-real        — a.ts:3, found FULLY by the candidate;
+ *   • p-partial     — a.ts:5 (evidence '18789'); the candidate emits a finding matching file +
+ *     evidence but at the WRONG line → scorer 'partial' → queues as ambiguous; the operator
+ *     CONFIRMS it a hit (§3.4 confirm_hit);
+ *   • p-genuine-miss — a.ts:7, the candidate never flags → a true miss.
+ * With pass_recall 1.0 the run goes 'adjudicating' (the partial queues), and AFTER the operator
+ * confirms p-partial it still FAILS on p-genuine-miss. The defect this exercises:
+ * classifyCertificationFail must read found=[p-real,p-partial] / missed=[p-genuine-miss] — it must
+ * NOT name the operator-CONFIRMED p-partial in suspectPlants nor report it 'missed'.
+ */
+async function seedTargetThreePlant(): Promise<TargetSeed> {
+	const n = ++seedCount;
+	const role = await createRole(db, {
+		slug: `cert-target3-${n}`,
+		name: `Cert Target3 ${n}`,
+		purpose: 'HR-3 post-adjudication classify test bed'
+	});
+	const version = await createRoleVersion(db, {
+		role: role.id,
+		prompt_core: `You are reviewer3 #${n}.`,
+		default_tier: 'sonnet',
+		source: 'operator'
+	});
+	const defectSlug = `fx-defect3-${n}`;
+	const fixture = await createGauntletFixture(db, {
+		role: role.id,
+		slug: defectSlug,
+		kind: 'planted_defect',
+		work: { 'a.ts': 'l1\nl2\nprocess.kill(pid, 0);\nl4\nconst p = 18789;\nl6\nconst tok = secret;\n' },
+		sentinel: newSentinelUlid(),
+		provenance: 'fails: F-001'
+	});
+	await createGauntletKey(db, {
+		fixture: fixture.id,
+		plants: [
+			{ id: 'p-real', class: 'platform-bug', detection: { file: 'a.ts', lines: [3, 3], evidence_pattern: 'process\\.kill' } },
+			{ id: 'p-partial', class: 'redundant-citation', detection: { file: 'a.ts', lines: [5, 5], evidence_pattern: '18789' } },
+			{ id: 'p-genuine-miss', class: 'secret-leak', detection: { file: 'a.ts', lines: [7, 7], evidence_pattern: 'secret' } }
+		],
+		fp_tolerance: 0
+	});
+	await activateGauntletFixture(db, fixture.id);
+
+	const controlSlug = `ctrl3-${n}`;
+	const control = await createGauntletFixture(db, {
+		role: role.id,
+		slug: controlSlug,
+		kind: 'scorer_control',
+		work: {
+			'c.ts': 'l1\nl2\nconst r = eval(input);\n',
+			[KNOWN_PASS_PATH]: JSON.stringify([
+				{ fixture: controlSlug, file: 'c.ts', lines: [3, 3], class: 'injection', evidence: 'eval(input)' }
+			]),
+			[KNOWN_FAIL_PATH]: JSON.stringify([])
+		},
+		sentinel: newSentinelUlid()
+	});
+	await createGauntletKey(db, {
+		fixture: control.id,
+		plants: [{ id: 'c1', detection: { file: 'c.ts', lines: [3, 3], evidence_pattern: 'eval\\(' } }]
+	});
+	await activateGauntletFixture(db, control.id);
+
+	return { role, version, defectSlug, controlSlug };
+}
+
 // ── Scripted candidate backend (a behaviorally-correct candidate: finds p-real only) ─
 
 interface ScriptedBackend extends CcBackend {
@@ -265,6 +333,22 @@ const correctButOverStrictFail: FindingsWriter = (cwd, seed) => {
 /** A candidate that finds NOTHING — the genuine candidate-miss shape. */
 const emptyFindings: FindingsWriter = (cwd) => {
 	writeFileSync(join(cwd, 'findings.json'), JSON.stringify([]), 'utf8');
+};
+
+/** For seedTargetThreePlant: finds p-real FULLY, emits p-partial at the WRONG line (file +
+ *  evidence match, line mismatch → scorer 'partial' → ambiguous queue), never flags
+ *  p-genuine-miss. → run 'adjudicating'; after operator confirm_hit on p-partial it FAILS on
+ *  p-genuine-miss. */
+const partialPlusGenuineMiss: FindingsWriter = (cwd, seed) => {
+	writeFileSync(
+		join(cwd, 'findings.json'),
+		JSON.stringify([
+			{ fixture: seed.defectSlug, file: 'a.ts', lines: [3, 3], class: 'platform-bug', evidence: 'process.kill(pid, 0)' },
+			// file + evidence match plant p-partial, but line 99 ≠ 5 → 'partial' → ambiguous.
+			{ fixture: seed.defectSlug, file: 'a.ts', lines: [99, 99], class: 'redundant-citation', evidence: 'const p = 18789;' }
+		]),
+		'utf8'
+	);
 };
 
 // ── Step 1 — draftCertificationSet (PROPOSE-ONLY, B2) ────────────────────────────────
@@ -458,6 +542,54 @@ describe('classifyCertificationFail — KEY-DEFECT vs candidate-miss + re-versio
 		expect(result.reversion.reversioned).toBe(true);
 		expect(result.reversion.version!.lifecycle).toBe('draft');
 	}, 40_000);
+
+	it('POST-ADJUDICATION: honors a confirm_hit — does NOT name the confirmed plant in suspectPlants (F-008)', async () => {
+		const seed = await seedTargetThreePlant();
+		// Candidate finds p-real, partial-matches p-partial (→ ambiguous), misses p-genuine-miss.
+		const out = await runCertificationGauntlet(depsFor(candidateBackend(partialPlusGenuineMiss, seed)), {
+			roleVersionId: seed.version.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: 'claude-sonnet-x',
+			operatorApprovedKeySet: true
+		});
+		expect(out.kind).toBe('ran');
+		if (out.kind !== 'ran') return;
+		// The partial queued → the run is NOT yet terminal; it awaits the operator (§3.4).
+		expect(out.run.status).toBe('adjudicating');
+		const queue = out.run.ambiguous as Array<{ type: string; plant?: string }>;
+		const partialIdx = queue.findIndex((q) => q.type === 'partial_match' && q.plant === 'p-partial');
+		expect(partialIdx).toBeGreaterThanOrEqual(0);
+
+		// Operator CONFIRMS p-partial as a hit (resolve ALL items — batch-or-nothing).
+		const resolutions = queue.map((q, index) =>
+			index === partialIdx
+				? { index, resolution: 'confirm_hit' as const, note: 'operator: matched plant, scorer line off-by' }
+				: { index, resolution: 'dismiss' as const }
+		);
+		const finalized = await adjudicateInterviewRun(db, out.run.id, { resolutions });
+		// Still fails on the genuine miss (recall 2/3 < 1.0).
+		expect(finalized.status).toBe('failed');
+
+		const result = await classifyCertificationFail(db, finalized.id);
+		const fxEvidence = result.evidence.find((e) => e.fixture === seed.defectSlug);
+		// HONESTY (the defect): the operator-CONFIRMED plant is reported FOUND, never missed.
+		expect(fxEvidence?.found).toContain('p-partial');
+		expect(fxEvidence?.found).toContain('p-real');
+		expect(fxEvidence?.missed).not.toContain('p-partial');
+		expect(fxEvidence?.missed).toContain('p-genuine-miss');
+		// Still found-some/missed-some → key_defect, but suspectPlants must be ONLY the genuine
+		// miss — it must NOT recommend dropping the plant the operator just adjudicated legitimate.
+		expect(result.classification).toBe('key_defect');
+		// suspectPlants = ONLY the genuine miss. The operator-confirmed p-partial must NOT be a
+		// suspect (the proposal must never advise dropping a plant the operator adjudicated a hit).
+		expect(result.keyFix!.suspectPlants).toEqual(['p-genuine-miss']);
+		// The recommendation drops ONLY the suspect plant — never the confirmed one. (p-partial may
+		// appear in the rationale's verbatim FOUND list; what must NOT happen is recommending its
+		// removal — assert the recommendation's drop-target.)
+		expect(result.keyFix!.recommendation).toContain('p-genuine-miss');
+		expect(result.keyFix!.recommendation).not.toMatch(/drops? the redundant plant\(s\) \[[^\]]*p-partial/);
+	}, 60_000);
 
 	it('names a non-failed run (shadow path: wrong status)', async () => {
 		const seed = await seedTarget();

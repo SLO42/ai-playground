@@ -339,21 +339,61 @@ interface ExtractedFixtureResult {
 	missed: string[];
 }
 
-/** B3 — extract the scorer's per-fixture found/missed from the run's persisted results.
- *  READ-ONLY: never rescores, never reads gauntlet_key. The scorer wrote FixtureResult rows
- *  ({ fixture, kind, found, missed, extra, evidence }); the verdict/adjudication rows lack a
- *  `found` array and are skipped. Tolerates the SHADOW shapes (no results / malformed entry). */
+/** B3 — extract the scorer's per-fixture found/missed from the run's persisted results, THEN
+ *  RECONCILE against the operator's adjudication audit rows. READ-ONLY: never rescores, never
+ *  reads gauntlet_key.
+ *
+ *  The scorer wrote FixtureResult rows ({ fixture, kind, found, missed, extra, evidence }) where a
+ *  partial_match plant sits PROVISIONALLY in `missed` (scorer.ts:305). If the operator later
+ *  adjudicates that partial as a hit, adjudicateInterviewRun increments planted_found and APPENDS a
+ *  `{ kind:'adjudication', resolution:'confirm_hit', item:{ fixture, plant } }` audit row — but it
+ *  NEVER rewrites the FixtureResult's found/missed arrays (gauntlet.ts:949-1007). So the operator's
+ *  confirm_hit is the AUTHORITATIVE record; the raw FixtureResult `missed` is stale.
+ *
+ *  Without this reconciliation a POST-adjudication failed run would (a) mis-classify key_defect off
+ *  a plant the operator CONFIRMED as found, (b) name that confirmed plant in suspectPlants and
+ *  recommend authoring a fixture that DROPS it, and (c) emit `evidence.missed` contradicting the
+ *  adjudication audit row — a dishonest proposal on an operator surface (F-008). We therefore move
+ *  every confirm_hit plant from missed→found before classification reads the result.
+ *
+ *  Tolerates the SHADOW shapes (no results / malformed entry / a confirm_hit naming an unknown
+ *  fixture or an already-found plant — both no-ops). */
 function extractFixtureResults(run: InterviewRunRow): ExtractedFixtureResult[] {
-	const out: ExtractedFixtureResult[] = [];
+	const byFixture = new Map<string, ExtractedFixtureResult>();
+	const order: string[] = [];
 	for (const raw of run.results ?? []) {
 		if (!raw || typeof raw !== 'object') continue;
 		const r = raw as Record<string, unknown>;
 		if (typeof r.fixture !== 'string' || !Array.isArray(r.found) || !Array.isArray(r.missed)) continue;
-		out.push({
+		// Skip rows that are NOT scorer FixtureResults (verdict/adjudication rows have no `kind`
+		// matching a fixture row but also lack the found/missed shape — guarded above). A scorer
+		// FixtureResult is unique per fixture slug; reconcile in a stable map.
+		if (byFixture.has(r.fixture)) continue;
+		const result: ExtractedFixtureResult = {
 			fixture: r.fixture,
 			found: r.found.filter((x): x is string => typeof x === 'string'),
 			missed: r.missed.filter((x): x is string => typeof x === 'string')
-		});
+		};
+		byFixture.set(r.fixture, result);
+		order.push(r.fixture);
 	}
-	return out;
+
+	// RECONCILE: apply the operator's confirm_hit adjudications (authoritative over raw `missed`).
+	for (const raw of run.results ?? []) {
+		if (!raw || typeof raw !== 'object') continue;
+		const r = raw as Record<string, unknown>;
+		if (r.kind !== 'adjudication' || r.resolution !== 'confirm_hit') continue;
+		const item = r.item;
+		if (!item || typeof item !== 'object') continue;
+		const it = item as Record<string, unknown>;
+		if (typeof it.fixture !== 'string' || typeof it.plant !== 'string') continue;
+		const result = byFixture.get(it.fixture);
+		if (!result) continue; // confirm_hit naming an unknown fixture — no-op
+		const idx = result.missed.indexOf(it.plant);
+		if (idx === -1) continue; // already found / not in missed — no-op
+		result.missed.splice(idx, 1);
+		if (!result.found.includes(it.plant)) result.found.push(it.plant);
+	}
+
+	return order.map((slug) => byFixture.get(slug)!);
 }

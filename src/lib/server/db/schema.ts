@@ -1777,6 +1777,27 @@ const m0047_project_staff: Migration = {
 	`
 };
 
+// m0048 — CAPABILITY-MATCH-SPEC (BL-3) §3a project.capability_needs. The STRUCTURED needs
+// declaration a project matches against the catalog: {languages, frameworks, defect_classes}.
+// defect_classes is an ENUM drawn from the OPERATOR-CONFIRMED gauntlet-key plant.class set
+// (the curated vocabulary — listDefectClassVocabulary; LOCKED 2026-06-16) — the membership
+// check lives in capability-match.setCapabilityNeeds (the app boundary), NOT a DB ASSERT
+// (the vocabulary is data-derived + grows as keys are confirmed, so a static ASSERT would be
+// a lie). Each array stores screened (D-026) strings; absent ⇒ NONE → '—' (honest empty).
+// ADDITIVE OVERWRITE, IDEMPOTENT (F-015): new option<object> field + its nested array fields
+// on the EXISTING project table — no existing rows to backfill (the field reads NONE on every
+// prior project until it is set), no destructive change; apply-twice is a ledger no-op + the
+// raw OVERWRITE DDL re-runs clean over a half-applied state (no field half-created can wedge).
+const m0048_capability_needs: Migration = {
+	id: '0048_capability_needs',
+	up: `
+		DEFINE FIELD OVERWRITE capability_needs                ON project TYPE option<object>;
+		DEFINE FIELD OVERWRITE capability_needs.languages      ON project TYPE option<array<string>>;
+		DEFINE FIELD OVERWRITE capability_needs.frameworks     ON project TYPE option<array<string>>;
+		DEFINE FIELD OVERWRITE capability_needs.defect_classes ON project TYPE option<array<string>>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1830,5 +1851,6 @@ export const schemaMigrations: Migration[] = [
 	m0044_memory_license,
 	m0045_ingest_source_dropped_status,
 	m0046_review_proposal,
-	m0047_project_staff
+	m0047_project_staff,
+	m0048_capability_needs
 ];

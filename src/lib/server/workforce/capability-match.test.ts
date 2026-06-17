@@ -1,6 +1,7 @@
 import { StringRecordId } from 'surrealdb';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Db } from '../db/client';
+import { IdentifierError } from '../db/validate';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
@@ -392,6 +393,21 @@ describe('recommendStaffing — match engine', () => {
 
 	it('SHADOW: a missing project throws (matcher reads needs first)', async () => {
 		await expect(recommendStaffing(db, 'project:nope')).rejects.toBeInstanceOf(CapabilityNeedsError);
+	});
+
+	it('D-016 TABLE-SCOPE: a cross-type id (a REAL role:<id>) is rejected with IdentifierError', async () => {
+		// The BL-3 bug: role:x passes the generic RECORD_ID_RE shape, so the matcher would run a
+		// WRONG-TABLE lookup (SELECT capability_needs FROM role:…). The table-scope guard rejects it.
+		const { role } = await provenRole({ prefix: 'scope-role', cls: `scope-${++seq}` });
+		await expect(recommendStaffing(db, role.id)).rejects.toBeInstanceOf(IdentifierError);
+		await expect(getCapabilityNeeds(db, role.id)).rejects.toBeInstanceOf(IdentifierError);
+		await expect(
+			setCapabilityNeeds(db, role.id, { languages: ['ts'] })
+		).rejects.toBeInstanceOf(IdentifierError);
+		// A REAL project:<id> still resolves through the same path.
+		const project = await freshProject();
+		const rec = await recommendStaffing(db, project);
+		expect(rec.project).toBe(project);
 	});
 
 	it('PROPOSE-ONLY: recommend does not staff, hire, or open a proposal', async () => {

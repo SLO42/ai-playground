@@ -60,6 +60,35 @@ export function assertRecordId(id: unknown): string {
 }
 
 /**
+ * Validate that a record id is well-formed AND belongs to a SPECIFIC table — the
+ * project-scoped chokepoint (D-016 gap, BL-3 hardening). `assertRecordId` validates
+ * the `table:id` SHAPE but not WHICH table, so a cross-type id (e.g. `role:x`) passes
+ * the generic guard and would run a wrong-table lookup. Where a caller REQUIRES an id
+ * of a given table (e.g. a projectId must be a `project:…`), use this: it runs
+ * `assertRecordId` (shape) AND asserts the id's table-prefix equals `assertTableName(table)`,
+ * throwing an IdentifierError that NAMES the expected-vs-actual table.
+ *
+ * Do NOT use this to narrow the generic `assertRecordId`/`link()` paths — those serve
+ * many tables. This is the additive, table-scoped path for callers that demand one table.
+ *
+ * @returns the id unchanged on success.
+ * @throws {IdentifierError} when the id is malformed OR its table-prefix ≠ `table`.
+ */
+export function assertRecordIdOfTable(id: unknown, table: string): string {
+	const validTable = assertTableName(table); // the expected table must itself be valid.
+	const validId = assertRecordId(id); // shape first — malformed ids fail here, named.
+	const actualTable = validId.slice(0, validId.indexOf(':'));
+	if (actualTable !== validTable) {
+		throw new IdentifierError(
+			`Record id ${JSON.stringify(validId)} is in table '${actualTable}', ` +
+				`but a '${validTable}' record id is required here (D-016 table-scope guard).`,
+			id
+		);
+	}
+	return validId;
+}
+
+/**
  * Validate both endpoints of a RELATE edge (D-016 explicitly covers RELATE).
  * @returns the validated [from, to] pair.
  * @throws {IdentifierError} if either endpoint is malformed.

@@ -58,12 +58,17 @@ export const load: PageServerLoad = async ({ depends }): Promise<StaffingPageDat
 		for (const p of projects) {
 			try {
 				const view = await loadProjectStaffingView(db, p.id, p.name);
-				// Show a project only when it has declared needs OR the matcher found candidates/gaps —
-				// a project that declares nothing is not a staffing decision (honest omit, F-008).
+				// Show a project only when it has declared needs OR the matcher found candidates/gaps,
+				// OR it has an ORPHAN (staffed-but-not-candidate role / orphaned open proposal) the
+				// operator must be able to clean up — otherwise an orphan on an otherwise-empty project
+				// would be hidden and unreachable. A project that has none of these is not a staffing
+				// decision (honest omit, F-008).
 				const hasContent =
 					view.match.needs.defect_classes.length > 0 ||
 					view.match.candidates.length > 0 ||
-					view.match.gaps.length > 0;
+					view.match.gaps.length > 0 ||
+					view.orphanStaffed.length > 0 ||
+					view.orphanProposals.length > 0;
 				if (hasContent) all.push(view);
 			} catch {
 				// a single broken project view never sinks the page (honest partial).

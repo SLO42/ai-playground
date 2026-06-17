@@ -3,6 +3,7 @@ import {
 	IdentifierError,
 	assertTableName,
 	assertRecordId,
+	assertRecordIdOfTable,
 	assertEdgeId
 } from './validate';
 
@@ -64,6 +65,43 @@ describe('assertRecordId (D-016)', () => {
 		]) {
 			expect(() => assertRecordId(bad)).toThrow(IdentifierError);
 		}
+	});
+});
+
+describe('assertRecordIdOfTable (D-016 — table-scope guard, BL-3)', () => {
+	it('accepts a well-formed id whose table-prefix matches', () => {
+		expect(assertRecordIdOfTable('project:abc', 'project')).toBe('project:abc');
+		expect(assertRecordIdOfTable('project:cap_proj_1', 'project')).toBe('project:cap_proj_1');
+	});
+
+	it('REJECTS a cross-type id that passes the generic shape (role:x as a project id)', () => {
+		// This is the exact BL-3 bug: role:x passes RECORD_ID_RE but is the WRONG table.
+		expect(() => assertRecordIdOfTable('role:x', 'project')).toThrow(IdentifierError);
+	});
+
+	it('the error names the expected and actual table', () => {
+		try {
+			assertRecordIdOfTable('role:code_reviewer', 'project');
+			throw new Error('should have thrown');
+		} catch (e) {
+			expect(e).toBeInstanceOf(IdentifierError);
+			expect((e as Error).message).toContain("'role'");
+			expect((e as Error).message).toContain("'project'");
+		}
+	});
+
+	it('rejects a malformed id (fails the shape check first)', () => {
+		expect(() => assertRecordIdOfTable('not an id', 'project')).toThrow(IdentifierError);
+		expect(() => assertRecordIdOfTable('project', 'project')).toThrow(IdentifierError); // bare table
+	});
+
+	it('rejects when the expected table is itself invalid', () => {
+		expect(() => assertRecordIdOfTable('project:abc', 'Project')).toThrow(IdentifierError);
+	});
+
+	it('rejects non-string input', () => {
+		expect(() => assertRecordIdOfTable(123 as unknown, 'project')).toThrow(IdentifierError);
+		expect(() => assertRecordIdOfTable(null as unknown, 'project')).toThrow(IdentifierError);
 	});
 });
 

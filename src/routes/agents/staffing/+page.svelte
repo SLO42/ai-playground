@@ -210,6 +210,71 @@
             </ul>
           {/if}
 
+          {#if view.orphanStaffed.length}
+            <div class="orphans">
+              <span class="orphans-label">Staffed — no longer matched:</span>
+              <p class="orphans-note muted">
+                These roles are staffed on this project but are no longer match candidates (their
+                version failed/withdrew or the needs changed). Un-staff them if they should stop
+                working here.
+              </p>
+              <ul class="orphan-list" aria-label="staffed but no longer matched">
+                {#each view.orphanStaffed as o (o.role)}
+                  {@const ofb = fbForRole(view.project, o.role)}
+                  <li class="orphan candidate" data-match="orphan">
+                    <div class="c-head">
+                      <span class="role-name">{o.roleName}</span>
+                      <span class="staffed-tag">staffed</span>
+                      <span class="mono">since {o.staffedAt ?? '—'}</span>
+                    </div>
+                    <form method="POST" action="?/unstaff" use:enhance={busyEnhance(`unstaff:${view.project}:${o.role}`)} class="row">
+                      <input type="hidden" name="project" value={view.project} />
+                      <input type="hidden" name="role" value={o.role} />
+                      <label class="confirm">
+                        <input
+                          type="checkbox" name="operatorConfirmed"
+                          checked={unstaffTick[`${view.project}:${o.role}`] ?? false}
+                          onchange={(e) => tick('unstaff', `${view.project}:${o.role}`, e.currentTarget.checked)}
+                        />
+                        <span>confirm un-staff</span>
+                      </label>
+                      <button class="btn ghost danger" type="submit"
+                        disabled={!(unstaffTick[`${view.project}:${o.role}`]) || busy[`unstaff:${view.project}:${o.role}`]}>Un-staff</button>
+                    </form>
+                    {#if ofb?.error}<p class="warn" role="alert">{ofb.error}</p>{/if}
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          {/if}
+
+          {#if view.orphanProposals.length}
+            <div class="orphans">
+              <span class="orphans-label">Open proposals — role no longer matched:</span>
+              <p class="orphans-note muted">
+                These open staffing proposals target a role that is no longer a match candidate.
+                Reject them to clear the board.
+              </p>
+              <ul class="orphan-list" aria-label="orphaned staffing proposals">
+                {#each view.orphanProposals as op (op.proposal)}
+                  {@const pfb = fbForProposal(op.proposal)}
+                  <li class="orphan candidate" data-match="orphan">
+                    <div class="c-head">
+                      <span class="role-name">{op.roleName}</span>
+                      <span class="open-tag mono">proposal {op.status}</span>
+                    </div>
+                    <form method="POST" action="?/reject" use:enhance={busyEnhance(`reject:${op.proposal}`)} class="row">
+                      <input type="hidden" name="proposal" value={op.proposal} />
+                      <input class="note" type="text" name="reason" placeholder="reason (optional)" maxlength="2000" />
+                      <button class="btn ghost" type="submit" disabled={busy[`reject:${op.proposal}`]}>Reject</button>
+                    </form>
+                    {#if pfb?.error}<p class="warn" role="alert">{pfb.error}</p>{/if}
+                  </li>
+                {/each}
+              </ul>
+            </div>
+          {/if}
+
           {#if view.match.gaps.length}
             <div class="gaps">
               <span class="gaps-label">HIRE gaps — no catalog role proves these:</span>
@@ -467,6 +532,31 @@
   .btn.danger {
     color: var(--color-warn);
     border-color: var(--color-warn);
+  }
+  .orphans {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    padding-top: var(--space-2, 0.5rem);
+    border-top: var(--border-width, 1px) dashed var(--color-border);
+  }
+  .orphans-label {
+    font: var(--type-body-sm);
+    color: var(--color-warn);
+  }
+  .orphans-note {
+    margin: 0;
+  }
+  .orphan-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  .candidate[data-match='orphan'] {
+    border-left: 3px solid var(--color-warn);
   }
   .gaps {
     display: flex;

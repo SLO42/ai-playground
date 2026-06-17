@@ -34,7 +34,10 @@ import type { Db } from '../db/client';
 import {
 	createReviewProposal,
 	getReviewProposal,
+	getRole,
+	listOpenProposals,
 	listReviewProposalsForRole,
+	listProjectStaff,
 	rejectProposal,
 	setProposalStatus,
 	staffRole,
@@ -231,6 +234,15 @@ export async function confirmStaffing(
 		);
 	}
 
+	// LIVE RE-VALIDATE (BL-3 hardening, §3.8 fail-closed): the proposal stored the matcher evidence
+	// at PROPOSE time, but the world may have moved on (the role's active version failed/withdrew, was
+	// swapped to an unmatched one, or the project's needs changed). A stale proposal must FAIL CLOSED
+	// — never staff a now-unqualified role. We re-run the LIVE matcher and require the candidate to be
+	// a current REUSE recommendation (proven coverage ⊇ the project's CURRENT needed classes — which
+	// mirrors resolveStaff's fail-closed predicate that a role must be deployable+matched to work on a
+	// project). A failed re-validate raises the named StaffingGateError BEFORE any project_staff write.
+	await assertReuseCandidate(db, project, proposal.role);
+
 	// THE WRITE: staffRole creates/enables the project_staff row + role_event{op:'staffed'}. It is
 	// idempotent + concurrency-safe (the project_staff_dedup graceful no-op), so a concurrent
 	// double-confirm collapses to one row. source='pm_validated' (matcher-proposed, operator-confirmed).
@@ -274,6 +286,27 @@ export async function rejectStaffing(
 
 // ── Surface aggregator — the /agents/staffing view (read-only, honest) ────────────────
 
+/** A role STAFFED on a project but NO LONGER a live match candidate (its version failed/withdrew,
+ *  was swapped to an unmatched one, or the project's needs changed). It is invisible on the
+ *  candidate board, so the operator could not un-staff it — this surfaces it (BL-3 orphan fix). */
+export interface OrphanStaffedRole {
+	role: string;
+	roleName: string;
+	/** ISO string | null — when the staffing row was created (honest '—' when absent, F-013). */
+	staffedAt: string | null;
+}
+
+/** An OPEN staffing proposal whose candidate role is NO LONGER a live match candidate — invisible
+ *  on the candidate board (a candidate card renders the confirm/reject), so it is surfaced here for
+ *  the operator to REJECT it (BL-3 orphaned-proposal visibility). */
+export interface OrphanProposal {
+	proposal: string;
+	role: string;
+	roleName: string;
+	status: string;
+	createdAt: string | null;
+}
+
 /** One project's full staffing view: its needs + the matcher result + any OPEN staffing
  *  proposals (so the surface renders the gated confirm/reject controls). Honest empties (F-008). */
 export interface ProjectStaffingView {
@@ -286,6 +319,11 @@ export interface ProjectStaffingView {
 	openProposals: Array<{ proposal: string; role: string; status: string; createdAt: string | null }>;
 	/** The currently-staffed (enabled) roles on this project (id list) — the surface marks them. */
 	staffedRoles: string[];
+	/** STAFFED but NO LONGER a candidate — the operator can still un-staff these (orphan fix). */
+	orphanStaffed: OrphanStaffedRole[];
+	/** OPEN staffing proposals whose role is NO LONGER a candidate — surfaced so the operator can
+	 *  reject them (orphaned-proposal visibility). Honest empty (F-008) when none. */
+	orphanProposals: OrphanProposal[];
 }
 
 /**
@@ -300,10 +338,11 @@ export async function loadProjectStaffingView(
 	projectName: string
 ): Promise<ProjectStaffingView> {
 	const match = await recommendStaffing(db, projectId);
+	const candidateRoles = new Set(match.candidates.map((c) => c.role));
 
 	// OPEN staffing proposals for this project: scan each candidate's role proposals (bounded) +
 	// the gaps' candidate roles produce none. We collect across the candidate roles (the only
-	// roles a staffing proposal can target via this surface).
+	// roles a staffing proposal CARD can target via this surface).
 	const openProposals: ProjectStaffingView['openProposals'] = [];
 	const seen = new Set<string>();
 	for (const c of match.candidates) {
@@ -316,11 +355,60 @@ export async function loadProjectStaffingView(
 	}
 
 	// Currently-staffed (enabled) roles on this project.
-	const { listProjectStaff } = await import('./staff');
 	const staff = await listProjectStaff(db, projectId);
 	const staffedRoles = staff.filter((s) => s.enabled).map((s) => s.role);
 
-	return { project: match.project, projectName, match, openProposals, staffedRoles };
+	// ORPHAN STAFFED (BL-3 fix): a role enabled in project_staff that is NO LONGER a candidate
+	// (its version failed/withdrew, was swapped to an unmatched one, or the needs changed) is
+	// invisible on the candidate board — the operator could not un-staff it. Surface it so the
+	// existing unstaff action is reachable. Honest empty (F-008) when none. One enabled row per
+	// (project, role) — dedup defensively.
+	const orphanStaffed: OrphanStaffedRole[] = [];
+	const seenOrphan = new Set<string>();
+	for (const s of staff) {
+		if (!s.enabled || candidateRoles.has(s.role) || seenOrphan.has(s.role)) continue;
+		seenOrphan.add(s.role);
+		const role = await getRole(db, s.role);
+		orphanStaffed.push({
+			role: s.role,
+			roleName: role?.name ?? s.role, // honest: fall back to the id when the role row is gone.
+			staffedAt: s.created_at
+		});
+	}
+
+	// ORPHANED PROPOSALS (BL-3 fix): an OPEN staffing proposal whose role is NO LONGER a candidate
+	// is invisible on the board (the confirm/reject controls live on a candidate card). Surface it
+	// so the operator can REJECT it — INDEPENDENT of any project_staff row (a proposal can exist
+	// without ever having been staffed: propose ≠ staff). Source = ALL open proposals (bounded),
+	// filtered to kind='staffing' + THIS project in trigger + a role that is NOT a live candidate.
+	// Honest empty (F-008) when none.
+	const orphanProposals: OrphanProposal[] = [];
+	const seenProp = new Set<string>();
+	const allOpen = await listOpenProposals(db);
+	for (const p of allOpen) {
+		if (p.kind !== 'staffing') continue;
+		if (!isStaffingTrigger(p.trigger) || p.trigger.project !== projectId) continue;
+		if (candidateRoles.has(p.role) || seenProp.has(p.role)) continue;
+		seenProp.add(p.role);
+		const role = await getRole(db, p.role);
+		orphanProposals.push({
+			proposal: p.id,
+			role: p.role,
+			roleName: role?.name ?? p.role,
+			status: p.status,
+			createdAt: p.created_at
+		});
+	}
+
+	return {
+		project: match.project,
+		projectName,
+		match,
+		openProposals,
+		staffedRoles,
+		orphanStaffed,
+		orphanProposals
+	};
 }
 
 /** Find an OPEN staffing proposal for a (project, role) pair, or null. Reads the role's proposals

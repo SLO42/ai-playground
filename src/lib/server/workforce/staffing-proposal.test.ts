@@ -1,3 +1,4 @@
+import { StringRecordId } from 'surrealdb';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
@@ -18,10 +19,12 @@ import { setCapabilityNeeds } from './capability-match';
 import { getProjectStaff, resolveStaff, staffRole, type TierModelResolver } from './staff';
 import {
 	confirmStaffing,
+	loadProjectStaffingView,
 	proposeStaffing,
 	rejectStaffing,
 	StaffingGateError
 } from './staffing-proposal';
+import { unstaffRole } from './staff';
 
 // CAPABILITY-MATCH-SPEC §4/§5 (BL-3) VERIFY — the operator-gated STAFFING PROPOSAL bridge +
 // the staffRole concurrency no-op fold, against a REAL throwaway SurrealDB. Covers:
@@ -265,5 +268,123 @@ describe('staffRole — concurrent double-staff is a graceful no-op (ONE row)', 
 		// A malformed role id fails at the link() chokepoint BEFORE any dedup path — it must throw,
 		// never be absorbed as a benign no-op.
 		await expect(staffRole(db, project, 'not a record id at all', {})).rejects.toBeTruthy();
+	});
+});
+
+// ── (3) confirmStaffing LIVE RE-VALIDATE (BL-3 LOW) ───────────────────────────────────
+
+describe('confirmStaffing — live re-validate a STALE proposal fails closed', () => {
+	it('a proposal whose role went UNMATCHED (needs changed) fails closed with no project_staff write', async () => {
+		const project = await freshProject();
+		const { role } = await provenRole('stale-need', 'cls-stale-a');
+		// A second proven class so the project can legitimately need a DIFFERENT class later.
+		await provenRole('stale-other', 'cls-stale-b');
+		await setCapabilityNeeds(db, project, { defect_classes: ['cls-stale-a'] });
+		const { proposal } = await proposeStaffing(db, { project, role: role.id });
+
+		// The world moves on: the project no longer needs cls-stale-a (it now needs cls-stale-b,
+		// which `role` does NOT prove) → `role` is no longer a candidate. The stored proposal is now
+		// stale and MUST fail closed at confirm.
+		await setCapabilityNeeds(db, project, { defect_classes: ['cls-stale-b'] });
+		await expect(
+			confirmStaffing(db, { proposal: proposal.id, operatorConfirmed: true })
+		).rejects.toBeInstanceOf(StaffingGateError);
+		// FAIL-CLOSED: no project_staff row was written.
+		expect(await getProjectStaff(db, project, role.id)).toBeNull();
+	});
+
+	it('a proposal whose role went NON-DEPLOYABLE (version withdrawn) fails closed', async () => {
+		const project = await freshProject();
+		const { role, version } = await provenRole('stale-dep', 'cls-stale-c');
+		await setCapabilityNeeds(db, project, { defect_classes: ['cls-stale-c'] });
+		const { proposal } = await proposeStaffing(db, { project, role: role.id });
+
+		// Withdraw the role's active version → roleProvenCoverage returns [] (a role with no
+		// deployable active version proves nothing) → no longer a candidate. NOTE: coverage keys on
+		// a PASSING run at the active version; mark the version withdrawn so it is non-deployable.
+		await db.query(`UPDATE $vid SET lifecycle = 'withdrawn';`, {
+			vid: new StringRecordId(version.id)
+		});
+		await db.query(`UPDATE $rid SET active_version = NONE;`, {
+			rid: new StringRecordId(role.id)
+		});
+		await expect(
+			confirmStaffing(db, { proposal: proposal.id, operatorConfirmed: true })
+		).rejects.toBeInstanceOf(StaffingGateError);
+		expect(await getProjectStaff(db, project, role.id)).toBeNull();
+	});
+});
+
+// ── (2) ORPHAN un-staff + (4) ORPHANED-PROPOSAL visibility (BL-3 MEDIUM/LOW) ──────────
+
+describe('loadProjectStaffingView — orphan staffed roles + orphaned proposals', () => {
+	it('a staffed role that is no longer a candidate is surfaced as orphanStaffed and can be un-staffed', async () => {
+		const project = await freshProject();
+		const { role } = await provenRole('orphan-staff', 'cls-orph-a');
+		await provenRole('orphan-other', 'cls-orph-b');
+		await setCapabilityNeeds(db, project, { defect_classes: ['cls-orph-a'] });
+		// Staff it via the gated path (propose → confirm).
+		const { proposal } = await proposeStaffing(db, { project, role: role.id });
+		await confirmStaffing(db, { proposal: proposal.id, operatorConfirmed: true });
+
+		// Sanity: while it is still a candidate, it is NOT an orphan (it shows on the candidate card).
+		let view = await loadProjectStaffingView(db, project, 'orphan proj');
+		expect(view.staffedRoles).toContain(role.id);
+		expect(view.orphanStaffed.map((o) => o.role)).not.toContain(role.id);
+
+		// Change the needs so `role` is no longer a candidate → it becomes an ORPHAN (staffed but
+		// absent from the board).
+		await setCapabilityNeeds(db, project, { defect_classes: ['cls-orph-b'] });
+		view = await loadProjectStaffingView(db, project, 'orphan proj');
+		expect(view.match.candidates.map((c) => c.role)).not.toContain(role.id);
+		const orphan = view.orphanStaffed.find((o) => o.role === role.id);
+		expect(orphan).toBeDefined();
+		expect(orphan?.roleName).toBeTruthy(); // honest name, not the bare id when the role exists
+
+		// The existing unstaff action clears it.
+		await unstaffRole(db, project, role.id);
+		view = await loadProjectStaffingView(db, project, 'orphan proj');
+		expect(view.orphanStaffed.map((o) => o.role)).not.toContain(role.id);
+		expect(view.staffedRoles).not.toContain(role.id);
+	});
+
+	it('honest empty: no orphan staffed / no orphan proposals when none exist', async () => {
+		const project = await freshProject();
+		const { role } = await provenRole('no-orphan', 'cls-noorph');
+		await setCapabilityNeeds(db, project, { defect_classes: ['cls-noorph'] });
+		const view = await loadProjectStaffingView(db, project, 'clean proj');
+		expect(view.orphanStaffed).toEqual([]);
+		expect(view.orphanProposals).toEqual([]);
+		// the proven role IS a normal candidate (sanity that the view isn't broken)
+		expect(view.match.candidates.map((c) => c.role)).toContain(role.id);
+	});
+
+	it('an OPEN proposal whose role is no longer a candidate appears in orphanProposals', async () => {
+		const project = await freshProject();
+		const { role } = await provenRole('orphan-prop', 'cls-op-a');
+		await provenRole('orphan-prop-other', 'cls-op-b');
+		await setCapabilityNeeds(db, project, { defect_classes: ['cls-op-a'] });
+		const { proposal } = await proposeStaffing(db, { project, role: role.id });
+
+		// While still a candidate, the open proposal rides on the candidate card (openProposals), NOT
+		// the orphan surface.
+		let view = await loadProjectStaffingView(db, project, 'orphan prop proj');
+		expect(view.openProposals.map((p) => p.proposal)).toContain(proposal.id);
+		expect(view.orphanProposals).toEqual([]);
+
+		// Change the needs so `role` is no longer a candidate → the OPEN proposal is now invisible on
+		// the board → it must surface as an orphaned proposal so the operator can reject it.
+		await setCapabilityNeeds(db, project, { defect_classes: ['cls-op-b'] });
+		view = await loadProjectStaffingView(db, project, 'orphan prop proj');
+		expect(view.match.candidates.map((c) => c.role)).not.toContain(role.id);
+		const orphanProp = view.orphanProposals.find((p) => p.proposal === proposal.id);
+		expect(orphanProp).toBeDefined();
+		expect(orphanProp?.role).toBe(role.id);
+		expect(orphanProp?.roleName).toBeTruthy();
+
+		// Rejecting it clears it from the orphaned surface.
+		await rejectStaffing(db, { proposal: proposal.id, reason: 'no longer matched' });
+		view = await loadProjectStaffingView(db, project, 'orphan prop proj');
+		expect(view.orphanProposals.map((p) => p.proposal)).not.toContain(proposal.id);
 	});
 });

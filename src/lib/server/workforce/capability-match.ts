@@ -28,7 +28,7 @@
 
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
-import { assertRecordId } from '../db/validate';
+import { assertRecordId, assertRecordIdOfTable } from '../db/validate';
 import { screen } from '../memory/screen';
 import { getRole, listRoles, type RoleRow, type Tier } from './repo';
 
@@ -52,6 +52,14 @@ export class CapabilityNeedsError extends Error {
 
 function link(id: string): StringRecordId {
 	return new StringRecordId(assertRecordId(id));
+}
+
+/** Project-scoped link (BL-3 D-016 table-scope hardening). A projectId is REQUIRED to be a
+ *  `project:…` id — a cross-type id (e.g. `role:x`) passes the generic RECORD_ID_RE shape but
+ *  would run a wrong-table lookup, so we reject it at the chokepoint with a NAMED IdentifierError
+ *  (expected-vs-actual table) before it ever reaches a query. */
+function projectLink(projectId: string): StringRecordId {
+	return new StringRecordId(assertRecordIdOfTable(projectId, 'project'));
 }
 
 /** The tier cost ladder, cheapest → dearest (the §5 ranking axis). -1 ⇒ unknown tier
@@ -136,7 +144,7 @@ function normNeeds(raw: unknown): CapabilityNeeds {
  * when the project itself does not exist (a caller bug, not an empty state).
  */
 export async function getCapabilityNeeds(db: Db, projectId: string): Promise<CapabilityNeeds> {
-	const pid = link(projectId);
+	const pid = projectLink(projectId);
 	const [rows] = await db.query<[Array<{ capability_needs?: unknown }>]>(
 		`SELECT capability_needs FROM $pid;`,
 		{ pid }
@@ -174,7 +182,7 @@ export async function setCapabilityNeeds(
 	projectId: string,
 	input: SetCapabilityNeedsInput
 ): Promise<CapabilityNeeds> {
-	const pid = link(projectId);
+	const pid = projectLink(projectId);
 	// Existence check first — a needs-set for a missing project is a caller bug, not empty state.
 	const [exists] = await db.query<[Array<{ id: unknown }>]>(`SELECT id FROM $pid;`, { pid });
 	if (!exists.length) {
@@ -389,7 +397,7 @@ export async function recommendStaffing(
 	// candidate, no fabricated gap; fullyCovered is vacuously true.
 	if (needed.length === 0) {
 		return {
-			project: assertRecordId(projectId),
+			project: assertRecordIdOfTable(projectId, 'project'),
 			needs,
 			vocabulary,
 			candidates: [],

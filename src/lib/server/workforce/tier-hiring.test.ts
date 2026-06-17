@@ -191,6 +191,44 @@ describe('§7 tierHiringGrid — null-honest grid', () => {
 		expect(sonnet.gauntlet?.costUsd).toBeNull();
 	});
 
+	// REGRESSION (gap #1/#2 — recall/FP provenance): a tier with a PASSING run THEN a later FAILED
+	// run at the SAME model must surface the PASSING run's recall/FP in the deployable cell — NEVER
+	// the failed run's score (track-record's latest-terminal fold would have leaked the failed run).
+	it('PASS-then-FAIL at one tier → cell shows the PASSING run recall/FP, not the failed run (F-008)', async () => {
+		const { version } = await seedRole();
+		// Certify sonnet (the passing run: recall 1.0, fp 0 @ sha-P).
+		await seedRun(version, {
+			tier: 'sonnet',
+			modelId: MODELS.sonnet.model_id,
+			status: 'passed',
+			plantedTotal: 4,
+			plantedFound: 4,
+			fp: 0,
+			fixtureSetSha: 'sha-P'
+		});
+		// A LATER failed run at the same model (recall 0.25, fp 3) — must NOT bleed into the cell.
+		await seedRun(version, {
+			tier: 'sonnet',
+			modelId: MODELS.sonnet.model_id,
+			status: 'failed',
+			plantedTotal: 4,
+			plantedFound: 1,
+			fp: 3,
+			fixtureSetSha: 'sha-Q'
+		});
+		const grid = await tierHiringGrid(db, version.id, resolver);
+		const sonnet = grid.cells.find((c) => c.tier === 'sonnet')!;
+		// Deployable (the passing cert persists past a later fail).
+		expect(sonnet.deployable).toBe(true);
+		// The DISPLAYED recall/FP are the PASSING run's, NOT the failed run's (0.25/3).
+		expect(sonnet.gauntlet?.recall).toBe(1);
+		expect(sonnet.gauntlet?.falsePositives).toBe(0);
+		expect(sonnet.gauntlet?.passedFixtureSetSha).toBe('sha-P');
+		// The status counts still reflect BOTH runs (the full fold).
+		expect(sonnet.gauntlet?.passed).toBe(1);
+		expect(sonnet.gauntlet?.failed).toBe(1);
+	});
+
 	it('throws for a missing version (a grid for a missing artifact is a caller bug)', async () => {
 		await expect(tierHiringGrid(db, 'role_version:does_not_exist', resolver)).rejects.toThrow(
 			WorkforceInputError
@@ -272,6 +310,52 @@ describe('§7 recommendation — STRICT (pure computeRecommendation)', () => {
 		const r = computeRecommendation([cell('sonnet', { sha: 'sha-A', recall: 1, falsePositives: 0 })]);
 		expect(r.emit).toBe(false);
 		expect(r.reason).toMatch(/fewer than two/i);
+	});
+
+	// REGRESSION (gap #1 — the fabricated-'matches' bug): sonnet PASSES weakly (recall 0.75) then a
+	// LATER sonnet run FAILS but with a strong recall 1.0; opus PASSES at recall 1.0. The old fold
+	// took sonnet's recall from the latest-terminal (the FAILED, recall-1.0) run and emitted
+	// 'sonnet matches opus' — fabricated, since sonnet's REAL passing recall (0.75) is WORSE. The
+	// fix reads recall from the PASSING run, so NO claim is emitted.
+	it('does NOT fabricate a match from a later FAILED run with a flattering recall (gap #1)', async () => {
+		const { version } = await seedRole();
+		// opus certifies at recall 1.0 / fp 0 @ sha-A.
+		await seedRun(version, {
+			tier: 'opus',
+			modelId: MODELS.opus.model_id,
+			status: 'passed',
+			plantedTotal: 4,
+			plantedFound: 4,
+			fp: 0,
+			fixtureSetSha: 'sha-A'
+		});
+		// sonnet PASSES weakly: recall 0.75 (3/4), fp 0 @ sha-A.
+		await seedRun(version, {
+			tier: 'sonnet',
+			modelId: MODELS.sonnet.model_id,
+			status: 'passed',
+			plantedTotal: 4,
+			plantedFound: 3,
+			fp: 0,
+			fixtureSetSha: 'sha-A'
+		});
+		// A LATER sonnet run FAILS but reports a flattering recall 1.0 / fp 0 @ sha-A — the trap.
+		await seedRun(version, {
+			tier: 'sonnet',
+			modelId: MODELS.sonnet.model_id,
+			status: 'failed',
+			plantedTotal: 4,
+			plantedFound: 4,
+			fp: 0,
+			fixtureSetSha: 'sha-A'
+		});
+		const grid = await tierHiringGrid(db, version.id, resolver);
+		const sonnet = grid.cells.find((c) => c.tier === 'sonnet')!;
+		// The cell reflects the PASSING run's recall (0.75), not the failed run's 1.0.
+		expect(sonnet.gauntlet?.recall).toBe(0.75);
+		// And therefore NO fabricated 'matches' — sonnet's real passing recall is worse than opus.
+		expect(grid.recommendation.emit).toBe(false);
+		expect(grid.recommendation.reason).toMatch(/worse on recall or FP/i);
 	});
 
 	it('end-to-end via the grid: two passing tiers same sha → recommendation emits', async () => {
@@ -434,6 +518,43 @@ describe('§7 STRICT tier_change proposal + gate + swap', () => {
 		expect(again.proposal.status).toBe('swapped');
 		const fresh = await getReviewProposal(db, proposal.id);
 		expect(fresh?.status).toBe('swapped');
+	});
+
+	// REGRESSION (gap #3 — interrupt contract): the role TX commits BEFORE the proposal flips to
+	// 'swapped'. Simulate a crash in that window (rewind the proposal status post-TX) and re-run
+	// swapTierChange — the guarded audit CREATE must NOT append a SECOND tier_changed event.
+	it('crash-window re-run does NOT duplicate the tier_changed audit event (gap #3)', async () => {
+		const { version } = await seedRole('opus');
+		await seedRun(version, {
+			tier: 'sonnet',
+			modelId: MODELS.sonnet.model_id,
+			status: 'passed',
+			plantedTotal: 1,
+			plantedFound: 1,
+			fp: 0,
+			fixtureSetSha: 'sha-CRASH'
+		});
+		const { proposal } = await proposeTierChange(
+			db,
+			{ roleVersion: version.id, targetTier: 'sonnet' },
+			resolver
+		);
+		await swapTierChange(db, { proposal: proposal.id, operatorConfirmed: true }, resolver);
+		const { StringRecordId } = await import('surrealdb');
+		// Simulate the crash window: the role TX committed + the audit event landed, but the
+		// proposal never reached 'swapped'. Rewind it to an open status (raw write).
+		await db.query(`UPDATE $pid SET status = 'proposed';`, {
+			pid: new StringRecordId(proposal.id)
+		});
+		// Re-run — the line-664 guard does NOT short-circuit (status !== 'swapped'), so the role TX
+		// re-executes; the guarded CREATE must absorb the prior audit row.
+		const again = await swapTierChange(db, { proposal: proposal.id, operatorConfirmed: true }, resolver);
+		expect(again.proposal.status).toBe('swapped');
+		const [evs] = await db.query<[Array<{ id: unknown }>]>(
+			`SELECT id FROM role_event WHERE op = 'tier_changed' AND detail.proposal = $pstr;`,
+			{ pstr: proposal.id }
+		);
+		expect((evs ?? []).length).toBe(1);
 	});
 
 	it('STRICT: a FAILED run at the target does NOT unlock the swap (no laundering)', async () => {

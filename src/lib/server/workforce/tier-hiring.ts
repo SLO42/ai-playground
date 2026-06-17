@@ -90,9 +90,11 @@ export interface TierGauntletEvidence {
 	error: number;
 	adjudicating: number;
 	running: number;
-	/** planted_found / planted_total of the LATEST terminal run; null when none / total 0. */
+	/** planted_found / planted_total of the LATEST PASSING run (provenance-coherent with
+	 *  deployable + passedFixtureSetSha — NOT the latest-terminal fold); null when no passing run
+	 *  or its planted_total is 0 (never a failed run's score on a certified cell — F-008). */
 	recall: number | null;
-	/** false_positives of the latest terminal run; null when no terminal run. */
+	/** false_positives of the LATEST PASSING run; null when no passing run. */
 	falsePositives: number | null;
 	/** Σ cost_usd across PRICED runs only; null when none priced (F-008). */
 	costUsd: number | null;
@@ -218,29 +220,57 @@ async function fieldByModel(
 	return byModel;
 }
 
-/** The fixture_set_sha of the LATEST PASSING run at a model — the recommendation's apples-to-
- *  apples key. null when no passing run exists. Bounded read (F-022: ORDER BY field projected). */
-async function passedFixtureSetShaFor(
+/** The §7 PROVENANCE-COHERENT metrics of the LATEST PASSING run at a model — fixture_set_sha
+ *  AND the recall/FP of that SAME run. This is the apples-to-apples key the recommendation +
+ *  the deployable grid cell BOTH read (F-008 fix: NEVER mix the latest-terminal run's recall/FP,
+ *  which may be a later FAILED run, with the passing run's deployable/sha — the red-team's
+ *  fabricated-'matches' bug). null when no passing run exists. Bounded read (F-022: ORDER BY
+ *  field projected). */
+async function passingRunMetricsFor(
 	db: Db,
 	versionId: string,
 	modelId: string
-): Promise<string | null> {
+): Promise<{ fixtureSetSha: string; recall: number | null; falsePositives: number | null } | null> {
 	const vid = new StringRecordId(assertRecordId(versionId));
-	const [rows] = await db.query<[Array<{ fixture_set_sha: string; started_at: unknown }>]>(
-		`SELECT fixture_set_sha, started_at FROM interview_run
+	const [rows] = await db.query<
+		[
+			Array<{
+				fixture_set_sha: string;
+				planted_total: number;
+				planted_found: number;
+				false_positives: number;
+				started_at: unknown;
+			}>
+		]
+	>(
+		`SELECT fixture_set_sha, planted_total, planted_found, false_positives, started_at
+		   FROM interview_run
 		  WHERE role_version = $vid AND status = 'passed' AND model_id = $mid
 		  ORDER BY started_at DESC LIMIT 1;`,
 		{ vid, mid: modelId }
 	);
-	const sha = rows?.[0]?.fixture_set_sha;
-	return typeof sha === 'string' && sha.length > 0 ? sha : null;
+	const row = rows?.[0];
+	const sha = row?.fixture_set_sha;
+	if (typeof sha !== 'string' || sha.length === 0) return null;
+	const total = typeof row.planted_total === 'number' ? row.planted_total : 0;
+	const found = typeof row.planted_found === 'number' ? row.planted_found : 0;
+	return {
+		fixtureSetSha: sha,
+		// Recall/FP of the PASSING run itself — never str(undefined)/fake 0 (F-008/F-013).
+		recall: total > 0 ? found / total : null,
+		falsePositives: typeof row.false_positives === 'number' ? row.false_positives : null
+	};
 }
 
-/** Lift an InterviewPlaneCell (track-record fold) + the passing fixture_set_sha into the §7
- *  gauntlet-evidence shape. Pure (no IO). */
+/** Lift an InterviewPlaneCell (track-record fold) into the §7 gauntlet-evidence shape, with
+ *  recall/FP/sha taken from the LATEST PASSING run (provenance-coherent — same run as deployable),
+ *  NOT the latest-terminal fold. When there is no passing run, recall/FP are null (an
+ *  uncertified-at-this-tier cell never shows a failed run's score as if certified — F-008). The
+ *  run-status COUNTS (passed/failed/error/…) + costUsd still come from the full track-record fold.
+ *  Pure (no IO). */
 function gauntletEvidenceFrom(
 	cell: InterviewPlaneCell,
-	passedFixtureSetSha: string | null
+	passing: { fixtureSetSha: string; recall: number | null; falsePositives: number | null } | null
 ): TierGauntletEvidence {
 	return {
 		modelId: cell.model_id,
@@ -250,11 +280,13 @@ function gauntletEvidenceFrom(
 		error: cell.error,
 		adjudicating: cell.adjudicating,
 		running: cell.running,
-		recall: cell.recall,
-		falsePositives: cell.falsePositives,
+		// Provenance fix: recall/FP key on the PASSING run (the one deployable/sha key on), so the
+		// grid cell + the recommendation never read a later FAILED run's metrics.
+		recall: passing ? passing.recall : null,
+		falsePositives: passing ? passing.falsePositives : null,
 		costUsd: cell.costUsd,
 		stale: cell.stale,
-		passedFixtureSetSha,
+		passedFixtureSetSha: passing ? passing.fixtureSetSha : null,
 		lastRunAt: cell.lastRunAt
 	};
 }
@@ -308,8 +340,8 @@ export async function tierHiringGrid(
 		// no passing (prompt_sha × model_id) run is NOT deployable — no waiver, no inherited cert.
 		const verdict = await checkDeployability(db, version.id, modelId);
 		const interviewCell = byModelInterview.get(modelId) ?? null;
-		const passedSha = interviewCell
-			? await passedFixtureSetShaFor(db, version.id, modelId)
+		const passing = interviewCell
+			? await passingRunMetricsFor(db, version.id, modelId)
 			: null;
 		cells.push({
 			tier,
@@ -317,7 +349,7 @@ export async function tierHiringGrid(
 			deployable: verdict.deployable,
 			notDeployableReason: verdict.reason,
 			current: tier === currentTier,
-			gauntlet: interviewCell ? gauntletEvidenceFrom(interviewCell, passedSha) : null,
+			gauntlet: interviewCell ? gauntletEvidenceFrom(interviewCell, passing) : null,
 			field: fieldByMid.get(modelId) ?? null
 		});
 	}
@@ -686,16 +718,25 @@ export async function swapTierChange(
 	if (!role) throw new WorkforceInputError(`role not found: ${proposal.role}`);
 
 	// The tier swap: set role.preferred_tier + role_event{op:'tier_changed'} in ONE transaction
-	// (F-015 — assume it can die mid-apply; the transaction makes it atomic).
+	// (F-015 — assume it can die mid-apply; the transaction makes it atomic). The pointer write is
+	// value-idempotent; the audit-event CREATE is GUARDED so a crash-window re-run (this TX commits
+	// BEFORE closeProposalSwapped flips status to 'swapped', and the line-664 guard only absorbs an
+	// already-'swapped' proposal) does NOT append a SECOND tier_changed event for this proposal —
+	// re-run absorbs the prior partial work instead of duplicating the audit (interrupt contract,
+	// gap #3). The guard keys on detail.proposal so it is per-(proposal) idempotent.
 	const rid = new StringRecordId(assertRecordId(role.id));
 	const vid = new StringRecordId(assertRecordId(proposal.incumbent));
 	await db.query(
 		`BEGIN;
 		 UPDATE $rid SET preferred_tier = $tier, updated_at = time::now();
-		 CREATE role_event CONTENT {
-			role: $rid, role_version: $vid, op: 'tier_changed',
-			detail: { from: $from, to: $tier, model_id: $model, certified_by: $cert,
-			          proposal: $pstr, operator_confirmed: true }
+		 LET $already = (SELECT VALUE id FROM role_event
+		                 WHERE op = 'tier_changed' AND detail.proposal = $pstr LIMIT 1);
+		 IF array::len($already) == 0 {
+		   CREATE role_event CONTENT {
+		      role: $rid, role_version: $vid, op: 'tier_changed',
+		      detail: { from: $from, to: $tier, model_id: $model, certified_by: $cert,
+		                proposal: $pstr, operator_confirmed: true }
+		   };
 		 };
 		 COMMIT;`,
 		{

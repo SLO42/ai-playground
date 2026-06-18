@@ -85,6 +85,103 @@
   let hirePm = $state(true);
   let pmName = $state('');
 
+  // ── client-only field persistence (operator convenience — NOT server state) ──
+  // The brief fields, the chosen template, and the per-template param edits survive a reload AND
+  // navigating away+back so nothing is re-typed. This is sessionStorage-backed convenience ONLY
+  // (F-008: it never becomes server state); the generated proposal envelope is NEVER persisted — it
+  // stays ephemeral (D-010), regenerated fresh from the restored brief on the next propose.
+  const STORAGE_KEY = 'atelier:create:brief:v1';
+
+  /** SSR-safe sessionStorage handle (null on the server, in tests, or when storage is unavailable). */
+  function storage(): Storage | null {
+    if (typeof window === 'undefined') return null;
+    try {
+      return window.sessionStorage;
+    } catch {
+      // Private-mode / disabled storage — persistence silently no-ops (still fully usable).
+      return null;
+    }
+  }
+
+  // Restore runs exactly once, before the write-back effect is allowed to persist (so a partial
+  // restore can never clobber a good snapshot). `restored` gates the write effect below.
+  let restored = $state(false);
+
+  $effect(() => {
+    if (restored) return;
+    const store = storage();
+    if (store) {
+      try {
+        const raw = store.getItem(STORAGE_KEY);
+        if (raw) {
+          const snap = JSON.parse(raw) as Partial<{
+            name: string;
+            description: string;
+            ecosystem: string;
+            refRepoUrl: string;
+            targetPlatform: string;
+            selectedTemplateId: string;
+            paramValues: Record<string, string | boolean>;
+          }>;
+          if (typeof snap.name === 'string') name = snap.name;
+          if (typeof snap.description === 'string') description = snap.description;
+          if (typeof snap.ecosystem === 'string') ecosystem = snap.ecosystem;
+          if (typeof snap.refRepoUrl === 'string') refRepoUrl = snap.refRepoUrl;
+          if (typeof snap.targetPlatform === 'string') targetPlatform = snap.targetPlatform;
+          if (typeof snap.selectedTemplateId === 'string')
+            selectedTemplateId = snap.selectedTemplateId;
+          if (snap.paramValues && typeof snap.paramValues === 'object')
+            paramValues = { ...snap.paramValues };
+        }
+      } catch {
+        // Corrupt/foreign snapshot — drop it, start clean. Persistence stays disabled until a fresh write.
+      }
+    }
+    restored = true;
+  });
+
+  // Write-back: any field/template/param change re-persists the snapshot. Gated on `restored` so the
+  // first paint (pre-restore empty state) never overwrites a stored snapshot.
+  $effect(() => {
+    // Touch every persisted field so the effect re-runs on any change.
+    const snap = {
+      name,
+      description,
+      ecosystem,
+      refRepoUrl,
+      targetPlatform,
+      selectedTemplateId,
+      paramValues
+    };
+    if (!restored) return;
+    const store = storage();
+    if (!store) return;
+    try {
+      store.setItem(STORAGE_KEY, JSON.stringify(snap));
+    } catch {
+      // Quota/serialise failure — drop this write (next change retries). Never throws to the UI.
+    }
+  });
+
+  /** Reset every brief field + the selected template + params, and clear the stored snapshot. */
+  function clearAll() {
+    name = '';
+    description = '';
+    ecosystem = '';
+    refRepoUrl = '';
+    targetPlatform = '';
+    selectedTemplateId = '';
+    paramValues = {};
+    const store = storage();
+    if (store) {
+      try {
+        store.removeItem(STORAGE_KEY);
+      } catch {
+        // ignore — the in-memory reset above already cleared the form.
+      }
+    }
+  }
+
   // The serialized envelope the confirm step re-submits (the confirmToken binds it).
   const envelopeJson = $derived(envelope ? JSON.stringify(envelope) : '');
 
@@ -367,6 +464,14 @@
             {proposing ? 'Generating proposal…' : 'Generate proposal'}
           </button>
         {/if}
+        <button
+          class="btn ghost"
+          type="button"
+          onclick={clearAll}
+          disabled={proposing || scaffolding}
+        >
+          Clear all
+        </button>
       </div>
 
       <div class="status-line" aria-live="polite">
@@ -704,6 +809,16 @@
     border-color: var(--color-border);
   }
   .btn.secondary:hover {
+    border-color: var(--color-accent);
+    opacity: 1;
+  }
+  .btn.ghost {
+    color: var(--color-text-muted);
+    background: transparent;
+    border-color: var(--color-border);
+  }
+  .btn.ghost:hover {
+    color: var(--color-text);
     border-color: var(--color-accent);
     opacity: 1;
   }

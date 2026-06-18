@@ -19,6 +19,7 @@
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
+import { screen } from '../memory/screen';
 import { getProject, type SprintRow } from './repo';
 
 // ── PM memory taxonomy (the v1 type set, minus v1's SQLite "decision-context"
@@ -430,10 +431,17 @@ export async function listPmsWithCadence(db: Db): Promise<PmRow[]> {
  * row via getPm first (interrupt-safe re-run). All values bind via $param (D-016).
  */
 export async function createPm(db: Db, input: CreatePmInput): Promise<PmRow> {
+	// D-026 — the charter is agent-/operator-authored free text (the create-flow pmCharterDraft
+	// rides in here via hirePm). It MUST be screened at this persistence boundary, mirroring
+	// workforce/staff.ts staffRole, because this is the row's only write path: the plan-time
+	// 'freetext' echo gate lets a SAFELY-redactable span (e.g. `secret: <val>`, an email) PASS so
+	// the create won't hard-abort on benign PII, on the contract that the DISK/persistence boundary
+	// redacts it. The pm row IS that boundary — store the screened text, never the raw charter.
+	const charter = input.charter !== undefined ? screen(String(input.charter)).text : undefined;
 	const content = omitUndefined({
 		project: link(input.project),
 		name: input.name,
-		charter: input.charter,
+		charter,
 		persona: input.persona,
 		authority: input.authority
 	});

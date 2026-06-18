@@ -265,6 +265,27 @@ describe('pm identity row', () => {
 		expect(read?.persona).toBe('blunt, evidence-first');
 	});
 
+	// D-026 REGRESSION (CA-H1 fix-loop): the create-flow pmCharterDraft passes the plan-time
+	// 'freetext' echo gate when its only hit is a SAFELY-redactable span (status 'redacted', not
+	// 'quarantined'), on the contract that the persistence boundary redacts it. createPm IS that
+	// boundary — the verified-exploit charter `... secret: s3cretValue ...` must NOT land raw in the
+	// pm row. Asserted on the row READ BACK from SurrealDB (the disk-equivalent), not just the return.
+	it('D-026: a secret-bearing charter is SCREENED at createPm — never stored raw', async () => {
+		const p = await freshProject('pm_id_charter_secret');
+		const raw = 'Deploy with secret: s3cretValue please; also ping admin@example.com';
+		const created = await createPm(db, { project: p.id, name: 'Sentinel', charter: raw });
+		// The credential-assignment span is redacted; the raw value never survives.
+		expect(created.charter).not.toContain('s3cretValue');
+		expect(created.charter).not.toContain('admin@example.com');
+		expect(created.charter).toContain('[REDACTED:credential]');
+
+		// And on the row READ BACK from the DB (the persistence boundary, not just the in-memory return).
+		const read = await getPm(db, p.id);
+		expect(read?.charter).not.toContain('s3cretValue');
+		expect(read?.charter).not.toContain('admin@example.com');
+		expect(read?.charter).toContain('[REDACTED:credential]');
+	});
+
 	it('getPm is null for a project with no PM (the honest empty state)', async () => {
 		const p = await freshProject('pm_id_none');
 		expect(await getPm(db, p.id)).toBeNull();

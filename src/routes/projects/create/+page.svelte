@@ -1012,7 +1012,7 @@
     color: var(--color-text-2);
   }
   .hire-signal {
-    border-left: 2px solid var(--color-warning, var(--color-accent));
+    border-left: 2px solid var(--color-warn);
     padding-left: var(--space-3, 0.75rem);
   }
   .hire-tag {
@@ -1020,15 +1020,15 @@
     font-weight: 600;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--color-warning, var(--color-accent));
-    background: var(--color-warning-muted, var(--color-surface-overlay));
+    color: var(--color-warn-on-overlay);
+    background: var(--color-warn-bg);
     padding: 0.05rem 0.4rem;
     border-radius: var(--radius-sm, 6px);
     vertical-align: middle;
   }
   .chip.proposed {
-    color: var(--color-warning, var(--color-accent));
-    background: var(--color-warning-muted, var(--color-surface-overlay));
+    color: var(--color-warn-on-overlay);
+    background: var(--color-warn-bg);
   }
   .tasks {
     display: flex;

@@ -186,26 +186,63 @@ describe('executeTemplateCreation — redTeam D-018 param injects `../` into a g
 	}, 60_000);
 });
 
-describe('executeTemplateCreation — redTeam D-026 param becomes a literal secret in a generated file', () => {
-	// A param value that lands a literal credential into a generated file's CONTENT must HARD-throw at
-	// the per-file scaffold screen (ScaffoldSecretError) before the file is written — env NAMES only.
-	it('a literal secret in generated content HARD-throws (ScaffoldSecretError), no row, no dir', async () => {
-		// Token assembled at runtime so the source carries no contiguous provider-token pattern.
+describe('executeTemplateCreation — redTeam D-026 secret in a generated file', () => {
+	// An UN-REDACTABLE secret (a private-key PEM block) in generated content must HARD-throw at the
+	// per-file scaffold screen (ScaffoldSecretError) NAMING the file + the reason, before it is written.
+	it('an un-redactable private-key block HARD-throws (ScaffoldSecretError) naming the file, no row, no dir, no raw key', async () => {
+		// Assembled at runtime so the source carries no contiguous key block.
+		const key =
+			'-----BEGIN ' +
+			'RSA PRIVATE KEY-----\nMIIBdeadbeefdeadbeefdeadbeef\n-----END ' +
+			'RSA PRIVATE KEY-----';
+		const spy = vi
+			.spyOn(templates, 'getTemplate')
+			.mockReturnValue(hostileTemplate('blank', { 'CLAUDE.md': `# x\n${key}\n` }));
+		let thrown: unknown;
+		try {
+			await executeTemplateCreation(db, { templateId: 'blank', name: 'ct3 secret', codeRoot });
+		} catch (e) {
+			thrown = e;
+		} finally {
+			spy.mockRestore();
+		}
+		expect(thrown).toBeInstanceOf(ScaffoldSecretError);
+		expect((thrown as ScaffoldSecretError).path).toBe('CLAUDE.md');
+		expect((thrown as Error).message).toContain('CLAUDE.md');
+		expect((thrown as Error).message).toMatch(/quarantin/i);
+		expect(await getProject(db, 'project:ct3_secret')).toBeNull();
+		expect(await exists(join(codeRoot, 'ct3_secret'))).toBe(false);
+	}, 60_000);
+
+	// LIVE-BUG FIX: a REDACTABLE secret/PII span (a credential prefix token, an email) in generated
+	// content does NOT abort — the SAFE redacted text is written and the create SUCCEEDS. The raw secret
+	// is NEVER written to disk (D-026 preserved: redacted text carries no secret bytes).
+	it('a redactable credential/email in generated content is written REDACTED (create SUCCEEDS, never raw)', async () => {
 		const secret = 'sk-' + 'ant-' + 'deadbeefdeadbeefdeadbeef';
 		const spy = vi
 			.spyOn(templates, 'getTemplate')
 			.mockReturnValue(
-				hostileTemplate('blank', { 'CLAUDE.md': `# x\nuse ${secret} for auth\n` })
+				hostileTemplate('blank', {
+					'CLAUDE.md': `# x\nuse ${secret} for auth\ncontact dev@rounds.example\n`
+				})
 			);
 		try {
-			await expect(
-				executeTemplateCreation(db, { templateId: 'blank', name: 'ct3 secret', codeRoot })
-			).rejects.toBeInstanceOf(ScaffoldSecretError);
+			const res = await executeTemplateCreation(db, {
+				templateId: 'blank',
+				name: 'ct3 redact',
+				codeRoot
+			});
+			expect(res.projectId).toBe('project:ct3_redact');
+			const content = await readFile(join(codeRoot, 'ct3_redact', 'CLAUDE.md'), 'utf8');
+			expect(content).toContain('[REDACTED:anthropic-key]');
+			expect(content).toContain('[REDACTED:email]');
+			expect(content).not.toContain('sk-ant-'); // NEVER the raw token on disk.
+			expect(content).not.toContain('dev@rounds.example'); // NEVER the raw email on disk.
+			const row = await getProject(db, res.projectId);
+			expect(row!.create_status).toBe('complete');
 		} finally {
 			spy.mockRestore();
 		}
-		expect(await getProject(db, 'project:ct3_secret')).toBeNull();
-		expect(await exists(join(codeRoot, 'ct3_secret'))).toBe(false);
 	}, 60_000);
 });
 

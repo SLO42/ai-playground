@@ -91,7 +91,16 @@ export class ScaffoldPathError extends Error {
 	}
 }
 
-/** A scaffold file's CONTENT echoed a literal secret (D-026 — env NAMES only). */
+/**
+ * A scaffold file's CONTENT carried an UN-REDACTABLE secret (D-026 — env NAMES only). HARD-reject:
+ * `screen()` returned status 'quarantined' (e.g. a private-key PEM block) — the offending span could
+ * NOT be safely redacted in isolation, so the file is refused rather than written. The message names
+ * the FILE and the concrete reason (the screen rule ids), never a generic "literal secret".
+ *
+ * NOTE (the create-with-email live bug): a 'redacted' status is NOT this error — a redactable span
+ * (a benign email, a home path, a known-prefix token) is written as the SAFE screen().text version
+ * with an honest redaction note, never aborted. Only 'quarantined' (un-redactable) reaches here.
+ */
 export class ScaffoldSecretError extends Error {
 	readonly path: string;
 	constructor(message: string, path: string) {
@@ -266,12 +275,38 @@ function seedContent(rel: string, proposal: CreationProposal, projectName: strin
 	return `// ${rel} — scaffolded by Atelier Create-with-AI for ${projectName}. Founding tasks flesh this out.\n`;
 }
 
+/** An honest record of a file whose content was redacted-in-place before write (D-026, F-008). */
+interface ScaffoldRedaction {
+	/** The project-relative path of the redacted file. */
+	path: string;
+	/** The screen rule ids that fired (e.g. ['email'], ['home-path-win']) — honest, not generic. */
+	reasons: string[];
+}
+
+/** The outcome of materializing a scaffold file-map: the files written + any in-place redactions. */
+interface WriteFileMapResult {
+	/** Relative paths actually written to disk. */
+	written: string[];
+	/** Files whose content carried a redactable span — written as the SAFE redacted text (F-008). */
+	redactions: ScaffoldRedaction[];
+}
+
 /**
  * Write a relative-path → file-content MAP under `projectRoot` (already created + confined),
  * confining + screening every entry before write. Each KEY is re-confined under the project root
  * via resolveEntry (D-018, fail closed on absolute/`..` escape — ScaffoldPathError); a directory
- * key (trailing `/`) is mkdir-only; a file key's CONTENT is screened (D-026 — a literal secret
- * HARD-throws ScaffoldSecretError) before it is written. Returns the relative file paths written.
+ * key (trailing `/`) is mkdir-only; a file key's CONTENT is screened (D-026) before it is written.
+ *
+ * D-026 screen disposition (the three statuses, NO raw secret bytes ever reach disk):
+ *   • 'clean'        → write the content verbatim.
+ *   • 'redacted'     → the sensitive span was ALREADY replaced in screen().text (a benign email, a
+ *                      home path, a known-prefix token). Write that SAFE redacted text and record an
+ *                      honest redaction note (count + reasons). Do NOT abort — the prior hard-abort
+ *                      on 'redacted' was the bug that failed a normal description containing an email.
+ *   • 'quarantined'  → the span could NOT be safely redacted (e.g. a private-key PEM block). HARD-
+ *                      reject ScaffoldSecretError naming the FILE + the concrete screen reasons.
+ * In every case the bytes written are screen().text (clean===original, redacted===safe), so a raw
+ * secret is NEVER written — D-026 preserved (redacted text has none; quarantined is refused).
  *
  * This is the SINGLE scaffold writer shared by BOTH create paths: the AI path passes a map built
  * from dirLayout + seedContent (honest stubs), the TEMPLATE path passes the REAL generated content
@@ -285,8 +320,9 @@ function seedContent(rel: string, proposal: CreationProposal, projectName: strin
 async function writeFileMap(
 	projectRoot: string,
 	fileMap: Record<string, string>
-): Promise<string[]> {
+): Promise<WriteFileMapResult> {
 	const written: string[] = [];
+	const redactions: ScaffoldRedaction[] = [];
 	const seen = new Set<string>();
 	for (const [entry, content] of Object.entries(fileMap)) {
 		const resolved = resolveEntry(entry, projectRoot); // D-018 — absolute/`..` escape fails closed.
@@ -298,18 +334,25 @@ async function writeFileMap(
 			continue;
 		}
 		await mkdir(dirname(resolved.abs), { recursive: true });
-		// D-026: a literal secret must NEVER be written. screen() flags it; fail closed (named).
+		// D-026: screen the content. quarantined → HARD-reject (named, file + reason). redacted →
+		// write the SAFE redacted text + record the note. clean → write verbatim. screen().text is
+		// always the safe payload, so a raw secret never reaches disk on any branch.
 		const res = screen(content);
-		if (res.status !== 'clean') {
+		if (res.status === 'quarantined') {
 			throw new ScaffoldSecretError(
-				`scaffold file '${resolved.rel}' would write a literal secret (D-026): [${res.reasons.join(', ')}]`,
+				`scaffold file '${resolved.rel}' carries an un-redactable secret and was refused ` +
+					`(D-026, quarantined): [${res.reasons.join(', ')}]`,
 				resolved.rel
 			);
 		}
-		await writeFile(resolved.abs, content, 'utf8');
+		if (res.status === 'redacted') {
+			redactions.push({ path: resolved.rel, reasons: res.reasons });
+		}
+		// res.text === content for 'clean'; the safe redacted version for 'redacted'. Never raw secret.
+		await writeFile(resolved.abs, res.text, 'utf8');
 		written.push(resolved.rel);
 	}
-	return written;
+	return { written, redactions };
 }
 
 /**
@@ -344,12 +387,21 @@ async function pathExists(p: string): Promise<boolean> {
 	}
 }
 
-/** Record a global `incident` row (F-008 — a partial scaffold is NEVER silent). Best-effort. */
-async function recordIncident(db: Db, title: string, detail: string): Promise<string | undefined> {
+/**
+ * Record a global `incident` row (F-008 — a scaffold event is NEVER silent). Best-effort. `severity`
+ * defaults to 'error' (a real failure); an honest non-error signal (e.g. an in-place redaction note)
+ * passes 'info' so the surface does not mislabel a benign redaction as a failure.
+ */
+async function recordIncident(
+	db: Db,
+	title: string,
+	detail: string,
+	severity: 'info' | 'warn' | 'error' | 'critical' = 'error'
+): Promise<string | undefined> {
 	try {
 		const [rows] = await db.query<[Array<{ id: unknown }>]>(
 			`CREATE incident CONTENT { title: $title, detail: $detail, severity: $severity } RETURN AFTER;`,
-			{ title, detail: detail.slice(0, 4000), severity: 'error' }
+			{ title, detail: detail.slice(0, 4000), severity }
 		);
 		return rows.length ? String(rows[0].id) : undefined;
 	} catch {
@@ -778,11 +830,13 @@ async function scaffoldRegisterAndWire(
 
 		// ── SCAFFOLD — write tree, git init + first commit. Partial death → cleanup + incident. ──
 		let commitSha: string | undefined;
+		let scaffoldRedactions: ScaffoldRedaction[] = [];
 		try {
 			const rootExistedBefore = await pathExists(projectRoot);
 			await mkdir(projectRoot, { recursive: true });
 			weCreatedRoot = !rootExistedBefore;
-			await writeFileMap(projectRoot, input.fileMap);
+			const writeRes = await writeFileMap(projectRoot, input.fileMap);
+			scaffoldRedactions = writeRes.redactions;
 
 			// git init + first commit via the execFile-ARRAY runner (D-008/F-002 — never a shell).
 			const initRes = await run('git', ['init'], { cwd: projectRoot });
@@ -846,6 +900,23 @@ async function scaffoldRegisterAndWire(
 				`registered id ${row.id} diverged from gate id ${projectId} — scaffold removed (incident logged).`,
 				incidentId
 			);
+		}
+
+		// ── HONEST REDACTION NOTE (D-026 / F-008) — if any scaffold file had a redactable span, the
+		// SAFE redacted text was written (never aborted, never raw). Record an honest, non-fatal note
+		// (count + per-file reasons) so the redaction is visible, never silent. Best-effort: a note
+		// failure must not fail an otherwise-successful create.
+		if (scaffoldRedactions.length > 0) {
+			const detail = scaffoldRedactions
+				.map((r) => `${r.path}: [${r.reasons.join(', ')}]`)
+				.join('; ');
+			await recordIncident(
+				db,
+				`Create scaffold redactions: ${slug}`,
+				`Project ${row.id} scaffolded with ${scaffoldRedactions.length} file(s) redacted in place ` +
+					`(D-026 — safe redacted text written, no raw secret; not an error). ${detail}`,
+				'info'
+			).catch(() => undefined);
 		}
 
 		// ── POST-REGISTER WRITERS (CA-H2) — path-specific, via the caller's callback. ──

@@ -249,35 +249,115 @@ describe('executeCreation — red-team D-018 path escape', () => {
 });
 
 describe('executeCreation — red-team D-026 secret in scaffold content', () => {
-	const SECRET_MACRO = {
+	// A CREDENTIAL-PREFIX token (sk-ant-…) embedded in prose. screen() → 'redacted' (anthropic-key
+	// rule, NOT quarantine-on-hit). In 'freetext' mode the value is redactable PII-class, so the
+	// scaffold-write gate writes the SAFE [REDACTED:anthropic-key] text — never raw, never aborted.
+	const CRED_MACRO = {
 		// Token assembled at runtime so the source carries no contiguous provider-token pattern
-		// (GitHub push-protection) — runtime value is full-format so the scaffold-write screen fires.
+		// (GitHub push-protection) — runtime value is full-format so the screen fires.
 		purpose: 'Use the key ' + ('sk-' + 'ant-' + 'deadbeefdeadbeef') + ' for auth.',
 		vision: 'A tool reached for when tuning a run.',
 		role: 'Solo maintainer.',
 		definition_of_done: 'Runs without crash.'
 	};
 
-	// CA-H1 Gap-2: the plan macro (and every agent-authored free-text field) is now secret-screened at
-	// the PLAN trust boundary, so a key planted in purpose is caught BEFORE the proposal earns a
-	// confirmToken (SecretEchoError) — earlier than the old scaffold-write catch.
-	it('a literal secret in the plan macro is rejected at proposal time (SecretEchoError), no envelope', async () => {
+	// A QUARANTINED secret — a private-key PEM block (screen() quarantineOnHit). Assembled at runtime
+	// so the source file carries no contiguous key block. This is the case BOTH gates HARD-reject
+	// (it cannot be safely redacted in isolation).
+	const PRIVATE_KEY_BLOCK =
+		'-----BEGIN ' +
+		'RSA PRIVATE KEY-----\n' +
+		'MIIBdeadbeefdeadbeefdeadbeefdeadbeefdeadbeef\n' +
+		'-----END ' +
+		'RSA PRIVATE KEY-----';
+
+	// An UN-REDACTABLE (quarantined) private-key block in a free-text macro field is rejected at the
+	// PLAN trust boundary (SecretEchoError) BEFORE the proposal earns a confirmToken — it cannot be
+	// safely written, so it never reaches scaffold. (A REDACTABLE span like an email/known-prefix token
+	// passes the boundary and is redacted at the disk gate — covered below.)
+	it('an un-redactable secret in the plan macro is rejected at proposal time (SecretEchoError), no envelope', async () => {
 		const { SecretEchoError } = await import('./plan');
-		await expect(makeEnvelope('ca2 secret', { planMacro: SECRET_MACRO })).rejects.toBeInstanceOf(SecretEchoError);
+		const QUARANTINE_MACRO = {
+			purpose: `Bootstrap secret:\n${PRIVATE_KEY_BLOCK}`,
+			vision: 'A tool reached for when tuning a run.',
+			role: 'Solo maintainer.',
+			definition_of_done: 'Runs without crash.'
+		};
+		await expect(makeEnvelope('ca2 secret', { planMacro: QUARANTINE_MACRO })).rejects.toBeInstanceOf(
+			SecretEchoError
+		);
 		expect(await getProject(db, 'project:ca2_secret')).toBeNull();
 		expect(await exists(join(codeRoot, 'ca2_secret'))).toBe(false);
 	}, 60_000);
 
-	// Defense in depth: if a macro secret somehow bypassed the plan boundary and a fresh-token envelope
-	// reached the executor directly, the scaffold-write screen STILL fails closed (ScaffoldSecretError).
-	it('the executor still fails closed (ScaffoldSecretError) if a macro secret reaches it directly', async () => {
-		const env = await makeEnvelope('ca2 secret2');
-		const proposal = { ...env.proposal, planMacro: SECRET_MACRO };
+	// LIVE-BUG FIX (the create-with-email regression): a normal description containing a BENIGN email
+	// is redactable PII, NOT a literal secret. It now PASSES the plan boundary AND the scaffold-write
+	// gate writes the SAFE [REDACTED:email] text — the create SUCCEEDS, never aborts. No raw email on disk.
+	it('a benign email in the plan macro → create SUCCEEDS, README written with [REDACTED:email], no raw email on disk', async () => {
+		const EMAIL = 'jane.doe@rounds.example';
+		const env = await makeEnvelope('ca2 email ok', {
+			planMacro: {
+				purpose: `A ROUNDS support tool. Contact ${EMAIL} for triage.`,
+				vision: 'A tool reached for when tuning a run.',
+				role: 'Solo maintainer.',
+				definition_of_done: 'Runs without crash.'
+			}
+		});
+		const res = await executeCreation(db, env, { codeRoot });
+		expect(res.projectId).toBe('project:ca2_email_ok');
+		// The README seeds from purpose → screen redacted the email at the disk boundary.
+		const readme = await readFile(join(codeRoot, 'ca2_email_ok', 'README.md'), 'utf8');
+		expect(readme).toContain('[REDACTED:email]');
+		expect(readme).not.toContain(EMAIL); // NEVER the raw email on disk (D-026).
+		// The project is real and complete (no abort, no incomplete marking).
+		const row = await getProject(db, res.projectId);
+		expect(row).not.toBeNull();
+		expect(row!.create_status).toBe('complete');
+	}, 60_000);
+
+	// QUARANTINED: a private-key block in scaffold content → the executor HARD-rejects ScaffoldSecretError
+	// NAMING the file (README.md, seeded from purpose) + the reason — not a generic 'literal secret'. The
+	// plan boundary also rejects it (quarantined), so we re-mint a fresh token to reach the executor's gate.
+	it('a private-key block in scaffold content → ScaffoldSecretError naming the file, no project, no raw key on disk', async () => {
+		const env = await makeEnvelope('ca2 quarantine');
+		const proposal = {
+			...env.proposal,
+			planMacro: {
+				...env.proposal.planMacro,
+				purpose: `Bootstrap secret:\n${PRIVATE_KEY_BLOCK}`
+			}
+		};
 		const { computeConfirmToken } = await import('./plan');
 		const tampered = { ...env, proposal, confirmToken: computeConfirmToken(env.brief, proposal) };
-		await expect(executeCreation(db, tampered, { codeRoot })).rejects.toBeInstanceOf(ScaffoldSecretError);
-		expect(await getProject(db, 'project:ca2_secret2')).toBeNull();
-		expect(await exists(join(codeRoot, 'ca2_secret2'))).toBe(false);
+		let thrown: unknown;
+		try {
+			await executeCreation(db, tampered, { codeRoot });
+		} catch (e) {
+			thrown = e;
+		}
+		expect(thrown).toBeInstanceOf(ScaffoldSecretError);
+		expect((thrown as ScaffoldSecretError).path).toMatch(/README\.md$/);
+		expect((thrown as Error).message).toContain('README.md');
+		expect((thrown as Error).message).toMatch(/quarantin/i);
+		// No project, no dir, NO raw key bytes anywhere on disk (the partial dir was removed).
+		expect(await getProject(db, 'project:ca2_quarantine')).toBeNull();
+		expect(await exists(join(codeRoot, 'ca2_quarantine'))).toBe(false);
+	}, 60_000);
+
+	// Defense in depth: a credential-prefix token reaching the executor directly is 'redacted' (anthropic-
+	// key), so the scaffold-write gate writes the SAFE [REDACTED:anthropic-key] text — the raw token is
+	// NEVER written to disk, even though the create proceeds. (The plan boundary already rejects it; this
+	// isolates the write gate by re-minting a token so the macro reaches writeFileMap directly.)
+	it('a credential token reaching the write gate is written REDACTED, never raw, on disk', async () => {
+		const env = await makeEnvelope('ca2 redact direct');
+		const proposal = { ...env.proposal, planMacro: CRED_MACRO };
+		const { computeConfirmToken } = await import('./plan');
+		const tampered = { ...env, proposal, confirmToken: computeConfirmToken(env.brief, proposal) };
+		const res = await executeCreation(db, tampered, { codeRoot });
+		const readme = await readFile(join(codeRoot, 'ca2_redact_direct', 'README.md'), 'utf8');
+		expect(readme).toContain('[REDACTED:anthropic-key]');
+		expect(readme).not.toContain('sk-ant-'); // NEVER the raw token on disk (D-026 preserved).
+		expect(res.projectId).toBe('project:ca2_redact_direct');
 	}, 60_000);
 });
 

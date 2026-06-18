@@ -459,6 +459,57 @@ describe('CA-H1 — ENV-NAME-POSITIVE secret-echo at the trust boundary (redTeam
 			).rejects.toBeInstanceOf(SecretEchoError);
 		}
 	});
+
+	// LIVE-BUG FIX (the create-with-email regression): a BENIGN, redactable span (an email, a home
+	// path) in agent-authored PROSE is redactable PII, NOT a literal secret echo. Gate 1 in 'freetext'
+	// mode lets it PASS the plan boundary (the value is kept; the scaffold-write screen redacts it at
+	// the disk boundary). Previously this hard-rejected the whole proposal with a misleading
+	// 'literal secret' error — the live bug.
+	it('ACCEPTS a benign email in a free-text macro field (redactable PII is not a secret echo — Gate 1 freetext)', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({
+				planMacro: {
+					purpose: 'A ROUNDS support tool. Contact jane.doe@rounds.example for triage.',
+					vision: 'A mod players reach for when the base game feels flat.',
+					role: 'Solo maintainer with periodic playtests.',
+					definition_of_done: 'Mod loads, curve is configurable, no crash across 10 rounds.'
+				}
+			})
+		);
+		// The value is KEPT verbatim at the plan boundary (no mutation); the disk-write gate redacts it.
+		expect(p.planMacro.purpose).toContain('jane.doe@rounds.example');
+	});
+	it('ACCEPTS a benign email in a founding task purpose (free-text)', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({
+				foundingTasks: [
+					{ objective: 'Wire the support inbox', purpose: 'Route triage to ops@rounds.example.' },
+					{ objective: 'Implement the curve', purpose: 'The curve is the whole point.' },
+					{ objective: 'Add config', purpose: 'Players tune it.' }
+				]
+			})
+		);
+		expect(p.foundingTasks[0].purpose).toContain('ops@rounds.example');
+	});
+	// But an UN-REDACTABLE quarantined block (a private-key PEM) in free text still HARD-rejects at the
+	// plan boundary (Gate 1 'freetext' rejects 'quarantined') — it cannot be safely written.
+	it('REJECTS an un-redactable private-key block in a free-text macro field (quarantined — Gate 1 freetext)', async () => {
+		const KEY =
+			'-----BEGIN ' +
+			'RSA PRIVATE KEY-----\nMIIBdeadbeefdeadbeefdeadbeef\n-----END ' +
+			'RSA PRIVATE KEY-----';
+		const raw = goodRaw({
+			planMacro: {
+				purpose: `Bootstrap with:\n${KEY}`,
+				vision: 'A mod players reach for when the base game feels flat.',
+				role: 'Solo maintainer.',
+				definition_of_done: 'Loads + configurable.'
+			}
+		});
+		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(SecretEchoError);
+	});
 });
 
 // CA-H1 — D-018 path-confinement at the PLAN trust boundary: an absolute or `..`-traversal dirLayout

@@ -444,21 +444,41 @@ function looksLikeLiteralCredential(value: string): boolean {
  *      high-entropy mixed token) is rejected under ANY key, since no env-name reference looks like
  *      that. Catches a secret smuggled under an innocuous key (`{ note: 'glpat-…' }`).
  *
- * Stricter than "redact and continue" on purpose: a scaffold config that names a value rather than
- * an env var is a brief/agent bug to surface (CREATE-SPEC §3), not to paper over.
+ * `mode` tunes Gate 1's disposition of a NON-clean screen result, mirroring the scaffold-write gate:
+ *   • 'config' (default) — a config blob references env NAMES only, so ANY non-clean screen (redacted
+ *     OR quarantined) is a literal echo and HARD-rejects. Stricter than "redact and continue" on
+ *     purpose: a scaffold config that names a value rather than an env var is a bug to surface.
+ *   • 'freetext' — agent-authored descriptive prose (a plan-macro field, a charter, a task
+ *     objective/purpose, a clarifier). A 'redacted' status means the span is a benign,
+ *     SAFELY-redactable token (an email, a home path, a known-prefix mention) — the SAME class the
+ *     scaffold-write gate redacts-in-place rather than aborts. We let it PASS here (the value is kept
+ *     verbatim; the scaffold-write screen redacts it at the disk boundary, so no raw secret lands),
+ *     and HARD-reject ONLY 'quarantined' (an un-redactable private-key block). This fixes the live
+ *     bug where a normal description containing an email failed the create with a 'literal secret'
+ *     error: a redactable email in prose is not a secret echo, it is redactable PII.
+ * Gates 2 (key-positive) and 3 (prefix/entropy) ALWAYS run and are NEVER relaxed by mode — a real
+ * credential token in free text still HARD-rejects regardless.
  *
  * `key` is the immediate field name the value sits under (undefined at array elements / the root).
  */
-function assertNoSecretEcho(value: unknown, path: string, key?: string): void {
+function assertNoSecretEcho(
+	value: unknown,
+	path: string,
+	key?: string,
+	mode: 'config' | 'freetext' = 'config'
+): void {
 	if (typeof value === 'string') {
 		// Gate 1 — isolation screen (high-confidence inline secrets).
 		const res = screen(value);
-		if (res.status !== 'clean') {
-			throw new SecretEchoError(
-				`proposal '${path}' echoes a literal secret (D-026: config references env NAMES only) — ` +
-					`screen reasons: [${res.reasons.join(', ')}]`,
-				path
-			);
+		// 'config' rejects ANY non-clean; 'freetext' rejects only the un-redactable 'quarantined'
+		// (a 'redacted' span is benign redactable PII, handled at the scaffold-write disk boundary).
+		const gate1Rejects = mode === 'config' ? res.status !== 'clean' : res.status === 'quarantined';
+		if (gate1Rejects) {
+			const why =
+				res.status === 'quarantined'
+					? `carries an un-redactable secret (D-026, quarantined)`
+					: `echoes a literal secret (D-026: config references env NAMES only)`;
+			throw new SecretEchoError(`proposal '${path}' ${why} — screen reasons: [${res.reasons.join(', ')}]`, path);
 		}
 		// Gate 2 — KEY-POSITIVE: a non-empty value under a secret-like key must BE an EXPLICIT env-name
 		// reference (${ENV_NAME}/$ENV_NAME/…). A bare token or any literal is rejected — this is what
@@ -481,11 +501,11 @@ function assertNoSecretEcho(value: unknown, path: string, key?: string): void {
 		return;
 	}
 	if (Array.isArray(value)) {
-		value.forEach((v, i) => assertNoSecretEcho(v, `${path}[${i}]`, key));
+		value.forEach((v, i) => assertNoSecretEcho(v, `${path}[${i}]`, key, mode));
 		return;
 	}
 	if (isObj(value)) {
-		for (const [k, v] of Object.entries(value)) assertNoSecretEcho(v, `${path}.${k}`, k);
+		for (const [k, v] of Object.entries(value)) assertNoSecretEcho(v, `${path}.${k}`, k, mode);
 	}
 	// numbers/booleans/null pass through.
 }
@@ -725,7 +745,11 @@ export async function validateProposal(db: Db, raw: unknown): Promise<CreationPr
 				] as ReadonlyArray<readonly [string, string | undefined]>
 		)
 	];
-	for (const [p, s] of secretScreened) if (s !== undefined) assertNoSecretEcho(s, p);
+	// 'freetext' mode: a benign redactable span (an email, a home path) in agent-authored PROSE is
+	// redactable PII, NOT a literal secret echo — it passes here and is redacted at the scaffold-write
+	// disk boundary (the live-bug fix). Only an un-redactable 'quarantined' block hard-rejects; Gates
+	// 2/3 (key-positive + prefix/entropy) still catch a real credential token regardless of mode.
+	for (const [p, s] of secretScreened) if (s !== undefined) assertNoSecretEcho(s, p, undefined, 'freetext');
 
 	// §3 ANTI-SYCOPHANCY across EVERY agent-authored string. One pass, named SycophancyError.
 	// dirLayout[] and stack[] are agent-authored descriptive free-text too, so they are screened

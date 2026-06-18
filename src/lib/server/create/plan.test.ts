@@ -242,6 +242,36 @@ describe('D-026 no-secret-echo in target configs (redTeam)', () => {
 	});
 });
 
+// A stray/invalid targetDraft must NOT nuke an entire real-spend proposal — targetDrafts are the
+// lowest-stakes, OPTIONAL, operator-confirmed field. Drop invalid entries, keep valid ones. (The
+// live trigger: the agent emitted kind:'agent' and the whole ~2-min proposal hard-failed.)
+describe('targetDrafts resilience — drop invalid entries, keep valid (do not waste a generation)', () => {
+	it('drops an invalid-kind entry (e.g. "agent") instead of throwing, keeping the valid one', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({
+				targetDrafts: [
+					{ kind: 'agent', adapterId: 'whatever', config: {} },
+					{ kind: 'publish', adapterId: 'thunderstore', config: { tokenEnv: 'THUNDERSTORE_TOKEN' } }
+				]
+			})
+		);
+		expect(p.targetDrafts).toHaveLength(1);
+		expect(p.targetDrafts[0]).toEqual({ kind: 'publish', adapterId: 'thunderstore', config: { tokenEnv: 'THUNDERSTORE_TOKEN' } });
+	});
+	it('drops a non-object / id-less entry rather than failing the proposal', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({ targetDrafts: ['nonsense', { kind: 'deploy', config: {} }, { kind: 'sync', adapterId: 'gh', config: {} }] })
+		);
+		expect(p.targetDrafts).toEqual([{ kind: 'sync', adapterId: 'gh', config: {} }]);
+	});
+	it('an all-invalid targetDrafts becomes an empty array (still a valid proposal, F-008)', async () => {
+		const p = await validateProposal(db, goodRaw({ targetDrafts: [{ kind: 'agent', adapterId: 'x', config: {} }] }));
+		expect(p.targetDrafts).toEqual([]);
+	});
+});
+
 // CA-H1 — close the CA-1 red-team DEFERRED secret-echo gaps. The isolation screen() misses a literal
 // value when it is the WHOLE config value (no inline `key=value`) — these enforce the ENV-NAME-POSITIVE
 // rule at the proposal trust boundary instead. redTeam:true.

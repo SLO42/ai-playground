@@ -505,20 +505,36 @@ function validateTargetDrafts(raw: unknown): TargetDraft[] {
 		throw new ProposalContractError("proposal 'targetDrafts' must be an array");
 	}
 	const KINDS: AdapterKind[] = ['publish', 'deploy', 'sync'];
-	return raw.map((t, i) => {
-		if (!isObj(t)) throw new ProposalContractError(`targetDrafts[${i}] must be an object`);
-		const kind = reqStr(t.kind, `targetDrafts[${i}].kind`) as AdapterKind;
-		if (!KINDS.includes(kind)) {
-			throw new ProposalContractError(
-				`targetDrafts[${i}].kind '${kind}' is not a valid adapter kind (${KINDS.join('|')})`
-			);
+	// targetDrafts are the LOWEST-stakes field: OPTIONAL (an empty array is valid, F-008) and
+	// OPERATOR-CONFIRMED before any publish/deploy ever runs (D-037 + the operator gate). A single
+	// stray/malformed entry must NOT nuke an entire real-spend proposal (the recurring "don't let
+	// one bad field waste a ~2-min generation" lesson — cf. the over-constrained gauntlet keys) —
+	// DROP a non-object / invalid-kind / id-less entry (honest warn) and keep the valid targets;
+	// the operator reviews and adds any missing target post-create. SECURITY IS NEVER RELAXED: a
+	// KEPT entry whose config echoes a literal secret still HARD-throws (D-026 stays a hard gate).
+	const out: TargetDraft[] = [];
+	raw.forEach((t, i) => {
+		if (!isObj(t)) {
+			console.warn(`[create] dropping targetDrafts[${i}] — not an object`);
+			return;
 		}
-		const adapterId = reqStr(t.adapterId, `targetDrafts[${i}].adapterId`);
+		const kind = typeof t.kind === 'string' ? (t.kind.trim() as AdapterKind) : undefined;
+		if (!kind || !KINDS.includes(kind)) {
+			console.warn(`[create] dropping targetDrafts[${i}] — kind '${String(t.kind)}' not ${KINDS.join('|')}`);
+			return;
+		}
+		const adapterId = typeof t.adapterId === 'string' ? t.adapterId.trim() : '';
+		if (!adapterId) {
+			console.warn(`[create] dropping targetDrafts[${i}] — missing adapterId`);
+			return;
+		}
 		const config = isObj(t.config) ? t.config : {};
-		// D-026: the config blob references env NAMES only — reject any literal secret echo.
+		// D-026 (NEVER relaxed): the config blob references env NAMES only — a literal secret echo
+		// on a KEPT target still HARD-throws SecretEchoError.
 		assertNoSecretEcho(config, `targetDrafts[${i}].config`);
-		return { kind, adapterId, config };
+		out.push({ kind, adapterId, config });
 	});
+	return out;
 }
 
 /**

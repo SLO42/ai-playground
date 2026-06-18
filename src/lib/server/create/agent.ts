@@ -93,6 +93,7 @@ function buildPrompt(brief: CreateBrief): { title: string; description: string }
 		hintLines ? `Hints:\n${hintLines}` : '',
 		``,
 		`Emit ONE fenced \`\`\`json block with: dirLayout[], stack[], planMacro{purpose,vision,role,definition_of_done}, foundingTasks[3-7]{objective,purpose}, targetDrafts[]{kind,adapterId,config}, capabilityNeeds{languages[],frameworks[],defect_classes[]}, optional pmCharterDraft, clarifiers[0-4]{question,position,falsifier}.`,
+		`targetDrafts are RELEASE/DEPLOY destinations ONLY: each kind MUST be EXACTLY one of "publish" | "deploy" | "sync" (e.g. a Thunderstore publish, a GitHub-Pages deploy, a repo sync) — NEVER "agent"/"role"/"task"/anything else. If no real publish/deploy/sync destination applies yet, emit targetDrafts as an empty array [].`,
 		`TAKE POSITIONS (CREATE-SPEC §3): no hedging phrases; every clarifier pairs a position with its falsifier. Config references env NAMES only (D-026), never secret values.`
 	]
 		.filter((l) => l !== '')

@@ -19,6 +19,7 @@ export {
 	validateProposal,
 	computeConfirmToken,
 	assertProposalFresh,
+	briefHintsFromTemplate,
 	ProposalContractError,
 	SecretEchoError,
 	StaleProposalError,
@@ -38,6 +39,8 @@ export {
 export {
 	makeProposalAgent,
 	parseProposalOutput,
+	buildPrompt,
+	resolveTemplateContext,
 	type ProposalAgentDeps
 } from './agent';
 

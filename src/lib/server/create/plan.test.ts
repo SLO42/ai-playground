@@ -10,6 +10,7 @@ import {
 	validateProposal,
 	computeConfirmToken,
 	assertProposalFresh,
+	briefHintsFromTemplate,
 	ProposalContractError,
 	SecretEchoError,
 	StaleProposalError,
@@ -19,6 +20,7 @@ import {
 	type CreationProposal,
 	type ProposalGenerator
 } from './plan';
+import { getTemplate, type ProjectTemplate } from './templates';
 
 // Fake credential literals ASSEMBLED AT RUNTIME — the source text never contains a contiguous
 // provider-token pattern, so GitHub secret-scanning push-protection won't flag these test fixtures;
@@ -525,5 +527,50 @@ describe('confirmToken staleness (D-010 shape, ephemeral)', () => {
 			stack: [...env.proposal.stack, 'sneaky-extra']
 		};
 		expect(() => assertProposalFresh(env.brief, tampered, env.confirmToken)).toThrow(StaleProposalError);
+	});
+});
+
+describe('briefHintsFromTemplate — pure CT-4 pre-fill hints', () => {
+	function tpl(id: string): ProjectTemplate {
+		const t = getTemplate(id);
+		if (!t) throw new Error(`missing template ${id}`);
+		return t;
+	}
+
+	it('TypeScript template → ecosystem node; SvelteKit tags → web', () => {
+		const h = briefHintsFromTemplate(tpl('sveltekit'));
+		expect(h.ecosystem).toBe('node');
+		expect(h.targetPlatform).toBe('web');
+	});
+
+	it('Go CLI template → ecosystem go; cli tag → cli', () => {
+		const h = briefHintsFromTemplate(tpl('go'));
+		expect(h.ecosystem).toBe('go');
+		expect(h.targetPlatform).toBe('cli');
+	});
+
+	it('bepinex (C#, unity/mod/game tags) → ecosystem dotnet; specific tag wins over generic game', () => {
+		const h = briefHintsFromTemplate(tpl('bepinex'));
+		expect(h.ecosystem).toBe('dotnet');
+		expect(h.targetPlatform).toBe('unity');
+	});
+
+	it('fabric (minecraft) → minecraft platform; java → jvm', () => {
+		const h = briefHintsFromTemplate(tpl('fabric'));
+		expect(h.ecosystem).toBe('jvm');
+		expect(h.targetPlatform).toBe('minecraft');
+	});
+
+	it('honest absence: blank template (no language, no tags) → empty hints, no fabricated guess', () => {
+		const h = briefHintsFromTemplate(tpl('blank'));
+		expect(h.ecosystem).toBeUndefined();
+		expect(h.targetPlatform).toBeUndefined();
+		expect(Object.keys(h)).toHaveLength(0);
+	});
+
+	it('shadow paths: nil language / nil tags do not throw, yield no keys', () => {
+		const fake = { id: 'x', name: 'X', description: '', language: '', icon: '', tags: [], params: [], generate: () => ({}) } as unknown as ProjectTemplate;
+		expect(() => briefHintsFromTemplate(fake)).not.toThrow();
+		expect(briefHintsFromTemplate(fake)).toEqual({});
 	});
 });

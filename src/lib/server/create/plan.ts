@@ -20,6 +20,7 @@ import { createHash } from 'node:crypto';
 import { isAbsolute } from 'node:path';
 import { assertNoSycophancy, SycophancyError } from './anti-sycophancy';
 import type { AdapterKind } from '../adapters/types';
+import type { ProjectTemplate } from './templates';
 
 // ── Brief (input) ───────────────────────────────────────────────────────────────
 
@@ -38,6 +39,63 @@ export interface CreateBrief {
 	name: string;
 	description: string;
 	hints?: CreateHints;
+}
+
+/** A language → ecosystem mapping for template-derived brief hints (CT-4 pre-fill). */
+const ECOSYSTEM_BY_LANGUAGE: ReadonlyMap<string, string> = new Map([
+	['typescript', 'node'],
+	['javascript', 'node'],
+	['python', 'python'],
+	['go', 'go'],
+	['rust', 'rust'],
+	['ruby', 'ruby'],
+	['java', 'jvm'],
+	['c#', 'dotnet']
+]);
+
+/**
+ * A tag → targetPlatform mapping for template-derived brief hints (CT-4 pre-fill). The FIRST tag
+ * (in this priority order) that the template carries wins — more specific platform tags before the
+ * generic 'web'. Returns undefined when no tag maps (honest absence, not a fabricated default).
+ */
+const TARGET_PLATFORM_BY_TAG: ReadonlyArray<readonly [string, string]> = [
+	['minecraft', 'minecraft'],
+	['bg3', 'bg3'],
+	['unity', 'unity'],
+	['game', 'game'],
+	['mod', 'game'],
+	['cli', 'cli'],
+	['mcp', 'mcp'],
+	['agent', 'agent'],
+	['web', 'web']
+];
+
+/**
+ * Pure helper (CT-4): derive optional brief HINTS from a template's declared language + tags so the
+ * create UI can PRE-FILL the ecosystem / target-platform fields when the operator picks a template.
+ * Best-effort and HONEST (F-008): only fields that genuinely map are returned — an unmapped language
+ * or tag yields no key (never a fabricated guess). No I/O; depends only on its argument.
+ *
+ * Shadow paths: a template with an empty language → no `ecosystem`; with no mapping tag → no
+ * `targetPlatform`; both empty → an empty object (the UI pre-fills nothing).
+ */
+export function briefHintsFromTemplate(template: ProjectTemplate): {
+	ecosystem?: string;
+	targetPlatform?: string;
+} {
+	const out: { ecosystem?: string; targetPlatform?: string } = {};
+	const lang = template.language?.trim().toLowerCase() ?? '';
+	const ecosystem = ECOSYSTEM_BY_LANGUAGE.get(lang);
+	if (ecosystem) out.ecosystem = ecosystem;
+
+	const tags = new Set((template.tags ?? []).map((t) => t.trim().toLowerCase()).filter(Boolean));
+	for (const [tag, platform] of TARGET_PLATFORM_BY_TAG) {
+		if (tags.has(tag)) {
+			out.targetPlatform = platform;
+			break;
+		}
+	}
+	return out;
 }
 
 // ── Proposal (output) ─────────────────────────────────────────────────────────────

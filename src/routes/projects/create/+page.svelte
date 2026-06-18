@@ -28,6 +28,36 @@
   const runtimeReason = $derived(data.runtimeReason);
   const hasHostProject = $derived(data.hostProjectCount > 0);
   const canPropose = $derived(connected && runtimeAvailable && hasHostProject);
+  // The direct template scaffold needs only the DB (deterministic — no AI credential, no spend).
+  const canScaffold = $derived(connected);
+
+  // ── template picker (CT-2 / CT-4) ──
+  const templates = $derived(data.templates ?? []);
+  // '' = the pure-AI 'No template (blank brief)' path (exactly as today).
+  let selectedTemplateId = $state('');
+  const selectedTemplate = $derived(templates.find((t) => t.id === selectedTemplateId));
+  // Per-param values keyed by `${templateId}.${key}` so switching templates keeps each one's edits.
+  let paramValues = $state<Record<string, string | boolean>>({});
+
+  function paramKey(tid: string, key: string): string {
+    return `${tid}.${key}`;
+  }
+  /** The current value of a template param (operator edit, else its declared default). */
+  function paramVal(tid: string, p: { key: string; default: string | boolean }): string | boolean {
+    const k = paramKey(tid, p.key);
+    return k in paramValues ? paramValues[k] : p.default;
+  }
+
+  /** Pick a template (or '' for blank): pre-fill the brief hints (CT-4), seed nothing fabricated. */
+  function selectTemplate(id: string) {
+    selectedTemplateId = id;
+    const tpl = templates.find((t) => t.id === id);
+    if (tpl) {
+      // CT-4 pre-fill: only fields the template genuinely maps (honest absence otherwise).
+      ecosystem = tpl.hints.ecosystem ?? ecosystem;
+      targetPlatform = tpl.hints.targetPlatform ?? targetPlatform;
+    }
+  }
 
   // ── action results ──
   const propose = $derived(form && 'propose' in form ? form.propose : undefined);
@@ -41,6 +71,7 @@
 
   // ── live submit state ──
   let proposing = $state(false);
+  let scaffolding = $state(false);
   let creating = $state(false);
 
   // ── brief field bindings (preserved across a propose round-trip) ──
@@ -112,12 +143,13 @@
       </div>
     {:else if !runtimeAvailable}
       <div class="card notice warn" role="alert">
-        Cannot generate a proposal — {runtimeReason ?? 'the Claude Code credential is not configured'}.
+        Cannot refine with AI — {runtimeReason ?? 'the Claude Code credential is not configured'}.
+        You can still scaffold directly from a template below.
       </div>
     {:else if !hasHostProject}
       <div class="card notice warn" role="alert">
-        Register at least one project first — the read-only proposal agent needs an existing project
-        as its working directory.
+        Register at least one project first to refine with AI — the read-only proposal agent needs an
+        existing project as its working directory. Scaffolding directly from a template still works.
       </div>
     {/if}
 
@@ -125,14 +157,115 @@
       class="card brief"
       method="POST"
       action="?/propose"
-      use:enhance={() => {
-        proposing = true;
+      use:enhance={({ action }) => {
+        // The single brief form drives BOTH actions via the buttons' formaction; flag which is running.
+        if (action.search.includes('scaffoldTemplate')) scaffolding = true;
+        else proposing = true;
         return async ({ update }) => {
           await update({ reset: false });
           proposing = false;
+          scaffolding = false;
         };
       }}
     >
+      <!-- ── TEMPLATE PICKER (CT-2/CT-4) ── -->
+      <fieldset class="picker">
+        <legend class="field-label">Start from a template</legend>
+        <span class="field-help">
+          Pick a template to scaffold a real project directly (no AI), or refine it with AI. Or choose
+          “No template” for a pure-AI brief.
+        </span>
+        <div class="template-grid" role="radiogroup" aria-label="Project template">
+          <button
+            type="button"
+            class="template-card"
+            class:selected={selectedTemplateId === ''}
+            role="radio"
+            aria-checked={selectedTemplateId === ''}
+            onclick={() => selectTemplate('')}
+          >
+            <span class="tpl-icon" aria-hidden="true">✎</span>
+            <span class="tpl-name">No template</span>
+            <span class="tpl-desc">Blank brief — pure AI proposal</span>
+          </button>
+          {#each templates as t (t.id)}
+            <button
+              type="button"
+              class="template-card"
+              class:selected={selectedTemplateId === t.id}
+              role="radio"
+              aria-checked={selectedTemplateId === t.id}
+              onclick={() => selectTemplate(t.id)}
+            >
+              <span class="tpl-icon" aria-hidden="true">{t.icon || '📦'}</span>
+              <span class="tpl-name">{t.name}</span>
+              <span class="tpl-desc">{t.description}</span>
+              {#if t.language}<span class="tpl-lang mono">{t.language}</span>{/if}
+            </button>
+          {/each}
+        </div>
+      </fieldset>
+
+      <!-- The chosen template id rides every submit (propose carries it as CT-2 seed; scaffold uses it). -->
+      <input type="hidden" name="templateId" value={selectedTemplateId} />
+
+      <!-- ── TEMPLATE PARAMS (rendered when a template with params is selected) ── -->
+      {#if selectedTemplate && selectedTemplate.params.length > 0}
+        <fieldset class="params">
+          <legend class="field-label">{selectedTemplate.name} options</legend>
+          {#each selectedTemplate.params as p (p.key)}
+            {#if p.type === 'boolean'}
+              <label class="checkbox param">
+                <input
+                  type="checkbox"
+                  name={`param.${p.key}`}
+                  checked={paramVal(selectedTemplate.id, p) === true}
+                  onchange={(e) =>
+                    (paramValues[paramKey(selectedTemplate.id, p.key)] = e.currentTarget.checked)}
+                  aria-label={p.label}
+                />
+                <span>{p.label}<span class="field-help param-help">{p.description}</span></span>
+              </label>
+            {:else if p.type === 'select'}
+              <label class="field param">
+                <span class="field-help">{p.label}</span>
+                <select
+                  class="input"
+                  name={`param.${p.key}`}
+                  value={String(paramVal(selectedTemplate.id, p))}
+                  onchange={(e) =>
+                    (paramValues[paramKey(selectedTemplate.id, p.key)] = e.currentTarget.value)}
+                  aria-label={p.label}
+                >
+                  {#each p.options ?? [] as opt (opt)}
+                    <option value={opt}>{opt}</option>
+                  {/each}
+                </select>
+                {#if p.description}<span class="field-help param-help">{p.description}</span>{/if}
+              </label>
+            {:else}
+              <label class="field param">
+                <span class="field-help">{p.label}</span>
+                <input
+                  class="input mono"
+                  type="text"
+                  name={`param.${p.key}`}
+                  value={String(paramVal(selectedTemplate.id, p))}
+                  oninput={(e) =>
+                    (paramValues[paramKey(selectedTemplate.id, p.key)] = e.currentTarget.value)}
+                  placeholder={String(p.default)}
+                  maxlength="1000"
+                  autocomplete="off"
+                  spellcheck="false"
+                  aria-label={p.label}
+                />
+                {#if p.description}<span class="field-help param-help">{p.description}</span>{/if}
+              </label>
+            {/if}
+          {/each}
+        </fieldset>
+      {/if}
+
       <label class="field">
         <span class="field-label">Project name</span>
         <input
@@ -188,15 +321,61 @@
         </label>
       </fieldset>
 
+      <!-- PM hand-off (fork 3, default ON) — used by the DIRECT template scaffold (the AI path collects
+           it again at the confirm step). The brief form's checkbox seeds both. -->
+      {#if selectedTemplateId}
+        <fieldset class="pm-fieldset">
+          <legend class="field-label">Project management</legend>
+          <label class="checkbox">
+            <input type="checkbox" name="hirePm" bind:checked={hirePm} />
+            <span>Hire a PM for this project (managed from day 0)</span>
+          </label>
+          {#if hirePm}
+            <label class="field pm-name">
+              <span class="field-help">PM name (optional)</span>
+              <input class="input" type="text" name="pmName" bind:value={pmName}
+                placeholder={`${name || 'Project'} PM`} maxlength="200"
+                autocomplete="off" aria-label="PM name" />
+            </label>
+          {/if}
+        </fieldset>
+      {/if}
+
       <div class="actions">
-        <button class="btn" type="submit" disabled={proposing || !canPropose}>
-          {proposing ? 'Generating proposal…' : 'Generate proposal'}
-        </button>
+        {#if selectedTemplateId}
+          <button
+            class="btn confirm-btn"
+            type="submit"
+            formaction="?/scaffoldTemplate"
+            disabled={proposing || scaffolding || !canScaffold}
+          >
+            {scaffolding ? 'Scaffolding…' : 'Scaffold from template'}
+          </button>
+          <button
+            class="btn secondary"
+            type="submit"
+            formaction="?/propose"
+            disabled={proposing || scaffolding || !canPropose}
+          >
+            {proposing ? 'Refining…' : 'Refine with AI'}
+          </button>
+          <span class="field-help">
+            Scaffolding writes the real project on disk now. Refining runs the AI proposal first (review before disk).
+          </span>
+        {:else}
+          <button class="btn" type="submit" formaction="?/propose" disabled={proposing || !canPropose}>
+            {proposing ? 'Generating proposal…' : 'Generate proposal'}
+          </button>
+        {/if}
       </div>
 
       <div class="status-line" aria-live="polite">
         {#if proposeError}
           <p class="msg error" role="alert">{proposeError}</p>
+        {/if}
+        {#if createError && !proposal}
+          <!-- A direct-scaffold (?/scaffoldTemplate) error — the AI path surfaces createError in STAGE 2. -->
+          <p class="msg error" role="alert">{createError}</p>
         {/if}
       </div>
     </form>
@@ -438,7 +617,10 @@
     font: var(--type-body-sm);
     color: var(--color-text-muted);
   }
-  .hints {
+  .hints,
+  .picker,
+  .params,
+  .pm-fieldset {
     display: flex;
     flex-direction: column;
     gap: var(--space-3, 0.75rem);
@@ -447,8 +629,83 @@
     padding: var(--space-3, 0.75rem);
     margin: 0;
   }
-  .hints legend {
+  .hints legend,
+  .picker legend,
+  .params legend,
+  .pm-fieldset legend {
     padding: 0 var(--space-2, 0.5rem);
+  }
+
+  /* ── template picker ── */
+  .template-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+    gap: var(--space-2, 0.5rem);
+  }
+  .template-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+    text-align: left;
+    padding: var(--space-3, 0.75rem);
+    background: var(--color-surface-overlay, var(--color-bg));
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    cursor: pointer;
+    color: var(--color-text);
+    transition:
+      border-color var(--motion-fast, 140ms) var(--ease-out, ease),
+      background var(--motion-fast, 140ms) var(--ease-out, ease);
+  }
+  .template-card:hover {
+    border-color: var(--color-accent);
+  }
+  .template-card.selected {
+    border-color: var(--color-accent);
+    background: var(--color-accent-muted, var(--color-surface-overlay));
+  }
+  .template-card:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  .tpl-icon {
+    font-size: 1.1rem;
+  }
+  .tpl-name {
+    font-weight: 600;
+    font-size: 0.85rem;
+  }
+  .tpl-desc {
+    font: var(--type-body-sm);
+    color: var(--color-text-muted);
+  }
+  .tpl-lang {
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-accent);
+    margin-top: 0.15rem;
+  }
+
+  /* ── template params ── */
+  .param {
+    gap: 0.25rem;
+  }
+  .param-help {
+    display: block;
+    margin-top: 0.1rem;
+  }
+  select.input {
+    appearance: auto;
+  }
+  .btn.secondary {
+    color: var(--color-text);
+    background: transparent;
+    border-color: var(--color-border);
+  }
+  .btn.secondary:hover {
+    border-color: var(--color-accent);
+    opacity: 1;
   }
   .input {
     width: 100%;

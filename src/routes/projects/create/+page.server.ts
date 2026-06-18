@@ -27,18 +27,22 @@ import {
 	generateCreationProposal,
 	makeProposalAgent,
 	executeCreation,
-	ProposalContractError,
-	SycophancyError,
-	SecretEchoError,
+	executeTemplateCreation,
+	getTemplate,
 	StaleProposalError,
 	ProjectExistsError,
 	UnstableSlugError,
-	ScaffoldPathError,
-	ScaffoldSecretError,
-	ScaffoldFailedError,
+	ConcurrentCreateError,
 	type CreateBrief,
 	type CreationProposalEnvelope
 } from '$lib/server/create';
+import {
+	templateChoices,
+	readTemplateParams,
+	proposeErrorReason,
+	createErrorReason,
+	templateScaffoldErrorReason
+} from '$lib/server/create/template-form';
 import type { Actions, PageServerLoad } from './$types';
 
 /** Confinement root (CODE_ROOT) the scaffold lives under (D-018). Mirrors /projects ?/scan. */
@@ -58,9 +62,18 @@ const MAX_HINT = 1000;
  * surface, not the list) — we only need the COUNT to know a host project exists.
  */
 export const load: PageServerLoad = async () => {
+	// The template registry is pure + static (no DB/credential needed) — the picker is available even
+	// when the DB is down (the scaffold action then honestly 503s, but the form still renders).
+	const templates = templateChoices();
 	const db = tryGetDb();
 	if (!db) {
-		return { connected: false, runtimeAvailable: false, runtimeReason: null, hostProjectCount: 0 };
+		return {
+			connected: false,
+			runtimeAvailable: false,
+			runtimeReason: null,
+			hostProjectCount: 0,
+			templates
+		};
 	}
 	try {
 		const [projects, runtime] = await Promise.all([listProjects(db), getRuntime(db)]);
@@ -68,7 +81,8 @@ export const load: PageServerLoad = async () => {
 			connected: true,
 			runtimeAvailable: runtime.available,
 			runtimeReason: runtime.available ? null : runtime.reason,
-			hostProjectCount: projects.length
+			hostProjectCount: projects.length,
+			templates
 		};
 	} catch (err) {
 		const reason = classifyDbError(err) === 'disconnected' ? null : (err as Error).message;
@@ -76,7 +90,8 @@ export const load: PageServerLoad = async () => {
 			connected: false,
 			runtimeAvailable: false,
 			runtimeReason: reason,
-			hostProjectCount: 0
+			hostProjectCount: 0,
+			templates
 		};
 	}
 };
@@ -110,43 +125,6 @@ function readBrief(form: FormData): { brief: CreateBrief } | { error: string } {
 			...(Object.keys(hints).length ? { hints } : {})
 		}
 	};
-}
-
-/** Map a named CA-1 validation error to an honest operator-facing reason (EVERY ERROR HAS A NAME). */
-function proposeErrorReason(err: unknown): string {
-	if (err instanceof SycophancyError) {
-		return `The proposal hedged instead of taking a position (CREATE-SPEC §3) — re-generate. ${err.message}`;
-	}
-	if (err instanceof SecretEchoError) {
-		return `The proposal echoed a literal secret in '${err.field}' (D-026: env names only) — re-generate.`;
-	}
-	if (err instanceof ProposalContractError) {
-		return `The agent did not return a valid proposal — re-generate. ${err.message}`;
-	}
-	return (err as Error).message;
-}
-
-/** Map a named CA-2 execute error to an honest operator-facing reason. */
-function createErrorReason(err: unknown): string {
-	if (err instanceof StaleProposalError) {
-		return 'The brief or proposal changed since it was generated — regenerate before confirming (D-010).';
-	}
-	if (err instanceof ProjectExistsError) {
-		return `A project already exists at ${err.projectId} — open it instead.`;
-	}
-	if (err instanceof UnstableSlugError) {
-		return err.message;
-	}
-	if (err instanceof ScaffoldPathError) {
-		return `A scaffold path tried to escape the project directory (D-018) — regenerate. Entry: ${err.entry}`;
-	}
-	if (err instanceof ScaffoldSecretError) {
-		return `A scaffold file would have written a literal secret (D-026) — regenerate. File: ${err.path}`;
-	}
-	if (err instanceof ScaffoldFailedError) {
-		return `Scaffold failed — no project was registered${err.incidentId ? ` (incident ${err.incidentId})` : ''}. ${err.message}`;
-	}
-	return (err as Error).message;
 }
 
 /** The detail-route slug is the bare id after `project:` (the [id] loader re-prefixes it). */
@@ -199,13 +177,20 @@ export const actions: Actions = {
 			return fail(500, { propose: { error: `Could not load the portfolio: ${(err as Error).message}` } });
 		}
 
+		// CT-2 template grounding (optional): when the operator picked a template, thread its id + the
+		// resolved param values so the prompt carries the template's stack + layout as PRIOR ART. An
+		// unknown/blank templateId is a no-op (the prompt is byte-identical to the pure-AI path).
+		const templateId = field(form, 'templateId', MAX_HINT);
+		const tplParams = templateId ? readTemplateParams(form, templateId) : undefined;
+
 		const generate = makeProposalAgent({
 			db,
 			bus: getBus(),
 			runtime: runtime.runtime,
 			hostProjectId,
 			agentId: DEFAULT_AGENT,
-			model: DEFAULT_MODEL
+			model: DEFAULT_MODEL,
+			...(templateId && getTemplate(templateId) ? { templateId, params: tplParams } : {})
 		});
 
 		try {
@@ -282,6 +267,81 @@ export const actions: Actions = {
 					? 409
 					: 500;
 			return fail(status, { create: { error: createErrorReason(err) } });
+		}
+	},
+
+	/**
+	 * CT-3 — DIRECT template scaffold (NO AI spend). Confirm-gated (D-010: the operator clicks
+	 * 'Scaffold from template' on the picker, having seen the params it will use). Renders the chosen
+	 * template's REAL files via executeTemplateCreation (same scaffold/register/ingest pipeline as the
+	 * AI path — D-018 confine, D-026 screen, F-040 lock, git init, scanProject ingest), then lands the
+	 * operator on the new workspace via { create: { redirectTo } } (reuses STAGE 3 DONE rendering).
+	 *
+	 * Honest (F-008): no live DB → 503 with the reason, never a fabricated project. NO runtime
+	 * credential needed (the template path is deterministic — no agent leg, no spend).
+	 *
+	 * Shadow paths: nil/empty name → 400 (named field); blank/unknown templateId → 400 / honest
+	 * TemplateNotFoundError; DB down → 503; existing slug → ProjectExistsError (409); a param injecting
+	 * `../` → ScaffoldPathError; a param producing a literal secret → ScaffoldSecretError (HARD);
+	 * mid-scaffold death → ScaffoldFailedError (incident logged, NO phantom row); post-register writer
+	 * failure → PostRegisterWriterError (row marked incomplete, never a silent half-state).
+	 */
+	scaffoldTemplate: async ({ request }) => {
+		const form = await request.formData();
+		const templateId = field(form, 'templateId', MAX_HINT);
+		if (!templateId) {
+			return fail(400, { create: { error: 'Pick a template before scaffolding.' } });
+		}
+		if (!getTemplate(templateId)) {
+			return fail(400, { create: { error: `Unknown template '${templateId}' — pick one from the list.` } });
+		}
+
+		const read = readBrief(form);
+		if ('error' in read) return fail(400, { create: { error: read.error } });
+
+		const db = tryGetDb();
+		if (!db) {
+			return fail(503, { create: { error: 'Database not connected — start SurrealDB and retry.' } });
+		}
+
+		const params = readTemplateParams(form, templateId);
+
+		// PM hand-off (fork 3, default ON) — same opt-out + default-name contract as ?/create.
+		const wantPm = form.get('hirePm') === 'on';
+		const pmNameRaw = field(form, 'pmName', MAX_NAME);
+		const pm = wantPm ? { name: pmNameRaw || `${read.brief.name} PM`, answers: [] } : undefined;
+
+		try {
+			const res = await executeTemplateCreation(db, {
+				templateId,
+				name: read.brief.name,
+				description: read.brief.description,
+				params,
+				codeRoot: codeRoot(),
+				...(pm ? { pm } : {})
+			});
+			return {
+				create: {
+					ok: true as const,
+					projectId: res.projectId,
+					redirectTo: workspaceHref(res.projectId),
+					taskCount: res.taskIds.length,
+					taskStatus: res.taskStatus,
+					targetCount: res.targetIds.length,
+					...(res.commitSha ? { commitSha: res.commitSha } : {}),
+					...(res.pm
+						? { pm: { name: res.pm.pm.name, hired: res.pm.hired, alreadyHired: res.pm.alreadyHired } }
+						: {})
+				}
+			};
+		} catch (err) {
+			const status =
+				err instanceof ProjectExistsError ||
+				err instanceof UnstableSlugError ||
+				err instanceof ConcurrentCreateError
+					? 409
+					: 500;
+			return fail(status, { create: { error: templateScaffoldErrorReason(err) } });
 		}
 	}
 };

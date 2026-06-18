@@ -15,7 +15,8 @@ import { describe, it, expect } from 'vitest';
 import {
 	templateChoices,
 	readTemplateParams,
-	templateScaffoldErrorReason
+	templateScaffoldErrorReason,
+	MAX_TEMPLATE_PARAM
 } from '$lib/server/create/template-form';
 import {
 	TemplateNotFoundError,
@@ -92,13 +93,30 @@ describe('readTemplateParams — form → typed values (registry is the source o
 		expect(p.includeCI).toBe(false); // boolean absent → false
 	});
 
-	it('reads ONLY declared keys — an undeclared form field is ignored', () => {
+	it('reads ONLY declared keys — an undeclared form field is dropped (never threaded to the agent)', () => {
 		const form = new FormData();
 		form.set('param.notAKey', 'evil');
 		form.set('param.gameId', 'Valheim');
 		const p = readTemplateParams(form, 'bepinex');
 		expect(p.notAKey).toBeUndefined();
-		expect(p.gameId).toBe('Valheim');
+		expect('notAKey' in p).toBe(false); // dropped, not merely undefined-valued
+		expect(p.gameId).toBe('Valheim'); // declared key passes through with its value
+	});
+
+	it('caps an over-long string param value at MAX_TEMPLATE_PARAM (prompt-injection bound)', () => {
+		// A 50k param value must NOT thread unbounded into the agent prompt / scaffold (a 50k param →
+		// 200k prompt). Trim happens BEFORE the slice, so the bound is on the trimmed content length.
+		const over = 'x'.repeat(MAX_TEMPLATE_PARAM + 5000);
+		const form = new FormData();
+		form.set('param.moduleName', over); // go.moduleName is a string param
+		const p = readTemplateParams(form, 'go');
+		expect((p.moduleName as string).length).toBe(MAX_TEMPLATE_PARAM);
+
+		// A value at/under the cap is preserved verbatim (no false truncation).
+		const exact = 'y'.repeat(MAX_TEMPLATE_PARAM);
+		const form2 = new FormData();
+		form2.set('param.moduleName', exact);
+		expect(readTemplateParams(form2, 'go').moduleName).toBe(exact);
 	});
 
 	it('unknown templateId → {} (the action then throws TemplateNotFoundError)', () => {

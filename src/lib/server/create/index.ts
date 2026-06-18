@@ -46,6 +46,7 @@ export {
 
 export {
 	executeCreation,
+	executeTemplateCreation,
 	ProjectExistsError,
 	UnstableSlugError,
 	ScaffoldPathError,
@@ -53,6 +54,20 @@ export {
 	ScaffoldFailedError,
 	ConcurrentCreateError,
 	PostRegisterWriterError,
+	TemplateNotFoundError,
 	type ExecuteCreationOptions,
-	type ExecuteCreationResult
+	type ExecuteCreationResult,
+	type ExecuteTemplateCreationOptions,
+	type ExecuteTemplateCreationResult
 } from './execute';
+
+export {
+	getTemplate,
+	listTemplateMetadata,
+	toTemplateMetadata,
+	registry as templateRegistry,
+	BEPINEX_GAME_CONFIGS,
+	type ProjectTemplate,
+	type TemplateMetadata,
+	type TemplateParam
+} from './templates';

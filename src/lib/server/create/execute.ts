@@ -43,6 +43,7 @@ import {
 	type CreationProposalEnvelope,
 	type CreationProposal
 } from './plan';
+import { getTemplate, type ProjectTemplate } from './templates';
 
 // ── Errors (EVERY ERROR HAS A NAME) ────────────────────────────────────────────────
 
@@ -142,6 +143,16 @@ export class PostRegisterWriterError extends Error {
 		this.name = 'PostRegisterWriterError';
 		this.projectId = projectId;
 		this.incidentId = incidentId;
+	}
+}
+
+/** The requested template id does not exist in the registry (honest named error — CT-1). */
+export class TemplateNotFoundError extends Error {
+	readonly templateId: string;
+	constructor(templateId: string) {
+		super(`unknown template '${templateId}' — pick one from the template registry (CT-1).`);
+		this.name = 'TemplateNotFoundError';
+		this.templateId = templateId;
 	}
 }
 
@@ -256,51 +267,71 @@ function seedContent(rel: string, proposal: CreationProposal, projectName: strin
 }
 
 /**
- * Write the scaffold tree under `projectRoot` (already created + confined), screening every file's
- * content (D-026) before write. Always writes a .gitignore (covers .env) + README.md so commit 0 is
- * honest even if the proposal omitted them. Returns the list of relative file paths written.
+ * Write a relative-path → file-content MAP under `projectRoot` (already created + confined),
+ * confining + screening every entry before write. Each KEY is re-confined under the project root
+ * via resolveEntry (D-018, fail closed on absolute/`..` escape — ScaffoldPathError); a directory
+ * key (trailing `/`) is mkdir-only; a file key's CONTENT is screened (D-026 — a literal secret
+ * HARD-throws ScaffoldSecretError) before it is written. Returns the relative file paths written.
+ *
+ * This is the SINGLE scaffold writer shared by BOTH create paths: the AI path passes a map built
+ * from dirLayout + seedContent (honest stubs), the TEMPLATE path passes the REAL generated content
+ * (the key difference — template files are materialized verbatim, not placeholder stubs). The map's
+ * iteration order is insertion order; a dir entry and a deeper file entry both mkdir their parents.
  *
  * Atomic-ish (interrupt contract): each dir is mkdir-recursive (idempotent); each file is written
  * with writeFile (last-writer-wins on a re-run). The CALLER removes a partial dir on failure so a
  * re-run starts clean — there is never an observable half-scaffold registered (F-008 / interrupt).
  */
-async function writeScaffold(
+async function writeFileMap(
 	projectRoot: string,
-	proposal: CreationProposal,
-	projectName: string
+	fileMap: Record<string, string>
 ): Promise<string[]> {
-	// Always-present commit-0 files (deduped against the proposal's own entries below).
-	const required = ['.gitignore', 'README.md'];
-	const entries: ResolvedEntry[] = [];
-	const seen = new Set<string>();
-	for (const e of [...proposal.dirLayout, ...required]) {
-		const resolved = resolveEntry(e, projectRoot);
-		const key = process.platform === 'win32' ? resolved.abs.toLowerCase() : resolved.abs;
-		if (seen.has(key)) continue;
-		seen.add(key);
-		entries.push(resolved);
-	}
-
 	const written: string[] = [];
-	for (const ent of entries) {
-		if (ent.kind === 'dir') {
-			await mkdir(ent.abs, { recursive: true });
+	const seen = new Set<string>();
+	for (const [entry, content] of Object.entries(fileMap)) {
+		const resolved = resolveEntry(entry, projectRoot); // D-018 — absolute/`..` escape fails closed.
+		const key = process.platform === 'win32' ? resolved.abs.toLowerCase() : resolved.abs;
+		if (seen.has(key)) continue; // dedupe (a `.gitignore` declared twice writes once).
+		seen.add(key);
+		if (resolved.kind === 'dir') {
+			await mkdir(resolved.abs, { recursive: true });
 			continue;
 		}
-		await mkdir(dirname(ent.abs), { recursive: true });
-		const content = seedContent(ent.rel, proposal, projectName);
+		await mkdir(dirname(resolved.abs), { recursive: true });
 		// D-026: a literal secret must NEVER be written. screen() flags it; fail closed (named).
 		const res = screen(content);
 		if (res.status !== 'clean') {
 			throw new ScaffoldSecretError(
-				`scaffold file '${ent.rel}' would write a literal secret (D-026): [${res.reasons.join(', ')}]`,
-				ent.rel
+				`scaffold file '${resolved.rel}' would write a literal secret (D-026): [${res.reasons.join(', ')}]`,
+				resolved.rel
 			);
 		}
-		await writeFile(ent.abs, content, 'utf8');
-		written.push(ent.rel);
+		await writeFile(resolved.abs, content, 'utf8');
+		written.push(resolved.rel);
 	}
 	return written;
+}
+
+/**
+ * Build the AI path's scaffold file-map: the proposal's dirLayout (dirs → '', files → an honest
+ * seedContent stub, F-008) plus the always-present commit-0 files (.gitignore covers .env, README).
+ * The required files are appended LAST so an explicit dirLayout `.gitignore`/`README.md` (with its
+ * own seeded content) wins the dedupe in writeFileMap (first key wins). Pure; no I/O.
+ */
+function aiScaffoldFileMap(
+	proposal: CreationProposal,
+	projectName: string
+): Record<string, string> {
+	const map: Record<string, string> = {};
+	for (const entry of proposal.dirLayout) {
+		const isDir = entry.trim().endsWith('/') || entry.trim().endsWith('\\');
+		// The content for a dir key is ignored by writeFileMap; for a file key it is the honest stub.
+		map[entry] = isDir ? '' : seedContent(entry, proposal, projectName);
+	}
+	for (const req of ['.gitignore', 'README.md']) {
+		if (!(req in map)) map[req] = seedContent(req, proposal, projectName);
+	}
+	return map;
 }
 
 /** True iff `p` exists on disk (used for the CA-H2 ownership gate — did THIS run create the dir?). */
@@ -408,183 +439,43 @@ export async function executeCreation(
 	opts: ExecuteCreationOptions
 ): Promise<ExecuteCreationResult> {
 	const { brief, proposal, confirmToken } = envelope;
-	const run = opts.run ?? execFileRunner;
 
-	// ── 1. GATE — D-010 token re-check, then D-016 slug-validate the target id. ──
+	// ── 1. GATE — D-010 token re-check (before any disk touch). ──
 	assertProposalFresh(brief, proposal, confirmToken);
 
-	const slug = slugify(brief.name);
-	// SLUG STABILITY (D-016 / F-008): slugify is NOT idempotent for degenerate symbol-only names
-	// ('!!!','__','??? ' → 'p_', but re-slugifying 'p_' → 'p'). The scaffold dir is named `slug`
-	// (below) and scanProject (step 3) RE-DERIVES the registered slug from that dir basename via
-	// slugify — so unless slugify(slug) === slug, the gate-id (`project:${slug}`) and the
-	// registered-id (`project:${slugify(slug)}`) DIVERGE. That divergence wedges the existence gate
-	// (a second same-name create checks the wrong id, never fails closed, re-enters the existing
-	// scaffold, and its failed first commit rm -rf's the live project's dir → F-008 phantom row
-	// pointing at a deleted dir). Fail CLOSED here, before any disk touch, so gate-id, dir-basename,
-	// and registered-id are guaranteed to be ONE source.
-	const reSlug = slugify(slug);
-	if (reSlug !== slug) throw new UnstableSlugError(brief.name, slug, reSlug);
-	const projectId = assertRecordIdOfTable(`project:${slug}`, 'project'); // D-016 — named on failure.
+	// The AI path's scaffold file-map: dirLayout (honest seedContent stubs, F-008) + commit-0 files.
+	const fileMap = aiScaffoldFileMap(proposal, brief.name.trim());
 
-	// Fail closed on an existing project (idempotent same-slug re-create — §2.4 (1)). This is the
-	// FIRST half of the existence guard; the create-lock below closes its TOCTOU window (CA-H2).
-	const existing = await getProject(db, projectId);
-	if (existing) throw new ProjectExistsError(projectId);
-
-	// ── 1b. CREATE-LOCK (CA-H2 TOCTOU guard) — acquire a slug-keyed lock with a FAIL-CLOSED CREATE. ──
-	// Two parallel same-slug creates can BOTH pass the getProject null-gate above (TOCTOU); the lock's
-	// `CREATE create_lock:<slug>` errors for all but ONE (SurrealDB does not last-writer-win on CREATE)
-	// → the losers throw ConcurrentCreateError HERE, before any disk touch, so a loser can never
-	// rm -rf the winner's live scaffold. The lock is RELEASED in `finally` on every exit path. The
-	// nonce makes the release owner-scoped (a release can only delete a lock THIS run acquired).
-	const lockNonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
-	await acquireCreateLock(db, slug, lockNonce);
-
-	try {
-		// The scaffold root, confined under CODE_ROOT (D-018). resolve under codeRoot; the dir does not
-		// exist yet, so confineToRoot is applied to the CODE_ROOT itself + we join the slug (a slug is
-		// snake-case, no separators — it cannot escape). Re-confine the final root for defense in depth.
-		const realRoot = confineToRoot(opts.codeRoot, opts.codeRoot); // canonical, symlink-stable root.
-		const projectRoot = join(realRoot, slug);
-
-		// OWNERSHIP GATE (CA-H2): we may ONLY rm -rf a scaffold dir THIS run created. Record whether the
-		// dir existed BEFORE our mkdir; if it pre-existed (e.g. a leftover from another run/operator), we
-		// NEVER delete it on cleanup — deleting someone else's live scaffold is the exact corruption
-		// CA-H2 forbids. With the create-lock held this is belt-and-suspenders, but it is the durable
-		// invariant: cleanup is gated on ownership, not just on the lock.
-		let weCreatedRoot = false;
-
-		// ── 2. SCAFFOLD — write tree, git init + first commit. Partial death → cleanup + incident. ──
-		let commitSha: string | undefined;
-		try {
-			const rootExistedBefore = await pathExists(projectRoot);
-			await mkdir(projectRoot, { recursive: true });
-			weCreatedRoot = !rootExistedBefore;
-			await writeScaffold(projectRoot, proposal, brief.name.trim());
-
-			// git init + first commit via the execFile-ARRAY runner (D-008/F-002 — never a shell).
-			const initRes = await run('git', ['init'], { cwd: projectRoot });
-			if (initRes.code !== 0) {
-				throw new Error(`git init failed (code ${initRes.code}): ${initRes.stderr.slice(0, 200)}`);
-			}
-			await run('git', ['add', '-A'], { cwd: projectRoot });
-			const commitMsg = `chore: scaffold ${slug} via Atelier Create-with-AI`;
-			// Inline identity (-c) so the first commit succeeds even when no global/local git identity is
-			// configured (CI / a fresh repo). These are scoped to THIS commit invocation only.
-			const committed = await run(
-				'git',
-				[
-					'-c',
-					'user.name=Atelier',
-					'-c',
-					'user.email=atelier@local',
-					'commit',
-					'-m',
-					commitMsg
-				],
-				{ cwd: projectRoot }
-			);
-			if (committed.code !== 0) {
-				throw new Error(
-					`first commit failed (code ${committed.code}): ${(committed.stderr || committed.stdout).slice(0, 200)}`
-				);
-			}
-			const rev = await run('git', ['rev-parse', '--short', 'HEAD'], { cwd: projectRoot });
-			commitSha = rev.code === 0 ? rev.stdout.trim() : undefined;
-		} catch (err) {
-			// Interrupt contract / F-008: remove the partial dir so a re-run starts clean, register NO
-			// phantom row. Clean up ONLY a dir THIS run created (ownership gate, CA-H2) — never another
-			// run's live scaffold. Then decide what to re-throw:
-			//   • a REJECTED INPUT (path escape D-018 / secret echo D-026) is the caller's bug, not a
-			//     partial scaffold — re-throw the SPECIFIC named error verbatim, no incident;
-			//   • an IO / git failure IS a partial scaffold — log an incident (NEVER silent) and wrap as
-			//     ScaffoldFailedError (named) so the operator sees an honest failure, not a phantom row.
-			if (weCreatedRoot) await rm(projectRoot, { recursive: true, force: true }).catch(() => {});
-			if (err instanceof ScaffoldPathError || err instanceof ScaffoldSecretError) {
-				throw err;
-			}
-			const incidentId = await recordIncident(
-				db,
-				`Create-with-AI scaffold failed: ${slug}`,
-				`Scaffold/commit failed for project:${slug} at ${projectRoot}. ${(err as Error).message}`
-			);
-			throw new ScaffoldFailedError(
-				`scaffold failed for ${slug} — no project registered (incident logged). ${(err as Error).message}`,
-				incidentId
-			);
-		}
-
-		// ── 3. REGISTER HONESTLY — scanProject ingests the REAL on-disk scaffold (F-008). ──
-		// The row derives from disk (detected ecosystem/build tool), NEVER the proposal text.
-		const row = await scanProject(db, projectRoot, { codeRoot: opts.codeRoot });
-
-		// Defense in depth (D-016 / F-008): the gate's slug-stability guard guarantees the registered id
-		// equals the gate id, but assert it explicitly so any future slugify drift fails CLOSED here
-		// (clean up the scaffold + log an incident) instead of silently registering a row the existence
-		// gate can never find again. row.id is the single source the writers below all use.
-		if (row.id !== projectId) {
-			// Unreachable while the gate guard holds; if it ever fires, scanProject already UPSERTed a row
-			// at the diverged id — delete that row AND the scaffold dir so no phantom survives (F-008),
-			// then log an incident and fail closed. The id is validated through the D-016 chokepoint
-			// before interpolation. Cleanup is still ownership-gated (CA-H2).
-			await db
-				.query(`DELETE ${assertRecordIdOfTable(row.id, 'project')};`)
-				.catch(() => {});
-			if (weCreatedRoot) await rm(projectRoot, { recursive: true, force: true }).catch(() => {});
-			const incidentId = await recordIncident(
-				db,
-				`Create-with-AI slug divergence: ${slug}`,
-				`Gate id ${projectId} but scanProject registered ${row.id} for ${projectRoot}. ` +
-					`Removed the row + scaffold to avoid an unfindable phantom (D-016/F-008).`
-			);
-			throw new ScaffoldFailedError(
-				`registered id ${row.id} diverged from gate id ${projectId} — scaffold removed (incident logged).`,
-				incidentId
-			);
-		}
-
-		// ── 4-5. POST-REGISTER WRITERS (CA-H2) — plan · needs · tasks · targets · PM. ──
-		// The project row + scaffold are now REAL and committed. A throw in ANY writer below CANNOT
-		// unregister the project (the on-disk scaffold + commit are durable, and unwinding the row would
-		// rm -rf a live dir — the exact corruption CA-H2 forbids). So on a post-register throw we do NOT
-		// delete anything: we MARK the project honestly (`create_status='incomplete'`), log an incident
-		// (NEVER silent, F-008), and surface a NAMED PostRegisterWriterError. The result is a real,
-		// clearly-marked, NON-wedged project — not a silent half-built phantom, not a wedged slug.
-		let taskIds: string[];
-		let taskStatus: TaskStatus;
-		let targetIds: string[];
-		let pm: HirePmResult | undefined;
-		try {
-			await updateProjectPlan(db, row.id, {
+	return scaffoldRegisterAndWire(db, {
+		briefName: brief.name,
+		fileMap,
+		wantPm: opts.pm !== undefined,
+		run: opts.run,
+		codeRoot: opts.codeRoot,
+		// POST-REGISTER WRITERS (CA-H2) — plan · needs · tasks · targets · PM, all from the proposal.
+		async postRegister(projectId, taskStatus): Promise<PostRegisterOutcome> {
+			await updateProjectPlan(db, projectId, {
 				purpose: proposal.planMacro.purpose,
 				long_term_vision: proposal.planMacro.vision,
 				role: proposal.planMacro.role,
 				definition_of_done: proposal.planMacro.definition_of_done
 			});
 
-			// Capability needs (defect_classes were enum-validated by CA-1; setCapabilityNeeds re-validates
+			// Capability needs (defect_classes enum-validated by CA-1; setCapabilityNeeds re-validates
 			// + screens at its own boundary — the canonical chokepoint, D-026).
 			const needs = proposal.capabilityNeeds;
 			if (needs.languages.length || needs.frameworks.length || needs.defect_classes.length) {
-				await setCapabilityNeeds(db, row.id, {
+				await setCapabilityNeeds(db, projectId, {
 					languages: needs.languages,
 					frameworks: needs.frameworks,
 					defect_classes: needs.defect_classes
 				});
 			}
 
-			// PM-presence fork (fork 3): a PM requested OR already present ⇒ tasks born 'proposed' for the
-			// D-039 panel; otherwise born 'ready'. We check the persisted PM AFTER deciding the hand-off so
-			// a requested PM (created in step 5) still gets 'proposed' tasks here.
-			const wantPm = opts.pm !== undefined;
-			const existingPm = await getPm(db, row.id);
-			taskStatus = wantPm || existingPm ? 'proposed' : 'ready';
-
-			taskIds = [];
+			const taskIds: string[] = [];
 			for (const t of proposal.foundingTasks) {
 				const task = await createTask(db, {
-					project: row.id,
+					project: projectId,
 					title: t.objective,
 					// D-008: the description is the founding objective verbatim; purpose rides the field.
 					description: t.objective,
@@ -596,10 +487,10 @@ export async function executeCreation(
 				taskIds.push(task.id);
 			}
 
-			targetIds = [];
+			const targetIds: string[] = [];
 			for (const tg of proposal.targetDrafts) {
 				const target = await declareTarget(db, {
-					project: row.id,
+					project: projectId,
 					kind: tg.kind,
 					adapterId: tg.adapterId,
 					config: tg.config // env-NAMES only — declareTarget binds it as a $param blob (D-026).
@@ -607,40 +498,388 @@ export async function executeCreation(
 				targetIds.push(target.id);
 			}
 
-			// ── 5. HAND-OFF — hire the PM with the charter pre-filled from the proposal (fork 3). ──
+			// ── HAND-OFF — hire the PM with the charter pre-filled from the proposal (fork 3). ──
+			let pm: HirePmResult | undefined;
 			if (opts.pm) {
 				pm = await hirePm(db, {
-					project: row.id,
+					project: projectId,
 					name: opts.pm.name,
 					...(proposal.pmCharterDraft ? { charter: proposal.pmCharterDraft } : {}),
 					...(opts.pm.persona ? { persona: opts.pm.persona } : {}),
 					answers: opts.pm.answers ?? []
 				});
 			}
+
+			return { taskIds, targetIds, pm };
+		}
+	});
+}
+
+// ── Template executor (CT-3 entry point) ──────────────────────────────────────────────
+
+/** The result of a template-driven creation (mirrors {@link ExecuteCreationResult}). */
+export type ExecuteTemplateCreationResult = ExecuteCreationResult;
+
+export interface ExecuteTemplateCreationOptions {
+	/** The template id to materialize (CT-1 registry). Unknown ⇒ TemplateNotFoundError (honest). */
+	templateId: string;
+	/** The operator's project name (slug source) — the brief name analogue. */
+	name: string;
+	/** The operator's project description (rides into seed content / charter). May be empty. */
+	description?: string;
+	/** The template param values the UI collected (string/boolean) — passed verbatim to generate(). */
+	params?: Record<string, string | boolean>;
+	/** The confinement root (CODE_ROOT). The scaffold lives at `<codeRoot>/<slug>` (D-018). */
+	codeRoot: string;
+	/**
+	 * The PM hand-off (fork 3, default ON when present). Present ⇒ hirePm runs with a charter derived
+	 * from the template + brief; absent ⇒ no PM, founding tasks born 'ready'.
+	 */
+	pm?: {
+		name: string;
+		answers?: HireAnswer[];
+		persona?: string;
+	};
+	/** Injectable command runner (test seam) — defaults to {@link execFileRunner}. */
+	run?: CommandRunner;
+	/** Optional clock override (determinism in tests). Production omits it. */
+	now?: () => Date;
+}
+
+/**
+ * Execute a TEMPLATE-driven creation (CT-3). Resolves the template (getTemplate — honest
+ * TemplateNotFoundError when unknown), renders `template.generate(name, description, params)` into
+ * the REAL relative-path → content file-map, then runs the EXACT SAME pipeline executeCreation uses
+ * via the shared {@link scaffoldRegisterAndWire}: create_lock/F-040 acquire, slug + stability gate +
+ * ProjectExistsError, per-entry confineToRoot (ScaffoldPathError on `..`/absolute), per-file D-026
+ * screen (ScaffoldSecretError, HARD), mkdir + writeFile the REAL template content (NOT placeholder
+ * stubs — the key difference from the AI path's dirLayout), git init + first commit, scanProject
+ * ingest (row derives from DISK, F-008), register, then the post-register writers mapped from the
+ * TEMPLATE metadata + brief (plan macro · capability needs from template.language+tags · NO founding
+ * tasks unless the template provides them, which the current registry does not · optional hirePm).
+ *
+ * Same incident/rollback on a mid-scaffold failure (ScaffoldFailedError, NO phantom row). Same
+ * post-register honesty (PostRegisterWriterError + create_status='incomplete', never a silent
+ * half-state). Throws the same NAMED errors as executeCreation for the shared failure classes.
+ *
+ * Shadow paths: unknown templateId → TemplateNotFoundError (before any disk touch / lock); a param
+ * injecting `../` into a generated path → ScaffoldPathError (fail closed); a param that becomes a
+ * literal secret in a generated file → ScaffoldSecretError (HARD); an empty/whitespace name → the
+ * slug gate (UnstableSlugError) throws before any disk touch; a generate() that returns no files is
+ * impossible for the registry templates (every one emits at least a CLAUDE.md/.gitignore), but the
+ * commit-0 .gitignore/README are NOT auto-injected here — the template owns its own tree.
+ */
+export async function executeTemplateCreation(
+	db: Db,
+	opts: ExecuteTemplateCreationOptions
+): Promise<ExecuteTemplateCreationResult> {
+	// ── 1. RESOLVE — honest named error before any disk touch / lock (CT-1). ──
+	const template = getTemplate(opts.templateId);
+	if (!template) throw new TemplateNotFoundError(opts.templateId);
+
+	const name = opts.name;
+	const description = opts.description ?? '';
+	const params = opts.params ?? {};
+
+	// ── 2. RENDER — the REAL file-map (relative path → content). Pure; depends only on its args. ──
+	// A hostile param that injects `../` into a generated path key is NOT trusted here — the shared
+	// pipeline's resolveEntry re-confines EVERY key under the project root (D-018, ScaffoldPathError),
+	// and screen() re-checks EVERY file's content (D-026, ScaffoldSecretError) before any write.
+	const fileMap = template.generate(name, description, params);
+
+	return scaffoldRegisterAndWire(db, {
+		briefName: name,
+		fileMap,
+		wantPm: opts.pm !== undefined,
+		run: opts.run,
+		codeRoot: opts.codeRoot,
+		async postRegister(projectId, taskStatus): Promise<PostRegisterOutcome> {
+			// PLAN MACRO — derived from the template + brief (honest, F-008: every field is grounded in
+			// the template metadata + the operator's words, never fabricated boilerplate that pretends
+			// to be more specific than it is).
+			const purpose =
+				description.trim() ||
+				`${template.name} project: ${template.description}`;
+			await updateProjectPlan(db, projectId, {
+				purpose,
+				long_term_vision: `Grow ${name} from the ${template.name} scaffold into a maintained ${template.language || 'project'}.`,
+				role: 'Maintainer',
+				definition_of_done:
+					`The ${template.name} scaffold builds, its tests pass, and the founding work is complete.`
+			});
+
+			// CAPABILITY NEEDS — mapped from the template's declared language + tags (where they map to
+			// the workforce vocabulary). languages/frameworks are free text (screened at setCapabilityNeeds);
+			// defect_classes is enum-closed there, so we send NONE (the template carries no defect classes —
+			// sending an unvalidated guess would fail the enum gate, F-008: honest absence over a fabrication).
+			const languages = template.language?.trim() ? [template.language.trim().toLowerCase()] : [];
+			const frameworks = capabilityFrameworksFromTemplate(template);
+			if (languages.length || frameworks.length) {
+				await setCapabilityNeeds(db, projectId, { languages, frameworks, defect_classes: [] });
+			}
+
+			// FOUNDING TASKS — only when the template provides any (the current registry does not, so
+			// this is honestly empty; DEFERRED: a template-authored founding-task list is a future CT-1
+			// field, written down here rather than fabricated now). No fake tasks invented (F-008).
+			const taskIds: string[] = [];
+			for (const t of templateFoundingTasks(template)) {
+				const task = await createTask(db, {
+					project: projectId,
+					title: t.objective,
+					description: t.objective,
+					objective: t.objective,
+					purpose: t.purpose,
+					origin: 'pm',
+					status: taskStatus
+				});
+				taskIds.push(task.id);
+			}
+
+			// TARGETS — the template carries no deploy/publish targets (the operator adds them post-create,
+			// D-037 + the operator gate). Honestly empty (F-008), never a fabricated default target.
+			const targetIds: string[] = [];
+
+			// HAND-OFF — hire the PM with a charter derived from the template + brief (fork 3).
+			let pm: HirePmResult | undefined;
+			if (opts.pm) {
+				const charter =
+					`Own the ${name} roadmap. ${description.trim() || template.description}`.trim();
+				pm = await hirePm(db, {
+					project: projectId,
+					name: opts.pm.name,
+					charter,
+					...(opts.pm.persona ? { persona: opts.pm.persona } : {}),
+					answers: opts.pm.answers ?? []
+				});
+			}
+
+			return { taskIds, targetIds, pm };
+		}
+	});
+}
+
+// ── Template → metadata mappers (pure; F-008 honest) ──────────────────────────────────
+
+/**
+ * Map a template's tags to capability FRAMEWORK strings the workforce matcher understands. Only the
+ * tags that genuinely name a framework/runtime are kept (honest, F-008 — an unmapped tag yields no
+ * framework, never a fabricated one). Free text → screened at the setCapabilityNeeds boundary.
+ */
+function capabilityFrameworksFromTemplate(template: ProjectTemplate): string[] {
+	const KNOWN_FRAMEWORK_TAGS = new Set([
+		'sveltekit',
+		'nextjs',
+		'fastapi',
+		'react',
+		'unity',
+		'fabric',
+		'forge',
+		'paper',
+		'bepinex',
+		'minecraft'
+	]);
+	const tags = (template.tags ?? []).map((t) => t.trim().toLowerCase()).filter(Boolean);
+	return Array.from(new Set(tags.filter((t) => KNOWN_FRAMEWORK_TAGS.has(t))));
+}
+
+/**
+ * The template's founding-task drafts, when it declares any. The current CT-1 registry templates do
+ * NOT carry founding tasks, so this is honestly empty (F-008 — no fabricated tasks). Kept as a pure
+ * seam so a future CT-1 `foundingTasks` field flows through the same post-register writer.
+ */
+function templateFoundingTasks(
+	template: ProjectTemplate
+): ReadonlyArray<{ objective: string; purpose: string }> {
+	void template; // reserved seam — a future CT-1 `foundingTasks` field flows through here.
+	return [];
+}
+
+// ── The shared scaffold/register/wire pipeline (CA-2 / CT-3) ───────────────────────────
+
+/** What a post-register writer returns to the shared pipeline (the rows it created). */
+interface PostRegisterOutcome {
+	taskIds: string[];
+	targetIds: string[];
+	pm?: HirePmResult;
+}
+
+/** The per-path inputs the shared pipeline needs (the file-map + the post-register writer callback). */
+interface ScaffoldPipelineInput {
+	/** The operator's project name — the slug source + commit-identity context. */
+	briefName: string;
+	/** The REAL relative-path → content file-map to materialize (AI stubs OR template content). */
+	fileMap: Record<string, string>;
+	/** True ⇒ founding tasks born 'proposed' (a PM is requested) — fork 3. */
+	wantPm: boolean;
+	/** The confinement root (CODE_ROOT). */
+	codeRoot: string;
+	/** Injectable command runner (test seam) — defaults to execFileRunner. */
+	run?: CommandRunner;
+	/**
+	 * The path-specific post-register writers. Receives the registered project id + the decided task
+	 * status; returns the rows it created. A throw here surfaces as PostRegisterWriterError (the
+	 * project survives, marked create_status='incomplete' — CA-H2).
+	 */
+	postRegister(projectId: string, taskStatus: TaskStatus): Promise<PostRegisterOutcome>;
+}
+
+/**
+ * The SINGLE scaffold → git → register → wire pipeline shared by executeCreation (AI path) and
+ * executeTemplateCreation (template path). It owns every cross-cutting rail so neither caller forks
+ * the machinery: slug + stability gate (UnstableSlugError), existence fail-closed (ProjectExistsError),
+ * the slug-keyed create-lock (ConcurrentCreateError / F-040), confineToRoot project root (D-018),
+ * the ownership-gated scaffold write (writeFileMap — ScaffoldPathError / ScaffoldSecretError per
+ * entry), git init + first commit, the mid-scaffold incident + rollback (ScaffoldFailedError, NO
+ * phantom row), scanProject ingest (F-008 — row from DISK), the slug-divergence guard, and the
+ * post-register honesty (PostRegisterWriterError + create_status, never a silent half-state). The
+ * caller supplies ONLY the file-map + the post-register writers.
+ */
+async function scaffoldRegisterAndWire(
+	db: Db,
+	input: ScaffoldPipelineInput
+): Promise<ExecuteCreationResult> {
+	const run = input.run ?? execFileRunner;
+
+	// ── GATE — D-016 slug-validate + stability (before any disk touch). ──
+	const slug = slugify(input.briefName);
+	// SLUG STABILITY (D-016 / F-008): slugify is NOT idempotent for degenerate symbol-only names
+	// ('!!!','__','??? ' → 'p_', re-slugifying 'p_' → 'p'). The scaffold dir is named `slug` and
+	// scanProject RE-DERIVES the registered slug from that dir basename — so unless slugify(slug) ===
+	// slug, the gate-id and registered-id DIVERGE (wedging the existence gate → an F-008 phantom that
+	// rm -rf's a live dir on the next degenerate create). Fail CLOSED here so gate-id, dir-basename,
+	// and registered-id are guaranteed to be ONE source.
+	const reSlug = slugify(slug);
+	if (reSlug !== slug) throw new UnstableSlugError(input.briefName, slug, reSlug);
+	const projectId = assertRecordIdOfTable(`project:${slug}`, 'project'); // D-016 — named on failure.
+
+	// Fail closed on an existing project (idempotent same-slug re-create). First half of the existence
+	// guard; the create-lock below closes its TOCTOU window (CA-H2 / F-040).
+	const existing = await getProject(db, projectId);
+	if (existing) throw new ProjectExistsError(projectId);
+
+	// ── CREATE-LOCK (CA-H2 / F-040 TOCTOU guard) — slug-keyed lock with a FAIL-CLOSED CREATE. ──
+	// Two parallel same-slug creates can BOTH pass the getProject null-gate (TOCTOU); the lock's CREATE
+	// errors for all but ONE → the losers throw ConcurrentCreateError HERE, before any disk touch, so a
+	// loser can never rm -rf the winner's live scaffold. RELEASED in `finally` on every exit. The nonce
+	// makes the release owner-scoped (a release only deletes a lock THIS run acquired).
+	const lockNonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+	await acquireCreateLock(db, slug, lockNonce);
+
+	try {
+		// The scaffold root, confined under CODE_ROOT (D-018). The slug is snake-case (no separators) so
+		// the join cannot escape; confineToRoot canonicalizes the root (symlink-stable) for defense in depth.
+		const realRoot = confineToRoot(input.codeRoot, input.codeRoot);
+		const projectRoot = join(realRoot, slug);
+
+		// OWNERSHIP GATE (CA-H2 / F-040): we may ONLY rm -rf a dir THIS run created. If the dir pre-existed
+		// (a leftover from another run/operator), we NEVER delete it on cleanup — that is the exact
+		// corruption F-040 forbids (the loser never rm's the winner's live scaffold).
+		let weCreatedRoot = false;
+
+		// ── SCAFFOLD — write tree, git init + first commit. Partial death → cleanup + incident. ──
+		let commitSha: string | undefined;
+		try {
+			const rootExistedBefore = await pathExists(projectRoot);
+			await mkdir(projectRoot, { recursive: true });
+			weCreatedRoot = !rootExistedBefore;
+			await writeFileMap(projectRoot, input.fileMap);
+
+			// git init + first commit via the execFile-ARRAY runner (D-008/F-002 — never a shell).
+			const initRes = await run('git', ['init'], { cwd: projectRoot });
+			if (initRes.code !== 0) {
+				throw new Error(`git init failed (code ${initRes.code}): ${initRes.stderr.slice(0, 200)}`);
+			}
+			await run('git', ['add', '-A'], { cwd: projectRoot });
+			const commitMsg = `chore: scaffold ${slug} via Atelier Create-with-AI`;
+			// Inline identity (-c) so the first commit succeeds even with no global/local git identity
+			// configured (CI / a fresh repo). Scoped to THIS commit invocation only.
+			const committed = await run(
+				'git',
+				['-c', 'user.name=Atelier', '-c', 'user.email=atelier@local', 'commit', '-m', commitMsg],
+				{ cwd: projectRoot }
+			);
+			if (committed.code !== 0) {
+				throw new Error(
+					`first commit failed (code ${committed.code}): ${(committed.stderr || committed.stdout).slice(0, 200)}`
+				);
+			}
+			const rev = await run('git', ['rev-parse', '--short', 'HEAD'], { cwd: projectRoot });
+			commitSha = rev.code === 0 ? rev.stdout.trim() : undefined;
 		} catch (err) {
-			// POST-REGISTER FAILURE (CA-H2): mark honestly, log an incident, surface a NAMED error.
-			// Best-effort marking — if the marking write itself fails, the incident still records the
-			// honest failure (we never silently report success).
+			// Interrupt contract / F-008: remove the partial dir so a re-run starts clean, register NO
+			// phantom row. Clean up ONLY a dir THIS run created (ownership gate, CA-H2). Then re-throw:
+			//   • a REJECTED INPUT (path escape D-018 / secret echo D-026) is the caller's bug, not a
+			//     partial scaffold — re-throw the SPECIFIC named error verbatim, no incident;
+			//   • an IO / git failure IS a partial scaffold — log an incident (NEVER silent) + wrap as
+			//     ScaffoldFailedError (named) so the operator sees an honest failure, not a phantom row.
+			if (weCreatedRoot) await rm(projectRoot, { recursive: true, force: true }).catch(() => {});
+			if (err instanceof ScaffoldPathError || err instanceof ScaffoldSecretError) {
+				throw err;
+			}
+			const incidentId = await recordIncident(
+				db,
+				`Create scaffold failed: ${slug}`,
+				`Scaffold/commit failed for project:${slug} at ${projectRoot}. ${(err as Error).message}`
+			);
+			throw new ScaffoldFailedError(
+				`scaffold failed for ${slug} — no project registered (incident logged). ${(err as Error).message}`,
+				incidentId
+			);
+		}
+
+		// ── REGISTER HONESTLY — scanProject ingests the REAL on-disk scaffold (F-008). ──
+		// The row derives from disk (detected ecosystem/build tool), NEVER the input text.
+		const row = await scanProject(db, projectRoot, { codeRoot: input.codeRoot });
+
+		// Defense in depth (D-016 / F-008): the gate's slug-stability guard guarantees the registered id
+		// equals the gate id, but assert it explicitly so any future slugify drift fails CLOSED here.
+		if (row.id !== projectId) {
+			await db.query(`DELETE ${assertRecordIdOfTable(row.id, 'project')};`).catch(() => {});
+			if (weCreatedRoot) await rm(projectRoot, { recursive: true, force: true }).catch(() => {});
+			const incidentId = await recordIncident(
+				db,
+				`Create slug divergence: ${slug}`,
+				`Gate id ${projectId} but scanProject registered ${row.id} for ${projectRoot}. ` +
+					`Removed the row + scaffold to avoid an unfindable phantom (D-016/F-008).`
+			);
+			throw new ScaffoldFailedError(
+				`registered id ${row.id} diverged from gate id ${projectId} — scaffold removed (incident logged).`,
+				incidentId
+			);
+		}
+
+		// ── POST-REGISTER WRITERS (CA-H2) — path-specific, via the caller's callback. ──
+		// The project row + scaffold are now REAL and committed. A throw in the writer CANNOT unregister
+		// the project (the on-disk scaffold + commit are durable; unwinding the row would rm -rf a live
+		// dir — the exact corruption CA-H2 forbids). On a post-register throw we MARK the project honestly
+		// (create_status='incomplete'), log an incident (NEVER silent, F-008), and surface a NAMED
+		// PostRegisterWriterError — a real, clearly-marked, NON-wedged project.
+		const existingPm = await getPm(db, row.id);
+		const taskStatus: TaskStatus = input.wantPm || existingPm ? 'proposed' : 'ready';
+		let outcome: PostRegisterOutcome;
+		try {
+			outcome = await input.postRegister(row.id, taskStatus);
+		} catch (err) {
 			await setCreateStatus(db, row.id, 'incomplete').catch(() => {});
 			const incidentId = await recordIncident(
 				db,
-				`Create-with-AI setup incomplete: ${slug}`,
+				`Create setup incomplete: ${slug}`,
 				`Project ${row.id} registered + scaffolded at ${projectRoot} but a post-register writer ` +
 					`threw; marked create_status=incomplete (not wedged, not a phantom). ${(err as Error).message}`
 			);
 			throw new PostRegisterWriterError(row.id, (err as Error).message, incidentId);
 		}
 
-		// ── 6. MARK COMPLETE (CA-H2) — all writers succeeded; the project is fully, honestly wired. ──
+		// ── MARK COMPLETE (CA-H2) — all writers succeeded; the project is fully, honestly wired. ──
 		await setCreateStatus(db, row.id, 'complete');
 
 		return {
 			projectId: row.id,
 			rootPath: row.root_path,
-			taskIds,
+			taskIds: outcome.taskIds,
 			taskStatus,
-			targetIds,
-			...(pm ? { pm } : {}),
+			targetIds: outcome.targetIds,
+			...(outcome.pm ? { pm: outcome.pm } : {}),
 			...(commitSha ? { commitSha } : {})
 		};
 	} finally {

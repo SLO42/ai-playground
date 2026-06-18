@@ -451,11 +451,16 @@ function looksLikeLiteralCredential(value: string): boolean {
  *   • 'freetext' — agent-authored descriptive prose (a plan-macro field, a charter, a task
  *     objective/purpose, a clarifier). A 'redacted' status means the span is a benign,
  *     SAFELY-redactable token (an email, a home path, a known-prefix mention) — the SAME class the
- *     scaffold-write gate redacts-in-place rather than aborts. We let it PASS here (the value is kept
- *     verbatim; the scaffold-write screen redacts it at the disk boundary, so no raw secret lands),
- *     and HARD-reject ONLY 'quarantined' (an un-redactable private-key block). This fixes the live
- *     bug where a normal description containing an email failed the create with a 'literal secret'
- *     error: a redactable email in prose is not a secret echo, it is redactable PII.
+ *     scaffold-write gate redacts-in-place rather than aborts. We let it PASS this validation gate
+ *     (the value is kept verbatim HERE) and HARD-reject ONLY 'quarantined' (an un-redactable
+ *     private-key block). This fixes the live bug where a normal description containing an email
+ *     failed the create with a 'literal secret' error: a redactable email in prose is not a secret
+ *     echo, it is redactable PII. The redactable span is made SAFE at its WRITER boundary, not here:
+ *     scaffold-bound fields via the scaffold-write screen (writeFileMap), and DB-bound fields
+ *     (planMacro.* → updateProjectPlan, foundingTasks[].objective/purpose → createTask) via
+ *     screenWriterText() in execute.ts postRegister. Letting a 'redacted' span PASS this gate is
+ *     therefore safe ONLY because every persistence path screens it — never rely on this comment's
+ *     premise without the matching writer-boundary screen.
  * Gates 2 (key-positive) and 3 (prefix/entropy) ALWAYS run and are NEVER relaxed by mode — a real
  * credential token in free text still HARD-rejects regardless.
  *
@@ -745,10 +750,16 @@ export async function validateProposal(db: Db, raw: unknown): Promise<CreationPr
 				] as ReadonlyArray<readonly [string, string | undefined]>
 		)
 	];
-	// 'freetext' mode: a benign redactable span (an email, a home path) in agent-authored PROSE is
-	// redactable PII, NOT a literal secret echo — it passes here and is redacted at the scaffold-write
-	// disk boundary (the live-bug fix). Only an un-redactable 'quarantined' block hard-rejects; Gates
-	// 2/3 (key-positive + prefix/entropy) still catch a real credential token regardless of mode.
+	// 'freetext' mode: a benign redactable span (an email, a home path, a known-prefix provider key) in
+	// agent-authored PROSE is redactable PII, NOT a literal secret echo — it PASSES this validation gate
+	// (the live-bug fix: a normal description with an email no longer hard-fails the create). The raw
+	// value is NOT made safe here — it is screened to its SAFE redacted text at the WRITER boundary that
+	// persists it: scaffold files via writeFileMap/screen() (execute.ts), and the DB-bound fields
+	// (planMacro.* → updateProjectPlan, foundingTasks[].objective/purpose → createTask) via
+	// screenWriterText() in execute.ts postRegister — the canonical chokepoint that mirrors
+	// setCapabilityNeeds, so no raw secret lands in a file OR a DB column. Only an un-redactable
+	// 'quarantined' block hard-rejects here; Gates 2/3 (key-positive + prefix/entropy) still catch a real
+	// credential token regardless of mode.
 	for (const [p, s] of secretScreened) if (s !== undefined) assertNoSecretEcho(s, p, undefined, 'freetext');
 
 	// §3 ANTI-SYCOPHANCY across EVERY agent-authored string. One pass, named SycophancyError.

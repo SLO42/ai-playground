@@ -359,6 +359,50 @@ describe('executeCreation — red-team D-026 secret in scaffold content', () => 
 		expect(readme).not.toContain('sk-ant-'); // NEVER the raw token on disk (D-026 preserved).
 		expect(res.projectId).toBe('project:ca2_redact_direct');
 	}, 60_000);
+
+	// WRITER-BOUNDARY REGRESSION (red-team pass-2 HIGH): a 'redacted'-status provider key (sk-ant-…) in
+	// planMacro free text and a founding-task purpose PASSES the plan boundary ('freetext' rejects only
+	// 'quarantined'). These fields persist to the DB RAW (updateProjectPlan MERGE / createTask CREATE) —
+	// they NEVER pass through writeFileMap/screen(), so the disk-gate is not a backstop for them. The
+	// fix screens them at the writer boundary (execute.ts postRegister). Assert the DB COLUMN holds the
+	// SAFE redacted text, never the raw key. This is the assertion the green 107/107 was missing.
+	it('a credential token in planMacro + founding-task free text is stored REDACTED in the DB plan/task rows, never raw', async () => {
+		const KEY = 'sk-' + 'ant-' + 'deadbeefdeadbeef0123'; // assembled (GitHub push-protection)
+		const env = await makeEnvelope('ca2 writer redact', {
+			planMacro: {
+				purpose: `Integrate the API using ${KEY} for now.`,
+				vision: 'A tool reached for when tuning a run.',
+				role: 'Solo maintainer.',
+				definition_of_done: 'Runs without crash.'
+			},
+			foundingTasks: [
+				{ objective: 'Wire the client', purpose: `Call the API with ${KEY} until env wiring lands.` },
+				{ objective: 'Implement the curve', purpose: 'The curve is the whole point of the tool.' },
+				{ objective: 'Add a config surface', purpose: 'Users tune without code edits.' }
+			]
+		});
+		const res = await executeCreation(db, env, { codeRoot });
+		expect(res.projectId).toBe('project:ca2_writer_redact');
+
+		// The plan.purpose DB column holds the SAFE redacted text — NEVER the raw key (D-026).
+		const row = await getProject(db, res.projectId);
+		expect(row).not.toBeNull();
+		expect(row!.plan?.purpose).toContain('[REDACTED:anthropic-key]');
+		expect(row!.plan?.purpose).not.toContain('sk-ant-');
+		expect(row!.create_status).toBe('complete'); // redacted-in-place, NOT aborted.
+
+		// The founding-task purpose DB column is likewise redacted, never raw.
+		const tasks = await listTasksByProject(db, res.projectId);
+		const leaky = tasks.find((t) => t.objective === 'Wire the client');
+		expect(leaky).toBeTruthy();
+		expect(leaky!.purpose).toContain('[REDACTED:anthropic-key]');
+		expect(leaky!.purpose).not.toContain('sk-ant-');
+		// No DB column anywhere on the tasks carries the raw key.
+		for (const t of tasks) {
+			expect(t.purpose ?? '').not.toContain('sk-ant-');
+			expect(t.objective ?? '').not.toContain('sk-ant-');
+		}
+	}, 60_000);
 });
 
 describe('executeCreation — honest partial failure (F-008)', () => {

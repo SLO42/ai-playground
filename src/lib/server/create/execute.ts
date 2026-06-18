@@ -377,6 +377,25 @@ function aiScaffoldFileMap(
 	return map;
 }
 
+/**
+ * D-026 writer-boundary screen for an agent-authored DB-bound FREE-TEXT field (a plan-macro field or a
+ * founding-task objective/purpose). These fields are persisted RAW by updateProjectPlan (repo.ts MERGE)
+ * and createTask (tasks/repo.ts CREATE) — neither passes through writeFileMap/screen(), so the plan.ts
+ * 'freetext' relaxation's "redacted at the scaffold-write disk boundary" safety net does NOT cover them
+ * (only readme.md echoes purpose through the disk gate; the DB column gets the value verbatim). This is
+ * the canonical chokepoint that makes the relaxation honest: a 'redacted' span (a benign email, a home
+ * path, a known-prefix provider key like sk-ant-…) is stored as the SAFE screen().text — the SAME
+ * disposition setCapabilityNeeds and the scaffold-write gate use ("write safe redacted text instead of
+ * hard-aborting on benign PII"). A 'quarantined' (un-redactable) block is also reduced to its safe
+ * screen().text. The collected `reasons` feed an honest, non-fatal redaction note (F-008, parity with
+ * the fileMap redaction note) so a writer-boundary redaction is visible, never silent.
+ */
+function screenWriterText(value: string, field: string, into: ScaffoldRedaction[]): string {
+	const res = screen(value);
+	if (res.status !== 'clean') into.push({ path: field, reasons: res.reasons });
+	return res.text;
+}
+
 /** True iff `p` exists on disk (used for the CA-H2 ownership gate — did THIS run create the dir?). */
 async function pathExists(p: string): Promise<boolean> {
 	try {
@@ -506,11 +525,21 @@ export async function executeCreation(
 		codeRoot: opts.codeRoot,
 		// POST-REGISTER WRITERS (CA-H2) — plan · needs · tasks · targets · PM, all from the proposal.
 		async postRegister(projectId, taskStatus): Promise<PostRegisterOutcome> {
+			// D-026 writer boundary: planMacro + founding-task free text persist RAW (updateProjectPlan
+			// MERGE / createTask CREATE — neither passes through writeFileMap/screen()). The plan.ts
+			// 'freetext' relaxation lets a 'redacted'-status span (a benign email/home-path/provider-key
+			// like sk-ant-…) PASS validation; screen it HERE so the DB stores the SAFE redacted text,
+			// not the raw secret (the canonical chokepoint, mirroring setCapabilityNeeds).
+			const writerRedactions: ScaffoldRedaction[] = [];
 			await updateProjectPlan(db, projectId, {
-				purpose: proposal.planMacro.purpose,
-				long_term_vision: proposal.planMacro.vision,
-				role: proposal.planMacro.role,
-				definition_of_done: proposal.planMacro.definition_of_done
+				purpose: screenWriterText(proposal.planMacro.purpose, 'planMacro.purpose', writerRedactions),
+				long_term_vision: screenWriterText(proposal.planMacro.vision, 'planMacro.vision', writerRedactions),
+				role: screenWriterText(proposal.planMacro.role, 'planMacro.role', writerRedactions),
+				definition_of_done: screenWriterText(
+					proposal.planMacro.definition_of_done,
+					'planMacro.definition_of_done',
+					writerRedactions
+				)
 			});
 
 			// Capability needs (defect_classes enum-validated by CA-1; setCapabilityNeeds re-validates
@@ -525,18 +554,36 @@ export async function executeCreation(
 			}
 
 			const taskIds: string[] = [];
-			for (const t of proposal.foundingTasks) {
+			for (const [i, t] of proposal.foundingTasks.entries()) {
+				// Same D-026 writer-boundary screen for the founding-task free text (createTask persists
+				// title/description/objective/purpose RAW). objective backs title/description/objective.
+				const objective = screenWriterText(t.objective, `foundingTasks[${i}].objective`, writerRedactions);
+				const purpose = screenWriterText(t.purpose, `foundingTasks[${i}].purpose`, writerRedactions);
 				const task = await createTask(db, {
 					project: projectId,
-					title: t.objective,
+					title: objective,
 					// D-008: the description is the founding objective verbatim; purpose rides the field.
-					description: t.objective,
-					objective: t.objective,
-					purpose: t.purpose,
+					description: objective,
+					objective,
+					purpose,
 					origin: 'pm',
 					status: taskStatus
 				});
 				taskIds.push(task.id);
+			}
+
+			// Honest, non-fatal redaction note (F-008, parity with the scaffold-write fileMap note): a
+			// writer-boundary redaction is visible, never silent. Best-effort — a note failure must not
+			// fail an otherwise-successful create.
+			if (writerRedactions.length > 0) {
+				const detail = writerRedactions.map((r) => `${r.path}: [${r.reasons.join(', ')}]`).join('; ');
+				await recordIncident(
+					db,
+					`Create plan/task redactions: ${projectId}`,
+					`Project ${projectId} stored ${writerRedactions.length} plan/task free-text field(s) ` +
+						`redacted in place (D-026 — safe redacted text persisted, no raw secret; not an error). ${detail}`,
+					'info'
+				).catch(() => undefined);
 			}
 
 			const targetIds: string[] = [];
@@ -649,9 +696,16 @@ export async function executeTemplateCreation(
 			// PLAN MACRO — derived from the template + brief (honest, F-008: every field is grounded in
 			// the template metadata + the operator's words, never fabricated boilerplate that pretends
 			// to be more specific than it is).
-			const purpose =
-				description.trim() ||
-				`${template.name} project: ${template.description}`;
+			// D-026 writer boundary (parity with the AI path): the operator description rides into the
+			// DB-bound `purpose` RAW via updateProjectPlan — screen it so a secret in the description is
+			// stored as SAFE redacted text, never raw. The other plan fields are template-derived
+			// constants (no operator/agent free text), so they need no screen.
+			const writerRedactions: ScaffoldRedaction[] = [];
+			const purpose = screenWriterText(
+				description.trim() || `${template.name} project: ${template.description}`,
+				'planMacro.purpose',
+				writerRedactions
+			);
 			await updateProjectPlan(db, projectId, {
 				purpose,
 				long_term_vision: `Grow ${name} from the ${template.name} scaffold into a maintained ${template.language || 'project'}.`,
@@ -659,6 +713,16 @@ export async function executeTemplateCreation(
 				definition_of_done:
 					`The ${template.name} scaffold builds, its tests pass, and the founding work is complete.`
 			});
+			if (writerRedactions.length > 0) {
+				const detail = writerRedactions.map((r) => `${r.path}: [${r.reasons.join(', ')}]`).join('; ');
+				await recordIncident(
+					db,
+					`Create plan redactions: ${projectId}`,
+					`Project ${projectId} stored ${writerRedactions.length} plan free-text field(s) redacted ` +
+						`in place (D-026 — safe redacted text persisted, no raw secret; not an error). ${detail}`,
+					'info'
+				).catch(() => undefined);
+			}
 
 			// CAPABILITY NEEDS — mapped from the template's declared language + tags (where they map to
 			// the workforce vocabulary). languages/frameworks are free text (screened at setCapabilityNeeds);

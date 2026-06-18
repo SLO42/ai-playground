@@ -541,23 +541,48 @@ describe('CA-H1 — D-018 dirLayout path-escape rejected at the trust boundary (
 	});
 });
 
-describe('defect_class enum-closed (§3 D4, vs the live vocabulary)', () => {
-	it('accepts a class in the operator-confirmed vocabulary', async () => {
+describe('defect_class partition (§3 D4, vs the live vocabulary) — confirmed vs proposed', () => {
+	it('a class in the operator-confirmed vocabulary lands in defect_classes (confirmed/matchable)', async () => {
 		const p = await validateProposal(db, goodRaw());
 		expect(p.capabilityNeeds.defect_classes).toEqual(['null-deref']);
+		expect(p.capabilityNeeds.proposed_defect_classes).toEqual([]);
 	});
-	it('rejects a class NOT in the vocabulary', async () => {
+	it('a class NOT in the vocabulary is CAPTURED in proposed_defect_classes (no hard-fail)', async () => {
 		const raw = goodRaw({
 			capabilityNeeds: { languages: [], frameworks: [], defect_classes: ['never-confirmed-class'] }
 		});
-		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(ProposalContractError);
+		// The proposal no longer hard-fails on an unknown class (new-domain chicken-and-egg fix).
+		const p = await validateProposal(db, raw);
+		expect(p.capabilityNeeds.defect_classes).toEqual([]); // NOT promoted to confirmed
+		expect(p.capabilityNeeds.proposed_defect_classes).toEqual(['never-confirmed-class']);
 	});
-	it('empty defect_classes is honest (F-008) — no enum check needed', async () => {
+	it('a mixed list is PARTITIONED: known → defect_classes, unknown → proposed_defect_classes', async () => {
+		const raw = goodRaw({
+			capabilityNeeds: {
+				languages: [],
+				frameworks: [],
+				defect_classes: ['null-deref', 'bepinex-patch-conflict', 'another-novel-class']
+			}
+		});
+		const p = await validateProposal(db, raw);
+		expect(p.capabilityNeeds.defect_classes).toEqual(['null-deref']);
+		expect(p.capabilityNeeds.proposed_defect_classes).toEqual([
+			'another-novel-class',
+			'bepinex-patch-conflict'
+		]);
+		// D4: no overlap — a class is confirmed XOR proposed, never both.
+		const overlap = p.capabilityNeeds.defect_classes.filter((c) =>
+			p.capabilityNeeds.proposed_defect_classes.includes(c)
+		);
+		expect(overlap).toEqual([]);
+	});
+	it('empty defect_classes is honest (F-008) — both partitions empty', async () => {
 		const p = await validateProposal(
 			db,
 			goodRaw({ capabilityNeeds: { languages: ['ts'], frameworks: [], defect_classes: [] } })
 		);
 		expect(p.capabilityNeeds.defect_classes).toEqual([]);
+		expect(p.capabilityNeeds.proposed_defect_classes).toEqual([]);
 	});
 });
 

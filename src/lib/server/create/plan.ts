@@ -126,11 +126,23 @@ export interface TargetDraft {
 	config: Record<string, unknown>;
 }
 
-/** Capability needs draft (workforce capability-match shape). defect_classes is enum-validated. */
+/**
+ * Capability needs draft (workforce capability-match shape). `defect_classes` carries ONLY classes
+ * that are in the operator-confirmed vocabulary (confirmed + matchable, §3 D4). A class the agent
+ * proposes that is NOT yet in the vocabulary is CAPTURED separately in `proposed_defect_classes`
+ * (an explicit HIRE-gap signal that feeds the future pm-hr-handoff hire) — it is NEVER promoted to
+ * a confirmed/matchable class without an operator key (D4 LOCKED). This is the new-domain
+ * (e.g. BepInEx) chicken-and-egg fix: a brand-new domain has no confirmed classes yet, so we record
+ * the need instead of hard-failing the whole proposal.
+ */
 export interface CapabilityNeedsDraft {
 	languages: string[];
 	frameworks: string[];
+	/** Classes IN the operator-confirmed vocabulary — confirmed + matchable. */
 	defect_classes: string[];
+	/** Classes the agent proposed that are NOT (yet) in the vocabulary — captured as a HIRE signal,
+	 *  never confirmed/matchable until an operator key mints them (D4 LOCKED). */
+	proposed_defect_classes: string[];
 }
 
 /**
@@ -621,10 +633,16 @@ function validateTargetDrafts(raw: unknown): TargetDraft[] {
 }
 
 /**
- * Validate capabilityNeeds. defect_classes is ENUM-CLOSED against the operator-confirmed
- * vocabulary (the SAME guard setCapabilityNeeds enforces, §3 D4) — an unknown class is rejected
- * here so the proposal can never seed a need the workforce matcher will silently never satisfy.
- * languages/frameworks are free text (screened at the execute boundary, not here — this is a plan).
+ * Validate capabilityNeeds. The agent's raw `defect_classes` are PARTITIONED against the
+ * operator-confirmed vocabulary (the SAME source-of-truth setCapabilityNeeds enforces, §3 D4):
+ *   • in-vocab classes → `defect_classes` (CONFIRMED + matchable);
+ *   • NOT-in-vocab classes → `proposed_defect_classes` (CAPTURED as a HIRE signal — never confirmed
+ *     or matchable until an operator key mints them; D4 LOCKED).
+ * An unknown class no longer HARD-FAILS the proposal (the new-domain chicken-and-egg fix: a brand-new
+ * domain has no confirmed classes yet, so the need is recorded for the future hire instead of nuking
+ * a ~2-min real-spend generation). Both partitions are de-duplicated; a class can never appear in
+ * both (vocab membership decides). languages/frameworks are free text (screened at the execute
+ * boundary, not here — this is a plan).
  *
  * Shadow path: empty arrays are honest (F-008) — a brief that declares no capability needs is valid.
  */
@@ -634,19 +652,23 @@ async function validateCapabilityNeeds(db: Db, raw: unknown): Promise<Capability
 	}
 	const languages = reqStrArrayAllowEmpty(raw.languages, 'capabilityNeeds.languages');
 	const frameworks = reqStrArrayAllowEmpty(raw.frameworks, 'capabilityNeeds.frameworks');
-	const defect_classes = reqStrArrayAllowEmpty(raw.defect_classes, 'capabilityNeeds.defect_classes');
+	const rawDefects = reqStrArrayAllowEmpty(raw.defect_classes, 'capabilityNeeds.defect_classes');
 
-	if (defect_classes.length > 0) {
+	// PARTITION against the live operator-confirmed vocabulary (§3 D4). No hard-fail on unknown:
+	// in-vocab → confirmed/matchable; not-in-vocab → captured proposed need (future hire signal).
+	let defect_classes: string[] = [];
+	let proposed_defect_classes: string[] = [];
+	if (rawDefects.length > 0) {
 		const vocab = new Set(await listDefectClassVocabulary(db));
-		const unknown = defect_classes.filter((c) => !vocab.has(c));
-		if (unknown.length > 0) {
-			throw new ProposalContractError(
-				`proposal 'capabilityNeeds.defect_classes' contains class(es) not in the operator-confirmed ` +
-					`vocabulary (§3 D4): [${unknown.join(', ')}]. A class only exists once an operator key uses it.`
-			);
+		const confirmed = new Set<string>();
+		const proposed = new Set<string>();
+		for (const c of rawDefects) {
+			(vocab.has(c) ? confirmed : proposed).add(c);
 		}
+		defect_classes = [...confirmed].sort();
+		proposed_defect_classes = [...proposed].sort();
 	}
-	return { languages, frameworks, defect_classes };
+	return { languages, frameworks, defect_classes, proposed_defect_classes };
 }
 
 /** Like reqStrArray but tolerates an absent/empty array (honest empty — F-008). */

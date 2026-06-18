@@ -583,6 +583,20 @@
               </ul>
             {/if}
           </section>
+
+          {#if proposal.capabilityNeeds.proposed_defect_classes.length > 0}
+            <section class="block hire-signal">
+              <h3 class="block-title">Needs a new certified role <span class="hire-tag">hire signal</span></h3>
+              <p class="field-help">
+                These defect classes are not yet in the certified vocabulary. They are captured as
+                proposed needs — none of your existing roles can prove coverage of them, so closing
+                this gap requires hiring and certifying a new specialized role.
+              </p>
+              <ul class="chips" aria-label="proposed defect classes (hire signal)">
+                {#each proposal.capabilityNeeds.proposed_defect_classes as p (p)}<li class="chip mono proposed">{p}</li>{/each}
+              </ul>
+            </section>
+          {/if}
         </div>
 
         {#if proposal.pmCharterDraft}
@@ -996,6 +1010,25 @@
   }
   .chip.dc {
     color: var(--color-text-2);
+  }
+  .hire-signal {
+    border-left: 2px solid var(--color-warning, var(--color-accent));
+    padding-left: var(--space-3, 0.75rem);
+  }
+  .hire-tag {
+    font-size: 0.6rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-warning, var(--color-accent));
+    background: var(--color-warning-muted, var(--color-surface-overlay));
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm, 6px);
+    vertical-align: middle;
+  }
+  .chip.proposed {
+    color: var(--color-warning, var(--color-accent));
+    background: var(--color-warning-muted, var(--color-surface-overlay));
   }
   .tasks {
     display: flex;

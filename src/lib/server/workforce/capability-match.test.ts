@@ -149,6 +149,20 @@ describe('0048 capability_needs migration — apply-twice + half-applied', () =>
 		expect(rows[0].capability_needs?.languages).toEqual(['ts']);
 	});
 
+	it('m0051: the proposed_defect_classes nested field accepts arrays (additive, idempotent)', async () => {
+		const project = await freshProject();
+		const pid = new StringRecordId(project);
+		await db.query(
+			`UPDATE $pid SET capability_needs = { languages: [], frameworks: [], defect_classes: [], proposed_defect_classes: ['novel-x'] };`,
+			{ pid }
+		);
+		const [rows] = await db.query<[Array<{ capability_needs?: { proposed_defect_classes?: string[] } }>]>(
+			`SELECT capability_needs FROM $pid;`,
+			{ pid }
+		);
+		expect(rows[0].capability_needs?.proposed_defect_classes).toEqual(['novel-x']);
+	});
+
 	it('apply-twice: runner skips AND the raw DDL re-applies cleanly (OVERWRITE)', async () => {
 		const again = await runMigrations(db, schemaMigrations);
 		expect(again).toEqual([]);
@@ -215,7 +229,8 @@ describe('get/setCapabilityNeeds — enum-closed validation + D-026 screen', () 
 		expect(await getCapabilityNeeds(db, project)).toEqual({
 			languages: [],
 			frameworks: [],
-			defect_classes: []
+			defect_classes: [],
+			proposed_defect_classes: []
 		});
 		await provenRole({ prefix: 'need-known', cls: 'committed-secret-value' });
 		const needs = await setCapabilityNeeds(db, project, {
@@ -430,5 +445,92 @@ describe('recommendStaffing — match engine', () => {
 			{ r: new StringRecordId(role.id) }
 		);
 		expect(props).toEqual([]);
+	});
+});
+
+// ── 5. proposed_defect_classes — captured HIRE signal, NEVER matchable (D4 LOCKED) ────
+
+describe('proposed_defect_classes — captured, separate, never coverage', () => {
+	it('persists SEPARATELY from confirmed defect_classes (screened, not enum-validated)', async () => {
+		const project = await freshProject();
+		await provenRole({ prefix: 'sep-confirmed', cls: 'sep-known-class' });
+		const needs = await setCapabilityNeeds(db, project, {
+			defect_classes: ['sep-known-class'],
+			proposed_defect_classes: ['bepinex-patch-conflict', 'unknown-runtime-class']
+		});
+		expect(needs.defect_classes).toEqual(['sep-known-class']);
+		expect(needs.proposed_defect_classes).toEqual([
+			'bepinex-patch-conflict',
+			'unknown-runtime-class'
+		]);
+		// persisted + read back
+		const read = await getCapabilityNeeds(db, project);
+		expect(read.defect_classes).toEqual(['sep-known-class']);
+		expect(read.proposed_defect_classes).toEqual([
+			'bepinex-patch-conflict',
+			'unknown-runtime-class'
+		]);
+	});
+
+	it('an UNKNOWN class set as proposed is NOT rejected (no enum check) and stays NON-matchable', async () => {
+		const project = await freshProject();
+		// proposed_defect_classes accepts a class with NO confirmed key — it would be rejected as a
+		// defect_classes member, but is captured fine as a proposed need.
+		const needs = await setCapabilityNeeds(db, project, {
+			proposed_defect_classes: ['never-confirmed-anywhere']
+		});
+		expect(needs.proposed_defect_classes).toEqual(['never-confirmed-anywhere']);
+		// it is NOT in the vocabulary (no operator key) — proving D4 stays locked.
+		const vocab = await listDefectClassVocabulary(db);
+		expect(vocab).not.toContain('never-confirmed-anywhere');
+	});
+
+	it('the matcher NEVER counts a proposed class as covered — it is a HIRE gap, not coverage', async () => {
+		const project = await freshProject();
+		// A role PROVES 'cov-real-class'; the project declares it confirmed AND lists a proposed class.
+		await provenRole({ prefix: 'matcher-prop', cls: 'cov-real-class' });
+		await setCapabilityNeeds(db, project, {
+			defect_classes: ['cov-real-class'],
+			proposed_defect_classes: ['proposed-only-class']
+		});
+		const rec = await recommendStaffing(db, project);
+		// candidates + gaps are computed ONLY from confirmed defect_classes.
+		const candCovered = rec.candidates.flatMap((c) => c.covered);
+		expect(candCovered).not.toContain('proposed-only-class');
+		expect(rec.gaps.map((g) => g.defectClass)).not.toContain('proposed-only-class');
+		// the confirmed class IS scored (matcher untouched).
+		expect(candCovered).toContain('cov-real-class');
+		// the proposed need rides on the surfaced needs object (a signal), never as coverage.
+		expect(rec.needs.proposed_defect_classes).toEqual(['proposed-only-class']);
+	});
+
+	it('setting only proposed leaves confirmed defect_classes intact (MERGE)', async () => {
+		const project = await freshProject();
+		await provenRole({ prefix: 'merge-prop', cls: 'merge-known' });
+		await setCapabilityNeeds(db, project, { defect_classes: ['merge-known'] });
+		await setCapabilityNeeds(db, project, { proposed_defect_classes: ['merge-proposed'] });
+		const needs = await getCapabilityNeeds(db, project);
+		expect(needs.defect_classes).toEqual(['merge-known']); // confirmed survived
+		expect(needs.proposed_defect_classes).toEqual(['merge-proposed']);
+	});
+
+	it('D-026: a planted secret in a proposed class is screened before storage', async () => {
+		const project = await freshProject();
+		const needs = await setCapabilityNeeds(db, project, {
+			proposed_defect_classes: ['leak sk-abcdef0123456789abcdef0123456789abcdef01']
+		});
+		expect(needs.proposed_defect_classes.join(' ')).not.toContain(
+			'sk-abcdef0123456789abcdef0123456789abcdef01'
+		);
+	});
+
+	it('NO promotion path: a proposed class never enters the vocabulary without an operator key', async () => {
+		const project = await freshProject();
+		await setCapabilityNeeds(db, project, { proposed_defect_classes: ['would-be-promoted'] });
+		// Setting it as proposed minted no key → it is still NOT a vocabulary member, so trying to
+		// set it as a CONFIRMED defect_class is REJECTED (enum-closed). D4 holds.
+		await expect(
+			setCapabilityNeeds(db, project, { defect_classes: ['would-be-promoted'] })
+		).rejects.toBeInstanceOf(CapabilityNeedsError);
 	});
 });

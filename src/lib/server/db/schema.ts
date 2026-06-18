@@ -1845,6 +1845,23 @@ const m0050_cert_hire_brief: Migration = {
 	`
 };
 
+// m0051 — capability_needs.proposed_defect_classes (CA new-domain chicken-and-egg fix).
+// A Create-with-AI proposal may raise domain-specific/novel defect classes that are NOT yet in the
+// operator-confirmed vocabulary (e.g. a brand-new BepInEx domain). Those are CAPTURED here as a
+// HIRE-gap signal — stored SEPARATELY from the enum-closed `defect_classes` (which stays confirmed +
+// matchable). D4 LOCKED: a proposed class is NEVER confirmed/matchable until an operator key mints
+// it; the matcher (recommendStaffing) scores coverage ONLY against defect_classes and treats this
+// field purely as an explicit gap signal. ADDITIVE OVERWRITE, IDEMPOTENT (F-015): one new nested
+// option<array<string>> field on the EXISTING project.capability_needs object — no existing rows to
+// backfill (reads NONE → '—' until set), no destructive change; the raw OVERWRITE DDL re-runs clean
+// over a half-applied state and apply-twice is a ledger no-op.
+const m0051_proposed_defect_classes: Migration = {
+	id: '0051_proposed_defect_classes',
+	up: `
+		DEFINE FIELD OVERWRITE capability_needs.proposed_defect_classes ON project TYPE option<array<string>>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1901,5 +1918,6 @@ export const schemaMigrations: Migration[] = [
 	m0047_project_staff,
 	m0048_capability_needs,
 	m0049_create_integrity,
-	m0050_cert_hire_brief
+	m0050_cert_hire_brief,
+	m0051_proposed_defect_classes
 ];

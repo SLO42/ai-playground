@@ -545,11 +545,18 @@ export async function executeCreation(
 			// Capability needs (defect_classes enum-validated by CA-1; setCapabilityNeeds re-validates
 			// + screens at its own boundary — the canonical chokepoint, D-026).
 			const needs = proposal.capabilityNeeds;
-			if (needs.languages.length || needs.frameworks.length || needs.defect_classes.length) {
+			if (
+				needs.languages.length ||
+				needs.frameworks.length ||
+				needs.defect_classes.length ||
+				needs.proposed_defect_classes.length
+			) {
 				await setCapabilityNeeds(db, projectId, {
 					languages: needs.languages,
 					frameworks: needs.frameworks,
-					defect_classes: needs.defect_classes
+					defect_classes: needs.defect_classes,
+					// CAPTURED proposed classes persist SEPARATELY (hire signal, never matchable — D4).
+					proposed_defect_classes: needs.proposed_defect_classes
 				});
 			}
 

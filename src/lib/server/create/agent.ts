@@ -197,6 +197,7 @@ export function buildPrompt(
 		``,
 		`Emit ONE fenced \`\`\`json block with: dirLayout[], stack[], planMacro{purpose,vision,role,definition_of_done}, foundingTasks[3-7]{objective,purpose}, targetDrafts[]{kind,adapterId,config}, capabilityNeeds{languages[],frameworks[],defect_classes[]}, optional pmCharterDraft, clarifiers[0-4]{question,position,falsifier}.`,
 		`targetDrafts are RELEASE/DEPLOY destinations ONLY: each kind MUST be EXACTLY one of "publish" | "deploy" | "sync" (e.g. a Thunderstore publish, a GitHub-Pages deploy, a repo sync) — NEVER "agent"/"role"/"task"/anything else. If no real publish/deploy/sync destination applies yet, emit targetDrafts as an empty array [].`,
+		`capabilityNeeds.defect_classes are the quality risks a reviewer must PROVE coverage of. You MAY propose domain-specific or novel defect classes (e.g. for a new modding/runtime domain) — list them here; the platform captures any class not yet in the certified vocabulary as a PROPOSED need that triggers a future specialized hire (it is NOT silently dropped). Keep tools/libraries/runtimes/frameworks in capabilityNeeds.frameworks, languages in capabilityNeeds.languages — a defect_class names a FAILURE MODE (e.g. "null-deref", "race-condition"), not a tool.`,
 		`TAKE POSITIONS (CREATE-SPEC §3): no hedging phrases; every clarifier pairs a position with its falsifier. Config references env NAMES only (D-026), never secret values.`
 	]
 		.filter((l) => l !== '')

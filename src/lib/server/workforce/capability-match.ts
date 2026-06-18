@@ -117,16 +117,23 @@ export async function listDefectClassVocabulary(db: Db): Promise<string[]> {
 export interface CapabilityNeeds {
 	languages: string[];
 	frameworks: string[];
+	/** Classes IN the operator-confirmed vocabulary — confirmed + matchable (the ONLY field the
+	 *  matcher scores coverage against). */
 	defect_classes: string[];
+	/** Classes a Create-with-AI proposal raised that are NOT (yet) in the vocabulary — CAPTURED as
+	 *  an explicit HIRE-gap signal (feeds the future pm-hr-handoff hire). The matcher NEVER counts
+	 *  these as covered, and there is NO code path that promotes them to confirmed/matchable without
+	 *  an operator key (D4 LOCKED). */
+	proposed_defect_classes: string[];
 }
 
 /** The empty-but-honest needs (a project that has declared nothing). F-008: empty arrays,
  *  never a fabricated default. */
 function emptyNeeds(): CapabilityNeeds {
-	return { languages: [], frameworks: [], defect_classes: [] };
+	return { languages: [], frameworks: [], defect_classes: [], proposed_defect_classes: [] };
 }
 
-/** Normalize the raw capability_needs object off a project row → the three string arrays.
+/** Normalize the raw capability_needs object off a project row → the four string arrays.
  *  Absent / non-array fields → [] (honest empty, never str(undefined)). Pure. */
 function normNeeds(raw: unknown): CapabilityNeeds {
 	if (!raw || typeof raw !== 'object') return emptyNeeds();
@@ -134,7 +141,10 @@ function normNeeds(raw: unknown): CapabilityNeeds {
 	return {
 		languages: distinctStrings(Array.isArray(obj.languages) ? obj.languages : []),
 		frameworks: distinctStrings(Array.isArray(obj.frameworks) ? obj.frameworks : []),
-		defect_classes: distinctStrings(Array.isArray(obj.defect_classes) ? obj.defect_classes : [])
+		defect_classes: distinctStrings(Array.isArray(obj.defect_classes) ? obj.defect_classes : []),
+		proposed_defect_classes: distinctStrings(
+			Array.isArray(obj.proposed_defect_classes) ? obj.proposed_defect_classes : []
+		)
 	};
 }
 
@@ -158,7 +168,13 @@ export async function getCapabilityNeeds(db: Db, projectId: string): Promise<Cap
 export interface SetCapabilityNeedsInput {
 	languages?: string[];
 	frameworks?: string[];
+	/** ENUM-CLOSED against the operator-confirmed vocabulary — an unknown class is REJECTED here. */
 	defect_classes?: string[];
+	/** CAPTURED classes a CA proposal raised that are NOT in the vocabulary. Screened (D-026) but NOT
+	 *  enum-validated (they are by definition not yet a vocabulary member). Stored SEPARATELY from
+	 *  defect_classes; the matcher never reads them. NO operator key is minted by this write — D4
+	 *  LOCKED: a proposed class stays proposed until an operator key confirms it. */
+	proposed_defect_classes?: string[];
 }
 
 /**
@@ -199,6 +215,14 @@ export async function setCapabilityNeeds(
 	if (input.languages !== undefined) patch.languages = screenArr(input.languages);
 	if (input.frameworks !== undefined) patch.frameworks = screenArr(input.frameworks);
 
+	// proposed_defect_classes — CAPTURED hire-signal classes. SCREENED (D-026) + de-dup'd, but NOT
+	// enum-validated (they are by definition not in the vocabulary) and NOT cross-checked against
+	// confirmed defect_classes here: they are stored verbatim-after-screen as a need the future hire
+	// closes. D4 LOCKED — this write mints NO operator key and never promotes a class to confirmed.
+	if (input.proposed_defect_classes !== undefined) {
+		patch.proposed_defect_classes = screenArr(input.proposed_defect_classes);
+	}
+
 	if (input.defect_classes !== undefined) {
 		const screened = screenArr(input.defect_classes);
 		// ENUM-CLOSED (§3 D4): reject any class not in the operator-confirmed vocabulary. This is
@@ -226,7 +250,9 @@ export async function setCapabilityNeeds(
 	const merged: CapabilityNeeds = {
 		languages: (patch.languages as string[]) ?? prior.languages,
 		frameworks: (patch.frameworks as string[]) ?? prior.frameworks,
-		defect_classes: (patch.defect_classes as string[]) ?? prior.defect_classes
+		defect_classes: (patch.defect_classes as string[]) ?? prior.defect_classes,
+		proposed_defect_classes:
+			(patch.proposed_defect_classes as string[]) ?? prior.proposed_defect_classes
 	};
 	await db.query(`UPDATE $pid MERGE { capability_needs: $needs, updated_at: time::now() };`, {
 		pid,

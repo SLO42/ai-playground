@@ -297,6 +297,35 @@ export function toolOk(tc: Record<string, unknown> | undefined): boolean | null 
 	return typeof tc?.ok === 'boolean' ? (tc.ok as boolean) : null;
 }
 
+/** The file tools whose tool_use turn references a single file worth a "view snapshot" affordance
+ *  (FILE-SNAPSHOT-SPEC §4, FS-3). Mirrors the FS-2 capture set so the surface offers a view exactly
+ *  where a snapshot may have been captured. */
+const FILE_REF_TOOLS = new Set([
+	'Read',
+	'Write',
+	'Edit',
+	'MultiEdit',
+	'NotebookEdit',
+	'NotebookRead'
+]);
+
+/**
+ * Extract the file path a tool_use turn references, for the FS-3 "view file" affordance — PURELY
+ * (FILE-SNAPSHOT-SPEC §4). Returns the path (typically ABSOLUTE, as the tool reports it; the server
+ * relativizes it against the project root) ONLY for a file tool with a usable file_path; null for a
+ * non-file tool (Bash/Grep/Glob) or a turn with no path (honest — no affordance where there is no
+ * single referenced file). The server lookup decides whether a snapshot actually exists (honest
+ * empty when not), so this only gates WHERE the affordance is offered.
+ */
+export function toolFilePath(tc: Record<string, unknown> | undefined): string | null {
+	const name = typeof tc?.name === 'string' ? tc.name : '';
+	if (!FILE_REF_TOOLS.has(name)) return null;
+	const args = (tc?.args ?? null) as Record<string, unknown> | null;
+	if (!args || typeof args !== 'object') return null;
+	const p = args.file_path ?? args.notebook_path ?? args.path;
+	return typeof p === 'string' && p.trim() !== '' ? p : null;
+}
+
 /**
  * Compact one-line view of a tool call's input object (the name is shown separately).
  * Honest — an empty/absent args object renders nothing, NEVER a fabricated "{}". Long

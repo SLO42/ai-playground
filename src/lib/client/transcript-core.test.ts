@@ -18,6 +18,7 @@ import {
 	normOrigin,
 	toolName,
 	toolOk,
+	toolFilePath,
 	compactToolInput,
 	parseBriefing
 } from './transcript-core';
@@ -349,6 +350,23 @@ describe('tool helpers', () => {
 
 	it('compactToolInput stringifies nested objects', () => {
 		expect(compactToolInput({ args: { opts: { a: 1 } } })).toBe('opts: {"a":1}');
+	});
+
+	it('toolFilePath (FS-3) extracts the path ONLY for file tools, null otherwise', () => {
+		// File tools with a usable path → the path (the server relativizes it).
+		expect(toolFilePath({ name: 'Read', args: { file_path: '/p/a.ts' } })).toBe('/p/a.ts');
+		expect(toolFilePath({ name: 'Write', args: { file_path: '/p/b.ts' } })).toBe('/p/b.ts');
+		expect(toolFilePath({ name: 'Edit', args: { file_path: '/p/c.ts' } })).toBe('/p/c.ts');
+		expect(toolFilePath({ name: 'NotebookEdit', args: { notebook_path: '/p/n.ipynb' } })).toBe(
+			'/p/n.ipynb'
+		);
+		// Non-file tools → null (no affordance where there is no single referenced file).
+		expect(toolFilePath({ name: 'Bash', args: { command: 'ls' } })).toBeNull();
+		expect(toolFilePath({ name: 'Grep', args: { pattern: 'x' } })).toBeNull();
+		// SHADOW: file tool with no/empty path, absent args, undefined → null (honest).
+		expect(toolFilePath({ name: 'Read', args: {} })).toBeNull();
+		expect(toolFilePath({ name: 'Read', args: { file_path: '   ' } })).toBeNull();
+		expect(toolFilePath(undefined)).toBeNull();
 	});
 });
 

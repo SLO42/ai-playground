@@ -33,14 +33,22 @@
     roleEventLabel,
     toolName,
     toolOk,
+    toolFilePath,
     type Turn
   } from '$lib/client/transcript-core';
 
   interface Props {
     /** Normalized turns, oldest-first. Empty array → the parent shows its own empty state. */
     turns: Turn[];
+    /**
+     * FS-3 (FILE-SNAPSHOT-SPEC §4) — opt-in "view file" callback. When the host supplies it, a
+     * file tool turn (Read/Edit/Write/…) gains a keyboard-reachable "view file" affordance that
+     * hands the referenced path back so the host can open the FileSnapshotViewer (the host owns
+     * the project scope). Omitted → no affordance (the /claude-code replay has no project scope).
+     */
+    onViewFile?: (path: string) => void;
   }
-  let { turns }: Props = $props();
+  let { turns, onViewFile }: Props = $props();
 
   // Per-turn collapsible THINKING state, keyed by turn id (default collapsed — thinking is
   // secondary to the prose). Lives here so both host pages get identical behaviour for free.
@@ -100,10 +108,20 @@
     </div>
   {:else if t.kind === 'tool_use'}
     {@const input = compactToolInput(t.toolCall)}
+    {@const filePath = toolFilePath(t.toolCall)}
     <div class="tp-turn tool-use">
       <span class="tp-tag tool">tool</span>
       <span class="tp-tool-name mono">{toolName(t.toolCall)}</span>
       {#if input}<span class="tp-tool-input mono">{input}</span>{/if}
+      {#if onViewFile && filePath}
+        <!-- FS-3: open the DB-stored snapshot of the file this turn referenced (as-of/may-be-stale). -->
+        <button
+          type="button"
+          class="tp-view-file mono"
+          onclick={() => onViewFile?.(filePath)}
+          title="View the captured snapshot of {filePath}"
+        >view file</button>
+      {/if}
     </div>
   {:else if t.kind === 'tool_result'}
     {@const tc = t.toolCall}
@@ -265,6 +283,29 @@
     text-overflow: ellipsis;
     min-width: 0;
     flex: 1 1 auto;
+  }
+  /* FS-3 — the "view file" affordance on a file tool turn. A real <button>, quiet until
+     hover/focus, keyboard-reachable with a focus-visible ring. Tokens only. */
+  .tp-view-file {
+    flex: none;
+    appearance: none;
+    background: none;
+    border: var(--border-width, 1px) solid var(--color-border-strong);
+    border-radius: var(--radius-sm, 6px);
+    color: var(--color-text-muted);
+    cursor: pointer;
+    font-size: 0.64rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.05rem 0.4rem;
+  }
+  .tp-view-file:hover {
+    color: var(--color-accent);
+    border-color: var(--color-accent);
+  }
+  .tp-view-file:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
   }
   .tp-ok {
     font-size: 0.66rem;

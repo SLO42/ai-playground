@@ -17,6 +17,7 @@
   import { confirm } from '$lib/client/confirm.svelte';
   import { lineDiff } from '$lib/client/confirm-core';
   import SessionTranscript from '$lib/components/shell/SessionTranscript.svelte';
+  import FileSnapshotViewer from '$lib/components/shell/FileSnapshotViewer.svelte';
   import {
     rowToTurn,
     liveEventToTurn,
@@ -26,6 +27,14 @@
   import type { PageData, ActionData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
+
+  // ── FS-3 (FILE-SNAPSHOT-SPEC §4) — the in-app "view file" surface. Opening a referenced file
+  // (a finding's file:line) loads its DB-stored point-in-time snapshot, labelled as-of/may-be-stale.
+  let snapshotViewer = $state<{ open: boolean; path?: string }>({ open: false });
+  function viewFileSnapshot(path: string | null | undefined): void {
+    if (!path) return;
+    snapshotViewer = { open: true, path };
+  }
 
   const connected = $derived(data.connected);
   const project = $derived(data.project);
@@ -777,7 +786,17 @@
                   <span class="sev-tag" data-sev={f.severity}>{f.severity}</span>
                   <span class="family-tag mono" data-family={findingFamily(f.rule)}>{findingFamily(f.rule)}</span>
                   <span class="finding-rule mono">{f.rule}</span>
-                  <span class="finding-loc mono">{f.file ?? '—'}{#if f.line}:{f.line}{/if}</span>
+                  {#if f.file}
+                    <!-- FS-3: view the cited file's DB-stored snapshot (as-of/may-be-stale). -->
+                    <button
+                      type="button"
+                      class="finding-loc mono view-file"
+                      onclick={() => viewFileSnapshot(f.file)}
+                      title="View the captured snapshot of {f.file}"
+                    >{f.file}{#if f.line}:{f.line}{/if}</button>
+                  {:else}
+                    <span class="finding-loc mono">—</span>
+                  {/if}
                   {#if f.detail}<span class="finding-detail">{f.detail}</span>{/if}
                 </li>
               {/each}
@@ -2171,7 +2190,7 @@
                 <!-- KIND-AWARE render via the shared component: thinking → collapsible turn,
                      tool_use/tool_result → tool turns, briefing → "woke up with" block, the
                      rest → prose. Identical framing to the /claude-code replay (no divergence). -->
-                <SessionTranscript turns={liveTurns} />
+                <SessionTranscript turns={liveTurns} onViewFile={viewFileSnapshot} />
               {/if}
             </div>
 
@@ -2454,6 +2473,15 @@
     {/if}
   {/if}
 </section>
+
+<!-- FS-3 (FILE-SNAPSHOT-SPEC §4) — the read-only file-snapshot viewer, opened from a finding's
+     cited file:line. Scoped to THIS project so the lookup resolves the project's own snapshot. -->
+<FileSnapshotViewer
+  open={snapshotViewer.open}
+  path={snapshotViewer.path}
+  project={data.projectId}
+  onClose={() => (snapshotViewer = { open: false })}
+/>
 
 <style>
   .page {
@@ -3559,6 +3587,26 @@
   .finding-loc {
     font-size: 0.7rem;
     color: var(--color-text-muted);
+  }
+  /* FS-3 — the cited file as a view-snapshot trigger. A real <button> (keyboard-reachable);
+     reads as a quiet link until hover/focus so it does not shout over the finding row. */
+  button.view-file {
+    appearance: none;
+    background: none;
+    border: none;
+    padding: 0;
+    cursor: pointer;
+    text-align: left;
+    text-decoration: underline dotted;
+    text-underline-offset: 2px;
+  }
+  button.view-file:hover {
+    color: var(--color-accent);
+  }
+  button.view-file:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs, 3px);
   }
   .finding-detail {
     flex: 1 1 100%;

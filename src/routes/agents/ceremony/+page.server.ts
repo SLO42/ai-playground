@@ -24,8 +24,10 @@ import { tryGetDb } from '$lib/server/db/runtime-init';
 import {
 	activateGauntletFixture,
 	adjudicateInterviewRun,
+	autoAdjudicateRun,
 	ceremonyAuthoringState,
 	ceremonyExecutionState,
+	classifyAmbiguousItem,
 	confirmLaunchKey,
 	CeremonyGateError,
 	isSentinelShape,
@@ -41,6 +43,7 @@ import {
 	type CeremonyAuthoringState,
 	type CeremonyExecutionState,
 	type GauntletOutcome,
+	type ItemDecision,
 	type Tier
 } from '$lib/server/workforce';
 import { StringRecordId } from 'surrealdb';
@@ -69,6 +72,18 @@ export interface CeremonyAdjudicationCard {
 	at: string | null;
 	/** Verbatim interview_run.ambiguous — each item {type, fixture, plant?, finding, note}. */
 	ambiguous: Array<Record<string, unknown>>;
+	/**
+	 * HR-4 audit surface — the recruiter's classification of EVERY still-queued ambiguous item
+	 * (one per `ambiguous` entry, same order/index). Computed by classifyAmbiguousItem (REUSED
+	 * verbatim from auto-adjudicate.ts — NOT forked; the same logic the pre-pass runs). For each
+	 * item: HR either CLEARED it (resolution + basis — these are auto-resolved before the operator
+	 * ever sees the run; on a still-adjudicating run a clear item only persists when a SIBLING
+	 * escalated, so batch-or-nothing held the whole batch) or ESCALATED it (recommendation + basis)
+	 * to the operator. Lets the operator audit HR's calls and resolve only the escalations. */
+	hrDecisions: Array<
+		| { kind: 'clear'; index: number; resolution: AmbiguousResolution; basis: string }
+		| { kind: 'escalate'; index: number; recommendation: AmbiguousResolution | 'unresolved'; basis: string }
+	>;
 	/** Per-fixture scorer results: {fixture, kind, found[], missed[], extra, evidence[]}.
 	 *  Synthetic non-fixture rows (verdict/env/scorer_control) are filtered out — only the
 	 *  per-fixture found/missed/basis rows the operator needs to read the run are surfaced. */
@@ -157,6 +172,16 @@ async function buildCeremonyAdjudication(
 			(x) => typeof x.fixture === 'string' && (Array.isArray(x.found) || Array.isArray(x.missed))
 		);
 		const pc = r.pass_criteria ?? null;
+		const ambiguous = Array.isArray(r.ambiguous) ? (r.ambiguous as Array<Record<string, unknown>>) : [];
+		// HR-4 split — classify each still-queued item exactly as the pre-pass does (classify-
+		// AmbiguousItem reused verbatim, B3: read-only, no rescore). Maps the engine's ItemDecision
+		// to the card's narrowed shape so the UI can render auto-cleared vs escalated per item.
+		const hrDecisions = ambiguous.map((item, i) => {
+			const d: ItemDecision = classifyAmbiguousItem(item, i);
+			return d.kind === 'clear'
+				? { kind: 'clear' as const, index: d.index, resolution: d.resolution, basis: d.basis }
+				: { kind: 'escalate' as const, index: d.index, recommendation: d.recommendation, basis: d.basis };
+		});
 		cards.push({
 			run: String(r.id),
 			roleSlug: slug || roleId || '—',
@@ -166,7 +191,8 @@ async function buildCeremonyAdjudication(
 			plantedTotal: Number(r.planted_total ?? 0),
 			falsePositives: Number(r.false_positives ?? 0),
 			at: isoOrNull(r.started_at),
-			ambiguous: Array.isArray(r.ambiguous) ? (r.ambiguous as Array<Record<string, unknown>>) : [],
+			ambiguous,
+			hrDecisions,
 			results,
 			passCriteria: pc
 				? { passRecall: numOrNull(pc.pass_recall), maxFalsePositives: numOrNull(pc.max_false_positives) }
@@ -713,6 +739,48 @@ async function runCeremonyTrigger(
 			};
 		}
 		const outcome = await triggerBootstrapInterview(deps, input);
+		// HR-4 PRE-PASS — the operator ask: HR (autoAdjudicateRun) clears the CLEAR cases of an
+		// 'adjudicating' run everywhere the operator/ceremony flow scores ambiguous, NOT only the
+		// recruiter campaign. REUSED verbatim (no fork of the clear-vs-escalate logic, B3):
+		//   • ALL-clear → HR finalizes the run via the EXISTING batch-or-nothing adjudicate bar
+		//     (B4 — the shared pass/fail bar, never a hand-flip); the queue empties, the run goes
+		//     off the operator's adjudication list entirely.
+		//   • ANY escalate (incl. EVERY partial — a judgment HR never auto-confirms; and ANY
+		//     fabrication — HR NEVER auto-FPs) → HR resolves NOTHING (batch-or-nothing); the run
+		//     STAYS 'adjudicating' with the genuine-doubt items for the operator, who sees HR's
+		//     per-item recommendation+basis on the surface and resolves only those.
+		// A run that did not finalize as 'adjudicating' (clear pass/fail, queued, or error) skips
+		// the pre-pass and surfaces as before. autoAdjudicateRun is read-only on B3 (the scorer is
+		// untouched); the only finalize path is the shared adjudicate bar (B4).
+		if (outcome.kind === 'ran' && outcome.run.status === 'adjudicating') {
+			const auto = await autoAdjudicateRun(db, outcome.run.id);
+			if (auto.kind === 'auto_resolved') {
+				// HR cleared every item and finalized against the snapshot bar — surface the finalized
+				// run (status passed/failed) plus how many items HR auto-resolved, so the operator audits.
+				return {
+					ceremony: {
+						ok: true,
+						roleVersion: roleVersionId,
+						kind: 'interview',
+						...outcomeResult({ kind: 'ran', run: auto.run }),
+						hrAutoResolved: auto.plan.decisions.length,
+						hrEscalated: 0
+					}
+				};
+			}
+			// ANY escalate (or an empty queue) — the run stays 'adjudicating' for the operator. The
+			// per-item split renders on the adjudication card (buildCeremonyAdjudication.hrDecisions).
+			return {
+				ceremony: {
+					ok: true,
+					roleVersion: roleVersionId,
+					kind: 'interview',
+					...outcomeResult(outcome),
+					hrAutoResolved: auto.plan.decisions.length - auto.plan.escalated.length,
+					hrEscalated: auto.plan.escalated.length
+				}
+			};
+		}
 		return {
 			ceremony: { ok: true, roleVersion: roleVersionId, kind: 'interview', ...outcomeResult(outcome) }
 		};

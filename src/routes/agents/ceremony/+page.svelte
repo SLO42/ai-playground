@@ -125,8 +125,39 @@
   }
   function adjChoiceFor(run: string, idx: number, item: Record<string, unknown>): string {
     const key = `${run}:${idx}`;
-    // Default: confirm_hit when legal (it carries a matched plant), else false_positive.
-    return adjChoice[key] ?? (adjCanConfirmHit(item) ? 'confirm_hit' : 'false_positive');
+    if (adjChoice[key]) return adjChoice[key];
+    // Default to HR's pre-filled recommendation (so the operator's one ceremony stays cheap),
+    // when it is a legal radio choice; else confirm_hit when legal, else false_positive.
+    const hr = hrDecisionFor(run, idx);
+    const rec = hr?.kind === 'escalate' ? hr.recommendation : undefined;
+    if (rec === 'confirm_hit' && adjCanConfirmHit(item)) return 'confirm_hit';
+    if (rec === 'false_positive' || rec === 'dismiss') return rec;
+    return adjCanConfirmHit(item) ? 'confirm_hit' : 'false_positive';
+  }
+
+  // ── HR-4 — the recruiter's auto-adjudication split, surfaced per still-queued item so the
+  //    operator audits HR's calls and resolves ONLY the escalations. Each card carries
+  //    hrDecisions (one per ambiguous item, same index); reused verbatim from the engine.
+  type HrDecision =
+    | { kind: 'clear'; index: number; resolution: string; basis: string }
+    | { kind: 'escalate'; index: number; recommendation: string; basis: string };
+  function hrDecisionsFor(run: string): HrDecision[] {
+    const card = adjudication.find((a) => a.run === run);
+    return (card?.hrDecisions ?? []) as HrDecision[];
+  }
+  function hrDecisionFor(run: string, idx: number): HrDecision | undefined {
+    return hrDecisionsFor(run).find((d) => d.index === idx);
+  }
+  /** Count of items HR auto-cleared vs escalated on a run (for the run-level summary). */
+  function hrSplit(run: string): { cleared: number; escalated: number } {
+    const ds = hrDecisionsFor(run);
+    return {
+      cleared: ds.filter((d) => d.kind === 'clear').length,
+      escalated: ds.filter((d) => d.kind === 'escalate').length
+    };
+  }
+  function hrRecLabel(rec: string): string {
+    return rec === 'unresolved' ? 'no recommendation' : rec.replace(/_/g, ' ');
   }
   function setAdjChoice(run: string, idx: number, v: 'confirm_hit' | 'false_positive' | 'dismiss') {
     adjChoice = { ...adjChoice, [`${run}:${idx}`]: v };
@@ -306,6 +337,20 @@
                 {/if}
               </p>
 
+              <!-- HR-4 — the recruiter's auto-adjudication PRE-PASS split. HR auto-clears the
+                   CLEAR cases everywhere a cert scores 'adjudicating' (not only the recruiter
+                   campaign); an all-clear run never reaches this queue (it finalized). Every item
+                   below is one HR ESCALATED for the operator's judgment — HR pre-fills its
+                   recommendation+basis so the operator audits and resolves only these. -->
+              <p class="adj-hr-summary" role="status">
+                <span class="exec-label">HR (recruiter)</span>
+                <span class="hr-pill escalated mono">{hrSplit(a.run).escalated} escalated</span>
+                {#if hrSplit(a.run).cleared > 0}
+                  <span class="hr-pill cleared mono">{hrSplit(a.run).cleared} clear (held — a sibling escalated, batch-or-nothing)</span>
+                {/if}
+                <span class="hr-note">HR auto-resolves clear cases and never auto-FPs a fabrication; these need your judgment.</span>
+              </p>
+
               <!-- Per-fixture scorer results: the matched/missed plant ids + the basis the
                    scorer recorded (interview_run.results). The operator no longer DB-spelunks. -->
               {#if a.results.length > 0}
@@ -376,12 +421,30 @@
                 <ul class="adj-items" aria-label="ambiguous items">
                   {#each a.ambiguous as item, idx (idx)}
                     {@const f = adjFinding(item)}
+                    {@const hr = hrDecisionFor(a.run, idx)}
                     <li class="adj-item">
                       <div class="adj-item-head">
                         <span class="adj-item-type mono" data-type={adjItemType(item)}>{kindLabel(adjItemType(item))}</span>
                         {#if item.fixture}<span class="fix-slug mono">{String(item.fixture)}</span>{/if}
                         {#if item.plant}<span class="plant-chip miss mono" title="the plant this finding partially matched">{String(item.plant)}</span>{/if}
+                        {#if hr}
+                          {#if hr.kind === 'clear'}
+                            <span class="hr-tag cleared mono" title={hr.basis}>HR cleared · {hrRecLabel(hr.resolution)}</span>
+                          {:else}
+                            <span class="hr-tag escalated mono" title={hr.basis}>
+                              HR escalated{hr.recommendation !== 'unresolved' ? ` · recommends ${hrRecLabel(hr.recommendation)}` : ''}
+                            </span>
+                          {/if}
+                        {/if}
                       </div>
+
+                      <!-- HR's basis for escalating/clearing THIS item — the operator audits the call. -->
+                      {#if hr}
+                        <p class="adj-hr-basis">
+                          <span class="exec-label">HR basis</span>
+                          <span>{hr.basis}</span>
+                        </p>
+                      {/if}
 
                       <dl class="adj-finding">
                         <div><dt>location</dt><dd class="mono">{adjLocation(f)}</dd></div>
@@ -1623,6 +1686,46 @@
     display: flex;
     flex-wrap: wrap;
     align-items: baseline;
+    gap: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--color-text-2);
+    margin: 0;
+  }
+  /* HR-4 — recruiter auto-adjudication split (run summary + per-item tag/basis). */
+  .adj-hr-summary {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--color-text-2);
+    margin: 0;
+  }
+  .hr-note {
+    color: var(--color-text-2);
+  }
+  .hr-pill,
+  .hr-tag {
+    display: inline-block;
+    padding: 0 var(--space-2);
+    border-radius: var(--radius-sm);
+    border: var(--border-width) solid var(--color-border);
+    font-size: var(--text-xs);
+    line-height: 1.6;
+  }
+  .hr-pill.escalated,
+  .hr-tag.escalated {
+    color: var(--color-warn);
+    border-color: var(--color-warn);
+  }
+  .hr-pill.cleared,
+  .hr-tag.cleared {
+    color: var(--color-success);
+    border-color: var(--color-success);
+  }
+  .adj-hr-basis {
+    display: flex;
+    flex-wrap: wrap;
     gap: var(--space-1) var(--space-2);
     font-size: var(--text-xs);
     color: var(--color-text-2);

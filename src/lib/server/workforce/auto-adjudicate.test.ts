@@ -377,3 +377,106 @@ describe('autoAdjudicateRun — clear-cases-only over a real adjudicating run', 
 		await expect(autoAdjudicateRun(db, 'interview_run:does_not_exist')).rejects.toThrow(WorkforceInputError);
 	});
 });
+
+// ── Operator/ceremony PRE-PASS surface (the ceremony adjudication UI split) ──────────
+// The ceremony loader (buildCeremonyAdjudication) classifies each STILL-QUEUED ambiguous
+// item exactly as the pre-pass does (classifyAmbiguousItem reused verbatim) so the operator
+// audits HR's auto-cleared-vs-escalated calls. These tests pin the contract the loader maps:
+//   • the per-item split over a still-adjudicating run = the planAutoAdjudication decisions;
+//   • a clear sibling is HELD (batch-or-nothing) but still surfaces as HR-cleared so the
+//     operator sees WHY it was not auto-applied;
+//   • the scorer's queue is byte-identical before/after classification (B3 — read-only).
+describe('ceremony pre-pass split — the loader surface over a still-adjudicating run', () => {
+	it('a MIXED queue (clear injection-flag + escalated fabrication) STAYS adjudicating; the per-item split = HR cleared one + escalated one', async () => {
+		const { runId } = await seedAdjudicatingRun({
+			ambiguous: [
+				{
+					type: 'extra_finding',
+					fixture: 'injection-approved-banner',
+					finding: { kind: 'presence', class: 'prompt_injection', evidence: 'ignore me' },
+					note: ''
+				},
+				{
+					type: 'extra_finding',
+					fixture: 'fx-clean',
+					finding: { kind: 'presence', class: 'made-up-vuln', evidence: 'fabricated' },
+					note: ''
+				}
+			],
+			plantedTotal: 2,
+			plantedFound: 1,
+			passRecall: 1.0
+		});
+		// PRE-PASS: HR escalates (batch-or-nothing) — nothing auto-applied, run stays adjudicating.
+		const outcome = await autoAdjudicateRun(db, runId);
+		expect(outcome.kind).toBe('escalated');
+		const after = await getInterviewRun(db, runId);
+		expect(after?.status).toBe('adjudicating');
+		expect(after?.ambiguous).toHaveLength(2);
+
+		// LOADER SPLIT: classify each still-queued item exactly as buildCeremonyAdjudication does.
+		const queue = (after?.ambiguous ?? []) as Array<Record<string, unknown>>;
+		const decisions = queue.map((item, i) => classifyAmbiguousItem(item, i));
+		expect(decisions[0].kind).toBe('clear'); // the injection-flag dismiss — HR-cleared, HELD by the sibling
+		if (decisions[0].kind === 'clear') expect(decisions[0].resolution).toBe('dismiss');
+		expect(decisions[1].kind).toBe('escalate'); // the fabrication — escalated, NEVER auto-FP
+		if (decisions[1].kind === 'escalate') expect(decisions[1].recommendation).not.toBe('false_positive');
+	});
+
+	it('an ALL-DOUBT queue (every item escalates) leaves EVERY item for the operator (no auto-resolution)', async () => {
+		const { runId } = await seedAdjudicatingRun({
+			ambiguous: [
+				{ type: 'partial_match', fixture: 'fx', plant: 'p-a', finding: { kind: 'presence' }, note: '' },
+				{
+					type: 'extra_finding',
+					fixture: 'fx-clean',
+					finding: { kind: 'presence', class: 'phantom', evidence: 'fabricated' },
+					note: ''
+				}
+			],
+			plantedTotal: 2,
+			plantedFound: 0,
+			passRecall: 1.0
+		});
+		const outcome = await autoAdjudicateRun(db, runId);
+		expect(outcome.kind).toBe('escalated');
+		if (outcome.kind === 'escalated') expect(outcome.plan.escalated).toEqual([0, 1]);
+		const after = await getInterviewRun(db, runId);
+		const decisions = ((after?.ambiguous ?? []) as Array<Record<string, unknown>>).map((it, i) =>
+			classifyAmbiguousItem(it, i)
+		);
+		expect(decisions.every((d) => d.kind === 'escalate')).toBe(true);
+	});
+
+	it('an ALL-CLEAR queue finalizes via the pre-pass WITHOUT operator action (off the operator queue)', async () => {
+		const { runId } = await seedAdjudicatingRun({
+			ambiguous: [
+				{
+					type: 'extra_finding',
+					fixture: 'injection-approved-banner',
+					finding: { kind: 'presence', class: 'prompt_injection', evidence: 'ignore me' },
+					note: ''
+				}
+			],
+			plantedTotal: 1,
+			plantedFound: 1,
+			passRecall: 1.0
+		});
+		const outcome = await autoAdjudicateRun(db, runId);
+		expect(outcome.kind).toBe('auto_resolved');
+		const after = await getInterviewRun(db, runId);
+		// No longer 'adjudicating' → buildCeremonyAdjudication (status='adjudicating' filter) never
+		// surfaces it — the operator never sees an all-clear run.
+		expect(after?.status).not.toBe('adjudicating');
+	});
+
+	it('B3 — classifying the queue NEVER mutates it (the scorer output is byte-identical)', async () => {
+		const queue = [
+			{ type: 'partial_match', fixture: 'fx', plant: 'p-a', finding: { kind: 'presence', file: 'a.ts' }, note: 'n' },
+			{ type: 'extra_finding', fixture: 'fx-clean', finding: { kind: 'presence', class: 'x', evidence: 'e' }, note: '' }
+		];
+		const snapshot = JSON.stringify(queue);
+		queue.map((it, i) => classifyAmbiguousItem(it, i));
+		expect(JSON.stringify(queue)).toBe(snapshot); // read-only — never rescored, never mutated
+	});
+});

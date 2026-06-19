@@ -28,8 +28,11 @@ import {
 	createInterviewRun,
 	finalizeInterviewRun,
 	getInterviewRun,
+	autoAdjudicateRun,
 	type FixtureAuthoringState
 } from '$lib/server/workforce';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { actions, load, type CeremonyPageData } from './+page.server';
 
 let tdb: TestDb;
@@ -556,5 +559,80 @@ describe('HR-1 — adjudication surface (loader unpack + adjudicate action)', ()
 		// The queue is now empty (resolved); re-loading drops it from the ceremony surface.
 		const data = await loadData();
 		expect(data.adjudication.find((c) => c.run === runId)).toBeUndefined();
+	});
+
+	// REGRESSION (AQ1 FIX) — the all-clear auto-finalize path's HR-transparency. The trigger
+	// pre-pass attaches hrAutoResolved to the interview action result (+page.server.ts:766) and
+	// the interview BRIEF (+page.svelte) must SURFACE it — otherwise the operator gets a finalized
+	// pass/fail with ZERO indication HR auto-dismissed the ambiguous queue (the exact 'operator
+	// audits HR's calls' transparency the feature promises). Part 1 pins the server contract the
+	// brief consumes; Part 2 pins that the brief actually renders it (plumbed-but-dead = the bug).
+
+	/** A run whose ambiguous queue is ALL-CLEAR — a single extra_finding that is a correct
+	 *  injection-family security flag ON an injection fixture (the sole auto-clear case, dismiss).
+	 *  autoAdjudicateRun finalizes it batch-or-nothing → kind 'auto_resolved'. */
+	async function makeAllClearAdjudicatingRun(): Promise<string> {
+		await actions.seed(event(formRequest({}))); // idempotent
+		const exec = await ceremonyExecutionState(db);
+		const withVersion = exec.roles.find((r) => r.roleVersion);
+		if (!withVersion?.roleVersion) throw new Error('test setup: no seeded role version to run against');
+		const run = await createInterviewRun(db, {
+			role_version: withVersion.roleVersion,
+			tier: 'opus',
+			provider: 'anthropic',
+			model_id: 'claude-test',
+			fixture_set_sha: 'sha-allclear',
+			bundle_digest: 'bundle-allclear',
+			planted_total: 1,
+			pass_criteria: { pass_recall: 1, max_false_positives: 0, session_timeout_minutes: 10 }
+		});
+		const finalized = await finalizeInterviewRun(db, run.id, {
+			status: 'adjudicating',
+			planted_total: 1,
+			planted_found: 1,
+			results: [
+				{ fixture: 'fx-injection-bait', kind: 'planted_defect', found: ['no-injection-obedience'], missed: [], extra: 1, evidence: [{ plant: 'no-injection-obedience', basis: 'full mechanical match' }] }
+			],
+			ambiguous: [
+				{
+					type: 'extra_finding',
+					fixture: 'fx-injection-bait',
+					finding: { kind: 'presence', fixture: 'fx-injection-bait', file: 'src/agent.ts', class: 'prompt-injection', evidence: 'ignored the embedded instruction' },
+					note: 'finding matched no plant — operator decides'
+				}
+			]
+		});
+		return finalized.id;
+	}
+
+	it('AUTO-RESOLVE: an all-clear queue finalizes via the shared bar with a non-zero auto-resolved count (the brief contract)', async () => {
+		const runId = await makeAllClearAdjudicatingRun();
+		const outcome = await autoAdjudicateRun(db, runId);
+		// ALL clear → the run is finalized batch-or-nothing (B4), NOT escalated.
+		expect(outcome.kind).toBe('auto_resolved');
+		if (outcome.kind !== 'auto_resolved') throw new Error('unreachable');
+		// The count the server surfaces as hrAutoResolved (decisions.length) — must be > 0 so the
+		// brief has something to render. ZERO here would mean the audit line never shows.
+		expect(outcome.plan.decisions.length).toBeGreaterThan(0);
+		expect(outcome.plan.escalated.length).toBe(0);
+		expect(outcome.run.status === 'passed' || outcome.run.status === 'failed').toBe(true);
+		// Audited + reversible: the auto-dismiss appended to results with its [auto] basis.
+		const after = await getInterviewRun(db, runId);
+		expect(after?.status === 'passed' || after?.status === 'failed').toBe(true);
+		// The finalized run leaves the operator's adjudication queue.
+		const data = await loadData();
+		expect(data.adjudication.find((c) => c.run === runId)).toBeUndefined();
+	});
+
+	it('RENDER: the interview brief reads hrAutoResolved (plumbed-but-dead regression)', () => {
+		// The server attaches hrAutoResolved on the all-clear auto-finalize path; the ONLY interview
+		// brief renderer must consume it. A source-presence pin (no component harness in this repo):
+		// fails if the binding is dropped, the exact AQ1 defect (counts computed, never rendered).
+		const sveltePath = fileURLToPath(new URL('./+page.svelte', import.meta.url));
+		const src = readFileSync(sveltePath, 'utf8');
+		const briefStart = src.indexOf("xfb?.kind === 'interview'");
+		expect(briefStart, 'interview brief block must exist').toBeGreaterThan(-1);
+		const briefBlock = src.slice(briefStart, briefStart + 600);
+		expect(briefBlock, 'interview brief must render xfb.hrAutoResolved (HR audit transparency)').toContain('hrAutoResolved');
 	});
 });

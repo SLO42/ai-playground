@@ -923,6 +923,8 @@
                   Interview {String(xfb.status)} · found {String(xfb.plantedFound)}/{String(xfb.plantedTotal)}
                   · {String(xfb.falsePositives)} FP{#if xfb.costUsd != null} · {fmtUsd(xfb.costUsd)}{/if}.
                   {#if xfb.status === 'adjudicating'}Routed to the adjudication queue on /agents.{/if}
+                  {#if Number(xfb.hrAutoResolved) > 0}
+                    HR auto-resolved {String(xfb.hrAutoResolved)} clear adjudication item(s) — audit on /agents.{/if}
                 </p>
               {:else if xfb?.queued}
                 <p class="brief-warn" role="status">Queued (budget gate): {String(xfb.reason)}</p>

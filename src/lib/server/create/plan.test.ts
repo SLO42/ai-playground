@@ -291,6 +291,41 @@ describe('CA-H1 — ENV-NAME-POSITIVE secret-echo at the trust boundary (redTeam
 		expect(p.targetDrafts[0].config.password).toBe('[REDACTED:secret-like]');
 		expect(JSON.stringify(p)).not.toContain('s3cr3tP@ssw0rd');
 	});
+	// create-flow-harden-3: PLURAL secret-like heads were a Gate-2 bypass (a low-entropy bare literal
+	// under { passwords: '…' } slipped raw). Now caught — without over-redacting benign maxTokens/foreignKeys.
+	it('redacts-and-keeps a bare literal under a PLURAL secret-like key (passwords/secrets) — was a bypass', async () => {
+		for (const key of ['passwords', 'secrets', 'passphrases']) {
+			const p = await validateProposal(
+				db,
+				goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { [key]: 'lowentropylit' } }] })
+			);
+			expect(p.targetDrafts[0].config[key], key).toBe('[REDACTED:secret-like]');
+			expect(JSON.stringify(p), key).not.toContain('lowentropylit');
+		}
+	});
+	it('redacts-and-keeps a PLURAL credential-modifier key (accessTokens/apiKeys/clientSecrets)', async () => {
+		for (const key of ['accessTokens', 'apiKeys', 'clientSecrets']) {
+			const p = await validateProposal(
+				db,
+				goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { [key]: 'plainlit42' } }] })
+			);
+			expect(p.targetDrafts[0].config[key], key).toBe('[REDACTED:secret-like]');
+		}
+	});
+	it('F-008: a benign PLURAL non-credential key (maxTokens/foreignKeys) is NOT over-redacted', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({
+				targetDrafts: [
+					{ kind: 'deploy', adapterId: 'x', config: { maxTokens: 'gpt-4-turbo', foreignKeys: 'users.id' } }
+				]
+			})
+		);
+		// bare 'tokens'/'keys' heads with NO credential modifier → kept verbatim (not secret-like)
+		expect(p.targetDrafts[0].config.maxTokens).toBe('gpt-4-turbo');
+		expect(p.targetDrafts[0].config.foreignKeys).toBe('users.id');
+		expect(p.configRedactions).toEqual([]);
+	});
 	it('redacts-and-keeps a no-prefix DB password under a secret-like key', async () => {
 		const p = await validateProposal(
 			db,

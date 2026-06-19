@@ -388,17 +388,26 @@ const LITERAL_CREDENTIAL_PREFIXES: readonly string[] = Object.freeze([
 // and require the SECRET WORD to be the head (last) token (or the whole key) — so dbPassword/dbPass/
 // clientSecret/accessToken/credential are secret, but tokenExpiry/passwordPolicy/authMethod are not.
 
-/** Standalone head tokens that make a key secret-like (the value must be an env-name reference). */
+/** Standalone head tokens that make a key secret-like (the value must be an env-name reference).
+ *  Includes the UNAMBIGUOUS plurals (passwords/passphrases/secrets/apikeys/credentials) — a plural
+ *  secret-like head was a Gate-2 bypass (a low-entropy bare literal under `{ passwords: '…' }` slipped;
+ *  high-entropy ones are still caught by Gate 3). Bare 'token'/'tokens'/'key'/'keys' are deliberately
+ *  NOT standalone heads — they collide with benign config (maxTokens, foreignKeys, sortKey), so they
+ *  count only WITH a credential modifier (accessToken/apiKeys/clientSecret), handled in isSecretLikeKey. */
 const SECRET_HEAD_TOKENS: ReadonlySet<string> = new Set([
 	'password',
+	'passwords',
 	'passwd',
 	'passphrase',
+	'passphrases',
 	'pass',
 	'secret',
+	'secrets',
 	'token',
 	'credential',
 	'credentials',
-	'apikey'
+	'apikey',
+	'apikeys'
 ]);
 
 /** Modifiers that, when followed by a `key`/`secret`/`token` head, make the key secret-like. */
@@ -439,9 +448,12 @@ function isSecretLikeKey(key: string): boolean {
 	if (tokens.length === 0) return false;
 	const head = tokens[tokens.length - 1];
 	if (SECRET_HEAD_TOKENS.has(head)) return true;
-	// `key`/`secret`/`token` are only secret-like with a credential modifier in front (apiKey, but
-	// not sortKey/partitionKey); 'apikey' collapsed to one token is already covered above.
-	if ((head === 'key' || head === 'secret' || head === 'token') && tokens.length >= 2) {
+	// `key`/`secret`/`token` (and their plurals) are only secret-like WITH a credential modifier in
+	// front (apiKey/apiKeys/accessToken/accessTokens/clientSecret yes; sortKey/partitionKey/maxTokens/
+	// foreignKeys no). 'apikey'/'apikeys' collapsed to one token are already standalone heads above.
+	const pluralOrSingularHead =
+		head === 'key' || head === 'keys' || head === 'secret' || head === 'token' || head === 'tokens';
+	if (pluralOrSingularHead && tokens.length >= 2) {
 		if (SECRET_KEY_MODIFIERS.has(tokens[tokens.length - 2])) return true;
 	}
 	return false;

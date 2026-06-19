@@ -1936,6 +1936,54 @@ const m0053_create_proposal_run: Migration = {
 	`
 };
 
+// ── FILE-SNAPSHOT-SPEC §2 (FS-1) — content-addressed point-in-time file snapshots ──
+//
+// Any row that REFERENCES a file (a scaffold-create write, an agent read/edit transcript
+// turn, a review/gauntlet finding citing file:line) links a DB-stored SNAPSHOT of the
+// file's content so the app can render "what the file was when it was referenced" — never
+// a dangling path. The table is content-addressed (dedup by content_sha) + bounded (huge/
+// binary files store a MARKER, not the blob) + screened (D-026 — a secret-bearing file is
+// quarantined to a marker, never stored raw). Rails: F-008 (a snapshot is explicitly as-of
+// `captured_at` + labeled so; disk stays the source of truth — captureSnapshot/the FS-3
+// surface NEVER present it as live), D-016 (path validated + project-scoped), D-026 (screen
+// on capture), F-013 (captured_at coerced to ISO in the normalizer). Additive + idempotent
+// (OVERWRITE). FS-2 wires the capture points; FS-3 the view-file surface — NOT this task.
+const m0054_file_snapshot: Migration = {
+	id: '0054_file_snapshot',
+	up: `
+		DEFINE TABLE OVERWRITE file_snapshot SCHEMAFULL;
+		-- The project-relative path the snapshot was captured for (D-016 validated UPSTREAM by
+		-- captureSnapshot before it lands here — structural confinement, reject path-escape).
+		DEFINE FIELD OVERWRITE path        ON file_snapshot TYPE string;
+		-- The sha-256 of the captured content (content-address; dedup key with path+project).
+		DEFINE FIELD OVERWRITE content_sha ON file_snapshot TYPE string;
+		-- The stored body. For a clean/redacted in-bound file this is the (safe, screened) text;
+		-- for a quarantined/oversized/binary file this is a MARKER string (never the raw blob).
+		DEFINE FIELD OVERWRITE content     ON file_snapshot TYPE string;
+		-- Byte length of the ORIGINAL content (honest size even when the body is a marker).
+		DEFINE FIELD OVERWRITE bytes       ON file_snapshot TYPE int DEFAULT 0;
+		-- D-026 screen outcome of the captured content (parity with memory.screen_status).
+		DEFINE FIELD OVERWRITE screen_status ON file_snapshot TYPE string DEFAULT "clean"
+			ASSERT $value IN ["clean","redacted","quarantined"];
+		-- Why the body is a marker rather than the content: a quarantined secret, an over-cap
+		-- size, or a binary file. NONE when the real (clean/redacted) content is stored.
+		DEFINE FIELD OVERWRITE marker_reason ON file_snapshot TYPE option<string>
+			ASSERT $value = NONE OR $value IN ["quarantined","oversize","binary"];
+		-- True when 'content' is a marker, not the body (the FS-3 surface labels it so, F-008).
+		DEFINE FIELD OVERWRITE is_marker   ON file_snapshot TYPE bool DEFAULT false;
+		-- The entity/event that REFERENCED the file (the session turn / finding / scaffold). A
+		-- free-form string ref (a record id like 'message:…' or a scaffold tag) — FS-2 fills it.
+		DEFINE FIELD OVERWRITE captured_by ON file_snapshot TYPE option<string>;
+		DEFINE FIELD OVERWRITE project     ON file_snapshot TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE captured_at ON file_snapshot TYPE datetime DEFAULT time::now();
+
+		-- Content-address dedup scope (FILE-SNAPSHOT-SPEC §2): identical content for the same
+		-- path+project stores ONCE. project is optional, so coalesce to '' for a stable key.
+		DEFINE INDEX OVERWRITE file_snapshot_by_sha ON file_snapshot FIELDS content_sha;
+		DEFINE INDEX OVERWRITE file_snapshot_by_project ON file_snapshot FIELDS project;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1995,5 +2043,6 @@ export const schemaMigrations: Migration[] = [
 	m0050_cert_hire_brief,
 	m0051_proposed_defect_classes,
 	m0052_pm_fit_verdict,
-	m0053_create_proposal_run
+	m0053_create_proposal_run,
+	m0054_file_snapshot
 ];

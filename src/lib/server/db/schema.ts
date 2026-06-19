@@ -1900,6 +1900,42 @@ const m0052_pm_fit_verdict: Migration = {
 	`
 };
 
+// m0053 — create_proposal_run (Create-with-AI ASYNC propose: the run-row a propose launches).
+//
+// `propose` no longer BLOCKS ~2 min synchronously: it does the up-front gates (readBrief, DB,
+// runtime, host-project), LAUNCHES the read-only generation session, persists THIS run row
+// {status:'generating', session:<the launchSession id>} and returns {runId, sessionId} immediately.
+// The generation continues in a detached background job; on success it validates + screens the
+// envelope and UPDATEs {status:'done', envelope}; on any error it UPDATEs {status:'failed',
+// error_reason} (honest, F-008 — never a fake success). The client watches THIS row live (the SSE
+// `create_proposal_run` watcher) + the session's live transcript (the existing `message` stream).
+//
+// D-010 PRESERVED: still propose-only — NOTHING touches disk; the `envelope` carries the same
+// confirmToken the synchronous path minted, and ?/create re-validates it (assertProposalFresh).
+// D-026 PRESERVED: `brief` + `envelope` are screen()-passed before they land on the row (no raw
+// secret in a persisted/rendered run column); the generation transcript is screened at its existing
+// eventToMessage chokepoint. `envelope`/`error_reason` are option<…> — NONE until the run resolves
+// (read back as null → '—', never str(undefined); F-013/F-015). `status` is enum-asserted with a
+// concrete write (never NONE — §6.2). ADDITIVE, OVERWRITE-only (F-015 idempotent: apply-twice + a
+// half-applied state re-run clean over the raw OVERWRITE DDL; the generic schemaMigrations sweep in
+// migrate.test.ts covers both — no existing rows to backfill).
+const m0053_create_proposal_run: Migration = {
+	id: '0053_create_proposal_run',
+	up: `
+		DEFINE TABLE OVERWRITE create_proposal_run SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project      ON create_proposal_run TYPE record<project>;
+		DEFINE FIELD OVERWRITE session      ON create_proposal_run TYPE option<record<session>>;
+		DEFINE FIELD OVERWRITE brief        ON create_proposal_run TYPE object FLEXIBLE;
+		DEFINE FIELD OVERWRITE status       ON create_proposal_run TYPE string
+			DEFAULT "generating" ASSERT $value IN ["generating","done","failed"];
+		DEFINE FIELD OVERWRITE envelope      ON create_proposal_run TYPE option<object> FLEXIBLE;
+		DEFINE FIELD OVERWRITE error_reason  ON create_proposal_run TYPE option<string>;
+		DEFINE FIELD OVERWRITE created_at    ON create_proposal_run TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE ended_at      ON create_proposal_run TYPE option<datetime>;
+		DEFINE INDEX OVERWRITE create_proposal_run_by_project ON create_proposal_run FIELDS project;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1958,5 +1994,6 @@ export const schemaMigrations: Migration[] = [
 	m0049_create_integrity,
 	m0050_cert_hire_brief,
 	m0051_proposed_defect_classes,
-	m0052_pm_fit_verdict
+	m0052_pm_fit_verdict,
+	m0053_create_proposal_run
 ];

@@ -24,11 +24,14 @@ import { classifyDbError } from '$lib/server/db/classify';
 import { listProjects } from '$lib/server/projects/repo';
 import { getRuntime, getBus, DEFAULT_AGENT, DEFAULT_MODEL } from '$lib/server/harness';
 import {
-	generateCreationProposal,
 	makeProposalAgent,
 	executeCreation,
 	executeTemplateCreation,
 	getTemplate,
+	createProposalRun,
+	attachSession,
+	runProposalInBackground,
+	getProposalRun,
 	StaleProposalError,
 	ProjectExistsError,
 	UnstableSlugError,
@@ -39,7 +42,6 @@ import {
 import {
 	templateChoices,
 	readTemplateParams,
-	proposeErrorReason,
 	createErrorReason,
 	templateScaffoldErrorReason
 } from '$lib/server/create/template-form';
@@ -61,10 +63,22 @@ const MAX_HINT = 1000;
  * button that fails on submit. The actual project list is NOT rendered here (this is the create
  * surface, not the list) — we only need the COUNT to know a host project exists.
  */
-export const load: PageServerLoad = async () => {
+export const load: PageServerLoad = async ({ url, depends }) => {
+	// Create-with-AI ASYNC propose: the page re-reads the in-flight run on its OWN scoped dep so a
+	// `create_proposal_run` row change (the detached generation resolving) live-flips the page to the
+	// proposal review / honest failure WITHOUT re-pulling availability flags (no invalidate storm).
+	depends('app:create-run');
+
 	// The template registry is pure + static (no DB/credential needed) — the picker is available even
 	// when the DB is down (the scaffold action then honestly 503s, but the form still renders).
 	const templates = templateChoices();
+
+	// `?run=<id>` — the in-flight (or resolved) generation run the client is watching. Validated at
+	// the boundary (D-016): a malformed value is ignored (no run hydrated), never interpolated. The
+	// run row carries the honest state (generating/done/failed) + the session id (live transcript key)
+	// + the validated envelope on done. SHADOW PATHS: nil → no run; non-record-id → caught → no run.
+	const runParam = url.searchParams.get('run');
+
 	const db = tryGetDb();
 	if (!db) {
 		return {
@@ -72,17 +86,28 @@ export const load: PageServerLoad = async () => {
 			runtimeAvailable: false,
 			runtimeReason: null,
 			hostProjectCount: 0,
-			templates
+			templates,
+			run: null
 		};
 	}
 	try {
 		const [projects, runtime] = await Promise.all([listProjects(db), getRuntime(db)]);
+		// Read the watched run (honest empty when the param is absent/unknown — never fabricated).
+		let run = null;
+		if (runParam) {
+			try {
+				run = await getProposalRun(db, runParam);
+			} catch {
+				run = null; // a read failure (incl. a malformed id) → no run hydrated, page still usable.
+			}
+		}
 		return {
 			connected: true,
 			runtimeAvailable: runtime.available,
 			runtimeReason: runtime.available ? null : runtime.reason,
 			hostProjectCount: projects.length,
-			templates
+			templates,
+			run
 		};
 	} catch (err) {
 		const reason = classifyDbError(err) === 'disconnected' ? null : (err as Error).message;
@@ -91,7 +116,8 @@ export const load: PageServerLoad = async () => {
 			runtimeAvailable: false,
 			runtimeReason: reason,
 			hostProjectCount: 0,
-			templates
+			templates,
+			run: null
 		};
 	}
 };
@@ -135,12 +161,22 @@ function workspaceHref(projectId: string): string {
 
 export const actions: Actions = {
 	/**
-	 * CA-1 — generate the confirm-gated proposal. NO disk/DB writes. Honest 503 when the DB or the
-	 * runtime credential is unavailable, or when no host project exists to run the read-only session
-	 * under. Returns the full envelope (brief + proposal + confirmToken) for the review step.
+	 * CA-1 — LAUNCH the confirm-gated proposal generation ASYNC. The up-front gates are UNCHANGED
+	 * (readBrief, DB, runtime credential, host-project — honest 503 each), then instead of awaiting
+	 * the ~2-min read-only agent session, it: (1) CREATEs a create_proposal_run row {generating},
+	 * (2) fires the generation as a DETACHED background job (runProposalInBackground) that resolves
+	 * the row {done, envelope} | {failed, error_reason}, and (3) returns { runId, sessionId } the
+	 * INSTANT the session id is surfaced (the generator's onSessionCreated fires at the session-row
+	 * CREATE, long before generation finishes). The client then watches the run row live (the
+	 * `create_proposal_run` SSE watcher) + the session's live transcript (the `message` stream).
 	 *
-	 * Shadow paths: nil/empty name|description → 400 (named field); agent returns garbage →
-	 * ProposalContractError mapped to an honest reason; agent leg errors (env/timeout) → surfaced.
+	 * D-010 PRESERVED: still propose-only — NOTHING touches disk; the resolved envelope carries the
+	 * same confirmToken ?/create re-validates (assertProposalFresh). F-008: no fake proposal — the
+	 * row is honest 'generating' until the real agent resolves it; an agent failure → 'failed' + reason.
+	 *
+	 * Shadow paths: nil/empty name|description → 400 (named field); DB down → 503; no credential →
+	 * 503; empty portfolio → 503; the agent returns garbage / leg errors → the BACKGROUND job marks
+	 * the run 'failed' with the named reason (the client sees it via the live row), never a phantom ok.
 	 */
 	propose: async ({ request }) => {
 		const form = await request.formData();
@@ -177,12 +213,30 @@ export const actions: Actions = {
 			return fail(500, { propose: { error: `Could not load the portfolio: ${(err as Error).message}` } });
 		}
 
+		// CREATE the run row in the honest 'generating' state BEFORE launching (so a session-id surface
+		// or an instant failure always has a row to land on — the interrupt contract: a re-run/refresh
+		// re-reads this row via ?run=, never a half-state). The brief is screened for the row's display
+		// column inside createProposalRun (D-026); the envelope keeps the verbatim token-bound brief.
+		let runId: string;
+		try {
+			runId = await createProposalRun(db, { project: hostProjectId, brief: read.brief });
+		} catch (err) {
+			return fail(500, { propose: { error: `Could not start the proposal run: ${(err as Error).message}` } });
+		}
+
 		// CT-2 template grounding (optional): when the operator picked a template, thread its id + the
 		// resolved param values so the prompt carries the template's stack + layout as PRIOR ART. An
 		// unknown/blank templateId is a no-op (the prompt is byte-identical to the pure-AI path).
 		const templateId = field(form, 'templateId', MAX_HINT);
 		const tplParams = templateId ? readTemplateParams(form, templateId) : undefined;
 
+		// The session id is surfaced synchronously the INSTANT launchSession CREATEs the session row
+		// (onSessionCreated, before the stream is consumed). We both stamp it on the run row AND
+		// resolve `sessionReady` so we can return it to the client without awaiting the generation.
+		let resolveSession: (id: string) => void;
+		const sessionReady = new Promise<string>((res) => {
+			resolveSession = res;
+		});
 		const generate = makeProposalAgent({
 			db,
 			bus: getBus(),
@@ -190,17 +244,33 @@ export const actions: Actions = {
 			hostProjectId,
 			agentId: DEFAULT_AGENT,
 			model: DEFAULT_MODEL,
+			onSessionCreated: (sessionId) => {
+				resolveSession(sessionId);
+				// Best-effort stamp on the run row (D-016) — fail-open: a stamp failure never breaks
+				// generation (the client still watches the row; only the live-transcript link is delayed).
+				void attachSession(db, runId, sessionId).catch((e) =>
+					console.warn(`[create] attachSession failed for run ${runId}: ${(e as Error).message}`)
+				);
+			},
 			...(templateId && getTemplate(templateId) ? { templateId, params: tplParams } : {})
 		});
 
-		try {
-			const envelope = await generateCreationProposal(db, read.brief, generate);
-			// Carry the validated envelope to the review/confirm step as a single canonical JSON blob
-			// (the confirmToken binds it; ?/create re-validates with assertProposalFresh — D-010 shape).
-			return { propose: { ok: true as const, envelope } };
-		} catch (err) {
-			return fail(422, { propose: { error: proposeErrorReason(err) } });
-		}
+		// Fire the generation DETACHED — we do NOT await it. It resolves the run row on its own
+		// (done|failed). The catch is defensive; runProposalInBackground already swallows + records
+		// every failure on the row, so this only guards an unexpected throw before that runs.
+		void runProposalInBackground(db, runId, read.brief, generate).catch((e) =>
+			console.warn(`[create] background proposal run ${runId} threw unexpectedly: ${(e as Error).message}`)
+		);
+
+		// Return the run id immediately, with the session id if it surfaced fast enough (bounded — we
+		// never block the action on the ~2-min generation). If the session row is slow to CREATE, the
+		// client falls back to the run row's `session` field (stamped by attachSession) via the live
+		// watcher. F-014 discipline: a bounded wall-clock wait, no spin.
+		const sessionId = await Promise.race([
+			sessionReady,
+			new Promise<null>((res) => setTimeout(() => res(null), 8000))
+		]);
+		return { propose: { launched: true as const, runId, sessionId: sessionId ?? null } };
 	},
 
 	/**

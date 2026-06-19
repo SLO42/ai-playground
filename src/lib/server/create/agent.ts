@@ -43,6 +43,14 @@ export interface ProposalAgentDeps {
 	 */
 	templateId?: string;
 	params?: Record<string, string | boolean>;
+	/**
+	 * Create-with-AI ASYNC propose: a synchronous SESSION-ID surface forwarded straight onto
+	 * launchSession's `onSessionCreated`. Fired ONCE the instant the generation `session` row
+	 * exists (before the ~2-min stream is consumed) so the caller can land the id on its
+	 * create_proposal_run row and return {runId, sessionId} to the client immediately. Best-effort
+	 * inside launchSession (a throw is swallowed). Omitted ⇒ unchanged synchronous behaviour.
+	 */
+	onSessionCreated?: (sessionId: string) => void;
 }
 
 /**
@@ -226,7 +234,15 @@ export function makeProposalAgent(deps: ProposalAgentDeps): ProposalGenerator {
 			// READ-ONLY: allow-list carries no write/exec tools (D-018). WebSearch is NOT granted.
 			toolPolicy: { allow: [...READ_ONLY_TOOLS] }
 		};
-		const res = await launchSession({ db: deps.db, bus: deps.bus, runtime: deps.runtime, input });
+		const res = await launchSession({
+			db: deps.db,
+			bus: deps.bus,
+			runtime: deps.runtime,
+			input,
+			// Surface the session id synchronously the instant the row exists (ASYNC propose) so the
+			// caller lands it on the create_proposal_run row + returns to the client immediately.
+			...(deps.onSessionCreated ? { onSessionCreated: deps.onSessionCreated } : {})
+		});
 		if (res.status !== 'done') {
 			throw new ProposalContractError(
 				`proposal session ended '${res.status}' (not 'done') — no proposal produced. summary: ${res.summary}`

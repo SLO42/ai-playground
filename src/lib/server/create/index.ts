@@ -45,6 +45,17 @@ export {
 } from './agent';
 
 export {
+	createProposalRun,
+	attachSession,
+	markProposalDone,
+	markProposalFailed,
+	getProposalRun,
+	runProposalInBackground,
+	type ProposalRun,
+	type ProposalRunStatus
+} from './proposal-run';
+
+export {
 	executeCreation,
 	executeTemplateCreation,
 	ProjectExistsError,

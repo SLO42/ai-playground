@@ -17,7 +17,11 @@
    * navigate. clarifiers/anti-sycophancy positions are rendered as the agent authored them (§3).
    */
   import { enhance } from '$app/forms';
-  import { goto } from '$app/navigation';
+  import { goto, invalidate, replaceState } from '$app/navigation';
+  import { page } from '$app/state';
+  import { stream } from '$lib/client/stream.svelte';
+  import SessionTranscript from '$lib/components/shell/SessionTranscript.svelte';
+  import { liveEventToTurn, type Turn } from '$lib/client/transcript-core';
   import type { ActionData, PageData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -60,10 +64,25 @@
   }
 
   // ── action results ──
+  // ASYNC propose: the action no longer returns the envelope — it returns { launched, runId,
+  // sessionId } the instant generation is launched. The proposal arrives later via the watched
+  // run row (data.run), which walks generating → done|failed live (the create_proposal_run SSE
+  // watcher → invalidate('app:create-run') re-reads it). On launch we pin ?run=<id> so a reload
+  // re-hydrates the in-flight run honestly (never a fabricated wait).
   const propose = $derived(form && 'propose' in form ? form.propose : undefined);
   const proposeError = $derived(propose && 'error' in propose ? propose.error : undefined);
-  const envelope = $derived(propose && 'ok' in propose ? propose.envelope : undefined);
+
+  // The live run (server-loaded from ?run=). status: generating | done | failed (F-008 honest).
+  const run = $derived(data.run ?? undefined);
+  const generating = $derived(run?.status === 'generating');
+  const runFailed = $derived(run?.status === 'failed');
+  // The validated, token-bound envelope is present ONLY on a done run (D-010 unchanged).
+  const envelope = $derived(run?.status === 'done' ? run.envelope : undefined);
   const proposal = $derived(envelope?.proposal);
+  // The generation session id (live transcript key): from the run row, or the just-launched action.
+  const sessionId = $derived(
+    run?.session ?? (propose && 'sessionId' in propose ? (propose.sessionId ?? undefined) : undefined)
+  );
 
   const createRes = $derived(form && 'create' in form ? form.create : undefined);
   const createError = $derived(createRes && 'error' in createRes ? createRes.error : undefined);
@@ -194,6 +213,59 @@
       return () => clearTimeout(t);
     }
   });
+
+  // ── ASYNC propose: pin ?run=<id> on launch, then watch the run row live ──
+  // On a freshly LAUNCHED run, push ?run=<id> into the URL (replaceState — no history spam) so a
+  // reload re-hydrates the in-flight run via the loader. The load() reads data.run from this param.
+  $effect(() => {
+    const launchedRunId = propose && 'runId' in propose ? propose.runId : undefined;
+    if (launchedRunId && page.url.searchParams.get('run') !== launchedRunId) {
+      const url = new URL(page.url);
+      url.searchParams.set('run', launchedRunId);
+      replaceState(url, page.state);
+      // Re-read the run row immediately so the generating state renders without waiting for the
+      // first SSE tick (the row already exists — the action created it before returning).
+      void invalidate('app:create-run');
+    }
+  });
+
+  // Live re-read: a create_proposal_run row change (the detached generation resolving to done|failed)
+  // re-runs the loader on its scoped dep — the page flips from generating → review|failed with no
+  // poll loop (the SSE watcher is the live source; F-008 honest states only).
+  $effect(() => {
+    const off = stream.onDbChange('create_proposal_run', () => void invalidate('app:create-run'));
+    return off;
+  });
+
+  // ── live generation transcript (the /claude-code?session= precedent) ──
+  // While generating, show the read-only agent's turns live as they stream (subscribeTopic on the
+  // session's `transcript` events → liveEventToTurn, the same mapping projects/[id] + /claude-code
+  // use). Honest empty until the first turn arrives (F-008 — never a fake/blank progress bar). Reset
+  // the buffer whenever the watched session id changes so a stale run's turns never bleed across.
+  let liveTurns = $state<Turn[]>([]);
+  $effect(() => {
+    const sid = sessionId;
+    liveTurns = [];
+    if (!sid) return;
+    let liveSeq = 0;
+    const off = stream.subscribeTopic<{ kind: string; event: unknown }>('transcript', sid, (d) => {
+      const ev = d.event as Record<string, unknown> | undefined;
+      const turn = liveEventToTurn(ev, liveSeq);
+      if (!turn) return; // lifecycle (token_usage/done/error) — not a turn
+      liveSeq += 1;
+      // The wake-up briefing leads; every other turn appends (mirrors projects/[id]).
+      liveTurns = turn.kind === 'briefing' ? [turn, ...liveTurns] : [...liveTurns, turn];
+    });
+    return off;
+  });
+
+  /** Start over from the brief: drop ?run= so the loader hydrates no run (back to STAGE 1). */
+  function startOver() {
+    const url = new URL(page.url);
+    url.searchParams.delete('run');
+    replaceState(url, page.state);
+    void invalidate('app:create-run');
+  }
 </script>
 
 <svelte:head>
@@ -232,8 +304,49 @@
       <p class="state-body muted">Opening the project workspace…</p>
       <a class="btn" href={createOk.redirectTo}>Open now</a>
     </div>
+  {:else if generating}
+    <!-- ── STAGE 1.5: GENERATING (live, async) ──────────────────────── -->
+    <!-- The proposal runs in the background; the operator watches the read-only agent work LIVE
+         (the session's transcript streams via SSE) instead of a frozen disabled button. Honest
+         state (F-008): the spinner reflects a REAL in-flight run row, not a fabricated wait. -->
+    <article class="card generating" aria-label="Generating proposal" role="status" aria-live="polite">
+      <header class="gen-head">
+        <span class="eyebrow">generating</span>
+        <h2 class="section-title">
+          <span class="spinner" aria-hidden="true"></span>
+          Proposing a scaffold for <span class="mono">{run?.brief.name}</span>…
+        </h2>
+        <p class="field-help">
+          A read-only agent is reading prior art and drafting the layout, stack, plan, and founding
+          tasks. Nothing touches disk (D-010) — you'll review the proposal before anything is created.
+        </p>
+      </header>
+
+      <section class="gen-transcript" aria-label="Live generation transcript">
+        {#if !sessionId}
+          <p class="field-help">Starting the generation session…</p>
+        {:else if liveTurns.length === 0}
+          <p class="field-help">Waiting for the first turn…</p>
+        {:else}
+          <SessionTranscript turns={liveTurns} />
+        {/if}
+      </section>
+
+      <div class="actions">
+        <button class="btn ghost" type="button" onclick={startOver}>Start over</button>
+        <span class="field-help">The proposal will appear here automatically when it's ready.</span>
+      </div>
+    </article>
   {:else}
     <!-- ── STAGE 1: BRIEF ──────────────────────────────────────────── -->
+    {#if runFailed}
+      <!-- HONEST failure (F-008): the background generation failed — show the real reason, never a
+           fake success or a stuck spinner. The brief below stays usable to retry. -->
+      <div class="card notice warn" role="alert">
+        Proposal generation failed — {run?.errorReason ?? 'the agent could not produce a valid proposal'}.
+        Adjust the brief and try again.
+      </div>
+    {/if}
     {#if !connected}
       <div class="card notice warn" role="alert">
         The database is not connected — start SurrealDB and reload before creating a project.
@@ -454,14 +567,14 @@
             formaction="?/propose"
             disabled={proposing || scaffolding || !canPropose}
           >
-            {proposing ? 'Refining…' : 'Refine with AI'}
+            {proposing ? 'Launching…' : 'Refine with AI'}
           </button>
           <span class="field-help">
             Scaffolding writes the real project on disk now. Refining runs the AI proposal first (review before disk).
           </span>
         {:else}
           <button class="btn" type="submit" formaction="?/propose" disabled={proposing || !canPropose}>
-            {proposing ? 'Generating proposal…' : 'Generate proposal'}
+            {proposing ? 'Launching…' : 'Generate proposal'}
           </button>
         {/if}
         <button
@@ -734,6 +847,53 @@
   }
   .state-body.muted {
     color: var(--color-text-muted);
+  }
+
+  /* ── generating (async live) ── */
+  .generating {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-4, 1rem);
+    border-color: var(--color-accent);
+  }
+  .gen-head {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+  }
+  .gen-head .section-title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-3, 0.75rem);
+  }
+  .spinner {
+    flex: 0 0 auto;
+    width: 1rem;
+    height: 1rem;
+    border: 2px solid var(--color-border);
+    border-top-color: var(--color-accent);
+    border-radius: 50%;
+    animation: spin 0.8s linear infinite;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .spinner {
+      animation: none;
+      border-top-color: var(--color-accent);
+      opacity: 0.7;
+    }
+  }
+  @keyframes spin {
+    to {
+      transform: rotate(360deg);
+    }
+  }
+  .gen-transcript {
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: var(--space-3, 0.75rem);
+    max-height: 28rem;
+    overflow-y: auto;
+    background: var(--color-surface-overlay, var(--color-bg));
   }
 
   /* ── brief form ── */

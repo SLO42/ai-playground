@@ -164,6 +164,16 @@ export interface LaunchDeps {
 		 */
 		proposeSkills?: ProposeSkillsFn;
 	};
+	/**
+	 * Synchronous SESSION-ID surface (Create-with-AI ASYNC propose). Fired EXACTLY ONCE, the
+	 * instant the `session` row is CREATEd (status 'running') — BEFORE the runtime stream is
+	 * consumed and long before launchSession resolves. A caller that needs the live session id up
+	 * front (to land it on a tracking row and return to the client while generation continues in
+	 * the background) registers this. Best-effort + isolated: a throw from the callback is logged
+	 * and swallowed so it can NEVER break or fail the driven session (the launch is the work; this
+	 * is observability). Omitted by every existing caller ⇒ no behavioural change.
+	 */
+	onSessionCreated?: (sessionId: string) => void;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -330,6 +340,20 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	);
 	const sessionId = String(created[0].id);
 	const sid = link(sessionId);
+
+	// Surface the session id the instant the row exists (Create-with-AI ASYNC propose) — BEFORE
+	// the stream is consumed, so a caller can land it on a tracking row + return to the client
+	// while generation continues. Isolated/best-effort: a callback throw must never break the
+	// driven session (it is observability, not the work — same fail-open discipline as the bus).
+	if (deps.onSessionCreated) {
+		try {
+			deps.onSessionCreated(sessionId);
+		} catch (cbErr) {
+			console.warn(
+				`[launch] onSessionCreated callback threw for ${sessionId} (best-effort, ignored): ${(cbErr as Error).message}`
+			);
+		}
+	}
 
 	// A spawn agent_event the moment the session starts (analytics first-class). The
 	// shared writer (2.4) is the one chokepoint; the detail carries the how/why (intent

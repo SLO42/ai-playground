@@ -113,7 +113,11 @@ export const WATCHED_TABLES = [
 	'review_proposal',
 	// project_staff — /agents/staffing (BL-3 capability-matching: staff/un-staff decisions
 	// re-derive the staffing board live) — WORKFORCE-SPEC §6 / BL-3
-	'project_staff'
+	'project_staff',
+	// create_proposal_run — /projects/create (Create-with-AI ASYNC propose: the run row walks
+	// generating→done|failed; the page live-flips to the proposal review / honest failure as the
+	// detached background generation resolves) — CREATE-SPEC §2.1-2.3
+	'create_proposal_run'
 ] as const;
 
 /** One of the boot-watched table names. */

@@ -20,6 +20,7 @@ export type EventType =
 	| 'transcript' // a runtime/Claude Code transcript event
 	| 'interject' // a channel.pushToSession push into a running session (TASK 2.10; D-035)
 	| 'session_status' // a session lifecycle transition (stop/resume — TASK 2.10; D-011)
+	| 'live_status' // a watched table's LIVE-subscription health (live/reconnecting/disconnected — F-042)
 	| 'token_usage' // high-frequency metric — coalesced under backpressure (latest-wins)
 	| 'metric' // generic high-frequency metric — coalesced
 	| 'notification' // user-facing notification

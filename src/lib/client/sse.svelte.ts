@@ -9,9 +9,11 @@
 // browser retries (EventSource auto-reconnects), and 'offline' only when explicitly
 // stopped. We NEVER fake 'live' before the socket opens (F-008 / §1.3).
 
-import type { DbChange } from '$lib/server/events/db-source';
+import type { DbChange, LiveStatus, LiveStatusPhase } from '$lib/server/events/db-source';
 
 export type ConnectionState = 'live' | 'reconnecting' | 'offline' | 'unknown';
+
+export type { LiveStatusPhase } from '$lib/server/events/db-source';
 
 /** Payload as the SSE frame delivers it (see events/sse.ts formatFrame). */
 interface SseFrame<T = unknown> {
@@ -46,6 +48,16 @@ export class SseConnection {
 	connection = $state<ConnectionState>('unknown');
 	/** Timestamp of the last frame received — drives "as of <time>" staleness (§7). */
 	lastEventAt = $state<number | null>(null);
+	/**
+	 * Per-table LIVE-subscription health (F-042). The browser's EventSource `connection`
+	 * being 'live' only means the SSE socket is open — it does NOT prove the SERVER's
+	 * LIVE subscription for a given table is still feeding it. When a table's
+	 * server-side subscription dies/reconnects/gives up, the server emits a `live_status`
+	 * frame and this map flips, so a region can honestly show "reconnecting / live
+	 * disconnected" instead of presenting frozen rows as current (F-008). A table absent
+	 * from the map has had no death reported → treat as 'live' while connected.
+	 */
+	liveStatus = $state<Record<string, LiveStatusPhase>>({});
 
 	#source: EventSource | null = null;
 	#handlers = new Map<string, Set<DbChangeHandler>>();
@@ -59,8 +71,21 @@ export class SseConnection {
 	// key = `${eventType}::${topic}` → handlers.
 	#topicHandlers = new Map<string, Set<TopicHandler>>();
 
-	constructor(url = '/api/events?types=db_change') {
+	// live_status rides the SAME default stream as db_change so any page watching a
+	// table also learns when that table's server-side LIVE subscription dies (F-042).
+	constructor(url = '/api/events?types=db_change,live_status') {
 		this.#url = url;
+	}
+
+	/**
+	 * Effective liveness for a table's live region (F-042): 'offline'/'reconnecting'
+	 * when the SSE socket itself is down, else the table's reported phase, else 'live'
+	 * (connected, no death reported). Lets a region render an honest badge without
+	 * conflating socket health with per-table subscription health.
+	 */
+	tableLiveness(table: string): ConnectionState | LiveStatusPhase {
+		if (this.connection !== 'live') return this.connection;
+		return this.liveStatus[table] ?? 'live';
 	}
 
 	/** Register a handler for a table's db_change events. Returns an unsubscribe. */
@@ -91,6 +116,21 @@ export class SseConnection {
 			else this.connection = 'reconnecting';
 		};
 		es.addEventListener('db_change', (ev) => this.#onDbChange(ev as MessageEvent));
+		es.addEventListener('live_status', (ev) => this.#onLiveStatus(ev as MessageEvent));
+	}
+
+	#onLiveStatus(ev: MessageEvent): void {
+		this.lastEventAt = Date.now();
+		let frame: SseFrame<LiveStatus>;
+		try {
+			frame = JSON.parse(ev.data) as SseFrame<LiveStatus>;
+		} catch {
+			return; // a malformed frame is dropped, never crashes the stream
+		}
+		const phase = frame.data?.phase;
+		if (phase !== 'live' && phase !== 'reconnecting' && phase !== 'disconnected') return;
+		// Reassign the object so Svelte 5 ($state) reactivity fires for readers.
+		this.liveStatus = { ...this.liveStatus, [frame.topic]: phase };
 	}
 
 	#onDbChange(ev: MessageEvent): void {
@@ -178,5 +218,7 @@ export class SseConnection {
 		this.#topicSource?.close();
 		this.#topicSource = null;
 		this.connection = 'offline';
+		// Drop stale per-table phases — on a fresh start they are re-reported by the server.
+		this.liveStatus = {};
 	}
 }

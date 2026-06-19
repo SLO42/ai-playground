@@ -249,14 +249,37 @@ export class Db {
 		return this.handle.liveOf(uuid as Parameters<Surreal['liveOf']>[0]);
 	}
 
+	/**
+	 * Liveness/auth probe for the live-subscription self-heal (F-042 established-sub
+	 * gap). An ESTABLISHED LIVE subscription dies SILENTLY when the singleton's token
+	 * lapses — the SDK gives the subscriber no error, the message stream just ends
+	 * (db-source.ts). To re-establish honestly, the watcher needs to ask "is auth
+	 * actually back?" — this runs a trivial server round-trip (`RETURN true`) through
+	 * the SAME {@link runQuery} self-heal seam, so:
+	 *   • a lapsed token transparently triggers ONE de-duped {@link reauthenticate}
+	 *     (the existing in-flight promise — NOT a second copy) and the probe succeeds;
+	 *   • a GENUINE auth failure (creds rotated away) or a connection loss throws the
+	 *     honest error so the watcher surfaces 'disconnected' instead of re-subscribing
+	 *     into a dead session (F-008). No new auth logic lives here — it is a thin
+	 *     façade over the query path's heal. Resolves on healthy auth; throws otherwise.
+	 */
+	async probeAuth(): Promise<void> {
+		await this.runQuery<unknown>('RETURN true;', {});
+	}
+
 	/** Close the underlying connection. Idempotent / best-effort. */
 	async close(): Promise<void> {
 		await this.handle.close().catch(() => {});
 	}
 }
 
-/** Minimal shape of the surrealdb 2.x live subscription we depend on. */
-export interface LiveTableSubscription {
+/**
+ * Minimal shape of the surrealdb 2.x live subscription we depend on. It is an
+ * `AsyncIterable<LiveMessage>` (the SDK's LiveSubscription); the events layer drives
+ * the ITERATOR directly so it can observe an unexpected COMPLETION as the F-042
+ * silent-death signal (a `.subscribe()` handler is never told the stream ended).
+ */
+export interface LiveTableSubscription extends AsyncIterable<LiveMessage> {
 	subscribe(handler: (msg: LiveMessage) => void): () => void;
 	kill(): Promise<void>;
 }

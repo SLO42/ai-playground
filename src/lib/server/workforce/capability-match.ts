@@ -247,12 +247,19 @@ export async function setCapabilityNeeds(
 	// MERGE — SurrealDB MERGE of a nested object replaces the whole sub-object, so we merge the
 	// PRIOR needs with the patch ourselves to preserve untouched keys).
 	const prior = await getCapabilityNeeds(db, projectId);
+	const mergedConfirmed = (patch.defect_classes as string[]) ?? prior.defect_classes;
+	const mergedProposed = (patch.proposed_defect_classes as string[]) ?? prior.proposed_defect_classes;
+	// CROSS-DEDUP (consistency, NOT a D4 break): a class confirmed in defect_classes must never ALSO
+	// appear in proposed_defect_classes. A non-prod direct caller (or a confirm-then-propose sequence)
+	// could land the same class in both; the D4 matcher reads CONFIRMED only, so this is purely keeping
+	// the stored needs coherent — confirmed wins, the duplicate is dropped from proposed. No promotion,
+	// no key minted (D4 LOCKED): a class only becomes confirmed by passing the enum-closed check above.
+	const confirmedSet = new Set(mergedConfirmed);
 	const merged: CapabilityNeeds = {
 		languages: (patch.languages as string[]) ?? prior.languages,
 		frameworks: (patch.frameworks as string[]) ?? prior.frameworks,
-		defect_classes: (patch.defect_classes as string[]) ?? prior.defect_classes,
-		proposed_defect_classes:
-			(patch.proposed_defect_classes as string[]) ?? prior.proposed_defect_classes
+		defect_classes: mergedConfirmed,
+		proposed_defect_classes: mergedProposed.filter((c) => !confirmedSet.has(c))
 	};
 	await db.query(`UPDATE $pid MERGE { capability_needs: $needs, updated_at: time::now() };`, {
 		pid,

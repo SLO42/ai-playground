@@ -533,4 +533,43 @@ describe('proposed_defect_classes — captured, separate, never coverage', () =>
 			setCapabilityNeeds(db, project, { defect_classes: ['would-be-promoted'] })
 		).rejects.toBeInstanceOf(CapabilityNeedsError);
 	});
+
+	// CROSS-DEDUP (consistency, not a D4 break): a class confirmed in defect_classes must never ALSO
+	// land in proposed_defect_classes. Confirmed wins; the proposed duplicate is dropped.
+	it('a class supplied in BOTH confirmed and proposed lands ONLY in confirmed', async () => {
+		const project = await freshProject();
+		await provenRole({ prefix: 'xdedup-both', cls: 'dual-class' });
+		const needs = await setCapabilityNeeds(db, project, {
+			defect_classes: ['dual-class'],
+			proposed_defect_classes: ['dual-class', 'genuinely-proposed']
+		});
+		expect(needs.defect_classes).toEqual(['dual-class']);
+		// 'dual-class' dropped from proposed (it is confirmed); the non-overlapping one survives.
+		expect(needs.proposed_defect_classes).toEqual(['genuinely-proposed']);
+		const read = await getCapabilityNeeds(db, project);
+		expect(read.defect_classes).toEqual(['dual-class']);
+		expect(read.proposed_defect_classes).toEqual(['genuinely-proposed']);
+	});
+
+	it('cross-dedup applies against ALREADY-confirmed classes when only proposed is set (MERGE path)', async () => {
+		const project = await freshProject();
+		await provenRole({ prefix: 'xdedup-prior', cls: 'prior-confirmed' });
+		await setCapabilityNeeds(db, project, { defect_classes: ['prior-confirmed'] });
+		// Now a later proposed-only write tries to re-add the already-confirmed class → dropped.
+		const needs = await setCapabilityNeeds(db, project, {
+			proposed_defect_classes: ['prior-confirmed', 'new-proposed']
+		});
+		expect(needs.defect_classes).toEqual(['prior-confirmed']);
+		expect(needs.proposed_defect_classes).toEqual(['new-proposed']);
+	});
+
+	it('cross-dedup does not touch a proposed class absent from confirmed (normal needs unaffected)', async () => {
+		const project = await freshProject();
+		await provenRole({ prefix: 'xdedup-clean', cls: 'confirmed-x' });
+		const needs = await setCapabilityNeeds(db, project, {
+			defect_classes: ['confirmed-x'],
+			proposed_defect_classes: ['proposed-a', 'proposed-b']
+		});
+		expect(needs.proposed_defect_classes).toEqual(['proposed-a', 'proposed-b']);
+	});
 });

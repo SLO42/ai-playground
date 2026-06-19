@@ -849,6 +849,41 @@ describe('defect_class partition (§3 D4, vs the live vocabulary) — confirmed 
 	});
 });
 
+describe('capabilityNeeds bounded capture (H4: agent output cannot drive unbounded persisted capture)', () => {
+	// HARD-throw (named) on over-count — same fail-closed pattern as the founding-task/clarifier caps.
+	it('an over-cap defect_classes array (>32) → ProposalContractError (named, bounded)', async () => {
+		const tooMany = Array.from({ length: 33 }, (_, i) => `novel-class-${i}`);
+		const raw = goodRaw({ capabilityNeeds: { languages: [], frameworks: [], defect_classes: tooMany } });
+		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(ProposalContractError);
+	});
+	it('an over-cap languages array (>32) → ProposalContractError (named, bounded)', async () => {
+		const tooMany = Array.from({ length: 40 }, (_, i) => `lang-${i}`);
+		const raw = goodRaw({ capabilityNeeds: { languages: tooMany, frameworks: [], defect_classes: [] } });
+		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(ProposalContractError);
+	});
+	it('an over-length element (>120 chars) in frameworks → ProposalContractError (named, bounded)', async () => {
+		const raw = goodRaw({
+			capabilityNeeds: { languages: [], frameworks: ['x'.repeat(121)], defect_classes: [] }
+		});
+		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(ProposalContractError);
+	});
+	it('exactly at the caps (32 entries, 120-char element) is accepted — generous bound, normal needs unaffected', async () => {
+		const atCap = Array.from({ length: 32 }, (_, i) => `lang-${i}`);
+		atCap[0] = 'y'.repeat(120);
+		const raw = goodRaw({ capabilityNeeds: { languages: atCap, frameworks: [], defect_classes: [] } });
+		const p = await validateProposal(db, raw);
+		expect(p.capabilityNeeds.languages.length).toBe(32);
+	});
+	it('a normal small needs object is unaffected by the caps', async () => {
+		const raw = goodRaw({
+			capabilityNeeds: { languages: ['typescript', 'rust'], frameworks: ['svelte'], defect_classes: ['null-deref'] }
+		});
+		const p = await validateProposal(db, raw);
+		expect(p.capabilityNeeds.languages).toEqual(['typescript', 'rust']);
+		expect(p.capabilityNeeds.defect_classes).toEqual(['null-deref']);
+	});
+});
+
 describe('confirmToken staleness (D-010 shape, ephemeral)', () => {
 	it('a matching brief+proposal passes assertProposalFresh', async () => {
 		const env = await generateCreationProposal(db, BRIEF, stubGen(goodRaw()));

@@ -293,6 +293,52 @@ function reqStrArray(v: unknown, field: string): string[] {
 	return v.map((x, i) => reqStr(x, `${field}[${i}]`));
 }
 
+// ── Bounded-capture caps for agent-authored capabilityNeeds arrays ───────────────────
+//
+// H4 turned the unknown-defect-class hard-fail into UNBOUNDED CAPTURE: every not-in-vocab class the
+// agent emits now lands in proposed_defect_classes and is PERSISTED (capability_match.setCapabilityNeeds)
+// as a hire signal. With no cap, a runaway/adversarial generation could drive an arbitrarily large
+// array (or one enormous element) into a stored DB column. These caps bound what agent output can
+// persist. They are deliberately generous so a real brief is never clipped (a project legitimately
+// declares a handful of languages/frameworks and at most a few defect classes), and they FAIL CLOSED
+// with a NAMED ProposalContractError — matching the count-cap pattern of validateFoundingTasks /
+// validateClarifiers (those hard-throw on count, they do not truncate), not a silent drop.
+const MAX_CAPABILITY_ARRAY_ENTRIES = 32; // entries per languages/frameworks/defect_classes array
+const MAX_CAPABILITY_ELEMENT_CHARS = 120; // chars per single entry (a class/language/framework name)
+
+/**
+ * Require an array of non-empty strings BOUNDED to {@link MAX_CAPABILITY_ARRAY_ENTRIES} entries, each
+ * ≤ {@link MAX_CAPABILITY_ELEMENT_CHARS} chars. Over-cap on either axis → a NAMED ProposalContractError
+ * (the same fail-closed pattern as the founding-task / clarifier count caps). Tolerates an absent/empty
+ * array (honest empty — F-008). Used for the agent-authored capabilityNeeds arrays whose contents are
+ * captured/persisted, so unbounded agent output cannot drive unbounded stored capture (H4 fallout).
+ *
+ * Shadow paths: nil/undefined → []; non-array → throw (named); over-count → throw (named);
+ * over-length element → throw (named, indexed).
+ */
+function reqStrArrayCappedAllowEmpty(v: unknown, field: string): string[] {
+	if (v === undefined || v === null) return [];
+	if (!Array.isArray(v)) {
+		throw new ProposalContractError(`proposal field '${field}' must be an array of strings`);
+	}
+	if (v.length > MAX_CAPABILITY_ARRAY_ENTRIES) {
+		throw new ProposalContractError(
+			`proposal field '${field}' has ${v.length} entries — exceeds the ${MAX_CAPABILITY_ARRAY_ENTRIES} ` +
+				`cap (bounded capture: agent output cannot drive unbounded persisted capability needs)`
+		);
+	}
+	return v.map((x, i) => {
+		const s = reqStr(x, `${field}[${i}]`);
+		if (s.length > MAX_CAPABILITY_ELEMENT_CHARS) {
+			throw new ProposalContractError(
+				`proposal field '${field}[${i}]' is ${s.length} chars — exceeds the ` +
+					`${MAX_CAPABILITY_ELEMENT_CHARS}-char per-entry cap (bounded capture)`
+			);
+		}
+		return s;
+	});
+}
+
 // ── D-026 ENV-NAME-POSITIVE credential detection (CREATE-SPEC §3) ────────────────────
 //
 // The isolation-screening screen() (memory/screen.ts) catches a literal secret only when it is
@@ -812,9 +858,12 @@ async function validateCapabilityNeeds(db: Db, raw: unknown): Promise<Capability
 	if (!isObj(raw)) {
 		throw new ProposalContractError("proposal 'capabilityNeeds' must be an object");
 	}
-	const languages = reqStrArrayAllowEmpty(raw.languages, 'capabilityNeeds.languages');
-	const frameworks = reqStrArrayAllowEmpty(raw.frameworks, 'capabilityNeeds.frameworks');
-	const rawDefects = reqStrArrayAllowEmpty(raw.defect_classes, 'capabilityNeeds.defect_classes');
+	// Bounded capture (H4): cap entry COUNT + per-entry LENGTH so agent output cannot drive unbounded
+	// persisted capability needs. Over-cap → named ProposalContractError (fail closed), matching the
+	// founding-task / clarifier count-cap pattern.
+	const languages = reqStrArrayCappedAllowEmpty(raw.languages, 'capabilityNeeds.languages');
+	const frameworks = reqStrArrayCappedAllowEmpty(raw.frameworks, 'capabilityNeeds.frameworks');
+	const rawDefects = reqStrArrayCappedAllowEmpty(raw.defect_classes, 'capabilityNeeds.defect_classes');
 
 	// PARTITION against the live operator-confirmed vocabulary (§3 D4). No hard-fail on unknown:
 	// in-vocab → confirmed/matchable; not-in-vocab → captured proposed need (future hire signal).
@@ -831,12 +880,6 @@ async function validateCapabilityNeeds(db: Db, raw: unknown): Promise<Capability
 		proposed_defect_classes = [...proposed].sort();
 	}
 	return { languages, frameworks, defect_classes, proposed_defect_classes };
-}
-
-/** Like reqStrArray but tolerates an absent/empty array (honest empty — F-008). */
-function reqStrArrayAllowEmpty(v: unknown, field: string): string[] {
-	if (v === undefined || v === null) return [];
-	return reqStrArray(v, field);
 }
 
 function validateClarifiers(raw: unknown): Clarifier[] {

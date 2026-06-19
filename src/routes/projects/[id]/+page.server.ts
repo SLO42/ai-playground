@@ -96,6 +96,13 @@ import {
 	type MemoryGraph
 } from '$lib/server/memory';
 import { listFleetByProject, type FleetSession } from '$lib/server/analytics';
+import {
+	recommendStaffing,
+	dispatchHireRequest,
+	HireDispatchError,
+	CapabilityNeedsError,
+	type HireGap
+} from '$lib/server/workforce';
 import { listSessionMessages, launchSession, type TranscriptMessage } from '$lib/server/sessions';
 import {
 	getBus,
@@ -187,6 +194,14 @@ export interface ProjectDetailData {
 	/** HONEST session-control capability matrix (14.6/F-008) — what the wired backend
 	 *  REALLY supports; the controls render disabled-with-reason when off. */
 	controlCaps: ControlCapabilities;
+	/** PM→HR dispatch (gap A) — the capability HIRE-gaps for this project: defect classes NO catalog
+	 *  role proves (recommendStaffing.gaps). Each gets a DISPATCH affordance that enqueues a
+	 *  hire_request. Empty when the project has no declared needs or every need is covered (honest). */
+	staffingGaps: HireGap[];
+	/** The project's CAPTURED proposed_defect_classes (Create-with-AI hire-signal classes not yet in
+	 *  the operator vocabulary) — surfaced alongside gaps as the needed-role context (D4 LOCKED:
+	 *  never matchable, a pure hire signal). [] when none. */
+	proposedDefectClasses: string[];
 	error?: string;
 }
 
@@ -267,7 +282,9 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pmKinds: PM_MEMORY_KINDS,
 			selectedSession,
 			transcript: [],
-			controlCaps
+			controlCaps,
+			staffingGaps: [],
+			proposedDefectClasses: []
 		};
 	}
 
@@ -313,6 +330,20 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 
 		// TASK 16.4 — the proposals queue (open proposals + verdicts + open briefs).
 		const proposals = await listProposalQueue(db, projectId);
+
+		// PM→HR dispatch (gap A) — the capability HIRE-gaps (recommendStaffing, PROPOSE-ONLY).
+		// A matcher failure must NEVER sink the whole detail page (honest partial, F-008): a project
+		// with malformed/absent needs simply shows no gaps. proposed_defect_classes is the captured
+		// hire-signal context (D4 LOCKED — never matchable).
+		let staffingGaps: HireGap[] = [];
+		let proposedDefectClasses: string[] = [];
+		try {
+			const rec = await recommendStaffing(db, projectId);
+			staffingGaps = rec.gaps;
+			proposedDefectClasses = rec.needs.proposed_defect_classes;
+		} catch {
+			// matcher unavailable / no needs → honest empty gaps; never a fabricated gap.
+		}
 
 		// D-004: an AUTOMATIC (periodic) review is permitted only when the orchestration mode
 		// is NOT manual. Manual mode → the review is button-triggered only. Read honestly; a
@@ -377,7 +408,9 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pmKinds: PM_MEMORY_KINDS,
 			selectedSession,
 			transcript,
-			controlCaps
+			controlCaps,
+			staffingGaps,
+			proposedDefectClasses
 		};
 	} catch (err) {
 		// A 404 thrown above is a SvelteKit HttpError — rethrow it, don't swallow.
@@ -412,6 +445,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			selectedSession,
 			transcript: [],
 			controlCaps,
+			staffingGaps: [],
+			proposedDefectClasses: [],
 			error: (err as Error).message
 		};
 	}
@@ -1221,6 +1256,51 @@ export const actions: Actions = {
 			return { ux: { ok: true as const, action: 'inspect', trigger, written: written.length } };
 		} catch (err) {
 			return fail(500, { ux: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * PM→HR dispatch (gap A) — the operator/PM DISPATCH affordance for a capability HIRE-gap.
+	 * Enqueues EXACTLY ONE `hire_request` work_item for a (project, needed-role) gap
+	 * (dispatchHireRequest). PROPOSE-ONLY: this spends nothing — it asks the recruiter to DRAFT a
+	 * certification key-set the operator approves later (B2). The orchestrator drain consumes the
+	 * item (runHireRequest → draftCertificationSet). Idempotent per (project|role): a re-dispatch of
+	 * the SAME gap collapses to a no-op via the work_item dedup_key (enqueued:false, honest).
+	 *
+	 * The needed-role slug is operator-supplied (a gap is per-defect-class; the operator names which
+	 * role to hire/extend to close it). The defect classes are the gap's uncovered classes.
+	 */
+	dispatchHire: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { hire: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { hire: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const roleSlug = String(form.get('roleSlug') ?? '').trim();
+		// Defect classes arrive as repeated `defectClass` fields (one per uncovered class in the gap).
+		const defectClasses = form
+			.getAll('defectClass')
+			.map((v) => String(v).trim())
+			.filter((v) => v.length > 0);
+
+		try {
+			const res = await dispatchHireRequest(db, { projectId, roleSlug, defectClasses });
+			return {
+				hire: {
+					ok: true as const,
+					action: 'dispatch',
+					roleSlug,
+					enqueued: res.enqueued,
+					...(res.workItemId ? { workItemId: res.workItemId } : {}),
+					defectClasses: res.defectClasses
+				}
+			};
+		} catch (err) {
+			if (err instanceof HireDispatchError || err instanceof CapabilityNeedsError) {
+				return fail(400, { hire: { roleSlug, error: err.message } });
+			}
+			return fail(500, { hire: { roleSlug, error: (err as Error).message } });
 		}
 	}
 };

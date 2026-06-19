@@ -98,3 +98,10 @@ export * from './auto-adjudicate';
 // without an explicit operator confirm). Reuses createDecisionBrief / confirmStaffing /
 // transitionLifecycle — does not duplicate them.
 export * from './recruiter-hire';
+
+// HR-RECRUITER (PM→HR dispatch, gaps A+B) — the CONNECTIVE TISSUE from a project's capability
+// HIRE-gap to the recruiter's draft step: dispatchHireRequest enqueues ONE `hire_request` work_item
+// (dedup per project|role, PROPOSE-ONLY — spends nothing), and runHireRequest is the orchestrator
+// drain handler that calls draftCertificationSet (propose-only, B1/B2). It NEVER runs the gauntlet
+// (that fires only post-approval, operatorApprovedKeySet===true) and NEVER confirms a key.
+export * from './hire-dispatch';

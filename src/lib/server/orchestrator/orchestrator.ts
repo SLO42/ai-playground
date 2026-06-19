@@ -42,6 +42,11 @@ import { Semaphore } from './semaphore';
 import { runPostTask, type CommandRunner } from './post-task';
 import { claimNext, complete, enqueue, gcStale, spawnsSince, DAY_MS } from './workqueue';
 import { runReviewFork, makeWriteSurface, type ReviewKind } from '../memory/index';
+import {
+	runHireRequest,
+	HIRE_REQUEST_WORK_TYPE,
+	type HireRequestPayload
+} from '../workforce/hire-dispatch';
 
 export type OrchMode = 'event' | 'manual' | 'periodic';
 
@@ -400,6 +405,31 @@ export class Orchestrator {
 			return;
 		}
 
+		// PM→HR dispatch (gap B) — a `hire_request` work_item is NOT a task spawn: it asks the
+		// recruiter to DRAFT a certification key-set for a project's capability gap (runHireRequest
+		// → draftCertificationSet, PROPOSE-ONLY, B1/B2). Dispatch it HERE, before the task-spawn
+		// path, mirroring the memory_review fork: it drains under the SAME D-021 cap + claim-token +
+		// stale-GC the drain already enforces (no new uncapped spawn path). PROPOSE-ONLY — it NEVER
+		// runs the gauntlet (runRecruiterCampaign fires only post-approval) and NEVER confirms a key.
+		// Best-effort: a failure (e.g. the B1 self-cert refusal, RecruiterIntegrityError) marks the
+		// item failed and is logged, NEVER crashes the drain — mirroring the memory_review pattern.
+		if (workType === HIRE_REQUEST_WORK_TYPE) {
+			let hireOk = false;
+			try {
+				await this.#runHireRequestItem(item.payload);
+				hireOk = true;
+			} catch (err) {
+				console.warn(
+					`[orchestrator] hire_request ${item.id} draft failed (best-effort, item marked failed): ${(err as Error).message}`
+				);
+			} finally {
+				await complete(this.#db, item.id, item.claimToken, hireOk ? 'done' : 'failed').catch(() => {});
+				permit.release();
+				void this.drain();
+			}
+			return;
+		}
+
 		const taskId = String(item.payload.taskId ?? '');
 		const projectId = String(item.payload.projectId ?? '');
 		let ok = false;
@@ -506,5 +536,32 @@ export class Orchestrator {
 			extract,
 			proposeSkills
 		});
+	}
+
+	/**
+	 * PM→HR dispatch (gap B) — run the recruiter's DRAFT step over one drained `hire_request`
+	 * work_item (runHireRequest → draftCertificationSet, PROPOSE-ONLY, B1/B2). The handler resolves
+	 * the needed role + drafts the operator's B2 approve-surface; it writes NO certification key rows
+	 * and NEVER runs the gauntlet (that fires only after the operator approves the key-SET). An
+	 * 'unresolved' outcome (unknown role slug / no role_version yet) is an HONEST consume — the
+	 * request was drained, there is simply nothing to draft yet (F-008), logged for the operator.
+	 *
+	 * The payload shape is the one dispatchHireRequest wrote: { projectId, roleSlug, defectClasses }.
+	 * The defectClasses were screened at enqueue; the draft is propose-only + side-effect-free, so a
+	 * re-drain is idempotent (interrupt contract).
+	 */
+	async #runHireRequestItem(payload: Record<string, unknown>): Promise<void> {
+		const projectId = typeof payload.projectId === 'string' ? payload.projectId : '';
+		const roleSlug = typeof payload.roleSlug === 'string' ? payload.roleSlug : '';
+		const defectClasses = Array.isArray(payload.defectClasses)
+			? payload.defectClasses.filter((c): c is string => typeof c === 'string')
+			: [];
+		const hirePayload: HireRequestPayload = { projectId, roleSlug, defectClasses };
+		const outcome = await runHireRequest(this.#db, hirePayload);
+		if (outcome.kind === 'unresolved') {
+			console.warn(
+				`[orchestrator] hire_request for role '${outcome.roleSlug}' unresolved (no draft produced): ${outcome.reason}`
+			);
+		}
 	}
 }

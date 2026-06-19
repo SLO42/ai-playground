@@ -185,6 +185,16 @@
   // ── TASK 16.4 — the proposals queue (PM-SPEC §4 Act with Purpose). ──────────────
   const proposals = $derived(data.proposals ?? []);
   const pmAuthorities = $derived(data.pmAuthorities ?? []);
+  // ── PM→HR dispatch (gap A) — capability HIRE-gaps + the operator's needed-role slug entry. ──
+  const staffingGaps = $derived(data.staffingGaps ?? []);
+  const proposedDefectClasses = $derived(data.proposedDefectClasses ?? []);
+  // The operator names the role to hire per gap (a gap is per-defect-class; the role is the
+  // operator's choice). Keyed by the gap's defectClass so each gap row has its own input.
+  let hireRoleSlug = $state<Record<string, string>>({});
+  let hireBusy = $state(false);
+  const hireForm = $derived(
+    form && 'hire' in form ? (form.hire as Record<string, unknown>) : undefined
+  );
   let reviseOpenFor = $state<string | null>(null);
   let reviseTitle = $state('');
   let reviseObjective = $state('');
@@ -1488,6 +1498,93 @@
           </div>
         {/if}
 
+        <!-- PM→HR dispatch (gap A) — capability HIRE-gaps: defect classes NO catalog role proves.
+             Each gets a DISPATCH affordance that enqueues a hire_request (PROPOSE-ONLY: the recruiter
+             DRAFTS a cert key-set; the operator approves it later — nothing is spent here, B2). -->
+        <div class="card">
+          <div class="pm-head">
+            <h2 class="section-title">
+              Hiring gaps
+              {#if staffingGaps.length > 0}<span class="count mono">{staffingGaps.length}</span>{/if}
+            </h2>
+          </div>
+          {#if staffingGaps.length === 0}
+            <p class="state-body">
+              No hiring gaps — every declared capability need is proven by an existing role (or the
+              project has declared no defect-class needs yet). Gaps appear when a needed defect class
+              has no role that has passed a gauntlet keying it.
+            </p>
+          {:else}
+            <p class="state-body">
+              These defect classes have <strong>no catalog role</strong> that proves them. Dispatching
+              a gap asks the recruiter to <strong>draft</strong> a certification key-set for the role
+              you name — <span class="mono">propose-only</span>: nothing runs and no spend happens
+              until you approve the key-set (the recruiter never self-certifies, never auto-runs the
+              gauntlet, never confirms a key).
+            </p>
+            {#if proposedDefectClasses.length > 0}
+              <p class="hint">
+                Captured hire signals (not yet matchable):
+                {#each proposedDefectClasses as pc (pc)}<span class="mono chip">{pc}</span>{/each}
+              </p>
+            {/if}
+            <ul class="rows gap-list" aria-label="capability hiring gaps">
+              {#each staffingGaps as gap (gap.defectClass)}
+                <li class="gap">
+                  <div class="gap-head">
+                    <span class="row-title mono">{gap.defectClass}</span>
+                    <span class="status" data-status="hire">hire</span>
+                  </div>
+                  <p class="gap-evidence">{gap.evidence}</p>
+                  <form
+                    method="POST"
+                    action="?/dispatchHire"
+                    class="gap-form"
+                    use:enhance={() => {
+                      hireBusy = true;
+                      return async ({ update }) => {
+                        await update({ reset: false });
+                        hireBusy = false;
+                      };
+                    }}
+                  >
+                    <input type="hidden" name="defectClass" value={gap.defectClass} />
+                    <label class="field gap-role">
+                      <span class="field-label">Role to hire (slug)</span>
+                      <input
+                        class="pm-input"
+                        type="text"
+                        name="roleSlug"
+                        placeholder="e.g. security-reviewer"
+                        bind:value={hireRoleSlug[gap.defectClass]}
+                        disabled={hireBusy}
+                      />
+                    </label>
+                    <button
+                      class="btn primary"
+                      type="submit"
+                      disabled={hireBusy || !(hireRoleSlug[gap.defectClass] ?? '').trim()}
+                    >
+                      {hireBusy ? 'Dispatching…' : 'Dispatch hire request'}
+                    </button>
+                  </form>
+                  {#if hireForm && hireForm.roleSlug === (hireRoleSlug[gap.defectClass] ?? '').trim()}
+                    {#if hireForm.ok}
+                      <p class="gap-result ok" role="status">
+                        {hireForm.enqueued
+                          ? `Dispatched — the recruiter will draft a cert key-set for '${hireForm.roleSlug}' (awaiting your key-set approval).`
+                          : `Already dispatched — an open hire request for '${hireForm.roleSlug}' exists (no double-enqueue).`}
+                      </p>
+                    {:else if hireForm.error}
+                      <p class="gap-result err" role="alert">{hireForm.error}</p>
+                    {/if}
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+
         <!-- PM periodic review (TASK 11.4) -------------------------------------- -->
         <div class="card">
           <div class="pm-head">
@@ -2451,6 +2548,10 @@
   .status[data-status='withdrawn'] {
     color: var(--color-text-muted);
   }
+  /* PM→HR dispatch (gap A) — a HIRE gap (a class no role proves). */
+  .status[data-status='hire'] {
+    color: var(--color-info-on-overlay);
+  }
   .tag {
     font-size: 0.68rem;
     color: var(--color-accent);
@@ -2728,6 +2829,59 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-3, 0.75rem);
+  }
+  /* PM→HR dispatch (gap A) — the hiring-gap rows + dispatch affordance. */
+  .gap-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  .gap {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    padding: var(--space-3, 0.75rem);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-md, 8px);
+    background: var(--color-bg-inset);
+  }
+  .gap-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .gap-evidence {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--color-text-muted);
+  }
+  .gap-form {
+    display: flex;
+    align-items: flex-end;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+  }
+  .gap-role {
+    flex: 1 1 14rem;
+  }
+  .gap-result {
+    margin: 0;
+    font-size: 0.82rem;
+  }
+  .gap-result.ok {
+    color: var(--color-success, var(--color-running));
+  }
+  .gap-result.err {
+    color: var(--color-error-on-overlay);
+  }
+  .chip {
+    display: inline-block;
+    padding: 0.05rem 0.4rem;
+    margin: 0 0.2rem;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+    font-size: 0.72rem;
   }
   .proposal {
     display: flex;

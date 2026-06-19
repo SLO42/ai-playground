@@ -386,6 +386,19 @@ describe('runGauntlet — happy path (operator trigger, perfect candidate)', () 
 		// MANDATORY teardown (F-014): the run workspace is GONE.
 		const idPart = run.id.split(':')[1];
 		expect(existsSync(join(wsRoot, idPart))).toBe(false);
+
+		// ── FS-2 (c) FINDING-CITE CAPTURE (FILE-SNAPSHOT-SPEC §3 c): the presence finding cited
+		// `<defectSlug>/a.ts:3`; a file_snapshot of that cited file was linked from the run BEFORE the
+		// workspace teardown, so the cited content survives + shows next to the finding in-app.
+		const [snaps] = await db.query<[Record<string, unknown>[]]>(
+			`SELECT path, content, captured_by, is_marker FROM file_snapshot WHERE captured_by = $by;`,
+			{ by: run.id }
+		);
+		const cite = snaps.find((s) => String(s.path) === `${seed.defectSlug}/a.ts`);
+		expect(cite).toBeTruthy();
+		// The cited content is the REAL fixture work read from the workspace (not fabricated).
+		expect(String(cite!.content)).toContain('process.kill(pid, 0)');
+		expect(cite!.is_marker).toBe(false);
 	}, 30_000);
 
 	it('the captured plan PROVES confinement + sterility (15.1 + §3.2)', async () => {

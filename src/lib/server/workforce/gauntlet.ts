@@ -69,6 +69,7 @@ import {
 	type ScoringKey
 } from './scorer';
 import { parseFindingsFile } from './findings';
+import { captureSnapshotSafe } from '../memory/file-snapshot-capture';
 import { RESEARCHER_BASE_TOOLS, RESEARCHER_WEB_TOOLS } from './research';
 import { serveStubWeb, stubCorpusOf, type StubPage, type StubWeb } from './stub-web';
 
@@ -747,6 +748,41 @@ async function attemptGauntlet(deps: GauntletDeps, ctx: AttemptContext): Promise
 					}
 				]
 			});
+		}
+
+		// ── FS-2 (c) FINDING-CITE CAPTURE (FILE-SNAPSHOT-SPEC §3 c). Each presence finding cites a
+		// `fixture/file:line`; link a file_snapshot of that cited file so the content shows next to the
+		// finding in-app. MUST run HERE — before the `finally` tears the ephemeral workspace down
+		// (rmSync), the cited content only exists on disk during the run. The captured path is the
+		// fixture-relative `<fixture>/<file>` (already D-016-safe), content read from the workspace; the
+		// snapshot is linked from the run (captured_by=interview_run:<id>) and is NOT project-scoped (a
+		// gauntlet fixture is not a project file). BEST-EFFORT (captureSnapshotSafe never throws): a
+		// capture failure never affects the verdict (additive, F-008/F-014). Dedup-by-sha makes a file
+		// cited by several findings store ONCE. A finding whose cited file is missing from the workspace
+		// is honestly skipped (no fabricated snapshot).
+		if (ws) {
+			const seenCite = new Set<string>();
+			for (const f of parsed.findings) {
+				if (f.kind !== 'presence') continue; // absence findings cite no file body.
+				const citePath = `${f.fixture}/${f.file}`.replace(/\\/g, '/');
+				if (seenCite.has(citePath)) continue; // one capture per cited file (dedup is also by sha).
+				seenCite.add(citePath);
+				const abs = join(ws, f.fixture, f.file);
+				// Stay inside the workspace (D-018) — a finding citing `../` is honestly skipped, not read.
+				if (!abs.startsWith(ws + sep) && abs !== ws) continue;
+				if (!existsSync(abs)) continue; // cited file absent → honest skip (no fabricated snapshot).
+				let content: string;
+				try {
+					content = readFileSync(abs, 'utf8');
+				} catch {
+					continue; // unreadable (binary/perm) → skip; capture is best-effort observability.
+				}
+				await captureSnapshotSafe(db, {
+					path: citePath,
+					content,
+					capturedBy: run.id // linked from the interview_run that produced the finding.
+				});
+			}
 		}
 
 		// ── Per-batch positive control (§3.4) — the scorer proves itself first. ─────

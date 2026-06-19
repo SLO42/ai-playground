@@ -37,6 +37,7 @@ import { setCapabilityNeeds } from '../workforce/capability-match';
 import { getPm } from '../projects/pm-repo';
 import { hirePm, type HireAnswer, type HirePmResult } from '../projects/pm-hire';
 import { screen } from '../memory/screen';
+import { captureSnapshotSafe } from '../memory/file-snapshot-capture';
 import { execFileRunner, type CommandRunner } from '../orchestrator/post-task';
 import {
 	assertProposalFresh,
@@ -283,10 +284,20 @@ interface ScaffoldRedaction {
 	reasons: string[];
 }
 
+/** A file actually written to disk: its project-relative path + the SAFE bytes written (FS-2). */
+interface WrittenFile {
+	/** Project-relative path written. */
+	rel: string;
+	/** The SAFE content written to disk (clean===original, redacted===screen().text — never raw). */
+	content: string;
+}
+
 /** The outcome of materializing a scaffold file-map: the files written + any in-place redactions. */
 interface WriteFileMapResult {
 	/** Relative paths actually written to disk. */
 	written: string[];
+	/** The written files + their SAFE content — the FS-2 scaffold capture source (no disk re-read). */
+	writtenFiles: WrittenFile[];
 	/** Files whose content carried a redactable span — written as the SAFE redacted text (F-008). */
 	redactions: ScaffoldRedaction[];
 }
@@ -322,6 +333,7 @@ async function writeFileMap(
 	fileMap: Record<string, string>
 ): Promise<WriteFileMapResult> {
 	const written: string[] = [];
+	const writtenFiles: WrittenFile[] = [];
 	const redactions: ScaffoldRedaction[] = [];
 	const seen = new Set<string>();
 	for (const [entry, content] of Object.entries(fileMap)) {
@@ -351,8 +363,11 @@ async function writeFileMap(
 		// res.text === content for 'clean'; the safe redacted version for 'redacted'. Never raw secret.
 		await writeFile(resolved.abs, res.text, 'utf8');
 		written.push(resolved.rel);
+		// FS-2 scaffold capture source: the SAFE bytes written (res.text), so the snapshot reuses the
+		// SAME screened content the disk got — no double-screen of the raw, no disk re-read (§3 a).
+		writtenFiles.push({ rel: resolved.rel, content: res.text });
 	}
-	return { written, redactions };
+	return { written, writtenFiles, redactions };
 }
 
 /**
@@ -902,12 +917,14 @@ async function scaffoldRegisterAndWire(
 		// ── SCAFFOLD — write tree, git init + first commit. Partial death → cleanup + incident. ──
 		let commitSha: string | undefined;
 		let scaffoldRedactions: ScaffoldRedaction[] = [];
+		let scaffoldWrittenFiles: WrittenFile[] = [];
 		try {
 			const rootExistedBefore = await pathExists(projectRoot);
 			await mkdir(projectRoot, { recursive: true });
 			weCreatedRoot = !rootExistedBefore;
 			const writeRes = await writeFileMap(projectRoot, input.fileMap);
 			scaffoldRedactions = writeRes.redactions;
+			scaffoldWrittenFiles = writeRes.writtenFiles;
 
 			// git init + first commit via the execFile-ARRAY runner (D-008/F-002 — never a shell).
 			const initRes = await run('git', ['init'], { cwd: projectRoot });
@@ -988,6 +1005,22 @@ async function scaffoldRegisterAndWire(
 					`(D-026 — safe redacted text written, no raw secret; not an error). ${detail}`,
 				'info'
 			).catch(() => undefined);
+		}
+
+		// ── FS-2 (a) SCAFFOLD CAPTURE — each generated file → a file_snapshot, linked from the new
+		// project (FILE-SNAPSHOT-SPEC §3 a). So a freshly-created project's files are readable in-app
+		// immediately. The content is the SAFE text writeFileMap already screened+wrote (no double-
+		// screen of the raw, no disk re-read); captureSnapshot re-screens cheaply for D-026 belt-and-
+		// braces + content-addresses it (dedup). BEST-EFFORT (captureSnapshotSafe never throws): a
+		// capture failure must NEVER fail an otherwise-successful create (additive, F-008/F-014). Runs
+		// AFTER register so the project row exists for the captured_by link.
+		for (const wf of scaffoldWrittenFiles) {
+			await captureSnapshotSafe(db, {
+				path: wf.rel,
+				content: wf.content,
+				capturedBy: row.id, // linked from the new project (project:<slug>).
+				project: row.id
+			});
 		}
 
 		// ── POST-REGISTER WRITERS (CA-H2) — path-specific, via the caller's callback. ──

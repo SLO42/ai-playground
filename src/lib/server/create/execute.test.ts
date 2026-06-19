@@ -10,6 +10,8 @@ import { startTestDb, type TestDb } from '../db/testserver';
 import { createRole, createGauntletFixture, createGauntletKey } from '../workforce/repo';
 import { newSentinelUlid } from '../workforce/activation';
 import { getProject } from '../projects/repo';
+import { normFileSnapshot } from '../memory/file-snapshot';
+import { StringRecordId } from 'surrealdb';
 import { listTasksByProject } from '../tasks/repo';
 import { listTargets } from '../adapters/registry';
 import { getCapabilityNeeds } from '../workforce/capability-match';
@@ -193,6 +195,36 @@ describe('executeCreation — happy path (no PM)', () => {
 		const tasks = await listTasksByProject(db, res.projectId);
 		expect(tasks.every((t) => t.status === 'ready')).toBe(true);
 		expect(await getPm(db, res.projectId)).toBeNull();
+	}, 60_000);
+});
+
+describe('executeCreation — FS-2 (a) scaffold file-snapshot capture (FILE-SNAPSHOT-SPEC §3 a)', () => {
+	it('each scaffolded file is captured + linked from the new project, readable in-app', async () => {
+		const env = await makeEnvelope('ca2 fs2 snap');
+		const res = await executeCreation(db, env, { codeRoot });
+
+		// Snapshots are linked from the project (captured_by + project = project:<slug>).
+		const [rows] = await db.query<[Record<string, unknown>[]]>(
+			`SELECT * FROM file_snapshot WHERE project = $p;`,
+			{ p: new StringRecordId(res.projectId) }
+		);
+		const snaps = rows.map(normFileSnapshot);
+		expect(snaps.length).toBeGreaterThan(0);
+		// Every scaffold snapshot is linked from the project + carries an as-of capture time (F-013).
+		for (const s of snaps) {
+			expect(s.captured_by).toBe(res.projectId);
+			expect(s.project).toBe(res.projectId);
+			expect(typeof s.captured_at).toBe('string');
+			expect(s.captured_at).not.toBe('undefined');
+		}
+		// The README content is readable from the snapshot (the freshly-created project's files in-app).
+		const readme = snaps.find((s) => s.path === 'README.md');
+		expect(readme).toBeTruthy();
+		expect(readme!.content).toContain('# ca2 fs2 snap');
+		// The .gitignore snapshot mirrors what was written to disk (D-026 .env coverage from commit 0).
+		const gi = snaps.find((s) => s.path === '.gitignore');
+		expect(gi).toBeTruthy();
+		expect(gi!.content).toMatch(/^\.env$/m);
 	}, 60_000);
 });
 

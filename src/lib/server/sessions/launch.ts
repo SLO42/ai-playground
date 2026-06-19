@@ -42,6 +42,7 @@ import {
 	type ProposeSkillsFn
 } from '../memory/index';
 import { screen } from '../memory/screen';
+import { captureFileTurnSnapshot } from '../memory/file-snapshot-capture';
 import { drainInbox } from '../peer/drain';
 import { loadGatesConfig } from '../config/index';
 import type {
@@ -545,6 +546,12 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	// the error is rethrown (callers already treat a throw as a failed spawn: orchestrator
 	// #runItem marks the work_item failed, runner runStep marks the step failed).
 	let streamError: Error | undefined;
+	// FS-2 (b): pair a Read's tool_use (carries the file_path, no body) with the FOLLOWING tool_result
+	// (carries the body the agent SAW, no path). A Read emits tool_use then tool_result back-to-back,
+	// so we remember the last file-READ path and attach the next tool_result's output to it. A
+	// Write/Edit captures inline (its tool_use args carry the new content). State is per-session, reset
+	// when any non-result event intervenes so a stale path never mis-pairs (honest, F-008).
+	let pendingReadAbsPath: string | null = null;
 	try {
 		let order = 0;
 		for await (const ev of runtime.spawn(req)) {
@@ -576,8 +583,11 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 				// the driven session — it is observability, not the work. A failed message insert is
 				// logged and swallowed so the stream keeps flowing (the live bus event already fired
 				// above, and the terminal status write / reaper still guarantee an honest verdict).
+				let persistedMessageId: string | undefined;
 				try {
-					await db.query(`CREATE message CONTENT $content;`, {
+					const [created] = await db.query<[Array<{ id: unknown }>]>(
+						`CREATE message CONTENT $content RETURN AFTER;`,
+						{
 						content: omitUndefined({
 							session: sid,
 							role: msg.role,
@@ -591,11 +601,34 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 							content: msg.content,
 							tool_call: msg.tool_call
 						})
-					});
+						}
+					);
+					persistedMessageId = created?.length ? String(created[0].id) : undefined;
 				} catch (persistErr) {
 					console.warn(
 						`[launch] transcript message persist failed for ${sessionId} seq ${seq} (fail-open, session continues): ${(persistErr as Error).message}`
 					);
+				}
+
+				// ── FS-2 (b) AGENT READ/EDIT CAPTURE — link a file_snapshot to THIS transcript turn
+				// when it is a FILE tool turn → "what the agent saw / wrote" (FILE-SNAPSHOT-SPEC §3 b).
+				// BEST-EFFORT + non-blocking (captureSnapshotSafe never throws): a capture failure must
+				// NEVER crash or fail the driven session (F-014 / F-008). Only fires when the message row
+				// persisted (we need its id for captured_by). The path a tool reports is ABSOLUTE; we
+				// relativize it against the project root (cwd) — a file OUTSIDE the project yields null and
+				// is honestly NOT snapshotted. The pairing model handles Read (path now, body in the
+				// following tool_result).
+				if (persistedMessageId) {
+					pendingReadAbsPath = await captureFileTurnSnapshot(db, {
+						ev,
+						messageId: persistedMessageId,
+						projectRoot: cwd,
+						projectId: input.projectId,
+						pendingReadAbsPath
+					});
+				} else if (ev.type !== 'tool_call' && ev.type !== 'tool_result') {
+					// A non-file event with no persisted id still clears a stale pending Read pairing.
+					pendingReadAbsPath = null;
 				}
 
 				// BL-7 Part B (D-027 FAST tier ENQUEUE) — count this turn against the PERSISTED

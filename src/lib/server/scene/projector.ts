@@ -272,7 +272,9 @@ export class SceneProjector {
 			}
 			case 'work_item': {
 				if (action === 'CREATE') {
-					return { kind: 'job_fired', meta: labelMeta(row, ['status', 'kind']) };
+					// work_item is SCHEMAFULL with work_type (schema.ts §446), NOT kind — surface
+					// the real job-class label so job_fired isn't reduced to {status} only.
+					return { kind: 'job_fired', meta: labelMeta(row, ['status', 'work_type']) };
 				}
 				if (isTerminal(row.status)) {
 					return { kind: 'job_done', meta: labelMeta(row, ['status']) };
@@ -287,7 +289,10 @@ export class SceneProjector {
 			}
 			case 'entity': {
 				if (action === 'CREATE') {
-					return { kind: 'node_spawned', meta: labelMeta(row, ['kind', 'name']) };
+					// entity is SCHEMAFULL with label/type/project/status (schema.ts §294-299) —
+					// NOT kind/name. Surface the real label fields so node_spawned carries an
+					// identifying label in production (regression: the headline MEMORY node-class).
+					return { kind: 'node_spawned', meta: labelMeta(row, ['label', 'type']) };
 				}
 				return null;
 			}

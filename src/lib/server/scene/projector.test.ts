@@ -191,20 +191,42 @@ describe('SceneProjector emission map', () => {
 	});
 
 	it('work_item CREATE → job_fired; terminal UPDATE → job_done', async () => {
-		bus.publish(dbChange('work_item', 'CREATE', 'work_item:w1', { status: 'queued' }));
+		// Schema-accurate work_item row (SCHEMAFULL: work_type/status — NOT kind, schema.ts §446).
+		bus.publish(
+			dbChange('work_item', 'CREATE', 'work_item:w1', { status: 'pending', work_type: 'review' })
+		);
 		bus.publish(dbChange('work_item', 'UPDATE', 'work_item:w1', { status: 'done' }));
 		await projector.idle();
-		const kinds = (await feed()).map((r) => r.kind);
+		const rows = await feed();
+		const kinds = rows.map((r) => r.kind);
 		expect(kinds).toEqual(['job_fired', 'job_done']);
+		// REGRESSION (gap #2): the job-class label must survive — job_fired meta carries
+		// work_type, not be reduced to {status} only. A fixture using {kind} would mask this.
+		expect(rows[0].meta as Record<string, unknown>).toMatchObject({
+			status: 'pending',
+			work_type: 'review'
+		});
 	});
 
 	it('memory CREATE → memory_added; entity CREATE → node_spawned; references CREATE → connection_formed', async () => {
+		// Schema-accurate rows (entity is SCHEMAFULL label/type — NOT kind/name, schema.ts §294-299;
+		// memory has kind/namespace §208-210; references has kind §302).
 		bus.publish(dbChange('memory', 'CREATE', 'memory:m1', { kind: 'semantic', namespace: 'default' }));
-		bus.publish(dbChange('entity', 'CREATE', 'entity:e1', { kind: 'concept', name: 'Auth' }));
+		bus.publish(dbChange('entity', 'CREATE', 'entity:e1', { label: 'Auth', type: 'concept' }));
 		bus.publish(dbChange('references', 'CREATE', 'references:r1', { kind: 'relates' }));
 		await projector.idle();
-		const kinds = (await feed()).map((r) => r.kind);
+		const rows = await feed();
+		const kinds = rows.map((r) => r.kind);
 		expect(kinds).toEqual(['memory_added', 'node_spawned', 'connection_formed']);
+		// REGRESSION (gap #1): the headline node_spawned MUST surface a non-empty identifying
+		// label. With the old ['kind','name'] field names this meta was ALWAYS empty against
+		// the real schema (the prior fabricated {kind,name} fixture masked it).
+		const nodeSpawned = rows.find((r) => r.kind === 'node_spawned')!;
+		expect(nodeSpawned.meta as Record<string, unknown>).toMatchObject({
+			label: 'Auth',
+			type: 'concept'
+		});
+		expect(Object.keys(nodeSpawned.meta as Record<string, unknown>).length).toBeGreaterThan(0);
 	});
 
 	it('lifts the project off the changed row when present', async () => {

@@ -23,6 +23,7 @@ import { tryGetDb } from '$lib/server/db/runtime-init';
 import { classifyDbError } from '$lib/server/db/classify';
 import { listProjects } from '$lib/server/projects/repo';
 import { getRuntime, getBus, DEFAULT_AGENT, DEFAULT_MODEL } from '$lib/server/harness';
+import { listSessionMessages, type TranscriptMessage } from '$lib/server/sessions';
 import {
 	makeProposalAgent,
 	executeCreation,
@@ -68,6 +69,10 @@ export const load: PageServerLoad = async ({ url, depends }) => {
 	// `create_proposal_run` row change (the detached generation resolving) live-flips the page to the
 	// proposal review / honest failure WITHOUT re-pulling availability flags (no invalidate storm).
 	depends('app:create-run');
+	// The generation session's PERSISTED transcript re-reads on its OWN scoped dep so a new `message`
+	// row (a turn the read-only agent produced) live-appends to the transcript WITHOUT re-pulling the
+	// run row or the availability flags (no invalidate storm — the /claude-code?session= precedent).
+	depends('app:create-transcript');
 
 	// The template registry is pure + static (no DB/credential needed) — the picker is available even
 	// when the DB is down (the scaffold action then honestly 503s, but the form still renders).
@@ -87,7 +92,8 @@ export const load: PageServerLoad = async ({ url, depends }) => {
 			runtimeReason: null,
 			hostProjectCount: 0,
 			templates,
-			run: null
+			run: null,
+			transcript: [] as TranscriptMessage[]
 		};
 	}
 	try {
@@ -101,13 +107,28 @@ export const load: PageServerLoad = async ({ url, depends }) => {
 				run = null; // a read failure (incl. a malformed id) → no run hydrated, page still usable.
 			}
 		}
+		// The generation session's PERSISTED transcript (the LT-1 `message` rows the read-only agent
+		// produced) — the DURABLE live-transcript source, the /claude-code?session= precedent. Loaded
+		// only when the watched run carries a session id; a new turn live-appends via the `message`
+		// onDbChange → invalidate('app:create-transcript') re-read. SHADOW PATHS: no run / no session →
+		// []; an unknown/never-launched session → listSessionMessages returns [] (honest "starting…",
+		// never fabricated); a transcript-read failure is isolated so it never blanks the run row.
+		let transcript: TranscriptMessage[] = [];
+		if (run?.session) {
+			try {
+				transcript = await listSessionMessages(db, run.session);
+			} catch {
+				transcript = [];
+			}
+		}
 		return {
 			connected: true,
 			runtimeAvailable: runtime.available,
 			runtimeReason: runtime.available ? null : runtime.reason,
 			hostProjectCount: projects.length,
 			templates,
-			run
+			run,
+			transcript
 		};
 	} catch (err) {
 		const reason = classifyDbError(err) === 'disconnected' ? null : (err as Error).message;
@@ -117,7 +138,8 @@ export const load: PageServerLoad = async ({ url, depends }) => {
 			runtimeReason: reason,
 			hostProjectCount: 0,
 			templates,
-			run: null
+			run: null,
+			transcript: [] as TranscriptMessage[]
 		};
 	}
 };

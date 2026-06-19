@@ -21,7 +21,7 @@
   import { page } from '$app/state';
   import { stream } from '$lib/client/stream.svelte';
   import SessionTranscript from '$lib/components/shell/SessionTranscript.svelte';
-  import { liveEventToTurn, type Turn } from '$lib/client/transcript-core';
+  import { rowToTurn, liveEventToTurn, type Turn } from '$lib/client/transcript-core';
   import type { ActionData, PageData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -234,17 +234,34 @@
 
   // Live re-read: a create_proposal_run row change (the detached generation resolving to done|failed)
   // re-runs the loader on its scoped dep — the page flips from generating → review|failed with no
-  // poll loop (the SSE watcher is the live source; F-008 honest states only).
+  // poll loop (the SSE watcher is the live source; F-008 honest states only). A `message` row change
+  // (a new PERSISTED transcript turn from the read-only generation session) re-runs ONLY the
+  // transcript dep — the durable transcript live-appends without re-pulling the run row or the
+  // availability flags (the /claude-code?session= precedent; both tables are in WATCHED_TABLES).
   $effect(() => {
-    const off = stream.onDbChange('create_proposal_run', () => void invalidate('app:create-run'));
-    return off;
+    const offRun = stream.onDbChange('create_proposal_run', () => void invalidate('app:create-run'));
+    const offMsg = stream.onDbChange('message', () => void invalidate('app:create-transcript'));
+    return () => {
+      offRun();
+      offMsg();
+    };
   });
 
   // ── live generation transcript (the /claude-code?session= precedent) ──
-  // While generating, show the read-only agent's turns live as they stream (subscribeTopic on the
-  // session's `transcript` events → liveEventToTurn, the same mapping projects/[id] + /claude-code
-  // use). Honest empty until the first turn arrives (F-008 — never a fake/blank progress bar). Reset
-  // the buffer whenever the watched session id changes so a stale run's turns never bleed across.
+  // DURABLE source: the read-only agent's turns are PERSISTED to the `message` table (the D-026-
+  // screened eventToMessage chokepoint), reloaded here via `data.transcript` → rowToTurn (the SAME
+  // mapping /claude-code?session= uses). A new persisted turn live-appends through the `message`
+  // onDbChange → invalidate('app:create-transcript') re-read above — so the transcript SURVIVES a
+  // reload mid-generation (the ephemeral subscribeTopic-only feed lost everything on reload). F-013-
+  // safe: every datetime is ISO-coerced server-side in listSessionMessages; nothing fabricated (F-008).
+  const persistedTurns = $derived(data.transcript.map((m, i) => rowToTurn(m, i)));
+
+  // INSTANT-paint overlay: the persisted reload trails the live stream by one db_change round-trip,
+  // so we ALSO subscribe to the session's live `transcript` events (liveEventToTurn — same mapping
+  // projects/[id] uses) and show any turn the persisted set has not caught up to yet. The persisted
+  // replay is authoritative and ORDER-stable (seq); the overlay only fills the tail, so once a turn
+  // persists the live copy collapses away — no double render, no fabrication. Reset on session change
+  // so a stale run's turns never bleed across (F-008 honest per-session boundary).
   let liveTurns = $state<Turn[]>([]);
   $effect(() => {
     const sid = sessionId;
@@ -256,10 +273,22 @@
       const turn = liveEventToTurn(ev, liveSeq);
       if (!turn) return; // lifecycle (token_usage/done/error) — not a turn
       liveSeq += 1;
-      // The wake-up briefing leads; every other turn appends (mirrors projects/[id]).
-      liveTurns = turn.kind === 'briefing' ? [turn, ...liveTurns] : [...liveTurns, turn];
+      liveTurns = [...liveTurns, turn];
     });
     return off;
+  });
+
+  // The rendered transcript: the durable persisted replay, then any live overlay turn BEYOND what
+  // persistence has caught up to (the tail). Each persisted turn corresponds 1:1 to a streamed
+  // transcript event (eventToMessage mirrors liveEventToTurn), so slicing the overlay by the
+  // persisted count de-duplicates without guessing at row ids — once the `message` reload lands the
+  // overlay shrinks to empty. Briefing leads (the wake-up turn), mirroring projects/[id].
+  const transcriptTurns = $derived.by(() => {
+    const tail = liveTurns.slice(persistedTurns.length);
+    const merged = [...persistedTurns, ...tail];
+    const lead = merged.filter((t) => t.kind === 'briefing');
+    const rest = merged.filter((t) => t.kind !== 'briefing');
+    return [...lead, ...rest];
   });
 
   /** Start over from the brief: drop ?run= so the loader hydrates no run (back to STAGE 1). */
@@ -329,10 +358,10 @@
       <section class="gen-transcript" aria-label="Live generation transcript">
         {#if !sessionId}
           <p class="field-help">Starting the generation session…</p>
-        {:else if liveTurns.length === 0}
+        {:else if transcriptTurns.length === 0}
           <p class="field-help">Waiting for the first turn…</p>
         {:else}
-          <SessionTranscript turns={liveTurns} />
+          <SessionTranscript turns={transcriptTurns} />
         {/if}
       </section>
 

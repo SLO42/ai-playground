@@ -117,7 +117,11 @@ export const WATCHED_TABLES = [
 	// create_proposal_run — /projects/create (Create-with-AI ASYNC propose: the run row walks
 	// generating→done|failed; the page live-flips to the proposal review / honest failure as the
 	// detached background generation resolves) — CREATE-SPEC §2.1-2.3
-	'create_proposal_run'
+	'create_proposal_run',
+	// scene_event — /memory (the Scene lens, a later UI wave): the DERIVED append-only activity
+	// feed live-streams new viz events (node_spawned/job_fired/…) — MEMORY-SCENE-SPEC §5/§7.1.
+	// Watched here so the projection writer's appends fan out to the live scene exactly once.
+	'scene_event'
 ] as const;
 
 /** One of the boot-watched table names. */

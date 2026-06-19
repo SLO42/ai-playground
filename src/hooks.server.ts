@@ -27,6 +27,7 @@ import {
 	setActivePmTriggerEngine
 } from '$lib/server/projects/pm-triggers';
 import { runSentinelSweep } from '$lib/server/workforce/index';
+import { SceneProjector } from '$lib/server/scene/index';
 
 // Runtime env source (TASK 6.8). SvelteKit's `$env/dynamic/private` loads `.env` in
 // BOTH dev SSR (which Vite does NOT inject into `process.env`) and the prod Node
@@ -127,6 +128,16 @@ export function activeOrchestrator(): Orchestrator | null {
  */
 const pmTriggerEngines: PmTriggerEngine[] = [];
 
+/**
+ * MEMORY-SCENE-SPEC §5/§7.1 — the scene_event PROJECTOR, held like the others so the
+ * instance (its bus subscription) survives for the life of the process and shutdown
+ * can tear it down. It is bus-only (§2.11 — never its own live query) and best-effort
+ * (a projection write never crashes the host flow), so it starts on every CONNECTED
+ * boot regardless of the orchestration mode: it merely MIRRORS real row changes into a
+ * derived, append-only, rolling activity feed — it triggers no automatic work (D-004).
+ */
+const sceneProjectors: SceneProjector[] = [];
+
 /** The startup promise — loaders/routes can await it to know the DB state. */
 export const startup: Promise<DbInitResult> = bootstrap();
 
@@ -147,6 +158,9 @@ async function bootstrap(): Promise<DbInitResult> {
 			// The PM trigger engine is orchestration machinery too (TASK 16.2): same
 			// teardown step — its bus subscription + tick timer must not outlive the boot.
 			for (const e of pmTriggerEngines) e.stop();
+			// The scene projector is a bus consumer too (MEMORY-SCENE-SPEC §5): its
+			// subscription must not outlive the boot (F-014).
+			for (const s of sceneProjectors) s.stop();
 		},
 		killChildren: () => killAllClaudeChildren(),
 		stopWatchers: () => Promise.all(watchers.map((w) => w.stop().catch(() => {}))),
@@ -190,6 +204,20 @@ async function bootstrap(): Promise<DbInitResult> {
 		} catch (err) {
 			// A reaper failure must never crash the boot (D-019) — it retries next boot.
 			console.warn(`[startup] boot reaper failed: ${(err as Error).message}`);
+		}
+
+		// MEMORY-SCENE-SPEC §5 — start the scene PROJECTOR AFTER the watchTable live queries
+		// are open, so the bus already carries the source-table row changes it mirrors. It is
+		// a pure bus consumer (§2.11 — no own live query) and best-effort (a projection write
+		// never crashes the host flow), so it starts on every connected boot. A start failure
+		// must never crash the boot (D-019) — the scene feed simply stays empty (F-008 honest).
+		try {
+			const projector = new SceneProjector({ db, bus });
+			projector.start();
+			sceneProjectors.push(projector);
+			console.log('[startup] scene projector started — scene_event derived from live row changes (MEMORY-SCENE-SPEC §5).');
+		} catch (err) {
+			console.warn(`[startup] scene projector boot failed: ${(err as Error).message}`);
 		}
 
 		// TASK 8.1 — start the live orchestrator AFTER the watchTable live queries are open, so

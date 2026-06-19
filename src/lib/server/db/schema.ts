@@ -1984,6 +1984,42 @@ const m0054_file_snapshot: Migration = {
 	`
 };
 
+// ── MEMORY-SCENE-SPEC §5 — scene_event: a DERIVED, append-only viz activity feed ──
+//
+// The "living brain" scene's ONE queryable activity stream. It is NOT node state
+// (F-008): every row mirrors a REAL row-change the SSE already observed (a new
+// session/work_item → job_fired; a session/work_item terminal → job_done; a new
+// memory/entity → memory_added/node_spawned; a new references edge → connection_formed).
+// The node/edge TRUTH still derives LIVE from the source tables (§2/§3) — the scene
+// keeps NO denormalized mutable copy. Append-only + rolling retention (like agent_event),
+// so it cannot drift. Added to WATCHED_TABLES (it is itself SSE-fed for the live scene).
+const m0055_scene_event: Migration = {
+	id: '0055_scene_event',
+	up: `
+		DEFINE TABLE OVERWRITE scene_event SCHEMAFULL;
+		-- The v1 event vocabulary (extensible — add kinds in later waves). ASSERT keeps a
+		-- fabricated/unknown kind out of the feed (every kind maps to a real row-change class).
+		DEFINE FIELD OVERWRITE kind    ON scene_event TYPE string
+			ASSERT $value IN ["node_spawned","job_fired","job_done","connection_formed","node_retired","memory_added","hire_staffed"];
+		-- The record that CHANGED (a free-form ref string, e.g. 'session:abc' / an edge id).
+		-- Free-form string (not record<…>): the ref spans many tables incl. RELATION edges.
+		DEFINE FIELD OVERWRITE ref     ON scene_event TYPE string;
+		-- The source table the changed row belongs to (the SSE topic) — for filtering/grouping.
+		DEFINE FIELD OVERWRITE source  ON scene_event TYPE string;
+		-- Optional owning project (when the changed row carries one) — for a per-atelier lens.
+		DEFINE FIELD OVERWRITE project ON scene_event TYPE option<record<project>>;
+		-- Optional bounded, D-026-SCREENED meta (a label/status), never raw row content.
+		-- FLEXIBLE: a SCHEMAFULL table silently DROPS the sub-keys of a plain TYPE object
+		-- (the §4.10 gotcha) — FLEXIBLE preserves the screened label map we surface.
+		DEFINE FIELD OVERWRITE meta    ON scene_event FLEXIBLE TYPE option<object>;
+		DEFINE FIELD OVERWRITE at      ON scene_event TYPE datetime DEFAULT time::now();
+
+		DEFINE INDEX OVERWRITE scene_event_by_at      ON scene_event FIELDS at;
+		DEFINE INDEX OVERWRITE scene_event_by_kind    ON scene_event FIELDS kind;
+		DEFINE INDEX OVERWRITE scene_event_by_project ON scene_event FIELDS project;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2044,5 +2080,6 @@ export const schemaMigrations: Migration[] = [
 	m0051_proposed_defect_classes,
 	m0052_pm_fit_verdict,
 	m0053_create_proposal_run,
-	m0054_file_snapshot
+	m0054_file_snapshot,
+	m0055_scene_event
 ];

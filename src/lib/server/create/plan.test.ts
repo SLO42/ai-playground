@@ -713,6 +713,66 @@ describe('REDACT-AND-KEEP — targetDrafts config secret disposition (D-026, red
 		expect(p.targetDrafts[0].config).toEqual({ assets: ['icon.png'], tokenEnv: 'TS_TOKEN' });
 		expect(p.configRedactions.length).toBe(3);
 	});
+
+	// REGRESSION (re-review GAP-1/2): screen() 'redacted' replaces a HIGH-CONFIDENCE span (e.g. an
+	// email) but can leave a RESIDUAL raw secret in the SAME string. The prior redactConfigSecrets
+	// early-returned screen().text on a 'redacted' result, bypassing Gate 2 (key-positive) and Gate 3
+	// (entropy) on the residual — so a raw password/token survived in the returned proposal (a D-026
+	// leak that reaches the persisted SurrealDB config blob). These cases lock the residual closed.
+	it('PROBE A: redacts the residual raw password beside a redacted email under a secret-like key (no raw secret)', async () => {
+		const SECRET = 'hunter2hunter2longpw';
+		const p = await validateProposal(
+			db,
+			goodRaw({
+				targetDrafts: [
+					{ kind: 'deploy', adapterId: 'x', config: { password: `ops@x.example ${SECRET}` } }
+				]
+			})
+		);
+		// The whole secret-like-key value is replaced — the residual password does NOT survive.
+		expect(p.targetDrafts[0].config.password).toBe('[REDACTED:secret-like]');
+		assertNoRawSecret(p, [SECRET]);
+		// Both the email span (Gate 1) and the secret-like-key disposition are recorded.
+		const reasons = p.configRedactions
+			.filter((r) => r.field === 'targetDrafts[0].config.password')
+			.map((r) => r.reason);
+		expect(reasons).toContain('email');
+		expect(reasons).toContain('secret-like-key');
+	});
+
+	it('PROBE B: redacts a high-entropy residual token beside a redacted email under an INNOCUOUS key (no raw token)', async () => {
+		const TOKEN = 'aZ9bY8cX7dW6eV5fU4gT3hS2';
+		const p = await validateProposal(
+			db,
+			goodRaw({
+				targetDrafts: [
+					{ kind: 'deploy', adapterId: 'x', config: { note: `contact ops@x.example token ${TOKEN}` } }
+				]
+			})
+		);
+		// The email is replaced AND the embedded high-entropy token is redacted in place — token gone.
+		expect(p.targetDrafts[0].config.note).toBe('contact [REDACTED:email] token [REDACTED:secret-like]');
+		assertNoRawSecret(p, [TOKEN]);
+		const reasons = p.configRedactions
+			.filter((r) => r.field === 'targetDrafts[0].config.note')
+			.map((r) => r.reason);
+		expect(reasons).toContain('email');
+		expect(reasons).toContain('credential-shaped-token');
+	});
+
+	it('residual with NO embedded secret keeps the safe placeholder verbatim (no over-redaction, F-008)', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({
+				targetDrafts: [
+					{ kind: 'deploy', adapterId: 'x', config: { note: 'ping ops@x.example for the staging URL' } }
+				]
+			})
+		);
+		// Only the email span is redacted; the surrounding descriptive prose is untouched.
+		expect(p.targetDrafts[0].config.note).toBe('ping [REDACTED:email] for the staging URL');
+		expect(p.configRedactions).toEqual([{ field: 'targetDrafts[0].config.note', reason: 'email' }]);
+	});
 });
 
 // CA-H1 — D-018 path-confinement at the PLAN trust boundary: an absolute or `..`-traversal dirLayout

@@ -549,6 +549,30 @@ function assertNoSecretEcho(
 }
 
 const REDACTED_KEY_POSITIVE = '[REDACTED:secret-like]';
+const REDACTED_RESIDUAL_TOKEN = '[REDACTED:secret-like]';
+
+/**
+ * Redact any credential-shaped TOKEN embedded inside a (possibly multi-token) string, returning the
+ * screened text plus whether anything was redacted. Used ONLY on the residual of a screen() 'redacted'
+ * result: screen() replaces whole spans (an email, a home path), but can leave a high-entropy token
+ * residual beside the placeholder ('contact [REDACTED:email] token aZ9b…hS2') that the WHOLE-value
+ * looksLikeLiteralCredential check skips because the residual contains whitespace. We tokenize on
+ * whitespace and replace each token that looksLikeLiteralCredential (prefix OR ≥20-char high-entropy
+ * mixed token) — closing the residual leak (review GAP-2) without widening the conservative entropy
+ * gate to whole multi-word sentences (F-008: a sentence is never one ≥20-char no-whitespace token).
+ * NOTE: a known-prefix token cannot reach here — a prefixed value hard-rejects before screen() runs.
+ */
+function redactCredentialTokensInResidual(text: string): { text: string; redacted: boolean } {
+	let redacted = false;
+	const out = text.replace(/\S+/g, (tok) => {
+		if (looksLikeLiteralCredential(tok)) {
+			redacted = true;
+			return REDACTED_RESIDUAL_TOKEN;
+		}
+		return tok;
+	});
+	return { text: out, redacted };
+}
 
 /**
  * D-026 REDACT-AND-KEEP disposition for a targetDrafts CONFIG blob (the H1 disposition applied to
@@ -603,22 +627,41 @@ function redactConfigSecrets(
 				path
 			);
 		}
+		// A 'redacted' screen result replaces the HIGH-CONFIDENCE span(s) it caught (an email, a home
+		// path, a known-prefix mention) with a safe placeholder — but it can leave a RESIDUAL raw secret
+		// in the SAME string that it did not recognise (screen() redacts spans, not whole strings). The
+		// prior code early-returned res.text here, bypassing Gates 2/3 on that residual, so e.g.
+		// { password: 'ops@x.example hunter2longliteralpw' } returned '[REDACTED:email] hunter2longliteralpw'
+		// — the raw password residual survived raw under a secret-like key, a D-026 leak. So DO NOT
+		// early-return: carry res.text forward and run Gates 2/3 over it before returning. We keep the
+		// screen reasons; Gates 2/3 then decide whether the residual ALSO needs whole-value redaction.
+		const screenedText = res.status === 'redacted' ? res.text : value;
 		if (res.status === 'redacted') {
-			// REDACT-AND-KEEP: the span is already replaced with a safe placeholder in res.text.
 			for (const r of res.reasons) into.push({ field: path, reason: r });
-			return res.text;
 		}
 		// Gate 2 KEY-POSITIVE: a non-empty value under a secret-like key that is NOT an explicit env-name
-		// reference is a literal echo — REDACT-AND-KEEP (replace the whole value), do not hard-reject.
-		if (key !== undefined && isSecretLikeKey(key) && value.trim() !== '' && !isEnvNameReference(value)) {
+		// reference is a literal echo — REDACT-AND-KEEP (replace the WHOLE value), do not hard-reject. Run
+		// against screenedText so a partial screen redaction does not exempt a residual literal: any
+		// non-empty residual under a secret-like key that is not a clean env-ref is replaced wholesale.
+		if (key !== undefined && isSecretLikeKey(key) && screenedText.trim() !== '' && !isEnvNameReference(screenedText)) {
 			into.push({ field: path, reason: 'secret-like-key' });
 			return REDACTED_KEY_POSITIVE;
 		}
-		// Gate 3 ENTROPY: a credential-shaped (non-prefixed — prefixes already hard-rejected above)
-		// high-entropy token under any key — REDACT-AND-KEEP.
-		if (looksLikeLiteralCredential(value)) {
+		// Gate 3 ENTROPY (whole-value): a credential-shaped (non-prefixed — prefixes already hard-rejected
+		// above) high-entropy token under any key — REDACT-AND-KEEP the whole value.
+		if (looksLikeLiteralCredential(screenedText)) {
 			into.push({ field: path, reason: 'credential-shaped-token' });
 			return REDACTED_KEY_POSITIVE;
+		}
+		// 'redacted' residual: screen() replaced its high-confidence spans but may have left a
+		// credential-shaped token beside the placeholder (the whole-value Gate 3 above skips it because
+		// the residual carries whitespace). Tokenize the residual and redact any embedded credential
+		// token IN PLACE so no raw token survives next to a redacted span (review GAP-2). Only on the
+		// 'redacted' branch — a clean value is never touched (F-008).
+		if (res.status === 'redacted') {
+			const residual = redactCredentialTokensInResidual(res.text);
+			if (residual.redacted) into.push({ field: path, reason: 'credential-shaped-token' });
+			return residual.text;
 		}
 		// Clean (e.g. a benign asset path 'icon.png') — kept verbatim.
 		return value;

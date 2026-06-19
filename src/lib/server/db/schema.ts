@@ -1862,6 +1862,44 @@ const m0051_proposed_defect_classes: Migration = {
 	`
 };
 
+// m0052 — pm_fit_verdict (gap D — the PM FIT-VERDICT layer on a cert_hire brief).
+//
+// After HR raises a `cert_hire` decision_brief (capability-certified — the candidate passed the
+// objective gauntlet) and BEFORE the operator's B4 applyHireDecision, the PROJECT PM issues a
+// FIT-verdict judging fit for THIS project — context HR's generic gauntlet lacks (e.g. a generic
+// C# cert vs the project needing BepInEx/Unity specifics). This is FIRST-CLASS PM input, NOT a
+// competing hard gate: a PM DENY pre-sets the operator's hire surface to REJECT with the reason
+// shown, but the operator can OVERRIDE (D-039 stays final — decide-against-a-stated-objection,
+// never blocked). The verdict NEVER itself flips the cert or staffs (only applyHireDecision does,
+// B4) — this table records the PM's judgment, nothing more.
+//
+// Why a DEDICATED table (not extending panel_verdict's artifact_kind): panel_verdict requires a
+// `validator_session record<session>` and is keyed by an artifact+session dedup (the §4.2 panel
+// runner's independent-validator invariants). A fit-verdict is ONE PM-authored / operator-triggered
+// judgment bound to a brief — no validator session, no panel-runner semantics. Mixing it into
+// panel_verdict would force a fake session and pollute the deterministic panel runner (B3 — leave
+// the panel runner untouched). The hire brief's artifact_kind already admits 'cert_hire' (m0050).
+//
+// `brief` is the decision_brief (the candidate of record's hire gate); `project` is the project
+// whose PM is judging fit; `outcome` is approve|deny; `reason` carries the PM's fit rationale
+// (REQUIRED on deny — the operator surface shows it; honest on approve too). One latest-wins per
+// brief (the surface reads the newest); re-recording is allowed (the PM may revise its fit call
+// while the brief is still open). ADDITIVE, OVERWRITE-only (F-015 idempotent: apply-twice + a
+// half-applied state re-run clean over the raw OVERWRITE DDL; no existing rows to rewrite).
+const m0052_pm_fit_verdict: Migration = {
+	id: '0052_pm_fit_verdict',
+	up: `
+		DEFINE TABLE OVERWRITE pm_fit_verdict SCHEMAFULL;
+		DEFINE FIELD OVERWRITE brief      ON pm_fit_verdict TYPE record<decision_brief>;
+		DEFINE FIELD OVERWRITE project    ON pm_fit_verdict TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE outcome    ON pm_fit_verdict TYPE string ASSERT $value IN ["approve","deny"];
+		DEFINE FIELD OVERWRITE reason     ON pm_fit_verdict TYPE string;
+		DEFINE FIELD OVERWRITE author     ON pm_fit_verdict TYPE string DEFAULT "pm" ASSERT $value IN ["pm","operator"];
+		DEFINE FIELD OVERWRITE created_at ON pm_fit_verdict TYPE datetime DEFAULT time::now();
+		DEFINE INDEX OVERWRITE pm_fit_verdict_by_brief ON pm_fit_verdict FIELDS brief;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -1919,5 +1957,6 @@ export const schemaMigrations: Migration[] = [
 	m0048_capability_needs,
 	m0049_create_integrity,
 	m0050_cert_hire_brief,
-	m0051_proposed_defect_classes
+	m0051_proposed_defect_classes,
+	m0052_pm_fit_verdict
 ];

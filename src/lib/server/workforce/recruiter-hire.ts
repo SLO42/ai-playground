@@ -23,7 +23,9 @@
 // issue, falsifier, 2–4 evidence links, exactly-one recommended option) and its one-open-brief-
 // per-artifact absorb (interrupt contract: re-raising on the same run returns the same open brief).
 
+import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
+import { assertRecordId } from '../db/validate';
 import {
 	createDecisionBrief,
 	getBrief,
@@ -463,4 +465,130 @@ async function versionLifecycle(db: Db, versionId: string): Promise<string> {
 function recommendationFromBrief(brief: DecisionBriefRow): HireRecommendation {
 	const recommended = brief.options.find((o) => o.recommended);
 	return recommended?.id === 'approve' ? 'hire' : 'no_hire';
+}
+
+// ── Gap D — the PM FIT-VERDICT layer (pm_fit_verdict, migration 0052) ───────────────────
+//
+// After HR raises the cert_hire brief (the candidate passed the OBJECTIVE gauntlet) and BEFORE the
+// operator's B4 applyHireDecision, the PROJECT PM issues a fit-verdict judging fit for THIS project
+// — the context HR's generic gauntlet lacks (e.g. a generic C# cert vs the project needing BepInEx/
+// Unity specifics). This is FIRST-CLASS PM input, NOT a competing hard gate: a DENY pre-sets the
+// operator's hire surface to REJECT with the reason shown, but the operator can OVERRIDE (D-039 stays
+// final). A fit-verdict NEVER itself flips the cert or staffs — only applyHireDecision does (B4); this
+// module's write here records the PM's judgment row, nothing more. EVERY ERROR HAS A NAME: a bad input
+// (non-cert_hire brief, already-decided brief, empty reason) is a HireGateError.
+
+export type FitOutcome = 'approve' | 'deny';
+
+/** A PM fit-verdict bound to a cert_hire brief — the PM's judgment of fit for THIS project. */
+export interface PmFitVerdictRow {
+	id: string;
+	/** The cert_hire decision_brief this fit-verdict judges. */
+	brief: string;
+	/** The project whose PM authored the verdict (null when project-less). */
+	project: string | null;
+	outcome: FitOutcome;
+	/** The PM's fit rationale — REQUIRED on deny (the operator surface shows it). */
+	reason: string;
+	author: 'pm' | 'operator';
+	/** ISO; null → '—' (F-013). */
+	created_at: string | null;
+}
+
+export interface RecordPmFitVerdictInput {
+	outcome: FitOutcome;
+	/** REQUIRED — the fit rationale. A deny without a reason is refused (the operator must see WHY). */
+	reason: string;
+	/** Who authored it (default 'pm' — the project's PM; 'operator' when the operator records on the PM's behalf). */
+	author?: 'pm' | 'operator';
+}
+
+function strDate(v: unknown): string | null {
+	if (v === null || v === undefined) return null;
+	const s = v instanceof Date ? v.toISOString() : String(v);
+	if (s === '' || s === 'undefined' || s === 'null') return null;
+	return s;
+}
+
+function normFitVerdict(row: Record<string, unknown>): PmFitVerdictRow {
+	return {
+		id: String(row.id),
+		brief: String(row.brief),
+		project: row.project != null ? String(row.project) : null,
+		outcome: row.outcome as FitOutcome,
+		reason: typeof row.reason === 'string' ? row.reason : '',
+		author: row.author === 'operator' ? 'operator' : 'pm',
+		created_at: strDate(row.created_at)
+	};
+}
+
+function fitLink(id: string): StringRecordId {
+	return new StringRecordId(assertRecordId(id));
+}
+
+/**
+ * Record the project PM's fit-verdict on an OPEN cert_hire brief (gap D). Shadow paths, each NAMED:
+ *   • brief not found → HireGateError;
+ *   • brief not artifact_kind 'cert_hire' → HireGateError (a fit-verdict only judges a hire gate);
+ *   • brief already decided (not 'open') → HireGateError (the operator already disposed — a late
+ *     fit-verdict cannot change a decided hire; the PM must catch it while the gate stands);
+ *   • empty/blank reason → HireGateError (the operator must see WHY, especially on a deny).
+ * The verdict NEVER flips a cert or staffs (B4 — only applyHireDecision does); it writes ONE
+ * pm_fit_verdict row. Latest-wins per brief (re-recording is allowed while the brief is open — the
+ * PM may revise its fit call; the surface reads the newest via getPmFitVerdictForBrief).
+ */
+export async function recordPmFitVerdict(
+	db: Db,
+	briefId: string,
+	input: RecordPmFitVerdictInput
+): Promise<PmFitVerdictRow> {
+	const reason = (input.reason ?? '').trim();
+	if (!reason) {
+		throw new HireGateError(
+			'a PM fit-verdict requires a reason (the operator must see WHY — a deny especially needs its rationale)'
+		);
+	}
+	if (input.outcome !== 'approve' && input.outcome !== 'deny') {
+		throw new HireGateError(`fit-verdict outcome must be approve | deny (got ${JSON.stringify(input.outcome)})`);
+	}
+	const brief = await getBrief(db, briefId);
+	if (!brief) throw new HireGateError(`decision brief not found: ${briefId}`);
+	if (brief.artifact_kind !== 'cert_hire') {
+		throw new HireGateError(
+			`brief ${briefId} targets '${brief.artifact_kind}', not 'cert_hire' — a PM fit-verdict only judges a hire-gate brief`
+		);
+	}
+	if (brief.status !== 'open') {
+		throw new HireGateError(
+			`cert_hire brief ${briefId} is already '${brief.status}' — the operator has disposed; a fit-verdict only stands while the hire gate is open`
+		);
+	}
+
+	const content: Record<string, unknown> = {
+		brief: fitLink(brief.id),
+		outcome: input.outcome,
+		reason,
+		author: input.author === 'operator' ? 'operator' : 'pm'
+	};
+	if (brief.project) content.project = fitLink(brief.project);
+
+	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+		`CREATE pm_fit_verdict CONTENT $content RETURN AFTER;`,
+		{ content }
+	);
+	return normFitVerdict(rows[0]);
+}
+
+/**
+ * The PM's LATEST fit-verdict on a cert_hire brief, or null (no verdict yet). Latest-wins: the PM may
+ * revise its fit call while the brief is open; the surface shows the newest. Honest null when none
+ * (F-008 — the operator surface shows 'no PM fit-verdict yet', never a fabricated approve).
+ */
+export async function getPmFitVerdictForBrief(db: Db, briefId: string): Promise<PmFitVerdictRow | null> {
+	const bid = fitLink(briefId);
+	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+		`SELECT * FROM pm_fit_verdict WHERE brief = $bid ORDER BY created_at DESC LIMIT 1;`,
+		{ bid }
+	);
+	return rows.length ? normFitVerdict(rows[0]) : null;
 }

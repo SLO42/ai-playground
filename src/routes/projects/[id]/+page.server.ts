@@ -101,7 +101,11 @@ import {
 	dispatchHireRequest,
 	HireDispatchError,
 	CapabilityNeedsError,
-	type HireGap
+	loadWorkforcePanel,
+	recordPmFitVerdict,
+	HireGateError,
+	type HireGap,
+	type HireBriefCard
 } from '$lib/server/workforce';
 import { listSessionMessages, launchSession, type TranscriptMessage } from '$lib/server/sessions';
 import {
@@ -202,6 +206,12 @@ export interface ProjectDetailData {
 	 *  the operator vocabulary) — surfaced alongside gaps as the needed-role context (D4 LOCKED:
 	 *  never matchable, a pure hire signal). [] when none. */
 	proposedDefectClasses: string[];
+	/** Gap D - open cert_hire hire-gate briefs awaiting the operator's B4 decision, each with the
+	 *  project PM's LATEST fit-verdict (or null). A DENY pre-sets the operator surface to reject
+	 *  (the operator can override - D-039 final). A fit-verdict NEVER flips the cert or staffs (B4).
+	 *  The cert_hire brief is project-less (it certifies a role), so this is the GLOBAL open hire
+	 *  queue surfaced for the project PM to weigh in on. [] when none (honest, F-008). */
+	hireGates: HireBriefCard[];
 	error?: string;
 }
 
@@ -284,7 +294,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			transcript: [],
 			controlCaps,
 			staffingGaps: [],
-			proposedDefectClasses: []
+			proposedDefectClasses: [],
+			hireGates: []
 		};
 	}
 
@@ -344,6 +355,17 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 		} catch {
 			// matcher unavailable / no needs → honest empty gaps; never a fabricated gap.
 		}
+
+			// Gap D - the open cert_hire hire-gate queue (with each brief PM fit-verdict). A
+			// cert_hire brief certifies a ROLE, not a project, so this surfaces the global open
+			// queue for the project PM to issue fit-verdicts on. Never sinks the page (honest
+			// partial, F-008): a workforce-panel failure leaves an empty queue.
+			let hireGates: HireBriefCard[] = [];
+			try {
+				hireGates = (await loadWorkforcePanel(db)).hireQueue;
+			} catch {
+				// workforce panel unavailable - honest empty hire-gate queue.
+			}
 
 		// D-004: an AUTOMATIC (periodic) review is permitted only when the orchestration mode
 		// is NOT manual. Manual mode → the review is button-triggered only. Read honestly; a
@@ -410,7 +432,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			transcript,
 			controlCaps,
 			staffingGaps,
-			proposedDefectClasses
+			proposedDefectClasses,
+			hireGates
 		};
 	} catch (err) {
 		// A 404 thrown above is a SvelteKit HttpError — rethrow it, don't swallow.
@@ -447,6 +470,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			controlCaps,
 			staffingGaps: [],
 			proposedDefectClasses: [],
+			hireGates: [],
 			error: (err as Error).message
 		};
 	}
@@ -1205,6 +1229,51 @@ export const actions: Actions = {
 				return fail(409, { pm: { error: err.message } });
 			}
 			return fail(500, { pm: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * Gap D - the PM FIT-VERDICT on a cert_hire hire-gate brief. After HR raises the brief
+	 * (the candidate passed the OBJECTIVE gauntlet) and BEFORE the operator's B4 applyHireDecision,
+	 * the project PM judges FIT for THIS project (context HR's generic gauntlet lacks). FIRST-CLASS
+	 * PM input, NOT a hard gate: a DENY pre-sets the operator hire surface to reject with the reason
+	 * shown, but the operator can OVERRIDE (D-039 final). The verdict NEVER flips the cert or staffs
+	 * (only applyHireDecision does, B4) - it records the PM's judgment row. Operator-triggered here
+	 * (the project's operator records on the PM's behalf); author defaults to 'pm'. Every named error
+	 * maps to an honest reason: a non-cert_hire / already-decided brief or empty reason fails closed
+	 * (HireGateError -> 409); a malformed brief id is a boundary 400.
+	 */
+	pmFitVerdict: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { fit: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { fit: { error: 'Database not connected - start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const brief = String(form.get('brief') ?? '').trim();
+		const outcome = String(form.get('outcome') ?? '').trim();
+		const reason = String(form.get('reason') ?? '').trim();
+		if (!brief) return fail(400, { fit: { error: 'missing brief id' } });
+		try {
+			assertRecordId(brief);
+		} catch {
+			return fail(400, { fit: { brief, error: 'invalid brief id' } });
+		}
+		if (outcome !== 'approve' && outcome !== 'deny') {
+			return fail(400, { fit: { brief, error: `outcome must be approve | deny (got ${outcome || '(none)'})` } });
+		}
+		if (!reason) {
+			return fail(400, { fit: { brief, error: 'a fit-verdict needs a reason (the operator must see WHY, especially on a deny).' } });
+		}
+		if (reason.length > 4_000) {
+			return fail(400, { fit: { brief, error: 'reason is too long.' } });
+		}
+		try {
+			const v = await recordPmFitVerdict(db, brief, { outcome, reason, author: 'pm' });
+			return { fit: { ok: true as const, brief, outcome: v.outcome, reason: v.reason } };
+		} catch (err) {
+			if (err instanceof HireGateError) return fail(409, { fit: { brief, error: err.message } });
+			return fail(500, { fit: { brief, error: (err as Error).message } });
 		}
 	},
 

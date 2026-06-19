@@ -195,6 +195,20 @@
   const hireForm = $derived(
     form && 'hire' in form ? (form.hire as Record<string, unknown>) : undefined
   );
+  // ── Gap D — PM FIT-VERDICT on open cert_hire hire-gate briefs. The project PM judges fit for
+  // THIS project before the operator's B4 decision (a DENY pre-sets the operator surface to reject;
+  // the operator can override — D-039 final). Recording a fit-verdict NEVER flips the cert/staffs. ──
+  const hireGates = $derived(data.hireGates ?? []);
+  let fitReason = $state<Record<string, string>>({});
+  let fitBusy = $state<Record<string, boolean>>({});
+  const fitForm = $derived(
+    form && 'fit' in form ? (form.fit as Record<string, unknown>) : undefined
+  );
+  function refTail(id: string): string {
+    const s = String(id);
+    const c = s.indexOf(':');
+    return c >= 0 ? s.slice(c + 1) : s;
+  }
   let reviseOpenFor = $state<string | null>(null);
   let reviseTitle = $state('');
   let reviseObjective = $state('');
@@ -1585,6 +1599,113 @@
           {/if}
         </div>
 
+        <!-- Gap D - PM FIT-VERDICT on open cert_hire hire gates. After HR raises a hire brief
+             (the candidate passed the OBJECTIVE gauntlet) and BEFORE the operator's B4 decision,
+             the project PM judges FIT for THIS project. FIRST-CLASS PM input, not a hard gate: a
+             DENY pre-sets the operator surface to reject with the reason shown, but the operator
+             can OVERRIDE (D-039 final). Recording a fit-verdict NEVER flips the cert or staffs. -->
+        <div class="card">
+          <div class="pm-head">
+            <h2 class="section-title">
+              Hire gates - PM fit-verdict
+              {#if hireGates.length > 0}<span class="count mono">{hireGates.length}</span>{/if}
+            </h2>
+          </div>
+          {#if hireGates.length === 0}
+            <p class="state-body">
+              No open hire gates. When the recruiter finishes a candidate's certification gauntlet,
+              its hire brief appears here for the PM to judge <strong>fit for this project</strong>
+              before the operator's final hire decision on the <a class="inline-link" href="/agents">workforce board</a>.
+            </p>
+          {:else}
+            <p class="state-body">
+              The recruiter certified these candidates against an <strong>objective</strong> gauntlet.
+              The PM judges <strong>fit for this project</strong> (context the gauntlet lacks - e.g. a
+              generic cert vs the project's specific stack). A <span class="mono">deny</span> pre-sets
+              the operator's hire decision to reject with your reason shown; the operator can still
+              override (D-039 final). Your verdict records a judgment - it never certifies or staffs.
+            </p>
+            <ul class="rows fit-list" aria-label="open hire gates">
+              {#each hireGates as h (h.brief)}
+                <li class="fit-gate" data-rec={h.recommendation}>
+                  <div class="fit-head">
+                    <span class="status" data-status={h.recommendation === 'hire' ? 'pass' : 'fail'}>
+                      recruiter recommends {h.recommendation === 'hire' ? 'HIRE' : 'NO HIRE'}
+                    </span>
+                    <span class="ref mono" title={h.run}>run {refTail(h.run)}</span>
+                  </div>
+                  <p class="fit-ask">{h.ask}</p>
+                  <p class="fit-falsifier"><span class="brief-k">falsifier</span> {h.falsifier}</p>
+                  {#if h.fitVerdict}
+                    <p class="fit-current" data-outcome={h.fitVerdict.outcome} role="status">
+                      <span class="fit-badge" data-outcome={h.fitVerdict.outcome}>
+                        PM fit: {h.fitVerdict.outcome === 'approve' ? 'APPROVE' : 'DENY'}
+                      </span>
+                      <span class="fit-reason">{h.fitVerdict.reason}</span>
+                    </p>
+                  {:else}
+                    <p class="hint">No PM fit-verdict yet - record one below.</p>
+                  {/if}
+                  <form
+                    method="POST"
+                    action="?/pmFitVerdict"
+                    class="fit-form"
+                    use:enhance={() => {
+                      fitBusy = { ...fitBusy, [h.brief]: true };
+                      return async ({ update }) => {
+                        await update({ reset: false });
+                        fitBusy = { ...fitBusy, [h.brief]: false };
+                      };
+                    }}
+                  >
+                    <input type="hidden" name="brief" value={h.brief} />
+                    <label class="field">
+                      <span class="field-label">Fit reason (the operator sees this)</span>
+                      <textarea
+                        class="pm-input"
+                        name="reason"
+                        rows="2"
+                        placeholder="e.g. generic C# cert, but this project needs BepInEx/Unity specifics the gauntlet did not test"
+                        bind:value={fitReason[h.brief]}
+                        disabled={fitBusy[h.brief]}
+                      ></textarea>
+                    </label>
+                    <div class="fit-actions">
+                      <button
+                        class="btn primary"
+                        type="submit"
+                        name="outcome"
+                        value="approve"
+                        disabled={fitBusy[h.brief] || !(fitReason[h.brief] ?? '').trim()}
+                      >
+                        {fitBusy[h.brief] ? 'Recording...' : 'Fit - approve'}
+                      </button>
+                      <button
+                        class="btn"
+                        type="submit"
+                        name="outcome"
+                        value="deny"
+                        disabled={fitBusy[h.brief] || !(fitReason[h.brief] ?? '').trim()}
+                      >
+                        {fitBusy[h.brief] ? 'Recording...' : 'Not a fit - deny'}
+                      </button>
+                    </div>
+                  </form>
+                  {#if fitForm && fitForm.brief === h.brief}
+                    {#if fitForm.ok}
+                      <p class="fit-result ok" role="status">
+                        Fit-verdict recorded - {String(fitForm.outcome) === 'approve' ? 'APPROVE' : 'DENY'}. The operator's hire surface now shows it{String(fitForm.outcome) === 'deny' ? ' and defaults to reject' : ''}.
+                      </p>
+                    {:else if fitForm.error}
+                      <p class="fit-result err" role="alert">{String(fitForm.error)}</p>
+                    {/if}
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+
         <!-- PM periodic review (TASK 11.4) -------------------------------------- -->
         <div class="card">
           <div class="pm-head">
@@ -2873,6 +2994,84 @@
     color: var(--color-success, var(--color-running));
   }
   .gap-result.err {
+    color: var(--color-error-on-overlay);
+  }
+  /* Gap D — PM fit-verdict on hire gates */
+  .fit-list {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  .fit-gate {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    padding: var(--space-3, 0.75rem);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md, 0.5rem);
+    background: var(--color-bg-secondary, transparent);
+  }
+  .fit-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+  }
+  .fit-ask {
+    margin: 0;
+    font-weight: 600;
+  }
+  .fit-falsifier {
+    margin: 0;
+    font-size: 0.82rem;
+    color: var(--color-text-muted);
+  }
+  .fit-current {
+    margin: 0;
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+    font-size: 0.85rem;
+  }
+  .fit-badge {
+    display: inline-block;
+    padding: 0.05rem 0.45rem;
+    border-radius: var(--radius-sm, 0.25rem);
+    font-size: 0.72rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+  }
+  .fit-badge[data-outcome='approve'] {
+    color: var(--color-success, var(--color-running));
+    border: 1px solid var(--color-success, var(--color-running));
+  }
+  .fit-badge[data-outcome='deny'] {
+    color: var(--color-warn);
+    border: 1px solid var(--color-warn);
+  }
+  .fit-reason {
+    color: var(--color-text-primary);
+  }
+  .fit-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+  }
+  .fit-actions {
+    display: flex;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+  }
+  .fit-result {
+    margin: 0;
+    font-size: 0.82rem;
+  }
+  .fit-result.ok {
+    color: var(--color-success, var(--color-running));
+  }
+  .fit-result.err {
     color: var(--color-error-on-overlay);
   }
   .chip {

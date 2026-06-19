@@ -40,6 +40,7 @@ import {
 import { isCeremonySelectable } from './lifecycle';
 import { roleTrackRecord, type RoleTrackRecord } from './track-record';
 import { type BriefOption } from '../projects/briefs';
+import { getPmFitVerdictForBrief, type PmFitVerdictRow } from './recruiter-hire';
 
 /** The LATEST interview_run distilled to the §8 interview-line fields. Carries the full
  *  interview_run status set (schema: running|adjudicating|passed|failed|error) so a newer
@@ -125,6 +126,10 @@ export interface HireBriefCard {
 	options: BriefOption[];
 	/** The recommended option's id → hire | no_hire (the brief's own §8 recommendation). */
 	recommendation: 'hire' | 'no_hire';
+	/** Gap D — the project PM's LATEST fit-verdict on this hire gate, or null (no verdict yet). A
+	 *  DENY pre-sets the operator surface to REJECT with the reason shown; the operator can OVERRIDE
+	 *  (D-039 final). null = honest 'no PM fit-verdict yet' (F-008 — never a fabricated approve). */
+	fitVerdict: PmFitVerdictRow | null;
 	/** ISO; null → '—' (F-013). */
 	at: string | null;
 }
@@ -402,21 +407,28 @@ async function buildHireQueue(db: Db): Promise<HireBriefCard[]> {
 		   FROM decision_brief WHERE artifact_kind = 'cert_hire' AND status = 'open'
 		  ORDER BY created_at DESC LIMIT 100;`
 	);
-	return (rows ?? []).map((r) => {
-		const options = (Array.isArray(r.options) ? r.options : []) as BriefOption[];
-		const recommended = options.find((o) => o.recommended);
-		return {
-			brief: String(r.id),
-			run: String(r.artifact),
-			ask: typeof r.ask === 'string' ? r.ask : '',
-			issue: typeof r.issue === 'string' ? r.issue : '',
-			evidence: Array.isArray(r.evidence) ? (r.evidence as string[]) : [],
-			falsifier: typeof r.falsifier === 'string' ? r.falsifier : '',
-			options,
-			recommendation: recommended?.id === 'approve' ? 'hire' : 'no_hire',
-			at: strOrNull(r.created_at)
-		};
-	});
+	// Gap D — attach each brief's LATEST PM fit-verdict (the project PM's fit judgment, read-only;
+	// honest null when the PM has not yet weighed in). Bounded per-brief read off the indexed brief
+	// column; the hire queue is already capped at 100.
+	return Promise.all(
+		(rows ?? []).map(async (r) => {
+			const options = (Array.isArray(r.options) ? r.options : []) as BriefOption[];
+			const recommended = options.find((o) => o.recommended);
+			const briefId = String(r.id);
+			return {
+				brief: briefId,
+				run: String(r.artifact),
+				ask: typeof r.ask === 'string' ? r.ask : '',
+				issue: typeof r.issue === 'string' ? r.issue : '',
+				evidence: Array.isArray(r.evidence) ? (r.evidence as string[]) : [],
+				falsifier: typeof r.falsifier === 'string' ? r.falsifier : '',
+				options,
+				recommendation: recommended?.id === 'approve' ? 'hire' : 'no_hire',
+				fitVerdict: await getPmFitVerdictForBrief(db, briefId),
+				at: strOrNull(r.created_at)
+			};
+		})
+	);
 }
 
 /**

@@ -19,7 +19,7 @@ import {
 } from './repo';
 import { loadWorkforcePanel } from './panel';
 import { newSentinelUlid } from './activation';
-import { raiseHireBrief, applyHireDecision } from './recruiter-hire';
+import { raiseHireBrief, applyHireDecision, recordPmFitVerdict } from './recruiter-hire';
 
 // TASK 16.7b VERIFY — the read-only workforce-panel aggregator (WORKFORCE-SPEC §8) against
 // a REAL throwaway SurrealDB. The FOUR data paths the §8 surfaces depend on:
@@ -340,6 +340,14 @@ describe('loadWorkforcePanel — §8 surfaces', () => {
 		expect(card?.falsifier.trim().length).toBeGreaterThan(0);
 		// Exactly one recommended option (the §8 invariant) flows through to the card.
 		expect(card?.options.filter((o) => o.recommended)).toHaveLength(1);
+		// Gap D - no PM fit-verdict yet -> honest null (F-008, never a fabricated approve).
+		expect(card?.fitVerdict).toBeNull();
+
+		// Gap D - record a PM fit-verdict; the card now surfaces it (read-only, latest-wins).
+		await recordPmFitVerdict(db, brief.id, { outcome: 'deny', reason: 'wrong stack for this project' });
+		const withFit = (await loadWorkforcePanel(db)).hireQueue.find((h) => h.brief === brief.id);
+		expect(withFit?.fitVerdict?.outcome).toBe('deny');
+		expect(withFit?.fitVerdict?.reason).toBe('wrong stack for this project');
 
 		// DECIDE it (operator approves, B4) → it must DROP OFF the open queue (status no longer 'open').
 		await applyHireDecision(db, brief.id, 'approve', { operatorConfirmed: true });

@@ -446,6 +446,25 @@
                 {#each h.evidence as ev (ev)}<span class="mono hire-ev">{ev}</span>{/each}
               </p>
               <p class="hire-meta"><span class="brief-k">falsifier</span> {h.falsifier}</p>
+              <!-- Gap D — the project PM's FIT-VERDICT (fit for THIS project, context the objective
+                   gauntlet lacks). FIRST-CLASS input, NOT a hard gate: a DENY pre-sets this surface
+                   to REJECT with the reason shown, but you can OVERRIDE (D-039 final). -->
+              {#if h.fitVerdict}
+                <div class="hire-fit" data-outcome={h.fitVerdict.outcome} role="note">
+                  <span class="fit-badge" data-outcome={h.fitVerdict.outcome}>
+                    PM fit-verdict: {h.fitVerdict.outcome === 'approve' ? 'APPROVE' : 'DENY'}
+                  </span>
+                  <span class="hire-fit-reason">{h.fitVerdict.reason}</span>
+                  {#if h.fitVerdict.outcome === 'deny'}
+                    <span class="hire-fit-note">
+                      The PM judged this candidate a poor fit — this gate defaults to <strong>reject</strong>.
+                      You can still approve (D-039 — the decision is yours).
+                    </span>
+                  {/if}
+                </div>
+              {:else}
+                <p class="hire-meta hint-line">No PM fit-verdict yet — the project PM has not weighed in on fit.</p>
+              {/if}
               <ul class="hire-options">
                 {#each h.options as o (o.id)}
                   <li class="hire-option" class:recommended={!!o.recommended}>
@@ -482,14 +501,21 @@
                     checked={!!hireConfirm[h.brief]}
                     onchange={(e) => setHireConfirm(h.brief, (e.currentTarget as HTMLInputElement).checked)}
                   />
-                  I confirm — certify this role (D-039)
+                  {h.fitVerdict?.outcome === 'deny'
+                    ? 'I confirm — certify anyway, overriding the PM fit-verdict (D-039)'
+                    : 'I confirm — certify this role (D-039)'}
                 </label>
                 <button
                   type="submit"
                   class="hire-btn approve"
+                  class:override={h.fitVerdict?.outcome === 'deny'}
                   disabled={isRunBusy(hireBusy, h.brief) || !hireConfirm[h.brief]}
                 >
-                  {isRunBusy(hireBusy, h.brief) ? 'Hiring…' : 'Approve — certify'}
+                  {isRunBusy(hireBusy, h.brief)
+                    ? 'Hiring…'
+                    : h.fitVerdict?.outcome === 'deny'
+                      ? 'Approve anyway — override PM'
+                      : 'Approve — certify'}
                 </button>
               </form>
               <!-- REJECT — withholds; no confirm tick needed (flips nothing). -->
@@ -506,8 +532,13 @@
               >
                 <input type="hidden" name="brief" value={h.brief} />
                 <input type="hidden" name="action" value="reject" />
-                <button type="submit" class="hire-btn" disabled={isRunBusy(hireBusy, h.brief)}>
-                  Reject — no hire
+                <button
+                  type="submit"
+                  class="hire-btn"
+                  class:fit-default={h.fitVerdict?.outcome === 'deny'}
+                  disabled={isRunBusy(hireBusy, h.brief)}
+                >
+                  {h.fitVerdict?.outcome === 'deny' ? 'Reject — no hire (PM-recommended)' : 'Reject — no hire'}
                 </button>
               </form>
             </li>
@@ -1549,5 +1580,60 @@
   .hire-btn:disabled {
     opacity: 0.5;
     cursor: default;
+  }
+  /* Gap D — PM fit-verdict surfaced on the hire gate */
+  .hire-fit {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-1) var(--space-2);
+    padding: var(--space-2);
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-inset);
+  }
+  .hire-fit[data-outcome='deny'] {
+    border-color: var(--color-warn, var(--color-border-strong));
+  }
+  .hire-fit[data-outcome='approve'] {
+    border-color: var(--color-success);
+  }
+  .fit-badge {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.04em;
+    padding: 0.1rem 0.5rem;
+    border-radius: var(--radius-sm);
+    border: var(--border-width) solid var(--color-border);
+  }
+  .fit-badge[data-outcome='approve'] {
+    color: var(--color-success);
+    border-color: var(--color-success);
+  }
+  .fit-badge[data-outcome='deny'] {
+    color: var(--color-warn-on-overlay, var(--color-warn));
+    border-color: var(--color-warn, var(--color-border-strong));
+  }
+  .hire-fit-reason {
+    font-size: var(--text-xs);
+    color: var(--color-text);
+  }
+  .hire-fit-note {
+    flex-basis: 100%;
+    font-size: var(--text-xs);
+    color: var(--color-warn-on-overlay, var(--color-warn));
+  }
+  .hint-line {
+    color: var(--color-text-muted);
+  }
+  /* When the PM denied, the reject button is the PM-recommended default; approve becomes an
+     explicit override (D-039 — the operator can still approve against the stated objection). */
+  .hire-btn.fit-default {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+  .hire-btn.approve.override {
+    border-color: var(--color-warn, var(--color-border-strong));
+    color: var(--color-warn-on-overlay, var(--color-warn));
   }
 </style>

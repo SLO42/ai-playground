@@ -38,9 +38,12 @@ import {
 	buildHireDecision,
 	raiseHireBrief,
 	applyHireDecision,
+	recordPmFitVerdict,
+	getPmFitVerdictForBrief,
 	HireGateError
 } from './recruiter-hire';
-import { getBrief, getOpenBriefForArtifact } from '../projects/briefs';
+import { loadWorkforcePanel } from './panel';
+import { createDecisionBrief, getBrief, getOpenBriefForArtifact, markBriefDecided } from '../projects/briefs';
 
 // HR-5 VERIFY (real throwaway SurrealDB + the REAL ClaudeCodeRuntime over a scripted backend —
 // the gauntlet/recruiter test discipline; logic real, only the LLM scripted; every assertion
@@ -557,4 +560,117 @@ describe('applyHireDecision — approve flips/feeds, reject neither (B4)', () =>
 		await expect(applyHireDecision(db, 'decision_brief:nope', 'approve', { operatorConfirmed: true })).rejects.toBeInstanceOf(HireGateError);
 		expect(brief.artifact_kind).toBe('cert_hire');
 	}, 40_000);
+});
+
+// ── recordPmFitVerdict — gap D: the PM FIT-VERDICT layer (FIRST-CLASS input, NOT a hard gate) ──
+//
+// The PM judges fit for THIS project before the operator's B4 decision. A deny defaults the operator
+// surface to reject + surfaces the reason; the operator override still approves (D-039 final); a
+// fit-verdict NEVER itself flips the cert or staffs (only applyHireDecision does, B4); a fit-verdict
+// on a non-cert_hire / already-decided brief is refused (named). All four shadow paths covered.
+describe('recordPmFitVerdict — gap D PM fit-verdict on a cert_hire brief', () => {
+	it('records an APPROVE fit-verdict; the hire queue surfaces it (NEVER flips the cert, B4)', async () => {
+		const seed = await seedTarget();
+		const runId = await runToTerminal(seed, perfectFindings);
+		const brief = await raiseHireBrief(db, runId);
+		const before = (await getRoleVersion(db, seed.version.id))?.lifecycle;
+
+		const v = await recordPmFitVerdict(db, brief.id, { outcome: 'approve', reason: 'fits the project stack' });
+		expect(v.outcome).toBe('approve');
+		expect(v.reason).toBe('fits the project stack');
+		expect(v.author).toBe('pm');
+
+		// The verdict changed NOTHING about the cert/lifecycle — only applyHireDecision does (B4).
+		expect((await getRoleVersion(db, seed.version.id))?.lifecycle).toBe(before);
+		expect((await getBrief(db, brief.id))?.status).toBe('open');
+
+		// The /agents hire queue surfaces the latest fit-verdict on the card (read-only).
+		const panel = await loadWorkforcePanel(db);
+		const card = panel.hireQueue.find((h) => h.brief === brief.id);
+		expect(card?.fitVerdict?.outcome).toBe('approve');
+		expect(card?.fitVerdict?.reason).toBe('fits the project stack');
+	}, 40_000);
+
+	it('a DENY is surfaced with its reason; the operator OVERRIDE still approves (D-039 final)', async () => {
+		const seed = await seedTarget();
+		const runId = await runToTerminal(seed, perfectFindings);
+		const brief = await raiseHireBrief(db, runId);
+
+		const deny = await recordPmFitVerdict(db, brief.id, {
+			outcome: 'deny',
+			reason: 'generic cert; project needs BepInEx specifics the gauntlet did not test'
+		});
+		expect(deny.outcome).toBe('deny');
+
+		// The surface carries the deny + reason (this is what pre-sets the operator UI to reject).
+		const card = (await loadWorkforcePanel(db)).hireQueue.find((h) => h.brief === brief.id);
+		expect(card?.fitVerdict?.outcome).toBe('deny');
+		expect(card?.fitVerdict?.reason).toMatch(/BepInEx/);
+
+		// D-039 FINAL: the operator can OVERRIDE the PM deny and still approve. The fit-verdict did NOT
+		// block applyHireDecision — the operator's explicit confirm still flips the cert.
+		const res = await applyHireDecision(db, brief.id, 'approve', { operatorConfirmed: true });
+		expect(res.brief.status).toBe('approved');
+		expect((await getRoleVersion(db, seed.version.id))?.lifecycle).toBe('passed');
+	}, 40_000);
+
+	it('latest-wins: a revised fit-verdict supersedes the prior on the surface', async () => {
+		const seed = await seedTarget();
+		const runId = await runToTerminal(seed, perfectFindings);
+		const brief = await raiseHireBrief(db, runId);
+		await recordPmFitVerdict(db, brief.id, { outcome: 'deny', reason: 'first call' });
+		await recordPmFitVerdict(db, brief.id, { outcome: 'approve', reason: 'reconsidered — it fits' });
+		const latest = await getPmFitVerdictForBrief(db, brief.id);
+		expect(latest?.outcome).toBe('approve');
+		expect(latest?.reason).toBe('reconsidered — it fits');
+	}, 40_000);
+
+	it('REFUSES an empty reason (shadow: blank input — the operator must see WHY)', async () => {
+		const seed = await seedTarget();
+		const runId = await runToTerminal(seed, perfectFindings);
+		const brief = await raiseHireBrief(db, runId);
+		await expect(recordPmFitVerdict(db, brief.id, { outcome: 'deny', reason: '   ' })).rejects.toBeInstanceOf(
+			HireGateError
+		);
+	}, 40_000);
+
+	it('REFUSES a non-cert_hire brief (named — a fit-verdict only judges a hire gate)', async () => {
+		// A task-kind brief: createDecisionBrief enforces §8 but admits artifact_kind 'task'.
+		const seed = await seedTarget();
+		const taskBrief = await createDecisionBrief(db, {
+			artifact: `task:fit_neg_${++seedCount}`,
+			artifact_kind: 'task',
+			classification: 'proposal_gate',
+			ask: 'Promote?',
+			issue: 'A task gate, not a hire gate.',
+			effort: { apply: '—', wrongness: '—' },
+			evidence: [`task:fit_neg_${seedCount}`, 'tasks'],
+			falsifier: 'the proposal may be premature',
+			options: [
+				{ id: 'approve', label: 'Promote', pro: 'p', con: 'c', recommended: 'go' },
+				{ id: 'reject', label: 'Reject', pro: 'p', con: 'c' }
+			]
+		});
+		void seed;
+		await expect(
+			recordPmFitVerdict(db, taskBrief.id, { outcome: 'approve', reason: 'looks fine' })
+		).rejects.toBeInstanceOf(HireGateError);
+	}, 40_000);
+
+	it('REFUSES a fit-verdict on an ALREADY-DECIDED brief (shadow: upstream state — too late)', async () => {
+		const seed = await seedTarget();
+		const runId = await runToTerminal(seed, perfectFindings);
+		const brief = await raiseHireBrief(db, runId);
+		// The operator already disposed (rejected) — a late fit-verdict cannot change a decided hire.
+		await markBriefDecided(db, brief.id, 'rejected');
+		await expect(
+			recordPmFitVerdict(db, brief.id, { outcome: 'deny', reason: 'too late' })
+		).rejects.toBeInstanceOf(HireGateError);
+	}, 40_000);
+
+	it('names a missing brief (shadow: nil input)', async () => {
+		await expect(
+			recordPmFitVerdict(db, 'decision_brief:nope', { outcome: 'approve', reason: 'x' })
+		).rejects.toBeInstanceOf(HireGateError);
+	});
 });

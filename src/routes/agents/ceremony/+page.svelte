@@ -922,8 +922,10 @@
                 <p class="brief-ok" role="status">
                   Interview {String(xfb.status)} · found {String(xfb.plantedFound)}/{String(xfb.plantedTotal)}
                   · {String(xfb.falsePositives)} FP{#if xfb.costUsd != null} · {fmtUsd(xfb.costUsd)}{/if}.
-                  {#if xfb.status === 'adjudicating'}Routed to the adjudication queue on /agents.{/if}
-                  {#if Number(xfb.hrAutoResolved) > 0}
+                  {#if xfb.status === 'adjudicating'}Routed to the adjudication queue on /agents.
+                    {#if Number(xfb.hrAutoResolved) > 0}
+                      HR held {String(xfb.hrAutoResolved)} clear item(s) (a sibling escalated, batch-or-nothing) — audit on /agents.{/if}
+                  {:else if Number(xfb.hrAutoResolved) > 0}
                     HR auto-resolved {String(xfb.hrAutoResolved)} clear adjudication item(s) — audit on /agents.{/if}
                 </p>
               {:else if xfb?.queued}

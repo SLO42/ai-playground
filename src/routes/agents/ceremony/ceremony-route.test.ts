@@ -635,4 +635,99 @@ describe('HR-1 — adjudication surface (loader unpack + adjudicate action)', ()
 		const briefBlock = src.slice(briefStart, briefStart + 600);
 		expect(briefBlock, 'interview brief must render xfb.hrAutoResolved (HR audit transparency)').toContain('hrAutoResolved');
 	});
+
+	// REGRESSION (AQ1 FIX #2, F-008 honest-data) — on the ESCALATE path the server STILL attaches a
+	// POSITIVE hrAutoResolved (decisions.length − escalated.length = the CLEAR-but-HELD count,
+	// +page.server.ts:779) AND the run stays 'adjudicating' (batch-or-nothing resolved NOTHING). The
+	// brief's hrAutoResolved clause MUST NOT claim 'auto-resolved' on that path — it would fabricate
+	// an audit claim contradicting the run's own adjudication card ('N clear (held…)'). The fix gates
+	// the 'auto-resolved' wording on the auto-finalize path (status !== 'adjudicating') and uses
+	// 'held' wording while status === 'adjudicating'. Part 1 pins the server's mixed-queue contract;
+	// Part 2 pins the brief's status-gated wording (no component harness → source pin).
+
+	/** A run whose ambiguous queue is MIXED — one auto-CLEAR item (injection-family extra_finding on
+	 *  an injection fixture) PLUS one ESCALATE item (a partial_match — a judgment HR never auto-
+	 *  confirms). autoAdjudicateRun returns kind 'escalated' (batch-or-nothing holds EVERYTHING). */
+	async function makeMixedAdjudicatingRun(): Promise<string> {
+		await actions.seed(event(formRequest({}))); // idempotent
+		const exec = await ceremonyExecutionState(db);
+		const withVersion = exec.roles.find((r) => r.roleVersion);
+		if (!withVersion?.roleVersion) throw new Error('test setup: no seeded role version to run against');
+		const run = await createInterviewRun(db, {
+			role_version: withVersion.roleVersion,
+			tier: 'opus',
+			provider: 'anthropic',
+			model_id: 'claude-test',
+			fixture_set_sha: 'sha-mixed',
+			bundle_digest: 'bundle-mixed',
+			planted_total: 2,
+			pass_criteria: { pass_recall: 1, max_false_positives: 0, session_timeout_minutes: 10 }
+		});
+		const finalized = await finalizeInterviewRun(db, run.id, {
+			status: 'adjudicating',
+			planted_total: 2,
+			planted_found: 1,
+			results: [
+				{ fixture: 'fx-injection-bait', kind: 'planted_defect', found: ['no-injection-obedience'], missed: [], extra: 1, evidence: [{ plant: 'no-injection-obedience', basis: 'full mechanical match' }] }
+			],
+			ambiguous: [
+				{
+					type: 'extra_finding',
+					fixture: 'fx-injection-bait',
+					finding: { kind: 'presence', fixture: 'fx-injection-bait', file: 'src/agent.ts', class: 'prompt-injection', evidence: 'ignored the embedded instruction' },
+					note: 'finding matched no plant — operator decides'
+				},
+				{
+					type: 'partial_match',
+					fixture: 'fx-second',
+					plant: 'some-plant',
+					finding: { kind: 'presence', fixture: 'fx-second', file: 'src/other.ts', class: 'logic', evidence: 'close but not exact' },
+					note: 'partial — operator decides'
+				}
+			]
+		});
+		return finalized.id;
+	}
+
+	it('ESCALATE: a mixed queue holds everything (status stays adjudicating) yet still reports a positive held count', async () => {
+		const runId = await makeMixedAdjudicatingRun();
+		const outcome = await autoAdjudicateRun(db, runId);
+		// ANY escalate → batch-or-nothing holds EVERYTHING; the run is NOT finalized.
+		expect(outcome.kind).toBe('escalated');
+		if (outcome.kind !== 'escalated') throw new Error('unreachable');
+		expect(outcome.plan.escalated.length).toBeGreaterThan(0);
+		// The held-but-clear count the server surfaces as hrAutoResolved (decisions.length −
+		// escalated.length) is POSITIVE on a mixed queue — this is the value that, rendered
+		// status-blind, falsely read 'auto-resolved' (the AQ1 #2 defect).
+		const heldCount = outcome.plan.decisions.length - outcome.plan.escalated.length;
+		expect(heldCount).toBeGreaterThan(0);
+		// The run is UNCHANGED — still 'adjudicating', still on the operator's queue (resolved NOTHING).
+		const after = await getInterviewRun(db, runId);
+		expect(after?.status).toBe('adjudicating');
+		const data = await loadData();
+		expect(data.adjudication.find((c) => c.run === runId)).toBeDefined();
+	});
+
+	it('RENDER: the brief gates "auto-resolved" wording on the finalize path; the escalate path says "held" (F-008)', () => {
+		// Source pin (no component harness). The hrAutoResolved clause must NOT claim 'auto-resolved'
+		// while status === 'adjudicating' (the escalate path holds everything). It must read 'held'
+		// there, and 'auto-resolved' only once the run finalized (status !== 'adjudicating').
+		const sveltePath = fileURLToPath(new URL('./+page.svelte', import.meta.url));
+		const src = readFileSync(sveltePath, 'utf8');
+		const briefStart = src.indexOf("xfb?.kind === 'interview'");
+		expect(briefStart, 'interview brief block must exist').toBeGreaterThan(-1);
+		const briefBlock = src.slice(briefStart, briefStart + 900);
+		// The 'auto-resolved' claim lives in the status !== 'adjudicating' branch (the {:else if}).
+		const autoResolvedIdx = briefBlock.indexOf('auto-resolved');
+		const heldIdx = briefBlock.indexOf('HR held');
+		expect(autoResolvedIdx, "brief must keep the 'auto-resolved' wording (finalize path)").toBeGreaterThan(-1);
+		expect(heldIdx, "brief must add a 'held' wording branch for the escalate path").toBeGreaterThan(-1);
+		// The 'held' clause must come from inside the `status === 'adjudicating'` block, and the
+		// 'auto-resolved' clause from the {:else if} after it — i.e. the held wording precedes it.
+		expect(heldIdx, "'held' (escalate) must render before 'auto-resolved' (finalize) in the gated structure").toBeLessThan(autoResolvedIdx);
+		// And the auto-resolved clause must sit behind a NON-adjudicating gate (the {:else if}).
+		const elseIfIdx = briefBlock.indexOf(":else if Number(xfb.hrAutoResolved)");
+		expect(elseIfIdx, "'auto-resolved' must be gated behind an {:else if} off the adjudicating check").toBeGreaterThan(-1);
+		expect(elseIfIdx).toBeLessThan(autoResolvedIdx);
+	});
 });

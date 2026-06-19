@@ -17,7 +17,7 @@
    * navigate. clarifiers/anti-sycophancy positions are rendered as the agent authored them (§3).
    */
   import { enhance } from '$app/forms';
-  import { goto, invalidate, replaceState } from '$app/navigation';
+  import { goto, invalidate } from '$app/navigation';
   import { page } from '$app/state';
   import { stream } from '$lib/client/stream.svelte';
   import SessionTranscript from '$lib/components/shell/SessionTranscript.svelte';
@@ -215,17 +215,20 @@
   });
 
   // ── ASYNC propose: pin ?run=<id> on launch, then watch the run row live ──
-  // On a freshly LAUNCHED run, push ?run=<id> into the URL (replaceState — no history spam) so a
-  // reload re-hydrates the in-flight run via the loader. The load() reads data.run from this param.
+  // On a freshly LAUNCHED run, push ?run=<id> into the URL so a reload re-hydrates the in-flight run
+  // and — critically — so the loader's `url.searchParams.get('run')` sees it. We MUST use goto() (a
+  // real shallow client navigation), NOT replaceState(): replaceState updates page.url client-side
+  // but the URL it injects is NOT propagated into invalidate()'s __data.json re-fetch, so the loader
+  // re-runs WITHOUT the run param → run:null and the page never flips out of the brief form. goto()
+  // changes the data URL, so the loader re-runs WITH ?run= and data.run hydrates (no separate
+  // invalidate needed — the navigation itself re-fetches load data). replaceState:true keeps it off
+  // the history stack (no back-button spam); keepFocus/noScroll avoid a focus/scroll jump.
   $effect(() => {
     const launchedRunId = propose && 'runId' in propose ? propose.runId : undefined;
     if (launchedRunId && page.url.searchParams.get('run') !== launchedRunId) {
       const url = new URL(page.url);
       url.searchParams.set('run', launchedRunId);
-      replaceState(url, page.state);
-      // Re-read the run row immediately so the generating state renders without waiting for the
-      // first SSE tick (the row already exists — the action created it before returning).
-      void invalidate('app:create-run');
+      void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
     }
   });
 
@@ -260,11 +263,12 @@
   });
 
   /** Start over from the brief: drop ?run= so the loader hydrates no run (back to STAGE 1). */
+  // goto() (not replaceState) for the same reason as the launch effect: the dropped param must reach
+  // the loader's data URL so url.searchParams.get('run') is null → run:null → STAGE 1 renders.
   function startOver() {
     const url = new URL(page.url);
     url.searchParams.delete('run');
-    replaceState(url, page.state);
-    void invalidate('app:create-run');
+    void goto(url, { replaceState: true, keepFocus: true, noScroll: true });
   }
 </script>
 

@@ -39,6 +39,7 @@ import {
 } from './repo';
 import { isCeremonySelectable } from './lifecycle';
 import { roleTrackRecord, type RoleTrackRecord } from './track-record';
+import { type BriefOption } from '../projects/briefs';
 
 /** The LATEST interview_run distilled to the §8 interview-line fields. Carries the full
  *  interview_run status set (schema: running|adjudicating|passed|failed|error) so a newer
@@ -105,12 +106,37 @@ export interface AdjudicationCard {
 	at: string | null;
 }
 
+/**
+ * HR-5 (§7.5/B4) — one OPEN cert_hire decision_brief surfaced on the /agents HIRE QUEUE.
+ * The brief is the recruiter's PROPOSAL; the operator DISPOSES (B4). The card carries the
+ * brief's §8 fields VERBATIM from the persisted brief row (B3 read-only — never rescored,
+ * never re-derived from the run): ask/issue/evidence/options/falsifier are exactly what
+ * raiseHireBrief wrote. `recommendation` is the brief's OWN recommended option (approve→hire,
+ * reject→no_hire) — honest even if the underlying run has since changed.
+ */
+export interface HireBriefCard {
+	brief: string;
+	/** The candidate interview_run the brief certifies (artifact). */
+	run: string;
+	ask: string;
+	issue: string;
+	evidence: string[];
+	falsifier: string;
+	options: BriefOption[];
+	/** The recommended option's id → hire | no_hire (the brief's own §8 recommendation). */
+	recommendation: 'hire' | 'no_hire';
+	/** ISO; null → '—' (F-013). */
+	at: string | null;
+}
+
 export interface WorkforcePanelData {
 	roles: WorkforceRoleCard[];
 	/** §8 step ⑤ readiness echo: true once every launch role is deployable. */
 	allCertified: boolean;
 	/** §3.4 — every 'adjudicating' run awaiting the operator's judgment. */
 	adjudication: AdjudicationCard[];
+	/** HR-5 §7.5 — every OPEN cert_hire brief awaiting the operator's B4 hire gate. */
+	hireQueue: HireBriefCard[];
 	/** §5 — count of OPEN review_proposals (the /agents/proposals surface badge). Honest 0
 	 *  when none (a count is a real number — 0 here means "no open proposals", not '—'). */
 	openProposals: number;
@@ -362,6 +388,38 @@ async function buildAdjudicationQueue(db: Db): Promise<AdjudicationCard[]> {
 }
 
 /**
+ * HR-5 §7.5 — the OPEN cert_hire HIRE QUEUE: every standing operator hire-gate brief
+ * (artifact_kind 'cert_hire', status 'open'), newest first. B3 READ-ONLY: the card fields
+ * are taken verbatim from the persisted brief row (the recruiter already assembled them in
+ * raiseHireBrief from real run rows) — this aggregator NEVER re-derives the run, rescore, or
+ * read a key. A brief carrying no recommended option (a malformed brief) defaults to 'no_hire'
+ * (conservative — withholds, never asserts an unsubstantiated hire). Bounded SELECT; honest
+ * empty [] when none (F-008 — the page renders no queue rather than a fabricated row).
+ */
+async function buildHireQueue(db: Db): Promise<HireBriefCard[]> {
+	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+		`SELECT id, artifact, ask, issue, evidence, falsifier, options, created_at
+		   FROM decision_brief WHERE artifact_kind = 'cert_hire' AND status = 'open'
+		  ORDER BY created_at DESC LIMIT 100;`
+	);
+	return (rows ?? []).map((r) => {
+		const options = (Array.isArray(r.options) ? r.options : []) as BriefOption[];
+		const recommended = options.find((o) => o.recommended);
+		return {
+			brief: String(r.id),
+			run: String(r.artifact),
+			ask: typeof r.ask === 'string' ? r.ask : '',
+			issue: typeof r.issue === 'string' ? r.issue : '',
+			evidence: Array.isArray(r.evidence) ? (r.evidence as string[]) : [],
+			falsifier: typeof r.falsifier === 'string' ? r.falsifier : '',
+			options,
+			recommendation: recommended?.id === 'approve' ? 'hire' : 'no_hire',
+			at: strOrNull(r.created_at)
+		};
+	});
+}
+
+/**
  * §8 'Surfaces' — the full read-only workforce panel view. Bounded queries, JS fold,
  * honest empties (F-008). Throws nothing for an empty workforce: zero roles → an empty
  * `roles` array, which the page renders as the honest 'no roles' state.
@@ -370,11 +428,13 @@ export async function loadWorkforcePanel(db: Db): Promise<WorkforcePanelData> {
 	const roleRows = await listRoles(db);
 	const cards = await Promise.all(roleRows.map((r) => buildCard(db, r)));
 	const adjudication = await buildAdjudicationQueue(db);
+	const hireQueue = await buildHireQueue(db);
 	const open = await listOpenProposals(db);
 	return {
 		roles: cards,
 		allCertified: cards.length > 0 && cards.every((c) => c.deployable),
 		adjudication,
+		hireQueue,
 		openProposals: open.length
 	};
 }

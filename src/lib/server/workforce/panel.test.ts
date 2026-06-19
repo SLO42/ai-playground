@@ -19,6 +19,7 @@ import {
 } from './repo';
 import { loadWorkforcePanel } from './panel';
 import { newSentinelUlid } from './activation';
+import { raiseHireBrief, applyHireDecision } from './recruiter-hire';
 
 // TASK 16.7b VERIFY — the read-only workforce-panel aggregator (WORKFORCE-SPEC §8) against
 // a REAL throwaway SurrealDB. The FOUR data paths the §8 surfaces depend on:
@@ -67,6 +68,7 @@ describe('loadWorkforcePanel — §8 surfaces', () => {
 		// (other suites may have seeded rows; assert the SHAPE not the emptiness here)
 		expect(Array.isArray(panel.roles)).toBe(true);
 		expect(Array.isArray(panel.adjudication)).toBe(true);
+		expect(Array.isArray(panel.hireQueue)).toBe(true); // HR-5 hire queue is always an array
 		expect(typeof panel.allCertified).toBe('boolean');
 	});
 
@@ -301,6 +303,49 @@ describe('loadWorkforcePanel — §8 surfaces', () => {
 		expect(adj?.ambiguous).toHaveLength(2);
 		expect(adj?.ambiguous[0].type).toBe('partial_match');
 	});
+
+	it('HR-5 hire queue: an OPEN cert_hire brief surfaces (verbatim §8 fields); a DECIDED one drops off', async () => {
+		const slug = nextSlug('hirerole');
+		const role = await createRole(db, { slug, name: slug, purpose: 'hire-queue surface' });
+		const v = await createRoleVersion(db, {
+			role: role.id,
+			prompt_core: 'hire core',
+			default_tier: 'sonnet'
+		});
+		const run = await createInterviewRun(db, {
+			role_version: v.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			model_id: MODEL,
+			fixture_set_sha: 'fsha-hire'
+		});
+		// A PASSING terminal run → the recruiter raises a HIRE-recommended cert_hire brief.
+		await finalizeInterviewRun(db, run.id, {
+			status: 'passed',
+			planted_total: 2,
+			planted_found: 2,
+			false_positives: 0,
+			results: [{ fixture: slug, kind: 'planted_defect', found: ['p1', 'p2'], missed: [] }]
+		});
+		const brief = await raiseHireBrief(db, run.id);
+
+		// The OPEN brief surfaces on the hire queue with its §8 fields VERBATIM (B3 read-only).
+		const card = (await loadWorkforcePanel(db)).hireQueue.find((h) => h.brief === brief.id);
+		expect(card).toBeDefined();
+		expect(card?.run).toBe(run.id);
+		expect(card?.recommendation).toBe('hire'); // a passing run recommends HIRE
+		expect(card?.ask).toMatch(/hire/i);
+		expect(card?.evidence.length).toBeGreaterThanOrEqual(2);
+		expect(card?.evidence).toContain(run.id); // the candidate run is an evidence link
+		expect(card?.falsifier.trim().length).toBeGreaterThan(0);
+		// Exactly one recommended option (the §8 invariant) flows through to the card.
+		expect(card?.options.filter((o) => o.recommended)).toHaveLength(1);
+
+		// DECIDE it (operator approves, B4) → it must DROP OFF the open queue (status no longer 'open').
+		await applyHireDecision(db, brief.id, 'approve', { operatorConfirmed: true });
+		const after = (await loadWorkforcePanel(db)).hireQueue.find((h) => h.brief === brief.id);
+		expect(after).toBeUndefined();
+	}, 40_000);
 
 	it('pool generation: a deployable role with active fixtures surfaces the honest count', async () => {
 		const slug = nextSlug('poolrole');

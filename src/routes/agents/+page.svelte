@@ -29,8 +29,14 @@
   const workforce = $derived(data.workforce ?? null);
   const roleCards = $derived(workforce?.roles ?? []);
   const adjudication = $derived(workforce?.adjudication ?? []);
+  // HR-5 §7.5 — the OPEN cert_hire hire queue (the operator's B4 hire gate, surfaced here).
+  const hireQueue = $derived(workforce?.hireQueue ?? []);
   const wfFeedback = $derived(
     form && 'workforce' in form ? (form.workforce as Record<string, unknown>) : undefined
+  );
+  // HR-5 — applyHire action feedback (keyed by `hire`, separate from the adjudication `workforce`).
+  const hireFeedback = $derived(
+    form && 'hire' in form ? (form.hire as Record<string, unknown>) : undefined
   );
 
   const running = $derived(fleet.filter((f) => f.status === 'running'));
@@ -87,7 +93,9 @@
     // TASK 16.7b — workforce surfaces re-derive live off the ONE SSE stream (D-035): a
     // role/version create, an interview_run finalize/adjudicate, a panel_verdict, or a
     // role_event all re-invalidate the workforce slice. No second SSE source.
-    const wf = ['role', 'role_version', 'interview_run', 'panel_verdict', 'role_event'].map(
+    // HR-5 — a decision_brief change (a hire-gate raised, approved, or rejected) re-invalidates
+    // the workforce slice so the hire queue empties in place on decide (D-035, one SSE source).
+    const wf = ['role', 'role_version', 'interview_run', 'panel_verdict', 'role_event', 'decision_brief'].map(
       (t) => stream.onDbChange(t, () => void invalidate('app:workforce'))
     );
     return () => {
@@ -144,6 +152,18 @@
   // run resolvable (16.7b — shared-flag cross-form coupling fix). Transition/lookup via
   // the rune-free helpers in ./adj-busy (unit-tested for the isolation contract).
   let adjBusy = $state<AdjBusyMap>({});
+
+  // HR-5 — the hire gate: busy + the B4 confirm tick, scoped PER BRIEF (same isolation
+  // discipline as adjudication — approving one candidate never disables another's controls).
+  let hireBusy = $state<AdjBusyMap>({});
+  let hireConfirm = $state<Record<string, boolean>>({});
+  function setHireConfirm(brief: string, v: boolean) {
+    hireConfirm = { ...hireConfirm, [brief]: v };
+  }
+  /** A short id tail for a brief/run reference chip. */
+  function refTail(id: string): string {
+    return id.split(':').pop()?.slice(0, 8) ?? id;
+  }
 
   function itemType(item: Record<string, unknown>): string {
     return typeof item.type === 'string' ? item.type : 'unknown';
@@ -380,6 +400,121 @@
         </ul>
       {/if}
     </div>
+
+    <!-- ── HR-5 §7.5 — OPERATOR HIRE QUEUE (B4): open cert_hire decision briefs ──────
+         The recruiter PROPOSES (the cert_hire brief from a terminal certification run);
+         the operator DISPOSES here. APPROVE certifies the role (and is the B4 gate — it
+         REQUIRES the confirm tick; there is no auto-hire, D-039); REJECT flips nothing.
+         Staffing is a SEPARATE D-039 act on the staffing board. Live off the same SSE
+         stream (decision_brief watcher) — the queue empties in place on decide. -->
+    {#if hireQueue.length > 0}
+      <div class="card hire-queue" aria-labelledby="hire-title">
+        <div class="panel-head">
+          <span class="eyebrow" id="hire-title">hire queue (operator gate)</span>
+          <span class="count mono">{hireQueue.length} awaiting</span>
+        </div>
+        <p class="state-body">
+          A candidate finished its certification gauntlet. The recruiter proposes; you decide.
+          Approving certifies the role (a write — confirm it). Rejecting flips nothing. Staffing
+          a certified role onto a project is a separate step on the <a class="inline-link" href="/agents/staffing">staffing board</a>.
+        </p>
+        {#if hireFeedback?.error}
+          <p class="brief-error" role="alert">{String(hireFeedback.error)}</p>
+        {:else if hireFeedback?.ok}
+          <p class="adj-ok" role="status">
+            Hire {String(hireFeedback.action)}d —
+            {#if hireFeedback.action === 'approve'}
+              cert {hireFeedback.certFlipped ? 'flipped to' : 'already'} <span class="mono">{String(hireFeedback.lifecycle)}</span>.
+            {:else}
+              no change (the candidate stays uncertified).
+            {/if}
+          </p>
+        {/if}
+        <ul class="hire-briefs" aria-label="open hire briefs">
+          {#each hireQueue as h (h.brief)}
+            <li class="hire-brief" data-rec={h.recommendation}>
+              <div class="hire-brief-head">
+                <span class="rec-badge" data-rec={h.recommendation}>
+                  {h.recommendation === 'hire' ? 'recommends HIRE' : 'recommends NO HIRE'}
+                </span>
+                <span class="ref mono" title={h.run}>run {refTail(h.run)}</span>
+              </div>
+              <p class="hire-ask">{h.ask}</p>
+              <p class="hire-issue">{h.issue}</p>
+              <p class="hire-meta">
+                <span class="brief-k">evidence</span>
+                {#each h.evidence as ev (ev)}<span class="mono hire-ev">{ev}</span>{/each}
+              </p>
+              <p class="hire-meta"><span class="brief-k">falsifier</span> {h.falsifier}</p>
+              <ul class="hire-options">
+                {#each h.options as o (o.id)}
+                  <li class="hire-option" class:recommended={!!o.recommended}>
+                    <span class="hire-option-label">
+                      {o.label}
+                      {#if o.recommended}<span class="rec-tag">recommended</span>{/if}
+                    </span>
+                    <span class="hire-pro">+ {o.pro}</span>
+                    <span class="hire-con">− {o.con}</span>
+                    {#if o.recommended}<span class="hire-why">{o.recommended}</span>{/if}
+                  </li>
+                {/each}
+              </ul>
+              <!-- APPROVE — the B4-gated write. The confirm tick is REQUIRED (the server
+                   fail-closes without it, HireGateError → 409); we also gate the button so the
+                   operator cannot fire an unconfirmed approve from the UI. -->
+              <form
+                method="POST"
+                action="?/applyHire"
+                use:enhance={() => {
+                  hireBusy = setRunBusy(hireBusy, h.brief, true);
+                  return async ({ update }) => {
+                    await update({ reset: false });
+                    hireBusy = setRunBusy(hireBusy, h.brief, false);
+                  };
+                }}
+              >
+                <input type="hidden" name="brief" value={h.brief} />
+                <input type="hidden" name="action" value="approve" />
+                <label class="hire-confirm">
+                  <input
+                    type="checkbox"
+                    name="operatorConfirmed"
+                    checked={!!hireConfirm[h.brief]}
+                    onchange={(e) => setHireConfirm(h.brief, (e.currentTarget as HTMLInputElement).checked)}
+                  />
+                  I confirm — certify this role (D-039)
+                </label>
+                <button
+                  type="submit"
+                  class="hire-btn approve"
+                  disabled={isRunBusy(hireBusy, h.brief) || !hireConfirm[h.brief]}
+                >
+                  {isRunBusy(hireBusy, h.brief) ? 'Hiring…' : 'Approve — certify'}
+                </button>
+              </form>
+              <!-- REJECT — withholds; no confirm tick needed (flips nothing). -->
+              <form
+                method="POST"
+                action="?/applyHire"
+                use:enhance={() => {
+                  hireBusy = setRunBusy(hireBusy, h.brief, true);
+                  return async ({ update }) => {
+                    await update({ reset: false });
+                    hireBusy = setRunBusy(hireBusy, h.brief, false);
+                  };
+                }}
+              >
+                <input type="hidden" name="brief" value={h.brief} />
+                <input type="hidden" name="action" value="reject" />
+                <button type="submit" class="hire-btn" disabled={isRunBusy(hireBusy, h.brief)}>
+                  Reject — no hire
+                </button>
+              </form>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
 
     <!-- ── §3.4 ambiguous-match adjudication queue (the operator is the judge) ────── -->
     {#if adjudication.length > 0}
@@ -1257,5 +1392,162 @@
   .adj-ok {
     font: var(--type-body-sm);
     color: var(--color-success);
+  }
+
+  /* ── HR-5 §7.5 — operator hire queue (B4 gate) ──────────────────────────────── */
+  .inline-link {
+    color: var(--color-accent);
+    text-decoration: none;
+  }
+  .inline-link:hover {
+    text-decoration: underline;
+  }
+  .hire-briefs {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+  .hire-brief {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-overlay);
+  }
+  .hire-brief-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
+  }
+  .rec-badge {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.04em;
+    padding: 0.1rem 0.5rem;
+    border-radius: var(--radius-sm);
+    border: var(--border-width) solid var(--color-border);
+    color: var(--color-text-muted);
+  }
+  .rec-badge[data-rec='hire'] {
+    color: var(--color-success);
+    border-color: var(--color-success);
+  }
+  .rec-badge[data-rec='no_hire'] {
+    color: var(--color-warn-on-overlay, var(--color-warn));
+    border-color: var(--color-warn, var(--color-border-strong));
+  }
+  .ref {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    margin-left: auto;
+  }
+  .hire-ask {
+    font: var(--type-body);
+    font-weight: var(--weight-semibold);
+    color: var(--color-text);
+    margin: 0;
+  }
+  .hire-issue {
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+    margin: 0;
+  }
+  .hire-meta {
+    font-size: var(--text-xs);
+    color: var(--color-text-2);
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1) var(--space-2);
+    align-items: baseline;
+    margin: 0;
+  }
+  .brief-k {
+    color: var(--color-text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+  }
+  .hire-ev {
+    color: var(--color-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    max-width: 100%;
+  }
+  .hire-options {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  .hire-option {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    padding: var(--space-2);
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-inset);
+  }
+  .hire-option.recommended {
+    border-color: var(--color-accent);
+  }
+  .hire-option-label {
+    font: var(--type-body-sm);
+    font-weight: var(--weight-semibold);
+    color: var(--color-text);
+    display: flex;
+    gap: var(--space-2);
+    align-items: baseline;
+  }
+  .rec-tag {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    color: var(--color-accent);
+  }
+  .hire-pro,
+  .hire-con,
+  .hire-why {
+    font-size: var(--text-xs);
+    color: var(--color-text-2);
+  }
+  .hire-why {
+    color: var(--color-text-muted);
+    font-style: italic;
+  }
+  .hire-confirm {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-xs);
+    color: var(--color-text-2);
+  }
+  .hire-btn {
+    align-self: flex-start;
+    padding: var(--space-1) var(--space-3);
+    border: var(--border-width) solid var(--color-border-strong);
+    border-radius: var(--radius-sm);
+    background: transparent;
+    color: var(--color-text-2);
+    font: var(--type-body-sm);
+    cursor: pointer;
+  }
+  .hire-btn.approve {
+    border-color: var(--color-accent);
+    color: var(--color-accent);
+  }
+  .hire-btn:hover:not(:disabled) {
+    background: var(--color-surface-overlay);
+    color: var(--color-text);
+  }
+  .hire-btn:disabled {
+    opacity: 0.5;
+    cursor: default;
   }
 </style>

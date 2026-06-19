@@ -23,10 +23,15 @@ import { loadOrchestration } from '$lib/server/config';
 import {
 	loadWorkforcePanel,
 	adjudicateInterviewRun,
+	applyHireDecision,
+	HireGateError,
+	StaffingGateError,
 	WorkforceInputError,
 	type WorkforcePanelData,
 	type AmbiguousResolution
 } from '$lib/server/workforce';
+import { BriefError } from '$lib/server/projects';
+import { IdentifierError } from '$lib/server/db/validate';
 import { fail, type Actions } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
 
@@ -167,6 +172,67 @@ export const actions: Actions = {
 				return fail(400, { workforce: { error: err.message } });
 			}
 			return fail(500, { workforce: { error: (err as Error).message } });
+		}
+	},
+
+	// ── HR-5 §7.5 / B4 — the OPERATOR HIRE GATE on the /agents hire queue. The recruiter
+	// PROPOSES (the open cert_hire brief); the operator DISPOSES here. APPROVE flips the cert
+	// and (when chosen) feeds the BL-3 staffing flow; REJECT flips nothing. The B4 gate is the
+	// operatorConfirmed tick: an approve WITHOUT it fail-closes (HireGateError → 409) and the
+	// cert never flips — there is NO auto-hire (D-039). Staffing from the hire gate is a SEPARATE
+	// D-039 act on the staffing board, so this action certifies-only (no staffingProposal); the
+	// operator staffs the role afterward. Reuses applyHireDecision verbatim — no fork. Every named
+	// error is mapped to an honest operator-facing reason; nothing leaks as a masked 500.
+	applyHire: async ({ request }) => {
+		const db = tryGetDb();
+		if (!db) return fail(503, { hire: { error: 'database not connected' } });
+		const form = await request.formData();
+		const brief = String(form.get('brief') ?? '').trim();
+		const action = String(form.get('action') ?? '').trim();
+		if (!brief) return fail(400, { hire: { error: 'missing brief id' } });
+		if (action !== 'approve' && action !== 'reject') {
+			return fail(400, { hire: { brief, error: `action must be approve | reject (got ${action || '(none)'})` } });
+		}
+		// B4 — an APPROVE writes a cert (and may staff); it REQUIRES the operator's explicit
+		// confirm. Without the tick we refuse BEFORE calling the engine (the engine would also
+		// fail-closed, but a named UI reason is friendlier than the gate's prose). A REJECT
+		// withholds and needs no confirm.
+		const confirmed = form.get('operatorConfirmed') === 'on';
+		if (action === 'approve' && !confirmed) {
+			return fail(400, {
+				hire: {
+					brief,
+					error: 'confirm the hire — approving certifies the role (D-039; there is NO auto-hire). Tick to proceed.'
+				}
+			});
+		}
+		try {
+			const res = await applyHireDecision(db, brief, action, { operatorConfirmed: confirmed });
+			return {
+				hire: {
+					ok: true,
+					brief,
+					action,
+					status: res.brief.status,
+					recommendation: res.recommendation,
+					certFlipped: res.certFlipped,
+					lifecycle: res.lifecycle
+				}
+			};
+		} catch (err) {
+			// Every error has a name — map to an honest operator-facing reason, never a masked 500:
+			//   IdentifierError  — a malformed brief id (boundary), 400;
+			//   HireGateError    — a B1/B4 boundary violation or wrong-artifact-kind/missing brief
+			//                      (a forged/cross-role/non-cert_hire id fails closed here), 409;
+			//   StaffingGateError — only reachable if a staffing feed were attached (it isn't here),
+			//                      mapped for completeness;
+			//   BriefError       — illegal brief state (already-decided relabel), 409.
+			if (err instanceof IdentifierError) return fail(400, { hire: { brief, error: 'invalid brief id' } });
+			if (err instanceof HireGateError) return fail(409, { hire: { brief, error: err.message } });
+			if (err instanceof StaffingGateError) return fail(409, { hire: { brief, error: err.message } });
+			if (err instanceof WorkforceInputError) return fail(409, { hire: { brief, error: err.message } });
+			if (err instanceof BriefError) return fail(409, { hire: { brief, error: err.message } });
+			return fail(500, { hire: { brief, error: (err as Error).message } });
 		}
 	}
 };

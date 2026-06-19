@@ -26,7 +26,7 @@
 
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
-import { assertRecordId } from '../db/validate';
+import { assertRecordId, assertRecordIdOfTable } from '../db/validate';
 import { screen } from '../memory/screen';
 import {
 	generateCreationProposal,
@@ -182,9 +182,25 @@ export async function markProposalFailed(db: Db, runId: string, errorReason: str
 	});
 }
 
-/** Read one run by id (the page poll fallback + the SSE-driven re-read). null when unknown. */
+/**
+ * Read one run by id (the page poll fallback + the SSE-driven re-read). null when unknown.
+ *
+ * TABLE-SCOPED (D-016 trust boundary): the id MUST be a `create_proposal_run:…`. The generic
+ * `link()`/`assertRecordId` only checks the `table:id` SHAPE, so a crafted/stale `?run=` carrying a
+ * FOREIGN id (e.g. `project:…` or `session:…`) would otherwise `SELECT *` that wrong-table row and
+ * normRun would read its foreign `status` — fabricating an honest-looking 'generating' spinner (a
+ * project row) or a 'failed' alert (a failed session row). That is an F-008 fabricated state from
+ * untrusted input. A non-`create_proposal_run` id is therefore treated as UNKNOWN → null (the same
+ * honest-empty nil shadow as an unknown run id), never a foreign-row read.
+ */
 export async function getProposalRun(db: Db, runId: string): Promise<ProposalRun | null> {
-	const rid = link(runId);
+	let scopedId: string;
+	try {
+		scopedId = assertRecordIdOfTable(runId, 'create_proposal_run');
+	} catch {
+		return null; // foreign-table or malformed id → honest empty, never a fabricated foreign-row state.
+	}
+	const rid = new StringRecordId(scopedId);
 	const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $rid;`, { rid });
 	const row = Array.isArray(rows) ? rows[0] : undefined;
 	return row ? normRun(row as Parameters<typeof normRun>[0]) : null;

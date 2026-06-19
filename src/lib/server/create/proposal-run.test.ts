@@ -129,6 +129,28 @@ describe('getProposalRun — nil shadow path', () => {
 	it('unknown run id → null (honest empty, never fabricated)', async () => {
 		expect(await getProposalRun(db, 'create_proposal_run:nope')).toBeNull();
 	});
+
+	// D-016 trust boundary / F-008 regression: a crafted/stale `?run=` carrying a FOREIGN-table id
+	// must NOT read that wrong-table row and fabricate an honest-looking state from its foreign
+	// `status`. A real `project:` row (status 'active') would otherwise map to a PERMANENT
+	// 'generating' spinner; a 'failed' session row to a FABRICATED failure alert. Table-scoped read
+	// → null (honest empty), the same as an unknown run id.
+	it('a foreign-table id (project:) → null, never a foreign-row read (no fabricated spinner)', async () => {
+		// hostProject is a real, live `project:` row with status 'active' — the exact live-proven case.
+		expect(await getProposalRun(db, hostProject)).toBeNull();
+	});
+
+	it('a foreign-table session id → null (no fabricated failure alert)', async () => {
+		const [s] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE session CONTENT { project: $p, kind: "task", runtime: "claude-code", model: { provider: "anthropic", model_id: "x", tier: "cheap" }, status: "failed" } RETURN AFTER;`,
+			{ p: new StringRecordId(hostProject) }
+		);
+		expect(await getProposalRun(db, String(s[0].id))).toBeNull();
+	});
+
+	it('a malformed (non-record) id → null (honest empty)', async () => {
+		expect(await getProposalRun(db, 'not a record id')).toBeNull();
+	});
 });
 
 describe('runProposalInBackground — done', () => {

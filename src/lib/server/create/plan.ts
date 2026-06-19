@@ -949,9 +949,19 @@ export async function validateProposal(db: Db, raw: unknown): Promise<CreationPr
 	dirLayout.forEach((e, i) => assertNoSecretEcho(e, `dirLayout[${i}]`));
 	stack.forEach((e, i) => assertNoSecretEcho(e, `stack[${i}]`));
 
+	// pmCharterDraft is OPTIONAL (present only when the agent authored PM-hire charter content) and
+	// must end up a STRING (the charter field the PM hire consumes). The validator must NEVER hard-fail
+	// a whole real-spend proposal over its shape: agents legitimately emit it as "" (no charter), as a
+	// string, OR as a STRUCTURED object (mission/scope/metrics/guardrails). COERCE rather than reject —
+	// empty/absent → undefined; a non-empty string → kept; a non-empty object/array → serialized to a
+	// readable charter string (the PM reads it; it is secret-screened below like any other free text).
 	let pmCharterDraft: string | undefined;
-	if (raw.pmCharterDraft !== undefined && raw.pmCharterDraft !== null) {
-		pmCharterDraft = reqStr(raw.pmCharterDraft, 'pmCharterDraft');
+	const rawCharter = raw.pmCharterDraft;
+	if (typeof rawCharter === 'string') {
+		if (rawCharter.trim() !== '') pmCharterDraft = rawCharter;
+	} else if (rawCharter !== undefined && rawCharter !== null && typeof rawCharter === 'object') {
+		const serialized = JSON.stringify(rawCharter, null, 2);
+		if (serialized && serialized !== '{}' && serialized !== '[]') pmCharterDraft = serialized;
 	}
 
 	// D-026 — secret-echo across EVERY agent-authored FREE-TEXT string, not just configs/arrays

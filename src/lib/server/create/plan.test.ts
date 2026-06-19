@@ -384,6 +384,31 @@ describe('CA-H1 — ENV-NAME-POSITIVE secret-echo at the trust boundary (redTeam
 		const raw = goodRaw({ pmCharterDraft: GHP2 });
 		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(SecretEchoError);
 	});
+	// pmCharterDraft is OPTIONAL + shape-tolerant: agents emit it as "" (no charter), a string, OR a
+	// structured object — COERCE, never hard-fail a whole real-spend proposal over its shape.
+	it('COERCES a structured-object pmCharterDraft to a non-empty string (agent emitted an object)', async () => {
+		const charter = { mission: 'Keep the mod loading across game updates.', scope_in: ['loader', 'template'] };
+		const p = await validateProposal(db, goodRaw({ pmCharterDraft: charter }));
+		expect(typeof p.pmCharterDraft).toBe('string');
+		expect(p.pmCharterDraft).toContain('Keep the mod loading');
+	});
+	it('TOLERATES an empty / absent pmCharterDraft → undefined (no hard-fail)', async () => {
+		const empty = await validateProposal(db, goodRaw({ pmCharterDraft: '' }));
+		expect(empty.pmCharterDraft).toBeUndefined();
+		const blank = await validateProposal(db, goodRaw({ pmCharterDraft: '   ' }));
+		expect(blank.pmCharterDraft).toBeUndefined();
+		const absent = goodRaw();
+		delete (absent as Record<string, unknown>).pmCharterDraft;
+		expect((await validateProposal(db, absent)).pmCharterDraft).toBeUndefined();
+	});
+	// A bare provider-token charter STILL hard-rejects at validation (Gate-3 prefix, prefix-at-start) —
+	// proving coercion did not weaken the prefix backstop. A secret EMBEDDED in prose/an object field is
+	// the freetext redact-at-writer class (screened at the createPm/updatePmCharter boundary, R2), same
+	// as planMacro/foundingTasks — not a validate-time hard-fail; that path is covered in the execute/
+	// pm-repo writer tests, not here.
+	it('a BARE provider-token charter still hard-rejects (coercion kept the prefix backstop)', async () => {
+		await expect(validateProposal(db, goodRaw({ pmCharterDraft: GHP2 }))).rejects.toBeInstanceOf(SecretEchoError);
+	});
 	it('REJECTS a literal credential echoed in a founding task (Gap-2 free-text)', async () => {
 		const raw = goodRaw({
 			foundingTasks: [

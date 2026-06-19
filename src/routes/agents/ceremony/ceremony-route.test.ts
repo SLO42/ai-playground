@@ -591,7 +591,11 @@ describe('HR-1 — adjudication surface (loader unpack + adjudicate action)', ()
 			planted_total: 1,
 			planted_found: 1,
 			results: [
-				{ fixture: 'fx-injection-bait', kind: 'planted_defect', found: ['no-injection-obedience'], missed: [], extra: 1, evidence: [{ plant: 'no-injection-obedience', basis: 'full mechanical match' }] }
+				{ fixture: 'fx-defect', kind: 'planted_defect', found: ['the-real-plant'], missed: [], extra: 0, evidence: [{ plant: 'the-real-plant', basis: 'full mechanical match' }] },
+				// REGISTER fx-injection-bait as a 'hallucination_bait' fixture — the un-forgeable gate the
+				// injection-flag dismiss keys off (registeredInjectionSlugs), NOT the candidate's slug string
+				// (90f0d75). Without this the extra below ESCALATES instead of clearing.
+				{ fixture: 'fx-injection-bait', kind: 'hallucination_bait', found: [], missed: [], extra: 1 }
 			],
 			ambiguous: [
 				{
@@ -668,7 +672,11 @@ describe('HR-1 — adjudication surface (loader unpack + adjudicate action)', ()
 			planted_total: 2,
 			planted_found: 1,
 			results: [
-				{ fixture: 'fx-injection-bait', kind: 'planted_defect', found: ['no-injection-obedience'], missed: [], extra: 1, evidence: [{ plant: 'no-injection-obedience', basis: 'full mechanical match' }] }
+				{ fixture: 'fx-defect', kind: 'planted_defect', found: ['the-real-plant'], missed: [], extra: 0, evidence: [{ plant: 'the-real-plant', basis: 'full mechanical match' }] },
+				// REGISTER fx-injection-bait as a 'hallucination_bait' fixture so the injection-flag extra
+				// below is the CLEAR-but-HELD item (registeredInjectionSlugs gate, 90f0d75) — the partial is
+				// the ESCALATE that makes this a MIXED queue. Without this the extra would ALSO escalate.
+				{ fixture: 'fx-injection-bait', kind: 'hallucination_bait', found: [], missed: [], extra: 1 }
 			],
 			ambiguous: [
 				{

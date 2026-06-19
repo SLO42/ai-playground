@@ -278,29 +278,40 @@ describe('targetDrafts resilience — drop invalid entries, keep valid (do not w
 // value when it is the WHOLE config value (no inline `key=value`) — these enforce the ENV-NAME-POSITIVE
 // rule at the proposal trust boundary instead. redTeam:true.
 describe('CA-H1 — ENV-NAME-POSITIVE secret-echo at the trust boundary (redTeam)', () => {
-	it('rejects a bare password assigned to a secret-like key (screen() missed it in isolation)', async () => {
-		const raw = goodRaw({
-			targetDrafts: [{ kind: 'deploy', adapterId: 'vercel', config: { password: 's3cr3tP@ssw0rd' } }]
-		});
-		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(SecretEchoError);
+	// NOTE (LIVE BLOCKER fix): the target-config DETECTION (these cases still TRIP the secret gate) is
+	// unchanged; what changed is the DISPOSITION — a non-prefix/non-quarantine target-config secret is
+	// now REDACTED-AND-KEPT (proposal succeeds, no raw value) rather than hard-rejected. The dedicated
+	// 'REDACT-AND-KEEP' describe block above asserts the kept/redacted outcome for these same inputs.
+	// Only a known PREFIX or a QUARANTINED block in target config still hard-rejects.
+	it('redacts-and-keeps a bare password under a secret-like key (was hard-reject; no raw value)', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'vercel', config: { password: 's3cr3tP@ssw0rd' } }] })
+		);
+		expect(p.targetDrafts[0].config.password).toBe('[REDACTED:secret-like]');
+		expect(JSON.stringify(p)).not.toContain('s3cr3tP@ssw0rd');
 	});
-	it('rejects a no-prefix DB password under a secret-like key (was clean in isolation)', async () => {
-		const raw = goodRaw({
-			targetDrafts: [{ kind: 'deploy', adapterId: 'fly', config: { dbPassword: 'hunter2hunter2' } }]
-		});
-		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(SecretEchoError);
+	it('redacts-and-keeps a no-prefix DB password under a secret-like key', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'fly', config: { dbPassword: 'hunter2hunter2' } }] })
+		);
+		expect(p.targetDrafts[0].config.dbPassword).toBe('[REDACTED:secret-like]');
+		expect(JSON.stringify(p)).not.toContain('hunter2hunter2');
 	});
-	it('rejects a glpat- GitLab token even under an innocuous key (prefix gate)', async () => {
+	it('HARD-rejects a glpat- GitLab token even under an innocuous key (prefix gate — never redacted)', async () => {
 		const raw = goodRaw({
 			targetDrafts: [{ kind: 'deploy', adapterId: 'gitlab', config: { note: GLPAT2 } }]
 		});
 		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(SecretEchoError);
 	});
-	it('rejects a high-entropy literal token assigned to a secret-like key', async () => {
-		const raw = goodRaw({
-			targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { apiKey: 'aZ9bY8cX7dW6eV5fU4gT3hS2' } }]
-		});
-		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(SecretEchoError);
+	it('redacts-and-keeps a high-entropy literal token assigned to a secret-like key', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { apiKey: 'aZ9bY8cX7dW6eV5fU4gT3hS2' } }] })
+		);
+		expect(p.targetDrafts[0].config.apiKey).toBe('[REDACTED:secret-like]');
+		expect(JSON.stringify(p)).not.toContain('aZ9bY8cX7dW6eV5fU4gT3hS2');
 	});
 	it('rejects a literal secret echoed in a stack[] entry (was unscreened)', async () => {
 		const raw = goodRaw({ stack: ['Node', GLPAT2] });
@@ -336,17 +347,24 @@ describe('CA-H1 — ENV-NAME-POSITIVE secret-echo at the trust boundary (redTeam
 		expect(p.targetDrafts[0].config).toEqual({ apiKey: '' });
 	});
 	// CA-H1 review GAP-1 (root-cause closure): a BARE token is no longer read as an env-name reference.
-	it('REJECTS a bare UPPER_SNAKE token under a secret-like key (must be an explicit ${ENV} reference)', async () => {
-		const raw = goodRaw({
-			targetDrafts: [{ kind: 'deploy', adapterId: 'fly', config: { dbPassword: 'DATABASE_PASSWORD' } }]
-		});
-		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(SecretEchoError);
+	// DISPOSITION (LIVE BLOCKER fix): in target config this is now redacted-and-kept (still DETECTED as
+	// secret-like — the detection rule is unchanged), not hard-rejected.
+	it('redacts-and-keeps a bare UPPER_SNAKE token under a secret-like key (still detected, no raw value)', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'fly', config: { dbPassword: 'DATABASE_PASSWORD' } }] })
+		);
+		expect(p.targetDrafts[0].config.dbPassword).toBe('[REDACTED:secret-like]');
+		expect(JSON.stringify(p)).not.toContain('DATABASE_PASSWORD');
 	});
-	it('REJECTS a SHORT high-entropy literal under a secret-like key (the GAP the prior fix missed)', async () => {
-		// 12 + 16 + 15-char literals that previously classified as bare env names and passed both gates.
+	it('redacts-and-keeps SHORT high-entropy literals under a secret-like key (still detected, no raw value)', async () => {
 		for (const lit of ['X7K9QZ2MPLW4', 'A1B2C3D4E5F6G7H8', 'ZXCVBNMASDFGHJK']) {
-			const raw = goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { apiKey: lit } }] });
-			await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(SecretEchoError);
+			const p = await validateProposal(
+				db,
+				goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { apiKey: lit } }] })
+			);
+			expect(p.targetDrafts[0].config.apiKey).toBe('[REDACTED:secret-like]');
+			expect(JSON.stringify(p)).not.toContain(lit);
 		}
 	});
 	// CA-H1 review GAP-2: agent-authored FREE-TEXT fields (macro / charter / tasks / clarifiers) are
@@ -404,19 +422,22 @@ describe('CA-H1 — ENV-NAME-POSITIVE secret-echo at the trust boundary (redTeam
 		const p = await validateProposal(db, goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'vercel', config }] }));
 		expect(p.targetDrafts[0].config).toEqual(config);
 	});
-	it('still REJECTS a literal under a genuine secret HEAD key (dbPassword/clientSecret/accessToken/apiKey)', async () => {
-		for (const config of [
-			{ dbPassword: 's3cr3tP@ssw0rd' },
-			{ clientSecret: 'literal-not-an-env-name' },
-			{ accessToken: 'abc123literal' },
-			{ apiKey: 'plainvalue' },
-			{ access_key: 'plainvalue' },
-			{ private_key: 'plainvalue' },
-			{ dbPass: 'plainvalue' }
-		]) {
-			await expect(
-				validateProposal(db, goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'x', config }] }))
-			).rejects.toBeInstanceOf(SecretEchoError);
+	it('still DETECTS+redacts a literal under a genuine secret HEAD key (dbPassword/clientSecret/accessToken/apiKey)', async () => {
+		for (const [key, val] of [
+			['dbPassword', 's3cr3tP@ssw0rd'],
+			['clientSecret', 'literal-not-an-env-name'],
+			['accessToken', 'abc123literal'],
+			['apiKey', 'plainvalue'],
+			['access_key', 'plainvalue'],
+			['private_key', 'plainvalue'],
+			['dbPass', 'plainvalue']
+		] as const) {
+			const p = await validateProposal(
+				db,
+				goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { [key]: val } }] })
+			);
+			expect(p.targetDrafts[0].config[key]).toBe('[REDACTED:secret-like]');
+			expect(p.configRedactions).toEqual([{ field: `targetDrafts[0].config.${key}`, reason: 'secret-like-key' }]);
 		}
 	});
 	it('does NOT flag a non-credential *Key head (sortKey/partitionKey — modifier-gated)', async () => {
@@ -427,36 +448,48 @@ describe('CA-H1 — ENV-NAME-POSITIVE secret-echo at the trust boundary (redTeam
 	// CA-H1 re-review GAP-1 (HIGH): a high-entropy ALL-CAPS literal with no underscore is byte-for-byte
 	// a valid bare env-name token, so isEnvNameReference USED to accept it — passing Gate-2 under a
 	// secret-like key AND short-circuiting the Gate-3 prefix/entropy backstop. Both directions covered.
-	it('rejects a high-entropy ALL-CAPS literal under a secret-like key (env-ref must be env-NAME shaped)', async () => {
-		for (const config of [
-			{ apiKey: 'DGHJKLMNPQRSTUVWXYZ23456' }, // entropy 4.58, no underscore
-			{ password: 'C0FFEE4DEADBEEF8BADF00D' } // hex secret, no underscore
-		]) {
-			await expect(
-				validateProposal(db, goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'x', config }] }))
-			).rejects.toBeInstanceOf(SecretEchoError);
+	it('redacts-and-keeps a high-entropy ALL-CAPS literal under a secret-like key (still detected)', async () => {
+		for (const [key, val] of [
+			['apiKey', 'DGHJKLMNPQRSTUVWXYZ23456'], // entropy 4.58, no underscore
+			['password', 'C0FFEE4DEADBEEF8BADF00D'] // hex secret, no underscore
+		] as const) {
+			const p = await validateProposal(
+				db,
+				goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { [key]: val } }] })
+			);
+			expect(p.targetDrafts[0].config[key]).toBe('[REDACTED:secret-like]');
+			expect(JSON.stringify(p)).not.toContain(val);
 		}
 	});
-	it('rejects a high-entropy ALL-CAPS literal even under an INNOCUOUS key (Gate-3 runs unconditionally)', async () => {
-		const raw = goodRaw({
-			targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { note: 'DGHJKLMNPQRSTUVWXYZ23456' } }]
-		});
-		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(SecretEchoError);
+	it('redacts-and-keeps a high-entropy ALL-CAPS literal even under an INNOCUOUS key (Gate-3 still detects)', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { note: 'DGHJKLMNPQRSTUVWXYZ23456' } }] })
+		);
+		expect(p.targetDrafts[0].config.note).toBe('[REDACTED:secret-like]');
+		expect(p.configRedactions[0].reason).toBe('credential-shaped-token');
 	});
-	it('rejects a long underscore-free ALL-CAPS blob as a bare env name (must carry an underscore)', async () => {
-		const raw = goodRaw({
-			targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { token: 'ABCDEFGHIJKLMNOPQRSTUVWX' } }]
-		});
-		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(SecretEchoError);
+	it('redacts-and-keeps a long underscore-free ALL-CAPS blob under a secret-like key (still detected)', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { token: 'ABCDEFGHIJKLMNOPQRSTUVWX' } }] })
+		);
+		expect(p.targetDrafts[0].config.token).toBe('[REDACTED:secret-like]');
+		expect(JSON.stringify(p)).not.toContain('ABCDEFGHIJKLMNOPQRSTUVWX');
 	});
-	// CA-H1 root-cause closure: a BARE token (even an obvious env name like GITHUB_TOKEN) is no longer
-	// accepted under a secret-like key — a reference must be EXPLICIT (${GITHUB_TOKEN}). This is what
-	// removes the short-high-entropy hole entirely (no bare-token shape can be misread as a reference).
-	it('REJECTS a bare env-name-shaped token under a secret-like key (must be explicit ${ENV})', async () => {
-		for (const config of [{ token: 'GITHUB_TOKEN' }, { apiKey: 'OPENAI' }, { password: 'PGPASSWORD' }]) {
-			await expect(
-				validateProposal(db, goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'x', config }] }))
-			).rejects.toBeInstanceOf(SecretEchoError);
+	// CA-H1 root-cause closure: a BARE token (even an obvious env name like GITHUB_TOKEN) is not an
+	// env-name reference under a secret-like key. DISPOSITION (LIVE BLOCKER fix): redacted-and-kept.
+	it('redacts-and-keeps a bare env-name-shaped token under a secret-like key (still detected)', async () => {
+		for (const [key, val] of [
+			['token', 'GITHUB_TOKEN'],
+			['apiKey', 'OPENAI'],
+			['password', 'PGPASSWORD']
+		] as const) {
+			const p = await validateProposal(
+				db,
+				goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { [key]: val } }] })
+			);
+			expect(p.targetDrafts[0].config[key]).toBe('[REDACTED:secret-like]');
 		}
 	});
 
@@ -509,6 +542,176 @@ describe('CA-H1 — ENV-NAME-POSITIVE secret-echo at the trust boundary (redTeam
 			}
 		});
 		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(SecretEchoError);
+	});
+});
+
+// LIVE BLOCKER fix — REDACT-AND-KEEP for targetDrafts CONFIG secret-echoes (H1 disposition). The
+// live trigger: a publish-target asset PATH list (icon/README/manifest) had one entry flagged as a
+// literal secret and the WHOLE ~2-min real-spend proposal hard-failed. The disposition now SPLITS:
+// an UNAMBIGUOUS secret (known prefix / quarantined block) STILL hard-rejects; ANY OTHER suspected
+// secret is redacted-in-place and KEPT so the proposal SUCCEEDS. D-026: NO raw secret in the
+// returned proposal on ANY branch. redTeam:true.
+describe('REDACT-AND-KEEP — targetDrafts config secret disposition (D-026, redTeam)', () => {
+	/** Deep-walk a value and assert NONE of the forbidden raw substrings survive anywhere. */
+	function assertNoRawSecret(obj: unknown, forbidden: string[]): void {
+		const json = JSON.stringify(obj);
+		for (const f of forbidden) expect(json).not.toContain(f);
+	}
+
+	it('HARD-rejects a glpat- GitLab token in config (prefix is unambiguous — NOT redacted-and-kept)', async () => {
+		const raw = goodRaw({
+			targetDrafts: [{ kind: 'deploy', adapterId: 'gitlab', config: { token: GLPAT2 } }]
+		});
+		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(SecretEchoError);
+	});
+
+	it('HARD-rejects an sk-ant- token in config even under an innocuous key (prefix gate)', async () => {
+		const SKANT = 'sk-ant-' + 'api03' + 'AbCdEf0123456789XyZwAbCdEf';
+		const raw = goodRaw({
+			targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { note: SKANT } }]
+		});
+		await expect(validateProposal(db, raw)).rejects.toBeInstanceOf(SecretEchoError);
+	});
+
+	it('HARD-rejects a quarantined private-key block in config, NAMING the field', async () => {
+		const KEY =
+			'-----BEGIN ' +
+			'RSA PRIVATE KEY-----\nMIIBdeadbeefdeadbeefdeadbeef\n-----END ' +
+			'RSA PRIVATE KEY-----';
+		const raw = goodRaw({
+			targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { bootstrap: KEY } }]
+		});
+		let err: unknown;
+		try {
+			await validateProposal(db, raw);
+		} catch (e) {
+			err = e;
+		}
+		expect(err).toBeInstanceOf(SecretEchoError);
+		expect((err as SecretEchoError).field).toBe('targetDrafts[0].config.bootstrap');
+	});
+
+	it('REDACTS-AND-KEEPS a bare password under a secret-like key (NOT a hard-fail; no raw value returned)', async () => {
+		const SECRET = 's3cr3tP@ssw0rd';
+		const p = await validateProposal(
+			db,
+			goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'vercel', config: { password: SECRET } }] })
+		);
+		// Proposal SUCCEEDS; the value is redacted in place, NOT the raw secret.
+		expect(p.targetDrafts).toHaveLength(1);
+		expect(p.targetDrafts[0].config.password).toBe('[REDACTED:secret-like]');
+		expect(p.configRedactions).toEqual([
+			{ field: 'targetDrafts[0].config.password', reason: 'secret-like-key' }
+		]);
+		assertNoRawSecret(p, [SECRET]);
+	});
+
+	it('REDACTS-AND-KEEPS a high-entropy non-prefixed token under an innocuous key', async () => {
+		const TOKEN = 'aZ9bY8cX7dW6eV5fU4gT3hS2';
+		const p = await validateProposal(
+			db,
+			goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { note: TOKEN } }] })
+		);
+		expect(p.targetDrafts[0].config.note).toBe('[REDACTED:secret-like]');
+		expect(p.configRedactions[0]).toEqual({
+			field: 'targetDrafts[0].config.note',
+			reason: 'credential-shaped-token'
+		});
+		assertNoRawSecret(p, [TOKEN]);
+	});
+
+	it('REDACTS-AND-KEEPS a screen-redactable email in config (kept as safe placeholder)', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({
+				targetDrafts: [{ kind: 'deploy', adapterId: 'x', config: { contact: 'ops@rounds.example' } }]
+			})
+		);
+		expect(p.targetDrafts[0].config.contact).toBe('[REDACTED:email]');
+		expect(p.configRedactions).toEqual([
+			{ field: 'targetDrafts[0].config.contact', reason: 'email' }
+		]);
+		assertNoRawSecret(p, ['ops@rounds.example']);
+	});
+
+	it('KEEPS a benign asset PATH list clean (icon.png) and the proposal SUCCEEDS (the live blocker)', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({
+				targetDrafts: [
+					{
+						kind: 'publish',
+						adapterId: 'thunderstore',
+						config: { tokenEnv: 'THUNDERSTORE_TOKEN', assets: ['icon.png', 'README.md', 'manifest.json'] }
+					}
+				]
+			})
+		);
+		expect(p.targetDrafts[0].config).toEqual({
+			tokenEnv: 'THUNDERSTORE_TOKEN',
+			assets: ['icon.png', 'README.md', 'manifest.json']
+		});
+		expect(p.configRedactions).toEqual([]);
+	});
+
+	it('redacts inside a NESTED config object/array, keeping the field path honest', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({
+				targetDrafts: [
+					{
+						kind: 'deploy',
+						adapterId: 'x',
+						config: { auth: { password: 'plainliteral' }, extras: ['icon.png'] }
+					}
+				]
+			})
+		);
+		expect((p.targetDrafts[0].config.auth as Record<string, unknown>).password).toBe(
+			'[REDACTED:secret-like]'
+		);
+		expect(p.targetDrafts[0].config.extras).toEqual(['icon.png']);
+		expect(p.configRedactions).toEqual([
+			{ field: 'targetDrafts[0].config.auth.password', reason: 'secret-like-key' }
+		]);
+		assertNoRawSecret(p, ['plainliteral']);
+	});
+
+	it('still ACCEPTS an env-NAME reference under a secret-like key with NO redaction (happy path)', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({ targetDrafts: [{ kind: 'deploy', adapterId: 'vercel', config: { password: '${DB_PASSWORD}' } }] })
+		);
+		expect(p.targetDrafts[0].config).toEqual({ password: '${DB_PASSWORD}' });
+		expect(p.configRedactions).toEqual([]);
+	});
+
+	it('shadow path: empty config → no redactions, proposal succeeds', async () => {
+		const p = await validateProposal(
+			db,
+			goodRaw({ targetDrafts: [{ kind: 'sync', adapterId: 'gh', config: {} }] })
+		);
+		expect(p.configRedactions).toEqual([]);
+		expect(p.targetDrafts[0].config).toEqual({});
+	});
+
+	it('INVARIANT: across mixed clean/redact entries, NO raw secret survives anywhere in the returned proposal', async () => {
+		const SECRET = 'hunter2hunter2';
+		const TOKEN = 'aZ9bY8cX7dW6eV5fU4gT3hS2';
+		const EMAIL = 'jane.doe@rounds.example';
+		const p = await validateProposal(
+			db,
+			goodRaw({
+				targetDrafts: [
+					{ kind: 'publish', adapterId: 'thunderstore', config: { assets: ['icon.png'], tokenEnv: 'TS_TOKEN' } },
+					{ kind: 'deploy', adapterId: 'fly', config: { dbPassword: SECRET, note: TOKEN, contact: EMAIL } }
+				]
+			})
+		);
+		assertNoRawSecret(p, [SECRET, TOKEN, EMAIL]);
+		// The clean entry is untouched; the second entry is fully redacted.
+		expect(p.targetDrafts[0].config).toEqual({ assets: ['icon.png'], tokenEnv: 'TS_TOKEN' });
+		expect(p.configRedactions.length).toBe(3);
 	});
 });
 

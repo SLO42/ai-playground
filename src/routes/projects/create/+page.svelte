@@ -606,6 +606,25 @@
           </section>
         {/if}
 
+        {#if proposal.configRedactions.length > 0}
+          <section class="block redactions" aria-label="redacted config values">
+            <h3 class="block-title">Redacted config values <span class="redact-tag">kept &amp; redacted</span></h3>
+            <p class="field-help">
+              A config value looked secret-like and was redacted in place so the proposal still
+              succeeds — no raw secret is stored. Reference an environment variable
+              (<span class="mono">{'${ENV_NAME}'}</span>) instead before publishing or deploying.
+            </p>
+            <ul class="redaction-list" aria-label="redactions">
+              {#each proposal.configRedactions as r, i (i)}
+                <li class="redaction">
+                  <span class="mono redaction-field">{r.field}</span>
+                  <span class="redaction-reason">{r.reason}</span>
+                </li>
+              {/each}
+            </ul>
+          </section>
+        {/if}
+
         <!-- ── CONFIRM CONTROL (D-010) ── -->
         <form
           class="confirm"
@@ -1029,6 +1048,47 @@
   .chip.proposed {
     color: var(--color-warn-on-overlay);
     background: var(--color-warn-bg);
+  }
+  .redactions {
+    border-left: 2px solid var(--color-warn);
+    padding-left: var(--space-3, 0.75rem);
+    gap: var(--space-2, 0.5rem);
+  }
+  .redact-tag {
+    font-size: 0.6rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-warn-on-overlay);
+    background: var(--color-warn-bg);
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm, 6px);
+    vertical-align: middle;
+  }
+  .redaction-list {
+    list-style: none;
+    margin: var(--space-2, 0.5rem) 0 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .redaction {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-3, 0.75rem);
+    flex-wrap: wrap;
+    font-size: 0.78rem;
+  }
+  .redaction-field {
+    color: var(--color-text-2);
+  }
+  .redaction-reason {
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 700;
+    color: var(--color-warn-on-overlay);
   }
   .tasks {
     display: flex;

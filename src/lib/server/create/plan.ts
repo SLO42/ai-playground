@@ -127,6 +127,20 @@ export interface TargetDraft {
 }
 
 /**
+ * An honest record of a proposal value that LOOKED secret-like and was REDACTED in place (kept, not
+ * discarded) before the proposal was returned (D-026 redact-and-keep, mirrors the scaffold-write
+ * ScaffoldRedaction). The RETURNED proposal carries the redacted text only — never the raw value
+ * (D-026: no raw secret in a returned proposal object). The review UI surfaces these so the operator
+ * sees "a config value looked secret-like; use ${ENV_NAME}".
+ */
+export interface ConfigRedaction {
+	/** The dotted field path of the redacted value, e.g. `targetDrafts[0].config.password`. */
+	field: string;
+	/** Short machine reason: a screen rule id, 'secret-like-key', or 'credential-shaped-token'. */
+	reason: string;
+}
+
+/**
  * Capability needs draft (workforce capability-match shape). `defect_classes` carries ONLY classes
  * that are in the operator-confirmed vocabulary (confirmed + matchable, §3 D4). A class the agent
  * proposes that is NOT yet in the vocabulary is CAPTURED separately in `proposed_defect_classes`
@@ -174,6 +188,13 @@ export interface CreationProposal {
 	pmCharterDraft?: string;
 	/** 2-4 position-taking clarifiers (§2 step 1 + §3). May be empty when the brief does not fork. */
 	clarifiers: Clarifier[];
+	/**
+	 * Config values that looked secret-like and were REDACTED in place (kept, not discarded) so the
+	 * proposal SUCCEEDS instead of one off-happy-path field nuking a ~2-min real-spend generation
+	 * (D-026 redact-and-keep). Empty when no value tripped the redact path. The corresponding values
+	 * in `targetDrafts[].config` already carry the redacted text — NO raw secret is in this object.
+	 */
+	configRedactions: ConfigRedaction[];
 }
 
 /**
@@ -527,6 +548,93 @@ function assertNoSecretEcho(
 	// numbers/booleans/null pass through.
 }
 
+const REDACTED_KEY_POSITIVE = '[REDACTED:secret-like]';
+
+/**
+ * D-026 REDACT-AND-KEEP disposition for a targetDrafts CONFIG blob (the H1 disposition applied to
+ * the PROPOSAL secret-echo gate). Recursively returns a SCREENED COPY of the config plus the list of
+ * redactions performed. The disposition SPLITS by certainty so one off-happy-path field never
+ * discards an entire real-spend generation, while an UNAMBIGUOUS secret still HARD-rejects:
+ *
+ *   (a) HARD-reject (throws SecretEchoError, NAMES the field) — ONLY for a value the operator MUST
+ *       remove themselves:
+ *         • a known LITERAL_CREDENTIAL_PREFIXES prefix (glpat-/ghp_/sk-ant-/AKIA/AIza/…) — Gate 3
+ *           prefix branch; OR
+ *         • a `quarantined` screen result (un-redactable, e.g. a private-key PEM block).
+ *   (b) REDACT-IN-PLACE + KEEP (collect {field, reason}, proposal SUCCEEDS) — for ANY OTHER
+ *       suspected secret:
+ *         • screen() 'redacted' → keep screen().text (the span already replaced with a safe
+ *           placeholder, e.g. [REDACTED:email]);
+ *         • a value under a secret-like KEY that is NOT an env-name reference → replace the WHOLE
+ *           value with [REDACTED:secret-like] (reason 'secret-like-key');
+ *         • a high-entropy NON-prefixed credential-shaped token → replace with
+ *           [REDACTED:secret-like] (reason 'credential-shaped-token').
+ *
+ * D-026 PRESERVED: the RETURNED config carries NO raw secret on ANY branch — a kept value is either
+ * already-clean, the screen's redacted text, or the placeholder; a hard-rejected value never returns
+ * at all. The benign asset PATH ('icon.png') stays clean and is kept verbatim. NEVER relaxed for the
+ * two hard classes (prefix + quarantine), so a glpat-/sk-ant- value or a PEM block STILL hard-rejects.
+ */
+function redactConfigSecrets(
+	value: unknown,
+	path: string,
+	into: ConfigRedaction[],
+	key?: string
+): unknown {
+	if (typeof value === 'string') {
+		// Gate 3 PREFIX (HARD) — a known credential prefix is an unambiguous secret the operator must
+		// remove. Checked FIRST/unconditionally so an env-ref-shaped or screen-clean prefix still throws.
+		for (const p of LITERAL_CREDENTIAL_PREFIXES) {
+			if (value.trim().startsWith(p)) {
+				throw new SecretEchoError(
+					`proposal '${path}' contains a literal credential token ` +
+						`(D-026: config references env NAMES only — never a literal secret value)`,
+					path
+				);
+			}
+		}
+		// Gate 1 isolation screen.
+		const res = screen(value);
+		if (res.status === 'quarantined') {
+			// Un-redactable (e.g. a private-key block) — HARD-reject, NAME the field. The operator removes it.
+			throw new SecretEchoError(
+				`proposal '${path}' carries an un-redactable secret (D-026, quarantined) — ` +
+					`screen reasons: [${res.reasons.join(', ')}]`,
+				path
+			);
+		}
+		if (res.status === 'redacted') {
+			// REDACT-AND-KEEP: the span is already replaced with a safe placeholder in res.text.
+			for (const r of res.reasons) into.push({ field: path, reason: r });
+			return res.text;
+		}
+		// Gate 2 KEY-POSITIVE: a non-empty value under a secret-like key that is NOT an explicit env-name
+		// reference is a literal echo — REDACT-AND-KEEP (replace the whole value), do not hard-reject.
+		if (key !== undefined && isSecretLikeKey(key) && value.trim() !== '' && !isEnvNameReference(value)) {
+			into.push({ field: path, reason: 'secret-like-key' });
+			return REDACTED_KEY_POSITIVE;
+		}
+		// Gate 3 ENTROPY: a credential-shaped (non-prefixed — prefixes already hard-rejected above)
+		// high-entropy token under any key — REDACT-AND-KEEP.
+		if (looksLikeLiteralCredential(value)) {
+			into.push({ field: path, reason: 'credential-shaped-token' });
+			return REDACTED_KEY_POSITIVE;
+		}
+		// Clean (e.g. a benign asset path 'icon.png') — kept verbatim.
+		return value;
+	}
+	if (Array.isArray(value)) {
+		return value.map((v, i) => redactConfigSecrets(v, `${path}[${i}]`, into, key));
+	}
+	if (isObj(value)) {
+		const out: Record<string, unknown> = {};
+		for (const [k, v] of Object.entries(value)) out[k] = redactConfigSecrets(v, `${path}.${k}`, into, k);
+		return out;
+	}
+	// numbers/booleans/null pass through unchanged.
+	return value;
+}
+
 /**
  * D-018 path-confinement for a dirLayout[] entry, enforced at the PLAN trust boundary (before the
  * proposal can earn a confirmToken). REJECTS an absolute path or any `..` traversal segment — the
@@ -595,7 +703,7 @@ function validateFoundingTasks(raw: unknown): FoundingTaskDraft[] {
 	});
 }
 
-function validateTargetDrafts(raw: unknown): TargetDraft[] {
+function validateTargetDrafts(raw: unknown, redactions: ConfigRedaction[]): TargetDraft[] {
 	if (!Array.isArray(raw)) {
 		throw new ProposalContractError("proposal 'targetDrafts' must be an array");
 	}
@@ -605,8 +713,16 @@ function validateTargetDrafts(raw: unknown): TargetDraft[] {
 	// stray/malformed entry must NOT nuke an entire real-spend proposal (the recurring "don't let
 	// one bad field waste a ~2-min generation" lesson — cf. the over-constrained gauntlet keys) —
 	// DROP a non-object / invalid-kind / id-less entry (honest warn) and keep the valid targets;
-	// the operator reviews and adds any missing target post-create. SECURITY IS NEVER RELAXED: a
-	// KEPT entry whose config echoes a literal secret still HARD-throws (D-026 stays a hard gate).
+	// the operator reviews and adds any missing target post-create.
+	//
+	// D-026 disposition for a KEPT target's config (H1 REDACT-AND-KEEP, the operator-blessed
+	// disposition that fixes the recurring over-rejection — the live trigger was a benign publish-
+	// target asset PATH list flagged as a literal secret, discarding a whole ~2-min generation):
+	//   • UNAMBIGUOUS secret (a known credential PREFIX, or an un-redactable QUARANTINED block) →
+	//     STILL HARD-throws SecretEchoError naming the field — the operator must remove it.
+	//   • ANY OTHER suspected secret (screen 'redacted', a secret-like-key non-env-name value, a
+	//     high-entropy non-prefixed token) → REDACTED IN PLACE and KEPT; the proposal SUCCEEDS, the
+	//     redaction is recorded for the review UI. NO raw secret survives in the returned config.
 	const out: TargetDraft[] = [];
 	raw.forEach((t, i) => {
 		if (!isObj(t)) {
@@ -623,10 +739,13 @@ function validateTargetDrafts(raw: unknown): TargetDraft[] {
 			console.warn(`[create] dropping targetDrafts[${i}] — missing adapterId`);
 			return;
 		}
-		const config = isObj(t.config) ? t.config : {};
-		// D-026 (NEVER relaxed): the config blob references env NAMES only — a literal secret echo
-		// on a KEPT target still HARD-throws SecretEchoError.
-		assertNoSecretEcho(config, `targetDrafts[${i}].config`);
+		const rawConfig = isObj(t.config) ? t.config : {};
+		// REDACT-AND-KEEP: returns a screened COPY (no raw secret) + appends any redactions; a known
+		// prefix or a quarantined block still HARD-throws SecretEchoError (named) from inside.
+		const config = redactConfigSecrets(rawConfig, `targetDrafts[${i}].config`, redactions) as Record<
+			string,
+			unknown
+		>;
 		out.push({ kind, adapterId, config });
 	});
 	return out;
@@ -731,7 +850,10 @@ export async function validateProposal(db: Db, raw: unknown): Promise<CreationPr
 	}
 	const planMacro = validatePlanMacro(raw.planMacro);
 	const foundingTasks = validateFoundingTasks(raw.foundingTasks);
-	const targetDrafts = validateTargetDrafts(raw.targetDrafts);
+	// D-026 H1 redact-and-keep: targetDrafts config secret-echoes are redacted-in-place (kept) unless
+	// they are an unambiguous secret (prefix/quarantine), which still hard-rejects inside.
+	const configRedactions: ConfigRedaction[] = [];
+	const targetDrafts = validateTargetDrafts(raw.targetDrafts, configRedactions);
 	const capabilityNeeds = await validateCapabilityNeeds(db, raw.capabilityNeeds);
 	const clarifiers = validateClarifiers(raw.clarifiers);
 
@@ -809,7 +931,8 @@ export async function validateProposal(db: Db, raw: unknown): Promise<CreationPr
 		targetDrafts,
 		capabilityNeeds,
 		pmCharterDraft,
-		clarifiers
+		clarifiers,
+		configRedactions
 	};
 }
 

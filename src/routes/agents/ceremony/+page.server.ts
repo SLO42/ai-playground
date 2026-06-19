@@ -28,6 +28,7 @@ import {
 	ceremonyAuthoringState,
 	ceremonyExecutionState,
 	classifyAmbiguousItem,
+	registeredInjectionSlugs,
 	confirmLaunchKey,
 	CeremonyGateError,
 	isSentinelShape,
@@ -43,6 +44,7 @@ import {
 	type CeremonyAuthoringState,
 	type CeremonyExecutionState,
 	type GauntletOutcome,
+	type InterviewRunRow,
 	type ItemDecision,
 	type Tier
 } from '$lib/server/workforce';
@@ -176,8 +178,13 @@ async function buildCeremonyAdjudication(
 		// HR-4 split — classify each still-queued item exactly as the pre-pass does (classify-
 		// AmbiguousItem reused verbatim, B3: read-only, no rescore). Maps the engine's ItemDecision
 		// to the card's narrowed shape so the UI can render auto-cleared vs escalated per item.
+		// Build the run's REGISTERED injection-fixture slug set (kind 'hallucination_bait') from the
+		// scorer's read-only results — the same un-forgeable gate the pre-pass uses, so the card's HR
+		// split matches autoAdjudicateRun exactly (a forged/unregistered injection slug escalates, never
+		// auto-dismisses).
+		const injectionSlugs = registeredInjectionSlugs({ results: rawResults } as unknown as InterviewRunRow);
 		const hrDecisions = ambiguous.map((item, i) => {
-			const d: ItemDecision = classifyAmbiguousItem(item, i);
+			const d: ItemDecision = classifyAmbiguousItem(item, i, injectionSlugs);
 			return d.kind === 'clear'
 				? { kind: 'clear' as const, index: d.index, resolution: d.resolution, basis: d.basis }
 				: { kind: 'escalate' as const, index: d.index, recommendation: d.recommendation, basis: d.basis };

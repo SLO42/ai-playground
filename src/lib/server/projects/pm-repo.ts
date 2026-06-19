@@ -162,6 +162,49 @@ function omitUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
 	return out;
 }
 
+/**
+ * D-026 — a NAMED reject for an un-redactable secret reaching a pm writer boundary. The
+ * field is carried so the route surfaces WHICH field the operator must scrub (parity with
+ * the create-flow SecretEchoError). EVERY ERROR HAS A NAME: this names the un-redactable
+ * private-key-block case; benign redactable spans never throw (they are kept screened).
+ */
+export class PmSecretEchoError extends Error {
+	constructor(
+		message: string,
+		readonly field: string
+	) {
+		super(message);
+		this.name = 'PmSecretEchoError';
+	}
+}
+
+/**
+ * D-026 writer-boundary screen for an operator-/agent-authored FREE-TEXT pm field (charter,
+ * persona). This is the SAME disposition the create flow uses (execute.ts screenWriterText +
+ * plan.ts assertNoSecretEcho 'freetext' mode), made the pm row's only-write-path gate so a
+ * secret can NEVER land raw via createPm OR the later operator-direct edit paths (updatePmCharter,
+ * the persona field). Disposition:
+ *   • clean / redacted  → keep `screen().text` (a SAFELY-redactable span — a benign email, a home
+ *     path, a known-prefix provider key, an inline `secret: <val>` — is stored as the safe
+ *     [REDACTED:*] text, NOT hard-aborted; mirrors createPm's prior charter behaviour + F-008).
+ *   • quarantined       → REJECT (named) — an un-redactable private-key block cannot be made safe
+ *     in isolation, so it is refused with the field named, consistent with the create flow's
+ *     'freetext' gate which hard-rejects ONLY 'quarantined'.
+ * `undefined` in → `undefined` out (an absent field is not screened, stays absent → '—').
+ */
+function screenPmField(value: string | undefined, field: string): string | undefined {
+	if (value === undefined) return undefined;
+	const res = screen(String(value));
+	if (res.status === 'quarantined') {
+		throw new PmSecretEchoError(
+			`pm '${field}' carries an un-redactable secret (D-026, quarantined) — screen reasons: [${res.reasons.join(', ')}]`,
+			field
+		);
+	}
+	// clean → text is the original verbatim; redacted → the safe [REDACTED:*] text. Either is safe to store.
+	return res.text;
+}
+
 function normPmMemory(row: PmMemoryRow & { id: unknown; project: unknown }): PmMemoryRow {
 	return {
 		...row,
@@ -431,18 +474,20 @@ export async function listPmsWithCadence(db: Db): Promise<PmRow[]> {
  * row via getPm first (interrupt-safe re-run). All values bind via $param (D-016).
  */
 export async function createPm(db: Db, input: CreatePmInput): Promise<PmRow> {
-	// D-026 — the charter is agent-/operator-authored free text (the create-flow pmCharterDraft
-	// rides in here via hirePm). It MUST be screened at this persistence boundary, mirroring
-	// workforce/staff.ts staffRole, because this is the row's only write path: the plan-time
-	// 'freetext' echo gate lets a SAFELY-redactable span (e.g. `secret: <val>`, an email) PASS so
-	// the create won't hard-abort on benign PII, on the contract that the DISK/persistence boundary
-	// redacts it. The pm row IS that boundary — store the screened text, never the raw charter.
-	const charter = input.charter !== undefined ? screen(String(input.charter)).text : undefined;
+	// D-026 — charter AND persona are agent-/operator-authored free text (the create-flow
+	// pmCharterDraft / persona ride in here via hirePm). BOTH MUST be screened at this persistence
+	// boundary because this is the row's only write path: the plan-time 'freetext' echo gate lets a
+	// SAFELY-redactable span (e.g. `secret: <val>`, an email) PASS so the create won't hard-abort on
+	// benign PII, on the contract that the DISK/persistence boundary redacts it. The pm row IS that
+	// boundary — store the screened text (redactable → [REDACTED:*]); an un-redactable block REJECTS
+	// (named, PmSecretEchoError). persona was previously persisted RAW — that gap is closed here.
+	const charter = screenPmField(input.charter, 'charter');
+	const persona = screenPmField(input.persona, 'persona');
 	const content = omitUndefined({
 		project: link(input.project),
 		name: input.name,
 		charter,
-		persona: input.persona,
+		persona,
 		authority: input.authority
 	});
 	const [rows] = await db.query<[(PmRow & { id: unknown; project: unknown })[]]>(
@@ -466,7 +511,11 @@ export async function updatePmCharter(
 	const existing = await getPm(db, projectId);
 	if (!existing) return null;
 	const rid = link(existing.id);
-	const trimmed = charter.trim();
+	// D-026 — screen the operator-direct charter edit at this persistence boundary (the SAME gate
+	// createPm uses): a redactable span is stored as the safe [REDACTED:*] text, an un-redactable
+	// block REJECTS (named). This path bypassed screen() entirely before — a secret could land raw.
+	// Screen the trimmed text so the empty/clear path (NONE) is unaffected and the stored value is safe.
+	const trimmed = screenPmField(charter.trim(), 'charter') ?? '';
 	const [rows] = trimmed
 		? await db.query<[(PmRow & { id: unknown; project: unknown })[]]>(
 				`UPDATE $rid MERGE { charter: $charter } RETURN AFTER;`,

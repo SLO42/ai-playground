@@ -72,6 +72,7 @@ export {
 	createPm,
 	updatePmCharter,
 	updatePmAuthority,
+	PmSecretEchoError,
 	PM_AUTHORITIES,
 	// taxonomy + types
 	PM_MEMORY_KINDS,

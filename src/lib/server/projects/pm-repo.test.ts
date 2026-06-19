@@ -16,6 +16,7 @@ import {
 	createPm,
 	getPm,
 	updatePmCharter,
+	PmSecretEchoError,
 	PM_MEMORY_KINDS
 } from './pm-repo';
 
@@ -284,6 +285,86 @@ describe('pm identity row', () => {
 		expect(read?.charter).not.toContain('s3cretValue');
 		expect(read?.charter).not.toContain('admin@example.com');
 		expect(read?.charter).toContain('[REDACTED:credential]');
+	});
+
+	// D-026 (deferred MEDIUM wf_e995d6e3-e73): the `persona` field was persisted RAW (only charter
+	// was screened). A redactable secret in a persona must be screened to [REDACTED:*] at createPm,
+	// never stored raw — asserted on the row READ BACK from SurrealDB (the persistence boundary).
+	it('D-026: a secret-bearing PERSONA is SCREENED at createPm — never stored raw', async () => {
+		const p = await freshProject('pm_id_persona_secret');
+		const rawPersona = 'terse; note password: hunter2pass; reach me at ops@example.com';
+		const created = await createPm(db, { project: p.id, name: 'Sentinel', persona: rawPersona });
+		expect(created.persona).not.toContain('hunter2pass');
+		expect(created.persona).not.toContain('ops@example.com');
+		expect(created.persona).toContain('[REDACTED:credential]');
+
+		const read = await getPm(db, p.id);
+		expect(read?.persona).not.toContain('hunter2pass');
+		expect(read?.persona).not.toContain('ops@example.com');
+		expect(read?.persona).toContain('[REDACTED:credential]');
+	});
+
+	// A clean charter/persona must be byte-unchanged (screen() clean → verbatim; F-008: do not mangle
+	// legitimate config/prose).
+	it('D-026: a CLEAN charter + persona are byte-unchanged at createPm', async () => {
+		const p = await freshProject('pm_id_clean');
+		const charter = 'Priorities: ship the wedge weekly. Escalate releases.';
+		const persona = 'blunt, evidence-first, terse';
+		const created = await createPm(db, { project: p.id, name: 'Vesper', charter, persona });
+		expect(created.charter).toBe(charter);
+		expect(created.persona).toBe(persona);
+		const read = await getPm(db, p.id);
+		expect(read?.charter).toBe(charter);
+		expect(read?.persona).toBe(persona);
+	});
+
+	// An UN-REDACTABLE secret (a private-key block, quarantineOnHit) cannot be made safe in isolation
+	// → REJECT (named PmSecretEchoError), consistent with the create flow's 'freetext' gate. Both the
+	// charter and persona paths reject; nothing is persisted (the CREATE never runs).
+	it('D-026: an un-redactable secret in charter/persona REJECTS (named, never persisted)', async () => {
+		const pem =
+			'-----BEGIN RSA PRIVATE KEY-----\nMIIEowIBAAKCAQEA1234567890abcdef\n-----END RSA PRIVATE KEY-----';
+
+		const p1 = await freshProject('pm_id_quarantine_charter');
+		await expect(
+			createPm(db, { project: p1.id, name: 'X', charter: `here is my key ${pem}` })
+		).rejects.toBeInstanceOf(PmSecretEchoError);
+		expect(await getPm(db, p1.id)).toBeNull(); // nothing persisted
+
+		const p2 = await freshProject('pm_id_quarantine_persona');
+		await expect(
+			createPm(db, { project: p2.id, name: 'X', persona: `persona ${pem}` })
+		).rejects.toBeInstanceOf(PmSecretEchoError);
+		expect(await getPm(db, p2.id)).toBeNull();
+	});
+
+	// updatePmCharter (the operator-direct edit path) previously bypassed screen() entirely — a
+	// secret could land raw via this path. It must now screen identically to createPm: a redactable
+	// span → [REDACTED:*], a clean charter byte-unchanged, an un-redactable block → reject (named).
+	it('D-026: updatePmCharter SCREENS the edited charter — redactable redacted, clean unchanged, quarantine rejects', async () => {
+		const p = await freshProject('pm_id_update_secret');
+		await createPm(db, { project: p.id, name: 'Vesper' });
+
+		// redactable → stored as the safe [REDACTED:*] text, raw never survives.
+		const updated = await updatePmCharter(db, p.id, 'deploy with api_key: liveSecretValue123');
+		expect(updated?.charter).not.toContain('liveSecretValue123');
+		expect(updated?.charter).toContain('[REDACTED:credential]');
+		// and on the row READ BACK from the DB.
+		const read = await getPm(db, p.id);
+		expect(read?.charter).not.toContain('liveSecretValue123');
+		expect(read?.charter).toContain('[REDACTED:credential]');
+
+		// clean → byte-unchanged.
+		const clean = await updatePmCharter(db, p.id, 'tone: terse; escalate releases');
+		expect(clean?.charter).toBe('tone: terse; escalate releases');
+
+		// un-redactable → reject (named); the prior clean charter is left intact (UPDATE never ran).
+		const pem =
+			'-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmU\n-----END OPENSSH PRIVATE KEY-----';
+		await expect(updatePmCharter(db, p.id, `charter ${pem}`)).rejects.toBeInstanceOf(
+			PmSecretEchoError
+		);
+		expect((await getPm(db, p.id))?.charter).toBe('tone: terse; escalate releases');
 	});
 
 	it('getPm is null for a project with no PM (the honest empty state)', async () => {

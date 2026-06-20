@@ -59,6 +59,9 @@ import {
 	withdrawPmProposal,
 	ProposalContractError
 } from '$lib/server/projects/pm-proposals';
+// PM-LC-2 — the one-click lifecycle tick (PM-LIFECYCLE-SPEC §PM-LC-2).
+import { startProjectLifecycle } from '$lib/server/projects/pm-lifecycle';
+import { PmProposalContractError } from '$lib/server/projects/pm-propose';
 import {
 	hirePm,
 	hireInterviewFor,
@@ -121,7 +124,7 @@ import {
 	DEFAULT_INTENT,
 	type ControlCapabilities
 } from '$lib/server/harness';
-import { assertRecordId } from '$lib/server/db/validate';
+import { assertRecordId, assertRecordIdOfTable } from '$lib/server/db/validate';
 import { error, fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
@@ -1146,6 +1149,86 @@ export const actions: Actions = {
 				return fail(409, { pm: { error: err.message } });
 			}
 			return fail(500, { pm: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * PM-LC-2 (PM-LIFECYCLE-SPEC §PM-LC-2) — the ONE-CLICK lifecycle tick: "start the project's life".
+	 * Composes the EXISTING PM loop in one operator click — getPm → bootstrapPm (idempotent) →
+	 * generatePmProposals (real read-only PM session, opus cheap-tier) → runValidationPanel per fresh
+	 * proposal. Promotes NOTHING itself: promotion is the panel's pre-existing 'act'-authority
+	 * setStatus(ready) (the EXISTING orchestrator auto-develop trigger). No PM hired ⇒ needsHire (NEVER
+	 * auto-hire). 'observe' generates nothing; 'propose' leaves approved proposals for the operator;
+	 * 'act' promotes on panel approval. D-039 operator gates / hire-requests untouched.
+	 *
+	 * Spend = THIS click (one tick, not a daemon). Operator-triggered behind the client's cost-labelled
+	 * confirm. Returns the tick result incl. sessionId so the client subscribes to the live transcript.
+	 * Boundary (D-016): the project id is resolved with the table-scope guard (assertRecordIdOfTable).
+	 * Honest (F-008): a missing credential / contract violation returns the NAMED reason, never a fake run.
+	 */
+	startLifecycle: async ({ params }) => {
+		let projectId: string;
+		try {
+			projectId = assertRecordIdOfTable(`project:${params.id}`, 'project');
+		} catch {
+			return fail(400, { lifecycle: { error: 'invalid project id' } });
+		}
+		const db = tryGetDb();
+		if (!db) {
+			return fail(503, { lifecycle: { error: 'Database not connected — start SurrealDB and retry.' } });
+		}
+
+		// The tick spawns REAL sessions (the PM proposal generator + the validation panel) — the runtime
+		// must be available. Honest (F-008): an absent credential returns the real reason, never a fake tick.
+		const runtimeAvail = await getRuntime(db);
+		if (!runtimeAvail.available) {
+			return fail(503, { lifecycle: { error: runtimeAvail.reason } });
+		}
+
+		try {
+			const res = await startProjectLifecycle(
+				db,
+				{
+					bus: getBus(),
+					runtime: runtimeAvail.runtime,
+					fallbackModel: DEFAULT_MODEL,
+					budgets: DEFAULT_BUDGETS,
+					proposalModel: DEFAULT_MODEL,
+					proposalAgentId: DEFAULT_AGENT
+				},
+				projectId
+			);
+			// needsHire is an honest, non-error state (no PM) — surface it so the client renders the
+			// hire CTA rather than treating it as a failure.
+			return {
+				lifecycle: {
+					ok: true as const,
+					action: 'start',
+					needsHire: res.needsHire === true,
+					bootstrapped: res.bootstrapped,
+					authority: res.authority,
+					generated: res.generated,
+					validated: res.validated,
+					promoted: res.promoted,
+					leftForOperator: res.leftForOperator,
+					sessionId: res.sessionId,
+					summary: res.summary,
+					panelFailures: res.panelFailures.length
+				}
+			};
+		} catch (err) {
+			// EVERY ERROR HAS A NAME: a generation/panel contract violation is a 409 (the operator's
+			// action was well-formed but the agent output / state did not satisfy a contract); anything
+			// else is a 500 with the real reason. Never a silent success.
+			if (
+				err instanceof PmProposalContractError ||
+				err instanceof ProposalContractError ||
+				err instanceof ValidatorContractError ||
+				err instanceof PanelInputError
+			) {
+				return fail(409, { lifecycle: { error: err.message } });
+			}
+			return fail(500, { lifecycle: { error: (err as Error).message } });
 		}
 	},
 

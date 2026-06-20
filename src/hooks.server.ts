@@ -26,6 +26,12 @@ import {
 	PmTriggerEngine,
 	setActivePmTriggerEngine
 } from '$lib/server/projects/pm-triggers';
+import {
+	startAutonomousLoop,
+	setActiveAutonomousLoop,
+	type AutonomousPmLoop
+} from '$lib/server/projects/pm-autonomous';
+import { getRuntime, DEFAULT_MODEL, DEFAULT_BUDGETS, DEFAULT_AGENT } from '$lib/server/harness';
 import { runSentinelSweep } from '$lib/server/workforce/index';
 import { SceneProjector } from '$lib/server/scene/index';
 
@@ -128,6 +134,9 @@ export function activeOrchestrator(): Orchestrator | null {
  */
 const pmTriggerEngines: PmTriggerEngine[] = [];
 
+/** The live autonomous loops (PMA), held like the others so teardown can stop their bus subscriptions. */
+const autonomousLoops: AutonomousPmLoop[] = [];
+
 /**
  * MEMORY-SCENE-SPEC §5/§7.1 — the scene_event PROJECTOR, held like the others so the
  * instance (its bus subscription) survives for the life of the process and shutdown
@@ -158,6 +167,10 @@ async function bootstrap(): Promise<DbInitResult> {
 			// The PM trigger engine is orchestration machinery too (TASK 16.2): same
 			// teardown step — its bus subscription + tick timer must not outlive the boot.
 			for (const e of pmTriggerEngines) e.stop();
+			// The autonomous loop is a bus consumer too (PMA): its subscription must not
+			// outlive the boot (F-014). Clear the registry so a stale handle isn't read.
+			for (const l of autonomousLoops) l.stop();
+			setActiveAutonomousLoop(null);
 			// The scene projector is a bus consumer too (MEMORY-SCENE-SPEC §5): its
 			// subscription must not outlive the boot (F-014).
 			for (const s of sceneProjectors) s.stop();
@@ -241,6 +254,37 @@ async function bootstrap(): Promise<DbInitResult> {
 		} catch (err) {
 			// A boot failure must never crash the server boot (D-019 honest degrade).
 			console.warn(`[startup] orchestrator boot failed: ${(err as Error).message}`);
+		}
+
+		// PMA — the CONTINUOUS AUTONOMOUS LOOP, AFTER the orchestrator so a re-tick's promoted task→ready
+		// is drained by the live orchestrator. Bus-only (the SAME bus); it re-runs the one-click lifecycle
+		// tick when an armed PM's promoted batch drains, looping toward the DoD and HALTING honestly at
+		// blocked / cap-reached / awaiting-release-confirm. It NEVER bypasses an operator gate (no publish,
+		// no hire) and bounds spend (PMA-2 cap). Needs the Claude credential (it drives real PM sessions)
+		// — absent ⇒ skip cleanly (F-008). Manual mode ⇒ OFF (operator one-click only, D-004).
+		try {
+			let mode: OrchMode = 'manual';
+			try {
+				mode = loadOrchestration(`${process.env.CONFIG_DIR?.trim() || 'config'}/orchestration.yaml`).mode;
+			} catch {
+				mode = 'manual';
+			}
+			const loopBoot = await startAutonomousLoop(db, bus, {
+				getRuntime,
+				mode,
+				fallbackModel: DEFAULT_MODEL,
+				budgets: DEFAULT_BUDGETS,
+				proposalModel: DEFAULT_MODEL,
+				proposalAgentId: DEFAULT_AGENT
+			});
+			if (loopBoot.started) {
+				autonomousLoops.push(loopBoot.loop);
+				console.log('[startup] autonomous PM loop started — an ARMED PM re-ticks toward the DoD; HALTS at blocked / cap / publish gate (PMA, D-037/D-039 untouched).');
+			} else {
+				console.warn(`[startup] autonomous PM loop NOT started — ${loopBoot.reason}`);
+			}
+		} catch (err) {
+			console.warn(`[startup] autonomous PM loop boot failed: ${(err as Error).message}`);
 		}
 
 		// TASK 16.2 — the PM trigger engine (PM-SPEC §3), AFTER the watchers so the bus

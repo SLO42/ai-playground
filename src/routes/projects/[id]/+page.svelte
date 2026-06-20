@@ -194,6 +194,34 @@
   const lifecycleAuthority = $derived(
     typeof lifecycleFeedback?.authority === 'string' ? lifecycleFeedback.authority : null
   );
+
+  // PMA — the ARMED flag (is the PM driving UNSUPERVISED?) + the loop's honest last-state. `armed`
+  // reflects the optimistic action result first, then the loaded pm row. The loop-state is read-only
+  // (the boot-started loop owns it) — F-008: never a fabricated 'done', only the real honest state.
+  const autonomousFeedback = $derived(
+    form && 'pm' in form ? (form.pm as Record<string, unknown>) : undefined
+  );
+  const pmArmed = $derived(
+    autonomousFeedback?.action === 'autonomous' && typeof autonomousFeedback.autonomous === 'boolean'
+      ? (autonomousFeedback.autonomous as boolean)
+      : (data.pm?.autonomous ?? false)
+  );
+  // The live loop's honest stop/continue state for this project (null when the loop has not acted yet).
+  const loopState = $derived(data.autonomousLoop ?? null);
+  const loopStateLabel = $derived.by((): string => {
+    switch (loopState?.state) {
+      case 'running': return 'Driving — working the next batch';
+      case 'blocked': return 'Stopped — blocked';
+      case 'cap-reached': return 'Stopped — re-tick cap reached';
+      case 'dod-reached': return 'Stopped — definition of done reached';
+      case 'awaiting-release-confirm': return 'Awaiting your release confirmation';
+      default: return 'Idle';
+    }
+  });
+  const loopStopped = $derived(
+    loopState != null &&
+      ['blocked', 'cap-reached', 'dod-reached', 'awaiting-release-confirm'].includes(loopState.state)
+  );
   const lifecycleLeftForOperator = $derived(
     typeof lifecycleFeedback?.leftForOperator === 'number' ? lifecycleFeedback.leftForOperator : 0
   );
@@ -885,6 +913,57 @@
                 {lifecycleBusy ? 'Starting the project’s life…' : 'Start the project’s life'}
               </button>
             </form>
+
+            <!-- PMA — UNSUPERVISED autonomous drive. ARM ⇒ the boot-started loop re-runs the lifecycle
+                 tick after each promoted batch drains, looping toward the DoD and HALTING honestly at
+                 blocked / cap-reached / awaiting-release-confirm. It NEVER bypasses an operator gate (no
+                 publish — D-037; no hire — D-039) and bounds spend (the re-tick cap). -->
+            <div class="autonomous-control">
+              <div class="autonomous-row">
+                <div class="autonomous-label">
+                  <span class="auto-title">Autonomous drive</span>
+                  <span class="auto-sub">
+                    {pmArmed
+                      ? 'Armed — the PM drives unsupervised toward the first release. It stops on a blocker, at the spend cap, and at the publish gate (never auto-publishes).'
+                      : 'Off — the PM runs only when you click “Start the project’s life”.'}
+                  </span>
+                </div>
+                <form
+                  method="POST"
+                  action="?/pmAutonomous"
+                  use:enhance={() => async ({ update }) => { await update({ reset: false }); }}
+                >
+                  <input type="hidden" name="armed" value={pmArmed ? 'false' : 'true'} />
+                  <button
+                    class="btn {pmArmed ? 'warn' : 'primary'}"
+                    type="submit"
+                    aria-pressed={pmArmed}
+                    aria-label={pmArmed ? 'Disarm autonomous drive' : 'Arm autonomous drive'}
+                  >
+                    {pmArmed ? 'Disarm' : 'Arm autonomous drive'}
+                  </button>
+                </form>
+              </div>
+
+              <!-- The live loop's honest state for this project (F-008 — a real read, never a fake done). -->
+              {#if loopState}
+                <div
+                  class="autonomous-state"
+                  data-stopped={loopStopped}
+                  data-state={loopState.state}
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span class="auto-state-label">{loopStateLabel}</span>
+                  <span class="auto-state-reason">{loopState.reason}</span>
+                  {#if loopState.state === 'awaiting-release-confirm'}
+                    <a class="link-inline" href={releaseHref}>
+                      Review and confirm the release →
+                    </a>
+                  {/if}
+                </div>
+              {/if}
+            </div>
 
             <!-- Honest tick state (F-008): never a fake spinner-as-done. -->
             {#if lifecycleState === 'running'}
@@ -3781,6 +3860,64 @@
   }
   .lifecycle-counts .lc-warn .lc-n {
     color: var(--color-warn);
+  }
+  /* PMA — autonomous drive control + honest loop-state surface (tokens only). */
+  .autonomous-control {
+    margin-top: var(--space-3, 0.75rem);
+    border-top: var(--border-width, 1px) solid var(--color-border);
+    padding-top: var(--space-3, 0.75rem);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  .autonomous-row {
+    display: flex;
+    align-items: flex-start;
+    justify-content: space-between;
+    gap: var(--space-3, 0.75rem);
+    flex-wrap: wrap;
+  }
+  .autonomous-label {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1, 0.25rem);
+    min-width: 12rem;
+    flex: 1 1 16rem;
+  }
+  .auto-title {
+    font-weight: 600;
+    color: var(--color-text);
+  }
+  .auto-sub {
+    font-size: 0.85rem;
+    color: var(--color-text-muted);
+    line-height: 1.4;
+  }
+  .autonomous-state {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1, 0.25rem);
+    padding: var(--space-2, 0.5rem) var(--space-3, 0.75rem);
+    border-radius: var(--radius-sm, 0.375rem);
+    border-left: 3px solid var(--color-running, var(--color-accent));
+    background: var(--color-surface-overlay, transparent);
+  }
+  .autonomous-state[data-state='blocked'],
+  .autonomous-state[data-state='cap-reached'] {
+    border-left-color: var(--color-blocked, var(--color-warn));
+  }
+  .autonomous-state[data-state='dod-reached'],
+  .autonomous-state[data-state='awaiting-release-confirm'] {
+    border-left-color: var(--color-success);
+  }
+  .auto-state-label {
+    font-weight: 600;
+    color: var(--color-text);
+  }
+  .auto-state-reason {
+    font-size: 0.85rem;
+    color: var(--color-text-muted);
+    line-height: 1.4;
   }
   .lifecycle-live {
     margin-top: var(--space-2, 0.5rem);

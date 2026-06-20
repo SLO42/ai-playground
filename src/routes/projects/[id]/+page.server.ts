@@ -36,6 +36,7 @@ import {
 	updatePmCharter,
 	updatePmSchedule,
 	updatePmAuthority,
+	setPmAutonomous,
 	PM_MEMORY_KINDS,
 	PM_AUTHORITIES,
 	type PmAuthority,
@@ -61,6 +62,8 @@ import {
 } from '$lib/server/projects/pm-proposals';
 // PM-LC-2 — the one-click lifecycle tick (PM-LIFECYCLE-SPEC §PM-LC-2).
 import { startProjectLifecycle } from '$lib/server/projects/pm-lifecycle';
+// PMA — the live autonomous loop's honest last-state (read-only surface; the boot seam owns the loop).
+import { activeAutonomousLoop } from '$lib/server/projects/pm-autonomous';
 import { PmProposalContractError } from '$lib/server/projects/pm-propose';
 import {
 	hirePm,
@@ -196,6 +199,12 @@ export interface ProjectDetailData {
 	pmBootstrapped: boolean;
 	/** TASK 16.1 — the hired PM identity row, or null (the honest empty state + hire CTA). */
 	pm: PmRow | null;
+	/**
+	 * PMA — the live autonomous-loop's last honest state for this project (running / blocked /
+	 * cap-reached / dod-reached / awaiting-release-confirm), or null when the loop has not acted on this
+	 * project yet (or no loop is running — degraded boot). F-008: never a fabricated 'done'.
+	 */
+	autonomousLoop: { state: string; reason: string; ticksUsed: number } | null;
 	/** TASK 16.4 — open proposals with their panel verdicts + any open brief (PM-SPEC §4). */
 	proposals: ProposalQueueEntry[];
 	/** The PM authority ladder vocabulary (for the operator's authority control). */
@@ -299,6 +308,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			uxAutoAllowed: false,
 			pmBootstrapped: false,
 			pm: null,
+			autonomousLoop: null,
 			proposals: [],
 			pmAuthorities: PM_AUTHORITIES,
 			hireQuestions: [],
@@ -437,6 +447,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			uxAutoAllowed,
 			pmBootstrapped: pmMemory.length > 0,
 			pm: pmRow,
+			autonomousLoop: autonomousLoopStateFor(projectId),
 			proposals,
 			pmAuthorities: PM_AUTHORITIES,
 			// Smart-skip resolved server-side against the live plan macro (PM-SPEC §1).
@@ -475,6 +486,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			uxAutoAllowed: false,
 			pmBootstrapped: false,
 			pm: null,
+			autonomousLoop: null,
 			proposals: [],
 			pmAuthorities: PM_AUTHORITIES,
 			hireQuestions: [],
@@ -1100,6 +1112,33 @@ export const actions: Actions = {
 	},
 
 	/**
+	 * PMA-1 — ARM/DISARM the PM for UNSUPERVISED continuous drive (the autonomous loop). A SAFETY toggle
+	 * only: arming NEVER grants new authority and NEVER bypasses an operator gate — the external publish
+	 * stays operator-gated (D-037), a capability hire stays operator-gated (D-039), and only the EXISTING
+	 * 'act' authority promotes. When armed, the boot-started loop (pm-autonomous.ts) re-runs the lifecycle
+	 * tick after each promoted batch drains, looping toward the DoD and HALTING honestly at
+	 * blocked / cap-reached / awaiting-release-confirm. Arming NEVER auto-hires (no PM ⇒ 409).
+	 */
+	pmAutonomous: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { pm: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { pm: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const armed = String(form.get('armed') ?? '').trim() === 'true';
+		try {
+			const updated = await setPmAutonomous(db, projectId, armed);
+			if (!updated) {
+				return fail(409, { pm: { error: 'No PM hired for this project yet — hire one first (arming never auto-hires).' } });
+			}
+			return { pm: { ok: true as const, action: 'autonomous', autonomous: updated.autonomous } };
+		} catch (err) {
+			return fail(500, { pm: { error: (err as Error).message } });
+		}
+	},
+
+	/**
 	 * TASK 16.4 — run the VALIDATION PANEL over one proposed task (PM-SPEC §4.2).
 	 * Operator-triggered (a manual act — always allowed under D-004). Launches 1–2
 	 * REAL independent validator sessions (inline prompts — WORKFORCE §9 bridge),
@@ -1556,4 +1595,18 @@ function pmProjectId(idParam: string): string | null {
 	} catch {
 		return null;
 	}
+}
+
+/**
+ * PMA — the live autonomous loop's honest last-state for a project (read-only). null when no loop is
+ * running (degraded boot) or it has not acted on this project yet. F-008: a real read, never fabricated.
+ */
+function autonomousLoopStateFor(
+	projectId: string
+): { state: string; reason: string; ticksUsed: number } | null {
+	const loop = activeAutonomousLoop();
+	if (!loop) return null;
+	const out = loop.lastOutcome.get(projectId);
+	if (!out) return null;
+	return { state: out.state, reason: out.reason, ticksUsed: out.ticksUsed };
 }

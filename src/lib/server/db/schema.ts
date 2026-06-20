@@ -2077,6 +2077,27 @@ const m0056_pm_lifecycle_lock: Migration = {
 	`
 };
 
+// m0057 — pm.autonomous (PMA-1) — the ARMED flag that marks a project's PM as driving UNSUPERVISED.
+//
+// The one-click lifecycle TICK (PM-LC-2) runs ONE tick per operator click. This flag promotes a PM to
+// CONTINUOUS unsupervised drive: when armed, the autonomous loop (pm-autonomous.ts) re-runs
+// startProjectLifecycle after each batch of promoted tasks reaches a terminal state (done/failed),
+// looping toward the plan DoD. It is a SAFETY flag, not an authority grant — it never bypasses an
+// operator gate (the real external publish stays D-037-gated; a capability hire stays D-039-gated; only
+// the EXISTING PM 'act' authority promotes), and unsupervised spend stays bounded by the loop's hard
+// re-tick cap (PMA-2) + the orchestrator's existing daily spawn cap (D-021). DEFAULT false: a PM is
+// supervised (one-click-only) until the operator explicitly arms it.
+//
+// ADDITIVE, OVERWRITE-only (F-015 idempotent: apply-twice + a half-applied re-run are clean over the raw
+// OVERWRITE DDL — the generic schemaMigrations sweep in migrate.test.ts covers both). A non-NONE DEFAULT
+// (false) means existing pm rows read back `autonomous: false` with no backfill (no NONE→str gap, F-013).
+const m0057_pm_autonomous: Migration = {
+	id: '0057_pm_autonomous',
+	up: `
+		DEFINE FIELD OVERWRITE autonomous ON pm TYPE bool DEFAULT false;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2139,5 +2160,6 @@ export const schemaMigrations: Migration[] = [
 	m0053_create_proposal_run,
 	m0054_file_snapshot,
 	m0055_scene_event,
-	m0056_pm_lifecycle_lock
+	m0056_pm_lifecycle_lock,
+	m0057_pm_autonomous
 ];

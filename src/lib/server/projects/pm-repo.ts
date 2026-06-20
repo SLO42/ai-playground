@@ -423,6 +423,12 @@ export interface PmRow {
 	/** Per-project stagger (duration, coerced to its string form for the surface). */
 	cadence_offset?: string;
 	authority: PmAuthority;
+	/**
+	 * PMA-1 — ARMED for UNSUPERVISED drive (continuous autonomous loop). false ⇒ supervised
+	 * (the one-click tick runs once per operator click). Defaulted false at the schema DEFAULT
+	 * (m0057), so every existing/new pm row reads back a concrete boolean (never NONE).
+	 */
+	autonomous: boolean;
 	created_at: string | null;
 }
 
@@ -434,13 +440,18 @@ export interface CreatePmInput {
 	authority?: PmAuthority;
 }
 
-function normPm(row: PmRow & { id: unknown; project: unknown; cadence_offset?: unknown }): PmRow {
+function normPm(
+	row: PmRow & { id: unknown; project: unknown; cadence_offset?: unknown; autonomous?: unknown }
+): PmRow {
 	return {
 		...row,
 		id: str(row.id),
 		project: str(row.project),
 		// duration is a non-POJO in the 2.x SDK — coerce to its string form (F-013 class).
 		...(row.cadence_offset != null ? { cadence_offset: str(row.cadence_offset) } : {}),
+		// PMA-1 — coerce to a hard boolean. The schema DEFAULT is false, but a pre-m0057 row read
+		// before the migration lands (or a malformed value) coerces to false, never undefined (F-008).
+		autonomous: row.autonomous === true,
 		created_at: strDate(row.created_at)
 	};
 }
@@ -548,6 +559,28 @@ export async function updatePmAuthority(
 	const [rows] = await db.query<[(PmRow & { id: unknown; project: unknown })[]]>(
 		`UPDATE $rid MERGE { authority: $authority } RETURN AFTER;`,
 		{ rid: link(existing.id), authority }
+	);
+	return rows.length ? normPm(rows[0]) : null;
+}
+
+/**
+ * PMA-1 — ARM/DISARM the PM for UNSUPERVISED continuous drive (the autonomous loop). Operator-set on
+ * the project Overview; this is a SAFETY toggle, NOT an authority grant — arming a PM never bypasses an
+ * operator gate (the external publish stays D-037-gated, a capability hire stays D-039-gated; only the
+ * EXISTING 'act' authority promotes). MERGE preserves every untouched column. The value is bound via
+ * $param (D-016) and stored as a hard boolean. Returns null when the project has no hired PM (no row to
+ * arm — the caller surfaces "hire a PM first"; arming NEVER auto-hires).
+ */
+export async function setPmAutonomous(
+	db: Db,
+	projectId: string,
+	autonomous: boolean
+): Promise<PmRow | null> {
+	const existing = await getPm(db, projectId);
+	if (!existing) return null;
+	const [rows] = await db.query<[(PmRow & { id: unknown; project: unknown })[]]>(
+		`UPDATE $rid MERGE { autonomous: $autonomous } RETURN AFTER;`,
+		{ rid: link(existing.id), autonomous: autonomous === true }
 	);
 	return rows.length ? normPm(rows[0]) : null;
 }

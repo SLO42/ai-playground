@@ -84,6 +84,35 @@ describe('acquireLifecycleLock — happy path + benign concurrent refusal', () =
 		const refused = [a, b].find((r) => !r.held);
 		expect(refused?.reason).toBe('already-running');
 	});
+
+	// PMLH-1 regression — TRUE simultaneity. Under real parallelism SurrealDB's optimistic-transaction
+	// layer non-deterministically returns the LOSER either `already exists` OR `Failed to commit
+	// transaction due to a read or write conflict`. The original guard matched ONLY /already exists/ and
+	// RE-THREW the conflict variant — a raw 500, and on the both-commit variant the exact double-spend
+	// the lock exists to prevent. We loop several fresh-lock races so the conflict variant surfaces, and
+	// assert the loser is ALWAYS benign ({held:false, reason:'already-running'}) and the generator-of-
+	// truth — the holder — is acquired exactly ONCE per race (never twice, never thrown).
+	it('many TRUE-parallel acquire races: loser is ALWAYS benign, never thrown, never a second holder', async () => {
+		for (let i = 0; i < 12; i++) {
+			await db.query('DELETE pm_lifecycle_lock;').catch(() => {});
+			// Fire both with NO awaits in between so the two CREATEs reach the DB truly simultaneously —
+			// this is what makes the read/write-conflict variant (not just the serialized already-exists)
+			// reachable, which the timing-masked full-file run never exercised.
+			const results = await Promise.allSettled([
+				acquireLifecycleLock(db, projectId),
+				acquireLifecycleLock(db, projectId)
+			]);
+			// NEVER thrown — every settle is fulfilled (the conflict variant must be absorbed, not re-thrown).
+			const rejected = results.filter((r) => r.status === 'rejected');
+			expect(rejected, `iter ${i}: an acquire threw instead of returning benign`).toHaveLength(0);
+			const settled = results.map((r) => (r as PromiseFulfilledResult<Awaited<ReturnType<typeof acquireLifecycleLock>>>).value);
+			const holders = settled.filter((r) => r.held);
+			// Exactly ONE holder — the second submit must NOT acquire (no double real-spend).
+			expect(holders, `iter ${i}: expected exactly one holder`).toHaveLength(1);
+			const refused = settled.find((r) => !r.held);
+			expect(refused?.reason, `iter ${i}: loser not benign already-running`).toBe('already-running');
+		}
+	});
 });
 
 describe('releaseLifecycleLock — holder-scoped, re-acquirable', () => {

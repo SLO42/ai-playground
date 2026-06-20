@@ -309,10 +309,18 @@ describe('startProjectLifecycle — real-spend concurrency guard (PM-LC-2 harden
 
 		// Fire two ticks in parallel (the double-submit). Only ONE may run the generator + panel; the
 		// other must short-circuit on the held lock with alreadyRunning (no second session/spend).
-		const [a, b] = await Promise.all([
+		// PMLH-1 regression: under TRUE simultaneity the loser's lock-CREATE can fail with SurrealDB's
+		// `read or write conflict` (not just `already exists`); the original guard re-THREW that variant
+		// (here the second tick rejected with a raw 500). allSettled + the rejected-length assertion pins
+		// that the loser is now ABSORBED as benign — never thrown — which is the whole point of the lock.
+		const settled = await Promise.allSettled([
 			startProjectLifecycle(db, deps([approveRun(), approveRun()]), projectId, { generate: c.gen }),
 			startProjectLifecycle(db, deps([approveRun(), approveRun()]), projectId, { generate: c.gen })
 		]);
+		expect(settled.filter((r) => r.status === 'rejected')).toHaveLength(0);
+		const [a, b] = settled.map(
+			(r) => (r as PromiseFulfilledResult<Awaited<ReturnType<typeof startProjectLifecycle>>>).value
+		);
 
 		const ran = [a, b].filter((r) => !r.alreadyRunning && !r.needsHire);
 		const benign = [a, b].filter((r) => r.alreadyRunning === true);

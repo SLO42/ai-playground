@@ -1948,6 +1948,16 @@ const m0053_create_proposal_run: Migration = {
 // surface NEVER present it as live), D-016 (path validated + project-scoped), D-026 (screen
 // on capture), F-013 (captured_at coerced to ISO in the normalizer). Additive + idempotent
 // (OVERWRITE). FS-2 wires the capture points; FS-3 the view-file surface — NOT this task.
+//
+// CONCURRENCY DEDUP (file-snapshot-harden wave — closes the TOCTOU MEDIUM): the row id is
+// DETERMINISTIC — `file_snapshot:<sha256(content_sha|path|project)>` (captureSnapshot, the
+// snapshotId() helper). Identical content for the same (path, project) scope resolves to the
+// SAME record id, so a concurrent double-capture COLLIDES ATOMICALLY on the primary key (one
+// row, no matter how many racers). This mirrors F-026 / the gauntlet_key deterministic-id fix:
+// on THIS SurrealDB build a UNIQUE *secondary* index did NOT enforce under concurrent inserts
+// (gauntlet_key_dedup raced and dup'd), so the primary-key collision is the integrity guarantee,
+// NOT the index below. The composite index is for READ scale (the dedup SELECT + by-file lookups),
+// never the uniqueness backstop.
 const m0054_file_snapshot: Migration = {
 	id: '0054_file_snapshot',
 	up: `
@@ -1977,8 +1987,20 @@ const m0054_file_snapshot: Migration = {
 		DEFINE FIELD OVERWRITE project     ON file_snapshot TYPE option<record<project>>;
 		DEFINE FIELD OVERWRITE captured_at ON file_snapshot TYPE datetime DEFAULT time::now();
 
-		-- Content-address dedup scope (FILE-SNAPSHOT-SPEC §2): identical content for the same
-		-- path+project stores ONCE. project is optional, so coalesce to '' for a stable key.
+		-- Content-address read indexes (FILE-SNAPSHOT-SPEC §2): the dedup-by-scope is the
+		-- DETERMINISTIC record id's primary key (above) — NOT a secondary index. These two serve
+		-- the by-sha + by-project READ paths only.
+		--
+		-- A composite (content_sha, path, project) index was BUILT, EMPIRICALLY tested, and
+		-- DELETED: under 4-way concurrent identical CREATEs on the deterministic id, the composite
+		-- secondary index INTERFERED with the atomic primary-key collision — two racers' CREATEs
+		-- both returned a row (instead of the loser throwing the clean "already exists"/commit-race
+		-- conflict), though the table STILL held exactly one row. This is the F-026 trap exactly:
+		-- a secondary index that misbehaves under concurrency on this SurrealDB build. The
+		-- deterministic id is the sole, sufficient dedup guarantee; the composite index added no
+		-- read value the by_sha/by_project indexes don't already cover, so it is intentionally NOT
+		-- defined (the "composite dedup index for scale" LOW is declined WITH evidence — see the
+		-- file-snapshot.test.ts concurrency proof + the harden-wave summary).
 		DEFINE INDEX OVERWRITE file_snapshot_by_sha ON file_snapshot FIELDS content_sha;
 		DEFINE INDEX OVERWRITE file_snapshot_by_project ON file_snapshot FIELDS project;
 	`

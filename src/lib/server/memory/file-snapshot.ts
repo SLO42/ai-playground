@@ -31,7 +31,7 @@ import { createHash } from 'node:crypto';
 import { isAbsolute, resolve, sep, relative } from 'node:path';
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
-import { assertRecordIdOfTable } from '../db/validate';
+import { assertRecordId, assertRecordIdOfTable } from '../db/validate';
 import { screen, type ScreenStatus } from './screen';
 
 // ── Errors (EVERY ERROR HAS A NAME) ──────────────────────────────────────────────────
@@ -47,6 +47,23 @@ export class SnapshotPathError extends Error {
 	constructor(message: string, path: string) {
 		super(message);
 		this.path = path;
+	}
+}
+
+/**
+ * The `capturedBy` ref is present but not a well-formed record id (LOW: validate the ref shape —
+ * file_snapshot.captured_by is a free-form string column, so a malformed ref would silently land as
+ * a dangling pointer). Thrown BEFORE any DB touch — names the bad value, never a silent bad ref.
+ * Every real caller passes a record id (`message:…` / `project:…` / `interview_run:…`); a
+ * project-less/captured-by-less snapshot is fine (the field is OMITTED), but a NON-EMPTY ref must be
+ * a record id.
+ */
+export class SnapshotRefError extends Error {
+	override readonly name = 'SnapshotRefError';
+	readonly ref: unknown;
+	constructor(message: string, ref: unknown) {
+		super(message);
+		this.ref = ref;
 	}
 }
 
@@ -100,6 +117,74 @@ export function normalizeSnapshotPath(path: unknown): string {
 /** The sha-256 (lowercase hex) of a UTF-8 string — the content address (§2). */
 export function contentSha(content: string): string {
 	return createHash('sha256').update(content, 'utf8').digest('hex');
+}
+
+/**
+ * The DETERMINISTIC `file_snapshot:<id>` record id for a dedup scope (content_sha, path, project)
+ * — the CONCURRENCY-SAFE dedup guarantee (file-snapshot-harden; mirrors F-026 / gauntlet_key).
+ *
+ * Identical content for the same (path, project) maps to the SAME record id, so two concurrent
+ * captures both `CREATE` on that id and the loser collides ATOMICALLY on the primary key (SurrealDB
+ * cannot create two rows at one id) — exactly ONE row, no matter the racer count. This is why the
+ * dedup is the id, NOT a secondary UNIQUE index (which was reproduced NOT enforcing under concurrent
+ * inserts on this build — F-026/DEFECT 3).
+ *
+ * The id suffix is a sha-256 of the three scope components joined by SCOPE_SEP (a NUL byte). A NUL
+ * can never appear in a sha-hex ([a-f0-9]), a normalized snapshot path (normalizeSnapshotPath would
+ * have rejected/stripped it), or a validated `project:slug` id, so the join is UNAMBIGUOUS -- no
+ * `a|b` vs `a` + `|b` collision across the three components. project is OPTIONAL; a project-less
+ * snapshot uses an empty project component, giving it a distinct deterministic scope from any
+ * project-scoped one. The suffix is lowercase hex, satisfying the D-016 record-id charset.
+ *
+ * PURE + exported -- the id derivation is unit-testable without a DB.
+ */
+// SCOPE_SEP is a NUL byte BUILT AT RUNTIME via String.fromCharCode(0) -- deliberately NOT a literal
+// NUL nor a unicode escape in source, so the file stays pure-ASCII text (git would treat a file
+// with a raw NUL byte as binary; this keeps the source diffable).
+const SCOPE_SEP = String.fromCharCode(0);
+export function snapshotId(sha: string, path: string, project: string | null): string {
+	const scopeKey = `${sha}${SCOPE_SEP}${path}${SCOPE_SEP}${project ?? ''}`;
+	const suffix = createHash('sha256').update(scopeKey, 'utf8').digest('hex');
+	return `file_snapshot:${suffix}`;
+}
+
+/**
+ * Validate a NON-EMPTY `capturedBy` ref is a well-formed record id (LOW). Returns the validated ref
+ * (or undefined when absent — a captured-by-less snapshot is valid; the field is OMITTED). Throws
+ * {@link SnapshotRefError} (named, pre-DB) when present-but-malformed, so a bad ref never persists as
+ * a dangling free-form pointer. Wraps the db/validate.ts assertRecordId so the charset rule is the
+ * SAME single chokepoint (D-016) — re-surfaced as a snapshot-named error for the caller.
+ */
+export function assertCapturedByRef(ref: unknown): string | undefined {
+	if (ref == null || ref === '') return undefined;
+	if (typeof ref !== 'string') {
+		throw new SnapshotRefError(`capturedBy must be a record-id string, got ${typeof ref}`, ref);
+	}
+	try {
+		return assertRecordId(ref);
+	} catch {
+		throw new SnapshotRefError(
+			`capturedBy must be a '<table>:<id>' record id (D-016), got ${JSON.stringify(ref)}`,
+			ref
+		);
+	}
+}
+
+/**
+ * Is this the deterministic-id PRIMARY-KEY collision a concurrent identical capture raises (F-026)?
+ * On this SurrealDB build the same record-id double-CREATE surfaces as one of two raw shapes (both
+ * InternalError): the record-already-exists message, OR a commit-race read/write conflict when two
+ * writers reach commit together. This matcher is intentionally narrow — it matches ONLY those real
+ * collision phrases (never an unrelated error whose text merely mentions "exists"), and the caller
+ * invokes it ONLY around the single deterministic-id CREATE, so a match can be nothing but the dedup
+ * collision (mirrors workforce/ceremony.ts isDedupCollision; F-008 — re-raise everything else).
+ */
+function isSnapshotIdCollision(err: unknown): boolean {
+	const msg = err instanceof Error ? err.message : String(err);
+	return (
+		/record `?[^`']*`? already exists/i.test(msg) ||
+		/failed transaction|read or write conflict/i.test(msg)
+	);
 }
 
 /** Byte length of a string as UTF-8 (the honest on-disk size, not the JS char count). */
@@ -258,20 +343,45 @@ interface SnapshotRow {
 	marker_reason?: string | null;
 }
 
+/** Build a deduped (REUSE) result from an already-stored row. */
+function dedupResult(row: SnapshotRow, sha: string): CaptureSnapshotResult {
+	return {
+		id: String(row.id),
+		contentSha: sha,
+		deduped: true,
+		screenStatus: row.screen_status,
+		isMarker: row.is_marker,
+		...(row.marker_reason ? { markerReason: row.marker_reason as SnapshotMarkerReason } : {})
+	};
+}
+
 /**
  * Capture (or dedup to) a point-in-time snapshot of a file's content (FILE-SNAPSHOT-SPEC §2).
  *
- * Sequence: (1) D-016 — validate + normalize the path (SnapshotPathError on escape, before any
- * DB touch); (2) D-026 + §2 — plan the storable body (screen → quarantine-marker / redacted-safe /
- * clean, then bound binary/oversize → marker), computing the content_sha over the ORIGINAL bytes;
- * (3) DEDUP — if a row with the same (content_sha, path, project) already exists, REUSE it (no
- * duplicate write); else (4) CREATE the row.
+ * Sequence: (1) D-016 — validate + normalize the path (SnapshotPathError on escape, before any DB
+ * touch); (1b) LOW — validate the capturedBy ref shape (SnapshotRefError on a malformed ref); (2)
+ * D-026 + §2 — plan the storable body (screen → quarantine-marker / redacted-safe / clean, then
+ * bound binary/oversize → marker), computing the content_sha over the ORIGINAL bytes; (3) DEDUP —
+ * the row id is DETERMINISTIC over (content_sha, path, project), so a fast SELECT-by-id reuses an
+ * existing identical capture; (4) CREATE on that deterministic id — a concurrent identical capture
+ * COLLIDES ATOMICALLY on the primary key and is RESOLVED to the existing row (deduped:true).
+ *
+ * CONCURRENCY (closes the TOCTOU dedup MEDIUM — file-snapshot-harden): the OLD path did a
+ * SELECT-then-CREATE with NO DB uniqueness guard, so N concurrent identical captures all missed the
+ * SELECT and wrote N rows (defeating §2's "identical content stores ONCE"). The fix mirrors F-026 /
+ * gauntlet_key: a deterministic record id makes the dedup an ATOMIC primary-key collision — the SELECT
+ * is now just a fast-path read; correctness comes from the id, and the loser's collision is caught and
+ * resolved to the winner's row. EXACTLY one row regardless of racer count (proven by the Promise.all
+ * concurrency test). Interrupt-safe: a re-run CREATEs the same id → collides → resolves to the prior
+ * row (idempotent-by-collision; no half-state).
  *
  * Returns the row id (for the caller to link) + whether it deduped + the screen/marker disposition.
  *
  * Shadow paths: nil/empty content → an honest empty-string snapshot (sha of '', bytes 0, clean);
- * an escaping/absolute path → SnapshotPathError (named, pre-DB); a quarantined secret → a marker
- * row (never raw); an upstream DB error → surfaces with its own name (never swallowed as success).
+ * an escaping/absolute path → SnapshotPathError (named, pre-DB); a malformed capturedBy →
+ * SnapshotRefError (named, pre-DB); a quarantined secret → a marker row (never raw); a CONCURRENT
+ * identical capture → the loser's id-collision is resolved to the one row; an upstream DB error
+ * (not a dedup collision) → surfaces with its own name (never swallowed as success).
  */
 export async function captureSnapshot(
 	db: Db,
@@ -280,42 +390,32 @@ export async function captureSnapshot(
 	// 1. D-016 — validate + normalize (throws SnapshotPathError on escape, before any DB touch).
 	const path = normalizeSnapshotPath(input.path);
 
+	// 1b. LOW — validate the capturedBy ref SHAPE (throws SnapshotRefError on a malformed ref, pre-DB).
+	const capturedBy = assertCapturedByRef(input.capturedBy);
+
 	// 2. D-026 + §2 — decide the storable body (screen + bound). sha is over the ORIGINAL content.
 	const plan = planSnapshotBody(typeof input.content === 'string' ? input.content : '');
 
 	// Optional project: validated to a `project:<slug>` id (D-016) and bound as a record link.
-	const projectRid =
+	const projectId =
 		input.project != null && input.project !== ''
-			? new StringRecordId(assertRecordIdOfTable(input.project, 'project'))
+			? assertRecordIdOfTable(input.project, 'project')
 			: null;
+	const projectRid = projectId ? new StringRecordId(projectId) : null;
 
-	// 3. DEDUP — content-address scope is (content_sha, path, project) per §2. project is optional;
-	// the IS NONE / = $project split keeps the match exact (a NULL bind would never equal a NONE
-	// column, so a project-less snapshot must match on `project IS NONE`).
-	const dedupSurql = projectRid
-		? `SELECT id, content_sha, screen_status, is_marker, marker_reason FROM file_snapshot
-			 WHERE content_sha = $sha AND path = $path AND project = $project LIMIT 1;`
-		: `SELECT id, content_sha, screen_status, is_marker, marker_reason FROM file_snapshot
-			 WHERE content_sha = $sha AND path = $path AND project IS NONE LIMIT 1;`;
-	const [existing] = await db.query<[SnapshotRow[]]>(dedupSurql, {
-		sha: plan.sha,
-		path,
-		...(projectRid ? { project: projectRid } : {})
-	});
-	if (existing && existing.length > 0) {
-		const row = existing[0];
-		return {
-			id: String(row.id),
-			contentSha: plan.sha,
-			deduped: true,
-			screenStatus: row.screen_status,
-			isMarker: row.is_marker,
-			...(row.marker_reason ? { markerReason: row.marker_reason as SnapshotMarkerReason } : {})
-		};
-	}
+	// 3. DEDUP — the deterministic record id over (content_sha, path, project) is the concurrency-safe
+	// dedup key (F-026). A fast SELECT-by-id reuses an existing identical capture without a CREATE.
+	const ridStr = snapshotId(plan.sha, path, projectId);
+	const rid = new StringRecordId(assertRecordId(ridStr));
+	const [hit] = await db.query<[SnapshotRow[]]>(
+		`SELECT id, content_sha, screen_status, is_marker, marker_reason FROM $rid;`,
+		{ rid }
+	);
+	if (hit && hit.length > 0) return dedupResult(hit[0], plan.sha);
 
-	// 4. CREATE — a fresh content-addressed row. Every value binds as a $param (D-016); only the
-	// validated table literal is interpolated. captured_at defaults to time::now() (honest as-of).
+	// 4. CREATE on the DETERMINISTIC id. Every value binds as a $param (D-016); the validated record
+	// id binds as $rid (never interpolated). captured_at defaults to time::now() (honest as-of). A
+	// concurrent identical capture collides on this primary id → caught + resolved to the winner row.
 	const content: Record<string, unknown> = {
 		path,
 		content_sha: plan.sha,
@@ -325,25 +425,43 @@ export async function captureSnapshot(
 		is_marker: plan.isMarker
 	};
 	if (plan.markerReason) content.marker_reason = plan.markerReason;
-	if (input.capturedBy != null && input.capturedBy !== '') content.captured_by = input.capturedBy;
+	if (capturedBy) content.captured_by = capturedBy;
 	if (projectRid) content.project = projectRid;
 
-	const [created] = await db.query<[SnapshotRow[]]>(
-		`CREATE file_snapshot CONTENT $content RETURN AFTER;`,
-		{ content }
-	);
-	if (!created || created.length === 0) {
-		// EVERY ERROR HAS A NAME: a CREATE that returns nothing is a real DB anomaly, not success.
-		throw new Error('captureSnapshot: CREATE file_snapshot returned no row (unexpected DB state).');
+	try {
+		const [created] = await db.query<[SnapshotRow[]]>(`CREATE $rid CONTENT $content RETURN AFTER;`, {
+			rid,
+			content
+		});
+		if (!created || created.length === 0) {
+			// EVERY ERROR HAS A NAME: a CREATE that returns nothing is a real DB anomaly, not success.
+			throw new Error('captureSnapshot: CREATE file_snapshot returned no row (unexpected DB state).');
+		}
+		return {
+			id: String(created[0].id),
+			contentSha: plan.sha,
+			deduped: false,
+			screenStatus: plan.screenStatus,
+			isMarker: plan.isMarker,
+			...(plan.markerReason ? { markerReason: plan.markerReason } : {})
+		};
+	} catch (err) {
+		// CONCURRENCY (F-026): the deterministic-id CREATE collided — a racer won with the SAME content.
+		// This is the dedup invariant biting ATOMICALLY (NOT an error). Re-read the winner's row by id
+		// and resolve to it (deduped:true). This is a SINGLE re-read, not a retry loop — it cannot spin.
+		if (isSnapshotIdCollision(err)) {
+			const [won] = await db.query<[SnapshotRow[]]>(
+				`SELECT id, content_sha, screen_status, is_marker, marker_reason FROM $rid;`,
+				{ rid }
+			);
+			if (won && won.length > 0) return dedupResult(won[0], plan.sha);
+			// The winner's row is not visible yet — surface honestly rather than fabricate (F-008).
+			throw new Error(
+				`captureSnapshot: id-collision on ${ridStr} but the winning row is not yet visible (retry capture).`
+			);
+		}
+		throw err; // a non-collision DB error propagates unchanged (named, never swallowed as success).
 	}
-	return {
-		id: String(created[0].id),
-		contentSha: plan.sha,
-		deduped: false,
-		screenStatus: plan.screenStatus,
-		isMarker: plan.isMarker,
-		...(plan.markerReason ? { markerReason: plan.markerReason } : {})
-	};
 }
 
 // ── Row normalizer (F-013 — coerce datetimes to ISO; never str(undefined)) ─────────────

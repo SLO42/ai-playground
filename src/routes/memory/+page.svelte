@@ -12,6 +12,8 @@
   import { page } from '$app/stores';
   import { stream } from '$lib/client/stream.svelte';
   import MemoryTabs from '$lib/components/shell/MemoryTabs.svelte';
+  import MemoryScene from '$lib/components/scene/MemoryScene.svelte';
+  import type { SceneChange } from '$lib/client/scene/scene-graph';
   import type { PageData } from './$types';
 
   let { data }: { data: PageData } = $props();
@@ -19,7 +21,30 @@
   const connected = $derived(data.connected);
   const memories = $derived(data.memories ?? []);
   const graph = $derived(data.graph ?? { nodes: [], edges: [] });
+  // MEMORY-SCENE-SPEC §4 — the derived node/edge TRUTH for the living-brain Scene lens.
+  const scene = $derived(data.scene ?? { nodes: [], edges: [] });
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
+
+  // Lens toggle (operator fork #1: a 'Scene' LENS on /memory, not a new route). The Scene
+  // is decorative-augmenting — the honest Explorer text views stay the default + always
+  // reachable. Seeded from ?lens=scene so the view is deep-linkable.
+  let lens = $state<'explorer' | 'scene'>(
+    $page.url.searchParams.get('lens') === 'scene' ? 'scene' : 'explorer'
+  );
+
+  // The live animation feed for the Scene (the ONE SSE). The component owns NO truth — this
+  // only drives the animation timeline (which node spawned/fired/retired). The truth refresh
+  // (loader re-invalidation above) is what actually adds/removes nodes. We bridge the SSE's
+  // per-table onDbChange into the component's (topic, change) callback shape.
+  function sceneFeed(onChange: (topic: string, change: SceneChange) => void): () => void {
+    const topics = ['entity', 'memory', 'session', 'work_item', 'references'];
+    const offs = topics.map((t) =>
+      stream.onDbChange(t, (change) =>
+        onChange(t, change as unknown as SceneChange)
+      )
+    );
+    return () => offs.forEach((off) => off());
+  }
 
   // Keyword recall filter (client-side over the live list — honest: filters real rows only).
   // Seeded from ?q= so a deep link (e.g. the /cannibalize "recall →" link, which passes a
@@ -97,6 +122,30 @@
 
   <MemoryTabs />
 
+  <!-- Lens toggle (Explorer ↔ Scene) — the Scene is augmenting; Explorer stays the honest default. -->
+  <div class="lens-toggle" role="tablist" aria-label="Memory lens">
+    <button
+      type="button"
+      class="lens-tab"
+      role="tab"
+      aria-selected={lens === 'explorer'}
+      data-active={lens === 'explorer'}
+      onclick={() => (lens = 'explorer')}
+    >
+      Explorer
+    </button>
+    <button
+      type="button"
+      class="lens-tab"
+      role="tab"
+      aria-selected={lens === 'scene'}
+      data-active={lens === 'scene'}
+      onclick={() => (lens = 'scene')}
+    >
+      Scene
+    </button>
+  </div>
+
   {#if !connected}
     <div class="card state">
       <span class="eyebrow">disconnected</span>
@@ -104,6 +153,16 @@
         The database is not connected — showing no memory rather than a fabricated graph.
         {#if error}<span class="mono">{error}</span>{:else}Start SurrealDB and reload.{/if}
       </p>
+    </div>
+  {:else if lens === 'scene'}
+    <!-- MEMORY-SCENE-SPEC §4 — the living-brain animated force graph (the Scene lens). The
+         node/edge truth is the derived `scene` from the loader; the live feed drives the
+         spawn/pulse/connect/retire micro-animations. Honest empty handled in the component. -->
+    <div class="card scene-card">
+      <span class="eyebrow">
+        living scene · {scene.nodes.length} {scene.nodes.length === 1 ? 'node' : 'nodes'} · {scene.edges.length} {scene.edges.length === 1 ? 'edge' : 'edges'}
+      </span>
+      <MemoryScene graph={scene} feed={sceneFeed} />
     </div>
   {:else}
     <div class="grid">
@@ -251,6 +310,47 @@
     display: flex;
     flex-direction: column;
     gap: var(--space-2);
+  }
+  .lens-toggle {
+    display: inline-flex;
+    gap: var(--space-1, 0.25rem);
+    padding: 0.2rem;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md, 10px);
+    background: var(--color-surface-card);
+    width: fit-content;
+  }
+  .lens-tab {
+    font: var(--type-body-sm);
+    color: var(--color-text-muted);
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.3rem 0.8rem;
+    cursor: pointer;
+    transition: color 0.14s ease, background 0.14s ease, border-color 0.14s ease;
+  }
+  .lens-tab:hover {
+    color: var(--color-text);
+  }
+  .lens-tab:focus-visible {
+    outline: 2px solid var(--color-accent, #8ab0ab);
+    outline-offset: 1px;
+  }
+  .lens-tab[data-active='true'] {
+    color: var(--color-text);
+    background: var(--color-surface-overlay);
+    border-color: var(--color-border);
+  }
+  .scene-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .lens-tab {
+      transition: none;
+    }
   }
   .state-body {
     font: var(--type-body-sm);

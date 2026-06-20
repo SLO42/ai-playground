@@ -96,6 +96,22 @@ export function createErrorReason(err: unknown): string {
 	if (err instanceof UnstableSlugError) {
 		return err.message;
 	}
+	if (err instanceof ConcurrentCreateError) {
+		// CAH4-1: a concurrent same-slug create lost the fail-closed create-lock race (CA-H2). This is
+		// RETRYABLE — the winner is finishing; retrying once it lands either opens the new project or
+		// honestly hits ProjectExistsError. The message names the slug and says to retry in a moment.
+		return `Another create for '${err.slug}' is in progress — retry in a moment.`;
+	}
+	if (err instanceof PostRegisterWriterError) {
+		// CAH4-1: the scaffold + register SUCCEEDED but a post-register writer threw — the project is
+		// REAL on disk and registered, honestly MARKED create_status='incomplete' (F-008, never silently
+		// unwound, never deleted — F-040). NOT a benign success: surfaces as a real failure with a
+		// RECOVERY HINT pointing the operator at the resume path (CAH4-2), not a bare stack/cause.
+		return (
+			`Project ${err.projectId} was created but setup did not finish (marked incomplete` +
+			`${err.incidentId ? `, incident ${err.incidentId}` : ''}) — open the project page to resume.`
+		);
+	}
 	if (err instanceof ScaffoldPathError) {
 		return `A scaffold path tried to escape the project directory (D-018) — regenerate. Entry: ${err.entry}`;
 	}
@@ -108,17 +124,16 @@ export function createErrorReason(err: unknown): string {
 	return (err as Error).message;
 }
 
-/** Map a named template-scaffold error to an honest reason (mirrors createErrorReason; CT-3). */
+/**
+ * Map a named template-scaffold error to an honest reason (mirrors createErrorReason; CT-3).
+ * ConcurrentCreateError / PostRegisterWriterError now share createErrorReason's mapping (both the AI
+ * and template scaffold paths surface the identical retry / resume-hint message).
+ */
 export function templateScaffoldErrorReason(err: unknown): string {
 	if (err instanceof TemplateNotFoundError) {
 		return `Unknown template '${err.templateId}' — pick one from the list and retry.`;
 	}
-	if (err instanceof ConcurrentCreateError) {
-		return `A create for '${err.slug}' is already in progress — try again once it completes.`;
-	}
-	if (err instanceof PostRegisterWriterError) {
-		return `Project ${err.projectId} was created but setup did not finish (marked incomplete${err.incidentId ? `, incident ${err.incidentId}` : ''}) — open it to inspect. ${err.message}`;
-	}
-	// Shared scaffold/slug/exists classes carry the same honest reasons as the AI path.
+	// Shared scaffold/slug/exists/concurrent/post-register classes carry the same honest reasons as the
+	// AI path (createErrorReason is now the single source for all of them — DRY).
 	return createErrorReason(err);
 }

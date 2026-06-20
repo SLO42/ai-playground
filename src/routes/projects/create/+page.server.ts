@@ -37,6 +37,7 @@ import {
 	ProjectExistsError,
 	UnstableSlugError,
 	ConcurrentCreateError,
+	PostRegisterWriterError,
 	type CreateBrief,
 	type CreationProposalEnvelope
 } from '$lib/server/create';
@@ -354,10 +355,22 @@ export const actions: Actions = {
 				}
 			};
 		} catch (err) {
-			const status =
-				err instanceof StaleProposalError || err instanceof ProjectExistsError || err instanceof UnstableSlugError
-					? 409
-					: 500;
+			// 409 = client can resolve by acting differently / retrying:
+			//   • StaleProposalError / ProjectExistsError / UnstableSlugError — regenerate / open existing / fix name;
+			//   • ConcurrentCreateError (CAH4-1) — a concurrent same-slug create won the create-lock race; RETRYABLE
+			//     (the operator retries once the winner lands). It carried a generic 500 before this fix.
+			// 500 = a real server-side failure the operator cannot fix by re-submitting:
+			//   • PostRegisterWriterError (CAH4-1) — the project IS registered (honestly marked create_status=
+			//     'incomplete', F-008); createErrorReason carries the recovery HINT (open the project page to
+			//     resume — CAH4-2). NOT masked as success, NOT a bare 500 with a raw cause.
+			const retryableOrClientFixable =
+				err instanceof StaleProposalError ||
+				err instanceof ProjectExistsError ||
+				err instanceof UnstableSlugError ||
+				err instanceof ConcurrentCreateError;
+			// PostRegisterWriterError stays 500 explicitly (real backend failure; row honestly marked
+			// incomplete) — pinned here so a later edit to the fallthrough can't silently demote it.
+			const status = retryableOrClientFixable && !(err instanceof PostRegisterWriterError) ? 409 : 500;
 			return fail(status, { create: { error: createErrorReason(err) } });
 		}
 	},

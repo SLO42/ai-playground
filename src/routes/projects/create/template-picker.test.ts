@@ -16,6 +16,7 @@ import {
 	templateChoices,
 	readTemplateParams,
 	templateScaffoldErrorReason,
+	createErrorReason,
 	MAX_TEMPLATE_PARAM
 } from '$lib/server/create/template-form';
 import {
@@ -26,7 +27,8 @@ import {
 	UnstableSlugError,
 	ScaffoldPathError,
 	ScaffoldSecretError,
-	ScaffoldFailedError
+	ScaffoldFailedError,
+	StaleProposalError
 } from '$lib/server/create';
 
 describe('templateChoices — metadata + CT-4 pre-fill hints (F-008 honest)', () => {
@@ -169,5 +171,65 @@ describe('templateScaffoldErrorReason — EVERY ERROR HAS A NAME', () => {
 
 	it('an unknown/unnamed error surfaces its message (no swallow)', () => {
 		expect(templateScaffoldErrorReason(new Error('boom'))).toBe('boom');
+	});
+});
+
+describe('createErrorReason — CAH4-1 concurrent + post-register mappings (AI create path)', () => {
+	// EVERY ERROR HAS A NAME. The ?/create action maps ConcurrentCreateError→409 retryable and
+	// PostRegisterWriterError→500-with-recovery-hint; these prove the operator-facing message text.
+	it('ConcurrentCreateError → RETRYABLE message, names the slug, says retry in a moment', () => {
+		const r = createErrorReason(new ConcurrentCreateError('rounds-mod'));
+		expect(r).toContain("'rounds-mod'");
+		expect(r.toLowerCase()).toContain('in progress');
+		expect(r.toLowerCase()).toContain('retry in a moment');
+		// Honest (F-008): never phrased as a success / "created".
+		expect(r.toLowerCase()).not.toContain('created');
+	});
+
+	it('PostRegisterWriterError → RECOVERY HINT (incomplete + resume from project page), no leaked cause', () => {
+		const r = createErrorReason(
+			new PostRegisterWriterError('project:rounds_mod', 'pm hire threw: a PM name is required', 'incident:99')
+		);
+		expect(r).toContain('project:rounds_mod');
+		expect(r.toLowerCase()).toContain('incomplete');
+		expect(r.toLowerCase()).toContain('resume');
+		expect(r).toContain('incident:99');
+		// D-026: the recovery hint must NOT leak the raw post-register cause (the writer's internal
+		// stack/message) into the operator-facing reason — only id + incident + the resume hint.
+		expect(r).not.toContain('a PM name is required');
+		expect(r).not.toContain('pm hire threw');
+		// Honest (F-008): the project DID get created — the message says so, never masks it as success.
+		expect(r.toLowerCase()).toContain('created but setup did not finish');
+	});
+
+	it('PostRegisterWriterError without an incident id omits the incident clause (no "undefined")', () => {
+		const r = createErrorReason(new PostRegisterWriterError('project:p', 'cause'));
+		expect(r).not.toContain('undefined');
+		expect(r).not.toContain('incident');
+		expect(r.toLowerCase()).toContain('resume');
+	});
+
+	it('preserves existing mappings (Stale/Exists/Slug/Path/Secret/Failed) unchanged', () => {
+		expect(createErrorReason(new StaleProposalError('changed')).toLowerCase()).toContain(
+			'regenerate before confirming'
+		);
+		expect(createErrorReason(new ProjectExistsError('project:dup')).toLowerCase()).toContain(
+			'already exists'
+		);
+		const slugErr = new UnstableSlugError('!!!', '', '');
+		expect(createErrorReason(slugErr)).toBe(slugErr.message);
+		expect(createErrorReason(new ScaffoldPathError('../x', '/abs/x')).toLowerCase()).toContain(
+			'escape the project directory'
+		);
+		expect(createErrorReason(new ScaffoldSecretError('.env', 'leak')).toLowerCase()).toContain(
+			'literal secret'
+		);
+		expect(createErrorReason(new ScaffoldFailedError('disk full', 'incident:7')).toLowerCase()).toContain(
+			'scaffold failed'
+		);
+	});
+
+	it('an unknown/unnamed error surfaces its message (no swallow — shadow: upstream error)', () => {
+		expect(createErrorReason(new Error('kaboom'))).toBe('kaboom');
 	});
 });

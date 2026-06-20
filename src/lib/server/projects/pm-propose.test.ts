@@ -187,6 +187,80 @@ describe('generatePmProposals — D-026 writer-boundary screen', () => {
 		expect(res.dropped.some((d) => /quarantined/i.test(d.reason))).toBe(true);
 		expect(await listTasksByProject(db, projectId, 'proposed')).toHaveLength(0);
 	});
+
+	// Re-review gap 1 (D-026 writer-boundary leak): `evidence` is the FIFTH agent-authored freetext
+	// field — it persists (provenance.evidence), composes into the immutable description, and renders
+	// verbatim to the operator. It MUST cross the writer-boundary screen like every other field. A
+	// secret that fits the structural-ref SHAPE (no whitespace, lowercase prefix) but carries an
+	// api-key body must be REDACTED at the boundary — the raw key never persists.
+	it('screens evidence at the writer boundary — a key-shaped evidence ref is redacted, never persisted raw (D-026)', async () => {
+		const leaky = `gap:sk-ant-${'a'.repeat(24)}`; // valid structural shape, secret body
+		const gen = stub({ proposals: [candidate({ evidence: [projectId, leaky] })] });
+		const res = await generatePmProposals(db, gen, projectId);
+		expect(res.created).toBe(1);
+		const t = (await listTasksByProject(db, projectId, 'proposed'))[0];
+		// The raw key never lands anywhere evidence is stored/rendered.
+		expect(t.provenance?.evidence?.join(' ')).not.toContain('sk-ant-');
+		expect(t.provenance?.evidence?.join(' ')).toContain('[REDACTED:anthropic-key]');
+		// The redaction is surfaced honestly on an evidence field (never silent).
+		expect(res.redactions.some((r) => /evidence/.test(r.field) && r.reasons.includes('anthropic-key'))).toBe(true);
+	});
+
+	// A PEM block carries whitespace, so a PEM-in-evidence is refused by the structural-ref SHAPE guard
+	// (no-whitespace) BEFORE it can persist — the candidate never lands, the raw key never reaches the
+	// store/screen. Defense-in-depth: shape guard (no prose/whitespace) AND screen (key-shaped tokens).
+	it('refuses a PEM-in-evidence at the shape guard — the whitespace-bearing secret never persists', async () => {
+		const pem = '-----BEGIN RSA PRIVATE KEY-----\nMIIBfake\n-----END RSA PRIVATE KEY-----';
+		const gen = stub({ proposals: [candidate({ evidence: [`key:${pem}`] })] });
+		await expect(generatePmProposals(db, gen, projectId)).rejects.toThrow(PmProposalContractError);
+		expect(await listTasksByProject(db, projectId, 'proposed')).toHaveLength(0);
+	});
+});
+
+describe('generatePmProposals — anti-spam fingerprint stays structural (re-review gap 2)', () => {
+	// Re-review gap 2: evidence feeds proposalFingerprint, whose contract is that cosmetic re-wording
+	// cannot dodge an operator defer / duplicate absorb. PM-LC-1 made evidence agent-authored, so it
+	// is now constrained to a STRUCTURAL ref shape: free prose ('the DoD gap') is refused, and two
+	// ticks grounding the SAME structural refs produce the SAME fingerprint (the second is absorbed).
+	it('refuses free-prose evidence (a sentence) so a reworded tick cannot mint a new fingerprint', async () => {
+		const prose = stub({ proposals: [candidate({ evidence: ['the DoD gap in the plan'] })] });
+		await expect(generatePmProposals(db, prose, projectId)).rejects.toThrow(/structural evidence ref/);
+		expect(await listTasksByProject(db, projectId, 'proposed')).toHaveLength(0);
+
+		const reworded = stub({ proposals: [candidate({ evidence: ['DoD gap, per plan'] })] });
+		await expect(generatePmProposals(db, reworded, projectId)).rejects.toThrow(/structural evidence ref/);
+	});
+
+	it('two ticks with the same structural evidence refs share a fingerprint — the second is absorbed, not re-created', async () => {
+		const mem = await addPmMemory(db, {
+			project: projectId,
+			kind: 'risk',
+			content: 'Refresh-token rotation is untested.',
+			source: 'test'
+		});
+		const ev = [mem.id]; // a real pm_memory record id — a structural ref
+		const first = await generatePmProposals(db, stub({ proposals: [candidate({ evidence: ev, title: 'Close it' })] }), projectId);
+		expect(first.created).toBe(1);
+		// A second tick re-wording every freetext field but grounding the SAME structural evidence:
+		// the fingerprint is identical → absorbed as duplicate_open, NOT a second created row.
+		const second = await generatePmProposals(
+			db,
+			stub({
+				proposals: [
+					candidate({
+						evidence: ev,
+						title: 'Totally different wording for the same matter',
+						objective: 'Reworded objective that says the same thing differently.',
+						purpose: 'Reworded purpose.'
+					})
+				]
+			}),
+			projectId
+		);
+		expect(second.created).toBe(0);
+		expect(second.outcomes[0].outcome).toBe('duplicate_open');
+		expect(await listTasksByProject(db, projectId, 'proposed')).toHaveLength(1);
+	});
 });
 
 describe('generatePmProposals — bounded per-tick cap', () => {

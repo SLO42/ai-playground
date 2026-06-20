@@ -175,6 +175,54 @@ function reqStr(v: unknown, field: string): string {
 	return t;
 }
 
+// ── Evidence-ref shape (keeps the structural fingerprint structural) ──────────────────────────────
+//
+// `evidence` is the basis of proposalFingerprint (pm-proposals.ts §4 (d)) — the rail that makes
+// "cosmetic re-wording cannot dodge an operator's defer" TRUE. Every other proposeTask caller
+// (pm-triggers.ts) grounds evidence in CODE-controlled refs: real record-ids (`pm.id`, a runId, an
+// evidenceId) or bounded structural refs (`issue#12`, `pr#3`). PM-LC-1 is the first caller where the
+// agent AUTHORS evidence, so if evidence were free prose two ticks emitting ['the DoD gap'] vs
+// ['DoD gap in plan'] would fingerprint differently and dodge BOTH the duplicate_open absorb and the
+// operator defer window. We therefore CONSTRAIN each evidence item to a STRUCTURAL ref shape:
+//   • a valid `table:id` record-id (the brief's pm_memory / task / project row ids), OR
+//   • a bounded structural ref `<prefix>:<body>` / `<prefix>#<body>` with a lowercase prefix and a
+//     body of url/path-safe chars, NO whitespace (the brief's `plan:purpose`, `gap:<class>`, `issue#12`).
+// Free prose (spaces / uppercase sentences) is REFUSED — so re-wording cannot produce a new structural
+// identity, and the fingerprint stays structural for PM-LC-1 just as it is for every other caller.
+//
+// `pm-proposals.ts` re-validates record-id evidence at its own write boundary where it links rows;
+// this shape check is the UPSTREAM grounding contract (no-guessing) + the anti-spam invariant.
+const RECORD_ID_REF_RE = /^[a-z_][a-z0-9_]*:[a-z0-9_]+$/;
+const STRUCTURAL_REF_RE = /^[a-z][a-z0-9_]*[:#][A-Za-z0-9_./-]{1,96}$/;
+/** Max length of one evidence ref (bounded capture — a ref is an id/ref, not a paragraph). */
+const MAX_EVIDENCE_REF_CHARS = 128;
+
+/**
+ * Validate one agent-authored evidence ref into a bounded STRUCTURAL token (no free prose) so the
+ * proposalFingerprint stays structural (anti-spam/defer cannot be dodged by re-wording — gap 2). A
+ * value with whitespace, an uppercase prefix, or no `:`/`#` separator is REFUSED (named). Length is
+ * bounded. This is the no-guessing grounding contract: evidence must point at a real row/structural ref.
+ */
+function reqEvidenceRef(v: unknown, field: string): string {
+	if (typeof v !== 'string' || v.trim() === '') {
+		throw new PmProposalContractError(`PM proposal field '${field}' must be a non-empty evidence ref`);
+	}
+	const t = v.trim();
+	if (t.length > MAX_EVIDENCE_REF_CHARS) {
+		throw new PmProposalContractError(
+			`PM proposal field '${field}' is ${t.length} chars — exceeds the ${MAX_EVIDENCE_REF_CHARS}-char evidence-ref cap`
+		);
+	}
+	if (!RECORD_ID_REF_RE.test(t) && !STRUCTURAL_REF_RE.test(t)) {
+		throw new PmProposalContractError(
+			`PM proposal field '${field}' = ${JSON.stringify(t)} is not a structural evidence ref — it must be a ` +
+				`'table:id' record id or a bounded '<prefix>:<body>'/'<prefix>#<body>' ref (lowercase prefix, no ` +
+				`whitespace). Free prose is refused so the proposal fingerprint stays structural (anti-spam/defer).`
+		);
+	}
+	return t;
+}
+
 /**
  * Validate the raw generator output into typed candidates — the TRUST BOUNDARY. The agent returns
  * either an array of proposals, or an object with a `proposals` array, OR an object with an empty/
@@ -227,7 +275,7 @@ export function validateProposalsOutput(raw: unknown): PmProposalCandidate[] {
 				`PM proposal[${i}].evidence must be a non-empty array of real refs (no-guessing — ground every proposal)`
 			);
 		}
-		const evidence = rawEv.map((e, j) => reqStr(e, `proposal[${i}].evidence[${j}]`));
+		const evidence = rawEv.map((e, j) => reqEvidenceRef(e, `proposal[${i}].evidence[${j}]`));
 		return {
 			title: reqStr(c.title, `proposal[${i}].title`),
 			objective: reqStr(c.objective, `proposal[${i}].objective`),
@@ -285,7 +333,20 @@ function screenCandidate(
 		if (ac.quarantined) return null;
 		acceptance_criteria.push(ac.text);
 	}
-	return { title: title.text, objective: objective.text, purpose: purpose.text, acceptance_criteria, evidence: c.evidence };
+	// D-026: evidence is the FIFTH agent-authored freetext field — it persists (provenance.evidence),
+	// composes into the immutable description (pm-proposals.composeDescription), AND renders verbatim to
+	// the operator (projects/[id]/+page.svelte). It is shape-constrained to a structural ref (reqEvidenceRef)
+	// but MUST still cross the writer-boundary screen like every other agent-authored field: a redactable
+	// span is stored as its SAFE [REDACTED:*] text, a quarantined ref DROPS the whole candidate (F-008 —
+	// a half-redacted secret is never persisted). The screen is what closes the D-026 boundary; the shape
+	// check is what keeps the fingerprint structural — both are required.
+	const evidence: string[] = [];
+	for (let j = 0; j < c.evidence.length; j++) {
+		const ev = screenWriterText(c.evidence[j], `proposal[${idx}].evidence[${j}]`, into);
+		if (ev.quarantined) return null;
+		evidence.push(ev.text);
+	}
+	return { title: title.text, objective: objective.text, purpose: purpose.text, acceptance_criteria, evidence };
 }
 
 // ── Brief assembly (live rows only — F-008) ─────────────────────────────────────────────────────
@@ -394,7 +455,9 @@ export function buildPmProposalPrompt(brief: PmProposalBrief): { title: string; 
 		`Propose AT MOST ${MAX_PROPOSALS_PER_TICK} tasks. Emit ONE fenced \`\`\`json block of the shape:`,
 		`{ "proposals": [ { "title": string, "objective": string (one clear objective), "purpose": string`,
 		`(why this, why now — tie to the plan/DoD/a memory row/a gap), "acceptance_criteria": string[] (≥1,`,
-		`what a build agent proves), "evidence": string[] (≥1 REAL ref from the rows above) } ] }`,
+		`what a build agent proves), "evidence": string[] (≥1 STRUCTURAL ref from the rows above — a`,
+		`'table:id' row id (a pm_memory/task/project id), or a bounded 'plan:purpose'/'gap:<class>' ref. NO`,
+		`free-prose evidence — a sentence is refused; reference the real row id/structural ref) } ] }`,
 		`Config/values reference ENV NAMES only (D-026) — never a literal secret. Take positions; no hedging.`
 	]
 		.filter((l) => l !== '')

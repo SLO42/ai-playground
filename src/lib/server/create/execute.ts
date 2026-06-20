@@ -496,25 +496,96 @@ async function recordIncident(
 }
 
 /**
- * Acquire the slug-keyed create-lock (CA-H2). FAIL CLOSED: `CREATE create_lock:<slug>` errors if the
- * record already exists (SurrealDB does NOT last-writer-win on CREATE — verified) → another create
- * for this slug is in flight, so we throw ConcurrentCreateError. The slug is snake-case (validated
- * upstream), so `create_lock:<slug>` is a well-formed id; we still route it through the D-016 chokepoint.
- * Returns the run nonce stored on the lock so only THIS run releases it.
+ * Stale create-lock TTL (CA-H4 LOW). A create-lock older than this is treated as a CRASHED holder
+ * (a SIGKILL between acquire and the `finally`-release orphaned it) and may be seized by a later
+ * create via an atomic compare-and-swap. The bound MUST be safely LONGER than a real create
+ * (scaffold + git init/commit + scanProject ingest + plan/needs/tasks/targets writers + optional PM
+ * hire) so a slow-but-ALIVE create is NEVER stolen mid-flight. 15 min mirrors the pm-lifecycle-lock
+ * STALE_LOCK_MS (F-043) and is an order of magnitude above any observed real create.
+ */
+export const CREATE_LOCK_STALE_MS = 15 * 60 * 1000; // 15 minutes
+
+/** True iff `msg` is SurrealDB's "the OTHER racer won this row" signal (mirrors pm-lifecycle-lock). */
+function isCreateLockContended(msg: string): boolean {
+	return /already exists/i.test(msg) || /read or write conflict/i.test(msg);
+}
+
+/**
+ * Read the AUTHORITATIVE holder nonce persisted on the create-lock row, or undefined if no row exists.
+ * The DB row is the SINGLE source of truth for ownership — acquire decides held/contended from THIS,
+ * never from the CREATE/UPDATE call's own resolution (the SDK can falsely resolve a CREATE under a
+ * shared-socket race; the row is always consistent — F-043 root cause). `$id` is the bound slug
+ * id-part of create_lock:<slug> (D-016, never interpolated).
+ */
+async function readCreateLockHolder(db: Db, slug: string): Promise<string | undefined> {
+	const rows = await db.query<Array<Array<{ holder?: string }>>>(
+		`SELECT holder FROM type::thing('create_lock', $id);`,
+		{ id: slug }
+	);
+	return rows?.[0]?.[0]?.holder;
+}
+
+/**
+ * Acquire the slug-keyed create-lock (CA-H2 / F-040 TOCTOU guard). FAIL CLOSED: `CREATE
+ * create_lock:<slug>` errors if the record already exists (SurrealDB does NOT last-writer-win on
+ * CREATE — verified) → another create for this slug is in flight, so we throw ConcurrentCreateError.
+ * The slug is snake-case (validated upstream), so `create_lock:<slug>` is a well-formed id; we still
+ * route it through the D-016 chokepoint. Returns the run nonce stored on the lock so only THIS run
+ * releases it.
+ *
+ * The DB row is the SINGLE SOURCE OF TRUTH for ownership — we NEVER trust the CREATE's own resolution
+ * (F-043: the SDK can falsely resolve BOTH racers' CREATE under a shared WebSocket socket while only
+ * one row committed). So:
+ *   1. CREATE the lock. A CONTENDED outcome (`already exists` OR a retryable `read or write conflict`)
+ *      is EXPECTED under a race and absorbed — ownership is decided from the read-back, not this call.
+ *      A non-contended error is a real DB fault and surfaces with its own name (F-008).
+ *   2. READ-BACK VERIFY — if the persisted holder is OUR nonce, the CREATE was really ours: we hold.
+ *   3. STALE TAKEOVER (CA-H4 LOW — never wedge): a foreign row exists. A SIGKILL between a prior
+ *      acquire and its `finally`-release would orphan the lock forever; so if the row is STALE (its
+ *      `at` older than CREATE_LOCK_STALE_MS — a crashed holder) we seize it with an ATOMIC
+ *      compare-and-swap UPDATE … WHERE at < cutoff (two racers can't both win — SurrealDB applies it
+ *      atomically; the winner moves `at` forward so the loser's WHERE no longer matches), then read
+ *      back to confirm OUR nonce landed.
+ *   4. Otherwise a LIVE create holds the slug → ConcurrentCreateError (the honest "try again" signal,
+ *      never a phantom success and never a stolen in-flight create).
  */
 async function acquireCreateLock(db: Db, slug: string, nonce: string): Promise<void> {
 	const rid = new StringRecordId(assertRecordIdOfTable(`create_lock:${slug}`, 'create_lock'));
+
+	// 1. Attempt the CREATE. A contended outcome is absorbed (decided by read-back); a real DB fault surfaces.
 	try {
-		await db.query(`CREATE $rid CONTENT { holder: $holder } RETURN AFTER;`, {
+		await db.query(`CREATE $rid CONTENT { holder: $holder, at: time::now() } RETURN NONE;`, {
 			rid,
 			holder: nonce
 		});
 	} catch (err) {
-		// CREATE on an existing record throws "already exists" → another create holds the lock.
 		const msg = String((err as Error)?.message ?? err);
-		if (/already exists/i.test(msg)) throw new ConcurrentCreateError(slug);
-		throw err; // an unexpected DB error must surface with its own name, never as a phantom success.
+		if (!isCreateLockContended(msg)) throw err; // a real DB error surfaces with its own name (F-008).
 	}
+
+	// 2. READ-BACK VERIFY: the persisted holder is authoritative — our nonce ⇒ the CREATE was really ours.
+	if ((await readCreateLockHolder(db, slug)) === nonce) return;
+
+	// 3. A foreign lock row exists. Try an ATOMIC stale takeover: seize ONLY if the holder is dead
+	//    (at < cutoff). The WHERE makes this a compare-and-swap — two racers cannot both win.
+	const staleBefore = new Date(Date.now() - CREATE_LOCK_STALE_MS);
+	try {
+		await db.query(
+			`UPDATE type::thing('create_lock', $id) SET holder = $holder, at = time::now()
+			 WHERE at < $staleBefore RETURN NONE;`,
+			{ id: slug, holder: nonce, staleBefore }
+		);
+	} catch (err) {
+		const msg = String((err as Error)?.message ?? err);
+		// Parallel takeovers of the SAME stale lock can collide; the loser sees `read or write conflict`
+		// (the other racer seized it first). Absorb it — the read-back below decides ownership honestly.
+		if (!/read or write conflict/i.test(msg)) throw err;
+	}
+	// READ-BACK VERIFY the takeover too (never trust the UPDATE's resolution under the same SDK quirk).
+	if ((await readCreateLockHolder(db, slug)) === nonce) return;
+
+	// 4. A LIVE create holds the slug — fail CLOSED with the honest "in progress, try again" signal.
+	throw new ConcurrentCreateError(slug);
 }
 
 /**

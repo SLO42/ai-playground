@@ -609,6 +609,105 @@ describe('executeCreation — CA-H2 TOCTOU concurrent same-slug (fail-closed loc
 	}, 60_000);
 });
 
+describe('acquireCreateLock — CA-H4 LOW stale-takeover (a crashed holder never wedges the slug forever)', () => {
+	/** Read the holder nonce persisted on the create_lock row, or undefined if no row. */
+	async function lockHolder(slug: string): Promise<string | undefined> {
+		const [rows] = await db.query<[Array<{ holder?: string }>]>(
+			`SELECT holder FROM type::thing('create_lock', $slug);`,
+			{ slug }
+		);
+		return rows.length ? rows[0].holder : undefined;
+	}
+
+	/** Plant a create_lock row with an explicit `at` so we can simulate a fresh OR a long-crashed holder. */
+	async function plantLock(slug: string, holder: string, ageMs: number): Promise<void> {
+		const at = new Date(Date.now() - ageMs).toISOString();
+		await db.query(`CREATE type::thing('create_lock', $slug) CONTENT { holder: $holder, at: <datetime>$at };`, {
+			slug,
+			holder,
+			at
+		});
+	}
+
+	it('a STALE create_lock (crashed holder, no row registered) is SEIZED by a later create — slug not wedged', async () => {
+		const slug = 'ca2_stale_takeover';
+		// Simulate a SIGKILL'd prior create: a lock orphaned 20 min ago (> the 15-min TTL), TOCTOU window
+		// (no project row yet). Without takeover this would wedge the slug until an operator hand-deletes it.
+		await plantLock(slug, 'crashed-holder', 20 * 60 * 1000);
+		expect(await lockHolder(slug)).toBe('crashed-holder'); // precondition: the orphan is present.
+
+		// A fresh create for the same slug must SEIZE the stale lock and run to completion (F-008 honest).
+		const env = await makeEnvelope('ca2 stale takeover');
+		const res = await executeCreation(db, env, { codeRoot });
+		expect(res.projectId).toBe(`project:${slug}`);
+		expect((await getProject(db, res.projectId))!.create_status).toBe('complete');
+		// The lock is released on success (the seized-then-finished create cleared its OWN nonce).
+		expect(await lockRowCount(slug)).toBe(0);
+		expect(await exists(join(codeRoot, slug, '.git'))).toBe(true);
+	}, 60_000);
+
+	it('a FRESH foreign create_lock (a live in-flight create) is NEVER stolen — fails CLOSED', async () => {
+		const slug = 'ca2_fresh_notstolen';
+		// A live create is in flight (lock planted 30s ago — well under the 15-min TTL).
+		await plantLock(slug, 'live-in-flight', 30 * 1000);
+
+		// To exercise the LOCK path (not the ProjectExistsError gate) the project row must not yet exist.
+		const env = await makeEnvelope('ca2 fresh notstolen');
+		await expect(executeCreation(db, env, { codeRoot })).rejects.toBeInstanceOf(ConcurrentCreateError);
+		// The live holder STILL owns the lock — a slow-but-alive create was not stolen mid-flight.
+		expect(await lockHolder(slug)).toBe('live-in-flight');
+		// No phantom scaffold for the loser (it threw before any disk touch).
+		expect(await exists(join(codeRoot, slug))).toBe(false);
+
+		await db.query(`DELETE type::thing('create_lock', $slug);`, { slug }); // cleanup the simulated lock.
+	}, 60_000);
+
+	it('two parallel same-slug creates → EXACTLY ONE winner (one project, one scaffold), the other fails CLOSED', async () => {
+		const env1 = await makeEnvelope('ca2 parallel race');
+		const env2 = await makeEnvelope('ca2 parallel race');
+		const slug = 'ca2_parallel_race';
+
+		// Fire BOTH at once. The fail-closed CREATE + read-back-verify must elect exactly one holder; the
+		// loser sees ConcurrentCreateError (or ProjectExistsError if the winner registered first). Assert
+		// ownership via a COUNT, not merely "no throw".
+		const results = await Promise.allSettled([
+			executeCreation(db, env1, { codeRoot }),
+			executeCreation(db, env2, { codeRoot })
+		]);
+		const fulfilled = results.filter((r) => r.status === 'fulfilled');
+		const rejected = results.filter((r) => r.status === 'rejected') as PromiseRejectedResult[];
+		expect(fulfilled).toHaveLength(1); // EXACTLY one winner — never two scaffolds of the same slug.
+		expect(rejected).toHaveLength(1);
+		expect(
+			rejected[0].reason instanceof ConcurrentCreateError ||
+				rejected[0].reason instanceof ProjectExistsError
+		).toBe(true);
+
+		// Exactly one project row, one scaffold, and the lock is released (no orphan).
+		expect((await getProject(db, `project:${slug}`))!.create_status).toBe('complete');
+		expect(await exists(join(codeRoot, slug, '.git'))).toBe(true);
+		expect(await lockRowCount(slug)).toBe(0);
+	}, 90_000);
+
+	it('a stale takeover cannot DOUBLE-SEIZE: two parallel creates over one stale orphan elect one holder', async () => {
+		const slug = 'ca2_stale_double';
+		await plantLock(slug, 'crashed-holder', 20 * 60 * 1000); // one orphaned lock, both racers will see it.
+
+		const env1 = await makeEnvelope('ca2 stale double');
+		const env2 = await makeEnvelope('ca2 stale double');
+		const results = await Promise.allSettled([
+			executeCreation(db, env1, { codeRoot }),
+			executeCreation(db, env2, { codeRoot })
+		]);
+		// The atomic CAS (UPDATE … WHERE at < cutoff) lets only ONE racer move `at` forward; the other's
+		// WHERE no longer matches → its read-back is not its nonce → ConcurrentCreateError. Exactly one wins.
+		expect(results.filter((r) => r.status === 'fulfilled')).toHaveLength(1);
+		expect(results.filter((r) => r.status === 'rejected')).toHaveLength(1);
+		expect((await getProject(db, `project:${slug}`))!.create_status).toBe('complete');
+		expect(await lockRowCount(slug)).toBe(0);
+	}, 90_000);
+});
+
 describe('resumeCreation — CAH4 recovery of an incomplete create (F-008 honest, idempotent, no re-scaffold)', () => {
 	/**
 	 * Stand up a REAL, fully-scaffolded project, then force it into the honestly-marked

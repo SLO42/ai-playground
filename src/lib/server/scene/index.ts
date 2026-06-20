@@ -19,9 +19,11 @@ export {
 // §7.2 — the read-only node/edge AGGREGATOR (the scene's TRUTH, derived live; F-008).
 export {
 	buildSceneGraph,
+	listSceneEvents,
 	type SceneGraph,
 	type SceneNode,
 	type SceneEdge,
 	type SceneNodeClass,
-	type SceneGraphLimits
+	type SceneGraphLimits,
+	type SceneEvent
 } from './scene';

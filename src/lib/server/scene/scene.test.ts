@@ -5,7 +5,8 @@ import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
-import { buildSceneGraph } from './scene';
+import { buildSceneGraph, listSceneEvents } from './scene';
+import { appendSceneEvent } from './projector';
 
 // MEMORY-SCENE-SPEC §7.2 VERIFY — the read-only scene AGGREGATOR derives the node/edge
 // TRUTH LIVE from the existing tables (NO denormalized copy, F-008). Proven against a live
@@ -42,7 +43,7 @@ afterAll(async () => {
 beforeEach(async () => {
 	// Each test starts from an empty graph — clear the source tables we seed.
 	await db.query(
-		'DELETE references; DELETE entity; DELETE memory; DELETE session; DELETE work_item; DELETE work_item; DELETE project; DELETE task;'
+		'DELETE references; DELETE entity; DELETE memory; DELETE session; DELETE work_item; DELETE work_item; DELETE project; DELETE task; DELETE scene_event;'
 	);
 });
 
@@ -192,6 +193,75 @@ describe('buildSceneGraph — bounded window', () => {
 		const g = await buildSceneGraph(db, { entities: 2, sessions: 3 });
 		expect(g.nodes.filter((n) => n.subclass === 'entity')).toHaveLength(2);
 		expect(g.nodes.filter((n) => n.subclass === 'session')).toHaveLength(3);
+	});
+});
+
+// ── activity feed reader (MEMORY-SCENE-SPEC §5) ───────────────────────────────────────
+
+describe('listSceneEvents — the activity feed reader', () => {
+	it('returns recent scene_events newest-first, normalized (F-013 ISO at)', async () => {
+		const project = await seedProject();
+		await appendSceneEvent(db, {
+			kind: 'memory_added',
+			ref: 'memory:m1',
+			source: 'memory',
+			meta: { kind: 'semantic' }
+		});
+		await appendSceneEvent(db, {
+			kind: 'job_fired',
+			ref: 'session:s1',
+			source: 'session',
+			project,
+			meta: { status: 'running', kind: 'task' }
+		});
+
+		const feed = await listSceneEvents(db, 40);
+		expect(feed.length).toBe(2);
+		// newest-first: job_fired was appended second → it's first.
+		expect(feed[0].kind).toBe('job_fired');
+		expect(feed[1].kind).toBe('memory_added');
+		// normalized fields.
+		expect(feed[0]).toMatchObject({ ref: 'session:s1', source: 'session', project });
+		expect(feed[0].meta).toMatchObject({ status: 'running', kind: 'task' });
+		// F-013 — `at` is an ISO string (DEFAULT time::now()), never str(NONE).
+		expect(typeof feed[0].at).toBe('string');
+		expect(new Date(feed[0].at!).toISOString()).toBe(feed[0].at);
+	});
+
+	it('SHADOW nil — null/undefined db yields an honest empty feed (no throw)', async () => {
+		expect(await listSceneEvents(null)).toEqual([]);
+		expect(await listSceneEvents(undefined)).toEqual([]);
+	});
+
+	it('SHADOW empty — a connected DB with no events yields [] (no fabricated line)', async () => {
+		expect(await listSceneEvents(db)).toEqual([]);
+	});
+
+	it('SHADOW upstream-error — a query failure PROPAGATES (not swallowed into a fake-empty)', async () => {
+		const broken = await Db.connect({
+			url: tdb.wsUrl,
+			username: tdb.root.username,
+			password: tdb.root.password,
+			namespace: tdb.namespace,
+			database: tdb.database
+		});
+		await broken.close();
+		await expect(listSceneEvents(broken)).rejects.toThrow();
+	});
+
+	it('bounded — honors the LIMIT window (most-recent slice, not all-history)', async () => {
+		for (let i = 0; i < 6; i++) {
+			await appendSceneEvent(db, { kind: 'memory_added', ref: `memory:m${i}`, source: 'memory' });
+		}
+		const feed = await listSceneEvents(db, 3);
+		expect(feed.length).toBe(3);
+	});
+
+	it('an invalid/zero limit falls back to the default window (never an unbounded scan)', async () => {
+		await appendSceneEvent(db, { kind: 'memory_added', ref: 'memory:x', source: 'memory' });
+		expect((await listSceneEvents(db, 0)).length).toBe(1);
+		expect((await listSceneEvents(db, -5)).length).toBe(1);
+		expect((await listSceneEvents(db, Number.NaN)).length).toBe(1);
 	});
 });
 

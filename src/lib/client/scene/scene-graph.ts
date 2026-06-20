@@ -22,7 +22,7 @@
 //                            (wobbly spring normally; instant/opacity-only when reduced).
 //   4. nodeVisual()        — a node's design-system color family + radius (TOKENS only).
 
-import type { SceneGraph, SceneNode, SceneEdge, SceneNodeClass } from '$lib/server/scene';
+import type { SceneGraph, SceneNode, SceneEdge, SceneNodeClass, SceneEvent } from '$lib/server/scene';
 
 // ── 1. Force model ──────────────────────────────────────────────────────────────────
 
@@ -289,4 +289,74 @@ export function statusFamily(node: Pick<ForceNode, 'class' | 'status'>): string 
 export function nodeVisual(node: ForceNode): NodeVisual {
 	const radius = node.class === 'job' ? 9 : node.subclass === 'entity' ? 8 : 6;
 	return { colorClass: node.class, statusClass: statusFamily(node), radius };
+}
+
+// ── 5. Activity-feed formatting (the §5 "what's happening now" panel) ─────────────────
+
+/** A human-readable description of one scene_event for the activity feed. PURE. */
+export interface SceneEventLine {
+	/** A short, human verb phrase ("job fired", "memory added", "connection formed"). */
+	verb: string;
+	/** The node-class family the event belongs to (drives the feed dot color — TOKENS). */
+	colorClass: SceneNodeClass;
+	/** The short, content-free subject ('session: build', the ref tail) — never raw content. */
+	subject: string;
+	/** Optional trailing detail off the SCREENED meta (a status/kind), or undefined. */
+	detail?: string;
+}
+
+/** The v1 scene_event kind → its human verb. Unknown kinds fall back to a safe generic. */
+const KIND_VERB: Record<string, string> = {
+	node_spawned: 'node spawned',
+	job_fired: 'job fired',
+	job_done: 'job done',
+	connection_formed: 'connection formed',
+	node_retired: 'node retired',
+	memory_added: 'memory added',
+	hire_staffed: 'hire staffed'
+};
+
+/** The kind → which node-class color family the feed dot uses (memory vs job). */
+function kindColorClass(kind: string): SceneNodeClass {
+	// job_* events are the USAGE/JOBS family; everything else (memory/node/connection) is memory.
+	return kind === 'job_fired' || kind === 'job_done' ? 'job' : 'memory';
+}
+
+/** The short tail of a record-id ref ('session:abc' → 'abc'), or the whole ref if untagged. */
+function refTail(ref: string): string {
+	const i = ref.indexOf(':');
+	return i >= 0 ? ref.slice(i + 1) : ref;
+}
+
+/**
+ * Format ONE scene_event → a human-readable feed line (MEMORY-SCENE-SPEC §5). PURE + total:
+ * never throws, never surfaces raw row content (meta was D-026-screened at write time; we read
+ * only a couple of label fields). An unknown kind degrades to a generic verb (honest — we show
+ * the real kind string, never fabricate). Shadow paths: nil → null (skipped by the caller);
+ * absent meta → no detail. The subject prefers the screened label/kind meta, else the ref tail.
+ */
+export function describeSceneEvent(event: SceneEvent | null | undefined): SceneEventLine | null {
+	if (!event || typeof event.kind !== 'string') return null;
+	const verb = KIND_VERB[event.kind] ?? event.kind.replace(/_/g, ' ');
+	const meta = event.meta && typeof event.meta === 'object' ? event.meta : undefined;
+	// Subject: a screened label/kind/work_type meta field if present, else the ref tail. These
+	// meta fields are the ones the projector surfaces (already screened) — never raw content.
+	const labelMeta =
+		metaStr(meta, 'label') ?? metaStr(meta, 'kind') ?? metaStr(meta, 'work_type');
+	const subject = labelMeta ?? (typeof event.ref === 'string' ? refTail(event.ref) : '—');
+	// Detail: a status off the screened meta (e.g. 'done', 'failed') — the only extra label.
+	const detail = metaStr(meta, 'status');
+	return {
+		verb,
+		colorClass: kindColorClass(event.kind),
+		subject: subject || '—',
+		...(detail ? { detail } : {})
+	};
+}
+
+/** Read a string-valued meta field, or undefined (numbers/objects are not feed subjects). */
+function metaStr(meta: Record<string, unknown> | undefined, key: string): string | undefined {
+	if (!meta) return undefined;
+	const v = meta[key];
+	return typeof v === 'string' && v.length ? v : undefined;
 }

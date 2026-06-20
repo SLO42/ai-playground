@@ -13,6 +13,7 @@
   import { stream } from '$lib/client/stream.svelte';
   import MemoryTabs from '$lib/components/shell/MemoryTabs.svelte';
   import MemoryScene from '$lib/components/scene/MemoryScene.svelte';
+  import ActivityFeed from '$lib/components/scene/ActivityFeed.svelte';
   import type { SceneChange } from '$lib/client/scene/scene-graph';
   import type { PageData } from './$types';
 
@@ -23,6 +24,9 @@
   const graph = $derived(data.graph ?? { nodes: [], edges: [] });
   // MEMORY-SCENE-SPEC §4 — the derived node/edge TRUTH for the living-brain Scene lens.
   const scene = $derived(data.scene ?? { nodes: [], edges: [] });
+  // MEMORY-SCENE-SPEC §5 — the recent scene_event activity slice (the "what's happening now"
+  // feed). Derived live; honest empty handled in ActivityFeed.
+  const activity = $derived(data.activity ?? []);
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
 
   // Lens toggle (operator fork #1: a 'Scene' LENS on /memory, not a new route). The Scene
@@ -90,7 +94,10 @@
       stream.onDbChange('entity', () => void invalidate('app:scene')),
       stream.onDbChange('references', () => void invalidate('app:scene')),
       stream.onDbChange('session', () => void invalidate('app:scene')),
-      stream.onDbChange('work_item', () => void invalidate('app:scene'))
+      stream.onDbChange('work_item', () => void invalidate('app:scene')),
+      // MEMORY-SCENE-SPEC §5 — a new scene_event re-runs the loader so the activity feed
+      // (the "what's happening now" panel) refreshes live off its derived truth.
+      stream.onDbChange('scene_event', () => void invalidate('app:scene'))
     ];
     return () => offs.forEach((off) => off());
   });
@@ -158,11 +165,28 @@
     <!-- MEMORY-SCENE-SPEC §4 — the living-brain animated force graph (the Scene lens). The
          node/edge truth is the derived `scene` from the loader; the live feed drives the
          spawn/pulse/connect/retire micro-animations. Honest empty handled in the component. -->
-    <div class="card scene-card">
-      <span class="eyebrow">
-        living scene · {scene.nodes.length} {scene.nodes.length === 1 ? 'node' : 'nodes'} · {scene.edges.length} {scene.edges.length === 1 ? 'edge' : 'edges'}
-      </span>
-      <MemoryScene graph={scene} feed={sceneFeed} />
+    <div class="scene-grid">
+      <div class="card scene-card">
+        <div class="scene-head">
+          <span class="eyebrow">
+            living scene · {scene.nodes.length} {scene.nodes.length === 1 ? 'node' : 'nodes'} · {scene.edges.length} {scene.edges.length === 1 ? 'edge' : 'edges'}
+          </span>
+          <!-- Node-class legend (design tokens only) — explains the bubble colors. -->
+          <ul class="legend-key" aria-label="Node class legend">
+            <li><span class="key-dot" data-class="memory" aria-hidden="true"></span>memory</li>
+            <li><span class="key-dot" data-class="job" data-status="active" aria-hidden="true"></span>job · active</li>
+            <li><span class="key-dot" data-class="job" data-status="pending" aria-hidden="true"></span>job · pending</li>
+            <li><span class="key-dot" data-class="job" data-status="done" aria-hidden="true"></span>job · done</li>
+            <li><span class="key-dot" data-class="job" data-status="failed" aria-hidden="true"></span>job · failed</li>
+          </ul>
+        </div>
+        <MemoryScene graph={scene} feed={sceneFeed} />
+      </div>
+
+      <!-- Activity feed (§5) — the "what's happening now" panel + the scene's text-equivalent. -->
+      <aside class="card activity-card">
+        <ActivityFeed {activity} />
+      </aside>
     </div>
   {:else}
     <div class="grid">
@@ -342,10 +366,69 @@
     background: var(--color-surface-overlay);
     border-color: var(--color-border);
   }
+  .scene-grid {
+    display: grid;
+    grid-template-columns: minmax(0, 1.6fr) minmax(0, 1fr);
+    gap: var(--space-3, 0.75rem);
+    align-items: start;
+  }
+  @media (max-width: 1024px) {
+    .scene-grid {
+      grid-template-columns: 1fr;
+    }
+  }
   .scene-card {
     display: flex;
     flex-direction: column;
     gap: var(--space-3, 0.75rem);
+  }
+  .scene-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+  .legend-key {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.6rem;
+    font-size: 0.68rem;
+    color: var(--color-text-muted);
+  }
+  .legend-key li {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.3rem;
+  }
+  .key-dot {
+    width: 0.55rem;
+    height: 0.55rem;
+    border-radius: 50%;
+    flex: none;
+  }
+  /* Token-driven legend swatches — mirror the scene node-class colors (NO literals). */
+  .key-dot[data-class='memory'] {
+    background: var(--color-accent);
+  }
+  .key-dot[data-class='job'][data-status='active'] {
+    background: var(--color-running);
+  }
+  .key-dot[data-class='job'][data-status='pending'] {
+    background: var(--color-info);
+  }
+  .key-dot[data-class='job'][data-status='done'] {
+    background: var(--color-success);
+  }
+  .key-dot[data-class='job'][data-status='failed'] {
+    background: var(--color-warn);
+  }
+  .activity-card {
+    position: sticky;
+    top: var(--space-3, 0.75rem);
   }
   @media (prefers-reduced-motion: reduce) {
     .lens-tab {

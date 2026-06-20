@@ -42,6 +42,29 @@ import type { Db } from '../db/client';
 export type SceneNodeClass = 'memory' | 'job';
 
 /**
+ * One recent scene_event row — the "what's happening now" activity feed (MEMORY-SCENE-SPEC
+ * §5). DERIVED, append-only, rolling: each row mirrors a real observed row-change (the MS-1
+ * projector wrote it). The feed is the text-equivalent / replay of the scene's animation
+ * timeline. `meta` is already D-026-SCREENED at write time (projector); we surface it as-is.
+ */
+export interface SceneEvent {
+	/** scene_event record-id string. */
+	id: string;
+	/** The event kind (job_fired | memory_added | connection_formed | …). */
+	kind: string;
+	/** The record that changed (a free-form ref string, e.g. 'session:abc'). */
+	ref: string;
+	/** The source table the changed row belongs to. */
+	source: string;
+	/** Owning project record-id string, when the changed row carried one. */
+	project?: string;
+	/** When the event landed, ISO (F-013) — omitted when absent (never str(NONE)). */
+	at?: string;
+	/** Bounded, pre-screened label meta (status/kind/label/…); never raw row content. */
+	meta?: Record<string, unknown>;
+}
+
+/**
  * One node in the derived scene graph. `status` is the LIVE lifecycle status off the source
  * row (e.g. session running/done) so the UI wave can color/animate it; `subclass` is the
  * concrete source table (entity|memory|session|work_item) so the UI can style within a class.
@@ -302,4 +325,57 @@ export async function buildSceneGraph(
 	}
 
 	return { nodes, edges };
+}
+
+/** Default activity-feed window — the recent slice the "what's happening now" panel shows. */
+const DEFAULT_FEED_LIMIT = 40;
+
+/**
+ * List the most-recent scene_event rows for the activity feed (MEMORY-SCENE-SPEC §5). READ-
+ * ONLY: a single SELECT, newest-first, bounded — the feed is a live window, not the audit log
+ * (agent_event audits; the projector already prunes scene_event to its rolling cap). The
+ * node/edge TRUTH still derives from buildSceneGraph; this is purely the activity stream.
+ *
+ * Shadow paths, all four, all named:
+ *   • happy   — real scene_event rows → normalized, newest-first, capped.
+ *   • nil     — `db` null/undefined → honest empty `[]` (the loader renders the empty feed).
+ *   • empty   — connected, no events → `[]` ("no recent activity", F-008 — never a fake line).
+ *   • upstream error — the SELECT throws (DB drop / IAM expiry) → propagates to the LOADER,
+ *     which degrades to connected:false (we do NOT swallow a DB failure into a fake-empty feed).
+ *
+ * F-013: `at` is coerced to an ISO string (absent → omitted → the UI renders '—'); `project`
+ * to a `table:id` string. `meta` was D-026-screened at WRITE time (projector) — surfaced as-is.
+ */
+export async function listSceneEvents(
+	db: Db | null | undefined,
+	limit = DEFAULT_FEED_LIMIT
+): Promise<SceneEvent[]> {
+	// Nil shadow path: no DB → honest empty feed.
+	if (!db) return [];
+	// Boundary (D-016): the only bound value is the integer limit, via $param — no id interpolated.
+	const lim = Number.isFinite(limit) && limit > 0 ? Math.floor(limit) : DEFAULT_FEED_LIMIT;
+	const [rows] = await db.query<
+		[
+			Array<{
+				id: unknown;
+				kind: string;
+				ref: string;
+				source: string;
+				project?: unknown;
+				at?: unknown;
+				meta?: Record<string, unknown> | null;
+			}>
+		]
+	>(`SELECT id, kind, ref, source, project, at, meta FROM scene_event ORDER BY at DESC LIMIT $lim;`, {
+		lim
+	});
+	return rows.map((r) => ({
+		id: String(r.id),
+		kind: r.kind,
+		ref: r.ref,
+		source: r.source,
+		...(refOrUndef(r.project) ? { project: refOrUndef(r.project)! } : {}),
+		...(isoOrUndef(r.at) ? { at: isoOrUndef(r.at)! } : {}),
+		...(r.meta && typeof r.meta === 'object' ? { meta: r.meta } : {})
+	}));
 }

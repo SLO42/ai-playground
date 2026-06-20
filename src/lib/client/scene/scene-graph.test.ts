@@ -11,9 +11,10 @@ import {
 	keyframesFor,
 	statusFamily,
 	nodeVisual,
+	describeSceneEvent,
 	type SceneChange
 } from './scene-graph';
-import type { SceneGraph } from '$lib/server/scene';
+import type { SceneGraph, SceneEvent } from '$lib/server/scene';
 
 const graph: SceneGraph = {
 	nodes: [
@@ -171,5 +172,64 @@ describe('statusFamily + nodeVisual (token classes, no color literals)', () => {
 		expect(job.radius).toBeGreaterThan(mem.radius);
 		// no inline color anywhere in the visual — only class names
 		expect(JSON.stringify(job)).not.toMatch(/#[0-9a-f]{3,6}/i);
+	});
+});
+
+// ── 5. describeSceneEvent (the §5 activity-feed formatter, PURE) ───────────────────────
+
+describe('describeSceneEvent — human-readable activity line', () => {
+	const ev = (over: Partial<SceneEvent>): SceneEvent => ({
+		id: 'scene_event:x',
+		kind: 'memory_added',
+		ref: 'memory:m1',
+		source: 'memory',
+		...over
+	});
+
+	it('maps each v1 kind to a human verb + the right node-class color family', () => {
+		expect(describeSceneEvent(ev({ kind: 'job_fired', ref: 'session:s1' }))).toMatchObject({
+			verb: 'job fired',
+			colorClass: 'job'
+		});
+		expect(describeSceneEvent(ev({ kind: 'job_done', ref: 'session:s1' }))?.colorClass).toBe('job');
+		expect(describeSceneEvent(ev({ kind: 'memory_added' }))).toMatchObject({
+			verb: 'memory added',
+			colorClass: 'memory'
+		});
+		expect(describeSceneEvent(ev({ kind: 'node_spawned', ref: 'entity:a' }))?.colorClass).toBe('memory');
+		expect(describeSceneEvent(ev({ kind: 'connection_formed', ref: 'references:r' }))?.colorClass).toBe('memory');
+	});
+
+	it('prefers a screened label/kind meta as the subject; else the ref tail', () => {
+		expect(describeSceneEvent(ev({ ref: 'memory:abc', meta: { kind: 'semantic' } }))?.subject).toBe('semantic');
+		expect(describeSceneEvent(ev({ kind: 'node_spawned', ref: 'entity:auth', meta: { label: 'Auth' } }))?.subject).toBe('Auth');
+		// no usable meta → the ref TAIL (never the raw ref with the table prefix).
+		expect(describeSceneEvent(ev({ ref: 'memory:abc', meta: {} }))?.subject).toBe('abc');
+		expect(describeSceneEvent(ev({ ref: 'memory:abc' }))?.subject).toBe('abc');
+	});
+
+	it('surfaces a status detail off the screened meta when present', () => {
+		expect(describeSceneEvent(ev({ kind: 'job_done', ref: 'session:s', meta: { status: 'done' } }))?.detail).toBe('done');
+		expect(describeSceneEvent(ev({ meta: { kind: 'semantic' } }))?.detail).toBeUndefined();
+	});
+
+	it('an unknown kind degrades to a humanized generic (honest — never fabricated)', () => {
+		const line = describeSceneEvent(ev({ kind: 'some_new_kind' }));
+		expect(line?.verb).toBe('some new kind');
+		expect(line?.colorClass).toBe('memory');
+	});
+
+	it('SHADOW nil/malformed — null/undefined or a kindless event yields null (skipped)', () => {
+		expect(describeSceneEvent(null)).toBeNull();
+		expect(describeSceneEvent(undefined)).toBeNull();
+		// a kindless event (defensive) → null, never a fabricated line.
+		expect(describeSceneEvent({ id: 'x', ref: 'r', source: 's' } as unknown as SceneEvent)).toBeNull();
+	});
+
+	it('never surfaces a non-string meta field as a subject/detail (no raw content leak)', () => {
+		const line = describeSceneEvent(ev({ ref: 'memory:abc', meta: { kind: 42, status: { a: 1 } } as unknown as Record<string, unknown> }));
+		// numeric kind is NOT a subject → falls back to the ref tail; object status is NOT a detail.
+		expect(line?.subject).toBe('abc');
+		expect(line?.detail).toBeUndefined();
 	});
 });

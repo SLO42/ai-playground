@@ -9,7 +9,7 @@
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import { listMemories, listGraph } from '$lib/server/memory';
 import type { MemoryRow, MemoryGraph } from '$lib/server/memory';
-import { buildSceneGraph, type SceneGraph } from '$lib/server/scene';
+import { buildSceneGraph, listSceneEvents, type SceneGraph, type SceneEvent } from '$lib/server/scene';
 import type { PageServerLoad } from './$types';
 
 export interface MemoryData {
@@ -22,6 +22,12 @@ export interface MemoryData {
 	 * foundation the Scene lens (§7.3 UI wave) renders. Honest empty when nothing is active.
 	 */
 	scene: SceneGraph;
+	/**
+	 * MEMORY-SCENE-SPEC §5 — the recent scene_event activity slice (the "what's happening now"
+	 * feed). DERIVED, append-only, rolling; each row mirrors a real observed row-change. Honest
+	 * empty ('no recent activity') when nothing has fired yet (F-008).
+	 */
+	activity: SceneEvent[];
 	error?: string;
 }
 
@@ -39,22 +45,25 @@ export const load: PageServerLoad = async ({ depends }): Promise<MemoryData> => 
 			connected: false,
 			memories: [],
 			graph: { nodes: [], edges: [] },
-			scene: { nodes: [], edges: [] }
+			scene: { nodes: [], edges: [] },
+			activity: []
 		};
 	}
 	try {
-		const [memories, graph, scene] = await Promise.all([
+		const [memories, graph, scene, activity] = await Promise.all([
 			listMemories(db, 100),
 			listGraph(db, 300),
-			buildSceneGraph(db)
+			buildSceneGraph(db),
+			listSceneEvents(db, 40)
 		]);
-		return { connected: true, memories, graph, scene };
+		return { connected: true, memories, graph, scene, activity };
 	} catch (err) {
 		return {
 			connected: false,
 			memories: [],
 			graph: { nodes: [], edges: [] },
 			scene: { nodes: [], edges: [] },
+			activity: [],
 			error: (err as Error).message
 		};
 	}

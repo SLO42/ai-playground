@@ -34,6 +34,7 @@ import { KNOWN_FAIL_PATH, KNOWN_PASS_PATH, runPositiveControl } from './scorer';
 import { adjudicateInterviewRun, type GauntletDeps, QUEUED_INTERVIEW_TYPE } from './gauntlet';
 import {
 	CeremonyGateError,
+	ceremonyAuthoringState,
 	ceremonyExecutionState,
 	ceremonyReadiness,
 	confirmLaunchKey,
@@ -43,6 +44,7 @@ import {
 	triggerAdmissionReferenceRun,
 	triggerBootstrapInterview
 } from './ceremony';
+import { seedRecruiterRole, RECRUITER_DRAFT_KEYS } from './launch-fixtures';
 
 // TASK 16.7 VERIFY (W-D7c ceremony MECHANISM): the day-0 bootstrap ceremony write-paths
 // against a REAL throwaway SurrealDB + the REAL ClaudeCodeRuntime over a scripted backend
@@ -225,6 +227,35 @@ describe('promptCoreDiffStep (§8 ①) — read-only review substrate', () => {
 		expect(step.provenance).toMatch(/^harvested:/);
 		expect(step.prompt_sha).toBe(v.prompt_sha);
 		expect(step.lifecycle).toBe('draft'); // reviewed BEFORE it can interview
+	});
+});
+
+// ── Step ② — DRAFT key surfacing for one-click B2 approve (HRB-2) ────────────────────
+
+describe('ceremonyAuthoringState (§8 ②) — surfaces shipped DRAFT keys for one-click B2 approve (HRB-2)', () => {
+	it('pre-fills every recruiter fixture DRAFT key (unkeyed) — a surfaced draft is NOT a confirmed key', async () => {
+		await seedRecruiterRole(db); // idempotent seed
+		const state = await ceremonyAuthoringState(db);
+		const draftSlugs = new Set(RECRUITER_DRAFT_KEYS.map((k) => k.fixtureSlug));
+		// Identify the recruiter role by the fixtures it carries (no slug literal assumed).
+		const recruiter = state.roles.find((r) => r.fixtures.some((f) => draftSlugs.has(f.slug)));
+		expect(recruiter, 'recruiter role present in authoring state').toBeDefined();
+
+		for (const spec of RECRUITER_DRAFT_KEYS) {
+			const f = recruiter!.fixtures.find((x) => x.slug === spec.fixtureSlug);
+			expect(f, `fixture ${spec.fixtureSlug} present`).toBeDefined();
+			// B2 LOCKED: surfacing a draft must NEVER read as a confirmed key.
+			expect(f!.keyed).toBe(false);
+			expect(f!.draftKey, `draftKey surfaced for ${spec.fixtureSlug}`).not.toBeNull();
+			expect(f!.draftKey!.fpTolerance).toBe(spec.fp_tolerance);
+			expect(f!.draftKey!.fpJustification).toBe(spec.fp_justification);
+			// plants pre-filled as the spec's plants (pretty JSON the textarea consumes verbatim).
+			expect(JSON.parse(f!.draftKey!.plants)).toEqual(spec.plants);
+		}
+		// A candidate fixture with NO shipped draft surfaces draftKey:null (honest blank form).
+		for (const f of recruiter!.fixtures) {
+			if (!draftSlugs.has(f.slug)) expect(f.draftKey).toBeNull();
+		}
 	});
 });
 

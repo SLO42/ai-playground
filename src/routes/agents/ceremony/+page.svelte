@@ -694,7 +694,11 @@
                         aria-expanded={openKey[f.fixture] ?? false}
                         onclick={() => toggleKey(f.fixture)}
                       >
-                        {openKey[f.fixture] ? 'Hide key editor' : 'Author key'}
+                        {openKey[f.fixture]
+                          ? 'Hide key editor'
+                          : f.draftKey
+                            ? 'Review draft key'
+                            : 'Author key'}
                       </button>
 
                       {#if openKey[f.fixture]}
@@ -702,6 +706,14 @@
                           <summary>view fixture work (the diff's left side)</summary>
                           <pre class="work-text mono">{JSON.stringify(f.work, null, 2)}</pre>
                         </details>
+
+                        {#if f.draftKey}
+                          <p class="draft-note" role="status">
+                            A drafted answer key is pre-filled below — <strong>review and approve</strong>,
+                            or edit it first. Nothing is confirmed until you submit (B2 — you approve the
+                            key, the draft never auto-confirms).
+                          </p>
+                        {/if}
 
                         <form
                           method="POST"
@@ -712,11 +724,14 @@
                           <input type="hidden" name="fixture" value={f.fixture} />
 
                           <label class="field">
-                            <span class="field-label">plants (JSON array)</span>
+                            <span class="field-label">
+                              plants (JSON array){#if f.draftKey}<span class="draft-tag">DRAFT</span>{/if}
+                            </span>
                             <textarea
                               name="plants"
                               rows="8"
                               class="mono"
+                              value={f.draftKey?.plants ?? ''}
                               placeholder={plantHint(f)}
                               spellcheck="false"
                             ></textarea>
@@ -736,6 +751,7 @@
                                 min="0"
                                 step="1"
                                 class="mono"
+                                value={f.draftKey ? String(f.draftKey.fpTolerance) : ''}
                                 placeholder="engine default"
                               />
                             </label>
@@ -744,6 +760,7 @@
                               <input
                                 type="text"
                                 name="fp_justification"
+                                value={f.draftKey?.fpJustification ?? ''}
                                 placeholder="why this tolerance is justified"
                               />
                             </label>
@@ -1383,6 +1400,26 @@
   }
   .guard-note[data-kind='bait'] {
     border-left-color: var(--color-warn-on-overlay, var(--color-warn));
+  }
+  .draft-note {
+    font-size: var(--text-xs);
+    margin: var(--space-2) 0;
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+    background: var(--color-bg-inset);
+    color: var(--color-text-2);
+    border-left: 2px solid var(--color-accent, var(--color-border-strong));
+  }
+  .draft-tag {
+    margin-left: var(--space-2);
+    padding: 0 var(--space-1);
+    border: var(--border-width) solid var(--color-accent);
+    border-radius: var(--radius-sm);
+    color: var(--color-accent);
+    font-size: var(--text-2xs, var(--text-xs));
+    font-weight: var(--weight-medium, 600);
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
   }
   .key-diff {
     display: flex;

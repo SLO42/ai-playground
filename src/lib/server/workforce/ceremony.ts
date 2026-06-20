@@ -53,6 +53,7 @@ import { runGauntlet, type GauntletDeps, type GauntletOutcome } from './gauntlet
 import { checkDeployability } from './deployability';
 import { activateGauntletFixture, isSentinelShape, newSentinelUlid } from './activation';
 import { parsePlant, ScorerKeyError, KNOWN_PASS_PATH } from './scorer';
+import { RECRUITER_DRAFT_KEYS, RESEARCHER_DRAFT_KEYS, type DraftKeySpec } from './launch-fixtures';
 import { parseFindingsFile } from './findings';
 
 /** Fixture kinds whose whole POINT is teeth — a key MUST carry ≥1 plant or it can never
@@ -1012,6 +1013,12 @@ export interface FixtureAuthoringState {
 	/** hallucination_bait fixtures want a mode:'noncompliance'+compliance_pattern plant (A8) —
 	 *  the UI surfaces this affordance so the operator authors a scoreable bait key. */
 	isBait: boolean;
+	/** The DRAFT answer key shipped for this fixture (RECRUITER_DRAFT_KEYS / RESEARCHER_DRAFT_KEYS),
+	 *  surfaced ONLY while unkeyed so the operator can review-and-approve a pre-filled draft (B2)
+	 *  instead of hand-pasting from a blank form. `plants` is pretty-printed JSON ready for the
+	 *  textarea. NOT a confirmed key — confirmKey remains the gate; surfacing a draft is never
+	 *  auto-approval. Null when no draft is shipped for this slug (operator authors from blank). */
+	draftKey: { plants: string; fpTolerance: number; fpJustification: string } | null;
 }
 
 export interface RoleAuthoringState {
@@ -1042,6 +1049,15 @@ export interface CeremonyAuthoringState {
  * path) to surface whether each fixture is already keyed. Reuses promptCoreDiffStep for ①.
  * Honest day-0 empties (F-008): before seeding, `seeded:false` + no roles.
  */
+/** slug → the drafted answer key (RECRUITER + RESEARCHER draft specs). Surfaced at ceremony
+ *  step ② so the operator reviews-and-approves a pre-filled draft (B2) instead of authoring
+ *  from a blank form. These are CODE-CONSTANT proposals shown to the OPERATOR (the ceremony is
+ *  the operator's surface, never a candidate's) — the confirmKey gate is unchanged and nothing
+ *  here writes a gauntlet_key. Launch-role fixtures have no draft spec → null → blank form. */
+const DRAFT_KEY_BY_SLUG: ReadonlyMap<string, DraftKeySpec> = new Map(
+	[...RECRUITER_DRAFT_KEYS, ...RESEARCHER_DRAFT_KEYS].map((k) => [k.fixtureSlug, k])
+);
+
 export async function ceremonyAuthoringState(db: Db): Promise<CeremonyAuthoringState> {
 	const roles = await listRoles(db);
 	// Every seeded catalog role — the 5 §8 launch roles AND the §7b researcher (6th role).
@@ -1060,6 +1076,8 @@ export async function ceremonyAuthoringState(db: Db): Promise<CeremonyAuthoringS
 			const key = await readGauntletKeyForScoring(db, f.id);
 			const keyed = key !== null;
 			if (!keyed) keysOutstanding += 1;
+			// Surface a shipped draft ONLY while unkeyed (a keyed fixture shows keyDiff instead).
+			const draft = !keyed ? DRAFT_KEY_BY_SLUG.get(f.slug) : undefined;
 			fixtureStates.push({
 				fixture: f.id,
 				slug: f.slug,
@@ -1073,7 +1091,14 @@ export async function ceremonyAuthoringState(db: Db): Promise<CeremonyAuthoringS
 					? diffFor(f, key.plants, key.fp_tolerance, key.fp_justification ?? null)
 					: null,
 				requiresPlants: PLANTED_KINDS.has(f.kind),
-				isBait: f.kind === 'hallucination_bait'
+				isBait: f.kind === 'hallucination_bait',
+				draftKey: draft
+					? {
+							plants: JSON.stringify(draft.plants, null, 2),
+							fpTolerance: draft.fp_tolerance,
+							fpJustification: draft.fp_justification
+						}
+					: null
 			});
 		}
 		out.push({

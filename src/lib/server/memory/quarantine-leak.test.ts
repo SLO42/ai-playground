@@ -107,6 +107,12 @@ const READERS: ReaderPath[] = [
 		kind: 'LEAK',
 		why: 'loadMemoryContent — the utilization lens (listRetrievalOutcomes) surfaces memory CONTENT to the UI; must exclude quarantined so a quarantined memory with persisted retrieval_outcome rows never surfaces its body (D-026, UI-SPEC §43)'
 	},
+	{
+		file: 'scene/scene.ts',
+		marker: 'SELECT id, kind, status, project, importance, created_at FROM memory',
+		kind: 'LEAK',
+		why: 'MS-2 scene aggregator — the /memory Scene viz surfaces memory NODES to the UI (id + a kind-label only, never raw content); carries the quarantine filter so a quarantined memory never appears as a scene node (MEMORY-SCENE-SPEC §2, D-026)'
+	},
 	// ── EXEMPT readers — cannot leak quarantined content into context or an export ──
 	{
 		file: 'workforce/activation.ts',

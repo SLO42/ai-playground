@@ -157,6 +157,24 @@ export {
 	type BriefAction,
 	type ValidatorVerdict
 } from './pm-panel';
+// PM-LC-1 — the PM proposal GENERATOR (PM-LIFECYCLE-SPEC §PM-LC-1; the missing GENERATE step).
+export {
+	generatePmProposals,
+	makePmProposalAgent,
+	buildPmProposalPrompt,
+	parsePmProposalOutput,
+	validateProposalsOutput,
+	PmProposalContractError,
+	MAX_PROPOSALS_PER_TICK,
+	type PmProposalGenerator,
+	type PmProposalBrief,
+	type PmProposalCandidate,
+	type PmProposalAgentDeps,
+	type GeneratePmProposalsOpts,
+	type GeneratePmProposalsResult,
+	type ScreenedField
+} from './pm-propose';
+
 export {
 	createDecisionBrief,
 	getBrief,

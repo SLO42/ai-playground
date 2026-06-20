@@ -41,12 +41,18 @@
   // (loader re-invalidation above) is what actually adds/removes nodes. We bridge the SSE's
   // per-table onDbChange into the component's (topic, change) callback shape.
   function sceneFeed(onChange: (topic: string, change: SceneChange) => void): () => void {
-    const topics = ['entity', 'memory', 'session', 'work_item', 'references'];
-    const offs = topics.map((t) =>
-      stream.onDbChange(t, (change) =>
-        onChange(t, change as unknown as SceneChange)
-      )
-    );
+    // Static literal subscriptions (one per scene topic) so the WATCHED_TABLES static scanner can
+    // resolve every subscription — a loop over a topics array with a variable table name is not
+    // statically resolvable (the scanner reads literal table names to prove coverage).
+    const bridge = (topic: string) => (change: unknown) =>
+      onChange(topic, change as unknown as SceneChange);
+    const offs = [
+      stream.onDbChange('entity', bridge('entity')),
+      stream.onDbChange('memory', bridge('memory')),
+      stream.onDbChange('session', bridge('session')),
+      stream.onDbChange('work_item', bridge('work_item')),
+      stream.onDbChange('references', bridge('references'))
+    ];
     return () => offs.forEach((off) => off());
   }
 

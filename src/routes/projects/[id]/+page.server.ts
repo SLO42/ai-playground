@@ -1205,6 +1205,10 @@ export const actions: Actions = {
 					ok: true as const,
 					action: 'start',
 					needsHire: res.needsHire === true,
+					// Benign double-click/concurrent guard: a tick was already running for this project —
+					// NOTHING was run this call (no second session, no double spend). Surfaced as a non-error
+					// state so the client shows "already running", not a failure (PM-LC-2 hardening).
+					alreadyRunning: res.alreadyRunning === true,
 					bootstrapped: res.bootstrapped,
 					authority: res.authority,
 					generated: res.generated,

@@ -2042,6 +2042,41 @@ const m0055_scene_event: Migration = {
 	`
 };
 
+// m0056 — pm_lifecycle_lock (PM-LIFECYCLE-SPEC §PM-LC-2 hardening — the per-project in-flight guard).
+//
+// startProjectLifecycle is a REAL-SPEND action (it spawns a PM proposal-generation session + the
+// validation panel). With no guard, a double-click or concurrent submit spawned TWO PM sessions
+// (double model spend) and could double-propose the same fingerprint (proposeTask's dedup is a
+// TOCTOU over a NON-unique index — db/schema.ts:1260). This table is the per-PROJECT advisory
+// in-flight lock that serializes ticks: the SECOND concurrent tick for the same project gets a
+// BENIGN already-running result (no second session, no double spend), not a raw error.
+//
+// MIRRORS the m0049 create_lock pattern (F-040): a FAIL-CLOSED `CREATE` (SurrealDB errors if the
+// record already exists — last-writer does NOT win) is the atomic acquire; the holder nonce scopes
+// release so only THIS tick's `finally` DELETE can clear it. The id is keyed 1:1 to the project
+// (id-part = the project's local id, bound via type::thing — never interpolated, D-016).
+//
+// CA-H4 LOW lesson baked in (a SIGKILL between acquire and release must NOT wedge the project):
+// `at` records the acquire time so a STALE lock (older than the tick's wall-clock TTL — a crashed
+// holder that never released) can be taken over by a later tick via an atomic compare-and-swap on
+// the dead holder. The lock therefore self-heals; it can never permanently block future ticks.
+//
+// ADDITIVE, OVERWRITE-only (F-015 idempotent: apply-twice + a half-applied state re-run clean over
+// the raw OVERWRITE DDL; the generic schemaMigrations sweep in migrate.test.ts covers both — no
+// existing rows to backfill).
+const m0056_pm_lifecycle_lock: Migration = {
+	id: '0056_pm_lifecycle_lock',
+	up: `
+		DEFINE TABLE OVERWRITE pm_lifecycle_lock SCHEMAFULL;
+		-- The acquiring tick's nonce — only the owner (holder match) may release (DELETE) or be
+		-- compare-and-swapped over when stale.
+		DEFINE FIELD OVERWRITE holder ON pm_lifecycle_lock TYPE string;
+		-- When the lock was acquired (UTC). Drives stale-takeover: a lock older than the TTL is a
+		-- crashed holder and may be atomically seized by a later tick (CA-H4 — never wedge).
+		DEFINE FIELD OVERWRITE at     ON pm_lifecycle_lock TYPE datetime DEFAULT time::now();
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2103,5 +2138,6 @@ export const schemaMigrations: Migration[] = [
 	m0052_pm_fit_verdict,
 	m0053_create_proposal_run,
 	m0054_file_snapshot,
-	m0055_scene_event
+	m0055_scene_event,
+	m0056_pm_lifecycle_lock
 ];

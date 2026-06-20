@@ -285,3 +285,79 @@ describe('startProjectLifecycle — honest empties + summary shape (F-008)', () 
 		expect(Array.isArray(res.redactions)).toBe(true);
 	});
 });
+
+// ── REAL-SPEND CONCURRENCY GUARD (PM-LC-2 hardening) ──────────────────────────────────────────────
+// A double-click / concurrent submit must NOT spawn two PM sessions or double-propose. The per-project
+// in-flight lock serializes ticks: the second concurrent tick returns a BENIGN already-running result.
+
+/** A generator that COUNTS its invocations (the proxy for "how many PM sessions were spawned"). */
+function countingStub(payload: unknown): { gen: PmProposalGenerator; calls: () => number } {
+	let calls = 0;
+	return {
+		gen: async () => {
+			calls += 1;
+			return payload;
+		},
+		calls: () => calls
+	};
+}
+
+describe('startProjectLifecycle — real-spend concurrency guard (PM-LC-2 hardening)', () => {
+	it('two CONCURRENT ticks → exactly ONE PM session + ONE set of proposals; the other is benign', async () => {
+		await hire('act');
+		const c = countingStub({ proposals: [candidate()] });
+
+		// Fire two ticks in parallel (the double-submit). Only ONE may run the generator + panel; the
+		// other must short-circuit on the held lock with alreadyRunning (no second session/spend).
+		const [a, b] = await Promise.all([
+			startProjectLifecycle(db, deps([approveRun(), approveRun()]), projectId, { generate: c.gen }),
+			startProjectLifecycle(db, deps([approveRun(), approveRun()]), projectId, { generate: c.gen })
+		]);
+
+		const ran = [a, b].filter((r) => !r.alreadyRunning && !r.needsHire);
+		const benign = [a, b].filter((r) => r.alreadyRunning === true);
+		expect(ran).toHaveLength(1);
+		expect(benign).toHaveLength(1);
+		// Exactly ONE PM session was spawned (the generator ran once) — no double spend.
+		expect(c.calls()).toBe(1);
+		// Exactly ONE proposal exists in the DB — no double-propose.
+		expect((await listTasksByProject(db, projectId)).length).toBe(1);
+		expect(ran[0].generated).toBe(1);
+		expect(benign[0].summary).toMatch(/already running/i);
+	});
+
+	it('the lock RELEASES on success — a second SEQUENTIAL tick runs normally (no wedge)', async () => {
+		await hire('observe'); // observe so each tick is cheap (no panel) — isolates lock release.
+		const first = await startProjectLifecycle(db, deps([]), projectId, { generate: stub({ proposals: [] }) });
+		expect(first.alreadyRunning).toBeFalsy();
+		// If the lock did not release, this second call would return alreadyRunning. It must run normally.
+		const second = await startProjectLifecycle(db, deps([]), projectId, { generate: stub({ proposals: [] }) });
+		expect(second.alreadyRunning).toBeFalsy();
+		expect(second.authority).toBe('observe');
+	});
+
+	it('the lock RELEASES on ERROR — a throwing generator does NOT wedge the project', async () => {
+		await hire('act');
+		const boom: PmProposalGenerator = async () => {
+			throw new Error('generator exploded');
+		};
+		await expect(
+			startProjectLifecycle(db, deps([]), projectId, { generate: boom })
+		).rejects.toThrow(/exploded/);
+		// The lock must have been released in `finally` — a normal tick now runs (not wedged).
+		const after = await startProjectLifecycle(db, deps([]), projectId, { generate: stub({ proposals: [] }) });
+		expect(after.alreadyRunning).toBeFalsy();
+	});
+
+	it('a benign already-running result does NOT mask a needsHire (lock acquired before getPm)', async () => {
+		// No PM hired. A single tick returns needsHire — and crucially the lock was released so a later
+		// tick (after hiring) is not wedged. (Guards: the benign path can't swallow a real state.)
+		const noPm = await startProjectLifecycle(db, deps([]), projectId, { generate: stub({ proposals: [] }) });
+		expect(noPm.needsHire).toBe(true);
+		expect(noPm.alreadyRunning).toBeFalsy();
+		await hire('act');
+		const afterHire = await startProjectLifecycle(db, deps([]), projectId, { generate: stub({ proposals: [] }) });
+		expect(afterHire.alreadyRunning).toBeFalsy();
+		expect(afterHire.needsHire).toBeFalsy();
+	});
+});

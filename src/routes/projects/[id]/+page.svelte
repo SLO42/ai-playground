@@ -171,15 +171,20 @@
   // The honest tick state for the Overview region: idle → running → (done | empty | error).
   // `done` vs `empty` is decided by whether the tick generated anything; `error` is the named
   // failure reason. Never a fabricated count or a spinner-as-done.
-  const lifecycleState = $derived.by((): 'idle' | 'running' | 'done' | 'empty' | 'error' => {
-    if (lifecycleBusy) return 'running';
-    const fb = lifecycleFeedback;
-    if (!fb) return 'idle';
-    if (fb.error) return 'error';
-    if (fb.needsHire === true) return 'idle'; // the hire CTA renders; nothing was run.
-    if (typeof fb.generated === 'number' && fb.generated === 0) return 'empty';
-    return 'done';
-  });
+  const lifecycleState = $derived.by(
+    (): 'idle' | 'running' | 'done' | 'empty' | 'error' | 'busy-elsewhere' => {
+      if (lifecycleBusy) return 'running';
+      const fb = lifecycleFeedback;
+      if (!fb) return 'idle';
+      if (fb.error) return 'error';
+      // Benign concurrent-guard: a tick was already running for this project — nothing was run this
+      // click (no second session, no double spend). An honest non-error state (PM-LC-2 hardening).
+      if (fb.alreadyRunning === true) return 'busy-elsewhere';
+      if (fb.needsHire === true) return 'idle'; // the hire CTA renders; nothing was run.
+      if (typeof fb.generated === 'number' && fb.generated === 0) return 'empty';
+      return 'done';
+    }
+  );
   const lifecycleAuthority = $derived(
     typeof lifecycleFeedback?.authority === 'string' ? lifecycleFeedback.authority : null
   );
@@ -826,6 +831,12 @@
               </p>
             {:else if lifecycleState === 'error'}
               <p class="form-error" role="alert">{String(lifecycleFeedback?.error)}</p>
+            {:else if lifecycleState === 'busy-elsewhere'}
+              <p class="form-ok" role="status" aria-live="polite">
+                {lifecycleFeedback?.summary
+                  ? String(lifecycleFeedback.summary)
+                  : 'A lifecycle tick is already running for this project — let it finish before starting another.'}
+              </p>
             {:else if lifecycleState === 'empty'}
               <p class="form-ok" role="status">
                 {lifecycleFeedback?.summary

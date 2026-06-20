@@ -55,6 +55,7 @@ import {
 	type PanelRunOpts
 } from './pm-panel';
 import { ProposalContractError } from './pm-proposals';
+import { acquireLifecycleLock, releaseLifecycleLock } from './pm-lifecycle-lock';
 
 // ── Deps + opts ────────────────────────────────────────────────────────────────────────────────
 
@@ -115,6 +116,13 @@ export interface LifecyclePanelFailure {
 export interface StartLifecycleResult {
 	/** True ONLY when no PM is hired — the caller renders the hire CTA; NOTHING was run (no auto-hire). */
 	needsHire?: boolean;
+	/**
+	 * True ONLY when a lifecycle tick was ALREADY running for this project (the per-project in-flight
+	 * lock was held by a live tick). This is the BENIGN double-click/concurrent-submit guard: NOTHING
+	 * was run this call (no second PM session, no double spend) — the caller surfaces "a tick is already
+	 * running" rather than treating it as an error or starting a duplicate. (PM-LC-2 hardening.)
+	 */
+	alreadyRunning?: boolean;
 	/** Whether bootstrapPm seeded founding memory THIS tick (false ⇒ already bootstrapped — idempotent). */
 	bootstrapped: boolean;
 	/** The PM authority this tick ran under (governs promotion — observe/propose/act). */
@@ -151,13 +159,63 @@ export interface StartLifecycleResult {
  * so a re-run after a crash does not double-propose; the panel absorbs verdicts already recorded for a
  * proposal. Promotes NOTHING itself — promotion is the panel's pre-existing 'act'-authority setStatus.
  *
+ * REAL-SPEND GUARD (PM-LC-2 hardening): the tick is serialized PER PROJECT by an in-flight lock. A
+ * double-click / concurrent submit while a tick is already running for this project returns a BENIGN
+ * { alreadyRunning:true } result — NO second PM session, NO double spend, and no same-project
+ * double-propose (the lock serializes proposeTask too). A crashed holder's stale lock self-heals
+ * (CA-H4 takeover), so a SIGKILL between acquire and release can never permanently wedge the project.
+ *
  * @returns { needsHire:true } (and nothing else run) when the project has no hired PM — NEVER auto-hires.
+ * @returns { alreadyRunning:true } (and nothing else run) when a tick is already in flight for this project.
  */
 export async function startProjectLifecycle(
 	db: Db,
 	deps: LifecycleDeps,
 	projectId: string,
 	opts: StartLifecycleOpts = {}
+): Promise<StartLifecycleResult> {
+	// 0. CONCURRENCY/SPEND GUARD (PM-LC-2 hardening): acquire the per-project in-flight lock BEFORE any
+	//    work. A second concurrent tick (double-click / parallel submit) finds the lock held by a live
+	//    tick and gets a BENIGN already-running result — no second PM session, no double spend, and
+	//    (because ticks for a project are now serialized) no same-project double-propose. A crashed
+	//    holder's stale lock is taken over (CA-H4 — never wedge). The lock is released in `finally` on
+	//    EVERY exit below (success, needsHire, or throw). Acquired FIRST so even the needsHire/observe
+	//    short-circuits are serialized — a double-click never races getPm/bootstrapPm either.
+	const lock = await acquireLifecycleLock(db, projectId);
+	if (!lock.held) {
+		return {
+			alreadyRunning: true,
+			bootstrapped: false,
+			authority: 'observe',
+			generated: 0,
+			validated: 0,
+			promoted: 0,
+			leftForOperator: 0,
+			sessionId: null,
+			panels: [],
+			panelFailures: [],
+			summary:
+				'A lifecycle tick is already running for this project — let it finish before starting another (no second PM session was spawned).',
+			dropped: [],
+			redactions: []
+		};
+	}
+
+	try {
+		return await runTick(db, deps, projectId, opts);
+	} finally {
+		// RELEASE on every exit (success/needsHire/throw). Holder-scoped + best-effort: a release failure
+		// never masks the tick's result, and the STALE_LOCK_MS takeover is the backstop against a wedge.
+		await releaseLifecycleLock(db, projectId, lock.nonce);
+	}
+}
+
+/** The actual tick body, run UNDER the per-project lock held by startProjectLifecycle. */
+async function runTick(
+	db: Db,
+	deps: LifecycleDeps,
+	projectId: string,
+	opts: StartLifecycleOpts
 ): Promise<StartLifecycleResult> {
 	// 1. The PM must already be hired. No PM ⇒ the operator hires first (NEVER auto-hire). This is the
 	//    short-circuit honest empty: nothing is generated, validated, or promoted.

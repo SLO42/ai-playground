@@ -112,6 +112,13 @@ import {
 } from '$lib/server/workforce';
 import { listSessionMessages, launchSession, type TranscriptMessage } from '$lib/server/sessions';
 import {
+	resumeCreation,
+	ConcurrentCreateError,
+	ResumeProjectNotFoundError,
+	ResumeNotIncompleteError,
+	ResumeScaffoldMissingError
+} from '$lib/server/create';
+import {
 	getBus,
 	getRuntime,
 	getControlCapabilities,
@@ -151,6 +158,9 @@ export interface ProjectDetailData {
 		build_tool?: string;
 		test_command?: string;
 		repo_url?: string;
+		/** Create-with-AI materialization state (m0049): 'incomplete' ⇒ the setup did not finish and
+		 *  a resume affordance is offered; 'complete'/absent ⇒ fully wired / native (no surface). */
+		create_status?: string;
 		plan?: ProjectPlan;
 	};
 	releases: ReleaseRow[];
@@ -404,6 +414,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 				...(project.build_tool ? { build_tool: project.build_tool } : {}),
 				...(project.test_command ? { test_command: project.test_command } : {}),
 				...(project.repo_url ? { repo_url: project.repo_url } : {}),
+				...(project.create_status ? { create_status: project.create_status } : {}),
 				...(project.plan ? { plan: project.plan } : {})
 			},
 			releases,
@@ -1457,6 +1468,78 @@ export const actions: Actions = {
 				return fail(400, { hire: { roleSlug, error: err.message } });
 			}
 			return fail(500, { hire: { roleSlug, error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * CAH4 recovery — RESUME a partially-failed Create-with-AI project (create_status='incomplete').
+	 * Finishes the wiring on the EXISTING row WITHOUT re-creating or re-scaffolding it (resumeCreation
+	 * re-runs only the idempotent, durable-source writers: scanProject re-ingest + an idempotent hirePm
+	 * when the project already has a PM). On success the row flips create_status='complete'; on a writer
+	 * throw the row STAYS incomplete + an incident is logged (PostRegisterWriterError, same honest
+	 * contract as the create). The SSE `project` watcher re-invalidates this loader so the badge clears
+	 * live.
+	 *
+	 * Honest status mapping (EVERY ERROR HAS A NAME): an in-flight concurrent create/resume of the same
+	 * slug → 409 (retryable — ConcurrentCreateError); an already-complete/native project → 409
+	 * (ResumeNotIncompleteError — nothing to resume); a scaffold dir gone from under the row → 409
+	 * (ResumeScaffoldMissingError — un-resumable, the row stays honestly incomplete); a post-register
+	 * writer throw → 500 (PostRegisterWriterError — a real backend failure, row stays incomplete). A
+	 * not-found is a 404. F-008: never a fake success; the project is never silently unwound.
+	 */
+	resumeCreate: async ({ params }) => {
+		let projectId: string;
+		try {
+			projectId = assertRecordIdOfTable(`project:${params.id}`, 'project');
+		} catch {
+			return fail(400, { resume: { error: 'invalid project id' } });
+		}
+		const db = tryGetDb();
+		if (!db) {
+			return fail(503, { resume: { error: 'Database not connected — start SurrealDB and retry.' } });
+		}
+
+		// Re-run the PM hand-off ONLY when this project already has a hired PM (the durable signal a PM
+		// was wanted) — hirePm is idempotent (absorbs the existing row, completes missing founding
+		// memories). No PM row ⇒ resume finishes WITHOUT a PM (never fabricates a hire the operator did
+		// not ask for — F-008). The PM's own name drives the re-run.
+		let pm: { name: string; answers: HireAnswer[] } | undefined;
+		try {
+			const existingPm = await getPm(db, projectId);
+			if (existingPm) pm = { name: existingPm.name, answers: [] };
+		} catch {
+			// A PM-read failure must not block the resume — finish the rest of the wiring honestly.
+			pm = undefined;
+		}
+
+		try {
+			const res = await resumeCreation(db, projectId, {
+				codeRoot: process.env.CODE_ROOT?.trim() || 'F:/code',
+				...(pm ? { pm } : {})
+			});
+			return {
+				resume: {
+					ok: true as const,
+					projectId: res.projectId,
+					...(res.pm ? { pmName: res.pm.pm.name } : {})
+				}
+			};
+		} catch (err) {
+			if (err instanceof ResumeProjectNotFoundError) {
+				return fail(404, { resume: { error: err.message } });
+			}
+			// 409 = the operator can resolve by acting differently / retrying (retryable lock race) or the
+			// state is already non-resumable (complete/native, or the scaffold is gone — nothing to finish).
+			if (
+				err instanceof ConcurrentCreateError ||
+				err instanceof ResumeNotIncompleteError ||
+				err instanceof ResumeScaffoldMissingError
+			) {
+				return fail(409, { resume: { error: err.message } });
+			}
+			// 500 = a real backend writer failure; the row stays honestly incomplete (PostRegisterWriterError)
+			// or an unexpected fault. Never masked as success.
+			return fail(500, { resume: { error: (err as Error).message } });
 		}
 	}
 };

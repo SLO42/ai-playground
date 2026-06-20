@@ -65,6 +65,12 @@
   const selectedSession = $derived(data.selectedSession);
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
 
+  // ── CAH4 recovery — a Create-with-AI project whose setup did NOT finish (m0049
+  // create_status='incomplete'). The honest badge + a resume affordance surface here; the SSE
+  // `project` watcher clears it live the moment resumeCreate flips the row to 'complete' (F-008).
+  const createIncomplete = $derived(project?.create_status === 'incomplete');
+  let resumeBusy = $state(false);
+
   // The slug segment for child routes (the [id] param is the bare slug, not `project:slug`).
   const slug = $derived(page.params.id);
   const releaseHref = $derived(`/projects/${slug}/release`);
@@ -637,12 +643,68 @@
       <p class="path mono" title={project.root_path}>{project.root_path}</p>
       <div class="meta">
         <span class="status" data-status={project.status}>{project.status}</span>
+        {#if createIncomplete}
+          <span class="setup-badge" title="Create-with-AI setup did not finish — resume below">
+            setup incomplete
+          </span>
+        {/if}
         {#each project.ecosystem as e (e)}
           <span class="tag mono">{e}</span>
         {/each}
       </div>
     {/if}
   </header>
+
+  {#if project && createIncomplete}
+    <!-- CAH4 recovery — the honest incomplete-create banner + resume affordance (F-008). The
+         scaffold + registration succeeded but a post-register writer threw, so the project is
+         REAL but only partially wired. Resume re-runs the recoverable, idempotent writers
+         (re-scan from disk + an idempotent PM completion) on the EXISTING row — it NEVER
+         re-scaffolds and NEVER deletes the project. The SSE `project` watcher clears this live. -->
+    <div class="card setup-card" role="region" aria-label="incomplete project setup">
+      <div class="setup-head">
+        <span class="eyebrow">setup incomplete</span>
+      </div>
+      <p class="state-body">
+        This project was created with Create-with-AI, but its setup did not finish — the project
+        files and repository are real on disk, but some of the wiring (plan, capability needs,
+        founding tasks, targets, or the PM) was not completed. Resuming re-runs the recoverable
+        steps on the existing project. It never re-creates or deletes anything.
+      </p>
+
+      <form
+        method="POST"
+        action="?/resumeCreate"
+        use:enhance={() => {
+          resumeBusy = true;
+          return async ({ update }) => {
+            await update({ reset: false });
+            resumeBusy = false;
+          };
+        }}
+      >
+        <button
+          class="btn primary"
+          type="submit"
+          aria-busy={resumeBusy}
+          disabled={resumeBusy}
+        >
+          {resumeBusy ? 'Resuming setup…' : 'Resume setup'}
+        </button>
+      </form>
+
+      <!-- Honest result (F-008): the action returns { resume } — never a fake spinner-as-done. -->
+      {#if form && 'resume' in form && form.resume}
+        {#if 'ok' in form.resume && form.resume.ok}
+          <p class="form-ok" role="status" aria-live="polite">
+            Setup resumed — the project is now complete{#if 'pmName' in form.resume && form.resume.pmName}, PM {form.resume.pmName} confirmed{/if}.
+          </p>
+        {:else if 'error' in form.resume && form.resume.error}
+          <p class="form-error" role="alert">{form.resume.error}</p>
+        {/if}
+      {/if}
+    </div>
+  {/if}
 
   {#if !connected}
     <div class="card state">
@@ -2913,6 +2975,27 @@
     background: var(--color-accent-muted, var(--color-surface-overlay));
     padding: 0.05rem 0.4rem;
     border-radius: var(--radius-sm, 6px);
+  }
+  /* CAH4 — the honest "setup incomplete" markers (warning tone, design tokens only). */
+  .setup-badge {
+    font-size: 0.68rem;
+    font-weight: 600;
+    color: var(--color-error-on-overlay);
+    background: var(--color-surface-overlay);
+    border: var(--border-width, 1px) solid var(--color-error);
+    padding: 0.05rem 0.45rem;
+    border-radius: var(--radius-sm, 6px);
+  }
+  .setup-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.75rem;
+    border-color: var(--color-error);
+  }
+  .setup-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
   }
   .link-btn {
     align-self: flex-start;

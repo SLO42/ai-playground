@@ -166,6 +166,57 @@ export class TemplateNotFoundError extends Error {
 	}
 }
 
+/** Resume was asked for a project id that does not resolve to a registered row (honest, named). */
+export class ResumeProjectNotFoundError extends Error {
+	readonly projectId: string;
+	constructor(projectId: string) {
+		super(`project ${projectId} not found — nothing to resume.`);
+		this.name = 'ResumeProjectNotFoundError';
+		this.projectId = projectId;
+	}
+}
+
+/**
+ * Resume was asked for a project whose create_status is NOT 'incomplete' (it is 'complete', or NONE
+ * = never a partial Create-with-AI). Resume is ONLY for a partially-wired incomplete project; a
+ * complete/native project has nothing to finish, so we fail CLOSED with the honest current state
+ * (never silently "complete" an already-complete project, never touch a native one). Named (F-008).
+ */
+export class ResumeNotIncompleteError extends Error {
+	readonly projectId: string;
+	/** The project's actual create_status at refuse time ('complete' | undefined). */
+	readonly createStatus?: string;
+	constructor(projectId: string, createStatus?: string) {
+		super(
+			`project ${projectId} is not an incomplete create (create_status=${createStatus ?? 'none'}) — ` +
+				`nothing to resume.`
+		);
+		this.name = 'ResumeNotIncompleteError';
+		this.projectId = projectId;
+		this.createStatus = createStatus;
+	}
+}
+
+/**
+ * Resume found the project row but its on-disk scaffold dir is GONE (deleted/moved out from under the
+ * row). Resume operates on the EXISTING durable scaffold — it never re-scaffolds (the registration +
+ * commit already succeeded; re-creating would be a fabrication, F-008/F-040). With no dir there is
+ * nothing honest to finish, so we fail CLOSED, name it, and leave the row honestly incomplete.
+ */
+export class ResumeScaffoldMissingError extends Error {
+	readonly projectId: string;
+	readonly rootPath: string;
+	constructor(projectId: string, rootPath: string) {
+		super(
+			`project ${projectId} scaffold dir is missing at ${rootPath} — cannot resume (the scaffold is ` +
+				`not re-created; the project stays incomplete).`
+		);
+		this.name = 'ResumeScaffoldMissingError';
+		this.projectId = projectId;
+		this.rootPath = rootPath;
+	}
+}
+
 // ── Inputs / result ─────────────────────────────────────────────────────────────────
 
 export interface ExecuteCreationOptions {
@@ -634,6 +685,145 @@ export async function executeCreation(
 			return { taskIds, targetIds, pm };
 		}
 	});
+}
+
+// ── Resume executor (CAH4 recovery — finish an incomplete create) ─────────────────────
+
+export interface ResumeCreationOptions {
+	/** The confinement root (CODE_ROOT). The scaffold dir must already exist at `<codeRoot>/<slug>` (D-018). */
+	codeRoot: string;
+	/**
+	 * The PM hand-off to (re-)run, when the operator still wants a PM. hirePm is IDEMPOTENT — a re-run
+	 * absorbs any existing pm row and completes only the MISSING founding memories (pm-hire.ts), so this
+	 * is safe to run whether the original PM step landed, half-landed, or never ran. Absent ⇒ the PM step
+	 * is NOT re-run (a project that legitimately wants no PM finishes without one).
+	 */
+	pm?: {
+		name: string;
+		answers?: HireAnswer[];
+		persona?: string;
+	};
+}
+
+export interface ResumeCreationResult {
+	/** The project id (unchanged — resume never re-creates the row). */
+	projectId: string;
+	/** The scaffold's absolute root path (re-confined under CODE_ROOT). */
+	rootPath: string;
+	/** The PM hand-off result when a PM was (re-)requested; undefined otherwise. */
+	pm?: HirePmResult;
+}
+
+/**
+ * RESUME a partially-failed Create-with-AI project (CAH4 deferred-MEDIUM recovery). The scaffold +
+ * registration already SUCCEEDED (the row is real on disk + in the DB); only a POST-register writer
+ * threw, so the project is honestly marked create_status='incomplete' (m0049) and — before this — was
+ * un-recoverable (a retry through ?/create hit ProjectExistsError because the slug exists). Resume
+ * finishes the wiring on the EXISTING row WITHOUT re-creating or re-scaffolding it.
+ *
+ * It re-runs ONLY the writers that are SAFE to re-run on an existing project and grounded in DURABLE
+ * sources (no fabrication, F-008 — the original AI proposal text is ephemeral / not linked to the
+ * project row, so we never replay it; replaying createTask/declareTarget would DUPLICATE rows):
+ *   • scanProject — idempotent UPSERT MERGE; re-ingests the on-disk scaffold so the row reflects DISK
+ *     (the registration source of truth), refreshing ecosystem/build tool if the earlier scan was thin.
+ *   • hirePm (when opts.pm is given) — idempotent; absorbs any existing pm row + completes only the
+ *     MISSING founding memories (pm-hire.ts), so a PM step that failed/half-ran is completed cleanly.
+ * On success the row is flipped create_status='complete'. On a writer throw the row STAYS 'incomplete'
+ * (never silently flipped) + an incident is logged + a NAMED PostRegisterWriterError is thrown.
+ *
+ * Concurrency: takes the SAME slug-keyed create_lock executeCreation uses (fail-closed CREATE — F-040),
+ * so a resume can never race a concurrent create/resume of the same slug (ConcurrentCreateError). The
+ * lock is released in `finally` on every exit (owner-scoped nonce — never clobbers another run's lock).
+ *
+ * Shadow paths: nil/garbled id → the caller validates at the boundary (D-016) before calling; an
+ * unknown id → ResumeProjectNotFoundError; a complete/native project → ResumeNotIncompleteError (the
+ * honest current state, never a no-op "success"); a scaffold dir deleted out from under the row →
+ * ResumeScaffoldMissingError (we never re-scaffold, F-040); a writer throw → PostRegisterWriterError +
+ * the row stays incomplete (same honest contract as the original create). NEVER throws ProjectExistsError.
+ */
+export async function resumeCreation(
+	db: Db,
+	projectId: string,
+	opts: ResumeCreationOptions
+): Promise<ResumeCreationResult> {
+	// ── GATE — validate id + load the row (D-016 chokepoint). ──
+	const validId = assertRecordIdOfTable(projectId, 'project');
+	const project = await getProject(db, validId);
+	if (!project) throw new ResumeProjectNotFoundError(validId);
+
+	// Resume is ONLY for an honestly-marked incomplete create. A 'complete' or native (NONE) project
+	// has nothing to finish — fail CLOSED with the honest state (never flip an already-complete project).
+	if (project.create_status !== 'incomplete') {
+		throw new ResumeNotIncompleteError(validId, project.create_status);
+	}
+
+	// The slug is the local id-part of project:<slug> (snake-case, validated above) — the create_lock key.
+	const slug = validId.slice(validId.indexOf(':') + 1);
+
+	// ── CREATE-LOCK (F-040) — fail-closed so a resume never races a concurrent create/resume. ──
+	const lockNonce = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+	await acquireCreateLock(db, slug, lockNonce);
+
+	try {
+		// The scaffold dir MUST still exist — resume operates on the durable scaffold, never re-creates it
+		// (F-040: the registration + commit already succeeded; re-scaffolding would fabricate). Check the
+		// row's stored root_path FIRST: confineToRoot resolves the real path and itself fails closed when
+		// the dir is gone (PathConfinementError), so a plain existence check on the raw path gives the
+		// honest ResumeScaffoldMissingError instead of a confusing confinement error. Only once it exists
+		// do we re-confine it under CODE_ROOT (D-018, defense in depth) before any disk read.
+		if (!(await pathExists(project.root_path))) {
+			throw new ResumeScaffoldMissingError(validId, project.root_path);
+		}
+		const realRoot = confineToRoot(project.root_path, opts.codeRoot);
+
+		// ── RE-RUN the recoverable, idempotent writers. A throw here keeps the row 'incomplete'. ──
+		let pm: HirePmResult | undefined;
+		try {
+			// scanProject is idempotent (UPSERT MERGE keyed by the disk-derived slug); it refreshes the row
+			// from DISK without duplicating it. The id cannot diverge — the dir basename is the same slug we
+			// validated — but assert it as defense in depth (F-008/D-016) so a future drift fails closed.
+			const rescanned = await scanProject(db, realRoot, { codeRoot: opts.codeRoot });
+			if (rescanned.id !== validId) {
+				throw new Error(
+					`resume re-scan registered ${rescanned.id} but the project is ${validId} — refusing to ` +
+						`diverge (D-016/F-008).`
+				);
+			}
+
+			// hirePm is idempotent (absorbs an existing pm row, completes only missing founding memories).
+			if (opts.pm) {
+				pm = await hirePm(db, {
+					project: validId,
+					name: opts.pm.name,
+					...(opts.pm.persona ? { persona: opts.pm.persona } : {}),
+					answers: opts.pm.answers ?? []
+				});
+			}
+		} catch (err) {
+			// Same honest contract as the original create: the row STAYS 'incomplete' (never silently flipped),
+			// an incident is logged (NEVER silent, F-008), and a NAMED PostRegisterWriterError surfaces.
+			await setCreateStatus(db, validId, 'incomplete').catch(() => {});
+			const incidentId = await recordIncident(
+				db,
+				`Create resume failed: ${slug}`,
+				`Resume of ${validId} re-ran the recoverable writers at ${realRoot} but one threw; the project ` +
+					`stays create_status=incomplete (not wedged, not a phantom). ${(err as Error).message}`
+			);
+			throw new PostRegisterWriterError(validId, (err as Error).message, incidentId);
+		}
+
+		// ── MARK COMPLETE — the recoverable writers finished; the project is honestly wired. ──
+		await setCreateStatus(db, validId, 'complete');
+
+		return {
+			projectId: validId,
+			rootPath: realRoot,
+			...(pm ? { pm } : {})
+		};
+	} finally {
+		// Release the create-lock on EVERY exit (owner-scoped nonce + best-effort) — never wedge the slug.
+		await releaseCreateLock(db, slug, lockNonce);
+	}
 }
 
 // ── Template executor (CT-3 entry point) ──────────────────────────────────────────────

@@ -25,6 +25,7 @@ import {
 } from './plan';
 import {
 	executeCreation,
+	resumeCreation,
 	ProjectExistsError,
 	UnstableSlugError,
 	ScaffoldPathError,
@@ -32,6 +33,9 @@ import {
 	ScaffoldFailedError,
 	ConcurrentCreateError,
 	PostRegisterWriterError,
+	ResumeProjectNotFoundError,
+	ResumeNotIncompleteError,
+	ResumeScaffoldMissingError,
 	type ExecuteCreationOptions
 } from './execute';
 import { slugify } from '../scanner/detect';
@@ -602,6 +606,107 @@ describe('executeCreation — CA-H2 TOCTOU concurrent same-slug (fail-closed loc
 		await expect(executeCreation(db, second, { codeRoot })).rejects.toBeInstanceOf(ProjectExistsError);
 		// The first project's scaffold is untouched (no last-writer overwrite).
 		expect(await exists(join(codeRoot, 'ca2_collide', '.git'))).toBe(true);
+	}, 60_000);
+});
+
+describe('resumeCreation — CAH4 recovery of an incomplete create (F-008 honest, idempotent, no re-scaffold)', () => {
+	/**
+	 * Stand up a REAL, fully-scaffolded project, then force it into the honestly-marked
+	 * create_status='incomplete' state by failing the LAST post-register writer (a blank PM name makes
+	 * hirePm throw after plan/needs/tasks/targets landed). Returns the project id + slug for the resume.
+	 */
+	async function makeIncomplete(name: string): Promise<{ projectId: string; slug: string }> {
+		const env = await makeEnvelope(name);
+		await expect(
+			executeCreation(db, env, { codeRoot, pm: { name: '   ' } })
+		).rejects.toBeInstanceOf(PostRegisterWriterError);
+		const projectId = `project:${slugify(name)}`;
+		const row = await getProject(db, projectId);
+		expect(row!.create_status).toBe('incomplete'); // precondition: genuinely incomplete.
+		return { projectId, slug: slugify(name) };
+	}
+
+	it('an incomplete project resumes → recoverable writers re-run → create_status=complete, no ProjectExistsError', async () => {
+		const { projectId, slug } = await makeIncomplete('ca2 resume ok');
+		// Resume WITH a PM (idempotent hirePm completes the step that failed) — must NOT throw
+		// ProjectExistsError (the slug exists; resume operates on the existing row).
+		const res = await resumeCreation(db, projectId, { codeRoot, pm: { name: 'Ada', answers: [] } });
+		expect(res.projectId).toBe(projectId);
+		expect(res.pm?.pm.name).toBe('Ada');
+		// The row is now honestly complete; the PM landed; the lock is released.
+		const row = await getProject(db, projectId);
+		expect(row!.create_status).toBe('complete');
+		expect(await getPm(db, projectId)).not.toBeNull();
+		expect(await lockRowCount(slug)).toBe(0);
+		// The scaffold + .git were NOT touched (resume never re-scaffolds).
+		expect(await exists(join(codeRoot, slug, '.git'))).toBe(true);
+		expect(await exists(join(codeRoot, slug, 'src', 'index.ts'))).toBe(true);
+	}, 60_000);
+
+	it('resume without a PM finishes the create (no PM fabricated) and flips to complete', async () => {
+		const { projectId } = await makeIncomplete('ca2 resume nopm');
+		const res = await resumeCreation(db, projectId, { codeRoot });
+		expect(res.projectId).toBe(projectId);
+		expect(res.pm).toBeUndefined();
+		expect((await getProject(db, projectId))!.create_status).toBe('complete');
+		expect(await getPm(db, projectId)).toBeNull(); // never a fabricated hire (F-008).
+	}, 60_000);
+
+	it('a resume whose writer THROWS stays incomplete + logs an incident + releases the lock', async () => {
+		const { projectId, slug } = await makeIncomplete('ca2 resume fail');
+		const before = await countIncidents();
+		// A blank PM name makes the resume's idempotent hirePm throw — the SAME honest contract as create.
+		await expect(
+			resumeCreation(db, projectId, { codeRoot, pm: { name: '   ' } })
+		).rejects.toBeInstanceOf(PostRegisterWriterError);
+		// The row STAYS incomplete (never silently flipped), an incident was logged, the lock released.
+		expect((await getProject(db, projectId))!.create_status).toBe('incomplete');
+		expect(await countIncidents()).toBe(before + 1);
+		expect(await lockRowCount(slug)).toBe(0);
+		// The project still survives on disk (never unwound, F-040).
+		expect(await exists(join(codeRoot, slug, '.git'))).toBe(true);
+	}, 60_000);
+
+	it('resume of an UNKNOWN project → ResumeProjectNotFoundError (nothing to resume)', async () => {
+		await expect(
+			resumeCreation(db, 'project:ca2_resume_ghost', { codeRoot })
+		).rejects.toBeInstanceOf(ResumeProjectNotFoundError);
+	}, 60_000);
+
+	it('resume of a COMPLETE project → ResumeNotIncompleteError (no silent no-op success)', async () => {
+		const env = await makeEnvelope('ca2 resume complete');
+		const created = await executeCreation(db, env, { codeRoot });
+		expect((await getProject(db, created.projectId))!.create_status).toBe('complete');
+		await expect(
+			resumeCreation(db, created.projectId, { codeRoot })
+		).rejects.toBeInstanceOf(ResumeNotIncompleteError);
+	}, 60_000);
+
+	it('resume when the scaffold dir is GONE → ResumeScaffoldMissingError, row stays incomplete (never re-scaffolds)', async () => {
+		const { projectId, slug } = await makeIncomplete('ca2 resume nodir');
+		// Delete the on-disk scaffold out from under the row (a dir moved/removed by the operator).
+		await rm(join(codeRoot, slug), { recursive: true, force: true });
+		await expect(
+			resumeCreation(db, projectId, { codeRoot })
+		).rejects.toBeInstanceOf(ResumeScaffoldMissingError);
+		// Resume NEVER re-creates the dir, and the row stays honestly incomplete + the lock is released.
+		expect(await exists(join(codeRoot, slug))).toBe(false);
+		expect((await getProject(db, projectId))!.create_status).toBe('incomplete');
+		expect(await lockRowCount(slug)).toBe(0);
+	}, 60_000);
+
+	it('resume fails CLOSED (ConcurrentCreateError) when a same-slug create/resume holds the lock', async () => {
+		const { projectId, slug } = await makeIncomplete('ca2 resume locked');
+		// Simulate a concurrent create/resume in flight by holding the slug-keyed create-lock.
+		await db.query(`CREATE create_lock:${slug} CONTENT { holder: $h } RETURN AFTER;`, {
+			h: 'other-in-flight'
+		});
+		await expect(
+			resumeCreation(db, projectId, { codeRoot })
+		).rejects.toBeInstanceOf(ConcurrentCreateError);
+		// The row is untouched (still incomplete) — the lock holder is the foreign run, not us.
+		expect((await getProject(db, projectId))!.create_status).toBe('incomplete');
+		await db.query(`DELETE create_lock:${slug};`); // cleanup the simulated in-flight lock.
 	}, 60_000);
 });
 

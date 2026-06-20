@@ -58,6 +58,7 @@ export {
 export {
 	executeCreation,
 	executeTemplateCreation,
+	resumeCreation,
 	ProjectExistsError,
 	UnstableSlugError,
 	ScaffoldPathError,
@@ -66,10 +67,15 @@ export {
 	ConcurrentCreateError,
 	PostRegisterWriterError,
 	TemplateNotFoundError,
+	ResumeProjectNotFoundError,
+	ResumeNotIncompleteError,
+	ResumeScaffoldMissingError,
 	type ExecuteCreationOptions,
 	type ExecuteCreationResult,
 	type ExecuteTemplateCreationOptions,
-	type ExecuteTemplateCreationResult
+	type ExecuteTemplateCreationResult,
+	type ResumeCreationOptions,
+	type ResumeCreationResult
 } from './execute';
 
 export {

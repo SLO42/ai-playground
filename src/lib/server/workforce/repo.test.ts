@@ -638,9 +638,39 @@ describe('gauntlet_fixture + gauntlet_key — content addressing, dedup, single 
 		expect(await readGauntletKeyForScoring(db, fixture.id)).toBeNull();
 	});
 
+	// Strip line (`// …`) and block (`/* … */`) comments so a prior-art *reference* to
+	// gauntlet_key in prose (e.g. file-snapshot.ts cites F-026/gauntlet_key as the dedup
+	// pattern) never false-positives, while an ACTUAL code read (SELECT/db.query touching
+	// the table) still trips the census. Naive but sufficient: this is a leak-channel guard
+	// over our own source, not a general JS parser — string literals containing `//` or `/*`
+	// are not present in the files it walks, and a real `gauntlet_key` table read lives in
+	// executable code regardless.
+	const stripComments = (src: string): string =>
+		src
+			.replace(/\/\*[\s\S]*?\*\//g, '') // block comments
+			.replace(/(^|[^:])\/\/[^\n]*/g, '$1'); // line comments (keep `://` in URLs intact)
+	const mentionsGauntletKeyInCode = (src: string): boolean =>
+		stripComments(src).includes('gauntlet_key');
+
+	it('comment-stripping census ignores prose mentions but still trips on a real code read (guard teeth)', () => {
+		// A prior-art REFERENCE in a comment must NOT count (false-positive guard).
+		expect(
+			mentionsGauntletKeyInCode(
+				`/** mirrors F-026 / gauntlet_key: deterministic id dedup */\nexport const x = 1;`
+			)
+		).toBe(false);
+		expect(mentionsGauntletKeyInCode(`const y = 2; // see gauntlet_key prior art\n`)).toBe(false);
+		// An ACTUAL code read (SELECT/db.query in executable code) MUST still trip it.
+		expect(
+			mentionsGauntletKeyInCode(`const r = await db.query('SELECT * FROM gauntlet_key');`)
+		).toBe(true);
+		expect(mentionsGauntletKeyInCode(`const t = 'gauntlet_key'; // table name`)).toBe(true);
+	});
+
 	it('READ-PATH fixture (§2.1/§4.4): the workforce module is the ONLY gauntlet_key reader in src/lib', () => {
 		// Walk src/lib; any non-test module outside workforce/ (and the migration
-		// definition in db/schema.ts) that mentions gauntlet_key is a leak channel.
+		// definition in db/schema.ts) that reads gauntlet_key IN CODE is a leak channel.
+		// Comment-only mentions (prior-art prose) are stripped first — see census helper above.
 		const root = join(__dirname, '..', '..', '..');
 		const offenders: string[] = [];
 		const walk = (dir: string) => {
@@ -651,7 +681,7 @@ describe('gauntlet_fixture + gauntlet_key — content addressing, dedup, single 
 					walk(p);
 				} else if (/\.(ts|svelte)$/.test(entry.name) && !/\.test\.ts$/.test(entry.name)) {
 					if (!p.includes(join('server', 'workforce')) && !p.endsWith(join('db', 'schema.ts'))) {
-						if (readFileSync(p, 'utf8').includes('gauntlet_key')) offenders.push(p);
+						if (mentionsGauntletKeyInCode(readFileSync(p, 'utf8'))) offenders.push(p);
 					}
 				}
 			}

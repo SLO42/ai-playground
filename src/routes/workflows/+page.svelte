@@ -11,6 +11,7 @@
   import { invalidate } from '$app/navigation';
   import { page } from '$app/state';
   import { stream } from '$lib/client/stream.svelte';
+  import LiveBadge from '$lib/components/shell/LiveBadge.svelte';
   import type { PageData, ActionData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -29,6 +30,11 @@
 
   const hasWorkflows = $derived(workflows.length > 0);
   const hasRuns = $derived(runs.length > 0);
+
+  // Honest live-feed health for the run-history region (F-008): silent when cleanly
+  // live, surfaces "live: reconnecting/disconnected" when the server-side `workflow_run`
+  // LIVE subscription degrades, so a stalled run list is never shown as current.
+  const runLiveness = $derived(stream.tableLiveness('workflow_run'));
 
   // Live updates: workflow/run/session row changes re-run the loader (UI-SPEC §1.2).
   $effect(() => {
@@ -155,7 +161,10 @@
 
     <!-- Run history -->
     <div class="card">
-      <span class="eyebrow">run history · {runs.length}</span>
+      <div class="region-head">
+        <span class="eyebrow">run history · {runs.length}</span>
+        <LiveBadge phase={runLiveness} />
+      </div>
       {#if !hasRuns}
         <p class="state-body">No runs yet — a run appears here the moment a workflow executes.</p>
       {:else}
@@ -269,6 +278,13 @@
   }
   .mono {
     font-family: var(--font-mono, ui-monospace, monospace);
+  }
+  .region-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    flex-wrap: wrap;
   }
   .eyebrow {
     font-size: 0.7rem;

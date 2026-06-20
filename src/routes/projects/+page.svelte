@@ -10,12 +10,17 @@
   import { enhance } from '$app/forms';
   import { invalidate } from '$app/navigation';
   import { stream } from '$lib/client/stream.svelte';
+  import LiveBadge from '$lib/components/shell/LiveBadge.svelte';
   import type { ActionData, PageData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
 
   const projects = $derived(data.projects ?? []);
   const connected = $derived(data.connected);
+  // Honest live-feed health for THIS region's table (F-008): silent when cleanly
+  // live, surfaces "live: reconnecting/disconnected" when the server-side `project`
+  // LIVE subscription degrades, so frozen rows are never shown as current.
+  const projectLiveness = $derived(stream.tableLiveness('project'));
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
 
   // Register form: live submit state + honest result (error / registered) from the action.
@@ -54,7 +59,10 @@
     <span class="eyebrow">portfolio</span>
     <div class="head-row">
       <h1 class="title">Projects</h1>
-      <a class="btn create-ai" href="/projects/create">Create with AI</a>
+      <div class="head-actions">
+        <LiveBadge phase={projectLiveness} />
+        <a class="btn create-ai" href="/projects/create">Create with AI</a>
+      </div>
     </div>
     <p class="lede">
       Every project under management, served live from the database. Create a new one
@@ -167,6 +175,12 @@
     display: flex;
     align-items: center;
     justify-content: space-between;
+    gap: var(--space-3, 0.75rem);
+    flex-wrap: wrap;
+  }
+  .head-actions {
+    display: inline-flex;
+    align-items: center;
     gap: var(--space-3, 0.75rem);
     flex-wrap: wrap;
   }

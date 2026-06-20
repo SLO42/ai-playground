@@ -132,7 +132,12 @@
   // pages/actions use). Purposeful — this app IS a control plane; it also lets the
   // e2e drive the blocking confirm + gate banners that have no dedicated page yet.
   $effect(() => {
-    (window as unknown as { atelier?: unknown }).atelier = { toasts, confirm };
+    // `stream` is exposed too so the per-region LiveBadge (F-008 honest live-feed
+    // health) can be driven deterministically in the e2e — the real 1h-TTL
+    // subscription-death trigger is infeasible in a bounded verify, so we inject the
+    // server's `live_status` phase through the SAME reactive `liveStatus` map the
+    // server frame writes. Read-only control surface; carries no creds (D-026).
+    (window as unknown as { atelier?: unknown }).atelier = { toasts, confirm, stream };
     return () => {
       delete (window as unknown as { atelier?: unknown }).atelier;
     };

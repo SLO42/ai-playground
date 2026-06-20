@@ -10,6 +10,7 @@
    */
   import { invalidate } from '$app/navigation';
   import { stream } from '$lib/client/stream.svelte';
+  import LiveBadge from '$lib/components/shell/LiveBadge.svelte';
   import type { PageData } from './$types';
 
   // The known task statuses, in board order (mirrors TASK_STATUSES in the tasks repo —
@@ -39,6 +40,13 @@
   const activity = $derived(data.activity ?? []);
   const taskSummary = $derived(data.taskSummary);
   const fleet = $derived(data.fleet ?? []);
+
+  // Honest per-region live-feed health (F-008): the fleet streams `session` row changes,
+  // the activity feed streams `agent_event`. When a region's server-side LIVE subscription
+  // degrades, `tableLiveness` flips and the LiveBadge surfaces it — frozen rows are never
+  // presented as current. Silent (no badge) while the region is cleanly live.
+  const fleetLiveness = $derived(stream.tableLiveness('session'));
+  const activityLiveness = $derived(stream.tableLiveness('agent_event'));
 
   const running = $derived(fleet.filter((f) => f.status === 'running'));
   const recent = $derived(fleet.filter((f) => f.status !== 'running'));
@@ -160,7 +168,10 @@
   <!-- Region 3+4 — two columns: recent activity · portfolio task summary -->
   <div class="cols">
     <section class="card col" aria-labelledby="activity-head">
-      <span class="eyebrow" id="activity-head">recent activity</span>
+      <div class="panel-head">
+        <span class="eyebrow" id="activity-head">recent activity</span>
+        <LiveBadge phase={activityLiveness} />
+      </div>
       {#if activity.length === 0}
         <p class="state-body">
           {connected
@@ -221,7 +232,10 @@
   <section class="card" aria-labelledby="fleet-head">
     <div class="panel-head">
       <span class="eyebrow" id="fleet-head">agent fleet</span>
-      <span class="count mono">{running.length} running · {recent.length} recent</span>
+      <span class="head-meta">
+        <LiveBadge phase={fleetLiveness} />
+        <span class="count mono">{running.length} running · {recent.length} recent</span>
+      </span>
     </div>
     {#if fleet.length === 0}
       <p class="state-body">
@@ -371,6 +385,12 @@
   .count {
     font-size: var(--text-xs, 0.75rem);
     color: var(--color-text-muted);
+  }
+  .head-meta {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3);
+    flex-wrap: wrap;
   }
   .state {
     display: flex;

@@ -52,16 +52,22 @@
   const hasMemories = $derived(memories.length > 0);
   const hasGraph = $derived(graph.nodes.length > 0);
 
-  // Live updates: a memory/entity row change re-runs the loader (UI-SPEC §1.2).
+  // Live updates: a memory/entity row change re-runs the loader (UI-SPEC §1.2). The scene
+  // graph (MEMORY-SCENE-SPEC §7.2) derives off the SAME source tables plus the USAGE/JOBS
+  // layer (session/work_item), so we also re-derive it on those — `app:scene` keeps the
+  // living-brain data foundation live for the §7.3 UI wave.
   $effect(() => {
-    const off1 = stream.onDbChange('memory', () => void invalidate('app:memory'));
-    const off2 = stream.onDbChange('entity', () => void invalidate('app:graph'));
-    const off3 = stream.onDbChange('references', () => void invalidate('app:graph'));
-    return () => {
-      off1();
-      off2();
-      off3();
-    };
+    const offs = [
+      stream.onDbChange('memory', () => void invalidate('app:memory')),
+      stream.onDbChange('entity', () => void invalidate('app:graph')),
+      stream.onDbChange('references', () => void invalidate('app:graph')),
+      stream.onDbChange('memory', () => void invalidate('app:scene')),
+      stream.onDbChange('entity', () => void invalidate('app:scene')),
+      stream.onDbChange('references', () => void invalidate('app:scene')),
+      stream.onDbChange('session', () => void invalidate('app:scene')),
+      stream.onDbChange('work_item', () => void invalidate('app:scene'))
+    ];
+    return () => offs.forEach((off) => off());
   });
 
   function shortId(id: string): string {

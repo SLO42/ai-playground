@@ -15,3 +15,13 @@ export {
 	type AppendSceneEventInput,
 	type SceneProjectorOptions
 } from './projector';
+
+// §7.2 — the read-only node/edge AGGREGATOR (the scene's TRUTH, derived live; F-008).
+export {
+	buildSceneGraph,
+	type SceneGraph,
+	type SceneNode,
+	type SceneEdge,
+	type SceneNodeClass,
+	type SceneGraphLimits
+} from './scene';

@@ -156,6 +156,70 @@
   );
   const uxFindingCount = $derived(findings.filter((f) => f.rule.startsWith('ux.')).length);
 
+  // ── PM-LC-3 (PM-LIFECYCLE-SPEC §PM-LC-3) — the one-click "Start the project's life" control.
+  // Reuses the EXISTING ?/startLifecycle action (PM-LC-2). The click is REAL model spend, so it is
+  // gated behind the canonical D-010 blocking confirm (confirm.confirm) carrying the cost label —
+  // mirroring the create-flow / ceremony spend-confirm convention. On a returned sessionId we
+  // navigate to ?session=<id> so the EXISTING live transcript pipeline (SessionTranscript + the
+  // transcript/token_usage/session_status SSE topics) streams the PM thinking in real time; the
+  // tick result (generated / promoted / leftForOperator) renders honestly below the button.
+  let lifecycleBusy = $state(false);
+  // The action result the operator last triggered (named, F-008). Read off `form.lifecycle`.
+  const lifecycleFeedback = $derived(
+    form && 'lifecycle' in form ? (form.lifecycle as Record<string, unknown>) : undefined
+  );
+  // The honest tick state for the Overview region: idle → running → (done | empty | error).
+  // `done` vs `empty` is decided by whether the tick generated anything; `error` is the named
+  // failure reason. Never a fabricated count or a spinner-as-done.
+  const lifecycleState = $derived.by((): 'idle' | 'running' | 'done' | 'empty' | 'error' => {
+    if (lifecycleBusy) return 'running';
+    const fb = lifecycleFeedback;
+    if (!fb) return 'idle';
+    if (fb.error) return 'error';
+    if (fb.needsHire === true) return 'idle'; // the hire CTA renders; nothing was run.
+    if (typeof fb.generated === 'number' && fb.generated === 0) return 'empty';
+    return 'done';
+  });
+  const lifecycleAuthority = $derived(
+    typeof lifecycleFeedback?.authority === 'string' ? lifecycleFeedback.authority : null
+  );
+  const lifecycleLeftForOperator = $derived(
+    typeof lifecycleFeedback?.leftForOperator === 'number' ? lifecycleFeedback.leftForOperator : 0
+  );
+  // The live session id the tick spawned (the PM proposal-generation session). When present we both
+  // navigate to ?session=<id> (so the Sessions tab streams it) and render the live transcript inline.
+  const lifecycleSessionId = $derived(
+    typeof lifecycleFeedback?.sessionId === 'string' ? lifecycleFeedback.sessionId : null
+  );
+
+  // When the tick returns a session id, open it so the EXISTING ?session= transcript pipeline
+  // subscribes + streams it live (idempotent: openSession no-ops if we are already on it).
+  $effect(() => {
+    const sid = lifecycleSessionId;
+    if (sid && selectedSession !== sid) openSession(sid);
+  });
+
+  /**
+   * Run ONE lifecycle tick behind the real-spend confirm (PM-LC-3). The confirm carries the explicit
+   * cost label (spec wording) so the operator sees what the click costs BEFORE any spend. On accept
+   * we submit the hidden ?/startLifecycle form programmatically (its use:enhance drives busy + result).
+   */
+  let lifecycleForm = $state<HTMLFormElement | null>(null);
+  async function startLifecycleTick(): Promise<void> {
+    if (lifecycleBusy) return;
+    const ok = await confirm.confirm({
+      title: 'Start the project’s life?',
+      message:
+        'This spawns the PM agent to review the project, propose the next work, and start approved ' +
+        'tasks — real model spend. It runs ONE tick (not a daemon); approved work starts only if the ' +
+        'PM’s authority is “act”.',
+      confirmLabel: 'Start — spend',
+      cancelLabel: 'Cancel'
+    });
+    if (!ok) return;
+    lifecycleForm?.requestSubmit();
+  }
+
   // ── Memory tab (TASK 10.4) — client-side recall filter + node focus (mirrors /memory).
   let memQuery = $state('');
   const memFiltered = $derived(
@@ -696,6 +760,137 @@
             </dl>
           {:else}
             <p class="state-body">No plan macro set yet for this project.</p>
+          {/if}
+        </div>
+
+        <!-- PM-LC-3 (PM-LIFECYCLE-SPEC §PM-LC-3) — the one-click "start the project's life" control.
+             No PM hired → a "Hire a PM first" CTA to the EXISTING hire flow (never auto-hires). PM
+             hired → a prominent "Start the project's life" button behind a real-spend confirm. On a
+             returned sessionId the PM session's transcript streams LIVE (reuses the SSE pipeline);
+             the tick result renders honestly (idle / running / done / empty / error). -->
+        <div class="card lifecycle-card">
+          <div class="lifecycle-head">
+            <h2 class="section-title">Project lifecycle</h2>
+            {#if pm}
+              <span class="count mono" title="the PM's current authority">authority: {pm.authority}</span>
+            {/if}
+          </div>
+
+          {#if !pm}
+            <!-- No PM hired: the honest empty state + the hire CTA. NEVER auto-hires (LOCKED). -->
+            <p class="state-body">
+              This project has no Project Manager yet. Hire a PM to let it review the project, propose
+              the next work, and start approved tasks.
+            </p>
+            <button class="btn primary" type="button" onclick={() => { tab = 'pm'; startHire(); }}>
+              Hire a PM first
+            </button>
+          {:else}
+            <p class="state-body">
+              One click runs a single PM lifecycle tick: the PM reviews the project, proposes the next
+              work, and an independent panel validates each proposal. With authority
+              <span class="mono">act</span> approved proposals start automatically; with
+              <span class="mono">propose</span> they wait for your approval below.
+            </p>
+
+            <!-- The real-spend trigger. The hidden form posts ?/startLifecycle; the button opens the
+                 cost-labelled confirm first (D-010). use:enhance drives busy + the named result. -->
+            <form
+              bind:this={lifecycleForm}
+              method="POST"
+              action="?/startLifecycle"
+              use:enhance={() => {
+                lifecycleBusy = true;
+                return async ({ update }) => {
+                  await update({ reset: false });
+                  lifecycleBusy = false;
+                };
+              }}
+            >
+              <button
+                class="btn primary lifecycle-start"
+                type="button"
+                aria-label="Start the project's life — runs one PM lifecycle tick (real model spend)"
+                aria-busy={lifecycleBusy}
+                disabled={lifecycleBusy}
+                onclick={() => void startLifecycleTick()}
+              >
+                {lifecycleBusy ? 'Starting the project’s life…' : 'Start the project’s life'}
+              </button>
+            </form>
+
+            <!-- Honest tick state (F-008): never a fake spinner-as-done. -->
+            {#if lifecycleState === 'running'}
+              <p class="state-body" role="status" aria-live="polite">
+                The PM is reviewing the project and proposing work — watch it think below.
+              </p>
+            {:else if lifecycleState === 'error'}
+              <p class="form-error" role="alert">{String(lifecycleFeedback?.error)}</p>
+            {:else if lifecycleState === 'empty'}
+              <p class="form-ok" role="status">
+                {lifecycleFeedback?.summary
+                  ? String(lifecycleFeedback.summary)
+                  : 'PM lifecycle tick complete — no actionable gaps found. Nothing was proposed.'}
+              </p>
+            {:else if lifecycleState === 'done'}
+              <div class="lifecycle-result" role="status" aria-live="polite">
+                <p class="form-ok">{String(lifecycleFeedback?.summary ?? 'PM lifecycle tick complete.')}</p>
+                <ul class="lifecycle-counts" aria-label="tick result">
+                  <li><span class="lc-n">{Number(lifecycleFeedback?.generated ?? 0)}</span> generated</li>
+                  <li><span class="lc-n">{Number(lifecycleFeedback?.validated ?? 0)}</span> validated</li>
+                  <li><span class="lc-n">{Number(lifecycleFeedback?.promoted ?? 0)}</span> promoted to ready</li>
+                  <li><span class="lc-n">{lifecycleLeftForOperator}</span> awaiting your approval</li>
+                  {#if Number(lifecycleFeedback?.panelFailures ?? 0) > 0}
+                    <li class="lc-warn">
+                      <span class="lc-n">{Number(lifecycleFeedback?.panelFailures)}</span> panel run(s) failed
+                    </li>
+                  {/if}
+                </ul>
+                <!-- authority='propose' → link the EXISTING proposals panel (PM tab). -->
+                {#if lifecycleAuthority === 'propose' && lifecycleLeftForOperator > 0}
+                  <button
+                    class="link-inline"
+                    type="button"
+                    onclick={() => {
+                      tab = 'pm';
+                      document.getElementById('proposals-queue')?.scrollIntoView({ block: 'start' });
+                    }}
+                  >
+                    {lifecycleLeftForOperator} proposal{lifecycleLeftForOperator === 1 ? '' : 's'} awaiting your approval →
+                  </button>
+                {/if}
+              </div>
+            {/if}
+
+            <!-- LIVE: when the tick spawned a session, the EXISTING ?session= transcript pipeline is
+                 already streaming it (we navigated to it). Render that live transcript inline here so
+                 the operator watches the PM think without leaving Overview. -->
+            {#if lifecycleSessionId && selectedSession === lifecycleSessionId}
+              <div class="lifecycle-live">
+                <div class="transcript-head">
+                  <h3 class="section-subtitle">
+                    PM session <span class="mono sid">{shortId(lifecycleSessionId)}</span>
+                  </h3>
+                  <div class="transcript-meta">
+                    {#if liveStatus ?? selectedRow?.status}
+                      <span class="status" data-status={liveStatus ?? selectedRow?.status}>
+                        {liveStatus ?? selectedRow?.status}
+                      </span>
+                    {/if}
+                    {#if liveTokens}
+                      <span class="tokens mono">↓{liveTokens.tokensIn} ↑{liveTokens.tokensOut} tok</span>
+                    {/if}
+                  </div>
+                </div>
+                <div class="transcript" role="log" aria-live="polite" aria-label="PM lifecycle session transcript">
+                  {#if liveTurns.length === 0}
+                    <p class="state-body">No transcript yet — the PM’s reasoning appears here as it runs.</p>
+                  {:else}
+                    <SessionTranscript turns={liveTurns} onViewFile={viewFileSnapshot} />
+                  {/if}
+                </div>
+              </div>
+            {/if}
           {/if}
         </div>
 
@@ -1343,7 +1538,7 @@
           <!-- TASK 16.4 — proposals queue (PM-SPEC §4 "Act with Purpose"): tasks the PM
                proposed, each carrying the schema-enforced objective / purpose / spec /
                provenance, traversing the 1–2 validator panel before becoming ready. -->
-          <div class="card">
+          <div class="card" id="proposals-queue">
             <div class="pm-head">
               <h2 class="section-title">
                 Proposals
@@ -3450,6 +3645,59 @@
   .link-inline:focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
+  }
+
+  /* ── PM-LC-3 — the one-click "start the project's life" lifecycle control ───── */
+  .lifecycle-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  .lifecycle-head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-3, 0.75rem);
+  }
+  .lifecycle-head .count {
+    margin-left: auto;
+    color: var(--color-text-muted);
+  }
+  .lifecycle-start {
+    align-self: flex-start;
+  }
+  .lifecycle-result {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+  }
+  .lifecycle-counts {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-3, 0.75rem);
+    font-size: 0.78rem;
+    color: var(--color-text-muted);
+  }
+  .lifecycle-counts .lc-n {
+    font-weight: 700;
+    color: var(--color-text);
+    margin-right: 0.3rem;
+  }
+  .lifecycle-counts .lc-warn .lc-n {
+    color: var(--color-warn);
+  }
+  .lifecycle-live {
+    margin-top: var(--space-2, 0.5rem);
+    border-top: var(--border-width, 1px) solid var(--color-border);
+    padding-top: var(--space-3, 0.75rem);
+  }
+  .lifecycle-live .section-subtitle {
+    font-size: var(--text-base);
+    font-weight: 600;
+    margin: 0;
+    color: var(--color-text);
   }
 
   /* ── TASK 10.4 — Overview at-a-glance + Maintain panel ─────────────────────── */

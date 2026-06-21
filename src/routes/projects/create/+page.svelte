@@ -104,6 +104,17 @@
   let hirePm = $state(true);
   let pmName = $state('');
 
+  // ── EXP-1 autonomous build-and-publish-to-v1 (default OFF) ──
+  // The operator's explicit, per-project opt-in to let the new project drive HANDS-OFF to v1.0.0 —
+  // including the public Thunderstore publish — bounded by the daily spawn cap and gated by an
+  // OBJECTIVE release-readiness check (build green + tcli pack/validate green). It REQUIRES a PM to
+  // drive it: when 'Hire a PM' is unticked the option is force-OFF + disabled (arming never auto-hires).
+  let autonomousToV1 = $state(false);
+  // Force-off whenever there is no PM to arm — keeps the submitted value honest (no autonomous w/o PM).
+  $effect(() => {
+    if (!hirePm) autonomousToV1 = false;
+  });
+
   // ── client-only field persistence (operator convenience — NOT server state) ──
   // The brief fields, the chosen template, and the per-template param edits survive a reload AND
   // navigating away+back so nothing is re-typed. This is sessionStorage-backed convenience ONLY
@@ -332,6 +343,12 @@
           {:else}
             Hired PM <span class="mono">{createOk.pm.name}</span> — managed from day 0.
           {/if}
+        </p>
+      {/if}
+      {#if createOk.armedAutonomous}
+        <p class="state-body armed-note">
+          Autonomous build-and-publish-to-v1 is <strong>armed</strong> — the PM will drive this project
+          unsupervised toward v1.0.0 and auto-publish only when the build + validate gate is green.
         </p>
       {/if}
       <p class="state-body muted">Opening the project workspace…</p>
@@ -580,6 +597,22 @@
                 placeholder={`${name || 'Project'} PM`} maxlength="200"
                 autocomplete="off" aria-label="PM name" />
             </label>
+
+            <!-- EXP-1 — the hands-off 0→v1 opt-in (default OFF). Only meaningful with a PM (the toggle
+                 lives inside the hirePm block; force-off otherwise). Clearly labelled with the reality. -->
+            <label class="checkbox autonomous">
+              <input type="checkbox" name="autonomousToV1" bind:checked={autonomousToV1}
+                disabled={!hirePm} />
+              <span>
+                Autonomously build and publish to v1
+                <span class="field-help autonomous-reality">
+                  The PM drives this project unsupervised all the way to v1.0.0 — including the public
+                  Thunderstore publish — using real spend bounded by the daily agent cap. It auto-publishes
+                  only when the build and <span class="mono">tcli pack</span>/<span class="mono">validate</span>
+                  gate is green; on any real blocker it stops and waits for you. Off by default.
+                </span>
+              </span>
+            </label>
           {/if}
         </fieldset>
       {/if}
@@ -796,6 +829,21 @@
               <input class="input" type="text" name="pmName" bind:value={pmName}
                 placeholder={`${envelope?.brief.name ?? 'Project'} PM`} maxlength="200"
                 autocomplete="off" aria-label="PM name" />
+            </label>
+
+            <!-- EXP-1 — the hands-off 0→v1 opt-in (default OFF), parity with the template path. -->
+            <label class="checkbox autonomous">
+              <input type="checkbox" name="autonomousToV1" bind:checked={autonomousToV1}
+                disabled={!hirePm} />
+              <span>
+                Autonomously build and publish to v1
+                <span class="field-help autonomous-reality">
+                  The PM drives this project unsupervised all the way to v1.0.0 — including the public
+                  Thunderstore publish — using real spend bounded by the daily agent cap. It auto-publishes
+                  only when the build and <span class="mono">tcli pack</span>/<span class="mono">validate</span>
+                  gate is green; on any real blocker it stops and waits for you. Off by default.
+                </span>
+              </span>
             </label>
           {/if}
 
@@ -1344,6 +1392,22 @@
     accent-color: var(--color-accent);
     width: 1rem;
     height: 1rem;
+  }
+  /* EXP-1 — the autonomous opt-in: align the checkbox to the top so the multi-line reality copy reads
+     cleanly, and de-emphasise the explanatory sub-text. */
+  .checkbox.autonomous {
+    align-items: flex-start;
+  }
+  .checkbox.autonomous input {
+    margin-top: 0.15rem;
+  }
+  .autonomous-reality {
+    display: block;
+    margin-top: 0.2rem;
+    max-width: 60ch;
+  }
+  .armed-note {
+    color: var(--color-text);
   }
   .pm-name {
     max-width: 24rem;

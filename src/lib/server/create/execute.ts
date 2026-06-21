@@ -34,7 +34,7 @@ import { getProject, updateProjectPlan } from '../projects/repo';
 import { createTask, type TaskStatus } from '../tasks/repo';
 import { declareTarget } from '../adapters/registry';
 import { setCapabilityNeeds } from '../workforce/capability-match';
-import { getPm } from '../projects/pm-repo';
+import { getPm, setPmAutonomous, setPmAutoPublishPreauthorized } from '../projects/pm-repo';
 import { hirePm, type HireAnswer, type HirePmResult } from '../projects/pm-hire';
 import { screen } from '../memory/screen';
 import { captureSnapshotSafe } from '../memory/file-snapshot-capture';
@@ -166,6 +166,30 @@ export class TemplateNotFoundError extends Error {
 	}
 }
 
+/**
+ * The operator ticked "Autonomously build and publish to v1" at create, but the create flow did NOT
+ * hire a PM (PM-hire is conditional — the operator can opt out of the PM, or a template path may omit
+ * it). Arming the autonomous loop requires a PM to arm (setPmAutonomous/setPmAutoPublishPreauthorized
+ * both no-op when there is no `pm` row — they NEVER auto-hire, B4/D-039). So rather than SILENTLY drop
+ * the operator's explicit autonomous request (which would leave them believing the project is driving
+ * to v1 when nothing is armed — a dishonest no-op, F-008), we fail CLOSED and NAME it: autonomous mode
+ * needs a PM. The scaffold + registration already succeeded, so this surfaces as a post-register writer
+ * failure (the project is real on disk, honestly marked create_status='incomplete'); the operator
+ * re-creates WITH a PM, or arms manually on the project page once a PM is hired.
+ */
+export class AutonomousArmWithoutPmError extends Error {
+	readonly projectId: string;
+	constructor(projectId: string) {
+		super(
+			`autonomous build-and-publish-to-v1 was requested for ${projectId} but no PM was hired — ` +
+				`autonomous mode needs a PM to drive it (arming never auto-hires). Re-create with a PM, ` +
+				`or hire one and arm it on the project page.`
+		);
+		this.name = 'AutonomousArmWithoutPmError';
+		this.projectId = projectId;
+	}
+}
+
 /** Resume was asked for a project id that does not resolve to a registered row (honest, named). */
 export class ResumeProjectNotFoundError extends Error {
 	readonly projectId: string;
@@ -234,6 +258,18 @@ export interface ExecuteCreationOptions {
 		answers?: HireAnswer[];
 		persona?: string;
 	};
+	/**
+	 * EXP-1 — the operator's explicit "Autonomously build and publish to v1" choice, ticked at create
+	 * (default OFF). When true, AFTER the existing scaffold→register→hirePm path completes, the new
+	 * project's PM is ARMED for the one-shot 0→v1 drive: pm.autonomous=true (the unsupervised loop) +
+	 * auto_publish_preauthorized=true (the recorded operator consent the objective release gate reads).
+	 * This reuses the EXISTING setPmAutonomous + setPmAutoPublishPreauthorized writers — no parallel
+	 * writers. It is a CONSENT + safety record, NOT a new authority: publish still fires only on the
+	 * objective machine gate (build green + tcli pack/validate green), never a "PM says done" vibe.
+	 * Requires a PM (this flow's hirePm must have run) — option ON without a PM is an honest failure
+	 * (AutonomousArmWithoutPmError), NEVER a silent drop.
+	 */
+	autonomousToV1?: boolean;
 	/** Injectable command runner (test seam) — defaults to {@link execFileRunner}. */
 	run?: CommandRunner;
 	/**
@@ -255,6 +291,12 @@ export interface ExecuteCreationResult {
 	targetIds: string[];
 	/** The PM hand-off result when a PM was requested; undefined otherwise. */
 	pm?: HirePmResult;
+	/**
+	 * EXP-1 — true when the new project's PM was ARMED for the autonomous 0→v1 drive (autonomous +
+	 * auto_publish_preauthorized both set) because the operator ticked "Autonomously build and publish
+	 * to v1" AND a PM was hired. Absent/false when the option was off (a normal create is unchanged).
+	 */
+	armedAutonomous?: boolean;
 	/** The first commit sha, when git reported one. */
 	commitSha?: string;
 }
@@ -616,6 +658,40 @@ async function setCreateStatus(
 	});
 }
 
+/**
+ * EXP-1 — arm the just-hired PM for the autonomous 0→v1 drive, when the operator ticked "Autonomously
+ * build and publish to v1" at create. Runs in BOTH create paths' postRegister (AI + template) — the
+ * SINGLE arming chokepoint, reusing the EXISTING setPmAutonomous + setPmAutoPublishPreauthorized
+ * writers (NO parallel writers). Returns true iff it armed.
+ *
+ * Honesty / integrity (LOCKED even under the operator override):
+ *   • requires a PM — `pm` is the create flow's hirePm result (undefined when the operator opted out of
+ *     PM-hire, or a path didn't hire). Option ON + NO pm ⇒ throw AutonomousArmWithoutPmError (named) so
+ *     the request is NEVER silently dropped (the operator believes it's driving when nothing is armed).
+ *   • setPmAutonomous/setPmAutoPublishPreauthorized themselves NEVER auto-hire (they no-op → null when
+ *     no `pm` row exists); we assert the pm row landed via a non-null return, failing closed otherwise.
+ *   • this records CONSENT + arms the loop; it grants NO publish authority — the release path still
+ *     fires publish ONLY on the objective machine gate (build green + tcli pack/validate green, D-037).
+ * Called inside postRegister, so a throw here surfaces as PostRegisterWriterError (the project is real
+ * + honestly marked create_status='incomplete', never a silent half-state).
+ */
+async function armAutonomousIfRequested(
+	db: Db,
+	projectId: string,
+	requested: boolean | undefined,
+	pm: HirePmResult | undefined
+): Promise<boolean> {
+	if (!requested) return false;
+	if (!pm) throw new AutonomousArmWithoutPmError(projectId);
+	// Reuse the existing writers (no parallel writers). Each no-ops (returns null) if there were no pm
+	// row — assert the row was actually set so a missing PM can never look armed (F-008 honest).
+	const armed = await setPmAutonomous(db, projectId, true);
+	if (!armed) throw new AutonomousArmWithoutPmError(projectId);
+	const consented = await setPmAutoPublishPreauthorized(db, projectId, true);
+	if (!consented) throw new AutonomousArmWithoutPmError(projectId);
+	return true;
+}
+
 // ── The executor (CA-2 entry point) ──────────────────────────────────────────────────
 
 /**
@@ -753,7 +829,11 @@ export async function executeCreation(
 				});
 			}
 
-			return { taskIds, targetIds, pm };
+			// EXP-1 — arm the autonomous 0->v1 drive when the operator opted in at create (needs a PM;
+			// option ON + no PM is an honest failure here, never a silent drop).
+			const armedAutonomous = await armAutonomousIfRequested(db, projectId, opts.autonomousToV1, pm);
+
+			return { taskIds, targetIds, pm, armedAutonomous };
 		}
 	});
 }
@@ -922,6 +1002,12 @@ export interface ExecuteTemplateCreationOptions {
 		answers?: HireAnswer[];
 		persona?: string;
 	};
+	/**
+	 * EXP-1 — the operator's "Autonomously build and publish to v1" choice (default OFF), parity with
+	 * {@link ExecuteCreationOptions.autonomousToV1}. ON ⇒ arm the hired PM for the 0→v1 drive after the
+	 * scaffold/register/hirePm path; ON without a PM ⇒ AutonomousArmWithoutPmError (honest, never silent).
+	 */
+	autonomousToV1?: boolean;
 	/** Injectable command runner (test seam) — defaults to {@link execFileRunner}. */
 	run?: CommandRunner;
 	/** Optional clock override (determinism in tests). Production omits it. */
@@ -1052,7 +1138,11 @@ export async function executeTemplateCreation(
 				});
 			}
 
-			return { taskIds, targetIds, pm };
+			// EXP-1 — arm the autonomous 0->v1 drive when the operator opted in (parity with the AI path).
+			// Needs a PM; option ON + no PM is an honest failure here, never a silent drop.
+			const armedAutonomous = await armAutonomousIfRequested(db, projectId, opts.autonomousToV1, pm);
+
+			return { taskIds, targetIds, pm, armedAutonomous };
 		}
 	});
 }
@@ -1100,6 +1190,8 @@ interface PostRegisterOutcome {
 	taskIds: string[];
 	targetIds: string[];
 	pm?: HirePmResult;
+	/** EXP-1 — true when this post-register writer armed the PM for the autonomous 0→v1 drive. */
+	armedAutonomous?: boolean;
 }
 
 /** The per-path inputs the shared pipeline needs (the file-map + the post-register writer callback). */
@@ -1316,6 +1408,7 @@ async function scaffoldRegisterAndWire(
 			taskStatus,
 			targetIds: outcome.targetIds,
 			...(outcome.pm ? { pm: outcome.pm } : {}),
+			...(outcome.armedAutonomous ? { armedAutonomous: true } : {}),
 			...(commitSha ? { commitSha } : {})
 		};
 	} finally {

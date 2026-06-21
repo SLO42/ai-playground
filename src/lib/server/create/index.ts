@@ -66,6 +66,7 @@ export {
 	ScaffoldFailedError,
 	ConcurrentCreateError,
 	PostRegisterWriterError,
+	AutonomousArmWithoutPmError,
 	TemplateNotFoundError,
 	ResumeProjectNotFoundError,
 	ResumeNotIncompleteError,

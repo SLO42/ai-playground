@@ -33,6 +33,7 @@ import {
 	ScaffoldFailedError,
 	ConcurrentCreateError,
 	PostRegisterWriterError,
+	AutonomousArmWithoutPmError,
 	ResumeProjectNotFoundError,
 	ResumeNotIncompleteError,
 	ResumeScaffoldMissingError,
@@ -200,6 +201,67 @@ describe('executeCreation — happy path (no PM)', () => {
 		expect(tasks.every((t) => t.status === 'ready')).toBe(true);
 		expect(await getPm(db, res.projectId)).toBeNull();
 	}, 60_000);
+});
+
+describe('executeCreation — EXP-1 autonomous build-and-publish-to-v1 arming', () => {
+	it('option ON with a PM → the new project PM is armed autonomous=true + consent=true', async () => {
+		const env = await makeEnvelope('ca2 auto on');
+		const res = await executeCreation(db, env, {
+			codeRoot,
+			pm: { name: 'Hex', answers: [] },
+			autonomousToV1: true
+		});
+		expect(res.armedAutonomous).toBe(true);
+		// Reuses the EXISTING setters — the live pm row carries BOTH the unsupervised-loop arm and the
+		// recorded operator consent (the objective release gate reads the consent).
+		const pm = await getPm(db, res.projectId);
+		expect(pm).not.toBeNull();
+		expect(pm!.autonomous).toBe(true);
+		expect(pm!.auto_publish_preauthorized).toBe(true);
+		// The create still completed honestly (not marked incomplete).
+		const row = await getProject(db, res.projectId);
+		expect(row!.create_status).toBe('complete');
+	}, 60_000);
+
+	it('option OFF (normal create) → PM is NOT armed: autonomous=false + consent=false', async () => {
+		const env = await makeEnvelope('ca2 auto off');
+		const res = await executeCreation(db, env, {
+			codeRoot,
+			pm: { name: 'Vale', answers: [] }
+			// autonomousToV1 omitted → default OFF.
+		});
+		expect(res.armedAutonomous).toBeUndefined();
+		const pm = await getPm(db, res.projectId);
+		expect(pm).not.toBeNull();
+		// The schema DEFAULT (m0057/m0058) reads back hard false — a normal create is unchanged.
+		expect(pm!.autonomous).toBe(false);
+		expect(pm!.auto_publish_preauthorized).toBe(false);
+	}, 60_000);
+
+	it('option ON but NO PM hired → honest failure (AutonomousArmWithoutPmError), never a silent arm', async () => {
+		const env = await makeEnvelope('ca2 auto no pm');
+		// autonomousToV1 ON but no pm requested → arming has nothing to arm. The throw happens inside
+		// postRegister, so it surfaces as PostRegisterWriterError (project real on disk, marked incomplete),
+		// with the AutonomousArmWithoutPmError as its honest cause — never a silent no-op.
+		await expect(
+			executeCreation(db, env, { codeRoot, autonomousToV1: true })
+		).rejects.toBeInstanceOf(PostRegisterWriterError);
+
+		// No PM was ever created (arming never auto-hires — B4/D-039).
+		const projectId = `project:${slugify('ca2 auto no pm')}`;
+		expect(await getPm(db, projectId)).toBeNull();
+		// The project is honestly marked incomplete (not a silent half-state, not a phantom).
+		const row = await getProject(db, projectId);
+		expect(row).not.toBeNull();
+		expect(row!.create_status).toBe('incomplete');
+	}, 60_000);
+
+	it('AutonomousArmWithoutPmError is a NAMED error carrying the projectId', () => {
+		const err = new AutonomousArmWithoutPmError('project:x');
+		expect(err.name).toBe('AutonomousArmWithoutPmError');
+		expect(err.projectId).toBe('project:x');
+		expect(err.message).toMatch(/no PM/i);
+	});
 });
 
 describe('executeCreation — FS-2 (a) scaffold file-snapshot capture (FILE-SNAPSHOT-SPEC §3 a)', () => {

@@ -335,9 +335,16 @@ export const actions: Actions = {
 			? { name: pmNameRaw || `${envelope.brief.name} PM`, answers: [] }
 			: undefined;
 
+		// EXP-1 — the operator's explicit "Autonomously build and publish to v1" choice (default OFF).
+		// When ON, executeCreation arms the just-hired PM (autonomous + auto_publish_preauthorized) so the
+		// project drives hands-off to v1. It REQUIRES a PM: option ON without a PM is an honest failure
+		// (AutonomousArmWithoutPmError → surfaced as PostRegisterWriterError), never a silent arm.
+		const autonomousToV1 = form.get('autonomousToV1') === 'on';
+
 		try {
 			const res = await executeCreation(db, envelope, {
 				codeRoot: codeRoot(),
+				autonomousToV1,
 				...(pm ? { pm } : {})
 			});
 			return {
@@ -349,6 +356,7 @@ export const actions: Actions = {
 					taskStatus: res.taskStatus,
 					targetCount: res.targetIds.length,
 					...(res.commitSha ? { commitSha: res.commitSha } : {}),
+					...(res.armedAutonomous ? { armedAutonomous: true as const } : {}),
 					...(res.pm
 						? { pm: { name: res.pm.pm.name, hired: res.pm.hired, alreadyHired: res.pm.alreadyHired } }
 						: {})
@@ -416,6 +424,11 @@ export const actions: Actions = {
 		const pmNameRaw = field(form, 'pmName', MAX_NAME);
 		const pm = wantPm ? { name: pmNameRaw || `${read.brief.name} PM`, answers: [] } : undefined;
 
+		// EXP-1 — parity with ?/create: the operator's "Autonomously build and publish to v1" choice
+		// (default OFF) arms the hired PM for the hands-off 0→v1 drive. ON without a PM is an honest
+		// failure (AutonomousArmWithoutPmError → PostRegisterWriterError), never a silent arm.
+		const autonomousToV1 = form.get('autonomousToV1') === 'on';
+
 		try {
 			const res = await executeTemplateCreation(db, {
 				templateId,
@@ -423,6 +436,7 @@ export const actions: Actions = {
 				description: read.brief.description,
 				params,
 				codeRoot: codeRoot(),
+				autonomousToV1,
 				...(pm ? { pm } : {})
 			});
 			return {
@@ -434,6 +448,7 @@ export const actions: Actions = {
 					taskStatus: res.taskStatus,
 					targetCount: res.targetIds.length,
 					...(res.commitSha ? { commitSha: res.commitSha } : {}),
+					...(res.armedAutonomous ? { armedAutonomous: true as const } : {}),
 					...(res.pm
 						? { pm: { name: res.pm.pm.name, hired: res.pm.hired, alreadyHired: res.pm.alreadyHired } }
 						: {})

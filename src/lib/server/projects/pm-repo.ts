@@ -429,6 +429,14 @@ export interface PmRow {
 	 * (m0057), so every existing/new pm row reads back a concrete boolean (never NONE).
 	 */
 	autonomous: boolean;
+	/**
+	 * PMA — the operator's PRE-AUTHORIZATION to let the autonomous loop carry the release THROUGH the
+	 * publish gate without a fresh tap. DEFAULT false (m0058): publish always needs an explicit confirm.
+	 * A clearly-labelled opt-in surfaced behind the arming flow — NEVER auto-publishes silently. This is
+	 * an operator consent record, not an agent authority: the loop still halts at 'awaiting-release-
+	 * confirm' and has no publish authority of its own (D-037). Read back as a hard boolean (never NONE).
+	 */
+	auto_publish_preauthorized: boolean;
 	created_at: string | null;
 }
 
@@ -441,7 +449,13 @@ export interface CreatePmInput {
 }
 
 function normPm(
-	row: PmRow & { id: unknown; project: unknown; cadence_offset?: unknown; autonomous?: unknown }
+	row: PmRow & {
+		id: unknown;
+		project: unknown;
+		cadence_offset?: unknown;
+		autonomous?: unknown;
+		auto_publish_preauthorized?: unknown;
+	}
 ): PmRow {
 	return {
 		...row,
@@ -452,6 +466,9 @@ function normPm(
 		// PMA-1 — coerce to a hard boolean. The schema DEFAULT is false, but a pre-m0057 row read
 		// before the migration lands (or a malformed value) coerces to false, never undefined (F-008).
 		autonomous: row.autonomous === true,
+		// PMA — pre-authorize-auto-publish opt-in (m0058). Same coercion discipline: a pre-m0058 row
+		// (or a malformed value) reads back false, never undefined — publish defaults to operator-gated.
+		auto_publish_preauthorized: row.auto_publish_preauthorized === true,
 		created_at: strDate(row.created_at)
 	};
 }
@@ -581,6 +598,29 @@ export async function setPmAutonomous(
 	const [rows] = await db.query<[(PmRow & { id: unknown; project: unknown })[]]>(
 		`UPDATE $rid MERGE { autonomous: $autonomous } RETURN AFTER;`,
 		{ rid: link(existing.id), autonomous: autonomous === true }
+	);
+	return rows.length ? normPm(rows[0]) : null;
+}
+
+/**
+ * PMA — record the operator's PRE-AUTHORIZE-AUTO-PUBLISH consent (true) or revoke it (false). This is a
+ * SAFETY/consent toggle, NOT an authority grant: it records that the operator has pre-approved letting the
+ * autonomous loop carry the release through the publish gate. It NEVER grants the agent publish authority
+ * and NEVER bypasses D-037 by itself — the consuming release path reads this flag and a missing/false flag
+ * keeps publish operator-gated. DEFAULT false (m0058): publish always needs a confirm unless the operator
+ * explicitly opted in here. MERGE preserves every untouched column; the value binds via $param (D-016) and
+ * stores a hard boolean. Returns null when the project has no hired PM (no row to set — never auto-hires).
+ */
+export async function setPmAutoPublishPreauthorized(
+	db: Db,
+	projectId: string,
+	preauthorized: boolean
+): Promise<PmRow | null> {
+	const existing = await getPm(db, projectId);
+	if (!existing) return null;
+	const [rows] = await db.query<[(PmRow & { id: unknown; project: unknown })[]]>(
+		`UPDATE $rid MERGE { auto_publish_preauthorized: $pre } RETURN AFTER;`,
+		{ rid: link(existing.id), pre: preauthorized === true }
 	);
 	return rows.length ? normPm(rows[0]) : null;
 }

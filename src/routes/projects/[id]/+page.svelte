@@ -206,6 +206,47 @@
       ? (autonomousFeedback.autonomous as boolean)
       : (data.pm?.autonomous ?? false)
   );
+  // PMA — the operator's pre-authorize-auto-publish opt-in (default OFF). Reflects the optimistic action
+  // result first, then the loaded pm row. NEVER auto-publishes silently: when OFF the loop halts at the
+  // publish gate; when ON the operator has pre-consented (it is still operator consent, not agent authority).
+  const pmAutoPublish = $derived(
+    autonomousFeedback?.action === 'autoPublish' &&
+      typeof autonomousFeedback.autoPublishPreauthorized === 'boolean'
+      ? (autonomousFeedback.autoPublishPreauthorized as boolean)
+      : (data.pm?.auto_publish_preauthorized ?? false)
+  );
+  // PMA — the active HARD spawn caps that bound unsupervised spend (surfaced on the arm confirm + inline).
+  const spendCaps = $derived(data.spendCaps ?? { reTickCap: 24, dailySpawnCap: null });
+  const capLabel = $derived(
+    spendCaps.dailySpawnCap != null
+      ? `${spendCaps.reTickCap} re-ticks/day per project, and the orchestrator's ${spendCaps.dailySpawnCap} session-spawns/day ceiling`
+      : `${spendCaps.reTickCap} re-ticks/day per project`
+  );
+  // The hidden arm form is submitted only AFTER the real-spend + unsupervised confirm accepts (D-010).
+  let armForm = $state<HTMLFormElement | null>(null);
+  let armBusy = $state(false);
+
+  /**
+   * ARM autonomous drive behind the REAL-SPEND + UNSUPERVISED confirm (D-010). The confirm carries the
+   * cost reality AND the active hard spawn cap so the operator sees the ceiling BEFORE any unsupervised
+   * spend. Disarm is direct (no confirm — stopping is always safe). On accept we submit the hidden
+   * ?/pmAutonomous form (its use:enhance flips the row live).
+   */
+  async function armAutonomous(): Promise<void> {
+    if (armBusy) return;
+    const ok = await confirm.confirm({
+      title: 'Run autonomously to release?',
+      message:
+        'The PM will propose and develop work continuously toward the definition of done WITHOUT asking — ' +
+        'this is real, unsupervised model spend, bounded by ' + capLabel + '. It stops honestly at a ' +
+        'blocker, at the spend cap, or at the release gate; the final publish still needs your confirm ' +
+        '(it never auto-publishes or hires).',
+      confirmLabel: 'Arm — unsupervised spend',
+      cancelLabel: 'Cancel'
+    });
+    if (!ok) return;
+    armForm?.requestSubmit();
+  }
   // The live loop's honest stop/continue state for this project (null when the loop has not acted yet).
   const loopState = $derived(data.autonomousLoop ?? null);
   const loopStateLabel = $derived.by((): string => {
@@ -914,36 +955,105 @@
               </button>
             </form>
 
-            <!-- PMA — UNSUPERVISED autonomous drive. ARM ⇒ the boot-started loop re-runs the lifecycle
+            <!-- PMA — "Run autonomously to release". ARM ⇒ the boot-started loop re-runs the lifecycle
                  tick after each promoted batch drains, looping toward the DoD and HALTING honestly at
                  blocked / cap-reached / awaiting-release-confirm. It NEVER bypasses an operator gate (no
-                 publish — D-037; no hire — D-039) and bounds spend (the re-tick cap). -->
-            <div class="autonomous-control">
+                 publish — D-037; no hire — D-039) and bounds spend (the re-tick cap + the D-021 daily cap).
+                 ARM is behind a real-spend + unsupervised confirm (D-010) carrying the cost + the active
+                 cap; DISARM is a prominent STOP always available while armed (stopping is always safe). -->
+            <div class="autonomous-control" data-armed={pmArmed}>
               <div class="autonomous-row">
                 <div class="autonomous-label">
-                  <span class="auto-title">Autonomous drive</span>
+                  <span class="auto-title">Run autonomously to release</span>
                   <span class="auto-sub">
                     {pmArmed
-                      ? 'Armed — the PM drives unsupervised toward the first release. It stops on a blocker, at the spend cap, and at the publish gate (never auto-publishes).'
-                      : 'Off — the PM runs only when you click “Start the project’s life”.'}
+                      ? `Armed — the PM drives unsupervised toward the first release, bounded by ${capLabel}. It stops on a blocker, at the spend cap, and at the publish gate (never auto-publishes or hires).`
+                      : `Off — the PM runs only when you click “Start the project’s life”. When armed, unsupervised spend is bounded by ${capLabel}.`}
                   </span>
                 </div>
+
+                <!-- DISARM (the prominent STOP) is a direct submit — stopping is always safe, no confirm.
+                     ARM opens the cost + cap confirm first, then submits this same hidden form. -->
                 <form
+                  bind:this={armForm}
                   method="POST"
                   action="?/pmAutonomous"
-                  use:enhance={() => async ({ update }) => { await update({ reset: false }); }}
+                  use:enhance={() => {
+                    armBusy = true;
+                    return async ({ update }) => {
+                      await update({ reset: false });
+                      armBusy = false;
+                    };
+                  }}
                 >
                   <input type="hidden" name="armed" value={pmArmed ? 'false' : 'true'} />
-                  <button
-                    class="btn {pmArmed ? 'warn' : 'primary'}"
-                    type="submit"
-                    aria-pressed={pmArmed}
-                    aria-label={pmArmed ? 'Disarm autonomous drive' : 'Arm autonomous drive'}
-                  >
-                    {pmArmed ? 'Disarm' : 'Arm autonomous drive'}
-                  </button>
+                  {#if pmArmed}
+                    <!-- STOP / disarm — always available while armed; submits directly (no confirm). -->
+                    <button
+                      class="btn warn autonomous-stop"
+                      type="submit"
+                      aria-pressed="true"
+                      aria-busy={armBusy}
+                      disabled={armBusy}
+                      aria-label="Stop autonomous drive (disarm)"
+                    >
+                      {armBusy ? 'Stopping…' : 'Stop autonomous drive'}
+                    </button>
+                  {:else}
+                    <!-- ARM — opens the real-spend + unsupervised confirm (cost + active cap) first. -->
+                    <button
+                      class="btn primary"
+                      type="button"
+                      aria-pressed="false"
+                      aria-busy={armBusy}
+                      disabled={armBusy}
+                      aria-label="Arm autonomous drive — runs unsupervised toward release (real model spend)"
+                      onclick={() => void armAutonomous()}
+                    >
+                      {armBusy ? 'Arming…' : 'Run autonomously to release'}
+                    </button>
+                  {/if}
                 </form>
               </div>
+
+              <!-- The pre-authorize-auto-publish opt-in (default OFF). A CLEARLY-LABELLED operator toggle:
+                   OFF ⇒ the loop halts at the publish gate for your one tap (never auto-publishes); ON ⇒ you
+                   have pre-consented to let the loop carry the release through. It is operator CONSENT, not
+                   agent authority. Surfaced only while armed (it only matters once the loop is driving). -->
+              {#if pmArmed}
+                <form
+                  method="POST"
+                  action="?/pmAutoPublish"
+                  use:enhance={() => async ({ update }) => { await update({ reset: false }); }}
+                >
+                  <input type="hidden" name="preauthorized" value={pmAutoPublish ? 'false' : 'true'} />
+                  <label class="autopublish-opt">
+                    <button
+                      class="toggle"
+                      type="submit"
+                      role="switch"
+                      aria-checked={pmAutoPublish}
+                      data-on={pmAutoPublish}
+                      aria-label={pmAutoPublish
+                        ? 'Turn OFF pre-authorized auto-publish (publish will need your confirm)'
+                        : 'Turn ON pre-authorized auto-publish (the loop may publish the release without a fresh tap)'}
+                    >
+                      <span class="toggle-knob" aria-hidden="true"></span>
+                    </button>
+                    <span class="autopublish-copy">
+                      <span class="autopublish-title">
+                        Pre-authorize auto-publish
+                        <span class="autopublish-state mono" data-on={pmAutoPublish}>{pmAutoPublish ? 'ON' : 'OFF'}</span>
+                      </span>
+                      <span class="autopublish-sub">
+                        {pmAutoPublish
+                          ? 'You have pre-consented — the loop may carry the release through the publish gate without a fresh tap. Turn off to require your confirm again.'
+                          : 'Default — the loop halts at the release gate and waits for your one tap. It never auto-publishes silently.'}
+                      </span>
+                    </span>
+                  </label>
+                </form>
+              {/if}
 
               <!-- The live loop's honest state for this project (F-008 — a real read, never a fake done). -->
               {#if loopState}
@@ -3918,6 +4028,87 @@
     font-size: 0.85rem;
     color: var(--color-text-muted);
     line-height: 1.4;
+  }
+
+  /* PMA — pre-authorize-auto-publish opt-in (default OFF — a clearly-labelled operator switch). */
+  .autopublish-opt {
+    display: flex;
+    align-items: flex-start;
+    gap: var(--space-3, 0.75rem);
+    cursor: pointer;
+    padding: var(--space-2, 0.5rem) var(--space-3, 0.75rem);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 0.375rem);
+    background: var(--color-surface-overlay, transparent);
+  }
+  .toggle {
+    flex: 0 0 auto;
+    margin-top: 0.15rem;
+    width: 2.25rem;
+    height: 1.25rem;
+    border-radius: 999px;
+    border: var(--border-width, 1px) solid var(--color-border);
+    background: var(--color-surface-sunken, var(--color-bg));
+    padding: 0;
+    position: relative;
+    cursor: pointer;
+    transition: background-color 120ms ease, border-color 120ms ease;
+  }
+  .toggle[data-on='true'] {
+    background: var(--color-success);
+    border-color: var(--color-success);
+  }
+  .toggle-knob {
+    position: absolute;
+    top: 50%;
+    left: 0.15rem;
+    transform: translateY(-50%);
+    width: 0.9rem;
+    height: 0.9rem;
+    border-radius: 50%;
+    background: var(--color-text-on-accent, #fff);
+    transition: left 120ms ease;
+  }
+  .toggle[data-on='true'] .toggle-knob {
+    left: calc(100% - 1.05rem);
+  }
+  .toggle:focus-visible {
+    outline: 2px solid var(--color-focus, var(--color-accent));
+    outline-offset: 2px;
+  }
+  .autopublish-copy {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1, 0.25rem);
+  }
+  .autopublish-title {
+    font-weight: 600;
+    color: var(--color-text);
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2, 0.5rem);
+  }
+  .autopublish-state {
+    font-size: 0.7rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm, 0.375rem);
+    border: var(--border-width, 1px) solid var(--color-border);
+    color: var(--color-text-muted);
+  }
+  .autopublish-state[data-on='true'] {
+    color: var(--color-success);
+    border-color: var(--color-success);
+  }
+  .autopublish-sub {
+    font-size: 0.85rem;
+    color: var(--color-text-muted);
+    line-height: 1.4;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .toggle,
+    .toggle-knob {
+      transition: none;
+    }
   }
   .lifecycle-live {
     margin-top: var(--space-2, 0.5rem);

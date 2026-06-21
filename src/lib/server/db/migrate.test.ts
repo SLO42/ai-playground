@@ -440,4 +440,67 @@ describe('schemaMigrations — idempotent over fresh + half-applied state (11.4-
 			await db.close().catch(() => {});
 		}
 	});
+
+	// ── PMA — m0058 pm.auto_publish_preauthorized: the F-015 BACKFILL discipline. ──
+	// LIVE-VERIFIED failure that made the backfill necessary: a `DEFINE FIELD ... TYPE bool DEFAULT false`
+	// does NOT backfill EXISTING rows — the column is NONE on any pm row written before the field existed.
+	// Because the type is a NON-OPTIONAL bool, SurrealDB then REJECTS any later UPDATE/MERGE of that row
+	// ("Found NONE for field ... expected a bool"), so every arm/disarm or auto-publish toggle on a
+	// pre-existing PM threw. m0058 therefore backfills BOTH boolean PM flags (auto_publish_preauthorized
+	// AND the m0057 autonomous field, which shipped with the same latent gap) to false where NONE. This
+	// reproduces a pm row carrying the NONE flags (the pre-field shape) and asserts m0058 makes the row
+	// writable again — the exact gap the fresh-DB sweep above cannot see (a fresh DB never has NONE flags).
+	it('m0058 BACKFILLS NONE pm boolean flags so a pre-field pm row is writable again (F-015/F-013)', async () => {
+		const db = await freshDb('mig_pm_flags');
+		try {
+			// Reproduce the pre-field shape: define pm with the bool flags but seed a row with them NONE
+			// (mirrors a pm row written before m0057/m0058 added the columns). The non-optional bool type
+			// is what makes a later write fail until the backfill lands.
+			await db.query('DEFINE TABLE project SCHEMAFULL; DEFINE FIELD slug ON project TYPE string;');
+			await db.query('CREATE project:flagwedge SET slug = "flagwedge";');
+			await db.query(`
+				DEFINE TABLE pm SCHEMAFULL;
+				DEFINE FIELD project ON pm TYPE option<record<project>>;
+				DEFINE FIELD name ON pm TYPE option<string>;
+				DEFINE FIELD authority ON pm TYPE option<string>;
+				DEFINE FIELD autonomous ON pm TYPE option<bool>;
+				DEFINE FIELD auto_publish_preauthorized ON pm TYPE option<bool>;
+			`);
+			// A row with BOTH flags NONE (never set) — the exact pre-field state.
+			await db.query('CREATE pm:flagrow SET project = project:flagwedge, name = "Vesper", authority = "act";');
+			const before = await db.query<[{ autonomous: unknown; auto_publish_preauthorized: unknown }[]]>(
+				'SELECT autonomous, auto_publish_preauthorized FROM pm:flagrow;'
+			);
+			expect(before[0][0].autonomous ?? null).toBeNull();
+			expect(before[0][0].auto_publish_preauthorized ?? null).toBeNull();
+
+			// The full schema applies (m0057 + m0058 redefine the fields as non-optional bool and m0058
+			// backfills the NONE rows in the SAME write so the row re-validates clean).
+			await runMigrations(db, schemaMigrations);
+			expect(await isApplied(db, '0058_pm_auto_publish')).toBe(true);
+
+			const after = await db.query<[{ autonomous: boolean; auto_publish_preauthorized: boolean }[]]>(
+				'SELECT autonomous, auto_publish_preauthorized FROM pm:flagrow;'
+			);
+			expect(after[0][0].autonomous).toBe(false); // backfilled, never NONE
+			expect(after[0][0].auto_publish_preauthorized).toBe(false);
+
+			// The bug this fixes: a write to the (now backfilled) row SUCCEEDS where it previously threw
+			// "Found NONE for field ... expected a bool". This is the actual arm path.
+			await db.query('UPDATE pm:flagrow MERGE { autonomous: true };');
+			const armed = await db.query<[{ autonomous: boolean; auto_publish_preauthorized: boolean }[]]>(
+				'SELECT autonomous, auto_publish_preauthorized FROM pm:flagrow;'
+			);
+			expect(armed[0][0].autonomous).toBe(true);
+			expect(armed[0][0].auto_publish_preauthorized).toBe(false); // untouched flag preserved
+
+			// Re-run is a clean no-op AND idempotent: the backfill's `WHERE … IS NONE` matches nothing
+			// now, so it never clobbers the real `autonomous: true` we just set.
+			expect(await runMigrations(db, schemaMigrations)).toEqual([]);
+			const stable = await db.query<[{ autonomous: boolean }[]]>('SELECT autonomous FROM pm:flagrow;');
+			expect(stable[0][0].autonomous).toBe(true); // a second apply did NOT reset the operator's value
+		} finally {
+			await db.close().catch(() => {});
+		}
+	});
 });

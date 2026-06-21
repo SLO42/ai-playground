@@ -37,6 +37,7 @@ import {
 	updatePmSchedule,
 	updatePmAuthority,
 	setPmAutonomous,
+	setPmAutoPublishPreauthorized,
 	PM_MEMORY_KINDS,
 	PM_AUTHORITIES,
 	type PmAuthority,
@@ -63,7 +64,13 @@ import {
 // PM-LC-2 — the one-click lifecycle tick (PM-LIFECYCLE-SPEC §PM-LC-2).
 import { startProjectLifecycle } from '$lib/server/projects/pm-lifecycle';
 // PMA — the live autonomous loop's honest last-state (read-only surface; the boot seam owns the loop).
-import { activeAutonomousLoop } from '$lib/server/projects/pm-autonomous';
+import {
+	activeAutonomousLoop,
+	DEFAULT_MAX_TICKS_PER_WINDOW
+} from '$lib/server/projects/pm-autonomous';
+// PMA — the REAL D-021 daily spawn cap the live boot wires (the unsupervised-spend ceiling surfaced to
+// the operator on the arm confirm). undefined ⇒ uncapped (honest — never a fabricated number).
+import { bootDailySpawnCap } from '$lib/server/orchestrator/boot';
 import { PmProposalContractError } from '$lib/server/projects/pm-propose';
 import {
 	hirePm,
@@ -205,6 +212,14 @@ export interface ProjectDetailData {
 	 * project yet (or no loop is running — degraded boot). F-008: never a fabricated 'done'.
 	 */
 	autonomousLoop: { state: string; reason: string; ticksUsed: number } | null;
+	/**
+	 * PMA — the active HARD spawn caps that bound unsupervised spend (surfaced on the arm confirm so the
+	 * operator sees the real ceiling before arming). `reTickCap` is the loop's per-project re-tick cap
+	 * (PMA-2 — always enforced). `dailySpawnCap` is the REAL D-021 daily session-claim ceiling the live
+	 * boot wires (null ⇒ uncapped — honest, never a fabricated number; F-008). Static config reads, not
+	 * per-project rows — always present so the confirm never lacks the cap copy.
+	 */
+	spendCaps: { reTickCap: number; dailySpawnCap: number | null };
 	/** TASK 16.4 — open proposals with their panel verdicts + any open brief (PM-SPEC §4). */
 	proposals: ProposalQueueEntry[];
 	/** The PM authority ladder vocabulary (for the operator's authority control). */
@@ -309,6 +324,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pmBootstrapped: false,
 			pm: null,
 			autonomousLoop: null,
+			spendCaps: readSpendCaps(),
 			proposals: [],
 			pmAuthorities: PM_AUTHORITIES,
 			hireQuestions: [],
@@ -448,6 +464,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pmBootstrapped: pmMemory.length > 0,
 			pm: pmRow,
 			autonomousLoop: autonomousLoopStateFor(projectId),
+			spendCaps: readSpendCaps(),
 			proposals,
 			pmAuthorities: PM_AUTHORITIES,
 			// Smart-skip resolved server-side against the live plan macro (PM-SPEC §1).
@@ -487,6 +504,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pmBootstrapped: false,
 			pm: null,
 			autonomousLoop: null,
+			spendCaps: readSpendCaps(),
 			proposals: [],
 			pmAuthorities: PM_AUTHORITIES,
 			hireQuestions: [],
@@ -1139,6 +1157,38 @@ export const actions: Actions = {
 	},
 
 	/**
+	 * PMA — set/revoke the operator's PRE-AUTHORIZE-AUTO-PUBLISH consent. This records that the operator
+	 * has explicitly opted in to let the autonomous loop carry the release through the publish gate without
+	 * a fresh tap — it is a CONSENT record, NOT a new authority: it never grants the agent publish power and
+	 * the consuming release path still owns the actual D-037 publish. DEFAULT false (off) — publish stays
+	 * operator-gated unless the operator opts in here. Never auto-hires (no PM ⇒ 409).
+	 */
+	pmAutoPublish: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { pm: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { pm: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const preauthorized = String(form.get('preauthorized') ?? '').trim() === 'true';
+		try {
+			const updated = await setPmAutoPublishPreauthorized(db, projectId, preauthorized);
+			if (!updated) {
+				return fail(409, { pm: { error: 'No PM hired for this project yet — hire one first.' } });
+			}
+			return {
+				pm: {
+					ok: true as const,
+					action: 'autoPublish',
+					autoPublishPreauthorized: updated.auto_publish_preauthorized
+				}
+			};
+		} catch (err) {
+			return fail(500, { pm: { error: (err as Error).message } });
+		}
+	},
+
+	/**
 	 * TASK 16.4 — run the VALIDATION PANEL over one proposed task (PM-SPEC §4.2).
 	 * Operator-triggered (a manual act — always allowed under D-004). Launches 1–2
 	 * REAL independent validator sessions (inline prompts — WORKFORCE §9 bridge),
@@ -1609,4 +1659,17 @@ function autonomousLoopStateFor(
 	const out = loop.lastOutcome.get(projectId);
 	if (!out) return null;
 	return { state: out.state, reason: out.reason, ticksUsed: out.ticksUsed };
+}
+
+/**
+ * PMA — the active HARD spawn caps that bound unsupervised spend (surfaced on the arm confirm). Static
+ * reads (the loop's PMA-2 re-tick cap constant + the REAL D-021 daily cap the live boot wires) so the
+ * confirm copy always has a concrete ceiling to show. F-008: dailySpawnCap is null when genuinely
+ * uncapped — never a fabricated number; reTickCap is always the enforced constant.
+ */
+function readSpendCaps(): { reTickCap: number; dailySpawnCap: number | null } {
+	return {
+		reTickCap: DEFAULT_MAX_TICKS_PER_WINDOW,
+		dailySpawnCap: bootDailySpawnCap() ?? null
+	};
 }

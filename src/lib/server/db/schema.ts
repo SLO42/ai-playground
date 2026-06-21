@@ -2098,6 +2098,41 @@ const m0057_pm_autonomous: Migration = {
 	`
 };
 
+// m0058 — pm.auto_publish_preauthorized (PMA — the pre-authorize-auto-publish opt-in).
+//
+// The autonomous loop HALTS at the publish gate ('awaiting-release-confirm') and NEVER auto-publishes
+// (D-037 — the real external publish is an operator-only action). This flag is the OPERATOR'S explicit,
+// pre-given consent to let the loop carry the release through the publish gate WITHOUT a fresh tap. It is
+// DEFAULT false (publish always needs your confirm) and lives BEHIND the arming flow as a clearly-labelled
+// opt-in. It is an operator authorization, NOT a new authority for the agent: the loop still has no publish
+// authority itself — this flag only records that the operator already said yes. (The loop's halt-at-
+// 'awaiting-release-confirm' contract is unchanged here; the consuming release path reads this flag.)
+//
+// ADDITIVE, OVERWRITE-only DDL (F-015 idempotent: apply-twice + half-applied re-run are clean over the
+// raw OVERWRITE DDL — the generic schemaMigrations sweep in migrate.test.ts covers both).
+//
+// CRITICAL BACKFILL (F-015 / F-013 — live-verified failure that made this migration necessary): a
+// `DEFINE FIELD ... TYPE bool DEFAULT false` does NOT backfill EXISTING rows — the DEFAULT only applies
+// to rows CREATEd after the field is defined. On a `pm` row written before this field existed, the column
+// is NONE, and because the type is a NON-OPTIONAL `bool`, SurrealDB then REJECTS any later UPDATE/MERGE of
+// that row with "Found NONE for field ... expected a bool" (it re-validates the whole record on write). So
+// every arm/disarm or auto-publish toggle on a pre-existing PM would throw. We therefore BACKFILL both
+// boolean PM flags to false where they are NONE: `auto_publish_preauthorized` (this field) AND `autonomous`
+// (the m0057 field, which shipped with the SAME latent gap — caught here on the live dev DB). The
+// `WHERE … IS NONE` filter makes the backfill idempotent (a re-run matches nothing) and surgical (it never
+// overwrites an operator's real true/false). This is the F-015 rule in force: run db:up against the LIVE
+// dev DB as part of verify — the fresh-DB tests could never see the un-backfilled NONE state.
+const m0058_pm_auto_publish: Migration = {
+	id: '0058_pm_auto_publish',
+	up: `
+		DEFINE FIELD OVERWRITE auto_publish_preauthorized ON pm TYPE bool DEFAULT false;
+		UPDATE pm
+			SET auto_publish_preauthorized = (auto_publish_preauthorized ?? false),
+			    autonomous = (autonomous ?? false)
+			WHERE auto_publish_preauthorized IS NONE OR autonomous IS NONE;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2161,5 +2196,6 @@ export const schemaMigrations: Migration[] = [
 	m0054_file_snapshot,
 	m0055_scene_event,
 	m0056_pm_lifecycle_lock,
-	m0057_pm_autonomous
+	m0057_pm_autonomous,
+	m0058_pm_auto_publish
 ];

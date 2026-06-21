@@ -16,6 +16,8 @@ import {
 	createPm,
 	getPm,
 	updatePmCharter,
+	setPmAutonomous,
+	setPmAutoPublishPreauthorized,
 	PmSecretEchoError,
 	PM_MEMORY_KINDS
 } from './pm-repo';
@@ -404,5 +406,54 @@ describe('pm identity row', () => {
 			// @ts-expect-error — deliberately invalid authority to prove the ASSERT fires.
 			createPm(db, { project: p.id, name: 'X', authority: 'dictate' })
 		).rejects.toThrow();
+	});
+});
+
+// PMA — the autonomous-drive flags (autonomous arm + pre-authorize-auto-publish). Round-trip against the
+// real DB: both default false (a fresh PM is supervised and publish stays operator-gated), the setters flip
+// them and return the live row, and a no-PM project returns null (never auto-hires). F-008: every assertion
+// reads back what the DB persisted; F-013: the boolean reads back hard (never NONE/undefined).
+describe('PMA autonomous flags (arm + pre-authorize-auto-publish)', () => {
+	it('a fresh PM defaults to supervised + publish operator-gated (both flags false)', async () => {
+		const p = await freshProject('pma_defaults');
+		const created = await createPm(db, { project: p.id, name: 'Vesper' });
+		expect(created.autonomous).toBe(false);
+		expect(created.auto_publish_preauthorized).toBe(false);
+		// Read back from the DB (the persistence boundary), not just the create return.
+		const read = await getPm(db, p.id);
+		expect(read?.autonomous).toBe(false);
+		expect(read?.auto_publish_preauthorized).toBe(false);
+	});
+
+	it('setPmAutonomous arms/disarms; the live row reflects it, untouched flags preserved', async () => {
+		const p = await freshProject('pma_arm');
+		await createPm(db, { project: p.id, name: 'Vesper' });
+		const armed = await setPmAutonomous(db, p.id, true);
+		expect(armed?.autonomous).toBe(true);
+		// Arming must NOT touch the publish pre-auth (MERGE preserves untouched columns).
+		expect(armed?.auto_publish_preauthorized).toBe(false);
+		const disarmed = await setPmAutonomous(db, p.id, false);
+		expect(disarmed?.autonomous).toBe(false);
+		expect((await getPm(db, p.id))?.autonomous).toBe(false);
+	});
+
+	it('setPmAutoPublishPreauthorized opts in/out; arm flag preserved across the write', async () => {
+		const p = await freshProject('pma_autopublish');
+		await createPm(db, { project: p.id, name: 'Vesper' });
+		await setPmAutonomous(db, p.id, true); // arm first
+		const optedIn = await setPmAutoPublishPreauthorized(db, p.id, true);
+		expect(optedIn?.auto_publish_preauthorized).toBe(true);
+		// Opting in to auto-publish must NOT disarm the loop (independent flags).
+		expect(optedIn?.autonomous).toBe(true);
+		const optedOut = await setPmAutoPublishPreauthorized(db, p.id, false);
+		expect(optedOut?.auto_publish_preauthorized).toBe(false);
+		expect((await getPm(db, p.id))?.auto_publish_preauthorized).toBe(false);
+	});
+
+	it('both setters return null when no PM is hired (never auto-hires)', async () => {
+		const p = await freshProject('pma_no_pm');
+		expect(await setPmAutonomous(db, p.id, true)).toBeNull();
+		expect(await setPmAutoPublishPreauthorized(db, p.id, true)).toBeNull();
+		expect(await getPm(db, p.id)).toBeNull(); // nothing was created
 	});
 });

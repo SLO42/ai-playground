@@ -315,7 +315,9 @@ describe('AutonomousPmLoop — DoD reached halts at the operator publish gate', 
 // (that is release-gate.test.ts) — we inject a stub gate verdict and assert the LOOP's decision wiring.
 
 describe('AutonomousPmLoop — consented auto-publish runs the objective gate, never publishes unsafely', () => {
-	/** A loop at DoD-reached (zero gaps), with an injected release-gate verdict. */
+	/** A loop at DoD-reached (zero gaps), with an injected release-gate verdict. The release tick proposes
+	 *  exactly ONE release-prep task (version bump) — so PHASE 1 holds the publish; PHASE 2 runs the gate
+	 *  only after that task DRAINS. */
 	function gateLoop(gateResult: ReleaseGateResult) {
 		return new AutonomousPmLoop({
 			db,
@@ -325,6 +327,23 @@ describe('AutonomousPmLoop — consented auto-publish runs the objective gate, n
 			releaseOpts: { generate: stub({ proposals: [candidate({ title: 'Bump version to 1.0.0' })] }) },
 			releaseGate: async () => gateResult
 		});
+	}
+
+	/** Mark every promoted release-prep task DONE (simulating the version-bump/pack/changelog tasks
+	 *  completing) so the next evaluate sees release prep DRAINED and reaches PHASE 2 (the publish gate). */
+	async function drainReleaseTasks() {
+		await db.query(`UPDATE task SET status = 'done' WHERE project = $p AND status IN ['ready','in_progress','review'];`, {
+			p: new (await import('surrealdb')).StringRecordId(projectId)
+		});
+	}
+
+	/** Drive the two-phase consented flow to its terminal: PHASE 1 (propose+hold → running), drain the
+	 *  release prep, then PHASE 2 (the gate). Returns the PHASE-1 and PHASE-2 outcomes. */
+	async function driveToPublish(lp: AutonomousPmLoop) {
+		const phase1 = await lp.evaluate(projectId);
+		await drainReleaseTasks();
+		const phase2 = await lp.evaluate(projectId);
+		return { phase1, phase2 };
 	}
 	const greenGate: ReleaseGateResult = {
 		published: true,
@@ -341,14 +360,40 @@ describe('AutonomousPmLoop — consented auto-publish runs the objective gate, n
 		publish: null
 	};
 
-	it('consent recorded + GREEN gate → published (the consented 0→v1 drive completes)', async () => {
+	it('PHASE 1: consent + release prep proposed → HOLDS the publish (running), gate NOT run this cycle', async () => {
+		await hire('act');
+		await setPmAutoPublishPreauthorized(db, projectId, true);
+		let gateCalls = 0;
+		const lp = new AutonomousPmLoop({
+			db,
+			bus: new EventBus(),
+			deps: deps([approveRun(), approveRun()]),
+			lifecycleOpts: { generate: stub({ proposals: [] }) },
+			releaseOpts: { generate: stub({ proposals: [candidate({ title: 'Bump version to 1.0.0' })] }) },
+			releaseGate: async () => {
+				gateCalls++;
+				return greenGate;
+			}
+		});
+		const out = await lp.evaluate(projectId);
+		// Release prep was JUST proposed (version not bumped yet) → HOLD the publish, do NOT run the gate.
+		expect(out.state).toBe('running');
+		expect(out.reason).toMatch(/HOLDING the publish/i);
+		expect(gateCalls).toBe(0); // the gate (and any publish) is NOT run on the cycle that proposes prep.
+		// The version-bump release task is REALLY promoted to ready (developing, not yet done).
+		const ready = await listTasksByProject(db, projectId, 'ready');
+		expect(ready.some((t) => /1\.0\.0/.test(t.title))).toBe(true);
+	});
+
+	it('PHASE 2: consent + GREEN gate AFTER release prep drains → published (the two-phase 0→v1 drive completes)', async () => {
 		await hire('act');
 		expect((await setPmAutoPublishPreauthorized(db, projectId, true))?.auto_publish_preauthorized).toBe(true);
 		const lp = gateLoop(greenGate);
-		const out = await lp.evaluate(projectId);
-		expect(out.state).toBe('published');
-		expect(out.reason).toMatch(/GREEN/);
-		expect(out.releaseGate?.published).toBe(true);
+		const { phase1, phase2 } = await driveToPublish(lp);
+		expect(phase1.state).toBe('running'); // PHASE 1 held the publish.
+		expect(phase2.state).toBe('published'); // PHASE 2 published only after the prep drained.
+		expect(phase2.reason).toMatch(/GREEN/);
+		expect(phase2.releaseGate?.published).toBe(true);
 	});
 
 	// ── AUTO-DISARM at v1 (operator directive: a ONE-SHOT 0→v1 drive that AUTO-DISARMS on the real ──────
@@ -361,7 +406,7 @@ describe('AutonomousPmLoop — consented auto-publish runs the objective gate, n
 		await setPmAutoPublishPreauthorized(db, projectId, true);
 		expect((await getPm(db, projectId))?.autonomous).toBe(true); // armed before the drive completes.
 		const lp = gateLoop(greenGate);
-		const out = await lp.evaluate(projectId);
+		const { phase2: out } = await driveToPublish(lp);
 		expect(out.state).toBe('published');
 		expect(out.reason).toMatch(/v1 shipped/i);
 		expect(out.reason).toMatch(/autonomous mode complete/i);
@@ -385,8 +430,9 @@ describe('AutonomousPmLoop — consented auto-publish runs the objective gate, n
 				return greenGate;
 			}
 		});
-		expect((await lp.evaluate(projectId)).state).toBe('published');
-		expect(gateCalls).toBe(1);
+		const { phase2 } = await driveToPublish(lp);
+		expect(phase2.state).toBe('published');
+		expect(gateCalls).toBe(1); // the gate ran EXACTLY once (PHASE 2), never on PHASE 1.
 		const reTicksAfterPublish = lp.reTickCount;
 		// A later terminal event MUST NOT re-tick or re-run the gate: the live row is disarmed (Gate 1 → idle).
 		const second = await lp.evaluate(projectId);
@@ -404,7 +450,8 @@ describe('AutonomousPmLoop — consented auto-publish runs the objective gate, n
 		await setPmAutonomous(db, projectId, false);
 		await setPmAutonomous(db, projectId, true); // re-arm so the drive can run.
 		const lp = gateLoop(greenGate);
-		expect((await lp.evaluate(projectId)).state).toBe('published');
+		const { phase2 } = await driveToPublish(lp);
+		expect(phase2.state).toBe('published');
 		expect((await getPm(db, projectId))?.autonomous).toBe(false);
 	});
 
@@ -423,19 +470,20 @@ describe('AutonomousPmLoop — consented auto-publish runs the objective gate, n
 				return greenGate;
 			}
 		});
-		expect((await lp.evaluate(projectId)).state).toBe('published'); // v1 shipped → disarmed.
+		expect((await driveToPublish(lp)).phase2.state).toBe('published'); // v1 shipped → disarmed.
 		expect(gateCalls).toBe(1);
-		// Clear the v1 release task the first drive promoted (the operator would ship/close it before the next
-		// version) so the fresh drive reaches DoD→gate again rather than waiting on stale in-flight work.
+		// Clear the v1 release task the first drive promoted/drained (the operator would ship/close it before
+		// the next version) so the fresh drive reaches DoD→gate again rather than waiting on stale work.
 		await db.query(`DELETE task WHERE project = $p;`, {
 			p: new (await import('surrealdb')).StringRecordId(projectId)
 		});
 		// Operator explicitly RE-ARMS for the next version — a fresh, explicit action (never the loop itself).
+		// Gate 1's re-arm path clears the release-prep latch, so the fresh drive re-proposes prep (PHASE 1)
+		// then publishes after it drains (PHASE 2) — proving a post-v1 version is operator-initiated.
 		await setPmAutonomous(db, projectId, true);
-		const reArmed = await lp.evaluate(projectId);
-		// The re-arm drove again (the disarm cleared the stale 'published' latch): a fresh published drive that
-		// re-ran the gate — proving a post-v1 version is operator-initiated, never the auto-loop continuing.
-		expect(reArmed.state).toBe('published');
+		const { phase1: reArmedP1, phase2: reArmedP2 } = await driveToPublish(lp);
+		expect(reArmedP1.state).toBe('running'); // fresh PHASE 1 re-proposed prep (not skipped to a stale gate).
+		expect(reArmedP2.state).toBe('published');
 		expect(gateCalls).toBe(2); // the gate ran a SECOND time — only because the operator re-armed.
 	});
 
@@ -443,7 +491,7 @@ describe('AutonomousPmLoop — consented auto-publish runs the objective gate, n
 		await hire('act');
 		await setPmAutoPublishPreauthorized(db, projectId, true);
 		const lp = gateLoop(redGate);
-		const out = await lp.evaluate(projectId);
+		const { phase2: out } = await driveToPublish(lp);
 		expect(out.state).toBe('awaiting-release-confirm');
 		expect(out.reason).toMatch(/RED at "build"/);
 		expect(out.reason).toMatch(/no publish/i);
@@ -484,7 +532,7 @@ describe('AutonomousPmLoop — consented auto-publish runs the objective gate, n
 				throw new Error('gate env unreachable');
 			}
 		});
-		const out = await lp.evaluate(projectId);
+		const { phase2: out } = await driveToPublish(lp);
 		expect(out.state).toBe('awaiting-release-confirm');
 		expect(out.reason).toMatch(/gate errored/i);
 		expect(out.reason).toMatch(/gate env unreachable/);
@@ -505,12 +553,53 @@ describe('AutonomousPmLoop — consented auto-publish runs the objective gate, n
 				return greenGate;
 			}
 		});
-		expect((await lp.evaluate(projectId)).state).toBe('published');
+		expect((await driveToPublish(lp)).phase2.state).toBe('published');
 		expect(gateCalls).toBe(1);
 		// A later terminal event MUST NOT re-run the gate: post-v1 the PM is auto-disarmed → Gate 1 → idle.
 		const second = await lp.evaluate(projectId);
 		expect(second.state).toBe('idle'); // disarmed at v1 — not re-published.
 		expect(gateCalls).toBe(1); // NOT 2 — no second publish.
+	});
+
+	// ── PHASE-SEPARATION CONVERGENCE (the red-team livelock question) ───────────────────────────────────
+	// The release tick promotes the version-bump task OUT of 'proposed' (→ ready → done), so the release-tick
+	// dedup (which only absorbs still-'proposed' rows) would NOT collapse a second release tick to zero. The
+	// #releasePrepProposed latch is what guarantees convergence: PHASE 1 proposes prep ONCE, then PHASE 2
+	// SKIPS the release tick and goes straight to the gate. This test proves prep is proposed exactly once.
+
+	it('CONVERGENCE: release prep is proposed EXACTLY ONCE across the two phases (no re-propose livelock)', async () => {
+		await hire('act');
+		await setPmAutoPublishPreauthorized(db, projectId, true);
+		let releaseTicks = 0;
+		let gateCalls = 0;
+		const lp = new AutonomousPmLoop({
+			db,
+			bus: new EventBus(),
+			deps: deps([approveRun(), approveRun()]),
+			lifecycleOpts: { generate: stub({ proposals: [] }) },
+			releaseOpts: {
+				generate: async () => {
+					releaseTicks++;
+					return { proposals: [candidate({ title: 'Bump version to 1.0.0' })] };
+				}
+			},
+			releaseGate: async () => {
+				gateCalls++;
+				return greenGate;
+			}
+		});
+		const phase1 = await lp.evaluate(projectId);
+		expect(phase1.state).toBe('running'); // PHASE 1 proposed prep, held the publish.
+		expect(releaseTicks).toBe(1);
+		expect(gateCalls).toBe(0);
+		await drainReleaseTasks();
+		const phase2 = await lp.evaluate(projectId);
+		expect(phase2.state).toBe('published'); // PHASE 2 skipped the release tick, ran the gate, published.
+		expect(releaseTicks).toBe(1); // NOT 2 — the release tick was NOT re-run on PHASE 2 (no livelock).
+		expect(gateCalls).toBe(1); // the gate ran exactly once.
+		// Exactly ONE '1.0.0' release task exists (no duplicate re-proposed prep).
+		const all = await listTasksByProject(db, projectId);
+		expect(all.filter((t) => /1\.0\.0/.test(t.title)).length).toBe(1);
 	});
 });
 

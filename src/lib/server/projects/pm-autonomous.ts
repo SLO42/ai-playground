@@ -193,6 +193,17 @@ export class AutonomousPmLoop {
 	 * it (NOT a hard latch) so the rolling window can free it — Gate 3 owns that decision.
 	 */
 	readonly #stoppedProjects = new Map<string, AutonomousLoopState>();
+	/**
+	 * PHASE SEPARATION (EXP-1 red-team hole #2) — projects whose release-prep tasks (version bump → 1.0.0,
+	 * changelog, pack) have ALREADY been proposed this consented drive. The consented auto-publish is a TWO-
+	 * PHASE flow: cycle 1 PROPOSES release prep and HOLDS (never publishes a version-stale artifact), then
+	 * once those tasks DRAIN a later cycle runs the objective gate + publish. This flag is what makes the
+	 * second cycle SKIP re-proposing (release-tick dedup only absorbs still-'proposed' rows, so a promoted-
+	 * then-done release task would otherwise be re-proposed every cycle → a livelock) and go straight to the
+	 * gate — guaranteeing release prep is proposed ONCE, drains, then publishes. Cleared on a disarm/re-arm
+	 * (Gate 1) and on a published/blocked terminal so a fresh operator-initiated drive re-proposes cleanly.
+	 */
+	readonly #releasePrepProposed = new Set<string>();
 
 	/** Re-ticks this loop has driven (diagnostics / the verify count). */
 	reTickCount = 0;
@@ -300,10 +311,12 @@ export class AutonomousPmLoop {
 		const pm = await getPm(this.#db, projectId).catch(() => null);
 		if (!pm) {
 			this.#stoppedProjects.delete(projectId);
+			this.#releasePrepProposed.delete(projectId);
 			return this.#record(projectId, 'idle', 'no PM hired — not autonomous', null);
 		}
 		if (!pm.autonomous) {
 			this.#stoppedProjects.delete(projectId);
+			this.#releasePrepProposed.delete(projectId);
 			return this.#record(projectId, 'idle', 'PM is not armed for autonomous drive', null);
 		}
 
@@ -449,23 +462,49 @@ export class AutonomousPmLoop {
 	}
 
 	/**
-	 * DoD REACHED. Run ONE release tick — the PM proposes the release tasks (version bump → pack/validate
-	 * → changelog) through the SAME startProjectLifecycle path (it promotes only DEVELOPMENT tasks; it has
-	 * NO publish authority of its own). Then make the publish decision SAFELY:
+	 * DoD REACHED. The consented auto-publish is a TWO-PHASE flow (EXP-1 red-team hole #2 — never publish a
+	 * version-stale artifact):
 	 *
-	 *   • NO recorded consent (auto_publish_preauthorized=false/absent) → HALT at 'awaiting-release-confirm'
-	 *     exactly as before — the real external publish is an operator-gated action (D-037). UNCHANGED.
-	 *   • Consent recorded → run the OBJECTIVE release-readiness gate (build + pack + validate). ONLY if the
-	 *     gate is fully GREEN does it proceed through the EXISTING D-037 publish path and stop at 'published'.
-	 *     On ANY red (no target/token, build red, pack/validate red, publish did not complete) it HALTS at
-	 *     'awaiting-release-confirm' with the exact failing checks surfaced (F-008) — it NEVER publishes a
-	 *     broken/unvalidated artifact and NEVER publishes without a real green machine gate.
+	 *   PHASE 1 (PROPOSE + HOLD): run ONE release tick — the PM proposes the release tasks (version bump →
+	 *     1.0.0, pack/validate, changelog) through the SAME startProjectLifecycle path (it promotes only
+	 *     DEVELOPMENT tasks; it has NO publish authority of its own). When that tick GENERATES/ADVANCES any
+	 *     release prep, those tasks have NOT RUN YET — if we built+packed+published in this SAME cycle we
+	 *     would publish the OLD version (the version-bump task is still only 'proposed'/'ready'). So with
+	 *     consent recorded we MARK release-prep-proposed and return a NON-LATCHING 'running' so those tasks
+	 *     DEVELOP. The publish is HELD until they drain.
 	 *
-	 * The release tick itself counts against the PMA-2 cap (it is a real spend). If the cap is already
-	 * hit we stop at dod-reached WITHOUT the release tick (honest — the operator triggers release). The
-	 * gate's own build/publish spend is bounded by the build subprocess + the single publish call (no loop).
+	 *   PHASE 2 (PUBLISH): a LATER terminal event re-enters here once release prep has DRAINED (Gate 2 in
+	 *     #decide already guarantees nothing is in flight to reach #reachDod, and #releasePrepProposed proves
+	 *     prep was already proposed this drive). We then SKIP re-proposing (the release-tick dedup only
+	 *     absorbs still-'proposed' rows, so a promoted-then-done release task would otherwise be re-proposed
+	 *     every cycle → a LIVELOCK) and run the OBJECTIVE release-readiness gate (build + pack + validate)
+	 *     against the COMPLETED artifact (correct version). ONLY a fully GREEN gate proceeds through the
+	 *     EXISTING D-037 publish path → 'published'. ANY red HALTS at 'awaiting-release-confirm' with the
+	 *     failing checks surfaced (F-008).
+	 *
+	 *   • NO recorded consent (auto_publish_preauthorized=false/absent) → propose the release tasks then HALT
+	 *     at 'awaiting-release-confirm' (the latch makes this terminal) — the real external publish is an
+	 *     operator-gated action (D-037). UNCHANGED.
+	 *
+	 * Each release tick + the publish gate count against the PMA-2 cap (real spend). The two-phase flow runs
+	 * the release tick AT MOST once per drive (gated by #releasePrepProposed), so it converges — it cannot
+	 * re-propose forever. If the cap is hit before a phase, we stop honestly at dod-reached.
 	 */
 	async #reachDod(projectId: string, dodRes: StartLifecycleResult): Promise<AutonomousTickOutcome> {
+		// CONSENT — re-read the LIVE pm row (F-008) for the operator's recorded auto-publish pre-authorization.
+		// A read failure or a missing/false flag keeps publish operator-gated (fail safe toward NO publish).
+		const pm = await getPm(this.#db, projectId).catch(() => null);
+		const consent = pm?.auto_publish_preauthorized === true;
+
+		// PHASE 2 — consent recorded AND release prep was ALREADY proposed this drive (and has now DRAINED:
+		// Gate 2 in #decide guarantees nothing is in flight to reach here). Do NOT re-run the release tick
+		// (that would re-propose a promoted-then-done task every cycle → livelock). Run the objective gate +
+		// publish directly against the COMPLETED, correct-version artifact. This is the only cycle that publishes.
+		if (consent && this.#releasePrepProposed.has(projectId)) {
+			return await this.#runPublishGate(projectId, dodRes, consent);
+		}
+
+		// PHASE 1 — propose the release tasks (and, without consent, HALT at the operator gate as before).
 		const ticksUsed = this.#prunedTickCount(projectId);
 		if (ticksUsed >= this.#maxTicks) {
 			return this.#record(
@@ -493,11 +532,6 @@ export class AutonomousPmLoop {
 		// The release tick PROPOSED the release tasks (version/pack/changelog) as development work.
 		const proposed = rel.generated;
 
-		// CONSENT — re-read the LIVE pm row (F-008) for the operator's recorded auto-publish pre-authorization.
-		// A read failure or a missing/false flag keeps publish operator-gated (fail safe toward NO publish).
-		const pm = await getPm(this.#db, projectId).catch(() => null);
-		const consent = pm?.auto_publish_preauthorized === true;
-
 		if (!consent) {
 			// UNCHANGED behavior: no recorded consent → HALT at the operator publish gate (D-037).
 			return this.#record(
@@ -508,9 +542,40 @@ export class AutonomousPmLoop {
 			);
 		}
 
-		// CONSENT RECORDED → run the OBJECTIVE release-readiness gate (real exit codes — build + pack +
-		// validate), then the EXISTING D-037 publish ONLY if green. A gate fault (an unexpected throw) is a
-		// hard, honest HALT — never an auto-publish on an indeterminate gate.
+		// CONSENT RECORDED — did this release tick PROPOSE/ADVANCE any release prep? If so, those tasks have
+		// NOT RUN YET (version still stale). HOLD the publish (do NOT run the gate this cycle), mark prep as
+		// proposed, and return a NON-LATCHING 'running' so the proposed tasks develop. A later terminal event
+		// (once they drain) re-enters #reachDod, hits PHASE 2 above, and publishes the correct-version artifact.
+		const releasePrepAdvanced = rel.generated > 0 || rel.promoted > 0 || rel.leftForOperator > 0;
+		if (releasePrepAdvanced) {
+			this.#releasePrepProposed.add(projectId);
+			// Re-read the LIVE rows (F-008) for an honest in-flight count in the surfaced reason.
+			const counts = await this.#taskCounts(projectId);
+			return this.#record(
+				projectId,
+				'running',
+				`the plan DoD is satisfied and auto-publish is pre-authorized — proposed ${proposed} release task(s) (version bump → 1.0.0 / package / changelog) this cycle (${counts.inFlight} now in flight). HOLDING the publish until release prep DRAINS so the build/pack/publish reflects the COMPLETED release (correct version), never a stale one — the objective gate runs on a later cycle once prep is done.`,
+				rel
+			);
+		}
+
+		// CONSENT RECORDED + the release tick proposed NOTHING (no release prep needed — e.g. the project was
+		// already at its release version, or the release generator yielded no proposals) AND Gate 2 already
+		// proved nothing is in flight → there is no stale artifact to wait on. Publish directly.
+		return await this.#runPublishGate(projectId, rel, consent);
+	}
+
+	/**
+	 * PHASE 2 — run the OBJECTIVE release-readiness gate (real exit codes — build + pack + validate) against
+	 * the COMPLETED, drained release artifact, then the EXISTING D-037 publish ONLY if green. A gate fault
+	 * (an unexpected throw) is a hard, honest HALT — never an auto-publish on an indeterminate gate. `relRes`
+	 * is the lifecycle result carried into the outcome for the surface (the PHASE-1 or PHASE-2 tick).
+	 */
+	async #runPublishGate(
+		projectId: string,
+		rel: StartLifecycleResult,
+		consent: boolean
+	): Promise<AutonomousTickOutcome> {
 		let gate: ReleaseGateResult;
 		try {
 			gate = await this.#releaseGate({ db: this.#db, env: this.#env, projectId, consent });
@@ -570,6 +635,9 @@ export class AutonomousPmLoop {
 			// if no intervening evaluate observed the disarmed row. If the disarm FAILED (row gone / write
 			// fault) we KEEP the latch as the in-memory backstop so this loop instance still never re-spins.
 			if (disarmedOk) this.#stoppedProjects.delete(projectId);
+			// The drive is complete — clear the release-prep latch so a fresh operator-initiated re-arm (a new
+			// version) re-proposes release prep from scratch rather than skipping straight to a stale gate.
+			this.#releasePrepProposed.delete(projectId);
 			return outcome;
 		}
 

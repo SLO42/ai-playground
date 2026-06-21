@@ -257,7 +257,7 @@
       case 'cap-reached': return 'Stopped — re-tick cap reached';
       case 'dod-reached': return 'Stopped — definition of done reached';
       case 'awaiting-release-confirm': return 'Awaiting your release confirmation';
-      case 'published': return 'Published — released to v1 (auto-publish complete)';
+      case 'published': return 'v1 shipped — autonomous mode complete (further versions on-demand)';
       default: return 'Idle';
     }
   });

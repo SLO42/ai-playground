@@ -48,7 +48,7 @@ import type { BusEvent, EventBus, Unsubscribe } from '../events/bus';
 import type { DbChange } from '../events/db-source';
 import { assertRecordId } from '../db/validate';
 import { StringRecordId } from 'surrealdb';
-import { getPm } from './pm-repo';
+import { getPm, setPmAutonomous } from './pm-repo';
 import {
 	startProjectLifecycle,
 	type LifecycleDeps,
@@ -67,7 +67,10 @@ import type { EnvLike } from '../adapters/secrets';
  *   • awaiting-release-confirm — DoD met, release tasks proposed; HALTED at the operator publish gate.
  *   • published             — DoD met, the operator's auto-publish consent was recorded AND the objective
  *                             release-readiness gate (build + pack + validate) passed → the EXISTING D-037
- *                             publish path ran and completed. The 0→v1 drive is DONE; the loop stops here.
+ *                             publish path ran and completed. v1 SHIPPED — the one-shot 0→v1 drive is DONE:
+ *                             the loop AUTO-DISARMS the PM (autonomous=false) so it never re-ticks past v1,
+ *                             and the state reads 'v1 shipped — autonomous mode complete; further versions
+ *                             are on-demand'. Re-arming for v1.1 is a fresh, explicit operator action.
  *   • blocked               — a hard blocker (needsHire / no forward progress with a blocker standing).
  *   • cap-reached           — the hard re-tick cap (PMA-2) was hit; unsupervised spend is bounded.
  *   • idle                  — nothing to do this event (disarmed / no PM / batch still in flight). Not a stop.
@@ -523,13 +526,51 @@ export class AutonomousPmLoop {
 
 		if (gate.published) {
 			// GREEN gate → the EXISTING D-037 publish ran + completed. The consented 0→v1 drive is DONE.
-			return this.#record(
+			//
+			// AUTO-DISARM (operator directive: autonomous mode is a ONE-SHOT 0→v1 drive, NOT a forever-daemon).
+			// The drive is over the moment v1 actually SHIPS — so on the REAL publish-success signal
+			// (gate.published === true, a machine-verified exit code from the release-readiness gate — never a
+			// guess) we DISARM the PM (autonomous=false) so the loop cannot keep re-ticking past v1. This reuses
+			// the EXISTING setPmAutonomous write path (a MERGE — IDEMPOTENT: re-running it is a no-op when the
+			// row is already disarmed, so an interrupted-and-re-run drive cannot double-anything). A disarm
+			// failure is surfaced honestly (it does NOT fabricate a clean terminal state, F-008) but the publish
+			// itself already completed, so we still report 'published' with the honest disarm caveat.
+			//
+			// Why disarm is SAFE here even though the state latches anyway: the #stoppedProjects latch keeps THIS
+			// loop instance from re-spending, but a process restart (or a fresh loop) would re-arm off the live
+			// pm row — DISARMING the row is what makes "stays stopped past v1" durable across restarts. Post-v1,
+			// a new version is started by an EXPLICIT operator re-arm / PM proposal, never by the auto-loop
+			// continuing (the re-arm flips autonomous=true again → a fresh drive, Gate 1 clears the latch).
+			let disarmNote = '';
+			let disarmedOk = false;
+			try {
+				const disarmed = await setPmAutonomous(this.#db, projectId, false);
+				if (disarmed) {
+					disarmedOk = true;
+				} else {
+					// The pm row vanished between the consent read and now — the publish stands; note it honestly.
+					disarmNote = ' (note: could not auto-disarm — the PM row was not found; disarm it manually)';
+				}
+			} catch (err) {
+				// A disarm write fault must NOT be reported as a clean v1 (F-008). The publish DID complete, so we
+				// keep 'published', but we name the failed disarm so the operator can disarm by hand.
+				disarmNote = ` (note: auto-disarm failed — ${(err as Error).message}; disarm the PM manually so the loop does not re-tick)`;
+			}
+			const outcome = this.#record(
 				projectId,
 				'published',
-				`the plan DoD is satisfied and the release-readiness gate is GREEN — ${gate.summary}. The consented auto-publish completed (D-037 path, real publish).`,
+				`v1 shipped — autonomous mode complete; further versions are on-demand. The plan DoD was satisfied and the release-readiness gate was GREEN — ${gate.summary}. The consented auto-publish completed (D-037 path, real publish) and the PM was auto-disarmed (one-shot 0→v1 drive)${disarmNote}.`,
 				rel,
 				gate
 			);
+			// The DURABLE stop is now the live pm row (autonomous=false). When the disarm landed, drop the
+			// in-memory 'published' latch so the row IS the single source of truth: a later terminal event with
+			// the row still disarmed hits Gate 1 → idle (no re-spend), and an EXPLICIT operator re-arm
+			// (autonomous=true) starts a FRESH drive WITHOUT a stale latch masking it as still-published — even
+			// if no intervening evaluate observed the disarmed row. If the disarm FAILED (row gone / write
+			// fault) we KEEP the latch as the in-memory backstop so this loop instance still never re-spins.
+			if (disarmedOk) this.#stoppedProjects.delete(projectId);
+			return outcome;
 		}
 
 		// RED gate → do NOT publish; HALT at the operator publish gate with the EXACT failing check surfaced.

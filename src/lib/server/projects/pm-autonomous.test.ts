@@ -351,6 +351,94 @@ describe('AutonomousPmLoop — consented auto-publish runs the objective gate, n
 		expect(out.releaseGate?.published).toBe(true);
 	});
 
+	// ── AUTO-DISARM at v1 (operator directive: a ONE-SHOT 0→v1 drive that AUTO-DISARMS on the real ──────
+	// publish-success signal, never a forever-daemon). On gate.published the loop sets pm.autonomous=false
+	// and surfaces the honest 'v1 shipped — autonomous mode complete' terminal state. It does NOT re-tick
+	// after disarm; only an EXPLICIT operator re-arm starts a fresh drive.
+
+	it('GREEN gate → AUTO-DISARMS the PM (autonomous=false) and reports "v1 shipped"', async () => {
+		await hire('act');
+		await setPmAutoPublishPreauthorized(db, projectId, true);
+		expect((await getPm(db, projectId))?.autonomous).toBe(true); // armed before the drive completes.
+		const lp = gateLoop(greenGate);
+		const out = await lp.evaluate(projectId);
+		expect(out.state).toBe('published');
+		expect(out.reason).toMatch(/v1 shipped/i);
+		expect(out.reason).toMatch(/autonomous mode complete/i);
+		expect(out.reason).toMatch(/auto-disarmed/i);
+		// The disarm is driven by the REAL publish-success signal — the LIVE pm row is now disarmed (F-008).
+		expect((await getPm(db, projectId))?.autonomous).toBe(false);
+	});
+
+	it('after the v1 disarm the loop does NOT re-tick (a later terminal event is idle, gate NOT re-run)', async () => {
+		await hire('act');
+		await setPmAutoPublishPreauthorized(db, projectId, true);
+		let gateCalls = 0;
+		const lp = new AutonomousPmLoop({
+			db,
+			bus: new EventBus(),
+			deps: deps([approveRun(), approveRun()]),
+			lifecycleOpts: { generate: stub({ proposals: [] }) },
+			releaseOpts: { generate: stub({ proposals: [candidate({ title: 'Bump version to 1.0.0' })] }) },
+			releaseGate: async () => {
+				gateCalls++;
+				return greenGate;
+			}
+		});
+		expect((await lp.evaluate(projectId)).state).toBe('published');
+		expect(gateCalls).toBe(1);
+		const reTicksAfterPublish = lp.reTickCount;
+		// A later terminal event MUST NOT re-tick or re-run the gate: the live row is disarmed (Gate 1 → idle).
+		const second = await lp.evaluate(projectId);
+		expect(second.state).toBe('idle');
+		expect(second.reason).toMatch(/not armed/i);
+		expect(gateCalls).toBe(1); // NOT 2 — no second publish.
+		expect(lp.reTickCount).toBe(reTicksAfterPublish); // no extra re-tick.
+	});
+
+	it('the v1 disarm is IDEMPOTENT — a re-run of the published drive lands the same disarmed state (no double-anything)', async () => {
+		await hire('act');
+		await setPmAutoPublishPreauthorized(db, projectId, true);
+		// Disarm the row up-front (simulating a prior partial run that already disarmed) — the GREEN drive must
+		// still land cleanly on 'published' and leave the row disarmed (a MERGE to false over false is a no-op).
+		await setPmAutonomous(db, projectId, false);
+		await setPmAutonomous(db, projectId, true); // re-arm so the drive can run.
+		const lp = gateLoop(greenGate);
+		expect((await lp.evaluate(projectId)).state).toBe('published');
+		expect((await getPm(db, projectId))?.autonomous).toBe(false);
+	});
+
+	it('an EXPLICIT operator re-arm after v1 starts a FRESH drive (a new version is operator-initiated)', async () => {
+		await hire('act');
+		await setPmAutoPublishPreauthorized(db, projectId, true);
+		let gateCalls = 0;
+		const lp = new AutonomousPmLoop({
+			db,
+			bus: new EventBus(),
+			deps: deps([approveRun(), approveRun(), approveRun(), approveRun()]),
+			lifecycleOpts: { generate: stub({ proposals: [] }) },
+			releaseOpts: { generate: stub({ proposals: [candidate({ title: 'Bump version to 1.0.0' })] }) },
+			releaseGate: async () => {
+				gateCalls++;
+				return greenGate;
+			}
+		});
+		expect((await lp.evaluate(projectId)).state).toBe('published'); // v1 shipped → disarmed.
+		expect(gateCalls).toBe(1);
+		// Clear the v1 release task the first drive promoted (the operator would ship/close it before the next
+		// version) so the fresh drive reaches DoD→gate again rather than waiting on stale in-flight work.
+		await db.query(`DELETE task WHERE project = $p;`, {
+			p: new (await import('surrealdb')).StringRecordId(projectId)
+		});
+		// Operator explicitly RE-ARMS for the next version — a fresh, explicit action (never the loop itself).
+		await setPmAutonomous(db, projectId, true);
+		const reArmed = await lp.evaluate(projectId);
+		// The re-arm drove again (the disarm cleared the stale 'published' latch): a fresh published drive that
+		// re-ran the gate — proving a post-v1 version is operator-initiated, never the auto-loop continuing.
+		expect(reArmed.state).toBe('published');
+		expect(gateCalls).toBe(2); // the gate ran a SECOND time — only because the operator re-armed.
+	});
+
 	it('consent recorded + RED gate (build fails) → NO publish, halts at awaiting-release-confirm honestly', async () => {
 		await hire('act');
 		await setPmAutoPublishPreauthorized(db, projectId, true);
@@ -402,7 +490,7 @@ describe('AutonomousPmLoop — consented auto-publish runs the objective gate, n
 		expect(out.reason).toMatch(/gate env unreachable/);
 	});
 
-	it('published LATCHES: a second terminal event does NOT re-run the gate (no double publish)', async () => {
+	it('published does NOT re-run the gate (no double publish) — the v1 auto-disarm carries the no-spin guarantee', async () => {
 		await hire('act');
 		await setPmAutoPublishPreauthorized(db, projectId, true);
 		let gateCalls = 0;
@@ -419,9 +507,9 @@ describe('AutonomousPmLoop — consented auto-publish runs the objective gate, n
 		});
 		expect((await lp.evaluate(projectId)).state).toBe('published');
 		expect(gateCalls).toBe(1);
-		// A later terminal event re-surfaces 'published' off the latch WITHOUT re-running the gate.
+		// A later terminal event MUST NOT re-run the gate: post-v1 the PM is auto-disarmed → Gate 1 → idle.
 		const second = await lp.evaluate(projectId);
-		expect(second.state).toBe('published');
+		expect(second.state).toBe('idle'); // disarmed at v1 — not re-published.
 		expect(gateCalls).toBe(1); // NOT 2 — no second publish.
 	});
 });

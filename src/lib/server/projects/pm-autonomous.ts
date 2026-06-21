@@ -150,7 +150,13 @@ export class AutonomousPmLoop {
 	readonly #tickTimes = new Map<string, number[]>();
 	/** Per-project re-entrancy guard: one re-tick decision at a time per project (events coalesce). */
 	readonly #deciding = new Set<string>();
-	/** Projects already STOPPED (dod/blocked/cap) — they do not re-trigger until re-armed/reset. */
+	/**
+	 * Projects already STOPPED. A terminal stop state (dod-reached / awaiting-release-confirm / blocked)
+	 * LATCHES here and #decide re-surfaces it WITHOUT re-spending — the project stays stopped until an
+	 * operator re-arm (a disarm clears the latch in #decide's Gate 1). This is what delivers the "never
+	 * spin / stays stopped" guarantee. 'cap-reached' is recorded too but #decide deliberately re-evaluates
+	 * it (NOT a hard latch) so the rolling window can free it — Gate 3 owns that decision.
+	 */
 	readonly #stoppedProjects = new Map<string, AutonomousLoopState>();
 
 	/** Re-ticks this loop has driven (diagnostics / the verify count). */
@@ -246,10 +252,37 @@ export class AutonomousPmLoop {
 
 	async #decide(projectId: string): Promise<AutonomousTickOutcome> {
 		// Gate 1 — a HIRED + ARMED PM. No pm row, or autonomous=false ⇒ idle (a disarmed/absent PM is
-		// supervised: the one-click tick is the only driver). NEVER auto-hires/arms.
+		// supervised: the one-click tick is the only driver). NEVER auto-hires/arms. Reading the live pm
+		// row FIRST also makes the stop-latch self-clearing: a disarm (autonomous=false) — the ONLY way an
+		// operator re-opens the loop — drops the latch here, so the subsequent re-arm starts clean WITHOUT
+		// the route having to reach into this in-memory loop (addresses the re-arm-reset concern).
 		const pm = await getPm(this.#db, projectId).catch(() => null);
-		if (!pm) return this.#record(projectId, 'idle', 'no PM hired — not autonomous', null);
-		if (!pm.autonomous) return this.#record(projectId, 'idle', 'PM is not armed for autonomous drive', null);
+		if (!pm) {
+			this.#stoppedProjects.delete(projectId);
+			return this.#record(projectId, 'idle', 'no PM hired — not autonomous', null);
+		}
+		if (!pm.autonomous) {
+			this.#stoppedProjects.delete(projectId);
+			return this.#record(projectId, 'idle', 'PM is not armed for autonomous drive', null);
+		}
+
+		// Stop-latch — a project that already reached a terminal stop state (dod-reached /
+		// awaiting-release-confirm / blocked / cap-reached) STAYS stopped: a later terminal event must NOT
+		// re-enter the spend path and re-propose duplicate release tasks or retry a failing tick (the
+		// "never spin / stays stopped" contract). Re-surface the latched state WITHOUT re-spending; the
+		// latch is cleared only by a disarm (above) — i.e. an explicit operator re-arm. (cap-reached is the
+		// exception: it must re-evaluate so the rolling window can free it — Gate 3 owns that, returning
+		// cap-reached again if still capped or re-ticking once the window rolls forward.)
+		const latched = this.#stoppedProjects.get(projectId);
+		if (latched && latched !== 'cap-reached') {
+			const prev = this.lastOutcome.get(projectId);
+			return this.#record(
+				projectId,
+				latched,
+				prev ? `latched at ${latched} — staying stopped until re-armed (${prev.reason})` : `latched at ${latched} — staying stopped until re-armed`,
+				prev?.lifecycle ?? null
+			);
+		}
 
 		// Gate 2 — the project must not still have a promoted batch IN FLIGHT. We re-read the LIVE task
 		// rows (F-008) so a stale/duplicate terminal event never re-ticks while work is still running —

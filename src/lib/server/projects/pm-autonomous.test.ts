@@ -306,6 +306,114 @@ describe('AutonomousPmLoop — DoD reached halts at the operator publish gate', 
 	});
 });
 
+// ── Stop-latch: a stopped project STAYS stopped (never spins / never re-spends) ─────────────────────
+// REGRESSION for the re-review defect: #stoppedProjects was WRITTEN but never READ, so a later terminal
+// event re-entered the spend path — a dod-reached project re-proposed DUPLICATE release tasks every cycle
+// (a capped spin) and a blocked-by-error project retried the throwing tick on every event. The latch must
+// re-surface the stopped state WITHOUT re-spending, and must clear on an operator disarm→re-arm.
+
+describe('AutonomousPmLoop — a stopped project STAYS stopped (the never-spin contract)', () => {
+	it('awaiting-release-confirm LATCHES: a second terminal event does NOT re-propose release tasks', async () => {
+		await hire('act');
+		let releaseTicks = 0;
+		const lp = new AutonomousPmLoop({
+			db,
+			bus: new EventBus(),
+			deps: deps([approveRun(), approveRun()]), // exactly ONE release proposal's panel run.
+			lifecycleOpts: { generate: stub({ proposals: [] }) }, // DoD: no gaps, every call.
+			releaseOpts: {
+				generate: async () => {
+					releaseTicks++;
+					return {
+						proposals: [
+							candidate({
+								title: 'Bump version to 1.0.0 and pack',
+								objective: 'Bump version, pack and validate, write the changelog.'
+							})
+						]
+					};
+				}
+			}
+		});
+		const first = await lp.evaluate(projectId);
+		expect(first.state).toBe('awaiting-release-confirm');
+		expect(releaseTicks).toBe(1);
+		const ticksAfterFirst = lp.reTickCount;
+
+		// A NEW terminal event re-enters #decide — it MUST hit the latch and re-surface the stopped state
+		// WITHOUT running a second release tick (no duplicate release task, no extra spend).
+		const second = await lp.evaluate(projectId);
+		expect(second.state).toBe('awaiting-release-confirm');
+		expect(releaseTicks).toBe(1); // NOT 2 — no duplicate release proposal.
+		expect(lp.reTickCount).toBe(ticksAfterFirst); // no extra re-tick.
+		// Exactly ONE release task exists (no duplicate '1.0.0' tasks).
+		const ready = await listTasksByProject(db, projectId, 'ready');
+		expect(ready.filter((t) => /1\.0\.0/.test(t.title)).length).toBe(1);
+	});
+
+	it('blocked-by-error LATCHES: a second terminal event does NOT retry the throwing tick', async () => {
+		await hire('act');
+		let attempts = 0;
+		const lp = new AutonomousPmLoop({
+			db,
+			bus: new EventBus(),
+			deps: deps([]),
+			lifecycleOpts: {
+				generate: async () => {
+					attempts++;
+					throw new Error('PM session env unreachable');
+				}
+			}
+		});
+		expect((await lp.evaluate(projectId)).state).toBe('blocked');
+		expect(attempts).toBe(1);
+		// A later terminal event must NOT re-attempt the failing tick — it re-surfaces 'blocked' off the latch.
+		const second = await lp.evaluate(projectId);
+		expect(second.state).toBe('blocked');
+		expect(attempts).toBe(1); // NOT retried — no spin.
+	});
+
+	it('an operator DISARM clears the latch so a re-arm starts clean', async () => {
+		await hire('act');
+		const lp = loop([], { proposals: [] }, { releasePayload: { proposals: [] } });
+		expect((await lp.evaluate(projectId)).state).toBe('awaiting-release-confirm'); // latched.
+		// Latched: a re-evaluate stays stopped.
+		expect((await lp.evaluate(projectId)).state).toBe('awaiting-release-confirm');
+
+		// Operator DISARMS via the DB (the route's only seam — it never touches the in-memory loop). The
+		// next #decide sees autonomous=false, goes idle AND clears the latch.
+		await setPmAutonomous(db, projectId, false);
+		expect((await lp.evaluate(projectId)).state).toBe('idle');
+
+		// Re-arm: the loop is free to drive again (the latch was cleared by the disarm), proving the
+		// re-arm-reset path works without the route reaching into the loop.
+		await setPmAutonomous(db, projectId, true);
+		const reArmed = await lp.evaluate(projectId);
+		expect(reArmed.state).toBe('awaiting-release-confirm'); // drove again, NOT stuck on a stale latch.
+	});
+
+	it('cap-reached is NOT a hard latch: it re-evaluates so the rolling window can free it', async () => {
+		await hire('propose');
+		let clock = 1_000_000;
+		let n = 0;
+		const panel = Array.from({ length: 8 }, () => approveRun());
+		const lp = new AutonomousPmLoop({
+			db,
+			bus: new EventBus(),
+			deps: deps(panel),
+			maxTicksPerWindow: 1,
+			now: () => clock,
+			lifecycleOpts: { generate: async () => { n++; return { proposals: [candidate({ title: `Cap task ${n}`, evidence: [`plan:cap-${n}`] })] }; } },
+			releaseOpts: { generate: async () => { n++; return { proposals: [candidate({ title: `Cap task ${n}`, evidence: [`plan:cap-${n}`] })] }; } }
+		});
+		expect((await lp.evaluate(projectId)).state).toBe('running'); // consumes the one tick.
+		expect((await lp.evaluate(projectId)).state).toBe('cap-reached'); // capped.
+		clock += 25 * 60 * 60 * 1000; // window rolls forward.
+		// cap-reached must NOT be latched — it re-evaluates and re-ticks now that the window freed.
+		expect((await lp.evaluate(projectId)).state).toBe('running');
+	});
+});
+
 // ── Blocked: needsHire HALTS at the operator hire gate ──────────────────────────────────────────────
 
 describe('AutonomousPmLoop — blocked stops honestly (no spin, no auto-hire)', () => {
@@ -338,28 +446,53 @@ describe('AutonomousPmLoop — blocked stops honestly (no spin, no auto-hire)', 
 // ── Cap reached (PMA-2 hard re-tick cap) ────────────────────────────────────────────────────────────
 
 describe('AutonomousPmLoop — the hard re-tick cap bounds unsupervised spend (PMA-2)', () => {
-	it('stops at cap-reached once the re-tick cap is hit', async () => {
-		await hire('act');
-		// Cap = 1. The first evaluate re-ticks (generating nothing further so it does not loop forever in
-		// a single call); the SECOND evaluate is refused at the cap.
-		const lp = loop([], { proposals: [] }, { maxTicks: 1 });
-		const first = await lp.evaluate(projectId);
-		// generated 0 + no work → DoD reached path; but cap=1 was consumed by the DoD tick so the release
-		// tick is skipped → dod-reached (honest: operator triggers release).
-		expect(['dod-reached', 'awaiting-release-confirm']).toContain(first.state);
-		expect(lp.reTickCount).toBe(1);
+	// A loop whose every re-tick returns a NON-latching 'running' (a propose-authority PM whose approved
+	// proposal becomes an operator_gate → the task stays 'proposed', not in-flight). Each call yields a
+	// UNIQUE candidate so proposeTask never dedups it to generated:0 (which would latch dod-reached). This
+	// is the path that genuinely RE-ENTERS the spend path, so Gate 3 (the cap) is what stops it.
+	// Each call yields a UNIQUE evidence ref → a UNIQUE proposal fingerprint (title/objective are NOT in
+	// the fingerprint — project+trigger+evidence are; pm-proposals.proposalFingerprint), so proposeTask
+	// never absorbs it as a duplicate_open (which would collapse generated→0 and latch dod-reached).
+	function gateGen(): PmProposalGenerator {
+		let n = 0;
+		return async () => {
+			n++;
+			return { proposals: [candidate({ title: `Gate task ${n}`, objective: `Build gate task ${n}.`, evidence: [`plan:gate-${n}`] })] };
+		};
+	}
+	function gateLoop(opts: { maxTicks?: number; now?: () => number } = {}) {
+		// Plenty of approve runs queued — one panel run per re-tick proposal, more than the cap needs.
+		const panel = Array.from({ length: 8 }, () => approveRun());
+		return new AutonomousPmLoop({
+			db,
+			bus: new EventBus(),
+			deps: deps(panel),
+			maxTicksPerWindow: opts.maxTicks,
+			now: opts.now,
+			lifecycleOpts: { generate: gateGen() },
+			releaseOpts: { generate: gateGen() }
+		});
+	}
 
-		const second = await lp.evaluate(projectId);
-		expect(second.state).toBe('cap-reached');
-		expect(second.reason).toMatch(/cap reached/i);
-		expect(lp.reTickCount).toBe(1); // NO further re-tick — spend is bounded.
+	it('stops at cap-reached once the re-tick cap is hit', async () => {
+		await hire('propose'); // approved proposals become operator_gate → 'running', task stays 'proposed'.
+		// Cap = 2. Two evaluates each re-tick (running, NOT latched); the THIRD is refused at the cap.
+		const lp = gateLoop({ maxTicks: 2 });
+		expect((await lp.evaluate(projectId)).state).toBe('running');
+		expect((await lp.evaluate(projectId)).state).toBe('running');
+		expect(lp.reTickCount).toBe(2);
+
+		const capped = await lp.evaluate(projectId);
+		expect(capped.state).toBe('cap-reached');
+		expect(capped.reason).toMatch(/cap reached/i);
+		expect(lp.reTickCount).toBe(2); // NO further re-tick — spend is bounded.
 	});
 
 	it('the rolling window frees the cap as ticks age out', async () => {
-		await hire('act');
+		await hire('propose');
 		let clock = 1_000_000;
-		const lp = loop([], { proposals: [] }, { maxTicks: 1, now: () => clock, releasePayload: { proposals: [] } });
-		await lp.evaluate(projectId); // consumes the one tick.
+		const lp = gateLoop({ maxTicks: 1, now: () => clock });
+		expect((await lp.evaluate(projectId)).state).toBe('running'); // consumes the one tick.
 		expect((await lp.evaluate(projectId)).state).toBe('cap-reached');
 		clock += 25 * 60 * 60 * 1000; // advance past the 24h window.
 		const after = await lp.evaluate(projectId);

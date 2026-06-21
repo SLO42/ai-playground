@@ -206,9 +206,10 @@
       ? (autonomousFeedback.autonomous as boolean)
       : (data.pm?.autonomous ?? false)
   );
-  // PMA — the operator's pre-authorize-auto-publish opt-in (default OFF). Reflects the optimistic action
-  // result first, then the loaded pm row. NEVER auto-publishes silently: when OFF the loop halts at the
-  // publish gate; when ON the operator has pre-consented (it is still operator consent, not agent authority).
+  // PMA — the operator's auto-publish CONSENT opt-in (default OFF). Reflects the optimistic action result
+  // first, then the loaded pm row. RECORDED ONLY: this flag is not yet wired into the release/loop consumer,
+  // so the loop ALWAYS halts at the publish gate today regardless of it (the real external publish stays
+  // operator-gated — D-037). It records operator consent for a future wire-up; it is not agent authority.
   const pmAutoPublish = $derived(
     autonomousFeedback?.action === 'autoPublish' &&
       typeof autonomousFeedback.autoPublishPreauthorized === 'boolean'
@@ -1016,10 +1017,12 @@
                 </form>
               </div>
 
-              <!-- The pre-authorize-auto-publish opt-in (default OFF). A CLEARLY-LABELLED operator toggle:
-                   OFF ⇒ the loop halts at the publish gate for your one tap (never auto-publishes); ON ⇒ you
-                   have pre-consented to let the loop carry the release through. It is operator CONSENT, not
-                   agent authority. Surfaced only while armed (it only matters once the loop is driving). -->
+              <!-- The auto-publish CONSENT toggle (default OFF). A CLEARLY-LABELLED operator switch that
+                   RECORDS consent only — it is NOT yet wired into the release/loop consumer, so the loop
+                   ALWAYS halts at the publish gate for your one tap regardless of this flag (the real
+                   external publish stays operator-gated — D-037). It captures operator consent for a future
+                   wire-up; it is not agent authority and never bypasses the gate today. Surfaced only while
+                   armed (it only matters once the loop is driving). -->
               {#if pmArmed}
                 <form
                   method="POST"
@@ -1035,20 +1038,20 @@
                       aria-checked={pmAutoPublish}
                       data-on={pmAutoPublish}
                       aria-label={pmAutoPublish
-                        ? 'Turn OFF pre-authorized auto-publish (publish will need your confirm)'
-                        : 'Turn ON pre-authorized auto-publish (the loop may publish the release without a fresh tap)'}
+                        ? 'Turn OFF recorded auto-publish consent (clears your recorded consent)'
+                        : 'Record auto-publish consent (recorded only — the loop still always halts at the publish gate for your tap)'}
                     >
                       <span class="toggle-knob" aria-hidden="true"></span>
                     </button>
                     <span class="autopublish-copy">
                       <span class="autopublish-title">
-                        Pre-authorize auto-publish
-                        <span class="autopublish-state mono" data-on={pmAutoPublish}>{pmAutoPublish ? 'ON' : 'OFF'}</span>
+                        Record auto-publish consent
+                        <span class="autopublish-state mono" data-on={pmAutoPublish}>{pmAutoPublish ? 'RECORDED' : 'OFF'}</span>
                       </span>
                       <span class="autopublish-sub">
                         {pmAutoPublish
-                          ? 'You have pre-consented — the loop may carry the release through the publish gate without a fresh tap. Turn off to require your confirm again.'
-                          : 'Default — the loop halts at the release gate and waits for your one tap. It never auto-publishes silently.'}
+                          ? 'Recorded — your consent is saved, but it is not yet acted on: the loop still always halts at the publish gate and waits for your one tap (the real external publish stays operator-gated, D-037). Turn off to clear it.'
+                          : 'Off — the loop halts at the release gate and waits for your one tap. It never auto-publishes.'}
                       </span>
                     </span>
                   </label>

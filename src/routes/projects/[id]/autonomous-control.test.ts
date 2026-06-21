@@ -4,8 +4,9 @@
 //      AND the active spawn cap (capLabel) — never a bare submit.
 //   2. The active hard spawn cap is surfaced (the loader's spendCaps / capLabel).
 //   3. DISARM is a prominent, always-available STOP (a direct submit — stopping is always safe).
-//   4. The pre-authorize-auto-publish opt-in exists, is a clearly-labelled role="switch", and the hidden
+//   4. The auto-publish CONSENT opt-in exists, is a clearly-labelled role="switch", and the hidden
 //      default is OFF (the toggle flips to 'true' from a falsey current value — never auto-publishes).
+//      Its copy is honest: consent is RECORDED only, not yet acted on — the loop always halts at the gate.
 //   5. Honest live states are rendered from the real loop state (loopStateLabel / loopState.state).
 // Static-source so it runs with no DB/browser — it guards the wiring, not the runtime (the action +
 // repo round-trips are covered by pm-autonomous-action.test.ts / pm-repo.test.ts).
@@ -47,16 +48,31 @@ describe('Overview "Run autonomously to release" control — safety wiring', () 
 		expect(armedBranch).toMatch(/aria-label="Stop autonomous drive \(disarm\)"/);
 	});
 
-	it('the pre-authorize-auto-publish opt-in is a labelled switch defaulting OFF (never auto-publishes)', () => {
+	it('the auto-publish consent opt-in is a labelled switch defaulting OFF (never auto-publishes)', () => {
 		expect(src).toMatch(/action="\?\/pmAutoPublish"/);
 		// A real ARIA switch with a labelled state.
 		expect(src).toMatch(/role="switch"/);
 		expect(src).toMatch(/aria-checked=\{pmAutoPublish\}/);
-		expect(src).toMatch(/Pre-authorize auto-publish/);
+		expect(src).toMatch(/Record auto-publish consent/);
 		// Default OFF: pmAutoPublish falls back to the row value OR false; the copy states it never
-		// auto-publishes silently.
+		// auto-publishes.
 		expect(src).toMatch(/auto_publish_preauthorized \?\? false/);
-		expect(src).toMatch(/never auto-publishes silently/);
+		expect(src).toMatch(/never auto-publishes/);
+	});
+
+	// REGRESSION (F-008, gap fixed at 9d77cb0 re-review): the consent flag is WRITE-ONLY — it is not
+	// wired into #reachDod (pm-autonomous.ts) or the release path, so the loop ALWAYS halts at the
+	// publish gate today. The switch copy must NOT claim an effect it does not have. It must state the
+	// consent is RECORDED ONLY (not yet acted on) and that the loop still always halts at the publish gate.
+	it('the consent copy is honest — RECORDED-only, no false "carries the release through" claim (F-008)', () => {
+		// The ON state names itself as recorded-only and re-affirms the loop still halts at the gate.
+		expect(src).toMatch(/Recorded — your consent is saved, but it is not yet acted on/);
+		expect(src).toMatch(/the loop still always halts at the publish gate/);
+		expect(src).toMatch(/RECORDED/);
+		// The discredited effect-claiming phrases must be GONE (these promised a behavior that does not exist).
+		expect(src).not.toMatch(/may carry the release through/);
+		expect(src).not.toMatch(/may publish the release without a fresh tap/);
+		expect(src).not.toMatch(/pre-consented/);
 	});
 
 	it('honest live loop states are rendered from the real loop state (F-008 — no fake done)', () => {

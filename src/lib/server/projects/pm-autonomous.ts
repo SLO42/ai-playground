@@ -55,6 +55,8 @@ import {
 	type StartLifecycleOpts,
 	type StartLifecycleResult
 } from './pm-lifecycle';
+import { runReleaseReadinessGate, type ReleaseGateResult } from './release-gate';
+import type { EnvLike } from '../adapters/secrets';
 
 // ── Honest loop states (F-008 — never a fake 'done') ─────────────────────────────────────────────
 
@@ -63,6 +65,9 @@ import {
  *   • running               — a batch was promoted; the loop is waiting for it to drain (not stopped).
  *   • dod-reached           — the PM found no actionable gaps + nothing in flight → the plan DoD is met.
  *   • awaiting-release-confirm — DoD met, release tasks proposed; HALTED at the operator publish gate.
+ *   • published             — DoD met, the operator's auto-publish consent was recorded AND the objective
+ *                             release-readiness gate (build + pack + validate) passed → the EXISTING D-037
+ *                             publish path ran and completed. The 0→v1 drive is DONE; the loop stops here.
  *   • blocked               — a hard blocker (needsHire / no forward progress with a blocker standing).
  *   • cap-reached           — the hard re-tick cap (PMA-2) was hit; unsupervised spend is bounded.
  *   • idle                  — nothing to do this event (disarmed / no PM / batch still in flight). Not a stop.
@@ -71,6 +76,7 @@ export type AutonomousLoopState =
 	| 'running'
 	| 'dod-reached'
 	| 'awaiting-release-confirm'
+	| 'published'
 	| 'blocked'
 	| 'cap-reached'
 	| 'idle';
@@ -85,6 +91,12 @@ export interface AutonomousTickOutcome {
 	lifecycle: StartLifecycleResult | null;
 	/** How many re-ticks this loop has performed for this project in the rolling window (PMA-2). */
 	ticksUsed: number;
+	/**
+	 * The objective release-readiness gate's verdict when the consented auto-publish path ran (null on
+	 * every other outcome). Present on BOTH a green 'published' result AND a red gate that halted at
+	 * 'awaiting-release-confirm' — so the surface shows the exact build/pack/validate/publish facts (F-008).
+	 */
+	releaseGate?: ReleaseGateResult | null;
 }
 
 // ── Config ────────────────────────────────────────────────────────────────────────────────────────
@@ -126,6 +138,24 @@ export interface AutonomousLoopOptions {
 	releaseOpts?: StartLifecycleOpts;
 	/** Clock seam (tests) for the rolling cap window. */
 	now?: () => number;
+	/**
+	 * PMA — the runtime env ($env/dynamic/private) the objective release-readiness gate reads the publish
+	 * credential from (D-026 — presence only). REQUIRED for the consented auto-publish path: absent ⇒ the
+	 * gate cannot resolve a token and the loop halts at 'awaiting-release-confirm' (unchanged-when-no-consent
+	 * behavior is preserved regardless). Defaults to {} so an un-wired loop never publishes.
+	 */
+	env?: EnvLike;
+	/**
+	 * PMA — the consented auto-publish GATE seam. Injected the (db, env, projectId, consent) it needs to run
+	 * the objective build+pack+validate gate and, only if green, the EXISTING D-037 publish. Tests inject a
+	 * stub (NO real build, NO real publish); production omits it → the real {@link runReleaseReadinessGate}.
+	 */
+	releaseGate?: (input: {
+		db: Db;
+		env: EnvLike;
+		projectId: string;
+		consent: boolean;
+	}) => Promise<ReleaseGateResult>;
 }
 
 // ── The loop engine ────────────────────────────────────────────────────────────────────────────────
@@ -139,6 +169,8 @@ export class AutonomousPmLoop {
 	readonly #lifecycleOpts: StartLifecycleOpts;
 	readonly #releaseOpts: StartLifecycleOpts;
 	readonly #now: () => number;
+	readonly #env: EnvLike;
+	readonly #releaseGate: NonNullable<AutonomousLoopOptions['releaseGate']>;
 
 	#unsub?: Unsubscribe;
 	#started = false;
@@ -173,6 +205,12 @@ export class AutonomousPmLoop {
 		this.#lifecycleOpts = opts.lifecycleOpts ?? {};
 		this.#releaseOpts = opts.releaseOpts ?? opts.lifecycleOpts ?? {};
 		this.#now = opts.now ?? (() => Date.now());
+		this.#env = opts.env ?? {};
+		// Production: the real objective gate (build + pack + validate → EXISTING D-037 publish). The seam
+		// is injected the loop's own env so the gate's credential resolution stays D-026-confined.
+		this.#releaseGate =
+			opts.releaseGate ??
+			((g) => runReleaseReadinessGate({ db: g.db, env: g.env, projectId: g.projectId, consent: g.consent }));
 	}
 
 	/**
@@ -267,7 +305,7 @@ export class AutonomousPmLoop {
 		}
 
 		// Stop-latch — a project that already reached a terminal stop state (dod-reached /
-		// awaiting-release-confirm / blocked / cap-reached) STAYS stopped: a later terminal event must NOT
+		// awaiting-release-confirm / published / blocked / cap-reached) STAYS stopped: a later terminal event must NOT
 		// re-enter the spend path and re-propose duplicate release tasks or retry a failing tick (the
 		// "never spin / stays stopped" contract). Re-surface the latched state WITHOUT re-spending; the
 		// latch is cleared only by a disarm (above) — i.e. an explicit operator re-arm. (cap-reached is the
@@ -280,7 +318,8 @@ export class AutonomousPmLoop {
 				projectId,
 				latched,
 				prev ? `latched at ${latched} — staying stopped until re-armed (${prev.reason})` : `latched at ${latched} — staying stopped until re-armed`,
-				prev?.lifecycle ?? null
+				prev?.lifecycle ?? null,
+				prev?.releaseGate ?? null
 			);
 		}
 
@@ -409,12 +448,19 @@ export class AutonomousPmLoop {
 	/**
 	 * DoD REACHED. Run ONE release tick — the PM proposes the release tasks (version bump → pack/validate
 	 * → changelog) through the SAME startProjectLifecycle path (it promotes only DEVELOPMENT tasks; it has
-	 * NO publish authority). Then HALT at 'awaiting-release-confirm': the real external publish is a
-	 * SEPARATE operator-gated action (D-037, release/+page.server.ts) this loop cannot reach. NEVER
-	 * auto-publishes.
+	 * NO publish authority of its own). Then make the publish decision SAFELY:
+	 *
+	 *   • NO recorded consent (auto_publish_preauthorized=false/absent) → HALT at 'awaiting-release-confirm'
+	 *     exactly as before — the real external publish is an operator-gated action (D-037). UNCHANGED.
+	 *   • Consent recorded → run the OBJECTIVE release-readiness gate (build + pack + validate). ONLY if the
+	 *     gate is fully GREEN does it proceed through the EXISTING D-037 publish path and stop at 'published'.
+	 *     On ANY red (no target/token, build red, pack/validate red, publish did not complete) it HALTS at
+	 *     'awaiting-release-confirm' with the exact failing checks surfaced (F-008) — it NEVER publishes a
+	 *     broken/unvalidated artifact and NEVER publishes without a real green machine gate.
 	 *
 	 * The release tick itself counts against the PMA-2 cap (it is a real spend). If the cap is already
-	 * hit we stop at dod-reached WITHOUT the release tick (honest — the operator triggers release).
+	 * hit we stop at dod-reached WITHOUT the release tick (honest — the operator triggers release). The
+	 * gate's own build/publish spend is bounded by the build subprocess + the single publish call (no loop).
 	 */
 	async #reachDod(projectId: string, dodRes: StartLifecycleResult): Promise<AutonomousTickOutcome> {
 		const ticksUsed = this.#prunedTickCount(projectId);
@@ -441,14 +487,58 @@ export class AutonomousPmLoop {
 			);
 		}
 		this.reTickCount++;
-		// The release tick PROPOSED the release tasks (version/pack/changelog). The loop now HALTS at the
-		// operator publish gate — the actual external publish (D-037) is operator-only.
+		// The release tick PROPOSED the release tasks (version/pack/changelog) as development work.
 		const proposed = rel.generated;
+
+		// CONSENT — re-read the LIVE pm row (F-008) for the operator's recorded auto-publish pre-authorization.
+		// A read failure or a missing/false flag keeps publish operator-gated (fail safe toward NO publish).
+		const pm = await getPm(this.#db, projectId).catch(() => null);
+		const consent = pm?.auto_publish_preauthorized === true;
+
+		if (!consent) {
+			// UNCHANGED behavior: no recorded consent → HALT at the operator publish gate (D-037).
+			return this.#record(
+				projectId,
+				'awaiting-release-confirm',
+				`the plan DoD is satisfied — proposed ${proposed} release task(s) (version bump / package / changelog). HALTED at the publish gate: trigger the external publish yourself (D-037 — never auto-published).`,
+				rel
+			);
+		}
+
+		// CONSENT RECORDED → run the OBJECTIVE release-readiness gate (real exit codes — build + pack +
+		// validate), then the EXISTING D-037 publish ONLY if green. A gate fault (an unexpected throw) is a
+		// hard, honest HALT — never an auto-publish on an indeterminate gate.
+		let gate: ReleaseGateResult;
+		try {
+			gate = await this.#releaseGate({ db: this.#db, env: this.#env, projectId, consent });
+		} catch (err) {
+			return this.#record(
+				projectId,
+				'awaiting-release-confirm',
+				`the plan DoD is satisfied and auto-publish is pre-authorized, but the release-readiness gate errored (${(err as Error).message}) — HALTED at the publish gate (no publish); resolve and re-arm.`,
+				rel,
+				null
+			);
+		}
+
+		if (gate.published) {
+			// GREEN gate → the EXISTING D-037 publish ran + completed. The consented 0→v1 drive is DONE.
+			return this.#record(
+				projectId,
+				'published',
+				`the plan DoD is satisfied and the release-readiness gate is GREEN — ${gate.summary}. The consented auto-publish completed (D-037 path, real publish).`,
+				rel,
+				gate
+			);
+		}
+
+		// RED gate → do NOT publish; HALT at the operator publish gate with the EXACT failing check surfaced.
 		return this.#record(
 			projectId,
 			'awaiting-release-confirm',
-			`the plan DoD is satisfied — proposed ${proposed} release task(s) (version bump / package / changelog). HALTED at the publish gate: trigger the external publish yourself (D-037 — never auto-published).`,
-			rel
+			`the plan DoD is satisfied and auto-publish is pre-authorized, but the release-readiness gate is RED at "${gate.failedAt}" — ${gate.summary}. HALTED at the publish gate (no publish); fix the failure and re-arm.`,
+			rel,
+			gate
 		);
 	}
 
@@ -475,17 +565,25 @@ export class AutonomousPmLoop {
 		projectId: string,
 		state: AutonomousLoopState,
 		reason: string,
-		lifecycle: StartLifecycleResult | null
+		lifecycle: StartLifecycleResult | null,
+		releaseGate: ReleaseGateResult | null = null
 	): AutonomousTickOutcome {
 		const outcome: AutonomousTickOutcome = {
 			projectId,
 			state,
 			reason,
 			lifecycle,
-			ticksUsed: this.#prunedTickCount(projectId)
+			ticksUsed: this.#prunedTickCount(projectId),
+			releaseGate
 		};
 		this.lastOutcome.set(projectId, outcome);
-		if (state === 'dod-reached' || state === 'awaiting-release-confirm' || state === 'blocked' || state === 'cap-reached') {
+		if (
+			state === 'dod-reached' ||
+			state === 'awaiting-release-confirm' ||
+			state === 'published' ||
+			state === 'blocked' ||
+			state === 'cap-reached'
+		) {
 			this.#stoppedProjects.set(projectId, state);
 		} else {
 			this.#stoppedProjects.delete(projectId);
@@ -543,9 +641,12 @@ export type AutonomousLoopBootResult =
  * — when absent we skip cleanly (started:false) and the dashboard still boots. D-004: in MANUAL mode the
  * loop is OFF (the operator's one-click tick is the only driver) — only event/periodic modes arm it.
  *
- * The loop NEVER bypasses an operator gate: it only re-runs startProjectLifecycle (which promotes via the
- * panel's EXISTING 'act' authority), it never publishes (D-037) and never hires (D-039); spend is bounded
- * by the PMA-2 re-tick cap + the orchestrator's daily spawn cap.
+ * The loop NEVER bypasses an operator gate UNCONSENTED: it re-runs startProjectLifecycle (which promotes
+ * via the panel's EXISTING 'act' authority) and it auto-publishes ONLY when (a) the operator's
+ * auto_publish_preauthorized consent is recorded AND (b) the objective release-readiness gate is green —
+ * otherwise it halts at the publish gate (D-037). It NEVER hires (D-039); spend is bounded by the PMA-2
+ * re-tick cap + the orchestrator's daily spawn cap. The publish credential is read from `wiring.env`
+ * (D-026 — presence only) by the release-readiness gate.
  */
 export async function startAutonomousLoop(
 	db: Db,
@@ -558,6 +659,8 @@ export async function startAutonomousLoop(
 		proposalModel: import('../runtime/index').ModelSelection;
 		proposalAgentId: string;
 		maxTicksPerWindow?: number;
+		/** Runtime env ($env/dynamic/private) the release-readiness gate reads the publish secret from (D-026). */
+		env?: EnvLike;
 	}
 ): Promise<AutonomousLoopBootResult> {
 	if (wiring.mode === 'manual') {
@@ -578,7 +681,8 @@ export async function startAutonomousLoop(
 			proposalModel: wiring.proposalModel,
 			proposalAgentId: wiring.proposalAgentId
 		},
-		...(wiring.maxTicksPerWindow != null ? { maxTicksPerWindow: wiring.maxTicksPerWindow } : {})
+		...(wiring.maxTicksPerWindow != null ? { maxTicksPerWindow: wiring.maxTicksPerWindow } : {}),
+		...(wiring.env != null ? { env: wiring.env } : {})
 	});
 	loop.start();
 	setActiveAutonomousLoop(loop);

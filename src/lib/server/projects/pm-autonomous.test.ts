@@ -7,10 +7,11 @@ import { EventBus } from '../events/bus';
 import { ClaudeCodeRuntime, type CcBackend, type RuntimeEvent } from '../runtime/index';
 import { createProject, updateProjectPlan } from './repo';
 import { listTasksByProject } from '../tasks/repo';
-import { createPm, setPmAutonomous, getPm, type PmAuthority } from './pm-repo';
+import { createPm, setPmAutonomous, setPmAutoPublishPreauthorized, getPm, type PmAuthority } from './pm-repo';
 import type { PmProposalGenerator } from './pm-propose';
 import { type LifecycleDeps } from './pm-lifecycle';
 import { AutonomousPmLoop } from './pm-autonomous';
+import type { ReleaseGateResult } from './release-gate';
 
 // PMA VERIFY — the CONTINUOUS AUTONOMOUS LOOP against a REAL throwaway SurrealDB. The PM proposal
 // GENERATOR is an injected stub (NO spend — mirrors pm-lifecycle.test.ts); the validation PANEL runs the
@@ -303,6 +304,125 @@ describe('AutonomousPmLoop — DoD reached halts at the operator publish gate', 
 		const out = await lp.evaluate(projectId);
 		expect(out.state).toBe('blocked');
 		expect(out.reason).toMatch(/blocked/i);
+	});
+});
+
+// ── CONSENTED auto-publish: the objective release-readiness gate decides (HIGHEST-STAKES path) ───────
+// At DoD-reached, WITH the operator's recorded auto_publish_preauthorized consent, the loop runs the
+// OBJECTIVE gate (build + pack + validate) via the injected seam and ONLY proceeds to 'published' on a
+// GREEN gate. On a RED gate it HALTS at 'awaiting-release-confirm' with the failure surfaced. WITHOUT
+// consent, behavior is UNCHANGED (halt at the gate). The gate's own build/publish are NOT exercised here
+// (that is release-gate.test.ts) — we inject a stub gate verdict and assert the LOOP's decision wiring.
+
+describe('AutonomousPmLoop — consented auto-publish runs the objective gate, never publishes unsafely', () => {
+	/** A loop at DoD-reached (zero gaps), with an injected release-gate verdict. */
+	function gateLoop(gateResult: ReleaseGateResult) {
+		return new AutonomousPmLoop({
+			db,
+			bus: new EventBus(),
+			deps: deps([approveRun(), approveRun()]),
+			lifecycleOpts: { generate: stub({ proposals: [] }) }, // DoD: no gaps.
+			releaseOpts: { generate: stub({ proposals: [candidate({ title: 'Bump version to 1.0.0' })] }) },
+			releaseGate: async () => gateResult
+		});
+	}
+	const greenGate: ReleaseGateResult = {
+		published: true,
+		checks: [{ name: 'publish', ok: true, detail: 'uploaded 1.0.0' }],
+		failedAt: null,
+		summary: 'published stub:thing',
+		publish: null
+	};
+	const redGate: ReleaseGateResult = {
+		published: false,
+		checks: [{ name: 'build', ok: false, detail: 'build exited 1' }],
+		failedAt: 'build',
+		summary: 'the project build FAILED (exit 1)',
+		publish: null
+	};
+
+	it('consent recorded + GREEN gate → published (the consented 0→v1 drive completes)', async () => {
+		await hire('act');
+		expect((await setPmAutoPublishPreauthorized(db, projectId, true))?.auto_publish_preauthorized).toBe(true);
+		const lp = gateLoop(greenGate);
+		const out = await lp.evaluate(projectId);
+		expect(out.state).toBe('published');
+		expect(out.reason).toMatch(/GREEN/);
+		expect(out.releaseGate?.published).toBe(true);
+	});
+
+	it('consent recorded + RED gate (build fails) → NO publish, halts at awaiting-release-confirm honestly', async () => {
+		await hire('act');
+		await setPmAutoPublishPreauthorized(db, projectId, true);
+		const lp = gateLoop(redGate);
+		const out = await lp.evaluate(projectId);
+		expect(out.state).toBe('awaiting-release-confirm');
+		expect(out.reason).toMatch(/RED at "build"/);
+		expect(out.reason).toMatch(/no publish/i);
+		expect(out.releaseGate?.published).toBe(false);
+	});
+
+	it('NO consent → the gate seam is NEVER invoked; behavior unchanged (halt at the publish gate)', async () => {
+		await hire('act'); // consent NOT set (default false).
+		let gateCalls = 0;
+		const lp = new AutonomousPmLoop({
+			db,
+			bus: new EventBus(),
+			deps: deps([approveRun(), approveRun()]),
+			lifecycleOpts: { generate: stub({ proposals: [] }) },
+			releaseOpts: { generate: stub({ proposals: [candidate({ title: 'Bump version to 1.0.0' })] }) },
+			releaseGate: async () => {
+				gateCalls++;
+				return greenGate;
+			}
+		});
+		const out = await lp.evaluate(projectId);
+		expect(out.state).toBe('awaiting-release-confirm');
+		expect(out.reason).toMatch(/never auto-published/i);
+		expect(gateCalls).toBe(0); // the gate was NEVER consulted without recorded consent.
+		expect(out.releaseGate ?? null).toBeNull();
+	});
+
+	it('consent recorded but the gate seam THROWS → halts honestly (never an auto-publish on an indeterminate gate)', async () => {
+		await hire('act');
+		await setPmAutoPublishPreauthorized(db, projectId, true);
+		const lp = new AutonomousPmLoop({
+			db,
+			bus: new EventBus(),
+			deps: deps([approveRun(), approveRun()]),
+			lifecycleOpts: { generate: stub({ proposals: [] }) },
+			releaseOpts: { generate: stub({ proposals: [candidate({ title: 'Bump version to 1.0.0' })] }) },
+			releaseGate: async () => {
+				throw new Error('gate env unreachable');
+			}
+		});
+		const out = await lp.evaluate(projectId);
+		expect(out.state).toBe('awaiting-release-confirm');
+		expect(out.reason).toMatch(/gate errored/i);
+		expect(out.reason).toMatch(/gate env unreachable/);
+	});
+
+	it('published LATCHES: a second terminal event does NOT re-run the gate (no double publish)', async () => {
+		await hire('act');
+		await setPmAutoPublishPreauthorized(db, projectId, true);
+		let gateCalls = 0;
+		const lp = new AutonomousPmLoop({
+			db,
+			bus: new EventBus(),
+			deps: deps([approveRun(), approveRun()]),
+			lifecycleOpts: { generate: stub({ proposals: [] }) },
+			releaseOpts: { generate: stub({ proposals: [candidate({ title: 'Bump version to 1.0.0' })] }) },
+			releaseGate: async () => {
+				gateCalls++;
+				return greenGate;
+			}
+		});
+		expect((await lp.evaluate(projectId)).state).toBe('published');
+		expect(gateCalls).toBe(1);
+		// A later terminal event re-surfaces 'published' off the latch WITHOUT re-running the gate.
+		const second = await lp.evaluate(projectId);
+		expect(second.state).toBe('published');
+		expect(gateCalls).toBe(1); // NOT 2 — no second publish.
 	});
 });
 

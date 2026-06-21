@@ -275,11 +275,14 @@ async function bootstrap(): Promise<DbInitResult> {
 				fallbackModel: DEFAULT_MODEL,
 				budgets: DEFAULT_BUDGETS,
 				proposalModel: DEFAULT_MODEL,
-				proposalAgentId: DEFAULT_AGENT
+				proposalAgentId: DEFAULT_AGENT,
+				// The release-readiness gate reads the publish credential from $env/dynamic/private (D-026 —
+				// presence only). Wiring it here is what lets a CONSENTED + green-gate drive auto-publish.
+				env
 			});
 			if (loopBoot.started) {
 				autonomousLoops.push(loopBoot.loop);
-				console.log('[startup] autonomous PM loop started — an ARMED PM re-ticks toward the DoD; HALTS at blocked / cap / publish gate (PMA, D-037/D-039 untouched).');
+				console.log('[startup] autonomous PM loop started — an ARMED PM re-ticks toward the DoD; at DoD it auto-publishes ONLY with recorded consent + a GREEN release-readiness gate, else HALTS at the publish gate (PMA, D-037 consented override / D-039 untouched).');
 			} else {
 				console.warn(`[startup] autonomous PM loop NOT started — ${loopBoot.reason}`);
 			}

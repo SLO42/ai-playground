@@ -257,12 +257,13 @@
       case 'cap-reached': return 'Stopped — re-tick cap reached';
       case 'dod-reached': return 'Stopped — definition of done reached';
       case 'awaiting-release-confirm': return 'Awaiting your release confirmation';
+      case 'published': return 'Published — released to v1 (auto-publish complete)';
       default: return 'Idle';
     }
   });
   const loopStopped = $derived(
     loopState != null &&
-      ['blocked', 'cap-reached', 'dod-reached', 'awaiting-release-confirm'].includes(loopState.state)
+      ['blocked', 'cap-reached', 'dod-reached', 'awaiting-release-confirm', 'published'].includes(loopState.state)
   );
   const lifecycleLeftForOperator = $derived(
     typeof lifecycleFeedback?.leftForOperator === 'number' ? lifecycleFeedback.leftForOperator : 0
@@ -4020,7 +4021,8 @@
     border-left-color: var(--color-blocked, var(--color-warn));
   }
   .autonomous-state[data-state='dod-reached'],
-  .autonomous-state[data-state='awaiting-release-confirm'] {
+  .autonomous-state[data-state='awaiting-release-confirm'],
+  .autonomous-state[data-state='published'] {
     border-left-color: var(--color-success);
   }
   .auto-state-label {

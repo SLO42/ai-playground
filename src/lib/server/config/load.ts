@@ -149,7 +149,17 @@ export interface Orchestration {
 	mode: OrchMode;
 	triggers?: string[];
 	intervalMs?: number;
-	concurrency: { maxAgents: number; perProject: number };
+	/**
+	 * Interactive + background concurrency caps.
+	 *   • maxAgents / perProject — the interactive semaphore caps (in-process, per-boot).
+	 *   • dailySpawnCap — the D-021 rolling-24h CLAIM ceiling the orchestrator enforces on the
+	 *     BACKGROUND work_item drain. This is the hard ceiling that makes 'full unsupervised'
+	 *     drive-to-release SAFE: a loop bug or a runaway PM cannot claim/spawn past it. Absent
+	 *     OR 0 = UNCAPPED (opt-in, like `periodic`) so an older config never silently gains a
+	 *     cap; a positive integer arms the ceiling. boot.ts threads this into the orchestrator
+	 *     AND the /atelier/queue monitor so the reported cap == the enforced cap (no fake /N).
+	 */
+	concurrency: { maxAgents: number; perProject: number; dailySpawnCap?: number };
 	/**
 	 * intent → adaptive config (D-020). Validated at the boundary (loadOrchestration).
 	 * Partial: an unconfigured intent resolves to an empty bundle (all-defaults), so a
@@ -856,6 +866,19 @@ export function loadOrchestration(file: string, opts: LoadOpts = {}): Orchestrat
 	}
 	if (!Number.isInteger(c.perProject) || (c.perProject as number) < 1) {
 		throw new ConfigError('orchestration: concurrency.perProject must be a positive integer', file);
+	}
+	// D-021 daily spawn cap (the rolling-24h background-claim ceiling). OPTIONAL + opt-in:
+	// absent OR 0 = UNCAPPED (matching the orchestrator's own `dailySpawnCap > 0` gate). When
+	// present it must be a NON-NEGATIVE integer — a negative/fractional cap is meaningless and a
+	// silently-ignored knob is worse than a boot failure (the safety ceiling must be honest), so
+	// fail closed. 0 is permitted as the explicit "uncapped" sentinel (never a fake /0 denominator).
+	if (c.dailySpawnCap !== undefined && c.dailySpawnCap !== null) {
+		if (!Number.isInteger(c.dailySpawnCap) || (c.dailySpawnCap as number) < 0) {
+			throw new ConfigError(
+				'orchestration: concurrency.dailySpawnCap must be a non-negative integer (0 = uncapped)',
+				file
+			);
+		}
 	}
 	// TASK 2.12: validate the intent-adaptive bundles at the boundary (D-020). Each key
 	// MUST be one of the five intents; each known knob MUST be the right shape/range.

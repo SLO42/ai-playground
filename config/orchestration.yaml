@@ -12,6 +12,17 @@ intervalMs: 60000
 concurrency:
   maxAgents: 8        # total simultaneous interactive spawns
   perProject: 3       # simultaneous spawns within one project
+  # D-021 DAILY SPAWN CAP — the hard rolling-24h ceiling on how many background work_items the
+  # orchestrator may CLAIM (drain → spawn). This is the safety ceiling that makes 'full
+  # unsupervised' drive-to-release safe: once today's claim count hits this, the drain STOPS
+  # claiming new work and parks the rest (the /atelier/queue monitor surfaces capped/throttled).
+  # A loop bug or a runaway PM therefore CANNOT spawn past it / burn unbounded spend. The window
+  # is anchored on each item's claimed_at, so it survives restarts.
+  # 0 = UNCAPPED (opt-in; like `periodic`, off-by-default semantics for older configs). Default
+  # 200: at maxAgents=8 with realistic multi-minute interactive sessions, 200/day is generous
+  # headroom for legitimate autonomous work yet hard-stops a spin-bug (which blows past it in
+  # minutes). Operator-tunable.
+  dailySpawnCap: 200
 
 # Intent-adaptive config bundles (D-020). KongCode classifies each task's intent;
 # routing (resolveRoute) looks the intent up here and applies the bundle: thinking

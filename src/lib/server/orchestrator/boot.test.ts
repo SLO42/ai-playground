@@ -37,7 +37,11 @@ vi.mock('../harness', async (importOriginal) => {
 });
 
 // Import AFTER the mock is registered.
-const { startOrchestrator } = await import('./boot');
+const { startOrchestrator, bootDailySpawnCap } = await import('./boot');
+
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 /** A runtime that throws if spawned — proves the idle path never reaches it. */
 const idleRuntime: AgentRuntime = {
@@ -124,6 +128,24 @@ describe('TASK 8.1 — startOrchestrator boot wire (D-004/§2.11/F-008)', () => 
 		expect(subscribeSpy).not.toHaveBeenCalled();
 	});
 
+	// D-021 — the live boot wires the REAL daily spawn cap from config (BL-9-H1 found boot wired
+	// NONE → genuinely uncapped). With the shipped config carrying a positive cap, the boot result
+	// surfaces it AND it reaches the orchestrator (reported == enforced).
+	it('wires the D-021 dailySpawnCap from config into the boot result + orchestrator', async () => {
+		getRuntimeMock.mockResolvedValue({ available: true, runtime: idleRuntime });
+		const bus = new EventBus();
+		const boot = await startOrchestrator(idleDb(), bus);
+		expect(boot.started).toBe(true);
+		if (!boot.started) throw new Error('expected started');
+		try {
+			// The shipped config/orchestration.yaml ships a positive cap (the safety ceiling).
+			expect(typeof boot.dailySpawnCap).toBe('number');
+			expect(boot.dailySpawnCap as number).toBeGreaterThan(0);
+		} finally {
+			boot.orchestrator.stop();
+		}
+	});
+
 	it('subscribes to the BUS it is handed (§2.11 — never its own live query)', async () => {
 		getRuntimeMock.mockResolvedValue({ available: true, runtime: idleRuntime });
 		const bus = new EventBus();
@@ -137,5 +159,55 @@ describe('TASK 8.1 — startOrchestrator boot wire (D-004/§2.11/F-008)', () => 
 		} finally {
 			boot.orchestrator.stop();
 		}
+	});
+});
+
+// D-021 — bootDailySpawnCap: the seam that keeps the REPORTED cap (the /atelier/queue monitor)
+// == the ENFORCED cap (the orchestrator). It reads the SAME config the orchestrator reads and
+// normalizes through the SAME `> 0` gate. Shadow paths: positive cap, 0/absent (uncapped),
+// negative/malformed config, and an unreadable config dir — never a fabricated denominator.
+describe('bootDailySpawnCap — reported cap == enforced cap (BL-9-H1 LOW)', () => {
+	let dir: string;
+	const orig = process.env.CONFIG_DIR;
+
+	function writeOrch(body: string): void {
+		writeFileSync(join(dir, 'orchestration.yaml'), body, 'utf8');
+	}
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), 'orch-cap-'));
+		process.env.CONFIG_DIR = dir;
+	});
+	afterEach(() => {
+		if (orig === undefined) delete process.env.CONFIG_DIR;
+		else process.env.CONFIG_DIR = orig;
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it('returns the positive cap when one is configured', () => {
+		writeOrch('mode: event\nconcurrency:\n  maxAgents: 8\n  perProject: 3\n  dailySpawnCap: 150\n');
+		expect(bootDailySpawnCap()).toBe(150);
+	});
+
+	it('returns undefined (uncapped) when the cap is 0 (explicit uncapped sentinel)', () => {
+		writeOrch('mode: event\nconcurrency:\n  maxAgents: 8\n  perProject: 3\n  dailySpawnCap: 0\n');
+		expect(bootDailySpawnCap()).toBeUndefined();
+	});
+
+	it('returns undefined (uncapped) when the cap key is absent', () => {
+		writeOrch('mode: event\nconcurrency:\n  maxAgents: 8\n  perProject: 3\n');
+		expect(bootDailySpawnCap()).toBeUndefined();
+	});
+
+	it('returns undefined (honest, no fabricated cap) when the config is malformed', () => {
+		// A negative cap fails the config boundary; bootDailySpawnCap must NOT claim a cap is
+		// enforced — it reports uncapped (the orchestrator likewise skips start on a bad config).
+		writeOrch('mode: event\nconcurrency:\n  maxAgents: 8\n  perProject: 3\n  dailySpawnCap: -10\n');
+		expect(bootDailySpawnCap()).toBeUndefined();
+	});
+
+	it('returns undefined (honest) when the config dir is unreadable', () => {
+		// No orchestration.yaml written → read fails → uncapped (never a guessed denominator).
+		expect(bootDailySpawnCap()).toBeUndefined();
 	});
 });

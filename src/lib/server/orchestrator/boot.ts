@@ -52,9 +52,18 @@ import { resolveRoute, type RouteTask, type StaffRouteResolver } from '../routin
 import { resolveStaff, getProjectStaff, type Tier, type TierModelResolver } from '../workforce';
 import { Orchestrator, type StubRoute, type RouteResolver } from './orchestrator';
 
-/** What the boot wire did — so hooks.server.ts can log it and tests can assert it. */
+/** What the boot wire did — so hooks.server.ts can log it and tests can assert it.
+ *  `dailySpawnCap` is the D-021 rolling-24h CLAIM ceiling actually wired into the orchestrator
+ *  (undefined ⇒ uncapped — the operator left it 0/unset). Surfaced so a test can assert the
+ *  ENFORCED cap == the configured cap (the integrity check: reported == enforced). */
 export type OrchestratorBootResult =
-	| { started: true; orchestrator: Orchestrator; mode: OrchMode; maxConcurrent: number }
+	| {
+			started: true;
+			orchestrator: Orchestrator;
+			mode: OrchMode;
+			maxConcurrent: number;
+			dailySpawnCap?: number;
+	  }
 	| { started: false; reason: string };
 
 /** Load the orchestration config (mode + concurrency cap + the full bundle for routing),
@@ -65,6 +74,7 @@ function readOrchestrationConfig(): {
 	mode: OrchMode;
 	maxConcurrent: number;
 	intervalMs?: number;
+	dailySpawnCap?: number;
 	orchestration: Orchestration | null;
 } {
 	try {
@@ -74,13 +84,47 @@ function readOrchestrationConfig(): {
 			mode: orch.mode,
 			maxConcurrent: orch.concurrency.maxAgents,
 			intervalMs: orch.intervalMs,
+			// D-021 — the rolling-24h background-claim ceiling. Normalize 0/absent → undefined
+			// (uncapped) so the orchestrator's own `dailySpawnCap > 0` gate stays the single source
+			// of truth; a positive value arms the safety ceiling. Validated as a non-negative
+			// integer at the config boundary (loadOrchestration), so we trust the shape here.
+			dailySpawnCap: normalizeCap(orch.concurrency.dailySpawnCap),
 			orchestration: orch
 		};
 	} catch (err) {
 		console.warn(
 			`[startup] orchestration config unreadable — defaulting to event mode, maxConcurrent=4: ${(err as Error).message}`
 		);
+		// On an unreadable config we cannot read the operator's cap. We DO NOT fabricate one — the
+		// orchestrator only starts further down when the FULL config loads (it skips on a null
+		// orchestration), so this degraded branch never actually arms an uncapped spawner.
 		return { mode: 'event', maxConcurrent: 4, orchestration: null };
+	}
+}
+
+/** Coerce a configured daily cap to the orchestrator's contract: a positive finite integer arms
+ *  the cap; 0 / undefined / negative / non-finite ⇒ undefined (uncapped). Mirrors the
+ *  orchestrator's own `dailySpawnCap > 0` gate so the wired value and the enforced value agree. */
+function normalizeCap(raw: number | undefined): number | undefined {
+	return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : undefined;
+}
+
+/**
+ * The D-021 daily spawn cap the LIVE boot would wire — read straight from the same config the
+ * orchestrator reads, normalized through the same `> 0` gate. Exposed so a READ-ONLY consumer
+ * (the /atelier/queue monitor loader) can report the REAL enforced cap rather than guessing or
+ * showing 'no cap enforced' when one is in fact armed. Returns undefined (uncapped) on any
+ * read/parse failure — never a fabricated denominator (F-008). This is the single seam that keeps
+ * the REPORTED cap == the ENFORCED cap (the integrity requirement).
+ */
+export function bootDailySpawnCap(): number | undefined {
+	try {
+		const dir = process.env.CONFIG_DIR?.trim() || 'config';
+		const orch = loadOrchestration(`${dir}/orchestration.yaml`);
+		return normalizeCap(orch.concurrency.dailySpawnCap);
+	} catch {
+		// Unreadable config ⇒ we cannot claim a cap is enforced; report uncapped (honest, F-008).
+		return undefined;
 	}
 }
 
@@ -219,7 +263,7 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		return { started: false, reason: avail.reason };
 	}
 
-	const { mode, maxConcurrent, intervalMs, orchestration } = readOrchestrationConfig();
+	const { mode, maxConcurrent, intervalMs, dailySpawnCap, orchestration } = readOrchestrationConfig();
 
 	// The router needs BOTH the tier ladder (agent-pool) and the adaptive bundles
 	// (orchestration). Without them resolveRoute cannot pick a tier or apply D-020 — a started
@@ -255,11 +299,18 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		// event mode is harmless (the timer is only armed when mode==='periodic'), but we keep
 		// the orchestration.yaml intent faithful by forwarding it.
 		intervalMs,
+		// TASK 2.15 / D-021 — the REAL daily spawn cap (BL-9-H1 found this was OPT-IN and boot
+		// wired NONE, leaving the live system genuinely UNCAPPED). Wiring it here is the hard
+		// ceiling that makes 'full unsupervised' drive-to-release safe: the drain stops claiming
+		// once the rolling-24h claim count hits the cap (orchestrator #drain checks spawnsSince
+		// BEFORE each claim) and parks the rest. undefined ⇒ uncapped (operator left it 0/unset)
+		// — existing behavior preserved.
+		dailySpawnCap,
 		// TASK 2.3 — the REAL router: resolveRoute picks the tier from task content + writes the
 		// routing_event with rationale on every spawn (no constant DEFAULT_MODEL).
 		route: bootRoute(db, pool, orchestration)
 	});
 	orchestrator.start();
 
-	return { started: true, orchestrator, mode, maxConcurrent };
+	return { started: true, orchestrator, mode, maxConcurrent, dailySpawnCap };
 }

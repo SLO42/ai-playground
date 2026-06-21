@@ -172,6 +172,50 @@ describe('loadOrchestration — YAML + enum validation', () => {
 		expect(() => loadOrchestration(join(FIX, 'bad-mode.yaml'))).toThrow(ConfigError);
 	});
 
+	// D-021 — concurrency.dailySpawnCap (the rolling-24h background-claim ceiling).
+	describe('concurrency.dailySpawnCap (D-021 daily spawn cap)', () => {
+		it('parses a positive integer cap from the fixture', () => {
+			const orch = loadOrchestration(join(FIX, 'orchestration.yaml'));
+			expect(orch.concurrency.dailySpawnCap).toBe(200);
+		});
+
+		it('parses the SHIPPED config with a positive, operator-tunable cap', () => {
+			const orch = loadOrchestration(join(process.cwd(), 'config', 'orchestration.yaml'));
+			expect(typeof orch.concurrency.dailySpawnCap).toBe('number');
+			expect(orch.concurrency.dailySpawnCap).toBeGreaterThan(0);
+		});
+
+		it('treats an absent cap as undefined (uncapped — opt-in, existing behavior preserved)', () => {
+			const orch = loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { concurrency: { maxAgents: 8, perProject: 3 } }
+			});
+			expect(orch.concurrency.dailySpawnCap).toBeUndefined();
+		});
+
+		it('accepts 0 as the explicit uncapped sentinel', () => {
+			const orch = loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { concurrency: { maxAgents: 8, perProject: 3, dailySpawnCap: 0 } }
+			});
+			expect(orch.concurrency.dailySpawnCap).toBe(0);
+		});
+
+		it('rejects a negative cap (fail closed — the safety ceiling must be honest)', () => {
+			expect(() =>
+				loadOrchestration(join(FIX, 'orchestration.yaml'), {
+					_inject: { concurrency: { maxAgents: 8, perProject: 3, dailySpawnCap: -5 } }
+				})
+			).toThrow(/dailySpawnCap must be a non-negative integer/);
+		});
+
+		it('rejects a fractional cap (fail closed)', () => {
+			expect(() =>
+				loadOrchestration(join(FIX, 'orchestration.yaml'), {
+					_inject: { concurrency: { maxAgents: 8, perProject: 3, dailySpawnCap: 12.5 } }
+				})
+			).toThrow(/dailySpawnCap must be a non-negative integer/);
+		});
+	});
+
 	// TASK 2.12 — intent-adaptive bundle validation at the config boundary (D-020).
 	it('parses ALL FIVE intent bundles with their adaptive knobs', () => {
 		const orch = loadOrchestration(join(FIX, 'orchestration.yaml'));

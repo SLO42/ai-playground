@@ -5,6 +5,7 @@ intervalMs: 60000
 concurrency:
   maxAgents: 8
   perProject: 3
+  dailySpawnCap: 200   # D-021 rolling-24h background-claim ceiling (0 = uncapped)
 # Intent-adaptive config bundles (D-020): intent -> bundle. All five intents.
 bundles:
   simple-question:

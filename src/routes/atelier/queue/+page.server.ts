@@ -16,6 +16,7 @@ import {
 	type QueueStats,
 	type WorkItemRow
 } from '$lib/server/orchestrator/queue-monitor';
+import { bootDailySpawnCap } from '$lib/server/orchestrator/boot';
 import type { PageServerLoad } from './$types';
 
 /** A safe zeroed stats block for the disconnected/error path (honest, not fabricated). The cap
@@ -71,8 +72,13 @@ export const load: PageServerLoad = async ({ url, depends }): Promise<QueueData>
 		return { connected: false, stats: ZERO_STATS, active: [], completed: [], completedBefore: null };
 	}
 	try {
+		// BL-9-H1 LOW — thread the REAL enforced cap so the monitor reports the SAME D-021 daily
+		// cap the orchestrator actually enforces (boot.ts now wires one), not 'no cap enforced'.
+		// Read from the same config seam the orchestrator reads (bootDailySpawnCap), so reported
+		// == enforced. undefined ⇒ uncapped ⇒ queueStats reports capped:false (honest, no fake /N).
+		const dailyCap = bootDailySpawnCap();
 		const [stats, active, completed] = await Promise.all([
-			queueStats(db),
+			queueStats(db, { dailyCap }),
 			listWorkItems(db, { status: ['pending', 'processing'], limit: 100 }),
 			listWorkItems(db, { status: ['done', 'failed'], limit: COMPLETED_PAGE, before })
 		]);

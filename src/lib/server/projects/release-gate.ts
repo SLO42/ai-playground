@@ -50,6 +50,8 @@ import {
 	type RunTargetActionResult
 } from '../adapters/driver';
 import { execFileRunner, splitCommand, type CommandRunner } from '../orchestrator/post-task';
+import { buildCommandFor } from '../scanner/detect';
+import { existsSync } from 'node:fs';
 
 /** The objective sub-checks a gate ran, each with its honest pass/fail + a one-line reason (F-008). */
 export interface ReleaseGateCheck {
@@ -145,7 +147,7 @@ export async function runReleaseReadinessGate(input: ReleaseGateInput): Promise<
 		checks.push(check('target', false, 'project not found'));
 		return halt('target', 'the project row could not be read — halting (no publish)');
 	}
-	const cwd = project.root_path ?? '';
+	const cwd = (project.root_path ?? '').trim();
 
 	// (b) TARGET — the project's DECLARED default publish target (D-037). No target ⇒ halt honestly.
 	let target: ProjectTargetRow | null = null;
@@ -184,17 +186,55 @@ export async function runReleaseReadinessGate(input: ReleaseGateInput): Promise<
 	}
 	checks.push(check('token', true, requiredSecrets.length ? `required secret(s) present: ${requiredSecrets.map((s) => s.envVar).join(', ')}` : 'adapter requires no secret'));
 
-	// (d) BUILD — EXECUTE the project's own build command (real exit code, D-008 array, no shell). The
-	// project's build command is its `build_tool` (a runnable command, e.g. "dotnet build") or, absent
-	// that, its `test_command`. No runnable command ⇒ halt (we will not publish an UNBUILT artifact).
-	const buildCommand = (project.build_tool ?? project.test_command ?? '').trim();
-	if (!buildCommand) {
-		checks.push(check('build', false, 'no build command declared (project.build_tool / test_command absent)'));
-		return halt('build', 'no project build command is declared — halting (cannot verify the build, no publish)');
+	// (d) BUILD — EXECUTE a REAL build of the project (real exit code, D-008 array, no shell). Two FAIL-
+	// CLOSED preconditions first, then a REAL build INVOCATION resolved from the project's build tool.
+	//
+	// (d.0) ROOT — the build MUST run in the project's own root. An empty/absent root_path, or one that no
+	// longer exists on disk, is a RED build: we NEVER run the build in the dashboard cwd (that would compile
+	// the wrong thing and could false-GREEN). FAIL CLOSED, honest reason (LOW hole closed).
+	if (!cwd) {
+		checks.push(check('build', false, 'project root_path is missing/empty — refusing to build in the dashboard cwd'));
+		return halt('build', 'the project root_path is missing — halting (cannot build the project safely, no publish)');
 	}
-	const split = splitCommand(buildCommand);
+	if (!existsSync(cwd)) {
+		checks.push(check('build', false, `project root_path not found on disk: ${cwd}`));
+		return halt('build', 'the project root_path was not found on disk — halting (cannot build, no publish)');
+	}
+
+	// (d.1) COMMAND — resolve a REAL build invocation. `project.build_tool` is a BARE detected tool name
+	// (scanner detect.ts: 'dotnet'/'npm'/'cargo'/…), and a bare `dotnet` EXITS 0 WITHOUT BUILDING — a false
+	// GREEN that would publish an unbuilt artifact. So a bare tool token is mapped through buildCommandFor()
+	// (the single source of truth) to its real build command (e.g. dotnet→`dotnet build -c Release`). An
+	// UNKNOWN / un-buildable tool (e.g. 'pip') maps to null ⇒ FAIL CLOSED (RED), never silently green.
+	//   • build_tool absent  → fall back to test_command (last-resort real compile/run) or, absent that, RED.
+	//   • build_tool a SINGLE bare token → MUST map via buildCommandFor() or RED (no bare-tool-as-command).
+	//   • build_tool a MULTI-token string (operator-edited, e.g. "npm run build") → already a real command.
+	const buildToolRaw = (project.build_tool ?? '').trim();
+	const testCommandRaw = (project.test_command ?? '').trim();
+	let split: { file: string; args: string[] } | null;
+	if (!buildToolRaw) {
+		// No build tool detected/declared. The test_command is the only real compile/run we have.
+		if (!testCommandRaw) {
+			checks.push(check('build', false, 'no build command declared (project.build_tool / test_command absent)'));
+			return halt('build', 'no project build command is declared — halting (cannot verify the build, no publish)');
+		}
+		split = splitCommand(testCommandRaw);
+	} else if (/\s/.test(buildToolRaw)) {
+		// Already a multi-token real command (operator-edited). Run it as-is (still execFile array, no shell).
+		split = splitCommand(buildToolRaw);
+	} else {
+		// A BARE tool token — it MUST map to a real build invocation, or we FAIL CLOSED. We do NOT run the
+		// bare token (it would no-op-exit-0) and we do NOT fall through to test_command (that would mask an
+		// un-buildable tool as green): an un-mappable build_tool is an honest RED.
+		const mapped = buildCommandFor(buildToolRaw);
+		if (!mapped) {
+			checks.push(check('build', false, `build_tool "${buildToolRaw}" has no known real build command (un-buildable/unknown) — refusing to publish an unverified artifact`));
+			return halt('build', `the project build tool (${buildToolRaw}) has no real build command — halting (cannot verify the build, no publish)`);
+		}
+		split = mapped;
+	}
 	if (!split) {
-		checks.push(check('build', false, `build command is empty/unparseable: ${JSON.stringify(buildCommand)}`));
+		checks.push(check('build', false, `build command is empty/unparseable: ${JSON.stringify(buildToolRaw || testCommandRaw)}`));
 		return halt('build', 'the project build command is unparseable — halting (no publish)');
 	}
 	const run = input.runCommand ?? execFileRunner;

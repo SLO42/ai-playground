@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectEcosystem, slugify, readRepoUrl } from './detect';
+import { detectEcosystem, slugify, readRepoUrl, buildCommandFor } from './detect';
 
 // TASK 1.1 (detect half): pure ecosystem/mod detection over fixture directories.
 // No DB, no spawn — fixtures are real temp dirs with marker files.
@@ -135,5 +135,53 @@ describe('readRepoUrl', () => {
 	it('returns undefined when no git config', () => {
 		const dir = fixture('no-git', { 'package.json': '{}' });
 		expect(readRepoUrl(dir)).toBeUndefined();
+	});
+});
+
+describe('buildCommandFor — bare detected tool → REAL build invocation (release-gate safety)', () => {
+	it("maps 'dotnet' to a real `dotnet build` (NOT the bare no-op launcher)", () => {
+		const cmd = buildCommandFor('dotnet');
+		expect(cmd).not.toBeNull();
+		expect(cmd!.file).toBe('dotnet');
+		expect(cmd!.args[0]).toBe('build'); // bare `dotnet` exits 0 without building — must carry 'build'.
+		expect(cmd!.args.length).toBeGreaterThan(0);
+	});
+
+	it('maps every buildable detected tool to a multi-token invocation (verb present)', () => {
+		for (const [tool, file] of [
+			['npm', 'npm'],
+			['cargo', 'cargo'],
+			['gradle', 'gradle'],
+			['maven', 'mvn'],
+			['go', 'go']
+		] as const) {
+			const cmd = buildCommandFor(tool);
+			expect(cmd, tool).not.toBeNull();
+			expect(cmd!.file).toBe(file);
+			expect(cmd!.args.length, tool).toBeGreaterThan(0); // never the bare tool with no args.
+		}
+	});
+
+	it("returns null for the un-buildable 'pip' (Python has no single standard build) — FAIL CLOSED", () => {
+		expect(buildCommandFor('pip')).toBeNull();
+	});
+
+	it('returns null for unknown/empty/nil tools (shadow paths) — FAIL CLOSED', () => {
+		expect(buildCommandFor('frobnicate')).toBeNull();
+		expect(buildCommandFor('')).toBeNull();
+		expect(buildCommandFor('   ')).toBeNull();
+		expect(buildCommandFor(undefined)).toBeNull();
+		expect(buildCommandFor(null)).toBeNull();
+	});
+
+	it('is case-insensitive and trims whitespace around the tool name', () => {
+		expect(buildCommandFor('  DotNet ')!.args[0]).toBe('build');
+	});
+
+	it('returns a fresh args array each call (no shared mutable state)', () => {
+		const a = buildCommandFor('dotnet')!;
+		a.args.push('--mutated');
+		const b = buildCommandFor('dotnet')!;
+		expect(b.args).not.toContain('--mutated');
 	});
 });

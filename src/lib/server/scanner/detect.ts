@@ -102,6 +102,39 @@ const LANGUAGE_RULES: LanguageRule[] = [
 ];
 
 /**
+ * Map a BARE detected build tool (what `LANGUAGE_RULES[].buildTool` emits and what
+ * `project.build_tool` persists — e.g. 'dotnet'/'npm'/'cargo') to a REAL build INVOCATION
+ * (program + args) that actually compiles the project. This is the SINGLE SOURCE OF TRUTH
+ * for "given the tool, how do I really build it" — the release gate maps through it so a
+ * bare tool name (e.g. `dotnet`, which exits 0 WITHOUT building) can never produce a false
+ * GREEN on an unbuilt artifact.
+ *
+ * Returns null for an unknown OR un-buildable tool (e.g. 'pip' — Python has no single
+ * standard build step). A null is the FAIL-CLOSED signal: the caller must treat it as a RED
+ * build, never as "no build needed". Each command is split into program + argv (no shell —
+ * it is run through execFile, D-008): the args carry the verb/flags as literal argv tokens.
+ */
+const BUILD_COMMANDS: Record<string, { file: string; args: string[] }> = {
+	// .NET: bare `dotnet` is a no-op launcher that exits 0; the real compile is `dotnet build`.
+	dotnet: { file: 'dotnet', args: ['build', '-c', 'Release'] },
+	npm: { file: 'npm', args: ['run', 'build'] },
+	cargo: { file: 'cargo', args: ['build', '--release'] },
+	gradle: { file: 'gradle', args: ['build'] },
+	maven: { file: 'mvn', args: ['-B', '-q', 'package'] },
+	go: { file: 'go', args: ['build', './...'] }
+	// 'pip' is intentionally ABSENT — Python has no single standard build step, so it maps to
+	// null and the release gate FAILS CLOSED rather than publishing an unverified artifact.
+};
+
+export function buildCommandFor(tool: string | undefined | null): { file: string; args: string[] } | null {
+	if (!tool) return null;
+	const key = tool.trim().toLowerCase();
+	if (!key) return null;
+	const mapped = BUILD_COMMANDS[key];
+	return mapped ? { file: mapped.file, args: [...mapped.args] } : null;
+}
+
+/**
  * True when any file under `dir` (bounded recursive, depth ≤ `maxDepth`) ends
  * with `ext`. Mod/.NET project files frequently live one or two levels down
  * (e.g. `src/SWIP.csproj`), so a top-level-only check misses them.

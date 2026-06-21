@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
-import { createProject } from './repo';
+import { createProject, updateProject } from './repo';
 import { declareTarget } from '../adapters/registry';
 import { getAdapterRegistry, resetAdapterRegistry } from '../adapters/index';
 import type {
@@ -36,6 +39,9 @@ let tdb: TestDb;
 let db: Db;
 let projectId: string;
 let seq = 0;
+// A REAL on-disk directory so the gate's root_path existence check (fail-closed) passes for the
+// happy-path projects. NO real build/publish runs here — the build runner is always an injected stub.
+let projectRoot: string;
 
 const STUB_SECRET = 'STUB_PUBLISH_TOKEN';
 
@@ -83,12 +89,14 @@ beforeAll(async () => {
 		database: tdb.database
 	});
 	await runMigrations(db, schemaMigrations);
+	projectRoot = mkdtempSync(join(tmpdir(), 'relgate-root-'));
 }, 90_000);
 
 afterAll(async () => {
 	resetAdapterRegistry();
 	await db?.close().catch(() => {});
 	await tdb?.teardown();
+	if (projectRoot) rmSync(projectRoot, { recursive: true, force: true });
 });
 
 beforeEach(async () => {
@@ -96,7 +104,7 @@ beforeEach(async () => {
 	const p = await createProject(db, {
 		slug: `relgate${++seq}`,
 		name: 'Gate Host',
-		root_path: 'F:/code/relgate',
+		root_path: projectRoot,
 		build_tool: 'npm run build'
 	});
 	projectId = p.id;
@@ -122,6 +130,19 @@ async function declareStubTarget() {
 /** A build runner that always exits with the given code. */
 function buildExit(code: number | null, stderr = ''): (f: string, a: readonly string[], o: { cwd: string }) => Promise<CommandResult> {
 	return async () => ({ code, stdout: 'building…', stderr });
+}
+
+/**
+ * A build runner that CAPTURES the exact (file, args, cwd) it was handed and exits with `code`.
+ * Used to assert the gate runs a REAL build invocation ('dotnet build', not bare 'dotnet').
+ */
+function captureBuild(code: number | null) {
+	const calls: Array<{ file: string; args: string[]; cwd: string }> = [];
+	const fn = async (file: string, args: readonly string[], opts: { cwd: string }): Promise<CommandResult> => {
+		calls.push({ file, args: [...args], cwd: opts.cwd });
+		return { code, stdout: 'building…', stderr: '' };
+	};
+	return { fn, calls };
 }
 
 /** A publish seam capturing what it was handed; returns a green (or red) driver result. */
@@ -342,9 +363,9 @@ describe('runReleaseReadinessGate — missing target/token halt honestly', () =>
 	});
 
 	it('no build command declared → published:false, failedAt build, NO publish', async () => {
-		// A project with no build_tool/test_command.
+		// A project with no build_tool/test_command (root_path exists, so we reach the build-command check).
 		await db.query('DELETE project_target; DELETE project;');
-		const p = await createProject(db, { slug: `relgate${++seq}`, name: 'No Build', root_path: 'F:/code/nb' });
+		const p = await createProject(db, { slug: `relgate${++seq}`, name: 'No Build', root_path: projectRoot });
 		projectId = p.id;
 		resetAdapterRegistry();
 		stub = new StubPublisher();
@@ -387,5 +408,137 @@ describe('runReleaseReadinessGate — a publish that does not complete halts hon
 		expect(out.published).toBe(false);
 		expect(out.failedAt).toBe('publish');
 		expect(out.summary).toMatch(/did NOT complete/i);
+	});
+});
+
+// ── EXP-1 HARDENING: a BARE build tool must run a REAL build; un-buildable/missing fails CLOSED ──────
+//
+// The auto-publish safety hole: the scanner persists a BARE tool name into project.build_tool
+// ('dotnet'/'npm'/'cargo'/…). Running a bare `dotnet` EXITS 0 WITHOUT BUILDING → a false-GREEN gate that
+// would publish an unbuilt artifact. These tests pin the fix: the gate maps the bare tool to its REAL
+// build invocation, a compile FAILURE yields RED (no publish), an un-buildable tool fails closed, and a
+// missing/absent root_path fails closed. NO real build/publish — the runner is a capturing stub.
+describe('runReleaseReadinessGate — EXP-1: bare build_tool runs a REAL build (no false-green)', () => {
+	/** Fresh project with the given build_tool (and a real on-disk root), default target + secret armed. */
+	async function freshProject(buildTool: string | undefined, root = projectRoot): Promise<string> {
+		await db.query('DELETE project_target; DELETE project;');
+		const p = await createProject(db, {
+			slug: `relgate${++seq}`,
+			name: 'Bare Tool Host',
+			root_path: root,
+			...(buildTool ? { build_tool: buildTool } : {})
+		});
+		resetAdapterRegistry();
+		stub = new StubPublisher();
+		getAdapterRegistry().register(stub);
+		await declareTarget(db, {
+			project: p.id,
+			kind: 'publish',
+			adapterId: 'stub-publish',
+			label: 'Stub Publisher',
+			config: { namespace: 'team' },
+			enabled: true,
+			isDefault: true
+		});
+		return p.id;
+	}
+
+	it("build_tool='dotnet' → the gate runs `dotnet build` (NOT bare `dotnet`), green build proceeds", async () => {
+		const pid = await freshProject('dotnet');
+		const build = captureBuild(0);
+		const pub = capturePublish(true);
+		const out = await runReleaseReadinessGate({ db, env, projectId: pid, consent: true, runCommand: build.fn, runPublish: pub.fn });
+		expect(out.published).toBe(true);
+		// The EXACT command executed is a REAL build invocation, not the bare tool.
+		expect(build.calls.length).toBe(1);
+		expect(build.calls[0].file).toBe('dotnet');
+		expect(build.calls[0].args[0]).toBe('build'); // 'dotnet build …' — NOT bare 'dotnet'.
+		expect(build.calls[0].args).not.toEqual([]); // never run the bare tool with no args.
+		expect(build.calls[0].cwd).toBe(projectRoot); // run in the project's own root.
+		expect(pub.calls.length).toBe(1);
+	});
+
+	it("build_tool='dotnet' but the build EXITS NON-ZERO → gate RED at build, NO publish", async () => {
+		const pid = await freshProject('dotnet');
+		const build = captureBuild(1); // a real `dotnet build` that fails to compile.
+		const pub = capturePublish(true);
+		const out = await runReleaseReadinessGate({ db, env, projectId: pid, consent: true, runCommand: build.fn, runPublish: pub.fn });
+		expect(out.published).toBe(false);
+		expect(out.failedAt).toBe('build');
+		expect(build.calls[0].args[0]).toBe('build');
+		expect(pub.calls.length).toBe(0); // a compile failure NEVER publishes.
+	});
+
+	it.each(['npm', 'cargo', 'gradle', 'maven', 'go'])(
+		"bare build_tool='%s' maps to a real multi-token build invocation (never the bare tool alone)",
+		async (tool) => {
+			const pid = await freshProject(tool);
+			const build = captureBuild(0);
+			const pub = capturePublish(true);
+			const out = await runReleaseReadinessGate({ db, env, projectId: pid, consent: true, runCommand: build.fn, runPublish: pub.fn });
+			expect(out.published).toBe(true);
+			expect(build.calls.length).toBe(1);
+			// A real build always carries at least one arg (the verb) — never the bare tool with no args.
+			expect(build.calls[0].args.length).toBeGreaterThan(0);
+		}
+	);
+
+	it("an UNKNOWN/un-buildable bare build_tool (e.g. 'pip') FAILS CLOSED → RED at build, NO build run, NO publish", async () => {
+		const pid = await freshProject('pip'); // python: no single standard build step → un-mappable.
+		const build = captureBuild(0);
+		const pub = capturePublish(true);
+		const out = await runReleaseReadinessGate({ db, env, projectId: pid, consent: true, runCommand: build.fn, runPublish: pub.fn });
+		expect(out.published).toBe(false);
+		expect(out.failedAt).toBe('build');
+		expect(out.summary).toMatch(/no real build command/i);
+		expect(build.calls.length).toBe(0); // we NEVER ran a bare un-buildable tool…
+		expect(pub.calls.length).toBe(0); // …and NEVER published.
+	});
+
+	it("a gibberish bare build_tool ('frobnicate') FAILS CLOSED → RED at build, NO publish", async () => {
+		const pid = await freshProject('frobnicate');
+		const build = captureBuild(0);
+		const pub = capturePublish(true);
+		const out = await runReleaseReadinessGate({ db, env, projectId: pid, consent: true, runCommand: build.fn, runPublish: pub.fn });
+		expect(out.published).toBe(false);
+		expect(out.failedAt).toBe('build');
+		expect(build.calls.length).toBe(0);
+		expect(pub.calls.length).toBe(0);
+	});
+
+	it("an operator-edited MULTI-token build_tool ('dotnet build -c Release') is run as-is", async () => {
+		const pid = await freshProject('dotnet build -c Release');
+		const build = captureBuild(0);
+		const pub = capturePublish(true);
+		const out = await runReleaseReadinessGate({ db, env, projectId: pid, consent: true, runCommand: build.fn, runPublish: pub.fn });
+		expect(out.published).toBe(true);
+		expect(build.calls[0].file).toBe('dotnet');
+		expect(build.calls[0].args).toEqual(['build', '-c', 'Release']);
+	});
+
+	it('an EMPTY root_path FAILS CLOSED → RED at build, NO build run in the dashboard cwd, NO publish', async () => {
+		const pid = await freshProject('dotnet');
+		await updateProject(db, pid, { root_path: '   ' }); // whitespace-only → trims to empty.
+		const build = captureBuild(0);
+		const pub = capturePublish(true);
+		const out = await runReleaseReadinessGate({ db, env, projectId: pid, consent: true, runCommand: build.fn, runPublish: pub.fn });
+		expect(out.published).toBe(false);
+		expect(out.failedAt).toBe('build');
+		expect(out.summary).toMatch(/root_path is missing/i);
+		expect(build.calls.length).toBe(0); // NEVER ran the build in the wrong cwd.
+		expect(pub.calls.length).toBe(0);
+	});
+
+	it('a root_path that does NOT exist on disk FAILS CLOSED → RED at build, NO publish', async () => {
+		const pid = await freshProject('dotnet');
+		await updateProject(db, pid, { root_path: join(projectRoot, 'does', 'not', 'exist') });
+		const build = captureBuild(0);
+		const pub = capturePublish(true);
+		const out = await runReleaseReadinessGate({ db, env, projectId: pid, consent: true, runCommand: build.fn, runPublish: pub.fn });
+		expect(out.published).toBe(false);
+		expect(out.failedAt).toBe('build');
+		expect(out.summary).toMatch(/not found on disk/i);
+		expect(build.calls.length).toBe(0);
+		expect(pub.calls.length).toBe(0);
 	});
 });

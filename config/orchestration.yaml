@@ -59,10 +59,15 @@ bundles:
     # driven code-write session may wield. The runtime catalog-validates these at spawn
     # (fail closed on an unknown id) and composes them onto the harness base — operator
     # plugins/marketplaces stay empty (D-002 isolation). Edit to match the live catalog.
-    capabilities:
-      skills:
-        - svelte5-patterns
-        - error-learning
+    #
+    # INTENTIONALLY EMPTY (F-045): the live cc-config catalog is populated ONLY from synced
+    # `.claude` scopes (project roots + ~/.claude via cc-config/sync). `svelte5-patterns` /
+    # `error-learning` live solely in the platform repo's own `.claude` — which is neither a
+    # registered project root nor ~/.claude — so they can never enter the catalog through the
+    # current sync path, and declaring them here fail-closes EVERY code-write spawn (D-036).
+    # They're also project-irrelevant (a svelte skill on a C#/BepInEx build). Re-add ids here
+    # ONLY after they appear in the live catalog (a synced scope that carries them). With no
+    # `capabilities` block, the runtime composes the EMPTY_SET (no throw) onto the harness base.
   code-debug:
     thinking: high
     retrievalDepth: 10

@@ -11,6 +11,7 @@
   import { invalidate } from '$app/navigation';
   import { stream } from '$lib/client/stream.svelte';
   import SessionTranscript from '$lib/components/shell/SessionTranscript.svelte';
+  import SessionFailureReason from '$lib/components/shell/SessionFailureReason.svelte';
   import { rowToTurn, interjectEventToTurn, type Turn } from '$lib/client/transcript-core';
   import type { PageData, ActionData } from './$types';
 
@@ -350,16 +351,7 @@
                    it is safe to render verbatim. Only shown on a failed row that actually has a
                    reason; a failed row with no note (legacy rows before this fix) shows the honest
                    "no reason recorded" rather than a fabricated one (F-008). -->
-              {#if s.status === 'failed'}
-                <p class="sess-fail-reason" role="status">
-                  <span class="fail-label">reason</span>
-                  {#if s.note}
-                    <span class="fail-text">{s.note}</span>
-                  {:else}
-                    <span class="fail-text none">no reason recorded</span>
-                  {/if}
-                </p>
-              {/if}
+              <SessionFailureReason status={s.status} note={s.note} variant="row" />
 
               {#if isRunning && openInterject === s.id}
                 <div class="interject-row">
@@ -425,15 +417,8 @@
            launch write). Surfaced in the transcript header so a failed session explains itself
            right where the operator is reading it; a failed session with no note shows the honest
            "no reason recorded" (F-008), never a fabricated one. -->
-      {#if sessionMeta?.status === 'failed'}
-        <p class="tp-fail-reason" role="status">
-          <span class="fail-label">failure reason</span>
-          {#if sessionMeta.note}
-            <span class="fail-text">{sessionMeta.note}</span>
-          {:else}
-            <span class="fail-text none">no reason recorded</span>
-          {/if}
-        </p>
+      {#if sessionMeta}
+        <SessionFailureReason status={sessionMeta.status} note={sessionMeta.note} variant="panel" />
       {/if}
 
       <div class="transcript-log" role="log" aria-live="polite" aria-label="conversation transcript">
@@ -1246,37 +1231,10 @@
     margin: 0;
   }
 
-  /* ── OBSERVABILITY — honest failure reason on a failed session (tokens only; AA contrast) ── */
-  .sess-fail-reason,
-  .tp-fail-reason {
-    display: flex;
-    align-items: baseline;
-    flex-wrap: wrap;
-    gap: var(--space-2, 0.5rem);
-    margin: var(--space-2, 0.5rem) 0 0;
-    padding: var(--space-2, 0.5rem) var(--space-3, 0.75rem);
-    background: var(--color-surface-overlay);
-    border-left: 3px solid var(--color-error);
-    border-radius: var(--radius-sm, 6px);
-    font: var(--type-body-sm);
-  }
-  .fail-label {
-    flex: none;
-    font-size: 0.7rem;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.04em;
-    color: var(--color-error);
-  }
-  .fail-text {
-    color: var(--color-text);
-    word-break: break-word;
-    white-space: pre-wrap;
-  }
-  .fail-text.none {
-    color: var(--color-text-muted);
-    font-style: italic;
-  }
+  /* ── OBSERVABILITY — the honest failure-reason banner is now the shared
+       SessionFailureReason component (single render + AA-contrast source of
+       truth); the formerly-duplicated .sess-fail-reason/.tp-fail-reason/
+       .fail-label/.fail-text CSS lived here and was removed with it. ── */
 
   /* ── TASK (transcript-panel) — live read-only transcript (tokens-only; a11y AA; reduced-motion safe) ── */
   .transcript-panel {

@@ -63,7 +63,11 @@
     font-weight: 700;
     text-transform: uppercase;
     letter-spacing: 0.04em;
-    color: var(--color-error);
+    /* On --color-surface-overlay this small (≈11px) bold text is BODY-AA: it MUST use
+       the on-overlay token (error-300, 5.31:1), not raw --color-error (error-500, 3.50:1
+       — only AA_LARGE). The contrast gate covers the *-on-overlay pairings, not raw
+       --color-error as body text on the overlay. (colors.css:111-118) */
+    color: var(--color-error-on-overlay);
   }
   .fail-text {
     color: var(--color-text);

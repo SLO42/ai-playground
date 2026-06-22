@@ -40,7 +40,7 @@
 
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
-import { listTasksByProject } from '../tasks/repo';
+import { getTask, listTasksByProject, type TaskStatus } from '../tasks/repo';
 
 /** EVERY ERROR HAS A NAME — the orchestrator handle was absent (degraded/no-credential boot). The
  *  caller maps this to an honest 503 reason; nothing was enqueued or spawned. */
@@ -174,6 +174,19 @@ export interface RestartableSession {
 export const RESTARTABLE_SESSION_STATUSES: readonly string[] = ['failed', 'stale', 'unknown'] as const;
 
 /**
+ * The task statuses a RESTART is allowed to re-run — the SAME spawn-ready filter CONTINUE uses
+ * (continueReadyTasks enqueues `listTasksByProject(db, pid, 'ready')`). A task_run spawns the task
+ * behind the failed session UNCONDITIONALLY (orchestrator #runItem / launchSession read payload.taskId
+ * and spawn; spawn does NOT move the task off `ready`), so the SESSION-status guard alone is not enough:
+ * a failed session whose TASK has since ADVANCED (done/review/withdrawn/in_progress, or never readied —
+ * proposed/backlog/blocked) must NOT be re-spawned, or RESTART fabricates rework on a non-runnable task —
+ * the exact failure the done-SESSION guard claims to prevent, reached via a stale failed session
+ * (asymmetry with CONTINUE, which re-reads the task and is immune). Mirrors CONTINUE: `ready` only — the
+ * operator re-readies a task (→ ready) before restarting, exactly as CONTINUE requires.
+ */
+export const SPAWN_READY_TASK_STATUSES: readonly TaskStatus[] = ['ready'] as const;
+
+/**
  * RESTART — re-run the task behind a FAILED/stuck session by re-enqueuing its task_run through the SAME
  * orchestrator seam. Guarded against double-spawn by the work_item dedup_key (a second click while the
  * re-run is pending/processing is a no-op, enqueued:false). Guarded against cross-project leakage: the
@@ -183,10 +196,14 @@ export const RESTARTABLE_SESSION_STATUSES: readonly string[] = ['failed', 'stale
  * project + status + task here at the boundary (NO-GUESSING — never trust the client's claim). A session
  * with no task (a chat/discussion turn) cannot be "re-run as a task" → named error. A session that is
  * cleanly done or actively running is refused (RESTARTABLE_SESSION_STATUSES) so RESTART never duplicates
- * live work nor fabricates rework. Spend is bounded by the orchestrator's cap + semaphore in drain().
+ * live work. AND — critically — we re-read the TASK's current status (getTask) and refuse a task that has
+ * since advanced past spawn-ready (SPAWN_READY_TASK_STATUSES, mirroring CONTINUE's ready-filter): a stale
+ * failed session whose task is now done/review/withdrawn/in_progress would otherwise re-spawn fabricated
+ * rework. Spend is bounded by the orchestrator's cap + semaphore in drain().
  */
 export async function restartSessionTask(
 	orchestrator: OrchestratorControl | null,
+	db: Db,
 	projectId: string,
 	session: RestartableSession
 ): Promise<RestartResult> {
@@ -221,6 +238,26 @@ export async function restartSessionTask(
 	}
 	// Validate the task id at the boundary (D-016) before it flows into enqueueTask.
 	const tid = assertRecordId(taskId);
+
+	// TASK-STATUS GUARD (the asymmetry RESTART used to miss): re-read the TASK's CURRENT status and refuse
+	// a non-spawn-ready task. The session-status guard above only proves the SESSION is failed/stuck; it
+	// says NOTHING about the task, which may have ADVANCED since the session failed (a successful retry +
+	// PM-review moved it to done/review, the operator withdrew it, or another run took it in_progress).
+	// Spawn is unconditional (orchestrator #runItem / launchSession spawn payload.taskId without a task
+	// gate; spawn does NOT move the task off ready), so without this re-read RESTART would fabricate rework
+	// on a terminal/advanced task — the exact failure the done-SESSION guard claims to prevent, via a stale
+	// session. This mirrors CONTINUE, which re-reads listTasksByProject(...,'ready') and is immune. The task
+	// must still exist and be in a spawn-ready status (SPAWN_READY_TASK_STATUSES = the 'ready' set CONTINUE
+	// drives) — else a NAMED honest refusal (409), nothing enqueued.
+	const task = await getTask(db, tid);
+	if (!task) {
+		throw new SessionControlError('the session’s task no longer exists — nothing to re-run');
+	}
+	if (!SPAWN_READY_TASK_STATUSES.includes(task.status)) {
+		throw new SessionControlError(
+			`task status "${task.status}" is not re-runnable — the task has moved on since this session failed (re-running would fabricate rework). Move it back to ready to restart.`
+		);
+	}
 
 	// Re-enqueue the SAME task. Idempotent via the dedup_key: a re-run already pending/processing is a
 	// no-op (enqueued:false) — the double-click / concurrent-restart guard.

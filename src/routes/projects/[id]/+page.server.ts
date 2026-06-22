@@ -1747,7 +1747,7 @@ export const actions: Actions = {
 		if (!session) return fail(404, { restart: { error: 'session not found' } });
 
 		try {
-			const res = await restartSessionTask(activeOrchestrator(), projectId, {
+			const res = await restartSessionTask(activeOrchestrator(), db, projectId, {
 				id: session.id,
 				status: session.status,
 				project: session.projectId,

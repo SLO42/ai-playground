@@ -203,33 +203,33 @@ describe('continueReadyTasks', () => {
 describe('restartSessionTask', () => {
 	it('re-runs a FAILED session’s task once', async () => {
 		const p = await seedProject('proj_restart');
-		const t = await createTask(db, { project: p, title: 'failed task', description: 'x' });
-		const s = await seedSession({ projectId: p, taskId: t.id, status: 'failed' });
+		const tid = await seedReadyTask(p, 'failed task');
+		const s = await seedSession({ projectId: p, taskId: tid, status: 'failed' });
 		const orch = mockOrchestrator(db);
 
-		const res = await restartSessionTask(orch, p, {
+		const res = await restartSessionTask(orch, db, p, {
 			id: s,
 			status: 'failed',
 			project: p,
-			taskId: t.id
+			taskId: tid
 		});
-		expect(res.taskId).toBe(t.id);
+		expect(res.taskId).toBe(tid);
 		expect(res.enqueued).toBe(true);
 		expect(res.spawned).toBe(1);
-		expect(orch.enqueueCalls).toEqual([t.id]);
+		expect(orch.enqueueCalls).toEqual([tid]);
 	});
 
 	it('double RESTART does NOT double-spawn — the dedup_key guards the re-run', async () => {
 		const p = await seedProject('proj_restart2');
-		const t = await createTask(db, { project: p, title: 'failed task', description: 'x' });
-		const s = await seedSession({ projectId: p, taskId: t.id, status: 'failed' });
+		const tid = await seedReadyTask(p, 'failed task');
+		const s = await seedSession({ projectId: p, taskId: tid, status: 'failed' });
 		const orch = mockOrchestrator(db);
 		const enqOnly: OrchestratorControl = {
 			enqueueTask: orch.enqueueTask,
 			drain: async () => ({ claimed: 0, spawned: 0 })
 		};
-		const r1 = await restartSessionTask(enqOnly, p, { id: s, status: 'failed', project: p, taskId: t.id });
-		const r2 = await restartSessionTask(enqOnly, p, { id: s, status: 'failed', project: p, taskId: t.id });
+		const r1 = await restartSessionTask(enqOnly, db, p, { id: s, status: 'failed', project: p, taskId: tid });
+		const r2 = await restartSessionTask(enqOnly, db, p, { id: s, status: 'failed', project: p, taskId: tid });
 		expect(r1.enqueued).toBe(true);
 		expect(r2.enqueued).toBe(false); // dedup no-op — the benign double-click guard
 		expect(await countByStatus(db, 'pending')).toBe(1);
@@ -243,7 +243,7 @@ describe('restartSessionTask', () => {
 		const orch = mockOrchestrator(db);
 		// Try to restart B's session FROM project A → refused.
 		await expect(
-			restartSessionTask(orch, pA, { id: s, status: 'failed', project: pB, taskId: t.id })
+			restartSessionTask(orch, db, pA, { id: s, status: 'failed', project: pB, taskId: t.id })
 		).rejects.toBeInstanceOf(SessionControlError);
 		expect(orch.enqueueCalls).toEqual([]);
 	});
@@ -254,7 +254,7 @@ describe('restartSessionTask', () => {
 		const orch = mockOrchestrator(db);
 		for (const status of ['done', 'running']) {
 			await expect(
-				restartSessionTask(orch, p, { id: 'session:x', status, project: p, taskId: t.id })
+				restartSessionTask(orch, db, p, { id: 'session:x', status, project: p, taskId: t.id })
 			).rejects.toBeInstanceOf(SessionControlError);
 		}
 		expect(orch.enqueueCalls).toEqual([]);
@@ -264,7 +264,7 @@ describe('restartSessionTask', () => {
 		const p = await seedProject('proj_notask');
 		const orch = mockOrchestrator(db);
 		await expect(
-			restartSessionTask(orch, p, { id: 'session:y', status: 'failed', project: p, taskId: null })
+			restartSessionTask(orch, db, p, { id: 'session:y', status: 'failed', project: p, taskId: null })
 		).rejects.toBeInstanceOf(SessionControlError);
 		expect(orch.enqueueCalls).toEqual([]);
 	});
@@ -272,7 +272,55 @@ describe('restartSessionTask', () => {
 	it('nil orchestrator → NAMED OrchestratorUnavailableError', async () => {
 		const p = await seedProject('proj_restart_noorch');
 		await expect(
-			restartSessionTask(null, p, { id: 'session:z', status: 'failed', project: p, taskId: 'task:1' })
+			restartSessionTask(null, db, p, { id: 'session:z', status: 'failed', project: p, taskId: 'task:1' })
 		).rejects.toBeInstanceOf(OrchestratorUnavailableError);
+	});
+
+	// REGRESSION (red-team second-pass MEDIUM): a FAILED session whose TASK has since ADVANCED past
+	// spawn-ready must be refused — RESTART used to re-spawn it (fabricated rework on a non-runnable task),
+	// the exact failure the done-SESSION guard claims to prevent, reached via a stale failed session.
+	it('refuses a FAILED session whose task has ADVANCED past ready (done/review/withdrawn/in_progress)', async () => {
+		const advanced: Array<[string, (tid: string) => Promise<void>]> = [
+			['done', async (tid) => { await setStatus(db, tid, 'in_progress'); await setStatus(db, tid, 'done'); }],
+			['review', async (tid) => { await setStatus(db, tid, 'in_progress'); await setStatus(db, tid, 'review'); }],
+			['in_progress', async (tid) => { await setStatus(db, tid, 'in_progress'); }],
+			['blocked', async (tid) => { await setStatus(db, tid, 'blocked'); }]
+		];
+		for (const [label, advance] of advanced) {
+			const p = await seedProject(`proj_adv_${label}`);
+			const tid = await seedReadyTask(p, `task ${label}`); // born ready (the session's run target)
+			const s = await seedSession({ projectId: p, taskId: tid, status: 'failed' });
+			await advance(tid); // a successful retry / PM-review / operator moved it on AFTER the session failed
+			const orch = mockOrchestrator(db);
+			await expect(
+				restartSessionTask(orch, db, p, { id: s, status: 'failed', project: p, taskId: tid })
+			).rejects.toBeInstanceOf(SessionControlError);
+			// NOTHING was enqueued — the asymmetry with CONTINUE (which re-reads ready) is closed.
+			expect(orch.enqueueCalls).toEqual([]);
+			expect(await countByStatus(db, 'pending')).toBe(0);
+		}
+	});
+
+	// REGRESSION: a backlog task (never readied) behind a failed session is also refused (spawn-ready set
+	// is `ready` only — mirrors CONTINUE; the operator re-readies before restarting).
+	it('refuses a FAILED session whose task is still backlog (never readied)', async () => {
+		const p = await seedProject('proj_backlog_restart');
+		const t = await createTask(db, { project: p, title: 'backlog', description: 'x' }); // stays backlog
+		const s = await seedSession({ projectId: p, taskId: t.id, status: 'failed' });
+		const orch = mockOrchestrator(db);
+		await expect(
+			restartSessionTask(orch, db, p, { id: s, status: 'failed', project: p, taskId: t.id })
+		).rejects.toBeInstanceOf(SessionControlError);
+		expect(orch.enqueueCalls).toEqual([]);
+	});
+
+	// REGRESSION: a failed session whose task was DELETED is refused (named), not a crash.
+	it('refuses a FAILED session whose task no longer exists', async () => {
+		const p = await seedProject('proj_gone_restart');
+		const orch = mockOrchestrator(db);
+		await expect(
+			restartSessionTask(orch, db, p, { id: 'session:gone', status: 'failed', project: p, taskId: `task:nonexistent_${Date.now()}` })
+		).rejects.toBeInstanceOf(SessionControlError);
+		expect(orch.enqueueCalls).toEqual([]);
 	});
 });

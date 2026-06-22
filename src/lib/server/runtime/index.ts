@@ -301,7 +301,14 @@ export function isolatedConfigFor(
 	opts: IsolatedConfigOptions
 ): IsolatedConfig {
 	const root = opts.harnessConfigRoot.replace(/[\\/]+$/, '');
-	const configDir = `${root}/${safeSegment(req.agentId)}`;
+	// F-046: key the isolated CLAUDE_CONFIG_DIR by SESSION id, not agent slot. The Claude CLI
+	// writes `.claude.json` (state/trust) into this dir at startup; two concurrent sessions that
+	// shared one slot's dir (the old `${root}/${agentId}`) raced that write → "JSON Parse error:
+	// Unexpected EOF" → every-but-one parallel spawn died. Session ids are unique per spawn, so
+	// each concurrent session now gets its OWN dir. Resume reuses the SAME session id (channel.ts
+	// threads req.sessionId), so the CLI's transcript reuse (keyed by configDir+cwd) still works.
+	// Legacy/no-sessionId spawns fall back to the slot id — byte-identical to the old behavior.
+	const configDir = `${root}/${safeSegment(req.sessionId ?? req.agentId)}`;
 
 	// Strip the operator's inherited CLAUDE_CONFIG_DIR; pin ours. The whole point of
 	// the isolation is that the driven agent never sees the operator's global config.

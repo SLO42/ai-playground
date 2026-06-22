@@ -19,6 +19,7 @@
   import SessionTranscript from '$lib/components/shell/SessionTranscript.svelte';
   import SessionFailureReason from '$lib/components/shell/SessionFailureReason.svelte';
   import FileSnapshotViewer from '$lib/components/shell/FileSnapshotViewer.svelte';
+  import ProjectStatus from '$lib/components/project/ProjectStatus.svelte';
   import {
     rowToTurn,
     liveEventToTurn,
@@ -251,6 +252,9 @@
   }
   // The live loop's honest stop/continue state for this project (null when the loop has not acted yet).
   const loopState = $derived(data.autonomousLoop ?? null);
+  // CC-STATUS — the headline work-queue stats for the status dashboard's spawn-budget tile (null on a
+  // degraded boot — the tile shows an honest empty, never a fabricated count).
+  const queue = $derived(data.queue ?? null);
   const loopStateLabel = $derived.by((): string => {
     switch (loopState?.state) {
       case 'running': return 'Driving — working the next batch';
@@ -876,6 +880,19 @@
 
     {#if tab === 'overview'}
       <div class="tab-body">
+        <!-- CC-STATUS — the at-a-glance command-center status dashboard (extracted sub-component). All
+             counts/badges derive LIVE from the rows the loader already fetched (F-008). -->
+        <ProjectStatus
+          name={projectName ?? project.name}
+          status={project.status}
+          definitionOfDone={project.plan?.definition_of_done}
+          {tasks}
+          {sessions}
+          loop={loopState}
+          {queue}
+          {pm}
+        />
+
         <div class="card">
           <h2 class="section-title">Plan</h2>
           {#if project.plan && (project.plan.purpose || project.plan.long_term_vision || project.plan.role || project.plan.definition_of_done)}

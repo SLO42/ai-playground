@@ -71,6 +71,8 @@ import {
 // PMA — the REAL D-021 daily spawn cap the live boot wires (the unsupervised-spend ceiling surfaced to
 // the operator on the arm confirm). undefined ⇒ uncapped (honest — never a fabricated number).
 import { bootDailySpawnCap } from '$lib/server/orchestrator/boot';
+// CC-STATUS — the project command-center status dashboard's spawn-budget read (D-021 daily cap usage).
+import { queueStats, type QueueStats } from '$lib/server/orchestrator/queue-monitor';
 import { PmProposalContractError } from '$lib/server/projects/pm-propose';
 import {
 	hirePm,
@@ -220,6 +222,13 @@ export interface ProjectDetailData {
 	 * per-project rows — always present so the confirm never lacks the cap copy.
 	 */
 	spendCaps: { reTickCap: number; dailySpawnCap: number | null };
+	/**
+	 * CC-STATUS — headline work-queue stats for the project command-center dashboard: today's spawns
+	 * vs the REAL enforced D-021 daily cap (queue-monitor.queueStats). Reports the live reality (F-008):
+	 * `capped:false` + no denominator when the orchestrator runs uncapped (boot.ts wires no cap), never
+	 * a fabricated /N. null on a disconnected/degraded boot (honest empty — no zero-dressed-as-real).
+	 */
+	queue: QueueStats | null;
 	/** TASK 16.4 — open proposals with their panel verdicts + any open brief (PM-SPEC §4). */
 	proposals: ProposalQueueEntry[];
 	/** The PM authority ladder vocabulary (for the operator's authority control). */
@@ -325,6 +334,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pm: null,
 			autonomousLoop: null,
 			spendCaps: readSpendCaps(),
+			queue: null,
 			proposals: [],
 			pmAuthorities: PM_AUTHORITIES,
 			hireQuestions: [],
@@ -406,6 +416,20 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 				// workforce panel unavailable - honest empty hire-gate queue.
 			}
 
+		// CC-STATUS — the headline work-queue stats for the status dashboard's spawn-budget tile. The
+		// dailyCap passed MUST be the SAME value the orchestrator actually enforces (queue-monitor honors
+		// it only when positive-finite) — read from the live boot wire (bootDailySpawnCap), the REAL D-021
+		// ceiling; undefined ⇒ the uncapped reality is reported honestly (F-008, no fabricated /N). A reader
+		// throw must NEVER sink the detail page (honest partial): on failure the tile shows an honest empty.
+		let queue: QueueStats | null = null;
+		try {
+			const cap = bootDailySpawnCap();
+			queue = await queueStats(db, cap != null ? { dailyCap: cap } : {});
+		} catch {
+			// work_item readers unavailable → honest empty budget tile; never a fabricated count.
+			queue = null;
+		}
+
 		// D-004: an AUTOMATIC (periodic) review is permitted only when the orchestration mode
 		// is NOT manual. Manual mode → the review is button-triggered only. Read honestly; a
 		// malformed/absent config falls back to manual (the most conservative gate).
@@ -465,6 +489,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pm: pmRow,
 			autonomousLoop: autonomousLoopStateFor(projectId),
 			spendCaps: readSpendCaps(),
+			queue,
 			proposals,
 			pmAuthorities: PM_AUTHORITIES,
 			// Smart-skip resolved server-side against the live plan macro (PM-SPEC §1).
@@ -505,6 +530,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pm: null,
 			autonomousLoop: null,
 			spendCaps: readSpendCaps(),
+			queue: null,
 			proposals: [],
 			pmAuthorities: PM_AUTHORITIES,
 			hireQuestions: [],

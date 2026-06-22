@@ -234,7 +234,7 @@
     margin: 0;
     font-size: 1.1rem;
     font-weight: 700;
-    color: var(--color-text-primary);
+    color: var(--color-text);
   }
   .dod {
     margin: 0;
@@ -280,7 +280,7 @@
   .tile-figure {
     font-size: 1.4rem;
     font-weight: 700;
-    color: var(--color-text-primary);
+    color: var(--color-text);
     line-height: 1.1;
   }
   .tile-figure .of {
@@ -364,7 +364,7 @@
     font-size: 1.4rem;
     font-weight: 700;
     line-height: 1.1;
-    color: var(--color-text-primary);
+    color: var(--color-text);
   }
   .fig-n[data-tone='running'] {
     color: var(--color-running-on-overlay, var(--color-running));
@@ -479,7 +479,7 @@
     text-transform: lowercase;
   }
   .leg-count {
-    color: var(--color-text-primary);
+    color: var(--color-text);
     font-weight: 600;
   }
   .exceptions {

@@ -73,6 +73,17 @@ import {
 import { bootDailySpawnCap } from '$lib/server/orchestrator/boot';
 // CC-STATUS — the project command-center status dashboard's spawn-budget read (D-021 daily cap usage).
 import { queueStats, type QueueStats } from '$lib/server/orchestrator/queue-monitor';
+// CC-CONTROLS — the operator command-center CONTROL seam (CONTINUE re-enqueue / RESTART a failed run).
+// Reuses the LIVE orchestrator's enqueue/drain (activeOrchestrator) + the work_item dedup double-spawn
+// guard; never bypasses the spawn cap (the orchestrator owns it inside drain).
+import {
+	continueReadyTasks,
+	restartSessionTask,
+	OrchestratorUnavailableError,
+	SessionControlError
+} from '$lib/server/projects/project-controls';
+import { activeOrchestrator } from '../../../hooks.server';
+import { getFleetSession } from '$lib/server/analytics';
 import { PmProposalContractError } from '$lib/server/projects/pm-propose';
 import {
 	hirePm,
@@ -1655,6 +1666,114 @@ export const actions: Actions = {
 			// 500 = a real backend writer failure; the row stays honestly incomplete (PostRegisterWriterError)
 			// or an unexpected fault. Never masked as success.
 			return fail(500, { resume: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * CC-CONTROLS — CONTINUE: get a stalled project moving by re-enqueuing THIS project's already-READY
+	 * tasks into the LIVE orchestrator's claim queue and draining them. The honest fix for the operator's
+	 * pain (6 ready tasks sat undeveloped after a dev-server boot): the event-mode orchestrator only reacts
+	 * to a task ENTERING ready, so tasks already sitting ready are never re-driven — this asks it to drain
+	 * them explicitly via the REAL enqueue/drain seam (orchestrator.enqueueTask + drain), NOT a status
+	 * bounce through backlog (D-008 keeps the description immutable; a bounce would fabricate transitions).
+	 *
+	 * INTEGRITY (red-team): cannot double-spawn — enqueueTask is idempotent via the work_item dedup_key
+	 * (a task already pending/processing collapses to a no-op), so a double-click / concurrent CONTINUE /
+	 * a race with the boot trigger all converge to one in-flight task_run per task. Cannot bypass the
+	 * spawn cap — drain() enforces the orchestrator's OWN D-021 daily cap + interactive semaphore (this
+	 * seam adds no new spawn path). Cannot leak across projects — only THIS project's ready tasks are
+	 * listed/enqueued. Cannot run away — drain stops the instant permits OR the cap OR work run out.
+	 *
+	 * Honest (F-008): an absent orchestrator (degraded / no-credential boot) is a NAMED 503 reason, never
+	 * a fake "started". The project id is validated at the D-016 boundary.
+	 */
+	continueProject: async ({ params }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { continue: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { continue: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		try {
+			const res = await continueReadyTasks(activeOrchestrator(), db, projectId);
+			return {
+				continue: {
+					ok: true as const,
+					readyCount: res.readyCount,
+					enqueued: res.enqueued,
+					alreadyQueued: res.alreadyQueued,
+					claimed: res.claimed,
+					spawned: res.spawned
+				}
+			};
+		} catch (err) {
+			// EVERY ERROR HAS A NAME: no live orchestrator is a 503 (the engine is not running — honest,
+			// retryable on the next credentialed boot); anything else is a 500 with the real reason.
+			if (err instanceof OrchestratorUnavailableError) {
+				return fail(503, { continue: { error: err.message } });
+			}
+			return fail(500, { continue: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * CC-CONTROLS — RESTART: re-run the task behind a FAILED/stuck session by re-enqueuing its task_run
+	 * through the SAME orchestrator seam. The session is named by the client, but the project + status +
+	 * task are RE-READ server-side (NO-GUESSING — never trust the client's claim) via getFleetSession.
+	 *
+	 * INTEGRITY (red-team): cannot double-spawn — the dedup_key makes a second click while the re-run is
+	 * pending/processing a no-op (enqueued:false). Cannot leak across projects — the session must belong
+	 * to THIS project (a foreign session id is a named 409). Cannot re-run live/clean work — only
+	 * failed/stuck sessions are restartable (RESTARTABLE_SESSION_STATUSES); a healthy running session is
+	 * refused (that is the double-spawn we prevent) and a clean done session is refused (re-running is
+	 * fabricated rework — spawn a follow-up instead). Cannot bypass the cap — drain() owns it.
+	 */
+	restartSession: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { restart: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { restart: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const sessionId = String(form.get('sessionId') ?? '').trim();
+		try {
+			assertRecordId(sessionId);
+		} catch {
+			return fail(400, { restart: { error: 'invalid session id' } });
+		}
+
+		// NO-GUESSING: re-read the session row server-side for its REAL project + status + task — never
+		// trust the client's claim about which project/status the session is.
+		const session = await getFleetSession(db, sessionId);
+		if (!session) return fail(404, { restart: { error: 'session not found' } });
+
+		try {
+			const res = await restartSessionTask(activeOrchestrator(), projectId, {
+				id: session.id,
+				status: session.status,
+				project: session.projectId,
+				taskId: session.taskId
+			});
+			return {
+				restart: {
+					ok: true as const,
+					sessionId,
+					taskId: res.taskId,
+					enqueued: res.enqueued,
+					claimed: res.claimed,
+					spawned: res.spawned
+				}
+			};
+		} catch (err) {
+			// EVERY ERROR HAS A NAME: no live orchestrator → 503; a cross-project / non-restartable /
+			// no-task refusal → 409 (the operator's request was well-formed but the state forbids it);
+			// anything else → 500 with the real reason.
+			if (err instanceof OrchestratorUnavailableError) {
+				return fail(503, { restart: { sessionId, error: err.message } });
+			}
+			if (err instanceof SessionControlError) {
+				return fail(409, { restart: { sessionId, error: err.message } });
+			}
+			return fail(500, { restart: { sessionId, error: (err as Error).message } });
 		}
 	}
 };

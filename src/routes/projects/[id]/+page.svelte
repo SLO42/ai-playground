@@ -22,6 +22,7 @@
   import FileSnapshotViewer from '$lib/components/shell/FileSnapshotViewer.svelte';
   import ProjectStatus from '$lib/components/project/ProjectStatus.svelte';
   import ProjectActivity from '$lib/components/project/ProjectActivity.svelte';
+  import ProjectControls from '$lib/components/project/ProjectControls.svelte';
   import {
     rowToTurn,
     liveEventToTurn,
@@ -263,6 +264,14 @@
   // CC-STATUS — the headline work-queue stats for the status dashboard's spawn-budget tile (null on a
   // degraded boot — the tile shows an honest empty, never a fabricated count).
   const queue = $derived(data.queue ?? null);
+  // CC-CONTROLS — the last CONTINUE / RESTART action results (read off the named form keys; F-008 —
+  // a faithful read of the server result, never a fabricated success). Undefined until the operator acts.
+  const continueFeedback = $derived(
+    form && 'continue' in form ? (form.continue as Record<string, unknown>) : undefined
+  );
+  const restartFeedback = $derived(
+    form && 'restart' in form ? (form.restart as Record<string, unknown>) : undefined
+  );
   const loopStateLabel = $derived.by((): string => {
     switch (loopState?.state) {
       case 'running': return 'Driving — working the next batch';
@@ -916,6 +925,13 @@
           {queue}
           {pm}
         />
+
+        <!-- CC-CONTROLS — the operator command-center CONTROLS: CONTINUE (re-drive this project's ready
+             tasks through the live orchestrator) + RESTART a failed/stuck session's task. Guarded against
+             double-spawn (the work_item dedup_key) + bounded by the spawn cap (the orchestrator's own
+             cap inside drain). The RE-RUN PM / ARM / DISARM / STOP controls live in the Project lifecycle
+             card below. -->
+        <ProjectControls {tasks} {sessions} {continueFeedback} {restartFeedback} />
 
         <!-- ACTIVITY — the live "what's happening now?" panel: this project's running + recent
              sessions, kind-labelled (PM lifecycle / validation panel / dev task / HR), each

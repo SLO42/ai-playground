@@ -33,6 +33,14 @@ export interface FleetSession {
 	taskId: string | null;
 	startedAt: string;
 	endedAt: string | null;
+	/**
+	 * The honest terminal note (session.note, m0027) — WHY a failed session failed, already
+	 * D-026-SCREENED at the launch write (a secret in the reason was redacted before it landed).
+	 * NULL on a clean/running session (option<string> stays NONE — never a fabricated reason, F-008).
+	 * The fleet surfaces it on a `status === 'failed'` row so a failed spawn explains itself
+	 * instead of showing a dead row with no reason (the live 6-ROUNDS observability gap).
+	 */
+	note: string | null;
 }
 
 /**
@@ -141,7 +149,7 @@ function iso(at: unknown): string {
  */
 export async function listFleet(db: Db, limit = 30): Promise<FleetSession[]> {
 	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
-		`SELECT id, status, model, project, task, started_at, ended_at
+		`SELECT id, status, model, project, task, note, started_at, ended_at
 		   FROM session
 		   ORDER BY started_at DESC LIMIT $lim;`,
 		{ lim: limit }
@@ -156,6 +164,8 @@ export async function listFleet(db: Db, limit = 30): Promise<FleetSession[]> {
 			tier: (m.tier as string) ?? null,
 			projectId: r.project ? String(r.project) : null,
 			taskId: r.task ? String(r.task) : null,
+			// Honest absent note (option<string> NONE) → null, never str(undefined) (F-013 class).
+			note: r.note == null ? null : String(r.note),
 			startedAt: iso(r.started_at),
 			endedAt: r.ended_at ? iso(r.ended_at) : null
 		};
@@ -183,7 +193,7 @@ export async function listFleetByProject(
 ): Promise<FleetSession[]> {
 	const project = new StringRecordId(assertRecordId(projectId));
 	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
-		`SELECT id, status, model, project, task, started_at, ended_at
+		`SELECT id, status, model, project, task, note, started_at, ended_at
 		   FROM session
 		   WHERE project = $project
 		   ORDER BY started_at DESC LIMIT $lim;`,
@@ -199,6 +209,8 @@ export async function listFleetByProject(
 			tier: (m.tier as string) ?? null,
 			projectId: r.project ? String(r.project) : null,
 			taskId: r.task ? String(r.task) : null,
+			// Honest absent note (option<string> NONE) → null, never str(undefined) (F-013 class).
+			note: r.note == null ? null : String(r.note),
 			startedAt: iso(r.started_at),
 			endedAt: r.ended_at ? iso(r.ended_at) : null
 		};
@@ -226,7 +238,7 @@ export async function listFleetAcrossProjects(db: Db, limit = 40): Promise<Fleet
 	// explicit `project_id` alias is the stable source for the raw id even after FETCH
 	// expands `project` into the full object.
 	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
-		`SELECT id, status, model, project, task, cc_session_id, started_at, ended_at,
+		`SELECT id, status, model, project, task, note, cc_session_id, started_at, ended_at,
 		        project.id AS project_id, project.name AS project_name, project.slug AS project_slug
 		   FROM session
 		   ORDER BY started_at DESC LIMIT $lim
@@ -246,6 +258,8 @@ export async function listFleetAcrossProjects(db: Db, limit = 40): Promise<Fleet
 			projectName: r.project_name ? String(r.project_name) : null,
 			projectSlug: r.project_slug ? String(r.project_slug) : null,
 			taskId: r.task ? String(r.task) : null,
+			// Honest absent note (option<string> NONE) → null, never str(undefined) (F-013 class).
+			note: r.note == null ? null : String(r.note),
 			ccSessionId: r.cc_session_id ? String(r.cc_session_id) : null,
 			startedAt: iso(r.started_at),
 			endedAt: r.ended_at ? iso(r.ended_at) : null
@@ -270,7 +284,7 @@ export async function listFleetAcrossProjects(db: Db, limit = 40): Promise<Fleet
 export async function getFleetSession(db: Db, sessionId: string): Promise<FleetSessionXP | null> {
 	const sid = new StringRecordId(assertRecordId(sessionId));
 	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
-		`SELECT id, status, model, project, task, cc_session_id, started_at, ended_at,
+		`SELECT id, status, model, project, task, note, cc_session_id, started_at, ended_at,
 		        project.id AS project_id, project.name AS project_name, project.slug AS project_slug
 		   FROM session WHERE id = $sid LIMIT 1
 		   FETCH project;`,
@@ -290,6 +304,8 @@ export async function getFleetSession(db: Db, sessionId: string): Promise<FleetS
 		projectName: r.project_name ? String(r.project_name) : null,
 		projectSlug: r.project_slug ? String(r.project_slug) : null,
 		taskId: r.task ? String(r.task) : null,
+		// Honest absent note (option<string> NONE) → null, never str(undefined) (F-013 class).
+		note: r.note == null ? null : String(r.note),
 		ccSessionId: r.cc_session_id ? String(r.cc_session_id) : null,
 		startedAt: iso(r.started_at),
 		endedAt: r.ended_at ? iso(r.ended_at) : null

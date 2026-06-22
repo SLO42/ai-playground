@@ -546,6 +546,17 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	// the error is rethrown (callers already treat a throw as a failed spawn: orchestrator
 	// #runItem marks the work_item failed, runner runStep marks the step failed).
 	let streamError: Error | undefined;
+	// OBSERVABILITY GAP FIX — the honest NON-THROW failure reason. A run can end 'failed'
+	// WITHOUT throwing: the runtime yields an `error` event (the cli-backend converts a child
+	// spawn-fail / instant pre-init death / non-zero exit into one — F-016 captures the spawn
+	// 'error' so it surfaces HERE as an event, NOT a server crash), or it yields a `done` with
+	// ok=false. Before this fix only the THROW path stamped `note`, so those failures recorded
+	// note=NULL — the live 6-ROUNDS symptom (status='failed', cc_session_id=null, note=null:
+	// an invisible failure). We remember the LAST error-event text (the reason closest to the
+	// terminal state) and the final done summary so the terminal write below stamps an honest,
+	// SCREENED (D-026) reason on EVERY failed exit. NEVER fabricated: when nothing is available
+	// we record an honest "failed before producing any output (exit code unknown)" not a guess.
+	let lastErrorEvent: string | undefined;
 	// FS-2 (b): pair a Read's tool_use (carries the file_path, no body) with the FOLLOWING tool_result
 	// (carries the body the agent SAW, no path). A Read emits tool_use then tool_result back-to-back,
 	// so we remember the last file-READ path and attach the next tool_result's output to it. A
@@ -689,6 +700,13 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 				});
 			} else if (ev.type === 'error') {
 				ok = false;
+				// Remember the error text so the terminal write can stamp it as the honest session
+				// `note` (D-026-screened there). The LAST error event wins — it is the reason closest
+				// to the terminal state. This is the cli-backend's honest reason: 'claude CLI failed
+				// to start: <spawn err>' (instant pre-init fail, cc_session_id=null) or 'claude CLI
+				// exited N: <stdout/stderr tail>' (F-029 — a non-zero exit often carries its reason
+				// on STDOUT). NEVER fabricated; absent ⇒ the no-output fallback below.
+				lastErrorEvent = ev.error;
 				await writeAgentEvent(db, {
 					session: sessionId,
 					project: input.projectId,
@@ -710,11 +728,43 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	const status: SessionStatus = streamError ? 'failed' : sawDone ? (ok ? 'done' : 'failed') : 'failed';
 	const durationMs = Date.now() - startedAt;
 
+	// OBSERVABILITY GAP FIX — derive the honest, D-026-SCREENED failure note for EVERY failed
+	// exit path (the operator must never see a failed session with note=NULL again). Order of
+	// precedence picks the reason CLOSEST to the terminal cause:
+	//   1. streamError      — the stream/iterator THREW (a DB hiccup, a runtime that does not
+	//                          convert backend throws to events): the throw message.
+	//   2. lastErrorEvent   — the runtime yielded an `error` event (the common cli-backend case:
+	//                          a child spawn-fail / instant pre-init death with cc_session_id=null,
+	//                          or a non-zero exit whose reason rides STDOUT — F-029). This is the
+	//                          path that previously recorded note=null (the 6-ROUNDS symptom).
+	//   3. done(ok=false)   — the run completed but reported a failure result: the summary if it
+	//                          carries one, else an honest "completed with a failure result".
+	//   4. nothing at all   — no done, no error, no throw: an honest "failed before producing any
+	//                          output" — NEVER a fabricated/guessed reason (F-008).
+	// screenText() (D-026, fail-closed) redacts any secret the reason text might carry (a token in
+	// a stderr tail, an OAuth value echoed by the CLI) BEFORE it is ever persisted or rendered.
+	let failureNote: string | undefined;
+	if (status === 'failed') {
+		const raw = streamError
+			? `failed mid-stream: ${streamError.message}`
+			: lastErrorEvent
+				? lastErrorEvent
+				: sawDone
+					? summary.trim()
+						? `completed with a failure result: ${summary.trim()}`
+						: 'completed with a failure result (no detail reported)'
+					: 'failed before producing any output (no done/error event, no exit reason)';
+		// Screen, then guard against an empty result (a reason that screened to '' must still be
+		// an honest non-empty note, never a blank that reads like the old null).
+		const screened = screenText(raw).trim();
+		failureNote = screened || 'failed (reason unavailable after secret screening)';
+	}
+
 	// 4. Terminal update: status + ended_at + cc_session_id bridge (the session record
 	// carries cc_session_id — D-011). Optionals omitted, not nulled (§6.1). Runs on EVERY
-	// exit path (13.2); a throw path stamps the honest failure note (F-008). If the terminal
-	// write ITSELF fails (DB down — likely the same fault that broke the stream), the boot
-	// reaper (orchestrator/reaper.ts) recovers the still-'running' row on the next boot; we
+	// exit path (13.2); a failed path stamps the honest, screened failure note (F-008). If the
+	// terminal write ITSELF fails (DB down — likely the same fault that broke the stream), the
+	// boot reaper (orchestrator/reaper.ts) recovers the still-'running' row on the next boot; we
 	// never mask the original stream error with the write error.
 	try {
 		await db.query(`UPDATE $sid MERGE $content;`, {
@@ -723,7 +773,7 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 				status,
 				ended_at: new Date(),
 				cc_session_id: ccSessionId,
-				note: streamError ? `failed mid-stream: ${streamError.message}` : undefined
+				note: failureNote
 			})
 		});
 

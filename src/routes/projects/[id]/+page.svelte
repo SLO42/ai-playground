@@ -17,6 +17,7 @@
   import { confirm } from '$lib/client/confirm.svelte';
   import { lineDiff } from '$lib/client/confirm-core';
   import SessionTranscript from '$lib/components/shell/SessionTranscript.svelte';
+  import SessionFailureReason from '$lib/components/shell/SessionFailureReason.svelte';
   import FileSnapshotViewer from '$lib/components/shell/FileSnapshotViewer.svelte';
   import {
     rowToTurn,
@@ -2619,6 +2620,10 @@
                   <span class="model mono">{s.provider}/{s.modelId}</span>
                   <span class="when mono">{fmtTime(s.startedAt)}</span>
                   <button class="open-btn" type="button" onclick={() => openSession(s.id)}>open</button>
+                  <!-- OBSERVABILITY — a failed session explains itself right in the list (the
+                       screened session.note, or honest "no reason recorded"). Full-row span so
+                       the reason wraps under the meta line. -->
+                  <SessionFailureReason status={s.status} note={s.note} variant="row" />
                 </li>
               {/each}
             </ul>
@@ -2643,6 +2648,15 @@
                 {/if}
               </div>
             </div>
+
+            <!-- OBSERVABILITY — the open session's honest failure reason (screened session.note).
+                 Status prefers the live SSE status (a session that JUST failed shows it without a
+                 reload); the note is persisted-only (never live-streamed), read off the row. -->
+            <SessionFailureReason
+              status={liveStatus ?? selectedRow?.status}
+              note={selectedRow?.note}
+              variant="panel"
+            />
 
             <div class="transcript" role="log" aria-live="polite" aria-label="session transcript">
               {#if liveTurns.length === 0}
@@ -3306,9 +3320,17 @@
     outline: 2px solid var(--color-accent);
     outline-offset: 2px;
   }
+  .row.session {
+    flex-wrap: wrap;
+  }
   .row.session[data-selected='true'] {
     background: var(--color-surface-overlay);
     border-radius: var(--radius-sm, 6px);
+  }
+  /* The failure reason (SessionFailureReason) wraps onto its own full-width line below the
+     session meta row so a long reason is readable rather than truncated inline. */
+  .row.session :global(.fail-reason) {
+    flex: 1 0 100%;
   }
   .transcript-head {
     display: flex;

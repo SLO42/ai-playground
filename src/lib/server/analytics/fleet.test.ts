@@ -110,6 +110,78 @@ describe('fleet read models (2.4; UI-SPEC §198–200)', () => {
 		expect(mine!.projectId).toBe(projectId);
 	});
 
+	// OBSERVABILITY — a FAILED session's honest reason (session.note) is surfaced by every fleet
+	// read (project list, cross-project fleet, single-session header) so the project page +
+	// /claude-code can render WHY it failed instead of a dead row with no reason. A clean session
+	// carries note=null (honest absence, never str(undefined) — F-013 class).
+	it('surfaces session.note (failure reason) on a failed session, null on a clean one', async () => {
+		// A failed run: the backend yields an `error` event (the cli-backend instant-fail shape),
+		// so launchSession stamps the honest reason on session.note (the observability fix).
+		const failRuntime = new ClaudeCodeRuntime({
+			backend: scriptedBackend(
+				[{ type: 'error', error: 'claude CLI failed to start: spawn claude ENOENT' }],
+				`cc_fleet_fail_${Math.random().toString(36).slice(2, 8)}`
+			)
+		});
+		const failRes = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime: failRuntime,
+			input: {
+				projectId,
+				taskId,
+				agentId: 'agent_fleet_fail',
+				model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+				intent: 'code-write',
+				budgets: {},
+				toolPolicy: { allow: ['Read'] }
+			}
+		});
+		expect(failRes.status).toBe('failed');
+
+		// (a) project-scoped list
+		const byProject = await listFleet(db);
+		const fp = byProject.find((s) => s.id === failRes.sessionId);
+		expect(fp).toBeTruthy();
+		expect(fp!.status).toBe('failed');
+		expect(fp!.note).toBeTruthy();
+		expect(fp!.note).toContain('failed to start');
+
+		// (b) cross-project fleet
+		const xp = await listFleetAcrossProjects(db);
+		const xfp = xp.find((s) => s.id === failRes.sessionId);
+		expect(xfp!.note).toContain('ENOENT');
+
+		// (c) single-session header
+		const meta = await getFleetSession(db, failRes.sessionId);
+		expect(meta!.note).toContain('failed to start');
+
+		// A clean done session carries note=null (honest absence — no fabricated reason).
+		const cleanRuntime = new ClaudeCodeRuntime({
+			backend: scriptedBackend(
+				[{ type: 'done', result: { ok: true, summary: 'ok', ccSessionId: 'cc_fleet_clean_note' } }],
+				'cc_fleet_clean_note'
+			)
+		});
+		const cleanRes = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime: cleanRuntime,
+			input: {
+				projectId,
+				taskId,
+				agentId: 'agent_fleet_clean',
+				model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+				intent: 'code-write',
+				budgets: {},
+				toolPolicy: { allow: ['Read'] }
+			}
+		});
+		const cleanMeta = await getFleetSession(db, cleanRes.sessionId);
+		expect(cleanMeta!.status).toBe('done');
+		expect(cleanMeta!.note).toBeNull();
+	});
+
 	// TASK 9.3 — the cross-project fleet joins the owning project's LABEL (name/slug) and
 	// aggregates sessions ACROSS ALL projects, liveness from session.status (F-008 / §199).
 	it('listFleetAcrossProjects joins project label and spans projects', async () => {

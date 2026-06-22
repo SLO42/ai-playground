@@ -125,6 +125,25 @@ function baseInput(over: Partial<LaunchInput> = {}): LaunchInput {
 	};
 }
 
+/** An AgentRuntime that yields a fixed event stream and then RETURNS (no throw) — models the
+ *  real cli-backend path where a child spawn-fail / instant pre-init death / non-zero exit is
+ *  surfaced as an `error` EVENT (NOT a throw, NOT a `done`). This is the path that previously
+ *  recorded note=null (the live 6-ROUNDS observability gap). */
+function eventStreamRuntime(events: RuntimeEvent[]): AgentRuntime {
+	return {
+		spawn: async function* () {
+			for (const e of events) yield e;
+		},
+		async health() {
+			return { runtime: 'mock', providers: [] };
+		},
+		tools() {
+			return [];
+		},
+		async cancel() {}
+	};
+}
+
 describe('launchSession — persistence plumbing (1.6b; D-011)', () => {
 	it('persists a session row, cwd = project root, with the cc_session_id bridge', async () => {
 		const backend = scriptedBackend(transcript('cc_sess_AB12'));
@@ -464,6 +483,96 @@ describe('launchSession — terminal status on EVERY exit path (13.2)', () => {
 		expect(rows[0].ended_at).toBeTruthy();
 		// option<string> stays NONE on a clean run (§6.1) — no fabricated note.
 		expect(rows[0].note ?? null).toBeNull();
+	});
+});
+
+// ── OBSERVABILITY GAP FIX — a failed session ALWAYS records WHY (session.note) ──────────
+//
+// The live symptom: 6 ROUNDS dev sessions failed with cc_session_id=null, tool_iter_count=0,
+// note=null — an invisible failure (an auth/launch failure recorded nothing). Root cause: the
+// terminal `note` was stamped ONLY on the THROW path; an `error` EVENT (the common cli-backend
+// case) or a done(ok=false) ended 'failed' with note=NONE. These tests FAIL without the
+// error-event/done-failure note capture in launch.ts. They run against the live throwaway DB.
+
+describe('launchSession — honest failure reason on EVERY failed exit (observability)', () => {
+	it("an `error` EVENT (no done, no throw) persists a screened note, not null — the cc_session_id=null instant-fail case", async () => {
+		// The cli-backend's instant pre-init fail / spawn-fail message shape (F-016 capture).
+		const reason = 'claude CLI failed to start: spawn claude ENOENT';
+		const runtime = eventStreamRuntime([{ type: 'error', error: reason }]);
+		const res = await launchSession({ db, bus: new EventBus(), runtime, input: baseInput() });
+
+		expect(res.status).toBe('failed');
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $rid;`, {
+			rid: new StringRecordId(res.sessionId)
+		});
+		const sess = rows[0];
+		expect(sess.status).toBe('failed');
+		expect(sess.ended_at).toBeTruthy();
+		// NOT null — the honest reason the cli-backend surfaced is persisted (the fix).
+		expect(sess.note ?? null).not.toBeNull();
+		expect(String(sess.note)).toContain('failed to start');
+		expect(String(sess.note)).toContain('ENOENT');
+		// And cc_session_id stays NONE on a pre-init fail (honest — no fabricated id).
+		expect(sess.cc_session_id ?? null).toBeNull();
+	});
+
+	it('a non-zero exit whose reason rides STDOUT is captured honestly (F-029)', async () => {
+		const reason =
+			'claude CLI exited 1: {"type":"result","subtype":"error_max_turns","is_error":true}';
+		const runtime = eventStreamRuntime([
+			{ type: 'log', message: 'starting' },
+			{ type: 'error', error: reason }
+		]);
+		const res = await launchSession({ db, bus: new EventBus(), runtime, input: baseInput() });
+		expect(res.status).toBe('failed');
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $rid;`, {
+			rid: new StringRecordId(res.sessionId)
+		});
+		expect(String(rows[0].note)).toContain('exited 1');
+		expect(String(rows[0].note)).toContain('error_max_turns');
+	});
+
+	it('a SECRET embedded in the failure text is REDACTED before it is persisted (D-026)', async () => {
+		// A leaked OAuth token in the CLI stderr/stdout tail must never land in session.note raw.
+		const leaky = 'claude CLI exited 1: auth failed with token sk-ant-abcDEF0123456789xyz aborting';
+		const runtime = eventStreamRuntime([{ type: 'error', error: leaky }]);
+		const res = await launchSession({ db, bus: new EventBus(), runtime, input: baseInput() });
+		expect(res.status).toBe('failed');
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $rid;`, {
+			rid: new StringRecordId(res.sessionId)
+		});
+		const note = String(rows[0].note);
+		// The raw token is GONE; the screen placeholder is present; the rest of the reason survives.
+		expect(note).not.toContain('sk-ant-abcDEF0123456789xyz');
+		expect(note).toContain('[REDACTED:anthropic-key]');
+		expect(note).toContain('exited 1');
+	});
+
+	it('a done(ok=false) result records an honest reason (not null, not the throw path)', async () => {
+		const runtime = eventStreamRuntime([
+			{ type: 'log', message: 'ran' },
+			{ type: 'done', result: { ok: false, summary: 'tests failed: 3 of 40', ccSessionId: 'cc_fail_df1' } }
+		]);
+		const res = await launchSession({ db, bus: new EventBus(), runtime, input: baseInput() });
+		expect(res.status).toBe('failed');
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $rid;`, {
+			rid: new StringRecordId(res.sessionId)
+		});
+		expect(rows[0].note ?? null).not.toBeNull();
+		expect(String(rows[0].note)).toContain('tests failed: 3 of 40');
+		// The cc_session_id from the failing done is still bridged (honest — the run DID get an id).
+		expect(String(rows[0].cc_session_id)).toBe('cc_fail_df1');
+	});
+
+	it('an EMPTY stream (no done, no error, no throw) records an honest no-output reason, never null', async () => {
+		const runtime = eventStreamRuntime([]);
+		const res = await launchSession({ db, bus: new EventBus(), runtime, input: baseInput() });
+		expect(res.status).toBe('failed');
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $rid;`, {
+			rid: new StringRecordId(res.sessionId)
+		});
+		expect(rows[0].note ?? null).not.toBeNull();
+		expect(String(rows[0].note)).toContain('failed before producing any output');
 	});
 });
 

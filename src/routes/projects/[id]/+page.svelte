@@ -10,6 +10,7 @@
    * default (§1.2): a `project` / `task` / `session` row change on the one SSE stream
    * re-invalidates the loader so the detail updates in place. Svelte 5 RUNES only.
    */
+  import { untrack } from 'svelte';
   import { enhance } from '$app/forms';
   import { invalidate, goto } from '$app/navigation';
   import { page } from '$app/state';
@@ -20,6 +21,7 @@
   import SessionFailureReason from '$lib/components/shell/SessionFailureReason.svelte';
   import FileSnapshotViewer from '$lib/components/shell/FileSnapshotViewer.svelte';
   import ProjectStatus from '$lib/components/project/ProjectStatus.svelte';
+  import ProjectActivity from '$lib/components/project/ProjectActivity.svelte';
   import {
     rowToTurn,
     liveEventToTurn,
@@ -91,11 +93,17 @@
     | 'sync'
     | 'targets'
     | 'settings';
-  let tab = $state<Tab>('overview');
-  // Default to the Sessions tab when a session is selected via ?session=.
-  $effect(() => {
-    if (selectedSession) tab = 'sessions';
-  });
+  // Deep-link default: when the page LOADS with a `?session=` (a transcript link from elsewhere),
+  // land on the Sessions tab so the linked transcript is visible. Computed ONCE at component init
+  // (not in an $effect) — a subsequent in-page selection (e.g. expanding a row in the Overview
+  // Activity panel) must NOT yank the operator to another tab; the Activity panel streams the
+  // transcript inline on Overview itself. Using an $effect here would read+write its own guard
+  // state and loop (effect_update_depth_exceeded); a plain init read of the initial selection is
+  // the correct one-shot.
+  // `untrack` makes the one-shot intent explicit to the compiler: we read the INITIAL selection
+  // exactly once at init (not a reactive dependency) — re-running on later `data` changes is wrong
+  // (it would re-yank tabs). Without untrack, svelte-check warns `state_referenced_locally`.
+  let tab = $state<Tab>(untrack(() => (data.selectedSession ? 'sessions' : 'overview')));
 
   // ── Tasks board (TASK 10.4) — group the live task rows into kanban columns by status.
   // The columns follow the canonical status vocab; honest empty columns render "—".
@@ -571,14 +579,19 @@
   $effect(() => {
     // Reset the live buffer to the historical transcript whenever the selection changes.
     const sid = selectedSession;
-    liveTurns = (data.transcript ?? []).map((m, i) => rowToTurn(m, i));
+    // Build the seed from the loader rows into a LOCAL first, then assign. We must NOT read back
+    // `liveTurns` (the $state we just wrote) inside this same effect — doing so makes the effect
+    // depend on its own write and re-run forever (effect_update_depth_exceeded). The seq counter
+    // below seeds from the local `seed.length`, never from the reactive `liveTurns`.
+    const seed = (data.transcript ?? []).map((m, i) => rowToTurn(m, i));
+    liveTurns = seed;
     liveTokens = null;
     liveStatus = null;
     if (!sid) return;
 
     // Monotonic key for live-appended turns (stable {#each} keys, never colliding with the
     // historical rows' own ids). Starts past the seeded rows.
-    let liveSeq = liveTurns.length;
+    let liveSeq = seed.length;
 
     const offT = stream.subscribeTopic<{ kind: string; event: unknown }>(
       'transcript',
@@ -682,6 +695,17 @@
 
   function openSession(id: string): void {
     void goto(`/projects/${slug}?session=${encodeURIComponent(id)}`, { keepFocus: true, noScroll: true });
+  }
+
+  /** Expand the session (open its inline transcript) or, if already open, collapse it by clearing
+   *  the `?session=` selection. Drives the SAME selection the parent's live transcript pipeline
+   *  subscribes to, so the inline Activity transcript streams via the existing SSE wiring. */
+  function toggleSession(id: string): void {
+    if (selectedSession === id) {
+      void goto(`/projects/${slug}`, { keepFocus: true, noScroll: true });
+    } else {
+      openSession(id);
+    }
   }
 
   function shortId(id: string): string {
@@ -891,6 +915,21 @@
           loop={loopState}
           {queue}
           {pm}
+        />
+
+        <!-- ACTIVITY — the live "what's happening now?" panel: this project's running + recent
+             sessions, kind-labelled (PM lifecycle / validation panel / dev task / HR), each
+             expandable inline to its FULL live transcript (the shared <SessionTranscript> fed by
+             the same `?session=` SSE pipeline). Consolidates the per-session watching that used to
+             require /claude-code into the project view. Honest idle/failed states (F-008). -->
+        <ProjectActivity
+          {sessions}
+          {selectedSession}
+          turns={liveTurns}
+          {liveStatus}
+          {liveTokens}
+          onToggle={toggleSession}
+          onViewFile={viewFileSnapshot}
         />
 
         <div class="card">

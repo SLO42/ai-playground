@@ -31,6 +31,18 @@ export interface FleetSession {
 	tier: string | null;
 	projectId: string | null;
 	taskId: string | null;
+	/**
+	 * The session.kind discriminator (m0026/m0033: chat/task/review/release/discussion/interview),
+	 * or null on a legacy row that predates the field. Drives the activity panel's "what kind of
+	 * work is this?" label (a dev task vs a validation panel vs a PM lifecycle drive). Honest —
+	 * an absent/unknown kind surfaces as a neutral label, never a fabricated one (F-008).
+	 */
+	kind: string | null;
+	/** The workforce role slug the session ran AS (role.slug — pm / hr-recruiter / …), or null
+	 *  for a session with no role link. The activity label combines it with `kind`. */
+	roleSlug: string | null;
+	/** The workforce role display name (role.name), or null. */
+	roleName: string | null;
 	startedAt: string;
 	endedAt: string | null;
 	/**
@@ -149,9 +161,11 @@ function iso(at: unknown): string {
  */
 export async function listFleet(db: Db, limit = 30): Promise<FleetSession[]> {
 	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
-		`SELECT id, status, model, project, task, note, started_at, ended_at
+		`SELECT id, status, kind, model, project, task, note, started_at, ended_at,
+		        role.slug AS role_slug, role.name AS role_name
 		   FROM session
-		   ORDER BY started_at DESC LIMIT $lim;`,
+		   ORDER BY started_at DESC LIMIT $lim
+		   FETCH role;`,
 		{ lim: limit }
 	);
 	const sessions = (rows ?? []).map((r) => {
@@ -164,6 +178,10 @@ export async function listFleet(db: Db, limit = 30): Promise<FleetSession[]> {
 			tier: (m.tier as string) ?? null,
 			projectId: r.project ? String(r.project) : null,
 			taskId: r.task ? String(r.task) : null,
+			// Honest absent kind/role (option/legacy) → null, never a fabricated label (F-008).
+			kind: r.kind == null ? null : String(r.kind),
+			roleSlug: r.role_slug == null ? null : String(r.role_slug),
+			roleName: r.role_name == null ? null : String(r.role_name),
 			// Honest absent note (option<string> NONE) → null, never str(undefined) (F-013 class).
 			note: r.note == null ? null : String(r.note),
 			startedAt: iso(r.started_at),
@@ -193,10 +211,12 @@ export async function listFleetByProject(
 ): Promise<FleetSession[]> {
 	const project = new StringRecordId(assertRecordId(projectId));
 	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
-		`SELECT id, status, model, project, task, note, started_at, ended_at
+		`SELECT id, status, kind, model, project, task, note, started_at, ended_at,
+		        role.slug AS role_slug, role.name AS role_name
 		   FROM session
 		   WHERE project = $project
-		   ORDER BY started_at DESC LIMIT $lim;`,
+		   ORDER BY started_at DESC LIMIT $lim
+		   FETCH role;`,
 		{ project, lim: limit }
 	);
 	const sessions = (rows ?? []).map((r) => {
@@ -209,6 +229,10 @@ export async function listFleetByProject(
 			tier: (m.tier as string) ?? null,
 			projectId: r.project ? String(r.project) : null,
 			taskId: r.task ? String(r.task) : null,
+			// Honest absent kind/role (option/legacy) → null, never a fabricated label (F-008).
+			kind: r.kind == null ? null : String(r.kind),
+			roleSlug: r.role_slug == null ? null : String(r.role_slug),
+			roleName: r.role_name == null ? null : String(r.role_name),
 			// Honest absent note (option<string> NONE) → null, never str(undefined) (F-013 class).
 			note: r.note == null ? null : String(r.note),
 			startedAt: iso(r.started_at),
@@ -238,11 +262,12 @@ export async function listFleetAcrossProjects(db: Db, limit = 40): Promise<Fleet
 	// explicit `project_id` alias is the stable source for the raw id even after FETCH
 	// expands `project` into the full object.
 	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
-		`SELECT id, status, model, project, task, note, cc_session_id, started_at, ended_at,
-		        project.id AS project_id, project.name AS project_name, project.slug AS project_slug
+		`SELECT id, status, kind, model, project, task, note, cc_session_id, started_at, ended_at,
+		        project.id AS project_id, project.name AS project_name, project.slug AS project_slug,
+		        role.slug AS role_slug, role.name AS role_name
 		   FROM session
 		   ORDER BY started_at DESC LIMIT $lim
-		   FETCH project;`,
+		   FETCH project, role;`,
 		{ lim: limit }
 	);
 	const sessions = (rows ?? []).map((r) => {
@@ -258,6 +283,10 @@ export async function listFleetAcrossProjects(db: Db, limit = 40): Promise<Fleet
 			projectName: r.project_name ? String(r.project_name) : null,
 			projectSlug: r.project_slug ? String(r.project_slug) : null,
 			taskId: r.task ? String(r.task) : null,
+			// Honest absent kind/role → null, never a fabricated label (F-008).
+			kind: r.kind == null ? null : String(r.kind),
+			roleSlug: r.role_slug == null ? null : String(r.role_slug),
+			roleName: r.role_name == null ? null : String(r.role_name),
 			// Honest absent note (option<string> NONE) → null, never str(undefined) (F-013 class).
 			note: r.note == null ? null : String(r.note),
 			ccSessionId: r.cc_session_id ? String(r.cc_session_id) : null,
@@ -284,10 +313,11 @@ export async function listFleetAcrossProjects(db: Db, limit = 40): Promise<Fleet
 export async function getFleetSession(db: Db, sessionId: string): Promise<FleetSessionXP | null> {
 	const sid = new StringRecordId(assertRecordId(sessionId));
 	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
-		`SELECT id, status, model, project, task, note, cc_session_id, started_at, ended_at,
-		        project.id AS project_id, project.name AS project_name, project.slug AS project_slug
+		`SELECT id, status, kind, model, project, task, note, cc_session_id, started_at, ended_at,
+		        project.id AS project_id, project.name AS project_name, project.slug AS project_slug,
+		        role.slug AS role_slug, role.name AS role_name
 		   FROM session WHERE id = $sid LIMIT 1
-		   FETCH project;`,
+		   FETCH project, role;`,
 		{ sid }
 	);
 	const r = (rows ?? [])[0];
@@ -304,6 +334,10 @@ export async function getFleetSession(db: Db, sessionId: string): Promise<FleetS
 		projectName: r.project_name ? String(r.project_name) : null,
 		projectSlug: r.project_slug ? String(r.project_slug) : null,
 		taskId: r.task ? String(r.task) : null,
+		// Honest absent kind/role → null, never a fabricated label (F-008).
+		kind: r.kind == null ? null : String(r.kind),
+		roleSlug: r.role_slug == null ? null : String(r.role_slug),
+		roleName: r.role_name == null ? null : String(r.role_name),
 		// Honest absent note (option<string> NONE) → null, never str(undefined) (F-013 class).
 		note: r.note == null ? null : String(r.note),
 		ccSessionId: r.cc_session_id ? String(r.cc_session_id) : null,

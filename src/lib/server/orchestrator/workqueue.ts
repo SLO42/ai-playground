@@ -112,6 +112,25 @@ export async function enqueue(
 	}
 }
 
+/** Options for {@link claimNext}. */
+export interface ClaimOptions {
+	/** Bounded retry count on a lost claim race (default 16). */
+	maxRetries?: number;
+	/**
+	 * Per-project in-flight gate (orchestration concurrency.perProject). Project record-id
+	 * strings whose in-flight SESSION count is ALREADY at the perProject cap — the claim SELECT
+	 * skips a pending `task_run` item linked to one of these projects so it is PARKED (left
+	 * pending) for a later drain, while task_run items for other (free) projects stay claimable
+	 * in the same pass. SCOPE: only `task_run` items are gated — they are the ones launchSession
+	 * runs in the project's shared cwd (the F-007/F-046 git/file race). In-process forks
+	 * (memory_review / hire_request) carry a project link but write NOTHING to the cwd, so they
+	 * are NEVER parked by this gate. This enforces the per-project cap WITHOUT a busy loop: a
+	 * parked item is re-evaluated when an in-flight session for its project completes and
+	 * re-drains. Empty/absent ⇒ no gate (byte-identical to the pre-gate behavior).
+	 */
+	excludeProjectIds?: readonly string[];
+}
+
 /**
  * Claim the single highest-priority pending+unclaimed `work_item` ATOMICALLY, or
  * `null` if the queue is empty. SELECT-then-claim-by-id (§4.12): never `UPDATE…ORDER BY`.
@@ -120,12 +139,22 @@ export async function enqueue(
  * record-targeted UPDATE returns `[]`; we re-SELECT the next candidate and retry up to
  * `maxRetries` times (a finite bound, never a busy loop). When the SELECT itself finds
  * no candidate we return `null` immediately.
+ *
+ * `opts.excludeProjectIds` is the per-project in-flight gate (concurrency.perProject): pending
+ * items linked to a capped project are filtered OUT of the candidate SELECT so they stay parked
+ * for a later drain, while other projects' items remain claimable in the same pass.
  */
 export async function claimNext(
 	db: Db,
 	claimToken: string,
-	maxRetries = 16
+	maxRetries: number | ClaimOptions = 16
 ): Promise<ClaimedItem | null> {
+	// Back-compat overload: a bare number is the old maxRetries arg; an object is ClaimOptions.
+	const opts: ClaimOptions = typeof maxRetries === 'number' ? { maxRetries } : maxRetries;
+	const retries = opts.maxRetries ?? 16;
+	// Validate every excluded id at the D-016 chokepoint, then wrap as a record link so the
+	// SELECT compares against real record ids (never a raw interpolated string). Dedup defensively.
+	const excluded = [...new Set(opts.excludeProjectIds ?? [])].map((id) => link(id));
 	// Serialize claims on this connection (see claimSerializer): SurrealDB processes one
 	// query at a time per connection, but two claimNext calls awaiting in JS can still
 	// interleave their SELECT and CAS round-trips. Funnelling them through a per-db
@@ -134,7 +163,7 @@ export async function claimNext(
 	// BEGIN/COMMIT would interleave with the launch path's plain queries on the shared
 	// connection and surface spurious "failed transaction" errors). Claims are brief.
 	return claimSerializer(db, async () => {
-		for (let attempt = 0; attempt <= maxRetries; attempt++) {
+		for (let attempt = 0; attempt <= retries; attempt++) {
 			// SELECT-then-claim-by-id as ONE statement batch (§4.12 reference form):
 			//   LET $cand = (SELECT … ORDER BY priority LIMIT 1)[0].id;  -- read
 			//   UPDATE $cand SET … WHERE claim_token IS NONE RETURN AFTER; -- guarded CAS
@@ -145,9 +174,17 @@ export async function claimNext(
 			// IS NONE` is the atomic compare-and-set — exactly one claimer matches it.
 			let claimed: Array<Record<string, unknown>>;
 			try {
+				// Per-project gate (concurrency.perProject): when excluded ids are present, the
+				// candidate SELECT skips ONLY pending `task_run` items linked to a capped project —
+				// `NOT (work_type = "task_run" AND project IN $excluded)` parks a session spawn whose
+				// project is at its in-flight cap while leaving in-process forks (memory_review /
+				// hire_request, which write nothing to the project cwd) and every other project's
+				// task_run claimable in the same pass.
+				const projFilter =
+					excluded.length > 0 ? `AND NOT (work_type = "task_run" AND project IN $excluded)` : '';
 				const result = await db.query<unknown[]>(
 					`LET $cand = (SELECT id, priority FROM work_item
-					   WHERE status = "pending" AND claim_token IS NONE
+					   WHERE status = "pending" AND claim_token IS NONE ${projFilter}
 					   ORDER BY priority ASC LIMIT 1)[0].id;
 					 IF $cand != NONE {
 					   RETURN UPDATE $cand
@@ -158,7 +195,7 @@ export async function claimNext(
 					 } ELSE {
 					   RETURN [];
 					 };`,
-					{ t: claimToken }
+					excluded.length > 0 ? { t: claimToken, excluded } : { t: claimToken }
 				);
 				claimed = result[result.length - 1] as Array<Record<string, unknown>>;
 			} catch (err) {
@@ -172,12 +209,18 @@ export async function claimNext(
 			}
 			const row = claimed?.[0];
 			if (!row) {
-				// $cand was NONE (no candidate) or the guarded UPDATE matched nothing (a
-				// concurrent claim took it). Re-check: if no pending row remains, stop;
-				// else retry so a multi-row queue isn't abandoned after one lost race.
+				// $cand was NONE (no candidate, incl. all candidates filtered by the per-project
+				// gate) or the guarded UPDATE matched nothing (a concurrent claim took it). Re-check
+				// under the SAME project gate: if no claimable pending row remains, stop; else retry
+				// so a multi-row queue isn't abandoned after one lost race. The gate is applied here
+				// too so a queue full of ONLY capped-project task_run items terminates (returns null)
+				// rather than spinning the retry loop.
+				const projFilter =
+					excluded.length > 0 ? `AND NOT (work_type = "task_run" AND project IN $excluded)` : '';
 				const [remaining] = await db.query<[Array<{ c: number }>]>(
 					`SELECT count() AS c FROM work_item
-					   WHERE status = "pending" AND claim_token IS NONE GROUP ALL;`
+					   WHERE status = "pending" AND claim_token IS NONE ${projFilter} GROUP ALL;`,
+					excluded.length > 0 ? { excluded } : {}
 				);
 				if (Number(remaining?.[0]?.c ?? 0) === 0) return null;
 				continue;

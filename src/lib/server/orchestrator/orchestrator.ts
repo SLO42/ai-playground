@@ -83,6 +83,19 @@ export interface OrchestratorOptions {
 	runtime: AgentRuntime;
 	/** Interactive concurrency cap (config/orchestration.yaml concurrency.maxAgents). */
 	maxConcurrent: number;
+	/**
+	 * Per-project in-flight cap (config/orchestration.yaml concurrency.perProject). The max number
+	 * of sessions for the SAME project that may run concurrently — an ADDITIONAL gate on top of the
+	 * global `maxConcurrent` semaphore. With perProject=1 (the F-046 stopgap) at most one session
+	 * per project runs at a time, so same-repo commits in the shared project.root_path are serialized
+	 * (the F-007/F-046 git index.lock + file-stomp race is closed) WITHOUT needing per-session
+	 * worktrees yet; two DIFFERENT projects still run concurrently up to maxConcurrent. A task whose
+	 * project is at its perProject in-flight count is PARKED (left pending) and re-evaluated when any
+	 * in-flight session completes (event-driven re-drain, NO busy loop). Absent / < 1 ⇒ no per-project
+	 * gate (byte-identical to the pre-gate behavior). The config boundary validates it as a positive
+	 * integer (config/load.ts), so the live boot always passes a value ≥ 1.
+	 */
+	perProject?: number;
 	/** Orchestration mode (D-004). Default 'event'. */
 	mode?: OrchMode;
 	/** Periodic interval; ONLY armed when mode==='periodic' (off by default, D-004). */
@@ -155,6 +168,17 @@ export class Orchestrator {
 	readonly #postTask?: OrchestratorOptions['postTask'];
 	readonly #dailyCap?: number;
 	readonly #capWindowMs: number;
+	/** Per-project in-flight cap (concurrency.perProject); undefined / < 1 ⇒ no gate. */
+	readonly #perProject?: number;
+	/**
+	 * Live count of in-flight sessions PER project id — incremented when a task-spawn item is
+	 * claimed, decremented in the SAME finally that releases the interactive permit (EVERY exit
+	 * path: success/failure/throw). The decrement-on-all-paths discipline mirrors the global
+	 * semaphore's release-once contract: a leaked counter would permanently wedge a project
+	 * (F-014 class), so the count is bumped exactly once per claim and dropped exactly once per
+	 * terminal. Zero-valued entries are deleted so the map never grows unbounded.
+	 */
+	readonly #inFlightByProject = new Map<string, number>();
 
 	#unsub?: Unsubscribe;
 	#timer?: ReturnType<typeof setInterval>;
@@ -182,11 +206,55 @@ export class Orchestrator {
 		this.#postTask = opts.postTask;
 		this.#dailyCap = opts.dailySpawnCap && opts.dailySpawnCap > 0 ? opts.dailySpawnCap : undefined;
 		this.#capWindowMs = opts.dailyCapWindowMs ?? DAY_MS;
+		this.#perProject = opts.perProject && opts.perProject > 0 ? opts.perProject : undefined;
 	}
 
 	/** The interactive semaphore (read-only view for tests/diagnostics). */
 	get semaphore(): Semaphore {
 		return this.#sem;
+	}
+
+	/** The per-project in-flight cap (undefined ⇒ no gate). Read-only view for tests/diagnostics. */
+	get perProjectCap(): number | undefined {
+		return this.#perProject;
+	}
+
+	/** Current in-flight session count for a project id (0 when none). Tests/diagnostics. */
+	inFlightFor(projectId: string): number {
+		return this.#inFlightByProject.get(projectId) ?? 0;
+	}
+
+	/**
+	 * The set of project ids ALREADY at their perProject in-flight cap — the claim gate the drain
+	 * hands to claimNext so those projects' pending items stay parked. Empty when no per-project
+	 * gate is configured (undefined #perProject). Computed fresh each drain pass from the live map.
+	 */
+	#cappedProjectIds(): string[] {
+		if (this.#perProject === undefined) return [];
+		const capped: string[] = [];
+		for (const [pid, n] of this.#inFlightByProject) {
+			if (n >= this.#perProject) capped.push(pid);
+		}
+		return capped;
+	}
+
+	/** Increment the in-flight count for a project (at claim/spawn). No-op for an empty id. */
+	#bumpProject(projectId: string): void {
+		if (!projectId) return;
+		this.#inFlightByProject.set(projectId, (this.#inFlightByProject.get(projectId) ?? 0) + 1);
+	}
+
+	/**
+	 * Decrement the in-flight count for a project (in the permit-release finally, every exit path).
+	 * Floors at 0 and DELETES a zeroed entry so the map can't grow unbounded or go negative — a
+	 * leaked/over-decremented counter is the F-014 wedge class this guards against.
+	 */
+	#dropProject(projectId: string): void {
+		if (!projectId) return;
+		const n = this.#inFlightByProject.get(projectId);
+		if (n === undefined) return;
+		if (n <= 1) this.#inFlightByProject.delete(projectId);
+		else this.#inFlightByProject.set(projectId, n - 1);
 	}
 
 	get mode(): OrchMode {
@@ -337,16 +405,32 @@ export class Orchestrator {
 					}
 					const permit = this.#sem.tryAcquire();
 					if (!permit) break; // interactive cap reached — leave work parked
-					const item = await claimNext(this.#db, nextClaimToken());
+					// Per-project gate (concurrency.perProject): hand claimNext the project ids
+					// already AT their in-flight cap so their `task_run` items are skipped (parked,
+					// left pending) and re-evaluated when an in-flight session completes (the
+					// permit-release finally re-drains). Computed fresh each iteration so a bump
+					// from the claim just made above is reflected on the next claim in this pass.
+					const item = await claimNext(this.#db, nextClaimToken(), {
+						excludeProjectIds: this.#cappedProjectIds()
+					});
 					if (!item) {
 						permit.release();
-						break; // queue empty — nothing more to spawn this pass
+						break; // queue empty (or all remaining are capped-project task_runs) — park the rest
 					}
 					claimed++;
+					// Count this session against its project's in-flight cap BEFORE the spawn, so the
+					// next claim in this pass (and concurrent drains) see the updated count. Only a
+					// task_run consumes a project session slot; forks (memory_review/hire_request) do
+					// not write to the project cwd, so they never bump the per-project counter. The
+					// matching decrement runs in #runItem's permit-release finally on EVERY exit path.
+					const gated =
+						this.#perProject !== undefined && (item.workType ?? item.payload.work_type) === 'task_run';
+					const gatedProjectId = gated ? (item.projectId ?? String(item.payload.projectId ?? '')) : '';
+					if (gatedProjectId) this.#bumpProject(gatedProjectId);
 					// Spawn in the background; release the permit when the run ends so the
 					// next parked work can proceed. An interactive agent never blocks the
 					// drain loop itself — we don't await the whole run here.
-					void this.#runItem(item, permit);
+					void this.#runItem(item, permit, gatedProjectId);
 					spawned++;
 				}
 			} while (this.#redrain);
@@ -376,7 +460,14 @@ export class Orchestrator {
 			projectId?: string;
 			sessionId?: string;
 		},
-		permit: { release(): void }
+		permit: { release(): void },
+		/**
+		 * The project id this item was counted against in the per-project in-flight map (bumped at
+		 * claim in the drain). Empty string ⇒ NOT gated (a non-task_run fork, or no per-project cap)
+		 * — #dropProject('') is a no-op. The decrement runs in the task path's permit-release finally
+		 * on EVERY exit path (success/failure/throw) so the counter can never leak (F-014 wedge).
+		 */
+		gatedProjectId = ''
 	): Promise<void> {
 		// BL-7 Part B (D-027 FAST tier DRAIN) — a `memory_review` work_item is the in-use writer
 		// fork, NOT a task spawn. It carries no taskId; the OLD #runItem read only payload.taskId
@@ -525,6 +616,12 @@ export class Orchestrator {
 			ok = false; // a spawn failure marks the work_item failed; never crash the drain
 		} finally {
 			await complete(this.#db, item.id, item.claimToken, ok ? 'done' : 'failed').catch(() => {});
+			// Drop this session from its project's in-flight count BEFORE re-draining so the
+			// re-drain sees the freed per-project slot and can claim a parked same-project task.
+			// Runs on EVERY exit path (success/failure/throw via the catch above) — the decrement
+			// can never be skipped, so the per-project counter never leaks/wedges (F-014). A no-op
+			// when gatedProjectId is '' (ungated item / no per-project cap).
+			this.#dropProject(gatedProjectId);
 			// Free the interactive permit, then trigger one more drain so any work that
 			// was parked behind the cap proceeds now (event-driven, not a busy loop).
 			permit.release();

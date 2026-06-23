@@ -62,6 +62,8 @@ export type OrchestratorBootResult =
 			orchestrator: Orchestrator;
 			mode: OrchMode;
 			maxConcurrent: number;
+			/** The per-project in-flight cap actually wired into the orchestrator (concurrency.perProject). */
+			perProject?: number;
 			dailySpawnCap?: number;
 	  }
 	| { started: false; reason: string };
@@ -73,6 +75,7 @@ export type OrchestratorBootResult =
 function readOrchestrationConfig(): {
 	mode: OrchMode;
 	maxConcurrent: number;
+	perProject?: number;
 	intervalMs?: number;
 	dailySpawnCap?: number;
 	orchestration: Orchestration | null;
@@ -83,6 +86,12 @@ function readOrchestrationConfig(): {
 		return {
 			mode: orch.mode,
 			maxConcurrent: orch.concurrency.maxAgents,
+			// The PER-PROJECT in-flight cap (concurrency.perProject) — validated as a positive
+			// integer at the config boundary (loadOrchestration: load.ts), so a loaded config always
+			// carries a value ≥ 1. Threaded into the orchestrator as the ADDITIONAL per-project gate
+			// on top of maxConcurrent (the F-046 stopgap: perProject=1 serializes same-project
+			// sessions so concurrent same-repo commits in the shared project.root_path can't race).
+			perProject: orch.concurrency.perProject,
 			intervalMs: orch.intervalMs,
 			// D-021 — the rolling-24h background-claim ceiling. Normalize 0/absent → undefined
 			// (uncapped) so the orchestrator's own `dailySpawnCap > 0` gate stays the single source
@@ -263,7 +272,8 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		return { started: false, reason: avail.reason };
 	}
 
-	const { mode, maxConcurrent, intervalMs, dailySpawnCap, orchestration } = readOrchestrationConfig();
+	const { mode, maxConcurrent, perProject, intervalMs, dailySpawnCap, orchestration } =
+		readOrchestrationConfig();
 
 	// The router needs BOTH the tier ladder (agent-pool) and the adaptive bundles
 	// (orchestration). Without them resolveRoute cannot pick a tier or apply D-020 — a started
@@ -293,6 +303,13 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		bus,
 		runtime: avail.runtime,
 		maxConcurrent,
+		// The per-project in-flight cap (concurrency.perProject) — the ADDITIONAL gate the drain
+		// enforces on top of maxConcurrent. With perProject=1 (current config, the F-046 stopgap)
+		// at most one session per project runs at a time, serializing same-repo commits in the
+		// shared project.root_path (the F-007/F-046 git index.lock + file-stomp race) WITHOUT
+		// needing per-session worktrees yet; two DIFFERENT projects still run concurrently up to
+		// maxConcurrent. Previously parsed + validated but NEVER passed here — it was dead config.
+		perProject,
 		mode,
 		memory,
 		// intervalMs ONLY matters in 'periodic' mode (off by default, D-004). Passing it in
@@ -332,5 +349,5 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 	});
 	orchestrator.start();
 
-	return { started: true, orchestrator, mode, maxConcurrent, dailySpawnCap };
+	return { started: true, orchestrator, mode, maxConcurrent, perProject, dailySpawnCap };
 }

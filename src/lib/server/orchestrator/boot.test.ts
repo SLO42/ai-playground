@@ -146,6 +146,27 @@ describe('TASK 8.1 — startOrchestrator boot wire (D-004/§2.11/F-008)', () => 
 		}
 	});
 
+	// concurrency.perProject — previously parsed + validated but NEVER wired into the orchestrator
+	// (dead config: the live 19:43 ROUNDS batch ran 6 same-project sessions despite perProject:1).
+	// The boot now threads it from config → orchestrator (reported == enforced); the shipped
+	// config/orchestration.yaml carries perProject: 1 (the F-046 stopgap).
+	it('wires concurrency.perProject from config into the boot result + orchestrator', async () => {
+		getRuntimeMock.mockResolvedValue({ available: true, runtime: idleRuntime });
+		const bus = new EventBus();
+		const boot = await startOrchestrator(idleDb(), bus);
+		expect(boot.started).toBe(true);
+		if (!boot.started) throw new Error('expected started');
+		try {
+			// The shipped config ships a positive per-project cap (≥ 1, validated at the boundary).
+			expect(typeof boot.perProject).toBe('number');
+			expect(boot.perProject as number).toBeGreaterThanOrEqual(1);
+			// Reported == enforced: the value on the boot result is the value the orchestrator holds.
+			expect(boot.orchestrator.perProjectCap).toBe(boot.perProject);
+		} finally {
+			boot.orchestrator.stop();
+		}
+	});
+
 	it('subscribes to the BUS it is handed (§2.11 — never its own live query)', async () => {
 		getRuntimeMock.mockResolvedValue({ available: true, runtime: idleRuntime });
 		const bus = new EventBus();

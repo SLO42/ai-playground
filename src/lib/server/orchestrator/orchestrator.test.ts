@@ -388,6 +388,160 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 		}
 	}, 30_000);
 
+	// ── concurrency.perProject — the PER-PROJECT in-flight gate (F-046 / F-007) ──────────
+	//
+	// Proves the previously-dead `perProject` config is now ENFORCED: at most `perProject`
+	// SESSIONS for the SAME project run concurrently (an ADDITIONAL cap on top of maxConcurrent),
+	// two DIFFERENT projects still run concurrently, and a spawn that THROWS still decrements the
+	// per-project counter (no permanent wedge — F-014). Manual mode + an explicit drain so the
+	// daily/interactive caps are NOT the limiter under test — only the per-project gate is.
+	it('perProject=1: 2 ready tasks in ONE project → only 1 in flight; the 2nd runs after the 1st completes', async () => {
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = gatedBackend();
+		const runtime = new ClaudeCodeRuntime({ backend });
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 8, // global cap is NOT the limiter — the per-project cap (1) is
+			perProject: 1,
+			mode: 'manual',
+			route: stubRoute()
+		});
+		orch.start();
+		try {
+			const a = await createTask(db, { project: projectId, title: 'pp A', description: 'same project' });
+			const b = await createTask(db, { project: projectId, title: 'pp B', description: 'same project' });
+			await orch.enqueueTask(a.id, projectId);
+			await orch.enqueueTask(b.id, projectId);
+			await orch.drain();
+
+			// Only ONE spawn started despite two ready + 8 free interactive permits — the
+			// per-project cap (1) parked the second. The 2nd is left pending (not lost).
+			await waitFor(() => backend.plans.length >= 1);
+			await backend.gates[0].started;
+			await new Promise((r) => setTimeout(r, 300));
+			expect(backend.plans.length).toBe(1);
+			expect(orch.inFlightFor(projectId)).toBe(1);
+			expect(await countByStatus(db, 'pending')).toBe(1); // the 2nd parked
+			expect(await countByStatus(db, 'processing')).toBe(1);
+
+			// Release the first — its completion finally drops the per-project count and re-drains,
+			// so the SECOND same-project task now claims+spawns (event-driven, no busy poll).
+			backend.gates[0].release();
+			await waitFor(() => backend.plans.length >= 2, 10_000);
+			await backend.gates[1].started;
+			expect(backend.plans.length).toBe(2);
+			expect(orch.inFlightFor(projectId)).toBe(1); // still only ONE at a time
+
+			backend.gates[1].release();
+			await waitFor(() => orch.semaphore.inUse === 0, 10_000);
+			await waitFor(() => orch.inFlightFor(projectId) === 0, 5_000);
+			expect(await countByStatus(db, 'pending')).toBe(0); // both eventually drained
+		} finally {
+			orch.stop();
+		}
+	}, 30_000);
+
+	it('perProject=1: 2 ready tasks in TWO different projects → BOTH run concurrently (global cap permitting)', async () => {
+		await clearQueue();
+		const other = await createProject(db, {
+			slug: 'orch_pp2',
+			name: 'Orch Host 2',
+			root_path: 'F:/code/orch2'
+		});
+		const bus = new EventBus();
+		const backend = gatedBackend();
+		const runtime = new ClaudeCodeRuntime({ backend });
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 8,
+			perProject: 1,
+			mode: 'manual',
+			route: stubRoute()
+		});
+		orch.start();
+		try {
+			const a = await createTask(db, { project: projectId, title: 'proj1', description: 'project one' });
+			const b = await createTask(db, { project: other.id, title: 'proj2', description: 'project two' });
+			await orch.enqueueTask(a.id, projectId);
+			await orch.enqueueTask(b.id, other.id);
+			await orch.drain();
+
+			// BOTH spawn concurrently — the per-project cap is per-project, so two DIFFERENT
+			// projects each get their one slot at once (global maxConcurrent=8 permits it).
+			await waitFor(() => backend.plans.length >= 2);
+			await Promise.all([backend.gates[0].started, backend.gates[1].started]);
+			expect(backend.plans.length).toBe(2);
+			expect(backend.concurrentPeak).toBe(2); // genuinely concurrent
+			expect(orch.inFlightFor(projectId)).toBe(1);
+			expect(orch.inFlightFor(other.id)).toBe(1);
+
+			for (const g of backend.gates) g.release();
+			await waitFor(() => orch.semaphore.inUse === 0, 10_000);
+			await waitFor(() => orch.inFlightFor(projectId) === 0 && orch.inFlightFor(other.id) === 0, 5_000);
+		} finally {
+			orch.stop();
+			await deleteProject(db, other.id).catch(() => {});
+		}
+	}, 30_000);
+
+	it('perProject=1: a spawn that THROWS still decrements the per-project counter (no wedge — F-014)', async () => {
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = gatedBackend();
+		const runtime = new ClaudeCodeRuntime({ backend });
+		// A route resolver that THROWS on the FIRST call only (the spawn path then rejects into
+		// #runItem's catch → ok=false → the work_item is marked failed). The decrement MUST still
+		// happen in the finally, or the project would be permanently wedged at its cap.
+		let calls = 0;
+		const flakyRoute = (t: string, p: string): StubRoute => {
+			calls++;
+			if (calls === 1) throw new Error('route boom (simulated spawn failure)');
+			return stubRoute()(t, p);
+		};
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 8,
+			perProject: 1,
+			mode: 'manual',
+			route: flakyRoute
+		});
+		orch.start();
+		try {
+			const a = await createTask(db, { project: projectId, title: 'throw A', description: 'spawn throws' });
+			const b = await createTask(db, { project: projectId, title: 'then B', description: 'must still run' });
+			await orch.enqueueTask(a.id, projectId);
+			await orch.enqueueTask(b.id, projectId);
+			await orch.drain();
+
+			// The first claim bumped the project to 1, then the route threw → #runItem's catch +
+			// finally marks it failed, DROPS the per-project count back to 0, and re-drains. The
+			// counter did NOT leak: the project is claimable again, so the SECOND task spawns.
+			await waitFor(() => backend.plans.length >= 1, 10_000);
+			await backend.gates[0].started;
+			// One item failed (the throw), one spawned (the recovery) — the count is back to 1
+			// (the surviving in-flight session), never stuck at the cap with nothing running.
+			expect(orch.inFlightFor(projectId)).toBe(1);
+			expect(backend.plans.length).toBe(1);
+			expect(await countByStatus(db, 'failed')).toBe(1); // the throwing item marked failed
+
+			backend.gates[0].release();
+			await waitFor(() => orch.semaphore.inUse === 0, 10_000);
+			await waitFor(() => orch.inFlightFor(projectId) === 0, 5_000);
+			// No wedge: the counter returned to 0 on the throw path AND the success path.
+			expect(orch.inFlightFor(projectId)).toBe(0);
+			expect(await countByStatus(db, 'pending')).toBe(0);
+		} finally {
+			orch.stop();
+		}
+	}, 30_000);
+
 	it('manual mode: no bus subscription — a ready task does NOT auto-spawn; runOnce drains', async () => {
 		await clearQueue();
 		const bus = new EventBus();

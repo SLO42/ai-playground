@@ -25,6 +25,28 @@ import { assertRecordId } from '../db/validate';
 /** A `work_item` lifecycle status (schema ASSERT, §4.12). */
 export type WorkStatus = 'pending' | 'processing' | 'done' | 'failed';
 
+/**
+ * The work types whose drain runs through `launchSession` in the project's SHARED working
+ * tree (`project.root_path`) and COMMITS there — the F-046/F-007 git-index/file-stomp race
+ * surface. These, and ONLY these, are subject to the per-project in-flight gate
+ * (concurrency.perProject): two of them for the SAME project must be serialized so they don't
+ * race the same repo. Defined in ONE place so adding a future cwd-spawn type extends the gate
+ * everywhere (the candidate SELECT filter, the lost-race re-check, AND the orchestrator's
+ * per-project counter bump) at once, not scattered.
+ *
+ * DELIBERATELY EXCLUDED — the IN-PROCESS forks `memory_review` and `hire_request`: they carry a
+ * project link but write NOTHING to the project cwd (they hold only a MemoryWriteSurface / draft
+ * to the DB), so gating them would wrongly starve the FAST-tier writer fork / HR draft (the
+ * explicit HB-H1 deviation rationale). The gate set is the CWD-SPAWNING types, NOT all
+ * project-linked work.
+ */
+export const CWD_SPAWNING_WORK_TYPES: readonly string[] = ['task_run', 'review'];
+
+/** True iff `workType` spawns a session in the project's shared cwd (gate membership, single source). */
+export function isCwdSpawningWorkType(workType: string | undefined): boolean {
+	return workType !== undefined && CWD_SPAWNING_WORK_TYPES.includes(workType);
+}
+
 export interface EnqueueInput {
 	/** task_run | scan | review | release | extract | follow_up | maintenance … */
 	workType: string;
@@ -119,10 +141,11 @@ export interface ClaimOptions {
 	/**
 	 * Per-project in-flight gate (orchestration concurrency.perProject). Project record-id
 	 * strings whose in-flight SESSION count is ALREADY at the perProject cap — the claim SELECT
-	 * skips a pending `task_run` item linked to one of these projects so it is PARKED (left
-	 * pending) for a later drain, while task_run items for other (free) projects stay claimable
-	 * in the same pass. SCOPE: only `task_run` items are gated — they are the ones launchSession
-	 * runs in the project's shared cwd (the F-007/F-046 git/file race). In-process forks
+	 * skips a pending CWD-SPAWNING item (work_type ∈ {@link CWD_SPAWNING_WORK_TYPES}: task_run,
+	 * review) linked to one of these projects so it is PARKED (left pending) for a later drain,
+	 * while cwd-spawning items for other (free) projects stay claimable in the same pass. SCOPE:
+	 * only cwd-spawning items are gated — they are the ones launchSession runs in the project's
+	 * shared cwd and commits there (the F-007/F-046 git/file race). In-process forks
 	 * (memory_review / hire_request) carry a project link but write NOTHING to the cwd, so they
 	 * are NEVER parked by this gate. This enforces the per-project cap WITHOUT a busy loop: a
 	 * parked item is re-evaluated when an in-flight session for its project completes and
@@ -141,8 +164,9 @@ export interface ClaimOptions {
  * no candidate we return `null` immediately.
  *
  * `opts.excludeProjectIds` is the per-project in-flight gate (concurrency.perProject): pending
- * items linked to a capped project are filtered OUT of the candidate SELECT so they stay parked
- * for a later drain, while other projects' items remain claimable in the same pass.
+ * CWD-SPAWNING items ({@link CWD_SPAWNING_WORK_TYPES}) linked to a capped project are filtered
+ * OUT of the candidate SELECT so they stay parked for a later drain, while other projects' items
+ * (and the never-gated in-process forks) remain claimable in the same pass.
  */
 export async function claimNext(
 	db: Db,
@@ -155,6 +179,9 @@ export async function claimNext(
 	// Validate every excluded id at the D-016 chokepoint, then wrap as a record link so the
 	// SELECT compares against real record ids (never a raw interpolated string). Dedup defensively.
 	const excluded = [...new Set(opts.excludeProjectIds ?? [])].map((id) => link(id));
+	// The cwd-spawning work types the per-project gate applies to (single source, bound via $param
+	// at the D-016 boundary — never interpolated). Computed once; reused by both gated SELECTs below.
+	const cwdSpawnTypes = [...CWD_SPAWNING_WORK_TYPES];
 	// Serialize claims on this connection (see claimSerializer): SurrealDB processes one
 	// query at a time per connection, but two claimNext calls awaiting in JS can still
 	// interleave their SELECT and CAS round-trips. Funnelling them through a per-db
@@ -175,13 +202,16 @@ export async function claimNext(
 			let claimed: Array<Record<string, unknown>>;
 			try {
 				// Per-project gate (concurrency.perProject): when excluded ids are present, the
-				// candidate SELECT skips ONLY pending `task_run` items linked to a capped project —
-				// `NOT (work_type = "task_run" AND project IN $excluded)` parks a session spawn whose
-				// project is at its in-flight cap while leaving in-process forks (memory_review /
-				// hire_request, which write nothing to the project cwd) and every other project's
-				// task_run claimable in the same pass.
+				// candidate SELECT skips pending CWD-SPAWNING items (work_type IN $cwdSpawnTypes:
+				// task_run, review) linked to a capped project — `NOT (work_type IN $cwdSpawnTypes
+				// AND project IN $excluded)` parks a session spawn whose project is at its in-flight
+				// cap while leaving in-process forks (memory_review / hire_request, which write
+				// nothing to the project cwd) and every other project's cwd-spawning items claimable
+				// in the same pass.
 				const projFilter =
-					excluded.length > 0 ? `AND NOT (work_type = "task_run" AND project IN $excluded)` : '';
+					excluded.length > 0
+						? `AND NOT (work_type IN $cwdSpawnTypes AND project IN $excluded)`
+						: '';
 				const result = await db.query<unknown[]>(
 					`LET $cand = (SELECT id, priority FROM work_item
 					   WHERE status = "pending" AND claim_token IS NONE ${projFilter}
@@ -195,7 +225,7 @@ export async function claimNext(
 					 } ELSE {
 					   RETURN [];
 					 };`,
-					excluded.length > 0 ? { t: claimToken, excluded } : { t: claimToken }
+					excluded.length > 0 ? { t: claimToken, excluded, cwdSpawnTypes } : { t: claimToken }
 				);
 				claimed = result[result.length - 1] as Array<Record<string, unknown>>;
 			} catch (err) {
@@ -213,14 +243,16 @@ export async function claimNext(
 				// gate) or the guarded UPDATE matched nothing (a concurrent claim took it). Re-check
 				// under the SAME project gate: if no claimable pending row remains, stop; else retry
 				// so a multi-row queue isn't abandoned after one lost race. The gate is applied here
-				// too so a queue full of ONLY capped-project task_run items terminates (returns null)
-				// rather than spinning the retry loop.
+				// too so a queue full of ONLY capped-project cwd-spawning items terminates (returns
+				// null) rather than spinning the retry loop.
 				const projFilter =
-					excluded.length > 0 ? `AND NOT (work_type = "task_run" AND project IN $excluded)` : '';
+					excluded.length > 0
+						? `AND NOT (work_type IN $cwdSpawnTypes AND project IN $excluded)`
+						: '';
 				const [remaining] = await db.query<[Array<{ c: number }>]>(
 					`SELECT count() AS c FROM work_item
 					   WHERE status = "pending" AND claim_token IS NONE ${projFilter} GROUP ALL;`,
-					excluded.length > 0 ? { excluded } : {}
+					excluded.length > 0 ? { excluded, cwdSpawnTypes } : {}
 				);
 				if (Number(remaining?.[0]?.c ?? 0) === 0) return null;
 				continue;

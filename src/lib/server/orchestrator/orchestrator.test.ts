@@ -16,7 +16,7 @@ import {
 	type RuntimeEvent
 } from '../runtime/index';
 import { Orchestrator, type StubRoute } from './index';
-import { claimNext, complete, countByStatus } from './workqueue';
+import { claimNext, complete, countByStatus, enqueue } from './workqueue';
 import type { CommandRunner, CommandResult } from './post-task';
 
 // TASK 2.2 VERIFY (ARCHITECTURE §2.2/§2.11; D-004; DATA-MODEL §4.12) against the
@@ -540,6 +540,184 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 			expect(await countByStatus(db, 'pending')).toBe(0);
 		} finally {
 			orch.stop();
+		}
+	}, 30_000);
+
+	// ── HB-H1 extension — the gate covers EVERY cwd-spawning work type {task_run, review} ────────
+	//
+	// A `review` work_item ALSO runs through launchSession in project.root_path and commits there
+	// (review.ts: "exactly like a task_run"), so a review + a task_run for the SAME project would
+	// re-open the F-046/F-007 same-repo race. Proves the per-project gate now serializes them, never
+	// parks the in-process forks, and still lets two DIFFERENT projects run concurrently.
+	it('perProject=1: a review + a task_run for ONE project → only 1 in flight; the 2nd runs after the 1st completes', async () => {
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = gatedBackend();
+		const runtime = new ClaudeCodeRuntime({ backend });
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 8, // global cap is NOT the limiter — the per-project cap (1) is
+			perProject: 1,
+			mode: 'manual',
+			route: stubRoute()
+		});
+		orch.start();
+		try {
+			const a = await createTask(db, { project: projectId, title: 'cwd A', description: 'task_run' });
+			const b = await createTask(db, { project: projectId, title: 'cwd B', description: 'review' });
+			// A task_run (via enqueueTask) + a review (enqueued directly, the maybeEnqueueReview shape):
+			// both carry taskId+projectId so #runItem runs each through launchSession in the shared cwd.
+			await orch.enqueueTask(a.id, projectId);
+			await enqueue(db, {
+				workType: 'review',
+				payload: { taskId: b.id, projectId, sessionId: 'session:fake' },
+				projectId,
+				dedupScope: b.id
+			});
+			await orch.drain();
+
+			// Only ONE of the two cwd-spawning items started despite two ready + 8 free permits — the
+			// per-project cap (1) parked the second REGARDLESS of which type it is (task_run or review).
+			await waitFor(() => backend.plans.length >= 1);
+			await backend.gates[0].started;
+			await new Promise((r) => setTimeout(r, 300));
+			expect(backend.plans.length).toBe(1);
+			expect(orch.inFlightFor(projectId)).toBe(1);
+			expect(await countByStatus(db, 'pending')).toBe(1); // the 2nd cwd-spawn parked
+			expect(await countByStatus(db, 'processing')).toBe(1);
+
+			// Release the first — its completion drops the per-project count + re-drains, so the SECOND
+			// cwd-spawning item (the other of {task_run, review}) now claims + spawns.
+			backend.gates[0].release();
+			await waitFor(() => backend.plans.length >= 2, 10_000);
+			await backend.gates[1].started;
+			expect(backend.plans.length).toBe(2);
+			expect(orch.inFlightFor(projectId)).toBe(1); // still only ONE at a time
+			// Never two concurrent same-project cwd spawns — the F-046/F-007 race stays closed.
+			expect(backend.concurrentPeak).toBe(1);
+
+			backend.gates[1].release();
+			await waitFor(() => orch.semaphore.inUse === 0, 10_000);
+			await waitFor(() => orch.inFlightFor(projectId) === 0, 5_000);
+			expect(await countByStatus(db, 'pending')).toBe(0); // both eventually drained
+		} finally {
+			orch.stop();
+		}
+	}, 30_000);
+
+	it('perProject=1: a memory_review fork is NEVER parked even when the project is at its cwd-spawn cap', async () => {
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = gatedBackend();
+		const runtime = new ClaudeCodeRuntime({ backend });
+		// memory_review runs the in-process writer FORK (no cwd spawn). It must drain even while a
+		// same-project task_run holds the project's only cwd-spawn slot — gating it would starve the
+		// FAST-tier writer fork (the explicit HB-H1 deviation rationale). A memory dep is required for
+		// the fork to run; inject a mock that records the run and writes nothing real (F-008: mock in test).
+		let forkRan = false;
+		const memory = {
+			service: { db, embedder: { embed: async () => new Array(1024).fill(0) } },
+			extract: async () => {
+				forkRan = true;
+				return [];
+			},
+			proposeSkills: async () => []
+		} as unknown as ConstructorParameters<typeof Orchestrator>[0]['memory'];
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 8,
+			perProject: 1,
+			mode: 'manual',
+			route: stubRoute(),
+			memory
+		});
+		orch.start();
+		try {
+			const a = await createTask(db, { project: projectId, title: 'holds slot', description: 'task_run' });
+			await orch.enqueueTask(a.id, projectId);
+			// A memory_review fork for the SAME project — it carries the project link but writes nothing
+			// to the cwd, so the gate must NEVER park it even though the project is at its cwd-spawn cap.
+			await enqueue(db, {
+				workType: 'memory_review',
+				payload: { kind: 'memory', turnText: 'note worth keeping' },
+				projectId,
+				sessionId: undefined,
+				dedupScope: 'mr1'
+			});
+			await orch.drain();
+
+			// The task_run is in flight (holding the project's 1 cwd-spawn slot). The memory_review fork
+			// must STILL drain — it is never gated. It completes synchronously (no backend.run), so wait
+			// for it to terminal-complete and confirm it actually ran.
+			await waitFor(() => backend.plans.length >= 1);
+			await backend.gates[0].started;
+			await waitFor(() => forkRan, 5_000); // the fork drained despite the project being at cap
+			expect(orch.inFlightFor(projectId)).toBe(1); // the fork did NOT bump the per-project counter
+			// No memory_review row left pending — it was claimed + completed (forkRan), never parked.
+			const [mrPending] = await db.query<[Array<{ c: number }>]>(
+				`SELECT count() AS c FROM work_item WHERE work_type = "memory_review" AND status = "pending" GROUP ALL;`
+			);
+			expect(Number(mrPending?.[0]?.c ?? 0)).toBe(0);
+
+			backend.gates[0].release();
+			await waitFor(() => orch.semaphore.inUse === 0, 10_000);
+			await waitFor(() => orch.inFlightFor(projectId) === 0, 5_000);
+		} finally {
+			orch.stop();
+		}
+	}, 30_000);
+
+	it('perProject=1: a review in project A + a task_run in project B → BOTH run concurrently', async () => {
+		await clearQueue();
+		const other = await createProject(db, {
+			slug: 'orch_pp_cwd2',
+			name: 'Orch Host CWD2',
+			root_path: 'F:/code/orch-cwd2'
+		});
+		const bus = new EventBus();
+		const backend = gatedBackend();
+		const runtime = new ClaudeCodeRuntime({ backend });
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 8,
+			perProject: 1,
+			mode: 'manual',
+			route: stubRoute()
+		});
+		orch.start();
+		try {
+			const a = await createTask(db, { project: projectId, title: 'A review', description: 'review' });
+			const b = await createTask(db, { project: other.id, title: 'B task', description: 'task_run' });
+			// A review for project A + a task_run for project B — DIFFERENT projects, so each gets its
+			// own cwd-spawn slot and both run at once (global maxConcurrent=8 permits it).
+			await enqueue(db, {
+				workType: 'review',
+				payload: { taskId: a.id, projectId, sessionId: 'session:fake' },
+				projectId,
+				dedupScope: a.id
+			});
+			await orch.enqueueTask(b.id, other.id);
+			await orch.drain();
+
+			await waitFor(() => backend.plans.length >= 2);
+			await Promise.all([backend.gates[0].started, backend.gates[1].started]);
+			expect(backend.plans.length).toBe(2);
+			expect(backend.concurrentPeak).toBe(2); // genuinely concurrent across two projects
+			expect(orch.inFlightFor(projectId)).toBe(1);
+			expect(orch.inFlightFor(other.id)).toBe(1);
+
+			for (const g of backend.gates) g.release();
+			await waitFor(() => orch.semaphore.inUse === 0, 10_000);
+			await waitFor(() => orch.inFlightFor(projectId) === 0 && orch.inFlightFor(other.id) === 0, 5_000);
+		} finally {
+			orch.stop();
+			await deleteProject(db, other.id).catch(() => {});
 		}
 	}, 30_000);
 

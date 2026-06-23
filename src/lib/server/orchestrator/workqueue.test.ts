@@ -118,6 +118,67 @@ describe('work_item claim queue (DATA-MODEL §4.12; D-021)', () => {
 		expect(await countByStatus(db, 'done')).toBe(1);
 	});
 
+	it('per-project gate parks EVERY cwd-spawning type (task_run AND review), never the in-process forks', async () => {
+		await clearQueue();
+		// One review + one task_run for the SAME (capped) project, plus a memory_review fork for it,
+		// plus a task_run for a DIFFERENT (free) project. Distinct work_types/sessions keep dedup keys
+		// distinct so all four coexist as pending rows.
+		await enqueue(db, {
+			workType: 'review',
+			payload: { taskId: 'task:r' },
+			projectId,
+			priority: 1,
+			dedupScope: 'r'
+		});
+		await enqueue(db, {
+			workType: 'task_run',
+			payload: { taskId: 'task:t' },
+			projectId,
+			priority: 2,
+			dedupScope: 't'
+		});
+		await enqueue(db, {
+			workType: 'memory_review',
+			payload: { kind: 'memory' },
+			projectId,
+			priority: 3,
+			dedupScope: 'mr'
+		});
+
+		const other = await createProject(db, {
+			slug: 'wq_pp_other',
+			name: 'WQ Other',
+			root_path: 'F:/code/wq-other'
+		});
+		try {
+			await enqueue(db, {
+				workType: 'task_run',
+				payload: { taskId: 'task:o' },
+				projectId: other.id,
+				priority: 4,
+				dedupScope: 'o'
+			});
+
+			// Gate on the FIRST project: both its cwd-spawning items (review + task_run) must be parked;
+			// only the never-gated memory_review fork and the OTHER project's task_run stay claimable.
+			const claimable: string[] = [];
+			for (;;) {
+				const c = await claimNext(db, `g_${claimable.length}`, {
+					excludeProjectIds: [projectId]
+				});
+				if (!c) break;
+				claimable.push(c.workType);
+			}
+			// Only the fork (lowest claimable priority among the un-parked) and the other project's
+			// task_run were claimable — the capped project's review AND task_run stayed pending.
+			expect(claimable.sort()).toEqual(['memory_review', 'task_run']);
+			// The two parked cwd-spawning rows are still pending+unclaimed.
+			expect(await countByStatus(db, 'pending')).toBe(2);
+		} finally {
+			await deleteProject(db, other.id).catch(() => {});
+		}
+	});
+
 	it('dedup: re-enqueueing the same ACTIVE unit is a no-op (UNIQUE dedup_key)', async () => {
 		await clearQueue();
 		const sess = await db.query<[Array<{ id: unknown }>]>(

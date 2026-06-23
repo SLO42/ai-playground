@@ -42,7 +42,15 @@ import { setStatus } from '../tasks/repo';
 import { writeAgentEvent } from '../analytics/events';
 import { Semaphore } from './semaphore';
 import { runPostTask, resolveTestCommand, type CommandRunner } from './post-task';
-import { claimNext, complete, enqueue, gcStale, spawnsSince, DAY_MS } from './workqueue';
+import {
+	claimNext,
+	complete,
+	enqueue,
+	gcStale,
+	spawnsSince,
+	isCwdSpawningWorkType,
+	DAY_MS
+} from './workqueue';
 import { runReviewFork, makeWriteSurface, type ReviewKind } from '../memory/index';
 import {
 	runHireRequest,
@@ -416,16 +424,20 @@ export class Orchestrator {
 					});
 					if (!item) {
 						permit.release();
-						break; // queue empty (or all remaining are capped-project task_runs) — park the rest
+						break; // queue empty (or all remaining are capped-project cwd-spawning items) — park the rest
 					}
 					claimed++;
 					// Count this session against its project's in-flight cap BEFORE the spawn, so the
 					// next claim in this pass (and concurrent drains) see the updated count. Only a
-					// task_run consumes a project session slot; forks (memory_review/hire_request) do
-					// not write to the project cwd, so they never bump the per-project counter. The
-					// matching decrement runs in #runItem's permit-release finally on EVERY exit path.
+					// CWD-SPAWNING work type (isCwdSpawningWorkType: task_run, review) consumes a project
+					// session slot — those run launchSession in project.root_path and commit there; forks
+					// (memory_review/hire_request) do not write to the project cwd, so they never bump the
+					// per-project counter. Same single source the claim SELECT gate uses (workqueue.ts), so
+					// the bump set and the park set can never drift. The matching decrement runs in
+					// #runItem's permit-release finally on EVERY exit path.
 					const gated =
-						this.#perProject !== undefined && (item.workType ?? item.payload.work_type) === 'task_run';
+						this.#perProject !== undefined &&
+						isCwdSpawningWorkType(item.workType ?? (item.payload.work_type as string | undefined));
 					const gatedProjectId = gated ? (item.projectId ?? String(item.payload.projectId ?? '')) : '';
 					if (gatedProjectId) this.#bumpProject(gatedProjectId);
 					// Spawn in the background; release the permit when the run ends so the
@@ -464,8 +476,9 @@ export class Orchestrator {
 		permit: { release(): void },
 		/**
 		 * The project id this item was counted against in the per-project in-flight map (bumped at
-		 * claim in the drain). Empty string ⇒ NOT gated (a non-task_run fork, or no per-project cap)
-		 * — #dropProject('') is a no-op. The decrement runs in the task path's permit-release finally
+		 * claim in the drain). Empty string ⇒ NOT gated (a non-cwd-spawning fork — memory_review/
+		 * hire_request — or no per-project cap) — #dropProject('') is a no-op. The decrement runs in
+		 * the task path's permit-release finally
 		 * on EVERY exit path (success/failure/throw) so the counter can never leak (F-014 wedge).
 		 */
 		gatedProjectId = ''

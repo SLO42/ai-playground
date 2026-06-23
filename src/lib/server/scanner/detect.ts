@@ -135,6 +135,137 @@ export function buildCommandFor(tool: string | undefined | null): { file: string
 }
 
 /**
+ * Resolve a REAL test command for a BARE detected build tool — but ONLY when a meaningful
+ * test target actually exists under `projectRoot`. Mirror of {@link buildCommandFor} for the
+ * TEST step (HB-2): the post-task loop must NEVER mark a succeeded task failed (nor, with HB-1,
+ * trigger a false "tests failed" follow-up) just because a project carries a stored bare
+ * `test_command` (e.g. ROUNDS' `dotnet test`) that exits non-zero only because there is NO test
+ * project to run.
+ *
+ * Returns `null` — an HONEST SKIP — whenever there is no detectable test target, or the tool is
+ * unknown/un-testable. A `null` means: do NOT attempt a test (it is neither a pass nor a fail).
+ * Fail-closed: this never emits a bare/again-unbuildable token; it only ever returns a command
+ * we have positively confirmed has something real to run.
+ *
+ *   • dotnet  → 'dotnet test' ONLY if a test project is detectable under the root (a
+ *               `*.Tests.csproj` / a `*Tests.csproj`, or a csproj whose text references a test
+ *               SDK such as Microsoft.NET.Test.Sdk / xunit / nunit / mstest). Absent one → null.
+ *               (ROUNDS has a `*.csproj` but NO test project → null → honest skip.)
+ *   • npm     → 'npm test' ONLY if a `package.json` declares a `scripts.test` that is not the
+ *               npm default no-test stub ("Error: no test specified"). Absent/stub → null.
+ *   • cargo   → 'cargo test' when a `Cargo.toml` is present (cargo test is a no-op-OK when there
+ *               are no tests; it exits 0, so it is safe to always attempt).
+ *   • go      → 'go test ./...' when a `go.mod` is present (go test over zero tests exits 0).
+ *   • gradle / maven / pip / unknown → null (no reliable cheap "is there a test target" probe
+ *               that won't false-fail; fail-closed to an honest skip rather than risk a false RED).
+ */
+const TEST_COMMANDS: Record<string, string> = {
+	dotnet: 'dotnet test',
+	npm: 'npm test',
+	cargo: 'cargo test',
+	go: 'go test ./...'
+};
+
+export function testCommandFor(
+	tool: string | undefined | null,
+	projectRoot: string | undefined | null
+): string | null {
+	if (!tool || !projectRoot) return null;
+	const key = tool.trim().toLowerCase();
+	if (!key) return null;
+	const cmd = TEST_COMMANDS[key];
+	if (!cmd) return null; // unknown / un-testable tool → honest skip (fail-closed)
+
+	switch (key) {
+		case 'dotnet':
+			return hasDotnetTestProject(projectRoot) ? cmd : null;
+		case 'npm':
+			return hasNpmTestScript(projectRoot) ? cmd : null;
+		case 'cargo':
+			// `cargo test` exits 0 even with zero tests; presence of the crate is enough.
+			return hasFile(projectRoot, 'cargo.toml') ? cmd : null;
+		case 'go':
+			// `go test ./...` exits 0 when no package has tests; presence of the module is enough.
+			return hasFile(projectRoot, 'go.mod') ? cmd : null;
+		default:
+			return null;
+	}
+}
+
+/** True when a directory listing (case-insensitive, top-level only) contains `name`. */
+function hasFile(dir: string, name: string): boolean {
+	const lower = name.toLowerCase();
+	try {
+		return readdirSync(dir).some((e) => e.toLowerCase() === lower);
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * True when a .NET TEST PROJECT is detectable under `dir`. Two signals (either suffices):
+ *   1. a project file named `*.Tests.csproj` / `*Tests.csproj` (the conventional test-project name); or
+ *   2. ANY `*.csproj` whose text references a test SDK (Microsoft.NET.Test.Sdk) or a test
+ *      framework (xunit / nunit / MSTest) — i.e. a project that actually carries tests.
+ * Bounded recursion (test projects often live under `test/` or `tests/`, one or two levels down).
+ * Absent both → false → the loop SKIPS the test (ROUNDS: a bare `*.csproj`, no test project).
+ */
+function hasDotnetTestProject(dir: string, maxDepth = 3): boolean {
+	const TEST_SDK_RE =
+		/microsoft\.net\.test\.sdk|xunit|nunit|mstest\.testframework|<istestproject>\s*true/i;
+	const SKIP = new Set(['node_modules', '.git', 'target', 'bin', 'obj', 'dist']);
+	const walk = (d: string, depth: number): boolean => {
+		let entries: string[];
+		try {
+			entries = readdirSync(d);
+		} catch {
+			return false;
+		}
+		for (const e of entries) {
+			const lower = e.toLowerCase();
+			if (lower.endsWith('.csproj')) {
+				// Name convention: SomeName.Tests.csproj / SomeNameTests.csproj.
+				if (/tests?\.csproj$/i.test(lower)) return true;
+				// Otherwise read the project file and look for a test SDK / framework reference.
+				try {
+					if (TEST_SDK_RE.test(readFileSync(join(d, e), 'utf8'))) return true;
+				} catch {
+					/* unreadable — ignore */
+				}
+			}
+			if (depth < maxDepth && !SKIP.has(lower)) {
+				try {
+					if (statSync(join(d, e)).isDirectory() && walk(join(d, e), depth + 1)) return true;
+				} catch {
+					/* skip unreadable */
+				}
+			}
+		}
+		return false;
+	};
+	return walk(dir, 0);
+}
+
+/**
+ * True when the top-level `package.json` declares a REAL `scripts.test` — i.e. one that is not
+ * absent and not the `npm init` default no-test stub (`echo "Error: no test specified" && exit 1`),
+ * which always exits 1. Absent/stub → false → honest skip (never a false RED for a no-test project).
+ */
+function hasNpmTestScript(dir: string): boolean {
+	try {
+		const pkg = JSON.parse(readFileSync(join(dir, 'package.json'), 'utf8')) as {
+			scripts?: Record<string, unknown>;
+		};
+		const test = pkg.scripts?.test;
+		if (typeof test !== 'string' || !test.trim()) return false;
+		// The npm-init default stub deliberately exits 1 — treat it as "no test target".
+		return !/no test specified/i.test(test);
+	} catch {
+		return false;
+	}
+}
+
+/**
  * True when any file under `dir` (bounded recursive, depth ≤ `maxDepth`) ends
  * with `ext`. Mod/.NET project files frequently live one or two levels down
  * (e.g. `src/SWIP.csproj`), so a top-level-only check misses them.

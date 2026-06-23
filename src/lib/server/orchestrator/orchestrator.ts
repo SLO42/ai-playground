@@ -40,7 +40,7 @@ import { launchSession, type LaunchResult, type LaunchDeps } from '../sessions/l
 import { getProject } from '../projects/repo';
 import { setStatus } from '../tasks/repo';
 import { Semaphore } from './semaphore';
-import { runPostTask, type CommandRunner } from './post-task';
+import { runPostTask, resolveTestCommand, type CommandRunner } from './post-task';
 import { claimNext, complete, enqueue, gcStale, spawnsSince, DAY_MS } from './workqueue';
 import { runReviewFork, makeWriteSurface, type ReviewKind } from '../memory/index';
 import {
@@ -491,15 +491,25 @@ export class Orchestrator {
 			if (this.#postTask?.enabled) {
 				try {
 					const project = await getProject(this.#db, projectId);
+					const cwd = project?.root_path ?? '.';
+					// HB-2 — resolve the test command HONESTLY: prefer a positively-detected real
+					// test target (testCommandFor) over a stored bare token that would false-fail.
+					// null ⇒ honest skip (no test attempted), never a false fail / false follow-up.
+					const testCommand =
+						resolveTestCommand({
+							buildTool: project?.build_tool,
+							storedTestCommand: project?.test_command,
+							cwd
+						}) ?? undefined;
 					await runPostTask(
 						this.#db,
 						{
 							projectId,
 							taskId,
 							sessionId: res.sessionId,
-							cwd: project?.root_path ?? '.',
+							cwd,
 							commitMessage: `chore(agent): task ${taskId}`,
-							testCommand: project?.test_command,
+							testCommand,
 							runOk: res.status === 'done'
 						},
 						{

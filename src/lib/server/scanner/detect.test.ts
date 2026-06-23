@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectEcosystem, slugify, readRepoUrl, buildCommandFor } from './detect';
+import { detectEcosystem, slugify, readRepoUrl, buildCommandFor, testCommandFor } from './detect';
 
 // TASK 1.1 (detect half): pure ecosystem/mod detection over fixture directories.
 // No DB, no spawn — fixtures are real temp dirs with marker files.
@@ -183,5 +183,104 @@ describe('buildCommandFor — bare detected tool → REAL build invocation (rele
 		a.args.push('--mutated');
 		const b = buildCommandFor('dotnet')!;
 		expect(b.args).not.toContain('--mutated');
+	});
+});
+
+describe('testCommandFor — bare tool → REAL test command ONLY when a test target exists (HB-2)', () => {
+	it("dotnet + a *.Tests.csproj → 'dotnet test'", () => {
+		const dir = fixture('cs-with-tests', {
+			'src/App.csproj': '<Project/>',
+			'test/App.Tests.csproj': '<Project Sdk="Microsoft.NET.Sdk"/>'
+		});
+		expect(testCommandFor('dotnet', dir)).toBe('dotnet test');
+	});
+
+	it('dotnet + a csproj referencing a test SDK (no Tests-named file) → cmd', () => {
+		const dir = fixture('cs-test-sdk', {
+			'App.csproj':
+				'<Project><ItemGroup><PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.0.0"/></ItemGroup></Project>'
+		});
+		expect(testCommandFor('dotnet', dir)).toBe('dotnet test');
+	});
+
+	it('dotnet + a csproj referencing xunit → cmd', () => {
+		const dir = fixture('cs-xunit', {
+			'App.csproj': '<Project><PackageReference Include="xunit" Version="2.6.0"/></Project>'
+		});
+		expect(testCommandFor('dotnet', dir)).toBe('dotnet test');
+	});
+
+	it("dotnet with a plain *.csproj but NO test project → null (ROUNDS shape — honest skip)", () => {
+		const dir = fixture('cs-no-tests', { 'src/SWIP.csproj': '<Project Sdk="Microsoft.NET.Sdk"/>' });
+		expect(testCommandFor('dotnet', dir)).toBeNull();
+	});
+
+	it('dotnet with NO csproj at all → null', () => {
+		const dir = fixture('cs-empty', { 'README.md': 'hi' });
+		expect(testCommandFor('dotnet', dir)).toBeNull();
+	});
+
+	it("npm with a real scripts.test → 'npm test'", () => {
+		const dir = fixture('npm-real-test', {
+			'package.json': JSON.stringify({ scripts: { test: 'vitest run' } })
+		});
+		expect(testCommandFor('npm', dir)).toBe('npm test');
+	});
+
+	it('npm with the npm-init default no-test stub → null (would always exit 1)', () => {
+		const dir = fixture('npm-stub-test', {
+			'package.json': JSON.stringify({
+				scripts: { test: 'echo "Error: no test specified" && exit 1' }
+			})
+		});
+		expect(testCommandFor('npm', dir)).toBeNull();
+	});
+
+	it('npm with no scripts.test → null', () => {
+		const dir = fixture('npm-no-test', { 'package.json': JSON.stringify({ scripts: { build: 'x' } }) });
+		expect(testCommandFor('npm', dir)).toBeNull();
+	});
+
+	it("cargo with a Cargo.toml → 'cargo test' (cargo test is 0 with zero tests)", () => {
+		const dir = fixture('cargo-crate', { 'Cargo.toml': '[package]' });
+		expect(testCommandFor('cargo', dir)).toBe('cargo test');
+	});
+
+	it("go with a go.mod → 'go test ./...' (go test is 0 with zero tests)", () => {
+		const dir = fixture('go-mod', { 'go.mod': 'module x' });
+		expect(testCommandFor('go', dir)).toBe('go test ./...');
+	});
+
+	it('gradle / maven / pip → null (no cheap no-false-fail probe — fail-closed skip)', () => {
+		const g = fixture('gradle-app', { 'build.gradle': '' });
+		expect(testCommandFor('gradle', g)).toBeNull();
+		const m = fixture('maven-app', { 'pom.xml': '<project/>' });
+		expect(testCommandFor('maven', m)).toBeNull();
+		const p = fixture('pip-app', { 'pyproject.toml': '' });
+		expect(testCommandFor('pip', p)).toBeNull();
+	});
+
+	it('unknown / nil tool or nil root → null (shadow paths) — FAIL CLOSED', () => {
+		const dir = fixture('any-dir', { 'package.json': JSON.stringify({ scripts: { test: 'x' } }) });
+		expect(testCommandFor('frobnicate', dir)).toBeNull();
+		expect(testCommandFor('', dir)).toBeNull();
+		expect(testCommandFor('   ', dir)).toBeNull();
+		expect(testCommandFor(undefined, dir)).toBeNull();
+		expect(testCommandFor(null, dir)).toBeNull();
+		expect(testCommandFor('npm', undefined)).toBeNull();
+		expect(testCommandFor('npm', null)).toBeNull();
+		expect(testCommandFor('npm', '')).toBeNull();
+	});
+
+	it('is case-insensitive / trims the tool name', () => {
+		const dir = fixture('cargo-case', { 'Cargo.toml': '[package]' });
+		expect(testCommandFor('  CARGO ', dir)).toBe('cargo test');
+	});
+
+	it('never returns a bare/again-unbuildable token (always a multi-token command or null)', () => {
+		const dir = fixture('cargo-bare-check', { 'Cargo.toml': '[package]' });
+		const cmd = testCommandFor('cargo', dir);
+		expect(cmd).not.toBeNull();
+		expect(cmd!.trim().split(/\s+/).length).toBeGreaterThan(1); // 'cargo test', not bare 'cargo'.
 	});
 });

@@ -9,9 +9,13 @@ import { countByStatus } from './workqueue';
 import {
 	runPostTask,
 	splitCommand,
+	resolveTestCommand,
 	type CommandRunner,
 	type CommandResult
 } from './post-task';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // TASK 2.7 VERIFY (ARCHITECTURE §2.2/§3 step 7; D-008/D-016; D-018; DATA-MODEL §5).
 //
@@ -234,6 +238,113 @@ describe('post-task loop — no shell injection (D-008)', () => {
 
 	it('splitCommand returns null for an empty command', () => {
 		expect(splitCommand('   ')).toBeNull();
+	});
+});
+
+// ── HB-2: honest test resolution — a missing test target is a SKIP, not a pass/fail ──
+
+describe('resolveTestCommand — honest precedence (HB-2)', () => {
+	let work: string;
+	beforeAll(() => {
+		work = mkdtempSync(join(tmpdir(), 'resolve-test-'));
+	});
+	afterAll(() => {
+		rmSync(work, { recursive: true, force: true });
+	});
+	function dirWith(name: string, files: Record<string, string>): string {
+		const d = join(work, name);
+		mkdirSync(d, { recursive: true });
+		for (const [rel, content] of Object.entries(files)) {
+			const full = join(d, rel);
+			mkdirSync(join(full, '..'), { recursive: true });
+			writeFileSync(full, content);
+		}
+		return d;
+	}
+
+	it('ROUNDS shape: dotnet build tool + stored "dotnet test" but NO test project → null (honest skip)', () => {
+		const cwd = dirWith('rounds', { 'src/SWIP.csproj': '<Project Sdk="Microsoft.NET.Sdk"/>' });
+		// The stored bare token WOULD false-fail — the resolver discards it.
+		expect(
+			resolveTestCommand({ buildTool: 'dotnet', storedTestCommand: 'dotnet test', cwd })
+		).toBeNull();
+	});
+
+	it('dotnet build tool WITH a test project → resolver returns the command', () => {
+		const cwd = dirWith('cs-tests', { 'tests/X.Tests.csproj': '<Project/>' });
+		expect(
+			resolveTestCommand({ buildTool: 'dotnet', storedTestCommand: 'dotnet test', cwd })
+		).toBe('dotnet test');
+	});
+
+	it('no build tool but a hand-set custom stored command → fall back to the stored command', () => {
+		const cwd = dirWith('custom', { 'scripts/check.js': '' });
+		expect(
+			resolveTestCommand({ buildTool: undefined, storedTestCommand: 'node scripts/check.js', cwd })
+		).toBe('node scripts/check.js');
+	});
+
+	it('a build tool UNKNOWN to the resolver + stored command → honor the stored command', () => {
+		const cwd = dirWith('unknown-tool', {});
+		expect(
+			resolveTestCommand({ buildTool: 'make', storedTestCommand: 'make check', cwd })
+		).toBe('make check');
+	});
+
+	it('nothing stored and no resolvable target → null (skip)', () => {
+		const cwd = dirWith('empty', { 'README.md': 'hi' });
+		expect(resolveTestCommand({ buildTool: 'dotnet', storedTestCommand: undefined, cwd })).toBeNull();
+		expect(resolveTestCommand({ buildTool: undefined, storedTestCommand: undefined, cwd })).toBeNull();
+		expect(resolveTestCommand({ buildTool: undefined, storedTestCommand: '   ', cwd })).toBeNull();
+	});
+});
+
+describe('post-task loop — null test resolution → honest skip (HB-2)', () => {
+	it('no resolved test command → attempted=false ("no test target"), task still done, NO follow-up', async () => {
+		const before = await countByStatus(db, 'pending');
+		const taskId = await freshRunningTask('rounds task with no test target');
+		const sessionId = await makeSession(taskId);
+		// followUpOnTestFail ON to prove the skip never trips a follow-up (the bug HB-2 prevents).
+		const runner = fakeRunner((file, args) => {
+			if (file === 'git' && args[0] === 'rev-parse') return { code: 0, stdout: 'cafe123\n', stderr: '' };
+			return OK;
+		});
+
+		const res = await runPostTask(
+			db,
+			{
+				projectId,
+				taskId,
+				sessionId,
+				cwd: 'F:/code/ai-playground-v2',
+				commitMessage: 'feat: rounds work',
+				// HB-2: resolveTestCommand returned null upstream → no testCommand passed.
+				testCommand: undefined,
+				runOk: true
+			},
+			{ run: runner, followUpOnTestFail: true }
+		);
+
+		// the run still committed.
+		expect(res.commit.ok).toBe(true);
+		// the test was NOT attempted — an honest skip, neither pass nor fail.
+		expect(res.test.attempted).toBe(false);
+		expect(res.test.ok).toBe(false); // not a pass
+		expect(res.test.note).toBe('no test target');
+		// no test program was ever spawned.
+		expect(runner.calls.some((c) => c.file !== 'git')).toBe(false);
+		// the task still reached done.
+		expect(res.taskStatus).toBe('done');
+		expect(await readTaskStatus(taskId)).toBe('done');
+		// NO follow-up was enqueued (the skip is not a failure).
+		expect(res.followUpWorkId).toBeUndefined();
+		const after = await countByStatus(db, 'pending');
+		expect(after).toBe(before);
+		// the completion event records the skip honestly: test_ran=false, no test_ok pass/fail.
+		const ev = await readAgentEvent(res.agentEventId);
+		expect(ev.detail.test_ran).toBe(false);
+		expect(ev.detail.test_ok).toBeUndefined();
+		expect(ev.detail.test_note).toBe('no test target');
 	});
 });
 

@@ -30,6 +30,7 @@ import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import { enqueue } from './workqueue';
+import { testCommandFor } from '../scanner/detect';
 
 // ── The command runner seam (so tests inject a fake — NO live process, the same
 //    mocked-backend pattern 1.4/1.6b used; F-008 holds: a mock in a TEST is allowed) ──
@@ -167,6 +168,54 @@ export function splitCommand(cmd: string): { file: string; args: string[] } | nu
 	return { file: tokens[0], args: tokens.slice(1) };
 }
 
+/**
+ * HB-2 — resolve which test command (if any) the post-task loop should run, HONESTLY.
+ *
+ * The problem (HB-2): a project can carry a STORED `test_command` that is a bare/again-
+ * unbuildable token which exits non-zero only because there is no real test target — ROUNDS
+ * has `test_command='dotnet test'` + `build_tool='dotnet'` but NO test project, so `dotnet test`
+ * exits 1. That must NEVER mark a succeeded task failed nor (with HB-1) trigger a false
+ * "tests failed" follow-up. So we resolve through {@link testCommandFor}, which only returns a
+ * command when a meaningful test target is positively detected under the project root.
+ *
+ * Precedence (the RESOLVER WINS when the stored command would false-fail):
+ *   1. `build_tool` is one the resolver UNDERSTANDS (dotnet/npm/cargo/go):
+ *        • resolver returns a command  → use it (a real target exists).
+ *        • resolver returns null       → HONEST SKIP (no target). The stored `test_command`,
+ *          even if set, is DISCARDED here — running a bare known-tool token with no target is
+ *          exactly the false-fail HB-2 exists to prevent.
+ *   2. `build_tool` absent/unknown to the resolver (resolver null for the "don't know" reason):
+ *        • fall back to the STORED `test_command` (a hand-set custom command like
+ *          `node scripts/check.js` is legitimate and the resolver has no opinion on it).
+ *        • absent that → skip (nothing to run).
+ *
+ * Returns the command string to run, or null for an honest skip (do NOT attempt the test).
+ * Pure (testCommandFor only reads the filesystem) so the orchestrator stays thin and this is
+ * unit-testable in isolation.
+ */
+export function resolveTestCommand(input: {
+	buildTool?: string | null;
+	storedTestCommand?: string | null;
+	cwd?: string | null;
+}): string | null {
+	const stored = input.storedTestCommand?.trim() || null;
+	const tool = input.buildTool?.trim() || null;
+	const cwd = input.cwd?.trim() || null;
+
+	// Case 1: the build tool is one the resolver understands → the resolver is authoritative.
+	if (tool && isResolvableTool(tool)) {
+		return testCommandFor(tool, cwd); // command (real target) OR null (honest skip)
+	}
+
+	// Case 2: no build tool, or a tool the resolver has no opinion on → honor a hand-set command.
+	return stored;
+}
+
+/** True when {@link testCommandFor} has a positive/negative opinion on this tool (vs "don't know"). */
+function isResolvableTool(tool: string): boolean {
+	return ['dotnet', 'npm', 'cargo', 'go'].includes(tool.trim().toLowerCase());
+}
+
 // Remote-mutating / dangerous git verbs that this loop must NEVER issue (D-018). Used as
 // a self-audit assertion: the args we build are fixed, but this keeps the invariant local.
 const FORBIDDEN_GIT = ['push', 'remote'];
@@ -224,15 +273,22 @@ export async function runPostTask(
 	}
 
 	// ── 2. project test command — execFile arrays (split, no shell) ──
+	// HB-2: `input.testCommand` is the ALREADY-RESOLVED command (the caller runs it through
+	// resolveTestCommand). When it is absent the test is an HONEST SKIP — attempted stays
+	// false, recorded as 'no test target', never a fake pass and never a false fail.
 	const test: TestOutcome = { attempted: false, ok: false };
-	if (input.runOk && input.testCommand && input.testCommand.trim()) {
-		const split = splitCommand(input.testCommand);
+	if (input.runOk) {
+		const cmd = input.testCommand?.trim();
+		const split = cmd ? splitCommand(cmd) : null;
 		if (split) {
 			test.attempted = true;
 			const res = await run(split.file, split.args, { cwd: input.cwd });
 			test.code = res.code;
 			test.ok = res.code === 0;
 			test.note = (res.stderr || res.stdout).trim().slice(-200) || undefined;
+		} else {
+			// No resolved test command (no real test target / unbuildable token) → honest skip.
+			test.note = 'no test target';
 		}
 	}
 

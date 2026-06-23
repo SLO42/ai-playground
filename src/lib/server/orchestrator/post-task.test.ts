@@ -348,6 +348,154 @@ describe('post-task loop — null test resolution → honest skip (HB-2)', () =>
 	});
 });
 
+// ── HB-H3: the MID-RUN divergence — task moved out of in_progress/review before/at post-task ──
+
+describe('post-task loop — mid-run divergence is observable, never a silent false-ok (HB-H3)', () => {
+	/**
+	 * The RED-TEAM PROBE. The task is `in_progress` at claim (preStateEligible was true) but is
+	 * CONCURRENTLY MOVED to a non-eligible status (e.g. blocked) DURING the session run, BEFORE
+	 * the post-task transaction. Pre-fix runPostTask would STILL git-commit + write an ok:true
+	 * completion event while the guarded terminal UPDATE silently skipped → {committed work + ok
+	 * event + non-terminal task} the PM never sees. We assert that cannot happen: NO commit, NO ok
+	 * completion event, a divergence `error` event names the cause, the result is honest.
+	 */
+	it('task moved to blocked before runPostTask → NO commit, NO ok completion, divergence error event', async () => {
+		const taskId = await freshRunningTask('moved out mid-run');
+		const sessionId = await makeSession(taskId);
+		// The concurrent operator/PM move: in_progress → blocked (a legal, non-eligible status).
+		await setStatus(db, taskId, 'blocked');
+
+		const runner = fakeRunner((file, args) => {
+			if (file === 'git' && args[0] === 'rev-parse') return { code: 0, stdout: 'dead123\n', stderr: '' };
+			return OK;
+		});
+
+		const res = await runPostTask(
+			db,
+			{
+				projectId,
+				taskId,
+				sessionId,
+				cwd: 'F:/code/ai-playground-v2',
+				commitMessage: 'feat: should NOT commit under a moved task',
+				testCommand: 'npm test',
+				runOk: true
+			},
+			{ run: runner }
+		);
+
+		// (1) divergent — the terminal transition did NOT land.
+		expect(res.divergent).toBe(true);
+
+		// (2) NO commit (and no test) was performed — the runner was never touched.
+		expect(runner.calls.length).toBe(0);
+		expect(res.commit.attempted).toBe(false);
+		expect(res.commit.ok).toBe(false);
+		expect(res.test.attempted).toBe(false);
+
+		// (3) the task is STILL blocked — the concurrent mover owns it; we never papered over it.
+		expect(await readTaskStatus(taskId)).toBe('blocked');
+		expect(res.taskStatus).toBe('blocked');
+
+		// (4) the recorded event is a divergence `error`, NOT an ok completion.
+		const ev = await readAgentEvent(res.agentEventId);
+		expect(ev.type).toBe('error');
+		expect(ev.detail.reason).toBe('post-task-divergence-midrun');
+		expect(String(ev.detail.taskId)).toBe(taskId);
+		expect(ev.detail.actual_status).toBe('blocked');
+
+		// (5) NO ok `completion` event with reason 'post-task loop' was written for this session.
+		const completions = await readSessionCompletions(sessionId);
+		expect(completions.length).toBe(0);
+	});
+
+	it('task moved to a FOREIGN terminal status (failed) mid-run, runOk=true → divergence, never a false done', async () => {
+		const taskId = await freshRunningTask('failed-by-other mid-run');
+		const sessionId = await makeSession(taskId);
+		// in_progress → failed (a legal move; a concurrent actor terminally failed it). Our intended
+		// terminal is 'done' (runOk=true), so landed = (failed = done) = false → divergence.
+		await setStatus(db, taskId, 'failed');
+
+		const runner = fakeRunner(() => OK);
+		const res = await runPostTask(
+			db,
+			{
+				projectId,
+				taskId,
+				sessionId,
+				cwd: 'F:/code/ai-playground-v2',
+				commitMessage: 'feat: no',
+				testCommand: 'npm test',
+				runOk: true
+			},
+			{ run: runner }
+		);
+
+		expect(res.divergent).toBe(true);
+		expect(runner.calls.length).toBe(0);
+		expect(await readTaskStatus(taskId)).toBe('failed'); // NOT done
+		expect(res.taskStatus).toBe('failed');
+		const ev = await readAgentEvent(res.agentEventId);
+		expect(ev.type).toBe('error');
+		expect(ev.detail.reason).toBe('post-task-divergence-midrun');
+	});
+
+	it('idempotent re-run: task ALREADY in the intended terminal status (done) → NOT a divergence, completion still recorded', async () => {
+		// Interrupt contract: a partial prior run left the task `done`. Re-running post-task must
+		// ABSORB that (landed via already-terminal), commit (the agent work may be uncommitted),
+		// and write the completion — NOT treat the prior success as a divergence.
+		const taskId = await freshRunningTask('idempotent re-run');
+		const sessionId = await makeSession(taskId);
+		await setStatus(db, taskId, 'done'); // the prior partial run's terminal write
+
+		const runner = fakeRunner((file, args) => {
+			if (file === 'git' && args[0] === 'rev-parse') return { code: 0, stdout: 'idem99\n', stderr: '' };
+			return OK;
+		});
+		const res = await runPostTask(
+			db,
+			{
+				projectId,
+				taskId,
+				sessionId,
+				cwd: 'F:/code/ai-playground-v2',
+				commitMessage: 'feat: re-run commit',
+				testCommand: 'npm test',
+				runOk: true
+			},
+			{ run: runner }
+		);
+
+		expect(res.divergent).toBe(false);
+		expect(res.taskStatus).toBe('done');
+		expect(await readTaskStatus(taskId)).toBe('done');
+		// the commit + completion still happened (legitimate work is not stranded).
+		expect(res.commit.ok).toBe(true);
+		const ev = await readAgentEvent(res.agentEventId);
+		expect(ev.type).toBe('completion');
+		expect(ev.detail.reason).toBe('post-task loop');
+	});
+
+	it('a missing task throws (shadow path: nil/absent task) — never a silent false-ok', async () => {
+		const sessionId = await makeSession(await freshRunningTask('for-session-only'));
+		await expect(
+			runPostTask(
+				db,
+				{
+					projectId,
+					taskId: 'task:nonexistent_abc',
+					sessionId,
+					cwd: 'F:/code/ai-playground-v2',
+					commitMessage: 'feat: no task',
+					testCommand: 'npm test',
+					runOk: true
+				},
+				{ run: fakeRunner(() => OK) }
+			)
+		).rejects.toThrow(); // the THROW "task not found" rolls back the txn → a rejection, never a false-ok
+	});
+});
+
 // ── small DB read-back helpers (real throwaway DB; no fabricated data) ──
 
 async function makeSession(taskId: string): Promise<string> {
@@ -369,6 +517,18 @@ async function readTaskStatus(taskId: string): Promise<string> {
 	});
 	const row = (Array.isArray(rows) ? rows[0] : rows) as { status?: string } | undefined;
 	return row?.status ?? 'missing';
+}
+
+/** All `post-task loop` completion events for a session (HB-H3: assert NONE on a divergence). */
+async function readSessionCompletions(
+	sessionId: string
+): Promise<Array<{ detail: Record<string, unknown> }>> {
+	const { StringRecordId } = await import('surrealdb');
+	const [rows] = await db.query<[Array<{ detail: Record<string, unknown> }>]>(
+		`SELECT detail FROM agent_event WHERE type = 'completion' AND detail.reason = 'post-task loop' AND session = $sid;`,
+		{ sid: new StringRecordId(sessionId) }
+	);
+	return rows ?? [];
 }
 
 async function readAgentEvent(

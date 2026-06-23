@@ -122,12 +122,31 @@ export interface TestOutcome {
 export interface PostTaskResult {
 	commit: CommitOutcome;
 	test: TestOutcome;
-	/** The terminal status the task landed in. */
-	taskStatus: 'done' | 'failed';
-	/** The follow-up work_item id, when one was enqueued. */
+	/**
+	 * The status the task actually holds after the guarded terminal transition.
+	 * On the happy/idempotent path this is the intended terminal status ('done'|'failed').
+	 * On a MID-RUN divergence (the task was concurrently moved out of in_progress/review
+	 * before the transition could land) it is the foreign status the task now holds — an
+	 * HONEST report, never a false 'done'/'failed' (HB-H3).
+	 */
+	taskStatus: string;
+	/** The follow-up work_item id, when one was enqueued (happy path only). */
 	followUpWorkId?: string;
-	/** The completion agent_event id (so a caller can chain a join). */
+	/**
+	 * The agent_event id. On the happy/idempotent path this is the `completion` event
+	 * (reason 'post-task loop'). On a mid-run divergence it is the divergence `error`
+	 * event (reason 'post-task-divergence-midrun') — there is NEVER an ok completion event
+	 * under a non-terminal task (HB-H3).
+	 */
 	agentEventId: string;
+	/**
+	 * HB-H3 — true ⇔ the guarded terminal transition did NOT land because the task was
+	 * concurrently moved out of a post-task-eligible status (in_progress/review) DURING the
+	 * session run. When true: NO commit was performed, NO ok completion event was written,
+	 * and a divergence `error` event was recorded instead. The concurrent mover now owns the
+	 * task state; the divergence event makes the half-state observable to the operator/PM.
+	 */
+	divergent: boolean;
 }
 
 export interface PostTaskOptions {
@@ -230,14 +249,36 @@ function assertLocalGit(args: readonly string[]): void {
 // ── The loop ────────────────────────────────────────────────────────────────────────
 
 /**
- * Run the post-task loop for a completed session. Commits via execFile arrays, runs the
- * project test command, optionally enqueues a follow-up, and records the task terminal
- * status + completion agent_event (+ follow-up task) in ONE transaction.
+ * Run the post-task loop for a completed session.
  *
- * The OS side-effects (commit, test) happen FIRST (they can't be transactional — they
- * touch the filesystem/process table). Their OUTCOMES are then committed atomically to
- * the DB so the recorded state is all-or-nothing. A failed agent run (runOk=false) skips
- * the commit (nothing to record) and marks the task failed.
+ * ORDERING (HB-H3 — close the mid-run divergence window): the GUARDED TERMINAL TRANSITION
+ * is performed FIRST, transactionally, and reports back whether it actually LANDED. Only
+ * then — and ONLY when it landed — do we git-commit, run the test command, enqueue a
+ * follow-up, and write the ok `completion` event. This makes the divergence the prior code
+ * left silent UNREACHABLE:
+ *
+ *   Before: the commit + an ok `completion` event fired UNCONDITIONALLY, while the terminal
+ *   task UPDATE was guarded by `IF $cur IN ["in_progress","review"]`. So if an operator/PM
+ *   moved the task out of in_progress/review mid-run, the commit + ok event STILL fired
+ *   while the UPDATE silently skipped → {committed work + done work_item + ok event +
+ *   non-terminal task} the PM never sees. HB-H2 closed this only at CLAIM time; this closes
+ *   the residual mid-run window.
+ *
+ * The guarded transition (§ step 1) lands when the task is in a post-task-eligible status
+ * (in_progress/review) OR is ALREADY in the intended terminal status (an idempotent re-run
+ * after a partial prior run — interrupt contract). When it does NOT land (the task was
+ * concurrently moved to a foreign status — blocked/withdrawn/another-terminal), we:
+ *   • do NOT commit (the concurrent mover now owns the task state — F-007 NUANCE),
+ *   • do NOT write an ok completion event (NEVER a false ok under a non-terminal task),
+ *   • write a divergence `error` agent_event (reason 'post-task-divergence-midrun', carrying
+ *     taskId) so the half-state is OBSERVABLE for the operator/PM to reconcile,
+ *   • return `divergent: true` with the HONEST current status — the caller marks the
+ *     work_item failed (mirrors the HB-H2 claim-time gate).
+ *
+ * The OS side-effects (commit, test) can't be transactional (they touch the filesystem/
+ * process table); their OUTCOMES are recorded atomically with the completion event in a
+ * SECOND transaction. A failed agent run (runOk=false) skips the commit (nothing to record)
+ * and lands the task `failed` — still a legal terminal transition that must land.
  */
 export async function runPostTask(
 	db: Db,
@@ -247,7 +288,74 @@ export async function runPostTask(
 	const run = opts.run ?? execFileRunner;
 	const followUpOnTestFail = opts.followUpOnTestFail ?? true;
 
-	// ── 1. git commit (only when the run succeeded) — execFile ARRAYS, never a shell ──
+	// The terminal status the task SHOULD land in (decided by the run outcome, NOT the test
+	// result — tests only trigger a follow-up, they never change the terminal status).
+	const taskStatus: 'done' | 'failed' = input.runOk ? 'done' : 'failed';
+
+	// ── 1. GUARDED TERMINAL TRANSITION FIRST — does it land? ──────────────────────────────
+	// One transaction performs the SAME guarded UPDATE the prior code did, and RETURNS both
+	// whether the transition landed and the task's actual status afterwards. `landed` is true
+	// when the guard fired (in_progress/review → terminal) OR the task is already in the
+	// intended terminal status (idempotent re-run absorbs a partial prior run). It is FALSE
+	// when the task is in any other (foreign/non-eligible) status — the mid-run divergence.
+	const tid = link(input.taskId);
+	const transition = await db.query<[Array<{ landed: boolean; status: string }>]>(
+		`BEGIN TRANSACTION;
+		   LET $cur = (SELECT VALUE status FROM ONLY $tid);
+		   IF $cur = NONE { THROW "task not found"; };
+		   IF $cur IN ["in_progress","review"] {
+		     UPDATE $tid SET status = $status, updated_at = time::now();
+		   };
+		   LET $after = (SELECT VALUE status FROM ONLY $tid);
+		   -- landed ⇔ the task now holds the intended terminal status. Covers both the legal
+		   -- transition just applied AND an idempotent re-run where it was already terminal.
+		   RETURN [{ landed: $after = $status, status: $after }];
+		 COMMIT TRANSACTION;`,
+		{ tid, status: taskStatus }
+	);
+	const trow = transition[transition.length - 1]?.[0];
+	const landed = trow?.landed === true;
+	const actualStatus = trow?.status ?? taskStatus;
+
+	// ── DIVERGENCE PATH — the transition did NOT land (task concurrently moved mid-run) ──
+	if (!landed) {
+		// NO commit, NO test, NO follow-up, NO ok completion event. Record an observable
+		// divergence `error` event instead (mirror HB-H2: name what triggered it, what caught
+		// it, what a reader sees). `error` is the schema-accepted "the failure" agent_event
+		// type (`divergence` is not a valid type); the reason field distinguishes it.
+		const divDetail = omitUndefined({
+			by: 'post-task',
+			reason: 'post-task-divergence-midrun',
+			error:
+				`post-task terminal transition did NOT land: task ${input.taskId} was moved out of a ` +
+				`post-task-eligible status (in_progress/review) before the transition could land ` +
+				`(now '${actualStatus}') — a concurrent operator/PM status move during the session run. ` +
+				`NO commit performed; NO ok completion event written.`,
+			taskId: input.taskId,
+			intended_status: taskStatus,
+			actual_status: actualStatus
+		});
+		const divResult = await db.query<unknown[]>(
+			`CREATE agent_event CONTENT {
+			   session: $sess, project: $proj, type: "error", detail: $detail
+			 } RETURN VALUE id;`,
+			{ sess: link(input.sessionId), proj: link(input.projectId), detail: divDetail }
+		);
+		const divEventId = String(
+			Array.isArray(divResult[0]) ? (divResult[0] as unknown[])[0] : divResult[0]
+		);
+		return {
+			commit: { attempted: false, ok: false, note: 'post-task-divergence-midrun: transition not landed' },
+			test: { attempted: false, ok: false, note: 'skipped (divergence)' },
+			taskStatus: actualStatus,
+			agentEventId: divEventId,
+			divergent: true
+		};
+	}
+
+	// ── 2. git commit (only when the run succeeded) — execFile ARRAYS, never a shell ──
+	// Reached ONLY after the terminal transition LANDED, so a commit can never be stranded
+	// under a non-terminal task. A failed run (runOk=false) commits nothing.
 	const commit: CommitOutcome = { attempted: false, ok: false };
 	if (input.runOk) {
 		commit.attempted = true;
@@ -272,7 +380,7 @@ export async function runPostTask(
 		}
 	}
 
-	// ── 2. project test command — execFile arrays (split, no shell) ──
+	// ── 3. project test command — execFile arrays (split, no shell) ──
 	// HB-2: `input.testCommand` is the ALREADY-RESOLVED command (the caller runs it through
 	// resolveTestCommand). When it is absent the test is an HONEST SKIP — attempted stays
 	// false, recorded as 'no test target', never a fake pass and never a false fail.
@@ -292,8 +400,7 @@ export async function runPostTask(
 		}
 	}
 
-	// ── 3. decide terminal status + whether to plan a follow-up ──
-	const taskStatus: 'done' | 'failed' = input.runOk ? 'done' : 'failed';
+	// ── 4. plan a follow-up (off the interactive path) ──
 	const wantFollowUp = input.runOk && followUpOnTestFail && test.attempted && !test.ok;
 
 	// The follow-up work_item is enqueued OUTSIDE the status transaction (the work queue is
@@ -315,11 +422,13 @@ export async function runPostTask(
 		if (enqueued) followUpWorkId = id;
 	}
 
-	// ── 4. record the outcome atomically: task status + completion agent_event ──
-	// One transaction (DATA-MODEL §5): the status move and the analytics row are all-or-
-	// nothing. The transition legality (in_progress/review → done|failed) is enforced by
-	// the same guard setStatus uses, inlined here so it shares the transaction. The
-	// completion detail carries the commit sha + test outcome — the how/why a reader needs.
+	// ── 5. record the ok completion agent_event (re-checking the task is STILL terminal) ──
+	// The terminal transition ALREADY landed (§ step 1) — this records the commit sha + test
+	// outcome an analytics reader needs. We re-assert the task is STILL in the intended
+	// terminal status inside the SAME transaction (belt-and-suspenders against a status move
+	// in the narrow window between step 1 and here). The completion event is created ONLY when
+	// the re-check holds — `CREATE … WHERE` via an IF guard — so an ok completion can NEVER be
+	// written under a non-terminal task. `$ev` is an empty array iff the guard failed.
 	const detail = omitUndefined({
 		ok: input.runOk,
 		commit_sha: commit.sha,
@@ -332,24 +441,18 @@ export async function runPostTask(
 		reason: 'post-task loop'
 	});
 
-	const tid = link(input.taskId);
-	const result = await db.query<unknown[]>(
+	const result = await db.query<[Array<{ id?: unknown; status: string }>]>(
 		`BEGIN TRANSACTION;
 		   LET $cur = (SELECT VALUE status FROM ONLY $tid);
-		   IF $cur = NONE { THROW "task not found"; };
-		   -- Only move a task that is still in a non-terminal, post-completion status.
-		   -- A task already done/failed is left as-is (idempotent re-run), but we still
-		   -- record the agent_event so analytics never loses a completion.
-		   IF $cur IN ["in_progress","review"] {
-		     UPDATE $tid SET status = $status, updated_at = time::now();
-		   };
-		   LET $ev = (CREATE agent_event CONTENT {
-		     session: $sess,
-		     project: $proj,
-		     type: "completion",
-		     detail: $detail
-		   } RETURN AFTER);
-		   RETURN $ev[0].id;
+		   LET $ev = IF $cur = $status {
+		     (CREATE agent_event CONTENT {
+		       session: $sess,
+		       project: $proj,
+		       type: "completion",
+		       detail: $detail
+		     } RETURN AFTER)[0].id
+		   } ELSE { NONE };
+		   RETURN [{ id: $ev, status: $cur }];
 		 COMMIT TRANSACTION;`,
 		{
 			tid,
@@ -359,13 +462,52 @@ export async function runPostTask(
 			detail
 		}
 	);
-	const agentEventId = String(result[result.length - 1]);
+	const evRow = result[result.length - 1]?.[0];
+	const completionId = evRow?.id ? String(evRow.id) : undefined;
+
+	if (!completionId) {
+		// The narrow-window race: the task was moved out of its terminal status between step 1
+		// and now — AFTER the commit already happened. The work is legitimately committed, but
+		// an ok completion under the now-foreign status would be the very lie this wave closes.
+		// Record an OBSERVABLE divergence instead (commit retained, named, visible to the PM).
+		const movedStatus = evRow?.status ?? 'unknown';
+		const divDetail = omitUndefined({
+			by: 'post-task',
+			reason: 'post-task-divergence-midrun',
+			error:
+				`post-task terminal status changed AFTER the commit but BEFORE the completion event: ` +
+				`task ${input.taskId} is now '${movedStatus}' (intended '${taskStatus}'). Work WAS committed ` +
+				`(${commit.sha ?? 'no sha'}); NO ok completion event written — the divergence is recorded instead.`,
+			taskId: input.taskId,
+			intended_status: taskStatus,
+			actual_status: movedStatus,
+			commit_sha: commit.sha
+		});
+		const divResult = await db.query<unknown[]>(
+			`CREATE agent_event CONTENT {
+			   session: $sess, project: $proj, type: "error", detail: $detail
+			 } RETURN VALUE id;`,
+			{ sess: link(input.sessionId), proj: link(input.projectId), detail: divDetail }
+		);
+		const divEventId = String(
+			Array.isArray(divResult[0]) ? (divResult[0] as unknown[])[0] : divResult[0]
+		);
+		return omitUndefined({
+			commit,
+			test,
+			taskStatus: movedStatus,
+			followUpWorkId,
+			agentEventId: divEventId,
+			divergent: true
+		}) as PostTaskResult;
+	}
 
 	return omitUndefined({
 		commit,
 		test,
 		taskStatus,
 		followUpWorkId,
-		agentEventId
+		agentEventId: completionId,
+		divergent: false
 	}) as PostTaskResult;
 }

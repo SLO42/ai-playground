@@ -794,6 +794,47 @@ function outcomeBackend(ok: boolean): CcBackend & { plans: CcSpawnPlan[] } {
 	return self as unknown as CcBackend & { plans: CcSpawnPlan[] };
 }
 
+/**
+ * HB-H3 — a backend whose stream runs an injected `onMidRun` hook AFTER the task has been
+ * moved ready→in_progress (claim) but BEFORE the run completes (done). This simulates a
+ * concurrent operator/PM status move landing DURING the session run — the mid-run window
+ * the HB-H2 claim-time gate does NOT cover.
+ */
+function midRunMoveBackend(
+	onMidRun: () => Promise<void>
+): CcBackend & { plans: CcSpawnPlan[] } {
+	const plans: CcSpawnPlan[] = [];
+	const self = {
+		plans,
+		kind: 'mock',
+		run(plan: CcSpawnPlan): CcBackendRun {
+			plans.push(plan);
+			const ccSessionId = `cc_${plan.agentId}_${plans.length}_${Math.random().toString(36).slice(2, 10)}`;
+			return {
+				ccSessionId,
+				async *stream(): AsyncGenerator<RuntimeEvent> {
+					yield { type: 'log', message: 'started' };
+					// The concurrent move lands mid-run, before the session reports done.
+					await onMidRun();
+					yield { type: 'done', result: { ok: true, summary: 'work done', ccSessionId } };
+				},
+				async cancel() {}
+			};
+		},
+		async resume(req: { ccSessionId: string }) {
+			return {
+				ccSessionId: req.ccSessionId,
+				async *stream(): AsyncGenerator<RuntimeEvent> {
+					yield { type: 'done', result: { ok: true, summary: 'resumed' } };
+				},
+				async cancel() {}
+			};
+		},
+		async interject() {}
+	};
+	return self as unknown as CcBackend & { plans: CcSpawnPlan[] };
+}
+
 /** A fake post-task runner: records calls, returns scripted results. NO live process/shell. */
 function fakePostTaskRunner(): CommandRunner & { calls: { file: string; args: string[] }[] } {
 	const calls: { file: string; args: string[] }[] = [];
@@ -1023,6 +1064,90 @@ describe('THE HEARTBEAT — post-task wiring advances the TASK to terminal (read
 			expect(divergences.length).toBe(1);
 			expect(String(divergences[0].detail.taskId)).toBe(task.id);
 			expect(String(divergences[0].detail.by)).toBe('orchestrator');
+		} finally {
+			orch.stop();
+		}
+	}, 30_000);
+
+	it('HB-H3 — a MID-RUN concurrent status move (task moved out of in_progress DURING the run) never produces a silent {commit + ok event + non-terminal task}', async () => {
+		// The residual window HB-H2 did NOT close: the task IS in a legal pre-state at CLAIM
+		// (preStateEligible=true), so it passes the claim-time gate. But an operator/PM moves it
+		// out of in_progress DURING the session run, BEFORE the post-task transition. Pre-fix:
+		// runPostTask still git-committed + wrote an ok:true completion event while the guarded
+		// terminal UPDATE silently skipped → committed work under a non-terminal task. We assert
+		// that exact mid-run divergence CANNOT occur: no commit, work_item failed, divergence event.
+		await clearQueue();
+		const bus = new EventBus();
+		const runner = fakePostTaskRunner();
+
+		// The mid-run move: capture the claimed task id from the spawn plan, then move it to
+		// `blocked` (a legal, non-eligible status) before the run reports done.
+		let claimedTaskId: string | null = null;
+		const backend = midRunMoveBackend(async () => {
+			if (claimedTaskId) {
+				await setStatus(db, claimedTaskId, 'blocked');
+			}
+		});
+		// claimedTaskId is the task we enqueue (one task in flight); set just below.
+		const runtime = new ClaudeCodeRuntime({ backend });
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 2,
+			mode: 'manual',
+			route: stubRoute(),
+			postTask: { enabled: true, runner, followUpOnTestFail: false }
+		});
+		try {
+			const task = await createTask(db, {
+				project: projectId,
+				title: 'mid-run move',
+				description: 'moved out of in_progress during the run'
+			});
+			await setStatus(db, task.id, 'ready'); // legal pre-state at claim
+			claimedTaskId = task.id;
+
+			await orch.enqueueTask(task.id, projectId);
+			await orch.drain();
+
+			await waitForAsync(async () => backend.plans.length >= 1);
+			await waitForAsync(
+				async () => (await countByStatus(db, 'done')) + (await countByStatus(db, 'failed')) >= 1
+			);
+
+			// (1) the task is `blocked` (the concurrent mover owns it) — NOT silently 'done'.
+			expect((await getTask(db, task.id))?.status).toBe('blocked');
+
+			// (2) NO commit happened — the post-task happy path was refused at the transition gate.
+			expect(runner.calls.filter((c) => c.file === 'git').length).toBe(0);
+
+			// (3) the work_item is `failed`, NOT `done` (a false `done` is the divergence).
+			expect(await countByStatus(db, 'done')).toBe(0);
+			expect(await countByStatus(db, 'failed')).toBe(1);
+
+			const [sessions] = await db.query<[Array<{ id: unknown }>]>(
+				`SELECT id FROM session WHERE task = $tid;`,
+				{ tid: new StringRecordId(task.id) }
+			);
+			expect(sessions.length).toBe(1);
+			const sessionId = String(sessions[0].id);
+
+			// (4) NO ok `post-task loop` completion event for this session.
+			const [completions] = await db.query<[Array<{ detail: Record<string, unknown> }>]>(
+				`SELECT detail FROM agent_event WHERE type = 'completion' AND detail.reason = 'post-task loop' AND session = $sid;`,
+				{ sid: new StringRecordId(sessionId) }
+			);
+			expect(completions.length).toBe(0);
+
+			// (5) a divergence `error` event (mid-run) names the cause — the half-state is observable.
+			const [divergences] = await db.query<[Array<{ detail: Record<string, unknown> }>]>(
+				`SELECT detail FROM agent_event WHERE type = 'error' AND detail.reason = 'post-task-divergence-midrun' AND session = $sid;`,
+				{ sid: new StringRecordId(sessionId) }
+			);
+			expect(divergences.length).toBe(1);
+			expect(String(divergences[0].detail.taskId)).toBe(task.id);
+			expect(String(divergences[0].detail.actual_status)).toBe('blocked');
 		} finally {
 			orch.stop();
 		}

@@ -660,7 +660,7 @@ export class Orchestrator {
 							storedTestCommand: project?.test_command,
 							cwd
 						}) ?? undefined;
-					await runPostTask(
+					const ptRes = await runPostTask(
 						this.#db,
 						{
 							projectId,
@@ -676,6 +676,20 @@ export class Orchestrator {
 							followUpOnTestFail: this.#postTask.followUpOnTestFail
 						}
 					);
+					// HB-H3 — the MID-RUN divergence close. The HB-H2 gate above only catches a
+					// stale CLAIM pre-state; a concurrent operator/PM status move can also land
+					// DURING the session run, AFTER preStateEligible was captured. runPostTask now
+					// performs the guarded terminal transition FIRST and refuses to commit / write
+					// an ok completion when it does not land — returning divergent:true with a
+					// divergence `error` event already recorded. Honor it here: the task was NOT
+					// terminally advanced by us, so the work_item is NOT a `done` (mirror HB-H2 —
+					// a false `done` is the divergence). ok stays false → the finally marks it failed.
+					if (ptRes.divergent) {
+						ok = false;
+						console.warn(
+							`[orchestrator] post-task mid-run divergence for task ${taskId} (concurrent status move; work_item marked failed, divergence event recorded): now '${ptRes.taskStatus}'`
+						);
+					}
 				} catch {
 					// best-effort: never let post-task failure crash the drain or the spawn verdict
 				}

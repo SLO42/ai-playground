@@ -39,6 +39,7 @@ import type {
 import { launchSession, type LaunchResult, type LaunchDeps } from '../sessions/launch';
 import { getProject } from '../projects/repo';
 import { setStatus } from '../tasks/repo';
+import { writeAgentEvent } from '../analytics/events';
 import { Semaphore } from './semaphore';
 import { runPostTask, resolveTestCommand, type CommandRunner } from './post-task';
 import { claimNext, complete, enqueue, gcStale, spawnsSince, DAY_MS } from './workqueue';
@@ -542,8 +543,24 @@ export class Orchestrator {
 			// claim whose task advanced, or a concurrent move) throws and is SWALLOWED — we then spawn
 			// exactly as before, preserving the prior unconditional-spawn behaviour. A transition
 			// failure must NEVER by itself crash the drain or fail the spawn (F-014).
+			//
+			// HB-H2 (red-team divergence close): capture whether the task ACTUALLY landed in a
+			// post-task-eligible pre-state. setStatus returns the row on success (now `in_progress`,
+			// or an identity no-op for an already in_progress/review task); on an illegal current
+			// status — a stale claim or a concurrent operator/PM move between enqueue and claim (the
+			// `backlog`-task class the daily-cap test exercises) — it THROWS. Post-task's terminal
+			// write is guarded by `IF $cur IN ["in_progress","review"]` (post-task.ts:343); if we are
+			// NOT in one of those, that UPDATE SILENTLY skips while the commit/complete-as-done still
+			// ran — the exact {committed work + work_item done + ok event + non-terminal task}
+			// divergence the PM never sees. We make that pre-state OBSERVABLE here so the post-task
+			// block below can refuse the silent half-state instead of swallowing it.
+			let preStateEligible = false;
 			try {
-				await setStatus(this.#db, taskId, 'in_progress');
+				const moved = await setStatus(this.#db, taskId, 'in_progress');
+				// Eligible ⇔ the task is now in a status post-task may terminally advance. setStatus only
+				// ever moves TO `in_progress`, so a non-null return is `in_progress` (legal move or
+				// identity) — but check both legal pre-states defensively against any future caller.
+				preStateEligible = moved?.status === 'in_progress' || moved?.status === 'review';
 			} catch (transErr) {
 				console.warn(
 					`[orchestrator] task ${taskId} ready→in_progress skipped (status advanced or concurrent move; spawning anyway): ${(transErr as Error).message}`
@@ -574,12 +591,50 @@ export class Orchestrator {
 			this.spawnCount++;
 			ok = res.status === 'done';
 
-			// TASK 2.7 — the post-task loop (DATA-MODEL §3 step 7). OFF by default; when
-			// enabled, commit + run the project test command + optional follow-up and record
-			// the outcome atomically. A post-task failure must NOT crash the drain or flip the
-			// work_item terminal status (the SPAWN succeeded) — it is best-effort and logged
-			// via its own agent_event. Runs only when the session actually ended (done/failed).
-			if (this.#postTask?.enabled) {
+			// HB-H2 — the post-task loop runs ONLY when the task actually reached a post-task-
+			// eligible pre-state (in_progress/review). If it did NOT (stale claim / concurrent
+			// move; preStateEligible=false), entering runPostTask would commit + git-add/rev-parse
+			// + mark the work_item `done` + write an ok completion event WHILE post-task.ts:343
+			// silently skips the terminal task UPDATE — the {committed work + done work_item + ok
+			// event + non-terminal task} divergence the PM (which fires only on a TERMINAL task
+			// transition) never sees. We REFUSE that here: no commit, work_item marked `failed`
+			// (ok stays false → the finally's complete(...'failed')), and a divergence `error`
+			// agent_event names the cause so the half-state can NEVER occur silently (F-008).
+			if (this.#postTask?.enabled && !preStateEligible) {
+				ok = false; // honest: do NOT complete this item as `done` (the finally marks it failed)
+				try {
+					// HONEST + OBSERVABLE: name what triggered it (task not in a legal post-task
+					// pre-state), what caught it (this gate), and what a reader sees (an `error`
+					// event linked to the session/project — `divergence` is not a schema-accepted
+					// agent_event type, so we use `error`, the honest "the failure" type).
+					await writeAgentEvent(this.#db, {
+						type: 'error',
+						session: res.sessionId,
+						project: projectId,
+						detail: {
+							by: 'orchestrator',
+							reason: 'post-task-divergence',
+							error:
+								`post-task terminal write skipped: task ${taskId} was not in a legal ` +
+								`post-task pre-state (in_progress/review) at completion — stale claim or ` +
+								`concurrent status move. NO commit performed; work_item marked failed.`,
+							taskId
+						}
+					});
+				} catch (evErr) {
+					// best-effort: an event-write failure never crashes the drain (F-014). The
+					// work_item is STILL marked failed in the finally, so the divergence is not silent.
+					console.warn(
+						`[orchestrator] post-task divergence event write failed for task ${taskId} (work_item still marked failed): ${(evErr as Error).message}`
+					);
+				}
+			} else if (this.#postTask?.enabled) {
+				// TASK 2.7 — the post-task loop (DATA-MODEL §3 step 7). OFF by default; when
+				// enabled, commit + run the project test command + optional follow-up and record
+				// the outcome atomically. A post-task failure must NOT crash the drain or flip the
+				// work_item terminal status (the SPAWN succeeded) — it is best-effort and logged
+				// via its own agent_event. Runs only when the session actually ended (done/failed)
+				// AND the task is in a legal post-task pre-state (HB-H2 gate above).
 				try {
 					const project = await getProject(this.#db, projectId);
 					const cwd = project?.root_path ?? '.';

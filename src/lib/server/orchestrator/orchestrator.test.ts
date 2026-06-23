@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { StringRecordId } from 'surrealdb';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
@@ -763,6 +764,89 @@ describe('THE HEARTBEAT — post-task wiring advances the TASK to terminal (read
 		} finally {
 			orch.stop();
 			await watch.stop();
+		}
+	}, 30_000);
+
+	it('HB-H2 — a STALE claim (task NOT in a legal pre-state, e.g. backlog) with post-task enabled never produces a silent {done work_item + ok event + non-terminal task}', async () => {
+		// The RED-TEAM PROBE. A task_run is claimed whose task is `backlog` — the same class as a
+		// concurrent operator/PM move between enqueue and claim, or a stale work_item (the daily-cap
+		// test exercises backlog tasks). backlog→in_progress is an ILLEGAL transition, so the task
+		// never lands in a post-task-eligible pre-state. Pre-fix: post-task still git-committed +
+		// marked the work_item `done` + wrote an ok:true completion event WHILE post-task.ts silently
+		// skipped the terminal task UPDATE → committed work under a non-terminal task the PM never saw.
+		// We assert that exact divergence CANNOT occur: no commit, work_item failed, divergence event.
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = outcomeBackend(true); // the SESSION succeeds — the divergence is the STALE TASK
+		const runtime = new ClaudeCodeRuntime({ backend });
+		const runner = fakePostTaskRunner();
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 2,
+			mode: 'manual', // drive the drain explicitly — no bus trigger needed for a hand-enqueued item
+			route: stubRoute(),
+			postTask: { enabled: true, runner, followUpOnTestFail: false }
+		});
+		try {
+			// A task left on `backlog` (createTask default) — NEVER moved to ready. Then enqueue a
+			// task_run for it directly (the stale-claim shape) and drain.
+			const task = await createTask(db, {
+				project: projectId,
+				title: 'stale claim',
+				description: 'claimed while not in a legal post-task pre-state'
+			});
+			expect((await getTask(db, task.id))?.status).toBe('backlog');
+			await orch.enqueueTask(task.id, projectId);
+			await orch.drain();
+
+			// The session ran (the spawn is unconditional, HB-1 byte-unchanged)…
+			await waitForAsync(async () => backend.plans.length >= 1);
+			// …but the work_item must settle, and the divergence handling must have fired.
+			await waitForAsync(async () => (await countByStatus(db, 'done')) + (await countByStatus(db, 'failed')) >= 1);
+
+			// (1) The task is STILL backlog — it never (and could never) reach terminal. That is the
+			//     honest state; the divergence is made observable elsewhere, NOT papered over here.
+			expect((await getTask(db, task.id))?.status).toBe('backlog');
+
+			// (2) NO commit happened — the post-task happy path was refused (the exact silent-commit close).
+			const gitCalls = runner.calls.filter((c) => c.file === 'git');
+			expect(gitCalls.length).toBe(0);
+
+			// (3) The work_item is `failed`, NOT `done` — a false `done` is the divergence.
+			expect(await countByStatus(db, 'done')).toBe(0);
+			expect(await countByStatus(db, 'failed')).toBe(1);
+
+			// (4) NO POST-TASK completion event was written for THIS run's session (a `post-task loop`
+			//     completion carrying ok:true under a non-terminal task is precisely the lie that says
+			//     "the task finished"). The SESSION's OWN lifecycle completion (launchSession) is honest
+			//     and expected — the agent run did succeed; only the post-task terminal-claim is refused.
+			//     Instead a divergence `error` event linked to that session names the cause so the PM/
+			//     operator can SEE it. Scope by session (agent_event rows accumulate across tests on the
+			//     shared DB — clearQueue only wipes work_item) so we assert THIS run's events.
+			const [sessions] = await db.query<[Array<{ id: unknown }>]>(
+				`SELECT id FROM session WHERE task = $tid;`,
+				{ tid: new StringRecordId(task.id) }
+			);
+			expect(sessions.length).toBe(1);
+			const sessionId = String(sessions[0].id);
+
+			const [postTaskCompletions] = await db.query<[Array<{ detail: Record<string, unknown> }>]>(
+				`SELECT detail FROM agent_event WHERE type = 'completion' AND detail.reason = 'post-task loop' AND session = $sid;`,
+				{ sid: new StringRecordId(sessionId) }
+			);
+			expect(postTaskCompletions.length).toBe(0);
+
+			const [divergences] = await db.query<[Array<{ detail: Record<string, unknown> }>]>(
+				`SELECT detail FROM agent_event WHERE type = 'error' AND detail.reason = 'post-task-divergence' AND session = $sid;`,
+				{ sid: new StringRecordId(sessionId) }
+			);
+			expect(divergences.length).toBe(1);
+			expect(String(divergences[0].detail.taskId)).toBe(task.id);
+			expect(String(divergences[0].detail.by)).toBe('orchestrator');
+		} finally {
+			orch.stop();
 		}
 	}, 30_000);
 });

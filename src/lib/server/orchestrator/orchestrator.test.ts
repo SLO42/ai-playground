@@ -6,7 +6,7 @@ import { startTestDb, type TestDb } from '../db/testserver';
 import { EventBus } from '../events/bus';
 import { watchTable } from '../events/db-source';
 import { createProject, deleteProject } from '../projects/repo';
-import { createTask, setStatus } from '../tasks/repo';
+import { createTask, getTask, setStatus } from '../tasks/repo';
 import {
 	ClaudeCodeRuntime,
 	type CcBackend,
@@ -16,6 +16,7 @@ import {
 } from '../runtime/index';
 import { Orchestrator, type StubRoute } from './index';
 import { claimNext, complete, countByStatus } from './workqueue';
+import type { CommandRunner, CommandResult } from './post-task';
 
 // TASK 2.2 VERIFY (ARCHITECTURE §2.2/§2.11; D-004; DATA-MODEL §4.12) against the
 // MOCKED runtime (NO live API/creds/network — the 1.4 contract pattern):
@@ -414,6 +415,197 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 			backend.gates[0].release();
 			await waitFor(() => orch.spawnCount >= 1);
 			expect(orch.spawnCount).toBe(1);
+		} finally {
+			orch.stop();
+			await watch.stop();
+		}
+	}, 30_000);
+});
+
+// ── THE HEARTBEAT (operator direction 2026-06-23) — the post-task loop wired into the
+//    orchestrator advances the TASK to a terminal status, the db_change the PM consumes. ──
+//
+// A backend whose `done` result `ok` is configurable, so we can drive a DONE session (ok:true →
+// launchSession status 'done') AND a FAILED session (ok:false → status 'failed') deterministically
+// against a real throwaway DB. A FAKE CommandRunner (NO live process/shell — the same mocked
+// pattern post-task.test.ts uses; F-008 allows a mock in a TEST) records the git calls.
+function outcomeBackend(ok: boolean): CcBackend & { plans: CcSpawnPlan[] } {
+	const plans: CcSpawnPlan[] = [];
+	const self = {
+		plans,
+		kind: 'mock',
+		run(plan: CcSpawnPlan): CcBackendRun {
+			plans.push(plan);
+			const ccSessionId = `cc_${plan.agentId}_${plans.length}_${Math.random().toString(36).slice(2, 10)}`;
+			return {
+				ccSessionId,
+				async *stream(): AsyncGenerator<RuntimeEvent> {
+					yield { type: 'log', message: 'started' };
+					yield { type: 'token_usage', input: 10, output: 5 };
+					yield { type: 'done', result: { ok, summary: ok ? 'work done' : 'run failed', ccSessionId } };
+				},
+				async cancel() {}
+			};
+		},
+		async resume(req: { ccSessionId: string }) {
+			return {
+				ccSessionId: req.ccSessionId,
+				async *stream(): AsyncGenerator<RuntimeEvent> {
+					yield { type: 'done', result: { ok: true, summary: 'resumed' } };
+				},
+				async cancel() {}
+			};
+		},
+		async interject() {}
+	};
+	return self as unknown as CcBackend & { plans: CcSpawnPlan[] };
+}
+
+/** A fake post-task runner: records calls, returns scripted results. NO live process/shell. */
+function fakePostTaskRunner(): CommandRunner & { calls: { file: string; args: string[] }[] } {
+	const calls: { file: string; args: string[] }[] = [];
+	const fn: CommandRunner = async (file, args) => {
+		calls.push({ file, args: [...args] });
+		const res: CommandResult =
+			file === 'git' && args[0] === 'rev-parse'
+				? { code: 0, stdout: 'hb12345\n', stderr: '' }
+				: { code: 0, stdout: '', stderr: '' };
+		return res;
+	};
+	return Object.assign(fn, { calls });
+}
+
+/** Poll an ASYNC predicate until true or timeout (waitFor takes a sync predicate). */
+async function waitForAsync(predicate: () => Promise<boolean>, ms = 10_000): Promise<void> {
+	const start = Date.now();
+	while (!(await predicate())) {
+		if (Date.now() - start > ms) throw new Error('timeout waiting for async condition');
+		await new Promise((r) => setTimeout(r, 30));
+	}
+}
+
+describe('THE HEARTBEAT — post-task wiring advances the TASK to terminal (ready→in_progress→done|failed)', () => {
+	it('a DONE session: task transitions ready→in_progress→done, work committed, completion event written', async () => {
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = outcomeBackend(true);
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: 'F:/code/orch/.harness-cc' });
+		const runner = fakePostTaskRunner();
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 2,
+			mode: 'event',
+			route: stubRoute(),
+			// The wiring under test: post-task enabled with the injected runner (NO live git).
+			postTask: { enabled: true, runner, followUpOnTestFail: false }
+		});
+		orch.start();
+		const watch = await watchTable(db, bus, 'task');
+		try {
+			const task = await createTask(db, {
+				project: projectId,
+				title: 'heartbeat done',
+				description: 'a done session must advance its task to done'
+			});
+			await setStatus(db, task.id, 'ready');
+
+			// The session runs and the post-task loop advances the task to terminal.
+			await waitFor(() => backend.plans.length >= 1);
+			await waitForAsync(async () => (await getTask(db, task.id))?.status === 'done');
+
+			const finished = await getTask(db, task.id);
+			expect(finished?.status).toBe('done'); // ready→in_progress→done (post-task terminal write)
+
+			// F-007 — the work was committed via execFile arrays (git add / commit / rev-parse).
+			const gitVerbs = runner.calls.filter((c) => c.file === 'git').map((c) => c.args[0]);
+			expect(gitVerbs).toEqual(['add', 'commit', 'rev-parse']);
+
+			// The completion agent_event carries the sha (the db_change the PM consumes is the
+			// task→done above; this is the analytics trace of the commit).
+			const [evs] = await db.query<[Array<{ detail: Record<string, unknown> }>]>(
+				`SELECT detail FROM agent_event WHERE type = 'completion' AND detail.reason = 'post-task loop';`
+			);
+			expect(evs.some((e) => e.detail.commit_sha === 'hb12345')).toBe(true);
+		} finally {
+			orch.stop();
+			await watch.stop();
+		}
+	}, 30_000);
+
+	it('a FAILED session: task transitions ready→in_progress→failed, NO commit (F-007)', async () => {
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = outcomeBackend(false); // done(ok:false) → launchSession status 'failed'
+		const runtime = new ClaudeCodeRuntime({ backend });
+		const runner = fakePostTaskRunner();
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 2,
+			mode: 'event',
+			route: stubRoute(),
+			postTask: { enabled: true, runner, followUpOnTestFail: false }
+		});
+		orch.start();
+		const watch = await watchTable(db, bus, 'task');
+		try {
+			const task = await createTask(db, {
+				project: projectId,
+				title: 'heartbeat failed',
+				description: 'a failed session must advance its task to failed (visible to PM/operator)'
+			});
+			await setStatus(db, task.id, 'ready');
+
+			await waitFor(() => backend.plans.length >= 1);
+			await waitForAsync(async () => (await getTask(db, task.id))?.status === 'failed');
+
+			const finished = await getTask(db, task.id);
+			expect(finished?.status).toBe('failed'); // honest terminal status (not left ready)
+
+			// F-007 — a failed run commits NOTHING (runPostTask skips the commit when runOk=false).
+			expect(runner.calls.length).toBe(0);
+		} finally {
+			orch.stop();
+			await watch.stop();
+		}
+	}, 30_000);
+
+	it('the in_progress step is real but the terminal write needs post-task: without it a done session leaves the task in_progress (never done)', async () => {
+		// The DEAD-LINK proof (negative control). The spawn path moves the task ready→in_progress
+		// (so the run is visibly in flight), but WITHOUT the post-task wiring nothing advances it
+		// to terminal — it stalls at `in_progress`, never `done`, and the terminal db_change the PM
+		// consumes never fires. This is exactly the symptom this wave's post-task wiring fixes; it
+		// also proves the in_progress transition is independent of (and prerequisite to) post-task.
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = outcomeBackend(true);
+		const runtime = new ClaudeCodeRuntime({ backend });
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 2,
+			mode: 'event',
+			route: stubRoute()
+			// postTask intentionally omitted (the pre-fix boot state).
+		});
+		orch.start();
+		const watch = await watchTable(db, bus, 'task');
+		try {
+			const task = await createTask(db, {
+				project: projectId,
+				title: 'no post-task',
+				description: 'proves the wiring is load-bearing'
+			});
+			await setStatus(db, task.id, 'ready');
+			await waitFor(() => orch.spawnCount >= 1, 10_000);
+			await new Promise((r) => setTimeout(r, 200)); // let any stray transition settle
+			// The spawn ran and moved the task ready→in_progress, but with NO post-task wiring the
+			// task never reaches a terminal status — it is stuck at in_progress (the dead link).
+			expect((await getTask(db, task.id))?.status).toBe('in_progress');
 		} finally {
 			orch.stop();
 			await watch.stop();

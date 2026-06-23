@@ -308,7 +308,27 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		dailySpawnCap,
 		// TASK 2.3 — the REAL router: resolveRoute picks the tier from task content + writes the
 		// routing_event with rationale on every spawn (no constant DEFAULT_MODEL).
-		route: bootRoute(db, pool, orchestration)
+		route: bootRoute(db, pool, orchestration),
+		// THE HEARTBEAT (operator direction 2026-06-23) — wire the post-task loop so a finished
+		// orchestrator-driven session (a) git-commits the agent's work and (b) advances its TASK
+		// to a terminal status (done/failed). That terminal task `db_change` is exactly what the
+		// autonomous PM (pm-autonomous.ts) re-ticks on — making post-task advance the task to
+		// terminal IS what informs the PM. Without this the work_item alone went terminal and the
+		// 4 done ROUNDS sessions left their tasks `ready` with uncommitted deliverables (F-007).
+		//
+		// Default execFile-array runner (D-008/F-002 — post-task.ts defaults opts.run to the
+		// safe execFileRunner; we pass NO shell runner). It is best-effort: the orchestrator's
+		// #runItem try/catches it so a commit/test failure never crashes the drain nor flips the
+		// spawn verdict (F-014).
+		postTask: {
+			enabled: true,
+			// followUpOnTestFail OFF here: a project without a real test suite must not spawn an
+			// endless 'tests failed' follow-up loop. HB-2 makes test resolution honest; until then
+			// a non-zero/absent `test_command` outcome stays a recorded fact on the completion
+			// event, never an auto-enqueued follow_up. (Default in post-task.ts is true — we
+			// explicitly override to false.)
+			followUpOnTestFail: false
+		}
 	});
 	orchestrator.start();
 

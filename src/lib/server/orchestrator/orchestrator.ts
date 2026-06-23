@@ -38,6 +38,7 @@ import type {
 } from '../runtime/index';
 import { launchSession, type LaunchResult, type LaunchDeps } from '../sessions/launch';
 import { getProject } from '../projects/repo';
+import { setStatus } from '../tasks/repo';
 import { Semaphore } from './semaphore';
 import { runPostTask, type CommandRunner } from './post-task';
 import { claimNext, complete, enqueue, gcStale, spawnsSince, DAY_MS } from './workqueue';
@@ -435,6 +436,28 @@ export class Orchestrator {
 		let ok = false;
 		try {
 			if (!taskId || !projectId) return;
+			// THE HEARTBEAT (post-task transition prerequisite) — move the task ready → in_progress
+			// BEFORE the spawn. The spawn path (launchSession) only writes the SESSION row's status;
+			// it leaves the TASK on `ready`. The post-task loop's terminal write is guarded by the
+			// SAME state machine setStatus uses — `done`/`failed` are only legal FROM in_progress/
+			// review (tasks/repo.ts ALLOWED_TRANSITIONS), so a task still on `ready` at post-task time
+			// would be SILENTLY left ready (post-task.ts `IF $cur IN ["in_progress","review"]`), never
+			// advancing to terminal and never firing the db_change the autonomous PM consumes. Moving
+			// it here closes that link: ready → in_progress (now) → done|failed (post-task).
+			//
+			// Best-effort + idempotent (interrupt contract): setStatus is the canonical transition
+			// chokepoint with its own atomic guard. A legal ready→in_progress moves it; an already
+			// in_progress/review task is an identity no-op; an illegal/terminal current status (a stale
+			// claim whose task advanced, or a concurrent move) throws and is SWALLOWED — we then spawn
+			// exactly as before, preserving the prior unconditional-spawn behaviour. A transition
+			// failure must NEVER by itself crash the drain or fail the spawn (F-014).
+			try {
+				await setStatus(this.#db, taskId, 'in_progress');
+			} catch (transErr) {
+				console.warn(
+					`[orchestrator] task ${taskId} ready→in_progress skipped (status advanced or concurrent move; spawning anyway): ${(transErr as Error).message}`
+				);
+			}
 			// Resolve the route (production: awaits resolveRoute → writes the routing_event with
 			// rationale+intent). Awaiting a sync stub return is a no-op, so test/degenerate seams
 			// keep working unchanged. Resolved once per claim — the exactly-one-spawn invariant.

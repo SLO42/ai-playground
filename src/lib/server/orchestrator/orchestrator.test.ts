@@ -18,6 +18,11 @@ import {
 import { Orchestrator, type StubRoute } from './index';
 import { claimNext, complete, countByStatus, enqueue } from './workqueue';
 import type { CommandRunner, CommandResult } from './post-task';
+import { execFileRunner as gitExecFileRunner } from './post-task';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 // TASK 2.2 VERIFY (ARCHITECTURE §2.2/§2.11; D-004; DATA-MODEL §4.12) against the
 // MOCKED runtime (NO live API/creds/network — the 1.4 contract pattern):
@@ -1178,4 +1183,222 @@ describe('THE HEARTBEAT — post-task wiring advances the TASK to terminal (read
 			orch.stop();
 		}
 	}, 30_000);
+});
+
+// ── WI-3 — merge-back + teardown composed with the heartbeat post-task, end to end ─────────
+//
+// These exercise the FULL #runItem path against a REAL temp git repo project: the real
+// acquireSessionWorktree (WI-1/WI-2) puts the write session in an isolated worktree; a backend
+// writes a file INTO that worktree; the REAL post-task git runner commits it on the session branch
+// (HB-1); then the REAL merge-back FF-merges it into the project branch + tears the worktree down.
+// Proves the composition AND no-lost-work for the done (merge) and failed (preserve) exits.
+
+function git(cwd: string, ...args: string[]): string {
+	return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+}
+function initGitRepo(): string {
+	const base = mkdtempSync(join(tmpdir(), 'orch-mb-'));
+	const repo = join(base, 'proj');
+	execFileSync('git', ['init', '-b', 'main', repo]);
+	git(repo, 'config', 'user.email', 'test@test.local');
+	git(repo, 'config', 'user.name', 'Test');
+	writeFileSync(join(repo, 'README.md'), '# seed\n');
+	git(repo, 'add', '-A');
+	git(repo, 'commit', '-m', 'seed');
+	return repo;
+}
+
+/** A backend that WRITES a file into the spawn cwd (the session worktree) before reporting its
+ *  outcome — so the post-task `git add -A` + commit has a real change to commit on the branch. */
+function fileWritingBackend(ok: boolean, fileName: string): CcBackend & { plans: CcSpawnPlan[] } {
+	const plans: CcSpawnPlan[] = [];
+	const self = {
+		plans,
+		kind: 'mock',
+		run(plan: CcSpawnPlan): CcBackendRun {
+			plans.push(plan);
+			const ccSessionId = `cc_${plan.agentId}_${plans.length}_${Math.random().toString(36).slice(2, 10)}`;
+			return {
+				ccSessionId,
+				async *stream(): AsyncGenerator<RuntimeEvent> {
+					yield { type: 'log', message: 'started' };
+					// Write the agent's "work" into the worktree cwd so there is something to commit.
+					try {
+						writeFileSync(join(plan.cwd, fileName), `agent work in ${fileName}\n`);
+					} catch {
+						/* the cwd is the real worktree; if it is missing the test will catch it downstream */
+					}
+					yield { type: 'done', result: { ok, summary: ok ? 'work done' : 'run failed', ccSessionId } };
+				},
+				async cancel() {}
+			};
+		},
+		async resume(req: { ccSessionId: string }) {
+			return {
+				ccSessionId: req.ccSessionId,
+				async *stream(): AsyncGenerator<RuntimeEvent> {
+					yield { type: 'done', result: { ok: true, summary: 'resumed' } };
+				},
+				async cancel() {}
+			};
+		},
+		async interject() {}
+	};
+	return self as unknown as CcBackend & { plans: CcSpawnPlan[] };
+}
+
+describe('WI-3 — merge-back + teardown composed with post-task (real temp git repo)', () => {
+	let repo: string;
+	let mbProjectId: string;
+
+	afterAll(async () => {
+		if (mbProjectId) await deleteProject(db, mbProjectId).catch(() => {});
+		if (repo) {
+			try {
+				rmSync(join(repo, '..'), { recursive: true, force: true });
+			} catch {
+				/* best effort */
+			}
+		}
+	});
+
+	it('a DONE write session: post-task commits on the branch, merge-back FF-merges into the project branch + tears the worktree down', async () => {
+		await clearQueue();
+		repo = initGitRepo();
+		const baseHead = git(repo, 'rev-parse', 'main');
+		const proj = await createProject(db, { slug: 'mb_done', name: 'MB Done', root_path: repo });
+		mbProjectId = proj.id;
+
+		const bus = new EventBus();
+		const backend = fileWritingBackend(true, 'feature.txt');
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: join(repo, '.harness-cc') });
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 1,
+			mode: 'manual',
+			route: stubRoute(),
+			// REAL worktree acquirer (the repo is a real git repo) + REAL git runners for both legs.
+			postTask: { enabled: true, runner: gitExecFileRunner, followUpOnTestFail: false },
+			mergeBack: { enabled: true, runner: gitExecFileRunner }
+		});
+		try {
+			const task = await createTask(db, {
+				project: mbProjectId,
+				title: 'mb done',
+				description: 'a done write session merges its branch back into the project branch'
+			});
+			await setStatus(db, task.id, 'ready');
+			await orch.enqueueTask(task.id, mbProjectId);
+			await orch.drain();
+
+			await waitForAsync(async () => backend.plans.length >= 1);
+			await waitForAsync(async () => (await getTask(db, task.id))?.status === 'done');
+
+			// the session ran in an isolated worktree (off the seed HEAD), on a session branch
+			const [sessions] = await db.query<[Array<{ id: unknown; worktree_path?: unknown; worktree_branch?: unknown }>]>(
+				`SELECT id, worktree_path, worktree_branch FROM session WHERE task = $tid;`,
+				{ tid: new StringRecordId(task.id) }
+			);
+			expect(sessions.length).toBe(1);
+			const branch = String(sessions[0].worktree_branch);
+			const worktreePath = String(sessions[0].worktree_path);
+			expect(branch).toContain('atelier/session/');
+
+			// The merge-back is awaited inside #runItem but the drain returns before it; teardown is
+			// its LAST step (after the FF merge). Wait for the worktree to be gone — that proves the
+			// whole success path (FF merge → teardown) completed.
+			await waitForAsync(async () => !existsSync(worktreePath));
+
+			// NO LOST WORK: the session's commit is now on the project branch (main advanced).
+			expect(git(repo, 'rev-parse', 'main')).not.toBe(baseHead);
+			expect(existsSync(join(repo, 'feature.txt'))).toBe(true);
+			// teardown: the worktree is gone (no orphan) and the merged branch deleted.
+			expect(existsSync(worktreePath)).toBe(false);
+			expect(() => git(repo, 'rev-parse', '--verify', branch)).toThrow();
+		} finally {
+			orch.stop();
+		}
+	}, 40_000);
+
+	it('a FAILED write session: branch + worktree PRESERVED (never lost), honest note stamped, project branch untouched', async () => {
+		await clearQueue();
+		const repo2 = initGitRepo();
+		const baseHead = git(repo2, 'rev-parse', 'main');
+		const proj = await createProject(db, { slug: 'mb_failed', name: 'MB Failed', root_path: repo2 });
+		const failedProjectId = proj.id;
+
+		const bus = new EventBus();
+		const backend = fileWritingBackend(false, 'wip.txt'); // done(ok:false) → status 'failed'
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: join(repo2, '.harness-cc') });
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 1,
+			mode: 'manual',
+			route: stubRoute(),
+			postTask: { enabled: true, runner: gitExecFileRunner, followUpOnTestFail: false },
+			mergeBack: { enabled: true, runner: gitExecFileRunner }
+		});
+		try {
+			const task = await createTask(db, {
+				project: failedProjectId,
+				title: 'mb failed',
+				description: 'a failed write session preserves its branch + worktree'
+			});
+			await setStatus(db, task.id, 'ready');
+			await orch.enqueueTask(task.id, failedProjectId);
+			await orch.drain();
+
+			await waitForAsync(async () => backend.plans.length >= 1);
+			await waitForAsync(async () => (await getTask(db, task.id))?.status === 'failed');
+
+			const [sessions] = await db.query<[Array<{ id: unknown; worktree_path?: unknown; worktree_branch?: unknown; note?: unknown }>]>(
+				`SELECT id, worktree_path, worktree_branch, note FROM session WHERE task = $tid;`,
+				{ tid: new StringRecordId(task.id) }
+			);
+			expect(sessions.length).toBe(1);
+			const branch = String(sessions[0].worktree_branch);
+			const worktreePath = String(sessions[0].worktree_path);
+
+			// Wait for the PRESERVE advisory specifically — a failed session ALREADY carries
+			// launchSession's failure note, so merge-back APPENDS "· work preserved …" to it; we must
+			// not race-read the failure note alone before the append lands.
+			await waitForAsync(async () => {
+				const [rows] = await db.query<[Array<{ note?: unknown }>]>(
+					`SELECT note FROM session WHERE id = $sid;`,
+					{ sid: new StringRecordId(String(sessions[0].id)) }
+				);
+				return rows[0]?.note != null && String(rows[0].note).includes('preserved on branch');
+			});
+
+			// project branch NOT advanced (no merge of an incomplete session).
+			expect(git(repo2, 'rev-parse', 'main')).toBe(baseHead);
+			// the worktree is PRESERVED (a failed session keeps its tree for resume / inspection).
+			expect(existsSync(worktreePath)).toBe(true);
+			// honest preserve note on the session row (surfaces on the MC-4 surface).
+			const [noteRows] = await db.query<[Array<{ note?: unknown }>]>(
+				`SELECT note FROM session WHERE id = $sid;`,
+				{ sid: new StringRecordId(String(sessions[0].id)) }
+			);
+			expect(String(noteRows[0].note)).toContain('preserved on branch');
+			expect(String(noteRows[0].note)).toContain('merge needed');
+			// the honest note names the ACTUAL session branch (so the operator can find the work).
+			expect(String(noteRows[0].note)).toContain(branch);
+
+			// the branch survives (a failed run does NOT commit, F-007, so it may equal HEAD); either
+			// way NOTHING was lost or force-merged — the worktree registration is intact.
+			expect(() => git(repo2, 'worktree', 'list')).not.toThrow();
+		} finally {
+			orch.stop();
+			await deleteProject(db, failedProjectId).catch(() => {});
+			try {
+				rmSync(join(repo2, '..'), { recursive: true, force: true });
+			} catch {
+				/* best effort */
+			}
+		}
+	}, 40_000);
 });

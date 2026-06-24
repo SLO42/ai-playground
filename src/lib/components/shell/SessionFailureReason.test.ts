@@ -67,6 +67,36 @@ describe('GAP 1 — SessionFailureReason .fail-label uses the BODY-AA on-overlay
   });
 });
 
+describe('WI-3 — advisory note on a NON-failed session (work-preserved) surfaces, distinct from a failure', () => {
+  const src = readFileSync(COMPONENT, 'utf8');
+
+  it('renders an advisory branch for a non-failed session that carries a note', () => {
+    // The component gates failure on status==='failed' but ALSO renders an advisory when
+    // !failed && note present (the WI-3 "work preserved on branch …; merge needed" note on a
+    // done-but-couldn't-merge session). Lock that the advisory branch exists.
+    expect(/isAdvisory/.test(src), 'an isAdvisory derived branch must exist').toBe(true);
+    expect(/\{:else if isAdvisory\}/.test(src), 'an {:else if isAdvisory} render branch must exist').toBe(true);
+  });
+
+  it('the advisory uses the WARN tone (not the error border), visually distinct from a failure', () => {
+    const stripped = src.replace(/\/\*[\s\S]*?\*\//g, '');
+    // advisory label color is the gated warn-on-overlay token
+    const tok = colorTokenOfRule(stripped, 'advisory-label');
+    expect(tok).toBe('--color-warn-on-overlay');
+    // the advisory variant overrides the (error) left border to warn
+    expect(/\.fail-reason\.advisory\s*\{[^}]*border-left-color\s*:\s*var\(\s*--color-warn\s*\)/.test(stripped)).toBe(true);
+  });
+
+  it('the advisory label token measures ≥ BODY AA (4.5:1) on the overlay surface', () => {
+    const decls = loadColorTokens();
+    const ratio = contrastRatio(
+      resolveToHex('--color-warn-on-overlay', decls),
+      resolveToHex('--color-surface-overlay', decls)
+    );
+    expect(ratio, `--color-warn-on-overlay on overlay = ${ratio.toFixed(2)}:1`).toBeGreaterThanOrEqual(AA_BODY);
+  });
+});
+
 describe('GAP 2 — /claude-code renders the failure banner via the shared component (no duplicate)', () => {
   const src = readFileSync(CLAUDE_CODE, 'utf8');
 

@@ -25,7 +25,9 @@
 // freed semaphore permit, or an explicit drain), NEVER a busy loop. Each drain claims
 // while permits AND work both remain, then stops.
 
+import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
+import { assertRecordId } from '../db/validate';
 import type { BusEvent, EventBus, Unsubscribe } from '../events/bus';
 import type { DbChange } from '../events/db-source';
 import type {
@@ -42,6 +44,7 @@ import { setStatus } from '../tasks/repo';
 import { writeAgentEvent } from '../analytics/events';
 import { Semaphore } from './semaphore';
 import { runPostTask, resolveTestCommand, type CommandRunner } from './post-task';
+import { mergeBackWorktree, type CommandRunner as GitRunner } from '../sessions/merge-back';
 import {
 	claimNext,
 	complete,
@@ -158,6 +161,23 @@ export interface OrchestratorOptions {
 		/** Auto-enqueue a follow_up when the run succeeded but tests failed (default true). */
 		followUpOnTestFail?: boolean;
 	};
+	/**
+	 * WI-3 (WORKSPACE-ISOLATION-SPEC) — merge-back + teardown for per-session WRITE worktrees.
+	 * When enabled, AFTER the post-task commit lands on the session branch (HB-1), a session that
+	 * ran in an isolated worktree (WI-2: it carries worktree_path/worktree_branch) is reconciled:
+	 *   • clean `done`  → FAST-FORWARD merge the session branch into the project branch, then tear
+	 *     the worktree down + delete the merged branch (cleanup, F-014);
+	 *   • non-FF (diverged) OR failed/cancelled → PRESERVE the branch + worktree and stamp an honest
+	 *     screened note (F-007 — never lose committed work; the anti-invisible-failure surface).
+	 * OFF by default so a degenerate/test orchestrator never touches git merge state unless asked.
+	 * An injectable `runner` lets tests drive it against a real temp git repo; it defaults to
+	 * merge-back's execFile arrays (D-008).
+	 */
+	mergeBack?: {
+		enabled: boolean;
+		/** Injectable git runner (test seam); defaults to merge-back's execFile arrays. */
+		runner?: GitRunner;
+	};
 }
 
 /** What one drain pass did (diagnostics / tests). */
@@ -184,6 +204,7 @@ export class Orchestrator {
 	readonly #acquireWorktree?: LaunchDeps['acquireWorktree'];
 	readonly #spawnReady: ReadonlySet<string>;
 	readonly #postTask?: OrchestratorOptions['postTask'];
+	readonly #mergeBack?: OrchestratorOptions['mergeBack'];
 	readonly #dailyCap?: number;
 	readonly #capWindowMs: number;
 	/** Per-project in-flight cap (concurrency.perProject); undefined / < 1 ⇒ no gate. */
@@ -223,6 +244,7 @@ export class Orchestrator {
 		this.#acquireWorktree = opts.acquireWorktree;
 		this.#spawnReady = new Set(opts.spawnReadyStatuses ?? ['ready']);
 		this.#postTask = opts.postTask;
+		this.#mergeBack = opts.mergeBack;
 		this.#dailyCap = opts.dailySpawnCap && opts.dailySpawnCap > 0 ? opts.dailySpawnCap : undefined;
 		this.#capWindowMs = opts.dailyCapWindowMs ?? DAY_MS;
 		this.#perProject = opts.perProject && opts.perProject > 0 ? opts.perProject : undefined;
@@ -663,7 +685,14 @@ export class Orchestrator {
 				// AND the task is in a legal post-task pre-state (HB-H2 gate above).
 				try {
 					const project = await getProject(this.#db, projectId);
-					const cwd = project?.root_path ?? '.';
+					// WI-3 COMPOSITION: a WRITE session ran in an isolated per-session WORKTREE (WI-2);
+					// the agent edits live THERE, not the shared project root. So the post-task git
+					// add -A + commit MUST run IN THE WORKTREE — that lands the commit on the session
+					// BRANCH for WI-3 merge-back to fast-forward. The worktree provenance is on the
+					// session row; absent (READ session / non-git project) => the shared project root
+					// (pre-WI-3 behaviour, unchanged). Read ONCE here and reused by merge-back below.
+					const wt = await this.#readWorktree(res.sessionId);
+					const cwd = wt?.path ?? project?.root_path ?? '.';
 					// HB-2 — resolve the test command HONESTLY: prefer a positively-detected real
 					// test target (testCommandFor) over a stored bare token that would false-fail.
 					// null ⇒ honest skip (no test attempted), never a false fail / false follow-up.
@@ -706,6 +735,22 @@ export class Orchestrator {
 				} catch {
 					// best-effort: never let post-task failure crash the drain or the spawn verdict
 				}
+			}
+
+			// WI-3 — merge-back + teardown. Runs AFTER the post-task commit (HB-1) so a clean
+			// session's committed work is on the session BRANCH before we fast-forward it into the
+			// project branch. ONLY for a session that actually ran in an isolated worktree (WI-2: the
+			// row carries worktree_path/worktree_branch); a READ session / non-git project never got
+			// one and is skipped. The exit state reflects the FINAL verdict (`ok`), which the post-task
+			// divergence above may have flipped to false → that session PRESERVES its branch instead of
+			// merging. Best-effort (F-014): a merge-back fault is logged and NEVER crashes the drain or
+			// changes the work_item verdict — any committed work stays on its branch.
+			if (this.#mergeBack?.enabled) {
+				await this.#mergeBackSession(res.sessionId, projectId, ok ? 'done' : 'failed').catch((mbErr) =>
+					console.warn(
+						`[orchestrator] merge-back skipped for session ${res.sessionId} (best-effort; committed work stays on its branch): ${(mbErr as Error).message}`
+					)
+				);
 			}
 		} catch {
 			ok = false; // a spawn failure marks the work_item failed; never crash the drain
@@ -788,5 +833,74 @@ export class Orchestrator {
 				`[orchestrator] hire_request for role '${outcome.roleSlug}' unresolved (no draft produced): ${outcome.reason}`
 			);
 		}
+	}
+
+	/**
+	 * WI-2/WI-3 — read ONE session's worktree provenance (worktree_path / worktree_branch, m0059).
+	 * Returns null when the session did NOT run in an isolated worktree (a READ-class session / a
+	 * non-git project / an explicit-cwd workflow step left BOTH option fields NONE) — an honest
+	 * absent, never a fabricated path (F-008). Used to (a) point the post-task commit at the worktree
+	 * so it lands on the session branch, and (b) drive WI-3 merge-back. The id binds at the D-016
+	 * chokepoint as a record link; the values are coerced to plain strings (never raw SDK values).
+	 */
+	async #readWorktree(sessionId: string): Promise<{ path: string; branch: string } | null> {
+		const sid = new StringRecordId(assertRecordId(sessionId));
+		const [rows] = await this.#db.query<[Array<{ worktree_path?: unknown; worktree_branch?: unknown }>]>(
+			`SELECT worktree_path, worktree_branch FROM ONLY $sid;`,
+			{ sid }
+		);
+		const row = (Array.isArray(rows) ? rows[0] : rows) as
+			| { worktree_path?: unknown; worktree_branch?: unknown }
+			| undefined;
+		const path = row?.worktree_path == null ? null : String(row.worktree_path);
+		const branch = row?.worktree_branch == null ? null : String(row.worktree_branch);
+		if (!path || !branch) return null;
+		return { path, branch };
+	}
+
+	/**
+	 * WI-3 (WORKSPACE-ISOLATION-SPEC) — reconcile ONE finished session's per-session worktree.
+	 *
+	 * Reads the session's WI-2 worktree provenance (worktree_path / worktree_branch). If the session
+	 * did NOT run in an isolated worktree (a READ-class session / a non-git project / an explicit-cwd
+	 * workflow step left BOTH fields NONE) there is nothing to merge or tear down → honest no-op. When
+	 * it DID, hand off to {@link mergeBackWorktree}, which (under a per-project-root lock) FF-merges a
+	 * clean-done branch into the project branch + tears the worktree down, or PRESERVES the branch +
+	 * worktree + stamps an honest screened note on every other exit (F-007). The project root is the
+	 * merge target tree (project.root_path). Best-effort: the helper never throws into the drain; a
+	 * read/dispatch fault here is caught by the caller's `.catch` and logged — committed work always
+	 * stays on its branch (F-014).
+	 */
+	async #mergeBackSession(
+		sessionId: string,
+		projectId: string,
+		exitState: 'done' | 'failed'
+	): Promise<void> {
+		// Read the WI-2 provenance off the just-finished session row (the same read post-task used
+		// for its commit cwd). Honest absent (option<string> NONE on a READ/non-git session) → no
+		// worktree → skip cleanly (nothing to merge or tear down).
+		const wt = await this.#readWorktree(sessionId);
+		if (!wt) return; // not an isolated WRITE session — nothing to do
+		const { path: worktreePath, branch: worktreeBranch } = wt;
+
+		// The merge target tree is the project root. Absent project / root_path → cannot reconcile
+		// (we never fabricate a path, F-008); the helper would have no valid cwd, so skip honestly.
+		const project = await getProject(this.#db, projectId);
+		const projectRoot = project?.root_path;
+		if (!projectRoot) {
+			console.warn(
+				`[orchestrator] merge-back skipped for session ${sessionId}: project ${projectId} has no root_path (branch ${worktreeBranch} preserved)`
+			);
+			return;
+		}
+
+		const outcome = await mergeBackWorktree(
+			this.#db,
+			{ sessionId, projectRoot, worktreePath, worktreeBranch, exitState },
+			{ run: this.#mergeBack?.runner }
+		);
+		// Log the honest outcome (merged / preserved / no-op) — the operator's audit trail. A preserve
+		// is NOT an error here (the work is safe on its branch + the screened note surfaces on MC-4).
+		console.info(`[orchestrator] merge-back for session ${sessionId}: ${outcome.kind} (branch ${outcome.branch})`);
 	}
 }

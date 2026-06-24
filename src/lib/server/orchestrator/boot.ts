@@ -345,7 +345,16 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 			// event, never an auto-enqueued follow_up. (Default in post-task.ts is true — we
 			// explicitly override to false.)
 			followUpOnTestFail: false
-		}
+		},
+		// WI-3 (WORKSPACE-ISOLATION-SPEC) — merge-back + teardown for per-session WRITE worktrees.
+		// A WRITE-class session runs in an isolated per-session worktree (WI-2) and the post-task loop
+		// commits its work on the session branch (HB-1). With this enabled, AFTER that commit the
+		// orchestrator FAST-FORWARD-merges a clean-done session's branch into the project branch + tears
+		// the worktree down (cleanup, F-014); a divergent (non-FF) or failed/cancelled session has its
+		// branch + worktree PRESERVED with an honest screened note (F-007). Default execFile-array git
+		// runner (D-008/F-002 — no shell runner). Best-effort: the orchestrator catches it so a merge-back
+		// fault never crashes the drain (committed work always stays on its branch).
+		mergeBack: { enabled: true }
 	});
 	orchestrator.start();
 

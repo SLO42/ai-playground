@@ -11,10 +11,14 @@ intervalMs: 60000
 # Interactive concurrency caps (orchestrator semaphore).
 concurrency:
   maxAgents: 8        # total simultaneous interactive spawns
-  perProject: 1       # F-046 stopgap: ONE spawn per project until per-session workspace
-                      # isolation lands. Driven sessions share the project's cwd (project
-                      # root_path), so >1 concurrent writer in one repo = file/git stomping.
-                      # Raise once code-write sessions get an isolated git worktree per session.
+  perProject: 3       # Per-session git-worktree isolation (WI-1..WI-3) now makes >1 concurrent
+                      # spawn per project SAFE: each WRITE session runs in its OWN worktree on the
+                      # session branch (no shared-cwd file/git stomping), and merge-back is
+                      # FF-or-preserve (it serializes the integration into the project branch, and
+                      # falls back to preserving the session branch instead of clobbering on a
+                      # non-FF). This supersedes the F-046 perProject=1 stopgap. Kept conservative
+                      # at 3 (< maxAgents=8, below the floor(maxAgents×0.5)=4 resource-profile
+                      # auto-default) so one project still cannot monopolise the interactive pool.
   # D-021 DAILY SPAWN CAP — the hard rolling-24h ceiling on how many background work_items the
   # orchestrator may CLAIM (drain → spawn). This is the safety ceiling that makes 'full
   # unsupervised' drive-to-release safe: once today's claim count hits this, the drain STOPS

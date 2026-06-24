@@ -185,6 +185,17 @@ describe('loadOrchestration — YAML + enum validation', () => {
 			expect(orch.concurrency.dailySpawnCap).toBeGreaterThan(0);
 		});
 
+		// WI-4 regression (F-016 false-premise class): the F-046 perProject=1 stopgap is RETIRED now
+		// that per-session git-worktree isolation (WI-1..WI-3) makes concurrent same-project writes
+		// safe. The shipped config must carry perProject > 1 (currently 3) — if it ever reverts to 1
+		// while the boot/orchestrator comments still claim the stopgap is retired, those comments go
+		// stale and this trips. Kept conservative (< maxAgents) so one project can't monopolise the pool.
+		it('SHIPPED config carries perProject > 1 (F-046 stopgap retired by WI-1..WI-3 worktrees)', () => {
+			const orch = loadOrchestration(join(process.cwd(), 'config', 'orchestration.yaml'));
+			expect(orch.concurrency.perProject).toBeGreaterThan(1);
+			expect(orch.concurrency.perProject).toBeLessThan(orch.concurrency.maxAgents);
+		});
+
 		it('treats an absent cap as undefined (uncapped — opt-in, existing behavior preserved)', () => {
 			const orch = loadOrchestration(join(FIX, 'orchestration.yaml'), {
 				_inject: { concurrency: { maxAgents: 8, perProject: 3 } }

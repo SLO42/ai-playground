@@ -98,10 +98,12 @@ export interface OrchestratorOptions {
 	/**
 	 * Per-project in-flight cap (config/orchestration.yaml concurrency.perProject). The max number
 	 * of sessions for the SAME project that may run concurrently — an ADDITIONAL gate on top of the
-	 * global `maxConcurrent` semaphore. With perProject=1 (the F-046 stopgap) at most one session
-	 * per project runs at a time, so same-repo commits in the shared project.root_path are serialized
-	 * (the F-007/F-046 git index.lock + file-stomp race is closed) WITHOUT needing per-session
-	 * worktrees yet; two DIFFERENT projects still run concurrently up to maxConcurrent. A task whose
+	 * global `maxConcurrent` semaphore. The shipped config carries perProject=3 now that per-session
+	 * git-worktree isolation (WI-1..WI-3) gives each WRITE session its OWN worktree on the session
+	 * branch (with FF-or-preserve merge-back), so concurrent same-repo work no longer races the shared
+	 * project.root_path working tree/index (the F-007/F-046 git index.lock + file-stomp race) — this
+	 * supersedes the F-046 perProject=1 stopgap; two DIFFERENT projects still run concurrently up to
+	 * maxConcurrent. A task whose
 	 * project is at its perProject in-flight count is PARKED (left pending) and re-evaluated when any
 	 * in-flight session completes (event-driven re-drain, NO busy loop). Absent / < 1 ⇒ no per-project
 	 * gate (byte-identical to the pre-gate behavior). The config boundary validates it as a positive

@@ -149,7 +149,9 @@ describe('TASK 8.1 — startOrchestrator boot wire (D-004/§2.11/F-008)', () => 
 	// concurrency.perProject — previously parsed + validated but NEVER wired into the orchestrator
 	// (dead config: the live 19:43 ROUNDS batch ran 6 same-project sessions despite perProject:1).
 	// The boot now threads it from config → orchestrator (reported == enforced); the shipped
-	// config/orchestration.yaml carries perProject: 1 (the F-046 stopgap).
+	// config/orchestration.yaml carries perProject: 3 now that per-session git-worktree
+		// isolation (WI-1..WI-3) makes concurrent same-project writes safe (the F-046 perProject=1
+		// stopgap is retired). The assertions stay value-agnostic (>= 1) so retuning won't break them.
 	it('wires concurrency.perProject from config into the boot result + orchestrator', async () => {
 		getRuntimeMock.mockResolvedValue({ available: true, runtime: idleRuntime });
 		const bus = new EventBus();

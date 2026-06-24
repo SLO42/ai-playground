@@ -89,8 +89,10 @@ function readOrchestrationConfig(): {
 			// The PER-PROJECT in-flight cap (concurrency.perProject) — validated as a positive
 			// integer at the config boundary (loadOrchestration: load.ts), so a loaded config always
 			// carries a value ≥ 1. Threaded into the orchestrator as the ADDITIONAL per-project gate
-			// on top of maxConcurrent (the F-046 stopgap: perProject=1 serializes same-project
-			// sessions so concurrent same-repo commits in the shared project.root_path can't race).
+			// on top of maxConcurrent. Per-session git-worktree isolation (WI-1..WI-3) now makes >1
+			// concurrent spawn per project safe — each WRITE session runs in its OWN worktree on the
+			// session branch with FF-or-preserve merge-back — so the shipped config carries
+			// perProject=3 (the F-046 perProject=1 stopgap is retired).
 			perProject: orch.concurrency.perProject,
 			intervalMs: orch.intervalMs,
 			// D-021 — the rolling-24h background-claim ceiling. Normalize 0/absent → undefined
@@ -304,11 +306,13 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		runtime: avail.runtime,
 		maxConcurrent,
 		// The per-project in-flight cap (concurrency.perProject) — the ADDITIONAL gate the drain
-		// enforces on top of maxConcurrent. With perProject=1 (current config, the F-046 stopgap)
-		// at most one session per project runs at a time, serializing same-repo commits in the
-		// shared project.root_path (the F-007/F-046 git index.lock + file-stomp race) WITHOUT
-		// needing per-session worktrees yet; two DIFFERENT projects still run concurrently up to
-		// maxConcurrent. Previously parsed + validated but NEVER passed here — it was dead config.
+		// enforces on top of maxConcurrent. With the shipped config (perProject=3) up to 3 sessions
+		// per project run concurrently: per-session git-worktree isolation (WI-1..WI-3) gives each
+		// WRITE session its OWN worktree on the session branch, so concurrent same-repo work no
+		// longer stomps the shared project.root_path (the F-007/F-046 git index.lock + file-stomp
+		// race), and merge-back is FF-or-preserve. This supersedes the F-046 perProject=1 stopgap.
+		// Two DIFFERENT projects still run concurrently up to maxConcurrent. Previously parsed +
+		// validated but NEVER passed here — it was dead config.
 		perProject,
 		mode,
 		memory,

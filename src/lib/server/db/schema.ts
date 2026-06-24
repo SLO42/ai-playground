@@ -2153,6 +2153,52 @@ const m0059_session_worktree: Migration = {
 	`
 };
 
+// ── SH-1 (SKILL-HARVEST-SPEC §1) — the skill_proposal store (agents PROPOSE; operator promotes) ──
+//
+// A session that established a reusable procedure may DRAFT a skill_proposal — DATA, never a disk
+// write and never a cc_skill row (G2: agents propose, operator retires; D-010: disk is truth for the
+// catalog; F-045: an un-catalogued id fail-closes at spawn). A proposal is born status='open' and can
+// ONLY reach the live catalog through a recorded operator approval (SH-3 promote) — NO self-approve.
+//
+// Field discipline:
+//   • status carries a concrete non-NONE DEFAULT 'open' + an ASSERT over the ladder (§6.2 — read back
+//     on a RETURN AFTER write); a proposal is NEVER born 'approved'.
+//   • occurrences is INT DEFAULT 1 — proposeSkill BUMPS it on a normalized name+trigger match instead
+//     of inserting a duplicate (SKILL-HARVEST-SPEC §2 RECUR/RANK: count recurrence, do NOT auto-promote).
+//   • evidence is array<string> DEFAULT [] (shape-constrained + D-026-screened at the writer boundary —
+//     proposal.ts, mirroring pm-propose's evidence discipline; the schema only shape-checks the column).
+//   • session/project/approved_by/approved_at are OPTION fields — OMITTED at write when absent
+//     (F-013/§6.1), surfaced as the honest '—', never a raw null.
+//   • norm_key is a computed VALUE field (the normalized name+trigger dedup identity) with a UNIQUE-per-
+//     OPEN index is NOT used — dedup is enforced in proposeSkill (the bump path needs the existing row),
+//     not by a unique constraint (an open + a later closed proposal of the same key must coexist for audit).
+// IDEMPOTENT (D-006/F-015): OVERWRITE only — clean over a fresh DB AND a half-applied state (re-running
+// over a DB where the table/fields already exist is a no-op).
+const m0060_skill_proposal: Migration = {
+	id: '0060_skill_proposal',
+	up: `
+		DEFINE TABLE OVERWRITE skill_proposal SCHEMAFULL;
+		DEFINE FIELD OVERWRITE name            ON skill_proposal TYPE string;
+		DEFINE FIELD OVERWRITE description     ON skill_proposal TYPE string;
+		DEFINE FIELD OVERWRITE body            ON skill_proposal TYPE string;
+		DEFINE FIELD OVERWRITE trigger_context ON skill_proposal TYPE string;
+		DEFINE FIELD OVERWRITE source          ON skill_proposal TYPE string DEFAULT "session-harvest";
+		DEFINE FIELD OVERWRITE session         ON skill_proposal TYPE option<record<session>>;
+		DEFINE FIELD OVERWRITE project         ON skill_proposal TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE evidence        ON skill_proposal TYPE array<string> DEFAULT [];
+		DEFINE FIELD OVERWRITE occurrences     ON skill_proposal TYPE int DEFAULT 1;
+		DEFINE FIELD OVERWRITE status          ON skill_proposal TYPE string DEFAULT "open"
+			ASSERT $value IN ["open","approved","rejected"];
+		DEFINE FIELD OVERWRITE approved_by     ON skill_proposal TYPE option<string>;
+		DEFINE FIELD OVERWRITE approved_at     ON skill_proposal TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE created_at      ON skill_proposal TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE updated_at      ON skill_proposal TYPE datetime DEFAULT time::now();
+
+		DEFINE INDEX OVERWRITE skill_proposal_by_status ON skill_proposal FIELDS status;
+		DEFINE INDEX OVERWRITE skill_proposal_by_name   ON skill_proposal FIELDS name;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2218,5 +2264,6 @@ export const schemaMigrations: Migration[] = [
 	m0056_pm_lifecycle_lock,
 	m0057_pm_autonomous,
 	m0058_pm_auto_publish,
-	m0059_session_worktree
+	m0059_session_worktree,
+	m0060_skill_proposal
 ];

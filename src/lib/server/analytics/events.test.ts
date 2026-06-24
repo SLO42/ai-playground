@@ -129,7 +129,19 @@ describe('writeAgentEvent — the shared lifecycle writer (2.4; DATA-MODEL §4.4
 			budgets: {},
 			toolPolicy: { allow: ['Read'] }
 		};
-		const res = await launchSession({ db, bus: new EventBus(), runtime, input });
+		// WI-2: inject a fake worktree acquirer so this code-write spawn (against a non-git path
+		// fixture) exercises the persist path without git mechanics this analytics test doesn't cover.
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input,
+			acquireWorktree: async (root, sid) => ({
+				cwd: `${root}/.wt/${sid.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+				branch: `atelier/session/${sid.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+				cleanup: async () => {}
+			})
+		});
 		const [evs] = await db.query<[Array<Record<string, unknown>>]>(
 			`SELECT type, detail, at FROM agent_event WHERE session = $sid ORDER BY at ASC;`,
 			{ sid: new StringRecordId(res.sessionId) }

@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { StringRecordId } from 'surrealdb';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
@@ -16,6 +16,11 @@ import {
 	type RuntimeEvent
 } from '../runtime/index';
 import { launchSession, type LaunchInput } from './launch';
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { listFleetAcrossProjects } from '../analytics/fleet';
 
 // TASK 1.6b VERIFY (DATA-MODEL §4.3/§4.4; D-011) — the NON-LIVE half of 1.6.
 //
@@ -118,7 +123,11 @@ function baseInput(over: Partial<LaunchInput> = {}): LaunchInput {
 		taskId,
 		agentId: 'agent_coder_1',
 		model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
-		intent: 'code-write',
+		// WI-2: these plumbing tests are intent-agnostic (persistence/transcript/analytics). They
+		// use a READ class so they keep the shared project root (the project's root_path is a plain
+		// path fixture, not a git repo); the WRITE→worktree wiring is proven in its own describe
+		// block below against a REAL temp git repo. A WRITE intent here would fail closed (non-git).
+		intent: 'code-read',
 		budgets: { thinking: 'high', toolCalls: 20, concurrency: 1 },
 		toolPolicy: { allow: ['Read', 'Edit', 'Bash'] },
 		...over
@@ -145,12 +154,12 @@ function eventStreamRuntime(events: RuntimeEvent[]): AgentRuntime {
 }
 
 describe('launchSession — persistence plumbing (1.6b; D-011)', () => {
-	it('persists a session row, cwd = project root, with the cc_session_id bridge', async () => {
+	it('persists a session row, cwd = project root (READ session), with the cc_session_id bridge', async () => {
 		const backend = scriptedBackend(transcript('cc_sess_AB12'));
 		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: 'F:/code/sess/.harness-cc' });
 		const res = await launchSession({ db, bus: new EventBus(), runtime, input: baseInput() });
 
-		// cwd handed to the runtime is the PROJECT ROOT (D-002 / 1.4a).
+		// A READ-class session keeps the shared PROJECT ROOT (D-002 / 1.4a) — WI-2 only worktrees WRITE classes.
 		expect(backend.plans[0]?.cwd).toBe('F:/code/sess');
 		// 1.4a deny rules are active via the isolated config carried on the plan.
 		expect(backend.plans[0]?.isolated.env.CLAUDE_CONFIG_DIR).toBeTruthy();
@@ -638,4 +647,161 @@ describe('launchSession — editScope wiring (15.1; real throwaway SurrealDB)', 
 			else process.env.CONFIG_DIR = saved;
 		}
 	});
+});
+
+// ── WI-2 (WORKSPACE-ISOLATION-SPEC) — WRITE sessions run in an isolated per-session worktree ──
+//
+// Verified against a REAL temp git repo (init a throwaway repo, NOT a mock) + the real throwaway
+// SurrealDB. Covers: a code-write spawn runs in a worktree cwd (cwd != root_path, worktree exists,
+// session row carries worktree_path/branch); a code-read spawn runs in root_path (unchanged); a
+// WRITE session on a NON-git root FAILS CLOSED (honest terminal note, never silent shared cwd);
+// the fleet normalizer surfaces the worktree provenance honestly.
+describe('launchSession — WI-2 per-session worktree (WRITE classes)', () => {
+	function initRepo(): string {
+		const base = mkdtempSync(join(tmpdir(), 'wi2-launch-'));
+		const repo = join(base, 'proj');
+		execFileSync('git', ['init', '-b', 'main', repo]);
+		execFileSync('git', ['config', 'user.email', 'test@test.local'], { cwd: repo });
+		execFileSync('git', ['config', 'user.name', 'Test'], { cwd: repo });
+		writeFileSync(join(repo, 'README.md'), '# seed\n');
+		execFileSync('git', ['add', '-A'], { cwd: repo });
+		execFileSync('git', ['commit', '-m', 'seed'], { cwd: repo });
+		return repo;
+	}
+
+	const tmpRoots: string[] = [];
+	afterEach(() => {
+		for (const r of tmpRoots.splice(0)) {
+			try {
+				rmSync(join(r, '..'), { recursive: true, force: true });
+			} catch {
+				/* best effort — sibling .atelier-worktrees lives under the same mkdtemp base */
+			}
+		}
+	});
+
+	it('a code-write spawn runs in a worktree cwd (≠ root_path) + persists worktree_path/branch', async () => {
+		const repo = initRepo();
+		tmpRoots.push(repo);
+		const p = await createProject(db, { slug: `wi2w_${Math.random().toString(36).slice(2, 10)}`, name: 'WI2 Write', root_path: repo });
+		const t = await createTask(db, { project: p.id, title: 'Build', description: 'edit + commit' });
+
+		const backend = scriptedBackend(transcript('cc_wi2_write'));
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: join(repo, '.harness-cc') });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput({ projectId: p.id, taskId: t.id, intent: 'code-write' })
+		});
+
+		// The cwd handed to the runtime is the per-session WORKTREE, NOT the shared project root.
+		const cwd = backend.plans[0]?.cwd;
+		expect(cwd).toBeTruthy();
+		expect(cwd).not.toBe(repo);
+		expect(existsSync(cwd!)).toBe(true);
+
+		// The session row carries the worktree provenance (m0059) — real strings, not null/undefined.
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $rid;`, {
+			rid: new StringRecordId(res.sessionId)
+		});
+		const sess = rows[0];
+		expect(sess.worktree_path).toBeTruthy();
+		expect(String(sess.worktree_path)).toBe(cwd);
+		expect(String(sess.worktree_branch)).toBe(`atelier/session/${res.sessionId.replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 64)}`);
+
+		// The fleet normalizer surfaces the provenance honestly (non-null on a worktree session).
+		const fleet = await listFleetAcrossProjects(db, 50);
+		const row = fleet.find((f) => f.id === res.sessionId);
+		expect(row).toBeTruthy();
+		expect(row!.worktreePath).toBe(cwd);
+		expect(row!.worktreeBranch).toBe(String(sess.worktree_branch));
+
+		await deleteProject(db, p.id).catch(() => {});
+	}, 60_000);
+
+	it('a code-read spawn runs in root_path (unchanged) + leaves worktree fields NONE', async () => {
+		const repo = initRepo();
+		tmpRoots.push(repo);
+		const p = await createProject(db, { slug: `wi2r_${Math.random().toString(36).slice(2, 10)}`, name: 'WI2 Read', root_path: repo });
+		const t = await createTask(db, { project: p.id, title: 'Read', description: 'just read' });
+
+		const backend = scriptedBackend(transcript('cc_wi2_read'));
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: join(repo, '.harness-cc') });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput({ projectId: p.id, taskId: t.id, intent: 'code-read' })
+		});
+
+		// READ class is byte-identical to today: cwd = the shared project root.
+		expect(backend.plans[0]?.cwd).toBe(repo);
+
+		// option<string> worktree fields stay NONE (omit-when-absent, F-013) — normalizer → null.
+		const fleet = await listFleetAcrossProjects(db, 50);
+		const row = fleet.find((f) => f.id === res.sessionId);
+		expect(row!.worktreePath).toBeNull();
+		expect(row!.worktreeBranch).toBeNull();
+
+		await deleteProject(db, p.id).catch(() => {});
+	}, 60_000);
+
+	it('a WRITE session on a NON-git root FAILS CLOSED (honest note, never silent shared cwd)', async () => {
+		// A real dir that is NOT a git repo.
+		const base = mkdtempSync(join(tmpdir(), 'wi2-nongit-'));
+		tmpRoots.push(join(base, 'x')); // cleanup removes the mkdtemp base via `..`
+		const p = await createProject(db, { slug: `wi2n_${Math.random().toString(36).slice(2, 10)}`, name: 'WI2 NonGit', root_path: base });
+		const t = await createTask(db, { project: p.id, title: 'Build', description: 'edit' });
+
+		const backend = scriptedBackend(transcript('cc_wi2_nongit'));
+		const runtime = new ClaudeCodeRuntime({ backend });
+		await expect(
+			launchSession({
+				db,
+				bus: new EventBus(),
+				runtime,
+				input: baseInput({ projectId: p.id, taskId: t.id, intent: 'code-write' })
+			})
+		).rejects.toThrow(/not a git repository/i);
+
+		// NEVER spawned into the shared root (fail closed — no plan recorded).
+		expect(backend.plans).toHaveLength(0);
+
+		// The session row was flipped to a terminal failed status with an honest note (not phantom-running).
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+			`SELECT status, note, worktree_path FROM session WHERE project = $pid;`,
+			{ pid: new StringRecordId(p.id) }
+		);
+		const sess = rows.find((r) => r.status === 'failed');
+		expect(sess).toBeTruthy();
+		expect(String(sess!.note)).toMatch(/worktree acquisition failed/i);
+		expect(sess!.worktree_path == null).toBe(true); // never recorded a worktree it couldn't make
+
+		await deleteProject(db, p.id).catch(() => {});
+	}, 60_000);
+
+	it('the worktree is acquired with the SAME sessionId so resume re-acquires it (idempotent)', async () => {
+		const repo = initRepo();
+		tmpRoots.push(repo);
+		const p = await createProject(db, { slug: `wi2i_${Math.random().toString(36).slice(2, 10)}`, name: 'WI2 Idem', root_path: repo });
+		const t = await createTask(db, { project: p.id, title: 'Build', description: 'edit' });
+
+		const backend = scriptedBackend(transcript('cc_wi2_idem'));
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: join(repo, '.harness-cc') });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput({ projectId: p.id, taskId: t.id, intent: 'code-write' })
+		});
+
+		// Re-acquiring with the persisted sessionId returns the SAME tree (no second worktree) —
+		// the resume idempotency contract, proven against the real WI-1 helper.
+		const { acquireSessionWorktree } = await import('./worktree');
+		const again = await acquireSessionWorktree(repo, res.sessionId);
+		expect(again.cwd).toBe(backend.plans[0]?.cwd);
+
+		await deleteProject(db, p.id).catch(() => {});
+	}, 60_000);
 });

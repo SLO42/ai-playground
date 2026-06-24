@@ -34,7 +34,8 @@ import { assertRecordId } from '../db/validate';
 import type { EventBus } from '../events/bus';
 import { writeAgentEvent } from '../analytics/events';
 import { fence } from '../memory/fence';
-import { eventToMessage } from '../sessions/launch';
+import { eventToMessage, isWriteIntent } from '../sessions/launch';
+import { acquireSessionWorktree, type SessionWorktree } from '../sessions/worktree';
 import type {
 	ClaudeCodeRuntime,
 	Intent,
@@ -146,6 +147,13 @@ export interface ChannelDeps {
 	/** The D-025 per-boot token (operator steering capability). NEVER persisted; NEVER
 	 *  handed to the runtime — only compared inside this seam. */
 	bootToken: string;
+	/**
+	 * WI-2 (WORKSPACE-ISOLATION-SPEC) — the per-session worktree acquirer seam (tests inject a
+	 * fake / a real temp-repo acquire). Defaults to {@link acquireSessionWorktree}. The resume path
+	 * RE-acquires a WRITE session's worktree (idempotent — WI-1 reuses the existing tree, never a
+	 * second one) so a resumed write session continues in its ORIGINAL tree, never a fresh root.
+	 */
+	acquireWorktree?: (projectRoot: string, sessionId: string) => Promise<SessionWorktree>;
 }
 
 export interface Channel {
@@ -267,6 +275,7 @@ async function readProjectRoot(db: Db, projectId: string): Promise<string | unde
  */
 export function createChannel(deps: ChannelDeps): Channel {
 	const { db, bus, runtime, bootToken } = deps;
+	const acquireWorktree = deps.acquireWorktree ?? acquireSessionWorktree;
 
 	return {
 		async interject(req: InterjectRequest): Promise<InterjectResult> {
@@ -441,6 +450,20 @@ export function createChannel(deps: ChannelDeps): Channel {
 				throw new Error(`project root '${root}' no longer exists — cannot resume there`);
 			}
 
+			// WI-2 (WORKSPACE-ISOLATION-SPEC) — a resumed WRITE session must continue in its
+			// ORIGINAL per-session worktree, never a fresh project root (its committed work lives
+			// on the per-session branch in that tree — F-007). RE-acquire it here: WI-1 is
+			// IDEMPOTENT and keyed by the sessionId, so it REUSES the existing tree (never a second
+			// one). A READ-class resume keeps the shared project root (unchanged). FAIL CLOSED
+			// before any state flip — a non-git root throws here (never a doomed spawn into the
+			// wrong cwd); the throw maps to a failed resume and no phantom 'running' row is stranded
+			// (the flip below has not happened yet).
+			let resumeCwd = root;
+			if (isWriteIntent(req.intent)) {
+				const wt = await acquireWorktree(root, req.sessionId);
+				resumeCwd = wt.cwd;
+			}
+
 			// Flip the record back to running so the fleet view shows it immediately. The
 			// terminal status is reconciled on EVERY exit path below (incl. throws — 14.6).
 			await db.query(`UPDATE $sid MERGE $c;`, {
@@ -485,7 +508,7 @@ export function createChannel(deps: ChannelDeps): Channel {
 					projectId: session.project,
 					// G-B (D-035a): a resumed session can also peer-send — pin its id into the spawn env.
 					sessionId: req.sessionId,
-					cwd: root,
+					cwd: resumeCwd,
 					model: req.model,
 					intent: req.intent,
 					task: {

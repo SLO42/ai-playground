@@ -101,6 +101,16 @@ async function runSessionTranscript(): Promise<SessionTranscript> {
 		db,
 		bus,
 		runtime,
+		// WI-2: this read-back proof hinges on the session running in workDir where the project
+		// `.claude/settings.json` under test lives. Inject an acquirer that pins the cwd to workDir
+		// (the per-session worktree mechanics are proven separately in launch.test.ts) so the real
+		// session still reads the config-managed deny rule. Without this, a code-write spawn would
+		// run in a fresh worktree that has no .claude config — defeating the read-back's premise.
+		acquireWorktree: async () => ({
+			cwd: workDir.replace(/\\/g, '/'),
+			branch: 'atelier/session/readback-live',
+			cleanup: async () => {}
+		}),
 		input: {
 			projectId,
 			taskId,

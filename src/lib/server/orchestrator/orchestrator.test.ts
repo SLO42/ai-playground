@@ -97,6 +97,16 @@ function gatedBackend(): CcBackend & {
 	};
 }
 
+// WI-2: the orchestrator drains code-write tasks through launchSession; against a non-git path
+// fixture the real acquirer would fail closed. This fake returns a deterministic per-session
+// worktree cwd+branch so these queue/cap/concurrency tests exercise the WI-2 wiring (cwd is the
+// worktree, persistence happens) without a real repo. Real worktree mechanics: launch.test.ts.
+const fakeWt = async (root: string, sid: string) => ({
+	cwd: `${root}/.wt/${sid.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+	branch: `atelier/session/${sid.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+	cleanup: async () => {}
+});
+
 function stubRoute(agentId = 'agent_coder_1'): (t: string, p: string) => StubRoute {
 	return () => ({
 		agentId,
@@ -155,7 +165,8 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 			runtime,
 			maxConcurrent: 4,
 			mode: 'event',
-			route: stubRoute()
+			route: stubRoute(),
+			acquireWorktree: fakeWt,
 		});
 		orch.start();
 		// The ONLY live query is events/watchTable — the orchestrator never opens its own.
@@ -176,8 +187,9 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 			await backend.gates[0].started;
 			expect(backend.plans).toHaveLength(1);
 
-			// The spawn ran for OUR task, at the project root, with the 1.4a isolated config.
-			expect(backend.plans[0].cwd).toBe('F:/code/orch');
+			// WI-2: a code-write spawn runs in the per-session WORKTREE (off the project root via the
+			// injected fake acquirer), NOT the shared project root — with the 1.4a isolated config.
+			expect(backend.plans[0].cwd).toContain('F:/code/orch/.wt/');
 			expect(backend.plans[0].isolated.env.CLAUDE_CONFIG_DIR).toBeTruthy();
 
 			// Exactly one work_item was claimed (now processing), then completes.
@@ -204,7 +216,7 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 		const bus = new EventBus();
 		const backend = gatedBackend();
 		const runtime = new ClaudeCodeRuntime({ backend });
-		const orch = new Orchestrator({ db, bus, runtime, maxConcurrent: 4, route: stubRoute() });
+		const orch = new Orchestrator({ db, bus, runtime, maxConcurrent: 4, route: stubRoute(), acquireWorktree: fakeWt });
 		orch.start();
 		const watch = await watchTable(db, bus, 'task');
 		try {
@@ -231,7 +243,7 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 		const bus = new EventBus();
 		const backend = gatedBackend();
 		const runtime = new ClaudeCodeRuntime({ backend });
-		const orch = new Orchestrator({ db, bus, runtime, maxConcurrent: 2, route: stubRoute() });
+		const orch = new Orchestrator({ db, bus, runtime, maxConcurrent: 2, route: stubRoute(), acquireWorktree: fakeWt });
 		orch.start();
 		const watch = await watchTable(db, bus, 'task');
 		try {
@@ -284,7 +296,7 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 		const bus = new EventBus();
 		const runtime = new ClaudeCodeRuntime({ backend: gatedBackend() });
 		// event mode: no timer armed.
-		const ev = new Orchestrator({ db, bus, runtime, maxConcurrent: 1, route: stubRoute() });
+		const ev = new Orchestrator({ db, bus, runtime, maxConcurrent: 1, route: stubRoute(), acquireWorktree: fakeWt });
 		ev.start();
 		expect(ev.mode).toBe('event');
 		expect(ev.periodicArmed).toBe(false);
@@ -297,7 +309,8 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 			runtime,
 			maxConcurrent: 1,
 			mode: 'periodic',
-			route: stubRoute()
+			route: stubRoute(),
+			acquireWorktree: fakeWt,
 		});
 		perNoInterval.start();
 		expect(perNoInterval.periodicArmed).toBe(false);
@@ -311,7 +324,8 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 			maxConcurrent: 1,
 			mode: 'periodic',
 			intervalMs: 60_000,
-			route: stubRoute()
+			route: stubRoute(),
+			acquireWorktree: fakeWt,
 		});
 		perOn.start();
 		expect(perOn.periodicArmed).toBe(true);
@@ -332,6 +346,7 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 			maxConcurrent: 8, // interactive cap is NOT the limiter here — the daily cap is
 			mode: 'manual',
 			route: stubRoute(),
+			acquireWorktree: fakeWt,
 			dailySpawnCap: 2
 		});
 		orch.start();
@@ -372,7 +387,7 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 		await clearQueue();
 		const bus = new EventBus();
 		const runtime = new ClaudeCodeRuntime({ backend: gatedBackend() });
-		const orch = new Orchestrator({ db, bus, runtime, maxConcurrent: 1, mode: 'manual', route: stubRoute() });
+		const orch = new Orchestrator({ db, bus, runtime, maxConcurrent: 1, mode: 'manual', route: stubRoute(), acquireWorktree: fakeWt });
 		try {
 			// One terminal row aged past the window.
 			const gt = await createTask(db, { project: projectId, title: 'gc', description: 'gc me' });
@@ -408,7 +423,8 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 			maxConcurrent: 8, // global cap is NOT the limiter — the per-project cap (1) is
 			perProject: 1,
 			mode: 'manual',
-			route: stubRoute()
+			route: stubRoute(),
+			acquireWorktree: fakeWt,
 		});
 		orch.start();
 		try {
@@ -462,7 +478,8 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 			maxConcurrent: 8,
 			perProject: 1,
 			mode: 'manual',
-			route: stubRoute()
+			route: stubRoute(),
+			acquireWorktree: fakeWt,
 		});
 		orch.start();
 		try {
@@ -511,7 +528,8 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 			maxConcurrent: 8,
 			perProject: 1,
 			mode: 'manual',
-			route: flakyRoute
+			route: flakyRoute,
+			acquireWorktree: fakeWt,
 		});
 		orch.start();
 		try {
@@ -561,7 +579,8 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 			maxConcurrent: 8, // global cap is NOT the limiter — the per-project cap (1) is
 			perProject: 1,
 			mode: 'manual',
-			route: stubRoute()
+			route: stubRoute(),
+			acquireWorktree: fakeWt,
 		});
 		orch.start();
 		try {
@@ -633,6 +652,7 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 			perProject: 1,
 			mode: 'manual',
 			route: stubRoute(),
+			acquireWorktree: fakeWt,
 			memory
 		});
 		orch.start();
@@ -688,7 +708,8 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 			maxConcurrent: 8,
 			perProject: 1,
 			mode: 'manual',
-			route: stubRoute()
+			route: stubRoute(),
+			acquireWorktree: fakeWt,
 		});
 		orch.start();
 		try {
@@ -726,7 +747,7 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 		const bus = new EventBus();
 		const backend = gatedBackend();
 		const runtime = new ClaudeCodeRuntime({ backend });
-		const orch = new Orchestrator({ db, bus, runtime, maxConcurrent: 2, mode: 'manual', route: stubRoute() });
+		const orch = new Orchestrator({ db, bus, runtime, maxConcurrent: 2, mode: 'manual', route: stubRoute(), acquireWorktree: fakeWt });
 		orch.start();
 		const watch = await watchTable(db, bus, 'task');
 		try {
@@ -872,6 +893,7 @@ describe('THE HEARTBEAT — post-task wiring advances the TASK to terminal (read
 			maxConcurrent: 2,
 			mode: 'event',
 			route: stubRoute(),
+			acquireWorktree: fakeWt,
 			// The wiring under test: post-task enabled with the injected runner (NO live git).
 			postTask: { enabled: true, runner, followUpOnTestFail: false }
 		});
@@ -921,6 +943,7 @@ describe('THE HEARTBEAT — post-task wiring advances the TASK to terminal (read
 			maxConcurrent: 2,
 			mode: 'event',
 			route: stubRoute(),
+			acquireWorktree: fakeWt,
 			postTask: { enabled: true, runner, followUpOnTestFail: false }
 		});
 		orch.start();
@@ -963,7 +986,8 @@ describe('THE HEARTBEAT — post-task wiring advances the TASK to terminal (read
 			runtime,
 			maxConcurrent: 2,
 			mode: 'event',
-			route: stubRoute()
+			route: stubRoute(),
+			acquireWorktree: fakeWt,
 			// postTask intentionally omitted (the pre-fix boot state).
 		});
 		orch.start();
@@ -1006,6 +1030,7 @@ describe('THE HEARTBEAT — post-task wiring advances the TASK to terminal (read
 			maxConcurrent: 2,
 			mode: 'manual', // drive the drain explicitly — no bus trigger needed for a hand-enqueued item
 			route: stubRoute(),
+			acquireWorktree: fakeWt,
 			postTask: { enabled: true, runner, followUpOnTestFail: false }
 		});
 		try {
@@ -1097,6 +1122,7 @@ describe('THE HEARTBEAT — post-task wiring advances the TASK to terminal (read
 			maxConcurrent: 2,
 			mode: 'manual',
 			route: stubRoute(),
+			acquireWorktree: fakeWt,
 			postTask: { enabled: true, runner, followUpOnTestFail: false }
 		});
 		try {

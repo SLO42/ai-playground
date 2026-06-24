@@ -2133,6 +2133,26 @@ const m0058_pm_auto_publish: Migration = {
 	`
 };
 
+// ── WI-2 (WORKSPACE-ISOLATION-SPEC) — per-session worktree provenance on `session` ──
+//
+// A WRITE-class session (code-write / code-debug) on a git project root now runs in a
+// DEDICATED git worktree (WI-1 acquireSessionWorktree) on a per-session branch, instead of
+// the shared project root. These two OPTION fields record WHERE that worktree lives so:
+//   • resume (channel.ts) re-anchors the resumed turn in the SAME tree (idempotent re-acquire);
+//   • WI-3 merge-back finds the branch to fast-forward into the project branch;
+//   • the fleet UI shows the per-session branch/tree honestly.
+// READ-class sessions (code-read / deep-explore / simple-question) keep the shared project
+// root and leave BOTH fields NONE — option<string>, OMITTED at write (F-013 / §6.1), never a
+// raw null. IDEMPOTENT (D-006/F-015): OVERWRITE only — clean over a fresh DB AND a half-applied
+// state (re-running this migration over a DB where the fields already exist is a no-op).
+const m0059_session_worktree: Migration = {
+	id: '0059_session_worktree',
+	up: `
+		DEFINE FIELD OVERWRITE worktree_path   ON session TYPE option<string>;
+		DEFINE FIELD OVERWRITE worktree_branch ON session TYPE option<string>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2197,5 +2217,6 @@ export const schemaMigrations: Migration[] = [
 	m0055_scene_event,
 	m0056_pm_lifecycle_lock,
 	m0057_pm_autonomous,
-	m0058_pm_auto_publish
+	m0058_pm_auto_publish,
+	m0059_session_worktree
 ];

@@ -120,6 +120,13 @@ describe('LIVE PROOF 8.3 — memory loop over real qwen3 embeddings', () => {
 			bus: new EventBus(),
 			runtime: rt,
 			memory: { service: mem, extract },
+			// WI-2: this live proof targets memory recall/extract with a scripted backend (no real
+			// cwd); a fake worktree acquirer keeps the code-write spawn off the git fail-closed path.
+			acquireWorktree: async (root, sid) => ({
+				cwd: `${root}/.wt/${sid.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+				branch: `atelier/session/${sid.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+				cleanup: async () => {}
+			}),
 			input: {
 				projectId,
 				taskId: t.id,

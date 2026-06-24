@@ -43,6 +43,7 @@ import {
 } from '../memory/index';
 import { screen } from '../memory/screen';
 import { captureFileTurnSnapshot } from '../memory/file-snapshot-capture';
+import { acquireSessionWorktree, type SessionWorktree } from './worktree';
 import { drainInbox } from '../peer/drain';
 import { loadGatesConfig } from '../config/index';
 import type {
@@ -175,6 +176,16 @@ export interface LaunchDeps {
 	 * is observability). Omitted by every existing caller ⇒ no behavioural change.
 	 */
 	onSessionCreated?: (sessionId: string) => void;
+	/**
+	 * WI-2 (WORKSPACE-ISOLATION-SPEC) — the per-session worktree acquirer seam. Injected so the
+	 * integration test can point it at a real temp git repo (and a unit test at a fake). Defaults
+	 * to {@link acquireSessionWorktree}. Called for a WRITE-class session (isWriteIntent) AFTER the
+	 * `session` row exists (the sessionId keys the worktree, so resume re-acquires the SAME one) and
+	 * BEFORE the runtime spawns into it. A non-git project root throws NotAGitRepoError here — the
+	 * write session FAILS CLOSED (surfaced as the session's honest terminal note), NEVER silently
+	 * sharing the project root (that re-opens the F-046 race). READ classes never call it.
+	 */
+	acquireWorktree?: (projectRoot: string, sessionId: string) => Promise<SessionWorktree>;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -182,6 +193,20 @@ export interface LaunchDeps {
 /** Validate a `table:id` link at the D-016 chokepoint, then wrap as a record link. */
 function link(id: string): StringRecordId {
 	return new StringRecordId(assertRecordId(id));
+}
+
+/**
+ * WI-2 (WORKSPACE-ISOLATION-SPEC §"Design — phase-gated isolation") — the WRITE session
+ * classes. A WRITE-class session edits + commits source, so it runs in a DEDICATED per-session
+ * git worktree (no shared-cwd race, F-046/F-007). READ classes (`code-read` / `deep-explore` /
+ * `simple-question`) do not write source and stay in the shared project root, parallel-safe via
+ * editScope/D-018. The set is the SINGLE source of truth for the launch + resume decision.
+ */
+export const WRITE_INTENTS: readonly Intent[] = ['code-write', 'code-debug'];
+
+/** True iff this intent is a WRITE class → gets an isolated worktree on a git root (WI-2). */
+export function isWriteIntent(intent: Intent): boolean {
+	return WRITE_INTENTS.includes(intent);
 }
 
 /** Drop keys whose value is `undefined` so option<T> fields stay NONE (§6.1). */
@@ -290,7 +315,12 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	// a workflow step supplies an explicit cwd override (D-013).
 	const project = await getProject(db, input.projectId);
 	if (!project) throw new Error(`project not found: ${input.projectId}`);
-	const cwd = input.cwd ?? project.root_path;
+	// WI-2: the BASE cwd is the project root (D-002 / 1.4a) unless a workflow step supplies an
+	// explicit override (D-013). For a WRITE-class session on a git root with NO explicit override
+	// this is REPLACED below — after the session row exists — by a dedicated per-session worktree
+	// (the sessionId keys it, so resume re-acquires the same one). An explicit `input.cwd` override
+	// is honored verbatim (a workflow step already picked its cwd) and never worktree-substituted.
+	let cwd = input.cwd ?? project.root_path;
 
 	// Resolve the prompt source. Exactly one of taskId / promptTask drives the prompt:
 	//   • taskId    — read the real task; its title/description seed the prompt (D-008).
@@ -341,6 +371,67 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	);
 	const sessionId = String(created[0].id);
 	const sid = link(sessionId);
+
+	// WI-2 (WORKSPACE-ISOLATION-SPEC) — a WRITE-class session on a git project root runs in a
+	// DEDICATED per-session worktree, not the shared project root (F-046 concurrent-cwd race / F-007
+	// shared-index stomping). Acquired HERE — AFTER the session row exists (the sessionId keys the
+	// worktree + branch, so resume re-acquires the SAME tree, idempotent) and BEFORE the runtime
+	// spawns into it (the tree must be ready first). The acquired cwd REPLACES the shared root for
+	// the spawn; the worktree path+branch are PERSISTED on the session row (option fields, OMITTED
+	// when absent — F-013/§6.1) so resume + WI-3 merge-back + the fleet UI find the provenance.
+	//
+	// SKIPPED for: READ classes (unchanged — shared root, parallel-safe via editScope/D-018) AND a
+	// session with an explicit `input.cwd` override (a workflow step already chose its cwd, D-013).
+	// FAIL CLOSED (WI-1): a WRITE session whose project root is NOT a git repo throws here
+	// (NotAGitRepoError) — it is NEVER silently downgraded to the shared root. The terminal-status
+	// guard below has not yet been entered, so we stamp the honest, screened failure note on the
+	// already-created row and rethrow (callers treat a throw as a failed spawn — same as 13.2).
+	const acquireWorktree = deps.acquireWorktree ?? acquireSessionWorktree;
+	if (isWriteIntent(input.intent) && input.cwd === undefined) {
+		try {
+			const wt = await acquireWorktree(project.root_path, sessionId);
+			cwd = wt.cwd;
+			// Persist the worktree provenance (additive m0059 option fields). Coerced to plain
+			// strings (never raw SDK values — F-013 class); both are real strings from WI-1, so the
+			// MERGE always sets them on a worktree session and leaves them NONE on a READ session.
+			await db.query(`UPDATE $sid MERGE $content;`, {
+				sid,
+				content: omitUndefined({
+					worktree_path: String(wt.cwd),
+					worktree_branch: String(wt.branch)
+				})
+			});
+		} catch (wtErr) {
+			// Fail closed: stamp the honest, D-026-screened reason on the row + flip it terminal, then
+			// rethrow. The session row already exists 'running'; without this it would strand a phantom
+			// running session (the 13.2 guard is entered only after the spawn loop starts, below).
+			const reason = screenText(
+				`worktree acquisition failed (write session not isolated, fail closed): ${(wtErr as Error).message}`
+			).trim();
+			await db
+				.query(`UPDATE $sid MERGE $content;`, {
+					sid,
+					content: omitUndefined({
+						status: 'failed' as SessionStatus,
+						ended_at: new Date(),
+						note: reason || 'worktree acquisition failed (reason unavailable after secret screening)'
+					})
+				})
+				.catch((markErr) =>
+					console.warn(
+						`[launch] could not stamp worktree-fail terminal status for ${sessionId} (boot reaper will recover): ${(markErr as Error).message}`
+					)
+				);
+			await writeAgentEvent(db, {
+				session: sessionId,
+				project: input.projectId,
+				type: 'error',
+				model: input.model,
+				detail: { error: (wtErr as Error).message, reason: 'WI-2 worktree acquisition failed (fail closed)' }
+			}).catch(() => undefined);
+			throw wtErr;
+		}
+	}
 
 	// Surface the session id the instant the row exists (Create-with-AI ASYNC propose) — BEFORE
 	// the stream is consumed, so a caller can land it on a tracking row + return to the client
@@ -519,7 +610,7 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		// G-B (D-035a): pin this session's record id into the isolated spawn env (ATELIER_SESSION_ID)
 		// so a granted peer-send tool can stamp the SENDER server-side — never from the agent body.
 		sessionId,
-		cwd, // EXPLICIT project root (D-002 / 1.4a)
+		cwd, // EXPLICIT cwd (D-002 / 1.4a): project root for a READ session; the per-session worktree for a WRITE session (WI-2)
 		model: input.model,
 		intent: input.intent,
 		task: { id: String(task.id), title: task.title, description: task.description },

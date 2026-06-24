@@ -26,6 +26,17 @@ import {
 // TASK 2.4 VERIFY (part 4) — the /agents read models from REAL rows (F-008). Liveness
 // comes from session.status, NEVER agent_slot.busy (UI-SPEC §199).
 
+// WI-2: these fleet read-model tests launch code-write sessions only incidentally (their subject
+// is the fleet projection, not git mechanics). The project roots are plain path fixtures, not git
+// repos, so we inject a FAKE worktree acquirer that returns a deterministic per-session worktree
+// path+branch — exercising the WI-2 persist path without a real repo. The real worktree mechanics
+// are proven against a temp git repo in launch.test.ts + worktree.test.ts.
+const fakeAcquireWorktree = async (projectRoot: string, sessionId: string) => ({
+	cwd: `${projectRoot}/.wt/${sessionId.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+	branch: `atelier/session/${sessionId.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+	cleanup: async () => {}
+});
+
 function scriptedBackend(events: RuntimeEvent[], cc: string): CcBackend {
 	return {
 		kind: 'mock',
@@ -99,7 +110,13 @@ describe('fleet read models (2.4; UI-SPEC §198–200)', () => {
 			budgets: {},
 			toolPolicy: { allow: ['Read'] }
 		};
-		const res = await launchSession({ db, bus: new EventBus(), runtime, input });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input,
+			acquireWorktree: fakeAcquireWorktree
+		});
 
 		const fleet = await listFleet(db);
 		const mine = fleet.find((f) => f.id === res.sessionId);
@@ -127,6 +144,7 @@ describe('fleet read models (2.4; UI-SPEC §198–200)', () => {
 			db,
 			bus: new EventBus(),
 			runtime: failRuntime,
+			acquireWorktree: fakeAcquireWorktree,
 			input: {
 				projectId,
 				taskId,
@@ -167,6 +185,7 @@ describe('fleet read models (2.4; UI-SPEC §198–200)', () => {
 			db,
 			bus: new EventBus(),
 			runtime: cleanRuntime,
+			acquireWorktree: fakeAcquireWorktree,
 			input: {
 				projectId,
 				taskId,
@@ -201,6 +220,7 @@ describe('fleet read models (2.4; UI-SPEC §198–200)', () => {
 			db,
 			bus: new EventBus(),
 			runtime,
+			acquireWorktree: fakeAcquireWorktree,
 			input: {
 				projectId: p2.id,
 				taskId: t2.id,
@@ -300,6 +320,7 @@ describe('getFleetSession — single-session header metadata (transcript-panel)'
 			db,
 			bus: new EventBus(),
 			runtime,
+			acquireWorktree: fakeAcquireWorktree,
 			input: {
 				projectId,
 				taskId,
@@ -321,6 +342,10 @@ describe('getFleetSession — single-session header metadata (transcript-panel)'
 		expect(meta!.projectName).toBe('Fleet Host');
 		expect(meta!.projectSlug).toBe('fleet');
 		expect(meta!.ccSessionId).toBe('cc_one_1');
+		// WI-2: the worktree provenance is surfaced honestly (this was a WRITE session via the fake
+		// acquirer) — a real per-session branch, never null on a worktree session.
+		expect(meta!.worktreePath).toBeTruthy();
+		expect(meta!.worktreeBranch).toContain('atelier/session/');
 	});
 
 	it('returns null for an unknown (never-launched) session id — honest, never fabricated', async () => {

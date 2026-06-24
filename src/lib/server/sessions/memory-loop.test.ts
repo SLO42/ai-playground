@@ -19,6 +19,15 @@ import { assertRecordId } from '../db/validate';
 import { sendPeerMessage, getPeerMessage } from '../peer/repo';
 import { launchSession } from './launch';
 
+// WI-2: these memory-loop tests launch code-write sessions against a non-git path fixture (their
+// subject is recall/extract, not git mechanics). A fake worktree acquirer exercises the persist
+// path without a real repo; the worktree mechanics are proven in launch.test.ts.
+const fakeWt = async (root: string, sid: string) => ({
+	cwd: `${root}/.wt/${sid.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+	branch: `atelier/session/${sid.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+	cleanup: async () => {}
+});
+
 // TASK 8.3 VERIFY — WIRE THE MEMORY LOOP into the live session path (D-026/D-028/D-029; D-019).
 //
 // MemoryService (recall/extractAndStore/buildBriefing) was built + unit-tested but had ZERO
@@ -126,6 +135,7 @@ describe('TASK 8.3 — memory loop wired into the live session path', () => {
 			bus,
 			runtime: rt,
 			memory: { service: mem, extract },
+			acquireWorktree: fakeWt,
 			input: {
 				projectId,
 				taskId,
@@ -188,6 +198,7 @@ describe('TASK 8.3 — memory loop wired into the live session path', () => {
 			bus,
 			runtime: rt,
 			memory: { service: mem, extract },
+			acquireWorktree: fakeWt,
 			input: {
 				projectId,
 				taskId,
@@ -251,6 +262,7 @@ describe('TASK 8.3 — memory loop wired into the live session path', () => {
 			bus: new EventBus(),
 			runtime: rt,
 			memory: { service: mem, extract: async () => [] },
+			acquireWorktree: fakeWt,
 			input: {
 				projectId,
 				taskId,
@@ -288,6 +300,7 @@ describe('TASK 8.3 — memory loop wired into the live session path', () => {
 			bus,
 			runtime: rt,
 			memory: { service: boom, extract },
+			acquireWorktree: fakeWt,
 			input: {
 				projectId,
 				taskId,

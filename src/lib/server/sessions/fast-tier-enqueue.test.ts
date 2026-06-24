@@ -24,6 +24,15 @@ import {
 import { assertRecordId } from '../db/validate';
 import { launchSession } from './launch';
 
+// WI-2: these fast-tier tests launch code-write sessions against a non-git path fixture (their
+// subject is the per-turn enqueue cadence, not git mechanics). A fake worktree acquirer exercises
+// the persist path without a real repo; the worktree mechanics are proven in launch.test.ts.
+const fakeWt = async (root: string, sid: string) => ({
+	cwd: `${root}/.wt/${sid.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+	branch: `atelier/session/${sid.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+	cleanup: async () => {}
+});
+
 // BL-7 Part B (D-027 FAST tier ENQUEUE leg) — VERIFY the per-turn in-use writer fork is wired into
 // the live session path (MEMORY-UTILIZATION-SPEC §5.2/§5.2a). The dead enqueue side (bumpCounters →
 // dueReview → enqueueReview, loop.ts) had ZERO non-test callers; this proves launchSession now drives
@@ -147,6 +156,7 @@ describe('BL-7 Part B — fast-tier enqueue wired into the live session path', (
 			bus: new EventBus(),
 			runtime: runtimeFor(nTextTurns(3, 'cc_cad_1'), 'cc_cad_1'),
 			memory: { service: mem, extract: noExtract, cadence: CADENCE_2 },
+			acquireWorktree: fakeWt,
 			input: {
 				projectId,
 				taskId,
@@ -181,6 +191,7 @@ describe('BL-7 Part B — fast-tier enqueue wired into the live session path', (
 			bus: new EventBus(),
 			runtime: runtimeFor(nTextTurns(1, 'cc_sub_1'), 'cc_sub_1'),
 			memory: { service: mem, extract: noExtract, cadence: CADENCE_2 },
+			acquireWorktree: fakeWt,
 			input: {
 				projectId,
 				taskId,
@@ -204,6 +215,7 @@ describe('BL-7 Part B — fast-tier enqueue wired into the live session path', (
 			bus: new EventBus(),
 			runtime: runtimeFor(nTextTurns(9, 'cc_storm_1'), 'cc_storm_1'),
 			memory: { service: mem, extract: noExtract, cadence: CADENCE_2 },
+			acquireWorktree: fakeWt,
 			input: {
 				projectId,
 				taskId,
@@ -228,6 +240,7 @@ describe('BL-7 Part B — fast-tier enqueue wired into the live session path', (
 			bus: new EventBus(),
 			runtime: runtimeFor(nTextTurns(2, 'cc_leak_1', `use the key ${SECRET} now`), 'cc_leak_1'),
 			memory: { service: mem, extract: noExtract, cadence: CADENCE_2 },
+			acquireWorktree: fakeWt,
 			input: {
 				projectId,
 				taskId,
@@ -254,6 +267,7 @@ describe('BL-7 Part B — fast-tier enqueue wired into the live session path', (
 			bus: new EventBus(),
 			runtime: runtimeFor(nTextTurns(4, 'cc_off_1'), 'cc_off_1'),
 			memory: { service: mem, extract: noExtract, cadence: CADENCE_2, fastTier: false },
+			acquireWorktree: fakeWt,
 			input: {
 				projectId,
 				taskId,
@@ -283,6 +297,7 @@ describe('BL-7 Part B — fast-tier enqueue wired into the live session path', (
 			bus: new EventBus(),
 			runtime: runtimeFor(evs, 'cc_pem_1'),
 			memory: { service: mem, extract: noExtract, cadence: CADENCE_2 },
+			acquireWorktree: fakeWt,
 			input: {
 				projectId,
 				taskId,
@@ -310,6 +325,7 @@ describe('BL-7 Part B — fast-tier enqueue wired into the live session path', (
 			bus: new EventBus(),
 			runtime: runtimeFor(nTextTurns(2, 'cc_res_1'), 'cc_res_1'),
 			memory: { service: mem, extract: noExtract, cadence: CADENCE_2 },
+			acquireWorktree: fakeWt,
 			input: {
 				projectId,
 				taskId,

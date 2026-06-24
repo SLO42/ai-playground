@@ -53,14 +53,17 @@ function scriptedBackend(opts?: {
 	interjects: RecordedInterject[];
 	cancelled: string[];
 	resumed: string[];
+	resumedCwds: string[];
 } {
 	const interjects: RecordedInterject[] = [];
 	const cancelled: string[] = [];
 	const resumed: string[] = [];
+	const resumedCwds: string[] = [];
 	return {
 		interjects,
 		cancelled,
 		resumed,
+		resumedCwds,
 		kind: 'mock',
 		// HONEST capability matrix (14.6): the channel refuses up front when undeclared.
 		supportsInterject: opts?.supportsInterject ?? true,
@@ -78,6 +81,7 @@ function scriptedBackend(opts?: {
 		},
 		async resume(req) {
 			resumed.push(req.ccSessionId);
+			resumedCwds.push(req.plan.cwd); // WI-2: capture the resolved resume cwd (worktree vs root)
 			return {
 				ccSessionId: req.ccSessionId,
 				async *stream() {
@@ -164,10 +168,27 @@ async function messageCount(sessionId: string): Promise<number> {
 	return msgs.length;
 }
 
+// WI-2: the resume path RE-acquires a WRITE session's per-session worktree. These channel
+// tests run against a non-git temp project root (their subject is resume transcript/seq/status,
+// not git mechanics), so we inject a FAKE acquirer that returns a deterministic per-session
+// worktree cwd+branch (idempotent — same sessionId → same tree). The dedicated WI-2 worktree
+// mechanics are proven against a REAL temp git repo in launch.test.ts + worktree.test.ts.
+const fakeAcquireWorktree = async (projectRoot: string, sessionId: string) => ({
+	cwd: `${projectRoot}/.wt/${sessionId.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+	branch: `atelier/session/${sessionId.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+	cleanup: async () => {}
+});
+
 function makeChannel(backend: ReturnType<typeof scriptedBackend>) {
 	const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: 'F:/code/sc/.h' });
 	const bus = new EventBus();
-	const channel = createChannel({ db, bus, runtime, bootToken: BOOT_TOKEN });
+	const channel = createChannel({
+		db,
+		bus,
+		runtime,
+		bootToken: BOOT_TOKEN,
+		acquireWorktree: fakeAcquireWorktree
+	});
 	return { runtime, bus, channel };
 }
 
@@ -513,6 +534,11 @@ describe('channel stop / resume — session record transitions (D-011)', () => {
 		});
 		// resume continued the SAME cc session by its bridge id.
 		expect(backend.resumed).toContain('cc_resume_1');
+		// WI-2: a WRITE-class resume re-anchors in the per-session WORKTREE, NOT the shared
+		// project root — the resolved cwd carries the session-keyed worktree path (the resumed
+		// session continues in its ORIGINAL tree, never a fresh root).
+		expect(backend.resumedCwds[0]).toContain('/.wt/');
+		expect(backend.resumedCwds[0]).toContain(sessionId.replace(/[^a-zA-Z0-9_-]+/g, '_'));
 		// the scripted run completes ⇒ terminal status reconciled to done.
 		expect(res.status).toBe('done');
 
@@ -522,6 +548,28 @@ describe('channel stop / resume — session record transitions (D-011)', () => {
 		// no longer cancelled — the record followed the resumed run out of its stopped state.
 		expect(rows[0].status).toBe('done');
 		expect(rows[0].status).not.toBe('cancelled');
+	});
+
+	it('WI-2: a READ-class resume stays in the shared project root (no worktree, unchanged)', async () => {
+		const backend = scriptedBackend();
+		const { channel } = makeChannel(backend);
+		const sessionId = await makeRunningSession('cc_resume_read_1');
+		await db.query(`UPDATE $sid SET status = "cancelled", ended_at = time::now();`, {
+			sid: new StringRecordId(sessionId)
+		});
+
+		await channel.resume({
+			sessionId,
+			agentId: 'agent_coder_1',
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+			intent: 'code-read',
+			budgets: { toolCalls: 10 },
+			toolPolicy: { allow: ['Read'] }
+		});
+
+		// READ-class resume is byte-identical to today: cwd = the shared project root, no worktree.
+		expect(backend.resumedCwds[0]).toBe(tmpdir().replace(/\\/g, '/'));
+		expect(backend.resumedCwds[0]).not.toContain('/.wt/');
 	});
 
 	it('REGRESSION (m0037 resume seq continuation): a resumed turn is APPENDED after the launch turns, not interleaved into them', async () => {

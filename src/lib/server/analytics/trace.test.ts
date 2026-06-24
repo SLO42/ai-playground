@@ -109,7 +109,19 @@ describe('traceAction — the how/why chain for one action (2.4 VERIFY)', () => 
 			budgets: {},
 			toolPolicy: { allow: ['Read', 'Edit'] }
 		};
-		const res = await launchSession({ db, bus: new EventBus(), runtime, input });
+		// WI-2: fake worktree acquirer — this code-write spawn runs against a non-git path fixture;
+		// the trace test covers the analytics chain, not git mechanics.
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input,
+			acquireWorktree: async (root, sid) => ({
+				cwd: `${root}/.wt/${sid.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+				branch: `atelier/session/${sid.replace(/[^a-zA-Z0-9_-]+/g, '_')}`,
+				cleanup: async () => {}
+			})
+		});
 
 		// 3. A recorded escalation on that session (the core how/why step).
 		await writeAgentEvent(db, {

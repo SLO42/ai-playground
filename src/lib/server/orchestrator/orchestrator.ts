@@ -123,6 +123,14 @@ export interface OrchestratorOptions {
 	 * loop is best-effort (D-019) — it never blocks a spawn nor changes its verdict.
 	 */
 	memory?: LaunchDeps['memory'];
+	/**
+	 * WI-2 (WORKSPACE-ISOLATION-SPEC) — the per-session worktree acquirer, forwarded onto every
+	 * orchestrator-driven spawn's launchSession. Production omits it ⇒ launchSession uses the real
+	 * {@link acquireSessionWorktree} (a WRITE-class session on the project's git root gets an
+	 * isolated worktree). Tests inject a fake so a code-write spawn against a non-git temp root does
+	 * not fail closed on git mechanics they are not exercising.
+	 */
+	acquireWorktree?: LaunchDeps['acquireWorktree'];
 	/** Statuses that make a task spawn-ready. Default: 'ready'. */
 	spawnReadyStatuses?: readonly string[];
 	/**
@@ -173,6 +181,7 @@ export class Orchestrator {
 	readonly #intervalMs?: number;
 	readonly #route: RouteResolver;
 	readonly #memory?: LaunchDeps['memory'];
+	readonly #acquireWorktree?: LaunchDeps['acquireWorktree'];
 	readonly #spawnReady: ReadonlySet<string>;
 	readonly #postTask?: OrchestratorOptions['postTask'];
 	readonly #dailyCap?: number;
@@ -211,6 +220,7 @@ export class Orchestrator {
 		this.#intervalMs = opts.intervalMs;
 		this.#route = opts.route;
 		this.#memory = opts.memory;
+		this.#acquireWorktree = opts.acquireWorktree;
 		this.#spawnReady = new Set(opts.spawnReadyStatuses ?? ['ready']);
 		this.#postTask = opts.postTask;
 		this.#dailyCap = opts.dailySpawnCap && opts.dailySpawnCap > 0 ? opts.dailySpawnCap : undefined;
@@ -590,6 +600,9 @@ export class Orchestrator {
 				// TASK 8.3 — the memory loop rides every orchestrator-driven spawn (recall on
 				// spawn, extract on session-end). Undefined ⇒ the loop is skipped (Ollama down).
 				memory: this.#memory,
+				// WI-2: forward the worktree acquirer so a WRITE-class spawn runs in an isolated
+				// per-session worktree (production default = the real acquirer; tests inject a fake).
+				acquireWorktree: this.#acquireWorktree,
 				input: {
 					projectId,
 					taskId,

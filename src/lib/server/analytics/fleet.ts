@@ -67,6 +67,14 @@ export interface FleetSessionXP extends FleetSession {
 	projectName: string | null;
 	projectSlug: string | null;
 	ccSessionId: string | null;
+	/**
+	 * WI-2 (WORKSPACE-ISOLATION-SPEC) — the per-session git worktree this WRITE session ran in,
+	 * and the branch it committed on (session.worktree_path / worktree_branch, m0059). NULL for a
+	 * READ-class session (shared project root — the option fields stay NONE), never a fabricated
+	 * path (F-008). Lets the fleet UI show the isolated tree/branch honestly + WI-3 find the branch.
+	 */
+	worktreePath: string | null;
+	worktreeBranch: string | null;
 }
 
 /** One scope (global / a project) that defines an agent type — the honest "where it lives". */
@@ -263,6 +271,7 @@ export async function listFleetAcrossProjects(db: Db, limit = 40): Promise<Fleet
 	// expands `project` into the full object.
 	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
 		`SELECT id, status, kind, model, project, task, note, cc_session_id, started_at, ended_at,
+		        worktree_path, worktree_branch,
 		        project.id AS project_id, project.name AS project_name, project.slug AS project_slug,
 		        role.slug AS role_slug, role.name AS role_name
 		   FROM session
@@ -290,6 +299,9 @@ export async function listFleetAcrossProjects(db: Db, limit = 40): Promise<Fleet
 			// Honest absent note (option<string> NONE) → null, never str(undefined) (F-013 class).
 			note: r.note == null ? null : String(r.note),
 			ccSessionId: r.cc_session_id ? String(r.cc_session_id) : null,
+			// WI-2: honest worktree provenance — absent (READ session / option NONE) → null (F-008).
+			worktreePath: r.worktree_path == null ? null : String(r.worktree_path),
+			worktreeBranch: r.worktree_branch == null ? null : String(r.worktree_branch),
 			startedAt: iso(r.started_at),
 			endedAt: r.ended_at ? iso(r.ended_at) : null
 		};
@@ -314,6 +326,7 @@ export async function getFleetSession(db: Db, sessionId: string): Promise<FleetS
 	const sid = new StringRecordId(assertRecordId(sessionId));
 	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
 		`SELECT id, status, kind, model, project, task, note, cc_session_id, started_at, ended_at,
+		        worktree_path, worktree_branch,
 		        project.id AS project_id, project.name AS project_name, project.slug AS project_slug,
 		        role.slug AS role_slug, role.name AS role_name
 		   FROM session WHERE id = $sid LIMIT 1
@@ -341,6 +354,9 @@ export async function getFleetSession(db: Db, sessionId: string): Promise<FleetS
 		// Honest absent note (option<string> NONE) → null, never str(undefined) (F-013 class).
 		note: r.note == null ? null : String(r.note),
 		ccSessionId: r.cc_session_id ? String(r.cc_session_id) : null,
+		// WI-2: honest worktree provenance — absent (READ session / option NONE) → null (F-008).
+		worktreePath: r.worktree_path == null ? null : String(r.worktree_path),
+		worktreeBranch: r.worktree_branch == null ? null : String(r.worktree_branch),
 		startedAt: iso(r.started_at),
 		endedAt: r.ended_at ? iso(r.ended_at) : null
 	};

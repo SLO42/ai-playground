@@ -19,7 +19,7 @@
 // (option<T> rejects NULL — MEMORY-SPEC §6.1).
 
 import { createHash } from 'node:crypto';
-import { existsSync, realpathSync, statSync } from 'node:fs';
+import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
@@ -362,6 +362,12 @@ export interface ScopeReconcileResult {
 	removed: string[];
 	/** cc_scope ids synced fresh from a project's own `<root>/.claude`. */
 	synced: string[];
+	/**
+	 * The harness-owned harvest scope id ensured this call (SH-5), or absent if the
+	 * best-effort ensure failed. Always present on success — it is re-synced every reconcile
+	 * (idempotent), so it does NOT ride `synced` (which is project-derivation only).
+	 */
+	harvestScopeId?: string;
 }
 
 /** Delete a cc_scope row AND every child mirror row that hangs off it. */
@@ -378,14 +384,80 @@ async function deleteScopeCascade(db: Db, scopeId: string): Promise<void> {
 	);
 }
 
+// ── Harvest scope (SH-5, SKILL-HARVEST-SPEC §4/§5) — the one harness-owned synced scope ──
+//
+// F-045 dead-end: the platform's OWN `.claude` is not a registered project root and not
+// `~/.claude`, so no sync path covers it — a freshly-written SKILL.md could never enter
+// `cc_skill` / `catalogIds`, so a promoted skill could never be referenced as a capability
+// id (composeCapabilities fail-closes, D-036). SH-5 fixes that by establishing ONE scope the
+// HARNESS controls, creates, writes to, and SYNCS — the destination SH-3 (promote) writes a
+// promoted SKILL.md into so it actually reaches the catalog.
+//
+// Path is DETERMINISTIC + harness-controlled (not operator-config-dependent in a way that
+// breaks D-002 isolation): `<HARVEST_SCOPE_ROOT or <HARNESS_CONFIG_ROOT parent>/harvest>/.claude`.
+// It carries ONLY harvested skills — NO operator plugins/agents bleed in (D-002): the harness
+// is the sole writer (SH-3 promote), and the dir starts empty. Registered as a `global`-kind
+// cc_scope, which is EXEMPT from project-root confinement (classifyScopes) so reconcileScopes
+// never tears it down as "unverifiable" — it has no owning project by design.
+
+/** Env override for the harvest-scope parent dir; falsy ⇒ derive from HARNESS_CONFIG_ROOT. */
+const HARVEST_SCOPE_ROOT_ENV = 'HARVEST_SCOPE_ROOT';
+/** Env carrying the harness isolated-config root; the harvest scope sits beside it. */
+const HARNESS_CONFIG_ROOT_ENV = 'HARNESS_CONFIG_ROOT';
+/** Default harness-config root (mirrors harness/wiring.ts) when the env is unset. */
+const DEFAULT_HARNESS_CONFIG_ROOT = '.harness/claude-config';
+/** Sibling dir name under the harness root that owns the harvest `.claude`. */
+const HARVEST_DIRNAME = 'harvest';
+
+/**
+ * The deterministic absolute path to the harvest scope's `.claude` directory the harness
+ * controls. Resolution (most → least specific), all confined + deterministic:
+ *   1. `$HARVEST_SCOPE_ROOT/.claude` when that env is set (explicit operator/test control);
+ *   2. else `<parent of $HARNESS_CONFIG_ROOT>/harvest/.claude` — beside the isolated-config
+ *      root the runtime already owns, so it lives in the harness's own state tree.
+ * `env` is injectable for tests; defaults to `process.env`.
+ */
+export function harvestScopeDir(env: NodeJS.ProcessEnv = process.env): string {
+	const explicit = env[HARVEST_SCOPE_ROOT_ENV]?.trim();
+	if (explicit) return resolve(explicit, '.claude');
+	const harnessRoot = env[HARNESS_CONFIG_ROOT_ENV]?.trim() || DEFAULT_HARNESS_CONFIG_ROOT;
+	return resolve(harnessRoot, '..', HARVEST_DIRNAME, '.claude');
+}
+
+/** The `global`-kind {@link SyncScope} for the harvest dir (no owning project — exempt from confinement). */
+export function harvestScope(env: NodeJS.ProcessEnv = process.env): SyncScope {
+	return { kind: 'global', claudeDir: harvestScopeDir(env) };
+}
+
+/**
+ * Ensure the harvest scope EXISTS on disk and is registered + synced in the catalog (SH-5).
+ * Idempotent + interrupt-safe: `mkdirSync(recursive)` no-ops when the dir already exists, and
+ * `syncScope` UPSERTs a deterministic scope id (re-run rewrites the same row — no duplicate).
+ * Creates `<dir>/skills` too so SH-3's first promote writes into an existing tree. The scope
+ * is `global`-kind so it is NEVER torn down by the project-confinement reconcile pass.
+ * Returns the synced scope id.
+ */
+export async function ensureHarvestScope(
+	db: Db,
+	env: NodeJS.ProcessEnv = process.env
+): Promise<string> {
+	const claudeDir = harvestScopeDir(env);
+	// Create the .claude tree (and the skills/ subdir SH-3 writes into) idempotently.
+	mkdirSync(resolve(claudeDir, 'skills'), { recursive: true });
+	const res = await syncScope(db, { kind: 'global', claudeDir });
+	return res.scopeId;
+}
+
 /**
  * Reconcile the cc_scope catalog against the REGISTERED project roots (14.4d):
  *   1. remove (with children) every row {@link classifyScopes} marks invalid;
  *   2. for each project whose own `<root_path>/.claude` EXISTS on disk but has no valid
  *      catalog row, derive the scope from the project's own root and sync it.
+ *   3. ensure the harness-owned HARVEST scope exists + is synced (SH-5) so a promoted
+ *      skill can reach `cc_skill` / `catalogIds` (the F-045 dead-end fix).
  * Projects sharing one root dedup onto a single scope (the oldest registrant wins).
- * Steady-state (clean catalog, no missing scopes) performs NO writes — safe to run from
- * the /claude-code loader. Returns what changed.
+ * The harvest ensure runs every call (it is idempotent — a no-op once the row + dir exist).
+ * Returns what changed.
  */
 export async function reconcileScopes(db: Db): Promise<ScopeReconcileResult> {
 	const { valid, invalid } = await classifyScopes(db);
@@ -423,7 +495,22 @@ export async function reconcileScopes(db: Db): Promise<ScopeReconcileResult> {
 		const res = await syncScope(db, projectScopeOf(id, root));
 		synced.push(res.scopeId);
 	}
-	return { removed, synced };
+
+	// SH-5: the harness-owned harvest scope is part of the catalog reconcile. Idempotent —
+	// once the dir + cc_scope row exist, this rewrites the same row (deterministic id), so
+	// running reconcile twice never duplicates it. It is NOT a project scope, so it is NOT
+	// added to `synced` (which means "a project scope newly derived this call" — keeping the
+	// project-idempotency contract intact); its id rides `harvestScopeId` instead. A failure
+	// here (e.g. an unwritable harness state dir) must NOT blank the project catalog — surface
+	// it without aborting the reconcile (F-014 best-effort, additive to the project flow).
+	let harvestScopeId: string | undefined;
+	try {
+		harvestScopeId = await ensureHarvestScope(db);
+	} catch {
+		/* harvest-scope ensure is best-effort; project reconcile stands on its own */
+	}
+
+	return { removed, synced, ...(harvestScopeId ? { harvestScopeId } : {}) };
 }
 
 // ── Drift detection (synced / out-of-sync) ───────────────────────────────────────

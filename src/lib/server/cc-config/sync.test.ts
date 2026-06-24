@@ -1,4 +1,4 @@
-import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -10,6 +10,9 @@ import { createProject } from '../projects/repo';
 import {
 	catalogIds,
 	classifyScopes,
+	ensureHarvestScope,
+	harvestScope,
+	harvestScopeDir,
 	projectScopeOf,
 	readCatalog,
 	reconcileScopes,
@@ -34,6 +37,12 @@ let root: string;
 let claudeDir: string;
 let scope: SyncScope;
 
+// SH-5: pin the harness-owned harvest scope to a hermetic temp dir for the whole file so the
+// reconcile pass (which now also ensures the harvest scope) never writes into the worktree's
+// real `.harness/` tree. Restored in afterAll.
+let harvestRoot: string;
+const prevHarvestEnv = process.env.HARVEST_SCOPE_ROOT;
+
 function writeSettings(obj: unknown) {
 	writeFileSync(join(claudeDir, 'settings.json'), JSON.stringify(obj, null, 2));
 }
@@ -48,6 +57,10 @@ beforeAll(async () => {
 		database: tdb.database
 	});
 	await runMigrations(db, schemaMigrations);
+
+	// Pin the harvest scope to a temp dir BEFORE any reconcile runs (env read at call time).
+	harvestRoot = mkdtempSync(join(tmpdir(), 'cc-harvest-'));
+	process.env.HARVEST_SCOPE_ROOT = harvestRoot;
 
 	// A fixture project `.claude` tree on disk.
 	root = mkdtempSync(join(tmpdir(), 'cc-sync-'));
@@ -81,6 +94,9 @@ afterAll(async () => {
 	await db?.close().catch(() => {});
 	await tdb?.teardown();
 	if (root) rmSync(root, { recursive: true, force: true });
+	if (harvestRoot) rmSync(harvestRoot, { recursive: true, force: true });
+	if (prevHarvestEnv === undefined) delete process.env.HARVEST_SCOPE_ROOT;
+	else process.env.HARVEST_SCOPE_ROOT = prevHarvestEnv;
 });
 
 describe('syncScope — disk → cc_* mirror (D-010)', () => {
@@ -302,5 +318,77 @@ describe('reconcileScopes / classifyScopes — scope provenance anchored to proj
 			join(root3, '.claude').toLowerCase()
 		);
 		rmSync(root3, { recursive: true, force: true });
+	});
+});
+
+// SH-5 (SKILL-HARVEST-SPEC §5) — the load-bearing fix for F-045: one harness-owned, synced
+// harvest scope so a freshly-written SKILL.md actually reaches `cc_skill` / `catalogIds` and
+// becomes a referenceable capability id. These tests run against the REAL temp `.claude` dir
+// pinned via HARVEST_SCOPE_ROOT in the top-level beforeAll.
+describe('harvest scope (SH-5) — harness-owned synced scope so a promoted skill reaches catalogIds', () => {
+	function writeHarvestSkill(name: string, description: string) {
+		const dir = join(harvestScopeDir(), 'skills', name);
+		mkdirSync(dir, { recursive: true });
+		writeFileSync(join(dir, 'SKILL.md'), `---\nname: ${name}\ndescription: ${description}\n---\nbody`);
+	}
+
+	it('harvestScopeDir is deterministic + honors HARVEST_SCOPE_ROOT, and harvestScope is global-kind', () => {
+		// Pinned to the temp root in this file → <root>/.claude.
+		expect(harvestScopeDir()).toBe(join(harvestRoot, '.claude'));
+		// Env override resolves explicitly (injectable env).
+		expect(harvestScopeDir({ HARVEST_SCOPE_ROOT: 'X:/h' } as NodeJS.ProcessEnv)).toBe(
+			join('X:/h', '.claude')
+		);
+		// Falls back to the harness-config-root sibling when only HARNESS_CONFIG_ROOT is set.
+		expect(harvestScopeDir({ HARNESS_CONFIG_ROOT: 'Y:/cfg/claude-config' } as NodeJS.ProcessEnv)).toBe(
+			join('Y:/cfg', 'harvest', '.claude')
+		);
+		const sc = harvestScope();
+		expect(sc.kind).toBe('global');
+		expect(sc.project).toBeUndefined(); // no owning project — exempt from confinement
+		expect(sc.claudeDir).toBe(join(harvestRoot, '.claude'));
+	});
+
+	it('ensureHarvestScope creates the .claude/skills tree on disk + registers a global cc_scope (idempotent)', async () => {
+		const id1 = await ensureHarvestScope(db);
+		expect(existsSync(join(harvestScopeDir(), 'skills'))).toBe(true);
+		// Deterministic id, same on re-run (no duplicate row).
+		const id2 = await ensureHarvestScope(db);
+		expect(id2).toBe(id1);
+		const catalog = await readCatalog(db);
+		const rows = catalog.filter((c) => c.scopeId === id1);
+		expect(rows).toHaveLength(1); // exactly one — UPSERT, not a second CREATE
+		expect(rows[0].kind).toBe('global');
+		expect(rows[0].path.toLowerCase()).toBe(join(harvestRoot, '.claude').toLowerCase());
+	});
+
+	it('a SKILL.md written into the harvest scope then synced APPEARS in catalogIds (the F-045 fix)', async () => {
+		writeHarvestSkill('replay-fix', 'a harvested reusable procedure');
+		await ensureHarvestScope(db); // re-sync picks up the new skill on disk
+		const ids = await catalogIds(db);
+		expect(ids.skills.has('replay-fix')).toBe(true); // ← referenceable capability id
+	});
+
+	it('reconcileScopes covers the harvest scope and is idempotent (run twice → no duplicate)', async () => {
+		const r1 = await reconcileScopes(db);
+		expect(r1.harvestScopeId).toBe(scopeIdOf('global', harvestScopeDir()));
+		const r2 = await reconcileScopes(db);
+		expect(r2.harvestScopeId).toBe(r1.harvestScopeId);
+		// Exactly one harvest row in the catalog after two reconciles.
+		const catalog = await readCatalog(db);
+		expect(catalog.filter((c) => c.scopeId === r1.harvestScopeId)).toHaveLength(1);
+		// classifyScopes keeps it VALID (global is exempt from project confinement) — never removed.
+		const cls = await classifyScopes(db);
+		expect(cls.valid.map((v) => v.id)).toContain(r1.harvestScopeId);
+		expect(cls.invalid.map((v) => v.id)).not.toContain(r1.harvestScopeId);
+	});
+
+	it('the harvest scope carries ONLY harvested skills — no operator-plugin agents bleed in (D-002)', async () => {
+		// The dir is harness-created empty + only skills are written into it; it has no agents/.
+		const catalog = await readCatalog(db);
+		const harvest = catalog.find((c) => c.scopeId === scopeIdOf('global', harvestScopeDir()));
+		expect(harvest).toBeTruthy();
+		expect(harvest!.agents).toEqual([]);
+		expect(harvest!.mcpServers).toEqual([]);
 	});
 });

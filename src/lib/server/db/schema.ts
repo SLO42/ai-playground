@@ -2169,11 +2169,20 @@ const m0059_session_worktree: Migration = {
 //     proposal.ts, mirroring pm-propose's evidence discipline; the schema only shape-checks the column).
 //   • session/project/approved_by/approved_at are OPTION fields — OMITTED at write when absent
 //     (F-013/§6.1), surfaced as the honest '—', never a raw null.
-//   • norm_key is a computed VALUE field (the normalized name+trigger dedup identity) with a UNIQUE-per-
-//     OPEN index is NOT used — dedup is enforced in proposeSkill (the bump path needs the existing row),
-//     not by a unique constraint (an open + a later closed proposal of the same key must coexist for audit).
+//   • norm_key is the canonical normalized (name+trigger) dedup identity — set EXPLICITLY by the writer
+//     (proposal.ts normalizedDedupKey, computed over the SCREENED name+trigger). It is a real stored
+//     field so the VALUE dedup_key can reference it (a VALUE field cannot re-derive the JS-side
+//     whitespace/case normalization in SurrealQL).
+//   • dedup_key is a computed VALUE field (D-008 pattern, mirroring work_item/memory) that resolves to
+//     norm_key WHILE status='open', else to the record id — so EXACTLY ONE open proposal can hold a given
+//     normalized key, while any number of closed (approved/rejected) proposals of the same key coexist for
+//     audit (G2 mark-don't-delete). The UNIQUE index over dedup_key SERIALIZES concurrent inserts at the
+//     DB (the SELECT-then-INSERT dedup in proposeSkill is a TOCTOU race on its own — two concurrent drafts
+//     of the same pattern BOTH see 0 rows and BOTH insert; this index is the atomic backstop, and
+//     proposeSkill catches the collision and bumps instead — F-???/SH-1 red-team second-pass fix).
 // IDEMPOTENT (D-006/F-015): OVERWRITE only — clean over a fresh DB AND a half-applied state (re-running
-// over a DB where the table/fields already exist is a no-op).
+// over a DB where the table/fields already exist is a no-op). The backfill recomputes dedup_key on any
+// pre-existing row (rows written before this index landed).
 const m0060_skill_proposal: Migration = {
 	id: '0060_skill_proposal',
 	up: `
@@ -2191,11 +2200,53 @@ const m0060_skill_proposal: Migration = {
 			ASSERT $value IN ["open","approved","rejected"];
 		DEFINE FIELD OVERWRITE approved_by     ON skill_proposal TYPE option<string>;
 		DEFINE FIELD OVERWRITE approved_at     ON skill_proposal TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE norm_key        ON skill_proposal TYPE option<string>;
 		DEFINE FIELD OVERWRITE created_at      ON skill_proposal TYPE datetime DEFAULT time::now();
 		DEFINE FIELD OVERWRITE updated_at      ON skill_proposal TYPE datetime DEFAULT time::now();
 
+		-- dedup_key VALUE pattern (D-008): the normalized key WHILE open AND a norm_key is present
+		-- (one open per key), else the record id — so closed (approved/rejected) proposals of the same
+		-- key coexist for audit, and any legacy row written before this index (norm_key NONE) falls to its
+		-- own id (no spurious collision on backfill). The UNIQUE index serializes concurrent same-key
+		-- inserts at the DB — the atomic backstop for proposeSkill's TOCTOU dedup race.
+		-- F-020: a VALUE field computes against the row as-SET, BEFORE the schema DEFAULT for status
+		-- lands — so a freshly CREATEd row has status=NONE here. Treat NONE as open (the status DEFAULT
+		-- is "open"); a later UPDATE to approved/rejected recomputes this and frees the key to the id.
+		DEFINE FIELD OVERWRITE dedup_key ON skill_proposal VALUE
+			(IF norm_key != NONE AND (status = "open" OR status = NONE) THEN norm_key ELSE <string>id END);
+		DEFINE INDEX OVERWRITE skill_proposal_dedup ON skill_proposal FIELDS dedup_key UNIQUE;
+
 		DEFINE INDEX OVERWRITE skill_proposal_by_status ON skill_proposal FIELDS status;
 		DEFINE INDEX OVERWRITE skill_proposal_by_name   ON skill_proposal FIELDS name;
+
+		${backfillValueField('skill_proposal', 'dedup_key')}
+	`
+};
+
+// ── SH-1 dedup hardening (red-team second pass) — the atomic dedup serialization for skill_proposal ──
+//
+// The original m0060 shipped (commit 555fd93) with a NON-atomic SELECT-then-INSERT dedup in proposeSkill
+// and NO DB-level guard: two concurrent drafts of the same normalized (name+trigger) pattern BOTH saw 0
+// open rows and BOTH inserted → duplicate open rows, SPLITTING the occurrence count the operator ranks on
+// (SKILL-HARVEST §2 RECUR/RANK). The fix needs `norm_key` + the `dedup_key` VALUE field + a UNIQUE index
+// so racers serialize and collapse onto one row. Because m0060 is ALREADY recorded as applied on every
+// live dev DB (the runner skips applied ids — runMigrations), the m0060 edit alone would NEVER reach an
+// already-migrated DB. This ADDITIVE migration (F-015: never mutate-then-rely-on-re-run; add an idempotent
+// follow-on) delivers the same three definitions to an existing skill_proposal table. OVERWRITE-only, so
+// it is a clean no-op over a fresh DB (where m0060 already defined them) AND over the old m0060 shape
+// (where it adds them). The backfill recomputes dedup_key on any pre-existing row.
+const m0061_skill_proposal_dedup: Migration = {
+	id: '0061_skill_proposal_dedup',
+	up: `
+		DEFINE FIELD OVERWRITE norm_key ON skill_proposal TYPE option<string>;
+		-- dedup_key VALUE pattern (D-008): the normalized key WHILE open (one open per key), else the id.
+		-- F-020: a VALUE field computes against the row as-SET, BEFORE the status DEFAULT lands → a fresh
+		-- CREATE has status=NONE here; treat NONE as open (status DEFAULT is "open").
+		DEFINE FIELD OVERWRITE dedup_key ON skill_proposal VALUE
+			(IF norm_key != NONE AND (status = "open" OR status = NONE) THEN norm_key ELSE <string>id END);
+		DEFINE INDEX OVERWRITE skill_proposal_dedup ON skill_proposal FIELDS dedup_key UNIQUE;
+
+		${backfillValueField('skill_proposal', 'dedup_key')}
 	`
 };
 
@@ -2265,5 +2316,6 @@ export const schemaMigrations: Migration[] = [
 	m0057_pm_autonomous,
 	m0058_pm_auto_publish,
 	m0059_session_worktree,
-	m0060_skill_proposal
+	m0060_skill_proposal,
+	m0061_skill_proposal_dedup
 ];

@@ -116,6 +116,61 @@ describe('proposeSkill — normalized dedup bumps occurrences', () => {
 			normalizedDedupKey('foo-bar', 'hello world')
 		);
 	});
+
+	// REGRESSION: the original separator was a literal NUL byte (\0). It was invisible while the key only
+	// lived in JS (both sides shared the NUL) but FATAL once stored in the indexed norm_key/dedup_key
+	// columns — SurrealDB's index key encoding rejects a NUL ("Key encoding error: … contained a null
+	// byte"). Assert the key is index-safe: no control characters (< 0x20).
+	it('normalizedDedupKey is index-safe (no control characters / NUL byte)', () => {
+		const k = normalizedDedupKey('windows-pid-liveness', 'When checking if a process is alive.');
+		expect(k).toContain('|'); // the printable separator
+		const controlCodes = [...k].map((c) => c.charCodeAt(0)).filter((n) => n < 0x20);
+		expect(controlCodes).toEqual([]);
+	});
+
+	// REGRESSION (SH-1 red-team second pass): the SELECT-then-INSERT dedup was a TOCTOU race — N
+	// concurrent identical drafts ALL saw 0 open rows and ALL inserted → N rows occurrences=1 each,
+	// splitting the very recurrence signal the operator ranks on. A JS retry was INSUFFICIENT (this
+	// SurrealDB build can leave 2 open rows past the UNIQUE index across separate transactions); the fix
+	// runs read-or-bump-else-create as ONE server-side transaction so racers serialize and collapse onto
+	// ONE row. Run SEVERAL trials — a single race can pass spuriously even with a broken implementation.
+	it('CONCURRENT identical drafts collapse to ONE row with the summed occurrences (no TOCTOU split)', async () => {
+		const N = 5;
+		for (let trial = 0; trial < 4; trial++) {
+			await db.query('DELETE skill_proposal;');
+			await Promise.all(
+				Array.from({ length: N }, (_, i) =>
+					proposeSkill(
+						db,
+						input({
+							// vary noise that normalization erases — same canonical key for all N
+							trigger_context: `  When CHECKING whether a spawned process is still alive on Windows.  `,
+							description: `racer ${trial}-${i}`
+						})
+					)
+				)
+			);
+			// Exactly ONE underlying open row, occurrences = the count of concurrent submits (no split).
+			const all = await listSkillProposals(db, {});
+			expect(all, `trial ${trial}: expected a single collapsed row`).toHaveLength(1);
+			expect(all[0].occurrences, `trial ${trial}: occurrences must sum all racers`).toBe(N);
+		}
+	});
+
+	it('a closed proposal does NOT block a fresh open draft of the same key (dedup_key falls to id when closed)', async () => {
+		const first = await proposeSkill(db, input());
+		// Close it (simulate the operator reject/approve path the store does not own). The id is a
+		// `skill_proposal:…` thing string; UPDATE it directly (SurrealQL parses the record literal).
+		await db.query(`UPDATE ${first.id} SET status = "rejected";`);
+		// A fresh draft of the SAME normalized key must insert a NEW open row (the closed one is retained
+		// for audit; its dedup_key resolved to its own id, freeing the normalized key).
+		const second = await proposeSkill(db, input());
+		expect(second.id).not.toBe(first.id);
+		expect(second.status).toBe('open');
+		expect(second.occurrences).toBe(1);
+		const open = await listSkillProposals(db, { status: 'open' });
+		expect(open).toHaveLength(1);
+	});
 });
 
 describe('proposeSkill — D-026 secret screen before persist', () => {
@@ -242,6 +297,64 @@ describe('skill_proposal migration — idempotent (F-015)', () => {
 		} finally {
 			await db3.close().catch(() => {});
 			await tdb3.teardown();
+		}
+	}, 90_000);
+
+	// REGRESSION (F-015): the dedup fix had to reach a DB where the OLD m0060 (no dedup index) was
+	// ALREADY recorded as applied — the runner skips applied ids, so an in-place edit to m0060 would
+	// NEVER re-run. m0061 is the ADDITIVE follow-on that delivers norm_key + dedup_key + the UNIQUE
+	// index to such a DB. Prove: with 0060 in the ledger but NO dedup index present, running the full
+	// set applies ONLY 0061, lands the index, and the dedup contract then holds.
+	it('0061 additively delivers the dedup index to a DB already carrying the OLD 0060 shape', async () => {
+		const tdb4 = await startTestDb();
+		const db4 = await Db.connect({
+			url: tdb4.wsUrl,
+			username: tdb4.root.username,
+			password: tdb4.root.password,
+			namespace: tdb4.namespace,
+			database: tdb4.database
+		});
+		try {
+			// Stand up the OLD m0060 shape (no norm_key / dedup_key / unique index) and record BOTH the
+			// ledger table and 0060 as applied — exactly the live-DB state commit 555fd93 left behind.
+			await db4.query(`
+				DEFINE TABLE OVERWRITE skill_proposal SCHEMAFULL;
+				DEFINE FIELD OVERWRITE name            ON skill_proposal TYPE string;
+				DEFINE FIELD OVERWRITE description     ON skill_proposal TYPE string;
+				DEFINE FIELD OVERWRITE body            ON skill_proposal TYPE string;
+				DEFINE FIELD OVERWRITE trigger_context ON skill_proposal TYPE string;
+				DEFINE FIELD OVERWRITE source          ON skill_proposal TYPE string DEFAULT "session-harvest";
+				DEFINE FIELD OVERWRITE evidence        ON skill_proposal TYPE array<string> DEFAULT [];
+				DEFINE FIELD OVERWRITE occurrences     ON skill_proposal TYPE int DEFAULT 1;
+				DEFINE FIELD OVERWRITE status          ON skill_proposal TYPE string DEFAULT "open"
+					ASSERT $value IN ["open","approved","rejected"];
+				DEFINE FIELD OVERWRITE created_at      ON skill_proposal TYPE datetime DEFAULT time::now();
+				DEFINE FIELD OVERWRITE updated_at      ON skill_proposal TYPE datetime DEFAULT time::now();
+				DEFINE TABLE OVERWRITE _migration SCHEMAFULL;
+				DEFINE FIELD OVERWRITE id_str ON _migration TYPE string;
+				DEFINE INDEX OVERWRITE mig_id ON _migration FIELDS id_str UNIQUE;
+			`);
+			// Mark every migration UP TO AND INCLUDING 0060 as applied (the ledger state pre-0061).
+			for (const m of schemaMigrations) {
+				await db4.query('CREATE _migration SET id_str = $id;', { id: m.id });
+				if (m.id === '0060_skill_proposal') break;
+			}
+			// Running the full set now applies ONLY 0061 (everything else is already ledgered).
+			const applied = await runMigrations(db4, schemaMigrations);
+			expect(applied).toEqual(['0061_skill_proposal_dedup']);
+			// The UNIQUE dedup index is now present.
+			const info = await db4.query<[{ indexes: Record<string, string> }]>(
+				'INFO FOR TABLE skill_proposal;'
+			);
+			expect(Object.keys(info[0].indexes)).toContain('skill_proposal_dedup');
+			// And the dedup contract holds: concurrent same-key drafts collapse to one row.
+			await Promise.all([proposeSkill(db4, input()), proposeSkill(db4, input())]);
+			const all = await listSkillProposals(db4, {});
+			expect(all).toHaveLength(1);
+			expect(all[0].occurrences).toBe(2);
+		} finally {
+			await db4.close().catch(() => {});
+			await tdb4.teardown();
 		}
 	}, 90_000);
 });

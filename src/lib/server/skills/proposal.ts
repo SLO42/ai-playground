@@ -192,13 +192,37 @@ function reqEvidenceRef(v: unknown, idx: number): string {
 // ── Normalized dedup identity (case- + whitespace-insensitive) ──────────────────────────────────────
 
 /**
- * The NORMALIZED dedup key over (name + trigger_context): lowercased, every whitespace run collapsed to
- * a single space, trimmed. Case- AND whitespace-insensitive so a cosmetic re-wording (extra spaces /
- * capitalization) of the SAME pattern still collapses onto one open proposal (SKILL-HARVEST-SPEC §2).
+ * Is this a SurrealDB 2.x UNIQUE-index / primary-key / commit-race collision on the skill_proposal_dedup
+ * index? Two concurrent drafts of the SAME normalized key BOTH pass the SELECT-then-INSERT dedup read (a
+ * TOCTOU race — neither sees the other's not-yet-committed row) and BOTH attempt the CREATE; the loser
+ * collides on the dedup UNIQUE index. Match ONLY the real unique-violation phrases (parity with
+ * workforce/staff.isDedupCollision, peer/repo, memory/loop) — re-raise everything else (F-008: an
+ * unrelated DB error must NEVER be silently absorbed as a benign duplicate).
+ */
+function isDedupCollision(err: unknown): boolean {
+	const msg = err instanceof Error ? err.message : String(err);
+	return (
+		/index `?[^`']*`? already contains/i.test(msg) ||
+		/record `?[^`']*`? already exists/i.test(msg) ||
+		/failed transaction|read or write conflict/i.test(msg)
+	);
+}
+
+/**
+ * The NORMALIZED dedup key over (name + trigger_context): each segment lowercased, every whitespace run
+ * collapsed to a single space, trimmed; the two segments joined by a literal '|'. Case- AND
+ * whitespace-insensitive so a cosmetic re-wording (extra spaces / capitalization) of the SAME pattern
+ * still collapses onto one open proposal (SKILL-HARVEST-SPEC §2).
+ *
+ * The separator MUST be index-safe: this key is now persisted in the indexed `norm_key`/`dedup_key`
+ * columns, and SurrealDB's index key encoding REJECTS a NUL byte ("Key encoding error: … contained a
+ * null byte"). It uses '|' — the codebase dedup_key convention (memory/work_item use `namespace + '|' +
+ * key`). norm() collapses whitespace, so a literal '|' inside a segment cannot forge a false match
+ * (it only shifts the boundary, still a deterministic function of the inputs).
  */
 export function normalizedDedupKey(name: string, triggerContext: string): string {
 	const norm = (s: string) => s.toLowerCase().replace(/\s+/g, ' ').trim();
-	return `${norm(name)} ${norm(triggerContext)}`;
+	return `${norm(name)}|${norm(triggerContext)}`;
 }
 
 // ── D-026 writer-boundary screen ─────────────────────────────────────────────────────────────────────
@@ -233,8 +257,13 @@ function normProposal(
 		updated_at?: unknown;
 	}
 ): SkillProposalRow {
+	// Strip the internal dedup machinery (norm_key / dedup_key are persistence-only — they index the
+	// normalized identity and never belong in the public row the operator review surface renders).
+	const { norm_key: _nk, dedup_key: _dk, ...rest } = row as unknown as Record<string, unknown>;
+	void _nk;
+	void _dk;
 	return {
-		...row,
+		...(rest as unknown as SkillProposalRow),
 		id: str(row.id),
 		// option<record> links → string id when present, OMITTED when absent (never a raw null).
 		...(row.session != null ? { session: str(row.session) } : { session: undefined }),
@@ -304,25 +333,12 @@ export async function proposeSkill(db: Db, input: ProposeSkillInput): Promise<Sk
 	const screenedTrigger = screenField(triggerContext, 'trigger_context');
 	const evidence = evidenceShaped.map((e, i) => screenField(e, `evidence[${i}]`));
 
-	// 3. DEDUP — bump an OPEN proposal with the same normalized (screened name + screened trigger).
+	// 3/4. DEDUP-OR-INSERT, ATOMIC (the SH-1 red-team second-pass fix). The normalized (screened
+	// name + trigger) key is the canonical identity, stored as `norm_key`; the schema's `dedup_key` VALUE
+	// field resolves to it WHILE the row is open. The proposal is born status='open' — status is
+	// INTENTIONALLY not a content key (no self-promotion; the schema DEFAULT 'open' guarantees the born
+	// state). norm_key is set so dedup_key resolves to the normalized identity (NOT the row id).
 	const dedupKey = normalizedDedupKey(screenedName, screenedTrigger);
-	const [openRows] = await db.query<[RawProposalRow[]]>(
-		`SELECT * FROM skill_proposal WHERE name = $name AND status = "open";`,
-		{ name: screenedName }
-	);
-	const match = (openRows ?? []).find(
-		(r) => normalizedDedupKey(str(r.name), str(r.trigger_context)) === dedupKey
-	);
-	if (match) {
-		const [bumped] = await db.query<[RawProposalRow[]]>(
-			`UPDATE $rid SET occurrences = occurrences + 1, updated_at = time::now() RETURN AFTER;`,
-			{ rid: link(str(match.id)) }
-		);
-		return normProposal(bumped[0]);
-	}
-
-	// 4. INSERT — born 'open'. status is INTENTIONALLY not settable by the caller (no self-promotion);
-	// the schema DEFAULT 'open' + the absence of a status key here guarantee the born state.
 	const content = omitUndefined({
 		name: screenedName,
 		description: screenedDescription,
@@ -330,14 +346,64 @@ export async function proposeSkill(db: Db, input: ProposeSkillInput): Promise<Sk
 		trigger_context: screenedTrigger,
 		source: 'session-harvest',
 		evidence,
+		norm_key: dedupKey,
 		session: input.session ? link(input.session) : undefined,
 		project: input.project ? link(input.project) : undefined
 	});
-	const [rows] = await db.query<[RawProposalRow[]]>(
-		`CREATE skill_proposal CONTENT $content RETURN AFTER;`,
-		{ content }
-	);
-	return normProposal(rows[0]);
+
+	// The SELECT-then-INSERT dedup was a TOCTOU race: N concurrent drafts of the SAME key BOTH saw 0 rows
+	// and BOTH inserted → N rows occurrences=1, SPLITTING the recurrence signal the operator ranks on
+	// (SKILL-HARVEST §2 RECUR/RANK). A JS-level retry is INSUFFICIENT — this SurrealDB build does NOT
+	// reliably abort a second concurrent same-key insert at the UNIQUE index across separate transactions
+	// (it can leave TWO open rows; observed empirically — the same "MERGES concurrent deltas" behaviour
+	// peer/repo.ts documents). The fix is to do the read-or-bump-else-create as ONE server-side
+	// transaction (BEGIN…COMMIT): inside a single tx, two racers serialize — the loser's CREATE collides
+	// on the UNIQUE index and the WHOLE tx aborts as a RETRYABLE "read or write conflict"; on retry its
+	// SELECT now sees the winner's row and BUMPS it. The bounded loop (F-014: HARD-CAPPED, never an
+	// unbounded spin) retries ONLY that retryable class; any other DB error propagates verbatim (F-008).
+	const upsertSql = `BEGIN;
+		LET $existing = (SELECT id FROM skill_proposal WHERE dedup_key = $key AND status = "open" LIMIT 1);
+		LET $row = IF count($existing) > 0
+			THEN (UPDATE $existing[0].id SET occurrences += 1, updated_at = time::now() RETURN AFTER)
+			ELSE (CREATE skill_proposal CONTENT $content RETURN AFTER) END;
+		RETURN $row;
+		COMMIT;`;
+	const MAX_DEDUP_RETRIES = 16;
+	for (let attempt = 0; ; attempt++) {
+		try {
+			const res = await db.query<unknown[]>(upsertSql, { key: dedupKey, content });
+			// RETURN $row is the last statement → its value is the last element of the response. UPDATE/
+			// CREATE … RETURN AFTER yields an array; unwrap the single row.
+			const last = res[res.length - 1];
+			const row = (Array.isArray(last) ? last[0] : last) as RawProposalRow | undefined;
+			if (!row) throw new SkillProposalContractError('proposeSkill: upsert returned no row');
+			// HONESTY GUARD (F-008, mirroring peer/repo): the JS SDK can RESOLVE a transaction that
+			// actually ABORTED on the index collision, returning the pre-abort CREATE value — a PHANTOM
+			// row that never committed. Re-read the committed open row by its UNIQUE dedup_key (an index
+			// scan reflects the committed table) and return THAT, so the returned id/occurrences are the
+			// real persisted ones, never a phantom.
+			const [committed] = await db.query<[RawProposalRow[]]>(
+				`SELECT * FROM skill_proposal WHERE dedup_key = $key AND status = "open" LIMIT 1;`,
+				{ key: dedupKey }
+			);
+			if (committed && committed.length) return normProposal(committed[0]);
+			// The committed row is not visible yet (a racing abort): retry, bounded.
+			if (attempt < MAX_DEDUP_RETRIES) continue;
+			throw new SkillProposalContractError(
+				`proposeSkill: upsert for key ${JSON.stringify(dedupKey)} committed no visible open row after ${MAX_DEDUP_RETRIES} retries — retry`
+			);
+		} catch (err) {
+			// A retryable optimistic-concurrency conflict / UNIQUE collision inside the tx → re-loop (the
+			// next pass's SELECT finds the winner and bumps). Bounded (F-014). Anything else propagates.
+			if (isDedupCollision(err) && attempt < MAX_DEDUP_RETRIES) continue;
+			if (isDedupCollision(err)) {
+				throw new SkillProposalContractError(
+					`proposeSkill: concurrent skill_proposal_dedup contention for key ${JSON.stringify(dedupKey)} exceeded ${MAX_DEDUP_RETRIES} retries — retry`
+				);
+			}
+			throw err; // a non-retryable DB error — propagate verbatim (F-008).
+		}
+	}
 }
 
 // ── Reads (the operator review surface — SH-4) ──────────────────────────────────────────────────────

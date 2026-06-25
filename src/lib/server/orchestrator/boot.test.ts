@@ -39,9 +39,19 @@ vi.mock('../harness', async (importOriginal) => {
 // SH-2 GO-LIVE — spy on the production skill-harvest generator factory so we can assert the boot
 // CONSTRUCTS it (the capture loop is wired at the SAME composition point as the memory loop). The
 // stub returns a harmless harvester (never invoked at idle — no session ends in these tests).
-const makeSkillHarvestAgentMock = vi.fn(() => ({ async propose() { return null; } }));
+// Typed with the production deps shape so the factory mock infers a single-arg signature (not
+// zero-arg) — otherwise the `(...args)` spread (below) and `mock.calls[0][0]` (the wiring assertion)
+// are type-illegal under svelte-check's strict tuple checking (would emit 3 svelte-check errors).
+const makeSkillHarvestAgentMock = vi.fn<
+	(deps: import('../skills/harvest-agent').SkillHarvestAgentDeps) => { propose: () => Promise<null> }
+>(() => ({
+	async propose() {
+		return null;
+	}
+}));
 vi.mock('../skills/harvest-agent', () => ({
-	makeSkillHarvestAgent: (...args: unknown[]) => makeSkillHarvestAgentMock(...args)
+	makeSkillHarvestAgent: (deps: import('../skills/harvest-agent').SkillHarvestAgentDeps) =>
+		makeSkillHarvestAgentMock(deps)
 }));
 
 // Import AFTER the mock is registered.
@@ -111,7 +121,7 @@ describe('TASK 8.1 — startOrchestrator boot wire (D-004/§2.11/F-008)', () => 
 			// The factory was called exactly once at boot (it produces the SkillHarvester forwarded onto
 			// every spawn). It is built with the confirmed runtime — never at idle invoked.
 			expect(makeSkillHarvestAgentMock).toHaveBeenCalledTimes(1);
-			const arg = makeSkillHarvestAgentMock.mock.calls[0][0] as { runtime: unknown; agentId: unknown; model: unknown };
+			const arg = makeSkillHarvestAgentMock.mock.calls[0][0];
 			expect(arg.runtime).toBe(idleRuntime);
 			expect(arg.agentId).toBeTruthy();
 			expect(arg.model).toBeTruthy();

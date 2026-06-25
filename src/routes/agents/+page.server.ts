@@ -17,6 +17,12 @@ import {
 	listAgentCatalog
 } from '$lib/server/analytics';
 import type { PoolSlot, FleetSession, TierUsage, AgentCatalogEntry } from '$lib/server/analytics';
+// UO-3 (USAGE-OBSERVABILITY-SPEC) — the granted-vs-used roll-up read model (UO-1 granted set +
+// UO-2 tool_use fold). Pure READ over already-persisted data; no new write path. Answers the
+// operator's "what agents/hires/tasks use what tools/skills?" on the surface that already owns
+// the capability-bundle view (/agents, UI-SPEC §198). Bounded (F-014), honest (F-008).
+import { usageRollup } from '$lib/server/observability';
+import type { UsageRollup } from '$lib/server/observability';
 import { loadOrchestration } from '$lib/server/config';
 // TASK 16.7b — W-D7c workforce surfaces (WORKFORCE-SPEC §8). Read-only panel aggregator
 // + the §3.4 adjudication write-path (reuses 16.6's adjudicateInterviewRun — not forked).
@@ -50,6 +56,13 @@ export interface AgentsData {
 	/** TASK 16.7b — the workforce panel (role cards + §3.4 adjudication queue); honest
 	 *  null when disconnected (the page degrades to its existing disconnected state). */
 	workforce: WorkforcePanelData | null;
+	/**
+	 * UO-3 — the capability-usage roll-up: per-session GRANTED capabilities (UO-1) alongside the
+	 * USED tools (UO-2), and a cross-session roll-up keyed by skill/tool (who's granted it, who
+	 * used it). Honest null when disconnected (the page degrades to its existing disconnected
+	 * state); a connected-but-empty DB yields empty arrays (honest empty, F-008).
+	 */
+	usageRollup: UsageRollup | null;
 	error?: string;
 }
 
@@ -90,22 +103,34 @@ export const load: PageServerLoad = async ({ depends }): Promise<AgentsData> => 
 
 	const db = tryGetDb();
 	if (!db) {
-		return { connected: false, pool: [], fleet: [], usage: [], catalog: [], workforce: null };
+		return {
+			connected: false,
+			pool: [],
+			fleet: [],
+			usage: [],
+			catalog: [],
+			workforce: null,
+			usageRollup: null
+		};
 	}
 	try {
-		const [pool, fleet, usage, catalogRows, workforce] = await Promise.all([
+		const [pool, fleet, usage, catalogRows, workforce, rollup] = await Promise.all([
 			listPoolSlots(db),
 			listFleet(db, 30),
 			buildTierUsage(db, { windowDays: 30 }),
 			listAgentCatalog(db),
-			loadWorkforcePanel(db)
+			loadWorkforcePanel(db),
+			// UO-3 — granted-vs-used roll-up over the recent session window. Bounded by the read
+			// model's own caps (F-014); the result carries sessionsCapped/toolRowsCapped so the UI
+			// surfaces a truncated read honestly rather than implying it scanned everything.
+			usageRollup(db)
 		]);
 		const bundles = agentBundleMap();
 		const catalog: CatalogAgent[] = catalogRows.map((a) => ({
 			...a,
 			bundles: bundles.get(a.name) ?? []
 		}));
-		return { connected: true, pool, fleet, usage, catalog, workforce };
+		return { connected: true, pool, fleet, usage, catalog, workforce, usageRollup: rollup };
 	} catch (err) {
 		return {
 			connected: false,
@@ -114,6 +139,7 @@ export const load: PageServerLoad = async ({ depends }): Promise<AgentsData> => 
 			usage: [],
 			catalog: [],
 			workforce: null,
+			usageRollup: null,
 			error: (err as Error).message
 		};
 	}

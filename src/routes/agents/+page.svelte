@@ -23,6 +23,29 @@
   const catalog = $derived(data.catalog ?? []);
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
 
+  // ── UO-3 (USAGE-OBSERVABILITY-SPEC) — capability usage: GRANTED (UO-1) vs USED (UO-2) ──
+  // The roll-up answers "what agents/hires/tasks use what tools/skills?" without conflating
+  // the two: `granted` is the ACTUAL composed grant persisted at spawn (never the static
+  // bundle); `usedTools` is the ACTUAL tool_use rows. A `tool-allow` grant with used=false is a
+  // DEAD GRANT (provisioned, never called) — surfaced distinctly from a used capability. Live
+  // off the same SSE stream (the `session` watcher already re-invalidates app:fleet; a new
+  // grant or a new tool_use row both land on session/message — see the message watcher below).
+  const rollup = $derived(data.usageRollup ?? null);
+  const granted = $derived(rollup?.granted ?? []);
+  const usedTools = $derived(rollup?.usedTools ?? []);
+  // A short, opaque session-id tail for an attribution chip (the full id is the chip title).
+  function sessTail(id: string): string {
+    return id.split(':').pop()?.slice(0, 8) ?? id;
+  }
+  // The honest per-attribution label for a session ref: prefer the role (the "what agent"),
+  // fall back to the intent (the "what kind of work"), else the bare session tail. NEVER
+  // fabricates — an absent role/intent simply degrades to the next honest label (F-008).
+  function refLabel(ref: { roleId: string | null; intent: string | null; sessionId: string }): string {
+    if (ref.roleId) return ref.roleId.split(':').pop() ?? ref.roleId;
+    if (ref.intent) return ref.intent;
+    return sessTail(ref.sessionId);
+  }
+
   // ── TASK 16.7b — W-D7c workforce surfaces (WORKFORCE-SPEC §8). Role cards + the §3.4
   //    adjudication queue. Live via the existing SSE onDbChange watchers (no second SSE
   //    source, D-035). Day-one reality: no interview data → every role is honest empty.
@@ -90,6 +113,10 @@
     const off1 = stream.onDbChange('session', () => void invalidate('app:fleet'));
     const off2 = stream.onDbChange('agent_event', () => void invalidate('app:analytics'));
     const off3 = stream.onDbChange('cc_agent', () => void invalidate('app:claude-code'));
+    // UO-3 — a new GRANTED set lands on a `session` row (off1 already covers it); a new USED
+    // tool lands as a `message` row (kind=tool_use). Re-invalidate the fleet slice on a message
+    // change so the granted-vs-used roll-up stays live without a second SSE source (D-035).
+    const off4 = stream.onDbChange('message', () => void invalidate('app:fleet'));
     // TASK 16.7b — workforce surfaces re-derive live off the ONE SSE stream (D-035): a
     // role/version create, an interview_run finalize/adjudicate, a panel_verdict, or a
     // role_event all re-invalidate the workforce slice. No second SSE source.
@@ -102,6 +129,7 @@
       off1();
       off2();
       off3();
+      off4();
       wf.forEach((off) => off());
     };
   });
@@ -770,6 +798,151 @@
             </li>
           {/each}
         </ul>
+      {/if}
+    </div>
+
+    <!-- ── UO-3 (USAGE-OBSERVABILITY-SPEC) — CAPABILITY USAGE: granted vs used ──────────
+         The operator's question, answered honestly: the agent catalog above shows what
+         agents COULD be provisioned (the static D-036 bundle declaration); THIS card shows
+         what sessions were ACTUALLY granted (UO-1, the composed set persisted at spawn) and
+         what tools they ACTUALLY called (UO-2, the tool_use rows). GRANTED and USED are kept
+         rigorously distinct — a tool-allow grant that was never called is a DEAD GRANT,
+         visually separated from a used capability (F-008, no conflation). Bounded read
+         (F-014): a truncated window is flagged, not silently partial. -->
+    <div class="card usage-obs" aria-labelledby="uo-title">
+      <div class="panel-head">
+        <span class="eyebrow" id="uo-title">capability usage (granted vs used)</span>
+        <span class="head-meta">
+          <span class="count mono">
+            {granted.length} granted · {usedTools.length} used
+          </span>
+        </span>
+      </div>
+      <p class="state-body">
+        What each session was actually <strong>granted</strong> at spawn (the composed
+        capability set — not the static bundle) alongside the tools it actually
+        <strong>used</strong>. A granted tool never called is a
+        <span class="dead-key">dead grant</span>; a tool used without a recorded grant is an
+        <span class="ungranted-key">ungranted use</span>.
+      </p>
+
+      {#if rollup == null}
+        <p class="state-body">
+          Usage roll-up unavailable — the database is not connected. Showing nothing rather
+          than a fabricated grant.
+        </p>
+      {:else if granted.length === 0 && usedTools.length === 0}
+        <p class="state-body">
+          No grants or tool usage recorded yet across the recent session window. Sessions
+          launched before capability persistence (legacy rows) record no grant and appear
+          here only via the tools they used.
+        </p>
+      {:else}
+        {#if rollup.sessionsCapped || rollup.toolRowsCapped}
+          <p class="uo-truncation" role="note">
+            Showing the {rollup.sessionsScanned} most recent sessions{#if rollup.toolRowsCapped} (tool-usage scan also capped){/if} — older
+            grants/usage exist beyond this window (bounded read, F-014).
+          </p>
+        {/if}
+
+        <!-- GRANTED roll-up — per capability: who's granted it + (for tool-allow) whether it
+             was ever used. Dead grants (granted, 0 calls) are flagged distinctly. -->
+        {#if granted.length > 0}
+          <div class="uo-section">
+            <span class="uo-section-head">granted capabilities</span>
+            <ul class="uo-list" aria-label="granted capabilities">
+              {#each granted as g (g.dimension + ':' + g.id)}
+                <li
+                  class="uo-row"
+                  class:dead-grant={g.dimension === 'tool-allow' && g.used === false}
+                  class:used-grant={g.dimension === 'tool-allow' && g.used === true}
+                >
+                  <div class="uo-row-head">
+                    <span class="uo-dim" data-dim={g.dimension}>{g.dimension}</span>
+                    <span class="uo-id mono">{g.id}</span>
+                    {#if g.dimension === 'tool-allow'}
+                      {#if g.used === true}
+                        <span class="uo-status used" title="this grant was actually invoked">
+                          used · {g.usedCallCount} call{g.usedCallCount === 1 ? '' : 's'}
+                        </span>
+                      {:else}
+                        <span class="uo-status dead" title="granted but never invoked — a dead grant">
+                          dead grant · 0 calls
+                        </span>
+                      {/if}
+                    {:else}
+                      <!-- skill/agent/mcp/reserved ids do not map 1:1 onto tool_use names, so we
+                           honestly DECLINE to assert used/unused (F-008) rather than fabricate. -->
+                      <span class="uo-status na" title="usage not derivable for this dimension">
+                        grant-only
+                      </span>
+                    {/if}
+                  </div>
+                  <div class="uo-attrib">
+                    <span class="uo-attrib-label">granted to</span>
+                    <span class="uo-chips">
+                      {#each g.grantedTo as ref (ref.sessionId)}
+                        <a
+                          class="uo-chip"
+                          href={`/claude-code?session=${ref.sessionId}`}
+                          title={ref.sessionId}
+                        >{refLabel(ref)}</a>
+                      {/each}
+                      {#if g.grantedTo.length === 0}
+                        <span class="uo-none">— no in-window session</span>
+                      {/if}
+                    </span>
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
+
+        <!-- USED-tool roll-up — per tool actually invoked: call count, the sessions that ran
+             it, and whether it was on any using session's grant (honest tri-state). -->
+        {#if usedTools.length > 0}
+          <div class="uo-section">
+            <span class="uo-section-head">used tools</span>
+            <ul class="uo-list" aria-label="used tools">
+              {#each usedTools as t (t.tool)}
+                <li class="uo-row" class:ungranted-use={t.wasGranted === false}>
+                  <div class="uo-row-head">
+                    <span class="uo-id mono">{t.tool}</span>
+                    <span class="uo-status used">
+                      {t.callCount} call{t.callCount === 1 ? '' : 's'} · {t.sessionCount} session{t.sessionCount === 1 ? '' : 's'}
+                    </span>
+                    {#if t.wasGranted === false}
+                      <span class="uo-status ungranted" title="used but on no recorded grant">
+                        ungranted use
+                      </span>
+                    {:else if t.wasGranted === true}
+                      <span class="uo-status granted-ok" title="on at least one using session's grant">
+                        granted
+                      </span>
+                    {:else}
+                      <span class="uo-status na" title="none of the using sessions recorded a grant (legacy)">
+                        grant not recorded
+                      </span>
+                    {/if}
+                  </div>
+                  <div class="uo-attrib">
+                    <span class="uo-attrib-label">used by</span>
+                    <span class="uo-chips">
+                      {#each t.sessions as ref (ref.sessionId)}
+                        <a
+                          class="uo-chip"
+                          href={`/claude-code?session=${ref.sessionId}`}
+                          title={ref.sessionId}
+                        >{refLabel(ref)}</a>
+                      {/each}
+                    </span>
+                  </div>
+                </li>
+              {/each}
+            </ul>
+          </div>
+        {/if}
       {/if}
     </div>
   {/if}
@@ -1635,5 +1808,144 @@
   .hire-btn.approve.override {
     border-color: var(--color-warn, var(--color-border-strong));
     color: var(--color-warn-on-overlay, var(--color-warn));
+  }
+
+  /* ── UO-3 — capability usage (granted vs used) ──────────────────────────────── */
+  .dead-key {
+    color: var(--color-warn-on-overlay, var(--color-warn));
+    font-weight: var(--weight-semibold);
+  }
+  .ungranted-key {
+    color: var(--color-error-on-overlay, var(--color-error));
+    font-weight: var(--weight-semibold);
+  }
+  .uo-truncation {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    margin: 0;
+  }
+  .uo-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  .uo-section-head {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    text-transform: lowercase;
+    letter-spacing: 0.04em;
+    color: var(--color-text-muted);
+  }
+  .uo-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  .uo-row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-3);
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-overlay);
+    /* a left rail carries the granted/used/dead signal without relying on colour alone */
+    border-left: 3px solid var(--color-border);
+  }
+  /* used-grant / ungranted-use get a coloured rail below; the badge text + title also
+     disambiguate so the signal never relies on colour alone (MC-4 a11y). */
+  .uo-row.used-grant {
+    border-left-color: var(--color-success);
+  }
+  .uo-row.dead-grant {
+    border-left-color: var(--color-warn, var(--color-border-strong));
+  }
+  .uo-row.ungranted-use {
+    border-left-color: var(--color-error);
+  }
+  .uo-row-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
+  }
+  .uo-dim {
+    font-size: var(--text-xs);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.05rem 0.4rem;
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+  }
+  .uo-dim[data-dim='tool-allow'] {
+    color: var(--color-text-2);
+  }
+  .uo-id {
+    font-size: 0.78rem;
+    font-weight: var(--weight-semibold);
+    color: var(--color-text);
+  }
+  .uo-status {
+    font-size: var(--text-xs);
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+  }
+  .uo-status.used,
+  .uo-status.granted-ok {
+    color: var(--color-success-on-overlay, var(--color-success));
+  }
+  .uo-status.dead {
+    color: var(--color-warn-on-overlay, var(--color-warn));
+    font-weight: var(--weight-semibold);
+  }
+  .uo-status.ungranted {
+    color: var(--color-error-on-overlay, var(--color-error));
+    font-weight: var(--weight-semibold);
+  }
+  .uo-status.na {
+    font-style: italic;
+  }
+  .uo-attrib {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-1) var(--space-2);
+    font-size: var(--text-xs);
+  }
+  .uo-attrib-label {
+    color: var(--color-text-muted);
+    text-transform: lowercase;
+    min-width: 5rem;
+  }
+  .uo-chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+  .uo-chip {
+    font-size: 0.66rem;
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-card);
+    color: var(--color-text-2);
+    border: var(--border-width) solid var(--color-border);
+    text-decoration: none;
+  }
+  .uo-chip:hover {
+    color: var(--color-text);
+    border-color: var(--color-accent);
+  }
+  .uo-chip:focus-visible {
+    outline: 2px solid var(--color-focus-ring, var(--color-accent));
+    outline-offset: 2px;
+  }
+  .uo-none {
+    color: var(--color-text-muted);
+    font-style: italic;
   }
 </style>

@@ -53,6 +53,7 @@ export {
 	type PoolSlot,
 	type FleetSession,
 	type FleetSessionXP,
+	type GrantedCapabilities,
 	type AgentCatalogEntry,
 	type AgentCatalogScope
 } from './fleet';

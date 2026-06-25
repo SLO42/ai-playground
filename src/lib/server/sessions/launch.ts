@@ -48,7 +48,7 @@ import { acquireSessionWorktree, type SessionWorktree } from './worktree';
 import { drainInbox } from '../peer/drain';
 import { loadFleetSnapshot } from '../peer/repo';
 import { buildPeerSendAffordance } from '../peer/affordance';
-import { peerSendGranted } from '../agent/tool-catalog';
+import { peerSendGranted, PEER_SEND_CAPABILITY_ID } from '../agent/tool-catalog';
 import { loadGatesConfig } from '../config/index';
 import type {
 	AgentRuntime,
@@ -277,6 +277,57 @@ function omitUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
 	return out;
 }
 
+/**
+ * UO-1 (USAGE-OBSERVABILITY-SPEC) — screen + clean ONE granted-id dimension for persistence.
+ * Each id is D-026-screened (opaque ids, but any free-text rides the screen path), trimmed, and
+ * empty/blank entries dropped. Returns undefined for an absent/empty/all-blank list so the option
+ * field is OMITTED at write (F-013/§6.1) → reads honestly as 'not recorded' (null), never a
+ * fabricated empty grant (F-008). A non-array input (a malformed bundle) yields undefined, never a
+ * throw (shadow path: nil/empty/non-array all collapse to "nothing persisted").
+ */
+function cleanGrantedIds(ids: unknown): string[] | undefined {
+	if (!Array.isArray(ids)) return undefined;
+	const out: string[] = [];
+	for (const id of ids) {
+		if (typeof id !== 'string') continue;
+		const screened = screenText(id).trim();
+		if (screened) out.push(screened);
+	}
+	return out.length ? out : undefined;
+}
+
+/**
+ * UO-1 — build the OMIT-when-absent granted-capability fields persisted on the session row at
+ * CREATE. The set is the ACTUAL composed/effective grant known at spawn (NOT the static bundle,
+ * F-008): the three catalog dimensions (skills/agents/mcp), the RESERVED runtime grants actually
+ * in effect (peer-send when {@link peerSendGranted}), the allow-listed tool names, and the
+ * resolved intent. Every list is screened + omitted-when-empty by {@link cleanGrantedIds}; the
+ * intent is a known enum slug (no screen needed, but never blank). This does NOT alter the
+ * compose/spawn path — it only records what launchSession already decided.
+ */
+function grantedCapabilityFields(input: LaunchInput): {
+	granted_skills?: string[];
+	granted_agents?: string[];
+	granted_mcp?: string[];
+	granted_reserved?: string[];
+	tool_allow?: string[];
+	granted_intent?: string;
+} {
+	const caps = input.capabilities;
+	// The RESERVED grants actually in effect — recorded by their reserved id. peer-send is the only
+	// reserved runtime affordance today (RESERVED_CAPABILITY_IDS); when another lands, add it here.
+	const reserved: string[] = [];
+	if (peerSendGranted(caps)) reserved.push(PEER_SEND_CAPABILITY_ID);
+	return omitUndefined({
+		granted_skills: cleanGrantedIds(caps?.skills),
+		granted_agents: cleanGrantedIds(caps?.agents),
+		granted_mcp: cleanGrantedIds(caps?.mcp),
+		granted_reserved: reserved.length ? reserved : undefined,
+		tool_allow: cleanGrantedIds(input.toolPolicy?.allow),
+		granted_intent: input.intent ? String(input.intent) : undefined
+	});
+}
+
 /** The persisted transcript message shape: a role (m0003), a `kind` discriminator
  *  (m0037), the screened content, and optional screened tool_call metadata. The persist
  *  caller stamps the monotonic `seq` (per-session order). */
@@ -409,6 +460,18 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		editScope = { ...input.editScope, destructiveBash: gatesConfig.destructiveBash };
 	}
 
+	// 1c. UO-1 (USAGE-OBSERVABILITY-SPEC) — compute the GRANTED capability set to persist on the
+	// row. This is the ACTUAL composed/effective grant known at spawn (input.capabilities +
+	// peerSendGranted + toolPolicy.allow + intent), NOT the static orchestration bundle (F-008).
+	// We do NOT change the compose/spawn logic — only record what is already decided here.
+	//
+	// Each id list is SCREENED (D-026 — ids are opaque, not secrets, but any free-text rides the
+	// standard screen path) and OMITTED when empty (F-013/§6.1) so a legacy/no-grant row reads as
+	// 'not recorded' (null) downstream, never a fabricated empty grant. The reserved grants are the
+	// runtime affordances actually in EFFECT (peer-send when peerSendGranted) — the dual of the
+	// catalog dimensions, recorded by their reserved id so the surface shows "had peer-send".
+	const granted = grantedCapabilityFields(input);
+
 	// 2. CREATE the session row (status "running") — first-class from the instant it starts.
 	const sessionContent = omitUndefined({
 		project: link(input.projectId),
@@ -422,7 +485,9 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 			tier: input.model.tier
 		},
 		runtime: 'claude-code',
-		workflow_run: input.workflowRunId ? link(input.workflowRunId) : undefined
+		workflow_run: input.workflowRunId ? link(input.workflowRunId) : undefined,
+		// UO-1: the persisted granted set (each field already omitted-when-absent by the helper).
+		...granted
 	});
 	const [created] = await db.query<[Array<{ id: unknown }>]>(
 		`CREATE session CONTENT $content RETURN AFTER;`,

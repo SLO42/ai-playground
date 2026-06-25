@@ -2321,6 +2321,38 @@ const m0064_skill_proposal_approved_name: Migration = {
 	`
 };
 
+// ── UO-1 (USAGE-OBSERVABILITY-SPEC) — persist the GRANTED capability set on `session` ──
+//
+// The granted capability set is KNOWN at spawn (launch.ts `input.capabilities` + the effective
+// reserved grants like peer-send + `toolPolicy.allow` + the `intent`) but was NEVER persisted —
+// so "what was this session ALLOWED to wield?" could not be queried (UO-3 attribution). These
+// additive OPTION fields record the ACTUAL composed/effective grant at CREATE (NOT the static
+// orchestration bundle — F-008): the three catalog dimensions, the effective RESERVED grant ids
+// (e.g. 'peer-send' when peerSendGranted), the allow-listed tool names, and the resolved intent.
+//
+// Field discipline:
+//   • All OPTION — OMITTED at write when absent/empty (F-013/§6.1). A LEGACY row (written before
+//     this migration) carries NONE on every field → the normalizer reads it as 'not recorded'
+//     (null), NEVER a fabricated empty grant (F-008). An EMPTY granted set (a session granted no
+//     capabilities) is likewise omitted → reads as 'not recorded'; the honest read of "nothing
+//     persisted" is null, distinct from a deliberate empty array we never write.
+//   • granted_* / tool_allow are array<string> — opaque ids/names, screened free-text at the
+//     writer boundary (launch.ts), never raw SDK values; the schema only shape-checks the column.
+//   • granted_intent is option<string> — the resolved Intent slug the session ran as.
+// IDEMPOTENT (D-006/F-015): OVERWRITE only — clean over a fresh DB AND a half-applied state
+// (re-running over a DB where the fields already exist is a no-op; no data touched, additive only).
+const m0065_session_granted: Migration = {
+	id: '0065_session_granted',
+	up: `
+		DEFINE FIELD OVERWRITE granted_skills   ON session TYPE option<array<string>>;
+		DEFINE FIELD OVERWRITE granted_agents   ON session TYPE option<array<string>>;
+		DEFINE FIELD OVERWRITE granted_mcp      ON session TYPE option<array<string>>;
+		DEFINE FIELD OVERWRITE granted_reserved ON session TYPE option<array<string>>;
+		DEFINE FIELD OVERWRITE tool_allow       ON session TYPE option<array<string>>;
+		DEFINE FIELD OVERWRITE granted_intent   ON session TYPE option<string>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2391,5 +2423,6 @@ export const schemaMigrations: Migration[] = [
 	m0061_skill_proposal_dedup,
 	m0062_pm_repo_create_preauthorized,
 	m0063_repo_create_brief,
-	m0064_skill_proposal_approved_name
+	m0064_skill_proposal_approved_name,
+	m0065_session_granted
 ];

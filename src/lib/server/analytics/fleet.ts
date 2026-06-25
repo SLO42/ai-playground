@@ -75,6 +75,34 @@ export interface FleetSessionXP extends FleetSession {
 	 */
 	worktreePath: string | null;
 	worktreeBranch: string | null;
+	/**
+	 * UO-1 (USAGE-OBSERVABILITY-SPEC) — the GRANTED capability set persisted at spawn
+	 * (session.granted_skills/agents/mcp/reserved + tool_allow + granted_intent, m0065). This is the
+	 * ACTUAL composed/effective grant the session was launched with (NOT the static orchestration
+	 * bundle — F-008), so UO-3 can answer "what was this session ALLOWED to wield?" and distinguish
+	 * GRANTED from USED. A LEGACY row (predates m0065) carries NONE on every field → `granted: null`,
+	 * the honest "not recorded" (never a fabricated empty grant). A session that WAS recorded but
+	 * granted nothing in a dimension simply carries an empty array there. Capability/tool ids are
+	 * opaque (D-026), already screened at the launch write.
+	 */
+	granted: GrantedCapabilities | null;
+}
+
+/**
+ * UO-1 — the persisted granted-capability read model for ONE session. Mirrors the persisted
+ * fields (m0065): the three catalog dimensions, the reserved runtime grants in effect (e.g.
+ * 'peer-send'), the allow-listed tool names, and the resolved intent. Each list defaults to []
+ * (a recorded-but-empty dimension), `intent` to null when absent. The WHOLE object is null on a
+ * legacy/never-recorded row — the caller distinguishes "not recorded" (null) from "recorded,
+ * empty" ([]). Honest: no fabricated grant (F-008).
+ */
+export interface GrantedCapabilities {
+	skills: string[];
+	agents: string[];
+	mcp: string[];
+	reserved: string[];
+	toolAllow: string[];
+	intent: string | null;
 }
 
 /** One scope (global / a project) that defines an agent type — the honest "where it lives". */
@@ -160,6 +188,41 @@ export async function listPoolSlots(db: Db): Promise<PoolSlot[]> {
 function iso(at: unknown): string {
 	if (at instanceof Date) return at.toISOString();
 	return typeof at === 'string' ? at : '';
+}
+
+/** Coerce a persisted granted-id column to a clean string[] (raw SDK arrays may carry non-strings).
+ *  An absent/NONE column → [] (the dimension was recorded-but-empty or the row predates the field;
+ *  the OUTER null vs the inner [] is decided by {@link normGranted}). Never returns null itself. */
+function strList(v: unknown): string[] {
+	if (!Array.isArray(v)) return [];
+	return v.filter((x): x is string => typeof x === 'string' && x.trim() !== '').map((x) => x.trim());
+}
+
+/**
+ * UO-1 — normalize the persisted granted-capability columns into {@link GrantedCapabilities} or
+ * null. A row where EVERY granted field is NONE/absent (a legacy row predating m0065, OR a session
+ * that recorded nothing) reads as null — the honest "not recorded", never a fabricated empty grant
+ * (F-008/F-013). When ANY granted field is present, the object is returned with each dimension
+ * coerced ([] when that one dimension is absent). The intent is coerced to a string or null (never
+ * str(undefined) — F-013 class).
+ */
+function normGranted(r: Record<string, unknown>): GrantedCapabilities | null {
+	const present =
+		r.granted_skills != null ||
+		r.granted_agents != null ||
+		r.granted_mcp != null ||
+		r.granted_reserved != null ||
+		r.tool_allow != null ||
+		r.granted_intent != null;
+	if (!present) return null;
+	return {
+		skills: strList(r.granted_skills),
+		agents: strList(r.granted_agents),
+		mcp: strList(r.granted_mcp),
+		reserved: strList(r.granted_reserved),
+		toolAllow: strList(r.tool_allow),
+		intent: r.granted_intent == null ? null : String(r.granted_intent)
+	};
 }
 
 /**
@@ -272,6 +335,7 @@ export async function listFleetAcrossProjects(db: Db, limit = 40): Promise<Fleet
 	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
 		`SELECT id, status, kind, model, project, task, note, cc_session_id, started_at, ended_at,
 		        worktree_path, worktree_branch,
+		        granted_skills, granted_agents, granted_mcp, granted_reserved, tool_allow, granted_intent,
 		        project.id AS project_id, project.name AS project_name, project.slug AS project_slug,
 		        role.slug AS role_slug, role.name AS role_name
 		   FROM session
@@ -302,6 +366,8 @@ export async function listFleetAcrossProjects(db: Db, limit = 40): Promise<Fleet
 			// WI-2: honest worktree provenance — absent (READ session / option NONE) → null (F-008).
 			worktreePath: r.worktree_path == null ? null : String(r.worktree_path),
 			worktreeBranch: r.worktree_branch == null ? null : String(r.worktree_branch),
+			// UO-1: honest granted set — legacy/never-recorded row → null, never a fabricated grant (F-008).
+			granted: normGranted(r),
 			startedAt: iso(r.started_at),
 			endedAt: r.ended_at ? iso(r.ended_at) : null
 		};
@@ -327,6 +393,7 @@ export async function getFleetSession(db: Db, sessionId: string): Promise<FleetS
 	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
 		`SELECT id, status, kind, model, project, task, note, cc_session_id, started_at, ended_at,
 		        worktree_path, worktree_branch,
+		        granted_skills, granted_agents, granted_mcp, granted_reserved, tool_allow, granted_intent,
 		        project.id AS project_id, project.name AS project_name, project.slug AS project_slug,
 		        role.slug AS role_slug, role.name AS role_name
 		   FROM session WHERE id = $sid LIMIT 1
@@ -357,6 +424,8 @@ export async function getFleetSession(db: Db, sessionId: string): Promise<FleetS
 		// WI-2: honest worktree provenance — absent (READ session / option NONE) → null (F-008).
 		worktreePath: r.worktree_path == null ? null : String(r.worktree_path),
 		worktreeBranch: r.worktree_branch == null ? null : String(r.worktree_branch),
+		// UO-1: honest granted set — legacy/never-recorded row → null, never a fabricated grant (F-008).
+		granted: normGranted(r),
 		startedAt: iso(r.started_at),
 		endedAt: r.ended_at ? iso(r.ended_at) : null
 	};

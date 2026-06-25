@@ -806,6 +806,74 @@ describe('launchSession — WI-2 per-session worktree (WRITE classes)', () => {
 	}, 60_000);
 });
 
+// ── UO-1 (USAGE-OBSERVABILITY-SPEC) — persist the GRANTED capability set at the session CREATE ──────
+//
+// The granted set is known at spawn (input.capabilities + peerSendGranted + toolPolicy.allow +
+// intent) but was never persisted. UO-1 records the ACTUAL composed/effective grant on the row at
+// CREATE (NOT the static bundle — F-008), as additive OPTION fields (omit-when-absent, F-013). These
+// tests assert the RAW row carries the granted columns at CREATE for a granted session, and omits
+// the absent dimensions for a non-granted session — directly on the row (the fleet-projection
+// read-back + legacy-null normalization are proven in analytics/fleet.test.ts).
+describe('UO-1 — granted capability set lands on the session row at CREATE', () => {
+	it('a peer-send-granted session row carries granted_* + reserved + tool_allow + intent', async () => {
+		const backend = scriptedBackend([
+			{ type: 'log', message: 'go' },
+			{ type: 'done', result: { ok: true, summary: 'ok', ccSessionId: 'cc_uo1_l_g' } }
+		]);
+		const runtime = new ClaudeCodeRuntime({ backend });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			// READ class keeps the shared root (no git fixture needed); the grant fields are
+			// intent-agnostic and computed BEFORE the worktree branch.
+			input: baseInput({
+				intent: 'code-read',
+				capabilities: { skills: ['peer-send', 'design'], agents: ['coder'], mcp: ['atelier-memory'] },
+				toolPolicy: { allow: ['Read', 'Edit'] }
+			})
+		});
+
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $rid;`, {
+			rid: new StringRecordId(res.sessionId)
+		});
+		const sess = rows[0];
+		expect(sess.granted_skills).toEqual(['peer-send', 'design']);
+		expect(sess.granted_agents).toEqual(['coder']);
+		expect(sess.granted_mcp).toEqual(['atelier-memory']);
+		expect(sess.granted_reserved).toEqual(['peer-send']); // the EFFECTIVE reserved grant
+		expect(sess.tool_allow).toEqual(['Read', 'Edit']);
+		expect(sess.granted_intent).toBe('code-read');
+	}, 60_000);
+
+	it('a non-granted session OMITS empty capability dims (option NONE, never a stored [])', async () => {
+		const backend = scriptedBackend([
+			{ type: 'log', message: 'go' },
+			{ type: 'done', result: { ok: true, summary: 'ok', ccSessionId: 'cc_uo1_l_p' } }
+		]);
+		const runtime = new ClaudeCodeRuntime({ backend });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput({ intent: 'code-read', toolPolicy: { allow: ['Read'] } }) // no capabilities
+		});
+
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $rid;`, {
+			rid: new StringRecordId(res.sessionId)
+		});
+		const sess = rows[0];
+		// Absent dims OMITTED (F-013/§6.1) — NONE, never a fabricated empty array.
+		expect(sess.granted_skills == null).toBe(true);
+		expect(sess.granted_agents == null).toBe(true);
+		expect(sess.granted_mcp == null).toBe(true);
+		expect(sess.granted_reserved == null).toBe(true); // peer-send not granted → no reserved
+		// tool_allow + intent ARE recorded (always present on a launch).
+		expect(sess.tool_allow).toEqual(['Read']);
+		expect(sess.granted_intent).toBe('code-read');
+	}, 60_000);
+});
+
 // ── SH-2 — the skill-proposal CAPTURE seam at session-end (SKILL-HARVEST-SPEC §"CAPTURE") ──────────
 //
 // An INJECTED SkillHarvester (stub = no spend) is offered the screened trajectory at session-end. It

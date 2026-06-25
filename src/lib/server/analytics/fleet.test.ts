@@ -305,6 +305,115 @@ describe('fleet read models (2.4; UI-SPEC §198–200)', () => {
 	});
 });
 
+// UO-1 (USAGE-OBSERVABILITY-SPEC) — the GRANTED capability set persists at the session CREATE and
+// the fleet projection surfaces it HONESTLY: a granted session carries its composed set + the
+// effective reserved grant (peer-send) + toolPolicy.allow + intent; a non-granted session omits
+// the absent dimensions; a LEGACY row (no granted fields) reads as `granted: null` ("not recorded",
+// never a fabricated empty grant — F-008/F-013). granted ≠ used (no conflation).
+describe('UO-1 — granted capability set persists at CREATE + normalizes honestly (fleet projection)', () => {
+	it('a session GRANTED peer-send persists skills/agents/mcp + reserved + tool_allow + intent', async () => {
+		const events: RuntimeEvent[] = [
+			{ type: 'log', message: 'go' },
+			{ type: 'done', result: { ok: true, summary: 'ok', ccSessionId: 'cc_uo1_granted' } }
+		];
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(events, 'cc_uo1_granted') });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			acquireWorktree: fakeAcquireWorktree,
+			input: {
+				projectId,
+				taskId,
+				agentId: 'agent_uo1_g',
+				model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+				intent: 'code-write',
+				budgets: {},
+				// peer-send is a RESERVED runtime grant id; design is a (notional) catalog skill id.
+				capabilities: { skills: ['peer-send', 'design'], agents: ['coder'], mcp: ['atelier-memory'] },
+				toolPolicy: { allow: ['Read', 'Edit', 'Bash'] }
+			}
+		});
+
+		const meta = await getFleetSession(db, res.sessionId);
+		expect(meta).toBeTruthy();
+		const g = meta!.granted;
+		expect(g).toBeTruthy();
+		expect(g!.skills).toEqual(['peer-send', 'design']);
+		expect(g!.agents).toEqual(['coder']);
+		expect(g!.mcp).toEqual(['atelier-memory']);
+		// The EFFECTIVE reserved grant in effect — recorded by its canonical reserved id (peer-send).
+		expect(g!.reserved).toEqual(['peer-send']);
+		expect(g!.toolAllow).toEqual(['Read', 'Edit', 'Bash']);
+		expect(g!.intent).toBe('code-write');
+
+		// The cross-project fleet carries the SAME granted set (read-back parity).
+		const xp = await listFleetAcrossProjects(db, 80);
+		const row = xp.find((s) => s.id === res.sessionId);
+		expect(row!.granted!.reserved).toEqual(['peer-send']);
+		expect(row!.granted!.toolAllow).toEqual(['Read', 'Edit', 'Bash']);
+	});
+
+	it('a NON-granted session omits empty dims + records NO reserved grant (honest, not fabricated)', async () => {
+		const events: RuntimeEvent[] = [
+			{ type: 'log', message: 'go' },
+			{ type: 'done', result: { ok: true, summary: 'ok', ccSessionId: 'cc_uo1_plain' } }
+		];
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(events, 'cc_uo1_plain') });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: {
+				projectId,
+				taskId,
+				agentId: 'agent_uo1_p',
+				model: { provider: 'claude', modelId: 'claude-haiku-4', tier: 'haiku' },
+				// READ class — no capabilities block at all; toolPolicy.allow + intent still recorded.
+				intent: 'code-read',
+				budgets: {},
+				toolPolicy: { allow: ['Read'] }
+			}
+		});
+
+		const meta = await getFleetSession(db, res.sessionId);
+		const g = meta!.granted;
+		// Present (intent + tool_allow were recorded) — so granted is an object, not null.
+		expect(g).toBeTruthy();
+		expect(g!.skills).toEqual([]); // no capabilities block → dimension omitted at write → []
+		expect(g!.agents).toEqual([]);
+		expect(g!.mcp).toEqual([]);
+		expect(g!.reserved).toEqual([]); // peer-send NOT granted → no reserved grant recorded
+		expect(g!.toolAllow).toEqual(['Read']);
+		expect(g!.intent).toBe('code-read');
+
+		// Raw row: the empty capability dimensions are OMITTED (option NONE), never a stored [].
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $rid;`, {
+			rid: new StringRecordId(res.sessionId)
+		});
+		expect(rows[0].granted_reserved == null).toBe(true);
+		expect(rows[0].granted_skills == null).toBe(true);
+	});
+
+	it('a LEGACY row with NO granted fields normalizes to granted: null (not a fake empty grant)', async () => {
+		// Simulate a pre-m0065 row: CREATE a session WITHOUT any granted_* fields.
+		const [created] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE session CONTENT {
+				project: $p, kind: "task",
+				model: { provider: "claude", model_id: "claude-opus-4-8", tier: "opus" },
+				runtime: "claude-code"
+			 } RETURN AFTER;`,
+			{ p: new StringRecordId(projectId) }
+		);
+		const legacyId = String(created[0].id);
+
+		const meta = await getFleetSession(db, legacyId);
+		expect(meta).toBeTruthy();
+		// Honest "not recorded" — null, never a fabricated empty grant (F-008/F-013).
+		expect(meta!.granted).toBeNull();
+	});
+});
+
 // TASK (transcript-panel) — getFleetSession backs the /claude-code?session=<id> transcript-panel
 // header (one session's status/model/project label). SHADOW PATHS: happy (a real session) +
 // unknown id (→ null, honest "no session found") + malformed id (→ throws at the D-016

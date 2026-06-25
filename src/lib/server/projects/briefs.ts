@@ -32,7 +32,11 @@ export type BriefStatus = 'open' | 'approved' | 'rejected' | 'deferred' | 'super
 // record). Its decide-effect (cert flip + staffing feed, B4) lives in workforce/recruiter-hire.ts
 // applyHireDecision, NOT pm-panel.ts applyBriefDecision (which is task-only) — the same
 // brief-row-records-the-ceremony / effects-live-elsewhere split documented at the top of this file.
-export type BriefArtifactKind = 'task' | 'review_proposal' | 'fixture_proposal' | 'cert_hire';
+// 'repo_create' (RC-3) — the brief's artifact is the PROJECT row; the matter is "create this project's
+// GitHub repo". Its decide-effect (the RC-2 outward gate) lives in repo-create-proposal.ts
+// applyRepoCreateDecision, NOT pm-panel.ts applyBriefDecision (task-only) — the same brief-row-records-
+// the-ceremony / effects-live-elsewhere split documented at the top of this file (cert_hire precedent).
+export type BriefArtifactKind = 'task' | 'review_proposal' | 'fixture_proposal' | 'cert_hire' | 'repo_create';
 
 /** One Approve/Reject/Defer option — each with its strongest pro AND con (§8). */
 export interface BriefOption {

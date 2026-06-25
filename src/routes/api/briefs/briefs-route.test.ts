@@ -27,6 +27,9 @@ import {
 	raiseHireBrief
 } from '$lib/server/workforce';
 import { getBrief } from '$lib/server/projects/briefs';
+import { createProject } from '$lib/server/projects/repo';
+import { createPm, getPm } from '$lib/server/projects/pm-repo';
+import { proposeRepoCreate } from '$lib/server/projects/repo-create-proposal';
 import { POST } from './+server';
 
 let tdb: TestDb;
@@ -151,5 +154,49 @@ describe('/api/briefs POST — cert_hire dispatch (HR-5, B4)', () => {
 			staffingProposal: 'review_proposal:does_not_exist'
 		});
 		expect(res.status).toBe(409);
+	}, 60_000);
+});
+
+// RC-3 — the repo_create dispatch (the PM-PROPOSED rail's operator decide endpoint). The route runs the
+// PRODUCTION path (no gh/git seam — those are test-only injectables), so we exercise ONLY the dispatch +
+// integrity branches that NEVER reach the outward gh call: defer→400, the integrity wall
+// (approve without operatorConfirmed → 409, fails closed BEFORE the gate), and reject→200 (no gh, no repo).
+describe('/api/briefs POST — repo_create dispatch (RC-3, B4)', () => {
+	let rn = 0;
+	async function freshRepoBrief(): Promise<{ briefId: string; projectId: string }> {
+		const p = await createProject(db, {
+			slug: `repo_route_${++rn}_${Date.now()}`,
+			name: `Repo Route ${rn}`,
+			root_path: 'F:/code/whatever'
+		});
+		await createPm(db, { project: p.id, name: 'Vesper' });
+		const { brief } = await proposeRepoCreate(db, { project: p.id, name: 'repo-route' });
+		return { briefId: brief.id, projectId: p.id };
+	}
+
+	it('the integrity wall: an APPROVE WITHOUT operatorConfirmed is refused 409 (the gate never runs, no repo)', async () => {
+		const { briefId, projectId } = await freshRepoBrief();
+		const res = await call({ id: briefId, action: 'approve' });
+		expect(res.status).toBe(409);
+		// FAIL CLOSED: brief stays open, no consent recorded (the gate was never reached).
+		expect((await getBrief(db, briefId))?.status).toBe('open');
+		expect((await getPm(db, projectId))?.repo_create_preauthorized).toBe(false);
+	}, 60_000);
+
+	it('DEFER on a repo_create brief is 400 (approve/reject only)', async () => {
+		const { briefId } = await freshRepoBrief();
+		const res = await call({ id: briefId, action: 'defer' });
+		expect(res.status).toBe(400);
+		expect((await getBrief(db, briefId))?.status).toBe('open');
+	}, 60_000);
+
+	it('REJECT succeeds 200 + marks the brief rejected (no gh, no repo, no consent)', async () => {
+		const { briefId, projectId } = await freshRepoBrief();
+		const res = await call({ id: briefId, action: 'reject' });
+		expect(res.status).toBe(200);
+		expect((res.json as { ok: boolean }).ok).toBe(true);
+		expect((res.json as { briefStatus: string }).briefStatus).toBe('rejected');
+		expect((await getBrief(db, briefId))?.status).toBe('rejected');
+		expect((await getPm(db, projectId))?.repo_create_preauthorized).toBe(false);
 	}, 60_000);
 });

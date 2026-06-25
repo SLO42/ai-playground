@@ -190,5 +190,30 @@ export {
 	type BriefChallenge,
 	type BriefStatus,
 	type BriefClassification,
+	type BriefArtifactKind,
 	type BriefCompleteness
 } from './briefs';
+
+// RC-2 — the GATED OUTWARD repo-creation driver (private-first, consent + confirm-token gated).
+export {
+	runRepoCreationGate,
+	repoCreateConfirmToken,
+	REPO_CREATE_ADAPTER_ID,
+	type RepoCreateGateInput,
+	type RepoCreateGateResult,
+	type RepoCreateCheck,
+	type RepoCreateStage
+} from './repo-creation-gate';
+
+// RC-3 — the two trigger paths onto the RC-2 gate (operator-create + PM-proposed via the brief rail).
+export {
+	proposeRepoCreate,
+	applyRepoCreateDecision,
+	repoCreateFingerprint,
+	RepoProposalError,
+	RepoCreateGateError,
+	type ProposeRepoCreateInput,
+	type ProposeRepoCreateResult,
+	type ApplyRepoCreateInput,
+	type ApplyRepoCreateResult
+} from './repo-create-proposal';

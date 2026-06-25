@@ -38,6 +38,7 @@ import {
 	updatePmAuthority,
 	setPmAutonomous,
 	setPmAutoPublishPreauthorized,
+	setPmRepoCreatePreauthorized,
 	PM_MEMORY_KINDS,
 	PM_AUTHORITIES,
 	type PmAuthority,
@@ -61,6 +62,15 @@ import {
 	withdrawPmProposal,
 	ProposalContractError
 } from '$lib/server/projects/pm-proposals';
+// RC-2/RC-3 — the operator-create gate driver + the PM-proposed recommendation rail.
+import {
+	runRepoCreationGate,
+	repoCreateConfirmToken
+} from '$lib/server/projects/repo-creation-gate';
+import {
+	proposeRepoCreate,
+	RepoProposalError
+} from '$lib/server/projects/repo-create-proposal';
 // PM-LC-2 — the one-click lifecycle tick (PM-LIFECYCLE-SPEC §PM-LC-2).
 import { startProjectLifecycle } from '$lib/server/projects/pm-lifecycle';
 // PMA — the live autonomous loop's honest last-state (read-only surface; the boot seam owns the loop).
@@ -1222,6 +1232,109 @@ export const actions: Actions = {
 			};
 		} catch (err) {
 			return fail(500, { pm: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * RC-3 PATH A (OPERATOR-CREATE) — the operator UI's server action to CREATE this project's GitHub
+	 * repo via the RC-2 gate. The operator identity is SERVER-RESOLVED (this action runs server-side; a
+	 * client/agent cannot forge it — mirrors pmAutoPublish/pmPanel/the release confirm). The operator
+	 * supplies only the repo name (+ optional owner/branch) in the form; the server RECORDS the consent
+	 * (setPmRepoCreatePreauthorized true) and DERIVES the confirm token itself (repoCreateConfirmToken),
+	 * then drives runRepoCreationGate. PRIVATE-FIRST is non-negotiable (the gate hardcodes --private and
+	 * public is unrepresentable). Honest (F-008): a RED gate returns the named failedAt + summary, never a
+	 * fabricated success. Idempotent (gate absorbs already-exists / already-set-origin). Never auto-hires:
+	 * a project with no PM has no row to record consent on → 409 (hire a PM first).
+	 */
+	repoCreate: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { repo: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { repo: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const name = String(form.get('name') ?? '').trim();
+		const owner = String(form.get('owner') ?? '').trim() || undefined;
+		const branch = String(form.get('branch') ?? '').trim() || undefined;
+		if (!name) return fail(400, { repo: { error: 'a repo name is required' } });
+
+		try {
+			// Record the operator's consent SERVER-side (operator identity = this server action; un-forgeable).
+			// A no-PM project returns null → 409 (never auto-hires; the gate's consent leg has no row to set).
+			const consented = await setPmRepoCreatePreauthorized(db, projectId, true);
+			if (!consented) {
+				return fail(409, { repo: { error: 'No PM hired for this project yet — hire one first (the consent record lives on the PM row).' } });
+			}
+			// Derive the confirm token SERVER-side (never client-supplied) for THIS (project, name, owner).
+			const confirmToken = repoCreateConfirmToken(owner !== undefined ? { projectId, name, owner } : { projectId, name });
+			const gate = await runRepoCreationGate({
+				db,
+				projectId,
+				consent: true,
+				confirmToken,
+				name,
+				...(owner !== undefined ? { owner } : {}),
+				...(branch ? { branch } : {})
+			});
+			return {
+				repo: {
+					ok: true as const,
+					created: gate.created,
+					failedAt: gate.failedAt,
+					summary: gate.summary,
+					repoUrl: gate.repoUrl,
+					checks: gate.checks
+				}
+			};
+		} catch (err) {
+			// A boundary violation (a malformed name reaching the gate's RC-1 validation) surfaces as a
+			// named 400; anything else is an honest 500. The gate itself never throws for an EXPECTED red.
+			return fail(500, { repo: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * RC-3 PATH B (PM-PROPOSED) — the operator/PM affordance to RECOMMEND a repo be created. This routes
+	 * through the EXISTING operator-gated brief rail (proposeRepoCreate → a repo_create decision_brief):
+	 * the PM's recommendation is DATA until the operator APPROVES it on the brief (/api/briefs →
+	 * applyRepoCreateDecision drives the RC-2 gate). The PM NEVER reaches the gate from here — this action
+	 * only raises the brief. (Surfaced for the operator-on-behalf-of-PM case; the autonomous PM raises the
+	 * same brief through its own loop.) Honest (F-008): no PM / observe-only / repo already set → the
+	 * named RepoProposalError as a 409.
+	 */
+	repoProposeCreate: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { repo: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { repo: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const name = String(form.get('name') ?? '').trim();
+		const owner = String(form.get('owner') ?? '').trim() || undefined;
+		const rationale = String(form.get('rationale') ?? '').trim() || undefined;
+		if (!name) return fail(400, { repo: { error: 'a recommended repo name is required' } });
+
+		try {
+			const result = await proposeRepoCreate(db, {
+				project: projectId,
+				name,
+				...(owner !== undefined ? { owner } : {}),
+				...(rationale !== undefined ? { rationale } : {})
+			});
+			return {
+				repo: {
+					ok: true as const,
+					action: 'propose' as const,
+					raised: result.raised,
+					briefId: result.brief.id,
+					briefStatus: result.brief.status
+				}
+			};
+		} catch (err) {
+			if (err instanceof RepoProposalError) {
+				return fail(409, { repo: { error: err.message } });
+			}
+			return fail(500, { repo: { error: (err as Error).message } });
 		}
 	},
 

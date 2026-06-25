@@ -11,7 +11,15 @@
 import { json, error } from '@sveltejs/kit';
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import { IdentifierError } from '$lib/server/db/validate';
-import { applyBriefDecision, BriefError, getBrief, type BriefAction } from '$lib/server/projects';
+import {
+	applyBriefDecision,
+	applyRepoCreateDecision,
+	BriefError,
+	RepoCreateGateError,
+	getBrief,
+	type BriefAction
+} from '$lib/server/projects';
+import { env } from '$env/dynamic/private';
 import {
 	applyHireDecision,
 	HireGateError,
@@ -63,6 +71,30 @@ export const POST: RequestHandler = async ({ request }) => {
 			});
 		}
 
+		// RC-3 — a repo_create brief has its OWN decide-effect (the RC-2 outward gate); it is NOT a
+		// task brief, so applyBriefDecision would reject it. Dispatch on artifact_kind (mirrors
+		// cert_hire). approve/reject only (no defer — the project stays repo-less until decided);
+		// approve REQUIRES operatorConfirmed (B4 — the integrity wall: a PM/agent cannot set it, so a
+		// PM-proposed repo-create can NEVER reach the gate without the operator's explicit confirm).
+		if (brief?.artifact_kind === 'repo_create') {
+			if (body.action === 'defer') {
+				throw error(400, 'a repo-create brief is approve/reject only — there is no defer (the project stays repo-less until decided)');
+			}
+			const result = await applyRepoCreateDecision(db, body.id, body.action as 'approve' | 'reject', {
+				env,
+				operatorConfirmed: body.operatorConfirmed === true
+			});
+			return json({
+				ok: true,
+				action: body.action,
+				briefStatus: result.brief.status,
+				created: result.gate?.created ?? false,
+				...(result.gate?.failedAt ? { failedAt: result.gate.failedAt } : {}),
+				...(result.gate?.summary ? { gateSummary: result.gate.summary } : {}),
+				...(result.repoUrl ? { repoUrl: result.repoUrl } : {})
+			});
+		}
+
 		const result = await applyBriefDecision(db, body.id, body.action as BriefAction);
 		return json({
 			ok: true,
@@ -82,6 +114,9 @@ export const POST: RequestHandler = async ({ request }) => {
 		// re-confirms (or the operator certifies-only by omitting it).
 		if (err instanceof StaffingGateError) throw error(409, err.message);
 		if (err instanceof WorkforceInputError) throw error(409, err.message);
+		// RC-3: an approve without operatorConfirmed, a wrong-kind/stale brief — a fail-closed boundary
+		// violation, not a server fault (the integrity wall surfaces here as a clean 409).
+		if (err instanceof RepoCreateGateError) throw error(409, err.message);
 		if (err instanceof BriefError) throw error(409, err.message);
 		if (err && typeof err === 'object' && 'status' in err) throw err;
 		throw error(500, (err as Error).message);

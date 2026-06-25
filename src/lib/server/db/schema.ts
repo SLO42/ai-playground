@@ -2276,6 +2276,25 @@ const m0062_pm_repo_create_preauthorized: Migration = {
 	`
 };
 
+// m0063 — decision_brief.artifact_kind admits 'repo_create' (RC-3 — the PM-PROPOSED repo-create rail).
+//
+// The PM may RECOMMEND a repo (repo-create-proposal.ts proposeRepoCreate) by raising a decision_brief
+// whose artifact is the PROJECT row and whose decide-effect (the RC-2 gate) lives in
+// applyRepoCreateDecision — the SAME brief/effect split cert_hire uses (m0050). The existing
+// artifact_kind ASSERT only admitted task/review_proposal/fixture_proposal/cert_hire, so a repo_create
+// brief CONTENT write would be REJECTED. This ADDITIVELY widens the enum to admit 'repo_create' — no
+// existing kind changes, no row is rewritten. OVERWRITE-only (F-015 idempotent: re-running re-asserts
+// the same widened set; apply-twice + half-applied recovery are covered by db/migrate.test.ts's generic
+// OVERWRITE sweep). The panel_verdict ASSERT is left untouched (a repo-create brief raises no panel
+// verdict — the PM proposes, the operator disposes; B4/D-039).
+const m0063_repo_create_brief: Migration = {
+	id: '0063_repo_create_brief',
+	up: `
+		DEFINE FIELD OVERWRITE artifact_kind ON decision_brief TYPE string
+			ASSERT $value IN ["task","review_proposal","fixture_proposal","cert_hire","repo_create"];
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2344,5 +2363,6 @@ export const schemaMigrations: Migration[] = [
 	m0059_session_worktree,
 	m0060_skill_proposal,
 	m0061_skill_proposal_dedup,
-	m0062_pm_repo_create_preauthorized
+	m0062_pm_repo_create_preauthorized,
+	m0063_repo_create_brief
 ];

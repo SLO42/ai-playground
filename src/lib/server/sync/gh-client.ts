@@ -83,6 +83,38 @@ export function assertRepoName(name: string): string {
 	return name;
 }
 
+/**
+ * A git branch/ref name that is SAFE to pass as a `git push` argument: no leading `-` (so git can
+ * never misparse it as a flag — D-008 class), ref-safe characters only, and within git's own ref
+ * constraints. We forbid the chars git itself rejects in refs (space, `~ ^ : ? * [ \`), runs of `..`,
+ * a leading/trailing `.` or `/`, and `@{`. 1–255 chars. This is INTENTIONALLY stricter than git's
+ * full grammar — the gate only ever pushes a plain branch like `main`/`feature/x`.
+ */
+const BRANCH_NAME_RE = /^[A-Za-z0-9](?:[A-Za-z0-9._/-]*[A-Za-z0-9])?$/;
+
+/**
+ * Validate a branch name at the OUTWARD-push boundary (RC-2 finding #2). A `-`-prefixed value could
+ * be read by git as a flag rather than a ref, so we reject any leading `-` (the RE's first char
+ * class excludes it) plus the ref-unsafe sequences git forbids. The gate ALSO uses a `--` separator
+ * before the branch as defense-in-depth, but validating here gives an honest, named rejection rather
+ * than a confusing git error. @throws on a malformed/flag-shaped branch.
+ */
+export function assertBranchName(branch: string): string {
+	if (
+		typeof branch !== 'string' ||
+		branch.length === 0 ||
+		branch.length > 255 ||
+		branch.startsWith('-') ||
+		!BRANCH_NAME_RE.test(branch) ||
+		branch.includes('..') ||
+		branch.includes('@{') ||
+		branch.endsWith('.lock')
+	) {
+		throw new Error(`invalid git branch name: ${JSON.stringify(branch)}`);
+	}
+	return branch;
+}
+
 /** The GitHub operations the sync adapter depends on (the injectable seam). */
 export interface GitHubClient {
 	/** Is `gh` installed AND authenticated? Never throws — returns an honest reason. */
@@ -119,6 +151,15 @@ export interface GitHubClient {
 	 * implement it (the gated driver requires a client that does — RC-2).
 	 */
 	createRepo?(input: CreateRepoInput, cwd: string): Promise<CreateRepoOutcome>;
+	/**
+	 * RC-2 finding #1/#3 — the authenticated account's login (`gh api user --jq .login`). The
+	 * gate uses it to build a WELL-FORMED `https://github.com/<owner>/<name>` canonical URL when
+	 * the caller omitted `owner` (so the already-exists path never synthesizes an owner-less,
+	 * malformed URL) AND to verify a recorded `project.repo_url` actually points at the repo being
+	 * created (the stale-origin guard). Never throws — returns null when gh can't resolve it.
+	 * OPTIONAL: a client without it makes the gate fall back to the unresolved-owner path.
+	 */
+	resolveOwner?(cwd: string): Promise<string | null>;
 }
 
 /** One open issue/PR head — the minimal arrival-detection shape (TASK 16.2). */
@@ -214,6 +255,25 @@ export class GitHubCliClient implements GitHubClient {
 			);
 			const repo = out.trim();
 			return repo ? assertRepoSlug(repo) : null;
+		} catch {
+			return null;
+		}
+	}
+
+	/**
+	 * RC-2 finding #1/#3 — the authenticated account login (`gh api user --jq .login`). Validated
+	 * with {@link assertOwner} so a malformed/garbage value never propagates into a URL or slug.
+	 * Never throws — returns null on any gh failure or an unparseable login.
+	 */
+	async resolveOwner(cwd: string): Promise<string | null> {
+		try {
+			const out = await runGh(['api', 'user', '--jq', '.login'], {
+				cwd,
+				bin: this.#bin,
+				prefixArgs: this.#prefixArgs
+			});
+			const login = out.trim();
+			return login ? assertOwner(login) : null;
 		} catch {
 			return null;
 		}
@@ -360,9 +420,18 @@ export class GitHubCliClient implements GitHubClient {
 						reason: 'Authenticated, but not permitted to create a repo under that owner.'
 					};
 				}
-				// Honest fallthrough: surface gh's own message (gh redacts its token), never the
-				// env GH_TOKEN value (D-026).
-				return { kind: 'error', reason: stderr.trim() || err.message };
+				// Honest fallthrough: surface gh's own stderr (gh redacts its token), never the env
+				// GH_TOKEN value (D-026). When stderr is EMPTY (a timeout or a missing-binary crash,
+				// err.code===null), gh wrote nothing useful — DON'T leak the internal
+				// "gh repo create failed: …" message (RC-2 finding #5; noisy/internal). Map the two
+				// empty-stderr modes to clean operator-facing reasons instead.
+				const clean = stderr.trim();
+				if (clean) return { kind: 'error', reason: clean };
+				const reason =
+					err.code === null
+						? 'GitHub CLI did not respond (timed out or `gh` is unavailable).'
+						: `GitHub CLI exited ${err.code} without details.`;
+				return { kind: 'error', reason };
 			}
 			return { kind: 'error', reason: err instanceof Error ? err.message : String(err) };
 		}
@@ -512,7 +581,22 @@ function isAlreadyExists(stderr: string): boolean {
 	return /already exists/i.test(stderr);
 }
 
-/** gh's permission/auth-scope refusal stderr (HTTP 403 / not-permitted wording). */
+/**
+ * gh's permission/authorization refusal stderr — REQUIRES permission-specific wording (RC-2
+ * finding #4). The earlier form also matched a bare `scope`/`insufficient`, which mislabels a
+ * benign error that merely MENTIONS "scope" (e.g. "name out of scope") as permission-denied. We
+ * now require an HTTP 403, an explicit forbidden/permission/authorization phrase, or the specific
+ * OAuth-scope refusals gh emits ("insufficient OAuth scope" / "requires the … scope") — not the
+ * standalone word. Anything else falls through to the honest `error` outcome.
+ */
 function isPermissionDenied(stderr: string): boolean {
-	return /permission|forbidden|not authorized|HTTP 403|insufficient|scope/i.test(stderr);
+	return (
+		/\bHTTP 403\b/i.test(stderr) ||
+		/forbidden/i.test(stderr) ||
+		/permission denied/i.test(stderr) ||
+		/not authorized|unauthorized/i.test(stderr) ||
+		/must have admin/i.test(stderr) ||
+		/resource not accessible/i.test(stderr) ||
+		/insufficient (?:oauth )?scope|requires? .*\bscope\b/i.test(stderr)
+	);
 }

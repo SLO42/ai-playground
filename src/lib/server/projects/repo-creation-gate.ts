@@ -44,6 +44,7 @@ import type { Db } from '../db/client';
 import { getProject, updateProject } from './repo';
 import {
 	GitHubCliClient,
+	assertBranchName,
 	type CreateRepoInput,
 	type CreateRepoOutcome,
 	type GitHubClient
@@ -227,12 +228,56 @@ export async function runRepoCreationGate(input: RepoCreateGateInput): Promise<R
 	let resolvedUrl: string | null = null;
 	const alreadyExisted = outcome.kind === 'already-exists';
 	if (outcome.kind === 'created') {
+		// gh itself returned the URL of the repo IT JUST created — trustworthy, points at the right
+		// remote by construction. No stale-origin risk here (the recorded repo_url is irrelevant).
 		resolvedUrl = outcome.url;
 		checks.push(check('create', true, `repo created (private): ${outcome.url}`));
 	} else if (outcome.kind === 'already-exists') {
 		// IDEMPOTENT: a prior run (or an operator) already created it — NOT a failure. We still back the
-		// remote + record repo_url below. The canonical https URL is synthesized from the validated slug.
-		resolvedUrl = canonicalRepoUrl(input.name, input.owner, project.repo_url);
+		// remote + record repo_url below. BUT we MUST NOT trust a recorded `project.repo_url` blindly: a
+		// scanner-seeded STALE origin (registry.ts) could point at an UNRELATED existing remote, and
+		// pushing this project's commits there would be the worst-case outward action (RC-2 finding #1).
+		// So we DERIVE the canonical URL from the resolved owner/slug and trust a recorded repo_url ONLY
+		// when it matches that exact slug. We also RESOLVE the owner (finding #3) so an owner-less input
+		// never synthesizes a malformed `https://github.com/<name>` (no owner) URL.
+		let owner = input.owner;
+		if (owner === undefined && typeof client.resolveOwner === 'function') {
+			owner = (await client.resolveOwner(cwd).catch(() => null)) ?? undefined;
+		}
+		if (owner === undefined) {
+			// Cannot build a well-formed owner/name URL and cannot verify any recorded URL — fail closed
+			// rather than synthesize a malformed (owner-less) URL or trust an unverifiable recorded one.
+			checks.push(
+				check(
+					'create',
+					false,
+					'repo already exists but the owner could not be resolved (gh) — refusing to derive or trust a remote URL (no push)'
+				)
+			);
+			return halt(
+				'create',
+				'the repo already exists but its owner could not be resolved — halting (cannot back a well-formed remote safely, no push)'
+			);
+		}
+		const canonical = `https://github.com/${owner}/${input.name}`;
+		const recorded = (project.repo_url ?? '').trim();
+		if (recorded && !sameRepoTarget(recorded, owner, input.name)) {
+			// STALE-ORIGIN GUARD (the load-bearing one): the recorded repo_url points somewhere OTHER than
+			// the repo we just confirmed exists. Pushing there would send commits to the wrong remote AND
+			// falsely report created:true. Fail closed with a named reason — NEVER push to a mismatched remote.
+			checks.push(
+				check(
+					'create',
+					false,
+					`recorded repo_url (${tail(recorded, 120)}) does not match the repo being created (${owner}/${input.name}) — refusing to push to a mismatched remote`
+				)
+			);
+			return halt(
+				'create',
+				`the recorded repo URL points at a different remote than ${owner}/${input.name} — halting (stale-origin guard, no push)`
+			);
+		}
+		resolvedUrl = canonical;
 		checks.push(check('create', true, `repo already exists (idempotent no-op): ${resolvedUrl}`));
 	} else if (outcome.kind === 'unauthed') {
 		checks.push(check('create', false, `gh not authenticated: ${outcome.reason}`));
@@ -256,6 +301,16 @@ export async function runRepoCreationGate(input: RepoCreateGateInput): Promise<R
 	// `origin` is absorbed (git remote add exits non-zero on a dup — we detect and proceed to push).
 	const gitRunner = input.gitRunner ?? execFileRunner;
 	const branch = (input.branch ?? '').trim() || 'main';
+	// (f-pre) BRANCH — validate the push branch (RC-2 finding #2). `branch` is the one push arg that was
+	// previously unvalidated; a `-`-prefixed value could be misparsed by git as a flag (D-008 class). A
+	// malformed branch is a named red at 'remote' BEFORE any outward git runs (backRemote ALSO `--`-guards
+	// it as defense-in-depth, but rejecting here gives the honest reason + never lets it reach git).
+	try {
+		assertBranchName(branch);
+	} catch (err) {
+		checks.push(check('remote', false, `invalid push branch: ${(err as Error).message}`));
+		return halt('remote', `the push branch is invalid (${(err as Error).message}) — halting (no push)`);
+	}
 	const remoteResult = await backRemote(gitRunner, cwd, resolvedUrl, branch, alreadyExisted);
 	if (!remoteResult.ok) {
 		checks.push(check('remote', false, remoteResult.detail));
@@ -318,10 +373,12 @@ async function backRemote(
 		return { ok: false, detail: `git remote add could not run: ${(err as Error).message}` };
 	}
 
-	// push -u origin <branch> — the durable, re-runnable step. A re-push of an up-to-date branch exits 0
-	// ("Everything up-to-date"); a genuine rejection is a named red.
+	// push -u origin -- <branch> — the durable, re-runnable step. The `--` separator means git can NEVER
+	// read <branch> as a flag even if it somehow began with `-` (RC-2 finding #2; the gate already
+	// validated it via assertBranchName — this is belt-and-suspenders, D-008 class). A re-push of an
+	// up-to-date branch exits 0 ("Everything up-to-date"); a genuine rejection is a named red.
 	try {
-		const push = await run('git', ['push', '-u', 'origin', branch], { cwd });
+		const push = await run('git', ['push', '-u', 'origin', '--', branch], { cwd });
 		if (push.code !== 0) {
 			const text = (push.stderr || push.stdout).trim();
 			return { ok: false, detail: `git push -u origin ${branch} failed (exit ${push.code}): ${tail(text) || 'no output'}` };
@@ -335,11 +392,28 @@ async function backRemote(
 }
 
 /**
- * Synthesize the canonical https remote URL for an already-existing repo. Prefer the project's recorded
- * repo_url when it already points at this repo (a re-run); otherwise build it from the validated slug.
+ * RC-2 finding #1 — does a recorded `project.repo_url` actually point at the `owner/name` repo being
+ * created? Used by the stale-origin guard: we only trust (and push to) a recorded URL when it resolves
+ * to the SAME owner/name; a mismatch means the recorded remote is stale/unrelated and we must NOT push
+ * there. We parse the owner/name out of the common GitHub remote forms (https, git+ssh, scp-style
+ * `git@github.com:owner/name`), strip a trailing `.git`, and compare case-insensitively (GitHub
+ * owners/names are case-insensitive). Anything unparseable → NOT a match (fail closed).
  */
-function canonicalRepoUrl(name: string, owner: string | undefined, recorded?: string): string {
-	if (recorded && recorded.trim()) return recorded.trim();
-	const slug = owner !== undefined ? `${owner}/${name}` : name;
-	return `https://github.com/${slug}`;
+export function sameRepoTarget(recorded: string, owner: string, name: string): boolean {
+	const parsed = parseRepoTarget(recorded);
+	if (!parsed) return false;
+	return parsed.owner.toLowerCase() === owner.toLowerCase() && parsed.name.toLowerCase() === name.toLowerCase();
+}
+
+/** Extract `{owner,name}` from a GitHub remote URL/slug, or null if it isn't a recognizable GitHub remote. */
+function parseRepoTarget(url: string): { owner: string; name: string } | null {
+	const trimmed = url.trim();
+	if (!trimmed) return null;
+	// https://github.com/owner/name(.git)?  |  ssh://git@github.com/owner/name(.git)?
+	const httpish = trimmed.match(/^(?:https?|ssh|git):\/\/[^/]*github\.com\/([^/]+)\/([^/?#]+?)(?:\.git)?\/?(?:[?#].*)?$/i);
+	if (httpish) return { owner: httpish[1], name: httpish[2] };
+	// scp-style: git@github.com:owner/name(.git)?
+	const scp = trimmed.match(/^[^@]+@github\.com:([^/]+)\/([^/?#]+?)(?:\.git)?\/?$/i);
+	if (scp) return { owner: scp[1], name: scp[2] };
+	return null;
 }

@@ -3,11 +3,12 @@ import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
-import { createProject, getProject } from './repo';
+import { createProject, getProject, updateProject } from './repo';
 import {
 	runRepoCreationGate,
 	repoCreateConfirmToken,
-	REPO_CREATE_ADAPTER_ID
+	REPO_CREATE_ADAPTER_ID,
+	sameRepoTarget
 } from './repo-creation-gate';
 import type { CommandResult, CommandRunner } from '../orchestrator/post-task';
 import type { GitHubClient, CreateRepoInput, CreateRepoOutcome, AuthStatus } from '../sync/gh-client';
@@ -65,10 +66,17 @@ class FakeClient implements GitHubClient {
 	createOutcome: CreateRepoOutcome = { kind: 'created', url: 'https://github.com/me/repo-host' };
 	createCalls: Array<{ input: CreateRepoInput; cwd: string }> = [];
 	authCalls = 0;
+	/** The login resolveOwner returns. null = gh could not resolve it (finding #3 fallback). */
+	ownerLogin: string | null = 'me';
+	resolveOwnerCalls = 0;
 
 	async isAuthenticated(): Promise<AuthStatus> {
 		this.authCalls++;
 		return this.authed ? { ok: true } : { ok: false, reason: 'GitHub CLI is not authenticated — run `gh auth login` or set GH_TOKEN.' };
+	}
+	async resolveOwner(): Promise<string | null> {
+		this.resolveOwnerCalls++;
+		return this.ownerLogin;
 	}
 	async resolveRepo(): Promise<string | null> {
 		return null;
@@ -136,10 +144,11 @@ describe('runRepoCreationGate — consent + valid token + authed → creates, ba
 		expect('owner' in client.createCalls[0].input).toBe(false);
 		expect(client.createCalls[0].cwd).toBe('F:/code/whatever');
 
-		// The OUTWARD runner did remote add + push -u origin main (D-008 array args).
+		// The OUTWARD runner did remote add + push -u origin -- main (D-008 array args; the `--`
+		// separator means a branch can never be misparsed as a flag — RC-2 finding #2).
 		expect(git.calls).toEqual([
 			{ file: 'git', args: ['remote', 'add', 'origin', 'https://github.com/me/repo-host'], cwd: 'F:/code/whatever' },
-			{ file: 'git', args: ['push', '-u', 'origin', 'main'], cwd: 'F:/code/whatever' }
+			{ file: 'git', args: ['push', '-u', 'origin', '--', 'main'], cwd: 'F:/code/whatever' }
 		]);
 
 		// repo_url persisted (F-013 normalized, real DB read-back).
@@ -151,7 +160,7 @@ describe('runRepoCreationGate — consent + valid token + authed → creates, ba
 		const client = new FakeClient();
 		const git = fakeGit();
 		await runRepoCreationGate({ db, projectId, consent: true, confirmToken: validToken(), name: 'repo-host', client, gitRunner: git.fn });
-		expect(git.calls[1].args).toEqual(['push', '-u', 'origin', 'main']);
+		expect(git.calls[1].args).toEqual(['push', '-u', 'origin', '--', 'main']);
 	});
 });
 
@@ -303,6 +312,139 @@ describe('runRepoCreationGate — createRepo failures surface honestly', () => {
 	});
 });
 
+// ── RC-2 finding #1: STALE-ORIGIN GUARD (already-exists) ─────────────────────────────────
+describe('runRepoCreationGate — stale-origin guard on already-exists (RC-2 finding #1)', () => {
+	it('a recorded repo_url that does NOT match the repo being created → fail closed, NO push', async () => {
+		// Seed a STALE origin on the project (as a scanner could): points at an UNRELATED remote.
+		await updateProject(db, projectId, { repo_url: 'https://github.com/someoneelse/unrelated-repo' });
+		const client = new FakeClient();
+		client.createOutcome = { kind: 'already-exists' };
+		const git = fakeGit();
+		const out = await runRepoCreationGate({
+			db,
+			projectId,
+			consent: true,
+			confirmToken: validToken('repo-host', 'me'),
+			name: 'repo-host',
+			owner: 'me',
+			client,
+			gitRunner: git.fn
+		});
+		expect(out.created).toBe(false);
+		expect(out.failedAt).toBe('create');
+		// THE load-bearing assertion: NEVER pushed to the mismatched remote.
+		expect(git.calls.length).toBe(0);
+		expect(out.checks.find((c) => c.name === 'create')?.detail).toMatch(/mismatched|does not match/i);
+		// The stale repo_url is left UNTOUCHED (we did not overwrite it with the canonical).
+		const p = await getProject(db, projectId);
+		expect(p?.repo_url).toBe('https://github.com/someoneelse/unrelated-repo');
+	});
+
+	it('a recorded repo_url that DOES match (different URL form, .git suffix) → trusted, pushes canonical', async () => {
+		// scp-style + .git suffix for the SAME owner/name — must be recognized as a match.
+		await updateProject(db, projectId, { repo_url: 'git@github.com:me/repo-host.git' });
+		const client = new FakeClient();
+		client.createOutcome = { kind: 'already-exists' };
+		const git = fakeGit();
+		const out = await runRepoCreationGate({
+			db,
+			projectId,
+			consent: true,
+			confirmToken: validToken('repo-host', 'me'),
+			name: 'repo-host',
+			owner: 'me',
+			client,
+			gitRunner: git.fn
+		});
+		expect(out.created).toBe(true);
+		expect(out.repoUrl).toBe('https://github.com/me/repo-host');
+		expect(git.calls.some((c) => c.args[0] === 'push')).toBe(true);
+	});
+});
+
+// ── RC-2 finding #3: owner-less already-exists resolves a well-formed URL ─────────────────
+describe('runRepoCreationGate — owner-less already-exists (RC-2 finding #3)', () => {
+	it('no owner given → resolveOwner fills it → well-formed https://github.com/<owner>/<name>', async () => {
+		const client = new FakeClient();
+		client.createOutcome = { kind: 'already-exists' };
+		client.ownerLogin = 'resolved-acct';
+		const git = fakeGit();
+		const out = await runRepoCreationGate({
+			db,
+			projectId,
+			consent: true,
+			confirmToken: validToken('repo-host'), // token derived WITHOUT owner
+			name: 'repo-host',
+			client,
+			gitRunner: git.fn
+		});
+		expect(out.created).toBe(true);
+		expect(client.resolveOwnerCalls).toBe(1);
+		// Well-formed: owner present, never the malformed owner-less https://github.com/repo-host.
+		expect(out.repoUrl).toBe('https://github.com/resolved-acct/repo-host');
+		expect(git.calls[0].args).toEqual(['remote', 'add', 'origin', 'https://github.com/resolved-acct/repo-host']);
+	});
+
+	it('no owner AND resolveOwner returns null → fail closed, never a malformed owner-less URL, NO push', async () => {
+		const client = new FakeClient();
+		client.createOutcome = { kind: 'already-exists' };
+		client.ownerLogin = null; // gh could not resolve the account
+		const git = fakeGit();
+		const out = await runRepoCreationGate({
+			db,
+			projectId,
+			consent: true,
+			confirmToken: validToken('repo-host'),
+			name: 'repo-host',
+			client,
+			gitRunner: git.fn
+		});
+		expect(out.created).toBe(false);
+		expect(out.failedAt).toBe('create');
+		expect(git.calls.length).toBe(0);
+		expect(out.checks.find((c) => c.name === 'create')?.detail).toMatch(/owner could not be resolved/i);
+	});
+});
+
+// ── RC-2 finding #2: branch-name validation / flag-misparse defense ──────────────────────
+describe('runRepoCreationGate — branch validation (RC-2 finding #2)', () => {
+	it('a `-`-prefixed branch is rejected (flag misparse) → failedAt remote, NO push', async () => {
+		const client = new FakeClient();
+		const git = fakeGit();
+		const out = await runRepoCreationGate({
+			db,
+			projectId,
+			consent: true,
+			confirmToken: validToken(),
+			name: 'repo-host',
+			branch: '--upload-pack=touch pwned',
+			client,
+			gitRunner: git.fn
+		});
+		expect(out.created).toBe(false);
+		expect(out.failedAt).toBe('remote');
+		expect(out.checks.find((c) => c.name === 'remote')?.detail).toMatch(/invalid push branch/i);
+		// Never reached git at all (validated before the outward runner).
+		expect(git.calls.length).toBe(0);
+	});
+
+	it('a valid branch is pushed with a `--` separator (git can never read it as a flag)', async () => {
+		const client = new FakeClient();
+		const git = fakeGit();
+		await runRepoCreationGate({
+			db,
+			projectId,
+			consent: true,
+			confirmToken: validToken(),
+			name: 'repo-host',
+			branch: 'feature/x',
+			client,
+			gitRunner: git.fn
+		});
+		expect(git.calls.find((c) => c.args[0] === 'push')?.args).toEqual(['push', '-u', 'origin', '--', 'feature/x']);
+	});
+});
+
 // ── SHADOW: missing project / empty root ─────────────────────────────────────────────────
 describe('runRepoCreationGate — shadow paths (nil/empty)', () => {
 	it('missing project row → failedAt auth, no outward call', async () => {
@@ -338,5 +480,31 @@ describe('runRepoCreationGate — shadow paths (nil/empty)', () => {
 		});
 		expect(out.failedAt).toBe('auth');
 		expect(git.calls.length).toBe(0);
+	});
+});
+
+// ── sameRepoTarget — pure URL-matching for the stale-origin guard (RC-2 finding #1) ──────
+describe('sameRepoTarget — recognizes a remote pointing at owner/name (and rejects others)', () => {
+	it('matches the common GitHub remote forms (case-insensitive, .git/trailing-slash tolerant)', () => {
+		for (const url of [
+			'https://github.com/me/repo-host',
+			'https://github.com/me/repo-host.git',
+			'https://github.com/me/repo-host/',
+			'http://github.com/ME/Repo-Host',
+			'git@github.com:me/repo-host.git',
+			'ssh://git@github.com/me/repo-host.git'
+		]) {
+			expect(sameRepoTarget(url, 'me', 'repo-host')).toBe(true);
+		}
+	});
+	it('rejects a different owner or name (the stale/unrelated remote → no push)', () => {
+		expect(sameRepoTarget('https://github.com/someoneelse/repo-host', 'me', 'repo-host')).toBe(false);
+		expect(sameRepoTarget('https://github.com/me/other-repo', 'me', 'repo-host')).toBe(false);
+		expect(sameRepoTarget('https://gitlab.com/me/repo-host', 'me', 'repo-host')).toBe(false);
+	});
+	it('rejects nil/empty/unparseable input (fail closed)', () => {
+		expect(sameRepoTarget('', 'me', 'repo-host')).toBe(false);
+		expect(sameRepoTarget('   ', 'me', 'repo-host')).toBe(false);
+		expect(sameRepoTarget('not a url', 'me', 'repo-host')).toBe(false);
 	});
 });

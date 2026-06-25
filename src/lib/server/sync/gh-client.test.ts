@@ -2,7 +2,7 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { GitHubCliClient, assertRepoName } from './gh-client';
+import { GitHubCliClient, assertRepoName, assertBranchName } from './gh-client';
 
 // RC-1 VERIFY (REPO-CREATION-SPEC; D-008; D-026; F-008) — `createRepo` is exercised against a
 // STUBBED `gh` (a fake-gh Node script pointed at via the `bin` override). NO real network, NO
@@ -39,6 +39,10 @@ if (sub === 'repo create') {
   if (mode === 'exists') { process.stderr.write('GraphQL: Name already exists on this account (createRepository)'); process.exit(1); }
   if (mode === 'denied') { process.stderr.write('HTTP 403: Resource not accessible by integration'); process.exit(1); }
   if (mode === 'other')  { process.stderr.write('could not create repository: upstream server error'); process.exit(1); }
+  // A BENIGN error that merely MENTIONS 'scope' (not a permission refusal) — must NOT be permission-denied.
+  if (mode === 'benignscope') { process.stderr.write('error: the requested name is out of scope for this template'); process.exit(1); }
+  // Empty stderr, non-zero exit (the noisy err.message leak case — finding #5).
+  if (mode === 'emptyerr') { process.exit(7); }
   const slug = argv[2];
   process.stdout.write('https://github.com/' + slug + '\\n');
   process.exit(0);
@@ -175,6 +179,55 @@ describe('GitHubCliClient.createRepo — private-first, honest named outcomes (R
 		const argv = JSON.parse(readArgv()) as string[];
 		expect(argv).toContain('--private');
 		expect(argv).not.toContain('--public');
+	});
+});
+
+describe('createRepo error mapping — finding #4 (scope over-broad) + #5 (empty-stderr leak)', () => {
+	it('a BENIGN error that merely mentions "scope" is NOT mislabeled permission-denied (finding #4)', async () => {
+		resetEnv();
+		process.env.FAKE_GH_MODE = 'benignscope';
+		const res = await fakeClient().createRepo({ name: 'atelier', owner: 'octo' }, dir);
+		expect(res.kind).toBe('error'); // honest error, NOT permission-denied
+		if (res.kind === 'error') expect(res.reason).toMatch(/out of scope/i);
+	});
+
+	it('a genuine OAuth-scope refusal still maps to permission-denied (finding #4 keeps real refusals)', async () => {
+		resetEnv();
+		process.env.FAKE_GH_MODE = 'denied'; // "HTTP 403: Resource not accessible by integration"
+		const res = await fakeClient().createRepo({ name: 'atelier', owner: 'octo' }, dir);
+		expect(res.kind).toBe('permission-denied');
+	});
+
+	it('an empty-stderr non-zero exit yields a CLEAN operator message, not the internal err string (finding #5)', async () => {
+		resetEnv();
+		process.env.FAKE_GH_MODE = 'emptyerr';
+		const res = await fakeClient().createRepo({ name: 'atelier', owner: 'octo' }, dir);
+		expect(res.kind).toBe('error');
+		if (res.kind === 'error') {
+			// No internal "gh repo create failed: …" / "Command failed" leakage; a clean operator line.
+			expect(res.reason).not.toMatch(/gh repo create|Command failed|failed: /i);
+			expect(res.reason).toMatch(/GitHub CLI exited|did not respond/i);
+		}
+	});
+});
+
+describe('assertBranchName — flag-shaped / ref-unsafe rejection (RC-2 finding #2)', () => {
+	it('accepts plain branch names', () => {
+		expect(assertBranchName('main')).toBe('main');
+		expect(assertBranchName('feature/x-1')).toBe('feature/x-1');
+		expect(assertBranchName('release.2')).toBe('release.2');
+	});
+	it('rejects a leading-dash / flag-shaped branch', () => {
+		expect(() => assertBranchName('-x')).toThrow(/invalid git branch/);
+		expect(() => assertBranchName('--upload-pack=touch pwned')).toThrow(/invalid git branch/);
+	});
+	it('rejects ref-unsafe / empty branches', () => {
+		expect(() => assertBranchName('')).toThrow();
+		expect(() => assertBranchName('has space')).toThrow();
+		expect(() => assertBranchName('a..b')).toThrow();
+		expect(() => assertBranchName('a~1')).toThrow();
+		expect(() => assertBranchName('foo.lock')).toThrow();
+		expect(() => assertBranchName('foo@{1}')).toThrow();
 	});
 });
 

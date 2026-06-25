@@ -650,7 +650,12 @@ export class Orchestrator {
 					intent: route.intent,
 					budgets: route.budgets,
 					toolPolicy: route.toolPolicy,
-					capabilities: route.capabilities
+					capabilities: route.capabilities,
+					// LIFECYCLE-GRAPH (m0067): the cause of this spawn IS the work_item the drain just
+					// claimed — the proximate, always-known trigger. Thread its id onto the spawn
+					// agent_event.parent_event_id so the node-graph draws the queue→session edge
+					// explicitly (Continue/PM rooted that work_item upstream) instead of inferring it.
+					parentEventId: item.id
 				}
 			});
 			this.spawnCount++;

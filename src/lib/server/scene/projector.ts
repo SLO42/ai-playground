@@ -46,7 +46,10 @@ import type { BusEvent, EventBus, Unsubscribe } from '../events/bus';
 import type { DbChange } from '../events/db-source';
 import { screen } from '../memory/screen';
 
-/** The v1 scene_event vocabulary (MEMORY-SCENE-SPEC §5; matches the schema ASSERT). */
+/** The v1 scene_event vocabulary (MEMORY-SCENE-SPEC §5; matches the schema ASSERT).
+ *  LIFECYCLE-GRAPH adds three causal-root kinds (m0066): `continue`/`batch_drained` (a
+ *  Continue/drain root) + `pm_tick` (a PM re-tick) — emitted by the controls/PM loop, not
+ *  the projector's db_change classifier (they are explicit causal markers, not row mirrors). */
 export type SceneEventKind =
 	| 'node_spawned'
 	| 'job_fired'
@@ -54,7 +57,10 @@ export type SceneEventKind =
 	| 'connection_formed'
 	| 'node_retired'
 	| 'memory_added'
-	| 'hire_staffed';
+	| 'hire_staffed'
+	| 'continue'
+	| 'batch_drained'
+	| 'pm_tick';
 
 /** Input to {@link appendSceneEvent} — a single derived viz event. */
 export interface AppendSceneEventInput {

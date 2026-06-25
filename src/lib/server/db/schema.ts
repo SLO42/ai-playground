@@ -2353,6 +2353,53 @@ const m0065_session_granted: Migration = {
 	`
 };
 
+// ── LIFECYCLE-GRAPH provenance (LIFECYCLE-GRAPH-SPEC) — make Continue→session→PM→new-task
+//    edges EXPLICIT instead of timestamp-inferred. Two additive, best-effort, screened seams.
+//
+// m0066 — three NEW scene_event kinds in the ASSERT vocabulary.
+//   • continue      — continueReadyTasks rooted a "Continue" node (a batch-drain was asked for).
+//   • batch_drained — reserved sibling of `continue` (a drain that claimed/spawned work) — added
+//                     to the vocabulary now so a later emitter need not re-migrate the ASSERT.
+//   • pm_tick        — the AutonomousPmLoop re-ticked (the PM node + its in/out edges become
+//                     observable; today the tick is in-memory lastOutcome only).
+//
+// This is its OWN migration (NOT an in-place edit of m0055): the runner records a migration only
+// on success and never re-runs an already-applied one, so editing m0055's ASSERT in place would
+// NEVER land on the LIVE dev DB (F-015). A fresh, additive OVERWRITE migration re-runs the FULL
+// scene_event field set (the OVERWRITE DDL is idempotent — apply-twice + half-applied re-run are
+// clean; no rows to backfill, the ASSERT only WIDENS the accepted set so every existing row still
+// validates). The generic schemaMigrations sweep in migrate.test.ts covers both idempotency paths.
+const m0066_scene_event_lifecycle_kinds: Migration = {
+	id: '0066_scene_event_lifecycle_kinds',
+	up: `
+		DEFINE FIELD OVERWRITE kind ON scene_event TYPE string
+			ASSERT $value IN ["node_spawned","job_fired","job_done","connection_formed","node_retired","memory_added","hire_staffed","continue","batch_drained","pm_tick"];
+	`
+};
+
+// m0067 — agent_event.parent_event_id (LIFECYCLE-GRAPH-SPEC) — the EXPLICIT causal back-link from a
+// spawn agent_event to the event/work that CAUSED it (a triggering work_item, a completion, or a
+// pm_tick), so the graph draws Continue→session / PM→new-task as a REAL edge instead of inferring it
+// from timestamps. Populated WHERE the cause is known at spawn (the drain knows the triggering
+// work_item id); left NONE where it is NOT (honest — the graph falls back to inference for those
+// edges, F-008 — never a fabricated parent).
+//
+// FREE-FORM string (NOT a typed record<…> link): the cause spans heterogeneous tables — a work_item
+// (the drain's proximate trigger), an agent_event completion, or a scene_event (pm_tick). A single
+// typed link could only point at one table; a `table:id` string points at any of them uniformly and
+// keeps the column additive across future cause classes (mirrors scene_event.ref, schema §2028).
+//
+// ADDITIVE, OVERWRITE-only (F-015 idempotent: apply-twice + half-applied re-run are clean over the raw
+// OVERWRITE DDL — the generic schemaMigrations sweep covers both). option<string>: a LEGACY agent_event
+// (written before this field) reads back NONE → the graph treats it as "cause unknown" (inference
+// fallback), NEVER a fabricated link (F-008). OMITTED at write when absent (§6.1) — never explicit NULL.
+const m0067_agent_event_parent: Migration = {
+	id: '0067_agent_event_parent',
+	up: `
+		DEFINE FIELD OVERWRITE parent_event_id ON agent_event TYPE option<string>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2424,5 +2471,7 @@ export const schemaMigrations: Migration[] = [
 	m0062_pm_repo_create_preauthorized,
 	m0063_repo_create_brief,
 	m0064_skill_proposal_approved_name,
-	m0065_session_granted
+	m0065_session_granted,
+	m0066_scene_event_lifecycle_kinds,
+	m0067_agent_event_parent
 ];

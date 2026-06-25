@@ -113,6 +113,40 @@ describe('writeAgentEvent — the shared lifecycle writer (2.4; DATA-MODEL §4.4
 		await expect(writeAgentEvent(db, { type: 'spawn', project: 'not a valid id' })).rejects.toThrow();
 	});
 
+	// LIFECYCLE-GRAPH (m0067) — parent_event_id persists the EXPLICIT cause when KNOWN, omits when not.
+	it('persists parent_event_id when the cause is known + omits it (NONE) when not', async () => {
+		// Cause KNOWN (a triggering work_item id) → the column carries the opaque table:id ref.
+		const cause = `work_item:cause_${Date.now()}`;
+		const withParent = await writeAgentEvent(db, {
+			type: 'spawn',
+			project: projectId,
+			parentEventId: cause
+		});
+		// Cause UNKNOWN (omitted) → the column stays NONE — never a fabricated link (F-008).
+		const noParent = await writeAgentEvent(db, { type: 'spawn', project: projectId });
+		// A blank/whitespace ref is treated as unknown (omitted), never stored as ''.
+		const blankParent = await writeAgentEvent(db, {
+			type: 'spawn',
+			project: projectId,
+			parentEventId: '   '
+		});
+
+		const [pr] = await db.query<[Array<{ parent_event_id?: unknown }>]>(`SELECT parent_event_id FROM $rid;`, {
+			rid: new StringRecordId(withParent)
+		});
+		expect(pr[0].parent_event_id).toBe(cause);
+
+		const [np] = await db.query<[Array<{ parent_event_id?: unknown }>]>(`SELECT parent_event_id FROM $rid;`, {
+			rid: new StringRecordId(noParent)
+		});
+		expect(np[0].parent_event_id === undefined || np[0].parent_event_id === null).toBe(true);
+
+		const [bp] = await db.query<[Array<{ parent_event_id?: unknown }>]>(`SELECT parent_event_id FROM $rid;`, {
+			rid: new StringRecordId(blankParent)
+		});
+		expect(bp[0].parent_event_id === undefined || bp[0].parent_event_id === null).toBe(true);
+	});
+
 	it('launch path still emits spawn + completion via the shared writer', async () => {
 		const events: RuntimeEvent[] = [
 			{ type: 'log', message: 'go' },
@@ -120,6 +154,7 @@ describe('writeAgentEvent — the shared lifecycle writer (2.4; DATA-MODEL §4.4
 			{ type: 'done', result: { ok: true, summary: 'done', ccSessionId: 'cc_launch_x' } }
 		];
 		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(events, 'cc_launch_x') });
+		const causeWorkItem = `work_item:launch_cause_${Date.now()}`;
 		const input: LaunchInput = {
 			projectId,
 			taskId,
@@ -127,7 +162,10 @@ describe('writeAgentEvent — the shared lifecycle writer (2.4; DATA-MODEL §4.4
 			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
 			intent: 'code-write',
 			budgets: {},
-			toolPolicy: { allow: ['Read'] }
+			toolPolicy: { allow: ['Read'] },
+			// LIFECYCLE-GRAPH (m0067): the orchestrator drain passes the triggering work_item id; the
+			// spawn agent_event must carry it as parent_event_id so the graph draws the queue→session edge.
+			parentEventId: causeWorkItem
 		};
 		// WI-2: inject a fake worktree acquirer so this code-write spawn (against a non-git path
 		// fixture) exercises the persist path without git mechanics this analytics test doesn't cover.
@@ -143,7 +181,7 @@ describe('writeAgentEvent — the shared lifecycle writer (2.4; DATA-MODEL §4.4
 			})
 		});
 		const [evs] = await db.query<[Array<Record<string, unknown>>]>(
-			`SELECT type, detail, at FROM agent_event WHERE session = $sid ORDER BY at ASC;`,
+			`SELECT type, detail, parent_event_id, at FROM agent_event WHERE session = $sid ORDER BY at ASC;`,
 			{ sid: new StringRecordId(res.sessionId) }
 		);
 		const types = evs.map((e) => e.type);
@@ -152,5 +190,7 @@ describe('writeAgentEvent — the shared lifecycle writer (2.4; DATA-MODEL §4.4
 		// spawn detail carries the how/why (intent) for the trace chain.
 		const spawn = evs.find((e) => e.type === 'spawn');
 		expect((spawn!.detail as Record<string, unknown>).intent).toBe('code-write');
+		// LIFECYCLE-GRAPH (m0067): the spawn carries the explicit cause threaded through launchSession.
+		expect(spawn!.parent_event_id).toBe(causeWorkItem);
 	});
 });

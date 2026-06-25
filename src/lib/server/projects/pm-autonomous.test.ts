@@ -223,6 +223,74 @@ describe('AutonomousPmLoop — armed PM re-ticks toward the next batch', () => {
 	});
 });
 
+// ── LIFECYCLE-GRAPH: pm_tick scene_event ─────────────────────────────────────────────────────────────
+
+describe('AutonomousPmLoop — pm_tick scene_event (LIFECYCLE-GRAPH)', () => {
+	it('emits a pm_tick scene_event when a re-tick RUNS (with bounded state/reason/ids meta)', async () => {
+		await db.query('DELETE scene_event;');
+		await hire('act');
+		const lp = loop([approveRun(), approveRun()], { proposals: [candidate()] });
+		const out = await lp.evaluate(projectId);
+		expect(out.state).toBe('running');
+
+		const [rows] = await db.query<
+			[Array<{ kind: string; ref: string; source: string; project?: unknown; meta?: Record<string, unknown> }>]
+		>(`SELECT kind, ref, source, project, meta FROM scene_event WHERE kind = "pm_tick";`);
+		expect(rows.length).toBe(1);
+		expect(rows[0].ref).toBe(projectId);
+		expect(rows[0].source).toBe('pm');
+		expect(String(rows[0].project)).toBe(projectId);
+		expect(rows[0].meta?.state).toBe('running');
+		expect(typeof rows[0].meta?.reason).toBe('string');
+		// ticksUsed is a bounded number; proposedTaskIds is a comma-joined id string (a real task id).
+		expect(typeof rows[0].meta?.ticksUsed).toBe('number');
+		expect(typeof rows[0].meta?.proposedTaskIds).toBe('string');
+		expect(String(rows[0].meta?.proposedTaskIds)).toContain('task:');
+	});
+
+	it('does NOT emit a pm_tick when no tick ran (disarmed → idle, lifecycle null)', async () => {
+		await db.query('DELETE scene_event;');
+		await hire('act', false); // hired but NOT armed → idle, no re-tick.
+		const lp = loop([], { proposals: [candidate()] });
+		const out = await lp.evaluate(projectId);
+		expect(out.state).toBe('idle');
+		expect(out.lifecycle).toBeNull();
+		const [rows] = await db.query<[Array<{ id: unknown }>]>(
+			`SELECT id FROM scene_event WHERE kind = "pm_tick";`
+		);
+		expect(rows.length).toBe(0);
+	});
+
+	it('a THROWING scene_event append does NOT change the re-tick outcome (best-effort, F-048)', async () => {
+		await hire('act');
+		// Wrap db so the pm_tick CREATE throws; the re-tick (which reads/writes via the loop's own db
+		// handle for its real work) must still complete and return its honest state.
+		const throwingDb = new Proxy(db, {
+			get(target, prop, receiver) {
+				if (prop === 'query') {
+					return async (q: string, ...rest: unknown[]) => {
+						if (typeof q === 'string' && q.includes('CREATE scene_event')) {
+							throw new Error('injected pm_tick write fault');
+						}
+						return (target.query as (q: string, ...r: unknown[]) => Promise<unknown>)(q, ...rest);
+					};
+				}
+				return Reflect.get(target, prop, receiver);
+			}
+		}) as typeof db;
+		const lp = new AutonomousPmLoop({
+			db: throwingDb,
+			bus: new EventBus(),
+			deps: deps([approveRun(), approveRun()]),
+			lifecycleOpts: { generate: stub({ proposals: [candidate()] }) }
+		});
+		const out = await lp.evaluate(projectId);
+		// The re-tick succeeded despite the append fault.
+		expect(out.state).toBe('running');
+		expect(lp.reTickCount).toBe(1);
+	});
+});
+
 // ── Disarmed / no-PM → NO re-tick ───────────────────────────────────────────────────────────────────
 
 describe('AutonomousPmLoop — disarmed/absent PM does NOT auto-re-tick', () => {

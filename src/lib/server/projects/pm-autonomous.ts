@@ -56,6 +56,7 @@ import {
 	type StartLifecycleResult
 } from './pm-lifecycle';
 import { runReleaseReadinessGate, type ReleaseGateResult } from './release-gate';
+import { appendSceneEvent } from '../scene/projector';
 import type { EnvLike } from '../adapters/secrets';
 
 // ── Honest loop states (F-008 — never a fake 'done') ─────────────────────────────────────────────
@@ -296,9 +297,52 @@ export class AutonomousPmLoop {
 		}
 		this.#deciding.add(projectId);
 		try {
-			return await this.#decide(projectId);
+			const outcome = await this.#decide(projectId);
+			// LIFECYCLE-GRAPH (LIFECYCLE-GRAPH-SPEC) — emit a `pm_tick` scene_event so the PM node + its
+			// in/out edges become OBSERVABLE in the node-graph (today the tick lives only in the in-memory
+			// lastOutcome). Emit ONLY when a real re-tick RAN (outcome.lifecycle != null) — an idle / latched
+			// re-surface ran no tick and roots no PM node. BEST-EFFORT / NON-BLOCKING (D-019 / F-048): the
+			// append is awaited-and-swallowed so a scene_event write fault NEVER changes the re-tick outcome
+			// nor crashes the bus. Bounded meta (state/reason + ids only — never raw proposal text); screened.
+			if (outcome.lifecycle) await this.#emitPmTick(projectId, outcome);
+			return outcome;
 		} finally {
 			this.#deciding.delete(projectId);
+		}
+	}
+
+	/**
+	 * Best-effort `pm_tick` scene_event for one re-tick outcome. Surfaces the honest tick state +
+	 * reason + cap usage, plus the BOUNDED set of task ids the tick PROPOSED/advanced (the PM node's
+	 * OUT edges to the new task nodes — `proposedTaskIds`). All ids are `table:id` opaque refs, never
+	 * raw row content; appendSceneEvent screens the meta (D-026). A throw here is caught + logged and
+	 * never propagates (the re-tick already happened; this is observability, F-048).
+	 */
+	async #emitPmTick(projectId: string, outcome: AutonomousTickOutcome): Promise<void> {
+		// proposedTaskIds: the real task ids this tick put through the panel (born 'proposed' / advanced)
+		// — the PM node's outgoing edges to the new task nodes. Bounded to a small cap so the meta stays
+		// label-class (the graph can fan out to the full set via the live task rows if it needs more).
+		const proposedTaskIds = (outcome.lifecycle?.panels ?? [])
+			.map((p) => p.taskId)
+			.filter((id): id is string => typeof id === 'string' && id.length > 0)
+			.slice(0, 20);
+		try {
+			await appendSceneEvent(this.#db, {
+				kind: 'pm_tick',
+				ref: projectId,
+				source: 'pm',
+				project: projectId,
+				meta: {
+					state: outcome.state,
+					reason: outcome.reason,
+					ticksUsed: outcome.ticksUsed,
+					...(proposedTaskIds.length ? { proposedTaskIds: proposedTaskIds.join(',') } : {})
+				}
+			});
+		} catch (err) {
+			console.warn(
+				`[pm-autonomous] pm_tick scene_event append failed (re-tick unaffected): ${(err as Error).message}`
+			);
 		}
 	}
 

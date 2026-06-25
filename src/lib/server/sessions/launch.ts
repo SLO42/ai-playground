@@ -117,6 +117,14 @@ export interface LaunchInput {
 	editScope?: Pick<EditScopeInput, 'scopeRoots' | 'scopeAllow'>;
 	/** Set when this session is a workflow step (D-013). */
 	workflowRunId?: string;
+	/**
+	 * LIFECYCLE-GRAPH (m0067) — the EXPLICIT cause of this spawn: the `table:id` of the
+	 * triggering work_item / completion / pm_tick that caused it. Threaded straight onto the
+	 * spawn `agent_event.parent_event_id` so the node-graph draws Continue→session / PM→new-task
+	 * as a REAL edge. Set by the orchestrator drain (which knows the triggering work_item id);
+	 * absent ⇒ the column stays NONE and the graph infers that edge from timestamps (honest, F-008).
+	 */
+	parentEventId?: string;
 }
 
 export interface LaunchResult {
@@ -579,6 +587,9 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		project: input.projectId,
 		type: 'spawn',
 		model: input.model,
+		// LIFECYCLE-GRAPH (m0067): carry the explicit cause when the caller knew it (the orchestrator
+		// drain passes the triggering work_item id). Absent ⇒ omitted → NONE (graph infers the edge).
+		...(input.parentEventId ? { parentEventId: input.parentEventId } : {}),
 		detail: { intent: input.intent, reason: `spawn for ${input.intent}` }
 	});
 

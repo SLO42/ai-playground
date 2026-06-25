@@ -41,6 +41,7 @@
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import { getTask, listTasksByProject, type TaskStatus } from '../tasks/repo';
+import { appendSceneEvent } from '../scene/projector';
 
 /** EVERY ERROR HAS A NAME — the orchestrator handle was absent (degraded/no-credential boot). The
  *  caller maps this to an honest 503 reason; nothing was enqueued or spawned. */
@@ -144,6 +145,30 @@ export async function continueReadyTasks(
 	// Drain under the orchestrator's OWN cap + semaphore. Safe even when nothing new was enqueued (it
 	// drains whatever is claimable, bounded). A drain mid-flight is interrupt-safe (durable queue).
 	const drained = await orchestrator.drain();
+
+	// LIFECYCLE-GRAPH (LIFECYCLE-GRAPH-SPEC) — emit a `continue` scene_event so the node-graph can
+	// ROOT a "Continue" node for this batch-drain and tie it to the work it set in motion (the spawned
+	// sessions back-link to their work_items via m0067; this is the upstream root). BEST-EFFORT /
+	// NON-BLOCKING (D-019 / F-048): the append is wrapped + swallowed — a scene_event write fault NEVER
+	// fails the CONTINUE (the work was already enqueued + drained above) and never crashes the server.
+	// Bounded meta only (counts — never raw row content); appendSceneEvent screens it (D-026).
+	await appendSceneEvent(db, {
+		kind: 'continue',
+		ref: pid,
+		source: 'project',
+		project: pid,
+		meta: {
+			readyCount: ready.length,
+			enqueued,
+			alreadyQueued,
+			claimed: drained.claimed,
+			spawned: drained.spawned
+		}
+	}).catch((err) =>
+		console.warn(
+			`[project-controls] continue scene_event append failed (CONTINUE unaffected): ${(err as Error).message}`
+		)
+	);
 
 	return {
 		readyCount: ready.length,

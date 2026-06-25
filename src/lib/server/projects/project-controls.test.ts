@@ -324,3 +324,60 @@ describe('restartSessionTask', () => {
 		expect(orch.enqueueCalls).toEqual([]);
 	});
 });
+
+// LIFECYCLE-GRAPH (LIFECYCLE-GRAPH-SPEC) — CONTINUE roots a `continue` scene_event so the node-graph
+// can anchor a Continue node. The emission is BEST-EFFORT: a scene_event write fault NEVER fails the
+// CONTINUE (the work was already enqueued + drained). Asserted against the LIVE scene_event row.
+describe('continueReadyTasks — continue scene_event (LIFECYCLE-GRAPH)', () => {
+	it('emits a `continue` scene_event refed to the project with bounded count meta', async () => {
+		await db.query('DELETE scene_event;');
+		const p = await seedProject('proj_scene_continue');
+		await seedReadyTask(p, 'r1');
+		await seedReadyTask(p, 'r2');
+		const orch = mockOrchestrator(db);
+
+		const res = await continueReadyTasks(orch, db, p);
+		expect(res.spawned).toBe(2);
+
+		const [rows] = await db.query<
+			[Array<{ kind: string; ref: string; source: string; project?: unknown; meta?: Record<string, unknown> }>]
+		>(`SELECT kind, ref, source, project, meta FROM scene_event WHERE kind = "continue";`);
+		expect(rows.length).toBe(1);
+		expect(rows[0].kind).toBe('continue');
+		expect(rows[0].ref).toBe(p);
+		expect(rows[0].source).toBe('project');
+		expect(String(rows[0].project)).toBe(p);
+		// Bounded count meta — never raw row content (D-026 screened at write).
+		expect(rows[0].meta?.readyCount).toBe(2);
+		expect(rows[0].meta?.enqueued).toBe(2);
+		expect(rows[0].meta?.spawned).toBe(2);
+	});
+
+	it('a THROWING scene_event append does NOT fail the CONTINUE (best-effort, F-048)', async () => {
+		const p = await seedProject('proj_scene_throw');
+		await seedReadyTask(p, 'r1');
+		const orch = mockOrchestrator(db);
+
+		// Wrap the live db so the scene_event CREATE throws, but the rest of CONTINUE (enqueue/drain,
+		// which run through the orchestrator's OWN db handle) is unaffected. The CONTINUE must STILL
+		// return its honest counts — the append fault is swallowed + logged, never propagated.
+		const throwingDb = new Proxy(db, {
+			get(target, prop, receiver) {
+				if (prop === 'query') {
+					return async (q: string, ...rest: unknown[]) => {
+						if (typeof q === 'string' && q.includes('CREATE scene_event')) {
+							throw new Error('injected scene_event write fault');
+						}
+						return (target.query as (q: string, ...r: unknown[]) => Promise<unknown>)(q, ...rest);
+					};
+				}
+				return Reflect.get(target, prop, receiver);
+			}
+		}) as typeof db;
+
+		const res = await continueReadyTasks(orch, throwingDb, p);
+		// CONTINUE succeeded despite the append fault — the work was enqueued + drained.
+		expect(res.readyCount).toBe(1);
+		expect(res.spawned).toBe(1);
+	});
+});

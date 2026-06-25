@@ -85,6 +85,16 @@ export interface WriteAgentEventInput {
 	costUsd?: number;
 	durationMs?: number;
 	detail?: AgentEventDetail;
+	/**
+	 * LIFECYCLE-GRAPH (m0067) — the EXPLICIT causal back-link: the `table:id` of the event/work that
+	 * CAUSED this spawn (the triggering work_item, a completion, or a pm_tick scene_event). Set ONLY
+	 * where the cause is known at spawn (the orchestrator drain knows the triggering work_item id);
+	 * OMITTED otherwise → the column stays NONE and the graph falls back to timestamp inference for
+	 * that edge (honest — never a fabricated parent, F-008). A free-form `table:id` STRING, not a typed
+	 * record link (the cause spans heterogeneous tables — work_item / agent_event / scene_event). It is
+	 * an opaque id, not free text, so it carries no secret span — bound straight via $param (NOT screened).
+	 */
+	parentEventId?: string;
 }
 
 /**
@@ -146,6 +156,12 @@ export async function writeAgentEvent(db: Db, input: WriteAgentEventInput): Prom
 		tokens_out: input.tokensOut,
 		cost_usd: input.costUsd,
 		duration_ms: input.durationMs,
+		// LIFECYCLE-GRAPH (m0067): an opaque `table:id` cause ref (work_item / completion / pm_tick).
+		// Trimmed → an empty/blank ref is treated as "unknown" (omitted, NONE) rather than stored as ''.
+		parent_event_id:
+			typeof input.parentEventId === 'string' && input.parentEventId.trim()
+				? input.parentEventId.trim()
+				: undefined,
 		detail:
 			input.detail && Object.keys(omitUndefined(input.detail)).length
 				? omitUndefined(input.detail)

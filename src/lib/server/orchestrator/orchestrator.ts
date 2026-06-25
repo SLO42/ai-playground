@@ -136,6 +136,15 @@ export interface OrchestratorOptions {
 	 * not fail closed on git mechanics they are not exercising.
 	 */
 	acquireWorktree?: LaunchDeps['acquireWorktree'];
+	/**
+	 * SH-2 GO-LIVE (SKILL-HARVEST-SPEC §"CAPTURE") — the skill-proposal CAPTURE seam, forwarded onto
+	 * every orchestrator-driven spawn's launchSession. When present, a SUCCESSFUL code-write session
+	 * offers its screened trajectory to this generator at session-end, which may DRAFT a skill_proposal
+	 * (persisted born 'open' via SH-1; G2/D-039 — never self-promoted). Omitted ⇒ no harvest (the
+	 * dormant default). BEST-EFFORT (D-019 / F-014): launchSession's seam swallows any fault — a
+	 * harvester error NEVER blocks or fails the spawn.
+	 */
+	skillHarvester?: LaunchDeps['skillHarvester'];
 	/** Statuses that make a task spawn-ready. Default: 'ready'. */
 	spawnReadyStatuses?: readonly string[];
 	/**
@@ -204,6 +213,7 @@ export class Orchestrator {
 	readonly #route: RouteResolver;
 	readonly #memory?: LaunchDeps['memory'];
 	readonly #acquireWorktree?: LaunchDeps['acquireWorktree'];
+	readonly #skillHarvester?: LaunchDeps['skillHarvester'];
 	readonly #spawnReady: ReadonlySet<string>;
 	readonly #postTask?: OrchestratorOptions['postTask'];
 	readonly #mergeBack?: OrchestratorOptions['mergeBack'];
@@ -244,6 +254,7 @@ export class Orchestrator {
 		this.#route = opts.route;
 		this.#memory = opts.memory;
 		this.#acquireWorktree = opts.acquireWorktree;
+		this.#skillHarvester = opts.skillHarvester;
 		this.#spawnReady = new Set(opts.spawnReadyStatuses ?? ['ready']);
 		this.#postTask = opts.postTask;
 		this.#mergeBack = opts.mergeBack;
@@ -627,6 +638,10 @@ export class Orchestrator {
 				// WI-2: forward the worktree acquirer so a WRITE-class spawn runs in an isolated
 				// per-session worktree (production default = the real acquirer; tests inject a fake).
 				acquireWorktree: this.#acquireWorktree,
+				// SH-2 GO-LIVE: forward the skill-harvest CAPTURE seam so a SUCCESSFUL code-write spawn
+				// drafts a born-'open' skill_proposal at session-end (best-effort, D-019 — launchSession
+				// swallows any fault). Undefined ⇒ no harvest (the dormant default).
+				skillHarvester: this.#skillHarvester,
 				input: {
 					projectId,
 					taskId,

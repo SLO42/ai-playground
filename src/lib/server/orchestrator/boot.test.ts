@@ -36,6 +36,14 @@ vi.mock('../harness', async (importOriginal) => {
 	};
 });
 
+// SH-2 GO-LIVE — spy on the production skill-harvest generator factory so we can assert the boot
+// CONSTRUCTS it (the capture loop is wired at the SAME composition point as the memory loop). The
+// stub returns a harmless harvester (never invoked at idle — no session ends in these tests).
+const makeSkillHarvestAgentMock = vi.fn(() => ({ async propose() { return null; } }));
+vi.mock('../skills/harvest-agent', () => ({
+	makeSkillHarvestAgent: (...args: unknown[]) => makeSkillHarvestAgentMock(...args)
+}));
+
 // Import AFTER the mock is registered.
 const { startOrchestrator, bootDailySpawnCap } = await import('./boot');
 
@@ -64,6 +72,7 @@ function idleDb(): Db {
 
 beforeEach(() => {
 	getRuntimeMock.mockReset();
+	makeSkillHarvestAgentMock.mockClear();
 });
 
 afterEach(() => {
@@ -84,6 +93,28 @@ describe('TASK 8.1 — startOrchestrator boot wire (D-004/§2.11/F-008)', () => 
 			// NO LOOP (D-004): event mode arms no periodic timer.
 			expect(boot.orchestrator.periodicArmed).toBe(false);
 			expect(boot.orchestrator.mode).toBe('event');
+		} finally {
+			boot.orchestrator.stop();
+		}
+	});
+
+	// SH-2 GO-LIVE — the production skill-harvest generator is CONSTRUCTED at the boot composition
+	// point (alongside the memory loop) and wired onto the orchestrator, so live successful code-write
+	// sessions draft proposals. Before this it was DORMANT — only test stubs existed.
+	it('constructs + wires the production skill-harvest generator (SH-2 capture loop, not dormant)', async () => {
+		getRuntimeMock.mockResolvedValue({ available: true, runtime: idleRuntime });
+		const bus = new EventBus();
+		const boot = await startOrchestrator(idleDb(), bus);
+		expect(boot.started).toBe(true);
+		if (!boot.started) throw new Error('expected started');
+		try {
+			// The factory was called exactly once at boot (it produces the SkillHarvester forwarded onto
+			// every spawn). It is built with the confirmed runtime — never at idle invoked.
+			expect(makeSkillHarvestAgentMock).toHaveBeenCalledTimes(1);
+			const arg = makeSkillHarvestAgentMock.mock.calls[0][0] as { runtime: unknown; agentId: unknown; model: unknown };
+			expect(arg.runtime).toBe(idleRuntime);
+			expect(arg.agentId).toBeTruthy();
+			expect(arg.model).toBeTruthy();
 		} finally {
 			boot.orchestrator.stop();
 		}

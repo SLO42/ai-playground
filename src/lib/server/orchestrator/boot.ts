@@ -45,8 +45,10 @@ import {
 	getMemoryService,
 	resolveCapabilitiesForIntent,
 	DEFAULT_TOOL_POLICY,
-	DEFAULT_AGENT
+	DEFAULT_AGENT,
+	DEFAULT_MODEL
 } from '../harness';
+import { makeSkillHarvestAgent } from '../skills/harvest-agent';
 import { loadOrchestration, loadAgentPool, type OrchMode, type AgentPool, type Orchestration } from '../config/index';
 import { resolveRoute, type RouteTask, type StaffRouteResolver } from '../routing/index';
 import { resolveStaff, getProjectStaff, type Tier, type TierModelResolver } from '../workforce';
@@ -300,6 +302,24 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		console.warn(`[startup] memory loop OFF: ${memAvail.reason}`);
 	}
 
+	// SH-2 GO-LIVE (SKILL-HARVEST-SPEC §"CAPTURE") — wire the PRODUCTION skill-harvest generator onto
+	// every orchestrator-driven spawn. At session-end, a SUCCESSFUL code-write session offers its
+	// SCREENED (D-026) trajectory to this read-only cheap-tier generator, which may DRAFT a
+	// skill_proposal — persisted born 'open' via SH-1 (G2/D-039: never self-promoted; the operator is
+	// the only promote gate). The credential is already confirmed (avail.available above), so the
+	// generator can run its bounded session. BEST-EFFORT (D-019 / F-014): launchSession's SH-2 seam
+	// try/catches the whole propose() call, so a harvest fault NEVER blocks or fails the spawn. One
+	// bounded read-only session per qualifying session-end (no new uncapped spend path — it shares the
+	// orchestrator's daily spawn cap surface). Was BUILT (SH-1..5) but DORMANT — only test stubs
+	// existed; this is the production wiring that makes live successful sessions draft proposals.
+	const skillHarvester = makeSkillHarvestAgent({
+		db,
+		bus,
+		runtime: avail.runtime,
+		agentId: DEFAULT_AGENT,
+		model: DEFAULT_MODEL
+	});
+
 	const orchestrator = new Orchestrator({
 		db,
 		bus,
@@ -316,6 +336,8 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		perProject,
 		mode,
 		memory,
+		// SH-2 GO-LIVE — forward the production skill-harvest CAPTURE seam onto every spawn (see above).
+		skillHarvester,
 		// intervalMs ONLY matters in 'periodic' mode (off by default, D-004). Passing it in
 		// event mode is harmless (the timer is only armed when mode==='periodic'), but we keep
 		// the orchestration.yaml intent faithful by forwarding it.

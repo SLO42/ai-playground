@@ -13,7 +13,7 @@
 // If the SurrealDB binary can't start, the DB-backed assertions skip honestly (never a faked artifact).
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
-import { mkdtempSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Db } from '$lib/server/db/client';
@@ -23,6 +23,7 @@ import { startTestDb, type TestDb } from '$lib/server/db/testserver';
 import { catalogIds, harvestScopeDir } from '$lib/server/cc-config';
 import {
 	proposeSkill,
+	editProposal,
 	listSkillProposals,
 	getSkillProposal,
 	rejectSkill,
@@ -164,6 +165,83 @@ describe('/skills approve action — promote lands the skill in the catalog', ()
 		// The promoted proposal is no longer in the OPEN review list.
 		const open = await listSkillProposals(db, { status: 'open' });
 		expect(open.find((r) => r.id === p.id)).toBeUndefined();
+	});
+});
+
+// REGRESSION (SH-4 DoD-review defect): edit-then-approve MUST persist the operator's body/description
+// edit and promote THAT — never the original undedited body — and must NOT bump the recurrence counter.
+describe('/skills editApprove action — operator edit persists; not a harvested recurrence', () => {
+	it('body+description edit (name+trigger unchanged) updates IN PLACE, promotes the edited body, keeps occurrences', async () => {
+		if (!db) return expect(true).toBe(true);
+		// A pattern surfaced twice → occurrences=2 (the dedup-bump path the defect collided with).
+		const seed = {
+			name: 'windows-pid-liveness',
+			description: 'ORIGINAL description.',
+			body: '# liveness\nORIGINAL BODY',
+			trigger_context: 'checking a spawned process is alive on Windows'
+		};
+		await proposeSkill(db, seed);
+		const orig = await proposeSkill(db, seed);
+		expect(orig.occurrences).toBe(2);
+
+		// The operator edits body+description but leaves name+trigger (the skill identity) unchanged.
+		const { row: edited, renamed } = await editProposal(db, orig.id, {
+			name: seed.name,
+			description: 'EDITED description by operator.',
+			body: '# liveness\nEDITED BODY OPERATOR CHANGED',
+			trigger_context: seed.trigger_context
+		});
+
+		// IN-PLACE: same row id, NOT a rename, edited content persisted, occurrences UNCHANGED (not 3).
+		expect(renamed).toBe(false);
+		expect(edited.id).toBe(orig.id);
+		expect(edited.body).toBe('# liveness\nEDITED BODY OPERATOR CHANGED');
+		expect(edited.description).toBe('EDITED description by operator.');
+		expect(edited.occurrences).toBe(2);
+
+		// The promoted SKILL.md on disk carries the EDITED body — not 'ORIGINAL BODY' (the defect).
+		const res = await promoteSkill(db, { proposalId: edited.id, approver: 'operator', env });
+		expect(existsSync(res.filePath)).toBe(true);
+		const onDisk = readFileSync(res.filePath, 'utf8');
+		expect(onDisk).toContain('EDITED BODY OPERATOR CHANGED');
+		expect(onDisk).not.toContain('ORIGINAL BODY');
+	});
+
+	it('a RENAME (name changed) creates a fresh draft and leaves the original open (renamed:true)', async () => {
+		if (!db) return expect(true).toBe(true);
+		const orig = await proposeSkill(db, {
+			name: 'old-name',
+			description: 'desc.',
+			body: '# body',
+			trigger_context: 'some trigger context'
+		});
+
+		const { row: renamedRow, renamed } = await editProposal(db, orig.id, {
+			name: 'new-name',
+			description: 'desc.',
+			body: '# body',
+			trigger_context: 'some trigger context'
+		});
+
+		expect(renamed).toBe(true);
+		expect(renamedRow.id).not.toBe(orig.id);
+		expect(renamedRow.name).toBe('new-name');
+		// Both are still OPEN (the original is retained for review — G2).
+		const open = await listSkillProposals(db, { status: 'open' });
+		expect(open.find((r) => r.id === orig.id)).toBeDefined();
+		expect(open.find((r) => r.id === renamedRow.id)).toBeDefined();
+	});
+
+	it('editing an unknown id throws the honest named absent (SkillRejectNotFoundError)', async () => {
+		if (!db) return expect(true).toBe(true);
+		await expect(
+			editProposal(db, 'skill_proposal:does_not_exist', {
+				name: 'whatever-name',
+				description: 'd',
+				body: 'b',
+				trigger_context: 't'
+			})
+		).rejects.toThrow(/not found/i);
 	});
 });
 

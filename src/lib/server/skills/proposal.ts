@@ -406,6 +406,117 @@ export async function proposeSkill(db: Db, input: ProposeSkillInput): Promise<Sk
 	}
 }
 
+// ── editProposal — the OPERATOR edit path (SH-4 edit-then-approve) ──────────────────────────────────
+
+/** The outcome of an operator edit: the row to promote + whether it is a NEW draft (a rename). */
+export interface EditProposalResult {
+	/** The row the operator's edit landed on — the IN-PLACE-updated open row, or a fresh draft on rename. */
+	row: SkillProposalRow;
+	/**
+	 * True when the edit changed the dedup identity (name and/or trigger_context) so a NEW open draft was
+	 * created and the ORIGINAL `srcId` row remains open. False when the edit updated the original row in
+	 * place (the common body/description-only edit).
+	 */
+	renamed: boolean;
+}
+
+/**
+ * Apply an OPERATOR edit to a skill proposal, then return the row to promote (SH-4 edit-then-approve).
+ *
+ * This is DISTINCT from {@link proposeSkill}, which models a SESSION-HARVEST recurrence (a second session
+ * surfacing the same pattern → BUMP `occurrences`). An operator edit is NOT a recurrence — routing it
+ * through proposeSkill's dedup silently DROPPED the operator's body/description edit (the UPDATE branch
+ * only bumps occurrences) AND corrupted the RECUR/RANK signal by inflating occurrences on a single edit
+ * (the SH-4 DoD-review defect). Steps, in order:
+ *   1. SHAPE + D-026 SCREEN — same writer-boundary discipline as proposeSkill (name → kebab id; freetext
+ *      non-empty + bounded; evidence bounded; every field screened — a quarantined block REJECTS, named).
+ *   2. LOCATE — the original `srcId` row anchors the edit. Compute the EDITED normalized (name+trigger)
+ *      key. If it equals the ORIGINAL row's normalized key (a body/description/evidence-only edit), the
+ *      edit lands IN PLACE on that row.
+ *   3a. IN-PLACE UPDATE — re-write body/description/evidence (+ updated_at) on the original row WITHOUT
+ *       touching `occurrences` (an operator edit is not a harvested recurrence). norm_key is unchanged so
+ *       the dedup_key/UNIQUE identity is stable. Returns { row, renamed:false }.
+ *   3b. RENAME (identity changed) — the edited name/trigger is a DIFFERENT skill identity, so a fresh open
+ *       draft is created (through proposeSkill's screened write chokepoint) and the original row is LEFT
+ *       open (G2 mark-don't-delete; a rename is a new skill id). Returns { row:newDraft, renamed:true }.
+ *
+ * Shadow paths: unknown srcId → SkillRejectNotFoundError (honest absent, named); empty/over-bound/poisoned
+ * field → step-1 named throw; quarantined secret → step-1 named throw; an upstream DB fault → propagates
+ * (never silenced, F-008). Boundary discipline (D-016): the id binds via $param; only the validated id is
+ * interpolated.
+ */
+export async function editProposal(
+	db: Db,
+	srcId: string,
+	input: ProposeSkillInput
+): Promise<EditProposalResult> {
+	// 1. SHAPE + D-026 SCREEN (identical writer-boundary discipline to proposeSkill).
+	const name = reqKebabName(input.name);
+	const description = reqStr(input.description, 'description');
+	const body = reqStr(input.body, 'body');
+	const triggerContext = reqStr(input.trigger_context, 'trigger_context');
+	const rawEvidence = input.evidence ?? [];
+	if (!Array.isArray(rawEvidence)) {
+		throw new SkillProposalContractError(`skill_proposal field 'evidence' must be an array`);
+	}
+	if (rawEvidence.length > MAX_EVIDENCE_REFS) {
+		throw new SkillProposalContractError(
+			`skill_proposal has ${rawEvidence.length} evidence refs — exceeds the ${MAX_EVIDENCE_REFS} cap (bounded capture)`
+		);
+	}
+	const evidenceShaped = rawEvidence.map((e, i) => reqEvidenceRef(e, i));
+
+	const screenedName = screenField(name, 'name');
+	if (screenedName !== name) {
+		throw new SkillSecretEchoError(
+			`skill_proposal 'name' was altered by the secret screen — a skill id must be a clean kebab token`,
+			'name'
+		);
+	}
+	const screenedDescription = screenField(description, 'description');
+	const screenedBody = screenField(body, 'body');
+	const screenedTrigger = screenField(triggerContext, 'trigger_context');
+	const evidence = evidenceShaped.map((e, i) => screenField(e, `evidence[${i}]`));
+
+	// 2. LOCATE the original row (honest absent → named).
+	const original = await getSkillProposal(db, srcId);
+	if (!original) {
+		throw new SkillRejectNotFoundError(
+			`skill_proposal ${JSON.stringify(srcId)} not found — nothing to edit (honest absent)`
+		);
+	}
+
+	const editedKey = normalizedDedupKey(screenedName, screenedTrigger);
+	const originalKey = normalizedDedupKey(original.name, original.trigger_context);
+
+	// 3a. IN-PLACE — the edit kept the dedup identity (the common body/description-only edit). Re-write the
+	//     content on the SAME open row WITHOUT bumping occurrences (an operator edit is not a recurrence).
+	//     Only an OPEN row is editable here; if the original is already approved/rejected, fall through to
+	//     a fresh draft (the closed row is retained for audit; a new open draft starts).
+	if (editedKey === originalKey && original.status === 'open') {
+		await db.query(
+			`UPDATE $rid SET description = $description, body = $body, evidence = $evidence, updated_at = time::now();`,
+			{ rid: link(original.id), description: screenedDescription, body: screenedBody, evidence }
+		);
+		const updated = (await getSkillProposal(db, original.id)) ?? original;
+		return { row: updated, renamed: false };
+	}
+
+	// 3b. RENAME / identity change (or the original is no longer open) — the edited name/trigger is a
+	//     DIFFERENT skill identity. Create a fresh open draft through the screened write chokepoint; the
+	//     original row is LEFT as-is (G2 — a rename is a new skill id; the old draft stays open for review).
+	const draft = await proposeSkill(db, {
+		name,
+		description,
+		body,
+		trigger_context: triggerContext,
+		evidence: rawEvidence,
+		session: input.session,
+		project: input.project
+	});
+	return { row: draft, renamed: draft.id !== original.id };
+}
+
 // ── Reads (the operator review surface — SH-4) ──────────────────────────────────────────────────────
 
 /**

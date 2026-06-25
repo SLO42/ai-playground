@@ -27,7 +27,7 @@
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import {
 	listSkillProposals,
-	proposeSkill,
+	editProposal,
 	rejectSkill,
 	SkillProposalContractError,
 	SkillSecretEchoError,
@@ -137,6 +137,8 @@ function promoteFail(err: unknown) {
 	if (err instanceof SkillPromoteSecretEchoError) return fail(422, { review: { error: err.message } });
 	if (err instanceof SkillProposalContractError) return fail(400, { review: { error: err.message } });
 	if (err instanceof SkillSecretEchoError) return fail(422, { review: { error: err.message } });
+	// editApprove's editProposal throws this when the source row vanished (honest absent).
+	if (err instanceof SkillRejectNotFoundError) return fail(404, { review: { error: err.message } });
 	return fail(500, { review: { error: (err as Error).message } });
 }
 
@@ -171,21 +173,24 @@ export const actions: Actions = {
 	},
 
 	/**
-	 * EDIT-THEN-APPROVE — the operator tweaks name/description/body, then promotes. The edit is recorded
-	 * as a fresh proposeSkill draft (the operator's authorship; SCREENED — D-026; born 'open'), and the
-	 * RESULT row is promoted. Because the edit re-drafts through the SAME write chokepoint, a malformed
-	 * name / quarantined secret in the operator's edit fails closed (named) BEFORE any promote. If the
-	 * edit is byte-identical to the original open draft, proposeSkill's dedup returns the same row (no
-	 * duplicate) and we promote that — so an unchanged "edit" is just an approve. NOTE: the promoted
-	 * name is whatever the operator typed — a RENAME creates a new skill id (the old draft stays open).
+	 * EDIT-THEN-APPROVE — the operator tweaks name/description/body, then promotes. The edit goes through
+	 * editProposal (NOT proposeSkill): a body/description/evidence-only edit (name+trigger unchanged) is
+	 * APPLIED IN PLACE on the SAME open row — without bumping `occurrences` (an operator edit is not a
+	 * harvested recurrence) — and that updated row is promoted, so the operator's edited body is what lands
+	 * on disk. Routing this through proposeSkill's dedup previously DROPPED the operator's edit (the dedup
+	 * UPDATE only bumped occurrences) and promoted the ORIGINAL undedited body — silent data loss + a false
+	 * "edited and approved" confirmation (the SH-4 DoD-review defect). A RENAME (name and/or trigger
+	 * changed) is a different skill identity → editProposal creates a fresh open draft and LEAVES the
+	 * original open (renamed:true; the UI says so). The edit re-screens every field through the write
+	 * chokepoint, so a malformed name / quarantined secret fails closed (named) BEFORE any promote.
 	 */
 	editApprove: async ({ request }) => {
 		const db = tryGetDb();
 		if (!db) return fail(503, { review: { error: 'Database not connected — start SurrealDB and retry.' } });
 
 		const form = await request.formData();
-		// We re-draft from the operator's edited fields; the original id anchors the trigger_context so
-		// an edited copy still dedups onto the same pattern when name+trigger are unchanged.
+		// The original id anchors the edit: editProposal compares the edited (name+trigger) identity to the
+		// original row's, applying a same-identity edit IN PLACE and treating a changed identity as a rename.
 		const srcId = validProposalId(form.get('proposalId'));
 		if (!srcId) return fail(400, { review: { error: 'invalid proposal id' } });
 
@@ -200,8 +205,14 @@ export const actions: Actions = {
 		}
 
 		try {
-			// Re-draft as the OPERATOR's edit (proposeSkill SHAPES + SCREENS + dedups; born 'open').
-			const edited = await proposeSkill(db, { name, description, body, trigger_context: triggerContext });
+			// Apply the OPERATOR's edit (editProposal SHAPES + SCREENS; in-place on a same-identity edit,
+			// fresh draft on a rename). The RETURNED row carries the operator's edited body/description.
+			const { row: edited, renamed } = await editProposal(db, srcId, {
+				name,
+				description,
+				body,
+				trigger_context: triggerContext
+			});
 			// Promote the edited row, recording OPERATOR_ID (server-resolved).
 			const res = await promoteSkill(db, { proposalId: edited.id, approver: OPERATOR_ID });
 			return {
@@ -212,7 +223,7 @@ export const actions: Actions = {
 					filePath: res.filePath,
 					wroteFile: res.wroteFile,
 					// Honest signal: a rename leaves the original draft open (a new skill id was promoted).
-					renamed: edited.id !== srcId && name !== ''
+					renamed
 				}
 			};
 		} catch (err) {

@@ -82,6 +82,8 @@
   const releaseHref = $derived(`/projects/${slug}/release`);
   const syncHref = $derived(`/projects/${slug}/sync`);
   const targetsHref = $derived(`/projects/${slug}/targets`);
+  // LG-3 — the live animated lifecycle node-graph (Continue → sessions → PM → tasks).
+  const graphHref = $derived(`/projects/${slug}/graph`);
   const projectName = $derived(project?.name ?? slug);
 
   type Tab =
@@ -1275,6 +1277,8 @@
                   {/if}
                 </div>
               {/if}
+              <!-- LG-3 — the live causal node-graph of this project's lifecycle. -->
+              <a class="link-inline" href={graphHref}>See the lifecycle graph →</a>
             </div>
 
             <!-- Honest tick state (F-008): never a fake spinner-as-done. -->

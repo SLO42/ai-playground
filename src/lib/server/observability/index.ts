@@ -15,3 +15,17 @@ export {
 	type UsageRollup,
 	type UsageRollupOptions
 } from './usage';
+
+// LG-2 (LIFECYCLE-GRAPH-SPEC §LG-2) — the live causal node-graph read model
+// (Continue→session→PM→task). Pure READ over scene_event + session/task/agent_event;
+// the LG-3 UI (/projects/[id]/graph) renders + animates this off the existing onDbChange SSE.
+export {
+	buildLifecycleGraph,
+	type LifecycleGraph,
+	type LifecycleNode,
+	type LifecycleEdge,
+	type LifecycleNodeKind,
+	type LifecycleEdgeKind,
+	type LifecycleSource,
+	type LifecycleGraphLimits
+} from './lifecycle';

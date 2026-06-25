@@ -172,6 +172,14 @@ import { assertRecordId, assertRecordIdOfTable } from '$lib/server/db/validate';
 import { error, fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
+/** Coerce a (possibly SurrealDB-datetime) value to a clean ISO string, or null when absent/
+ *  unparseable (F-013 — never return a raw SDK datetime to the client, never str(undefined)). */
+function isoOrNull(v: unknown): string | null {
+	if (v == null) return null;
+	const t = new Date(String(v)).getTime();
+	return Number.isNaN(t) ? null : new Date(t).toISOString();
+}
+
 /** A task row reduced to what the detail page renders (plain, serializable). */
 export interface TaskSummary {
 	id: string;
@@ -180,6 +188,9 @@ export interface TaskSummary {
 	priority: TaskPriority;
 	/** The statuses this task may legally move TO (the board's move targets). */
 	moves: TaskStatus[];
+	/** When the task was created (ISO string), or null when absent/unparseable (F-013 — never a
+	 *  fabricated time). Drives the board card's "created Nm ago" relative label. */
+	createdAt: string | null;
 }
 
 export interface ProjectDetailData {
@@ -507,7 +518,9 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			status: t.status,
 			priority: t.priority,
 			// Legal move targets for the board (the state machine — D-008 task lifecycle).
-			moves: [...TASK_STATUSES].filter((s) => canTransition(t.status, s))
+			moves: [...TASK_STATUSES].filter((s) => canTransition(t.status, s)),
+			// ISO-coerced creation time (F-013); null when absent → the card renders '—'.
+			createdAt: isoOrNull(t.created_at)
 		}));
 
 		return {

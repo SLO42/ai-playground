@@ -27,6 +27,7 @@
   import SessionTranscript from '$lib/components/shell/SessionTranscript.svelte';
   import SessionFailureReason from '$lib/components/shell/SessionFailureReason.svelte';
   import type { Turn } from '$lib/client/transcript-core';
+  import { relativeTime, elapsed, absoluteTime } from '$lib/client/time-format';
   import {
     buildActivity,
     type ActivitySessionLike
@@ -68,11 +69,18 @@
     const i = id.indexOf(':');
     return i >= 0 ? id.slice(i + 1) : id;
   }
-  function fmtTime(iso: string | null | undefined): string {
-    if (!iso) return '—';
-    const d = new Date(iso);
-    return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
-  }
+
+  // A SINGLE shared clock ticks for the whole panel (one interval, never per-row timers) so the
+  // running sessions' live elapsed advances without hammering. Updated every 1s; absent any RUNNING
+  // session the tick is harmless (finished rows freeze their elapsed at end−start). Reduced-motion is
+  // irrelevant here (no animation — just a text update); the interval is torn down on unmount.
+  let now = $state(Date.now());
+  $effect(() => {
+    const id = setInterval(() => {
+      now = Date.now();
+    }, 1000);
+    return () => clearInterval(id);
+  });
 </script>
 
 <section class="activity card" aria-label="live project activity">
@@ -115,7 +123,16 @@
             <span class="act-model mono">{e.provider}/{e.modelId}</span>
             {#if e.tier}<span class="act-tier" data-tier={e.tier}>{e.tier}</span>{/if}
             <span class="act-sid mono" title={e.id}>{shortId(e.id)}</span>
-            <span class="act-when mono">{fmtTime(e.startedAt)}</span>
+            <!-- START (relative, absolute on hover) + ELAPSED (live-ticking while running, final once
+                 terminal). Honest '—' when the timestamp is absent (F-013) — never a fabricated time. -->
+            <span class="act-times" aria-hidden="false">
+              <span class="act-when mono" title={absoluteTime(e.startedAt)}>{relativeTime(e.startedAt, now)}</span>
+              <span
+                class="act-elapsed mono"
+                class:live={e.running}
+                title={e.running ? 'elapsed (live)' : 'elapsed'}
+              >{elapsed(e.startedAt, e.endedAt, now)}</span>
+            </span>
           </button>
 
           <!-- OBSERVABILITY (MC-4) — a failed session explains itself right in the list (the
@@ -331,10 +348,26 @@
     font-size: 0.68rem;
     color: var(--color-text-muted);
   }
+  .act-times {
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.5rem;
+    margin-left: auto;
+    flex: none;
+  }
   .act-when {
     font-size: 0.7rem;
     color: var(--color-text-muted);
-    margin-left: auto;
+  }
+  .act-elapsed {
+    font-size: 0.7rem;
+    color: var(--color-text-2);
+    padding: 0.02rem 0.4rem;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-card);
+  }
+  .act-elapsed.live {
+    color: var(--color-running, var(--color-success, #2a9d4a));
   }
   .act-detail {
     display: flex;

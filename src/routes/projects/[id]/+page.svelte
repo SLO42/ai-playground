@@ -29,6 +29,7 @@
     interjectEventToTurn,
     type Turn
   } from '$lib/client/transcript-core';
+  import { relativeTime, elapsed, absoluteTime } from '$lib/client/time-format';
   import type { PageData, ActionData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -780,6 +781,17 @@
     return Number.isNaN(d.getTime()) ? iso : d.toLocaleString();
   }
 
+  // ONE shared clock for every time-relative surface on this page (session list elapsed, task card
+  // ages) — a single 1s interval, never per-row timers (keeps a running session's elapsed ticking
+  // without hammering). Torn down on unmount.
+  let now = $state(Date.now());
+  $effect(() => {
+    const id = setInterval(() => {
+      now = Date.now();
+    }, 1000);
+    return () => clearInterval(id);
+  });
+
   /** Strip the `table:` prefix from a record id for compact display. */
   function bareId(id: string): string {
     return id.replace(/^\w+:/, '');
@@ -1468,6 +1480,8 @@
                         <span class="board-card-title">{t.title}</span>
                         <div class="board-card-foot">
                           <span class="prio mono" data-prio={t.priority}>{t.priority}</span>
+                          <!-- Creation age (relative; precise on hover). Honest '—' when absent (F-013). -->
+                          <span class="card-when mono" title={absoluteTime(t.createdAt)}>{relativeTime(t.createdAt, now)}</span>
                           {#if t.moves.length}
                             <form
                               method="POST"
@@ -2742,7 +2756,10 @@
                   <span class="mono sid">{shortId(s.id)}</span>
                   <span class="status" data-status={s.status}>{s.status}</span>
                   <span class="model mono">{s.provider}/{s.modelId}</span>
-                  <span class="when mono">{fmtTime(s.startedAt)}</span>
+                  <!-- START (relative; precise on hover) + ELAPSED (live while running, final once
+                       terminal). Honest '—' when started_at is absent (F-013). -->
+                  <span class="when mono" title={absoluteTime(s.startedAt)}>{relativeTime(s.startedAt, now)}</span>
+                  <span class="elapsed mono" class:live={s.status === 'running'} title={s.status === 'running' ? 'elapsed (live)' : 'elapsed'}>{elapsed(s.startedAt, s.endedAt, now)}</span>
                   <button class="open-btn" type="button" onclick={() => openSession(s.id)}>open</button>
                   <!-- OBSERVABILITY — a failed session explains itself right in the list (the
                        screened session.note, or honest "no reason recorded"). Full-row span so
@@ -3422,6 +3439,20 @@
     font-size: 0.72rem;
     color: var(--color-text-muted);
     margin-left: auto;
+  }
+  .elapsed {
+    font-size: 0.72rem;
+    color: var(--color-text-secondary, var(--color-text-muted));
+    padding: 0.02rem 0.4rem;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+  }
+  .elapsed.live {
+    color: var(--color-running-on-overlay, var(--color-running));
+  }
+  .card-when {
+    font-size: 0.66rem;
+    color: var(--color-text-muted);
   }
   .prio {
     font-size: 0.7rem;

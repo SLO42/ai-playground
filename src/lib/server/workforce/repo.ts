@@ -1041,6 +1041,37 @@ export async function listRoleEvents(db: Db, roleId: string, limit = 100): Promi
 	return rows.map(normRoleEvent);
 }
 
+/** A recent role_event with the role's display slug joined — for the workforce activity surface
+ *  (the project command-center HR/role pulse). `role_slug` is the human-readable role identity
+ *  (role.slug), or null when the link is dangling (honest — never fabricated). */
+export interface RecentRoleEventRow extends RoleEventRow {
+	role_slug: string | null;
+}
+
+/**
+ * The most-recent workforce role_events ACROSS all roles (newest-first, bounded). role_event has no
+ * project column — workforce lifecycle (created/swap/staffed/retired/cert/flip) is project-less — so
+ * this is the GLOBAL recent-HR-activity feed the project command-center surfaces (the operator wants
+ * hires/cert/swaps visible alongside dev + PM activity).
+ *
+ * Bounded by construction (F-014): newest-first + a hard-clamped LIMIT — never an unbounded scan. The
+ * role.slug is joined in the projection (F-022: the ORDER BY field `at` is selected). datetime → ISO
+ * string in normRoleEvent (F-013); a dangling role link yields role_slug:null (honest, F-008).
+ *
+ * SHADOW PATHS: no role_events ⇒ [] (honest empty — the surface shows "HR idle"); a row with a
+ * dangling role ⇒ role_slug:null (shown as the raw id, never dropped); limit≤0 ⇒ clamped to 1.
+ */
+export async function listRecentRoleEvents(db: Db, limit = 20): Promise<RecentRoleEventRow[]> {
+	const cap = Math.min(Math.max(limit, 1), 200);
+	const [rows] = await db.query<[Array<Raw & { role_slug?: unknown }>]>(
+		`SELECT *, role.slug AS role_slug FROM role_event ORDER BY at DESC LIMIT ${cap};`
+	);
+	return (rows ?? []).map((row) => ({
+		...normRoleEvent(row),
+		role_slug: row.role_slug != null ? str(row.role_slug) : null
+	}));
+}
+
 // ── §2.6 bundle_digest honesty ───────────────────────────────────────────────────
 
 /**

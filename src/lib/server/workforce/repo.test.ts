@@ -25,6 +25,7 @@ import {
 	getRoleBySlug,
 	getRoleVersion,
 	listRoleEvents,
+	listRecentRoleEvents,
 	markInterviewRunStale,
 	readGauntletKeyForScoring,
 	retireRoleVersion,
@@ -477,6 +478,47 @@ describe('incumbency swap (§2.3 — one pointer write + one role_event)', () =>
 		expect(typeof retired.retired_at).toBe('string'); // F-013 on the SET row
 		expect((await listRoleEvents(db, role.id)).some((e) => e.op === 'retired')).toBe(true);
 		await expect(withdrawRoleVersion(db, v.id)).rejects.toThrow(LifecycleError);
+	});
+});
+
+// ── listRecentRoleEvents — the GLOBAL recent HR/role feed (command-center agency pulse) ──
+
+describe('listRecentRoleEvents (project command-center HR/role activity)', () => {
+	it('returns recent role_events ACROSS roles, newest-first, with the role slug joined', async () => {
+		const a = await freshRole('wf-recent-a');
+		const b = await freshRole('wf-recent-b');
+		// Seed events on two DIFFERENT roles so the cross-role merge is exercised.
+		await addRoleEvent(db, { role: a.id, op: 'staffed' });
+		await addRoleEvent(db, { role: b.id, op: 'swap' });
+
+		const recent = await listRecentRoleEvents(db, 50);
+		// Both seeded events are present (plus the createRole 'created' events).
+		const mine = recent.filter((e) => e.role === a.id || e.role === b.id);
+		expect(mine.length).toBeGreaterThanOrEqual(4); // 2 created + staffed + swap
+
+		// F-013: at is an ISO string (or null), never a raw SDK datetime.
+		for (const e of recent) {
+			expect(e.at === null || typeof e.at === 'string').toBe(true);
+		}
+		// The role slug is joined for display (honest — the real slug, not the raw id).
+		const staffed = recent.find((e) => e.role === a.id && e.op === 'staffed');
+		expect(staffed?.role_slug).toBe(a.slug);
+
+		// Newest-first: a strictly-later event sorts before an earlier one (where timestamps differ).
+		const dated = recent.filter((e) => e.at != null);
+		for (let i = 1; i < dated.length; i++) {
+			expect(dated[i - 1].at! >= dated[i].at!).toBe(true);
+		}
+	});
+
+	it('the limit bounds the page (hard-clamped); a tiny limit returns at most that many', async () => {
+		const recent = await listRecentRoleEvents(db, 2);
+		expect(recent.length).toBeLessThanOrEqual(2);
+	});
+
+	it('limit ≤ 0 is clamped to 1 (never an unbounded or empty-by-clamp scan)', async () => {
+		const recent = await listRecentRoleEvents(db, 0);
+		expect(recent.length).toBeLessThanOrEqual(1);
 	});
 });
 

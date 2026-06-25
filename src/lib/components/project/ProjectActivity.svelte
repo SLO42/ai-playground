@@ -32,10 +32,22 @@
     buildActivity,
     type ActivitySessionLike
   } from './project-activity-core';
+  import {
+    buildPulse,
+    type PulseProposalLike,
+    type PulseLoopLike,
+    type PulseRoleEventLike
+  } from './project-pulse-core';
 
   interface Props {
     /** The live per-project session rows (loader FleetSession[] — running + recent). */
     sessions: readonly ActivitySessionLike[];
+    /** PM proposals + their panel verdicts (loader `proposals`) — the agency pulse PM signal. */
+    proposals?: readonly PulseProposalLike[] | null;
+    /** The autonomous-PM loop's honest last-state (loader `autonomousLoop`), or null (unknown). */
+    loop?: PulseLoopLike | null;
+    /** Recent workforce role_events (loader `roleEvents`) — the agency pulse HR signal. */
+    roleEvents?: readonly PulseRoleEventLike[] | null;
     /** The currently-expanded session id (the parent's `?session=` selection), or null. */
     selectedSession: string | null;
     /** The expanded session's normalized live transcript turns (parent's `liveTurns`). */
@@ -51,6 +63,9 @@
   }
   let {
     sessions,
+    proposals = null,
+    loop = null,
+    roleEvents = null,
     selectedSession,
     turns,
     liveStatus,
@@ -61,6 +76,10 @@
 
   // The activity model — running-first, finished tail bounded — derived LIVE from real rows.
   const model = $derived(buildActivity(sessions));
+
+  // The AGENCY pulse — PM proposals/verdicts + the autonomous-loop tick state + HR/role activity,
+  // derived LIVE from the loader's already-fetched rows. Honest idle when no agency signal (F-008).
+  const pulse = $derived(buildPulse({ proposals, loop, roleEvents }));
 
   // The expanded row, if any (so its header shows the live status/tokens of the open session).
   const expanded = $derived(model.entries.find((e) => e.id === selectedSession) ?? null);
@@ -96,6 +115,64 @@
       {/if}
     </span>
   </header>
+
+  <!-- AGENCY PULSE — PM proposals/decisions + autonomous tick state + HR/role activity, rendered
+       ABOVE the dev sessions and visually DISTINCT from them (a tinted strip + per-entry kind tag).
+       The operator no longer sees only dev activity at a glance. Honest throughout (F-008): a PM
+       with no proposals/verdicts shows "PM idle"; no role activity shows "no HR activity"; an unknown
+       loop state is shown verbatim. Every entry is a REAL loaded row — never a fabricated thought. -->
+  <section class="pulse" aria-label="PM and HR agency activity">
+    <header class="pulse-head">
+      <span class="pulse-eyebrow">agency · PM &amp; HR</span>
+      <span class="pulse-counts mono">
+        {#if pulse.idle}
+          PM idle · no HR activity
+        {:else}
+          {pulse.pmCount} PM · {pulse.hrCount} HR
+        {/if}
+      </span>
+    </header>
+
+    <!-- The autonomous-PM tick state — always shown when a state is known (honest 'unknown' verbatim
+         otherwise). This is the "is the PM driving / blocked / done?" signal the operator scans. -->
+    {#if pulse.loop}
+      <div class="pulse-loop" data-tone={pulse.loop.tone} aria-label="autonomous PM tick state">
+        <span class="pulse-tag" data-kind="pm-loop">PM loop</span>
+        <span class="pulse-loop-state">{pulse.loop.label}</span>
+        {#if pulse.loop.reason}<span class="pulse-loop-reason">{pulse.loop.reason}</span>{/if}
+        {#if pulse.loop.ticksUsed > 0}
+          <span class="pulse-loop-ticks mono" title="re-ticks used this window"
+            >{pulse.loop.ticksUsed} tick{pulse.loop.ticksUsed === 1 ? '' : 's'}</span
+          >
+        {/if}
+      </div>
+    {:else}
+      <p class="pulse-loop-unknown">PM autonomous state unknown — no hired/armed PM, or boot degraded.</p>
+    {/if}
+
+    {#if pulse.entries.length === 0}
+      <!-- HONEST idle (F-008): the PM has proposed nothing and there is no recent HR/role activity. -->
+      <p class="pulse-idle">
+        PM idle — no recent proposals or panel decisions; no HR/role activity. PM proposals and hires
+        appear here as they happen.
+      </p>
+    {:else}
+      <ul class="pulse-list" aria-label="recent PM and HR activity">
+        {#each pulse.entries as p (p.id)}
+          <li class="pulse-row" data-kind={p.kind} data-tone={p.tone}>
+            <span class="pulse-tag" data-kind={p.kind}>{p.tag}</span>
+            <span class="pulse-body">
+              <span class="pulse-headline">{p.headline}</span>
+              {#if p.detail}<span class="pulse-detail">{p.detail}</span>{/if}
+            </span>
+            <span class="pulse-when mono" title={p.at ? absoluteTime(p.at) : 'no timestamp recorded'}>
+              {p.at ? relativeTime(p.at, now) : '—'}
+            </span>
+          </li>
+        {/each}
+      </ul>
+    {/if}
+  </section>
 
   {#if model.idle}
     <!-- HONEST idle (F-008): nothing running and no recent sessions for this project. -->
@@ -431,5 +508,149 @@
     .act-log {
       scroll-behavior: auto;
     }
+  }
+
+  /* ── AGENCY PULSE — PM/HR strip, visually distinct from dev sessions (tinted, tagged). ── */
+  .pulse {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    padding: var(--space-3, 0.75rem);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-left: 3px solid var(--color-accent);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-accent-muted, var(--color-surface-overlay));
+  }
+  .pulse-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-3, 0.75rem);
+  }
+  .pulse-eyebrow {
+    font-size: 0.72rem;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--color-accent);
+  }
+  .pulse-counts {
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
+  }
+  .pulse-loop {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 0.5rem;
+    padding: 0.35rem 0.5rem;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-card);
+    border: var(--border-width, 1px) solid var(--color-border);
+  }
+  .pulse-loop[data-tone='running'] {
+    border-color: var(--color-running, var(--color-success, #2a9d4a));
+  }
+  .pulse-loop[data-tone='blocked'] {
+    border-color: var(--color-blocked, var(--color-warn, orange));
+  }
+  .pulse-loop-state {
+    font-size: 0.78rem;
+    font-weight: 600;
+    color: var(--color-text);
+  }
+  .pulse-loop[data-tone='running'] .pulse-loop-state {
+    color: var(--color-running, var(--color-success, #2a9d4a));
+  }
+  .pulse-loop[data-tone='blocked'] .pulse-loop-state {
+    color: var(--color-blocked, var(--color-warn, orange));
+  }
+  .pulse-loop-reason {
+    font-size: 0.72rem;
+    color: var(--color-text-2);
+  }
+  .pulse-loop-ticks {
+    font-size: 0.68rem;
+    color: var(--color-text-muted);
+    margin-left: auto;
+  }
+  .pulse-loop-unknown,
+  .pulse-idle {
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+    font-style: italic;
+    margin: 0;
+  }
+  .pulse-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+  }
+  .pulse-row {
+    display: flex;
+    align-items: baseline;
+    gap: 0.55rem;
+    padding: 0.3rem 0.45rem;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-card);
+    min-width: 0;
+  }
+  /* A left accent rule keys the row's stream so PM vs HR reads at a glance (color + the text tag). */
+  .pulse-row[data-kind='pm-proposal'],
+  .pulse-row[data-kind='pm-verdict'] {
+    border-left: 2px solid var(--color-tier-opus, var(--color-accent));
+  }
+  .pulse-row[data-kind='hr-role'] {
+    border-left: 2px solid var(--color-tier-sonnet, var(--color-text-muted));
+  }
+  .pulse-tag {
+    font-size: 0.62rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.1rem 0.4rem;
+    border-radius: var(--radius-sm, 6px);
+    white-space: nowrap;
+    flex: none;
+    background: var(--color-surface-overlay);
+    color: var(--color-text-muted);
+  }
+  .pulse-tag[data-kind='pm-proposal'],
+  .pulse-tag[data-kind='pm-verdict'],
+  .pulse-tag[data-kind='pm-loop'] {
+    color: var(--color-tier-opus, var(--color-accent));
+  }
+  .pulse-tag[data-kind='hr-role'] {
+    color: var(--color-tier-sonnet, var(--color-accent));
+  }
+  .pulse-body {
+    display: flex;
+    flex-direction: column;
+    gap: 0.1rem;
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+  .pulse-headline {
+    font-size: 0.8rem;
+    color: var(--color-text);
+  }
+  .pulse-row[data-tone='approve'] .pulse-headline {
+    color: var(--color-success, var(--color-running, #2a9d4a));
+  }
+  .pulse-row[data-tone='pushback'] .pulse-headline {
+    color: var(--color-blocked, var(--color-warn, orange));
+  }
+  .pulse-detail {
+    font-size: 0.7rem;
+    color: var(--color-text-2);
+    overflow-wrap: anywhere;
+  }
+  .pulse-when {
+    font-size: 0.68rem;
+    color: var(--color-text-muted);
+    flex: none;
+    margin-left: auto;
   }
 </style>

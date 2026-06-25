@@ -606,6 +606,8 @@
     // TASK 16.4 — proposals queue: panel verdicts + decision briefs update live.
     const offPv = stream.onDbChange('panel_verdict', () => void invalidate('app:pm'));
     const offDb = stream.onDbChange('decision_brief', () => void invalidate('app:pm'));
+    // AGENCY-PULSE — HR/role activity (hires/cert/swaps) lands in the activity strip live.
+    const offRe = stream.onDbChange('role_event', () => void invalidate('app:pm'));
     // TASK 10.4 — the Maintain panel + Memory tab update live too.
     const offF = stream.onDbChange('security_finding', () => void invalidate('app:findings'));
     const offMem = stream.onDbChange('memory', () => void invalidate('app:memory'));
@@ -621,6 +623,7 @@
       offPm();
       offPv();
       offDb();
+      offRe();
       offF();
       offMem();
       offE();
@@ -1013,6 +1016,9 @@
              require /claude-code into the project view. Honest idle/failed states (F-008). -->
         <ProjectActivity
           {sessions}
+          {proposals}
+          loop={loopState}
+          roleEvents={data.roleEvents ?? []}
           {selectedSession}
           turns={liveTurns}
           {liveStatus}

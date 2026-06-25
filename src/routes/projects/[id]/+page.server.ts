@@ -144,8 +144,10 @@ import {
 	loadWorkforcePanel,
 	recordPmFitVerdict,
 	HireGateError,
+	listRecentRoleEvents,
 	type HireGap,
-	type HireBriefCard
+	type HireBriefCard,
+	type RecentRoleEventRow
 } from '$lib/server/workforce';
 import { listSessionMessages, launchSession, type TranscriptMessage } from '$lib/server/sessions';
 import {
@@ -267,6 +269,10 @@ export interface ProjectDetailData {
 	queue: QueueStats | null;
 	/** TASK 16.4 — open proposals with their panel verdicts + any open brief (PM-SPEC §4). */
 	proposals: ProposalQueueEntry[];
+	/** AGENCY-PULSE — recent workforce role_events (hire/cert/swap/staff/retire) for the command-center
+	 *  HR/role activity strip. role_event is project-less, so this is the GLOBAL recent feed, newest-first
+	 *  + bounded. [] when no role activity (honest empty → the strip shows "no HR activity", F-008). */
+	roleEvents: RecentRoleEventRow[];
 	/** The PM authority ladder vocabulary (for the operator's authority control). */
 	pmAuthorities: readonly PmAuthority[];
 	/** The Six Forcing Questions resolved against this project (smart-skip evidence). */
@@ -388,6 +394,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			spendCaps: readSpendCaps(),
 			queue: null,
 			proposals: [],
+			roleEvents: [],
 			pmAuthorities: PM_AUTHORITIES,
 			hireQuestions: [],
 			pmKinds: PM_MEMORY_KINDS,
@@ -485,6 +492,19 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 				// workforce panel unavailable - honest empty hire-gate queue.
 			}
 
+			// AGENCY-PULSE — recent workforce role_events (hires/cert/swaps/staffing) for the project
+			// command-center's HR/role activity strip. role_event is project-less (global workforce audit),
+			// so this is the GLOBAL recent feed — surfaced so the operator sees HR activity at a glance
+			// alongside dev + PM activity. Bounded (newest-first, hard cap). A reader throw must NEVER sink
+			// the detail page (honest partial, F-008): on failure the strip shows an honest "no HR activity".
+			let roleEvents: RecentRoleEventRow[] = [];
+			try {
+				roleEvents = await listRecentRoleEvents(db, 12);
+			} catch {
+				// role_event reader unavailable → honest empty HR strip; never a fabricated event.
+				roleEvents = [];
+			}
+
 		// CC-STATUS — the headline work-queue stats for the status dashboard's spawn-budget tile. The
 		// dailyCap passed MUST be the SAME value the orchestrator actually enforces (queue-monitor honors
 		// it only when positive-finite) — read from the live boot wire (bootDailySpawnCap), the REAL D-021
@@ -562,6 +582,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			spendCaps: readSpendCaps(),
 			queue,
 			proposals,
+			roleEvents,
 			pmAuthorities: PM_AUTHORITIES,
 			// Smart-skip resolved server-side against the live plan macro (PM-SPEC §1).
 			hireQuestions: hireInterviewFor(project),
@@ -604,6 +625,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			spendCaps: readSpendCaps(),
 			queue: null,
 			proposals: [],
+			roleEvents: [],
 			pmAuthorities: PM_AUTHORITIES,
 			hireQuestions: [],
 			pmKinds: PM_MEMORY_KINDS,

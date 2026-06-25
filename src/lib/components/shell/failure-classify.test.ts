@@ -150,3 +150,65 @@ describe('classifyFailureNote — honest fallback + shadow paths', () => {
 		expect(classifyFailureNote(note).category).toBe('capability-denied');
 	});
 });
+
+/* ============================================================================
+   CC-1 fix gap #1 — FOREIGN-MARKER COLLISION (regression). A real
+   cli-backend.ts:705-709 `claude CLI exited N: <detail>` wraps the agent's OWN
+   stream-json result tail (up to 800 chars) as foreign text. A generic content
+   marker (401 / credential / timeout / refusal / "N failed") quoted INSIDE that
+   tail must NOT mislabel the cause — the wrapper classifies as stream-exit. Only
+   a REAL spawn-layer cause (capability-denied, the F-029 stale-token signals)
+   legitimately overrides the wrapper. These notes are shaped exactly like the
+   real producer (cli-backend.ts:705-709 / launch.ts:998).
+   ============================================================================ */
+describe('classifyFailureNote — embedded foreign text in a stream-exit wrapper must NOT mislabel the cause', () => {
+	const wrapped: Array<{ name: string; note: string }> = [
+		{
+			name: "agent's own result says 'I cannot help' (refusal token, NOT a refusal cause)",
+			note: 'claude CLI exited 1: {"type":"result","subtype":"error","result":"I cannot help with that request"}'
+		},
+		{
+			name: "agent's result mentions 'timed out' (timeout token, NOT a spawn timeout)",
+			note: 'claude CLI exited 1: {"type":"result","result":"the build timed out after 600s; investigating"}'
+		},
+		{
+			name: "agent's result mentions a 401 (auth token, NOT an auth-token cause)",
+			note: 'claude CLI exited 1: {"type":"result","result":"got a 401 from the upstream API mid-run"}'
+		},
+		{
+			name: "agent's result says 'invalid credential' (credential token, NOT an auth cause)",
+			note: 'claude CLI exited 1: {"type":"result","result":"the tool returned an invalid credential error"}'
+		},
+		{
+			name: "embedded 'completed with a failure result: 3 failed; I will not retry' (tests/refusal tokens)",
+			note: 'claude CLI exited 2: completed with a failure result: 3 failed; I will not retry'
+		}
+	];
+	for (const c of wrapped) {
+		it(`${c.name} → stream-exit (the wrapper IS the cause, not its quoted tail)`, () => {
+			const out = classifyFailureNote(c.note);
+			expect(out.category).toBe('stream-exit');
+			// detail stays the FULL verbatim note (D-026 unchanged) — nothing is hidden, only labeled honestly.
+			expect(out.detail).toBe(c.note);
+		});
+	}
+
+	it('a REAL capability-denial nested in the wrapper STILL wins (legitimate cause overrides)', () => {
+		const note =
+			'claude CLI exited 1: unknown skill capability id "svelte5-patterns" — not in the cc-config catalog (fail closed, D-036)';
+		expect(classifyFailureNote(note).category).toBe('capability-denied');
+	});
+
+	it('a REAL F-029 stale-token cause on a failed-to-start wrapper STILL wins (auth-token)', () => {
+		const note = 'claude CLI failed to start: OPENCLAW_TOKEN unset (stale token)';
+		expect(classifyFailureNote(note).category).toBe('auth-token');
+	});
+
+	it('a NON-wrapper note carrying a generic marker still classifies by content (scope unchanged)', () => {
+		// Not a wrapper → the whole note is scannable → the generic timeout/refusal markers still fire.
+		expect(classifyFailureNote('proposal session ended timeout (not done)').category).toBe('spawn-timeout');
+		expect(
+			classifyFailureNote('completed with a failure result: I cannot help with that request.').category
+		).toBe('agent-refusal');
+	});
+});

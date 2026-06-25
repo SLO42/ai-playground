@@ -60,8 +60,48 @@ interface Rule {
 	test: (lower: string) => boolean;
 }
 
-// Ordered most-specific → most-generic. Each marker is cited to its real producer.
-const RULES: readonly Rule[] = [
+// ── FOREIGN-TEXT GUARD (fix: CC-1 review gap #1) ──────────────────────────────────────────────
+// A stream-exit note WRAPS arbitrary foreign text that is NOT a marker for the cause:
+//   • cli-backend.ts:705-709 — `claude CLI exited N: <detail>` where <detail> is up to 800 chars of
+//     the agent's OWN stream-json result tail (`{"type":"result","result":"I cannot help…"}`, the
+//     last 3 raw lines joined by ' ⏎ ') — the agent's natural-language output, NOT the exit cause.
+//   • cli-backend.ts:699 — `claude CLI failed to start: <err>` (spawn err message).
+//   • launch.ts:998 — `failed mid-stream: <err>`.
+// The generic single-token content markers below (401/credential/timeout/refusal/\d+ failed) would
+// fire from INSIDE that embedded payload → a confidently-WRONG overview tag (a CLI crash mislabeled
+// 'agent declined the task'/'timed out'/'auth problem'), violating the honesty rail (§12-15: a
+// category is assigned ONLY on a real OBSERVED marker FOR THE CAUSE). So generic content markers are
+// matched ONLY against the WRAPPER (the text up to the first ': '), never the embedded tail. REAL
+// causes our spawn/runtime layer emits as the error ITSELF (capability-denied, the F-029 stale-token
+// signals) are in REAL_CAUSE_RULES below and match anywhere — they ARE the observed cause.
+const STREAM_WRAPPER_PREFIXES = [
+	'claude cli exited',
+	'claude cli failed to start',
+	'failed mid-stream'
+] as const;
+
+/** True when the lowercased note is a stream-exit wrapper (its tail is foreign, non-marker text). */
+function isStreamWrapper(lower: string): boolean {
+	return STREAM_WRAPPER_PREFIXES.some((p) => lower.startsWith(p));
+}
+
+/**
+ * The portion of a wrapper note safe to scan for GENERIC content markers: the wrapper itself, up to
+ * (and excluding) the embedded payload that begins after the first ': '. For a non-wrapper note the
+ * whole note is returned unchanged (nothing is stripped). This is the ONLY text the generic rules
+ * see — so a marker buried in the agent's own result tail can no longer mislabel the cause.
+ */
+function scannableScope(lower: string): string {
+	if (!isStreamWrapper(lower)) return lower;
+	const sep = lower.indexOf(': ');
+	return sep === -1 ? lower : lower.slice(0, sep);
+}
+
+// REAL-CAUSE rules: each marker is text OUR code emits AS the error/advisory itself — a genuine
+// OBSERVED cause. Matched against the WHOLE note (they legitimately ride inside a stream wrapper,
+// e.g. capability-denied / the F-029 stale-token reason on `claude CLI failed to start: …`).
+// Ordered most-specific → most-generic; first match wins.
+const REAL_CAUSE_RULES: readonly Rule[] = [
 	{
 		// reaper.ts:25 — REAPED_NOTE = 'reaped: server restarted mid-run'
 		category: 'crashed-mid-run',
@@ -77,7 +117,8 @@ const RULES: readonly Rule[] = [
 		test: (l) => l.includes('merge needed') || l.includes('work preserved on') || l.includes('fast-forward not possible')
 	},
 	{
-		// capabilities.ts:190 — 'unknown <kind> capability id "<id>" — not in the cc-config catalog (fail closed, D-036)'
+		// capabilities.ts:190 — 'unknown <kind> capability id "<id>" — not in the cc-config catalog (fail closed, D-036)'.
+		// This is the REAL cause even when it rides inside `claude CLI exited N: …` (the legitimate nesting).
 		category: 'capability-denied',
 		icon: '⊘',
 		shortLabel: 'capability denied',
@@ -91,9 +132,11 @@ const RULES: readonly Rule[] = [
 		test: (l) => l.includes('worktree acquisition failed') || l.includes('worktree setup failed')
 	},
 	{
-		// Instant pre-init death with cc_session_id=null (the 6-ROUNDS symptom; F-029 stale token).
-		// Test fixtures: 'spawn failed: cc_session_id=null', 'child spawn died: cc_session_id=null'.
-		// Also the explicit stale-token / auth signals.
+		// EXPLICIT spawn-layer auth/token cause — our code emits this AS the error (F-029 stale token;
+		// the instant pre-init death with cc_session_id=null). These are real OBSERVED causes and
+		// legitimately ride inside `claude CLI failed to start: OPENCLAW_TOKEN unset (stale token)`,
+		// so they match the whole note. The GENERIC auth tokens (401/credential/…) are NOT here — they
+		// must not fire from inside an embedded agent result payload (see generic-content rules).
 		category: 'auth-token',
 		icon: '🔑',
 		shortLabel: 'auth / token problem',
@@ -101,14 +144,28 @@ const RULES: readonly Rule[] = [
 			l.includes('cc_session_id=null') ||
 			l.includes('stale token') ||
 			l.includes('token unset') ||
-			/\b(auth|oauth|unauthorized|401|invalid api key|credential)\b/.test(l)
-	},
+			l.includes('openclaw_token')
+	}
+];
+
+// GENERIC-CONTENT rules: single-token / phrase markers that could appear in ARBITRARY foreign text
+// (an agent's own result, a git stderr tail). Matched ONLY against `scannableScope` — the wrapper,
+// never an embedded payload — so they classify the genuine cause and never a quote of it.
+// Ordered most-specific → most-generic; first match wins.
+const GENERIC_CONTENT_RULES: readonly Rule[] = [
 	{
 		// A spawn/start timeout (subprocess discipline; create-leg 'timeout'/'session ended timeout').
 		category: 'spawn-timeout',
 		icon: '⏱',
 		shortLabel: 'timed out',
 		test: (l) => l.includes('timed out') || /\btimeout\b/.test(l)
+	},
+	{
+		// Generic auth/credential tokens — only meaningful OUTSIDE a wrapped agent payload.
+		category: 'auth-token',
+		icon: '🔑',
+		shortLabel: 'auth / token problem',
+		test: (l) => /\b(auth|oauth|unauthorized|401|invalid api key|credential)\b/.test(l)
 	},
 	{
 		// The model DECLINED the task (an honest refusal, F-008). Distinct from a crash.
@@ -126,19 +183,15 @@ const RULES: readonly Rule[] = [
 		test: (l) =>
 			/\b(tests? failed|test failures?|build failed|svelte-check|lint (errors?|failed)|\d+ failed)\b/.test(l) ||
 			(l.includes('completed with a failure result') && /\btest|build|lint\b/.test(l))
-	},
-	{
-		// cli-backend.ts:699/709 — 'claude CLI failed to start: <err>' / 'claude CLI exited N: <detail>'.
-		// launch.ts:998 — 'failed mid-stream: …'. This is the generic streamed-exit wall of text.
-		category: 'stream-exit',
-		icon: '⚠',
-		shortLabel: 'CLI exited with an error',
-		test: (l) =>
-			l.includes('claude cli exited') ||
-			l.includes('claude cli failed to start') ||
-			l.startsWith('failed mid-stream')
 	}
 ];
+
+// The generic stream-exit fallback: a recognized wrapper whose embedded tail carried no REAL cause.
+const STREAM_EXIT_RESULT: Pick<Rule, 'category' | 'icon' | 'shortLabel'> = {
+	category: 'stream-exit',
+	icon: '⚠',
+	shortLabel: 'CLI exited with an error'
+};
 
 /**
  * Classify a raw (already-D-026-screened) session note into a render-ready category + short
@@ -168,10 +221,26 @@ export function classifyFailureNote(note: string | null | undefined): Classified
 		return { category: 'no-output', shortLabel: 'failed before any output', detail, icon: '∅', empty: false };
 	}
 
-	for (const rule of RULES) {
+	// 1. REAL-CAUSE markers — text our code emits AS the error itself. Matched against the WHOLE
+	//    note (they legitimately ride inside a stream wrapper; e.g. capability-denied / stale-token).
+	for (const rule of REAL_CAUSE_RULES) {
 		if (rule.test(lower)) {
 			return { category: rule.category, shortLabel: rule.shortLabel, detail, icon: rule.icon, empty: false };
 		}
+	}
+
+	// 2. GENERIC-CONTENT markers — only scanned over the WRAPPER (never an embedded agent/git
+	//    payload), so a marker quoted inside the agent's own result tail can't mislabel the cause.
+	const scope = scannableScope(lower);
+	for (const rule of GENERIC_CONTENT_RULES) {
+		if (rule.test(scope)) {
+			return { category: rule.category, shortLabel: rule.shortLabel, detail, icon: rule.icon, empty: false };
+		}
+	}
+
+	// 3. A recognized stream-exit wrapper with no real cause in its (foreign) tail → stream-exit.
+	if (isStreamWrapper(lower)) {
+		return { ...STREAM_EXIT_RESULT, detail, empty: false };
 	}
 
 	// Unrecognized note → HONEST fallback. Never a guessed category/label (F-008). The raw

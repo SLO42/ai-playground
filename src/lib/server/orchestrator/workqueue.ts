@@ -231,7 +231,7 @@ export async function claimNext(
 			} catch (err) {
 				// A retryable conflict — back off and retry the bounded loop; else re-throw.
 				const msg = (err as Error).message ?? '';
-				if (/conflict|can be retried|retry|failed transaction/i.test(msg)) {
+				if (/conflict|can be retried|retry|failed transaction|work_item_dedup|already (contains|exists)/i.test(msg)) {
 					await new Promise((r) => setTimeout(r, 2 * (attempt + 1)));
 					continue;
 				}

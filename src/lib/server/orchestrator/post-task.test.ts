@@ -134,6 +134,33 @@ describe('post-task loop — commit + test in a transaction (2.7)', () => {
 		expect(ev.detail.test_ok).toBe(true);
 	});
 
+	// D-018 / REPO-CREATION-SPEC integrity: the post-task loop stays LOCAL-ONLY. It must NEVER issue a
+	// remote-mutating git verb (push/remote) nor a --force/-f flag. The sanctioned outward remote/push
+	// lives ONLY in the gated repo-creation runner (repo-creation-gate.ts) — NEVER here. This guards the
+	// invariant that the repo-creation work did NOT weaken assertLocalGit/FORBIDDEN_GIT.
+	it('stays LOCAL-ONLY — never issues a remote/push/--force git op (D-018)', async () => {
+		const taskId = await freshRunningTask('local-only check');
+		const sessionId = await makeSession(taskId);
+		const runner = fakeRunner((file, args) => {
+			if (file === 'git' && args[0] === 'rev-parse') return { code: 0, stdout: 'aaa0001\n', stderr: '' };
+			return OK;
+		});
+		await runPostTask(
+			db,
+			{ projectId, taskId, sessionId, cwd: 'F:/code/ai-playground-v2', commitMessage: 'feat: local only', testCommand: 'npm test', runOk: true },
+			{ run: runner }
+		);
+		const gitCalls = runner.calls.filter((c) => c.file === 'git');
+		// Only local verbs were ever issued.
+		expect(gitCalls.map((c) => c.args[0]).sort()).toEqual(['add', 'commit', 'rev-parse']);
+		// No forbidden remote/push verb and no force flag anywhere in the loop's git argv.
+		for (const c of gitCalls) {
+			expect(['push', 'remote']).not.toContain(c.args[0]);
+			expect(c.args).not.toContain('--force');
+			expect(c.args).not.toContain('-f');
+		}
+	});
+
 	it('a failed test enqueues a follow_up work_item (off the interactive path)', async () => {
 		const before = await countByStatus(db, 'pending');
 		const taskId = await freshRunningTask('feature with broken tests');

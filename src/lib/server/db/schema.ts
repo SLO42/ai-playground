@@ -2250,6 +2250,32 @@ const m0061_skill_proposal_dedup: Migration = {
 	`
 };
 
+// m0062 — pm.repo_create_preauthorized (RC-2 — the create-the-project's-repo consent opt-in).
+//
+// Repo-creation is an OUTWARD, gated action (REPO-CREATION-SPEC; D-037). The repo-creation gate
+// (projects/repo-creation-gate.ts) NEVER creates a real repo without the operator's RECORDED consent
+// PLUS a valid deterministic confirm-token (mirrors release-gate's auto_publish_preauthorized rail).
+// This flag is that recorded consent: the operator's explicit opt-in that a repo MAY be created for
+// this project (operator-create sets it directly; a PM proposal still routes through the §4.1 panel +
+// operator 'act' — the flag is consent, NOT agent authority, and the PM can never set it unilaterally).
+//
+// Field discipline (mirrors m0058): a NON-OPTIONAL `bool` with DEFAULT false, so every pm row reads
+// back a concrete boolean (never NONE — F-008). Because the type is non-optional, a pre-m0062 pm row
+// has the field as NONE until a write touches it, and SurrealDB re-validates the WHOLE record on any
+// later UPDATE/MERGE → "Found NONE for field … expected a bool" would throw on every arm/disarm. So we
+// BACKFILL the flag to false where it IS NONE. The `WHERE … IS NONE` filter makes the backfill
+// IDEMPOTENT (a re-run matches nothing) and surgical (never overwrites an operator's real true/false).
+// F-015 in force: OVERWRITE define + idempotent backfill; run db:up against the LIVE dev DB to verify.
+const m0062_pm_repo_create_preauthorized: Migration = {
+	id: '0062_pm_repo_create_preauthorized',
+	up: `
+		DEFINE FIELD OVERWRITE repo_create_preauthorized ON pm TYPE bool DEFAULT false;
+		UPDATE pm
+			SET repo_create_preauthorized = (repo_create_preauthorized ?? false)
+			WHERE repo_create_preauthorized IS NONE;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2317,5 +2343,6 @@ export const schemaMigrations: Migration[] = [
 	m0058_pm_auto_publish,
 	m0059_session_worktree,
 	m0060_skill_proposal,
-	m0061_skill_proposal_dedup
+	m0061_skill_proposal_dedup,
+	m0062_pm_repo_create_preauthorized
 ];

@@ -437,6 +437,15 @@ export interface PmRow {
 	 * confirm' and has no publish authority of its own (D-037). Read back as a hard boolean (never NONE).
 	 */
 	auto_publish_preauthorized: boolean;
+	/**
+	 * RC-2 (REPO-CREATION-SPEC) — the operator's RECORDED consent that a GitHub repo MAY be created
+	 * for this project (the repo-creation gate's D-037 consent leg, mirroring auto_publish_preauthorized).
+	 * DEFAULT false (m0062): no repo is ever created without this opt-in PLUS a valid confirm-token. It is
+	 * a consent record, NOT agent authority — a PM never sets it unilaterally (B4/D-039); operator-create
+	 * sets it directly, a PM proposal routes through the §4.1 panel + operator 'act'. Read back as a hard
+	 * boolean (never NONE).
+	 */
+	repo_create_preauthorized: boolean;
 	created_at: string | null;
 }
 
@@ -455,6 +464,7 @@ function normPm(
 		cadence_offset?: unknown;
 		autonomous?: unknown;
 		auto_publish_preauthorized?: unknown;
+		repo_create_preauthorized?: unknown;
 	}
 ): PmRow {
 	return {
@@ -469,6 +479,9 @@ function normPm(
 		// PMA — pre-authorize-auto-publish opt-in (m0058). Same coercion discipline: a pre-m0058 row
 		// (or a malformed value) reads back false, never undefined — publish defaults to operator-gated.
 		auto_publish_preauthorized: row.auto_publish_preauthorized === true,
+		// RC-2 — pre-authorize-repo-create consent (m0062). Same coercion: a pre-m0062 row (or a
+		// malformed value) reads back false, never undefined — repo-create defaults to operator-gated.
+		repo_create_preauthorized: row.repo_create_preauthorized === true,
 		created_at: strDate(row.created_at)
 	};
 }
@@ -620,6 +633,30 @@ export async function setPmAutoPublishPreauthorized(
 	if (!existing) return null;
 	const [rows] = await db.query<[(PmRow & { id: unknown; project: unknown })[]]>(
 		`UPDATE $rid MERGE { auto_publish_preauthorized: $pre } RETURN AFTER;`,
+		{ rid: link(existing.id), pre: preauthorized === true }
+	);
+	return rows.length ? normPm(rows[0]) : null;
+}
+
+/**
+ * RC-2 (REPO-CREATION-SPEC) — record the operator's PRE-AUTHORIZE-REPO-CREATE consent (true) or revoke
+ * it (false). This is the recorded-consent leg the repo-creation gate (repo-creation-gate.ts) re-asserts
+ * before any real `gh repo create` (mirrors setPmAutoPublishPreauthorized). It records that the operator
+ * has approved creating a GitHub repo for this project; it NEVER grants the PM authority to create one
+ * unilaterally and NEVER bypasses the gate's confirm-token leg by itself (B4/D-039 — a PM-proposed create
+ * still routes through the §4.1 panel + operator 'act'). DEFAULT false (m0062): no repo is created without
+ * this opt-in. MERGE preserves every untouched column; the value binds via $param (D-016) and stores a
+ * hard boolean. Returns null when the project has no hired PM (no row to set — never auto-hires).
+ */
+export async function setPmRepoCreatePreauthorized(
+	db: Db,
+	projectId: string,
+	preauthorized: boolean
+): Promise<PmRow | null> {
+	const existing = await getPm(db, projectId);
+	if (!existing) return null;
+	const [rows] = await db.query<[(PmRow & { id: unknown; project: unknown })[]]>(
+		`UPDATE $rid MERGE { repo_create_preauthorized: $pre } RETURN AFTER;`,
 		{ rid: link(existing.id), pre: preauthorized === true }
 	);
 	return rows.length ? normPm(rows[0]) : null;

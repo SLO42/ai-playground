@@ -339,9 +339,13 @@ describe('skill_proposal migration — idempotent (F-015)', () => {
 				await db4.query('CREATE _migration SET id_str = $id;', { id: m.id });
 				if (m.id === '0060_skill_proposal') break;
 			}
-			// Running the full set now applies ONLY 0061 (everything else is already ledgered).
+			// Running the full set now applies 0061 (the dedup follow-on) plus any migrations that ship
+			// AFTER it — everything up to and including 0060 is already ledgered, so 0061 is the FIRST
+			// applied. We assert 0061 is delivered + leads (its index lands below), not that it is the
+			// sole migration: pinning the exact tail makes this break on every later additive migration
+			// (F-016/F-019 brittleness — a control assertion must not over-specify the migration tail).
 			const applied = await runMigrations(db4, schemaMigrations);
-			expect(applied).toEqual(['0061_skill_proposal_dedup']);
+			expect(applied[0]).toBe('0061_skill_proposal_dedup');
 			// The UNIQUE dedup index is now present.
 			const info = await db4.query<[{ indexes: Record<string, string> }]>(
 				'INFO FOR TABLE skill_proposal;'

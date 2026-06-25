@@ -503,4 +503,54 @@ describe('schemaMigrations — idempotent over fresh + half-applied state (11.4-
 			await db.close().catch(() => {});
 		}
 	});
+
+	// ── RC-2 — m0062 pm.repo_create_preauthorized: the SAME F-015 BACKFILL discipline as m0058. ──
+	// A non-optional `bool DEFAULT false` does not backfill EXISTING rows → the flag is NONE on any pm row
+	// written before m0062, and a later UPDATE/MERGE then throws "Found NONE for field … expected a bool".
+	// m0062 backfills the flag to false where NONE (idempotent `WHERE … IS NONE`). This reproduces a pre-
+	// field pm row and asserts m0062 makes it writable again + the backfill never clobbers a real value.
+	it('m0062 BACKFILLS NONE pm.repo_create_preauthorized so a pre-field pm row is writable again (F-015)', async () => {
+		const db = await freshDb('mig_pm_repo_consent');
+		try {
+			await db.query('DEFINE TABLE project SCHEMAFULL; DEFINE FIELD slug ON project TYPE string;');
+			await db.query('CREATE project:rcwedge SET slug = "rcwedge";');
+			await db.query(`
+				DEFINE TABLE pm SCHEMAFULL;
+				DEFINE FIELD project ON pm TYPE option<record<project>>;
+				DEFINE FIELD name ON pm TYPE option<string>;
+				DEFINE FIELD authority ON pm TYPE option<string>;
+				DEFINE FIELD repo_create_preauthorized ON pm TYPE option<bool>;
+			`);
+			// A row with the flag NONE (never set) — the exact pre-field state.
+			await db.query('CREATE pm:rcrow SET project = project:rcwedge, name = "Vesper", authority = "act";');
+			const before = await db.query<[{ repo_create_preauthorized: unknown }[]]>(
+				'SELECT repo_create_preauthorized FROM pm:rcrow;'
+			);
+			expect(before[0][0].repo_create_preauthorized ?? null).toBeNull();
+
+			await runMigrations(db, schemaMigrations);
+			expect(await isApplied(db, '0062_pm_repo_create_preauthorized')).toBe(true);
+
+			const after = await db.query<[{ repo_create_preauthorized: boolean }[]]>(
+				'SELECT repo_create_preauthorized FROM pm:rcrow;'
+			);
+			expect(after[0][0].repo_create_preauthorized).toBe(false); // backfilled, never NONE
+
+			// The bug this fixes: a write to the backfilled row SUCCEEDS where it previously threw.
+			await db.query('UPDATE pm:rcrow MERGE { repo_create_preauthorized: true };');
+			const set = await db.query<[{ repo_create_preauthorized: boolean }[]]>(
+				'SELECT repo_create_preauthorized FROM pm:rcrow;'
+			);
+			expect(set[0][0].repo_create_preauthorized).toBe(true);
+
+			// Re-run is a clean no-op AND idempotent — the backfill does not reset the operator's value.
+			expect(await runMigrations(db, schemaMigrations)).toEqual([]);
+			const stable = await db.query<[{ repo_create_preauthorized: boolean }[]]>(
+				'SELECT repo_create_preauthorized FROM pm:rcrow;'
+			);
+			expect(stable[0][0].repo_create_preauthorized).toBe(true);
+		} finally {
+			await db.close().catch(() => {});
+		}
+	});
 });

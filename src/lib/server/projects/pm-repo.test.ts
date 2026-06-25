@@ -18,6 +18,7 @@ import {
 	updatePmCharter,
 	setPmAutonomous,
 	setPmAutoPublishPreauthorized,
+	setPmRepoCreatePreauthorized,
 	PmSecretEchoError,
 	PM_MEMORY_KINDS
 } from './pm-repo';
@@ -455,5 +456,29 @@ describe('PMA autonomous flags (arm + pre-authorize-auto-publish)', () => {
 		expect(await setPmAutonomous(db, p.id, true)).toBeNull();
 		expect(await setPmAutoPublishPreauthorized(db, p.id, true)).toBeNull();
 		expect(await getPm(db, p.id)).toBeNull(); // nothing was created
+	});
+
+	// RC-2 (REPO-CREATION-SPEC) — the repo-create consent flag (m0062), mirroring auto-publish.
+	it('repo_create_preauthorized defaults false; setPmRepoCreatePreauthorized opts in/out, untouched flags preserved', async () => {
+		const p = await freshProject('rc_consent');
+		const created = await createPm(db, { project: p.id, name: 'Vesper' });
+		expect(created.repo_create_preauthorized).toBe(false);
+		expect((await getPm(db, p.id))?.repo_create_preauthorized).toBe(false);
+
+		await setPmAutonomous(db, p.id, true); // arm first (an independent flag)
+		const optedIn = await setPmRepoCreatePreauthorized(db, p.id, true);
+		expect(optedIn?.repo_create_preauthorized).toBe(true);
+		// Recording repo-create consent must NOT touch the arm flag or the publish pre-auth.
+		expect(optedIn?.autonomous).toBe(true);
+		expect(optedIn?.auto_publish_preauthorized).toBe(false);
+		const optedOut = await setPmRepoCreatePreauthorized(db, p.id, false);
+		expect(optedOut?.repo_create_preauthorized).toBe(false);
+		expect((await getPm(db, p.id))?.repo_create_preauthorized).toBe(false);
+	});
+
+	it('setPmRepoCreatePreauthorized returns null when no PM is hired (never auto-hires)', async () => {
+		const p = await freshProject('rc_consent_no_pm');
+		expect(await setPmRepoCreatePreauthorized(db, p.id, true)).toBeNull();
+		expect(await getPm(db, p.id)).toBeNull();
 	});
 });

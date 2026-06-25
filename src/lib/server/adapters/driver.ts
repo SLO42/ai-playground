@@ -58,6 +58,15 @@ function canonicalJson(value: unknown): string {
 }
 
 /**
+ * The kinds of GATED action a confirm token can bind. The three D-037 adapter families
+ * (publish/deploy/sync = {@link AdapterKind}) PLUS other gated OUTWARD actions that reuse this
+ * EXACT deterministic derivation instead of hand-rolling their own token — currently
+ * 'repo-create' (the repo-creation gate, RC-2/REPO-CREATION-SPEC). Distinct kind strings keep a
+ * publish token from ever confirming a repo-create (and vice-versa) — they hash differently.
+ */
+export type GatedActionKind = AdapterKind | 'repo-create';
+
+/**
  * The confirm token binding a real action to the dry-run it followed. A sha256 of the
  * (project, kind, adapterId, sha256(canonical-JSON of the resolved target config)) tuple —
  * deterministic so a dry-run and its confirm derive the SAME token, but specific enough that
@@ -66,7 +75,7 @@ function canonicalJson(value: unknown): string {
  */
 export function confirmTokenFor(input: {
 	projectId: string;
-	kind: AdapterKind;
+	kind: GatedActionKind;
 	adapterId: string;
 	config: Record<string, unknown>;
 }): string {

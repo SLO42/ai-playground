@@ -32,6 +32,57 @@ export interface AuthStatus {
 	reason?: string;
 }
 
+// ── Repo creation (RC-1, REPO-CREATION-SPEC) ──────────────────────────────────────────
+// `createRepo` creates a project's GitHub repo PRIVATE-FIRST. `--private` is HARDCODED into
+// the argv and there is NO field on CreateRepoInput a caller can flip to request public —
+// public is UNREPRESENTABLE here (the integrity invariant: no code path creates a public
+// repo). The real outward `gh repo create` runs only behind the D-037 operator gate (RC-2);
+// this seam never decides consent, it only maps gh's result to an HONEST named outcome
+// (F-008) — created / already-exists / permission-denied / unauthed / error — and never
+// fabricates success. Credentials are the operator's gh auth / GH_TOKEN (D-026): the token
+// VALUE is never read, logged, or placed in an outcome (gh authenticates itself).
+
+/**
+ * Input to {@link GitHubClient.createRepo}. Deliberately has NO `private`/`visibility`/
+ * `public` field: `--private` is non-optional in the impl, so a caller CANNOT request a
+ * public repo. `name` is the bare repo name; `owner` (optional) is the org/user login the
+ * repo is created under (defaults to the authenticated user when omitted). Both are passed
+ * as inert argv elements (D-008) and validated at the boundary.
+ */
+export interface CreateRepoInput {
+	/** The bare repo name (e.g. "atelier") — validated, passed as one argv element. */
+	name: string;
+	/** Optional org/user login to create under; defaults to the authed user when omitted. */
+	owner?: string;
+}
+
+/**
+ * The honest, named result of a repo-creation attempt (F-008) — never a thrown stack trace
+ * for the expected failure modes, never a fabricated success.
+ * - `created`: the repo now exists (this call created it); carries the resolved remote URL.
+ * - `already-exists`: a repo with that name already exists (idempotent re-run is a no-op).
+ * - `permission-denied`: authed, but the token/account may not create under that owner.
+ * - `unauthed`: gh is not installed or not authenticated (precheck failed).
+ * - `error`: any other gh failure — carries an honest message (never the token value).
+ */
+export type CreateRepoOutcome =
+	| { kind: 'created'; url: string }
+	| { kind: 'already-exists' }
+	| { kind: 'permission-denied'; reason: string }
+	| { kind: 'unauthed'; reason: string }
+	| { kind: 'error'; reason: string };
+
+/** A bare GitHub repo name — letters/digits/`._-`, 1–100 chars (gh's own constraint). */
+const REPO_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9._-]{0,99}$/;
+
+/** Validate a bare repo name at the boundary (D-008). @throws on a malformed name. */
+export function assertRepoName(name: string): string {
+	if (typeof name !== 'string' || !REPO_NAME_RE.test(name)) {
+		throw new Error(`invalid GitHub repo name: ${JSON.stringify(name)}`);
+	}
+	return name;
+}
+
 /** The GitHub operations the sync adapter depends on (the injectable seam). */
 export interface GitHubClient {
 	/** Is `gh` installed AND authenticated? Never throws — returns an honest reason. */
@@ -60,6 +111,14 @@ export interface GitHubClient {
 		repo: string,
 		cwd: string
 	): Promise<{ issues: OpenItem[]; prs: OpenItem[] }>;
+	/**
+	 * RC-1 — create the project's repo PRIVATE-FIRST. Prechecks {@link isAuthenticated};
+	 * `--private` is hardcoded and public is unrepresentable in {@link CreateRepoInput}.
+	 * NEVER throws for the expected modes — returns a named {@link CreateRepoOutcome}.
+	 * OPTIONAL on the interface so existing fakes/clients that don't create repos need not
+	 * implement it (the gated driver requires a client that does — RC-2).
+	 */
+	createRepo?(input: CreateRepoInput, cwd: string): Promise<CreateRepoOutcome>;
 }
 
 /** One open issue/PR head — the minimal arrival-detection shape (TASK 16.2). */
@@ -122,13 +181,21 @@ const LABEL_COLOR = '8ab0ab'; // the design-system accent — Atelier-owned labe
 /** The real `gh` CLI implementation (production). */
 export class GitHubCliClient implements GitHubClient {
 	readonly #bin: string | undefined;
-	constructor(opts: { bin?: string } = {}) {
+	/**
+	 * Args prepended before the gh args (TESTS ONLY — mirrors runGh's `prefixArgs` seam in
+	 * gh.ts). Lets a test point `bin` at the Node executable and pass a fake-gh script path,
+	 * exercising the SAME direct-spawn (no shell) path production uses. Production NEVER sets
+	 * this; real `gh` is a true binary that spawns directly without a shell.
+	 */
+	readonly #prefixArgs: string[] | undefined;
+	constructor(opts: { bin?: string; prefixArgs?: string[] } = {}) {
 		this.#bin = opts.bin;
+		this.#prefixArgs = opts.prefixArgs;
 	}
 
 	async isAuthenticated(cwd: string): Promise<AuthStatus> {
 		try {
-			await runGh(['auth', 'status'], { cwd, bin: this.#bin });
+			await runGh(['auth', 'status'], { cwd, bin: this.#bin, prefixArgs: this.#prefixArgs });
 			return { ok: true };
 		} catch (err) {
 			const reason =
@@ -247,6 +314,58 @@ export class GitHubCliClient implements GitHubClient {
 			return raw.map((i) => ({ number: i.number, title: i.title, url: i.url }));
 		};
 		return { issues: await list('issue'), prs: await list('pr') };
+	}
+
+	/**
+	 * RC-1 — create the project's repo PRIVATE-FIRST (REPO-CREATION-SPEC).
+	 *
+	 * Precheck `isAuthenticated()` → on failure return a named `unauthed` outcome (NEVER a
+	 * fabricated success). Then `gh repo create <owner/name|name> --private` via runGh (array
+	 * args, no shell — D-008): the `--private` flag is ALWAYS present and there is no input
+	 * that can request public. gh prints the resolved remote URL on stdout; we return it.
+	 *
+	 * gh's exit/stderr are mapped to HONEST named outcomes (F-008): an existing repo →
+	 * `already-exists` (idempotent re-run is a no-op); an auth/permission stderr →
+	 * `permission-denied`; anything else → `error` carrying an honest message. The GH_TOKEN
+	 * VALUE is never read or logged (D-026) — only gh's own stderr text (which gh itself
+	 * redacts) is surfaced.
+	 */
+	async createRepo(input: CreateRepoInput, cwd: string): Promise<CreateRepoOutcome> {
+		const name = assertRepoName(input.name);
+		const slug = input.owner !== undefined ? `${assertOwner(input.owner)}/${name}` : name;
+
+		// Precheck: an un-authed CLI must surface a NAMED unauthed outcome, not a gh crash.
+		const auth = await this.isAuthenticated(cwd);
+		if (!auth.ok) {
+			return { kind: 'unauthed', reason: auth.reason ?? 'GitHub CLI is not authenticated.' };
+		}
+
+		try {
+			// `--private` is HARDCODED — public is unrepresentable. The slug is one inert argv
+			// element (D-008). gh emits the created repo's URL on stdout.
+			const out = await runGh(['repo', 'create', slug, '--private'], {
+				cwd,
+				bin: this.#bin,
+				prefixArgs: this.#prefixArgs
+			});
+			const url = extractRepoUrl(out, slug);
+			return { kind: 'created', url };
+		} catch (err) {
+			if (err instanceof GhError) {
+				const stderr = err.stderr ?? '';
+				if (isAlreadyExists(stderr)) return { kind: 'already-exists' };
+				if (isPermissionDenied(stderr)) {
+					return {
+						kind: 'permission-denied',
+						reason: 'Authenticated, but not permitted to create a repo under that owner.'
+					};
+				}
+				// Honest fallthrough: surface gh's own message (gh redacts its token), never the
+				// env GH_TOKEN value (D-026).
+				return { kind: 'error', reason: stderr.trim() || err.message };
+			}
+			return { kind: 'error', reason: err instanceof Error ? err.message : String(err) };
+		}
 	}
 
 	/** Create any missing labels (idempotent — `--force` upserts). Best-effort. */
@@ -369,4 +488,31 @@ interface GhField {
 	id: string;
 	name: string;
 	options?: GhFieldOption[];
+}
+
+// ── createRepo helpers (RC-1) ─────────────────────────────────────────────────────────
+
+/** A github.com repo URL anywhere in gh's stdout/stderr. */
+const GH_URL_RE = /https?:\/\/github\.com\/[A-Za-z0-9._-]+\/[A-Za-z0-9._-]+/;
+
+/**
+ * Resolve the created repo's remote URL from gh's output. gh repo create prints the URL on
+ * stdout (e.g. `https://github.com/owner/name`); if it doesn't (output shape varies by gh
+ * version), synthesize a canonical https URL from the slug we already validated so success
+ * ALWAYS carries an honest, well-formed URL rather than empty text.
+ */
+function extractRepoUrl(out: string, slug: string): string {
+	const m = out.match(GH_URL_RE);
+	if (m) return m[0];
+	return `https://github.com/${slug}`;
+}
+
+/** gh's "name already exists" stderr (case-insensitive substring; gh wording is stable). */
+function isAlreadyExists(stderr: string): boolean {
+	return /already exists/i.test(stderr);
+}
+
+/** gh's permission/auth-scope refusal stderr (HTTP 403 / not-permitted wording). */
+function isPermissionDenied(stderr: string): boolean {
+	return /permission|forbidden|not authorized|HTTP 403|insufficient|scope/i.test(stderr);
 }

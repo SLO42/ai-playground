@@ -23,7 +23,7 @@ import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
-import { assertRecordId } from '../db/validate';
+import { assertRecordId, assertTableName } from '../db/validate';
 import {
 	digestScope,
 	readScope,
@@ -93,6 +93,23 @@ export function scopeIdOf(kind: string, claudeDir: string): string {
 function settingsIdOf(scopeId: string): string {
 	const digest = createHash('sha256').update(scopeId).digest('hex').slice(0, 32);
 	return `cc_settings:t_${digest}`;
+}
+
+/**
+ * A stable, ONE-per-(scope,disk-identity) child-row id for a cc_hook / cc_agent / cc_skill /
+ * cc_mcp_server row. Derived from the scope id + a per-table prefix + the row's disk-identity
+ * key so re-syncing the SAME child UPSERTs the SAME row (idempotent) instead of the old
+ * non-atomic DELETE-then-CREATE that duplicated child rows under concurrent reconciles during
+ * the drift-transition window (the SH-5 child-table race — the exact moment SH-3 promotes a
+ * skill). Concurrent writers compute identical ids → converge on one row per child.
+ *
+ * The `key` is the row's natural disk identity: `file_path` for agents/skills (one file → one
+ * row), `name` for mcp servers (unique within a scope), and the full content tuple for hooks
+ * (no single natural key — two byte-identical hooks correctly collapse to one row; disk truth).
+ */
+function childIdOf(table: string, prefix: string, scopeId: string, key: string): string {
+	const digest = createHash('sha256').update(`${scopeId}|${key}`).digest('hex').slice(0, 32);
+	return `${table}:${prefix}_${digest}`;
 }
 
 /**
@@ -200,10 +217,14 @@ export async function syncScope(db: Db, scope: SyncScope): Promise<SyncResult> {
 	);
 
 	// 3. Child tables — full replace scoped to this scope (mirror = disk exactly).
-	await replaceHooks(db, scopeRid, content.settings.hooks);
-	await replaceMcpServers(db, scopeRid, content.settings.mcpServers);
-	await replaceAgents(db, scopeRid, content.agents);
-	await replaceSkills(db, scopeRid, content.skills);
+	//    Each replace uses deterministic per-child ids + a guarded sweep + UPSERT (NOT the old
+	//    non-atomic DELETE-then-CREATE) so N concurrent reconciles racing the SAME scope during
+	//    the drift-transition window (e.g. SH-3 promoting a skill) converge on one row per child
+	//    instead of leaking duplicate orphans (the SH-5 child-table race).
+	await replaceHooks(db, scopeId, scopeRid, content.settings.hooks);
+	await replaceMcpServers(db, scopeId, scopeRid, content.settings.mcpServers);
+	await replaceAgents(db, scopeId, scopeRid, content.agents);
+	await replaceSkills(db, scopeId, scopeRid, content.skills);
 
 	return {
 		scopeId,
@@ -217,28 +238,68 @@ export async function syncScope(db: Db, scope: SyncScope): Promise<SyncResult> {
 	};
 }
 
-async function replaceHooks(db: Db, scope: StringRecordId, hooks: ParsedHook[]): Promise<void> {
-	await db.query(`DELETE cc_hook WHERE scope = $scope;`, { scope });
-	for (const h of hooks) {
-		const content = omitUndefined({
-			scope,
-			event: h.event,
-			matcher: h.matcher,
-			command: h.command,
-			timeout: h.timeout
-		});
-		await db.query(`CREATE cc_hook CONTENT $content;`, { content });
+/**
+ * Replace a scope's rows in ONE child table without the non-atomic DELETE-then-CREATE that
+ * duplicated rows under concurrent reconciles (the SH-5 child-table race). Each row gets a
+ * DETERMINISTIC id (childIdOf) keyed by its disk identity, then:
+ *   1. a GUARDED SWEEP retires only this scope's rows whose disk identity is GONE
+ *      (`DELETE … WHERE scope = $scope AND id NOTINSIDE $keep`) — never the rows we are about
+ *      to (or a concurrent writer just did) UPSERT, because those ids are in `$keep`;
+ *   2. one UPSERT $rid CONTENT per surviving row (full-record replace at a stable id).
+ * N concurrent writers compute the SAME keep-set and the SAME UPSERT ids, so they converge on
+ * exactly one row per child — no duplicate orphans, even mid drift-transition. The sweep runs
+ * even when `rows` is empty (keep-set = []) so a scope emptied on disk is cleared (mirror = disk).
+ */
+async function replaceChildren(
+	db: Db,
+	table: string,
+	scope: StringRecordId,
+	rows: Array<{ id: StringRecordId; content: Record<string, unknown> }>
+): Promise<void> {
+	const keep = rows.map((r) => r.id);
+	await db.query(`DELETE ${assertTableName(table)} WHERE scope = $scope AND id NOTINSIDE $keep;`, {
+		scope,
+		keep
+	});
+	for (const r of rows) {
+		await db.query(`UPSERT $rid CONTENT $content;`, { rid: r.id, content: r.content });
 	}
+}
+
+async function replaceHooks(
+	db: Db,
+	scopeId: string,
+	scope: StringRecordId,
+	hooks: ParsedHook[]
+): Promise<void> {
+	const rows = hooks.map((h) => {
+		// No single natural key for a hook — its identity is the full content tuple. Two
+		// byte-identical hooks correctly collapse to one row (disk truth, a dedup not a loss).
+		const key = stableHookKey(h);
+		return {
+			id: link(childIdOf('cc_hook', 'h', scopeId, key)),
+			content: omitUndefined({
+				scope,
+				event: h.event,
+				matcher: h.matcher,
+				command: h.command,
+				timeout: h.timeout
+			})
+		};
+	});
+	await replaceChildren(db, 'cc_hook', scope, rows);
 }
 
 async function replaceMcpServers(
 	db: Db,
+	scopeId: string,
 	scope: StringRecordId,
 	servers: ParsedMcpServer[]
 ): Promise<void> {
-	await db.query(`DELETE cc_mcp_server WHERE scope = $scope;`, { scope });
-	for (const s of servers) {
-		const content = omitUndefined({
+	const rows = servers.map((s) => ({
+		// `name` is the natural unique key within a scope (mcpServers is a name-keyed map on disk).
+		id: link(childIdOf('cc_mcp_server', 'm', scopeId, s.name)),
+		content: omitUndefined({
 			scope,
 			name: s.name,
 			type: s.type,
@@ -246,46 +307,55 @@ async function replaceMcpServers(
 			args: s.args,
 			url: s.url,
 			env: s.env
-		});
-		await db.query(`CREATE cc_mcp_server CONTENT $content;`, { content });
-	}
+		})
+	}));
+	await replaceChildren(db, 'cc_mcp_server', scope, rows);
 }
 
 async function replaceAgents(
 	db: Db,
+	scopeId: string,
 	scope: StringRecordId,
 	agents: ParsedAgent[]
 ): Promise<void> {
-	await db.query(`DELETE cc_agent WHERE scope = $scope;`, { scope });
-	for (const a of agents) {
-		const content = omitUndefined({
+	const rows = agents.map((a) => ({
+		// `file_path` is the natural unique key (one agent .md → one row).
+		id: link(childIdOf('cc_agent', 'a', scopeId, a.file_path)),
+		content: omitUndefined({
 			scope,
 			file_path: a.file_path,
 			name: a.name,
 			description: a.description,
 			frontmatter: a.frontmatter,
 			category: a.category
-		});
-		await db.query(`CREATE cc_agent CONTENT $content;`, { content });
-	}
+		})
+	}));
+	await replaceChildren(db, 'cc_agent', scope, rows);
 }
 
 async function replaceSkills(
 	db: Db,
+	scopeId: string,
 	scope: StringRecordId,
 	skills: ParsedSkill[]
 ): Promise<void> {
-	await db.query(`DELETE cc_skill WHERE scope = $scope;`, { scope });
-	for (const s of skills) {
-		const content = omitUndefined({
+	const rows = skills.map((s) => ({
+		// `file_path` is the natural unique key (one SKILL.md → one row).
+		id: link(childIdOf('cc_skill', 'k', scopeId, s.file_path)),
+		content: omitUndefined({
 			scope,
 			file_path: s.file_path,
 			name: s.name,
 			description: s.description,
 			plugin: s.plugin
-		});
-		await db.query(`CREATE cc_skill CONTENT $content;`, { content });
-	}
+		})
+	}));
+	await replaceChildren(db, 'cc_skill', scope, rows);
+}
+
+/** Stable identity string for a hook (its full content tuple) — the childIdOf key for cc_hook. */
+function stableHookKey(h: ParsedHook): string {
+	return JSON.stringify([h.event, h.matcher ?? '', h.command, h.timeout ?? '']);
 }
 
 // ── Scope derivation + catalog reconciliation (TASK 14.4d; D-016/D-018) ───────────

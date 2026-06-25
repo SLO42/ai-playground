@@ -407,6 +407,44 @@ describe('harvest scope (SH-5) — harness-owned synced scope so a promoted skil
 		expect(scopes).toHaveLength(1);
 	});
 
+	// REGRESSION (SH-5 re-review MEDIUM — the CHILD-table race, the prior fix missed): the same
+	// non-atomic DELETE-then-CREATE that duplicated cc_settings ALSO lived in replaceSkills/Hooks/
+	// Agents/McpServers. The review's instrumented probe (8 parallel ensureHarvestScope under
+	// forced drift) produced cc_skill=6 then =16 rows for 2 skills. The fix (deterministic
+	// per-child ids + guarded-sweep UPSERT) must hold every child table at exactly the on-disk
+	// count under the SAME 8-parallel forced-drift interleave.
+	it('concurrent ensureHarvestScope writes converge — child tables (cc_skill etc.) never duplicate under forced drift', async () => {
+		const id = scopeIdOf('global', harvestScopeDir());
+		const scopeRid = `cc_scope:${id.split(':')[1]}`;
+		// Two skills on disk + a new one forces a digest change so ALL 8 parallel ensures take the
+		// WRITE path (not the steady-state read short-circuit) and race replaceSkills concurrently.
+		writeHarvestSkill('child-probe-a', 'first skill to force the child-table concurrency path');
+		writeHarvestSkill('child-probe-b', 'second skill to force the child-table concurrency path');
+		await Promise.all(Array.from({ length: 8 }, () => ensureHarvestScope(db)));
+
+		// Exactly the on-disk skill count — no per-writer duplicate orphans. (replay-fix + race-probe
+		// from earlier tests in this scope are also on disk; assert by deterministic-id uniqueness
+		// instead of a brittle absolute count: distinct ids == total rows means zero duplication.)
+		const [skillRows] = await db.query<[Array<{ id: unknown; name: unknown }>]>(
+			`SELECT id, name FROM cc_skill WHERE scope = ${scopeRid};`
+		);
+		const distinctIds = new Set(skillRows.map((r) => String(r.id)));
+		expect(distinctIds.size).toBe(skillRows.length); // no duplicate-id rows at all
+		// And every skill name appears exactly once (the user-visible /claude-code catalog is honest).
+		const names = skillRows.map((r) => String(r.name));
+		expect(new Set(names).size).toBe(names.length);
+		expect(names).toContain('child-probe-a');
+		expect(names).toContain('child-probe-b');
+
+		// catalogIds (Set) was always immune; the rendered catalog (readCatalog, no dedup) is the
+		// honesty surface — it must show each skill ONCE now that rows can't duplicate (F-008/D-010).
+		const catalog = await readCatalog(db);
+		const harvest = catalog.find((c) => c.scopeId === id);
+		expect(harvest).toBeTruthy();
+		const catNames = harvest!.skills.map((k) => k.name);
+		expect(new Set(catNames).size).toBe(catNames.length); // mirror is disk-exact, no dup rows
+	});
+
 	it('steady-state ensureHarvestScope is write-free — unchanged disk does NOT touch cc_settings (digest gate)', async () => {
 		const id = scopeIdOf('global', harvestScopeDir());
 		const scopeRid = `cc_scope:${id.split(':')[1]}`;

@@ -89,6 +89,38 @@ export const MEMORY_PULL_CAPABILITY_IDS: ReadonlySet<string> = new Set([
 	'memory'
 ]);
 
+// ── CONVERSATION-LAYER-SPEC (pillar 3) — RESERVED peer-send grant ids (F-045-safe) ──
+//
+// `peer-send` is a RESERVED RUNTIME capability id read by peerSendGranted() to gate the
+// (already-built) peer-send MCP affordance — it is NOT a cc_skill and is NEVER expected to
+// appear in the cc-config catalog. F-045 was exactly the failure of routing an un-catalogued
+// id through catalog validation: an id in `capabilities.skills` that the catalog lacked
+// fail-closed EVERY spawn. To grant peer-send to an intent WITHOUT re-tripping F-045, the
+// compose seam must RECOGNIZE these reserved ids and pass them through validateDimension
+// WITHOUT a catalog lookup (the reserved-path proof) — exactly the dual of how the §3.2
+// sterile rail recognizes MEMORY_PULL_CAPABILITY_IDS at this same seam. This set is the SINGLE
+// source of truth for "is this a peer-send reserved id"; tool-catalog.ts re-exports it so
+// peerSendGranted decides against ONE set, never a drifting copy.
+//
+// SCOPE of the bypass: ONLY these exact reserved ids skip the catalog check. A genuine cc_skill
+// id (svelte5-patterns, design, …) is NOT in this set and STILL fails closed against the catalog
+// (the F-045 fail-closed for real skills stays — we do not weaken catalog validation).
+export const PEER_SEND_CAPABILITY_IDS: ReadonlySet<string> = new Set([
+	'peer-send',
+	'peer_send',
+	'peer-message',
+	'peer_message',
+	'fleet-message'
+]);
+
+/** Reserved runtime capability ids that BYPASS cc-config catalog validation at the compose seam.
+ *  ONLY peer-send: it is a runtime-recognized affordance grant (peerSendGranted), NOT a cc tool,
+ *  so requiring a catalog entry would be the F-045 trap. Memory-pull is deliberately NOT here —
+ *  it IS a catalogued B10 cc tool (its reserved-id set drives only the §3.2 sterile REFUSAL, a
+ *  different concern). Reserved ⇒ pass-through; everything else (incl. real cc_skill ids) ⇒
+ *  catalog-validated, fail-closed. */
+export const RESERVED_CAPABILITY_IDS: ReadonlySet<string> = PEER_SEND_CAPABILITY_IDS;
+
 /** Thrown when a sterile (interview) compose declares a memory-pull capability id —
  *  the compose is REFUSED whole (fail closed, §3.2/§4.2). */
 export class SterileCompositionError extends Error {
@@ -137,6 +169,12 @@ function assertStringArray(v: unknown, kind: CapabilityKind): string[] {
  * Validate one declared dimension against the catalog allow-list. EVERY id must be in
  * the catalog set; the FIRST unknown id throws (fail closed — we never silently drop a
  * bad id and provision the rest). Returns the validated ids verbatim (order preserved).
+ *
+ * F-045-safe RESERVED pass-through: a {@link RESERVED_CAPABILITY_IDS} id (peer-send) is
+ * recognized by the runtime itself and is NOT a cc tool — it skips the catalog lookup so a
+ * granted spawn never fail-closes against a catalog that (correctly) lacks it. EVERY other id
+ * — including genuine cc_skill ids — still requires a catalog entry (the F-045 fail-closed for
+ * real skills is preserved; we do not weaken catalog validation).
  */
 function validateDimension(
 	declared: string[],
@@ -144,6 +182,7 @@ function validateDimension(
 	kind: CapabilityKind
 ): string[] {
 	for (const id of declared) {
+		if (RESERVED_CAPABILITY_IDS.has(id)) continue; // reserved runtime grant — never catalogued (F-045-safe)
 		if (!allowed.has(id)) {
 			throw new CapabilityValidationError(
 				kind,

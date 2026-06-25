@@ -41,7 +41,7 @@
 // it registered (it is refused at composeCapabilities BEFORE this seam ever runs).
 
 import { join } from 'node:path';
-import { MEMORY_PULL_CAPABILITY_IDS } from '../runtime/capabilities';
+import { MEMORY_PULL_CAPABILITY_IDS, PEER_SEND_CAPABILITY_IDS } from '../runtime/capabilities';
 import type { CapabilitySet } from '../runtime/capabilities';
 
 /**
@@ -174,18 +174,13 @@ export const PEER_SEND_CAPABILITY_ID = 'peer-send';
 
 /**
  * The reserved capability-id alias set for the peer-send surface. A grant marker is ANY of these
- * appearing in any dimension of the (composed, catalog-validated) bundle. Mirrors
- * MEMORY_PULL_CAPABILITY_IDS so "granted here" is decided against ONE id set, never a drifting
- * copy. (The fleet bus has no sterile-interview rail of its own — an interview session simply
- * never declares a peer-send id; if that ever changes, mirror the §3.2 refusal.)
+ * appearing in any dimension of the (composed, catalog-validated) bundle. Re-exported from
+ * runtime/capabilities so the GRANT side (composeCapabilities' F-045-safe reserved pass-through,
+ * RESERVED_CAPABILITY_IDS) and the READ side (peerSendGranted, below) decide against ONE id set,
+ * never a drifting copy. (The fleet bus has no sterile-interview rail of its own — an interview
+ * session simply never declares a peer-send id; if that ever changes, mirror the §3.2 refusal.)
  */
-export const PEER_SEND_CAPABILITY_IDS: ReadonlySet<string> = new Set([
-	'peer-send',
-	'peer_send',
-	'peer-message',
-	'peer_message',
-	'fleet-message'
-]);
+export { PEER_SEND_CAPABILITY_IDS };
 
 /** The stdio MCP server script the peer-send registration points at (plain ESM, like memory-pull). */
 export const PEER_SEND_MCP_SCRIPT = 'peer-send-mcp.mjs';

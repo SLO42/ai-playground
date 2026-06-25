@@ -40,8 +40,10 @@ import {
 	buildMemoryPullMcpServer,
 	memoryPullGranted,
 	buildPeerSendMcpServer,
-	peerSendGranted
+	peerSendGranted,
+	PEER_SEND_CAPABILITY_ID
 } from '../agent/tool-catalog';
+import { WRITE_INTENTS } from '../sessions/launch';
 import { loadOrchestration, resolveAdaptiveConfig, type IntentClass } from '../config/index';
 import type { Db } from '../db/client';
 
@@ -253,19 +255,44 @@ export async function getProviderHealth(): Promise<ProviderHealth[]> {
  * spawn (fail closed). An intent with no configured bundle/capabilities yields undefined
  * (⇒ the harness base only, no extra capabilities). Degrades to undefined if the config
  * is unreadable — never throws into the launch path.
+ *
+ * CONVERSATION-LAYER-SPEC (pillar 3 — hires actually converse): the peer-send affordance is
+ * GRANTED here, on the WRITE intents (code-write / code-debug) — the conversation-purposeful
+ * sessions (a project with >1 concurrent/staffed write session benefits; a solo write session
+ * is still granted, it just resolves zero recipients — honest, no dead affordance). A read /
+ * question / explore intent is NOT granted (peerSendGranted stays false there). The grant is
+ * applied at THIS intent→capability composition seam (not in orchestration.yaml's `capabilities`
+ * block) precisely so it rides ONLY the chosen intents and stays OUT of the cc-config-validated
+ * config path.
+ *
+ * F-045-safe: `peer-send` is a RESERVED runtime id (RESERVED_CAPABILITY_IDS) — composeCapabilities
+ * passes it through WITHOUT a catalog lookup, so granting it never fail-closes a spawn against a
+ * catalog that (correctly) does not carry it. It is added as an extra `skills` entry only because
+ * peerSendGranted scans every dimension; the dimension is immaterial (any works).
  */
 export function resolveCapabilitiesForIntent(intent: Intent): CapabilitySet | undefined {
+	const granted = WRITE_INTENTS.includes(intent);
+	let base: CapabilitySet | undefined;
 	try {
 		const dir = process.env.CONFIG_DIR?.trim() || 'config';
 		const orch = loadOrchestration(`${dir}/orchestration.yaml`);
 		const bundle = resolveAdaptiveConfig(orch, intent as IntentClass);
 		const caps = bundle.capabilities;
-		if (!caps) return undefined;
 		// Normalize the optional-array bundle shape → the runtime's required-array CapabilitySet.
-		return { skills: caps.skills ?? [], agents: caps.agents ?? [], mcp: caps.mcp ?? [] };
+		if (caps) base = { skills: caps.skills ?? [], agents: caps.agents ?? [], mcp: caps.mcp ?? [] };
 	} catch {
-		return undefined;
+		// Config unreadable — fall through. A WRITE intent STILL gets the reserved peer-send grant
+		// below (it does not depend on the bundle); a non-write intent stays undefined.
+		base = undefined;
 	}
+	if (!granted) return base; // non-conversation intent: bundle caps as-is (or undefined).
+	// Grant peer-send: merge the reserved id onto the bundle set (or a fresh empty set), without
+	// duplicating it if a bundle ever declares it. Never mutate the bundle's array in place.
+	const set: CapabilitySet = base
+		? { skills: [...base.skills], agents: [...base.agents], mcp: [...base.mcp] }
+		: { skills: [], agents: [], mcp: [] };
+	if (!set.skills.includes(PEER_SEND_CAPABILITY_ID)) set.skills.push(PEER_SEND_CAPABILITY_ID);
+	return set;
 }
 
 // ── Sensible defaults the UI actions seed a manual run with ──────────────────────────────

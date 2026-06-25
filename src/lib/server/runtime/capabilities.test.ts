@@ -97,6 +97,61 @@ describe('composeCapabilities — catalog-validated composition (D-036)', () => 
 	});
 });
 
+// ── F-045-safe RESERVED pass-through: peer-send is NOT a cc_skill and bypasses the catalog ──
+//
+// CONVERSATION-LAYER-SPEC (pillar 3). The LOAD-BEARING F-045 proof: a granted spawn (peer-send in
+// the capability set) must NOT fail-close at composeCapabilities against a catalog that — correctly
+// — does not carry `peer-send`. F-045 was exactly the opposite: an un-catalogued id in
+// capabilities.skills fail-closed EVERY spawn. The reserved-id pass-through fixes that WITHOUT
+// weakening catalog validation for genuine cc_skill ids.
+describe('composeCapabilities — peer-send reserved pass-through (F-045-safe grant)', () => {
+	// An EMPTY catalog (the F-045 reality: nothing synced) and a normal one that lacks peer-send.
+	const EMPTY_CATALOG: CapabilityCatalog = { skills: new Set(), agents: new Set(), mcp: new Set() };
+
+	it('a peer-send grant composes WITHOUT a throw against an EMPTY catalog (the reserved-path proof)', () => {
+		const set: CapabilitySet = { skills: ['peer-send'], agents: [], mcp: [] };
+		expect(() => composeCapabilities(set, EMPTY_CATALOG, HARNESS_BASE)).not.toThrow();
+		const composed = composeCapabilities(set, EMPTY_CATALOG, HARNESS_BASE);
+		// The reserved id survives onto the composed set verbatim (peerSendGranted reads it downstream).
+		expect(composed.capabilities.skills).toEqual(['peer-send']);
+	});
+
+	it('a peer-send grant composes against a normal catalog that LACKS peer-send (no catalog entry required)', () => {
+		// CATALOG has no 'peer-send' anywhere. The grant alongside a REAL catalogued skill is fine.
+		const set: CapabilitySet = { skills: ['design', 'peer-send'], agents: [], mcp: [] };
+		const composed = composeCapabilities(set, CATALOG, HARNESS_BASE);
+		expect(composed.capabilities.skills).toEqual(['design', 'peer-send']);
+	});
+
+	it('every peer-send alias bypasses the catalog (one source of truth)', () => {
+		for (const alias of ['peer-send', 'peer_send', 'peer-message', 'peer_message', 'fleet-message']) {
+			expect(() =>
+				composeCapabilities({ skills: [alias], agents: [], mcp: [] }, EMPTY_CATALOG, HARNESS_BASE)
+			).not.toThrow();
+		}
+	});
+
+	it('does NOT weaken the catalog for genuine ids: a real un-catalogued cc_skill STILL fails closed', () => {
+		// The F-045 fail-closed for actual skills must stay — only the reserved id is exempted.
+		const set: CapabilitySet = { skills: ['no-such-skill'], agents: [], mcp: [] };
+		expect(() => composeCapabilities(set, EMPTY_CATALOG, HARNESS_BASE)).toThrow(CapabilityValidationError);
+		// And a peer-send grant does NOT launder an adjacent bad id through (the bad id still throws).
+		const mixed: CapabilitySet = { skills: ['peer-send', 'no-such-skill'], agents: [], mcp: [] };
+		expect(() => composeCapabilities(mixed, EMPTY_CATALOG, HARNESS_BASE)).toThrow(CapabilityValidationError);
+	});
+
+	it('a non-granted set (no peer-send) against an empty catalog is unchanged: empty in → empty out', () => {
+		const composed = composeCapabilities({ skills: [], agents: [], mcp: [] }, EMPTY_CATALOG, HARNESS_BASE);
+		expect(composed.capabilities).toEqual({ skills: [], agents: [], mcp: [] });
+	});
+
+	it('D-002 isolation preserved: a peer-send grant does NOT bleed operator plugins/marketplaces', () => {
+		const composed = composeCapabilities({ skills: ['peer-send'], agents: [], mcp: [] }, EMPTY_CATALOG, HARNESS_BASE);
+		expect(composed.plugins ?? []).toEqual([]);
+		expect((composed as Record<string, unknown>).marketplaces ?? []).toEqual([]);
+	});
+});
+
 // ── 4. The security INVARIANT: a capability set can NEVER override a gate ────────────
 //
 // A provisioned skill/MCP runs as ordinary tool calls; those calls still flow through

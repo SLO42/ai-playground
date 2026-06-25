@@ -11,7 +11,50 @@
 import { afterEach, describe, expect, it } from 'vitest';
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
-import { EMBEDDING_MODEL, embeddingModelReady, parseExtraction, unescapeDoubleEncoded } from './wiring';
+import {
+	EMBEDDING_MODEL,
+	embeddingModelReady,
+	parseExtraction,
+	unescapeDoubleEncoded,
+	resolveCapabilitiesForIntent
+} from './wiring';
+import { peerSendGranted, PEER_SEND_CAPABILITY_ID } from '../agent/tool-catalog';
+
+// CONVERSATION-LAYER-SPEC (pillar 3) — the peer-send GRANT rides ONLY the conversation-purposeful
+// WRITE intents (code-write / code-debug). These prove: the chosen intents carry the grant, others
+// don't, and the resolved set reads peerSendGranted=true exactly for the granted intents. Uses the
+// LIVE config/orchestration.yaml — code-write's `capabilities` block is intentionally empty (F-045),
+// so the only capability a code-write spawn carries is the reserved peer-send grant added here.
+describe('resolveCapabilitiesForIntent — peer-send grant on conversation-purposeful WRITE intents', () => {
+	it('code-write is GRANTED peer-send (the reserved id rides the set; peerSendGranted=true)', () => {
+		const caps = resolveCapabilitiesForIntent('code-write');
+		expect(caps).toBeDefined();
+		expect(caps!.skills).toContain(PEER_SEND_CAPABILITY_ID);
+		expect(peerSendGranted(caps)).toBe(true);
+	});
+
+	it('code-debug is GRANTED peer-send (peerSendGranted=true)', () => {
+		const caps = resolveCapabilitiesForIntent('code-debug');
+		expect(peerSendGranted(caps)).toBe(true);
+	});
+
+	it('code-read / simple-question / deep-explore are NOT granted (peerSendGranted=false)', () => {
+		for (const intent of ['code-read', 'simple-question', 'deep-explore'] as const) {
+			const caps = resolveCapabilitiesForIntent(intent);
+			expect(peerSendGranted(caps)).toBe(false);
+			// The reserved id is absent from every dimension of a non-granted intent.
+			expect((caps?.skills ?? []).includes(PEER_SEND_CAPABILITY_ID)).toBe(false);
+		}
+	});
+
+	it('the grant is NOT duplicated and never mutates the bundle (idempotent shape)', () => {
+		const a = resolveCapabilitiesForIntent('code-write');
+		const b = resolveCapabilitiesForIntent('code-write');
+		// Exactly one peer-send entry per resolve, and distinct array instances (no shared mutation).
+		expect(a!.skills.filter((s) => s === PEER_SEND_CAPABILITY_ID).length).toBe(1);
+		expect(a!.skills).not.toBe(b!.skills);
+	});
+});
 
 describe('unescapeDoubleEncoded — the doubled-backslash artifact, and nothing else', () => {
 	it('collapses \\\\ pairs when EVERY backslash is paired (the double-encoded signature)', () => {

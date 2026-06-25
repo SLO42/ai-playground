@@ -31,7 +31,6 @@
 // still hold inside runRepoCreationGate on this path exactly as on operator-create.
 
 import type { Db } from '../db/client';
-import type { EnvLike } from '../adapters/secrets';
 import type { GitHubClient } from '../sync/gh-client';
 import type { CommandRunner } from '../orchestrator/post-task';
 import { assertRepoName } from '../sync/gh-client';
@@ -201,8 +200,6 @@ export async function proposeRepoCreate(
 // ── PATH B step 2: the operator's decide-effect (the ONLY crossing into RC-2) ──────
 
 export interface ApplyRepoCreateInput {
-	/** Runtime env ($env/dynamic/private) — passed through for parity with the gate's seams. */
-	env?: EnvLike;
 	/** The operator's explicit B4 confirm. REQUIRED true for approve — fail-closed, NO auto-create. */
 	operatorConfirmed: boolean;
 	/** The branch to push (defaults to 'main'). */
@@ -258,10 +255,12 @@ function repoTargetFromBrief(brief: DecisionBriefRow): { name: string; owner?: s
  * markBriefDecided absorbs a same-action re-decide. A crash between the gate's create and the
  * brief-mark re-runs cleanly: the gate re-run absorbs the existing repo, then the brief-mark completes.
  *
- * Shadow paths, each NAMED: brief not found / not 'open' (markBriefDecided guards) → BriefError;
- * brief not artifact_kind 'repo_create' → RepoCreateGateError; approve without operatorConfirmed →
- * RepoCreateGateError (B4, fail-closed BEFORE consent); a RED gate → result.gate carries the honest
- * failedAt, the brief stays OPEN.
+ * Shadow paths, each NAMED: brief not found → RepoCreateGateError; brief not artifact_kind
+ * 'repo_create' → RepoCreateGateError; approve without operatorConfirmed → RepoCreateGateError (B4,
+ * fail-closed BEFORE consent); approve on a brief the operator already DECIDED → RepoCreateGateError
+ * (rejected/superseded never re-drive the gate) or an idempotent absorb (already-approved, gate:null,
+ * the recorded repo_url) — the status guard runs BEFORE consent + the gate; a RED gate → result.gate
+ * carries the honest failedAt, the brief stays OPEN.
  */
 export async function applyRepoCreateDecision(
 	db: Db,
@@ -292,6 +291,28 @@ export async function applyRepoCreateDecision(
 		throw new RepoCreateGateError(
 			`approving a repo-create requires an explicit operator confirm (operatorConfirmed:true) — there is NO auto-create; ` +
 				`the PM proposes, the operator disposes (B4/D-039)`
+		);
+	}
+
+	// STATUS GUARD — the brief MUST still be 'open' BEFORE consent is recorded and BEFORE the outward gate
+	// runs. This is the integrity wall: a brief the operator already DECIDED (rejected / superseded) must
+	// NEVER resurrect the irreversible outward create. Without this check, the only 'open' guard is
+	// markBriefDecided — which runs AFTER runRepoCreationGate, so a decided brief re-approved would fire a
+	// REAL create + push + consent write, THEN throw on the brief-mark (the operator's reject silently
+	// overridden — a private repo created anyway). The check happens HERE, before any side effect.
+	//   • already 'approved' → idempotent absorb: the gate already ran on the first approve; do NOT re-drive
+	//     it. Return the decided brief with the recorded repo_url (gate:null — nothing ran this call).
+	//   • any OTHER terminal status (rejected / superseded / deferred) → refuse loudly (named). A decided
+	//     repo-create never re-drives the gate; the operator's disposal stands (B4/D-039).
+	if (brief.status !== 'open') {
+		if (brief.status === 'approved') {
+			const proj = await getProject(db, brief.artifact);
+			const repoUrl = proj?.repo_url && proj.repo_url.trim() ? proj.repo_url.trim() : null;
+			return { brief, gate: null, repoUrl };
+		}
+		throw new RepoCreateGateError(
+			`repo-create brief ${briefId} is already '${brief.status}' — refusing to re-drive the outward create on a decided brief ` +
+				`(the operator's decision stands; the PM proposes, the operator disposes — B4/D-039)`
 		);
 	}
 

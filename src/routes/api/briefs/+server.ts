@@ -19,7 +19,6 @@ import {
 	getBrief,
 	type BriefAction
 } from '$lib/server/projects';
-import { env } from '$env/dynamic/private';
 import {
 	applyHireDecision,
 	HireGateError,
@@ -81,7 +80,6 @@ export const POST: RequestHandler = async ({ request }) => {
 				throw error(400, 'a repo-create brief is approve/reject only — there is no defer (the project stays repo-less until decided)');
 			}
 			const result = await applyRepoCreateDecision(db, body.id, body.action as 'approve' | 'reject', {
-				env,
 				operatorConfirmed: body.operatorConfirmed === true
 			});
 			return json({

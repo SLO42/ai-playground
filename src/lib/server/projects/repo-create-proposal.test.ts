@@ -5,7 +5,7 @@ import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
 import { createProject, getProject } from './repo';
 import { createPm, getPm, updatePmAuthority } from './pm-repo';
-import { getBrief, getOpenBriefForArtifact } from './briefs';
+import { getBrief, getOpenBriefForArtifact, supersedeOpenBrief } from './briefs';
 import {
 	proposeRepoCreate,
 	applyRepoCreateDecision,
@@ -264,7 +264,7 @@ describe('applyRepoCreateDecision — operator approve drives the RC-2 gate (stu
 		expect((await getProject(db, p.id))?.repo_url).toBeFalsy();
 	});
 
-	it('idempotent re-approve absorbs (markBriefDecided) after the gate already created', async () => {
+	it('idempotent re-approve absorbs WITHOUT re-driving the gate (already-approved → gate:null)', async () => {
 		const p = await freshProject();
 		await createPm(db, { project: p.id, name: 'Vesper' });
 		const { brief } = await proposeRepoCreate(db, { project: p.id, name: 'repo-host' });
@@ -277,13 +277,79 @@ describe('applyRepoCreateDecision — operator approve drives the RC-2 gate (stu
 			gitRunner: git.fn
 		});
 		expect(first.brief.status).toBe('approved');
+		expect(client.createCalls.length).toBe(1);
+		const gitCallsAfterFirst = git.calls.length; // the first approve legitimately pushed (remote add + push)
 
-		// Re-approve the now-decided brief → absorbed (same terminal status), no throw.
+		// Re-approve the now-APPROVED brief → absorbed (status guard, BEFORE the gate). No second outward
+		// create, no second push: the gate is NOT re-driven on a decided brief (createCalls stays 1).
 		const again = await applyRepoCreateDecision(db, brief.id, 'approve', {
 			operatorConfirmed: true,
 			client,
 			gitRunner: git.fn
 		});
 		expect(again.brief.status).toBe('approved');
+		expect(again.gate).toBeNull(); // nothing ran this call (idempotent absorb)
+		expect(again.repoUrl).toBe('https://github.com/me/repo-host'); // the recorded url is returned
+		expect(client.createCalls.length).toBe(1); // STILL 1 — the gate did NOT re-fire
+		expect(git.calls.length).toBe(gitCallsAfterFirst); // no NEW outward git ran on the absorb
+	});
+
+	// REGRESSION (RC-3 fix HIGH) — a brief the operator already REJECTED must NEVER resurrect the
+	// irreversible outward create. Before the fix, approve drove runRepoCreationGate BEFORE any
+	// status guard, so a reject→approve fired a REAL create + push + consent write, THEN threw on the
+	// brief-mark — the operator's reject silently overridden, a private repo created anyway.
+	it('reject → approve is REFUSED before any outward effect (no create, no push, no consent)', async () => {
+		const p = await freshProject();
+		await createPm(db, { project: p.id, name: 'Vesper' });
+		const { brief } = await proposeRepoCreate(db, { project: p.id, name: 'repo-host' });
+
+		// The operator REJECTS the repo-create brief.
+		const rejected = await applyRepoCreateDecision(db, brief.id, 'reject', { operatorConfirmed: false });
+		expect(rejected.brief.status).toBe('rejected');
+
+		// A later approve POST on the SAME brief id must fail CLOSED before the gate — not override the reject.
+		const client = new FakeClient();
+		const git = fakeGit();
+		await expect(
+			applyRepoCreateDecision(db, brief.id, 'approve', {
+				operatorConfirmed: true,
+				client,
+				gitRunner: git.fn
+			})
+		).rejects.toBeInstanceOf(RepoCreateGateError);
+
+		// NOTHING outward happened: no create, no push, consent stays false, brief stays 'rejected', no repo_url.
+		expect(client.createCalls.length).toBe(0);
+		expect(git.calls.length).toBe(0);
+		expect((await getPm(db, p.id))?.repo_create_preauthorized).toBe(false);
+		expect((await getBrief(db, brief.id))?.status).toBe('rejected');
+		expect((await getProject(db, p.id))?.repo_url).toBeFalsy();
+	});
+
+	// REGRESSION (RC-3 fix HIGH) — same wall for a SUPERSEDED brief (the proposal was withdrawn/revised
+	// while the question stood). A superseded brief is terminal-decided; approve must not re-drive the gate.
+	it('superseded → approve is REFUSED before any outward effect (no create, no consent)', async () => {
+		const p = await freshProject();
+		await createPm(db, { project: p.id, name: 'Vesper' });
+		const { brief } = await proposeRepoCreate(db, { project: p.id, name: 'repo-host' });
+
+		const superseded = await supersedeOpenBrief(db, p.id);
+		expect(superseded?.status).toBe('superseded');
+
+		const client = new FakeClient();
+		const git = fakeGit();
+		await expect(
+			applyRepoCreateDecision(db, brief.id, 'approve', {
+				operatorConfirmed: true,
+				client,
+				gitRunner: git.fn
+			})
+		).rejects.toBeInstanceOf(RepoCreateGateError);
+
+		expect(client.createCalls.length).toBe(0);
+		expect(git.calls.length).toBe(0);
+		expect((await getPm(db, p.id))?.repo_create_preauthorized).toBe(false);
+		expect((await getBrief(db, brief.id))?.status).toBe('superseded');
+		expect((await getProject(db, p.id))?.repo_url).toBeFalsy();
 	});
 });

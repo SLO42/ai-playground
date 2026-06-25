@@ -347,6 +347,58 @@
     form && 'settings' in form ? (form.settings as Record<string, unknown>) : undefined
   );
 
+  // ── RC-4 — GitHub repo creation surface (Settings tab). The RC-3 server action `repoCreate`
+  // (already wired in +page.server.ts) is the SOLE authority; this UI only drives it. The create is
+  // ALWAYS private (RC-1/RC-2 hardcode --private; public is unrepresentable). Honest states (F-008):
+  // no-repo / creating / created (real repo_url) / each NAMED failure (the gate's honest summary —
+  // unauthed / permission-denied / already-exists). The confirm is a two-step UI gate (mirrors the
+  // release confirm-token UX); the token itself is DERIVED server-side, never client-built.
+  const repoBrief = $derived(data.repoBrief ?? null);
+  let repoName = $state('');
+  let repoOwner = $state('');
+  let repoConfirming = $state(false); // step 2 of the two-step confirm gate (operator armed the create)
+  let repoBusy = $state(false);
+  let repoBriefBusy = $state(false);
+  let repoBriefError = $state<string | null>(null);
+  // The action result envelope (form.repo). On success: { created, failedAt, summary, repoUrl }.
+  // On a boundary fail(): { error }. Honest — never dressed as success.
+  const repoFeedback = $derived(
+    form && 'repo' in form ? (form.repo as Record<string, unknown>) : undefined
+  );
+  // Default the repo-name field to the project slug once (operator can override before confirming).
+  $effect(() => {
+    if (!repoName && project && !project.repo_url) repoName = untrack(() => slug) ?? '';
+  });
+
+  // RC-4 — approve/reject the OPEN PM repo_create brief via /api/briefs (applyRepoCreateDecision).
+  // Approve REQUIRES operatorConfirmed:true (the B4 integrity wall — a PM/agent can never set it).
+  async function decideRepoBrief(id: string, action: 'approve' | 'reject'): Promise<void> {
+    repoBriefBusy = true;
+    repoBriefError = null;
+    try {
+      const res = await fetch('/api/briefs', {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        // approve carries the explicit operator confirm; reject does not drive the gate.
+        body: JSON.stringify(
+          action === 'approve' ? { id, action, operatorConfirmed: true } : { id, action }
+        )
+      });
+      if (!res.ok) {
+        const msg = await res.text();
+        repoBriefError = msg || `the decision failed (HTTP ${res.status})`;
+        return;
+      }
+      // The decision_brief / project SSE watchers re-invalidate the loader; pull the fresh state in.
+      await invalidate('app:projects');
+      await invalidate('app:pm');
+    } catch (err) {
+      repoBriefError = (err as Error).message;
+    } finally {
+      repoBriefBusy = false;
+    }
+  }
+
   // PM form state.
   let pmBusy = $state(false);
   let newMemoryKind = $state('observation');
@@ -3008,6 +3060,171 @@
           {/if}
         </div>
 
+        <!-- RC-4 — GitHub repository. Honest states (F-008): created (real repo_url) / no-repo
+             (create control) / creating / each NAMED failure. ALWAYS private (RC-1/RC-2). -->
+        <div class="card repo-card">
+          <h2 class="section-title">GitHub repository</h2>
+
+          {#if project.repo_url}
+            <!-- CREATED — show the real, live repo_url (never fabricated). -->
+            <p class="state-body">This project is backed by a GitHub repository.</p>
+            <div class="repo-linked">
+              <span class="repo-badge" data-kind="linked">linked</span>
+              <a
+                class="repo-url mono"
+                href={project.repo_url}
+                target="_blank"
+                rel="noopener noreferrer"
+              >{project.repo_url}</a>
+            </div>
+            <p class="repo-note">
+              The remote URL is also editable in the form above. To create a NEW repo, clear it there
+              first.
+            </p>
+          {:else}
+            <!-- NO-REPO — offer the private create control + the two-step operator confirm. -->
+            <p class="state-body">
+              No repository yet. Create one to back this project with a remote. This
+              <strong>always creates a PRIVATE repository</strong> — public repos are never created
+              here (RC-1).
+            </p>
+
+            {#if repoBrief}
+              <!-- PM-PROPOSED brief (RC-3) — the operator approves (→ confirmed create) or rejects. -->
+              <div class="repo-brief" aria-label="pending repo-create recommendation">
+                <span class="repo-badge" data-kind="proposed">PM recommendation</span>
+                <p class="repo-brief-ask">{repoBrief.ask}</p>
+                <p class="repo-brief-issue">{repoBrief.issue}</p>
+                {#if repoBrief.name}
+                  <p class="repo-brief-target">
+                    Target (private):
+                    <span class="mono">{repoBrief.owner ? `${repoBrief.owner}/${repoBrief.name}` : repoBrief.name}</span>
+                  </p>
+                {/if}
+                <div class="repo-brief-actions">
+                  <button
+                    class="btn primary"
+                    type="button"
+                    disabled={repoBriefBusy}
+                    onclick={() => decideRepoBrief(repoBrief!.id, 'approve')}
+                  >
+                    {repoBriefBusy ? 'Working…' : 'Approve & create (private)'}
+                  </button>
+                  <button
+                    class="btn ghost"
+                    type="button"
+                    disabled={repoBriefBusy}
+                    onclick={() => decideRepoBrief(repoBrief!.id, 'reject')}
+                  >
+                    Reject
+                  </button>
+                </div>
+                {#if repoBriefError}
+                  <p class="form-error" role="alert">{repoBriefError}</p>
+                {/if}
+                <p class="repo-note">
+                  Approving records your consent and drives the gated create (private-first); rejecting
+                  creates nothing. The confirm is server-derived — never client-built.
+                </p>
+              </div>
+            {/if}
+
+            <form
+              method="POST"
+              action="?/repoCreate"
+              class="repo-form"
+              use:enhance={() => {
+                repoBusy = true;
+                return async ({ update }) => {
+                  await update({ reset: false });
+                  repoBusy = false;
+                  repoConfirming = false;
+                };
+              }}
+            >
+              <label class="field settings-field">
+                <span class="field-label">Repository name</span>
+                <input
+                  class="pm-input mono"
+                  type="text"
+                  name="name"
+                  bind:value={repoName}
+                  placeholder="my-project"
+                  autocomplete="off"
+                  required
+                />
+              </label>
+              <label class="field settings-field">
+                <span class="field-label">Owner <span class="field-hint">(optional — defaults to the authenticated user)</span></span>
+                <input
+                  class="pm-input mono"
+                  type="text"
+                  name="owner"
+                  bind:value={repoOwner}
+                  placeholder="my-org"
+                  autocomplete="off"
+                />
+              </label>
+
+              {#if !repoConfirming}
+                <button
+                  class="btn primary"
+                  type="button"
+                  disabled={repoBusy || !repoName.trim()}
+                  onclick={() => (repoConfirming = true)}
+                >
+                  Create repo (private)…
+                </button>
+              {:else}
+                <div class="repo-confirm" role="group" aria-label="confirm private repo creation">
+                  <p class="confirm-note">
+                    This creates a <strong>PRIVATE</strong> GitHub repository
+                    <span class="mono">{repoOwner.trim() ? `${repoOwner.trim()}/${repoName.trim()}` : repoName.trim()}</span>
+                    and pushes this project's local commits to it. It is a real outward action,
+                    reversible only by deleting the repo on GitHub. The confirm token is derived
+                    server-side. Continue?
+                  </p>
+                  <div class="repo-confirm-actions">
+                    <button class="btn primary" type="submit" disabled={repoBusy}>
+                      {repoBusy ? 'Creating…' : 'Confirm — create private repo'}
+                    </button>
+                    <button
+                      class="btn ghost"
+                      type="button"
+                      disabled={repoBusy}
+                      onclick={() => (repoConfirming = false)}
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              {/if}
+            </form>
+
+            {#if repoFeedback}
+              {#if 'error' in repoFeedback}
+                <!-- Boundary fail() — a named server-side reason (no PM, invalid name, DB down). -->
+                <p class="form-error" role="alert">{repoFeedback.error}</p>
+              {:else if repoFeedback.created}
+                <!-- CREATED — the gate landed the repo. Show the real URL (live next reload). -->
+                <p class="form-ok">
+                  {repoFeedback.summary ?? 'Repository created.'}
+                  {#if repoFeedback.repoUrl}
+                    <a class="repo-url mono" href={String(repoFeedback.repoUrl)} target="_blank" rel="noopener noreferrer">{repoFeedback.repoUrl}</a>
+                  {/if}
+                </p>
+              {:else}
+                <!-- NOT created — the gate halted at a NAMED stage (unauthed / permission /
+                     private re-assert). Surface the honest summary, never a fabricated success. -->
+                <p class="form-error" role="alert">
+                  {repoFeedback.summary ?? 'The repository was not created.'}
+                  {#if repoFeedback.failedAt}<span class="repo-failed-at mono"> (halted at: {repoFeedback.failedAt})</span>{/if}
+                </p>
+              {/if}
+            {/if}
+          {/if}
+        </div>
+
         <div class="card">
           <h2 class="section-title">Model routing &amp; gates</h2>
           <p class="state-body">
@@ -3371,6 +3588,103 @@
   .form-ok {
     font: var(--type-body-sm);
     color: var(--color-success, var(--color-running, var(--color-accent)));
+  }
+  /* RC-4 — GitHub repository surface (Settings tab). Tokens only; a11y-first. */
+  .btn.ghost {
+    background: transparent;
+  }
+  .repo-card {
+    display: flex;
+    flex-direction: column;
+    gap: 0.6rem;
+  }
+  .repo-linked {
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .repo-url {
+    color: var(--color-text-accent, var(--color-accent));
+    text-decoration: underline;
+    word-break: break-all;
+  }
+  .repo-url:focus-visible {
+    outline: 2px solid var(--color-focus-ring, var(--color-accent));
+    outline-offset: 2px;
+  }
+  .repo-badge {
+    display: inline-block;
+    font: var(--type-body-sm);
+    font-weight: 600;
+    padding: 0.1rem 0.45rem;
+    border-radius: var(--radius-sm, 6px);
+    border: var(--border-width, 1px) solid var(--color-border);
+    color: var(--color-text-2);
+  }
+  .repo-badge[data-kind='linked'] {
+    color: var(--color-success-on-overlay, var(--color-success));
+    border-color: var(--color-success, var(--color-border));
+  }
+  .repo-badge[data-kind='proposed'] {
+    color: var(--color-info-on-overlay, var(--color-info));
+    border-color: var(--color-info, var(--color-border));
+  }
+  .repo-note {
+    font: var(--type-body-sm);
+    color: var(--color-text-muted, var(--color-text-2));
+  }
+  .field-hint {
+    font-weight: 400;
+    color: var(--color-text-muted, var(--color-text-2));
+  }
+  .repo-form {
+    display: flex;
+    flex-direction: column;
+    gap: 0.55rem;
+  }
+  .repo-confirm {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+    padding: 0.6rem;
+    border: var(--border-width, 1px) solid var(--color-border-strong, var(--color-border));
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-bg-inset, var(--color-surface));
+  }
+  .confirm-note {
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+    margin: 0;
+  }
+  .repo-confirm-actions,
+  .repo-brief-actions {
+    display: flex;
+    gap: 0.5rem;
+    flex-wrap: wrap;
+  }
+  .repo-brief {
+    display: flex;
+    flex-direction: column;
+    gap: 0.45rem;
+    padding: 0.6rem;
+    border: var(--border-width, 1px) solid var(--color-info, var(--color-border));
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-info-bg, var(--color-surface));
+  }
+  .repo-brief-ask {
+    font-weight: 600;
+    color: var(--color-text);
+    margin: 0;
+  }
+  .repo-brief-issue,
+  .repo-brief-target {
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+    margin: 0;
+  }
+  .repo-failed-at {
+    color: var(--color-text-muted, var(--color-text-2));
   }
   .open-btn {
     appearance: none;

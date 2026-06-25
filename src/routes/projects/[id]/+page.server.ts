@@ -71,6 +71,10 @@ import {
 	proposeRepoCreate,
 	RepoProposalError
 } from '$lib/server/projects/repo-create-proposal';
+// RC-4 — the OPEN PM-proposed repo_create brief for THIS project (artifact = the project row). Surfaced
+// read-only for the operator to approve/reject via /api/briefs (applyRepoCreateDecision). One repo per
+// project ⇒ at most one open brief.
+import { getOpenBriefForArtifact, type DecisionBriefRow } from '$lib/server/projects/briefs';
 // PM-LC-2 — the one-click lifecycle tick (PM-LIFECYCLE-SPEC §PM-LC-2).
 import { startProjectLifecycle } from '$lib/server/projects/pm-lifecycle';
 // PMA — the live autonomous loop's honest last-state (read-only surface; the boot seam owns the loop).
@@ -279,7 +283,23 @@ export interface ProjectDetailData {
 	 *  The cert_hire brief is project-less (it certifies a role), so this is the GLOBAL open hire
 	 *  queue surfaced for the project PM to weigh in on. [] when none (honest, F-008). */
 	hireGates: HireBriefCard[];
+	/** RC-4 — the OPEN PM-proposed repo_create brief for this project (or null). Surfaced read-only so
+	 *  the operator can APPROVE (→ confirmed → the RC-2 outward gate) or REJECT it via /api/briefs. At
+	 *  most one (one repo per project). null when no PM has proposed one (honest empty, F-008). */
+	repoBrief: RepoBriefCard | null;
 	error?: string;
+}
+
+/** RC-4 — the operator-facing projection of an open repo_create decision brief (briefs.ts §B4). */
+export interface RepoBriefCard {
+	id: string;
+	ask: string;
+	issue: string;
+	evidence: string[];
+	/** The recommended repo target the brief carries (the create is ALWAYS private — RC-1/RC-2). */
+	name: string | null;
+	owner: string | null;
+	createdAt: string | null;
 }
 
 export const load: PageServerLoad = async ({ params, depends, url }): Promise<ProjectDetailData> => {
@@ -365,7 +385,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			controlCaps,
 			staffingGaps: [],
 			proposedDefectClasses: [],
-			hireGates: []
+			hireGates: [],
+			repoBrief: null
 		};
 	}
 
@@ -411,6 +432,22 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 
 		// TASK 16.4 — the proposals queue (open proposals + verdicts + open briefs).
 		const proposals = await listProposalQueue(db, projectId);
+
+		// RC-4 — the OPEN PM-proposed repo_create brief for this project (artifact = the project row),
+		// projected for the operator's approve/reject surface. A reader throw must NEVER sink the detail
+		// page (honest partial, F-008): on failure the surface shows no pending recommendation. Only
+		// surface it when the project has NO repo yet (a brief on an already-backed project is stale).
+		let repoBrief: RepoBriefCard | null = null;
+		if (!(project.repo_url && project.repo_url.trim())) {
+			try {
+				const openBrief = await getOpenBriefForArtifact(db, projectId);
+				if (openBrief && openBrief.artifact_kind === 'repo_create') {
+					repoBrief = _projectRepoBriefCard(openBrief);
+				}
+			} catch {
+				repoBrief = null;
+			}
+		}
 
 		// PM→HR dispatch (gap A) — the capability HIRE-gaps (recommendStaffing, PROPOSE-ONLY).
 		// A matcher failure must NEVER sink the whole detail page (honest partial, F-008): a project
@@ -521,7 +558,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			controlCaps,
 			staffingGaps,
 			proposedDefectClasses,
-			hireGates
+			hireGates,
+			repoBrief
 		};
 	} catch (err) {
 		// A 404 thrown above is a SvelteKit HttpError — rethrow it, don't swallow.
@@ -562,10 +600,38 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			staffingGaps: [],
 			proposedDefectClasses: [],
 			hireGates: [],
+			repoBrief: null,
 			error: (err as Error).message
 		};
 	}
 };
+
+/**
+ * RC-4 — project the open repo_create brief into the operator card. Mirrors repoTargetFromBrief
+ * (repo-create-proposal.ts) for the stowed name/owner (challenge.cost_if_wrong=`repo:<name>`,
+ * challenge.context_we_might_be_missing=`owner=<login>`). Parsing is best-effort: a malformed/absent
+ * payload yields null name/owner (the card still renders the ask honestly), never a thrown loader.
+ */
+export function _projectRepoBriefCard(brief: DecisionBriefRow): RepoBriefCard {
+	const cost = (brief.challenge?.cost_if_wrong ?? '').trim();
+	const nameMatch = /^repo:(.+)$/.exec(cost);
+	const name = nameMatch ? nameMatch[1].trim() || null : null;
+	const ctx = (brief.challenge?.context_we_might_be_missing ?? '').trim();
+	const ownerMatch = /^owner=(.+)$/.exec(ctx);
+	const owner =
+		ownerMatch && ownerMatch[1].trim() && ownerMatch[1].trim() !== '(authenticated user)'
+			? ownerMatch[1].trim()
+			: null;
+	return {
+		id: brief.id,
+		ask: brief.ask,
+		issue: brief.issue,
+		evidence: brief.evidence,
+		name,
+		owner,
+		createdAt: brief.created_at
+	};
+}
 
 export const actions: Actions = {
 	/**

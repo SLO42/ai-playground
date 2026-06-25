@@ -67,13 +67,15 @@ interface Rule {
 //     last 3 raw lines joined by ' ⏎ ') — the agent's natural-language output, NOT the exit cause.
 //   • cli-backend.ts:699 — `claude CLI failed to start: <err>` (spawn err message).
 //   • launch.ts:998 — `failed mid-stream: <err>`.
-// The generic single-token content markers below (401/credential/timeout/refusal/\d+ failed) would
-// fire from INSIDE that embedded payload → a confidently-WRONG overview tag (a CLI crash mislabeled
-// 'agent declined the task'/'timed out'/'auth problem'), violating the honesty rail (§12-15: a
-// category is assigned ONLY on a real OBSERVED marker FOR THE CAUSE). So generic content markers are
-// matched ONLY against the WRAPPER (the text up to the first ': '), never the embedded tail. REAL
-// causes our spawn/runtime layer emits as the error ITSELF (capability-denied, the F-029 stale-token
-// signals) are in REAL_CAUSE_RULES below and match anywhere — they ARE the observed cause.
+// The scoped/generic content markers below (401/credential/timeout/refusal/\d+ failed, and the broad
+// real-cause prose markers merge-needed/reaped/worktree-failed/'stale token') would fire from INSIDE
+// that embedded payload → a confidently-WRONG overview tag (a CLI crash mislabeled 'agent declined the
+// task'/'timed out'/'work preserved — merge needed'), violating the honesty rail (§12-15: a category
+// is assigned ONLY on a real OBSERVED marker FOR THE CAUSE). So those markers are matched ONLY against
+// `scannableScope` (the wrapper PREFIX + our own ' · '-appended advisories), never the embedded foreign
+// tail. The narrow, structurally-distinctive causes our spawn/runtime layer emits as the error ITSELF
+// (capability-denied two-token, the STRUCTURED F-029 token signals) are in REAL_CAUSE_RULES and match
+// the whole note — they ARE the observed cause and legitimately ride inside a wrapper.
 const STREAM_WRAPPER_PREFIXES = [
 	'claude cli exited',
 	'claude cli failed to start',
@@ -86,36 +88,53 @@ function isStreamWrapper(lower: string): boolean {
 }
 
 /**
- * The portion of a wrapper note safe to scan for GENERIC content markers: the wrapper itself, up to
- * (and excluding) the embedded payload that begins after the first ': '. For a non-wrapper note the
- * whole note is returned unchanged (nothing is stripped). This is the ONLY text the generic rules
- * see — so a marker buried in the agent's own result tail can no longer mislabel the cause.
+ * The advisory-append separator merge-back.ts uses (stampNote: `string::concat($cur, " · ", $advisory)`)
+ * — an existing failure note + ' · ' + OUR screened advisory. Anything in a ' · '-delimited segment
+ * AFTER the first is appended by our own layer (a merge-needed preserve advisory), NOT foreign text.
+ */
+const ADVISORY_SEP = ' · ';
+
+/**
+ * The portion of a wrapper note safe to scan for SCOPED/GENERIC content markers: the wrapper prefix
+ * itself PLUS any of our own ' · '-appended advisory segments — but NOT the embedded FOREIGN payload
+ * (the agent's stream-json result tail / git stderr) that begins after the first ': '. For a
+ * non-wrapper note the whole note is returned unchanged (nothing is stripped).
+ *
+ * Structure of a wrapped+appended note (merge-back.ts:281/352 stampNote appends to launch.ts's note):
+ *   `<wrapper>: <FOREIGN PAYLOAD> · <our advisory> · <our advisory>`
+ * We drop ONLY the FOREIGN PAYLOAD (first ': ' → first ' · '), keeping the wrapper prefix and every
+ * appended advisory. So a marker BURIED in the agent's own result tail can no longer mislabel the
+ * cause, while a legitimate appended 'merge needed' preserve advisory IS still seen (no regression).
  */
 function scannableScope(lower: string): string {
 	if (!isStreamWrapper(lower)) return lower;
 	const sep = lower.indexOf(': ');
-	return sep === -1 ? lower : lower.slice(0, sep);
+	if (sep === -1) return lower;
+	const prefix = lower.slice(0, sep); // the wrapper, e.g. 'claude cli exited 1'
+	// The embedded foreign payload runs from just after ': ' to the first appended-advisory boundary
+	// (' · ') if any; everything from that boundary on is OUR appended, screened advisory text.
+	const rest = lower.slice(sep + 2);
+	const advIdx = rest.indexOf(ADVISORY_SEP);
+	const appended = advIdx === -1 ? '' : rest.slice(advIdx); // includes the leading ' · '
+	return prefix + appended;
 }
 
-// REAL-CAUSE rules: each marker is text OUR code emits AS the error/advisory itself — a genuine
-// OBSERVED cause. Matched against the WHOLE note (they legitimately ride inside a stream wrapper,
-// e.g. capability-denied / the F-029 stale-token reason on `claude CLI failed to start: …`).
-// Ordered most-specific → most-generic; first match wins.
+// REAL-CAUSE rules (WHOLE-NOTE): each marker is text OUR spawn/runtime layer emits AS the error
+// itself AND legitimately rides INSIDE a stream wrapper (e.g. `claude CLI failed to start: …`), so
+// it must be matched against the whole note. To avoid the embedded-tail false positive (CC-1 review
+// gap #1), ONLY narrow, structurally-distinctive markers live here:
+//   • capability-denied — the two-token `capability id`+`catalog` (or the `d-036` flag) thrown by
+//     capabilities.ts:190 and surfaced via `claude CLI failed to start: …`; near-zero prose-collision.
+//   • the STRUCTURED F-029 spawn-layer signals (`cc_session_id=null`, `token unset`, `openclaw_token`)
+//     — non-prose tokens our code emits, e.g. `claude CLI failed to start: OPENCLAW_TOKEN unset`.
+// BROAD real-cause markers whose producers are STANDALONE (never wrapped) — reaper.ts:25
+// 'reaped: server restarted mid-run', merge-back.ts:280 'work preserved on branch <b>; … merge needed',
+// launch.ts:533/541 'worktree acquisition failed …', and the PROSE phrase 'stale token' — are NOT here:
+// matching them whole-note buys nothing (their notes are stamped directly on the row, separate path)
+// and only lets an agent's own result-tail prose ("a merge needed manual resolution", "had a stale
+// token earlier") mislabel a wrapped CLI crash. They live in SCOPED_CAUSE_RULES below, scanned ONLY
+// over the wrapper — exactly like the generic-content rules. Ordered most-specific → most-generic.
 const REAL_CAUSE_RULES: readonly Rule[] = [
-	{
-		// reaper.ts:25 — REAPED_NOTE = 'reaped: server restarted mid-run'
-		category: 'crashed-mid-run',
-		icon: '⟲',
-		shortLabel: 'crashed — server restarted',
-		test: (l) => l.includes('reaped') || l.includes('server restarted mid-run')
-	},
-	{
-		// merge-back.ts:280/350 — 'work preserved on branch <b>; … merge needed' (+ 'fast-forward not possible')
-		category: 'merge-needed',
-		icon: '⑂',
-		shortLabel: 'work preserved — merge needed',
-		test: (l) => l.includes('merge needed') || l.includes('work preserved on') || l.includes('fast-forward not possible')
-	},
 	{
 		// capabilities.ts:190 — 'unknown <kind> capability id "<id>" — not in the cc-config catalog (fail closed, D-036)'.
 		// This is the REAL cause even when it rides inside `claude CLI exited N: …` (the legitimate nesting).
@@ -125,26 +144,56 @@ const REAL_CAUSE_RULES: readonly Rule[] = [
 		test: (l) => (l.includes('capability id') && l.includes('catalog')) || l.includes('d-036')
 	},
 	{
-		// launch.ts:541 — 'worktree acquisition failed …' (WI-2 fail-closed path)
+		// EXPLICIT spawn-layer auth/token cause — our code emits these STRUCTURED tokens AS the error
+		// (F-029 stale token; the instant pre-init death with cc_session_id=null). They legitimately
+		// ride inside `claude CLI failed to start: OPENCLAW_TOKEN unset`, so they match the whole note.
+		// The prose phrase 'stale token' is NOT here (it is plausible agent-tail prose → SCOPED_CAUSE_RULES);
+		// the GENERIC auth tokens (401/credential/…) are in the generic-content rules.
+		category: 'auth-token',
+		icon: '🔑',
+		shortLabel: 'auth / token problem',
+		test: (l) =>
+			l.includes('cc_session_id=null') ||
+			l.includes('token unset') ||
+			l.includes('openclaw_token')
+	}
+];
+
+// SCOPED-CAUSE rules: REAL causes whose producers stamp the note STANDALONE (never inside a stream
+// wrapper) AND whose markers are plausible foreign prose (an agent's own result tail, a git stderr).
+// Matched ONLY against `scannableScope` — the wrapper, never an embedded payload — exactly like the
+// generic-content rules. For a standalone note (not a wrapper) `scannableScope` returns it unchanged,
+// so the genuine producer note still classifies correctly; a quote of these phrases inside a wrapped
+// CLI crash no longer mislabels the cause (CC-1 review gap #1). Ordered most-specific → most-generic.
+const SCOPED_CAUSE_RULES: readonly Rule[] = [
+	{
+		// reaper.ts:25 — REAPED_NOTE = 'reaped: server restarted mid-run' (standalone row stamp).
+		category: 'crashed-mid-run',
+		icon: '⟲',
+		shortLabel: 'crashed — server restarted',
+		test: (l) => l.includes('reaped') || l.includes('server restarted mid-run')
+	},
+	{
+		// merge-back.ts:280 — 'work preserved on branch <b>; … merge needed' (+ 'fast-forward not possible') (standalone).
+		category: 'merge-needed',
+		icon: '⑂',
+		shortLabel: 'work preserved — merge needed',
+		test: (l) => l.includes('merge needed') || l.includes('work preserved on') || l.includes('fast-forward not possible')
+	},
+	{
+		// launch.ts:533/541 — 'worktree acquisition failed …' (WI-2 fail-closed path, standalone row stamp).
 		category: 'worktree-failed',
 		icon: '⑂',
 		shortLabel: 'worktree setup failed',
 		test: (l) => l.includes('worktree acquisition failed') || l.includes('worktree setup failed')
 	},
 	{
-		// EXPLICIT spawn-layer auth/token cause — our code emits this AS the error (F-029 stale token;
-		// the instant pre-init death with cc_session_id=null). These are real OBSERVED causes and
-		// legitimately ride inside `claude CLI failed to start: OPENCLAW_TOKEN unset (stale token)`,
-		// so they match the whole note. The GENERIC auth tokens (401/credential/…) are NOT here — they
-		// must not fire from inside an embedded agent result payload (see generic-content rules).
+		// The PROSE 'stale token' phrase (F-029) — a real cause when our layer emits it standalone, but
+		// plausible agent-tail prose, so scoped to the wrapper. (The STRUCTURED token signals stay whole-note.)
 		category: 'auth-token',
 		icon: '🔑',
 		shortLabel: 'auth / token problem',
-		test: (l) =>
-			l.includes('cc_session_id=null') ||
-			l.includes('stale token') ||
-			l.includes('token unset') ||
-			l.includes('openclaw_token')
+		test: (l) => l.includes('stale token')
 	}
 ];
 
@@ -221,18 +270,21 @@ export function classifyFailureNote(note: string | null | undefined): Classified
 		return { category: 'no-output', shortLabel: 'failed before any output', detail, icon: '∅', empty: false };
 	}
 
-	// 1. REAL-CAUSE markers — text our code emits AS the error itself. Matched against the WHOLE
-	//    note (they legitimately ride inside a stream wrapper; e.g. capability-denied / stale-token).
+	// 1. NARROW REAL-CAUSE markers — structurally-distinctive text our code emits AS the error itself,
+	//    which legitimately rides inside a stream wrapper (capability-denied / structured F-029 tokens).
+	//    Matched against the WHOLE note (low prose-collision risk by construction).
 	for (const rule of REAL_CAUSE_RULES) {
 		if (rule.test(lower)) {
 			return { category: rule.category, shortLabel: rule.shortLabel, detail, icon: rule.icon, empty: false };
 		}
 	}
 
-	// 2. GENERIC-CONTENT markers — only scanned over the WRAPPER (never an embedded agent/git
-	//    payload), so a marker quoted inside the agent's own result tail can't mislabel the cause.
+	// 2. SCOPED-CAUSE + GENERIC-CONTENT markers — plausible foreign prose (an agent result tail, a git
+	//    stderr, or a standalone row note). Scanned ONLY over the WRAPPER (for a standalone note that is
+	//    the whole note), so a marker quoted inside an embedded agent/git payload can't mislabel the
+	//    cause. Scoped-cause rules precede generic ones (more-specific markers win).
 	const scope = scannableScope(lower);
-	for (const rule of GENERIC_CONTENT_RULES) {
+	for (const rule of [...SCOPED_CAUSE_RULES, ...GENERIC_CONTENT_RULES]) {
 		if (rule.test(scope)) {
 			return { category: rule.category, shortLabel: rule.shortLabel, detail, icon: rule.icon, empty: false };
 		}

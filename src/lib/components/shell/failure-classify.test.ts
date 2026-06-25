@@ -212,3 +212,65 @@ describe('classifyFailureNote — embedded foreign text in a stream-exit wrapper
 		).toBe('agent-refusal');
 	});
 });
+
+/* ============================================================================
+   CC-1 RE-REVIEW gap #1 — BROAD real-cause markers buried in a wrapped agent
+   result tail must NOT mislabel the overview tag (the symmetric hole the prior
+   pass left). The producers of these markers — reaper.ts:25 'reaped …',
+   merge-back.ts:280 'work preserved … merge needed', launch.ts:533 'worktree
+   acquisition failed …', and the prose 'stale token' — stamp the note STANDALONE
+   (never inside the wrapper as the FOREIGN payload), so an agent's own result
+   tail quoting these phrases is foreign text, not the cause. They are now scanned
+   ONLY over `scannableScope` (the wrapper prefix + our own ' · '-appended
+   advisories), exactly like the generic-content rules. Note shapes match the real
+   producer (cli-backend.ts:705-709 embedding the agent's stream-json result tail).
+   ============================================================================ */
+describe('classifyFailureNote — broad real-cause prose buried in a wrapped tail must NOT mislabel', () => {
+	const buriedInTail: Array<{ name: string; note: string }> = [
+		{
+			name: "agent's result quotes 'a merge needed manual resolution' (merge-needed prose, NOT a preserve advisory)",
+			note: 'claude CLI exited 1: {"type":"result","result":"I tried but a merge needed manual resolution upstream"}'
+		},
+		{
+			name: "agent's result quotes 'had a stale token earlier' (stale-token prose, NOT an auth cause)",
+			note: 'claude CLI exited 1: {"type":"result","result":"the auth had a stale token earlier but I recovered"}'
+		},
+		{
+			name: "agent's result quotes 'reaped some resources' (reaped prose, NOT a reaper crash)",
+			note: 'claude CLI exited 1: {"type":"result","result":"I reaped some resources before exiting"}'
+		},
+		{
+			name: "agent's result quotes 'work preserved on the side branch' (preserve prose, NOT merge-back)",
+			note: 'claude CLI exited 1: {"type":"result","result":"work preserved on the side branch as a backup"}'
+		}
+	];
+	for (const c of buriedInTail) {
+		it(`${c.name} → stream-exit (the wrapper IS the cause, not its quoted tail)`, () => {
+			const out = classifyFailureNote(c.note);
+			expect(out.category).toBe('stream-exit');
+			expect(out.detail).toBe(c.note); // verbatim, D-026 unchanged
+		});
+	}
+
+	it('a STANDALONE merge-needed note (merge-back.ts:280, not wrapped) STILL classifies merge-needed', () => {
+		// scannableScope returns a non-wrapper note unchanged → the scoped merge rule still fires.
+		expect(
+			classifyFailureNote('work preserved on branch session/abc-123; session failed — merge needed').category
+		).toBe('merge-needed');
+	});
+
+	it('a LEGITIMATE merge advisory APPENDED to a wrapper (merge-back stampNote " · " append) is NOT regressed to stream-exit', () => {
+		// merge-back.ts:281 stampNote appends ' · <advisory>' to launch.ts's existing failure note, so a
+		// real preserve advisory can ride AFTER a wrapper. scannableScope keeps the appended ' · ' segment
+		// (drops only the embedded foreign payload), so this still classifies as merge-needed.
+		const note =
+			'claude CLI exited 1: {"type":"result","result":"boom"} · work preserved on branch atelier/session/sess-x; session failed — merge needed';
+		expect(classifyFailureNote(note).category).toBe('merge-needed');
+	});
+
+	it('the STRUCTURED F-029 token signals still win whole-note even inside a wrapper (not scoped away)', () => {
+		// cc_session_id=null / OPENCLAW_TOKEN unset are non-prose, our-code-emitted tokens → REAL_CAUSE (whole-note).
+		expect(classifyFailureNote('claude CLI failed to start: OPENCLAW_TOKEN unset').category).toBe('auth-token');
+		expect(classifyFailureNote('spawn failed: cc_session_id=null').category).toBe('auth-token');
+	});
+});

@@ -715,6 +715,15 @@
   let controlBusy = $state(false);
   let controlError = $state<string | null>(null);
 
+  // ── CC-3 OVERVIEW IA — progressive disclosure (operator: the overview "floods" at a glance).
+  // The at-a-glance summary (ProjectStatus MC-1) + the live controls/activity stay always-visible;
+  // the secondary detail panels (Plan, Maintain findings) collapse by default behind a real
+  // <button aria-expanded> disclosure (the same a11y pattern as ProjectActivity's session toggles).
+  // No surface is removed — only relocated/collapsed; expanding reveals the full original panel.
+  // Default-collapsed so the page reads cleanly; nothing here is reactive to live data, so a plain
+  // $state record is correct (not derived).
+  let ovOpen = $state<{ plan: boolean; maintain: boolean }>({ plan: false, maintain: false });
+
   // TASK 14.6 — the HONEST backend capability matrix (F-008): a control the wired backend
   // cannot really perform renders DISABLED with its reason, never a dead/deceptive button.
   const caps = $derived(
@@ -1012,31 +1021,77 @@
           onViewFile={viewFileSnapshot}
         />
 
-        <div class="card">
-          <h2 class="section-title">Plan</h2>
-          {#if project.plan && (project.plan.purpose || project.plan.long_term_vision || project.plan.role || project.plan.definition_of_done)}
-            <dl class="plan">
-              {#if project.plan.purpose}
-                <dt>Purpose</dt>
-                <dd>{project.plan.purpose}</dd>
+        <!-- At-a-glance counts → the dedicated surfaces. Relocated up under the live activity (CC-3
+             IA) as the compact drill-in row, so the operator sees the headline figures + can jump
+             to detail tabs without scrolling past the lifecycle/maintain panels. Counts are LIVE
+             from the loader rows (F-008). -->
+        <ul class="overview-stats" aria-label="project at a glance">
+          <li class="card stat">
+            <span class="stat-val">{tasks.length}</span>
+            <button class="stat-label link-inline" type="button" onclick={() => (tab = 'tasks')}>open tasks →</button>
+          </li>
+          <li class="card stat">
+            <span class="stat-val">{releases.length}</span>
+            <button class="stat-label link-inline" type="button" onclick={() => (tab = 'roadmap')}>releases →</button>
+          </li>
+          <li class="card stat">
+            <span class="stat-val">{sessions.length}</span>
+            <button class="stat-label link-inline" type="button" onclick={() => (tab = 'sessions')}>sessions →</button>
+          </li>
+          <li class="card stat">
+            <span class="stat-val" data-tone={findings.length > 0 ? 'warn' : ''}>{findings.length}</span>
+            <button class="stat-label link-inline" type="button" onclick={() => (ovOpen.maintain = true)}>open findings →</button>
+          </li>
+        </ul>
+
+        <!-- CC-3 IA — the Plan macro is reference detail, not at-a-glance: collapsed by default
+             behind a keyboard-accessible disclosure (aria-expanded). The whole panel is preserved —
+             expanding reveals the original Plan card verbatim. -->
+        <section class="card disclosure" aria-label="Plan">
+          <button
+            type="button"
+            class="disclosure-head"
+            aria-expanded={ovOpen.plan}
+            aria-controls="ov-plan-body"
+            onclick={() => (ovOpen.plan = !ovOpen.plan)}
+          >
+            <span class="section-title">Plan</span>
+            <span class="disclosure-hint">
+              {#if project.plan && (project.plan.purpose || project.plan.long_term_vision || project.plan.role || project.plan.definition_of_done)}
+                <span class="disclosure-sub">purpose · vision · role · DoD</span>
+              {:else}
+                <span class="disclosure-sub muted">not set</span>
               {/if}
-              {#if project.plan.long_term_vision}
-                <dt>Vision</dt>
-                <dd>{project.plan.long_term_vision}</dd>
+              <span class="chevron" data-open={ovOpen.plan} aria-hidden="true">›</span>
+            </span>
+          </button>
+          {#if ovOpen.plan}
+            <div id="ov-plan-body" class="disclosure-body">
+              {#if project.plan && (project.plan.purpose || project.plan.long_term_vision || project.plan.role || project.plan.definition_of_done)}
+                <dl class="plan">
+                  {#if project.plan.purpose}
+                    <dt>Purpose</dt>
+                    <dd>{project.plan.purpose}</dd>
+                  {/if}
+                  {#if project.plan.long_term_vision}
+                    <dt>Vision</dt>
+                    <dd>{project.plan.long_term_vision}</dd>
+                  {/if}
+                  {#if project.plan.role}
+                    <dt>Role</dt>
+                    <dd>{project.plan.role}</dd>
+                  {/if}
+                  {#if project.plan.definition_of_done}
+                    <dt>Definition of done</dt>
+                    <dd>{project.plan.definition_of_done}</dd>
+                  {/if}
+                </dl>
+              {:else}
+                <p class="state-body">No plan macro set yet for this project.</p>
               {/if}
-              {#if project.plan.role}
-                <dt>Role</dt>
-                <dd>{project.plan.role}</dd>
-              {/if}
-              {#if project.plan.definition_of_done}
-                <dt>Definition of done</dt>
-                <dd>{project.plan.definition_of_done}</dd>
-              {/if}
-            </dl>
-          {:else}
-            <p class="state-body">No plan macro set yet for this project.</p>
+            </div>
           {/if}
-        </div>
+        </section>
 
         <!-- PM-LC-3 (PM-LIFECYCLE-SPEC §PM-LC-3) — the one-click "start the project's life" control.
              No PM hired → a "Hire a PM first" CTA to the EXISTING hire flow (never auto-hires). PM
@@ -1297,33 +1352,28 @@
           {/if}
         </div>
 
-        <!-- At-a-glance counts → the dedicated surfaces -->
-        <ul class="overview-stats" aria-label="project at a glance">
-          <li class="card stat">
-            <span class="stat-val">{tasks.length}</span>
-            <button class="stat-label link-inline" type="button" onclick={() => (tab = 'tasks')}>open tasks →</button>
-          </li>
-          <li class="card stat">
-            <span class="stat-val">{releases.length}</span>
-            <button class="stat-label link-inline" type="button" onclick={() => (tab = 'roadmap')}>releases →</button>
-          </li>
-          <li class="card stat">
-            <span class="stat-val">{sessions.length}</span>
-            <button class="stat-label link-inline" type="button" onclick={() => (tab = 'sessions')}>sessions →</button>
-          </li>
-          <li class="card stat">
-            <span class="stat-val" data-tone={findings.length > 0 ? 'warn' : ''}>{findings.length}</span>
-            <span class="stat-label">open findings</span>
-          </li>
-        </ul>
-
         <!-- Maintain panel (UI-SPEC §189) — the per-project security/dep-health/UX rollup.
-             Reuses the SAME live security_finding rows the global /reports rollup reads. -->
-        <div class="card maintain-card">
-          <div class="maintain-head">
-            <h2 class="section-title">Maintain</h2>
-            <span class="count mono">{findings.length} open</span>
-          </div>
+             Reuses the SAME live security_finding rows the global /reports rollup reads.
+             CC-3 IA — collapsed by default behind a keyboard-accessible disclosure
+             (aria-expanded); the OPEN-finding count stays in the always-visible head so the
+             at-a-glance signal is preserved. Nothing is removed — expanding reveals the full
+             original Maintain panel (UX-inspector trigger + severity + finding rows). -->
+        <section class="card maintain-card disclosure" aria-label="Maintain">
+          <button
+            type="button"
+            class="disclosure-head maintain-head"
+            aria-expanded={ovOpen.maintain}
+            aria-controls="ov-maintain-body"
+            onclick={() => (ovOpen.maintain = !ovOpen.maintain)}
+          >
+            <span class="section-title">Maintain</span>
+            <span class="disclosure-hint">
+              <span class="count mono" data-tone={findings.length > 0 ? 'warn' : ''}>{findings.length} open</span>
+              <span class="chevron" data-open={ovOpen.maintain} aria-hidden="true">›</span>
+            </span>
+          </button>
+          {#if ovOpen.maintain}
+          <div id="ov-maintain-body" class="disclosure-body">
           <p class="state-body">
             Security, dependency-health and UX-inspection findings for this project — the
             per-project view of the Maintain surface. Findings appear the moment a scan writes
@@ -1404,7 +1454,9 @@
               No open findings — this project is clean, or it has not been scanned yet.
             </p>
           {/if}
-        </div>
+          </div>
+          {/if}
+        </section>
       </div>
     {:else if tab === 'tasks'}
       <!-- TASK 10.4 — the Tasks BOARD: kanban by status; create + move live (UI-SPEC §190). -->
@@ -4564,6 +4616,79 @@
     font-weight: 600;
     margin: 0;
     color: var(--color-text);
+  }
+
+  /* ── CC-3 — overview progressive-disclosure (Plan / Maintain) ──────────────── */
+  .disclosure {
+    /* the disclosure head owns the card padding; the card itself becomes a tight shell so the
+       collapsed state is a single compact row (reduces the at-a-glance flooding). */
+    padding: 0;
+    gap: 0;
+  }
+  .disclosure-head {
+    /* a real <button> (keyboard + aria-expanded), styled as the panel header row. */
+    appearance: none;
+    background: transparent;
+    border: 0;
+    width: 100%;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3, 0.75rem);
+    padding: var(--pad-card, 1rem);
+    cursor: pointer;
+    color: inherit;
+    text-align: left;
+  }
+  .disclosure-head:hover .section-title {
+    color: var(--color-text);
+  }
+  .disclosure-head:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: -2px;
+    border-radius: var(--radius-md, 10px);
+  }
+  .disclosure-hint {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-3, 0.75rem);
+    flex: none;
+  }
+  .disclosure-sub {
+    font: var(--type-body-sm);
+    color: var(--color-text-muted);
+  }
+  .disclosure-sub.muted {
+    color: var(--color-text-muted);
+    opacity: 0.8;
+  }
+  .disclosure-hint .count[data-tone='warn'] {
+    color: var(--color-blocked-on-overlay, var(--color-error-on-overlay));
+    font-weight: 600;
+  }
+  .chevron {
+    display: inline-block;
+    font-size: 1.1rem;
+    line-height: 1;
+    color: var(--color-text-muted);
+    transform: rotate(90deg);
+    transition: transform var(--motion-fast, 120ms) ease;
+  }
+  .chevron[data-open='true'] {
+    transform: rotate(270deg);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chevron {
+      transition: none;
+    }
+  }
+  .disclosure-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+    padding: 0 var(--pad-card, 1rem) var(--pad-card, 1rem);
+    border-top: var(--border-width, 1px) solid var(--color-border);
+    padding-top: var(--space-3, 0.75rem);
   }
 
   /* ── TASK 10.4 — Overview at-a-glance + Maintain panel ─────────────────────── */

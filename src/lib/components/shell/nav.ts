@@ -36,6 +36,9 @@ export const navGroups: NavGroup[] = [
       // G-C — the atelier-wide reasoning/actions/communications timeline (GLOBAL-TRANSCRIPT-SPEC).
       { label: 'Atelier', href: '/atelier' },
       { label: 'Memory', href: '/memory' },
+      // SH-4 — /skills: the operator review surface for harvested skill proposals
+      // (approve→promote SH-3 / edit-then-approve / reject-mark). G2: agents propose, operator decides.
+      { label: 'Skills', href: '/skills' },
       // BL-6 — /cannibalize: the Ingest front door (capture→distill→screen→fence→embed→ingest
       // external content into the brain, with provenance + license) — CANNIBALIZE-SPEC §5.
       { label: 'Cannibalize', href: '/cannibalize' },

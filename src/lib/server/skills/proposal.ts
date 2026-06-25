@@ -435,3 +435,79 @@ export async function getSkillProposal(db: Db, id: string): Promise<SkillProposa
 	const [rows] = await db.query<[RawProposalRow[]]>(`SELECT * FROM $rid;`, { rid: link(id) });
 	return rows.length ? normProposal(rows[0]) : null;
 }
+
+// ── reject (the operator MARK path — SH-4 review surface; G2 mark-don't-delete) ─────────────────────
+
+/** The proposal id does not resolve to a row (honest absent → named, not a silent no-op). */
+export class SkillRejectNotFoundError extends Error {
+	override readonly name = 'SkillRejectNotFoundError';
+}
+
+/**
+ * Rejection was attempted without a recorded operator id, or against a proposal that has already been
+ * APPROVED (an approved proposal has a live SKILL.md + cc_skill row — it is not reject-able from this
+ * surface; the operator removes a promoted skill through the config editor, not by flipping the row).
+ * G2/D-039: only the operator decides. Fail closed (named).
+ */
+export class SkillRejectNotAllowedError extends Error {
+	override readonly name = 'SkillRejectNotAllowedError';
+}
+
+/**
+ * MARK a skill_proposal rejected (G2 mark-don't-delete — the row is RETAINED for audit, never deleted).
+ * Operator-only: requires a non-empty `rejectedBy` (the server-resolved operator id; an agent has no
+ * path here). Steps:
+ *   1. LOAD — absent → SkillRejectNotFoundError (honest, named).
+ *   2. GATE (G2/D-039) — empty rejectedBy → SkillRejectNotAllowedError; an 'approved' proposal is NOT
+ *      reject-able from this surface (it has a live skill on disk/catalog) → SkillRejectNotAllowedError.
+ *   3. MARK — UPDATE status='rejected' + record approved_by (the deciding operator) + approved_at. The
+ *      schema's dedup_key VALUE recomputes to the row id on the status change, freeing the normalized
+ *      key so a fresh open draft of the same pattern can start (the closed row coexists for audit).
+ *
+ * Idempotent + interrupt-safe (F-015): re-rejecting an already-'rejected' row by the SAME operator is a
+ * NO-OP (no status thrash); a different/absent decider on a rejected row records the operator. The write
+ * binds the id via $param (D-016); only the id is interpolated, validated at validate.ts first.
+ *
+ * Shadow paths: nil/empty rejectedBy → step-2 named throw; unknown id → step-1 named throw; an upstream
+ * DB fault → propagates (never silenced, F-008).
+ */
+export async function rejectSkill(
+	db: Db,
+	id: string,
+	rejectedBy: string
+): Promise<SkillProposalRow> {
+	// 1. LOAD.
+	const proposal = await getSkillProposal(db, id);
+	if (!proposal) {
+		throw new SkillRejectNotFoundError(
+			`skill_proposal ${JSON.stringify(id)} not found — nothing to reject (honest absent)`
+		);
+	}
+
+	// 2. GATE (G2/D-039) — operator-only; an approved proposal is terminal here.
+	if (typeof rejectedBy !== 'string' || rejectedBy.trim() === '') {
+		throw new SkillRejectNotAllowedError(
+			`rejectSkill requires a recorded operator id — refusing to mark ${proposal.id} rejected ` +
+				`without one (G2/D-039: only the operator decides; fail closed)`
+		);
+	}
+	const decider = rejectedBy.trim();
+	if (proposal.status === 'approved') {
+		throw new SkillRejectNotAllowedError(
+			`skill_proposal ${proposal.id} is 'approved' — it has a live SKILL.md + cc_skill row and is ` +
+				`not reject-able from the review surface (remove the promoted skill via the config editor)`
+		);
+	}
+
+	// 3. MARK — idempotent (skip the write when already rejected by THIS operator). The id binds via
+	//    $param; dedup_key recomputes to the id on the status change, freeing the normalized key.
+	if (!(proposal.status === 'rejected' && proposal.approved_by === decider)) {
+		await db.query(
+			`UPDATE $rid SET status = "rejected", approved_by = $by, approved_at = time::now(), updated_at = time::now();`,
+			{ rid: link(proposal.id), by: decider }
+		);
+	}
+
+	// Re-read the canonical row so the result reflects the persisted state (F-008 — the real row).
+	return (await getSkillProposal(db, proposal.id)) ?? proposal;
+}

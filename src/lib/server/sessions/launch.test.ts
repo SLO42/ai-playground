@@ -968,3 +968,64 @@ describe('SH-2 — skill-proposal CAPTURE seam (SKILL-HARVEST-SPEC §CAPTURE)', 
 		expect(JSON.stringify(open)).not.toContain(SECRET);
 	});
 });
+
+// ── CONVERSATION-LAYER-SPEC (pillar 3) — peer-send AFFORDANCE wiring ────────────────────────────
+// The affordance reaches the agent's PROMPT (the backend CcSpawnPlan.prompt) as a REAL instruction
+// — ONLY when the session is GRANTED peer-send, and NEVER for a non-granted session. The who-list
+// is derived from a STUBBED FleetSnapshot (no DB dependency — deterministic), proving the agent
+// addresses real running recipients. This is the integration counterpart to affordance.test.ts.
+describe('launchSession — peer-send affordance reaches the prompt only when granted (pillar 3)', () => {
+	/** A stub FleetSnapshot loader: one other running session in THIS project, plus a foreign one. */
+	const stubFleet = async () => ({
+		running: [
+			{ id: 'session:teammate', role: 'reviewer', project: projectId, kind: 'task', pm: null },
+			{ id: 'session:foreign', role: 'coder', project: 'project:other', kind: 'task', pm: null }
+		],
+		pmByProject: {}
+	});
+
+	it('a GRANTED session gets the peer_send affordance + the real who-list in its prompt', async () => {
+		const backend = scriptedBackend(transcript('cc_sess_AFF1'));
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: 'F:/code/sess/.harness-aff' });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput({ capabilities: { skills: ['peer-send'], agents: [], mcp: [] } }),
+			loadFleet: stubFleet
+		});
+		expect(res.status).toBe('done');
+		const prompt = backend.plans[0]?.prompt ?? '';
+		// The REAL affordance instruction is present (distinct from the "(not instructions)" context).
+		expect(prompt).toContain('Peer messaging (your `peer_send` tool)');
+		expect(prompt).toContain('peer_send({ to: { kind, ref?, project? }, body })');
+		// The who-list lists the real in-project teammate, NOT the foreign-project session.
+		expect(prompt).toContain('session:teammate');
+		expect(prompt).not.toContain('session:foreign');
+		// Honest classes only — never advertises pm/atelier as a reachable kind.
+		expect(prompt).not.toContain('kind: "pm"');
+		expect(prompt).not.toContain('kind: "atelier"');
+	});
+
+	it('a NON-granted session sees NO affordance (no dead affordance, loadFleet never called)', async () => {
+		const backend = scriptedBackend(transcript('cc_sess_AFF2'));
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: 'F:/code/sess/.harness-aff2' });
+		let fleetLoaded = false;
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput(), // no peer-send capability
+			loadFleet: async () => {
+				fleetLoaded = true;
+				return { running: [], pmByProject: {} };
+			}
+		});
+		expect(res.status).toBe('done');
+		const prompt = backend.plans[0]?.prompt ?? '';
+		expect(prompt).not.toContain('peer_send');
+		expect(prompt).not.toContain('Peer messaging');
+		// A non-granted session never even loads the fleet (the grant gate short-circuits).
+		expect(fleetLoaded).toBe(false);
+	});
+});

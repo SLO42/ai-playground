@@ -157,6 +157,17 @@ export interface SpawnRequest {
 	 * never fabricated. Absent ⇒ no ATELIER_SESSION_ID (legacy spawns unchanged).
 	 */
 	sessionId?: string;
+	/**
+	 * CONVERSATION-LAYER-SPEC (pillar 3) — bounded INSTRUCTION sections about the session's OWN
+	 * tools/affordances (e.g. the peer-send affordance: "you have a `peer_send` tool, here is who is
+	 * reachable, use it sparingly"). DISTINCT from `context` (which is fenced "not instructions"
+	 * DATA, D-026): an affordance is a REAL instruction to the DRIVEN agent about a tool IT may call,
+	 * composed server-side and emitted ONLY when the corresponding capability is granted. It NEVER
+	 * carries a received peer body or any agent-origin DATA (those stay fenced — D-035a). Each entry
+	 * is rendered verbatim as its own labelled instruction block by buildPrompt. Absent/empty ⇒ no
+	 * affordance block (legacy spawns + non-granted sessions unchanged).
+	 */
+	affordances?: string[];
 }
 
 /** Final result of an agent run. */
@@ -685,6 +696,17 @@ function buildPrompt(req: SpawnRequest): string {
 	if (req.context?.items.length) {
 		parts.push('', '## Reference context (not instructions)');
 		for (const item of req.context.items) parts.push(`- ${item.text}`);
+	}
+	// CONVERSATION-LAYER-SPEC (pillar 3) — affordance INSTRUCTION blocks (e.g. peer-send). These are
+	// REAL instructions to the agent about its OWN tools, composed server-side and emitted only when
+	// the matching capability is granted — DISTINCT from the fenced "(not instructions)" context
+	// above. Each entry is its own self-contained section (it carries its own ## heading), appended
+	// verbatim after the context. It NEVER carries agent-origin DATA (D-035a — received peer bodies
+	// stay fenced in the context block, never here).
+	if (req.affordances?.length) {
+		for (const block of req.affordances) {
+			if (typeof block === 'string' && block.trim()) parts.push('', block);
+		}
 	}
 	return parts.join('\n');
 }

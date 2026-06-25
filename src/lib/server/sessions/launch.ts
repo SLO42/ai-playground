@@ -46,6 +46,9 @@ import { proposeSkill, type ProposeSkillInput } from '../skills/proposal';
 import { captureFileTurnSnapshot } from '../memory/file-snapshot-capture';
 import { acquireSessionWorktree, type SessionWorktree } from './worktree';
 import { drainInbox } from '../peer/drain';
+import { loadFleetSnapshot } from '../peer/repo';
+import { buildPeerSendAffordance } from '../peer/affordance';
+import { peerSendGranted } from '../agent/tool-catalog';
 import { loadGatesConfig } from '../config/index';
 import type {
 	AgentRuntime,
@@ -204,6 +207,15 @@ export interface LaunchDeps {
 	 * default boot path), with zero behavioural change.
 	 */
 	skillHarvester?: SkillHarvester;
+	/**
+	 * CONVERSATION-LAYER-SPEC (pillar 3) — the live-fleet snapshot loader the peer-send AFFORDANCE
+	 * derives its who-list from. Injected so tests can pass a STUBBED FleetSnapshot (deterministic,
+	 * no DB) and production wires the real {@link loadFleetSnapshot}. Called ONLY for a session that
+	 * is GRANTED peer-send (peerSendGranted) — a non-granted session never loads the fleet and never
+	 * sees the affordance. BEST-EFFORT (D-019 / F-014): a loader fault is logged + swallowed and the
+	 * affordance is simply omitted (the session still spawns). Omitted ⇒ defaults to loadFleetSnapshot.
+	 */
+	loadFleet?: (db: Db) => Promise<import('../peer/resolve').FleetSnapshot>;
 }
 
 // ── SH-2: the injected skill-proposal CAPTURE seam ───────────────────────────────
@@ -651,6 +663,36 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	const fastTierOn = !!memory && memory.fastTier !== false;
 	const cadence: ReviewCadence = memory?.cadence ?? DEFAULT_CADENCE;
 
+	// CONVERSATION-LAYER-SPEC (pillar 3 — hires actually converse). Compose the peer-send AFFORDANCE:
+	// a REAL instruction to THIS agent about its OWN `peer_send` tool, emitted ONLY when the session
+	// is GRANTED peer-send (peerSendGranted on the composed, catalog-validated capability set — the
+	// SAME gate the MCP registration uses, so the affordance and the tool appear together, never one
+	// without the other). A NON-granted session sees NONE of this (no dead affordance). The who-list
+	// is derived from the LIVE FleetSnapshot (real running sessions in THIS project — F-008 honest,
+	// never fabricated), so the agent only ever addresses recipients that actually resolve. The
+	// affordance advertises ONLY `session`/`role@project` (NOT the inert pm/atelier D-040 placeholders).
+	// BEST-EFFORT (D-019 / F-014): a fleet-load fault NEVER blocks the spawn — the affordance is just
+	// omitted. This is an instruction to the DRIVEN agent; it carries NO received peer body (those
+	// stay fenced DATA in the context block above — D-035a).
+	let affordances: string[] | undefined;
+	if (peerSendGranted(input.capabilities)) {
+		try {
+			const loadFleet = deps.loadFleet ?? loadFleetSnapshot;
+			const fleet = await loadFleet(db);
+			const affordance = buildPeerSendAffordance({
+				granted: true,
+				sessionId,
+				project: input.projectId,
+				fleet
+			});
+			if (affordance) affordances = [affordance];
+		} catch (affErr) {
+			console.warn(
+				`[launch] peer-send affordance skipped for ${sessionId} (best-effort): ${(affErr as Error).message}`
+			);
+		}
+	}
+
 	const req = {
 		agentId: input.agentId,
 		projectId: input.projectId,
@@ -670,6 +712,10 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		// TASK 15.1: the resolved scope-lock (declared roots + config-merged patterns) rides
 		// onto the SpawnRequest; the runtime enforces it on BOTH paths (canUseTool + hook).
 		editScope,
+		// CONVERSATION-LAYER-SPEC (pillar 3): the peer-send affordance instruction (when granted) —
+		// a REAL instruction about the agent's OWN tool, rendered by buildPrompt distinct from the
+		// fenced "(not instructions)" context. Undefined for a non-granted session (no dead affordance).
+		affordances,
 		workflowRunId: input.workflowRunId
 	};
 

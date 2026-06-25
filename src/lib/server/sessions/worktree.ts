@@ -247,6 +247,16 @@ export async function acquireSessionWorktree(
 
 	const cleanup = makeCleanup(projectRoot, worktreeDir, run);
 
+	// WI-1 RED-TEAM (work-loss HIGH): track whether THIS invocation actually created the tree
+	// via a successful `git worktree add`. The failure-path cleanup removes ONLY a tree this
+	// call created — NEVER a tree it merely found occupied. If `add` fails because the path is
+	// already taken by a CONCURRENT WINNER (or a resumable tree that appeared after our
+	// worktreeExists() check), `didCreate` stays false and we DO NOT touch the winner's live
+	// tree (deleting it would lose the winner's uncommitted work — the exact F-007/F-046 class
+	// this whole effort prevents). A genuine self-created tree (didCreate=true) is still cleaned
+	// on a later-step failure.
+	let didCreate = false;
+
 	// ── IDEMPOTENT re-acquire: the tree already exists for this session → REUSE it. ──
 	// Detected via `git worktree list` (authoritative) — never re-`add` over an existing
 	// path. Covers resume AND a re-run after a partial prior acquire (interrupt contract).
@@ -278,6 +288,7 @@ export async function acquireSessionWorktree(
 	let addArgs: readonly string[] = ['worktree', 'add', '-b', branch, worktreeDir, 'HEAD'];
 	assertLocalGit(addArgs);
 	let res = await run('git', addArgs, { cwd: projectRoot });
+	if (res.code === 0) didCreate = true;
 
 	if (res.code !== 0) {
 		// The branch may already exist (a prior partial acquire created the branch but the
@@ -288,11 +299,18 @@ export async function acquireSessionWorktree(
 			addArgs = ['worktree', 'add', worktreeDir, branch];
 			assertLocalGit(addArgs);
 			res = await run('git', addArgs, { cwd: projectRoot });
+			if (res.code === 0) didCreate = true;
 		}
 		if (res.code !== 0) {
-			// Could not establish a worktree → fail closed (named), and best-effort clean up any
-			// partial dir we may have created so we leave no orphan tree (F-014).
-			await cleanup();
+			// Could not establish a worktree → fail closed (named). Best-effort clean up ONLY a
+			// tree THIS call created (didCreate) so we leave no orphan tree (F-014) — but NEVER
+			// remove a tree we merely found occupied. When `add` fails because the path/branch is
+			// already taken (a CONCURRENT WINNER's live tree for the same session id, or a
+			// resumable tree that materialized after our worktreeExists() check), didCreate is
+			// false: the tree belongs to the winner / is the resume target, and removing it would
+			// destroy the winner's uncommitted work (F-007/F-046). So the LOSER fails honestly
+			// here WITHOUT touching the winner's tree.
+			if (didCreate) await cleanup();
 			throw new WorktreeGitError(`worktree add ${branch}`, res.code, res.stderr || res.stdout);
 		}
 	}

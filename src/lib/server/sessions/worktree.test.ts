@@ -246,6 +246,88 @@ describe('no shell injection — projectRoot / sessionId as inert argv (D-008 / 
 	});
 });
 
+describe('WI-1 red-team — concurrent same-session acquire: loser NEVER deletes winner tree (F-007/F-046)', () => {
+	it('two concurrent acquires for one session id → the winner tree survives, the loser fails without removing it', async () => {
+		const repo = initRepo();
+		trackParent(repo);
+
+		// Fire both acquires for the SAME session id concurrently. git serializes the two
+		// `worktree add` calls on the same path: #0 wins+creates, #1's add fails ("already
+		// exists"). The branch already exists (created by the winner), so the loser's no-b
+		// retry ALSO fails (the path is occupied). Pre-fix, the loser's UNCONDITIONAL cleanup
+		// removed the winner's live tree. Post-fix the loser fails honestly, untouched.
+		const results = await Promise.allSettled([
+			acquireSessionWorktree(repo, 'sess-race'),
+			acquireSessionWorktree(repo, 'sess-race')
+		]);
+
+		const fulfilled = results.filter((r) => r.status === 'fulfilled');
+		const rejected = results.filter((r) => r.status === 'rejected');
+
+		// exactly one winner, one loser
+		expect(fulfilled.length).toBe(1);
+		expect(rejected.length).toBe(1);
+		// the loser failed HONESTLY (a named git error), it did not silently succeed
+		expect((rejected[0] as PromiseRejectedResult).reason).toBeInstanceOf(WorktreeGitError);
+
+		// THE INVARIANT: the winner's live tree SURVIVES — on disk, registered, on its branch.
+		const winner = (fulfilled[0] as PromiseFulfilledResult<Awaited<ReturnType<typeof acquireSessionWorktree>>>)
+			.value;
+		expect(existsSync(winner.cwd)).toBe(true);
+		expect(existsSync(join(winner.cwd, 'README.md'))).toBe(true);
+		expect(git(winner.cwd, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('atelier/session/sess-race');
+
+		// exactly ONE session worktree registered (the loser left no orphan, removed nothing)
+		const list = git(repo, 'worktree', 'list', '--porcelain');
+		const sessionTrees = list
+			.split(/\r?\n/)
+			.filter((l) => l.startsWith('worktree ') && l.replace(/\\/g, '/').includes('.atelier-worktrees'));
+		expect(sessionTrees.length).toBe(1);
+
+		await winner.cleanup();
+	});
+
+	it('concurrent acquire with UNCOMMITTED work in the winner: the winner keeps its uncommitted file (the F-007 loss the red-team proved)', async () => {
+		const repo = initRepo();
+		trackParent(repo);
+
+		// Race both acquires; the winner then writes UNCOMMITTED work into its tree. Pre-fix the
+		// loser's unconditional cleanup `git worktree remove --force` deleted exactly this
+		// (uncommitted, unrecoverable) work. We assert it survives.
+		const [r0, r1] = await Promise.allSettled([
+			acquireSessionWorktree(repo, 'sess-uncommit'),
+			acquireSessionWorktree(repo, 'sess-uncommit')
+		]);
+		const winnerRes = (r0.status === 'fulfilled' ? r0 : r1) as PromiseFulfilledResult<
+			Awaited<ReturnType<typeof acquireSessionWorktree>>
+		>;
+		const loserRes = r0.status === 'rejected' ? r0 : r1;
+		expect(winnerRes.status).toBe('fulfilled');
+		expect((loserRes as PromiseRejectedResult).reason).toBeInstanceOf(WorktreeGitError);
+
+		const winner = winnerRes.value;
+		writeFileSync(join(winner.cwd, 'uncommitted.txt'), 'live work, not yet committed\n');
+		// the loser already rejected above; the winner's uncommitted work must be intact
+		expect(existsSync(join(winner.cwd, 'uncommitted.txt'))).toBe(true);
+		expect(existsSync(winner.cwd)).toBe(true);
+
+		await winner.cleanup();
+	});
+
+	it('a genuinely self-created tree IS removed on this-call cleanup (cleanup itself still removes a real tree)', async () => {
+		// Direct proof that the cleanup we GATE is the same one that legitimately removes a tree
+		// this call created — so the gate narrows WHEN it runs, it does not weaken WHAT it does.
+		const repo = initRepo();
+		trackParent(repo);
+		const wt = await acquireSessionWorktree(repo, 'sess-realremove');
+		expect(existsSync(wt.cwd)).toBe(true);
+		await wt.cleanup(); // the exact closure the failure path would invoke when didCreate
+		expect(existsSync(wt.cwd)).toBe(false);
+		const list = git(repo, 'worktree', 'list', '--porcelain');
+		expect(list.replace(/\\/g, '/')).not.toContain('.atelier-worktrees/sess-realremove');
+	});
+});
+
 describe('WorktreeGitError surfaces a failed git op (named)', () => {
 	it('throws WorktreeGitError (named) when worktree add fails on a passing repo check', async () => {
 		const repo = initRepo();

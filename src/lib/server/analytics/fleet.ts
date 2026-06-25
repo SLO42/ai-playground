@@ -185,9 +185,21 @@ export async function listPoolSlots(db: Db): Promise<PoolSlot[]> {
 	}));
 }
 
+/**
+ * Coerce a persisted datetime to an ISO string, or '' when absent/unparseable (the honest-absent
+ * sentinel the time-format util turns into '—'). The SurrealDB 2.x SDK returns datetime columns as a
+ * non-POJO `DateTime` instance (NOT a JS Date, NOT a string) — the prior `instanceof Date`/`typeof
+ * string` form fell through it to '', so the activity panel + session list rendered '—' for the start
+ * AND elapsed of EVERY live session (CC-2 defect). `String(at)` yields the ISO text for a SurrealDB
+ * DateTime, a JS Date, or a string alike; we then round-trip through `Date` so a non-date string still
+ * collapses to '' (F-013 — never return a raw SDK datetime, never str(undefined)). This mirrors the
+ * working `isoOrNull` in projects/[id]/+page.server.ts that already drives the task-board card.
+ */
 function iso(at: unknown): string {
+	if (at == null) return '';
 	if (at instanceof Date) return at.toISOString();
-	return typeof at === 'string' ? at : '';
+	const t = new Date(String(at)).getTime();
+	return Number.isNaN(t) ? '' : new Date(t).toISOString();
 }
 
 /** Coerce a persisted granted-id column to a clean string[] (raw SDK arrays may carry non-strings).

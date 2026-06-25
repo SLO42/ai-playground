@@ -127,6 +127,53 @@ describe('fleet read models (2.4; UI-SPEC §198–200)', () => {
 		expect(mine!.projectId).toBe(projectId);
 	});
 
+	// CC-2 REGRESSION — the fleet projection must surface the session's REAL start time, not '—'.
+	// session.started_at is persisted as a SurrealDB 2.x `DateTime` (non-POJO, not a JS Date/string);
+	// the prior iso() helper fell through it to '' → the activity panel + session list rendered '—'
+	// for start AND elapsed on EVERY live row. startedAt must be a non-empty, parseable ISO string
+	// (mirrors isoOrNull in +page.server.ts that already drives the task-board card). A terminal
+	// (done) row also carries a parseable endedAt so the elapsed duration is finite, not live-ticking.
+	it('startedAt/endedAt coerce the SurrealDB DateTime to a parseable ISO (not "—")', async () => {
+		const events: RuntimeEvent[] = [
+			{ type: 'log', message: 'go' },
+			{ type: 'done', result: { ok: true, summary: 'ok', ccSessionId: 'cc_fleet_dt' } }
+		];
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(events, 'cc_fleet_dt') });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			acquireWorktree: fakeAcquireWorktree,
+			input: {
+				projectId,
+				taskId,
+				agentId: 'agent_fleet_dt',
+				model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+				intent: 'code-write',
+				budgets: {},
+				toolPolicy: { allow: ['Read'] }
+			}
+		});
+
+		// (a) project-scoped list
+		const mine = (await listFleet(db)).find((f) => f.id === res.sessionId);
+		expect(mine).toBeTruthy();
+		expect(mine!.startedAt).not.toBe(''); // the bug returned '' → '—'
+		expect(Number.isNaN(new Date(mine!.startedAt).getTime())).toBe(false);
+		expect(mine!.endedAt).toBeTruthy(); // a done row has a real end
+		expect(Number.isNaN(new Date(mine!.endedAt!).getTime())).toBe(false);
+
+		// (b) cross-project fleet (same coercion path)
+		const xp = (await listFleetAcrossProjects(db)).find((s) => s.id === res.sessionId);
+		expect(xp!.startedAt).not.toBe('');
+		expect(Number.isNaN(new Date(xp!.startedAt).getTime())).toBe(false);
+
+		// (c) single-session header
+		const meta = await getFleetSession(db, res.sessionId);
+		expect(meta!.startedAt).not.toBe('');
+		expect(Number.isNaN(new Date(meta!.startedAt).getTime())).toBe(false);
+	});
+
 	// OBSERVABILITY — a FAILED session's honest reason (session.note) is surfaced by every fleet
 	// read (project list, cross-project fleet, single-session header) so the project page +
 	// /claude-code can render WHY it failed instead of a dead row with no reason. A clean session

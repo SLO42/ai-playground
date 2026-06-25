@@ -41,7 +41,9 @@ import {
 	SkillPromoteNotApprovedError,
 	SkillPromoteConfinementError,
 	SkillPromoteCollisionError,
-	SkillPromoteSecretEchoError
+	SkillPromoteSecretEchoError,
+	SkillPromoteBadNameError,
+	SkillPromoteNameOwnedError
 } from '$lib/server/skills/promote';
 import { assertRecordId } from '$lib/server/db/validate';
 import { fail } from '@sveltejs/kit';
@@ -133,7 +135,9 @@ function promoteFail(err: unknown) {
 	if (err instanceof SkillPromoteNotFoundError) return fail(404, { review: { error: err.message } });
 	if (err instanceof SkillPromoteNotApprovedError) return fail(403, { review: { error: err.message } });
 	if (err instanceof SkillPromoteConfinementError) return fail(422, { review: { error: err.message } });
+	if (err instanceof SkillPromoteBadNameError) return fail(422, { review: { error: err.message } });
 	if (err instanceof SkillPromoteCollisionError) return fail(409, { review: { error: err.message } });
+	if (err instanceof SkillPromoteNameOwnedError) return fail(409, { review: { error: err.message } });
 	if (err instanceof SkillPromoteSecretEchoError) return fail(422, { review: { error: err.message } });
 	if (err instanceof SkillProposalContractError) return fail(400, { review: { error: err.message } });
 	if (err instanceof SkillSecretEchoError) return fail(422, { review: { error: err.message } });

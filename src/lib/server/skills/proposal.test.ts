@@ -100,6 +100,37 @@ describe('proposeSkill — normalized dedup bumps occurrences', () => {
 		expect(all[0].occurrences).toBe(2);
 	});
 
+	it('item 5 — a recurrence UNIONS its new evidence into the bumped row (no longer discarded), deduped + bounded', async () => {
+		const first = await proposeSkill(db, input({ evidence: ['fails.md:F-001', 'session:abc'] }));
+		expect(first.evidence).toEqual(['fails.md:F-001', 'session:abc']);
+
+		// A second session surfaces the SAME pattern (same normalized key) with PARTLY-new evidence: one
+		// overlapping ref + one brand-new ref. The bump must MERGE them, not drop the new one.
+		const second = await proposeSkill(
+			db,
+			input({ evidence: ['session:abc', 'transcript:xyz#42'] })
+		);
+		expect(second.id).toBe(first.id);
+		expect(second.occurrences).toBe(2);
+		// Union, deduped (session:abc appears once), preserving the originals + the new ref.
+		expect(second.evidence).toContain('fails.md:F-001');
+		expect(second.evidence).toContain('session:abc');
+		expect(second.evidence).toContain('transcript:xyz#42');
+		expect(second.evidence.filter((e) => e === 'session:abc')).toHaveLength(1);
+	});
+
+	it('item 5 — the unioned evidence stays bounded to the MAX_EVIDENCE_REFS cap on bump', async () => {
+		// First draft at the cap-ish, then a recurrence pushing past 32 distinct refs must SLICE to 32.
+		const firstRefs = Array.from({ length: 30 }, (_, i) => `ref-a-${i}`);
+		const first = await proposeSkill(db, input({ evidence: firstRefs }));
+		expect(first.evidence).toHaveLength(30);
+		const moreRefs = Array.from({ length: 10 }, (_, i) => `ref-b-${i}`); // 30 + 10 distinct = 40 > 32
+		const second = await proposeSkill(db, input({ evidence: moreRefs }));
+		expect(second.id).toBe(first.id);
+		expect(second.evidence.length).toBeLessThanOrEqual(32);
+		expect(second.evidence.length).toBe(32);
+	});
+
 	it('a DIFFERENT trigger inserts a new row (does not absorb)', async () => {
 		await proposeSkill(db, input());
 		const other = await proposeSkill(

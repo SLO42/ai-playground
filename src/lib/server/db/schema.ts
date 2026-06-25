@@ -2295,6 +2295,32 @@ const m0063_repo_create_brief: Migration = {
 	`
 };
 
+// m0064 — skill_proposal: ONE approved proposal per name (same-name promote serialization, SH deferred
+// ledger item 3). `skill_proposal` had a UNIQUE only on `dedup_key` (the OPEN-scoped name+trigger key) —
+// NOTHING constrained `name` across status. So two same-name / DIFFERENT-trigger proposals could BOTH be
+// promoted (SH-3): each writes the SAME `<scope>/skills/<name>/SKILL.md` (deterministic path) — the second
+// clobbers the first on disk (last-writer-wins) while BOTH skill_proposal rows read status='approved'. The
+// promote.ts step-4 guard (approvedNameOwner) catches the sequential case, but a DB-level constraint is the
+// durable backstop (and serializes a concurrent race the JS check cannot). The D-008 VALUE-key pattern:
+// `approved_name_key` resolves to `name` WHILE approved, else the record id — so AT MOST ONE approved row
+// can hold a given name, while any number of open/rejected same-name rows coexist (each falls to its own
+// id; no spurious collision). A second approved promote of the same name collides on the UNIQUE index →
+// the promote tx fails closed (named in promote.ts) instead of silently producing a duplicate-approved name.
+// F-020: a VALUE field computes against the row as-SET, BEFORE the status DEFAULT lands → a fresh CREATE
+// has status=NONE here; NONE is NOT approved, so it correctly falls to the id (an open draft never claims
+// the approved-name key). F-015 idempotent: OVERWRITE-only define + index; the backfill recomputes the key
+// on pre-existing rows (an already-approved row claims its name; others fall to their id).
+const m0064_skill_proposal_approved_name: Migration = {
+	id: '0064_skill_proposal_approved_name',
+	up: `
+		DEFINE FIELD OVERWRITE approved_name_key ON skill_proposal VALUE
+			(IF status = "approved" THEN name ELSE <string>id END);
+		DEFINE INDEX OVERWRITE skill_proposal_approved_name ON skill_proposal FIELDS approved_name_key UNIQUE;
+
+		${backfillValueField('skill_proposal', 'approved_name_key')}
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2364,5 +2390,6 @@ export const schemaMigrations: Migration[] = [
 	m0060_skill_proposal,
 	m0061_skill_proposal_dedup,
 	m0062_pm_repo_create_preauthorized,
-	m0063_repo_create_brief
+	m0063_repo_create_brief,
+	m0064_skill_proposal_approved_name
 ];

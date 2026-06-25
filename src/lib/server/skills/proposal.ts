@@ -257,11 +257,20 @@ function normProposal(
 		updated_at?: unknown;
 	}
 ): SkillProposalRow {
-	// Strip the internal dedup machinery (norm_key / dedup_key are persistence-only — they index the
-	// normalized identity and never belong in the public row the operator review surface renders).
-	const { norm_key: _nk, dedup_key: _dk, ...rest } = row as unknown as Record<string, unknown>;
+	// Strip the internal dedup machinery (norm_key / dedup_key / approved_name_key are persistence-only —
+	// they index the normalized + approved-name identities and never belong in the public row the operator
+	// review surface renders; _touch is the backfill no-op column).
+	const {
+		norm_key: _nk,
+		dedup_key: _dk,
+		approved_name_key: _ank,
+		_touch: _t,
+		...rest
+	} = row as unknown as Record<string, unknown>;
 	void _nk;
 	void _dk;
+	void _ank;
+	void _t;
 	return {
 		...(rest as unknown as SkillProposalRow),
 		id: str(row.id),
@@ -294,7 +303,9 @@ type RawProposalRow = SkillProposalRow & {
  *   1. SHAPE — validate + bound every field (name → kebab id; freetext non-empty; evidence bounded).
  *   2. D-026 SCREEN — every agent-authored field through screen(); a quarantined block REJECTS (named).
  *   3. DEDUP — compute the normalized (name+trigger) key; if an OPEN proposal already matches, BUMP
- *      its occurrences (+1) and return the bumped row — no duplicate insert (SKILL-HARVEST-SPEC §2).
+ *      its occurrences (+1), UNION the new (screened) evidence refs into the row (deduped + bounded to
+ *      MAX_EVIDENCE_REFS — a recurrence's grounding is no longer discarded), and return the bumped row —
+ *      no duplicate insert (SKILL-HARVEST-SPEC §2).
  *   4. INSERT — otherwise CREATE the row BORN status='open' (never 'approved' — no self-promotion).
  *
  * Shadow paths: nil input → caller-side (TS requires the object); empty/whitespace field → step-1 named
@@ -361,17 +372,31 @@ export async function proposeSkill(db: Db, input: ProposeSkillInput): Promise<Sk
 	// on the UNIQUE index and the WHOLE tx aborts as a RETRYABLE "read or write conflict"; on retry its
 	// SELECT now sees the winner's row and BUMPS it. The bounded loop (F-014: HARD-CAPPED, never an
 	// unbounded spin) retries ONLY that retryable class; any other DB error propagates verbatim (F-008).
+	// EVIDENCE UNION ON BUMP (SH deferred ledger item 5): a recurrence's NEW evidence refs were DISCARDED —
+	// the BUMP branch only incremented occurrences, so a second session's grounding (a new transcript/file
+	// ref) was lost. Merge instead: UNION the existing row's evidence with the new (already-SCREENED, see
+	// `evidence` above) refs, dedup via array::distinct, and SLICE to the same MAX_EVIDENCE_REFS bound the
+	// insert path enforces (bounded capture — a runaway recurrence can't bloat the row). The new refs are
+	// the already-screened ones (D-026 holds — they passed screenField above); no raw secret is concatenated.
 	const upsertSql = `BEGIN;
-		LET $existing = (SELECT id FROM skill_proposal WHERE dedup_key = $key AND status = "open" LIMIT 1);
+		LET $existing = (SELECT id, evidence FROM skill_proposal WHERE dedup_key = $key AND status = "open" LIMIT 1);
 		LET $row = IF count($existing) > 0
-			THEN (UPDATE $existing[0].id SET occurrences += 1, updated_at = time::now() RETURN AFTER)
+			THEN (UPDATE $existing[0].id SET
+				occurrences += 1,
+				evidence = array::slice(array::distinct(array::concat($existing[0].evidence ?? [], $newEvidence)), 0, $evCap),
+				updated_at = time::now() RETURN AFTER)
 			ELSE (CREATE skill_proposal CONTENT $content RETURN AFTER) END;
 		RETURN $row;
 		COMMIT;`;
 	const MAX_DEDUP_RETRIES = 16;
 	for (let attempt = 0; ; attempt++) {
 		try {
-			const res = await db.query<unknown[]>(upsertSql, { key: dedupKey, content });
+			const res = await db.query<unknown[]>(upsertSql, {
+				key: dedupKey,
+				content,
+				newEvidence: evidence,
+				evCap: MAX_EVIDENCE_REFS
+			});
 			// RETURN $row is the last statement → its value is the last element of the response. UPDATE/
 			// CREATE … RETURN AFTER yields an array; unwrap the single row.
 			const last = res[res.length - 1];

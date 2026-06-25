@@ -706,6 +706,68 @@ Engineering gotchas the new tables above must respect (kongcode lessons, MEMORY-
 
 ---
 
+### 4.17 Skill harvest — skill_proposal (SH-1/SH-3, G2 agents-propose/operator-promotes)
+
+A session that established a reusable procedure may DRAFT a `skill_proposal` — **DATA**, never a disk
+write and never a `cc_skill` row (G2; D-010 disk-is-truth for the catalog; F-045: an un-catalogued id
+fail-closes at spawn). A proposal is born `status='open'` and can ONLY reach the live catalog through a
+recorded operator approval (SH-3 `promoteSkill`, which writes `<harvest>/skills/<name>/SKILL.md` then
+syncs it into `cc_skill`). No self-promotion: `proposeSkill` cannot set `approved_by`. Mirrors `schema.ts`
+m0060 + m0061 (dedup hardening) + m0064 (one-approved-per-name). Store: `src/lib/server/skills/`
+(`proposal.ts`, `promote.ts`).
+
+```sql
+DEFINE TABLE skill_proposal SCHEMAFULL;
+DEFINE FIELD name            ON skill_proposal TYPE string;             -- kebab skill id (the .claude/skills/<name>/ dir)
+DEFINE FIELD description     ON skill_proposal TYPE string;
+DEFINE FIELD body            ON skill_proposal TYPE string;             -- the SKILL.md markdown body
+DEFINE FIELD trigger_context ON skill_proposal TYPE string;            -- when the skill applies
+DEFINE FIELD source          ON skill_proposal TYPE string DEFAULT "session-harvest";
+DEFINE FIELD session         ON skill_proposal TYPE option<record<session>>;   -- OMITTED when absent (§6.1)
+DEFINE FIELD project         ON skill_proposal TYPE option<record<project>>;   -- OMITTED when absent
+DEFINE FIELD evidence        ON skill_proposal TYPE array<string> DEFAULT [];  -- D-026-screened refs (bounded ≤32; UNIONed on recurrence-bump)
+DEFINE FIELD occurrences     ON skill_proposal TYPE int DEFAULT 1;     -- bumped on a normalized (name+trigger) recurrence (RECUR/RANK)
+DEFINE FIELD status          ON skill_proposal TYPE string DEFAULT "open"
+    ASSERT $value IN ["open","approved","rejected"];                   -- never born "approved" (no self-promotion)
+DEFINE FIELD approved_by     ON skill_proposal TYPE option<string>;    -- set ONLY by promote/reject (operator id); OMITTED otherwise
+DEFINE FIELD approved_at     ON skill_proposal TYPE option<datetime>;  -- F-013: ISO string in the normalizer; absent → null → '—'
+DEFINE FIELD norm_key        ON skill_proposal TYPE option<string>;    -- canonical normalized (name+trigger) key, set by the writer
+DEFINE FIELD created_at      ON skill_proposal TYPE datetime DEFAULT time::now();
+DEFINE FIELD updated_at      ON skill_proposal TYPE datetime DEFAULT time::now();
+
+-- dedup_key VALUE (D-008): the normalized key WHILE open (one OPEN proposal per name+trigger), else the
+-- record id — so closed (approved/rejected) same-key rows coexist for audit (G2 mark-don't-delete). The
+-- UNIQUE index SERIALIZES concurrent same-key drafts at the DB (proposeSkill's read-or-bump-else-create
+-- runs as one server-side tx; the loser collides and retries → BUMP). F-020: a VALUE field computes
+-- against the row as-SET, BEFORE the status DEFAULT lands → a fresh CREATE has status=NONE; treat NONE as open.
+DEFINE FIELD dedup_key ON skill_proposal VALUE
+    (IF norm_key != NONE AND (status = "open" OR status = NONE) THEN norm_key ELSE <string>id END);
+DEFINE INDEX skill_proposal_dedup ON skill_proposal FIELDS dedup_key UNIQUE;
+
+-- approved_name_key VALUE (m0064, D-008): the name WHILE approved, else the record id — so AT MOST ONE
+-- approved proposal can hold a given name. Open/rejected same-name rows coexist (each falls to its own id).
+-- This is the DB backstop for same-name promote serialization (a name → ONE durable skill, never
+-- last-writer-wins across two approved rows); promote.ts also guards it in JS and names the collision.
+DEFINE FIELD approved_name_key ON skill_proposal VALUE
+    (IF status = "approved" THEN name ELSE <string>id END);
+DEFINE INDEX skill_proposal_approved_name ON skill_proposal FIELDS approved_name_key UNIQUE;
+
+DEFINE INDEX skill_proposal_by_status ON skill_proposal FIELDS status;
+DEFINE INDEX skill_proposal_by_name   ON skill_proposal FIELDS name;
+```
+
+**Promote integrity (SH-3 `promoteSkill`).** Operator-gated (requires a non-empty `approver`; agents have
+no path to `approved_by`). At the disk-write boundary it is **D-026-symmetric** — it re-screens BOTH
+`body` AND `description` (a quarantine → reject; a redactable span → `[REDACTED:*]`) and re-validates
+`name` is a clean lower-kebab id (a non-kebab/traversal name fails closed, never coerced). Collision
+ownership is **catalog-SCOPE-attributed** (a `cc_skill` row under OUR harvest scope), NOT bare disk
+presence — a foreign-owned catalog name + a stale harvest file fails closed (no duplicate-name row). Disk
+is written first (D-010), atomically (stage→rename, sweeping any stale `${name}.tmp-*` orphan), THEN
+synced into `cc_skill`. Idempotent + interrupt-safe (F-015): a re-promote is a no-op; a partial prior
+promote (file on disk, status still open) is absorbed.
+
+---
+
 ## 5. Transactions (kill the v1 race class)
 
 Any multi-write that must be atomic runs in a transaction. Example — completing a task, recording analytics, and creating a follow-up as one unit:

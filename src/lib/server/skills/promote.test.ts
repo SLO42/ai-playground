@@ -15,7 +15,9 @@ import {
 	SkillPromoteNotApprovedError,
 	SkillPromoteConfinementError,
 	SkillPromoteCollisionError,
-	SkillPromoteSecretEchoError
+	SkillPromoteSecretEchoError,
+	SkillPromoteBadNameError,
+	SkillPromoteNameOwnedError
 } from './promote';
 
 // SH-3 VERIFY (SKILL-HARVEST-SPEC §3) — the PROMOTE stage against a REAL throwaway SurrealDB + a temp
@@ -151,11 +153,13 @@ describe('promoteSkill — no self-promotion (G2/D-039, fail closed)', () => {
 	});
 });
 
-describe('promoteSkill — confinement (D-018, fail closed)', () => {
-	it('a name resolving outside the harvest tree fails closed (never writes/escapes)', async () => {
+describe('promoteSkill — name re-validation + confinement (D-018/D-026 symmetry, fail closed)', () => {
+	it('a traversal name in a planted row fails closed at the disk boundary (never writes/escapes)', async () => {
 		// reqKebabName rejects `..` at the PROPOSAL boundary, so we cannot persist an escape name through
-		// proposeSkill. To prove the promote-side confinement independently, plant a row whose name
-		// contains a traversal segment directly, then promote it — the confined resolver must fail closed.
+		// proposeSkill. To prove the promote-side guards independently, plant a row whose name contains a
+		// traversal segment directly, then promote it. The disk-boundary name re-validation (item 1, D-026
+		// symmetry) catches the non-kebab name FIRST (SkillPromoteBadNameError); the confined resolver
+		// (D-018) remains the authoritative escape backstop behind it. Either way: fail closed, no escape.
 		const [created] = await db.query<[Array<{ id: unknown }>]>(
 			`CREATE skill_proposal CONTENT {
 				name: $name, description: "x", body: "# x\\nbody", trigger_context: "t",
@@ -167,12 +171,34 @@ describe('promoteSkill — confinement (D-018, fail closed)', () => {
 		const id = String(created[0].id);
 		await expect(
 			promoteSkill(db, { proposalId: id, approver: 'operator:sam', env })
-		).rejects.toBeInstanceOf(SkillPromoteConfinementError);
+		).rejects.toBeInstanceOf(SkillPromoteBadNameError);
 		// Nothing escaped onto disk under the harvest parent, and no catalog id appeared.
 		const cat = await catalogIds(db);
 		expect(cat.skills.has('../../escape')).toBe(false);
 		expect(existsSync(resolve(harvestRoot, '..', 'escape', 'SKILL.md'))).toBe(false);
 	});
+
+	it('a non-kebab in-tree name (uppercase/space) fails closed with SkillPromoteBadNameError', async () => {
+		// A name with no traversal but not a clean lower-kebab id — the disk boundary must refuse it
+		// (D-026 symmetry: the disk-write boundary re-validates the name, never coerces it).
+		const [created] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE skill_proposal CONTENT {
+				name: $name, description: "x", body: "# x\\nbody", trigger_context: "t",
+				source: "session-harvest", evidence: [], occurrences: 1, status: "open", norm_key: "bad|t"
+			} RETURN id;`,
+			{ name: 'Not A Kebab' }
+		);
+		const id = String(created[0].id);
+		await expect(
+			promoteSkill(db, { proposalId: id, approver: 'operator:sam', env })
+		).rejects.toBeInstanceOf(SkillPromoteBadNameError);
+		expect((await catalogIds(db)).skills.has('Not A Kebab')).toBe(false);
+	});
+
+	// Confinement (D-018) stays reachable as a TYPE: ConfigTargetError subclass of the promote confinement
+	// error is asserted by the cc-config config-target tests; here the BadName guard fires first for any
+	// `..` name. We keep the import + class to document the layered defense (BadName → Confinement).
+	void SkillPromoteConfinementError;
 });
 
 describe('promoteSkill — no catalog poisoning (collision)', () => {
@@ -190,6 +216,77 @@ describe('promoteSkill — no catalog poisoning (collision)', () => {
 		).rejects.toBeInstanceOf(SkillPromoteCollisionError);
 		// Our SKILL.md was NOT written (fail closed before disk write).
 		expect(existsSync(skillMdPath())).toBe(false);
+	});
+
+	it('item 2 — a FOREIGN-owned name + a STALE harvest file at our path STILL fails closed (scope-attributed, not bare existsSync)', async () => {
+		// The exact under-guard the ledger flags: the old guard inferred ownership from existsSync(filePath).
+		// Plant (a) a foreign cc_skill row owning the name in another scope, AND (b) a stale SKILL.md already
+		// sitting at OUR harvest path. The old `existsSync` guard would treat the name as "ours" and proceed,
+		// creating a DUPLICATE-name cc_skill row across scopes. The scope-attributed guard must still reject:
+		// the name is NOT owned by OUR harvest scope (no cc_skill row under our scope id yet).
+		await db.query(`
+			CREATE cc_scope:foreign2 SET kind = "global", path = "/some/other/.claude";
+			CREATE cc_skill:foreign2 SET scope = cc_scope:foreign2, name = "windows-pid-liveness",
+				file_path = "/some/other/.claude/skills/windows-pid-liveness/SKILL.md";
+		`);
+		// Stale file already on disk at our harvest path (simulates a prior aborted/orphaned write).
+		mkdirSync(join(harvestScopeDir(env), 'skills', 'windows-pid-liveness'), { recursive: true });
+		writeFileSync(skillMdPath(), '---\nname: windows-pid-liveness\ndescription: "stale"\n---\n\nstale\n', 'utf8');
+
+		const proposal = await proposeSkill(db, input());
+		await expect(
+			promoteSkill(db, { proposalId: proposal.id, approver: 'operator:sam', env })
+		).rejects.toBeInstanceOf(SkillPromoteCollisionError);
+
+		// No duplicate-name cc_skill row was created (the foreign one is the ONLY cc_skill named so).
+		const [rows] = await db.query<[Array<{ id: unknown }>]>(
+			`SELECT id FROM cc_skill WHERE name = "windows-pid-liveness";`
+		);
+		expect(rows).toHaveLength(1);
+	});
+});
+
+describe('promoteSkill — same-name promote serialization (item 3: a name → ONE durable skill)', () => {
+	it('a SECOND same-name / different-trigger proposal cannot ALSO promote (fail closed, no last-writer-wins)', async () => {
+		// Two proposals share the kebab `name` but have DIFFERENT triggers (so they are SEPARATE open rows —
+		// the open dedup_key is name+trigger, not name alone). Promote the first → approved + on disk. The
+		// second must NOT also flip approved onto the same SKILL.md path (last-writer-wins). It fails closed.
+		const first = await proposeSkill(db, input({ trigger_context: 'Trigger context number one here.' }));
+		const second = await proposeSkill(db, input({ trigger_context: 'A genuinely different trigger two.' }));
+		expect(second.id).not.toBe(first.id);
+
+		await promoteSkill(db, { proposalId: first.id, approver: 'operator:sam', env });
+		await expect(
+			promoteSkill(db, { proposalId: second.id, approver: 'operator:sam', env })
+		).rejects.toBeInstanceOf(SkillPromoteNameOwnedError);
+
+		// Exactly ONE approved proposal owns the name, and exactly ONE cc_skill row carries it.
+		const [approved] = await db.query<[Array<{ id: unknown }>]>(
+			`SELECT id FROM skill_proposal WHERE name = "windows-pid-liveness" AND status = "approved";`
+		);
+		expect(approved).toHaveLength(1);
+		const [skillRows] = await db.query<[Array<{ id: unknown }>]>(
+			`SELECT id FROM cc_skill WHERE name = "windows-pid-liveness";`
+		);
+		expect(skillRows).toHaveLength(1);
+	});
+
+	it('the DB UNIQUE backstop refuses a second approved row even if the JS guard is bypassed (m0064)', async () => {
+		// Promote the first proposal normally. Then plant a SECOND same-name open row and try to flip it
+		// approved DIRECTLY at the DB — the m0064 approved_name_key UNIQUE index must reject it.
+		const first = await proposeSkill(db, input({ trigger_context: 'Unique-backstop trigger one.' }));
+		await promoteSkill(db, { proposalId: first.id, approver: 'operator:sam', env });
+
+		const [created] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE skill_proposal CONTENT {
+				name: "windows-pid-liveness", description: "x", body: "# x\\nb", trigger_context: "two",
+				source: "session-harvest", evidence: [], occurrences: 1, status: "open", norm_key: "wpl|two"
+			} RETURN id;`
+		);
+		const id = String(created[0].id);
+		await expect(
+			db.query(`UPDATE ${id} SET status = "approved";`)
+		).rejects.toThrow();
 	});
 });
 
@@ -211,6 +308,43 @@ describe('promoteSkill — D-026 disk-boundary secret screen', () => {
 			promoteSkill(db, { proposalId: id, approver: 'operator:sam', env })
 		).rejects.toBeInstanceOf(SkillPromoteSecretEchoError);
 		expect(existsSync(skillMdPath('leaky-skill'))).toBe(false);
+	});
+
+	it('a quarantine in the DESCRIPTION (not just body) REJECTS at the disk boundary (D-026 symmetry)', async () => {
+		// Item 1 — the disk boundary re-screens the DESCRIPTION too (it was previously only re-screening the
+		// body). Plant a row whose description carries an un-redactable private-key block; the SkillMd would
+		// embed it in the frontmatter, so promote must reject before writing the file. carries field='description'.
+		const pem =
+			'-----BEGIN RSA PRIVATE KEY-----\nMIIEpAIBAAKCAQEA1234567890\n-----END RSA PRIVATE KEY-----';
+		const [created] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE skill_proposal CONTENT {
+				name: "leaky-desc", description: $desc, body: "# clean body", trigger_context: "t",
+				source: "session-harvest", evidence: [], occurrences: 1, status: "open", norm_key: "leakydesc|t"
+			} RETURN id;`,
+			{ desc: `See key ${pem}` }
+		);
+		const id = String(created[0].id);
+		await expect(
+			promoteSkill(db, { proposalId: id, approver: 'operator:sam', env }).catch((e) => {
+				expect(e).toBeInstanceOf(SkillPromoteSecretEchoError);
+				expect((e as SkillPromoteSecretEchoError).field).toBe('description');
+				throw e;
+			})
+		).rejects.toBeInstanceOf(SkillPromoteSecretEchoError);
+		expect(existsSync(skillMdPath('leaky-desc'))).toBe(false);
+	});
+
+	it('a REDACTABLE secret in the description is rewritten (not rejected) and the SKILL.md lands screened', async () => {
+		// Symmetry must not over-reject: a benign redactable span (email) in the description is rewritten to
+		// its [REDACTED:*] form and the file is written (parity with the proposal-entry screen, not a throw).
+		const proposal = await proposeSkill(
+			db,
+			input({ name: 'redacted-desc', description: 'Ping dev@example.com for the runbook.' })
+		);
+		const res = await promoteSkill(db, { proposalId: proposal.id, approver: 'operator:sam', env });
+		const md = readFileSync(res.filePath, 'utf8');
+		expect(md).not.toContain('dev@example.com');
+		expect(md).toContain('[REDACTED:email]');
 	});
 });
 

@@ -42,6 +42,7 @@ import {
 	type ProposeSkillsFn
 } from '../memory/index';
 import { screen } from '../memory/screen';
+import { proposeSkill, type ProposeSkillInput } from '../skills/proposal';
 import { captureFileTurnSnapshot } from '../memory/file-snapshot-capture';
 import { acquireSessionWorktree, type SessionWorktree } from './worktree';
 import { drainInbox } from '../peer/drain';
@@ -186,6 +187,52 @@ export interface LaunchDeps {
 	 * sharing the project root (that re-opens the F-046 race). READ classes never call it.
 	 */
 	acquireWorktree?: (projectRoot: string, sessionId: string) => Promise<SessionWorktree>;
+	/**
+	 * SH-2 (SKILL-HARVEST-SPEC §"CAPTURE") — the injected skill-proposal CAPTURE seam. At session
+	 * end, on a SUCCESSFUL (`status==='done'`) CODE-WRITE session ONLY (the narrow trigger, §"Scope
+	 * guard"), the just-finished, SCREENED (D-026) trajectory is offered to this seam, which may DRAFT
+	 * a `skill_proposal` (a reusable procedure worth replaying) or decline (return null — most sessions).
+	 *
+	 * Mirrors {@link PmProposalGenerator} (pm-propose.ts) EXACTLY: an injected function so UNIT TESTS
+	 * pass a STUB (no model spend, deterministic) and PRODUCTION wires the real generator. The seam only
+	 * PROPOSES — launchSession persists the returned draft via SH-1 {@link proposeSkill}, which is born
+	 * status='open' and can never reach the live catalog without a recorded operator approval (G2/D-039).
+	 *
+	 * BEST-EFFORT (D-019 / F-014): a harvester fault — a throw, a malformed draft rejected by SH-1's
+	 * contract, or a DB write failure — NEVER blocks or fails the session. It is logged and swallowed;
+	 * the session's terminal verdict is already decided before this runs. Omitted ⇒ no harvest (the
+	 * default boot path), with zero behavioural change.
+	 */
+	skillHarvester?: SkillHarvester;
+}
+
+// ── SH-2: the injected skill-proposal CAPTURE seam ───────────────────────────────
+
+/**
+ * The screened trajectory a {@link SkillHarvester} reasons over. `transcriptText` is the
+ * D-026-screened, bounded session trajectory (secrets already redacted before it reaches the seam);
+ * the rest is honest provenance the drafted proposal grounds itself in (project/session/task ids).
+ */
+export interface SkillHarvestContext {
+	/** The screened, bounded transcript text (summary + turns) — D-026-safe by construction. */
+	transcriptText: string;
+	/** The session that produced the trajectory (`session:…`) — provenance for the draft. */
+	sessionId: string;
+	/** The project context (`project:…`) — provenance for the draft. */
+	projectId: string;
+	/** The task title that drove the session — a grounding hint for the draft. */
+	taskTitle: string;
+}
+
+/**
+ * The CAPTURE seam: look at a (screened) successful code-write trajectory and OPTIONALLY draft a
+ * skill proposal. PRODUCTION runs a real cheap-tier generator session; UNIT TESTS inject a stub
+ * (no creds/network/spend). Returns a {@link ProposeSkillInput} draft, or `null` when the session
+ * established nothing reusable (the common case — most sessions harvest nothing). The seam NEVER
+ * writes: launchSession persists the returned draft via SH-1 {@link proposeSkill} (born 'open').
+ */
+export interface SkillHarvester {
+	propose(ctx: SkillHarvestContext): Promise<ProposeSkillInput | null>;
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
@@ -922,6 +969,39 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 			});
 		} catch (err) {
 			console.warn(`[launch] memory extraction skipped for ${sessionId}: ${(err as Error).message}`);
+		}
+	}
+
+	// 6. CAPTURE on session-end (SH-2 / SKILL-HARVEST-SPEC §"CAPTURE") — offer the just-finished
+	// trajectory to the injected skill-proposal seam, which may DRAFT a `skill_proposal`. Start NARROW
+	// (§"Scope guard"): ONLY a SUCCESSFUL (`status==='done'`) CODE-WRITE session harvests — a failed or
+	// non-code-write session establishes no replayable procedure worth proposing. The harvester sees the
+	// SCREENED (D-026) trajectory ONLY (the parts were already screened in eventToMessage; we re-screen
+	// the assembled text + the summary so a secret can NEVER reach the proposal, defense-in-depth ahead
+	// of SH-1's own field screen). A returned draft is persisted through SH-1 proposeSkill — born
+	// status='open', never promoted here (G2/D-039); a returned null means "nothing reusable" (the common
+	// case, F-008 honest — we draft NOTHING rather than fabricate a skill). Entirely BEST-EFFORT (D-019 /
+	// F-014): a throw, a contract rejection by proposeSkill, or a DB fault is logged + swallowed and NEVER
+	// changes the session's terminal verdict (the work is already done; this is observability/learning).
+	if (deps.skillHarvester && status === 'done' && input.intent === 'code-write' && transcriptParts.length) {
+		try {
+			// Screen the assembled trajectory (summary + screened turn tail) BEFORE the seam sees it.
+			const rawTrajectory = [summary, ...transcriptParts].filter(Boolean).join('\n').slice(0, 16_000);
+			const transcriptText = screen(rawTrajectory).text;
+			const draft = await deps.skillHarvester.propose({
+				transcriptText,
+				sessionId,
+				projectId: input.projectId,
+				taskTitle: task.title
+			});
+			if (draft) {
+				// SH-1 chokepoint: born 'open', dedup-bumped on recurrence, every field re-screened (D-026).
+				// We stamp the session/project provenance HERE (server-side) so the seam cannot forge it; a
+				// draft that supplies its own is overridden with the real ids.
+				await proposeSkill(db, { ...draft, session: sessionId, project: input.projectId });
+			}
+		} catch (err) {
+			console.warn(`[launch] skill harvest skipped for ${sessionId} (best-effort): ${(err as Error).message}`);
 		}
 	}
 

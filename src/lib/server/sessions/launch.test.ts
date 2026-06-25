@@ -805,3 +805,166 @@ describe('launchSession — WI-2 per-session worktree (WRITE classes)', () => {
 		await deleteProject(db, p.id).catch(() => {});
 	}, 60_000);
 });
+
+// ── SH-2 — the skill-proposal CAPTURE seam at session-end (SKILL-HARVEST-SPEC §"CAPTURE") ──────────
+//
+// An INJECTED SkillHarvester (stub = no spend) is offered the screened trajectory at session-end. It
+// may DRAFT a skill_proposal (persisted via SH-1 proposeSkill, born 'open') or decline (null). The
+// trigger is NARROW: ONLY a successful (done) code-write session harvests. A harvester fault NEVER
+// fails the session (best-effort, D-019). A planted secret in the trajectory is screened before the
+// seam ever sees it (D-026).
+
+import type { SkillHarvester, SkillHarvestContext } from './launch';
+import type { SessionWorktree } from './worktree';
+import { listSkillProposals } from '../skills/proposal';
+
+/** A worktree stub that points a WRITE session's cwd at the project root (no real git repo needed) —
+ *  lets a `code-write` session reach `done` deterministically so the harvest trigger fires in-test. */
+function fakeWorktree(projectRoot: string): (root: string, sessionId: string) => Promise<SessionWorktree> {
+	return async () => ({ cwd: projectRoot, branch: 'sh2-test', cleanup: async () => {} });
+}
+
+describe('SH-2 — skill-proposal CAPTURE seam (SKILL-HARVEST-SPEC §CAPTURE)', () => {
+	it('a successful code-write session drafts an OPEN proposal via SH-1 (asserted in the store)', async () => {
+		const name = `harvest-pattern-${Math.random().toString(36).slice(2, 8)}`;
+		let sawCtx: SkillHarvestContext | undefined;
+		const harvester: SkillHarvester = {
+			async propose(ctx) {
+				sawCtx = ctx;
+				return {
+					name,
+					description: 'A reusable procedure surfaced by this session.',
+					body: '# Reusable\nSteps the agent established.',
+					trigger_context: 'when you need to do the reusable thing',
+					evidence: ['session:trajectory']
+				};
+			}
+		};
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(transcript('cc_sh2_ok')) });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput({ intent: 'code-write' }),
+			acquireWorktree: fakeWorktree('F:/code/sess'),
+			skillHarvester: harvester
+		});
+		expect(res.status).toBe('done');
+
+		// SH-1 store carries a BORN-'open' proposal stamped with THIS session/project provenance.
+		const open = await listSkillProposals(db, { status: 'open' });
+		const mine = open.find((p) => p.name === name);
+		expect(mine).toBeTruthy();
+		expect(mine!.status).toBe('open');
+		expect(mine!.session).toBe(res.sessionId);
+		expect(mine!.project).toBe(projectId);
+		// The seam received the SCREENED trajectory text + honest provenance.
+		expect(sawCtx?.transcriptText).toBeTruthy();
+		expect(sawCtx?.sessionId).toBe(res.sessionId);
+		expect(sawCtx?.projectId).toBe(projectId);
+	});
+
+	it('a harvester that THROWS does NOT fail the session (best-effort, D-019/F-014)', async () => {
+		const harvester: SkillHarvester = {
+			async propose() {
+				throw new Error('harvester boom');
+			}
+		};
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(transcript('cc_sh2_throw')) });
+		// Must NOT throw — the harvester fault is swallowed; the session keeps its terminal verdict.
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput({ intent: 'code-write' }),
+			acquireWorktree: fakeWorktree('F:/code/sess'),
+			skillHarvester: harvester
+		});
+		expect(res.status).toBe('done');
+	});
+
+	it('a NON-code-write session harvests NOTHING (narrow trigger)', async () => {
+		let called = false;
+		const harvester: SkillHarvester = {
+			async propose() {
+				called = true;
+				return null;
+			}
+		};
+		// A READ session (no worktree) — the trigger gates on intent='code-write'.
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(transcript('cc_sh2_read')) });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput({ intent: 'code-read' }),
+			skillHarvester: harvester
+		});
+		expect(res.status).toBe('done');
+		expect(called).toBe(false);
+	});
+
+	it('a FAILED code-write session harvests NOTHING (narrow trigger — only success harvests)', async () => {
+		let called = false;
+		const harvester: SkillHarvester = {
+			async propose() {
+				called = true;
+				return null;
+			}
+		};
+		const fail: RuntimeEvent[] = [
+			{ type: 'log', message: 'working' },
+			{ type: 'error', error: 'build failed' },
+			{ type: 'done', result: { ok: false, summary: 'failed' } }
+		];
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(fail) });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput({ intent: 'code-write' }),
+			acquireWorktree: fakeWorktree('F:/code/sess'),
+			skillHarvester: harvester
+		});
+		expect(res.status).toBe('failed');
+		expect(called).toBe(false);
+	});
+
+	it('a PLANTED SECRET in the trajectory is screened before it reaches the seam AND before persist (D-026)', async () => {
+		const SECRET = 'sk-ant-PLANTEDsecret1234harvest';
+		const name = `secret-harvest-${Math.random().toString(36).slice(2, 8)}`;
+		let sawText = '';
+		const harvester: SkillHarvester = {
+			async propose(ctx) {
+				sawText = ctx.transcriptText;
+				// Draft a clean proposal so we can assert the persisted row carries no raw secret either.
+				return {
+					name,
+					description: 'cleaned procedure',
+					body: '# Body\nno secrets here',
+					trigger_context: 'when the cleaned thing applies',
+					evidence: ['session:trajectory']
+				};
+			}
+		};
+		const events: RuntimeEvent[] = [
+			{ type: 'log', message: `the token is ${SECRET}` },
+			{ type: 'done', result: { ok: true, summary: `used ${SECRET} successfully`, ccSessionId: 'cc_sh2_secret' } }
+		];
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(events, 'cc_sh2_secret') });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput({ intent: 'code-write' }),
+			acquireWorktree: fakeWorktree('F:/code/sess'),
+			skillHarvester: harvester
+		});
+		expect(res.status).toBe('done');
+		// The seam NEVER saw the raw secret (screened in eventToMessage AND re-screened before the seam).
+		expect(sawText).not.toContain(SECRET);
+		// And nothing the secret rode in on persisted raw — the proposal row + transcript messages are clean.
+		const open = await listSkillProposals(db, { status: 'open' });
+		expect(JSON.stringify(open)).not.toContain(SECRET);
+	});
+});

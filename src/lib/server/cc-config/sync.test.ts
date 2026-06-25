@@ -383,6 +383,54 @@ describe('harvest scope (SH-5) — harness-owned synced scope so a promoted skil
 		expect(cls.invalid.map((v) => v.id)).not.toContain(r1.harvestScopeId);
 	});
 
+	// REGRESSION (SH-5 review MEDIUM): the loader re-invalidates reconcileScopes on every
+	// `project` DB event, so multi-tab / event-burst concurrency drives N PARALLEL reconciles.
+	// The old per-scope cc_settings write was a non-atomic DELETE-then-CREATE: all DELETEs ran,
+	// then all CREATEs → cc_settings=N orphan rows for ONE scope. The fix (deterministic-id
+	// UPSERT + digest-gated re-sync) must keep it at exactly ONE row under concurrency.
+	it('concurrent ensureHarvestScope writes converge on exactly ONE cc_settings row (no duplicate-orphan race)', async () => {
+		const id = scopeIdOf('global', harvestScopeDir());
+		const scopeRid = `cc_scope:${id.split(':')[1]}`;
+		// Force a digest change so ALL 8 parallel ensures see drift and race the WRITE path
+		// (not the steady-state read short-circuit) — this is the interleave the review proved
+		// produced cc_settings=8 under the old DELETE-then-CREATE.
+		writeHarvestSkill('race-probe', 'forces a digest change for the concurrency test');
+		// 8 parallel ensures (the probe count from the review) — the worst-case interleave.
+		await Promise.all(Array.from({ length: 8 }, () => ensureHarvestScope(db)));
+		const [settings] = await db.query<[unknown[]]>(
+			`SELECT id FROM cc_settings WHERE scope = ${scopeRid};`
+		);
+		expect(settings).toHaveLength(1); // deterministic id + UPSERT — never duplicated
+
+		// And exactly one cc_scope row (UPSERT-deduped, the part the review confirmed already held).
+		const [scopes] = await db.query<[unknown[]]>(`SELECT id FROM cc_scope WHERE id = ${scopeRid};`);
+		expect(scopes).toHaveLength(1);
+	});
+
+	it('steady-state ensureHarvestScope is write-free — unchanged disk does NOT touch cc_settings (digest gate)', async () => {
+		const id = scopeIdOf('global', harvestScopeDir());
+		const scopeRid = `cc_scope:${id.split(':')[1]}`;
+		await ensureHarvestScope(db); // land the mirror
+		// Capture the settings row id; a re-sync would CONTENT-replace it (here: same id, but a
+		// DELETE-then-CREATE would have churned a NEW random id). With the digest gate, the row
+		// is not rewritten at all when disk is unchanged.
+		const [before] = await db.query<[Array<{ id: unknown; synced_at: unknown }>]>(
+			`SELECT id, synced_at FROM cc_settings WHERE scope = ${scopeRid};`
+		);
+		expect(before).toHaveLength(1);
+		const beforeStamp = String(before[0].synced_at);
+
+		// Steady state: disk unchanged → no write. synced_at is set on every write, so an
+		// unchanged stamp proves the gate skipped syncScope.
+		await ensureHarvestScope(db);
+		const [after] = await db.query<[Array<{ id: unknown; synced_at: unknown }>]>(
+			`SELECT id, synced_at FROM cc_settings WHERE scope = ${scopeRid};`
+		);
+		expect(after).toHaveLength(1);
+		expect(String(after[0].id)).toBe(String(before[0].id)); // same row, not re-created
+		expect(String(after[0].synced_at)).toBe(beforeStamp); // NOT re-written (write-free)
+	});
+
 	it('the harvest scope carries ONLY harvested skills — no operator-plugin agents bleed in (D-002)', async () => {
 		// The dir is harness-created empty + only skills are written into it; it has no agents/.
 		const catalog = await readCatalog(db);

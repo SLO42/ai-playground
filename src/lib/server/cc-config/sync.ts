@@ -86,6 +86,16 @@ export function scopeIdOf(kind: string, claudeDir: string): string {
 }
 
 /**
+ * The stable, ONE-per-scope `cc_settings:<digest>` id for a scope record id. Derived from the
+ * scope id so re-syncing the SAME scope UPSERTs the SAME cc_settings row (idempotent) instead of
+ * the non-atomic DELETE-then-CREATE that duplicated rows under concurrent reconciles (SH-5 race).
+ */
+function settingsIdOf(scopeId: string): string {
+	const digest = createHash('sha256').update(scopeId).digest('hex').slice(0, 32);
+	return `cc_settings:t_${digest}`;
+}
+
+/**
  * Confine `claudeDir` under `root` after symlink + `..` normalization (D-018,
  * fail-closed). Used when a caller wants to assert a project scope lives under
  * CODE_ROOT before syncing it. Returns the canonical path. The global (~/.claude)
@@ -175,9 +185,19 @@ export async function syncScope(db: Db, scope: SyncScope): Promise<SyncResult> {
 		sync_digest: digest,
 		synced_at: new Date()
 	});
-	// One cc_settings per scope: delete any existing for this scope, then create.
-	await db.query(`DELETE cc_settings WHERE scope = $scope;`, { scope: scopeRid });
-	await db.query(`CREATE cc_settings CONTENT $content;`, { content: settingsContent });
+	// One cc_settings per scope via a DETERMINISTIC id + UPSERT CONTENT (full-record replace,
+	// same id) — NOT the old non-atomic DELETE-then-CREATE, which let N concurrent reconciles
+	// all DELETE then all CREATE → duplicate orphan rows (the SH-5 hot-path race). One stable
+	// id per scope means concurrent writers converge on a single row. The guarded sweep
+	// (`id != $rid`) retires any legacy random-id rows from before this deterministic-id change
+	// (F-015 migration: absorb prior partial/old state) WITHOUT ever deleting the canonical row,
+	// so a concurrent writer's just-UPSERTed row is never swept.
+	const settingsRid = link(settingsIdOf(scopeId));
+	await db.query(
+		`DELETE cc_settings WHERE scope = $scope AND id != $rid;
+		 UPSERT $rid CONTENT $content;`,
+		{ scope: scopeRid, rid: settingsRid, content: settingsContent }
+	);
 
 	// 3. Child tables — full replace scoped to this scope (mirror = disk exactly).
 	await replaceHooks(db, scopeRid, content.settings.hooks);
@@ -436,6 +456,16 @@ export function harvestScope(env: NodeJS.ProcessEnv = process.env): SyncScope {
  * Creates `<dir>/skills` too so SH-3's first promote writes into an existing tree. The scope
  * is `global`-kind so it is NEVER torn down by the project-confinement reconcile pass.
  * Returns the synced scope id.
+ *
+ * STEADY-STATE WRITE-FREE (F-014; fix for the SH-5 concurrency race): this runs on the
+ * /claude-code loader hot path (reconcileScopes is re-invalidated on every `project` DB event),
+ * so it MUST NOT write when nothing on disk changed. syncScope's per-scope cc_settings /
+ * cc_skill replace is a non-atomic DELETE-then-CREATE; N concurrent reconciles all DELETE then
+ * all CREATE, leaking duplicate orphan rows. We gate the write on a digest-changed check: read
+ * the disk content, digest it, compare to the mirror's stored digest, and call syncScope ONLY
+ * when the scope is new (no mirror) or the disk digest differs. The dir-create stays
+ * unconditional (mkdir is itself idempotent). In steady state (harvest dir unchanged), this is
+ * a pure read — no write hits the hot path under multi-tab / event-burst concurrency.
  */
 export async function ensureHarvestScope(
 	db: Db,
@@ -444,6 +474,15 @@ export async function ensureHarvestScope(
 	const claudeDir = harvestScopeDir(env);
 	// Create the .claude tree (and the skills/ subdir SH-3 writes into) idempotently.
 	mkdirSync(resolve(claudeDir, 'skills'), { recursive: true });
+
+	// Digest-gate the write: only re-sync when disk drifted from the mirror (or never synced).
+	// Keeps the loader hot path write-free in steady state — closing the non-atomic
+	// DELETE-then-CREATE concurrency race that duplicated cc_settings / cc_skill rows.
+	const scopeId = scopeIdOf('global', claudeDir);
+	const diskDigest = digestScope(readScope(claudeDir));
+	const stored = await mirrorDigest(db, scopeId);
+	if (stored === diskDigest) return scopeId; // unchanged — no write (steady state)
+
 	const res = await syncScope(db, { kind: 'global', claudeDir });
 	return res.scopeId;
 }

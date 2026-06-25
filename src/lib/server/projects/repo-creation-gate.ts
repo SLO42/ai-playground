@@ -33,8 +33,10 @@
 // IDEMPOTENT (interrupt contract / F-008): a re-run absorbs prior partial work instead of erroring —
 //   • repo ALREADY EXISTS (createRepo → already-exists) → honest no-op success path (still ensure the
 //     remote is set + repo_url recorded; never a crash, never a re-create);
-//   • the `origin` remote is ALREADY set → honest no-op (we do NOT re-add and do NOT re-push-error;
-//     `git remote add` on an existing remote exits non-zero — we detect & absorb it).
+//   • the `origin` remote is ALREADY set → we absorb the non-zero `git remote add` exit, then
+//     `git remote set-url origin <resolvedUrl>` to RECONCILE a possibly-stale pre-existing origin
+//     (scanner-derived from local .git/config) so the push ALWAYS targets the resolved URL — never a
+//     re-create, never a stale-remote push (RC-2 finding #1, the created-path stale-origin hole).
 //
 // D-026: the GH_TOKEN VALUE is NEVER read, logged, persisted, or placed in a result — gh authenticates
 // itself; we only surface gh's own (self-redacted) stderr text. F-008: created:true ONLY on a real
@@ -229,7 +231,9 @@ export async function runRepoCreationGate(input: RepoCreateGateInput): Promise<R
 	const alreadyExisted = outcome.kind === 'already-exists';
 	if (outcome.kind === 'created') {
 		// gh itself returned the URL of the repo IT JUST created — trustworthy, points at the right
-		// remote by construction. No stale-origin risk here (the recorded repo_url is irrelevant).
+		// remote by construction; the recorded repo_url is irrelevant here. But a STALE pre-existing LOCAL
+		// `origin` (scanner-derived) could still hijack the push — backRemote's set-url reconcile pins
+		// origin at THIS resolvedUrl before pushing, so the created path can't push to a stale remote.
 		resolvedUrl = outcome.url;
 		checks.push(check('create', true, `repo created (private): ${outcome.url}`));
 	} else if (outcome.kind === 'already-exists') {
@@ -298,7 +302,8 @@ export async function runRepoCreationGate(input: RepoCreateGateInput): Promise<R
 
 	// (f) REMOTE — back the existing local scaffold commits via the DEDICATED OUTWARD runner. This is the
 	// sanctioned remote/push seam; it NEVER routes through assertLocalGit. Idempotent: an already-set
-	// `origin` is absorbed (git remote add exits non-zero on a dup — we detect and proceed to push).
+	// `origin` is absorbed (git remote add exits non-zero on a dup) THEN reconciled via set-url to the
+	// resolved URL, so the push always targets the gate-resolved remote even when a stale origin pre-exists.
 	const gitRunner = input.gitRunner ?? execFileRunner;
 	const branch = (input.branch ?? '').trim() || 'main';
 	// (f-pre) BRANCH — validate the push branch (RC-2 finding #2). `branch` is the one push arg that was
@@ -347,8 +352,16 @@ export async function runRepoCreationGate(input: RepoCreateGateInput): Promise<R
  * exception, gated by the caller. Array-args, no shell (D-008): the url + branch are inert argv.
  *
  * IDEMPOTENT (interrupt contract): `git remote add` of an already-set `origin` exits non-zero
- * ("remote origin already exists") — we ABSORB that and proceed to push (the push is the durable,
- * re-runnable step). A genuine push failure (no upstream, rejected) is a NAMED red, never silent.
+ * ("remote origin already exists") — we ABSORB that, then `git remote set-url origin <url>` to
+ * RECONCILE its target before pushing (RC-2 finding #1, the load-bearing one): a scanner-seeded
+ * project derives `origin` from its local `.git/config` (scanner/detect.ts readRepoUrl), so an
+ * absorbed pre-existing `origin` could point at a STALE/unrelated remote. Without the reconcile,
+ * `git push -u origin <branch>` on the `created` path (where the create-outcome guard never runs)
+ * would send this project's commits to the wrong remote — the worst-case outward action the gate
+ * exists to block. `set-url` pins origin at the resolved URL on BOTH the `created` and
+ * `already-exists` paths so the push ALWAYS targets the URL the gate resolved. The push (the
+ * durable, re-runnable step) follows. A genuine push failure (no upstream, rejected) is a NAMED
+ * red, never silent.
  */
 async function backRemote(
 	run: CommandRunner,
@@ -359,18 +372,37 @@ async function backRemote(
 ): Promise<{ ok: boolean; detail: string }> {
 	// remote add — absorb an existing-origin non-zero exit (idempotent re-run), surface other failures.
 	let addNote = 'origin added';
+	let originPreexisted = false;
 	try {
 		const add = await run('git', ['remote', 'add', 'origin', url], { cwd });
 		if (add.code !== 0) {
 			const text = (add.stderr || add.stdout).trim();
 			if (/already exists/i.test(text)) {
-				addNote = 'origin already set (idempotent no-op)';
+				addNote = 'origin already set — reconciled to resolved URL';
+				originPreexisted = true;
 			} else {
 				return { ok: false, detail: `git remote add origin failed (exit ${add.code}): ${tail(text) || 'no output'}` };
 			}
 		}
 	} catch (err) {
 		return { ok: false, detail: `git remote add could not run: ${(err as Error).message}` };
+	}
+
+	// RECONCILE (RC-2 finding #1): if `origin` already existed it may point at a STALE/unrelated remote
+	// (scanner-derived from local .git/config). `git remote set-url origin <url>` pins it at the URL the
+	// gate resolved BEFORE the push, so commits can NEVER go to a mismatched pre-existing remote — closing
+	// the hole on the `created` path (the create-outcome stale-origin guard only covers `already-exists`).
+	// We do NOT set-url when we just added origin (it already points at <url>) — only on the absorb path.
+	if (originPreexisted) {
+		try {
+			const setUrl = await run('git', ['remote', 'set-url', 'origin', url], { cwd });
+			if (setUrl.code !== 0) {
+				const text = (setUrl.stderr || setUrl.stdout).trim();
+				return { ok: false, detail: `git remote set-url origin failed (exit ${setUrl.code}): ${tail(text) || 'no output'}` };
+			}
+		} catch (err) {
+			return { ok: false, detail: `git remote set-url could not run: ${(err as Error).message}` };
+		}
 	}
 
 	// push -u origin -- <branch> — the durable, re-runnable step. The `--` separator means git can NEVER

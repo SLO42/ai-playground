@@ -95,13 +95,26 @@ class FakeClient implements GitHubClient {
 }
 
 /** A git runner that captures every (file,args,cwd) and returns scripted exits keyed by the verb. */
-function fakeGit(opts: { remoteAddCode?: number; remoteAddOut?: string; pushCode?: number; pushOut?: string } = {}) {
+function fakeGit(
+	opts: {
+		remoteAddCode?: number;
+		remoteAddOut?: string;
+		setUrlCode?: number;
+		setUrlOut?: string;
+		pushCode?: number;
+		pushOut?: string;
+	} = {}
+) {
 	const calls: Array<{ file: string; args: string[]; cwd: string }> = [];
 	const fn: CommandRunner = async (file, args, o): Promise<CommandResult> => {
 		calls.push({ file, args: [...args], cwd: o.cwd });
-		// `git remote add origin <url>` → args[0]='remote'; `git push -u origin <branch>` → args[0]='push'.
+		// `git remote add origin <url>` → args[0]='remote',args[1]='add'; `git remote set-url origin <url>`
+		// → args[1]='set-url'; `git push -u origin <branch>` → args[0]='push'.
 		if (args[0] === 'remote' && args[1] === 'add') {
 			return { code: opts.remoteAddCode ?? 0, stdout: '', stderr: opts.remoteAddOut ?? '' };
+		}
+		if (args[0] === 'remote' && args[1] === 'set-url') {
+			return { code: opts.setUrlCode ?? 0, stdout: '', stderr: opts.setUrlOut ?? '' };
 		}
 		if (args[0] === 'push') {
 			return { code: opts.pushCode ?? 0, stdout: opts.pushOut ?? '', stderr: opts.pushCode ? (opts.pushOut ?? 'rejected') : '' };
@@ -271,6 +284,57 @@ describe('runRepoCreationGate — idempotent already-exists is an honest no-op s
 		expect(out.checks.find((c) => c.name === 'remote')?.detail).toMatch(/already set/i);
 		// push still ran despite the dup remote.
 		expect(git.calls.some((c) => c.args[0] === 'push')).toBe(true);
+	});
+
+	// ── RC-H GAP 1/2: STALE-ORIGIN GUARD ON THE `created` PATH (the hole the second-pass review found) ──
+	// A scanner-imported project has a PRE-EXISTING LOCAL `origin` (detect.ts readRepoUrl). On a fresh
+	// `created` outcome the create-outcome stale-origin guard never runs, so before this fix backRemote
+	// absorbed the dup `origin` WITHOUT reconciling its URL and `git push -u origin` targeted whatever
+	// stale remote was already configured. The reconcile (`git remote set-url origin <resolvedUrl>`) must
+	// run on the absorb path so the push ALWAYS targets the gate-resolved URL — on BOTH branches.
+	it('created path: a pre-existing (stale) origin is RECONCILED to the resolved URL before push', async () => {
+		const client = new FakeClient();
+		// gh creates a genuinely new repo; the LOCAL origin already exists and is stale/unrelated.
+		client.createOutcome = { kind: 'created', url: 'https://github.com/me/repo-host' };
+		const git = fakeGit({ remoteAddCode: 1, remoteAddOut: 'error: remote origin already exists.' });
+		const out = await runRepoCreationGate({ db, projectId, consent: true, confirmToken: validToken(), name: 'repo-host', branch: 'main', client, gitRunner: git.fn });
+
+		expect(out.created).toBe(true);
+		expect(out.createOutcome).toBe('created');
+
+		// THE load-bearing assertions: set-url reconciled origin to the resolved URL, and the push targets
+		// origin (which now points at the resolved URL) — the gate can never push to the stale pre-existing remote.
+		const setUrl = git.calls.find((c) => c.args[0] === 'remote' && c.args[1] === 'set-url');
+		expect(setUrl).toBeDefined();
+		expect(setUrl?.args).toEqual(['remote', 'set-url', 'origin', 'https://github.com/me/repo-host']);
+		// Exact outward sequence: add (dup) → set-url (reconcile) → push.
+		expect(git.calls).toEqual([
+			{ file: 'git', args: ['remote', 'add', 'origin', 'https://github.com/me/repo-host'], cwd: 'F:/code/whatever' },
+			{ file: 'git', args: ['remote', 'set-url', 'origin', 'https://github.com/me/repo-host'], cwd: 'F:/code/whatever' },
+			{ file: 'git', args: ['push', '-u', 'origin', '--', 'main'], cwd: 'F:/code/whatever' }
+		]);
+		expect(out.checks.find((c) => c.name === 'remote')?.detail).toMatch(/reconciled/i);
+	});
+
+	it('created path: a FRESH origin (no dup) is NOT set-url (already points at the resolved URL)', async () => {
+		const client = new FakeClient();
+		const git = fakeGit(); // remote add exits 0 → origin freshly added, no reconcile needed.
+		await runRepoCreationGate({ db, projectId, consent: true, confirmToken: validToken(), name: 'repo-host', branch: 'main', client, gitRunner: git.fn });
+		// No set-url call when we just added origin — it already points at the resolved URL.
+		expect(git.calls.some((c) => c.args[0] === 'remote' && c.args[1] === 'set-url')).toBe(false);
+	});
+
+	it('a set-url failure on the reconcile path is a NAMED red (no silent stale push)', async () => {
+		const client = new FakeClient();
+		const git = fakeGit({ remoteAddCode: 1, remoteAddOut: 'error: remote origin already exists.', setUrlCode: 1, setUrlOut: 'fatal: No such remote origin' });
+		const out = await runRepoCreationGate({ db, projectId, consent: true, confirmToken: validToken(), name: 'repo-host', client, gitRunner: git.fn });
+		expect(out.created).toBe(false);
+		expect(out.failedAt).toBe('remote');
+		expect(out.checks.find((c) => c.name === 'remote')?.detail).toMatch(/set-url/i);
+		// Never pushed once the reconcile failed.
+		expect(git.calls.some((c) => c.args[0] === 'push')).toBe(false);
+		const p = await getProject(db, projectId);
+		expect(p?.repo_url).toBeUndefined();
 	});
 });
 

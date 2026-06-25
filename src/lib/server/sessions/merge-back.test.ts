@@ -172,6 +172,72 @@ describe('mergeBackWorktree — divergent project branch → preserve + note (NE
 	});
 });
 
+describe('mergeBackWorktree — dirty project tree → preserve with HONEST dirty-tree note (not "diverged")', () => {
+	it('ff-only aborts on a dirty working tree → preserved-conflict, note says uncommitted changes, NOT diverged', async () => {
+		const repo = initRepo();
+		trackParent(repo);
+		const wt = await sessionWithWork(repo, 'sess-dirty', 'README.md'); // touches a tracked file
+		const sessionHead = git(repo, 'rev-parse', 'atelier/session/sess-dirty');
+		// LIVE project root has an UNCOMMITTED edit to the same tracked file the FF would overwrite.
+		writeFileSync(join(repo, 'README.md'), '# locally edited, uncommitted\n');
+		const projHeadBefore = git(repo, 'rev-parse', 'main');
+		const { db, notes } = fakeDb();
+
+		const outcome = await mergeBackWorktree(asDb(db), {
+			sessionId: 'session:dirty1',
+			projectRoot: repo,
+			worktreePath: wt.cwd,
+			worktreeBranch: 'atelier/session/sess-dirty',
+			exitState: 'done'
+		});
+
+		expect(outcome.kind).toBe('preserved-conflict');
+		// project branch untouched + session work preserved (NO LOST WORK either way)
+		expect(git(repo, 'rev-parse', 'main')).toBe(projHeadBefore);
+		expect(git(repo, 'rev-parse', 'atelier/session/sess-dirty')).toBe(sessionHead);
+		expect(existsSync(wt.cwd)).toBe(true);
+		// HONEST note: names the dirty working tree, does NOT misattribute it as a branch divergence.
+		expect(notes.length).toBe(1);
+		expect(notes[0].note).toContain('project working tree has uncommitted changes');
+		expect(notes[0].note).not.toContain('diverged');
+		expect(notes[0].note).toContain('work preserved on branch atelier/session/sess-dirty');
+
+		await wt.cleanup();
+	});
+});
+
+describe('mergeBackWorktree — behind/reachable branch → honest noop-empty (not "merged")', () => {
+	it('a clean done whose branch is fully reachable behind HEAD (no new commits) → noop-empty, branch deleted, NO fabricated merge', async () => {
+		const repo = initRepo();
+		trackParent(repo);
+		// Acquire the worktree at the CURRENT tip, commit NOTHING on the session branch, then advance
+		// the PROJECT branch — now the session branch is strictly BEHIND HEAD and fully reachable.
+		const wt = await acquireSessionWorktree(repo, 'sess-behind');
+		writeFileSync(join(repo, 'advanced.txt'), 'project moved on\n');
+		git(repo, 'add', '-A');
+		git(repo, 'commit', '-m', 'project advanced past the session branch');
+		const projHeadBefore = git(repo, 'rev-parse', 'main');
+		const { db, notes } = fakeDb();
+
+		const outcome = await mergeBackWorktree(asDb(db), {
+			sessionId: 'session:behind1',
+			projectRoot: repo,
+			worktreePath: wt.cwd,
+			worktreeBranch: 'atelier/session/sess-behind',
+			exitState: 'done'
+		});
+
+		// Nothing advanced → honest noop-empty, NOT a fabricated 'merged'.
+		expect(outcome.kind).toBe('noop-empty');
+		// HEAD did not move (the FF was an "Already up to date" no-op).
+		expect(git(repo, 'rev-parse', 'main')).toBe(projHeadBefore);
+		// tree torn down + branch deleted (nothing to preserve — no commits were lost).
+		expect(existsSync(wt.cwd)).toBe(false);
+		expect(() => git(repo, 'rev-parse', '--verify', 'atelier/session/sess-behind')).toThrow();
+		expect(notes.length).toBe(0); // a noop stamps no preserve note
+	});
+});
+
 describe('mergeBackWorktree — failed / cancelled session → preserve + note', () => {
 	for (const exitState of ['failed', 'cancelled'] as const) {
 		it(`${exitState}: branch + worktree preserved, note stamped, NO merge attempted`, async () => {

@@ -170,7 +170,8 @@ export type MergeBackOutcome =
 	| { kind: 'preserved-conflict'; branch: string; note: string }
 	/** failed/cancelled session → branch + worktree PRESERVED; note stamped. */
 	| { kind: 'preserved-incomplete'; branch: string; note: string }
-	/** A clean done whose branch had NOTHING to merge (no commits) → torn down, branch deleted. */
+	/** A clean done whose branch had NOTHING to merge (no commits, OR fully reachable behind HEAD —
+	 *  the FF was an "Already up to date" no-op that advanced nothing) → torn down, branch deleted. */
 	| { kind: 'noop-empty'; branch: string }
 	/** The branch/worktree no longer exist (idempotent re-run after a prior merge) → clean no-op. */
 	| { kind: 'noop-gone'; branch: string };
@@ -179,8 +180,10 @@ export interface MergeBackOptions {
 	/** Injectable command runner (tests pass a fake). Defaults to {@link execFileRunner}. */
 	run?: CommandRunner;
 	/**
-	 * Injectable worktree teardown (defaults to {@link removeWorktree}). The orchestrator passes
-	 * the WI-1 SessionWorktree.cleanup so the SAME idempotent remove path is reused.
+	 * Injectable worktree teardown (defaults to {@link removeWorktree}). The orchestrator does NOT
+	 * pass this (it hands only `{ run }`, orchestrator.ts #mergeBackSession), so the default
+	 * {@link removeWorktree} is used — functionally equivalent to the WI-1 SessionWorktree.cleanup
+	 * (both `git worktree remove --force` + prune, idempotent). Tests inject a fake here.
 	 */
 	teardown?: () => Promise<void>;
 }
@@ -247,8 +250,9 @@ export async function removeWorktree(
  * SHADOW PATHS (all four handled, none crashes the drain):
  *   • exitState !== 'done'         → PRESERVE (branch + tree kept, honest note). The commits stay.
  *   • branch/worktree already gone → noop-gone (idempotent re-run after a prior merge).
- *   • branch has no commits        → noop-empty (nothing to merge; tree torn down, branch deleted).
- *   • project branch diverged      → ff-only ABORTS → preserved-conflict (note), NEVER force-merged.
+ *   • branch has no commits / behind → noop-empty (FF advanced nothing; tree torn down, branch deleted).
+ *   • project branch diverged       → ff-only ABORTS → preserved-conflict (diverged note), NEVER force-merged.
+ *   • project tree dirty            → ff-only ABORTS → preserved-conflict (dirty-tree note, NOT "diverged").
  *
  * The note write is best-effort: a DB write failure is logged, never thrown — the BRANCH preserve
  * (the work-safety guarantee) does not depend on the note landing (F-014). Returns the honest
@@ -307,25 +311,44 @@ export async function mergeBackWorktree(
 		const merged = await run('git', mergeArgs, { cwd: projectRoot });
 
 		if (merged.code === 0) {
-			// FF success: the session work is now on the project branch. The commits are reachable,
-			// so tearing down the worktree + safe-deleting the branch loses NOTHING (F-007). Teardown
-			// is MANDATORY here (success path) but its own failure must NOT crash the drain (F-014) —
-			// removeWorktree never throws; a leftover dir is logged, the branch delete still proceeds.
+			// FF returned success — but distinguish a REAL fast-forward (HEAD advanced) from an
+			// "Already up to date" no-op (the session branch was fully reachable BEHIND HEAD and
+			// carried no commits HEAD didn't already have, so nothing merged). Compare the post-merge
+			// HEAD to the pre-merge HEAD: unchanged ⇒ nothing landed ⇒ honest noop-empty (NOT a
+			// fabricated 'merged'). The branch is still fully merged into HEAD, so the safe -d delete +
+			// teardown lose NOTHING (F-007). headSha was read above, before the merge.
 			const mergedSha = await revParse(projectRoot, 'HEAD', run);
 			await teardown();
 			await safeDeleteBranch(projectRoot, branch, run);
+			if (headSha && mergedSha && mergedSha === headSha) {
+				// HEAD did not move — the FF was a no-op (behind/reachable branch). Honest label.
+				return { kind: 'noop-empty', branch } as MergeBackOutcome;
+			}
 			return { kind: 'merged', branch, mergedSha } as MergeBackOutcome;
 		}
 
-		// ── CONFLICT / non-FF → PRESERVE. NEVER `--no-ff`, NEVER `--force`, NEVER discard. ──
-		// The project branch diverged from the session branch (a concurrent merge raced us, or the
-		// project advanced during the run). git left the working tree clean (ff-only aborts before
-		// touching it). Keep the branch AND the worktree, stamp the honest reason so the operator can
-		// resolve it manually (the anti-invisible-failure surface).
+		// ── ABORTED ff-only → PRESERVE. NEVER `--no-ff`, NEVER `--force`, NEVER discard. ──
+		// ff-only aborts (non-zero, working tree untouched) for TWO distinct reasons we must NOT
+		// conflate (F-008 — the surfaced state must be HONEST):
+		//   (a) DIVERGENCE — the project branch advanced to a commit the session branch can't
+		//       fast-forward over (a concurrent merge raced us / an operator commit landed).
+		//   (b) DIRTY WORKING TREE — the LIVE project-root tree has an uncommitted edit to a file
+		//       the FF would touch; git refuses with "local changes ... would be overwritten by
+		//       merge" and exits 1 BEFORE diverging anything. This is NOT a branch divergence — the
+		//       branch IS fast-forwardable once the tree is clean. Misreporting it as "diverged"
+		//       (the old behaviour) sent the operator chasing a phantom merge conflict.
+		// Work is PRESERVED identically either way (branch + worktree kept); only the note wording
+		// differs so the operator sees the REAL blocker.
 		const reason = (merged.stderr || merged.stdout).trim().slice(0, 160);
+		const isDirtyTree = /local changes|would be overwritten|Please commit your changes or stash/i.test(
+			merged.stderr || merged.stdout
+		);
+		const cause = isDirtyTree
+			? `project working tree has uncommitted changes — merge deferred`
+			: `project branch diverged — fast-forward not possible`;
 		const note =
 			`work preserved on branch ${branch}; merge needed ` +
-			`(project branch diverged — fast-forward not possible${reason ? `: ${reason}` : ''})`;
+			`(${cause}${reason ? `: ${reason}` : ''})`;
 		await stampNote(db, sessionId, note);
 		return { kind: 'preserved-conflict', branch, note } as MergeBackOutcome;
 	});

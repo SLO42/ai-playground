@@ -462,6 +462,27 @@ export function createChannel(deps: ChannelDeps): Channel {
 			if (isWriteIntent(req.intent)) {
 				const wt = await acquireWorktree(root, req.sessionId);
 				resumeCwd = wt.cwd;
+				// Re-persist the worktree provenance on the session row (WI-1/WI-2 columns). Launch
+				// already wrote these, BUT if launch crashed BETWEEN the acquire and that MERGE the row
+				// would carry a stale/absent path while the tree exists — so WI-3 merge-back + the fleet
+				// UI would read the wrong (or no) provenance. acquireWorktree is idempotent (same tree by
+				// sessionId), so re-stamping here makes the row ALWAYS reflect the live worktree. Coerced
+				// to plain strings (never raw SDK values — F-013 class); OMIT-when-undefined keeps a
+				// READ-class resume (which never enters this branch) untouched. Best-effort: a write
+				// fault is logged, never thrown — the resume itself does not depend on the re-stamp.
+				await db
+					.query(`UPDATE $sid MERGE $content;`, {
+						sid: link(req.sessionId),
+						content: omitUndefined({
+							worktree_path: String(wt.cwd),
+							worktree_branch: String(wt.branch)
+						})
+					})
+					.catch((persistErr) =>
+						console.warn(
+							`[channel] resume worktree re-persist failed for ${req.sessionId} (resume proceeds; tree is live): ${(persistErr as Error).message}`
+						)
+					);
 			}
 
 			// Flip the record back to running so the fleet view shows it immediately. The

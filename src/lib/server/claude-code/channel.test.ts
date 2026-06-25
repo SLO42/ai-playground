@@ -550,6 +550,39 @@ describe('channel stop / resume — session record transitions (D-011)', () => {
 		expect(rows[0].status).not.toBe('cancelled');
 	});
 
+	it('WI-2: a WRITE-class resume RE-PERSISTS worktree_path/worktree_branch on the session row', async () => {
+		// If launch crashed BETWEEN acquiring the worktree and persisting its path, the row would
+		// carry a stale/absent provenance while the tree is live — WI-3 merge-back + the fleet UI
+		// would then read the wrong cwd. Resume re-acquires the (idempotent) tree, so it must also
+		// re-stamp the columns so the row ALWAYS reflects the live worktree. Simulate the crash by
+		// CLEARING the columns before resume, then assert resume re-stamps them.
+		const backend = scriptedBackend();
+		const { channel } = makeChannel(backend);
+		const sessionId = await makeRunningSession('cc_resume_persist_1');
+		const safeId = sessionId.replace(/[^a-zA-Z0-9_-]+/g, '_');
+		// Simulate the launch-crash partial state: tree exists, row has NO worktree provenance.
+		await db.query(
+			`UPDATE $sid SET status = "cancelled", ended_at = time::now(), worktree_path = NONE, worktree_branch = NONE;`,
+			{ sid: new StringRecordId(sessionId) }
+		);
+
+		await channel.resume({
+			sessionId,
+			agentId: 'agent_coder_1',
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+			intent: 'code-write',
+			budgets: { toolCalls: 10 },
+			toolPolicy: { allow: ['Read', 'Edit'] }
+		});
+
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $sid;`, {
+			sid: new StringRecordId(sessionId)
+		});
+		// The row now reflects the live (idempotently re-acquired) worktree — matching fakeAcquireWorktree.
+		expect(rows[0].worktree_path).toBe(`${tmpdir().replace(/\\/g, '/')}/.wt/${safeId}`);
+		expect(rows[0].worktree_branch).toBe(`atelier/session/${safeId}`);
+	});
+
 	it('WI-2: a READ-class resume stays in the shared project root (no worktree, unchanged)', async () => {
 		const backend = scriptedBackend();
 		const { channel } = makeChannel(backend);

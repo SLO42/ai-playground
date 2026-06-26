@@ -418,6 +418,51 @@ export async function gcStale(
 	};
 }
 
+// ── F-048 follow-on — release a DEAD session's claimed work so the drain re-drives it ──
+//
+// gcStale (above) recovers crashed `processing` rows only by AGE (≥1h). But when a session is
+// REAPED at boot (reaper.ts) or otherwise marked terminal, its in-flight fork twins — the
+// `memory_review` / `review` work_items enqueued WITH that session id (work_item.session, §4.12;
+// fast-tier-enqueue path launch.ts → loop.ts enqueueReview) — stay wedged `processing` for up to
+// that whole hour. The orchestrator drain then STARVES on the orphaned twin (the exact F-048
+// go-live symptom, hand-recovered via DB last time). Releasing them IMMEDIATELY on reap closes
+// that gap: reset the twin back to pending + clear its lease (claim_token / claimed_at → NONE) so
+// a re-claim re-stamps the daily-cap window and the drain picks it up at once.
+
+/** Outcome of {@link releaseSessionWork} — honest real count (F-008). */
+export interface ReleaseResult {
+	/** `processing` work_items claimed by the session that were reset to pending + unclaimed. */
+	released: number;
+}
+
+/**
+ * Release every `processing` work_item CLAIMED BY `sessionId` back to pending + unclaimed so the
+ * orchestrator drain re-drives it — the F-048 follow-on recovery (see block comment above).
+ *
+ * CALLER CONTRACT: `sessionId` is ALREADY in a TERMINAL state (failed/done/cancelled) — the caller
+ * (reapStaleRuns, or any runtime session-failure path) flips the session BEFORE releasing its work,
+ * so we never free work out from under a LIVE session. DEFENSE-IN-DEPTH: the release is additionally
+ * scoped to `session.status != "running"` (a record-link traversal on the work_item's session link),
+ * so a mis-call against a still-running session frees NOTHING (a no-op, never a steal). A session
+ * that no longer exists (link → NONE) is treated as terminal — its orphaned work is safely released.
+ *
+ * Idempotent (interrupt contract): once the rows are pending (lease cleared) a second call matches
+ * nothing and releases zero. F-014-safe: ONE bounded UPDATE — no retry loop, no timers, no spin; a
+ * query fault rejects to the caller (the reaper wraps it per-session so it never crashes the server).
+ */
+export async function releaseSessionWork(db: Db, sessionId: string): Promise<ReleaseResult> {
+	const sid = link(sessionId);
+	// RETURN BEFORE counts the rows that matched the WHERE (mirrors gcStale's recovery count).
+	const [rows] = await db.query<[Array<unknown>]>(
+		`UPDATE work_item
+		   SET status = "pending", claim_token = NONE, claimed_at = NONE
+		   WHERE session = $sid AND status = "processing" AND session.status != "running"
+		   RETURN BEFORE;`,
+		{ sid }
+	);
+	return { released: rows?.length ?? 0 };
+}
+
 // ── TASK 2.15 — crash-safe handoff (D-021: "crash-safe handoff written on session end") ─
 //
 // KongCode writes a handoff record SYNCHRONOUSLY on session end so an item interrupted

@@ -6,6 +6,8 @@ import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
 import { createProject, deleteProject } from '../projects/repo';
 import { createWorkflow } from '../workflows/repo';
+import { createTask, resetStuckTaskToReady } from '../tasks/repo';
+import { releaseSessionWork } from './workqueue';
 import { reapStaleRuns, processBootTime, REAPED_NOTE } from './reaper';
 
 // TASK 13.2 VERIFY — the boot-time reaper (FINDING 13.2c). A hard server death writes no
@@ -106,7 +108,8 @@ describe('reapStaleRuns — boot-time recovery of wedged running rows (13.2)', (
 
 		const bootTime = new Date(Date.now() - 5_000); // after the stuck rows, before fresh
 		const res = await reapStaleRuns(db, bootTime);
-		expect(res).toEqual({ sessions: 1, workflowRuns: 1 });
+		// The stuck session carries no task and no claimed work_items → recovery counts are 0.
+		expect(res).toEqual({ sessions: 1, workflowRuns: 1, releasedWorkItems: 0, resetTasks: 0 });
 
 		// The stuck session is honestly failed (F-008): terminal status + ended_at + note.
 		const s = await readRow(stuckSession);
@@ -141,7 +144,12 @@ describe('reapStaleRuns — boot-time recovery of wedged running rows (13.2)', (
 		expect(done.note ?? null).toBeNull();
 
 		// Idempotent: a second sweep finds nothing 'running' pre-boot and reaps zero.
-		expect(await reapStaleRuns(db, bootTime)).toEqual({ sessions: 0, workflowRuns: 0 });
+		expect(await reapStaleRuns(db, bootTime)).toEqual({
+			sessions: 0,
+			workflowRuns: 0,
+			releasedWorkItems: 0,
+			resetTasks: 0
+		});
 
 		// Cleanup the fresh row so it can't leak into other assertions.
 		await db.query(`UPDATE $rid SET status = 'cancelled', ended_at = time::now();`, {
@@ -154,5 +162,99 @@ describe('reapStaleRuns — boot-time recovery of wedged running rows (13.2)', (
 		expect(boot.getTime()).toBeLessThanOrEqual(Date.now());
 		// uptime > 0 ⇒ strictly before "now" by at least the process's age.
 		expect(boot.getTime()).toBeLessThan(Date.now() + 1);
+	});
+});
+
+// ── F-048 follow-on — a reaped session's claimed work freed + its task reset to ready ──
+// The go-live symptom (hand-recovered via DB): a reaped session leaves its `memory_review` fork
+// twin wedged `processing` and its task stranded `in_progress`, so the orchestrator drain starves
+// on the orphaned twin until gcStale's 1h age window. reapStaleRuns must now release the twin AND
+// reset the task IMMEDIATELY, while never freeing a LIVE session's work. Real throwaway SurrealDB.
+
+/** Seed a `processing` work_item claimed by a session (the orphaned-twin simulation). */
+async function makeWorkItem(sessionId: string, workType = 'memory_review'): Promise<string> {
+	const [rows] = await db.query<[Array<{ id: unknown }>]>(
+		`CREATE work_item CONTENT $content RETURN AFTER;`,
+		{
+			content: {
+				work_type: workType,
+				payload: { kind: 'memory', turnText: 'orphaned twin' },
+				status: 'processing',
+				session: new StringRecordId(sessionId),
+				project: new StringRecordId(projectId),
+				claim_token: `tok-${Date.now()}-${Math.random().toString(36).slice(2)}`,
+				claimed_at: new Date()
+			}
+		}
+	);
+	return String(rows[0].id);
+}
+
+describe('reapStaleRuns — F-048 follow-on (release claimed work + reset orphaned task)', () => {
+	it('reaping a session frees its processing work_item (lease cleared) and resets its in_progress task to ready', async () => {
+		const past = new Date(Date.now() - 60_000);
+		const task = await createTask(db, {
+			project: projectId,
+			title: 'orphaned task',
+			description: 'wedged in_progress by a dead session',
+			status: 'in_progress'
+		});
+		const session = await makeSession({ status: 'running', started_at: past, task: new StringRecordId(task.id) });
+		const wi = await makeWorkItem(session);
+
+		const bootTime = new Date(Date.now() - 5_000); // session predates boot → reaped
+		const res = await reapStaleRuns(db, bootTime);
+		// Exactly one running pre-boot session exists at this point (earlier test rows are terminal).
+		expect(res.sessions).toBe(1);
+		expect(res.releasedWorkItems).toBe(1);
+		expect(res.resetTasks).toBe(1);
+
+		// The session is honestly failed.
+		expect((await readRow(session)).status).toBe('failed');
+
+		// The orphaned twin is back to pending with the lease fully cleared (re-claimable).
+		const item = await readRow(wi);
+		expect(item.status).toBe('pending');
+		expect(item.claim_token ?? null).toBeNull();
+		expect(item.claimed_at ?? null).toBeNull();
+
+		// The stranded task is back to ready so the drain can re-drive it.
+		expect((await readRow(task.id)).status).toBe('ready');
+
+		// Idempotent: re-running the recovery primitives directly is a no-op (no double-effect, no throw).
+		expect(await releaseSessionWork(db, session)).toEqual({ released: 0 });
+		expect(await resetStuckTaskToReady(db, task.id)).toBe(false);
+		expect((await readRow(wi)).status).toBe('pending');
+		expect((await readRow(task.id)).status).toBe('ready');
+	});
+
+	it('NEVER releases a LIVE (running) session’s work — the caller-contract guard holds', async () => {
+		const liveSession = await makeSession({ status: 'running' }); // started_at = now (live)
+		const wi = await makeWorkItem(liveSession);
+
+		// Direct call against a still-running session: the session.status != "running" guard frees nothing.
+		expect(await releaseSessionWork(db, liveSession)).toEqual({ released: 0 });
+		const item = await readRow(wi);
+		expect(item.status).toBe('processing');
+		expect(item.claim_token).toBeTruthy();
+
+		// Cleanup so the live row can't leak into other assertions.
+		await db.query(`UPDATE $rid SET status = 'cancelled', ended_at = time::now();`, {
+			rid: new StringRecordId(liveSession)
+		});
+	});
+
+	it('resetStuckTaskToReady only moves in_progress/review tasks — done/ready/backlog are untouched', async () => {
+		const doneTask = await createTask(db, { project: projectId, title: 'done', description: 'd', status: 'done' });
+		const readyTask = await createTask(db, { project: projectId, title: 'ready', description: 'r', status: 'ready' });
+		const reviewTask = await createTask(db, { project: projectId, title: 'review', description: 'v', status: 'review' });
+
+		expect(await resetStuckTaskToReady(db, doneTask.id)).toBe(false);
+		expect(await resetStuckTaskToReady(db, readyTask.id)).toBe(false);
+		expect(await resetStuckTaskToReady(db, reviewTask.id)).toBe(true); // review → ready (recovery)
+
+		expect((await readRow(doneTask.id)).status).toBe('done');
+		expect((await readRow(readyTask.id)).status).toBe('ready');
+		expect((await readRow(reviewTask.id)).status).toBe('ready');
 	});
 });

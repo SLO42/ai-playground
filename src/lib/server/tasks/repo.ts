@@ -393,3 +393,32 @@ export async function setStatus(db: Db, id: string, to: TaskStatus): Promise<Tas
 	}
 	return row ? normTask(row) : null;
 }
+
+/**
+ * CRASH-RECOVERY ONLY — reset a task wedged `in_progress`/`review` by a DEAD session back to
+ * `ready` so the orchestrator drain re-drives it (the F-048 follow-on; called by reaper.ts).
+ *
+ * This DELIBERATELY bypasses {@link setStatus}'s state machine — and is the documented EXCEPTION
+ * to the "status moves ONLY through setStatus" invariant above. ALLOWED_TRANSITIONS forbids
+ * `in_progress→ready` and `review→ready` ON PURPOSE: in normal flow you never "un-start" work
+ * (that would discard a real in-flight run). But a session reaped at boot leaves its task stranded
+ * mid-flight with NO live worker — recovery to ready is exactly the move the normal machine refuses,
+ * and there is no legal multi-hop path back to ready from in_progress/review either. So recovery
+ * uses a NARROW, record-targeted UPDATE guarded to ONLY the two orphaned-by-crash pre-states.
+ *
+ * GUARD (`WHERE status IN ["in_progress","review"]`): a task that already advanced (done/failed),
+ * was never started (proposed/backlog/ready), or was parked (blocked/withdrawn) is left UNTOUCHED —
+ * we never clobber a task that moved on or that the operator/PM deliberately parked. Idempotent
+ * (interrupt contract): once the task is `ready` a re-run matches nothing and moves zero rows.
+ * Touches `updated_at` so the live query / PM observes the recovery. Returns whether a row moved.
+ */
+export async function resetStuckTaskToReady(db: Db, taskId: string): Promise<boolean> {
+	const rid = new StringRecordId(assertRecordId(taskId));
+	// RETURN BEFORE yields the rows that matched the guarded WHERE (the count of tasks reset).
+	const [rows] = await db.query<[unknown[]]>(
+		`UPDATE $rid SET status = "ready", updated_at = time::now()
+		   WHERE status IN ["in_progress", "review"] RETURN BEFORE;`,
+		{ rid }
+	);
+	return rows.length > 0;
+}

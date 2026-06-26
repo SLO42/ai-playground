@@ -82,8 +82,7 @@
     flex-direction: column;
     gap: var(--space-4, 1.25rem);
     padding: var(--space-5, 1.5rem);
-    max-width: 1100px;
-    margin: 0 auto;
+    width: 100%;
   }
   .head {
     display: flex;

@@ -7,6 +7,8 @@
 >
 > **Why a doc and not the database (operator-discussed 2026-06-10):** the build factory must not store its control state inside the thing it is building — waves migrate/reset/wedge the dev SurrealDB (F-015 wedged `db:up` itself), and D-001's boundary cuts both ways (product never parses harness files; harness doesn't write product tables). Git-tracked markdown needs zero infrastructure and versions with the decisions behind each item. **End state = D-040 self-hosting:** this queue becomes `task`/`sprint` rows in `atelier_self`, owned by the PM inside the product; this doc then retires to a read-only cold-boot projection.
 
+> ⏭ **RESUME PLAN (operator, 2026-06-25):** next session — do **BL-R1** (crash-recovery hardening: reaped sessions release their work_items + reset tasks; claim skips a stuck collider; verify gcStale) **then headroom-digest → headroom-eval (BL-H1/BL-H2)**, THEN **go-live** (bring up DB + dev server token-unset → operator hits Continue → watch ROUNDS + the new `/projects/[id]/graph`). Server is currently DOWN (paused). All work committed + pushed to origin/v2 (tip `1da738e`); docs on v2-main. The full "alive" arc + repo-creation + usage-observability + command-center-ux + lifecycle-graph are DONE. Open tracked: BL-R1, wi-harden-2 (latent), headroom (BL-H1/H2), backlog (BL-1/BL-2/BL-2b).
+
 | status | id | what | gate |
 |---|---|---|---|
 | done | wave-14.x | v2.0 audit remediation + full-viewport ✅ 6/6 (d7f0506, 4995d58+edf4ff4, 3a48c7c, 487b5a6, 16e8283, eab1961 — pushed) | auto |

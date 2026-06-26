@@ -171,6 +171,10 @@ describe('LG-2 buildLifecycleGraph — the full Continue→session→completion�
 			session: sessionId,
 			project: projectId,
 			type: 'completion',
+			tokensIn: 1200,
+			tokensOut: 800,
+			costUsd: 0.0342,
+			durationMs: 240_000,
 			detail: { ok: true, summary: 'built the widget' }
 		});
 
@@ -242,6 +246,16 @@ describe('LG-2 buildLifecycleGraph — the full Continue→session→completion�
 		expect(reported[0].from).toBe(sessionId);
 		expect(reported[0].to).toBe(pmTickId);
 		expect(reported[0].inferred).toBe(true);
+
+		// DETAIL: the session node's token/cost detail is folded from the completion agent_event.
+		const det = g.details[sessionId];
+		expect(det).toBeDefined();
+		expect(det.tokensIn).toBe(1200);
+		expect(det.tokensOut).toBe(800);
+		expect(det.costUsd).toBeCloseTo(0.0342, 6);
+		expect(det.durationMs).toBe(240_000);
+		expect(det.tools).toEqual([]); // no tool_use rows seeded → honest empty breakdown
+		expect(det.toolTotal).toBe(0);
 	});
 
 	it('resolves an EXPLICIT Continue→session edge when the spawn parent_event_id IS the marker', async () => {
@@ -288,6 +302,104 @@ describe('LG-2 buildLifecycleGraph — the full Continue→session→completion�
 		expect(fu[0].from).toBe(orig.id);
 		expect(fu[0].to).toBe(followUp.id);
 		expect(fu[0].inferred).toBe(false);
+	});
+});
+
+describe('LG-2 per-session DETAIL — token usage + cost + per-tool breakdown (F-008)', () => {
+	/** CREATE a tool_use message row naming a tool for a session. */
+	async function seedToolUse(sessionId: string, tool: string): Promise<void> {
+		await db.query(`CREATE message CONTENT $c;`, {
+			c: {
+				session: new StringRecordId(sessionId),
+				role: 'tool',
+				kind: 'tool_use',
+				content: '',
+				tool_call: { name: tool }
+			}
+		});
+	}
+
+	it('sums tokens/cost/duration across multiple agent_events and folds per-tool counts', async () => {
+		const sessionId = await seedSession({
+			status: 'done',
+			toolIter: 5,
+			startedAt: new Date().toISOString()
+		});
+		// Two priced agent_events → the detail SUMS each signal.
+		await writeAgentEvent(db, {
+			session: sessionId,
+			project: projectId,
+			type: 'completion',
+			tokensIn: 100,
+			tokensOut: 50,
+			costUsd: 0.01,
+			durationMs: 1000
+		});
+		await writeAgentEvent(db, {
+			session: sessionId,
+			project: projectId,
+			type: 'completion',
+			tokensIn: 200,
+			tokensOut: 25,
+			costUsd: 0.02,
+			durationMs: 500
+		});
+		// tool_use rows: Bash×2, Read×1 → desc by count then name.
+		await seedToolUse(sessionId, 'Bash');
+		await seedToolUse(sessionId, 'Read');
+		await seedToolUse(sessionId, 'Bash');
+
+		const g = await buildLifecycleGraph(db, projectId);
+		const det = g.details[sessionId];
+		expect(det).toBeDefined();
+		expect(det.tokensIn).toBe(300);
+		expect(det.tokensOut).toBe(75);
+		expect(det.costUsd).toBeCloseTo(0.03, 6);
+		expect(det.durationMs).toBe(1500);
+		expect(det.tools).toEqual([
+			{ tool: 'Bash', count: 2 },
+			{ tool: 'Read', count: 1 }
+		]);
+		expect(det.toolTotal).toBe(3);
+		expect(det.toolsCapped).toBe(false);
+	});
+
+	it('omits cost for an UNPRICED model but still reports tokens (honest — never fake $)', async () => {
+		const sessionId = await seedSession({ status: 'done', startedAt: new Date().toISOString() });
+		await writeAgentEvent(db, {
+			session: sessionId,
+			project: projectId,
+			type: 'completion',
+			tokensIn: 500,
+			tokensOut: 300
+			// costUsd omitted → unpriced
+		});
+		const g = await buildLifecycleGraph(db, projectId);
+		const det = g.details[sessionId];
+		expect(det).toBeDefined();
+		expect(det.tokensIn).toBe(500);
+		expect(det.tokensOut).toBe(300);
+		expect(det.costUsd).toBeUndefined(); // absent → omitted, not 0
+	});
+
+	it('a session with NO recorded usage gets NO detail entry (empty shadow path → popover shows —)', async () => {
+		const sessionId = await seedSession({ status: 'running', startedAt: new Date().toISOString() });
+		const g = await buildLifecycleGraph(db, projectId);
+		// The session node exists, but with no agent_event/tool_use rows it has no detail entry.
+		expect(g.nodes.some((n) => n.id === sessionId)).toBe(true);
+		expect(g.details[sessionId]).toBeUndefined();
+	});
+
+	it('folds a tool-only session (no token rows) into a tools breakdown with absent token fields', async () => {
+		const sessionId = await seedSession({ status: 'running', startedAt: new Date().toISOString() });
+		await seedToolUse(sessionId, 'Grep');
+		const g = await buildLifecycleGraph(db, projectId);
+		const det = g.details[sessionId];
+		expect(det).toBeDefined();
+		expect(det.tools).toEqual([{ tool: 'Grep', count: 1 }]);
+		expect(det.toolTotal).toBe(1);
+		expect(det.tokensIn).toBeUndefined();
+		expect(det.costUsd).toBeUndefined();
 	});
 });
 

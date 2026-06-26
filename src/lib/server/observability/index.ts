@@ -27,5 +27,7 @@ export {
 	type LifecycleNodeKind,
 	type LifecycleEdgeKind,
 	type LifecycleSource,
-	type LifecycleGraphLimits
+	type LifecycleGraphLimits,
+	type LifecycleNodeDetail,
+	type LifecycleToolCount
 } from './lifecycle';

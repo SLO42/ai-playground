@@ -91,7 +91,38 @@ export interface LifecycleEdge {
 }
 
 /** Which substrate source a read folded (for the honest-partial `failedSources`). */
-export type LifecycleSource = 'scene_event' | 'session' | 'task' | 'agent_event';
+export type LifecycleSource = 'scene_event' | 'session' | 'task' | 'agent_event' | 'tool_use';
+
+/** One tool name + the count of times a session invoked it (per-tool breakdown). */
+export interface LifecycleToolCount {
+	/** The opaque tool name (tool_call.name) — e.g. "Bash", "Read", an mcp__ id. D-026 opaque. */
+	tool: string;
+	/** How many tool_use rows in this session named this tool. Always ≥ 1. */
+	count: number;
+}
+
+/**
+ * Per-session DETAIL threaded onto a session node for the LG-3 popover (LIFECYCLE-GRAPH-SPEC):
+ * token usage + cost + a per-tool breakdown, all DERIVED from REAL rows (F-008). Every field is
+ * OMITTED when its source row is absent — never str(undefined), never a fabricated 0/$ (an unpriced
+ * model leaves `costUsd` absent; a session that called no tools has an empty `tools` + total 0).
+ */
+export interface LifecycleNodeDetail {
+	/** Σ tokens_in across the session's agent_event rows; omitted when none recorded. */
+	tokensIn?: number;
+	/** Σ tokens_out across the session's agent_event rows; omitted when none recorded. */
+	tokensOut?: number;
+	/** Σ cost_usd across PRICED agent_event rows only (F-008); omitted when nothing priced. */
+	costUsd?: number;
+	/** Σ duration_ms across the session's agent_event rows; omitted when none recorded. */
+	durationMs?: number;
+	/** Per-tool call counts (desc by count then name), from tool_use message rows. Empty when none. */
+	tools: LifecycleToolCount[];
+	/** Σ of all tool calls (the breakdown total). 0 for a session that called nothing (honest). */
+	toolTotal: number;
+	/** True when the per-tool scan hit its row cap — the counts are an honest lower bound (F-014). */
+	toolsCapped: boolean;
+}
 
 /** The assembled lifecycle graph for one project (or honest-empty). */
 export interface LifecycleGraph {
@@ -107,6 +138,12 @@ export interface LifecycleGraph {
 	failedSources: LifecycleSource[];
 	/** True when ANY source hit its window cap (more rows exist than were folded — F-014). */
 	capped: boolean;
+	/**
+	 * Per-session DETAIL keyed by session node id — token usage / cost / per-tool breakdown for
+	 * the LG-3 popover. ONLY session nodes get an entry, and ONLY when at least one detail signal
+	 * exists (an absent key ⇒ the node has no recorded usage yet → the popover shows honest '—').
+	 */
+	details: Record<string, LifecycleNodeDetail>;
 }
 
 /** Per-class window caps so the graph stays renderable (recent/active, not all-history). */
@@ -122,6 +159,8 @@ export interface LifecycleGraphLimits {
 	/** Inference window in ms: a Continue→session / session→PM heuristic edge only links nodes
 	 *  whose start times fall within this window of each other. */
 	inferenceWindowMs?: number;
+	/** Max tool_use message rows scanned across ALL in-window sessions for the per-tool breakdown. */
+	toolRows?: number;
 }
 
 const DEFAULT_LIMITS: Required<LifecycleGraphLimits> = {
@@ -131,7 +170,10 @@ const DEFAULT_LIMITS: Required<LifecycleGraphLimits> = {
 	agentEvents: 2000,
 	// 30 min — a Continue drain's sessions spawn within minutes; a session→PM re-tick fires on
 	// the task-terminal change. A generous-but-bounded window keeps the heuristic honest.
-	inferenceWindowMs: 30 * 60 * 1000
+	inferenceWindowMs: 30 * 60 * 1000,
+	// The per-tool breakdown scans tool_use rows ACROSS every in-window session in one bounded
+	// query — capped so a busy project never triggers an unbounded message-table scan (F-014).
+	toolRows: 20_000
 };
 
 /** The scene_event PM marker kind that roots the PM node (LG-1; m0066). The Continue roots
@@ -162,6 +204,21 @@ function refOrUndef(v: unknown): string | undefined {
 function intOrUndef(v: unknown): number | undefined {
 	if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return undefined;
 	return Math.floor(v);
+}
+
+/** A finite, non-negative number → itself, else undefined (an absent figure is omitted, not 0). */
+function numOrUndef(v: unknown): number | undefined {
+	if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) return undefined;
+	return v;
+}
+
+/** Extract the opaque tool name from a tool_use row's tool_call blob; null when malformed/absent. */
+function toolNameOf(toolCall: unknown): string | null {
+	if (!toolCall || typeof toolCall !== 'object') return null;
+	const name = (toolCall as Record<string, unknown>).name;
+	if (typeof name !== 'string') return null;
+	const t = name.trim();
+	return t === '' ? null : t;
 }
 
 /** A string[] column → cleaned non-empty strings, or undefined when none (never a fake empty). */
@@ -230,6 +287,20 @@ interface RawAgentEvent {
 	parent_event_id?: unknown;
 	at?: unknown;
 }
+/** A token/cost/duration row off agent_event (for the per-session usage detail). */
+interface RawUsage {
+	session?: unknown;
+	tokens_in?: unknown;
+	tokens_out?: unknown;
+	cost_usd?: unknown;
+	duration_ms?: unknown;
+	at?: unknown; // selected only to satisfy the ORDER BY idiom (F-020); never read in the fold
+}
+/** A tool_use message row off the message table (for the per-session tool breakdown). */
+interface RawToolUse {
+	session?: unknown;
+	tool_call?: unknown;
+}
 
 // ── Bounded source readers (each: own LIMIT, project-scoped, newest-first) ────────────────
 
@@ -281,6 +352,40 @@ async function readAgentEvents(db: Db, project: StringRecordId, lim: number): Pr
 	return rows ?? [];
 }
 
+/** Token/cost/duration agent_event rows for the project (capped) — folded per-session for detail. */
+async function readUsage(db: Db, project: StringRecordId, lim: number): Promise<RawUsage[]> {
+	// F-020: every ORDER BY idiom (`at`) MUST appear in the SELECT projection or SurrealDB throws
+	// "Missing order idiom" at parse — so `at` is selected even though the fold never reads it.
+	const [rows] = await db.query<[RawUsage[]]>(
+		`SELECT session, tokens_in, tokens_out, cost_usd, duration_ms, at FROM agent_event
+		  WHERE project = $project
+		    AND (tokens_in != NONE OR tokens_out != NONE OR cost_usd != NONE OR duration_ms != NONE)
+		  ORDER BY at DESC LIMIT $lim;`,
+		{ project, lim }
+	);
+	return rows ?? [];
+}
+
+/**
+ * tool_use message rows for a bounded set of sessions (the in-window session ids), in ONE query.
+ * F-020: `seq`/`at` would need to be SELECTed if ordered by; we don't ORDER (we only count names),
+ * so a bare project-scoped session-IN scan with a hard LIMIT is correct + bounded (F-014).
+ */
+async function readToolUse(
+	db: Db,
+	sessionIds: StringRecordId[],
+	lim: number
+): Promise<RawToolUse[]> {
+	if (sessionIds.length === 0) return [];
+	const [rows] = await db.query<[RawToolUse[]]>(
+		`SELECT session, tool_call FROM message
+		  WHERE kind = "tool_use" AND session IN $sids
+		  LIMIT $lim;`,
+		{ sids: sessionIds, lim }
+	);
+	return rows ?? [];
+}
+
 /**
  * Assemble the lifecycle node-graph for one project. PURE READ — every query is a SELECT; the
  * function derives the graph live and returns it (it writes nothing).
@@ -314,7 +419,8 @@ export async function buildLifecycleGraph(
 			edges: [],
 			complete: true,
 			failedSources: [],
-			capped: false
+			capped: false,
+			details: {}
 		};
 	}
 
@@ -335,11 +441,12 @@ export async function buildLifecycleGraph(
 		}
 	};
 
-	const [rawMarkers, rawSessions, rawTasks, rawEvents] = await Promise.all([
+	const [rawMarkers, rawSessions, rawTasks, rawEvents, rawUsage] = await Promise.all([
 		run('scene_event', () => readMarkers(db, project, lim.markers + 1)),
 		run('session', () => readSessions(db, project, lim.sessions + 1)),
 		run('task', () => readTasks(db, project, lim.tasks + 1)),
-		run('agent_event', () => readAgentEvents(db, project, lim.agentEvents + 1))
+		run('agent_event', () => readAgentEvents(db, project, lim.agentEvents + 1)),
+		run('agent_event', () => readUsage(db, project, lim.agentEvents + 1))
 	]);
 
 	// Detect + trim per-source truncation (F-014 — honest cap, never a silent partial).
@@ -558,12 +665,90 @@ export async function buildLifecycleGraph(
 		return a.to < b.to ? -1 : a.to > b.to ? 1 : 0;
 	});
 
+	// ── Per-session DETAIL (popover): token usage / cost / per-tool breakdown ───────────────
+	// All DERIVED from REAL rows (F-008). A session with no recorded usage gets NO entry (the
+	// popover then shows honest '—'); an unpriced model leaves costUsd absent (never fake $).
+	const sessionNodeIds = new Set(nodes.filter((n) => n.kind === 'session').map((n) => n.id));
+
+	// (a) Token/cost/duration — fold the usage rows per session (Σ each signal; cost only when priced).
+	interface UsageAcc { tokensIn: number; tokensOut: number; costUsd: number; durationMs: number;
+		hasIn: boolean; hasOut: boolean; hasCost: boolean; hasDur: boolean; }
+	const usageBy = new Map<string, UsageAcc>();
+	for (const u of rawUsage) {
+		const sid = refOrUndef(u.session);
+		if (!sid || !sessionNodeIds.has(sid)) continue; // only sessions IN the rendered node set
+		const acc = usageBy.get(sid) ?? {
+			tokensIn: 0, tokensOut: 0, costUsd: 0, durationMs: 0,
+			hasIn: false, hasOut: false, hasCost: false, hasDur: false
+		};
+		const ti = intOrUndef(u.tokens_in);
+		const to = intOrUndef(u.tokens_out);
+		const c = numOrUndef(u.cost_usd);
+		const d = intOrUndef(u.duration_ms);
+		if (ti != null) { acc.tokensIn += ti; acc.hasIn = true; }
+		if (to != null) { acc.tokensOut += to; acc.hasOut = true; }
+		if (c != null) { acc.costUsd += c; acc.hasCost = true; }
+		if (d != null) { acc.durationMs += d; acc.hasDur = true; }
+		usageBy.set(sid, acc);
+	}
+
+	// (b) Per-tool breakdown — ONE bounded tool_use scan over the in-window session ids (F-014).
+	const sessionLinks: StringRecordId[] = [];
+	for (const id of sessionNodeIds) {
+		try {
+			sessionLinks.push(link(id));
+		} catch {
+			// A session id that doesn't pass the record-id guard is skipped (defensive — node ids
+			// come from real rows so this should never fire; never throws the whole read).
+		}
+	}
+	let rawTools: RawToolUse[] = [];
+	if (sessionLinks.length > 0) {
+		rawTools = await run('tool_use', () => readToolUse(db, sessionLinks, lim.toolRows + 1));
+	}
+	const toolsCappedAll = rawTools.length > lim.toolRows;
+	const scannedTools = toolsCappedAll ? rawTools.slice(0, lim.toolRows) : rawTools;
+	const toolsBy = new Map<string, Map<string, number>>();
+	for (const r of scannedTools) {
+		const sid = refOrUndef(r.session);
+		if (!sid || !sessionNodeIds.has(sid)) continue;
+		const name = toolNameOf(r.tool_call);
+		if (name == null) continue; // malformed/absent → skip, never a fabricated bucket (F-008)
+		const m = toolsBy.get(sid) ?? new Map<string, number>();
+		m.set(name, (m.get(name) ?? 0) + 1);
+		toolsBy.set(sid, m);
+	}
+
+	// (c) Assemble the details map — only for sessions with at least one detail signal.
+	const details: Record<string, LifecycleNodeDetail> = {};
+	const detailSessions = new Set<string>([...usageBy.keys(), ...toolsBy.keys()]);
+	for (const sid of detailSessions) {
+		const u = usageBy.get(sid);
+		const tm = toolsBy.get(sid);
+		const tools: LifecycleToolCount[] = tm
+			? [...tm.entries()]
+					.map(([tool, count]) => ({ tool, count }))
+					.sort((a, b) => b.count - a.count || a.tool.localeCompare(b.tool))
+			: [];
+		const toolTotal = tools.reduce((s, t) => s + t.count, 0);
+		details[sid] = {
+			...(u?.hasIn ? { tokensIn: u.tokensIn } : {}),
+			...(u?.hasOut ? { tokensOut: u.tokensOut } : {}),
+			...(u?.hasCost ? { costUsd: u.costUsd } : {}),
+			...(u?.hasDur ? { durationMs: u.durationMs } : {}),
+			tools,
+			toolTotal,
+			toolsCapped: toolsCappedAll
+		};
+	}
+
 	return {
 		project: safeProject,
 		nodes,
 		edges,
 		complete: failedSources.length === 0,
 		failedSources,
-		capped
+		capped: capped || toolsCappedAll,
+		details
 	};
 }

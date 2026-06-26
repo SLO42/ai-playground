@@ -46,22 +46,45 @@ export interface PlacedEdge extends LifecycleEdge {
 	path: string;
 }
 
+/** One column (causal-rank) band — drives the n8n-style column header + rhythm guides. */
+export interface GraphColumn {
+	/** The causal-depth rank this column represents (0 = roots). */
+	col: number;
+	/** Left x of the column band (px). */
+	x: number;
+	/** Center x of the column (where the cards + header center). */
+	centerX: number;
+	/** Column band width (px). */
+	width: number;
+	/** How many nodes landed in this column. */
+	count: number;
+	/** A short phase label for the header (derived from the dominant node kind in the column). */
+	label: string;
+}
+
 /** The laid-out graph + the canvas extent the SVG should size to. */
 export interface GraphLayout {
 	nodes: PlacedNode[];
 	edges: PlacedEdge[];
+	/** Per-column header/rhythm metadata, left→right by rank. */
+	columns: GraphColumn[];
 	/** Total canvas width in px (covers the rightmost node + node half-width + margin). */
 	width: number;
 	/** Total canvas height in px. */
 	height: number;
 }
 
-/** Geometry constants (px). Exported so the component + tests agree on the box size. */
-export const NODE_W = 200;
-export const NODE_H = 84;
-export const COL_GAP = 96; // horizontal gap between columns (depth steps)
-export const ROW_GAP = 28; // vertical gap between rows in a column
-export const MARGIN = 32; // canvas padding around the whole graph
+/** Geometry constants (px). Exported so the component + tests agree on the box size.
+ *  Fixed-size n8n-style card: a kind eyebrow + truncated title + a tidy meta grid + a footer
+ *  metric strip all FIT inside NODE_W×NODE_H with no overflow (the card text is laid out as HTML
+ *  inside a <foreignObject> of exactly this size, clipped by overflow:hidden + ellipsis). */
+export const NODE_W = 224;
+export const NODE_H = 124;
+export const COL_GAP = 104; // horizontal gap between columns (depth steps)
+export const ROW_GAP = 32; // vertical gap between rows in a column
+export const MARGIN = 36; // canvas padding around the whole graph
+/** Reserved band above each column for its header (phase label + node count). */
+export const COL_HEADER_H = 34;
 
 const COL_STRIDE = NODE_W + COL_GAP;
 const ROW_STRIDE = NODE_H + ROW_GAP;
@@ -131,7 +154,7 @@ export function layoutGraph(
 	const es = Array.isArray(edges) ? edges : [];
 
 	if (ns.length === 0) {
-		return { nodes: [], edges: [], width: MARGIN * 2, height: MARGIN * 2 };
+		return { nodes: [], edges: [], columns: [], width: MARGIN * 2, height: MARGIN * 2 };
 	}
 
 	const idSet = new Set(ns.map((n) => n.id));
@@ -167,7 +190,8 @@ export function layoutGraph(
 			col,
 			row,
 			x: MARGIN + col * COL_STRIDE + NODE_W / 2,
-			y: MARGIN + row * ROW_STRIDE + NODE_H / 2
+			// Cards start BELOW the column-header band so the header never overlaps row 0.
+			y: MARGIN + COL_HEADER_H + row * ROW_STRIDE + NODE_H / 2
 		};
 	});
 
@@ -192,9 +216,59 @@ export function layoutGraph(
 		if (p.row > maxRow) maxRow = p.row;
 	}
 	const width = MARGIN * 2 + (maxCol + 1) * NODE_W + maxCol * COL_GAP;
-	const height = MARGIN * 2 + (maxRow + 1) * NODE_H + maxRow * ROW_GAP;
+	const height = MARGIN * 2 + COL_HEADER_H + (maxRow + 1) * NODE_H + maxRow * ROW_GAP;
 
-	return { nodes: placed, edges: placedEdges, width, height };
+	// Column bands (left→right by rank) — header label from the column's dominant node kind.
+	const columns: GraphColumn[] = [];
+	for (let col = 0; col <= maxCol; col++) {
+		const inCol = placed.filter((p) => p.col === col);
+		const x = MARGIN + col * COL_STRIDE;
+		columns.push({
+			col,
+			x,
+			centerX: x + NODE_W / 2,
+			width: NODE_W,
+			count: inCol.length,
+			label: columnLabel(col, inCol)
+		});
+	}
+
+	return { nodes: placed, edges: placedEdges, columns, width, height };
+}
+
+/** A short phase label for a column header: the dominant node kind, else a rank fallback. */
+function columnLabel(col: number, inCol: PlacedNode[]): string {
+	if (inCol.length === 0) return `Rank ${col}`;
+	const counts = new Map<LifecycleNodeKind, number>();
+	for (const n of inCol) counts.set(n.kind, (counts.get(n.kind) ?? 0) + 1);
+	let best: LifecycleNodeKind = inCol[0].kind;
+	let bestN = 0;
+	for (const [k, n] of counts) {
+		if (n > bestN) {
+			best = k;
+			bestN = n;
+		}
+	}
+	switch (best) {
+		case 'continue':
+			return 'Continue';
+		case 'session':
+			return inCol.length > 1 ? 'Agent sessions' : 'Agent session';
+		case 'pm':
+			return 'Project manager';
+		case 'task':
+			return inCol.length > 1 ? 'Tasks' : 'Task';
+	}
+}
+
+/**
+ * Truncate a label to `max` chars with a trailing ellipsis — the VISIBLE card title (the full,
+ * untruncated label is always available on hover/popover, never lost). CSS `text-overflow:ellipsis`
+ * does the visual clip too, but this keeps the SVG/text-equivalent honest at a known bound (F-014).
+ */
+export function truncate(s: string, max = 40): string {
+	if (s.length <= max) return s;
+	return `${s.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
 /** Short, screen-reader/tooltip-friendly noun for a node kind. */

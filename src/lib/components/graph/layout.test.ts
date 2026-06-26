@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { layoutGraph, nodeKindLabel, NODE_W, MARGIN, COL_GAP } from './layout';
+import { layoutGraph, nodeKindLabel, truncate, NODE_W, MARGIN, COL_GAP, COL_HEADER_H } from './layout';
 import type { LifecycleEdge, LifecycleNode } from '$lib/server/observability';
 
 // LG-3 layout VERIFY — the PURE layout fn. Deterministic geometry from the LG-2 read model;
@@ -18,6 +18,7 @@ describe('layoutGraph', () => {
 		const out = layoutGraph([], []);
 		expect(out.nodes).toEqual([]);
 		expect(out.edges).toEqual([]);
+		expect(out.columns).toEqual([]);
 		expect(out.width).toBe(MARGIN * 2);
 		expect(out.height).toBe(MARGIN * 2);
 	});
@@ -35,6 +36,23 @@ describe('layoutGraph', () => {
 		expect(out.nodes[0].col).toBe(0);
 		expect(out.nodes[0].row).toBe(0);
 		expect(out.nodes[0].x).toBe(MARGIN + NODE_W / 2);
+		// Cards sit BELOW the column-header band (y offset by COL_HEADER_H).
+		expect(out.nodes[0].y).toBeGreaterThan(MARGIN + COL_HEADER_H);
+	});
+
+	it('emits a per-column band (header label + count) per rank', () => {
+		const nodes = [
+			node('continue:1', 'continue'),
+			node('session:1', 'session'),
+			node('session:2', 'session')
+		];
+		const edges = [edge('continue:1', 'session:1'), edge('continue:1', 'session:2')];
+		const out = layoutGraph(nodes, edges);
+		expect(out.columns).toHaveLength(2);
+		expect(out.columns[0]).toMatchObject({ col: 0, count: 1, label: 'Continue' });
+		expect(out.columns[1]).toMatchObject({ col: 1, count: 2, label: 'Agent sessions' });
+		// Column center x aligns with the cards in that column.
+		expect(out.columns[1].centerX).toBe(out.nodes.find((n) => n.id === 'session:1')!.x);
 	});
 
 	it('assigns causal-depth columns: Continue→session→pm→task is 4 columns', () => {
@@ -126,5 +144,20 @@ describe('nodeKindLabel', () => {
 		expect(nodeKindLabel('session')).toBe('Agent session');
 		expect(nodeKindLabel('pm')).toBe('Project manager');
 		expect(nodeKindLabel('task')).toBe('Task');
+	});
+});
+
+describe('truncate', () => {
+	it('leaves a short string unchanged', () => {
+		expect(truncate('hello', 40)).toBe('hello');
+	});
+	it('ellipsises a long string to the bound (full title kept by the caller)', () => {
+		const long = 'a'.repeat(60);
+		const out = truncate(long, 40);
+		expect(out.length).toBe(40);
+		expect(out.endsWith('…')).toBe(true);
+	});
+	it('handles the empty string (shadow path)', () => {
+		expect(truncate('', 40)).toBe('');
 	});
 });

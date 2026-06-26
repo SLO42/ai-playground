@@ -40,7 +40,8 @@ function emptyGraph(projectId: string): LifecycleGraph {
 		edges: [],
 		complete: true,
 		failedSources: [],
-		capped: false
+		capped: false,
+		details: {}
 	};
 }
 

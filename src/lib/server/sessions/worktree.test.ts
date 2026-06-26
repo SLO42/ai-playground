@@ -1,6 +1,6 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, readFileSync, mkdirSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
@@ -171,6 +171,70 @@ describe('acquireSessionWorktree — idempotent re-acquire (resume)', () => {
 		expect(git(repo, 'rev-parse', 'atelier/session/sess-half')).toBe(head);
 
 		await again.cleanup();
+	});
+});
+
+describe('acquireSessionWorktree — stale untracked on-disk dir guard (F-007 work-loss)', () => {
+	it('(a) EMPTY stale dir → rm path taken, worktree add proceeds, no orphaned dir left', async () => {
+		const repo = initRepo();
+		trackParent(repo);
+		const worktreesRoot = mkdtempSync(join(tmpdir(), 'wt-root-'));
+		toClean.push(worktreesRoot);
+		const segment = safeSegment('sess-empty');
+		const worktreeDir = join(worktreesRoot, segment);
+		// seed an EMPTY untracked dir at the worktree path (the documented crash half-state)
+		mkdirSync(worktreeDir, { recursive: true });
+		expect(existsSync(worktreeDir)).toBe(true);
+
+		const wt = await acquireSessionWorktree(repo, 'sess-empty', { worktreesRoot });
+
+		// the worktree was created cleanly at the same path (off HEAD, on the session branch)
+		expect(wt.cwd).toBe(worktreeDir);
+		expect(existsSync(join(worktreeDir, 'README.md'))).toBe(true);
+		expect(git(worktreeDir, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('atelier/session/sess-empty');
+		// NO preserve happened — the empty dir was rm'd, not renamed aside
+		expect(existsSync(`${worktreeDir}.orphaned-${segment}`)).toBe(false);
+
+		await wt.cleanup();
+	});
+
+	it('(b) NON-EMPTY stale dir → PRESERVED aside (file intact), worktree still created clean, warning surfaced', async () => {
+		const repo = initRepo();
+		trackParent(repo);
+		const worktreesRoot = mkdtempSync(join(tmpdir(), 'wt-root-'));
+		toClean.push(worktreesRoot);
+		const segment = safeSegment('sess-nonempty');
+		const worktreeDir = join(worktreesRoot, segment);
+		// seed a NON-EMPTY untracked dir at the worktree path — it carries "uncommitted work"
+		mkdirSync(worktreeDir, { recursive: true });
+		writeFileSync(join(worktreeDir, 'uncommitted-work.txt'), 'precious unsaved work\n');
+
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+		let surfaced = '';
+		let wt: Awaited<ReturnType<typeof acquireSessionWorktree>>;
+		try {
+			wt = await acquireSessionWorktree(repo, 'sess-nonempty', { worktreesRoot });
+			// capture BEFORE mockRestore() (which clears mock.calls along with restoring)
+			surfaced = warn.mock.calls.map((c) => String(c[0])).join('\n');
+		} finally {
+			warn.mockRestore();
+		}
+
+		// the dir was PRESERVED by renaming aside — the file survives intact at the orphaned path
+		const orphaned = `${worktreeDir}.orphaned-${segment}`;
+		expect(existsSync(orphaned)).toBe(true);
+		expect(readFileSync(join(orphaned, 'uncommitted-work.txt'), 'utf8')).toBe('precious unsaved work\n');
+
+		// the original path is now a CLEAN worktree (work was NOT destroyed; original path vacated)
+		expect(wt!.cwd).toBe(worktreeDir);
+		expect(existsSync(join(worktreeDir, 'README.md'))).toBe(true);
+		expect(existsSync(join(worktreeDir, 'uncommitted-work.txt'))).toBe(false);
+		expect(git(worktreeDir, 'rev-parse', '--abbrev-ref', 'HEAD')).toBe('atelier/session/sess-nonempty');
+
+		// a NAMED warning was surfaced (operator-visible, not silent)
+		expect(surfaced).toContain('StaleOrphanedDirPreserved');
+
+		await wt!.cleanup();
 	});
 });
 

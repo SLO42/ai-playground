@@ -31,7 +31,7 @@
 //   • D-018: only LOCAL git verbs (worktree/branch/rev-parse) — never push/remote/--force.
 
 import { execFile } from 'node:child_process';
-import { mkdir, rm, stat } from 'node:fs/promises';
+import { mkdir, readdir, rename, rm, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 
 // ── Named errors (EVERY ERROR HAS A NAME) ──────────────────────────────────────────────
@@ -169,6 +169,53 @@ async function isDir(dir: string): Promise<boolean> {
 }
 
 /**
+ * True iff `dir` exists, is a directory, AND has ZERO entries. Used to distinguish the
+ * DOCUMENTED safe-to-delete half-state (an empty dir left by a crash between `mkdir` and
+ * `git worktree add`) from a NON-EMPTY dir that may carry uncommitted work (F-007 work-loss).
+ * A missing dir / read error → false (we treat unknown as NOT-empty, the conservative side:
+ * a false-non-empty merely preserves a dir that was actually empty — never destroys work).
+ */
+async function isEmptyDir(dir: string): Promise<boolean> {
+	try {
+		return (await readdir(dir)).length === 0;
+	} catch {
+		return false;
+	}
+}
+
+/**
+ * PRESERVE a stale, work-bearing on-disk dir at `worktreeDir` instead of hard-deleting it
+ * (F-007 work-loss class). The dir is on disk but git does NOT track it as a worktree, AND it
+ * is NON-EMPTY — it may hold a prior run's uncommitted work — so we rename it ASIDE to a
+ * deterministic sibling `<worktreeDir>.orphaned-<segment>` (id-based for traceability) and emit
+ * a NAMED warning. The caller then proceeds to a clean `git worktree add` at the now-vacant
+ * worktreeDir.
+ *
+ * Bounded + idempotent: if the id-based target already exists (a prior preserve), append a
+ * timestamp so we never collide with or overwrite an earlier rescued tree (still PRESERVE,
+ * never destroy). `rename` is atomic on the same filesystem. On the rare cross-device /
+ * permission failure we DO NOT fall back to `rm` (that would destroy the work) — we leave the
+ * dir in place and surface a named warning; the caller's subsequent `worktree add` then fails
+ * loudly on the occupied path rather than silently eating the dir.
+ */
+async function preserveOrphanedDir(worktreeDir: string, segment: string): Promise<void> {
+	let target = `${worktreeDir}.orphaned-${segment}`;
+	if (await isDir(target)) target = `${target}-${Date.now()}`;
+	try {
+		await rename(worktreeDir, target);
+		console.warn(
+			`[worktree] StaleOrphanedDirPreserved: non-empty stale dir (possible uncommitted work, ` +
+				`F-007) renamed ${worktreeDir} → ${target} before a clean worktree add`
+		);
+	} catch (err) {
+		console.warn(
+			`[worktree] StaleOrphanedDirPreserveFailed: could NOT move non-empty stale dir ` +
+				`${worktreeDir} (left in place, NOT deleted — F-007): ${(err as Error)?.message ?? String(err)}`
+		);
+	}
+}
+
+/**
  * Assert projectRoot is a git repo, FAIL CLOSED otherwise. Three shadow paths handled:
  *   • nil/empty projectRoot   → NotAGitRepoError (named).
  *   • dir missing on disk      → NotAGitRepoError (named).
@@ -265,7 +312,7 @@ export async function acquireSessionWorktree(
 	}
 
 	// A stale dir on disk that git does NOT track as a worktree (a half-state from a prior
-	// crash between mkdir and `worktree add`): prune git's stale records, then clear the dir
+	// crash between mkdir and `worktree add`): prune git's stale records, then vacate the dir
 	// so `worktree add` lands clean. Both bounded, both idempotent (absorb the partial work).
 	if (await isDir(worktreeDir)) {
 		const pruneArgs = ['worktree', 'prune'] as const;
@@ -275,7 +322,16 @@ export async function acquireSessionWorktree(
 		if (await worktreeExists(projectRoot, worktreeDir, run)) {
 			return { cwd: worktreeDir, branch, cleanup };
 		}
-		await rm(worktreeDir, { recursive: true, force: true });
+		// Vacate the untracked dir so `worktree add` lands clean — but NEVER blindly hard-delete:
+		//   • EMPTY (the DOCUMENTED crash half-state) → rm and proceed.
+		//   • NON-EMPTY (may hold a prior run's uncommitted work) → PRESERVE it: rename aside to a
+		//     sibling `.orphaned-<segment>` path + NAMED warning, then proceed to a clean add. This
+		//     is the F-007 work-loss guard: an unconditional rm here would silently destroy work.
+		if (await isEmptyDir(worktreeDir)) {
+			await rm(worktreeDir, { recursive: true, force: true });
+		} else {
+			await preserveOrphanedDir(worktreeDir, segment);
+		}
 	}
 
 	// Ensure the parent root exists (idempotent; recursive). Lives OUTSIDE the project tree.

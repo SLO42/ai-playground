@@ -7,7 +7,7 @@ import { startTestDb, type TestDb } from '../db/testserver';
 import { EventBus } from '../events/bus';
 import { watchTable } from '../events/db-source';
 import { createProject, deleteProject } from '../projects/repo';
-import { createTask, getTask, setStatus } from '../tasks/repo';
+import { createTask, getTask, setStatus, resetStuckTaskToFailed } from '../tasks/repo';
 import {
 	ClaudeCodeRuntime,
 	type CcBackend,
@@ -1484,4 +1484,99 @@ describe('Orchestrator backstop maintenance gc (R1-2)', () => {
 		orch.startMaintenance({ intervalMs: 1000 });
 		expect(orch.maintenanceArmed).toBe(false);
 	});
+});
+
+// ── BL-R2 (BL-R1 red-team named gap) — a FAILED task_run spawn/route must transition its TASK
+//    off `in_progress`, never strand it until the next boot reaper. `task_run` work_items carry
+//    no `session`, so BL-R1's releaseSessionWork can't reach the task; the orchestrator drain must
+//    drive it to the honest terminal `failed` itself, after the work_item is marked failed. ──
+describe('BL-R2 — a failed task_run spawn/route drives its TASK to failed (not stranded in_progress)', () => {
+	// A route resolver that ALWAYS throws — simulates resolveRoute failing or the spawn path
+	// rejecting BEFORE launchSession, the exact window where post-task (the only terminal-task
+	// writer) never runs. The task was already moved ready→in_progress before the throw.
+	const throwingRoute = (): StubRoute => {
+		throw new Error('route boom (BL-R2 simulated route/spawn failure)');
+	};
+
+	it('route throws after ready→in_progress: task ends `failed`, work_item `failed`, no spawn, idempotent re-drive', async () => {
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = gatedBackend();
+		const runtime = new ClaudeCodeRuntime({ backend });
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 4,
+			mode: 'manual',
+			route: throwingRoute,
+			acquireWorktree: fakeWt
+			// post-task INTENTIONALLY omitted — the DEFAULT boot state where the BL-R2 gap bites:
+			// nothing on the success path writes the task terminal, and the failure path previously
+			// left the task stranded `in_progress` until the next boot reaper (or forever, no restart).
+		});
+		orch.start();
+		try {
+			const task = await createTask(db, {
+				project: projectId,
+				title: 'route fails',
+				description: 'a route/spawn failure must drive the task to failed, never strand it in_progress'
+			});
+			await setStatus(db, task.id, 'ready'); // backlog→ready so #runItem moves it ready→in_progress
+			await orch.enqueueTask(task.id, projectId);
+			await orch.drain();
+
+			// The route threw → #runItem's catch (ok=false) → the work_item is marked failed AND the
+			// task — left `in_progress` by the pre-spawn move — is driven to the honest terminal.
+			await waitForAsync(async () => (await getTask(db, task.id))?.status === 'failed', 10_000);
+			expect((await getTask(db, task.id))?.status).toBe('failed'); // honest terminal, NOT in_progress
+			expect(await countByStatus(db, 'failed')).toBe(1); // the work_item marked failed
+			expect(backend.plans.length).toBe(0); // route threw BEFORE any spawn — no fabricated route
+
+			// Idempotent (interrupt contract): once the task is terminal, the guarded UPDATE matches
+			// nothing — a re-run / concurrent terminal write moves zero rows and never throws.
+			expect(await resetStuckTaskToFailed(db, task.id)).toBe(false);
+			expect((await getTask(db, task.id))?.status).toBe('failed');
+		} finally {
+			orch.stop();
+		}
+	}, 30_000);
+
+	it('a SUCCESSFUL task_run still flows through post-task to `done` — the !ok-guarded failed-write never fires (no double-transition)', async () => {
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = outcomeBackend(true); // done(ok:true) → launchSession status 'done'
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: 'F:/code/orch/.harness-cc' });
+		const runner = fakePostTaskRunner();
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 2,
+			mode: 'manual',
+			route: stubRoute(),
+			acquireWorktree: fakeWt,
+			postTask: { enabled: true, runner, followUpOnTestFail: false }
+		});
+		orch.start();
+		try {
+			const task = await createTask(db, {
+				project: projectId,
+				title: 'success path',
+				description: 'a done session reaches done via post-task; the BL-R2 failed-write must NOT fire'
+			});
+			await setStatus(db, task.id, 'ready');
+			await orch.enqueueTask(task.id, projectId);
+			await orch.drain();
+
+			// post-task wrote the terminal `done`; because ok=true, the BL-R2 (!ok) failed-write is
+			// skipped entirely — the task ends `done`, never clobbered to `failed`.
+			await waitForAsync(async () => (await getTask(db, task.id))?.status === 'done', 10_000);
+			expect((await getTask(db, task.id))?.status).toBe('done');
+			// No work_item left failed by a spurious double-transition (the success completed `done`).
+			expect(await countByStatus(db, 'failed')).toBe(0);
+		} finally {
+			orch.stop();
+		}
+	}, 30_000);
 });

@@ -40,7 +40,7 @@ import type {
 } from '../runtime/index';
 import { launchSession, type LaunchResult, type LaunchDeps } from '../sessions/launch';
 import { getProject } from '../projects/repo';
-import { setStatus } from '../tasks/repo';
+import { setStatus, resetStuckTaskToFailed } from '../tasks/repo';
 import { writeAgentEvent } from '../analytics/events';
 import { Semaphore } from './semaphore';
 import { runPostTask, resolveTestCommand, type CommandRunner } from './post-task';
@@ -851,6 +851,33 @@ export class Orchestrator {
 			ok = false; // a spawn failure marks the work_item failed; never crash the drain
 		} finally {
 			await complete(this.#db, item.id, item.claimToken, ok ? 'done' : 'failed').catch(() => {});
+			// BL-R2 — a FAILED task_run must not strand its TASK on `in_progress`. The task was moved
+			// ready→in_progress BEFORE the spawn (above), but post-task — the ONLY path that writes the
+			// task's terminal `done`/`failed` — runs solely on the SUCCESS path. A route resolve throw,
+			// a launchSession failure, or post-task being disabled (the default) all reach here with
+			// ok=false and the task still `in_progress`, with NO next-boot reaper until restart. And
+			// task_run work_items carry no `session`, so BL-R1's releaseSessionWork can't reach this
+			// task either. So on a NON-OK terminal we drive the task to the honest `failed` (mirrors
+			// post-task's failed write). GUARDED + idempotent (WHERE status IN [in_progress,review]):
+			// a no-op when post-task already wrote the terminal (spawn-returned-failed path), when the
+			// task advanced/was-parked elsewhere (stale claim / mid-run divergence — preStateEligible
+			// false), or on a re-run. F-014: a transition fault is logged-and-swallowed, never crashes
+			// the drain. Skipped on ok (post-task already wrote `done`) and when there is no taskId
+			// (the early-return guard above, or a non-task work_type — already handled before here).
+			if (!ok && taskId) {
+				try {
+					const failed = await resetStuckTaskToFailed(this.#db, taskId);
+					if (failed) {
+						console.warn(
+							`[orchestrator] task ${taskId} → failed (task_run spawn/route failed; not stranded in_progress)`
+						);
+					}
+				} catch (failErr) {
+					console.warn(
+						`[orchestrator] task ${taskId} terminal-failed transition errored (best-effort, drain continues): ${(failErr as Error).message}`
+					);
+				}
+			}
 			// Drop this session from its project's in-flight count BEFORE re-draining so the
 			// re-drain sees the freed per-project slot and can claim a parked same-project task.
 			// Runs on EVERY exit path (success/failure/throw via the catch above) — the decrement

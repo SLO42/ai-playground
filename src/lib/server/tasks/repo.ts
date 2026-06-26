@@ -422,3 +422,40 @@ export async function resetStuckTaskToReady(db: Db, taskId: string): Promise<boo
 	);
 	return rows.length > 0;
 }
+
+/**
+ * SPAWN/ROUTE-FAILURE TERMINAL — drive a task wedged `in_progress`/`review` by a FAILED
+ * `task_run` spawn (the route resolve threw, or launchSession failed) to the honest terminal
+ * `failed`, instead of stranding it `in_progress` until the next boot reaper (the BL-R2 gap
+ * named by the BL-R1 red-team). `task_run` work_items carry NO `session`, so BL-R1's
+ * `releaseSessionWork` cannot reach this task — the orchestrator drain calls this directly
+ * after the work_item is marked failed.
+ *
+ * Unlike {@link resetStuckTaskToReady}, `in_progress→failed` and `review→failed` ARE legal
+ * moves in ALLOWED_TRANSITIONS — so this is NOT a state-machine bypass; the guarded UPDATE is
+ * used (instead of {@link setStatus}) purely for IDEMPOTENCE: it mirrors post-task's own
+ * terminal-failed write (post-task.ts:306 `IF $cur IN ["in_progress","review"]`) so the two
+ * failure paths land the same way, and a re-run / concurrent post-task move never throws.
+ *
+ * We PREFER `failed` over `ready` deliberately: there is NO bounded task-level retry mechanism
+ * for `task_run` (the work_item `attempts` field counts only lost-claim-race retries inside
+ * claimNext — workqueue.ts:221 — not spawn re-drives), so resetting to `ready` would re-drain
+ * the same task into the same spawn failure forever. `failed` is the honest terminal; rework
+ * spawns a NEW follow-up task (origin "follow_up", §4.2) preserving the audit trail.
+ *
+ * GUARD (`WHERE status IN ["in_progress","review"]`): a task that already advanced (done/failed
+ * — e.g. post-task already wrote the terminal on the spawn-returned-failed path), was never
+ * started, or was parked is left UNTOUCHED. Idempotent (interrupt contract): once `failed`, a
+ * re-run matches nothing and moves zero rows. Touches `updated_at` so the live query / PM
+ * observes the terminal. Returns whether a row moved.
+ */
+export async function resetStuckTaskToFailed(db: Db, taskId: string): Promise<boolean> {
+	const rid = new StringRecordId(assertRecordId(taskId));
+	// RETURN BEFORE yields the rows that matched the guarded WHERE (the count of tasks failed).
+	const [rows] = await db.query<[unknown[]]>(
+		`UPDATE $rid SET status = "failed", updated_at = time::now()
+		   WHERE status IN ["in_progress", "review"] RETURN BEFORE;`,
+		{ rid }
+	);
+	return rows.length > 0;
+}

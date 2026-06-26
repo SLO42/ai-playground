@@ -6,7 +6,7 @@ import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
 import { createProject, deleteProject } from '../projects/repo';
 import { createWorkflow } from '../workflows/repo';
-import { createTask, resetStuckTaskToReady } from '../tasks/repo';
+import { createTask, resetStuckTaskToReady, resetStuckTaskToFailed } from '../tasks/repo';
 import { releaseSessionWork } from './workqueue';
 import { reapStaleRuns, processBootTime, REAPED_NOTE } from './reaper';
 
@@ -256,5 +256,31 @@ describe('reapStaleRuns — F-048 follow-on (release claimed work + reset orphan
 		expect((await readRow(doneTask.id)).status).toBe('done');
 		expect((await readRow(readyTask.id)).status).toBe('ready');
 		expect((await readRow(reviewTask.id)).status).toBe('ready');
+	});
+
+	// BL-R2 — the failed-task_run terminal primitive. Mirrors the resetStuckTaskToReady guard test:
+	// only in_progress/review are driven to `failed`; every other status is left untouched; idempotent.
+	it('resetStuckTaskToFailed only moves in_progress/review tasks — done/ready/backlog/failed are untouched', async () => {
+		const inProg = await createTask(db, { project: projectId, title: 'inprog', description: 'i', status: 'in_progress' });
+		const reviewTask = await createTask(db, { project: projectId, title: 'review2', description: 'v', status: 'review' });
+		const doneTask = await createTask(db, { project: projectId, title: 'done2', description: 'd', status: 'done' });
+		const readyTask = await createTask(db, { project: projectId, title: 'ready2', description: 'r', status: 'ready' });
+		const backlogTask = await createTask(db, { project: projectId, title: 'backlog2', description: 'b', status: 'backlog' });
+
+		expect(await resetStuckTaskToFailed(db, inProg.id)).toBe(true); // in_progress → failed (spawn/route failure)
+		expect(await resetStuckTaskToFailed(db, reviewTask.id)).toBe(true); // review → failed
+		expect(await resetStuckTaskToFailed(db, doneTask.id)).toBe(false); // terminal — untouched
+		expect(await resetStuckTaskToFailed(db, readyTask.id)).toBe(false); // never-started — untouched
+		expect(await resetStuckTaskToFailed(db, backlogTask.id)).toBe(false); // never-started — untouched
+
+		expect((await readRow(inProg.id)).status).toBe('failed');
+		expect((await readRow(reviewTask.id)).status).toBe('failed');
+		expect((await readRow(doneTask.id)).status).toBe('done');
+		expect((await readRow(readyTask.id)).status).toBe('ready');
+		expect((await readRow(backlogTask.id)).status).toBe('backlog');
+
+		// Idempotent: a second call once `failed` matches nothing and moves zero rows (no throw).
+		expect(await resetStuckTaskToFailed(db, inProg.id)).toBe(false);
+		expect((await readRow(inProg.id)).status).toBe('failed');
 	});
 });

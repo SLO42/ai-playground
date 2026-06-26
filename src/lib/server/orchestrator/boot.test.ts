@@ -56,6 +56,7 @@ vi.mock('../skills/harvest-agent', () => ({
 
 // Import AFTER the mock is registered.
 const { startOrchestrator, bootDailySpawnCap } = await import('./boot');
+const { Orchestrator } = await import('./orchestrator');
 
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -208,6 +209,34 @@ describe('TASK 8.1 — startOrchestrator boot wire (D-004/§2.11/F-008)', () => 
 		} finally {
 			boot.orchestrator.stop();
 		}
+	});
+
+	// R1-2 — the boot wires gcStale as the AUTOMATIC backstop: a ONE-SHOT gc on startup (after the
+	// boot reaper) PLUS a bounded periodic safety-net interval. Before this gc() was never invoked
+	// automatically, so an orphaned `processing` work_item missed by R1-1's targeted release stayed
+	// stuck for its full lease. Teardown (orchestrator.stop) must clear the interval — no leaked timer.
+	it('fires a one-shot backstop gc on startup and arms the bounded maintenance interval (R1-2)', async () => {
+		getRuntimeMock.mockResolvedValue({ available: true, runtime: idleRuntime });
+		// Spy on the prototype so we capture BOTH the boot one-shot and (would-be) periodic ticks,
+		// and so the gc never reaches the throwing idleDb. The periodic interval is ~5 min → it does
+		// NOT fire inside this synchronous test, so exactly the single startup call is observed.
+		const gcSpy = vi
+			.spyOn(Orchestrator.prototype, 'gc')
+			.mockResolvedValue({ deletedTerminal: 0, recoveredStuck: 0 });
+		const bus = new EventBus();
+		const boot = await startOrchestrator(idleDb(), bus);
+		expect(boot.started).toBe(true);
+		if (!boot.started) throw new Error('expected started');
+		try {
+			// One-shot backstop gc at startup (fire-and-forget) — invoked exactly once.
+			expect(gcSpy).toHaveBeenCalledTimes(1);
+			// The bounded periodic safety-net is armed.
+			expect(boot.orchestrator.maintenanceArmed).toBe(true);
+		} finally {
+			boot.orchestrator.stop();
+		}
+		// Teardown clears the interval — no leaked timer survives shutdown (F-014).
+		expect(boot.orchestrator.maintenanceArmed).toBe(false);
 	});
 
 	it('subscribes to the BUS it is handed (§2.11 — never its own live query)', async () => {

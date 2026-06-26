@@ -203,6 +203,14 @@ function nextClaimToken(): string {
 	return `orch_${process.pid}_${Date.now().toString(36)}_${(tokenSeq++).toString(36)}`;
 }
 
+/**
+ * Default cadence for the BACKSTOP maintenance gc (R1-2). A slow (~5 min), time-based safety
+ * net — NOT the primary release. R1-1's targeted release frees a finished session's claim
+ * promptly; this only catches the ones that release MISSED (a crashed/orphaned `processing`
+ * row, an aged terminal row). Deliberately coarse so it never races a legitimate long claim.
+ */
+const GC_MAINTENANCE_INTERVAL_MS = 5 * 60_000;
+
 export class Orchestrator {
 	readonly #db: Db;
 	readonly #bus: EventBus;
@@ -233,6 +241,10 @@ export class Orchestrator {
 
 	#unsub?: Unsubscribe;
 	#timer?: ReturnType<typeof setInterval>;
+	/** Backstop maintenance gc timer (R1-2). Unref'd; cleared in stop(). undefined ⇒ not armed. */
+	#gcTimer?: ReturnType<typeof setInterval>;
+	/** True while a maintenance gc is still in flight — guards against overlapping ticks. */
+	#gcInFlight = false;
 	#started = false;
 	/** True after stop(): a stopped orchestrator never claims/spawns new work. */
 	#stopped = false;
@@ -320,6 +332,11 @@ export class Orchestrator {
 		return this.#timer !== undefined;
 	}
 
+	/** True while the R1-2 backstop maintenance gc interval is armed. Read-only view for tests. */
+	get maintenanceArmed(): boolean {
+		return this.#gcTimer !== undefined;
+	}
+
 	/**
 	 * Start the orchestrator. In `event` (and `periodic`) mode it subscribes to the
 	 * bus — the ONLY way it observes triggers (§2.11, never its own live query). In
@@ -360,6 +377,11 @@ export class Orchestrator {
 		this.#unsub = undefined;
 		if (this.#timer) clearInterval(this.#timer);
 		this.#timer = undefined;
+		// R1-2 — tear down the backstop maintenance interval too, so no timer outlives shutdown
+		// (F-014: a leaked interval keeps firing gc against a closing DB). Idempotent: clearing an
+		// undefined handle is a no-op, and #runMaintenanceTick also short-circuits once #stopped.
+		if (this.#gcTimer) clearInterval(this.#gcTimer);
+		this.#gcTimer = undefined;
 		this.#started = false;
 	}
 
@@ -409,6 +431,57 @@ export class Orchestrator {
 		recoveredStuck: number;
 	}> {
 		return gcStale(this.#db, opts ?? {});
+	}
+
+	/**
+	 * R1-2 — arm the BACKSTOP maintenance interval. gcStale (recover orphaned `processing`
+	 * work_items past their stuck-age + delete aged terminal rows) was otherwise reachable ONLY
+	 * via an explicit gc() trigger and was never invoked automatically, so a missed R1-1 targeted
+	 * release left a `processing` row stuck for its full lease. This arms a BOUNDED, unref'd
+	 * interval (default ~5 min) that fires gc() in the background — a slow, time-based safety net,
+	 * NOT the primary release (R1-1's prompt release stays primary) and NOT a busy loop.
+	 *
+	 * F-014 discipline: each tick is wrapped in try/catch (a GC fault NEVER propagates and never
+	 * crashes the host), runs are NON-overlapping (the #gcInFlight guard skips a tick while the
+	 * prior gc is still running, so a slow gc can't stack), the handle is unref()'d (it never keeps
+	 * the Node process alive), and stop() clears it (no leaked timer at shutdown). Idempotent: a
+	 * second call while already armed — or after stop() — is a no-op. Default cadence keeps the
+	 * 1h stuckMaxAgeMs (a long-running legitimate claim is never freed early); callers may override
+	 * the interval (tests) but should NOT lower stuckMaxAgeMs.
+	 */
+	startMaintenance(opts?: {
+		intervalMs?: number;
+		gcOpts?: { terminalMaxAgeMs?: number; stuckMaxAgeMs?: number };
+	}): void {
+		if (this.#gcTimer || this.#stopped) return;
+		const intervalMs =
+			opts?.intervalMs && opts.intervalMs > 0 ? opts.intervalMs : GC_MAINTENANCE_INTERVAL_MS;
+		const gcOpts = opts?.gcOpts;
+		this.#gcTimer = setInterval(() => void this.#runMaintenanceTick(gcOpts), intervalMs);
+		if (typeof this.#gcTimer.unref === 'function') this.#gcTimer.unref();
+	}
+
+	/**
+	 * One maintenance tick (R1-2). Skips entirely if a prior gc is still in flight (no overlap)
+	 * or the orchestrator has stopped, runs gc() under a try/catch so a fault is logged-and-
+	 * swallowed (never propagates out of the fire-and-forget timer callback — F-014), and always
+	 * clears the in-flight guard in the finally so a single failed tick can't wedge the backstop.
+	 */
+	async #runMaintenanceTick(gcOpts?: {
+		terminalMaxAgeMs?: number;
+		stuckMaxAgeMs?: number;
+	}): Promise<void> {
+		if (this.#gcInFlight || this.#stopped) return;
+		this.#gcInFlight = true;
+		try {
+			await this.gc(gcOpts);
+		} catch (err) {
+			console.warn(
+				`[orchestrator] backstop maintenance gc failed (will retry next tick): ${(err as Error).message}`
+			);
+		} finally {
+			this.#gcInFlight = false;
+		}
 	}
 
 	/**

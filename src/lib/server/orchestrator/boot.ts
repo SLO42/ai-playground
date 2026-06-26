@@ -384,5 +384,23 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 	});
 	orchestrator.start();
 
+	// R1-2 — wire gcStale as the AUTOMATIC backstop. It was built but NEVER invoked automatically,
+	// so an orphaned `processing` work_item (a crashed/killed session whose R1-1 targeted release was
+	// missed) stayed stuck for its full lease, and aged terminal rows never reaped. Two seams:
+	//   (1) ONE-SHOT on boot — the boot reaper (hooks.server.ts reapStaleRuns) has already swept stale
+	//       session/workflow_run rows by the time we get here; this immediately reconciles the work_item
+	//       QUEUE the same way. Fire-and-forget with .catch — a gc fault must NEVER crash boot (F-014).
+	//   (2) BOUNDED periodic safety-net — a coarse (~5 min) unref'd interval (startMaintenance) that keeps
+	//       reconciling for the life of the process. It does NOT lower the 1h stuckMaxAgeMs default, so a
+	//       legitimately long-running claim is never freed early; R1-1's prompt release stays primary. The
+	//       interval is unref'd (never holds the process open) and torn down by orchestrator.stop() (the
+	//       hooks.server.ts stopOrchestrators teardown path), so no timer outlives shutdown.
+	void orchestrator
+		.gc()
+		.catch((err) =>
+			console.warn(`[startup] boot backstop gc failed (periodic net will retry): ${(err as Error).message}`)
+		);
+	orchestrator.startMaintenance();
+
 	return { started: true, orchestrator, mode, maxConcurrent, perProject, dailySpawnCap };
 }

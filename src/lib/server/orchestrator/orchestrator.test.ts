@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { StringRecordId } from 'surrealdb';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
@@ -1401,4 +1401,87 @@ describe('WI-3 — merge-back + teardown composed with post-task (real temp git 
 			}
 		}
 	}, 40_000);
+});
+
+// R1-2 — the BACKSTOP maintenance gc. gcStale was built but never invoked automatically; this
+// arms a bounded, unref'd interval that fires gc() so orphaned `processing` rows + aged terminal
+// rows self-heal even when R1-1's targeted release is missed. Deterministic via fake timers (no
+// real wall-clock sleep) and a stubbed gc (no DB hit), so we observe the scheduling contract:
+// periodic firing, no overlap, and a clean teardown that leaks no timer.
+describe('Orchestrator backstop maintenance gc (R1-2)', () => {
+	function makeOrch(): Orchestrator {
+		const backend = gatedBackend();
+		const runtime = new ClaudeCodeRuntime({ backend });
+		return new Orchestrator({ db, bus: new EventBus(), runtime, maxConcurrent: 1, route: stubRoute() });
+	}
+
+	it('arms an unref’d interval that periodically runs gc; stop() clears it (no leaked timer)', async () => {
+		vi.useFakeTimers();
+		try {
+			const orch = makeOrch();
+			const gcSpy = vi
+				.spyOn(orch, 'gc')
+				.mockResolvedValue({ deletedTerminal: 0, recoveredStuck: 0 });
+
+			expect(orch.maintenanceArmed).toBe(false);
+			orch.startMaintenance({ intervalMs: 1000 });
+			expect(orch.maintenanceArmed).toBe(true);
+			// A second arm while already armed is a no-op (idempotent) — still one timer.
+			orch.startMaintenance({ intervalMs: 1000 });
+
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(gcSpy).toHaveBeenCalledTimes(1);
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(gcSpy).toHaveBeenCalledTimes(2);
+
+			// Teardown clears the interval — and no further tick fires afterward (no leaked timer).
+			orch.stop();
+			expect(orch.maintenanceArmed).toBe(false);
+			await vi.advanceTimersByTimeAsync(5000);
+			expect(gcSpy).toHaveBeenCalledTimes(2);
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('does not overlap runs: a still-in-flight gc makes the next tick a no-op', async () => {
+		vi.useFakeTimers();
+		try {
+			const orch = makeOrch();
+			let resolveFirst!: () => void;
+			const gcSpy = vi.spyOn(orch, 'gc').mockImplementation(
+				() =>
+					new Promise((res) => {
+						resolveFirst = () => res({ deletedTerminal: 0, recoveredStuck: 0 });
+					})
+			);
+
+			orch.startMaintenance({ intervalMs: 1000 });
+			// Tick 1 → gc starts and stays in flight (never resolves yet).
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(gcSpy).toHaveBeenCalledTimes(1);
+			// Tick 2 → SKIPPED because the prior gc is still in flight (#gcInFlight guard).
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(gcSpy).toHaveBeenCalledTimes(1);
+
+			// Let the first gc finish, flush the finally that clears the in-flight guard…
+			resolveFirst();
+			await Promise.resolve();
+			await Promise.resolve();
+			// …then the NEXT tick runs again (the backstop is not wedged by one slow run).
+			await vi.advanceTimersByTimeAsync(1000);
+			expect(gcSpy).toHaveBeenCalledTimes(2);
+
+			orch.stop();
+		} finally {
+			vi.useRealTimers();
+		}
+	});
+
+	it('startMaintenance after stop() is a no-op (never arms a post-shutdown timer)', () => {
+		const orch = makeOrch();
+		orch.stop();
+		orch.startMaintenance({ intervalMs: 1000 });
+		expect(orch.maintenanceArmed).toBe(false);
+	});
 });

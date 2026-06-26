@@ -32,6 +32,7 @@
   import { animate } from 'motion';
   import type { LifecycleGraph, LifecycleNodeDetail } from '$lib/server/observability';
   import { layoutGraph, nodeKindLabel, truncate, NODE_W, NODE_H, COL_HEADER_H } from './layout';
+  import { motionFor, MAX_ANIMATED_NODES } from './motion-state';
 
   interface Props {
     /** The LG-2 derived node/edge TRUTH. The component never fetches this. */
@@ -51,6 +52,14 @@
   /** Per-session detail keyed by node id (token/cost/tool breakdown), or {} when absent. */
   const details = $derived<Record<string, LifecycleNodeDetail>>(graph?.details ?? {});
 
+  // ── "Alive" motion environment (reduced-motion + the F-014 bounded-motion cap) ──────────
+  // The per-node motion-state DECISION lives in the pure ./motion-state helper (unit-tested):
+  // a running session gets a cycling glow ring; a done/failed node settles to a distinct
+  // STATIC state; reduced-motion or a graph past MAX_ANIMATED_NODES drops the perimeter motion
+  // (the running node keeps a static glow so it stays honest). This component only BINDS the
+  // result — it never decides motion from a status string inline.
+  const motionEnv = $derived({ reducedMotion, nodeCount: laid.nodes.length });
+
   // ── Entrance-animation bookkeeping ───────────────────────────────────────────────────────
   // A node id NEW to the truth (after the first paint) plays ONE entrance pop; the initial set +
   // persisting nodes never re-animate. `mounted` gates the first paint so the initial graph appears
@@ -62,22 +71,48 @@
     nodeEls.set(id, el);
     return { destroy: () => nodeEls.delete(id) };
   }
+
+  // Edge draw-in bookkeeping: a NEW edge (after first paint) draws itself with a one-shot
+  // stroke-dashoffset sweep so a fresh causal link reads as "just formed" (n8n connect feel).
+  // The initial edge set never draws; only live appends do. Bounded by the same node cap
+  // (a giant graph skips the per-edge sweep — F-014). Reduced-motion → instant (no sweep).
+  let drawnEdges = $state<Set<string>>(new Set());
+  const edgeEls = new Map<string, SVGPathElement>();
+  function edgeKey(e: { from: string; to: string; kind: string }): string {
+    return `${e.from}->${e.to}:${e.kind}`;
+  }
+  function regEdge(el: SVGPathElement, key: string): { destroy: () => void } {
+    edgeEls.set(key, el);
+    return { destroy: () => edgeEls.delete(key) };
+  }
+
   $effect(() => {
     const ids = laid.nodes.map((n) => n.id);
+    const ekeys = laid.edges.map(edgeKey);
+    const overCap = laid.nodes.length > MAX_ANIMATED_NODES;
     untrack(() => {
       if (!mounted) return;
-      const newcomers = ids.filter((id) => !entered.has(id));
-      if (newcomers.length === 0) return;
-      const next = new Set(entered);
-      for (const id of newcomers) next.add(id);
-      entered = next;
-      // Next tick (after the new <g> is in the DOM), play a transform+opacity pop on each newcomer.
+      const newNodes = ids.filter((id) => !entered.has(id));
+      const newEdges = ekeys.filter((k) => !drawnEdges.has(k));
+      if (newNodes.length === 0 && newEdges.length === 0) return;
+      if (newNodes.length) {
+        const next = new Set(entered);
+        for (const id of newNodes) next.add(id);
+        entered = next;
+      }
+      if (newEdges.length) {
+        const next = new Set(drawnEdges);
+        for (const k of newEdges) next.add(k);
+        drawnEdges = next;
+      }
+      // Next tick (after the new <g>/<path> is in the DOM), play the entrance.
       void tick().then(() => {
-        for (const id of newcomers) {
+        for (const id of newNodes) {
           const el = nodeEls.get(id);
           if (!el) continue;
-          if (reducedMotion) {
-            animate(el, { opacity: [0, 1] }, { duration: 0.001 });
+          if (reducedMotion || overCap) {
+            // Reduced-motion / bounded: instant appear, no transform spring.
+            animate(el, { opacity: [0, 1] }, { duration: reducedMotion ? 0.001 : 0.12 });
           } else {
             // Wobbly pop (skill §7 spawn preset) — a lively, real-arrival entrance.
             animate(
@@ -85,6 +120,40 @@
               { opacity: [0, 1], scale: [0.9, 1], x: [-12, 0] },
               { type: 'spring', stiffness: 220, damping: 16 }
             );
+          }
+        }
+        for (const k of newEdges) {
+          const el = edgeEls.get(k);
+          if (!el) continue;
+          if (reducedMotion) {
+            animate(el, { opacity: [0, 1] }, { duration: 0.001 });
+            continue;
+          }
+          // Draw the stroke in from its start: set the dash to the full length, then sweep
+          // the offset to 0 (the classic SVG "draw-in"). getTotalLength is read once here.
+          let len = 0;
+          try {
+            len = el.getTotalLength();
+          } catch {
+            len = 0;
+          }
+          if (len > 0 && !overCap) {
+            el.style.strokeDasharray = `${len}`;
+            const restore = () => {
+              // Restore the kind's resting dash (inferred edges keep their dashed pattern).
+              el.style.removeProperty('stroke-dasharray');
+              el.style.removeProperty('stroke-dashoffset');
+            };
+            // The imperative controls are promise-like (resolve on finish) — match the
+            // MemoryScene pattern; `.finished` isn't typed on AnimationPlaybackControls here.
+            const controls = animate(
+              el,
+              { strokeDashoffset: [len, 0], opacity: [0.2, 1] },
+              { duration: 0.55, ease: [0.22, 1, 0.36, 1] }
+            );
+            void Promise.resolve(controls).then(restore, restore);
+          } else {
+            animate(el, { opacity: [0.2, 1] }, { duration: 0.18 });
           }
         }
       });
@@ -174,9 +243,10 @@
     reducedMotion = mq.matches;
     const onMq = (e: MediaQueryListEvent) => (reducedMotion = e.matches);
     mq.addEventListener('change', onMq);
-    // The first render's nodes appear settled — mark them entered, then open the gate so only
-    // LATER arrivals (live appends) play the pop.
+    // The first render's nodes + edges appear settled — mark them entered/drawn, then open the
+    // gate so only LATER arrivals (live appends) play the pop / draw-in.
     entered = new Set(laid.nodes.map((n) => n.id));
+    drawnEdges = new Set(laid.edges.map(edgeKey));
     mounted = true;
     return () => mq.removeEventListener('change', onMq);
   });
@@ -271,6 +341,7 @@
           {#each laid.edges as e (e.from + '->' + e.to + ':' + e.kind)}
             <path
               class="edge"
+              use:regEdge={e.from + '->' + e.to + ':' + e.kind}
               d={e.path}
               data-kind={e.kind}
               data-inferred={e.inferred}
@@ -284,19 +355,39 @@
           {#each laid.nodes as n (n.id)}
             {@const chips = skillChips(n.skills)}
             {@const d = details[n.id]}
-            {@const running = n.kind === 'session' && n.status === 'running'}
+            {@const m = motionFor(n, motionEnv)}
+            {@const running = m.state === 'running'}
             <g
               class="node"
               use:regNode={n.id}
               data-kind={n.kind}
               data-status={n.status}
               data-running={running}
+              data-motion={m.state}
+              data-glow={m.glow}
+              data-animate={m.animate}
               data-focus={focusId === n.id}
               data-open={openId === n.id}
               data-neighbour={neighbours.has(n.id)}
               data-dim={focusId !== null && focusId !== n.id && !neighbours.has(n.id)}
               transform="translate({n.x - NODE_W / 2},{n.y - NODE_H / 2})"
             >
+              <!-- Cycling GLOW ring — a token-coloured halo whose travelling dash circles a
+                   RUNNING node's border (n8n "this step is working" feel). The dash TRAVEL is
+                   pure CSS (animate-bound class), so reduced-motion / over-cap (data-animate=false)
+                   leaves a STATIC glow ring — still honest, just not moving. Only rendered for a
+                   glowing node; done/failed never get it. aria-hidden (decorative). -->
+              {#if m.glow}
+                <rect
+                  class="run-ring"
+                  x="-2"
+                  y="-2"
+                  width={NODE_W + 4}
+                  height={NODE_H + 4}
+                  rx="14"
+                  aria-hidden="true"
+                />
+              {/if}
               <rect class="node-box" width={NODE_W} height={NODE_H} rx="12" />
               <!-- left status rail (color paired with the status text in the card — never color-only) -->
               <rect class="node-rail" x="0" y="0" width="4" height={NODE_H} rx="2" />
@@ -644,10 +735,51 @@
   .node[data-kind='session'][data-status='error'] .node-rail {
     fill: var(--color-error);
   }
-  /* Running session card glows (paired with the live-dot + status text — never color-only). */
-  .node[data-running='true'] .node-box {
+  /* ── "Alive" motion states (LIFECYCLE-GRAPH-UX-SPEC) ──────────────────────────────────
+     A RUNNING session card glows (paired with the live-dot + status text — never color-only).
+     A terminal node SETTLES to a DISTINCT static state: done = calm success border, failed =
+     error border. The settled states are visually unambiguous so a failed node can never read
+     as 'active'. All token-driven (--color-running / --color-success / --color-error). */
+  .node[data-motion='running'] .node-box {
     stroke: var(--color-running);
   }
+  .node[data-motion='settled-done'] .node-box {
+    stroke: var(--color-success);
+  }
+  .node[data-motion='settled-failed'] .node-box {
+    stroke: var(--color-error);
+  }
+
+  /* The cycling glow ring. A travelling accent dash circles the perimeter of a running node.
+     The ring's BASE is a soft static halo (honest even when motion is off); the TRAVEL only
+     plays when data-animate='true' (not reduced-motion, under the F-014 node cap). The dash
+     length + gap are tuned so a single bright segment sweeps the border, n8n-style. */
+  .run-ring {
+    fill: none;
+    stroke: var(--color-running);
+    stroke-width: 2;
+    /* Static base: a faint full outline so a non-animating running node still glows honestly. */
+    opacity: 0.45;
+    filter: drop-shadow(0 0 5px color-mix(in oklch, var(--color-running) 55%, transparent));
+    pointer-events: none;
+  }
+  /* When motion is allowed: a single bright dash travels the perimeter (stroke-dashoffset loop).
+     pathLength is normalized to 100 via the keyframe's dasharray so the loop is geometry-agnostic. */
+  .node[data-animate='true'] .run-ring {
+    stroke-dasharray: 26 130;
+    opacity: 0.85;
+    animation: lg-ring-travel 2.6s var(--ease-standard, linear) infinite;
+  }
+  @keyframes lg-ring-travel {
+    /* dashoffset sweeps one full dasharray period (26 + 130 = 156) for a seamless loop. */
+    from {
+      stroke-dashoffset: 156;
+    }
+    to {
+      stroke-dashoffset: 0;
+    }
+  }
+
   .node:hover .node-box {
     stroke: var(--color-border-strong);
   }
@@ -1105,14 +1237,23 @@
     background: var(--color-error-bg, var(--color-surface));
   }
 
-  /* Reduced motion: no transform/transition entrance (a11y). The motion-lib pop already
-     degrades to an instant opacity tween; this kills the CSS transitions too. */
+  /* Reduced motion: no transform/transition entrance + NO cycling glow (a11y). The running
+     ring degrades to its STATIC halo (still honest — the node IS running), never a moving
+     dash. The motion-lib pop/draw-in already degrade to instant opacity tweens; this kills
+     the CSS transitions + the perimeter travel too. Belt-and-braces with data-animate (the
+     JS already sets it false under reduced-motion), so the ring is static even mid-stream. */
   @media (prefers-reduced-motion: reduce) {
     .node,
     .node-box,
     .edge,
     .te-node {
       transition: none;
+    }
+    .run-ring {
+      animation: none !important;
+      /* settle to the static full outline (drop the travelling dash) */
+      stroke-dasharray: none !important;
+      stroke-dashoffset: 0 !important;
     }
   }
 </style>

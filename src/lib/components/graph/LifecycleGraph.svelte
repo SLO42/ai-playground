@@ -618,7 +618,9 @@
           </div>
           <h4 class="pop-title">{openNode.label}</h4>
           {#if openNode.description}
-            <p class="pop-desc">{truncate(openNode.description, 240)}</p>
+            <!-- Full description — the popover scrolls (max-height:60vh), so the node card stays
+                 clamped while clicking a node EXPANDS to read the whole thing. -->
+            <p class="pop-desc">{openNode.description}</p>
           {/if}
           <dl class="pop-meta">
             <dt>status</dt>

@@ -27,6 +27,10 @@
   // The live connection state passed to the graph (honest badge — never faked 'live').
   const connection = $derived(stream.connection);
 
+  // Graph-only fullscreen mode: hide the page chrome and let the graph fill the viewport.
+  // Toggled by the header button; an exit button returns to the main view (operator request).
+  let fullscreen = $state(false);
+
   // Live: a contributing-table row change re-invalidates the loader so the graph grows in
   // place. These are the LG-2 substrate tables (watched-tables.ts → the SSE fires). REUSE.
   $effect(() => {
@@ -44,7 +48,7 @@
   <title>Lifecycle graph · {projectName}</title>
 </svelte:head>
 
-<div class="page">
+<div class="page" class:is-fullscreen={fullscreen}>
   <header class="head">
     <div class="crumbs">
       <a class="link-inline" href={backHref}>← {projectName}</a>
@@ -55,6 +59,11 @@
       sessions, each finishes and reports to the <strong>PM</strong>, and the PM proposes the next
       tasks — the graph grows as it happens. Solid edges are real links; dashed edges are inferred.
     </p>
+    {#if connected}
+      <button type="button" class="mode-btn" onclick={() => (fullscreen = true)}>
+        ⤢ Fullscreen graph
+      </button>
+    {/if}
   </header>
 
   {#if !connected}
@@ -70,7 +79,12 @@
       </p>
     </div>
   {:else}
-    <div class="card">
+    <div class="card graph-card">
+      {#if fullscreen}
+        <button type="button" class="mode-btn fs-exit" onclick={() => (fullscreen = false)}>
+          ✕ Exit fullscreen
+        </button>
+      {/if}
       <LifecycleGraph {graph} {connection} />
     </div>
   {/if}
@@ -136,5 +150,58 @@
     margin: 0;
     color: var(--color-text-2);
     font-size: var(--text-sm, 0.875rem);
+  }
+
+  /* Fullscreen-graph mode toggle button (header + floating exit). */
+  .mode-btn {
+    align-self: flex-start;
+    margin-top: var(--space-1, 0.25rem);
+    padding: 0.35rem 0.7rem;
+    font-size: var(--text-sm, 0.875rem);
+    color: var(--color-text);
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    cursor: pointer;
+  }
+  .mode-btn:hover {
+    background: var(--color-surface-raised, var(--color-surface));
+  }
+  .mode-btn:focus-visible {
+    outline: 2px solid var(--color-focus-ring, var(--color-accent));
+    outline-offset: 2px;
+  }
+
+  .graph-card {
+    position: relative;
+  }
+
+  /* Graph-only fullscreen: the page covers the viewport, chrome hidden, graph fills + scrolls. */
+  .is-fullscreen {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    padding: 0;
+    gap: 0;
+    background: var(--color-bg);
+    overflow: auto;
+  }
+  .is-fullscreen .head {
+    display: none;
+  }
+  .is-fullscreen .graph-card {
+    border: none;
+    border-radius: 0;
+    min-height: 100vh;
+    padding: var(--space-3, 0.75rem);
+  }
+  .fs-exit {
+    position: fixed;
+    top: var(--space-3, 0.75rem);
+    right: var(--space-3, 0.75rem);
+    z-index: 61;
+    margin-top: 0;
+    background: var(--color-surface-raised, var(--color-surface));
+    box-shadow: var(--shadow-sm);
   }
 </style>

@@ -31,7 +31,7 @@
   import { onMount, untrack, tick } from 'svelte';
   import { animate } from 'motion';
   import type { LifecycleGraph, LifecycleNodeDetail } from '$lib/server/observability';
-  import { layoutGraph, nodeKindLabel, truncate, NODE_W, NODE_H, COL_HEADER_H } from './layout';
+  import { layoutGraph, nodePath, nodeKindLabel, truncate, NODE_W, NODE_H, COL_HEADER_H } from './layout';
   import { motionFor, MAX_ANIMATED_NODES } from './motion-state';
 
   interface Props {
@@ -173,20 +173,74 @@
         )
       : new Set<string>()
   );
-  /** Open the detail popover for a node (and focus it for the edge highlight). */
-  function openDetail(id: string): void {
+  // Focus management (a11y): remember what to restore focus to when the popover closes, and
+  // hold the popover element so we can move focus INTO it on open + TRAP focus while it's open.
+  let popoverEl = $state<HTMLDivElement | null>(null);
+  let restoreFocusEl: HTMLElement | null = null;
+  /** Open the detail popover for a node (and focus it for the edge highlight). Focus moves into
+   *  the popover; closing returns focus to the trigger (focus-managed dialog — a11y). */
+  function openDetail(id: string, trigger?: HTMLElement): void {
     focusId = id;
-    openId = openId === id ? null : id;
+    const wasOpen = openId === id;
+    openId = wasOpen ? null : id;
+    if (openId) {
+      // Remember the trigger so Esc/close returns focus there (event.currentTarget when invoked
+      // from a button; falls back to the active element so a keyboard open still restores).
+      restoreFocusEl = trigger ?? (document.activeElement as HTMLElement | null);
+      // Move focus into the dialog on the next tick (after it renders).
+      void tick().then(() => popoverEl?.focus());
+    }
   }
   function closeDetail(): void {
     openId = null;
+    // Return focus to whatever opened the popover (focus-managed — never strand the keyboard user).
+    const el = restoreFocusEl;
+    restoreFocusEl = null;
+    if (el && typeof el.focus === 'function') void tick().then(() => el.focus());
   }
 
-  // The currently-open node + its placed geometry (for popover anchoring) + its detail.
+  /** Open from a (decorative, aria-hidden) SVG card click — restore focus to the MATCHING
+   *  text-equivalent button so a keyboard user lands on a real, labelled control on close. */
+  function openFromCard(id: string): void {
+    const te = document.querySelector<HTMLElement>(`[data-te-node="${cssEscape(id)}"]`);
+    openDetail(id, te ?? undefined);
+  }
+  /** Minimal CSS.escape fallback (jsdom/old browsers) — ids are `table:slug`, the `:` needs escaping. */
+  function cssEscape(s: string): string {
+    return typeof CSS !== 'undefined' && CSS.escape ? CSS.escape(s) : s.replace(/[^a-zA-Z0-9_-]/g, '\\$&');
+  }
+
+  /** Trap Tab/Shift+Tab inside the open popover (focus-managed dialog — a11y). */
+  function trapFocus(e: KeyboardEvent): void {
+    if (e.key !== 'Tab' || !popoverEl) return;
+    const focusables = popoverEl.querySelectorAll<HTMLElement>(
+      'button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])'
+    );
+    if (focusables.length === 0) {
+      // Nothing tabbable inside — keep focus pinned on the dialog container.
+      e.preventDefault();
+      popoverEl.focus();
+      return;
+    }
+    const first = focusables[0];
+    const last = focusables[focusables.length - 1];
+    const active = document.activeElement as HTMLElement | null;
+    if (e.shiftKey && (active === first || active === popoverEl)) {
+      e.preventDefault();
+      last.focus();
+    } else if (!e.shiftKey && active === last) {
+      e.preventDefault();
+      first.focus();
+    }
+  }
+
+  // The currently-open node + its placed geometry (for popover anchoring) + its detail + path.
   const openNode = $derived(openId ? laid.nodes.find((n) => n.id === openId) ?? null : null);
   const openDetailData = $derived<LifecycleNodeDetail | null>(
     openId ? details[openId] ?? null : null
   );
+  /** The open node's causal place: parents (its causes) → this → children (what it caused). */
+  const openPath = $derived(openId ? nodePath(openId, laid.nodes, laid.edges) : null);
 
   // ── Honest presentation helpers ──────────────────────────────────────────────────────────
   /** A short id tail (drop the `table:` prefix) for skills/role display — never a fabricated name. */
@@ -437,7 +491,7 @@
                 role="button"
                 tabindex="-1"
                 aria-hidden="true"
-                onclick={() => openDetail(n.id)}
+                onclick={() => openFromCard(n.id)}
               />
             </g>
           {/each}
@@ -449,7 +503,11 @@
         <div
           class="popover"
           role="dialog"
+          aria-modal="true"
           aria-label="Node detail: {openNode.label}"
+          tabindex="-1"
+          bind:this={popoverEl}
+          onkeydown={trapFocus}
           style="left:{openNode.x + NODE_W / 2 + 12}px; top:{openNode.y - NODE_H / 2}px;"
         >
           <div class="pop-head">
@@ -457,6 +515,9 @@
             <button type="button" class="pop-close" onclick={closeDetail} aria-label="Close detail">×</button>
           </div>
           <h4 class="pop-title">{openNode.label}</h4>
+          {#if openNode.description}
+            <p class="pop-desc">{truncate(openNode.description, 240)}</p>
+          {/if}
           <dl class="pop-meta">
             <dt>status</dt>
             <dd class="mono" data-status={openNode.status}>{openNode.status}</dd>
@@ -500,6 +561,56 @@
               {/if}
             </div>
           {/if}
+
+          <!-- The node's PATH in the causal chain: parent(s) → this → child(ren). Honest: an
+               inferred join is marked; a root has no parents and a leaf no children (no fabrication). -->
+          <div class="pop-section pop-path">
+            <span class="pop-section-title">path</span>
+            {#if openPath && (openPath.parents.length || openPath.children.length)}
+              {#if openPath.parents.length}
+                <div class="pop-path-group">
+                  <span class="pop-path-dir">from</span>
+                  <ul class="pop-path-list">
+                    {#each openPath.parents as p (p.id + ':' + p.kind)}
+                      <li>
+                        <button
+                          type="button"
+                          class="pop-path-link"
+                          data-inferred={p.inferred}
+                          onclick={() => openDetail(p.id)}
+                        >
+                          <span class="pp-edge">{edgeDesc(p.kind, p.inferred)}</span>
+                          <span class="pp-label">{truncate(p.label, 32)}</span>
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                </div>
+              {/if}
+              {#if openPath.children.length}
+                <div class="pop-path-group">
+                  <span class="pop-path-dir">to</span>
+                  <ul class="pop-path-list">
+                    {#each openPath.children as c (c.id + ':' + c.kind)}
+                      <li>
+                        <button
+                          type="button"
+                          class="pop-path-link"
+                          data-inferred={c.inferred}
+                          onclick={() => openDetail(c.id)}
+                        >
+                          <span class="pp-edge">{edgeDesc(c.kind, c.inferred)}</span>
+                          <span class="pp-label">{truncate(c.label, 32)}</span>
+                        </button>
+                      </li>
+                    {/each}
+                  </ul>
+                </div>
+              {/if}
+            {:else}
+              <span class="pop-empty">— no linked nodes in view</span>
+            {/if}
+          </div>
         </div>
       {/if}
     </div>
@@ -523,11 +634,12 @@
             <button
               type="button"
               class="te-node"
+              data-te-node={n.id}
               data-kind={n.kind}
               data-status={n.status}
               data-focus={focusId === n.id}
               aria-pressed={openId === n.id}
-              onclick={() => openDetail(n.id)}
+              onclick={(e) => openDetail(n.id, e.currentTarget)}
             >
               <span class="te-dot" data-kind={n.kind} data-status={n.status} aria-hidden="true"></span>
               <span class="te-body">
@@ -1041,6 +1153,74 @@
   .pt-count {
     color: var(--color-text-muted);
     flex: none;
+  }
+
+  /* Task description (screened at source) — bounded, wraps, truncated by the caller. */
+  .pop-desc {
+    margin: 0;
+    font-size: 0.74rem;
+    line-height: 1.4;
+    color: var(--color-text-2);
+    word-break: break-word;
+  }
+
+  /* ── Path (parent → this → children) ──────────────────────────────────────────────────── */
+  .pop-path-group {
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .pop-path-dir {
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-text-faint, var(--color-text-muted));
+  }
+  .pop-path-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.15rem;
+  }
+  .pop-path-link {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+    width: 100%;
+    text-align: left;
+    appearance: none;
+    background: transparent;
+    border: 1px solid transparent;
+    border-radius: var(--radius-xs, 3px);
+    padding: 0.15rem 0.3rem;
+    cursor: pointer;
+    color: var(--color-text-2);
+    font-size: 0.72rem;
+  }
+  .pop-path-link:hover {
+    border-color: var(--color-border);
+    background: var(--color-surface-overlay);
+  }
+  .pop-path-link:focus-visible {
+    outline: 2px solid var(--color-focus-ring, var(--color-accent));
+    outline-offset: 1px;
+  }
+  .pp-edge {
+    flex: none;
+    font-size: 0.64rem;
+    color: var(--color-text-muted);
+    white-space: nowrap;
+  }
+  .pop-path-link[data-inferred='true'] .pp-edge {
+    font-style: italic;
+  }
+  .pp-label {
+    color: var(--color-text);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* ── Honest empty ──────────────────────────────────────────────────────────────────── */

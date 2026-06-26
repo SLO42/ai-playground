@@ -60,6 +60,9 @@ export interface LifecycleNode {
 	kind: LifecycleNodeKind;
 	/** Human label (task name for a session/task node; a short marker label otherwise). Screened. */
 	label: string;
+	/** The task description (task node, or the session's task) — screened at source (D-026). Omitted
+	 *  when absent (F-008: never str(undefined)). Bounded — the popover truncates for display. */
+	description?: string;
 	/** The workforce role record-id the session ran AS (the role/title), when present. */
 	role?: string;
 	/** The role_version record-id (the concrete "hire"), when present. */
@@ -221,6 +224,14 @@ function toolNameOf(toolCall: unknown): string | null {
 	return t === '' ? null : t;
 }
 
+/** A free-text description column → trimmed non-empty string, or undefined when absent/blank.
+ *  Screened at source (D-026); never str(undefined) (F-008). Length is left to the UI to bound. */
+function descOrUndef(v: unknown): string | undefined {
+	if (typeof v !== 'string') return undefined;
+	const t = v.trim();
+	return t === '' ? undefined : t;
+}
+
 /** A string[] column → cleaned non-empty strings, or undefined when none (never a fake empty). */
 function strListOrUndef(v: unknown): string[] | undefined {
 	if (!Array.isArray(v)) return undefined;
@@ -269,10 +280,12 @@ interface RawSession {
 	started_at?: unknown;
 	ended_at?: unknown;
 	ttitle?: unknown; // joined task.title
+	tdesc?: unknown; // joined task.description
 }
 interface RawTask {
 	id: unknown;
 	title?: string;
+	description?: string;
 	status?: string;
 	proposed_by?: unknown;
 	provenance?: Record<string, unknown> | null;
@@ -320,7 +333,7 @@ async function readMarkers(db: Db, project: StringRecordId, lim: number): Promis
 async function readSessions(db: Db, project: StringRecordId, lim: number): Promise<RawSession[]> {
 	const [rows] = await db.query<[RawSession[]]>(
 		`SELECT id, task, role, role_version, status, tool_iter_count, granted_skills,
-		        started_at, ended_at, task.title AS ttitle
+		        started_at, ended_at, task.title AS ttitle, task.description AS tdesc
 		   FROM session
 		  WHERE project = $project
 		  ORDER BY started_at DESC LIMIT $lim;`,
@@ -332,7 +345,7 @@ async function readSessions(db: Db, project: StringRecordId, lim: number): Promi
 /** Task rows for the project (most-recent first, capped) with provenance/succession links. */
 async function readTasks(db: Db, project: StringRecordId, lim: number): Promise<RawTask[]> {
 	const [rows] = await db.query<[RawTask[]]>(
-		`SELECT id, title, status, proposed_by, provenance, revision_of, parent, created_at
+		`SELECT id, title, description, status, proposed_by, provenance, revision_of, parent, created_at
 		   FROM task
 		  WHERE project = $project
 		  ORDER BY created_at DESC LIMIT $lim;`,
@@ -488,11 +501,13 @@ export async function buildLifecycleGraph(
 		const elapsed = elapsedMs(started, ended);
 		const skills = strListOrUndef(s.granted_skills);
 		const toolCount = intOrUndef(s.tool_iter_count);
+		const desc = descOrUndef(s.tdesc);
 		nodes.push({
 			id,
 			kind: 'session',
 			label: title ? `session: ${title}` : 'session',
 			status: s.status ?? 'running',
+			...(desc ? { description: desc } : {}),
 			...(refOrUndef(s.role) ? { role: refOrUndef(s.role)! } : {}),
 			...(refOrUndef(s.role_version) ? { hire: refOrUndef(s.role_version)! } : {}),
 			...(toolCount != null ? { toolCount } : {}),
@@ -507,11 +522,13 @@ export async function buildLifecycleGraph(
 		const id = String(t.id);
 		const created = isoOrUndef(t.created_at);
 		const title = typeof t.title === 'string' && t.title.trim() ? t.title.trim() : undefined;
+		const desc = descOrUndef(t.description);
 		nodes.push({
 			id,
 			kind: 'task',
 			label: title ? title : 'task',
 			status: t.status ?? 'backlog',
+			...(desc ? { description: desc } : {}),
 			...(created ? { startedAt: created } : {})
 		});
 	}

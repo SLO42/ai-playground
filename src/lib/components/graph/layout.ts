@@ -271,6 +271,72 @@ export function truncate(s: string, max = 40): string {
 	return `${s.slice(0, Math.max(0, max - 1)).trimEnd()}…`;
 }
 
+/** One step on a node's causal path — the neighbour node id, its label, and the edge that joins
+ *  it (so the UI can render "spawned →" / "(inferred)" honestly without re-deriving). */
+export interface PathStep {
+	/** The neighbour node id. */
+	id: string;
+	/** The neighbour's human label (screened at source — D-026). */
+	label: string;
+	/** The causal edge kind joining this node to the focus node. */
+	kind: LifecycleEdge['kind'];
+	/** True ⇒ the joining edge is inferred (heuristic), not a real link (F-008 honest). */
+	inferred: boolean;
+}
+
+/** A node's place in the causal chain: its incoming parents and outgoing children, both labelled. */
+export interface NodePath {
+	/** Nodes with an edge INTO the focus node (its causes). Empty for a root. */
+	parents: PathStep[];
+	/** Nodes the focus node has an edge TO (what it caused). Empty for a leaf. */
+	children: PathStep[];
+}
+
+/**
+ * Derive a node's causal PATH — parent(s) → this → child(ren) — from the read-model edges. PURE +
+ * total: a node id absent from `nodes` (or a nil/empty input) yields an empty path (never throws).
+ * Labels resolve from the node set; an edge to/from an unknown node is dropped (defensive — LG-2
+ * guarantees no dangling edge, but this never assumes it). Steps are de-duplicated + label-sorted
+ * for a stable, deterministic render. F-008: only REAL edges surface; `inferred` is carried through
+ * verbatim so the UI marks a heuristic link honestly.
+ *
+ * Shadow paths (all four): happy → parents+children; nil → empty path; empty graph → empty path;
+ * unknown focus id / dangling endpoint → that step dropped (never a fabricated neighbour).
+ */
+export function nodePath(
+	focusId: string | null | undefined,
+	nodes: LifecycleNode[] | null | undefined,
+	edges: LifecycleEdge[] | null | undefined
+): NodePath {
+	const ns = Array.isArray(nodes) ? nodes : [];
+	const es = Array.isArray(edges) ? edges : [];
+	if (!focusId) return { parents: [], children: [] };
+	const labelOf = new Map(ns.map((n) => [n.id, n.label]));
+	if (!labelOf.has(focusId)) return { parents: [], children: [] };
+
+	const seen = new Set<string>(); // dedup a neighbour reached by >1 edge (key = dir+id+kind)
+	const parents: PathStep[] = [];
+	const children: PathStep[] = [];
+	for (const e of es) {
+		if (e.to === focusId && labelOf.has(e.from)) {
+			const key = `p:${e.from}:${e.kind}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			parents.push({ id: e.from, label: labelOf.get(e.from)!, kind: e.kind, inferred: e.inferred });
+		} else if (e.from === focusId && labelOf.has(e.to)) {
+			const key = `c:${e.to}:${e.kind}`;
+			if (seen.has(key)) continue;
+			seen.add(key);
+			children.push({ id: e.to, label: labelOf.get(e.to)!, kind: e.kind, inferred: e.inferred });
+		}
+	}
+	const byLabel = (a: PathStep, b: PathStep) =>
+		a.label.localeCompare(b.label) || a.id.localeCompare(b.id);
+	parents.sort(byLabel);
+	children.sort(byLabel);
+	return { parents, children };
+}
+
 /** Short, screen-reader/tooltip-friendly noun for a node kind. */
 export function nodeKindLabel(kind: LifecycleNodeKind): string {
 	switch (kind) {

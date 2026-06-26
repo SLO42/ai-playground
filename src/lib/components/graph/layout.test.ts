@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { layoutGraph, nodeKindLabel, truncate, NODE_W, MARGIN, COL_GAP, COL_HEADER_H } from './layout';
+import { layoutGraph, nodePath, nodeKindLabel, truncate, NODE_W, MARGIN, COL_GAP, COL_HEADER_H } from './layout';
 import type { LifecycleEdge, LifecycleNode } from '$lib/server/observability';
 
 // LG-3 layout VERIFY — the PURE layout fn. Deterministic geometry from the LG-2 read model;
@@ -135,6 +135,68 @@ describe('layoutGraph', () => {
 		expect(out.nodes[0].role).toBe('role:dev');
 		expect(out.nodes[0].toolCount).toBe(7);
 		expect(out.nodes[0].skills).toEqual(['svelte5-patterns']);
+	});
+});
+
+describe('nodePath', () => {
+	// Continue → session → pm → task chain (the canonical lifecycle).
+	const nodes = [
+		node('continue:1', 'continue', { label: 'Continue' }),
+		node('session:1', 'session', { label: 'session: build X' }),
+		node('pm_tick:1', 'pm', { label: 'PM tick' }),
+		node('task:1', 'task', { label: 'next task' })
+	];
+	const edges = [
+		edge('continue:1', 'session:1', 'spawned'),
+		edge('session:1', 'pm_tick:1', 'reported-to', true),
+		edge('pm_tick:1', 'task:1', 'proposed')
+	];
+
+	it('returns parents (causes) and children (effects) for a mid-chain node', () => {
+		const p = nodePath('session:1', nodes, edges);
+		expect(p.parents).toEqual([
+			{ id: 'continue:1', label: 'Continue', kind: 'spawned', inferred: false }
+		]);
+		expect(p.children).toEqual([
+			{ id: 'pm_tick:1', label: 'PM tick', kind: 'reported-to', inferred: true }
+		]);
+	});
+
+	it('a root node has no parents; a leaf has no children', () => {
+		expect(nodePath('continue:1', nodes, edges).parents).toEqual([]);
+		expect(nodePath('task:1', nodes, edges).children).toEqual([]);
+	});
+
+	it('carries the inferred flag through verbatim (F-008 honest)', () => {
+		expect(nodePath('pm_tick:1', nodes, edges).parents[0].inferred).toBe(true);
+	});
+
+	it('drops a path step whose neighbour is not a node (defensive — never fabricates)', () => {
+		const p = nodePath('a', [node('a', 'task')], [edge('a', 'ghost'), edge('ghost', 'a')]);
+		expect(p.parents).toEqual([]);
+		expect(p.children).toEqual([]);
+	});
+
+	it('nil / empty / unknown-focus → empty path (all shadow paths, never throws)', () => {
+		expect(nodePath(null, nodes, edges)).toEqual({ parents: [], children: [] });
+		expect(nodePath('session:1', null, null)).toEqual({ parents: [], children: [] });
+		expect(nodePath('nope:1', nodes, edges)).toEqual({ parents: [], children: [] });
+		expect(() => nodePath('session:1', undefined, undefined)).not.toThrow();
+	});
+
+	it('dedups a neighbour reached by the same edge kind + sorts by label', () => {
+		const ns = [
+			node('p:1', 'task', { label: 'beta' }),
+			node('p:2', 'task', { label: 'alpha' }),
+			node('c:1', 'task', { label: 'child' })
+		];
+		const es = [
+			edge('p:1', 'c:1', 'follow-up'),
+			edge('p:2', 'c:1', 'follow-up'),
+			edge('p:1', 'c:1', 'follow-up') // duplicate — collapsed
+		];
+		const p = nodePath('c:1', ns, es);
+		expect(p.parents.map((x) => x.label)).toEqual(['alpha', 'beta']); // label-sorted, deduped
 	});
 });
 

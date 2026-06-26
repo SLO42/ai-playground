@@ -225,6 +225,12 @@ describe('LG-2 buildLifecycleGraph — the full Continue→session→completion�
 		expect(sNode.skills).toEqual(['svelte5-patterns', 'error-learning']);
 		expect(sNode.status).toBe('done');
 		expect(sNode.elapsed).toBe(240_000); // 5min - 1min
+		// Description threads through from the session's joined task.description (LG-3 popover detail).
+		expect(sNode.description).toBe('do it');
+
+		// Task nodes carry their OWN description (the proposed task's "follow on").
+		const proposedNode = byKind('task').find((n) => n.id === proposedTask.id)!;
+		expect(proposedNode.description).toBe('follow on');
 
 		// EXPLICIT edge: PM → proposed task (proposed_by + provenance), not inferred.
 		const proposed = edge(g, 'proposed');
@@ -433,6 +439,7 @@ describe('LG-2 shadow paths — nil / empty / honest attributes', () => {
 		expect(sNode.role).toBeUndefined();
 		expect(sNode.hire).toBeUndefined();
 		expect(sNode.skills).toBeUndefined();
+		expect(sNode.description).toBeUndefined(); // no task → no description (never str(undefined), F-008)
 		expect(sNode.toolCount).toBe(0); // a real 0 (column default), not omitted — honest
 		expect(sNode.status).toBe('running');
 		expect(sNode.label).toBe('session'); // no task → bare label, not a fabricated name

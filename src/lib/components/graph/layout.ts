@@ -166,6 +166,11 @@ export function layoutGraph(
 	for (const e of es) {
 		if (!idSet.has(e.from) || !idSet.has(e.to)) continue;
 		liveEdges.push(e);
+		// The LATERAL 'messaged' data-share is NOT a causal edge: it must NOT contribute to causal
+		// depth (else two same-rank sessions that exchanged data would shove one into a deeper
+		// column, breaking the "parallel spawns share a rank" layout). It still renders as an edge
+		// (it's in liveEdges) — just routed between whatever columns its endpoints landed in.
+		if (e.kind === 'messaged') continue;
 		const arr = adj.get(e.from);
 		if (arr) arr.push(e.to);
 		else adj.set(e.from, [e.to]);
@@ -199,7 +204,22 @@ export function layoutGraph(
 	const placedEdges: PlacedEdge[] = liveEdges.map((e) => {
 		const a = byId.get(e.from)!;
 		const b = byId.get(e.to)!;
-		// Anchor at the right edge of source, left edge of target (left→right flow).
+		// LATERAL data-share ('messaged'): the endpoints often share a column (two parallel
+		// sessions), so a right→left causal cubic would degenerate to a flat overlap. Route it as a
+		// RIGHT-SIDE arc — both anchors leave the cards' right edge and bow outward — so a sideways
+		// data hop reads visually distinct from the left→right causal flow (and never overlaps the
+		// node it connects). Honest geometry; the edge STYLE (color/dash/label) carries the meaning.
+		if (e.kind === 'messaged') {
+			const x1 = a.x + NODE_W / 2;
+			const y1 = a.y;
+			const x2 = b.x + NODE_W / 2;
+			const y2 = b.y;
+			// Bow the control points out to the right of the rightmost endpoint by a fixed offset.
+			const bow = Math.max(x1, x2) + COL_GAP * 0.55;
+			const path = `M ${x1} ${y1} C ${bow} ${y1}, ${bow} ${y2}, ${x2} ${y2}`;
+			return { ...e, x1, y1, x2, y2, path };
+		}
+		// Causal edge — anchor at the right edge of source, left edge of target (left→right flow).
 		const x1 = a.x + NODE_W / 2;
 		const y1 = a.y;
 		const x2 = b.x - NODE_W / 2;
@@ -335,6 +355,63 @@ export function nodePath(
 	parents.sort(byLabel);
 	children.sort(byLabel);
 	return { parents, children };
+}
+
+/**
+ * The set of node ids on a node's FULL causal path: the focus node itself + every transitive
+ * ANCESTOR (follow causal edges backward) + every transitive DESCENDANT (forward). PURE + total.
+ *
+ * CAUSAL edges only (`spawned` / `reported-to` / `proposed` / `follow-up`) define lineage — the
+ * LATERAL `messaged` data-share is EXCLUDED (a sideways data hop is not an ancestor/descendant, so
+ * a peer link can never pull an unrelated branch into the highlighted path — honest, F-008). The
+ * returned set ALWAYS contains `focusId` (when it is a real node) so the focus node itself stays
+ * lit. A cycle (should not occur in a causal DAG, but input is never trusted) terminates via the
+ * visited set. Used by the LG-3 focus interaction: ids IN the set are highlighted, the rest dimmed.
+ *
+ * Shadow paths (all four): happy → the focus node's full lineage closure; nil focusId/nodes/edges
+ * → empty set; empty graph → empty set; unknown focus id → empty set (nothing to highlight).
+ */
+export function nodeLineage(
+	focusId: string | null | undefined,
+	nodes: LifecycleNode[] | null | undefined,
+	edges: LifecycleEdge[] | null | undefined
+): Set<string> {
+	const out = new Set<string>();
+	const ns = Array.isArray(nodes) ? nodes : [];
+	const es = Array.isArray(edges) ? edges : [];
+	if (!focusId) return out;
+	const idSet = new Set(ns.map((n) => n.id));
+	if (!idSet.has(focusId)) return out;
+
+	// Causal adjacency (exclude the lateral 'messaged' data-share). Forward (from→to) for
+	// descendants, reverse (to→from) for ancestors. Drop edges whose endpoints aren't real nodes.
+	const fwd = new Map<string, string[]>();
+	const rev = new Map<string, string[]>();
+	for (const e of es) {
+		if (e.kind === 'messaged') continue; // lateral data-share is not causal lineage
+		if (!idSet.has(e.from) || !idSet.has(e.to)) continue;
+		(fwd.get(e.from) ?? fwd.set(e.from, []).get(e.from)!).push(e.to);
+		(rev.get(e.to) ?? rev.set(e.to, []).get(e.to)!).push(e.from);
+	}
+
+	// Walk a direction from the focus node, collecting every reachable id (visited-set terminates).
+	const walk = (adj: Map<string, string[]>) => {
+		const stack = [focusId];
+		const seen = new Set<string>([focusId]);
+		while (stack.length) {
+			const cur = stack.pop()!;
+			out.add(cur);
+			for (const next of adj.get(cur) ?? []) {
+				if (!seen.has(next)) {
+					seen.add(next);
+					stack.push(next);
+				}
+			}
+		}
+	};
+	walk(fwd); // descendants (+ focus)
+	walk(rev); // ancestors (+ focus)
+	return out;
 }
 
 /** Short, screen-reader/tooltip-friendly noun for a node kind. */

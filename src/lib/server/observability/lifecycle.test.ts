@@ -516,3 +516,134 @@ describe('LG-2 bounded (F-014)', () => {
 		expect(g.capped).toBe(false);
 	});
 });
+
+describe('LG-2 GUX-4 — data-shared (peer_message) edges + the PM funnel', () => {
+	/** CREATE a peer_message row between two sessions for THIS project. The graph reader never reads
+	 *  `body`, but the SCHEMAFULL column requires it — a minimal value satisfies the DDL. A unique
+	 *  per-sender `peer_seq` is stamped (the UNIQUE (from_session, peer_seq) index rejects two NONE
+	 *  rows from one sender — production stamps it at the atomic send; the test mirrors that). */
+	let peerSeq = 0;
+	async function seedPeerMessage(from: string, to: string, projectOverride?: string): Promise<void> {
+		const content: Record<string, unknown> = {
+			from_session: new StringRecordId(from),
+			to_session: new StringRecordId(to),
+			to_kind: 'session',
+			project: new StringRecordId(projectOverride ?? projectId),
+			body: 'fenced-envelope',
+			status: 'delivered',
+			hops: 1,
+			peer_seq: ++peerSeq
+		};
+		await db.query(`CREATE peer_message CONTENT $content RETURN NONE;`, { content });
+	}
+
+	function peerEdge(g: LifecycleGraph): LifecycleEdge[] {
+		return g.edges.filter((e) => e.kind === 'messaged');
+	}
+
+	it('renders a peer_message between two session nodes as a REAL (not inferred) data-shared edge', async () => {
+		const now = Date.now();
+		const a = await seedSession({ status: 'running', startedAt: new Date(now).toISOString() });
+		const b = await seedSession({ status: 'running', startedAt: new Date(now + 1000).toISOString() });
+		await seedPeerMessage(a, b);
+
+		const g = await buildLifecycleGraph(db, projectId);
+		const peers = peerEdge(g);
+		expect(peers).toHaveLength(1);
+		expect(peers[0].from).toBe(a);
+		expect(peers[0].to).toBe(b);
+		expect(peers[0].inferred).toBe(false); // a real persisted link, never a heuristic
+	});
+
+	it('collapses repeated messages between the SAME pair to ONE edge (shows THAT data flowed)', async () => {
+		const now = Date.now();
+		const a = await seedSession({ status: 'running', startedAt: new Date(now).toISOString() });
+		const b = await seedSession({ status: 'running', startedAt: new Date(now + 1000).toISOString() });
+		await seedPeerMessage(a, b);
+		await seedPeerMessage(a, b);
+		await seedPeerMessage(a, b);
+		const g = await buildLifecycleGraph(db, projectId);
+		expect(peerEdge(g)).toHaveLength(1);
+	});
+
+	it('does NOT fabricate a data-shared edge to a node OUTSIDE the graph (honest — F-008)', async () => {
+		// A peer_message whose to_session is a session in ANOTHER project → not in this graph → no edge.
+		const now = Date.now();
+		const a = await seedSession({ status: 'running', startedAt: new Date(now).toISOString() });
+		const other = await createProject(db, {
+			slug: `lg2_peer_other_${Date.now()}`,
+			name: 'Other',
+			root_path: 'F:/code/other'
+		});
+		try {
+			const [rows] = await db.query<[Array<{ id: unknown }>]>(
+				`CREATE session CONTENT $c RETURN AFTER;`,
+				{
+					c: {
+						project: new StringRecordId(other.id),
+						kind: 'task',
+						model: { provider: 'claude', model_id: 'm', tier: 'opus' },
+						status: 'running',
+						runtime: 'claude-code',
+						tool_iter_count: 0,
+						started_at: new Date(now)
+					}
+				}
+			);
+			const outsider = String(rows[0].id);
+			// The peer_message is scoped to THIS project but points at the outsider session.
+			await seedPeerMessage(a, outsider);
+			const g = await buildLifecycleGraph(db, projectId);
+			expect(peerEdge(g)).toHaveLength(0); // to_session not a node here → no dangling edge
+		} finally {
+			await deleteProject(db, other.id).catch(() => {});
+		}
+	});
+
+	it('honest-empty when there is NO peer data (no data-shared edges, never a fake one)', async () => {
+		const a = await seedSession({ status: 'running', startedAt: new Date().toISOString() });
+		await seedSession({ status: 'running', startedAt: new Date().toISOString() });
+		void a;
+		const g = await buildLifecycleGraph(db, projectId);
+		expect(peerEdge(g)).toHaveLength(0);
+	});
+
+	it('3 finished sessions reporting to ONE pm_tick converge as a funnel (3 reported-to edges → 1 PM)', async () => {
+		const t0 = Date.parse('2026-06-25T12:00:00.000Z');
+		const iso = (off: number) => new Date(t0 + off).toISOString();
+		// 3 sessions that all finish, then a single PM tick after them.
+		const sids: string[] = [];
+		for (let i = 0; i < 3; i++) {
+			const sid = await seedSession({
+				status: 'done',
+				startedAt: iso(i * 1000),
+				endedAt: iso(60_000 + i * 1000)
+			});
+			await writeAgentEvent(db, {
+				session: sid,
+				project: projectId,
+				type: 'completion',
+				detail: { ok: true }
+			});
+			sids.push(sid);
+		}
+		const pmTickId = await appendSceneEvent(db, {
+			kind: 'pm_tick',
+			ref: 'pm:funnel',
+			source: 'pm',
+			project: projectId,
+			meta: { state: 'acted' }
+		});
+		await db.query(`UPDATE $id SET at = $at;`, {
+			id: new StringRecordId(pmTickId),
+			at: new Date(t0 + 120_000) // after all 3 finished, within the inference window
+		});
+
+		const g = await buildLifecycleGraph(db, projectId);
+		const reported = g.edges.filter((e) => e.kind === 'reported-to');
+		// All 3 sessions report into the SAME pm_tick node → a 3-way funnel.
+		expect(reported).toHaveLength(3);
+		expect(new Set(reported.map((e) => e.to))).toEqual(new Set([pmTickId]));
+		expect(new Set(reported.map((e) => e.from))).toEqual(new Set(sids));
+	});
+});

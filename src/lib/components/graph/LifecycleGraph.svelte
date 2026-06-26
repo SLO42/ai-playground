@@ -31,7 +31,16 @@
   import { onMount, untrack, tick } from 'svelte';
   import { animate } from 'motion';
   import type { LifecycleGraph, LifecycleNodeDetail } from '$lib/server/observability';
-  import { layoutGraph, nodePath, nodeKindLabel, truncate, NODE_W, NODE_H, COL_HEADER_H } from './layout';
+  import {
+    layoutGraph,
+    nodePath,
+    nodeLineage,
+    nodeKindLabel,
+    truncate,
+    NODE_W,
+    NODE_H,
+    COL_HEADER_H
+  } from './layout';
   import { motionFor, MAX_ANIMATED_NODES } from './motion-state';
 
   interface Props {
@@ -161,18 +170,44 @@
   });
 
   // ── Focus / keyboard nav (drives the text-equivalent + edge highlight + popover) ──────────
+  // focusId is set by hover OR click OR open; it lights the focused node's FULL causal lineage
+  // (all ancestors + descendants) and dims the rest (GUX-4). A separate `pinnedFocus` distinguishes
+  // a CLICK-pinned focus (sticky — survives mouse-leave, cleared by clicking empty space) from a
+  // transient HOVER focus (clears on mouse-leave). The popover-open node also pins focus.
   let focusId = $state<string | null>(null);
+  let pinnedFocus = $state<string | null>(null);
   /** The node whose detail popover is OPEN (a deliberate select, distinct from hover-focus). */
   let openId = $state<string | null>(null);
-  const neighbours = $derived(
-    focusId
-      ? new Set(
-          laid.edges
-            .filter((e) => e.from === focusId || e.to === focusId)
-            .map((e) => (e.from === focusId ? e.to : e.from))
-        )
-      : new Set<string>()
-  );
+  /** The focus node's FULL causal path: itself + every transitive ancestor + descendant (lateral
+   *  'messaged' edges excluded — a data hop is not lineage). Ids IN this set stay lit; others dim. */
+  const lineage = $derived(nodeLineage(focusId, laid.nodes, laid.edges));
+
+  // ── PM funnel hubs (GUX-4) — a PM node that MULTIPLE finished sessions reported into reads as a
+  // CONVERGENCE hub. Count the distinct incoming `reported-to` edges per PM node; ≥2 ⇒ a funnel.
+  // The PM node gets a hub treatment and its incoming edges bundle/emphasize. DERIVED from the real
+  // reported-to edges only (F-008) — never fabricated; a single report is not a funnel.
+  const funnelInto = $derived.by(() => {
+    const counts = new Map<string, number>();
+    for (const e of laid.edges) {
+      if (e.kind !== 'reported-to') continue;
+      counts.set(e.to, (counts.get(e.to) ?? 0) + 1);
+    }
+    const hubs = new Map<string, number>();
+    for (const [id, n] of counts) if (n >= 2) hubs.set(id, n);
+    return hubs;
+  });
+
+  /** Hover sets a transient focus; if a click-pin exists, hover does not override it (the pin wins
+   *  until cleared). Mouse-leave restores to the pinned focus (or null). */
+  function hoverFocus(id: string | null): void {
+    if (pinnedFocus) return; // a pinned focus is sticky — hover doesn't change it
+    focusId = id;
+  }
+  /** Click on empty canvas space clears any pinned focus (GUX-4: "clicking empty space clears"). */
+  function clearFocus(): void {
+    pinnedFocus = null;
+    focusId = null;
+  }
   // Focus management (a11y): remember what to restore focus to when the popover closes, and
   // hold the popover element so we can move focus INTO it on open + TRAP focus while it's open.
   let popoverEl = $state<HTMLDivElement | null>(null);
@@ -181,6 +216,7 @@
    *  the popover; closing returns focus to the trigger (focus-managed dialog — a11y). */
   function openDetail(id: string, trigger?: HTMLElement): void {
     focusId = id;
+    pinnedFocus = id; // opening a detail pins the lineage highlight too (sticky until cleared)
     const wasOpen = openId === id;
     openId = wasOpen ? null : id;
     if (openId) {
@@ -193,6 +229,9 @@
   }
   function closeDetail(): void {
     openId = null;
+    // Closing the popover also releases the pinned lineage highlight (the focus came from opening).
+    pinnedFocus = null;
+    focusId = null;
     // Return focus to whatever opened the popover (focus-managed — never strand the keyboard user).
     const el = restoreFocusEl;
     restoreFocusEl = null;
@@ -288,7 +327,9 @@
           ? 'reported to'
           : kind === 'proposed'
             ? 'proposed'
-            : 'follow-up of';
+            : kind === 'messaged'
+              ? 'shared data with'
+              : 'follow-up of';
     return inferred ? `${verb} (inferred)` : verb;
   }
 
@@ -336,6 +377,8 @@
       <span class="legend-sep"></span>
       <span class="legend-item"><span class="edge-key solid"></span>explicit</span>
       <span class="legend-item"><span class="edge-key dashed"></span>inferred</span>
+      <span class="legend-item"><span class="edge-key messaged"></span>data shared</span>
+      <span class="legend-item"><span class="swatch hub" data-kind="pm"></span>PM funnel</span>
     </div>
 
     <!-- The layered DAG (decorative-augmenting). aria-hidden so AT users get the labelled
@@ -371,7 +414,30 @@
           >
             <path d="M0,0 L10,5 L0,10 Z" class="arrow-head inferred" />
           </marker>
+          <marker
+            id="lg-arrow-messaged"
+            viewBox="0 0 10 10"
+            refX="8.5"
+            refY="5"
+            markerWidth="6.5"
+            markerHeight="6.5"
+            orient="auto-start-reverse"
+          >
+            <path d="M0,0 L10,5 L0,10 Z" class="arrow-head messaged" />
+          </marker>
         </defs>
+
+        <!-- Empty-space backdrop: clicking it CLEARS a pinned focus (GUX-4). Behind everything,
+             fills the whole canvas; nodes/edges stopPropagation so only true empty space clears. -->
+        <rect
+          class="canvas-backdrop"
+          x="0"
+          y="0"
+          width={laid.width}
+          height={laid.height}
+          onclick={clearFocus}
+          aria-hidden="true"
+        />
 
         <!-- Column rhythm: a faint guide rail + a header band (phase label · count) per rank. -->
         <g class="columns">
@@ -393,15 +459,43 @@
 
         <g class="edges">
           {#each laid.edges as e (e.from + '->' + e.to + ':' + e.kind)}
+            {@const onPath =
+              e.kind !== 'messaged' &&
+              focusId !== null &&
+              lineage.has(e.from) &&
+              lineage.has(e.to)}
+            {@const dimEdge = focusId !== null && !onPath && !(e.from === focusId || e.to === focusId)}
             <path
               class="edge"
               use:regEdge={e.from + '->' + e.to + ':' + e.kind}
               d={e.path}
               data-kind={e.kind}
               data-inferred={e.inferred}
-              data-active={focusId !== null && (e.from === focusId || e.to === focusId)}
-              marker-end={e.inferred ? 'url(#lg-arrow-inferred)' : 'url(#lg-arrow)'}
+              data-active={onPath}
+              data-funnel={e.kind === 'reported-to' && funnelInto.has(e.to)}
+              data-dim={dimEdge}
+              marker-end={e.kind === 'messaged'
+                ? 'url(#lg-arrow-messaged)'
+                : e.inferred
+                  ? 'url(#lg-arrow-inferred)'
+                  : 'url(#lg-arrow)'}
             />
+          {/each}
+          <!-- DATA-SHARED labels: a small "data" tag at each messaged edge midpoint so the operator
+               reads WHAT the lateral link is (paired with the distinct color/dash — never color-only). -->
+          {#each laid.edges as e (e.from + '->' + e.to + ':msg-label')}
+            {#if e.kind === 'messaged'}
+              {@const mx = Math.max(e.x1, e.x2) + 30}
+              {@const my = (e.y1 + e.y2) / 2}
+              <g
+                class="msg-label"
+                data-dim={focusId !== null && !(e.from === focusId || e.to === focusId)}
+                aria-hidden="true"
+              >
+                <rect x={mx - 18} y={my - 8} width="36" height="16" rx="8" class="msg-label-bg" />
+                <text x={mx} y={my + 3} text-anchor="middle" class="msg-label-text">data</text>
+              </g>
+            {/if}
           {/each}
         </g>
 
@@ -422,8 +516,9 @@
               data-animate={m.animate}
               data-focus={focusId === n.id}
               data-open={openId === n.id}
-              data-neighbour={neighbours.has(n.id)}
-              data-dim={focusId !== null && focusId !== n.id && !neighbours.has(n.id)}
+              data-lineage={focusId !== null && focusId !== n.id && lineage.has(n.id)}
+              data-dim={focusId !== null && !lineage.has(n.id)}
+              data-hub={funnelInto.has(n.id)}
               transform="translate({n.x - NODE_W / 2},{n.y - NODE_H / 2})"
             >
               <!-- Cycling GLOW ring — a token-coloured halo whose travelling dash circles a
@@ -469,6 +564,10 @@
                     {:else if n.kind === 'pm'}
                       <span class="cg-k">role</span>
                       <span class="cg-v">project manager</span>
+                      {#if funnelInto.has(n.id)}
+                        <span class="cg-k">reports in</span>
+                        <span class="cg-v mono hub-count">{funnelInto.get(n.id)} sessions</span>
+                      {/if}
                     {:else}
                       <span class="cg-k">state</span>
                       <span class="cg-v mono" data-status={n.status}>{n.status}</span>
@@ -482,7 +581,8 @@
                   {/if}
                 </div>
               </foreignObject>
-              <!-- a transparent hit-rect so the WHOLE card is clickable (foreignObject swallows some) -->
+              <!-- a transparent hit-rect so the WHOLE card is clickable (foreignObject swallows some).
+                   Hover focuses the node's lineage; click opens the detail (which pins focus). -->
               <rect
                 class="node-hit"
                 width={NODE_W}
@@ -491,7 +591,9 @@
                 role="button"
                 tabindex="-1"
                 aria-hidden="true"
-                onclick={() => openFromCard(n.id)}
+                onclick={(e) => { e.stopPropagation(); openFromCard(n.id); }}
+                onmouseenter={() => hoverFocus(n.id)}
+                onmouseleave={() => hoverFocus(null)}
               />
             </g>
           {/each}
@@ -638,8 +740,13 @@
               data-kind={n.kind}
               data-status={n.status}
               data-focus={focusId === n.id}
+              data-lineage={focusId !== null && focusId !== n.id && lineage.has(n.id)}
               aria-pressed={openId === n.id}
               onclick={(e) => openDetail(n.id, e.currentTarget)}
+              onmouseenter={() => hoverFocus(n.id)}
+              onmouseleave={() => hoverFocus(null)}
+              onfocus={() => hoverFocus(n.id)}
+              onblur={() => hoverFocus(null)}
             >
               <span class="te-dot" data-kind={n.kind} data-status={n.status} aria-hidden="true"></span>
               <span class="te-body">
@@ -670,7 +777,7 @@
                 {#if outEdges.length}
                   <span class="te-edges">
                     {#each outEdges as e (e.to + ':' + e.kind)}
-                      <span class="te-edge" data-inferred={e.inferred}>
+                      <span class="te-edge" data-inferred={e.inferred} data-kind={e.kind}>
                         {edgeDesc(e.kind, e.inferred)} →
                         {laid.nodes.find((m) => m.id === e.to)?.label ?? e.to}
                       </span>
@@ -752,6 +859,14 @@
   .edge-key.dashed {
     border-top-style: dashed;
   }
+  .edge-key.messaged {
+    border-top: 0;
+    border-bottom: 2px dashed var(--color-warn);
+    height: 2px;
+  }
+  .swatch.hub {
+    box-shadow: 0 0 0 2px var(--color-info-bg, var(--color-surface)), 0 0 0 3px var(--color-info);
+  }
 
   /* ── Canvas (the layered DAG) ──────────────────────────────────────────────────────── */
   .canvas-scroll {
@@ -793,6 +908,14 @@
   .arrow-head.inferred {
     fill: var(--color-neutral, var(--color-text-muted));
   }
+  .arrow-head.messaged {
+    fill: var(--color-warn);
+  }
+
+  /* Empty-space backdrop — clicking it clears a pinned focus (GUX-4). Transparent, hit-testable. */
+  .canvas-backdrop {
+    fill: transparent;
+  }
 
   /* Edges — solid for explicit (real link), dashed for inferred (heuristic). */
   .edge {
@@ -813,6 +936,51 @@
     stroke: var(--color-accent);
     opacity: 1;
     stroke-width: 2;
+  }
+
+  /* DATA-SHARED edge (peer_message) — a distinct WARN-amber dash-dot, lateral, arrowed. It reads
+     apart from the causal flow (border-strong solid / neutral inferred-dash) so the operator sees
+     "data flowed between these nodes" at a glance. Real link (never marked inferred). */
+  .edge[data-kind='messaged'] {
+    stroke: var(--color-warn);
+    stroke-width: 1.6;
+    stroke-dasharray: 2 5;
+    stroke-linecap: round;
+    opacity: 0.78;
+  }
+
+  /* FUNNEL bundle — incoming reported-to edges that converge on a PM hub thicken + tint toward the
+     PM (info) family so the convergence reads as a bundle pouring into the hub. */
+  .edge[data-funnel='true'] {
+    stroke: var(--color-info);
+    stroke-width: 2.4;
+    opacity: 0.92;
+  }
+
+  /* Focus dim: edges NOT on the focused lineage fade back so the highlighted path stands out. */
+  .edge[data-dim='true'] {
+    opacity: 0.12;
+  }
+
+  /* DATA-SHARED midpoint label — a small "data" pill on each messaged edge. */
+  .msg-label {
+    pointer-events: none;
+    transition: opacity var(--motion-fast, 140ms) var(--ease-out, ease);
+  }
+  .msg-label[data-dim='true'] {
+    opacity: 0.15;
+  }
+  .msg-label-bg {
+    fill: var(--color-warn-bg, var(--color-surface));
+    stroke: var(--color-warn);
+    stroke-width: 1;
+  }
+  .msg-label-text {
+    fill: var(--color-warn-on-overlay, var(--color-warn));
+    font-family: var(--font-sans, system-ui, sans-serif);
+    font-size: 9px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
   }
 
   /* Nodes — the n8n card. Color FAMILY by kind, accent rail by status (TOKENS only). */
@@ -903,12 +1071,28 @@
     stroke: var(--color-accent);
     stroke-width: 2.5;
   }
-  .node[data-neighbour='true'] .node-box {
+  /* On-lineage (an ancestor/descendant of the focused node, but not the focus itself): a muted
+     accent ring so the whole causal path reads as one connected highlight. */
+  .node[data-lineage='true'] .node-box {
     stroke: var(--color-accent-muted);
     stroke-width: 2;
   }
+  /* Off-lineage when something is focused: dim back so the path stands out (GUX-4 focus). */
   .node[data-dim='true'] {
-    opacity: 0.42;
+    opacity: 0.32;
+  }
+
+  /* PM FUNNEL HUB — a PM node ≥2 sessions reported into. A soft info-tinted halo + a stronger box
+     so it reads as the convergence point of the bundle. Paired with the in-card "reports in: N
+     sessions" line (never halo-only). */
+  .node[data-hub='true'] .node-box {
+    stroke: var(--color-info);
+    stroke-width: 2;
+    filter: drop-shadow(0 0 6px color-mix(in oklch, var(--color-info) 45%, transparent));
+  }
+  .hub-count {
+    color: var(--color-info);
+    font-weight: 600;
   }
   .node-hit {
     fill: transparent;
@@ -1302,6 +1486,9 @@
     border-color: var(--color-accent);
     background: var(--color-surface-selected, var(--color-surface-overlay));
   }
+  .te-node[data-lineage='true'] {
+    border-color: var(--color-accent-muted);
+  }
   .te-dot {
     width: 0.7rem;
     height: 0.7rem;
@@ -1397,6 +1584,10 @@
   .te-edge[data-inferred='true'] {
     color: var(--color-text-muted);
     font-style: italic;
+  }
+  .te-edge[data-kind='messaged'] {
+    color: var(--color-warn-on-overlay, var(--color-warn));
+    font-style: normal;
   }
 
   .mono {

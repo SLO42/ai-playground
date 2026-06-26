@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { layoutGraph, nodePath, nodeKindLabel, truncate, NODE_W, MARGIN, COL_GAP, COL_HEADER_H } from './layout';
+import {
+	layoutGraph,
+	nodePath,
+	nodeLineage,
+	nodeKindLabel,
+	truncate,
+	NODE_W,
+	MARGIN,
+	COL_GAP,
+	COL_HEADER_H
+} from './layout';
 import type { LifecycleEdge, LifecycleNode } from '$lib/server/observability';
 
 // LG-3 layout VERIFY — the PURE layout fn. Deterministic geometry from the LG-2 read model;
@@ -197,6 +207,83 @@ describe('nodePath', () => {
 		];
 		const p = nodePath('c:1', ns, es);
 		expect(p.parents.map((x) => x.label)).toEqual(['alpha', 'beta']); // label-sorted, deduped
+	});
+});
+
+describe('nodeLineage', () => {
+	// continue:1 → session:1 → pm_tick:1 → task:1 (a linear causal chain) PLUS a SECOND branch
+	// continue:1 → session:2 that does NOT continue, and a LATERAL data-share session:1↔session:2.
+	const nodes = [
+		node('continue:1', 'continue'),
+		node('session:1', 'session'),
+		node('session:2', 'session'),
+		node('pm_tick:1', 'pm'),
+		node('task:1', 'task')
+	];
+	const edges = [
+		edge('continue:1', 'session:1', 'spawned'),
+		edge('continue:1', 'session:2', 'spawned'),
+		edge('session:1', 'pm_tick:1', 'reported-to', true),
+		edge('pm_tick:1', 'task:1', 'proposed'),
+		edge('session:1', 'session:2', 'messaged') // LATERAL — must NOT count as lineage
+	];
+
+	it('returns the focus node + every transitive ancestor AND descendant', () => {
+		// Focusing session:1 lights continue:1 (ancestor), pm_tick:1 + task:1 (descendants), itself.
+		const set = nodeLineage('session:1', nodes, edges);
+		expect([...set].sort()).toEqual(['continue:1', 'pm_tick:1', 'session:1', 'task:1']);
+	});
+
+	it('EXCLUDES a lateral messaged edge from lineage (a data hop is not an ancestor/descendant)', () => {
+		// session:2 is reachable from session:1 ONLY via the messaged edge → it must NOT be lit.
+		const set = nodeLineage('session:1', nodes, edges);
+		expect(set.has('session:2')).toBe(false);
+		// And focusing session:2 yields only its causal lineage (continue:1 + itself), not session:1.
+		const set2 = nodeLineage('session:2', nodes, edges);
+		expect([...set2].sort()).toEqual(['continue:1', 'session:2']);
+	});
+
+	it('the focus set always contains the focus node itself (when it is a real node)', () => {
+		expect(nodeLineage('task:1', nodes, edges).has('task:1')).toBe(true);
+		expect(nodeLineage('continue:1', nodes, edges).has('continue:1')).toBe(true);
+	});
+
+	it('nil / empty / unknown-focus → empty set (all shadow paths, never throws)', () => {
+		expect(nodeLineage(null, nodes, edges).size).toBe(0);
+		expect(nodeLineage('session:1', null, null).size).toBe(0);
+		expect(nodeLineage('nope:1', nodes, edges).size).toBe(0);
+		expect(() => nodeLineage('session:1', undefined, undefined)).not.toThrow();
+	});
+
+	it('terminates on a cycle (malformed input — never trusts the DAG invariant)', () => {
+		const cyc = [node('a', 'task'), node('b', 'task')];
+		const ce = [edge('a', 'b', 'follow-up'), edge('b', 'a', 'follow-up')];
+		const set = nodeLineage('a', cyc, ce);
+		expect([...set].sort()).toEqual(['a', 'b']); // both, no infinite loop
+	});
+});
+
+describe('layoutGraph — lateral messaged (data-shared) edges', () => {
+	it('a messaged edge does NOT push a same-rank session into a deeper column', () => {
+		// Two parallel sessions the Continue spawned (same rank 1) that also exchanged data.
+		const nodes = [
+			node('continue:1', 'continue'),
+			node('session:1', 'session'),
+			node('session:2', 'session')
+		];
+		const edges = [
+			edge('continue:1', 'session:1', 'spawned'),
+			edge('continue:1', 'session:2', 'spawned'),
+			edge('session:1', 'session:2', 'messaged')
+		];
+		const out = layoutGraph(nodes, edges);
+		const s1 = out.nodes.find((n) => n.id === 'session:1')!;
+		const s2 = out.nodes.find((n) => n.id === 'session:2')!;
+		// Both stay in column 1 (the messaged edge is excluded from causal depth).
+		expect(s1.col).toBe(1);
+		expect(s2.col).toBe(1);
+		// The messaged edge is still rendered (it's in the placed edge set).
+		expect(out.edges.some((e) => e.kind === 'messaged')).toBe(true);
 	});
 });
 

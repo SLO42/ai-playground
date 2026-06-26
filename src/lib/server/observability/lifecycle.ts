@@ -46,8 +46,15 @@ import { assertRecordId } from '../db/validate';
 /** The four node classes in the lifecycle graph. */
 export type LifecycleNodeKind = 'continue' | 'session' | 'pm' | 'task';
 
-/** The four causal edge kinds. */
-export type LifecycleEdgeKind = 'spawned' | 'reported-to' | 'proposed' | 'follow-up';
+/**
+ * The causal edge kinds plus the lateral DATA-SHARED kind:
+ *   • spawned / reported-to / proposed / follow-up — the causal CHAIN (vertical lineage).
+ *   • messaged — a peer_message agent↔agent data-share (LATERAL, not causal). It is a REAL
+ *     link (a persisted peer_message row), so `inferred:false`; the UI styles it distinctly
+ *     ("data-shared") and EXCLUDES it from causal-lineage focus so a sideways data hop never
+ *     reads as an ancestor/descendant in the chain (GUX-4 — honest, F-008).
+ */
+export type LifecycleEdgeKind = 'spawned' | 'reported-to' | 'proposed' | 'follow-up' | 'messaged';
 
 /**
  * One node in the causal lifecycle graph. Every field derives from a REAL row (F-008); an
@@ -94,7 +101,13 @@ export interface LifecycleEdge {
 }
 
 /** Which substrate source a read folded (for the honest-partial `failedSources`). */
-export type LifecycleSource = 'scene_event' | 'session' | 'task' | 'agent_event' | 'tool_use';
+export type LifecycleSource =
+	| 'scene_event'
+	| 'session'
+	| 'task'
+	| 'agent_event'
+	| 'tool_use'
+	| 'peer_message';
 
 /** One tool name + the count of times a session invoked it (per-tool breakdown). */
 export interface LifecycleToolCount {
@@ -164,6 +177,8 @@ export interface LifecycleGraphLimits {
 	inferenceWindowMs?: number;
 	/** Max tool_use message rows scanned across ALL in-window sessions for the per-tool breakdown. */
 	toolRows?: number;
+	/** Max peer_message rows scanned (most-recent first) for the lateral data-shared edges. */
+	peerMessages?: number;
 }
 
 const DEFAULT_LIMITS: Required<LifecycleGraphLimits> = {
@@ -176,7 +191,10 @@ const DEFAULT_LIMITS: Required<LifecycleGraphLimits> = {
 	inferenceWindowMs: 30 * 60 * 1000,
 	// The per-tool breakdown scans tool_use rows ACROSS every in-window session in one bounded
 	// query — capped so a busy project never triggers an unbounded message-table scan (F-014).
-	toolRows: 20_000
+	toolRows: 20_000,
+	// The lateral data-shared (peer_message) edges scan recent peer rows for the project — capped
+	// (F-014); only rows whose BOTH endpoints are session nodes IN the graph become edges.
+	peerMessages: 500
 };
 
 /** The scene_event PM marker kind that roots the PM node (LG-1; m0066). The Continue roots
@@ -314,6 +332,13 @@ interface RawToolUse {
 	session?: unknown;
 	tool_call?: unknown;
 }
+/** A peer_message row off the fleet bus (for the lateral data-shared edges). Body is NEVER
+ *  selected — only the routing coordinates (D-026: no transcript/secret leaks to the graph). */
+interface RawPeer {
+	from_session?: unknown;
+	to_session?: unknown;
+	status?: unknown;
+}
 
 // ── Bounded source readers (each: own LIMIT, project-scoped, newest-first) ────────────────
 
@@ -400,6 +425,23 @@ async function readToolUse(
 }
 
 /**
+ * Recent peer_message rows for the project (most-recent first, capped) — the LATERAL data-shared
+ * edges. Selects ONLY the routing coordinates (from_session, to_session, status) — NEVER `body`
+ * (D-026: no screened-or-not transcript reaches the graph; the routing endpoints are opaque ids).
+ * F-020: the ORDER BY idiom (`created_at`) is in the SELECT projection. Both endpoints must be
+ * session nodes in the graph for a row to become an edge (filtered in the fold — no dangling edge).
+ */
+async function readPeerMessages(db: Db, project: StringRecordId, lim: number): Promise<RawPeer[]> {
+	const [rows] = await db.query<[Array<RawPeer & { created_at?: unknown }>]>(
+		`SELECT from_session, to_session, status, created_at FROM peer_message
+		  WHERE project = $project AND to_session != NONE
+		  ORDER BY created_at DESC LIMIT $lim;`,
+		{ project, lim }
+	);
+	return rows ?? [];
+}
+
+/**
  * Assemble the lifecycle node-graph for one project. PURE READ — every query is a SELECT; the
  * function derives the graph live and returns it (it writes nothing).
  *
@@ -454,12 +496,13 @@ export async function buildLifecycleGraph(
 		}
 	};
 
-	const [rawMarkers, rawSessions, rawTasks, rawEvents, rawUsage] = await Promise.all([
+	const [rawMarkers, rawSessions, rawTasks, rawEvents, rawUsage, rawPeers] = await Promise.all([
 		run('scene_event', () => readMarkers(db, project, lim.markers + 1)),
 		run('session', () => readSessions(db, project, lim.sessions + 1)),
 		run('task', () => readTasks(db, project, lim.tasks + 1)),
 		run('agent_event', () => readAgentEvents(db, project, lim.agentEvents + 1)),
-		run('agent_event', () => readUsage(db, project, lim.agentEvents + 1))
+		run('agent_event', () => readUsage(db, project, lim.agentEvents + 1)),
+		run('peer_message', () => readPeerMessages(db, project, lim.peerMessages + 1))
 	]);
 
 	// Detect + trim per-source truncation (F-014 — honest cap, never a silent partial).
@@ -467,11 +510,13 @@ export async function buildLifecycleGraph(
 	const sessionsCapped = rawSessions.length > lim.sessions;
 	const tasksCapped = rawTasks.length > lim.tasks;
 	const eventsCapped = rawEvents.length > lim.agentEvents;
+	const peersCapped = rawPeers.length > lim.peerMessages;
 	const markers = markersCapped ? rawMarkers.slice(0, lim.markers) : rawMarkers;
 	const sessions = sessionsCapped ? rawSessions.slice(0, lim.sessions) : rawSessions;
 	const tasks = tasksCapped ? rawTasks.slice(0, lim.tasks) : rawTasks;
 	const events = eventsCapped ? rawEvents.slice(0, lim.agentEvents) : rawEvents;
-	const capped = markersCapped || sessionsCapped || tasksCapped || eventsCapped;
+	const peers = peersCapped ? rawPeers.slice(0, lim.peerMessages) : rawPeers;
+	const capped = markersCapped || sessionsCapped || tasksCapped || eventsCapped || peersCapped;
 
 	// ── Project the nodes ──────────────────────────────────────────────────────────────
 	const nodes: LifecycleNode[] = [];
@@ -666,6 +711,24 @@ export async function buildLifecycleGraph(
 			pushEdge(sid, best.id, 'reported-to', true);
 			haveReported.add(sid);
 		}
+	}
+
+	// (6) session → session  — DATA-SHARED (peer_message, the CV/BL-4 fleet bus). A LATERAL, REAL
+	// link (inferred:false): the operator's "what data flowed between nodes" read. ONLY rows whose
+	// BOTH endpoints resolve to session nodes IN this graph become edges (no dangling, no fabricated
+	// connection — F-008); a self-message (from==to) and a duplicate pair are collapsed to ONE edge
+	// (the graph shows THAT two sessions exchanged data, not how many times). Body is never read
+	// (D-026 — the reader never SELECTs it).
+	const haveMessaged = new Set<string>(); // `from→to` already drawn (collapse repeats)
+	for (const p of peers) {
+		const from = refOrUndef(p.from_session);
+		const to = refOrUndef(p.to_session);
+		if (!from || !to || from === to) continue; // need both endpoints; never a self-loop
+		if (!nodeIds.has(from) || !nodeIds.has(to)) continue; // both must be in-graph nodes
+		const key = `${from} ${to}`;
+		if (haveMessaged.has(key)) continue;
+		haveMessaged.add(key);
+		pushEdge(from, to, 'messaged', false);
 	}
 
 	// Stable, deterministic order: nodes oldest-first (the chain grows forward); a node without a

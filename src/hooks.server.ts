@@ -209,9 +209,10 @@ async function bootstrap(): Promise<DbInitResult> {
 		// on every connected boot — credentialed or not (the wedge predates this process).
 		try {
 			const reaped = await reapStaleRuns(db);
-			if (reaped.sessions || reaped.workflowRuns) {
+			if (reaped.sessions || reaped.workflowRuns || reaped.releasedWorkItems || reaped.resetTasks) {
 				console.warn(
-					`[startup] reaped ${reaped.sessions} session(s) + ${reaped.workflowRuns} workflow_run(s) left 'running' by a previous boot.`
+					`[startup] reaped ${reaped.sessions} session(s) + ${reaped.workflowRuns} workflow_run(s) left 'running' by a previous boot ` +
+						`(recovered ${reaped.releasedWorkItems} work_item(s) + ${reaped.resetTasks} task(s) → ready, BL-R1).`
 				);
 			}
 		} catch (err) {

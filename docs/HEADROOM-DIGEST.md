@@ -102,5 +102,44 @@ the memory spec).
 
 ---
 
-*Generated from the cannibalize foundry, 2026-06-26. Deeper:
+## 6. BL-H2 VERDICT — bounded spike result (2026-06-26): NO-ADOPT now, IDEA-ONLY later
+Ran a **contained, credential-free, offline** measurement (the more-contained pivot from
+a live proxy — the pip package's compressors run in-process, so no API traffic/Rust
+build was needed to measure). Real ai-playground tool outputs → headroom's actual
+compressors → token delta with a real Anthropic tokenizer (`litellm.token_counter`).
+Artifacts under `scratchpad/headroom-spike/`. Gotcha logged **F-049**.
+
+**Measured (structured-tool-output basket, on the pure-Python 0.9.7 era):**
+search **98%**, log **89%**, JSON-array **89%**, git-diff **8.9%**, source-code **0%
+(no-op)**; aggregate **63–66%**. Sits inside headroom's 47–92% headline band.
+
+**Why NO-ADOPT-NOW (three independent blockers, each sufficient):**
+1. **Windows-incompatible as shipped.** 0.20.15+ requires the Rust `_core` ext (compressors
+   hard-import it, no Python fallback); PyPI has **no `win_amd64` binary wheel**; the sdist
+   build needs Rust+MSVC and **fails** (`link.exe`). v2 is Windows-native → headroom is NOT
+   "one pip install" here. The 63–66% number is from 0.9.7's retired pure-Python path, not
+   the shipped build.
+2. **The big cuts are LOSSY down-sampling, not lossless.** Search kept 30/2444 hits, log
+   43/625 lines, JSON 22/200 rows. "Free" ONLY if CCR recovery is wired — but the proxy
+   path at our pinned commit calls the **non-CCR variant** (§1) → no recovery → genuine
+   information loss on agent traffic (the model loses grep hits / log lines / rows it may
+   need). Correctness risk, not a clean win.
+3. **Fresh coding-agent tool outputs are bypassed by default.** `DEFAULT_EXCLUDE_TOOLS`
+   (Read/Glob/Grep/Write/Edit/Bash) means only STALE/old outputs compress → the realistic
+   live cut on our code-write traffic is far below the 63% basket ceiling. Source-code (the
+   bulk of code-write context) is **0% no-op**. git-diff is only 8.9%.
+
+**IDEA-ONLY (what's worth keeping, build native if/when token cost becomes a real pain):**
+the **live-zone-only + cache-floor** design (compress only the latest user message's
+structured tool-output blocks, keep everything below the floor byte-identical so the
+prompt cache still hits) and the **SmartCrusher/Log/Search down-sample-with-anchors**
+policy — rebuilt v2-native: **deterministic, secret-fenced, Windows-safe, and CCR-backed
+(recoverable)**. NOT a third-party Windows-incompatible Rust proxy in our LLM path, NOT
+`headroom learn`/cross-agent memory (we have error-learning + skill-harvest + the memory
+spec). No build now — revisit only when measured token spend justifies it.
+
+---
+
+*Generated from the cannibalize foundry, 2026-06-26; §6 verdict from the BL-H2 offline
+spike. Deeper:
 `F:\code\cannibalize\scripts\find-relevant.ps1 -Keywords compression,headroom -Hydrate`.*

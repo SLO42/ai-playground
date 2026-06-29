@@ -27,7 +27,11 @@ export const navGroups: NavGroup[] = [
     items: [
       { label: 'Agents', href: '/agents' },
       { label: 'Claude Code', href: '/claude-code' },
-      { label: 'Workflows', href: '/workflows' }
+      { label: 'Workflows', href: '/workflows' },
+      // Loops — the first-class view of Atelier's recurring autonomous loops
+      // (orchestrator drain/GC, per-project PM drive + cadence, memory review).
+      // Phase 1 = VIEW + IDENTIFY (LOOP-ENGINEERING.md; operator directive 2026-06-29).
+      { label: 'Loops', href: '/loops' }
     ]
   },
   {

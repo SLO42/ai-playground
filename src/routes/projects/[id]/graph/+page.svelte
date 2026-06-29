@@ -45,7 +45,7 @@
 </script>
 
 <svelte:head>
-  <title>Lifecycle graph · {projectName}</title>
+  <title>Lifecycle graph · {projectName} — Atelier</title>
 </svelte:head>
 
 <div class="page" class:is-fullscreen={fullscreen}>

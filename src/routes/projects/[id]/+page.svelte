@@ -1380,11 +1380,12 @@
             class="disclosure-head maintain-head"
             aria-expanded={ovOpen.maintain}
             aria-controls="ov-maintain-body"
+            aria-label={`Maintain — ${findings.length} findings open`}
             onclick={() => (ovOpen.maintain = !ovOpen.maintain)}
           >
             <span class="section-title">Maintain</span>
             <span class="disclosure-hint">
-              <span class="count mono" data-tone={findings.length > 0 ? 'warn' : ''}>{findings.length} open</span>
+              <span class="count mono" aria-hidden="true" data-tone={findings.length > 0 ? 'warn' : ''}>{findings.length} open</span>
               <span class="chevron" data-open={ovOpen.maintain} aria-hidden="true">›</span>
             </span>
           </button>

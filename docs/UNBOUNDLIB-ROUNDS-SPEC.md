@@ -71,3 +71,17 @@ only, no ModdingUtils — confirmed via its manifest/csproj).
 - Source of truth = Bknibb's fork (adapt, don't rewrite).
 - The hard part is the in-game verify loop, which is human-in-the-loop — bake that into the
   task flow (build → operator-verify → feed stack traces → fix → repeat).
+
+## Backlog / v2 enhancements (operator-approved, deferred)
+- **TODO (v2, post-compat-testing): late-registration handling in UnboundLib's MODS menu.**
+  Today a mod's MODS-options entry only appears if it calls `Unbound.RegisterMenu` BEFORE
+  `ModOptions.CreateModOptions` builds the menu (modMenus must be populated at build time;
+  there is NO rebuild on late registration). On BepInEx 5.4.23.5 + Unity 2022.3, Unity does
+  NOT dispatch plugin `Start()` (Awake runs, Start never fires — see PickNCards `d2cbf7d`),
+  so any mod registering in `Start()` is absent from MODS. Enhancement: when `RegisterMenu`
+  is called AFTER the MODS menu already exists, build that mod's entry immediately (or
+  rebuild the menu) so registration order/timing doesn't matter and mods need no Awake
+  workaround. **Operator decision (2026-06-29): powerful, but defer to v2** — first test the
+  current library + observe real mod compatibility before changing UnboundLib's menu logic.
+  HOLD until then. (Per-mod Awake-registration is the current workaround; UnboundLib stays
+  byte-identical to the no-regression port.)

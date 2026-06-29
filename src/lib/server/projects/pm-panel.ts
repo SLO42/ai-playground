@@ -706,6 +706,25 @@ export function cadenceWindowMs(cadence: string | undefined, from = new Date()):
 	return fires.length === 2 ? fires[1] - fires[0] : null;
 }
 
+/**
+ * The next future fire of a cadence cron as an ISO string (bounded forward scan, 60 days), or null
+ * when the cadence is absent/unparseable or no fire lands inside the horizon. Honest (F-008): the loops
+ * read model surfaces null as '—' rather than a fabricated time. Reuses the same minute-granular cron
+ * machinery as {@link cadenceWindowMs} so "next fire" and "window" agree.
+ */
+export function nextCadenceFireAt(cadence: string | undefined, from = new Date()): string | null {
+	if (!cadence) return null;
+	const spec = parseCron(cadence);
+	if (!spec) return null;
+	const start = new Date(from.getTime());
+	start.setSeconds(0, 0);
+	for (let i = 1; i <= 60 * 24 * 60; i++) {
+		const t = new Date(start.getTime() + i * 60_000);
+		if (cronMatches(spec, t)) return t.toISOString();
+	}
+	return null;
+}
+
 function deferWindowMs(pm: PmRow | null, opts: { configDir?: string }): number {
 	const fromCadence = cadenceWindowMs(pm?.cadence);
 	if (fromCadence) return fromCadence;

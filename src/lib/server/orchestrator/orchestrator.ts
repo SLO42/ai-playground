@@ -261,6 +261,8 @@ export class Orchestrator {
 	#timer?: ReturnType<typeof setInterval>;
 	/** Backstop maintenance gc timer (R1-2). Unref'd; cleared in stop(). undefined ⇒ not armed. */
 	#gcTimer?: ReturnType<typeof setInterval>;
+	/** The gc sweep cadence (ms) — default until startMaintenance arms a (possibly overridden) interval. */
+	#gcIntervalMs: number = GC_MAINTENANCE_INTERVAL_MS;
 	/** True while a maintenance gc is still in flight — guards against overlapping ticks. */
 	#gcInFlight = false;
 	#started = false;
@@ -354,6 +356,23 @@ export class Orchestrator {
 	/** True while the R1-2 backstop maintenance gc interval is armed. Read-only view for tests. */
 	get maintenanceArmed(): boolean {
 		return this.#gcTimer !== undefined;
+	}
+
+	/**
+	 * The periodic drain interval (ms) as configured, or undefined when none is set. Read-only view
+	 * for the loops read model (no behavior change) — the timer is only ARMED in 'periodic' mode
+	 * (see {@link periodicArmed}); this is the configured cadence regardless of mode.
+	 */
+	get intervalMs(): number | undefined {
+		return this.#intervalMs;
+	}
+
+	/**
+	 * The maintenance gc sweep interval (ms) — the LIVE armed cadence when {@link maintenanceArmed},
+	 * else the default backstop cadence. Read-only view for the loops read model (no behavior change).
+	 */
+	get gcIntervalMs(): number {
+		return this.#gcIntervalMs;
 	}
 
 	/**
@@ -475,6 +494,7 @@ export class Orchestrator {
 		if (this.#gcTimer || this.#stopped) return;
 		const intervalMs =
 			opts?.intervalMs && opts.intervalMs > 0 ? opts.intervalMs : GC_MAINTENANCE_INTERVAL_MS;
+		this.#gcIntervalMs = intervalMs;
 		const gcOpts = opts?.gcOpts;
 		this.#gcTimer = setInterval(() => void this.#runMaintenanceTick(gcOpts), intervalMs);
 		if (typeof this.#gcTimer.unref === 'function') this.#gcTimer.unref();
@@ -1069,4 +1089,23 @@ export class Orchestrator {
 		// is NOT an error here (the work is safe on its branch + the screened note surfaces on MC-4).
 		console.info(`[orchestrator] merge-back for session ${sessionId}: ${outcome.kind} (branch ${outcome.branch})`);
 	}
+}
+
+// ── Process-wide registry (mirrors pm-autonomous's activeAutonomousLoop) ─────────────────────────────
+// The boot seam (boot.ts startOrchestrator) registers the live orchestrator; a READ-ONLY consumer (the
+// loops read model) reads its armed-state getters (mode/periodicArmed/maintenanceArmed/intervalMs/
+// gcIntervalMs) for an honest live status WITHOUT importing hooks.server.ts (circularity). Null when no
+// orchestrator is running (degraded/credential-less boot) — the read model then surfaces the honest
+// "not running" state rather than a fabricated one (F-008).
+
+let activeOrch: Orchestrator | null = null;
+
+/** Register the boot-started orchestrator (boot.ts). Pass null on teardown. */
+export function setActiveOrchestrator(orch: Orchestrator | null): void {
+	activeOrch = orch;
+}
+
+/** The live orchestrator, or null when none is running (degraded boot / no credential). */
+export function activeOrchestrator(): Orchestrator | null {
+	return activeOrch;
 }

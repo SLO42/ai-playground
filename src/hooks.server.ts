@@ -18,7 +18,12 @@ import { initDbFromEnv, tryGetDb, type DbInitResult } from '$lib/server/db/runti
 import { closeDb } from '$lib/server/db/client';
 import { getEventBus, watchTable, WATCHED_TABLES, type DbSourceHandle } from '$lib/server/events';
 import { bootstrapControlPlane, type ListenerSpec } from '$lib/server/config/loopback';
-import { startOrchestrator, reapStaleRuns, type Orchestrator } from '$lib/server/orchestrator';
+import {
+	startOrchestrator,
+	reapStaleRuns,
+	setActiveOrchestrator,
+	type Orchestrator
+} from '$lib/server/orchestrator';
 import { killAllClaudeChildren } from '$lib/server/claude-code/cli-backend';
 import { registerShutdown } from '$lib/server/shutdown';
 import { loadWorkforce, loadOrchestration, type OrchMode } from '$lib/server/config/index';
@@ -164,6 +169,9 @@ async function bootstrap(): Promise<DbInitResult> {
 	registerShutdown({
 		stopOrchestrators: () => {
 			for (const o of orchestrators) o.stop();
+			// Clear the live-orchestrator registry so a READ-ONLY consumer (loops read model) never
+			// reads a stale handle after shutdown (F-014).
+			setActiveOrchestrator(null);
 			// The PM trigger engine is orchestration machinery too (TASK 16.2): same
 			// teardown step — its bus subscription + tick timer must not outlive the boot.
 			for (const e of pmTriggerEngines) e.stop();

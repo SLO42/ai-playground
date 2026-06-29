@@ -211,6 +211,16 @@ export class AutonomousPmLoop {
 	/** The last outcome per project (the surface reads this for the honest state). */
 	readonly lastOutcome = new Map<string, AutonomousTickOutcome>();
 
+	/** The HARD per-window re-tick cap (PMA-2). Read-only view for the loops read model. */
+	get maxTicksPerWindow(): number {
+		return this.#maxTicks;
+	}
+
+	/** The rolling-window length (ms) for the re-tick cap. Read-only view for the loops read model. */
+	get tickWindowMs(): number {
+		return this.#windowMs;
+	}
+
 	constructor(opts: AutonomousLoopOptions) {
 		this.#db = opts.db;
 		this.#bus = opts.bus;

@@ -8,6 +8,8 @@
 
 export {
 	Orchestrator,
+	setActiveOrchestrator,
+	activeOrchestrator,
 	type OrchestratorOptions,
 	type OrchMode,
 	type StubRoute,

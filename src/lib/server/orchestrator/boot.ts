@@ -52,7 +52,7 @@ import { makeSkillHarvestAgent } from '../skills/harvest-agent';
 import { loadOrchestration, loadAgentPool, type OrchMode, type AgentPool, type Orchestration } from '../config/index';
 import { resolveRoute, type RouteTask, type StaffRouteResolver } from '../routing/index';
 import { resolveStaff, getProjectStaff, type Tier, type TierModelResolver } from '../workforce';
-import { Orchestrator, type StubRoute, type RouteResolver } from './orchestrator';
+import { Orchestrator, setActiveOrchestrator, type StubRoute, type RouteResolver } from './orchestrator';
 
 /** What the boot wire did — so hooks.server.ts can log it and tests can assert it.
  *  `dailySpawnCap` is the D-021 rolling-24h CLAIM ceiling actually wired into the orchestrator
@@ -392,6 +392,10 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		gameVerify: { enabled: true }
 	});
 	orchestrator.start();
+	// Register the live orchestrator so the loops read model (and other READ-ONLY consumers) can read
+	// its armed-state getters without importing hooks.server.ts (circularity). Cleared on teardown
+	// (hooks.server.ts stopOrchestrators) so a stale handle is never read after shutdown (F-014).
+	setActiveOrchestrator(orchestrator);
 
 	// R1-2 — wire gcStale as the AUTOMATIC backstop. It was built but NEVER invoked automatically,
 	// so an orphaned `processing` work_item (a crashed/killed session whose R1-1 targeted release was

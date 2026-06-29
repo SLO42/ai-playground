@@ -510,6 +510,18 @@ export async function listPmsWithCadence(db: Db): Promise<PmRow[]> {
 }
 
 /**
+ * Every PM ARMED for the unsupervised autonomous drive (PMA-1 — `autonomous = true`). The loops read
+ * model reads THIS list (live rows, F-008) to surface the per-project autonomous loop: a disarmed PM
+ * never appears here (honest — no card for a loop that is not armed, not a fabricated one).
+ */
+export async function listAutonomousPms(db: Db): Promise<PmRow[]> {
+	const [rows] = await db.query<[(PmRow & { id: unknown; project: unknown })[]]>(
+		`SELECT * FROM pm WHERE autonomous = true;`
+	);
+	return rows.map(normPm);
+}
+
+/**
  * Create the project's `pm` row. ONE per project — the UNIQUE pm_by_project index makes a
  * concurrent double-hire collide rather than duplicate (D-008); callers absorb the existing
  * row via getPm first (interrupt-safe re-run). All values bind via $param (D-016).

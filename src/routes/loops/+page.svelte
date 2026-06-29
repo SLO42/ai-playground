@@ -66,7 +66,7 @@
       </p>
     </div>
   {:else}
-    <LoopList {loops} {projectNames} />
+    <LoopList {loops} {projectNames} editable />
   {/if}
 </section>
 

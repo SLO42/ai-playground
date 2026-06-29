@@ -19,8 +19,12 @@
     relativeTime,
     nextFireLabel
   } from './loop-card-core';
+  import LoopControls from './LoopControls.svelte';
 
-  let { loop }: { loop: LoopView } = $props();
+  // `editable` opts the card into the Phase-2 in-UI controls (cadence editor / pause toggle). Only the
+  // Loops surfaces that host the matching `?/pmSchedule` + `?/pmAutonomous` form actions pass it true;
+  // default false keeps the card a pure view everywhere else.
+  let { loop, editable = false }: { loop: LoopView; editable?: boolean } = $props();
 
   let expanded = $state(false);
 
@@ -29,6 +33,9 @@
   const ticks = $derived(ticksLabel(loop));
   const hasHistory = $derived(tracksRunHistory(loop));
   const runCount = $derived(loop.recentRuns.length);
+  // Only the two NO-restart DB-MERGE loops have an editable control here (orchestrator/memory-review
+  // show none — the orchestrator mode is the D-010 confirm flow on /settings).
+  const hasControls = $derived(loop.kind === 'pm-cadence' || loop.kind === 'pm-autonomous');
 </script>
 
 <article class="loop-card" data-tone={loop.tone} aria-labelledby="loop-name-{loop.id}">
@@ -113,6 +120,10 @@
         {/if}
       {/if}
     </div>
+  {/if}
+
+  {#if editable && hasControls}
+    <LoopControls {loop} />
   {/if}
 </article>
 

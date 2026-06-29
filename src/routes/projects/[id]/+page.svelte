@@ -3103,7 +3103,7 @@
             </p>
           </div>
         {:else}
-          <LoopList {loops} projectNames={loopProjectNames} />
+          <LoopList {loops} projectNames={loopProjectNames} editable />
         {/if}
       </div>
     {:else if tab === 'release'}

@@ -12,8 +12,9 @@
 
   let {
     loops,
-    projectNames = {}
-  }: { loops: LoopView[]; projectNames?: Record<string, string> } = $props();
+    projectNames = {},
+    editable = false
+  }: { loops: LoopView[]; projectNames?: Record<string, string>; editable?: boolean } = $props();
 
   const groups = $derived(groupLoops(loops, projectNames));
 </script>
@@ -33,7 +34,7 @@
         </h2>
         <div class="lg-grid">
           {#each group.loops as loop (loop.id)}
-            <LoopCard {loop} />
+            <LoopCard {loop} {editable} />
           {/each}
         </div>
       </section>

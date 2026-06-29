@@ -76,6 +76,19 @@ export interface LoopView {
 	ticksUsed?: number | null;
 	/** The hard per-window re-tick cap (autonomous loop). */
 	ticksMax?: number | null;
+	/**
+	 * For pm-cadence loops ONLY: the RAW cron expression + duration offset, so the in-UI cadence
+	 * editor can prefill the exact stored values (null when the field is unset → empty input). These
+	 * are the same strings the `pmSchedule` write path consumes; the human `cadenceLabel` is for display.
+	 */
+	cadenceCron?: string | null;
+	cadenceOffset?: string | null;
+	/**
+	 * For pm-autonomous loops ONLY: whether the drive is currently ARMED (the pause/kill toggle's
+	 * source of truth). A pm-autonomous card only exists while the PM is armed, so this is true today;
+	 * threaded honestly (not assumed) so the toggle reflects real state.
+	 */
+	armed?: boolean;
 	/** Last ~10 runs from agent_event (newest first), details SCREENED (D-026). */
 	recentRuns: LoopRun[];
 }
@@ -227,6 +240,8 @@ async function pmAutonomousLoops(db: Db, pms: PmRow[]): Promise<LoopView[]> {
 			nextFireAt: null,
 			ticksUsed: outcome?.ticksUsed ?? null,
 			ticksMax,
+			// This view is only built for an armed PM (listAutonomousPms / pm.autonomous gate) — armed=true.
+			armed: true,
 			recentRuns: runs
 		});
 	}
@@ -254,6 +269,9 @@ async function pmCadenceLoops(db: Db, pms: PmRow[]): Promise<LoopView[]> {
 			stateLabel: 'scheduled',
 			phase: cadencePhase(pm),
 			cadenceLabel: `cron ${pm.cadence}`,
+			// The RAW values the in-UI cadence editor prefills (and the pmSchedule write path consumes).
+			cadenceCron: pm.cadence ?? null,
+			cadenceOffset: pm.cadence_offset ?? null,
 			lastRunAt: runs[0]?.at ?? null,
 			nextFireAt: nextCadenceFireAt(pm.cadence),
 			recentRuns: runs

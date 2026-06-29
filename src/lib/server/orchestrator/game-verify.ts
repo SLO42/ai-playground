@@ -477,7 +477,18 @@ export async function runGameVerify(
 	}
 }
 
-/** An honest, fully-formed verdict for a config/env fault — never a fabricated pass. */
+/**
+ * An honest, fully-formed verdict for a config/env fault — never a fabricated pass.
+ *
+ * D-026: `note` is built from operator-set config paths AND OS error messages (a launcher/
+ * copier ENOENT/EACCES can embed a host home path `C:\Users\<name>\…` or a token-shaped
+ * string). GV-4 RENDERS `note` in the command-center, so — like stackTraces/logTail — it MUST
+ * pass through screenForDisplay BEFORE it enters the verdict. This is the SINGLE note choke
+ * point: every honest outcome (config error, deploy-escape, not_ready, the catch path) is
+ * constructed here, and the clean-run verdict never sets a note. Display-safe: screenForDisplay
+ * never throws (screen.ts fails CLOSED to a screened/quarantined string), so we keep .text and
+ * never mask the outcome.
+ */
 function honest(outcome: GameVerifyOutcome, note: string): GameVerifyVerdict {
 	return {
 		outcome,
@@ -487,6 +498,6 @@ function honest(outcome: GameVerifyOutcome, note: string): GameVerifyVerdict {
 		byPattern: {},
 		stackTraces: [],
 		logTail: '',
-		note
+		note: screenForDisplay(note).text
 	};
 }

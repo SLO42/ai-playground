@@ -237,6 +237,60 @@ describe('runGameVerify — honest verdicts + mandatory kill (F-014)', () => {
 		expect(killer.calls).toEqual(['ROUNDS.exe']);
 	});
 
+	it('a thrown OS error with a home path + token in its message → note is SCREENED (D-026)', async () => {
+		// A real launcher/copier ENOENT/EACCES can embed a host home path or a token-shaped
+		// string in (err as Error).message; GV-4 renders verdict.note in the command-center, so
+		// note MUST be screened (the honest() choke point) before it enters the verdict.
+		const killer = fakeKiller();
+		const leakyLauncher: Launcher = async () => {
+			throw new Error(
+				'spawn ENOENT C:\\Users\\victim\\secret\\game.exe token=sk-ant-deadbeefcafe1234'
+			);
+		};
+		const v = await runGameVerify(baseCfg, ctx, {
+			killer,
+			launcher: leakyLauncher,
+			logReader: seqLogReader([PASS_LOG]),
+			clock: fakeClock()
+		});
+
+		expect(v.outcome).toBe('not_ready');
+		// The note is present and honest, but the home path + token are redacted (not raw).
+		expect(v.note).toBeTruthy();
+		expect(v.note).toContain('game-verify fault');
+		expect(v.note).not.toContain('victim');
+		expect(v.note).not.toContain('sk-ant-deadbeefcafe1234');
+		expect(v.note).toContain('[REDACTED:home-path]');
+		expect(v.note).toContain('[REDACTED:anthropic-key]');
+		expect(killer.calls).toEqual(['ROUNDS.exe']);
+	});
+
+	it('a thrown copier error with a home path in its message → deploy note is SCREENED (D-026)', async () => {
+		const killer = fakeKiller();
+		const throwingCopier: FileCopier = async () => {
+			throw new Error('EACCES C:\\Users\\victim\\AppData\\plugins denied');
+		};
+		const cfg: GameVerifyConfig = {
+			...baseCfg,
+			deploy: [{ source: '**/UnboundLib.dll', target: 'E:/games/ROUNDS/BepInEx/plugins/' }]
+		};
+		const v = await runGameVerify(
+			cfg,
+			{ cwd: 'F:/code/proj', builtArtifacts: ['F:/code/proj/UnboundLib.dll'] },
+			{
+				killer,
+				launcher: fakeLauncher(),
+				logReader: seqLogReader([PASS_LOG]),
+				clock: fakeClock(),
+				copier: throwingCopier
+			}
+		);
+		expect(v.outcome).toBe('not_ready');
+		expect(v.note).not.toContain('victim');
+		expect(v.note).toContain('[REDACTED:home-path]');
+		expect(killer.calls).toEqual(['ROUNDS.exe']);
+	});
+
 	it('invalid ready_pattern is a config error → honest not_ready (never a fabricated pass)', async () => {
 		const killer = fakeKiller();
 		const v = await runGameVerify(

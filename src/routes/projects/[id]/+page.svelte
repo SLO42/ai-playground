@@ -23,6 +23,8 @@
   import ProjectStatus from '$lib/components/project/ProjectStatus.svelte';
   import ProjectActivity from '$lib/components/project/ProjectActivity.svelte';
   import ProjectControls from '$lib/components/project/ProjectControls.svelte';
+  // GAME-VERIFY GV-4 — the live game_verify verdict surface (operator visibility).
+  import GameVerifyVerdict from './GameVerifyVerdict.svelte';
   import {
     rowToTurn,
     liveEventToTurn,
@@ -50,6 +52,10 @@
   const sprints = $derived(data.sprints ?? []);
   const tasks = $derived(data.tasks ?? []);
   const sessions = $derived(data.sessions ?? []);
+  // GAME-VERIFY GV-4 — the latest persisted game_verify verdict(s) + whether the project declares a
+  // harness (drives the honest "not yet run" vs "not configured" empty states; F-008).
+  const gameVerify = $derived(data.gameVerify ?? []);
+  const gameVerifyConfigured = $derived(data.gameVerifyConfigured ?? false);
   // ── TASK 10.4 — the missing workspace surfaces (board / memory / settings / maintain).
   const taskStatuses = $derived(data.taskStatuses ?? []);
   const taskPriorities = $derived(data.taskPriorities ?? []);
@@ -2832,6 +2838,30 @@
             </ul>
           {/if}
         </div>
+
+        <!-- GAME-VERIFY GV-4 — the live game-mod verification surface (operator visibility; spec
+             §"Orchestrator integration"). Shown only for a project that DECLARES a game_verify
+             harness (opt-in); the verdict is read from the persisted agent_event (GV-3) and is
+             DISPLAY-ONLY — its log tail / stack traces were screened by the runner (D-026). Honest
+             states (F-008): configured-but-never-run → "not yet run"; not configured → nothing. -->
+        {#if gameVerifyConfigured}
+          <div class="card">
+            <h2 class="section-title">
+              Game verification <span class="count mono">{gameVerify.length}</span>
+            </h2>
+            <p class="state-body">
+              This project verifies its built mod by running the game — the latest verdict(s) appear
+              here the moment a run completes (deploy → launch → poll log → kill → verdict).
+            </p>
+            {#if gameVerify.length === 0}
+              <p class="state-body">Not yet run — a verdict appears after the next build verifies in-game.</p>
+            {:else}
+              {#each gameVerify as v (v.id)}
+                <GameVerifyVerdict verdict={v} {now} />
+              {/each}
+            {/if}
+          </div>
+        {/if}
 
         <!-- Live transcript + session controls (PRODUCT §4.8; D-011/D-035). -->
         {#if selectedSession}

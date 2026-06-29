@@ -17,6 +17,7 @@ import {
 	listFeatures,
 	listSprints,
 	createSprint,
+	parseGameVerifyConfig,
 	PROJECT_STATUSES,
 	type ProjectPlan,
 	type ReleaseRow,
@@ -87,6 +88,12 @@ import {
 import { bootDailySpawnCap } from '$lib/server/orchestrator/boot';
 // CC-STATUS — the project command-center status dashboard's spawn-budget read (D-021 daily cap usage).
 import { queueStats, type QueueStats } from '$lib/server/orchestrator/queue-monitor';
+// GAME-VERIFY GV-4 — surface the latest persisted game_verify verdict(s) (operator visibility). The
+// reader is DISPLAY-ONLY: the logTail/stackTraces were screened by the runner before persistence (D-026).
+import {
+	listGameVerifyVerdicts,
+	type GameVerifyVerdictRow
+} from '$lib/server/orchestrator/game-verify-read';
 // CC-CONTROLS — the operator command-center CONTROL seam (CONTINUE re-enqueue / RESTART a failed run).
 // Reuses the LIVE orchestrator's enqueue/drain (activeOrchestrator) + the work_item dedup double-spawn
 // guard; never bypasses the spawn cap (the orchestrator owns it inside drain).
@@ -304,6 +311,18 @@ export interface ProjectDetailData {
 	 *  the operator can APPROVE (→ confirmed → the RC-2 outward gate) or REJECT it via /api/briefs. At
 	 *  most one (one repo per project). null when no PM has proposed one (honest empty, F-008). */
 	repoBrief: RepoBriefCard | null;
+	/**
+	 * GAME-VERIFY GV-4 — the latest persisted game_verify verdict(s) for this project (newest first,
+	 * bounded), surfaced in the command-center for operator visibility (GAME-VERIFY-SPEC §"Orchestrator
+	 * integration"). DISPLAY-ONLY: the logTail/stackTraces were screened by the runner before
+	 * persistence (D-026). [] when the project has never run a verify (the UI shows "not yet run" when
+	 * `gameVerifyConfigured`, or nothing when not configured — honest empty, F-008).
+	 */
+	gameVerify: GameVerifyVerdictRow[];
+	/** GV-4 — whether the project DECLARES a parseable `game_verify` harness (opt-in, operator-set).
+	 *  Lets the UI distinguish "configured but not yet run" (a muted prompt) from "not configured"
+	 *  (nothing shown) — never invents a launch config (F-008). */
+	gameVerifyConfigured: boolean;
 	error?: string;
 }
 
@@ -404,7 +423,9 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			staffingGaps: [],
 			proposedDefectClasses: [],
 			hireGates: [],
-			repoBrief: null
+			repoBrief: null,
+			gameVerify: [],
+			gameVerifyConfigured: false
 		};
 	}
 
@@ -510,6 +531,20 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 		// it only when positive-finite) — read from the live boot wire (bootDailySpawnCap), the REAL D-021
 		// ceiling; undefined ⇒ the uncapped reality is reported honestly (F-008, no fabricated /N). A reader
 		// throw must NEVER sink the detail page (honest partial): on failure the tile shows an honest empty.
+		// GAME-VERIFY GV-4 — the latest persisted game_verify verdict(s) for the command-center surface
+		// (operator visibility). `gameVerifyConfigured` reflects whether the project DECLARES a parseable
+		// harness (opt-in) — so the UI shows "not yet run" only when configured, nothing otherwise (never
+		// invents a launch config, F-008). A reader throw must NEVER sink the detail page (honest partial):
+		// on failure the surface shows no verdict. DISPLAY-ONLY — the verdict text was screened by the
+		// runner before persistence (D-026); this never re-fetches a raw log.
+		const gameVerifyConfigured = parseGameVerifyConfig(project.game_verify) != null;
+		let gameVerify: GameVerifyVerdictRow[] = [];
+		try {
+			gameVerify = await listGameVerifyVerdicts(db, projectId, 5);
+		} catch {
+			gameVerify = [];
+		}
+
 		let queue: QueueStats | null = null;
 		try {
 			const cap = bootDailySpawnCap();
@@ -593,7 +628,9 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			staffingGaps,
 			proposedDefectClasses,
 			hireGates,
-			repoBrief
+			repoBrief,
+			gameVerify,
+			gameVerifyConfigured
 		};
 	} catch (err) {
 		// A 404 thrown above is a SvelteKit HttpError — rethrow it, don't swallow.
@@ -636,6 +673,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			proposedDefectClasses: [],
 			hireGates: [],
 			repoBrief: null,
+			gameVerify: [],
+			gameVerifyConfigured: false,
 			error: (err as Error).message
 		};
 	}

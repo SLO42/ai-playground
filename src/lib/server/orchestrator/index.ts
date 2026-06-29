@@ -75,6 +75,12 @@ export {
 	type GameVerifyStepDeps,
 	type GameVerifyStepResult
 } from './game-verify-step';
+// GV-4 — the read-side: surface the persisted verdict in the project command-center (operator visibility).
+export {
+	listGameVerifyVerdicts,
+	type GameVerifyVerdictRow,
+	type GameVerifyVerdictOutcome
+} from './game-verify-read';
 
 export {
 	maybeEnqueueReview,

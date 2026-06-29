@@ -195,12 +195,21 @@ const PRIVATE_PATH_RULES: SecretRule[] = [
 	// without greedily swallowing the FOLLOWING path components (those are separated by
 	// `\`/`/`, not matched) or punctuation. Still anchored on `X:[\/]Users[\/]` so plain
 	// prose containing the word "Users" is not redacted.
+	//
+	// The user-segment is `[^\\/\s]+` (any NON-separator, NON-whitespace char), NOT the
+	// ASCII-only `[A-Za-z0-9._-]+`: an accented (`José`, `Müller`) or non-Latin (`田中`,
+	// `Алексей`) username leaked on these exact path shapes — the ASCII class stopped at
+	// the first non-ASCII byte (leaking the tail), and a non-Latin-LEADING name failed the
+	// `+` entirely so the whole rule missed → the path returned `clean`, fully unredacted
+	// (a total PII leak that was NOT fail-closed). `[^\\/\s]` is Unicode-by-default in JS
+	// (no `u` flag needed) and still excludes the `\`/`/` separators and whitespace, so the
+	// segment boundary (next path component) is unchanged for ASCII names (D-026).
 	{
 		id: 'home-path-win',
-		re: /[A-Za-z]:[\\/]Users[\\/][A-Za-z0-9._-]+(?: [A-Za-z0-9._-]+)*/g,
+		re: /[A-Za-z]:[\\/]Users[\\/][^\\/\s]+(?: [^\\/\s]+)*/g,
 		placeholder: '[REDACTED:home-path]'
 	},
-	{ id: 'home-path-unix', re: /\/(?:home|Users)\/[A-Za-z0-9._-]+/g, placeholder: '[REDACTED:home-path]' }
+	{ id: 'home-path-unix', re: /\/(?:home|Users)\/[^\\/\s]+/g, placeholder: '[REDACTED:home-path]' }
 ];
 
 const ALL_RULES = [...SECRET_RULES, ...PRIVATE_PATH_RULES];

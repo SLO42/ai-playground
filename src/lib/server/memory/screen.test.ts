@@ -186,6 +186,67 @@ describe('§3.1b Windows home-path redaction completeness (D-026)', () => {
 	});
 });
 
+// D-026 redaction-completeness (game-verify-harden red-team, 2nd pass): the username
+// char class was ASCII-only (`[A-Za-z0-9._-]`), so NON-ASCII usernames leaked on the very
+// path shapes the spaces/forward-slash fix targeted. Two leak classes: (a) a name whose
+// non-ASCII chars come AFTER an ASCII prefix leaked the tail (`…\Müller\` → `…üller\`);
+// (b) a non-Latin-LEADING name (`田中`, `Алексей`) failed the `+` entirely → the whole
+// rule missed → path returned status=`clean`, FULLY unredacted (NOT fail-closed). The
+// segment is now `[^\\/\s]+` (Unicode-by-default, separator/whitespace-bounded).
+describe('§3.1b Windows home-path redaction completeness — NON-ASCII usernames (D-026)', () => {
+	it('redacts an ACCENTED username fully — no tail leak (backslash)', () => {
+		const r = screen('logs at C:\\Users\\Müller\\work were captured');
+		expect(r.status).toBe('redacted');
+		expect(r.reasons).toContain('home-path-win');
+		expect(r.text).not.toContain('Müller');
+		expect(r.text).not.toContain('üller'); // surname-minus-first-char must NOT leak
+		expect(r.text).toContain('[REDACTED:home-path]');
+		expect(r.text).toContain('\\work'); // following component preserved
+	});
+
+	it('redacts an ACCENTED username on a FORWARD-SLASH Windows path (the named deliverable)', () => {
+		const r = screen('opened C:/Users/José/proj');
+		expect(r.status).toBe('redacted');
+		expect(r.text).not.toContain('José');
+		expect(r.text).not.toContain('é/proj'); // tail must NOT leak
+		expect(r.text).toContain('[REDACTED:home-path]');
+		expect(r.text).toContain('/proj'); // trailing component preserved
+	});
+
+	it('redacts a CJK-leading username — was returning status=clean, fully UNREDACTED', () => {
+		const r = screen('cwd C:\\Users\\田中\\Documents now');
+		expect(r.status).toBe('redacted');
+		expect(r.reasons).toContain('home-path-win');
+		expect(r.text).not.toContain('田中'); // total PII leak previously — must be gone
+		expect(r.text).toContain('[REDACTED:home-path]');
+		expect(r.text).toContain('\\Documents');
+	});
+
+	it('redacts a CYRILLIC-leading username — was returning status=clean (NOT fail-closed)', () => {
+		const r = screen('see C:\\Users\\Алексей\\x for the dump');
+		expect(r.status).toBe('redacted');
+		expect(r.text).not.toContain('Алексей');
+		expect(r.text).toContain('[REDACTED:home-path]');
+		expect(r.text).toContain('\\x');
+	});
+
+	it('redacts a non-Latin username on the unix /Users rule too (same ASCII-class root cause)', () => {
+		const r = screen('mac path /Users/José/Library here');
+		expect(r.status).toBe('redacted');
+		expect(r.text).not.toContain('José');
+		expect(r.text).toContain('[REDACTED:home-path]');
+		expect(r.text).toContain('/Library');
+	});
+
+	it('redacts an ACCENTED username WITH SPACES on a forward-slash path (no tail leak)', () => {
+		const r = screen('cwd C:/Users/José Maria/work');
+		expect(r.status).toBe('redacted');
+		expect(r.text).not.toContain('José');
+		expect(r.text).not.toContain('Maria'); // both display-name words gone
+		expect(r.text).toContain('/work');
+	});
+});
+
 describe('§3.1 DO-NOT-CAPTURE guard', () => {
 	it('drops "daemon is unreachable" (transient environment failure)', () => {
 		expect(captureGate('the kongcode daemon is unreachable this turn').capture).toBe(false);

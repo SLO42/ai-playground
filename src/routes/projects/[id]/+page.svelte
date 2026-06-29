@@ -25,6 +25,8 @@
   import ProjectControls from '$lib/components/project/ProjectControls.svelte';
   // GAME-VERIFY GV-4 — the live game_verify verdict surface (operator visibility).
   import GameVerifyVerdict from './GameVerifyVerdict.svelte';
+  // LP-3 — the reusable Loops surface (LP-2): grouped LoopCards for this project's loops.
+  import LoopList from '$lib/components/loops/LoopList.svelte';
   import {
     rowToTurn,
     liveEventToTurn,
@@ -56,6 +58,9 @@
   // harness (drives the honest "not yet run" vs "not configured" empty states; F-008).
   const gameVerify = $derived(data.gameVerify ?? []);
   const gameVerifyConfigured = $derived(data.gameVerifyConfigured ?? false);
+  // LP-3 — this project's recurring autonomous loops (project-scoped: autonomous PM drive + cadence).
+  // Honest empty (F-008): an unarmed/unscheduled PM ⇒ [] ⇒ the tab shows "no active loops".
+  const loops = $derived(data.loops ?? []);
   // ── TASK 10.4 — the missing workspace surfaces (board / memory / settings / maintain).
   const taskStatuses = $derived(data.taskStatuses ?? []);
   const taskPriorities = $derived(data.taskPriorities ?? []);
@@ -91,6 +96,12 @@
   // LG-3 — the live animated lifecycle node-graph (Continue → sessions → PM → tasks).
   const graphHref = $derived(`/projects/${slug}/graph`);
   const projectName = $derived(project?.name ?? slug);
+  // LP-3 — title the LoopList group with THIS project's display name (LoopList groups project-scoped
+  // loops by projectId). Always present once connected; a slug/id fallback keeps it honest if the
+  // name is absent (final data.projectId fallback guarantees a string — Record<string,string>).
+  const loopProjectNames = $derived<Record<string, string>>({
+    [data.projectId]: projectName ?? slug ?? data.projectId
+  });
 
   type Tab =
     | 'overview'
@@ -99,6 +110,7 @@
     | 'pm'
     | 'sessions'
     | 'memory'
+    | 'loops'
     | 'release'
     | 'sync'
     | 'targets'
@@ -620,6 +632,10 @@
     const offF = stream.onDbChange('security_finding', () => void invalidate('app:findings'));
     const offMem = stream.onDbChange('memory', () => void invalidate('app:memory'));
     const offE = stream.onDbChange('entity', () => void invalidate('app:graph'));
+    // LP-3 — the Loops tab's per-loop run history is agent_event; a run event re-invalidates the
+    // loader so the loop cards' last-run / recent-runs re-derive live (the arm/cadence state already
+    // re-invalidates via the pm watcher above).
+    const offAe = stream.onDbChange('agent_event', () => void invalidate('app:analytics'));
     return () => {
       offP();
       offT();
@@ -635,6 +651,7 @@
       offF();
       offMem();
       offE();
+      offAe();
     };
   });
 
@@ -964,6 +981,15 @@
         data-active={tab === 'memory'}
         onclick={() => (tab = 'memory')}
         >Memory{#if memories.length > 0}<span class="count mono" aria-hidden="true">{memories.length}</span>{/if}</button
+      >
+      <button
+        class="tab"
+        type="button"
+        aria-pressed={tab === 'loops'}
+        aria-label={loops.length > 0 ? `Loops, ${loops.length} ${loops.length === 1 ? 'loop' : 'loops'}` : 'Loops'}
+        data-active={tab === 'loops'}
+        onclick={() => (tab = 'loops')}
+        >Loops{#if loops.length > 0}<span class="count mono" aria-hidden="true">{loops.length}</span>{/if}</button
       >
       <button
         class="tab"
@@ -3058,6 +3084,28 @@
           </div>
         </div>
       </div>
+    {:else if tab === 'loops'}
+      <!-- LP-3 — this project's recurring autonomous loops (autonomous PM drive + cadence), surfaced
+           via the reusable LoopList (LP-2). VIEW + IDENTIFY only — config-editing is a later wave.
+           Honest states (F-008): an unarmed/unscheduled PM ⇒ "no active loops", never a fake card. -->
+      <div class="tab-body">
+        <p class="state-body loops-lede">
+          The recurring loops this project's Project Manager runs on its own — the autonomous drive
+          (when armed) and the cadence trigger (when scheduled). Live from the database; states are
+          honest ('—' / 'not yet run' / 'unknown') rather than fabricated. View &amp; identify only.
+        </p>
+        {#if loops.length === 0}
+          <div class="card state">
+            <span class="eyebrow">no active loops</span>
+            <p class="state-body">
+              This project has no armed autonomous drive or scheduled PM cadence yet, so it runs no
+              recurring loops. Arm the PM or set a cadence on the PM tab and its loops appear here.
+            </p>
+          </div>
+        {:else}
+          <LoopList {loops} projectNames={loopProjectNames} />
+        {/if}
+      </div>
     {:else if tab === 'release'}
       <div class="tab-body">
         <div class="card">
@@ -3405,6 +3453,10 @@
   .state-body {
     font: var(--type-body-sm);
     color: var(--color-text-2);
+  }
+  /* LP-3 — the Loops tab intro line; max-width keeps the copy readable above the card grid. */
+  .loops-lede {
+    max-width: 72ch;
   }
   .tabs {
     display: flex;

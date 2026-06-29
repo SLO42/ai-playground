@@ -94,6 +94,10 @@ import {
 	listGameVerifyVerdicts,
 	type GameVerifyVerdictRow
 } from '$lib/server/orchestrator/game-verify-read';
+// LP-3 — this project's recurring autonomous loops (autonomous PM drive + PM cadence) for the
+// command-center Loops tab. getLoops({projectId}) returns ONLY the project-scoped loops (global
+// loops excluded), typed + normalized (no raw SDK non-POJOs — F-013); honest states (F-008).
+import { getLoops, type LoopView } from '$lib/server/loops/read';
 // CC-CONTROLS — the operator command-center CONTROL seam (CONTINUE re-enqueue / RESTART a failed run).
 // Reuses the LIVE orchestrator's enqueue/drain (activeOrchestrator) + the work_item dedup double-spawn
 // guard; never bypasses the spawn cap (the orchestrator owns it inside drain).
@@ -323,6 +327,14 @@ export interface ProjectDetailData {
 	 *  Lets the UI distinguish "configured but not yet run" (a muted prompt) from "not configured"
 	 *  (nothing shown) — never invents a launch config (F-008). */
 	gameVerifyConfigured: boolean;
+	/**
+	 * LP-3 — this project's recurring autonomous loops for the command-center Loops tab: the
+	 * autonomous PM drive (when armed) + the PM cadence trigger (when scheduled). PROJECT-SCOPED only
+	 * (getLoops filters out the global orchestrator/memory loops). Typed + normalized — no raw SDK
+	 * non-POJOs (F-013); every surfaced detail screened (D-026). [] when no PM is armed/scheduled or
+	 * on a degraded boot (honest empty → the tab shows "no active loops", F-008).
+	 */
+	loops: LoopView[];
 	error?: string;
 }
 
@@ -347,6 +359,9 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 	depends('app:findings');
 	depends('app:memory');
 	depends('app:graph');
+	// LP-3 — the Loops tab's run history is agent_event; a run event re-invalidates the loader, which
+	// re-samples the live armed PM singletons (the loop arm/cadence already re-invalidate via app:pm).
+	depends('app:analytics');
 
 	// Validate the project id at the boundary (D-016) — a malformed param is a 404,
 	// never an interpolated query.
@@ -425,7 +440,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			hireGates: [],
 			repoBrief: null,
 			gameVerify: [],
-			gameVerifyConfigured: false
+			gameVerifyConfigured: false,
+			loops: []
 		};
 	}
 
@@ -545,6 +561,17 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			gameVerify = [];
 		}
 
+		// LP-3 — this project's recurring autonomous loops (project-scoped: autonomous PM drive +
+		// cadence). getLoops samples the live armed singletons + the project's agent_event history.
+		// A reader throw must NEVER sink the detail page (honest partial, F-008): on failure the
+		// Loops tab shows an honest empty ("no active loops"), never a fabricated card.
+		let loops: LoopView[] = [];
+		try {
+			loops = await getLoops(db, { projectId });
+		} catch {
+			loops = [];
+		}
+
 		let queue: QueueStats | null = null;
 		try {
 			const cap = bootDailySpawnCap();
@@ -630,7 +657,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			hireGates,
 			repoBrief,
 			gameVerify,
-			gameVerifyConfigured
+			gameVerifyConfigured,
+			loops
 		};
 	} catch (err) {
 		// A 404 thrown above is a SvelteKit HttpError — rethrow it, don't swallow.
@@ -675,6 +703,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			repoBrief: null,
 			gameVerify: [],
 			gameVerifyConfigured: false,
+			loops: [],
 			error: (err as Error).message
 		};
 	}

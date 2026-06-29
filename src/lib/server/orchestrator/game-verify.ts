@@ -360,7 +360,16 @@ export async function runGameVerify(
 						return honest('not_ready', `deploy dest escaped target: ${dest}`);
 					}
 					await copier(src, dest);
-					deployed.push({ source: src, target: dest });
+					// D-026: `source` (listFiles/builtArtifacts) and `target` (operator config) can each
+					// embed a host home path (C:\Users\<name>\…); GV-4 RENDERS deployed[] in the
+					// command-center. Screen BOTH at this capture choke — like stackTraces/logTail — so the
+					// PERSISTED verdict never carries a raw home path. copier ran on the RAW paths above;
+					// only the stored strings are screened. screenForDisplay is idempotent (re-screening
+					// already-redacted text is a no-op) and never throws (fails closed).
+					deployed.push({
+						source: screenForDisplay(src).text,
+						target: screenForDisplay(dest).text
+					});
 				}
 			}
 		}

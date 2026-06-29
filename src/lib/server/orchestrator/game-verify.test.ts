@@ -355,6 +355,46 @@ describe('runGameVerify — deploy (configured paths only, injected copier)', ()
 		expect(killer.calls).toEqual(['ROUNDS.exe']);
 	});
 
+	it('a home path in the deploy source/target → the verdict deployed[] is SCREENED (D-026)', async () => {
+		// The sibling leak the note fix missed: deployed[].source (listFiles/builtArtifacts) +
+		// deployed[].target (operator config) can each embed a host home path. They are RENDERED
+		// in the command-center, so the PERSISTED verdict must carry the redacted form, never raw.
+		const killer = fakeKiller();
+		const copies: { source: string; dest: string }[] = [];
+		const copier: FileCopier = async (source, dest) => {
+			copies.push({ source, dest });
+		};
+		const cfg: GameVerifyConfig = {
+			...baseCfg,
+			deploy: [{ source: '**/X.dll', target: 'C:/Users/victim/games/ROUNDS/plugins/' }]
+		};
+		const deployCtx: GameVerifyContext = {
+			cwd: 'C:/Users/victim/build',
+			builtArtifacts: ['C:/Users/victim/build/X.dll']
+		};
+		const v = await runGameVerify(cfg, deployCtx, {
+			killer,
+			launcher: fakeLauncher(),
+			logReader: seqLogReader([PASS_LOG]),
+			clock: fakeClock(),
+			copier
+		});
+
+		// copier ran on the RAW paths (the real file must actually be copied)…
+		expect(copies).toHaveLength(1);
+		expect(copies[0].source).toBe('C:/Users/victim/build/X.dll');
+		// …but the stored verdict carries ONLY the redacted strings — the raw home path is absent.
+		expect(v.deployed).toHaveLength(1);
+		expect(v.deployed![0].source).toContain('[REDACTED:home-path]');
+		expect(v.deployed![0].source).toContain('X.dll'); // the non-sensitive tail survives
+		expect(v.deployed![0].target).toContain('[REDACTED:home-path]');
+		const blob = JSON.stringify(v.deployed);
+		expect(blob).not.toContain('victim');
+		expect(blob).not.toMatch(/[/\\]Users[/\\]victim/);
+		expect(v.outcome).toBe('pass');
+		expect(killer.calls).toEqual(['ROUNDS.exe']);
+	});
+
 	it('a non-absolute deploy target is rejected with an honest verdict (rail)', async () => {
 		const killer = fakeKiller();
 		const cfg: GameVerifyConfig = {

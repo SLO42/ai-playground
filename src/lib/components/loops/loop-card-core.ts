@@ -122,6 +122,62 @@ export function ticksLabel(
 	return `${used} / ${view.ticksMax}`;
 }
 
+/**
+ * The orchestrator DRAIN card's config/sync display model (LP-2). Derived purely from the honest
+ * LoopView config fields LP-2 produced (configuredMode / runningMode / restartNeeded / intervalMs) —
+ * nothing fabricated (F-008): an unreadable config shows configured '—', a stopped orchestrator shows
+ * running 'not running', and the status tells the TRUTH about whether a restart is pending. Returns
+ * null for every loop that carries no orchestrator mode-config (only the drain card does), so the
+ * component renders the block only where it applies.
+ */
+export interface OrchConfigView {
+	/** Configured mode (orchestration.yaml) or '—' when unreadable. */
+	configured: string;
+	/** The live orchestrator's booted mode, or 'not running' when none is live. */
+	running: string;
+	/** Human sweep-interval label (e.g. '60s sweep'), or null when no interval is configured. */
+	interval: string | null;
+	/** True when the running mode differs from configured → a restart is pending. */
+	restartNeeded: boolean;
+	/** The honest status + tone: 'restart needed' (warning) | 'in sync' (done) | 'not running' (idle) |
+	 *  'config unreadable' (warning, when running but the configured mode could not be read). */
+	status: { text: string; tone: 'warning' | 'done' | 'idle' };
+}
+
+/**
+ * Build the orchestrator drain card's config/sync view, or null when the loop carries no
+ * orchestrator mode-config. SHADOW PATHS: configuredMode null ⇒ '—'; runningMode null ⇒ 'not running'
+ * + 'not running' status (idle); intervalMs null ⇒ no interval row. A live mode mismatch ⇒ a warning
+ * 'restart needed' status; matching modes ⇒ a 'in sync' done status. Never implies a live change took
+ * effect when a restart is pending (F-008/F-029).
+ */
+export function orchConfigView(
+	view: Pick<LoopView, 'kind' | 'configuredMode' | 'runningMode' | 'restartNeeded' | 'intervalMs'>
+): OrchConfigView | null {
+	// Only the drain card sets these fields (configuredMode is set even when null); the GC card and
+	// every non-orchestrator loop leave them undefined → no block.
+	if (view.kind !== 'orchestrator' || view.configuredMode === undefined) return null;
+	const configured = view.configuredMode ?? '—';
+	const running = view.runningMode ?? 'not running';
+	const interval =
+		typeof view.intervalMs === 'number' && view.intervalMs > 0
+			? `${Math.round(view.intervalMs / 1000)}s sweep`
+			: null;
+	const restartNeeded = view.restartNeeded === true;
+	let status: OrchConfigView['status'];
+	if (restartNeeded) {
+		status = { text: 'restart needed', tone: 'warning' };
+	} else if (view.runningMode == null) {
+		status = { text: 'not running', tone: 'idle' };
+	} else if (view.configuredMode == null) {
+		// Running, but the configured mode is unreadable → we CANNOT claim "in sync" (F-008 honesty).
+		status = { text: 'config unreadable', tone: 'warning' };
+	} else {
+		status = { text: 'in sync', tone: 'done' };
+	}
+	return { configured, running, interval, restartNeeded, status };
+}
+
 /** One scope-grouped block of loop cards (System loops first, then one per project). */
 export interface LoopGroup {
 	/** Stable group key: 'system' for global loops, else the project record id. */

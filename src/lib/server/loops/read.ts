@@ -21,6 +21,7 @@ import { activityLabel } from '../analytics/events';
 import { DEFAULT_CADENCE } from '../memory/loop';
 import { loopBadge, type LoopTone } from '../../components/project/project-status-core';
 import { activeOrchestrator } from '../orchestrator/orchestrator';
+import { loadOrchestration, type OrchMode } from '../config';
 import {
 	activeAutonomousLoop,
 	DEFAULT_MAX_TICKS_PER_WINDOW,
@@ -84,6 +85,30 @@ export interface LoopView {
 	cadenceCron?: string | null;
 	cadenceOffset?: string | null;
 	/**
+	 * For the orchestrator DRAIN loop ONLY (LP-2): the orchestration `mode` persisted in
+	 * orchestration.yaml — the D-010-gated value /settings edits. Null when the config is unreadable/
+	 * malformed (honest, never a fabricated mode; F-008). Absent on every non-orchestrator loop.
+	 */
+	configuredMode?: OrchMode | null;
+	/**
+	 * For the orchestrator DRAIN loop ONLY: the LIVE orchestrator's BOOTED mode (same source /settings
+	 * reads). Null when no orchestrator is running (honest — the card shows 'not running').
+	 */
+	runningMode?: OrchMode | null;
+	/**
+	 * For the orchestrator DRAIN loop ONLY: true iff a live orchestrator booted with a mode DIFFERENT
+	 * from the now-configured mode → a RESTART is required for the config change to take effect (the
+	 * orchestrator reads `mode` once per boot). Mirrors settings/+page.server.ts:230. False when in
+	 * sync OR nothing is running; absent on non-orchestrator loops (F-008/F-029 — never imply a live
+	 * change took effect when it needs a restart).
+	 */
+	restartNeeded?: boolean;
+	/**
+	 * For the orchestrator DRAIN loop ONLY: the configured drain sweep interval (ms), null when unset/
+	 * unreadable. The card renders it as a human '60s sweep'; the GC card's cadence stays its own field.
+	 */
+	intervalMs?: number | null;
+	/**
 	 * For pm-autonomous loops ONLY: whether the drive is currently ARMED (the pause/kill toggle's
 	 * source of truth). A pm-autonomous card only exists while the PM is armed, so this is true today;
 	 * threaded honestly (not assumed) so the toggle reflects real state.
@@ -93,9 +118,40 @@ export interface LoopView {
 	recentRuns: LoopRun[];
 }
 
+/** The orchestration config snapshot the orchestrator DRAIN card compares the live orchestrator
+ *  against — honest by construction (a malformed config yields {mode:null,intervalMs:null}). */
+export interface OrchConfigSnapshot {
+	mode: OrchMode | null;
+	intervalMs: number | null;
+}
+
 export interface GetLoopsOptions {
 	/** Filter to ONE project's loops (the per-project tab). Global loops are excluded when set. */
 	projectId?: string;
+	/**
+	 * Override the orchestration config snapshot (mode + interval) the orchestrator DRAIN card compares
+	 * the LIVE orchestrator against. Defaults to reading config/orchestration.yaml live; pass an
+	 * explicit snapshot (e.g. {mode:null,intervalMs:null} for the unreadable-config path) in tests so
+	 * restartNeeded is deterministic and not coupled to the on-disk config's current mode.
+	 */
+	orchConfig?: OrchConfigSnapshot;
+}
+
+/**
+ * Read the configured orchestration mode + interval from orchestration.yaml (the same D-010-gated
+ * file /settings edits, resolved via CONFIG_DIR like settings/+page.server.ts). SHADOW PATHS: a
+ * malformed/absent config throws ConfigError → caught → honest {mode:null,intervalMs:null} (F-008),
+ * so the card shows configured '—' rather than a fabricated mode. EVERY ERROR HAS A NAME: the
+ * ConfigError is named at the boundary and degraded here, not swallowed silently elsewhere.
+ */
+function readOrchConfig(): OrchConfigSnapshot {
+	const dir = process.env.CONFIG_DIR?.trim() || 'config';
+	try {
+		const orch = loadOrchestration(`${dir}/orchestration.yaml`);
+		return { mode: orch.mode, intervalMs: orch.intervalMs ?? null };
+	} catch {
+		return { mode: null, intervalMs: null };
+	}
 }
 
 /** Newest-first cap on the run history surfaced per loop. */
@@ -162,10 +218,18 @@ function autonomousBadge(state: AutonomousLoopState | null, reason: string): {
 
 // ── (1)+(2) The two GLOBAL orchestrator loops ───────────────────────────────────────────────────────
 
-async function orchestratorLoops(db: Db): Promise<LoopView[]> {
+async function orchestratorLoops(db: Db, cfg: OrchConfigSnapshot): Promise<LoopView[]> {
 	const orch = activeOrchestrator();
 	// The drain's output IS spawns/completions — a fair, honest run history for the GLOBAL drain.
 	const drainRuns = await recentRuns(db, { types: ['spawn', 'completion'] });
+
+	// Configured (orchestration.yaml) vs RUNNING (the live orchestrator booted with this mode once per
+	// boot). restartNeeded mirrors settings/+page.server.ts:230 — a restart is needed ONLY when a live
+	// orchestrator's booted mode differs from the now-configured mode. Honest: nothing running ⇒
+	// runningMode null ⇒ restartNeeded false (no live change to mis-imply); config unreadable ⇒
+	// configuredMode null ⇒ we do NOT claim a restart we cannot justify (F-008/F-029).
+	const runningMode: OrchMode | null = orch ? orch.mode : null;
+	const restartNeeded = runningMode !== null && cfg.mode !== null && runningMode !== cfg.mode;
 
 	// Drain cadence: event-driven by default (D-004); 'periodic' mode adds a timed sweep. Unknown when
 	// no orchestrator is live (we will not fabricate the configured cadence we cannot read — F-008).
@@ -191,6 +255,10 @@ async function orchestratorLoops(db: Db): Promise<LoopView[]> {
 		cadenceLabel: drainCadence,
 		lastRunAt: drainRuns[0]?.at ?? null,
 		nextFireAt: null,
+		configuredMode: cfg.mode,
+		runningMode,
+		restartNeeded,
+		intervalMs: cfg.intervalMs,
 		recentRuns: drainRuns
 	};
 
@@ -324,8 +392,9 @@ export async function getLoops(db: Db, opts: GetLoopsOptions = {}): Promise<Loop
 		return [...autoViews, ...cadenceViews];
 	}
 
+	const cfg = opts.orchConfig ?? readOrchConfig();
 	const [orchViews, autonomousPms, cadencePms] = await Promise.all([
-		orchestratorLoops(db),
+		orchestratorLoops(db, cfg),
 		listAutonomousPms(db),
 		listPmsWithCadence(db)
 	]);

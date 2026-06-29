@@ -269,3 +269,79 @@ describe('getLoops — live orchestrator armed state (read-only accessors)', () 
 		expect(drain.cadenceLabel).toBe('unknown');
 	});
 });
+
+describe('getLoops — orchestrator drain config vs running mode (LP-2 restartNeeded)', () => {
+	function orchWithMode(mode: 'event' | 'periodic' | 'manual'): Orchestrator {
+		const runtime = new ClaudeCodeRuntime({
+			backend: noopBackend(),
+			harnessConfigRoot: 'F:/code/loops-a/.harness-cc'
+		});
+		return new Orchestrator({ db, bus: new EventBus(), runtime, maxConcurrent: 4, mode, route: stubRoute() });
+	}
+
+	it('restartNeeded is TRUE when the running mode differs from the configured mode', async () => {
+		setActiveOrchestrator(orchWithMode('event'));
+		try {
+			// Configured is periodic (injected), running booted as event → a restart is pending.
+			const loops = await getLoops(db, { orchConfig: { mode: 'periodic', intervalMs: 60_000 } });
+			const drain = loops.find((l) => l.id === 'orch:drain')!;
+			expect(drain.configuredMode).toBe('periodic');
+			expect(drain.runningMode).toBe('event');
+			expect(drain.restartNeeded).toBe(true);
+			expect(drain.intervalMs).toBe(60_000);
+		} finally {
+			setActiveOrchestrator(null);
+		}
+	});
+
+	it('restartNeeded is FALSE when the running mode equals the configured mode', async () => {
+		setActiveOrchestrator(orchWithMode('event'));
+		try {
+			const loops = await getLoops(db, { orchConfig: { mode: 'event', intervalMs: 60_000 } });
+			const drain = loops.find((l) => l.id === 'orch:drain')!;
+			expect(drain.configuredMode).toBe('event');
+			expect(drain.runningMode).toBe('event');
+			expect(drain.restartNeeded).toBe(false);
+		} finally {
+			setActiveOrchestrator(null);
+		}
+	});
+
+	it('reports an honest null runningMode + FALSE restartNeeded when no orchestrator is running', async () => {
+		setActiveOrchestrator(null);
+		const loops = await getLoops(db, { orchConfig: { mode: 'event', intervalMs: 60_000 } });
+		const drain = loops.find((l) => l.id === 'orch:drain')!;
+		expect(drain.runningMode).toBeNull();
+		expect(drain.configuredMode).toBe('event');
+		// Nothing live to mis-imply a change for → no restart is "needed".
+		expect(drain.restartNeeded).toBe(false);
+	});
+
+	it('reports an honest null configuredMode (no fabricated mode) + FALSE restartNeeded when config is unreadable', async () => {
+		setActiveOrchestrator(orchWithMode('event'));
+		try {
+			const loops = await getLoops(db, { orchConfig: { mode: null, intervalMs: null } });
+			const drain = loops.find((l) => l.id === 'orch:drain')!;
+			expect(drain.configuredMode).toBeNull();
+			expect(drain.runningMode).toBe('event');
+			// We never claim a restart against a mode we could not read.
+			expect(drain.restartNeeded).toBe(false);
+			expect(drain.intervalMs).toBeNull();
+		} finally {
+			setActiveOrchestrator(null);
+		}
+	});
+
+	it('leaves the GC backstop card free of drain-only config fields (no cross-bleed)', async () => {
+		setActiveOrchestrator(orchWithMode('event'));
+		try {
+			const loops = await getLoops(db, { orchConfig: { mode: 'periodic', intervalMs: 60_000 } });
+			const gc = loops.find((l) => l.id === 'orch:gc')!;
+			expect(gc.configuredMode).toBeUndefined();
+			expect(gc.runningMode).toBeUndefined();
+			expect(gc.restartNeeded).toBeUndefined();
+		} finally {
+			setActiveOrchestrator(null);
+		}
+	});
+});

@@ -17,7 +17,8 @@
     tracksRunHistory,
     ticksLabel,
     relativeTime,
-    nextFireLabel
+    nextFireLabel,
+    orchConfigView
   } from './loop-card-core';
   import LoopControls from './LoopControls.svelte';
 
@@ -30,6 +31,10 @@
 
   const meta = $derived(kindMeta(loop.kind));
   const phase = $derived(phaseMeta(loop.phase));
+  // Orchestrator DRAIN config/sync block (LP-2) — null for every other loop. The mode edit itself
+  // lives behind the D-010 confirm flow on /settings; here we only SHOW configured vs running + an
+  // honest restart-needed badge, and deep-link out. No mode editor / confirm-token flow here.
+  const orch = $derived(orchConfigView(loop));
   const ticks = $derived(ticksLabel(loop));
   const hasHistory = $derived(tracksRunHistory(loop));
   const runCount = $derived(loop.recentRuns.length);
@@ -88,6 +93,37 @@
       </div>
     {/if}
   </dl>
+
+  {#if orch}
+    <div class="lc-orch">
+      <dl class="lc-facts">
+        <div class="lc-fact">
+          <dt>configured mode</dt>
+          <dd>{orch.configured}</dd>
+        </div>
+        <div class="lc-fact">
+          <dt>running mode</dt>
+          <dd data-muted={orch.running === 'not running'}>{orch.running}</dd>
+        </div>
+        {#if orch.interval}
+          <div class="lc-fact">
+            <dt>sweep interval</dt>
+            <dd>{orch.interval}</dd>
+          </div>
+        {/if}
+      </dl>
+      <div class="lc-orch-foot">
+        <span class="lc-sync" data-tone={orch.status.tone}>{orch.status.text}</span>
+        <a class="lc-settings-link" href="/settings">Configure in Settings →</a>
+      </div>
+      {#if orch.restartNeeded}
+        <p class="lc-orch-note" role="status">
+          The orchestrator is running <strong>{orch.running}</strong> — restart for the configured
+          <strong>{orch.configured}</strong> mode to take effect.
+        </p>
+      {/if}
+    </div>
+  {/if}
 
   {#if hasHistory}
     <div class="lc-history">
@@ -225,6 +261,53 @@
   .lc-fact dd[data-muted='true'] { color: var(--color-text-muted); }
   .lc-unit { color: var(--color-text-muted); font-size: var(--text-xs, 0.7rem); }
   .mono { font-family: var(--font-mono); }
+
+  .lc-orch {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    border-top: 1px solid var(--color-border-faint, var(--color-border));
+    padding-top: var(--space-3);
+  }
+  .lc-orch-foot {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-3);
+    flex-wrap: wrap;
+  }
+  /* Status pill — text carries the meaning; tone reinforces, never alone (a11y). */
+  .lc-sync {
+    font-size: var(--text-xs, 0.7rem);
+    font-weight: var(--weight-semibold, 600);
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    padding: 0 var(--space-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    background: var(--color-surface-overlay);
+  }
+  .lc-sync[data-tone='warning'] {
+    color: var(--color-warn);
+    border-color: var(--color-warn);
+    background: var(--color-warn-bg, var(--color-surface-overlay));
+  }
+  .lc-sync[data-tone='done'] { color: var(--color-success); border-color: var(--color-success); }
+  .lc-settings-link {
+    font-size: var(--text-sm, 0.82rem);
+    color: var(--color-text-link);
+    text-decoration: none;
+    white-space: nowrap;
+  }
+  .lc-settings-link:hover { text-decoration: underline; }
+  .lc-settings-link:focus-visible { outline: 2px solid var(--color-text-link); outline-offset: 2px; border-radius: var(--radius-sm); }
+  .lc-orch-note {
+    margin: 0;
+    font-size: var(--text-xs, 0.72rem);
+    color: var(--color-text-2);
+  }
+  .lc-orch-note strong { color: var(--color-text); font-weight: var(--weight-semibold, 600); }
 
   .lc-history { border-top: 1px solid var(--color-border-faint, var(--color-border)); padding-top: var(--space-2); }
   .lc-toggle {

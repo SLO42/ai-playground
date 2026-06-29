@@ -8,7 +8,8 @@ import {
 	lastRunLabel,
 	tracksRunHistory,
 	ticksLabel,
-	groupLoops
+	groupLoops,
+	orchConfigView
 } from './loop-card-core';
 
 /** A minimal LoopView factory — only the fields a given test reads need to be realistic. */
@@ -173,5 +174,51 @@ describe('groupLoops', () => {
 		expect(groups).toHaveLength(1);
 		expect(groups[0].title).toBe('Unknown project');
 		expect(groups[0].loops).toHaveLength(1);
+	});
+});
+
+describe('orchConfigView (LP-2 drain config/sync block)', () => {
+	it('returns null for a loop with no orchestrator mode-config (gc card / other kinds)', () => {
+		// GC card: orchestrator kind but no configuredMode field set.
+		expect(orchConfigView(view({ id: 'orch:gc' }))).toBeNull();
+		// A non-orchestrator loop never carries config.
+		expect(orchConfigView(view({ kind: 'pm-cadence' }))).toBeNull();
+	});
+
+	it('shows a warning "restart needed" status when running differs from configured', () => {
+		const o = orchConfigView(
+			view({ configuredMode: 'periodic', runningMode: 'event', restartNeeded: true, intervalMs: 60_000 })
+		)!;
+		expect(o.configured).toBe('periodic');
+		expect(o.running).toBe('event');
+		expect(o.interval).toBe('60s sweep');
+		expect(o.restartNeeded).toBe(true);
+		expect(o.status).toEqual({ text: 'restart needed', tone: 'warning' });
+	});
+
+	it('shows a done "in sync" status when running equals configured', () => {
+		const o = orchConfigView(
+			view({ configuredMode: 'event', runningMode: 'event', restartNeeded: false, intervalMs: 60_000 })
+		)!;
+		expect(o.restartNeeded).toBe(false);
+		expect(o.status).toEqual({ text: 'in sync', tone: 'done' });
+	});
+
+	it('shows an idle "not running" status and "—"/"not running" labels when nothing is live', () => {
+		const o = orchConfigView(
+			view({ configuredMode: 'event', runningMode: null, restartNeeded: false, intervalMs: 60_000 })
+		)!;
+		expect(o.running).toBe('not running');
+		expect(o.status).toEqual({ text: 'not running', tone: 'idle' });
+	});
+
+	it('renders configured "—" honestly when the config is unreadable, and drops the interval row when null', () => {
+		const o = orchConfigView(
+			view({ configuredMode: null, runningMode: 'event', restartNeeded: false, intervalMs: null })
+		)!;
+		expect(o.configured).toBe('—');
+		expect(o.interval).toBeNull();
+		// Running is live but config is unreadable → we do NOT falsely claim "in sync" (F-008 honesty).
+		expect(o.status).toEqual({ text: 'config unreadable', tone: 'warning' });
 	});
 });

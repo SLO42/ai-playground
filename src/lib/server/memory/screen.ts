@@ -179,9 +179,28 @@ const SECRET_RULES: SecretRule[] = [
 ];
 
 // Private/home filesystem paths — operator-private, redacted not quarantined.
+//
+// The Windows rule runs BEFORE the unix rule: a forward-slash Windows path
+// (`C:/Users/<name>`) contains the substring `/Users/<name>` which the unix rule
+// would otherwise match FIRST — and on a username WITH SPACES that partial match
+// (`/Users/John`) leaves ` Doe/…` behind, LEAKING the surname (D-026). The win rule
+// anchored on the drive letter claims the whole `X:[\/]Users[\/]<name>` span first,
+// so the unix rule never sees a half-path to mangle.
 const PRIVATE_PATH_RULES: SecretRule[] = [
-	{ id: 'home-path-unix', re: /\/(?:home|Users)\/[A-Za-z0-9._-]+/g, placeholder: '[REDACTED:home-path]' },
-	{ id: 'home-path-win', re: /[A-Za-z]:\\Users\\[A-Za-z0-9._-]+/g, placeholder: '[REDACTED:home-path]' }
+	// Windows home path. Matches BOTH separators (`\` and `/`) and allows SPACES inside
+	// the single user-dir segment (`John Doe`) up to the NEXT path separator — earlier
+	// `[A-Za-z0-9._-]+` stopped at the first space, redacting `C:\Users\John Doe\x` to
+	// `[REDACTED:home-path] Doe\x` and leaking the surname. The username is matched as
+	// space-joined word segments (`name(?: name)*`) so it captures the full display name
+	// without greedily swallowing the FOLLOWING path components (those are separated by
+	// `\`/`/`, not matched) or punctuation. Still anchored on `X:[\/]Users[\/]` so plain
+	// prose containing the word "Users" is not redacted.
+	{
+		id: 'home-path-win',
+		re: /[A-Za-z]:[\\/]Users[\\/][A-Za-z0-9._-]+(?: [A-Za-z0-9._-]+)*/g,
+		placeholder: '[REDACTED:home-path]'
+	},
+	{ id: 'home-path-unix', re: /\/(?:home|Users)\/[A-Za-z0-9._-]+/g, placeholder: '[REDACTED:home-path]' }
 ];
 
 const ALL_RULES = [...SECRET_RULES, ...PRIVATE_PATH_RULES];

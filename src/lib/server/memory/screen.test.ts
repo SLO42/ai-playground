@@ -131,6 +131,61 @@ describe('§3.1b card-number rule is Luhn-gated (F-008 over-redaction)', () => {
 	});
 });
 
+// D-026 redaction-completeness (game-verify-harden red-team): the Windows home-path
+// rule had two leak holes — (1) usernames WITH SPACES redacted only the first word,
+// leaking the surname (`C:\Users\John Doe` → `[REDACTED:home-path] Doe`); (2) FORWARD-
+// SLASH Windows paths (`C:/Users/<name>`) matched neither home-path rule cleanly.
+describe('§3.1b Windows home-path redaction completeness (D-026)', () => {
+	it('redacts a username WITH SPACES fully — no surname leak (backslash)', () => {
+		const r = screen('logs at C:\\Users\\John Doe\\secret were captured');
+		expect(r.status).toBe('redacted');
+		expect(r.reasons).toContain('home-path-win');
+		expect(r.text).not.toContain('John');
+		expect(r.text).not.toContain('Doe'); // surname must NOT leak
+		expect(r.text).toContain('[REDACTED:home-path]');
+		expect(r.text).toContain('\\secret'); // following path component preserved
+	});
+
+	it('redacts a FORWARD-SLASH Windows path (C:/Users/<name>)', () => {
+		const r = screen('opened C:/Users/jane/proj/app.ts');
+		expect(r.status).toBe('redacted');
+		expect(r.text).not.toContain('/jane');
+		expect(r.text).toContain('[REDACTED:home-path]');
+		expect(r.text).toContain('/proj/app.ts'); // trailing components preserved
+	});
+
+	it('redacts a FORWARD-SLASH Windows path with a SPACED username (no surname leak)', () => {
+		const r = screen('cwd C:/Users/John Doe/work');
+		expect(r.status).toBe('redacted');
+		expect(r.text).not.toContain('John');
+		expect(r.text).not.toContain('Doe');
+		expect(r.text).toContain('/work');
+	});
+
+	it('REGRESSION — a plain backslash, no-space Windows home path still redacts', () => {
+		const r = screen('see D:\\Users\\sam\\AppData\\Local for cache');
+		expect(r.status).toBe('redacted');
+		expect(r.reasons).toContain('home-path-win');
+		expect(r.text).not.toContain('\\sam');
+		expect(r.text).toContain('\\AppData\\Local'); // following components preserved
+	});
+
+	it('REGRESSION — unix /home and mac /Users paths still redact', () => {
+		const a = screen('from /home/jane/secrets');
+		expect(a.status).toBe('redacted');
+		expect(a.text).not.toContain('/home/jane');
+		const b = screen('mac path /Users/jane/Library');
+		expect(b.status).toBe('redacted');
+		expect(b.text).not.toContain('/Users/jane');
+	});
+
+	it('does NOT over-redact ordinary prose containing the word "Users"', () => {
+		const r = screen('the Users table lists all active Users in the system');
+		expect(r.status).toBe('clean');
+		expect(r.text).toBe('the Users table lists all active Users in the system');
+	});
+});
+
 describe('§3.1 DO-NOT-CAPTURE guard', () => {
 	it('drops "daemon is unreachable" (transient environment failure)', () => {
 		expect(captureGate('the kongcode daemon is unreachable this turn').capture).toBe(false);

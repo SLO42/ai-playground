@@ -4,6 +4,7 @@ import {
 	kindMeta,
 	phaseMeta,
 	relativeTime,
+	nextFireLabel,
 	lastRunLabel,
 	tracksRunHistory,
 	ticksLabel,
@@ -75,6 +76,27 @@ describe('relativeTime — shadow paths', () => {
 	});
 	it('clamps a future timestamp to a non-negative value (no "-3s ago")', () => {
 		expect(relativeTime(new Date(now + 10_000).toISOString(), now)).toBe('0s ago');
+	});
+});
+
+describe('nextFireLabel — forward-looking, never collapses a future fire to "0s"', () => {
+	const now = Date.UTC(2026, 5, 29, 12, 0, 0);
+	it('null / undefined / empty / un-parseable ⇒ honest dash', () => {
+		expect(nextFireLabel(null, now)).toBe('—');
+		expect(nextFireLabel(undefined, now)).toBe('—');
+		expect(nextFireLabel('', now)).toBe('—');
+		expect(nextFireLabel('not-a-date', now)).toBe('—');
+	});
+	it('REGRESSION (gap 1): a future fire renders "in Xm", NOT "0s from now"', () => {
+		// A */10 cron up to ~10m out — the exact case the old relativeTime path collapsed to 0.
+		expect(nextFireLabel(new Date(now + 7 * 60_000).toISOString(), now)).toBe('in 7m');
+		expect(nextFireLabel(new Date(now + 30_000).toISOString(), now)).toBe('in 30s');
+		expect(nextFireLabel(new Date(now + 3 * 3_600_000).toISOString(), now)).toBe('in 3h');
+		expect(nextFireLabel(new Date(now + 2 * 86_400_000).toISOString(), now)).toBe('in 2d');
+	});
+	it('a non-future fire (≤ now / overdue) ⇒ "due now", never a negative value', () => {
+		expect(nextFireLabel(new Date(now).toISOString(), now)).toBe('due now');
+		expect(nextFireLabel(new Date(now - 5_000).toISOString(), now)).toBe('due now');
 	});
 });
 

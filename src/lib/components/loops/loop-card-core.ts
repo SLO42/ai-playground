@@ -68,6 +68,27 @@ export function relativeTime(iso: string | null | undefined, now: number = Date.
 	return `${Math.round(h / 24)}d ago`;
 }
 
+/**
+ * Forward-looking "time until" for a loop's next scheduled fire (e.g. a PM cadence cron). Distinct
+ * from relativeTime, which clamps to the past (`Math.max(0, now-t)`) and would collapse EVERY future
+ * fire to "0s ago" — so the next-fire field must NOT route through it. SHADOW PATHS: null/empty/
+ * un-parseable ⇒ '—' (honest unknown, F-008); a non-future timestamp (≤ now, i.e. the fire is due/
+ * overdue) ⇒ 'due now' rather than a negative or fabricated value. `now` is injectable for tests.
+ */
+export function nextFireLabel(iso: string | null | undefined, now: number = Date.now()): string {
+	if (!iso) return '—';
+	const t = new Date(iso).getTime();
+	if (Number.isNaN(t)) return '—';
+	const s = Math.round((t - now) / 1000);
+	if (s <= 0) return 'due now';
+	if (s < 60) return `in ${s}s`;
+	const m = Math.round(s / 60);
+	if (m < 60) return `in ${m}m`;
+	const h = Math.round(m / 60);
+	if (h < 24) return `in ${h}h`;
+	return `in ${Math.round(h / 24)}d`;
+}
+
 // LP-1 establishes that two loops keep NO per-run history BY DESIGN (the GC reaper writes no
 // agent_event; the memory-review loop is cadence-only) — for THOSE, an absent last-run is honestly
 // '—' (no history kept), NOT 'not yet run'. The run-driven loops (drain / pm-autonomous / pm-cadence)

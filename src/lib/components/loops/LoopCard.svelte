@@ -16,7 +16,8 @@
     lastRunLabel,
     tracksRunHistory,
     ticksLabel,
-    relativeTime
+    relativeTime,
+    nextFireLabel
   } from './loop-card-core';
 
   let { loop }: { loop: LoopView } = $props();
@@ -70,7 +71,7 @@
     {#if loop.nextFireAt}
       <div class="lc-fact">
         <dt>next fire</dt>
-        <dd title={loop.nextFireAt}>{relativeTime(loop.nextFireAt).replace(/ ago$/, ' from now')}</dd>
+        <dd title={loop.nextFireAt}>{nextFireLabel(loop.nextFireAt)}</dd>
       </div>
     {/if}
     {#if ticks}

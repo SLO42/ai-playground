@@ -57,6 +57,25 @@ export {
 	type HandoffRow
 } from './workqueue';
 
+// GAME-VERIFY (docs/GAME-VERIFY-SPEC.md) — the runner + the orchestrator step that gates/serializes/
+// persists/feeds-back a built mod's live game verification. INFRASTRUCTURE (ROUNDS is only a config).
+export {
+	runGameVerify,
+	type GameVerifyConfig,
+	type GameVerifyContext,
+	type GameVerifyDeps,
+	type GameVerifyVerdict,
+	type GameVerifyOutcome
+} from './game-verify';
+export {
+	runGameVerifyStep,
+	gameVerifyInFlightCount,
+	type GameVerifyRunner,
+	type GameVerifyStepInput,
+	type GameVerifyStepDeps,
+	type GameVerifyStepResult
+} from './game-verify-step';
+
 export {
 	maybeEnqueueReview,
 	countChangedFiles,

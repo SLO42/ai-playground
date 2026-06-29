@@ -45,6 +45,7 @@ import { writeAgentEvent } from '../analytics/events';
 import { Semaphore } from './semaphore';
 import { runPostTask, resolveTestCommand, type CommandRunner } from './post-task';
 import { mergeBackWorktree, type CommandRunner as GitRunner } from '../sessions/merge-back';
+import { runGameVerifyStep, type GameVerifyRunner } from './game-verify-step';
 import {
 	claimNext,
 	complete,
@@ -189,6 +190,22 @@ export interface OrchestratorOptions {
 		/** Injectable git runner (test seam); defaults to merge-back's execFile arrays. */
 		runner?: GitRunner;
 	};
+	/**
+	 * GAME-VERIFY (docs/GAME-VERIFY-SPEC.md §"Orchestrator integration") — the live game-mod
+	 * verification step. When enabled, AFTER the post-task build/test gate a session whose project
+	 * DECLARES a `game_verify` harness gets its built mod VERIFIED by running the game (deploy →
+	 * launch → poll-log → screened verdict → MANDATORY kill), the verdict persisted, and a non-pass
+	 * verdict fed back as a `follow_up` (the next iteration's fix signal — NOT a hard task failure,
+	 * F-008). A project with no `game_verify` block ⇒ the runner is NEVER invoked (gated off, exactly
+	 * like test_command). OFF by default so a degenerate/test orchestrator never launches anything.
+	 * An injectable `runner` lets tests drive verdicts with NO real game (F-010/F-014); it defaults
+	 * to `runGameVerify` (game-verify.ts). Best-effort: a game-verify fault NEVER crashes the drain (F-014/F-048).
+	 */
+	gameVerify?: {
+		enabled: boolean;
+		/** Injectable game-verify runner (test seam); defaults to `runGameVerify` (game-verify.ts). */
+		runner?: GameVerifyRunner;
+	};
 }
 
 /** What one drain pass did (diagnostics / tests). */
@@ -225,6 +242,7 @@ export class Orchestrator {
 	readonly #spawnReady: ReadonlySet<string>;
 	readonly #postTask?: OrchestratorOptions['postTask'];
 	readonly #mergeBack?: OrchestratorOptions['mergeBack'];
+	readonly #gameVerify?: OrchestratorOptions['gameVerify'];
 	readonly #dailyCap?: number;
 	readonly #capWindowMs: number;
 	/** Per-project in-flight cap (concurrency.perProject); undefined / < 1 ⇒ no gate. */
@@ -270,6 +288,7 @@ export class Orchestrator {
 		this.#spawnReady = new Set(opts.spawnReadyStatuses ?? ['ready']);
 		this.#postTask = opts.postTask;
 		this.#mergeBack = opts.mergeBack;
+		this.#gameVerify = opts.gameVerify;
 		this.#dailyCap = opts.dailySpawnCap && opts.dailySpawnCap > 0 ? opts.dailySpawnCap : undefined;
 		this.#capWindowMs = opts.dailyCapWindowMs ?? DAY_MS;
 		this.#perProject = opts.perProject && opts.perProject > 0 ? opts.perProject : undefined;
@@ -825,6 +844,31 @@ export class Orchestrator {
 						ok = false;
 						console.warn(
 							`[orchestrator] post-task mid-run divergence for task ${taskId} (concurrent status move; work_item marked failed, divergence event recorded): now '${ptRes.taskStatus}'`
+						);
+					} else if (this.#gameVerify?.enabled && res.status === 'done') {
+						// GAME-VERIFY (docs/GAME-VERIFY-SPEC.md) — runs AFTER the build/test gate
+						// (post-task) on a CLEAN-done session, BEFORE the task is considered settled.
+						// GATED: only a project that DECLARES a `game_verify` harness launches anything
+						// (runGameVerifyStep returns ran:false otherwise — no behavior change for non-game
+						// projects). The built mod is verified by running the game (deploy → launch →
+						// poll-log → screened verdict → MANDATORY kill, serialized per game). A NON-pass
+						// verdict is NOT a hard fail (F-008): it is persisted + fed back as a follow_up (the
+						// next iteration's fix signal) — `ok` stays true, the task stays done. Best-effort:
+						// the step never throws (F-014/F-048); the .catch is belt-and-suspenders.
+						await runGameVerifyStep(
+							this.#db,
+							{
+								projectId,
+								taskId,
+								sessionId: res.sessionId,
+								cwd,
+								rawConfig: project?.game_verify
+							},
+							{ runner: this.#gameVerify.runner }
+						).catch((gvErr) =>
+							console.warn(
+								`[orchestrator] game-verify step skipped for task ${taskId} (best-effort; task stays done): ${(gvErr as Error).message}`
+							)
 						);
 					}
 				} catch {

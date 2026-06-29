@@ -380,7 +380,16 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		// branch + worktree PRESERVED with an honest screened note (F-007). Default execFile-array git
 		// runner (D-008/F-002 — no shell runner). Best-effort: the orchestrator catches it so a merge-back
 		// fault never crashes the drain (committed work always stays on its branch).
-		mergeBack: { enabled: true }
+		mergeBack: { enabled: true },
+		// GAME-VERIFY (docs/GAME-VERIFY-SPEC.md) — wire the live game-mod verification step. After the
+		// post-task build/test gate, a CLEAN-done session whose project DECLARES a `game_verify` harness
+		// gets its built mod VERIFIED by running the game (deploy → launch → poll-log → screened verdict
+		// → MANDATORY kill, serialized per game); the verdict is persisted and a non-pass is fed back as a
+		// follow_up (the next iteration's fix signal — NOT a hard task failure, F-008). Enabling it is
+		// SAFE-by-default: a project with NO `game_verify` block launches nothing (gated off, exactly like
+		// test_command) — the capability is opt-in + operator-configured per project. Default runner
+		// (runGameVerify): the game is ALWAYS killed, bounded poll, never throws out (F-014/F-048).
+		gameVerify: { enabled: true }
 	});
 	orchestrator.start();
 

@@ -16,6 +16,7 @@ import {
 	type RuntimeEvent
 } from '../runtime/index';
 import { Orchestrator, type StubRoute } from './index';
+import type { GameVerifyRunner, GameVerifyVerdict } from './index';
 import { claimNext, complete, countByStatus, enqueue } from './workqueue';
 import type { CommandRunner, CommandResult } from './post-task';
 import { execFileRunner as gitExecFileRunner } from './post-task';
@@ -1575,6 +1576,132 @@ describe('BL-R2 — a failed task_run spawn/route drives its TASK to failed (not
 			expect((await getTask(db, task.id))?.status).toBe('done');
 			// No work_item left failed by a spurious double-transition (the success completed `done`).
 			expect(await countByStatus(db, 'failed')).toBe(0);
+		} finally {
+			orch.stop();
+		}
+	}, 30_000);
+});
+
+// ── GAME-VERIFY wiring (docs/GAME-VERIFY-SPEC.md §"Orchestrator integration") ──────────────────
+//
+// Proves the orchestrator runs the game_verify step at the post-task seam: AFTER the build/test
+// gate, on a CLEAN-done session, for projects that DECLARE a game_verify block — and NOT for a
+// non-game project. The runner is INJECTED (a fake — NO real game launches, F-010/F-014); the
+// step's own gate/persist/feed-back rails are unit-tested in game-verify-step.test.ts.
+describe('GAME-VERIFY — the orchestrator runs the verify step after the post-task gate (gated by project config)', () => {
+	const GAME_VERIFY = {
+		launch_command: 'steam://rungameid/1557740',
+		process_name: 'FakeGame.exe',
+		log_path: 'C:/fake/BepInEx/LogOutput.log',
+		ready_pattern: 'Chainloader startup complete'
+	};
+	const PASS_VERDICT: GameVerifyVerdict = {
+		outcome: 'pass',
+		ready: true,
+		loaded: true,
+		errorCount: 0,
+		byPattern: {},
+		stackTraces: [],
+		logTail: 'startup complete'
+	};
+
+	/** A fake game-verify runner that records each invocation. NO real game. */
+	function fakeGameRunner(
+		verdict: GameVerifyVerdict
+	): GameVerifyRunner & { calls: { processName: string; cwd: string }[] } {
+		const calls: { processName: string; cwd: string }[] = [];
+		const fn = (async (cfg, ctx) => {
+			calls.push({ processName: cfg.process_name, cwd: ctx.cwd });
+			return verdict;
+		}) as GameVerifyRunner & { calls: typeof calls };
+		fn.calls = calls;
+		return fn;
+	}
+
+	it('a GAME project (game_verify declared): a clean-done task runs the verify step (verdict persisted), task stays done', async () => {
+		await clearQueue();
+		const gameProject = await createProject(db, {
+			slug: 'orch_gv_game',
+			name: 'orch-gv-game',
+			root_path: 'F:/code/orch-gv-game',
+			game_verify: GAME_VERIFY
+		});
+		const bus = new EventBus();
+		const backend = outcomeBackend(true);
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: 'F:/code/orch/.harness-cc' });
+		const gameRunner = fakeGameRunner(PASS_VERDICT);
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 2,
+			mode: 'manual',
+			route: stubRoute(),
+			acquireWorktree: fakeWt,
+			postTask: { enabled: true, runner: fakePostTaskRunner(), followUpOnTestFail: false },
+			gameVerify: { enabled: true, runner: gameRunner }
+		});
+		orch.start();
+		try {
+			const task = await createTask(db, {
+				project: gameProject.id,
+				title: 'build the mod',
+				description: 'a clean-done mod task must trigger the game-verify step'
+			});
+			await setStatus(db, task.id, 'ready');
+			await orch.enqueueTask(task.id, gameProject.id);
+			await orch.drain();
+
+			await waitForAsync(async () => (await getTask(db, task.id))?.status === 'done', 10_000);
+			// The task reached done (a non-pass would not fail it either; here it's a pass).
+			expect((await getTask(db, task.id))?.status).toBe('done');
+			// The injected game-verify runner ran once, for the configured game, in the worktree cwd.
+			expect(gameRunner.calls.length).toBe(1);
+			expect(gameRunner.calls[0].processName).toBe('FakeGame.exe');
+			// The verdict was persisted as a game-verify completion event.
+			const [evs] = await db.query<[Array<{ detail: Record<string, unknown> }>]>(
+				`SELECT detail FROM agent_event WHERE detail.reason = 'game-verify' AND project = $p;`,
+				{ p: new StringRecordId(gameProject.id) }
+			);
+			expect(evs.length).toBe(1);
+			expect(evs[0].detail.outcome).toBe('pass');
+		} finally {
+			orch.stop();
+			await deleteProject(db, gameProject.id).catch(() => {});
+		}
+	}, 30_000);
+
+	it('a NON-game project (no game_verify): the verify step runner is NEVER invoked', async () => {
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = outcomeBackend(true);
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: 'F:/code/orch/.harness-cc' });
+		const gameRunner = fakeGameRunner(PASS_VERDICT);
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 2,
+			mode: 'manual',
+			route: stubRoute(),
+			acquireWorktree: fakeWt,
+			postTask: { enabled: true, runner: fakePostTaskRunner(), followUpOnTestFail: false },
+			gameVerify: { enabled: true, runner: gameRunner }
+		});
+		orch.start();
+		try {
+			const task = await createTask(db, {
+				project: projectId, // the shared host project has NO game_verify block
+				title: 'plain task',
+				description: 'a non-game project must never launch the game-verify runner'
+			});
+			await setStatus(db, task.id, 'ready');
+			await orch.enqueueTask(task.id, projectId);
+			await orch.drain();
+
+			await waitForAsync(async () => (await getTask(db, task.id))?.status === 'done', 10_000);
+			expect((await getTask(db, task.id))?.status).toBe('done');
+			expect(gameRunner.calls.length).toBe(0); // gated off — the runner stayed untouched
 		} finally {
 			orch.stop();
 		}

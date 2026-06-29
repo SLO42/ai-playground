@@ -2400,6 +2400,32 @@ const m0067_agent_event_parent: Migration = {
 	`
 };
 
+// m0068 — project.game_verify (GAME-VERIFY-SPEC) — the OPTIONAL, operator-set harness descriptor that
+// opts a project into live game-mod verification (deploy built artifact → launch the game → poll its
+// log for a ready signal → structured verdict → MANDATORY kill → feed back to the build loop). Absent
+// ⇒ capability DISABLED, exactly like `test_command` (§4.1, schema L35) — the runner/orchestrator only
+// act when this block is present; the agent NEVER invents launch_command/process_name/paths.
+//
+// FLEXIBLE option<object>: the config is open-ended (launch_command can be a steam:// string OR an
+// { exe, args } object; deploy is an array of { source, target }; success/error patterns are arrays).
+// A SCHEMAFULL `TYPE object` field WITHOUT FLEXIBLE silently DROPS every nested sub-key on write
+// (SurrealDB 2.x — see the cc_settings/memory_history precedents, schema L264/L564), so the round-trip
+// would lose the entire descriptor. FLEXIBLE preserves the full nested JSON; app-side validation
+// (parseGameVerifyConfig in projects/repo.ts) — NOT the schema — enforces required fields, so a
+// malformed config disables the capability rather than throwing at the DB write (D-016 boundary).
+//
+// ADDITIVE, OVERWRITE-only (F-015 idempotent: apply-twice + half-applied re-run are clean over the raw
+// OVERWRITE DDL — the generic schemaMigrations sweep covers both). option<object>: a LEGACY project
+// (written before this field) reads back NONE → game_verify is OMITTED from the normalized row (§6.1),
+// capability stays disabled (F-008 — never a fabricated config). OMITTED at write when absent — never
+// an explicit NULL (option<T> rejects NULL — MEMORY-SPEC §6.1).
+const m0068_project_game_verify: Migration = {
+	id: '0068_project_game_verify',
+	up: `
+		DEFINE FIELD OVERWRITE game_verify ON project FLEXIBLE TYPE option<object>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2473,5 +2499,6 @@ export const schemaMigrations: Migration[] = [
 	m0064_skill_proposal_approved_name,
 	m0065_session_granted,
 	m0066_scene_event_lifecycle_kinds,
-	m0067_agent_event_parent
+	m0067_agent_event_parent,
+	m0068_project_game_verify
 ];

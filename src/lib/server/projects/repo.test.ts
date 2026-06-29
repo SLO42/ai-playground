@@ -29,8 +29,30 @@ import {
 	getSprint,
 	listSprints,
 	updateSprint,
-	deleteSprint
+	deleteSprint,
+	parseGameVerifyConfig,
+	type GameVerifyConfig
 } from './repo';
+
+// The ROUNDS reference game-verify config (GAME-VERIFY-SPEC §"ROUNDS reference config",
+// all values proven live this session). Used to assert a full descriptor round-trips
+// through the FLEXIBLE option<object> column intact (m0068) and that the validator accepts it.
+const ROUNDS_GAME_VERIFY: GameVerifyConfig = {
+	launch_command: 'steam://rungameid/1557740',
+	process_name: 'ROUNDS.exe',
+	log_path: 'E:\\SteamLibrary\\steamapps\\common\\ROUNDS\\BepInEx\\LogOutput.log',
+	ready_pattern: 'Chainloader startup complete',
+	deploy: [
+		{
+			source: '**/bin/**/UnboundLib.dll',
+			target: 'E:\\SteamLibrary\\steamapps\\common\\ROUNDS\\BepInEx\\plugins\\unbound\\'
+		}
+	],
+	success_patterns: ['Loading \\[Rounds Unbound', 'loaded\\.'],
+	error_patterns: ['MissingMethodException', 'AmbiguousMatch', 'NullReferenceException', 'Fatal'],
+	timeout_ms: 120000,
+	stack_capture_lines: 20
+};
 
 // TASK 1.2 VERIFY: plan CRUD round-trips — create→read→update→delete at EVERY
 // level (project + release/phase/feature/sprint), against the throwaway test DB
@@ -125,6 +147,95 @@ describe('project — CRUD round-trip (§4.1)', () => {
 		expect(repurposed?.plan?.purpose).toBe('Ship faster');
 		expect(repurposed?.plan?.role).toBe('platform'); // preserved
 		await deleteProject(db, 'project:planned');
+	});
+});
+
+describe('project.game_verify — FLEXIBLE config round-trip + validator (m0068, GAME-VERIFY)', () => {
+	it('round-trips a SET game_verify descriptor through the FLEXIBLE column intact', async () => {
+		// Assert on a row where the field IS set (F-013 — a NONE-everywhere row would hide the gap).
+		const created = await createProject(db, {
+			slug: 'gvset',
+			name: 'GV Set',
+			root_path: 'F:/code/gvset',
+			game_verify: ROUNDS_GAME_VERIFY
+		});
+		expect(created.game_verify).toEqual(ROUNDS_GAME_VERIFY);
+
+		// Re-read from the DB: FLEXIBLE preserved every nested sub-key (without FLEXIBLE the
+		// SCHEMAFULL object would have stored {} and the deploy/patterns would be gone, m0068).
+		const read = await getProject(db, 'project:gvset');
+		expect(read?.game_verify).toEqual(ROUNDS_GAME_VERIFY);
+		expect(read?.game_verify?.deploy?.[0]?.target).toContain('plugins');
+		expect(read?.game_verify?.error_patterns).toHaveLength(4);
+		// The persisted descriptor is a plain POJO that the validator accepts.
+		expect(parseGameVerifyConfig(read?.game_verify)).toEqual(ROUNDS_GAME_VERIFY);
+
+		await deleteProject(db, 'project:gvset');
+	});
+
+	it('omits game_verify when absent (option<object> stays NONE — §6.1 / F-008)', async () => {
+		const created = await createProject(db, {
+			slug: 'gvabsent',
+			name: 'GV Absent',
+			root_path: 'F:/code/gvabsent'
+		});
+		expect('game_verify' in created).toBe(false);
+		const read = await getProject(db, 'project:gvabsent');
+		expect(read?.game_verify).toBeUndefined();
+		await deleteProject(db, 'project:gvabsent');
+	});
+
+	it('parseGameVerifyConfig accepts the ROUNDS reference config', () => {
+		expect(parseGameVerifyConfig(ROUNDS_GAME_VERIFY)).toEqual(ROUNDS_GAME_VERIFY);
+	});
+
+	it('parseGameVerifyConfig accepts the minimal required-only config + an exe-object launch', () => {
+		expect(
+			parseGameVerifyConfig({
+				launch_command: { exe: 'C:\\Games\\ROUNDS\\ROUNDS.exe', args: ['--no-vr'] },
+				process_name: 'ROUNDS.exe',
+				log_path: 'C:\\Games\\ROUNDS\\BepInEx\\LogOutput.log',
+				ready_pattern: 'Chainloader startup complete'
+			})
+		).toEqual({
+			launch_command: { exe: 'C:\\Games\\ROUNDS\\ROUNDS.exe', args: ['--no-vr'] },
+			process_name: 'ROUNDS.exe',
+			log_path: 'C:\\Games\\ROUNDS\\BepInEx\\LogOutput.log',
+			ready_pattern: 'Chainloader startup complete'
+		});
+	});
+
+	it('parseGameVerifyConfig rejects a missing-required-field object (disabled, not thrown)', () => {
+		// Drop process_name from the otherwise-valid ROUNDS config.
+		const missing: Partial<GameVerifyConfig> = { ...ROUNDS_GAME_VERIFY };
+		delete missing.process_name;
+		expect(parseGameVerifyConfig(missing)).toBeNull();
+	});
+
+	it('parseGameVerifyConfig returns null on the shadow paths (nil / empty / wrong-typed)', () => {
+		expect(parseGameVerifyConfig(null)).toBeNull(); // nil
+		expect(parseGameVerifyConfig(undefined)).toBeNull(); // nil
+		expect(parseGameVerifyConfig({})).toBeNull(); // empty object — no required fields
+		expect(parseGameVerifyConfig([])).toBeNull(); // array, not an object
+		expect(parseGameVerifyConfig('steam://x')).toBeNull(); // primitive, not an object
+		// empty-string required field
+		expect(
+			parseGameVerifyConfig({ ...ROUNDS_GAME_VERIFY, process_name: '' })
+		).toBeNull();
+		// launch_command an empty-args-less malformed object (no exe)
+		expect(
+			parseGameVerifyConfig({ ...ROUNDS_GAME_VERIFY, launch_command: { args: ['x'] } })
+		).toBeNull();
+		// deploy entry missing target
+		expect(
+			parseGameVerifyConfig({ ...ROUNDS_GAME_VERIFY, deploy: [{ source: 'a.dll' }] })
+		).toBeNull();
+		// error_patterns not a string array
+		expect(
+			parseGameVerifyConfig({ ...ROUNDS_GAME_VERIFY, error_patterns: [1, 2] })
+		).toBeNull();
+		// non-positive timeout_ms
+		expect(parseGameVerifyConfig({ ...ROUNDS_GAME_VERIFY, timeout_ms: 0 })).toBeNull();
 	});
 });
 

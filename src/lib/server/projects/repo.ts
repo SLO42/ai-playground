@@ -48,6 +48,14 @@ export interface ProjectRow {
 	 */
 	create_status?: string;
 	plan?: ProjectPlan;
+	/**
+	 * OPTIONAL, operator-set live game-mod verification harness descriptor (GAME-VERIFY-SPEC,
+	 * migration 0068). Absent/NONE = capability disabled (like `test_command`). Stored as a
+	 * FLEXIBLE option<object>; the runner/orchestrator validate it via {@link parseGameVerifyConfig}
+	 * (a malformed config disables the harness rather than throwing). Passed through normProject
+	 * as a plain POJO — the descriptor holds no datetime/RecordId so no F-013 coercion is needed.
+	 */
+	game_verify?: GameVerifyConfig;
 }
 
 /** Project-Plan-v3 embedded object (DATA-MODEL §4.1). All fields optional. */
@@ -56,6 +64,157 @@ export interface ProjectPlan {
 	long_term_vision?: string;
 	role?: string;
 	definition_of_done?: string;
+}
+
+// ── GAME-VERIFY harness descriptor (GAME-VERIFY-SPEC) ────────────────────────────
+//
+// The OPTIONAL, operator-set config that opts a project into live game-mod verification
+// (deploy built artifact → launch the game → poll its log for a ready signal → structured
+// verdict → MANDATORY kill → feed back to the build loop). Persisted as project.game_verify
+// (FLEXIBLE option<object>, schema m0068); absent ⇒ capability DISABLED, like `test_command`.
+// This module owns the TYPE + the validator; the runner (GAME-VERIFY GV-2) and the
+// orchestrator step import them from here (post-task.ts / orchestrator.ts already import this
+// module, so it is the established shared home for project/orchestrator config types).
+//
+// SHAPE NOTE: launch_command (and the optional pre_launch/post_kill) is a steam:// (or any)
+// string OR an { exe, args } object. deploy/log paths point OUTSIDE the project root by design —
+// they are explicit, operator-configured, named paths (the game install), not arbitrary FS.
+
+/** A launch/exec spec: a bare command string (e.g. `steam://rungameid/<appid>`) or an exe+args. */
+export type GameVerifyLaunch = string | { exe: string; args?: string[] };
+
+/** One deploy hop: copy a built-artifact glob to an absolute target path under the game install. */
+export interface GameVerifyDeploy {
+	source: string;
+	target: string;
+}
+
+/** The operator-set game-verify harness descriptor (project.game_verify). */
+export interface GameVerifyConfig {
+	/** How to launch the game: a `steam://…` (or other) command string, or `{ exe, args }`. */
+	launch_command: GameVerifyLaunch;
+	/** Process image name for the MANDATORY kill (e.g. `ROUNDS.exe`). */
+	process_name: string;
+	/** Absolute path of the log to poll/read (e.g. `<game>/BepInEx/LogOutput.log`). */
+	log_path: string;
+	/** Regex (source string) signalling load finished (e.g. `Chainloader startup complete`). */
+	ready_pattern: string;
+	/** Optional artifact deploy hops run before launch. */
+	deploy?: GameVerifyDeploy[];
+	/** Optional regexes whose matches count as success signals (load line). */
+	success_patterns?: string[];
+	/** Optional regexes whose matches count as errors (NRE / MissingMethod / …). */
+	error_patterns?: string[];
+	/** Wall-clock cap for the poll (default applied by the runner; spec default ~120000). */
+	timeout_ms?: number;
+	/** How many log lines to capture after each error class (stack-trace context). */
+	stack_capture_lines?: number;
+	/** Optional cleanup/setup run before launch. */
+	pre_launch?: GameVerifyLaunch;
+	/** Optional cleanup run after the mandatory kill. */
+	post_kill?: GameVerifyLaunch;
+}
+
+function isNonEmptyString(v: unknown): v is string {
+	return typeof v === 'string' && v.length > 0;
+}
+
+/** A valid launch spec: a non-empty string, or `{ exe: <non-empty string>, args?: string[] }`. */
+function parseLaunch(v: unknown): GameVerifyLaunch | null {
+	if (isNonEmptyString(v)) return v;
+	if (v != null && typeof v === 'object' && !Array.isArray(v)) {
+		const o = v as Record<string, unknown>;
+		if (!isNonEmptyString(o.exe)) return null;
+		if (o.args !== undefined) {
+			if (!Array.isArray(o.args) || !o.args.every((a) => typeof a === 'string')) return null;
+			return { exe: o.exe, args: o.args as string[] };
+		}
+		return { exe: o.exe };
+	}
+	return null;
+}
+
+function parseStringArray(v: unknown): string[] | null {
+	if (!Array.isArray(v)) return null;
+	if (!v.every((s) => typeof s === 'string')) return null;
+	return v as string[];
+}
+
+/**
+ * Validate a raw `project.game_verify` value into a {@link GameVerifyConfig}, or `null` when the
+ * block is absent/malformed (⇒ capability disabled). BOTH the runner and the orchestrator call
+ * this, so a malformed operator config DISABLES the harness instead of throwing mid-task (F-008 —
+ * honest off, never a fabricated launch). Required: launch_command, process_name, log_path,
+ * ready_pattern. Optional fields are validated when present and dropped when malformed-but-absent.
+ *
+ * Shadow paths (all return null, never throw): nil/non-object input; empty-string required field;
+ * wrong-typed required field; a deploy entry missing source/target; a non-string-array pattern list.
+ */
+export function parseGameVerifyConfig(raw: unknown): GameVerifyConfig | null {
+	if (raw == null || typeof raw !== 'object' || Array.isArray(raw)) return null;
+	const r = raw as Record<string, unknown>;
+
+	const launch_command = parseLaunch(r.launch_command);
+	if (launch_command === null) return null;
+	if (!isNonEmptyString(r.process_name)) return null;
+	if (!isNonEmptyString(r.log_path)) return null;
+	if (!isNonEmptyString(r.ready_pattern)) return null;
+
+	const cfg: GameVerifyConfig = {
+		launch_command,
+		process_name: r.process_name,
+		log_path: r.log_path,
+		ready_pattern: r.ready_pattern
+	};
+
+	if (r.deploy !== undefined) {
+		if (!Array.isArray(r.deploy)) return null;
+		const deploy: GameVerifyDeploy[] = [];
+		for (const d of r.deploy) {
+			if (d == null || typeof d !== 'object' || Array.isArray(d)) return null;
+			const dd = d as Record<string, unknown>;
+			if (!isNonEmptyString(dd.source) || !isNonEmptyString(dd.target)) return null;
+			deploy.push({ source: dd.source, target: dd.target });
+		}
+		cfg.deploy = deploy;
+	}
+
+	if (r.success_patterns !== undefined) {
+		const p = parseStringArray(r.success_patterns);
+		if (p === null) return null;
+		cfg.success_patterns = p;
+	}
+	if (r.error_patterns !== undefined) {
+		const p = parseStringArray(r.error_patterns);
+		if (p === null) return null;
+		cfg.error_patterns = p;
+	}
+	if (r.timeout_ms !== undefined) {
+		if (typeof r.timeout_ms !== 'number' || !Number.isFinite(r.timeout_ms) || r.timeout_ms <= 0)
+			return null;
+		cfg.timeout_ms = r.timeout_ms;
+	}
+	if (r.stack_capture_lines !== undefined) {
+		if (
+			typeof r.stack_capture_lines !== 'number' ||
+			!Number.isInteger(r.stack_capture_lines) ||
+			r.stack_capture_lines < 0
+		)
+			return null;
+		cfg.stack_capture_lines = r.stack_capture_lines;
+	}
+	if (r.pre_launch !== undefined) {
+		const p = parseLaunch(r.pre_launch);
+		if (p === null) return null;
+		cfg.pre_launch = p;
+	}
+	if (r.post_kill !== undefined) {
+		const p = parseLaunch(r.post_kill);
+		if (p === null) return null;
+		cfg.post_kill = p;
+	}
+
+	return cfg;
 }
 
 export interface ReleaseRow {
@@ -107,6 +266,13 @@ export interface CreateProjectInput {
 	test_command?: string;
 	repo_url?: string;
 	status?: string;
+	/**
+	 * OPTIONAL, operator-set game-verify harness descriptor (GAME-VERIFY-SPEC). Set via CONTENT on
+	 * create. NOTE: updateProject MERGEs this object — a later full-replace of a nested array (e.g.
+	 * `deploy`) should write the COMPLETE descriptor (MERGE deep-merges; it does not delete dropped
+	 * sub-keys). Absent ⇒ omitted (option<object> stays NONE, §6.1) ⇒ capability disabled.
+	 */
+	game_verify?: GameVerifyConfig;
 }
 
 export type UpdateProjectInput = Partial<Omit<CreateProjectInput, 'slug'>>;
@@ -182,6 +348,11 @@ function normProject(row: ProjectRow & { id: unknown }): ProjectRow {
 	else delete out.created_at;
 	if (out.updated_at != null) out.updated_at = isoOrUndef(out.updated_at);
 	else delete out.updated_at;
+	// game_verify (FLEXIBLE option<object>, m0068): pass the descriptor through as the plain POJO the
+	// SDK returns (no datetime/RecordId inside ⇒ no F-013 coercion). Absent/NONE ⇒ OMIT the key so the
+	// capability reads as disabled (F-008 — never a fabricated/empty config). Validation is deferred to
+	// parseGameVerifyConfig at the runner/orchestrator boundary, not here (the raw row stays faithful).
+	if (out.game_verify == null) delete out.game_verify;
 	return out as ProjectRow;
 }
 function normRelease(row: ReleaseRow & { id: unknown; project: unknown }): ReleaseRow {
@@ -302,7 +473,8 @@ export async function createProject(db: Db, input: CreateProjectInput): Promise<
 		build_tool: input.build_tool,
 		test_command: input.test_command,
 		repo_url: input.repo_url,
-		status: input.status
+		status: input.status,
+		game_verify: input.game_verify
 	});
 	const [rows] = await db.query<[(ProjectRow & { id: unknown })[]]>(
 		`CREATE $rid CONTENT $content RETURN AFTER;`,

@@ -268,9 +268,10 @@ export interface CreateProjectInput {
 	status?: string;
 	/**
 	 * OPTIONAL, operator-set game-verify harness descriptor (GAME-VERIFY-SPEC). Set via CONTENT on
-	 * create. NOTE: updateProject MERGEs this object — a later full-replace of a nested array (e.g.
-	 * `deploy`) should write the COMPLETE descriptor (MERGE deep-merges; it does not delete dropped
-	 * sub-keys). Absent ⇒ omitted (option<object> stays NONE, §6.1) ⇒ capability disabled.
+	 * create. A config descriptor has REPLACE (not deep-merge) semantics: updateProject SETs this
+	 * object whole when present, so a partial edit (shorter `deploy`, changed patterns) leaves NO
+	 * stale sub-keys from the prior descriptor. Absent in a patch ⇒ left untouched (no-op). Absent on
+	 * create ⇒ omitted (option<object> stays NONE, §6.1) ⇒ capability disabled.
 	 */
 	game_verify?: GameVerifyConfig;
 }
@@ -498,14 +499,34 @@ export async function listProjects(db: Db): Promise<ProjectRow[]> {
 /**
  * Update mutable project columns (slug/id are immutable). MERGE preserves
  * untouched columns + the `plan` object; touches `updated_at` on every write.
+ *
+ * `game_verify` is special-cased: it is a config DESCRIPTOR with replace (not
+ * deep-merge) semantics. MERGE would recursively merge the nested object, so a
+ * partial edit (a shorter `deploy` array, different patterns) would leave STALE
+ * sub-keys from the prior descriptor. When the patch includes `game_verify` we
+ * therefore SET the whole field (full overwrite) in a second statement, keeping
+ * MERGE semantics for every other scalar column. An absent `game_verify` in the
+ * patch is a no-op (the field is never wiped when it is not being edited).
  */
 export async function updateProject(
 	db: Db,
 	id: string,
 	patch: UpdateProjectInput
 ): Promise<ProjectRow | null> {
-	const content = omitUndefined({ ...patch, updated_at: new Date() });
-	return updateMerge<ProjectRow>(db, id, content, normProject);
+	const { game_verify, ...rest } = patch;
+	const content = omitUndefined({ ...rest, updated_at: new Date() });
+	if (game_verify === undefined) {
+		return updateMerge<ProjectRow>(db, id, content, normProject);
+	}
+	// MERGE the scalar patch, then SET game_verify whole (replace, not deep-merge). Two statements
+	// in one query: the first MERGE updates untouched-preserving columns + updated_at; the second
+	// `SET game_verify = $gv` (`=`, not `+=`) overwrites the entire object, dropping any old sub-keys.
+	const rid = new StringRecordId(assertRecordId(id));
+	const [, after] = await db.query<[unknown, (ProjectRow & { id: unknown })[]]>(
+		`UPDATE $rid MERGE $content; UPDATE $rid SET game_verify = $gv RETURN AFTER;`,
+		{ rid, content, gv: game_verify }
+	);
+	return after.length ? normProject(after[0]) : null;
 }
 
 /**

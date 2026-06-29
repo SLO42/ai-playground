@@ -185,6 +185,69 @@ describe('project.game_verify — FLEXIBLE config round-trip + validator (m0068,
 		await deleteProject(db, 'project:gvabsent');
 	});
 
+	it('updateProject REPLACES game_verify whole — no stale sub-keys from the prior descriptor', async () => {
+		// Start from the full ROUNDS descriptor (multi-entry deploy + 2 success + 4 error patterns).
+		const created = await createProject(db, {
+			slug: 'gvedit',
+			name: 'GV Edit',
+			root_path: 'F:/code/gvedit',
+			game_verify: ROUNDS_GAME_VERIFY
+		});
+		expect(created.game_verify).toEqual(ROUNDS_GAME_VERIFY);
+
+		// Operator edits the harness config to a SHORTER deploy (1→0 array entries is still an array,
+		// so use a single DIFFERENT hop), DIFFERENT patterns, and DROPS optional sub-keys
+		// (success_patterns/timeout_ms/stack_capture_lines absent ⇒ must NOT linger from the old one).
+		const edited: GameVerifyConfig = {
+			launch_command: { exe: 'C:\\Games\\ROUNDS\\ROUNDS.exe' },
+			process_name: 'ROUNDS.exe',
+			log_path: 'C:\\Games\\ROUNDS\\BepInEx\\LogOutput.log',
+			ready_pattern: 'Chainloader startup complete',
+			deploy: [{ source: '**/PickNCards.dll', target: 'C:\\Games\\ROUNDS\\BepInEx\\plugins\\' }],
+			error_patterns: ['NullReferenceException']
+		};
+		const updated = await updateProject(db, 'project:gvedit', { game_verify: edited });
+		// EXACT equality: the persisted descriptor is the new one, with zero leftover sub-keys.
+		expect(updated?.game_verify).toEqual(edited);
+		expect(updated?.game_verify?.deploy).toHaveLength(1);
+		expect(updated?.game_verify?.deploy?.[0]?.source).toBe('**/PickNCards.dll');
+		expect(updated?.game_verify?.error_patterns).toEqual(['NullReferenceException']);
+		// Dropped optional sub-keys must be GONE (a deep-merge would have retained these).
+		expect(updated?.game_verify?.success_patterns).toBeUndefined();
+		expect(updated?.game_verify?.timeout_ms).toBeUndefined();
+		expect(updated?.game_verify?.stack_capture_lines).toBeUndefined();
+
+		// Re-read from the DB confirms the persisted row equals the new descriptor exactly.
+		const read = await getProject(db, 'project:gvedit');
+		expect(read?.game_verify).toEqual(edited);
+		expect(parseGameVerifyConfig(read?.game_verify)).toEqual(edited);
+
+		await deleteProject(db, 'project:gvedit');
+	});
+
+	it('updateProject WITHOUT game_verify leaves the existing descriptor intact (no-op)', async () => {
+		const created = await createProject(db, {
+			slug: 'gvkeep',
+			name: 'GV Keep',
+			root_path: 'F:/code/gvkeep',
+			game_verify: ROUNDS_GAME_VERIFY
+		});
+		expect(created.game_verify).toEqual(ROUNDS_GAME_VERIFY);
+
+		// A patch that touches only scalar columns must NOT wipe game_verify.
+		const updated = await updateProject(db, 'project:gvkeep', {
+			name: 'GV Keep (renamed)',
+			status: 'paused'
+		});
+		expect(updated?.name).toBe('GV Keep (renamed)');
+		expect(updated?.status).toBe('paused');
+		expect(updated?.game_verify).toEqual(ROUNDS_GAME_VERIFY);
+
+		const read = await getProject(db, 'project:gvkeep');
+		expect(read?.game_verify).toEqual(ROUNDS_GAME_VERIFY);
+		await deleteProject(db, 'project:gvkeep');
+	});
+
 	it('parseGameVerifyConfig accepts the ROUNDS reference config', () => {
 		expect(parseGameVerifyConfig(ROUNDS_GAME_VERIFY)).toEqual(ROUNDS_GAME_VERIFY);
 	});

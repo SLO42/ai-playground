@@ -82,12 +82,51 @@
   let ty = $state(0);
   let k = $state(1);
   let fullscreen = $state(false);
-  const MIN_K = 0.3;
+  // Auto-fit the camera to the node bbox while a viewport change (initial mount, full-screen
+  // toggle, container resize) is settling; cleared the moment the user pans/zooms/drags or the
+  // sim settles, so we never fight a deliberate camera move. This is what keeps nodes in-frame
+  // on full-screen instead of drifting off (the force layout spans thousands of px; the viewBox
+  // + forceCenter already track the resize correctly — what was missing was fitting the camera).
+  let autoFit = $state(true);
+  const MIN_K = 0.1;
   const MAX_K = 4;
   const clampK = (v: number): number => Math.min(MAX_K, Math.max(MIN_K, v));
 
   function dims(): { w: number; h: number } {
     return { w: width || 800, h: fullscreen ? stageH || height : height };
+  }
+
+  /**
+   * Fit + center the camera so every node (respecting the timeline window) sits inside the
+   * current viewport with a small margin. Sets the pan/zoom transform only — never touches the
+   * simulation. Used by the recenter control and the auto-fit pass on viewport changes.
+   */
+  function fitToNodes(ns: ForceNode[] = positioned): void {
+    if (!ns.length) return;
+    const inWin = ns.filter(inWindow);
+    const use = inWin.length ? inWin : ns;
+    let minX = Infinity,
+      minY = Infinity,
+      maxX = -Infinity,
+      maxY = -Infinity;
+    for (const n of use) {
+      const r = nodeVisual(n).radius + 4;
+      const x = n.x ?? 0;
+      const y = n.y ?? 0;
+      if (x - r < minX) minX = x - r;
+      if (x + r > maxX) maxX = x + r;
+      if (y - r < minY) minY = y - r;
+      if (y + r > maxY) maxY = y + r;
+    }
+    if (!Number.isFinite(minX)) return;
+    const { w, h } = dims();
+    const pad = 28;
+    const cw = Math.max(1, maxX - minX);
+    const ch = Math.max(1, maxY - minY);
+    const nk = clampK(Math.min((w - 2 * pad) / cw, (h - 2 * pad) / ch));
+    k = nk;
+    tx = w / 2 - nk * ((minX + maxX) / 2);
+    ty = h / 2 - nk * ((minY + maxY) / 2);
   }
 
   function clientToUser(e: { clientX: number; clientY: number }): { x: number; y: number } | null {
@@ -109,17 +148,19 @@
   }
   function onWheel(e: WheelEvent): void {
     e.preventDefault();
+    autoFit = false;
     const u = clientToUser(e);
     if (!u) return;
     zoomAround(u.x, u.y, e.deltaY < 0 ? 1.12 : 1 / 1.12);
   }
   function zoomBtn(factor: number): void {
+    autoFit = false;
     zoomAround(dims().w / 2, dims().h / 2, factor);
   }
-  function resetCamera(): void {
-    tx = 0;
-    ty = 0;
-    k = 1;
+  /** Recenter: fit + center all nodes in the current viewport (one-shot). */
+  function recenter(): void {
+    autoFit = false;
+    fitToNodes();
   }
 
   // ── Pan + node-drag (pointer) ───────────────────────────────────────────────────────────
@@ -132,6 +173,7 @@
 
   function bgPointerDown(e: PointerEvent): void {
     if (e.button !== 0) return;
+    autoFit = false;
     panning = true;
     panMoved = false;
     panStart = { cx: e.clientX, cy: e.clientY, tx, ty };
@@ -140,6 +182,7 @@
   function nodePointerDown(e: PointerEvent, id: string): void {
     if (e.button !== 0) return;
     e.stopPropagation();
+    autoFit = false;
     dragId = id;
     dragMoved = false;
     svgEl?.setPointerCapture?.(e.pointerId);
@@ -222,14 +265,36 @@
       sim.stop();
       positioned = [...nodes];
       links = lks;
+      if (autoFit) {
+        fitToNodes(nodes);
+        autoFit = false;
+      }
       return;
     }
 
     sim.on('tick', () => {
       positioned = [...nodes];
       links = lks;
+      if (autoFit) fitToNodes(nodes); // keep nodes framed while the layout settles
+    });
+    // Once the layout has settled, do a final fit then hold the camera (so live spawns/pulses
+    // and user pans aren't fought by a continuous refit).
+    sim.on('end', () => {
+      if (autoFit) {
+        fitToNodes(nodes);
+        autoFit = false;
+      }
     });
   }
+
+  // Re-arm auto-fit whenever the VIEWPORT changes (full-screen toggle / container resize /
+  // initial measure) — NOT on model changes, so newly-arrived nodes never yank the camera.
+  $effect(() => {
+    void fullscreen;
+    void width;
+    void stageH;
+    autoFit = true;
+  });
 
   $effect(() => {
     void model;
@@ -443,7 +508,7 @@
       <div class="controls" role="group" aria-label="Scene camera controls">
         <button type="button" class="ctl" onclick={() => zoomBtn(1.2)} aria-label="Zoom in" title="Zoom in">+</button>
         <button type="button" class="ctl" onclick={() => zoomBtn(1 / 1.2)} aria-label="Zoom out" title="Zoom out">−</button>
-        <button type="button" class="ctl" onclick={resetCamera} aria-label="Reset camera" title="Reset view">⤢</button>
+        <button type="button" class="ctl" onclick={recenter} aria-label="Recenter — fit all nodes" title="Recenter (fit all nodes)">⊙</button>
         <button
           type="button"
           class="ctl"

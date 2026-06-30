@@ -34,6 +34,12 @@ export interface MemoryCandidate {
 	tags?: string[];
 	source?: string;
 	importance?: number;
+	/**
+	 * S3 — a coarse category flag (m0073 `memory.category`). A `category: "correction"` row is a
+	 * high-importance correction (the scene classes it as a correction node). option<string>; omit
+	 * for an ordinary memory. Untrusted-extractor field → validated at the store boundary like the rest.
+	 */
+	category?: string;
 	project?: string; // table:id
 	/**
 	 * TASK 16.6 (WORKFORCE-SPEC §4.2) — the ORIGINATING session (table:id, m0033
@@ -240,7 +246,7 @@ function assertCandidateShape(c: MemoryCandidate): void {
 
 	// key / source / license — option<string>: a string or absent. `license` (BL-6) is the
 	// declared/derived consent note for a lifted finding (§2.2).
-	for (const field of ['key', 'source', 'license'] as const) {
+	for (const field of ['key', 'source', 'license', 'category'] as const) {
 		const v = c[field];
 		if (v !== undefined && typeof v !== 'string') {
 			throw new MemoryCandidateFieldError(field, shapeOf(v), 'string or absent');
@@ -319,6 +325,8 @@ export async function storeMemory(opts: StoreOptions, c: MemoryCandidate): Promi
 		provenance: c.provenance ? link(c.provenance) : undefined,
 		// BL-6 (m0043): the consent/license note for a lifted finding (§2.2), denormalized.
 		license: c.license,
+		// S3 (m0073): coarse category flag — "correction" marks a high-importance correction memory.
+		category: c.category,
 		importance: c.importance,
 		screen_status: scr.status,
 		// Pass a Date OBJECT — the SDK serializes it as a SurrealDB datetime. An ISO

@@ -173,11 +173,11 @@ describe('(B) the fork CANNOT launder an unscreened secret', () => {
 });
 
 describe('(A) the fork CANNOT write outside the memory/skill whitelist (§2.1)', () => {
-	it('the write surface exposes ONLY writeMemories + writeSkill — no db/exec/git/fs handle', () => {
-		// Structural proof: the capability object the fork receives has exactly the two
-		// whitelisted methods and no escape hatch (no `db`, `query`, `exec`, `git`, `fs`).
+	it('the write surface exposes ONLY writeMemories + writeSkill + writeConcepts — no db/exec/git/fs handle', () => {
+		// Structural proof: the capability object the fork receives has exactly the three
+		// whitelisted write methods and no escape hatch (no `db`, `query`, `exec`, `git`, `fs`).
 		const keys = Object.keys(surface).sort();
-		expect(keys).toEqual(['writeMemories', 'writeSkill']);
+		expect(keys).toEqual(['writeConcepts', 'writeMemories', 'writeSkill']);
 		const asRecord = surface as unknown as Record<string, unknown>;
 		for (const forbidden of ['db', 'query', 'exec', 'git', 'fs', 'spawn', 'run']) {
 			expect(asRecord[forbidden]).toBeUndefined();
@@ -197,6 +197,10 @@ describe('(A) the fork CANNOT write outside the memory/skill whitelist (§2.1)',
 			async writeSkill(s: SkillCandidate): Promise<WrittenSkill> {
 				calls.push(`writeSkill:${s.name}`);
 				return { id: '', persisted: true };
+			},
+			async writeConcepts(c): Promise<import('./concepts').StoredConcept[]> {
+				calls.push(`writeConcepts:${c.length}`);
+				return c.map(() => ({ id: '', persisted: true, deduped: false, screenStatus: 'clean' as const }));
 			}
 		};
 		const hostileExtract: ExtractFn = async () => [{ content: 'rm -rf / ; git push --force' }];

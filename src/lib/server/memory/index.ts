@@ -29,7 +29,16 @@ export { screen, captureGate, gateCandidate, type ScreenStatus, type ScreenResul
 export { fence, fenceAll, assembleContext, StreamScrubber, scrubComplete, FENCE_OPEN, FENCE_CLOSE, type InjectionSource, type FencedItem } from './fence';
 export { OllamaEmbedder, CachedEmbedder, FakeEmbedder, EmbeddingError, EMBEDDING_DIM, cacheKey, distanceToSimilarity, type Embedder, type EmbedRole } from './embed';
 export { recall, recordOutcomes, markIngestedFindingsApplied, parseCitations, WMR_WEIGHTS, NOVELTY_COSINE_CUT, RECALL_BUDGET, budgetCapsFor, type RecallItem, type RecallResult, type RecallOptions } from './recall';
-export { recordTurnOutcomes, summarizeTurnTools, type RecordTurnOutcomesInput, type TurnToolOutcome } from './outcomes';
+export {
+	recordTurnOutcomes,
+	summarizeTurnTools,
+	recordRetrievalFeedback,
+	isRetrievalFeedbackVerdict,
+	RETRIEVAL_FEEDBACK_VERDICTS,
+	type RecordTurnOutcomesInput,
+	type TurnToolOutcome,
+	type RetrievalFeedbackVerdict
+} from './outcomes';
 export { storeMemory, storeMemories, extractAndStore, buildExtraction, type MemoryCandidate, type StoredMemory, type ExtractFn, type ExtractInput } from './store';
 export {
 	dueReview,
@@ -49,6 +58,20 @@ export {
 	type RunReviewForkInput,
 	type RunReviewForkResult
 } from './loop';
+export {
+	storeConcept,
+	storeConcepts,
+	isConceptCandidate,
+	ConceptCandidateError,
+	ConceptExtractShapeError,
+	CONCEPT_DEDUP_COSINE,
+	CONCEPT_EDGE_KINDS,
+	type ConceptCandidate,
+	type StoredConcept,
+	type ConceptEdgeKind,
+	type ConceptStoreOptions,
+	type ExtractConceptsFn
+} from './concepts';
 export {
 	buildBriefing,
 	estimateTokens,

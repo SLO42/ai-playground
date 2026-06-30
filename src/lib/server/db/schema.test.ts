@@ -81,7 +81,10 @@ const EXPECTED_TABLES = [
 	'skill',
 	'causal_chain',
 	// §4.15 embedding cache
-	'embedding_cache'
+	'embedding_cache',
+	// §S3 cognitive layer (m0073)
+	'concept',
+	'concept_edge'
 ];
 
 // Every named index DATA-MODEL.md §4 declares, mapped to its table.
@@ -110,13 +113,16 @@ const EXPECTED_INDEXES: Record<string, string[]> = {
 	retrieval_outcome: ['retrieval_outcome_by_session', 'retrieval_outcome_by_memory'],
 	skill: ['skill_vec', 'skill_by_status'],
 	causal_chain: ['causal_chain_by_session'],
-	embedding_cache: ['embedding_cache_hash']
+	embedding_cache: ['embedding_cache_hash'],
+	// §S3 cognitive layer (m0073)
+	concept: ['concept_vec', 'concept_dedup', 'concept_by_project', 'concept_by_status']
 };
 
-// The two HNSW vector indexes — must be 2.x-valid (no "M0").
+// The HNSW vector indexes — must be 2.x-valid (no "M0").
 const HNSW_INDEXES: Array<{ table: string; index: string }> = [
 	{ table: 'memory', index: 'memory_vec' },
-	{ table: 'skill', index: 'skill_vec' }
+	{ table: 'skill', index: 'skill_vec' },
+	{ table: 'concept', index: 'concept_vec' }
 ];
 
 beforeAll(async () => {

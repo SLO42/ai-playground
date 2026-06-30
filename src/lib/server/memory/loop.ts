@@ -22,6 +22,14 @@ import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import type { Embedder } from './embed';
 import { storeMemories, type MemoryCandidate, type StoredMemory, type ExtractFn, buildExtraction } from './store';
+import {
+	storeConcepts,
+	isConceptCandidate,
+	ConceptExtractShapeError,
+	type ConceptCandidate,
+	type StoredConcept,
+	type ExtractConceptsFn
+} from './concepts';
 import { gateCandidate, captureGate, screen } from './screen';
 
 function link(id: string): StringRecordId {
@@ -200,6 +208,12 @@ export interface MemoryWriteSurface {
 	writeMemories(candidates: MemoryCandidate[]): Promise<StoredMemory[]>;
 	/** Skill write — screened at synthesis (§5.4a); a quarantined part blocks graduation. */
 	writeSkill(skill: SkillCandidate): Promise<WrittenSkill>;
+	/**
+	 * S3 concept write — each candidate is screen-before-embed + embedding-deduped (concepts.ts).
+	 * A near-duplicate reinforces the existing concept; a quarantined label/summary never lands.
+	 * Same capability discipline as the rest of the surface: the fork never touches `db` directly.
+	 */
+	writeConcepts(candidates: ConceptCandidate[]): Promise<StoredConcept[]>;
 }
 
 /**
@@ -245,6 +259,11 @@ export function makeWriteSurface(db: Db, embedder: Embedder): MemoryWriteSurface
 				{ content }
 			);
 			return { id: String(rows[0].id), persisted: true };
+		},
+		writeConcepts(candidates: ConceptCandidate[]): Promise<StoredConcept[]> {
+			// concepts.ts screens label+summary BEFORE embed and dedups by embedding cosine — the
+			// same screen-before-embed invariant as memory, applied to the semantic concept layer.
+			return storeConcepts({ db, embedder }, candidates);
 		}
 	};
 }
@@ -384,15 +403,26 @@ export interface RunReviewForkInput {
 	extract: ExtractFn;
 	/** The review LLM call for skill candidates. Injected; mocked in tests. Optional. */
 	proposeSkills?: ProposeSkillsFn;
+	/**
+	 * S3 — the review LLM call that mines CONCEPTS (semantic nodes) from the turn. Injected;
+	 * mocked in tests. Optional — when absent, no concept extraction runs (back-compat). Fires on
+	 * the same memory|combined kinds as the memory extractor (concepts are the semantic distillate
+	 * of the same turn).
+	 */
+	extractConcepts?: ExtractConceptsFn;
 }
 
 export interface RunReviewForkResult {
 	stored: StoredMemory[];
 	skills: WrittenSkill[];
+	/** S3 — concepts written (or reinforced) this fork. */
+	concepts: StoredConcept[];
 	/** How many candidates the LLM proposed (memory) — for the explain/audit view. */
 	memoryCandidates: number;
 	/** How many skill candidates the LLM proposed. */
 	skillCandidates: number;
+	/** How many concept candidates the LLM proposed (S3). */
+	conceptCandidates: number;
 }
 
 /**
@@ -424,12 +454,14 @@ export interface RunReviewForkResult {
  * not add a Db/exec path to the fork to build it.
  */
 export async function runReviewFork(input: RunReviewForkInput): Promise<RunReviewForkResult> {
-	const { payload, surface, extract, proposeSkills } = input;
+	const { payload, surface, extract, proposeSkills, extractConcepts } = input;
 	const result: RunReviewForkResult = {
 		stored: [],
 		skills: [],
+		concepts: [],
 		memoryCandidates: 0,
-		skillCandidates: 0
+		skillCandidates: 0,
+		conceptCandidates: 0
 	};
 
 	const turn = typeof payload.turnText === 'string' ? payload.turnText : '';
@@ -467,6 +499,22 @@ export async function runReviewFork(input: RunReviewForkInput): Promise<RunRevie
 			session: c.session ?? payload.session
 		}));
 		result.stored = await surface.writeMemories(withProvenance);
+	}
+
+	// ── S3 concept mine path (semantic distillate of the same turn) ──
+	if (wantMemory && extractConcepts && turn.trim()) {
+		const rawC = await extractConcepts(turn);
+		// D-026 trust boundary: the concept extractor return is untrusted — validate the array
+		// shape AND each element BEFORE writing (a non-array / malformed element would otherwise
+		// throw an anonymous TypeError in storeConcepts). Fail NAMED + attributable.
+		if (!Array.isArray(rawC)) throw new ConceptExtractShapeError(shapeOf(rawC));
+		for (let i = 0; i < rawC.length; i++) {
+			if (!isConceptCandidate(rawC[i])) throw new ConceptExtractShapeError(shapeOf(rawC[i]), i);
+		}
+		result.conceptCandidates = rawC.length;
+		// Carry the turn's project onto each candidate (concepts.ts dedups within project scope).
+		const withProject: ConceptCandidate[] = rawC.map((c) => ({ ...c, project: c.project ?? payload.project }));
+		result.concepts = await surface.writeConcepts(withProject);
 	}
 
 	// ── skill write path (synthesis-screened) ──

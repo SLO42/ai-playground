@@ -2537,6 +2537,92 @@ const m0072_loop_manifest: Migration = {
 	`
 };
 
+// ── §S3 cognitive layer — concept graph + corrections + retrieval feedback ───────────
+//
+// Stage S3 (laqrumcode PATTERN as a LAYER over the existing brain, NOT a port): a semantic
+// `concept` node table that gets its embedding via the SAME store/embed path as memory
+// (1024-dim, screen-before-embed, D-026 — concepts.ts), plus ONE typed RELATION
+// `concept_edge` carrying the hierarchy (narrower/broader/related_to/about_concept) AND
+// episodic (caused_by/supports/contradicts/describes/supersedes) edge kinds — the
+// `references` (m0007) precedent of one relation table + a `kind` enum, not nine tables.
+//
+// Corrections are NOT a new table (operator directive): a correction is a high-importance
+// `memory` row flagged by the additive `memory.category` field — it inherits the whole
+// screen-before-embed write path + recall + audit for free.
+//
+// S1 retrieval feedback: an additive `retrieval_outcome.llm_relevance` verdict the
+// concierge/agents UPDATE post-hoc (helpful/irrelevant/outdated/pin) — ranker signal only
+// (D-030), never prunes. The row already carries the query embedding (outcomes.ts).
+//
+// Idempotent + additive (F-015): every statement OVERWRITE / additive option field; the
+// concept dedup_key follows the D-008 NONE-dodging VALUE pattern (backfill touches pre-
+// existing rows, no-op on a fresh DB). The HNSW concept_vec is the locked 2.x param string
+// (no M0). The generic schemaMigrations apply-twice + half-applied sweep in migrate.test.ts
+// covers both idempotency paths.
+const m0073_concept_graph: Migration = {
+	id: '0073_concept_graph',
+	up: `
+		DEFINE TABLE OVERWRITE concept SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project       ON concept TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE label         ON concept TYPE string;
+		DEFINE FIELD OVERWRITE summary       ON concept TYPE string DEFAULT "";
+		DEFINE FIELD OVERWRITE namespace     ON concept TYPE string DEFAULT "default";
+		DEFINE FIELD OVERWRITE embedding     ON concept TYPE array<float>;
+		DEFINE FIELD OVERWRITE importance    ON concept TYPE float DEFAULT 5.0;
+		DEFINE FIELD OVERWRITE confidence    ON concept TYPE float DEFAULT 1.0;
+		-- stability: how settled the concept is (0 = freshly-minted, 1 = load-bearing). Bumped
+		-- on dedup re-observation (concepts.ts) — the semantic analogue of memory fib resurfacing.
+		DEFINE FIELD OVERWRITE stability     ON concept TYPE float DEFAULT 0.5;
+		DEFINE FIELD OVERWRITE access_count  ON concept TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE status        ON concept TYPE string DEFAULT "active"
+			ASSERT $value IN ["active","archived","superseded"];
+		-- D-026 secret/PII screen status (mirrors memory.screen_status); concepts.ts screens the
+		-- label + summary BEFORE embed, so a quarantined concept is never surfaced (scene filters it).
+		DEFINE FIELD OVERWRITE screen_status ON concept TYPE string DEFAULT "clean"
+			ASSERT $value IN ["clean","redacted","quarantined"];
+		DEFINE FIELD OVERWRITE superseded_by ON concept TYPE option<record<concept>>;
+		DEFINE FIELD OVERWRITE last_accessed ON concept TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE created_at    ON concept TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE updated_at    ON concept TYPE datetime DEFAULT time::now();
+
+		-- HNSW vector index. 1024-dim/COSINE, same locked 2.x param string as memory_vec (D-014). No M0.
+		DEFINE INDEX OVERWRITE concept_vec ON concept FIELDS embedding
+			HNSW DIMENSION 1024 DIST COSINE TYPE F32 EFC 150 M 12;
+		DEFINE INDEX OVERWRITE concept_by_project ON concept FIELDS project;
+		DEFINE INDEX OVERWRITE concept_by_status  ON concept FIELDS status;
+
+		-- dedup_key VALUE pattern (D-008): namespace + label, fall back to id. concepts.ts ALWAYS
+		-- SETs namespace explicitly (never relies on the DEFAULT landing first — F-020) so the VALUE
+		-- never computes against a NONE namespace.
+		DEFINE FIELD OVERWRITE dedup_key ON concept VALUE (namespace + '|' + (label OR <string>id));
+		DEFINE INDEX OVERWRITE concept_dedup ON concept FIELDS dedup_key UNIQUE;
+
+		${backfillValueField('concept', 'dedup_key')}
+
+		-- §S3 hierarchy + episodic edges. ONE typed RELATION (the m0007 \`references\` precedent):
+		-- narrower/broader/related_to/about_concept (hierarchy) + caused_by/supports/contradicts/
+		-- describes/supersedes (episodic). IN concept|memory|session OUT concept|memory covers every
+		-- pair the extractor writes (about_concept: memory|session→concept; supersedes: memory|
+		-- concept→concept|memory; hierarchy: concept→concept).
+		DEFINE TABLE OVERWRITE concept_edge TYPE RELATION IN concept|memory|session OUT concept|memory SCHEMAFULL;
+		DEFINE FIELD OVERWRITE kind   ON concept_edge TYPE string
+			ASSERT $value IN ["narrower","broader","related_to","about_concept","caused_by","supports","contradicts","describes","supersedes"];
+		DEFINE FIELD OVERWRITE weight ON concept_edge TYPE float DEFAULT 1.0;
+		DEFINE FIELD OVERWRITE at     ON concept_edge TYPE datetime DEFAULT time::now();
+
+		-- Corrections = high-importance memory rows flagged by category (NOT a new table). Additive
+		-- option field on the existing memory table — inherits the whole screen-before-embed write
+		-- path, recall, and audit. The scene classes category="correction" rows as correction nodes.
+		DEFINE FIELD OVERWRITE category ON memory TYPE option<string>;
+
+		-- S1 retrieval feedback: an LLM/operator relevance verdict UPDATEd onto an existing outcome
+		-- row (helpful/irrelevant/outdated/pin). option<string> — absent until a verdict lands; the
+		-- ASSERT permits NONE so the field is legal before any feedback. Ranker signal only (D-030).
+		DEFINE FIELD OVERWRITE llm_relevance ON retrieval_outcome TYPE option<string>
+			ASSERT $value == NONE OR $value IN ["helpful","irrelevant","outdated","pin"];
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2615,5 +2701,6 @@ export const schemaMigrations: Migration[] = [
 	m0069_session_agent,
 	m0070_session_specialist,
 	m0071_app_auth,
-	m0072_loop_manifest
+	m0072_loop_manifest,
+	m0073_concept_graph
 ];

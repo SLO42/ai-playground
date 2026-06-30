@@ -756,6 +756,7 @@
       <div class="panel-head">
         <span class="eyebrow">agent catalog (available types)</span>
         <span class="count mono">{catalog.length} {catalog.length === 1 ? 'type' : 'types'}</span>
+        <a class="cta-link" href="/agents/catalog">Browse agent library →</a>
       </div>
       {#if catalog.length === 0}
         <p class="state-body">

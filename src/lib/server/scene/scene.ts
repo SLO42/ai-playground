@@ -11,15 +11,20 @@
 //     node/edge TRUTH ("what exists right now"). The UI wave (§7.3) colors/animates the
 //     truth from this aggregator and pulses it off the scene_event feed.
 //
-// Scope (operator fork #2 — MEMORY + USAGE/JOBS only; hires/PMs/ateliers are a later wave):
+// Scope (MEMORY + USAGE/JOBS + the interactive-graph wave's PROJECT + AGENT context):
 //   NODE classes
 //     memory  — `entity` rows (the knowledge-graph nodes `/memory` already renders) +
 //               `memory` rows (the recall store).
 //     job     — `session` rows (active/recent) + `work_item` rows (queue / firing jobs).
+//     project — `project` rows (the atelier a job acts on); un-drops the session/work_item→
+//               project edges that had no endpoint to draw to before.
+//     agent   — DERIVED (no table): one node per distinct `session.agent` slot id (m0069) —
+//               which agent ran a job. The slot id is an opaque identity, never content (D-026).
 //   EDGE kinds
 //     references     — entity↔entity + entity↔memory (REUSED from the /memory projection).
 //     session_target — session↔{project, task} (who is working on what, now).
 //     job_target     — work_item↔{project, session} (what a firing job is acting on).
+//     agent          — session→agent (which agent ran the job; the synthetic agent:<slot> node).
 //
 // READ-ONLY INVARIANT (grep-provable): this module issues ONLY `SELECT` queries. There is
 // no CREATE / UPDATE / DELETE / RELATE / UPSERT / INSERT anywhere in it — the aggregator
@@ -38,8 +43,12 @@
 
 import type { Db } from '../db/client';
 
-/** A node class in the v1 scene scope (operator fork #2: MEMORY + USAGE/JOBS only). */
-export type SceneNodeClass = 'memory' | 'job';
+/**
+ * A node class in the scene. MEMORY (entity/memory) + JOB (session/work_item) are the original
+ * fork-#2 scope; PROJECT (the atelier a job acts on) + AGENT (the slot that ran a job) were
+ * layered in by the interactive-graph wave so the scene shows who-works-on-what end-to-end.
+ */
+export type SceneNodeClass = 'memory' | 'job' | 'project' | 'agent';
 
 /**
  * One recent scene_event row — the "what's happening now" activity feed (MEMORY-SCENE-SPEC
@@ -70,18 +79,24 @@ export interface SceneEvent {
  * concrete source table (entity|memory|session|work_item) so the UI can style within a class.
  */
 export interface SceneNode {
-	/** Source record-id string (`entity:…`, `memory:…`, `session:…`, `work_item:…`). */
+	/** Source record-id string (`entity:…`, `memory:…`, `session:…`, `work_item:…`,
+	 *  `project:…`) or the SYNTHETIC `agent:<slot>` id for an agent node (no `agent` table —
+	 *  the scene treats node ids as opaque strings; agent nodes are derived, not stored). */
 	id: string;
-	/** v1 node class — drives the scene's color family. */
+	/** Node class — drives the scene's color family + icon. */
 	class: SceneNodeClass;
 	/** Concrete source table — drives within-class styling. */
-	subclass: 'entity' | 'memory' | 'session' | 'work_item';
+	subclass: 'entity' | 'memory' | 'session' | 'work_item' | 'project' | 'agent';
 	/** Human label (already screen-clean for entity/memory; a short class label otherwise). */
 	label: string;
 	/** Live lifecycle status off the source row (e.g. active | running | done | pending). */
 	status: string;
 	/** Owning project record-id, when the source row carries one (for a per-atelier lens). */
 	project?: string;
+	/** The agent slot that ran a job (session nodes; m0069) — for the inspect panel. */
+	agent?: string;
+	/** Linked task record-id (session nodes), when the row carries one — for the inspect panel. */
+	task?: string;
 	/** Last-known activity time, ISO (F-013) — omitted when the source datetime is absent. */
 	at?: string;
 }
@@ -110,13 +125,16 @@ export interface SceneGraphLimits {
 	sessions?: number;
 	/** Max work_item nodes (most-recent first). */
 	workItems?: number;
+	/** Max project nodes (most-recent first). Projects are few; a generous cap covers all. */
+	projects?: number;
 }
 
 const DEFAULT_LIMITS: Required<SceneGraphLimits> = {
 	entities: 300,
 	memories: 150,
 	sessions: 80,
-	workItems: 80
+	workItems: 80,
+	projects: 60
 };
 
 /** Coerce a SurrealDB datetime/string to an ISO string, or undefined when absent (F-013). */
@@ -207,11 +225,12 @@ export async function buildSceneGraph(
 				status: string;
 				project?: unknown;
 				task?: unknown;
+				agent?: unknown;
 				started_at?: unknown;
 			}>
 		]
 	>(
-		`SELECT id, kind, status, project, task, started_at FROM session
+		`SELECT id, kind, status, project, task, agent, started_at FROM session
 		  ORDER BY started_at DESC LIMIT $sessions;`,
 		{ sessions: lim.sessions }
 	);
@@ -233,6 +252,19 @@ export async function buildSceneGraph(
 		`SELECT id, work_type, status, project, session, created_at FROM work_item
 		  ORDER BY created_at DESC LIMIT $workItems;`,
 		{ workItems: lim.workItems }
+	);
+
+	// ── PROJECT class ─────────────────────────────────────────────────────────────────
+	// project nodes — the atelier a job acts on. The scene previously had NO project nodes,
+	// so every session→project / work_item→project edge was DROPPED (no endpoint to draw to);
+	// adding them un-drops those edges. Bounded (projects are few; the cap covers all in
+	// practice); status carries active/paused/archived for color. created_at → `at` (F-013).
+	const [projectRows] = await db.query<
+		[Array<{ id: unknown; name?: string; slug?: string; status?: string; created_at?: unknown }>]
+	>(
+		`SELECT id, name, slug, status, created_at FROM project
+		  ORDER BY created_at DESC LIMIT $projects;`,
+		{ projects: lim.projects }
 	);
 
 	// ── Project the nodes ─────────────────────────────────────────────────────────────
@@ -260,6 +292,7 @@ export async function buildSceneGraph(
 		});
 	}
 	for (const s of sessionRows) {
+		const agent = typeof s.agent === 'string' && s.agent.trim() ? s.agent.trim() : undefined;
 		nodes.push({
 			id: String(s.id),
 			class: 'job',
@@ -267,6 +300,8 @@ export async function buildSceneGraph(
 			label: jobLabel('session', s),
 			status: s.status ?? 'running',
 			...(refOrUndef(s.project) ? { project: refOrUndef(s.project)! } : {}),
+			...(agent ? { agent } : {}),
+			...(refOrUndef(s.task) ? { task: refOrUndef(s.task)! } : {}),
 			...(isoOrUndef(s.started_at) ? { at: isoOrUndef(s.started_at)! } : {})
 		});
 	}
@@ -279,6 +314,46 @@ export async function buildSceneGraph(
 			status: w.status ?? 'pending',
 			...(refOrUndef(w.project) ? { project: refOrUndef(w.project)! } : {}),
 			...(isoOrUndef(w.created_at) ? { at: isoOrUndef(w.created_at)! } : {})
+		});
+	}
+
+	// project nodes — label is the screen-clean project NAME (a project name is operator-set,
+	// not screened content), status drives the color. created_at → `at` for the time scrubber.
+	for (const p of projectRows) {
+		const label = (typeof p.name === 'string' && p.name) || (typeof p.slug === 'string' && p.slug) || 'project';
+		nodes.push({
+			id: String(p.id),
+			class: 'project',
+			subclass: 'project',
+			label,
+			status: p.status ?? 'active',
+			...(isoOrUndef(p.created_at) ? { at: isoOrUndef(p.created_at)! } : {})
+		});
+	}
+
+	// ── AGENT class (DERIVED, not stored) ─────────────────────────────────────────────
+	// agent nodes are SYNTHESIZED from the distinct `session.agent` slot ids in the window —
+	// there is no `agent` table (D-026: the slot id is an opaque identity, not content). One
+	// node per slot clusters every job that agent ran. status = 'running' if any of its
+	// windowed sessions is live, else 'idle'; `at` = its most-recent session start (scrubber).
+	const agentAcc = new Map<string, { running: boolean; at?: string }>();
+	for (const s of sessionRows) {
+		const agent = typeof s.agent === 'string' && s.agent.trim() ? s.agent.trim() : undefined;
+		if (!agent) continue;
+		const acc = agentAcc.get(agent) ?? { running: false };
+		if ((s.status ?? 'running') === 'running') acc.running = true;
+		const at = isoOrUndef(s.started_at);
+		if (at && (!acc.at || at > acc.at)) acc.at = at;
+		agentAcc.set(agent, acc);
+	}
+	for (const [agent, acc] of agentAcc) {
+		nodes.push({
+			id: `agent:${agent}`,
+			class: 'agent',
+			subclass: 'agent',
+			label: agent,
+			status: acc.running ? 'running' : 'idle',
+			...(acc.at ? { at: acc.at } : {})
 		});
 	}
 
@@ -302,15 +377,19 @@ export async function buildSceneGraph(
 	}
 
 	// session_target — session↔{project, task}: who is working on what, NOW. We only draw to
-	// a target that is also a node in this graph (project/task nodes are layered in a later
-	// wave; until then a session→project edge whose project isn't a node is dropped, not
-	// faked). task targets land when a future wave adds task nodes; today they no-op cleanly.
+	// a target that is also a node in this graph. Project nodes now exist (above), so the
+	// session→project edge draws; task nodes are still a later wave, so a session→task edge
+	// no-ops cleanly until then (the endpoint guard drops it — never faked).
 	for (const s of sessionRows) {
 		const id = String(s.id);
 		const proj = refOrUndef(s.project);
 		const task = refOrUndef(s.task);
 		if (proj && nodeIds.has(proj)) edges.push({ from: id, to: proj, kind: 'session_target' });
 		if (task && nodeIds.has(task)) edges.push({ from: id, to: task, kind: 'session_target' });
+		// session→agent (m0069) — which agent ran this job. The agent node is the synthetic
+		// `agent:<slot>`, present iff this (or another windowed) session carried the slot id.
+		const agent = typeof s.agent === 'string' && s.agent.trim() ? `agent:${s.agent.trim()}` : undefined;
+		if (agent && nodeIds.has(agent)) edges.push({ from: id, to: agent, kind: 'agent' });
 	}
 
 	// job_target — work_item↔{project, session}: what a firing job is acting on. work_item→

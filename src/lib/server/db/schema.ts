@@ -2426,6 +2426,25 @@ const m0068_project_game_verify: Migration = {
 	`
 };
 
+// ── SCENE-GRAPH (memory living-scene) — `session.agent` spawn-time agent identity ──
+//
+// The living-scene Scene lens now renders `agent` NODES (which agent ran a job) + job↔agent
+// edges. The cleanest agent identity AVAILABLE AT SPAWN is the agent SLOT id (input.agentId,
+// e.g. "sonnet-1"): `session.role`/`role_version` are stamped LATER by workforce activation —
+// launchSession has NO role at CREATE time (launch.ts persists the row then reads role back) —
+// so the slot id is the only agent identity present when the row is born. Populated for NEW
+// sessions ONLY (launch.ts sessionContent); HISTORICAL rows written before this field read back
+// NONE → OMITTED from the normalized scene node (§6.1) → they simply show NO agent edge (F-008
+// honest), never a fabricated identity. ADDITIVE + idempotent (D-006/F-015, OVERWRITE-only): a
+// clean no-op over a fresh DB AND over a half-applied state (re-running where the field already
+// exists is a no-op). option<string>, OMITTED at write when absent — never an explicit NULL.
+const m0069_session_agent: Migration = {
+	id: '0069_session_agent',
+	up: `
+		DEFINE FIELD OVERWRITE agent ON session TYPE option<string>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2500,5 +2519,6 @@ export const schemaMigrations: Migration[] = [
 	m0065_session_granted,
 	m0066_scene_event_lifecycle_kinds,
 	m0067_agent_event_parent,
-	m0068_project_game_verify
+	m0068_project_game_verify,
+	m0069_session_agent
 ];

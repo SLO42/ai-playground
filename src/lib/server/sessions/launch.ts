@@ -492,6 +492,11 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 			model_id: input.model.modelId,
 			tier: input.model.tier
 		},
+		// m0069 — the spawn-time AGENT identity for the living-scene `agent` node (which agent
+		// ran this job). The slot id is the only agent identity known at CREATE time (role is
+		// stamped LATER by workforce activation). NEW sessions only; historical rows stay NONE
+		// → no agent edge (F-008 honest). option<string> on the schema — omitted if ever blank.
+		agent: input.agentId,
 		runtime: 'claude-code',
 		workflow_run: input.workflowRunId ? link(input.workflowRunId) : undefined,
 		// UO-1: the persisted granted set (each field already omitted-when-absent by the helper).

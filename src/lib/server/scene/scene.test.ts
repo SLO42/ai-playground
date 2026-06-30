@@ -120,11 +120,64 @@ describe('buildSceneGraph — derived node/edge truth', () => {
 		const wiId = String(wi[0].id);
 
 		const g = await buildSceneGraph(db);
-		// session→project is a session_target ONLY if the project is also a node — project
-		// nodes are a later wave (fork #2), so this edge is correctly DROPPED, not faked.
-		expect(g.edges.find((e) => e.kind === 'session_target')).toBeUndefined();
+		// session→project: the project IS now a node (project class) → the edge is DRAWN
+		// (previously dropped for want of a project node — the interactive-graph wave un-drops it).
+		expect(g.edges).toContainEqual({ from: 'session:s', to: project, kind: 'session_target' });
 		// work_item→session: both endpoints are nodes → a job_target edge is drawn.
 		expect(g.edges).toContainEqual({ from: wiId, to: 'session:s', kind: 'job_target' });
+	});
+
+	it('derives PROJECT nodes (name label, status) and un-drops the work_item→project edge', async () => {
+		const [p] = await db.query<[Array<{ id: unknown }>]>(
+			'CREATE project SET slug="atelier", name="Atelier", root_path="/x", status="active" RETURN AFTER;'
+		);
+		const pid = String(p[0].id);
+		await db.query(
+			'CREATE work_item SET work_type="review", project=type::thing("project", $rid), payload={}, priority=5;',
+			{ rid: pid.split(':')[1] }
+		);
+
+		const g = await buildSceneGraph(db);
+		const byId = new Map(g.nodes.map((n) => [n.id, n]));
+		expect(byId.get(pid)).toMatchObject({ class: 'project', subclass: 'project', label: 'Atelier', status: 'active' });
+		// F-013 — project.at (created_at) is an ISO string when present.
+		expect(typeof byId.get(pid)!.at).toBe('string');
+		// work_item→project edge now draws (project node exists).
+		const wiNode = g.nodes.find((n) => n.subclass === 'work_item')!;
+		expect(g.edges).toContainEqual({ from: wiNode.id, to: pid, kind: 'job_target' });
+	});
+
+	it('synthesizes AGENT nodes from session.agent (m0069) + draws the session→agent edge', async () => {
+		// Two sessions ran on the same agent slot, one on another → two agent nodes, clustered.
+		await db.query(
+			'CREATE session:a1 SET kind="task", status="running", agent="sonnet-1", model={provider:"x",model_id:"y"};'
+		);
+		await db.query(
+			'CREATE session:a2 SET kind="task", status="done", agent="sonnet-1", model={provider:"x",model_id:"y"};'
+		);
+		await db.query(
+			'CREATE session:a3 SET kind="task", status="running", agent="opus-1", model={provider:"x",model_id:"y"};'
+		);
+		// A legacy session with NO agent → no agent node, no agent edge (F-008 honest).
+		await db.query(
+			'CREATE session:legacy SET kind="task", status="running", model={provider:"x",model_id:"y"};'
+		);
+
+		const g = await buildSceneGraph(db);
+		const agents = g.nodes.filter((n) => n.class === 'agent');
+		expect(agents.map((n) => n.id).sort()).toEqual(['agent:opus-1', 'agent:sonnet-1']);
+		// sonnet-1 has a running session → status running; its label is the slot id.
+		const sonnet = agents.find((n) => n.id === 'agent:sonnet-1')!;
+		expect(sonnet).toMatchObject({ subclass: 'agent', label: 'sonnet-1', status: 'running' });
+		// Each agent-bearing session draws a session→agent edge; the legacy one does not.
+		expect(g.edges).toContainEqual({ from: 'session:a1', to: 'agent:sonnet-1', kind: 'agent' });
+		expect(g.edges).toContainEqual({ from: 'session:a2', to: 'agent:sonnet-1', kind: 'agent' });
+		expect(g.edges).toContainEqual({ from: 'session:a3', to: 'agent:opus-1', kind: 'agent' });
+		expect(g.edges.filter((e) => e.kind === 'agent' && e.from === 'session:legacy')).toHaveLength(0);
+		// The session node surfaces its agent slot (for the inspect panel); legacy omits it.
+		const s1 = g.nodes.find((n) => n.id === 'session:a1')!;
+		expect(s1.agent).toBe('sonnet-1');
+		expect(g.nodes.find((n) => n.id === 'session:legacy')!.agent).toBeUndefined();
 	});
 
 	it('drops dangling edges whose endpoint is outside the returned node window (bounded)', async () => {

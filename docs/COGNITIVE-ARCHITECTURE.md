@@ -155,7 +155,18 @@ Built one stage at a time (sequential, F-052), each scout→build→verify→rep
 
 Shipped: living-scene upgrade + camera/inspect/timeline fixes; `/agents/catalog`; agent
 invocation-tracking (`session.specialist`, m0070) + propose-only recommender; DB-backed
-external login gate (m0071, scrypt); loops first-class (m0072 — manifest + readiness gate).
-Building: **S3 concept graph + extraction + explorer viz (+ S1 feedback)** — the cognitive
-architecture foundation. Pending: S2 reranker, S4 soul, the concierge, plus the brain
-"sections" (decisions/spend/search) which fold into the concierge's dashboard.
+external login gate (m0071, scrypt); loops first-class (m0072 — manifest + readiness gate);
+**S3 cognitive layer (m0073)** — `concept` table + `concept_vec` HNSW 1024-dim + one typed
+`concept_edge` relation (hierarchy + episodic kinds); corrections-as-memory (`memory.category`);
+heartbeat-loop concept extraction with embedding-cosine dedup (`memory/concepts.ts`, `loop.ts`
+`extractConcepts` seam); explorer viz (concept/causal/skill/correction scene classes +
+extracted-from/hierarchy/supersedes/retrieved/grounded-on edges); **S1 feedback**
+(`recordRetrievalFeedback` → `retrieval_outcome.llm_relevance`). Commits `5ae7cf6`/`fa14d6a`/
+`ea6cd3f` on `v2`. NOTE: live concepts populate as the heartbeat loop mines real sessions
+(the build's live-verify seeded via the production `storeConcepts` path with a FakeEmbedder —
+rows/screen/dedup/edges are real, only the vector source differed; on the running app the
+`Embedder` = Ollama `qwen3-embedding:0.6b`). `retrieved`/`grounded-on` edges need windowed
+session→memory outcome rows (unit-tested; sparse live until traffic accrues).
+Pending: **S2** learned reranker (ACAN-style over `retrieval_outcome` utilization, eval-harness
+measured), **S4** soul/identity, **the concierge** (D-040 always-on `atelier_self`), plus the
+brain "sections" (decisions/spend/search) which fold into the concierge's dashboard.

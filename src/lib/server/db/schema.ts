@@ -2445,6 +2445,29 @@ const m0069_session_agent: Migration = {
 	`
 };
 
+// ── AGENT-INVOCATION (per-specialist usage) — `session.specialist` spawn-time identity ──
+//
+// The catalog (/agents/catalog) wants REAL per-specialist usage, but `session.agent` is the
+// agent SLOT id (e.g. "sonnet-1", picked by TIER) and `session.role.slug` is stamped LATER by
+// workforce activation — so most sessions never bridge to the `.claude/agents` specialist that
+// actually did the work. This OPTIONAL column records the chosen specialist NAME (the library
+// agent's `name`, e.g. "atelier-developer") at spawn WHEN a caller supplied one — the only place
+// the specialist identity is known at CREATE time. It is the EXACT bridge key the usage fold
+// prefers; absent ⇒ the fold falls back to role.slug (UNION, never a fabricated identity).
+//
+// Populated for NEW sessions ONLY (launch.ts sessionContent, written when input.specialist is
+// set). HISTORICAL rows + every orchestrator-drain spawn (which passes no specialist) read back
+// NONE → OMITTED from the usage bridge (§6.1) → counted only via role.slug, exactly as today
+// (F-008 honest). ADDITIVE + idempotent (D-006/F-015, OVERWRITE-only): a clean no-op over a
+// fresh DB AND over a half-applied state. option<string>, OMITTED at write when absent — never an
+// explicit NULL (option<T> rejects NULL — MEMORY-SPEC §6.1).
+const m0070_session_specialist: Migration = {
+	id: '0070_session_specialist',
+	up: `
+		DEFINE FIELD OVERWRITE specialist ON session TYPE option<string>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2520,5 +2543,6 @@ export const schemaMigrations: Migration[] = [
 	m0066_scene_event_lifecycle_kinds,
 	m0067_agent_event_parent,
 	m0068_project_game_verify,
-	m0069_session_agent
+	m0069_session_agent,
+	m0070_session_specialist
 ];

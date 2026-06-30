@@ -401,6 +401,48 @@ describe('schemaMigrations — idempotent over fresh + half-applied state (11.4-
 		}
 	});
 
+	it('m0070 session.specialist: applies over a half-applied session table; legacy→NONE, new round-trips', async () => {
+		const db = await freshDb('mig_specialist_wedge');
+		try {
+			// Half-applied wedge: a session table that exists WITHOUT the specialist field (the
+			// pre-m0070 shape). A legacy row was written before the field existed.
+			await db.query('DEFINE TABLE session SCHEMAFULL;');
+			await db.query('DEFINE FIELD kind ON session TYPE string;');
+			await db.query('CREATE session:legacy SET kind = "task";');
+			const before = await db.query<[{ fields: Record<string, string> }]>('INFO FOR TABLE session;');
+			expect(Object.keys(before[0].fields)).not.toContain('specialist');
+
+			// The full schema applies cleanly OVER the half-applied table (OVERWRITE recovers it).
+			await runMigrations(db, schemaMigrations);
+			const after = await db.query<[{ fields: Record<string, string> }]>('INFO FOR TABLE session;');
+			expect(Object.keys(after[0].fields)).toContain('specialist');
+
+			// Legacy row reads back NONE (option<string>, never a fabricated value — F-008).
+			const legacy = await db.query<[Array<{ specialist: unknown }>]>(
+				'SELECT specialist FROM session:legacy;'
+			);
+			expect(legacy[0][0].specialist ?? null).toBeNull();
+
+			// A new row with specialist SET round-trips the value.
+			await db.query(
+				`CREATE session:withspec CONTENT {
+					kind: "task",
+					model: { provider: "anthropic", model_id: "claude-opus-4-8" },
+					specialist: "atelier-developer"
+				};`
+			);
+			const withSpec = await db.query<[Array<{ specialist: unknown }>]>(
+				'SELECT specialist FROM session:withspec;'
+			);
+			expect(String(withSpec[0][0].specialist)).toBe('atelier-developer');
+
+			// Apply-twice over the recovered state is still a clean no-op.
+			expect(await runMigrations(db, schemaMigrations)).toEqual([]);
+		} finally {
+			await db.close().catch(() => {});
+		}
+	});
+
 	it('m0029 recovers half-applied pm ROWS: backfills authority/created_at, deletes id-only corruption', async () => {
 		const db = await freshDb('mig_pm_backfill');
 		try {

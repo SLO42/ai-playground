@@ -86,6 +86,16 @@ export interface LaunchInput {
 	cwd?: string;
 	/** Agent slot id this session runs as (carried into the isolated config dir). */
 	agentId: string;
+	/**
+	 * AGENT-INVOCATION (per-specialist usage) — the OPTIONAL `.claude/agents` specialist NAME
+	 * (the library agent's `name`, e.g. "atelier-developer") this spawn is acting AS. It does
+	 * NOT change tier/slot selection (agentId stays the tier-picked slot) — it is a PROVENANCE
+	 * label persisted on the row (m0070 `session.specialist`) so the catalog can count REAL
+	 * per-specialist usage. Set ONLY by a caller that deliberately routed to a recommended
+	 * specialist (the gated manual-launch seam); the orchestrator drain leaves it unset. Absent
+	 * ⇒ the column stays NONE → usage counts only via role.slug (F-008 honest, no fabrication).
+	 */
+	specialist?: string;
 	/** Chosen model (from Routing in a later wave; explicit here). */
 	model: ModelSelection;
 	intent: Intent;
@@ -497,6 +507,12 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		// stamped LATER by workforce activation). NEW sessions only; historical rows stay NONE
 		// → no agent edge (F-008 honest). option<string> on the schema — omitted if ever blank.
 		agent: input.agentId,
+		// m0070 — the spawn-time SPECIALIST identity (the .claude/agents agent name) when the
+		// caller routed to one (the gated manual-launch seam). OMITTED when absent (omitUndefined
+		// → NONE) so an orchestrator-drain / legacy spawn reads back NONE and is counted only via
+		// role.slug downstream (F-008 honest — never a fabricated specialist). Trimmed; a blank
+		// string collapses to undefined so it is omitted rather than persisting "".
+		specialist: input.specialist?.trim() || undefined,
 		runtime: 'claude-code',
 		workflow_run: input.workflowRunId ? link(input.workflowRunId) : undefined,
 		// UO-1: the persisted granted set (each field already omitted-when-absent by the helper).

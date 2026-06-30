@@ -113,6 +113,12 @@ const READERS: ReaderPath[] = [
 		kind: 'LEAK',
 		why: 'MS-2 scene aggregator — the /memory Scene viz surfaces memory NODES to the UI (id + a kind-label only, never raw content); carries the quarantine filter so a quarantined memory never appears as a scene node (MEMORY-SCENE-SPEC §2, D-026)'
 	},
+	{
+		file: 'scene/scene.ts',
+		marker: 'WHERE category = "correction" AND screen_status != "quarantined"',
+		kind: 'LEAK',
+		why: 'S3 scene aggregator — surfaces high-importance CORRECTION memory rows as correction NODES (id + a kind-label only, never raw content); carries the same quarantine filter so a quarantined correction never appears as a scene node (D-026)'
+	},
 	// ── EXEMPT readers — cannot leak quarantined content into context or an export ──
 	{
 		file: 'workforce/activation.ts',

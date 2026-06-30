@@ -632,9 +632,9 @@
                 transform="translate({n.x ?? 0},{n.y ?? 0})"
                 onpointerdown={(e) => nodePointerDown(e, n.id)}
               >
-                {#if n.class === 'project'}
-                  <rect class="bubble" x={-v.radius} y={-v.radius} width={v.radius * 2} height={v.radius * 2} rx="3" />
-                {:else if n.class === 'agent'}
+                {#if n.class === 'project' || n.class === 'concept'}
+                  <rect class="bubble" x={-v.radius} y={-v.radius} width={v.radius * 2} height={v.radius * 2} rx={n.class === 'concept' ? v.radius : 3} />
+                {:else if n.class === 'agent' || n.class === 'skill'}
                   <polygon class="bubble" points="0,{-v.radius} {v.radius},0 0,{v.radius} {-v.radius},0" />
                 {:else}
                   <circle class="bubble" r={v.radius} />
@@ -644,9 +644,9 @@
             {#each exiting as n (n.id)}
               {@const v = nodeVisual(n)}
               <g use:registerExit={n.id} class="node exiting" data-class={v.colorClass} data-status={v.statusClass} transform="translate({n.x ?? 0},{n.y ?? 0})">
-                {#if n.class === 'project'}
-                  <rect class="bubble" x={-v.radius} y={-v.radius} width={v.radius * 2} height={v.radius * 2} rx="3" />
-                {:else if n.class === 'agent'}
+                {#if n.class === 'project' || n.class === 'concept'}
+                  <rect class="bubble" x={-v.radius} y={-v.radius} width={v.radius * 2} height={v.radius * 2} rx={n.class === 'concept' ? v.radius : 3} />
+                {:else if n.class === 'agent' || n.class === 'skill'}
                   <polygon class="bubble" points="0,{-v.radius} {v.radius},0 0,{v.radius} {-v.radius},0" />
                 {:else}
                   <circle class="bubble" r={v.radius} />
@@ -834,6 +834,15 @@
   }
   .edge[data-kind='references'] { stroke: var(--color-accent-muted, var(--color-border)); }
   .edge[data-kind='agent'] { stroke-dasharray: 3 3; }
+  /* S3 cognitive edges — extracted-from (concept provenance), retrieved / grounded-on (recall),
+     supersedes + the concept hierarchy kinds. Each gets a distinct token stroke + dash signature. */
+  .edge[data-kind='extracted-from'] { stroke: var(--color-tier-opus); stroke-dasharray: 4 2; }
+  .edge[data-kind='retrieved'] { stroke: var(--color-info); stroke-dasharray: 1 3; }
+  .edge[data-kind='grounded-on'] { stroke: var(--color-success); }
+  .edge[data-kind='supersedes'] { stroke: var(--color-warn); stroke-dasharray: 6 3; }
+  .edge[data-kind='related_to'],
+  .edge[data-kind='narrower'],
+  .edge[data-kind='broader'] { stroke: var(--color-tier-opus); }
   .edge[data-active='true'] {
     stroke: var(--color-accent);
     opacity: 1;
@@ -859,6 +868,12 @@
   .node[data-class='job'][data-status='failed'] .bubble { fill: var(--color-warn); }
   .node[data-class='project'] .bubble { fill: var(--color-blocked); }
   .node[data-class='agent'] .bubble { fill: var(--color-info); }
+  /* S3 cognitive families — concept → opus purple (semantic anchor); causal → amber; skill →
+     green (graduated); correction → red (high-importance fix). Distinct from the four above. */
+  .node[data-class='concept'] .bubble { fill: var(--color-tier-opus); }
+  .node[data-class='causal'] .bubble { fill: var(--color-warn); }
+  .node[data-class='skill'] .bubble { fill: var(--color-success); }
+  .node[data-class='correction'] .bubble { fill: var(--color-error); }
   .node[data-status='dim'] .bubble {
     fill: var(--color-text-muted);
     opacity: 0.5;
@@ -866,7 +881,8 @@
 
   /* Status ring (project/agent carry status via the stroke; job carries it via fill). */
   .node[data-class='project'][data-status='active'] .bubble,
-  .node[data-class='agent'][data-status='active'] .bubble {
+  .node[data-class='agent'][data-status='active'] .bubble,
+  .node[data-class='concept'][data-status='active'] .bubble {
     stroke: var(--color-running);
     stroke-width: 2;
   }
@@ -994,6 +1010,11 @@
   .dot[data-class='job'][data-status='failed'] { background: var(--color-warn); }
   .dot[data-class='project'] { background: var(--color-blocked); border-radius: 2px; }
   .dot[data-class='agent'] { background: var(--color-info); border-radius: 2px; transform: rotate(45deg); }
+  /* S3 cognitive legend dots — distinct color + shape echo of the scene bubbles. */
+  .dot[data-class='concept'] { background: var(--color-tier-opus); border-radius: 3px; }
+  .dot[data-class='causal'] { background: var(--color-warn); }
+  .dot[data-class='skill'] { background: var(--color-success); border-radius: 2px; transform: rotate(45deg); }
+  .dot[data-class='correction'] { background: var(--color-error); }
   .dot[data-status='dim'] { background: var(--color-text-muted); }
   .legend-label {
     overflow: hidden;

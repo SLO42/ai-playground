@@ -129,6 +129,25 @@
         <dt>last active</dt>
         <dd class="mono" title={node.at ?? ''}>{when(node.at)}</dd>
       </div>
+    {:else if node.subclass === 'concept'}
+      <!-- S3 concept — its summary + provenance. summary was screened before store (clean). -->
+      <div class="ins-row">
+        <dt>project</dt>
+        <dd class="mono">{shortId(node.project)}</dd>
+      </div>
+      <div class="ins-row">
+        <dt>first seen</dt>
+        <dd class="mono" title={node.at ?? ''}>{when(node.at)}</dd>
+      </div>
+    {:else if node.subclass === 'causal' || node.subclass === 'skill' || node.subclass === 'correction'}
+      <div class="ins-row">
+        <dt>type</dt>
+        <dd class="mono">{node.subclass}</dd>
+      </div>
+      <div class="ins-row">
+        <dt>created</dt>
+        <dd class="mono" title={node.at ?? ''}>{when(node.at)}</dd>
+      </div>
     {:else}
       <!-- memory / entity -->
       {#if kindLabel}
@@ -143,6 +162,11 @@
       </div>
     {/if}
   </dl>
+
+  {#if node.subclass === 'concept' && node.summary}
+    <!-- The concept's screened summary (D-026: screened before store, safe to surface). -->
+    <p class="ins-summary">{node.summary}</p>
+  {/if}
 
   {#if pinned && onunpin}
     <button type="button" class="ins-unpin" onclick={onunpin}>Release pin</button>
@@ -199,6 +223,19 @@
   .ins-class[data-class='job'] { background: var(--color-running); }
   .ins-class[data-class='project'] { background: var(--color-blocked); }
   .ins-class[data-class='agent'] { background: var(--color-info); }
+  .ins-class[data-class='concept'] { background: var(--color-tier-opus); }
+  .ins-class[data-class='causal'] { background: var(--color-warn); }
+  .ins-class[data-class='skill'] { background: var(--color-success); }
+  .ins-class[data-class='correction'] { background: var(--color-error); }
+  .ins-summary {
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+    margin: 0;
+    padding: var(--space-2, 0.5rem);
+    background: var(--color-surface-overlay);
+    border-radius: var(--radius-sm, 6px);
+    overflow-wrap: anywhere;
+  }
   .ins-close {
     background: transparent;
     border: none;

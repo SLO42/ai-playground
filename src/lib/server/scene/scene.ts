@@ -48,7 +48,7 @@ import type { Db } from '../db/client';
  * fork-#2 scope; PROJECT (the atelier a job acts on) + AGENT (the slot that ran a job) were
  * layered in by the interactive-graph wave so the scene shows who-works-on-what end-to-end.
  */
-export type SceneNodeClass = 'memory' | 'job' | 'project' | 'agent';
+export type SceneNodeClass = 'memory' | 'job' | 'project' | 'agent' | 'concept' | 'causal' | 'skill' | 'correction';
 
 /**
  * One recent scene_event row — the "what's happening now" activity feed (MEMORY-SCENE-SPEC
@@ -86,9 +86,14 @@ export interface SceneNode {
 	/** Node class — drives the scene's color family + icon. */
 	class: SceneNodeClass;
 	/** Concrete source table — drives within-class styling. */
-	subclass: 'entity' | 'memory' | 'session' | 'work_item' | 'project' | 'agent';
+	subclass: 'entity' | 'memory' | 'session' | 'work_item' | 'project' | 'agent' | 'concept' | 'causal' | 'skill' | 'correction';
 	/** Human label (already screen-clean for entity/memory; a short class label otherwise). */
 	label: string;
+	/**
+	 * S3 — a concept node's SCREENED summary (concepts.ts screens label+summary before store, so
+	 * this is clean text safe to surface in the inspect panel). Omitted for every other node class.
+	 */
+	summary?: string;
 	/** Live lifecycle status off the source row (e.g. active | running | done | pending). */
 	status: string;
 	/** Owning project record-id, when the source row carries one (for a per-atelier lens). */
@@ -127,6 +132,16 @@ export interface SceneGraphLimits {
 	workItems?: number;
 	/** Max project nodes (most-recent first). Projects are few; a generous cap covers all. */
 	projects?: number;
+	/** Max concept nodes (S3 — most-salient first). */
+	concepts?: number;
+	/** Max causal_chain nodes (S3 — most-recent first). */
+	causals?: number;
+	/** Max skill nodes (S3 — most-recent first). */
+	skills?: number;
+	/** Max correction (high-importance flagged memory) nodes (S3). */
+	corrections?: number;
+	/** Max retrieval_outcome rows scanned for retrieved / grounded-on edges (S3). */
+	outcomes?: number;
 }
 
 const DEFAULT_LIMITS: Required<SceneGraphLimits> = {
@@ -134,7 +149,12 @@ const DEFAULT_LIMITS: Required<SceneGraphLimits> = {
 	memories: 150,
 	sessions: 80,
 	workItems: 80,
-	projects: 60
+	projects: 60,
+	concepts: 120,
+	causals: 60,
+	skills: 60,
+	corrections: 60,
+	outcomes: 200
 };
 
 /** Coerce a SurrealDB datetime/string to an ISO string, or undefined when absent (F-013). */
@@ -209,7 +229,7 @@ export async function buildSceneGraph(
 		]
 	>(
 		`SELECT id, kind, status, project, importance, created_at FROM memory
-		  WHERE screen_status != "quarantined"
+		  WHERE screen_status != "quarantined" AND (category IS NONE OR category != "correction")
 		  ORDER BY importance DESC, created_at DESC LIMIT $memories;`,
 		{ memories: lim.memories }
 	);
@@ -265,6 +285,50 @@ export async function buildSceneGraph(
 		`SELECT id, name, slug, status, created_at FROM project
 		  ORDER BY created_at DESC LIMIT $projects;`,
 		{ projects: lim.projects }
+	);
+
+	// ── S3 COGNITIVE class — concept / causal / skill / correction ─────────────────────
+	// concept nodes (S3) — the semantic distillate (m0073). label+summary were SCREENED before
+	// store (concepts.ts), so both are clean to surface; quarantined concepts are EXCLUDED outright
+	// (D-026, mirrors memory). Most-salient first (importance, then recency).
+	const [conceptRows] = await db.query<
+		[Array<{ id: unknown; label?: string; summary?: string; status: string; project?: unknown; importance?: number; created_at?: unknown }>]
+	>(
+		`SELECT id, label, summary, status, project, importance, created_at FROM concept
+		  WHERE screen_status != "quarantined"
+		  ORDER BY importance DESC, created_at DESC LIMIT $concepts;`,
+		{ concepts: lim.concepts }
+	);
+
+	// causal node — a learned trigger→outcome chain (m0014). Content-free label (the kind only —
+	// the trigger/outcome prose is NEVER surfaced, D-026); status from success. Most-recent first.
+	const [causalRows] = await db.query<
+		[Array<{ id: unknown; kind?: string; success?: boolean; session?: unknown; created_at?: unknown }>]
+	>(
+		`SELECT id, kind, success, session, created_at FROM causal_chain
+		  ORDER BY created_at DESC LIMIT $causals;`,
+		{ causals: lim.causals }
+	);
+
+	// skill node — a graduated procedure (m0014). The name was screened at graduation (loop.ts),
+	// so it is clean to surface; archived/superseded returned flagged. Most-recent first.
+	const [skillRows] = await db.query<
+		[Array<{ id: unknown; name?: string; status: string; created_at?: unknown }>]
+	>(
+		`SELECT id, name, status, created_at FROM skill
+		  ORDER BY created_at DESC LIMIT $skills;`,
+		{ skills: lim.skills }
+	);
+
+	// correction node — a high-importance memory flagged category="correction" (m0073). Quarantined
+	// excluded (D-026); content-free label (the kind), status from the memory row. Most-salient first.
+	const [correctionRows] = await db.query<
+		[Array<{ id: unknown; kind?: string; status: string; project?: unknown; importance?: number; created_at?: unknown }>]
+	>(
+		`SELECT id, kind, status, project, importance, created_at FROM memory
+		  WHERE category = "correction" AND screen_status != "quarantined"
+		  ORDER BY importance DESC, created_at DESC LIMIT $corrections;`,
+		{ corrections: lim.corrections }
 	);
 
 	// ── Project the nodes ─────────────────────────────────────────────────────────────
@@ -328,6 +392,56 @@ export async function buildSceneGraph(
 			label,
 			status: p.status ?? 'active',
 			...(isoOrUndef(p.created_at) ? { at: isoOrUndef(p.created_at)! } : {})
+		});
+	}
+
+	// ── Project the S3 cognitive nodes ─────────────────────────────────────────────────
+	for (const c of conceptRows) {
+		const label = (typeof c.label === 'string' && c.label.trim()) || 'concept';
+		const summary = typeof c.summary === 'string' && c.summary.trim() ? c.summary.trim() : undefined;
+		nodes.push({
+			id: String(c.id),
+			class: 'concept',
+			subclass: 'concept',
+			label,
+			status: c.status ?? 'active',
+			...(summary ? { summary } : {}),
+			...(refOrUndef(c.project) ? { project: refOrUndef(c.project)! } : {}),
+			...(isoOrUndef(c.created_at) ? { at: isoOrUndef(c.created_at)! } : {})
+		});
+	}
+	for (const cc of causalRows) {
+		const kind = typeof cc.kind === 'string' ? cc.kind : undefined;
+		nodes.push({
+			id: String(cc.id),
+			class: 'causal',
+			subclass: 'causal',
+			label: kind ? `causal: ${kind}` : 'causal',
+			// status drives the color/pulse: a successful chain reads 'done', a failed one 'failed'.
+			status: cc.success === false ? 'failed' : 'done',
+			...(isoOrUndef(cc.created_at) ? { at: isoOrUndef(cc.created_at)! } : {})
+		});
+	}
+	for (const sk of skillRows) {
+		nodes.push({
+			id: String(sk.id),
+			class: 'skill',
+			subclass: 'skill',
+			label: (typeof sk.name === 'string' && sk.name.trim()) || 'skill',
+			status: sk.status ?? 'active',
+			...(isoOrUndef(sk.created_at) ? { at: isoOrUndef(sk.created_at)! } : {})
+		});
+	}
+	for (const cr of correctionRows) {
+		const kind = typeof cr.kind === 'string' ? cr.kind : undefined;
+		nodes.push({
+			id: String(cr.id),
+			class: 'correction',
+			subclass: 'correction',
+			label: kind ? `correction: ${kind}` : 'correction',
+			status: cr.status ?? 'active',
+			...(refOrUndef(cr.project) ? { project: refOrUndef(cr.project)! } : {}),
+			...(isoOrUndef(cr.created_at) ? { at: isoOrUndef(cr.created_at)! } : {})
 		});
 	}
 
@@ -401,6 +515,47 @@ export async function buildSceneGraph(
 		const sess = refOrUndef(w.session);
 		if (proj && nodeIds.has(proj)) edges.push({ from: id, to: proj, kind: 'job_target' });
 		if (sess && nodeIds.has(sess)) edges.push({ from: id, to: sess, kind: 'job_target' });
+	}
+
+	// ── S3 concept edges (m0073 concept_edge) ──────────────────────────────────────────
+	// about_concept renders as "extracted-from" (memory|session → concept); supersedes keeps its
+	// name; the hierarchy kinds (narrower/broader/related_to) and the rest render under their own
+	// kind. Endpoint-guarded (both ends must be in the window) so no dangling edge is emitted.
+	const [conceptEdgeRows] = await db.query<[Array<{ in: unknown; out: unknown; kind: string }>]>(
+		`SELECT in, out, kind FROM concept_edge;`
+	);
+	for (const r of conceptEdgeRows) {
+		const from = String(r.in);
+		const to = String(r.out);
+		if (!nodeIds.has(from) || !nodeIds.has(to)) continue;
+		const kind = r.kind === 'about_concept' ? 'extracted-from' : r.kind;
+		edges.push({ from, to, kind });
+	}
+
+	// retrieved / grounded-on — derive from retrieval_outcome (m0013): the SESSION that retrieved a
+	// memory → that memory. An UTILIZED/cited outcome means the answer was grounded on it
+	// ("grounded-on"); an un-utilized one is a plain "retrieved" link. Both ends must be windowed
+	// nodes (the message query_turn is not a scene node, so the session is the query proxy).
+	const [outcomeRows] = await db.query<
+		[Array<{ session?: unknown; memory?: unknown; utilized?: boolean; cited?: boolean; created_at?: unknown }>]
+	>(
+		// created_at is SELECTed because it is the ORDER BY idiom (F-020 — ORDER BY requires the
+		// field in the projection).
+		`SELECT session, memory, utilized, cited, created_at FROM retrieval_outcome
+		  ORDER BY created_at DESC LIMIT $outcomes;`,
+		{ outcomes: lim.outcomes }
+	);
+	const seenOutcome = new Set<string>();
+	for (const o of outcomeRows) {
+		const sess = refOrUndef(o.session);
+		const mem = refOrUndef(o.memory);
+		if (!sess || !mem || !nodeIds.has(sess) || !nodeIds.has(mem)) continue;
+		const kind = o.utilized === true || o.cited === true ? 'grounded-on' : 'retrieved';
+		// Collapse duplicate parallel outcomes for the same (session, memory, kind) to one edge.
+		const key = `${sess}|${mem}|${kind}`;
+		if (seenOutcome.has(key)) continue;
+		seenOutcome.add(key);
+		edges.push({ from: sess, to: mem, kind });
 	}
 
 	return { nodes, edges };

@@ -43,7 +43,7 @@ afterAll(async () => {
 beforeEach(async () => {
 	// Each test starts from an empty graph — clear the source tables we seed.
 	await db.query(
-		'DELETE references; DELETE entity; DELETE memory; DELETE session; DELETE work_item; DELETE work_item; DELETE project; DELETE task; DELETE scene_event;'
+		'DELETE references; DELETE concept_edge; DELETE entity; DELETE memory; DELETE concept; DELETE session; DELETE work_item; DELETE project; DELETE task; DELETE scene_event; DELETE causal_chain; DELETE skill; DELETE retrieval_outcome;'
 	);
 });
 
@@ -178,6 +178,87 @@ describe('buildSceneGraph — derived node/edge truth', () => {
 		const s1 = g.nodes.find((n) => n.id === 'session:a1')!;
 		expect(s1.agent).toBe('sonnet-1');
 		expect(g.nodes.find((n) => n.id === 'session:legacy')!.agent).toBeUndefined();
+	});
+
+	it('derives S3 cognitive nodes — concept / causal / skill / correction — from real rows', async () => {
+		await db.query(
+			`CREATE concept:c1 SET label="idempotent migrations", summary="every migration must be idempotent",
+			   namespace="default", embedding=array::repeat(0.0, 1024), importance=8.0, status="active", screen_status="clean";`
+		);
+		await db.query('CREATE causal_chain:cc1 SET trigger="t", outcome="o", kind="fix", success=true, confidence=0.9;');
+		await db.query(
+			'CREATE skill:sk1 SET name="retry-on-timeout", description="d", embedding=array::repeat(0.0, 1024), steps=["a"], status="active";'
+		);
+		await db.query(
+			`CREATE memory:fix1 SET content="corrected fact", kind="semantic", namespace="default", scope="project",
+			   embedding=array::repeat(0.0, 1024), importance=9.0, status="active", screen_status="clean", category="correction";`
+		);
+
+		const g = await buildSceneGraph(db);
+		const byId = new Map(g.nodes.map((n) => [n.id, n]));
+		expect(byId.get('concept:c1')).toMatchObject({ class: 'concept', subclass: 'concept', label: 'idempotent migrations', status: 'active' });
+		expect(byId.get('concept:c1')!.summary).toBe('every migration must be idempotent'); // screened summary surfaced
+		expect(byId.get('causal_chain:cc1')).toMatchObject({ class: 'causal', subclass: 'causal', status: 'done' });
+		expect(byId.get('skill:sk1')).toMatchObject({ class: 'skill', subclass: 'skill', label: 'retry-on-timeout', status: 'active' });
+		expect(byId.get('memory:fix1')).toMatchObject({ class: 'correction', subclass: 'correction', status: 'active' });
+		// A correction memory is classed as correction, NOT double-counted as a memory node.
+		expect(g.nodes.filter((n) => n.id === 'memory:fix1' && n.class === 'memory')).toHaveLength(0);
+	});
+
+	it('derives S3 edges — extracted-from (about_concept), supersedes, retrieved + grounded-on', async () => {
+		const project = await seedProject();
+		const pid = project.split(':')[1];
+		await db.query(
+			`CREATE memory:src SET content="src", kind="semantic", namespace="default", scope="project",
+			   embedding=array::repeat(0.0, 1024), status="active", screen_status="clean";`
+		);
+		await db.query(
+			`CREATE concept:c2 SET label="build cmd", summary="npm run build", namespace="default",
+			   embedding=array::repeat(0.0, 1024), status="active", screen_status="clean";`
+		);
+		await db.query(
+			`CREATE concept:old SET label="old", summary="old", namespace="default",
+			   embedding=array::repeat(0.0, 1024), status="active", screen_status="clean";`
+		);
+		// about_concept (memory→concept) renders as extracted-from; supersedes keeps its name.
+		await db.query('RELATE memory:src->concept_edge->concept:c2 SET kind="about_concept";');
+		await db.query('RELATE concept:c2->concept_edge->concept:old SET kind="supersedes";');
+		// retrieval_outcome: a session retrieved memory:src — utilized=true ⇒ grounded-on.
+		await db.query(
+			'CREATE session:rs SET kind="task", status="running", project=type::thing("project", $pid), model={provider:"x",model_id:"y"};',
+			{ pid }
+		);
+		await db.query('CREATE retrieval_outcome SET session=session:rs, memory=memory:src, utilized=true, cited=true, score=0.8;');
+
+		const g = await buildSceneGraph(db);
+		expect(g.edges).toContainEqual({ from: 'memory:src', to: 'concept:c2', kind: 'extracted-from' });
+		expect(g.edges).toContainEqual({ from: 'concept:c2', to: 'concept:old', kind: 'supersedes' });
+		expect(g.edges).toContainEqual({ from: 'session:rs', to: 'memory:src', kind: 'grounded-on' });
+	});
+
+	it('a plain (un-utilized) retrieval_outcome draws a `retrieved` edge', async () => {
+		const project = await seedProject();
+		const pid = project.split(':')[1];
+		await db.query(
+			`CREATE memory:r2 SET content="r2", kind="semantic", namespace="default", scope="project",
+			   embedding=array::repeat(0.0, 1024), status="active", screen_status="clean";`
+		);
+		await db.query(
+			'CREATE session:r2s SET kind="task", status="running", project=type::thing("project", $pid), model={provider:"x",model_id:"y"};',
+			{ pid }
+		);
+		await db.query('CREATE retrieval_outcome SET session=session:r2s, memory=memory:r2, utilized=false, cited=false, score=0.3;');
+		const g = await buildSceneGraph(db);
+		expect(g.edges).toContainEqual({ from: 'session:r2s', to: 'memory:r2', kind: 'retrieved' });
+	});
+
+	it('a QUARANTINED concept is never surfaced as a node (D-026)', async () => {
+		await db.query(
+			`CREATE concept:q SET label="leak", summary="secret", namespace="default",
+			   embedding=array::repeat(0.0, 1024), status="active", screen_status="quarantined";`
+		);
+		const g = await buildSceneGraph(db);
+		expect(g.nodes.find((n) => n.id === 'concept:q')).toBeUndefined();
 	});
 
 	it('drops dangling edges whose endpoint is outside the returned node window (bounded)', async () => {

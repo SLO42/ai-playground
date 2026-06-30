@@ -33,6 +33,8 @@ export interface ForceNode {
 	subclass: SceneNode['subclass'];
 	label: string;
 	status: string;
+	/** S3 — a concept node's screened summary (surfaced in the inspect panel). Absent otherwise. */
+	summary?: string;
 	/** Owning project record-id when the source row carried one (for the per-atelier lens). */
 	project?: string;
 	/** Agent slot that ran a job (session nodes; m0069) — surfaced in the inspect panel. */
@@ -84,6 +86,7 @@ export function toForceModel(graph: SceneGraph | null | undefined): ForceModel {
 		subclass: n.subclass,
 		label: n.label,
 		status: n.status,
+		...(n.summary ? { summary: n.summary } : {}),
 		...(n.project ? { project: n.project } : {}),
 		...(n.agent ? { agent: n.agent } : {}),
 		...(n.task ? { task: n.task } : {}),
@@ -306,7 +309,23 @@ export function statusFamily(node: Pick<ForceNode, 'class' | 'status'>): string 
  */
 export function nodeVisual(node: ForceNode): NodeVisual {
 	const radius =
-		node.class === 'project' ? 12 : node.class === 'agent' ? 10 : node.class === 'job' ? 9 : node.subclass === 'entity' ? 8 : 6;
+		node.class === 'project'
+			? 12
+			: node.class === 'concept'
+				? 11 // S3 concepts are structural semantic anchors (project-sized)
+				: node.class === 'agent'
+					? 10
+					: node.class === 'job'
+						? 9
+						: node.class === 'skill'
+							? 8
+							: node.class === 'causal'
+								? 8
+								: node.class === 'correction'
+									? 7
+									: node.subclass === 'entity'
+										? 8
+										: 6;
 	return { colorClass: node.class, statusClass: statusFamily(node), radius };
 }
 

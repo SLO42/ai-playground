@@ -35,11 +35,20 @@ export interface ForceNode {
 	status: string;
 	/** Owning project record-id when the source row carried one (for the per-atelier lens). */
 	project?: string;
+	/** Agent slot that ran a job (session nodes; m0069) — surfaced in the inspect panel. */
+	agent?: string;
+	/** Linked task record-id (session nodes) — surfaced in the inspect panel. */
+	task?: string;
+	/** Last-known activity time, ISO — drives the time scrubber + the inspect panel. */
+	at?: string;
 	/** Simulation-owned position/velocity (seeded; d3-force fills these). */
 	x?: number;
 	y?: number;
 	vx?: number;
 	vy?: number;
+	/** Pin flag: when dragged, the node is fixed (fx/fy) until released. */
+	fx?: number | null;
+	fy?: number | null;
 }
 
 /** A link fed to d3-force. `source`/`target` are node ids (d3 swaps them for node refs). */
@@ -75,7 +84,10 @@ export function toForceModel(graph: SceneGraph | null | undefined): ForceModel {
 		subclass: n.subclass,
 		label: n.label,
 		status: n.status,
-		...(n.project ? { project: n.project } : {})
+		...(n.project ? { project: n.project } : {}),
+		...(n.agent ? { agent: n.agent } : {}),
+		...(n.task ? { task: n.task } : {}),
+		...(n.at ? { at: n.at } : {})
 	}));
 
 	const ids = new Set(nodes.map((n) => n.id));
@@ -282,12 +294,19 @@ export function statusFamily(node: Pick<ForceNode, 'class' | 'status'>): string 
 	if (TERMINAL_STATUSES.has(s)) return s === 'failed' || s === 'cancelled' ? 'failed' : 'done';
 	if (s === 'running' || s === 'processing' || s === 'active') return 'active';
 	if (s === 'pending' || s === 'queued') return 'pending';
+	// project 'paused' / agent 'idle' — a quiet, non-active state (no pulse, dimmed ring).
+	if (s === 'idle' || s === 'paused') return 'idle';
 	return 'active';
 }
 
-/** Map a node → its visual (token color class + radius). PURE; no color literals. */
+/**
+ * Map a node → its visual (token color class + radius). PURE; no color literals. The class drives
+ * the color FAMILY + icon (memory / job / project / agent); status drives the within-class state
+ * (the pulse ring) via statusClass. Project/agent get a slightly larger radius (structural anchors).
+ */
 export function nodeVisual(node: ForceNode): NodeVisual {
-	const radius = node.class === 'job' ? 9 : node.subclass === 'entity' ? 8 : 6;
+	const radius =
+		node.class === 'project' ? 12 : node.class === 'agent' ? 10 : node.class === 'job' ? 9 : node.subclass === 'entity' ? 8 : 6;
 	return { colorClass: node.class, statusClass: statusFamily(node), radius };
 }
 

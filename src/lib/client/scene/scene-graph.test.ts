@@ -163,6 +163,10 @@ describe('statusFamily + nodeVisual (token classes, no color literals)', () => {
 		expect(statusFamily({ class: 'job', status: 'failed' })).toBe('failed');
 		expect(statusFamily({ class: 'memory', status: 'archived' })).toBe('dim');
 		expect(statusFamily({ class: 'memory', status: 'active' })).toBe('active');
+		// project 'paused' / agent 'idle' → the quiet 'idle' family (no pulse).
+		expect(statusFamily({ class: 'project', status: 'paused' })).toBe('idle');
+		expect(statusFamily({ class: 'agent', status: 'idle' })).toBe('idle');
+		expect(statusFamily({ class: 'agent', status: 'running' })).toBe('active');
 	});
 
 	it('nodeVisual returns token classes + a radius (jobs larger than memories)', () => {
@@ -172,6 +176,28 @@ describe('statusFamily + nodeVisual (token classes, no color literals)', () => {
 		expect(job.radius).toBeGreaterThan(mem.radius);
 		// no inline color anywhere in the visual — only class names
 		expect(JSON.stringify(job)).not.toMatch(/#[0-9a-f]{3,6}/i);
+	});
+
+	it('nodeVisual maps the new project + agent classes (distinct color class + larger radius)', () => {
+		const project = nodeVisual({ id: 'project:p1', class: 'project', subclass: 'project', label: 'Atelier', status: 'active' });
+		const agent = nodeVisual({ id: 'agent:sonnet-1', class: 'agent', subclass: 'agent', label: 'sonnet-1', status: 'running' });
+		const job = nodeVisual({ id: 'session:s1', class: 'job', subclass: 'session', label: 's', status: 'running' });
+		expect(project).toMatchObject({ colorClass: 'project', statusClass: 'active' });
+		expect(agent).toMatchObject({ colorClass: 'agent', statusClass: 'active' });
+		// project/agent are structural anchors — larger than a job bubble.
+		expect(project.radius).toBeGreaterThan(job.radius);
+		expect(agent.radius).toBeGreaterThanOrEqual(job.radius);
+	});
+
+	it('toForceModel carries the inspect-panel fields (agent / task / at) through', () => {
+		const g: SceneGraph = {
+			nodes: [
+				{ id: 'session:s1', class: 'job', subclass: 'session', label: 's', status: 'running', agent: 'sonnet-1', task: 'task:t1', at: '2026-06-30T00:00:00.000Z' }
+			],
+			edges: []
+		};
+		const n = toForceModel(g).nodes[0];
+		expect(n).toMatchObject({ agent: 'sonnet-1', task: 'task:t1', at: '2026-06-30T00:00:00.000Z' });
 	});
 });
 

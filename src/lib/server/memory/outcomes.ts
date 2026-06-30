@@ -139,3 +139,43 @@ export async function recordTurnOutcomes(
 	await markIngestedFindingsApplied(db, applied);
 	return ids;
 }
+
+// ── S1 retrieval feedback (DATA-MODEL §4.13 + m0073 `llm_relevance`; D-030) ──────────────
+//
+// Closes the S1 half of the cognitive loop: AFTER an outcome row exists (it already carries the
+// query embedding + memory link, written above), an LLM/operator/concierge can stamp a post-hoc
+// relevance VERDICT onto it — was the recalled memory actually helpful, irrelevant, outdated, or
+// worth pinning? This is RANKER SIGNAL ONLY (D-030, like the rest of retrieval_outcome): it
+// updates *what surfaces next time*, never *what survives* (the curator never reads it). The
+// verdict UPDATEs an EXISTING row — it never creates one (a feedback for a non-existent outcome
+// is a no-op, returned false, not a silent fabricated row, F-008).
+
+/** The S1 relevance verdicts (lock-step with the m0073 `retrieval_outcome.llm_relevance` ASSERT). */
+export const RETRIEVAL_FEEDBACK_VERDICTS = ['helpful', 'irrelevant', 'outdated', 'pin'] as const;
+export type RetrievalFeedbackVerdict = (typeof RETRIEVAL_FEEDBACK_VERDICTS)[number];
+
+/** Untrusted-input guard for the verdict (D-026): only the four ASSERT-legal values pass. */
+export function isRetrievalFeedbackVerdict(v: unknown): v is RetrievalFeedbackVerdict {
+	return typeof v === 'string' && (RETRIEVAL_FEEDBACK_VERDICTS as readonly string[]).includes(v);
+}
+
+/**
+ * Stamp an S1 relevance verdict onto an EXISTING `retrieval_outcome` row (m0073 `llm_relevance`).
+ * Validates the outcome id at the D-016 chokepoint and the verdict against the ASSERT set BEFORE
+ * the write. Returns true when a row was updated, false when no row matched that id (a no-op — no
+ * fabricated row). RANKER INPUT ONLY (D-030): this never prunes.
+ */
+export async function recordRetrievalFeedback(
+	db: Db,
+	outcomeId: string,
+	verdict: RetrievalFeedbackVerdict
+): Promise<boolean> {
+	if (!isRetrievalFeedbackVerdict(verdict)) {
+		throw new Error(`invalid retrieval-feedback verdict "${verdict}"; expected one of ${JSON.stringify(RETRIEVAL_FEEDBACK_VERDICTS)}`);
+	}
+	const [rows] = await db.query<[Array<{ id: unknown }>]>(
+		`UPDATE $id SET llm_relevance = $verdict RETURN AFTER;`,
+		{ id: link(outcomeId), verdict }
+	);
+	return rows.length > 0;
+}

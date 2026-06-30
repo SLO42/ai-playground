@@ -6,7 +6,7 @@ import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
 import { createProject, deleteProject } from '../projects/repo';
 import { MemoryService, FakeEmbedder } from './index';
-import { summarizeTurnTools } from './outcomes';
+import { summarizeTurnTools, recordRetrievalFeedback, isRetrievalFeedbackVerdict } from './outcomes';
 import type { RuntimeEvent } from '../runtime/index';
 
 // TASK 2.16 VERIFY (integration) — record retrieval outcomes (D-022 groundwork; D-030).
@@ -232,5 +232,44 @@ describe('VERIFY (3): recall ranking CONSUMES the outcome; nothing else does (D-
 			'utf8'
 		);
 		expect(loopSrc).not.toContain('retrieval_outcome');
+	});
+});
+
+describe('S1 retrieval feedback — recordRetrievalFeedback (m0073 llm_relevance; D-030)', () => {
+	it('UPDATEs an existing outcome row with the relevance verdict (helpful/irrelevant/outdated/pin)', async () => {
+		// Produce a real outcome row through the 2.16 turn path.
+		const [m] = await mem.store([{ content: 'a fact that will receive an S1 relevance verdict', project: projectId }]);
+		const r = await mem.recall('a fact that will receive an S1 relevance verdict', { project: projectId, limit: 5 });
+		const cit = r.items.find((x) => x.id === m.id);
+		expect(cit).toBeDefined();
+		await mem.recordTurnOutcomes({ responseText: `Per [#${cit!.citationId}].`, injected: r.items });
+		const [outRows] = await db.query<[Array<{ id: unknown }>]>(`SELECT id FROM retrieval_outcome WHERE memory = $m;`, {
+			m: new StringRecordId(m.id)
+		});
+		expect(outRows.length).toBeGreaterThan(0);
+		const outcomeId = String(outRows[0].id);
+
+		// Stamp the verdict; the row's llm_relevance is set.
+		const ok = await recordRetrievalFeedback(db, outcomeId, 'helpful');
+		expect(ok).toBe(true);
+		const [after] = await db.query<[Array<{ llm_relevance: string }>]>(`SELECT llm_relevance FROM $id;`, { id: new StringRecordId(outcomeId) });
+		expect(after[0].llm_relevance).toBe('helpful');
+
+		// A later verdict overwrites (e.g. operator pins it).
+		expect(await recordRetrievalFeedback(db, outcomeId, 'pin')).toBe(true);
+		const [pinned] = await db.query<[Array<{ llm_relevance: string }>]>(`SELECT llm_relevance FROM $id;`, { id: new StringRecordId(outcomeId) });
+		expect(pinned[0].llm_relevance).toBe('pin');
+	});
+
+	it('returns false for a non-existent outcome id (no fabricated row, F-008)', async () => {
+		expect(await recordRetrievalFeedback(db, 'retrieval_outcome:does_not_exist', 'irrelevant')).toBe(false);
+		const [rows] = await db.query<[Array<{ id: unknown }>]>(`SELECT id FROM retrieval_outcome:does_not_exist;`);
+		expect(rows).toHaveLength(0);
+	});
+
+	it('rejects an invalid verdict at the boundary (D-026)', async () => {
+		expect(isRetrievalFeedbackVerdict('helpful')).toBe(true);
+		expect(isRetrievalFeedbackVerdict('bogus')).toBe(false);
+		await expect(recordRetrievalFeedback(db, 'retrieval_outcome:x', 'bogus' as never)).rejects.toThrow(/invalid retrieval-feedback verdict/);
 	});
 });

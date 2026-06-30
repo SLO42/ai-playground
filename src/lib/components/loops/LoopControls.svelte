@@ -21,8 +21,25 @@
   import { enhance } from '$app/forms';
   import type { SubmitFunction } from '@sveltejs/kit';
   import type { LoopView } from '$lib/server/loops/read';
+  import type { ReadinessResult } from './readiness-core';
 
-  let { loop }: { loop: LoopView } = $props();
+  // `readiness` + `override` (pm-autonomous only) drive the ARM gate UI: arming a not-ready, non-overridden
+  // loop is blocked server-side; here we pre-surface the gate so the operator sees what's required and can
+  // record an explicit override. Disarm (kill switch) is never gated.
+  let {
+    loop,
+    readiness = null,
+    override = false
+  }: { loop: LoopView; readiness?: ReadinessResult | null; override?: boolean } = $props();
+
+  // Whether arming is permitted without an override (the gate is satisfied).
+  const armReady = $derived(override === true || readiness == null || readiness.green === true);
+
+  // Operator override controls (only used when arming a not-ready loop).
+  let wantOverride = $state(false);
+  let overrideReason = $state('');
+  // Missing items returned by a blocked arm attempt (server is authoritative).
+  let blockedMissing = $state<string[]>([]);
 
   // ── pm-cadence editor state ──────────────────────────────────────────────────────────────────────
   // Seed the editable fields ONCE from the loop's current values (untrack: capturing the initial value
@@ -46,14 +63,18 @@
   const submitter: SubmitFunction = () => {
     busy = true;
     errorMsg = null;
+    blockedMissing = [];
     return async ({ update, result }) => {
       if (result.type === 'failure') {
-        const d = result.data as { pm?: { error?: string } } | undefined;
+        const d = result.data as { pm?: { error?: string; missing?: string[] } } | undefined;
         errorMsg = d?.pm?.error ?? 'The change was rejected.';
+        // A blocked arm surfaces the missing Design-Checklist items (server-authoritative).
+        blockedMissing = Array.isArray(d?.pm?.missing) ? (d!.pm!.missing as string[]) : [];
       } else if (result.type === 'error') {
         errorMsg = 'Something went wrong applying the change.';
       } else {
         confirming = false;
+        wantOverride = false;
       }
       // Re-run the loader either way so the cards reflect the live truth (a disarmed loop's card vanishes).
       await update({ reset: false });
@@ -126,15 +147,50 @@
         </button>
       {/if}
     {:else}
-      <!-- Defensive: a disarmed loop normally has no card; if surfaced, allow a direct re-arm. -->
+      <!-- ARM — readiness-gated (LOOP-ENGINEERING step 5). The gate is server-authoritative; here we
+           pre-surface it: a not-ready loop needs the checklist green OR an explicit operator override. -->
       <input type="hidden" name="armed" value="true" />
-      <button class="lc-btn" type="submit" disabled={busy} aria-pressed="false">
-        {busy ? 'Arming…' : 'Arm the autonomous drive'}
+      <input type="hidden" name="override" value={wantOverride ? 'true' : 'false'} />
+      {#if wantOverride}
+        <input type="hidden" name="overrideReason" value={overrideReason} />
+      {/if}
+
+      {#if !armReady}
+        <div class="lc-gate" role="group" aria-label="Readiness gate">
+          <p class="lc-gate-head">
+            Not ready for autonomy{readiness ? ` — ${readiness.missing.length} item${readiness.missing.length === 1 ? '' : 's'} left` : ''}.
+          </p>
+          {#if readiness && readiness.missing.length}
+            <ul class="lc-gate-list">
+              {#each readiness.missing as m (m.id)}<li>{m.label}</li>{/each}
+            </ul>
+          {/if}
+          <label class="lc-override">
+            <input type="checkbox" bind:checked={wantOverride} />
+            <span>Override the gate (arm anyway — recorded)</span>
+          </label>
+          {#if wantOverride}
+            <input
+              class="lc-input"
+              type="text"
+              bind:value={overrideReason}
+              placeholder="Reason for the override (recorded in the run log)"
+              aria-label="override reason"
+            />
+          {/if}
+        </div>
+      {/if}
+
+      <button class="lc-btn" type="submit" disabled={busy || (!armReady && !wantOverride)} aria-pressed="false">
+        {busy ? 'Arming…' : wantOverride ? 'Override & arm' : 'Arm the autonomous drive'}
       </button>
     {/if}
     <p class="lc-note">
       {#if errorMsg}
         <span class="lc-err" role="alert">{errorMsg}</span>
+        {#if blockedMissing.length}
+          <span class="lc-gate-missing"> Missing: {blockedMissing.join(', ')}.</span>
+        {/if}
       {:else}
         Applies immediately — no restart needed. Disarming halts the drive; the publish gate stays operator-gated.
       {/if}
@@ -215,4 +271,38 @@
     color: var(--color-text-muted);
   }
   .lc-err { color: var(--color-error-on-overlay, var(--color-blocked)); }
+  .lc-gate-missing { color: var(--color-error-on-overlay, var(--color-blocked)); }
+
+  .lc-gate {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-2);
+    border: 1px solid var(--color-warn, var(--color-border));
+    border-radius: var(--radius-sm);
+    background: var(--color-warn-bg, var(--color-surface-overlay));
+  }
+  .lc-gate-head {
+    margin: 0;
+    font-size: var(--text-sm, 0.82rem);
+    font-weight: var(--weight-semibold, 600);
+    color: var(--color-text);
+  }
+  .lc-gate-list {
+    margin: 0;
+    padding-left: 1.1rem;
+    font-size: var(--text-xs, 0.72rem);
+    color: var(--color-text-2);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .lc-override {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--text-xs, 0.74rem);
+    color: var(--color-text-2);
+    cursor: pointer;
+  }
 </style>

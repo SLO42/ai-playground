@@ -12,6 +12,7 @@
   import { stream } from '$lib/client/stream.svelte';
   import LiveBadge from '$lib/components/shell/LiveBadge.svelte';
   import LoopList from '$lib/components/loops/LoopList.svelte';
+  import LoopDeclaredCard from '$lib/components/loops/LoopDeclaredCard.svelte';
   import type { PageData } from './$types';
 
   let { data }: { data: PageData } = $props();
@@ -19,6 +20,8 @@
   const connected = $derived(data.connected);
   const loops = $derived(data.loops ?? []);
   const projectNames = $derived(data.projectNames ?? {});
+  const manifestMap = $derived(data.manifestMap ?? {});
+  const declaredOnly = $derived(data.declaredOnly ?? []);
 
   // The run-history feed is agent_event — its liveness is the most representative health signal for
   // this surface; the LiveBadge stays silent while the feed is cleanly live and surfaces a degrade.
@@ -31,7 +34,8 @@
       stream.onDbChange('agent_event', () => void invalidate('app:analytics')),
       stream.onDbChange('pm', () => void invalidate('app:pm')),
       stream.onDbChange('session', () => void invalidate('app:fleet')),
-      stream.onDbChange('project', () => void invalidate('app:projects'))
+      stream.onDbChange('project', () => void invalidate('app:projects')),
+      stream.onDbChange('loop', () => void invalidate('app:loops-manifest'))
     ];
     return () => offs.forEach((off) => off());
   });
@@ -66,7 +70,25 @@
       </p>
     </div>
   {:else}
-    <LoopList {loops} {projectNames} editable />
+    <LoopList {loops} {projectNames} {manifestMap} editable />
+
+    {#if declaredOnly.length}
+      <section class="declared-section" aria-labelledby="declared-h">
+        <h2 class="declared-title" id="declared-h">
+          Declared · not currently running
+          <span class="declared-count" aria-hidden="true">{declaredOnly.length}</span>
+        </h2>
+        <p class="declared-lede">
+          Loops declared in the manifest with no live counterpart right now. Their readiness is still
+          reviewable and configurable; arming a project loop here is gated on its readiness.
+        </p>
+        <div class="declared-grid">
+          {#each declaredOnly as entry (entry.identifier)}
+            <LoopDeclaredCard {entry} />
+          {/each}
+        </div>
+      </section>
+    {/if}
   {/if}
 </section>
 
@@ -118,5 +140,33 @@
   .state-body {
     font: var(--type-body-sm);
     color: var(--color-text-2);
+  }
+  .declared-section {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+  .declared-title {
+    font: var(--type-h2);
+    color: var(--color-text);
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-3);
+  }
+  .declared-count {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm, 0.82rem);
+    color: var(--color-text-muted);
+    font-weight: var(--weight-regular, 400);
+  }
+  .declared-lede {
+    font: var(--type-body-sm);
+    color: var(--color-text-muted);
+    max-width: 72ch;
+  }
+  .declared-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: var(--space-4);
   }
 </style>

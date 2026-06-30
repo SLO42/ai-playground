@@ -10,6 +10,7 @@
    * alone, decorative glyphs aria-hidden, an explicit expander label + aria-expanded).
    */
   import type { LoopView } from '$lib/server/loops/read';
+  import type { LoopManifestRow } from '$lib/server/loops/manifest';
   import {
     kindMeta,
     phaseMeta,
@@ -20,12 +21,20 @@
     nextFireLabel,
     orchConfigView
   } from './loop-card-core';
+  import { evaluateReadiness } from './readiness-core';
   import LoopControls from './LoopControls.svelte';
+  import LoopReadiness from './LoopReadiness.svelte';
 
-  // `editable` opts the card into the Phase-2 in-UI controls (cadence editor / pause toggle). Only the
-  // Loops surfaces that host the matching `?/pmSchedule` + `?/pmAutonomous` form actions pass it true;
-  // default false keeps the card a pure view everywhere else.
-  let { loop, editable = false }: { loop: LoopView; editable?: boolean } = $props();
+  // `editable` opts the card into the Phase-2 in-UI controls (cadence editor / pause toggle / readiness).
+  // Only the Loops surfaces that host the matching `?/pmSchedule` + `?/pmAutonomous` + `?/loopChecklist`
+  // form actions pass it true; default false keeps the card a pure view everywhere else.
+  // `manifest` is the declared layer for THIS loop (null when undeclared) — drives the declared badge +
+  // readiness panel + the arm gate's surfaced state.
+  let {
+    loop,
+    editable = false,
+    manifest = null
+  }: { loop: LoopView; editable?: boolean; manifest?: LoopManifestRow | null } = $props();
 
   let expanded = $state(false);
 
@@ -41,6 +50,10 @@
   // Only the two NO-restart DB-MERGE loops have an editable control here (orchestrator/memory-review
   // show none — the orchestrator mode is the D-010 confirm flow on /settings).
   const hasControls = $derived(loop.kind === 'pm-cadence' || loop.kind === 'pm-autonomous');
+  // Declared-vs-running: a manifest row means the operator has declared this loop (LP step 3). The arm
+  // gate (step 5) reads the manifest readiness; show whether this loop is ready/overridden, honestly.
+  const declared = $derived(manifest != null);
+  const readiness = $derived(evaluateReadiness(manifest?.checklist));
 </script>
 
 <article class="loop-card" data-tone={loop.tone} aria-labelledby="loop-name-{loop.id}">
@@ -65,6 +78,18 @@
       {phase.text}
     </span>
   </header>
+
+  {#if editable && hasControls}
+    <div class="lc-declared">
+      {#if declared}
+        <span class="lc-tag" data-tone={readiness.green ? 'done' : manifest?.override ? 'warning' : 'idle'}>
+          {#if readiness.green}declared · ready{:else if manifest?.override}declared · overridden{:else}declared · {readiness.checked}/{readiness.total}{/if}
+        </span>
+      {:else}
+        <span class="lc-tag" data-tone="idle">not declared</span>
+      {/if}
+    </div>
+  {/if}
 
   <div class="lc-status">
     <span class="lc-dot" data-tone={loop.tone} aria-hidden="true"></span>
@@ -159,7 +184,14 @@
   {/if}
 
   {#if editable && hasControls}
-    <LoopControls {loop} />
+    <LoopReadiness
+      identifier={loop.id}
+      kind={loop.kind}
+      label={loop.name}
+      projectId={loop.projectId ?? null}
+      {manifest}
+    />
+    <LoopControls {loop} {readiness} override={manifest?.override === true} />
   {/if}
 </article>
 
@@ -216,6 +248,21 @@
   }
   .lc-phase[data-phase='L3'] { color: var(--color-text-accent, var(--color-accent)); border-color: var(--color-accent); }
   .lc-phase[data-phase='L2'] { color: var(--color-text); }
+
+  .lc-declared { display: flex; }
+  .lc-tag {
+    font-size: var(--text-xs, 0.68rem);
+    font-weight: var(--weight-semibold, 600);
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    padding: 0 var(--space-2);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    background: var(--color-surface-overlay);
+  }
+  .lc-tag[data-tone='done'] { color: var(--color-success); border-color: var(--color-success); }
+  .lc-tag[data-tone='warning'] { color: var(--color-warn); border-color: var(--color-warn); }
 
   .lc-status { display: inline-flex; align-items: center; gap: var(--space-2); }
   .lc-dot {

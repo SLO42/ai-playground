@@ -121,7 +121,10 @@ export const WATCHED_TABLES = [
 	// scene_event — /memory (the Scene lens, a later UI wave): the DERIVED append-only activity
 	// feed live-streams new viz events (node_spawned/job_fired/…) — MEMORY-SCENE-SPEC §5/§7.1.
 	// Watched here so the projection writer's appends fan out to the live scene exactly once.
-	'scene_event'
+	'scene_event',
+	// loop — /loops (the loop manifest: declare/checklist/phase/override + arm changes re-derive the
+	// declared-vs-running cards + readiness gate live) — LOOP-ENGINEERING.md steps 3-5
+	'loop'
 ] as const;
 
 /** One of the boot-watched table names. */

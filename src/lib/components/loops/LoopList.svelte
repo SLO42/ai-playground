@@ -7,14 +7,22 @@
    * state when there are no loops at all (F-008). Svelte 5 runes; design tokens only.
    */
   import type { LoopView } from '$lib/server/loops/read';
+  import type { LoopManifestRow } from '$lib/server/loops/manifest';
   import { groupLoops } from './loop-card-core';
   import LoopCard from './LoopCard.svelte';
 
   let {
     loops,
     projectNames = {},
-    editable = false
-  }: { loops: LoopView[]; projectNames?: Record<string, string>; editable?: boolean } = $props();
+    editable = false,
+    manifestMap = {}
+  }: {
+    loops: LoopView[];
+    projectNames?: Record<string, string>;
+    editable?: boolean;
+    /** identifier → declared manifest row, so each card finds its declared/readiness state. */
+    manifestMap?: Record<string, LoopManifestRow>;
+  } = $props();
 
   const groups = $derived(groupLoops(loops, projectNames));
 </script>
@@ -34,7 +42,7 @@
         </h2>
         <div class="lg-grid">
           {#each group.loops as loop (loop.id)}
-            <LoopCard {loop} {editable} />
+            <LoopCard {loop} {editable} manifest={manifestMap[loop.id] ?? null} />
           {/each}
         </div>
       </section>

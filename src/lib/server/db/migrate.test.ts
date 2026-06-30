@@ -443,6 +443,54 @@ describe('schemaMigrations — idempotent over fresh + half-applied state (11.4-
 		}
 	});
 
+	it('m0072 loop manifest: applies over a half-applied bare `loop` table; row round-trips', async () => {
+		const db = await freshDb('mig_loop_wedge');
+		try {
+			// Half-applied wedge: the `loop` table exists but is BARE (fields:{}), migration unrecorded.
+			await db.query('DEFINE TABLE loop SCHEMAFULL;');
+			const before = await db.query<[{ fields: Record<string, string> }]>('INFO FOR TABLE loop;');
+			expect(Object.keys(before[0].fields)).toHaveLength(0); // bare — the wedge
+			expect(await isApplied(db, '0072_loop_manifest')).toBe(false);
+
+			// The full schema applies cleanly OVER the half-applied table (OVERWRITE recovers it).
+			const applied = await runMigrations(db, schemaMigrations);
+			expect(applied).toContain('0072_loop_manifest');
+
+			const after = await db.query<[{ fields: Record<string, string> }]>('INFO FOR TABLE loop;');
+			for (const f of ['identifier', 'kind', 'label', 'phase', 'enabled', 'checklist', 'override', 'created_at', 'updated_at']) {
+				expect(Object.keys(after[0].fields)).toContain(f);
+			}
+			const idx = await db.query<[{ indexes: Record<string, string> }]>('INFO FOR TABLE loop;');
+			expect(Object.keys(idx[0].indexes)).toContain('loop_by_identifier');
+			expect(await isApplied(db, '0072_loop_manifest')).toBe(true);
+
+			// A GLOBAL loop row (project NULL) round-trips: phase defaults L1, enabled true, override false,
+			// checklist defaults to {} (readiness not green), and the datetime DEFAULTs land.
+			await db.query(
+				`CREATE loop CONTENT { identifier: 'orch:drain', kind: 'orchestrator', label: 'Orchestrator drain' };`
+			);
+			const rows = await db.query<[Array<{ phase: string; enabled: boolean; override: boolean; checklist: unknown; created_at: unknown; project: unknown }>]>(
+				`SELECT phase, enabled, override, checklist, created_at, project FROM loop WHERE identifier = 'orch:drain';`
+			);
+			expect(rows[0][0].phase).toBe('L1');
+			expect(rows[0][0].enabled).toBe(true);
+			expect(rows[0][0].override).toBe(false);
+			expect(rows[0][0].checklist).toEqual({});
+			expect(rows[0][0].created_at).toBeTruthy();
+			expect(rows[0][0].project ?? null).toBeNull();
+
+			// The UNIQUE identifier index rejects a duplicate declare.
+			await expect(
+				db.query(`CREATE loop CONTENT { identifier: 'orch:drain', kind: 'orchestrator', label: 'dup' };`)
+			).rejects.toThrow();
+
+			// Apply-twice over the recovered state is a clean no-op.
+			expect(await runMigrations(db, schemaMigrations)).toEqual([]);
+		} finally {
+			await db.close().catch(() => {});
+		}
+	});
+
 	it('m0029 recovers half-applied pm ROWS: backfills authority/created_at, deletes id-only corruption', async () => {
 		const db = await freshDb('mig_pm_backfill');
 		try {

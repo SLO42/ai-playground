@@ -2490,6 +2490,53 @@ const m0071_app_auth: Migration = {
 	`
 };
 
+// ── LOOP MANIFEST (the declared layer over the derived runtime loop view) — LOOP-ENGINEERING.md step 3 ──
+//
+// Today loops are DERIVED only: getLoops() (loops/read.ts) synthesizes the running loop families from
+// live `pm` rows + the orchestrator singletons. This table is the DECLARED layer the operator owns: a
+// durable, per-loop entity carrying its stable `identifier` (the SAME id the runtime LoopView uses —
+// e.g. 'orch:drain', 'pm-auto:project:x', 'pm-cadence:pm:y'), declared cadence/phase, enabled flag, and
+// the Loop Design Checklist `readiness` state (the pre-arm gate). Execution STILL runs off pm/orchestrator
+// — the manifest does not drive behavior; it records the operator's declaration + grades readiness, and
+// the read model RECONCILES declared-vs-running (loops/manifest.ts) so a declared-but-not-running loop is
+// honest, never a fabricated card (F-008).
+//
+// `project` is option<record<project>> — NULL for the GLOBAL loops (orchestrator drain/gc, memory-review),
+// SET for per-project loops. `identifier` is UNIQUE so upsert is idempotent (one manifest row per loop,
+// mirrors pm_by_project). `checklist` is a FLEXIBLE object (item id → bool); absent ⇒ {} ⇒ readiness not
+// green (an undeclared loop has earned nothing). The override trio records the operator's sovereign
+// "arm anyway" decision (override + reason + when). created_at/updated_at carry concrete DEFAULTs (§6.2),
+// coerced to ISO in the manifest normalizer (F-013).
+//
+// ADDITIVE + idempotent (D-006/F-015, OVERWRITE-only): a clean no-op over a fresh DB AND over a half-
+// applied state (the generic apply-twice + bare-table wedge cases in migrate.test.ts cover both).
+const m0072_loop_manifest: Migration = {
+	id: '0072_loop_manifest',
+	up: `
+		DEFINE TABLE OVERWRITE loop SCHEMAFULL;
+		DEFINE FIELD OVERWRITE project         ON loop TYPE option<record<project>>;
+		DEFINE FIELD OVERWRITE identifier       ON loop TYPE string;
+		DEFINE FIELD OVERWRITE kind             ON loop TYPE string DEFAULT "orchestrator"
+			ASSERT $value IN ["orchestrator","pm-autonomous","pm-cadence","memory-review","game-verify"];
+		DEFINE FIELD OVERWRITE label            ON loop TYPE string;
+		DEFINE FIELD OVERWRITE cadence          ON loop TYPE option<string>;
+		DEFINE FIELD OVERWRITE phase            ON loop TYPE string DEFAULT "L1"
+			ASSERT $value IN ["L1","L2","L3"];
+		DEFINE FIELD OVERWRITE enabled          ON loop TYPE bool DEFAULT true;
+		DEFINE FIELD OVERWRITE checklist        ON loop FLEXIBLE TYPE object DEFAULT {};
+		DEFINE FIELD OVERWRITE override          ON loop TYPE bool DEFAULT false;
+		DEFINE FIELD OVERWRITE override_reason   ON loop TYPE option<string>;
+		DEFINE FIELD OVERWRITE override_at       ON loop TYPE option<datetime>;
+		DEFINE FIELD OVERWRITE created_at        ON loop TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE updated_at        ON loop TYPE datetime DEFAULT time::now();
+
+		-- ONE manifest row per loop identifier: UNIQUE so a concurrent double-declare collides rather
+		-- than duplicating (D-008) and upsert-by-identifier is idempotent.
+		DEFINE INDEX OVERWRITE loop_by_identifier ON loop FIELDS identifier UNIQUE;
+		DEFINE INDEX OVERWRITE loop_by_project    ON loop FIELDS project;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2567,5 +2614,6 @@ export const schemaMigrations: Migration[] = [
 	m0068_project_game_verify,
 	m0069_session_agent,
 	m0070_session_specialist,
-	m0071_app_auth
+	m0071_app_auth,
+	m0072_loop_manifest
 ];

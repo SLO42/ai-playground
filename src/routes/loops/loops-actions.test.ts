@@ -21,6 +21,9 @@ import { schemaMigrations } from '$lib/server/db/schema';
 import { startTestDb, type TestDb } from '$lib/server/db/testserver';
 import { createProject } from '$lib/server/projects/repo';
 import { createPm, getPm, setPmAutonomous } from '$lib/server/projects/pm-repo';
+import { upsertLoopManifest, setLoopChecklistItem } from '$lib/server/loops/manifest';
+import { pmAutonomousLoopIdentifier } from '$lib/server/loops/arm-gate';
+import { READINESS_CHECKLIST } from '$lib/components/loops/readiness-core';
 import { actions } from './+page.server';
 
 let tdb: TestDb;
@@ -59,7 +62,7 @@ function fd(fields: Record<string, string>): FormData {
 }
 
 async function call(
-	name: 'pmSchedule' | 'pmAutonomous',
+	name: 'pmSchedule' | 'pmAutonomous' | 'loopChecklist' | 'loopPhase',
 	fields: Record<string, string>
 ): Promise<{ status: number; data: unknown }> {
 	const request = { formData: async () => fd(fields) } as unknown as Request;
@@ -146,10 +149,31 @@ describe('/loops pmAutonomous action — pause/kill toggle (DB-MERGE, no restart
 		expect((await getPm(db, projectId))?.autonomous).toBe(false);
 	}, 60_000);
 
-	it('arm (armed=true) sets pm.autonomous=true', async () => {
+	it('arm (armed=true) is BLOCKED 409 when readiness is not green — nothing armed, missing surfaced', async () => {
 		const projectId = await freshProjectWithPm();
 		const res = await call('pmAutonomous', { projectId, armed: 'true' });
+		expect(res.status).toBe(409);
+		expect(String(pmOf(res).error)).toMatch(/not ready|readiness/i);
+		expect(Array.isArray(pmOf(res).missing)).toBe(true);
+		expect((pmOf(res).missing as string[]).length).toBe(READINESS_CHECKLIST.length);
+		expect((await getPm(db, projectId))?.autonomous).toBe(false);
+	}, 60_000);
+
+	it('arm (armed=true) SUCCEEDS once the readiness checklist is green', async () => {
+		const projectId = await freshProjectWithPm();
+		const identifier = pmAutonomousLoopIdentifier(projectId);
+		await upsertLoopManifest(db, { identifier, kind: 'pm-autonomous', label: 'd', projectId });
+		for (const item of READINESS_CHECKLIST) await setLoopChecklistItem(db, identifier, item.id, true);
+		const res = await call('pmAutonomous', { projectId, armed: 'true' });
 		expect(res.status).toBe(200);
+		expect((await getPm(db, projectId))?.autonomous).toBe(true);
+	}, 60_000);
+
+	it('arm with override=true arms a not-ready loop (operator is sovereign)', async () => {
+		const projectId = await freshProjectWithPm();
+		const res = await call('pmAutonomous', { projectId, armed: 'true', override: 'true', overrideReason: 'go' });
+		expect(res.status).toBe(200);
+		expect(pmOf(res).overridden).toBe(true);
 		expect((await getPm(db, projectId))?.autonomous).toBe(true);
 	}, 60_000);
 

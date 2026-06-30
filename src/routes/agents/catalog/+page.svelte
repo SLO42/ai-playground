@@ -128,6 +128,10 @@
   }
 </script>
 
+<svelte:head>
+  <title>Agent library — Atelier</title>
+</svelte:head>
+
 <section class="page">
   <header class="page-head">
     <span class="eyebrow">harness · available agents</span>
@@ -568,7 +572,7 @@
     color: var(--color-text);
     padding: 0.4rem 0.6rem;
     font-size: var(--text-sm);
-    font-family: inherit;
+    font-family: var(--font-body);
     resize: vertical;
   }
   .rec-textarea:focus-visible {

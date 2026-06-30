@@ -89,6 +89,13 @@ describe('/loops loader — shadow paths (honest degrade, D-019/F-008)', () => {
 	it('a dead/closed DB handle ⇒ connected:false + empty, never a fabricated loop', async () => {
 		await closeDb();
 		const data = await runLoad();
-		expect(data).toEqual({ connected: false, loops: [], projectNames: {} });
+		expect(data).toEqual({
+			connected: false,
+			loops: [],
+			manifest: [],
+			manifestMap: {},
+			declaredOnly: [],
+			projectNames: {}
+		});
 	});
 });

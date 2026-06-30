@@ -82,12 +82,17 @@
   let ty = $state(0);
   let k = $state(1);
   let fullscreen = $state(false);
-  // Auto-fit the camera to the node bbox while a viewport change (initial mount, full-screen
-  // toggle, container resize) is settling; cleared the moment the user pans/zooms/drags or the
-  // sim settles, so we never fight a deliberate camera move. This is what keeps nodes in-frame
-  // on full-screen instead of drifting off (the force layout spans thousands of px; the viewBox
-  // + forceCenter already track the resize correctly — what was missing was fitting the camera).
-  let autoFit = $state(true);
+  // One-shot auto-fit. Frames the node bbox during the bounded settle that follows an EXPLICIT
+  // trigger only — initial mount, the Recenter button, and a full-screen toggle. It is cleared
+  // on sim-settle ('end') and the instant the user pans/zooms/drags, and is NEVER re-armed by an
+  // incidental resize, so it can neither fight a deliberate camera move (the 7550f2f regression
+  // that killed panning) nor chase a still-spreading layout (the regression that drifted nodes
+  // off-frame on full-screen). After it clears, the camera is authoritative until the next trigger.
+  let pendingFit = $state(true);
+  // Bounds a fit episode so it always ENDS (final fit, then hold) even if the sim never fires
+  // 'end' — e.g. frequent live model reheats keep replacing the sim. Per-tick framing keeps the
+  // bbox in view until this fires, so the bounded clear never leaves the camera mid-frame.
+  let fitTimer: ReturnType<typeof setTimeout> | null = null;
   const MIN_K = 0.1;
   const MAX_K = 4;
   const clampK = (v: number): number => Math.min(MAX_K, Math.max(MIN_K, v));
@@ -148,18 +153,42 @@
   }
   function onWheel(e: WheelEvent): void {
     e.preventDefault();
-    autoFit = false;
+    cancelPendingFit();
     const u = clientToUser(e);
     if (!u) return;
     zoomAround(u.x, u.y, e.deltaY < 0 ? 1.12 : 1 / 1.12);
   }
   function zoomBtn(factor: number): void {
-    autoFit = false;
+    cancelPendingFit();
     zoomAround(dims().w / 2, dims().h / 2, factor);
   }
-  /** Recenter: fit + center all nodes in the current viewport (one-shot). */
+  /** Cancel any in-flight one-shot fit (called the instant the user takes camera control). */
+  function cancelPendingFit(): void {
+    pendingFit = false;
+    if (fitTimer) {
+      clearTimeout(fitTimer);
+      fitTimer = null;
+    }
+  }
+  /**
+   * Arm a bounded one-shot fit episode. The sim's tick/'end' handlers frame the bbox against the
+   * live dims as the layout (and any full-screen resize) settles; this timer guarantees the episode
+   * terminates — final fit, then hold — so it can never refit "forever" under continuous reheats.
+   */
+  function armFit(delay = 3500): void {
+    pendingFit = true;
+    if (fitTimer) clearTimeout(fitTimer);
+    fitTimer = setTimeout(() => {
+      fitTimer = null;
+      if (pendingFit) {
+        fitToNodes();
+        pendingFit = false;
+      }
+    }, delay);
+  }
+  /** Recenter: fit + center all nodes in the current viewport (one-shot, user-invoked). */
   function recenter(): void {
-    autoFit = false;
+    cancelPendingFit();
     fitToNodes();
   }
 
@@ -173,7 +202,7 @@
 
   function bgPointerDown(e: PointerEvent): void {
     if (e.button !== 0) return;
-    autoFit = false;
+    cancelPendingFit();
     panning = true;
     panMoved = false;
     panStart = { cx: e.clientX, cy: e.clientY, tx, ty };
@@ -182,7 +211,7 @@
   function nodePointerDown(e: PointerEvent, id: string): void {
     if (e.button !== 0) return;
     e.stopPropagation();
-    autoFit = false;
+    cancelPendingFit();
     dragId = id;
     dragMoved = false;
     svgEl?.setPointerCapture?.(e.pointerId);
@@ -265,9 +294,9 @@
       sim.stop();
       positioned = [...nodes];
       links = lks;
-      if (autoFit) {
+      if (pendingFit) {
         fitToNodes(nodes);
-        autoFit = false;
+        pendingFit = false;
       }
       return;
     }
@@ -275,34 +304,65 @@
     sim.on('tick', () => {
       positioned = [...nodes];
       links = lks;
-      if (autoFit) fitToNodes(nodes); // keep nodes framed while the layout settles
+      // While a fit is pending (post-trigger settle only), keep the bbox framed against the LIVE
+      // dims — this also tracks the full-screen resize as it lands. Cleared on 'end'/interaction.
+      if (pendingFit) fitToNodes(nodes);
     });
-    // Once the layout has settled, do a final fit then hold the camera (so live spawns/pulses
-    // and user pans aren't fought by a continuous refit).
+    // Settled: final fit, then HOLD — clearing pendingFit so subsequent live model rebuilds (each
+    // re-runs the sim) never refit and chase the camera, and a user pan/zoom/drag is never fought.
     sim.on('end', () => {
-      if (autoFit) {
+      if (pendingFit) {
         fitToNodes(nodes);
-        autoFit = false;
+        pendingFit = false;
+        if (fitTimer) {
+          clearTimeout(fitTimer);
+          fitTimer = null;
+        }
       }
     });
   }
 
-  // Re-arm auto-fit whenever the VIEWPORT changes (full-screen toggle / container resize /
-  // initial measure) — NOT on model changes, so newly-arrived nodes never yank the camera.
-  $effect(() => {
-    void fullscreen;
-    void width;
-    void stageH;
-    autoFit = true;
-  });
-
+  // Rebuild the simulation only on STRUCTURAL change (node/edge model, or reduced-motion) — NOT
+  // on resize/full-screen. Rebuilding on every resize re-ran the sim from a hot alpha repeatedly,
+  // a reheat storm that kept the layout spreading and the camera chasing it (7550f2f drift). The
+  // viewBox + the full-screen effect below handle viewport changes without a structural rebuild.
   $effect(() => {
     void model;
     void reducedMotion;
-    void width;
-    void fullscreen;
-    void stageH;
     untrack(() => buildSim());
+  });
+
+  // A full-screen toggle is a DELIBERATE viewport change: re-center the force on the new viewport,
+  // gently reheat so the layout re-settles, and arm ONE pending fit (the tick/'end' handlers frame
+  // it against the live dims as the resize lands, then hold). Depends ONLY on `fullscreen`, so an
+  // incidental container resize never re-triggers it. The initial run (mount) is skipped — the
+  // mount fit is owned by buildSim's pending fit.
+  let fsReady = false;
+  $effect(() => {
+    void fullscreen;
+    untrack(() => {
+      if (!fsReady) {
+        fsReady = true;
+        return;
+      }
+      const { w, h } = dims();
+      sim?.force('center', forceCenter(w / 2, h / 2));
+      if (!reducedMotion) {
+        armFit();
+        sim?.alpha(0.5).restart();
+      } else {
+        pendingFit = true;
+        // reduced-motion: no ticks will run — fit against the new viewport once the resize lands.
+        requestAnimationFrame(() =>
+          requestAnimationFrame(() => {
+            if (pendingFit) {
+              fitToNodes();
+              pendingFit = false;
+            }
+          })
+        );
+      }
+    });
   });
 
   // ── Timeline scrubber (replay recent activity by `at`) ──────────────────────────────────
@@ -471,6 +531,9 @@
     });
     if (stageEl) ro.observe(stageEl);
 
+    // Initial mount = the first explicit fit trigger: frame once after the layout settles, bounded.
+    armFit();
+
     let offFeed: (() => void) | undefined;
     if (feed) {
       try {
@@ -487,6 +550,7 @@
       mq.removeEventListener('change', onMq);
       ro.disconnect();
       offFeed?.();
+      if (fitTimer) clearTimeout(fitTimer);
       sim?.stop();
       sim = null;
     };

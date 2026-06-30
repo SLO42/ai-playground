@@ -74,6 +74,33 @@ fork the embedding path and spin up a second ns/db brain — fighting Atelier's 
 D-026 quarantine discipline. Instead: give the concierge a laqrumcode-**style** retrieval +
 extraction layer over Atelier's existing tables, embedding through the existing path.
 
+### 4.1 The vector DB is SurrealDB; the embedder is the one swappable piece
+
+There is **no separate vector database** — SurrealDB is multi-model (vector HNSW + graph +
+document + relational in one store). Atelier's vector indexes live inside it: `memory_vec`
+and `skill_vec` (1024-dim HNSW COSINE), `embedding_cache`, and the new `concept` embeddings
+use the same path. Adding a bolt-on vector DB (Pinecone/Qdrant/etc.) would split the brain
+and break the native joins between vectors, edges, and telemetry — and leave the D-026
+quarantine boundary. So: keep everything in the one SurrealDB store.
+
+The **only** component outside SurrealDB is the **embedder** (text → 1024-dim vector), and it
+sits behind a swappable `Embedder` interface (`memory/embed.ts`, injected into `memory/
+store.ts` / `memory/concepts.ts`; screen-before-embed, D-026). Current config: **Ollama →
+`qwen3-embedding:0.6b`, 1024-dim**, via `POST /api/embed` (`OllamaEmbedder`). Two INDEPENDENT
+knobs, both deferred optimizations (decide with the R@5 eval harness — do NOT block the
+foundation; the seam makes either a cheap swap that never touches the brain):
+
+1. **Serving — Ollama HTTP vs in-process (cpp/native).** Ollama adds an HTTP round-trip per
+   embed; an in-process embedder (llama.cpp / candle / a Rust binding — what laqrumcode's
+   daemon does) removes that overhead, which matters when the extraction/retrieval loop embeds
+   many items per turn. Our model is tiny (0.6B) so Ollama is fine for now.
+2. **Model — `qwen3-embedding:0.6b` vs BGE-M3.** laqrumcode's 98.2% R@5 is on **BGE-M3**; we
+   run qwen3-embedding 0.6b. Both 1024-dim (index-compatible), but retrieval *quality* may
+   differ. BGE-M3 is available via Ollama or cpp if we want laqrumcode-parity recall.
+
+Rule: keep the `Embedder` seam clean so serving and model can change behind it; any dim change
+must stay 1024 to match the live HNSW indexes (or migrate the index).
+
 ## 5. Stages (each at a cited seam)
 
 - **S0 — Ground-on-memory:** concierge reads via `memory/recall.ts` + `scene/scene.ts`; must

@@ -13,8 +13,19 @@
 // side-effecting init below runs at module-eval time, awaited via a shared promise
 // so the SSE route + loaders can observe the startup result without racing it.
 
+import type { Handle } from '@sveltejs/kit';
 import { env } from '$env/dynamic/private';
 import { initDbFromEnv, tryGetDb, type DbInitResult } from '$lib/server/db/runtime-init';
+import { readCredential } from '$lib/server/auth/credential';
+import {
+	AUTH_COOKIE,
+	acceptsHtml,
+	decideGate,
+	isExemptPath,
+	isLoopbackHost,
+	normalizeAddr,
+	verifySessionToken
+} from '$lib/server/auth/gate';
 import { closeDb } from '$lib/server/db/client';
 import { getEventBus, watchTable, WATCHED_TABLES, type DbSourceHandle } from '$lib/server/events';
 import { bootstrapControlPlane, type ListenerSpec } from '$lib/server/config/loopback';
@@ -358,3 +369,68 @@ async function bootstrap(): Promise<DbInitResult> {
 	}
 	return result;
 }
+
+// ── Login gate (non-loopback only) ───────────────────────────────────────────────
+//
+// The FIRST (and only) `handle` hook. Loopback requests pass UNTOUCHED — local use
+// is login-free (D-025). A NON-loopback (LAN/remote) request must present a valid
+// signed session cookie once a credential is set; before first-run it is steered to
+// /setup. This is casual gating over plain HTTP (see auth/credential.ts for the
+// honest scope caveat); it never touches the boot side-effects above.
+//
+// LOOPBACK DETECTION — WHY getClientAddress() first, Host header as fallback:
+// `event.getClientAddress()` reflects the real TCP peer (the adapter/Vite reads the
+// socket's remote address), so it cannot be spoofed by a header the way a `Host`/
+// `Origin` value can. We PREFER it. If it is empty/unavailable we fall back to the
+// `Host` header — which IS spoofable (a LAN client can send `Host: 127.0.0.1`), so
+// the fallback only weakens to "casual gating" honesty, never a hard security claim.
+// (Verified live under `vite dev --host`: loopback → 127.0.0.1 / ::1, LAN → the LAN IP.)
+function clientIsLoopback(event: Parameters<Handle>[0]['event']): boolean {
+	try {
+		const addr = event.getClientAddress();
+		if (addr) return isLoopbackHost(normalizeAddr(addr));
+	} catch {
+		// getClientAddress throws if the adapter can't determine it — fall through.
+	}
+	const host = event.request.headers.get('host');
+	if (!host) return false;
+	const bare = host.split(':')[0];
+	return isLoopbackHost(bare);
+}
+
+export const handle: Handle = async ({ event, resolve }) => {
+	const path = event.url.pathname;
+	const isLoopback = clientIsLoopback(event);
+
+	// Default request auth state (loopback is implicitly authed). The auth pages read
+	// `locals.auth.isLoopback`; they re-derive credential/cookie state from the DB.
+	event.locals.auth = { isLoopback, hasCredential: false, authed: isLoopback };
+
+	// Auth surface + control-plane callbacks + static assets bypass the gate entirely.
+	if (isExemptPath(path)) return resolve(event);
+	// Loopback is login-free — no DB read needed on the hot local path.
+	if (isLoopback) return resolve(event);
+
+	// External, non-exempt: consult the credential store (honest-degrade if DB down).
+	const db = tryGetDb();
+	let cred: Awaited<ReturnType<typeof readCredential>> | null = null;
+	if (db) {
+		try {
+			cred = await readCredential(db);
+		} catch {
+			cred = null; // DB error → treat as no credential → fail closed below.
+		}
+	}
+	const hasCredential = !!cred;
+	const validCookie = cred ? verifySessionToken(event.cookies.get(AUTH_COOKIE), cred.signSecret) : false;
+	event.locals.auth = { isLoopback, hasCredential, authed: validCookie };
+
+	const isBrowserGet =
+		event.request.method === 'GET' && acceptsHtml(event.request.headers.get('accept'));
+	const decision = decideGate({ hasCredential, validCookie, isBrowserGet, path });
+	if (decision.action === 'pass') return resolve(event);
+	if (decision.action === 'redirect') {
+		return new Response(null, { status: 303, headers: { location: decision.to } });
+	}
+	return new Response('Unauthorized', { status: 401, headers: { 'content-type': 'text/plain' } });
+};

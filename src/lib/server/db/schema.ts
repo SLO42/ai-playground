@@ -2468,6 +2468,28 @@ const m0070_session_specialist: Migration = {
 	`
 };
 
+// ── APP-AUTH (non-loopback login gate) — single-row operator credential ──────────
+//
+// Backs the casual LAN login gate (src/lib/server/auth). Loopback use is login-free
+// (D-025); a NON-loopback (LAN/remote) request must present a valid signed session
+// cookie. The operator sets the password on first run via /setup; we store a salted
+// scrypt HASH (never the plaintext — D-026) plus a random HMAC cookie-signing secret.
+// ONE row only (record id `app_auth:singleton`). The string fields are REQUIRED (set
+// together by setCredential); created_at/updated_at carry concrete DEFAULTs (§6.2),
+// coerced to ISO in the auth normalizer (F-013). ADDITIVE + idempotent (D-006/F-015,
+// OVERWRITE-only): a clean no-op over a fresh DB AND over a half-applied state.
+const m0071_app_auth: Migration = {
+	id: '0071_app_auth',
+	up: `
+		DEFINE TABLE OVERWRITE app_auth SCHEMAFULL;
+		DEFINE FIELD OVERWRITE password_hash ON app_auth TYPE string;
+		DEFINE FIELD OVERWRITE password_salt ON app_auth TYPE string;
+		DEFINE FIELD OVERWRITE sign_secret   ON app_auth TYPE string;
+		DEFINE FIELD OVERWRITE created_at     ON app_auth TYPE datetime DEFAULT time::now();
+		DEFINE FIELD OVERWRITE updated_at     ON app_auth TYPE datetime DEFAULT time::now();
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2544,5 +2566,6 @@ export const schemaMigrations: Migration[] = [
 	m0067_agent_event_parent,
 	m0068_project_game_verify,
 	m0069_session_agent,
-	m0070_session_specialist
+	m0070_session_specialist,
+	m0071_app_auth
 ];

@@ -1,24 +1,20 @@
 <script lang="ts">
   /**
-   * MemoryScene — the living-brain animated force graph (MEMORY-SCENE-SPEC §4).
+   * MemoryScene — the living-brain animated force graph (MEMORY-SCENE-SPEC §4), upgraded to a
+   * FULL interactive graph: a free camera (pan / wheel+button zoom / node drag with pin-release),
+   * a full-screen mode, click-to-inspect detail panel, project + agent node classes (distinct
+   * color + shape per class), live status coloring/pulse, and a timeline scrubber that replays
+   * recent activity by `at`.
    *
-   * An Obsidian-bubble-style force-directed scene of the RUNNING system: memory + job
-   * nodes (the MS-2 aggregator's derived TRUTH) positioned by a d3-force simulation, with
-   * motion.dev imperative springs LAYERED on the force positions for the live micro-
-   * animations — node SPAWN (wobbly pop), job FIRING (pulse/glow), CONNECTION (edge draw),
-   * node RETIRE (fade+shrink before removal).
+   * TRUTH vs FEED (F-008): this component does NOT fetch its own truth. The `graph` prop is the
+   * aggregator's derived node/edge truth (re-derived live by the loader on every relevant row
+   * change). The `feed` prop is the live DbChange stream — it ONLY drives the animation timeline;
+   * it never adds a node the truth doesn't have, so a stale feed can never paint stale state.
    *
-   * TRUTH vs FEED (F-008): this component does NOT fetch its own truth. The `graph` prop is
-   * the aggregator's derived node/edge truth (re-derived live by the loader on every
-   * relevant row change). The `feed` prop is the live DbChange stream (off the ONE SSE) —
-   * it ONLY drives the animation timeline (which node just spawned / fired / retired); it
-   * never adds a node the truth doesn't have. So a stale feed can never paint stale state.
-   *
-   * RAILS: design-system TOKENS only (node color per class/status — no hard-coded colors);
-   * transform/opacity-only animations for 60fps; prefers-reduced-motion → instant/opacity-
-   * only (no springs); honest empty ('no active memory/jobs yet'); keyboard-navigable +
-   * a text-equivalent (the scene is decorative-augmenting, never the only way to read state).
-   * Svelte 5 runes only.
+   * RAILS: design-system TOKENS only (color per class/status — no hard-coded colors); transform/
+   * opacity-only animations for 60fps; prefers-reduced-motion → instant/opacity-only (no springs,
+   * no status pulse); honest empty ('no active memory/jobs yet'); keyboard-navigable text-
+   * equivalent (the scene is decorative-augmenting, never the only way to read state). Svelte 5 runes.
    */
   import { onMount, untrack } from 'svelte';
   import { animate } from 'motion';
@@ -42,14 +38,15 @@
     type ForceLink,
     type AnimationIntent
   } from '$lib/client/scene/scene-graph';
+  import NodeInspector from './NodeInspector.svelte';
 
   interface Props {
-    /** The derived node/edge TRUTH (MS-2 aggregator). The component never fetches this. */
+    /** The derived node/edge TRUTH (aggregator). The component never fetches this. */
     graph: SceneGraph;
     /**
-     * Subscribe to the live DbChange feed (the ONE SSE). Called once on mount with a
-     * callback the component drives its animation timeline from; returns an unsubscribe.
-     * Decoupled as a prop so the component owns NO truth and is trivially testable/mountable.
+     * Subscribe to the live DbChange feed. Called once on mount with a callback the component
+     * drives its animation timeline from; returns an unsubscribe. Decoupled as a prop so the
+     * component owns NO truth and is trivially testable/mountable.
      */
     feed?: (onChange: (topic: string, change: SceneChange) => void) => () => void;
     /** Optional fixed height (px) for the canvas; defaults to a responsive 520. */
@@ -71,31 +68,144 @@
   let sim: Simulation<ForceNode, ForceLink> | null = null;
 
   let width = $state(0);
+  let stageH = $state(0);
   let svgEl = $state<SVGSVGElement | null>(null);
-  // node id → its <g> element (for imperative motion.dev animation).
+  let stageEl = $state<HTMLDivElement | null>(null);
   const nodeEls = new Map<string, SVGGElement>();
-  // link id → its <line> element.
   const edgeEls = new Map<string, SVGLineElement>();
-  // exiting node id → its <g> element (the retire-fade DOM layer).
   const exitEls = new Map<string, SVGGElement>();
-  // nodes currently animating OUT (retire) — held in the DOM until the fade completes.
   let exiting = $state<ForceNode[]>([]);
-  // ids we've already played a spawn for (so a truth refresh doesn't re-pop everything).
   const spawned = new Set<string>();
 
+  // ── Camera (pan / zoom) + full-screen ─────────────────────────────────────────────────
+  let tx = $state(0);
+  let ty = $state(0);
+  let k = $state(1);
+  let fullscreen = $state(false);
+  const MIN_K = 0.3;
+  const MAX_K = 4;
+  const clampK = (v: number): number => Math.min(MAX_K, Math.max(MIN_K, v));
+
   function dims(): { w: number; h: number } {
-    return { w: width || 800, h: height };
+    return { w: width || 800, h: fullscreen ? stageH || height : height };
   }
 
-  /** (Re)build the d3-force simulation from the current model. */
+  function clientToUser(e: { clientX: number; clientY: number }): { x: number; y: number } | null {
+    const ctm = svgEl?.getScreenCTM();
+    if (!ctm) return null;
+    const p = new DOMPoint(e.clientX, e.clientY).matrixTransform(ctm.inverse());
+    return { x: p.x, y: p.y };
+  }
+  function clientToSim(e: { clientX: number; clientY: number }): { x: number; y: number } | null {
+    const u = clientToUser(e);
+    return u ? { x: (u.x - tx) / k, y: (u.y - ty) / k } : null;
+  }
+  /** Zoom keeping the user-space point (ux,uy) fixed under the cursor. */
+  function zoomAround(ux: number, uy: number, factor: number): void {
+    const nk = clampK(k * factor);
+    tx = ux - ((ux - tx) / k) * nk;
+    ty = uy - ((uy - ty) / k) * nk;
+    k = nk;
+  }
+  function onWheel(e: WheelEvent): void {
+    e.preventDefault();
+    const u = clientToUser(e);
+    if (!u) return;
+    zoomAround(u.x, u.y, e.deltaY < 0 ? 1.12 : 1 / 1.12);
+  }
+  function zoomBtn(factor: number): void {
+    zoomAround(dims().w / 2, dims().h / 2, factor);
+  }
+  function resetCamera(): void {
+    tx = 0;
+    ty = 0;
+    k = 1;
+  }
+
+  // ── Pan + node-drag (pointer) ───────────────────────────────────────────────────────────
+  let panning = $state(false);
+  let panMoved = false;
+  let panStart = { cx: 0, cy: 0, tx: 0, ty: 0 };
+  let dragId: string | null = null;
+  let dragMoved = false;
+  let pinned = $state(new Set<string>());
+
+  function bgPointerDown(e: PointerEvent): void {
+    if (e.button !== 0) return;
+    panning = true;
+    panMoved = false;
+    panStart = { cx: e.clientX, cy: e.clientY, tx, ty };
+    svgEl?.setPointerCapture?.(e.pointerId);
+  }
+  function nodePointerDown(e: PointerEvent, id: string): void {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    dragId = id;
+    dragMoved = false;
+    svgEl?.setPointerCapture?.(e.pointerId);
+    if (!reducedMotion) sim?.alphaTarget(0.25).restart();
+  }
+  function onPointerMove(e: PointerEvent): void {
+    if (dragId) {
+      const c = clientToSim(e);
+      if (!c) return;
+      dragMoved = true;
+      const n = positioned.find((x) => x.id === dragId);
+      if (n) {
+        n.fx = c.x;
+        n.fy = c.y;
+        n.x = c.x;
+        n.y = c.y;
+        positioned = [...positioned];
+      }
+    } else if (panning) {
+      const dx = e.clientX - panStart.cx;
+      const dy = e.clientY - panStart.cy;
+      if (Math.abs(dx) + Math.abs(dy) > 2) panMoved = true;
+      tx = panStart.tx + dx;
+      ty = panStart.ty + dy;
+    }
+  }
+  function onPointerUp(): void {
+    if (dragId) {
+      if (!dragMoved) {
+        focus(dragId); // a tap (no drag) = inspect/focus
+      } else {
+        // dropped after a drag → keep it PINNED where placed (fx/fy retained).
+        pinned = new Set(pinned).add(dragId);
+      }
+      if (!reducedMotion) sim?.alphaTarget(0);
+      dragId = null;
+    } else if (panning && !panMoved) {
+      // a background tap (no drag) clears the selection.
+      focusId = null;
+    }
+    panning = false;
+  }
+  /** Release a pinned node back into the simulation. */
+  function unpin(id: string): void {
+    const n = positioned.find((x) => x.id === id);
+    if (n) {
+      n.fx = null;
+      n.fy = null;
+      positioned = [...positioned];
+    }
+    const next = new Set(pinned);
+    next.delete(id);
+    pinned = next;
+    if (!reducedMotion) sim?.alphaTarget(0.15).restart().alphaTarget(0);
+  }
+
+  /** (Re)build the d3-force simulation from the current model. Preserves position + pins. */
   function buildSim(): void {
     const { w, h } = dims();
     sim?.stop();
-    // Preserve positions of nodes that persist across a truth refresh (no teleport-replay).
     const prev = new Map(positioned.map((n) => [n.id, n]));
     const nodes: ForceNode[] = model.nodes.map((n) => {
       const p = prev.get(n.id);
-      return p ? { ...n, x: p.x, y: p.y, vx: p.vx, vy: p.vy } : { ...n, x: w / 2 + (Math.random() - 0.5) * 40, y: h / 2 + (Math.random() - 0.5) * 40 };
+      return p
+        ? { ...n, x: p.x, y: p.y, vx: p.vx, vy: p.vy, fx: p.fx, fy: p.fy }
+        : { ...n, x: w / 2 + (Math.random() - 0.5) * 40, y: h / 2 + (Math.random() - 0.5) * 40 };
     });
     const lks: ForceLink[] = model.links.map((l) => ({ ...l }));
 
@@ -107,7 +217,6 @@
       .alpha(0.9)
       .alphaDecay(0.045);
 
-    // Reduced motion: settle the layout synchronously (no animated physics tick stream).
     if (reducedMotion) {
       for (let i = 0; i < 240 && sim.alpha() > sim.alphaMin(); i++) sim.tick();
       sim.stop();
@@ -117,21 +226,37 @@
     }
 
     sim.on('tick', () => {
-      // Reassign for $state reactivity (the array identity changes each tick).
       positioned = [...nodes];
       links = lks;
     });
   }
 
-  // Rebuild whenever the truth model changes (node/edge set). Position is preserved above.
   $effect(() => {
-    // Track the model + reducedMotion; rebuild in an untracked block so the sim's own state
-    // writes don't loop the effect.
     void model;
     void reducedMotion;
     void width;
+    void fullscreen;
+    void stageH;
     untrack(() => buildSim());
   });
+
+  // ── Timeline scrubber (replay recent activity by `at`) ──────────────────────────────────
+  const times = $derived(
+    model.nodes
+      .map((n) => (n.at ? new Date(n.at).getTime() : NaN))
+      .filter((t) => !Number.isNaN(t))
+  );
+  const minAt = $derived(times.length ? Math.min(...times) : 0);
+  const maxAt = $derived(times.length ? Math.max(...times) : 0);
+  const hasScrub = $derived(times.length > 1 && maxAt > minAt);
+  // null cutoff = LIVE (show all); a number hides nodes whose `at` is older than it.
+  let cutoff = $state<number | null>(null);
+  function inWindow(n: ForceNode): boolean {
+    if (cutoff === null || !n.at) return true; // structural nodes (no `at`) always show
+    const t = new Date(n.at).getTime();
+    return Number.isNaN(t) || t >= cutoff;
+  }
+  const cutoffLabel = $derived(cutoff === null ? 'live · all' : new Date(cutoff).toLocaleString());
 
   // ── Live feed → animation intents (the §4 micro-animations) ───────────────────────────
   function play(intent: AnimationIntent): void {
@@ -141,7 +266,6 @@
         return;
       }
       const el = nodeEls.get(intent.target);
-      // pulse on a live node; spawn is driven by the mount pass (the node may not exist yet).
       if (el) animateNode(el, intent);
     } else {
       const el = edgeEls.get(intent.target);
@@ -149,29 +273,18 @@
     }
   }
 
-  /**
-   * Retire a node: fade+shrink it BEFORE DOM removal (AnimatePresence-equivalent). We snapshot
-   * the live node into `exiting` (its own DOM layer) so the fade survives the truth refresh
-   * that drops it from the simulation; when the fade finishes we remove the snapshot. If the
-   * node isn't currently rendered we no-op (nothing to fade). Re-allowing a future re-spawn:
-   * its id is cleared from `spawned` so a later CREATE pops it again.
-   */
   function retire(id: string): void {
     spawned.delete(id);
-    if (exiting.some((n) => n.id === id)) return; // already exiting
+    if (exiting.some((n) => n.id === id)) return;
     const node = positioned.find((n) => n.id === id);
-    if (!node) return; // not on screen — nothing to fade
+    if (!node) return;
     exiting = [...exiting, { ...node }];
   }
 
   function animateNode(el: SVGGElement, intent: AnimationIntent, onDone?: () => void): void {
     const kf = keyframesFor(intent.kind, reducedMotion);
     const tr = springFor(intent.kind, reducedMotion);
-    // motion.dev imperative core — transform/opacity only.
     const controls = animate(el, kf as Record<string, number[]>, tr as Parameters<typeof animate>[2]);
-    // The imperative controls are promise-like (`.then` resolves when the animation finishes);
-    // we await that to remove the node only AFTER its retire fade completes (AnimatePresence-
-    // equivalent — animate-out then DOM removal).
     if (onDone) void Promise.resolve(controls).then(onDone, onDone);
   }
 
@@ -181,9 +294,7 @@
     animate(el, kf as Record<string, number[]>, tr as Parameters<typeof animate>[2]);
   }
 
-  // exiting-node ids whose fade has already been started (so the effect plays each once).
   const exitPlayed = new Set<string>();
-  // Play the retire fade on each exiting node's element, then drop it from the DOM.
   $effect(() => {
     void exiting;
     untrack(() => {
@@ -204,15 +315,10 @@
     });
   });
 
-  // ── Spawn pass: pop any node that is newly in the truth (mount-time micro-animation) ──
+  // ── Spawn pass: pop any node newly in the truth (mount-time micro-animation) ──
   $effect(() => {
     void positioned;
     untrack(() => {
-      if (reducedMotion) {
-        // Still honor opacity-only spawn for newcomers (no transform).
-        for (const n of positioned) if (!spawned.has(n.id)) markSpawn(n.id);
-        return;
-      }
       for (const n of positioned) {
         if (spawned.has(n.id)) continue;
         markSpawn(n.id);
@@ -221,7 +327,6 @@
   });
   function markSpawn(id: string): void {
     spawned.add(id);
-    // Defer one frame so the <g> exists, then play the spawn pop.
     requestAnimationFrame(() => {
       const el = nodeEls.get(id);
       if (el) animateNode(el, { kind: 'spawn', target: id, on: 'node' });
@@ -241,7 +346,7 @@
     return { destroy: () => exitEls.delete(id) };
   }
 
-  // ── Focus / keyboard nav (text-equivalent + a11y) ─────────────────────────────────────
+  // ── Focus / selection (text-equivalent + click-to-inspect) ──────────────────────────────
   let focusId = $state<string | null>(null);
   const neighbours = $derived(
     focusId
@@ -252,6 +357,7 @@
         )
       : new Set<string>()
   );
+  const selected = $derived(focusId ? (positioned.find((n) => n.id === focusId) ?? null) : null);
 
   function srcId(l: ForceLink): string {
     return typeof l.source === 'string' ? l.source : (l.source as ForceNode).id;
@@ -267,9 +373,21 @@
     const n = l[end];
     return typeof n === 'object' ? ((n as ForceNode).y ?? 0) : 0;
   }
+  function edgeInWindow(l: ForceLink): boolean {
+    const s = positioned.find((n) => n.id === srcId(l));
+    const t = positioned.find((n) => n.id === tgtId(l));
+    return (!s || inWindow(s)) && (!t || inWindow(t));
+  }
 
   function focus(id: string): void {
     focusId = focusId === id ? null : id;
+  }
+
+  function onKeydown(e: KeyboardEvent): void {
+    if (e.key === 'Escape') {
+      if (focusId) focusId = null;
+      else if (fullscreen) fullscreen = false;
+    }
   }
 
   // ── Mount: reduced-motion, resize, feed subscription, teardown ─────────────────────────
@@ -280,12 +398,14 @@
     mq.addEventListener('change', onMq);
 
     const ro = new ResizeObserver((entries) => {
-      width = entries[0]?.contentRect.width ?? width;
+      const r = entries[0]?.contentRect;
+      if (r) {
+        width = r.width;
+        stageH = r.height;
+      }
     });
-    if (svgEl?.parentElement) ro.observe(svgEl.parentElement);
+    if (stageEl) ro.observe(stageEl);
 
-    // Subscribe the live feed → animation timeline. The component owns NO truth; this only
-    // animates. A throwing/absent feed is tolerated (the static graph still renders).
     let offFeed: (() => void) | undefined;
     if (feed) {
       try {
@@ -308,64 +428,143 @@
   });
 </script>
 
-<div class="scene" style:--scene-h="{height}px">
+<svelte:window onkeydown={onKeydown} />
+
+<div class="scene" class:fullscreen style:--scene-h="{height}px">
   {#if !hasNodes}
     <!-- Honest empty (F-008) — never a faked graph. -->
     <div class="empty" role="status">
       <span class="eyebrow">scene</span>
-      <p class="empty-body">No active memory or jobs yet — the scene animates as entities, sessions and work items land.</p>
+      <p class="empty-body">No active memory or jobs yet — the scene animates as entities, sessions, projects and agents land.</p>
     </div>
   {:else}
-    <!-- The animated scene (decorative-augmenting). aria-hidden so AT users get the
-         text-equivalent below instead of an unlabelled SVG soup. -->
-    <svg
-      bind:this={svgEl}
-      class="canvas"
-      viewBox="0 0 {dims().w} {dims().h}"
-      preserveAspectRatio="xMidYMid meet"
-      aria-hidden="true"
-    >
-      <g class="edges">
-        {#each links as l (l.id)}
-          <line
-            use:registerEdge={l.id}
-            class="edge"
-            data-kind={l.kind}
-            data-active={focusId !== null && (srcId(l) === focusId || tgtId(l) === focusId)}
-            x1={nx(l, 'source')}
-            y1={ny(l, 'source')}
-            x2={nx(l, 'target')}
-            y2={ny(l, 'target')}
-          />
-        {/each}
-      </g>
-      <g class="nodes">
-        {#each positioned as n (n.id)}
-          {@const v = nodeVisual(n)}
-          <g
-            use:registerNode={n.id}
-            class="node"
-            data-class={v.colorClass}
-            data-status={v.statusClass}
-            data-focus={focusId === n.id}
-            data-neighbour={neighbours.has(n.id)}
-            data-dim={focusId !== null && focusId !== n.id && !neighbours.has(n.id)}
-            transform="translate({n.x ?? 0},{n.y ?? 0})"
-          >
-            <circle class="bubble" r={v.radius} />
-          </g>
-        {/each}
-        {#each exiting as n (n.id)}
-          {@const v = nodeVisual(n)}
-          <g use:registerExit={n.id} class="node exiting" data-class={v.colorClass} data-status={v.statusClass} transform="translate({n.x ?? 0},{n.y ?? 0})">
-            <circle class="bubble" r={v.radius} />
-          </g>
-        {/each}
-      </g>
-    </svg>
+    <div class="stage" bind:this={stageEl}>
+      <!-- Camera controls (overlay, top-right). -->
+      <div class="controls" role="group" aria-label="Scene camera controls">
+        <button type="button" class="ctl" onclick={() => zoomBtn(1.2)} aria-label="Zoom in" title="Zoom in">+</button>
+        <button type="button" class="ctl" onclick={() => zoomBtn(1 / 1.2)} aria-label="Zoom out" title="Zoom out">−</button>
+        <button type="button" class="ctl" onclick={resetCamera} aria-label="Reset camera" title="Reset view">⤢</button>
+        <button
+          type="button"
+          class="ctl"
+          onclick={() => (fullscreen = !fullscreen)}
+          aria-pressed={fullscreen}
+          aria-label={fullscreen ? 'Exit full screen' : 'Full screen'}
+          title={fullscreen ? 'Exit full screen' : 'Full screen'}
+        >{fullscreen ? '✕' : '⛶'}</button>
+      </div>
 
-    <!-- Text-equivalent: a keyboard-navigable list of the SAME nodes. This is the honest,
-         non-decorative read of the scene (a11y) — every node reachable + focusable. -->
+      <!-- The animated scene. aria-hidden so AT users get the text-equivalent list below;
+           mouse users get pan (drag background), zoom (wheel/buttons) and node drag. -->
+      <!-- svelte-ignore a11y_no_static_element_interactions -->
+      <svg
+        bind:this={svgEl}
+        class="canvas"
+        viewBox="0 0 {dims().w} {dims().h}"
+        preserveAspectRatio="xMidYMid meet"
+        aria-hidden="true"
+        data-panning={panning}
+        onwheel={onWheel}
+        onpointermove={onPointerMove}
+        onpointerup={onPointerUp}
+        onpointercancel={onPointerUp}
+      >
+        <rect class="bg" x="0" y="0" width={dims().w} height={dims().h} onpointerdown={bgPointerDown} />
+        <g class="camera" transform="translate({tx},{ty}) scale({k})">
+          <g class="edges">
+            {#each links as l (l.id)}
+              <line
+                use:registerEdge={l.id}
+                class="edge"
+                data-kind={l.kind}
+                data-active={focusId !== null && (srcId(l) === focusId || tgtId(l) === focusId)}
+                data-faded={!edgeInWindow(l)}
+                x1={nx(l, 'source')}
+                y1={ny(l, 'source')}
+                x2={nx(l, 'target')}
+                y2={ny(l, 'target')}
+              />
+            {/each}
+          </g>
+          <g class="nodes">
+            {#each positioned as n (n.id)}
+              {@const v = nodeVisual(n)}
+              <!-- svelte-ignore a11y_no_static_element_interactions -->
+              <g
+                use:registerNode={n.id}
+                class="node"
+                data-class={v.colorClass}
+                data-status={v.statusClass}
+                data-focus={focusId === n.id}
+                data-neighbour={neighbours.has(n.id)}
+                data-pinned={pinned.has(n.id)}
+                data-dim={focusId !== null && focusId !== n.id && !neighbours.has(n.id)}
+                data-faded={!inWindow(n)}
+                transform="translate({n.x ?? 0},{n.y ?? 0})"
+                onpointerdown={(e) => nodePointerDown(e, n.id)}
+              >
+                {#if n.class === 'project'}
+                  <rect class="bubble" x={-v.radius} y={-v.radius} width={v.radius * 2} height={v.radius * 2} rx="3" />
+                {:else if n.class === 'agent'}
+                  <polygon class="bubble" points="0,{-v.radius} {v.radius},0 0,{v.radius} {-v.radius},0" />
+                {:else}
+                  <circle class="bubble" r={v.radius} />
+                {/if}
+              </g>
+            {/each}
+            {#each exiting as n (n.id)}
+              {@const v = nodeVisual(n)}
+              <g use:registerExit={n.id} class="node exiting" data-class={v.colorClass} data-status={v.statusClass} transform="translate({n.x ?? 0},{n.y ?? 0})">
+                {#if n.class === 'project'}
+                  <rect class="bubble" x={-v.radius} y={-v.radius} width={v.radius * 2} height={v.radius * 2} rx="3" />
+                {:else if n.class === 'agent'}
+                  <polygon class="bubble" points="0,{-v.radius} {v.radius},0 0,{v.radius} {-v.radius},0" />
+                {:else}
+                  <circle class="bubble" r={v.radius} />
+                {/if}
+              </g>
+            {/each}
+          </g>
+        </g>
+      </svg>
+
+      <!-- Click-to-inspect detail panel (overlay; metadata only — D-026). -->
+      {#if selected}
+        <div class="inspector-wrap">
+          <NodeInspector
+            node={selected}
+            {links}
+            pinned={pinned.has(selected.id)}
+            onclose={() => (focusId = null)}
+            onunpin={() => unpin(selected.id)}
+          />
+        </div>
+      {/if}
+    </div>
+
+    <!-- Timeline scrubber (replay recent activity by `at`). Reduced-motion safe: it only
+         filters/repaints, no animation. Hidden when there's nothing to scrub. -->
+    {#if hasScrub}
+      <div class="scrubber">
+        <span class="eyebrow">timeline</span>
+        <input
+          class="scrub-range"
+          type="range"
+          min={minAt}
+          max={maxAt}
+          step={Math.max(1, Math.round((maxAt - minAt) / 200))}
+          value={cutoff ?? minAt}
+          aria-label="Filter scene to activity after a time"
+          oninput={(e) => (cutoff = Number((e.currentTarget as HTMLInputElement).value))}
+        />
+        <span class="scrub-label mono">{cutoffLabel}</span>
+        {#if cutoff !== null}
+          <button type="button" class="scrub-live" onclick={() => (cutoff = null)}>live</button>
+        {/if}
+      </div>
+    {/if}
+
+    <!-- Text-equivalent: a keyboard-navigable list of the SAME nodes (a11y). -->
     <ul class="legend" aria-label="Scene nodes ({positioned.length})">
       {#each positioned as n (n.id)}
         {@const v = nodeVisual(n)}
@@ -376,6 +575,7 @@
             data-class={v.colorClass}
             data-status={v.statusClass}
             data-focus={focusId === n.id}
+            data-faded={!inWindow(n)}
             data-dim={focusId !== null && focusId !== n.id && !neighbours.has(n.id)}
             aria-pressed={focusId === n.id}
             onclick={() => focus(n.id)}
@@ -397,14 +597,76 @@
     gap: var(--space-3, 0.75rem);
     width: 100%;
   }
-  .canvas {
+  .scene.fullscreen {
+    position: fixed;
+    inset: 0;
+    z-index: 50;
+    background: var(--color-bg);
+    padding: var(--space-4, 1.25rem);
+    gap: var(--space-2, 0.5rem);
+  }
+  .stage {
+    position: relative;
     width: 100%;
     height: var(--scene-h, 520px);
+  }
+  .scene.fullscreen .stage {
+    flex: 1;
+    height: auto;
+  }
+  .canvas {
+    width: 100%;
+    height: 100%;
     display: block;
-    background:
-      radial-gradient(circle at 50% 40%, var(--color-surface-overlay), var(--color-surface) 70%);
+    background: radial-gradient(circle at 50% 40%, var(--color-surface-overlay), var(--color-surface) 70%);
     border: 1px solid var(--color-border);
     border-radius: var(--radius-md, 10px);
+    touch-action: none;
+    cursor: grab;
+  }
+  .canvas[data-panning='true'] {
+    cursor: grabbing;
+  }
+  .bg {
+    fill: transparent;
+  }
+  .controls {
+    position: absolute;
+    top: var(--space-2, 0.5rem);
+    right: var(--space-2, 0.5rem);
+    z-index: 2;
+    display: flex;
+    gap: 0.25rem;
+  }
+  .ctl {
+    width: 1.9rem;
+    height: 1.9rem;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 0.95rem;
+    color: var(--color-text-2);
+    background: var(--color-surface-raised);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    cursor: pointer;
+    transition: border-color 0.14s ease, color 0.14s ease;
+  }
+  .ctl:hover {
+    border-color: var(--color-accent);
+    color: var(--color-text);
+  }
+  .ctl:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  .inspector-wrap {
+    position: absolute;
+    top: var(--space-2, 0.5rem);
+    left: var(--space-2, 0.5rem);
+    z-index: 2;
+    width: min(20rem, calc(100% - 1rem));
+    max-height: calc(100% - 1rem);
   }
   .empty {
     display: flex;
@@ -441,51 +703,109 @@
     opacity: 0.55;
     transition: opacity 0.16s ease, stroke 0.16s ease;
   }
+  .edge[data-kind='references'] { stroke: var(--color-accent-muted, var(--color-border)); }
+  .edge[data-kind='agent'] { stroke-dasharray: 3 3; }
   .edge[data-active='true'] {
     stroke: var(--color-accent);
     opacity: 1;
   }
+  .edge[data-faded='true'] {
+    opacity: 0.08;
+  }
 
-  /* Nodes — color FAMILY by class, status by data-status (TOKENS only, no literals). */
+  /* Nodes — color FAMILY + SHAPE by class, status by data-status (TOKENS only). */
   .node {
-    /* transform is owned by d3 (translate) + motion (scale layered via the element's
-       transform); transform-origin center so the spring scales about the bubble. */
     transform-box: fill-box;
+    cursor: pointer;
   }
   .bubble {
     stroke: var(--color-surface);
     stroke-width: 1;
   }
-  /* memory family → accent; job family → status-colored. */
-  .node[data-class='memory'] .bubble {
-    fill: var(--color-accent);
-  }
-  .node[data-class='job'][data-status='active'] .bubble {
-    fill: var(--color-running);
-  }
-  .node[data-class='job'][data-status='pending'] .bubble {
-    fill: var(--color-info);
-  }
-  .node[data-class='job'][data-status='done'] .bubble {
-    fill: var(--color-success);
-  }
-  .node[data-class='job'][data-status='failed'] .bubble {
-    fill: var(--color-warn);
-  }
+  /* memory family → accent; job family → status-colored (load-bearing); project → rust; agent → blue. */
+  .node[data-class='memory'] .bubble { fill: var(--color-accent); }
+  .node[data-class='job'][data-status='active'] .bubble { fill: var(--color-running); }
+  .node[data-class='job'][data-status='pending'] .bubble { fill: var(--color-info); }
+  .node[data-class='job'][data-status='done'] .bubble { fill: var(--color-success); }
+  .node[data-class='job'][data-status='failed'] .bubble { fill: var(--color-warn); }
+  .node[data-class='project'] .bubble { fill: var(--color-blocked); }
+  .node[data-class='agent'] .bubble { fill: var(--color-info); }
   .node[data-status='dim'] .bubble {
     fill: var(--color-text-muted);
     opacity: 0.5;
   }
+
+  /* Status ring (project/agent carry status via the stroke; job carries it via fill). */
+  .node[data-class='project'][data-status='active'] .bubble,
+  .node[data-class='agent'][data-status='active'] .bubble {
+    stroke: var(--color-running);
+    stroke-width: 2;
+  }
+  .node[data-class='project'][data-status='idle'] .bubble,
+  .node[data-class='agent'][data-status='idle'] .bubble {
+    stroke: var(--color-neutral);
+    stroke-width: 1.5;
+  }
+  .node[data-class='project'][data-status='dim'] .bubble {
+    opacity: 0.5;
+  }
+
+  /* Live status pulse for running nodes (disabled under reduced-motion). */
+  .node[data-status='active'] .bubble {
+    animation: scene-node-pulse 1.9s ease-in-out infinite;
+  }
+
   .node[data-focus='true'] .bubble {
     stroke: var(--color-accent);
-    stroke-width: 2;
+    stroke-width: 2.5;
   }
   .node[data-neighbour='true'] .bubble {
     stroke: var(--color-accent-muted);
     stroke-width: 1.5;
   }
+  .node[data-pinned='true'] .bubble {
+    stroke-dasharray: 2 2;
+  }
   .node[data-dim='true'] {
     opacity: 0.3;
+  }
+  .node[data-faded='true'] {
+    opacity: 0.12;
+    pointer-events: none;
+  }
+
+  @keyframes scene-node-pulse {
+    0%, 100% { stroke-opacity: 0.85; }
+    50% { stroke-opacity: 0.2; }
+  }
+
+  /* Timeline scrubber. */
+  .scrubber {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+  }
+  .scrub-range {
+    flex: 1;
+    min-width: 10rem;
+    accent-color: var(--color-accent);
+  }
+  .scrub-label {
+    font-size: 0.66rem;
+    color: var(--color-text-muted);
+  }
+  .scrub-live {
+    font-size: 0.66rem;
+    color: var(--color-text-2);
+    background: var(--color-surface-overlay);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.15rem 0.5rem;
+    cursor: pointer;
+  }
+  .scrub-live:hover {
+    border-color: var(--color-accent);
   }
 
   /* Legend / text-equivalent — keyboard-navigable list of the same nodes. */
@@ -498,6 +818,9 @@
     gap: var(--space-2, 0.5rem);
     max-height: 14rem;
     overflow-y: auto;
+  }
+  .scene.fullscreen .legend {
+    max-height: 9rem;
   }
   .legend-node {
     display: inline-flex;
@@ -526,30 +849,23 @@
   .legend-node[data-dim='true'] {
     opacity: 0.45;
   }
+  .legend-node[data-faded='true'] {
+    opacity: 0.35;
+  }
   .dot {
     width: 0.6rem;
     height: 0.6rem;
     border-radius: 50%;
     flex: none;
   }
-  .dot[data-class='memory'] {
-    background: var(--color-accent);
-  }
-  .dot[data-class='job'][data-status='active'] {
-    background: var(--color-running);
-  }
-  .dot[data-class='job'][data-status='pending'] {
-    background: var(--color-info);
-  }
-  .dot[data-class='job'][data-status='done'] {
-    background: var(--color-success);
-  }
-  .dot[data-class='job'][data-status='failed'] {
-    background: var(--color-warn);
-  }
-  .dot[data-status='dim'] {
-    background: var(--color-text-muted);
-  }
+  .dot[data-class='memory'] { background: var(--color-accent); }
+  .dot[data-class='job'][data-status='active'] { background: var(--color-running); }
+  .dot[data-class='job'][data-status='pending'] { background: var(--color-info); }
+  .dot[data-class='job'][data-status='done'] { background: var(--color-success); }
+  .dot[data-class='job'][data-status='failed'] { background: var(--color-warn); }
+  .dot[data-class='project'] { background: var(--color-blocked); border-radius: 2px; }
+  .dot[data-class='agent'] { background: var(--color-info); border-radius: 2px; transform: rotate(45deg); }
+  .dot[data-status='dim'] { background: var(--color-text-muted); }
   .legend-label {
     overflow: hidden;
     text-overflow: ellipsis;
@@ -567,6 +883,9 @@
     }
     .legend-node {
       transition: none;
+    }
+    .node[data-status='active'] .bubble {
+      animation: none;
     }
   }
 </style>

@@ -101,6 +101,8 @@
       stream.onDbChange('references', () => void invalidate('app:scene')),
       stream.onDbChange('session', () => void invalidate('app:scene')),
       stream.onDbChange('work_item', () => void invalidate('app:scene')),
+      // project node class (interactive-graph wave) — a project row change re-derives the scene.
+      stream.onDbChange('project', () => void invalidate('app:scene')),
       // MEMORY-SCENE-SPEC §5 — a new scene_event re-runs the loader so the activity feed
       // (the "what's happening now" panel) refreshes live off its derived truth.
       stream.onDbChange('scene_event', () => void invalidate('app:scene'))
@@ -184,6 +186,8 @@
             <li><span class="key-dot" data-class="job" data-status="pending" aria-hidden="true"></span>job · pending</li>
             <li><span class="key-dot" data-class="job" data-status="done" aria-hidden="true"></span>job · done</li>
             <li><span class="key-dot" data-class="job" data-status="failed" aria-hidden="true"></span>job · failed</li>
+            <li><span class="key-dot" data-class="project" aria-hidden="true"></span>project</li>
+            <li><span class="key-dot" data-class="agent" aria-hidden="true"></span>agent</li>
           </ul>
         </div>
         <MemoryScene graph={scene} feed={sceneFeed} />
@@ -431,6 +435,15 @@
   }
   .key-dot[data-class='job'][data-status='failed'] {
     background: var(--color-warn);
+  }
+  .key-dot[data-class='project'] {
+    background: var(--color-blocked);
+    border-radius: 2px;
+  }
+  .key-dot[data-class='agent'] {
+    background: var(--color-info);
+    border-radius: 1px;
+    transform: rotate(45deg);
   }
   .activity-card {
     position: sticky;

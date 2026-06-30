@@ -759,6 +759,16 @@ export const actions: Actions = {
 		if (!taskId) {
 			return fail(400, { launch: { error: 'Pick a task to launch a session against.' } });
 		}
+
+		// AGENT-INVOCATION seam (GATED, operator-driven): an OPTIONAL `.claude/agents` specialist
+		// NAME the operator deliberately routed this manual launch to (e.g. from the catalog's
+		// propose-only recommender). It is recorded as PROVENANCE on the session row (m0070
+		// session.specialist) so the catalog can count REAL per-specialist usage — it does NOT
+		// change tier/slot selection. This is the ONLY write-path that sets `specialist`; the
+		// orchestrator drain never does (no silent auto-reroute — recommendation stays propose-only).
+		// Absent/blank ⇒ omitted (the slot-only spawn, unchanged behaviour).
+		const rawSpecialist = form.get('specialist');
+		const specialist = typeof rawSpecialist === 'string' ? rawSpecialist.trim() : '';
 		try {
 			assertRecordId(taskId);
 		} catch {
@@ -800,7 +810,9 @@ export const actions: Actions = {
 					toolPolicy: DEFAULT_TOOL_POLICY,
 					// D-036: the resolved intent bundle's capability set, validated + composed
 					// against the live catalog inside the runtime (fail closed on an unknown id).
-					capabilities: resolveCapabilitiesForIntent(DEFAULT_INTENT)
+					capabilities: resolveCapabilitiesForIntent(DEFAULT_INTENT),
+					// GATED specialist provenance (see the seam note above) — omitted when not supplied.
+					...(specialist ? { specialist } : {})
 				}
 			});
 			return {

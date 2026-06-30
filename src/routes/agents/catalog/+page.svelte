@@ -11,10 +11,40 @@
    * the SSE `session` stream. Svelte 5 runes; design tokens; a11y.
    */
   import { invalidate } from '$app/navigation';
+  import { enhance } from '$app/forms';
   import { stream } from '$lib/client/stream.svelte';
-  import type { PageData } from './$types';
+  import type { PageData, ActionData } from './$types';
 
-  let { data }: { data: PageData } = $props();
+  let { data, form }: { data: PageData; form: ActionData } = $props();
+
+  // Propose-only recommender result (the `recommend` action). Writes NOTHING to the spawn path.
+  const recommend = $derived(
+    form && typeof form === 'object' && 'recommend' in form
+      ? (form.recommend as Record<string, unknown>)
+      : null
+  );
+  const recError = $derived(
+    recommend && 'error' in recommend ? (recommend.error as string) : null
+  );
+  const recList = $derived(
+    recommend && 'ok' in recommend && recommend.ok
+      ? (recommend.recommendations as Array<{
+          name: string;
+          score: number;
+          normalized: number;
+          matchedCapabilities: string[];
+          matchedTerms: string[];
+          rationale: string;
+        }>)
+      : []
+  );
+  let recommending = $state(false);
+
+  /** Select a recommended agent in the detail pane (finds its relPath by name). */
+  function selectByName(name: string) {
+    const hit = agents.find((a) => a.name === name);
+    if (hit) selectAgent(hit.relPath);
+  }
 
   const agents = $derived(data.agents ?? []);
   const types = $derived(data.types ?? []);
@@ -104,8 +134,9 @@
     <h1 class="title">Agent library</h1>
     <p class="lede">
       Every specialist agent the harness can spawn, read straight from its definition file —
-      with its when-to-use, capabilities, and the usage it has seen. Usage is bridged by agent
-      name ⋈ <span class="mono">role.slug</span>; an agent with no matching certified role shows
+      with its when-to-use, capabilities, and the usage it has seen. Usage counts by
+      <span class="mono">session.specialist</span> (exact invocations) ∪ certified role
+      <span class="mono">role.slug</span> (fallback); an agent with neither shows
       <strong>no runs yet</strong> rather than a fabricated count.
     </p>
     <p class="crumbs"><a class="inline-link" href="/agents">← Agents (fleet &amp; usage)</a></p>
@@ -153,6 +184,97 @@
         {/each}
       </div>
     </div>
+
+    <!-- PROPOSE-ONLY recommender: describe a task → ranked specialists. Writes NOTHING to spawn. -->
+    <details class="recommend-panel card">
+      <summary class="rec-summary">
+        <span class="d-label">recommend a specialist for a task</span>
+        <span class="rec-hint">propose-only · scores name · capabilities · when-to-use</span>
+      </summary>
+      <form
+        method="POST"
+        action="?/recommend"
+        class="rec-form"
+        use:enhance={() => {
+          recommending = true;
+          return async ({ update }) => {
+            await update({ reset: false });
+            recommending = false;
+          };
+        }}
+      >
+        <input
+          class="search"
+          type="text"
+          name="title"
+          placeholder="Task title (e.g. Add a SurrealDB migration for session.specialist)"
+          aria-label="task title"
+        />
+        <textarea
+          class="rec-textarea"
+          name="description"
+          rows="2"
+          placeholder="Description — what changes and the context…"
+          aria-label="task description"
+        ></textarea>
+        <div class="rec-row">
+          <input class="search" type="text" name="objective" placeholder="Objective (optional)" aria-label="objective" />
+          <input
+            class="search"
+            type="text"
+            name="acceptanceCriteria"
+            placeholder="Acceptance criteria (optional)"
+            aria-label="acceptance criteria"
+          />
+        </div>
+        <button class="rec-go" type="submit" disabled={recommending}>
+          {recommending ? 'Scoring…' : 'Recommend specialists'}
+        </button>
+      </form>
+
+      {#if recError}
+        <p class="state-body small rec-err" role="status">{recError}</p>
+      {:else if recommend && 'ok' in recommend}
+        {#if recList.length === 0}
+          <p class="state-body small" role="status">
+            No specialist scored against that task signal — try more specific wording (capabilities,
+            stack, domain). Showing nothing rather than a fabricated match.
+          </p>
+        {:else}
+          <ol class="rec-results" aria-label="recommended specialists">
+            {#each recList as r, i (r.name)}
+              <li class="rec-item">
+                <div class="rec-rank">{i + 1}</div>
+                <div class="rec-body">
+                  <div class="rec-top">
+                    <button class="rec-name mono" type="button" onclick={() => selectByName(r.name)}>
+                      {r.name}
+                    </button>
+                    <span class="rec-score" title="relative match strength (top = 1.00)">
+                      {r.normalized.toFixed(2)}
+                    </span>
+                  </div>
+                  <div class="rec-bar" aria-hidden="true">
+                    <span class="rec-bar-fill" style={`width:${Math.round(r.normalized * 100)}%`}></span>
+                  </div>
+                  <p class="rec-why">{r.rationale}</p>
+                  {#if r.matchedCapabilities.length}
+                    <div class="caps">
+                      {#each r.matchedCapabilities as cap (cap)}<span class="cap mono">{cap}</span>{/each}
+                    </div>
+                  {/if}
+                </div>
+              </li>
+            {/each}
+          </ol>
+          <p class="mapnote">
+            Propose-only — this recommends, it does not spawn. To actually run a session as a
+            specialist (and start its <span class="mono">session.specialist</span> usage count), use
+            the gated manual-launch control on the project page.
+          </p>
+        {/if}
+      {/if}
+    </details>
 
     <div class="split">
       <ul class="list" aria-label="agent library">
@@ -225,7 +347,17 @@
                 <div><span class="u-n">{fmtDur(u.avgDurationMs)}</span><span class="u-k">avg duration</span></div>
               </div>
               <p class="mapnote">
-                Mapped by slug <span class="mono">{u.slug}</span>{#if u.roleName} ({u.roleName}){/if}.
+                {#if u.bridge === 'specialist'}
+                  Counted by <span class="mono">session.specialist</span> — {u.viaSpecialist} exact
+                  invocation{u.viaSpecialist === 1 ? '' : 's'} of this agent.
+                {:else if u.bridge === 'mixed'}
+                  Counted by <span class="mono">session.specialist</span> ({u.viaSpecialist}) ∪
+                  certified role <span class="mono">{u.slug}</span>{#if u.roleName} ({u.roleName}){/if}
+                  ({u.viaRole}).
+                {:else}
+                  Bridged by certified role <span class="mono">{u.slug}</span>{#if u.roleName} ({u.roleName}){/if}
+                  — {u.viaRole} session{u.viaRole === 1 ? '' : 's'} (no exact specialist tag yet).
+                {/if}
               </p>
             {:else}
               <p class="state-body small">
@@ -400,6 +532,154 @@
   .chip:focus-visible {
     outline: 2px solid var(--color-accent);
     outline-offset: 1px;
+  }
+
+  .recommend-panel {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  .rec-summary {
+    cursor: pointer;
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+  }
+  .rec-summary:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  .rec-hint {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    opacity: 0.8;
+  }
+  .rec-form {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    margin-top: var(--space-2, 0.5rem);
+  }
+  .rec-textarea {
+    background: var(--color-surface);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md, 0.5rem);
+    color: var(--color-text);
+    padding: 0.4rem 0.6rem;
+    font-size: var(--text-sm);
+    font-family: inherit;
+    resize: vertical;
+  }
+  .rec-textarea:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  .rec-row {
+    display: flex;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+  }
+  .rec-row .search {
+    flex: 1 1 12rem;
+  }
+  .rec-go {
+    align-self: flex-start;
+    background: var(--color-accent);
+    color: var(--color-bg, #0d1117);
+    border: 1px solid var(--color-accent);
+    border-radius: var(--radius-md, 0.5rem);
+    padding: 0.4rem 0.9rem;
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .rec-go:disabled {
+    opacity: 0.6;
+    cursor: progress;
+  }
+  .rec-go:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+  }
+  .rec-err {
+    color: var(--color-warning, #d29922);
+  }
+  .rec-results {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+  }
+  .rec-item {
+    display: flex;
+    gap: var(--space-3, 0.75rem);
+    align-items: flex-start;
+    background: var(--color-bg, rgba(0, 0, 0, 0.15));
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-md, 0.5rem);
+    padding: 0.5rem 0.65rem;
+  }
+  .rec-rank {
+    flex: 0 0 auto;
+    font-weight: 700;
+    color: var(--color-accent);
+    font-size: var(--text-sm);
+    width: 1.2rem;
+    text-align: center;
+  }
+  .rec-body {
+    flex: 1 1 auto;
+    min-width: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+  }
+  .rec-top {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: 0.5rem;
+  }
+  .rec-name {
+    background: none;
+    border: none;
+    padding: 0;
+    color: var(--color-accent);
+    font-size: var(--text-sm);
+    font-weight: 600;
+    cursor: pointer;
+    text-align: left;
+  }
+  .rec-name:hover {
+    text-decoration: underline;
+  }
+  .rec-name:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 1px;
+  }
+  .rec-score {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    font-variant-numeric: tabular-nums;
+  }
+  .rec-bar {
+    height: 4px;
+    border-radius: 2px;
+    background: var(--color-border);
+    overflow: hidden;
+  }
+  .rec-bar-fill {
+    display: block;
+    height: 100%;
+    background: var(--color-accent);
+  }
+  .rec-why {
+    margin: 0;
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
   }
 
   .split {

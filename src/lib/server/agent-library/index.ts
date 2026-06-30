@@ -13,4 +13,12 @@ export {
 	type LibraryAgentContent
 } from './library';
 
-export { agentUsageBySlug, type AgentUsage } from './usage';
+export { agentUsageByName, agentUsageBySlug, type AgentUsage, type UsageBridge } from './usage';
+
+export {
+	recommendAgentsForTask,
+	asRecommendAgentInput,
+	type RecommendTaskInput,
+	type RecommendAgentInput,
+	type AgentRecommendation
+} from './recommend';

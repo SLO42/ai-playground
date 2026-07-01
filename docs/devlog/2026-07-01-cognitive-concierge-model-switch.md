@@ -1,6 +1,6 @@
 # 2026-07-01 — Cognitive architecture + Concierge + model-switch/benchmark
 
-**Branch:** `v2` (worktree `F:\code\ai-playground-v2`), code head `0854109`. Docs on `v2-main`. All features gate-green (lint 0 · svelte-check 0 ·
+**Branch:** `v2` (worktree `F:\code\ai-playground-v2`), code head `de08c8f`. Docs on `v2-main`. All features gate-green (lint 0 · svelte-check 0 ·
 targeted vitest · build) and pushed. One builder per worktree (F-052).
 
 ## Theme
@@ -29,6 +29,11 @@ switch + behavioral benchmark. Autonomous chain, scout→build→verify→commit
 | affordance honesty fix | `75a715f` | pm/atelier were falsely "unreachable" post-Stage-1 |
 | Path A — PM chat consults | `f8e5730` | peer-send (all peers) + when-to-consult guidance |
 | Path B — autonomous review consults | `4226787` | fire-and-forget consult on novel specialist-need; durable PM peer-identity mailbox session; deduped, non-steering, fail-open |
+
+### Loops first-class UI (post-arc, directed by the loop-engineering adoption)
+| feature | commit | notes |
+|---|---|---|
+| per-loop detail page + shape-visual | `de08c8f` | `/loops/[identifier]` (encoded key); loop-shape visual (6 primitives goal→trigger→action→check→state→handoff + L1→L2→L3 ladder, honest from readiness — satisfied only when the readiness item is checked); deep review (200-run history + override/timestamps/checklist); wired the 2 unwired controls (phase promote/demote, `enabled` toggle, lightweight no-restart); arming keeps its gate; honest 404; card link-in. Pure shape-core + real-surreal route tests; no migration |
 
 ### Local-vs-cloud model experiment (fully wired, unpopulated)
 | feature | commit | notes |

@@ -85,6 +85,35 @@ describe('planOrchestrationWrite', () => {
 			planOrchestrationWrite({ filePath: file, change: { intervalMs: 0 } })
 		).toThrow(OrchestrationWriteError);
 	});
+
+	// MODEL-BENCHMARK-SPEC step 1 — the global default-provider toggle rides the SAME write contract.
+	it('diffs + validates + persists a defaultProvider change (validate → confirm → read-back)', () => {
+		const plan = planOrchestrationWrite({ filePath: file, change: { defaultProvider: 'local' } });
+		expect(plan.diff.unchanged).toBe(false);
+		expect(plan.proposed).toMatch(/defaultProvider:\s*local/);
+		const res = applyOrchestrationWrite({
+			filePath: file,
+			proposed: plan.proposed,
+			confirmToken: plan.confirmToken
+		});
+		expect(res.bytesWritten).toBeGreaterThan(0);
+		// Round-trip through the REAL loader off disk — the persisted provider is the new one.
+		expect(loadOrchestration(file).defaultProvider).toBe('local');
+	});
+
+	it('rejects an out-of-enum defaultProvider at the boundary (no write)', () => {
+		expect(() =>
+			planOrchestrationWrite({ filePath: file, change: { defaultProvider: 'gpu' as never } })
+		).toThrow(OrchestrationWriteError);
+		expect(readFileSync(file, 'utf8')).toBe(SEED);
+	});
+
+	it('a defaultProvider change PRESERVES mode + tuned bundles', () => {
+		const plan = planOrchestrationWrite({ filePath: file, change: { defaultProvider: 'cloud' } });
+		expect(plan.proposed).toMatch(/mode:\s*event/);
+		expect(plan.proposed).toMatch(/code-write/);
+		expect(plan.proposed).toMatch(/thinking:\s*medium/);
+	});
 });
 
 describe('applyOrchestrationWrite', () => {

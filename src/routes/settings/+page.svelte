@@ -18,6 +18,8 @@
   const tiers = $derived(data.tiers ?? []);
   const escalationOrder = $derived(data.escalationOrder ?? []);
   const bundles = $derived(data.bundles ?? []);
+  const configuredProvider = $derived(data.defaultProvider ?? 'auto');
+  const defaultProviders = $derived(data.defaultProviders ?? ['auto', 'local', 'cloud']);
   const keys = $derived(data.keys ?? []);
   const configError = $derived(data.configError);
 
@@ -43,6 +45,34 @@
     orchestratorRunning?: boolean;
   }
   const orch = $derived((form?.orch ?? null) as OrchView | null);
+
+  // The global default-provider toggle action result (planProvider → confirming; applyProvider → saved).
+  interface ProvView {
+    phase?: 'confirming' | 'saved';
+    error?: string;
+    defaultProvider?: string | null;
+    proposed?: string;
+    confirmToken?: string;
+    unchanged?: boolean;
+    hunks?: Array<{ op: string; line: string }>;
+    bytesWritten?: number;
+    restartNeeded?: boolean;
+    orchestratorRunning?: boolean;
+  }
+  const prov = $derived((form?.prov ?? null) as ProvView | null);
+
+  // The provider the operator is choosing in the form (seeded from the configured value).
+  let pickedProvider = $state<string>('');
+  $effect(() => {
+    if (pickedProvider === '' && configuredProvider) pickedProvider = configuredProvider;
+  });
+
+  function describeProvider(p: string): string {
+    if (p === 'auto') return 'route normally — local floor, escalate on complexity (default)';
+    if (p === 'local') return 'force the local tier (Ollama, free) for every routed spawn';
+    if (p === 'cloud') return 'force a cloud tier (Claude) for every routed spawn';
+    return p;
+  }
   const keyset = $derived(
     (form?.keyset ?? null) as { key?: string; present?: boolean; restartNeeded?: boolean; error?: string } | null
   );
@@ -220,6 +250,83 @@
       provider) and the per-intent config bundles (D-020). Edit the YAML in
       <span class="mono">config/</span> to retune; this is the live window onto how routing is shaped.
     </p>
+
+    <!-- Global default-provider toggle (MODEL-BENCHMARK-SPEC step 1 — local ↔ cloud A/B). -->
+    <div class="provider-toggle" aria-labelledby="prov-h">
+      <h3 id="prov-h" class="sub">Default model provider</h3>
+      <p class="card-body">
+        Force every orchestrator-routed spawn onto one provider so the local-vs-cloud benchmark can
+        A/B a pure sample. <b class="mono">auto</b> is normal routing (no change to existing builds).
+        The running engine reads this once at boot — a change takes effect on the next restart.
+      </p>
+
+      <dl class="state-grid">
+        <div class="state-cell">
+          <dt class="state-label">Configured</dt>
+          <dd class="state-val mono">{configuredProvider}</dd>
+        </div>
+      </dl>
+
+      {#if prov?.error}
+        <p class="form-error" role="alert">{prov.error}</p>
+      {/if}
+
+      {#if prov?.phase === 'saved'}
+        <p class="form-ok" role="status">
+          Saved — {prov.bytesWritten} bytes written to orchestration.yaml.
+          {#if prov.restartNeeded}
+            The running orchestrator is still using its boot-time provider; restart to apply
+            <b class="mono">{prov.defaultProvider}</b>.
+          {:else}
+            It will take effect when the orchestrator next starts.
+          {/if}
+        </p>
+      {/if}
+
+      <!-- Step 1: choose provider → plan (diff). -->
+      {#if prov?.phase !== 'confirming'}
+        <form method="POST" action="?/planProvider" use:enhance class="orch-form">
+          <fieldset class="mode-set">
+            <legend class="sr-only">Default model provider</legend>
+            {#each defaultProviders as p (p)}
+              <label class="mode-opt" class:picked={pickedProvider === p}>
+                <input
+                  type="radio"
+                  name="defaultProvider"
+                  value={p}
+                  checked={pickedProvider === p}
+                  onchange={() => (pickedProvider = p)}
+                />
+                <span class="mode-name mono">{p}</span>
+                <span class="mode-desc">{describeProvider(p)}</span>
+              </label>
+            {/each}
+          </fieldset>
+          <div class="actions">
+            <button class="btn primary" type="submit">Review change</button>
+          </div>
+        </form>
+      {/if}
+
+      <!-- Step 2: review diff + confirm (D-010). -->
+      {#if prov?.phase === 'confirming'}
+        <div class="confirm" aria-label="provider change diff">
+          {#if prov.unchanged}
+            <p class="state-body">No changes — the proposed provider matches disk.</p>
+          {:else}
+            <pre class="diff-pre mono">{#each prov.hunks ?? [] as h, i (i)}<span class="hunk" data-op={h.op}>{h.op} {h.line}
+</span>{/each}</pre>
+          {/if}
+        </div>
+        <form method="POST" action="?/applyProvider" use:enhance class="actions">
+          <input type="hidden" name="proposed" value={prov.proposed ?? ''} />
+          <input type="hidden" name="confirmToken" value={prov.confirmToken ?? ''} />
+          <input type="hidden" name="defaultProvider" value={prov.defaultProvider ?? ''} />
+          <button class="btn primary" type="submit" disabled={prov.unchanged}>Confirm &amp; save</button>
+          <a class="btn" href="/settings" data-sveltekit-reload>Cancel</a>
+        </form>
+      {/if}
+    </div>
 
     <div class="route-cols">
       <div class="route-col">
@@ -581,6 +688,15 @@
   }
   .hunk[data-op=' '] {
     color: var(--color-text-muted);
+  }
+
+  /* Global default-provider toggle (benchmark A/B). */
+  .provider-toggle {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+    padding-bottom: var(--space-3, 0.75rem);
+    border-bottom: 1px solid var(--color-border-faint, var(--color-border));
   }
 
   /* Routing view. */

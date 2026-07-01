@@ -30,6 +30,12 @@ export {
 	type RollupOptions
 } from './rollup';
 
+export {
+	buildProviderUsage,
+	type ProviderUsage,
+	type ProviderUsageOptions
+} from './provider-usage';
+
 export { traceAction, type ActionTrace, type TraceStep } from './trace';
 
 export {

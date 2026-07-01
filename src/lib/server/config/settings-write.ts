@@ -27,7 +27,14 @@
 import { createHash } from 'node:crypto';
 import { readFileSync, writeFileSync } from 'node:fs';
 import yaml from 'js-yaml';
-import { ORCH_MODES, loadOrchestration, type OrchMode, type Orchestration } from './load';
+import {
+	ORCH_MODES,
+	DEFAULT_PROVIDERS,
+	loadOrchestration,
+	type OrchMode,
+	type DefaultProvider,
+	type Orchestration
+} from './load';
 
 /** Thrown when applyOrchestrationWrite is called but the file changed since the diff (D-010). */
 export class StaleConfirmError extends Error {
@@ -56,6 +63,11 @@ export interface OrchestrationChange {
 	triggers?: string[];
 	/** Periodic sweep interval in ms (periodic mode); must be a positive integer when set. */
 	intervalMs?: number;
+	/**
+	 * MODEL-BENCHMARK-SPEC step 1 — the GLOBAL default-provider override (auto | local | cloud).
+	 * A SENSITIVE routing write: it changes which provider every orchestrator-routed spawn runs on.
+	 */
+	defaultProvider?: DefaultProvider;
 }
 
 /** A unified per-line diff of the file's current bytes vs the proposed bytes (review surface). */
@@ -145,6 +157,14 @@ function assertChange(change: OrchestrationChange): void {
 			throw new OrchestrationWriteError('intervalMs must be a positive integer');
 		}
 	}
+	if (
+		change.defaultProvider !== undefined &&
+		!(DEFAULT_PROVIDERS as readonly string[]).includes(change.defaultProvider)
+	) {
+		throw new OrchestrationWriteError(
+			`defaultProvider must be one of ${DEFAULT_PROVIDERS.join(' | ')} (got ${String(change.defaultProvider)})`
+		);
+	}
 }
 
 /**
@@ -159,6 +179,7 @@ function renderOrchestration(orch: Orchestration): string {
 	const ordered: Record<string, unknown> = { mode: orch.mode };
 	if (orch.triggers !== undefined) ordered.triggers = orch.triggers;
 	if (orch.intervalMs !== undefined) ordered.intervalMs = orch.intervalMs;
+	if (orch.defaultProvider !== undefined) ordered.defaultProvider = orch.defaultProvider;
 	ordered.concurrency = orch.concurrency;
 	if (orch.bundles !== undefined) ordered.bundles = orch.bundles;
 	// Carry any forward-compat keys the loader round-tripped but doesn't model.
@@ -193,6 +214,7 @@ export function planOrchestrationWrite(input: PlanInput): OrchestrationPlan {
 	if (input.change.mode !== undefined) next.mode = input.change.mode;
 	if (input.change.triggers !== undefined) next.triggers = input.change.triggers;
 	if (input.change.intervalMs !== undefined) next.intervalMs = input.change.intervalMs;
+	if (input.change.defaultProvider !== undefined) next.defaultProvider = input.change.defaultProvider;
 
 	const proposed = renderOrchestration(next);
 

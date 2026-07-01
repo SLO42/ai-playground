@@ -28,6 +28,12 @@
   const anomalies = $derived(data.anomalies ?? []);
   const totals = $derived(data.totals);
   const usage = $derived(data.usage ?? []);
+  const providerComparison = $derived(data.providerComparison ?? []);
+  function providerLabel(p: string): string {
+    if (p === 'ollama') return 'local (Ollama · free)';
+    if (p === 'claude') return 'cloud (Claude)';
+    return p;
+  }
   const routing = $derived(data.routing ?? { decisions: [], aggregate: { total: 0, byTier: [], byModel: [], byMethod: [], overrideRate: null, overrides: 0 } });
   const decisions = $derived(routing.decisions);
   const agg = $derived(routing.aggregate);
@@ -365,6 +371,49 @@
           </table>
         </div>
       {/if}
+
+      <!-- MODEL-BENCHMARK-SPEC step 1 — objective local-vs-cloud comparison (GROUP BY provider). -->
+      <div class="card chart-card">
+        <span class="eyebrow">benchmark · local vs cloud</span>
+        <h2 class="chart-title">
+          Model provider comparison ({filters.days}d{#if filters.project} · <span class="mono">{shortProject(filters.project)}</span>{/if})
+        </h2>
+        {#if providerComparison.length}
+          <table class="rollup-table">
+            <thead>
+              <tr>
+                <th>provider</th><th>sessions</th><th>runs</th><th>done</th><th>err</th>
+                <th>tokens</th><th>cost</th><th>avg dur</th><th>spawns</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each providerComparison as p (p.provider)}
+                <tr>
+                  <td class="mono">{providerLabel(p.provider)}</td>
+                  <td>{p.sessions}</td>
+                  <td>{p.runs}</td>
+                  <td>{p.completions}</td>
+                  <td>{p.errors}</td>
+                  <td class="mono">{fmtTokens(p.tokensIn + p.tokensOut)}</td>
+                  <td class="mono">{fmtCost(p.costUsd)}</td>
+                  <td class="mono">{fmtMs(p.avgDurationMs)}</td>
+                  <td>{p.childSpawns}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+          <p class="chart-note">
+            Objective metrics from real <span class="mono">agent_event</span> rows. Local (Ollama) runs are
+            free (cost shows <span class="mono">—</span> until a priced row lands). Inter-hire comms volume
+            (peer messages per provider) is a follow-on measurement.
+          </p>
+        {:else}
+          <p class="empty-note">
+            No sessions in this window yet — flip the default provider in <a href="/settings">Settings</a>
+            and route work to populate the comparison. (Honest empty state — no fabricated rows.)
+          </p>
+        {/if}
+      </div>
     {/if}
 
     <!-- Maintain rollup: security + dependency-health + UX findings (UI-SPEC §207) -->
@@ -688,6 +737,19 @@
   .chart-title {
     font: var(--type-h3, 1rem/1.3 sans-serif);
     color: var(--color-text);
+  }
+  .chart-note {
+    font: var(--type-body-sm, 0.78rem/1.4 sans-serif);
+    color: var(--color-text-muted);
+    margin: 0.5rem 0 0;
+    max-width: 80ch;
+  }
+  .empty-note {
+    font: var(--type-body-sm, 0.78rem/1.4 sans-serif);
+    color: var(--color-text-muted);
+    font-style: italic;
+    margin: 0.25rem 0 0;
+    max-width: 80ch;
   }
   .chart {
     display: flex;

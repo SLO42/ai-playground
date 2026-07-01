@@ -24,6 +24,7 @@ import {
 	loadOrchestration,
 	loadAgentPool,
 	ORCH_MODES,
+	DEFAULT_PROVIDERS,
 	INTENT_CLASSES,
 	planOrchestrationWrite,
 	applyOrchestrationWrite,
@@ -33,6 +34,7 @@ import {
 	setEnvKey,
 	EnvWriteError,
 	type OrchMode,
+	type DefaultProvider,
 	type Orchestration,
 	type AgentPool,
 	type KeyPresence
@@ -86,6 +88,9 @@ export interface SettingsData {
 	tiers: TierView[];
 	escalationOrder: string[];
 	bundles: BundleView[];
+	/** MODEL-BENCHMARK-SPEC step 1 — the configured global default-provider toggle + its options. */
+	defaultProvider: DefaultProvider;
+	defaultProviders: readonly DefaultProvider[];
 	/** API-key presence (D-026 — set/unset only, NEVER a value). */
 	keys: KeyPresence[];
 	/** Honest config-read error (the file is malformed) — surfaced, not hidden. */
@@ -149,6 +154,9 @@ export const load: PageServerLoad = async () => {
 		tiers: projectTiers(pool),
 		escalationOrder: pool?.escalation?.order ?? [],
 		bundles: projectBundles(orch),
+		// The global default-provider toggle (absent ⇒ 'auto' — the no-regression default).
+		defaultProvider: orch?.defaultProvider ?? 'auto',
+		defaultProviders: DEFAULT_PROVIDERS,
 		keys
 	};
 	if (configError) data.configError = configError;
@@ -246,6 +254,78 @@ export const actions: Actions = {
 				return fail(422, { orch: { error: err.message } });
 			}
 			return fail(500, { orch: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * MODEL-BENCHMARK-SPEC step 1 — GLOBAL default-provider toggle, step 1 (PLAN). A SENSITIVE
+	 * routing write (it changes which provider every orchestrator-routed spawn runs on), so it
+	 * follows the SAME D-010 validate → diff → confirm shape as the mode write. Reuses
+	 * planOrchestrationWrite with a { defaultProvider } change; no write here.
+	 */
+	planProvider: async ({ request }) => {
+		const form = await request.formData();
+		const raw = form.get('defaultProvider');
+		if (typeof raw !== 'string' || !(DEFAULT_PROVIDERS as readonly string[]).includes(raw)) {
+			return fail(400, { prov: { error: `provider must be one of ${DEFAULT_PROVIDERS.join(' | ')}` } });
+		}
+		const defaultProvider = raw as DefaultProvider;
+		try {
+			const plan = planOrchestrationWrite({ filePath: orchPath(), change: { defaultProvider } });
+			return {
+				prov: {
+					phase: 'confirming' as const,
+					defaultProvider,
+					proposed: plan.proposed,
+					confirmToken: plan.confirmToken,
+					unchanged: plan.diff.unchanged,
+					hunks: plan.diff.hunks
+				}
+			};
+		} catch (err) {
+			if (err instanceof OrchestrationWriteError) return fail(422, { prov: { error: err.message } });
+			return fail(500, { prov: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * GLOBAL default-provider toggle, step 2 (APPLY / CONFIRM). applyOrchestrationWrite re-validates,
+	 * asserts the file still matches the token (StaleConfirmError on a hand-edit), then writes. The
+	 * orchestrator reads defaultProvider ONCE per boot (bootRoute), so a change persists now but the
+	 * running fleet only reflects it after a restart — surfaced honestly (F-029).
+	 */
+	applyProvider: async ({ request }) => {
+		const form = await request.formData();
+		const proposed = typeof form.get('proposed') === 'string' ? String(form.get('proposed')) : '';
+		const confirmToken =
+			typeof form.get('confirmToken') === 'string' ? String(form.get('confirmToken')) : '';
+		const defaultProviderRaw = form.get('defaultProvider');
+		const defaultProvider =
+			typeof defaultProviderRaw === 'string' &&
+			(DEFAULT_PROVIDERS as readonly string[]).includes(defaultProviderRaw)
+				? (defaultProviderRaw as DefaultProvider)
+				: null;
+		if (!proposed || !confirmToken) {
+			return fail(400, { prov: { error: 'missing proposed content or confirm token — re-review the diff' } });
+		}
+		try {
+			const res = applyOrchestrationWrite({ filePath: orchPath(), proposed, confirmToken });
+			const running = activeOrchestrator();
+			return {
+				prov: {
+					phase: 'saved' as const,
+					defaultProvider,
+					bytesWritten: res.bytesWritten,
+					orchestratorRunning: running !== null,
+					// The running orchestrator read defaultProvider at boot — a live orchestrator needs a
+					// restart to pick up the new provider (honest boot-read reflect, F-029).
+					restartNeeded: running !== null
+				}
+			};
+		} catch (err) {
+			if (err instanceof OrchestrationStaleConfirmError) return fail(409, { prov: { error: err.message } });
+			if (err instanceof OrchestrationWriteError) return fail(422, { prov: { error: err.message } });
+			return fail(500, { prov: { error: (err as Error).message } });
 		}
 	},
 

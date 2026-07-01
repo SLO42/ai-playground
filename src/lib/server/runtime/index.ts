@@ -496,6 +496,15 @@ export interface ClaudeCodeRuntimeOptions {
 	providerHealth?: () => Promise<ProviderHealth[]>;
 	/** Tool surface the runtime exposes; defaults to the standard CC tool set. */
 	toolSurface?: ToolDescriptor[];
+	/**
+	 * MODEL-BENCHMARK-SPEC step 1 — the LOCAL-provider backend (OllamaBackend). When a spawn's
+	 * resolved model has `provider === 'ollama'` (the routing ladder's `local` tier), the runtime
+	 * routes THAT spawn's `run` here instead of the default (Claude CLI) backend, so the `local`
+	 * tier actually executes a local chat turn. ADDITIVE / opt-in: absent ⇒ a local-provider spawn
+	 * falls through to the default `backend` UNCHANGED (no-regression — mock/test runtimes keep their
+	 * old path). The whole cloud path is byte-identical when provider !== 'ollama'.
+	 */
+	ollamaBackend?: CcBackend;
 }
 
 /** The default tool surface a Claude Code session exposes (capability check). */
@@ -510,6 +519,8 @@ const DEFAULT_TOOLS: ToolDescriptor[] = [
 
 export class ClaudeCodeRuntime implements AgentRuntime {
 	private readonly backend: CcBackend;
+	/** MODEL-BENCHMARK-SPEC step 1 — the local (Ollama) backend, used ONLY for provider==='ollama'. */
+	private readonly ollamaBackend?: CcBackend;
 	private readonly harnessConfigRoot: string;
 	private readonly gates?: Record<string, string>;
 	private readonly hooks?: Record<string, unknown>;
@@ -522,6 +533,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 
 	constructor(opts: ClaudeCodeRuntimeOptions) {
 		this.backend = opts.backend;
+		this.ollamaBackend = opts.ollamaBackend;
 		this.harnessConfigRoot = opts.harnessConfigRoot ?? '.harness/claude-config';
 		this.gates = opts.gates;
 		this.hooks = opts.hooks;
@@ -609,7 +621,15 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 		} catch (err) {
 			return failClosed(err);
 		}
-		const run = this.backend.run(plan);
+		// MODEL-BENCHMARK-SPEC step 1 — provider branch (ADDITIVE / opt-in). A `local`-tier spawn
+		// (provider 'ollama') routes to the local backend so the routing ladder's $0 floor actually
+		// executes — but ONLY when a local backend is wired. Every other provider, AND any spawn on a
+		// runtime with no local backend, uses the default backend UNCHANGED (no-regression: the prior
+		// behaviour is byte-identical). Production always wires the OllamaBackend (harness/wiring.ts),
+		// so the local tier runs locally there; mock/test runtimes that omit it keep their old path.
+		const backend =
+			plan.model.provider === 'ollama' && this.ollamaBackend ? this.ollamaBackend : this.backend;
+		const run = backend.run(plan);
 		return this.consume(req.agentId, run);
 	}
 

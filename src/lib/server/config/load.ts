@@ -78,6 +78,17 @@ export interface ModelsConfig {
 export const ORCH_MODES = ['event', 'periodic', 'manual'] as const;
 export type OrchMode = (typeof ORCH_MODES)[number];
 
+// MODEL-BENCHMARK-SPEC step 1 — the GLOBAL default-provider override (operator toggle). Forces
+// EVERY orchestrator-routed spawn onto one provider so the local-vs-cloud benchmark can A/B a
+// pure sample; 'auto' (the default when absent) leaves normal routing untouched — the no-regression
+// value. The orchestrator reads this ONCE per boot (bootRoute), so a change needs a restart (F-029),
+// surfaced honestly by /settings.
+//   • auto  — no override; route normally (local floor → escalate). Byte-identical to pre-toggle.
+//   • local — force the `local` tier (Ollama, $0).
+//   • cloud — force a cloud tier (Claude).
+export const DEFAULT_PROVIDERS = ['auto', 'local', 'cloud'] as const;
+export type DefaultProvider = (typeof DEFAULT_PROVIDERS)[number];
+
 // --- intent-adaptive config bundles (D-020) --------------------------------
 //
 // TASK 2.12: the five intents KongCode classifies (mirrors runtime `Intent` and
@@ -160,6 +171,12 @@ export interface Orchestration {
 	 *     AND the /atelier/queue monitor so the reported cap == the enforced cap (no fake /N).
 	 */
 	concurrency: { maxAgents: number; perProject: number; dailySpawnCap?: number };
+	/**
+	 * MODEL-BENCHMARK-SPEC step 1 — the operator's GLOBAL default-provider override. Absent ⇒
+	 * 'auto' (normal routing; no-regression). 'local'/'cloud' force every orchestrator-routed
+	 * spawn onto that provider (the benchmark A/B toggle). Read per-boot by bootRoute.
+	 */
+	defaultProvider?: DefaultProvider;
 	/**
 	 * intent → adaptive config (D-020). Validated at the boundary (loadOrchestration).
 	 * Partial: an unconfigured intent resolves to an empty bundle (all-defaults), so a
@@ -876,6 +893,21 @@ export function loadOrchestration(file: string, opts: LoadOpts = {}): Orchestrat
 		if (!Number.isInteger(c.dailySpawnCap) || (c.dailySpawnCap as number) < 0) {
 			throw new ConfigError(
 				'orchestration: concurrency.dailySpawnCap must be a non-negative integer (0 = uncapped)',
+				file
+			);
+		}
+	}
+	// MODEL-BENCHMARK-SPEC step 1: the GLOBAL default-provider override. OPTIONAL + additive —
+	// absent/null ⇒ 'auto' (normal routing, no-regression). When present it MUST be one of the
+	// known values; a typo would silently mis-force the whole fleet onto the wrong provider, so
+	// fail closed at the boundary (never a silently-ignored safety knob).
+	if (raw.defaultProvider !== undefined && raw.defaultProvider !== null) {
+		if (
+			typeof raw.defaultProvider !== 'string' ||
+			!(DEFAULT_PROVIDERS as readonly string[]).includes(raw.defaultProvider)
+		) {
+			throw new ConfigError(
+				`orchestration: "defaultProvider" must be one of ${DEFAULT_PROVIDERS.join(' | ')} (got ${String(raw.defaultProvider)})`,
 				file
 			);
 		}

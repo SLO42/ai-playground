@@ -8,6 +8,13 @@ mode: event
 triggers: [task_created, task_unblocked]
 intervalMs: 60000
 
+# MODEL-BENCHMARK-SPEC step 1 — global default model provider (the local-vs-cloud A/B toggle).
+#   auto  — route normally (local floor → escalate). DEFAULT / no-regression.
+#   local — force every orchestrator-routed spawn onto the local `local` tier (Ollama, $0).
+#   cloud — force every orchestrator-routed spawn onto a cloud tier (Claude).
+# Read once per boot (restart to apply — /settings surfaces this honestly, F-029).
+defaultProvider: auto
+
 # Interactive concurrency caps (orchestrator semaphore).
 concurrency:
   maxAgents: 8        # total simultaneous interactive spawns

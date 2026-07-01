@@ -51,6 +51,7 @@ import {
 import { makeSkillHarvestAgent } from '../skills/harvest-agent';
 import { loadOrchestration, loadAgentPool, type OrchMode, type AgentPool, type Orchestration } from '../config/index';
 import { resolveRoute, type RouteTask, type StaffRouteResolver } from '../routing/index';
+import type { ModelSelection } from '../runtime/index';
 import { resolveStaff, getProjectStaff, type Tier, type TierModelResolver } from '../workforce';
 import { Orchestrator, setActiveOrchestrator, type StubRoute, type RouteResolver } from './orchestrator';
 
@@ -235,8 +236,45 @@ function bootStaffResolver(db: Db, pool: AgentPool): StaffRouteResolver {
  * staffed model (today no task carries a role → the seam is inert + additive). NO fabricated
  * route — a read/resolve failure rejects and the work_item is marked failed by the orchestrator.
  */
+/**
+ * MODEL-BENCHMARK-SPEC step 1 — map the operator's global default-provider toggle → a concrete
+ * ModelSelection override (or undefined for 'auto'/absent = normal routing). The forced model id is
+ * read from the LIVE pool tiers (never hardcoded): 'local' → the `local` tier; 'cloud' → a cloud
+ * tier (preferring `sonnet` as a balanced always-on-brain default, else the first non-ollama tier
+ * in the escalation order). Returns undefined (honest, F-008) when the needed tier is not configured
+ * — the toggle then no-ops rather than forcing a provider the pool can't serve.
+ */
+function resolveProviderOverride(
+	dp: Orchestration['defaultProvider'],
+	pool: AgentPool
+): ModelSelection | undefined {
+	if (!dp || dp === 'auto') return undefined;
+	let tierName: string | undefined;
+	if (dp === 'local') {
+		tierName = pool.tiers.local ? 'local' : undefined;
+	} else {
+		// 'cloud': prefer sonnet; else the first non-ollama tier in the escalation ladder.
+		if (pool.tiers.sonnet && pool.tiers.sonnet.provider !== 'ollama') tierName = 'sonnet';
+		else tierName = pool.escalation?.order?.find((t) => pool.tiers[t] && pool.tiers[t].provider !== 'ollama');
+	}
+	const tier = tierName ? pool.tiers[tierName] : undefined;
+	if (!tier || !tierName) {
+		console.warn(
+			`[routing] defaultProvider='${dp}' set but no matching tier in agent-pool.yaml — override ignored (normal routing).`
+		);
+		return undefined;
+	}
+	return { provider: tier.provider, modelId: tier.model, tier: tierName };
+}
+
 function bootRoute(db: Db, pool: AgentPool, orchestration: Orchestration): RouteResolver {
 	const staffResolver = bootStaffResolver(db, pool);
+	// MODEL-BENCHMARK-SPEC step 1 — resolve the operator's GLOBAL default-provider override ONCE
+	// (the orchestrator + its config are per-boot singletons). 'auto'/absent ⇒ undefined ⇒ normal
+	// routing (no-regression). 'local'/'cloud' ⇒ a concrete ModelSelection forced via resolveRoute's
+	// explicit-override seam (F-005) — it wins over classify/tier/staffing so the benchmark A/B is a
+	// PURE per-provider sample. Read from the same boot config the orchestrator reads (restart to change).
+	const providerOverride = resolveProviderOverride(orchestration.defaultProvider, pool);
 	return async (taskId: string, projectId: string): Promise<StubRoute> => {
 		const task = await readRouteTask(db, taskId, projectId);
 		const plan = await resolveRoute({
@@ -245,7 +283,8 @@ function bootRoute(db: Db, pool: AgentPool, orchestration: Orchestration): Route
 			pool,
 			orchestration,
 			providerHealth: getProviderHealth,
-			staffResolver
+			staffResolver,
+			...(providerOverride ? { override: providerOverride } : {})
 		});
 		return {
 			agentId: agentForTier(pool, plan.model.tier),

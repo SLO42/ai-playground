@@ -239,6 +239,27 @@ describe('loadOrchestration — YAML + enum validation', () => {
 		expect(orch.bundles!['deep-explore']!.tokenBudget).toBe(200000);
 	});
 
+	// MODEL-BENCHMARK-SPEC step 1 — the global default-provider override at the config boundary.
+	it('defaults defaultProvider to undefined (absent ⇒ auto / normal routing)', () => {
+		const orch = loadOrchestration(join(FIX, 'orchestration.yaml'));
+		expect(orch.defaultProvider).toBeUndefined();
+	});
+
+	it('parses a valid defaultProvider', () => {
+		const orch = loadOrchestration(join(FIX, 'orchestration.yaml'), {
+			_inject: { defaultProvider: 'local' }
+		});
+		expect(orch.defaultProvider).toBe('local');
+	});
+
+	it('rejects an out-of-enum defaultProvider (fails closed)', () => {
+		expect(() =>
+			loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { defaultProvider: 'gpu' }
+			})
+		).toThrow(/defaultProvider/);
+	});
+
 	it('rejects a bundle key that is not a known intent (typo fails closed)', () => {
 		expect(() =>
 			loadOrchestration(join(FIX, 'orchestration.yaml'), {

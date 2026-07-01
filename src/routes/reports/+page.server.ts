@@ -20,14 +20,16 @@ import { tryGetDb } from '$lib/server/db/runtime-init';
 import {
 	buildReportSummary,
 	buildTierUsage,
-	buildRoutingRationale
+	buildRoutingRationale,
+	buildProviderUsage
 } from '$lib/server/analytics';
 import type {
 	DailyRollup,
 	Anomaly,
 	ReportSummary,
 	TierUsage,
-	RoutingRationale
+	RoutingRationale,
+	ProviderUsage
 } from '$lib/server/analytics';
 import { listAllFindings } from '$lib/server/scanner';
 import { buildTrayData, type NotificationItem } from '$lib/server/notifications/repo';
@@ -84,6 +86,8 @@ export interface ReportsData {
 	anomalies: Anomaly[];
 	totals: ReportSummary['totals'];
 	usage: TierUsage[];
+	/** MODEL-BENCHMARK-SPEC step 1 — the objective local-vs-cloud comparison (GROUP BY provider). */
+	providerComparison: ProviderUsage[];
 	/** The RoutingRationale view (per-decision rows + aggregate) — TASK 11.1a. */
 	routing: RoutingRationale;
 	findings: FindingCard[];
@@ -145,6 +149,7 @@ export const load: PageServerLoad = async ({ depends, url }): Promise<ReportsDat
 			anomalies: [],
 			totals: emptyTotals(),
 			usage: [],
+			providerComparison: [],
 			routing: emptyRouting(),
 			findings: [],
 			notifications: [],
@@ -158,6 +163,13 @@ export const load: PageServerLoad = async ({ depends, url }): Promise<ReportsDat
 			...(project ? { projectId: project } : {})
 		});
 		const usage = await buildTierUsage(db, { windowDays: Math.max(days, 30) });
+
+		// MODEL-BENCHMARK-SPEC step 1 — the objective local-vs-cloud comparison (GROUP BY provider),
+		// over the SAME window + project filter. Honest empty ([]) when no rows land yet (F-008).
+		const providerComparison = await buildProviderUsage(db, {
+			windowDays: days,
+			...(project ? { projectId: project } : {})
+		});
 
 		// RoutingRationale view (TASK 11.1a): per-decision rows + aggregate, all filters applied.
 		const routing = await buildRoutingRationale(db, {
@@ -215,6 +227,7 @@ export const load: PageServerLoad = async ({ depends, url }): Promise<ReportsDat
 			anomalies: summary.anomalies,
 			totals: summary.totals,
 			usage,
+			providerComparison,
 			routing,
 			findings,
 			notifications,
@@ -231,6 +244,7 @@ export const load: PageServerLoad = async ({ depends, url }): Promise<ReportsDat
 			anomalies: [],
 			totals: emptyTotals(),
 			usage: [],
+			providerComparison: [],
 			routing: emptyRouting(),
 			findings: [],
 			notifications: [],

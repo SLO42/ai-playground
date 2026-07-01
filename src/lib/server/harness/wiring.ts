@@ -33,6 +33,7 @@ import {
 import { OllamaProvider, collectText, type ProviderHealth } from '../providers/index';
 import { MemoryService, OllamaEmbedder, type ExtractFn, type MemoryCandidate } from '../memory/index';
 import { ClaudeCliBackend } from '../claude-code/cli-backend';
+import { OllamaBackend } from '../claude-code/ollama-backend';
 import { catalogIds } from '../cc-config/index';
 import { DEFAULT_GATE_POLICY } from '../claude-code/gates';
 import { buildDrivenHookSettings } from './hooks-wiring';
@@ -125,6 +126,15 @@ export async function getRuntime(db?: Db): Promise<RuntimeAvailability> {
 	// driven session a real agentic budget; the per-spawn wall-clock (timeoutMs) and the
 	// gauntlet's own bound remain the runaway guards (F-030).
 	const backend = new ClaudeCliBackend({ oauthToken, maxTurns: 80 });
+	// MODEL-BENCHMARK-SPEC step 1 — the LOCAL-provider backend. A spawn whose resolved model is the
+	// `local` tier (provider 'ollama', config/agent-pool.yaml) routes here instead of the Claude CLI,
+	// so the routing ladder's $0 floor actually executes a local chat turn. Endpoint from OLLAMA_HOST
+	// (no /v1, D-003) or the loopback default. Additive: the Claude path is unchanged for every other
+	// provider. Local sessions are a single chat turn — no tool-gate/interject parity (the delta the
+	// benchmark measures); the backend declares that honestly (F-008).
+	const ollamaBackend = new OllamaBackend({
+		endpoint: process.env.OLLAMA_HOST?.trim() || 'http://127.0.0.1:11434'
+	});
 	// The live catalog is the D-036 allow-list. When a db is supplied, read it so
 	// composeCapabilities runs against the REAL catalog (the dead-branch fix). When no db
 	// is in hand (e.g. a non-DB caller), capability provisioning stays OFF for that boot.
@@ -167,6 +177,8 @@ export async function getRuntime(db?: Db): Promise<RuntimeAvailability> {
 	};
 	cachedRuntime = new ClaudeCodeRuntime({
 		backend,
+		// The local-provider backend (used ONLY for provider==='ollama' spawns — the `local` tier).
+		ollamaBackend,
 		harnessConfigRoot: process.env.HARNESS_CONFIG_ROOT?.trim() || '.harness/claude-config',
 		// D-018 harness gates ride every isolated --settings (the gate layer still evaluates
 		// each tool call regardless; this seeds the composed settings' gate map).

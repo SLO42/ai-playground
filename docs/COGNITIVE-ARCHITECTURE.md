@@ -167,6 +167,19 @@ extracted-from/hierarchy/supersedes/retrieved/grounded-on edges); **S1 feedback*
 rows/screen/dedup/edges are real, only the vector source differed; on the running app the
 `Embedder` = Ollama `qwen3-embedding:0.6b`). `retrieved`/`grounded-on` edges need windowed
 session→memory outcome rows (unit-tested; sparse live until traffic accrues).
+**Concierge Stage-1 (D-040, `atelier_self`)** — SHIPPED event-triggered (operator chose
+event-triggered over persistent, 2026-07-01). Reachable identity, NOT a 24/7 process: a
+`to_kind:'atelier'` send fires `triggerConcierge` (`api/peer/send`), which spawns a short-lived
+atelier_self session row (`ensureAtelierSession`), grounds on the brain (S0 — `MemoryService.recall`
+global, cites `citationId`), answers the "recommend agent" query via the existing pure
+`recommendAgentsForTask` scorer, replies over the bus ADVISORY/non-steering, then tears down.
+Deterministic programmatic turn (no LLM spawn — recommend+recall are pure) → $0 idle, bounded,
+flake-free. Wired two real placeholder gaps: **m0074** added `session.pm` (the column
+`resolveAtelier` filters on didn't exist; the `pm` table can't hold a project-less atelier PM —
+its `project` is required), and `loadFleetSnapshot` now SELECTs `pm` + keys `ATELIER_SELF_PM`
+('pm:atelier_self') under `ATELIER_PROJECT_KEY` when a live atelier session is up. New
+`concierge/{concierge,wire}.ts` + 7 tests. Commit `f8c6732` on `v2`.
 Pending: **S2** learned reranker (ACAN-style over `retrieval_outcome` utilization, eval-harness
-measured), **S4** soul/identity, **the concierge** (D-040 always-on `atelier_self`), plus the
-brain "sections" (decisions/spend/search) which fold into the concierge's dashboard.
+measured), **S4** soul/identity, **Concierge Stage-2+** (LLM turn for open-ended PM questions;
+skill/hire drafting over the bus, operator-gated), plus the brain "sections"
+(decisions/spend/search) which fold into the concierge's dashboard.

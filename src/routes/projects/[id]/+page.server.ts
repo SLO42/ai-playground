@@ -118,7 +118,11 @@ import {
 	type HireInterviewQuestion,
 	type HireQuestionId
 } from '$lib/server/projects/pm-hire';
-import { assemblePmContext, resolvePmRoute } from '$lib/server/projects/pm-session';
+import {
+	assemblePmContext,
+	resolvePmRoute,
+	PM_CHAT_CAPABILITIES
+} from '$lib/server/projects/pm-session';
 import { runPmReview } from '$lib/server/projects/pm-review';
 import { parseCron, parseDurationMs } from '$lib/server/projects/pm-triggers';
 import { loadOrchestration } from '$lib/server/config';
@@ -1168,7 +1172,12 @@ export const actions: Actions = {
 		// TASK 16.1 (PM-SPEC §2): the ONE PM context assembly — charter (fenced, D-026)
 		// + plan macro + typed PM memory, all from LIVE rows (F-008). Passed as the
 		// SEPARATE fenced context bundle (D-008) — never folded into the prompt.
-		const ctx = await assemblePmContext(db, projectId);
+		//
+		// Path A (CONVERSATION-LAYER-SPEC): this agentic PM turn is GRANTED peer-send (below),
+		// so it also carries the Atelier-concierge resource (when-to-consult guidance). The flag
+		// is what keeps that layer HONEST (F-008) — only a turn that actually has the `peer_send`
+		// tool advertises consulting the concierge with it.
+		const ctx = await assemblePmContext(db, projectId, { conciergeConsult: true });
 
 		// TASK 16.1 (PM-SPEC §1): the PM model is an EXPLICIT config override (F-005
 		// short-circuit) from config/workforce.yaml pm.model_id, recorded in routing_event;
@@ -1198,6 +1207,12 @@ export const actions: Actions = {
 					intent: 'simple-question',
 					budgets: DEFAULT_BUDGETS,
 					toolPolicy: { allow: ['Read'] },
+					// Path A (CONVERSATION-LAYER-SPEC): GRANT peer-send so the agentic PM can consult
+					// the Atelier concierge (and any live peer). `peer-send` is a RESERVED runtime id
+					// (RESERVED_CAPABILITY_IDS) — it bypasses cc-config catalog validation, so this does
+					// NOT re-trip F-045. It gates BOTH the `peer_send` MCP tool AND the honest peer-send
+					// affordance in launchSession (full mesh: session / role@project / pm / atelier).
+					capabilities: PM_CHAT_CAPABILITIES,
 					...(ctx.items.length ? { context: { items: ctx.items } } : {})
 				}
 			});

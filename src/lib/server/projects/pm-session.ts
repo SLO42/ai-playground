@@ -21,9 +21,20 @@ import { join } from 'node:path';
 import type { Db } from '../db/client';
 import { ConfigError, loadWorkforce } from '../config/index';
 import { writeRoutingEvent } from '../routing/index';
-import type { ModelSelection } from '../runtime/index';
+import type { CapabilitySet, ModelSelection } from '../runtime/index';
 import { getProject } from './repo';
 import { getPm, listPmMemory } from './pm-repo';
+
+// ── Peer-send grant for the agentic PM chat (Path A — CONVERSATION-LAYER-SPEC) ─────
+//
+// The one capability set an agentic PM chat turn launches with. `peer-send` is a
+// RESERVED runtime capability id (RESERVED_CAPABILITY_IDS in runtime/capabilities) —
+// it BYPASSES cc-config catalog validation at the compose seam, so granting it does
+// NOT re-trip F-045 (an un-catalogued id fail-closing every spawn). Granting it makes
+// peerSendGranted() true → the runtime registers the `peer_send` MCP tool AND emits the
+// honest peer-send affordance (full mesh: session / role@project / pm / atelier). Exported
+// as the SINGLE source of truth so the pmChat action and its regression test share one value.
+export const PM_CHAT_CAPABILITIES: CapabilitySet = { skills: ['peer-send'], agents: [], mcp: [] };
 
 // ── Context assembly (PM-SPEC §2 — charter + plan + memory, one manual) ───────────
 
@@ -35,7 +46,8 @@ export interface PmContextItem {
 }
 
 export interface PmContextBundle {
-	/** Charter (when in force) FIRST, then the plan macro, then typed PM memory. */
+	/** Charter (when in force) FIRST, then the plan macro, then typed PM memory, then the
+	 *  optional Atelier concierge resource (only when conciergeConsult is set). */
 	items: PmContextItem[];
 	/** The charter text in force, or null — the honest signal for callers/surfaces. */
 	charter: string | null;
@@ -50,7 +62,7 @@ export interface PmContextBundle {
 export async function assemblePmContext(
 	db: Db,
 	projectId: string,
-	opts: { memoryLimit?: number } = {}
+	opts: { memoryLimit?: number; conciergeConsult?: boolean } = {}
 ): Promise<PmContextBundle> {
 	const [pm, project, memories] = await Promise.all([
 		getPm(db, projectId),
@@ -86,6 +98,31 @@ export async function assemblePmContext(
 	// Layer 3 — accumulated typed PM memory (append-only, D-015), newest first.
 	for (const m of memories) {
 		items.push({ text: `[${m.kind}] ${m.content}`, citationId: m.id });
+	}
+
+	// Layer 4 — the Atelier concierge resource (Path A — CONVERSATION-LAYER-SPEC). Emitted
+	// ONLY when the caller GRANTS peer-send to this turn (opts.conciergeConsult) — so it is
+	// honest (F-008): a PM turn without the `peer_send` tool (e.g. the runPmReview pass) never
+	// sees guidance to use a tool it lacks. Advisory/NON-STEERING framing (D-035a/D-040): the
+	// concierge PROPOSES (agent-rec / skill-discovery / open-question), it does not act; hires
+	// and skill installs stay operator-gated. Background reference DATA, not an instruction —
+	// the actual `peer_send` affordance (call shape + who-list) is emitted separately by launch.
+	if (opts.conciergeConsult) {
+		items.push({
+			text:
+				'Atelier concierge (an advisory resource you can consult):\n' +
+				'The platform runs a singular global Atelier concierge — a cross-project brain grounded ' +
+				'in the shared memory. You may consult it with your `peer_send` tool: ' +
+				"`peer_send({ to: { kind: 'atelier' }, body: '<your question>' })`. Consult it when you " +
+				'need a SPECIALIST AGENT for a piece of work (agent recommendation), a SKILL/capability ' +
+				'this project lacks (skill discovery), or you hit a hard CROSS-PROJECT decision (an open ' +
+				'question worth a second opinion). The consult is ASYNC and NON-BLOCKING: it does not pause ' +
+				'your turn — the reply arrives later as a peer message you weigh at your discretion. The ' +
+				'concierge ADVISES only — it proposes agents, skills, and answers; it never acts for you ' +
+				'and cannot change anything. You decide and act. Hiring a specialist and installing a skill ' +
+				'remain operator-gated: the concierge proposes, the operator approves.',
+			citationId: 'atelier-concierge'
+		});
 	}
 
 	return { items, charter };

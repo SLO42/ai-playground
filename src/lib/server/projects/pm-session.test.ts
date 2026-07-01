@@ -9,7 +9,8 @@ import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
 import { createProject, updateProjectPlan } from './repo';
 import { addPmMemory, createPm } from './pm-repo';
-import { assemblePmContext, resolvePmRoute } from './pm-session';
+import { assemblePmContext, resolvePmRoute, PM_CHAT_CAPABILITIES } from './pm-session';
+import { peerSendGranted } from '../agent/tool-catalog';
 
 // TASK 16.1 VERIFY (D-038) — the PM session seams against a REAL throwaway SurrealDB:
 //   • assemblePmContext — charter FIRST, then plan, then memory; every shadow path
@@ -91,6 +92,41 @@ describe('assemblePmContext — charter + plan + memory, fenced DATA payloads', 
 		const ctx = await assemblePmContext(db, p.id);
 		expect(ctx.items).toEqual([]);
 		expect(ctx.charter).toBeNull();
+	});
+});
+
+// Path A (CONVERSATION-LAYER-SPEC) — the Atelier-concierge resource layer + peer-send grant.
+describe('assemblePmContext — the Atelier concierge consult layer (Path A)', () => {
+	it('default (no flag) OMITS the concierge item — honest for a turn without peer-send', async () => {
+		const p = await freshProject('ctx_noconcierge');
+		await createPm(db, { project: p.id, name: 'Quill', charter: 'Ship it.' });
+		await updateProjectPlan(db, p.id, { purpose: 'Run the mods' });
+		const ctx = await assemblePmContext(db, p.id);
+		expect(ctx.items.some((i) => i.citationId === 'atelier-concierge')).toBe(false);
+	});
+
+	it('conciergeConsult:true APPENDS an advisory concierge resource (peer_send + atelier, operator-gated)', async () => {
+		const p = await freshProject('ctx_concierge');
+		await createPm(db, { project: p.id, name: 'Vesper', charter: 'Escalate release-shaped work.' });
+		const ctx = await assemblePmContext(db, p.id, { conciergeConsult: true });
+		const item = ctx.items.find((i) => i.citationId === 'atelier-concierge');
+		expect(item).toBeDefined();
+		// It advertises the real tool + address, framed advisory/non-steering + operator-gated (F-008).
+		expect(item!.text).toContain('peer_send');
+		expect(item!.text).toContain("kind: 'atelier'");
+		expect(item!.text).toContain('ADVISES');
+		expect(item!.text).toContain('operator-gated');
+		// It is the LAST layer (appended after charter/plan/memory) — never displaces them.
+		expect(ctx.items[ctx.items.length - 1].citationId).toBe('atelier-concierge');
+	});
+});
+
+describe('PM_CHAT_CAPABILITIES — the agentic PM chat peer-send grant', () => {
+	it('grants peer-send (the reserved id) so the pmChat turn gets the peer_send tool + affordance', () => {
+		// The SAME value the pmChat action launches with (single source of truth) — asserts the
+		// grant marker peerSendGranted reads, without spawning a runtime.
+		expect(peerSendGranted(PM_CHAT_CAPABILITIES)).toBe(true);
+		expect(PM_CHAT_CAPABILITIES.skills).toContain('peer-send');
 	});
 });
 

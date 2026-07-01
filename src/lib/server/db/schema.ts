@@ -2623,6 +2623,33 @@ const m0073_concept_graph: Migration = {
 	`
 };
 
+// ── CONCIERGE (D-040 self-hosting seam) — `session.pm` identity link ──────────────
+//
+// The atelier/PM RESOLUTION seam the fleet bus anticipated but never had. `resolveAtelier`
+// (peer/resolve.ts) resolves a `to_kind:'atelier'` message to the running session(s) whose
+// `pm` link equals `pmByProject['__atelier__']`, and a project 'pm' address matches the
+// running session acting AS that project's PM — BOTH read `session.pm`, which did NOT exist
+// (loadFleetSnapshot/resolve.ts LiveSession.pm were DOCUMENTED PLACEHOLDERS reading back null
+// on every row, so 'pm'/'atelier' always inboxed pending). This column is that seam: the pm
+// IDENTITY a session is acting as. It is a STRING (not record<pm>) so it can carry the atelier
+// self-identity SENTINEL (ATELIER_SELF_PM='pm:atelier_self', peer/resolve.ts) for the global,
+// project-LESS concierge presence — the `pm` table requires a `project` (m0029), so a project-
+// less atelier PM cannot be a `pm` row; the sentinel string names it honestly instead. A future
+// project-PM session may stamp its real `pm:…` id string here uniformly.
+//
+// Populated ONLY by a session that DECLARES a pm identity at CREATE (the concierge's atelier_self
+// session — src/lib/server/concierge). Every existing/legacy session leaves it NONE → reads back
+// null → a 'pm'/'atelier' address still resolves to ZERO sessions (unchanged, honest, F-008).
+// ADDITIVE + idempotent (D-006/F-015, OVERWRITE-only): a clean no-op over a fresh DB AND over a
+// half-applied state. option<string>, OMITTED at write when absent — never an explicit NULL
+// (option<T> rejects NULL — MEMORY-SPEC §6.1).
+const m0074_session_pm: Migration = {
+	id: '0074_session_pm',
+	up: `
+		DEFINE FIELD OVERWRITE pm ON session TYPE option<string>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2702,5 +2729,6 @@ export const schemaMigrations: Migration[] = [
 	m0070_session_specialist,
 	m0071_app_auth,
 	m0072_loop_manifest,
-	m0073_concept_graph
+	m0073_concept_graph,
+	m0074_session_pm
 ];

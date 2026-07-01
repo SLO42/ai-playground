@@ -21,7 +21,7 @@ import { assertRecordId } from '../db/validate';
 import { screen } from '../memory/screen';
 import { fence } from '../memory/fence';
 import type { FleetSnapshot, LiveSession } from './resolve';
-import { ATELIER_PROJECT_KEY, type ToKind } from './resolve';
+import { ATELIER_PROJECT_KEY, ATELIER_SELF_PM, type ToKind } from './resolve';
 
 // ── Named errors ────────────────────────────────────────────────────────────────
 
@@ -410,29 +410,39 @@ export async function pendingInbox(db: Db, toSession: string): Promise<PeerMessa
  */
 export async function loadFleetSnapshot(db: Db): Promise<FleetSnapshot> {
 	const [sessRows] = await db.query<[Raw[]]>(
-		`SELECT id, role, project, kind FROM session WHERE status = "running" LIMIT 1000;`
+		`SELECT id, role, project, kind, pm FROM session WHERE status = "running" LIMIT 1000;`
 	);
 	const running: LiveSession[] = (sessRows ?? []).map((r) => ({
 		id: str(r.id),
 		role: r.role != null ? str(r.role) : null,
 		project: r.project != null ? str(r.project) : null,
 		kind: str(r.kind),
-		// DOCUMENTED PLACEHOLDER: there is no `session.pm` column yet (PM sessions are launched via
-		// projects/pm-session.ts but not stamped with a pm link). Until that seam exists, every
-		// running session reads pm=null → a 'pm'/'atelier' address resolves to ZERO sessions and
-		// inboxes as pending (the PM/atelier is event-triggered, usually OFFLINE). Never fabricated.
+		// The pm IDENTITY this session is acting AS (m0074 `session.pm`, option<string>). The
+		// concierge's atelier_self session stamps ATELIER_SELF_PM here; a project-PM session may
+		// stamp its real pm id string. Absent (every legacy/worker session) ⇒ null → a 'pm'/'atelier'
+		// address resolves to ZERO sessions and inboxes as pending (honest, never fabricated — F-008).
 		pm: r.pm != null ? str(r.pm) : null
 	}));
 
 	// PM identities: pm.project → pm.id (one PM per project, PM-SPEC). The resolver matches a 'pm'
-	// address to a running session whose pm link equals this id (none today — see placeholder).
-	// A project-less PM (atelier_self's global PM) is keyed under ATELIER_PROJECT_KEY (§11 atelier).
+	// address to a running session whose pm link equals this id. The `pm` table requires a project
+	// (m0029), so it never yields a project-less row — the ATELIER_PROJECT_KEY entry comes from the
+	// live concierge session below, not this table.
 	const [pmRows] = await db.query<[Raw[]]>(`SELECT id, project FROM pm LIMIT 1000;`);
 	const pmByProject: Record<string, string | null> = {};
 	for (const r of pmRows ?? []) {
 		const proj = r.project != null ? str(r.project) : null;
 		const key = proj ?? ATELIER_PROJECT_KEY;
 		pmByProject[key] = str(r.id);
+	}
+
+	// CONCIERGE (D-040): when a running session carries the atelier self-identity sentinel on its
+	// `pm` link, the global platform identity is LIVE — key it under ATELIER_PROJECT_KEY so
+	// resolveAtelier fans an 'atelier' address out to it. No such session ⇒ the key stays absent and
+	// 'atelier' resolves offline→pending (the concierge is event-triggered, usually OFFLINE). This is
+	// the HONEST live source (F-008): the identity is reachable exactly while its session runs.
+	if (running.some((s) => s.pm === ATELIER_SELF_PM)) {
+		pmByProject[ATELIER_PROJECT_KEY] = ATELIER_SELF_PM;
 	}
 
 	return { running, pmByProject };

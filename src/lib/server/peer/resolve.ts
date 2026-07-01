@@ -143,6 +143,17 @@ export interface Resolution {
  */
 export const ATELIER_PROJECT_KEY = '__atelier__';
 
+/**
+ * The atelier self-identity SENTINEL (D-040 self-hosting, Stage-1 concierge). The concierge's
+ * project-LESS `atelier_self` session stamps this on `session.pm` (m0074) at CREATE, and
+ * loadFleetSnapshot keys it under {@link ATELIER_PROJECT_KEY} in `pmByProject`, so `resolveAtelier`
+ * resolves an 'atelier' address to that live session (and it inboxes as pending when none is up —
+ * the concierge is EVENT-TRIGGERED, usually offline). It is a plain string (NOT a `record<pm>`)
+ * because the `pm` table requires a `project` (m0029) — a project-less atelier PM cannot be a `pm`
+ * row, so this sentinel names the singular global platform identity honestly instead.
+ */
+export const ATELIER_SELF_PM = 'pm:atelier_self';
+
 function resolveAtelier(fleet: FleetSnapshot): Resolution {
 	const atelierPm = fleet.pmByProject?.[ATELIER_PROJECT_KEY] ?? null;
 	if (!atelierPm) {

@@ -38,6 +38,7 @@ import {
 } from '$lib/server/peer/send';
 import { PEER_CLIENT_KEY_MAX } from '$lib/server/peer/repo';
 import type { PeerAddress, ToKind } from '$lib/server/peer/resolve';
+import { triggerConcierge } from '$lib/server/concierge/wire';
 import type { RequestHandler } from './$types';
 
 /** An honest failure result (F-008 — never a fabricated send). */
@@ -166,6 +167,15 @@ export const POST: RequestHandler = async ({ request }) => {
 			{ senderSessionId, address, body: rawBody, ...(hops !== undefined ? { hops } : {}), ...(clientKey ? { clientKey } : {}) },
 			{ db, deliver, publish: (ev) => getBus().publish(ev) }
 		);
+		// CONCIERGE (D-040 Stage-1). An 'atelier'-addressed message is the EVENT that wakes the
+		// event-triggered concierge: bring up the atelier_self session, ground on the brain, answer
+		// via the recommender, reply over the bus, tear down. Fire-and-forget + best-effort (F-014):
+		// it NEVER blocks or fails the send response (the message is already durably persisted; this
+		// is the async advisory follow-up), and triggerConcierge itself never throws. Non-atelier
+		// sends are untouched.
+		if (address.kind === 'atelier') {
+			void triggerConcierge(db);
+		}
 		return json({ ok: true, ...result });
 	} catch (err) {
 		// EVERY ERROR HAS A NAME — map each to an honest ok:false the agent can act on. A 4xx for a

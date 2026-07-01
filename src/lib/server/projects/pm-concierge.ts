@@ -40,6 +40,7 @@ import {
 	type SendPeerMessageInput,
 	type PeerMessageRow
 } from '../peer/repo';
+import { ATELIER_SELF_PM } from '../peer/resolve';
 import { getPm, addPmMemory, type PmMemoryRow } from './pm-repo';
 import type { TaskRow } from '../tasks/repo';
 import type { FindingRow } from '../scanner/findings-repo';
@@ -48,6 +49,10 @@ import type { FindingRow } from '../scanner/findings-repo';
  *  memories (so the PM tab / dedup can identify them). */
 const CONSULT_SOURCE = 'pm-concierge-consult';
 const CONSULT_REPLY_SOURCE = 'pm-concierge-reply';
+/** pm_memory.source tag for a NON-concierge peer message surfaced off the PM identity mailbox —
+ *  e.g. a granted worker's `peer_send({ to: { kind:'pm' } })` escalation ("I'm blocked"). Distinct
+ *  from CONSULT_REPLY_SOURCE so surfaces/dedup never confuse a worker message with an advisory. */
+const PEER_MESSAGE_SOURCE = 'pm-peer-message';
 
 /** The session.agent sentinel marking the durable PM peer-identity (NOT a real on-disk agent). */
 const PM_IDENTITY_AGENT = 'pm_review_identity';
@@ -253,7 +258,7 @@ export async function maybeEmitConciergeConsult(
 		}
 
 		// Fire the concierge best-effort: ASYNC + NON-BLOCKING (never awaited — a 30s LLM turn must not
-		// block/hang the review, F-014). The reply lands on a LATER pass (surfaceConciergeReplies).
+		// block/hang the review, F-014). The reply lands on a LATER pass (surfacePmInbox).
 		const trigger = deps?.trigger ?? defaultTrigger;
 		void Promise.resolve(trigger(db)).catch((e) =>
 			console.warn(`[pm-concierge] trigger failed (fail-open): ${(e as Error).message}`)
@@ -275,31 +280,102 @@ export async function maybeEmitConciergeConsult(
 	}
 }
 
-// ── SURFACE — drain the async concierge reply into PM memory on a later pass ───────────────
+// ── SURFACE — drain the PM identity inbox (concierge advisories + worker peer messages) ────
+
+/** One pending inbox row, with the sender columns graph-traversed off `from_session` so the
+ *  surfaced label is RESOLVED from the live sender session row — never guessed (F-008). */
+interface PmInboxRow {
+	id: unknown;
+	body: unknown;
+	created_at: unknown;
+	from_session: unknown;
+	sender_pm: unknown;
+	sender_agent: unknown;
+	sender_role: unknown;
+}
+
+/** Honest label for a NON-concierge sender: role name first (the most meaningful WHO), then the
+ *  agent slug, then the bare session id; an unresolvable sender is said to be exactly that (F-008
+ *  — never a fabricated identity). The label is metadata only (role/agent/session id), never
+ *  message content (D-026). */
+function senderLabel(r: PmInboxRow): string {
+	const sid = r.from_session != null ? String(r.from_session) : null;
+	const role = typeof r.sender_role === 'string' && r.sender_role ? r.sender_role : null;
+	const agent = typeof r.sender_agent === 'string' && r.sender_agent ? r.sender_agent : null;
+	if (role && sid) return `Peer message from a "${role}" session (${sid})`;
+	if (agent && sid) return `Peer message from agent "${agent}" (${sid})`;
+	if (sid) return `Peer message from session ${sid}`;
+	return 'Peer message from an unidentified session';
+}
 
 /**
- * Read the concierge's async advisory replies that landed on this project's PM peer-identity mailbox
- * and surface each into pm_memory (an advisory observation). Atomic pending→delivered CAS per reply
- * (only the pass that WINS the flip writes the memory — no double-surface under concurrent ticks,
- * F-048-class). The mailbox is addressed by nothing but the concierge (it is not advertised), so every
- * pending message on it is a concierge reply. Returns the memories written (folded into review.written).
- * NEVER throws (fail-open) — a drain fault must not crash the review/server (F-014).
+ * Drain the pending messages on this project's PM inbox and surface each into pm_memory. The PM
+ * inbox is TWO row shapes on the peer bus (both drained here; neither has any other drain):
+ *   • `to_session = <PM peer-identity>` — the concierge's advisory replies (handleAtelierMessages
+ *     addresses the identity mailbox directly), plus any direct session-addressed message to it;
+ *   • `to_kind = 'pm' AND project = <this>` — a worker's `peer_send({to:{kind:'pm', project}})`
+ *     escalation (send.ts destinationCoords stores NO to_session for the pm class — the address
+ *     is the project's PM identity, not a session id).
+ * Atomic pending→delivered CAS per message (only the pass that WINS the flip writes the memory —
+ * no double-surface under concurrent ticks, F-048-class). The surfaced label branches by ORIGIN
+ * (the sender session's `pm` identity):
+ *   • the Atelier concierge (atelier_self, `pm` = ATELIER_SELF_PM) → the advisory observation
+ *     ("async reply to a prior review consult") tagged CONSULT_REPLY_SOURCE, as before;
+ *   • any OTHER sender → an honest "Peer message from <sender>" observation tagged
+ *     PEER_MESSAGE_SOURCE — NEVER mislabeled as a concierge advisory (F-008).
+ * Returns the memories written (folded into review.written). NEVER throws (fail-open) — a drain
+ * fault must not crash the review/server (F-014).
  */
-export async function surfaceConciergeReplies(db: Db, projectId: string): Promise<PmMemoryRow[]> {
+export async function surfacePmInbox(db: Db, projectId: string): Promise<PmMemoryRow[]> {
 	try {
 		const sid = await findPmIdentitySession(db, projectId);
-		if (!sid) return []; // no identity ⇒ no consult ever ⇒ nothing to surface
 
-		// F-020: the ORDER BY field (created_at) is in the SELECT list; to_session is indexed.
-		const [rows] = await db.query<[Array<{ id: unknown; body: unknown; created_at: unknown }>]>(
-			`SELECT id, body, created_at FROM peer_message
-				WHERE to_session = $sid AND status = "pending"
+		// F-020: the ORDER BY field (created_at) is in every SELECT list; to_session is indexed.
+		// Sender columns traverse the from_session record link; a deleted/missing sender row
+		// yields NONE → the honest "unidentified" fallback (F-008).
+		const SENDER_PROJECTION = `id, body, created_at, from_session,
+					from_session.pm AS sender_pm,
+					from_session.agent AS sender_agent,
+					from_session.role.name AS sender_role`;
+
+		// Shape 1 — messages addressed TO the PM peer-identity session (concierge replies). Only
+		// exists once a consult was ever emitted; no identity ⇒ skip (nothing can address it).
+		let rows: PmInboxRow[] = [];
+		if (sid) {
+			const [identityRows] = await db.query<[PmInboxRow[]]>(
+				`SELECT ${SENDER_PROJECTION}
+					FROM peer_message
+					WHERE to_session = $sid AND status = "pending"
+					ORDER BY created_at ASC LIMIT ${MAX_REPLIES_PER_PASS};`,
+				{ sid: link(sid) }
+			);
+			rows = rows.concat(identityRows ?? []);
+		}
+
+		// Shape 2 — pm-class messages for THIS project (worker escalations). Drained regardless of
+		// the identity session: a worker can address {kind:'pm'} before any consult ever ran.
+		const [pmKindRows] = await db.query<[PmInboxRow[]]>(
+			`SELECT ${SENDER_PROJECTION}
+				FROM peer_message
+				WHERE to_kind = "pm" AND project = $project AND status = "pending"
 				ORDER BY created_at ASC LIMIT ${MAX_REPLIES_PER_PASS};`,
-			{ sid: link(sid) }
+			{ project: link(projectId) }
 		);
+		rows = rows.concat(pmKindRows ?? []);
+
+		// Deterministic surface order across both shapes (the two sets are disjoint by construction —
+		// a pm-class row stores no to_session — but the CAS flip below de-dupes defensively anyway).
+		// F-013-class care: the SDK hands datetimes back as Date-likes — compare via epoch, never
+		// String(Date) (locale text does not sort chronologically).
+		const epoch = (v: unknown): number => {
+			if (v instanceof Date) return v.getTime();
+			const t = new Date(String(v ?? '')).getTime();
+			return Number.isNaN(t) ? 0 : t;
+		};
+		rows.sort((a, b) => epoch(a.created_at) - epoch(b.created_at));
 
 		const out: PmMemoryRow[] = [];
-		for (const r of rows ?? []) {
+		for (const r of rows) {
 			const replyId = String(r.id);
 			// Atomic single-surface guard: flip pending→delivered; only proceed if THIS pass won the flip.
 			const [flipped] = await db.query<[unknown[]]>(
@@ -310,11 +386,15 @@ export async function surfaceConciergeReplies(db: Db, projectId: string): Promis
 			if (!Array.isArray(flipped) || flipped.length === 0) continue; // lost the race / already surfaced
 
 			const body = typeof r.body === 'string' ? r.body : '';
+			// ORIGIN branch: only the concierge's atelier identity earns the advisory label.
+			const fromAtelier = r.sender_pm != null && String(r.sender_pm) === ATELIER_SELF_PM;
 			const memory = await addPmMemory(db, {
 				project: projectId,
 				kind: 'observation',
-				content: `Atelier concierge advisory (async reply to a prior review consult):\n${body}`,
-				source: CONSULT_REPLY_SOURCE,
+				content: fromAtelier
+					? `Atelier concierge advisory (async reply to a prior review consult):\n${body}`
+					: `${senderLabel(r)}:\n${body}`,
+				source: fromAtelier ? CONSULT_REPLY_SOURCE : PEER_MESSAGE_SOURCE,
 				related_to: replyId,
 				confidence: 1.0
 			});
@@ -322,10 +402,11 @@ export async function surfaceConciergeReplies(db: Db, projectId: string): Promis
 		}
 		return out;
 	} catch (err) {
-		console.warn(`[pm-concierge] surfaceConciergeReplies failed (fail-open): ${(err as Error).message}`);
+		console.warn(`[pm-concierge] surfacePmInbox failed (fail-open): ${(err as Error).message}`);
 		return [];
 	}
 }
 
-/** Re-exported tags so the surface / tests can identify consult + reply memories without magic strings. */
-export { CONSULT_SOURCE, CONSULT_REPLY_SOURCE, PM_IDENTITY_AGENT };
+/** Re-exported tags so the surface / tests can identify consult + reply + worker-message memories
+ *  without magic strings. */
+export { CONSULT_SOURCE, CONSULT_REPLY_SOURCE, PEER_MESSAGE_SOURCE, PM_IDENTITY_AGENT };

@@ -31,6 +31,7 @@ import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import type { EventBus } from '../events/bus';
 import type { AgentRuntime, Intent, SpawnBudgets, ToolPolicy } from '../runtime/index';
+import { resolveCapabilitiesForIntent } from '../harness';
 import { launchSession, type LaunchResult } from '../sessions/launch';
 import {
 	getWorkflow,
@@ -149,6 +150,10 @@ export async function runWorkflow(deps: RunWorkflowDeps): Promise<RunWorkflowRes
 					intent: deps.intent ?? 'code-write',
 					budgets: deps.budgets ?? DEFAULT_BUDGETS,
 					toolPolicy: deps.toolPolicy ?? DEFAULT_TOOL_POLICY,
+					// D-036: the resolved intent's capability set (mirrors orchestrator/boot.ts) — so a
+					// workflow-step worker gets peer-send iff its intent is a WRITE intent (same policy
+					// everywhere; a read-intent step composes no grant).
+					capabilities: resolveCapabilitiesForIntent(deps.intent ?? 'code-write'),
 					workflowRunId: runId // ties the step session to this run (§4.11)
 				}
 			});

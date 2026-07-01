@@ -8,11 +8,13 @@ import { createTask, setStatus } from '../tasks/repo';
 import { createPm, listPmMemory } from './pm-repo';
 import { sendPeerMessage, type SendPeerMessageInput, type PeerMessageRow } from '../peer/repo';
 import { runPmReview } from './pm-review';
+import { StringRecordId } from 'surrealdb';
 import {
 	maybeEmitConciergeConsult,
-	surfaceConciergeReplies,
+	surfacePmInbox,
 	CONSULT_SOURCE,
 	CONSULT_REPLY_SOURCE,
+	PEER_MESSAGE_SOURCE,
 	type PmConciergeDeps
 } from './pm-concierge';
 
@@ -171,7 +173,7 @@ describe('maybeEmitConciergeConsult — emit once per novel specialist-need (ded
 	});
 });
 
-describe('surfaceConciergeReplies — the async advisory lands on a later pass', () => {
+describe('surfacePmInbox — the async advisory lands on a later pass', () => {
 	it('surfaces a landed concierge reply into pm_memory ONCE (not re-surfaced on the next pass)', async () => {
 		await hirePm('act');
 		await seedBlockedTask('Stuck');
@@ -195,13 +197,13 @@ describe('surfaceConciergeReplies — the async advisory lands on a later pass',
 		});
 
 		// 3) A LATER pass surfaces it into pm_memory (advisory), exactly once.
-		const surfaced = await surfaceConciergeReplies(db, projectId);
+		const surfaced = await surfacePmInbox(db, projectId);
 		expect(surfaced).toHaveLength(1);
 		expect(surfaced[0].source).toBe(CONSULT_REPLY_SOURCE);
 		expect(/Atelier advice/i.test(surfaced[0].content)).toBe(true);
 
 		// 4) The reply row is now consumed (delivered) — a subsequent pass surfaces NOTHING (no dup).
-		const again = await surfaceConciergeReplies(db, projectId);
+		const again = await surfacePmInbox(db, projectId);
 		expect(again).toHaveLength(0);
 		const replyMemories = (await listPmMemory(db, projectId)).filter((m) => m.source === CONSULT_REPLY_SOURCE);
 		expect(replyMemories).toHaveLength(1);
@@ -209,8 +211,126 @@ describe('surfaceConciergeReplies — the async advisory lands on a later pass',
 
 	it('no identity mailbox (no consult ever) ⇒ surfacing is a clean no-op', async () => {
 		await hirePm('act');
-		const surfaced = await surfaceConciergeReplies(db, projectId);
+		const surfaced = await surfacePmInbox(db, projectId);
 		expect(surfaced).toEqual([]);
+	});
+});
+
+describe('surfacePmInbox — a worker peer message surfaces with the HONEST sender label (never the advisory label)', () => {
+	/** A real running worker session in THIS project (optionally carrying a role). */
+	async function seedWorkerSession(over: Record<string, unknown> = {}): Promise<string> {
+		const [rows] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE session CONTENT $c RETURN AFTER;`,
+			{
+				c: {
+					kind: 'task',
+					model: { provider: 'claude', model_id: 'claude-opus-4-8' },
+					status: 'running',
+					runtime: 'claude-code',
+					project: new StringRecordId(projectId),
+					...over
+				}
+			}
+		);
+		return String(rows[0].id);
+	}
+
+	it("a worker's peer_send({to:{kind:'pm'}}) escalation surfaces labeled by its ROLE — not as a concierge advisory", async () => {
+		await hirePm('act');
+		const [roleRows] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE role CONTENT { slug: 'code-reviewer', name: 'Code Reviewer', purpose: 'review' } RETURN AFTER;`
+		);
+		const worker = await seedWorkerSession({ role: new StringRecordId(String(roleRows[0].id)) });
+
+		// The REAL worker path: to_kind:'pm' + project — send.ts destinationCoords stores NO
+		// to_session for the pm class, so the row is pm-kind + project (the shape-2 inbox).
+		await sendPeerMessage(db, {
+			from_session: worker,
+			to_kind: 'pm',
+			project: projectId,
+			body: "I'm blocked: the migration decision needs a PM call."
+		});
+
+		const surfaced = await surfacePmInbox(db, projectId);
+		expect(surfaced).toHaveLength(1);
+		// Honest sender label (F-008) — the role + the real session id, tagged as a peer message…
+		expect(surfaced[0].source).toBe(PEER_MESSAGE_SOURCE);
+		expect(surfaced[0].content).toContain('Peer message from a "Code Reviewer" session');
+		expect(surfaced[0].content).toContain(worker);
+		// …and NEVER the concierge-advisory label (the mislabel this fix removes).
+		expect(surfaced[0].content).not.toContain('Atelier concierge advisory');
+		expect(surfaced[0].source).not.toBe(CONSULT_REPLY_SOURCE);
+
+		// Drained exactly once (pending→delivered CAS): a second pass surfaces nothing.
+		expect(await surfacePmInbox(db, projectId)).toHaveLength(0);
+	});
+
+	it('a role-less worker falls back to its agent slug, then the bare session id (honest, never guessed)', async () => {
+		await hirePm('act');
+		const byAgent = await seedWorkerSession({ agent: 'atelier-developer' });
+		await sendPeerMessage(db, {
+			from_session: byAgent,
+			to_kind: 'pm',
+			project: projectId,
+			body: 'Handing off: the schema change affects your roadmap read.'
+		});
+		const surfacedAgent = await surfacePmInbox(db, projectId);
+		expect(surfacedAgent).toHaveLength(1);
+		expect(surfacedAgent[0].source).toBe(PEER_MESSAGE_SOURCE);
+		expect(surfacedAgent[0].content).toContain('Peer message from agent "atelier-developer"');
+
+		const bare = await seedWorkerSession({});
+		await sendPeerMessage(db, {
+			from_session: bare,
+			to_kind: 'pm',
+			project: projectId,
+			body: 'Second escalation.'
+		});
+		const surfacedBare = await surfacePmInbox(db, projectId);
+		expect(surfacedBare).toHaveLength(1);
+		expect(surfacedBare[0].content).toContain(`Peer message from session ${bare}`);
+	});
+
+	it('an atelier-origin reply STILL surfaces as an advisory while a worker message in the same pass does not (no regression)', async () => {
+		await hirePm('act');
+		await seedBlockedTask('Stuck');
+		const tasks = await import('../tasks/repo').then((m) => m.listTasksByProject(db, projectId));
+		const { send } = spySend();
+		await maybeEmitConciergeConsult(
+			db,
+			{ projectId, projectLabel: 'Concierge Host', tasks, severe: [] },
+			{ send, trigger: async () => {} }
+		);
+		const identity = (await atelierMessages())[0].from_session;
+
+		// The concierge's reply (atelier_self origin — `pm` = the atelier sentinel)…
+		const [atelierSess] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE session CONTENT { kind: 'discussion', model: { provider: 'atelier', model_id: 'concierge-stage1' }, status: 'running', pm: 'pm:atelier_self' } RETURN AFTER;`
+		);
+		await sendPeerMessage(db, {
+			from_session: String(atelierSess[0].id),
+			to_kind: 'session',
+			to_session: identity,
+			body: 'Atelier advice: hire a specialist.'
+		});
+		// …and a worker escalation landing in the SAME pass.
+		const worker = await seedWorkerSession({});
+		await sendPeerMessage(db, {
+			from_session: worker,
+			to_kind: 'pm',
+			project: projectId,
+			body: 'Blocked on conflicting instructions.'
+		});
+
+		const surfaced = await surfacePmInbox(db, projectId);
+		expect(surfaced).toHaveLength(2);
+		const advisory = surfaced.find((m) => m.source === CONSULT_REPLY_SOURCE);
+		const peerMsg = surfaced.find((m) => m.source === PEER_MESSAGE_SOURCE);
+		expect(advisory).toBeDefined();
+		expect(advisory!.content).toContain('Atelier concierge advisory');
+		expect(peerMsg).toBeDefined();
+		expect(peerMsg!.content).toContain('Peer message from session');
+		expect(peerMsg!.content).not.toContain('Atelier concierge advisory');
 	});
 });
 

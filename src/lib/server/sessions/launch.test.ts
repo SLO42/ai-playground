@@ -1173,9 +1173,11 @@ describe('launchSession — peer-send affordance reaches the prompt only when gr
 		// The who-list lists the real in-project teammate, NOT the foreign-project session.
 		expect(prompt).toContain('session:teammate');
 		expect(prompt).not.toContain('session:foreign');
-		// Honest classes only — never advertises pm/atelier as a reachable kind.
-		expect(prompt).not.toContain('kind: "pm"');
-		expect(prompt).not.toContain('kind: "atelier"');
+		// Honest classes: pm/atelier resolve LIVE since Concierge Stage-1 (inbox-pending when
+		// offline), so the affordance DOES advertise them (affordance.test.ts asserts the same —
+		// the old "never advertises pm/atelier" premise was the F-008 dishonesty that was fixed).
+		expect(prompt).toContain('kind: "pm"');
+		expect(prompt).toContain('kind: "atelier"');
 	});
 
 	it('a NON-granted session sees NO affordance (no dead affordance, loadFleet never called)', async () => {

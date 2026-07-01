@@ -30,7 +30,7 @@ import { proposeTask, type ProposalOpts, type ProposeTaskResult, type ProposeTas
 import { deriveGithubTriage, type GithubTriageResult } from './pm-triage';
 import {
 	maybeEmitConciergeConsult,
-	surfaceConciergeReplies,
+	surfacePmInbox,
 	type PmConciergeDeps
 } from './pm-concierge';
 import {
@@ -111,10 +111,11 @@ export async function runPmReview(
 	const project = await getProject(db, projectId);
 	if (!project) throw new Error(`project not found: ${projectId}`);
 
-	// Path B (CONVERSATION-LAYER-SPEC): FIRST drain any async Atelier-concierge advisories that
-	// landed since the last pass (replies to earlier consults) into pm_memory — BEFORE assembling
-	// the context, so surfaced advice is part of THIS pass's PM view. Fail-open (never throws).
-	const surfacedAdvisories = await surfaceConciergeReplies(db, projectId);
+	// Path B (CONVERSATION-LAYER-SPEC): FIRST drain the PM identity inbox — async Atelier-concierge
+	// advisories (replies to earlier consults) AND worker peer messages (a granted session's
+	// peer_send to {kind:'pm'}) — into pm_memory BEFORE assembling the context, so surfaced
+	// advice/escalations are part of THIS pass's PM view. Fail-open (never throws).
+	const surfacedAdvisories = await surfacePmInbox(db, projectId);
 
 	// TASK 16.1 (PM-SPEC §2): assemble the durable context layers (charter + plan +
 	// memory) BEFORE deriving — the bundle the pass woke up with, charter first.

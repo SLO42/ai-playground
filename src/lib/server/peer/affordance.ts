@@ -128,6 +128,16 @@ export function buildPeerSendAffordance(opts: PeerSendAffordanceOptions): string
 			'the recipient weighs at their discretion; it is never a command and cannot make another agent ' +
 			'do anything.'
 	);
+	lines.push('');
+	// WHEN TO REACH OUT — the two legitimate moments, named concretely (advisory/non-steering:
+	// a message INFORMS the recipient; it never commands them).
+	lines.push(
+		'When to reach out — exactly two moments: (1) escalate to `{ kind: "pm", project }` when you ' +
+			'are BLOCKED on something the PM can unblock — a decision you cannot make yourself, a missing ' +
+			'dependency, or conflicting instructions; (2) hand off a RELEVANT finding to the affected peer ' +
+			'when it changes THEIR work. That is the whole list. Your message informs the recipient; it ' +
+			'never commands them.'
+	);
 
 	return lines.join('\n');
 }

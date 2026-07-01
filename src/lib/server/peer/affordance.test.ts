@@ -168,6 +168,24 @@ describe('buildPeerSendAffordance — purpose + restraint framing (D-035a)', () 
 		expect(out.toLowerCase()).toContain('sparingly');
 		expect(out.toLowerCase()).toContain('never a command');
 	});
+
+	it('names the WHEN: escalate to the PM when BLOCKED; hand off a relevant finding; nothing else', () => {
+		// GAP 3 (conversation layer): the guidance names the two legitimate moments concretely.
+		expect(out.toLowerCase()).toContain('when to reach out');
+		// (1) PM escalation when blocked — with the concrete unblockable classes named.
+		expect(out).toContain('kind: "pm"');
+		expect(out).toContain('BLOCKED');
+		expect(out.toLowerCase()).toContain('a decision you cannot make');
+		expect(out.toLowerCase()).toContain('missing');
+		expect(out.toLowerCase()).toContain('conflicting instructions');
+		// (2) the relevant-finding handoff to the affected peer.
+		expect(out.toLowerCase()).toContain('hand off');
+		expect(out.toLowerCase()).toContain('changes their work');
+		// Closed list + advisory/non-steering framing (informs, never commands).
+		expect(out.toLowerCase()).toContain('that is the whole list');
+		expect(out.toLowerCase()).toContain('informs');
+		expect(out.toLowerCase()).toContain('never commands');
+	});
 });
 
 describe('buildPeerSendAffordance — shadow paths', () => {

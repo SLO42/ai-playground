@@ -21,6 +21,7 @@ import {
 	type WorkflowStep
 } from './repo';
 import { runWorkflow } from './runner';
+import { PEER_SEND_CAPABILITY_ID } from '../agent/tool-catalog';
 
 // TASK 2.17 VERIFY (D-013; DATA-MODEL §4.11) — a multi-step pipeline runs as a tracked
 // workflow_run with per-step session records, driven by a MOCKED/SANDBOXED runtime (the
@@ -332,6 +333,49 @@ describe('runWorkflow — multi-step pipeline as a tracked workflow_run (D-013)'
 		expect(rows[0].status).toBe('failed');
 		expect(rows[0].ended_at).toBeTruthy();
 		expect(String(rows[0].note)).toContain('simulated DB outage mid-run');
+	});
+
+	it('workflow-step workers carry the intent capability set — peer-send grant iff WRITE intent (D-036 parity with boot.ts)', async () => {
+		// GAP 2 (conversation layer): runner.ts now passes resolveCapabilitiesForIntent(intent) into
+		// launchSession, mirroring orchestrator/boot.ts — so a workflow-step worker converses exactly
+		// when an orchestrator-spawned worker would. Asserted via the UO-1 granted fields launchSession
+		// persists on the step session row (the ACTUAL composed grant, F-008).
+		const wfWrite = await createWorkflow(db, {
+			name: 'caps-write',
+			project: projectId,
+			steps: [step({ id: 'w' })]
+		});
+		// Default intent is 'code-write' (a WRITE intent) → the reserved peer-send grant rides.
+		const resW = await runWorkflow({ db, bus: new EventBus(), runtime: rt(), workflow: wfWrite.id });
+		expect(resW.status).toBe('done');
+		const [wRows] = await db.query<[Array<{ granted_reserved: unknown; granted_intent: unknown }>]>(
+			`SELECT granted_reserved, granted_intent FROM session WHERE workflow_run = $rid;`,
+			{ rid: new StringRecordId(resW.runId) }
+		);
+		expect(wRows[0].granted_intent).toBe('code-write');
+		expect(wRows[0].granted_reserved).toContain(PEER_SEND_CAPABILITY_ID);
+
+		// A READ intent composes NO peer-send grant (same policy everywhere; nothing else granted).
+		const wfRead = await createWorkflow(db, {
+			name: 'caps-read',
+			project: projectId,
+			steps: [step({ id: 'r' })]
+		});
+		const resR = await runWorkflow({
+			db,
+			bus: new EventBus(),
+			runtime: rt(),
+			workflow: wfRead.id,
+			intent: 'code-read'
+		});
+		expect(resR.status).toBe('done');
+		const [rRows] = await db.query<[Array<{ granted_reserved: unknown; granted_intent: unknown }>]>(
+			`SELECT granted_reserved, granted_intent FROM session WHERE workflow_run = $rid;`,
+			{ rid: new StringRecordId(resR.runId) }
+		);
+		expect(rRows[0].granted_intent).toBe('code-read');
+		const reserved = rRows[0].granted_reserved;
+		expect(reserved == null || !(reserved as string[]).includes(PEER_SEND_CAPABILITY_ID)).toBe(true);
 	});
 
 	it('uses the workflow project when no projectId override is given', async () => {

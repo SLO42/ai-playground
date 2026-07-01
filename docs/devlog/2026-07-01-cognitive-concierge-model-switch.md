@@ -1,6 +1,6 @@
 # 2026-07-01 — Cognitive architecture + Concierge + model-switch/benchmark
 
-**Branch:** `v2` (worktree `F:\code\ai-playground-v2`), code head `de08c8f`. Docs on `v2-main`. All features gate-green (lint 0 · svelte-check 0 ·
+**Branch:** `v2` (worktree `F:\code\ai-playground-v2`), code head `3c4a848`. Docs on `v2-main`. All features gate-green (lint 0 · svelte-check 0 ·
 targeted vitest · build) and pushed. One builder per worktree (F-052).
 
 ## Theme
@@ -37,6 +37,7 @@ switch + behavioral benchmark. Autonomous chain, scout→build→verify→commit
 
 | per-project Loops tab (LP-3) | `4a9a7fb` | scoped LoopList + manifest layer + declared-only section + composed actions on the project route; **closed a real gate-bypass** — the project route's `pmAutonomous` ARM (incl. Overview "Run autonomously to release") skipped the readiness gate; now `armAutonomousLoop`-gated (green-or-override, disarm ungated); live-verified (deep-link + checklist tick 0/9→1/9) |
 | gate-integrity audit + security fix | `0003dc1` | audited all 7 gate classes after LP-3's find → ONE more real hole: `/api/sessions/[id]/control` login-exempt with NO caller credential while operator-stamping interjects (unauth LAN caller could steer sessions as operator, D-035a) → exemption removed (loopback bypass + login cookie protect it now). Everything else clean/documented-intended. F-055 logged (gate-bypass class, 2 finds this session) |
+| exact consult↔reply pairing | `3c4a848` | m0079 `peer_message.reply_to`; concierge stamps the drained consult id on its reply; reader prefers exact pairing, FIFO fallback for legacy rows (never strands old advisories); closes the `6f98bd3` TODO |
 | concierge advisories surfaced | `6f98bd3` | project PM tab (pending→answered lifecycle) + `/brain` cross-project Advisories; Path-B mailbox pairing (FIFO contract — `reply_to` column noted as TODO for exact pairing); Path-A chat replies were already transcript-visible; live-verified on seeded throwaway DB |
 
 ### Local-vs-cloud model experiment (fully wired, unpopulated)
@@ -72,6 +73,13 @@ m0077 benchmark_verdict · m0078 soul_graduation (subject-keyed).
 `docs/MODEL-BENCHMARK-SPEC.md` (+ the deferred experiment runbook) · `docs/fails.md` ·
 memory: local-brain hypothesis, find-skills reference, concierge-shipped. Started this devlog.
 New repo `SLO42/obs-stuff-and-things` created (operator request, unrelated).
+
+## Post-arc additions (same session, operator: "keep it moving")
+Loops detail + LP-3 tab, advisories surfaced + `reply_to` exactness, the **gate-integrity audit**
+(7 classes swept → 2 real bypasses found + fixed this session: LP-3 ARM, control endpoint; F-055
+logged), and this devlog itself (now a standing per-session practice). **m0079 applied live →
+79/79, idempotent** (parked-holder db:up quirk noted: when db:up spawns the server it parks as the
+holder — kill it after; the second foreground run is the idempotency check).
 
 ## End-gate — consolidated live-verify (PASS)
 Whole stretch verified live on the real dev DB: **`db:up` applied m0078 → 78/78, idempotent

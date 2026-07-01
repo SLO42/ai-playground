@@ -221,9 +221,16 @@ fabrication (F-008). Injected (screened, bounded) into the Concierge Stage-2 ope
 Real-surreal test parses the count()/ORDER BY SurrealQL (F-020 lesson). Live brain = `nascent`
 today, richens as the heartbeat accrues. Deferred: soul/maturity SCENE surface (`loadSoul` is the
 ready read-seam) + a graduation-history table (provenance/timeline).
-Pending: **brain "sections"** (decisions/spend/search dashboard, folds into the concierge view),
-**Concierge Stage-3** (skill-discovery via gated find-skills; real skill/hire drafting,
-operator-gated), the deferred hardening (provider-usage parse test — pattern now exists; soul scene
-surface), and the first real local-vs-cloud benchmark RUN (needs a cloud key for the judge half). (LLM turn for open-ended PM questions;
+**Brain view** — SHIPPED `3469791` (2026-07-01). New `/brain` route surfaces the S4 soul
+(maturity_stage + summary + experience grid + competence + knows-about chips + learned values +
+next-stage gates, honest cold `nascent`/disconnected states) + a **decisions** section (real
+`decision` table m0023 §4.1b — `listRecentDecisions`, F-013/F-020-safe; NOT fabricated) + link
+cards to the existing `/reports` (spend), `/memory` (search), `/atelier` (advisories) — reused,
+not rebuilt. Design-system standard, Svelte 5 runes, live `$effect` re-invalidate.
+Pending: **Concierge Stage-3** (skill-discovery via gated find-skills; real skill/hire drafting,
+operator-gated), deferred hardening (provider-usage parse test — pattern now exists; soul SCENE
+surface + graduation-history table), and **the first real local-vs-cloud benchmark RUN** (decide to
+flip `defaultProvider` toward local for a stretch to accrue sessions, then run the judged-eval —
+its cloud-judge half needs a cloud API key present). These need operator input / a key. (LLM turn for open-ended PM questions;
 skill/hire drafting over the bus, operator-gated), plus the brain "sections"
 (decisions/spend/search) which fold into the concierge's dashboard.

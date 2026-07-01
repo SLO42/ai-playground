@@ -224,6 +224,26 @@ export async function setLoopPhase(
 }
 
 /**
+ * Enable/disable a declared loop — a lightweight, reversible, NO-restart DB-MERGE (mirrors setLoopPhase):
+ * the manifest records the operator's declared intent; nothing in the running engine reads it at boot, so
+ * flipping it takes effect the moment the surface re-reads. Returns null when the loop is not declared
+ * (no fabricated row; F-008).
+ */
+export async function setLoopEnabled(
+	db: Db,
+	identifier: string,
+	enabled: boolean
+): Promise<LoopManifestRow | null> {
+	const existing = await getLoopManifest(db, identifier);
+	if (!existing) return null;
+	const [rows] = await db.query<[RawLoopRow[]]>(
+		`UPDATE $rid MERGE { enabled: $enabled, updated_at: time::now() } RETURN AFTER;`,
+		{ rid: new StringRecordId(assertRecordId(existing.id)), enabled: enabled === true }
+	);
+	return rows.length ? normLoop(rows[0]) : null;
+}
+
+/**
  * Record (or clear) the operator's sovereign readiness-gate override on a declared loop. Setting it true
  * stamps override_at + the reason (the recorded "arm anyway" decision); clearing it wipes both. Returns
  * null when the loop is not declared.

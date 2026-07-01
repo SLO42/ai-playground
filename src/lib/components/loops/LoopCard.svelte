@@ -73,6 +73,11 @@
     <div class="lc-titles">
       <h3 class="lc-name" id="loop-name-{loop.id}">{loop.name}</h3>
       <span class="lc-id mono">{loop.id}</span>
+      <!-- Deep-link to the per-loop review + configure page. The identifier carries ':' (e.g.
+           pm-auto:project:x) so it is URL-encoded here and decoded in that route's loader. -->
+      <a class="lc-review" href={`/loops/${encodeURIComponent(loop.id)}`} aria-label={`Review ${loop.name}`}>
+        Review &amp; configure →
+      </a>
     </div>
     <span class="lc-phase" data-phase={loop.phase} title={phase.title} aria-label="maturity {phase.title}">
       {phase.text}
@@ -236,6 +241,15 @@
     font-size: var(--text-xs, 0.7rem);
     color: var(--color-text-muted);
   }
+  .lc-review {
+    font-size: var(--text-xs, 0.72rem);
+    color: var(--color-text-link);
+    text-decoration: none;
+    width: fit-content;
+    margin-top: 2px;
+  }
+  .lc-review:hover { text-decoration: underline; }
+  .lc-review:focus-visible { outline: 2px solid var(--color-text-link); outline-offset: 2px; border-radius: var(--radius-sm); }
   .lc-phase {
     flex: 0 0 auto;
     font-size: var(--text-xs, 0.7rem);

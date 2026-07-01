@@ -154,8 +154,10 @@ function readOrchConfig(): OrchConfigSnapshot {
 	}
 }
 
-/** Newest-first cap on the run history surfaced per loop. */
+/** Newest-first cap on the run history surfaced per loop CARD (the compact recent-runs list). */
 const RECENT_RUN_LIMIT = 10;
+/** The deeper cap the per-loop DETAIL page reads (uncapped in spirit; a sane upper bound guards the query). */
+export const DETAIL_RUN_LIMIT = 200;
 /** A rolling-24h tick window renders as 'day'; mirrors pm-autonomous DEFAULT_TICK_WINDOW_MS. */
 const ONE_DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -182,9 +184,13 @@ interface RawRun {
  */
 async function recentRuns(
 	db: Db,
-	opts: { projectId?: string; types?: readonly string[] } = {}
+	opts: { projectId?: string; types?: readonly string[]; limit?: number } = {}
 ): Promise<LoopRun[]> {
-	const params: Record<string, unknown> = { lim: RECENT_RUN_LIMIT };
+	const lim =
+		typeof opts.limit === 'number' && opts.limit > 0
+			? Math.min(Math.floor(opts.limit), DETAIL_RUN_LIMIT)
+			: RECENT_RUN_LIMIT;
+	const params: Record<string, unknown> = { lim };
 	const clauses: string[] = [];
 	if (opts.projectId) {
 		params.pid = new StringRecordId(assertRecordId(opts.projectId));
@@ -402,4 +408,33 @@ export async function getLoops(db: Db, opts: GetLoopsOptions = {}): Promise<Loop
 	const cadenceViews = await pmCadenceLoops(db, cadencePms);
 
 	return [...orchViews, ...autoViews, ...cadenceViews, memoryReviewLoop()];
+}
+
+/** The agent_event query a loop's run history is read from, or null when the loop keeps NO history by
+ *  design (the GC reaper writes no event; the memory-review loop is cadence-only) — honest, never faked. */
+function loopRunQuery(
+	loop: Pick<LoopView, 'id' | 'kind' | 'projectId'>
+): { projectId?: string; types?: readonly string[] } | null {
+	if (loop.id === 'orch:gc' || loop.id === 'mem-review') return null;
+	// The GLOBAL drain's history IS spawns/completions (mirrors orchestratorLoops); a project loop's
+	// history is that project's agent_event rows (mirrors pmAutonomousLoops / pmCadenceLoops).
+	if (loop.kind === 'orchestrator') return { types: ['spawn', 'completion'] };
+	if (loop.projectId) return { projectId: loop.projectId };
+	return null;
+}
+
+/**
+ * Read a SINGLE loop's DEEP run history for the per-loop detail page (the card's ~10 is too shallow for
+ * review). SHADOW PATHS: a no-history-by-design loop ⇒ [] (honest, not fabricated); a loop that has never
+ * fired ⇒ [] ("not yet run"). Reuses the SAME screened, ISO-coerced projection as the card (D-026/F-013)
+ * and the SAME query shape each loop family already uses — just a deeper, bounded LIMIT (DETAIL_RUN_LIMIT).
+ */
+export async function getLoopRuns(
+	db: Db,
+	loop: Pick<LoopView, 'id' | 'kind' | 'projectId'>,
+	opts: { limit?: number } = {}
+): Promise<LoopRun[]> {
+	const q = loopRunQuery(loop);
+	if (!q) return [];
+	return recentRuns(db, { ...q, limit: opts.limit ?? DETAIL_RUN_LIMIT });
 }

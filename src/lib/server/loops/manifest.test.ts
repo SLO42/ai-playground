@@ -16,6 +16,7 @@ import {
 	listLoopManifest,
 	setLoopChecklistItem,
 	setLoopPhase,
+	setLoopEnabled,
 	setLoopOverride,
 	reconcileLoops,
 	manifestByIdentifier,
@@ -117,6 +118,19 @@ describe('loop manifest CRUD (migration 0072)', () => {
 		const cleared = await setLoopOverride(db, identifier, false);
 		expect(cleared?.override).toBe(false);
 		expect(cleared?.overrideReason).toBeNull();
+	}, 60_000);
+
+	it('setLoopEnabled flips only the enabled flag (reversible, no restart) — null when undeclared', async () => {
+		const projectId = await freshProjectWithPm();
+		const identifier = `pm-auto:${projectId}`;
+		await upsertLoopManifest(db, { identifier, kind: 'pm-autonomous', label: 'd', projectId });
+		await setLoopChecklistItem(db, identifier, 'single_goal', true);
+		const off = await setLoopEnabled(db, identifier, false);
+		expect(off?.enabled).toBe(false);
+		expect(off?.checklist.single_goal).toBe(true); // untouched
+		const on = await setLoopEnabled(db, identifier, true);
+		expect(on?.enabled).toBe(true);
+		expect(await setLoopEnabled(db, 'nope:nothing', false)).toBeNull();
 	}, 60_000);
 
 	it('setters return null for an undeclared loop (no fabricated row)', async () => {

@@ -176,6 +176,34 @@ describe('runConciergeTurn — Stage-2 open-question LLM turn (stub, no real mod
 		expect(turn.replyText.toLowerCase()).not.toMatch(/\bspawn the\b|\bhire the\b|\byou must\b/);
 	});
 
+	it('S4 — injects the DERIVED soul/identity block into the open-question system prompt when present', async () => {
+		const { fn, calls } = makeLlmStub('Grounded answer.');
+		const soulBlock = 'Maturity: developing. Atelier knows d3-force.\nKnows about: memory scene, d3-force.';
+		const turn = await runConciergeTurn(
+			{ recall: recallStub, listAgents: listStub, llm: fn, soulBlock },
+			'What are you good at?'
+		);
+		expect(turn.intent).toBe('open_question');
+		expect(turn.llmUsed).toBe(true);
+		expect(calls).toHaveLength(1);
+		// The base advisory contract is preserved AND the identity block is grounded into the system prompt.
+		expect(calls[0].system).toContain('ADVISE ONLY');
+		expect(calls[0].system).toContain('YOUR IDENTITY');
+		expect(calls[0].system).toContain('Maturity: developing');
+		expect(calls[0].system).toContain('d3-force');
+	});
+
+	it('S4 — omits the identity block honestly when the brain is cold (no soulBlock) — base prompt unchanged', async () => {
+		const { fn, calls } = makeLlmStub('Grounded answer.');
+		const turn = await runConciergeTurn(
+			{ recall: recallStub, listAgents: listStub, llm: fn },
+			'What are you good at?'
+		);
+		expect(turn.llmUsed).toBe(true);
+		expect(calls[0].system).toContain('ADVISE ONLY');
+		expect(calls[0].system).not.toContain('YOUR IDENTITY');
+	});
+
 	it('a model error degrades to an HONEST unavailable note (never a fabricated answer, F-008)', async () => {
 		const turn = await runConciergeTurn(
 			{ recall: recallStub, listAgents: listStub, llm: async () => { throw new Error('ollama offline'); } },

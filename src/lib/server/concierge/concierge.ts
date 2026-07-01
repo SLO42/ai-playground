@@ -109,6 +109,14 @@ export interface ConciergeDeps {
 	 * the session is an honest provider sample for the model-benchmark.
 	 */
 	sessionModel?: ConciergeSessionModel;
+	/**
+	 * S4 — the DERIVED soul/identity block (concise, screened, bounded) injected into the Stage-2
+	 * open-question turn context so the concierge grounds its VOICE in Atelier's real accumulated
+	 * identity (memory/soul.ts loadSoul→formatSoulBlock; wire.ts computes it best-effort). Absent
+	 * (undefined) when the brain is cold OR the read faulted ⇒ the turn runs WITHOUT an identity
+	 * block (honest omission, F-008 — never a fabricated persona). Only the open-question path uses it.
+	 */
+	soulBlock?: string;
 }
 
 // ── The atelier_self session (short-lived, project-less, LIVE only while the turn runs) ──
@@ -316,9 +324,17 @@ function buildOpenQuestionUserPrompt(question: string, grounding: ConciergeGroun
 async function runOpenQuestionTurn(
 	deps: Pick<ConciergeTurnDeps, 'llm'>,
 	question: string,
-	grounding: ConciergeGroundingItem[]
+	grounding: ConciergeGroundingItem[],
+	soulBlock?: string
 ): Promise<ConciergeTurnResult> {
 	const citations = grounding.map((g) => g.citationId);
+	// S4: prepend the DERIVED self-model so the model speaks grounded in Atelier's real identity.
+	// Absent (cold brain / read fault) ⇒ the base system prompt is used UNCHANGED (honest omission).
+	const system = soulBlock
+		? `${OPEN_QUESTION_SYSTEM}\n\nYOUR IDENTITY (a self-model DERIVED from your real accumulated brain — ` +
+			'speak grounded in this; do NOT invent traits, knowledge, or values beyond it):\n' +
+			soulBlock
+		: OPEN_QUESTION_SYSTEM;
 	const base = {
 		intent: 'open_question' as const,
 		groundingCitations: citations,
@@ -342,7 +358,7 @@ async function runOpenQuestionTurn(
 	let answer = '';
 	try {
 		const raw = await deps.llm({
-			system: OPEN_QUESTION_SYSTEM,
+			system,
 			user: buildOpenQuestionUserPrompt(question, grounding)
 		});
 		answer = screen(typeof raw === 'string' ? raw : '').text.trim();
@@ -384,7 +400,7 @@ async function runOpenQuestionTurn(
 /** The deterministic deps a single turn needs (no DB). */
 export type ConciergeTurnDeps = Pick<
 	ConciergeDeps,
-	'recall' | 'listAgents' | 'recallLimit' | 'recommendLimit' | 'llm'
+	'recall' | 'listAgents' | 'recallLimit' | 'recommendLimit' | 'llm' | 'soulBlock'
 >;
 
 /**
@@ -452,7 +468,7 @@ export async function runConciergeTurn(
 	}
 
 	if (intent === 'open_question') {
-		return runOpenQuestionTurn(deps, signal, grounding);
+		return runOpenQuestionTurn(deps, signal, grounding, deps.soulBlock);
 	}
 
 	// intent === 'recommend_agent' — the DETERMINISTIC Stage-1 path (unchanged).

@@ -17,6 +17,7 @@
 
 import type { Db } from '../db/client';
 import { getMemoryService } from '../harness';
+import { loadSoul, formatSoulBlock } from '../memory/soul';
 import { listLibraryAgents } from '../agent-library/library';
 import { asRecommendAgentInput, type RecommendAgentInput } from '../agent-library/recommend';
 import { loadAgentPool, loadModels, loadOrchestration } from '../config/load';
@@ -55,6 +56,22 @@ async function buildRecallFn(db: Db, limit: number): Promise<ConciergeRecallFn> 
 		const res = await mem.memory.recall(query, { limit });
 		return res.items.map((it) => ({ citationId: it.citationId, body: it.body, score: it.score }));
 	};
+}
+
+/**
+ * S4 — derive the concierge's soul/identity block from the LIVE brain (compute-on-read). Best-effort:
+ * a cold brain returns null (block omitted honestly) and ANY read fault degrades to undefined — the
+ * open-question turn then runs WITHOUT an identity block, never a fabricated persona (F-008). Bounded
+ * (a few count() + two small ORDER BY LIMIT reads); does not touch the reply path on failure.
+ */
+async function buildSoulBlock(db: Db): Promise<string | undefined> {
+	try {
+		const block = formatSoulBlock(await loadSoul(db));
+		return block ?? undefined;
+	} catch (err) {
+		console.warn(`[concierge] soul derivation failed (honest omit): ${(err as Error).message}`);
+		return undefined;
+	}
 }
 
 /** Read the on-disk library specialists as recommender inputs (metadata-only — bounded). */
@@ -169,13 +186,15 @@ export async function triggerConcierge(db: Db): Promise<AtelierTriggerResult | n
 		const recall = await buildRecallFn(db, recallLimit);
 		const dir = process.env.CONFIG_DIR?.trim() || 'config';
 		const { llm, sessionModel } = buildConciergeLlm(dir);
+		const soulBlock = await buildSoulBlock(db);
 		return await handleAtelierMessages({
 			db,
 			recall,
 			listAgents,
 			recallLimit,
 			...(llm ? { llm } : {}),
-			...(sessionModel ? { sessionModel } : {})
+			...(sessionModel ? { sessionModel } : {}),
+			...(soulBlock ? { soulBlock } : {})
 		});
 	} catch (err) {
 		console.warn(`[concierge] trigger failed (best-effort): ${(err as Error).message}`);

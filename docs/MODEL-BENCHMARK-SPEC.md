@@ -93,6 +93,25 @@ live/parse-level test; a consolidated live-verify is mandatory at feature end-ga
 (Step 1) live-verified vs real Ollama `gpt-oss:20b`; the judged-eval real cloud smoke additionally
 needs a cloud API key (not assumed) — deferred until a benchmark run is actually wanted.
 
+## ▶ RUNNING THE EXPERIMENT (deferred — operator, do later)
+The harness is COMPLETE + live-verified but UNPOPULATED. To get the first real local-vs-cloud
+brain numbers, run this (needs a cloud API key for the judged half — not assumed):
+1. **Local model up** — Ollama at `127.0.0.1:11434` with `gpt-oss:20b` pulled (probe `/api/tags`).
+2. **Flip to local** — `/settings` Routing panel → `defaultProvider: local` (or `orchestration.yaml`);
+   RESTART the dev server (boot-read config — the restart-needed banner tells you; F-029).
+3. **Accrue local sessions** — drive real work (concierge open-question turns via a `to_kind:'atelier'`
+   peer message; any orchestrated sessions). Optionally set `captureThinking: true` for the thinking corpus.
+   Rows land in `agent_event` tagged `provider=ollama`.
+4. **Cloud baseline** — flip `defaultProvider: cloud`, restart, drive equivalent work → `provider=claude` rows.
+5. **Judge** — set `ANTHROPIC_API_KEY` in `.env`; `/reports` → "Run judge" action (batch ≤20) over both
+   providers' sessions. Cold corpus / no key → honest no-op (no fabrication).
+6. **Read** — `/reports`: objective A/B (`buildProviderUsage` — tokens/cost[$0 local]/latency/spawns) +
+   judged quality (confidence/reasoning/fact-check/thinking-consistency per provider). Decision output:
+   is local good enough for the always-on brain? If yes → graduate the concierge to persistent-local.
+Honest caveat: OllamaBackend has NO tool-gate/interject parity (Stage-1 single-chat turn) — the objective
+"tool usages / agent spawns / comms" metrics will read low/zero for local on complex tasks BY DESIGN;
+that capability delta IS a finding, not a bug.
+
 ## Follow-up hardening (deferred, tracked)
 - Add a live-DB or parse-level test for `buildProviderUsage` (+ audit other hand-written SurrealQL
   with ORDER BY/GROUP BY for the same F-020 idiom gap). The `stubDb()` pattern gives false green.

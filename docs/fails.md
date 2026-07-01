@@ -133,6 +133,13 @@ the operator retires them.
 - **Fix**: both paths now route through their gates. The `isExemptPath` doc now states the invariant: every exempt callback MUST enforce `authorizeHookRequest` itself; the control endpoint is explicitly NOT exempt.
 - **Prevention**: (1) when adding ANY new code path that changes gated state (arm/hire/publish/steer/spawn/config), route it through the EXISTING gate function — never re-implement or skip "because the context is trusted"; (2) when a gate's environmental premise changes (loopback-only → LAN-exposed, single-user → multi-user), AUDIT every path that relied on the old premise — grep the exemption/bypass lists and each exempted handler's own auth; (3) an exemption from a perimeter gate is valid ONLY if the exempted handler enforces its own credential — assert it (test per exempt path) rather than assuming; (4) after closing one bypass, sweep for the CLASS (the LP-3 find → audit → found the control endpoint). 2nd occurrence of the class this session — if it recurs again, escalate to a CLAUDE.md hard rule.
 
+## F-056: `*/` inside a block comment (a cron example) closes the comment — vitest transform SyntaxError
+- **Date**: 2026-07-01 (logged on `v2` during the MaintenanceLoopEngine build `2c6e638`; synced here)
+- **What**: maintenance.test.ts documented its test cadence as `*/5 * * * *` inside a `/** … */` JSDoc; the `*/` in `*/5` terminated the block comment early, so the rest of the "comment" parsed as code → esbuild transform error (`Expected ";" but found "SELECT"`) on the first vitest run of the suite.
+- **Why**: JS block comments have no escaping — ANY `*/` byte sequence ends them, and cron step syntax (`*/5`), glob patterns (`**/*.ts`), and regex fragments embed exactly that sequence.
+- **Fix**: moved the cron example into a `//` line comment.
+- **Prevention**: never write cron step expressions / glob patterns containing `*/` inside a `/* */` or `/** */` comment — use a `//` line comment or quote the expression in a string. The failure is a load-time transform error, so ANY test run catches it immediately; the rule is about not writing it in the first place.
+
 ## F-015: non-idempotent migration wedged db:up; tests green on fresh DB, broken on live DB
 - **Date**: 2026-06-09
 - **What**: v1.7/11.4 shipped migration m0025 with a bare `DEFINE TABLE pm_review SCHEMAFULL`. It half-applied on the live dev DB (table created, field defs/index never landed, migration not recorded), so `npm run db:up` failed permanently with "The table 'pm_review' already exists", and pm_review rows missing `created_at` rendered the literal string "undefined" in the PM tab. All 14 unit tests passed.

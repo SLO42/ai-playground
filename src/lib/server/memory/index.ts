@@ -24,6 +24,7 @@ import { gateCandidate } from './screen';
 import { recall, recordOutcomes, type RecallOptions, type RecallResult, type OutcomeInput } from './recall';
 import { recordTurnOutcomes, type RecordTurnOutcomesInput } from './outcomes';
 import { extractAndStore, storeMemories, type StoreOptions, type MemoryCandidate, type StoredMemory, type ExtractFn, type ExtractInput } from './store';
+import { trainAndPersist } from './rerank';
 
 export { screen, captureGate, gateCandidate, type ScreenStatus, type ScreenResult } from './screen';
 export { fence, fenceAll, assembleContext, StreamScrubber, scrubComplete, FENCE_OPEN, FENCE_CLOSE, type InjectionSource, type FencedItem } from './fence';
@@ -40,6 +41,24 @@ export {
 	type RetrievalFeedbackVerdict
 } from './outcomes';
 export { storeMemory, storeMemories, extractAndStore, buildExtraction, type MemoryCandidate, type StoredMemory, type ExtractFn, type ExtractInput } from './store';
+export {
+	scoreFeatures,
+	trainReranker,
+	applyRerank,
+	labelFor,
+	loadTrainingExamples,
+	loadActiveWeights,
+	saveWeights,
+	trainAndPersist,
+	RERANK_FEATURES,
+	RERANK_DEFAULT_ENABLED,
+	RERANK_MIN_EXAMPLES,
+	RERANK_MIN_PER_CLASS,
+	type RerankFeatures,
+	type RerankWeights,
+	type LabeledExample,
+	type SaveWeightsMeta
+} from './rerank';
 export {
 	dueReview,
 	bumpCounters,
@@ -282,6 +301,16 @@ export class MemoryService {
 	/** Load the fenced Tier-0 directive set (§6.8). */
 	loadTier0(project?: string): Promise<FencedItem[]> {
 		return loadTier0(this.db, project);
+	}
+
+	/**
+	 * S2 (COGNITIVE-ARCHITECTURE §5): train the learned reranker OFFLINE from the live
+	 * retrieval_outcome utilization labels and persist it as the active model. Cold start
+	 * (too few feature-bearing labels) is honest — returns a reason and persists nothing, so
+	 * recall stays on the baseline WMR order (F-008). recall() only ever READS the active model.
+	 */
+	trainReranker(opts?: { project?: string; evalDelta?: number; persist?: boolean }) {
+		return trainAndPersist(this.db, opts);
 	}
 
 	/** Assemble a full fenced injection block from any mix of sources (§10 chokepoint). */

@@ -2650,6 +2650,54 @@ const m0074_session_pm: Migration = {
 	`
 };
 
+// ── §S2 learned reranker — feature persistence + learned-weight store ─────────────────
+//
+// Stage S2 (COGNITIVE-ARCHITECTURE §5): an ACAN-STYLE learned reranker over `retrieval_outcome`
+// utilization labels re-orders the heuristic recall candidate set; the WMR heuristic stays the
+// BASELINE + fallback (recall.ts). Two additive pieces, both idempotent (F-015):
+//
+// 1. `retrieval_outcome.feat_{cosine,utility,recency}` — the recall-time feature BREAKDOWN so an
+//    outcome row becomes a trainable example. The row already carries the label (`utilized` +
+//    the S1 `llm_relevance` verdict) + `was_neighbor`, but only the FINAL WMR `score` — not the
+//    per-feature components the learned model re-weights. These option<float> fields persist them.
+//    ADDITIVE: pre-m0075 rows keep NONE features and are simply skipped by the trainer (rerank.ts
+//    `loadTrainingExamples` filters `feat_cosine IS NOT NONE`) — no backfill, honest cold start.
+//
+// 2. `reranker_model` — the persisted learned weights (a small linear/logistic model). Training
+//    is OFFLINE (rerank.ts `trainAndPersist`, a maintenance caller); recall() only READS the
+//    active row. At most one active row at a time (saveWeights retires the prior active first).
+//
+// D-030 ranking-only: nothing here prunes memory; the reranker changes WHAT SURFACES, never WHAT
+// SURVIVES. D-026: feat_* are numeric only — no screened content is persisted. F-015: every
+// statement is OVERWRITE / additive option field, a clean no-op on a fresh DB AND a half-applied
+// state (the generic apply-twice + half-applied sweep in migrate.test.ts covers both paths).
+const m0075_learned_reranker: Migration = {
+	id: '0075_learned_reranker',
+	up: `
+		-- Recall-time feature breakdown persisted per outcome row (trainable example). option<float>
+		-- — absent (NONE) on every pre-m0075 row, so the trainer skips them; SET on new rows.
+		DEFINE FIELD OVERWRITE feat_cosine  ON retrieval_outcome TYPE option<float>;
+		DEFINE FIELD OVERWRITE feat_utility ON retrieval_outcome TYPE option<float>;
+		DEFINE FIELD OVERWRITE feat_recency ON retrieval_outcome TYPE option<float>;
+
+		-- The learned-weight store. SCHEMAFULL; one active row at a time (saveWeights retires the
+		-- prior active). Weights mirror rerank.ts RERANK_FEATURES + a bias. n_examples/eval_delta
+		-- are honest provenance for WHY these weights exist (F-008).
+		DEFINE TABLE OVERWRITE reranker_model SCHEMAFULL;
+		DEFINE FIELD OVERWRITE w_cosine   ON reranker_model TYPE float DEFAULT 0.0;
+		DEFINE FIELD OVERWRITE w_utility  ON reranker_model TYPE float DEFAULT 0.0;
+		DEFINE FIELD OVERWRITE w_recency  ON reranker_model TYPE float DEFAULT 0.0;
+		DEFINE FIELD OVERWRITE w_neighbor ON reranker_model TYPE float DEFAULT 0.0;
+		DEFINE FIELD OVERWRITE bias       ON reranker_model TYPE float DEFAULT 0.0;
+		DEFINE FIELD OVERWRITE n_examples ON reranker_model TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE eval_delta ON reranker_model TYPE option<float>;
+		DEFINE FIELD OVERWRITE status     ON reranker_model TYPE string DEFAULT "active"
+			ASSERT $value IN ["active","retired"];
+		DEFINE FIELD OVERWRITE created_at ON reranker_model TYPE datetime DEFAULT time::now();
+		DEFINE INDEX OVERWRITE reranker_model_by_status ON reranker_model FIELDS status;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2730,5 +2778,6 @@ export const schemaMigrations: Migration[] = [
 	m0071_app_auth,
 	m0072_loop_manifest,
 	m0073_concept_graph,
-	m0074_session_pm
+	m0074_session_pm,
+	m0075_learned_reranker
 ];

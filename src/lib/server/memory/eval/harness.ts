@@ -27,7 +27,19 @@ import type { Db } from '../../db/client';
 import { assertRecordId } from '../../db/validate';
 import type { Embedder } from '../embed';
 import { distanceToSimilarity } from '../embed';
-import { MemoryService, WMR_WEIGHTS, NOVELTY_COSINE_CUT, RECALL_BUDGET, estimateTokens, parseCitations } from '../index';
+import {
+	MemoryService,
+	WMR_WEIGHTS,
+	NOVELTY_COSINE_CUT,
+	RECALL_BUDGET,
+	estimateTokens,
+	parseCitations,
+	loadTrainingExamples,
+	trainReranker,
+	scoreFeatures,
+	RERANK_MIN_EXAMPLES,
+	type RerankWeights
+} from '../index';
 import { CORPUS, QUERIES, dupFamilies, type EvalQuery } from './corpus';
 import {
 	precisionAtK,
@@ -175,11 +187,29 @@ export function rankRefs(
 	noveltyCut: number,
 	limit: number
 ): { finalRefs: string[]; scoredOrder: string[] } {
+	return rankRefsWith(
+		cands,
+		(c) => weights.cosine * c.cosine + weights.utility * c.utility + weights.recency * c.recency,
+		noveltyCut,
+		limit
+	);
+}
+
+/**
+ * Generalized read-only re-ranking: score each candidate with an ARBITRARY score function (WMR
+ * weights OR the learned reranker logit), sort desc, apply the §4.6 novelty gate at `noveltyCut`,
+ * take top-`limit`. Returns the ordered refs + the full scored order. NEVER writes. This is the
+ * shared selection core rankRefs (WMR) and the S2 rerank probe (learned) both use — so BASELINE
+ * and RERANKED differ ONLY in the score function, an apples-to-apples comparison.
+ */
+export function rankRefsWith(
+	cands: Cand[],
+	scoreOf: (c: Cand) => number,
+	noveltyCut: number,
+	limit: number
+): { finalRefs: string[]; scoredOrder: string[] } {
 	const scored = cands
-		.map((c) => ({
-			...c,
-			score: weights.cosine * c.cosine + weights.utility * c.utility + weights.recency * c.recency
-		}))
+		.map((c) => ({ ...c, score: scoreOf(c) }))
 		.sort((a, b) => b.score - a.score);
 	const scoredOrder = scored.map((c) => c.ref);
 	const selected: typeof scored = [];
@@ -272,6 +302,8 @@ export interface EvalReport {
 	budgetProbe: BudgetProbe[];
 	/** Cite-signal probe (Part A): before/after cite-directive coverage + [#N] parse rate. */
 	citeSignal: CiteSignalProbe;
+	/** S2 learned-reranker probe: baseline WMR vs learned order on the reference set. */
+	rerankProbe: RerankProbe;
 	notes: string[];
 }
 
@@ -383,6 +415,185 @@ export async function runCiteSignalProbe(mem: MemoryService): Promise<CiteSignal
 	};
 }
 
+// ── S2 learned-reranker probe (COGNITIVE-ARCHITECTURE §5 — baseline vs reranked) ──────────
+//
+// Measures whether the LEARNED reranker (rerank.ts) beats the fixed WMR heuristic on the
+// reference query set, END-TO-END through the real DB pipeline: it seeds feature-bearing
+// `retrieval_outcome` rows (the trainable labels), TRAINS via the production `loadTrainingExamples`
+// + `trainReranker` path, then compares the baseline WMR order against the learned order on the
+// SAME candidate pools (identical novelty gate + limit — only the score function differs).
+//
+// HONEST BOUND (F-008): the labels are DERIVED from the corpus relevance grades (a controlled
+// fixture, not live agent utilization) and the eval is IN-SAMPLE on the LexicalEmbedder corpus —
+// so a positive delta here demonstrates the MECHANISM works + does not regress, NOT a live
+// production gain. Live labels accrue as real turns record outcomes with feat_* (m0075); until a
+// discriminating live corpus exists, the reranker ships OFF by default (RERANK_DEFAULT_ENABLED).
+// The probe RECORDS only — it seeds telemetry rows in the throwaway ns and prunes nothing.
+
+/** A macro-averaged metric set (across the reference queries) for one ranking. */
+export interface RerankMetricSet {
+	precisionAt5: number;
+	recallAt5: number;
+	mrr: number;
+	ndcgAt5: number;
+}
+
+export interface RerankProbe {
+	/** Whether a model was trainable (enough feature-bearing, two-class labels) — else cold start. */
+	trained: boolean;
+	/** Honest cold-start reason when `trained` is false (F-008). */
+	reason?: string;
+	/** Feature-bearing labeled rows the trainer saw. */
+	nExamples: number;
+	/** The learned weights (null on cold start ⇒ reranked == baseline passthrough). */
+	weights: RerankWeights | null;
+	/** Baseline WMR order metrics (the heuristic). */
+	baseline: RerankMetricSet;
+	/** Learned reranker order metrics (== baseline on cold start). */
+	reranked: RerankMetricSet;
+	/** reranked − baseline per metric (the measured delta; F-008 — 0 when no change). */
+	delta: RerankMetricSet;
+	/** True iff reranked did NOT regress baseline on any metric (within a tiny tolerance). */
+	noRegression: boolean;
+}
+
+/**
+ * Bootstrap the historical-utility signal: seed UTILIZED outcome rows (WITHOUT feat_*, so they are
+ * NOT training examples — they only feed recall's utility count) for each RELEVANT candidate, in
+ * proportion to its grade. After this, a re-fetch reflects utility on the relevant memories. Records only.
+ */
+async function bootstrapUtility(db: Db, perQueryCands: { q: EvalQuery; cands: Cand[] }[]): Promise<void> {
+	for (const { q, cands } of perQueryCands) {
+		for (const c of cands) {
+			const grade = q.relevance[c.ref] ?? 0;
+			for (let i = 0; i < grade; i++) {
+				await db.query(
+					`CREATE retrieval_outcome CONTENT { memory: $mem, cited: true, utilized: true, was_neighbor: false, score: $s };`,
+					{ mem: link(c.id), s: c.cosine }
+				);
+			}
+		}
+	}
+}
+
+/**
+ * Seed the TRAINING rows: one FEATURE-BEARING outcome row per candidate, carrying the candidate's
+ * CURRENT features (cosine/utility/recency — utility already reflects the bootstrap) and the label
+ * (relevant ⇒ utilized true, irrelevant ⇒ utilized false). These are what `loadTrainingExamples`
+ * reads. Training on these representative features (not the utility=0 pre-bootstrap ones) keeps the
+ * learned model faithful to what it will see at rerank time. Records only.
+ */
+async function seedTrainingRows(db: Db, perQueryCands: { q: EvalQuery; cands: Cand[] }[]): Promise<void> {
+	for (const { q, cands } of perQueryCands) {
+		for (const c of cands) {
+			const utilized = (q.relevance[c.ref] ?? 0) > 0;
+			await db.query(
+				`CREATE retrieval_outcome CONTENT {
+					memory: $mem, cited: $u, utilized: $u, was_neighbor: false,
+					score: $cosine, feat_cosine: $cosine, feat_utility: $utility, feat_recency: $recency
+				};`,
+				{ mem: link(c.id), u: utilized, cosine: c.cosine, utility: c.utility, recency: c.recency }
+			);
+		}
+	}
+}
+
+function macroMetrics(perQuery: { q: EvalQuery; finalRefs: string[] }[]): RerankMetricSet {
+	return {
+		precisionAt5: round(mean(perQuery.map((x) => precisionAtK(x.finalRefs, x.q.relevance, 5)))),
+		recallAt5: round(mean(perQuery.map((x) => recallAtK(x.finalRefs, x.q.relevance, 5)))),
+		mrr: round(mean(perQuery.map((x) => reciprocalRank(x.finalRefs, x.q.relevance)))),
+		ndcgAt5: round(mean(perQuery.map((x) => ndcgAtK(x.finalRefs, x.q.relevance, 5))))
+	};
+}
+
+/**
+ * Run the S2 baseline-vs-reranked probe. Two rounds of outcome seeding (round 1 bootstraps the
+ * `utility` feature; round 2 re-fetches so relevant memories now carry utility, then seeds labels
+ * that CORRELATE utility with relevance), trains the reranker from the live rows, and compares the
+ * WMR baseline order against the learned order on the round-2 pools. RECORDS only.
+ */
+export async function runRerankProbe(mem: MemoryService, seeded: SeededCorpus): Promise<RerankProbe> {
+	const db = mem.db;
+	const limit = 5;
+	const cut = NOVELTY_COSINE_CUT;
+
+	// Round 1 — fetch (utility ~0) then BOOTSTRAP the utility signal on relevant memories.
+	const r1: { q: EvalQuery; cands: Cand[] }[] = [];
+	for (const q of QUERIES) {
+		const { cands } = await fetchCandidates(db, mem.embedder, seeded, q.query);
+		r1.push({ q, cands });
+	}
+	await bootstrapUtility(db, r1);
+
+	// Round 2 — re-fetch (utility now populated on relevant memories) + seed the TRAINING rows from
+	// these representative features (utility correlates with the relevance label).
+	const r2: { q: EvalQuery; cands: Cand[] }[] = [];
+	for (const q of QUERIES) {
+		const { cands } = await fetchCandidates(db, mem.embedder, seeded, q.query);
+		r2.push({ q, cands });
+	}
+	await seedTrainingRows(db, r2);
+
+	// Train from the LIVE feature-bearing rows (the production trainer path).
+	const examples = await loadTrainingExamples(db);
+	const weights = trainReranker(examples);
+
+	// Baseline WMR order on the round-2 pools.
+	const bw: Weights = { ...WMR_WEIGHTS };
+	const baseFinal = r2.map(({ q, cands }) => ({
+		q,
+		finalRefs: rankRefsWith(
+			cands,
+			(c) => bw.cosine * c.cosine + bw.utility * c.utility + bw.recency * c.recency,
+			cut,
+			limit
+		).finalRefs
+	}));
+	const baseline = macroMetrics(baseFinal);
+
+	// Learned order on the SAME pools (cold start ⇒ passthrough == baseline).
+	let reranked = baseline;
+	if (weights) {
+		const rrFinal = r2.map(({ q, cands }) => ({
+			q,
+			finalRefs: rankRefsWith(
+				cands,
+				(c) => scoreFeatures({ cosine: c.cosine, utility: c.utility, recency: c.recency, wasNeighbor: 0 }, weights),
+				cut,
+				limit
+			).finalRefs
+		}));
+		reranked = macroMetrics(rrFinal);
+	}
+
+	const delta: RerankMetricSet = {
+		precisionAt5: round(reranked.precisionAt5 - baseline.precisionAt5),
+		recallAt5: round(reranked.recallAt5 - baseline.recallAt5),
+		mrr: round(reranked.mrr - baseline.mrr),
+		ndcgAt5: round(reranked.ndcgAt5 - baseline.ndcgAt5)
+	};
+	const EPS = 1e-6;
+	const noRegression =
+		delta.precisionAt5 >= -EPS &&
+		delta.recallAt5 >= -EPS &&
+		delta.mrr >= -EPS &&
+		delta.ndcgAt5 >= -EPS;
+
+	return {
+		trained: weights != null,
+		reason: weights
+			? undefined
+			: `cold start — ${examples.length} feature-bearing labeled rows (< ${RERANK_MIN_EXAMPLES} or single-class)`,
+		nExamples: examples.length,
+		weights,
+		baseline,
+		reranked,
+		delta,
+		noRegression
+	};
+}
+
 /**
  * Run the full §11 measurement. Seeds the corpus, fetches candidates ONCE per query, runs the
  * weight + novelty sweeps as pure re-scores, and runs a live budget probe through the real
@@ -460,6 +671,10 @@ export async function runEval(mem: MemoryService): Promise<EvalReport> {
 	// Cite-signal probe (Part A): before/after cite-directive coverage + [#N] parse-path integrity.
 	const citeSignal = await runCiteSignalProbe(mem);
 
+	// S2 learned-reranker probe LAST — it seeds retrieval_outcome rows (which would change the
+	// `utility` term of any subsequent live recall), so it must run after every other probe.
+	const rerankProbe = await runRerankProbe(mem, seeded);
+
 	return {
 		corpus: { items: CORPUS.length, queries: QUERIES.length, embedder: mem.embedder.modelVersion },
 		baseline: { weights: baseWeights, noveltyCut: baseCut, limit },
@@ -467,6 +682,7 @@ export async function runEval(mem: MemoryService): Promise<EvalReport> {
 		noveltySweep,
 		budgetProbe,
 		citeSignal,
+		rerankProbe,
 		notes: [
 			'MEASUREMENT ONLY — no engine default was mutated and no row was pruned (D-030 ranking-only; pruning stays time-based).',
 			'Numbers are on the controlled LexicalEmbedder eval corpus, NOT live qwen3 — they re-validate the SHAPE of the §11 tunables, they are not an achieved production metric (F-008).',
@@ -475,7 +691,11 @@ export async function runEval(mem: MemoryService): Promise<EvalReport> {
 			'Read the noveltySweep dupSuppression column: realistic near-dup PARAPHRASES on this corpus sit at pairwise cosine ~0.83–0.91. The RETIRED 0.97 cut left them ABOVE the cut → not collapsed (~0.4 suppression); the OPERATOR-BLESSED 0.90 cut (2026-06-13) catches the 0.91-cosine paraphrase pair → higher suppression. This is the EVIDENCE for the 0.97→0.90 change (B8), now recorded against the live default.',
 			'CITE-SIGNAL (Part A, MEMORY-UTILIZATION-SPEC): the strengthened use-and-cite directive lifts cite-directive coverage from ' +
 				`${citeSignal.citeDirectiveCoverageBefore} (retired consult-only note) to ${citeSignal.citeDirectiveCoverageAfter} (live note) — a +${citeSignal.citeDirectiveLift} prompt-side lift — and the rendered [#N] ids parse at ${citeSignal.citeIdParseRate} through the shared parseCitations() grammar. ` +
-				'HONEST BOUND (F-008): this measures PROMPT-SIDE signal strength + parse-path integrity over a live recall set, NOT a model-behaviour citation-rate gain — no live model runs in this harness (the deferred live proof). The directive stays consult-not-obey: citing REPORTS usefulness, it does not obey the fenced DATA (D-026/D-035a).'
+				'HONEST BOUND (F-008): this measures PROMPT-SIDE signal strength + parse-path integrity over a live recall set, NOT a model-behaviour citation-rate gain — no live model runs in this harness (the deferred live proof). The directive stays consult-not-obey: citing REPORTS usefulness, it does not obey the fenced DATA (D-026/D-035a).',
+			'S2 LEARNED RERANKER (COGNITIVE-ARCHITECTURE §5): trained the reranker end-to-end from ' +
+				`${rerankProbe.nExamples} feature-bearing retrieval_outcome rows (${rerankProbe.trained ? 'trained' : 'COLD START — ' + rerankProbe.reason}) and compared the baseline WMR order vs the learned order on the reference queries. ` +
+				`Delta (reranked − baseline): nDCG@5 ${rerankProbe.delta.ndcgAt5 >= 0 ? '+' : ''}${rerankProbe.delta.ndcgAt5}, MRR ${rerankProbe.delta.mrr >= 0 ? '+' : ''}${rerankProbe.delta.mrr}, P@5 ${rerankProbe.delta.precisionAt5 >= 0 ? '+' : ''}${rerankProbe.delta.precisionAt5}, R@5 ${rerankProbe.delta.recallAt5 >= 0 ? '+' : ''}${rerankProbe.delta.recallAt5} (noRegression=${rerankProbe.noRegression}). ` +
+				`HONEST BOUND (F-008): labels are DERIVED from the corpus relevance grades (a controlled fixture, not live agent utilization) and the eval is IN-SAMPLE on the LexicalEmbedder corpus. ${rerankProbe.noRegression ? 'The learned order did not regress the heuristic here' : 'The learned order does NOT clear the tuned WMR heuristic on this corpus (a linear model overfits the near-constant recency/utility signal a fixture lacks)'} — which is EXACTLY why S2 ships OFF by default (RERANK_DEFAULT_ENABLED=false) with cold-start passthrough until a discriminating LIVE outcome corpus accrues (m0075 feat_* rows). This measures the MECHANISM end-to-end, NOT a live production gain.`
 		]
 	};
 }
@@ -514,6 +734,20 @@ export function formatReport(rep: EvalReport): string {
 	L.push(`cite-directive coverage: BEFORE (retired consult-only note) ${cs.citeDirectiveCoverageBefore} → AFTER (live note) ${cs.citeDirectiveCoverageAfter}  (lift +${cs.citeDirectiveLift})`);
 	L.push(`[#N] parse rate through shared parseCitations(): ${cs.citeIdParseRate} over ${cs.totalItems} surfaced items`);
 	for (const q of cs.perQuery) L.push(`    ${q.queryId}: ${q.items} citable items`);
+	L.push('');
+	L.push('--- S2 learned-reranker probe (baseline WMR vs learned order) ---');
+	const rp = rep.rerankProbe;
+	L.push(`trained: ${rp.trained}${rp.trained ? '' : ' (' + rp.reason + ')'}; feature-bearing labeled rows: ${rp.nExamples}`);
+	if (rp.weights) {
+		const w = rp.weights;
+		L.push(`learned weights: cosine=${round(w.cosine)} utility=${round(w.utility)} recency=${round(w.recency)} wasNeighbor=${round(w.wasNeighbor)} bias=${round(w.bias)}`);
+	}
+	L.push('metric | baseline | reranked | delta');
+	L.push(`P@5    | ${rp.baseline.precisionAt5} | ${rp.reranked.precisionAt5} | ${rp.delta.precisionAt5 >= 0 ? '+' : ''}${rp.delta.precisionAt5}`);
+	L.push(`R@5    | ${rp.baseline.recallAt5} | ${rp.reranked.recallAt5} | ${rp.delta.recallAt5 >= 0 ? '+' : ''}${rp.delta.recallAt5}`);
+	L.push(`MRR    | ${rp.baseline.mrr} | ${rp.reranked.mrr} | ${rp.delta.mrr >= 0 ? '+' : ''}${rp.delta.mrr}`);
+	L.push(`nDCG@5 | ${rp.baseline.ndcgAt5} | ${rp.reranked.ndcgAt5} | ${rp.delta.ndcgAt5 >= 0 ? '+' : ''}${rp.delta.ndcgAt5}`);
+	L.push(`no regression vs baseline: ${rp.noRegression}`);
 	L.push('');
 	L.push('--- Notes ---');
 	for (const n of rep.notes) L.push(`• ${n}`);

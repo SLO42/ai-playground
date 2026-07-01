@@ -24,6 +24,7 @@ import { assertRecordId } from '../db/validate';
 import type { Embedder } from './embed';
 import { distanceToSimilarity } from './embed';
 import { fence, estimateTokens, type FencedItem } from './fence';
+import { loadActiveWeights, scoreFeatures, RERANK_DEFAULT_ENABLED, type RerankWeights } from './rerank';
 
 /** WMR weights (§4.3) — tunable starting points (kongcode defaults), not locked. */
 export const WMR_WEIGHTS = { cosine: 0.5, utility: 0.35, recency: 0.15 } as const;
@@ -142,6 +143,8 @@ interface ScoredCandidate {
 	utility: number;
 	recency: number;
 	score: number;
+	/** S2 learned-reranker logit (set only when the reranker re-ordered this set). */
+	rerankScore?: number;
 	sessionLineage?: string;
 	wasNeighbor: boolean;
 	/** BL-6 (m0043): originating ingest_source id when this is an ingested finding; undefined otherwise. */
@@ -182,6 +185,13 @@ export interface RecallResult {
 	items: RecallItem[];
 	/** The assembled, fenced context string (all items joined). */
 	contextText: string;
+	/**
+	 * S2 (COGNITIVE-ARCHITECTURE §5): true iff the LEARNED reranker re-ordered the heuristic
+	 * candidate set for this call. false ⇒ the baseline WMR order was used — either the reranker
+	 * was OFF (default) or it had no trustworthy signal (cold start, no active weights). An honest
+	 * signal (F-008): the caller can tell whether a learned model or the heuristic produced the order.
+	 */
+	reranked: boolean;
 }
 
 export interface RecallOptions {
@@ -205,6 +215,20 @@ export interface RecallOptions {
 	 * over-estimates, so an ambiguous count under-fills. See `budgetCapsFor`.
 	 */
 	budget?: { maxItems?: number | null; maxTokens?: number | null };
+	/**
+	 * S2 learned reranker (COGNITIVE-ARCHITECTURE §5). When true AND an active `reranker_model`
+	 * exists, the heuristic candidate set is RE-ORDERED by the learned score before the novelty
+	 * gate + budget. OMITTED ⇒ RERANK_DEFAULT_ENABLED (OFF) — the baseline WMR order. Even when
+	 * true, a cold start (no active weights) passes through the baseline order (F-008). The
+	 * reranker only re-orders the SAME candidate set recall already produced — it is never a
+	 * separate recall path and never admits a row the active-set filter excluded.
+	 */
+	rerank?: boolean;
+	/**
+	 * Pre-loaded reranker weights (test/eval injection) — skips the `loadActiveWeights` DB read.
+	 * When omitted and `rerank` is on, recall loads the active model from the DB.
+	 */
+	rerankWeights?: RerankWeights | null;
 }
 
 /** cosine of two equal-length vectors (both already unit-normalized by the embedder). */
@@ -327,7 +351,7 @@ export async function recall(opts: RecallOptions, query: string): Promise<Recall
 	}
 
 	const candidates = [...byId.values()];
-	if (!candidates.length) return { items: [], contextText: '' };
+	if (!candidates.length) return { items: [], contextText: '', reranked: false };
 
 	// historical_utility from retrieval_outcome (§4.5, D-030 — ranking input only).
 	// Count UTILIZED outcome rows per memory. NB: SurrealDB 2.x `math::sum(<bool>)` does NOT
@@ -355,6 +379,28 @@ export async function recall(opts: RecallOptions, query: string): Promise<Recall
 			WMR_WEIGHTS.recency * c.recency;
 	}
 	candidates.sort((a, b) => b.score - a.score);
+
+	// Step 3b — S2 LEARNED RERANK (COGNITIVE-ARCHITECTURE §5). Re-order the SAME heuristic
+	// candidate set by the learned score when the reranker is ON and an active model exists.
+	// Cold start (no weights) or OFF ⇒ keep the baseline WMR order — an honest passthrough
+	// (F-008), never a fabricated score. This runs BEFORE the novelty gate + budget so the
+	// learned order drives what the gate selects; the active-set filter already ran in SQL, so
+	// re-ordering can never surface an excluded row. Baseline is preserved as the fallback.
+	let reranked = false;
+	if ((opts.rerank ?? RERANK_DEFAULT_ENABLED) && candidates.length > 1) {
+		const weights =
+			opts.rerankWeights !== undefined ? opts.rerankWeights : await loadActiveWeights(db);
+		if (weights) {
+			for (const c of candidates) {
+				c.rerankScore = scoreFeatures(
+					{ cosine: c.cosine, utility: c.utility, recency: c.recency, wasNeighbor: c.wasNeighbor ? 1 : 0 },
+					weights
+				);
+			}
+			candidates.sort((a, b) => (b.rerankScore ?? 0) - (a.rerankScore ?? 0));
+			reranked = true;
+		}
+	}
 
 	// Steps 4+5 — novelty gate (drop near-dups vs already-selected) + lineage dedup.
 	const selected: ScoredCandidate[] = [];
@@ -424,7 +470,7 @@ export async function recall(opts: RecallOptions, query: string): Promise<Recall
 	});
 
 	const contextText = items.map((i) => i.fenced.text).join('\n\n');
-	return { items, contextText };
+	return { items, contextText, reranked };
 }
 
 // ── §4.5 retrieval-outcome recording (D-030 — ranking input only, NOT pruning) ─────
@@ -506,7 +552,14 @@ export async function recordOutcomes(db: Db, input: OutcomeInput): Promise<strin
 			cited: isCited,
 			utilized,
 			was_neighbor: item.wasNeighbor,
-			score: item.score
+			score: item.score,
+			// S2 (m0075): persist the recall-time feature breakdown so this row is a trainable
+			// example for the learned reranker (rerank.ts). The label is `utilized` (+ the S1
+			// llm_relevance verdict); the FINAL WMR `score` alone can't be re-weighted, so the
+			// per-feature components are stored explicitly. Numeric only — no content (D-026).
+			feat_cosine: item.explain.cosine,
+			feat_utility: item.explain.utility,
+			feat_recency: item.explain.recency
 		};
 		if (input.session) content.session = link(input.session);
 		if (input.queryTurn) content.query_turn = link(input.queryTurn);

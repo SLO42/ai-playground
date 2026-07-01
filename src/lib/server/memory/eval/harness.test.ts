@@ -3,7 +3,7 @@ import { Db } from '../../db/client';
 import { runMigrations } from '../../db/migrate';
 import { schemaMigrations } from '../../db/schema';
 import { startTestDb, type TestDb } from '../../db/testserver';
-import { MemoryService, WMR_WEIGHTS, NOVELTY_COSINE_CUT, RECALL_BUDGET } from '../index';
+import { MemoryService, WMR_WEIGHTS, NOVELTY_COSINE_CUT, RECALL_BUDGET, RERANK_DEFAULT_ENABLED } from '../index';
 import { LexicalEmbedder, tokenize } from './embedder';
 import { CORPUS, QUERIES, dupFamilies } from './corpus';
 import {
@@ -255,6 +255,31 @@ describe('runEval — live integration, MEASUREMENT ONLY', () => {
 		// Either half alone is NOT enough (guards against a false positive on stray text).
 		expect(noteHasCiteDirective('please cite your sources')).toBe(false);
 		expect(noteHasCiteDirective('see [#3] above')).toBe(false);
+	});
+
+	it('S2 rerank probe: trains from live outcome rows and reports an HONEST baseline-vs-reranked delta', () => {
+		const rp = report.rerankProbe;
+		// A model WAS trainable — the two-round seed produced enough two-class feature-bearing rows.
+		expect(rp.trained).toBe(true);
+		expect(rp.nExamples).toBeGreaterThanOrEqual(20);
+		expect(rp.weights).not.toBeNull();
+		// The delta is a REAL measured comparison (reranked − baseline), computed honestly (F-008).
+		expect(rp.delta.ndcgAt5).toBe(Number((rp.reranked.ndcgAt5 - rp.baseline.ndcgAt5).toFixed(4)));
+		expect(rp.delta.mrr).toBe(Number((rp.reranked.mrr - rp.baseline.mrr).toFixed(4)));
+		// Every metric is a valid number in range (not NaN).
+		for (const m of [rp.baseline, rp.reranked]) {
+			expect(m.ndcgAt5).toBeGreaterThanOrEqual(0);
+			expect(m.ndcgAt5).toBeLessThanOrEqual(1);
+			expect(m.precisionAt5).toBeGreaterThanOrEqual(0);
+			expect(m.recallAt5).toBeGreaterThanOrEqual(0);
+		}
+		// HONEST SHIP DECISION (F-008): on this controlled corpus the learned reranker does NOT clear
+		// the tuned WMR heuristic (a linear model overfits the near-constant recency/utility signal an
+		// eval fixture lacks). `noRegression` records that outcome verbatim; it is NOT asserted true —
+		// forcing a positive delta by corpus engineering would be the fabrication the task forbids. The
+		// evidence that the reranker can't be shown ≥ baseline yet is EXACTLY why S2 ships OFF by default.
+		expect(typeof rp.noRegression).toBe('boolean');
+		expect(RERANK_DEFAULT_ENABLED).toBe(false);
 	});
 
 	it('the budget probe tail-drops live recall without ever exceeding the cap', () => {

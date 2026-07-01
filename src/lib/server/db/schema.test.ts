@@ -84,7 +84,9 @@ const EXPECTED_TABLES = [
 	'embedding_cache',
 	// §S3 cognitive layer (m0073)
 	'concept',
-	'concept_edge'
+	'concept_edge',
+	// §S2 learned reranker (m0075)
+	'reranker_model'
 ];
 
 // Every named index DATA-MODEL.md §4 declares, mapped to its table.
@@ -115,7 +117,9 @@ const EXPECTED_INDEXES: Record<string, string[]> = {
 	causal_chain: ['causal_chain_by_session'],
 	embedding_cache: ['embedding_cache_hash'],
 	// §S3 cognitive layer (m0073)
-	concept: ['concept_vec', 'concept_dedup', 'concept_by_project', 'concept_by_status']
+	concept: ['concept_vec', 'concept_dedup', 'concept_by_project', 'concept_by_status'],
+	// §S2 learned reranker (m0075)
+	reranker_model: ['reranker_model_by_status']
 };
 
 // The HNSW vector indexes — must be 2.x-valid (no "M0").

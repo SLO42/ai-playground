@@ -120,7 +120,12 @@ export async function recordTurnOutcomes(
 			cited: isCited,
 			utilized,
 			was_neighbor: item.wasNeighbor,
-			score: item.score
+			score: item.score,
+			// S2 (m0075): persist the recall-time feature breakdown so this row is a trainable
+			// example for the learned reranker (rerank.ts). Numeric only — no content (D-026).
+			feat_cosine: item.explain.cosine,
+			feat_utility: item.explain.utility,
+			feat_recency: item.explain.recency
 		};
 		if (input.session) content.session = link(input.session);
 		if (input.queryTurn) content.query_turn = link(input.queryTurn);

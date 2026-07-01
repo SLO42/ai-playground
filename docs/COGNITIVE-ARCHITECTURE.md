@@ -259,9 +259,22 @@ reply lands back and surfaces once into `pm_memory` a later pass; deduped via im
 blocks/crashes the review (F-014); non-steering (proposals untouched — the concierge advises, the
 operator/PM acts). This realizes the vision's "hires talk to the brain" pillar.
 
-**Roadmap COMPLETE for the buildable queue.** Deferred / operator-gated only: graduation-history
-table (soul provenance/timeline); flip `CONCIERGE_SKILL_SEARCH` on for live skill search; the first
-real local-vs-cloud benchmark RUN (runbook in MODEL-BENCHMARK-SPEC.md — needs a cloud API key +
-the decision to flip `defaultProvider`); real skill/hire DRAFTING (still operator-gated, §7). (LLM turn for open-ended PM questions;
-skill/hire drafting over the bus, operator-gated), plus the brain "sections"
-(decisions/spend/search) which fold into the concierge's dashboard.
+**Soul graduation-history** — SHIPPED `2af6e45` (2026-07-01). `m0078 soul_graduation`
+(**subject-keyed** — DEFAULT `"atelier"`, so per-PM souls extend additively with zero schema churn)
+records each `maturity_stage` boundary crossing with a metric snapshot + `graduated_at`. Recorder in
+the orchestrator fast-tier drain (`#runReviewItem`, right after the brain grows — honest home since
+`runReviewFork` is capability-isolated with no Db); inserts once per change FOR THE SUBJECT (up OR
+down, honest), fail-open (a DB fault / F-048 twin collision never crashes the drain), per-subject
+dedup. `/brain` shows the atelier growth timeline (honest empty "no graduations yet — identity is
+<stage>").
+
+**Operator decision (2026-07-01): PMs get souls too, not just Atelier.** A PM soul derives from
+PROJECT-scoped signals (that project's concepts/decisions/corrections/sessions) — a long-running PM
+has MATURED, a fresh one is nascent; data is already project-scoped; serves per-project ALIVE + the
+"hires have identity" vision. The `soul_graduation` subject key makes this additive. **NEXT BUILD:**
+project-scoped soul derivation (parameterize `soul.ts` readers by project) + per-PM graduation
+(recorder writes `subject="project:<id>"`) + surface on the project page.
+
+**Deferred / operator-gated only:** the PM-soul build (next); flip `CONCIERGE_SKILL_SEARCH` on for
+live skill search; the first real local-vs-cloud benchmark RUN (runbook in MODEL-BENCHMARK-SPEC.md —
+needs a cloud API key + the decision to flip `defaultProvider`); real skill/hire DRAFTING (§7).

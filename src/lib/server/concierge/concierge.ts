@@ -882,7 +882,10 @@ export async function handleAtelierMessages(deps: ConciergeDeps): Promise<Atelie
 						from_session: sessionId,
 						to_kind: 'session',
 						to_session: msg.fromSession,
-						body: turn.replyText
+						body: turn.replyText,
+						// EXACT consult↔reply pairing (m0079): stamp the consult this reply answers so
+						// readers (concierge-advisories) pair by id, not by drain position.
+						reply_to: msg.id
 					});
 					replies++;
 				}

@@ -2816,6 +2816,23 @@ const m0078_soul_graduation: Migration = {
 	`
 };
 
+// m0079 — peer_message.reply_to: EXACT consult↔reply pairing on the peer bus. The concierge's
+// advisory reply (handleAtelierMessages) stamps the consult peer_message id it answers, so readers
+// (projects/concierge-advisories.ts) pair exactly instead of resting on the positional drain-ASC/
+// one-reply-per-consult FIFO contract (which skews for later replies when a turn faults mid-drain).
+//
+// ADDITIVE + idempotent (F-015: OVERWRITE-only; apply-twice + half-applied re-run are clean — the
+// generic schemaMigrations sweep covers both). option<record<peer_message>>: a LEGACY reply (written
+// before this field) reads back NONE → readers fall back to FIFO pairing for it (honest back-compat,
+// F-008 — old advisories are never stranded). OMITTED at write when absent — never an explicit NULL
+// (option<T> rejects NULL — MEMORY-SPEC §6.1); every non-reply sender simply never sets it.
+const m0079_peer_message_reply_to: Migration = {
+	id: '0079_peer_message_reply_to',
+	up: `
+		DEFINE FIELD OVERWRITE reply_to ON peer_message TYPE option<record<peer_message>>;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2900,5 +2917,6 @@ export const schemaMigrations: Migration[] = [
 	m0075_learned_reranker,
 	m0076_thinking_capture,
 	m0077_benchmark_verdict,
-	m0078_soul_graduation
+	m0078_soul_graduation,
+	m0079_peer_message_reply_to
 ];

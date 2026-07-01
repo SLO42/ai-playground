@@ -68,8 +68,9 @@ async function emitConsult(pid: string, label: string): Promise<void> {
 	expect(out.emitted).toBe(true);
 }
 
-/** Land a concierge advisory reply on a project's identity mailbox (as handleAtelierMessages does). */
-async function landReply(text: string): Promise<void> {
+/** Land a concierge advisory reply on a project's identity mailbox (as handleAtelierMessages does).
+ *  `replyTo` stamps the m0079 exact-pairing id; omit it to simulate a LEGACY pre-m0079 reply. */
+async function landReply(text: string, replyTo?: string): Promise<void> {
 	const [consults] = await db.query<[Array<{ from_session: unknown }>]>(
 		`SELECT from_session, created_at FROM peer_message WHERE to_kind = "atelier" ORDER BY created_at ASC;`
 	);
@@ -81,8 +82,28 @@ async function landReply(text: string): Promise<void> {
 		from_session: String(sess[0].id),
 		to_kind: 'session',
 		to_session: identity,
-		body: text
+		body: text,
+		...(replyTo ? { reply_to: replyTo } : {})
 	});
+}
+
+/** The identity mailbox session id (from the consults already emitted). */
+async function identityMailbox(): Promise<string> {
+	const [consults] = await db.query<[Array<{ from_session: unknown }>]>(
+		`SELECT from_session, created_at FROM peer_message WHERE to_kind = "atelier" ORDER BY created_at ASC;`
+	);
+	return String(consults[consults.length - 1].from_session);
+}
+
+/** Send a SECOND consult from the SAME identity mailbox via the real writer (need: findings). */
+async function sendFollowupConsult(identity: string): Promise<string> {
+	const row = await sendPeerMessage(db, {
+		from_session: identity,
+		to_kind: 'atelier',
+		body: 'Review findings pile-up — requesting an advisory.',
+		client_key: 'pmconsult:findings:test-followup'
+	});
+	return row.id;
 }
 
 describe('listConciergeAdvisories — the operator projection of the Path-B consult lifecycle', () => {
@@ -146,6 +167,62 @@ describe('listConciergeAdvisories — the operator projection of the Path-B cons
 		expect(theirs).toHaveLength(1);
 		expect(theirs[0].status).toBe('answered');
 		expect(theirs[0].advisory).toMatch(/OTHER project only/);
+	});
+
+	it('EXACT pairing (m0079): an out-of-order stamped reply pins to its consult — FIFO would mispair it', async () => {
+		await emitConsult(projectId, 'Advisory Host');
+		const identity = await identityMailbox();
+		const second = await sendFollowupConsult(identity);
+
+		// ONE reply, answering the SECOND consult. Positionally (FIFO) it would land on the first
+		// consult (the mid-drain-fault skew); reply_to must pin it to the second.
+		await landReply('Exact advice for the findings consult.', second);
+
+		const rows = await listConciergeAdvisories(db, { projectId });
+		expect(rows).toHaveLength(2);
+		const blocked = rows.find((r) => r.need === 'blocked');
+		const findings = rows.find((r) => r.need === 'findings');
+		expect(findings?.status).toBe('answered');
+		expect(findings?.advisory).toMatch(/Exact advice/);
+		// The skipped consult stays honestly PENDING — no positional skew (F-008).
+		expect(blocked?.status).toBe('pending');
+		expect(blocked?.advisory).toBeNull();
+		expect(blocked?.answeredAt).toBeNull();
+	});
+
+	it('LEGACY rows (no reply_to) still pair FIFO — pre-m0079 advisories are not stranded', async () => {
+		await emitConsult(projectId, 'Advisory Host');
+		const identity = await identityMailbox();
+		await sendFollowupConsult(identity);
+		await landReply('Legacy advice one.'); // pre-m0079 shape: reply_to absent
+		await landReply('Legacy advice two.');
+
+		const rows = await listConciergeAdvisories(db, { projectId });
+		expect(rows).toHaveLength(2);
+		const blocked = rows.find((r) => r.need === 'blocked');
+		const findings = rows.find((r) => r.need === 'findings');
+		expect(blocked?.status).toBe('answered');
+		expect(blocked?.advisory).toMatch(/one/);
+		expect(findings?.status).toBe('answered');
+		expect(findings?.advisory).toMatch(/two/);
+	});
+
+	it('MIXED old+new: the stamped reply claims its consult; the legacy reply falls back to the remaining one', async () => {
+		await emitConsult(projectId, 'Advisory Host');
+		const identity = await identityMailbox();
+		const second = await sendFollowupConsult(identity);
+		// The stamped reply lands FIRST — pure position would hand it to the first consult.
+		await landReply('Stamped advice for the second consult.', second);
+		await landReply('Legacy advice for whoever is left.');
+
+		const rows = await listConciergeAdvisories(db, { projectId });
+		expect(rows).toHaveLength(2);
+		const blocked = rows.find((r) => r.need === 'blocked');
+		const findings = rows.find((r) => r.need === 'findings');
+		expect(findings?.status).toBe('answered');
+		expect(findings?.advisory).toMatch(/Stamped advice/);
+		expect(blocked?.status).toBe('answered');
+		expect(blocked?.advisory).toMatch(/whoever is left/);
 	});
 
 	it('bounded + newest-consult-first', async () => {

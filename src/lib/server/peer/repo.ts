@@ -72,6 +72,9 @@ export interface PeerMessageRow {
 	body: string;
 	status: PeerStatus;
 	hops: number;
+	/** The peer_message this row REPLIES to (exact consult↔reply pairing, m0079), else null.
+	 *  Legacy rows (pre-m0079) read back NONE → null — readers FIFO-fallback for them (F-008). */
+	reply_to: string | null;
 	created_at: string | null;
 	delivered_at: string | null;
 }
@@ -109,6 +112,7 @@ function normPeerMessage(row: Raw): PeerMessageRow {
 		body: str(row.body),
 		status: row.status as PeerStatus,
 		hops: Number(row.hops),
+		reply_to: row.reply_to != null ? str(row.reply_to) : null,
 		created_at: strDate(row.created_at),
 		delivered_at: strDate(row.delivered_at)
 	};
@@ -162,6 +166,9 @@ export interface SendPeerMessageInput {
 	hops?: number;
 	/** Ingress idempotency token → dedup_key (a retried send collides rather than double-sends). */
 	client_key?: string;
+	/** The peer_message id this send REPLIES to (exact consult↔reply pairing, m0079). Omit for a
+	 *  non-reply send — absent ⇒ the column stays NONE and nothing changes for other senders. */
+	reply_to?: string;
 	/**
 	 * The per-session lifetime send cap. When set, the count+insert run as ONE transaction (the
 	 * budget is checked INSIDE the write so concurrent sends cannot each pass a stale read and then
@@ -212,6 +219,7 @@ export async function sendPeerMessage(db: Db, input: SendPeerMessageInput): Prom
 	if (input.to_role) content.to_role = link(input.to_role);
 	if (input.project) content.project = link(input.project);
 	if (input.client_key) content.client_key = input.client_key;
+	if (input.reply_to) content.reply_to = link(input.reply_to);
 
 	// Every send is assigned a per-sender monotonic SEQUENCE (peer_seq) from the session counter, set
 	// AT CREATE inside ONE transaction (PM2 finding c). Two enforcement layers make the per-session

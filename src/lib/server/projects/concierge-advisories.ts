@@ -7,12 +7,14 @@
 // addresses it — pm-concierge.ts docstring). Both bodies were screened+fenced by the peer repo at
 // write time (D-026), so displaying them verbatim surfaces no raw content.
 //
-// LIFECYCLE PAIRING. peer_message has NO reply_to column. The concierge drains its atelier inbox
-// created_at ASC and replies once per consult (handleAtelierMessages), so replies land FIFO:
-// the i-th reply answers the i-th consult. We pair positionally on that contract — a consult with
-// no positional reply is honestly PENDING (never a fabricated answer, F-008). If a concierge turn
-// faulted mid-drain the tail consults simply stay pending, which is the truthful state (no advice
-// was recorded for them).
+// LIFECYCLE PAIRING. Since m0079 the concierge's reply stamps `peer_message.reply_to` with the
+// consult id it answers (handleAtelierMessages), so pairing is EXACT by id. LEGACY replies (written
+// before m0079) have no reply_to — for those we fall back to the old positional contract (the
+// concierge drains its atelier inbox created_at ASC and replies once per consult, so legacy replies
+// land FIFO): remaining unstamped replies pair, in order, with the remaining unanswered consults.
+// A consult with neither an exact nor a fallback reply is honestly PENDING (never a fabricated
+// answer, F-008). If a concierge turn faulted mid-drain, the exact pairing keeps every later
+// stamped reply on its true consult instead of skewing the tail.
 //
 // F-013: created_at is coerced to an ISO string here — a `load` never hands out a raw SDK datetime.
 // F-020 #1: every ORDER BY field is in the SELECT projection. D-016: LIMIT is a clamped integer
@@ -133,7 +135,8 @@ async function findMailboxes(db: Db, projectId?: string): Promise<MailboxRef[]> 
 	});
 }
 
-/** Read one mailbox's consults + replies (both ASC, bounded) and pair them positionally (FIFO). */
+/** Read one mailbox's consults + replies (both ASC, bounded) and pair them: EXACT by reply_to
+ *  (m0079) first; legacy replies (no reply_to) fall back to the old positional FIFO contract. */
 async function readMailbox(db: Db, box: MailboxRef): Promise<ConciergeAdvisoryRow[]> {
 	const sid = link(box.sessionId);
 	// F-020 #1: created_at is in both projections for the ORDER BY idiom.
@@ -144,13 +147,30 @@ async function readMailbox(db: Db, box: MailboxRef): Promise<ConciergeAdvisoryRo
 		{ sid }
 	);
 	const [replies] = await db.query<[Array<Record<string, unknown>>]>(
-		`SELECT id, body, created_at FROM peer_message
+		`SELECT id, body, reply_to, created_at FROM peer_message
 			WHERE to_session = $sid
 			ORDER BY created_at ASC LIMIT ${PER_MAILBOX_CAP};`,
 		{ sid }
 	);
-	return (consults ?? []).map((c, i) => {
-		const reply = (replies ?? [])[i];
+	// Split replies: STAMPED (reply_to set → exact map, first stamp wins) vs LEGACY (pre-m0079,
+	// reply_to NONE → FIFO queue). A stamped reply whose consult is outside this window pairs with
+	// nothing — it declared its target, so it never leaks into the FIFO fallback.
+	const exact = new Map<string, Record<string, unknown>>();
+	const legacy: Array<Record<string, unknown>> = [];
+	for (const r of replies ?? []) {
+		const target = recordToString(r.reply_to);
+		if (target) {
+			if (!exact.has(target)) exact.set(target, r);
+		} else {
+			legacy.push(r);
+		}
+	}
+	let li = 0;
+	return (consults ?? []).map((c) => {
+		const cid = recordToString(c.id);
+		// Exact first; else the next legacy reply in landing order (?? short-circuits, so a legacy
+		// reply is only CONSUMED when no exact reply claimed this consult).
+		const reply = (cid ? exact.get(cid) : undefined) ?? legacy[li++];
 		return {
 			id: recordToString(c.id) ?? '',
 			project: box.project,

@@ -587,12 +587,14 @@ describe('concierge — reachability + event trigger (live DB)', () => {
 		expect(String(msgRows[0].status)).toBe('delivered');
 
 		// An ADVISORY reply was sent back to the requester over the bus (to_kind=session).
-		const [replyRows] = await db.query<[Array<{ from_session: unknown; body: string; to_session: unknown }>]>(
-			`SELECT from_session, to_session, body FROM peer_message WHERE to_kind = "session";`
-		);
+		const [replyRows] = await db.query<
+			[Array<{ from_session: unknown; body: string; to_session: unknown; reply_to: unknown }>]
+		>(`SELECT from_session, to_session, body, reply_to FROM peer_message WHERE to_kind = "session";`);
 		const reply = replyRows.filter((r) => String(r.to_session) === requester);
 		expect(reply.length).toBe(1);
 		expect(String(reply[0].from_session)).toBe(result.sessionId);
+		// EXACT consult↔reply pairing (m0079): the reply stamps the consult it answers.
+		expect(String(reply[0].reply_to)).toBe(req.id);
 		// The body is screened+fenced by the repo but the advisory recommendation text survives.
 		expect(reply[0].body).toContain('atelier-developer');
 		expect(reply[0].body).toContain('advisory, non-steering');

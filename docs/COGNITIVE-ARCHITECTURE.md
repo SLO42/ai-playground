@@ -235,9 +235,19 @@ dominant concept nodes, honest-empty on a cold brain) makes S4 identity ALIVE in
 bugs**: `briefing.ts loadUnresolved` (was SILENTLY dropping unresolved tasks from the wakeup
 briefing, hidden by a best-effort catch) + `resolution.ts resolveRegauntletTarget`. See fails.md
 F-020 sweep note + F-054 (CRLF gotcha).
-Pending: **Concierge Stage-3** (skill-discovery via gated find-skills; real skill/hire drafting,
-operator-gated), graduation-history table (soul provenance/timeline), and **the first real
-local-vs-cloud benchmark RUN** — see the runbook in MODEL-BENCHMARK-SPEC.md (needs a cloud API key
-for the judge half; operator-run, deferred). (LLM turn for open-ended PM questions;
+**Concierge Stage-3 — gated skill-discovery** — SHIPPED `7f21f94` (2026-07-01), live-verified vs
+real skills.sh. Replaces the Stage-2 skill_request stub with a real search→gate→propose:
+read-only HTTP GET `skills.sh/api/search` (structurally no-install surface — `npx skills add` exists
+NOWHERE in the code), quality-gate (`recommended` only if trusted-owner OR installs ≥1000; 100–999
+`cautious`; <100 omit), D-026-screens every untrusted name/source, advisory/non-steering, honest
+fallback when unreachable (no fabricated results). Opt-in `CONCIERGE_SKILL_SEARCH` env (default OFF
+— security-sensitive outbound; OFF still returns a real manual-path explainer, better than the old
+stub). Standing note in every proposal: installs are operator-gated + D-026/D-037-reviewed + must
+be in a SYNCED catalog scope before any bundle declares them (F-045).
+
+**Roadmap COMPLETE for the buildable queue.** Deferred / operator-gated only: graduation-history
+table (soul provenance/timeline); flip `CONCIERGE_SKILL_SEARCH` on for live skill search; the first
+real local-vs-cloud benchmark RUN (runbook in MODEL-BENCHMARK-SPEC.md — needs a cloud API key +
+the decision to flip `defaultProvider`); real skill/hire DRAFTING (still operator-gated, §7). (LLM turn for open-ended PM questions;
 skill/hire drafting over the bus, operator-gated), plus the brain "sections"
 (decisions/spend/search) which fold into the concierge's dashboard.

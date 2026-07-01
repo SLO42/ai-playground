@@ -139,6 +139,16 @@ Built one stage at a time (sequential, F-052), each scout→build→verify→rep
   resolves live; the peer route + `coerceAddress('atelier')` need no change.
 - Concierge Stage 1 (when reached): alive + reachable + brain-reading (S0) + answers a PM's
   "recommend an agent" over the bus via the existing recommender (`agent-library/recommend.ts`).
+- **Concierge future capability — SKILL DISCOVERY (operator, 2026-07-01, "eventually"):** teach
+  Atelier the `find-skills` skill (vercel-labs/skills `skills/find-skills/SKILL.md`). Mechanism:
+  the `npx skills` CLI (`find`/`add`/`check`/`update`) + the skills.sh leaderboard;
+  **verify-before-recommend** (install count ≥1K, source reputation — official
+  `vercel-labs`/`anthropics`/`microsoft` trusted). Slots into the concierge's reserved
+  "recommend a skill (`cc_skill`)" answer: a PM asks Atelier for a skill → concierge searches the
+  OPEN ecosystem, quality-gates, and PROPOSES. Our gates on top: NO silent install (operator/PM
+  approves — like hiring, §7), D-026 screen + D-037-class review on any third-party skill code
+  before it enters a `.claude` scope, and the catalogued-capability rule (F-045 — a skill id must
+  be in a SYNCED catalog scope before any bundle declares it). Advisory only (non-steering bus).
 
 ## 7. Standing gates (non-negotiable)
 

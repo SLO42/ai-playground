@@ -1,24 +1,47 @@
-// CONCIERGE — production wiring for the Stage-1 event trigger.
+// CONCIERGE — production wiring for the event trigger (Stage-1 recommender + Stage-2 LLM turn).
 //
 // Assembles the LIVE deps for handleAtelierMessages from the real platform seams:
 //   • recall     — the live MemoryService (S0 grounding). Ollama-offline ⇒ HONEST empty grounding.
 //   • listAgents — the real on-disk agent library (listLibraryAgents), scored on cheap metadata
 //                  (no when-to-use body read — bounded per-trigger cost; recommend.ts supports it).
+//   • llm        — the Stage-2 open-question completion on the CONFIGURED provider (defaultProvider
+//                  toggle → resolveConciergeProvider → a cloud ClaudeProvider or the LOCAL Ollama
+//                  model). Undefined when no provider is configured/credentialed ⇒ the open-question
+//                  path degrades to an HONEST "LLM turn unavailable" reply (F-008). Mirrors the
+//                  benchmark judge wiring (analytics/benchmark/judge.ts makeClaudeJudge) — the same
+//                  provider seam, so the concierge turn is itself a provider sample for the benchmark.
 //   • send       — the peer_message repo writer (default inside handleAtelierMessages).
 //
 // Split from concierge.ts so the core stays dependency-light + purely unit-testable (no harness /
-// no disk); this module is the ONLY concierge code that touches the harness + the disk library.
+// no disk / no config / no network); this module is the ONLY concierge code that touches them.
 
 import type { Db } from '../db/client';
 import { getMemoryService } from '../harness';
 import { listLibraryAgents } from '../agent-library/library';
 import { asRecommendAgentInput, type RecommendAgentInput } from '../agent-library/recommend';
+import { loadAgentPool, loadModels, loadOrchestration } from '../config/load';
+import {
+	ClaudeProvider,
+	OllamaProvider,
+	collectText,
+	type ChatMessage,
+	type Provider,
+	type StreamChunk
+} from '../providers';
 import {
 	handleAtelierMessages,
+	resolveConciergeProvider,
 	type AtelierTriggerResult,
 	type ConciergeGroundingItem,
-	type ConciergeRecallFn
+	type ConciergeLlmFn,
+	type ConciergeRecallFn,
+	type ConciergeSessionModel
 } from './concierge';
+
+/** Wall-clock bound on ONE concierge LLM turn (F-014) — a wedged local model can't hang the drain. */
+const CONCIERGE_LLM_TIMEOUT_MS = 30_000;
+/** Output cap for the concierge turn (advisory prose is short; keeps cost + latency bounded). */
+const CONCIERGE_MAX_TOKENS = 1024;
 
 /** Build the S0 grounding recall fn over the live MemoryService. When Ollama / the embedding model
  *  is unavailable, recall degrades to an HONEST empty grounding ([]) — never a fabricated memory. */
@@ -39,8 +62,104 @@ function listAgents(): RecommendAgentInput[] {
 	return listLibraryAgents().map((a) => asRecommendAgentInput(a));
 }
 
+/** Read a provider endpoint from models config; `fallback` when absent/unreadable (mirror reports). */
+function readProviderEndpoint(dir: string, provider: string, fallback: string): string {
+	for (const file of [`${dir}/models.json5`, `${dir}/models.yaml`]) {
+		try {
+			const models = loadModels(file) as { providers?: Record<string, { endpoint?: string }> };
+			const ep = models.providers?.[provider]?.endpoint;
+			if (typeof ep === 'string' && ep.trim()) return ep.trim();
+		} catch {
+			// try the next candidate path
+		}
+	}
+	return fallback;
+}
+
+/** Wrap a Provider's stream into the ConciergeLlmFn shape (system+user → text), wall-clock bounded.
+ *  Mirrors makeClaudeJudge but is provider-agnostic (works for the local Ollama model too). */
+function providerToLlmFn(provider: Provider): ConciergeLlmFn {
+	return async ({ system, user }) => {
+		const messages: ChatMessage[] = [
+			{ role: 'system', content: system },
+			{ role: 'user', content: user }
+		];
+		const collect = (async () => {
+			const chunks: StreamChunk[] = [];
+			for await (const c of provider.stream(messages)) chunks.push(c);
+			return collectText(chunks);
+		})();
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const timeout = new Promise<never>((_, reject) => {
+			timer = setTimeout(
+				() => reject(new Error(`concierge LLM turn exceeded ${CONCIERGE_LLM_TIMEOUT_MS}ms`)),
+				CONCIERGE_LLM_TIMEOUT_MS
+			);
+		});
+		try {
+			return await Promise.race([collect, timeout]);
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
+	};
+}
+
 /**
- * Fire the Stage-1 concierge for a landed `to_kind:'atelier'` message (best-effort, event-driven).
+ * Resolve the Stage-2 concierge brain from the LIVE config (defaultProvider toggle → pool tier) and
+ * build the bounded LLM fn on the CONFIGURED provider. Returns `{ llm: undefined }` HONESTLY when no
+ * provider is configured, or when the resolved cloud tier has no ANTHROPIC_API_KEY (the open-question
+ * path then reports unavailable — never a fabricated answer). `sessionModel` is set ONLY when a real
+ * LLM was built, so the atelier_self session names a brain it can actually run (honest provenance).
+ */
+function buildConciergeLlm(dir: string): {
+	llm: ConciergeLlmFn | undefined;
+	sessionModel: ConciergeSessionModel | undefined;
+} {
+	let pool, orchestration;
+	try {
+		pool = loadAgentPool(`${dir}/agent-pool.yaml`);
+		orchestration = loadOrchestration(`${dir}/orchestration.yaml`);
+	} catch (err) {
+		console.warn(`[concierge] config unreadable — LLM turn disabled: ${(err as Error).message}`);
+		return { llm: undefined, sessionModel: undefined };
+	}
+
+	const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+	const choice = resolveConciergeProvider(orchestration.defaultProvider, pool, {
+		hasCloudKey: !!apiKey
+	});
+	if (!choice) return { llm: undefined, sessionModel: undefined };
+
+	let provider: Provider;
+	if (choice.provider === 'ollama') {
+		provider = new OllamaProvider({
+			endpoint: readProviderEndpoint(dir, 'ollama', 'http://127.0.0.1:11434'),
+			model: choice.model
+		});
+	} else {
+		// A cloud (ClaudeProvider) turn needs a key; without it we cannot run it honestly.
+		if (!apiKey) {
+			console.warn(
+				`[concierge] defaultProvider resolved to cloud tier '${choice.tier}' but no ANTHROPIC_API_KEY — LLM turn disabled (honest).`
+			);
+			return { llm: undefined, sessionModel: undefined };
+		}
+		provider = new ClaudeProvider({
+			endpoint: readProviderEndpoint(dir, 'claude', 'https://api.anthropic.com'),
+			model: choice.model,
+			apiKey,
+			maxTokens: CONCIERGE_MAX_TOKENS
+		});
+	}
+
+	return {
+		llm: providerToLlmFn(provider),
+		sessionModel: { provider: choice.provider, model_id: choice.model }
+	};
+}
+
+/**
+ * Fire the concierge for a landed `to_kind:'atelier'` message (best-effort, event-driven).
  * NEVER throws to the caller — a fault is caught + logged so it can never break the peer-send
  * response path (the send already succeeded; this is the async advisory follow-up).
  */
@@ -48,7 +167,16 @@ export async function triggerConcierge(db: Db): Promise<AtelierTriggerResult | n
 	try {
 		const recallLimit = 5;
 		const recall = await buildRecallFn(db, recallLimit);
-		return await handleAtelierMessages({ db, recall, listAgents, recallLimit });
+		const dir = process.env.CONFIG_DIR?.trim() || 'config';
+		const { llm, sessionModel } = buildConciergeLlm(dir);
+		return await handleAtelierMessages({
+			db,
+			recall,
+			listAgents,
+			recallLimit,
+			...(llm ? { llm } : {}),
+			...(sessionModel ? { sessionModel } : {})
+		});
 	} catch (err) {
 		console.warn(`[concierge] trigger failed (best-effort): ${(err as Error).message}`);
 		return null;

@@ -56,6 +56,7 @@ import {
 	DAY_MS
 } from './workqueue';
 import { runReviewFork, makeWriteSurface, type ReviewKind } from '../memory/index';
+import { recordGraduationIfChanged } from '../memory/soul-graduation';
 import {
 	runHireRequest,
 	HIRE_REQUEST_WORK_TYPE,
@@ -1005,6 +1006,12 @@ export class Orchestrator {
 			extract,
 			proposeSkills
 		});
+		// S4 — the natural periodic "did the maturity stage change?" pass. The fork just grew the
+		// brain (concepts/corrections), so this is the moment to record a graduation if the derived
+		// stage crossed a boundary (soul-graduation.ts, m0078). It is FAIL-OPEN by contract (never
+		// throws — a history write must never crash the drain, F-014/F-048) and dedup-safe (records
+		// only on a real stage change), so it runs AFTER the fork on the same live db handle.
+		await recordGraduationIfChanged(service.db);
 	}
 
 	/**

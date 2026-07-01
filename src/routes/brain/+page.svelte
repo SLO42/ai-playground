@@ -16,12 +16,14 @@
 
   const connected = $derived(data.connected);
   const soul = $derived(data.soul);
+  const graduations = $derived(data.graduations ?? []);
   const decisions = $derived(data.decisions ?? []);
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
 
   // Live: any brain-row change re-runs the loader (the soul is compute-on-read; UI-SPEC §1.2).
+  // `soul_graduation` is included so a freshly-recorded graduation appears without a manual reload.
   $effect(() => {
-    const tables = ['concept', 'memory', 'causal_chain', 'session', 'retrieval_outcome', 'decision'];
+    const tables = ['concept', 'memory', 'causal_chain', 'session', 'retrieval_outcome', 'decision', 'soul_graduation'];
     const offs = tables.map((t) => stream.onDbChange(t, () => void invalidate('app:brain')));
     return () => offs.forEach((off) => off());
   });
@@ -154,6 +156,42 @@
             {/each}
           </ul>
         </div>
+      {/if}
+    </div>
+
+    <!-- ── Graduation timeline (S4 provenance) ──────────────────────────────── -->
+    <div class="card section">
+      <div class="section-head">
+        <span class="eyebrow">identity provenance</span>
+        <h2 class="section-title">Graduation history</h2>
+      </div>
+      {#if graduations.length}
+        <ol class="timeline">
+          {#each graduations as g (g.id)}
+            <li class="grad">
+              <div class="grad-head">
+                <span class="transition">
+                  <span class="from">{g.fromStage}</span>
+                  <span class="arrow" aria-hidden="true">→</span>
+                  <span class="to" data-stage={g.toStage}>{g.toStage}</span>
+                </span>
+                <time class="ts mono dim" datetime={g.graduatedAt ?? undefined}>{fmtTime(g.graduatedAt)}</time>
+              </div>
+              <div class="snapshot dim mono" aria-label="metric snapshot at graduation">
+                <span>{g.concepts} concepts</span>
+                <span>{g.corrections} corrections</span>
+                <span>{g.causalChains} causal chains</span>
+                <span>{g.sessions} sessions</span>
+                <span>competence {competenceLabel(g.competence)}</span>
+              </div>
+            </li>
+          {/each}
+        </ol>
+      {:else}
+        <p class="dim state-body">
+          No graduations yet — identity is <strong>{soul.maturityStage}</strong>. The first crossing
+          is recorded automatically as the brain accrues concepts, corrections, and sessions.
+        </p>
       {/if}
     </div>
 
@@ -408,6 +446,61 @@
   }
   .gate-detail {
     font-size: 0.72rem;
+  }
+
+  /* ── Graduation timeline ────────────────────────────────────────────────── */
+  .timeline {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+  }
+  .grad {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 0.6rem 0.7rem;
+    border: 1px solid var(--color-border);
+    border-left-width: 3px;
+    border-left-color: var(--color-accent, #8ab0ab);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-card);
+  }
+  .grad-head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+  }
+  .transition {
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-2, 0.5rem);
+    font: var(--type-body-sm);
+  }
+  .transition .from {
+    color: var(--color-text-muted);
+  }
+  .transition .arrow {
+    color: var(--color-text-muted);
+  }
+  .transition .to {
+    font-weight: var(--weight-semibold, 600);
+    color: var(--color-text);
+  }
+  .transition .to[data-stage='developing'] {
+    color: var(--color-accent, #8ab0ab);
+  }
+  .transition .to[data-stage='established'] {
+    color: var(--color-text-accent, #8ab0ab);
+  }
+  .snapshot {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1, 0.25rem) var(--space-3, 0.75rem);
+    font-size: 0.68rem;
   }
 
   /* ── Sections ───────────────────────────────────────────────────────────── */

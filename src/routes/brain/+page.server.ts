@@ -19,12 +19,20 @@ import {
 	RECENT_DECISIONS_LIMIT,
 	type DecisionRow
 } from '$lib/server/memory/decisions';
+import {
+	listGraduations,
+	GRADUATION_TIMELINE_LIMIT,
+	ATELIER_SUBJECT,
+	type GraduationRow
+} from '$lib/server/memory/soul-graduation';
 import type { PageServerLoad } from './$types';
 
 export interface BrainData {
 	connected: boolean;
 	/** The derived self-model, or null when the brain is unreachable. */
 	soul: SoulModel | null;
+	/** The identity's graduation timeline (newest-first); [] when it has never graduated (S4). */
+	graduations: GraduationRow[];
 	/** Recent architectural decisions (newest-first); [] when none / unreachable. */
 	decisions: DecisionRow[];
 	error?: string;
@@ -34,15 +42,16 @@ export const load: PageServerLoad = async ({ depends }): Promise<BrainData> => {
 	depends('app:brain');
 
 	const db = tryGetDb();
-	if (!db) return { connected: false, soul: null, decisions: [] };
+	if (!db) return { connected: false, soul: null, graduations: [], decisions: [] };
 
 	try {
-		const [soul, decisions] = await Promise.all([
+		const [soul, graduations, decisions] = await Promise.all([
 			loadSoul(db),
+			listGraduations(db, ATELIER_SUBJECT, GRADUATION_TIMELINE_LIMIT),
 			listRecentDecisions(db, RECENT_DECISIONS_LIMIT)
 		]);
-		return { connected: true, soul, decisions };
+		return { connected: true, soul, graduations, decisions };
 	} catch (err) {
-		return { connected: false, soul: null, decisions: [], error: (err as Error).message };
+		return { connected: false, soul: null, graduations: [], decisions: [], error: (err as Error).message };
 	}
 };

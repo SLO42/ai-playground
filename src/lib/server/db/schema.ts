@@ -2774,6 +2774,48 @@ const m0077_benchmark_verdict: Migration = {
 	`
 };
 
+// ── S4 SOUL GRADUATION HISTORY (provenance/timeline over the compute-on-read self-model) ──
+//
+// soul.ts derives Atelier's CURRENT maturity_stage on read but keeps NO history of WHEN it
+// graduated. This additive table records one row each time the derived stage CROSSES a boundary,
+// with the metric SNAPSHOT at that moment (memory/soul-graduation.ts recordGraduationIfChanged, run
+// on the heartbeat fast-tier drain). `/brain` reads it as a growth timeline (Atelier feels ALIVE).
+//
+// Purely ADDITIVE (a new table + two indexes — no change to existing tables). Fully idempotent
+// (OVERWRITE table/field/index) so a half-applied m0078 re-runs clean (F-015 — the generic
+// schemaMigrations apply-twice + half-applied sweep in migrate.test.ts covers it). NO VALUE field
+// relying on a DEFAULT landing first, NO HNSW vector (F-020 non-issues). graduated_at is coerced to
+// ISO in the reader normalizer (F-013). Both from_stage and to_stage are always SET by the recorder.
+//
+// SUBJECT-KEYED from the start (operator decision): every row names WHOSE identity graduated so
+// per-PM souls extend additively later with ZERO schema change. `subject` is a STRING (the
+// session.pm precedent) — the atelier global self-identity ("atelier") THIS build; a future PM-soul
+// build writes subject="project:<id>" rows and derives project-scoped souls off the same table. The
+// recorder's dedup/idempotency guard is keyed PER-SUBJECT (an atelier graduation and a future PM
+// graduation never collide). DEFAULT "atelier" so a legacy/unspecified write is the global self.
+const m0078_soul_graduation: Migration = {
+	id: '0078_soul_graduation',
+	up: `
+		DEFINE TABLE OVERWRITE soul_graduation SCHEMAFULL;
+		-- WHOSE identity graduated: "atelier" (the global brain) or "project:<id>" (a PM soul, future).
+		DEFINE FIELD OVERWRITE subject       ON soul_graduation TYPE string DEFAULT "atelier";
+		DEFINE FIELD OVERWRITE from_stage    ON soul_graduation TYPE string
+			ASSERT $value IN ["nascent","developing","established"];
+		DEFINE FIELD OVERWRITE to_stage      ON soul_graduation TYPE string
+			ASSERT $value IN ["nascent","developing","established"];
+		-- Metric snapshot at graduation (all live counts; F-008). Non-negative integers.
+		DEFINE FIELD OVERWRITE concepts      ON soul_graduation TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE corrections   ON soul_graduation TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE causal_chains ON soul_graduation TYPE int DEFAULT 0;
+		DEFINE FIELD OVERWRITE sessions      ON soul_graduation TYPE int DEFAULT 0;
+		-- Recall competence in [0,1], or NONE when the outcome sample was too small (honest unknown).
+		DEFINE FIELD OVERWRITE competence    ON soul_graduation TYPE option<float>;
+		DEFINE FIELD OVERWRITE graduated_at  ON soul_graduation TYPE datetime DEFAULT time::now();
+		-- Per-subject, newest-first reads: the composite index backs WHERE subject … ORDER BY time.
+		DEFINE INDEX OVERWRITE soul_graduation_by_subject ON soul_graduation FIELDS subject, graduated_at;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2857,5 +2899,6 @@ export const schemaMigrations: Migration[] = [
 	m0074_session_pm,
 	m0075_learned_reranker,
 	m0076_thinking_capture,
-	m0077_benchmark_verdict
+	m0077_benchmark_verdict,
+	m0078_soul_graduation
 ];

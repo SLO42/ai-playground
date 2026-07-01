@@ -64,6 +64,16 @@ m0077 benchmark_verdict · m0078 soul_graduation (subject-keyed).
 memory: local-brain hypothesis, find-skills reference, concierge-shipped. Started this devlog.
 New repo `SLO42/obs-stuff-and-things` created (operator request, unrelated).
 
+## End-gate — consolidated live-verify (PASS)
+Whole stretch verified live on the real dev DB: **`db:up` applied m0078 → 78/78, idempotent
+re-run clean** (F-015). Render-smoke (bounded, killed): `/brain` (soul nascent — 3 concepts / 1
+correction / 1 causal / 143 sessions; graduation timeline honest-empty; 2 real decisions), living
+scene (324 nodes / 85 edges), project PM-tab `PmSoulPanel` (honest nascent), `/reports` (honest-
+empty A/B + judged), `/settings`, `/agents/catalog` (113 agents), `/loops` — all HTTP 200, honest
+states, no 500/undefined/fabricated. Clean (no new bugs). Minor gap found + fixed: `?tab=pm` didn't
+deep-link (project tab was client `$state` ignoring the search param) → `23db06e` (TABS as-const +
+validated deep-link init).
+
 ## Parked / next
 - **Needs operator:** run the real local-vs-cloud benchmark (needs `ANTHROPIC_API_KEY` + flip
   `defaultProvider→local`; runbook in MODEL-BENCHMARK-SPEC.md) · flip `CONCIERGE_SKILL_SEARCH` on ·

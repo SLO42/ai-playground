@@ -104,9 +104,15 @@ export function normalizeAddr(addr: string): string {
  *   - /api/gates/pretooluse     pre-tool-use gate
  *   - /api/memory/pull          memory pull
  *   - /api/peer/send            peer send
- *   - /api/sessions/{id}/control session control      (routes/api/sessions/[id]/control)
  *   - /login /setup /logout     the auth surface itself
  *   - /_app/* /fonts/* favicon  static assets (never redirect a non-document asset)
+ *
+ * NOT exempt: /api/sessions/{id}/control. Unlike the four callbacks above (which all
+ * enforce their own `authorizeHookRequest` token and 401 without it), the control
+ * endpoint checks no caller credential AND stamps operator origin (D-035a) — so it is
+ * called only by the operator's browser and must sit behind this login gate like every
+ * other browser surface (loopback bypasses in the handle; a remote browser needs the
+ * auth cookie; an unauthenticated LAN caller gets the gate's 401).
  */
 export function isExemptPath(path: string): boolean {
 	if (path === '/login' || path === '/setup' || path === '/logout') return true;
@@ -116,7 +122,6 @@ export function isExemptPath(path: string): boolean {
 	if (path === '/api/gates/pretooluse') return true;
 	if (path === '/api/memory/pull') return true;
 	if (path === '/api/peer/send') return true;
-	if (/^\/api\/sessions\/[^/]+\/control$/.test(path)) return true;
 	return false;
 }
 

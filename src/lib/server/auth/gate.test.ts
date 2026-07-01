@@ -95,20 +95,49 @@ describe('isExemptPath', () => {
 		for (const p of ['/favicon.svg', '/favicon.ico', '/_app/immutable/x.js', '/fonts/lastik.woff2'])
 			expect(isExemptPath(p)).toBe(true);
 	});
-	it('exempts the control-plane callbacks', () => {
+	it('exempts the token-authenticated control-plane callbacks (they enforce authorizeHookRequest themselves)', () => {
 		for (const p of [
 			'/api/hooks/PreToolUse',
 			'/api/gates/pretooluse',
 			'/api/memory/pull',
-			'/api/peer/send',
-			'/api/sessions/abc123/control'
+			'/api/peer/send'
 		])
 			expect(isExemptPath(p)).toBe(true);
+	});
+	it('does NOT exempt the session-control endpoint — it checks no caller credential and stamps operator origin (D-035a), so it sits behind the login gate', () => {
+		expect(isExemptPath('/api/sessions/abc123/control')).toBe(false);
+		expect(isExemptPath('/api/sessions/s_0xdead/control')).toBe(false);
 	});
 	it('does NOT exempt ordinary pages or other API routes', () => {
 		for (const p of ['/', '/projects', '/api/events', '/api/sessions/abc123', '/api/sessions'])
 			expect(isExemptPath(p)).toBe(false);
 	});
+});
+
+describe('session-control endpoint gating (was the isExemptPath hole: unauthenticated LAN callers reached the operator-origin-stamping handler)', () => {
+	const controlPath = '/api/sessions/abc123/control';
+
+	it('a non-loopback unauthenticated POST to the control path is 401 (API semantics — plain unauthorized, never an HTML redirect)', () => {
+		// The handle computes isBrowserGet = GET && accepts text/html; control is a POST,
+		// so a gated request always takes the unauthorized branch (401), not a redirect.
+		expect(
+			decideGate({ hasCredential: true, validCookie: false, isBrowserGet: false, path: controlPath })
+		).toEqual({ action: 'unauthorized' });
+		// First-run (no credential set) fails closed the same way.
+		expect(
+			decideGate({ hasCredential: false, validCookie: false, isBrowserGet: false, path: controlPath })
+		).toEqual({ action: 'unauthorized' });
+	});
+
+	it('a logged-in remote browser (valid signed cookie) passes', () => {
+		expect(
+			decideGate({ hasCredential: true, validCookie: true, isBrowserGet: false, path: controlPath })
+		).toEqual({ action: 'pass' });
+	});
+
+	// Loopback never reaches decideGate at all — the handle short-circuits loopback
+	// requests before the gate (login-free local use, D-025); asserted structurally by
+	// the isExemptPath + isLoopbackHost tests above.
 });
 
 describe('loopback detection helpers', () => {

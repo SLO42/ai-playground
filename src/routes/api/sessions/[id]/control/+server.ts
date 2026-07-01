@@ -7,10 +7,16 @@
 // decide operator-origin steering — the runtime never sees the token. A push off any other
 // path (the agent/SSE bus) can never be operator even if a token leaked (D-035a).
 //
-// Single-operator, local-first (D-025): the whole control plane is loopback-bound at the
-// server bind (asserted in hooks.server.ts), so presenting the boot token here is the
-// authenticated-operator signal. Every state change flows db → events → the one SSE (§2.11);
-// the channel seam republishes the interject/session_status events, so the UI reflects it live.
+// Single-operator (D-025), but the app is LAN-exposable — so this endpoint sits BEHIND the
+// m0071 login gate (hooks.server.ts): loopback callers bypass the gate; a remote browser must
+// carry the signed auth cookie; an unauthenticated non-loopback caller gets the gate's 401
+// before this handler runs. It is deliberately NOT in `isExemptPath` (auth/gate.ts) — the
+// exempt machine-to-machine callbacks all enforce `authorizeHookRequest`, while this handler
+// checks no caller credential itself and stamps operator origin on behalf of the caller, so
+// exempting it would let an unauthenticated LAN device steer sessions AS OPERATOR. For a
+// gate-authenticated caller the operator-origin stamping below is unchanged. Every state
+// change flows db → events → the one SSE (§2.11); the channel seam republishes the
+// interject/session_status events, so the UI reflects it live.
 
 import { json, error } from '@sveltejs/kit';
 import { tryGetDb } from '$lib/server/db/runtime-init';

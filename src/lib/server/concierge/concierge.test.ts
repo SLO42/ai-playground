@@ -23,10 +23,15 @@ import {
 	ensureAtelierSession,
 	handleAtelierMessages,
 	fetchPendingAtelierInbox,
+	gateSkillCandidates,
+	parseSkillsSearchResponse,
+	TRUSTED_SKILL_OWNERS,
 	type ConciergeGroundingItem,
 	type ConciergeRecallFn,
 	type ConciergeListAgentsFn,
-	type ConciergeLlmFn
+	type ConciergeLlmFn,
+	type ConciergeSkillSearchFn,
+	type SkillSearchResult
 } from './concierge';
 import type { AgentPool } from '../config/load';
 
@@ -227,7 +232,7 @@ describe('runConciergeTurn — Stage-2 open-question LLM turn (stub, no real mod
 		expect(turn.replyText).toContain('no usable answer');
 	});
 
-	it('a skill request is honestly DEFERRED (not built, gated) — the LLM is NOT called', async () => {
+	it('a skill request with NO search seam gives an honest manual-path explainer — the LLM is NOT called', async () => {
 		const turn = await runConciergeTurn(
 			{ recall: recallStub, listAgents: listStub, llm: mustNotCall },
 			'Can you author a skill to lint our configs?'
@@ -235,8 +240,9 @@ describe('runConciergeTurn — Stage-2 open-question LLM turn (stub, no real mod
 		expect(turn.intent).toBe('skill_request');
 		expect(turn.handledIntent).toBe(false);
 		expect(turn.recommendations).toEqual([]);
-		expect(turn.replyText).toContain('not yet available');
-		expect(turn.replyText).toContain('did not draft or install a skill');
+		expect(turn.replyText).toContain('not enabled');
+		expect(turn.replyText).toContain('did not install');
+		expect(turn.replyText).toContain('npx skills find');
 		expect(turn.replyText).toContain('advisory, non-steering');
 	});
 
@@ -249,6 +255,177 @@ describe('runConciergeTurn — Stage-2 open-question LLM turn (stub, no real mod
 		expect(turn.handledIntent).toBe(false);
 		expect(turn.replyText).toContain('operator-gated');
 		expect(turn.replyText).toContain('never draft, certify, or execute a hire');
+	});
+});
+
+// ── (a3) Stage-3 gated skill-discovery — search-only, quality-gated, advisory, NO install ──
+
+describe('runConciergeTurn — Stage-3 gated skill-discovery (find-skills, advisory, no install)', () => {
+	const RESULTS: SkillSearchResult[] = [
+		// trusted owner → recommended (surfaced as trusted), ranked first.
+		{ id: 'vercel-labs/agent-skills/vercel-react', name: 'vercel-react', source: 'vercel-labs/agent-skills', installs: 500_000 },
+		// community, ≥1K installs → recommended.
+		{ id: 'acme/tools/lint-configs', name: 'lint-configs', source: 'acme/tools', installs: 4_200 },
+		// community, <100 installs → OMITTED (never recommend an unvetted low-adoption skill).
+		{ id: 'randy/x/tiny-skill', name: 'tiny-skill', source: 'randy/x', installs: 12 }
+	];
+	function makeSearchStub(results: SkillSearchResult[]) {
+		const calls: string[] = [];
+		const fn: ConciergeSkillSearchFn = async (q) => {
+			calls.push(q);
+			return results;
+		};
+		return { fn, calls };
+	}
+	const searchMustNotCall: ConciergeSkillSearchFn = async () => {
+		throw new Error('skillSearch must not be called for this intent');
+	};
+	const llmMustNotCall: ConciergeLlmFn = async () => {
+		throw new Error('LLM must not be called on the skill path');
+	};
+
+	it('searches, quality-gates + ranks, proposes ADVISORY candidates, and NEVER installs', async () => {
+		const { fn, calls } = makeSearchStub(RESULTS);
+		const turn = await runConciergeTurn(
+			{ recall: recallStub, listAgents: listStub, skillSearch: fn, llm: llmMustNotCall },
+			'Can you find a skill to lint our configs?'
+		);
+		expect(turn.intent).toBe('skill_request');
+		expect(turn.handledIntent).toBe(true);
+		expect(turn.llmUsed).toBe(false); // deterministic — no model spawn on the skill path
+		// The (unfenced) request reached the READ-ONLY search transport.
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toContain('lint');
+		// Trusted source ranked FIRST; the <100-install candidate is OMITTED (not recommended unvetted).
+		expect(turn.skillCandidates?.map((c) => c.name)).toEqual(['vercel-react', 'lint-configs']);
+		expect(turn.skillCandidates?.[0].trust).toBe('trusted');
+		expect(turn.skillCandidates?.[0].verdict).toBe('recommended');
+		expect(turn.skillCandidates?.[1].verdict).toBe('recommended');
+		// Advisory framing + the MANDATORY no-install / operator-gate contract.
+		expect(turn.replyText).toContain('[Atelier Concierge — advisory, non-steering]');
+		expect(turn.replyText).toContain('I did NOT install anything');
+		expect(turn.replyText).toContain('OPERATOR-GATED');
+		expect(turn.replyText).toContain('never run `npx skills add`');
+		expect(turn.replyText).toContain('1 lower-adoption candidate(s) omitted');
+		// No directive language.
+		expect(turn.replyText.toLowerCase()).not.toMatch(/\byou must\b/);
+	});
+
+	it('an UNREACHABLE search transport degrades to an honest fallback — NO fabricated results (F-008)', async () => {
+		const turn = await runConciergeTurn(
+			{ recall: recallStub, listAgents: listStub, skillSearch: async () => { throw new Error('skills.sh unreachable'); } },
+			'find me a skill for X'
+		);
+		expect(turn.intent).toBe('skill_request');
+		expect(turn.handledIntent).toBe(false);
+		expect(turn.skillCandidates).toBeUndefined();
+		expect(turn.replyText).toContain('unavailable right now');
+		expect(turn.replyText).toContain('skills.sh unreachable');
+		expect(turn.replyText).toContain('did not fabricate');
+		expect(turn.replyText).toContain('npx skills find'); // honest manual path
+		expect(turn.replyText).toContain('advisory, non-steering');
+	});
+
+	it('zero hits is an honest no-candidates state (never a fabricated proposal)', async () => {
+		const { fn } = makeSearchStub([]);
+		const turn = await runConciergeTurn(
+			{ recall: recallStub, listAgents: listStub, skillSearch: fn },
+			'find a skill for quantum xylophones'
+		);
+		expect(turn.handledIntent).toBe(false);
+		expect(turn.skillCandidates).toEqual([]);
+		expect(turn.replyText).toContain('found no candidates');
+		expect(turn.replyText).toContain('did not fabricate');
+	});
+
+	it('when every hit is below the quality gate, nothing is recommended (no unvetted recommend)', async () => {
+		const { fn } = makeSearchStub([
+			{ id: 'a/b/low1', name: 'low1', source: 'a/b', installs: 40 },
+			{ id: 'c/d/low2', name: 'low2', source: 'c/d', installs: 3 }
+		]);
+		const turn = await runConciergeTurn(
+			{ recall: recallStub, listAgents: listStub, skillSearch: fn },
+			'find a skill to do X'
+		);
+		expect(turn.handledIntent).toBe(false);
+		expect(turn.skillCandidates).toEqual([]);
+		expect(turn.replyText).toContain('none cleared the quality gate');
+	});
+
+	it('D-026 — screens untrusted third-party skill name before it enters the reply', async () => {
+		const { fn } = makeSearchStub([
+			{ id: 'evil/x/leak', name: 'leak sk-ant-ABCDEFGH12345', source: 'evil/repo', installs: 9_000 }
+		]);
+		const turn = await runConciergeTurn(
+			{ recall: recallStub, listAgents: listStub, skillSearch: fn },
+			'find a skill'
+		);
+		expect(turn.handledIntent).toBe(true);
+		// The embedded secret-shaped token is redacted; the raw token NEVER reaches the reply.
+		expect(turn.replyText).not.toContain('sk-ant-ABCDEFGH12345');
+		expect(turn.replyText).toContain('[REDACTED:anthropic-key]');
+	});
+
+	it('a recommend-agent request never reaches the skill search (intent precedence holds)', async () => {
+		const turn = await runConciergeTurn(
+			{ recall: recallStub, listAgents: listStub, skillSearch: searchMustNotCall },
+			'recommend an agent to build a skill' // recommend_agent wins over the skill mention
+		);
+		expect(turn.intent).toBe('recommend_agent');
+		expect(turn.handledIntent).toBe(true);
+	});
+});
+
+describe('gateSkillCandidates + parseSkillsSearchResponse (pure)', () => {
+	it('parses the skills.sh response shape, tolerates drift, floors installs, caps results', () => {
+		const json = {
+			query: 'x',
+			skills: [
+				{ id: 'o/r/a', name: 'a', source: 'o/r', installs: 5 },
+				{ id: 'o/r2/b', skillId: 'b', source: 'o/r2', installs: 2.9 }, // name from skillId; installs floored
+				{ name: 'noSource' }, // dropped — no source
+				{ source: 'o/r3' }, // dropped — no name
+				null,
+				'garbage'
+			],
+			count: 6
+		};
+		const out = parseSkillsSearchResponse(json, 10);
+		expect(out.map((s) => s.name)).toEqual(['a', 'b']);
+		expect(out[1].installs).toBe(2);
+		expect(parseSkillsSearchResponse({}, 10)).toEqual([]);
+		expect(parseSkillsSearchResponse(null, 10)).toEqual([]);
+		expect(parseSkillsSearchResponse(json, 1)).toHaveLength(1); // cap respected
+	});
+
+	it('the quality gate: trusted promotes, ≥1K recommends, 100..999 cautious, <100 omitted', () => {
+		const raw: SkillSearchResult[] = [
+			{ id: '1', name: 'trusted-low', source: 'anthropics/skills', installs: 5 },
+			{ id: '2', name: 'big', source: 'x/y', installs: 250_000 },
+			{ id: '3', name: 'mid', source: 'x/y', installs: 300 },
+			{ id: '4', name: 'tiny', source: 'x/y', installs: 9 }
+		];
+		const { proposed, omitted } = gateSkillCandidates(raw, { limit: 5 });
+		expect(omitted).toBe(1); // tiny
+		const byName = Object.fromEntries(proposed.map((c) => [c.name, c]));
+		expect(byName['trusted-low'].verdict).toBe('recommended');
+		expect(byName['trusted-low'].trust).toBe('trusted');
+		expect(byName['big'].verdict).toBe('recommended');
+		expect(byName['mid'].verdict).toBe('cautious');
+		expect(byName['tiny']).toBeUndefined();
+		// Trusted ranked FIRST even with far fewer installs.
+		expect(proposed[0].name).toBe('trusted-low');
+		// NEVER surfaces an unvetted low-adoption community skill as `recommended`.
+		expect(
+			proposed.find((c) => c.verdict === 'recommended' && c.trust === 'community' && c.installs < 1000)
+		).toBeUndefined();
+	});
+
+	it('TRUSTED_SKILL_OWNERS covers the official owners only', () => {
+		expect(TRUSTED_SKILL_OWNERS.has('vercel-labs')).toBe(true);
+		expect(TRUSTED_SKILL_OWNERS.has('anthropics')).toBe(true);
+		expect(TRUSTED_SKILL_OWNERS.has('microsoft')).toBe(true);
+		expect(TRUSTED_SKILL_OWNERS.has('randos')).toBe(false);
 	});
 });
 

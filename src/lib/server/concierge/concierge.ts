@@ -77,6 +77,64 @@ export type ConciergeSendFn = (input: SendPeerMessageInput) => Promise<unknown>;
  */
 export type ConciergeLlmFn = (prompt: { system: string; user: string }) => Promise<string>;
 
+// ── Stage-3 skill-discovery seam (find-skills, GATED + advisory — NEVER installs) ────────
+//
+// One raw hit from the open skills ecosystem (skills.sh /api/search). This is UNTRUSTED
+// third-party content: `name`/`source` are D-026-screened before they enter any prompt/reply
+// (see gateSkillCandidates). The transport is READ-ONLY by construction — a search fn, never an
+// install. wire.ts implements it as a bounded HTTP GET; tests inject a deterministic stub (NO real
+// network). Absent (undefined) ⇒ the skill_request branch degrades to an HONEST manual-path
+// explainer, never a fabricated result (F-008).
+export interface SkillSearchResult {
+	/** owner/repo/skill id (untrusted). */
+	id: string;
+	/** the skill name (untrusted — screened before use). */
+	name: string;
+	/** the `owner/repo` source (untrusted — screened; the owner drives the trust tier). */
+	source: string;
+	/** install count from the skills.sh leaderboard — the adoption signal for the quality gate. */
+	installs: number;
+}
+
+/** Search the open skills ecosystem for `query`. READ-ONLY (never installs). Unreachable / not
+ *  enabled ⇒ throws (concierge catches → honest fallback) or is simply absent (→ explainer). */
+export type ConciergeSkillSearchFn = (query: string) => Promise<SkillSearchResult[]>;
+
+/** Source-reputation tier of a candidate (verify-before-recommend, find-skills). */
+export type SkillTrust = 'trusted' | 'community';
+/** Quality-gate verdict. `omit` = never surfaced as a recommendation (too little adoption / unvetted). */
+export type SkillVerdict = 'recommended' | 'cautious' | 'omit';
+
+/** A quality-gated skill candidate — post-screen, post-reputation-check. What the concierge PROPOSES
+ *  (advisory only). `name`/`source` are already D-026-screened. */
+export interface SkillCandidate {
+	/** screened skill name. */
+	name: string;
+	/** screened `owner/repo` source. */
+	source: string;
+	/** install count (adoption signal). */
+	installs: number;
+	/** source reputation tier (official owners trusted). */
+	trust: SkillTrust;
+	/** gate verdict — never `recommended` for an unvetted low-adoption skill. */
+	verdict: SkillVerdict;
+	/** human-readable reason for the verdict (the quality signal surfaced to the PM). */
+	reason: string;
+}
+
+/** Official owners trusted by reputation (find-skills verify-before-recommend). Matched on the OWNER
+ *  segment (first path component of `source`), case-insensitive. */
+export const TRUSTED_SKILL_OWNERS: ReadonlySet<string> = new Set([
+	'vercel-labs',
+	'anthropics',
+	'anthropic',
+	'microsoft'
+]);
+
+/** install-count band boundaries (find-skills): ≥1K = adoption-vetted; <100 = too little to recommend. */
+const SKILL_INSTALLS_RECOMMEND = 1000;
+const SKILL_INSTALLS_MIN = 100;
+
 /** The model identity stamped on the atelier_self session (honest provenance of WHO answered). */
 export interface ConciergeSessionModel {
 	provider: string;
@@ -93,6 +151,15 @@ export interface ConciergeDeps {
 	 * touch it (they are deterministic / honest-deferred).
 	 */
 	llm?: ConciergeLlmFn;
+	/**
+	 * Stage-3 skill-discovery seam (optional, GATED). Present ⇒ a `skill_request` runs a bounded,
+	 * READ-ONLY search of the open ecosystem → quality-gate → advisory proposal (NEVER installs).
+	 * Absent ⇒ the branch gives an HONEST manual-path explainer (search not enabled), never a
+	 * fabricated result (F-008). wire.ts supplies it only when the operator opts in (default OFF).
+	 */
+	skillSearch?: ConciergeSkillSearchFn;
+	/** Max skill candidates to propose (default 5). */
+	skillLimit?: number;
 	/** Defaults to sendPeerMessage(db, …). Injectable so a unit test asserts the reply without a DB write. */
 	send?: ConciergeSendFn;
 	/** Clock seam (tests). Defaults to () => new Date(). */
@@ -278,6 +345,8 @@ export interface ConciergeTurnResult {
 	groundingCitations: string[];
 	/** The ranked specialist recommendations (propose-only; empty for non-recommend intents). */
 	recommendations: AgentRecommendation[];
+	/** Stage-3: the quality-gated skill candidates PROPOSED (advisory; only for a served skill_request). */
+	skillCandidates?: SkillCandidate[];
 }
 
 const ADVISORY_HEADER = '[Atelier Concierge — advisory, non-steering]';
@@ -289,6 +358,213 @@ const NON_STEERING_FOOTER =
 function excerpt(body: string, max = 140): string {
 	const oneLine = body.replace(/\s+/g, ' ').trim();
 	return oneLine.length > max ? `${oneLine.slice(0, max)}…` : oneLine;
+}
+
+// ── Stage-3 skill-discovery: parse (pure) + quality-gate (pure) ───────────────────────────
+
+/** Screen an untrusted third-party field (D-026) and collapse to a bounded single line. Empty after
+ *  screening → a placeholder (never leaks raw or an empty label). */
+function screenField(raw: string, fallback: string): string {
+	const s = screen(typeof raw === 'string' ? raw : '')
+		.text.replace(/\s+/g, ' ')
+		.trim();
+	return s || fallback;
+}
+
+/**
+ * Parse a skills.sh `/api/search` response body into typed results (PURE — unit-tested without any
+ * network; wire.ts feeds it the fetched JSON). Tolerant of shape drift: a missing `skills` array, or
+ * a malformed item, degrades to fewer/zero results — never throws, never fabricates. Caps at `cap`.
+ * Does NOT screen here (screening happens in the gate, where the fields actually enter the reply).
+ */
+export function parseSkillsSearchResponse(json: unknown, cap: number): SkillSearchResult[] {
+	const skills = (json as { skills?: unknown } | null)?.skills;
+	if (!Array.isArray(skills)) return [];
+	const out: SkillSearchResult[] = [];
+	const limit = Math.max(0, Math.floor(cap));
+	for (const s of skills) {
+		if (out.length >= limit) break;
+		if (!s || typeof s !== 'object') continue;
+		const o = s as Record<string, unknown>;
+		const name =
+			typeof o.name === 'string' && o.name.trim()
+				? o.name.trim()
+				: typeof o.skillId === 'string'
+					? o.skillId.trim()
+					: '';
+		const source = typeof o.source === 'string' ? o.source.trim() : '';
+		if (!name || !source) continue;
+		const id = typeof o.id === 'string' && o.id.trim() ? o.id.trim() : `${source}/${name}`;
+		const installs =
+			typeof o.installs === 'number' && Number.isFinite(o.installs) ? Math.max(0, Math.floor(o.installs)) : 0;
+		out.push({ id, name, source, installs });
+	}
+	return out;
+}
+
+/**
+ * QUALITY-GATE the raw hits (find-skills verify-before-recommend). PURE. For each hit:
+ *   1. D-026-SCREEN the untrusted `name`/`source` before they enter the proposal.
+ *   2. Reputation: an official OWNER (vercel-labs/anthropics/microsoft) ⇒ `trusted`.
+ *   3. Adoption band: ≥1K installs ⇒ recommendable; 100..999 ⇒ `cautious`; <100 ⇒ `omit` (unless trusted).
+ * Verdict: `recommended` iff trusted OR installs≥1K; `cautious` for 100..999; else `omit`. An unvetted
+ * low-adoption skill is NEVER surfaced as `recommended` (the mandatory gate). Ranked trusted-first then
+ * installs-desc, capped at `limit`. Returns the proposed set + how many were omitted (honest signal).
+ */
+export function gateSkillCandidates(
+	raw: SkillSearchResult[],
+	opts: { limit?: number } = {}
+): { proposed: SkillCandidate[]; omitted: number } {
+	const limit = Math.max(1, Math.floor(opts.limit ?? 5));
+	const graded: SkillCandidate[] = raw.map((r) => {
+		const name = screenField(r.name, '(name withheld by screen)');
+		const source = screenField(r.source, '(source withheld by screen)');
+		const owner = source.split('/')[0]?.toLowerCase() ?? '';
+		const trusted = TRUSTED_SKILL_OWNERS.has(owner);
+		const installs = r.installs;
+		let verdict: SkillVerdict;
+		let reason: string;
+		if (trusted) {
+			verdict = 'recommended';
+			reason = `official/trusted source (${owner}); ${installs.toLocaleString()} installs`;
+		} else if (installs >= SKILL_INSTALLS_RECOMMEND) {
+			verdict = 'recommended';
+			reason = `${installs.toLocaleString()} installs (≥1K adoption)`;
+		} else if (installs >= SKILL_INSTALLS_MIN) {
+			verdict = 'cautious';
+			reason = `only ${installs.toLocaleString()} installs (<1K) — below the recommend threshold; review before use`;
+		} else {
+			verdict = 'omit';
+			reason = `${installs.toLocaleString()} installs (<100) — too little adoption to recommend`;
+		}
+		return { name, source, installs, trust: trusted ? 'trusted' : 'community', verdict, reason };
+	});
+	const kept = graded.filter((c) => c.verdict !== 'omit');
+	const omitted = graded.length - kept.length;
+	kept.sort((a, b) => {
+		if (a.trust !== b.trust) return a.trust === 'trusted' ? -1 : 1;
+		return b.installs - a.installs;
+	});
+	return { proposed: kept.slice(0, limit), omitted };
+}
+
+/** The honest manual-path note appended when the concierge cannot run a live gated search. */
+const SKILL_MANUAL_PATH =
+	'You can search the open ecosystem yourself: `npx skills find <query>` or browse https://skills.sh . ' +
+	'Any skill still requires operator approval + D-026 screening + review before it enters a .claude scope.';
+
+/** The standing no-install / operator-gate contract surfaced on EVERY skill proposal (D-026, §7, F-045). */
+const SKILL_GATE_NOTE =
+	'Installing any of these is OPERATOR-GATED and screened: I never run `npx skills add`, never write to ' +
+	'a .claude scope, and never register a capability. A human approves the install; the third-party skill ' +
+	'code is D-026-screened + reviewed (D-037-class) before it enters any scope, and it must be present in a ' +
+	'SYNCED catalog scope before any bundle may declare it (F-045). This is search + advice only.';
+
+/**
+ * Run ONE skill_request turn (Stage-3): a bounded, READ-ONLY search of the open ecosystem →
+ * quality-gate → advisory proposal. NEVER installs / never mutates a .claude scope (there is no such
+ * code path — the only external call is the READ-ONLY search seam). HONEST states throughout (F-008):
+ *   - no search seam (not enabled)      → honest explainer + manual path (handledIntent:false).
+ *   - search throws (unreachable/CLI)   → honest fallback + manual path, no fabricated results.
+ *   - zero hits / all below the gate    → honest "nothing cleared the gate", no fabricated recommend.
+ *   - ≥1 candidate cleared the gate     → advisory ranked proposal + quality signals + gate note.
+ */
+async function runSkillDiscoveryTurn(
+	deps: Pick<ConciergeTurnDeps, 'skillSearch' | 'skillLimit'>,
+	query: string,
+	citations: string[]
+): Promise<ConciergeTurnResult> {
+	const base = {
+		intent: 'skill_request' as const,
+		llmUsed: false,
+		groundingCitations: citations,
+		recommendations: [] as AgentRecommendation[]
+	};
+
+	// Not enabled → honest explainer (strictly better than a bare stub: it explains the manual path).
+	if (!deps.skillSearch) {
+		return {
+			...base,
+			handledIntent: false,
+			replyText: [
+				ADVISORY_HEADER,
+				'Live skill-discovery search is not enabled for the concierge right now, so I have no ' +
+					'candidates to propose. I did not install or draft any skill. ' +
+					SKILL_MANUAL_PATH,
+				NON_STEERING_FOOTER
+			].join('\n')
+		};
+	}
+
+	let results: SkillSearchResult[];
+	try {
+		results = await deps.skillSearch(query);
+	} catch (err) {
+		// Unreachable transport (no network / skills.sh down / CLI absent) → honest, no fabrication.
+		return {
+			...base,
+			handledIntent: false,
+			replyText: [
+				ADVISORY_HEADER,
+				`Skill-discovery is unavailable right now (${(err as Error).message}). I did not fabricate any ` +
+					'results. ' +
+					SKILL_MANUAL_PATH,
+				NON_STEERING_FOOTER
+			].join('\n')
+		};
+	}
+
+	if (!results.length) {
+		return {
+			...base,
+			handledIntent: false,
+			skillCandidates: [],
+			replyText: [
+				ADVISORY_HEADER,
+				'I searched the open skills ecosystem and found no candidates for this request. I did not ' +
+					'fabricate any results. ' +
+					SKILL_MANUAL_PATH,
+				NON_STEERING_FOOTER
+			].join('\n')
+		};
+	}
+
+	const { proposed, omitted } = gateSkillCandidates(results, { limit: deps.skillLimit ?? 5 });
+
+	if (!proposed.length) {
+		return {
+			...base,
+			handledIntent: false,
+			skillCandidates: [],
+			replyText: [
+				ADVISORY_HEADER,
+				`I found ${results.length} candidate(s) but none cleared the quality gate (all below the ` +
+					'adoption threshold / unvetted), so I am not recommending an unvetted skill. ' +
+					SKILL_MANUAL_PATH,
+				NON_STEERING_FOOTER
+			].join('\n')
+		};
+	}
+
+	const lines: string[] = [
+		ADVISORY_HEADER,
+		'Skill candidates from the open ecosystem (search + quality-gate only — I did NOT install anything):'
+	];
+	for (const c of proposed) {
+		lines.push(`  ${c.name} — ${c.source} [${c.verdict}, ${c.trust}] — ${c.reason}`);
+	}
+	if (omitted > 0) {
+		lines.push(`(${omitted} lower-adoption candidate(s) omitted as too risky to recommend.)`);
+	}
+	lines.push(SKILL_GATE_NOTE);
+	lines.push(NON_STEERING_FOOTER);
+
+	return {
+		...base,
+		handledIntent: true,
+		skillCandidates: proposed,
+		replyText: lines.join('\n')
+	};
 }
 
 /** The system prompt for the Stage-2 open-question turn. Hard-codes the non-steering + ground-only +
@@ -400,7 +676,7 @@ async function runOpenQuestionTurn(
 /** The deterministic deps a single turn needs (no DB). */
 export type ConciergeTurnDeps = Pick<
 	ConciergeDeps,
-	'recall' | 'listAgents' | 'recallLimit' | 'recommendLimit' | 'llm' | 'soulBlock'
+	'recall' | 'listAgents' | 'recallLimit' | 'recommendLimit' | 'llm' | 'soulBlock' | 'skillSearch' | 'skillLimit'
 >;
 
 /**
@@ -433,21 +709,10 @@ export async function runConciergeTurn(
 	const citations = grounding.map((g) => g.citationId);
 
 	if (intent === 'skill_request') {
-		// Skill find/authoring is a CAPTURED roadmap item, not built here — decline honestly (no auto-draft).
-		return {
-			intent,
-			handledIntent: false,
-			llmUsed: false,
-			groundingCitations: citations,
-			recommendations: [],
-			replyText: [
-				ADVISORY_HEADER,
-				'Finding or authoring a skill is not yet available — it is a captured, operator-gated ' +
-					'roadmap item. I did not draft or install a skill. You can ask me to "recommend an agent" ' +
-					'for a task, or ask an open question I can ground on the brain.',
-				NON_STEERING_FOOTER
-			].join('\n')
-		};
+		// Stage-3: a GATED, READ-ONLY skill search → quality-gate → advisory proposal (NEVER installs).
+		// Degrades to honest states (not-enabled / unreachable / nothing cleared the gate) — never a
+		// fabricated result and never an install side-effect (there is no install code path here).
+		return runSkillDiscoveryTurn(deps, signal, citations);
 	}
 
 	if (intent === 'hire_request') {

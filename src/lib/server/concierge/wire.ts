@@ -32,17 +32,65 @@ import {
 import {
 	handleAtelierMessages,
 	resolveConciergeProvider,
+	parseSkillsSearchResponse,
 	type AtelierTriggerResult,
 	type ConciergeGroundingItem,
 	type ConciergeLlmFn,
 	type ConciergeRecallFn,
-	type ConciergeSessionModel
+	type ConciergeSessionModel,
+	type ConciergeSkillSearchFn
 } from './concierge';
 
 /** Wall-clock bound on ONE concierge LLM turn (F-014) — a wedged local model can't hang the drain. */
 const CONCIERGE_LLM_TIMEOUT_MS = 30_000;
 /** Output cap for the concierge turn (advisory prose is short; keeps cost + latency bounded). */
 const CONCIERGE_MAX_TOKENS = 1024;
+
+// ── Stage-3 skill-discovery transport (GATED, opt-in, READ-ONLY) ──────────────────────────
+//
+// The skills.sh leaderboard search endpoint (find-skills). A pure HTTP GET — chosen over shelling
+// out to `npx skills find` (subprocess spawn + ANSI parsing + injection surface) because it is
+// structured JSON, has NO install/side-effect surface (a GET can only read), and is trivially
+// bounded via AbortController. The endpoint returns `{ skills: [{ id, name, source, installs }], … }`.
+const SKILLS_SEARCH_ENDPOINT = 'https://skills.sh/api/search';
+/** Wall-clock bound on the search (F-014 — no spin, honest fallback on abort). */
+const SKILL_SEARCH_TIMEOUT_MS = 8_000;
+/** Cap the hits parsed from a response (bound cost; the gate ranks + trims further). */
+const SKILL_SEARCH_MAX_RESULTS = 12;
+/** Bound the outbound query length (defensive — the PM request is natural language). */
+const SKILL_QUERY_MAX_LEN = 200;
+
+/**
+ * Build the Stage-3 skill-search fn — a bounded, READ-ONLY HTTP GET against skills.sh.
+ *
+ * OPT-IN (security-sensitive: outbound network to a third-party endpoint). Returns `undefined`
+ * unless the operator sets `CONCIERGE_SKILL_SEARCH` truthy — when absent the skill_request branch
+ * gives an honest manual-path explainer (strictly better than the old bare stub). The fn NEVER
+ * installs and has no mutate path: it only issues a GET and parses JSON. On non-200 / bad-JSON /
+ * timeout it THROWS, which the concierge turn catches → honest "unavailable" reply (no fabrication).
+ */
+export function buildSkillSearch(): ConciergeSkillSearchFn | undefined {
+	const enabled = /^(1|true|yes|on)$/i.test(process.env.CONCIERGE_SKILL_SEARCH?.trim() ?? '');
+	if (!enabled) return undefined;
+	return async (query: string): Promise<ReturnType<typeof parseSkillsSearchResponse>> => {
+		const q = (query ?? '').trim().slice(0, SKILL_QUERY_MAX_LEN);
+		if (!q) return [];
+		const url = `${SKILLS_SEARCH_ENDPOINT}?q=${encodeURIComponent(q)}`;
+		const ctrl = new AbortController();
+		const t = setTimeout(() => ctrl.abort(), SKILL_SEARCH_TIMEOUT_MS);
+		try {
+			const res = await fetch(url, {
+				signal: ctrl.signal,
+				headers: { accept: 'application/json' }
+			});
+			if (!res.ok) throw new Error(`skills.sh search HTTP ${res.status}`);
+			const json: unknown = await res.json();
+			return parseSkillsSearchResponse(json, SKILL_SEARCH_MAX_RESULTS);
+		} finally {
+			clearTimeout(t);
+		}
+	};
+}
 
 /** Build the S0 grounding recall fn over the live MemoryService. When Ollama / the embedding model
  *  is unavailable, recall degrades to an HONEST empty grounding ([]) — never a fabricated memory. */
@@ -187,6 +235,7 @@ export async function triggerConcierge(db: Db): Promise<AtelierTriggerResult | n
 		const dir = process.env.CONFIG_DIR?.trim() || 'config';
 		const { llm, sessionModel } = buildConciergeLlm(dir);
 		const soulBlock = await buildSoulBlock(db);
+		const skillSearch = buildSkillSearch();
 		return await handleAtelierMessages({
 			db,
 			recall,
@@ -194,7 +243,8 @@ export async function triggerConcierge(db: Db): Promise<AtelierTriggerResult | n
 			recallLimit,
 			...(llm ? { llm } : {}),
 			...(sessionModel ? { sessionModel } : {}),
-			...(soulBlock ? { soulBlock } : {})
+			...(soulBlock ? { soulBlock } : {}),
+			...(skillSearch ? { skillSearch } : {})
 		});
 	} catch (err) {
 		console.warn(`[concierge] trigger failed (best-effort): ${(err as Error).message}`);

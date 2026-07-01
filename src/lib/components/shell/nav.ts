@@ -37,6 +37,10 @@ export const navGroups: NavGroup[] = [
   {
     title: 'Knowledge & system',
     items: [
+      // Brain — Atelier's highest-level view of ITSELF: the derived soul/identity (S4 loadSoul,
+      // maturity ladder) + a consolidated map of the brain's sections (decisions + links to
+      // reports/memory/atelier). Makes the invisible cognitive architecture (S0–S4) legible.
+      { label: 'Brain', href: '/brain' },
       // G-C — the atelier-wide reasoning/actions/communications timeline (GLOBAL-TRANSCRIPT-SPEC).
       { label: 'Atelier', href: '/atelier' },
       { label: 'Memory', href: '/memory' },

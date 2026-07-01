@@ -1,0 +1,48 @@
+// /brain — Atelier's highest-level view of ITSELF: the derived soul/identity (S4) + a consolidated
+// map of the brain's sections. The cognitive architecture (S0–S4) accrues invisibly; this surface
+// makes it legible.
+//
+// The MUST-HAVE is the SOUL: `loadSoul` computes Atelier's self-model on-read from live brain rows
+// (dominant concepts + learned corrections + recall competence + experience volume) and graduates a
+// maturity_stage on MEASURABLE thresholds — a cold brain is honestly `nascent`, never a fabricated
+// personality (F-008; D-026 screened at the read seam). The consolidation sections REUSE existing
+// surfaces: recent architectural `decision` rows (a real source), and links to /reports (spend +
+// routing), /memory (recall + search), and /atelier (the global timeline) — no rebuild of those.
+//
+// Degrades honestly (F-008 / D-019): DB down → connected:false + null soul + empty; a failing read →
+// honest error, never a fabricated identity. Live (§1.2): a brain-row change re-invalidates.
+
+import { tryGetDb } from '$lib/server/db/runtime-init';
+import { loadSoul, type SoulModel } from '$lib/server/memory/soul';
+import {
+	listRecentDecisions,
+	RECENT_DECISIONS_LIMIT,
+	type DecisionRow
+} from '$lib/server/memory/decisions';
+import type { PageServerLoad } from './$types';
+
+export interface BrainData {
+	connected: boolean;
+	/** The derived self-model, or null when the brain is unreachable. */
+	soul: SoulModel | null;
+	/** Recent architectural decisions (newest-first); [] when none / unreachable. */
+	decisions: DecisionRow[];
+	error?: string;
+}
+
+export const load: PageServerLoad = async ({ depends }): Promise<BrainData> => {
+	depends('app:brain');
+
+	const db = tryGetDb();
+	if (!db) return { connected: false, soul: null, decisions: [] };
+
+	try {
+		const [soul, decisions] = await Promise.all([
+			loadSoul(db),
+			listRecentDecisions(db, RECENT_DECISIONS_LIMIT)
+		]);
+		return { connected: true, soul, decisions };
+	} catch (err) {
+		return { connected: false, soul: null, decisions: [], error: (err as Error).message };
+	}
+};

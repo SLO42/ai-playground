@@ -13,8 +13,11 @@
 //   • affordance-only-when-granted — the caller gates on peerSendGranted and only renders this when
 //     it returns non-null; this composer itself returns null when !granted (defense-in-depth).
 //   • HONEST recipients only (F-008) — it advertises ONLY the address classes that actually RESOLVE
-//     (`session`, `role@project`); it EXPLICITLY does NOT advertise pm/atelier (inert D-040
-//     placeholders that resolve to zero — never tell an agent it can reach a dead address).
+//     (`session`, `role@project`, `pm`, `atelier`). pm/atelier resolve LIVE now (Concierge Stage-1):
+//     `pm` → the project's PM identity; `atelier` → the singular global platform brain/concierge (the
+//     ONE cross-project identity). Both are usually EVENT-TRIGGERED/offline, so a message to them
+//     inboxes as PENDING and is delivered on their next spawn — exactly the shape of an offline role,
+//     NOT a dead address. It still advertises no class that cannot resolve.
 //   • the who-list is REAL running sessions from the live snapshot — never fabricated, bounded by
 //     WHO_LIST_MAX, honest-empty ("you are the only session…") when the agent is solo.
 //   • this is an instruction to the DRIVEN agent about ITS OWN tool — it is NOT a received peer
@@ -55,9 +58,9 @@ interface WhoEntry {
 /**
  * Compose the bounded peer-send affordance instruction, or `null` when the session is NOT granted
  * (no dead affordance for a non-granted session). The returned string is a REAL instruction section
- * about the agent's own `peer_send` tool — it states the call shape, lists ONLY the classes that
- * resolve (session / role@project — NEVER pm/atelier), discloses the live who-list, and frames
- * purpose + restraint. SHADOW PATHS: !granted → null; empty/solo fleet → honest "you are the only
+ * about the agent's own `peer_send` tool — it states the call shape, lists the classes that resolve
+ * (session / role@project / pm / atelier — pm & atelier inbox as pending when offline), discloses the
+ * live who-list, and frames purpose + restraint. SHADOW PATHS: !granted → null; empty/solo fleet → honest "you are the only
  * session" line; a non-array `fleet.running` (defensive) → empty who-list, never a throw.
  */
 export function buildPeerSendAffordance(opts: PeerSendAffordanceOptions): string | null {
@@ -84,8 +87,15 @@ export function buildPeerSendAffordance(opts: PeerSendAffordanceOptions): string
 			'" }` — every running session of that role in this project.'
 	);
 	lines.push(
-		'Do NOT attempt `pm` or `atelier` addresses — those identities are not yet reachable ' +
-			'(they resolve to no one); a message to them goes nowhere. Use only `session` and `role` above.'
+		'- `{ kind: "pm", project: "' +
+			(opts.project ?? '(your project)') +
+			'" }` — this project’s PM identity. The PM is usually event-triggered/offline, so the ' +
+			'message inboxes as pending and is delivered on the PM’s next spawn.'
+	);
+	lines.push(
+		'- `{ kind: "atelier" }` — the singular global platform brain/concierge (no project; the ONE ' +
+			'identity you may reach across projects). Usually offline — the message inboxes as pending ' +
+			'and is delivered when it next runs.'
 	);
 	lines.push('');
 

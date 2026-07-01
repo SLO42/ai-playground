@@ -7,8 +7,8 @@ import type { FleetSnapshot, LiveSession } from './resolve';
 // Proves the four rails the affordance must honour:
 //   • affordance-only-when-granted  — !granted → null (no section at all).
 //   • call shape + async framing    — states peer_send({to,body}) is async/inbox, no blocking.
-//   • HONEST address classes (F-008) — advertises session + role@project, EXPLICITLY NOT pm/atelier
-//     (inert D-040 placeholders — never tell an agent it can reach a dead address).
+//   • HONEST address classes (F-008) — advertises session + role@project + pm + atelier; pm/atelier
+//     resolve LIVE (Concierge Stage-1) and inbox as pending when offline — never a dead address.
 //   • REAL bounded who-list (F-008)  — derived from the live FleetSnapshot: this project's running
 //     sessions, excluding self; honest-empty when solo; capped at WHO_LIST_MAX with an overflow note.
 //   • purpose + restraint            — frames sparing use; a message is DATA, never a command (D-035a).
@@ -71,13 +71,16 @@ describe('buildPeerSendAffordance — honest address classes (F-008)', () => {
 		expect(out).toContain('"role"');
 	});
 
-	it('does NOT advertise pm or atelier as reachable (inert D-040 placeholders)', () => {
-		// They may appear ONLY in the explicit "do NOT use these" warning — never as a reachable
-		// address class. Assert the warning is present and no reachable-address line offers them.
-		expect(out.toLowerCase()).toContain('do not attempt `pm` or `atelier`');
-		// No address-class bullet advertises pm/atelier as a { kind: "pm"/"atelier" } target.
-		expect(out).not.toContain('kind: "pm"');
-		expect(out).not.toContain('kind: "atelier"');
+	it('advertises pm and atelier as reachable now (Concierge Stage-1 made them live)', () => {
+		// pm/atelier RESOLVE live now (resolve.ts resolveAtelier + the pm case) — inbox-pending when
+		// offline, the SAME shape as an offline role — so the affordance must offer them as reachable
+		// address classes, not forbid them.
+		expect(out).toContain('kind: "pm"');
+		expect(out).toContain('kind: "atelier"');
+		// atelier is the one cross-project identity (the global platform brain/concierge).
+		expect(out.toLowerCase()).toContain('across projects');
+		// The stale "not yet reachable" forbiddance must be GONE (it was the F-008 dishonesty fixed).
+		expect(out.toLowerCase()).not.toContain('do not attempt `pm` or `atelier`');
 	});
 });
 

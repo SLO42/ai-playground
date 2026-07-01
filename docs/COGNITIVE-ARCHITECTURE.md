@@ -179,7 +179,16 @@ flake-free. Wired two real placeholder gaps: **m0074** added `session.pm` (the c
 its `project` is required), and `loadFleetSnapshot` now SELECTs `pm` + keys `ATELIER_SELF_PM`
 ('pm:atelier_self') under `ATELIER_PROJECT_KEY` when a live atelier session is up. New
 `concierge/{concierge,wire}.ts` + 7 tests. Commit `f8c6732` on `v2`.
-Pending: **S2** learned reranker (ACAN-style over `retrieval_outcome` utilization, eval-harness
-measured), **S4** soul/identity, **Concierge Stage-2+** (LLM turn for open-ended PM questions;
+**S2 learned reranker** — SHIPPED OFF-by-default (`f7bb9e3`, 2026-07-01). Deterministic
+L2-logistic scorer (`memory/rerank.ts`) re-orders the heuristic candidate set before the novelty
+gate; cold-start → passthrough. **m0075** added `retrieval_outcome.feat_{cosine,utility,recency}`
++ `reranker_model` weight store (additive/idempotent). Wired OFF because (1) live rows carry zero
+`feat_*` yet (columns start populating now), (2) on the controlled corpus the learned order didn't
+clear the tuned heuristic (fixture has no real recency/utility spread — overfits). Flips ON once
+live labels accrue + eval shows reranked ≥ baseline. Corrected a false spec premise: there is NO
+`query_embedding` column on `retrieval_outcome`, so a re-embedding ACAN wasn't buildable from
+stored data — the linear model over recall's own features is the honest slice. 15 unit tests prove
+the mechanism.
+Pending: **S4** soul/identity, **Concierge Stage-2+** (LLM turn for open-ended PM questions;
 skill/hire drafting over the bus, operator-gated), plus the brain "sections"
 (decisions/spend/search) which fold into the concierge's dashboard.

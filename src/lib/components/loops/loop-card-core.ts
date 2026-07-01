@@ -22,7 +22,9 @@ const KIND_META: Record<LoopKind, KindMeta> = {
 	orchestrator: { icon: 'orchestrator', srLabel: 'orchestrator loop' },
 	'pm-autonomous': { icon: 'pm-autonomous', srLabel: 'autonomous PM loop' },
 	'pm-cadence': { icon: 'pm-cadence', srLabel: 'scheduled PM loop' },
-	'memory-review': { icon: 'memory-review', srLabel: 'memory review loop' }
+	'memory-review': { icon: 'memory-review', srLabel: 'memory review loop' },
+	// Self-maintenance loops (m0080) reuse the neutral orchestrator glyph — no bespoke icon yet.
+	maintenance: { icon: 'orchestrator', srLabel: 'maintenance loop' }
 };
 
 /** Map a loop kind to its icon key + a11y role word. An unknown kind (defensive) falls back to a

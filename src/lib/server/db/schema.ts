@@ -2833,6 +2833,36 @@ const m0079_peer_message_reply_to: Migration = {
 	`
 };
 
+// m0080 — Atelier SELF-MAINTENANCE loops (LOOP-ENGINEERING; operator directive 2026-06-29/30).
+// Three additive pieces for the MaintenanceLoopEngine (loops/maintenance.ts):
+//   1. `loop.kind` gains 'maintenance' — the manifest kind the engine DRIVES (the one semantic
+//      change to the m0072 declaration-only contract; pm/orchestrator kinds stay declaration-only).
+//   2. `agent_event.type` gains 'maintenance' — the engine's honest run log (one row per firing,
+//      detail = { loop, ok, summary }), surfaced by the /loops run history (read.ts recentRuns).
+//   3. `eval_report` — the persisted MEMORY-SPEC §11 EvalReport a maint:eval-regression firing
+//      produces (measurement evidence, D-030 ranking-only; the report itself mutates nothing).
+//      `loop` is the producing loop identifier; `report` is the full EvalReport (FLEXIBLE object).
+//
+// ADDITIVE + idempotent (F-015: OVERWRITE-only; apply-twice + half-applied re-run are clean — the
+// generic schemaMigrations sweep covers both). Widening an ASSERT enum never touches existing rows.
+const m0080_maintenance_loops: Migration = {
+	id: '0080_maintenance_loops',
+	up: `
+		DEFINE FIELD OVERWRITE kind ON loop TYPE string DEFAULT "orchestrator"
+			ASSERT $value IN ["orchestrator","pm-autonomous","pm-cadence","memory-review","game-verify","maintenance"];
+
+		DEFINE FIELD OVERWRITE type ON agent_event TYPE string
+			ASSERT $value IN ["spawn","completion","escalation","cancel","error","hook","maintenance"];
+
+		DEFINE TABLE OVERWRITE eval_report SCHEMAFULL;
+		DEFINE FIELD OVERWRITE loop       ON eval_report TYPE string;
+		DEFINE FIELD OVERWRITE embedder   ON eval_report TYPE string DEFAULT "";
+		DEFINE FIELD OVERWRITE report     ON eval_report FLEXIBLE TYPE object;
+		DEFINE FIELD OVERWRITE created_at ON eval_report TYPE datetime DEFAULT time::now();
+		DEFINE INDEX OVERWRITE eval_report_by_loop ON eval_report FIELDS loop;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2918,5 +2948,6 @@ export const schemaMigrations: Migration[] = [
 	m0076_thinking_capture,
 	m0077_benchmark_verdict,
 	m0078_soul_graduation,
-	m0079_peer_message_reply_to
+	m0079_peer_message_reply_to,
+	m0080_maintenance_loops
 ];

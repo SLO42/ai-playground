@@ -6,7 +6,9 @@
 //   2. Orchestrator GC backstop (GLOBAL)   — orchestrator.ts startMaintenance gc sweep
 //   3. Autonomous PM loop (PER-PROJECT)    — pm-autonomous.ts AutonomousPmLoop (L3 drive)
 //   4. PM cadence trigger (PER-PM)         — pm.cadence cron + cadence_offset
-//   5. Memory review (PER-SESSION, info)   — memory/loop.ts ReviewCadence (lowest priority, embedded)
+//   5. Self-maintenance loops (GLOBAL)     — loops/maintenance.ts MaintenanceLoopEngine (m0080;
+//      manifest-driven, armed = enabled + readiness-green-or-override + registered + cadence)
+//   6. Memory review (PER-SESSION, info)   — memory/loop.ts ReviewCadence (lowest priority, embedded)
 //
 // This is Phase 1 = VIEW + IDENTIFY only (config-editing is a separate wave). Live armed state is read
 // through READ-ONLY accessors on the live singletons (activeOrchestrator / activeAutonomousLoop) — no
@@ -29,9 +31,16 @@ import {
 } from '../projects/pm-autonomous';
 import { getPm, listAutonomousPms, listPmsWithCadence, type PmRow } from '../projects/pm-repo';
 import { nextCadenceFireAt } from '../projects/pm-panel';
+import { activeMaintenanceEngine } from './maintenance';
+import { listLoopManifest, type LoopManifestRow } from './manifest';
 
-/** The four loop families Atelier runs. */
-export type LoopKind = 'orchestrator' | 'pm-autonomous' | 'pm-cadence' | 'memory-review';
+/** The loop families Atelier runs ('maintenance' = the engine-driven self-maintenance loops, m0080). */
+export type LoopKind =
+	| 'orchestrator'
+	| 'pm-autonomous'
+	| 'pm-cadence'
+	| 'memory-review'
+	| 'maintenance';
 
 /** Where a loop operates: a single GLOBAL loop for the whole platform, or one PER project. */
 export type LoopScope = 'global' | 'project';
@@ -184,7 +193,13 @@ interface RawRun {
  */
 async function recentRuns(
 	db: Db,
-	opts: { projectId?: string; types?: readonly string[]; limit?: number } = {}
+	opts: {
+		projectId?: string;
+		types?: readonly string[];
+		/** Narrow to one maintenance loop's run-log rows (agent_event detail.loop === identifier). */
+		loopIdentifier?: string;
+		limit?: number;
+	} = {}
 ): Promise<LoopRun[]> {
 	const lim =
 		typeof opts.limit === 'number' && opts.limit > 0
@@ -199,6 +214,10 @@ async function recentRuns(
 	if (opts.types && opts.types.length) {
 		params.types = [...opts.types];
 		clauses.push('type IN $types');
+	}
+	if (opts.loopIdentifier) {
+		params.loop = opts.loopIdentifier;
+		clauses.push('detail.loop = $loop');
 	}
 	const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
 	const [rows] = await db.query<[RawRun[]]>(
@@ -354,7 +373,49 @@ async function pmCadenceLoops(db: Db, pms: PmRow[]): Promise<LoopView[]> {
 	return views;
 }
 
-// ── (5) The per-session memory review loop (informational) ──────────────────────────────────────────
+// ── (5) GLOBAL self-maintenance loops (the MaintenanceLoopEngine, m0080) ────────────────────────────
+
+/**
+ * The RUNNING view of the engine-driven maintenance loops. A view exists ONLY for a manifest row the
+ * LIVE engine would actually fire when due (engine.armedFor: mode + enabled + readiness-green-or-
+ * override + registered action + parseable cadence) — anything less stays out of the running view and
+ * surfaces via reconcile as 'declared-not-running' (honest, F-008; no fabricated armed card). No live
+ * engine (degraded boot / manual mode) ⇒ no views. Run history = the engine's agent_event run log
+ * (type 'maintenance', keyed per loop by detail.loop).
+ */
+async function maintenanceLoops(db: Db): Promise<LoopView[]> {
+	const engine = activeMaintenanceEngine();
+	if (!engine) return [];
+	let rows: LoopManifestRow[] = [];
+	try {
+		rows = (await listLoopManifest(db)).filter(
+			(r) => r.kind === 'maintenance' && r.projectId === null
+		);
+	} catch {
+		return []; // manifest unreadable ⇒ honestly no running maintenance cards, never fabricated
+	}
+	const views: LoopView[] = [];
+	for (const row of rows) {
+		if (!engine.armedFor(row)) continue;
+		const runs = await recentRuns(db, { types: ['maintenance'], loopIdentifier: row.identifier });
+		views.push({
+			id: row.identifier,
+			name: row.label || row.identifier,
+			kind: 'maintenance',
+			scope: 'global',
+			tone: 'running',
+			stateLabel: `armed · ${engine.mode}`,
+			phase: row.phase,
+			cadenceLabel: `cron ${row.cadence}`,
+			lastRunAt: runs[0]?.at ?? null,
+			nextFireAt: nextCadenceFireAt(row.cadence ?? undefined),
+			recentRuns: runs
+		});
+	}
+	return views;
+}
+
+// ── (6) The per-session memory review loop (informational) ──────────────────────────────────────────
 
 function memoryReviewLoop(): LoopView {
 	return {
@@ -399,23 +460,27 @@ export async function getLoops(db: Db, opts: GetLoopsOptions = {}): Promise<Loop
 	}
 
 	const cfg = opts.orchConfig ?? readOrchConfig();
-	const [orchViews, autonomousPms, cadencePms] = await Promise.all([
+	const [orchViews, autonomousPms, cadencePms, maintViews] = await Promise.all([
 		orchestratorLoops(db, cfg),
 		listAutonomousPms(db),
-		listPmsWithCadence(db)
+		listPmsWithCadence(db),
+		maintenanceLoops(db)
 	]);
 	const autoViews = await pmAutonomousLoops(db, autonomousPms);
 	const cadenceViews = await pmCadenceLoops(db, cadencePms);
 
-	return [...orchViews, ...autoViews, ...cadenceViews, memoryReviewLoop()];
+	return [...orchViews, ...autoViews, ...cadenceViews, ...maintViews, memoryReviewLoop()];
 }
 
 /** The agent_event query a loop's run history is read from, or null when the loop keeps NO history by
  *  design (the GC reaper writes no event; the memory-review loop is cadence-only) — honest, never faked. */
 function loopRunQuery(
 	loop: Pick<LoopView, 'id' | 'kind' | 'projectId'>
-): { projectId?: string; types?: readonly string[] } | null {
+): { projectId?: string; types?: readonly string[]; loopIdentifier?: string } | null {
 	if (loop.id === 'orch:gc' || loop.id === 'mem-review') return null;
+	// A maintenance loop's history is its OWN engine run log (agent_event type 'maintenance',
+	// keyed per loop by detail.loop) — mirrors maintenanceLoops.
+	if (loop.kind === 'maintenance') return { types: ['maintenance'], loopIdentifier: loop.id };
 	// The GLOBAL drain's history IS spawns/completions (mirrors orchestratorLoops); a project loop's
 	// history is that project's agent_event rows (mirrors pmAutonomousLoops / pmCadenceLoops).
 	if (loop.kind === 'orchestrator') return { types: ['spawn', 'completion'] };

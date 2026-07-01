@@ -50,6 +50,12 @@ import {
 import { getRuntime, DEFAULT_MODEL, DEFAULT_BUDGETS, DEFAULT_AGENT } from '$lib/server/harness';
 import { runSentinelSweep } from '$lib/server/workforce/index';
 import { SceneProjector } from '$lib/server/scene/index';
+import {
+	MaintenanceLoopEngine,
+	seedMaintenanceLoops,
+	setActiveMaintenanceEngine
+} from '$lib/server/loops/maintenance';
+import { defaultMaintenanceRegistry } from '$lib/server/loops/maintenance-actions';
 
 // Runtime env source (TASK 6.8). SvelteKit's `$env/dynamic/private` loads `.env` in
 // BOTH dev SSR (which Vite does NOT inject into `process.env`) and the prod Node
@@ -153,6 +159,9 @@ const pmTriggerEngines: PmTriggerEngine[] = [];
 /** The live autonomous loops (PMA), held like the others so teardown can stop their bus subscriptions. */
 const autonomousLoops: AutonomousPmLoop[] = [];
 
+/** The live self-maintenance loop engine(s) (m0080), held like the others so teardown stops the tick. */
+const maintenanceEngines: MaintenanceLoopEngine[] = [];
+
 /**
  * MEMORY-SCENE-SPEC §5/§7.1 — the scene_event PROJECTOR, held like the others so the
  * instance (its bus subscription) survives for the life of the process and shutdown
@@ -190,6 +199,10 @@ async function bootstrap(): Promise<DbInitResult> {
 			// outlive the boot (F-014). Clear the registry so a stale handle isn't read.
 			for (const l of autonomousLoops) l.stop();
 			setActiveAutonomousLoop(null);
+			// The maintenance loop engine's tick timer must not outlive the boot (F-014); clear the
+			// registry so the loops read model never reads a stale handle after shutdown.
+			for (const m of maintenanceEngines) m.stop();
+			setActiveMaintenanceEngine(null);
 			// The scene projector is a bus consumer too (MEMORY-SCENE-SPEC §5): its
 			// subscription must not outlive the boot (F-014).
 			for (const s of sceneProjectors) s.stop();
@@ -348,6 +361,33 @@ async function bootstrap(): Promise<DbInitResult> {
 			);
 		} catch (err) {
 			console.warn(`[startup] pm trigger engine boot failed: ${(err as Error).message}`);
+		}
+
+		// SELF-MAINTENANCE LOOPS (m0080; LOOP-ENGINEERING) — the manifest-driven MaintenanceLoopEngine,
+		// AFTER the pm trigger engine (same D-004 mode read; no bus needed — it is cadence-only). Boot
+		// SEEDS the two declared global loops CREATE-IF-ABSENT (idempotent; operator edits are never
+		// clobbered): they ship with EMPTY checklists, so readiness is NOT green and the engine does not
+		// fire them until the operator ticks the checklist (or records an override) on /loops — declared,
+		// visible, honestly inert (F-008). Manual mode arms no timer (D-004). Actions are deterministic,
+		// credential-free, deadline-bounded, and PROPOSE-ONLY (no default is ever flipped — D-004);
+		// any maintenance fault is absorbed + logged, never a server crash (F-048).
+		try {
+			let mode: OrchMode = 'manual';
+			try {
+				mode = loadOrchestration(`${process.env.CONFIG_DIR?.trim() || 'config'}/orchestration.yaml`).mode;
+			} catch {
+				mode = 'manual'; // most conservative gate on a bad config (11.5 pattern)
+			}
+			const created = await seedMaintenanceLoops(db);
+			const engine = new MaintenanceLoopEngine({ db, mode, registry: defaultMaintenanceRegistry() });
+			engine.start();
+			maintenanceEngines.push(engine);
+			setActiveMaintenanceEngine(engine);
+			console.log(
+				`[startup] maintenance loop engine started (mode=${mode}${created ? `, declared ${created} loop(s)` : ''}) — manifest-driven, readiness-gated, propose-only (m0080).`
+			);
+		} catch (err) {
+			console.warn(`[startup] maintenance loop engine boot failed: ${(err as Error).message}`);
 		}
 
 		// TASK 16.6 — the §4.2 gauntlet SENTINEL SWEEP, once per connected boot (the

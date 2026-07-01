@@ -59,7 +59,8 @@ const VALID_KINDS: ReadonlySet<string> = new Set([
 	'pm-autonomous',
 	'pm-cadence',
 	'memory-review',
-	'game-verify'
+	'game-verify',
+	'maintenance'
 ]);
 
 function asKind(raw: FormDataEntryValue | null): LoopManifestKind | null {

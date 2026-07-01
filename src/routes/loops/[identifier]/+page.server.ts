@@ -117,7 +117,12 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<LoopDet
 			loop,
 			manifest,
 			runs,
-			tracksHistory: runs.length > 0 || (loop != null && loop.id !== 'orch:gc' && loop.id !== 'mem-review'),
+			tracksHistory:
+				runs.length > 0 ||
+				(loop != null && loop.id !== 'orch:gc' && loop.id !== 'mem-review') ||
+				// Maintenance loops track a run log by design (engine agent_event rows) even before the
+				// first firing — the panel renders an honest "not yet run", not "no history".
+				manifest?.kind === 'maintenance',
 			runLimit: DETAIL_RUN_LIMIT,
 			projectName
 		};
@@ -139,7 +144,8 @@ const VALID_KINDS: ReadonlySet<string> = new Set([
 	'pm-autonomous',
 	'pm-cadence',
 	'memory-review',
-	'game-verify'
+	'game-verify',
+	'maintenance'
 ]);
 
 function asKind(raw: FormDataEntryValue | null): LoopManifestKind | null {

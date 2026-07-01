@@ -2,10 +2,14 @@
 //
 // loops/read.ts (getLoops) is the RUNNING view: it synthesizes the loop families from live pm/orchestrator
 // state. THIS module is the durable DECLARED layer (migration 0072, table `loop`): the operator's per-loop
-// declaration + its Loop Design Checklist readiness state. It does NOT drive execution (pm/orchestrator
-// still do) — it records the declaration and grades readiness, and RECONCILES declared-vs-running so the
-// surface is honest (F-008): a declared-but-not-running loop is surfaced as exactly that, never a fake card;
-// a running-but-undeclared loop is surfaced as undeclared, never silently hidden.
+// declaration + its Loop Design Checklist readiness state. EXECUTION CONTRACT (semantic change, m0080):
+// for the pm/orchestrator/memory-review/game-verify kinds the manifest remains DECLARATION-ONLY (the
+// pm/orchestrator engines drive those; the manifest records + grades readiness). For kind='maintenance'
+// ONLY, the manifest now DRIVES execution: the MaintenanceLoopEngine (loops/maintenance.ts) reads the
+// GLOBAL maintenance rows live each tick and fires the enabled + readiness-green-or-overridden, cadence-due
+// ones against its static in-code action registry. Either way the read model RECONCILES declared-vs-running
+// so the surface is honest (F-008): a declared-but-not-running loop is surfaced as exactly that, never a
+// fake card; a running-but-undeclared loop is surfaced as undeclared, never silently hidden.
 //
 // Boundary discipline (D-016): record ids / table names validated at db/validate first; every VALUE binds
 // via $param. The manifest is keyed by `identifier` (the SAME stable id the runtime LoopView uses) so the
@@ -18,13 +22,15 @@ import type { LoopView, LoopScope } from './read';
 import type { ChecklistState, DeclaredPhase } from '../../components/loops/readiness-core';
 import { evaluateReadiness, type ReadinessResult } from '../../components/loops/readiness-core';
 
-/** Manifest loop kinds — the runtime LoopKind set plus the forward-looking game-verify loop. */
+/** Manifest loop kinds — the runtime LoopKind set plus the forward-looking game-verify loop and the
+ *  engine-driven self-maintenance kind (m0080; the ONE kind the manifest drives — see header). */
 export type LoopManifestKind =
 	| 'orchestrator'
 	| 'pm-autonomous'
 	| 'pm-cadence'
 	| 'memory-review'
-	| 'game-verify';
+	| 'game-verify'
+	| 'maintenance';
 
 /** A persisted `loop` manifest row (migration 0072). Datetimes are ISO strings or null (F-013). */
 export interface LoopManifestRow {
@@ -66,7 +72,8 @@ const ALLOWED_KINDS: ReadonlySet<string> = new Set([
 	'pm-autonomous',
 	'pm-cadence',
 	'memory-review',
-	'game-verify'
+	'game-verify',
+	'maintenance'
 ]);
 
 /** Coerce a SurrealDB datetime (non-POJO in 2.x) to ISO, or null when absent — never 'undefined' (F-013). */

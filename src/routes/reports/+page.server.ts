@@ -16,12 +16,18 @@
 // into every builder so the counts the operator sees are the counts that match. Degrades
 // honestly (D-019): DB down → connected:false + empty, never zero-dressed-as-real.
 
+import { fail } from '@sveltejs/kit';
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import {
 	buildReportSummary,
 	buildTierUsage,
 	buildRoutingRationale,
-	buildProviderUsage
+	buildProviderUsage,
+	buildJudgedComparison,
+	runJudgeBatch,
+	resolveJudgeModel,
+	makeClaudeJudge,
+	boundJudgeLimit
 } from '$lib/server/analytics';
 import type {
 	DailyRollup,
@@ -29,13 +35,15 @@ import type {
 	ReportSummary,
 	TierUsage,
 	RoutingRationale,
-	ProviderUsage
+	ProviderUsage,
+	ProviderVerdicts
 } from '$lib/server/analytics';
+import { loadAgentPool, loadModels } from '$lib/server/config';
 import { listAllFindings } from '$lib/server/scanner';
 import { buildTrayData, type NotificationItem } from '$lib/server/notifications/repo';
 import { listIncidents } from '$lib/server/services/incidents';
 import { listProjects } from '$lib/server/projects/repo';
-import type { PageServerLoad } from './$types';
+import type { PageServerLoad, Actions } from './$types';
 
 /** A serializable finding DTO for the Maintain rollup (no SDK RecordId/Date objects). */
 export interface FindingCard {
@@ -88,6 +96,12 @@ export interface ReportsData {
 	usage: TierUsage[];
 	/** MODEL-BENCHMARK-SPEC step 1 — the objective local-vs-cloud comparison (GROUP BY provider). */
 	providerComparison: ProviderUsage[];
+	/**
+	 * MODEL-BENCHMARK-SPEC step 3 — the JUDGED local-vs-cloud comparison (LLM-judge verdicts
+	 * grouped by session-under-test provider). Portfolio-wide (not project-scoped). Honest
+	 * empty [] when no session has been judged yet (F-008).
+	 */
+	judgedComparison: ProviderVerdicts[];
 	/** The RoutingRationale view (per-decision rows + aggregate) — TASK 11.1a. */
 	routing: RoutingRationale;
 	findings: FindingCard[];
@@ -126,6 +140,7 @@ export const load: PageServerLoad = async ({ depends, url }): Promise<ReportsDat
 	depends('app:findings'); // security_finding rows (incl. dependency.* / ux.*)
 	depends('app:shell'); // notification rows (shared with the RightTray — TASK 10.2)
 	depends('app:incidents'); // incident rows (durable history — TASK 11.1d)
+	depends('app:benchmark'); // benchmark_verdict rows (re-runs after a judge action — step 3)
 
 	// ── Server-driven filters (TASK 11.1b): read + validate from the URL query. ──────
 	const rawDays = Number(url.searchParams.get('days'));
@@ -150,6 +165,7 @@ export const load: PageServerLoad = async ({ depends, url }): Promise<ReportsDat
 			totals: emptyTotals(),
 			usage: [],
 			providerComparison: [],
+			judgedComparison: [],
 			routing: emptyRouting(),
 			findings: [],
 			notifications: [],
@@ -170,6 +186,11 @@ export const load: PageServerLoad = async ({ depends, url }): Promise<ReportsDat
 			windowDays: days,
 			...(project ? { projectId: project } : {})
 		});
+
+		// MODEL-BENCHMARK-SPEC step 3 — the JUDGED local-vs-cloud comparison (LLM-judge verdicts
+		// grouped by session-under-test provider). Portfolio-wide over the same window; honest
+		// empty ([]) until the operator runs the judge action (F-008).
+		const judgedComparison = await buildJudgedComparison(db, { windowDays: days });
 
 		// RoutingRationale view (TASK 11.1a): per-decision rows + aggregate, all filters applied.
 		const routing = await buildRoutingRationale(db, {
@@ -228,6 +249,7 @@ export const load: PageServerLoad = async ({ depends, url }): Promise<ReportsDat
 			totals: summary.totals,
 			usage,
 			providerComparison,
+			judgedComparison,
 			routing,
 			findings,
 			notifications,
@@ -245,11 +267,98 @@ export const load: PageServerLoad = async ({ depends, url }): Promise<ReportsDat
 			totals: emptyTotals(),
 			usage: [],
 			providerComparison: [],
+			judgedComparison: [],
 			routing: emptyRouting(),
 			findings: [],
 			notifications: [],
 			incidents: [],
 			error: (err as Error).message
 		};
+	}
+};
+
+/** Read the Claude direct-chat endpoint from models config; canonical Anthropic base as fallback. */
+function readClaudeEndpoint(dir: string): string {
+	for (const file of [`${dir}/models.json5`, `${dir}/models.yaml`]) {
+		try {
+			const models = loadModels(file) as {
+				providers?: Record<string, { endpoint?: string }>;
+			};
+			const ep = models.providers?.claude?.endpoint;
+			if (typeof ep === 'string' && ep.trim()) return ep.trim();
+		} catch {
+			// try the next candidate path
+		}
+	}
+	return 'https://api.anthropic.com';
+}
+
+/**
+ * MODEL-BENCHMARK-SPEC step 3 — the ON-DEMAND, cost-BOUNDED judge trigger (a form action, NOT
+ * the heartbeat). Resolves a CLOUD judge model from the live pool (never the local model under
+ * test), judges at most `limit` recent sessions, and stores structured verdicts. Every failure
+ * is an honest, evidence-bearing reason (F-008) — never a silent no-op or a fabricated result.
+ */
+export const actions: Actions = {
+	judge: async ({ request }) => {
+		const db = tryGetDb();
+		if (!db) return fail(503, { judgeError: 'database unavailable — cannot run the judge.' });
+
+		const form = await request.formData();
+		const rawLimit = Number(form.get('limit'));
+		const limit = boundJudgeLimit(Number.isFinite(rawLimit) ? rawLimit : undefined);
+		const rawDays = Number(form.get('days'));
+		const windowDays = DAY_OPTIONS.includes(rawDays) ? rawDays : 30;
+		const rawProvider = String(form.get('provider') ?? '').trim();
+		const provider = rawProvider && /^[A-Za-z0-9_-]{1,40}$/.test(rawProvider) ? rawProvider : undefined;
+
+		const dir = process.env.CONFIG_DIR?.trim() || 'config';
+		let pool;
+		try {
+			pool = loadAgentPool(`${dir}/agent-pool.yaml`);
+		} catch (e) {
+			return fail(500, { judgeError: `config error: ${(e as Error).message}` });
+		}
+
+		// The judge is a CLOUD model (never the local model under test); refuse if none configured.
+		const choice = resolveJudgeModel(pool);
+		if (!choice) {
+			return fail(400, {
+				judgeError:
+					'no cloud tier in agent-pool.yaml — the judge will not run on the local model under test.'
+			});
+		}
+		const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
+		if (!apiKey) {
+			return fail(400, {
+				judgeError:
+					'no ANTHROPIC_API_KEY configured — the judge is a cloud LLM call (no key ⇒ no judging).'
+			});
+		}
+
+		const model = makeClaudeJudge({
+			endpoint: readClaudeEndpoint(dir),
+			model: choice.modelId,
+			apiKey
+		});
+		try {
+			const result = await runJudgeBatch(db, {
+				model,
+				judge: { provider: choice.provider, modelId: choice.modelId },
+				limit,
+				windowDays,
+				...(provider ? { provider } : {})
+			});
+			return {
+				judgeResult: {
+					...result,
+					judgeModel: choice.modelId,
+					judgeProvider: choice.provider,
+					judgeTier: choice.tier
+				}
+			};
+		} catch (e) {
+			return fail(502, { judgeError: `judge run failed: ${(e as Error).message}` });
+		}
 	}
 };

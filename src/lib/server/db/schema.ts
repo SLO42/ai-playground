@@ -2736,6 +2736,44 @@ const m0076_thinking_capture: Migration = {
 	`
 };
 
+// ── MODEL-BENCHMARK-SPEC step 3 (class B — Judged) — the LLM-judge verdict store ──
+//
+// One row per (session-under-test, rubric dimension) verdict the on-demand judge produces
+// (analytics/benchmark). `provider`/`model_id` are the SESSION-UNDER-TEST's identity (so the
+// /reports comparison can GROUP BY provider = local-vs-cloud); `judge_provider`/`judge_model`
+// record WHO judged (a cloud model — never the local model under test). `dimension` is the
+// rubric axis; `status` distinguishes a real SCORED verdict from an honest INSUFFICIENT_DATA
+// one (F-008 — e.g. Ollama emits no thinking → thinking_consistency is insufficient, NOT a
+// low score). `score` is option<float> so an insufficient verdict lands NULL, never a fake 0.
+// `rationale` is the judge's one-line evidence, ALREADY D-026-screened by the store path.
+//
+// ADDITIVE + IDEMPOTENT (F-015): SCHEMAFULL with OVERWRITE on every DEFINE; a brand-new
+// additive table — clean over a fresh DB, a half-applied state, and a re-run. The store path
+// re-judges by DELETE-then-CREATE per session (no mutable dedup_key → sidesteps the F-048
+// status-transition collision class). `judged_at` is a datetime — the buildJudgedComparison
+// loader coerces it to an ISO string (F-013: never return a raw SDK datetime to the client).
+const m0077_benchmark_verdict: Migration = {
+	id: '0077_benchmark_verdict',
+	up: `
+		DEFINE TABLE OVERWRITE benchmark_verdict SCHEMAFULL;
+		DEFINE FIELD OVERWRITE session        ON benchmark_verdict TYPE record<session>;
+		DEFINE FIELD OVERWRITE provider       ON benchmark_verdict TYPE string;
+		DEFINE FIELD OVERWRITE model_id       ON benchmark_verdict TYPE string DEFAULT "";
+		DEFINE FIELD OVERWRITE dimension      ON benchmark_verdict TYPE string
+			ASSERT $value IN ["confidence","reasoning_quality","fact_checking","thinking_consistency"];
+		DEFINE FIELD OVERWRITE status         ON benchmark_verdict TYPE string DEFAULT "scored"
+			ASSERT $value IN ["scored","insufficient_data"];
+		DEFINE FIELD OVERWRITE score          ON benchmark_verdict TYPE option<float>;
+		DEFINE FIELD OVERWRITE rationale      ON benchmark_verdict TYPE string DEFAULT "";
+		DEFINE FIELD OVERWRITE evidence       ON benchmark_verdict FLEXIBLE TYPE option<object>;
+		DEFINE FIELD OVERWRITE judge_provider ON benchmark_verdict TYPE string DEFAULT "";
+		DEFINE FIELD OVERWRITE judge_model    ON benchmark_verdict TYPE string DEFAULT "";
+		DEFINE FIELD OVERWRITE judged_at      ON benchmark_verdict TYPE datetime DEFAULT time::now();
+		DEFINE INDEX OVERWRITE benchmark_verdict_by_session  ON benchmark_verdict FIELDS session;
+		DEFINE INDEX OVERWRITE benchmark_verdict_by_provider ON benchmark_verdict FIELDS provider;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2818,5 +2856,6 @@ export const schemaMigrations: Migration[] = [
 	m0073_concept_graph,
 	m0074_session_pm,
 	m0075_learned_reranker,
-	m0076_thinking_capture
+	m0076_thinking_capture,
+	m0077_benchmark_verdict
 ];

@@ -13,11 +13,15 @@
    * row change re-invalidates the matching loader key so the page updates in place. Runes only.
    */
   import { invalidate, goto } from '$app/navigation';
+  import { enhance } from '$app/forms';
   import { page } from '$app/state';
   import { stream } from '$lib/client/stream.svelte';
-  import type { PageData } from './$types';
+  import type { PageData, ActionData } from './$types';
 
-  let { data }: { data: PageData } = $props();
+  let { data, form }: { data: PageData; form: ActionData } = $props();
+
+  // MODEL-BENCHMARK-SPEC step 3 — the judged local-vs-cloud comparison + judge-run state.
+  let judging = $state(false);
 
   const connected = $derived(data.connected);
   const filters = $derived(data.filters);
@@ -29,10 +33,21 @@
   const totals = $derived(data.totals);
   const usage = $derived(data.usage ?? []);
   const providerComparison = $derived(data.providerComparison ?? []);
+  const judgedComparison = $derived(data.judgedComparison ?? []);
   function providerLabel(p: string): string {
     if (p === 'ollama') return 'local (Ollama · free)';
     if (p === 'claude') return 'cloud (Claude)';
     return p;
+  }
+  const DIM_LABELS: Record<string, string> = {
+    confidence: 'confidence',
+    reasoning_quality: 'reasoning',
+    fact_checking: 'fact-check',
+    thinking_consistency: 'thinking'
+  };
+  /** Judged score 0..1 → 2dp; '—' when insufficient (null). No fabricated figure (F-008). */
+  function fmtScore(s: number | null): string {
+    return typeof s === 'number' ? s.toFixed(2) : '—';
   }
   const routing = $derived(data.routing ?? { decisions: [], aggregate: { total: 0, byTier: [], byModel: [], byMethod: [], overrideRate: null, overrides: 0 } });
   const decisions = $derived(routing.decisions);
@@ -414,6 +429,87 @@
           </p>
         {/if}
       </div>
+
+      <!-- MODEL-BENCHMARK-SPEC step 3 — JUDGED local-vs-cloud comparison (LLM-judge verdicts). -->
+      <div class="card chart-card">
+        <span class="eyebrow">benchmark · judged quality</span>
+        <h2 class="chart-title">Judged quality — local vs cloud</h2>
+        <p class="chart-note">
+          An LLM judge (a <strong>cloud</strong> model, never the local model under test) scores recent
+          sessions on the rubric. On-demand and cost-bounded — run it below; it never runs on the heartbeat.
+          A dimension with no evidence (e.g. Ollama emits no thinking) reads
+          <span class="mono">—</span> (insufficient), never a fabricated low score.
+        </p>
+
+        <form
+          method="POST"
+          action="?/judge"
+          use:enhance={() => {
+            judging = true;
+            return async ({ update }) => {
+              await update();
+              judging = false;
+            };
+          }}
+          class="judge-form"
+        >
+          <input type="hidden" name="days" value={filters.days} />
+          <label class="judge-limit">
+            batch
+            <input type="number" name="limit" min="1" max="20" value="5" />
+          </label>
+          <button type="submit" class="judge-run" disabled={judging}>
+            {judging ? 'judging…' : 'Run judge (cloud, bounded)'}
+          </button>
+        </form>
+
+        {#if form?.judgeError}
+          <p class="empty-note">Judge did not run: {form.judgeError}</p>
+        {:else if form?.judgeResult}
+          <p class="chart-note">
+            Judged {form.judgeResult.judged} session(s) with
+            <span class="mono">{form.judgeResult.judgeModel}</span> ({form.judgeResult.judgeTier}); skipped
+            {form.judgeResult.skipped} with no transcript; {form.judgeResult.insufficientVerdicts} insufficient-data
+            verdict(s) (honest).
+          </p>
+        {/if}
+
+        {#if judgedComparison.length}
+          <table class="rollup-table">
+            <thead>
+              <tr>
+                <th>provider</th><th>sessions</th>
+                {#each Object.keys(DIM_LABELS) as d (d)}<th>{DIM_LABELS[d]}</th>{/each}
+                <th>last judged</th>
+              </tr>
+            </thead>
+            <tbody>
+              {#each judgedComparison as p (p.provider)}
+                <tr>
+                  <td class="mono">{providerLabel(p.provider)}</td>
+                  <td>{p.sessionsJudged}</td>
+                  {#each p.dimensions as dim (dim.dimension)}
+                    <td class="mono" title={`${dim.scored} scored · ${dim.insufficient} insufficient`}>
+                      {fmtScore(dim.avgScore)}
+                    </td>
+                  {/each}
+                  <td class="mono">{p.lastJudgedAt ? p.lastJudgedAt.slice(0, 16).replace('T', ' ') : '—'}</td>
+                </tr>
+              {/each}
+            </tbody>
+          </table>
+          <p class="chart-note">
+            Scores are 0–1 (higher is better), averaged over SCORED verdicts only; hover a cell for the
+            scored/insufficient split. Fact-check blends the objective tool-before-claim signal with the
+            judge's read. Verdicts persist in <span class="mono">benchmark_verdict</span>.
+          </p>
+        {:else}
+          <p class="empty-note">
+            No sessions judged yet — run the judge above to populate the local-vs-cloud quality view.
+            (Honest empty state — no fabricated verdicts.)
+          </p>
+        {/if}
+      </div>
     {/if}
 
     <!-- Maintain rollup: security + dependency-health + UX findings (UI-SPEC §207) -->
@@ -750,6 +846,43 @@
     font-style: italic;
     margin: 0.25rem 0 0;
     max-width: 80ch;
+  }
+  .judge-form {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    margin: 0.6rem 0 0.2rem;
+    flex-wrap: wrap;
+  }
+  .judge-limit {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.35rem;
+    font: var(--type-body-sm, 0.78rem/1.4 sans-serif);
+    color: var(--color-text-muted);
+  }
+  .judge-limit input {
+    width: 3.5rem;
+    padding: 0.2rem 0.4rem;
+    background: var(--color-bg-primary, #111);
+    color: var(--color-text-primary, #eee);
+    border: 1px solid var(--color-border, #333);
+    border-radius: 0.3rem;
+    font: inherit;
+  }
+  .judge-run {
+    padding: 0.35rem 0.8rem;
+    background: var(--color-accent, #4c8bf5);
+    color: var(--color-bg-primary, #06101f);
+    border: none;
+    border-radius: 0.4rem;
+    font: var(--type-body-sm, 0.78rem/1.4 sans-serif);
+    font-weight: 600;
+    cursor: pointer;
+  }
+  .judge-run:disabled {
+    opacity: 0.6;
+    cursor: progress;
   }
   .chart {
     display: flex;

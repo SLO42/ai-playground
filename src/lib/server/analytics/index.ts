@@ -63,3 +63,22 @@ export {
 	type AgentCatalogEntry,
 	type AgentCatalogScope
 } from './fleet';
+
+// MODEL-BENCHMARK-SPEC step 3 (class B — Judged) — the on-demand LLM-judge model eval.
+export {
+	runJudgeBatch,
+	boundJudgeLimit,
+	buildJudgedComparison,
+	resolveJudgeModel,
+	makeClaudeJudge,
+	DEFAULT_JUDGE_LIMIT,
+	DEFAULT_JUDGE_LIMIT_MAX,
+	BENCHMARK_DIMENSIONS,
+	type ProviderVerdicts,
+	type DimensionRollup,
+	type JudgeModel,
+	type JudgeModelChoice,
+	type JudgeBatchResult,
+	type SessionVerdict,
+	type BenchmarkDimension
+} from './benchmark';

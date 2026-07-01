@@ -260,6 +260,27 @@ describe('loadOrchestration — YAML + enum validation', () => {
 		).toThrow(/defaultProvider/);
 	});
 
+	// MODEL-BENCHMARK-SPEC class C — the OPT-IN thinking-capture toggle at the config boundary.
+	it('defaults captureThinking to undefined (absent ⇒ OFF / no-regression)', () => {
+		const orch = loadOrchestration(join(FIX, 'orchestration.yaml'));
+		expect(orch.captureThinking).toBeUndefined();
+	});
+
+	it('parses a valid captureThinking boolean', () => {
+		const orch = loadOrchestration(join(FIX, 'orchestration.yaml'), {
+			_inject: { captureThinking: true }
+		});
+		expect(orch.captureThinking).toBe(true);
+	});
+
+	it('rejects a non-boolean captureThinking (fails closed)', () => {
+		expect(() =>
+			loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { captureThinking: 'yes' }
+			})
+		).toThrow(/captureThinking/);
+	});
+
 	it('rejects a bundle key that is not a known intent (typo fails closed)', () => {
 		expect(() =>
 			loadOrchestration(join(FIX, 'orchestration.yaml'), {

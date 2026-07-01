@@ -199,6 +199,17 @@ export interface LaunchDeps {
 	 */
 	onSessionCreated?: (sessionId: string) => void;
 	/**
+	 * MODEL-BENCHMARK-SPEC class C (Capture gap) — OPT-IN thinking capture. Default false (OFF):
+	 * thinking turns persist to the transcript `message` table exactly as before (no-regression),
+	 * but NO `thinking_capture` row is written. true ⇒ each `thinking` turn ALSO writes ONE
+	 * provider-tagged `thinking_capture` row carrying the SAME already-D-026-screened text the
+	 * message row got (screened once in eventToMessage, reused — never raw), for the Step-4
+	 * judged-eval corpus. A provider that emits no thinking (Ollama) writes zero rows — honest
+	 * empty, never fabricated (F-008). BEST-EFFORT (F-014): a capture write error is logged +
+	 * swallowed; it NEVER blocks or fails the driven session (observability, not the work).
+	 */
+	captureThinking?: boolean;
+	/**
 	 * WI-2 (WORKSPACE-ISOLATION-SPEC) — the per-session worktree acquirer seam. Injected so the
 	 * integration test can point it at a real temp git repo (and a unit test at a fake). Defaults
 	 * to {@link acquireSessionWorktree}. Called for a WRITE-class session (isWriteIntent) AFTER the
@@ -900,6 +911,34 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 					console.warn(
 						`[launch] transcript message persist failed for ${sessionId} seq ${seq} (fail-open, session continues): ${(persistErr as Error).message}`
 					);
+				}
+
+				// ── MODEL-BENCHMARK-SPEC class C — OPT-IN thinking capture (screened, provider-tagged) ──
+				// When the operator opted in (deps.captureThinking), ALSO record this thinking turn to the
+				// benchmark corpus the Step-4 judged-eval consumes. `msg.content` is the SAME text
+				// eventToMessage already D-026-screened (screened once, reused — a secret in the thinking
+				// block is redacted before it reaches this row). The row is provider/model-tagged INLINE
+				// so the eval can GROUP BY provider without a session join. A provider that emits no
+				// thinking (Ollama) never reaches this branch ⇒ zero rows ⇒ honest empty (F-008), and an
+				// emitted-but-empty block persists honestly as content=''. Default OFF ⇒ this whole block
+				// is skipped ⇒ byte-identical no-regression. BEST-EFFORT (F-014): a write fault is logged +
+				// swallowed so the driven session is never blocked/failed by benchmark observability.
+				if (deps.captureThinking && msg.kind === 'thinking') {
+					try {
+						await db.query(`CREATE thinking_capture CONTENT $content;`, {
+							content: {
+								session: sid,
+								seq,
+								provider: input.model.provider,
+								model_id: input.model.modelId,
+								content: msg.content
+							}
+						});
+					} catch (captureErr) {
+						console.warn(
+							`[launch] thinking_capture persist failed for ${sessionId} seq ${seq} (fail-open, session continues): ${(captureErr as Error).message}`
+						);
+					}
 				}
 
 				// ── FS-2 (b) AGENT READ/EDIT CAPTURE — link a file_snapshot to THIS transcript turn

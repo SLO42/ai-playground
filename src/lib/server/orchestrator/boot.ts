@@ -377,6 +377,11 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		memory,
 		// SH-2 GO-LIVE — forward the production skill-harvest CAPTURE seam onto every spawn (see above).
 		skillHarvester,
+		// MODEL-BENCHMARK-SPEC class C — the OPT-IN thinking-capture toggle, read from the SAME boot
+		// orchestration config (restart to change, F-029). Absent/false ⇒ OFF (no thinking_capture
+		// rows; byte-identical no-regression). true ⇒ every orchestrator-driven spawn records its
+		// screened, provider-tagged thinking to the Step-4 judged-eval corpus.
+		captureThinking: orchestration.captureThinking,
 		// intervalMs ONLY matters in 'periodic' mode (off by default, D-004). Passing it in
 		// event mode is harmless (the timer is only armed when mode==='periodic'), but we keep
 		// the orchestration.yaml intent faithful by forwarding it.

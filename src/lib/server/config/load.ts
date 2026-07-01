@@ -178,6 +178,15 @@ export interface Orchestration {
 	 */
 	defaultProvider?: DefaultProvider;
 	/**
+	 * MODEL-BENCHMARK-SPEC class C (Capture gap) — OPT-IN model-thinking capture. Absent/false ⇒
+	 * OFF (the default): thinking turns still persist to the transcript `message` table as always
+	 * (no-regression), but NO benchmark `thinking_capture` row is written. true ⇒ every
+	 * orchestrator-driven spawn ALSO records its screened (D-026) thinking turns to the
+	 * provider-tagged benchmark corpus the Step-4 judged-eval consumes. Opt-in for privacy +
+	 * volume. Read once per boot (like defaultProvider) ⇒ a change needs a restart (F-029).
+	 */
+	captureThinking?: boolean;
+	/**
 	 * intent → adaptive config (D-020). Validated at the boundary (loadOrchestration).
 	 * Partial: an unconfigured intent resolves to an empty bundle (all-defaults), so a
 	 * sparsely-tuned orchestration.yaml still routes every intent (resolveAdaptiveConfig).
@@ -911,6 +920,15 @@ export function loadOrchestration(file: string, opts: LoadOpts = {}): Orchestrat
 				file
 			);
 		}
+	}
+	// MODEL-BENCHMARK-SPEC class C — the OPT-IN thinking-capture toggle. Absent/null ⇒ OFF
+	// (no-regression). When present it MUST be a boolean; a typo'd/mistyped value would silently
+	// leave the corpus off (or, worse, be truthy-coerced) — fail closed at the boundary.
+	if (raw.captureThinking !== undefined && raw.captureThinking !== null && typeof raw.captureThinking !== 'boolean') {
+		throw new ConfigError(
+			`orchestration: "captureThinking" must be a boolean (got ${String(raw.captureThinking)})`,
+			file
+		);
 	}
 	// TASK 2.12: validate the intent-adaptive bundles at the boundary (D-020). Each key
 	// MUST be one of the five intents; each known knob MUST be the right shape/range.

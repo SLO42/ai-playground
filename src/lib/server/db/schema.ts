@@ -2698,6 +2698,44 @@ const m0075_learned_reranker: Migration = {
 	`
 };
 
+// ── MODEL-BENCHMARK-SPEC class C (Capture gap) — OPT-IN, screened, provider-tagged thinking corpus ──
+//
+// SCOUT FINDING (build-time, corrects the spec's seam-scout assumption): the Claude CLI stream-json
+// DOES expose extended-`thinking` content blocks — cli-backend.mapCliEvent maps them to a
+// RuntimeEvent{type:'thinking'}, and launch.ts ALREADY persists them SCREENED (D-026, via
+// eventToMessage→screenText) into `message` (kind='thinking', keyed by session+seq). So thinking is
+// NOT un-captured. What the BENCHMARK still lacks is (1) an OPT-IN corpus (the transcript `message`
+// thinking is ALWAYS-ON — a privacy+volume concern the spec calls out) and (2) an INLINE provider tag
+// (attributing a `message` thinking row to a provider needs a session join). This table is that
+// corpus: written ONLY when the operator opts in (config `captureThinking`, default OFF ⇒ ZERO rows ⇒
+// byte-identical no-regression), provider/model_id stamped per row for the Step-4 judged-eval's
+// GROUP BY provider, decoupled from transcript retention. The thinking TEXT here is the SAME
+// already-D-026-screened string launch persisted to `message` (screened once, reused — never raw).
+//
+// HONEST EMPTY (F-008): a provider that emits NO thinking (Ollama gpt-oss:20b streams plain text with
+// no thinking channel — ollama-backend emits no {type:'thinking'} event) produces ZERO rows for that
+// session — NEVER a fabricated/backfilled thinking row. Absence + the session's model.provider is the
+// honest "produced none" signal the eval reads. An emitted-but-empty thinking block persists honestly
+// as content='' (mirrors the `message` kind='thinking' empty-stays-empty rule).
+//
+// ADDITIVE + IDEMPOTENT (F-015): SCHEMAFULL with OVERWRITE on every DEFINE; a brand-new additive
+// table — clean over a fresh DB, a half-applied state, and a re-run. `captured_at` is a datetime
+// (F-013: NO loader returns this table today; any future `load` MUST coerce it to an ISO string in
+// that table's normalizer — never return a raw SDK datetime to the client).
+const m0076_thinking_capture: Migration = {
+	id: '0076_thinking_capture',
+	up: `
+		DEFINE TABLE OVERWRITE thinking_capture SCHEMAFULL;
+		DEFINE FIELD OVERWRITE session     ON thinking_capture TYPE record<session>;
+		DEFINE FIELD OVERWRITE seq         ON thinking_capture TYPE int;
+		DEFINE FIELD OVERWRITE provider    ON thinking_capture TYPE string;
+		DEFINE FIELD OVERWRITE model_id    ON thinking_capture TYPE string;
+		DEFINE FIELD OVERWRITE content     ON thinking_capture TYPE string;
+		DEFINE FIELD OVERWRITE captured_at ON thinking_capture TYPE datetime DEFAULT time::now();
+		DEFINE INDEX OVERWRITE thinking_capture_by_session_seq ON thinking_capture FIELDS session, seq;
+	`
+};
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)
@@ -2779,5 +2817,6 @@ export const schemaMigrations: Migration[] = [
 	m0072_loop_manifest,
 	m0073_concept_graph,
 	m0074_session_pm,
-	m0075_learned_reranker
+	m0075_learned_reranker,
+	m0076_thinking_capture
 ];

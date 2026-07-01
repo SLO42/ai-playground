@@ -146,6 +146,13 @@ export interface OrchestratorOptions {
 	 * harvester error NEVER blocks or fails the spawn.
 	 */
 	skillHarvester?: LaunchDeps['skillHarvester'];
+	/**
+	 * MODEL-BENCHMARK-SPEC class C — OPT-IN thinking capture, forwarded onto every orchestrator-
+	 * driven spawn's launchSession. Default undefined/false ⇒ OFF (no benchmark thinking_capture
+	 * rows; byte-identical no-regression). true ⇒ each spawn records its screened, provider-tagged
+	 * thinking turns to the judged-eval corpus. Read per-boot from orchestration.yaml (F-029).
+	 */
+	captureThinking?: LaunchDeps['captureThinking'];
 	/** Statuses that make a task spawn-ready. Default: 'ready'. */
 	spawnReadyStatuses?: readonly string[];
 	/**
@@ -239,6 +246,7 @@ export class Orchestrator {
 	readonly #memory?: LaunchDeps['memory'];
 	readonly #acquireWorktree?: LaunchDeps['acquireWorktree'];
 	readonly #skillHarvester?: LaunchDeps['skillHarvester'];
+	readonly #captureThinking?: LaunchDeps['captureThinking'];
 	readonly #spawnReady: ReadonlySet<string>;
 	readonly #postTask?: OrchestratorOptions['postTask'];
 	readonly #mergeBack?: OrchestratorOptions['mergeBack'];
@@ -287,6 +295,7 @@ export class Orchestrator {
 		this.#memory = opts.memory;
 		this.#acquireWorktree = opts.acquireWorktree;
 		this.#skillHarvester = opts.skillHarvester;
+		this.#captureThinking = opts.captureThinking;
 		this.#spawnReady = new Set(opts.spawnReadyStatuses ?? ['ready']);
 		this.#postTask = opts.postTask;
 		this.#mergeBack = opts.mergeBack;
@@ -754,6 +763,10 @@ export class Orchestrator {
 				// drafts a born-'open' skill_proposal at session-end (best-effort, D-019 — launchSession
 				// swallows any fault). Undefined ⇒ no harvest (the dormant default).
 				skillHarvester: this.#skillHarvester,
+				// MODEL-BENCHMARK-SPEC class C — forward the OPT-IN thinking-capture toggle so a spawn
+				// records its screened, provider-tagged thinking to the judged-eval corpus. Undefined/
+				// false ⇒ OFF (no thinking_capture rows; byte-identical no-regression).
+				captureThinking: this.#captureThinking,
 				input: {
 					projectId,
 					taskId,

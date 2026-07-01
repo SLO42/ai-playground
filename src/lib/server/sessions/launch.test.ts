@@ -437,6 +437,109 @@ function throwingRuntime(events: RuntimeEvent[], err: Error): AgentRuntime {
 	};
 }
 
+// ── MODEL-BENCHMARK-SPEC class C — OPT-IN thinking capture (screened, provider-tagged) ──────
+describe('launchSession — thinking capture (MODEL-BENCHMARK class C)', () => {
+	async function captureRows(sessionId: string) {
+		const sid = new StringRecordId(sessionId);
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(
+			`SELECT provider, model_id, content, seq FROM thinking_capture WHERE session = $sid ORDER BY seq ASC;`,
+			{ sid }
+		);
+		return rows;
+	}
+
+	it('OFF by default — a thinking turn writes NO thinking_capture row (no-regression), but the transcript message still persists', async () => {
+		const events: RuntimeEvent[] = [
+			{ type: 'thinking', text: 'reasoning here' },
+			{ type: 'log', message: 'answer' },
+			{ type: 'done', result: { ok: true, summary: 'done', ccSessionId: 'cc_capture_off_1' } }
+		];
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(events, 'cc_capture_off_1') });
+		// captureThinking omitted ⇒ OFF.
+		const res = await launchSession({ db, bus: new EventBus(), runtime, input: baseInput() });
+
+		// No benchmark rows...
+		expect(await captureRows(res.sessionId)).toHaveLength(0);
+		// ...but the transcript message thinking row is UNAFFECTED (the existing always-on path).
+		const sid = new StringRecordId(res.sessionId);
+		const [msgs] = await db.query<[Array<Record<string, unknown>>]>(
+			`SELECT content FROM message WHERE session = $sid AND kind = "thinking";`,
+			{ sid }
+		);
+		expect(msgs).toHaveLength(1);
+		expect(msgs[0].content).toBe('reasoning here');
+	});
+
+	it('ON — a Claude thinking turn persists a screened, provider-tagged thinking_capture row', async () => {
+		const events: RuntimeEvent[] = [
+			{ type: 'thinking', text: 'first thought' },
+			{ type: 'log', message: 'answer' },
+			{ type: 'thinking', text: 'second thought' },
+			{ type: 'done', result: { ok: true, summary: 'done', ccSessionId: 'cc_capture_on_1' } }
+		];
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(events, 'cc_capture_on_1') });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput(),
+			captureThinking: true
+		});
+
+		const rows = await captureRows(res.sessionId);
+		expect(rows).toHaveLength(2);
+		expect(rows.map((r) => r.content)).toEqual(['first thought', 'second thought']);
+		// provider/model stamped INLINE (the Step-4 eval GROUP BY provider needs no session join).
+		expect(rows[0].provider).toBe('claude');
+		expect(rows[0].model_id).toBe('claude-opus-4-8');
+		// seq monotonic — the capture rows carry the transcript turn order.
+		expect((rows[1].seq as number) > (rows[0].seq as number)).toBe(true);
+	});
+
+	it('ON — a planted secret in a thinking turn is SCREENED before it reaches the capture row (D-026)', async () => {
+		const SECRET = 'sk-ant-thinkCAPTURE1234secretvalue';
+		const events: RuntimeEvent[] = [
+			{ type: 'thinking', text: `I will authenticate with ${SECRET} now` },
+			{ type: 'done', result: { ok: true, summary: 'done', ccSessionId: 'cc_capture_secret_1' } }
+		];
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(events, 'cc_capture_secret_1') });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput(),
+			captureThinking: true
+		});
+
+		const rows = await captureRows(res.sessionId);
+		expect(rows).toHaveLength(1);
+		const blob = JSON.stringify(rows);
+		expect(blob).not.toContain(SECRET); // the raw secret survives in no captured column
+		expect(blob).toContain('REDACTED'); // it was caught, not silently dropped
+	});
+
+	it('ON — an Ollama session that emits NO thinking writes ZERO rows (honest empty, no fabrication, F-008)', async () => {
+		// A local Ollama turn is a plain assistant `log` block — no {type:'thinking'} event at all.
+		const events: RuntimeEvent[] = [
+			{ type: 'log', message: 'a plain local answer with no thinking channel' },
+			{ type: 'token_usage', input: 40, output: 12 },
+			{ type: 'done', result: { ok: true, summary: 'done', ccSessionId: 'cc_capture_ollama_1' } }
+		];
+		const runtime = new ClaudeCodeRuntime({ backend: scriptedBackend(events, 'cc_capture_ollama_1') });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput({ model: { provider: 'ollama', modelId: 'gpt-oss:20b', tier: 'local' } }),
+			captureThinking: true
+		});
+
+		// Zero rows — the honest "produced none" signal (absence + session.model.provider='ollama'),
+		// NEVER a fabricated/backfilled thinking row.
+		expect(await captureRows(res.sessionId)).toHaveLength(0);
+	});
+});
+
 describe('launchSession — terminal status on EVERY exit path (13.2)', () => {
 	it("a mid-stream throw still ends the session 'failed' with ended_at + honest note + error agent_event", async () => {
 		const bus = new EventBus();

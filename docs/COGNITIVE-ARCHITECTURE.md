@@ -199,6 +199,18 @@ live labels accrue + eval shows reranked ≥ baseline. Corrected a false spec pr
 `query_embedding` column on `retrieval_outcome`, so a re-embedding ACAN wasn't buildable from
 stored data — the linear model over recall's own features is the honest slice. 15 unit tests prove
 the mechanism.
-Pending: **S4** soul/identity, **Concierge Stage-2+** (LLM turn for open-ended PM questions;
+**Concierge Stage-2 — provider-aware LLM turn** — SHIPPED `8679946` (2026-07-01), live-verified on
+the REAL local `gpt-oss:20b` (grounded+cited, advisory, 7.1s, one call). Intent split
+(`classifyAtelierIntent`): `recommend_agent`→ unchanged deterministic Stage-1; `skill_request`/
+`hire_request`→ honest gated stubs (no auto-draft/auto-hire, §7); `open_question`→ bounded LLM turn
+(30s/1024-tok cap) grounded on brain (S0 recall + cite) + advisory/non-steering reply.
+`resolveConciergeProvider` reads the LIVE pool + the `defaultProvider` toggle (same idiom as boot +
+the benchmark judge) → the concierge is itself the always-on-LOCAL-brain candidate, and its sessions
+flow through the model-benchmark (provider-tagged agent_event + optional thinking_capture +
+judged-eval). D-026 screens prompt+reply; honest states on no-provider/error/empty. No migration
+(reuses session/message/peer_message). **The local-vs-cloud brain experiment is now end-to-end
+testable** (switch + local concierge turn + benchmark capture/judge).
+Pending: **S4** soul/identity (now has a real consumer — the concierge turn context), **Concierge
+Stage-3** (skill-discovery via gated find-skills; real skill/hire drafting, operator-gated) (LLM turn for open-ended PM questions;
 skill/hire drafting over the bus, operator-gated), plus the brain "sections"
 (decisions/spend/search) which fold into the concierge's dashboard.

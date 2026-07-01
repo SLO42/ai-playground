@@ -227,10 +227,17 @@ next-stage gates, honest cold `nascent`/disconnected states) + a **decisions** s
 `decision` table m0023 §4.1b — `listRecentDecisions`, F-013/F-020-safe; NOT fabricated) + link
 cards to the existing `/reports` (spend), `/memory` (search), `/atelier` (advisories) — reused,
 not rebuilt. Design-system standard, Svelte 5 runes, live `$effect` re-invalidate.
+**Soul in the living scene + F-020 hardening** — SHIPPED `491fc0b` (2026-07-01). A central
+`self:atelier` scene node derived from `loadSoul` (maturity-ringed core, `knows`-edges to its
+dominant concept nodes, honest-empty on a cold brain) makes S4 identity ALIVE in the graph
+(`scene.ts` + `MemoryScene.svelte` + `NodeInspector.svelte`). Added the real-surreal parse test for
+`buildProviderUsage` — which prompted a repo sweep that found + fixed **two more live F-020 idiom
+bugs**: `briefing.ts loadUnresolved` (was SILENTLY dropping unresolved tasks from the wakeup
+briefing, hidden by a best-effort catch) + `resolution.ts resolveRegauntletTarget`. See fails.md
+F-020 sweep note + F-054 (CRLF gotcha).
 Pending: **Concierge Stage-3** (skill-discovery via gated find-skills; real skill/hire drafting,
-operator-gated), deferred hardening (provider-usage parse test — pattern now exists; soul SCENE
-surface + graduation-history table), and **the first real local-vs-cloud benchmark RUN** (decide to
-flip `defaultProvider` toward local for a stretch to accrue sessions, then run the judged-eval —
-its cloud-judge half needs a cloud API key present). These need operator input / a key. (LLM turn for open-ended PM questions;
+operator-gated), graduation-history table (soul provenance/timeline), and **the first real
+local-vs-cloud benchmark RUN** — see the runbook in MODEL-BENCHMARK-SPEC.md (needs a cloud API key
+for the judge half; operator-run, deferred). (LLM turn for open-ended PM questions;
 skill/hire drafting over the bus, operator-gated), plus the brain "sections"
 (decisions/spend/search) which fold into the concierge's dashboard.

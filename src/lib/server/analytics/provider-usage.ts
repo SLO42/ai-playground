@@ -91,7 +91,7 @@ export async function buildProviderUsage(
 
 	const [rows] = await db.query<[RawProviderRow[]]>(
 		`SELECT model.provider AS provider, session, tokens_in, tokens_out, cost_usd,
-		        duration_ms, parent_event_id AS parent, type
+		        duration_ms, parent_event_id AS parent, type, at
 		   FROM agent_event WHERE ${where} ORDER BY at ASC LIMIT $lim;`,
 		params
 	);

@@ -87,6 +87,21 @@ async function landReply(text: string, replyTo?: string): Promise<void> {
 	});
 }
 
+/** Land a WORKER-origin message on the identity mailbox (the a6be543 conversation layer: worker
+ *  sessions can address the PM identity too). No reply_to, and the sender is NOT the concierge. */
+async function landWorkerMessage(text: string): Promise<void> {
+	const identity = await identityMailbox();
+	const [sess] = await db.query<[Array<{ id: unknown }>]>(
+		`CREATE session CONTENT { kind: 'task', model: { provider: 'anthropic', model_id: 'claude-sonnet' }, status: 'running' } RETURN AFTER;`
+	);
+	await sendPeerMessage(db, {
+		from_session: String(sess[0].id),
+		to_kind: 'session',
+		to_session: identity,
+		body: text
+	});
+}
+
 /** The identity mailbox session id (from the consults already emitted). */
 async function identityMailbox(): Promise<string> {
 	const [consults] = await db.query<[Array<{ from_session: unknown }>]>(
@@ -205,6 +220,29 @@ describe('listConciergeAdvisories — the operator projection of the Path-B cons
 		expect(blocked?.advisory).toMatch(/one/);
 		expect(findings?.status).toBe('answered');
 		expect(findings?.advisory).toMatch(/two/);
+	});
+
+	it('ORIGIN filter: an unstamped WORKER row on the mailbox never pairs as an advisory reply — a later legacy concierge reply still does', async () => {
+		await emitConsult(projectId, 'Advisory Host');
+		// A worker escalation lands FIRST on the identity mailbox (unstamped, non-concierge origin).
+		// Pure FIFO would hand it to the consult as a fake advisory.
+		await landWorkerMessage('Worker escalation: build tooling is flaky, please advise.');
+
+		let rows = await listConciergeAdvisories(db, { projectId });
+		expect(rows).toHaveLength(1);
+		// The consult stays honestly PENDING (F-008) — the worker row is not an advisory.
+		expect(rows[0].status).toBe('pending');
+		expect(rows[0].advisory).toBeNull();
+		expect(rows[0].answeredAt).toBeNull();
+
+		// The worker row is EXCLUDED from the FIFO queue, not blocking it: a legacy (unstamped)
+		// concierge reply landing later still pairs with the consult.
+		await landReply('Real concierge advice, after the worker noise.');
+		rows = await listConciergeAdvisories(db, { projectId });
+		expect(rows).toHaveLength(1);
+		expect(rows[0].status).toBe('answered');
+		expect(rows[0].advisory).toMatch(/Real concierge advice/);
+		expect(rows[0].advisory).not.toMatch(/Worker escalation/);
 	});
 
 	it('MIXED old+new: the stamped reply claims its consult; the legacy reply falls back to the remaining one', async () => {

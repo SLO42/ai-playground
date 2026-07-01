@@ -12,6 +12,10 @@
 // before m0079) have no reply_to — for those we fall back to the old positional contract (the
 // concierge drains its atelier inbox created_at ASC and replies once per consult, so legacy replies
 // land FIFO): remaining unstamped replies pair, in order, with the remaining unanswered consults.
+// The FIFO candidate set is ORIGIN-FILTERED to concierge-sent rows (`from_session.pm` =
+// ATELIER_SELF_PM — the same origin branch surfacePmInbox uses): since the worker conversation
+// layer, WORKER messages also land on the PM identity mailbox, and an unstamped worker row must
+// never masquerade as an advisory reply (F-008; workers are surfaced separately with honest labels).
 // A consult with neither an exact nor a fallback reply is honestly PENDING (never a fabricated
 // answer, F-008). If a concierge turn faulted mid-drain, the exact pairing keeps every later
 // stamped reply on its true consult instead of skewing the tail.
@@ -24,6 +28,7 @@ import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import { FENCE_OPEN, FENCE_CLOSE } from '../memory/fence';
+import { ATELIER_SELF_PM } from '../peer/resolve';
 import { PM_IDENTITY_AGENT } from './pm-concierge';
 
 /** One consult + its (possibly not-yet-landed) advisory, serialization-safe for a `load` (F-013). */
@@ -146,22 +151,26 @@ async function readMailbox(db: Db, box: MailboxRef): Promise<ConciergeAdvisoryRo
 			ORDER BY created_at ASC LIMIT ${PER_MAILBOX_CAP};`,
 		{ sid }
 	);
+	// The sender's `pm` identity traverses the from_session link (a deleted sender → NONE → the
+	// row is NOT concierge-origin, so it can only pair via an explicit reply_to stamp).
 	const [replies] = await db.query<[Array<Record<string, unknown>>]>(
-		`SELECT id, body, reply_to, created_at FROM peer_message
+		`SELECT id, body, reply_to, created_at, from_session.pm AS sender_pm FROM peer_message
 			WHERE to_session = $sid
 			ORDER BY created_at ASC LIMIT ${PER_MAILBOX_CAP};`,
 		{ sid }
 	);
 	// Split replies: STAMPED (reply_to set → exact map, first stamp wins) vs LEGACY (pre-m0079,
 	// reply_to NONE → FIFO queue). A stamped reply whose consult is outside this window pairs with
-	// nothing — it declared its target, so it never leaks into the FIFO fallback.
+	// nothing — it declared its target, so it never leaks into the FIFO fallback. The FIFO queue
+	// admits ONLY concierge-origin rows: worker messages also land on this mailbox now, and an
+	// unstamped non-concierge row must never mis-pair as an advisory reply (F-008).
 	const exact = new Map<string, Record<string, unknown>>();
 	const legacy: Array<Record<string, unknown>> = [];
 	for (const r of replies ?? []) {
 		const target = recordToString(r.reply_to);
 		if (target) {
 			if (!exact.has(target)) exact.set(target, r);
-		} else {
+		} else if (r.sender_pm != null && String(r.sender_pm) === ATELIER_SELF_PM) {
 			legacy.push(r);
 		}
 	}

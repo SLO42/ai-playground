@@ -104,18 +104,22 @@
     [data.projectId]: projectName ?? slug ?? data.projectId
   });
 
-  type Tab =
-    | 'overview'
-    | 'tasks'
-    | 'roadmap'
-    | 'pm'
-    | 'sessions'
-    | 'memory'
-    | 'loops'
-    | 'release'
-    | 'sync'
-    | 'targets'
-    | 'settings';
+  // The known workspace tabs — a single runtime source of truth so both the `Tab` type AND the
+  // `?tab=` deep-link validator below derive from the SAME list (adding a tab in one place covers both).
+  const TABS = [
+    'overview',
+    'tasks',
+    'roadmap',
+    'pm',
+    'sessions',
+    'memory',
+    'loops',
+    'release',
+    'sync',
+    'targets',
+    'settings'
+  ] as const;
+  type Tab = (typeof TABS)[number];
   // Deep-link default: when the page LOADS with a `?session=` (a transcript link from elsewhere),
   // land on the Sessions tab so the linked transcript is visible. Computed ONCE at component init
   // (not in an $effect) — a subsequent in-page selection (e.g. expanding a row in the Overview
@@ -126,7 +130,15 @@
   // `untrack` makes the one-shot intent explicit to the compiler: we read the INITIAL selection
   // exactly once at init (not a reactive dependency) — re-running on later `data` changes is wrong
   // (it would re-yank tabs). Without untrack, svelte-check warns `state_referenced_locally`.
-  let tab = $state<Tab>(untrack(() => (data.selectedSession ? 'sessions' : 'overview')));
+  // Deep-link IN: an explicit `?tab=<id>` naming a KNOWN tab wins (share/PM links land straight on
+  // that tab, e.g. `?tab=pm` → the PmSoulPanel). An absent/unknown `?tab=` falls through to the
+  // `?session=` default above → 'overview'. Validated against TABS so a garbage param can't crash.
+  function initialTab(): Tab {
+    const requested = page.url.searchParams.get('tab');
+    if (requested && (TABS as readonly string[]).includes(requested)) return requested as Tab;
+    return data.selectedSession ? 'sessions' : 'overview';
+  }
+  let tab = $state<Tab>(untrack(() => initialTab()));
 
   // ── Tasks board (TASK 10.4) — group the live task rows into kanban columns by status.
   // The columns follow the canonical status vocab; honest empty columns render "—".

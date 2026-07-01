@@ -268,13 +268,16 @@ down, honest), fail-open (a DB fault / F-048 twin collision never crashes the dr
 dedup. `/brain` shows the atelier growth timeline (honest empty "no graduations yet — identity is
 <stage>").
 
-**Operator decision (2026-07-01): PMs get souls too, not just Atelier.** A PM soul derives from
-PROJECT-scoped signals (that project's concepts/decisions/corrections/sessions) — a long-running PM
-has MATURED, a fresh one is nascent; data is already project-scoped; serves per-project ALIVE + the
-"hires have identity" vision. The `soul_graduation` subject key makes this additive. **NEXT BUILD:**
-project-scoped soul derivation (parameterize `soul.ts` readers by project) + per-PM graduation
-(recorder writes `subject="project:<id>"`) + surface on the project page.
+**Per-PM souls** — SHIPPED `0854109` (2026-07-01). PMs now have souls too, not just Atelier.
+`soul.ts` readers gained an optional `project` (omitted = global Atelier, byte-identical no-regression;
+scoped = that project's slice). `concept`/`memory`/`session` scope by their direct `project` column;
+`causal_chain`/`retrieval_outcome` (no project column) scope via `session.project` link (the
+`atelier/timeline.ts` idiom). Per-PM graduation records under `subject="project:<id>"`
+(`recordProjectGraduationIfChanged`, wired into the orchestrator fast-tier review drain beside the
+atelier one — no migration, the subject key pre-existed). `PmSoulPanel` on the project page (PM tab),
+project-worded, honest nascent/empty/disconnected. **Scope isolation tested** — a project's soul
+excludes global-only rows AND other projects' rows.
 
-**Deferred / operator-gated only:** the PM-soul build (next); flip `CONCIERGE_SKILL_SEARCH` on for
+**Deferred / operator-gated only:** flip `CONCIERGE_SKILL_SEARCH` on for
 live skill search; the first real local-vs-cloud benchmark RUN (runbook in MODEL-BENCHMARK-SPEC.md —
 needs a cloud API key + the decision to flip `defaultProvider`); real skill/hire DRAFTING (§7).

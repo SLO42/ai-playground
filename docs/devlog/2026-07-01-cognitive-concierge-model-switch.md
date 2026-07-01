@@ -1,7 +1,6 @@
 # 2026-07-01 — Cognitive architecture + Concierge + model-switch/benchmark
 
-**Branch:** `v2` (worktree `F:\code\ai-playground-v2`), code head `2af6e45` (+ per-PM
-souls in flight). Docs on `v2-main`. All features gate-green (lint 0 · svelte-check 0 ·
+**Branch:** `v2` (worktree `F:\code\ai-playground-v2`), code head `0854109`. Docs on `v2-main`. All features gate-green (lint 0 · svelte-check 0 ·
 targeted vitest · build) and pushed. One builder per worktree (F-052).
 
 ## Theme
@@ -19,6 +18,7 @@ switch + behavioral benchmark. Autonomous chain, scout→build→verify→commit
 | `/brain` view | `3469791` | soul + real `decision` table + section links (reuse, not rebuild) |
 | soul self-node in living scene | `491fc0b` | central `self:atelier` node, maturity-ringed, `knows`-edges to concepts |
 | soul graduation-history | `2af6e45` | m0078, **subject-keyed** (PM souls extend additively); recorder in orchestrator drain, fail-open, per-subject dedup |
+| per-PM souls | `0854109` | project-scoped soul derivation (readers parameterized; causal/outcome via session.project link) + per-PM graduation (`subject="project:<id>"`) + `PmSoulPanel`; scope-isolation tested; no migration |
 
 ### Concierge (apex — Stages 1→3 + consultation)
 | feature | commit | notes |
@@ -65,7 +65,6 @@ memory: local-brain hypothesis, find-skills reference, concierge-shipped. Starte
 New repo `SLO42/obs-stuff-and-things` created (operator request, unrelated).
 
 ## Parked / next
-- **In flight:** per-PM souls (project-scoped soul + per-PM graduation + project-page surface).
 - **Needs operator:** run the real local-vs-cloud benchmark (needs `ANTHROPIC_API_KEY` + flip
   `defaultProvider→local`; runbook in MODEL-BENCHMARK-SPEC.md) · flip `CONCIERGE_SKILL_SEARCH` on ·
   the ROUNDS CardDrawControl MP client log (host log was clean; drop is client-side).

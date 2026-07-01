@@ -210,7 +210,20 @@ flow through the model-benchmark (provider-tagged agent_event + optional thinkin
 judged-eval). D-026 screens prompt+reply; honest states on no-provider/error/empty. No migration
 (reuses session/message/peer_message). **The local-vs-cloud brain experiment is now end-to-end
 testable** (switch + local concierge turn + benchmark capture/judge).
-Pending: **S4** soul/identity (now has a real consumer — the concierge turn context), **Concierge
-Stage-3** (skill-discovery via gated find-skills; real skill/hire drafting, operator-gated) (LLM turn for open-ended PM questions;
+**S4 — soul/identity graduation** — SHIPPED `37edafe` (2026-07-01). **Cognitive architecture
+S0–S4 + explorer viz + Concierge Stage-1/2 now COMPLETE.** `memory/soul.ts` derives an HONEST
+self-model — compute-on-read (no migration; pure projection, always-current): dominant concepts
+(what it knows), corrections-as-values (what it learned NOT to do), causal-chain count, recall
+competence (utilization rate), experience volume. `maturity_stage` ladder nascent→developing→
+established, AND-gated across dimensions + an `established` competence quality-gate (≥0.85 over
+≥20 outcomes) so "big but incompetent" can't graduate; cold brain → honest `nascent`, zero
+fabrication (F-008). Injected (screened, bounded) into the Concierge Stage-2 open-question turn.
+Real-surreal test parses the count()/ORDER BY SurrealQL (F-020 lesson). Live brain = `nascent`
+today, richens as the heartbeat accrues. Deferred: soul/maturity SCENE surface (`loadSoul` is the
+ready read-seam) + a graduation-history table (provenance/timeline).
+Pending: **brain "sections"** (decisions/spend/search dashboard, folds into the concierge view),
+**Concierge Stage-3** (skill-discovery via gated find-skills; real skill/hire drafting,
+operator-gated), the deferred hardening (provider-usage parse test — pattern now exists; soul scene
+surface), and the first real local-vs-cloud benchmark RUN (needs a cloud key for the judge half). (LLM turn for open-ended PM questions;
 skill/hire drafting over the bus, operator-gated), plus the brain "sections"
 (decisions/spend/search) which fold into the concierge's dashboard.

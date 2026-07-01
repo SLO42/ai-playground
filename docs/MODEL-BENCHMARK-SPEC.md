@@ -70,10 +70,34 @@ F-008 — no fabricated scores; cold/empty is a valid state).
 3. **Thinking capture** (class C) — SHIPPED `3c35c4f` (m0076 thinking_capture, opt-in,
    screened, Ollama honest-empty). Premise corrected: thinking was already screened+stored
    in `message kind='thinking'`; the gap was the opt-in provider-tagged corpus.
-4. **Judged eval** (class B) — LLM-judge rubric over transcript+thinking, structured
-   verdicts, surfaced in the comparison report. IN PROGRESS. On-demand + cost-bounded
-   (NOT per-session on the heartbeat); judge = cloud model (pool-read, not local-under-test);
-   honest "insufficient data" per dimension when the corpus is empty.
+4. **Judged eval** (class B) — SHIPPED `a5b75d5` (2026-07-01). LLM-judge (`analytics/benchmark/`)
+   scores confidence / reasoning / fact-check / thinking-consistency; **m0077 benchmark_verdict**
+   store. On-demand only (a `/reports` form action, NOT the heartbeat), one cloud call per session,
+   batch hard-capped 20; judge = cloud model read live from the pool (never the local model under
+   test); cold corpus → no model call; every empty dimension → honest `insufficient_data` (score
+   null), even if the model hallucinates a number (overridden locally). **Fact-check = HYBRID**:
+   objective `toolBeforeClaimRatio` (from `message` seq order) + the judge weighs it. **Confidence
+   = calibrated** against `session.status` terminal outcome. DELETE-then-CREATE persist (avoids the
+   F-048 dedup class); `isoOrNull` on load (F-013). 20 unit tests; full gather→judge→store→compare
+   exercised vs real throwaway surreal (stub judge).
+
+**FEATURE COMPLETE + LIVE-VERIFIED** (switch + all 3 measurement classes). Consolidated
+live-verify PASS (2026-07-01): `db:up` on the LIVE dev DB applied m0076/m0077 (m0074/m0075 were
+already live) → **77/77, idempotent re-run clean** (F-015); render-smoke of `/reports` (objective
+provider A/B + judged honest-empty), `/settings` (model toggle), `/agents/catalog`, `/loops`,
+`/memory` — all honest, no 500/undefined/fabricated (F-008). The live pass CAUGHT A REAL DEFECT
+the whole suite missed: `provider-usage.ts` `ORDER BY at` without `at` in SELECT → parse error →
+false-DISCONNECTED `/reports` (F-020 recurrence, fixed `8905482`). Root gap = `stubDb()` unit
+tests never parse SurrealQL (see F-020 recurrence note — escalated: hand-written queries need a
+live/parse-level test; a consolidated live-verify is mandatory at feature end-gate). The switch
+(Step 1) live-verified vs real Ollama `gpt-oss:20b`; the judged-eval real cloud smoke additionally
+needs a cloud API key (not assumed) — deferred until a benchmark run is actually wanted.
+
+## Follow-up hardening (deferred, tracked)
+- Add a live-DB or parse-level test for `buildProviderUsage` (+ audit other hand-written SurrealQL
+  with ORDER BY/GROUP BY for the same F-020 idiom gap). The `stubDb()` pattern gives false green.
+- Run the real cloud judged-eval smoke once a cloud key is available → get the FIRST actual
+  local-vs-cloud quality numbers (the whole point). Until then the harness is proven, unpopulated.
 
 ## Gotchas (from the seam scout)
 - Ollama can't speak the Claude CLI protocol (isolated-config / gate-hook /

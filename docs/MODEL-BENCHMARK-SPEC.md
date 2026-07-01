@@ -38,13 +38,19 @@ F-008 — no fabricated scores; cold/empty is a valid state).
 - **Thinking consistency** — does its stated intent stay consistent across the session,
   or drift/contradict?
 
-### C. Capture gap — NEW, screened before store (D-026)
-- **Thinking context** — what the model says WHILE thinking, and how it affects
-  progress/work. Almost certainly NOT persisted today (Claude CLI emits thinking
-  blocks; `agent_event` has no thinking field per the seam scout). To judge B's
-  "thinking consistency" + this, thinking text must be recorded per session, SCREENED
-  (D-026 quarantine) before store, opt-in (privacy + volume). Confirm exact capture
-  point in `claude-code/cli-backend.ts` stream handling at build.
+### C. Capture gap — SHIPPED `3c35c4f` (m0076), premise corrected
+- **Thinking context** — what the model says WHILE thinking. CORRECTION (scout, Step 2):
+  thinking IS already persisted today — the Claude CLI `stream-json` emits `thinking`
+  content blocks → mapped to a first-class `RuntimeEvent{type:'thinking'}`
+  (`cli-backend.ts mapCliEvent`) → screened (D-026) + written to `message` as
+  `kind='thinking'` by `launch.ts eventToMessage` (unconditional, serves transcript
+  replay). The real gap was an OPT-IN, PROVIDER-TAGGED corpus decoupled from the
+  always-on transcript (the privacy+volume concern). Built as **m0076 thinking_capture**
+  (session, seq, provider, model_id, content, captured_at), opt-in `captureThinking` flag
+  in `orchestration.yaml` (default OFF), reusing the ALREADY-screened `message.content`
+  (never re-raw). Ollama `gpt-oss:20b` emits NO thinking → honest zero rows (F-008), not
+  fabricated. Step 3 judged-eval consumes either `thinking_capture` (provider-grouped) or
+  the always-on `message kind='thinking'` rows.
 
 ## Build sequence (foundation → measurement)
 1. **Switch seam** (foundation) — SHIPPED `6e1677b` (2026-07-01), live-verified vs real
@@ -61,9 +67,13 @@ F-008 — no fabricated scores; cold/empty is a valid state).
    live. ("sonnet 5" reconcile = separate `agent-pool.yaml`+`MODEL_IDS` change if wanted.)
 2. **Objective benchmark view** (class A) — `GROUP BY provider` report; derive
    tool/spawn/comm/cadence per session from existing rows.
-3. **Thinking capture** (class C) — screened, opt-in recording of thinking text.
+3. **Thinking capture** (class C) — SHIPPED `3c35c4f` (m0076 thinking_capture, opt-in,
+   screened, Ollama honest-empty). Premise corrected: thinking was already screened+stored
+   in `message kind='thinking'`; the gap was the opt-in provider-tagged corpus.
 4. **Judged eval** (class B) — LLM-judge rubric over transcript+thinking, structured
-   verdicts, surfaced in the comparison report.
+   verdicts, surfaced in the comparison report. IN PROGRESS. On-demand + cost-bounded
+   (NOT per-session on the heartbeat); judge = cloud model (pool-read, not local-under-test);
+   honest "insufficient data" per dimension when the corpus is empty.
 
 ## Gotchas (from the seam scout)
 - Ollama can't speak the Claude CLI protocol (isolated-config / gate-hook /

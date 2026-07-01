@@ -35,6 +35,7 @@ switch + behavioral benchmark. Autonomous chain, scout→build→verify→commit
 |---|---|---|
 | per-loop detail page + shape-visual | `de08c8f` | `/loops/[identifier]` (encoded key); loop-shape visual (6 primitives goal→trigger→action→check→state→handoff + L1→L2→L3 ladder, honest from readiness — satisfied only when the readiness item is checked); deep review (200-run history + override/timestamps/checklist); wired the 2 unwired controls (phase promote/demote, `enabled` toggle, lightweight no-restart); arming keeps its gate; honest 404; card link-in. Pure shape-core + real-surreal route tests; no migration |
 
+| per-project Loops tab (LP-3) | `4a9a7fb` | scoped LoopList + manifest layer + declared-only section + composed actions on the project route; **closed a real gate-bypass** — the project route's `pmAutonomous` ARM (incl. Overview "Run autonomously to release") skipped the readiness gate; now `armAutonomousLoop`-gated (green-or-override, disarm ungated); live-verified (deep-link + checklist tick 0/9→1/9) |
 | concierge advisories surfaced | `6f98bd3` | project PM tab (pending→answered lifecycle) + `/brain` cross-project Advisories; Path-B mailbox pairing (FIFO contract — `reply_to` column noted as TODO for exact pairing); Path-A chat replies were already transcript-visible; live-verified on seeded throwaway DB |
 
 ### Local-vs-cloud model experiment (fully wired, unpopulated)

@@ -59,6 +59,11 @@ import {
 	type PmReviewRow,
 	type PmRow
 } from '$lib/server/projects/pm-repo';
+// Concierge advisories — the Path-B PM↔concierge consult lifecycle (pending → answered), read-only.
+import {
+	listConciergeAdvisories,
+	type ConciergeAdvisoryRow
+} from '$lib/server/projects/concierge-advisories';
 // TASK 16.4 — the proposed-task pipeline + validation panel (PM-SPEC §4 / D-039).
 import {
 	listProposalQueue,
@@ -261,6 +266,10 @@ export interface ProjectDetailData {
 	graph: MemoryGraph;
 	/** PM typed memory (observation/learning/risk/pattern/decision), newest first. */
 	pmMemory: PmMemoryRow[];
+	/** Concierge advisories (Path-B consults) for THIS project — honest lifecycle: PENDING until the
+	 *  concierge's real reply landed on the PM peer-identity mailbox, then ANSWERED with the advisory
+	 *  text (screened at write, D-026). Newest-first + bounded; [] when never consulted (F-008). */
+	conciergeAdvisories: ConciergeAdvisoryRow[];
 	/** Per-kind PM memory counts (honest real counts; null until the project loads). */
 	pmStats: PmMemoryStats | null;
 	/** Architectural decisions for this project, newest first. */
@@ -437,6 +446,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			memories: [],
 			graph: { nodes: [], edges: [] },
 			pmMemory: [],
+			conciergeAdvisories: [],
 			pmStats: null,
 			decisions: [],
 			pmReviews: [],
@@ -581,6 +591,16 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			gameVerify = [];
 		}
 
+		// Concierge advisories — this project's Path-B consults (pending → answered), operator
+		// visibility for the command-center. A reader throw must NEVER sink the detail page (honest
+		// partial, F-008): on failure the section shows an honest empty, never a fabricated advisory.
+		let conciergeAdvisories: ConciergeAdvisoryRow[] = [];
+		try {
+			conciergeAdvisories = await listConciergeAdvisories(db, { projectId, limit: 10 });
+		} catch {
+			conciergeAdvisories = [];
+		}
+
 		// LP-3 — this project's recurring autonomous loops (project-scoped: autonomous PM drive +
 		// cadence). getLoops samples the live armed singletons + the project's agent_event history.
 		// A reader throw must NEVER sink the detail page (honest partial, F-008): on failure the
@@ -672,6 +692,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			memories,
 			graph,
 			pmMemory,
+			conciergeAdvisories,
 			pmStats,
 			decisions,
 			pmReviews,
@@ -720,6 +741,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			memories: [],
 			graph: { nodes: [], edges: [] },
 			pmMemory: [],
+			conciergeAdvisories: [],
 			pmStats: null,
 			decisions: [],
 			pmReviews: [],

@@ -1,0 +1,161 @@
+import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
+import { Db } from '../db/client';
+import { runMigrations } from '../db/migrate';
+import { schemaMigrations } from '../db/schema';
+import { startTestDb, type TestDb } from '../db/testserver';
+import { createProject } from './repo';
+import { createTask, setStatus, listTasksByProject } from '../tasks/repo';
+import { createPm } from './pm-repo';
+import { sendPeerMessage } from '../peer/repo';
+import { maybeEmitConciergeConsult } from './pm-concierge';
+import { listConciergeAdvisories } from './concierge-advisories';
+
+// ADVISORY-SURFACING VERIFY (D-038) — the read-only projection both operator surfaces (project PM
+// tab + /brain) load, against a REAL throwaway SurrealDB (real session/peer_message rows written by
+// the REAL Path-B emit path). F-020: the reader's ORDER BY queries run against the live parser here.
+// Honest states (F-008): PENDING until a real reply row landed; ANSWERED with the real advisory
+// text; [] when no consult was ever emitted; and per-project scoping (no cross-project bleed).
+
+let tdb: TestDb;
+let db: Db;
+let projectId: string;
+
+beforeAll(async () => {
+	tdb = await startTestDb();
+	db = await Db.connect({
+		url: tdb.wsUrl,
+		username: tdb.root.username,
+		password: tdb.root.password,
+		namespace: tdb.namespace,
+		database: tdb.database
+	});
+	await runMigrations(db, schemaMigrations);
+}, 90_000);
+
+afterAll(async () => {
+	await db?.close().catch(() => {});
+	await tdb?.teardown();
+});
+
+beforeEach(async () => {
+	await db
+		.query('DELETE peer_message; DELETE pm; DELETE pm_memory; DELETE task; DELETE session; DELETE project;')
+		.catch(() => {});
+	projectId = (await seedProject('advhost', 'Advisory Host')).id;
+});
+
+async function seedProject(slug: string, name: string) {
+	return createProject(db, {
+		slug,
+		name,
+		root_path: `F:/code/${slug}`,
+		repo_url: `https://github.com/octo/${slug}`
+	});
+}
+
+/** Emit a REAL Path-B consult for a project (hired act-PM + a real blocked task → the real emit). */
+async function emitConsult(pid: string, label: string): Promise<void> {
+	await createPm(db, { project: pid, name: 'Quill', charter: 'Ship it.', authority: 'act' });
+	const t = await createTask(db, { project: pid, title: 'Stuck', description: '', status: 'ready' });
+	await setStatus(db, t.id, 'in_progress');
+	await setStatus(db, t.id, 'blocked');
+	const tasks = await listTasksByProject(db, pid);
+	const out = await maybeEmitConciergeConsult(
+		db,
+		{ projectId: pid, projectLabel: label, tasks, severe: [] },
+		{ trigger: async () => {} }
+	);
+	expect(out.emitted).toBe(true);
+}
+
+/** Land a concierge advisory reply on a project's identity mailbox (as handleAtelierMessages does). */
+async function landReply(text: string): Promise<void> {
+	const [consults] = await db.query<[Array<{ from_session: unknown }>]>(
+		`SELECT from_session, created_at FROM peer_message WHERE to_kind = "atelier" ORDER BY created_at ASC;`
+	);
+	const identity = String(consults[consults.length - 1].from_session);
+	const [sess] = await db.query<[Array<{ id: unknown }>]>(
+		`CREATE session CONTENT { kind: 'discussion', model: { provider: 'atelier', model_id: 'concierge-stage1' }, status: 'running', pm: 'pm:atelier_self' } RETURN AFTER;`
+	);
+	await sendPeerMessage(db, {
+		from_session: String(sess[0].id),
+		to_kind: 'session',
+		to_session: identity,
+		body: text
+	});
+}
+
+describe('listConciergeAdvisories — the operator projection of the Path-B consult lifecycle', () => {
+	it('honest empty: no consult ever emitted ⇒ [] (project view AND cross-project view)', async () => {
+		expect(await listConciergeAdvisories(db, { projectId })).toEqual([]);
+		expect(await listConciergeAdvisories(db)).toEqual([]);
+	});
+
+	it('a sent-but-unanswered consult surfaces as PENDING with the need + ISO askedAt (F-013)', async () => {
+		await emitConsult(projectId, 'Advisory Host');
+
+		const rows = await listConciergeAdvisories(db, { projectId });
+		expect(rows).toHaveLength(1);
+		const r = rows[0];
+		expect(r.status).toBe('pending');
+		expect(r.need).toBe('blocked');
+		expect(r.advisory).toBeNull();
+		expect(r.answeredAt).toBeNull();
+		// the ask is the content-free need line, unfenced for display
+		expect(r.asked).toMatch(/blocked/i);
+		expect(r.asked).not.toContain('⎆');
+		// F-013: ISO string, never a raw SDK datetime
+		expect(typeof r.askedAt).toBe('string');
+		expect(new Date(r.askedAt as string).toISOString()).toBe(r.askedAt);
+		expect(r.project).toBe(projectId);
+	});
+
+	it('a landed reply flips the consult to ANSWERED with the advisory text + ISO answeredAt', async () => {
+		await emitConsult(projectId, 'Advisory Host');
+		await landReply('Atelier advice: hire a build-tooling specialist to unblock this class of work.');
+
+		const rows = await listConciergeAdvisories(db, { projectId });
+		expect(rows).toHaveLength(1);
+		const r = rows[0];
+		expect(r.status).toBe('answered');
+		expect(r.advisory).toMatch(/build-tooling specialist/);
+		expect(r.advisory).not.toContain('⎆');
+		expect(typeof r.answeredAt).toBe('string');
+		expect(new Date(r.answeredAt as string).toISOString()).toBe(r.answeredAt);
+	});
+
+	it('cross-project view lists both projects; the project view is scoped (no bleed)', async () => {
+		const other = await seedProject('advother', 'Advisory Other');
+		await emitConsult(projectId, 'Advisory Host');
+		await emitConsult(other.id, 'Advisory Other');
+		await landReply('Atelier advice for the OTHER project only.');
+
+		// cross-project (/brain): both consults, each attributed to its own project
+		const all = await listConciergeAdvisories(db);
+		expect(all).toHaveLength(2);
+		expect(new Set(all.map((r) => r.project))).toEqual(new Set([projectId, other.id]));
+
+		// project view: exactly this project's consult — the other project's reply never bleeds in
+		const mine = await listConciergeAdvisories(db, { projectId });
+		expect(mine).toHaveLength(1);
+		expect(mine[0].project).toBe(projectId);
+		expect(mine[0].status).toBe('pending');
+		expect(mine[0].advisory).toBeNull();
+
+		const theirs = await listConciergeAdvisories(db, { projectId: other.id });
+		expect(theirs).toHaveLength(1);
+		expect(theirs[0].status).toBe('answered');
+		expect(theirs[0].advisory).toMatch(/OTHER project only/);
+	});
+
+	it('bounded + newest-consult-first', async () => {
+		const other = await seedProject('advnewer', 'Advisory Newer');
+		await emitConsult(projectId, 'Advisory Host');
+		await emitConsult(other.id, 'Advisory Newer');
+
+		const all = await listConciergeAdvisories(db, { limit: 1 });
+		expect(all).toHaveLength(1);
+		// the second (newer) consult wins the newest-first cap
+		expect(all[0].project).toBe(other.id);
+	});
+});

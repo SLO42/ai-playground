@@ -25,6 +25,11 @@ import {
 	ATELIER_SUBJECT,
 	type GraduationRow
 } from '$lib/server/memory/soul-graduation';
+import {
+	listConciergeAdvisories,
+	CONCIERGE_ADVISORIES_LIMIT,
+	type ConciergeAdvisoryRow
+} from '$lib/server/projects/concierge-advisories';
 import type { PageServerLoad } from './$types';
 
 export interface BrainData {
@@ -35,6 +40,9 @@ export interface BrainData {
 	graduations: GraduationRow[];
 	/** Recent architectural decisions (newest-first); [] when none / unreachable. */
 	decisions: DecisionRow[];
+	/** Recent concierge advisories across ALL projects (Path-B PM consults, pending → answered),
+	 *  newest-first + bounded; [] when no PM has ever consulted (honest empty, F-008). */
+	advisories: ConciergeAdvisoryRow[];
 	error?: string;
 }
 
@@ -42,16 +50,24 @@ export const load: PageServerLoad = async ({ depends }): Promise<BrainData> => {
 	depends('app:brain');
 
 	const db = tryGetDb();
-	if (!db) return { connected: false, soul: null, graduations: [], decisions: [] };
+	if (!db) return { connected: false, soul: null, graduations: [], decisions: [], advisories: [] };
 
 	try {
-		const [soul, graduations, decisions] = await Promise.all([
+		const [soul, graduations, decisions, advisories] = await Promise.all([
 			loadSoul(db),
 			listGraduations(db, ATELIER_SUBJECT, GRADUATION_TIMELINE_LIMIT),
-			listRecentDecisions(db, RECENT_DECISIONS_LIMIT)
+			listRecentDecisions(db, RECENT_DECISIONS_LIMIT),
+			listConciergeAdvisories(db, { limit: CONCIERGE_ADVISORIES_LIMIT })
 		]);
-		return { connected: true, soul, graduations, decisions };
+		return { connected: true, soul, graduations, decisions, advisories };
 	} catch (err) {
-		return { connected: false, soul: null, graduations: [], decisions: [], error: (err as Error).message };
+		return {
+			connected: false,
+			soul: null,
+			graduations: [],
+			decisions: [],
+			advisories: [],
+			error: (err as Error).message
+		};
 	}
 };

@@ -18,12 +18,13 @@
   const soul = $derived(data.soul);
   const graduations = $derived(data.graduations ?? []);
   const decisions = $derived(data.decisions ?? []);
+  const advisories = $derived(data.advisories ?? []);
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
 
   // Live: any brain-row change re-runs the loader (the soul is compute-on-read; UI-SPEC §1.2).
   // `soul_graduation` is included so a freshly-recorded graduation appears without a manual reload.
   $effect(() => {
-    const tables = ['concept', 'memory', 'causal_chain', 'session', 'retrieval_outcome', 'decision', 'soul_graduation'];
+    const tables = ['concept', 'memory', 'causal_chain', 'session', 'retrieval_outcome', 'decision', 'soul_graduation', 'peer_message'];
     const offs = tables.map((t) => stream.onDbChange(t, () => void invalidate('app:brain')));
     return () => offs.forEach((off) => off());
   });
@@ -223,6 +224,42 @@
         <p class="dim state-body">
           No architectural decisions recorded yet — they accrue as PMs and the operator lock direction
           on projects.
+        </p>
+      {/if}
+    </div>
+
+    <!-- Concierge advisories — the cross-project Path-B consult lifecycle (pending → answered).
+         Every row traces to a real consult peer_message; PENDING until a real reply landed (F-008);
+         bodies were screened at write (D-026). Mirrors the Decisions section pattern. -->
+    <div class="card section">
+      <div class="section-head">
+        <span class="eyebrow">concierge advisories</span>
+        <h2 class="section-title">Advisories</h2>
+      </div>
+      {#if advisories.length}
+        <ul class="decisions" aria-label="concierge advisories">
+          {#each advisories as a (a.id)}
+            <li class="decision advisory" data-status={a.status}>
+              <div class="decision-head">
+                <span class="status-tag" data-status={a.status}>{a.status}</span>
+                <span class="advisory-need mono dim">need: {a.need}</span>
+                {#if a.project}<span class="mono dim decision-project">{shortId(a.project)}</span>{/if}
+                <time class="ts mono dim" datetime={a.askedAt ?? undefined}>{fmtTime(a.askedAt)}</time>
+              </div>
+              <p class="decision-body dim">{a.asked}</p>
+              {#if a.status === 'answered' && a.advisory}
+                <p class="decision-body advisory-text">{a.advisory}</p>
+                <span class="mono dim advisory-meta">answered {fmtTime(a.answeredAt)}</span>
+              {:else}
+                <span class="mono dim advisory-meta">awaiting the concierge's advice</span>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="dim state-body">
+          No concierge consults yet — a PM's autonomous review consults the Atelier concierge when it
+          detects a specialist need.
         </p>
       {/if}
     </div>
@@ -572,6 +609,21 @@
     font: var(--type-body-sm);
     color: var(--color-text-2, var(--color-text-muted));
     max-width: 80ch;
+  }
+  .advisory[data-status='pending'] {
+    border-left-color: var(--color-warn, #c8a45c);
+  }
+  .advisory-need {
+    font-size: 0.68rem;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+  }
+  .advisory-text {
+    color: var(--color-text);
+    white-space: pre-wrap;
+  }
+  .advisory-meta {
+    font-size: 0.65rem;
   }
   .links {
     display: grid;

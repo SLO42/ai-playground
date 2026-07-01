@@ -71,6 +71,7 @@
   const graph = $derived(data.graph ?? { nodes: [], edges: [] });
   // ── PM (TASK 9.1) — the strategic layer above task execution.
   const pmMemory = $derived(data.pmMemory ?? []);
+  const conciergeAdvisories = $derived(data.conciergeAdvisories ?? []);
   const pmStats = $derived(data.pmStats);
   const decisions = $derived(data.decisions ?? []);
   const pmBootstrapped = $derived(data.pmBootstrapped ?? false);
@@ -641,6 +642,8 @@
     const offDb = stream.onDbChange('decision_brief', () => void invalidate('app:pm'));
     // AGENCY-PULSE — HR/role activity (hires/cert/swaps) lands in the activity strip live.
     const offRe = stream.onDbChange('role_event', () => void invalidate('app:pm'));
+    // Concierge advisories — a Path-B consult/reply is a peer_message row; land it live.
+    const offPeer = stream.onDbChange('peer_message', () => void invalidate('app:pm'));
     // TASK 10.4 — the Maintain panel + Memory tab update live too.
     const offF = stream.onDbChange('security_finding', () => void invalidate('app:findings'));
     const offMem = stream.onDbChange('memory', () => void invalidate('app:memory'));
@@ -661,6 +664,7 @@
       offPv();
       offDb();
       offRe();
+      offPeer();
       offF();
       offMem();
       offE();
@@ -2561,6 +2565,43 @@
                         · authority {r.provenance.authority ?? '—'}
                       </span>
                     </div>
+                  {/if}
+                </li>
+              {/each}
+            </ul>
+          {/if}
+        </div>
+
+        <!-- Concierge advisories --------------------------------------------------
+             Path-B: the autonomous review consulted the Atelier concierge on a specialist
+             need. Honest lifecycle (F-008): PENDING until the concierge's real reply landed
+             on this project's PM peer-identity mailbox, then ANSWERED with the advisory
+             text (screened at write, D-026). Newest-first + bounded. -->
+        <div class="card">
+          <h2 class="section-title">
+            Concierge advisories
+            {#if conciergeAdvisories.length > 0}<span class="count mono">{conciergeAdvisories.length}</span>{/if}
+          </h2>
+          {#if conciergeAdvisories.length === 0}
+            <p class="state-body">
+              No consults yet — the autonomous PM review consults the Atelier concierge when it
+              detects a specialist need (blocked work, severe findings).
+            </p>
+          {:else}
+            <ul class="rows advisories" aria-label="concierge advisories">
+              {#each conciergeAdvisories as a (a.id)}
+                <li class="advisory-row" data-status={a.status}>
+                  <div class="advisory-head">
+                    <span class="advisory-status mono" data-status={a.status}>{a.status}</span>
+                    <span class="advisory-need mono">need: {a.need}</span>
+                    <span class="advisory-ts mono">asked {fmtTime(a.askedAt)}</span>
+                  </div>
+                  <p class="advisory-asked">{a.asked}</p>
+                  {#if a.status === 'answered' && a.advisory}
+                    <p class="advisory-text">{a.advisory}</p>
+                    <span class="advisory-ts mono">answered {fmtTime(a.answeredAt)}</span>
+                  {:else}
+                    <span class="advisory-ts mono">awaiting the concierge's advice</span>
                   {/if}
                 </li>
               {/each}
@@ -4475,6 +4516,65 @@
     font-size: 0.66rem;
     color: var(--color-text-muted);
     margin-left: auto;
+  }
+  .advisories {
+    gap: 0.6rem;
+  }
+  .advisory-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    padding: 0.5rem 0.6rem;
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-left-width: 3px;
+    border-left-color: var(--color-accent, #8ab0ab);
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+  }
+  .advisory-row[data-status='pending'] {
+    border-left-color: var(--color-warn, #c8a45c);
+  }
+  .advisory-head {
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+  }
+  .advisory-status {
+    font-size: 0.62rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.02rem 0.4rem;
+    border-radius: var(--radius-sm, 6px);
+    border: var(--border-width, 1px) solid var(--color-border);
+    color: var(--color-text-muted);
+  }
+  .advisory-status[data-status='answered'] {
+    color: var(--color-text-accent, var(--color-text));
+  }
+  .advisory-need {
+    font-size: 0.66rem;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-text-muted);
+  }
+  .advisory-ts {
+    font-size: 0.66rem;
+    color: var(--color-text-muted);
+    margin-left: auto;
+  }
+  .advisory-asked {
+    font: var(--type-body-sm);
+    color: var(--color-text-2, var(--color-text-muted));
+    margin: 0;
+    max-width: 80ch;
+  }
+  .advisory-text {
+    font: var(--type-body-sm);
+    color: var(--color-text);
+    margin: 0;
+    max-width: 80ch;
+    white-space: pre-wrap;
   }
   .pm-decisions {
     gap: 0.6rem;

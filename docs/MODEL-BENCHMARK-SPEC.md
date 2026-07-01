@@ -47,12 +47,18 @@ F-008 — no fabricated scores; cold/empty is a valid state).
   point in `claude-code/cli-backend.ts` stream handling at build.
 
 ## Build sequence (foundation → measurement)
-1. **Switch seam** (foundation): `OllamaRuntime` wrapping `OllamaProvider.stream()`
-   adapted to `RuntimeEvent`; branch at the runtime boundary on `plan.model.provider`
-   so the existing `local` tier executes. Settings toggle (global default local↔cloud)
-   reusing the settings validate/diff/confirm write pattern + honest restart-needed
-   banner (F-029). `MODEL_IDS` enum reconcile (operator's "sonnet 5" ≠ current
-   `claude-sonnet-4-6` in `config/load.ts:35`).
+1. **Switch seam** (foundation) — SHIPPED `6e1677b` (2026-07-01), live-verified vs real
+   Ollama `gpt-oss:20b`. `OllamaBackend` (`claude-code/ollama-backend.ts`) wraps
+   `OllamaProvider.stream()` → `RuntimeEvent`; OPT-IN branch in `ClaudeCodeRuntime.spawn`
+   (engages only when a local backend is wired, else falls through to the default backend
+   byte-identical — no-regression; F-053). Global `defaultProvider: auto|local|cloud`
+   toggle in `orchestration.yaml`, `/settings` Routing panel validate→diff→confirm +
+   restart-needed banner (F-029); `bootRoute` maps it to a pool-derived override. Objective
+   A/B view `buildProviderUsage` (GROUP BY provider) on `/reports`. Honest Stage-1
+   capability boundary: OllamaBackend `supportsInterject/supportsResume=false`, single chat
+   turn, NO tool-gate/interject parity (the delta the benchmark measures). Enum NOT widened
+   — no speculative `sonnet-5` id; `cloud` reads the pool's sonnet/first-non-ollama tier
+   live. ("sonnet 5" reconcile = separate `agent-pool.yaml`+`MODEL_IDS` change if wanted.)
 2. **Objective benchmark view** (class A) — `GROUP BY provider` report; derive
    tool/spawn/comm/cadence per session from existing rows.
 3. **Thinking capture** (class C) — screened, opt-in recording of thinking text.

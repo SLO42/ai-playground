@@ -24,8 +24,17 @@
 // self-model); the ASSEMBLED block is re-screened before it leaves the process (belt + suspenders).
 // Boundary discipline (D-016): every value via $param; counts read defensively (empty GROUP ALL → 0).
 
+import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
+import { assertRecordId } from '../db/validate';
 import { screen } from './screen';
+
+// Bind a project id as a StringRecordId so the SDK serializes it as a true record link (matching the
+// `option<record<project>>` column type) — a bare string would not equal a record link. D-016: the
+// id flows through assertRecordId first. Mirrors atelier/timeline.ts and memory/recall.ts.
+function link(id: string): StringRecordId {
+	return new StringRecordId(assertRecordId(id));
+}
 
 // ── The derived self-model + the maturity ladder ─────────────────────────────────────────
 
@@ -249,25 +258,50 @@ function firstCount(rows: Array<{ c?: unknown }> | undefined): number {
 /**
  * Read the live brain-volume metrics (all `count()` GROUP ALL — six statements in ONE query). Only
  * active + clean concept/correction rows count (D-026 — a quarantined row is never part of identity).
+ *
+ * SCOPE (per-PM souls). When `project` is omitted this reads the GLOBAL brain (Atelier's soul) — the
+ * query is BYTE-IDENTICAL to before (no regression). When a project id is given it derives that
+ * project's slice: concept/memory/session filter their direct `project` column; causal_chain and
+ * retrieval_outcome carry no project column, so they reach it THROUGH their `session` link
+ * (`session.project`, the same idiom as atelier/timeline.ts). Global-only rows (project = NONE) and
+ * OTHER projects' rows are excluded — clean isolation, so a small/new project computes an honest
+ * `nascent` (F-008), never another project's or the global identity.
  */
-export async function readSoulMetrics(db: Db): Promise<SoulMetrics> {
-	const [concepts, corrections, causal, sessions, outcomes, utilized] = await db.query<
-		[
-			Array<{ c: number }>,
-			Array<{ c: number }>,
-			Array<{ c: number }>,
-			Array<{ c: number }>,
-			Array<{ c: number }>,
-			Array<{ c: number }>
-		]
-	>(
-		`SELECT count() AS c FROM concept WHERE status = "active" AND screen_status = "clean" GROUP ALL;
-		 SELECT count() AS c FROM memory WHERE category = "correction" AND status = "active" AND screen_status = "clean" GROUP ALL;
-		 SELECT count() AS c FROM causal_chain GROUP ALL;
-		 SELECT count() AS c FROM session GROUP ALL;
-		 SELECT count() AS c FROM retrieval_outcome GROUP ALL;
-		 SELECT count() AS c FROM retrieval_outcome WHERE utilized = true GROUP ALL;`
-	);
+export async function readSoulMetrics(db: Db, project?: string): Promise<SoulMetrics> {
+	const scoped = project !== undefined;
+	// Direct project column (concept/memory); session-linked reach it via session.project.
+	const andProj = scoped ? ' AND project = $project' : '';
+	const sessionWhere = scoped ? ' WHERE project = $project' : '';
+	const sessProjWhere = scoped ? ' WHERE session.project = $project' : '';
+	const sessProjAnd = scoped ? ' AND session.project = $project' : '';
+	const sql =
+		`SELECT count() AS c FROM concept WHERE status = "active" AND screen_status = "clean"${andProj} GROUP ALL;
+		 SELECT count() AS c FROM memory WHERE category = "correction" AND status = "active" AND screen_status = "clean"${andProj} GROUP ALL;
+		 SELECT count() AS c FROM causal_chain${sessProjWhere} GROUP ALL;
+		 SELECT count() AS c FROM session${sessionWhere} GROUP ALL;
+		 SELECT count() AS c FROM retrieval_outcome${sessProjWhere} GROUP ALL;
+		 SELECT count() AS c FROM retrieval_outcome WHERE utilized = true${sessProjAnd} GROUP ALL;`;
+	const [concepts, corrections, causal, sessions, outcomes, utilized] = scoped
+		? await db.query<
+				[
+					Array<{ c: number }>,
+					Array<{ c: number }>,
+					Array<{ c: number }>,
+					Array<{ c: number }>,
+					Array<{ c: number }>,
+					Array<{ c: number }>
+				]
+			>(sql, { project: link(project as string) })
+		: await db.query<
+				[
+					Array<{ c: number }>,
+					Array<{ c: number }>,
+					Array<{ c: number }>,
+					Array<{ c: number }>,
+					Array<{ c: number }>,
+					Array<{ c: number }>
+				]
+			>(sql);
 	return {
 		concepts: firstCount(concepts),
 		corrections: firstCount(corrections),
@@ -283,13 +317,19 @@ export async function readSoulMetrics(db: Db): Promise<SoulMetrics> {
  * access_count (all three in the projection so the ORDER BY idiom is legal — F-020 #1). Active +
  * clean only. `limit` inlined as a sanitized integer (SurrealDB LIMIT is not a bind param here).
  */
-export async function readDominantConcepts(db: Db, limit = SOUL_KNOWS_ABOUT_LIMIT): Promise<DominantConcept[]> {
+export async function readDominantConcepts(
+	db: Db,
+	limit = SOUL_KNOWS_ABOUT_LIMIT,
+	project?: string
+): Promise<DominantConcept[]> {
 	const n = Math.max(1, Math.floor(limit));
-	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
-		`SELECT label, importance, stability, access_count FROM concept
-		   WHERE status = "active" AND screen_status = "clean"
-		 ORDER BY importance DESC, stability DESC, access_count DESC LIMIT ${n};`
-	);
+	const andProj = project !== undefined ? ' AND project = $project' : '';
+	const sql = `SELECT label, importance, stability, access_count FROM concept
+		   WHERE status = "active" AND screen_status = "clean"${andProj}
+		 ORDER BY importance DESC, stability DESC, access_count DESC LIMIT ${n};`;
+	const [rows] = project !== undefined
+		? await db.query<[Array<Record<string, unknown>>]>(sql, { project: link(project) })
+		: await db.query<[Array<Record<string, unknown>>]>(sql);
 	return (rows ?? []).map((r) => ({
 		label: String(r.label ?? ''),
 		importance: typeof r.importance === 'number' ? r.importance : 0,
@@ -303,13 +343,19 @@ export async function readDominantConcepts(db: Db, limit = SOUL_KNOWS_ABOUT_LIMI
  * then recency (created_at in the projection so the ORDER BY idiom is legal — F-020 #1). Active +
  * clean only. Bodies are already screened at store time; excerpted downstream in deriveSoul.
  */
-export async function readLearnedValues(db: Db, limit = SOUL_VALUES_LIMIT): Promise<LearnedValue[]> {
+export async function readLearnedValues(
+	db: Db,
+	limit = SOUL_VALUES_LIMIT,
+	project?: string
+): Promise<LearnedValue[]> {
 	const n = Math.max(1, Math.floor(limit));
-	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
-		`SELECT content, importance, created_at FROM memory
-		   WHERE category = "correction" AND status = "active" AND screen_status = "clean"
-		 ORDER BY importance DESC, created_at DESC LIMIT ${n};`
-	);
+	const andProj = project !== undefined ? ' AND project = $project' : '';
+	const sql = `SELECT content, importance, created_at FROM memory
+		   WHERE category = "correction" AND status = "active" AND screen_status = "clean"${andProj}
+		 ORDER BY importance DESC, created_at DESC LIMIT ${n};`;
+	const [rows] = project !== undefined
+		? await db.query<[Array<Record<string, unknown>>]>(sql, { project: link(project) })
+		: await db.query<[Array<Record<string, unknown>>]>(sql);
 	return (rows ?? []).map((r) => ({
 		text: String(r.content ?? ''),
 		importance: typeof r.importance === 'number' ? r.importance : 0
@@ -321,12 +367,16 @@ export async function readLearnedValues(db: Db, limit = SOUL_VALUES_LIMIT): Prom
  * consumer). Reads metrics + dominant concepts + learned values, then derives the pure model. On a
  * sparse/cold brain this returns an honest `nascent` model (empty knows-about/values) — never a
  * fabricated identity (F-008).
+ *
+ * Omit `project` for the GLOBAL Atelier soul (unchanged). Pass a project id for that project's PM
+ * soul — the SAME derivation + thresholds over the project's slice of the brain, so a small/new
+ * project is honestly `nascent` (per-PM souls).
  */
-export async function loadSoul(db: Db): Promise<SoulModel> {
+export async function loadSoul(db: Db, project?: string): Promise<SoulModel> {
 	const [metrics, dominantConcepts, learnedValues] = await Promise.all([
-		readSoulMetrics(db),
-		readDominantConcepts(db, SOUL_KNOWS_ABOUT_LIMIT),
-		readLearnedValues(db, SOUL_VALUES_LIMIT)
+		readSoulMetrics(db, project),
+		readDominantConcepts(db, SOUL_KNOWS_ABOUT_LIMIT, project),
+		readLearnedValues(db, SOUL_VALUES_LIMIT, project)
 	]);
 	return deriveSoul({ metrics, dominantConcepts, learnedValues });
 }

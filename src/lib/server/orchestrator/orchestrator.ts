@@ -56,7 +56,7 @@ import {
 	DAY_MS
 } from './workqueue';
 import { runReviewFork, makeWriteSurface, type ReviewKind } from '../memory/index';
-import { recordGraduationIfChanged } from '../memory/soul-graduation';
+import { recordGraduationIfChanged, recordProjectGraduationIfChanged } from '../memory/soul-graduation';
 import {
 	runHireRequest,
 	HIRE_REQUEST_WORK_TYPE,
@@ -1012,6 +1012,13 @@ export class Orchestrator {
 		// throws — a history write must never crash the drain, F-014/F-048) and dedup-safe (records
 		// only on a real stage change), so it runs AFTER the fork on the same live db handle.
 		await recordGraduationIfChanged(service.db);
+		// Per-PM soul (per-PM identity) — the SAME fork also grew THIS project's slice of the brain
+		// (the review item's concepts/corrections carry its project), so record the PROJECT's
+		// graduation if ITS project-scoped stage crossed a boundary. Same fail-open + per-subject
+		// dedup contract, keyed by the project record id. Skipped for a review item with no project.
+		if (project) {
+			await recordProjectGraduationIfChanged(service.db, project);
+		}
 	}
 
 	/**

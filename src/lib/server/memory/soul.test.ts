@@ -12,6 +12,7 @@ import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
+import { StringRecordId } from 'surrealdb';
 import {
 	computeCompetence,
 	deriveMaturityStage,
@@ -251,5 +252,156 @@ describe('soul on-read aggregation — live SurrealDB (F-020)', () => {
 		expect(soul.knowsAbout).toEqual([]);
 		expect(soul.values).toEqual([]);
 		expect(formatSoulBlock(soul)).toBeNull();
+	});
+});
+
+// ── 3. PROJECT-SCOPED soul (per-PM identity) — live SurrealDB (F-020) ───────────────────────
+//
+// The SAME readers, scoped to ONE project's slice of the brain. The correctness crux is ISOLATION:
+// a project's soul counts ONLY its own rows — a DIFFERENT project's rows and global-only rows (no
+// project) must NOT bleed in — and the GLOBAL (no-arg) read is unchanged (no-regression). concept/
+// memory/session filter their direct `project` column; causal_chain/retrieval_outcome reach it via
+// `session.project` (the traversal is exercised here against a live DB, F-020).
+
+describe('project-scoped soul (per-PM identity) — live SurrealDB (F-020)', () => {
+	let tdb: TestDb;
+	let db: Db;
+
+	const A = 'project:alpha';
+	const B = 'project:beta';
+	function plink(id: string): StringRecordId {
+		return new StringRecordId(id);
+	}
+
+	beforeAll(async () => {
+		tdb = await startTestDb();
+		db = await Db.connect({
+			url: tdb.wsUrl,
+			username: tdb.root.username,
+			password: tdb.root.password,
+			namespace: tdb.namespace,
+			database: tdb.database
+		});
+		await runMigrations(db, schemaMigrations);
+	}, 60_000);
+
+	afterAll(async () => {
+		await db?.close().catch(() => {});
+		await tdb?.teardown().catch(() => {});
+	});
+
+	beforeEach(async () => {
+		await db.query('DELETE concept; DELETE memory; DELETE causal_chain; DELETE session; DELETE retrieval_outcome;');
+	});
+
+	// project omitted ⇒ a GLOBAL row (project = NONE) — must be excluded from every project scope.
+	async function pConcept(label: string, importance: number, project?: string): Promise<void> {
+		await db.query(
+			`CREATE concept SET label=$label, summary="", namespace="default",
+			   embedding=array::repeat(0.0, 1024), importance=$imp, stability=0.5, access_count=0,
+			   status="active", screen_status="clean"${project ? ', project=$project' : ''} RETURN NONE;`,
+			{ label, imp: importance, ...(project ? { project: plink(project) } : {}) }
+		);
+	}
+	async function pCorrection(content: string, project?: string): Promise<void> {
+		await db.query(
+			`CREATE memory SET content=$c, kind="semantic", namespace=$ns, scope="project",
+			   embedding=array::repeat(0.0, 1024), importance=9.0, status="active", screen_status="clean",
+			   category="correction"${project ? ', project=$project' : ''} RETURN NONE;`,
+			{ c: content, ns: content.slice(0, 12), ...(project ? { project: plink(project) } : {}) }
+		);
+	}
+	async function pSession(project?: string): Promise<string> {
+		const [rows] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE session SET kind="discussion", model={ provider: "test", model_id: "m" }, runtime="claude-code",
+			   status="done"${project ? ', project=$project' : ''} RETURN id;`,
+			project ? { project: plink(project) } : {}
+		);
+		return String(rows[0].id);
+	}
+	async function pCausal(i: number, sessionId: string): Promise<void> {
+		// NB: `$session` is a SurrealDB PROTECTED variable — bind the link under a different name.
+		await db.query(
+			`CREATE causal_chain SET trigger=$t, outcome=$o, kind="fix", success=true, confidence=0.8, session=$sess RETURN NONE;`,
+			{ t: `trig ${i} ${sessionId}`, o: `out ${i}`, sess: plink(sessionId) }
+		);
+	}
+	async function pOutcome(utilized: boolean, sessionId: string): Promise<void> {
+		await db.query(`CREATE retrieval_outcome SET utilized=$u, score=0.5, session=$sess RETURN NONE;`, {
+			u: utilized,
+			sess: plink(sessionId)
+		});
+	}
+
+	it('project-scoped readSoulMetrics counts ONLY the project slice — sibling + global rows do not bleed in', async () => {
+		// project A: 2 concepts, 1 correction, 1 session + 1 causal + 2 outcomes UNDER that session.
+		await pConcept('alpha-c1', 9, A);
+		await pConcept('alpha-c2', 7, A);
+		await pCorrection('alpha never delete (A)', A);
+		const sA = await pSession(A);
+		await pCausal(1, sA);
+		await pOutcome(true, sA);
+		await pOutcome(false, sA);
+		// project B: 3 concepts, 1 session (no correction / causal / outcome).
+		await pConcept('beta-c1', 8, B);
+		await pConcept('beta-c2', 6, B);
+		await pConcept('beta-c3', 5, B);
+		await pSession(B);
+		// GLOBAL (no project): 1 concept, 1 correction, 1 session — excluded from every project scope.
+		await pConcept('global-c1', 4);
+		await pCorrection('global correction', undefined);
+		await pSession();
+
+		const a = await readSoulMetrics(db, A);
+		expect(a.concepts).toBe(2);
+		expect(a.corrections).toBe(1);
+		expect(a.sessions).toBe(1);
+		expect(a.causalChains).toBe(1); // reached via session.project (traversal)
+		expect(a.retrievalOutcomes).toBe(2);
+		expect(a.utilizedOutcomes).toBe(1);
+
+		const b = await readSoulMetrics(db, B);
+		expect(b.concepts).toBe(3);
+		expect(b.sessions).toBe(1);
+		expect(b.corrections).toBe(0);
+		expect(b.causalChains).toBe(0); // no causal under a B session
+		expect(b.retrievalOutcomes).toBe(0);
+
+		// GLOBAL (no arg) counts EVERYTHING — unchanged behavior (no-regression).
+		const g = await readSoulMetrics(db);
+		expect(g.concepts).toBe(6); // 2 (A) + 3 (B) + 1 (global)
+		expect(g.corrections).toBe(2); // A + global
+		expect(g.sessions).toBe(3); // A + B + global
+		expect(g.causalChains).toBe(1);
+		expect(g.retrievalOutcomes).toBe(2);
+	});
+
+	it('project-scoped readDominantConcepts surfaces ONLY the project concepts', async () => {
+		await pConcept('alpha top', 9, A);
+		await pConcept('alpha mid', 6, A);
+		await pConcept('beta top', 10, B);
+		await pConcept('global top', 8);
+		const domA = await readDominantConcepts(db, 5, A);
+		expect(domA.map((d) => d.label)).toEqual(['alpha top', 'alpha mid']);
+	});
+
+	it('loadSoul(project) derives the PROJECT identity — a tiny/cold project is honestly nascent, no bleed from a rich sibling', async () => {
+		// Sibling B is rich, but must NOT lift A.
+		for (let i = 0; i < 6; i++) await pConcept(`beta rich ${i}`, 7, B);
+		await pCorrection('beta correction', B);
+		// A has a single dominant concept — far under the developing gates.
+		await pConcept('alpha lone concept', 9, A);
+
+		const soulA = await loadSoul(db, A);
+		expect(soulA.maturityStage).toBe('nascent'); // honest — A is tiny (F-008)
+		expect(soulA.knowsAbout).toEqual(['alpha lone concept']); // A's OWN concept, not B's
+		expect(soulA.experience.concepts).toBe(1);
+
+		// A truly cold project → empty nascent identity (never fabricated).
+		const soulCold = await loadSoul(db, 'project:empty');
+		expect(soulCold.maturityStage).toBe('nascent');
+		expect(soulCold.nascent).toBe(true);
+		expect(soulCold.knowsAbout).toEqual([]);
+		expect(soulCold.values).toEqual([]);
 	});
 });

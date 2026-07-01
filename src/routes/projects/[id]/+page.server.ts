@@ -10,6 +10,15 @@
 // watchers re-invalidate this loader so the detail updates in place (UI-SPEC §1.2).
 
 import { tryGetDb } from '$lib/server/db/runtime-init';
+// Per-PM soul (per-PM identity) — the project-scoped derived self-model + its graduation timeline
+// (mirrors /brain's Atelier soul, scoped to THIS project's slice of the brain).
+import { loadSoul, type SoulModel } from '$lib/server/memory/soul';
+import {
+	listGraduations,
+	projectSubject,
+	GRADUATION_TIMELINE_LIMIT,
+	type GraduationRow
+} from '$lib/server/memory/soul-graduation';
 import {
 	getProject,
 	listReleases,
@@ -213,6 +222,11 @@ export interface TaskSummary {
 export interface ProjectDetailData {
 	connected: boolean;
 	projectId: string;
+	/** The PM's project-scoped soul (derived self-model), or null when unreachable / the read failed.
+	 *  A cold/new project is honestly `nascent` (F-008) — never a fabricated maturity. */
+	pmSoul: SoulModel | null;
+	/** The PM soul's graduation timeline (newest-first); [] when it has never graduated / unreachable. */
+	pmGraduations: GraduationRow[];
 	/** Present only when the project exists + DB connected. */
 	project?: {
 		id: string;
@@ -408,6 +422,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 		return {
 			connected: false,
 			projectId,
+			pmSoul: null,
+			pmGraduations: [],
 			releases: [],
 			phases: [],
 			features: [],
@@ -576,6 +592,23 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			loops = [];
 		}
 
+		// Per-PM SOUL (per-PM identity) — this project's project-scoped derived self-model + its
+		// graduation timeline (subject = the project record id). Mirrors /brain's Atelier soul, scoped
+		// to THIS project's slice of the brain. A cold/new project derives an honest `nascent` identity
+		// (F-008), never a fabricated maturity. A reader throw must NEVER sink the detail page (honest
+		// partial): on failure the panel shows an honest unavailable state, never invented identity.
+		let pmSoul: SoulModel | null = null;
+		let pmGraduations: GraduationRow[] = [];
+		try {
+			[pmSoul, pmGraduations] = await Promise.all([
+				loadSoul(db, projectId),
+				listGraduations(db, projectSubject(projectId), GRADUATION_TIMELINE_LIMIT)
+			]);
+		} catch {
+			pmSoul = null;
+			pmGraduations = [];
+		}
+
 		let queue: QueueStats | null = null;
 		try {
 			const cap = bootDailySpawnCap();
@@ -612,6 +645,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 		return {
 			connected: true,
 			projectId,
+			pmSoul,
+			pmGraduations,
 			project: {
 				id: project.id,
 				name: project.name,
@@ -670,6 +705,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 		return {
 			connected: false,
 			projectId,
+			pmSoul: null,
+			pmGraduations: [],
 			releases: [],
 			phases: [],
 			features: [],

@@ -14,8 +14,11 @@ import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
+import { StringRecordId } from 'surrealdb';
 import {
 	recordGraduationIfChanged,
+	recordProjectGraduationIfChanged,
+	projectSubject,
 	listGraduations,
 	readLatestGraduationStage,
 	ATELIER_SUBJECT
@@ -162,5 +165,120 @@ describe('soul graduation history — live SurrealDB (F-020)', () => {
 		// Re-running either subject is a per-subject no-op.
 		expect(await recordGraduationIfChanged(db, ATELIER_SUBJECT)).toBeNull();
 		expect(await recordGraduationIfChanged(db, 'project:test')).toBeNull();
+	});
+});
+
+// ── 3. PER-PM soul graduation (project subject + project-SCOPED metrics), live (F-020) ──────
+//
+// recordProjectGraduationIfChanged records under the project record-id subject AND derives the
+// stage from that PROJECT's slice of the brain (not the global one). Proves: a project stage change
+// records ONCE (per-subject dedup); a cold/new project is honestly nascent (records nothing); the
+// atelier (global) and a project subject are isolated even with REAL project-scoped metrics.
+
+describe('per-PM soul graduation (project subject) — live SurrealDB (F-020)', () => {
+	let tdb: TestDb;
+	let db: Db;
+
+	const A = 'project:alpha';
+	function plink(id: string): StringRecordId {
+		return new StringRecordId(id);
+	}
+
+	beforeAll(async () => {
+		tdb = await startTestDb();
+		db = await Db.connect({
+			url: tdb.wsUrl,
+			username: tdb.root.username,
+			password: tdb.root.password,
+			namespace: tdb.namespace,
+			database: tdb.database
+		});
+		await runMigrations(db, schemaMigrations);
+	}, 60_000);
+
+	afterAll(async () => {
+		await db?.close().catch(() => {});
+		await tdb?.teardown().catch(() => {});
+	});
+
+	beforeEach(async () => {
+		await db.query(
+			'DELETE soul_graduation; DELETE concept; DELETE memory; DELETE causal_chain; DELETE session; DELETE retrieval_outcome;'
+		);
+	});
+
+	/** Seed enough PROJECT-scoped rows to clear the DEVELOPING gates for `project`. */
+	async function seedDevelopingFor(project: string): Promise<void> {
+		for (let i = 0; i < 5; i++) {
+			await db.query(
+				`CREATE concept SET label=$label, summary="", namespace="default",
+				   embedding=array::repeat(0.0, 1024), importance=5.0, stability=0.5, access_count=0,
+				   status="active", screen_status="clean", project=$project RETURN NONE;`,
+				{ label: `${project} concept ${i}`, project: plink(project) }
+			);
+		}
+		await db.query(
+			`CREATE memory SET content=$c, kind="semantic", namespace=$ns, scope="project",
+			   embedding=array::repeat(0.0, 1024), importance=9.0, status="active", screen_status="clean",
+			   category="correction", project=$project RETURN NONE;`,
+			{ c: `${project} correction`, ns: project.slice(0, 12), project: plink(project) }
+		);
+		const sessions: string[] = [];
+		for (let i = 0; i < 10; i++) {
+			const [rows] = await db.query<[Array<{ id: unknown }>]>(
+				`CREATE session SET kind="discussion", model={ provider: "test", model_id: "m" }, runtime="claude-code",
+				   status="done", project=$project RETURN id;`,
+				{ project: plink(project) }
+			);
+			sessions.push(String(rows[0].id));
+		}
+		for (let i = 0; i < 3; i++) {
+			// NB: `$session` is a SurrealDB PROTECTED variable — bind the link under a different name.
+			await db.query(
+				`CREATE causal_chain SET trigger=$t, outcome=$o, kind="fix", success=true, confidence=0.8, session=$sess RETURN NONE;`,
+				{ t: `trig ${i}`, o: `out ${i}`, sess: plink(sessions[i]) }
+			);
+		}
+	}
+
+	it('records the PROJECT stage change ONCE under the project subject; re-running is a per-subject no-op (dedup)', async () => {
+		await seedDevelopingFor(A);
+
+		const rec = await recordProjectGraduationIfChanged(db, A);
+		expect(rec).toEqual({ subject: projectSubject(A), fromStage: 'nascent', toStage: 'developing' });
+
+		// Re-running at the same project stage is a no-op (per-subject dedup guard).
+		expect(await recordProjectGraduationIfChanged(db, A)).toBeNull();
+
+		const rows = await listGraduations(db, projectSubject(A));
+		expect(rows).toHaveLength(1);
+		expect(rows[0].subject).toBe(A);
+		expect(rows[0].toStage).toBe('developing');
+		// Snapshot reflects the PROJECT's live counts (F-008), not the global brain's.
+		expect(rows[0].concepts).toBe(5);
+		expect(rows[0].corrections).toBe(1);
+		expect(rows[0].causalChains).toBe(3);
+		expect(rows[0].sessions).toBe(10);
+	});
+
+	it('a cold/new project is honestly nascent — records nothing (F-008)', async () => {
+		await seedDevelopingFor(A); // A is developing; a DIFFERENT project has no rows.
+		expect(await recordProjectGraduationIfChanged(db, 'project:brandnew')).toBeNull();
+		expect(await listGraduations(db, projectSubject('project:brandnew'))).toEqual([]);
+	});
+
+	it('atelier (global) and a project subject are isolated with REAL project-scoped metrics', async () => {
+		await seedDevelopingFor(A); // A's rows are ALSO global rows.
+
+		// Atelier reads the GLOBAL brain (A's rows count) → developing.
+		expect((await recordGraduationIfChanged(db))?.toStage).toBe('developing');
+		// Project A reads its OWN slice → developing (independent subject).
+		expect((await recordProjectGraduationIfChanged(db, A))?.toStage).toBe('developing');
+		// A cold sibling project reads an EMPTY slice → nascent → records nothing.
+		expect(await recordProjectGraduationIfChanged(db, 'project:cold')).toBeNull();
+
+		expect(await listGraduations(db, ATELIER_SUBJECT)).toHaveLength(1);
+		expect(await listGraduations(db, projectSubject(A))).toHaveLength(1);
+		expect(await listGraduations(db, projectSubject('project:cold'))).toEqual([]);
 	});
 });

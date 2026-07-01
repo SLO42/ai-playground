@@ -159,8 +159,9 @@ export async function listGraduations(
  * compare to the last recorded `to_stage` FOR `subject` (or the {@link BASELINE_STAGE} nascent
  * baseline when the subject has no history), and append EXACTLY ONE `soul_graduation` row iff the
  * stage CHANGED. Returns the recorded transition, or null when nothing changed (or on any absorbed
- * fault). THIS build derives the ATELIER global soul; `subject` is parameterized so a future PM-soul
- * build reuses this recorder verbatim with a `project:<id>` subject + its own derived metrics.
+ * fault). `subject` is the storage key and `project` is the metric SCOPE: omit both for the ATELIER
+ * global soul; pass a project id (see {@link recordProjectGraduationIfChanged}) for a per-PM soul,
+ * which derives from THAT project's slice of the brain (readSoulMetrics(db, project)) — never global.
  *
  * IDEMPOTENT + DEDUP-SAFE (PER-SUBJECT): the last-recorded-stage guard is scoped to `subject`, so
  * re-running the pass at the same stage records nothing and an atelier graduation never collides
@@ -171,10 +172,11 @@ export async function listGraduations(
  */
 export async function recordGraduationIfChanged(
 	db: Db,
-	subject: string = ATELIER_SUBJECT
+	subject: string = ATELIER_SUBJECT,
+	project?: string
 ): Promise<RecordedGraduation | null> {
 	try {
-		const metrics = await readSoulMetrics(db);
+		const metrics = await readSoulMetrics(db, project);
 		const { stage } = deriveMaturityStage(metrics);
 		const last = (await readLatestGraduationStage(db, subject)) ?? BASELINE_STAGE;
 		if (stage === last) return null; // no boundary crossed → nothing to record
@@ -200,4 +202,28 @@ export async function recordGraduationIfChanged(
 		// the next pass re-checks against the now-current last stage and stays consistent.
 		return null;
 	}
+}
+
+/**
+ * The soul SUBJECT key for a project's PM identity. The project record id ("project:<slug>") IS the
+ * key — it is unique per project, already distinct from {@link ATELIER_SUBJECT} ("atelier"), and
+ * needs no transform. Centralized so the recorder and every reader derive the SAME key from a
+ * project id (no drift between the write seam and the project-page read).
+ */
+export function projectSubject(projectId: string): string {
+	return projectId;
+}
+
+/**
+ * Record a PROJECT's PM-soul graduation if its project-scoped maturity stage crossed a boundary.
+ * Thin wrapper over {@link recordGraduationIfChanged}: the subject is the project record id
+ * ({@link projectSubject}) and the metric scope is that same project — so the derived stage is the
+ * project's own (per-PM identity), never the global Atelier stage. Same fail-open + per-subject
+ * dedup contract; returns null when the stage is unchanged or a fault is absorbed.
+ */
+export async function recordProjectGraduationIfChanged(
+	db: Db,
+	projectId: string
+): Promise<RecordedGraduation | null> {
+	return recordGraduationIfChanged(db, projectSubject(projectId), projectId);
 }

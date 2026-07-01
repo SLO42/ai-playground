@@ -23,6 +23,7 @@
   import ProjectStatus from '$lib/components/project/ProjectStatus.svelte';
   import ProjectActivity from '$lib/components/project/ProjectActivity.svelte';
   import ProjectControls from '$lib/components/project/ProjectControls.svelte';
+  import PmSoulPanel from '$lib/components/project/PmSoulPanel.svelte';
   // GAME-VERIFY GV-4 — the live game_verify verdict surface (operator visibility).
   import GameVerifyVerdict from './GameVerifyVerdict.svelte';
   // LP-3 — the reusable Loops surface (LP-2): grouped LoopCards for this project's loops.
@@ -1732,6 +1733,13 @@
     {:else if tab === 'pm'}
       <!-- TASK 9.1/16.1 — Project Manager: hired identity + the strategic layer. -->
       <div class="tab-body">
+        <!-- Per-PM soul (per-PM identity) — the project-scoped derived self-model + graduation
+             timeline, mirroring /brain's Atelier soul. Honest nascent for a cold/new project. -->
+        <PmSoulPanel
+          connected={data.connected}
+          pmSoul={data.pmSoul}
+          graduations={data.pmGraduations}
+        />
         <div class="card">
           <div class="pm-head">
             <h2 class="section-title">Project Manager</h2>

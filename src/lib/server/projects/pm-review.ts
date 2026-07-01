@@ -29,6 +29,11 @@ import { assemblePmContext, type PmContextBundle } from './pm-session';
 import { proposeTask, type ProposalOpts, type ProposeTaskResult, type ProposeTaskInput } from './pm-proposals';
 import { deriveGithubTriage, type GithubTriageResult } from './pm-triage';
 import {
+	maybeEmitConciergeConsult,
+	surfaceConciergeReplies,
+	type PmConciergeDeps
+} from './pm-concierge';
+import {
 	addPmMemory,
 	addPmReview,
 	getPm,
@@ -100,10 +105,16 @@ export async function runPmReview(
 	projectId: string,
 	trigger: PmReviewTrigger = 'manual',
 	provenance?: PmReviewProvenance,
-	opts: ProposalOpts = {}
+	opts: ProposalOpts = {},
+	conciergeDeps?: PmConciergeDeps
 ): Promise<PmReviewResult> {
 	const project = await getProject(db, projectId);
 	if (!project) throw new Error(`project not found: ${projectId}`);
+
+	// Path B (CONVERSATION-LAYER-SPEC): FIRST drain any async Atelier-concierge advisories that
+	// landed since the last pass (replies to earlier consults) into pm_memory — BEFORE assembling
+	// the context, so surfaced advice is part of THIS pass's PM view. Fail-open (never throws).
+	const surfacedAdvisories = await surfaceConciergeReplies(db, projectId);
 
 	// TASK 16.1 (PM-SPEC §2): assemble the durable context layers (charter + plan +
 	// memory) BEFORE deriving — the bundle the pass woke up with, charter first.
@@ -243,7 +254,9 @@ export async function runPmReview(
 		seeds.push(...triage.notes);
 	}
 
-	const written: PmMemoryRow[] = [];
+	// Surfaced concierge advisories were already written to pm_memory (above, pre-context) — fold them
+	// into this pass's `written` so callers/surfaces see them as memories this pass produced.
+	const written: PmMemoryRow[] = [...surfacedAdvisories];
 	for (const seed of seeds) written.push(await addPmMemory(db, seed));
 
 	const risksWrittenNow = written.filter((m) => m.kind === 'risk').length;
@@ -280,6 +293,18 @@ export async function runPmReview(
 		triageProposals: triage?.proposals ?? [],
 		opts
 	});
+
+	// Path B: LAST, on a NOVEL specialist-need (blocked work / severe findings), EMIT one
+	// fire-and-forget atelier consult (deduped per novel need). This is ADVISORY and NON-STEERING —
+	// it runs AFTER (and never alters) the deterministic proposals above; the concierge's async reply
+	// informs the operator/next pass (surfaced then), it does not act. Fail-open (never throws). The
+	// "awaiting advice" note it writes is persisted to pm_memory (surfaces next pass), deliberately NOT
+	// folded into this pass's `written`/memories_written — that count already closed on what we derived.
+	await maybeEmitConciergeConsult(
+		db,
+		{ projectId, projectLabel: project.name, tasks, severe },
+		conciergeDeps
+	);
 
 	return {
 		review,

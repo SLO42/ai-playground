@@ -778,8 +778,9 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	// without the other). A NON-granted session sees NONE of this (no dead affordance). The who-list
 	// is derived from the LIVE FleetSnapshot (real running sessions in THIS project — F-008 honest,
 	// never fabricated), so the agent only ever addresses recipients that actually resolve. The
-	// affordance advertises ONLY `session`/`role@project` (NOT the inert pm/atelier D-040 placeholders).
-	// BEST-EFFORT (D-019 / F-014): a fleet-load fault NEVER blocks the spawn — the affordance is just
+	// affordance advertises the full mesh — `session`/`role@project` PLUS `pm` and `atelier` (live since
+	// 75a715f: pm → the project's PM identity, atelier → the singular platform concierge; both inbox as
+	// pending when offline). BEST-EFFORT (D-019 / F-014): a fleet-load fault NEVER blocks the spawn — the affordance is just
 	// omitted. This is an instruction to the DRIVEN agent; it carries NO received peer body (those
 	// stay fenced DATA in the context block above — D-035a).
 	let affordances: string[] | undefined;

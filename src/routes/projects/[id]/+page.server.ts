@@ -112,6 +112,25 @@ import {
 // command-center Loops tab. getLoops({projectId}) returns ONLY the project-scoped loops (global
 // loops excluded), typed + normalized (no raw SDK non-POJOs — F-013); honest states (F-008).
 import { getLoops, type LoopView } from '$lib/server/loops/read';
+// LP-3 (manifest layer) — the DECLARED loop manifest scoped to THIS project: each running card's
+// readiness/override state (manifestMap) plus declared-but-not-running loops surfaced honestly
+// (F-008 — never dropped, never dressed as running). Same composition as /loops, project-scoped.
+import {
+	listLoopManifest,
+	reconcileLoops,
+	manifestByIdentifier,
+	type LoopManifestRow,
+	type ReconciledLoop
+} from '$lib/server/loops/manifest';
+// LP-3 — the readiness ARM GATE (LOOP-ENGINEERING step 5). The Loops tab hosts the same editable
+// LoopCards as /loops, so this route's `pmAutonomous` ARM path routes through the SAME gate
+// (Design Checklist green OR an explicit recorded operator override) — otherwise arming from this
+// page would silently bypass the gate /loops enforces. DISARM (the kill switch) is NEVER gated.
+import { armAutonomousLoop } from '$lib/server/loops/arm-gate';
+// LP-3 — compose the /loops route's already-validated manifest actions (loopChecklist / loopPhase):
+// the LoopReadiness / LoopManageControls forms POST to the CURRENT page (`?/loopChecklist` …), so the
+// page hosting the cards must host the actions — the same composition /loops/[identifier] uses.
+import { actions as loopsActions } from '../../loops/+page.server';
 // CC-CONTROLS — the operator command-center CONTROL seam (CONTINUE re-enqueue / RESTART a failed run).
 // Reuses the LIVE orchestrator's enqueue/drain (activeOrchestrator) + the work_item dedup double-spawn
 // guard; never bypasses the spawn cap (the orchestrator owns it inside drain).
@@ -362,6 +381,18 @@ export interface ProjectDetailData {
 	 * on a degraded boot (honest empty → the tab shows "no active loops", F-008).
 	 */
 	loops: LoopView[];
+	/**
+	 * LP-3 (manifest layer) — identifier → declared manifest row for THIS project's loops, so each
+	 * running LoopCard finds its declared/readiness state (checklist, phase, override). {} when
+	 * nothing is declared or on a degraded read (honest empty, F-008).
+	 */
+	loopManifestMap: Record<string, LoopManifestRow>;
+	/**
+	 * LP-3 — this project's DECLARED loops with NO live counterpart (reconcile status
+	 * 'declared-not-running'), surfaced honestly as their own section (F-008) — a real declaration
+	 * whose loop is not currently running, never dropped and never dressed as a running card.
+	 */
+	loopDeclaredOnly: ReconciledLoop[];
 	error?: string;
 }
 
@@ -389,6 +420,9 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 	// LP-3 — the Loops tab's run history is agent_event; a run event re-invalidates the loader, which
 	// re-samples the live armed PM singletons (the loop arm/cadence already re-invalidate via app:pm).
 	depends('app:analytics');
+	// LP-3 (manifest layer) — a `loop` row change (checklist tick / phase / override / declare)
+	// re-invalidates so the cards' readiness state updates live (mirrors /loops).
+	depends('app:loops-manifest');
 
 	// Validate the project id at the boundary (D-016) — a malformed param is a 404,
 	// never an interpolated query.
@@ -471,7 +505,9 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			repoBrief: null,
 			gameVerify: [],
 			gameVerifyConfigured: false,
-			loops: []
+			loops: [],
+			loopManifestMap: {},
+			loopDeclaredOnly: []
 		};
 	}
 
@@ -612,6 +648,24 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			loops = [];
 		}
 
+		// LP-3 (manifest layer) — THIS project's declared manifest rows: manifestMap keys each running
+		// card to its readiness/override state; reconcile surfaces declared-but-not-running loops as
+		// their own honest section. Scoped server-side (listLoopManifest({projectId}) — another
+		// project's declarations never bleed in). A reader throw must NEVER sink the detail page
+		// (honest partial, F-008): on failure both degrade to empty, never a fabricated declaration.
+		let loopManifestMap: Record<string, LoopManifestRow> = {};
+		let loopDeclaredOnly: ReconciledLoop[] = [];
+		try {
+			const loopManifest = await listLoopManifest(db, { projectId });
+			loopManifestMap = manifestByIdentifier(loopManifest);
+			loopDeclaredOnly = reconcileLoops(loopManifest, loops).filter(
+				(r) => r.status === 'declared-not-running'
+			);
+		} catch {
+			loopManifestMap = {};
+			loopDeclaredOnly = [];
+		}
+
 		// Per-PM SOUL (per-PM identity) — this project's project-scoped derived self-model + its
 		// graduation timeline (subject = the project record id). Mirrors /brain's Atelier soul, scoped
 		// to THIS project's slice of the brain. A cold/new project derives an honest `nascent` identity
@@ -718,7 +772,9 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			repoBrief,
 			gameVerify,
 			gameVerifyConfigured,
-			loops
+			loops,
+			loopManifestMap,
+			loopDeclaredOnly
 		};
 	} catch (err) {
 		// A 404 thrown above is a SvelteKit HttpError — rethrow it, don't swallow.
@@ -767,6 +823,8 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			gameVerify: [],
 			gameVerifyConfigured: false,
 			loops: [],
+			loopManifestMap: {},
+			loopDeclaredOnly: [],
 			error: (err as Error).message
 		};
 	}
@@ -1447,16 +1505,64 @@ export const actions: Actions = {
 
 		const form = await request.formData();
 		const armed = String(form.get('armed') ?? '').trim() === 'true';
+
+		// DISARM — never gated (the kill switch). Direct write.
+		if (!armed) {
+			try {
+				const updated = await setPmAutonomous(db, projectId, false);
+				if (!updated) {
+					return fail(409, { pm: { error: 'No PM hired for this project yet — hire one first (arming never auto-hires).' } });
+				}
+				return { pm: { ok: true as const, action: 'autonomous', autonomous: updated.autonomous } };
+			} catch (err) {
+				return fail(500, { pm: { error: (err as Error).message } });
+			}
+		}
+
+		// ARM — gated on the loop's Design-Checklist readiness (LP-3: the SAME gate the /loops
+		// `pmAutonomous` ARM path enforces — this route hosts the same editable LoopCards, so it must
+		// not be a bypass). The operator may override (override=true + an optional recorded reason);
+		// a persisted override on the manifest also satisfies the gate.
+		const override = String(form.get('override') ?? '').trim() === 'true';
+		const overrideReason = String(form.get('overrideReason') ?? '').trim() || undefined;
 		try {
-			const updated = await setPmAutonomous(db, projectId, armed);
-			if (!updated) {
+			const result = await armAutonomousLoop(db, projectId, { override, overrideReason });
+			if (result.ok) {
+				return {
+					pm: {
+						ok: true as const,
+						action: 'autonomous',
+						autonomous: result.autonomous,
+						overridden: result.overridden
+					}
+				};
+			}
+			if (result.reason === 'no-pm') {
 				return fail(409, { pm: { error: 'No PM hired for this project yet — hire one first (arming never auto-hires).' } });
 			}
-			return { pm: { ok: true as const, action: 'autonomous', autonomous: updated.autonomous } };
+			// not-ready — block + surface the missing Design-Checklist items (honest; never a silent arm).
+			return fail(409, {
+				pm: {
+					error:
+						'Loop not ready for autonomy — complete the readiness checklist on the Loops tab or override the gate.',
+					missing: result.missing.map((m) => m.label)
+				}
+			});
 		} catch (err) {
 			return fail(500, { pm: { error: (err as Error).message } });
 		}
 	},
+
+	// LP-3 — the Loops tab's manifest write paths, COMPOSED from the /loops route's already-validated,
+	// already-tested actions (the LoopReadiness checklist + phase forms POST to the CURRENT page; both
+	// carry the loop identity — identifier/kind/label/projectId — in the form and validate it at the
+	// boundary). Same composition pattern as /loops/[identifier]. The delegates cast ONLY the route-id
+	// literal on the Action generic ("/projects/[id]" → "/loops"); the composed actions read nothing
+	// but `request`, so the event is structurally compatible.
+	loopChecklist: async (event) =>
+		loopsActions.loopChecklist(event as unknown as Parameters<typeof loopsActions.loopChecklist>[0]),
+	loopPhase: async (event) =>
+		loopsActions.loopPhase(event as unknown as Parameters<typeof loopsActions.loopPhase>[0]),
 
 	/**
 	 * PMA — set/revoke the operator's PRE-AUTHORIZE-AUTO-PUBLISH consent. This records that the operator

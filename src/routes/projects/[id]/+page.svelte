@@ -26,8 +26,10 @@
   import PmSoulPanel from '$lib/components/project/PmSoulPanel.svelte';
   // GAME-VERIFY GV-4 — the live game_verify verdict surface (operator visibility).
   import GameVerifyVerdict from './GameVerifyVerdict.svelte';
-  // LP-3 — the reusable Loops surface (LP-2): grouped LoopCards for this project's loops.
+  // LP-3 — the reusable Loops surface (LP-2): grouped LoopCards for this project's loops, plus the
+  // honest declared-but-not-running card (the manifest layer).
   import LoopList from '$lib/components/loops/LoopList.svelte';
+  import LoopDeclaredCard from '$lib/components/loops/LoopDeclaredCard.svelte';
   import {
     rowToTurn,
     liveEventToTurn,
@@ -62,6 +64,10 @@
   // LP-3 — this project's recurring autonomous loops (project-scoped: autonomous PM drive + cadence).
   // Honest empty (F-008): an unarmed/unscheduled PM ⇒ [] ⇒ the tab shows "no active loops".
   const loops = $derived(data.loops ?? []);
+  // LP-3 (manifest layer) — identifier → declared manifest row (readiness/checklist/override for the
+  // editable cards) + this project's declared-but-not-running loops (their own honest section).
+  const loopManifestMap = $derived(data.loopManifestMap ?? {});
+  const loopDeclaredOnly = $derived(data.loopDeclaredOnly ?? []);
   // ── TASK 10.4 — the missing workspace surfaces (board / memory / settings / maintain).
   const taskStatuses = $derived(data.taskStatuses ?? []);
   const taskPriorities = $derived(data.taskPriorities ?? []);
@@ -652,6 +658,9 @@
     // loader so the loop cards' last-run / recent-runs re-derive live (the arm/cadence state already
     // re-invalidates via the pm watcher above).
     const offAe = stream.onDbChange('agent_event', () => void invalidate('app:analytics'));
+    // LP-3 (manifest layer) — a `loop` row change (checklist tick / phase / override / declare)
+    // re-invalidates so the Loops tab's readiness state updates live (mirrors /loops).
+    const offLoop = stream.onDbChange('loop', () => void invalidate('app:loops-manifest'));
     return () => {
       offP();
       offT();
@@ -669,6 +678,7 @@
       offMem();
       offE();
       offAe();
+      offLoop();
     };
   });
 
@@ -3147,24 +3157,51 @@
       </div>
     {:else if tab === 'loops'}
       <!-- LP-3 — this project's recurring autonomous loops (autonomous PM drive + cadence), surfaced
-           via the reusable LoopList (LP-2). VIEW + IDENTIFY only — config-editing is a later wave.
-           Honest states (F-008): an unarmed/unscheduled PM ⇒ "no active loops", never a fake card. -->
+           via the reusable LoopList (LP-2) with the FULL editable controls (arm/disarm + override,
+           readiness checklist, cadence — this route hosts the same actions as /loops), plus the
+           declared-but-not-running manifest section. Each card keeps its "Review & configure →" link
+           to /loops/[identifier]. Honest states (F-008): an unarmed/unscheduled PM with nothing
+           declared ⇒ "no loops for this project yet", never a fake card. -->
       <div class="tab-body">
         <p class="state-body loops-lede">
           The recurring loops this project's Project Manager runs on its own — the autonomous drive
           (when armed) and the cadence trigger (when scheduled). Live from the database; states are
-          honest ('—' / 'not yet run' / 'unknown') rather than fabricated. View &amp; identify only.
+          honest ('—' / 'not yet run' / 'unknown') rather than fabricated. Arm/disarm, readiness and
+          cadence are editable here; each card links to its full review page.
         </p>
-        {#if loops.length === 0}
+        {#if loops.length === 0 && loopDeclaredOnly.length === 0}
           <div class="card state">
-            <span class="eyebrow">no active loops</span>
+            <span class="eyebrow">no loops for this project yet</span>
             <p class="state-body">
-              This project has no armed autonomous drive or scheduled PM cadence yet, so it runs no
-              recurring loops. Arm the PM or set a cadence on the PM tab and its loops appear here.
+              This project has no armed autonomous drive, scheduled PM cadence, or declared loop yet,
+              so it runs no recurring loops. Arm the PM or set a cadence on the PM tab and its loops
+              appear here.
             </p>
           </div>
         {:else}
-          <LoopList {loops} projectNames={loopProjectNames} editable />
+          {#if loops.length > 0}
+            <LoopList
+              {loops}
+              projectNames={loopProjectNames}
+              manifestMap={loopManifestMap}
+              editable
+            />
+          {/if}
+          {#if loopDeclaredOnly.length > 0}
+            <!-- Declared in the manifest, no live counterpart (F-008 — honest, never dressed as
+                 running). Arming a pm-autonomous declared loop here is readiness-gated. -->
+            <section class="loops-declared" aria-labelledby="proj-declared-h">
+              <h3 class="loops-declared-title" id="proj-declared-h">
+                Declared · not currently running
+                <span class="loops-declared-count" aria-hidden="true">{loopDeclaredOnly.length}</span>
+              </h3>
+              <div class="loops-declared-grid">
+                {#each loopDeclaredOnly as entry (entry.identifier)}
+                  <LoopDeclaredCard {entry} />
+                {/each}
+              </div>
+            </section>
+          {/if}
         {/if}
       </div>
     {:else if tab === 'release'}
@@ -3518,6 +3555,31 @@
   /* LP-3 — the Loops tab intro line; max-width keeps the copy readable above the card grid. */
   .loops-lede {
     max-width: 72ch;
+  }
+  /* LP-3 (manifest layer) — the declared-but-not-running section (mirrors /loops' declared block). */
+  .loops-declared {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+    margin-top: var(--space-5);
+  }
+  .loops-declared-title {
+    font: var(--type-h3);
+    color: var(--color-text);
+    display: flex;
+    align-items: baseline;
+    gap: var(--space-3);
+  }
+  .loops-declared-count {
+    font-family: var(--font-mono);
+    font-size: var(--text-sm, 0.82rem);
+    color: var(--color-text-muted);
+    font-weight: var(--weight-regular, 400);
+  }
+  .loops-declared-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(320px, 1fr));
+    gap: var(--space-4);
   }
   .tabs {
     display: flex;

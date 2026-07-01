@@ -3,7 +3,9 @@
 // control: arm/disarm the unsupervised loop, and the operator's pre-authorize-auto-publish consent
 // (default OFF). The red-team here is the actions' boundary + integrity invariants:
 //
-//   • arm true/false flips pm.autonomous and returns the live value (200);
+//   • ARM is readiness-GATED (LP-3 — the SAME arm gate as /loops): a not-green Design Checklist blocks
+//     409 with the missing items; a green checklist or an explicit operator override arms (200);
+//   • DISARM (the kill switch) is NEVER gated and flips pm.autonomous=false (200);
 //   • pre-authorize true/false flips pm.auto_publish_preauthorized and returns it (200);
 //   • the two flags are INDEPENDENT — arming never auto-publishes, opting in never disarms;
 //   • a project with NO hired PM → 409 for BOTH (never auto-hires — integrity LOCKED);
@@ -18,6 +20,9 @@ import { runMigrations } from '$lib/server/db/migrate';
 import { schemaMigrations } from '$lib/server/db/schema';
 import { startTestDb, type TestDb } from '$lib/server/db/testserver';
 import { createPm, getPm } from '$lib/server/projects/pm-repo';
+import { setLoopChecklistItem, upsertLoopManifest } from '$lib/server/loops/manifest';
+import { pmAutonomousLoopIdentifier } from '$lib/server/loops/arm-gate';
+import { READINESS_CHECKLIST } from '$lib/components/loops/readiness-core';
 import { actions } from './+page.server';
 
 let tdb: TestDb;
@@ -86,10 +91,27 @@ async function call(
 
 const pmOf = (r: ActionRes) => (r.data as { pm?: Record<string, unknown> })?.pm ?? {};
 
-describe('/projects/[id] pmAutonomous action — arm/disarm the unsupervised loop', () => {
-	it('arms a hired PM (200); the live row reads autonomous=true', async () => {
+/** Green the pm-autonomous loop's Design Checklist so an ungated arm is reachable (mirrors /loops). */
+async function greenChecklist(projectId: string): Promise<void> {
+	const identifier = pmAutonomousLoopIdentifier(projectId);
+	await upsertLoopManifest(db, { identifier, kind: 'pm-autonomous', label: 'test loop', projectId });
+	for (const item of READINESS_CHECKLIST) await setLoopChecklistItem(db, identifier, item.id, true);
+}
+
+describe('/projects/[id] pmAutonomous action — arm/disarm the unsupervised loop (readiness-gated arm)', () => {
+	it('arm is BLOCKED 409 when the readiness checklist is not green — nothing armed, missing surfaced', async () => {
+		const slug = await freshProjectSlug('pma_arm_blocked');
+		await createPm(db, { project: `project:${slug}`, name: 'Vesper' });
+		const res = await call('pmAutonomous', slug, { armed: 'true' });
+		expect(res.status).toBe(409);
+		expect((pmOf(res).missing as string[]).length).toBe(READINESS_CHECKLIST.length);
+		expect((await getPm(db, `project:${slug}`))?.autonomous).toBe(false);
+	});
+
+	it('arms a hired PM once the checklist is green (200); the live row reads autonomous=true', async () => {
 		const slug = await freshProjectSlug('pma_arm_act');
 		await createPm(db, { project: `project:${slug}`, name: 'Vesper' });
+		await greenChecklist(`project:${slug}`);
 		const res = await call('pmAutonomous', slug, { armed: 'true' });
 		expect(res.status).toBe(200);
 		expect(pmOf(res).action).toBe('autonomous');
@@ -97,10 +119,24 @@ describe('/projects/[id] pmAutonomous action — arm/disarm the unsupervised loo
 		expect((await getPm(db, `project:${slug}`))?.autonomous).toBe(true);
 	});
 
-	it('disarms (armed=false) → autonomous=false', async () => {
+	it('arm with override=true arms a not-ready loop (operator is sovereign; recorded)', async () => {
+		const slug = await freshProjectSlug('pma_arm_override');
+		await createPm(db, { project: `project:${slug}`, name: 'Vesper' });
+		const res = await call('pmAutonomous', slug, {
+			armed: 'true',
+			override: 'true',
+			overrideReason: 'operator go'
+		});
+		expect(res.status).toBe(200);
+		expect(pmOf(res).autonomous).toBe(true);
+		expect(pmOf(res).overridden).toBe(true);
+		expect((await getPm(db, `project:${slug}`))?.autonomous).toBe(true);
+	});
+
+	it('disarms (armed=false) → autonomous=false — the kill switch is NEVER gated', async () => {
 		const slug = await freshProjectSlug('pma_disarm_act');
 		await createPm(db, { project: `project:${slug}`, name: 'Vesper' });
-		await call('pmAutonomous', slug, { armed: 'true' });
+		await call('pmAutonomous', slug, { armed: 'true', override: 'true' });
 		const res = await call('pmAutonomous', slug, { armed: 'false' });
 		expect(res.status).toBe(200);
 		expect(pmOf(res).autonomous).toBe(false);
@@ -123,7 +159,8 @@ describe('/projects/[id] pmAutoPublish action — pre-authorize-auto-publish opt
 	it('opts in (200); the live row reads auto_publish_preauthorized=true; arm flag untouched', async () => {
 		const slug = await freshProjectSlug('pma_pub_in');
 		await createPm(db, { project: `project:${slug}`, name: 'Vesper' });
-		await call('pmAutonomous', slug, { armed: 'true' });
+		// Arm via the operator override (the readiness gate would otherwise block a fresh loop).
+		await call('pmAutonomous', slug, { armed: 'true', override: 'true' });
 		const res = await call('pmAutoPublish', slug, { preauthorized: 'true' });
 		expect(res.status).toBe(200);
 		expect(pmOf(res).action).toBe('autoPublish');

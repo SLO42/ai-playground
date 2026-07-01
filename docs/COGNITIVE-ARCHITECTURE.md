@@ -245,6 +245,20 @@ fallback when unreachable (no fabricated results). Opt-in `CONCIERGE_SKILL_SEARC
 stub). Standing note in every proposal: installs are operator-gated + D-026/D-037-reviewed + must
 be in a SYNCED catalog scope before any bundle declares them (F-045).
 
+**Concierge is now CONSULTED (not just reachable)** — 2026-07-01. Prereq honesty fix: the peer
+affordance was falsely telling granted sessions `pm`/`atelier` were "not yet reachable" (stale since
+Stage-1) → corrected to advertise both as reachable (`75a715f`). **Path A** (`f8e5730`): the agentic
+PM chat gets peer-send (all peers, reserved `peer-send` id — no F-045 trip) + a gated when-to-consult
+resource in its turn (specialist→agent-rec, skill→skill-discovery, hard decision→open-question;
+advisory/async/non-blocking). **Path B** (`4226787`): the AUTONOMOUS deterministic PM review
+(`pm-review.ts`) emits a fire-and-forget atelier consult on a NOVEL specialist/skill/hard-decision
+need — anchored on a durable per-project **PM peer-identity session** (`status:done` mailbox, stays
+out of the fleet snapshot = honest liveness) so the deterministic pass can send + the async advisory
+reply lands back and surfaces once into `pm_memory` a later pass; deduped via immutable
+`peer_message.dedup_key` (once per novel need, not per tick — F-048-safe); fire-and-forget never
+blocks/crashes the review (F-014); non-steering (proposals untouched — the concierge advises, the
+operator/PM acts). This realizes the vision's "hires talk to the brain" pillar.
+
 **Roadmap COMPLETE for the buildable queue.** Deferred / operator-gated only: graduation-history
 table (soul provenance/timeline); flip `CONCIERGE_SKILL_SEARCH` on for live skill search; the first
 real local-vs-cloud benchmark RUN (runbook in MODEL-BENCHMARK-SPEC.md — needs a cloud API key +

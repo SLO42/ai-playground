@@ -194,3 +194,18 @@ describe('§2.6 wakeup briefing — token budget + salience banding (VERIFY 2)',
 		expect(estimateTokens(empty.text)).toBeLessThanOrEqual(50);
 	});
 });
+
+describe('§2.6 unresolved tasks — surfaced in the briefing (F-020 regression)', () => {
+	// The unresolved-tasks query (loadUnresolved) ORDER BYs `updated_at`; that field MUST be in the
+	// projection or SurrealDB 2.x parse-errors "Missing order idiom". The load path wraps the call in
+	// a best-effort try/catch, so a parse error was SILENTLY swallowed — the seeded blocked task never
+	// surfaced and no test noticed (the pre-existing tests seed a task but never assert it appears).
+	// This locks the real path: the seeded 'blocked/high' task MUST be surfaced in the briefing.
+	it('surfaces the seeded blocked task (the ORDER BY updated_at query must actually PARSE)', async () => {
+		const b = await buildBriefing(mem, { project: projectId, query: 'importer flaky test', tokenBudget: 6000 });
+		const task = b.items.find(
+			(i) => i.fenced.text.includes('Unresolved task') && i.fenced.text.includes('Fix flaky importer test')
+		);
+		expect(task).toBeDefined();
+	});
+});

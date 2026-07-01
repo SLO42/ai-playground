@@ -22,7 +22,7 @@
 //                            (wobbly spring normally; instant/opacity-only when reduced).
 //   4. nodeVisual()        — a node's design-system color family + radius (TOKENS only).
 
-import type { SceneGraph, SceneNode, SceneEdge, SceneNodeClass, SceneEvent } from '$lib/server/scene';
+import type { SceneGraph, SceneNode, SceneEdge, SceneNodeClass, SceneEvent, SceneSelfDetail } from '$lib/server/scene';
 
 // ── 1. Force model ──────────────────────────────────────────────────────────────────
 
@@ -35,6 +35,8 @@ export interface ForceNode {
 	status: string;
 	/** S3 — a concept node's screened summary (surfaced in the inspect panel). Absent otherwise. */
 	summary?: string;
+	/** S4 — the SELF node's derived soul/identity detail (only present on the `self` node). */
+	self?: SceneSelfDetail;
 	/** Owning project record-id when the source row carried one (for the per-atelier lens). */
 	project?: string;
 	/** Agent slot that ran a job (session nodes; m0069) — surfaced in the inspect panel. */
@@ -87,6 +89,7 @@ export function toForceModel(graph: SceneGraph | null | undefined): ForceModel {
 		label: n.label,
 		status: n.status,
 		...(n.summary ? { summary: n.summary } : {}),
+		...(n.self ? { self: n.self } : {}),
 		...(n.project ? { project: n.project } : {}),
 		...(n.agent ? { agent: n.agent } : {}),
 		...(n.task ? { task: n.task } : {}),
@@ -292,6 +295,9 @@ export interface NodeVisual {
 
 /** Normalize a live status into one of the design-system status families (token classes). */
 export function statusFamily(node: Pick<ForceNode, 'class' | 'status'>): string {
+	// S4 — the SELF node carries its maturity stage as its status; pass it through unchanged so the
+	// UI can color the identity ring by stage (nascent | developing | established), not a job family.
+	if (node.class === 'self') return (node.status ?? 'nascent').toLowerCase();
 	const s = (node.status ?? '').toLowerCase();
 	if (s === 'archived' || s === 'superseded') return 'dim';
 	if (TERMINAL_STATUSES.has(s)) return s === 'failed' || s === 'cancelled' ? 'failed' : 'done';
@@ -309,7 +315,9 @@ export function statusFamily(node: Pick<ForceNode, 'class' | 'status'>): string 
  */
 export function nodeVisual(node: ForceNode): NodeVisual {
 	const radius =
-		node.class === 'project'
+		node.class === 'self'
+			? 16 // S4 — the identity anchor: the single largest node in the scene.
+			: node.class === 'project'
 			? 12
 			: node.class === 'concept'
 				? 11 // S3 concepts are structural semantic anchors (project-sized)

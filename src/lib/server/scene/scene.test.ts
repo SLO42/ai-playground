@@ -272,6 +272,50 @@ describe('buildSceneGraph — derived node/edge truth', () => {
 	});
 });
 
+// ── SELF / soul identity node (S4) ───────────────────────────────────────────────────
+
+describe('buildSceneGraph — SELF / soul identity node (S4)', () => {
+	async function seedConcept(label: string, importance: number): Promise<void> {
+		await db.query(
+			`CREATE concept SET label=$label, summary="", namespace="default",
+			   embedding=array::repeat(0.0, 1024), importance=$imp, stability=0.5, access_count=0,
+			   status="active", screen_status="clean" RETURN NONE;`,
+			{ label, imp: importance }
+		);
+	}
+
+	it('emits ONE central self node anchored to its dominant concepts via `knows` edges', async () => {
+		await seedConcept('living memory scene', 9);
+		await seedConcept('heartbeat loop', 7);
+
+		const g = await buildSceneGraph(db);
+		const self = g.nodes.find((n) => n.id === 'self:atelier');
+		expect(self).toBeDefined();
+		expect(self).toMatchObject({ class: 'self', subclass: 'self', label: 'Atelier' });
+		// status carries the derived maturity stage (a cold-ish brain reads honestly nascent).
+		expect(['nascent', 'developing', 'established']).toContain(self!.status);
+		// exactly ONE self node — the singular identity anchor.
+		expect(g.nodes.filter((n) => n.class === 'self')).toHaveLength(1);
+
+		// The derived soul detail rides on the node (all POJO; F-008 — traces to real rows).
+		expect(self!.self).toBeDefined();
+		expect(self!.self!.knowsAbout[0]).toBe('living memory scene');
+		expect(self!.self!.experience.concepts).toBe(2);
+		expect(typeof self!.self!.summary).toBe('string');
+
+		// `knows` edge SELF → the existing concept node (REUSED, matched by screened label).
+		const conceptNode = g.nodes.find((n) => n.class === 'concept' && n.label === 'living memory scene');
+		expect(conceptNode).toBeDefined();
+		expect(g.edges).toContainEqual({ from: 'self:atelier', to: conceptNode!.id, kind: 'knows' });
+	});
+
+	it('a cold/empty brain yields NO self node — the honest-empty scene is preserved (F-008)', async () => {
+		const g = await buildSceneGraph(db);
+		expect(g.nodes.find((n) => n.class === 'self')).toBeUndefined();
+		expect(g).toEqual({ nodes: [], edges: [] });
+	});
+});
+
 // ── shadow paths ───────────────────────────────────────────────────────────────────
 
 describe('buildSceneGraph — shadow paths (F-008 honest)', () => {

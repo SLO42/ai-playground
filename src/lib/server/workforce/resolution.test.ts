@@ -42,6 +42,7 @@ import {
 	proposalDiff,
 	regauntletChallenger,
 	rejectProposal,
+	resolveRegauntletTarget,
 	ResolutionGateError,
 	swapFromProposal
 } from './resolution';
@@ -577,6 +578,25 @@ describe('listOpenProposals', () => {
 		expect(list.some((p) => p.id === open.id)).toBe(true);
 		expect(list.some((p) => p.id === toReject.id)).toBe(false);
 	});
+});
+
+// ── resolveRegauntletTarget (F-020: ORDER BY started_at must parse) ────────────────────
+
+describe('resolveRegauntletTarget — the §5 certified (tier × model) target', () => {
+	// The target query ORDER BYs interview_run.started_at; that field MUST be in the projection or
+	// SurrealDB 2.x parse-errors "Missing order idiom" (F-020). No existing test exercised this path
+	// (regauntletChallenger is handed tier/provider/model explicitly), so the parse gap was invisible.
+	it('resolves the incumbent’s certified target from its most-recent passing interview', async () => {
+		const seed = await seedRole();
+		await certifyIncumbent(seed); // writes a passing interview_run at the incumbent prompt_sha × MODEL
+		const proposal = await openProposal(seed);
+		const res = await resolveRegauntletTarget(db, proposal.id);
+		expect(res.ok).toBe(true);
+		if (res.ok) {
+			expect(res.target.tier).toBe('sonnet');
+			expect(res.target.modelId).toBe(MODEL);
+		}
+	}, 60_000);
 });
 
 // ── status machine guard (validated → swapped is illegal) ─────────────────────────────

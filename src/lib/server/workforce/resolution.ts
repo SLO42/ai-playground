@@ -381,7 +381,9 @@ export async function resolveRegauntletTarget(
 	if (!inc) return { ok: false, reason: `incumbent ${proposal.incumbent} not found` };
 	const vid = new StringRecordId(assertRecordId(inc.id));
 	const [rows] = await db.query<[Array<{ tier: string; provider: string; model_id: string; id: unknown }>]>(
-		`SELECT id, tier, provider, model_id FROM interview_run
+		// `started_at` MUST appear in the projection to be an ORDER BY idiom (SurrealDB 2.x —
+		// "Missing order idiom" parse error otherwise; F-020). It is not otherwise read here.
+		`SELECT id, tier, provider, model_id, started_at FROM interview_run
 		  WHERE role_version = $vid AND status = 'passed' AND prompt_sha = $sha
 		  ORDER BY started_at DESC LIMIT 1;`,
 		{ vid, sha: inc.prompt_sha }

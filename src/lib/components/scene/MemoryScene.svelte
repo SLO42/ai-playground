@@ -632,7 +632,12 @@
                 transform="translate({n.x ?? 0},{n.y ?? 0})"
                 onpointerdown={(e) => nodePointerDown(e, n.id)}
               >
-                {#if n.class === 'project' || n.class === 'concept'}
+                {#if n.class === 'self'}
+                  <!-- S4 identity anchor: a maturity-ringed core (halo stroke = stage color). -->
+                  <circle class="halo" r={v.radius + 4} />
+                  <circle class="bubble" r={v.radius} />
+                  <circle class="core" r={v.radius * 0.42} />
+                {:else if n.class === 'project' || n.class === 'concept'}
                   <rect class="bubble" x={-v.radius} y={-v.radius} width={v.radius * 2} height={v.radius * 2} rx={n.class === 'concept' ? v.radius : 3} />
                 {:else if n.class === 'agent' || n.class === 'skill'}
                   <polygon class="bubble" points="0,{-v.radius} {v.radius},0 0,{v.radius} {-v.radius},0" />
@@ -834,6 +839,8 @@
   }
   .edge[data-kind='references'] { stroke: var(--color-accent-muted, var(--color-border)); }
   .edge[data-kind='agent'] { stroke-dasharray: 3 3; }
+  /* S4 — the SELF node's "knows-about" links to its dominant concepts (identity → knowledge). */
+  .edge[data-kind='knows'] { stroke: var(--color-accent); stroke-dasharray: 5 3; opacity: 0.7; }
   /* S3 cognitive edges — extracted-from (concept provenance), retrieved / grounded-on (recall),
      supersedes + the concept hierarchy kinds. Each gets a distinct token stroke + dash signature. */
   .edge[data-kind='extracted-from'] { stroke: var(--color-tier-opus); stroke-dasharray: 4 2; }
@@ -874,6 +881,18 @@
   .node[data-class='causal'] .bubble { fill: var(--color-warn); }
   .node[data-class='skill'] .bubble { fill: var(--color-success); }
   .node[data-class='correction'] .bubble { fill: var(--color-error); }
+  /* S4 SELF — the identity anchor. Accent core (the app's own colour) with a concentric maturity
+     halo (stroke = stage: nascent→neutral, developing→running, established→success). */
+  .node[data-class='self'] .bubble { fill: var(--color-accent); stroke: var(--color-surface); stroke-width: 1.5; }
+  .node[data-class='self'] .core { fill: var(--color-on-accent); opacity: 0.85; }
+  .node[data-class='self'] .halo { fill: none; stroke: var(--color-neutral); stroke-width: 2.5; }
+  .node[data-class='self'][data-status='developing'] .halo { stroke: var(--color-running); }
+  .node[data-class='self'][data-status='established'] .halo { stroke: var(--color-success); }
+  /* A living identity gently breathes once it has begun to develop (reduced-motion disables it). */
+  .node[data-class='self'][data-status='developing'] .halo,
+  .node[data-class='self'][data-status='established'] .halo {
+    animation: scene-node-pulse 2.4s ease-in-out infinite;
+  }
   .node[data-status='dim'] .bubble {
     fill: var(--color-text-muted);
     opacity: 0.5;
@@ -1015,6 +1034,10 @@
   .dot[data-class='causal'] { background: var(--color-warn); }
   .dot[data-class='skill'] { background: var(--color-success); border-radius: 2px; transform: rotate(45deg); }
   .dot[data-class='correction'] { background: var(--color-error); }
+  /* S4 SELF legend dot — accent core with a maturity ring echo. */
+  .dot[data-class='self'] { background: var(--color-accent); box-shadow: 0 0 0 1.5px var(--color-neutral); }
+  .dot[data-class='self'][data-status='developing'] { box-shadow: 0 0 0 1.5px var(--color-running); }
+  .dot[data-class='self'][data-status='established'] { box-shadow: 0 0 0 1.5px var(--color-success); }
   .dot[data-status='dim'] { background: var(--color-text-muted); }
   .legend-label {
     overflow: hidden;
@@ -1035,6 +1058,9 @@
       transition: none;
     }
     .node[data-status='active'] .bubble {
+      animation: none;
+    }
+    .node[data-class='self'] .halo {
       animation: none;
     }
   }

@@ -189,6 +189,49 @@ describe('statusFamily + nodeVisual (token classes, no color literals)', () => {
 		expect(agent.radius).toBeGreaterThanOrEqual(job.radius);
 	});
 
+	it('S4 SELF — nodeVisual is the largest anchor; statusFamily passes the maturity stage through', () => {
+		const self = nodeVisual({ id: 'self:atelier', class: 'self', subclass: 'self', label: 'Atelier', status: 'developing' });
+		const project = nodeVisual({ id: 'project:p1', class: 'project', subclass: 'project', label: 'P', status: 'active' });
+		expect(self.colorClass).toBe('self');
+		// the identity anchor is the single largest node in the scene.
+		expect(self.radius).toBeGreaterThan(project.radius);
+		// maturity stage is passed through as the status family (not coerced to a job family).
+		expect(statusFamily({ class: 'self', status: 'developing' })).toBe('developing');
+		expect(statusFamily({ class: 'self', status: 'nascent' })).toBe('nascent');
+		// no inline colour literal in the visual — token classes only.
+		expect(JSON.stringify(self)).not.toMatch(/#[0-9a-f]{3,6}/i);
+	});
+
+	it('S4 SELF — toForceModel carries the soul detail + `knows` edges through', () => {
+		const g: SceneGraph = {
+			nodes: [
+				{
+					id: 'self:atelier',
+					class: 'self',
+					subclass: 'self',
+					label: 'Atelier',
+					status: 'developing',
+					summary: 'Atelier is developing.',
+					self: {
+						maturityStage: 'developing',
+						competence: 0.9,
+						summary: 'Atelier is developing.',
+						knowsAbout: ['memory scene'],
+						values: ['idempotent migrations'],
+						gates: [{ gate: 'concepts ≥ 25', pass: false, detail: '5 concepts' }],
+						experience: { concepts: 5, corrections: 1, causalChains: 3, sessions: 10, retrievalOutcomes: 0, utilizedOutcomes: 0 }
+					}
+				},
+				{ id: 'concept:c1', class: 'concept', subclass: 'concept', label: 'memory scene', status: 'active' }
+			],
+			edges: [{ from: 'self:atelier', to: 'concept:c1', kind: 'knows' }]
+		};
+		const m = toForceModel(g);
+		const self = m.nodes.find((n) => n.id === 'self:atelier');
+		expect(self!.self).toMatchObject({ maturityStage: 'developing', knowsAbout: ['memory scene'] });
+		expect(m.links).toContainEqual({ id: 'self:atelier→concept:c1:knows', source: 'self:atelier', target: 'concept:c1', kind: 'knows' });
+	});
+
 	it('toForceModel carries the inspect-panel fields (agent / task / at) through', () => {
 		const g: SceneGraph = {
 			nodes: [

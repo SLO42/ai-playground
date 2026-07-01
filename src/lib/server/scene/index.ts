@@ -20,10 +20,12 @@ export {
 export {
 	buildSceneGraph,
 	listSceneEvents,
+	SELF_NODE_ID,
 	type SceneGraph,
 	type SceneNode,
 	type SceneEdge,
 	type SceneNodeClass,
 	type SceneGraphLimits,
-	type SceneEvent
+	type SceneEvent,
+	type SceneSelfDetail
 } from './scene';

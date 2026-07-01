@@ -77,6 +77,13 @@
   const kindLabel = $derived(
     node.subclass === 'memory' && node.label.includes(':') ? node.label.split(':')[1].trim() : undefined
   );
+
+  // S4 — the SELF node's derived soul detail (only present on the identity node). Metadata only.
+  const soul = $derived(node.self);
+  /** Competence in [0,1] → a percentage, or an honest 'unknown' when the sample is too small. */
+  function competenceLabel(c: number | null | undefined): string {
+    return typeof c === 'number' ? `${Math.round(c * 100)}%` : 'unknown';
+  }
 </script>
 
 <aside class="inspector" aria-label="Node details">
@@ -119,6 +126,28 @@
       <div class="ins-row">
         <dt>created</dt>
         <dd class="mono" title={node.at ?? ''}>{when(node.at)}</dd>
+      </div>
+    {:else if node.subclass === 'self' && soul}
+      <!-- S4 identity — maturity + competence + experience volume (all derived from live rows). -->
+      <div class="ins-row">
+        <dt>maturity</dt>
+        <dd class="mono">{soul.maturityStage}</dd>
+      </div>
+      <div class="ins-row">
+        <dt>competence</dt>
+        <dd class="mono">{competenceLabel(soul.competence)}</dd>
+      </div>
+      <div class="ins-row">
+        <dt>concepts</dt>
+        <dd class="mono">{soul.experience.concepts}</dd>
+      </div>
+      <div class="ins-row">
+        <dt>corrections</dt>
+        <dd class="mono">{soul.experience.corrections}</dd>
+      </div>
+      <div class="ins-row">
+        <dt>sessions</dt>
+        <dd class="mono">{soul.experience.sessions}</dd>
       </div>
     {:else if node.subclass === 'agent'}
       <div class="ins-row">
@@ -166,6 +195,46 @@
   {#if node.subclass === 'concept' && node.summary}
     <!-- The concept's screened summary (D-026: screened before store, safe to surface). -->
     <p class="ins-summary">{node.summary}</p>
+  {/if}
+
+  {#if node.subclass === 'self' && soul}
+    <!-- S4 soul detail — the honest self-model (screened at store time; loadSoul reads clean rows). -->
+    <p class="ins-summary">{soul.summary}</p>
+    {#if soul.knowsAbout.length}
+      <div class="soul-block">
+        <span class="eyebrow">knows about</span>
+        <ul class="soul-tags">
+          {#each soul.knowsAbout as label (label)}
+            <li class="soul-tag">{label}</li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+    {#if soul.values.length}
+      <div class="soul-block">
+        <span class="eyebrow">learned values</span>
+        <ul class="soul-vals">
+          {#each soul.values as v (v)}
+            <li>{v}</li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
+    {#if soul.gates.length}
+      <div class="soul-block">
+        <span class="eyebrow">
+          {#if soul.maturityStage === 'established'}gates met{:else}to graduate next{/if}
+        </span>
+        <ul class="soul-gates">
+          {#each soul.gates as g (g.gate)}
+            <li class="soul-gate" data-pass={g.pass}>
+              <span class="gate-mark" aria-hidden="true">{g.pass ? '✓' : '○'}</span>
+              <span class="gate-detail mono">{g.detail}</span>
+            </li>
+          {/each}
+        </ul>
+      </div>
+    {/if}
   {/if}
 
   {#if pinned && onunpin}
@@ -227,6 +296,7 @@
   .ins-class[data-class='causal'] { background: var(--color-warn); }
   .ins-class[data-class='skill'] { background: var(--color-success); }
   .ins-class[data-class='correction'] { background: var(--color-error); }
+  .ins-class[data-class='self'] { background: var(--color-accent); }
   .ins-summary {
     font: var(--type-body-sm);
     color: var(--color-text-2);
@@ -356,5 +426,61 @@
     font: var(--type-body-sm);
     color: var(--color-text-muted);
     margin: 0;
+  }
+  /* S4 soul detail blocks. */
+  .soul-block {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .soul-tags {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+  .soul-tag {
+    font-size: 0.66rem;
+    color: var(--color-text-2);
+    background: var(--color-surface-overlay);
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.1rem 0.4rem;
+  }
+  .soul-vals {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+  }
+  .soul-vals li {
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+    padding-left: 0.6rem;
+    border-left: 2px solid var(--color-error);
+    overflow-wrap: anywhere;
+  }
+  .soul-gates {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.2rem;
+  }
+  .soul-gate {
+    display: flex;
+    align-items: baseline;
+    gap: 0.4rem;
+  }
+  .gate-mark { color: var(--color-neutral); font-size: 0.7rem; }
+  .soul-gate[data-pass='true'] .gate-mark { color: var(--color-success); }
+  .gate-detail {
+    font-size: 0.68rem;
+    color: var(--color-text-2);
   }
 </style>

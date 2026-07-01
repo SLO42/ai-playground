@@ -42,13 +42,43 @@
 // an absent datetime becomes `undefined` (omitted) → the UI renders '—', never str(NONE).
 
 import type { Db } from '../db/client';
+import { loadSoul } from '../memory/soul';
+import type { MaturityStage, MaturityGateResult, SoulMetrics } from '../memory/soul';
 
 /**
  * A node class in the scene. MEMORY (entity/memory) + JOB (session/work_item) are the original
  * fork-#2 scope; PROJECT (the atelier a job acts on) + AGENT (the slot that ran a job) were
  * layered in by the interactive-graph wave so the scene shows who-works-on-what end-to-end.
+ * SELF (S4) is the single synthetic identity node — Atelier's derived soul (soul.ts loadSoul),
+ * an anchor the dominant concepts it "knows about" attach to.
  */
-export type SceneNodeClass = 'memory' | 'job' | 'project' | 'agent' | 'concept' | 'causal' | 'skill' | 'correction';
+export type SceneNodeClass = 'memory' | 'job' | 'project' | 'agent' | 'concept' | 'causal' | 'skill' | 'correction' | 'self';
+
+/** The synthetic SELF node id (S4). Opaque, singular — there is no `self` table; it is DERIVED. */
+export const SELF_NODE_ID = 'self:atelier';
+
+/**
+ * The soul/identity detail carried on the single SELF node (S4). A PROJECTION of loadSoul's
+ * derived self-model — every field traces to real brain rows (F-008); a cold brain yields the
+ * honest `nascent` stage with empty knowsAbout/values. All POJO (no datetime → no F-013 risk);
+ * D-026: the concepts/values were screened at store time and loadSoul re-reads only clean rows.
+ */
+export interface SceneSelfDetail {
+	/** nascent | developing | established — graduates on measurable brain-volume/quality gates. */
+	maturityStage: MaturityStage;
+	/** Recall competence in [0,1], or null when the outcome sample is too small (honest unknown). */
+	competence: number | null;
+	/** A one-line honest self-description composed deterministically from the counts. */
+	summary: string;
+	/** Dominant concept labels — what Atelier knows about (drives the `knows` edges). */
+	knowsAbout: string[];
+	/** Learned-value excerpts — what it learned NOT to do. */
+	values: string[];
+	/** Per-gate evidence for the NEXT maturity stage (provenance for the inspect panel). */
+	gates: MaturityGateResult[];
+	/** The raw honest brain-volume counts the model is derived from. */
+	experience: SoulMetrics;
+}
 
 /**
  * One recent scene_event row — the "what's happening now" activity feed (MEMORY-SCENE-SPEC
@@ -86,14 +116,17 @@ export interface SceneNode {
 	/** Node class — drives the scene's color family + icon. */
 	class: SceneNodeClass;
 	/** Concrete source table — drives within-class styling. */
-	subclass: 'entity' | 'memory' | 'session' | 'work_item' | 'project' | 'agent' | 'concept' | 'causal' | 'skill' | 'correction';
+	subclass: 'entity' | 'memory' | 'session' | 'work_item' | 'project' | 'agent' | 'concept' | 'causal' | 'skill' | 'correction' | 'self';
 	/** Human label (already screen-clean for entity/memory; a short class label otherwise). */
 	label: string;
 	/**
 	 * S3 — a concept node's SCREENED summary (concepts.ts screens label+summary before store, so
-	 * this is clean text safe to surface in the inspect panel). Omitted for every other node class.
+	 * this is clean text safe to surface in the inspect panel). Also carries the SELF node's honest
+	 * one-line soul summary (S4). Omitted for every other node class.
 	 */
 	summary?: string;
+	/** S4 — the SELF node's derived soul/identity detail (only present on the `self` node). */
+	self?: SceneSelfDetail;
 	/** Live lifecycle status off the source row (e.g. active | running | done | pending). */
 	status: string;
 	/** Owning project record-id, when the source row carries one (for a per-atelier lens). */
@@ -556,6 +589,47 @@ export async function buildSceneGraph(
 		if (seenOutcome.has(key)) continue;
 		seenOutcome.add(key);
 		edges.push({ from: sess, to: mem, kind });
+	}
+
+	// ── SELF / SOUL node (S4) — Atelier's derived identity, anchored in the living scene ──
+	// Emitted ONLY when the brain already has other signal (nodes present): a truly cold/empty DB
+	// still yields the honest-empty scene (F-008) rather than a lone fabricated self node. The soul
+	// is a PROJECTION of live rows (loadSoul → deriveSoul): maturity graduates on measurable gates,
+	// and a sparse brain reads honestly `nascent` with empty knows-about/values (never invented).
+	// The dominant concepts it "knows about" REUSE the existing concept nodes (matched by their
+	// already-screened label) via `knows` edges — no duplicate nodes, no new content surfaced (D-026).
+	if (nodes.length > 0) {
+		const soul = await loadSoul(db);
+		nodes.push({
+			id: SELF_NODE_ID,
+			class: 'self',
+			subclass: 'self',
+			label: 'Atelier',
+			// status carries the maturity stage so the UI colors the identity ring by stage.
+			status: soul.maturityStage,
+			summary: soul.summary,
+			self: {
+				maturityStage: soul.maturityStage,
+				competence: soul.competence,
+				summary: soul.summary,
+				knowsAbout: soul.knowsAbout,
+				values: soul.values,
+				gates: soul.gates,
+				experience: soul.experience
+			}
+		});
+		// `knows` edges: SELF → each concept node already in the window whose (screened) label is in
+		// the dominant set. Bounded to the dominant concepts; endpoint-guarded by construction (we
+		// only link to concept nodes we actually returned). A dominant concept not in the window
+		// (unlikely — both rank by importance) simply draws no edge (never a dangling link).
+		if (soul.knowsAbout.length) {
+			const want = new Set(soul.knowsAbout);
+			for (const n of nodes) {
+				if (n.class === 'concept' && want.has(n.label)) {
+					edges.push({ from: SELF_NODE_ID, to: n.id, kind: 'knows' });
+				}
+			}
+		}
 	}
 
 	return { nodes, edges };

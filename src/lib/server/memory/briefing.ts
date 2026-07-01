@@ -269,7 +269,9 @@ async function loadUnresolved(mem: MemoryService, project: string, limit: number
 	const { assertRecordId } = await import('../db/validate');
 	const pid = new StringRecordId(assertRecordId(project));
 	const [rows] = await mem.db.query<[UnresolvedTaskRow[]]>(
-		`SELECT title, status, priority FROM task
+		// `updated_at` MUST appear in the projection to be an ORDER BY idiom (SurrealDB 2.x —
+		// "Missing order idiom" parse error otherwise; F-020). It is not otherwise read.
+		`SELECT title, status, priority, updated_at FROM task
 		  WHERE project = $pid AND status IN ["blocked","in_progress","review"]
 		  ORDER BY updated_at DESC LIMIT $lim;`,
 		{ pid, lim: limit }

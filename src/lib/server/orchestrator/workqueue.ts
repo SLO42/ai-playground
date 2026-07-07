@@ -107,9 +107,13 @@ function str(v: unknown): string {
 // the SAME record id → a second CREATE collides ATOMICALLY on the primary key (exactly one row, no
 // matter the racer count). Because the id is STABLE across the pending→processing claim transition
 // (the id never changes), it ALSO fixes the F-048 status-split clobber: a re-enqueue while the twin
-// is already `processing` hits the same id and is deduped — the 2nd row is never created. The
-// active-window `dedup_key` field + index remain (collapsed to a constant 'active' marker in m0081,
-// non-unique) purely as a harmless read aid; they are NOT the guarantee.
+// is already `processing` hits the same id and is deduped — the 2nd row is never created. NO
+// migration ships for BL-R3 (F-057 revert): the active-window `dedup_key` VALUE field is UNCHANGED
+// (work_type|session|dedup_scope|status, m0019) and the `work_item_dedup` index remains UNIQUE
+// (m0012). For the deterministic-id task_run path that index is NOT the guarantee (the primary id
+// is) — but it is DELIBERATELY LEFT in place because three OTHER producers (loop.ts enqueueReview /
+// activation.ts reinterview / gauntlet.ts queued-interview) still `CREATE work_item` with a RANDOM
+// id and rely on it for their dedup (see schema.ts §4.12 BL-R3 note). Do NOT drop it — re-triggers F-057.
 //
 // SCOPE_SEP is a NUL byte built at RUNTIME (String.fromCharCode(0)) so the three id components can
 // never collide across a `|`-boundary (`a|b` vs `a`+`|b`) and the SOURCE stays pure-ASCII/diffable

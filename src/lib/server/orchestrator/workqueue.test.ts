@@ -391,4 +391,24 @@ describe('work_item daily cap / GC / handoff (TASK 2.15; D-021)', () => {
 		await claimNext(db, 'pd');
 		expect(await pendingDepth(db)).toBe(1); // one now processing
 	});
+
+	// BL-R3 / F-057 guard: the `work_item_dedup` index MUST stay UNIQUE (m0012). The old
+	// workqueue.ts comment falsely claimed it was collapsed to a non-unique 'active' marker in a
+	// phantom m0081 — acting on that (dropping/downgrading it) re-triggers F-057, because three
+	// RANDOM-id producers (loop.ts/activation.ts/gauntlet.ts) still rely on it for dedup. No BL-R3
+	// migration ships, so the shipped DDL must still read UNIQUE. Assert the live index DDL, not a
+	// source-text scan (EOL-agnostic — dodges F-054).
+	it('work_item_dedup index remains UNIQUE (F-057 revert; no BL-R3 migration)', async () => {
+		const [info] = await db.query<[{ indexes: Record<string, string> }]>(
+			'INFO FOR TABLE work_item;'
+		);
+		const dedupDdl = info.indexes.work_item_dedup;
+		expect(dedupDdl).toBeDefined();
+		expect(dedupDdl).toMatch(/UNIQUE/);
+		// The VALUE key is unchanged since m0019 (still scoped by dedup_scope, not a constant marker).
+		const fieldInfo = await db.query<[{ fields: Record<string, string> }]>(
+			'INFO FOR TABLE work_item;'
+		);
+		expect(fieldInfo[0].fields.dedup_key).toMatch(/dedup_scope/);
+	});
 });

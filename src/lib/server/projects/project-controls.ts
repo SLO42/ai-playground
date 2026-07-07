@@ -40,7 +40,12 @@
 
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
-import { getTask, listTasksByProject, type TaskStatus } from '../tasks/repo';
+import {
+	getTask,
+	listTasksByProject,
+	reopenFailedTaskToReady,
+	type TaskStatus
+} from '../tasks/repo';
 import { appendSceneEvent } from '../scene/projector';
 
 /** EVERY ERROR HAS A NAME — the orchestrator handle was absent (degraded/no-credential boot). The
@@ -225,12 +230,24 @@ export const SPAWN_READY_TASK_STATUSES: readonly TaskStatus[] = ['ready'] as con
  * since advanced past spawn-ready (SPAWN_READY_TASK_STATUSES, mirroring CONTINUE's ready-filter): a stale
  * failed session whose task is now done/review/withdrawn/in_progress would otherwise re-spawn fabricated
  * rework. Spend is bounded by the orchestrator's cap + semaphore in drain().
+ *
+ * BL-R4 — OPERATOR RE-RUN OF A FAILED TASK: when the session's task is itself terminal `failed` (the
+ * common case — post-task wrote the task `failed` when the session failed), a re-run is legitimate but
+ * ONLY under OPERATOR CONTROL-PLANE AUTHORITY (D-025/D-035a). `operatorAuthority` MUST be passed `true`
+ * ONLY by the operator-gated server action; when set, we reopen the task failed→ready via the
+ * operator-only {@link reopenFailedTaskToReady} guarded UPDATE, then re-drive. When it is false/absent
+ * (any non-operator / auto caller), a `failed` task is REFUSED with a named error — this is what proves
+ * the auto/reaper/drain path can NEVER reach the failed→ready reopen (RH-1: no bounded task-retry, so an
+ * unattended reopen would re-drain into the same failure forever). A task advanced to any OTHER non-ready
+ * status (done/review/in_progress/backlog/blocked/…) is still refused regardless of authority — that
+ * would be fabricated rework, not a re-run of the failed unit.
  */
 export async function restartSessionTask(
 	orchestrator: OrchestratorControl | null,
 	db: Db,
 	projectId: string,
-	session: RestartableSession
+	session: RestartableSession,
+	operatorAuthority = false
 ): Promise<RestartResult> {
 	const pid = assertRecordId(projectId);
 	if (!orchestrator) {
@@ -278,9 +295,36 @@ export async function restartSessionTask(
 	if (!task) {
 		throw new SessionControlError('the session’s task no longer exists — nothing to re-run');
 	}
-	if (!SPAWN_READY_TASK_STATUSES.includes(task.status)) {
+	// BL-R4 — a task terminal `failed` (the common case behind a failed session) is re-runnable, but ONLY
+	// under OPERATOR CONTROL-PLANE AUTHORITY (D-025/D-035a). Reopen it failed→ready via the operator-only
+	// guarded UPDATE, then fall through to enqueue+drain. Without operatorAuthority (any auto/non-operator
+	// caller) a `failed` task is refused here — proving the auto/reaper/drain path can never reopen it
+	// (RH-1: no bounded task-retry ⇒ an unattended reopen would re-drain into the same failure forever).
+	if (task.status === 'failed') {
+		if (!operatorAuthority) {
+			throw new SessionControlError(
+				'task status "failed" — a failed task can only be re-run under operator authority (reopen it to ready). The automatic recovery path deliberately leaves failed work failed (there is no bounded retry).'
+			);
+		}
+		const reopened = await reopenFailedTaskToReady(db, tid);
+		if (!reopened) {
+			// The task moved off `failed` between our read and the reopen (a concurrent operator move / a
+			// fresh run advanced it). Re-read: proceed only if it is now spawn-ready, else a named refusal —
+			// never silently re-run a task that is no longer the failed unit the operator meant to reopen.
+			const fresh = await getTask(db, tid);
+			if (!fresh || !SPAWN_READY_TASK_STATUSES.includes(fresh.status)) {
+				throw new SessionControlError(
+					`task is no longer failed — its status changed before the reopen (now "${fresh ? fresh.status : 'deleted'}"); nothing was re-run.`
+				);
+			}
+		}
+	} else if (!SPAWN_READY_TASK_STATUSES.includes(task.status)) {
+		// Not ready and not the reopenable `failed` state: the task advanced since the session failed
+		// (done/review/in_progress = live or finished; backlog/blocked/proposed = never readied). Re-running
+		// would fabricate rework — refuse and name the ONLY real paths: re-ready the task (for a task that
+		// can legally reach ready) or spawn a follow-up for finished work.
 		throw new SessionControlError(
-			`task status "${task.status}" is not re-runnable — the task has moved on since this session failed (re-running would fabricate rework). Move it back to ready to restart.`
+			`task status "${task.status}" is not re-runnable — the task has moved on since this session failed (re-running would fabricate rework). Re-ready the task, or spawn a follow-up for work that already finished.`
 		);
 	}
 

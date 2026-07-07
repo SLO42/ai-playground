@@ -2221,12 +2221,22 @@ export const actions: Actions = {
 		if (!session) return fail(404, { restart: { error: 'session not found' } });
 
 		try {
-			const res = await restartSessionTask(activeOrchestrator(), db, projectId, {
-				id: session.id,
-				status: session.status,
-				project: session.projectId,
-				taskId: session.taskId
-			});
+			// operatorAuthority=true — this is the OPERATOR control-plane action on the login-gated project
+			// page (D-025/D-035a), the ONLY path allowed to reopen a terminal `failed` task to `ready` for a
+			// deliberate re-run (BL-R4). The auto-drain / reaper / gcStale never reach restartSessionTask, so
+			// they can never trigger the failed→ready reopen (RH-1 stays intact).
+			const res = await restartSessionTask(
+				activeOrchestrator(),
+				db,
+				projectId,
+				{
+					id: session.id,
+					status: session.status,
+					project: session.projectId,
+					taskId: session.taskId
+				},
+				true
+			);
 			return {
 				restart: {
 					ok: true as const,

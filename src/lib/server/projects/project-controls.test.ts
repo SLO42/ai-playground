@@ -4,7 +4,7 @@ import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
 import { createProject } from './repo';
-import { createTask, setStatus } from '../tasks/repo';
+import { createTask, setStatus, getTask } from '../tasks/repo';
 import { enqueue, claimNext, complete, countByStatus } from '../orchestrator/workqueue';
 import {
 	continueReadyTasks,
@@ -312,6 +312,51 @@ describe('restartSessionTask', () => {
 			restartSessionTask(orch, db, p, { id: s, status: 'failed', project: p, taskId: t.id })
 		).rejects.toBeInstanceOf(SessionControlError);
 		expect(orch.enqueueCalls).toEqual([]);
+	});
+
+	// BL-R4 — OPERATOR RE-RUN of a terminal FAILED task: under operator authority the task is reopened
+	// failed→ready (the guarded operator-only UPDATE) and re-driven. This is the operator's exact pain: a
+	// session failed AND post-task wrote the task `failed`; without this path restart would 409 forever
+	// (failed→ready is not a legal state-machine move, so "move it back to ready" was an impossible advice).
+	it('re-runs a FAILED task UNDER OPERATOR AUTHORITY — reopens failed→ready, then re-drives', async () => {
+		const p = await seedProject('proj_failed_reopen');
+		const t = await createTask(db, { project: p, title: 'failed task', description: 'x', status: 'failed' });
+		const s = await seedSession({ projectId: p, taskId: t.id, status: 'failed' });
+		const orch = mockOrchestrator(db);
+
+		const res = await restartSessionTask(
+			orch,
+			db,
+			p,
+			{ id: s, status: 'failed', project: p, taskId: t.id },
+			true // operator control-plane authority
+		);
+		expect(res.taskId).toBe(t.id);
+		expect(res.enqueued).toBe(true);
+		expect(res.spawned).toBe(1);
+		expect(orch.enqueueCalls).toEqual([t.id]);
+		// The task was reopened to `ready` (the re-run target), no longer `failed`.
+		expect((await getTask(db, t.id))?.status).toBe('ready');
+	});
+
+	// BL-R4 / RH-1 PROOF — WITHOUT operator authority (the default; any auto/non-operator caller) a FAILED
+	// task is REFUSED: it stays `failed`, nothing is enqueued. This is the machine proof that the
+	// auto-drain / reaper / gcStale can never trigger the failed→ready reopen (they never pass
+	// operatorAuthority, and never call restartSessionTask at all).
+	it('refuses a FAILED task WITHOUT operator authority — task stays failed, nothing enqueued', async () => {
+		const p = await seedProject('proj_failed_noauth');
+		const t = await createTask(db, { project: p, title: 'failed task', description: 'x', status: 'failed' });
+		const s = await seedSession({ projectId: p, taskId: t.id, status: 'failed' });
+		const orch = mockOrchestrator(db);
+
+		await expect(
+			// operatorAuthority omitted → defaults false (the non-operator / auto posture).
+			restartSessionTask(orch, db, p, { id: s, status: 'failed', project: p, taskId: t.id })
+		).rejects.toBeInstanceOf(SessionControlError);
+		// The failed task was NOT reopened (RH-1: auto path never lands failed work on ready).
+		expect((await getTask(db, t.id))?.status).toBe('failed');
+		expect(orch.enqueueCalls).toEqual([]);
+		expect(await countByStatus(db, 'pending')).toBe(0);
 	});
 
 	// REGRESSION: a failed session whose task was DELETED is refused (named), not a crash.

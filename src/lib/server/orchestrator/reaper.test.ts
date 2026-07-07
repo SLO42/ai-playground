@@ -6,7 +6,12 @@ import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
 import { createProject, deleteProject } from '../projects/repo';
 import { createWorkflow } from '../workflows/repo';
-import { createTask, resetStuckTaskToReady, resetStuckTaskToFailed } from '../tasks/repo';
+import {
+	createTask,
+	resetStuckTaskToReady,
+	resetStuckTaskToFailed,
+	reopenFailedTaskToReady
+} from '../tasks/repo';
 import { releaseSessionWork } from './workqueue';
 import { reapStaleRuns, processBootTime, REAPED_NOTE } from './reaper';
 
@@ -282,5 +287,52 @@ describe('reapStaleRuns — F-048 follow-on (release claimed work + reset orphan
 		// Idempotent: a second call once `failed` matches nothing and moves zero rows (no throw).
 		expect(await resetStuckTaskToFailed(db, inProg.id)).toBe(false);
 		expect((await readRow(inProg.id)).status).toBe('failed');
+	});
+
+	// BL-R4 — the OPERATOR-MANUAL failed→ready re-run primitive. Guarded to ONLY the `failed` pre-state
+	// (the mirror of the resetStuckTaskToReady/Failed guard tests): every OTHER status is left untouched;
+	// idempotent once `ready`. This proves the reopen cannot silently reopen anything but a failed task.
+	it('reopenFailedTaskToReady only moves FAILED tasks — in_progress/review/done/ready/backlog untouched', async () => {
+		const failed = await createTask(db, { project: projectId, title: 'failed', description: 'f', status: 'failed' });
+		const inProg = await createTask(db, { project: projectId, title: 'inprog3', description: 'i', status: 'in_progress' });
+		const reviewTask = await createTask(db, { project: projectId, title: 'review3', description: 'v', status: 'review' });
+		const doneTask = await createTask(db, { project: projectId, title: 'done3', description: 'd', status: 'done' });
+		const readyTask = await createTask(db, { project: projectId, title: 'ready3', description: 'r', status: 'ready' });
+		const backlogTask = await createTask(db, { project: projectId, title: 'backlog3', description: 'b', status: 'backlog' });
+
+		expect(await reopenFailedTaskToReady(db, failed.id)).toBe(true); // failed → ready (operator re-run)
+		expect(await reopenFailedTaskToReady(db, inProg.id)).toBe(false); // live work — untouched
+		expect(await reopenFailedTaskToReady(db, reviewTask.id)).toBe(false); // in review — untouched
+		expect(await reopenFailedTaskToReady(db, doneTask.id)).toBe(false); // finished — untouched
+		expect(await reopenFailedTaskToReady(db, readyTask.id)).toBe(false); // already ready — untouched
+		expect(await reopenFailedTaskToReady(db, backlogTask.id)).toBe(false); // never started — untouched
+
+		expect((await readRow(failed.id)).status).toBe('ready');
+		expect((await readRow(inProg.id)).status).toBe('in_progress');
+		expect((await readRow(reviewTask.id)).status).toBe('review');
+		expect((await readRow(doneTask.id)).status).toBe('done');
+		expect((await readRow(readyTask.id)).status).toBe('ready');
+		expect((await readRow(backlogTask.id)).status).toBe('backlog');
+
+		// Idempotent: once reopened to `ready`, a second call matches nothing and moves zero rows (no throw).
+		expect(await reopenFailedTaskToReady(db, failed.id)).toBe(false);
+		expect((await readRow(failed.id)).status).toBe('ready');
+	});
+
+	// BL-R4 / RH-1 NON-REGRESSION — the AUTO path still LANDS `failed`, never `ready`. resetStuckTaskToFailed
+	// (the reaper/spawn-failure terminal) drives in_progress→failed and then leaves it failed; the operator
+	// reopen is a SEPARATE, manual primitive. This asserts the two never collapse: the auto path parks the
+	// task on `failed`, and only an explicit reopen (operator authority) moves it onward.
+	it('AUTO recovery lands failed and STAYS failed — only the manual reopen advances it (RH-1 invariant)', async () => {
+		const t = await createTask(db, { project: projectId, title: 'auto-fail', description: 'a', status: 'in_progress' });
+		// Auto path (reaper / spawn-failure terminal): in_progress → failed.
+		expect(await resetStuckTaskToFailed(db, t.id)).toBe(true);
+		expect((await readRow(t.id)).status).toBe('failed');
+		// The auto path is idempotent on `failed` and NEVER promotes it to ready — a re-drive would spin.
+		expect(await resetStuckTaskToFailed(db, t.id)).toBe(false);
+		expect((await readRow(t.id)).status).toBe('failed');
+		// ONLY the operator-manual reopen advances it off the terminal.
+		expect(await reopenFailedTaskToReady(db, t.id)).toBe(true);
+		expect((await readRow(t.id)).status).toBe('ready');
 	});
 });

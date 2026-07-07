@@ -488,3 +488,41 @@ export async function resetStuckTaskToDone(db: Db, taskId: string): Promise<bool
 	);
 	return rows.length > 0;
 }
+
+/**
+ * BL-R4 — OPERATOR-MANUAL RE-RUN ONLY. Reopen a task the operator DELIBERATELY chooses to re-run from
+ * the terminal `failed` back to `ready`, so the orchestrator drain can re-drive it. A narrow,
+ * record-targeted UPDATE that DELIBERATELY bypasses {@link setStatus}'s state machine — modeled on
+ * {@link resetStuckTaskToReady}, but guarded to the `failed` pre-state instead of in_progress/review.
+ *
+ * ALLOWED_TRANSITIONS makes `failed` TERMINAL on purpose: a finished task does not silently reopen, and
+ * there is no legal multi-hop path back to `ready` from `failed` (this is exactly the move the normal
+ * machine refuses). So the re-run uses this guarded UPDATE, mirroring the RH-1 recovery pattern.
+ *
+ * CRITICAL — OPERATOR CONTROL-PLANE AUTHORITY ONLY (D-025/D-035a). This function MUST be reached ONLY
+ * from an operator-gated control-plane action (project-controls.restartSessionTask under
+ * `operatorAuthority`). It MUST NOT be called from the auto-drain / boot reaper / gcStale / any
+ * unattended path. RH-1 INVARIANT (DO NOT REGRESS): the AUTO recovery path deliberately lands failed
+ * work on `failed`, NEVER `ready` — because there is NO bounded task-level retry, so `ready` would
+ * re-drain into the SAME failure forever (a spin). The reaper uses {@link resetStuckTaskToReady} (guarded
+ * to in_progress/review — it never touches `failed`) and {@link resetStuckTaskToFailed} (which LANDS
+ * `failed`); neither reopens a failed task. The OPERATOR making the re-run decision IS the bounded-retry
+ * mechanism the auto path lacks — that human authority is the whole reason a failed→ready reopen is safe
+ * here and unsafe automatically.
+ *
+ * GUARD (`WHERE status = "failed"`): a task in ANY other status is left UNTOUCHED — we never reopen a
+ * done/in_progress/review/ready/backlog/blocked/proposed/withdrawn task (that would be fabricated rework
+ * or a double-run). Idempotent (interrupt contract): once `ready`, a re-run matches nothing and moves
+ * zero rows — no throw. Touches `updated_at` so the live query / PM observes the reopen. Returns whether
+ * a row moved.
+ */
+export async function reopenFailedTaskToReady(db: Db, taskId: string): Promise<boolean> {
+	const rid = new StringRecordId(assertRecordId(taskId));
+	// RETURN BEFORE yields the rows that matched the guarded WHERE (the count of failed tasks reopened).
+	const [rows] = await db.query<[unknown[]]>(
+		`UPDATE $rid SET status = "ready", updated_at = time::now()
+		   WHERE status = "failed" RETURN BEFORE;`,
+		{ rid }
+	);
+	return rows.length > 0;
+}

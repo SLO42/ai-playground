@@ -111,9 +111,12 @@ function str(v: unknown): string {
 // migration ships for BL-R3 (F-057 revert): the active-window `dedup_key` VALUE field is UNCHANGED
 // (work_type|session|dedup_scope|status, m0019) and the `work_item_dedup` index remains UNIQUE
 // (m0012). For the deterministic-id task_run path that index is NOT the guarantee (the primary id
-// is) — but it is DELIBERATELY LEFT in place because three OTHER producers (loop.ts enqueueReview /
-// activation.ts reinterview / gauntlet.ts queued-interview) still `CREATE work_item` with a RANDOM
-// id and rely on it for their dedup (see schema.ts §4.12 BL-R3 note). Do NOT drop it — re-triggers F-057.
+// is) — but it is DELIBERATELY LEFT in place because ONE active-window producer, loop.ts enqueueReview
+// (a `memory_review` work_item, status pending), still `CREATE`s with a RANDOM id and relies on this
+// index for its dedup (see schema.ts §4.12 BL-R3 note). reinterview (activation.ts) and queued-interview
+// (gauntlet.ts) now route through the deterministic-id enqueue() and do NOT rely on the index; the two
+// `status:'done'` audit tokens in activation.ts/gauntlet.ts are terminal, never in the active window.
+// Do NOT drop it — re-triggers F-057.
 //
 // SCOPE_SEP is a NUL byte built at RUNTIME (String.fromCharCode(0)) so the three id components can
 // never collide across a `|`-boundary (`a|b` vs `a`+`|b`) and the SOURCE stays pure-ASCII/diffable

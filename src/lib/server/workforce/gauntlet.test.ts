@@ -32,6 +32,7 @@ import {
 	type GauntletDeps
 } from './gauntlet';
 import { activateGauntletFixture, newSentinelUlid } from './activation';
+import { activeWorkItemId } from '../orchestrator/workqueue';
 import { KNOWN_FAIL_PATH, KNOWN_PASS_PATH } from './scorer';
 import {
 	createGauntletFixture,
@@ -934,6 +935,13 @@ describe('§3.7 budget gate — auto triggers count-and-surface until armed', ()
 		if (out.kind !== 'queued') return;
 		expect(out.reason).toMatch(/count-and-surface/);
 		expect(out.workItemId).toBeTruthy();
+		// F-057-class regression (pins the corrected workqueue.ts/schema.ts §4.12 comment):
+		// queued-interview routes through the DETERMINISTIC-id enqueue() (dedupScope = version|tier,
+		// no session) — the returned workItemId IS activeWorkItemId(...), NOT a random id. A revert
+		// to a random-id CREATE (relying on the work_item_dedup index) breaks this equality.
+		expect(out.workItemId).toBe(
+			activeWorkItemId(QUEUED_INTERVIEW_TYPE, '', `${seed.version.id}|sonnet`)
+		);
 		// No run, no session, no spend.
 		const [runs] = await db.query<[Array<{ c: number }>]>(
 			`SELECT count() AS c FROM interview_run WHERE role_version = $v GROUP ALL;`,

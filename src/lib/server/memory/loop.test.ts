@@ -16,6 +16,7 @@ import {
 	type WrittenSkill
 } from './loop';
 import type { ExtractFn, MemoryCandidate, StoredMemory } from './store';
+import { activeWorkItemId } from '../orchestrator/workqueue';
 
 // TASK 2.5 / D-027 §2.1 — the review-memory WRITER FORK, against a LIVE throwaway SurrealDB
 // with the real §4 schema (memory, skill, memory_history). The embedder is the deterministic
@@ -319,6 +320,12 @@ describe('RT-1 (F-008) enqueueReview dedup catch — swallow ONLY the unique-vio
 		const s = await makeSession();
 		const first = await enqueueReview(db, { session: s, kind: 'memory', turnText: 'first' });
 		expect(first).not.toBeNull();
+		// F-057-class regression (pins the corrected workqueue.ts/schema.ts §4.12 comment):
+		// enqueueReview is the SOLE active-window RANDOM-id producer that relies on the
+		// work_item_dedup UNIQUE index — it does NOT use the deterministic-id enqueue() scheme,
+		// so its row id is NOT activeWorkItemId(...). If it is ever routed through enqueue()
+		// (making the "sole random-id producer" note stale), this inequality breaks.
+		expect(first).not.toBe(activeWorkItemId('memory_review', s, s));
 		const second = await enqueueReview(db, { session: s, kind: 'memory', turnText: 'second' });
 		expect(second).toBeNull(); // dedup no-op — the real unique-violation signal
 		// Exactly ONE pending review for the session (the dedup actually coalesced).

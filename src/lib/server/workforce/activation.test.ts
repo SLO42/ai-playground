@@ -16,6 +16,7 @@ import {
 	REINTERVIEW_PROPOSAL_TYPE,
 	SENTINEL_SWEEP_TYPE
 } from './activation';
+import { activeWorkItemId } from '../orchestrator/workqueue';
 import {
 	createGauntletFixture,
 	createGauntletKey,
@@ -221,6 +222,19 @@ describe('activateGauntletFixture — atomic injection + re-address + key re-bin
 			{ wt: REINTERVIEW_PROPOSAL_TYPE, scope: role.id }
 		);
 		expect(items[0]?.c ?? 0).toBe(1);
+
+		// F-057-class regression (pins the corrected workqueue.ts/schema.ts §4.12 comment):
+		// reinterview routes through the DETERMINISTIC-id enqueue() (dedupScope = role, no session),
+		// NOT a random-id CREATE — so the pending row's id IS activeWorkItemId(...). If a future
+		// change reverts it to a random-id CREATE (relying on the work_item_dedup index), this
+		// equality breaks, forcing the "sole active-window random-id producer is loop.ts" note to be
+		// revisited.
+		const [detId] = await db.query<[Array<{ id: unknown }>]>(
+			`SELECT id FROM work_item
+			  WHERE work_type = $wt AND status = 'pending' AND dedup_scope = $scope;`,
+			{ wt: REINTERVIEW_PROPOSAL_TYPE, scope: role.id }
+		);
+		expect(String(detId[0]?.id)).toBe(activeWorkItemId(REINTERVIEW_PROPOSAL_TYPE, '', role.id));
 
 		// role_event audit: stale_marked appended for the affected version.
 		const events = await listRoleEvents(db, role.id);

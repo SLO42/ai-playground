@@ -445,7 +445,8 @@ export class Orchestrator {
 	 * server process. A trigger failure (e.g. a transient DB error, or a dedup race when more
 	 * than one writer briefly overlaps) is logged and swallowed; the orchestrator is event-
 	 * driven, so a later trigger re-checks. This never weakens the dedup/no-double-fire guard:
-	 * enqueueTask still collapses a duplicate via the work_item UNIQUE dedup_key.
+	 * enqueueTask still collapses a duplicate via the DETERMINISTIC work_item primary id
+	 * (workqueue.activeWorkItemId; F-048 structural fix + F-026), not the UNIQUE dedup_key.
 	 */
 	async #onTrigger(e: BusEvent): Promise<void> {
 		const change = e.data as DbChange;

@@ -976,12 +976,13 @@ describe('THE HEARTBEAT — post-task wiring advances the TASK to terminal (read
 		}
 	}, 30_000);
 
-	it('the in_progress step is real but the terminal write needs post-task: without it a done session leaves the task in_progress (never done)', async () => {
-		// The DEAD-LINK proof (negative control). The spawn path moves the task ready→in_progress
-		// (so the run is visibly in flight), but WITHOUT the post-task wiring nothing advances it
-		// to terminal — it stalls at `in_progress`, never `done`, and the terminal db_change the PM
-		// consumes never fires. This is exactly the symptom this wave's post-task wiring fixes; it
-		// also proves the in_progress transition is independent of (and prerequisite to) post-task.
+	it('BL-R3 success-side twin: a DONE session with post-task DISABLED advances the task to done (never stranded in_progress)', async () => {
+		// The success-side strand close (BL-R3). The spawn path moves the task ready→in_progress; with
+		// NO post-task wiring, post-task — the ONLY writer of a task's terminal `done` — never runs, so
+		// the OLD behaviour stranded the task at `in_progress` forever (an invisible half-state, the
+		// F-048 class, mirror of the BL-R2 failed-side strand). The orchestrator's success-side terminal
+		// writer now drives an ok spawn with post-task off to the honest terminal `done`, so the PM's
+		// terminal db_change fires. Production ALWAYS enables post-task, so this path is degenerate-only.
 		await clearQueue();
 		const bus = new EventBus();
 		const backend = outcomeBackend(true);
@@ -993,8 +994,8 @@ describe('THE HEARTBEAT — post-task wiring advances the TASK to terminal (read
 			maxConcurrent: 2,
 			mode: 'event',
 			route: stubRoute(),
-			acquireWorktree: fakeWt,
-			// postTask intentionally omitted (the pre-fix boot state).
+			acquireWorktree: fakeWt
+			// postTask intentionally omitted (the degenerate default-off path BL-R3 guards).
 		});
 		orch.start();
 		const watch = await watchTable(db, bus, 'task');
@@ -1002,14 +1003,14 @@ describe('THE HEARTBEAT — post-task wiring advances the TASK to terminal (read
 			const task = await createTask(db, {
 				project: projectId,
 				title: 'no post-task',
-				description: 'proves the wiring is load-bearing'
+				description: 'a successful spawn must not strand the task in_progress'
 			});
 			await setStatus(db, task.id, 'ready');
 			await waitFor(() => orch.spawnCount >= 1, 10_000);
-			await new Promise((r) => setTimeout(r, 200)); // let any stray transition settle
-			// The spawn ran and moved the task ready→in_progress, but with NO post-task wiring the
-			// task never reaches a terminal status — it is stuck at in_progress (the dead link).
-			expect((await getTask(db, task.id))?.status).toBe('in_progress');
+			// The spawn ran (ready→in_progress) and, with post-task off, the success-side writer advances
+			// it to the honest terminal `done` — NOT left stranded at in_progress.
+			await waitForAsync(async () => (await getTask(db, task.id))?.status === 'done');
+			expect((await getTask(db, task.id))?.status).toBe('done');
 		} finally {
 			orch.stop();
 			await watch.stop();

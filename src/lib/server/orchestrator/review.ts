@@ -18,9 +18,10 @@
 //
 // Boundary discipline (D-016): record ids pass the db/validate chokepoint and bind as
 // StringRecordId via the workqueue's own enqueue(); absent optionals are OMITTED (§6.1).
-// The "exactly one" guarantee is the work_item dedup_key UNIQUE index (active-window
-// work_type|session|status, §4.12) scoped per-task: a re-run for the same task is a no-op,
-// so a double-fire (e.g. two post-task re-drains) can NEVER produce two reviews.
+// The "exactly one" guarantee is the work_item DETERMINISTIC primary id (workqueue.activeWorkItemId
+// over work_type|session|dedup_scope; F-048 fix + F-026) scoped per-task via dedup_scope: a re-run
+// for the same task collides atomically on the id and is a no-op, so a double-fire (e.g. two
+// post-task re-drains) can NEVER produce two reviews — even across the pending→processing transition.
 
 import type { Db } from '../db/client';
 import { execFileRunner, type CommandRunner } from './post-task';

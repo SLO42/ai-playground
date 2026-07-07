@@ -40,7 +40,7 @@ import type {
 } from '../runtime/index';
 import { launchSession, type LaunchResult, type LaunchDeps } from '../sessions/launch';
 import { getProject } from '../projects/repo';
-import { setStatus, resetStuckTaskToFailed } from '../tasks/repo';
+import { setStatus, resetStuckTaskToFailed, resetStuckTaskToDone } from '../tasks/repo';
 import { writeAgentEvent } from '../analytics/events';
 import { Semaphore } from './semaphore';
 import { runPostTask, resolveTestCommand, type CommandRunner } from './post-task';
@@ -534,9 +534,11 @@ export class Orchestrator {
 	}
 
 	/**
-	 * Enqueue a task_run `work_item` for one task. Idempotent within the active window
-	 * via the dedup_key UNIQUE index (§4.12) — a second enqueue of the same active task
-	 * is a no-op. Returns whether a NEW row was created.
+	 * Enqueue a task_run `work_item` for one task. Idempotent within the active window via the
+	 * DETERMINISTIC primary id (workqueue.activeWorkItemId; F-048 structural fix + F-026) — a second
+	 * enqueue of the same active task (pending OR already-processing) collides atomically on the id and
+	 * is a no-op, so a task can never spawn two concurrent task_run twins. Returns whether a NEW row
+	 * was created.
 	 */
 	async enqueueTask(taskId: string, projectId: string): Promise<boolean> {
 		const { enqueued } = await enqueue(this.#db, {
@@ -953,6 +955,29 @@ export class Orchestrator {
 				} catch (failErr) {
 					console.warn(
 						`[orchestrator] task ${taskId} terminal-failed transition errored (best-effort, drain continues): ${(failErr as Error).message}`
+					);
+				}
+			} else if (ok && taskId && !this.#postTask?.enabled) {
+				// BL-R3 (success-side twin) — a SUCCESSFUL task_run with post-task DISABLED (the
+				// degenerate constructor default) has NO terminal writer: post-task is the ONLY path that
+				// writes a task's `done`, and the failed-writer above only fires on a NON-ok terminal. So
+				// an ok spawn with post-task off would strand the task on `in_progress` forever (moved
+				// there at spawn-start) with no live worker — the invisible half-state F-048 class, the
+				// success-side mirror of the BL-R2 failed-side strand. Drive it to the honest terminal
+				// `done` (the session succeeded). GUARDED + idempotent (in_progress/review → done); a
+				// no-op if the task already advanced. SCOPED to post-task-OFF so the production path
+				// (post-task ALWAYS enabled → this branch never fires) stays byte-identical and this can
+				// never mask a post-task commit/test failure. F-014: a fault is logged-and-swallowed.
+				try {
+					const done = await resetStuckTaskToDone(this.#db, taskId);
+					if (done) {
+						console.warn(
+							`[orchestrator] task ${taskId} → done (successful task_run, post-task disabled; not stranded in_progress)`
+						);
+					}
+				} catch (doneErr) {
+					console.warn(
+						`[orchestrator] task ${taskId} terminal-done transition errored (best-effort, drain continues): ${(doneErr as Error).message}`
 					);
 				}
 			}

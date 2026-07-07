@@ -5,6 +5,7 @@ import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
 import { createProject, deleteProject } from '../projects/repo';
 import {
+	activeWorkItemId,
 	claimNext,
 	complete,
 	countByStatus,
@@ -106,6 +107,107 @@ describe('work_item claim queue (DATA-MODEL §4.12; D-021)', () => {
 		expect(winners[0]!.attempts).toBe(1);
 	});
 
+	// ── BL-R3 (F-048 structural fix + F-026) — active-window dedup is a DETERMINISTIC primary id ──
+	it('4 CONCURRENT enqueues of the SAME unit → exactly ONE row (F-026: prove the guard holds under concurrency)', async () => {
+		await clearQueue();
+		// The F-026 proof. On THIS SurrealDB build a secondary UNIQUE index over a computed VALUE does
+		// NOT enforce under concurrent inserts (two racers both commit). Fire 4 truly-concurrent
+		// enqueues of the IDENTICAL (work_type, session, dedup_scope) unit and prove the chosen guard —
+		// a DETERMINISTIC primary record id — persists EXACTLY ONE row regardless of racer count.
+		const results = await Promise.all(
+			Array.from({ length: 4 }, () =>
+				enqueue(db, { workType: 'task_run', payload: { taskId: 'task:cc' }, projectId, dedupScope: 'task:cc' })
+			)
+		);
+		// EXACTLY ONE ROW — assert the persisted-state invariant, NOT the per-call `enqueued` flag
+		// (MVCC may report enqueued:true for more than one racer while only ONE row survives — F-026).
+		const [all] = await db.query<[Array<{ c: number }>]>(`SELECT count() AS c FROM work_item GROUP ALL;`);
+		expect(Number(all?.[0]?.c ?? 0)).toBe(1);
+		expect(await countByStatus(db, 'pending')).toBe(1);
+		// Every caller resolved to the SAME deterministic id — never a blank/fabricated id (F-008).
+		const detid = activeWorkItemId('task_run', '', 'task:cc');
+		for (const r of results) expect(r.id).toBe(detid);
+		// The single row claims exactly once; a second claim finds nothing (no hidden twin).
+		const claimed = await claimNext(db, 'r3_tok');
+		expect(claimed?.id).toBe(detid);
+		expect(await claimNext(db, 'r3_tok2')).toBeNull();
+	});
+
+	it('F-048 fix: re-enqueue while the twin is already PROCESSING is deduped (no 2nd clobbering row)', async () => {
+		await clearQueue();
+		const first = await enqueue(db, {
+			workType: 'task_run',
+			payload: { taskId: 'task:p' },
+			projectId,
+			dedupScope: 'task:p'
+		});
+		expect(first.enqueued).toBe(true);
+		// Claim it → status flips pending→processing (the transition the OLD `…|status` dedup_key let a
+		// 2nd enqueue slip past as a fresh `…|pending`). The deterministic id is STABLE across the
+		// transition, so the re-enqueue collides on the id instead.
+		const claimed = await claimNext(db, 'p_tok');
+		expect(claimed?.id).toBe(first.id);
+		expect(await countByStatus(db, 'processing')).toBe(1);
+		const second = await enqueue(db, {
+			workType: 'task_run',
+			payload: { taskId: 'task:p' },
+			projectId,
+			dedupScope: 'task:p'
+		});
+		expect(second.enqueued).toBe(false); // deduped against the PROCESSING twin (the F-048 clobber)
+		expect(second.id).toBe(first.id);
+		expect(await countByStatus(db, 'pending')).toBe(0); // no fresh clobber row was created
+		expect(await countByStatus(db, 'processing')).toBe(1);
+	});
+
+	it('a TERMINAL unit is re-queueable: the deterministic id is REUSED for a fresh run', async () => {
+		await clearQueue();
+		const a = await enqueue(db, {
+			workType: 'task_run',
+			payload: { taskId: 'task:t', n: 1 },
+			projectId,
+			dedupScope: 'task:t'
+		});
+		const c1 = await claimNext(db, 't_tok');
+		expect(c1?.id).toBe(a.id);
+		expect(await complete(db, c1!.id, 't_tok', 'done')).toBe(true);
+		expect(await countByStatus(db, 'done')).toBe(1);
+		// Re-enqueue the SAME unit after it finished → REUSE the id for a fresh pending run (this is
+		// what the old `dedup_key = <string>id` ELSE-branch bought — a completed unit can re-queue).
+		const b = await enqueue(db, {
+			workType: 'task_run',
+			payload: { taskId: 'task:t', n: 2 },
+			projectId,
+			dedupScope: 'task:t'
+		});
+		expect(b.enqueued).toBe(true);
+		expect(b.id).toBe(a.id); // same deterministic id, reused (not a second row)
+		expect(await countByStatus(db, 'pending')).toBe(1);
+		expect(await countByStatus(db, 'done')).toBe(0); // the terminal row was RESET, not left alongside
+		const c2 = await claimNext(db, 't_tok2');
+		expect(c2?.id).toBe(a.id);
+		expect(c2?.payload.n).toBe(2); // the reset carried the NEW run's payload
+		expect(c2?.attempts).toBe(1); // attempts reset to 0 by the reuse, then bumped to 1 by this claim
+	});
+
+	it('the terminal-REUSE reset is GUARDED: it can never clobber a twin a racer already re-claimed', async () => {
+		await clearQueue();
+		await enqueue(db, { workType: 'task_run', payload: { taskId: 'task:g' }, projectId, dedupScope: 'task:g' });
+		const c1 = await claimNext(db, 'g1');
+		await complete(db, c1!.id, 'g1', 'failed');
+		// Reuse after terminal → fresh pending, then claim it (processing again).
+		const b = await enqueue(db, { workType: 'task_run', payload: { taskId: 'task:g' }, projectId, dedupScope: 'task:g' });
+		expect(b.enqueued).toBe(true);
+		await claimNext(db, 'g2');
+		expect(await countByStatus(db, 'processing')).toBe(1);
+		// A 3rd enqueue now sees an ACTIVE (processing) twin → the guarded `WHERE status IN [done,failed]`
+		// reset matches NOTHING, so it dedups instead of resetting a live claim back to pending.
+		const third = await enqueue(db, { workType: 'task_run', payload: { taskId: 'task:g' }, projectId, dedupScope: 'task:g' });
+		expect(third.enqueued).toBe(false);
+		expect(await countByStatus(db, 'processing')).toBe(1);
+		expect(await countByStatus(db, 'pending')).toBe(0);
+	});
+
 	it('complete only succeeds for the lease holder (claim_token guard)', async () => {
 		await clearQueue();
 		await enqueue(db, { workType: 'task_run', payload: { x: 1 } });
@@ -179,7 +281,7 @@ describe('work_item claim queue (DATA-MODEL §4.12; D-021)', () => {
 		}
 	});
 
-	it('dedup: re-enqueueing the same ACTIVE unit is a no-op (UNIQUE dedup_key)', async () => {
+	it('dedup: re-enqueueing the same ACTIVE unit is a no-op (deterministic primary id)', async () => {
 		await clearQueue();
 		const sess = await db.query<[Array<{ id: unknown }>]>(
 			`CREATE session CONTENT {

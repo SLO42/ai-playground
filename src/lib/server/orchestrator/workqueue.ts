@@ -18,6 +18,7 @@
 // Optional fields are OMITTED, never set to explicit NULL (option<T> rejects NULL,
 // MEMORY-SPEC §6.1). Array/set legality stays in JS, not SQL.
 
+import { createHash } from 'node:crypto';
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
@@ -95,43 +96,158 @@ function str(v: unknown): string {
 	return String(v);
 }
 
+// ── BL-R3 (F-048 structural fix + F-026) — deterministic-id active-window dedup ──────────────
+//
+// The active-window dedup ("one pending-or-processing work_item per unit") is enforced by a
+// DETERMINISTIC PRIMARY record id, NOT the secondary `work_item_dedup` UNIQUE index. On THIS
+// SurrealDB build a secondary UNIQUE index over a computed VALUE field does NOT enforce under
+// concurrent inserts (F-026 — two racers both commit) AND can INTERFERE with the atomic primary-
+// key collision (the file_snapshot lesson). Only the PRIMARY record id is collision-atomic, so the
+// unit's id IS the dedup key: two enqueues of the SAME (work_type, session, dedup_scope) resolve to
+// the SAME record id → a second CREATE collides ATOMICALLY on the primary key (exactly one row, no
+// matter the racer count). Because the id is STABLE across the pending→processing claim transition
+// (the id never changes), it ALSO fixes the F-048 status-split clobber: a re-enqueue while the twin
+// is already `processing` hits the same id and is deduped — the 2nd row is never created. The
+// active-window `dedup_key` field + index remain (collapsed to a constant 'active' marker in m0081,
+// non-unique) purely as a harmless read aid; they are NOT the guarantee.
+//
+// SCOPE_SEP is a NUL byte built at RUNTIME (String.fromCharCode(0)) so the three id components can
+// never collide across a `|`-boundary (`a|b` vs `a`+`|b`) and the SOURCE stays pure-ASCII/diffable
+// (a raw NUL would make git treat this file as binary). Mirrors file-snapshot.ts snapshotId().
+const SCOPE_SEP = String.fromCharCode(0);
+
 /**
- * Enqueue a `work_item`. The UNIQUE `dedup_key` (active window: work_type|session|status,
- * §4.12) makes re-enqueueing the SAME active unit a UNIQUE-violation — caught here and
- * surfaced as `enqueued:false` rather than a thrown duplicate (exactly-once-ish, D-008).
+ * The DETERMINISTIC `work_item:<hex>` record id for one active-window dedup unit
+ * (work_type, session, dedup_scope) — the CONCURRENCY-SAFE dedup guarantee (F-026). Identical
+ * (work_type|session|dedup_scope) maps to the SAME id, so two concurrent enqueues both `CREATE`
+ * that id and the loser collides atomically on the primary key. session/dedup_scope absent ⇒ an
+ * empty component (a session-less, scope-less unit gets its own stable id). The suffix is lowercase
+ * hex (satisfies the D-016 record-id charset). PURE + exported — unit-testable without a DB.
+ */
+export function activeWorkItemId(workType: string, session: string, dedupScope: string): string {
+	const scopeKey = `${workType}${SCOPE_SEP}${session}${SCOPE_SEP}${dedupScope}`;
+	const suffix = createHash('sha256').update(scopeKey, 'utf8').digest('hex');
+	return `work_item:${suffix}`;
+}
+
+/**
+ * Is this the deterministic-id PRIMARY-KEY collision a concurrent/duplicate enqueue raises (F-026)?
+ * On this SurrealDB build the same record-id double-CREATE surfaces as one of a few raw shapes (all
+ * InternalError): record-already-exists, a commit-race read/write conflict when two writers reach
+ * commit together, or (defense-in-depth) the leftover secondary-index `already contains`. Narrow by
+ * design — invoked ONLY around the single deterministic-id CREATE, so a match can be nothing but the
+ * dedup collision (mirrors file-snapshot.ts isSnapshotIdCollision; F-008 — re-raise everything else).
+ */
+function isWorkItemIdCollision(err: unknown): boolean {
+	const msg = err instanceof Error ? err.message : String(err);
+	return (
+		/record `?[^`']*`? already exists/i.test(msg) ||
+		/failed transaction|read or write conflict|can be retried/i.test(msg) ||
+		/work_item_dedup|already contains/i.test(msg)
+	);
+}
+
+/** A work_item status IN the active dedup window (a pending/processing twin blocks a re-enqueue). */
+const ACTIVE_STATUSES: readonly WorkStatus[] = ['pending', 'processing'];
+
+/**
+ * Enqueue a `work_item`, deduped within the ACTIVE window by a DETERMINISTIC PRIMARY id (see the
+ * block comment above; F-048 structural fix + F-026). The unit is (work_type, session, dedup_scope):
+ *
+ *   • no active row for the unit          → CREATE it (`enqueued: true`);
+ *   • an ACTIVE (pending/processing) twin → dedup, no new row (`enqueued: false`) — this is the
+ *     F-048 fix: the id is stable across the claim transition, so a re-enqueue while the twin is
+ *     already `processing` is caught (never a 2nd clobbering row);
+ *   • only a TERMINAL (done/failed) row   → the prior run is finished, so REUSE that id for a fresh
+ *     run (guarded reset back to pending) — this is what the old `dedup_key = <string>id` ELSE-branch
+ *     bought us: a completed unit can be re-queued. The reset is GUARDED `WHERE status IN [done,failed]`
+ *     so it can NEVER clobber a twin that a racer already reused+claimed (it then falls through to the
+ *     dedup branch on the re-read).
+ *
+ * Returns the unit's deterministic id + whether a NEW run was queued. Idempotent / interrupt-safe:
+ * a re-run collides on the id and resolves to the existing row's disposition. Shadow paths — nil/
+ * empty payload: an honest empty-object payload row; absent session/project: OMITTED (NONE, §6.1);
+ * a non-collision DB error: surfaced with its own name, NEVER swallowed as success (F-008).
  */
 export async function enqueue(
 	db: Db,
 	input: EnqueueInput
 ): Promise<{ id: string; enqueued: boolean }> {
+	const session = input.sessionId ?? '';
+	const dedupScope = input.dedupScope ?? '';
+	const ridStr = activeWorkItemId(input.workType, session, dedupScope);
+	const rid = new StringRecordId(assertRecordId(ridStr));
+
+	// The row body for a CREATE or a terminal-REUSE reset. status is set EXPLICITLY (§6.2) so the
+	// dedup_key VALUE + status ASSERT see a concrete "pending"; the record id is the actual guard.
+	const priority = input.priority ?? 5;
 	const content = omitUndefined({
 		work_type: input.workType,
 		payload: input.payload,
-		priority: input.priority,
-		// Set status EXPLICITLY so the computed `dedup_key VALUE` (which keys on status,
-		// §4.12) sees a concrete "pending" — relying on the schema DEFAULT leaves status
-		// NONE at the moment the VALUE clause evaluates, so dedup_key falls to the ELSE
-		// (record id) branch and the active-window UNIQUE dedup never engages.
-		status: 'pending',
-		dedup_scope: input.dedupScope,
+		priority,
+		status: 'pending' as const,
+		dedup_scope: dedupScope,
 		session: input.sessionId ? link(input.sessionId) : undefined,
 		project: input.projectId ? link(input.projectId) : undefined
 	});
-	try {
-		const [rows] = await db.query<[Array<{ id: unknown }>]>(
-			`CREATE work_item CONTENT $content RETURN AFTER;`,
-			{ content }
+
+	// Bounded classify-or-create loop (never spins — resolves in 1–2 passes; the cap only guards a
+	// pathological reset↔reuse ping-pong). Each pass: read the unit's row by its deterministic id and
+	// act on its disposition (active ⇒ dedup, terminal ⇒ guarded reuse, absent ⇒ CREATE; a lost
+	// CREATE/reset race ⇒ re-read).
+	for (let attempt = 0; attempt < 4; attempt++) {
+		const [rows] = await db.query<[Array<{ status?: unknown }>]>(
+			`SELECT status FROM $rid;`,
+			{ rid }
 		);
-		return { id: str(rows[0].id), enqueued: true };
-	} catch (err) {
-		// A dedup_key UNIQUE collision means this active unit is already queued — not an
-		// error, just a no-op dedup. Any other failure re-throws.
-		const msg = (err as Error).message ?? '';
-		if (/work_item_dedup|already (contains|exists)|index/i.test(msg)) {
-			return { id: '', enqueued: false };
+		const existing = rows?.[0];
+
+		if (existing) {
+			const status = str(existing.status) as WorkStatus;
+			if (ACTIVE_STATUSES.includes(status)) {
+				// An active twin already holds the unit — dedup (the F-048 fix, incl. the processing twin).
+				return { id: ridStr, enqueued: false };
+			}
+			// Terminal (done/failed): the prior run finished — REUSE the id for a fresh run. GUARDED so a
+			// concurrent reuse+claim can't be clobbered: if the row is no longer terminal by the time we
+			// write, nothing matches → re-read (it's now active ⇒ dedup).
+			const [reset] = await db.query<[Array<{ id: unknown }>]>(
+				`UPDATE $rid SET
+				   work_type = $content.work_type, payload = $content.payload, priority = $content.priority,
+				   status = "pending", dedup_scope = $content.dedup_scope,
+				   attempts = 0, claim_token = NONE, claimed_at = NONE, completed_at = NONE, handoff = NONE
+				 WHERE status IN ["done", "failed"] RETURN AFTER;`,
+				{ rid, content }
+			);
+			if ((reset?.length ?? 0) > 0) return { id: ridStr, enqueued: true };
+			continue; // lost the reuse race — re-read (a racer reused it; likely active now ⇒ dedup)
 		}
-		throw err;
+
+		// No row yet — CREATE on the deterministic id. A concurrent duplicate collides atomically on
+		// the primary key (F-026): the winner returns the row; a loser's collision is caught → re-read.
+		try {
+			const [created] = await db.query<[Array<{ id: unknown }>]>(
+				`CREATE $rid CONTENT $content RETURN AFTER;`,
+				{ rid, content }
+			);
+			if (!created || created.length === 0) {
+				// EVERY ERROR HAS A NAME: a CREATE that returns nothing is a real DB anomaly, not success.
+				throw new Error(`enqueue: CREATE ${ridStr} returned no row (unexpected DB state).`);
+			}
+			return { id: ridStr, enqueued: true };
+		} catch (err) {
+			if (isWorkItemIdCollision(err)) continue; // a racer won the id — re-read its disposition
+			throw err; // a non-collision DB error propagates unchanged (named, never swallowed, F-008)
+		}
 	}
+
+	// Loop exhausted (extreme reuse↔dedup contention): re-read once and report honestly. An active
+	// twin ⇒ dedup; anything else ⇒ surface the anomaly (F-008 — never fabricate an enqueued:true).
+	const [final] = await db.query<[Array<{ status?: unknown }>]>(`SELECT status FROM $rid;`, { rid });
+	if (final?.[0] && ACTIVE_STATUSES.includes(str(final[0].status) as WorkStatus)) {
+		return { id: ridStr, enqueued: false };
+	}
+	throw new Error(`enqueue: could not resolve ${ridStr} after 4 passes (unexpected contention).`);
 }
 
 /** Options for {@link claimNext}. */

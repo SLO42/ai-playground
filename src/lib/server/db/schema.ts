@@ -2863,6 +2863,24 @@ const m0080_maintenance_loops: Migration = {
 	`
 };
 
+// ── §4.12 note (BL-R3 — F-048 structural fix + F-026) — active-window dedup is the PRIMARY id ──
+//
+// NO new migration ships for BL-R3. The task_run active-window dedup ("one pending-or-processing
+// task_run per task") is now enforced in code by a DETERMINISTIC PRIMARY record id (workqueue.ts
+// activeWorkItemId → work_item:<sha(work_type|session|dedup_scope)>), which is collision-atomic on
+// THIS SurrealDB build where a secondary UNIQUE index over a computed VALUE does NOT hold under
+// concurrent inserts (F-026). Because the id is STABLE across the pending→processing claim transition,
+// it closes the F-048 status-split clobber (the old `dedup_key = …|status` key recomputed on claim and
+// let a 2nd enqueue slip in as a fresh `…|pending`) WITHOUT a schema change.
+//
+// The `work_item_dedup` UNIQUE index (m0012) is DELIBERATELY LEFT in place: three OTHER producers
+// (loop.ts enqueueReview / activation.ts reinterview / gauntlet.ts queued-interview) still `CREATE
+// work_item` with a random id and rely on that index for their dedup. The deterministic-id path for
+// task_run is unaffected by the index (the id is the guard; the index never false-fires because the
+// same unit is always the same single row). DEFERRED (written down, not silently cut): routing those
+// three producers through the same deterministic-id enqueue() to give THEM the same F-026-proof
+// concurrency guarantee — out of BL-R3's task_run scope.
+
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).
  * Order: referenced tables (project, session, memory, workflow, causal_chain)

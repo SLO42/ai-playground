@@ -459,3 +459,32 @@ export async function resetStuckTaskToFailed(db: Db, taskId: string): Promise<bo
 	);
 	return rows.length > 0;
 }
+
+/**
+ * BL-R3 (success-side twin) — drive a task stranded `in_progress`/`review` to the terminal `done`.
+ *
+ * The SYMMETRIC counterpart of {@link resetStuckTaskToFailed}. A SUCCESSFUL `task_run` whose
+ * orchestrator ran WITHOUT the post-task loop (the degenerate constructor default — production
+ * ALWAYS enables it) has NO terminal writer: post-task is the only path that writes a task's `done`,
+ * and the failed-writer only fires on a NON-ok terminal. So an ok spawn with post-task disabled would
+ * otherwise leave the task pinned `in_progress` forever with no live worker — the invisible half-state
+ * F-048 class (a success-side mirror of BL-R2's failed-side strand). The orchestrator calls this on
+ * that exact path so the honest terminal (the session succeeded) is recorded.
+ *
+ * `in_progress→done` and `review→done` ARE legal in ALLOWED_TRANSITIONS — so this is NOT a
+ * state-machine bypass; the guarded UPDATE is used (instead of {@link setStatus}) purely for
+ * IDEMPOTENCE: it mirrors post-task's own terminal write (`IF $cur IN ["in_progress","review"]`) so
+ * a re-run / a task that already advanced (post-task raced it, an operator move) matches nothing and
+ * moves zero rows — never a throw. Touches `updated_at` so the live query / PM observes the terminal.
+ * Returns whether a row moved.
+ */
+export async function resetStuckTaskToDone(db: Db, taskId: string): Promise<boolean> {
+	const rid = new StringRecordId(assertRecordId(taskId));
+	// RETURN BEFORE yields the rows that matched the guarded WHERE (the count of tasks advanced).
+	const [rows] = await db.query<[unknown[]]>(
+		`UPDATE $rid SET status = "done", updated_at = time::now()
+		   WHERE status IN ["in_progress", "review"] RETURN BEFORE;`,
+		{ rid }
+	);
+	return rows.length > 0;
+}

@@ -370,6 +370,17 @@ async function backRemote(
 	branch: string,
 	repoAlreadyExisted: boolean
 ): Promise<{ ok: boolean; detail: string }> {
+	// BRANCH RESOLUTION + NORMALIZATION (F-050) — resolve the branch to push FIRST, never ASSUME `main`.
+	// The original bug: this leg hardcoded `git push -u origin main`, so a `master`-default local repo
+	// (ROUNDS was scaffolded on `master`) failed with `src refspec main does not match any` → the repo
+	// existed but stayed UNBACKED. We now resolve the repo's ACTUAL current branch and normalize a
+	// `master`-default repo to the requested branch before pushing.
+	const resolved = await resolvePushBranch(run, cwd, branch);
+	if (!resolved.ok) {
+		return { ok: false, detail: resolved.detail };
+	}
+	const pushBranch = resolved.branch;
+
 	// remote add — absorb an existing-origin non-zero exit (idempotent re-run), surface other failures.
 	let addNote = 'origin added';
 	let originPreexisted = false;
@@ -405,22 +416,97 @@ async function backRemote(
 		}
 	}
 
-	// push -u origin -- <branch> — the durable, re-runnable step. The `--` separator means git can NEVER
-	// read <branch> as a flag even if it somehow began with `-` (RC-2 finding #2; the gate already
-	// validated it via assertBranchName — this is belt-and-suspenders, D-008 class). A re-push of an
-	// up-to-date branch exits 0 ("Everything up-to-date"); a genuine rejection is a named red.
+	// push -u origin -- <pushBranch> — the durable, re-runnable step. The `--` separator means git can
+	// NEVER read <pushBranch> as a flag even if it somehow began with `-` (RC-2 finding #2; the requested
+	// branch was validated via assertBranchName and the resolved branch is a real git-reported ref — this
+	// is belt-and-suspenders, D-008 class). A re-push of an up-to-date branch exits 0 ("Everything
+	// up-to-date"); a genuine rejection is a named red.
 	try {
-		const push = await run('git', ['push', '-u', 'origin', '--', branch], { cwd });
+		const push = await run('git', ['push', '-u', 'origin', '--', pushBranch], { cwd });
 		if (push.code !== 0) {
 			const text = (push.stderr || push.stdout).trim();
-			return { ok: false, detail: `git push -u origin ${branch} failed (exit ${push.code}): ${tail(text) || 'no output'}` };
+			return { ok: false, detail: `git push -u origin ${pushBranch} failed (exit ${push.code}): ${tail(text) || 'no output'}` };
 		}
 	} catch (err) {
 		return { ok: false, detail: `git push could not run: ${(err as Error).message}` };
 	}
 
 	const existedNote = repoAlreadyExisted ? ' (repo pre-existed)' : '';
-	return { ok: true, detail: `${addNote}; pushed ${branch} to origin${existedNote}` };
+	return { ok: true, detail: `${addNote}; ${resolved.note}; pushed ${pushBranch} to origin${existedNote}` };
+}
+
+/**
+ * F-050 — resolve the branch this gate should push, normalizing a `master`-default local repo to the
+ * requested branch. NEVER assume `main`: the original defect hardcoded `git push -u origin main`, so a
+ * repo whose only branch was `master` (ROUNDS was scaffolded on `master`) failed with `src refspec main
+ * does not match any` and stayed unbacked. The resolution ladder (all array-args, no shell — D-008):
+ *
+ *   1. Resolve the ACTUAL current branch — `git symbolic-ref --short HEAD` (`git branch --show-current`
+ *      equivalent). Already on the requested branch → push it (the common post-fix case: born on `main`).
+ *   2. Requested branch EXISTS locally (even if not checked out) — `git rev-parse --verify --quiet
+ *      refs/heads/<requested>` → push it by name (git pushes the named ref regardless of checkout).
+ *   3. NORMALIZE a `master`-default repo — HEAD is `master` and the requested branch does NOT exist →
+ *      `git branch -m master <requested>` (rename), then push the requested branch. This is the F-050 fix.
+ *   4. Requested branch absent and NOT a `master` repo → push the ACTUAL current branch rather than
+ *      inventing a non-existent one (honors "resolve the real branch, never assume main").
+ *   5. No resolvable branch (unborn/detached HEAD and the requested branch is absent) → honest named red,
+ *      no push (the caller surfaces it at the 'remote' stage; the repo is created but honestly unbacked).
+ *
+ * The requested branch was already `assertBranchName`-validated by the gate; a branch resolved from git
+ * (case 4) is an inherently-valid ref. Both are pushed behind the `--` separator (belt-and-suspenders).
+ */
+async function resolvePushBranch(
+	run: CommandRunner,
+	cwd: string,
+	requested: string
+): Promise<{ ok: true; branch: string; note: string } | { ok: false; detail: string }> {
+	// (1) Resolve the ACTUAL current branch — never assume `main`.
+	let current = '';
+	try {
+		const head = await run('git', ['symbolic-ref', '--short', 'HEAD'], { cwd });
+		if (head.code === 0) current = head.stdout.trim();
+	} catch (err) {
+		return { ok: false, detail: `resolving the current branch failed: ${(err as Error).message}` };
+	}
+
+	// Already on the requested branch → push it as-is (born-on-main scaffolds land here).
+	if (current && current === requested) {
+		return { ok: true, branch: requested, note: `on ${requested}` };
+	}
+
+	// (2) Requested branch exists locally (perhaps not checked out) → push it by name.
+	let requestedExists = false;
+	try {
+		const verify = await run('git', ['rev-parse', '--verify', '--quiet', `refs/heads/${requested}`], { cwd });
+		requestedExists = verify.code === 0;
+	} catch {
+		requestedExists = false;
+	}
+	if (requestedExists) {
+		return { ok: true, branch: requested, note: `local ${requested} exists` };
+	}
+
+	// (3) NORMALIZE a `master`-default repo → rename master to the requested branch (the F-050 fix).
+	if (current === 'master') {
+		try {
+			const ren = await run('git', ['branch', '-m', 'master', requested], { cwd });
+			if (ren.code !== 0) {
+				const text = (ren.stderr || ren.stdout).trim();
+				return { ok: false, detail: `normalizing master -> ${requested} failed (exit ${ren.code}): ${tail(text) || 'no output'}` };
+			}
+		} catch (err) {
+			return { ok: false, detail: `normalizing master -> ${requested} could not run: ${(err as Error).message}` };
+		}
+		return { ok: true, branch: requested, note: `normalized master -> ${requested}` };
+	}
+
+	// (4) Requested branch absent and not a `master` repo → push the ACTUAL current branch, never invent one.
+	if (current) {
+		return { ok: true, branch: current, note: `requested ${requested} absent — pushing actual branch ${current}` };
+	}
+
+	// (5) No resolvable branch (unborn/detached HEAD) → honest named red, no push.
+	return { ok: false, detail: `no local branch to push (HEAD is unborn/detached and ${requested} does not exist)` };
 }
 
 /**

@@ -103,11 +103,35 @@ function fakeGit(
 		setUrlOut?: string;
 		pushCode?: number;
 		pushOut?: string;
+		/** The branch `git symbolic-ref --short HEAD` reports. '' = unborn/detached (non-zero exit). Default 'main'. */
+		currentBranch?: string;
+		/** The local branches `git rev-parse --verify --quiet refs/heads/<b>` finds. Default: [currentBranch]. */
+		existingBranches?: string[];
+		/** Exit code for the `git branch -m master <b>` normalization (F-050). Default 0. */
+		renameCode?: number;
+		renameOut?: string;
 	} = {}
 ) {
+	const currentBranch = opts.currentBranch ?? 'main';
+	const existingBranches = opts.existingBranches ?? (currentBranch ? [currentBranch] : []);
 	const calls: Array<{ file: string; args: string[]; cwd: string }> = [];
 	const fn: CommandRunner = async (file, args, o): Promise<CommandResult> => {
 		calls.push({ file, args: [...args], cwd: o.cwd });
+		// F-050 branch resolution: `git symbolic-ref --short HEAD` → current branch; `git rev-parse
+		// --verify --quiet refs/heads/<b>` → does <b> exist; `git branch -m master <b>` → normalize.
+		if (args[0] === 'symbolic-ref') {
+			return currentBranch
+				? { code: 0, stdout: `${currentBranch}\n`, stderr: '' }
+				: { code: 1, stdout: '', stderr: 'fatal: ref HEAD is not a symbolic ref' };
+		}
+		if (args[0] === 'rev-parse' && args[1] === '--verify') {
+			const ref = args[args.length - 1]; // refs/heads/<name>
+			const name = ref.replace(/^refs\/heads\//, '');
+			return { code: existingBranches.includes(name) ? 0 : 1, stdout: '', stderr: '' };
+		}
+		if (args[0] === 'branch' && args[1] === '-m') {
+			return { code: opts.renameCode ?? 0, stdout: '', stderr: opts.renameCode ? (opts.renameOut ?? 'rename failed') : '' };
+		}
 		// `git remote add origin <url>` → args[0]='remote',args[1]='add'; `git remote set-url origin <url>`
 		// → args[1]='set-url'; `git push -u origin <branch>` → args[0]='push'.
 		if (args[0] === 'remote' && args[1] === 'add') {
@@ -160,6 +184,7 @@ describe('runRepoCreationGate — consent + valid token + authed → creates, ba
 		// The OUTWARD runner did remote add + push -u origin -- main (D-008 array args; the `--`
 		// separator means a branch can never be misparsed as a flag — RC-2 finding #2).
 		expect(git.calls).toEqual([
+			{ file: 'git', args: ['symbolic-ref', '--short', 'HEAD'], cwd: 'F:/code/whatever' },
 			{ file: 'git', args: ['remote', 'add', 'origin', 'https://github.com/me/repo-host'], cwd: 'F:/code/whatever' },
 			{ file: 'git', args: ['push', '-u', 'origin', '--', 'main'], cwd: 'F:/code/whatever' }
 		]);
@@ -173,7 +198,7 @@ describe('runRepoCreationGate — consent + valid token + authed → creates, ba
 		const client = new FakeClient();
 		const git = fakeGit();
 		await runRepoCreationGate({ db, projectId, consent: true, confirmToken: validToken(), name: 'repo-host', client, gitRunner: git.fn });
-		expect(git.calls[1].args).toEqual(['push', '-u', 'origin', '--', 'main']);
+		expect(git.calls.find((c) => c.args[0] === 'push')?.args).toEqual(['push', '-u', 'origin', '--', 'main']);
 	});
 });
 
@@ -307,8 +332,10 @@ describe('runRepoCreationGate — idempotent already-exists is an honest no-op s
 		const setUrl = git.calls.find((c) => c.args[0] === 'remote' && c.args[1] === 'set-url');
 		expect(setUrl).toBeDefined();
 		expect(setUrl?.args).toEqual(['remote', 'set-url', 'origin', 'https://github.com/me/repo-host']);
-		// Exact outward sequence: add (dup) → set-url (reconcile) → push.
+		// Exact outward sequence: resolve branch (symbolic-ref, already main) → add (dup) → set-url
+		// (reconcile) → push.
 		expect(git.calls).toEqual([
+			{ file: 'git', args: ['symbolic-ref', '--short', 'HEAD'], cwd: 'F:/code/whatever' },
 			{ file: 'git', args: ['remote', 'add', 'origin', 'https://github.com/me/repo-host'], cwd: 'F:/code/whatever' },
 			{ file: 'git', args: ['remote', 'set-url', 'origin', 'https://github.com/me/repo-host'], cwd: 'F:/code/whatever' },
 			{ file: 'git', args: ['push', '-u', 'origin', '--', 'main'], cwd: 'F:/code/whatever' }
@@ -446,7 +473,12 @@ describe('runRepoCreationGate — owner-less already-exists (RC-2 finding #3)', 
 		expect(client.resolveOwnerCalls).toBe(1);
 		// Well-formed: owner present, never the malformed owner-less https://github.com/repo-host.
 		expect(out.repoUrl).toBe('https://github.com/resolved-acct/repo-host');
-		expect(git.calls[0].args).toEqual(['remote', 'add', 'origin', 'https://github.com/resolved-acct/repo-host']);
+		expect(git.calls.find((c) => c.args[0] === 'remote' && c.args[1] === 'add')?.args).toEqual([
+			'remote',
+			'add',
+			'origin',
+			'https://github.com/resolved-acct/repo-host'
+		]);
 	});
 
 	it('no owner AND resolveOwner returns null → fail closed, never a malformed owner-less URL, NO push', async () => {
@@ -494,7 +526,8 @@ describe('runRepoCreationGate — branch validation (RC-2 finding #2)', () => {
 
 	it('a valid branch is pushed with a `--` separator (git can never read it as a flag)', async () => {
 		const client = new FakeClient();
-		const git = fakeGit();
+		// The repo is actually on `feature/x` → resolution reports it and pushes it as-is.
+		const gitFeature = fakeGit({ currentBranch: 'feature/x' });
 		await runRepoCreationGate({
 			db,
 			projectId,
@@ -503,9 +536,96 @@ describe('runRepoCreationGate — branch validation (RC-2 finding #2)', () => {
 			name: 'repo-host',
 			branch: 'feature/x',
 			client,
+			gitRunner: gitFeature.fn
+		});
+		expect(gitFeature.calls.find((c) => c.args[0] === 'push')?.args).toEqual(['push', '-u', 'origin', '--', 'feature/x']);
+	});
+});
+
+// ── F-050: master-default local repo → normalize to main before pushing ──────────────────
+// The original defect: the push leg hardcoded `git push -u origin main`, so a repo whose only branch
+// was `master` (ROUNDS was scaffolded on `master`) failed with `src refspec main does not match any`
+// → failedAt:'remote', "repo exists but unbacked". The fix resolves the ACTUAL current branch and
+// normalizes a master-default repo to the requested branch (rename master→main) before pushing.
+describe('runRepoCreationGate — F-050 branch resolution / master→main normalization', () => {
+	it('REGRESSION: a master-default repo (no local main) is renamed master→main, then main is pushed', async () => {
+		const client = new FakeClient();
+		// The local repo is on `master` and has NO `main` — exactly the F-050 ROUNDS scaffold.
+		const git = fakeGit({ currentBranch: 'master', existingBranches: ['master'] });
+		const out = await runRepoCreationGate({
+			db,
+			projectId,
+			consent: true,
+			confirmToken: validToken(),
+			name: 'repo-host',
+			branch: 'main',
+			client,
 			gitRunner: git.fn
 		});
-		expect(git.calls.find((c) => c.args[0] === 'push')?.args).toEqual(['push', '-u', 'origin', '--', 'feature/x']);
+		expect(out.created).toBe(true);
+		expect(out.failedAt).toBeNull();
+		// The load-bearing fix: master was renamed to main BEFORE the push, and the push targets main
+		// (never the pre-fix `push -u origin main` against a non-existent local main).
+		expect(git.calls.some((c) => c.args[0] === 'branch' && c.args[1] === '-m' && c.args[2] === 'master' && c.args[3] === 'main')).toBe(true);
+		expect(git.calls.find((c) => c.args[0] === 'push')?.args).toEqual(['push', '-u', 'origin', '--', 'main']);
+		expect(out.checks.find((c) => c.name === 'remote')?.detail).toMatch(/normalized master -> main/i);
+		const p = await getProject(db, projectId);
+		expect(p?.repo_url).toBe('https://github.com/me/repo-host');
+	});
+
+	it('a repo already on main is a no-op (no rename) and pushes main', async () => {
+		const client = new FakeClient();
+		const git = fakeGit({ currentBranch: 'main', existingBranches: ['main'] });
+		const out = await runRepoCreationGate({ db, projectId, consent: true, confirmToken: validToken(), name: 'repo-host', client, gitRunner: git.fn });
+		expect(out.created).toBe(true);
+		// Never renamed — main already exists.
+		expect(git.calls.some((c) => c.args[0] === 'branch' && c.args[1] === '-m')).toBe(false);
+		expect(git.calls.find((c) => c.args[0] === 'push')?.args).toEqual(['push', '-u', 'origin', '--', 'main']);
+	});
+
+	it('requested branch absent + NOT master → pushes the ACTUAL current branch (never assumes main)', async () => {
+		const client = new FakeClient();
+		// On `develop`, no `main`, no `master` — resolution must push the real branch, not invent main.
+		const git = fakeGit({ currentBranch: 'develop', existingBranches: ['develop'] });
+		const out = await runRepoCreationGate({ db, projectId, consent: true, confirmToken: validToken(), name: 'repo-host', client, gitRunner: git.fn });
+		expect(out.created).toBe(true);
+		expect(git.calls.some((c) => c.args[0] === 'branch' && c.args[1] === '-m')).toBe(false);
+		expect(git.calls.find((c) => c.args[0] === 'push')?.args).toEqual(['push', '-u', 'origin', '--', 'develop']);
+		expect(out.checks.find((c) => c.name === 'remote')?.detail).toMatch(/pushing actual branch develop/i);
+	});
+
+	it('requested branch already exists locally (not checked out) → pushed by name, no rename', async () => {
+		const client = new FakeClient();
+		// HEAD is on `dev` but a local `main` already exists → push main by name (git pushes named refs).
+		const git = fakeGit({ currentBranch: 'dev', existingBranches: ['dev', 'main'] });
+		const out = await runRepoCreationGate({ db, projectId, consent: true, confirmToken: validToken(), name: 'repo-host', branch: 'main', client, gitRunner: git.fn });
+		expect(out.created).toBe(true);
+		expect(git.calls.some((c) => c.args[0] === 'branch' && c.args[1] === '-m')).toBe(false);
+		expect(git.calls.find((c) => c.args[0] === 'push')?.args).toEqual(['push', '-u', 'origin', '--', 'main']);
+	});
+
+	it('a rename failure is a NAMED red at remote (no push, repo stays unbacked honestly)', async () => {
+		const client = new FakeClient();
+		const git = fakeGit({ currentBranch: 'master', existingBranches: ['master'], renameCode: 1, renameOut: 'fatal: no commit on branch master yet' });
+		const out = await runRepoCreationGate({ db, projectId, consent: true, confirmToken: validToken(), name: 'repo-host', client, gitRunner: git.fn });
+		expect(out.created).toBe(false);
+		expect(out.failedAt).toBe('remote');
+		expect(out.checks.find((c) => c.name === 'remote')?.detail).toMatch(/normalizing master -> main/i);
+		// Never pushed once the normalization failed — no half-state.
+		expect(git.calls.some((c) => c.args[0] === 'push')).toBe(false);
+		const p = await getProject(db, projectId);
+		expect(p?.repo_url).toBeUndefined();
+	});
+
+	it('an unborn/detached HEAD with no requested branch → named red at remote, NO push', async () => {
+		const client = new FakeClient();
+		// symbolic-ref exits non-zero (unborn/detached) and no `main` exists → nothing safe to push.
+		const git = fakeGit({ currentBranch: '', existingBranches: [] });
+		const out = await runRepoCreationGate({ db, projectId, consent: true, confirmToken: validToken(), name: 'repo-host', client, gitRunner: git.fn });
+		expect(out.created).toBe(false);
+		expect(out.failedAt).toBe('remote');
+		expect(out.checks.find((c) => c.name === 'remote')?.detail).toMatch(/no local branch to push/i);
+		expect(git.calls.some((c) => c.args[0] === 'push')).toBe(false);
 	});
 });
 

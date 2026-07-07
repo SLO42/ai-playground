@@ -1284,6 +1284,14 @@ async function scaffoldRegisterAndWire(
 			if (initRes.code !== 0) {
 				throw new Error(`git init failed (code ${initRes.code}): ${initRes.stderr.slice(0, 200)}`);
 			}
+			// BIRTH ON `main` (F-050 / operator directive: `main` is ALWAYS the default; `master` is
+			// deprecated). `git init` picks the installed git's default branch — on older git that is
+			// `master`, which is the ORIGIN of the F-050 repo-creation bug (a `master`-default scaffold
+			// broke the gate's `git push -u origin main`). Point the still-unborn HEAD at refs/heads/main
+			// BEFORE the first commit so the initial branch is `main` regardless of git's default. This is
+			// version-agnostic (no `git init -b main`, which needs git >= 2.28) and never touches an
+			// existing branch (HEAD is unborn here — the scaffold dir is always freshly created).
+			await run('git', ['symbolic-ref', 'HEAD', 'refs/heads/main'], { cwd: projectRoot });
 			await run('git', ['add', '-A'], { cwd: projectRoot });
 			const commitMsg = `chore: scaffold ${slug} via Atelier Create-with-AI`;
 			// Inline identity (-c) so the first commit succeeds even with no global/local git identity

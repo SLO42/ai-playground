@@ -40,7 +40,7 @@ import {
 	type ExecuteCreationOptions
 } from './execute';
 import { slugify } from '../scanner/detect';
-import type { CommandRunner } from '../orchestrator/post-task';
+import { execFileRunner, type CommandRunner } from '../orchestrator/post-task';
 
 // CA-2 (CREATE-SPEC §2.4-2.5, §3 rails) — the EXECUTE half. Run vs a REAL throwaway SurrealDB +
 // a REAL temp CODE_ROOT (real git init / real scaffold / real scanProject ingest — NO agent spend:
@@ -154,6 +154,12 @@ describe('executeCreation — happy path (PM requested, fork 3)', () => {
 		expect(await exists(join(root, 'README.md'))).toBe(true);
 		expect(await exists(join(root, '.git'))).toBe(true);
 		// .gitignore covers .env from commit 0 (D-026).
+		// F-050: the scaffold is BORN on `main` (never `master`) regardless of the installed git's default
+		// branch — the real fix for the repo-creation gate's `push -u origin main` (a `master`-default
+		// scaffold was the origin of F-050). Assert the real on-disk branch via real git.
+		const head = await execFileRunner('git', ['symbolic-ref', '--short', 'HEAD'], { cwd: realpathSync(root) });
+		expect(head.code).toBe(0);
+		expect(head.stdout.trim()).toBe('main');
 		const gi = await readFile(join(root, '.gitignore'), 'utf8');
 		expect(gi).toMatch(/^\.env$/m);
 

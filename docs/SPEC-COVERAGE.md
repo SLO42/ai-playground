@@ -4,7 +4,7 @@
 burn-down. Backend subsystems = `F:\code\ai-playground-v2\src\lib\server\<dir>`; specs = `docs/*.md`.
 Coverage honesty: "mentioned in ARCHITECTURE/DATA-MODEL" = **PARTIAL**, not FULL.
 
-**Tally (2026-07-07): 15 FULL · 21 PARTIAL · 3 NONE.** New specs written this session are FULL.
+**Tally (2026-07-08): 16 FULL · 20 PARTIAL · 3 NONE.** New specs written this session are FULL.
 
 ## Coverage
 
@@ -25,7 +25,7 @@ Coverage honesty: "mentioned in ARCHITECTURE/DATA-MODEL" = **PARTIAL**, not FULL
 | agent | MEMORY-SPEC §4/§8/§10 | FULL |
 | home | UI-SPEC §6 | FULL |
 | notifications | UI-SPEC | FULL |
-| **orchestrator** | ARCHITECTURE §2.2; queue-monitor + crash-recovery touch surfaces only | **PARTIAL** |
+| orchestrator | ORCHESTRATOR-SPEC (2026-07-08); ARCHITECTURE §2.2 | FULL |
 | **projects** | ARCHITECTURE/DATA-MODEL; PM specs adjacent | **PARTIAL** |
 | **claude-code** | ARCHITECTURE (runtime); F-046 lives here | **PARTIAL** |
 | **adapters** | D-037; per-adapter specs but not the framework contract | **PARTIAL** |
@@ -52,7 +52,7 @@ Coverage honesty: "mentioned in ARCHITECTURE/DATA-MODEL" = **PARTIAL**, not FULL
 
 ## Next specs to write (ranked by undocumented design complexity)
 
-1. **ORCHESTRATOR / WORK-QUEUE-SPEC** — the drain/claim/enqueue/dedup engine (10.9k loc); F-048 lives here; highest-value gap.
+1. ~~ORCHESTRATOR / WORK-QUEUE-SPEC~~ — **DONE 2026-07-08** (`ORCHESTRATOR-SPEC.md`; hardening wave queued `orchestrator-hardening`).
 2. **PROJECTS data-plane spec** — biggest subsystem (18.2k loc), only DATA-MODEL tables + adjacent PM specs.
 3. **CLAUDE-CODE-HARNESS-SPEC** — spawn / `agent_slot` / session-keyed isolated config (F-046); trickiest concurrency+security.
 4. **ADAPTER-FRAMEWORK-SPEC** — the D-037 contract (how an adapter registers, fail-closed) — NOTE: partly covered in RELEASE-SPEC §1; may just need extraction.

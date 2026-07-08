@@ -7,8 +7,9 @@
 // `?types=` query param (e.g. `?types=db_change`); default = all.
 //
 // We await `startup` first so the live-query watchers are running before a client
-// subscribes (no missed early changes for a just-loaded page). The connection is
-// Protection = the m0071 login gate (loopback bypasses it; external needs the signed SameSite=lax cookie), NOT the server bind.
+// subscribes (no missed early changes for a just-loaded page). Protection = the m0071
+// login gate (loopback bypasses it; external needs the signed SameSite=lax cookie), NOT
+// the server bind.
 
 import { sseStream, getEventBus, type EventType } from '$lib/server/events';
 import { startup } from '../../../hooks.server';

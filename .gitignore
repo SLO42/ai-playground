@@ -26,6 +26,9 @@ dist/
 /.surreal/
 /.cache/
 
+# Generated graphify cache (build artifact, not committed)
+/src/graphify-out/
+
 # Lastik font is license-restricted (That That Type Commercial, D-034):
 # font binaries MUST NOT be committed to this public repo. Provisioned at build.
 *.woff

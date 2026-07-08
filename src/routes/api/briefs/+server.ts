@@ -1,4 +1,4 @@
-// TASK 16.4 — decision-brief decide endpoint (loopback control, D-025; D-016; F-008).
+// TASK 16.4 — decision-brief decide endpoint; protected by m0071 login gate (D-025; D-016; F-008).
 //
 // POST /api/briefs  { id: 'decision_brief:<id>', action: 'approve' | 'reject' | 'defer' }
 //

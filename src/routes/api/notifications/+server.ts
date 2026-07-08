@@ -6,7 +6,7 @@
 // The mutation is a plain guarded UPDATE off the DB singleton; the change reaches the UI
 // LIVE via the `notification` SSE watcher (§2.11) — the tray + Topbar badge re-derive from
 // the re-invalidated layout load, never a fabricated optimistic count. We still echo the
-// fresh unread count so the caller can confirm. Loopback-only is enforced at the server bind.
+// fresh unread count so the caller can confirm. Protection = the m0071 login gate (loopback bypasses it; external needs the signed SameSite=lax cookie), NOT the server bind.
 
 import { json, error } from '@sveltejs/kit';
 import { tryGetDb } from '$lib/server/db/runtime-init';

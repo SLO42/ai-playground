@@ -5,7 +5,7 @@
 //
 // The FileSnapshotViewer fetches HERE to resolve a file reference (a finding's file:line, a
 // transcript turn's path, a project tree entry) to its stored point-in-time snapshot. Read-only,
-// loopback (D-025); every value binds via the server-side query module's $params (D-016 — the path
+// protected by m0071 login gate (D-025); every value binds via the server-side query module's $params (D-016 — the path
 // is normalized/confined, the ids validated). Returns:
 //
 //   • 200 { snapshot }            — the F-013-normalized row (datetime → ISO; a marker body is

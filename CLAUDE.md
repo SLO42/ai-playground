@@ -68,6 +68,14 @@ npm run verify       # build && vitest && playwright  (full)
 
 ---
 
+## 2.5 Model roles (operator policy, 2026-07-07)
+
+Split which model does what by TASK TYPE:
+- **Plan / spec / create workflows → Fable 5 (`claude-fable-5`).** Brainstorming, specs, plans, roadmaps, decisions, authoring wave scripts / deciding wave structure — the thinking/design layer.
+- **Build / code / research / large-context → Opus (`claude-opus-4-8`).** Implementation, coding, codebase scouts, tool/graph analysis, and a wave's build/fix/review/red-team (they read + verify real code = large-context execution). `push`/mechanical stays haiku.
+
+Route spawned agents/waves accordingly: planning/spec/authoring subagents on `claude-fable-5`; build/research/large-context on `claude-opus-4-8`. Supersedes the 2026-06-13 "fable-5 retired / opus-everywhere" note.
+
 ## 3. Conventions
 
 **The ones already in force here — follow them:**

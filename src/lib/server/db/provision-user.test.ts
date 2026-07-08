@@ -162,6 +162,90 @@ describe('scoped-user grant matrix — CRUD yes / admin no (SEC-4, verified vs 2
 	});
 });
 
+describe('scoped-user cross-db / cross-ns confinement — no blast radius (SEC-4, PRIMARY security claim)', () => {
+	// The feature's #1 property (provision-user.ts:21-27, printed to the operator at
+	// db-up.ts:150): a DATABASE-level EDITOR is CONFINED to ONE database — it can reach
+	// neither a SIBLING database in the same namespace nor a FOREIGN namespace. That is the
+	// "no cross-db blast radius" claim the whole feature exists to deliver. A stubDb cannot
+	// prove it; this exercises the real 2.6.5 confinement boundary end-to-end. Verified live
+	// against 2.6.5: a scoped user's use() to a foreign db/ns is silently ignored — the
+	// session stays scoped to its OWN db, so a sibling/foreign secret is never readable.
+	const SIBLING_DB = 'sibling_secret_db';
+	const FOREIGN_NS = `foreign_ns_${process.pid}_${Date.now()}`;
+	let scoped: Db;
+
+	beforeAll(async () => {
+		// Seed a SECRET root-owned row in (a) a sibling database in the SAME namespace and
+		// (b) a wholly FOREIGN namespace. Dedicated root connections (Db.connect selects one
+		// ns/db) so we never disturb the shared `root` handle's USE state used by other suites.
+		const seedSibling = await Db.connect({
+			url: tdb.wsUrl,
+			username: tdb.root.username,
+			password: tdb.root.password,
+			namespace: tdb.namespace,
+			database: SIBLING_DB
+		});
+		try {
+			await seedSibling.query('DEFINE TABLE secretstuff SCHEMALESS;');
+			await seedSibling.query('CREATE secretstuff:x SET v = 42;');
+		} finally {
+			await seedSibling.close();
+		}
+		const seedForeign = await Db.connect({
+			url: tdb.wsUrl,
+			username: tdb.root.username,
+			password: tdb.root.password,
+			namespace: FOREIGN_NS,
+			database: 'main'
+		});
+		try {
+			await seedForeign.query('DEFINE TABLE secretstuff SCHEMALESS;');
+			await seedForeign.query('CREATE secretstuff:x SET v = 99;');
+		} finally {
+			await seedForeign.close();
+		}
+
+		await provisionRuntimeUser(root, { username: 'rt_confine', password: 'confine_pw_1' });
+		scoped = await connectScoped('rt_confine', 'confine_pw_1');
+	}, 60_000);
+
+	afterAll(async () => {
+		await scoped?.close().catch(() => {});
+		// The run namespace (with its sibling db) is dropped by tdb.teardown; the foreign
+		// namespace we created here must be dropped explicitly. Root op — level-agnostic.
+		await root
+			.query('REMOVE NAMESPACE IF EXISTS type::namespace($ns);', { ns: FOREIGN_NS })
+			.catch(() => {});
+	});
+
+	it('CANNOT read a SIBLING database in the same namespace (use() is confined)', async () => {
+		// Attempt to switch the scoped session to the sibling db, then read the secret.
+		await scoped.raw.use({ namespace: tdb.namespace, database: SIBLING_DB }).catch(() => {});
+		const rows = await scoped.query<[unknown[]]>('SELECT * FROM secretstuff;');
+		// Confined: use() to a foreign db is silently ignored — the session stays on the
+		// scoped user's OWN db (no secretstuff table), so the sibling secret (v=42) is
+		// invisible. If confinement ever broke, this would return the {v:42} row and fail.
+		expect(rows[0]).toEqual([]);
+	});
+
+	it('CANNOT reach a FOREIGN namespace (no cross-ns blast radius)', async () => {
+		await scoped.raw.use({ namespace: FOREIGN_NS, database: 'main' }).catch(() => {});
+		const rows = await scoped.query<[unknown[]]>('SELECT * FROM secretstuff;');
+		// Same confinement across a namespace boundary: the foreign secret (v=99) is never
+		// visible — the scoped session cannot leave its own ns/db.
+		expect(rows[0]).toEqual([]);
+	});
+
+	it('INFO FOR DB still reflects its OWN database, never the foreign one it use()-d', async () => {
+		// After the foreign use() above, the scoped session's INFO FOR DB must describe its
+		// OWN db (confirming the switch was ignored) — it must NOT expose the foreign db.
+		// The own db has the `widget` table other suites defined; the foreign db does not.
+		const info = await scoped.query<[{ tables?: Record<string, unknown> }]>('INFO FOR DB;');
+		expect(info[0]?.tables).toBeDefined();
+		expect(Object.keys(info[0]?.tables ?? {})).toContain('widget');
+	});
+});
+
 describe('scoped-user F-042 self-heal (single-flight re-signin, DATABASE level)', () => {
 	it('transparently re-auths the scoped user after the session drops, then returns rows', async () => {
 		await provisionRuntimeUser(root, { username: 'rt_heal', password: 'heal_pw_123' });

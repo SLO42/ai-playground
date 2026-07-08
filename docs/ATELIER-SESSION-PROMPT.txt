@@ -23,4 +23,4 @@ RULES (from CLAUDE.md — do not break):
 - Commit docs to v2-main, code to v2; run gates with CLAUDE_CODE_OAUTH_TOKEN unset; one builder per worktree.
 - Write a session devlog (docs/devlog/) and keep BUILD-QUEUE + SPEC-COVERAGE current.
 
-START BY: reading the four docs above, then propose the next 3 specs you'll write (from the SPEC-COVERAGE ranked list) and confirm the plan before spawning opus scouts. The immediate operator-gated milestone waiting on a human is new-mod-test (a fresh Create-with-AI ROUNDS mod → first real publish) — surface it but don't trigger it without the operator.
+START BY: reading the four docs above, then propose the next 10 specs you'll write (from the SPEC-COVERAGE ranked list) and confirm the plan before spawning opus scouts. The immediate operator-gated milestone waiting on a human is new-mod-test (a fresh Create-with-AI ROUNDS mod → first real publish) — surface it, take action on what you thin

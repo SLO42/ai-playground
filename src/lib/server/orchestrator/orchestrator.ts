@@ -49,6 +49,7 @@ import { runGameVerifyStep, type GameVerifyRunner } from './game-verify-step';
 import {
 	claimNext,
 	complete,
+	release,
 	enqueue,
 	gcStale,
 	pendingDepth,
@@ -56,6 +57,7 @@ import {
 	isCwdSpawningWorkType,
 	DAY_MS
 } from './workqueue';
+import { tokensSpentSince, TokenBudgetExceededError } from '../analytics/spend-budget';
 import { runReviewFork, makeWriteSurface, type ReviewKind } from '../memory/index';
 import { recordGraduationIfChanged, recordProjectGraduationIfChanged } from '../memory/soul-graduation';
 import {
@@ -169,6 +171,16 @@ export interface OrchestratorOptions {
 	/** Rolling cap window in ms. Default 24h (workqueue.DAY_MS). */
 	dailyCapWindowMs?: number;
 	/**
+	 * COST-GOVERNANCE-SPEC CG-2 — the GLOBAL rolling-24h TOKEN budget. Distinct from dailySpawnCap
+	 * (a claim COUNT): this bounds real SPEND. The drain checks Σ(tokens) over the window BEFORE
+	 * claiming and PARKS the queue once it is reached (mirrors the dailySpawnCap gate exactly), so a
+	 * runaway does not burn unbounded spend even if it stays under the claim count. 0 / undefined =
+	 * uncapped. The window is anchored on the durable agent_event timestamp (restart-proof). This is
+	 * the efficient park (no claim, no spin); launchSession's own CG-2 gate is the un-bypassable
+	 * backstop for the rare cross-check race (budget crossed between this gate and the spawn).
+	 */
+	dailyTokenBudget?: number;
+	/**
 	 * Enable the post-task loop (TASK 2.7): on a session that ends, run the commit +
 	 * project test command + optional follow-up and record the outcome (DATA-MODEL §3
 	 * step 7). OFF by default so a degenerate orchestrator never touches git/the FS. When
@@ -268,6 +280,7 @@ export class Orchestrator {
 	readonly #gameVerify?: OrchestratorOptions['gameVerify'];
 	readonly #dailyCap?: number;
 	readonly #capWindowMs: number;
+	readonly #dailyTokenBudget?: number;
 	/** Per-project in-flight cap (concurrency.perProject); undefined / < 1 ⇒ no gate. */
 	readonly #perProject?: number;
 	/**
@@ -317,6 +330,10 @@ export class Orchestrator {
 		this.#gameVerify = opts.gameVerify;
 		this.#dailyCap = opts.dailySpawnCap && opts.dailySpawnCap > 0 ? opts.dailySpawnCap : undefined;
 		this.#capWindowMs = opts.dailyCapWindowMs ?? DAY_MS;
+		// CG-2: mirror the dailySpawnCap 0-sentinel — a positive value arms the token budget, 0/undefined
+		// leaves it uncapped (byte-identical no-regression for a config that doesn't set spend).
+		this.#dailyTokenBudget =
+			opts.dailyTokenBudget && opts.dailyTokenBudget > 0 ? opts.dailyTokenBudget : undefined;
 		this.#perProject = opts.perProject && opts.perProject > 0 ? opts.perProject : undefined;
 	}
 
@@ -596,6 +613,17 @@ export class Orchestrator {
 						const drained = await spawnsSince(this.#db, this.#capWindowMs);
 						if (drained >= this.#dailyCap) break; // cap reached — leave work parked
 					}
+					// CG-2 (COST-GOVERNANCE-SPEC) — the GLOBAL rolling-24h TOKEN budget. Same park
+					// pattern as the claim-cap above but on real SPEND: once Σ(tokens) in the window
+					// reaches the budget, stop claiming and PARK the rest (the work stays pending +
+					// re-drains when the window rolls forward / a completion frees spend). This is the
+					// EFFICIENT park (no claim, no spin); launchSession's own CG-2 gate is the
+					// un-bypassable backstop for the narrow race where the budget is crossed between
+					// this check and the spawn (that refusal is caught in #runItem as park-not-burn).
+					if (this.#dailyTokenBudget !== undefined) {
+						const spent = await tokensSpentSince(this.#db, this.#capWindowMs);
+						if (spent >= this.#dailyTokenBudget) break; // budget reached — leave work parked
+					}
 					const permit = this.#sem.tryAcquire();
 					if (!permit) break; // interactive cap reached — leave work parked
 					// Per-project gate (concurrency.perProject): hand claimNext the project ids
@@ -830,6 +858,10 @@ export class Orchestrator {
 		const taskId = String(item.payload.taskId ?? '');
 		const projectId = String(item.payload.projectId ?? '');
 		let ok = false;
+		// CG-2 park flag: set when launchSession REFUSES on the token budget (the narrow race past the
+		// drain gate). A parked item is RELEASED back to pending (re-drains when spend frees) — it must
+		// NOT be completed-failed nor its task burned-to-failed in the finally (that would drop the work).
+		let parked = false;
 		try {
 			if (!taskId || !projectId) return;
 			// THE HEARTBEAT (post-task transition prerequisite) — move the task ready → in_progress
@@ -1049,9 +1081,32 @@ export class Orchestrator {
 					)
 				);
 			}
-		} catch {
-			ok = false; // a spawn failure marks the work_item failed; never crash the drain
+		} catch (err) {
+			// CG-2 (COST-GOVERNANCE-SPEC) — a token-budget REFUSAL is PARK-not-crash, distinct from a
+			// generic spawn failure. launchSession's un-bypassable budget gate threw because the spend
+			// crossed the ceiling AFTER the drain gate let this claim through (the narrow race). We must
+			// NOT burn the work: release the work_item back to PENDING (it re-drains once spend frees —
+			// the drain's own token gate then parks it cleanly, no spin) and DO NOT mark the task failed.
+			// The task stays `in_progress`; the eventual re-claim re-runs setStatus(in_progress)
+			// idempotently and spawns. enforceTokenBudget already emitted the named refusal event.
+			if (err instanceof TokenBudgetExceededError) {
+				parked = true;
+				await release(this.#db, item.id, item.claimToken).catch((relErr) =>
+					console.warn(
+						`[orchestrator] token-budget park: could not release work_item ${item.id} to pending (boot reaper recovers a stuck claim): ${(relErr as Error).message}`
+					)
+				);
+				console.warn(
+					`[orchestrator] task ${taskId} PARKED on token budget (${err.spent} ≥ ${err.budget}); work_item ${item.id} released to pending, task left in_progress for re-drain`
+				);
+			} else {
+				ok = false; // a spawn failure marks the work_item failed; never crash the drain
+			}
 		} finally {
+			// CG-2: a parked item was already released to pending — do NOT complete it terminal and do
+			// NOT run the task-terminal reconciliation below (that would burn the parked task). The
+			// per-project decrement + permit release + re-drain still run (they must, on every path).
+			if (!parked)
 			await complete(this.#db, item.id, item.claimToken, ok ? 'done' : 'failed').catch(() => {});
 			// BL-R2 — a FAILED task_run must not strand its TASK on `in_progress`. The task was moved
 			// ready→in_progress BEFORE the spawn (above), but post-task — the ONLY path that writes the
@@ -1066,7 +1121,9 @@ export class Orchestrator {
 			// false), or on a re-run. F-014: a transition fault is logged-and-swallowed, never crashes
 			// the drain. Skipped on ok (post-task already wrote `done`) and when there is no taskId
 			// (the early-return guard above, or a non-task work_type — already handled before here).
-			if (!ok && taskId) {
+			// CG-2: `!parked` — a token-budget park leaves the task in_progress ON PURPOSE (it re-drains);
+			// burning it to `failed` here would drop the parked work (the exact thing park must not do).
+			if (!ok && !parked && taskId) {
 				try {
 					const failed = await resetStuckTaskToFailed(this.#db, taskId);
 					if (failed) {

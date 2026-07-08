@@ -81,6 +81,7 @@ function readOrchestrationConfig(): {
 	perProject?: number;
 	intervalMs?: number;
 	dailySpawnCap?: number;
+	dailyTokenBudget?: number;
 	orchestration: Orchestration | null;
 } {
 	try {
@@ -103,6 +104,10 @@ function readOrchestrationConfig(): {
 			// of truth; a positive value arms the safety ceiling. Validated as a non-negative
 			// integer at the config boundary (loadOrchestration), so we trust the shape here.
 			dailySpawnCap: normalizeCap(orch.concurrency.dailySpawnCap),
+			// CG-2 (COST-GOVERNANCE-SPEC) — the GLOBAL rolling-24h TOKEN budget wired into the drain's
+			// park gate. Same normalizeCap 0-sentinel: 0/absent ⇒ undefined (uncapped) so the
+			// orchestrator's own `> 0` gate is the single source of truth; a positive value arms it.
+			dailyTokenBudget: normalizeCap(orch.spend?.dailyTokenBudget),
 			orchestration: orch
 		};
 	} catch (err) {
@@ -315,7 +320,7 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		return { started: false, reason: avail.reason };
 	}
 
-	const { mode, maxConcurrent, perProject, intervalMs, dailySpawnCap, orchestration } =
+	const { mode, maxConcurrent, perProject, intervalMs, dailySpawnCap, dailyTokenBudget, orchestration } =
 		readOrchestrationConfig();
 
 	// The router needs BOTH the tier ladder (agent-pool) and the adaptive bundles
@@ -393,6 +398,12 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		// BEFORE each claim) and parks the rest. undefined ⇒ uncapped (operator left it 0/unset)
 		// — existing behavior preserved.
 		dailySpawnCap,
+		// CG-2 (COST-GOVERNANCE-SPEC) — the GLOBAL rolling-24h TOKEN budget. The drain checks
+		// Σ(tokens) over the window BEFORE each claim and parks the queue once the budget is reached
+		// (the SPEND analogue of dailySpawnCap's claim ceiling). undefined ⇒ uncapped (the shipped
+		// default is 0/uncapped — no-regression). launchSession enforces the same budget INSIDE the
+		// spawn primitive (F-055 — un-bypassable by interactive/ceremony/concierge call sites).
+		dailyTokenBudget,
 		// TASK 2.3 — the REAL router: resolveRoute picks the tier from task content + writes the
 		// routing_event with rationale on every spawn (no constant DEFAULT_MODEL).
 		route: bootRoute(db, pool, orchestration),

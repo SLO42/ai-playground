@@ -18,6 +18,8 @@ import {
 import { Orchestrator, type StubRoute } from './index';
 import type { GameVerifyRunner, GameVerifyVerdict } from './index';
 import { claimNext, complete, countByStatus, enqueue } from './workqueue';
+import { writeAgentEvent } from '../analytics/events';
+import { __setBudgetForTest } from '../analytics/spend-budget';
 import type { CommandRunner, CommandResult } from './post-task';
 import { execFileRunner as gitExecFileRunner } from './post-task';
 import { execFileSync } from 'node:child_process';
@@ -386,6 +388,107 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 			expect(await countByStatus(db, 'pending')).toBe(3);
 		} finally {
 			orch.stop();
+		}
+	}, 30_000);
+
+	// ── COST-GOVERNANCE-SPEC CG-2 — the GLOBAL rolling-24h TOKEN budget ──────────────────
+	//
+	// Two paths: (1) the DRAIN GATE parks BEFORE claiming (the efficient, spin-free park — the
+	// production background behavior since drain-budget == launchSession-budget); (2) the
+	// launchSession BACKSTOP for the narrow race where the budget is crossed after the drain gate
+	// let a claim through — #runItem must PARK (release the work_item to pending), NOT burn the task.
+
+	/** Seed one durable COMPLETION agent_event carrying spend (the counter's source rows). */
+	async function seedSpend(tokensIn: number, tokensOut: number): Promise<void> {
+		await writeAgentEvent(db, {
+			type: 'completion',
+			project: projectId,
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+			tokensIn,
+			tokensOut,
+			detail: { ok: true }
+		});
+	}
+
+	it('CG-2 drain gate: over budget ⇒ the drain PARKS (never claims); work stays pending, task stays ready', async () => {
+		await clearQueue();
+		await db.query(`DELETE agent_event;`);
+		await seedSpend(1500, 1500); // 3000 spent ≥ 500 budget
+		const bus = new EventBus();
+		const backend = gatedBackend();
+		const runtime = new ClaudeCodeRuntime({ backend });
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 8, // NOT the limiter — the token budget is
+			mode: 'manual',
+			route: stubRoute(),
+			acquireWorktree: fakeWt,
+			dailyTokenBudget: 500
+		});
+		orch.start();
+		try {
+			const t = await createTask(db, { project: projectId, title: 'over-budget', description: 'parked by token budget' });
+			const statusBefore = (await getTask(db, t.id))?.status;
+			await orch.enqueueTask(t.id, projectId);
+			await orch.drain();
+			await new Promise((r) => setTimeout(r, 200));
+			// Nothing claimed/spawned — the drain gate parked it BEFORE the claim.
+			expect(backend.plans.length).toBe(0);
+			expect(await countByStatus(db, 'pending')).toBe(1); // work parked, not lost
+			expect(await countByStatus(db, 'processing')).toBe(0);
+			// The task was never claimed/moved (the drain gate parked before the claim) — not burned.
+			expect((await getTask(db, t.id))?.status).toBe(statusBefore);
+			expect((await getTask(db, t.id))?.status).not.toBe('failed');
+		} finally {
+			orch.stop();
+			await db.query(`DELETE agent_event;`);
+		}
+	}, 30_000);
+
+	it('CG-2 launchSession backstop: a claimed item refused on budget is PARKED (released to pending), task NOT failed', async () => {
+		await clearQueue();
+		await db.query(`DELETE agent_event;`);
+		await seedSpend(400, 400); // 800 spent ≥ 500 launchSession budget
+		// Drain gate OFF (dailyTokenBudget undefined) so the item IS claimed; launchSession's own CG-2
+		// gate (reads the injected budget) then refuses AFTER the claim — the race backstop.
+		__setBudgetForTest(500);
+		const bus = new EventBus();
+		const backend = gatedBackend();
+		const runtime = new ClaudeCodeRuntime({ backend });
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 8,
+			mode: 'manual',
+			route: stubRoute(),
+			acquireWorktree: fakeWt
+			// no dailyTokenBudget ⇒ no drain gate ⇒ the claim goes through to launchSession
+		});
+		orch.start();
+		try {
+			const t = await createTask(db, { project: projectId, title: 'race-backstop', description: 'refused after claim' });
+			await orch.enqueueTask(t.id, projectId);
+			await orch.drain();
+			// STOP immediately: #stopped short-circuits the finally's re-drain, so the released item is
+			// NOT re-claimed into a spin (in production the drain gate — same budget — parks it instead).
+			orch.stop();
+			// Wait for #runItem's async refuse→park→release to settle.
+			await waitForAsync(async () => (await countByStatus(db, 'pending')) === 1, 8000).catch(() => {});
+			await new Promise((r) => setTimeout(r, 100));
+			// launchSession refused BEFORE spawning the backend (no plan), the work_item is RELEASED to
+			// pending (park-not-crash, not marked failed/done), and the task is NOT burned to failed.
+			expect(backend.plans.length).toBe(0);
+			expect(await countByStatus(db, 'pending')).toBe(1);
+			expect(await countByStatus(db, 'failed')).toBe(0);
+			expect(await countByStatus(db, 'done')).toBe(0);
+			expect((await getTask(db, t.id))?.status).not.toBe('failed');
+		} finally {
+			orch.stop();
+			__setBudgetForTest(null);
+			await db.query(`DELETE agent_event;`);
 		}
 	}, 30_000);
 

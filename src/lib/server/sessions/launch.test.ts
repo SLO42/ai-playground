@@ -21,6 +21,8 @@ import { mkdtempSync, rmSync, existsSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { listFleetAcrossProjects } from '../analytics/fleet';
+import { writeAgentEvent } from '../analytics/events';
+import { __setBudgetForTest, TokenBudgetExceededError } from '../analytics/spend-budget';
 
 // TASK 1.6b VERIFY (DATA-MODEL §4.3/§4.4; D-011) — the NON-LIVE half of 1.6.
 //
@@ -1200,5 +1202,106 @@ describe('launchSession — peer-send affordance reaches the prompt only when gr
 		expect(prompt).not.toContain('Peer messaging');
 		// A non-granted session never even loads the fleet (the grant gate short-circuits).
 		expect(fleetLoaded).toBe(false);
+	});
+});
+
+// COST-GOVERNANCE-SPEC CG-2 — the token budget is enforced INSIDE launchSession (F-055: no caller
+// can bypass it), BEFORE the session row is created. Background over-budget REFUSES with a typed
+// error (no phantom row); operator+override PROCEEDS; the 0-sentinel is uncapped.
+describe('launchSession — CG-2 token budget gate', () => {
+	afterEach(() => {
+		__setBudgetForTest(null); // clear back to the config-file path so no OTHER test sees a cap
+	});
+
+	/** Count session rows for THIS project (proves a refusal created NO phantom running row). */
+	async function sessionCount(): Promise<number> {
+		const [rows] = await db.query<[Array<{ c: number }>]>(
+			`SELECT count() AS c FROM session WHERE project = $p GROUP ALL;`,
+			{ p: new StringRecordId(projectId) }
+		);
+		return Number(rows?.[0]?.c ?? 0);
+	}
+
+	it('uncapped (0-sentinel) ⇒ launches normally even with prior spend (no-regression)', async () => {
+		__setBudgetForTest(0);
+		await writeAgentEvent(db, {
+			type: 'completion',
+			project: projectId,
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+			tokensIn: 10_000,
+			tokensOut: 10_000,
+			detail: { ok: true }
+		});
+		const backend = scriptedBackend(transcript('cc_cg2_uncapped'));
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: 'F:/code/sess/.harness-cg2a' });
+		const res = await launchSession({ db, bus: new EventBus(), runtime, input: baseInput() });
+		expect(res.status).toBe('done');
+	});
+
+	it('BACKGROUND over budget ⇒ refuses with TokenBudgetExceededError + creates NO session row', async () => {
+		__setBudgetForTest(1000);
+		await writeAgentEvent(db, {
+			type: 'completion',
+			project: projectId,
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+			tokensIn: 800,
+			tokensOut: 800, // 1600 ≥ 1000
+			detail: { ok: true }
+		});
+		const before = await sessionCount();
+		const backend = scriptedBackend(transcript('cc_cg2_bg'));
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: 'F:/code/sess/.harness-cg2b' });
+		// No overrideTokenBudget key ⇒ background source ⇒ hard refuse.
+		await expect(
+			launchSession({ db, bus: new EventBus(), runtime, input: baseInput() })
+		).rejects.toBeInstanceOf(TokenBudgetExceededError);
+		// The refusal is BEFORE the session CREATE — no phantom running row, and the backend never ran.
+		expect(await sessionCount()).toBe(before);
+		expect(backend.plans.length).toBe(0);
+	});
+
+	it('OPERATOR without override, over budget ⇒ still refuses (the UI then confirms)', async () => {
+		__setBudgetForTest(1000);
+		await writeAgentEvent(db, {
+			type: 'completion',
+			project: projectId,
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+			tokensIn: 700,
+			tokensOut: 700, // 1400 ≥ 1000
+			detail: { ok: true }
+		});
+		const backend = scriptedBackend(transcript('cc_cg2_op_noover'));
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: 'F:/code/sess/.harness-cg2c' });
+		await expect(
+			launchSession({
+				db,
+				bus: new EventBus(),
+				runtime,
+				input: baseInput({ overrideTokenBudget: false })
+			})
+		).rejects.toBeInstanceOf(TokenBudgetExceededError);
+		expect(backend.plans.length).toBe(0);
+	});
+
+	it('OPERATOR + override, over budget ⇒ PROCEEDS (operator authority)', async () => {
+		__setBudgetForTest(1000);
+		await writeAgentEvent(db, {
+			type: 'completion',
+			project: projectId,
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+			tokensIn: 900,
+			tokensOut: 900, // 1800 ≥ 1000
+			detail: { ok: true }
+		});
+		const backend = scriptedBackend(transcript('cc_cg2_op_override'));
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: 'F:/code/sess/.harness-cg2d' });
+		const res = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput({ overrideTokenBudget: true })
+		});
+		expect(res.status).toBe('done');
+		expect(backend.plans.length).toBe(1);
 	});
 });

@@ -41,6 +41,7 @@ import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import { writeAgentEvent } from '../analytics/events';
+import { enforceTokenBudget, resolveDailyTokenBudget } from '../analytics/spend-budget';
 import { loadGatesConfig, type WorkforceConfig } from '../config/index';
 import { enqueue } from '../orchestrator/workqueue';
 import { eventToMessage } from '../sessions/launch';
@@ -397,6 +398,20 @@ export async function runGauntlet(deps: GauntletDeps, input: RunGauntletInput): 
 		);
 	}
 	const control = await loadScorerControl(db, role);
+
+	// CG-2 (COST-GOVERNANCE-SPEC) — the GLOBAL rolling-24h TOKEN budget. The gauntlet spawns a real
+	// candidate session (attemptGauntlet → runtime.spawn), so it is a spend chokepoint the §3.7
+	// interview budget alone does NOT cover (that caps interview COUNT, not global spend). Checked
+	// HERE — after the no-side-effect pre-flight and BEFORE recordAutoToken/attemptGauntlet — so an
+	// over-budget refusal consumes NO day-cap slot and spawns nothing. An 'operator'-triggered run
+	// carries operator authority (the click IS the budget decision, §3.7) ⇒ override (WARN + proceed);
+	// an 'auto' run is background ⇒ refuse with TokenBudgetExceededError (the caller surfaces it, no
+	// spend). Uncapped (0) ⇒ a cheap no-op (the shipped default).
+	await enforceTokenBudget(db, {
+		budget: resolveDailyTokenBudget(),
+		source: input.trigger === 'operator' ? 'gauntlet-operator' : 'gauntlet-auto',
+		override: input.trigger === 'operator'
+	});
 
 	// §3.7 — the day-cap counting token is recorded ONLY now that the pre-flight has
 	// passed and a real run is about to start. Recording it before the pre-flight

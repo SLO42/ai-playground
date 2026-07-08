@@ -29,6 +29,7 @@ import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import type { EventBus } from '../events/bus';
 import { writeAgentEvent } from '../analytics/events';
+import { enforceTokenBudget, resolveDailyTokenBudget } from '../analytics/spend-budget';
 import { getProject } from '../projects/repo';
 import {
 	buildBriefing,
@@ -135,6 +136,22 @@ export interface LaunchInput {
 	 * absent ⇒ the column stays NONE and the graph infers that edge from timestamps (honest, F-008).
 	 */
 	parentEventId?: string;
+	/**
+	 * COST-GOVERNANCE-SPEC CG-2 — operator authority to proceed PAST the global rolling-24h token
+	 * budget (`spend.dailyTokenBudget`). The enforcement lives INSIDE launchSession (F-055 — so no
+	 * caller can bypass it), checked BEFORE the session row is created. This flag is the ONLY way a
+	 * launch proceeds when over budget:
+	 *   • ABSENT ⇒ a BACKGROUND/autonomous launch (the orchestrator drain, forks): over budget ⇒
+	 *     REFUSE with TokenBudgetExceededError, which the drain absorbs as park-not-crash (the work
+	 *     re-drains when spend frees). This is the safe default — a new caller that forgets the flag
+	 *     fails CLOSED to "refuse", never silently uncapped.
+	 *   • false ⇒ an OPERATOR-explicit (manual UI) launch that has NOT confirmed the overspend: over
+	 *     budget ⇒ still REFUSE (the UI surfaces the warning + a confirm that re-submits with true).
+	 *   • true  ⇒ an OPERATOR-explicit launch confirming the overspend: over budget ⇒ WARN + emit an
+	 *     override event + PROCEED (operator authority; consent and cap are separate — CLAUDE.md §6).
+	 * The event {source} is 'operator' whenever this key is present (true/false), else 'background'.
+	 */
+	overrideTokenBudget?: boolean;
 }
 
 export interface LaunchResult {
@@ -454,6 +471,22 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	// a workflow step supplies an explicit cwd override (D-013).
 	const project = await getProject(db, input.projectId);
 	if (!project) throw new Error(`project not found: ${input.projectId}`);
+
+	// CG-2 (COST-GOVERNANCE-SPEC) — the GLOBAL rolling-24h TOKEN budget gate. Enforced HERE, the ONE
+	// creation primitive every real-money session is born in (F-055 — un-bypassable by any caller),
+	// BEFORE the session row is created so an over-budget refusal has NO side effect (no phantom row).
+	// The armed budget is read from config (0 = uncapped ⇒ this is a cheap no-op on the shipped
+	// default). SOURCE: a launch that threads `overrideTokenBudget` (true/false) is the OPERATOR
+	// manual-UI path; one that omits it is a BACKGROUND/autonomous launch (the orchestrator drain +
+	// forks). Over budget with no override ⇒ TokenBudgetExceededError propagates to the caller: the
+	// orchestrator drain absorbs it as park-not-crash (the work re-drains when spend frees); the UI
+	// catches it and surfaces the warning+confirm. Over budget WITH override ⇒ WARN + proceed.
+	await enforceTokenBudget(db, {
+		budget: resolveDailyTokenBudget(),
+		source: input.overrideTokenBudget === undefined ? 'background' : 'operator',
+		override: input.overrideTokenBudget === true,
+		project: input.projectId
+	});
 	// WI-2: the BASE cwd is the project root (D-002 / 1.4a) unless a workflow step supplies an
 	// explicit override (D-013). For a WRITE-class session on a git root with NO explicit override
 	// this is REPLACED below — after the session row exists — by a dedicated per-session worktree

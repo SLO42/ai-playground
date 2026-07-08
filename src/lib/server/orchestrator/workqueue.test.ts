@@ -8,6 +8,7 @@ import {
 	activeWorkItemId,
 	claimNext,
 	complete,
+	release,
 	countByStatus,
 	enqueue,
 	gcStale,
@@ -70,6 +71,33 @@ describe('work_item claim queue (DATA-MODEL §4.12; D-021)', () => {
 		// Now processing, not pending.
 		expect(await countByStatus(db, 'pending')).toBe(0);
 		expect(await countByStatus(db, 'processing')).toBe(1);
+	});
+
+	// CG-2 (COST-GOVERNANCE-SPEC) — release() is the PARK primitive: a claimed item goes back to
+	// pending (re-drainable) with its claim cleared, distinct from complete()'s terminal write.
+	it('release returns a claimed item to pending (the CG-2 park), lease-guarded + idempotent', async () => {
+		await clearQueue();
+		const { id } = await enqueue(db, { workType: 'task_run', payload: { taskId: 'task:rel', projectId }, projectId });
+		const claimed = await claimNext(db, 'rel_tok');
+		expect(claimed!.id).toBe(id);
+		expect(await countByStatus(db, 'processing')).toBe(1);
+
+		// A STALE token cannot release a re-claimed row (the lease guard) — no-op.
+		expect(await release(db, id, 'wrong_tok')).toBe(false);
+		expect(await countByStatus(db, 'processing')).toBe(1);
+
+		// The holder releases it back to pending (park).
+		expect(await release(db, id, 'rel_tok')).toBe(true);
+		expect(await countByStatus(db, 'pending')).toBe(1);
+		expect(await countByStatus(db, 'processing')).toBe(0);
+
+		// Idempotent on re-run: the claim_token is now cleared, so a second release is a no-op.
+		expect(await release(db, id, 'rel_tok')).toBe(false);
+		expect(await countByStatus(db, 'pending')).toBe(1);
+
+		// The parked item is fully re-claimable (a fresh token claims it again).
+		const reclaimed = await claimNext(db, 'rel_tok2');
+		expect(reclaimed!.id).toBe(id);
 	});
 
 	it('claimNext returns null on an empty queue', async () => {

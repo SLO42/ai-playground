@@ -258,6 +258,19 @@ export interface Orchestration {
 	 */
 	concurrency: { maxAgents: number; perProject: number; dailySpawnCap?: number };
 	/**
+	 * COST-GOVERNANCE-SPEC CG-2 — the GLOBAL rolling-24h TOKEN budget. Unlike `dailySpawnCap`
+	 * (a background CLAIM-count ceiling, D-021), this meters real SPEND (tokens) across EVERY
+	 * spend source — background drain, interactive/manual launches, ceremony/gauntlet runs,
+	 * concierge Stage-2 turns, benchmark runs — enforced at the launchSession / gauntlet /
+	 * concierge chokepoints (never at call sites — F-055). `dailyTokenBudget`: sum of
+	 * tokens_in+tokens_out over the trailing 24h vs this ceiling. 0 / absent = UNCAPPED sentinel
+	 * (mirrors dailySpawnCap / normalizeCap semantics — an older config never silently gains a
+	 * cap). Anchored on the durable agent_event timestamp, so the counter survives restarts.
+	 * Both caps coexist: the claim-cap bounds runaway SPAWNING, the token-budget bounds runaway
+	 * SPEND (200 trivial local spawns ≠ 200 deep opus spawns).
+	 */
+	spend?: { dailyTokenBudget?: number };
+	/**
 	 * MODEL-BENCHMARK-SPEC step 1 — the operator's GLOBAL default-provider override. Absent ⇒
 	 * 'auto' (normal routing; no-regression). 'local'/'cloud' force every orchestrator-routed
 	 * spawn onto that provider (the benchmark A/B toggle). Read per-boot by bootRoute.
@@ -990,6 +1003,25 @@ export function loadOrchestration(file: string, opts: LoadOpts = {}): Orchestrat
 				'orchestration: concurrency.dailySpawnCap must be a non-negative integer (0 = uncapped)',
 				file
 			);
+		}
+	}
+	// COST-GOVERNANCE-SPEC CG-2 — the GLOBAL rolling-24h TOKEN budget (spend.dailyTokenBudget).
+	// OPTIONAL + opt-in: absent OR the whole `spend` block absent ⇒ UNCAPPED. When present it MUST
+	// be a mapping and `dailyTokenBudget`, when set, a NON-NEGATIVE integer (0 = explicit uncapped
+	// sentinel — never a fake denominator). A silently-ignored spend ceiling is worse than a boot
+	// failure (the whole point is to bound real money), so fail closed on a malformed value.
+	if (raw.spend !== undefined && raw.spend !== null) {
+		if (typeof raw.spend !== 'object' || Array.isArray(raw.spend)) {
+			throw new ConfigError('orchestration: "spend" must be a mapping (with dailyTokenBudget)', file);
+		}
+		const budget = (raw.spend as Record<string, unknown>).dailyTokenBudget;
+		if (budget !== undefined && budget !== null) {
+			if (!Number.isInteger(budget) || (budget as number) < 0) {
+				throw new ConfigError(
+					'orchestration: spend.dailyTokenBudget must be a non-negative integer (0 = uncapped)',
+					file
+				);
+			}
 		}
 	}
 	// MODEL-BENCHMARK-SPEC step 1: the GLOBAL default-provider override. OPTIONAL + additive —

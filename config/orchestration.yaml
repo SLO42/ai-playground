@@ -38,6 +38,26 @@ concurrency:
   # minutes). Operator-tunable.
   dailySpawnCap: 200
 
+# COST-GOVERNANCE-SPEC CG-2 — the GLOBAL rolling-24h TOKEN budget.
+#
+# dailySpawnCap (above) bounds runaway SPAWNING (a claim COUNT); this bounds runaway SPEND
+# (real tokens). It meters EVERY spend source — the background drain, manual/interactive
+# launches, ceremony/gauntlet interview runs, concierge Stage-2 turns, benchmark runs —
+# enforced INSIDE the spend chokepoints (launchSession, the gauntlet runner, the concierge
+# provider call), so a new call site cannot bypass it (F-055). The counter is Σ(tokens_in +
+# tokens_out) over agent_event completion rows in the trailing 24h, anchored on the durable
+# event timestamp (restart-proof).
+#
+# At-cap behavior: a background/orchestrator launch is REFUSED and its work PARKED (re-drains
+# when the window rolls forward / spend frees) — never dropped, never burned. An operator-
+# explicit (manual UI) launch gets a WARN and may proceed only with an explicit override
+# (operator authority). Every refusal/override emits a named analytics event {spent, budget}.
+#
+# 0 = UNCAPPED (the shipped default — no-regression; honest opt-in, like dailySpawnCap). Set a
+# positive integer to arm the ceiling. Operator-tunable; read live at each chokepoint.
+spend:
+  dailyTokenBudget: 0
+
 # Intent-adaptive config bundles (D-020). KongCode classifies each task's intent;
 # routing (resolveRoute) looks the intent up here and applies the bundle: thinking
 # tier, tool-call budget, memory-retrieval depth + share, token budget. A trivial

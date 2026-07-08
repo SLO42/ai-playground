@@ -16,6 +16,7 @@
 // no disk / no config / no network); this module is the ONLY concierge code that touches them.
 
 import type { Db } from '../db/client';
+import { enforceTokenBudget, resolveDailyTokenBudget } from '../analytics/spend-budget';
 import { getMemoryService } from '../harness';
 import { loadSoul, formatSoulBlock } from '../memory/soul';
 import { listLibraryAgents } from '../agent-library/library';
@@ -143,8 +144,14 @@ function readProviderEndpoint(dir: string, provider: string, fallback: string): 
 
 /** Wrap a Provider's stream into the ConciergeLlmFn shape (system+user → text), wall-clock bounded.
  *  Mirrors makeClaudeJudge but is provider-agnostic (works for the local Ollama model too). */
-function providerToLlmFn(provider: Provider): ConciergeLlmFn {
+function providerToLlmFn(provider: Provider, db: Db): ConciergeLlmFn {
 	return async ({ system, user }) => {
+		// CG-2 (COST-GOVERNANCE-SPEC) — the concierge Stage-2 turn is a direct provider call (NOT
+		// launchSession), so it is metered HERE at its one bounded-call site with the same helper +
+		// semantics. It is a background/autonomous consult (no operator override), so over budget ⇒
+		// TokenBudgetExceededError, which runOpenQuestionTurn's own try/catch turns into an HONEST
+		// "model unavailable" reply (F-008 — never a fabricated answer). Uncapped (0) ⇒ a cheap no-op.
+		await enforceTokenBudget(db, { budget: resolveDailyTokenBudget(), source: 'concierge' });
 		const messages: ChatMessage[] = [
 			{ role: 'system', content: system },
 			{ role: 'user', content: user }
@@ -176,7 +183,7 @@ function providerToLlmFn(provider: Provider): ConciergeLlmFn {
  * path then reports unavailable — never a fabricated answer). `sessionModel` is set ONLY when a real
  * LLM was built, so the atelier_self session names a brain it can actually run (honest provenance).
  */
-function buildConciergeLlm(dir: string): {
+function buildConciergeLlm(dir: string, db: Db): {
 	llm: ConciergeLlmFn | undefined;
 	sessionModel: ConciergeSessionModel | undefined;
 } {
@@ -218,7 +225,7 @@ function buildConciergeLlm(dir: string): {
 	}
 
 	return {
-		llm: providerToLlmFn(provider),
+		llm: providerToLlmFn(provider, db),
 		sessionModel: { provider: choice.provider, model_id: choice.model }
 	};
 }
@@ -233,7 +240,7 @@ export async function triggerConcierge(db: Db): Promise<AtelierTriggerResult | n
 		const recallLimit = 5;
 		const recall = await buildRecallFn(db, recallLimit);
 		const dir = process.env.CONFIG_DIR?.trim() || 'config';
-		const { llm, sessionModel } = buildConciergeLlm(dir);
+		const { llm, sessionModel } = buildConciergeLlm(dir, db);
 		const soulBlock = await buildSoulBlock(db);
 		const skillSearch = buildSkillSearch();
 		return await handleAtelierMessages({

@@ -229,6 +229,59 @@ describe('loadOrchestration — YAML + enum validation', () => {
 		});
 	});
 
+	// COST-GOVERNANCE-SPEC CG-2 — spend.dailyTokenBudget (the global rolling-24h token budget).
+	describe('spend.dailyTokenBudget (CG-2 global token budget)', () => {
+		it('parses the shipped config (spend block present; default 0 = uncapped)', () => {
+			const orch = loadOrchestration(join(process.cwd(), 'config', 'orchestration.yaml'));
+			expect(orch.spend?.dailyTokenBudget).toBe(0);
+		});
+
+		it('treats an absent spend block as undefined (uncapped — opt-in)', () => {
+			const orch = loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { concurrency: { maxAgents: 8, perProject: 3 } }
+			});
+			expect(orch.spend).toBeUndefined();
+		});
+
+		it('accepts a positive integer budget', () => {
+			const orch = loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { spend: { dailyTokenBudget: 5_000_000 } }
+			});
+			expect(orch.spend?.dailyTokenBudget).toBe(5_000_000);
+		});
+
+		it('accepts 0 as the explicit uncapped sentinel', () => {
+			const orch = loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { spend: { dailyTokenBudget: 0 } }
+			});
+			expect(orch.spend?.dailyTokenBudget).toBe(0);
+		});
+
+		it('rejects a negative budget (fail closed — a spend ceiling must be honest)', () => {
+			expect(() =>
+				loadOrchestration(join(FIX, 'orchestration.yaml'), {
+					_inject: { spend: { dailyTokenBudget: -1 } }
+				})
+			).toThrow(/spend.dailyTokenBudget must be a non-negative integer/);
+		});
+
+		it('rejects a fractional budget (fail closed)', () => {
+			expect(() =>
+				loadOrchestration(join(FIX, 'orchestration.yaml'), {
+					_inject: { spend: { dailyTokenBudget: 1.5 } }
+				})
+			).toThrow(/spend.dailyTokenBudget must be a non-negative integer/);
+		});
+
+		it('rejects a non-mapping spend block (fail closed)', () => {
+			expect(() =>
+				loadOrchestration(join(FIX, 'orchestration.yaml'), {
+					_inject: { spend: 12345 }
+				})
+			).toThrow(/"spend" must be a mapping/);
+		});
+	});
+
 	// TASK 2.12 — intent-adaptive bundle validation at the config boundary (D-020).
 	it('parses ALL FIVE intent bundles with their adaptive knobs', () => {
 		const orch = loadOrchestration(join(FIX, 'orchestration.yaml'));

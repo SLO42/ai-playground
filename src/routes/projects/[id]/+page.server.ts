@@ -198,6 +198,7 @@ import {
 	type RecentRoleEventRow
 } from '$lib/server/workforce';
 import { listSessionMessages, launchSession, type TranscriptMessage } from '$lib/server/sessions';
+import { TokenBudgetExceededError } from '$lib/server/analytics/spend-budget';
 import {
 	resumeCreation,
 	ConcurrentCreateError,
@@ -890,6 +891,12 @@ export const actions: Actions = {
 		// Absent/blank ⇒ omitted (the slot-only spawn, unchanged behaviour).
 		const rawSpecialist = form.get('specialist');
 		const specialist = typeof rawSpecialist === 'string' ? rawSpecialist.trim() : '';
+		// CG-2 (COST-GOVERNANCE-SPEC) — operator authority to proceed PAST the global token budget.
+		// This is an operator-explicit (manual UI) launch, so it threads `overrideTokenBudget` (its
+		// mere presence marks the launch OPERATOR-sourced at the launchSession gate). Default false:
+		// the first submit refuses at the cap and the UI surfaces the warning + a confirm that
+		// re-submits with overrideBudget=true (consent + cap stay separate — CLAUDE.md §6).
+		const overrideTokenBudget = form.get('overrideBudget') === 'true';
 		try {
 			assertRecordId(taskId);
 		} catch {
@@ -932,6 +939,8 @@ export const actions: Actions = {
 					// D-036: the resolved intent bundle's capability set, validated + composed
 					// against the live catalog inside the runtime (fail closed on an unknown id).
 					capabilities: resolveCapabilitiesForIntent(DEFAULT_INTENT),
+					// CG-2: operator authority to spend past the global token budget (see note above).
+					overrideTokenBudget,
 					// GATED specialist provenance (see the seam note above) — omitted when not supplied.
 					...(specialist ? { specialist } : {})
 				}
@@ -940,6 +949,19 @@ export const actions: Actions = {
 				launch: { ok: true as const, sessionId: result.sessionId, status: result.status }
 			};
 		} catch (err) {
+			// CG-2: a token-budget refusal is NOT a failure — it is an operator decision point. Surface
+			// the honest spent/budget so the UI can render a warning + a confirm that re-submits with
+			// overrideBudget=true (HTTP 402 Payment Required — the honest status for a spend ceiling).
+			if (err instanceof TokenBudgetExceededError) {
+				return fail(402, {
+					launch: {
+						error: `This launch would exceed the daily token budget (${err.spent} of ${err.budget} tokens spent in the last 24h). Confirm to spend past it.`,
+						budgetExceeded: true as const,
+						spent: err.spent,
+						budget: err.budget
+					}
+				});
+			}
 			return fail(500, { launch: { error: (err as Error).message } });
 		}
 	},
@@ -1330,6 +1352,10 @@ export const actions: Actions = {
 					// NOT re-trip F-045. It gates BOTH the `peer_send` MCP tool AND the honest peer-send
 					// affordance in launchSession (full mesh: session / role@project / pm / atelier).
 					capabilities: PM_CHAT_CAPABILITIES,
+					// CG-2: operator-explicit launch → threads the token-budget override (presence marks
+					// it OPERATOR-sourced). Default false: over budget refuses; the UI re-submits with
+					// overrideBudget=true to confirm the overspend.
+					overrideTokenBudget: form.get('overrideBudget') === 'true',
 					...(ctx.items.length ? { context: { items: ctx.items } } : {})
 				}
 			});
@@ -1344,6 +1370,17 @@ export const actions: Actions = {
 				}
 			};
 		} catch (err) {
+			// CG-2: token-budget refusal → an operator decision point, not a failure (HTTP 402).
+			if (err instanceof TokenBudgetExceededError) {
+				return fail(402, {
+					pm: {
+						error: `This PM turn would exceed the daily token budget (${err.spent} of ${err.budget} tokens spent in the last 24h). Confirm to spend past it.`,
+						budgetExceeded: true as const,
+						spent: err.spent,
+						budget: err.budget
+					}
+				});
+			}
 			return fail(500, { pm: { error: (err as Error).message } });
 		}
 	},

@@ -438,6 +438,28 @@ export async function complete(
 	return (rows?.length ?? 0) > 0;
 }
 
+/**
+ * RELEASE a claimed item back to PENDING (unclaim) so it re-drains later — the PARK primitive
+ * (COST-GOVERNANCE-SPEC CG-2). Unlike {@link complete} (which marks a terminal done/failed), this
+ * returns the item to the queue with its claim cleared, so the next drain can re-claim it once the
+ * blocking condition (the token budget) frees. Only the holder of `claimToken` may release it (the
+ * same lease guard as complete — a stale worker can't unclaim a row that was re-claimed), so it is
+ * idempotent + safe on a re-run: a second release with a now-stale token matches nothing (no-op).
+ * Clears claim_token/claimed_at (mirrors gcStale's recovery reset) so the row is fully re-claimable;
+ * completed_at is left untouched (the item never completed). Returns whether a row was released.
+ */
+export async function release(db: Db, id: string, claimToken: string): Promise<boolean> {
+	const rid = link(id);
+	const [rows] = await db.query<[Array<{ id: unknown }>]>(
+		`UPDATE $rid
+		   SET status = "pending", claim_token = NONE, claimed_at = NONE
+		   WHERE claim_token = $t AND status = "processing"
+		   RETURN AFTER;`,
+		{ rid, t: claimToken }
+	);
+	return (rows?.length ?? 0) > 0;
+}
+
 /** Count rows in a given status (diagnostics / drain threshold checks). */
 export async function countByStatus(db: Db, status: WorkStatus): Promise<number> {
 	const [rows] = await db.query<[Array<{ c: number }>]>(

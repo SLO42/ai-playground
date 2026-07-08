@@ -4,7 +4,7 @@
 burn-down. Backend subsystems = `F:\code\ai-playground-v2\src\lib\server\<dir>`; specs = `docs/*.md`.
 Coverage honesty: "mentioned in ARCHITECTURE/DATA-MODEL" = **PARTIAL**, not FULL.
 
-**Tally (2026-07-08): 23 FULL · 13 PARTIAL · 3 NONE.** (CLAUDE-CODE-HARNESS-SPEC covers claude-code + sessions + harness in one.) New specs written this session are FULL.
+**Tally (2026-07-08, campaign complete): 27 FULL · 11 PARTIAL · 1 NONE (perf, trivial).** Every ranked next-spec + both held P1s are DONE. (CLAUDE-CODE-HARNESS-SPEC covers claude-code + sessions + harness in one.) New specs written this session are FULL.
 
 ## Coverage
 
@@ -32,8 +32,8 @@ Coverage honesty: "mentioned in ARCHITECTURE/DATA-MODEL" = **PARTIAL**, not FULL
 | db | DB-RUNTIME-SPEC (2026-07-08) + DATA-MODEL (schema) | FULL |
 | sessions | CLAUDE-CODE-HARNESS-SPEC §1.3–1.5 (2026-07-08); D-011 | FULL |
 | analytics | ARCHITECTURE §2.4; "analytics first-class" mandate, no ANALYTICS-SPEC | PARTIAL |
-| scanner | ARCHITECTURE §2.7; no dedicated spec | PARTIAL |
-| sync | D-037; no dedicated spec | PARTIAL |
+| scanner | SCANNER-SPEC (2026-07-08) | FULL |
+| sync | SYNC-SPEC (2026-07-08) | FULL |
 | cc-config | CC-CONFIG-SPEC (2026-07-08); D-010 | FULL |
 | config | ARCHITECTURE §5/§6, D-025 | PARTIAL |
 | runtime | MODEL-BENCHMARK-SPEC, ARCHITECTURE | PARTIAL |
@@ -46,8 +46,8 @@ Coverage honesty: "mentioned in ARCHITECTURE/DATA-MODEL" = **PARTIAL**, not FULL
 | hooks | D-019, ARCHITECTURE | PARTIAL |
 | agent-library | AGENTS.md (listing, not design) | PARTIAL |
 | harness | CLAUDE-CODE-HARNESS-SPEC §1.7/§3 (2026-07-08) | FULL |
-| **auth** | none dedicated (F-055 gate class) | **NONE** |
-| **services** | none | **NONE** |
+| auth | SECURITY-MODEL-SPEC §1 (2026-07-08) | FULL |
+| services | SERVICES-SPEC (2026-07-08) | FULL |
 | perf | none (trivial) | NONE |
 
 ## Next specs to write (ranked by undocumented design complexity)
@@ -58,11 +58,11 @@ Coverage honesty: "mentioned in ARCHITECTURE/DATA-MODEL" = **PARTIAL**, not FULL
 4. ~~ADAPTER-FRAMEWORK-SPEC~~ — **DONE 2026-07-08** (found RELEASE-SPEC stale on verify()/deferral — marked; Thunderstore real upload + verify() are LIVE-capable).
 5. ~~DB-RUNTIME-SPEC~~ — **DONE 2026-07-08** (found the D-026c least-priv user is never DEFINEd — dev runs as root; DBR-1 queued).
 6. ~~cc-config / capability-catalog spec~~ — **DONE 2026-07-08** (`CC-CONFIG-SPEC.md`).
-7. **scanner**, 8. **sync**, 9. **services** (NONE), 10. **auth** (NONE, security-critical — pairs with the held SECURITY-MODEL spec).
+7.–10. ~~scanner / sync / services / auth~~ — **ALL DONE 2026-07-08** (SCANNER-SPEC, SYNC-SPEC, SERVICES-SPEC, SECURITY-MODEL-SPEC §1; hardening items consolidated in the `periphery-hardening` + `security-hardening-1` queue rows).
 - Honorable mention: **ANALYTICS-SPEC** — 4.4k loc + "analytics is first-class" mandate, unspecced.
 
 ## Also held (from the docs-gap audit, not subsystem-scoped)
-- ~~COST-GOVERNANCE-SPEC~~ — **DONE 2026-07-08** (`COST-GOVERNANCE-SPEC.md`; headline: cost_usd never populated, dailySpawnCap drain-only) · **SECURITY-MODEL-SPEC** (P1, consolidates D-018/024/025/026/036 + F-055 — scout in flight).
+- ~~COST-GOVERNANCE-SPEC~~ — **DONE 2026-07-08** (headline: cost_usd never populated, dailySpawnCap drain-only) · ~~SECURITY-MODEL-SPEC~~ — **DONE 2026-07-08** (`SECURITY-MODEL-SPEC.md`; perimeter verified layered+fail-closed; 4 findings w/ exploit scenarios → `security-hardening-1`).
 - P2/P3: self-hosting D-040, BL-GUX-2 causality, BL-1 image-gen, BL-2 marketing, BL-2b scalar.
 
 ## Specs written 2026-07-07 (this session)

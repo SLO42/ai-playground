@@ -25,6 +25,20 @@ export interface DbConnectOptions {
 	/** Database to USE after signin. */
 	database: string;
 	/**
+	 * Auth LEVEL of {@link username} (DBR-1 / D-026c). SurrealDB 2.x scopes the signin
+	 * payload by the user's definition level, and the two forms are MUTUALLY EXCLUSIVE
+	 * (verified live against the pinned 2.6.5 binary):
+	 *   • `'root'` (default) — a `DEFINE USER … ON ROOT` user signs in with `{username,
+	 *     password}` ONLY. Passing ns/db in the payload FAILS auth. This is the historical
+	 *     path; leaving `authLevel` unset is byte-identical to before DBR-1.
+	 *   • `'database'` — a `DEFINE USER … ON DATABASE` user (the scoped least-priv runtime
+	 *     user) MUST include `{namespace, database, username, password}` in the signin
+	 *     payload; WITHOUT them it FAILS auth. Uses {@link namespace}/{@link database}.
+	 * The F-042 re-signin path honors the same level, so a scoped-user session self-heals
+	 * identically. Additive/opt-in (F-053): an unset value never changes an existing caller.
+	 */
+	authLevel?: 'root' | 'database';
+	/**
 	 * Hard wall-clock bound on connect+signin+use (TASK 13.5 finding 5 / F-014). The
 	 * SurrealDB SDK can hang ~90s on a dead/black-holed socket, and connect() sits on
 	 * the BOOT path — unbounded, that wedges the whole server start. Default 5000ms;
@@ -54,6 +68,27 @@ export type Bindings = Record<string, unknown>;
 const AUTH_EXPIRED_RE =
 	/not enough permissions|token (?:has )?expired|expired token|not authenticated|invalid token|iam error/i;
 
+/**
+ * Build the SurrealDB signin payload for a user's auth LEVEL (DBR-1). A ROOT user
+ * signs in with `{username, password}` and REJECTS ns/db in the payload; a DATABASE
+ * user REQUIRES `{namespace, database, username, password}` — the forms are mutually
+ * exclusive (verified live, 2.6.5). Centralised so {@link Db.connect} and the F-042
+ * {@link Db.reauthenticate} path build byte-identical payloads.
+ */
+function signinAuth(a: {
+	authLevel: 'root' | 'database';
+	username: string;
+	password: string;
+	namespace: string;
+	database: string;
+}):
+	| { username: string; password: string }
+	| { namespace: string; database: string; username: string; password: string } {
+	return a.authLevel === 'database'
+		? { namespace: a.namespace, database: a.database, username: a.username, password: a.password }
+		: { username: a.username, password: a.password };
+}
+
 /** True when a thrown error looks like an expired/dropped auth session (F-042). */
 function isAuthExpiredError(err: unknown): boolean {
 	const message =
@@ -76,6 +111,8 @@ export class Db {
 	 * logged / never thrown (D-026) — only fed back to `signin()`/`use()` on expiry.
 	 */
 	private readonly creds: { username: string; password: string };
+	/** Auth level retained for the F-042 re-signin so the scoped user re-auths correctly. */
+	private readonly authLevel: 'root' | 'database';
 	/**
 	 * Single in-flight re-auth promise (F-042 stampede guard). When N concurrent
 	 * queries all hit expiry at once, they await ONE re-signin instead of firing N.
@@ -87,9 +124,11 @@ export class Db {
 		private readonly handle: Surreal,
 		readonly namespace: string,
 		readonly database: string,
-		creds: { username: string; password: string }
+		creds: { username: string; password: string },
+		authLevel: 'root' | 'database'
 	) {
 		this.creds = creds;
+		this.authLevel = authLevel;
 	}
 
 	/**
@@ -101,6 +140,7 @@ export class Db {
 	 */
 	static async connect(opts: DbConnectOptions): Promise<Db> {
 		const handle = new Surreal();
+		const authLevel = opts.authLevel ?? 'root';
 		const timeoutMs = opts.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const deadline = new Promise<never>((_, reject) => {
@@ -117,7 +157,15 @@ export class Db {
 			await Promise.race([
 				(async () => {
 					await handle.connect(opts.url);
-					await handle.signin({ username: opts.username, password: opts.password });
+					await handle.signin(
+						signinAuth({
+							authLevel,
+							username: opts.username,
+							password: opts.password,
+							namespace: opts.namespace,
+							database: opts.database
+						})
+					);
 					await handle.use({ namespace: opts.namespace, database: opts.database });
 				})(),
 				deadline
@@ -130,10 +178,13 @@ export class Db {
 		} finally {
 			clearTimeout(timer);
 		}
-		return new Db(handle, opts.namespace, opts.database, {
-			username: opts.username,
-			password: opts.password
-		});
+		return new Db(
+			handle,
+			opts.namespace,
+			opts.database,
+			{ username: opts.username, password: opts.password },
+			authLevel
+		);
 	}
 
 	/**
@@ -146,10 +197,15 @@ export class Db {
 	private async reauthenticate(): Promise<void> {
 		if (this.reauth) return this.reauth;
 		this.reauth = (async () => {
-			await this.handle.signin({
-				username: this.creds.username,
-				password: this.creds.password
-			});
+			await this.handle.signin(
+				signinAuth({
+					authLevel: this.authLevel,
+					username: this.creds.username,
+					password: this.creds.password,
+					namespace: this.namespace,
+					database: this.database
+				})
+			);
 			await this.handle.use({ namespace: this.namespace, database: this.database });
 		})();
 		try {

@@ -29,6 +29,10 @@ import { Db } from '../src/lib/server/db/client.ts';
 import { runMigrations, isApplied } from '../src/lib/server/db/migrate.ts';
 import { schemaMigrations } from '../src/lib/server/db/schema.ts';
 import { isLoopbackHost } from '../src/lib/server/config/loopback.ts';
+import {
+	provisionRuntimeUser,
+	DEFAULT_RUNTIME_USERNAME
+} from '../src/lib/server/db/provision-user.ts';
 
 const WS = (process.env.SURREAL_WS || 'ws://127.0.0.1:8000').trim();
 const NS = (process.env.SURREAL_NS || 'playground').trim();
@@ -38,6 +42,10 @@ const DB = (process.env.SURREAL_DB || 'v2').trim();
 const ROOT_USER = (process.env.SURREAL_ROOT_USER || process.env.SURREAL_USER || 'root').trim();
 const ROOT_PASS = process.env.SURREAL_ROOT_PASS ?? process.env.SURREAL_PASS ?? 'root';
 const DATA_DIR = (process.env.SURREAL_DATA_DIR || '.data').trim();
+// Scoped least-priv runtime user (DBR-1 / D-026c). Name is configurable; password is
+// taken from SURREAL_RUNTIME_PASS if set, else generated (crypto) and printed ONCE.
+const RUNTIME_USER = (process.env.SURREAL_RUNTIME_USER || DEFAULT_RUNTIME_USERNAME).trim();
+const RUNTIME_PASS = process.env.SURREAL_RUNTIME_PASS;
 
 /** Parse `ws://host:port/...` → { host, port }. */
 function wsParts(url: string): { host: string; port: number } {
@@ -114,22 +122,68 @@ async function main(): Promise<void> {
 	for (const m of schemaMigrations) {
 		if (!(await isApplied(root, m.id))) missing.push(m.id);
 	}
-	await root.close();
 	if (missing.length) {
+		await root.close();
 		throw new Error(
 			`[db:up] post-migration assertion FAILED — ${missing.length} migration(s) not recorded: ${missing.join(', ')}`
 		);
 	}
 
+	// 4. Provision the scoped least-priv runtime user (DBR-1 / D-026c) — idempotent
+	//    DEFINE USER IF NOT EXISTS on the CURRENT database, run as ROOT (user admin is
+	//    root-only). NOT a schema migration: DB users are instance/db auth objects, and
+	//    a migration would wedge every throwaway test DB. Password: SURREAL_RUNTIME_PASS
+	//    if set, else generated + printed ONCE below (never logged elsewhere).
+	const runtime = await provisionRuntimeUser(root, {
+		username: RUNTIME_USER,
+		password: RUNTIME_PASS
+	});
+	await root.close();
+
 	console.log(
 		`[db:up] CONNECTED — ${schemaMigrations.length}/${schemaMigrations.length} migrations applied on ${NS}/${DB}.`
 	);
-	console.log('[db:up] Set these in .env for the dashboard runtime user (least-priv — D-026c):');
+	console.log(
+		`[db:up] Runtime user provisioned: ${runtime.username} (ROLES ${runtime.role}, scoped to DATABASE ${NS}/${DB} — D-026c).`
+	);
+	console.log(
+		'[db:up]   Scope (verified vs 2.6.5): CRUD on product tables YES; DEFINE USER / root+namespace admin / cross-database access NO.'
+	);
+	console.log('[db:up] .env block for the dashboard runtime user (least-priv — D-026c):');
 	console.log(`          SURREAL_WS=${WS}`);
 	console.log(`          SURREAL_NS=${NS}`);
 	console.log(`          SURREAL_DB=${DB}`);
-	console.log(`          SURREAL_USER=${ROOT_USER}   # dev: root; production: a scoped least-priv user`);
-	console.log('          SURREAL_PASS=<password>');
+	console.log(`          SURREAL_USER=${runtime.username}`);
+	if (runtime.alreadyExisted) {
+		// HONEST (F-008): the user was already defined — IF NOT EXISTS is a no-op and does
+		// NOT reset the password, so we must NOT print a fresh/fabricated value. The
+		// original credential (from the FIRST provisioning) still stands.
+		console.log(
+			'          SURREAL_PASS=<unchanged — user already existed; the password from its FIRST'
+		);
+		console.log(
+			'                       provisioning is retained. To rotate: REMOVE USER then re-run,'
+		);
+		console.log('                       or set SURREAL_RUNTIME_PASS before the first provisioning.>');
+	} else if (runtime.generated) {
+		// Printed ONCE, here only — never persisted, never logged again (D-026). A future
+		// re-run does NOT reset this password, so store it now.
+		console.log(`          SURREAL_PASS=${runtime.password}   # GENERATED — shown ONCE; store it now`);
+	} else {
+		console.log('          SURREAL_PASS=<the SURREAL_RUNTIME_PASS you configured>');
+	}
+	console.log(
+		'[db:up]   NOTE: the runtime is NOT flipped automatically. To use the scoped user, set the'
+	);
+	console.log(
+		'[db:up]   above SURREAL_USER/SURREAL_PASS in .env AND connect at DATABASE auth level'
+	);
+	console.log(
+		'[db:up]   (Db.connect authLevel:\'database\'). Until then the runtime keeps its current'
+	);
+	console.log(
+		`[db:up]   user; root (${ROOT_USER}) remains provisioning/migration-only (D-026c).`
+	);
 
 	if (server) {
 		// Keep the server in the FOREGROUND so `db:up` owns its lifecycle in dev (Ctrl-C

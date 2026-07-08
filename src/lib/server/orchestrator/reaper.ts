@@ -22,6 +22,7 @@ import type { Db } from '../db/client';
 import { writeAgentEvent } from '../analytics/events';
 import { releaseSessionWork } from './workqueue';
 import { resetStuckTaskToReady } from '../tasks/repo';
+import { activeOrchestrator } from './orchestrator';
 
 /** The honest note stamped on every reaped row (F-008 — never a silent flip). */
 export const REAPED_NOTE = 'reaped: server restarted mid-run';
@@ -44,6 +45,44 @@ export interface ReapResult {
 /** The instant THIS process booted — the cutoff a run must predate to be reaped. */
 export function processBootTime(): Date {
 	return new Date(Date.now() - process.uptime() * 1000);
+}
+
+/**
+ * ORH-2 (ORCHESTRATOR-SPEC §5) — self-trigger a drain after a release freed work.
+ *
+ * `releaseSessionWork` resets a dead session's `processing` twins → pending, but nothing
+ * DRAINS them: the drain loop is trigger-driven (bus event / permit release / operator /
+ * boot), and a freed row emits none of those. Left alone, the freed work sat until the next
+ * unrelated task event (the ~5min `startMaintenance` backstop only un-sticks stale rows by
+ * age — it does NOT drain). So after a successful release with n>0 freed items we NUDGE the
+ * live orchestrator to drain them right now.
+ *
+ * Fire-and-forget + FULLY swallowed (F-014, invariant §2.5): a recovery release must NEVER
+ * fail — and its already-computed result must NEVER be lost — because the nudge threw. Both
+ * a rejected drain promise (`.catch`) and a synchronous throw from `drain()`/
+ * `activeOrchestrator()` (the outer `try`) are logged and absorbed, re-raising nothing.
+ *
+ * At BOOT the orchestrator does not yet exist (`reapStaleRuns` runs before
+ * `startOrchestrator` subscribes), so `activeOrchestrator()` returns null and this is a
+ * correct no-op — ORH-1's `bootDrain` covers the boot-time reaper case. This nudge covers
+ * RUNTIME callers (a live-session-failure recovery path invoking the release while the
+ * orchestrator is running).
+ */
+function nudgeDrainAfterRelease(released: number): void {
+	if (released <= 0) return; // nothing freed → nothing to drain
+	try {
+		void activeOrchestrator()
+			?.drain()
+			.catch((err) => {
+				console.warn(
+					`[reaper] post-release drain nudge rejected (swallowed, F-014): ${(err as Error).message}`
+				);
+			});
+	} catch (err) {
+		console.warn(
+			`[reaper] post-release drain nudge threw synchronously (swallowed, F-014): ${(err as Error).message}`
+		);
+	}
 }
 
 /**
@@ -123,6 +162,11 @@ export async function reapStaleRuns(db: Db, bootTime: Date = processBootTime()):
 			}
 		}
 	}
+
+	// ORH-2: the reap freed `releasedWorkItems` claimed twins back to pending — self-trigger a
+	// drain so the freed work is re-driven now instead of waiting on the next unrelated event.
+	// No-op + never-throws when the orchestrator isn't live yet (boot) or the nudge faults.
+	nudgeDrainAfterRelease(releasedWorkItems);
 
 	return { sessions: sessions.length, workflowRuns: runs.length, releasedWorkItems, resetTasks };
 }

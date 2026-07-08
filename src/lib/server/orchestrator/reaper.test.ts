@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, afterEach } from 'vitest';
 import { StringRecordId } from 'surrealdb';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
@@ -14,6 +14,7 @@ import {
 } from '../tasks/repo';
 import { releaseSessionWork } from './workqueue';
 import { reapStaleRuns, processBootTime, REAPED_NOTE } from './reaper';
+import { setActiveOrchestrator, type Orchestrator } from './orchestrator';
 
 // TASK 13.2 VERIFY — the boot-time reaper (FINDING 13.2c). A hard server death writes no
 // terminal status, so session/workflow_run rows from a previous boot stay 'running'
@@ -334,5 +335,91 @@ describe('reapStaleRuns — F-048 follow-on (release claimed work + reset orphan
 		// ONLY the operator-manual reopen advances it off the terminal.
 		expect(await reopenFailedTaskToReady(db, t.id)).toBe(true);
 		expect((await readRow(t.id)).status).toBe('ready');
+	});
+});
+
+// ── ORH-2 (ORCHESTRATOR-SPEC §5) — a release freeing n>0 items self-triggers a drain ──
+// releaseSessionWork resets a dead session's twins → pending, but nothing DRAINS them (the
+// drain loop is trigger-driven; a freed row emits no trigger; the 5-min backstop only
+// un-sticks by age). reapStaleRuns must nudge the live orchestrator's drain() after a
+// release freed work — fire-and-forget + F-014-swallowed, and a correct no-op (never a
+// throw) when no orchestrator is live (boot). Real throwaway SurrealDB.
+
+/** A test double registered via setActiveOrchestrator — records/steers drain() calls. */
+function fakeOrch(drain: () => Promise<{ claimed: number; spawned: number }>): Orchestrator {
+	return { drain } as unknown as Orchestrator;
+}
+
+describe('reapStaleRuns — ORH-2 post-release drain nudge', () => {
+	afterEach(() => setActiveOrchestrator(null)); // never leak a live orchestrator into other tests
+
+	it('nudges the live orchestrator to drain after a release frees n>0 items', async () => {
+		let drainCalls = 0;
+		setActiveOrchestrator(
+			fakeOrch(async () => {
+				drainCalls += 1;
+				return { claimed: 0, spawned: 0 };
+			})
+		);
+
+		const past = new Date(Date.now() - 60_000);
+		const session = await makeSession({ status: 'running', started_at: past });
+		await makeWorkItem(session); // a claimed `processing` twin the reap will free
+
+		const res = await reapStaleRuns(db, new Date(Date.now() - 5_000));
+		expect(res.releasedWorkItems).toBe(1); // exactly one twin freed
+		// The nudge is invoked synchronously inside reapStaleRuns (void drain()), so by the time
+		// it returns the fake's drain body has already run through its first (only) statement.
+		expect(drainCalls).toBe(1);
+	});
+
+	it('does NOT nudge when a reap frees zero items (no session had claimed work)', async () => {
+		let drainCalls = 0;
+		setActiveOrchestrator(
+			fakeOrch(async () => {
+				drainCalls += 1;
+				return { claimed: 0, spawned: 0 };
+			})
+		);
+
+		const past = new Date(Date.now() - 60_000);
+		await makeSession({ status: 'running', started_at: past }); // reaped, but carries no work_items
+
+		const res = await reapStaleRuns(db, new Date(Date.now() - 5_000));
+		expect(res.releasedWorkItems).toBe(0);
+		expect(drainCalls).toBe(0); // n=0 → the nudge is skipped
+	});
+
+	it('does NOT throw when NO orchestrator is live — the freed work waits for the next trigger (boot case)', async () => {
+		setActiveOrchestrator(null); // boot ordering: reaper runs before the orchestrator exists
+
+		const past = new Date(Date.now() - 60_000);
+		const session = await makeSession({ status: 'running', started_at: past });
+		const wi = await makeWorkItem(session);
+
+		// The release still happens and its result is intact; the null nudge is a silent no-op.
+		const res = await reapStaleRuns(db, new Date(Date.now() - 5_000));
+		expect(res.releasedWorkItems).toBe(1);
+		expect((await readRow(wi)).status).toBe('pending'); // freed regardless of the (absent) nudge
+	});
+
+	it('swallows a drain() rejection — the reap result is returned intact (F-014)', async () => {
+		setActiveOrchestrator(
+			fakeOrch(async () => {
+				throw new Error('drain boom');
+			})
+		);
+
+		const past = new Date(Date.now() - 60_000);
+		const session = await makeSession({ status: 'running', started_at: past });
+		const wi = await makeWorkItem(session);
+
+		// A rejected drain promise must never propagate out of the reaper (best-effort side loop,
+		// invariant §2.9): the recovery result is computed and returned unchanged.
+		const res = await reapStaleRuns(db, new Date(Date.now() - 5_000));
+		expect(res).toEqual({ sessions: 1, workflowRuns: 0, releasedWorkItems: 1, resetTasks: 0 });
+		expect((await readRow(wi)).status).toBe('pending'); // the freed twin is real, nudge fault or not
+		// Let the swallowed rejection settle so it can't surface as an unhandled rejection later.
+		await new Promise((r) => setTimeout(r, 10));
 	});
 });

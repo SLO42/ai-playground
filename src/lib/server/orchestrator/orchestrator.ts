@@ -51,6 +51,7 @@ import {
 	complete,
 	enqueue,
 	gcStale,
+	pendingDepth,
 	spawnsSince,
 	isCwdSpawningWorkType,
 	DAY_MS
@@ -220,6 +221,19 @@ export interface OrchestratorOptions {
 export interface DrainSummary {
 	claimed: number;
 	spawned: number;
+}
+
+/**
+ * ORH-1 — what the ONE-SHOT boot drain did (diagnostics / the boot analytics event / tests).
+ * `readyTasksEnqueued` counts the spawn-ready tasks a NEW work_item was created for (a task already
+ * pending/processing dedups to a no-op and is NOT counted); `pendingItemsSeen` is the pending+unclaimed
+ * queue depth observed just BEFORE the drain (the honest "what boot found waiting"); `drain` is the
+ * bounded drain's own claim/spawn counts (all three gates respected — it calls the real drain()).
+ */
+export interface BootDrainSummary {
+	readyTasksEnqueued: number;
+	pendingItemsSeen: number;
+	drain: DrainSummary;
 }
 
 let tokenSeq = 0;
@@ -621,6 +635,113 @@ export class Orchestrator {
 			this.#draining = false;
 		}
 		return { claimed, spawned };
+	}
+
+	/**
+	 * ORH-1 (ORCHESTRATOR-SPEC §5) — the ONE-SHOT boot drain. Called ONCE from startOrchestrator
+	 * AFTER start() subscribes (event/periodic modes only). Closes the verified boot-recovery hole:
+	 * start() only SUBSCRIBES — the bus never replays the task→ready `db_change`s that fired BEFORE
+	 * the subscription existed (tasks already ready at boot, and the boot reaper's ready-resets which
+	 * run in hooks.server.ts before this seam), and a released/pre-existing pending work_item has no
+	 * self-trigger. So without this nudge those sit until a later task event or the operator.
+	 *
+	 * Shape — the GLOBAL analogue of continueReadyTasks (project-controls.ts), all-projects not one:
+	 *   (a) enumerate every currently spawn-ready task and enqueueTask each — IDEMPOTENT (the
+	 *       deterministic-id dedup, workqueue.activeWorkItemId, absorbs a task already pending/processing
+	 *       as a no-op, so a re-boot enqueues no duplicates);
+	 *   (b) drain() the pending work_items under ALL THREE gates in order (daily cap → semaphore →
+	 *       per-project) — it calls the existing drain(), NEVER a bypass.
+	 * A ONE-SHOT, not a poller — a single boot-time shot; invariant §2.1 (bus-only observation) stands.
+	 *
+	 * Manual mode is UNCHANGED: it subscribes to nothing and runs only on explicit triggers, so it must
+	 * not auto-drain at boot — self-guarded here (a mistaken call is a zero-result no-op) AND gated at the
+	 * boot.ts call site (defense in depth).
+	 *
+	 * Emits ONE named analytics agent_event carrying the counts {readyTasksEnqueued, pendingItemsSeen}
+	 * + the drain outcome — how/why, never a flat event (analytics-first-class). The agent_event `type`
+	 * column is schema-constrained to the five lifecycle values, so this rides on `completion` (the boot
+	 * drain concluded) with a `kind: 'boot_drain'` discriminator in `detail`. That write is best-effort
+	 * (a side loop — invariant §2.9): a failure is logged+swallowed and never changes the drain outcome.
+	 *
+	 * Crash-safe: the whole method is invoked fire-and-forget from boot.ts with a catch-all log+swallow
+	 * (an unhandled rejection on the drain path would take down the process — F-014; mirrors #onTrigger).
+	 * Here too a single task's enqueue fault is caught so one bad row can't abort the whole boot drain.
+	 */
+	async bootDrain(): Promise<BootDrainSummary> {
+		const empty: BootDrainSummary = {
+			readyTasksEnqueued: 0,
+			pendingItemsSeen: 0,
+			drain: { claimed: 0, spawned: 0 }
+		};
+		// Self-guard: manual mode never auto-drains at boot; a stopped orchestrator never claims.
+		if (this.#mode === 'manual' || this.#stopped) return empty;
+
+		// (a) Enqueue every currently spawn-ready task (all projects). enqueueTask is idempotent via the
+		// deterministic primary id, so a task already in-flight (or a re-boot) collapses to a no-op.
+		const ready = await this.#listReadyTasks();
+		let readyTasksEnqueued = 0;
+		for (const t of ready) {
+			try {
+				if (await this.enqueueTask(t.id, t.project)) readyTasksEnqueued += 1;
+			} catch (err) {
+				// One task's transient enqueue conflict must not sink the whole boot drain — skip it; the
+				// deterministic-id dedup makes a later trigger/continue re-check of that task safe (F-014).
+				console.warn(
+					`[orchestrator] boot-drain enqueue for ${t.id} failed (skipped, will re-check on a later trigger): ${(err as Error).message}`
+				);
+			}
+		}
+
+		// pendingItemsSeen — the pending+unclaimed depth just before the drain: pre-existing/released
+		// items PLUS the ones we just enqueued. The honest "what boot found waiting" (diagnostics only).
+		const pendingItemsSeen = await pendingDepth(this.#db);
+
+		// (b) Drain under all three gates (the existing bounded drain — no bypass, no busy loop).
+		const drain = await this.drain();
+
+		// ONE named boot-drain analytics event — the how/why (counts + outcome), never flat. Best-effort:
+		// a write fault is logged+swallowed and NEVER changes the drain result (side-loop invariant §2.9).
+		await writeAgentEvent(this.#db, {
+			type: 'completion',
+			detail: {
+				kind: 'boot_drain',
+				reason: `boot drain: enqueued ${readyTasksEnqueued} ready task(s), ${pendingItemsSeen} pending item(s) seen, drained ${drain.claimed} claimed / ${drain.spawned} spawned`,
+				readyTasksEnqueued,
+				pendingItemsSeen,
+				claimed: drain.claimed,
+				spawned: drain.spawned
+			}
+		}).catch((err) =>
+			console.warn(
+				`[orchestrator] boot-drain analytics event failed (drain unaffected): ${(err as Error).message}`
+			)
+		);
+
+		return { readyTasksEnqueued, pendingItemsSeen, drain };
+	}
+
+	/**
+	 * ORH-1 — enumerate every currently spawn-ready task across ALL projects (id + project only). The
+	 * GLOBAL analogue of continueReadyTasks' per-project `listTasksByProject(db, pid, 'ready')` read,
+	 * lifted INTO the orchestrator (not imported from the projects/UI layer) so the boot drain carries no
+	 * project-controls import cycle. Filters on the SAME #spawnReady status set the bus trigger uses
+	 * (default 'ready') so what the boot drains and what a live trigger would enqueue can never diverge.
+	 * F-020: the ORDER BY field (created_at) is in the projection; oldest-first so the longest-waiting
+	 * task drains first. Rows with a nil id/project are skipped (honest — never a fabricated link).
+	 */
+	async #listReadyTasks(): Promise<Array<{ id: string; project: string }>> {
+		const statuses = [...this.#spawnReady];
+		const [rows] = await this.#db.query<
+			[Array<{ id: unknown; project: unknown; created_at: unknown }>]
+		>(`SELECT id, project, created_at FROM task WHERE status IN $statuses ORDER BY created_at ASC;`, {
+			statuses
+		});
+		const out: Array<{ id: string; project: string }> = [];
+		for (const r of rows ?? []) {
+			if (r?.id == null || r?.project == null) continue;
+			out.push({ id: String(r.id), project: String(r.project) });
+		}
+		return out;
 	}
 
 	/**

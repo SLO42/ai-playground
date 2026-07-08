@@ -452,11 +452,39 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 	//       legitimately long-running claim is never freed early; R1-1's prompt release stays primary. The
 	//       interval is unref'd (never holds the process open) and torn down by orchestrator.stop() (the
 	//       hooks.server.ts stopOrchestrators teardown path), so no timer outlives shutdown.
+	// ORH-1 (ORCHESTRATOR-SPEC §5) — the ONE-SHOT boot drain, CHAINED after the boot gc so gc-recovered
+	// `processing`→`pending` rows are swept into the SAME boot recovery pass. The hole it closes: start()
+	// above only SUBSCRIBES; the bus never replays the task→ready `db_change`s that fired BEFORE the
+	// subscription existed — tasks already ready at boot, and the boot reaper's ready-resets (reapStaleRuns
+	// in hooks.server.ts, which runs BEFORE this seam) — and a released/pre-existing pending work_item has
+	// no self-trigger. Without this nudge those sit until a later task event or an operator Continue. So
+	// after subscribe we enqueue every currently-ready task + drain pending items, ONCE. Idempotent by
+	// construction (deterministic-id dedup absorbs re-enqueues, so a re-boot double-drains nothing);
+	// bounded (bootDrain calls drain() → all three gates, never a bypass); a ONE-SHOT, not a poller
+	// (invariant §2.1 bus-only observation stands). EVENT/PERIODIC ONLY — manual mode subscribes to
+	// nothing and must stay trigger-free (bootDrain ALSO self-guards on manual — defense in depth).
+	// Fire-and-forget with a catch-all log+swallow: an unhandled rejection on the drain path would take
+	// down the process (F-014; mirrors the orchestrator's #onTrigger).
 	void orchestrator
 		.gc()
 		.catch((err) =>
 			console.warn(`[startup] boot backstop gc failed (periodic net will retry): ${(err as Error).message}`)
-		);
+		)
+		.finally(() => {
+			if (mode !== 'event' && mode !== 'periodic') return; // manual: no boot drain (trigger-free)
+			void orchestrator
+				.bootDrain()
+				.then((r) =>
+					console.log(
+						`[startup] boot drain: ${r.readyTasksEnqueued} ready task(s) enqueued, ${r.pendingItemsSeen} pending item(s) seen, drained ${r.drain.claimed}/${r.drain.spawned}`
+					)
+				)
+				.catch((err) =>
+					console.warn(
+						`[startup] boot drain failed (a later trigger/Continue re-checks): ${(err as Error).message}`
+					)
+				);
+		});
 	orchestrator.startMaintenance();
 
 	return { started: true, orchestrator, mode, maxConcurrent, perProject, dailySpawnCap };

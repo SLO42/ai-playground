@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterAll, vi } from 'vitest';
 import { StringRecordId } from 'surrealdb';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
@@ -1703,6 +1703,252 @@ describe('GAME-VERIFY — the orchestrator runs the verify step after the post-t
 			await waitForAsync(async () => (await getTask(db, task.id))?.status === 'done', 10_000);
 			expect((await getTask(db, task.id))?.status).toBe('done');
 			expect(gameRunner.calls.length).toBe(0); // gated off — the runner stayed untouched
+		} finally {
+			orch.stop();
+		}
+	}, 30_000);
+});
+
+// ── ORH-1 — the ONE-SHOT boot drain (ORCHESTRATOR-SPEC §5) ───────────────────────────────────
+//
+// Real-surreal proof that startOrchestrator's boot drain closes the verified boot-recovery hole:
+// a task already spawn-ready before boot, and a released/pre-existing PENDING work_item, are both
+// drained at boot WITHOUT any bus event — because start() only SUBSCRIBES and the bus never
+// replays the db_changes that predate the subscription. We call orch.bootDrain() directly (exactly
+// what boot.ts fire-and-forgets after start()), with NO watchTable live query wired, so the ONLY
+// thing that can move the queue is the boot drain itself. Also proves: manual mode is inert, the
+// three drain gates (daily cap) still bind, and a re-boot enqueues no duplicates (deterministic-id).
+
+/** Total work_item rows (all statuses) — the dedup assertion needs the raw count, not per-status. */
+async function totalWorkItems(): Promise<number> {
+	const [rows] = await db.query<[Array<{ c: number }>]>(
+		`SELECT count() AS c FROM work_item GROUP ALL;`
+	);
+	return Number(rows?.[0]?.c ?? 0);
+}
+
+/** Delete every task + work_item row — #listReadyTasks is GLOBAL (all projects), so a prior test's
+ *  leftover `ready` task (e.g. the manual-mode / daily-cap-parked cases that never spawn to terminal)
+ *  would otherwise be picked up by the next boot drain. Each ORH-1 test starts from a clean slate. */
+async function resetBootDrainState(): Promise<void> {
+	await db.query(`DELETE work_item; DELETE task;`);
+}
+
+describe('ORH-1 — boot drain (seed-before-boot recovery)', () => {
+	beforeEach(resetBootDrainState);
+
+	it('a ready task + a pre-existing pending work_item are BOTH drained at boot with NO bus event fired', async () => {
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = gatedBackend();
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: 'F:/code/orch/.harness-cc' });
+
+		// Count any task-topic bus events — the boot drain must NOT rely on (or emit) one. No
+		// watchTable live query is wired, so this MUST stay 0 (the "without any bus event" assertion).
+		let taskBusEvents = 0;
+		const unsub = bus.subscribe(
+			() => (taskBusEvents += 1),
+			(e) => e.type === 'db_change' && e.topic === 'task'
+		);
+
+		// (1) A task already spawn-ready BEFORE the orchestrator exists (predates any subscription).
+		const ready = await createTask(db, {
+			project: projectId,
+			title: 'pre-boot ready',
+			description: 'a task already ready at boot must drain without a live trigger'
+		});
+		await setStatus(db, ready.id, 'ready');
+		// (2) A released/pre-existing PENDING work_item for a DIFFERENT task (the reaper-released case:
+		// releaseSessionWork resets a dead session's twin → pending, but nothing drains it). Seeded
+		// directly as a task_run so #runItem resolves it through launchSession like any claimed item.
+		const orphan = await createTask(db, {
+			project: projectId,
+			title: 'pre-boot pending',
+			description: 'a pending work_item with no self-trigger must drain at boot'
+		});
+		await enqueue(db, {
+			workType: 'task_run',
+			payload: { taskId: orphan.id, projectId },
+			projectId,
+			dedupScope: orphan.id
+		});
+		expect(await countByStatus(db, 'pending')).toBe(1); // only the orphan so far
+
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 8,
+			mode: 'event',
+			route: stubRoute(),
+			acquireWorktree: fakeWt
+		});
+		orch.start(); // SUBSCRIBE only — no boot drain happens inside start()
+
+		try {
+			// Nothing has drained yet: start() only subscribed, and no bus event was fired.
+			await new Promise((r) => setTimeout(r, 150));
+			expect(backend.plans.length).toBe(0);
+			expect(await countByStatus(db, 'processing')).toBe(0);
+
+			// THE boot drain (what boot.ts fire-and-forgets after start()).
+			const summary = await orch.bootDrain();
+			// The ready task was enqueued (1 NEW row); the orphan was already pending (not re-counted).
+			expect(summary.readyTasksEnqueued).toBe(1);
+			// Both items were pending when the drain measured depth (ready's new row + the orphan).
+			expect(summary.pendingItemsSeen).toBe(2);
+			expect(summary.drain.claimed).toBe(2);
+			expect(summary.drain.spawned).toBe(2);
+
+			// Both spawns actually started through the runtime — the recovery is real, not just counters.
+			await waitFor(() => backend.plans.length >= 2);
+			await Promise.all([backend.gates[0].started, backend.gates[1].started]);
+			expect(backend.plans.length).toBe(2);
+			expect(await countByStatus(db, 'processing')).toBe(2);
+
+			// The whole recovery happened with ZERO task bus events (no live query, no replay).
+			expect(taskBusEvents).toBe(0);
+
+			// Release both and settle: both work_items reach done, none left pending, still no bus event.
+			for (const g of backend.gates) g.release();
+			await waitFor(() => orch.semaphore.inUse === 0, 10_000);
+			await new Promise((r) => setTimeout(r, 150));
+			expect(await countByStatus(db, 'done')).toBe(2);
+			expect(await countByStatus(db, 'pending')).toBe(0);
+			expect(taskBusEvents).toBe(0);
+		} finally {
+			unsub();
+			orch.stop();
+		}
+	}, 30_000);
+
+	it('MANUAL mode: bootDrain is a no-op (no enqueue, no drain, no spawn)', async () => {
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = gatedBackend();
+		const runtime = new ClaudeCodeRuntime({ backend });
+		// A ready task exists — a manual-mode boot MUST leave it untouched (manual is trigger-free).
+		const t = await createTask(db, {
+			project: projectId,
+			title: 'manual ready',
+			description: 'manual mode must not auto-drain at boot'
+		});
+		await setStatus(db, t.id, 'ready');
+
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 8,
+			mode: 'manual',
+			route: stubRoute(),
+			acquireWorktree: fakeWt
+		});
+		orch.start();
+		try {
+			const summary = await orch.bootDrain();
+			expect(summary).toEqual({
+				readyTasksEnqueued: 0,
+				pendingItemsSeen: 0,
+				drain: { claimed: 0, spawned: 0 }
+			});
+			await new Promise((r) => setTimeout(r, 150));
+			expect(backend.plans.length).toBe(0);
+			// Nothing was even enqueued — the queue is empty (the ready task was never touched).
+			expect(await totalWorkItems()).toBe(0);
+		} finally {
+			orch.stop();
+		}
+	}, 30_000);
+
+	it('boot drain respects the DAILY CAP: cap already reached → the ready task is enqueued but PARKED (no spawn)', async () => {
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = gatedBackend();
+		const runtime = new ClaudeCodeRuntime({ backend });
+
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 8, // interactive cap is NOT the limiter — the daily cap is
+			mode: 'event',
+			route: stubRoute(),
+			acquireWorktree: fakeWt,
+			dailySpawnCap: 1
+		});
+		orch.start();
+		try {
+			// Pre-fill the rolling window to the cap WITHOUT going through the backend: create a task,
+			// enqueue + claim it (claimed_at = now stamps the window) + complete. spawnsSince → 1 == cap.
+			const filler = await createTask(db, { project: projectId, title: 'cap filler', description: 'fills the window' });
+			await orch.enqueueTask(filler.id, projectId);
+			const claimed = await claimNext(db, 'orh_cap_tok');
+			expect(claimed).not.toBeNull();
+			await complete(db, claimed!.id, 'orh_cap_tok', 'done');
+
+			// A task already ready at boot — the boot drain enqueues it, but the cap gate parks it.
+			const ready = await createTask(db, { project: projectId, title: 'capped ready', description: 'must be parked by the daily cap' });
+			await setStatus(db, ready.id, 'ready');
+
+			const summary = await orch.bootDrain();
+			expect(summary.readyTasksEnqueued).toBe(1); // it WAS enqueued (idempotently)
+			expect(summary.pendingItemsSeen).toBe(1); // the parked ready item is waiting
+			// …but the cap (already reached) stopped the drain BEFORE any claim/spawn.
+			expect(summary.drain.claimed).toBe(0);
+			expect(summary.drain.spawned).toBe(0);
+			await new Promise((r) => setTimeout(r, 150));
+			expect(backend.plans.length).toBe(0); // nothing spawned through the runtime
+			expect(await countByStatus(db, 'pending')).toBe(1); // the ready item stays parked (not lost)
+		} finally {
+			orch.stop();
+		}
+	}, 30_000);
+
+	it('RE-BOOT idempotency: a second bootDrain over already-queued work enqueues NO duplicate (deterministic-id dedup)', async () => {
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = gatedBackend();
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: 'F:/code/orch/.harness-cc' });
+
+		const ready = await createTask(db, {
+			project: projectId,
+			title: 're-boot task',
+			description: 'a re-boot must not double-enqueue an in-flight task'
+		});
+		await setStatus(db, ready.id, 'ready');
+
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 8,
+			mode: 'event',
+			route: stubRoute(),
+			acquireWorktree: fakeWt
+		});
+		orch.start();
+		try {
+			// First boot: enqueue + drain. The gated backend holds the spawn IN FLIGHT (processing).
+			const first = await orch.bootDrain();
+			expect(first.readyTasksEnqueued).toBe(1);
+			await waitFor(() => backend.plans.length >= 1);
+			await backend.gates[0].started;
+			expect(await countByStatus(db, 'processing')).toBe(1);
+			expect(await totalWorkItems()).toBe(1);
+
+			// Second boot WHILE the first spawn is still processing (a crash-restart racing the in-flight
+			// run): the deterministic primary id collapses the re-enqueue to a no-op — no duplicate row,
+			// no second spawn of the same task.
+			const second = await orch.bootDrain();
+			expect(second.readyTasksEnqueued).toBe(0); // dedup no-op — nothing NEW enqueued
+			expect(second.drain.spawned).toBe(0); // no pending work to claim (the twin is processing)
+			await new Promise((r) => setTimeout(r, 150));
+			expect(backend.plans.length).toBe(1); // STILL exactly one spawn
+			expect(await totalWorkItems()).toBe(1); // STILL exactly one work_item (no duplicate)
+
+			backend.gates[0].release();
+			await waitFor(() => orch.semaphore.inUse === 0, 10_000);
 		} finally {
 			orch.stop();
 		}

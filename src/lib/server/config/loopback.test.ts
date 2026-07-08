@@ -4,6 +4,7 @@ import {
 	assertLoopback,
 	mintBootToken,
 	bootstrapControlPlane,
+	decideClientLoopback,
 	LoopbackBindError,
 	type ListenerSpec
 } from './loopback';
@@ -95,5 +96,81 @@ describe('bootstrapControlPlane — D-025 startup gate', () => {
 		const cp = bootstrapControlPlane(loopback);
 		const serialized = JSON.stringify(cp.listeners);
 		expect(serialized).not.toContain(cp.token);
+	});
+});
+
+describe('decideClientLoopback — SEC-1 fail-closed Host-header fallback', () => {
+	// (c) Normal getClientAddress() path — authoritative + unspoofable, byte-identical to
+	// the old `isLoopbackHost(normalizeAddr(addr))`: the real peer alone decides regardless
+	// of the Host header or the server bind.
+	describe('(c) real peer address is authoritative when present', () => {
+		it('loopback peer → loopback (true), any bind, ignoring a spoofed Host', () => {
+			for (const serverLoopbackBound of [true, false]) {
+				expect(
+					decideClientLoopback({ clientAddr: '127.0.0.1', hostHeader: 'evil.example.com', serverLoopbackBound })
+				).toBe(true);
+				expect(
+					decideClientLoopback({ clientAddr: '::1', hostHeader: null, serverLoopbackBound })
+				).toBe(true);
+			}
+		});
+
+		it('LAN peer → NOT loopback (false), even when the Host header claims 127.0.0.1', () => {
+			for (const serverLoopbackBound of [true, false]) {
+				expect(
+					decideClientLoopback({ clientAddr: '192.168.1.50', hostHeader: '127.0.0.1', serverLoopbackBound })
+				).toBe(false);
+			}
+		});
+	});
+
+	// (a) Missing getClientAddress() + LAN-bound server → the spoofable Host fallback must
+	// DENY (fail-closed) so a LAN attacker's `Host: 127.0.0.1` cannot grant login-free access.
+	describe('(a) missing peer address + LAN-bound → deny (fail-closed)', () => {
+		it('spoofed loopback Host on a LAN-bound server → NOT loopback (gate applies)', () => {
+			expect(
+				decideClientLoopback({ clientAddr: null, hostHeader: '127.0.0.1', serverLoopbackBound: false })
+			).toBe(false);
+			expect(
+				decideClientLoopback({ clientAddr: undefined, hostHeader: 'localhost', serverLoopbackBound: false })
+			).toBe(false);
+			expect(
+				decideClientLoopback({ clientAddr: '', hostHeader: '::1', serverLoopbackBound: false })
+			).toBe(false);
+		});
+
+		it('a routable Host on a LAN-bound server with no peer address → also denied', () => {
+			expect(
+				decideClientLoopback({ clientAddr: null, hostHeader: '10.0.0.9', serverLoopbackBound: false })
+			).toBe(false);
+		});
+	});
+
+	// (b) Missing getClientAddress() + loopback-bound server → unchanged lenient Host
+	// fallback (a LAN attacker cannot reach a loopback bind; dev ergonomics stay).
+	describe('(b) missing peer address + loopback-bound → lenient Host fallback (unchanged)', () => {
+		it('loopback Host on a loopback-bound server → loopback (true)', () => {
+			expect(
+				decideClientLoopback({ clientAddr: null, hostHeader: '127.0.0.1', serverLoopbackBound: true })
+			).toBe(true);
+			expect(
+				decideClientLoopback({ clientAddr: null, hostHeader: 'localhost', serverLoopbackBound: true })
+			).toBe(true);
+		});
+
+		it('non-loopback Host on a loopback-bound server → NOT loopback (false)', () => {
+			expect(
+				decideClientLoopback({ clientAddr: null, hostHeader: 'example.com', serverLoopbackBound: true })
+			).toBe(false);
+		});
+
+		it('absent Host + no peer address → false (the old `if (!host) return false`)', () => {
+			expect(
+				decideClientLoopback({ clientAddr: null, hostHeader: null, serverLoopbackBound: true })
+			).toBe(false);
+			expect(
+				decideClientLoopback({ clientAddr: null, hostHeader: undefined, serverLoopbackBound: true })
+			).toBe(false);
+		});
 	});
 });

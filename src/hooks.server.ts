@@ -28,7 +28,7 @@ import {
 } from '$lib/server/auth/gate';
 import { closeDb } from '$lib/server/db/client';
 import { getEventBus, watchTable, WATCHED_TABLES, type DbSourceHandle } from '$lib/server/events';
-import { bootstrapControlPlane, type ListenerSpec } from '$lib/server/config/loopback';
+import { bootstrapControlPlane, decideClientLoopback, type ListenerSpec } from '$lib/server/config/loopback';
 import {
 	startOrchestrator,
 	reapStaleRuns,
@@ -418,24 +418,44 @@ async function bootstrap(): Promise<DbInitResult> {
 // /setup. This is casual gating over plain HTTP (see auth/credential.ts for the
 // honest scope caveat); it never touches the boot side-effects above.
 //
-// LOOPBACK DETECTION — WHY getClientAddress() first, Host header as fallback:
+// LOOPBACK DETECTION — WHY getClientAddress() first, Host header fallback FAIL-CLOSED (SEC-1):
 // `event.getClientAddress()` reflects the real TCP peer (the adapter/Vite reads the
 // socket's remote address), so it cannot be spoofed by a header the way a `Host`/
-// `Origin` value can. We PREFER it. If it is empty/unavailable we fall back to the
-// `Host` header — which IS spoofable (a LAN client can send `Host: 127.0.0.1`), so
-// the fallback only weakens to "casual gating" honesty, never a hard security claim.
-// (Verified live under `vite dev --host`: loopback → 127.0.0.1 / ::1, LAN → the LAN IP.)
+// `Origin` value can. We PREFER it. If it is empty/unavailable we may fall back to the
+// `Host` header — which IS spoofable (a LAN client can send `Host: 127.0.0.1`). To stop
+// that spoof from granting login-free control-plane access when an adapter change ever
+// leaves getClientAddress() unpopulated, the fallback is gated on THIS server's own bind
+// (`serverIsLoopbackBound`): on a LAN-bound server it DENIES (fail-closed → the login
+// gate applies); on a loopback-bound server it keeps the lenient Host fallback (a LAN
+// attacker cannot reach a loopback bind at all). The policy lives in the pure, unit-tested
+// `decideClientLoopback` (config/loopback.ts). (Verified live under `vite dev --host`:
+// loopback → 127.0.0.1 / ::1, LAN → the LAN IP.)
 function clientIsLoopback(event: Parameters<Handle>[0]['event']): boolean {
+	let clientAddr: string | null = null;
 	try {
 		const addr = event.getClientAddress();
-		if (addr) return isLoopbackHost(normalizeAddr(addr));
+		if (addr) clientAddr = normalizeAddr(addr);
 	} catch {
-		// getClientAddress throws if the adapter can't determine it — fall through.
+		// getClientAddress throws if the adapter can't determine it — fall through to the
+		// fail-closed Host fallback in decideClientLoopback.
 	}
-	const host = event.request.headers.get('host');
-	if (!host) return false;
-	const bare = host.split(':')[0];
-	return isLoopbackHost(bare);
+	const rawHost = event.request.headers.get('host');
+	const hostHeader = rawHost ? rawHost.split(':')[0] : null;
+	return decideClientLoopback({
+		clientAddr,
+		hostHeader,
+		serverLoopbackBound: serverIsLoopbackBound()
+	});
+}
+
+/**
+ * True iff THIS server binds a loopback address, from the HOST bind env (default
+ * 127.0.0.1 — the same default as {@link bootListeners} and the D-025 boot gate). A LAN
+ * bind (HOST set to a routable address) is exactly where the spoofable Host-header
+ * loopback fallback must fail closed (SEC-1).
+ */
+function serverIsLoopbackBound(): boolean {
+	return isLoopbackHost((env.HOST || '127.0.0.1').trim());
 }
 
 export const handle: Handle = async ({ event, resolve }) => {

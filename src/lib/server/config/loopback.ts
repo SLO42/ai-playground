@@ -72,6 +72,44 @@ export function isLoopbackHost(host: string): boolean {
 }
 
 /**
+ * Decide whether a request is loopback for the LOGIN GATE (SEC-1), given the (possibly
+ * absent) real TCP peer address and the Host header — fail-closed on a LAN bind.
+ *
+ * `getClientAddress()` reflects the real socket peer and CANNOT be spoofed by a header;
+ * when present, it alone decides. When it is ABSENT (an adapter change leaves it
+ * unpopulated), the only signal left is the `Host` header — which a LAN client CAN spoof
+ * (`Host: 127.0.0.1`). So the fallback is gated on the SERVER's OWN bind:
+ *
+ *   - LAN-bound server (`serverLoopbackBound: false`) → DENY (return false, fail-closed):
+ *     a spoofed Host must not grant login-free control-plane access (SEC-1). The login
+ *     gate then applies.
+ *   - loopback-bound server (`serverLoopbackBound: true`) → keep the lenient Host
+ *     fallback byte-identical: a LAN attacker cannot reach a loopback bind at all
+ *     (unreachable by the D-025 boundary), and dev ergonomics stay.
+ *
+ * Pure (no request/env access) so the SEC-1 policy is unit-testable without SvelteKit.
+ * The caller normalizes the peer address (IPv4-mapped IPv6 strip) and strips the Host
+ * port before passing them in.
+ */
+export function decideClientLoopback(input: {
+	/** Real TCP peer from getClientAddress(), already normalized; null/undefined if unavailable. */
+	clientAddr: string | null | undefined;
+	/** Bare Host-header hostname (port already stripped); null/undefined if absent. */
+	hostHeader: string | null | undefined;
+	/** True iff THIS server binds a loopback address (from the HOST bind env). */
+	serverLoopbackBound: boolean;
+}): boolean {
+	// Authoritative + unspoofable: when the real peer address is known, it alone decides.
+	if (input.clientAddr) return isLoopbackHost(input.clientAddr);
+	// Address unavailable → the only remaining signal is the SPOOFABLE Host header.
+	// Fail-closed on a LAN-bound server (SEC-1); a loopback-bound server keeps the
+	// lenient fallback (a LAN attacker can't reach a loopback bind).
+	if (!input.serverLoopbackBound) return false;
+	if (!input.hostHeader) return false;
+	return isLoopbackHost(input.hostHeader);
+}
+
+/**
  * Assert a single listener binds loopback. Throws {@link LoopbackBindError}
  * (fail-closed) on any routable address. Returns silently on loopback.
  */

@@ -79,6 +79,8 @@ Triggers and interval live in `config` and a settings page.
 
 **Consequences:** Idle cost drops to ~zero. Autonomous "maintain my projects" behavior is preserved by enabling `periodic` when wanted. Event plumbing replaces a busy loop.
 
+**Additive note (2026-07-08, SVC-1, operator-delegated): bounded supervision backstop tick.** The services auto-restart engine (`ServicesManager.tick`) gains a production scheduler: a bounded, unref'd periodic tick (the same shape as the orchestrator's `startMaintenance` gcStale backstop — precedented, not a busy work loop), config `services.tickMs`, **default 300000 (5 min), 0 = off**. Rationale for default-on: a $0 local probe every 5 min is not the idle-cost class D-004 guards against, and a crashed ollama silently staying down contradicts the aliveness north star + F-008 honesty. One-shot tick at boot after the singleton builds. Ships in `periphery-hardening` (SVC-1).
+
 ---
 
 ## D-005 🔒 Dashboard: keep SvelteKit 2.x + Svelte 5 + Tailwind v4, but trim
@@ -261,6 +263,8 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 **Decision:** v2's orchestrator background queue (for post-task extraction, follow-ups, maintenance — D-013/D-017) adopts these patterns directly: a `work_item` table with atomic claim, UNIQUE dedup keys (D-008), priority, a drain trigger (event/threshold, not a busy loop — D-004/D-017), a daily cap, stale-item GC, and a synchronous handoff record for crash recovery.
 
 **Consequences:** heavy work never blocks an interactive agent; exactly-once-ish semantics without locks.
+
+**Additive note (2026-07-08, ORH-3, operator-delegated):** the crash-safe **handoff pair (`writeHandoff`/`recoverHandoffs`) is RETIRED** — `recoverHandoffs` never gained a boot caller, and the crash classes it targeted are covered by the reaper (`releaseSessionWork` + `resetStuckTask*`), `gcStale`, and the F-026 deterministic-id dedup (a re-enqueue after crash is absorbed). No handoff payload carries state the queue row doesn't. The `orchestrator-hardening` wave deletes the dead pair + its tests. Reinstate only if a future work_type carries in-flight state not reconstructible from its `work_item` row.
 
 ---
 
@@ -491,6 +495,8 @@ Gates are configurable per project. This is the runtime complement to D-008 (no 
 **Consequences:** bundles gain a `capabilities` block; the runtime composes session config = harness-base ⊕ intent capability set; catalog-validation at the boundary (D-016 discipline). Net: agentic development *automatically* wields the task-appropriate toolkit without sacrificing isolation/determinism or the security envelope. **Scope:** landed as the **v1.1** task 5.1. (Owner-requested, builds on D-002/D-010/D-018/D-020.)
 
 **Resolved (build):** built at v1.1 task 5.1 (`runtime/capabilities.ts`), **live-wired at gap-closure v1.3** — `harness/wiring.ts` reads the live cc-config catalog so `composeCapabilities` runs on every spawn (the GAP-ANALYSIS DEFECT-1 dead branch was the fix), covered by `capability-wiring.live.test.ts`. 🟡 → 🔒.
+
+**Additive note (2026-07-08, CCF-1, operator-delegated): catalog freshness at spawn time.** D-036 is a fail-closed SECURITY boundary, so the allow-list must not go stale in the permissive direction: a DELETED skill still passing validation via a cached snapshot is a (small) hole. Contract: at spawn-plan time, when `syncState` reports `out_of_sync` for a scope feeding the catalog (digest compare — cheap), `reconcileScopes` runs and the runtime's CapabilityCatalog snapshot rebuilds before validation. Load-time reconcile on `/claude-code` stays as the UI freshness path; the watcher remains observe-only. Ships in `cc-config-hardening` (CCF-1) with the deleted-id-refused test.
 
 ---
 

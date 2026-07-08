@@ -15,7 +15,7 @@ import {
 	type CcSpawnPlan,
 	type RuntimeEvent
 } from '../runtime/index';
-import { writeAgentEvent } from './events';
+import { writeAgentEvent, __setPricingForTest } from './events';
 
 // TASK 2.4 VERIFY (part 1) — every lifecycle step writes an agent_event, through the ONE
 // shared writer. We prove: (a) the writer creates a valid row for each of the 5 types,
@@ -192,5 +192,84 @@ describe('writeAgentEvent — the shared lifecycle writer (2.4; DATA-MODEL §4.4
 		expect((spawn!.detail as Record<string, unknown>).intent).toBe('code-write');
 		// LIFECYCLE-GRAPH (m0067): the spawn carries the explicit cause threaded through launchSession.
 		expect(spawn!.parent_event_id).toBe(causeWorkItem);
+	});
+});
+
+// COST-GOVERNANCE-SPEC CG-1 — cost_usd is METERED at this one completion-write chokepoint.
+// Real-surreal (F-020): every assertion reads cost_usd back from the live throwaway DB, so the
+// computed figure round-trips as a real number/NULL — a stubDb couldn't prove the write persists.
+// A deterministic pricing map is injected so the test never depends on config/pricing.yaml contents.
+describe('writeAgentEvent — CG-1 cost metering (real-surreal)', () => {
+	beforeAll(() => {
+		__setPricingForTest({
+			models: {
+				'claude-opus-4-8': { inputUsdPerMtok: 5, outputUsdPerMtok: 25 },
+				'gpt-oss:20b': { inputUsdPerMtok: 0, outputUsdPerMtok: 0 }
+			}
+		});
+	});
+	afterAll(() => __setPricingForTest(null));
+
+	async function costOf(id: string): Promise<unknown> {
+		const [rows] = await db.query<[Array<{ cost_usd?: unknown }>]>(`SELECT cost_usd FROM $rid;`, {
+			rid: new StringRecordId(id)
+		});
+		return rows[0].cost_usd;
+	}
+
+	it('a PRICED model + tokens ⇒ a computed cost_usd (200 in / 80 out @ opus = $0.003)', async () => {
+		const id = await writeAgentEvent(db, {
+			type: 'completion',
+			project: projectId,
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+			tokensIn: 200,
+			tokensOut: 80
+		});
+		expect(await costOf(id)).toBeCloseTo(0.003, 9);
+	});
+
+	it('a LOCAL/$0 model + tokens ⇒ a GENUINE 0 (recorded as 0, NOT null — CG-1)', async () => {
+		const id = await writeAgentEvent(db, {
+			type: 'completion',
+			project: projectId,
+			model: { provider: 'ollama', modelId: 'gpt-oss:20b', tier: 'local' },
+			tokensIn: 5000,
+			tokensOut: 5000
+		});
+		expect(await costOf(id)).toBe(0);
+	});
+
+	it('an UNPRICED model + tokens ⇒ cost_usd stays NULL (never a fabricated $0 — F-008)', async () => {
+		const id = await writeAgentEvent(db, {
+			type: 'completion',
+			project: projectId,
+			model: { provider: 'claude', modelId: 'claude-sonnet-4-6', tier: 'sonnet' },
+			tokensIn: 1000,
+			tokensOut: 1000
+		});
+		const c = await costOf(id);
+		expect(c === undefined || c === null).toBe(true);
+	});
+
+	it('a priced model with NO tokens (a spawn) ⇒ NONE, not 0 (nothing to meter)', async () => {
+		const id = await writeAgentEvent(db, {
+			type: 'spawn',
+			project: projectId,
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' }
+		});
+		const c = await costOf(id);
+		expect(c === undefined || c === null).toBe(true);
+	});
+
+	it('an explicit caller-priced costUsd wins over computation (gauntlet sumPricedCost path)', async () => {
+		const id = await writeAgentEvent(db, {
+			type: 'completion',
+			project: projectId,
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+			tokensIn: 200,
+			tokensOut: 80,
+			costUsd: 9.99
+		});
+		expect(await costOf(id)).toBeCloseTo(9.99, 5);
 	});
 });

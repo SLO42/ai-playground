@@ -1,0 +1,35 @@
+# Model pricing (COST-GOVERNANCE-SPEC CG-1) — model_id → USD per 1M tokens.
+#
+# This is the ONLY source of a real dollar figure in the system. The events.ts
+# completion-write chokepoint (analytics/events.ts) consumes this map: a completion
+# that carries tokens_in/out on a PRICED model gets a computed cost_usd; an UNPRICED
+# model leaves cost_usd NULL (F-008 honesty — never a fabricated $0) and warns once
+# per model per boot. The local/ollama tier is genuinely free and is recorded as an
+# explicit ZERO (0, not NULL) — a real $0, not an unknown.
+#
+# The loader (config/load.ts → loadPricing) validates this file at load and throws
+# ConfigError on anything malformed (a non-mapping, a non-numeric or negative rate).
+#
+# ONLY list a model whose price you can VERIFY. A model absent from this map falls
+# through to the honest UNPRICED path (cost_usd NULL) — that is correct, not a gap.
+# Do NOT guess a price to fill a row.
+#
+# Prices below are the public per-1M-token list prices for the live routing ladder
+# (agent-pool.yaml tiers), sourced from Anthropic's published model pricing:
+#   • claude-opus-4-8            $5 in  / $25 out
+#   • claude-sonnet-4-6          $3 in  / $15 out
+#   • claude-haiku-4-5-20251001  $1 in  / $5  out
+#   • ollama gpt-oss:20b         local, genuinely free → explicit 0/0
+models:
+  claude-opus-4-8:
+    inputUsdPerMtok: 5.0
+    outputUsdPerMtok: 25.0
+  claude-sonnet-4-6:
+    inputUsdPerMtok: 3.0
+    outputUsdPerMtok: 15.0
+  claude-haiku-4-5-20251001:
+    inputUsdPerMtok: 1.0
+    outputUsdPerMtok: 5.0
+  "gpt-oss:20b":
+    inputUsdPerMtok: 0.0
+    outputUsdPerMtok: 0.0

@@ -16,10 +16,17 @@
 // absent optionals are OMITTED, never set to explicit NULL (option<T> rejects NULL —
 // MEMORY-SPEC §6.1). The `cost_usd` column is written ONLY when a price is known — we
 // never fabricate a dollar figure (F-008); an unpriced model leaves cost_usd NONE.
+//
+// COST-GOVERNANCE-SPEC CG-1: this is the ONE completion-write chokepoint where the dollar
+// figure is METERED. When a completion carries token counts on a priced model, cost_usd is
+// computed here from config/pricing.yaml (local/ollama ⇒ a genuine 0); an unpriced model
+// leaves cost_usd NONE + warns once per model per boot. See resolveCostUsd below.
 
+import { join } from 'node:path';
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
+import { loadPricing, resolveModelCost, type PricingConfig } from '../config/load';
 
 /** The five lifecycle types the schema's ASSERT accepts (DATA-MODEL §4.4). */
 export const AGENT_EVENT_TYPES = [
@@ -81,7 +88,11 @@ export interface WriteAgentEventInput {
 	model?: AgentEventModel;
 	tokensIn?: number;
 	tokensOut?: number;
-	/** Cost in USD — pass ONLY a real, priced figure; omit to leave NONE (never fake $). */
+	/**
+	 * Cost in USD. Pass ONLY a real, already-priced figure (e.g. gauntlet's sumPricedCost) and it
+	 * is trusted as-is. OMIT it and CG-1 computes cost from `model` + tokens at the write chokepoint
+	 * (config/pricing.yaml); an unpriced model / no tokens leaves cost_usd NONE (never fake $, F-008).
+	 */
 	costUsd?: number;
 	durationMs?: number;
 	detail?: AgentEventDetail;
@@ -134,6 +145,87 @@ function link(id: string): StringRecordId {
 	return new StringRecordId(assertRecordId(id));
 }
 
+// --- CG-1: cost metering at the ONE completion-write chokepoint ------------
+//
+// COST-GOVERNANCE-SPEC §1 invariant 1: METER AT THE CHOKEPOINT, never the call sites.
+// writeAgentEvent is the one place tokens_in/out and the model converge, so the dollar
+// figure is computed HERE from config/pricing.yaml — every producer inherits metering by
+// construction, no caller threads a price. The pricing map is loaded ONCE per boot (lazy
+// singleton); a config problem is named + logged loudly ONCE, then degrades to honest-NULL
+// pricing so a bad config can never nuke the analytics write path (which many callers wrap
+// in a best-effort catch). Malformed-config fail-loud lives in loadPricing itself (tested).
+
+/** The default pricing file, resolved the same way every other config family is (harness/wiring.ts:289). */
+function pricingPath(): string {
+	const dir = process.env.CONFIG_DIR?.trim() || 'config';
+	return join(dir, 'pricing.yaml');
+}
+
+/** Lazy per-boot pricing singleton + the once-per-model-per-boot unpriced-warning set. */
+let pricingCache: PricingConfig | null = null;
+let pricingOverride: PricingConfig | null = null;
+const warnedUnpricedModels = new Set<string>();
+
+/**
+ * The active pricing map. Prefers a test-injected override; else lazy-loads
+ * config/pricing.yaml once. A load failure (missing/malformed file) is NAMED and logged
+ * ONCE, then cached as an EMPTY map ({models:{}}) so every subsequent write degrades to
+ * honest-NULL pricing rather than throwing on the hot path. (loadPricing still throws for
+ * the boot/loader path — this catch is the chokepoint's own resilience, not a silent swallow.)
+ */
+function getPricing(): PricingConfig {
+	if (pricingOverride) return pricingOverride;
+	if (pricingCache) return pricingCache;
+	try {
+		pricingCache = loadPricing(pricingPath());
+	} catch (err) {
+		console.error(
+			`[analytics] pricing config unavailable (${(err as Error).message}) — cost_usd will be NULL for every model until fixed. This warning fires once per boot.`
+		);
+		pricingCache = { models: {} };
+	}
+	return pricingCache;
+}
+
+/**
+ * TEST SEAM: inject a deterministic pricing map (or `null` to clear back to the lazy
+ * config-file path) and reset the boot-scoped unpriced-warning set. Not exported from the
+ * barrel — for the events real-surreal tests only.
+ */
+export function __setPricingForTest(p: PricingConfig | null): void {
+	pricingOverride = p;
+	pricingCache = null;
+	warnedUnpricedModels.clear();
+}
+
+/**
+ * Resolve the cost_usd to persist for one event (CG-1). Precedence:
+ *   1. An explicit `costUsd` a caller already priced (gauntlet's sumPricedCost, tests) — trusted as-is.
+ *   2. Else compute from the model + token counts against the pricing map — when the model is
+ *      priced (a real cloud model ⇒ a positive figure; local/ollama ⇒ a genuine 0).
+ *   3. Else `undefined` — the column stays NONE (NULL): no explicit cost, no model, no tokens, or an
+ *      UNPRICED model. An unpriced *model* additionally logs a named warning ONCE per model per boot
+ *      (a log line, never an event — no event storm). Never a fabricated $0 (F-008).
+ */
+function resolveCostUsd(input: WriteAgentEventInput): number | undefined {
+	if (typeof input.costUsd === 'number') return input.costUsd;
+	if (!input.model) return undefined;
+	// Nothing to price against — a spawn (no tokens) leaves cost NONE, not 0.
+	if (input.tokensIn === undefined && input.tokensOut === undefined) return undefined;
+	const cost = resolveModelCost(getPricing(), input.model.modelId, input.tokensIn ?? 0, input.tokensOut ?? 0);
+	if (cost === null) {
+		const id = input.model.modelId;
+		if (!warnedUnpricedModels.has(id)) {
+			warnedUnpricedModels.add(id);
+			console.warn(
+				`[analytics] unpriced model "${id}" — cost_usd left NULL (F-008); add it to config/pricing.yaml to meter its spend. This warning fires once per model per boot.`
+			);
+		}
+		return undefined;
+	}
+	return cost;
+}
+
 /**
  * Write ONE `agent_event` row (DATA-MODEL §4.4). The single chokepoint every lifecycle
  * producer routes through. Record-id links pass the D-016 guard and bind as
@@ -154,7 +246,10 @@ export async function writeAgentEvent(db: Db, input: WriteAgentEventInput): Prom
 			: undefined,
 		tokens_in: input.tokensIn,
 		tokens_out: input.tokensOut,
-		cost_usd: input.costUsd,
+		// CG-1: computed at THIS chokepoint from config/pricing.yaml (priced model + tokens ⇒ a
+		// figure, local ⇒ genuine 0), or an explicit caller-priced figure, or NONE (unpriced/no
+		// model/no tokens — never a fabricated $0, F-008). See resolveCostUsd.
+		cost_usd: resolveCostUsd(input),
 		duration_ms: input.durationMs,
 		// LIFECYCLE-GRAPH (m0067): an opaque `table:id` cause ref (work_item / completion / pm_tick).
 		// Trimmed → an empty/blank ref is treated as "unknown" (omitted, NONE) rather than stored as ''.

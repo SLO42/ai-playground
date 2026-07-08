@@ -7,6 +7,8 @@ import {
 	loadOrchestration,
 	loadGatesConfig,
 	loadWorkforce,
+	loadPricing,
+	resolveModelCost,
 	loadConfig,
 	validateBundles,
 	resolveAdaptiveConfig,
@@ -701,5 +703,68 @@ describe('loadWorkforce — the single workforce config namespace', () => {
 		['string fetches', { pm: { model_id: 'claude-opus-4-8' }, research: { max_fetches: '5' } }]
 	])('rejects %s at the §7b research boundary (fail closed)', (_label, inject) => {
 		expect(() => loadWorkforce(REAL_WF, { _inject: inject as never })).toThrow(ConfigError);
+	});
+});
+
+// ── loadPricing — COST-GOVERNANCE-SPEC CG-1 (config boundary; fail loud) ────────────────
+describe('loadPricing — pricing.yaml (CG-1)', () => {
+	const REAL_PRICING = join(process.cwd(), 'config', 'pricing.yaml');
+
+	it('SHIPPED pricing.yaml loads clean; the live ladder + local floor are priced', () => {
+		const p = loadPricing(REAL_PRICING);
+		// Cloud tiers carry positive list prices.
+		expect(p.models['claude-opus-4-8']).toMatchObject({ inputUsdPerMtok: 5, outputUsdPerMtok: 25 });
+		expect(p.models['claude-sonnet-4-6']).toMatchObject({ inputUsdPerMtok: 3, outputUsdPerMtok: 15 });
+		expect(p.models['claude-haiku-4-5-20251001']).toMatchObject({ inputUsdPerMtok: 1, outputUsdPerMtok: 5 });
+		// The local/ollama tier is a GENUINE zero (0/0), not absent, not NULL.
+		expect(p.models['gpt-oss:20b']).toEqual({ inputUsdPerMtok: 0, outputUsdPerMtok: 0 });
+	});
+
+	it('an EMPTY models map is valid (everything honestly unpriced)', () => {
+		const p = loadPricing(REAL_PRICING, { _inject: { models: {} } });
+		expect(p.models).toEqual({});
+	});
+
+	it('throws ConfigError (not a raw fs error) for a missing file', () => {
+		expect(() => loadPricing(join(FIX, 'nope-pricing.yaml'))).toThrow(ConfigError);
+	});
+
+	it.each([
+		['non-mapping models', { models: 'free' }],
+		['models is a list', { models: [{ id: 'x' }] }],
+		['null models', { models: null }],
+		['entry is not a mapping', { models: { 'claude-opus-4-8': 5 } }],
+		['entry is a list', { models: { 'claude-opus-4-8': [5, 25] } }],
+		['missing inputUsdPerMtok', { models: { 'claude-opus-4-8': { outputUsdPerMtok: 25 } } }],
+		['non-numeric rate', { models: { 'claude-opus-4-8': { inputUsdPerMtok: '5', outputUsdPerMtok: 25 } } }],
+		['negative rate', { models: { 'claude-opus-4-8': { inputUsdPerMtok: -5, outputUsdPerMtok: 25 } } }],
+		['NaN rate', { models: { 'claude-opus-4-8': { inputUsdPerMtok: NaN, outputUsdPerMtok: 25 } } }],
+		['infinite rate', { models: { 'claude-opus-4-8': { inputUsdPerMtok: Infinity, outputUsdPerMtok: 25 } } }]
+	])('rejects %s at the CG-1 boundary (fail loud)', (_label, inject) => {
+		expect(() => loadPricing(REAL_PRICING, { _inject: inject as never })).toThrow(ConfigError);
+	});
+});
+
+describe('resolveModelCost — CG-1 pricing math', () => {
+	const pricing = {
+		models: {
+			'claude-opus-4-8': { inputUsdPerMtok: 5, outputUsdPerMtok: 25 },
+			'gpt-oss:20b': { inputUsdPerMtok: 0, outputUsdPerMtok: 0 }
+		}
+	};
+
+	it('computes a priced cost from both token legs', () => {
+		// 1,000,000 in @ $5 + 1,000,000 out @ $25 = $30.
+		expect(resolveModelCost(pricing, 'claude-opus-4-8', 1_000_000, 1_000_000)).toBeCloseTo(30, 6);
+		// 200 in / 80 out @ opus = 0.001 + 0.002 = 0.003.
+		expect(resolveModelCost(pricing, 'claude-opus-4-8', 200, 80)).toBeCloseTo(0.003, 9);
+	});
+
+	it('a local/$0 model yields a GENUINE 0 (not null)', () => {
+		expect(resolveModelCost(pricing, 'gpt-oss:20b', 5000, 5000)).toBe(0);
+	});
+
+	it('an UNPRICED model yields null (caller records NULL, never a fake $0 — F-008)', () => {
+		expect(resolveModelCost(pricing, 'claude-sonnet-4-6', 100, 100)).toBeNull();
 	});
 });

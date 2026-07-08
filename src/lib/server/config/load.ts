@@ -45,6 +45,92 @@ export function isValidModelId(id: string): id is ModelId {
 	return (MODEL_IDS as readonly string[]).includes(id);
 }
 
+// --- pricing.yaml (COST-GOVERNANCE-SPEC CG-1) ------------------------------
+//
+// The ONE source of a real dollar figure. `config` is the sole boundary this
+// untrusted-on-disk map crosses (ARCHITECTURE §6), so it is validated HERE and
+// consumed at the events.ts completion-write chokepoint (never at call sites —
+// COST-GOVERNANCE-SPEC §1 invariant 1). F-008 honesty is structural: a model
+// ABSENT from the map is UNPRICED (cost_usd stays NULL downstream, never a fake
+// $0); a model present with 0/0 is a genuine $0 (local/ollama). A malformed file
+// fails LOUD (ConfigError) rather than silently pricing at 0 or skipping a row.
+
+/** A model's list price in USD per 1,000,000 tokens (input + output legs priced separately). */
+export interface ModelPrice {
+	/** USD per 1M input (prompt) tokens. Non-negative; 0 = genuinely free (local). */
+	inputUsdPerMtok: number;
+	/** USD per 1M output (completion) tokens. Non-negative; 0 = genuinely free (local). */
+	outputUsdPerMtok: number;
+}
+
+/** The validated shape of config/pricing.yaml — model_id → per-Mtok price. */
+export interface PricingConfig {
+	models: Record<string, ModelPrice>;
+}
+
+/**
+ * Load + validate config/pricing.yaml (COST-GOVERNANCE-SPEC CG-1). FAIL LOUD: a
+ * missing/unreadable/malformed file, a non-mapping `models`, an entry that is not a
+ * `{ inputUsdPerMtok, outputUsdPerMtok }` mapping, or a rate that is not a finite
+ * non-negative number, all throw ConfigError — a silently mis-priced meter is worse
+ * than a boot failure. An EMPTY `models: {}` is valid (everything is honestly UNPRICED).
+ */
+export function loadPricing(file: string, opts: LoadOpts = {}): PricingConfig {
+	const raw = { ...asObject(parseYaml(file), file), ...(opts._inject ?? {}) };
+	const models = raw.models;
+	if (models === null || models === undefined || typeof models !== 'object' || Array.isArray(models)) {
+		throw new ConfigError(
+			'pricing: "models" must be a mapping of model_id → { inputUsdPerMtok, outputUsdPerMtok }',
+			file
+		);
+	}
+	const out: Record<string, ModelPrice> = {};
+	for (const [id, spec] of Object.entries(models as Record<string, unknown>)) {
+		if (!id.trim()) {
+			throw new ConfigError('pricing: a model id key must be a non-empty string', file);
+		}
+		if (!spec || typeof spec !== 'object' || Array.isArray(spec)) {
+			throw new ConfigError(
+				`pricing: model "${id}" must be a mapping { inputUsdPerMtok, outputUsdPerMtok }`,
+				file
+			);
+		}
+		const s = spec as Record<string, unknown>;
+		const rate = (key: 'inputUsdPerMtok' | 'outputUsdPerMtok'): number => {
+			const v = s[key];
+			// A missing/NaN/negative/infinite rate is a config error — a $0 default would
+			// dishonestly meter a real cloud model as free (F-008), so fail closed instead.
+			if (typeof v !== 'number' || !Number.isFinite(v) || v < 0) {
+				throw new ConfigError(
+					`pricing: model "${id}".${key} must be a non-negative finite number (got ${String(v)})`,
+					file
+				);
+			}
+			return v;
+		};
+		out[id.trim()] = { inputUsdPerMtok: rate('inputUsdPerMtok'), outputUsdPerMtok: rate('outputUsdPerMtok') };
+	}
+	return { models: out };
+}
+
+/**
+ * Compute the USD cost of a completion (CG-1). Returns:
+ *   • a number (possibly a genuine 0 for a $0/local model) when `modelId` IS priced;
+ *   • null when `modelId` is UNPRICED — the caller then records cost_usd=NULL (F-008),
+ *     never a fabricated $0.
+ * Token counts are treated as 0 when absent (a leg with no tokens contributes nothing).
+ */
+export function resolveModelCost(
+	pricing: PricingConfig,
+	modelId: string,
+	tokensIn: number,
+	tokensOut: number
+): number | null {
+	const price = pricing.models[modelId];
+	if (!price) return null;
+	return (tokensIn / 1_000_000) * price.inputUsdPerMtok + (tokensOut / 1_000_000) * price.outputUsdPerMtok;
+}
+
 // --- agent-pool.yaml -------------------------------------------------------
 
 export interface Tier {

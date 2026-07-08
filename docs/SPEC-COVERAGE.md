@@ -4,7 +4,7 @@
 burn-down. Backend subsystems = `F:\code\ai-playground-v2\src\lib\server\<dir>`; specs = `docs/*.md`.
 Coverage honesty: "mentioned in ARCHITECTURE/DATA-MODEL" = **PARTIAL**, not FULL.
 
-**Tally (2026-07-08): 16 FULL · 20 PARTIAL · 3 NONE.** New specs written this session are FULL.
+**Tally (2026-07-08): 17 FULL · 19 PARTIAL · 3 NONE.** New specs written this session are FULL.
 
 ## Coverage
 
@@ -26,7 +26,7 @@ Coverage honesty: "mentioned in ARCHITECTURE/DATA-MODEL" = **PARTIAL**, not FULL
 | home | UI-SPEC §6 | FULL |
 | notifications | UI-SPEC | FULL |
 | orchestrator | ORCHESTRATOR-SPEC (2026-07-08); ARCHITECTURE §2.2 | FULL |
-| **projects** | ARCHITECTURE/DATA-MODEL; PM specs adjacent | **PARTIAL** |
+| projects | PROJECTS-SPEC (2026-07-08); PM specs adjacent | FULL |
 | **claude-code** | ARCHITECTURE (runtime); F-046 lives here | **PARTIAL** |
 | **adapters** | D-037; per-adapter specs but not the framework contract | **PARTIAL** |
 | **db** | DATA-MODEL (schema only); client/binary-verify/runner code-only | **PARTIAL** |
@@ -53,7 +53,7 @@ Coverage honesty: "mentioned in ARCHITECTURE/DATA-MODEL" = **PARTIAL**, not FULL
 ## Next specs to write (ranked by undocumented design complexity)
 
 1. ~~ORCHESTRATOR / WORK-QUEUE-SPEC~~ — **DONE 2026-07-08** (`ORCHESTRATOR-SPEC.md`; hardening wave queued `orchestrator-hardening`).
-2. **PROJECTS data-plane spec** — biggest subsystem (18.2k loc), only DATA-MODEL tables + adjacent PM specs.
+2. ~~PROJECTS data-plane spec~~ — **DONE 2026-07-08** (`PROJECTS-SPEC.md`; hardening wave queued `projects-hardening`).
 3. **CLAUDE-CODE-HARNESS-SPEC** — spawn / `agent_slot` / session-keyed isolated config (F-046); trickiest concurrency+security.
 4. **ADAPTER-FRAMEWORK-SPEC** — the D-037 contract (how an adapter registers, fail-closed) — NOTE: partly covered in RELEASE-SPEC §1; may just need extraction.
 5. **DB-RUNTIME-SPEC** — binary SHA-256 verify (F-006), bounded connect (F-014), migration runner idempotency (F-015) — the most-recurrent-fails area.

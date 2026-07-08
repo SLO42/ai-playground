@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
 	ClaudeCodeRuntime,
 	isolatedConfigFor,
+	runKeyFor,
 	type AgentRuntime,
 	type SpawnRequest,
 	type RuntimeEvent,
@@ -427,5 +428,128 @@ describe('D-008 (4) — failed run is deregistered in finally (no leaked handle)
 
 		const second = await drain(rt.spawn(baseReq({ agentId: 'reused' })));
 		expect(second.at(-1)?.type).toBe('done'); // slot was free — respawn works
+	});
+});
+
+// ── CCH-1 (HARNESS-SPEC §5): the in-flight run registry is keyed by sessionId ──────
+//
+// The bug: `ClaudeCodeRuntime.running` keyed by `agentId` (the SLOT id). Manual launches
+// ALL default to slot 'opus-1' (wiring.ts), so two concurrent sessions on that slot
+// collided — the second's run handle OVERWROTE the first's, and cancel/stop reached only
+// the latest (the exact F-046 class the config-dir fix already solved one layer down).
+// The fix mirrors that fix: key the registry by `runKeyFor` = `sessionId ?? agentId`, so
+// each unique session isolates its own handle; a legacy no-sessionId spawn falls back to
+// the slot id, byte-identical. These are the §6 required tests: concurrent same-slot cancel
+// independence, the legacy fallback, and resume registering under the same key.
+
+describe('runKeyFor — the single registry-key definition (CCH-1)', () => {
+	it('prefers sessionId; falls back to agentId when no sessionId is present', () => {
+		expect(runKeyFor({ sessionId: 'session:1', agentId: 'opus-1' })).toBe('session:1');
+		expect(runKeyFor({ agentId: 'opus-1' })).toBe('opus-1'); // legacy fallback
+	});
+});
+
+describe('CCH-1 — concurrent same-slot runs cancel independently (F-046 class, one layer up)', () => {
+	/**
+	 * A backend whose runs stay OPEN until cancelled — each run streams forever (no timers:
+	 * a synchronous tight loop guarded by a cancel flag, so the test drives .next() at will)
+	 * and records ITS OWN cancellation, labelled by ccSessionId, so a test can prove cancel
+	 * reached the RIGHT run and left the other streaming. Distinct from the default mock,
+	 * which completes on its own.
+	 */
+	function heldOpenBackend() {
+		const cancelledCc: string[] = [];
+		let n = 0;
+		const backend: CcBackend = {
+			kind: 'mock',
+			supportsInterject: true,
+			supportsResume: true,
+			run(): CcBackendRun {
+				const cc = `cc_run_${++n}`;
+				let cancelled = false;
+				return {
+					ccSessionId: cc,
+					async *stream(): AsyncGenerator<RuntimeEvent> {
+						let i = 0;
+						while (!cancelled) yield { type: 'log', message: `tick${i++}` };
+					},
+					async cancel() {
+						cancelled = true;
+						cancelledCc.push(cc);
+					}
+				};
+			},
+			async resume(req): Promise<CcBackendRun> {
+				const cc = req.ccSessionId;
+				let cancelled = false;
+				return {
+					ccSessionId: cc,
+					async *stream(): AsyncGenerator<RuntimeEvent> {
+						let i = 0;
+						while (!cancelled) yield { type: 'log', message: `rtick${i++}` };
+					},
+					async cancel() {
+						cancelled = true;
+						cancelledCc.push(cc);
+					}
+				};
+			},
+			async interject() {}
+		};
+		return { backend, cancelledCc };
+	}
+
+	it('two concurrent runs on ONE slot with distinct sessionIds cancel independently', async () => {
+		const { backend, cancelledCc } = heldOpenBackend();
+		const rt = new ClaudeCodeRuntime({ backend });
+
+		// The EXACT manual-launch collision: SAME slot ('opus-1'), DISTINCT session ids.
+		const itA = rt.spawn(baseReq({ agentId: 'opus-1', sessionId: 'session:A' }))[Symbol.asyncIterator]();
+		const itB = rt.spawn(baseReq({ agentId: 'opus-1', sessionId: 'session:B' }))[Symbol.asyncIterator]();
+		// Pull once each so BOTH register in the run map (under their session ids, not the slot).
+		expect((await itA.next()).value).toMatchObject({ type: 'log' });
+		expect((await itB.next()).value).toMatchObject({ type: 'log' });
+
+		// Cancelling by the SLOT id reaches NEITHER — the registry is not keyed by slot anymore.
+		await rt.cancel('opus-1');
+		expect(cancelledCc).toEqual([]);
+
+		// Cancel A by ITS session id — ONLY A's run is cancelled (B's handle was not overwritten).
+		await rt.cancel('session:A');
+		expect(cancelledCc).toEqual(['cc_run_1']);
+
+		// B is untouched and still streaming (the pre-fix collision would have lost this handle).
+		const bStep = await itB.next();
+		expect(bStep.done).toBe(false);
+		expect(bStep.value).toMatchObject({ type: 'log' });
+
+		// And B cancels independently by its own session id.
+		await rt.cancel('session:B');
+		expect(cancelledCc).toEqual(['cc_run_1', 'cc_run_2']);
+	});
+
+	it('a legacy spawn WITHOUT sessionId registers under the slot id — cancel by agentId still works (byte-identical)', async () => {
+		const { backend, cancelledCc } = heldOpenBackend();
+		const rt = new ClaudeCodeRuntime({ backend });
+		const it = rt.spawn(baseReq({ agentId: 'opus-1' }))[Symbol.asyncIterator](); // NO sessionId
+		await it.next(); // register
+		// runKeyFor falls back to the slot id, so the legacy cancel-by-agentId path is unchanged.
+		await rt.cancel('opus-1');
+		expect(cancelledCc).toEqual(['cc_run_1']);
+	});
+
+	it('a resumed run registers under the SAME sessionId key — a later cancel/stop reaches it', async () => {
+		const { backend, cancelledCc } = heldOpenBackend();
+		const rt = new ClaudeCodeRuntime({ backend });
+		const resumeStream = rt.resume('cc_existing', baseReq({ agentId: 'opus-1', sessionId: 'session:R' }));
+		const it = resumeStream[Symbol.asyncIterator]();
+		await it.next(); // register the resumed run
+
+		// Keyed by sessionId, NOT the slot: cancel-by-slot misses (proves the key), then the
+		// session-id cancel (what channel.stop passes) reaches the resumed run.
+		await rt.cancel('opus-1');
+		expect(cancelledCc).toEqual([]);
+		await rt.cancel('session:R');
+		expect(cancelledCc).toEqual(['cc_existing']);
 	});
 });

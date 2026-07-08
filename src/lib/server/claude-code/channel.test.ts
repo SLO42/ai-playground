@@ -12,7 +12,8 @@ import {
 	type CcBackend,
 	type CcBackendRun,
 	type CcSpawnPlan,
-	type RuntimeEvent
+	type RuntimeEvent,
+	type SpawnRequest
 } from '../runtime/index';
 import { FENCE_OPEN, FENCE_CLOSE } from '../memory/fence';
 import { createChannel, ControlNotSupportedError, type InterjectRequest } from './channel';
@@ -510,6 +511,69 @@ describe('channel stop / resume — session record transitions (D-011)', () => {
 		);
 		expect(evs.length).toBe(1);
 		expect((evs[0].detail as Record<string, unknown>).by).toBe('operator');
+	});
+
+	it('CCH-1: stop routes cancel by SESSION id, not the (fixed DEFAULT_AGENT) slot id', async () => {
+		// The regression this locks: the control endpoint passes a FIXED agentId (DEFAULT_AGENT,
+		// e.g. 'opus-1') for every stop — it only knows the session id. With the run registry
+		// keyed by sessionId (runKeyFor), stop MUST route the cancel by session id so it reaches
+		// THIS session's in-flight run even though the slot id it was handed is a constant that
+		// two concurrent sessions would share. A held-open backend registers a live run; stop is
+		// called with a deliberately WRONG slot id — the run must still be cancelled.
+		const cancelledCc: string[] = [];
+		const heldBackend: CcBackend = {
+			kind: 'mock',
+			supportsInterject: true,
+			supportsResume: true,
+			run(): CcBackendRun {
+				let cancelled = false;
+				return {
+					ccSessionId: 'cc_held_1',
+					async *stream(): AsyncGenerator<RuntimeEvent> {
+						let i = 0;
+						while (!cancelled) yield { type: 'log', message: `tick${i++}` };
+					},
+					async cancel() {
+						cancelled = true;
+						cancelledCc.push('cc_held_1');
+					}
+				};
+			},
+			async resume(req): Promise<CcBackendRun> {
+				return { ccSessionId: req.ccSessionId, async *stream() {}, async cancel() {} };
+			},
+			async interject() {}
+		};
+		const runtime = new ClaudeCodeRuntime({ backend: heldBackend, harnessConfigRoot: 'F:/code/sc/.h' });
+		const bus = new EventBus();
+		const channel = createChannel({ db, bus, runtime, bootToken: BOOT_TOKEN, acquireWorktree: fakeAcquireWorktree });
+		const sessionId = await makeRunningSession('cc_held_1');
+
+		// Register a live run under THIS session id (agentId = the real slot 'opus-1').
+		const spawnReq: SpawnRequest = {
+			agentId: 'opus-1',
+			projectId,
+			sessionId,
+			cwd: tmpdir().replace(/\\/g, '/'),
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+			intent: 'code-write',
+			task: { id: sessionId, title: 'held', description: 'stay open' },
+			budgets: { toolCalls: 10 },
+			toolPolicy: { allow: ['Read'] }
+		};
+		const it = runtime.spawn(spawnReq)[Symbol.asyncIterator]();
+		await it.next(); // start the run so it registers under runKeyFor = sessionId
+
+		// The control endpoint hands stop a FIXED slot id that is NOT how the run is keyed.
+		const res = await channel.stop({ sessionId, agentId: 'DEFAULT_AGENT_SLOT', reason: 'operator stop' });
+		expect(res.status).toBe('cancelled');
+		// Routed by session id → the live run WAS cancelled despite the wrong slot id.
+		expect(cancelledCc).toEqual(['cc_held_1']);
+
+		const [rows] = await db.query<[Array<Record<string, unknown>>]>(`SELECT status FROM $sid;`, {
+			sid: new StringRecordId(sessionId)
+		});
+		expect(rows[0].status).toBe('cancelled');
 	});
 
 	it('resume re-runs the cc session via the bridge and reconciles its terminal status', async () => {

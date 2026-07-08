@@ -209,8 +209,13 @@ export interface AgentRuntime {
 	health(): Promise<RuntimeHealth>;
 	/** Tools the runtime exposes (file/exec/git), for capability checks. */
 	tools(): ToolDescriptor[];
-	/** Cancel a running agent. */
-	cancel(agentId: string): Promise<void>;
+	/**
+	 * Cancel a running agent. The key is the SAME one the run was registered under
+	 * (`runKeyFor` = `sessionId ?? agentId`, CCH-1): callers that know the session id
+	 * pass it so cancel reaches the exact run even when two sessions share one slot;
+	 * legacy no-sessionId callers pass the slot id (byte-identical fallback).
+	 */
+	cancel(runKey: string): Promise<void>;
 }
 
 // ── Isolated config (S1 / D-002) ─────────────────────────────────────────────────
@@ -298,6 +303,23 @@ export interface IsolatedConfigOptions {
 /** Sanitize an agent id into a filesystem-safe segment for the isolated config dir. */
 function safeSegment(s: string): string {
 	return s.replace(/[^a-zA-Z0-9_-]+/g, '_').slice(0, 64) || 'agent';
+}
+
+/**
+ * CCH-1 (HARNESS-SPEC §5) — the in-flight run registry key. Mirrors the F-046
+ * config-dir fix (`isolatedConfigFor`, keyed by `sessionId ?? agentId`) ONE LAYER UP:
+ * two concurrent sessions on the SAME slot (manual launches all default to 'opus-1',
+ * wiring.ts) must NOT collide in `ClaudeCodeRuntime.running` — the second would
+ * overwrite the first's run handle and `cancel`/`stop` would reach only the latest.
+ * Session ids are unique per spawn, so keying by sessionId isolates concurrent
+ * same-slot runs; a legacy/no-sessionId spawn falls back to the slot id, byte-identical
+ * to the old behaviour. Computed ONCE here so no reader/writer of the map diverges —
+ * spawn/resume (writers) and channel.stop (the cancel caller) all key through this.
+ * NOTE: not filesystem-bound (a Map key, not a path), so — unlike the config dir — it
+ * needs no `safeSegment`; store and lookup only need to agree on the SAME raw string.
+ */
+export function runKeyFor(req: { sessionId?: string; agentId: string }): string {
+	return req.sessionId ?? req.agentId;
 }
 
 /**
@@ -528,7 +550,11 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 	private readonly mcpToolWiring?: (capabilities: CapabilitySet) => Record<string, unknown> | undefined;
 	private readonly providerHealth?: () => Promise<ProviderHealth[]>;
 	private readonly toolSurface: ToolDescriptor[];
-	/** In-flight runs by agentId — so cancel(agentId) reaches the right backend run. */
+	/**
+	 * In-flight runs keyed by `runKeyFor` (= `sessionId ?? agentId`, CCH-1) — so
+	 * `cancel(runKey)` reaches the RIGHT backend run even when two concurrent sessions
+	 * share one slot id. Legacy no-sessionId spawns key by the slot id (unchanged).
+	 */
 	private readonly running = new Map<string, CcBackendRun>();
 
 	constructor(opts: ClaudeCodeRuntimeOptions) {
@@ -596,9 +622,16 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 		};
 	}
 
-	/** Consume a backend run's stream, registering it for cancel and cleaning up. */
-	private async *consume(agentId: string, run: CcBackendRun): AsyncIterable<RuntimeEvent> {
-		this.running.set(agentId, run);
+	/**
+	 * Consume a backend run's stream, registering it for cancel and cleaning up. `runKey`
+	 * is `runKeyFor(req)` (CCH-1) computed ONCE by the caller (spawn/resume), so the store
+	 * here and the lookup in `cancel` agree on the same key. Cleanup in `finally` is
+	 * KEY-SCOPED: it deletes only if the map STILL holds THIS run — a same-key overwrite
+	 * (impossible with unique session ids, but defensive for the legacy slot-key fallback)
+	 * must never let one run's teardown evict a different live run's handle.
+	 */
+	private async *consume(runKey: string, run: CcBackendRun): AsyncIterable<RuntimeEvent> {
+		this.running.set(runKey, run);
 		try {
 			for await (const ev of run.stream()) {
 				yield ev;
@@ -607,7 +640,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 			// Backend failure → an error event, never an unhandled throw (§2.3 cleanup).
 			yield { type: 'error', error: (err as Error).message };
 		} finally {
-			this.running.delete(agentId);
+			if (this.running.get(runKey) === run) this.running.delete(runKey);
 		}
 	}
 
@@ -630,7 +663,7 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 		const backend =
 			plan.model.provider === 'ollama' && this.ollamaBackend ? this.ollamaBackend : this.backend;
 		const run = backend.run(plan);
-		return this.consume(req.agentId, run);
+		return this.consume(runKeyFor(req), run);
 	}
 
 	/**
@@ -661,7 +694,10 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 			return;
 		}
 		const run = await this.backend.resume({ ccSessionId, plan });
-		yield* this.consume(req.agentId, run);
+		// CCH-1: register under the SAME key a fresh spawn would — a resumed WRITE session
+		// reuses its original sessionId (channel threads req.sessionId), so a later stop
+		// reaches the resumed run by session id exactly like the launch run it continues.
+		yield* this.consume(runKeyFor(req), run);
 	}
 
 	/**
@@ -695,8 +731,10 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 		return [...this.toolSurface];
 	}
 
-	async cancel(agentId: string): Promise<void> {
-		const run = this.running.get(agentId);
+	async cancel(runKey: string): Promise<void> {
+		// CCH-1: `runKey` is `runKeyFor` (sessionId ?? agentId) — the exact key the run
+		// registered under. A miss (already-terminal run, or a stale key) is a silent no-op.
+		const run = this.running.get(runKey);
 		if (run) await run.cancel();
 	}
 }

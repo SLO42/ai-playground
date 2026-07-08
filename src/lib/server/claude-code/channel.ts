@@ -36,6 +36,7 @@ import { writeAgentEvent } from '../analytics/events';
 import { fence } from '../memory/fence';
 import { eventToMessage, isWriteIntent } from '../sessions/launch';
 import { acquireSessionWorktree, type SessionWorktree } from '../sessions/worktree';
+import { runKeyFor } from '../runtime/index';
 import type {
 	ClaudeCodeRuntime,
 	Intent,
@@ -105,7 +106,12 @@ export interface InterjectResult {
 
 export interface StopRequest {
 	sessionId: string;
-	/** Agent slot id so the runtime cancel reaches the right in-flight backend run. */
+	/**
+	 * Agent slot id — the LEGACY fallback key for the runtime's in-flight run registry.
+	 * CCH-1: the run is registered under `sessionId ?? agentId` (runKeyFor), so cancel is
+	 * routed by sessionId here (the slot id alone collides when two sessions share 'opus-1');
+	 * agentId is used only for a legacy no-sessionId spawn.
+	 */
 	agentId: string;
 	reason?: string;
 }
@@ -388,8 +394,12 @@ export function createChannel(deps: ChannelDeps): Channel {
 			if (!session) throw new Error(`session not found: ${req.sessionId}`);
 
 			// Cancel the in-flight runtime run (Windows-safe taskkill lives in the real
-			// backend; the runtime routes cancel(agentId) → the right backend run).
-			await runtime.cancel(req.agentId);
+			// backend; the runtime routes cancel(runKey) → the right backend run). CCH-1:
+			// the run is registered under runKeyFor (sessionId ?? agentId), so we cancel by
+			// the SAME key — routed by sessionId so two concurrent sessions on ONE slot don't
+			// collide (the control endpoint passes a fixed DEFAULT_AGENT slot id; sessionId is
+			// the unique handle). A legacy no-sessionId session falls back to agentId, unchanged.
+			await runtime.cancel(runKeyFor(req));
 
 			// Transition the session record → cancelled + ended_at (D-011). Optionals omitted.
 			await db.query(`UPDATE $sid MERGE $c;`, {

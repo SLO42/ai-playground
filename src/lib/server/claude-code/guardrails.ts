@@ -184,6 +184,47 @@ export function writeProjectGuardrails(input: GuardrailInput): string {
 	return settingsPath;
 }
 
+// ── Self-host exemption (CCH-2 red-team fix) ──────────────────────────────────────
+//
+// The D-024 guardrail must NEVER be seeded into Atelier's OWN worktree — the control-
+// plane repo the platform itself runs from (D-040 self-host root). Doing so writes a
+// self-clamping `.claude/settings.json` INTO the platform repo: Claude Code loads project
+// settings.json locally, so a session operating here would inherit `Bash(git push*)`,
+// `Bash(*--force*)`, `Read(**/.claude/**)` and `disableBypassPermissionsMode:disable` —
+// denies that directly contradict the platform's OWN documented ops (CLAUDE.md §5/F-051
+// `git push origin v2`; §8 `@.claude/skills/*` reads). Worse, mergeSettings UNIONS deny,
+// so the row self-re-injects every boot and the operator cannot durably remove it while a
+// project row points at this worktree. Both write paths (scanProject registration + the
+// boot reconcile) route through this guard.
+
+/**
+ * True iff `projectRoot` IS the platform's own worktree (the D-040 self-host root Atelier
+ * runs from) or an ANCESTOR that contains it — the one root the D-024 guardrail must never
+ * clamp. Realpath-compared so a symlinked worktree still matches; fail-SAFE (an unresolvable
+ * path → `false`, so a genuine project is never wrongly exempted from its guardrail).
+ *
+ * @param projectRoot the candidate project root about to be guarded.
+ * @param selfRoot    the platform's own worktree — defaults to `process.cwd()` (the dir the
+ *                    SvelteKit server booted from; the established self-root signal in this
+ *                    codebase, cf. harness/wiring.ts). Injectable for tests.
+ */
+export function isPlatformSelfRoot(
+	projectRoot: string,
+	selfRoot: string = process.cwd()
+): boolean {
+	let realSelf: string;
+	let realProject: string;
+	try {
+		realSelf = realpathSync(resolve(selfRoot));
+		realProject = realpathSync(resolve(projectRoot));
+	} catch {
+		return false; // unresolvable on either side → not PROVABLY self; guard the project normally
+	}
+	// Skip when the project root equals the platform worktree (the measured self-clamp), OR is
+	// an ancestor that contains it (a guardrail at/above the platform root could still bite it).
+	return isUnder(realSelf, realProject);
+}
+
 // ── Path-confinement resolver (server-independent, fail CLOSED) ───────────────────
 
 /** Thrown when a target escapes the project root, or cannot be resolved (fail closed). */

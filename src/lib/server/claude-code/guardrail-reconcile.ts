@@ -25,14 +25,20 @@
 import { statSync } from 'node:fs';
 import type { Db } from '../db/client';
 import { listProjects } from '../projects/repo';
-import { writeProjectGuardrails } from './guardrails';
+import { isPlatformSelfRoot, writeProjectGuardrails } from './guardrails';
 
 export interface GuardrailReconcileResult {
 	/** How many projects had their `.claude/settings.json` guardrail seeded/refreshed. */
 	seeded: number;
 	/** How many projects were skipped (root missing/not a directory, or a write error). */
 	skipped: number;
-	/** One NAMED warning per skipped project (paths only — no secrets; F-008 honest). */
+	/**
+	 * How many projects were INTENTIONALLY exempted — the platform's own self-host worktree
+	 * (D-040): seeding the D-024 guardrail there would self-clamp the control-plane repo
+	 * (CCH-2 red-team fix). An exemption is a deliberate no-op, NOT a fault (distinct from skipped).
+	 */
+	exempted: number;
+	/** One NAMED line per skipped/exempted project (paths only — no secrets; F-008 honest). */
 	warnings: string[];
 }
 
@@ -45,22 +51,42 @@ export interface GuardrailReconcileResult {
  * A `listProjects` DB failure DOES propagate (the caller in hooks.server.ts try/catches it into an
  * honest degraded-boot warning) — we do not fabricate an empty project list on a read error (F-008).
  *
+ * The platform's OWN self-host worktree (D-040) is EXEMPTED, never seeded — writing the guardrail
+ * there would self-clamp the control-plane repo Atelier runs from (CCH-2 red-team fix).
+ *
  * @param db the runtime DB (least-priv) — read-only here (listProjects).
  * @param opts.codeRoot the CODE_ROOT the guardrail's config-protection spans (carried onto the
  *        GuardrailInput; the deny globs are already code-root-agnostic, with a leading recursive
  *        glob, so they bite anywhere under any project root).
+ * @param opts.selfRoot the platform's own worktree to EXEMPT (defaults to process.cwd() — the dir
+ *        the server booted from). Injectable for tests.
  */
 export async function reconcileProjectGuardrails(
 	db: Db,
-	opts: { codeRoot: string }
+	opts: { codeRoot: string; selfRoot?: string }
 ): Promise<GuardrailReconcileResult> {
 	const projects = await listProjects(db);
 	let seeded = 0;
 	let skipped = 0;
+	let exempted = 0;
 	const warnings: string[] = [];
 
 	for (const p of projects) {
 		const root = p.root_path;
+		// SELF-HOST EXEMPTION (CCH-2 red-team fix): a project row whose root IS the platform's own
+		// worktree (or an ancestor containing it) must NOT be guarded — seeding .claude/settings.json
+		// there self-clamps the control-plane repo Atelier runs from (denies git push / .claude reads /
+		// --force + disableBypassPermissionsMode, self-re-injecting every boot). Intentional no-op,
+		// counted honestly as `exempted` (NOT a fault-skip). Checked BEFORE statSync so an existing
+		// self-root is never written.
+		if (root && isPlatformSelfRoot(root, opts.selfRoot)) {
+			exempted++;
+			warnings.push(
+				`[startup] guardrail reconcile: EXEMPT ${p.id} — root is the platform's own self-host worktree (${root}); ` +
+					`not seeding a self-clamping .claude/settings.json into the control-plane repo (D-040/CCH-2). Intentional, not a fault.`
+			);
+			continue;
+		}
 		// Shadow path (missing/moved root): a project row can outlive its directory. Guard existence
 		// BEFORE writeProjectGuardrails, whose recursive mkdirSync would otherwise CREATE a phantom
 		// `<root>/.claude` tree under a path that no longer exists (F-008 — never fabricate state).
@@ -88,5 +114,5 @@ export async function reconcileProjectGuardrails(
 		}
 	}
 
-	return { seeded, skipped, warnings };
+	return { seeded, skipped, exempted, warnings };
 }

@@ -21,6 +21,11 @@ dist/
 /.harness/
 **/.harness/
 
+# Generated D-024 guardrail (CCH-2) — the platform's OWN worktree is EXEMPTED from seeding, but
+# gitignore the generated settings.json here too so an accidental self-seed can never be committed
+# into the control-plane repo (defense-in-depth on top of the self-host exemption).
+/.claude/settings.json
+
 # SurrealDB server binary + cache (D-006: provisioned at build, NOT committed)
 /bin/surreal*
 /.surreal/

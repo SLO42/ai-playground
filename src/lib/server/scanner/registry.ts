@@ -11,7 +11,7 @@ import { realpathSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
-import { writeProjectGuardrails } from '../claude-code/guardrails';
+import { isPlatformSelfRoot, writeProjectGuardrails } from '../claude-code/guardrails';
 import { detectEcosystem, readRepoUrl, slugify, type Detection } from './detect';
 
 /** Thrown when a scan target escapes the configured code root (fail-closed, D-018). */
@@ -102,6 +102,13 @@ function toProjectContent(det: Detection, rootPath: string, repoUrl?: string) {
 export interface ScanOptions {
 	/** Confinement root (CODE_ROOT). Targets must resolve under this. */
 	codeRoot: string;
+	/**
+	 * The platform's own self-host worktree (D-040) to EXEMPT from D-024 guardrail seeding —
+	 * defaults to process.cwd() (the dir the server booted from). Seeding a self-clamping
+	 * .claude/settings.json into the control-plane repo Atelier runs from is the CCH-2 red-team
+	 * defect this guards. Injectable for tests.
+	 */
+	selfRoot?: string;
 }
 
 /**
@@ -146,6 +153,18 @@ export async function scanProject(
 	// Idempotent + merge-preserving (a hand-edited settings.json is never clobbered). BEST-EFFORT
 	// (F-014): an unwritable root logs a named warning and the scan STILL succeeds — the boot
 	// reconcile (guardrail-reconcile.ts) and the runtime network gate remain as backstops.
+	//
+	// SELF-HOST EXEMPTION (CCH-2 red-team fix): if the scanned root IS the platform's own worktree
+	// (D-040 self-host root, or an ancestor containing it), do NOT seed the guardrail — writing a
+	// self-clamping .claude/settings.json into the control-plane repo Atelier runs from would deny
+	// the platform's own documented ops (git push / .claude reads / --force) and self-re-inject.
+	if (isPlatformSelfRoot(rootPath, opts.selfRoot)) {
+		console.warn(
+			`[scan] EXEMPT ${recordId} — root is the platform's own self-host worktree (${rootPath}); ` +
+				`not seeding a self-clamping .claude/settings.json into the control-plane repo (D-040/CCH-2).`
+		);
+		return normalizeRow(row);
+	}
 	try {
 		writeProjectGuardrails({ projectRoot: rootPath, codeRoot: opts.codeRoot });
 	} catch (err) {

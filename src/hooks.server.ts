@@ -264,10 +264,15 @@ async function bootstrap(): Promise<DbInitResult> {
 		// applies) and NEVER crashes boot. CODE_ROOT resolves the same way the scan/create routes do.
 		try {
 			const guardrailCodeRoot = process.env.CODE_ROOT?.trim() || 'F:/code';
-			const rec = await reconcileProjectGuardrails(db, { codeRoot: guardrailCodeRoot });
-			if (rec.seeded || rec.skipped) {
+			// selfRoot = the platform's own worktree (process.cwd()) — EXEMPTED so the reconcile never
+			// seeds a self-clamping .claude/settings.json into the control-plane repo (D-040/CCH-2).
+			const rec = await reconcileProjectGuardrails(db, {
+				codeRoot: guardrailCodeRoot,
+				selfRoot: process.cwd()
+			});
+			if (rec.seeded || rec.skipped || rec.exempted) {
 				console.log(
-					`[startup] guardrail reconcile: seeded ${rec.seeded} project(s), skipped ${rec.skipped} — D-024 primary permissions.deny boundary (CCH-2/1.4a).`
+					`[startup] guardrail reconcile: seeded ${rec.seeded} project(s), skipped ${rec.skipped}, exempted ${rec.exempted} (self-host) — D-024 primary permissions.deny boundary (CCH-2/1.4a).`
 				);
 			}
 			for (const w of rec.warnings) console.warn(w);

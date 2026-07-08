@@ -135,6 +135,36 @@ describe('reconcileProjectGuardrails — boot-time seed of the D-024 primary bou
 
 	it('returns an honest empty result when there are no registered projects', async () => {
 		const res = await reconcileProjectGuardrails(db, { codeRoot });
-		expect(res).toEqual({ seeded: 0, skipped: 0, warnings: [] });
+		expect(res).toEqual({ seeded: 0, skipped: 0, exempted: 0, warnings: [] });
+	});
+
+	// CCH-2 red-team fix: the platform's OWN worktree, if registered as a project row, must be
+	// EXEMPTED — never seed a self-clamping .claude/settings.json into the control-plane repo.
+	it('EXEMPTS the platform self-host worktree — no .claude written, counted as exempted not a fault-skip', async () => {
+		const selfRoot = await registerProject('recon_self');
+
+		const res = await reconcileProjectGuardrails(db, { codeRoot, selfRoot });
+
+		// Intentional no-op: exempted, NOT seeded, NOT a fault-skip.
+		expect(res.exempted).toBe(1);
+		expect(res.seeded).toBe(0);
+		expect(res.skipped).toBe(0);
+		expect(res.warnings).toHaveLength(1);
+		expect(res.warnings[0]).toContain('EXEMPT');
+		expect(res.warnings[0]).toContain('project:recon_self');
+		// The measured defect: settings.json was written INTO the platform repo. It must NOT be now.
+		expect(existsSync(settingsPath(selfRoot))).toBe(false);
+	});
+
+	it('exempts the self-root while STILL seeding the other projects in the same pass', async () => {
+		const selfRoot = await registerProject('recon_self_mix');
+		const other = await registerProject('recon_other');
+
+		const res = await reconcileProjectGuardrails(db, { codeRoot, selfRoot });
+
+		expect(res.exempted).toBe(1);
+		expect(res.seeded).toBe(1);
+		expect(existsSync(settingsPath(selfRoot))).toBe(false);
+		expect(existsSync(settingsPath(other))).toBe(true);
 	});
 });

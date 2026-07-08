@@ -1,10 +1,19 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, readFileSync } from 'node:fs';
+import {
+	mkdtempSync,
+	rmSync,
+	mkdirSync,
+	writeFileSync,
+	symlinkSync,
+	readFileSync,
+	realpathSync
+} from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import {
 	buildGuardrailSettings,
 	writeProjectGuardrails,
+	isPlatformSelfRoot,
 	resolveConfinedTarget,
 	PathConfinementError,
 	CONFIG_PROTECTION_DENY,
@@ -127,6 +136,54 @@ describe('writeProjectGuardrails — write .claude/settings.json before spawn', 
 		const written = JSON.parse(readFileSync(path, 'utf8'));
 		const deny: string[] = written.permissions.deny;
 		expect(new Set(deny).size).toBe(deny.length);
+	});
+});
+
+// ── Self-host exemption (CCH-2 red-team fix) ──────────────────────────────────────
+// The D-024 guardrail must NEVER be seeded into Atelier's OWN worktree — doing so writes a
+// self-clamping .claude/settings.json into the control-plane repo. isPlatformSelfRoot is the
+// pure predicate both write paths (scanProject + boot reconcile) consult before seeding.
+describe('isPlatformSelfRoot — never seed the guardrail into the platform worktree', () => {
+	it('returns true when the project root IS the platform self-root (the measured self-clamp)', () => {
+		const self = realpathSync(projectRoot('self'));
+		expect(isPlatformSelfRoot(self, self)).toBe(true);
+	});
+
+	it('returns true when the project root is an ANCESTOR that contains the platform self-root', () => {
+		const parent = realpathSync(projectRoot('parent'));
+		const self = join(parent, 'nested-worktree');
+		mkdirSync(self, { recursive: true });
+		// A guardrail written at/above the platform root could still clamp it → exempt the ancestor.
+		expect(isPlatformSelfRoot(parent, realpathSync(self))).toBe(true);
+	});
+
+	it('returns FALSE for a genuine, unrelated project (never wrongly exempts real work)', () => {
+		const self = realpathSync(projectRoot('self'));
+		const other = realpathSync(projectRoot('other-project'));
+		expect(isPlatformSelfRoot(other, self)).toBe(false);
+	});
+
+	it('returns FALSE for a sibling that shares a name prefix (no substring bug)', () => {
+		const self = realpathSync(projectRoot('app'));
+		const sibling = realpathSync(projectRoot('app-two'));
+		expect(isPlatformSelfRoot(sibling, self)).toBe(false);
+	});
+
+	it('matches through a symlinked worktree (realpath-compared, not string-compared)', () => {
+		const real = realpathSync(projectRoot('real-worktree'));
+		const link = join(codeRoot, 'linked-worktree');
+		symlinkSync(real, link, 'dir');
+		// The project row stores the symlink path; the platform runs from the real path (or vice
+		// versa) — both must resolve to the same real dir and be exempted.
+		expect(isPlatformSelfRoot(link, real)).toBe(true);
+		expect(isPlatformSelfRoot(real, link)).toBe(true);
+	});
+
+	it('fails SAFE (false) when a path is unresolvable — a real project is never wrongly exempted', () => {
+		const self = realpathSync(projectRoot('self'));
+		const ghost = join(codeRoot, 'does', 'not', 'exist');
+		expect(isPlatformSelfRoot(ghost, self)).toBe(false);
+		expect(isPlatformSelfRoot(self, ghost)).toBe(false);
 	});
 });
 

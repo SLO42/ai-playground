@@ -116,6 +116,22 @@ describe('scanProject — upsert into the project registry', () => {
 		);
 		expect(written.permissions.additionalDirectories).toEqual([realpathSync(dir)]);
 	});
+
+	// CCH-2 red-team fix: scanning the platform's OWN worktree (D-040 self-host root) must NOT seed
+	// the guardrail — writing a self-clamping .claude/settings.json into the control-plane repo would
+	// deny the platform's own documented ops (git push / .claude reads / --force) and self-re-inject.
+	// The row is STILL registered; only the guardrail write is exempted.
+	it('does NOT seed the guardrail when the scanned root IS the platform self-host worktree (D-040/CCH-2)', async () => {
+		const dir = project('self-worktree', { 'package.json': '{"name":"self-worktree"}' });
+
+		const row = await scanProject(db, dir, { codeRoot, selfRoot: dir });
+
+		// The project is still registered (the exemption is guardrail-only, not registration).
+		expect(row.id).toBe('project:self_worktree');
+		// But the self-clamping settings.json was NOT written into the control-plane repo.
+		const settingsPath = join(realpathSync(dir), '.claude', 'settings.json');
+		expect(existsSync(settingsPath)).toBe(false);
+	});
 });
 
 describe('confineToRoot — D-018 path-confinement (fail-closed)', () => {

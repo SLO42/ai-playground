@@ -586,59 +586,16 @@ export async function releaseSessionWork(db: Db, sessionId: string): Promise<Rel
 	return { released: rows?.length ?? 0 };
 }
 
-// ── TASK 2.15 — crash-safe handoff (D-021: "crash-safe handoff written on session end") ─
+// ── TASK 2.15 — crash-safe handoff (D-021) — RETIRED (ORH-3) ─────────────────────────
 //
-// KongCode writes a handoff record SYNCHRONOUSLY on session end so an item interrupted
-// mid-flight can be resumed by another worker after a crash. We persist the handoff state
-// onto the work_item row's `handoff` object (FLEXIBLE, schema §4.12). Guarded by the
-// claim_token lease so only the current holder may write its handoff (a stale worker that
-// lost the lease can't clobber the row that was re-claimed). recoverHandoffs surfaces the
-// handoff state of items still mid-flight so a freshly-booted orchestrator can resume them.
-
-/**
- * Persist crash-recovery handoff state onto a claimed item, SYNCHRONOUSLY on session end
- * (D-021). Lease-guarded: only the current `claim_token` holder writes. Returns whether
- * the row was matched (false ⇒ the lease moved / the row is gone — caller must not assume
- * the handoff persisted).
- */
-export async function writeHandoff(
-	db: Db,
-	id: string,
-	claimToken: string,
-	handoff: Record<string, unknown>
-): Promise<boolean> {
-	const rid = link(id);
-	const [rows] = await db.query<[Array<{ id: unknown }>]>(
-		`UPDATE $rid SET handoff = $handoff
-		   WHERE claim_token = $t RETURN AFTER;`,
-		{ rid, handoff, t: claimToken }
-	);
-	return (rows?.length ?? 0) > 0;
-}
-
-/** A mid-flight item plus its persisted handoff state (crash-recovery surface). */
-export interface HandoffRow {
-	id: string;
-	workType: string;
-	payload: Record<string, unknown>;
-	handoff: Record<string, unknown>;
-	claimToken: string;
-}
-
-/**
- * Surface every `processing` item that carries handoff state — the crash-recovery view a
- * freshly-booted orchestrator reads to resume interrupted work (D-021). Read-only.
- */
-export async function recoverHandoffs(db: Db): Promise<HandoffRow[]> {
-	const [rows] = await db.query<[Array<Record<string, unknown>>]>(
-		`SELECT id, work_type, payload, handoff, claim_token FROM work_item
-		   WHERE status = "processing" AND handoff != NONE;`
-	);
-	return (rows ?? []).map((r) => ({
-		id: str(r.id),
-		workType: str(r.work_type),
-		payload: (r.payload as Record<string, unknown>) ?? {},
-		handoff: (r.handoff as Record<string, unknown>) ?? {},
-		claimToken: str(r.claim_token)
-	}));
-}
+// `writeHandoff`/`recoverHandoffs` (the D-021 crash-handoff replay pair) were RETIRED per
+// the ORH-3 decision — see ORCHESTRATOR-SPEC.md §5 ORH-3 and the additive note on D-021 in
+// docs/DECISIONS.md (2026-07-08, operator-delegated). `recoverHandoffs` never gained a boot
+// caller; the known crash classes are already covered by the reaper (reaper.ts
+// reapStaleRuns → releaseSessionWork), `gcStale` (stuck processing → pending), and the
+// deterministic-id dedup (F-026/F-048, stable across pending→processing). No handoff payload
+// carried state the `work_item` row doesn't already hold, so replay was pure dead weight.
+//
+// The `work_item.handoff` column (schema.ts, option<object>) is LEFT IN PLACE intentionally:
+// dropping it is a migration risk (F-015) with zero payoff, and the schema stays append-only/
+// idempotent. The field is simply no longer written by any code path.

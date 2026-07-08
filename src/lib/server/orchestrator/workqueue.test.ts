@@ -12,9 +12,7 @@ import {
 	enqueue,
 	gcStale,
 	pendingDepth,
-	recoverHandoffs,
-	spawnsSince,
-	writeHandoff
+	spawnsSince
 } from './workqueue';
 
 // TASK 2.2 — the background work_item claim queue (DATA-MODEL §4.12; D-021). Proven
@@ -362,24 +360,6 @@ describe('work_item daily cap / GC / handoff (TASK 2.15; D-021)', () => {
 		// Idempotent: a second GC with nothing newly stale is a no-op.
 		const res2 = await gcStale(db);
 		expect(res2.deletedTerminal).toBe(0);
-	});
-
-	it('writeHandoff is lease-guarded; recoverHandoffs surfaces mid-flight items', async () => {
-		await clearQueue();
-		await enqueue(db, { workType: 'resumable', payload: { step: 0 } });
-		const claimed = await claimNext(db, 'holder');
-		expect(claimed).not.toBeNull();
-		// A stale worker with the wrong lease cannot write a handoff.
-		expect(await writeHandoff(db, claimed!.id, 'not_holder', { step: 9 })).toBe(false);
-		// The lease holder can write its crash-recovery handoff state synchronously.
-		expect(await writeHandoff(db, claimed!.id, 'holder', { step: 3, note: 'paused' })).toBe(true);
-		// A freshly-booted orchestrator surfaces the mid-flight item + its handoff.
-		const rows = await recoverHandoffs(db);
-		expect(rows).toHaveLength(1);
-		expect(rows[0].id).toBe(claimed!.id);
-		expect(rows[0].handoff.step).toBe(3);
-		expect(rows[0].handoff.note).toBe('paused');
-		expect(rows[0].claimToken).toBe('holder');
 	});
 
 	it('pendingDepth reflects the unclaimed backlog (threshold-drain signal)', async () => {

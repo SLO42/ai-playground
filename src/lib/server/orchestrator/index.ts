@@ -49,14 +49,11 @@ export {
 	pendingDepth,
 	spawnsSince,
 	gcStale,
-	writeHandoff,
-	recoverHandoffs,
 	DAY_MS,
 	type EnqueueInput,
 	type ClaimedItem,
 	type WorkStatus,
-	type GcResult,
-	type HandoffRow
+	type GcResult
 } from './workqueue';
 
 // GAME-VERIFY (docs/GAME-VERIFY-SPEC.md) — the runner + the orchestrator step that gates/serializes/

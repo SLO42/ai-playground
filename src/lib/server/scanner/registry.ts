@@ -11,6 +11,7 @@ import { realpathSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
+import { writeProjectGuardrails } from '../claude-code/guardrails';
 import { detectEcosystem, readRepoUrl, slugify, type Detection } from './detect';
 
 /** Thrown when a scan target escapes the configured code root (fail-closed, D-018). */
@@ -135,6 +136,25 @@ export async function scanProject(
 	if (!row) {
 		throw new Error(`UPSERT of ${recordId} returned no row.`);
 	}
+
+	// CCH-2 — seed the D-024 PRIMARY guardrail at REGISTRATION, BEFORE any agent can spawn into
+	// this project: write `<root>/.claude/settings.json` carrying Claude Code's OWN permissions.deny
+	// (the boundary Claude Code enforces LOCALLY — server-down; the runtime network gate is defense-
+	// in-depth on top). scanProject is the SOLE upsert-from-detection funnel — the /projects scan
+	// action AND Create-with-AI's executeCreation both reach here — so this single hook covers every
+	// registration path. `rootPath` was just realpath-confined (it EXISTS), so no phantom-dir risk.
+	// Idempotent + merge-preserving (a hand-edited settings.json is never clobbered). BEST-EFFORT
+	// (F-014): an unwritable root logs a named warning and the scan STILL succeeds — the boot
+	// reconcile (guardrail-reconcile.ts) and the runtime network gate remain as backstops.
+	try {
+		writeProjectGuardrails({ projectRoot: rootPath, codeRoot: opts.codeRoot });
+	} catch (err) {
+		console.warn(
+			`[scan] could not seed permissions.deny guardrail for ${recordId} at ${rootPath} ` +
+				`(best-effort; boot reconcile + runtime gate still apply): ${(err as Error).message}`
+		);
+	}
+
 	return normalizeRow(row);
 }
 

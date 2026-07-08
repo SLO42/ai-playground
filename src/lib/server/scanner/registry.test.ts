@@ -1,11 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync, existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
+import { CONFIG_PROTECTION_DENY, DANGEROUS_BASH_DENY } from '../claude-code/guardrails';
 import { scanProject, confineToRoot, PathConfinementError } from './registry';
 
 // TASK 1.1 VERIFY: scanning a real directory under CODE_ROOT creates the expected
@@ -97,6 +98,23 @@ describe('scanProject — upsert into the project registry', () => {
 		const row = await scanProject(db, dir, { codeRoot });
 		expect(row.ecosystem).toContain('csharp');
 		expect(row.ecosystem).toContain('bepinex');
+	});
+
+	// CCH-2 — registration seeds the D-024 PRIMARY guardrail (.claude/settings.json permissions.deny)
+	// at the scanned root, BEFORE any agent can spawn into the project. scanProject is the sole
+	// upsert-from-detection funnel, so this is what makes the primary boundary EXIST on new projects.
+	it('seeds the .claude/settings.json permissions.deny guardrail at the scanned root (D-024)', async () => {
+		const dir = project('guarded-app', { 'package.json': '{"name":"guarded-app"}' });
+
+		await scanProject(db, dir, { codeRoot });
+
+		const settingsPath = join(realpathSync(dir), '.claude', 'settings.json');
+		expect(existsSync(settingsPath)).toBe(true);
+		const written = JSON.parse(readFileSync(settingsPath, 'utf8'));
+		expect(written.permissions.deny).toEqual(
+			expect.arrayContaining([...CONFIG_PROTECTION_DENY, ...DANGEROUS_BASH_DENY])
+		);
+		expect(written.permissions.additionalDirectories).toEqual([realpathSync(dir)]);
 	});
 });
 

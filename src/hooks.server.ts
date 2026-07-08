@@ -36,6 +36,7 @@ import {
 	type Orchestrator
 } from '$lib/server/orchestrator';
 import { killAllClaudeChildren } from '$lib/server/claude-code/cli-backend';
+import { reconcileProjectGuardrails } from '$lib/server/claude-code/guardrail-reconcile';
 import { registerShutdown } from '$lib/server/shutdown';
 import { loadWorkforce, loadOrchestration, type OrchMode } from '$lib/server/config/index';
 import {
@@ -250,6 +251,30 @@ async function bootstrap(): Promise<DbInitResult> {
 		} catch (err) {
 			// A reaper failure must never crash the boot (D-019) — it retries next boot.
 			console.warn(`[startup] boot reaper failed: ${(err as Error).message}`);
+		}
+
+		// CCH-2 (CLAUDE-CODE-HARNESS-SPEC section 5) — RECONCILE the D-024 PRIMARY guardrail boundary
+		// for every REGISTERED project BEFORE the orchestrator can drive a spawn. writeProjectGuardrails
+		// seeds <root>/.claude/settings.json permissions.deny — the boundary Claude Code enforces
+		// LOCALLY (server-down); the runtime network PreToolUse/canUseTool gate is defense-in-depth ON
+		// TOP of it. New projects get it at registration (scanProject); this boot pass covers a project
+		// registered BEFORE that seam existed (and refreshes a stale ruleset). Idempotent + merge-
+		// preserving (a hand-edited settings.json is never clobbered). Best-effort (F-014): a per-project
+		// fault is a named warning; a whole-pass failure degrades honestly (the network gate still
+		// applies) and NEVER crashes boot. CODE_ROOT resolves the same way the scan/create routes do.
+		try {
+			const guardrailCodeRoot = process.env.CODE_ROOT?.trim() || 'F:/code';
+			const rec = await reconcileProjectGuardrails(db, { codeRoot: guardrailCodeRoot });
+			if (rec.seeded || rec.skipped) {
+				console.log(
+					`[startup] guardrail reconcile: seeded ${rec.seeded} project(s), skipped ${rec.skipped} — D-024 primary permissions.deny boundary (CCH-2/1.4a).`
+				);
+			}
+			for (const w of rec.warnings) console.warn(w);
+		} catch (err) {
+			console.warn(
+				`[startup] guardrail reconcile failed (runtime network gate still applies): ${(err as Error).message}`
+			);
 		}
 
 		// MEMORY-SCENE-SPEC §5 — start the scene PROJECTOR AFTER the watchTable live queries

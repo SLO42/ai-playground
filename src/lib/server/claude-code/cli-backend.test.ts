@@ -9,7 +9,8 @@ import { describe, it, expect } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync, existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { buildCliSettings, buildMcpConfigArgs } from './cli-backend';
+import { buildCliSettings, buildMcpConfigArgs, resolveMaxTurns, MAX_TURNS_FLOOR } from './cli-backend';
+import type { SpawnBudgets } from '../runtime/index';
 import { decodeGateHookConfig } from './gate-transport';
 import { DEFAULT_GATE_POLICY } from './gates';
 import { parseSettings } from '../cc-config/parse';
@@ -198,5 +199,54 @@ describe('cli-backend MCP delivery — mcpServers go to --mcp-config, NOT the --
 		} finally {
 			rmSync(dir, { recursive: true, force: true });
 		}
+	});
+});
+
+// -- CCH-3 (HARNESS-SPEC section 5): the declared per-spawn tool-call budget drives --max-turns --
+//
+// THE GAP THIS GUARDS: SpawnBudgets.toolCalls is set per intent by the D-020 bundles
+// (config/orchestration.yaml -- code-write 40, code-debug 60, deep-explore 80) and rides every
+// plan, but the CLI always emitted the FIXED constructor maxTurns (80 in production). So a
+// declared budget never reached the --max-turns boundary. resolveMaxTurns is the arg-builder
+// seam start() now uses: String(resolveMaxTurns(plan.budgets, this.opts.maxTurns)).
+describe('resolveMaxTurns -- declared budget drives --max-turns, else the default (CCH-3)', () => {
+	const DEFAULT = 80;
+
+	it('uses a declared positive-integer budget verbatim (the arg carries the value)', () => {
+		// The real D-020 bundle values (code-read 15, code-write 40, code-debug 60, deep-explore 80).
+		expect(resolveMaxTurns({ toolCalls: 15 }, DEFAULT)).toBe(15);
+		expect(resolveMaxTurns({ toolCalls: 40 }, DEFAULT)).toBe(40);
+		expect(resolveMaxTurns({ toolCalls: 60 }, DEFAULT)).toBe(60);
+		expect(resolveMaxTurns({ toolCalls: 80 }, DEFAULT)).toBe(80);
+		// A budget above the default is honored too -- the budget is the source of truth, not a cap.
+		expect(resolveMaxTurns({ toolCalls: 120 }, DEFAULT)).toBe(120);
+	});
+
+	it('falls back to the default when no budget is declared (no behavior change)', () => {
+		expect(resolveMaxTurns(undefined, DEFAULT)).toBe(DEFAULT);
+		expect(resolveMaxTurns({}, DEFAULT)).toBe(DEFAULT);
+		expect(resolveMaxTurns({ thinking: 'high', concurrency: 1 }, DEFAULT)).toBe(DEFAULT);
+		// The floor only applies to a DECLARED budget -- an unset budget honors the default verbatim.
+		expect(resolveMaxTurns(undefined, 1)).toBe(1);
+	});
+
+	it('clamps a declared 1 UP to the floor -- never the F-032 instant-death trap', () => {
+		expect(resolveMaxTurns({ toolCalls: 1 }, DEFAULT)).toBe(MAX_TURNS_FLOOR);
+		expect(MAX_TURNS_FLOOR).toBeGreaterThanOrEqual(2);
+		// The floor is exactly 2 (the smallest usable agentic budget).
+		expect(resolveMaxTurns({ toolCalls: 2 }, DEFAULT)).toBe(2);
+	});
+
+	it('rejects degenerate values (0, negative, NaN, Infinity, fractional) -> default', () => {
+		expect(resolveMaxTurns({ toolCalls: 0 }, DEFAULT)).toBe(DEFAULT);
+		expect(resolveMaxTurns({ toolCalls: -5 }, DEFAULT)).toBe(DEFAULT);
+		expect(resolveMaxTurns({ toolCalls: Number.NaN }, DEFAULT)).toBe(DEFAULT);
+		expect(resolveMaxTurns({ toolCalls: Number.POSITIVE_INFINITY }, DEFAULT)).toBe(DEFAULT);
+		expect(resolveMaxTurns({ toolCalls: Number.NEGATIVE_INFINITY }, DEFAULT)).toBe(DEFAULT);
+		expect(resolveMaxTurns({ toolCalls: 2.5 }, DEFAULT)).toBe(DEFAULT);
+		// A non-number that slipped past the type (defensive -- SpawnBudgets.toolCalls is number?).
+		expect(
+			resolveMaxTurns({ toolCalls: '40' as unknown as number } as SpawnBudgets, DEFAULT)
+		).toBe(DEFAULT);
 	});
 });

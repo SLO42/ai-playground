@@ -31,7 +31,8 @@ import type {
 	CcBackend,
 	CcBackendRun,
 	CcSpawnPlan,
-	RuntimeEvent
+	RuntimeEvent,
+	SpawnBudgets
 } from '../runtime/index';
 import { buildGateHookGroup, encodeGateHookConfig } from './gate-transport';
 import type { EditScopeInput, FetchAllowlistInput } from './gates';
@@ -169,6 +170,45 @@ export function buildMcpConfigArgs(plan: CcSpawnPlan, settingsDir: string): stri
 	// .mcp.json uses (cc-config/parse.parseSettings reads servers from exactly this key).
 	writeFileSync(mcpJsonPath, JSON.stringify({ mcpServers: servers }), 'utf8');
 	return ['--mcp-config', mcpJsonPath, '--strict-mcp-config'];
+}
+
+/**
+ * CCH-3 (HARNESS-SPEC §5) — the sane floor for `--max-turns`. `--max-turns 1` is the F-032
+ * instant-death trap: the CLI exits `error_max_turns` right after the FIRST tool call, so any
+ * agentic session gets zero useful work done. A declared budget is clamped UP to this floor.
+ */
+export const MAX_TURNS_FLOOR = 2;
+
+/**
+ * CCH-3 (HARNESS-SPEC §5) — resolve the effective `--max-turns` for one spawn from its declared
+ * per-spawn tool-call budget (D-020 bundle → SpawnBudgets.toolCalls), falling back to the backend
+ * default when no usable budget is declared.
+ *
+ * THE GAP THIS CLOSES: SpawnBudgets.toolCalls is set per intent by the D-020 bundles
+ * (config/orchestration.yaml — code-write 40, code-debug 60, deep-explore 80, …) and rides every
+ * plan (CcSpawnPlan.budgets), but the CLI always spawned with the FIXED constructor maxTurns
+ * (80 in production, harness/wiring.ts) — so a declared budget never reached the boundary
+ * (SpawnBudgets.toolCalls exists on the contract but was inert on the CLI arg). Now it does.
+ *
+ * Rules (fail-safe — never the F-032 instant-death trap):
+ *   • A positive finite INTEGER → use it, clamped UP to MAX_TURNS_FLOOR (so a declared 1 becomes
+ *     2, never a guaranteed one-tool death).
+ *   • Anything else — undeclared, 0, negative, NaN, ±Infinity, fractional — is NOT a usable budget
+ *     and falls back to `defaultMaxTurns` UNCHANGED (no behavior change for callers that do not
+ *     declare a valid budget).
+ *
+ * Exported for the CCH-3 unit test (arg-builder level); the arg the class emits is
+ * `String(resolveMaxTurns(plan.budgets, this.opts.maxTurns))`.
+ */
+export function resolveMaxTurns(
+	budgets: SpawnBudgets | undefined,
+	defaultMaxTurns: number
+): number {
+	const tc = budgets?.toolCalls;
+	if (typeof tc === 'number' && Number.isInteger(tc) && tc > 0) {
+		return Math.max(MAX_TURNS_FLOOR, tc);
+	}
+	return defaultMaxTurns;
 }
 
 function seedHookTrust(configDir: string, cwd: string): void {
@@ -534,8 +574,11 @@ export class ClaudeCliBackend implements CcBackend {
 			'stream-json',
 			'--replay-user-messages',
 			'--verbose',
+			// CCH-3: the effective turn budget is the plan's declared per-spawn tool-call budget
+			// (D-020 bundle → SpawnBudgets.toolCalls), clamped to the F-032-safe floor, falling
+			// back to the constructor default (80 in production) when no valid budget is declared.
 			'--max-turns',
-			String(this.opts.maxTurns),
+			String(resolveMaxTurns(plan.budgets, this.opts.maxTurns)),
 			'--model',
 			plan.model.modelId,
 			'--permission-mode',

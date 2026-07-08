@@ -4,7 +4,7 @@
 burn-down. Backend subsystems = `F:\code\ai-playground-v2\src\lib\server\<dir>`; specs = `docs/*.md`.
 Coverage honesty: "mentioned in ARCHITECTURE/DATA-MODEL" = **PARTIAL**, not FULL.
 
-**Tally (2026-07-08): 17 FULL · 19 PARTIAL · 3 NONE.** New specs written this session are FULL.
+**Tally (2026-07-08): 20 FULL · 16 PARTIAL · 3 NONE.** (CLAUDE-CODE-HARNESS-SPEC covers claude-code + sessions + harness in one.) New specs written this session are FULL.
 
 ## Coverage
 
@@ -27,10 +27,10 @@ Coverage honesty: "mentioned in ARCHITECTURE/DATA-MODEL" = **PARTIAL**, not FULL
 | notifications | UI-SPEC | FULL |
 | orchestrator | ORCHESTRATOR-SPEC (2026-07-08); ARCHITECTURE §2.2 | FULL |
 | projects | PROJECTS-SPEC (2026-07-08); PM specs adjacent | FULL |
-| **claude-code** | ARCHITECTURE (runtime); F-046 lives here | **PARTIAL** |
+| claude-code | CLAUDE-CODE-HARNESS-SPEC (2026-07-08) — also covers runtime/, harness/, sessions/ | FULL |
 | **adapters** | D-037; per-adapter specs but not the framework contract | **PARTIAL** |
 | **db** | DATA-MODEL (schema only); client/binary-verify/runner code-only | **PARTIAL** |
-| sessions | D-011; WORKSPACE-ISOLATION peripheral | PARTIAL |
+| sessions | CLAUDE-CODE-HARNESS-SPEC §1.3–1.5 (2026-07-08); D-011 | FULL |
 | analytics | ARCHITECTURE §2.4; "analytics first-class" mandate, no ANALYTICS-SPEC | PARTIAL |
 | scanner | ARCHITECTURE §2.7; no dedicated spec | PARTIAL |
 | sync | D-037; no dedicated spec | PARTIAL |
@@ -45,7 +45,7 @@ Coverage honesty: "mentioned in ARCHITECTURE/DATA-MODEL" = **PARTIAL**, not FULL
 | workflows | D-013, DATA-MODEL §4.11 | PARTIAL |
 | hooks | D-019, ARCHITECTURE | PARTIAL |
 | agent-library | AGENTS.md (listing, not design) | PARTIAL |
-| harness | ARCHITECTURE (implicit) | PARTIAL |
+| harness | CLAUDE-CODE-HARNESS-SPEC §1.7/§3 (2026-07-08) | FULL |
 | **auth** | none dedicated (F-055 gate class) | **NONE** |
 | **services** | none | **NONE** |
 | perf | none (trivial) | NONE |
@@ -54,7 +54,7 @@ Coverage honesty: "mentioned in ARCHITECTURE/DATA-MODEL" = **PARTIAL**, not FULL
 
 1. ~~ORCHESTRATOR / WORK-QUEUE-SPEC~~ — **DONE 2026-07-08** (`ORCHESTRATOR-SPEC.md`; hardening wave queued `orchestrator-hardening`).
 2. ~~PROJECTS data-plane spec~~ — **DONE 2026-07-08** (`PROJECTS-SPEC.md`; hardening wave queued `projects-hardening`).
-3. **CLAUDE-CODE-HARNESS-SPEC** — spawn / `agent_slot` / session-keyed isolated config (F-046); trickiest concurrency+security.
+3. ~~CLAUDE-CODE-HARNESS-SPEC~~ — **DONE 2026-07-08** (`CLAUDE-CODE-HARNESS-SPEC.md`; wave queued `cc-harness-hardening` — incl. the newly-found slot-keyed run-registry F-046 sibling).
 4. **ADAPTER-FRAMEWORK-SPEC** — the D-037 contract (how an adapter registers, fail-closed) — NOTE: partly covered in RELEASE-SPEC §1; may just need extraction.
 5. **DB-RUNTIME-SPEC** — binary SHA-256 verify (F-006), bounded connect (F-014), migration runner idempotency (F-015) — the most-recurrent-fails area.
 6. **cc-config / capability-catalog spec** — F-045 fail-closed catalog class.

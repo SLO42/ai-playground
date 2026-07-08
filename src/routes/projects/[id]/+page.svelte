@@ -449,6 +449,8 @@
   let newDecisionRationale = $state('');
   let newSprintName = $state('');
   let pmChatMessage = $state('');
+  // CG-2: operator confirm-to-overspend for the "Talk to the PM" turn (mirrors launchOverride).
+  let pmOverride = $state(false);
 
   // ── TASK 16.1 — PM identity: the hired PM row + the hire-interview wizard. ──────
   const pm = $derived(data.pm ?? null);
@@ -764,6 +766,11 @@
   // Selected task for the launch form.
   let launchTaskId = $state('');
   let launching = $state(false);
+  // CG-2 (COST-GOVERNANCE-SPEC): when a manual launch refuses at the global token budget the
+  // server returns 402 {budgetExceeded}. This confirms the operator's authority to spend past it —
+  // the confirm control sets this true so the enhance re-submit threads overrideBudget=true. Reset
+  // after every submit so a fresh launch never silently carries a prior override (consent ≠ cap).
+  let launchOverride = $state(false);
 
   // ── Session control (interject / stop / resume) via the loopback control endpoint ──────
   let interjectMsg = $state('');
@@ -2841,12 +2848,17 @@
             method="POST"
             action="?/pmChat"
             class="pm-chat-form"
-            use:enhance={() => {
+            use:enhance={({ formData }) => {
               pmBusy = true;
-              return async ({ update }) => {
+              // CG-2: thread the override only on an explicit confirm re-submit.
+              if (pmOverride) formData.set('overrideBudget', 'true');
+              return async ({ update, result }) => {
                 await update({ reset: false });
                 pmBusy = false;
-                pmChatMessage = '';
+                pmOverride = false;
+                // Clear the message ONLY on a real send — a 402 budget refusal must KEEP the
+                // typed message so the confirm re-submit still carries it (server requires it).
+                if (result.type === 'success') pmChatMessage = '';
               };
             }}
           >
@@ -2864,6 +2876,21 @@
             <button class="btn primary" type="submit" disabled={pmBusy || !pm || !pmChatMessage.trim()}>
               {pmBusy ? 'Sending…' : 'Send to PM'}
             </button>
+            <!-- CG-2: operator confirm-to-overspend for the PM turn. The 402 surfaced the honest
+                 spent/budget in the shared PM feedback line; this re-submits with overrideBudget. -->
+            {#if pmFeedback && pmFeedback.budgetExceeded}
+              <p class="form-error" role="alert">
+                Over the daily token budget ({String(pmFeedback.spent)} of {String(pmFeedback.budget)} tokens in the last 24h).
+              </p>
+              <button
+                class="btn warn"
+                type="submit"
+                disabled={pmBusy || !pm || !pmChatMessage.trim()}
+                onclick={() => (pmOverride = true)}
+              >
+                {pmBusy ? 'Sending…' : 'Confirm — spend past budget'}
+              </button>
+            {/if}
           </form>
         </div>
       </div>
@@ -2882,11 +2909,15 @@
               method="POST"
               action="?/launch"
               class="launch-form"
-              use:enhance={() => {
+              use:enhance={({ formData }) => {
                 launching = true;
+                // CG-2: only the operator's explicit confirm threads the override; a normal launch
+                // never carries it. Reading the state var (not the DOM) is submit-time exact.
+                if (launchOverride) formData.set('overrideBudget', 'true');
                 return async ({ update }) => {
                   await update({ reset: false });
                   launching = false;
+                  launchOverride = false;
                 };
               }}
             >
@@ -2902,6 +2933,19 @@
               <button class="btn primary" type="submit" disabled={launching || !launchTaskId}>
                 {launching ? 'Launching…' : 'Launch session'}
               </button>
+              <!-- CG-2: the honest operator decision point. When the launch refused at the global
+                   token budget (402), the server sent budgetExceeded + the honest spent/budget in
+                   the error above. This confirm re-submits the SAME task with overrideBudget=true. -->
+              {#if form?.launch && 'budgetExceeded' in form.launch && form.launch.budgetExceeded}
+                <button
+                  class="btn warn"
+                  type="submit"
+                  disabled={launching || !launchTaskId}
+                  onclick={() => (launchOverride = true)}
+                >
+                  {launching ? 'Launching…' : 'Confirm — spend past budget'}
+                </button>
+              {/if}
             </form>
             {#if form?.launch && 'error' in form.launch}
               <p class="form-error" role="alert">{form.launch.error}</p>

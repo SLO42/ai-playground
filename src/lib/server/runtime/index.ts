@@ -370,6 +370,10 @@ export function isolatedConfigFor(
 	// settings on BOTH branches (the no-catalog branch provisions nothing, which is
 	// trivially sterile — the marker still makes the proof assertable downstream).
 	const sterile = req.sessionKind === 'interview';
+	// Hooks (D-019) execute outside the D-036 capability allow-list by design (CC-CONFIG-SPEC §3).
+	// Unlike capabilities (skills/agents/mcp), hooks are repo-committed code reviewed like any
+	// contribution (D-018/D-026 posture), NOT runtime-granted capabilities. They therefore ride
+	// the isolated settings unconditionally, outside the per-spawn catalog-validated set.
 	const settings: HarnessSettings = opts.catalog
 		? composeCapabilities(
 				req.capabilities,

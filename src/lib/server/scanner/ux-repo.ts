@@ -30,6 +30,7 @@ import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import { inspectUx, type UxInspectionSource, type UxFinding } from './ux-inspect';
 import { writeFindings, type FindingRow } from './findings-repo';
+import { withScanLock } from './scan-lock';
 
 /** Validate a `table:id` link string at the D-016 chokepoint, wrap as a record link. */
 function link(id: string): StringRecordId {
@@ -85,18 +86,26 @@ export interface InspectUxHandle {
  * "inspect now" action). Scoped-soft-archives stale active `ux.*` findings, then persists
  * the fresh batch via the shared writeFindings(). F-008: every row is a real check of a
  * real inspector snapshot.
+ *
+ * SCN-1: the inspect+persist runs under the per-(project,'ux') single-flight lock so two
+ * concurrent UX inspections of the same project (e.g. two page loads racing the detached
+ * background job) cannot both archive-then-insert into ONE active set — the second serializes
+ * behind the first (withScanLock). The lock key is family-scoped, so a concurrent security or
+ * dependency scan of the same project is UNAFFECTED.
  */
 export async function runUxInspection(
 	db: Db,
 	projectId: string,
 	source: UxInspectionSource
 ): Promise<FindingRow[]> {
-	const findings: UxFinding[] = inspectUx(source);
-	await archiveActiveUxFindings(db, projectId);
-	// UxFinding extends SecurityFinding — writeFindings persists the shared columns
-	// (rule/severity/file/line/detail). The route rides in `file`; the §4.9 schema is
-	// unchanged (UX findings are security findings on the surface).
-	return writeFindings(db, projectId, findings);
+	return withScanLock('ux', projectId, async () => {
+		const findings: UxFinding[] = inspectUx(source);
+		await archiveActiveUxFindings(db, projectId);
+		// UxFinding extends SecurityFinding — writeFindings persists the shared columns
+		// (rule/severity/file/line/detail). The route rides in `file`; the §4.9 schema is
+		// unchanged (UX findings are security findings on the surface).
+		return writeFindings(db, projectId, findings);
+	});
 }
 
 /**

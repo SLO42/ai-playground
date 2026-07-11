@@ -19,6 +19,7 @@ import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import { confineToRoot } from './registry';
 import { scanSecurity, type SecurityFinding, type Severity } from './security';
+import { withScanLock } from './scan-lock';
 
 /** A persisted `security_finding` row (SDK RecordId/Date coerced to plain JSON). */
 export interface FindingRow {
@@ -150,6 +151,11 @@ export interface ScanSecurityOptions {
  * batch linked to `projectId`. Idempotent: re-scanning replaces the live set without
  * losing history. Returns the freshly-written rows. (F-008: every row is a real scan
  * result — nothing fabricated.)
+ *
+ * SCN-1: the scan+persist runs under the per-(project,'security') single-flight lock so two
+ * concurrent security scans of the same project cannot both archive-then-insert into ONE active
+ * set — the second serializes behind the first (withScanLock). Path confinement (D-018) runs
+ * BEFORE the lock so a bad path fails fast without queuing.
  */
 export async function scanProjectSecurity(
 	db: Db,
@@ -158,7 +164,9 @@ export async function scanProjectSecurity(
 	opts: ScanSecurityOptions
 ): Promise<FindingRow[]> {
 	const rootPath = confineToRoot(dir, opts.codeRoot);
-	const findings = scanSecurity(rootPath);
-	await archiveActiveFindings(db, projectId);
-	return writeFindings(db, projectId, findings);
+	return withScanLock('security', projectId, async () => {
+		const findings = scanSecurity(rootPath);
+		await archiveActiveFindings(db, projectId);
+		return writeFindings(db, projectId, findings);
+	});
 }

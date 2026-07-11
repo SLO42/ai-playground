@@ -22,6 +22,7 @@ import { assertRecordId } from '../db/validate';
 import { confineToRoot } from './registry';
 import { scanDependencies, type AdvisorySource, type DependencyFinding } from './dependencies';
 import { writeFindings, type FindingRow } from './findings-repo';
+import { withScanLock } from './scan-lock';
 
 /** Validate a `table:id` link string at the D-016 chokepoint, wrap as a record link. */
 function link(id: string): StringRecordId {
@@ -67,6 +68,12 @@ export interface ScanDependencyOptions {
  * shared writeFindings(). Idempotent: re-scanning replaces the live dependency set without
  * losing history or affecting security findings. Returns the freshly-written rows. The
  * advisory rides along in each row's `detail` (F-008: every row is a real comparison).
+ *
+ * SCN-1: the scan+persist runs under the per-(project,'dependency') single-flight lock so two
+ * concurrent dependency scans of the same project cannot both archive-then-insert into ONE active
+ * set — the second serializes behind the first (withScanLock). The lock key is family-scoped, so a
+ * concurrent security or ux scan of the same project is UNAFFECTED. Path confinement (D-018) runs
+ * BEFORE the lock so a bad path fails fast without queuing.
  */
 export async function scanProjectDependencies(
 	db: Db,
@@ -75,10 +82,12 @@ export async function scanProjectDependencies(
 	opts: ScanDependencyOptions
 ): Promise<FindingRow[]> {
 	const rootPath = confineToRoot(dir, opts.codeRoot);
-	const findings: DependencyFinding[] = scanDependencies(rootPath, opts.source);
-	await archiveActiveDependencyFindings(db, projectId);
-	// DependencyFinding extends SecurityFinding — writeFindings persists the shared columns
-	// (rule/severity/file/line/detail). The advisory id/package live inside `detail`, so the
-	// §4.9 schema is unchanged (dependency findings are security findings on the surface).
-	return writeFindings(db, projectId, findings);
+	return withScanLock('dependency', projectId, async () => {
+		const findings: DependencyFinding[] = scanDependencies(rootPath, opts.source);
+		await archiveActiveDependencyFindings(db, projectId);
+		// DependencyFinding extends SecurityFinding — writeFindings persists the shared columns
+		// (rule/severity/file/line/detail). The advisory id/package live inside `detail`, so the
+		// §4.9 schema is unchanged (dependency findings are security findings on the surface).
+		return writeFindings(db, projectId, findings);
+	});
 }

@@ -58,6 +58,14 @@ concurrency:
 spend:
   dailyTokenBudget: 0
 
+  # COST-GOVERNANCE-SPEC CG-3 — the OPTIONAL per-project token ceiling. Same uniform semantics as
+  # dailyTokenBudget (0 = UNCAPPED sentinel; positive arms; durable-anchor / restart-proof), enforced
+  # at the SAME launchSession chokepoint but keyed by the launch's project id — the counter sums tokens
+  # over THAT project's completion rows in the trailing 24h. It stops ONE project eating the whole
+  # global budget: `dailyTokenBudget` bounds total spend; this bounds any single project's slice. Both
+  # are checked independently, so either can refuse a launch. 0 = the shipped default (no-regression).
+  perProjectTokenBudget: 0
+
 # Intent-adaptive config bundles (D-020). KongCode classifies each task's intent;
 # routing (resolveRoute) looks the intent up here and applies the bundle: thinking
 # tier, tool-call budget, memory-retrieval depth + share, token budget. A trivial

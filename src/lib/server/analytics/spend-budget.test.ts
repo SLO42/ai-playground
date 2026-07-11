@@ -7,10 +7,13 @@ import { createProject, deleteProject } from '../projects/repo';
 import { writeAgentEvent } from './events';
 import {
 	tokensSpentSince,
+	tokensSpentSinceForProject,
 	enforceTokenBudget,
 	normalizeTokenBudget,
+	resolvePerProjectTokenBudget,
 	isLocalProvider,
 	__resetReservationsForTest,
+	__setPerProjectBudgetForTest,
 	TokenBudgetExceededError,
 	SPEND_WINDOW_MS
 } from './spend-budget';
@@ -48,6 +51,9 @@ beforeEach(async () => {
 	await db.query(`DELETE agent_event;`);
 	// Hermetic: clear the in-process concurrency reservation counter between tests.
 	__resetReservationsForTest();
+	// Hermetic: pin the per-project ceiling to 0 (uncapped) so CG-2 tests that pass a `project` never
+	// read the real config file / never engage CG-3. Each CG-3 test overrides this explicitly.
+	__setPerProjectBudgetForTest(0);
 });
 
 /** Seed one COMPLETION agent_event carrying tokens (the durable spend row). Returns its id. */
@@ -271,5 +277,204 @@ describe('concurrency-overshoot guard — serialized read+decide + reservation (
 			)
 		);
 		expect(results.every((r) => r.status === 'fulfilled')).toBe(true); // all proceed — no false parking
+	});
+});
+
+// COST-GOVERNANCE-SPEC CG-3 — the OPTIONAL per-project token ceiling, proven against a LIVE SurrealDB.
+// The counter reads the project link on the completion row DIRECTLY (events.ts writes it), so this is a
+// real-surreal test of the actual per-project aggregate. Shadow paths covered: nil/empty project window,
+// the 0-sentinel (uncapped), two-project isolation, global+per-project interaction (either refuses),
+// override, the scoped governance event, and per-project concurrency reservation bucketing.
+describe('CG-3 per-project token budget (real-surreal)', () => {
+	let projectB: string;
+
+	beforeAll(async () => {
+		const p = await createProject(db, { slug: 'spendb', name: 'Spend Host B', root_path: 'F:/code/spendb' });
+		projectB = p.id;
+	}, 30_000);
+
+	afterAll(async () => {
+		await deleteProject(db, projectB).catch(() => {});
+	});
+
+	/** Seed one COMPLETION agent_event carrying tokens, attributed to a SPECIFIC project. */
+	async function seedFor(project: string, tokensIn: number, tokensOut: number): Promise<string> {
+		return writeAgentEvent(db, {
+			type: 'completion',
+			project,
+			model: { provider: 'claude', modelId: 'claude-opus-4-8', tier: 'opus' },
+			tokensIn,
+			tokensOut,
+			detail: { ok: true, summary: 'seeded spend' }
+		});
+	}
+
+	/** The most recent budget-governance event's detail (type=cancel, by=budget), or undefined. */
+	async function lastBudgetEvent(): Promise<Record<string, unknown> | undefined> {
+		const [rows] = await db.query<[Array<{ detail?: Record<string, unknown> }>]>(
+			`SELECT detail FROM agent_event WHERE type = 'cancel';`
+		);
+		return (Array.isArray(rows) ? rows : []).map((r) => r.detail).find((d) => d?.by === 'budget');
+	}
+
+	describe('resolvePerProjectTokenBudget — the 0-sentinel + config/override seam', () => {
+		it('an injected override wins; 0 clears to uncapped', () => {
+			__setPerProjectBudgetForTest(750);
+			expect(resolvePerProjectTokenBudget()).toBe(750);
+			__setPerProjectBudgetForTest(0);
+			expect(resolvePerProjectTokenBudget()).toBe(0);
+		});
+
+		it('null clears the override back to the config-file path (shipped default 0)', () => {
+			__setPerProjectBudgetForTest(null);
+			// config/orchestration.yaml ships perProjectTokenBudget: 0 (uncapped) — the honest default.
+			expect(resolvePerProjectTokenBudget()).toBe(0);
+			__setPerProjectBudgetForTest(0); // restore the hermetic pin for the rest of the suite
+		});
+	});
+
+	describe('tokensSpentSinceForProject — per-project counter isolation', () => {
+		it('empty project ⇒ 0 (honest, never fabricated)', async () => {
+			expect(await tokensSpentSinceForProject(db, projectB)).toBe(0);
+		});
+
+		it('sums ONLY the given project’s completion rows (the other project is invisible to it)', async () => {
+			await seedFor(projectId, 400, 100); // project A: 500
+			await seedFor(projectB, 30, 20); // project B: 50
+			expect(await tokensSpentSinceForProject(db, projectId)).toBe(500);
+			expect(await tokensSpentSinceForProject(db, projectB)).toBe(50);
+			// The GLOBAL counter sees both.
+			expect(await tokensSpentSince(db)).toBe(550);
+		});
+
+		it('WINDOW BOUNDARY — a project’s old spend is excluded', async () => {
+			const oldId = await seedFor(projectB, 1000, 1000); // 2000, aged out
+			await db.query(`UPDATE type::thing($a) SET at = <datetime>$old;`, {
+				a: oldId,
+				old: new Date(Date.now() - 25 * 60 * 60 * 1000).toISOString()
+			});
+			await seedFor(projectB, 7, 3); // 10, in-window
+			expect(await tokensSpentSinceForProject(db, projectB, SPEND_WINDOW_MS)).toBe(10);
+		});
+	});
+
+	describe('enforcement — two-project isolation, interaction, override', () => {
+		it('two projects, one AT its per-project budget ⇒ ITS background launch refuses; the OTHER is unaffected', async () => {
+			__setPerProjectBudgetForTest(1000); // per-project ceiling
+			await seedFor(projectId, 700, 500); // project A: 1200 ≥ 1000 → over
+			await seedFor(projectB, 100, 50); // project B: 150 → well under
+			// Global uncapped (budget:0) so ONLY the per-project ceiling can bite.
+			await expect(
+				enforceTokenBudget(db, { budget: 0, source: 'background', project: projectId })
+			).rejects.toBeInstanceOf(TokenBudgetExceededError);
+			// Project B proceeds — its own slice is under budget.
+			const resB = await enforceTokenBudget(db, { budget: 0, source: 'background', project: projectB });
+			expect(resB.enforced).toBe(true);
+			resB.release();
+			// The refusal event names the project scope + the breaching project.
+			const ev = await lastBudgetEvent();
+			expect(ev?.scope).toBe('project');
+			expect(String(ev?.projectId)).toBe(projectId);
+			expect(ev?.spent).toBe(1200);
+			expect(ev?.budget).toBe(1000);
+		});
+
+		it('0-sentinel per-project ⇒ UNCAPPED: an over-spending project proceeds', async () => {
+			__setPerProjectBudgetForTest(0); // per-project uncapped
+			await seedFor(projectId, 9_999, 9_999); // huge spend on A
+			const res = await enforceTokenBudget(db, { budget: 0, source: 'background', project: projectId });
+			expect(res.enforced).toBe(false); // both ceilings uncapped ⇒ cheap no-op
+			res.release();
+		});
+
+		it('GLOBAL uncapped + per-project ARMED ⇒ refuses on the per-project ceiling (scope:project)', async () => {
+			__setPerProjectBudgetForTest(1000);
+			await seedFor(projectId, 600, 600); // 1200 ≥ 1000
+			const err = await enforceTokenBudget(db, {
+				budget: 0,
+				source: 'background',
+				project: projectId
+			}).catch((e) => e);
+			expect(err).toBeInstanceOf(TokenBudgetExceededError);
+			expect((err as TokenBudgetExceededError).scope).toBe('project');
+			expect((err as TokenBudgetExceededError).projectId).toBe(projectId);
+			expect((err as TokenBudgetExceededError).spent).toBe(1200);
+		});
+
+		it('per-project uncapped + GLOBAL armed ⇒ refuses on the GLOBAL ceiling (scope:global)', async () => {
+			__setPerProjectBudgetForTest(0);
+			await seedFor(projectId, 600, 600); // 1200 global ≥ 1000
+			const err = await enforceTokenBudget(db, {
+				budget: 1000,
+				source: 'background',
+				project: projectId
+			}).catch((e) => e);
+			expect(err).toBeInstanceOf(TokenBudgetExceededError);
+			expect((err as TokenBudgetExceededError).scope).toBe('global');
+			expect((err as TokenBudgetExceededError).projectId).toBeUndefined();
+		});
+
+		it('BOTH armed: a project under GLOBAL but over its PER-PROJECT slice still refuses (project scope)', async () => {
+			__setPerProjectBudgetForTest(500);
+			await seedFor(projectId, 400, 200); // A: 600 ≥ 500 per-project, but < 100_000 global
+			await expect(
+				enforceTokenBudget(db, { budget: 100_000, source: 'background', project: projectId })
+			).rejects.toBeInstanceOf(TokenBudgetExceededError);
+			const ev = await lastBudgetEvent();
+			expect(ev?.scope).toBe('project');
+		});
+
+		it('BOTH armed, both UNDER ⇒ proceeds and reports the GLOBAL binding figures (CG-2 back-compat)', async () => {
+			__setPerProjectBudgetForTest(100_000);
+			await seedFor(projectId, 100, 100); // 200 both global + project
+			const res = await enforceTokenBudget(db, { budget: 1000, source: 'background', project: projectId });
+			expect(res.enforced).toBe(true);
+			expect(res.spent).toBe(200); // global figure (global ceiling armed)
+			expect(res.budget).toBe(1000);
+			res.release();
+		});
+
+		it('per-project breach + OPERATOR override ⇒ proceeds (overrode:true) + emits an override event (scope:project)', async () => {
+			__setPerProjectBudgetForTest(1000);
+			await seedFor(projectId, 700, 500); // 1200 ≥ 1000
+			const res = await enforceTokenBudget(db, {
+				budget: 0,
+				source: 'operator',
+				override: true,
+				project: projectId
+			});
+			expect(res.overrode).toBe(true);
+			expect(res.spent).toBe(1200);
+			const ev = await lastBudgetEvent();
+			expect(ev?.decision).toBe('override');
+			expect(ev?.scope).toBe('project');
+			expect(String(ev?.projectId)).toBe(projectId);
+		});
+	});
+
+	describe('per-project concurrency reservation bucketing', () => {
+		it('N concurrent at-threshold launches on ONE project ⇒ at most 1 proceeds; a DIFFERENT project is unaffected', async () => {
+			__setPerProjectBudgetForTest(1000);
+			await seedFor(projectId, 999, 0); // A: 999, headroom for exactly one reservation
+			// B has no spend at all — its own bucket must stay empty regardless of A's reservations.
+			const N = 6;
+			const aResults = await Promise.allSettled(
+				Array.from({ length: N }, () =>
+					enforceTokenBudget(db, { budget: 0, source: 'background', project: projectId })
+				)
+			);
+			const aProceeded = aResults.filter((r) => r.status === 'fulfilled');
+			const aParked = aResults.filter(
+				(r) => r.status === 'rejected' && r.reason instanceof TokenBudgetExceededError
+			);
+			expect(aProceeded.length).toBeLessThanOrEqual(1);
+			expect(aProceeded.length + aParked.length).toBe(N);
+			// Project B (empty) proceeds — A's reservation lives in A's bucket, not B's.
+			const resB = await enforceTokenBudget(db, { budget: 0, source: 'background', project: projectB });
+			expect(resB.enforced).toBe(true);
+			resB.release();
+			// Release any A reservation that proceeded (hermetic).
+			for (const r of aProceeded) if (r.status === 'fulfilled') r.value.release();
+		});
 	});
 });

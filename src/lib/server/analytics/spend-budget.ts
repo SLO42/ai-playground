@@ -22,7 +22,9 @@
 //     carrying {spent, budget, source} so the how/why is queryable — never a silent stall.
 
 import { join } from 'node:path';
+import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
+import { assertRecordId } from '../db/validate';
 import { loadOrchestration } from '../config/load';
 import { writeAgentEvent } from './events';
 
@@ -43,16 +45,24 @@ export class TokenBudgetExceededError extends Error {
 	readonly budget: number;
 	/** Which spend source hit the ceiling (background / operator / gauntlet-auto / concierge …). */
 	readonly source: string;
-	constructor(spent: number, budget: number, source: string) {
+	/** WHICH ceiling was breached — the GLOBAL rolling budget (CG-2) or a per-PROJECT budget (CG-3). */
+	readonly scope: 'global' | 'project';
+	/** The project id when {@link scope} is 'project' (CG-3); absent for a global breach. */
+	readonly projectId?: string;
+	constructor(spent: number, budget: number, source: string, scope: 'global' | 'project' = 'global', projectId?: string) {
 		// Honest for BOTH refusal causes: measured spend already at/over budget, AND the
 		// concurrency guard (spent + in-flight reservations would cross it) where measured spent
 		// is fractionally under budget — so we phrase "against budget", never a false "≥".
 		super(
-			`token budget reached: ${spent} tokens spent in the trailing 24h against budget ${budget} (source: ${source}) — spawn refused/parked`
+			`${scope} token budget reached: ${spent} tokens spent in the trailing 24h against budget ${budget} (source: ${source}${
+				scope === 'project' && projectId ? `, project: ${projectId}` : ''
+			}) — spawn refused/parked`
 		);
 		this.spent = spent;
 		this.budget = budget;
 		this.source = source;
+		this.scope = scope;
+		if (scope === 'project' && projectId) this.projectId = projectId;
 	}
 }
 
@@ -75,6 +85,8 @@ export function normalizeTokenBudget(raw: number | undefined | null): number {
 
 let budgetCache: number | null = null;
 let budgetOverride: number | null = null;
+let perProjectBudgetCache: number | null = null;
+let perProjectBudgetOverride: number | null = null;
 
 /** The default orchestration file, resolved the same way every other config family is. */
 function orchestrationPath(): string {
@@ -103,12 +115,45 @@ export function resolveDailyTokenBudget(): number {
 }
 
 /**
+ * The armed PER-PROJECT token budget (0 = uncapped) — COST-GOVERNANCE-SPEC CG-3. Same read/degrade
+ * contract as {@link resolveDailyTokenBudget}: prefers a test-injected override; else lazy-loads
+ * config/orchestration.yaml `spend.perProjectTokenBudget` once per boot; FAIL-OPEN (0 = uncapped) on
+ * any read/parse failure, with a named warning ONCE per boot. A per-project ceiling is a soft
+ * governance control, not a security boundary (D-024/F-053), so an unreadable config never fail-closes
+ * and wedges every project spawn. The un-bypassable enforcement still lives at the launchSession
+ * chokepoint; this only decides the armed value.
+ */
+export function resolvePerProjectTokenBudget(): number {
+	if (perProjectBudgetOverride !== null) return perProjectBudgetOverride;
+	if (perProjectBudgetCache !== null) return perProjectBudgetCache;
+	try {
+		const orch = loadOrchestration(orchestrationPath());
+		perProjectBudgetCache = normalizeTokenBudget(orch.spend?.perProjectTokenBudget);
+	} catch (err) {
+		console.warn(
+			`[spend-budget] orchestration config unavailable (${(err as Error).message}) — per-project token budget treated as UNCAPPED until fixed. This warning fires once per boot.`
+		);
+		perProjectBudgetCache = 0;
+	}
+	return perProjectBudgetCache;
+}
+
+/**
  * TEST SEAM: inject a deterministic armed budget (or `null` to clear back to the config-file path).
  * Not exported from the barrel — for the spend-budget / launch integration tests only.
  */
 export function __setBudgetForTest(budget: number | null): void {
 	budgetOverride = budget;
 	budgetCache = null;
+}
+
+/**
+ * TEST SEAM: inject a deterministic armed PER-PROJECT budget (or `null` to clear back to the config-
+ * file path). Not exported from the barrel — for the spend-budget / launch integration tests only.
+ */
+export function __setPerProjectBudgetForTest(budget: number | null): void {
+	perProjectBudgetOverride = budget;
+	perProjectBudgetCache = null;
 }
 
 // --- the counter (durable, restart-proof) ----------------------------------------------------
@@ -130,6 +175,35 @@ export async function tokensSpentSince(db: Db, windowMs: number = SPEND_WINDOW_M
 		  WHERE type = 'completion' AND at >= <datetime>$since
 		  GROUP ALL;`,
 		{ since }
+	);
+	const row = Array.isArray(rows) ? rows[0] : undefined;
+	const ti = typeof row?.ti === 'number' ? row.ti : 0;
+	const to = typeof row?.to === 'number' ? row.to : 0;
+	return ti + to;
+}
+
+/**
+ * COST-GOVERNANCE-SPEC CG-3 — Σ(tokens_in + tokens_out) over agent_event COMPLETION rows THAT belong
+ * to `project`, in the trailing `windowMs`. The project link is on the row DIRECTLY (events.ts writes
+ * `project` on every launched session's completion — launch.ts:1150), so this is ONE aggregate keyed on
+ * that column; no session→project join is needed (the spec's join is already denormalized onto the
+ * row). Same durable `at` anchor as {@link tokensSpentSince} (restart-proof), same `?? 0` coalescing of
+ * a NONE token leg, same inclusive window boundary (`at >= $since`). The project id passes the D-016
+ * chokepoint (assertRecordId) and binds as a record link (`$project`), never string-interpolated.
+ * Returns a non-negative number (0 when the project has no in-window spend — honest, not fabricated).
+ */
+export async function tokensSpentSinceForProject(
+	db: Db,
+	project: string,
+	windowMs: number = SPEND_WINDOW_MS
+): Promise<number> {
+	const since = new Date(Date.now() - windowMs).toISOString();
+	const [rows] = await db.query<[Array<{ ti: number | null; to: number | null }>]>(
+		`SELECT math::sum(tokens_in ?? 0) AS ti, math::sum(tokens_out ?? 0) AS to
+		   FROM agent_event
+		  WHERE type = 'completion' AND project = $project AND at >= <datetime>$since
+		  GROUP ALL;`,
+		{ project: new StringRecordId(assertRecordId(project)), since }
 	);
 	const row = Array.isArray(rows) ? rows[0] : undefined;
 	const ti = typeof row?.ti === 'number' ? row.ti : 0;
@@ -173,7 +247,12 @@ export interface EnforceTokenBudgetOpts {
 	override?: boolean;
 	/** Rolling window (defaults to SPEND_WINDOW_MS). */
 	windowMs?: number;
-	/** Project the spend is attributed to (for the emitted event) — omitted ⇒ NONE. */
+	/**
+	 * Project the spend is attributed to. Drives TWO things: the emitted event's `project` link, AND
+	 * (CG-3) the per-project token ceiling — when set, enforceTokenBudget ALSO checks this project's
+	 * in-window spend against the armed `spend.perProjectTokenBudget`. Omitted ⇒ NONE + global-only
+	 * (the gauntlet/concierge chokepoints are project-less, so they are never per-project gated).
+	 */
 	project?: string;
 }
 
@@ -233,8 +312,21 @@ const RESERVATION_TOKENS = 1;
 const RESERVATION_TTL_MS = 30 * 60 * 1000;
 /** In-process count of launches that passed the gate but whose spend has not yet landed as a row. */
 let reservedInFlight = 0;
+/**
+ * CG-3 — the SAME in-flight reservations, bucketed by project id, so the per-project gate accounts
+ * only for concurrent launches on THAT project (a global reservation from another project must not
+ * falsely park an under-budget project). One physical reservation counts against BOTH the global
+ * counter above AND its project's bucket here (takeReservation increments both, release decrements
+ * both). A project-less launch (gauntlet/concierge) touches only the global counter.
+ */
+const reservedInFlightByProject = new Map<string, number>();
 /** FIFO serialization chain for the read+decide window (never rejects — outcomes are absorbed). */
 let budgetGateChain: Promise<void> = Promise.resolve();
+
+/** Current in-flight reservation count for a project (0 when none) — the per-project projected-spend term. */
+function projectReserved(project: string): number {
+	return reservedInFlightByProject.get(project) ?? 0;
+}
 
 /** Run `fn` serialized behind every prior gate call (FIFO). The chain never rejects, so one call's
  *  throw/refusal cannot wedge the next; the caller still sees `fn`'s own resolution/rejection. */
@@ -247,14 +339,25 @@ function withBudgetGate<T>(fn: () => Promise<T>): Promise<T> {
 	return run;
 }
 
-/** Take one in-flight reservation; returns an idempotent release (also auto-releases after the TTL). */
-function takeReservation(): () => void {
+/**
+ * Take one in-flight reservation; returns an idempotent release (also auto-releases after the TTL).
+ * The physical reservation counts against the GLOBAL counter AND, when a `project` is given, that
+ * project's bucket (CG-3) — release decrements both. A project bucket is deleted at 0 so the Map does
+ * not accumulate empty entries.
+ */
+function takeReservation(project?: string): () => void {
 	reservedInFlight++;
+	if (project) reservedInFlightByProject.set(project, projectReserved(project) + 1);
 	let released = false;
 	const drop = () => {
 		if (released) return; // idempotent — a double release cannot under-count
 		released = true;
 		reservedInFlight = Math.max(0, reservedInFlight - 1);
+		if (project) {
+			const next = projectReserved(project) - 1;
+			if (next > 0) reservedInFlightByProject.set(project, next);
+			else reservedInFlightByProject.delete(project);
+		}
 	};
 	const timer = setTimeout(drop, RESERVATION_TTL_MS);
 	// Never hold the process open for a reservation timer (F-014 — no dangling handle).
@@ -277,34 +380,43 @@ const NOOP_RELEASE = (): void => {};
  */
 export function __resetReservationsForTest(): void {
 	reservedInFlight = 0;
+	reservedInFlightByProject.clear();
 	budgetGateChain = Promise.resolve();
 }
 
 /**
- * The ONE enforcement primitive every spend chokepoint calls (COST-GOVERNANCE-SPEC CG-2). The
+ * The ONE enforcement primitive every spend chokepoint calls (COST-GOVERNANCE-SPEC CG-2 + CG-3). The
  * read+decide window is SERIALIZED (FIFO) and accounts for in-flight reservations so concurrent
- * launches cannot all slip under the ceiling (the concurrency-overshoot guard above). Shadow
- * paths, all built + tested:
- *   • LOCAL/$0 provider (isLocalProvider)      → EXEMPT: return immediately, NO gate (the gate is
- *     skipped; metering, if any, is separate — session paths record at events.ts, the concierge
- *     direct call does not). The $0 local floor is the first cost control, not a capped resource.
- *   • budget ≤ 0 (uncapped / 0-sentinel)      → return immediately, NO query/lock (cheap; the shipped
+ * launches cannot all slip under a ceiling (the concurrency-overshoot guard above). TWO ceilings are
+ * checked, independently — either can refuse:
+ *   • the GLOBAL rolling-24h budget (CG-2): `opts.budget`, resolved by the caller (resolveDailyToken-
+ *     Budget). Bounds TOTAL spend across every project + source.
+ *   • the PER-PROJECT budget (CG-3): resolved HERE (resolvePerProjectTokenBudget) and engaged ONLY when
+ *     `opts.project` is set — the counter sums tokens over THAT project's completion rows. Bounds any
+ *     single project's slice so one project cannot eat the whole global budget. A project-less launch
+ *     (gauntlet/concierge) is global-only. Resolving inside keeps the gate un-bypassable by construction
+ *     (F-055): every existing chokepoint that already threads `project` inherits CG-3 with no caller edit.
+ * Shadow paths, all built + tested:
+ *   • LOCAL/$0 provider (isLocalProvider)      → EXEMPT from BOTH ceilings: return immediately, NO gate.
+ *     The $0 local floor is the first cost control, not a capped resource.
+ *   • BOTH ceilings ≤ 0 (uncapped / 0-sentinel) → return immediately, NO query/lock (cheap; the shipped
  *     default is uncapped so an untuned deploy pays zero overhead).
  *   • counter query THROWS (DB fault)          → FAIL-OPEN: allow + a named warning. A budget is a
  *     soft governance control, not a security boundary (D-024/F-053), and a DB fault on a spend path
  *     must never crash the server (F-014/F-048).
- *   • spent + in-flight reservations < budget  → PROCEED, take a reservation (returned as release()),
+ *   • projected spend < every armed ceiling    → PROCEED, take a reservation (returned as release()),
  *     NO event (only breaches are events).
- *   • at/over budget + override                → WARN + emit a `token-budget-override` event + proceed.
- *   • at/over budget (or reservation-crossed) + no override → emit a `token-budget-refused` event +
- *     THROW TokenBudgetExceededError (the caller parks-not-crashes).
+ *   • at/over an armed ceiling + override       → WARN + emit an override event + proceed.
+ *   • at/over an armed ceiling + no override     → emit a refused event + THROW TokenBudgetExceededError
+ *     (the caller parks-not-crashes). The error/event `scope` names WHICH ceiling breached ('global' |
+ *     'project'); a project breach carries `projectId`.
  *
  * The event is written as an agent_event `type:'cancel'` with `detail.by='budget'` — the shape
  * events.ts already documents for a budget-initiated governance decision (a REFUSED spawn is a
  * cancelled spawn; an OVERRIDE records that the gate fired and the operator re-authorised). The
- * `detail.decision` field ('refused' | 'override') disambiguates, so a reader queries
- * `type='cancel' AND detail.by='budget'`. Event writes are best-effort (F-014): an event-write fault
- * is logged and never masks the budget decision itself.
+ * `detail.decision` field ('refused' | 'override') + `detail.scope` ('global' | 'project')
+ * disambiguate, so a reader queries `type='cancel' AND detail.by='budget'`. Event writes are
+ * best-effort (F-014): an event-write fault is logged and never masks the budget decision itself.
  */
 export async function enforceTokenBudget(db: Db, opts: EnforceTokenBudgetOpts): Promise<EnforceResult> {
 	// LOCAL/$0 exemption: a genuinely-free provider is never gated on the real-money token budget
@@ -313,37 +425,63 @@ export async function enforceTokenBudget(db: Db, opts: EnforceTokenBudgetOpts): 
 	if (isLocalProvider(opts.provider)) {
 		return { enforced: false, spent: 0, budget: 0, overrode: false, release: NOOP_RELEASE };
 	}
-	const budget = normalizeTokenBudget(opts.budget);
-	// 0-sentinel: uncapped. No query, no lock, no event — the cheap common case (shipped default).
-	if (budget <= 0) return { enforced: false, spent: 0, budget: 0, overrode: false, release: NOOP_RELEASE };
+	const globalBudget = normalizeTokenBudget(opts.budget);
+	// CG-3: the per-project ceiling engages ONLY when the launch carries a project id (a project-less
+	// launch — gauntlet/concierge — is global-only). Resolved from config (0 = uncapped), so an
+	// unconfigured deploy leaves it at the 0-sentinel and pays no per-project cost.
+	const projectBudget = opts.project ? normalizeTokenBudget(resolvePerProjectTokenBudget()) : 0;
+	// BOTH uncapped: nothing to enforce. No query, no lock, no event — the cheap common case.
+	if (globalBudget <= 0 && projectBudget <= 0) {
+		return { enforced: false, spent: 0, budget: 0, overrode: false, release: NOOP_RELEASE };
+	}
 
 	// SERIALIZE the read+decide+reserve window (concurrency-overshoot guard). The critical section is
-	// just the counter read + the budget decision + taking a reservation — short + bounded; the actual
-	// spawn/turn happens AFTER this resolves, outside the lock.
+	// just the counter read(s) + the budget decision + taking a reservation — short + bounded; the
+	// actual spawn/turn happens AFTER this resolves, outside the lock.
 	return withBudgetGate(async () => {
-		let spent: number;
+		// Measure each ARMED dimension (skip a query for an unarmed one). A counter fault on either
+		// fails OPEN (a soft governance control must never wedge a legitimate spawn — D-024/F-053).
+		let globalSpent = 0;
+		let projectSpent = 0;
 		try {
-			spent = await tokensSpentSince(db, opts.windowMs ?? SPEND_WINDOW_MS);
+			if (globalBudget > 0) globalSpent = await tokensSpentSince(db, opts.windowMs ?? SPEND_WINDOW_MS);
+			if (projectBudget > 0 && opts.project) {
+				projectSpent = await tokensSpentSinceForProject(db, opts.project, opts.windowMs ?? SPEND_WINDOW_MS);
+			}
 		} catch (err) {
-			// Fail-open (not a security boundary): a counter fault must never wedge a legitimate spawn.
 			console.warn(
 				`[spend-budget] token counter query failed (${(err as Error).message}) — allowing spend (fail-open, budget not enforced this call).`
 			);
-			return { enforced: false, spent: 0, budget, overrode: false, release: NOOP_RELEASE };
+			return { enforced: false, spent: 0, budget: 0, overrode: false, release: NOOP_RELEASE };
 		}
 
 		// Account for launches that already passed the gate but whose spend has not yet landed as a
 		// completion row (each reserves the RESERVATION_TOKENS honest floor). At the threshold this is
-		// what makes "at most 1 of N concurrent launches proceeds".
-		const projected = spent + reservedInFlight * RESERVATION_TOKENS;
-		if (projected < budget) {
-			// PROCEED under budget — take a reservation the caller releases once its spend is metered
-			// (or the TTL auto-releases). The measured `spent` is reported honestly (never `projected`).
-			return { enforced: true, spent, budget, overrode: false, release: takeReservation() };
+		// what makes "at most 1 of N concurrent launches proceeds" — per ceiling, using that ceiling's
+		// reservation term (global counter for the global ceiling; the project bucket for the project one).
+		const globalProjected = globalSpent + reservedInFlight * RESERVATION_TOKENS;
+		const projectProjected =
+			projectSpent + (opts.project ? projectReserved(opts.project) : 0) * RESERVATION_TOKENS;
+		const globalOver = globalBudget > 0 && globalProjected >= globalBudget;
+		const projectOver = projectBudget > 0 && projectProjected >= projectBudget;
+
+		if (!globalOver && !projectOver) {
+			// Under EVERY armed ceiling — take ONE reservation (counted against the global counter and,
+			// when set, this project's bucket). Report the binding dimension honestly: the GLOBAL figures
+			// when the global ceiling is armed (back-compat with CG-2 callers), else the per-project ones.
+			const [spent, budget] = globalBudget > 0 ? [globalSpent, globalBudget] : [projectSpent, projectBudget];
+			return { enforced: true, spent, budget, overrode: false, release: takeReservation(opts.project) };
 		}
 
-		// At/over budget (measured, or would-be with concurrent in-flight launches). Emit the named
-		// governance event (best-effort), then refuse-or-override. The event carries the MEASURED spent.
+		// At/over ≥1 ceiling. Report the BREACHED scope — the per-project ceiling takes precedence when it
+		// is the one breached (it is the tighter, project-scoped bound); if both breached, report project.
+		const scope: 'global' | 'project' = projectOver ? 'project' : 'global';
+		const spent = scope === 'project' ? projectSpent : globalSpent;
+		const budget = scope === 'project' ? projectBudget : globalBudget;
+		const projectId = scope === 'project' ? opts.project : undefined;
+
+		// Emit the named governance event (best-effort). It carries the MEASURED breached-scope figures
+		// (+ projectId for a per-project breach, per CG-3), never `projected`.
 		const emit = (decision: 'refused' | 'override') =>
 			writeAgentEvent(db, {
 				type: 'cancel',
@@ -351,10 +489,12 @@ export async function enforceTokenBudget(db: Db, opts: EnforceTokenBudgetOpts): 
 				detail: {
 					by: 'budget',
 					decision,
+					scope,
+					...(projectId ? { projectId } : {}),
 					reason:
 						decision === 'refused'
-							? `token budget reached — spawn refused + parked (spent ${spent}, budget ${budget}, in-flight ${reservedInFlight}, source: ${opts.source})`
-							: `token budget reached — operator override, proceeding (spent ${spent}, budget ${budget}, source: ${opts.source})`,
+							? `${scope} token budget reached — spawn refused + parked (spent ${spent}, budget ${budget}, source: ${opts.source}${projectId ? `, project: ${projectId}` : ''})`
+							: `${scope} token budget reached — operator override, proceeding (spent ${spent}, budget ${budget}, source: ${opts.source}${projectId ? `, project: ${projectId}` : ''})`,
 					spent,
 					budget,
 					source: opts.source
@@ -367,7 +507,7 @@ export async function enforceTokenBudget(db: Db, opts: EnforceTokenBudgetOpts): 
 
 		if (opts.override) {
 			console.warn(
-				`[spend-budget] token budget reached (spent ${spent}, budget ${budget}, source: ${opts.source}) — proceeding on operator override.`
+				`[spend-budget] ${scope} token budget reached (spent ${spent}, budget ${budget}, source: ${opts.source}) — proceeding on operator override.`
 			);
 			await emit('override');
 			// Override proceeds regardless; no reservation needed (a concurrent NON-override launch
@@ -376,6 +516,6 @@ export async function enforceTokenBudget(db: Db, opts: EnforceTokenBudgetOpts): 
 		}
 
 		await emit('refused');
-		throw new TokenBudgetExceededError(spent, budget, opts.source);
+		throw new TokenBudgetExceededError(spent, budget, opts.source, scope, projectId);
 	});
 }

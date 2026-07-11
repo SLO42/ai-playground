@@ -268,8 +268,15 @@ export interface Orchestration {
 	 * cap). Anchored on the durable agent_event timestamp, so the counter survives restarts.
 	 * Both caps coexist: the claim-cap bounds runaway SPAWNING, the token-budget bounds runaway
 	 * SPEND (200 trivial local spawns ≠ 200 deep opus spawns).
+	 *
+	 * COST-GOVERNANCE-SPEC CG-3 — `perProjectTokenBudget`: the OPTIONAL per-project token ceiling,
+	 * same uniform semantics (0 / absent = UNCAPPED sentinel; positive arms; durable-anchor / restart-
+	 * proof), enforced at the SAME launchSession chokepoint but keyed by the launch's project id (the
+	 * counter sums tokens over THAT project's completion rows in the window). It stops ONE project
+	 * eating the whole global budget: the global `dailyTokenBudget` bounds total spend, this bounds any
+	 * single project's slice. Either ceiling can refuse a launch independently (both are checked).
 	 */
-	spend?: { dailyTokenBudget?: number };
+	spend?: { dailyTokenBudget?: number; perProjectTokenBudget?: number };
 	/**
 	 * MODEL-BENCHMARK-SPEC step 1 — the operator's GLOBAL default-provider override. Absent ⇒
 	 * 'auto' (normal routing; no-regression). 'local'/'cloud' force every orchestrator-routed
@@ -1019,6 +1026,19 @@ export function loadOrchestration(file: string, opts: LoadOpts = {}): Orchestrat
 			if (!Number.isInteger(budget) || (budget as number) < 0) {
 				throw new ConfigError(
 					'orchestration: spend.dailyTokenBudget must be a non-negative integer (0 = uncapped)',
+					file
+				);
+			}
+		}
+		// COST-GOVERNANCE-SPEC CG-3 — the OPTIONAL per-project token ceiling. Same uniform semantics
+		// as dailyTokenBudget: absent/null ⇒ UNCAPPED; when set it MUST be a non-negative integer (0 =
+		// explicit uncapped sentinel). A silently-ignored per-project ceiling is worse than a boot
+		// failure, so fail closed on a malformed value.
+		const perProject = (raw.spend as Record<string, unknown>).perProjectTokenBudget;
+		if (perProject !== undefined && perProject !== null) {
+			if (!Number.isInteger(perProject) || (perProject as number) < 0) {
+				throw new ConfigError(
+					'orchestration: spend.perProjectTokenBudget must be a non-negative integer (0 = uncapped)',
 					file
 				);
 			}

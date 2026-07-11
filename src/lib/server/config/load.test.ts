@@ -282,6 +282,60 @@ describe('loadOrchestration — YAML + enum validation', () => {
 		});
 	});
 
+	// COST-GOVERNANCE-SPEC CG-3 — spend.perProjectTokenBudget (the optional per-project token ceiling).
+	describe('spend.perProjectTokenBudget (CG-3 per-project token budget)', () => {
+		it('parses the shipped config (default 0 = uncapped)', () => {
+			const orch = loadOrchestration(join(process.cwd(), 'config', 'orchestration.yaml'));
+			expect(orch.spend?.perProjectTokenBudget).toBe(0);
+		});
+
+		it('accepts a positive integer per-project budget', () => {
+			const orch = loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { spend: { perProjectTokenBudget: 1_000_000 } }
+			});
+			expect(orch.spend?.perProjectTokenBudget).toBe(1_000_000);
+		});
+
+		it('accepts 0 as the explicit uncapped sentinel', () => {
+			const orch = loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { spend: { perProjectTokenBudget: 0 } }
+			});
+			expect(orch.spend?.perProjectTokenBudget).toBe(0);
+		});
+
+		it('accepts a spend block with ONLY perProjectTokenBudget (global absent = uncapped)', () => {
+			const orch = loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { spend: { perProjectTokenBudget: 500 } }
+			});
+			expect(orch.spend?.perProjectTokenBudget).toBe(500);
+			expect(orch.spend?.dailyTokenBudget).toBeUndefined();
+		});
+
+		it('accepts both ceilings set together', () => {
+			const orch = loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { spend: { dailyTokenBudget: 9_000_000, perProjectTokenBudget: 2_000_000 } }
+			});
+			expect(orch.spend?.dailyTokenBudget).toBe(9_000_000);
+			expect(orch.spend?.perProjectTokenBudget).toBe(2_000_000);
+		});
+
+		it('rejects a negative per-project budget (fail closed)', () => {
+			expect(() =>
+				loadOrchestration(join(FIX, 'orchestration.yaml'), {
+					_inject: { spend: { perProjectTokenBudget: -1 } }
+				})
+			).toThrow(/spend.perProjectTokenBudget must be a non-negative integer/);
+		});
+
+		it('rejects a fractional per-project budget (fail closed)', () => {
+			expect(() =>
+				loadOrchestration(join(FIX, 'orchestration.yaml'), {
+					_inject: { spend: { perProjectTokenBudget: 2.5 } }
+				})
+			).toThrow(/spend.perProjectTokenBudget must be a non-negative integer/);
+		});
+	});
+
 	// TASK 2.12 — intent-adaptive bundle validation at the config boundary (D-020).
 	it('parses ALL FIVE intent bundles with their adaptive knobs', () => {
 		const orch = loadOrchestration(join(FIX, 'orchestration.yaml'));

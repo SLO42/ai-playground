@@ -327,6 +327,7 @@ export const actions: Actions = {
 				projectId,
 				cwd: project.root_path,
 				direction: 'push',
+				dryRun: false, // board push is a real mutation (no dry-run UI); explicit per SYN-1
 				...(repo ? { repo } : {})
 			});
 			return {

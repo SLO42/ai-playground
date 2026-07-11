@@ -175,7 +175,7 @@ describe('GitHubBoardSyncAdapter.sync (one-way push)', () => {
 
 		const fake = new FakeBoard();
 		const adapter = new GitHubBoardSyncAdapter({ client: fake });
-		const res = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', repo: REPO });
+		const res = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', repo: REPO, dryRun: false });
 
 		expect(res.updated).toBe(2);
 		expect(res.errors).toHaveLength(0);
@@ -203,7 +203,8 @@ describe('GitHubBoardSyncAdapter.sync (one-way push)', () => {
 			projectId,
 			cwd: CWD,
 			direction: 'push',
-			repo: REPO
+			repo: REPO,
+			dryRun: false
 		});
 		expect(res.updated).toBe(1);
 		expect(res.skipped).toBe(1);
@@ -223,7 +224,8 @@ describe('GitHubBoardSyncAdapter.sync (one-way push)', () => {
 			projectId,
 			cwd: CWD,
 			direction: 'push',
-			repo: REPO
+			repo: REPO,
+			dryRun: false
 		});
 		expect(res.updated).toBe(0);
 		expect(res.skipped).toBe(1);
@@ -239,7 +241,8 @@ describe('GitHubBoardSyncAdapter.sync (one-way push)', () => {
 			projectId,
 			cwd: CWD,
 			direction: 'push',
-			repo: REPO
+			repo: REPO,
+			dryRun: false
 		});
 		expect(res.errors.length).toBeGreaterThan(0);
 		const cfg = await getBoardConfig(db, projectId);
@@ -261,7 +264,8 @@ describe('GitHubBoardSyncAdapter.sync (one-way push)', () => {
 			projectId,
 			cwd: CWD,
 			direction: 'push',
-			repo: REPO
+			repo: REPO,
+			dryRun: false
 		});
 		expect(res.errors.length).toBe(1);
 		expect(res.errors[0]).toMatch(/no column named/i);

@@ -178,7 +178,7 @@ describe('push — task → issue, idempotent (the create-or-update invariant)',
 		const adapter = new GitHubSyncAdapter({ client: gh });
 		await createTask(db, { project: projectId, title: 'Build sync', description: 'do it' });
 
-		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', dryRun: false });
 		expect(r.created).toBe(1);
 		expect(gh.createdCalls).toBe(1);
 		expect(gh.issues.size).toBe(1);
@@ -193,8 +193,8 @@ describe('push — task → issue, idempotent (the create-or-update invariant)',
 		const adapter = new GitHubSyncAdapter({ client: gh });
 		await createTask(db, { project: projectId, title: 'Build sync', description: 'do it' });
 
-		await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
-		const r2 = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', dryRun: false });
+		const r2 = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', dryRun: false });
 
 		expect(r2.created).toBe(0);
 		expect(r2.updated).toBe(1);
@@ -208,12 +208,12 @@ describe('push — task → issue, idempotent (the create-or-update invariant)',
 		const gh = new FakeGitHub();
 		const adapter = new GitHubSyncAdapter({ client: gh });
 		const t = await createTask(db, { project: projectId, title: 'Ship', description: 'x' });
-		await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', dryRun: false });
 		// ready → in_progress → done
 		await setStatus(db, t.id, 'ready');
 		await setStatus(db, t.id, 'in_progress');
 		await setStatus(db, t.id, 'done');
-		await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', dryRun: false });
 		const issue = [...gh.issues.values()][0];
 		expect(issue.state).toBe('closed');
 		expect(issue.labels.map((l) => l.name)).toContain('status:done');
@@ -225,7 +225,7 @@ describe('push — task → issue, idempotent (the create-or-update invariant)',
 		const adapter = new GitHubSyncAdapter({ client: gh });
 		await createTask(db, { project: projectId, title: 'Pre-existing', description: 'x' });
 
-		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', dryRun: false });
 		expect(r.linked).toBe(1);
 		expect(r.created).toBe(0);
 		expect(gh.createdCalls).toBe(0);
@@ -263,7 +263,7 @@ describe('proposal ceremony at the sync boundary (16.4)', () => {
 			origin: 'pm'
 		});
 
-		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', dryRun: false });
 		expect(r.created).toBe(0);
 		expect(r.linked).toBe(0);
 		expect(r.skipped).toBeGreaterThanOrEqual(1);
@@ -284,7 +284,7 @@ describe('proposal ceremony at the sync boundary (16.4)', () => {
 		});
 		await setStatus(db, t.id, 'withdrawn');
 
-		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', dryRun: false });
 		expect(r.created).toBe(0);
 		expect(gh.createdCalls).toBe(0);
 		expect((await listMappings(db, projectId, REPO)).length).toBe(0);
@@ -294,13 +294,13 @@ describe('proposal ceremony at the sync boundary (16.4)', () => {
 		const gh = new FakeGitHub();
 		const adapter = new GitHubSyncAdapter({ client: gh });
 		const t = await createTask(db, { project: projectId, title: 'Was live', description: 'x' });
-		await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' }); // mapped + open
+		await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', dryRun: false }); // mapped + open
 		expect([...gh.issues.values()][0].state).toBe('open');
 		// Simulate the pre-fix legacy state: a mapped task reaches terminal 'withdrawn'
 		// (raw write — the machine only allows proposed→withdrawn; the mapping predates the fix).
 		await db.query(`UPDATE $rid SET status = 'withdrawn';`, { rid: new StringRecordId(t.id) });
 
-		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', dryRun: false });
 		expect(r.updated).toBe(1);
 		const issue = [...gh.issues.values()][0];
 		expect(issue.state).toBe('closed');
@@ -336,7 +336,7 @@ describe('proposal ceremony at the sync boundary (16.4)', () => {
 			}
 		});
 
-		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'pull' });
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'pull', dryRun: false });
 		expect(r.pulled).toBe(0);
 		expect(r.skipped).toBeGreaterThanOrEqual(1);
 		expect((await getTask(db, t.id))?.status).toBe('proposed'); // the ceremony holds
@@ -351,13 +351,13 @@ describe('pull — issue → task, through the status state machine', () => {
 		await setStatus(db, t.id, 'ready');
 		await setStatus(db, t.id, 'in_progress');
 		// Push to create the mapping + issue.
-		await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', dryRun: false });
 		const issue = [...gh.issues.values()][0];
 		// Simulate someone closing it on GitHub (clear the status label so open/closed decides).
 		issue.state = 'closed';
 		issue.labels = [{ name: 'atelier-task' }];
 
-		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'pull' });
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'pull', dryRun: false });
 		expect(r.pulled).toBe(1);
 		const after = await getTask(db, t.id);
 		expect(after?.status).toBe('done');
@@ -370,12 +370,12 @@ describe('pull — issue → task, through the status state machine', () => {
 		await setStatus(db, t.id, 'ready');
 		await setStatus(db, t.id, 'in_progress');
 		await setStatus(db, t.id, 'done'); // terminal
-		await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', dryRun: false });
 		const issue = [...gh.issues.values()][0];
 		// Issue says "reopen / in_progress" but done is terminal — must NOT move.
 		issue.state = 'open';
 		issue.labels = [{ name: 'atelier-task' }, { name: 'status:in_progress' }];
-		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'pull' });
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'pull', dryRun: false });
 		expect(r.pulled).toBe(0);
 		expect(r.skipped).toBeGreaterThanOrEqual(1);
 		expect((await getTask(db, t.id))?.status).toBe('done');
@@ -398,7 +398,7 @@ describe('arrivals — external open issues/PRs detected during a sync run', () 
 		const adapter = new GitHubSyncAdapter({ client: gh });
 		// One task pushed from here → mapped issue 100 (NOT an arrival).
 		await createTask(db, { project: projectId, title: 'Ours', description: 'x' });
-		await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', dryRun: false });
 		// Externally-born work: an unmapped open issue + an open PR.
 		gh.openIssues = [
 			{ number: 100, title: 'Ours', url: `https://github.com/${REPO}/issues/100` },
@@ -406,7 +406,7 @@ describe('arrivals — external open issues/PRs detected during a sync run', () 
 		];
 		gh.openPrs = [{ number: 8, title: 'External fix', url: `https://github.com/${REPO}/pull/8` }];
 
-		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', dryRun: false });
 		expect(r.arrivals).toBeDefined();
 		expect(r.arrivals).toEqual([
 			{ kind: 'issue', externalId: '7', title: 'External bug', url: `https://github.com/${REPO}/issues/7` },
@@ -417,7 +417,7 @@ describe('arrivals — external open issues/PRs detected during a sync run', () 
 	it('a client WITHOUT listOpenItems omits arrivals entirely (honest absence)', async () => {
 		const gh = new FakeGitHub(); // no listOpenItems
 		const adapter = new GitHubSyncAdapter({ client: gh });
-		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', dryRun: false });
 		expect(r.arrivals).toBeUndefined();
 	});
 
@@ -428,7 +428,7 @@ describe('arrivals — external open issues/PRs detected during a sync run', () 
 		};
 		const adapter = new GitHubSyncAdapter({ client: gh });
 		await createTask(db, { project: projectId, title: 'Still works', description: 'x' });
-		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push' });
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'push', dryRun: false });
 		expect(r.created).toBe(1); // the sync itself succeeded
 		expect(r.arrivals).toBeUndefined();
 		expect(r.errors.some((e) => /arrival detection: rate limited/.test(e))).toBe(true);
@@ -440,7 +440,7 @@ describe('both — full reconcile records an analytics event', () => {
 		const gh = new FakeGitHub();
 		const adapter = new GitHubSyncAdapter({ client: gh });
 		await createTask(db, { project: projectId, title: 'Reconcile', description: 'x' });
-		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'both' });
+		const r = await adapter.sync(db, { projectId, cwd: CWD, direction: 'both', dryRun: false });
 		expect(r.created).toBe(1);
 		expect(r.target).toBe(REPO);
 		const [events] = await db.query<[Array<{ type: string }>]>(

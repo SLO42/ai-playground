@@ -49,8 +49,12 @@ export interface SyncRunOptions {
 	cwd: string;
 	/** Direction to reconcile. Default `both`. */
 	direction?: SyncDirection;
-	/** When true, compute the plan but perform NO external mutations (preview). */
-	dryRun?: boolean;
+	/**
+	 * When true, compute the plan but perform NO external mutations (preview).
+	 * REQUIRED (SYN-1): a missing value would fall back to false (a REAL mutation), so every call
+	 * site must state intent explicitly — the compiler is the safety net, not a runtime flag flip.
+	 */
+	dryRun: boolean;
 }
 
 /** A per-task outcome of a sync run — what happened to one task↔counterpart pair. */

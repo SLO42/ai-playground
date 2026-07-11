@@ -30,6 +30,7 @@ import { assertRecordId } from '../db/validate';
 import { FENCE_OPEN, FENCE_CLOSE } from '../memory/fence';
 import { ATELIER_SELF_PM } from '../peer/resolve';
 import { PM_IDENTITY_AGENT } from './pm-concierge';
+import { isoOrNull } from './repo';
 
 /** One consult + its (possibly not-yet-landed) advisory, serialization-safe for a `load` (F-013). */
 export interface ConciergeAdvisoryRow {
@@ -80,16 +81,6 @@ function recordToString(v: unknown): string | null {
 		if (typeof inner === 'string') return inner;
 	}
 	return null;
-}
-
-/** SurrealDB 2.x datetime → canonical ISO string, else null (F-013; mirrors decisions.isoOrNull). */
-function isoOrNull(v: unknown): string | null {
-	if (v == null) return null;
-	if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v.toISOString();
-	const s = String(v);
-	if (s === '' || s === 'undefined' || s === 'null') return null;
-	const d = new Date(s);
-	return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 
 /** Parse the review signal out of the deterministic dedup client_key (`pmconsult:<reason>:<hash>`). */

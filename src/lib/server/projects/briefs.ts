@@ -16,6 +16,7 @@
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
+import { isoOrNull } from './repo';
 
 // ── Named errors ──────────────────────────────────────────────────────────────────
 
@@ -108,14 +109,6 @@ function str(v: unknown): string {
 	return String(v);
 }
 
-/** F-013: SurrealDB 2.x datetime → ISO string; absent/garbage → null (never 'undefined'). */
-function strDate(v: unknown): string | null {
-	if (v === null || v === undefined) return null;
-	const s = v instanceof Date ? v.toISOString() : String(v);
-	if (s === '' || s === 'undefined' || s === 'null') return null;
-	return s;
-}
-
 function link(id: string): StringRecordId {
 	return new StringRecordId(assertRecordId(id));
 }
@@ -153,9 +146,9 @@ function normBrief(row: Raw): DecisionBriefRow {
 		...(row.challenge != null ? { challenge: row.challenge as BriefChallenge } : {}),
 		status: row.status as BriefStatus,
 		...(row.fingerprint != null ? { fingerprint: str(row.fingerprint) } : {}),
-		defer_until: strDate(row.defer_until),
-		decided_at: strDate(row.decided_at),
-		created_at: strDate(row.created_at)
+		defer_until: isoOrNull(row.defer_until),
+		decided_at: isoOrNull(row.decided_at),
+		created_at: isoOrNull(row.created_at)
 	};
 }
 

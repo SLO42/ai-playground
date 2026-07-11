@@ -379,11 +379,32 @@ function normFeature(
 		release: row.release != null ? str(row.release) : undefined
 	};
 }
-/** Coerce a SurrealDB datetime (Date / wrapped) to a plain ISO string, or omit it. */
-function isoOrUndef(v: unknown): string | undefined {
+/**
+ * Coerce a SurrealDB datetime (Date / wrapped) to a plain ISO string, or return undefined.
+ * F-013: Never returns a raw SDK datetime or str(undefined). Absent → undefined (for option<T>
+ * NONE absorption). Used by normalizers that omit the key when the value is undefined.
+ */
+export function isoOrUndef(v: unknown): string | undefined {
 	if (v == null) return undefined;
 	if (v instanceof Date) return v.toISOString();
 	return String(v);
+}
+
+/**
+ * Coerce a SurrealDB datetime (Date / wrapped) to a plain ISO string, or return null.
+ * F-013: Never returns a raw SDK datetime or str(undefined). Absent → null (for explicit
+ * null pattern). Used when a datetime field must always be present in the output (null when absent).
+ */
+export function isoOrNull(v: unknown): string | null {
+	if (v == null) return null;
+	if (v instanceof Date) {
+		const t = v.getTime();
+		return Number.isNaN(t) ? null : v.toISOString();
+	}
+	const s = String(v);
+	if (s === '' || s === 'undefined' || s === 'null') return null;
+	const d = new Date(s);
+	return Number.isNaN(d.getTime()) ? null : d.toISOString();
 }
 function normSprint(
 	row: SprintRow & { id: unknown; project: unknown; starts?: unknown; ends?: unknown; completed_at?: unknown }

@@ -200,6 +200,9 @@ function normTask(
 		proposed_by: row.proposed_by != null ? str(row.proposed_by) : undefined,
 		revision_of: row.revision_of != null ? str(row.revision_of) : undefined,
 		superseded_by: row.superseded_by != null ? str(row.superseded_by) : undefined,
+		// F-013: created_at/updated_at are SAFE to str() because they carry non-NONE DEFAULTs
+		// in the schema — they are always present. For any new OPTIONAL datetime field on task,
+		// MUST use the isoOrUndef pattern from projects/repo.ts (imports there, not here).
 		created_at: str(row.created_at),
 		updated_at: str(row.updated_at)
 	};

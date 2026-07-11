@@ -28,6 +28,7 @@ import {
 	createSprint,
 	parseGameVerifyConfig,
 	PROJECT_STATUSES,
+	isoOrNull,
 	type ProjectPlan,
 	type ReleaseRow,
 	type PhaseRow,
@@ -222,14 +223,6 @@ import {
 import { assertRecordId, assertRecordIdOfTable } from '$lib/server/db/validate';
 import { error, fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
-
-/** Coerce a (possibly SurrealDB-datetime) value to a clean ISO string, or null when absent/
- *  unparseable (F-013 — never return a raw SDK datetime to the client, never str(undefined)). */
-function isoOrNull(v: unknown): string | null {
-	if (v == null) return null;
-	const t = new Date(String(v)).getTime();
-	return Number.isNaN(t) ? null : new Date(t).toISOString();
-}
 
 /** A task row reduced to what the detail page renders (plain, serializable). */
 export interface TaskSummary {

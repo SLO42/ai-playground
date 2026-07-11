@@ -275,6 +275,46 @@ describe('runtime composes the capability set into the isolated session config',
 		expect(plan?.isolated.settings.plugins ?? []).toEqual([]);
 	});
 
+	// CCF-1 (D-036 note) — refreshCatalog rebuilds the per-boot snapshot so the NEXT spawn validates
+	// against a fresh id-set. A skill removed from the catalog after boot must stop passing.
+	it('refreshCatalog swaps the snapshot — a removed id then fails the NEXT spawn closed', async () => {
+		let plan: CcSpawnPlan | undefined;
+		const rt = new ClaudeCodeRuntime({
+			backend: mockBackend((p) => (plan = p)),
+			harnessConfigRoot: 'F:/code/v2/.harness-cc',
+			catalog: { skills: new Set(['design']), agents: new Set(), mcp: new Set() }
+		});
+		// While 'design' is catalogued the spawn composes it.
+		await drain(rt.spawn(baseReq({ capabilities: { skills: ['design'], agents: [], mcp: [] } })));
+		expect(plan?.isolated.settings.capabilities?.skills).toEqual(['design']);
+
+		// Rebuild the snapshot WITHOUT 'design' (simulates a deleted skill reconciled out at spawn time).
+		rt.refreshCatalog({ skills: new Set(), agents: new Set(), mcp: new Set() });
+		const events: RuntimeEvent[] = [];
+		for await (const e of rt.spawn(baseReq({ capabilities: { skills: ['design'], agents: [], mcp: [] } }))) {
+			events.push(e);
+		}
+		expect(events.at(-1)?.type).toBe('error');
+		expect(events.find((e) => e.type === 'error' && 'error' in e && e.error?.includes('design'))).toBeTruthy();
+	});
+
+	// CCF-1 no-op guard — a runtime that never provisioned capabilities (no catalog) must NOT flip
+	// provisioning ON via refreshCatalog: the no-catalog legacy path stays byte-identical (F-053).
+	it('refreshCatalog is a NO-OP when the runtime has no catalog (provisioning stays OFF)', async () => {
+		let plan: CcSpawnPlan | undefined;
+		const rt = new ClaudeCodeRuntime({
+			backend: mockBackend((p) => (plan = p)),
+			harnessConfigRoot: 'F:/code/v2/.harness-cc'
+			// no catalog ⇒ provisioning OFF
+		});
+		rt.refreshCatalog({ skills: new Set(['design']), agents: new Set(), mcp: new Set() });
+		// Still the legacy harness-only branch: a declared (would-be catalogued) id is NOT composed,
+		// and — crucially — an unknown id does NOT fail closed, because composeCapabilities never runs.
+		await drain(rt.spawn(baseReq({ capabilities: { skills: ['anything'], agents: [], mcp: [] } })));
+		expect(plan?.isolated.settings.capabilities).toBeUndefined();
+		expect(plan?.isolated.settings.plugins ?? []).toEqual([]);
+	});
+
 	it('a spawn with an UNKNOWN capability id fails closed (error event, no allow)', async () => {
 		const rt = new ClaudeCodeRuntime({
 			backend: mockBackend(() => {}),

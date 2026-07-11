@@ -216,6 +216,15 @@ export interface AgentRuntime {
 	 * legacy no-sessionId callers pass the slot id (byte-identical fallback).
 	 */
 	cancel(runKey: string): Promise<void>;
+	/**
+	 * CCF-1 (D-036 note) — rebuild the per-boot D-036 catalog snapshot with a freshly-read
+	 * id-set BEFORE the next spawn-plan validation, so a skill DELETED from a scope between
+	 * page visits stops passing this fail-closed security boundary. OPTIONAL: a runtime that
+	 * never provisioned capabilities (no catalog) is a no-op — this only keeps an EXISTING
+	 * snapshot fresh, never flips provisioning ON mid-flight (F-053 additive; the no-catalog
+	 * legacy path stays byte-identical). Test/mock runtimes omit it (⇒ caller's `?.` no-op).
+	 */
+	refreshCatalog?(catalog: CapabilityCatalog): void;
 }
 
 // ── Isolated config (S1 / D-002) ─────────────────────────────────────────────────
@@ -546,7 +555,9 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 	private readonly harnessConfigRoot: string;
 	private readonly gates?: Record<string, string>;
 	private readonly hooks?: Record<string, unknown>;
-	private readonly catalog?: CapabilityCatalog;
+	// CCF-1: NOT readonly — refreshCatalog() rebuilds this per-boot snapshot with a freshly-read
+	// id-set at spawn-plan time so a deleted skill stops passing the D-036 fail-closed boundary.
+	private catalog?: CapabilityCatalog;
 	private readonly mcpToolWiring?: (capabilities: CapabilitySet) => Record<string, unknown> | undefined;
 	private readonly providerHealth?: () => Promise<ProviderHealth[]>;
 	private readonly toolSurface: ToolDescriptor[];
@@ -567,6 +578,20 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 		this.mcpToolWiring = opts.mcpToolWiring;
 		this.providerHealth = opts.providerHealth;
 		this.toolSurface = opts.toolSurface ?? DEFAULT_TOOLS;
+	}
+
+	/**
+	 * CCF-1 (D-036 note) — rebuild the per-boot catalog snapshot with a freshly-read id-set so the
+	 * NEXT spawn-plan validates against a current allow-list (a skill deleted from a scope between
+	 * page visits stops passing the fail-closed boundary). NO-OP when this runtime never provisioned
+	 * capabilities (this.catalog undefined): CCF-1 only keeps an EXISTING snapshot fresh — it never
+	 * flips provisioning ON mid-flight, so the no-catalog legacy path stays byte-identical (F-053).
+	 * The caller (orchestrator drain) owns the DB read + reconcile decision (cc-config.freshenCatalog);
+	 * this layer just swaps the in-memory snapshot, keeping the runtime free of a DB/cc-config edge.
+	 */
+	refreshCatalog(catalog: CapabilityCatalog): void {
+		if (this.catalog === undefined) return; // provisioning OFF — nothing to keep fresh (byte-identical)
+		this.catalog = catalog;
 	}
 
 	/** Build the resolved spawn plan, ALWAYS attaching the isolated config (D-002). */

@@ -31,6 +31,7 @@ export {
 	mirrorDigest,
 	readCatalog,
 	catalogIds,
+	freshenCatalog,
 	scopeIdOf,
 	confineScope,
 	projectScopeOf,
@@ -46,6 +47,8 @@ export {
 	type ScopeState,
 	type CatalogScope,
 	type CatalogIds,
+	type CatalogFreshness,
+	type FreshenCatalogDeps,
 	type ScopeRowView,
 	type ScopeReconcileResult
 } from './sync';

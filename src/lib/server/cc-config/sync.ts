@@ -781,3 +781,110 @@ export async function catalogIds(db: Db): Promise<CatalogIds> {
 	};
 	return { skills: toSet(skills), agents: toSet(agents), mcp: toSet(mcp) };
 }
+
+// ── CCF-1 — spawn-time catalog freshness (D-036 additive note, 2026-07-08) ─────────────
+//
+// D-036 is a fail-closed SECURITY allow-list, so the catalog must not go stale in the
+// PERMISSIVE direction at spawn time: a skill DELETED (or promoted) from a catalog-feeding
+// scope between /claude-code page visits must not keep passing validation via the runtime's
+// per-boot snapshot. `/claude-code` reconciles only on page load; the runtime snapshot is
+// captured once at boot (harness/wiring.getRuntime). This is the spawn-time freshness seam.
+//
+// Contract (DECISIONS.md, D-036 note): probe every catalog-feeding scope's disk-vs-mirror
+// digest (syncState — cheap: one disk read + one mirror SELECT per scope, NO write). ONLY
+// when a scope is `out_of_sync` do we run the SAME reconcile the loader calls (reconcileScopes
+// — one reconcile, reused, never a second implementation) and re-read the id-set, so a deleted
+// skill leaves the catalog before validation. In-sync/unsynced scopes take the FAST PATH — no
+// reconcile — so freshness costs one digest read per scope in steady state (F-053 additive).
+//
+// Failure semantics: if the triggered reconcile THROWS, validation proceeds against the
+// LAST-GOOD id-set (re-read here) and a `staleWarning` is returned so the caller records honest
+// staleness in its analytics event — the spawn is NEVER blocked on a reconcile fault (F-014).
+// D-036 unknown-id refusal stays fail-closed regardless: composeCapabilities still rejects any
+// id absent from whatever id-set this returns.
+
+/** The result of a spawn-time catalog freshness pass ({@link freshenCatalog}). */
+export interface CatalogFreshness {
+	/** The id-set to validate against — reconciled+fresh when a scope drifted, else the current mirror. */
+	catalog: CatalogIds;
+	/** True when a drifted (out_of_sync) scope triggered `reconcileScopes` this call. */
+	reconciled: boolean;
+	/** Set ONLY when a triggered reconcile FAILED — the last-good id-set is used; an honest warning to surface. */
+	staleWarning?: string;
+}
+
+/** Injectable seams for {@link freshenCatalog} — production defaults reuse the SAME functions the
+ *  /claude-code loader calls (no second reconcile). Tests inject spies to assert the fast path
+ *  skips reconcile and to force a reconcile failure. */
+export interface FreshenCatalogDeps {
+	probeStale?: (db: Db) => Promise<boolean>;
+	reconcile?: (db: Db) => Promise<unknown>;
+	readIds?: (db: Db) => Promise<CatalogIds>;
+}
+
+/**
+ * Cheap staleness probe: is ANY catalog-feeding cc_scope `out_of_sync` on disk? One disk digest
+ * + one mirror SELECT per scope via {@link syncState} (never writes). An unreadable scope path is
+ * NOT proof of drift — it is skipped (the loader's status overlay does the same). Mirrors the
+ * loader's per-scope syncState overlay so the two freshness paths agree on what "drifted" means.
+ */
+async function anyScopeOutOfSync(db: Db): Promise<boolean> {
+	const [scopes] = await db.query<[Array<{ kind: unknown; path: unknown; project: unknown }>]>(
+		`SELECT kind, path, project FROM cc_scope;`
+	);
+	for (const sc of scopes ?? []) {
+		const kind: 'project' | 'global' = sc.kind === 'global' ? 'global' : 'project';
+		const path = typeof sc.path === 'string' ? sc.path : '';
+		if (!path) continue;
+		try {
+			const st = await syncState(db, {
+				kind,
+				claudeDir: path,
+				...(sc.project != null ? { project: String(sc.project) } : {})
+			});
+			if (st.status === 'out_of_sync') return true;
+		} catch {
+			// An unreadable/vanished scope path is not proof of catalog drift — skip it (parity
+			// with the loader's status overlay, which keeps the mirror status on a read failure).
+			continue;
+		}
+	}
+	return false;
+}
+
+/**
+ * Freshen the D-036 catalog id-set at spawn-plan time (CCF-1). See the block comment above for
+ * the security rationale + failure semantics. Reuses {@link reconcileScopes} (the loader's
+ * reconcile) and {@link catalogIds} (the mirror id-set read) — no second reconcile path.
+ */
+export async function freshenCatalog(
+	db: Db,
+	deps: FreshenCatalogDeps = {}
+): Promise<CatalogFreshness> {
+	const probeStale = deps.probeStale ?? anyScopeOutOfSync;
+	const reconcile = deps.reconcile ?? reconcileScopes;
+	const readIds = deps.readIds ?? catalogIds;
+
+	const stale = await probeStale(db);
+	if (!stale) {
+		// FAST PATH — no scope drifted; the mirror IS the fresh catalog. No reconcile (byte-identical
+		// steady state — the /claude-code reconcile is the only writer of the mirror on this path).
+		return { catalog: await readIds(db), reconciled: false };
+	}
+	try {
+		await reconcile(db);
+		return { catalog: await readIds(db), reconciled: true };
+	} catch (err) {
+		// Reconcile failed — validate against the LAST-GOOD id-set + an honest staleness warning.
+		// Never block the spawn on a reconcile fault (F-014); D-036 unknown-id refusal still
+		// fail-closes against whatever the last-good mirror holds.
+		return {
+			catalog: await readIds(db),
+			reconciled: false,
+			staleWarning:
+				`cc-config catalog reconcile failed at spawn time; validating against the ` +
+				`last-good snapshot (a deleted/edited scope may still pass until the next ` +
+				`successful reconcile): ${(err as Error).message}`
+		};
+	}
+}

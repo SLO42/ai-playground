@@ -39,6 +39,7 @@ import type {
 	ToolPolicy
 } from '../runtime/index';
 import { launchSession, type LaunchResult, type LaunchDeps } from '../sessions/launch';
+import { freshenCatalog } from '../cc-config/index';
 import { getProject } from '../projects/repo';
 import { setStatus, resetStuckTaskToFailed, resetStuckTaskToDone } from '../tasks/repo';
 import { writeAgentEvent } from '../analytics/events';
@@ -906,6 +907,44 @@ export class Orchestrator {
 			// rationale+intent). Awaiting a sync stub return is a no-op, so test/degenerate seams
 			// keep working unchanged. Resolved once per claim — the exactly-one-spawn invariant.
 			const route = await this.#route(taskId, projectId);
+			// CCF-1 (D-036 note) — freshen the D-036 catalog snapshot the runtime validates this
+			// spawn's capability set against, BEFORE the plan is built. `/claude-code` reconciles
+			// only on page load and the runtime's snapshot is captured once at boot, so a skill
+			// DELETED from a scope between visits would keep passing this fail-closed security
+			// boundary. A cheap per-scope digest probe reconciles ONLY when a catalog-feeding scope
+			// drifted (out_of_sync), then rebuilds the runtime snapshot. Best-effort + fail-open
+			// (F-014): a probe/reconcile fault NEVER crashes the drain — it falls back to the
+			// last-good snapshot and records an HONEST staleness analytics event (D-036 unknown-id
+			// refusal stays fail-closed regardless). refreshCatalog is a no-op when the runtime
+			// never provisioned capabilities (no catalog) — the legacy path stays byte-identical.
+			try {
+				const fresh = await freshenCatalog(this.#db);
+				this.#runtime.refreshCatalog?.({
+					skills: fresh.catalog.skills,
+					agents: fresh.catalog.agents,
+					mcp: fresh.catalog.mcp
+				});
+				if (fresh.staleWarning) {
+					await writeAgentEvent(this.#db, {
+						type: 'error',
+						project: projectId,
+						detail: {
+							by: 'orchestrator',
+							reason: 'cc-config-catalog-stale',
+							error: fresh.staleWarning,
+							taskId
+						}
+					}).catch(() => {});
+				}
+			} catch (freshErr) {
+				// The freshen path is itself best-effort: a failure here must not block the spawn —
+				// it proceeds against the runtime's existing (last-good) snapshot. Named + logged
+				// (F-008 "every error has a name"); the spawn's D-036 validation still fail-closes.
+				console.warn(
+					`[orchestrator] cc-config catalog freshen skipped for task ${taskId} ` +
+						`(spawning against last-good snapshot): ${(freshErr as Error).message}`
+				);
+			}
 			const res: LaunchResult = await launchSession({
 				db: this.#db,
 				bus: this.#bus,

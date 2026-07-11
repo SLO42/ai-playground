@@ -158,9 +158,11 @@ export interface EnforceTokenBudgetOpts {
 	 * EXEMPT from the TOKEN budget gate: the always-on local brain (the concierge Stage-2 turn on
 	 * Ollama) is genuinely free, so gating it on a token ceiling contradicts the local-first design
 	 * (COST-GOVERNANCE-SPEC §1 invariant 5 — the $0 local floor is the FIRST cost control, not a
-	 * capped resource). Tokens are STILL metered at the events.ts completion write for observability;
-	 * this only skips the GATE. A CLOUD provider (or an absent provider — the safe, gated default)
-	 * falls through and stays gated. See {@link isLocalProvider}.
+	 * capped resource). This ONLY skips the GATE; it does not itself record spend. A local turn run
+	 * through a launched session is still metered at the events.ts completion write, but a non-session
+	 * direct call — the concierge Stage-2 turn — writes no completion row, so its genuinely-$0 spend is
+	 * simply not counted (an accepted observability gap). A CLOUD provider (or an absent provider — the
+	 * safe, gated default) falls through and stays gated. See {@link isLocalProvider}.
 	 */
 	provider?: string;
 	/**
@@ -197,8 +199,10 @@ export interface EnforceResult {
 /**
  * LOCAL/$0 provider exemption (COST-GOVERNANCE-SPEC §1 invariant 5). The always-on local brain runs
  * on Ollama, which is genuinely free — gating a $0 turn on a real-money TOKEN budget contradicts the
- * local-first design, so a local provider is never refused by the budget. Tokens are still metered at
- * the events.ts write for observability; only the GATE is skipped. An ABSENT/unknown provider is NOT
+ * local-first design, so a local provider is never refused by the budget. The exemption only skips the
+ * GATE: a local turn run through a launched session is still metered at the events.ts completion write,
+ * but a non-session direct call (the concierge Stage-2 turn) writes no completion row and is un-metered.
+ * An ABSENT/unknown provider is NOT
  * treated as local (the safe, gated default — a caller must positively declare 'local'/'ollama').
  */
 export function isLocalProvider(provider: string | undefined): boolean {
@@ -281,8 +285,9 @@ export function __resetReservationsForTest(): void {
  * read+decide window is SERIALIZED (FIFO) and accounts for in-flight reservations so concurrent
  * launches cannot all slip under the ceiling (the concurrency-overshoot guard above). Shadow
  * paths, all built + tested:
- *   • LOCAL/$0 provider (isLocalProvider)      → EXEMPT: return immediately, NO gate (still metered
- *     at events.ts). The $0 local floor is the first cost control, not a capped resource.
+ *   • LOCAL/$0 provider (isLocalProvider)      → EXEMPT: return immediately, NO gate (the gate is
+ *     skipped; metering, if any, is separate — session paths record at events.ts, the concierge
+ *     direct call does not). The $0 local floor is the first cost control, not a capped resource.
  *   • budget ≤ 0 (uncapped / 0-sentinel)      → return immediately, NO query/lock (cheap; the shipped
  *     default is uncapped so an untuned deploy pays zero overhead).
  *   • counter query THROWS (DB fault)          → FAIL-OPEN: allow + a named warning. A budget is a
@@ -303,7 +308,8 @@ export function __resetReservationsForTest(): void {
  */
 export async function enforceTokenBudget(db: Db, opts: EnforceTokenBudgetOpts): Promise<EnforceResult> {
 	// LOCAL/$0 exemption: a genuinely-free provider is never gated on the real-money token budget
-	// (still metered at events.ts). Checked BEFORE the lock so a $0 turn pays zero serialization cost.
+	// (the GATE is skipped only; this does not itself meter). Checked BEFORE the lock so a $0 turn
+	// pays zero serialization cost.
 	if (isLocalProvider(opts.provider)) {
 		return { enforced: false, spent: 0, budget: 0, overrode: false, release: NOOP_RELEASE };
 	}

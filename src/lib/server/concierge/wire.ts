@@ -149,14 +149,20 @@ function readProviderEndpoint(dir: string, provider: string, fallback: string): 
 function providerToLlmFn(provider: Provider, db: Db, providerKind: string): ConciergeLlmFn {
 	return async ({ system, user }) => {
 		// CG-2 (COST-GOVERNANCE-SPEC) — the concierge Stage-2 turn is a direct provider call (NOT
-		// launchSession), so it is metered HERE at its one bounded-call site with the same helper +
-		// semantics. It is a background/autonomous consult (no operator override), so over budget ⇒
-		// TokenBudgetExceededError, which runOpenQuestionTurn's own try/catch turns into an HONEST
-		// "model unavailable" reply (F-008 — never a fabricated answer). Uncapped (0) ⇒ a cheap no-op.
+		// launchSession), so CG-2's ROLE at this call site is the budget GATE, NOT metering: this
+		// path writes NO agent_event completion row, so tokensSpentSince never counts this turn's
+		// spend. The concierge is therefore un-metered on BOTH the local and the cloud path — a known
+		// observability gap (tracked as a followUp, not fixed here); do not read the gate below as
+		// "still metered." It is a background/autonomous consult (no operator override), so over
+		// budget ⇒ TokenBudgetExceededError, which runOpenQuestionTurn's own try/catch turns into an
+		// HONEST "model unavailable" reply (F-008 — never a fabricated answer). Uncapped (0) ⇒ a
+		// cheap no-op.
 		// LOCAL EXEMPTION: the always-on local brain runs on Ollama ($0), so `provider` is threaded in
-		// and enforceTokenBudget skips the gate for it (still metered for observability). Only a CLOUD
-		// concierge turn is gated. The reservation the gate takes (cloud path) is released in the
-		// finally once this turn's spend is metered — tight concurrency accounting (finding #1).
+		// and enforceTokenBudget skips the gate for it entirely (a genuinely-free turn is never refused
+		// on a real-money ceiling). Only a CLOUD concierge turn is gated — and note it is gated against
+		// a global budget its own (un-metered) consumption never contributes to (the same gap). The
+		// reservation the gate takes on the cloud path is released in the finally when this turn
+		// completes — tight concurrency accounting (finding #1).
 		const gate = await enforceTokenBudget(db, {
 			budget: resolveDailyTokenBudget(),
 			source: 'concierge',

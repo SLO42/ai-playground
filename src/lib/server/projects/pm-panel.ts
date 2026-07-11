@@ -52,6 +52,7 @@ import {
 	getOpenBriefForArtifact,
 	markBriefDecided,
 	BriefError,
+	type BriefArtifactKind,
 	type BriefChallenge,
 	type DecisionBriefRow
 } from './briefs';
@@ -60,6 +61,16 @@ import { resolvePmRoute } from './pm-session';
 import { parseCron, cronMatches } from './pm-triggers';
 import { ProposalContractError } from './pm-proposals';
 import { getProject } from './repo';
+// PJH-1 (PROJECTS-SPEC §7) — the per-kind decide-effects the ONE operator brief surface routes
+// through. Each is the kind's EXISTING gate/effect (F-055: route every gated state-change through
+// the existing gate — NEVER re-implement one inline): cert_hire → the workforce hire path (its D-039
+// B4 operator gate intact); repo_create → the RC-2 outward gate (via the proposal decide, F-050
+// main-default normalization lives inside runRepoCreationGate). These are called ONLY from inside the
+// per-brief ceremony lock below — the analytics + refusal policy stays here; the effect stays theirs.
+import { applyHireDecision } from '../workforce/recruiter-hire';
+import { applyRepoCreateDecision } from './repo-create-proposal';
+import type { GitHubClient } from '../sync/gh-client';
+import type { CommandRunner } from '../orchestrator/post-task';
 
 // ── Named errors ──────────────────────────────────────────────────────────────────
 
@@ -680,10 +691,64 @@ function briefEvidence(task: TaskRow, verdicts: PanelVerdictRow[]): string[] {
 
 export type BriefAction = 'approve' | 'reject' | 'defer';
 
+/**
+ * The operator asked for an action this brief KIND does not support — e.g. DEFER on an
+ * approve/reject-only hire-gate (cert_hire) or repo-create brief. This is a client-side bad-action
+ * (the surface HIDES the Defer control for those kinds; this is the server backstop), so the route
+ * maps it to 400 — DISTINCT from a 409 state/authority refusal. It extends BriefError so every
+ * existing `instanceof BriefError` catch still absorbs it (the route checks the subclass FIRST → 400).
+ */
+export class BriefActionError extends BriefError {
+	// BriefError types `name` as the literal 'BriefError', so a subclass cannot RE-DECLARE the field to
+	// a different literal (override-compat). Set it at runtime via the constructor instead — honest name,
+	// no type conflict, and `instanceof BriefError` still absorbs it (the route checks the subclass first).
+	constructor(message?: string) {
+		super(message);
+		(this as { name: string }).name = 'BriefActionError';
+	}
+}
+
+/**
+ * Options carried into a brief decision. Beyond configDir (task defer-window derivation), the
+ * operator-gated kinds need their B4 inputs threaded through the ONE dispatcher (the route sets these
+ * from the operator's loopback request, NEVER from agent text — the integrity wall):
+ *   • operatorConfirmed — REQUIRED true for a cert_hire / repo_create APPROVE (fail-closed, no auto-effect).
+ *   • staffingProposal / charterNote — OPTIONAL cert_hire staffing feed (screened downstream, D-026).
+ *   • branch — OPTIONAL repo_create push branch (defaults 'main' inside the gate, F-050).
+ *   • client / gitRunner — TEST SEAMS (repo_create only): inject stubbed gh/git so a routing test drives
+ *     the gate with NO real network. Production callers omit them (mirrors ApplyRepoCreateInput).
+ */
+export interface BriefDecisionOpts {
+	configDir?: string;
+	operatorConfirmed?: boolean;
+	staffingProposal?: string;
+	charterNote?: string;
+	branch?: string;
+	client?: GitHubClient;
+	gitRunner?: CommandRunner;
+}
+
 export interface BriefDecisionResult {
+	/** Which artifact_kind's effect ran — the route renders per kind (a discriminated surface). */
+	kind: BriefArtifactKind;
 	brief: DecisionBriefRow;
-	/** The artifact's resulting status (task briefs), when it changed. */
+	/** task: the artifact task's resulting status, when it changed. */
 	taskStatus?: string;
+	/** cert_hire: the hire effect's surface fields (from applyHireDecision). */
+	hire?: {
+		recommendation: 'hire' | 'no_hire';
+		lifecycle: string;
+		certFlipped: boolean;
+		staffed?: boolean;
+		staffId?: string;
+	};
+	/** repo_create: the RC-2 gate's surface fields (from applyRepoCreateDecision). */
+	repo?: {
+		created: boolean;
+		failedAt?: string;
+		summary?: string;
+		repoUrl?: string;
+	};
 }
 
 /** The documented defer fallback: pm-cadence-derived when a cadence is set, else
@@ -777,25 +842,71 @@ export async function applyBriefDecision(
 	db: Db,
 	briefId: string,
 	action: BriefAction,
-	opts: { configDir?: string } = {}
+	opts: BriefDecisionOpts = {}
 ): Promise<BriefDecisionResult> {
-	return withBriefLock(briefId, () => applyBriefDecisionInner(db, briefId, action, opts));
+	// Read ONCE to route on the (immutable) artifact_kind — this read only chooses the per-kind
+	// handler; it NEVER gates an effect. The status pre-check that guards every effect is re-read
+	// INSIDE the lock below (a pre-lock status read could be stale against a serialized winner).
+	const routing = await getBrief(db, briefId);
+	if (!routing) throw new BriefError(`decision brief not found: ${briefId}`);
+
+	// Per-brief ceremony serialization across ALL kinds (16.4 gap 6, generalized to the whole decision
+	// surface): two simultaneous cross-action decides on the SAME brief serialize here so the loser
+	// re-reads the winner's committed status and refuses with ZERO effects — the operator-authority
+	// invariant. The delegated cert_hire/repo_create effects run inside this lock too (their own
+	// markBriefDecided status-guard is the durable backstop; the lock removes the interleave window).
+	return withBriefLock(briefId, async () => {
+		const brief = await getBrief(db, briefId);
+		if (!brief) throw new BriefError(`decision brief vanished mid-decision: ${briefId}`);
+		switch (brief.artifact_kind) {
+			case 'task':
+				return applyTaskBriefDecision(db, brief, action, opts);
+			case 'cert_hire':
+				return applyCertHireBriefDecision(db, brief, action, opts);
+			case 'repo_create':
+				return applyRepoCreateBriefDecision(db, brief, action, opts);
+			case 'review_proposal':
+			case 'fixture_proposal':
+				// Declared brief kinds that are NEVER minted as operator briefs (grep-verified: these are
+				// panel_verdict artifact kinds — a review/fixture PROPOSAL is JUDGED by a panel, not decided on
+				// a brief) and carry NO built decide-effect. Honest unbuilt seam: a typed refusal names the gap;
+				// never a crash, never a fake success (F-008).
+				throw new BriefError(
+					`brief ${briefId} targets '${brief.artifact_kind}' — that kind is a panel-verdict artifact, ` +
+						`not an operator decision brief; it has no decide-effect and the decision surface refuses it honestly`
+				);
+			default:
+				// Fail-closed on any future/unknown kind (D-024 spirit on the operator-authority surface):
+				// never silently no-op, never crash — a typed refusal. The schema ASSERT admits only the kinds
+				// handled above, so this is the defensive net for a kind added to the enum without a handler.
+				throw new BriefError(
+					`brief ${briefId} targets unknown artifact_kind '${String(brief.artifact_kind)}' — ` +
+						`refusing (fail-closed decision surface: no decide-effect is wired for this kind)`
+				);
+		}
+	});
 }
 
-async function applyBriefDecisionInner(
+// ── Per-kind decide handlers (each routes through the kind's EXISTING gate/effect) ────────────────
+
+/**
+ * TASK briefs — the panel-gated proposed→ready promotion (D-039 propose-authority path). Effects are
+ * mechanical (§2.2, D-035 server-side); effect-first / ceremony-last so a crash between them converges
+ * on re-POST (the brief stays OPEN until the ceremony write lands). Receives the FRESH in-lock brief.
+ *   approve → task 'proposed'→'ready'; pushback-verdicts close 'overridden_by_operator'; approve-
+ *             verdicts stay open for the upheld-on-done closure.
+ *   reject  → task → 'withdrawn'; approve-verdicts close 'overridden_by_operator', pushback-verdicts
+ *             close 'upheld' (the rejection upheld them).
+ *   defer   → brief deferred with a cadence-derived window; the task stays 'proposed'; the structural
+ *             fingerprint suppresses re-proposals.
+ */
+async function applyTaskBriefDecision(
 	db: Db,
-	briefId: string,
+	brief: DecisionBriefRow,
 	action: BriefAction,
 	opts: { configDir?: string } = {}
 ): Promise<BriefDecisionResult> {
-	const brief = await getBrief(db, briefId);
-	if (!brief) throw new BriefError(`decision brief not found: ${briefId}`);
-	if (brief.artifact_kind !== 'task') {
-		throw new BriefError(
-			`brief ${briefId} targets '${brief.artifact_kind}' — only task briefs are decidable in this wave (honest gap)`
-		);
-	}
-
+	const briefId = brief.id;
 	const task = await getTask(db, brief.artifact);
 	if (!task) throw new BriefError(`brief artifact vanished: ${brief.artifact}`);
 
@@ -811,7 +922,9 @@ async function applyBriefDecisionInner(
 	if (brief.status !== 'open') {
 		const terminal = action === 'approve' ? 'approved' : action === 'reject' ? 'rejected' : 'deferred';
 		if (brief.status === terminal) {
-			return { brief, taskStatus: task.status };
+			// Idempotent absorb (same answer re-POSTed): the original decision's effects + its analytics
+			// row already stand — do NOT re-write analytics (that would double-count the one decision).
+			return { kind: 'task', brief, taskStatus: task.status };
 		}
 		throw new BriefError(
 			`decision brief ${briefId} already '${brief.status}' — refusing '${action}' ` +
@@ -836,7 +949,14 @@ async function applyBriefDecisionInner(
 			if (v.verdict === 'pushback') await closePanelVerdictOutcome(db, v.id, 'overridden_by_operator');
 		}
 		const decided = await markBriefDecided(db, brief.id, 'approved');
-		return { brief: decided, taskStatus: ready?.status ?? task.status };
+		await recordBriefDecisionAnalytics(
+			db,
+			decided,
+			'approve',
+			`task ${task.id} → ${ready?.status ?? task.status}`,
+			`panel-gated promotion approved by the operator: ${brief.ask}`
+		);
+		return { kind: 'task', brief: decided, taskStatus: ready?.status ?? task.status };
 	}
 
 	if (action === 'reject') {
@@ -850,7 +970,14 @@ async function applyBriefDecisionInner(
 			);
 		}
 		const decided = await markBriefDecided(db, brief.id, 'rejected');
-		return { brief: decided, taskStatus: withdrawn?.status ?? task.status };
+		await recordBriefDecisionAnalytics(
+			db,
+			decided,
+			'reject',
+			`task ${task.id} → ${withdrawn?.status ?? task.status}`,
+			`operator rejected the panel-gated promotion: ${brief.ask}`
+		);
+		return { kind: 'task', brief: decided, taskStatus: withdrawn?.status ?? task.status };
 	}
 
 	// defer — the ceremony IS the effect here (the task stays 'proposed').
@@ -869,7 +996,141 @@ async function applyBriefDecisionInner(
 		source: 'decision-brief',
 		confidence: 1.0
 	});
-	return { brief: decided, taskStatus: task.status };
+	// First-class analytics of the DECISION itself (kind/decision/outcome/why), distinct from the
+	// suppression 'observation' above (that feeds the WORKFORCE §8 one-click list; this feeds the
+	// decision audit). Content deliberately carries no 'DEFERRED' token so the two rows never conflate.
+	await recordBriefDecisionAnalytics(
+		db,
+		decided,
+		'defer',
+		`task ${task.id} stays proposed; suppressed until ${until.toISOString()}`,
+		brief.ask
+	);
+	return { kind: 'task', brief: decided, taskStatus: task.status };
+}
+
+/**
+ * CERT_HIRE briefs — route through the EXISTING workforce hire path (applyHireDecision; HR-5 §7.5, B4).
+ * The hire gate is approve/reject ONLY: a hire-gate has no defer window (the candidate stays OPEN until
+ * the operator disposes), so a defer is a typed refusal — never a crash, never a silent no-op. APPROVE
+ * requires operatorConfirmed (B4 fail-closed — enforced INSIDE applyHireDecision; the dispatcher only
+ * threads it through). The cert flip + staffing feed live in applyHireDecision (F-055: never inline).
+ */
+async function applyCertHireBriefDecision(
+	db: Db,
+	brief: DecisionBriefRow,
+	action: BriefAction,
+	opts: BriefDecisionOpts
+): Promise<BriefDecisionResult> {
+	if (action === 'defer') {
+		throw new BriefActionError(
+			`brief ${brief.id} is a cert_hire (hire-gate) brief — it is approve/reject only; there is no defer ` +
+				`(the candidate stays open until the operator disposes)`
+		);
+	}
+	const result = await applyHireDecision(db, brief.id, action, {
+		operatorConfirmed: opts.operatorConfirmed === true,
+		...(opts.staffingProposal ? { staffingProposal: opts.staffingProposal } : {}),
+		...(opts.charterNote !== undefined ? { charterNote: opts.charterNote } : {})
+	});
+	await recordBriefDecisionAnalytics(
+		db,
+		result.brief,
+		action,
+		action === 'approve'
+			? `cert ${result.certFlipped ? 'flipped→passed' : 'already-passed (no-op)'}${result.staffing ? '; staffing fed' : ''}`
+			: 'no cert flip, no staffing (reject withholds)',
+		`recommendation=${result.recommendation}; lifecycle=${result.lifecycle}`
+	);
+	return {
+		kind: 'cert_hire',
+		brief: result.brief,
+		hire: {
+			recommendation: result.recommendation,
+			lifecycle: result.lifecycle,
+			certFlipped: result.certFlipped,
+			...(result.staffing ? { staffed: result.staffing.staffed, staffId: result.staffing.staff.id } : {})
+		}
+	};
+}
+
+/**
+ * REPO_CREATE briefs — route through the EXISTING RC-2 outward gate (applyRepoCreateDecision; RC-3, B4).
+ * Approve/reject ONLY (the project stays repo-less until decided) — a defer is a typed refusal. APPROVE
+ * requires operatorConfirmed (B4 fail-closed — enforced INSIDE applyRepoCreateDecision, the integrity
+ * wall a PM/agent cannot cross). The consent record + confirm-token derivation + gate drive (with F-050
+ * main-default branch normalization) live in applyRepoCreateDecision (F-055: never inline).
+ */
+async function applyRepoCreateBriefDecision(
+	db: Db,
+	brief: DecisionBriefRow,
+	action: BriefAction,
+	opts: BriefDecisionOpts
+): Promise<BriefDecisionResult> {
+	if (action === 'defer') {
+		throw new BriefActionError(
+			`brief ${brief.id} is a repo_create brief — it is approve/reject only; there is no defer ` +
+				`(the project stays repo-less until the operator disposes)`
+		);
+	}
+	const result = await applyRepoCreateDecision(db, brief.id, action, {
+		operatorConfirmed: opts.operatorConfirmed === true,
+		...(opts.branch ? { branch: opts.branch } : {}),
+		...(opts.client ? { client: opts.client } : {}),
+		...(opts.gitRunner ? { gitRunner: opts.gitRunner } : {})
+	});
+	await recordBriefDecisionAnalytics(
+		db,
+		result.brief,
+		action,
+		action === 'approve'
+			? result.gate?.created
+				? `repo created (${result.repoUrl ?? 'url pending'})`
+				: `repo gate red at ${result.gate?.failedAt ?? '—'} (brief stays open)`
+			: 'no repo created (reject withholds)',
+		result.gate?.summary ?? 'operator disposed the repo-create recommendation'
+	);
+	return {
+		kind: 'repo_create',
+		brief: result.brief,
+		repo: {
+			created: result.gate?.created ?? false,
+			...(result.gate?.failedAt ? { failedAt: result.gate.failedAt } : {}),
+			...(result.gate?.summary ? { summary: result.gate.summary } : {}),
+			...(result.repoUrl ? { repoUrl: result.repoUrl } : {})
+		}
+	};
+}
+
+/**
+ * First-class analytics on an operator brief decision (the studio records HOW/WHY a decision was made —
+ * never a flat event; analytics-first rule). Best-effort + wrapped-and-swallowed (§5 invariant 8): an
+ * analytics append NEVER fails the decision it records nor crashes the server (F-014/F-048). Written as
+ * a typed pm_memory 'decision' row ONLY for a project-bearing brief — pm_memory is project-scoped, so a
+ * project-less brief (a cert_hire is raised WITHOUT a project) is skipped honestly rather than attributed
+ * to a fabricated project (its own audit lives in the workforce role_event/lifecycle rows). Idempotent by
+ * placement: called only on the ACTUAL transition (never the absorb path), so a re-POST never re-counts.
+ */
+async function recordBriefDecisionAnalytics(
+	db: Db,
+	brief: DecisionBriefRow,
+	action: BriefAction,
+	outcome: string,
+	why: string
+): Promise<void> {
+	if (!brief.project) return;
+	await addPmMemory(db, {
+		project: brief.project,
+		kind: 'decision',
+		content: `Operator decision on ${brief.artifact_kind} brief ${brief.id}: decision=${action}; outcome=${outcome}. Why: ${why}`,
+		source: 'decision-brief',
+		confidence: 1.0,
+		related_to: brief.id
+	}).catch((err) =>
+		console.warn(
+			`[pm-panel] brief-decision analytics append failed (decision unaffected): ${(err as Error).message}`
+		)
+	);
 }
 
 // ── Proposals queue read model (the PM tab surface) ───────────────────────────────

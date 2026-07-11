@@ -149,12 +149,15 @@ export {
 	buildValidatorPrompt,
 	ValidatorContractError,
 	PanelInputError,
+	BriefActionError,
 	type PanelDecision,
 	type PanelRunResult,
 	type PanelDeps,
 	type PanelRunOpts,
 	type ProposalQueueEntry,
 	type BriefAction,
+	type BriefDecisionOpts,
+	type BriefDecisionResult,
 	type ValidatorVerdict
 } from './pm-panel';
 // PM-LC-1 — the PM proposal GENERATOR (PM-LIFECYCLE-SPEC §PM-LC-1; the missing GENERATE step).

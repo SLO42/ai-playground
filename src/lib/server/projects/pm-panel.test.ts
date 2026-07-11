@@ -11,12 +11,23 @@ import {
 	type CcSpawnPlan,
 	type RuntimeEvent
 } from '../runtime/index';
-import { createProject } from './repo';
+import { createProject, getProject } from './repo';
 import { getTask, setStatus } from '../tasks/repo';
-import { listPanelVerdictsForArtifact } from '../workforce/repo';
-import { createPm, listPmMemory } from './pm-repo';
-import { listOpenBriefs, getBrief, BriefError } from './briefs';
+import {
+	listPanelVerdictsForArtifact,
+	createRole,
+	createRoleVersion,
+	createInterviewRun,
+	getRoleVersion
+} from '../workforce/repo';
+import { createPm, getPm, listPmMemory } from './pm-repo';
+import { listOpenBriefs, getBrief, createDecisionBrief, BriefError } from './briefs';
 import { proposeTask, type ProposeTaskInput } from './pm-proposals';
+// PJH-1 — the per-kind decide effects the ONE dispatcher (applyBriefDecision) routes through.
+import { raiseHireBrief, HireGateError } from '../workforce/recruiter-hire';
+import { proposeRepoCreate, RepoCreateGateError } from './repo-create-proposal';
+import type { GitHubClient, CreateRepoInput, CreateRepoOutcome, AuthStatus } from '../sync/gh-client';
+import type { CommandResult, CommandRunner } from '../orchestrator/post-task';
 import {
 	runValidationPanel,
 	applyBriefDecision,
@@ -572,6 +583,236 @@ describe('applyBriefDecision — approve / reject / defer with §2.2 closure', (
 		await withdrawPmProposal(db, task.id);
 		const re = await proposeTask(db, proposalInput());
 		expect(re.outcome).toBe('defer_suppressed');
+	});
+});
+
+// ── PJH-1: per-kind decision-brief routing (the ONE operator-authority dispatcher) ─────────────
+// Red-team surface: applyBriefDecision must route EACH artifact_kind through its EXISTING gate/effect
+// (never re-implement inline, F-055), keep the B4 operator gate intact per kind, refuse an unbuilt kind
+// honestly (typed, not a crash), and leave the task path byte-identical. Every assertion reads back a
+// live row the effect actually wrote (real-surreal; F-008 — no stub).
+
+// A controllable fake GitHubClient (NO network) — mirrors repo-create-proposal.test.ts.
+class FakeGh implements GitHubClient {
+	authed = true;
+	createOutcome: CreateRepoOutcome = { kind: 'created', url: 'https://github.com/me/repo-host' };
+	createCalls: Array<{ input: CreateRepoInput; cwd: string }> = [];
+	async isAuthenticated(): Promise<AuthStatus> {
+		return this.authed ? { ok: true } : { ok: false, reason: 'GitHub CLI is not authenticated.' };
+	}
+	async resolveRepo(): Promise<string | null> {
+		return null;
+	}
+	async listIssues() {
+		return [];
+	}
+	async createIssue() {
+		return { number: 1, url: 'x' };
+	}
+	async updateIssue() {}
+	async createRepo(input: CreateRepoInput, cwd: string): Promise<CreateRepoOutcome> {
+		this.createCalls.push({ input, cwd });
+		return this.createOutcome;
+	}
+}
+
+function fakeGit() {
+	const calls: Array<{ file: string; args: string[]; cwd: string }> = [];
+	const fn: CommandRunner = async (file, args, o): Promise<CommandResult> => {
+		calls.push({ file, args: [...args], cwd: o.cwd });
+		return { code: 0, stdout: '', stderr: '' };
+	};
+	return { fn, calls };
+}
+
+let hireSeq = 0;
+/** Seed a role + interviewing version + a TERMINAL PASSED interview_run, then raise its cert_hire brief. */
+async function seedCertHireBrief() {
+	const role = await createRole(db, {
+		slug: `hiretarget${++hireSeq}`,
+		name: 'Hire Target',
+		purpose: 'catch a specific defect class'
+	});
+	const version = await createRoleVersion(db, {
+		role: role.id,
+		prompt_core: 'find the planted defect and nothing else',
+		default_tier: 'sonnet'
+	});
+	// createInterviewRun flips the draft version → 'interviewing' (the campaign coupling).
+	const run = await createInterviewRun(db, {
+		role_version: version.id,
+		tier: 'sonnet',
+		provider: 'claude',
+		model_id: 'claude-test',
+		fixture_set_sha: 'sha-test',
+		planted_total: 2,
+		pass_criteria: { pass_recall: 1.0, max_false_positives: 0 }
+	});
+	// Finalize to a terminal PASSED run (the fields buildHireDecision reads — a real green campaign).
+	await db.query(`UPDATE $rid SET status = 'passed', planted_found = 2, false_positives = 0;`, {
+		rid: new StringRecordId(run.id)
+	});
+	const brief = await raiseHireBrief(db, run.id);
+	return { role, version, run, brief };
+}
+
+describe('applyBriefDecision — cert_hire routes through the workforce hire path (B4 intact)', () => {
+	it('approve WITH operatorConfirmed flips the cert (routes to applyHireDecision)', async () => {
+		const { version, brief } = await seedCertHireBrief();
+		const out = await applyBriefDecision(db, brief.id, 'approve', { operatorConfirmed: true });
+		expect(out.kind).toBe('cert_hire');
+		expect(out.brief.status).toBe('approved');
+		expect(out.hire?.certFlipped).toBe(true);
+		expect(out.hire?.recommendation).toBe('hire');
+		// The cert really flipped on the version (F-008 — read back the live lifecycle).
+		expect((await getRoleVersion(db, version.id))?.lifecycle).toBe('passed');
+	});
+
+	it('approve WITHOUT operatorConfirmed fails CLOSED (B4) — no cert flip, brief stays open', async () => {
+		const { version, brief } = await seedCertHireBrief();
+		await expect(applyBriefDecision(db, brief.id, 'approve', { operatorConfirmed: false })).rejects.toBeInstanceOf(
+			HireGateError
+		);
+		expect((await getRoleVersion(db, version.id))?.lifecycle).toBe('interviewing'); // untouched
+		expect((await getBrief(db, brief.id))?.status).toBe('open'); // re-decidable
+	});
+
+	it('reject withholds (no cert flip); brief rejected', async () => {
+		const { version, brief } = await seedCertHireBrief();
+		const out = await applyBriefDecision(db, brief.id, 'reject');
+		expect(out.kind).toBe('cert_hire');
+		expect(out.brief.status).toBe('rejected');
+		expect(out.hire?.certFlipped).toBe(false);
+		expect((await getRoleVersion(db, version.id))?.lifecycle).toBe('interviewing'); // not certified
+	});
+
+	it('defer is a TYPED refusal — a hire-gate is approve/reject only (no crash, no effect)', async () => {
+		const { brief } = await seedCertHireBrief();
+		await expect(applyBriefDecision(db, brief.id, 'defer')).rejects.toBeInstanceOf(BriefError);
+		expect((await getBrief(db, brief.id))?.status).toBe('open'); // untouched
+	});
+});
+
+describe('applyBriefDecision — repo_create routes through the RC-2 outward gate (B4 intact)', () => {
+	async function repoCreateBrief() {
+		await createPm(db, { project: projectId, name: 'Vesper' }); // default authority 'act'
+		const { brief } = await proposeRepoCreate(db, { project: projectId, name: 'repo-host' });
+		return brief;
+	}
+
+	it('approve WITH operatorConfirmed drives the gate (stubbed gh): repo created, brief approved', async () => {
+		const brief = await repoCreateBrief();
+		const gh = new FakeGh();
+		const git = fakeGit();
+		const out = await applyBriefDecision(db, brief.id, 'approve', {
+			operatorConfirmed: true,
+			client: gh,
+			gitRunner: git.fn
+		});
+		expect(out.kind).toBe('repo_create');
+		expect(out.repo?.created).toBe(true);
+		expect(out.repo?.repoUrl).toBe('https://github.com/me/repo-host');
+		expect(out.brief.status).toBe('approved');
+		expect(gh.createCalls.length).toBe(1); // the gate really called the (stubbed) outward create
+		expect((await getProject(db, projectId))?.repo_url).toBe('https://github.com/me/repo-host');
+	});
+
+	it('approve WITHOUT operatorConfirmed fails CLOSED (B4 wall) — nothing created, brief open', async () => {
+		const brief = await repoCreateBrief();
+		const gh = new FakeGh();
+		const git = fakeGit();
+		await expect(
+			applyBriefDecision(db, brief.id, 'approve', { operatorConfirmed: false, client: gh, gitRunner: git.fn })
+		).rejects.toBeInstanceOf(RepoCreateGateError);
+		expect(gh.createCalls.length).toBe(0);
+		expect((await getPm(db, projectId))?.repo_create_preauthorized).toBe(false);
+		expect((await getBrief(db, brief.id))?.status).toBe('open');
+	});
+
+	it('reject creates nothing; brief rejected', async () => {
+		const brief = await repoCreateBrief();
+		const out = await applyBriefDecision(db, brief.id, 'reject');
+		expect(out.kind).toBe('repo_create');
+		expect(out.repo?.created).toBe(false);
+		expect(out.brief.status).toBe('rejected');
+		expect((await getProject(db, projectId))?.repo_url).toBeFalsy();
+	});
+
+	it('defer is a TYPED refusal — repo_create is approve/reject only', async () => {
+		const brief = await repoCreateBrief();
+		await expect(applyBriefDecision(db, brief.id, 'defer')).rejects.toBeInstanceOf(BriefError);
+		expect((await getBrief(db, brief.id))?.status).toBe('open');
+	});
+});
+
+describe('applyBriefDecision — unbuilt / unknown kinds refuse honestly (fail-closed, never a crash)', () => {
+	it.each(['review_proposal', 'fixture_proposal'] as const)(
+		'%s brief → typed BriefError (panel-verdict kind, no decide-effect)',
+		async (kind) => {
+			// These kinds ARE admitted by the schema ASSERT but are NEVER minted as operator briefs (they
+			// are panel_verdict artifact kinds). A brief carrying one has no decide-effect → honest refusal.
+			const brief = await createDecisionBrief(db, {
+				project: projectId,
+				artifact: projectId, // any real record id; the refusal precedes any artifact read
+				artifact_kind: kind,
+				classification: 'confirm',
+				ask: 'decide this?',
+				issue: 'an unbuilt-kind brief that must refuse honestly',
+				effort: { apply: '—', wrongness: '—' },
+				evidence: [projectId, `${projectId}#2`],
+				falsifier: 'the kind may gain a decide-effect later',
+				options: [
+					{ id: 'approve', label: 'Approve', pro: 'p', con: 'c', recommended: 'r' },
+					{ id: 'reject', label: 'Reject', pro: 'p', con: 'c' }
+				]
+			});
+			await expect(applyBriefDecision(db, brief.id, 'approve')).rejects.toBeInstanceOf(BriefError);
+			await expect(applyBriefDecision(db, brief.id, 'reject')).rejects.toBeInstanceOf(BriefError);
+			// No effect: the brief is left OPEN (the refusal never touched it).
+			expect((await getBrief(db, brief.id))?.status).toBe('open');
+		}
+	);
+
+	it('a nonexistent brief id → typed BriefError (not found), never a crash', async () => {
+		await expect(applyBriefDecision(db, 'decision_brief:doesnotexist', 'approve')).rejects.toBeInstanceOf(
+			BriefError
+		);
+	});
+});
+
+describe('applyBriefDecision — first-class DECISION analytics (kind/decision/outcome/why)', () => {
+	async function gateBriefFor() {
+		const task = await propose('propose');
+		const result = await runValidationPanel(
+			deps([verdictRun(baseVerdict()), verdictRun(baseVerdict())]),
+			task.id
+		);
+		return { task, brief: result.brief! };
+	}
+
+	it('a task approve writes ONE pm_memory decision row carrying kind + decision + why', async () => {
+		const { brief } = await gateBriefFor();
+		await applyBriefDecision(db, brief.id, 'approve');
+		const decisions = await listPmMemory(db, projectId, { kind: 'decision' });
+		const row = decisions.find((m) => m.source === 'decision-brief' && m.content.includes(`brief ${brief.id}`));
+		expect(row).toBeTruthy();
+		expect(row!.content).toContain('decision=approve');
+		expect(row!.content).toContain('task'); // the kind
+		// Idempotent absorb: a re-POST of the SAME answer does NOT double-count the decision.
+		await applyBriefDecision(db, brief.id, 'approve');
+		expect(
+			(await listPmMemory(db, projectId, { kind: 'decision' })).filter((m) =>
+				m.content.includes(`brief ${brief.id}`)
+			)
+		).toHaveLength(1);
+	});
+
+	it('the task path stays byte-identical on the RESULT (kind:"task" + taskStatus preserved)', async () => {
+		const { brief } = await gateBriefFor();
+		const out = await applyBriefDecision(db, brief.id, 'approve');
+		expect(out.kind).toBe('task');
+		expect(out.taskStatus).toBe('ready');
+		expect(out.brief.status).toBe('approved');
 	});
 });
 

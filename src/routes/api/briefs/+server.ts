@@ -1,26 +1,26 @@
-// TASK 16.4 — decision-brief decide endpoint; protected by m0071 login gate (D-025; D-016; F-008).
+// TASK 16.4 / PJH-1 — decision-brief decide endpoint; protected by m0071 login gate (D-025; D-016; F-008).
 //
-// POST /api/briefs  { id: 'decision_brief:<id>', action: 'approve' | 'reject' | 'defer' }
+// POST /api/briefs  { id: 'decision_brief:<id>', action: 'approve' | 'reject' | 'defer',
+//                     operatorConfirmed?: boolean, staffingProposal?: string }
 //
-// The RightTray decisions inbox posts here. The EFFECTS are mechanical + server-side
-// (applyBriefDecision — §2.2/D-035): approve promotes the proposed task to 'ready',
-// reject withdraws it (verdicts close 'overridden_by_operator'/'upheld' per their
-// value), defer stamps a cadence-derived window the structural fingerprint honors.
-// The change reaches the UI live via the `decision_brief`/`task` SSE watchers.
+// The RightTray decisions inbox posts here. The per-kind routing lives in ONE place — applyBriefDecision
+// (PJH-1): it dispatches on the brief's artifact_kind, routing each kind through its EXISTING gate/effect
+// (F-055 — never a second call path): task → the panel-gated promotion; cert_hire → the workforce hire
+// path (B4 operator gate); repo_create → the RC-2 outward gate; review/fixture/unknown → an honest typed
+// refusal. operatorConfirmed / staffingProposal are threaded from THIS loopback request (never agent text
+// — the integrity wall). The change reaches the UI live via the `decision_brief`/`task` SSE watchers.
 
 import { json, error } from '@sveltejs/kit';
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import { IdentifierError } from '$lib/server/db/validate';
 import {
 	applyBriefDecision,
-	applyRepoCreateDecision,
+	BriefActionError,
 	BriefError,
 	RepoCreateGateError,
-	getBrief,
 	type BriefAction
 } from '$lib/server/projects';
 import {
-	applyHireDecision,
 	HireGateError,
 	StaffingGateError,
 	WorkforceInputError
@@ -45,55 +45,43 @@ export const POST: RequestHandler = async ({ request }) => {
 	}
 
 	try {
-		// HR-5 — a cert_hire brief has its OWN decide-effect (cert flip + staffing feed, B4); it is
-		// NOT a task brief, so applyBriefDecision would reject it. Dispatch on artifact_kind. The
-		// hire-gate has only approve/reject (no defer); approve REQUIRES operatorConfirmed (B4).
-		const brief = await getBrief(db, body.id);
-		if (brief?.artifact_kind === 'cert_hire') {
-			if (body.action === 'defer') {
-				throw error(400, 'a hire-gate brief is approve/reject only — there is no defer (the candidate stays open until decided)');
-			}
-			const result = await applyHireDecision(db, body.id, body.action as 'approve' | 'reject', {
-				operatorConfirmed: body.operatorConfirmed === true,
-				...(typeof body.staffingProposal === 'string' && body.staffingProposal
-					? { staffingProposal: body.staffingProposal }
-					: {})
-			});
+		// ONE dispatcher (PJH-1): applyBriefDecision routes on artifact_kind through each kind's EXISTING
+		// gate/effect. operatorConfirmed (B4) + staffingProposal are threaded from THIS operator-driven
+		// loopback request — a cert_hire/repo_create APPROVE fails CLOSED inside the effect without them.
+		// A defer on an approve/reject-only kind (cert_hire/repo_create) is a typed BriefError → 409 below.
+		const result = await applyBriefDecision(db, body.id, body.action as BriefAction, {
+			operatorConfirmed: body.operatorConfirmed === true,
+			...(typeof body.staffingProposal === 'string' && body.staffingProposal
+				? { staffingProposal: body.staffingProposal }
+				: {})
+		});
+
+		// Render per kind (a discriminated result — the surface fields differ by effect).
+		if (result.kind === 'cert_hire') {
+			const hire = result.hire!;
 			return json({
 				ok: true,
 				action: body.action,
 				briefStatus: result.brief.status,
-				recommendation: result.recommendation,
-				lifecycle: result.lifecycle,
-				certFlipped: result.certFlipped,
-				...(result.staffing ? { staffed: result.staffing.staffed, staff: result.staffing.staff.id } : {})
+				recommendation: hire.recommendation,
+				lifecycle: hire.lifecycle,
+				certFlipped: hire.certFlipped,
+				...(hire.staffed !== undefined ? { staffed: hire.staffed, staff: hire.staffId } : {})
 			});
 		}
-
-		// RC-3 — a repo_create brief has its OWN decide-effect (the RC-2 outward gate); it is NOT a
-		// task brief, so applyBriefDecision would reject it. Dispatch on artifact_kind (mirrors
-		// cert_hire). approve/reject only (no defer — the project stays repo-less until decided);
-		// approve REQUIRES operatorConfirmed (B4 — the integrity wall: a PM/agent cannot set it, so a
-		// PM-proposed repo-create can NEVER reach the gate without the operator's explicit confirm).
-		if (brief?.artifact_kind === 'repo_create') {
-			if (body.action === 'defer') {
-				throw error(400, 'a repo-create brief is approve/reject only — there is no defer (the project stays repo-less until decided)');
-			}
-			const result = await applyRepoCreateDecision(db, body.id, body.action as 'approve' | 'reject', {
-				operatorConfirmed: body.operatorConfirmed === true
-			});
+		if (result.kind === 'repo_create') {
+			const repo = result.repo!;
 			return json({
 				ok: true,
 				action: body.action,
 				briefStatus: result.brief.status,
-				created: result.gate?.created ?? false,
-				...(result.gate?.failedAt ? { failedAt: result.gate.failedAt } : {}),
-				...(result.gate?.summary ? { gateSummary: result.gate.summary } : {}),
-				...(result.repoUrl ? { repoUrl: result.repoUrl } : {})
+				created: repo.created,
+				...(repo.failedAt ? { failedAt: repo.failedAt } : {}),
+				...(repo.summary ? { gateSummary: repo.summary } : {}),
+				...(repo.repoUrl ? { repoUrl: repo.repoUrl } : {})
 			});
 		}
-
-		const result = await applyBriefDecision(db, body.id, body.action as BriefAction);
+		// task (the common shape — task status + any defer window).
 		return json({
 			ok: true,
 			action: body.action,
@@ -104,6 +92,10 @@ export const POST: RequestHandler = async ({ request }) => {
 	} catch (err) {
 		// Boundary errors are 4xx with their honest names, never a masked 500.
 		if (err instanceof IdentifierError) throw error(400, 'invalid brief id');
+		// A defer on an approve/reject-only kind (cert_hire / repo_create) — a client-side bad-action
+		// (the tray hides the Defer control for those kinds; this is the server backstop). Checked BEFORE
+		// BriefError (its superclass) so it maps to 400, distinct from a 409 state/authority refusal.
+		if (err instanceof BriefActionError) throw error(400, err.message);
 		if (err instanceof HireGateError) throw error(409, err.message);
 		// HR-5 staffing feed: an approve with a STALE/wrong-kind/disposed staffingProposal makes
 		// confirmStaffing throw StaffingGateError / WorkforceInputError — a fail-closed boundary

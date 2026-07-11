@@ -141,7 +141,7 @@ import {
 	SessionControlError
 } from '$lib/server/projects/project-controls';
 import { activeOrchestrator } from '../../../hooks.server';
-import { getFleetSession } from '$lib/server/analytics';
+import { getFleetSession, estimateLoopRun, toEstimateDisplay, type RunEstimateDisplay } from '$lib/server/analytics';
 import { PmProposalContractError } from '$lib/server/projects/pm-propose';
 import {
 	hirePm,
@@ -319,6 +319,13 @@ export interface ProjectDetailData {
 	 */
 	spendCaps: { reTickCap: number; dailySpawnCap: number | null };
 	/**
+	 * CG-4 — the recent-window per-driven-session spend estimate rendered on the autonomous-loop ARM
+	 * confirm (so the operator sees the likely cost BEFORE arming unsupervised spend). Always present +
+	 * honest: measured '~N tokens (~$X) per driven session' from THIS project's completion history, or
+	 * '—' with 'no history yet' when the project has no spend yet (F-008 — never a fabricated figure).
+	 */
+	loopEstimate: RunEstimateDisplay;
+	/**
 	 * CC-STATUS — headline work-queue stats for the project command-center dashboard: today's spawns
 	 * vs the REAL enforced D-021 daily cap (queue-monitor.queueStats). Reports the live reality (F-008):
 	 * `capped:false` + no denominator when the orchestrator runs uncapped (boot.ts wires no cap), never
@@ -491,6 +498,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pm: null,
 			autonomousLoop: null,
 			spendCaps: readSpendCaps(),
+			loopEstimate: toEstimateDisplay(null, 'driven session'),
 			queue: null,
 			proposals: [],
 			roleEvents: [],
@@ -757,6 +765,15 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pm: pmRow,
 			autonomousLoop: autonomousLoopStateFor(projectId),
 			spendCaps: readSpendCaps(),
+			// CG-4: best-effort (F-014) — a spend-estimate counter fault must never break the project
+			// page; it degrades to the honest '—' (no history) while everything else renders.
+			loopEstimate: toEstimateDisplay(
+				await estimateLoopRun(db, projectId).catch((err) => {
+					console.warn(`[project] loop spend estimate unavailable (best-effort): ${(err as Error).message}`);
+					return null;
+				}),
+				'driven session'
+			),
 			queue,
 			proposals,
 			roleEvents,
@@ -808,6 +825,7 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			pm: null,
 			autonomousLoop: null,
 			spendCaps: readSpendCaps(),
+			loopEstimate: toEstimateDisplay(null, 'driven session'),
 			queue: null,
 			proposals: [],
 			roleEvents: [],

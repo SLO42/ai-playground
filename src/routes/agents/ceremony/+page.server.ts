@@ -51,6 +51,7 @@ import {
 import { StringRecordId } from 'surrealdb';
 import { assertRecordId } from '$lib/server/db/validate';
 import { getRuntime } from '$lib/server/harness';
+import { estimateCeremonyRun, toEstimateDisplay, type RunEstimateDisplay } from '$lib/server/analytics';
 import { loadAgentPool, loadWorkforce, type AgentPool } from '$lib/server/config';
 import { fail, type Actions } from '@sveltejs/kit';
 import type { PageServerLoad } from './$types';
@@ -105,6 +106,10 @@ export interface CeremonyPageData {
 	 *  When false, the trigger buttons render disabled-with-reason rather than failing on click. */
 	runtimeAvailable: boolean;
 	runtimeReason: string | null;
+	/** CG-4 — the recent-window per-run spend estimate rendered next to the spend confirm. Always
+	 *  present + honest: measured '~N tokens (~$X) per run' from real gauntlet history, or '—' with
+	 *  'no history yet' (F-008 — never a fabricated figure). */
+	spendEstimate: RunEstimateDisplay;
 	error?: string;
 }
 
@@ -224,15 +229,23 @@ export const load: PageServerLoad = async ({ depends }): Promise<CeremonyPageDat
 			execution: null,
 			adjudication: [],
 			runtimeAvailable: false,
-			runtimeReason: 'database not connected'
+			runtimeReason: 'database not connected',
+			spendEstimate: toEstimateDisplay(null)
 		};
 	}
 	try {
-		const [state, execution, adjudication, runtime] = await Promise.all([
+		// CG-4: the spend estimate is best-effort (F-014) — a counter fault must NEVER break the
+		// ceremony page. On a throw the estimate degrades to the honest '—' (no history), while the
+		// rest of the page still renders.
+		const [state, execution, adjudication, runtime, estimate] = await Promise.all([
 			ceremonyAuthoringState(db),
 			ceremonyExecutionState(db),
 			buildCeremonyAdjudication(db),
-			getRuntime(db)
+			getRuntime(db),
+			estimateCeremonyRun(db).catch((err) => {
+				console.warn(`[ceremony] spend estimate unavailable (best-effort): ${(err as Error).message}`);
+				return null;
+			})
 		]);
 		return {
 			connected: true,
@@ -240,7 +253,8 @@ export const load: PageServerLoad = async ({ depends }): Promise<CeremonyPageDat
 			execution,
 			adjudication,
 			runtimeAvailable: runtime.available,
-			runtimeReason: runtime.available ? null : runtime.reason
+			runtimeReason: runtime.available ? null : runtime.reason,
+			spendEstimate: toEstimateDisplay(estimate)
 		};
 	} catch (err) {
 		return {
@@ -250,6 +264,7 @@ export const load: PageServerLoad = async ({ depends }): Promise<CeremonyPageDat
 			adjudication: [],
 			runtimeAvailable: false,
 			runtimeReason: null,
+			spendEstimate: toEstimateDisplay(null),
 			error: (err as Error).message
 		};
 	}

@@ -35,6 +35,8 @@
   const certifiedCount = $derived(execution?.certifiedCount ?? 0);
   const runtimeAvailable = $derived(data.runtimeAvailable);
   const runtimeReason = $derived(data.runtimeReason);
+  // CG-4 — the recent-window per-run spend estimate (server-computed, honest '—' with no history).
+  const spendEstimate = $derived(data.spendEstimate);
 
   // ── HR-1 — the §3.4 adjudication queue (the operator is the judge; B4). Each run is
   //    unpacked: per ambiguous item the finding (file/class/verbatim evidence), scorer note,
@@ -1038,6 +1040,13 @@
                         />
                         confirm spend — {effortLabel(tier)}
                       </label>
+                      <!-- CG-4 — the honest recent-window spend estimate for a gauntlet run, shown
+                           BEFORE the operator confirms the spend (measured from history, or '—'). -->
+                      <p class="spend-estimate" data-history={spendEstimate.hasHistory} role="status">
+                        <span class="est-label">estimated cost</span>
+                        <span class="est-value mono">{spendEstimate.label}</span>
+                        <span class="est-note">{spendEstimate.note}</span>
+                      </p>
                       <div class="spend-buttons">
                         <form method="POST" action="?/referenceRun" use:enhance={busyEnhance(`ref-${rv}`)}>
                           <input type="hidden" name="roleVersion" value={rv} />
@@ -1685,6 +1694,29 @@
   }
   .spend-buttons form {
     margin: 0;
+  }
+  /* CG-4 — the honest recent-window spend estimate line next to the spend confirm. */
+  .spend-estimate {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-1) var(--space-2);
+    margin: 0;
+    font-size: var(--text-xs);
+  }
+  .est-label {
+    color: var(--color-text-muted);
+    text-transform: lowercase;
+  }
+  .est-value {
+    color: var(--color-text);
+    font-weight: var(--weight-medium, 600);
+  }
+  .spend-estimate[data-history='false'] .est-value {
+    color: var(--color-text-muted);
+  }
+  .est-note {
+    color: var(--color-text-muted);
   }
   .confirm-check.inline {
     align-items: center;

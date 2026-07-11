@@ -36,6 +36,16 @@ export {
 	type ProviderUsageOptions
 } from './provider-usage';
 
+// COST-GOVERNANCE-SPEC CG-4 — recent-window per-source spend ESTIMATOR (cost-labelled confirms).
+export {
+	estimateCeremonyRun,
+	estimateLoopRun,
+	toEstimateDisplay,
+	ESTIMATE_WINDOW_MS,
+	type RunSpendEstimate,
+	type RunEstimateDisplay
+} from './run-estimate';
+
 // COST-GOVERNANCE-SPEC CG-6 — per-PROJECT usage attribution (session→project join).
 export {
 	buildProjectUsage,

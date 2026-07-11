@@ -275,6 +275,12 @@
       ? `${spendCaps.reTickCap} re-ticks/day per project, and the orchestrator's ${spendCaps.dailySpawnCap} session-spawns/day ceiling`
       : `${spendCaps.reTickCap} re-ticks/day per project`
   );
+  // CG-4 — the recent-window per-driven-session spend estimate (server-computed, honest '—' with no
+  // history). Surfaced inline near the arm control AND folded into the arm confirm so the operator
+  // sees the likely cost BEFORE authorising unsupervised spend.
+  const loopEstimate = $derived(
+    data.loopEstimate ?? { label: '—', note: 'no history yet', hasHistory: false }
+  );
   // The hidden arm form is submitted only AFTER the real-spend + unsupervised confirm accepts (D-010).
   let armForm = $state<HTMLFormElement | null>(null);
   let armBusy = $state(false);
@@ -287,13 +293,18 @@
    */
   async function armAutonomous(): Promise<void> {
     if (armBusy) return;
+    // CG-4 — an HONEST estimate line (measured from this project's recent spend, or '—' with no
+    // history) so the confirm carries the likely cost, not just the caps.
+    const estLine = loopEstimate.hasHistory
+      ? ' Estimated cost: ' + loopEstimate.label + ' (' + loopEstimate.note + ').'
+      : ' Estimated cost per driven session: — (no history yet).';
     const ok = await confirm.confirm({
       title: 'Run autonomously to release?',
       message:
         'The PM will propose and develop work continuously toward the definition of done WITHOUT asking — ' +
         'this is real, unsupervised model spend, bounded by ' + capLabel + '. It stops honestly at a ' +
         'blocker, at the spend cap, or at the release gate; the final publish still needs your confirm ' +
-        '(it never auto-publishes or hires).',
+        '(it never auto-publishes or hires).' + estLine,
       confirmLabel: 'Arm — unsupervised spend',
       cancelLabel: 'Cancel'
     });
@@ -1237,6 +1248,13 @@
                     {pmArmed
                       ? `Armed — the PM drives unsupervised toward the first release, bounded by ${capLabel}. It stops on a blocker, at the spend cap, and at the publish gate (never auto-publishes or hires).`
                       : `Off — the PM runs only when you click “Start the project’s life”. When armed, unsupervised spend is bounded by ${capLabel}.`}
+                  </span>
+                  <!-- CG-4 — the honest recent-window spend estimate for a driven session, shown
+                       BEFORE arming (measured from this project's history, or '—' with no history). -->
+                  <span class="auto-estimate" data-history={loopEstimate.hasHistory}>
+                    <span class="est-label">estimated cost</span>
+                    <span class="est-value mono">{loopEstimate.label}</span>
+                    <span class="est-note">{loopEstimate.note}</span>
                   </span>
                 </div>
 
@@ -4816,6 +4834,28 @@
     font-size: 0.85rem;
     color: var(--color-text-muted);
     line-height: 1.4;
+  }
+  /* CG-4 — the honest recent-window spend estimate line shown before arming. */
+  .auto-estimate {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-1, 0.25rem) var(--space-2, 0.5rem);
+    font-size: var(--text-xs, 0.75rem);
+  }
+  .auto-estimate .est-label {
+    color: var(--color-text-muted);
+    text-transform: lowercase;
+  }
+  .auto-estimate .est-value {
+    color: var(--color-text);
+    font-weight: var(--weight-medium, 600);
+  }
+  .auto-estimate[data-history='false'] .est-value {
+    color: var(--color-text-muted);
+  }
+  .auto-estimate .est-note {
+    color: var(--color-text-muted);
   }
   .autonomous-state {
     display: flex;

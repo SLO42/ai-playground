@@ -36,6 +36,13 @@ export {
 	type ProviderUsageOptions
 } from './provider-usage';
 
+// COST-GOVERNANCE-SPEC CG-6 — per-PROJECT usage attribution (session→project join).
+export {
+	buildProjectUsage,
+	type ProjectUsage,
+	type ProjectUsageOptions
+} from './project-usage';
+
 export { traceAction, type ActionTrace, type TraceStep } from './trace';
 
 export {

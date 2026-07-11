@@ -21,6 +21,13 @@
   const connected = $derived(data.connected);
   const queryError = $derived(data.queryError);
 
+  // CCF-2 — the harness skill-harvest scope health: the SH-5 ensure that lets a PROMOTED skill
+  // (SH-3) reach the catalog. Previously a failure here was swallowed — a promoted skill could
+  // silently never appear + nothing said so. Now surfaced honestly (F-008): an `error` reason
+  // banner, or a subtle `healthy` chip. `null` (DB down / reconcile never ran) shows nothing —
+  // the offline card covers that; we never fabricate a healthy state we could not verify.
+  const harvestHealth = $derived(data.harvestHealth ?? null);
+
   // ── TASK 9.3 — the cross-project SESSION FLEET (portfolio-wide live session control). ──
   // Every running/recent Claude Code session ACROSS ALL projects (F-008 live rows), with
   // project label, model/tier, status, live liveness (session.status), and per-session
@@ -255,6 +262,30 @@
       flags drift when a file is edited on disk.
     </p>
   </header>
+
+  <!-- ── CCF-2 — harness skill-harvest scope health. The SH-5 ensure that lets a PROMOTED skill
+       reach the catalog was previously swallowed on failure (a promoted skill could silently
+       never appear, and nothing said so). Surface it honestly (F-008): an error banner with the
+       named reason, or a subtle healthy chip. `null` (DB down) renders nothing — the offline
+       card below explains that; we never fabricate a healthy state we could not verify. -->
+  {#if connected && harvestHealth}
+    {#if harvestHealth.status === 'error'}
+      <div class="card harvest-health-error" role="alert">
+        <span class="eyebrow">skill-harvest scope · unavailable</span>
+        <p class="card-body">
+          The harness skill-harvest scope could not be ensured — a promoted skill may not reach
+          the catalog until this recovers.
+          <span class="mono reason">{harvestHealth.reason}</span>
+        </p>
+      </div>
+    {:else}
+      <p class="harvest-health-ok" aria-label="skill-harvest scope healthy">
+        <span class="dot" aria-hidden="true"></span>
+        <span class="eyebrow">skill-harvest scope · healthy</span>
+        <span class="hh-id mono" title={harvestHealth.scopeId}>{harvestHealth.scopeId}</span>
+      </p>
+    {/if}
+  {/if}
 
   <!-- ── TASK 9.3 — cross-project SESSION FLEET (portfolio-wide live session control). ──
        Running/recent Claude Code sessions ACROSS ALL projects with project label, model/tier,
@@ -1002,6 +1033,43 @@
   .state-body {
     font: var(--type-body-sm);
     color: var(--color-text-2);
+  }
+
+  /* ── CCF-2 — harvest-scope health surface (tokens only; a11y AA; reduced-motion safe) ── */
+  .harvest-health-error {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+    border-color: var(--color-error);
+  }
+  .harvest-health-error .eyebrow {
+    color: var(--color-error);
+  }
+  .harvest-health-error .reason {
+    color: var(--color-error);
+    word-break: break-word;
+  }
+  .harvest-health-ok {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2, 0.5rem);
+    margin: 0;
+    flex-wrap: wrap;
+  }
+  .harvest-health-ok .dot {
+    width: 0.5rem;
+    height: 0.5rem;
+    border-radius: 50%;
+    background: var(--color-success, var(--color-running, var(--color-accent)));
+    flex: none;
+  }
+  .harvest-health-ok .hh-id {
+    font-size: 0.72rem;
+    color: var(--color-text-muted);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    min-width: 0;
   }
 
   /* ── TASK 9.3 — cross-project session fleet (tokens-only; a11y AA; reduced-motion safe) ── */

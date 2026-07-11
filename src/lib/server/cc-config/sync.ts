@@ -447,6 +447,21 @@ export async function classifyScopes(
 	return { valid, invalid };
 }
 
+/**
+ * The health of the SH-5 harvest-scope ensure performed inside {@link reconcileScopes} — the
+ * disk+catalog registration that lets a PROMOTED skill (SH-3) reach `cc_skill` / `catalogIds`.
+ *
+ * CCF-2 (CC-CONFIG-SPEC §3): this ensure was previously wrapped in a BARE catch, so a failure
+ * (e.g. an unwritable harness state dir, a sync fault) silently dropped the reason — a promoted
+ * skill could never reach the catalog and NOTHING on /claude-code said so. The failure is now
+ * captured as a TYPED value and surfaced honestly (F-008 — never a fabricated "synced" state).
+ *   • `healthy` — the ensure succeeded; carries the ensured harvest scope id.
+ *   • `error`   — the ensure threw; carries the failure message (the named reason, not dropped).
+ */
+export type HarvestScopeHealth =
+	| { status: 'healthy'; scopeId: string }
+	| { status: 'error'; reason: string };
+
 export interface ScopeReconcileResult {
 	/** cc_scope ids removed because their provenance failed validation (fail-closed). */
 	removed: string[];
@@ -454,10 +469,19 @@ export interface ScopeReconcileResult {
 	synced: string[];
 	/**
 	 * The harness-owned harvest scope id ensured this call (SH-5), or absent if the
-	 * best-effort ensure failed. Always present on success — it is re-synced every reconcile
-	 * (idempotent), so it does NOT ride `synced` (which is project-derivation only).
+	 * ensure failed. Present on success — it is re-synced every reconcile (idempotent), so it
+	 * does NOT ride `synced` (which is project-derivation only). See {@link harvestHealth} for
+	 * the failure REASON on the absent branch.
 	 */
 	harvestScopeId?: string;
+	/**
+	 * CCF-2 — the health of the harvest-scope ensure. ALWAYS present: populated on success
+	 * (`healthy` + the scope id) AND on failure (`error` + the typed reason). The reason is no
+	 * longer swallowed by a bare catch — /claude-code renders it as an honest error state
+	 * (F-008). Present on BOTH branches so a happy-path test asserts it is populated on success
+	 * too (the F-020 sweep rule — a best-effort catch must not silently drop the reason).
+	 */
+	harvestHealth: HarvestScopeHealth;
 }
 
 /** Delete a cc_scope row AND every child mirror row that hangs off it. */
@@ -612,14 +636,22 @@ export async function reconcileScopes(db: Db): Promise<ScopeReconcileResult> {
 	// project-idempotency contract intact); its id rides `harvestScopeId` instead. A failure
 	// here (e.g. an unwritable harness state dir) must NOT blank the project catalog — surface
 	// it without aborting the reconcile (F-014 best-effort, additive to the project flow).
+	//
+	// CCF-2: the failure is CAPTURED (typed reason), never a bare catch that drops it (F-020
+	// sweep). EVERY ERROR HAS A NAME — trigger: the harvest ensure throws (unwritable harness
+	// state dir / sync fault); caught: here; user-visible: the /claude-code health surface shows
+	// the reason instead of a fabricated "synced" state (F-008). We do NOT re-throw: a harness-dir
+	// fault must not blank the project catalog (F-014).
 	let harvestScopeId: string | undefined;
+	let harvestHealth: HarvestScopeHealth;
 	try {
 		harvestScopeId = await ensureHarvestScope(db);
-	} catch {
-		/* harvest-scope ensure is best-effort; project reconcile stands on its own */
+		harvestHealth = { status: 'healthy', scopeId: harvestScopeId };
+	} catch (err) {
+		harvestHealth = { status: 'error', reason: err instanceof Error ? err.message : String(err) };
 	}
 
-	return { removed, synced, ...(harvestScopeId ? { harvestScopeId } : {}) };
+	return { removed, synced, harvestHealth, ...(harvestScopeId ? { harvestScopeId } : {}) };
 }
 
 // ── Drift detection (synced / out-of-sync) ───────────────────────────────────────

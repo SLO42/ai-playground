@@ -50,7 +50,8 @@ export {
 	type CatalogFreshness,
 	type FreshenCatalogDeps,
 	type ScopeRowView,
-	type ScopeReconcileResult
+	type ScopeReconcileResult,
+	type HarvestScopeHealth
 } from './sync';
 
 // TASK 2.11 — read-WRITE config manager (D-010): validate → diff + confirm → write →

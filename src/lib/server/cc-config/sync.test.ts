@@ -372,8 +372,13 @@ describe('harvest scope (SH-5) — harness-owned synced scope so a promoted skil
 	it('reconcileScopes covers the harvest scope and is idempotent (run twice → no duplicate)', async () => {
 		const r1 = await reconcileScopes(db);
 		expect(r1.harvestScopeId).toBe(scopeIdOf('global', harvestScopeDir()));
+		// CCF-2 — the harvest-scope health is populated on SUCCESS too (F-020 sweep: a best-effort
+		// catch must not silently drop the reason — so the field must exist on the happy path, not
+		// only on failure). Healthy carries the ensured scope id.
+		expect(r1.harvestHealth).toEqual({ status: 'healthy', scopeId: r1.harvestScopeId });
 		const r2 = await reconcileScopes(db);
 		expect(r2.harvestScopeId).toBe(r1.harvestScopeId);
+		expect(r2.harvestHealth).toEqual({ status: 'healthy', scopeId: r1.harvestScopeId });
 		// Exactly one harvest row in the catalog after two reconciles.
 		const catalog = await readCatalog(db);
 		expect(catalog.filter((c) => c.scopeId === r1.harvestScopeId)).toHaveLength(1);
@@ -381,6 +386,38 @@ describe('harvest scope (SH-5) — harness-owned synced scope so a promoted skil
 		const cls = await classifyScopes(db);
 		expect(cls.valid.map((v) => v.id)).toContain(r1.harvestScopeId);
 		expect(cls.invalid.map((v) => v.id)).not.toContain(r1.harvestScopeId);
+	});
+
+	// CCF-2 (CC-CONFIG-SPEC §3) — the harvest-scope ensure failure is CAPTURED, not swallowed. A
+	// promoted skill's catalog destination could be unavailable (unwritable harness state dir); the
+	// old bare catch dropped the reason silently. Now the failure rides `harvestHealth` as a typed
+	// `error` so /claude-code renders an honest state. Forced deterministically by pointing the
+	// harvest scope root at a FILE — ensureHarvestScope's `mkdirSync(<file>/.claude/skills)` throws.
+	// The PROJECT reconcile still stands on its own (removed/synced unaffected — not blanked, F-014).
+	it('reconcileScopes CAPTURES a harvest-ensure failure as a typed error health (not a bare swallow)', async () => {
+		const blocker = join(mkdtempSync(join(tmpdir(), 'cc-harvest-block-')), 'not-a-dir');
+		writeFileSync(blocker, 'this is a file, not a directory — mkdir under it must fail');
+		const prev = process.env.HARVEST_SCOPE_ROOT;
+		process.env.HARVEST_SCOPE_ROOT = blocker; // harvestScopeDir → <file>/.claude ⇒ mkdir throws
+		try {
+			const res = await reconcileScopes(db);
+			// The harvest ensure failed → health is a TYPED error carrying the (named) reason.
+			expect(res.harvestHealth.status).toBe('error');
+			if (res.harvestHealth.status === 'error') {
+				expect(res.harvestHealth.reason).toBeTruthy();
+				expect(typeof res.harvestHealth.reason).toBe('string');
+			}
+			// The harvest scope id is absent on the failure branch (nothing was ensured)…
+			expect(res.harvestScopeId).toBeUndefined();
+			// …but the project reconcile is NOT blanked by the harvest fault (F-014): it still returns
+			// its own removed/synced arrays (here both empty — no invalid rows, all projects covered).
+			expect(Array.isArray(res.removed)).toBe(true);
+			expect(Array.isArray(res.synced)).toBe(true);
+		} finally {
+			if (prev === undefined) delete process.env.HARVEST_SCOPE_ROOT;
+			else process.env.HARVEST_SCOPE_ROOT = prev;
+			rmSync(blocker, { force: true });
+		}
 	});
 
 	// REGRESSION (SH-5 review MEDIUM): the loader re-invalidates reconcileScopes on every

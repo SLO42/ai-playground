@@ -24,7 +24,8 @@ import {
 	ConfigValidationError,
 	StaleConfirmError,
 	type CatalogScope,
-	type ConfigKind
+	type ConfigKind,
+	type HarvestScopeHealth
 } from '$lib/server/cc-config';
 import { listFleetAcrossProjects, getFleetSession, type FleetSessionXP } from '$lib/server/analytics';
 import { listSessionMessages, type TranscriptMessage } from '$lib/server/sessions';
@@ -107,9 +108,17 @@ export const load: PageServerLoad = async ({ depends, url }) => {
 			controlCaps,
 			selectedSession,
 			transcript: [] as TranscriptMessage[],
-			sessionMeta: null as FleetSessionXP | null
+			sessionMeta: null as FleetSessionXP | null,
+			// DB down ⇒ no reconcile ran ⇒ harvest health is genuinely UNKNOWN, not "healthy"
+			// (F-008 — never fabricate a synced state). The offline card already explains the DB.
+			harvestHealth: null as HarvestScopeHealth | null
 		};
 	}
+
+	// CCF-2 — the harvest-scope ensure health, captured from reconcileScopes below. Declared in
+	// the outer scope so the disconnected / queryError catch-returns can still surface whatever
+	// reconcile managed to report before a LATER read (catalog/fleet) failed.
+	let harvestHealth: HarvestScopeHealth | null = null;
 
 	try {
 		// TASK 9.3 — the LIVE cross-project session fleet (portfolio-wide). A fleet-read failure
@@ -147,9 +156,18 @@ export const load: PageServerLoad = async ({ depends, url }) => {
 		// but is missing from the catalog gets its scope derived from its OWN root.
 		// Steady-state this is a pure read; a reconcile failure never blanks the page.
 		try {
-			await reconcileScopes(db);
-		} catch {
-			/* keep serving the catalog as-is — the edit allow-list still fails closed */
+			const rec = await reconcileScopes(db);
+			// CCF-2 — surface the harvest-scope ensure health (healthy + id, or error + reason).
+			// A harvest-ensure fault is captured INSIDE reconcile as this value (not thrown), so a
+			// healthy project reconcile can still carry an `error` harvest health — rendered
+			// honestly on the page (F-008), never swallowed.
+			harvestHealth = rec.harvestHealth;
+		} catch (err) {
+			// The WHOLE reconcile threw. Keep serving the catalog as-is (the edit allow-list still
+			// fails closed) but surface the harvest health as an honest error rather than a
+			// fabricated 'synced' state (F-008). EVERY ERROR HAS A NAME — trigger: reconcile throws;
+			// caught: here; user sees the reason on the /claude-code health surface.
+			harvestHealth = { status: 'error', reason: `scope reconcile failed: ${(err as Error).message}` };
 		}
 
 		const scopes = await readCatalog(db);
@@ -181,7 +199,10 @@ export const load: PageServerLoad = async ({ depends, url }) => {
 			controlCaps,
 			selectedSession,
 			transcript,
-			sessionMeta
+			sessionMeta,
+			// CCF-2 — the harvest-scope ensure health captured above (healthy | error), so the page
+			// can render an honest state when a promoted skill's catalog destination is unavailable.
+			harvestHealth
 		};
 	} catch (err) {
 		// Classify the thrown error (shared with /workflows + /projects + home, D-019):
@@ -196,7 +217,10 @@ export const load: PageServerLoad = async ({ depends, url }) => {
 				controlCaps,
 				selectedSession,
 				transcript: [] as TranscriptMessage[],
-				sessionMeta: null as FleetSessionXP | null
+				sessionMeta: null as FleetSessionXP | null,
+				// Surface whatever the earlier reconcile reported (or null if it never ran) — honest,
+				// never a fabricated healthy state on a disconnected read (F-008).
+				harvestHealth
 			};
 		}
 		return {
@@ -207,7 +231,8 @@ export const load: PageServerLoad = async ({ depends, url }) => {
 			queryError: (err as Error).message,
 			selectedSession,
 			transcript: [] as TranscriptMessage[],
-			sessionMeta: null as FleetSessionXP | null
+			sessionMeta: null as FleetSessionXP | null,
+			harvestHealth
 		};
 	}
 };

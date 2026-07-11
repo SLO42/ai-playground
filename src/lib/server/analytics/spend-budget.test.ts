@@ -9,6 +9,8 @@ import {
 	tokensSpentSince,
 	enforceTokenBudget,
 	normalizeTokenBudget,
+	isLocalProvider,
+	__resetReservationsForTest,
 	TokenBudgetExceededError,
 	SPEND_WINDOW_MS
 } from './spend-budget';
@@ -44,6 +46,8 @@ afterAll(async () => {
 
 beforeEach(async () => {
 	await db.query(`DELETE agent_event;`);
+	// Hermetic: clear the in-process concurrency reservation counter between tests.
+	__resetReservationsForTest();
 });
 
 /** Seed one COMPLETION agent_event carrying tokens (the durable spend row). Returns its id. */
@@ -136,7 +140,8 @@ describe('enforceTokenBudget — refuse / override / 0-sentinel (real-surreal)',
 	it('0-sentinel ⇒ UNCAPPED: proceeds even with spend present, runs no query, writes no event', async () => {
 		await seedCompletion(9_999, 9_999);
 		const res = await enforceTokenBudget(db, { budget: 0, source: 'background' });
-		expect(res).toEqual({ enforced: false, spent: 0, budget: 0, overrode: false });
+		expect(res).toMatchObject({ enforced: false, spent: 0, budget: 0, overrode: false });
+		expect(typeof res.release).toBe('function');
 		expect(await countBudgetEvents('refused')).toBe(0);
 		expect(await countBudgetEvents('override')).toBe(0);
 	});
@@ -187,5 +192,84 @@ describe('enforceTokenBudget — refuse / override / 0-sentinel (real-surreal)',
 		await expect(
 			enforceTokenBudget(db, { budget: 1000, source: 'background' })
 		).rejects.toBeInstanceOf(TokenBudgetExceededError);
+	});
+});
+
+describe('isLocalProvider + LOCAL/$0 exemption (deferred finding cost-governance-1a #2)', () => {
+	it('classifies ollama/local as local; cloud/absent are NOT local', () => {
+		expect(isLocalProvider('ollama')).toBe(true);
+		expect(isLocalProvider('local')).toBe(true);
+		expect(isLocalProvider('OLLAMA')).toBe(true); // case-insensitive
+		expect(isLocalProvider(' local ')).toBe(true); // trimmed
+		expect(isLocalProvider('claude')).toBe(false);
+		expect(isLocalProvider(undefined)).toBe(false); // absent ⇒ gated default (safe)
+		expect(isLocalProvider('')).toBe(false);
+	});
+
+	it('a LOCAL provider is EXEMPT: proceeds over budget WITHOUT throwing, and writes no refusal event', async () => {
+		await seedCompletion(5_000, 5_000); // 10_000 spent — far over a tiny budget
+		const res = await enforceTokenBudget(db, {
+			budget: 1000,
+			source: 'concierge',
+			provider: 'ollama',
+			project: projectId
+		});
+		// Exempt: not gated (enforced:false), no throw, no reservation-relevant state.
+		expect(res.enforced).toBe(false);
+		expect(res.overrode).toBe(false);
+		expect(typeof res.release).toBe('function');
+		expect(await countBudgetEvents('refused')).toBe(0);
+	});
+
+	it('a CLOUD provider over budget is still GATED (refuses) — the exemption is local-only', async () => {
+		await seedCompletion(600, 600); // 1200 ≥ 1000
+		await expect(
+			enforceTokenBudget(db, { budget: 1000, source: 'concierge', provider: 'claude', project: projectId })
+		).rejects.toBeInstanceOf(TokenBudgetExceededError);
+	});
+});
+
+describe('concurrency-overshoot guard — serialized read+decide + reservation (deferred finding cost-governance-1a #1)', () => {
+	it('N CONCURRENT at-threshold launches ⇒ at MOST 1 proceeds (the rest park)', async () => {
+		// Seed measured spend one token below budget: the first launch is under budget, but once it
+		// reserves, every concurrent sibling sees spent+reservation ≥ budget and must park.
+		await seedCompletion(999, 0); // 999 spent, budget 1000 ⇒ headroom for exactly one reservation
+		const N = 8;
+		const results = await Promise.allSettled(
+			Array.from({ length: N }, () =>
+				enforceTokenBudget(db, { budget: 1000, source: 'background', project: projectId })
+			)
+		);
+		const proceeded = results.filter((r) => r.status === 'fulfilled');
+		const parked = results.filter(
+			(r) => r.status === 'rejected' && r.reason instanceof TokenBudgetExceededError
+		);
+		expect(proceeded.length).toBeLessThanOrEqual(1);
+		expect(proceeded.length + parked.length).toBe(N); // every call resolved to proceed-or-park (no crash)
+	});
+
+	it('releasing a reservation frees the headroom for the next launch (no permanent leak)', async () => {
+		await seedCompletion(999, 0); // 999 spent, budget 1000
+		const first = await enforceTokenBudget(db, { budget: 1000, source: 'background' });
+		expect(first.enforced).toBe(true); // proceeded + reserved the single headroom slot
+		// With the reservation still held, a second launch parks (spent 999 + reserved 1 ≥ 1000).
+		await expect(
+			enforceTokenBudget(db, { budget: 1000, source: 'background' })
+		).rejects.toBeInstanceOf(TokenBudgetExceededError);
+		// Release the first reservation → the headroom is free again → the next launch proceeds.
+		first.release();
+		const third = await enforceTokenBudget(db, { budget: 1000, source: 'background' });
+		expect(third.enforced).toBe(true);
+	});
+
+	it('far below the ceiling, the +1/launch reservation does NOT block normal concurrency', async () => {
+		await seedCompletion(10, 0); // 10 spent, huge budget ⇒ plenty of headroom
+		const N = 8;
+		const results = await Promise.allSettled(
+			Array.from({ length: N }, () =>
+				enforceTokenBudget(db, { budget: 1_000_000, source: 'background' })
+			)
+		);
+		expect(results.every((r) => r.status === 'fulfilled')).toBe(true); // all proceed — no false parking
 	});
 });

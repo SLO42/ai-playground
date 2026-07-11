@@ -1439,6 +1439,21 @@ export const actions: Actions = {
 				}
 			};
 		} catch (err) {
+			// CG-2: a PM review can transitively spawn a proposal session (makePmProposalAgent →
+			// launchSession), which enforces the global token budget. A budget refusal is an operator
+			// decision point, NOT a 500 — surface the honest spent/budget as HTTP 402 (matching the
+			// launch/chat handlers) so the UI shows a named "budget reached" message instead of a raw
+			// error. A periodic review has no operator override; the operator re-runs it manually later.
+			if (err instanceof TokenBudgetExceededError) {
+				return fail(402, {
+					pm: {
+						error: `This PM review would exceed the daily token budget (${err.spent} of ${err.budget} tokens spent in the last 24h). It parked — retry once spend frees, or raise the budget in Settings.`,
+						budgetExceeded: true as const,
+						spent: err.spent,
+						budget: err.budget
+					}
+				});
+			}
 			return fail(500, { pm: { error: (err as Error).message } });
 		}
 	},

@@ -55,7 +55,7 @@ vi.mock('../skills/harvest-agent', () => ({
 }));
 
 // Import AFTER the mock is registered.
-const { startOrchestrator, bootDailySpawnCap } = await import('./boot');
+const { startOrchestrator, bootDailySpawnCap, validateBootPricing } = await import('./boot');
 const { Orchestrator } = await import('./orchestrator');
 
 import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
@@ -302,5 +302,63 @@ describe('bootDailySpawnCap — reported cap == enforced cap (BL-9-H1 LOW)', () 
 	it('returns undefined (honest) when the config dir is unreadable', () => {
 		// No orchestration.yaml written → read fails → uncapped (never a guessed denominator).
 		expect(bootDailySpawnCap()).toBeUndefined();
+	});
+});
+
+// CG-1 (deferred finding cost-governance-1a #4) — validateBootPricing surfaces a malformed
+// pricing.yaml LOUDLY at boot (eager), but is DELIBERATELY NON-FATAL (D-024 — a cost-display config
+// error must never brick the boot). Shadow paths: valid file (ok), malformed file (loud, ok:false,
+// no throw), absent file (loud, ok:false, no throw).
+describe('validateBootPricing — eager boot-time pricing validation, loud but non-fatal (CG-1)', () => {
+	let dir: string;
+	const orig = process.env.CONFIG_DIR;
+
+	function writePricing(body: string): void {
+		writeFileSync(join(dir, 'pricing.yaml'), body, 'utf8');
+	}
+
+	beforeEach(() => {
+		dir = mkdtempSync(join(tmpdir(), 'pricing-boot-'));
+		process.env.CONFIG_DIR = dir;
+	});
+	afterEach(() => {
+		if (orig === undefined) delete process.env.CONFIG_DIR;
+		else process.env.CONFIG_DIR = orig;
+		rmSync(dir, { recursive: true, force: true });
+	});
+
+	it('returns ok for a VALID pricing.yaml (empty models map is valid — everything honestly unpriced)', () => {
+		writePricing('models: {}\n');
+		expect(validateBootPricing()).toEqual({ ok: true });
+	});
+
+	it('returns ok for a valid priced entry', () => {
+		writePricing('models:\n  claude-opus-4-8:\n    inputUsdPerMtok: 15\n    outputUsdPerMtok: 75\n');
+		expect(validateBootPricing()).toEqual({ ok: true });
+	});
+
+	it('a MALFORMED pricing.yaml surfaces LOUD (ok:false + reason) WITHOUT throwing (non-fatal, D-024)', () => {
+		// A negative rate fails loadPricing's validation — the boot must NOT crash on it.
+		writePricing('models:\n  bad-model:\n    inputUsdPerMtok: -1\n    outputUsdPerMtok: 5\n');
+		const errSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+		let res: { ok: boolean; reason?: string } | undefined;
+		expect(() => {
+			res = validateBootPricing();
+		}).not.toThrow();
+		expect(res?.ok).toBe(false);
+		expect(res?.reason).toMatch(/pricing/i);
+		// It was surfaced LOUDLY (a console.error at boot), not swallowed.
+		expect(errSpy).toHaveBeenCalledTimes(1);
+		expect(String(errSpy.mock.calls[0][0])).toMatch(/COST METERING DISABLED/);
+	});
+
+	it('an ABSENT pricing.yaml surfaces loud (ok:false) without throwing (missing file is a config error)', () => {
+		// No pricing.yaml written → loadPricing throws ConfigError → loud, non-fatal.
+		vi.spyOn(console, 'error').mockImplementation(() => {});
+		let res: { ok: boolean; reason?: string } | undefined;
+		expect(() => {
+			res = validateBootPricing();
+		}).not.toThrow();
+		expect(res?.ok).toBe(false);
 	});
 });

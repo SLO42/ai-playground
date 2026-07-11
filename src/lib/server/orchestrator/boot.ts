@@ -49,7 +49,7 @@ import {
 	DEFAULT_MODEL
 } from '../harness';
 import { makeSkillHarvestAgent } from '../skills/harvest-agent';
-import { loadOrchestration, loadAgentPool, type OrchMode, type AgentPool, type Orchestration } from '../config/index';
+import { loadOrchestration, loadAgentPool, loadPricing, ConfigError, type OrchMode, type AgentPool, type Orchestration } from '../config/index';
 import { resolveRoute, type RouteTask, type StaffRouteResolver } from '../routing/index';
 import type { ModelSelection } from '../runtime/index';
 import { resolveStaff, getProjectStaff, type Tier, type TierModelResolver } from '../workforce';
@@ -144,6 +144,36 @@ export function bootDailySpawnCap(): number | undefined {
 	} catch {
 		// Unreadable config ⇒ we cannot claim a cap is enforced; report uncapped (honest, F-008).
 		return undefined;
+	}
+}
+
+/**
+ * CG-1 (COST-GOVERNANCE-SPEC) — EAGERLY validate config/pricing.yaml at boot so a malformed pricing
+ * file surfaces LOUDLY at startup, not lazily (and silently) at the first completion write. The
+ * events.ts write chokepoint keeps its own resilient degrade (a bad config there → honest-NULL
+ * cost_usd, never a crashed write path) — this is a SEPARATE, eager, boot-time surfacing that tells
+ * the operator "cost metering is DISABLED until you fix pricing.yaml" the moment the server boots.
+ *
+ * DELIBERATELY NON-FATAL (D-024/F-053 — fail-closed is for SECURITY boundaries ONLY): a cost-display
+ * config error must NEVER brick the whole boot (that would fail-closed on a soft governance/measurement
+ * control). So we LOG the ConfigError prominently and continue; the orchestrator + dashboard still
+ * boot, metering just records honest-NULL cost until pricing.yaml is fixed. "Fail loud" ≠ "fail closed".
+ * Never throws. Returns whether pricing validated (surfaced in the boot log; useful to a test).
+ */
+export function validateBootPricing(): { ok: boolean; reason?: string } {
+	const dir = process.env.CONFIG_DIR?.trim() || 'config';
+	try {
+		loadPricing(`${dir}/pricing.yaml`);
+		return { ok: true };
+	} catch (err) {
+		const reason = err instanceof ConfigError ? err.message : (err as Error).message;
+		console.error(
+			`[startup] COST METERING DISABLED — config/pricing.yaml is invalid: ${reason}. ` +
+				`cost_usd will record as NULL for every completion until this is fixed (token metering is ` +
+				`unaffected). This is surfaced loudly at boot; the analytics write path degrades honestly, ` +
+				`it does not crash (D-024 — pricing is a soft governance control, not a security boundary).`
+		);
+		return { ok: false, reason };
 	}
 }
 
@@ -313,6 +343,11 @@ function bootRoute(db: Db, pool: AgentPool, orchestration: Orchestration): Route
  * idle-cheap: at idle it arms no timer and burns ~zero CPU (D-004).
  */
 export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promise<OrchestratorBootResult> {
+	// CG-1 — validate config/pricing.yaml EAGERLY, on EVERY boot (before the credential gate below so
+	// it runs even on a no-credential boot). Loud-but-non-fatal: a malformed pricing file is logged
+	// prominently here and never blocks the boot (see validateBootPricing — D-024 non-fatal rationale).
+	validateBootPricing();
+
 	// Honest availability gate (F-008): no credential ⇒ a started orchestrator would claim a
 	// work_item then fail every spawn. Skip cleanly; the queue waits for a credentialed boot.
 	const avail = await getRuntime(db);

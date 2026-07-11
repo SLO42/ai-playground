@@ -814,6 +814,35 @@ describe('applyBriefDecision — first-class DECISION analytics (kind/decision/o
 		expect(out.taskStatus).toBe('ready');
 		expect(out.brief.status).toBe('approved');
 	});
+
+	// Regression (re-review DEFECT 1): the DELEGATED kinds (repo_create/cert_hire) absorb an already-decided
+	// brief INSIDE their delegate and return normally, so a re-POST reached the unconditional analytics write
+	// and (for a CREATED repo) wrote a SECOND, factually-FALSE 'repo gate red at —' decision row. Analytics
+	// must fire ONLY on the real open→decided transition — the same idempotence the task path already holds.
+	it('a repo_create re-POST does NOT double-count OR write a false "gate red" decision row', async () => {
+		await createPm(db, { project: projectId, name: 'Vesper' });
+		const { brief } = await proposeRepoCreate(db, { project: projectId, name: 'repo-host' });
+		const gh = new FakeGh();
+		const git = fakeGit();
+		const opts = { operatorConfirmed: true, client: gh, gitRunner: git.fn };
+
+		const first = await applyBriefDecision(db, brief.id, 'approve', opts);
+		expect(first.repo?.created).toBe(true); // the repo was really created on the first approve
+
+		const rows1 = (await listPmMemory(db, projectId, { kind: 'decision' })).filter(
+			(m) => m.source === 'decision-brief' && m.content.includes(`brief ${brief.id}`)
+		);
+		expect(rows1).toHaveLength(1);
+		expect(rows1[0].content).toContain('repo created');
+
+		// Re-POST the SAME approve — the delegate absorbs (gate:null, nothing ran); analytics must NOT re-fire.
+		await applyBriefDecision(db, brief.id, 'approve', opts);
+		const rows2 = (await listPmMemory(db, projectId, { kind: 'decision' })).filter(
+			(m) => m.source === 'decision-brief' && m.content.includes(`brief ${brief.id}`)
+		);
+		expect(rows2).toHaveLength(1); // still exactly ONE row — no double-count
+		expect(rows2.some((m) => m.content.includes('gate red'))).toBe(false); // no factually-false row
+	});
 });
 
 // ── Read models + helpers ──────────────────────────────────────────────────────────

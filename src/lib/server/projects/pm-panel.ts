@@ -1028,20 +1028,27 @@ async function applyCertHireBriefDecision(
 				`(the candidate stays open until the operator disposes)`
 		);
 	}
+	// Capture the pre-delegate status: applyHireDecision ABSORBS an already-decided brief (markBriefDecided
+	// returns the row on a same-action re-decide) and returns normally, so a re-POST reaches this wrapper with
+	// no transition having occurred. Analytics fires ONLY on the real open→decided transition — mirroring the
+	// task path's pre-analytics absorb return (F-008: never a second, factually-false decision row on re-POST).
+	const wasOpen = brief.status === 'open';
 	const result = await applyHireDecision(db, brief.id, action, {
 		operatorConfirmed: opts.operatorConfirmed === true,
 		...(opts.staffingProposal ? { staffingProposal: opts.staffingProposal } : {}),
 		...(opts.charterNote !== undefined ? { charterNote: opts.charterNote } : {})
 	});
-	await recordBriefDecisionAnalytics(
-		db,
-		result.brief,
-		action,
-		action === 'approve'
-			? `cert ${result.certFlipped ? 'flipped→passed' : 'already-passed (no-op)'}${result.staffing ? '; staffing fed' : ''}`
-			: 'no cert flip, no staffing (reject withholds)',
-		`recommendation=${result.recommendation}; lifecycle=${result.lifecycle}`
-	);
+	if (wasOpen) {
+		await recordBriefDecisionAnalytics(
+			db,
+			result.brief,
+			action,
+			action === 'approve'
+				? `cert ${result.certFlipped ? 'flipped→passed' : 'already-passed (no-op)'}${result.staffing ? '; staffing fed' : ''}`
+				: 'no cert flip, no staffing (reject withholds)',
+			`recommendation=${result.recommendation}; lifecycle=${result.lifecycle}`
+		);
+	}
 	return {
 		kind: 'cert_hire',
 		brief: result.brief,
@@ -1073,23 +1080,31 @@ async function applyRepoCreateBriefDecision(
 				`(the project stays repo-less until the operator disposes)`
 		);
 	}
+	// Capture the pre-delegate status: applyRepoCreateDecision ABSORBS an already-approved brief (returns the
+	// decided brief with gate:null — nothing ran this call) and an already-rejected brief refuses loudly, so a
+	// re-POST of a CREATED repo would otherwise hit the gate:null branch below and write a SECOND, factually-
+	// FALSE 'repo gate red at —' row for a repo that was actually created. Analytics fires ONLY on the real
+	// open→decided transition — mirroring the task path's pre-analytics absorb return (F-008 honesty).
+	const wasOpen = brief.status === 'open';
 	const result = await applyRepoCreateDecision(db, brief.id, action, {
 		operatorConfirmed: opts.operatorConfirmed === true,
 		...(opts.branch ? { branch: opts.branch } : {}),
 		...(opts.client ? { client: opts.client } : {}),
 		...(opts.gitRunner ? { gitRunner: opts.gitRunner } : {})
 	});
-	await recordBriefDecisionAnalytics(
-		db,
-		result.brief,
-		action,
-		action === 'approve'
-			? result.gate?.created
-				? `repo created (${result.repoUrl ?? 'url pending'})`
-				: `repo gate red at ${result.gate?.failedAt ?? '—'} (brief stays open)`
-			: 'no repo created (reject withholds)',
-		result.gate?.summary ?? 'operator disposed the repo-create recommendation'
-	);
+	if (wasOpen) {
+		await recordBriefDecisionAnalytics(
+			db,
+			result.brief,
+			action,
+			action === 'approve'
+				? result.gate?.created
+					? `repo created (${result.repoUrl ?? 'url pending'})`
+					: `repo gate red at ${result.gate?.failedAt ?? '—'} (brief stays open)`
+				: 'no repo created (reject withholds)',
+			result.gate?.summary ?? 'operator disposed the repo-create recommendation'
+		);
+	}
 	return {
 		kind: 'repo_create',
 		brief: result.brief,

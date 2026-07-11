@@ -2,10 +2,16 @@
 //
 // Built-in adapters (npm + Thunderstore publishers, the static-host deploy target) register at
 // first use. A project resolves its adapter by the id it declares in a `project_target`
-// ({adapterId, config}); an UNKNOWN id fails CLOSED (UnknownAdapterError). This registry is the
-// v1.8 generalization point: a novel per-project publish/deploy target registers here (or a
-// project declares a custom adapter id) WITHOUT touching any caller. The sync family keeps its
-// own SyncRegistry (sync/index.ts) — both share the SAME framework types (re-exported here).
+// ({adapterId, config}); an UNKNOWN id fails CLOSED (UnknownAdapterError).
+//
+// EXTENSION POSTURE (ADAPTER-FRAMEWORK-SPEC §2, corrects a prior over-claim): a novel adapter is
+// a CODE CONTRIBUTION — implement the framework interface, pass the contract harness (contract.ts),
+// and `register()` it here. There is deliberately NO config/runtime path that loads adapter code:
+// adapters run with resolved secrets and outward network access, so a runtime-loadable adapter
+// would be arbitrary-code-execution behind a config row (a D-026/D-018 violation). A "per-project
+// custom target" is a per-project `project_target` row selecting any ALREADY-REGISTERED adapter
+// with custom config — not per-project code. The sync family keeps its own SyncRegistry
+// (sync/index.ts) — both share the SAME framework types (re-exported here).
 
 export * from './types';
 export * from './secrets';

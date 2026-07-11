@@ -21,6 +21,12 @@
 // (it takes a `Db` + per-call options), so one process-wide registry is safe.
 
 import type { Db } from '../db/client';
+// ADF-2: ONE UnknownAdapterError across the whole adapter framework. The canonical class lives in
+// adapters/types.ts (the D-037 core, imported by the registry + the release surface); the sync
+// family re-uses it so a catch/instanceof on the canonical class catches a sync-registry miss too
+// (ADAPTER-FRAMEWORK-SPEC §8 ADF-2). types.ts's `export type { SyncAdapter … } from './adapter'`
+// is TYPE-only (erased at runtime) so this is not a runtime import cycle.
+import { UnknownAdapterError } from '../adapters/types';
 
 /** Sync direction — which way changes flow. `both` reconciles in both directions. */
 export type SyncDirection = 'push' | 'pull' | 'both';
@@ -121,13 +127,12 @@ export interface SyncAdapter {
 	sync(db: Db, opts: SyncRunOptions): Promise<SyncResult>;
 }
 
-/** Thrown when a requested adapter id is not registered (fail loud at the boundary). */
-export class UnknownAdapterError extends Error {
-	override readonly name = 'UnknownAdapterError';
-	constructor(readonly adapterId: string) {
-		super(`no sync adapter registered for id: ${JSON.stringify(adapterId)}`);
-	}
-}
+/**
+ * Thrown when a requested adapter id is not registered (fail loud at the boundary). This is the
+ * ONE canonical class (adapters/types.ts) re-exported so `import … from '../sync'` keeps surfacing
+ * it AND a catch/instanceof on the canonical class catches a sync miss (ADF-2, spec §8).
+ */
+export { UnknownAdapterError } from '../adapters/types';
 
 /**
  * The id→adapter registry (D-037). Built-in adapters register at module load; a project
@@ -149,7 +154,7 @@ export class SyncRegistry {
 	/** Resolve an adapter by id. @throws {UnknownAdapterError} if unregistered. */
 	get(id: string): SyncAdapter {
 		const a = this.#adapters.get(id);
-		if (!a) throw new UnknownAdapterError(id);
+		if (!a) throw new UnknownAdapterError(id, 'sync');
 		return a;
 	}
 

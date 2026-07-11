@@ -1439,21 +1439,13 @@ export const actions: Actions = {
 				}
 			};
 		} catch (err) {
-			// CG-2: a PM review can transitively spawn a proposal session (makePmProposalAgent →
-			// launchSession), which enforces the global token budget. A budget refusal is an operator
-			// decision point, NOT a 500 — surface the honest spent/budget as HTTP 402 (matching the
-			// launch/chat handlers) so the UI shows a named "budget reached" message instead of a raw
-			// error. A periodic review has no operator override; the operator re-runs it manually later.
-			if (err instanceof TokenBudgetExceededError) {
-				return fail(402, {
-					pm: {
-						error: `This PM review would exceed the daily token budget (${err.spent} of ${err.budget} tokens spent in the last 24h). It parked — retry once spend frees, or raise the budget in Settings.`,
-						budgetExceeded: true as const,
-						spent: err.spent,
-						budget: err.budget
-					}
-				});
-			}
+			// CG-2b: runPmReview is a PURE strategic pass — it reads live rows and writes PM memory. Its
+			// whole dependency tree (pm-review / pm-proposals / pm-concierge / pm-session / pm-triage)
+			// spawns NO session and calls NO enforceTokenBudget, so it can never raise
+			// TokenBudgetExceededError. (makePmProposalAgent -> launchSession is reached only by the
+			// pm-lifecycle background tick, NOT by this action.) There is therefore no budget "recourse"
+			// to surface here — a review that throws is a genuine failure, an honest 500. The real
+			// budget-guarded spend paths are the launch + PM-chat actions above.
 			return fail(500, { pm: { error: (err as Error).message } });
 		}
 	},

@@ -1,6 +1,6 @@
 # VERSIONING-AUDIT-SPEC — every capability artifact versions, every version explains itself
 
-**Status**: PROPOSED (planning spec, no code)
+**Status**: LOCKED as **D-042** (operator, 2026-07-23). Planning spec — no code yet; queued `versioning-audit`.
 **Date**: 2026-07-23
 **Author**: Fable-5 planner session
 **Operator intent (verbatim)**: *"Tools should version, and agents and skills should version. We should have AUDIT TRAILS so we can see WHERE updates came from, WHY, and WHEN."*

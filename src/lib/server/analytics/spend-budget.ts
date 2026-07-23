@@ -67,6 +67,58 @@ export class TokenBudgetExceededError extends Error {
 }
 
 /**
+ * The honest, SCOPE-AWARE 402 envelope a server action returns when an interactive spend refuses at a
+ * token ceiling (COST-GOVERNANCE-SPEC CG-2/CG-3). The bug this closes (deferred finding CG2-2): the
+ * launch/pmChat catch blocks hardcoded "daily token budget" even when the breach was PER-PROJECT
+ * (`err.scope === 'project'`) — mislabeling the operator's recourse (a per-project cap is freed by
+ * confirming past THIS project's budget, not the global daily one). We read `err.scope`/`err.projectId`
+ * and render the correct label + which budget is the actual constraint, so the message is honest (F-008).
+ *
+ * `actionNoun` is the plain-language subject of the refused spend ('launch' | 'PM turn') so one helper
+ * serves every interactive chokepoint with identical, scope-correct copy. The returned `budgetExceeded`
+ * flag + `spent`/`budget` drive the existing confirm-to-overspend control; `scope`/`projectId` are
+ * carried through so the UI can stay honest end-to-end.
+ */
+export interface BudgetRefusalEnvelope {
+	/** Plain-language, scope-correct refusal message (rendered verbatim in the form-error alert). */
+	readonly error: string;
+	/** Gates the operator's confirm-to-overspend control (re-submits with overrideBudget=true). */
+	readonly budgetExceeded: true;
+	/** Measured spend in the trailing 24h window against the breached ceiling (never fabricated). */
+	readonly spent: number;
+	/** The armed budget the spend would have crossed. */
+	readonly budget: number;
+	/** WHICH ceiling breached — so the UI never mislabels the operator's recourse. */
+	readonly scope: 'global' | 'project';
+	/** The project id when {@link scope} is 'project' (CG-3); absent for a global breach. */
+	readonly projectId?: string;
+}
+
+/**
+ * Build the {@link BudgetRefusalEnvelope} for a refused interactive spend. A per-project breach names
+ * "this project's token budget" (spent BY this project); a global breach names "the daily token budget"
+ * (spent ACROSS all projects). Both offer the honest recourse (confirm to spend past it). Pure — no db,
+ * no side effect — so it unit-tests directly for both scopes.
+ */
+export function budgetRefusalEnvelope(
+	err: TokenBudgetExceededError,
+	actionNoun: string
+): BudgetRefusalEnvelope {
+	const error =
+		err.scope === 'project'
+			? `This ${actionNoun} would exceed this project's token budget — ${err.spent} of ${err.budget} tokens have been spent by this project in the last 24h. Confirm to spend past it.`
+			: `This ${actionNoun} would exceed the daily token budget — ${err.spent} of ${err.budget} tokens have been spent across all projects in the last 24h. Confirm to spend past it.`;
+	return {
+		error,
+		budgetExceeded: true,
+		spent: err.spent,
+		budget: err.budget,
+		scope: err.scope,
+		...(err.projectId ? { projectId: err.projectId } : {})
+	};
+}
+
+/**
  * Coerce a configured budget to the enforcement contract: a positive finite integer arms the cap;
  * 0 / undefined / negative / non-finite ⇒ 0 (UNCAPPED). Mirrors boot.ts normalizeCap so the wired
  * value and the enforced value agree, and the 0-sentinel is honoured identically everywhere.

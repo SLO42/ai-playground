@@ -199,7 +199,7 @@ import {
 	type RecentRoleEventRow
 } from '$lib/server/workforce';
 import { listSessionMessages, launchSession, type TranscriptMessage } from '$lib/server/sessions';
-import { TokenBudgetExceededError } from '$lib/server/analytics/spend-budget';
+import { TokenBudgetExceededError, budgetRefusalEnvelope } from '$lib/server/analytics/spend-budget';
 import {
 	resumeCreation,
 	ConcurrentCreateError,
@@ -963,15 +963,11 @@ export const actions: Actions = {
 			// CG-2: a token-budget refusal is NOT a failure — it is an operator decision point. Surface
 			// the honest spent/budget so the UI can render a warning + a confirm that re-submits with
 			// overrideBudget=true (HTTP 402 Payment Required — the honest status for a spend ceiling).
+			// CG2-2: render the honest, SCOPE-AWARE label — a per-project breach ('project') names
+			// this project's budget as the constraint, a global breach ('global') the daily budget —
+			// so the operator's recourse is never mislabeled (err.scope drives the copy).
 			if (err instanceof TokenBudgetExceededError) {
-				return fail(402, {
-					launch: {
-						error: `This launch would exceed the daily token budget (${err.spent} of ${err.budget} tokens spent in the last 24h). Confirm to spend past it.`,
-						budgetExceeded: true as const,
-						spent: err.spent,
-						budget: err.budget
-					}
-				});
+				return fail(402, { launch: budgetRefusalEnvelope(err, 'launch') });
 			}
 			return fail(500, { launch: { error: (err as Error).message } });
 		}
@@ -1382,15 +1378,10 @@ export const actions: Actions = {
 			};
 		} catch (err) {
 			// CG-2: token-budget refusal → an operator decision point, not a failure (HTTP 402).
+			// CG2-2: scope-aware label (a PM turn threads projectId, so a per-project breach is reachable
+			// here too) — never mislabel a project breach as the daily budget.
 			if (err instanceof TokenBudgetExceededError) {
-				return fail(402, {
-					pm: {
-						error: `This PM turn would exceed the daily token budget (${err.spent} of ${err.budget} tokens spent in the last 24h). Confirm to spend past it.`,
-						budgetExceeded: true as const,
-						spent: err.spent,
-						budget: err.budget
-					}
-				});
+				return fail(402, { pm: budgetRefusalEnvelope(err, 'PM turn') });
 			}
 			return fail(500, { pm: { error: (err as Error).message } });
 		}

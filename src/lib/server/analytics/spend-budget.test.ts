@@ -15,6 +15,7 @@ import {
 	__resetReservationsForTest,
 	__setPerProjectBudgetForTest,
 	TokenBudgetExceededError,
+	budgetRefusalEnvelope,
 	SPEND_WINDOW_MS
 } from './spend-budget';
 
@@ -476,5 +477,58 @@ describe('CG-3 per-project token budget (real-surreal)', () => {
 			// Release any A reservation that proceeded (hermetic).
 			for (const r of aProceeded) if (r.status === 'fulfilled') r.value.release();
 		});
+	});
+});
+
+// CG2-2 — the HONEST, scope-aware 402 refusal envelope. Deferred finding: the launch/pmChat catch
+// blocks hardcoded "daily token budget" even for a PER-PROJECT breach, mislabeling the operator's
+// recourse. budgetRefusalEnvelope reads err.scope/err.projectId and renders the correct label. Pure
+// (no db), so it unit-tests both scopes + the shadow paths directly.
+describe('budgetRefusalEnvelope — scope-aware, honest labels (CG2-2)', () => {
+	it('a PER-PROJECT breach names THIS project’s budget (not the daily one) + carries projectId', () => {
+		const err = new TokenBudgetExceededError(1200, 1000, 'operator', 'project', 'project:acme');
+		const env = budgetRefusalEnvelope(err, 'launch');
+		expect(env.scope).toBe('project');
+		expect(env.projectId).toBe('project:acme');
+		expect(env.budgetExceeded).toBe(true);
+		expect(env.spent).toBe(1200);
+		expect(env.budget).toBe(1000);
+		// The honest label: this project's budget is the constraint, spent BY this project.
+		expect(env.error).toContain("this project's token budget");
+		expect(env.error).toContain('spent by this project');
+		expect(env.error).toContain('1200 of 1000 tokens');
+		expect(env.error).toContain('Confirm to spend past it');
+		// Never mislabel a project breach as the daily budget.
+		expect(env.error).not.toContain('daily token budget');
+		expect(env.error).not.toContain('across all projects');
+	});
+
+	it('a GLOBAL breach names the DAILY budget (spent across all projects) + omits projectId', () => {
+		const err = new TokenBudgetExceededError(5000, 4000, 'background', 'global');
+		const env = budgetRefusalEnvelope(err, 'launch');
+		expect(env.scope).toBe('global');
+		expect(env.projectId).toBeUndefined();
+		expect(env.error).toContain('the daily token budget');
+		expect(env.error).toContain('across all projects');
+		expect(env.error).toContain('5000 of 4000 tokens');
+		// Never mislabel a global breach as a per-project one.
+		expect(env.error).not.toContain("this project's");
+		expect(env.error).not.toContain('spent by this project');
+	});
+
+	it('the actionNoun personalizes the subject (launch vs PM turn) for each chokepoint', () => {
+		const projErr = new TokenBudgetExceededError(1200, 1000, 'operator', 'project', 'project:acme');
+		expect(budgetRefusalEnvelope(projErr, 'launch').error.startsWith('This launch would exceed')).toBe(true);
+		expect(budgetRefusalEnvelope(projErr, 'PM turn').error.startsWith('This PM turn would exceed')).toBe(true);
+	});
+
+	it('SHADOW — a project-scoped error constructed WITHOUT a projectId omits projectId honestly (no undefined leak)', () => {
+		// The error ctor only sets projectId when scope==='project' AND an id is given; the envelope must
+		// mirror that (never emit projectId:undefined), and still render the project-scope label.
+		const err = new TokenBudgetExceededError(1200, 1000, 'operator', 'project');
+		const env = budgetRefusalEnvelope(err, 'launch');
+		expect('projectId' in env).toBe(false);
+		expect(env.scope).toBe('project');
+		expect(env.error).toContain("this project's token budget");
 	});
 });

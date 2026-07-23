@@ -48,7 +48,8 @@ describe('CG-2 operator token-budget override — the confirm surface exists & i
 		// Two "spend past budget" confirm buttons (launch + PM), using the existing .btn.warn token.
 		const confirmBtns = src.match(/Confirm — spend past budget/g) ?? [];
 		expect(confirmBtns.length).toBe(2);
-		// The PM overspend warning surfaces the honest live spent/budget (F-008), role=alert.
-		expect(src).toMatch(/Over the daily token budget \(\{String\(pmFeedback\.spent\)\} of \{String\(pmFeedback\.budget\)\}/);
+		// The PM overspend warning surfaces the honest live spent/budget (F-008), role=alert, and a
+		// SCOPE-AWARE label (CG2-2) — a per-project breach names this project's budget, not the daily one.
+		expect(src).toMatch(/Over \{pmFeedback\.scope === 'project' \? "this project's" : 'the daily'\} token budget \(\{String\(pmFeedback\.spent\)\} of \{String\(pmFeedback\.budget\)\}/);
 	});
 });

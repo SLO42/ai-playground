@@ -2897,8 +2897,10 @@
             <!-- CG-2: operator confirm-to-overspend for the PM turn. The 402 surfaced the honest
                  spent/budget in the shared PM feedback line; this re-submits with overrideBudget. -->
             {#if pmFeedback && pmFeedback.budgetExceeded}
+              <!-- CG2-2: honest, scope-aware label — a per-project breach names THIS project's
+                   budget, a global breach the daily budget, so the recourse is never mislabeled. -->
               <p class="form-error" role="alert">
-                Over the daily token budget ({String(pmFeedback.spent)} of {String(pmFeedback.budget)} tokens in the last 24h).
+                Over {pmFeedback.scope === 'project' ? "this project's" : 'the daily'} token budget ({String(pmFeedback.spent)} of {String(pmFeedback.budget)} tokens in the last 24h).
               </p>
               <button
                 class="btn warn"

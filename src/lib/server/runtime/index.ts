@@ -113,6 +113,24 @@ export interface SpawnRequest {
 	 */
 	capabilities?: CapabilitySet;
 	/**
+	 * CCC2-2 (D-036 note) — the PER-SPAWN, IMMUTABLE catalog id-set THIS spawn's `capabilities`
+	 * are validated + composed against. Captured by the caller at spawn-plan time (the orchestrator
+	 * drain reads it from cc-config.freshenCatalog just before the launch) and carried on the request
+	 * so `plan()` validates against a snapshot that CANNOT be torn by a concurrent drain.
+	 *
+	 * WHY it lives on the request, not just `this.catalog`: CCF-1 made the runtime's boot snapshot
+	 * (`this.catalog`) MUTABLE via refreshCatalog, but the orchestrator fires unawaited parallel
+	 * `#runItem` drains — spawn A can freshen, then AWAIT launchSession while spawn B's freshen
+	 * overwrites the shared snapshot, so A's later `plan()` would read B's id-set (a torn allow-list).
+	 * A per-request snapshot removes the shared read across awaits: each spawn validates against its OWN.
+	 *
+	 * F-053 GUARD (preserved in plan()): this NEVER flips provisioning ON. When the runtime never
+	 * provisioned a catalog (`this.catalog` undefined), `req.catalog` is IGNORED and the no-catalog
+	 * legacy path stays byte-identical. Absent ⇒ falls back to the runtime's boot snapshot (resume /
+	 * manual launches that do not freshen).
+	 */
+	catalog?: CapabilityCatalog;
+	/**
 	 * TASK 15.1 (HARVEST B1 / D-018) — the session's declared SCOPE-LOCK: the file roots
 	 * this session may WRITE under ({scopeRoots, scopeAllow glob exceptions}) plus the
 	 * operator-configured destructive-bash pattern lists (config/gates.yaml, merged in by
@@ -600,11 +618,19 @@ export class ClaudeCodeRuntime implements AgentRuntime {
 
 	/** Build the resolved spawn plan, ALWAYS attaching the isolated config (D-002). */
 	private plan(req: SpawnRequest, resumeCcSessionId?: string): CcSpawnPlan {
+		// CCC2-2 — validate THIS spawn against its OWN per-request snapshot when supplied, so a
+		// concurrent drain's refreshCatalog can never tear the id-set out from under a spawn whose
+		// plan() runs after an await (the orchestrator fires parallel unawaited #runItem drains).
+		// F-053 GUARD: only prefer req.catalog when provisioning is already ON (this.catalog defined);
+		// a no-catalog runtime IGNORES req.catalog so it never flips provisioning on mid-flight — the
+		// legacy path stays byte-identical. Absent req.catalog ⇒ the runtime's boot snapshot (resume /
+		// manual launches that do not freshen).
+		const catalog = this.catalog === undefined ? undefined : (req.catalog ?? this.catalog);
 		const isolated = isolatedConfigFor(req, {
 			harnessConfigRoot: this.harnessConfigRoot,
 			gates: this.gates,
 			hooks: this.hooks,
-			catalog: this.catalog,
+			catalog,
 			mcpToolWiring: this.mcpToolWiring
 		});
 		// TASK 13.3 (D-018/D-024, §2.10e) — when gates are configured, every plan carries the

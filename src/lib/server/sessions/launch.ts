@@ -60,6 +60,7 @@ import type {
 	ToolPolicy,
 	ContextBundle,
 	CapabilitySet,
+	CapabilityCatalog,
 	EditScopeInput
 } from '../runtime/index';
 
@@ -111,6 +112,15 @@ export interface LaunchInput {
 	 * NEVER the operator's whole plugin set — D-002 isolation is preserved in the composer.
 	 */
 	capabilities?: CapabilitySet;
+	/**
+	 * CCC2-2 (D-036 note) — the PER-SPAWN, IMMUTABLE catalog id-set THIS session's `capabilities`
+	 * are validated + composed against. The orchestrator drain reads it from cc-config.freshenCatalog
+	 * immediately before the launch and passes it here so it rides straight onto the SpawnRequest —
+	 * the runtime then validates against a snapshot that a concurrent parallel drain's refreshCatalog
+	 * cannot tear (F-053-guarded in the runtime: a no-catalog runtime ignores it). Absent ⇒ the runtime
+	 * falls back to its boot snapshot (manual/workflow launches that do not freshen).
+	 */
+	catalog?: CapabilityCatalog;
 	/**
 	 * TASK 15.1 (HARVEST B1 / D-018) — the session's declared SCOPE-LOCK: the file roots
 	 * it may WRITE under, plus optional glob exceptions for shared files. The launch path
@@ -851,6 +861,10 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		// D-036: the resolved intent bundle's capability set rides onto the SpawnRequest so
 		// the runtime's composeCapabilities validates + composes it against the live catalog.
 		capabilities: input.capabilities,
+		// CCC2-2: the PER-SPAWN catalog snapshot (freshened by the orchestrator drain just before
+		// this launch) rides on too, so the runtime validates against an id-set that a concurrent
+		// parallel drain cannot tear. Absent ⇒ the runtime falls back to its boot snapshot.
+		catalog: input.catalog,
 		// TASK 15.1: the resolved scope-lock (declared roots + config-merged patterns) rides
 		// onto the SpawnRequest; the runtime enforces it on BOTH paths (canUseTool + hook).
 		editScope,

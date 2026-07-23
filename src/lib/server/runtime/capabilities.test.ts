@@ -315,6 +315,83 @@ describe('runtime composes the capability set into the isolated session config',
 		expect(plan?.isolated.settings.plugins ?? []).toEqual([]);
 	});
 
+	// CCC2-2 (D-036 note) — the PER-SPAWN catalog snapshot. CCF-1 made `this.catalog` mutable; the
+	// orchestrator fires parallel unawaited drains, so spawn A can freshen then AWAIT launchSession
+	// while sibling drain B overwrites the shared snapshot — A's later plan() would read B's id-set (a
+	// torn allow-list). Threading the snapshot on the REQUEST removes that shared read: each spawn
+	// validates against its OWN immutable copy, immune to a concurrent refreshCatalog.
+	it('CCC2-2: a spawn validates against ITS req.catalog even after the shared snapshot was mutated away', async () => {
+		const plans: CcSpawnPlan[] = [];
+		const rt = new ClaudeCodeRuntime({
+			backend: mockBackend((p) => plans.push(p)),
+			harnessConfigRoot: 'F:/code/v2/.harness-cc',
+			// The boot / shared snapshot HAS 'design'.
+			catalog: { skills: new Set(['design']), agents: new Set(), mcp: new Set() }
+		});
+		// A CONCURRENT sibling drain overwrites the SHARED snapshot to one WITHOUT 'design'.
+		rt.refreshCatalog({ skills: new Set(['other']), agents: new Set(), mcp: new Set() });
+		// THIS spawn carries its own per-spawn snapshot that DOES have 'design' — it must win.
+		await drain(
+			rt.spawn(
+				baseReq({
+					capabilities: { skills: ['design'], agents: [], mcp: [] },
+					catalog: { skills: new Set(['design']), agents: new Set(), mcp: new Set() }
+				})
+			)
+		);
+		// Composed 'design' → validated against req.catalog, NOT the mutated shared snapshot (no throw).
+		expect(plans.at(-1)?.isolated.settings.capabilities?.skills).toEqual(['design']);
+	});
+
+	it('CCC2-2: two parallel spawns during a freshen each receive a consistent, complete id-set', async () => {
+		const plans: CcSpawnPlan[] = [];
+		const rt = new ClaudeCodeRuntime({
+			backend: mockBackend((p) => plans.push(p)),
+			harnessConfigRoot: 'F:/code/v2/.harness-cc',
+			catalog: { skills: new Set(['boot-only']), agents: new Set(), mcp: new Set() }
+		});
+		// Spawn A validates against {a-skill}; spawn B against {b-skill}. A refreshCatalog (a sibling
+		// drain) fires BETWEEN them, mutating the shared snapshot — it must leak into NEITHER plan.
+		const spawnA = rt.spawn(
+			baseReq({
+				capabilities: { skills: ['a-skill'], agents: [], mcp: [] },
+				catalog: { skills: new Set(['a-skill']), agents: new Set(), mcp: new Set() }
+			})
+		);
+		rt.refreshCatalog({ skills: new Set(['mid-drain']), agents: new Set(), mcp: new Set() });
+		const spawnB = rt.spawn(
+			baseReq({
+				capabilities: { skills: ['b-skill'], agents: [], mcp: [] },
+				catalog: { skills: new Set(['b-skill']), agents: new Set(), mcp: new Set() }
+			})
+		);
+		await Promise.all([drain(spawnA), drain(spawnB)]);
+		// Each spawn composed EXACTLY its own id-set — complete + consistent, zero cross-contamination
+		// (order is deterministic: plan() runs synchronously when spawn() is called).
+		expect(plans[0]?.isolated.settings.capabilities?.skills).toEqual(['a-skill']);
+		expect(plans[1]?.isolated.settings.capabilities?.skills).toEqual(['b-skill']);
+	});
+
+	it('CCC2-2 / F-053: a no-catalog runtime IGNORES req.catalog (provisioning stays OFF)', async () => {
+		const plans: CcSpawnPlan[] = [];
+		const rt = new ClaudeCodeRuntime({
+			backend: mockBackend((p) => plans.push(p)),
+			harnessConfigRoot: 'F:/code/v2/.harness-cc'
+			// no catalog ⇒ provisioning OFF
+		});
+		// A per-spawn catalog must NOT flip provisioning on: the no-catalog legacy path stays
+		// byte-identical (an unknown id does NOT fail closed because composeCapabilities never runs).
+		await drain(
+			rt.spawn(
+				baseReq({
+					capabilities: { skills: ['anything'], agents: [], mcp: [] },
+					catalog: { skills: new Set(['anything']), agents: new Set(), mcp: new Set() }
+				})
+			)
+		);
+		expect(plans.at(-1)?.isolated.settings.capabilities).toBeUndefined();
+	});
+
 	it('a spawn with an UNKNOWN capability id fails closed (error event, no allow)', async () => {
 		const rt = new ClaudeCodeRuntime({
 			backend: mockBackend(() => {}),

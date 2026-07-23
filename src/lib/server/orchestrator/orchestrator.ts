@@ -32,6 +32,7 @@ import type { BusEvent, EventBus, Unsubscribe } from '../events/bus';
 import type { DbChange } from '../events/db-source';
 import type {
 	AgentRuntime,
+	CapabilityCatalog,
 	CapabilitySet,
 	Intent,
 	ModelSelection,
@@ -917,13 +918,26 @@ export class Orchestrator {
 			// last-good snapshot and records an HONEST staleness analytics event (D-036 unknown-id
 			// refusal stays fail-closed regardless). refreshCatalog is a no-op when the runtime
 			// never provisioned capabilities (no catalog) — the legacy path stays byte-identical.
+			// CCC2-2 — the PER-SPAWN catalog snapshot THIS spawn validates against. Captured here from
+			// the freshen result and threaded onto the LaunchInput → SpawnRequest so the runtime's
+			// plan() validates against an id-set that a CONCURRENT parallel drain (this method runs
+			// unawaited via `void #runItem`) cannot tear. Undefined ⇒ freshen was skipped/failed and the
+			// runtime falls back to its last-good boot snapshot (fail-open, F-014). Snapshotted BEFORE the
+			// launch await so no later refreshCatalog from a sibling drain can mutate what THIS spawn uses.
+			let spawnCatalog: CapabilityCatalog | undefined;
 			try {
 				const fresh = await freshenCatalog(this.#db);
-				this.#runtime.refreshCatalog?.({
+				spawnCatalog = {
 					skills: fresh.catalog.skills,
 					agents: fresh.catalog.agents,
 					mcp: fresh.catalog.mcp
-				});
+				};
+				// Keep the runtime's shared boot snapshot fresh too, for spawn paths that do NOT thread a
+				// per-spawn catalog (resume / manual launches). The per-spawn `spawnCatalog` above is what
+				// THIS drained spawn actually validates against — immune to a sibling drain overwriting the
+				// shared snapshot mid-flight (that was the CCC2-2 torn-read; refreshCatalog is now a benign
+				// last-writer-wins on the FALLBACK only, never the value a concurrently-planning spawn reads).
+				this.#runtime.refreshCatalog?.(spawnCatalog);
 				if (fresh.staleWarning) {
 					await writeAgentEvent(this.#db, {
 						type: 'error',
@@ -972,6 +986,9 @@ export class Orchestrator {
 					budgets: route.budgets,
 					toolPolicy: route.toolPolicy,
 					capabilities: route.capabilities,
+					// CCC2-2: the per-spawn catalog snapshot captured from freshenCatalog above (undefined
+					// when the freshen was skipped/failed ⇒ runtime falls back to its boot snapshot).
+					catalog: spawnCatalog,
 					// LIFECYCLE-GRAPH (m0067): the cause of this spawn IS the work_item the drain just
 					// claimed — the proximate, always-known trigger. Thread its id onto the spawn
 					// agent_event.parent_event_id so the node-graph draws the queue→session edge

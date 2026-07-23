@@ -232,10 +232,11 @@ export interface EnforceTokenBudgetOpts {
 	 * EXEMPT from the TOKEN budget gate: the always-on local brain (the concierge Stage-2 turn on
 	 * Ollama) is genuinely free, so gating it on a token ceiling contradicts the local-first design
 	 * (COST-GOVERNANCE-SPEC §1 invariant 5 — the $0 local floor is the FIRST cost control, not a
-	 * capped resource). This ONLY skips the GATE; it does not itself record spend. A local turn run
-	 * through a launched session is still metered at the events.ts completion write, but a non-session
-	 * direct call — the concierge Stage-2 turn — writes no completion row, so its genuinely-$0 spend is
-	 * simply not counted (an accepted observability gap). A CLOUD provider (or an absent provider — the
+	 * capped resource). This ONLY skips the GATE; it does not itself record spend — metering happens
+	 * elsewhere: a launched local session at the events.ts completion write, and the non-session
+	 * concierge Stage-2 turn at wire.ts meterConciergeTurn (CG-2-1), which writes the one completion
+	 * row for every concierge turn, so a LOCAL turn is counted as a genuine $0 and a CLOUD turn at its
+	 * real cost (the former un-metered-concierge observability gap is now closed). A CLOUD provider (or an absent provider — the
 	 * safe, gated default) falls through and stays gated. See {@link isLocalProvider}.
 	 */
 	provider?: string;
@@ -279,9 +280,9 @@ export interface EnforceResult {
  * LOCAL/$0 provider exemption (COST-GOVERNANCE-SPEC §1 invariant 5). The always-on local brain runs
  * on Ollama, which is genuinely free — gating a $0 turn on a real-money TOKEN budget contradicts the
  * local-first design, so a local provider is never refused by the budget. The exemption only skips the
- * GATE: a local turn run through a launched session is still metered at the events.ts completion write,
- * but a non-session direct call (the concierge Stage-2 turn) writes no completion row and is un-metered.
- * An ABSENT/unknown provider is NOT
+ * GATE, not metering: a launched local session is metered at the events.ts completion write, and the
+ * non-session concierge Stage-2 turn is metered at wire.ts meterConciergeTurn (CG-2-1) as an honest $0
+ * completion row (the local model prices 0/0). An ABSENT/unknown provider is NOT
  * treated as local (the safe, gated default — a caller must positively declare 'local'/'ollama').
  */
 export function isLocalProvider(provider: string | undefined): boolean {

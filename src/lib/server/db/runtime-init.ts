@@ -21,6 +21,20 @@ export interface DbEnv {
 	SURREAL_DB?: string;
 	SURREAL_USER?: string;
 	SURREAL_PASS?: string;
+	/**
+	 * Opt-in scoped least-privilege runtime creds (SF2-1 / DBR-1 / D-026c). The
+	 * DATABASE-level user `provision-user.ts` mints (`atelier_runtime`, ROLES EDITOR)
+	 * signs in DIFFERENTLY from root: SurrealDB 2.x requires a `DEFINE USER … ON
+	 * DATABASE` user to include `{namespace, database}` in the signin payload
+	 * (`authLevel:'database'`), which the historical root path does NOT send. When
+	 * BOTH of these are set, {@link resolveDbConnect} uses them + `authLevel:'database'`
+	 * so the operator who flips the runtime to the scoped user is not met with a failed
+	 * signin → disconnected dashboard. When UNSET, the connect path is BYTE-IDENTICAL to
+	 * the historical root path — no `authLevel`, `SURREAL_USER`/`SURREAL_PASS` unchanged
+	 * (additive opt-in, D-024/F-053: an un-wired env never changes an existing caller).
+	 */
+	SURREAL_RUNTIME_USER?: string;
+	SURREAL_RUNTIME_PASS?: string;
 }
 
 /** Outcome of a runtime-init attempt — honest, never throws on an unreachable DB. */
@@ -46,7 +60,17 @@ export function wsHost(url: string): string {
  * D-025 loopback assertion on the parsed host (fail-closed on a routable endpoint).
  */
 export function resolveDbConnect(env: DbEnv):
-	| { ok: true; opts: { url: string; username: string; password: string; namespace: string; database: string } }
+	| {
+			ok: true;
+			opts: {
+				url: string;
+				username: string;
+				password: string;
+				namespace: string;
+				database: string;
+				authLevel?: 'database';
+			};
+	  }
 	| { ok: false; reason: string } {
 	const url = env.SURREAL_WS?.trim();
 	if (!url) return { ok: false, reason: 'SURREAL_WS not set' };
@@ -60,6 +84,41 @@ export function resolveDbConnect(env: DbEnv):
 		);
 	}
 
+	const namespace = env.SURREAL_NS?.trim() || 'playground';
+	const database = env.SURREAL_DB?.trim() || 'v2';
+
+	// SF2-1 opt-in: scoped least-priv runtime user at DATABASE auth level (DBR-1/D-026c).
+	// Engaged ONLY when the operator has explicitly wired BOTH runtime creds — an empty
+	// string counts as unset. A PARTIAL config (one set, the other blank) is an honest
+	// misconfiguration reason, NEVER a silent fall-through to root: falling back would
+	// mask the operator's intent and connect with the WRONG (higher-privilege) identity.
+	const runtimeUser = env.SURREAL_RUNTIME_USER?.trim();
+	const runtimePass = env.SURREAL_RUNTIME_PASS;
+	const runtimeUserSet = Boolean(runtimeUser);
+	const runtimePassSet = runtimePass !== undefined && runtimePass !== '';
+	if (runtimeUserSet || runtimePassSet) {
+		if (!runtimeUserSet || !runtimePassSet) {
+			return {
+				ok: false,
+				reason: 'SURREAL_RUNTIME_USER and SURREAL_RUNTIME_PASS must both be set for scoped runtime auth'
+			};
+		}
+		// Non-null by the guards above; assert for the type-narrower.
+		return {
+			ok: true,
+			opts: {
+				url,
+				username: runtimeUser as string,
+				password: runtimePass as string,
+				namespace,
+				database,
+				authLevel: 'database'
+			}
+		};
+	}
+
+	// Historical root path — UNCHANGED. No `authLevel` key: Db.connect defaults to 'root',
+	// so this branch is byte-identical to the pre-SF2-1 behavior (F-053 additive opt-in).
 	const username = env.SURREAL_USER?.trim();
 	const password = env.SURREAL_PASS;
 	if (!username || password === undefined || password === '') {
@@ -72,8 +131,8 @@ export function resolveDbConnect(env: DbEnv):
 			url,
 			username,
 			password,
-			namespace: env.SURREAL_NS?.trim() || 'playground',
-			database: env.SURREAL_DB?.trim() || 'v2'
+			namespace,
+			database
 		}
 	};
 }

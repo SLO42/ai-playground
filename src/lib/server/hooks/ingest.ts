@@ -15,7 +15,7 @@
 //      proceeds. No safety decision rides this best-effort path.
 
 import { timingSafeEqual } from 'node:crypto';
-import { isLoopbackHost } from '../config/loopback';
+import { isLoopbackHost, hostnameFromHostHeader } from '../config/loopback';
 import { normalizeHookEvent, isHookEvent, type HookEvent, type HookAgentEvent } from './proxy-config';
 
 /** Env the ingest endpoint reads — the per-boot D-025 token (set at server boot). */
@@ -33,11 +33,14 @@ export interface AuthResult {
 /** Extract the host (sans port) from a `Host`/`Origin` header value. */
 function bareHost(hostHeader: string): string {
 	const v = hostHeader.trim();
-	// Origin is a full url; Host is `host:port`. Try url-parse first, fall back to split.
+	// Origin is a full url; Host is `host[:port]` (possibly a bracketed IPv6 literal). Try
+	// url-parse first (handles a full Origin url), then fall back to the bracketed-IPv6-aware
+	// Host parser (SF2-3(c)) so `[::1]:5173` normalizes to `::1`, not the naive `split(':')[0]`
+	// result `[` that would mis-classify the loopback literal as non-loopback (fail-closed deny).
 	try {
 		return new URL(v).hostname;
 	} catch {
-		return v.split(':')[0];
+		return hostnameFromHostHeader(v) ?? '';
 	}
 }
 

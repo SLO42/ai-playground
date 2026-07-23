@@ -122,21 +122,30 @@ export function hostnameFromHostHeader(raw: string | null | undefined): string |
 /**
  * Decide whether a request is loopback for the LOGIN GATE (SEC-1 / SF2-3), given the
  * (possibly absent) client address, WHETHER that address is spoofable, and the Host
- * header — fail-closed on a LAN bind.
+ * header — fail-closed whenever a signal cannot be trusted.
  *
  * `getClientAddress()` normally reflects the real socket peer and CANNOT be spoofed by a
  * header. BUT the adapter-node `getClientAddress()` returns a HEADER value instead when
  * `ADDRESS_HEADER` (e.g. `x-forwarded-for`) is configured — and a header IS spoofable
- * (SF2-3(a)). So the caller passes `clientAddrSpoofable` to say which regime it is in:
+ * (SF2-3(a)). `ADDRESS_HEADER` being set has a SECOND consequence that matters more than
+ * spoofability: it means a REVERSE PROXY fronts the app, so even a `127.0.0.1` bind is
+ * remotely reachable THROUGH that proxy. That voids the "a remote client cannot reach a
+ * loopback bind" premise the lenient branches rely on — in exactly the regime where a
+ * remote attacker can forge the forwarded address/Host. So the caller passes
+ * `clientAddrSpoofable` and this decision:
  *
- *   - `clientAddr` present, NOT spoofable (ADDRESS_HEADER unset) → the real peer alone
- *     decides on ANY bind (unspoofable). Byte-identical to the prior behavior.
- *   - `clientAddr` present, SPOOFABLE (ADDRESS_HEADER set) → same trust class as the Host
- *     header. On a LAN-bound server a spoofed `127.0.0.1` must NOT grant login-free
- *     control-plane access → DENY (fail-closed). On a loopback-bound server keep it
- *     lenient (a remote attacker cannot reach a loopback bind at all).
- *   - `clientAddr` absent → the only signal left is the SPOOFABLE Host header, gated the
- *     same way on the server's own bind.
+ *   - `clientAddrSpoofable` TRUE (ADDRESS_HEADER set → a proxy fronts the app) → NOTHING
+ *     is trusted as loopback, on ANY bind. Both the forwarded client address AND the Host
+ *     header are attacker-forgeable, and the fronting proxy makes even a loopback bind
+ *     remotely reachable. Under D-024 a security boundary fails closed → DENY (the login
+ *     gate applies to everyone). Covers both a forged `127.0.0.1` client address (GAP 1)
+ *     and the Host-fallback reached when getClientAddress() throws under the proxy (GAP 2).
+ *   - `clientAddrSpoofable` FALSE (ADDRESS_HEADER unset → no proxy, the default deployment):
+ *     - `clientAddr` present → the real, unspoofable socket peer alone decides on ANY bind.
+ *       Byte-identical to the prior authoritative-peer behavior.
+ *     - `clientAddr` absent → the only signal left is the SPOOFABLE Host header. Fail-closed
+ *       on a LAN bind (SEC-1); on a loopback bind keep the lenient fallback — with no proxy
+ *       a LAN attacker genuinely cannot reach a loopback bind.
  *
  * Pure (no request/env access) so the SEC-1/SF2-3 policy is unit-testable without
  * SvelteKit. The caller normalizes the peer address (IPv4-mapped IPv6 strip) and passes
@@ -151,23 +160,29 @@ export function decideClientLoopback(input: {
 	serverLoopbackBound: boolean;
 	/**
 	 * True iff `clientAddr` came from a spoofable HEADER rather than the real socket peer —
-	 * i.e. the adapter's `ADDRESS_HEADER` is configured. Defaults to false (the real, unset-
-	 * ADDRESS_HEADER deployment), which preserves the prior authoritative-peer behavior.
+	 * i.e. the adapter's `ADDRESS_HEADER` is configured, which ALSO means a reverse proxy
+	 * fronts the app. Defaults to false (the real, unset-ADDRESS_HEADER deployment), which
+	 * preserves the prior authoritative-peer behavior.
 	 */
 	clientAddrSpoofable?: boolean;
 }): boolean {
+	// ADDRESS_HEADER set ⇒ a reverse proxy fronts the app. Two consequences make EVERY
+	// loopback signal here untrustworthy REGARDLESS of the server bind: (1) the forwarded
+	// client address is an attacker-forgeable header, and (2) the fronting proxy makes even
+	// a 127.0.0.1 bind remotely reachable, so the "a remote client cannot reach a loopback
+	// bind" premise the lenient branches lean on is FALSE in exactly this regime. Under
+	// D-024 a security boundary fails closed → with a proxy configured, nothing is trusted
+	// as loopback and the login gate applies to everyone (SF2-3(a); GAP 1 + GAP 2). This
+	// must not lean on the adapter's default XFF_DEPTH=1 as its sole defense.
+	if (input.clientAddrSpoofable) return false;
+
 	if (input.clientAddr) {
-		// Real, unspoofable socket peer → authoritative on any bind (unchanged behavior).
-		if (!input.clientAddrSpoofable) return isLoopbackHost(input.clientAddr);
-		// Header-derived (ADDRESS_HEADER set) → spoofable. Fail-closed on a LAN bind so a
-		// spoofed loopback value can't bypass the login gate (SF2-3(a)); lenient on a
-		// loopback bind (a remote client cannot reach it).
-		if (!input.serverLoopbackBound) return false;
+		// Real, unspoofable socket peer (no proxy) → authoritative on any bind (unchanged).
 		return isLoopbackHost(input.clientAddr);
 	}
-	// Address unavailable → the only remaining signal is the SPOOFABLE Host header.
-	// Fail-closed on a LAN-bound server (SEC-1); a loopback-bound server keeps the
-	// lenient fallback (a LAN attacker can't reach a loopback bind).
+	// Address unavailable AND no proxy → the only remaining signal is the SPOOFABLE Host
+	// header. Fail-closed on a LAN-bound server (SEC-1); a loopback-bound server with no
+	// proxy keeps the lenient fallback (a LAN attacker can't reach a loopback bind).
 	if (!input.serverLoopbackBound) return false;
 	if (!input.hostHeader) return false;
 	return isLoopbackHost(input.hostHeader);

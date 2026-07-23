@@ -200,14 +200,67 @@ describe('decideClientLoopback — SEC-1 fail-closed Host-header fallback', () =
 			).toBe(false);
 		});
 
-		it('spoofable loopback client address on a LOOPBACK-bound server → lenient (true)', () => {
-			// A remote client cannot reach a loopback bind, so trusting the header stays safe.
+		it('spoofable loopback client address on a LOOPBACK-bound server → DENY (fail-closed)', () => {
+			// GAP 1 regression (SF2-3(a) residual): ADDRESS_HEADER set ⇒ a reverse proxy fronts
+			// the app, so even a 127.0.0.1 bind is remotely reachable THROUGH the proxy — the old
+			// "a remote client cannot reach a loopback bind" premise is FALSE in exactly this
+			// regime. A forged forwarded `127.0.0.1`/`::1` must NOT grant login-free access. D-024
+			// fail-closed on any bind when a proxy is configured; must not lean on XFF_DEPTH=1.
 			expect(
 				decideClientLoopback({
 					clientAddr: '127.0.0.1',
 					hostHeader: null,
 					serverLoopbackBound: true,
 					clientAddrSpoofable: true
+				})
+			).toBe(false);
+			expect(
+				decideClientLoopback({
+					clientAddr: '::1',
+					hostHeader: null,
+					serverLoopbackBound: true,
+					clientAddrSpoofable: true
+				})
+			).toBe(false);
+		});
+
+		it('GAP 2 regression: Host-fallback under a proxy (getClientAddress threw) fails closed on ANY bind', () => {
+			// clientAddr absent BUT ADDRESS_HEADER set (proxy) — e.g. adapter-node threw because
+			// the forwarded header was absent/malformed. The remaining Host signal is a
+			// proxy-forwarded, attacker-forgeable header, and the fronting proxy makes even a
+			// loopback bind remotely reachable. Must DENY on a loopback bind too (not just LAN).
+			for (const serverLoopbackBound of [true, false]) {
+				expect(
+					decideClientLoopback({
+						clientAddr: null,
+						hostHeader: '127.0.0.1',
+						serverLoopbackBound,
+						clientAddrSpoofable: true
+					})
+				).toBe(false);
+				expect(
+					decideClientLoopback({
+						clientAddr: undefined,
+						hostHeader: 'localhost',
+						serverLoopbackBound,
+						clientAddrSpoofable: true
+					})
+				).toBe(false);
+			}
+		});
+
+		it('no proxy (ADDRESS_HEADER unset) leaves the lenient loopback-bind Host fallback UNCHANGED', () => {
+			// Guards against over-reach: the fix must only engage when a proxy is configured.
+			// With clientAddrSpoofable false/absent, the loopback-bound Host fallback stays lenient.
+			expect(
+				decideClientLoopback({ clientAddr: null, hostHeader: '127.0.0.1', serverLoopbackBound: true })
+			).toBe(true);
+			expect(
+				decideClientLoopback({
+					clientAddr: null,
+					hostHeader: 'localhost',
+					serverLoopbackBound: true,
+					clientAddrSpoofable: false
 				})
 			).toBe(true);
 		});

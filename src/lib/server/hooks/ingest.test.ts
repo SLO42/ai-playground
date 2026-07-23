@@ -36,6 +36,24 @@ describe('authorizeHookRequest — D-025 control-plane auth (token + Origin/Host
 		expect(r.ok).toBe(false);
 	});
 
+	it('accepts a bracketed-IPv6 loopback Host (SF2-3(c) — [::1]:port not mis-parsed to `[`)', () => {
+		// GAP 3 regression: the old bareHost fallback `v.split(':')[0]` turned `[::1]:5173` into
+		// `[`, which isLoopbackHost rejects → a legitimate IPv6-loopback hook was fail-closed
+		// denied. Routing through hostnameFromHostHeader normalizes it to `::1`.
+		expect(
+			authorizeHookRequest(new Headers({ 'x-hook-token': TOKEN, host: '[::1]:5173' }), env).ok
+		).toBe(true);
+		expect(
+			authorizeHookRequest(new Headers({ 'x-hook-token': TOKEN, host: '[::1]' }), env).ok
+		).toBe(true);
+	});
+
+	it('still REJECTS a bracketed-IPv6 NON-loopback Host (fail-closed preserved)', () => {
+		expect(
+			authorizeHookRequest(new Headers({ 'x-hook-token': TOKEN, host: '[2001:db8::1]:5173' }), env).ok
+		).toBe(false);
+	});
+
 	it('fails CLOSED when no server token is configured (cannot authenticate → deny)', () => {
 		const r = authorizeHookRequest(new Headers({ 'x-hook-token': TOKEN, host: '127.0.0.1' }), {});
 		expect(r.ok).toBe(false);

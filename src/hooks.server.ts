@@ -519,8 +519,10 @@ function clientIsLoopback(event: Parameters<Handle>[0]['event']): boolean {
 	// `[` and mis-classifies the loopback literal as non-loopback) — SF2-3(c).
 	const hostHeader = hostnameFromHostHeader(event.request.headers.get('host'));
 	// adapter-node's getClientAddress() returns a spoofable HEADER value (not the socket
-	// peer) when ADDRESS_HEADER is configured — flag it so decideClientLoopback fails
-	// closed on a LAN bind rather than trusting a spoofed loopback address (SF2-3(a)).
+	// peer) when ADDRESS_HEADER is configured — which ALSO means a reverse proxy fronts the
+	// app, making even a loopback bind remotely reachable. Flag it so decideClientLoopback
+	// fails closed on ANY bind (forged address AND Host-fallback) rather than trusting a
+	// spoofed loopback value (SF2-3(a)).
 	const clientAddrSpoofable = !!env.ADDRESS_HEADER?.trim();
 	return decideClientLoopback({
 		clientAddr,

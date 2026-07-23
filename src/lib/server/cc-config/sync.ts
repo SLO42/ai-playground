@@ -601,30 +601,54 @@ export async function reconcileScopes(db: Db): Promise<ScopeReconcileResult> {
 		removed.push(row.id);
 	}
 
-	// Paths already covered by a valid row (canonical compare).
-	const covered = new Set<string>();
+	// Paths ALREADY in the catalog via a valid row (canonical compare). Such a row may be
+	// in-sync OR drifted on disk — CCC2-1: a drifted one MUST still be re-synced below so an
+	// on-disk deletion/edit propagates OUT of the mirror. Previously a covered project scope
+	// was skipped unconditionally, so a skill DELETED from an existing synced project's
+	// `.claude` stayed in `cc_skill` / `catalogIds` and kept passing composeCapabilities
+	// (a capability the operator removed remained grantable — a catalog-integrity hole).
+	const validCovered = new Set<string>();
 	for (const row of valid) {
-		if (row.kind === 'project') covered.add(canonPath(row.path));
+		if (row.kind === 'project') validCovered.add(canonPath(row.path));
 	}
 
-	// Derive missing scopes from each project's OWN root, oldest registrant first.
+	// Derive missing scopes from each project's OWN root, oldest registrant first, AND
+	// re-sync an already-catalogued project scope that has DRIFTED on disk. `seen` dedups
+	// projects sharing one root (oldest registrant wins) so a shared root is handled once.
 	const [projects] = await db.query<[Array<{ id: unknown; root_path: unknown }>]>(
 		`SELECT id, root_path, created_at FROM project ORDER BY created_at ASC;`
 	);
 	const synced: string[] = [];
+	const seen = new Set<string>();
 	for (const p of projects ?? []) {
 		const id = String(p.id);
 		const root = typeof p.root_path === 'string' ? p.root_path : '';
 		if (!root) continue;
 		const claudeDir = resolve(root, '.claude');
 		const key = canonPath(claudeDir);
-		if (covered.has(key)) continue;
+		if (seen.has(key)) continue; // an older project already handled this shared root
+		// A scope is only derived/synced for a real on-disk `.claude` dir (no fabricated row, F-008).
 		try {
 			if (!existsSync(claudeDir) || !statSync(claudeDir).isDirectory()) continue;
 		} catch {
 			continue;
 		}
-		covered.add(key);
+		seen.add(key);
+		if (validCovered.has(key)) {
+			// Already catalogued. Re-sync ONLY when disk drifted from the mirror, so an on-disk
+			// deletion propagates OUT of the catalog (CCC2-1). Steady-state (in-sync) → skip: keeps
+			// the loader hot path write-free (F-014) AND reconcile idempotent (a second run of an
+			// unchanged scope re-syncs nothing → `synced` stays empty, preserving the 14.4d contract).
+			let drifted = false;
+			try {
+				drifted = (await syncState(db, projectScopeOf(id, root))).status === 'out_of_sync';
+			} catch {
+				// An unreadable scope path is NOT proof of drift — leave the mirror as-is (parity with
+				// the loader status overlay + anyScopeOutOfSync). Skip the re-sync rather than churn it.
+				drifted = false;
+			}
+			if (!drifted) continue;
+		}
 		const res = await syncScope(db, projectScopeOf(id, root));
 		synced.push(res.scopeId);
 	}
@@ -839,7 +863,12 @@ export async function catalogIds(db: Db): Promise<CatalogIds> {
 export interface CatalogFreshness {
 	/** The id-set to validate against — reconciled+fresh when a scope drifted, else the current mirror. */
 	catalog: CatalogIds;
-	/** True when a drifted (out_of_sync) scope triggered `reconcileScopes` this call. */
+	/**
+	 * True when a drifted (out_of_sync) scope triggered `reconcileScopes` this call AND the
+	 * reconcile actually CLEARED the drift (verified by a re-probe). It is NOT set true merely
+	 * because reconcile did not throw: if a scope is still stale afterward the result reports
+	 * `reconciled:false` + a `staleWarning` instead (F-008 — never a false "reconciled" state).
+	 */
 	reconciled: boolean;
 	/** Set ONLY when a triggered reconcile FAILED — the last-good id-set is used; an honest warning to surface. */
 	staleWarning?: string;
@@ -905,7 +934,6 @@ export async function freshenCatalog(
 	}
 	try {
 		await reconcile(db);
-		return { catalog: await readIds(db), reconciled: true };
 	} catch (err) {
 		// Reconcile failed — validate against the LAST-GOOD id-set + an honest staleness warning.
 		// Never block the spawn on a reconcile fault (F-014); D-036 unknown-id refusal still
@@ -919,4 +947,28 @@ export async function freshenCatalog(
 				`successful reconcile): ${(err as Error).message}`
 		};
 	}
+	// CCC2-1 — VERIFY the reconcile actually cleared the drift before claiming `reconciled:true`.
+	// The old code returned true whenever reconcile() didn't throw, but reconcileScopes used to
+	// SKIP an already-covered project scope, so a deleted skill could remain in the catalog while
+	// this reported a false `reconciled:true` (F-008 dishonest). Re-probe: if a scope is STILL
+	// out_of_sync, report honestly (reconciled:false + a warning) rather than fabricate a clean state.
+	let stillStale = false;
+	try {
+		stillStale = await probeStale(db);
+	} catch {
+		// A probe fault after a successful reconcile is not proof of residual drift — don't
+		// fabricate one; fall through to the reconciled result against the freshly-read mirror.
+		stillStale = false;
+	}
+	if (stillStale) {
+		return {
+			catalog: await readIds(db),
+			reconciled: false,
+			staleWarning:
+				`cc-config catalog still reports drift after a spawn-time reconcile; validating ` +
+				`against the current mirror. A scope did not propagate its on-disk change — check ` +
+				`its provenance (e.g. an un-reconciled global scope, or an unreadable scope path).`
+		};
+	}
+	return { catalog: await readIds(db), reconciled: true };
 }

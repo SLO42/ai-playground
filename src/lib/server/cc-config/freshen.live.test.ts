@@ -6,6 +6,7 @@ import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
+import { createProject } from '../projects/repo';
 import { composeCapabilities, CapabilityValidationError } from '../runtime/index';
 import {
 	catalogIds,
@@ -164,5 +165,56 @@ describe('freshenCatalog — CCF-1 spawn-time catalog freshness (D-036)', () => 
 		expect(() =>
 			composeCapabilities({ skills: ['not-a-real-skill'], agents: [], mcp: [] }, fresh.catalog, {})
 		).toThrow(CapabilityValidationError);
+	});
+
+	// (e) CCC2-1 disk-drift on an EXISTING synced PROJECT scope — the catalog-integrity hole.
+	// A skill DELETED on disk from an already-catalogued project `.claude` used to survive in
+	// `catalogIds` because reconcileScopes SKIPPED covered project scopes, while freshenCatalog
+	// still reported a false `reconciled:true`. Now the drifted covered scope is re-synced OUT and
+	// the reconcile status is honest. Real-surreal (F-020): a registered project row + on-disk delete.
+	it('CCC2-1: a skill deleted from a SYNCED project scope on disk ⇒ freshened catalog reconciles it OUT (covered project scope no longer skipped)', async () => {
+		// A registered project with its OWN `.claude` carrying a skill — reconcileScopes derives it.
+		const driftRoot = mkdtempSync(join(tmpdir(), 'ccc2-drift-'));
+		const driftClaude = join(driftRoot, '.claude');
+		mkdirSync(driftClaude, { recursive: true });
+		writeFileSync(join(driftClaude, 'settings.json'), JSON.stringify({ permissions: { allow: ['Bash'] } }));
+		writeSkill(driftClaude, 'doomed-skill', 'a skill about to be deleted on disk');
+		await createProject(db, { slug: 'ccc2_drift', name: 'CCC2 Drift', root_path: driftRoot });
+
+		try {
+			// reconcileScopes derives + syncs the project scope; the skill enters the catalog.
+			await reconcileScopes(db);
+			const before = await catalogIds(db);
+			expect(before.skills.has('doomed-skill')).toBe(true);
+			// It validates while catalogued (compose does not throw).
+			expect(() =>
+				composeCapabilities({ skills: ['doomed-skill'], agents: [], mcp: [] }, before, {})
+			).not.toThrow();
+
+			// DELETE the skill on disk — the covered project scope now drifts, but the mirror still lists it.
+			rmSync(join(driftClaude, 'skills', 'doomed-skill'), { recursive: true, force: true });
+			expect((await syncState(db, { kind: 'project', claudeDir: driftClaude })).status).toBe('out_of_sync');
+			// The STALE mirror still carries the deleted id (the exact catalog-integrity hole).
+			expect((await catalogIds(db)).skills.has('doomed-skill')).toBe(true);
+
+			// Freshen at spawn time — the drifted COVERED project scope is re-synced OUT (previously skipped).
+			const fresh = await freshenCatalog(db);
+			expect(fresh.reconciled).toBe(true); // honest: the drift was actually cleared
+			expect(fresh.staleWarning).toBeUndefined();
+			expect(fresh.catalog.skills.has('doomed-skill')).toBe(false);
+
+			// composeCapabilities now REFUSES the deleted id — the operator's removal propagated (fail closed).
+			expect(() =>
+				composeCapabilities({ skills: ['doomed-skill'], agents: [], mcp: [] }, fresh.catalog, {})
+			).toThrow(CapabilityValidationError);
+
+			// Idempotent: a second freshen with the scope now in-sync takes the fast path (no reconcile).
+			const again = await freshenCatalog(db);
+			expect(again.reconciled).toBe(false);
+			expect(again.staleWarning).toBeUndefined();
+			expect(again.catalog.skills.has('doomed-skill')).toBe(false);
+		} finally {
+			rmSync(driftRoot, { recursive: true, force: true });
+		}
 	});
 });

@@ -22,7 +22,7 @@ import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
-import { ServicesManager, type ServiceAdapter, type ServiceName } from './manager';
+import { ServicesManager, SERVICE_NAMES, type ServiceAdapter, type ServiceName, type ServiceStatus } from './manager';
 import { listIncidents, listUnreadNotifications } from './incidents';
 import {
 	readServices,
@@ -240,6 +240,57 @@ describe('§14.4a/b readServices — probe reconciliation corrects the STALE ROW
 		expect(services.find((s) => s.name === 'ollama')!.status).toBe('stopped');
 		expect(services.find((s) => s.name === 'dashboard')!.status).toBe('unknown');
 		expect(summarizeServices(services)).toEqual({ up: 0, total: 1 });
+	});
+});
+
+describe('SVC-2 — the declared service set matches the managed set, and status is honest', () => {
+	const KNOWN_STATUSES: ServiceStatus[] = ['running', 'stopped', 'crashed', 'unknown'];
+
+	it('SERVICE_NAMES has NO phantom name — engine is gone, the set is exactly the three real services', () => {
+		// The dropped IN-PROCESS orchestrator must not linger in the declared set (F-008).
+		expect((SERVICE_NAMES as readonly string[]).includes('engine')).toBe(false);
+		expect([...SERVICE_NAMES].sort()).toEqual(['dashboard', 'ollama', 'surrealdb']);
+	});
+
+	it('the RENDERED set equals the DECLARED set exactly — every declared name renders, no extra row is fabricated', async () => {
+		await db.query(`DELETE service;`); // no persisted rows: still renders the full declared set honestly
+		const { services } = await readServices(db);
+		expect(services.map((s) => s.name).sort()).toEqual([...SERVICE_NAMES].sort());
+	});
+
+	it('every CONTROLLABLE/registered service is in the declared set — no silently-managed service missing from the surface', async () => {
+		// The production runtime registers exactly the controllable adapters; every one of them
+		// MUST appear in the reported SERVICE_NAMES (the inverse-phantom: managed-but-unreported).
+		const registered = getServicesManager(db).registered();
+		expect(registered.length).toBeGreaterThan(0);
+		for (const name of registered) {
+			expect((SERVICE_NAMES as readonly string[]).includes(name)).toBe(true);
+		}
+		// And a declared service that is NOT registered is honestly non-controllable WITH a note
+		// (a phantom would claim a control it cannot back). readServices carries that honesty.
+		const { services } = await readServices(db);
+		for (const view of services) {
+			if (!registered.includes(view.name)) {
+				expect(view.controllable, `${view.name} is not registered → must be non-controllable`).toBe(false);
+				expect(view.note, `${view.name} must explain WHY it is not managed here`).toBeTruthy();
+			}
+		}
+	});
+
+	it('every per-service status is an HONEST known state — a service with no backing reads unknown, never a fabricated up', async () => {
+		await db.query(`DELETE service;`); // no persisted rows for any service
+		// Deterministic DOWN probe for ollama (no dependence on a real Ollama on the test host).
+		__setOllamaAdapterForTest(db, new FakeProbeAdapter(false));
+		const { services } = await readServices(db);
+		for (const view of services) {
+			expect(KNOWN_STATUSES, `${view.name} status must be a known state`).toContain(view.status);
+			// No real "up" signal anywhere → NEVER a fabricated 'running' (F-008). ollama's probe
+			// says down (→ stopped, real knowledge); surrealdb/dashboard have no probe + no row (→ unknown).
+			expect(view.status, `${view.name} must not fabricate 'running' with no live signal`).not.toBe('running');
+		}
+		expect(services.find((s) => s.name === 'ollama')!.status).toBe('stopped'); // probe-false = real knowledge
+		expect(services.find((s) => s.name === 'surrealdb')!.status).toBe('unknown');
+		expect(services.find((s) => s.name === 'dashboard')!.status).toBe('unknown');
 	});
 });
 

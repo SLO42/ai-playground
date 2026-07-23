@@ -105,16 +105,19 @@ describe('buildProjectUsage — live SurrealDB (F-020)', () => {
 
 	interface SeedEvent {
 		session?: string;
+		/** Denormalized agent_event.project record link (the session-less github.ts write path). */
+		project?: string;
 		type: string;
 		tokens_in?: number;
 		tokens_out?: number;
 		cost_usd?: number;
 	}
 
-	/** Seed one real agent_event row; session is a true record link (matches events.ts:237). */
+	/** Seed one real agent_event row; session/project are true record links (matches events.ts:237). */
 	async function seedEvent(e: SeedEvent): Promise<void> {
 		const parts = [`type="${e.type}"`];
 		if (e.session) parts.push(`session=${e.session}`);
+		if (e.project) parts.push(`project=${e.project}`);
 		for (const k of ['tokens_in', 'tokens_out', 'cost_usd'] as const) {
 			if (e[k] != null) parts.push(`${k}=${e[k]}`);
 		}
@@ -162,5 +165,31 @@ describe('buildProjectUsage — live SurrealDB (F-020)', () => {
 
 	it('HONEST empty when the window has no rows (F-008)', async () => {
 		expect(await buildProjectUsage(db)).toEqual([]);
+	});
+
+	// CG2-3: a SESSION-LESS but project-SET agent_event (the github.ts completion write) must
+	// attribute to its own `project`, NOT misbucket to 'unknown' — while a session-linked row still
+	// resolves through session.project, and session WINS when both are present.
+	it('coalesces session.project ?? agent_event.project — session-less project-set attributes (CG2-3)', async () => {
+		await seedSession('session:s1', 'project:alpha');
+
+		// (a) session-linked → attributes via session.project.
+		await seedEvent({ session: 'session:s1', type: 'spawn', tokens_in: 100, tokens_out: 50 });
+		// (b) session-LESS but project-SET (github.ts-style completion) → must attribute to project:gamma.
+		await seedEvent({ project: 'project:gamma', type: 'completion', tokens_in: 7, tokens_out: 3 });
+		// (c) both present but DIFFERENT → the session link WINS (attributes to alpha, not delta).
+		await seedEvent({ session: 'session:s1', project: 'project:delta', type: 'spawn', tokens_in: 1, tokens_out: 1 });
+		// (d) both absent → the honest 'unknown' bucket survives.
+		await seedEvent({ type: 'error' });
+
+		const out = await buildProjectUsage(db);
+		const alpha = out.find((p) => p.project === 'project:alpha');
+		const gamma = out.find((p) => p.project === 'project:gamma');
+
+		// (b) landed on its own project, NOT 'unknown'.
+		expect(gamma).toMatchObject({ completions: 1, tokensIn: 7, tokensOut: 3, sessions: 0 });
+		expect(out.find((p) => p.project === 'project:delta')).toBeUndefined(); // (c) never buckets to delta
+		expect(alpha).toMatchObject({ runs: 2, tokensIn: 101, tokensOut: 51, sessions: 1 }); // (a)+(c) via session
+		expect(out.find((p) => p.project === 'unknown')).toMatchObject({ errors: 1 }); // (d) still honest
 	});
 });

@@ -1,12 +1,15 @@
 // COST-GOVERNANCE-SPEC CG-6 — per-PROJECT usage attribution (the session→project join).
 //
 // buildProviderUsage answered "which PROVIDER spent what"; CG-6 answers "which PROJECT spent
-// what". agent_event carries an optional denormalized `project`, but the SOURCE OF TRUTH for a
-// run's project is its SESSION (session.project) — many events land with `session` set and their
-// own `project` unset. So we attribute through the join agent_event → session → session.project
-// (F-008: a real link, never a guessed bucket). A row with no session, or a session with no
-// project, lands under 'unknown' — honest, not dropped (mirrors buildProviderUsage's 'unknown'
-// provider lane at :101/:149).
+// what". The SOURCE OF TRUTH for a run's project is its SESSION (session.project) — many events
+// land with `session` set and their own `project` unset, so we attribute through the join
+// agent_event → session → session.project (F-008: a real link, never a guessed bucket). But some
+// rows are legitimately SESSION-LESS while carrying the denormalized `agent_event.project` set
+// directly (e.g. sync/github.ts's completion rows write `project` with no session) — those must
+// attribute to their real project, not misbucket to 'unknown' (CG2-3). So the projection COALESCES
+// `session.project ?? project`: the session link WINS when present, else we fall back to the row's
+// own denormalized project, and only a row with BOTH absent lands under 'unknown' — honest, not
+// dropped (mirrors buildProviderUsage's 'unknown' provider lane at :101/:149).
 //
 // Aggregation style mirrors buildProviderUsage / buildTierUsage (rollup.ts): SELECT a bounded
 // window of raw rows (the join resolved by SurrealDB record-link traversal in the projection),
@@ -43,7 +46,7 @@ export interface ProjectUsageOptions {
 	maxRows?: number;
 }
 
-/** Minimal raw projection the fold consumes (`project` = the JOINED session.project link). */
+/** Minimal raw projection the fold consumes (`project` = session.project ?? agent_event.project). */
 interface RawProjectRow {
 	project?: unknown;
 	session?: unknown;
@@ -74,11 +77,13 @@ export async function buildProjectUsage(
 	const maxRows = opts.maxRows ?? 50_000;
 	const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
 
-	// session.project is a record-link traversal resolved by SurrealDB in the projection — an event
-	// with a NONE session, or a session whose project is NONE, yields NONE here → the 'unknown'
-	// bucket below. F-020: `at` (the ORDER BY idiom) is projected.
+	// `session.project ?? project` COALESCES the join (record-link traversal, resolved by SurrealDB
+	// in the projection) with the row's own denormalized `project`: session wins when linked, else
+	// the session-less-but-project-set rows (e.g. github.ts completion writes) fall back to their own
+	// project (CG2-3). Only a row with BOTH a NONE session/project-link AND a NONE own-project yields
+	// NONE here → the 'unknown' bucket below. F-020: `at` (the ORDER BY idiom) is projected.
 	const [rows] = await db.query<[RawProjectRow[]]>(
-		`SELECT session.project AS project, session, tokens_in, tokens_out, cost_usd, type, at
+		`SELECT (session.project ?? project) AS project, session, tokens_in, tokens_out, cost_usd, type, at
 		   FROM agent_event WHERE at >= $since ORDER BY at ASC LIMIT $lim;`,
 		{ since, lim: maxRows }
 	);

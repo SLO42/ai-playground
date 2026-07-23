@@ -17,6 +17,7 @@
 
 import type { Db } from '../db/client';
 import { enforceTokenBudget, resolveDailyTokenBudget } from '../analytics/spend-budget';
+import { writeAgentEvent } from '../analytics/events';
 import { getMemoryService } from '../harness';
 import { loadSoul, formatSoulBlock } from '../memory/soul';
 import { listLibraryAgents } from '../agent-library/library';
@@ -142,27 +143,72 @@ function readProviderEndpoint(dir: string, provider: string, fallback: string): 
 	return fallback;
 }
 
+/**
+ * METER one concierge Stage-2 turn (CG-2-1): pull the final token usage off the drained stream and
+ * write the ONE `agent_event` `type:'completion'` row for it, so the turn's spend is (a) COUNTED by
+ * the budget (tokensSpentSince sums every completion row) and (b) PRICED at the events.ts chokepoint
+ * — a CLOUD turn ⇒ a real cost_usd from config/pricing.yaml; a LOCAL Ollama turn ⇒ a genuine $0
+ * (recorded as 0, never a fabricated charge — F-008). Session-less BY DESIGN: the atelier_self session
+ * is created downstream in handleAtelierMessages and is not visible at this provider-call site, but the
+ * GLOBAL budget counter reads every completion row regardless of session (and the concierge gate is
+ * project-less / global-only), so a session-less row is still counted. This is the turn's ONLY metering
+ * site (no launchSession path), so a turn is NEVER double-metered. Absent `done` usage (a stream that
+ * ended without a usage leg) ⇒ tokens OMITTED → cost_usd stays NONE (never a fabricated 0). BEST-EFFORT
+ * (F-014): any write fault is NAMED + logged, never thrown — a lost meter row must not sink the advisory
+ * reply the turn already produced. The happy path (a completion row lands with the right tokens/cost) is
+ * asserted by wire.metering.test.ts, so this catch never silently drops spend without a covering test.
+ */
+async function meterConciergeTurn(
+	db: Db,
+	model: { provider: string; modelId: string; tier: string },
+	chunks: StreamChunk[],
+	durationMs: number
+): Promise<void> {
+	try {
+		const usage = chunks.find((c): c is Extract<StreamChunk, { type: 'done' }> => c.type === 'done')?.usage;
+		await writeAgentEvent(db, {
+			type: 'completion',
+			model: { provider: model.provider, modelId: model.modelId, tier: model.tier },
+			// Only meter tokens we actually observed — an absent usage leg stays honest NONE, never a
+			// fabricated 0-token completion that would price as a fake $0 (F-008).
+			...(usage ? { tokensIn: usage.input, tokensOut: usage.output } : {}),
+			durationMs,
+			detail: { ok: true, summary: 'concierge Stage-2 open-question turn', source: 'concierge' }
+		});
+	} catch (err) {
+		console.warn(`[concierge] metering write failed (best-effort): ${(err as Error).message}`);
+	}
+}
+
 /** Wrap a Provider's stream into the ConciergeLlmFn shape (system+user → text), wall-clock bounded.
  *  Mirrors makeClaudeJudge but is provider-agnostic (works for the local Ollama model too).
  *  `providerKind` is the resolved provider label ('ollama'/'local' vs 'claude') threaded into the
- *  budget gate so a genuinely-$0 LOCAL turn is EXEMPT (COST-GOVERNANCE-SPEC §1 invariant 5) — see below. */
-function providerToLlmFn(provider: Provider, db: Db, providerKind: string): ConciergeLlmFn {
+ *  budget gate so a genuinely-$0 LOCAL turn is EXEMPT (COST-GOVERNANCE-SPEC §1 invariant 5) — see below;
+ *  `modelId`/`tier` name the concrete brain so the metered completion row is priced correctly. */
+export function providerToLlmFn(
+	provider: Provider,
+	db: Db,
+	providerKind: string,
+	modelId: string,
+	tier: string
+): ConciergeLlmFn {
 	return async ({ system, user }) => {
 		// CG-2 (COST-GOVERNANCE-SPEC) — the concierge Stage-2 turn is a direct provider call (NOT
-		// launchSession), so CG-2's ROLE at this call site is the budget GATE, NOT metering: this
-		// path writes NO agent_event completion row, so tokensSpentSince never counts this turn's
-		// spend. The concierge is therefore un-metered on BOTH the local and the cloud path — a known
-		// observability gap (tracked as a followUp, not fixed here); do not read the gate below as
-		// "still metered." It is a background/autonomous consult (no operator override), so over
-		// budget ⇒ TokenBudgetExceededError, which runOpenQuestionTurn's own try/catch turns into an
-		// HONEST "model unavailable" reply (F-008 — never a fabricated answer). Uncapped (0) ⇒ a
-		// cheap no-op.
+		// launchSession). CG-2-1 wires its metering HERE: after the turn we write the one agent_event
+		// completion row (meterConciergeTurn), so this turn's spend IS counted by tokensSpentSince and
+		// priced at the events.ts chokepoint (cloud ⇒ real cost_usd; local ⇒ genuine $0). This is its
+		// only metering site (no launchSession), so it is never double-metered.
+		// The budget GATE below bounds the CLOUD path: it is a background/autonomous consult (no operator
+		// override), so over budget ⇒ TokenBudgetExceededError, which runOpenQuestionTurn's own try/catch
+		// turns into an HONEST "model unavailable" reply (F-008 — never a fabricated answer). Uncapped (0)
+		// ⇒ a cheap no-op.
 		// LOCAL EXEMPTION: the always-on local brain runs on Ollama ($0), so `provider` is threaded in
-		// and enforceTokenBudget skips the gate for it entirely (a genuinely-free turn is never refused
-		// on a real-money ceiling). Only a CLOUD concierge turn is gated — and note it is gated against
-		// a global budget its own (un-metered) consumption never contributes to (the same gap). The
-		// reservation the gate takes on the cloud path is released in the finally when this turn
-		// completes — tight concurrency accounting (finding #1).
+		// and enforceTokenBudget skips the GATE for it entirely (a genuinely-free turn is never refused
+		// on a real-money ceiling). The gate is skipped, but the turn is STILL METERED as an honest $0
+		// completion row (mirroring a launched local session, launch.ts:1150) — the exemption is about
+		// not REFUSING a free turn, not about hiding it. The reservation the gate takes on the cloud path
+		// is released in the finally AFTER the completion is metered, so the spend it reserved for is now
+		// a durable, counted row — tight concurrency accounting (finding #1).
 		const gate = await enforceTokenBudget(db, {
 			budget: resolveDailyTokenBudget(),
 			source: 'concierge',
@@ -172,10 +218,11 @@ function providerToLlmFn(provider: Provider, db: Db, providerKind: string): Conc
 			{ role: 'system', content: system },
 			{ role: 'user', content: user }
 		];
+		const startedAt = Date.now();
 		const collect = (async () => {
 			const chunks: StreamChunk[] = [];
 			for await (const c of provider.stream(messages)) chunks.push(c);
-			return collectText(chunks);
+			return chunks;
 		})();
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const timeout = new Promise<never>((_, reject) => {
@@ -185,7 +232,11 @@ function providerToLlmFn(provider: Provider, db: Db, providerKind: string): Conc
 			);
 		});
 		try {
-			return await Promise.race([collect, timeout]);
+			const chunks = await Promise.race([collect, timeout]);
+			// METER the turn (CG-2-1) BEFORE releasing the gate reservation, so the spend the gate
+			// accounted for is a durable, counted completion row by the time the reservation drops.
+			await meterConciergeTurn(db, { provider: providerKind, modelId, tier }, chunks, Date.now() - startedAt);
+			return collectText(chunks);
 		} finally {
 			if (timer) clearTimeout(timer);
 			gate.release();
@@ -242,7 +293,7 @@ function buildConciergeLlm(dir: string, db: Db): {
 	}
 
 	return {
-		llm: providerToLlmFn(provider, db, choice.provider),
+		llm: providerToLlmFn(provider, db, choice.provider, choice.model, choice.tier),
 		sessionModel: { provider: choice.provider, model_id: choice.model }
 	};
 }

@@ -293,3 +293,12 @@ Each phase is a v2-wave with the full D-038 end-gate (live `db:up`, render-smoke
 2. **Confirm v1 ships proposal-less (journal-only) and runs ~1 week before v2 arms proposals?** Recommended: **yes** — zero-risk baseline of triage quality; front-loads identity + data + UI that v2/v3 stand on.
 3. **Per-PM advisory rate limit for v3 routing?** Recommended: **max 2 advisories per PM per 24h, deduped by scope_key** (mirrors the pm-concierge consult dedup). Without it, a global anomaly (Ollama down) fans one root cause into an advisory per project.
 4. **Council spend bound?** Recommended: **<=3 readers per escalation, cheapest adequate cloud model, whole council charged against the brain's own nonzero budget** (never the general pool). Tighter alternative: council disabled until acceptance-rate clears ⅓ in calibration.
+
+---
+
+## Operator answers (2026-07-23) — spec FINAL
+
+1. **Auto-demote N = 5** consecutive operator-facing rejections → observe-only; resets on any acceptance. (BO-13 default confirmed.)
+2. **v1 ships proposal-less (eye before voice)** — journal-only for ~1 week; grade triage verdicts by hand before v2 arms proposals. (Phase v1 confirmed.)
+3. **Per-PM advisory rate limit = PER-PROJECT CONFIG** (not a fixed constant). Default **2 per PM per 24h, deduped by scope_key**, operator-raisable per project (Claude Code / fast models close the loop quickly, so the ceiling should be tunable up). → add `advisory_rate_per_pm_24h` to per-project brain config; the v3 routing check reads it live.
+4. **Council bound = ≤3 readers per escalation, cheapest adequate cloud model, charged to the brain's own nonzero budget** (never the general pool). (§Q4 recommended confirmed.)

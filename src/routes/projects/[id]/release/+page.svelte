@@ -254,6 +254,18 @@
                   (Thunderstore: the live 4-step upload); without it — or for adapters whose live
                   execution isn't wired yet — it defers honestly (D-026).
                 </p>
+                <!-- CG2-4 — honest external-cost line on the publish confirm. Atelier meters its
+                     OWN agent spend (CG-1/CG-4) but does NOT meter the external cost the target's
+                     publish/deploy adapter incurs (a Thunderstore upload is free; a deploy host
+                     bills its own hosting separately). We never fabricate a number (F-008) — this
+                     is an honest em-dash with the documented exclusion. -->
+                <p class="ext-cost" role="status">
+                  <span class="est-label">external {targetResult.kind} cost</span>
+                  <span class="est-value mono">—</span>
+                  <span class="est-note">
+                    not metered by Atelier — the {targetResult.kind} adapter/host bills it separately
+                  </span>
+                </p>
                 <button class="btn primary" type="submit" disabled={targetBusy}>
                   {targetBusy ? 'Confirming…' : `Confirm ${targetResult.kind}`}
                 </button>
@@ -747,4 +759,25 @@
     background: var(--color-surface-card);
   }
   .confirm-note { font: var(--type-body-sm); color: var(--color-text-2); }
+  /* CG2-4 — the honest external-cost line (em-dash exclusion; never a fabricated number, F-008). */
+  .ext-cost {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-1, 0.25rem) var(--space-2, 0.5rem);
+    margin: 0;
+    font: var(--type-body-sm);
+  }
+  .est-label {
+    color: var(--color-text-muted);
+    text-transform: lowercase;
+  }
+  /* Muted em-dash — the value is honestly excluded, not a real figure. */
+  .est-value {
+    color: var(--color-text-muted);
+    font-weight: 600;
+  }
+  .est-note {
+    color: var(--color-text-muted);
+  }
 </style>

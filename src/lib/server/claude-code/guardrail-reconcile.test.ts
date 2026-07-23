@@ -156,6 +156,47 @@ describe('reconcileProjectGuardrails — boot-time seed of the D-024 primary bou
 		expect(existsSync(settingsPath(selfRoot))).toBe(false);
 	});
 
+	// SF2-4b — a project row's root_path can escape CODE_ROOT (moved dir, imported/hand-edited row).
+	// The reconcile must RE-CONFINE fail-closed: skip it with a named warning, never seed a guardrail
+	// (whose additionalDirectories would grant fs access) outside the code root.
+	it('RE-CONFINES a root_path that escapes CODE_ROOT — skipped, no guardrail seeded outside the code root', async () => {
+		// A real, existing directory OUTSIDE codeRoot, registered as a project row.
+		const outside = realpathSync(mkdtempSync(join(tmpdir(), 'reconcile-escape-')));
+		try {
+			await createProject(db, { slug: 'recon_escape', name: 'recon_escape', root_path: outside });
+
+			const res = await reconcileProjectGuardrails(db, { codeRoot });
+
+			expect(res.seeded).toBe(0);
+			expect(res.skipped).toBe(1);
+			expect(res.exempted).toBe(0);
+			expect(res.warnings).toHaveLength(1);
+			expect(res.warnings[0]).toContain('project:recon_escape');
+			expect(res.warnings[0]).toMatch(/CODE_ROOT/);
+			// The out-of-root path was NEVER seeded with a guardrail.
+			expect(existsSync(settingsPath(outside))).toBe(false);
+		} finally {
+			rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
+	it('re-confines the escaping root while STILL seeding an in-root project in the same pass', async () => {
+		const inRoot = await registerProject('recon_inroot');
+		const outside = realpathSync(mkdtempSync(join(tmpdir(), 'reconcile-escape2-')));
+		try {
+			await createProject(db, { slug: 'recon_escape2', name: 'recon_escape2', root_path: outside });
+
+			const res = await reconcileProjectGuardrails(db, { codeRoot });
+
+			expect(res.seeded).toBe(1);
+			expect(res.skipped).toBe(1);
+			expect(existsSync(settingsPath(inRoot))).toBe(true);
+			expect(existsSync(settingsPath(outside))).toBe(false);
+		} finally {
+			rmSync(outside, { recursive: true, force: true });
+		}
+	});
+
 	it('exempts the self-root while STILL seeding the other projects in the same pass', async () => {
 		const selfRoot = await registerProject('recon_self_mix');
 		const other = await registerProject('recon_other');

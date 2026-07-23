@@ -225,6 +225,9 @@ const DANGEROUS_BASH_RM_RE = /\brm\s+-[a-z]*r[a-z]*f|\brm\s+-[a-z]*f[a-z]*r/; //
 /** Each entry tests against the raw command string (lower-cased, whitespace-collapsed). */
 const DANGEROUS_BASH_RE: readonly RegExp[] = [
 	/\bgit\s+push\b/,
+	// `git -C <dir> push` (and `-c <cfg>`) run git as-if elsewhere, so the command no longer reads
+	// `git push` and slips past the rule above (SF2-4c bypass; -C is lower-cased to -c by normalize).
+	/\bgit\s+-c\b.*\bpush\b/,
 	/\bgit\s+remote\s+set-url\b/,
 	/--force\b/,
 	/\bgit\s+reset\s+--hard\b/,

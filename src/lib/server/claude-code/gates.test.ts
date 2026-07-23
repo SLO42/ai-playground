@@ -128,6 +128,8 @@ describe('dangerous-bash gate', () => {
 		'rm -rf /',
 		'rm -rf node_modules',
 		'git push origin main',
+		'git -C /some/other/repo push origin main',
+		'git -c http.extraheader=x push origin main',
 		'git remote set-url origin https://evil',
 		'git checkout --force',
 		'git reset --hard HEAD~3'

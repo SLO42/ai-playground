@@ -1,4 +1,22 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+
+// SF2-4a atomic-write test: inject a rename FAILURE (simulated mid-write crash) via a hoisted
+// toggle. ESM module namespaces are non-configurable so `vi.spyOn(fs, 'renameSync')` is impossible;
+// `vi.mock` wrapping the real module is the supported path. Every other fs call passes through to the
+// real implementation (…actual), so this mock only bites when `mockFs.failRename` is explicitly set.
+const mockFs = vi.hoisted(() => ({ failRename: false }));
+vi.mock('node:fs', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('node:fs')>();
+	return {
+		...actual,
+		default: actual,
+		renameSync: (...args: Parameters<typeof actual.renameSync>) => {
+			if (mockFs.failRename) throw new Error('simulated crash during rename');
+			return actual.renameSync(...args);
+		}
+	};
+});
+
 import {
 	mkdtempSync,
 	rmSync,
@@ -6,6 +24,7 @@ import {
 	writeFileSync,
 	symlinkSync,
 	readFileSync,
+	readdirSync,
 	realpathSync
 } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -77,6 +96,17 @@ describe('buildGuardrailSettings — the generated settings.json object', () => 
 		expect(deny.some((r) => /Bash\(.*--force/.test(r))).toBe(true);
 	});
 
+	it('denies the `git -C <other> push` directory-flag bypass (SF2-4c)', () => {
+		const root = projectRoot('proj-a');
+		const s = buildGuardrailSettings({ projectRoot: root, codeRoot });
+		const deny = s.permissions!.deny as string[];
+		// A `git -C <dir> push` command does NOT begin `git push`, so the plain push rules miss it.
+		// There must be an explicit rule covering push under a `-C` redirect (leading and mid-command).
+		expect(deny).toContain('Bash(git -C* push*)');
+		expect(deny).toContain('Bash(* git -C* push*)');
+		expect(deny.some((r) => /Bash\(.*-C.*push/.test(r))).toBe(true);
+	});
+
 	it('hardens against bypass: disableBypassPermissionsMode + managed-rules-only', () => {
 		const root = projectRoot('proj-a');
 		const s = buildGuardrailSettings({ projectRoot: root, codeRoot });
@@ -136,6 +166,37 @@ describe('writeProjectGuardrails — write .claude/settings.json before spawn', 
 		const written = JSON.parse(readFileSync(path, 'utf8'));
 		const deny: string[] = written.permissions.deny;
 		expect(new Set(deny).size).toBe(deny.length);
+	});
+
+	// SF2-4a — the write is ATOMIC (stage temp → rename over target). A crash at the commit
+	// boundary must leave the PRIOR settings.json fully intact — a truncated D-024 guardrail
+	// (silently-dropped deny rules) is a security downgrade.
+	it('a mid-write crash leaves the prior settings.json intact (atomic rename)', () => {
+		const root = projectRoot('proj-atomic');
+		// Seed a valid prior guardrail file (this write commits normally).
+		const path = writeProjectGuardrails({ projectRoot: root, codeRoot });
+		const before = readFileSync(path, 'utf8');
+		expect(() => JSON.parse(before)).not.toThrow();
+
+		// Simulate a crash AT the atomic-commit boundary: the temp file is written, but the rename
+		// (the commit) is interrupted. The partial content only ever lived in the temp file.
+		mockFs.failRename = true;
+		try {
+			expect(() => writeProjectGuardrails({ projectRoot: root, codeRoot })).toThrow(
+				/simulated crash/
+			);
+		} finally {
+			mockFs.failRename = false;
+		}
+
+		// The prior file is byte-identical — never truncated, still valid JSON.
+		const after = readFileSync(path, 'utf8');
+		expect(after).toBe(before);
+		expect(() => JSON.parse(after)).not.toThrow();
+
+		// No orphaned temp file left behind (best-effort cleanup ran).
+		const leftover = readdirSync(join(root, '.claude')).filter((f) => f.includes('.tmp'));
+		expect(leftover).toEqual([]);
 	});
 });
 

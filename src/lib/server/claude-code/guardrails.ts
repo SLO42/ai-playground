@@ -22,6 +22,8 @@
 import {
 	mkdirSync,
 	writeFileSync,
+	renameSync,
+	unlinkSync,
 	readFileSync,
 	realpathSync,
 	lstatSync
@@ -29,7 +31,7 @@ import {
 import { dirname, join, resolve, sep } from 'node:path';
 
 /** Bump when the rule set changes so a re-seed can detect a stale generated config. */
-export const GUARDRAIL_SETTINGS_VERSION = 1;
+export const GUARDRAIL_SETTINGS_VERSION = 2;
 
 // ── Static deny rules (config-protection) ────────────────────────────────────────
 //
@@ -71,6 +73,11 @@ export const DANGEROUS_BASH_DENY: readonly string[] = [
 	'Bash(* rm -rf*)',
 	'Bash(git push*)',
 	'Bash(* git push*)',
+	// `git -C <dir> push` runs git AS IF from <dir>, so the command no longer begins `git push`
+	// and slips past both rules above (SF2-4c red-team bypass). Deny push under ANY `-C` redirect,
+	// whether `-C` leads the command or appears mid-command (chained/quoted).
+	'Bash(git -C* push*)',
+	'Bash(* git -C* push*)',
 	'Bash(git remote set-url*)',
 	'Bash(* git remote set-url*)',
 	// Any --force anywhere in the command (push --force, checkout --force, …).
@@ -180,8 +187,33 @@ export function writeProjectGuardrails(input: GuardrailInput): string {
 	const merged = mergeSettings(existing, buildGuardrailSettings(input));
 
 	mkdirSync(claudeDir, { recursive: true });
-	writeFileSync(settingsPath, JSON.stringify(merged, null, '\t') + '\n', 'utf8');
+	atomicWriteFileSync(settingsPath, JSON.stringify(merged, null, '\t') + '\n');
 	return settingsPath;
+}
+
+/**
+ * Write `data` to `path` ATOMICALLY (SF2-4a): stage into a unique sibling temp file, then rename
+ * it OVER the target. rename is atomic within a filesystem (POSIX rename; Windows MoveFileEx with
+ * REPLACE_EXISTING), so a crash mid-write can only ever leave a partial TEMP file — the target is
+ * either the old complete content or the new complete content, NEVER a truncated in-between. A
+ * truncated D-024 `settings.json` would silently drop deny rules = a security downgrade, so the
+ * guardrail file must never be written non-atomically. On any failure the temp file is best-effort
+ * removed and the original error rethrown (the cleanup never masks the real write/rename error).
+ * The temp lives in the SAME directory as the target so the rename stays intra-filesystem.
+ */
+function atomicWriteFileSync(path: string, data: string): void {
+	const tmp = `${path}.${process.pid}.${Date.now()}.${Math.random().toString(36).slice(2)}.tmp`;
+	try {
+		writeFileSync(tmp, data, 'utf8');
+		renameSync(tmp, path);
+	} catch (err) {
+		try {
+			unlinkSync(tmp);
+		} catch {
+			// best-effort cleanup of the staged temp — never mask the original write/rename error
+		}
+		throw err;
+	}
 }
 
 // ── Self-host exemption (CCH-2 red-team fix) ──────────────────────────────────────

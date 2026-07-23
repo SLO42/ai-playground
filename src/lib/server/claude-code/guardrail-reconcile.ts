@@ -25,7 +25,7 @@
 import { statSync } from 'node:fs';
 import type { Db } from '../db/client';
 import { listProjects } from '../projects/repo';
-import { isPlatformSelfRoot, writeProjectGuardrails } from './guardrails';
+import { isPlatformSelfRoot, resolveConfinedTarget, writeProjectGuardrails } from './guardrails';
 
 export interface GuardrailReconcileResult {
 	/** How many projects had their `.claude/settings.json` guardrail seeded/refreshed. */
@@ -100,6 +100,21 @@ export async function reconcileProjectGuardrails(
 			skipped++;
 			warnings.push(
 				`[startup] guardrail reconcile: SKIP ${p.id} — root_path is not an existing directory (${root || '(empty)'}); the runtime network gate still applies (F-014).`
+			);
+			continue;
+		}
+		// RE-CONFINE under CODE_ROOT (SF2-4b): scanProject confines a scan target at REGISTRATION,
+		// but a `project` row can outlive/predate that seam (moved dir, imported/hand-edited row) and
+		// carry a root_path that now escapes CODE_ROOT. Re-apply the D-018 confinement HERE, fail
+		// CLOSED: a root resolving OUTSIDE CODE_ROOT (after symlink + `..` normalization) is SKIPPED —
+		// never seed a guardrail whose `additionalDirectories` would grant an agent fs access outside
+		// the code root. Checked AFTER the existence gate so a missing root is skipped as such first.
+		try {
+			resolveConfinedTarget(root, opts.codeRoot);
+		} catch (err) {
+			skipped++;
+			warnings.push(
+				`[startup] guardrail reconcile: SKIP ${p.id} — root_path escapes CODE_ROOT, re-confined fail-closed (${(err as Error).message}); not seeding a guardrail outside the code root. The runtime network gate still applies (F-014).`
 			);
 			continue;
 		}

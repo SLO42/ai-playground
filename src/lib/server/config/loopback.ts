@@ -72,35 +72,99 @@ export function isLoopbackHost(host: string): boolean {
 }
 
 /**
- * Decide whether a request is loopback for the LOGIN GATE (SEC-1), given the (possibly
- * absent) real TCP peer address and the Host header — fail-closed on a LAN bind.
+ * The bind host THIS server uses, from the `HOST` bind env — the SINGLE source of the
+ * `127.0.0.1` default shared by the D-025 boot gate ({@link bootstrapControlPlane}'s
+ * listener set) and the runtime loopback determination ({@link isServerLoopbackBound}),
+ * so the two determinations can never DRIFT (SF2-3(b)). A missing/blank HOST means the
+ * SvelteKit/adapter default we assert — 127.0.0.1.
+ */
+export function serverBindHost(hostEnv: string | null | undefined): string {
+	const h = (hostEnv ?? '').trim();
+	return h || '127.0.0.1';
+}
+
+/**
+ * True iff THIS server binds a loopback address, derived from {@link serverBindHost} so it
+ * is byte-consistent with the D-025 boot-gate listener host. A LAN bind (HOST set to a
+ * routable address) is exactly where the spoofable Host-header / header-derived-address
+ * loopback fallbacks must fail closed (SEC-1 / SF2-3).
+ */
+export function isServerLoopbackBound(hostEnv: string | null | undefined): boolean {
+	return isLoopbackHost(serverBindHost(hostEnv));
+}
+
+/**
+ * Extract the bare hostname from a `Host` header value (`host[:port]`), normalizing a
+ * BRACKETED IPv6 literal correctly (SF2-3(c)): `[::1]:5173` → `::1`, `[::1]` → `::1`.
+ * A naive `split(':')[0]` turns `[::1]:5173` into `[` and mis-classifies the loopback
+ * literal as non-loopback. Returns null for an absent/blank value.
  *
- * `getClientAddress()` reflects the real socket peer and CANNOT be spoofed by a header;
- * when present, it alone decides. When it is ABSENT (an adapter change leaves it
- * unpopulated), the only signal left is the `Host` header — which a LAN client CAN spoof
- * (`Host: 127.0.0.1`). So the fallback is gated on the SERVER's OWN bind:
+ *   - `[<ipv6>]` / `[<ipv6>]:port` → the inner ipv6 literal (brackets + port stripped).
+ *   - a bare, UN-bracketed multi-colon value → treated as an IPv6 literal (a Host header
+ *     cannot carry an unbracketed `ipv6:port`, so every `:` is part of the address).
+ *   - `host:port` / `ipv4:port` / bare hostname → the substring before the single colon.
+ */
+export function hostnameFromHostHeader(raw: string | null | undefined): string | null {
+	if (!raw) return null;
+	const v = raw.trim();
+	if (!v) return null;
+	if (v.startsWith('[')) {
+		const close = v.indexOf(']');
+		return close > 1 ? v.slice(1, close) : v.slice(1);
+	}
+	const firstColon = v.indexOf(':');
+	if (firstColon === -1) return v;
+	// A second colon with no brackets ⇒ an unbracketed IPv6 literal (no port is possible).
+	if (v.indexOf(':', firstColon + 1) !== -1) return v;
+	return v.slice(0, firstColon);
+}
+
+/**
+ * Decide whether a request is loopback for the LOGIN GATE (SEC-1 / SF2-3), given the
+ * (possibly absent) client address, WHETHER that address is spoofable, and the Host
+ * header — fail-closed on a LAN bind.
  *
- *   - LAN-bound server (`serverLoopbackBound: false`) → DENY (return false, fail-closed):
- *     a spoofed Host must not grant login-free control-plane access (SEC-1). The login
- *     gate then applies.
- *   - loopback-bound server (`serverLoopbackBound: true`) → keep the lenient Host
- *     fallback byte-identical: a LAN attacker cannot reach a loopback bind at all
- *     (unreachable by the D-025 boundary), and dev ergonomics stay.
+ * `getClientAddress()` normally reflects the real socket peer and CANNOT be spoofed by a
+ * header. BUT the adapter-node `getClientAddress()` returns a HEADER value instead when
+ * `ADDRESS_HEADER` (e.g. `x-forwarded-for`) is configured — and a header IS spoofable
+ * (SF2-3(a)). So the caller passes `clientAddrSpoofable` to say which regime it is in:
  *
- * Pure (no request/env access) so the SEC-1 policy is unit-testable without SvelteKit.
- * The caller normalizes the peer address (IPv4-mapped IPv6 strip) and strips the Host
- * port before passing them in.
+ *   - `clientAddr` present, NOT spoofable (ADDRESS_HEADER unset) → the real peer alone
+ *     decides on ANY bind (unspoofable). Byte-identical to the prior behavior.
+ *   - `clientAddr` present, SPOOFABLE (ADDRESS_HEADER set) → same trust class as the Host
+ *     header. On a LAN-bound server a spoofed `127.0.0.1` must NOT grant login-free
+ *     control-plane access → DENY (fail-closed). On a loopback-bound server keep it
+ *     lenient (a remote attacker cannot reach a loopback bind at all).
+ *   - `clientAddr` absent → the only signal left is the SPOOFABLE Host header, gated the
+ *     same way on the server's own bind.
+ *
+ * Pure (no request/env access) so the SEC-1/SF2-3 policy is unit-testable without
+ * SvelteKit. The caller normalizes the peer address (IPv4-mapped IPv6 strip) and passes
+ * the bare Host hostname (see {@link hostnameFromHostHeader}).
  */
 export function decideClientLoopback(input: {
-	/** Real TCP peer from getClientAddress(), already normalized; null/undefined if unavailable. */
+	/** Client address from getClientAddress(), already normalized; null/undefined if unavailable. */
 	clientAddr: string | null | undefined;
 	/** Bare Host-header hostname (port already stripped); null/undefined if absent. */
 	hostHeader: string | null | undefined;
 	/** True iff THIS server binds a loopback address (from the HOST bind env). */
 	serverLoopbackBound: boolean;
+	/**
+	 * True iff `clientAddr` came from a spoofable HEADER rather than the real socket peer —
+	 * i.e. the adapter's `ADDRESS_HEADER` is configured. Defaults to false (the real, unset-
+	 * ADDRESS_HEADER deployment), which preserves the prior authoritative-peer behavior.
+	 */
+	clientAddrSpoofable?: boolean;
 }): boolean {
-	// Authoritative + unspoofable: when the real peer address is known, it alone decides.
-	if (input.clientAddr) return isLoopbackHost(input.clientAddr);
+	if (input.clientAddr) {
+		// Real, unspoofable socket peer → authoritative on any bind (unchanged behavior).
+		if (!input.clientAddrSpoofable) return isLoopbackHost(input.clientAddr);
+		// Header-derived (ADDRESS_HEADER set) → spoofable. Fail-closed on a LAN bind so a
+		// spoofed loopback value can't bypass the login gate (SF2-3(a)); lenient on a
+		// loopback bind (a remote client cannot reach it).
+		if (!input.serverLoopbackBound) return false;
+		return isLoopbackHost(input.clientAddr);
+	}
 	// Address unavailable → the only remaining signal is the SPOOFABLE Host header.
 	// Fail-closed on a LAN-bound server (SEC-1); a loopback-bound server keeps the
 	// lenient fallback (a LAN attacker can't reach a loopback bind).

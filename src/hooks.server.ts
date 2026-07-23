@@ -22,13 +22,19 @@ import {
 	acceptsHtml,
 	decideGate,
 	isExemptPath,
-	isLoopbackHost,
 	normalizeAddr,
 	verifySessionToken
 } from '$lib/server/auth/gate';
 import { closeDb } from '$lib/server/db/client';
 import { getEventBus, watchTable, WATCHED_TABLES, type DbSourceHandle } from '$lib/server/events';
-import { bootstrapControlPlane, decideClientLoopback, type ListenerSpec } from '$lib/server/config/loopback';
+import {
+	bootstrapControlPlane,
+	decideClientLoopback,
+	hostnameFromHostHeader,
+	isServerLoopbackBound,
+	serverBindHost,
+	type ListenerSpec
+} from '$lib/server/config/loopback';
 import {
 	startOrchestrator,
 	reapStaleRuns,
@@ -81,7 +87,10 @@ import { ServicesTicker, DEFAULT_SERVICES_TICK_MS } from '$lib/server/services';
 /** The listeners the D-025 startup gate asserts are loopback. Hosts come from env
  *  (SvelteKit HOST + the loopback service urls), defaulting to 127.0.0.1. */
 function bootListeners(): ListenerSpec[] {
-	const svelteHost = (env.HOST || '127.0.0.1').trim();
+	// serverBindHost is the SINGLE source of the 127.0.0.1 default — shared with the
+	// runtime serverIsLoopbackBound() so the boot gate and the login-gate loopback
+	// determination can never drift (SF2-3(b)).
+	const svelteHost = serverBindHost(env.HOST);
 	const sveltePort = Number((env.PORT || '5173').trim()) || 5173;
 	const hostOf = (url: string | undefined, fallback: string): string => {
 		if (!url) return fallback;
@@ -506,23 +515,30 @@ function clientIsLoopback(event: Parameters<Handle>[0]['event']): boolean {
 		// getClientAddress throws if the adapter can't determine it — fall through to the
 		// fail-closed Host fallback in decideClientLoopback.
 	}
-	const rawHost = event.request.headers.get('host');
-	const hostHeader = rawHost ? rawHost.split(':')[0] : null;
+	// Bracketed-IPv6 aware Host parse: `[::1]:5173` → `::1` (a naive split(':')[0] yields
+	// `[` and mis-classifies the loopback literal as non-loopback) — SF2-3(c).
+	const hostHeader = hostnameFromHostHeader(event.request.headers.get('host'));
+	// adapter-node's getClientAddress() returns a spoofable HEADER value (not the socket
+	// peer) when ADDRESS_HEADER is configured — flag it so decideClientLoopback fails
+	// closed on a LAN bind rather than trusting a spoofed loopback address (SF2-3(a)).
+	const clientAddrSpoofable = !!env.ADDRESS_HEADER?.trim();
 	return decideClientLoopback({
 		clientAddr,
 		hostHeader,
-		serverLoopbackBound: serverIsLoopbackBound()
+		serverLoopbackBound: serverIsLoopbackBound(),
+		clientAddrSpoofable
 	});
 }
 
 /**
  * True iff THIS server binds a loopback address, from the HOST bind env (default
- * 127.0.0.1 — the same default as {@link bootListeners} and the D-025 boot gate). A LAN
- * bind (HOST set to a routable address) is exactly where the spoofable Host-header
- * loopback fallback must fail closed (SEC-1).
+ * 127.0.0.1 — the SAME determination the D-025 boot gate uses via {@link serverBindHost},
+ * so the two can never drift, SF2-3(b)). A LAN bind (HOST set to a routable address) is
+ * exactly where the spoofable Host-header / header-derived-address loopback fallbacks
+ * must fail closed (SEC-1 / SF2-3).
  */
 function serverIsLoopbackBound(): boolean {
-	return isLoopbackHost((env.HOST || '127.0.0.1').trim());
+	return isServerLoopbackBound(env.HOST);
 }
 
 export const handle: Handle = async ({ event, resolve }) => {

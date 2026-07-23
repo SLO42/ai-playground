@@ -5,6 +5,9 @@ import {
 	mintBootToken,
 	bootstrapControlPlane,
 	decideClientLoopback,
+	hostnameFromHostHeader,
+	serverBindHost,
+	isServerLoopbackBound,
 	LoopbackBindError,
 	type ListenerSpec
 } from './loopback';
@@ -172,5 +175,142 @@ describe('decideClientLoopback — SEC-1 fail-closed Host-header fallback', () =
 				decideClientLoopback({ clientAddr: null, hostHeader: undefined, serverLoopbackBound: true })
 			).toBe(false);
 		});
+	});
+
+	// SF2-3(a) — adapter-node returns a SPOOFABLE header value from getClientAddress() when
+	// ADDRESS_HEADER is configured. A spoofed `127.0.0.1` there must not bypass loopback
+	// determination on a LAN bind.
+	describe('SF2-3(a) spoofable client address (ADDRESS_HEADER set) fails closed on a LAN bind', () => {
+		it('spoofed loopback client address on a LAN-bound server → NOT loopback (gate applies)', () => {
+			expect(
+				decideClientLoopback({
+					clientAddr: '127.0.0.1',
+					hostHeader: 'evil.example.com',
+					serverLoopbackBound: false,
+					clientAddrSpoofable: true
+				})
+			).toBe(false);
+			expect(
+				decideClientLoopback({
+					clientAddr: '::1',
+					hostHeader: null,
+					serverLoopbackBound: false,
+					clientAddrSpoofable: true
+				})
+			).toBe(false);
+		});
+
+		it('spoofable loopback client address on a LOOPBACK-bound server → lenient (true)', () => {
+			// A remote client cannot reach a loopback bind, so trusting the header stays safe.
+			expect(
+				decideClientLoopback({
+					clientAddr: '127.0.0.1',
+					hostHeader: null,
+					serverLoopbackBound: true,
+					clientAddrSpoofable: true
+				})
+			).toBe(true);
+		});
+
+		it('spoofable NON-loopback client address is not loopback on any bind', () => {
+			expect(
+				decideClientLoopback({
+					clientAddr: '10.0.0.9',
+					hostHeader: '127.0.0.1',
+					serverLoopbackBound: true,
+					clientAddrSpoofable: true
+				})
+			).toBe(false);
+		});
+
+		it('an UNSPOOFABLE (real socket peer) loopback address is authoritative on a LAN bind', () => {
+			// ADDRESS_HEADER unset (default / clientAddrSpoofable:false) → byte-identical to prior behavior.
+			expect(
+				decideClientLoopback({
+					clientAddr: '127.0.0.1',
+					hostHeader: 'evil.example.com',
+					serverLoopbackBound: false,
+					clientAddrSpoofable: false
+				})
+			).toBe(true);
+		});
+	});
+});
+
+// SF2-3(b) — the runtime loopback determination and the D-025 boot gate must share ONE
+// bind-host source so they cannot drift; unset HOST defaults to loopback in both.
+describe('serverBindHost / isServerLoopbackBound — one determination, no drift (SF2-3(b))', () => {
+	it('unset / blank HOST defaults to the loopback 127.0.0.1 bind', () => {
+		expect(serverBindHost(undefined)).toBe('127.0.0.1');
+		expect(serverBindHost(null)).toBe('127.0.0.1');
+		expect(serverBindHost('')).toBe('127.0.0.1');
+		expect(serverBindHost('   ')).toBe('127.0.0.1');
+		for (const h of [undefined, null, '', '  ']) {
+			expect(isServerLoopbackBound(h)).toBe(true);
+		}
+	});
+
+	it('trims and honors an explicit HOST', () => {
+		expect(serverBindHost('  127.0.0.1  ')).toBe('127.0.0.1');
+		expect(serverBindHost('0.0.0.0')).toBe('0.0.0.0');
+		expect(serverBindHost('192.168.1.10')).toBe('192.168.1.10');
+	});
+
+	it('a LAN / wildcard HOST is NOT loopback-bound (fail-closed regime engages)', () => {
+		expect(isServerLoopbackBound('0.0.0.0')).toBe(false);
+		expect(isServerLoopbackBound('::')).toBe(false);
+		expect(isServerLoopbackBound('192.168.1.10')).toBe(false);
+	});
+
+	it('a loopback HOST is loopback-bound', () => {
+		expect(isServerLoopbackBound('127.0.0.1')).toBe(true);
+		expect(isServerLoopbackBound('localhost')).toBe(true);
+		expect(isServerLoopbackBound('::1')).toBe(true);
+	});
+
+	it('the boot-gate default and the runtime default agree (no drift)', () => {
+		// The D-025 boot gate builds its sveltekit listener host from serverBindHost(env.HOST);
+		// the login gate calls isServerLoopbackBound(env.HOST). For every HOST value both agree.
+		for (const host of [undefined, '', '127.0.0.1', 'localhost', '::1', '0.0.0.0', '192.168.1.5']) {
+			expect(isServerLoopbackBound(host)).toBe(isLoopbackHost(serverBindHost(host)));
+		}
+	});
+});
+
+// SF2-3(c) — a bracketed IPv6 Host value must normalize to the loopback literal, not `[`.
+describe('hostnameFromHostHeader — bracketed IPv6 normalizes correctly (SF2-3(c))', () => {
+	it('strips brackets and port from an IPv6 loopback Host', () => {
+		expect(hostnameFromHostHeader('[::1]:5173')).toBe('::1');
+		expect(hostnameFromHostHeader('[::1]')).toBe('::1');
+		// and the normalized value is recognized as loopback (the whole point)
+		expect(isLoopbackHost(hostnameFromHostHeader('[::1]:5173') as string)).toBe(true);
+	});
+
+	it('handles a bracketed non-loopback IPv6', () => {
+		expect(hostnameFromHostHeader('[2001:db8::1]:8080')).toBe('2001:db8::1');
+		expect(isLoopbackHost(hostnameFromHostHeader('[2001:db8::1]:8080') as string)).toBe(false);
+	});
+
+	it('strips the port from a host:port / ipv4:port value', () => {
+		expect(hostnameFromHostHeader('127.0.0.1:5173')).toBe('127.0.0.1');
+		expect(hostnameFromHostHeader('localhost:5173')).toBe('localhost');
+		expect(hostnameFromHostHeader('example.com:443')).toBe('example.com');
+	});
+
+	it('returns a bare hostname / IPv4 unchanged', () => {
+		expect(hostnameFromHostHeader('localhost')).toBe('localhost');
+		expect(hostnameFromHostHeader('127.0.0.1')).toBe('127.0.0.1');
+	});
+
+	it('treats an unbracketed multi-colon value as an IPv6 literal (no port split)', () => {
+		expect(hostnameFromHostHeader('::1')).toBe('::1');
+		expect(isLoopbackHost(hostnameFromHostHeader('::1') as string)).toBe(true);
+	});
+
+	it('returns null for an absent / blank value', () => {
+		expect(hostnameFromHostHeader(null)).toBe(null);
+		expect(hostnameFromHostHeader(undefined)).toBe(null);
+		expect(hostnameFromHostHeader('')).toBe(null);
+		expect(hostnameFromHostHeader('   ')).toBe(null);
 	});
 });

@@ -1,6 +1,6 @@
 // TASK 10.5 — /services: the managed-services control surface (UI-SPEC §45/§210; F-008; D-019).
 //
-// Surfaces the local services the platform depends on (Ollama / SurrealDB / engine /
+// Surfaces the local services the platform depends on (Ollama / SurrealDB /
 // dashboard) with LIVE health + status, operator start/stop/restart on the controllable
 // ones (Ollama — safe; the dashboard cannot act on its own datastore/self, honestly noted),
 // and the durable incidents + notifications history (the operational audit trail, §208).

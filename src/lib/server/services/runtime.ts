@@ -1,7 +1,7 @@
 // TASK 10.5 — process-wide services-manager runtime + control surface for /services.
 //
 // The /services page (UI-SPEC §45/§210) needs a LIVE control surface over the local
-// services (Ollama / SurrealDB / engine), backed by REAL processes (F-008). The
+// services (Ollama / SurrealDB / dashboard), backed by REAL processes (F-008). The
 // ServicesManager (3.5) owns the supervision loop but is not otherwise instantiated in
 // the long-lived SvelteKit process — this module is the single place that builds + holds
 // it, registering the real ServiceAdapters once and exposing the page's read + act paths.
@@ -65,12 +65,9 @@ const META: Record<ServiceName, { label: string; purpose: string; controllable: 
 		controllable: false,
 		note: 'Externally managed (db:up owns its lifecycle); the dashboard reads from this server, so it cannot stop/restart its own datastore from here.'
 	},
-	engine: {
-		label: 'Engine',
-		purpose: 'The orchestration engine that drives Claude Code sessions from the task queue.',
-		controllable: false,
-		note: 'In-process with the dashboard (the orchestrator runs inside this server); manage it via the server lifecycle, not from here.'
-	},
+	// SVC-2 (SERVICES-SPEC §3): `engine` was removed from SERVICE_NAMES — the orchestration
+	// engine runs IN-PROCESS with the dashboard (not a distinct supervisable process), so it is
+	// surfaced under `dashboard`/the server lifecycle rather than as a phantom managed service.
 	dashboard: {
 		label: 'Dashboard',
 		purpose: 'This control-plane app. Status-only — it cannot start or stop itself.',

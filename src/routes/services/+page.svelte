@@ -2,7 +2,7 @@
   /**
    * /services — the managed-services control surface (UI-SPEC §45/§210).
    *
-   * LIVE health + status for the local services (Ollama / SurrealDB / engine / dashboard),
+   * LIVE health + status for the local services (Ollama / SurrealDB / dashboard),
    * operator start/stop/restart on the controllable ones, and the durable incidents +
    * notifications history (the operational audit trail, §208). Live by default (§1.2): a
    * `service`/`notification` row change on the one SSE stream re-invalidates the loader so

@@ -106,16 +106,17 @@ describe('home — services health rollup (probe-reconciled, 14.4a)', () => {
 
 	it('counts probe-healthy + unprobed self-reports honestly', async () => {
 		__resetServicesRuntime();
+		// SVC-2: `engine` was dropped from the managed set (it named the in-process orchestrator,
+		// not a distinct service). The honest managed set is [ollama, surrealdb, dashboard].
 		await db.query(
-			`UPSERT service:surrealdb CONTENT { name: 'surrealdb', status: 'running', checked_at: time::now() };
-			 UPSERT service:engine CONTENT { name: 'engine', status: 'stopped', checked_at: time::now() };`
+			`UPSERT service:surrealdb CONTENT { name: 'surrealdb', status: 'running', checked_at: time::now() };`
 		);
 		__setOllamaAdapterForTest(db, new FakeProbeAdapter(true, 4242));
 
 		const health = await readServicesHealth(db);
 		// ollama (probe-true) + surrealdb (self-report, no probe to contradict) up;
-		// engine stopped; dashboard has no row and no probe → honest unknown, excluded.
-		expect(health.total).toBe(3);
+		// dashboard has no row and no probe → honest unknown, excluded.
+		expect(health.total).toBe(2);
 		expect(health.up).toBe(2);
 	});
 });

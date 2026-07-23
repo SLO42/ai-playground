@@ -293,6 +293,15 @@ export interface Orchestration {
 	 */
 	captureThinking?: boolean;
 	/**
+	 * SVC-1 (SERVICES-SPEC / D-004 additive note, DECISIONS.md 7ca9145) — the services
+	 * supervision tick cadence. `tickMs`: the interval (ms) at which the boot-wired
+	 * ServicesTicker reconciles the managed services (auto-restart a desired-up service the
+	 * OS/health probe finds dead). 0 = OFF (no periodic supervision — the manual-only /
+	 * page-load-observed contract). Absent ⇒ the boot default (DEFAULT_SERVICES_TICK_MS =
+	 * 300000 = 5min). Read once per boot (restart to apply, F-029).
+	 */
+	services?: { tickMs?: number };
+	/**
 	 * intent → adaptive config (D-020). Validated at the boundary (loadOrchestration).
 	 * Partial: an unconfigured intent resolves to an empty bundle (all-defaults), so a
 	 * sparsely-tuned orchestration.yaml still routes every intent (resolveAdaptiveConfig).
@@ -1067,6 +1076,25 @@ export function loadOrchestration(file: string, opts: LoadOpts = {}): Orchestrat
 			`orchestration: "captureThinking" must be a boolean (got ${String(raw.captureThinking)})`,
 			file
 		);
+	}
+	// SVC-1 (SERVICES-SPEC / D-004 additive note) — the services supervision tick. OPTIONAL
+	// block; when present it MUST be a mapping and `tickMs`, when set, a NON-NEGATIVE integer
+	// (0 = OFF — a silently-ignored/negative cadence would be worse than a boot failure, so
+	// fail closed). Absent ⇒ the boot default (DEFAULT_SERVICES_TICK_MS) is applied at
+	// consumption, mirroring intervalMs (never a fabricated value here).
+	if (raw.services !== undefined && raw.services !== null) {
+		if (typeof raw.services !== 'object' || Array.isArray(raw.services)) {
+			throw new ConfigError('orchestration: "services" must be a mapping (with tickMs)', file);
+		}
+		const t = (raw.services as Record<string, unknown>).tickMs;
+		if (t !== undefined && t !== null) {
+			if (!Number.isInteger(t) || (t as number) < 0) {
+				throw new ConfigError(
+					'orchestration: services.tickMs must be a non-negative integer (0 = off)',
+					file
+				);
+			}
+		}
 	}
 	// TASK 2.12: validate the intent-adaptive bundles at the boundary (D-020). Each key
 	// MUST be one of the five intents; each known knob MUST be the right shape/range.

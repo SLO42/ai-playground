@@ -15,6 +15,20 @@ intervalMs: 60000
 # Read once per boot (restart to apply — /settings surfaces this honestly, F-029).
 defaultProvider: auto
 
+# SVC-1 (SERVICES-SPEC / D-004 additive note, DECISIONS.md 7ca9145) — the local-services
+# supervision tick. The ServicesManager owns pid+health liveness + bounded auto-restart, but
+# had NO production scheduler: a crashed service (e.g. an operator-armed Ollama) stayed down
+# until a page load happened to observe it. This arms a BOUNDED, unref'd periodic tick in the
+# server boot path that reconciles the managed services on this cadence — a crashed desired-up
+# service is auto-restarted (bounded by maxRestarts, incident-logged). The timer is unref'd
+# (never holds the process open, F-014), single-flight (a slow tick never overlaps itself), and
+# every tick is fault-isolated (a DB/probe fault logs + never crashes the server, F-014). Read
+# once per boot (restart to apply, F-029).
+#   tickMs: 300000  — the interval in ms (default when absent: 300000 = 5 min).
+#   tickMs: 0       — OFF (no periodic supervision; the manual-only / page-load-observed contract).
+services:
+  tickMs: 300000
+
 # Interactive concurrency caps (orchestrator semaphore).
 concurrency:
   maxAgents: 8        # total simultaneous interactive spawns

@@ -57,6 +57,7 @@ import {
 	setActiveMaintenanceEngine
 } from '$lib/server/loops/maintenance';
 import { defaultMaintenanceRegistry } from '$lib/server/loops/maintenance-actions';
+import { ServicesTicker, DEFAULT_SERVICES_TICK_MS } from '$lib/server/services';
 
 // Runtime env source (TASK 6.8). SvelteKit's `$env/dynamic/private` loads `.env` in
 // BOTH dev SSR (which Vite does NOT inject into `process.env`) and the prod Node
@@ -163,6 +164,10 @@ const autonomousLoops: AutonomousPmLoop[] = [];
 /** The live self-maintenance loop engine(s) (m0080), held like the others so teardown stops the tick. */
 const maintenanceEngines: MaintenanceLoopEngine[] = [];
 
+/** SVC-1 — the services supervision ticker(s), held like the others so shutdown tears down the
+ *  unref'd tick timer (F-014). Empty when the DB is down or `services.tickMs` is 0 (OFF). */
+const servicesTickers: ServicesTicker[] = [];
+
 /**
  * MEMORY-SCENE-SPEC §5/§7.1 — the scene_event PROJECTOR, held like the others so the
  * instance (its bus subscription) survives for the life of the process and shutdown
@@ -206,6 +211,9 @@ async function bootstrap(): Promise<DbInitResult> {
 			setActiveMaintenanceEngine(null);
 			// The scene projector is a bus consumer too (MEMORY-SCENE-SPEC §5): its
 			// subscription must not outlive the boot (F-014).
+			// SVC-1 — the services supervision ticker's unref'd tick timer must not outlive the
+			// boot (F-014); stop() tears it down.
+			for (const t of servicesTickers) t.stop();
 			for (const s of sceneProjectors) s.stop();
 		},
 		killChildren: () => killAllClaudeChildren(),
@@ -418,6 +426,35 @@ async function bootstrap(): Promise<DbInitResult> {
 			);
 		} catch (err) {
 			console.warn(`[startup] maintenance loop engine boot failed: ${(err as Error).message}`);
+		}
+
+		// SVC-1 (SERVICES-SPEC §3 / D-004 additive note, DECISIONS.md 7ca9145) — arm the
+		// PRODUCTION scheduler for the services supervision loop. The ServicesManager owns
+		// pid+health liveness + bounded auto-restart, but tick() had NO production caller: a
+		// crashed desired-up service (e.g. an operator-armed Ollama) stayed down until a page
+		// load happened to observe it. This wires a BOUNDED, unref'd, single-flight periodic
+		// tick that reconciles the managed services on `services.tickMs` (default 5min; 0 = OFF).
+		// Every tick is fault-isolated (a DB/probe fault logs + never crashes the server, F-014)
+		// and the timer is torn down on shutdown (stopOrchestrators, above). It is NOT mode-gated
+		// (a crashed-service backstop is not automatic AGENT work — the D-004 off switch here is
+		// tickMs=0). Read once per boot (restart to apply, F-029). A start failure must never
+		// crash the boot (D-019) — supervision simply stays off.
+		try {
+			let tickMs = DEFAULT_SERVICES_TICK_MS;
+			try {
+				const orch = loadOrchestration(`${process.env.CONFIG_DIR?.trim() || 'config'}/orchestration.yaml`);
+				tickMs = orch.services?.tickMs ?? DEFAULT_SERVICES_TICK_MS;
+			} catch {
+				tickMs = DEFAULT_SERVICES_TICK_MS; // unreadable config → the safe 5min backstop.
+			}
+			const ticker = new ServicesTicker({ db, tickMs });
+			ticker.start();
+			servicesTickers.push(ticker);
+			console.log(
+				`[startup] services ticker ${ticker.periodicArmed ? `armed (tickMs=${tickMs})` : 'OFF (tickMs=0)'} — bounded unref'd supervision backstop (SVC-1/D-004).`
+			);
+		} catch (err) {
+			console.warn(`[startup] services ticker boot failed: ${(err as Error).message}`);
 		}
 
 		// TASK 16.6 — the §4.2 gauntlet SENTINEL SWEEP, once per connected boot (the

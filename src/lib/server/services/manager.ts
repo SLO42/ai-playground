@@ -35,8 +35,22 @@ import {
 	type NotificationRow
 } from './incidents';
 
-/** The managed service names (DATA-MODEL §4.7). dashboard = status-only self-report. */
-export const SERVICE_NAMES = ['ollama', 'surrealdb', 'engine', 'dashboard'] as const;
+/**
+ * The managed service names (DATA-MODEL §4.7).
+ *   • ollama    — a real, distinct process: registered with a live adapter + health probe → fully supervised.
+ *   • surrealdb — a real, distinct process: the datastore this server READS THROUGH (observe-only, honest note).
+ *   • dashboard — this SvelteKit server process itself (status-only self-report — it cannot act on itself).
+ *
+ * SVC-2 (SERVICES-SPEC §3) — `engine` was DROPPED. It named the orchestration engine, but that
+ * engine runs IN-PROCESS with the dashboard (orchestrator.ts inside this same server) — it is NOT
+ * a distinct OS process, has no adapter, no health probe, and nothing ever writes its `service`
+ * row in v2. Listing it made the surface claim to manage a service that never existed/was managed;
+ * it duplicated `dashboard`. Per the spec's sanctioned fix ("drop the name from SERVICE_NAMES"),
+ * it is removed so /services reports only services that actually exist/are supervised (F-008).
+ * (DATA-MODEL §4.7's name list is a descriptive comment on a free-string field, not an enforced
+ * enum; its doc-comment should drop `engine` to match — tracked as a docs follow-up.)
+ */
+export const SERVICE_NAMES = ['ollama', 'surrealdb', 'dashboard'] as const;
 export type ServiceName = (typeof SERVICE_NAMES)[number];
 
 export type ServiceStatus = 'running' | 'stopped' | 'crashed' | 'unknown';
@@ -253,13 +267,21 @@ export class ServicesManager {
 			return { name, wasDown: false, restarted: false, healthy: true, incident: null };
 		}
 
+		// The honest WHY the service is considered down — reused for the incident detail AND
+		// the first-class supervision analytics event so both name the same cause (SVC-1).
+		const downReason =
+			pid == null
+				? 'no live pid recorded'
+				: !pidAlive
+					? `recorded pid ${pid} is not alive (tasklist)`
+					: 'process alive but health probe failed';
+		const attempt = entry.restartFailures + 1;
+
 		// Service is DOWN while it should be up → record crash, log, auto-restart.
 		await this.writeService(name, 'crashed', null);
 		const incident = await recordIncident(this.db, {
 			title: `Service "${name}" went down`,
-			detail: pid != null
-				? `pid ${pid} is no longer alive; auto-restarting (attempt ${entry.restartFailures + 1}/${this.maxRestarts})`
-				: `no live pid; auto-restarting (attempt ${entry.restartFailures + 1}/${this.maxRestarts})`,
+			detail: `${downReason}; auto-restarting (attempt ${attempt}/${this.maxRestarts})`,
 			severity: 'error'
 		});
 		await recordNotification(this.db, `Service "${name}" crashed — auto-restarting`);
@@ -270,6 +292,14 @@ export class ServicesManager {
 				title: `Service "${name}" exceeded restart limit`,
 				detail: `gave up after ${this.maxRestarts} consecutive restart failures`,
 				severity: 'critical'
+			});
+			await this.logSupervision(name, {
+				reason: downReason,
+				restarted: false,
+				healthy: false,
+				outcome: 'gave-up',
+				attempt,
+				maxRestarts: this.maxRestarts
 			});
 			return { name, wasDown: true, restarted: false, healthy: false, incident };
 		}
@@ -282,20 +312,90 @@ export class ServicesManager {
 				entry.restartFailures = 0;
 				await this.writeService(name, 'running', newPid);
 				await recordNotification(this.db, `Service "${name}" recovered`);
+				await this.logSupervision(name, {
+					reason: downReason,
+					restarted: true,
+					healthy: true,
+					outcome: 'recovered',
+					attempt,
+					maxRestarts: this.maxRestarts
+				});
 				return { name, wasDown: true, restarted: true, healthy: true, incident };
 			}
 			entry.restartFailures += 1;
 			await this.writeService(name, 'crashed', null);
+			await this.logSupervision(name, {
+				reason: downReason,
+				restarted: true,
+				healthy: false,
+				outcome: 'restart-unhealthy',
+				attempt,
+				maxRestarts: this.maxRestarts
+			});
 			return { name, wasDown: true, restarted: true, healthy: false, incident };
 		} catch (err) {
 			entry.restartFailures += 1;
+			const message = err instanceof Error ? err.message : String(err);
 			await recordIncident(this.db, {
 				title: `Service "${name}" auto-restart failed`,
-				detail: err instanceof Error ? err.message : String(err),
+				detail: message,
 				severity: 'critical'
 			});
 			await this.writeService(name, 'crashed', null);
+			await this.logSupervision(name, {
+				reason: downReason,
+				restarted: true,
+				healthy: false,
+				outcome: 'restart-error',
+				attempt,
+				maxRestarts: this.maxRestarts,
+				error: message
+			});
 			return { name, wasDown: true, restarted: true, healthy: false, incident };
+		}
+	}
+
+	/**
+	 * SVC-1 — write ONE first-class `agent_event` (type 'supervision') per detected-down +
+	 * restart-attempt: which service, WHY it was considered down, and the restart OUTCOME —
+	 * a queryable analytics fact (how/why, not a flat event), surfaced alongside the incident
+	 * trail. A run-log type (no model/tokens/cost), so it is a raw $param-bound CREATE outside
+	 * the priced writeAgentEvent chokepoint — mirroring the m0080 'maintenance' run-log
+	 * precedent. BEST-EFFORT (F-014): an analytics-write fault is named + swallowed so a
+	 * supervision fault can never crash the tick; the incident/notification trail already
+	 * carries the durable record if this ever fails.
+	 */
+	private async logSupervision(
+		name: ServiceName,
+		info: {
+			reason: string;
+			restarted: boolean;
+			healthy: boolean;
+			outcome: 'recovered' | 'restart-unhealthy' | 'restart-error' | 'gave-up';
+			attempt: number;
+			maxRestarts: number;
+			error?: string;
+		}
+	): Promise<void> {
+		try {
+			const detail: Record<string, unknown> = {
+				service: name,
+				reason: info.reason,
+				restarted: info.restarted,
+				healthy: info.healthy,
+				outcome: info.outcome,
+				attempt: info.attempt,
+				max_restarts: info.maxRestarts,
+				summary: `service "${name}" ${info.outcome} — ${info.reason}`
+			};
+			if (info.error !== undefined) detail.error = info.error;
+			await this.db.query(`CREATE agent_event CONTENT { type: 'supervision', detail: $detail };`, {
+				detail
+			});
+		} catch (err) {
+			console.warn(
+				`[services-manager] supervision analytics write failed for "${name}": ${(err as Error).message}`
+			);
 		}
 	}
 

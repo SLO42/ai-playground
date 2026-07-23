@@ -33,3 +33,4 @@ export {
 	type IncidentSeverity
 } from './incidents';
 export { isPidAlive, killPid } from './proc';
+export { ServicesTicker, DEFAULT_SERVICES_TICK_MS, type ServicesTickerOptions } from './ticker';

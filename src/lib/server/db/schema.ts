@@ -2863,6 +2863,27 @@ const m0080_maintenance_loops: Migration = {
 	`
 };
 
+// m0081 — SVC-1 (SERVICES-SPEC §3) — the services-supervision run log. `agent_event.type` gains
+// 'supervision': the ServicesManager reconcile path (manager.ts) writes ONE first-class agent_event
+// per detected-down + restart-attempt — detail = { service, reason (why it was considered down),
+// restarted, healthy, outcome (recovered|restart-unhealthy|restart-error|gave-up), summary } — so a
+// crashed service's whole supervision decision (which service, why down, what the auto-restart did)
+// is a queryable analytics fact, not only a pair of incident/notification rows. Mirrors the m0080
+// 'maintenance' run-log precedent (a run-log type, not a priced lifecycle event, so it is a raw
+// parameterized CREATE — outside AGENT_EVENT_TYPES/writeAgentEvent, like 'hook'/'maintenance').
+//
+// WHY the widened ASSERT is REQUIRED (not just nice): agent_event is SCHEMAFULL with a type ASSERT;
+// without 'supervision' in the enum every supervision write would fail the assertion and be rejected
+// (the exact m0022 'hook' silent-swallow bug). ADDITIVE + idempotent (F-015: OVERWRITE-only; the
+// generic schemaMigrations sweep re-runs it cleanly; widening an ASSERT enum never touches a row).
+const m0081_agent_event_supervision: Migration = {
+	id: '0081_agent_event_supervision',
+	up: `
+		DEFINE FIELD OVERWRITE type ON agent_event TYPE string
+			ASSERT $value IN ["spawn","completion","escalation","cancel","error","hook","maintenance","supervision"];
+	`
+};
+
 // ── §4.12 note (BL-R3 — F-048 structural fix + F-026) — active-window dedup is the PRIMARY id ──
 //
 // NO new migration ships for BL-R3. The task_run active-window dedup ("one pending-or-processing
@@ -2970,5 +2991,6 @@ export const schemaMigrations: Migration[] = [
 	m0077_benchmark_verdict,
 	m0078_soul_graduation,
 	m0079_peer_message_reply_to,
-	m0080_maintenance_loops
+	m0080_maintenance_loops,
+	m0081_agent_event_supervision
 ];

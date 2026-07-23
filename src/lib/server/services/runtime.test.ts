@@ -11,8 +11,11 @@
 //      with a SET datetime read back THROUGH the runtime read path is a plain ISO string (not a
 //      non-POJO SurrealDB DateTime that would break SvelteKit's load serializer).
 //   3. The RUNTIME control gate (`operateService`) refuses an unknown service, an unknown
-//      action, and a non-controllable service (surrealdb/engine/dashboard) — no dead/dangerous
+//      action, and a non-controllable service (surrealdb/dashboard) — no dead/dangerous
 //      control reaches the manager (D-038 #5/#6).
+//
+// SVC-2: `engine` was dropped from SERVICE_NAMES (it named the IN-PROCESS orchestrator, not a
+// distinct managed service). The full managed set is now [dashboard, ollama, surrealdb].
 
 import { describe, it, expect, beforeAll, afterAll, beforeEach } from 'vitest';
 import { Db } from '../db/client';
@@ -126,12 +129,12 @@ describe('§10.5 runtime.readServices — full set, honest controllability, F-01
 	it('returns the full managed set with honest controllability flags', async () => {
 		const { services } = await readServices(db);
 		const names = services.map((s) => s.name).sort();
-		expect(names).toEqual(['dashboard', 'engine', 'ollama', 'surrealdb']);
+		expect(names).toEqual(['dashboard', 'ollama', 'surrealdb']); // SVC-2: engine dropped
 
 		const ollama = services.find((s) => s.name === 'ollama')!;
 		expect(ollama.controllable).toBe(true);
 
-		for (const n of ['surrealdb', 'engine', 'dashboard'] as const) {
+		for (const n of ['surrealdb', 'dashboard'] as const) {
 			const s = services.find((x) => x.name === n)!;
 			expect(s.controllable).toBe(false);
 			expect(s.note, `${n} must explain WHY it is not controllable`).toBeTruthy();
@@ -251,7 +254,10 @@ describe('§10.5 runtime.operateService — control gate (no dead/dangerous cont
 
 	it('refuses a non-controllable service (surrealdb — the dashboard reads from it)', async () => {
 		await expect(operateService(db, 'surrealdb', 'restart')).rejects.toBeInstanceOf(ServiceControlError);
-		await expect(operateService(db, 'engine', 'stop')).rejects.toBeInstanceOf(ServiceControlError);
 		await expect(operateService(db, 'dashboard', 'start')).rejects.toBeInstanceOf(ServiceControlError);
+	});
+
+	it('refuses a dropped/unknown service name (SVC-2 — engine is no longer a managed service)', async () => {
+		await expect(operateService(db, 'engine', 'stop')).rejects.toBeInstanceOf(ServiceControlError);
 	});
 });

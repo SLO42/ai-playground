@@ -390,6 +390,50 @@ describe('loadOrchestration — YAML + enum validation', () => {
 		).toThrow(/captureThinking/);
 	});
 
+	// SVC-1 (SERVICES-SPEC §3) — services.tickMs (the supervision tick cadence).
+	describe('services.tickMs (SVC-1 supervision tick)', () => {
+		it('parses the committed config (positive tickMs)', () => {
+			const orch = loadOrchestration(join(process.cwd(), 'config', 'orchestration.yaml'));
+			expect(orch.services?.tickMs).toBe(300000);
+		});
+
+		it('defaults services to undefined when the block is absent (boot applies the default)', () => {
+			const orch = loadOrchestration(join(FIX, 'orchestration.yaml'));
+			expect(orch.services).toBeUndefined();
+		});
+
+		it('accepts 0 (explicit OFF)', () => {
+			const orch = loadOrchestration(join(FIX, 'orchestration.yaml'), {
+				_inject: { services: { tickMs: 0 } }
+			});
+			expect(orch.services?.tickMs).toBe(0);
+		});
+
+		it('rejects a negative tickMs (fails closed)', () => {
+			expect(() =>
+				loadOrchestration(join(FIX, 'orchestration.yaml'), {
+					_inject: { services: { tickMs: -1 } }
+				})
+			).toThrow(/services\.tickMs must be a non-negative integer/);
+		});
+
+		it('rejects a fractional tickMs (fails closed)', () => {
+			expect(() =>
+				loadOrchestration(join(FIX, 'orchestration.yaml'), {
+					_inject: { services: { tickMs: 12.5 } }
+				})
+			).toThrow(/services\.tickMs must be a non-negative integer/);
+		});
+
+		it('rejects a non-mapping services block (fails closed)', () => {
+			expect(() =>
+				loadOrchestration(join(FIX, 'orchestration.yaml'), {
+					_inject: { services: 300000 }
+				})
+			).toThrow(/"services" must be a mapping/);
+		});
+	});
+
 	it('rejects a bundle key that is not a known intent (typo fails closed)', () => {
 		expect(() =>
 			loadOrchestration(join(FIX, 'orchestration.yaml'), {

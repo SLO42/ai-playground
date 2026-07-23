@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { Db, initDb, getDb, closeDb } from './client';
+import { Db, initDb, getDb, closeDb, isAuthExpiredError } from './client';
 import { IdentifierError } from './validate';
 import { startTestDb, fixtureVector, type TestDb } from './testserver';
 
@@ -278,6 +278,49 @@ describe('Db self-heal on auth-token expiry (F-042)', () => {
 			await bad.close().catch(() => {});
 		}
 	}, 30_000);
+});
+
+// SF2-2 — wording-contract unit test. After the SF2-1 credential flip the runtime signs
+// in as a DATABASE-level EDITOR, so a GENUINE authorization denial (the role lacking a
+// capability) must NOT be mistaken for token expiry and enter the F-042 re-auth/retry —
+// re-signing in cannot grant a capability the role does not have, and under the live-sub
+// probe it would churn as a re-signin loop. The literal strings below are captured LIVE
+// vs the pinned 2.6.5 binary (see provision-user.test.ts for the behavioral proof that
+// these are the exact shapes the SDK throws): expiry is WRAPPED ("There was a problem with
+// the database: …"), a bare authz denial is NOT.
+describe('isAuthExpiredError — expiry vs authorization-denied (SF2-2)', () => {
+	// EXPIRY (heal): dropped/anon session hits a PERMISSIONS-NONE table → wrapped runtime error.
+	const EXPIRY = [
+		'There was a problem with the database: IAM error: Not enough permissions to perform this action',
+		'The token has expired',
+		'There was a problem with authentication: Not authenticated',
+		'Invalid token supplied'
+	];
+	// AUTHZ DENIAL (surface honestly, no re-auth): valid session, role lacks the capability.
+	const AUTHZ = [
+		'IAM error: Not enough permissions to perform this action', // bare — DEFINE USER / INFO FOR ROOT / cross-db
+		'IAM error: Not enough permissions'
+	];
+
+	for (const m of EXPIRY) {
+		it(`treats as expiry (heals): ${m.slice(0, 48)}…`, () => {
+			expect(isAuthExpiredError(new Error(m))).toBe(true);
+		});
+	}
+	for (const m of AUTHZ) {
+		it(`does NOT treat a bare authz denial as expiry: ${m.slice(0, 48)}…`, () => {
+			expect(isAuthExpiredError(new Error(m))).toBe(false);
+		});
+	}
+	it('handles string and null/undefined error shapes without matching (shadow paths)', () => {
+		expect(isAuthExpiredError('IAM error: Not enough permissions to perform this action')).toBe(false);
+		expect(
+			isAuthExpiredError('There was a problem with the database: IAM error: Not enough permissions')
+		).toBe(true);
+		expect(isAuthExpiredError(null)).toBe(false);
+		expect(isAuthExpiredError(undefined)).toBe(false);
+		expect(isAuthExpiredError({})).toBe(false);
+	});
 });
 
 describe('process-wide singleton', () => {

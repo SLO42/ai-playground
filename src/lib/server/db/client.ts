@@ -55,18 +55,31 @@ export const DEFAULT_CONNECT_TIMEOUT_MS = 5000;
 export type Bindings = Record<string, unknown>;
 
 /**
- * Auth-expiry fingerprint (F-042). SurrealDB provisions root with a default
- * `DURATION FOR TOKEN 1h`; on a long-lived singleton the signin token expires and
- * the live session silently drops to UNAUTHENTICATED. Because every table is
- * `PERMISSIONS NONE` (owner/root bypasses, an expired/anon session does NOT), EVERY
- * query then returns "IAM error: Not enough permissions". We match NARROWLY — only
- * the not-authenticated / token-expired / IAM-permission wording — so a GENUINE
- * permission error (e.g. a real least-priv grant gap) is NOT masked by a re-auth
- * retry; it surfaces honestly (F-008). Distinct from db/classify.ts which matches
- * connection-LOSS (a dead socket), a different failure that re-auth cannot fix.
+ * Auth-expiry fingerprint (F-042; narrowed by SF2-2). SurrealDB provisions root with a
+ * default `DURATION FOR TOKEN 1h`; on a long-lived singleton the signin token expires and
+ * the live session silently drops to UNAUTHENTICATED. An anonymous session querying a
+ * `PERMISSIONS NONE` table then fails — and the SDK reports it as a runtime DB error:
+ *   "There was a problem with the database: IAM error: Not enough permissions to perform this action"
+ * (verified live vs 2.6.5 — the same wrapped shape for an expired ROOT token, a
+ * DATABASE-level EDITOR token, and an `invalidate()`d session).
+ *
+ * The narrowing exists for the least-priv runtime credential (SF2-1 / DBR-1): once the
+ * runtime signs in as a DATABASE-level EDITOR, a GENUINE authorization denial — the user
+ * lacking a role capability (DEFINE USER, INFO FOR ROOT/NS, cross-db reach) — surfaces
+ * WITHOUT the runtime wrapper, as a bare:
+ *   "IAM error: Not enough permissions to perform this action"
+ * (verified live vs 2.6.5). A bare authz denial is NOT an expiry — re-signing in cannot
+ * grant a capability the role does not have, so it must NOT enter the F-042 re-auth/retry
+ * (which under the live-subscription probe would churn as a re-signin loop). It surfaces
+ * honestly (F-008, D-024 fail-closed).
+ *
+ * So we match ONLY: unambiguous token/session-expiry wording, OR the wrapped
+ * "problem with the database … not enough permissions" (dropped-session) form — never a
+ * BARE "not enough permissions" / "iam error" (which is an authorization denial). Distinct
+ * from db/classify.ts which matches connection-LOSS (a dead socket), which re-auth cannot fix.
  */
 const AUTH_EXPIRED_RE =
-	/not enough permissions|token (?:has )?expired|expired token|not authenticated|invalid token|iam error/i;
+	/token (?:has )?expired|expired token|not authenticated|invalid token|there was a problem with the database:.*not enough permissions/i;
 
 /**
  * Build the SurrealDB signin payload for a user's auth LEVEL (DBR-1). A ROOT user
@@ -89,8 +102,12 @@ function signinAuth(a: {
 		: { username: a.username, password: a.password };
 }
 
-/** True when a thrown error looks like an expired/dropped auth session (F-042). */
-function isAuthExpiredError(err: unknown): boolean {
+/**
+ * True when a thrown error looks like an expired/dropped auth session (F-042) — as
+ * opposed to a genuine authorization denial (SF2-2). Exported for the wording-contract
+ * unit test that pins the live-verified expiry vs authz-denial strings.
+ */
+export function isAuthExpiredError(err: unknown): boolean {
 	const message =
 		err instanceof Error
 			? err.message

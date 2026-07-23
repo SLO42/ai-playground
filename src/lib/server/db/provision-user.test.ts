@@ -236,13 +236,24 @@ describe('scoped-user cross-db / cross-ns confinement — no blast radius (SEC-4
 		expect(rows[0]).toEqual([]);
 	});
 
-	it('INFO FOR DB still reflects its OWN database, never the foreign one it use()-d', async () => {
-		// After the foreign use() above, the scoped session's INFO FOR DB must describe its
-		// OWN db (confirming the switch was ignored) — it must NOT expose the foreign db.
-		// The own db has the `widget` table other suites defined; the foreign db does not.
+	it('cannot INSPECT a foreign db via INFO FOR DB; own db reachable only after re-scoping', async () => {
+		// SF2-2 correction (verified live vs 2.6.5): a scoped user's use() to a foreign ns is
+		// NOT truly "ignored" — the session's SELECTED ns/db does move (a data read there is
+		// merely filtered to []). An ADMIN read (INFO FOR DB) on the foreign ns is DENIED with a
+		// BARE "IAM error: Not enough permissions" — a genuine AUTHORIZATION denial (valid
+		// session, no grant), NOT the wrapped dropped-session form. SF2-2 keeps that bare denial
+		// OUT of the F-042 re-auth (re-signin cannot grant a capability the role lacks); it fails
+		// closed honestly. (The OLD broad regex silently healed it, which reset the session back
+		// to its own db and MASKED the confinement — a circular assertion.)
+		await scoped.raw.use({ namespace: FOREIGN_NS, database: 'main' });
+		await expect(scoped.query('INFO FOR DB;')).rejects.toThrow(/permission|iam/i);
+		// The scoped user IS entitled to its OWN db; re-selecting it (no heal involved), INFO FOR
+		// DB reflects that own db (the `widget` table) and NEVER the foreign secretstuff.
+		await scoped.raw.use({ namespace: tdb.namespace, database: tdb.database });
 		const info = await scoped.query<[{ tables?: Record<string, unknown> }]>('INFO FOR DB;');
 		expect(info[0]?.tables).toBeDefined();
 		expect(Object.keys(info[0]?.tables ?? {})).toContain('widget');
+		expect(Object.keys(info[0]?.tables ?? {})).not.toContain('secretstuff');
 	});
 });
 
@@ -264,6 +275,60 @@ describe('scoped-user F-042 self-heal (single-flight re-signin, DATABASE level)'
 			for (const r of results) expect(typeof (r[0][0]?.n ?? 0)).toBe('number');
 		} finally {
 			await scoped.close();
+		}
+	}, 30_000);
+});
+
+describe('scoped-user authz-denial does NOT enter the re-signin loop (SF2-2, verified vs 2.6.5)', () => {
+	// After the SF2-1 flip the runtime is a DATABASE-level EDITOR. A genuine authorization
+	// denial (role lacks a capability) must surface honestly — re-signing in cannot grant a
+	// capability the role does not have, so it must NOT trigger the F-042 re-auth/retry. A
+	// genuine session drop still MUST heal. We count signin() calls on the raw handle to
+	// prove which path re-auths.
+	function countSignins(scoped: Db): { count: () => number; restore: () => void } {
+		const handle = scoped.raw;
+		const orig = handle.signin.bind(handle);
+		let n = 0;
+		(handle as unknown as { signin: typeof handle.signin }).signin = ((auth: unknown) => {
+			n += 1;
+			return orig(auth as Parameters<typeof handle.signin>[0]);
+		}) as typeof handle.signin;
+		return { count: () => n, restore: () => ((handle as unknown as { signin: unknown }).signin = orig) };
+	}
+
+	it('a bare IAM authz denial rejects immediately with ZERO re-signins', async () => {
+		await provisionRuntimeUser(root, { username: 'rt_authz', password: 'authz_pw_123' });
+		const scoped = await connectScoped('rt_authz', 'authz_pw_123');
+		const spy = countSignins(scoped);
+		try {
+			// DEFINE USER is denied to EDITOR → bare "IAM error: Not enough permissions" (no
+			// "problem with the database" wrapper). Must NOT be mistaken for expiry.
+			await expect(
+				scoped.query("DEFINE USER backdoor ON DATABASE PASSWORD 'x' ROLES OWNER;")
+			).rejects.toThrow(/permission|iam/i);
+			// INFO FOR ROOT — same class of bare authz denial.
+			await expect(scoped.query('INFO FOR ROOT;')).rejects.toThrow(/permission|iam/i);
+			// No re-auth was attempted for EITHER denial (would have churned the re-signin loop).
+			expect(spy.count()).toBe(0);
+		} finally {
+			spy.restore();
+			await scoped.close().catch(() => {});
+		}
+	});
+
+	it('a genuine session drop STILL heals with exactly ONE re-signin', async () => {
+		await provisionRuntimeUser(root, { username: 'rt_expiry', password: 'expiry_pw_123' });
+		const scoped = await connectScoped('rt_expiry', 'expiry_pw_123');
+		const spy = countSignins(scoped);
+		try {
+			await scoped.raw.invalidate(); // dropped session → wrapped "problem with the database … not enough permissions"
+			const rows = await scoped.query<[{ n: number }[]]>('SELECT count() AS n FROM widget GROUP ALL;');
+			expect(Array.isArray(rows[0])).toBe(true);
+			// The single-flight heal re-signed in exactly once.
+			expect(spy.count()).toBe(1);
+		} finally {
+			spy.restore();
+			await scoped.close().catch(() => {});
 		}
 	}, 30_000);
 });

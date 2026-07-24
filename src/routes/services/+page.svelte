@@ -22,6 +22,17 @@
   const incidents = $derived(data.incidents ?? []);
   const notifications = $derived(data.notifications ?? []);
 
+  // SD-1 — the budget-safety verdict (armed autonomous loop + an uncapped token ceiling = the
+  // runaway hole made VISIBLE). Rendered as a loud, honest banner; silent when safe (F-008).
+  const budgetSafety = $derived(data.budgetSafety);
+  // Which caps are uncapped, in plain words, for the banner body.
+  const uncappedList = $derived(
+    [
+      budgetSafety?.dailyUncapped ? 'the daily token budget' : null,
+      budgetSafety?.perProjectUncapped ? 'the per-project token budget' : null
+    ].filter((x): x is string => x !== null)
+  );
+
   const op = $derived(
     (form?.op ?? null) as
       | { name?: string; action?: string; ok?: boolean; error?: string; incidentTitle?: string }
@@ -37,9 +48,13 @@
   $effect(() => {
     const off1 = stream.onDbChange('service', () => void invalidate('app:services'));
     const off2 = stream.onDbChange('notification', () => void invalidate('app:services'));
+    // SD-1: arming/disarming a PM writes a `pm` row — re-run the loader so the budget-safety
+    // banner appears/clears live the moment an autonomous loop is armed while a ceiling is uncapped.
+    const off3 = stream.onDbChange('pm', () => void invalidate('app:services'));
     return () => {
       off1();
       off2();
+      off3();
     };
   });
 
@@ -103,6 +118,34 @@
       </p>
     </div>
   {:else}
+    <!-- ── SD-1 budget-safety banner: an ARMED autonomous loop against an UNCAPPED token ceiling
+         is the runaway-spend hole — make it LOUD, never silent (F-008). Silent when safe. ── -->
+    {#if budgetSafety?.uncappedWhileArmed}
+      <div class="card budget-banner" role="alert">
+        <div class="card-head">
+          <span class="eyebrow budget-eyebrow">autonomy · uncapped spend</span>
+          <h2 class="card-title">
+            {budgetSafety.armedLoops}
+            {budgetSafety.armedLoops === 1 ? 'autonomous loop is' : 'autonomous loops are'} armed with
+            no token ceiling
+          </h2>
+        </div>
+        <p class="card-body budget-body">
+          {budgetSafety.armedLoops === 1
+            ? 'An autonomous loop is'
+            : `${budgetSafety.armedLoops} autonomous loops are`}
+          running unsupervised, but {uncappedList.join(' and ')}
+          {uncappedList.length === 1 ? 'is' : 'are'} set to 0 (uncapped). Unattended spend can grow
+          without a backstop.
+        </p>
+        <p class="card-body budget-fix">
+          Arm a ceiling in <span class="mono">config/orchestration.yaml</span> —
+          {#if budgetSafety.dailyUncapped}<span class="mono">spend.dailyTokenBudget</span>{/if}{#if budgetSafety.dailyUncapped && budgetSafety.perProjectUncapped}{' / '}{/if}{#if budgetSafety.perProjectUncapped}<span class="mono">spend.perProjectTokenBudget</span>{/if}
+          — then restart the server to apply. Or disarm the loop on its project page.
+        </p>
+      </div>
+    {/if}
+
     <!-- Action result banner (success/failure of the last operator action). -->
     {#if op?.error}
       <p class="form-error" role="alert">{op.error}</p>
@@ -283,6 +326,22 @@
   }
   .error-card {
     border-color: var(--color-error);
+  }
+  /* SD-1 budget-safety banner — a loud warn-toned card (never color-only: the eyebrow + heading
+     carry the meaning in words for a11y, the tint reinforces it). */
+  .budget-banner {
+    border-color: var(--color-warn);
+    background: var(--color-warn-bg);
+  }
+  .budget-eyebrow {
+    color: var(--color-warn-on-overlay);
+    font-weight: 700;
+  }
+  .budget-body {
+    color: var(--color-text);
+  }
+  .budget-fix {
+    color: var(--color-text-2);
   }
   .card-head {
     display: flex;

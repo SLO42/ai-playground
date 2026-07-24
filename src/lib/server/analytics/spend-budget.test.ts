@@ -10,9 +10,12 @@ import {
 	tokensSpentSinceForProject,
 	enforceTokenBudget,
 	normalizeTokenBudget,
+	resolveDailyTokenBudget,
 	resolvePerProjectTokenBudget,
+	assessBudgetSafety,
 	isLocalProvider,
 	__resetReservationsForTest,
+	__setBudgetForTest,
 	__setPerProjectBudgetForTest,
 	TokenBudgetExceededError,
 	budgetRefusalEnvelope,
@@ -326,10 +329,12 @@ describe('CG-3 per-project token budget (real-surreal)', () => {
 			expect(resolvePerProjectTokenBudget()).toBe(0);
 		});
 
-		it('null clears the override back to the config-file path (shipped default 0)', () => {
+		it('null clears the override back to the config-file path (SD-1 armed backstop)', () => {
 			__setPerProjectBudgetForTest(null);
-			// config/orchestration.yaml ships perProjectTokenBudget: 0 (uncapped) — the honest default.
-			expect(resolvePerProjectTokenBudget()).toBe(0);
+			// config/orchestration.yaml ships perProjectTokenBudget: 5_000_000 (SD-1 operator backstop,
+			// 2026-07-23). This asserts the config file drives the resolved value (F-055 wired == enforced);
+			// retune it alongside the config if the backstop changes.
+			expect(resolvePerProjectTokenBudget()).toBe(5_000_000);
 			__setPerProjectBudgetForTest(0); // restore the hermetic pin for the rest of the suite
 		});
 	});
@@ -530,5 +535,86 @@ describe('budgetRefusalEnvelope — scope-aware, honest labels (CG2-2)', () => {
 		expect('projectId' in env).toBe(false);
 		expect(env.scope).toBe('project');
 		expect(env.error).toContain("this project's token budget");
+	});
+});
+
+// SD-1 — assessBudgetSafety: the PURE armed-vs-uncapped verdict driving the /services banner. The
+// loud state is "≥1 autonomous loop armed AND ≥1 token ceiling uncapped (0)". Pure (no db), so every
+// shadow path (nil/empty armed, negative/fractional armed, one/both caps uncapped, both armed) tests
+// directly. This is the VISIBILITY half of closing the uncapped-token hole (F-008).
+describe('assessBudgetSafety — the armed-and-uncapped visibility verdict (SD-1)', () => {
+	it('LOUD: a loop armed + the daily ceiling uncapped ⇒ uncappedWhileArmed:true', () => {
+		const s = assessBudgetSafety({ dailyTokenBudget: 0, perProjectTokenBudget: 5_000_000, armedLoops: 2 });
+		expect(s.uncappedWhileArmed).toBe(true);
+		expect(s.dailyUncapped).toBe(true);
+		expect(s.perProjectUncapped).toBe(false);
+		expect(s.armedLoops).toBe(2);
+	});
+
+	it('LOUD: a loop armed + the per-project ceiling uncapped ⇒ uncappedWhileArmed:true', () => {
+		const s = assessBudgetSafety({ dailyTokenBudget: 15_000_000, perProjectTokenBudget: 0, armedLoops: 1 });
+		expect(s.uncappedWhileArmed).toBe(true);
+		expect(s.dailyUncapped).toBe(false);
+		expect(s.perProjectUncapped).toBe(true);
+	});
+
+	it('LOUD: a loop armed + BOTH ceilings uncapped ⇒ uncappedWhileArmed:true (both flags set)', () => {
+		const s = assessBudgetSafety({ dailyTokenBudget: 0, perProjectTokenBudget: 0, armedLoops: 3 });
+		expect(s.uncappedWhileArmed).toBe(true);
+		expect(s.dailyUncapped).toBe(true);
+		expect(s.perProjectUncapped).toBe(true);
+	});
+
+	it('SAFE: NO loop armed + both ceilings uncapped ⇒ SILENT (an uncapped ceiling is harmless with nothing driving spend)', () => {
+		const s = assessBudgetSafety({ dailyTokenBudget: 0, perProjectTokenBudget: 0, armedLoops: 0 });
+		expect(s.uncappedWhileArmed).toBe(false);
+		// The caps are still reported honestly (uncapped) — only the ALARM is silent.
+		expect(s.dailyUncapped).toBe(true);
+		expect(s.perProjectUncapped).toBe(true);
+	});
+
+	it('SAFE: a loop armed but BOTH ceilings armed ⇒ SILENT (no uncapped hole)', () => {
+		const s = assessBudgetSafety({ dailyTokenBudget: 15_000_000, perProjectTokenBudget: 5_000_000, armedLoops: 4 });
+		expect(s.uncappedWhileArmed).toBe(false);
+		expect(s.dailyUncapped).toBe(false);
+		expect(s.perProjectUncapped).toBe(false);
+	});
+
+	it('SHADOW — a negative/fractional/NaN armedLoops floors to 0 (never a fabricated alarm)', () => {
+		for (const bad of [-1, 1.5, Number.NaN, Number.POSITIVE_INFINITY]) {
+			const s = assessBudgetSafety({ dailyTokenBudget: 0, perProjectTokenBudget: 0, armedLoops: bad });
+			expect(s.armedLoops).toBe(0);
+			expect(s.uncappedWhileArmed).toBe(false);
+		}
+	});
+
+	it('SHADOW — a stray negative/NaN cap normalizes to the 0 (uncapped) sentinel identically to enforcement', () => {
+		const s = assessBudgetSafety({ dailyTokenBudget: -5, perProjectTokenBudget: Number.NaN, armedLoops: 1 });
+		expect(s.dailyTokenBudget).toBe(0);
+		expect(s.perProjectTokenBudget).toBe(0);
+		expect(s.uncappedWhileArmed).toBe(true);
+	});
+});
+
+// SD-1 — the WIRED value == the ENFORCED value: resolveDailyTokenBudget / resolvePerProjectTokenBudget
+// read config/orchestration.yaml (relative to the test cwd = the worktree root, the REAL file). This
+// proves the operator-armed backstops (15M / 5M, set by SD-1) are actually loaded — not just present on
+// disk. Clearing the test override (null) forces a fresh file read. If these numbers are ever retuned,
+// update this test alongside the config (the point is that config drives enforcement, F-055).
+describe('resolve*TokenBudget — reads the armed config values (SD-1 wired == enforced)', () => {
+	afterAll(() => {
+		// Restore the hermetic defaults the rest of the suite relies on.
+		__setBudgetForTest(null);
+		__setPerProjectBudgetForTest(0);
+	});
+
+	it('resolveDailyTokenBudget reads the armed global ceiling from config/orchestration.yaml', () => {
+		__setBudgetForTest(null); // clear override → read the real file
+		expect(resolveDailyTokenBudget()).toBe(15_000_000);
+	});
+
+	it('resolvePerProjectTokenBudget reads the armed per-project ceiling from config/orchestration.yaml', () => {
+		__setPerProjectBudgetForTest(null); // clear override → read the real file
+		expect(resolvePerProjectTokenBudget()).toBe(5_000_000);
 	});
 });

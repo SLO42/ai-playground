@@ -231,9 +231,10 @@ describe('loadOrchestration — YAML + enum validation', () => {
 
 	// COST-GOVERNANCE-SPEC CG-2 — spend.dailyTokenBudget (the global rolling-24h token budget).
 	describe('spend.dailyTokenBudget (CG-2 global token budget)', () => {
-		it('parses the shipped config (spend block present; default 0 = uncapped)', () => {
+		it('parses the shipped config (SD-1 armed backstop: 15M global)', () => {
 			const orch = loadOrchestration(join(process.cwd(), 'config', 'orchestration.yaml'));
-			expect(orch.spend?.dailyTokenBudget).toBe(0);
+			// SD-1 (operator decision 2026-07-23): armed as a runaway backstop, no longer 0/uncapped.
+			expect(orch.spend?.dailyTokenBudget).toBe(15_000_000);
 		});
 
 		it('treats an absent spend block as undefined (uncapped — opt-in)', () => {
@@ -284,9 +285,10 @@ describe('loadOrchestration — YAML + enum validation', () => {
 
 	// COST-GOVERNANCE-SPEC CG-3 — spend.perProjectTokenBudget (the optional per-project token ceiling).
 	describe('spend.perProjectTokenBudget (CG-3 per-project token budget)', () => {
-		it('parses the shipped config (default 0 = uncapped)', () => {
+		it('parses the shipped config (SD-1 armed backstop: 5M per-project)', () => {
 			const orch = loadOrchestration(join(process.cwd(), 'config', 'orchestration.yaml'));
-			expect(orch.spend?.perProjectTokenBudget).toBe(0);
+			// SD-1 (operator decision 2026-07-23): armed as a per-project runaway backstop, no longer 0.
+			expect(orch.spend?.perProjectTokenBudget).toBe(5_000_000);
 		});
 
 		it('accepts a positive integer per-project budget', () => {

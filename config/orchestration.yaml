@@ -70,7 +70,11 @@ concurrency:
 # 0 = UNCAPPED (the shipped default — no-regression; honest opt-in, like dailySpawnCap). Set a
 # positive integer to arm the ceiling. Operator-tunable; read live at each chokepoint.
 spend:
-  dailyTokenBudget: 0
+  # OPERATOR DECISION (2026-07-23): armed as a runaway BACKSTOP, not a target. Normal autonomous
+  # work runs well under this; it exists to hard-stop a spin-bug / runaway loop from burning
+  # unbounded spend. Fully adjustable later. 0 would mean UNCAPPED (the old hole) — the /services
+  # budget-safety banner loudly flags any 0-while-a-loop-is-armed state so it can never go silent.
+  dailyTokenBudget: 15000000
 
   # COST-GOVERNANCE-SPEC CG-3 — the OPTIONAL per-project token ceiling. Same uniform semantics as
   # dailyTokenBudget (0 = UNCAPPED sentinel; positive arms; durable-anchor / restart-proof), enforced
@@ -78,7 +82,9 @@ spend:
   # over THAT project's completion rows in the trailing 24h. It stops ONE project eating the whole
   # global budget: `dailyTokenBudget` bounds total spend; this bounds any single project's slice. Both
   # are checked independently, so either can refuse a launch. 0 = the shipped default (no-regression).
-  perProjectTokenBudget: 0
+  # OPERATOR DECISION (2026-07-23): armed as a per-project runaway BACKSTOP (< the global daily
+  # ceiling) so one project cannot eat the whole budget. Not a target — normal work runs under it.
+  perProjectTokenBudget: 5000000
 
 # Intent-adaptive config bundles (D-020). KongCode classifies each task's intent;
 # routing (resolveRoute) looks the intent up here and applies the bundle: thinking

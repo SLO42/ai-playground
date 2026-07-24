@@ -127,6 +127,65 @@ export function normalizeTokenBudget(raw: number | undefined | null): number {
 	return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? Math.floor(raw) : 0;
 }
 
+// --- budget-safety verdict (SD-1 — the armed-and-uncapped VISIBILITY state) --------------------
+//
+// The 0-sentinel means UNCAPPED (honest opt-in). That is SAFE while nothing drives spend on its
+// own, but an ARMED autonomous loop (a pm.autonomous=true — pm-repo.listAutonomousPms) spends
+// real money unattended. An armed-AND-uncapped combination is exactly the runaway hole SD-1 closes:
+// it must be VISIBLE, never silent (F-008 — autonomy-down/uncapped is surfaced, not console-only).
+// This is the PURE verdict (no db, no config read) so it unit-tests directly for every shadow path;
+// the caller (the /services loader) supplies the two resolved caps + the live armed-loop count.
+
+/** The armed-vs-uncapped safety verdict rendered by the /services budget-safety banner. */
+export interface BudgetSafety {
+	/** The armed GLOBAL daily token budget, normalized (0 = uncapped). */
+	dailyTokenBudget: number;
+	/** The armed PER-PROJECT token budget, normalized (0 = uncapped). */
+	perProjectTokenBudget: number;
+	/** Count of autonomous loops currently ARMED (pm.autonomous=true) — real, never fabricated. */
+	armedLoops: number;
+	/** True iff the global daily ceiling is the 0 (uncapped) sentinel. */
+	dailyUncapped: boolean;
+	/** True iff the per-project ceiling is the 0 (uncapped) sentinel. */
+	perProjectUncapped: boolean;
+	/**
+	 * The LOUD state: at least one autonomous loop is armed AND at least one token ceiling is
+	 * uncapped (0). This is the runaway-spend hole SD-1 makes visible — an armed loop can burn
+	 * unbounded tokens against an uncapped ceiling. false when no loop is armed (an uncapped
+	 * ceiling is harmless with nothing driving spend) or when both ceilings are armed.
+	 */
+	uncappedWhileArmed: boolean;
+}
+
+/**
+ * Compute the {@link BudgetSafety} verdict from the two resolved caps + the live armed-loop count.
+ * PURE (no db / no config read) so it is trivially testable. Both caps pass through
+ * {@link normalizeTokenBudget} so a stray negative/NaN/fractional value collapses to the 0
+ * (uncapped) sentinel identically to the enforcement path (no divergence between what is enforced
+ * and what is reported). A non-positive / non-integer `armedLoops` (a shadow/degraded read) is
+ * floored to 0 — honest "no armed loop observed", never a fabricated alarm.
+ */
+export function assessBudgetSafety(input: {
+	dailyTokenBudget: number;
+	perProjectTokenBudget: number;
+	armedLoops: number;
+}): BudgetSafety {
+	const dailyTokenBudget = normalizeTokenBudget(input.dailyTokenBudget);
+	const perProjectTokenBudget = normalizeTokenBudget(input.perProjectTokenBudget);
+	const armedLoops =
+		Number.isInteger(input.armedLoops) && input.armedLoops > 0 ? input.armedLoops : 0;
+	const dailyUncapped = dailyTokenBudget <= 0;
+	const perProjectUncapped = perProjectTokenBudget <= 0;
+	return {
+		dailyTokenBudget,
+		perProjectTokenBudget,
+		armedLoops,
+		dailyUncapped,
+		perProjectUncapped,
+		uncappedWhileArmed: armedLoops > 0 && (dailyUncapped || perProjectUncapped)
+	};
+}
+
 // --- the config read (cached per boot, mirroring the pricing singleton in events.ts) ---------
 //
 // Read once per boot (F-029 convention: a config change needs a restart, surfaced honestly by

@@ -7,8 +7,11 @@
 //
 // THIS MODULE closes it in three pure-then-persistent steps:
 //   1. computeAutonomyStatus(configDir) — a PURE classifier over the SAME config files the boot
-//      engines read (orchestration.yaml drives the mode → all engines; workforce.yaml drives PM
-//      failure-triggers + drift). It never throws: a parse fault becomes an honest 'config-error'
+//      engines read: orchestration.yaml drives the mode → all engines; agent-pool.yaml is the
+//      routing ladder the orchestrator HARD-refuses to start without (unreadable OR empty
+//      tiers/slots ⇒ started:false, boot.ts startOrchestrator — a config-unreadable fault that
+//      forces autonomy OFF exactly like an orchestration fault); workforce.yaml drives PM
+//      failure-triggers + drift. It never throws: a parse fault becomes an honest 'config-error'
 //      assessment carrying the failing file + the raw message, mirroring how the boot code itself
 //      catches ConfigError → manual (the 11.5 most-conservative-gate pattern).
 //   2. persistAutonomyStatus(db, …) — UPSERTs the SINGLETON `autonomy_status:current` row (m0082)
@@ -23,7 +26,7 @@
 // why a later healthy boot cleanly clears a prior boot's detail/config_file (UPSERT CONTENT replaces).
 
 import type { Db } from '../db/client';
-import { loadOrchestration, loadWorkforce, ConfigError, type OrchMode } from '../config/index';
+import { loadOrchestration, loadWorkforce, loadAgentPool, ConfigError, type OrchMode } from '../config/index';
 
 /** The three honest autonomy states the operator can SEE. */
 export type AutonomyState = 'armed' | 'manual' | 'config-error';
@@ -35,7 +38,8 @@ export interface AutonomyAssessment {
 	state: AutonomyState;
 	/** The RESOLVED orchestration mode, or null when the config could not be read. */
 	mode: OrchMode | null;
-	/** True iff orchestration.yaml parsed cleanly. */
+	/** True iff the boot-critical config parsed cleanly (orchestration.yaml AND agent-pool.yaml —
+	 *  either failing forces autonomy OFF, so either fault sets this false). */
 	configOk: boolean;
 	/** True iff workforce.yaml parsed cleanly (a fault degrades PM triggers/drift, not the mode). */
 	workforceOk: boolean;
@@ -68,16 +72,20 @@ function baseName(file: string): string {
  * becomes an honest 'config-error' assessment (the same fail-to-manual posture the boot engines
  * take, but SURFACED instead of swallowed). `configDir` empty/whitespace falls back to 'config'.
  *
- * Shadow paths (all four exercised by the test suite):
+ * Shadow paths (all exercised by the test suite):
  *   • happy      — orchestration.yaml valid, mode manual → 'manual'; mode event|periodic → 'armed'.
  *   • upstream error — orchestration.yaml unreadable/malformed → 'config-error' (autonomy OFF).
- *   • partial degrade — orchestration.yaml valid but workforce.yaml unreadable → armed/manual per
- *                       mode, with workforceOk=false + an honest `note` (PM triggers unarmed).
+ *   • routing-ladder error — orchestration.yaml valid but agent-pool.yaml unreadable OR empty
+ *                       (no tiers/slots) → 'config-error' (autonomy OFF): the orchestrator won't
+ *                       start, so 'armed' would be a false-green (mirrors boot.ts startOrchestrator).
+ *   • partial degrade — orchestration.yaml + agent-pool.yaml valid but workforce.yaml unreadable →
+ *                       armed/manual per mode, workforceOk=false + an honest `note` (PM triggers unarmed).
  *   • empty dir  — a blank configDir falls back to the default 'config' directory.
  */
 export function computeAutonomyStatus(configDir: string): AutonomyAssessment {
 	const dir = (configDir ?? '').trim() || 'config';
 	const orchFile = `${dir}/orchestration.yaml`;
+	const poolFile = `${dir}/agent-pool.yaml`;
 	const wfFile = `${dir}/workforce.yaml`;
 
 	// orchestration.yaml is the MODE driver — a fault here forces every engine OFF (config-error).
@@ -94,6 +102,41 @@ export function computeAutonomyStatus(configDir: string): AutonomyAssessment {
 			configFile: file,
 			reason: `autonomy OFF: config unreadable (${baseName(file)})`,
 			detail: (err as Error).message,
+			note: null
+		};
+	}
+
+	// agent-pool.yaml is the ROUTING LADDER — the orchestrator HARD-refuses to start when it is
+	// unreadable OR carries no tiers/slots (boot.ts startOrchestrator: `!pool || slots.length===0 ||
+	// tiers empty` ⇒ started:false, because a router with no tier can't spawn). That is a
+	// config-unreadable fault that forces autonomy OFF exactly like an orchestration fault, so a
+	// valid orchestration.yaml alone is NOT enough to honestly report 'armed'. Mirror that gate here
+	// or /services paints a false-green 'Armed' while nothing drives (the exact silent-disarm hole).
+	let pool: { tiers: Record<string, unknown>; slots: unknown[] };
+	try {
+		pool = loadAgentPool(poolFile);
+	} catch (err) {
+		const file = err instanceof ConfigError && err.file ? err.file : poolFile;
+		return {
+			state: 'config-error',
+			mode: null,
+			configOk: false,
+			workforceOk: false, // not evaluated — the routing ladder already failed
+			configFile: file,
+			reason: `autonomy OFF: config unreadable (${baseName(file)})`,
+			detail: (err as Error).message,
+			note: null
+		};
+	}
+	if (pool.slots.length === 0 || Object.keys(pool.tiers).length === 0) {
+		return {
+			state: 'config-error',
+			mode: null,
+			configOk: false,
+			workforceOk: false,
+			configFile: poolFile,
+			reason: `autonomy OFF: config unreadable (${baseName(poolFile)})`,
+			detail: 'agent-pool.yaml defines no routing tiers/slots — the orchestrator cannot route any spawn and will not start.',
 			note: null
 		};
 	}

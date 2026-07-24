@@ -22,18 +22,34 @@ import {
 
 // A minimal-but-VALID workforce.yaml (loadWorkforce requires only pm.model_id, a known model id).
 const VALID_WORKFORCE = 'pm:\n  model_id: claude-opus-4-8\n';
+// A minimal-but-VALID agent-pool.yaml: one non-claude tier (ollama sidesteps the CA-H3 model-id
+// allowlist) + one slot referencing it. Passes loadAgentPool AND the orchestrator's non-empty
+// tiers/slots gate — so armed/manual paths reach their real assessment (SD-2 fix regression guard).
+const VALID_POOL =
+	'tiers:\n  local:\n    provider: ollama\n    model: gpt-oss:20b\nslots:\n  - id: worker-1\n    tier: local\n    role: builder\n';
 
-/** Write orchestration.yaml (+ optionally workforce.yaml) into a fresh temp dir; return the dir. */
-function fixtureDir(orch: string, workforce: string | null = VALID_WORKFORCE): string {
+/** Write orchestration.yaml (+ optionally workforce.yaml + agent-pool.yaml) into a fresh temp dir;
+ *  return the dir. Both workforce + agent-pool default to VALID so happy paths reach their state;
+ *  pass null to OMIT the file (missing) or a raw string to inject a malformed/empty one. */
+function fixtureDir(
+	orch: string,
+	workforce: string | null = VALID_WORKFORCE,
+	agentPool: string | null = VALID_POOL
+): string {
 	const dir = mkdtempSync(join(tmpdir(), 'atelier-autonomy-'));
 	writeFileSync(join(dir, 'orchestration.yaml'), orch);
 	if (workforce !== null) writeFileSync(join(dir, 'workforce.yaml'), workforce);
+	if (agentPool !== null) writeFileSync(join(dir, 'agent-pool.yaml'), agentPool);
 	return dir;
 }
 
 const cleanup: string[] = [];
-function tmp(orch: string, workforce: string | null = VALID_WORKFORCE): string {
-	const dir = fixtureDir(orch, workforce);
+function tmp(
+	orch: string,
+	workforce: string | null = VALID_WORKFORCE,
+	agentPool: string | null = VALID_POOL
+): string {
+	const dir = fixtureDir(orch, workforce, agentPool);
 	cleanup.push(dir);
 	return dir;
 }
@@ -97,6 +113,48 @@ describe('computeAutonomyStatus — pure classifier (four shadow paths)', () => 
 		expect(a.state).toBe('config-error');
 		expect(a.configOk).toBe(false);
 		expect(a.reason).toMatch(/config unreadable/);
+	});
+
+	// SD-2 FIX (in-scope config-unreadable gap): the orchestrator HARD-refuses to start when
+	// agent-pool.yaml is unreadable OR empty (boot.ts startOrchestrator — no tiers/slots ⇒ no route
+	// ⇒ every spawn fails). A valid orchestration.yaml alone must therefore NOT report 'armed', or
+	// /services paints a false-green banner while nothing drives. These guard that hole.
+	it('ROUTING-LADDER ERROR: valid orch + MISSING agent-pool.yaml → config-error (autonomy OFF, NOT armed)', () => {
+		const a = computeAutonomyStatus(tmp(VALID_ORCH('event'), VALID_WORKFORCE, null));
+		expect(a.state).toBe('config-error');
+		expect(a.mode).toBeNull();
+		expect(a.configOk).toBe(false);
+		expect(a.configFile).toContain('agent-pool.yaml');
+		expect(a.detail).toBeTruthy();
+		expect(a.reason).toBe('autonomy OFF: config unreadable (agent-pool.yaml)');
+	});
+
+	it('ROUTING-LADDER ERROR: valid orch + EMPTY agent-pool (no tiers/slots) → config-error (mirrors boot gate)', () => {
+		// Parses cleanly (tiers is a mapping, slots is a list) but is EMPTY — the exact case
+		// loadAgentPool accepts yet the orchestrator refuses to start on (slots.length===0 || no tiers).
+		const a = computeAutonomyStatus(tmp(VALID_ORCH('event'), VALID_WORKFORCE, 'tiers: {}\nslots: []\n'));
+		expect(a.state).toBe('config-error');
+		expect(a.mode).toBeNull();
+		expect(a.configOk).toBe(false);
+		expect(a.configFile).toContain('agent-pool.yaml');
+		expect(a.reason).toMatch(/config unreadable/);
+		expect(a.detail).toMatch(/tiers|slots/i);
+	});
+
+	it('ROUTING-LADDER ERROR: valid orch + MALFORMED agent-pool (slots not a list) → config-error', () => {
+		const a = computeAutonomyStatus(
+			tmp(VALID_ORCH('periodic'), VALID_WORKFORCE, 'tiers:\n  local:\n    provider: ollama\n    model: gpt-oss:20b\nslots: not-a-list\n')
+		);
+		expect(a.state).toBe('config-error');
+		expect(a.configFile).toContain('agent-pool.yaml');
+		expect(a.reason).toMatch(/config unreadable/);
+	});
+
+	it('ORDER: orchestration.yaml error is reported BEFORE an agent-pool error (mode driver first)', () => {
+		// Both broken: the mode driver (orchestration.yaml) is the primary fault surfaced.
+		const a = computeAutonomyStatus(tmp('mode: bogus\nconcurrency:\n  maxAgents: 1\n  perProject: 1\n', VALID_WORKFORCE, null));
+		expect(a.state).toBe('config-error');
+		expect(a.configFile).toContain('orchestration.yaml');
 	});
 
 	it('PARTIAL DEGRADE: valid orch + MALFORMED workforce → armed per mode, workforceOk=false + note', () => {

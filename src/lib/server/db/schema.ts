@@ -2884,6 +2884,45 @@ const m0081_agent_event_supervision: Migration = {
 	`
 };
 
+// m0082 — SD-2 (PRE-WAKE SAFETY) — the persisted, honest AUTONOMY boot-status row. Today a
+// malformed/unreadable orchestration.yaml (or workforce.yaml) silently degrades every engine to
+// mode='manual' with only a console.warn (hooks.server.ts) — the operator cannot SEE that autonomy
+// is down (F-008 violation: a silent disarm). This SINGLETON table (`autonomy_status:current`) is
+// written ONCE per boot with the honest computed state so /services can render a persistent, plain-
+// language surface — "autonomy OFF: config unreadable (orchestration.yaml)" — instead of a console
+// line no one reads.
+//   • state       — armed (mode event|periodic) | manual (mode manual, as configured) | config-error
+//                   (a config file was unreadable → engines forced OFF; the hole made VISIBLE).
+//   • mode        — the RESOLVED OrchMode (event|periodic|manual); NONE when config-error (no mode read).
+//   • config_ok   — orchestration.yaml parsed cleanly.
+//   • workforce_ok— workforce.yaml parsed cleanly (a fault here degrades PM triggers/drift, not the mode).
+//   • config_file — the file that FAILED to parse (config-error only), else NONE.
+//   • reason      — the plain-language headline the UI shows.
+//   • detail      — the raw parse-error message (config-error only), else NONE.
+//   • note        — a secondary honest degrade note (e.g. workforce.yaml unreadable), else NONE.
+//   • booted_at   — the boot instant this status was written.
+//
+// ADDITIVE + idempotent (F-015: OVERWRITE-only; the generic schemaMigrations apply-twice + half-
+// applied sweep in migrate.test.ts covers both paths). The row is UPSERTed at the fixed record id so
+// re-boot fully replaces it (no accumulation) — one honest current state, never a stale prior boot's.
+const m0082_autonomy_status: Migration = {
+	id: '0082_autonomy_status',
+	up: `
+		DEFINE TABLE OVERWRITE autonomy_status SCHEMAFULL;
+		DEFINE FIELD OVERWRITE state        ON autonomy_status TYPE string
+			ASSERT $value IN ["armed","manual","config-error"];
+		DEFINE FIELD OVERWRITE mode         ON autonomy_status TYPE option<string>
+			ASSERT $value = NONE OR $value IN ["event","periodic","manual"];
+		DEFINE FIELD OVERWRITE config_ok    ON autonomy_status TYPE bool DEFAULT true;
+		DEFINE FIELD OVERWRITE workforce_ok ON autonomy_status TYPE bool DEFAULT true;
+		DEFINE FIELD OVERWRITE config_file  ON autonomy_status TYPE option<string>;
+		DEFINE FIELD OVERWRITE reason       ON autonomy_status TYPE string;
+		DEFINE FIELD OVERWRITE detail       ON autonomy_status TYPE option<string>;
+		DEFINE FIELD OVERWRITE note         ON autonomy_status TYPE option<string>;
+		DEFINE FIELD OVERWRITE booted_at    ON autonomy_status TYPE datetime DEFAULT time::now();
+	`
+};
+
 // ── §4.12 note (BL-R3 — F-048 structural fix + F-026) — active-window dedup is the PRIMARY id ──
 //
 // NO new migration ships for BL-R3. The task_run active-window dedup ("one pending-or-processing
@@ -2992,5 +3031,6 @@ export const schemaMigrations: Migration[] = [
 	m0078_soul_graduation,
 	m0079_peer_message_reply_to,
 	m0080_maintenance_loops,
-	m0081_agent_event_supervision
+	m0081_agent_event_supervision,
+	m0082_autonomy_status
 ];

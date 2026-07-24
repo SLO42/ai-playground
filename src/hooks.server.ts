@@ -64,6 +64,8 @@ import {
 } from '$lib/server/loops/maintenance';
 import { defaultMaintenanceRegistry } from '$lib/server/loops/maintenance-actions';
 import { ServicesTicker, DEFAULT_SERVICES_TICK_MS } from '$lib/server/services';
+import { recordIncident, recordNotification } from '$lib/server/services';
+import { computeAutonomyStatus, persistAutonomyStatus } from '$lib/server/autonomy';
 
 // Runtime env source (TASK 6.8). SvelteKit's `$env/dynamic/private` loads `.env` in
 // BOTH dev SSR (which Vite does NOT inject into `process.env`) and the prod Node
@@ -313,8 +315,45 @@ async function bootstrap(): Promise<DbInitResult> {
 			console.warn(`[startup] scene projector boot failed: ${(err as Error).message}`);
 		}
 
-		// TASK 8.1 — start the live orchestrator AFTER the watchTable live queries are open, so
-		// the events bus already carries `task` row changes when the orchestrator subscribes. It
+		// SD-2 (PRE-WAKE SAFETY) — persist the HONEST autonomy boot-status BEFORE the engines start,
+			// so /services can render a persistent, plain-language surface instead of the console.warn no
+			// one reads. computeAutonomyStatus reads the SAME config files the engines below read
+			// (orchestration.yaml drives the mode → all engines; workforce.yaml drives PM triggers) and
+			// NEVER throws — a parse fault becomes an honest 'config-error' (the silent-disarm hole made
+			// VISIBLE, F-008). On a config-error we ALSO write a first-class incident + notification (the
+			// analytics/audit trail + the live right-tray surface, which re-invalidates /services): the
+			// degrade path is logged with HOW+WHY (which file, the raw message), not swallowed. A persist
+			// fault must never crash boot (D-019/F-014) — worst case the surface stays 'unknown' honestly.
+			try {
+				const status = computeAutonomyStatus(process.env.CONFIG_DIR?.trim() || 'config');
+				await persistAutonomyStatus(db, status);
+				if (status.state === 'config-error') {
+					console.warn(
+						`[startup] AUTONOMY OFF — config unreadable (${status.configFile ?? 'orchestration.yaml'}): ${status.detail ?? 'parse error'}. Engines forced to manual; surfaced on /services (SD-2).`
+					);
+					// First-class analytics + operator-visible surface for the DEGRADE (not just a persisted
+					// row): a durable incident (how+why) + an unread notification (the live right-tray).
+					// Best-effort — a logging fault must not undo the (already-persisted) honest status.
+					await recordIncident(db, {
+						title: 'Autonomy OFF — orchestration config unreadable',
+						detail: `${status.configFile ?? 'orchestration.yaml'}: ${status.detail ?? 'parse error'}. All engines are forced to manual until the config is fixed and the server restarts.`,
+						severity: 'error'
+					}).catch((e) => console.warn(`[startup] autonomy-status incident write failed: ${(e as Error).message}`));
+					await recordNotification(
+						db,
+						`Autonomy is OFF: ${status.configFile ?? 'orchestration.yaml'} could not be read — engines are in manual until it is fixed and the server restarts.`
+					).catch((e) => console.warn(`[startup] autonomy-status notification write failed: ${(e as Error).message}`));
+				} else {
+					console.log(
+						`[startup] autonomy boot-status persisted (state=${status.state}, mode=${status.mode ?? '—'}${status.workforceOk ? '' : ', workforce degraded'}) — surfaced on /services (SD-2).`
+					);
+				}
+			} catch (err) {
+				console.warn(`[startup] autonomy boot-status persist failed (surface stays 'unknown'): ${(err as Error).message}`);
+			}
+
+			// TASK 8.1 — start the live orchestrator AFTER the watchTable live queries are open, so
+			// the events bus already carries `task` row changes when the orchestrator subscribes. It
 		// reacts to a task entering a spawn-ready status (task→ready) by enqueuing one work_item
 		// and draining → spawning a real Claude Code session, with NO manual launch. It is
 		// event-driven + idle-cheap (D-004/§2.11): subscriptions only, no poller, ~zero idle CPU,

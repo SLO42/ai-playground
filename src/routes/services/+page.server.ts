@@ -28,6 +28,7 @@ import {
 	type BudgetSafety
 } from '$lib/server/analytics/spend-budget';
 import { listAutonomousPms } from '$lib/server/projects/pm-repo';
+import { readAutonomyStatus, type AutonomyStatusRow } from '$lib/server/autonomy';
 import type { Actions, PageServerLoad } from './$types';
 
 export interface ServicesPageData {
@@ -46,6 +47,13 @@ export interface ServicesPageData {
 	 * is armed without reading it, so the banner stays honestly silent, F-008).
 	 */
 	budgetSafety: BudgetSafety;
+	/**
+	 * SD-2 — the HONEST autonomy boot-status persisted once at boot (armed | manual | config-error).
+	 * null when the DB is down (we cannot read the boot state → the surface renders an honest
+	 * "unknown", never a fabricated "armed", F-008). A 'config-error' state is the silent-disarm
+	 * hole made VISIBLE: a config file was unreadable so every engine is forced OFF until restart.
+	 */
+	autonomyStatus: AutonomyStatusRow | null;
 }
 
 export const load: PageServerLoad = async ({ depends }) => {
@@ -67,7 +75,8 @@ export const load: PageServerLoad = async ({ depends }) => {
 			services: [] as ServiceView[],
 			incidents: [] as IncidentRow[],
 			notifications: [] as NotificationRow[],
-			budgetSafety: assessBudgetSafety({ dailyTokenBudget, perProjectTokenBudget, armedLoops: 0 })
+			budgetSafety: assessBudgetSafety({ dailyTokenBudget, perProjectTokenBudget, armedLoops: 0 }),
+			autonomyStatus: null
 		} satisfies ServicesPageData;
 	}
 
@@ -75,7 +84,9 @@ export const load: PageServerLoad = async ({ depends }) => {
 		// The armed-loop count is a SEPARATE, best-effort read (F-014): a fault reading the pm rows must
 		// not fail the whole services page. On a fault we report 0 armed loops (honest — no armed loop
 		// observed) rather than fabricate an alarm; the caps still surface from config above.
-		const [{ services }, incidents, notifications, armedLoops] = await Promise.all([
+		// SD-2: the persisted autonomy boot-status is likewise best-effort — a read fault must not fail
+		// the page (it degrades to null → honest "unknown", never a fabricated "armed").
+		const [{ services }, incidents, notifications, armedLoops, autonomyStatus] = await Promise.all([
 			readServices(db),
 			listIncidents(db, 50),
 			listUnreadNotifications(db, 50),
@@ -84,14 +95,19 @@ export const load: PageServerLoad = async ({ depends }) => {
 				.catch((err) => {
 					console.warn(`[services] armed-loop count read failed (best-effort): ${(err as Error).message}`);
 					return 0;
-				})
+				}),
+			readAutonomyStatus(db).catch((err) => {
+				console.warn(`[services] autonomy status read failed (best-effort): ${(err as Error).message}`);
+				return null;
+			})
 		]);
 		return {
 			connected: true,
 			services,
 			incidents,
 			notifications,
-			budgetSafety: assessBudgetSafety({ dailyTokenBudget, perProjectTokenBudget, armedLoops })
+			budgetSafety: assessBudgetSafety({ dailyTokenBudget, perProjectTokenBudget, armedLoops }),
+			autonomyStatus
 		} satisfies ServicesPageData;
 	} catch (err) {
 		// A dead cached handle / live-query failure → honest disconnected (D-019).
@@ -101,7 +117,8 @@ export const load: PageServerLoad = async ({ depends }) => {
 			services: [] as ServiceView[],
 			incidents: [] as IncidentRow[],
 			notifications: [] as NotificationRow[],
-			budgetSafety: assessBudgetSafety({ dailyTokenBudget, perProjectTokenBudget, armedLoops: 0 })
+			budgetSafety: assessBudgetSafety({ dailyTokenBudget, perProjectTokenBudget, armedLoops: 0 }),
+			autonomyStatus: null
 		} satisfies ServicesPageData;
 	}
 };

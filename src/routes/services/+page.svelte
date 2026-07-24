@@ -33,6 +33,12 @@
     ].filter((x): x is string => x !== null)
   );
 
+  // SD-2 — the persisted autonomy boot-status (armed | manual | config-error). A 'config-error'
+  // is the silent-disarm hole made VISIBLE: a config file was unreadable so every engine is forced
+  // OFF until restart — rendered as a LOUD, honest banner. 'manual'/'armed' render a calm honest
+  // line. null (DB down / never persisted) → an honest "unknown", never a fabricated "armed" (F-008).
+  const autonomy = $derived(data.autonomyStatus);
+
   const op = $derived(
     (form?.op ?? null) as
       | { name?: string; action?: string; ok?: boolean; error?: string; incidentTitle?: string }
@@ -118,6 +124,53 @@
       </p>
     </div>
   {:else}
+    <!-- ── SD-2 autonomy boot-status: is autonomy actually ON? A malformed config silently disarms
+         every engine (mode=manual) with only a console line — surface it here, honest + persistent.
+         'config-error' = the hole, rendered LOUD (role=alert). 'manual'/'armed' render a calm line.
+         null = the DB is down / no boot has persisted it → honest "unknown", never a faked "armed". ── -->
+    {#if autonomy && autonomy.state === 'config-error'}
+      <div class="card autonomy-off" role="alert">
+        <div class="card-head">
+          <span class="eyebrow autonomy-off-eyebrow">autonomy · OFF</span>
+          <h2 class="card-title">{autonomy.reason}</h2>
+        </div>
+        <p class="card-body autonomy-body">
+          A configuration file could not be read at boot, so every autonomy engine (orchestrator, PM
+          triggers, autonomous loop, maintenance) is forced to <strong>manual</strong> — no automatic
+          work will run until this is fixed.
+        </p>
+        {#if autonomy.detail}
+          <p class="card-body autonomy-detail mono">{autonomy.detail}</p>
+        {/if}
+        <p class="card-body autonomy-fix">
+          Fix
+          <span class="mono">{autonomy.configFile ?? 'config/orchestration.yaml'}</span>
+          and restart the server to re-arm autonomy. This state is read once per boot (F-029).
+        </p>
+      </div>
+    {:else}
+      <div class="card autonomy-status" data-state={autonomy?.state ?? 'unknown'}>
+        <div class="autonomy-line">
+          <span class="dot" data-autonomy={autonomy?.state ?? 'unknown'} aria-hidden="true"></span>
+          <span class="autonomy-label">Autonomy</span>
+          <span class="autonomy-state" data-state={autonomy?.state ?? 'unknown'}>
+            {#if autonomy?.state === 'armed'}Armed{:else if autonomy?.state === 'manual'}Manual{:else}Unknown{/if}
+          </span>
+          {#if autonomy?.mode}
+            <span class="autonomy-mode mono" title="orchestration mode">{autonomy.mode} mode</span>
+          {/if}
+        </div>
+        <p class="card-body autonomy-reason">
+          {#if autonomy}{autonomy.reason}{:else}Autonomy status has not been reported yet — it is
+            written once per boot. If the datastore was down at boot, restart the server once it is
+            up.{/if}
+        </p>
+        {#if autonomy?.note}
+          <p class="card-body autonomy-note" role="status">{autonomy.note}</p>
+        {/if}
+      </div>
+    {/if}
+
     <!-- ── SD-1 budget-safety banner: an ARMED autonomous loop against an UNCAPPED token ceiling
          is the runaway-spend hole — make it LOUD, never silent (F-008). Silent when safe. ── -->
     {#if budgetSafety?.uncappedWhileArmed}
@@ -343,6 +396,77 @@
   .budget-fix {
     color: var(--color-text-2);
   }
+
+  /* ── SD-2 autonomy status ─────────────────────────────────────────────────── */
+  /* config-error: a LOUD error-toned card. Never color-only — the eyebrow + heading + fix copy
+     carry the meaning in words for a11y; the tint reinforces it. */
+  .autonomy-off {
+    border-color: var(--color-error);
+    background: var(--color-error-bg);
+  }
+  .autonomy-off-eyebrow {
+    color: var(--color-error);
+    font-weight: 700;
+  }
+  .autonomy-body {
+    color: var(--color-text);
+  }
+  .autonomy-detail {
+    color: var(--color-text-muted);
+    word-break: break-word;
+  }
+  .autonomy-fix {
+    color: var(--color-text-2);
+  }
+  /* armed/manual/unknown: a calm one-line honest status (not an alarm). */
+  .autonomy-status {
+    gap: var(--space-2);
+  }
+  .autonomy-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+  .autonomy-label {
+    font: var(--type-mono);
+    font-weight: 600;
+    color: var(--color-text);
+  }
+  .autonomy-state {
+    font: var(--type-label);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.1rem 0.5rem;
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    background: var(--color-surface-overlay);
+  }
+  .autonomy-state[data-state='armed'] {
+    color: var(--color-running);
+    background: var(--color-running-bg);
+  }
+  .autonomy-mode {
+    font: var(--type-mono-sm);
+    color: var(--color-text-muted);
+  }
+  .autonomy-reason {
+    color: var(--color-text-2);
+  }
+  .autonomy-note {
+    color: var(--color-warn);
+  }
+  .dot[data-autonomy='armed'] {
+    background: var(--color-running);
+  }
+  .dot[data-autonomy='manual'] {
+    background: var(--color-neutral);
+  }
+  .dot[data-autonomy='unknown'] {
+    background: var(--color-text-faint);
+  }
+
   .card-head {
     display: flex;
     flex-direction: column;

@@ -20,10 +20,23 @@ pm:
     blast_radius_max_files: null
     effort_ceiling_minutes: null
   # PM-SPEC §3 event ① (TASK 16.2): session-failed/task-blocked distress must EXCEED
-  # this count (since the PM's last review) to auto-fire a review. Ships UNARMED
-  # (null, F-008): no invented bound — set it from real project history to arm.
+  # this count (since the PM's last review) to auto-fire ONE review — so a distressed
+  # project doesn't silently rot (SD-3, 2026-07-23).
   triggers:
-    failure_threshold: null
+    # ARMED (SD-3) at a conservative, GROUNDED bound: distress must EXCEED 2 — i.e. the
+    # 3rd consecutive failed-session/blocked-task since the PM's last review fires exactly
+    # one review. A single transient failure (or two) never trips it; three strikes is a
+    # real distress signal, not a statistic. Operator-tunable; null disarms it entirely.
+    failure_threshold: 2
+    # Anti-spam cooldown (minutes) ON TOP of the self-limiting last-review baseline reset:
+    # once a distress review fires, a FRESH burst that re-crosses the threshold is SUPPRESSED
+    # (and recorded as a first-class analytics event — visible, not silent) until this many
+    # minutes pass, so a project that keeps failing gets one review + a visible throttle,
+    # never a review storm. 30m lets the review's proposals/unblocking land before re-
+    # escalating; the periodic PM cadence still monitors on schedule. null/0 = no time
+    # cooldown (baseline-reset only). The review pass is deterministic ($0), so this bounds
+    # FREQUENCY; any session it later spawns is gated at the launchSession token budget (D-021).
+    distress_cooldown_minutes: 30
 
 panel:
   scope:

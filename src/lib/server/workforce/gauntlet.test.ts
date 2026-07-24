@@ -93,7 +93,7 @@ afterAll(async () => {
 
 function testConfig(over: Partial<WorkforceConfig['budget']> = {}, gauntletOver: Partial<WorkforceConfig['gauntlet']> = {}): WorkforceConfig {
 	return {
-		pm: { provider: 'claude', model_id: 'claude-opus-4-8', triggers: { failure_threshold: null } },
+		pm: { provider: 'claude', model_id: 'claude-opus-4-8', triggers: { failure_threshold: null, distress_cooldown_minutes: null } },
 		panel: { scope: { max_files: null, max_new_services: null } },
 		gauntlet: {
 			pass_recall: 1.0,

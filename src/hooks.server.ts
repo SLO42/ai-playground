@@ -425,10 +425,14 @@ async function bootstrap(): Promise<DbInitResult> {
 				mode = 'manual'; // most conservative gate on a bad config (11.5 pattern)
 			}
 			let failureThreshold: number | null = null;
+			let distressCooldownMs: number | null = null;
 			let driftConfig: import('$lib/server/config/index').WorkforceConfig | null = null;
 			try {
 				const wf = loadWorkforce(`${dir}/workforce.yaml`);
 				failureThreshold = wf.pm.triggers.failure_threshold;
+				// SD-3 — the anti-spam cooldown (minutes → ms). null stays null (no time cooldown).
+				const cd = wf.pm.triggers.distress_cooldown_minutes;
+				distressCooldownMs = cd !== null ? cd * 60_000 : null;
 				// WORKFORCE-SPEC §5: pass the full config so the periodic tick can run the
 				// bounded drift auto-raise pass (operator decision 4). null on a bad config
 				// → drift never auto-raises (the count-and-surface posture).
@@ -438,12 +442,12 @@ async function bootstrap(): Promise<DbInitResult> {
 					`[startup] workforce.yaml unreadable — pm failure trigger + §5 drift stay UNARMED: ${(err as Error).message}`
 				);
 			}
-			const engine = new PmTriggerEngine({ db, bus, mode, failureThreshold, driftConfig });
+			const engine = new PmTriggerEngine({ db, bus, mode, failureThreshold, distressCooldownMs, driftConfig });
 			engine.start();
 			pmTriggerEngines.push(engine);
 			setActivePmTriggerEngine(engine);
 			console.log(
-				`[startup] pm trigger engine started (mode=${mode}, failure_threshold=${failureThreshold ?? 'unarmed'}, drift=${driftConfig && mode !== 'manual' ? 'armed' : 'unarmed'}) — PM-SPEC §3 + WORKFORCE-SPEC §5 (D-004).`
+				`[startup] pm trigger engine started (mode=${mode}, failure_threshold=${failureThreshold ?? 'unarmed'}, distress_cooldown=${distressCooldownMs !== null ? `${Math.round(distressCooldownMs / 60_000)}m` : 'none'}, drift=${driftConfig && mode !== 'manual' ? 'armed' : 'unarmed'}) — PM-SPEC §3 + WORKFORCE-SPEC §5 (D-004).`
 			);
 		} catch (err) {
 			console.warn(`[startup] pm trigger engine boot failed: ${(err as Error).message}`);

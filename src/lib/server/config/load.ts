@@ -424,9 +424,17 @@ export interface WorkforceConfig {
 			/**
 			 * Distress threshold (failed sessions + freshly-blocked tasks since the last
 			 * review must EXCEED this to auto-fire). null = UNARMED (F-008): the trigger
-			 * never auto-fires until the operator sets a bound from real history.
+			 * never auto-fires until the operator sets a bound. Ships ARMED at 2 (SD-3 —
+			 * the 3rd consecutive distress signal fires exactly one review).
 			 */
 			failure_threshold: number | null;
+			/**
+			 * SD-3 anti-spam cooldown (minutes): once a distress review fires, a fresh
+			 * burst re-crossing the threshold is SUPPRESSED until this many minutes pass
+			 * (recorded as a first-class analytics event, never silent). null/0 = no time
+			 * cooldown (the last-review baseline reset alone bounds re-fires). Ships 30.
+			 */
+			distress_cooldown_minutes: number | null;
 		};
 		[k: string]: unknown;
 	};
@@ -535,6 +543,7 @@ export function loadWorkforce(file: string, opts: LoadOpts = {}): WorkforceConfi
 	// file simply ships unarmed); when present it must be a mapping, and the threshold
 	// must be null (unarmed) or a non-negative integer — fail closed on anything else.
 	let failureThreshold: number | null = null;
+	let distressCooldownMinutes: number | null = null;
 	if (p.triggers !== undefined) {
 		if (p.triggers === null || typeof p.triggers !== 'object' || Array.isArray(p.triggers)) {
 			throw new ConfigError('workforce: pm.triggers must be a mapping when set', file);
@@ -548,6 +557,18 @@ export function loadWorkforce(file: string, opts: LoadOpts = {}): WorkforceConfi
 				);
 			}
 			failureThreshold = t;
+		}
+		// SD-3 — the anti-spam cooldown (minutes). Optional (absent = unarmed cooldown);
+		// when present it must be null or a non-negative integer — fail closed on anything else.
+		const cd = (p.triggers as Record<string, unknown>).distress_cooldown_minutes;
+		if (cd !== undefined && cd !== null) {
+			if (typeof cd !== 'number' || !Number.isInteger(cd) || cd < 0) {
+				throw new ConfigError(
+					'workforce: pm.triggers.distress_cooldown_minutes must be null (unarmed) or a non-negative integer (minutes)',
+					file
+				);
+			}
+			distressCooldownMinutes = cd;
 		}
 	}
 
@@ -791,7 +812,10 @@ export function loadWorkforce(file: string, opts: LoadOpts = {}): WorkforceConfi
 			// `claude` is the registered Claude Code CLI backend — the provider every
 			// claude-* tier in agent-pool.yaml names; the justified default, not magic.
 			provider: typeof p.provider === 'string' && p.provider.trim() ? p.provider.trim() : 'claude',
-			triggers: { failure_threshold: failureThreshold }
+			triggers: {
+				failure_threshold: failureThreshold,
+				distress_cooldown_minutes: distressCooldownMinutes
+			}
 		},
 		panel: {
 			...(panelRaw && typeof panelRaw === 'object' && !Array.isArray(panelRaw)

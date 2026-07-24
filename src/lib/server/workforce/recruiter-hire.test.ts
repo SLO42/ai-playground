@@ -84,7 +84,7 @@ afterAll(async () => {
 
 function testConfig(): WorkforceConfig {
 	return {
-		pm: { provider: 'claude', model_id: 'claude-opus-4-8', triggers: { failure_threshold: null } },
+		pm: { provider: 'claude', model_id: 'claude-opus-4-8', triggers: { failure_threshold: null, distress_cooldown_minutes: null } },
 		panel: { scope: { max_files: null, max_new_services: null } },
 		gauntlet: { pass_recall: 1.0, max_false_positives: 0, session_timeout_minutes: 15 },
 		budget: { max_auto_interviews_per_day: null, allowed_auto_tiers: [] },

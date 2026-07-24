@@ -54,6 +54,7 @@ import type { DbChange } from '../events/db-source';
 import type { OrchMode } from '../config/index';
 import type { WorkforceConfig } from '../config/load';
 import { evaluateDriftAndAutoRaise } from '../workforce/drift';
+import { writeAgentEvent } from '../analytics/events';
 import { getPm, listPmsWithCadence, PM_AUTHORITIES, type PmReviewTrigger } from './pm-repo';
 import { runPmReview } from './pm-review';
 
@@ -233,6 +234,17 @@ export interface PmTriggerEngineOptions {
 	 * sets a bound from real history. When armed, a fire needs distress > threshold.
 	 */
 	failureThreshold: number | null;
+	/**
+	 * SD-3 anti-spam cooldown (config/workforce.yaml pm.triggers.distress_cooldown_minutes,
+	 * in MS here). The minimum time between two DISTRESS-triggered reviews for one project,
+	 * ON TOP of the self-limiting last-review baseline: after a distress review fires, a
+	 * FRESH burst that re-crosses the threshold is SUPPRESSED (and recorded as a first-class
+	 * analytics event — visible, F-008) until the cooldown elapses, so a project that keeps
+	 * failing gets one review + a visible throttle, never a review storm. null/≤0 = no time
+	 * cooldown (baseline-reset only). The review pass is deterministic ($0), so this bounds
+	 * FREQUENCY; any session it later spawns is gated at the launchSession token budget (D-021).
+	 */
+	distressCooldownMs?: number | null;
 	/** Periodic tick interval. Only armed when mode permits automatic fires. */
 	tickMs?: number;
 	/** Finding-burst coalescing window (a scan writes findings row-by-row). */
@@ -259,6 +271,7 @@ export class PmTriggerEngine {
 	readonly #bus: EventBus;
 	readonly #mode: OrchMode;
 	readonly #threshold: number | null;
+	readonly #distressCooldownMs: number | null;
 	readonly #tickMs: number;
 	readonly #coalesceMs: number;
 	readonly #driftConfig: WorkforceConfig | null;
@@ -288,12 +301,15 @@ export class PmTriggerEngine {
 	reviewCount = 0;
 	/** §5 drift proposals this engine has auto-raised (diagnostics / the verify count). */
 	driftRaiseCount = 0;
+	/** Distress fires SUPPRESSED by the SD-3 cooldown (diagnostics / the verify count). */
+	distressSuppressedCount = 0;
 
 	constructor(opts: PmTriggerEngineOptions) {
 		this.#db = opts.db;
 		this.#bus = opts.bus;
 		this.#mode = opts.mode;
 		this.#threshold = opts.failureThreshold;
+		this.#distressCooldownMs = opts.distressCooldownMs ?? null;
 		this.#tickMs = opts.tickMs ?? DEFAULT_TICK_MS;
 		this.#coalesceMs = opts.coalesceMs ?? DEFAULT_COALESCE_MS;
 		this.#driftConfig = opts.driftConfig ?? null;
@@ -503,15 +519,111 @@ export class PmTriggerEngine {
 		]);
 		const distress = failedSessions + blockedTasks;
 		if (distress <= this.#threshold) return;
+
+		// SD-3 anti-spam cooldown (bounded, F-008-visible): a project that keeps failing must
+		// not trigger a review STORM. The baseline-reset above already stops the SAME rows
+		// re-firing; this additionally throttles a FRESH burst — if a distress review already
+		// fired within the cooldown window, SUPPRESS this one and record a first-class analytics
+		// event so the throttled-but-distressed project stays visible (never a silent stall).
+		const cooldownMs = this.#distressCooldownMs;
+		if (cooldownMs !== null && cooldownMs > 0) {
+			const lastDistress = await this.#lastDistressReviewAt(projectId);
+			if (lastDistress) {
+				const elapsedMs = this.#now().getTime() - lastDistress.getTime();
+				if (elapsedMs < cooldownMs) {
+					await this.#recordDistressSuppressed(projectId, kind, evidenceId, {
+						failed_sessions: failedSessions,
+						blocked_tasks: blockedTasks,
+						threshold: this.#threshold,
+						cooldown_ms: cooldownMs,
+						elapsed_ms: Math.max(0, Math.round(elapsedMs))
+					});
+					return;
+				}
+			}
+		}
+
 		await this.#fire('event', projectId, {
 			kind,
 			evidence: [evidenceId],
 			detail: {
 				failed_sessions: failedSessions,
 				blocked_tasks: blockedTasks,
-				threshold: this.#threshold
+				threshold: this.#threshold,
+				...(cooldownMs !== null && cooldownMs > 0 ? { cooldown_ms: cooldownMs } : {})
 			}
 		});
+	}
+
+	/**
+	 * The created_at of the most recent DISTRESS-triggered review (session_failed /
+	 * task_blocked provenance) for a project, or null when the PM has never fired one.
+	 * Anchors the SD-3 cooldown. F-020: created_at is IN the SELECT (it is the ORDER BY
+	 * key). A read fault degrades to null (no cooldown this call) rather than crashing the
+	 * bus (F-014) — the worst case is one extra review, never a lost or crashing trigger.
+	 */
+	async #lastDistressReviewAt(projectId: string): Promise<Date | null> {
+		try {
+			const project = new StringRecordId(assertRecordId(projectId));
+			const [rows] = await this.#db.query<[Array<{ created_at: unknown }>]>(
+				`SELECT created_at FROM pm_review
+					WHERE project = $project AND provenance.kind IN ['session_failed', 'task_blocked']
+					ORDER BY created_at DESC LIMIT 1;`,
+				{ project }
+			);
+			if (!rows.length || rows[0].created_at == null) return null;
+			const d = new Date(String(rows[0].created_at));
+			return Number.isNaN(d.getTime()) ? null : d;
+		} catch (err) {
+			console.warn(
+				`[pm-triggers] distress-cooldown lookup failed (no cooldown this call): ${(err as Error).message}`
+			);
+			return null;
+		}
+	}
+
+	/**
+	 * Record a cooldown-SUPPRESSED distress fire as a FIRST-CLASS analytics event (F-008: a
+	 * throttled-but-distressed project must be VISIBLE, never console-only). Mirrors the
+	 * spend-budget governance precedent — an agent_event type:'cancel', by:'pm-distress-
+	 * cooldown', decision:'suppressed' — so the throttle is queryable
+	 * (type='cancel' AND detail.by='pm-distress-cooldown') carrying the full how/why: the real
+	 * distress counts, the threshold crossed, the cooldown, and how long remains. No model /
+	 * tokens ⇒ cost_usd + token legs stay NONE (this is a $0 governance decision, not a spend —
+	 * never double-counted toward a budget, CG2-1). Best-effort (F-014): an event-write fault is
+	 * logged, never masks or crashes the trigger path.
+	 */
+	async #recordDistressSuppressed(
+		projectId: string,
+		kind: 'session_failed' | 'task_blocked',
+		evidenceId: string,
+		detail: { failed_sessions: number; blocked_tasks: number; threshold: number; cooldown_ms: number; elapsed_ms: number }
+	): Promise<void> {
+		this.distressSuppressedCount++;
+		const cooldownMin = Math.round(detail.cooldown_ms / 60_000);
+		const remainMin = Math.max(0, Math.ceil((detail.cooldown_ms - detail.elapsed_ms) / 60_000));
+		await writeAgentEvent(this.#db, {
+			type: 'cancel',
+			project: projectId,
+			detail: {
+				by: 'pm-distress-cooldown',
+				decision: 'suppressed',
+				kind,
+				evidence: [evidenceId],
+				reason:
+					`PM distress review throttled — ${detail.failed_sessions} failed session(s) + ` +
+					`${detail.blocked_tasks} blocked task(s) exceeded threshold ${detail.threshold}, but a ` +
+					`distress review already fired within the ${cooldownMin}m cooldown (~${remainMin}m left). ` +
+					`The periodic PM cadence still monitors on schedule.`,
+				failed_sessions: detail.failed_sessions,
+				blocked_tasks: detail.blocked_tasks,
+				threshold: detail.threshold,
+				cooldown_ms: detail.cooldown_ms,
+				elapsed_ms: detail.elapsed_ms
+			}
+		}).catch((err) =>
+			console.warn(`[pm-triggers] distress-suppressed event write failed (best-effort): ${(err as Error).message}`)
+		);
 	}
 
 	#bufferFinding(projectId: string, findingId: string): void {

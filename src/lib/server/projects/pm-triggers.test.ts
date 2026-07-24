@@ -379,6 +379,109 @@ describe('PmTriggerEngine — distress events (threshold-gated, unarmed by defau
 		expect(await listPmReviews(db, projectId)).toHaveLength(1);
 	});
 
+	// ── SD-3 — arm the trigger (shipped default 2) + the anti-spam cooldown ──────────────
+
+	it('SD-3: N consecutive distress signals (a burst) fire EXACTLY ONE review at the shipped threshold 2', async () => {
+		await createPm(db, { project: projectId, name: 'Vesper' });
+		// The 3rd failed session is the one that EXCEEDS threshold 2. A burst of all three
+		// arriving together must coalesce to exactly one review (not one-per-signal).
+		const s1 = await createFailedSession();
+		const s2 = await createFailedSession();
+		const s3 = await createFailedSession();
+		const { engine, bus } = makeEngine({ failureThreshold: 2, distressCooldownMs: 30 * 60_000 });
+		publishChange(bus, 'session', 'UPDATE', s1, { status: 'failed', project: projectId });
+		publishChange(bus, 'session', 'UPDATE', s2, { status: 'failed', project: projectId });
+		publishChange(bus, 'session', 'UPDATE', s3, { status: 'failed', project: projectId });
+		await engine.idle();
+
+		const reviews = await listPmReviews(db, projectId);
+		expect(reviews).toHaveLength(1);
+		expect(reviews[0].provenance?.kind).toBe('session_failed');
+		expect(reviews[0].provenance?.detail?.failed_sessions).toBe(3);
+		expect(reviews[0].provenance?.detail?.threshold).toBe(2);
+		expect(reviews[0].provenance?.detail?.cooldown_ms).toBe(30 * 60_000);
+		expect(engine.distressSuppressedCount).toBe(0);
+	});
+
+	it('SD-3: 2 distress signals (below the shipped threshold 2) do NOT fire', async () => {
+		await createPm(db, { project: projectId, name: 'Vesper' });
+		const s1 = await createFailedSession();
+		await createFailedSession();
+		const { engine, bus } = makeEngine({ failureThreshold: 2, distressCooldownMs: 30 * 60_000 });
+		publishChange(bus, 'session', 'UPDATE', s1, { status: 'failed', project: projectId });
+		await engine.idle();
+		expect(await listPmReviews(db, projectId)).toHaveLength(0);
+	});
+
+	it('SD-3: a SECOND burst inside the cooldown is SUPPRESSED (no re-spam) + emits a first-class analytics event', async () => {
+		await createPm(db, { project: projectId, name: 'Vesper' });
+		const s1 = await createFailedSession();
+		// threshold 0 so any distress fires; a 60-min cooldown so the second burst is well inside it.
+		const { engine, bus } = makeEngine({ failureThreshold: 0, distressCooldownMs: 60 * 60_000 });
+		publishChange(bus, 'session', 'UPDATE', s1, { status: 'failed', project: projectId });
+		await engine.idle();
+		expect(await listPmReviews(db, projectId)).toHaveLength(1);
+
+		// A FRESH failure (a real new distress signal, NOT the same row) arrives seconds later —
+		// it re-crosses the threshold, but the cooldown throttles it: no second review.
+		const s2 = await createFailedSession();
+		publishChange(bus, 'session', 'UPDATE', s2, { status: 'failed', project: projectId });
+		await engine.idle();
+		expect(await listPmReviews(db, projectId)).toHaveLength(1); // STILL one — no re-spam
+		expect(engine.distressSuppressedCount).toBe(1);
+
+		// The suppression is VISIBLE (F-008), not console-only: a first-class agent_event carrying
+		// the how/why (mirrors the spend-budget governance precedent).
+		const project = new StringRecordId(assertRecordId(projectId));
+		const [events] = await db.query<[Array<{ type: string; detail: Record<string, unknown> }>]>(
+			`SELECT type, detail FROM agent_event WHERE project = $project AND type = 'cancel' AND detail.by = 'pm-distress-cooldown';`,
+			{ project }
+		);
+		expect(events).toHaveLength(1);
+		expect(events[0].detail?.decision).toBe('suppressed');
+		expect(events[0].detail?.failed_sessions).toBe(1);
+		expect(events[0].detail?.threshold).toBe(0);
+		expect(events[0].detail?.cooldown_ms).toBe(60 * 60_000);
+		expect(typeof events[0].detail?.reason).toBe('string');
+		expect(String(events[0].detail?.reason)).toContain('throttled');
+	});
+
+	it('SD-3: once the cooldown has ELAPSED, a fresh burst fires again (throttle is time-bounded, not permanent)', async () => {
+		await createPm(db, { project: projectId, name: 'Vesper' });
+		const s1 = await createFailedSession();
+		// 60-min cooldown, but drive the clock 2h forward so the second burst is PAST it.
+		const { engine, bus } = makeEngine({
+			failureThreshold: 0,
+			distressCooldownMs: 60 * 60_000,
+			now: () => new Date(Date.now() + 120 * 60_000)
+		});
+		publishChange(bus, 'session', 'UPDATE', s1, { status: 'failed', project: projectId });
+		await engine.idle();
+		expect(await listPmReviews(db, projectId)).toHaveLength(1);
+
+		const s2 = await createFailedSession();
+		publishChange(bus, 'session', 'UPDATE', s2, { status: 'failed', project: projectId });
+		await engine.idle();
+		expect(await listPmReviews(db, projectId)).toHaveLength(2); // cooldown elapsed → fires again
+		expect(engine.distressSuppressedCount).toBe(0);
+	});
+
+	it('SD-3: with NO cooldown armed (null), the baseline-reset alone still bounds re-fires', async () => {
+		await createPm(db, { project: projectId, name: 'Vesper' });
+		const s1 = await createFailedSession();
+		const { engine, bus } = makeEngine({ failureThreshold: 0, distressCooldownMs: null });
+		publishChange(bus, 'session', 'UPDATE', s1, { status: 'failed', project: projectId });
+		await engine.idle();
+		expect(await listPmReviews(db, projectId)).toHaveLength(1);
+
+		// A fresh failure with no cooldown → the baseline reset does not suppress it: it re-fires.
+		const s2 = await createFailedSession();
+		publishChange(bus, 'session', 'UPDATE', s2, { status: 'failed', project: projectId });
+		await engine.idle();
+		expect(await listPmReviews(db, projectId)).toHaveLength(2);
+		expect(engine.distressSuppressedCount).toBe(0);
+	});
+
 	it('shadow: no hired PM → an armed distress event still never fires', async () => {
 		const sessionId = await createFailedSession();
 		const { engine, bus } = makeEngine({ failureThreshold: 0 });
@@ -594,7 +697,7 @@ describe('PmTriggerEngine — manual mode is inert (D-004)', () => {
 /** A WorkforceConfig with miscalibration armed @ 0.5, window 14d, floor 5 (shipped defaults). */
 function driftCfg(): WorkforceConfig {
 	return {
-		pm: { provider: 'claude', model_id: 'm', triggers: { failure_threshold: null } },
+		pm: { provider: 'claude', model_id: 'm', triggers: { failure_threshold: null, distress_cooldown_minutes: null } },
 		panel: { scope: { max_files: null, max_new_services: null } },
 		gauntlet: { pass_recall: 1.0, max_false_positives: 0, session_timeout_minutes: 15 },
 		budget: { max_auto_interviews_per_day: null, allowed_auto_tiers: [] },

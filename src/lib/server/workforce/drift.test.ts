@@ -42,7 +42,7 @@ const REVIEW_PROPOSAL_MIG = '0046_review_proposal';
 /** Base config: miscalibration armed @ 0.5, window 14d, floor 5 (the shipped defaults). */
 function cfg(over: Partial<WorkforceConfig['drift']> = {}, wfOver: Partial<WorkforceConfig['workforce']> = {}): WorkforceConfig {
 	return {
-		pm: { provider: 'claude', model_id: 'm', triggers: { failure_threshold: null } },
+		pm: { provider: 'claude', model_id: 'm', triggers: { failure_threshold: null, distress_cooldown_minutes: null } },
 		panel: { scope: { max_files: null, max_new_services: null } },
 		gauntlet: { pass_recall: 1.0, max_false_positives: 0, session_timeout_minutes: 15 },
 		budget: { max_auto_interviews_per_day: null, allowed_auto_tiers: [] },

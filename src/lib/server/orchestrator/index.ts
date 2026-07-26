@@ -81,6 +81,46 @@ export {
 	type GameVerifyVerdictOutcome
 } from './game-verify-read';
 
+// COMPLETION-LEDGER Wave A — the DRAIN LEDGER. Write side: the ONE chokepoint that turns a
+// swallowed drain fault into a NAMED durable event, and enqueue/park/gate-block into first-class
+// queue holds. Read side (queue-monitor): what /atelier/queue renders so an operator can answer
+// "what broke?" and "why is this task not running?" without reading a console.
+export {
+	recordDrainFault,
+	recordQueueHold,
+	holdReasonForSpawnError,
+	screenErrorText,
+	errorClassOf,
+	parkSuppressedCount,
+	DRAIN_STAGES,
+	DRAIN_STAGE_LABELS,
+	QUEUE_PHASES,
+	QUEUE_REASONS,
+	QUEUE_REASON_LABELS,
+	DRAIN_FAULT_KIND,
+	QUEUE_HOLD_KIND,
+	PARK_THROTTLE_MS,
+	type DrainStage,
+	type QueuePhase,
+	type QueueReason,
+	type DrainFaultInput,
+	type QueueHoldInput
+} from './drain-events';
+
+export {
+	listWorkItems,
+	getWorkItem,
+	queueStats,
+	listDrainLedger,
+	drainLedgerCounts,
+	normDrainLedgerRow,
+	DEFAULT_STUCK_MS,
+	type WorkItemRow,
+	type QueueStats,
+	type DrainLedgerRow,
+	type DrainLedgerCounts
+} from './queue-monitor';
+
 export {
 	maybeEnqueueReview,
 	countChangedFiles,

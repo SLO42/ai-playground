@@ -28,13 +28,26 @@ import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import { loadPricing, resolveModelCost, type PricingConfig } from '../config/load';
 
-/** The five lifecycle types the schema's ASSERT accepts (DATA-MODEL §4.4). */
+/**
+ * The lifecycle types this chokepoint writes (a SUBSET of the schema ASSERT, DATA-MODEL §4.4).
+ *
+ * The schema ALSO accepts 'hook' / 'maintenance' / 'supervision' — those three are written by raw
+ * parameterized CREATEs in their own subsystems (hooks/proxy-config.ts, loops/maintenance.ts,
+ * services/manager.ts) and never come through here, so they are deliberately absent from this union.
+ *
+ * 'queue' (m0084, COMPLETION-LEDGER Wave A) IS written here: the orchestrator drain ledger
+ * (orchestrator/drain-events.ts) records first-class queue holds — enqueued / deduped / parked /
+ * gate-blocked — through this chokepoint like every other lifecycle producer. It is NOT an `error`:
+ * a park is a healthy ceiling doing its job, and conflating the two would make the failure surface
+ * lie about how much is broken.
+ */
 export const AGENT_EVENT_TYPES = [
 	'spawn',
 	'completion',
 	'escalation',
 	'cancel',
-	'error'
+	'error',
+	'queue'
 ] as const;
 export type AgentEventType = (typeof AGENT_EVENT_TYPES)[number];
 

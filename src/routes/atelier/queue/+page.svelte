@@ -21,11 +21,64 @@
   const completedBefore = $derived(data.completedBefore);
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
 
+  // COMPLETION-LEDGER Wave A — the DRAIN LEDGER: named drain faults + queue holds.
+  const ledger = $derived(data.ledger ?? []);
+  const ledgerCounts = $derived(data.ledgerCounts);
+
+  /**
+   * Ledger filter (client-side over the already-loaded page — no extra round trip, and the
+   * loaded set is bounded at 40 rows so filtering in the browser is honest and cheap).
+   * 'all' | 'fault' | 'hold'.
+   */
+  let ledgerFilter = $state<'all' | 'fault' | 'hold'>('all');
+  const shownLedger = $derived(
+    ledgerFilter === 'all' ? ledger : ledger.filter((r) => r.entry === ledgerFilter)
+  );
+
   // Live: a work_item row change re-runs the loader (UI-SPEC §1.2).
   $effect(() => {
     const off = stream.onDbChange('work_item', () => void invalidate('app:work-queue'));
     return off;
   });
+
+  // Live: the drain ledger is agent_event rows, so a work_item change alone would leave a new
+  // fault/hold invisible until the next navigation. Subscribe to agent_event too (same loader,
+  // same invalidate key) so a failure appears the moment the engine records it.
+  $effect(() => {
+    const off = stream.onDbChange('agent_event', () => void invalidate('app:work-queue'));
+    return off;
+  });
+
+  /** Human window label for the ledger headline ("24h" / "6h") — never a raw ms figure. */
+  function fmtWindow(ms: number): string {
+    const h = Math.round(ms / 3_600_000);
+    return h >= 24 && h % 24 === 0 ? `${h / 24}d` : `${h}h`;
+  }
+
+  /**
+   * The tone a ledger row renders at. A FAULT that changed the verdict is an error; a fault the
+   * drain absorbed is a warning (it survived); a PARK is a warning (work is waiting); a
+   * gate-block is an error (it will not clear on its own); enqueued/deduped are neutral
+   * bookkeeping. Honest: a hold is never dressed up as a failure, and vice versa.
+   */
+  function toneOf(r: { entry: string; absorbed?: boolean; phase?: string }): 'bad' | 'warn' | 'neutral' {
+    if (r.entry === 'fault') return r.absorbed === false ? 'bad' : 'warn';
+    if (r.phase === 'gate_blocked') return 'bad';
+    if (r.phase === 'parked') return 'warn';
+    return 'neutral';
+  }
+
+  /** The short badge label for a row — the step that broke, or the queue phase. */
+  function badgeOf(r: { entry: string; stage?: string; phase?: string }): string {
+    return (r.entry === 'fault' ? r.stage : r.phase) ?? r.entry;
+  }
+
+  /** Non-empty context entries rendered as `key: value` chips (already screened upstream). */
+  function contextPairs(ctx: Record<string, unknown>): Array<[string, string]> {
+    return Object.entries(ctx ?? {})
+      .filter(([, v]) => v != null && v !== '')
+      .map(([k, v]) => [k, typeof v === 'object' ? JSON.stringify(v) : String(v)] as [string, string]);
+  }
 
   function shortId(id: string | undefined): string {
     return id ? id.replace(/^\w+:/, '') : '—';
@@ -98,6 +151,93 @@
         <span class="stat-val mono">{stats.staleCount}</span>
         <span class="stat-label">stale</span>
       </div>
+      <div class="stat" data-flag={ledgerCounts.faults > 0 ? 'bad' : undefined}>
+        <span class="stat-val mono">{ledgerCounts.faults}</span>
+        <span class="stat-label">drain faults · last {fmtWindow(ledgerCounts.windowMs)}</span>
+      </div>
+      <!--
+        LIVE-VERIFIED HONESTY FIX: this stat originally read "times work was held" while counting
+        only PARKS, so it showed 0 with twenty `deduped` holds listed directly below it. The label
+        now names exactly what it counts, and the sibling stat carries the full hold total, so the
+        headline can never contradict the list underneath it (F-008).
+      -->
+      <div class="stat" data-flag={ledgerCounts.parks > 0 ? 'warn' : undefined}>
+        <span class="stat-val mono">{ledgerCounts.parks}</span>
+        <span class="stat-label">
+          times the queue hit a limit · last {fmtWindow(ledgerCounts.windowMs)}
+        </span>
+      </div>
+      <div class="stat">
+        <span class="stat-val mono">{ledgerCounts.holds}</span>
+        <span class="stat-label">queue decisions logged · last {fmtWindow(ledgerCounts.windowMs)}</span>
+      </div>
+    </div>
+
+    <!--
+      DRAIN LEDGER (COMPLETION-LEDGER Wave A) — the two questions this page could not previously
+      answer: "what broke?" (named drain faults — which step, which task, the real error) and
+      "why is this task not running?" (queue holds — dedup, daily cap, token budget, all slots
+      busy, per-project limit, capability refused). Both used to exist only as console lines.
+    -->
+    <div class="card block">
+      <div class="ledger-head">
+        <span class="eyebrow">what broke, and what is being held</span>
+        <div class="filters" role="group" aria-label="filter the drain ledger">
+          {#each [['all', 'everything'], ['fault', 'failures'], ['hold', 'holds']] as [value, label] (value)}
+            <button
+              type="button"
+              class="filter"
+              aria-pressed={ledgerFilter === value}
+              onclick={() => (ledgerFilter = value as 'all' | 'fault' | 'hold')}
+            >{label}</button>
+          {/each}
+        </div>
+      </div>
+
+      {#if ledger.length === 0}
+        <p class="state-body">
+          Nothing recorded. No drain step has failed and no work has been held back — when either
+          happens, it is named here with the step, the task, and the real reason.
+        </p>
+      {:else if shownLedger.length === 0}
+        <p class="state-body">
+          No {ledgerFilter === 'fault' ? 'failures' : 'holds'} in the {ledger.length} most recent
+          entries. Switch to “everything” to see the rest.
+        </p>
+      {:else}
+        <ul class="item-list" aria-label="drain ledger">
+          {#each shownLedger as row (row.id)}
+            <li class="ledger-row" data-tone={toneOf(row)}>
+              <div class="item-head">
+                <span class="ledger-badge" data-tone={toneOf(row)}>{badgeOf(row)}</span>
+                <span class="kind-tag">{row.entry === 'fault' ? 'failure' : 'hold'}</span>
+                {#if row.entry === 'fault' && row.absorbed}
+                  <span class="ref">recovered — the drain carried on</span>
+                {/if}
+                {#if row.suppressed}
+                  <span class="ref">+{row.suppressed} more in the last minute</span>
+                {/if}
+                <span class="age mono">{fmtTime(row.at)}</span>
+              </div>
+              <p class="ledger-msg">{row.message}</p>
+              <div class="item-foot mono">
+                {row.entry === 'fault' ? (row.stageLabel ?? '—') : (row.reasonLabel ?? '—')}
+                {#if row.errorClass} · {row.errorClass}{/if}
+                {#if row.taskId} · {shortId(row.taskId)}{/if}
+                {#if row.workType} · {row.workType}{/if}
+                {#if row.pendingDepth != null} · {row.pendingDepth} waiting{/if}
+              </div>
+              {#if contextPairs(row.context).length > 0}
+                <ul class="ctx-list">
+                  {#each contextPairs(row.context) as [k, v] (k)}
+                    <li class="ctx"><span class="ctx-k">{k}</span> <span class="ctx-v">{v}</span></li>
+                  {/each}
+                </ul>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+      {/if}
     </div>
 
     <!-- Active list -->
@@ -235,7 +375,10 @@
     background: var(--color-surface-card);
   }
   .stat[data-flag='warn'] {
-    border-color: var(--color-warn, #c8a45c);
+    border-color: var(--color-warn);
+  }
+  .stat[data-flag='bad'] {
+    border-color: var(--color-error);
   }
   .stat-val {
     font: var(--type-h2, var(--type-h1));
@@ -243,7 +386,13 @@
     color: var(--color-text);
   }
   .stat[data-flag='warn'] .stat-val {
-    color: var(--color-warn, #c8a45c);
+    color: var(--color-warn);
+  }
+  /* The stat VALUE sits on --color-surface-card (the base card surface), so the base-surface
+     semantic token is the correct family here — unlike the ledger badges below, which sit on
+     --color-surface-overlay and must use the *-on-overlay ramp (the AV-1 defect class). */
+  .stat[data-flag='bad'] .stat-val {
+    color: var(--color-error);
   }
   .stat-label {
     font-size: 0.68rem;
@@ -347,5 +496,109 @@
   .load-older:focus-visible {
     outline: 2px solid var(--color-accent, #8ab0ab);
     outline-offset: 1px;
+  }
+
+  /* ── DRAIN LEDGER ────────────────────────────────────────────────────────────
+     Every ledger row sits on --color-surface-overlay, so ALL of its tone TEXT is
+     drawn from the *-on-overlay ramp (--color-error-on-overlay / --color-warn-on-overlay
+     / --color-neutral-on-overlay), never the base-surface --color-error/--color-warn
+     family. That mismatch is the exact AV-1 defect (a 3.50:1 badge) this codebase
+     already paid for once; the on-overlay tokens are gated ≥4.5:1 on this surface. */
+  .ledger-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: var(--space-2, 0.5rem);
+    flex-wrap: wrap;
+  }
+  .filters {
+    display: flex;
+    gap: 0.3rem;
+  }
+  .filter {
+    font: var(--type-body-sm);
+    font-size: 0.7rem;
+    color: var(--color-text-muted);
+    background: none;
+    border: 1px solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    padding: 0.15rem 0.5rem;
+    cursor: pointer;
+  }
+  .filter:hover {
+    color: var(--color-text);
+    border-color: var(--color-accent);
+  }
+  .filter[aria-pressed='true'] {
+    color: var(--color-text);
+    border-color: var(--color-accent);
+    background: var(--color-surface-selected);
+  }
+  .filter:focus-visible {
+    outline: 2px solid var(--color-focus-ring);
+    outline-offset: 1px;
+  }
+  .ledger-row {
+    display: flex;
+    flex-direction: column;
+    gap: 0.3rem;
+    padding: 0.5rem 0.6rem;
+    border: 1px solid var(--color-border-subtle, var(--color-border));
+    border-left-width: 3px;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+  }
+  .ledger-row[data-tone='bad'] {
+    border-left-color: var(--color-error-on-overlay);
+  }
+  .ledger-row[data-tone='warn'] {
+    border-left-color: var(--color-warn-on-overlay);
+  }
+  .ledger-row[data-tone='neutral'] {
+    border-left-color: var(--color-neutral-on-overlay);
+  }
+  .ledger-badge {
+    font-size: 0.62rem;
+    font-weight: 700;
+    letter-spacing: 0.03em;
+    padding: 0.02rem 0.35rem;
+    border-radius: var(--radius-sm, 6px);
+    border: 1px solid currentcolor;
+  }
+  .ledger-badge[data-tone='bad'] {
+    color: var(--color-error-on-overlay);
+  }
+  .ledger-badge[data-tone='warn'] {
+    color: var(--color-warn-on-overlay);
+  }
+  .ledger-badge[data-tone='neutral'] {
+    color: var(--color-neutral-on-overlay);
+  }
+  .ledger-msg {
+    font: var(--type-body-sm);
+    color: var(--color-text);
+    max-width: 90ch;
+  }
+  .ctx-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+  .ctx {
+    font-size: 0.64rem;
+    padding: 0.05rem 0.35rem;
+    border-radius: var(--radius-sm, 6px);
+    border: 1px solid var(--color-border);
+    max-width: 100%;
+    overflow-wrap: anywhere;
+  }
+  .ctx-k {
+    color: var(--color-text-muted);
+  }
+  .ctx-v {
+    color: var(--color-text-2);
   }
 </style>

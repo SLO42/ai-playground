@@ -30,6 +30,15 @@ import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import { DAY_MS, pendingDepth, countByStatus, spawnsSince, type WorkStatus } from './workqueue';
+import {
+	DRAIN_FAULT_KIND,
+	QUEUE_HOLD_KIND,
+	DRAIN_STAGE_LABELS,
+	QUEUE_REASON_LABELS,
+	type DrainStage,
+	type QueuePhase,
+	type QueueReason
+} from './drain-events';
 
 /** Validate a `table:id` link at the D-016 chokepoint, wrap as a record link. */
 function link(id: string): StringRecordId {
@@ -272,4 +281,268 @@ async function staleProcessingCount(db: Db, stuckMs: number): Promise<number> {
 		{ cutoff }
 	);
 	return Number(rows?.[0]?.c ?? 0);
+}
+
+// ── COMPLETION-LEDGER Wave A — the DRAIN LEDGER read model ────────────────────────────────
+//
+// The write side is orchestrator/drain-events.ts; this is the READ side that makes it visible on
+// /atelier/queue. Same locked invariants as the rest of this module: READ-ONLY SELECTs, bounded
+// (LIMIT), every datetime ISO-coerced (F-013), honest empty (F-008 — an empty ledger renders as
+// "nothing has failed or been held", never as a fabricated row).
+//
+// F-020 (3× recurrence): the ORDER BY field (`at`) IS in the projection below. A stubDb unit test
+// does NOT parse SurrealQL and would pass green with it missing — queue-monitor.test.ts covers this
+// against a REAL SurrealDB, which is the only thing that catches it.
+
+/** One drain-ledger row, projected for the UI. */
+export interface DrainLedgerRow {
+	id: string;
+	/** 'fault' — a named drain failure; 'hold' — a queue hold (enqueued/deduped/parked/blocked). */
+	entry: 'fault' | 'hold';
+	/** ISO timestamp (F-013); undefined → the UI renders '—'. */
+	at?: string;
+	/** Fault rows: WHICH drain step broke. */
+	stage?: DrainStage | string;
+	/** Fault rows: the plain-language step name (resolved at READ time from the current vocabulary,
+	 *  so a row written before a label was reworded still renders the current wording). */
+	stageLabel?: string;
+	/** Fault rows: the error's class name (the machine-groupable half of "why"). */
+	errorClass?: string;
+	/** Fault rows: TRUE when the drain carried on regardless; FALSE when it changed the verdict. */
+	absorbed?: boolean;
+	/** Hold rows: the queue phase. */
+	phase?: QueuePhase | string;
+	/** Hold rows: the machine reason code. */
+	reason?: QueueReason | string;
+	/** Hold rows: the plain-language reason (resolved at READ time, same rationale as stageLabel). */
+	reasonLabel?: string;
+	/** Hold rows: parks folded into this one inside the throttle window (0 when none). */
+	suppressed?: number;
+	/** Hold rows: pending+unclaimed depth at the moment of the hold; undefined = not measured. */
+	pendingDepth?: number;
+	/** The human sentence to render. ALWAYS present — the writers guarantee one. */
+	message: string;
+	/** Links (plain `table:id` strings), when the producer knew them. */
+	taskId?: string;
+	projectId?: string;
+	sessionId?: string;
+	workItemId?: string;
+	workType?: string;
+	/** The screened error text (fault rows only). */
+	error?: string;
+	/** Extra structured context the writer attached (consequence / recovery / cap values / …). */
+	context: Record<string, unknown>;
+}
+
+/** The `detail` keys the row shape above consumes directly — everything else falls into `context`. */
+const LEDGER_OWN_KEYS = new Set([
+	'kind',
+	'by',
+	'stage',
+	'stageLabel',
+	'errorClass',
+	'absorbed',
+	'phase',
+	'reason',
+	'reasonLabel',
+	'suppressed',
+	'pendingDepth',
+	'summary',
+	'error',
+	'taskId',
+	'workItemId',
+	'workType'
+]);
+
+interface RawLedgerRow {
+	id: unknown;
+	type?: unknown;
+	at?: unknown;
+	project?: unknown;
+	session?: unknown;
+	detail?: unknown;
+}
+
+function optStr(v: unknown): string | undefined {
+	if (v == null) return undefined;
+	const s = String(v).trim();
+	return s && s !== 'undefined' && s !== 'null' ? s : undefined;
+}
+
+/**
+ * Normalize ONE agent_event row into a DrainLedgerRow.
+ *
+ * Shadow paths, all four: a row whose `detail` is missing / not an object still yields a valid row
+ * with an HONEST fallback message (never a blank card and never a fabricated reason); a nil/absent
+ * datetime yields `undefined` → the UI's '—' (F-013 — NEVER the string 'undefined'); unknown
+ * stage/reason codes (a row written by a future or retired vocabulary) fall back to the raw code
+ * rather than being dropped or mislabelled.
+ */
+export function normDrainLedgerRow(r: RawLedgerRow): DrainLedgerRow {
+	const d = (r.detail && typeof r.detail === 'object' ? r.detail : {}) as Record<string, unknown>;
+	const kind = optStr(d.kind);
+	const entry: 'fault' | 'hold' = kind === QUEUE_HOLD_KIND ? 'hold' : 'fault';
+	const stage = optStr(d.stage);
+	const reason = optStr(d.reason);
+	const phase = optStr(d.phase);
+
+	// Labels are resolved from the CURRENT vocabulary at read time (falling back to the persisted
+	// label, then to the raw code) so re-wording a label improves every historical row and an
+	// unknown code degrades to the code itself rather than to a blank.
+	const stageLabel =
+		(stage && DRAIN_STAGE_LABELS[stage as DrainStage]) || optStr(d.stageLabel) || stage;
+	const reasonLabel =
+		(reason && QUEUE_REASON_LABELS[reason as QueueReason]) || optStr(d.reasonLabel) || reason;
+
+	// The sentence to render. `summary` is the hold writer's field, `reason` the fault writer's
+	// (the shared activityLabel contract), and the final fallback is honest, never invented.
+	const message =
+		optStr(d.summary) ??
+		(entry === 'fault' ? optStr(d.reason) : undefined) ??
+		optStr(d.error) ??
+		(entry === 'fault'
+			? 'A drain step failed, but this row carries no recorded detail.'
+			: 'A queue hold was recorded, but this row carries no recorded detail.');
+
+	const context: Record<string, unknown> = {};
+	for (const [k, v] of Object.entries(d)) {
+		if (!LEDGER_OWN_KEYS.has(k) && v !== undefined) context[k] = v;
+	}
+
+	const suppressed = Number(d.suppressed);
+	const depth = Number(d.pendingDepth);
+
+	return {
+		id: String(r.id),
+		entry,
+		...(isoOrUndef(r.at) ? { at: isoOrUndef(r.at) } : {}),
+		...(stage ? { stage } : {}),
+		...(stageLabel ? { stageLabel } : {}),
+		...(optStr(d.errorClass) ? { errorClass: optStr(d.errorClass) } : {}),
+		...(typeof d.absorbed === 'boolean' ? { absorbed: d.absorbed } : {}),
+		...(phase ? { phase } : {}),
+		...(reason ? { reason } : {}),
+		...(reasonLabel ? { reasonLabel } : {}),
+		...(Number.isFinite(suppressed) ? { suppressed } : {}),
+		...(Number.isFinite(depth) ? { pendingDepth: depth } : {}),
+		message,
+		...(optStr(d.taskId) ? { taskId: optStr(d.taskId) } : {}),
+		...(optStr(r.project) ? { projectId: optStr(r.project) } : {}),
+		...(optStr(r.session) ? { sessionId: optStr(r.session) } : {}),
+		...(optStr(d.workItemId) ? { workItemId: optStr(d.workItemId) } : {}),
+		...(optStr(d.workType) ? { workType: optStr(d.workType) } : {}),
+		...(optStr(d.error) ? { error: optStr(d.error) } : {}),
+		context
+	};
+}
+
+/**
+ * List the drain ledger — named drain FAULTS (`type='error'` + `detail.kind='drain_fault'`) and
+ * queue HOLDS (`type='queue'` + `detail.kind='queue_hold'`) — newest first, bounded (F-014).
+ *
+ * `entry` filters to one class; `projectId` scopes to one project (the project command-center
+ * case); `before` pages back through history on an ISO cursor.
+ *
+ * The `type IN [...]` prefilter is deliberate: it lets `agent_event_by_type` narrow before the
+ * `detail.kind` object comparison runs, so this stays cheap on a table that carries every spawn
+ * and completion in the system. Returns [] on an empty ledger — the HONEST idle state (F-008); a
+ * query fault propagates to the loader's honest-error path and is NEVER swallowed into an empty
+ * list (a best-effort catch here would make a broken reader look like a healthy quiet queue,
+ * which is exactly the F-020-sweep trap).
+ */
+export async function listDrainLedger(
+	db: Db,
+	opts: { entry?: 'fault' | 'hold'; projectId?: string; limit?: number; before?: string } = {}
+): Promise<DrainLedgerRow[]> {
+	const limit = opts.limit ?? 40;
+	const params: Record<string, unknown> = { limit };
+	const clauses: string[] = [];
+
+	if (opts.entry === 'fault') {
+		params.types = ['error'];
+		params.kinds = [DRAIN_FAULT_KIND];
+	} else if (opts.entry === 'hold') {
+		params.types = ['queue'];
+		params.kinds = [QUEUE_HOLD_KIND];
+	} else {
+		params.types = ['error', 'queue'];
+		params.kinds = [DRAIN_FAULT_KIND, QUEUE_HOLD_KIND];
+	}
+	clauses.push(`type IN $types`, `detail.kind IN $kinds`);
+
+	if (opts.projectId) {
+		params.proj = link(opts.projectId);
+		clauses.push(`project = $proj`);
+	}
+	if (opts.before) {
+		params.before = opts.before;
+		clauses.push(`at < <datetime>$before`);
+	}
+
+	// F-020: `at` is BOTH the ORDER BY field AND in the projection. Do not remove it.
+	const [rows] = await db.query<[RawLedgerRow[]]>(
+		`SELECT id, type, at, project, session, detail
+		   FROM agent_event
+		  WHERE ${clauses.join(' AND ')}
+		  ORDER BY at DESC
+		  LIMIT $limit;`,
+		params
+	);
+	return (rows ?? []).map(normDrainLedgerRow);
+}
+
+/** Rolling-window counts for the ledger headline (honest zeros on an empty ledger). */
+export interface DrainLedgerCounts {
+	/** Named drain faults in the window. */
+	faults: number;
+	/** Queue holds in the window (all phases). */
+	holds: number;
+	/** The subset of holds that are PARKS — "work is waiting on a ceiling right now". */
+	parks: number;
+	/** The window these counts cover, in ms (so the UI can label it honestly). */
+	windowMs: number;
+}
+
+/**
+ * Count drain faults / queue holds / parks within a rolling window (default 24h) — the headline
+ * numbers on /atelier/queue. Three cheap GROUP ALL counts; the `at >= cutoff` bound keeps them
+ * from degrading as the append-only agent_event table grows.
+ *
+ * F-020: `count()` aggregates carry no ORDER BY / GROUP BY field to project. Throws propagate to
+ * the loader's honest-error path — never a fabricated zero (a zero here means "nothing failed",
+ * which is precisely the lie F-008 forbids).
+ */
+export async function drainLedgerCounts(
+	db: Db,
+	opts: { windowMs?: number; projectId?: string } = {}
+): Promise<DrainLedgerCounts> {
+	const windowMs = opts.windowMs ?? DAY_MS;
+	const since = new Date(Date.now() - windowMs).toISOString();
+	const params: Record<string, unknown> = {
+		since,
+		faultKind: DRAIN_FAULT_KIND,
+		holdKind: QUEUE_HOLD_KIND
+	};
+	const projClause = opts.projectId ? `AND project = $proj` : '';
+	if (opts.projectId) params.proj = link(opts.projectId);
+
+	const res = await db.query<[Array<{ c: number }>, Array<{ c: number }>, Array<{ c: number }>]>(
+		`SELECT count() AS c FROM agent_event
+		   WHERE type = "error" AND detail.kind = $faultKind AND at >= <datetime>$since ${projClause}
+		   GROUP ALL;
+		 SELECT count() AS c FROM agent_event
+		   WHERE type = "queue" AND detail.kind = $holdKind AND at >= <datetime>$since ${projClause}
+		   GROUP ALL;
+		 SELECT count() AS c FROM agent_event
+		   WHERE type = "queue" AND detail.kind = $holdKind AND detail.phase = "parked"
+		     AND at >= <datetime>$since ${projClause}
+		   GROUP ALL;`,
+		params
+	);
+	return {
+		faults: Number(res[0]?.[0]?.c ?? 0),
+		holds: Number(res[1]?.[0]?.c ?? 0),
+		parks: Number(res[2]?.[0]?.c ?? 0),
+		windowMs
+	};
 }

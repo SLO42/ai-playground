@@ -233,6 +233,14 @@ function whyForEvent(e: Record<string, unknown>): string {
 			return `cancelled${d.by ? ` by ${d.by}` : ''}${d.reason ? `: ${d.reason}` : ''}`;
 		case 'error':
 			return d.error ? `error: ${d.error}` : 'error';
+		// COMPLETION-LEDGER Wave A (m0084) — a drain-ledger QUEUE HOLD (enqueued/deduped/parked/
+		// gate-blocked). Its human sentence lives in `summary` (drain-events.recordQueueHold); the
+		// `reason` field holds the machine reason CODE, so we prefer summary and fall back to the
+		// code — never a bare "queue".
+		case 'queue':
+			return d.summary
+				? String(d.summary)
+				: `queue ${d.phase ?? 'hold'}${d.reason ? `: ${d.reason}` : ''}`;
 		default:
 			return String(e.type ?? 'event');
 	}

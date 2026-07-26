@@ -13,8 +13,12 @@ import { tryGetDb } from '$lib/server/db/runtime-init';
 import {
 	queueStats,
 	listWorkItems,
+	listDrainLedger,
+	drainLedgerCounts,
 	type QueueStats,
-	type WorkItemRow
+	type WorkItemRow,
+	type DrainLedgerRow,
+	type DrainLedgerCounts
 } from '$lib/server/orchestrator/queue-monitor';
 import { bootDailySpawnCap } from '$lib/server/orchestrator/boot';
 import type { PageServerLoad } from './$types';
@@ -33,6 +37,10 @@ const ZERO_STATS: QueueStats = {
 	staleCount: 0
 };
 
+/** Honest zeroed ledger counts for the disconnected/error path (never a fabricated "0 faults"
+ *  presented as a live reading — the UI only renders these behind `connected`). */
+const ZERO_LEDGER: DrainLedgerCounts = { faults: 0, holds: 0, parks: 0, windowMs: 24 * 60 * 60 * 1000 };
+
 export interface QueueData {
 	connected: boolean;
 	stats: QueueStats;
@@ -42,6 +50,14 @@ export interface QueueData {
 	completed: WorkItemRow[];
 	/** The cursor for the next older completed page (ISO), or null when exhausted. */
 	completedBefore: string | null;
+	/**
+	 * COMPLETION-LEDGER Wave A — the DRAIN LEDGER: named drain FAULTS (which step broke and why)
+	 * and queue HOLDS (why work is waiting), newest first. This is the surface that answers
+	 * "what broke?" and "why is this task not running?" — previously both were console-only.
+	 */
+	ledger: DrainLedgerRow[];
+	/** Rolling-24h headline counts for the ledger (faults · holds · parks). */
+	ledgerCounts: DrainLedgerCounts;
 	error?: string;
 }
 
@@ -69,7 +85,15 @@ export const load: PageServerLoad = async ({ url, depends }): Promise<QueueData>
 
 	const db = tryGetDb();
 	if (!db) {
-		return { connected: false, stats: ZERO_STATS, active: [], completed: [], completedBefore: null };
+		return {
+			connected: false,
+			stats: ZERO_STATS,
+			active: [],
+			completed: [],
+			completedBefore: null,
+			ledger: [],
+			ledgerCounts: ZERO_LEDGER
+		};
 	}
 	try {
 		// BL-9-H1 LOW — thread the REAL enforced cap so the monitor reports the SAME D-021 daily
@@ -77,16 +101,22 @@ export const load: PageServerLoad = async ({ url, depends }): Promise<QueueData>
 		// Read from the same config seam the orchestrator reads (bootDailySpawnCap), so reported
 		// == enforced. undefined ⇒ uncapped ⇒ queueStats reports capped:false (honest, no fake /N).
 		const dailyCap = bootDailySpawnCap();
-		const [stats, active, completed] = await Promise.all([
+		// The ledger reads run in the SAME Promise.all as the queue reads and are NOT wrapped in a
+		// best-effort catch: a broken ledger reader must surface as the page's honest error, not as
+		// an empty panel that reads "nothing has failed" (the F-020-sweep trap — a best-effort catch
+		// hiding a developer error). Both are bounded (LIMIT / rolling window), per F-014.
+		const [stats, active, completed, ledger, ledgerCounts] = await Promise.all([
 			queueStats(db, { dailyCap }),
 			listWorkItems(db, { status: ['pending', 'processing'], limit: 100 }),
-			listWorkItems(db, { status: ['done', 'failed'], limit: COMPLETED_PAGE, before })
+			listWorkItems(db, { status: ['done', 'failed'], limit: COMPLETED_PAGE, before }),
+			listDrainLedger(db, { limit: 40 }),
+			drainLedgerCounts(db)
 		]);
 		// Cursor for the next page = the enqueue time of the last completed row (when the page
 		// filled). When the page is short there are no older rows → null (honest end-of-list).
 		const completedBefore =
 			completed.length === COMPLETED_PAGE ? (completed[completed.length - 1].enqueuedAt ?? null) : null;
-		return { connected: true, stats, active, completed, completedBefore };
+		return { connected: true, stats, active, completed, completedBefore, ledger, ledgerCounts };
 	} catch (err) {
 		return {
 			connected: false,
@@ -94,6 +124,8 @@ export const load: PageServerLoad = async ({ url, depends }): Promise<QueueData>
 			active: [],
 			completed: [],
 			completedBefore: null,
+			ledger: [],
+			ledgerCounts: ZERO_LEDGER,
 			error: (err as Error).message
 		};
 	}

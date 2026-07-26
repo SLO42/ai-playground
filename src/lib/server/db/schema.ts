@@ -2977,6 +2977,42 @@ const m0083_workforce_hire_events: Migration = {
 	`
 };
 
+// m0084 — COMPLETION-LEDGER Wave A — the DRAIN LEDGER vocabulary (`agent_event.type` gains 'queue').
+//
+// THE GAP THIS CLOSES: the orchestrator drain swallowed every fault into console.* only (one site —
+// the post-task block — into a bare `catch {}`), and workqueue enqueue / park / gate-block were
+// NON-EVENTS. So a task that failed to claim/run/complete, and a task merely SITTING in the queue,
+// were equally invisible after the fact: the operator could not answer "what broke?" or "why is this
+// not running?" from the UI at all.
+//
+// ONE chokepoint (orchestrator/drain-events.ts) now writes both classes through the EXISTING
+// analytics writer (analytics/events.ts writeAgentEvent), into the EXISTING agent_event table — NO
+// new table, NO second writer (F-055). Faults ride the existing `error` type (the honest failure
+// type). Queue HOLDS are not errors — a park is a healthy ceiling doing its job — so they need their
+// own type, and `agent_event.type` is SCHEMAFULL with an ASSERT: writing 'queue' against the m0081
+// ASSERT would be REFUSED, and the best-effort ledger writer would absorb that refusal, leaving the
+// hole exactly as it was. Widening the ASSERT is therefore REQUIRED, not cosmetic.
+//
+// This follows the m0081_agent_event_supervision precedent EXACTLY (widen the type ASSERT with the
+// full prior list plus the new value) rather than inventing a table. It is its OWN migration, never
+// an in-place edit of m0080/m0081: the runner records a migration only on success and never re-runs
+// an applied one, so an in-place edit would NEVER land on the LIVE dev DB (F-015).
+//
+// agent_event_by_at: the drain-ledger read (queue-monitor.listDrainLedger) selects agent_event
+// ORDER BY at DESC over a type filter. agent_event_by_type serves the filter but NOT the sort, so
+// without this the ledger panel does a full-table sort on every /atelier/queue load. Additive +
+// OVERWRITE (idempotent, F-015 — apply-twice and half-applied are both covered by the generic
+// schemaMigrations sweep in migrate.test.ts).
+const m0084_drain_ledger: Migration = {
+	id: '0084_drain_ledger',
+	up: `
+		DEFINE FIELD OVERWRITE type ON agent_event TYPE string
+			ASSERT $value IN ["spawn","completion","escalation","cancel","error","hook","maintenance","supervision","queue"];
+
+		DEFINE INDEX OVERWRITE agent_event_by_at ON agent_event FIELDS at;
+	`
+};
+
 // ── §4.12 note (BL-R3 — F-048 structural fix + F-026) — active-window dedup is the PRIMARY id ──
 //
 // NO new migration ships for BL-R3. The task_run active-window dedup ("one pending-or-processing
@@ -3087,5 +3123,6 @@ export const schemaMigrations: Migration[] = [
 	m0080_maintenance_loops,
 	m0081_agent_event_supervision,
 	m0082_autonomy_status,
-	m0083_workforce_hire_events
+	m0083_workforce_hire_events,
+	m0084_drain_ledger
 ];

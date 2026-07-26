@@ -324,6 +324,13 @@ export async function runPostTask(
 		// it, what a reader sees). `error` is the schema-accepted "the failure" agent_event
 		// type (`divergence` is not a valid type); the reason field distinguishes it.
 		const divDetail = omitUndefined({
+			// DRAIN LEDGER (COMPLETION-LEDGER Wave A) — tag this pre-existing divergence event into the
+			// drain ledger so /atelier/queue surfaces it alongside every other named drain fault. TAGGED,
+			// not duplicated: no second writer (F-055). `reason` is left byte-identical — it is the
+			// stable machine discriminator existing queries and tests match on.
+			kind: 'drain_fault',
+			stage: 'post_task_divergence',
+			absorbed: false,
 			by: 'post-task',
 			reason: 'post-task-divergence-midrun',
 			error:
@@ -472,6 +479,10 @@ export async function runPostTask(
 		// Record an OBSERVABLE divergence instead (commit retained, named, visible to the PM).
 		const movedStatus = evRow?.status ?? 'unknown';
 		const divDetail = omitUndefined({
+			// DRAIN LEDGER — same tagging as the pre-commit divergence above (one writer, F-055).
+			kind: 'drain_fault',
+			stage: 'post_task_divergence',
+			absorbed: false,
 			by: 'post-task',
 			reason: 'post-task-divergence-midrun',
 			error:

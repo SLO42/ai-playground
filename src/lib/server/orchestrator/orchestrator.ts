@@ -60,6 +60,19 @@ import {
 	DAY_MS
 } from './workqueue';
 import { tokensSpentSince, TokenBudgetExceededError } from '../analytics/spend-budget';
+// COMPLETION-LEDGER Wave A — THE DRAIN LEDGER. Every fault below that used to die in a console.warn
+// (or, for the post-task block, in a bare `catch {}`) now ALSO writes a NAMED, durable agent_event
+// saying WHICH stage broke and WHY; every enqueue/park/gate-block writes a first-class queue hold so
+// the operator can answer "why is this task not running?" from /atelier/queue alone. Both writers are
+// BEST-EFFORT by contract (they never throw — F-014/F-048) so observability can never crash the thing
+// it observes. The console lines are KEPT: they are the live-tail channel, the events are the durable
+// one; neither replaces the other.
+import {
+	recordDrainFault,
+	recordQueueHold,
+	holdReasonForSpawnError,
+	DRAIN_FAULT_KIND
+} from './drain-events';
 import { runReviewFork, makeWriteSurface, type ReviewKind } from '../memory/index';
 import { recordGraduationIfChanged, recordProjectGraduationIfChanged } from '../memory/soul-graduation';
 import {
@@ -499,6 +512,17 @@ export class Orchestrator {
 			console.warn(
 				`[orchestrator] trigger for ${taskId} failed (will re-check on the next trigger): ${(err as Error).message}`
 			);
+			// DRAIN LEDGER: the fault above was previously console-only, so a task that never made it
+			// into the queue looked identical to one nobody had touched. `absorbed:true` — the drain
+			// carried on and a later trigger re-checks this task.
+			await recordDrainFault(this.#db, {
+				stage: 'trigger',
+				error: err,
+				taskId,
+				projectId,
+				absorbed: true,
+				context: { recovery: 'a later task trigger re-enqueues this task' }
+			});
 		}
 	}
 
@@ -562,6 +586,14 @@ export class Orchestrator {
 			console.warn(
 				`[orchestrator] backstop maintenance gc failed (will retry next tick): ${(err as Error).message}`
 			);
+			// DRAIN LEDGER: a repeatedly-failing gc means stuck `processing` rows are never recovered —
+			// the queue silently starves. Console-only, that was undiagnosable after the fact.
+			await recordDrainFault(this.#db, {
+				stage: 'maintenance_gc',
+				error: err,
+				absorbed: true,
+				context: { recovery: 'the next maintenance tick retries the sweep' }
+			});
 		} finally {
 			this.#gcInFlight = false;
 		}
@@ -575,7 +607,7 @@ export class Orchestrator {
 	 * was created.
 	 */
 	async enqueueTask(taskId: string, projectId: string): Promise<boolean> {
-		const { enqueued } = await enqueue(this.#db, {
+		const { id, enqueued } = await enqueue(this.#db, {
 			workType: 'task_run',
 			payload: { taskId, projectId },
 			projectId,
@@ -583,6 +615,22 @@ export class Orchestrator {
 			// re-enqueuing the SAME pending task is a no-op. task_run has no session at
 			// enqueue, so the task id is the dedup discriminator.
 			dedupScope: taskId
+		});
+		// DRAIN LEDGER (finding 4) — enqueue and DEDUP are now first-class events. The dedup case is
+		// the one the operator most needs: "I hit Continue and nothing happened" is almost always
+		// "an identical item is already pending or running", and until now that decision left no
+		// trace anywhere. Emitted HERE (the orchestrator's enqueue boundary) rather than inside
+		// workqueue.enqueue so that primitive stays a pure D-016 query helper with no analytics
+		// import — the drain path is what the operator is asking about, and this is its edge.
+		// Best-effort by contract: it never throws, so it can never turn a successful enqueue into
+		// a failed trigger (F-014).
+		await recordQueueHold(this.#db, {
+			phase: enqueued ? 'enqueued' : 'deduped',
+			reason: enqueued ? 'new_work' : 'active_twin',
+			taskId,
+			projectId,
+			workItemId: id,
+			workType: 'task_run'
 		});
 		return enqueued;
 	}
@@ -592,6 +640,19 @@ export class Orchestrator {
 	 * exist, claim one and spawn it. NEVER a busy loop — the loop ends the instant either
 	 * permits or work run out (D-004). Re-entrancy is collapsed: a trigger arriving mid-
 	 * drain sets a redraw flag so we drain once more rather than overlapping passes.
+	 *
+	 * DRAIN LEDGER (COMPLETION-LEDGER Wave A, finding 4): every `break` below is a PARK — a real
+	 * decision to leave work sitting — and each one now writes a first-class `queue` agent_event
+	 * naming WHICH ceiling stopped the drain (daily cap · token budget · concurrency · per-project),
+	 * with the pending depth so the operator can tell "parked with 12 waiting" from "parked with an
+	 * empty queue". Parks are THROTTLED per (reason, project) inside drain-events.PARK_THROTTLE_MS
+	 * with an honest folded-in count, because a park repeats on every trigger and an unthrottled
+	 * event would be a storm (which is the opposite of visibility).
+	 *
+	 * The gate reads + the claim are now also wrapped: a DB fault there used to reject out of
+	 * `drain()`, and drain() is invoked as `void this.drain()` on the completion path — an
+	 * UNHANDLED REJECTION that takes the process down (F-014). It is now caught, recorded as a
+	 * named `claim`-stage fault, and ends the pass cleanly (a later trigger re-drains).
 	 */
 	async drain(): Promise<DrainSummary> {
 		if (this.#stopped) return { claimed: 0, spawned: 0 }; // stopped → never claim
@@ -608,38 +669,96 @@ export class Orchestrator {
 				// Spawn while we have BOTH a free interactive permit AND claimable work.
 				for (;;) {
 					if (this.#stopped) break; // shutdown mid-drain — stop claiming
-					// TASK 2.15 — daily spawn cap (D-021): once the rolling-window claim count
-					// reaches the cap, stop claiming and PARK the rest. The window rolls forward
-					// on its own; a later trigger re-checks. Threshold-gated, NOT a busy loop.
-					if (this.#dailyCap !== undefined) {
-						const drained = await spawnsSince(this.#db, this.#capWindowMs);
-						if (drained >= this.#dailyCap) break; // cap reached — leave work parked
+					// The claim step (gate reads + claimNext) under ONE guard. `permit` is declared
+					// outside so the catch can hand it back — a permit leaked on a claim fault would
+					// permanently shrink the interactive cap (the F-014 wedge class).
+					let permit: { release(): void } | null = null;
+					let item: Awaited<ReturnType<typeof claimNext>> = null;
+					try {
+						// TASK 2.15 — daily spawn cap (D-021): once the rolling-window claim count
+						// reaches the cap, stop claiming and PARK the rest. The window rolls forward
+						// on its own; a later trigger re-checks. Threshold-gated, NOT a busy loop.
+						if (this.#dailyCap !== undefined) {
+							const drained = await spawnsSince(this.#db, this.#capWindowMs);
+							if (drained >= this.#dailyCap) {
+								await this.#recordPark('daily_cap', {
+									spawnsInWindow: drained,
+									dailyCap: this.#dailyCap,
+									windowMs: this.#capWindowMs
+								});
+								break; // cap reached — leave work parked
+							}
+						}
+						// CG-2 (COST-GOVERNANCE-SPEC) — the GLOBAL rolling-24h TOKEN budget. Same park
+						// pattern as the claim-cap above but on real SPEND: once Σ(tokens) in the window
+						// reaches the budget, stop claiming and PARK the rest (the work stays pending +
+						// re-drains when the window rolls forward / a completion frees spend). This is the
+						// EFFICIENT park (no claim, no spin); launchSession's own CG-2 gate is the
+						// un-bypassable backstop for the narrow race where the budget is crossed between
+						// this check and the spawn (that refusal is caught in #runItem as park-not-burn).
+						if (this.#dailyTokenBudget !== undefined) {
+							const spent = await tokensSpentSince(this.#db, this.#capWindowMs);
+							if (spent >= this.#dailyTokenBudget) {
+								await this.#recordPark('token_budget', {
+									tokensInWindow: spent,
+									tokenBudget: this.#dailyTokenBudget,
+									windowMs: this.#capWindowMs
+								});
+								break; // budget reached — leave work parked
+							}
+						}
+						permit = this.#sem.tryAcquire();
+						if (!permit) {
+								await this.#recordPark('concurrency', {
+								maxConcurrent: this.#sem.max,
+								inUse: this.#sem.inUse
+							});
+							break; // interactive cap reached — leave work parked
+						}
+						// Per-project gate (concurrency.perProject): hand claimNext the project ids
+						// already AT their in-flight cap so their `task_run` items are skipped (parked,
+						// left pending) and re-evaluated when an in-flight session completes (the
+						// permit-release finally re-drains). Computed fresh each iteration so a bump
+						// from the claim just made above is reflected on the next claim in this pass.
+						const cappedProjects = this.#cappedProjectIds();
+						item = await claimNext(this.#db, nextClaimToken(), {
+							excludeProjectIds: cappedProjects
+						});
+						if (!item) {
+							permit.release();
+							// Nothing claimable. An EMPTY queue is not an event (that is the healthy idle
+							// state and eventing it would be pure noise) — but "nothing claimable BECAUSE
+							// projects are at their in-flight cap" is exactly the question the operator
+							// asks, so we record the park only when the per-project gate was actually
+							// applied. HONEST: the reason line names the gate that was in force, it does
+							// not claim to have proved causation (claimNext cannot distinguish the two).
+							if (cappedProjects.length > 0) {
+								await this.#recordPark('per_project', {
+									cappedProjects,
+									perProjectCap: this.#perProject
+								});
+							}
+							break; // queue empty (or all remaining are capped-project cwd-spawning items) — park the rest
+						}
+					} catch (err) {
+						// A gate read or the claim itself threw. Hand the permit back FIRST (never leak
+						// the cap), then record a named `claim`-stage fault and end this pass cleanly.
+						permit?.release();
+						console.warn(
+							`[orchestrator] claim step failed (drain pass ended; a later trigger re-drains): ${(err as Error).message}`
+						);
+						await recordDrainFault(this.#db, {
+							stage: 'claim',
+							error: err,
+							absorbed: true,
+							context: { recovery: 'a later trigger re-drains the queue' }
+						});
+						break;
 					}
-					// CG-2 (COST-GOVERNANCE-SPEC) — the GLOBAL rolling-24h TOKEN budget. Same park
-					// pattern as the claim-cap above but on real SPEND: once Σ(tokens) in the window
-					// reaches the budget, stop claiming and PARK the rest (the work stays pending +
-					// re-drains when the window rolls forward / a completion frees spend). This is the
-					// EFFICIENT park (no claim, no spin); launchSession's own CG-2 gate is the
-					// un-bypassable backstop for the narrow race where the budget is crossed between
-					// this check and the spawn (that refusal is caught in #runItem as park-not-burn).
-					if (this.#dailyTokenBudget !== undefined) {
-						const spent = await tokensSpentSince(this.#db, this.#capWindowMs);
-						if (spent >= this.#dailyTokenBudget) break; // budget reached — leave work parked
-					}
-					const permit = this.#sem.tryAcquire();
-					if (!permit) break; // interactive cap reached — leave work parked
-					// Per-project gate (concurrency.perProject): hand claimNext the project ids
-					// already AT their in-flight cap so their `task_run` items are skipped (parked,
-					// left pending) and re-evaluated when an in-flight session completes (the
-					// permit-release finally re-drains). Computed fresh each iteration so a bump
-					// from the claim just made above is reflected on the next claim in this pass.
-					const item = await claimNext(this.#db, nextClaimToken(), {
-						excludeProjectIds: this.#cappedProjectIds()
-					});
-					if (!item) {
-						permit.release();
-						break; // queue empty (or all remaining are capped-project cwd-spawning items) — park the rest
-					}
+					// Every path that leaves `item`/`permit` unset already `break`s above; this is the
+					// type-level restatement of that invariant (narrowing does not survive try/catch).
+					// It is never reached in practice — and if it ever were, breaking is the safe act.
+					if (!item || !permit) break;
 					claimed++;
 					// Count this session against its project's in-flight cap BEFORE the spawn, so the
 					// next claim in this pass (and concurrent drains) see the updated count. Only a
@@ -665,6 +784,39 @@ export class Orchestrator {
 			this.#draining = false;
 		}
 		return { claimed, spawned };
+	}
+
+	/**
+	 * DRAIN LEDGER — record ONE park (the drain stopped claiming and left work pending) with the
+	 * ceiling that caused it plus the honest pending depth, so /atelier/queue can answer "why is
+	 * this task not running?".
+	 *
+	 * The depth read is itself best-effort and NEVER blocks the park: if `pendingDepth` throws (the
+	 * same DB fault that would break everything else), we record the park WITHOUT a depth rather
+	 * than lose the park event or fabricate a number (F-008 — an absent depth renders as an honest
+	 * omission, never a "0 items waiting" that would read as "nothing is stuck"). recordQueueHold
+	 * itself never throws (F-014/F-048) and throttles repeats, so this is cheap on a hot drain: the
+	 * depth query only runs when a park is actually about to be emitted.
+	 */
+	async #recordPark(
+		reason: 'daily_cap' | 'token_budget' | 'concurrency' | 'per_project',
+		context: Record<string, unknown>
+	): Promise<void> {
+		let depth: number | undefined;
+		try {
+			depth = await pendingDepth(this.#db);
+		} catch (depthErr) {
+			// Named, not swallowed silently: the park is still recorded, just without the depth.
+			console.warn(
+				`[orchestrator] park depth read failed (park still recorded without a depth): ${(depthErr as Error).message}`
+			);
+		}
+		await recordQueueHold(this.#db, {
+			phase: 'parked',
+			reason,
+			pendingDepth: depth,
+			context
+		});
 	}
 
 	/**
@@ -719,6 +871,16 @@ export class Orchestrator {
 				console.warn(
 					`[orchestrator] boot-drain enqueue for ${t.id} failed (skipped, will re-check on a later trigger): ${(err as Error).message}`
 				);
+				// DRAIN LEDGER: a ready task that boot could NOT queue is the most invisible failure of
+				// all — it looks exactly like a task nobody has got to yet. Name it.
+				await recordDrainFault(this.#db, {
+					stage: 'boot_enqueue',
+					error: err,
+					taskId: t.id,
+					projectId: t.project,
+					absorbed: true,
+					context: { recovery: 'a later task trigger or Continue re-enqueues this task' }
+				});
 			}
 		}
 
@@ -824,8 +986,19 @@ export class Orchestrator {
 				console.warn(
 					`[orchestrator] memory_review ${item.id} fork failed (best-effort, item marked failed): ${(err as Error).message}`
 				);
+				// DRAIN LEDGER: the fork silently marking itself failed is why "the brain stopped
+				// learning" was previously undiagnosable. absorbed:false — this DID change the verdict.
+				await recordDrainFault(this.#db, {
+					stage: 'memory_review_fork',
+					error: err,
+					projectId: item.projectId,
+					sessionId: item.sessionId,
+					workItemId: item.id,
+					workType,
+					absorbed: false
+				});
 			} finally {
-				await complete(this.#db, item.id, item.claimToken, reviewOk ? 'done' : 'failed').catch(() => {});
+				await this.#completeItem(item, reviewOk ? 'done' : 'failed', workType);
 				permit.release();
 				void this.drain();
 			}
@@ -849,8 +1022,19 @@ export class Orchestrator {
 				console.warn(
 					`[orchestrator] hire_request ${item.id} draft failed (best-effort, item marked failed): ${(err as Error).message}`
 				);
+				// DRAIN LEDGER: a refused HR draft (e.g. the B1 self-cert refusal, RecruiterIntegrityError)
+				// is a DECISION the operator must see — it was console-only. absorbed:false (item failed).
+				await recordDrainFault(this.#db, {
+					stage: 'hire_request_fork',
+					error: err,
+					projectId: item.projectId ?? (String(item.payload.projectId ?? '') || undefined),
+					workItemId: item.id,
+					workType,
+					absorbed: false,
+					context: { roleSlug: item.payload.roleSlug }
+				});
 			} finally {
-				await complete(this.#db, item.id, item.claimToken, hireOk ? 'done' : 'failed').catch(() => {});
+				await this.#completeItem(item, hireOk ? 'done' : 'failed', workType);
 				permit.release();
 				void this.drain();
 			}
@@ -903,6 +1087,22 @@ export class Orchestrator {
 				console.warn(
 					`[orchestrator] task ${taskId} ready→in_progress skipped (status advanced or concurrent move; spawning anyway): ${(transErr as Error).message}`
 				);
+				// DRAIN LEDGER: this is the exact precondition for the HB-H2 divergence below — the
+				// task never reached a post-task-eligible state, so the run's result will be refused.
+				// Recording it here names the CAUSE next to the effect instead of leaving the operator
+				// with only the downstream "post-task-divergence" symptom.
+				await recordDrainFault(this.#db, {
+					stage: 'task_transition',
+					error: transErr,
+					taskId,
+					projectId,
+					workItemId: item.id,
+					absorbed: true,
+					context: {
+						consequence:
+							'the spawn proceeds, but post-task will refuse to write a terminal result for a task in an illegal pre-state'
+					}
+				});
 			}
 			// Resolve the route (production: awaits resolveRoute → writes the routing_event with
 			// rationale+intent). Awaiting a sync stub return is a no-op, so test/degenerate seams
@@ -958,6 +1158,21 @@ export class Orchestrator {
 					`[orchestrator] cc-config catalog freshen skipped for task ${taskId} ` +
 						`(spawning against last-good snapshot): ${(freshErr as Error).message}`
 				);
+				// DRAIN LEDGER: fail-open means the spawn validates against a POSSIBLY STALE catalog.
+				// That is the right call (F-014) but the operator must be able to SEE that it happened
+				// — a run refused for an "unknown capability" is otherwise inexplicable.
+				await recordDrainFault(this.#db, {
+					stage: 'catalog_freshen',
+					error: freshErr,
+					taskId,
+					projectId,
+					workItemId: item.id,
+					absorbed: true,
+					context: {
+						consequence:
+							'the spawn proceeds against the last-good catalog snapshot; D-036 unknown-id refusal still fails closed'
+					}
+				});
 			}
 			const res: LaunchResult = await launchSession({
 				db: this.#db,
@@ -1020,6 +1235,13 @@ export class Orchestrator {
 						session: res.sessionId,
 						project: projectId,
 						detail: {
+							// DRAIN LEDGER: this event predates the ledger and already carried the right
+							// content, so it is TAGGED into the ledger rather than duplicated by a second
+							// writer (F-055 — one writer per event). `reason` is left byte-identical: it is
+							// the stable machine discriminator existing queries and tests match on.
+							kind: DRAIN_FAULT_KIND,
+							stage: 'post_task_divergence',
+							absorbed: false,
 							by: 'orchestrator',
 							reason: 'post-task-divergence',
 							error:
@@ -1111,14 +1333,56 @@ export class Orchestrator {
 								rawConfig: project?.game_verify
 							},
 							{ runner: this.#gameVerify.runner }
-						).catch((gvErr) =>
+						).catch(async (gvErr) => {
 							console.warn(
 								`[orchestrator] game-verify step skipped for task ${taskId} (best-effort; task stays done): ${(gvErr as Error).message}`
-							)
-						);
+							);
+							// DRAIN LEDGER: a silently-skipped game verify means the mod was never actually
+							// run — the operator would otherwise read "done" as "verified in-game".
+							await recordDrainFault(this.#db, {
+								stage: 'game_verify',
+								error: gvErr,
+								taskId,
+								projectId,
+								sessionId: res.sessionId,
+								workItemId: item.id,
+								absorbed: true,
+								context: {
+									consequence: 'the task stays done but was NOT verified by running the game'
+								}
+							});
+						});
 					}
-				} catch {
-					// best-effort: never let post-task failure crash the drain or the spawn verdict
+				} catch (ptErr) {
+					// best-effort: never let post-task failure crash the drain or the spawn verdict.
+					//
+					// THIS WAS A BARE `catch {}` — the single most invisible failure on the whole drain
+					// path. The project read, the worktree read, the test-command resolve, runPostTask
+					// itself (commit + test + follow-up) and the game-verify dispatch all live inside it,
+					// so an agent could do real work, fail to commit it, and leave NOTHING anywhere: no
+					// log line, no row, no UI state. The work_item still went `done` (ok is unchanged
+					// here — the SPAWN succeeded), which made it look like a clean run.
+					//
+					// It is still best-effort (F-014 — the spawn verdict is not flipped), but it is no
+					// longer silent: named, logged, and recorded as a `post_task`-stage fault so the
+					// operator can see that the commit/test half of the heartbeat did not complete.
+					console.warn(
+						`[orchestrator] post-task loop failed for task ${taskId} (spawn verdict unchanged; commit/test may NOT have run): ${(ptErr as Error).message}`
+					);
+					await recordDrainFault(this.#db, {
+						stage: 'post_task',
+						error: ptErr,
+						taskId,
+						projectId,
+						sessionId: res.sessionId,
+						workItemId: item.id,
+						workType,
+						absorbed: true,
+						context: {
+							consequence:
+								'the session verdict stands, but the commit / project-test step may not have completed — check the session branch for uncommitted work'
+						}
+					});
 				}
 			}
 
@@ -1131,10 +1395,28 @@ export class Orchestrator {
 			// merging. Best-effort (F-014): a merge-back fault is logged and NEVER crashes the drain or
 			// changes the work_item verdict — any committed work stays on its branch.
 			if (this.#mergeBack?.enabled) {
-				await this.#mergeBackSession(res.sessionId, projectId, ok ? 'done' : 'failed').catch((mbErr) =>
-					console.warn(
-						`[orchestrator] merge-back skipped for session ${res.sessionId} (best-effort; committed work stays on its branch): ${(mbErr as Error).message}`
-					)
+				await this.#mergeBackSession(res.sessionId, projectId, ok ? 'done' : 'failed').catch(
+					async (mbErr) => {
+						console.warn(
+							`[orchestrator] merge-back skipped for session ${res.sessionId} (best-effort; committed work stays on its branch): ${(mbErr as Error).message}`
+						);
+						// DRAIN LEDGER: the work is SAFE (it stays on the session branch) but it is NOT on
+						// the project branch — a difference the operator cannot see anywhere else, and the
+						// reason "my change is missing from main" keeps recurring.
+						await recordDrainFault(this.#db, {
+							stage: 'merge_back',
+							error: mbErr,
+							taskId,
+							projectId,
+							sessionId: res.sessionId,
+							workItemId: item.id,
+							absorbed: true,
+							context: {
+								consequence:
+									'any committed work is preserved on the session branch but was NOT merged into the project branch'
+							}
+						});
+					}
 				);
 			}
 		} catch (err) {
@@ -1147,23 +1429,87 @@ export class Orchestrator {
 			// idempotently and spawns. enforceTokenBudget already emitted the named refusal event.
 			if (err instanceof TokenBudgetExceededError) {
 				parked = true;
-				await release(this.#db, item.id, item.claimToken).catch((relErr) =>
+				await release(this.#db, item.id, item.claimToken).catch(async (relErr) => {
 					console.warn(
 						`[orchestrator] token-budget park: could not release work_item ${item.id} to pending (boot reaper recovers a stuck claim): ${(relErr as Error).message}`
-					)
-				);
+					);
+					// DRAIN LEDGER: a park that could not actually release leaves the item wedged
+					// `processing` — it looks in-flight but nothing is running it. Name it.
+					await recordDrainFault(this.#db, {
+						stage: 'release',
+						error: relErr,
+						taskId,
+						projectId,
+						workItemId: item.id,
+						workType,
+						absorbed: true,
+						context: {
+							consequence:
+								'the item stays claimed and will not re-drain until the maintenance gc / boot reaper resets it'
+						}
+					});
+				});
 				console.warn(
 					`[orchestrator] task ${taskId} PARKED on token budget (${err.spent} ≥ ${err.budget}); work_item ${item.id} released to pending, task left in_progress for re-drain`
 				);
+				// DRAIN LEDGER (finding 4): the CG-2 race park. enforceTokenBudget already emits its own
+				// refusal event; this records the QUEUE consequence — this specific task went back to
+				// pending — so /atelier/queue can say why that task is sitting there rather than running.
+				// Throttled per (reason, project) like every other park.
+				await recordQueueHold(this.#db, {
+					phase: 'parked',
+					reason: 'token_budget',
+					taskId,
+					projectId,
+					workItemId: item.id,
+					workType,
+					context: {
+						tokensInWindow: err.spent,
+						tokenBudget: err.budget,
+						at: 'spawn (the drain gate let this claim through, launchSession refused it)'
+					}
+				});
 			} else {
 				ok = false; // a spawn failure marks the work_item failed; never crash the drain
+				// DRAIN LEDGER (finding 3): THE big one. A route-resolve throw or a launchSession
+				// failure previously set ok=false and wrote NOTHING — the work_item went red and the
+				// task was burned to `failed` with no recorded cause anywhere.
+				//
+				// A D-036 capability refusal is separated out: it is not a transient fault but a
+				// standing POLICY block (the task cannot run until the catalog or the bundle changes),
+				// so it is recorded as an actionable `gate_blocked` HOLD instead of being buried in the
+				// generic fault bucket. Everything else is a named route_spawn fault.
+				const holdReason = holdReasonForSpawnError(err);
+				if (holdReason) {
+					await recordQueueHold(this.#db, {
+						phase: 'gate_blocked',
+						reason: holdReason,
+						taskId,
+						projectId,
+						workItemId: item.id,
+						workType,
+						context: { error: (err as Error).message?.slice(0, 300) }
+					});
+				} else {
+					await recordDrainFault(this.#db, {
+						stage: 'route_spawn',
+						error: err,
+						taskId,
+						projectId,
+						workItemId: item.id,
+						workType,
+						absorbed: false,
+						context: {
+							consequence: 'the work item is marked failed and the task is driven to failed'
+						}
+					});
+				}
 			}
 		} finally {
 			// CG-2: a parked item was already released to pending — do NOT complete it terminal and do
 			// NOT run the task-terminal reconciliation below (that would burn the parked task). The
 			// per-project decrement + permit release + re-drain still run (they must, on every path).
-			if (!parked)
-			await complete(this.#db, item.id, item.claimToken, ok ? 'done' : 'failed').catch(() => {});
+			if (!parked) await this.#completeItem(item, ok ? 'done' : 'failed', workType);
 			// BL-R2 — a FAILED task_run must not strand its TASK on `in_progress`. The task was moved
 			// ready→in_progress BEFORE the spawn (above), but post-task — the ONLY path that writes the
 			// task's terminal `done`/`failed` — runs solely on the SUCCESS path. A route resolve throw,
@@ -1191,6 +1537,24 @@ export class Orchestrator {
 					console.warn(
 						`[orchestrator] task ${taskId} terminal-failed transition errored (best-effort, drain continues): ${(failErr as Error).message}`
 					);
+					// DRAIN LEDGER — the HEARTBEAT link. This is the ONLY writer that gets a failed
+					// task_run's task off `in_progress`; when it errors the task is STRANDED in_progress
+					// with no live worker, and the PM (which fires on a terminal task transition) never
+					// wakes. That is the F-048 invisible half-state, and it was console-only.
+					await recordDrainFault(this.#db, {
+						stage: 'heartbeat',
+						error: failErr,
+						taskId,
+						projectId,
+						workItemId: item.id,
+						workType,
+						absorbed: true,
+						context: {
+							intendedStatus: 'failed',
+							consequence:
+								'the task is stranded in_progress with no live worker; the PM will not be notified until it is reset'
+						}
+					});
 				}
 			} else if (ok && taskId && !this.#postTask?.enabled) {
 				// BL-R3 (success-side twin) — a SUCCESSFUL task_run with post-task DISABLED (the
@@ -1214,6 +1578,22 @@ export class Orchestrator {
 					console.warn(
 						`[orchestrator] task ${taskId} terminal-done transition errored (best-effort, drain continues): ${(doneErr as Error).message}`
 					);
+					// DRAIN LEDGER — the success-side twin of the heartbeat strand above (BL-R3): a
+					// SUCCESSFUL run whose task never reached `done` is stranded in_progress forever.
+					await recordDrainFault(this.#db, {
+						stage: 'heartbeat',
+						error: doneErr,
+						taskId,
+						projectId,
+						workItemId: item.id,
+						workType,
+						absorbed: true,
+						context: {
+							intendedStatus: 'done',
+							consequence:
+								'the run succeeded but the task is stranded in_progress; the PM will not be notified until it is reset'
+						}
+					});
 				}
 			}
 			// Drop this session from its project's in-flight count BEFORE re-draining so the
@@ -1226,6 +1606,66 @@ export class Orchestrator {
 			// was parked behind the cap proceeds now (event-driven, not a busy loop).
 			permit.release();
 			void this.drain();
+		}
+	}
+
+	/**
+	 * Mark a claimed work_item terminal, with the failure MADE VISIBLE (DRAIN LEDGER).
+	 *
+	 * Every terminal write on the drain path used to be `complete(...).catch(() => {})` — a
+	 * completely silent swallow at THREE sites. That is the worst invisible failure in the whole
+	 * queue: the run finished, but the row stays `processing` forever, so the item looks stuck to
+	 * the monitor, the daily-cap window keeps counting it, and gcStale only frees it an hour later.
+	 * Nobody could tell that from a genuinely long-running claim.
+	 *
+	 * Still best-effort by contract (F-014/F-048 — a DB fault here must never crash the drain), but
+	 * no longer silent: the fault is logged AND recorded as a named `complete`-stage event naming
+	 * the recovery (the gc backstop). ALSO records the honest `false` return — a completed-nothing
+	 * (a STALE claim token: the row was re-claimed by the reaper/gc while we ran) is not an
+	 * exception, so it never reached the catch, yet it means our verdict was DROPPED on the floor.
+	 */
+	async #completeItem(
+		item: { id: string; claimToken: string; projectId?: string; sessionId?: string },
+		status: 'done' | 'failed',
+		workType?: string
+	): Promise<void> {
+		try {
+			const wrote = await complete(this.#db, item.id, item.claimToken, status);
+			if (!wrote) {
+				console.warn(
+					`[orchestrator] work_item ${item.id} could not be marked '${status}' — the claim lease is stale (the row was re-claimed or reset). The verdict was dropped.`
+				);
+				await recordDrainFault(this.#db, {
+					stage: 'complete',
+					error: new Error(
+						`work_item ${item.id} was not marked '${status}': the claim lease no longer matches ` +
+							`(the row was re-claimed or reset by the gc/reaper while this run was in flight).`
+					),
+					projectId: item.projectId,
+					sessionId: item.sessionId,
+					workItemId: item.id,
+					workType,
+					absorbed: true,
+					context: { intendedStatus: status, recovery: 'the re-claimer owns this item now' }
+				});
+			}
+		} catch (err) {
+			console.warn(
+				`[orchestrator] marking work_item ${item.id} '${status}' failed (drain continues; the gc backstop recovers a stuck claim): ${(err as Error).message}`
+			);
+			await recordDrainFault(this.#db, {
+				stage: 'complete',
+				error: err,
+				projectId: item.projectId,
+				sessionId: item.sessionId,
+				workItemId: item.id,
+				workType,
+				absorbed: true,
+				context: {
+					intendedStatus: status,
+					recovery: 'the backstop maintenance gc resets the stuck claim back to pending'
+				}
+			});
 		}
 	}
 

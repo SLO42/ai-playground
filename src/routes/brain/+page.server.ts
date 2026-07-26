@@ -30,6 +30,11 @@ import {
 	CONCIERGE_ADVISORIES_LIMIT,
 	type ConciergeAdvisoryRow
 } from '$lib/server/projects/concierge-advisories';
+import {
+	listConciergeTurns,
+	CONCIERGE_TURNS_LIMIT,
+	type ConciergeTurnRow
+} from '$lib/server/concierge/turn-events';
 import type { PageServerLoad } from './$types';
 
 export interface BrainData {
@@ -43,6 +48,10 @@ export interface BrainData {
 	/** Recent concierge advisories across ALL projects (Path-B PM consults, pending → answered),
 	 *  newest-first + bounded; [] when no PM has ever consulted (honest empty, F-008). */
 	advisories: ConciergeAdvisoryRow[];
+	/** COMPLETION-LEDGER Wave A — the concierge's THINKING ledger: one row per advisory turn
+	 *  (what was asked, what it decided, which brain served it), newest-first + bounded. [] when
+	 *  the concierge has never been consulted (honest empty, F-008 — never a fabricated turn). */
+	turns: ConciergeTurnRow[];
 	error?: string;
 }
 
@@ -50,16 +59,22 @@ export const load: PageServerLoad = async ({ depends }): Promise<BrainData> => {
 	depends('app:brain');
 
 	const db = tryGetDb();
-	if (!db) return { connected: false, soul: null, graduations: [], decisions: [], advisories: [] };
+	if (!db) {
+		return { connected: false, soul: null, graduations: [], decisions: [], advisories: [], turns: [] };
+	}
 
 	try {
-		const [soul, graduations, decisions, advisories] = await Promise.all([
+		const [soul, graduations, decisions, advisories, turns] = await Promise.all([
 			loadSoul(db),
 			listGraduations(db, ATELIER_SUBJECT, GRADUATION_TIMELINE_LIMIT),
 			listRecentDecisions(db, RECENT_DECISIONS_LIMIT),
-			listConciergeAdvisories(db, { limit: CONCIERGE_ADVISORIES_LIMIT })
+			listConciergeAdvisories(db, { limit: CONCIERGE_ADVISORIES_LIMIT }),
+			// Deliberately NOT wrapped in its own catch: a swallowed read would render "no concierge
+			// turns yet", which is exactly the fabricated-empty lie F-008 forbids. A throw lands on
+			// the honest connected:false path below, where the operator can SEE that it failed.
+			listConciergeTurns(db, { limit: CONCIERGE_TURNS_LIMIT })
 		]);
-		return { connected: true, soul, graduations, decisions, advisories };
+		return { connected: true, soul, graduations, decisions, advisories, turns };
 	} catch (err) {
 		return {
 			connected: false,
@@ -67,6 +82,7 @@ export const load: PageServerLoad = async ({ depends }): Promise<BrainData> => {
 			graduations: [],
 			decisions: [],
 			advisories: [],
+			turns: [],
 			error: (err as Error).message
 		};
 	}

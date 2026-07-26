@@ -19,15 +19,30 @@
   const graduations = $derived(data.graduations ?? []);
   const decisions = $derived(data.decisions ?? []);
   const advisories = $derived(data.advisories ?? []);
+  const turns = $derived(data.turns ?? []);
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
 
   // Live: any brain-row change re-runs the loader (the soul is compute-on-read; UI-SPEC §1.2).
   // `soul_graduation` is included so a freshly-recorded graduation appears without a manual reload.
+  // `agent_event` is watched so a concierge turn appears the moment it is recorded (the thinking
+  // ledger rides agent_event `type:'consult'`) — reactive off the live stream, never polled.
   $effect(() => {
-    const tables = ['concept', 'memory', 'causal_chain', 'session', 'retrieval_outcome', 'decision', 'soul_graduation', 'peer_message'];
+    const tables = ['concept', 'memory', 'causal_chain', 'session', 'retrieval_outcome', 'decision', 'soul_graduation', 'peer_message', 'agent_event'];
     const offs = tables.map((t) => stream.onDbChange(t, () => void invalidate('app:brain')));
     return () => offs.forEach((off) => off());
   });
+
+  /** Tone for a turn's outcome badge — drives ONLY the -on-overlay text token (≥4.5:1 on every
+   *  surface). The outcome word itself carries the meaning, so colour is never the sole signal. */
+  function turnTone(outcome: string | null): 'error' | 'warn' | 'neutral' {
+    if (outcome === 'failed') return 'error';
+    if (outcome === 'no_requester' || outcome === 'duplicate_suppressed') return 'warn';
+    return 'neutral';
+  }
+  function fmtDuration(ms: number | null): string {
+    if (ms == null) return '—';
+    return ms < 1000 ? `${Math.round(ms)}ms` : `${(ms / 1000).toFixed(1)}s`;
+  }
 
   const STAGE_LABEL: Record<string, string> = {
     nascent: 'nascent',
@@ -260,6 +275,67 @@
         <p class="dim state-body">
           No concierge consults yet — a PM's autonomous review consults the Atelier concierge when it
           detects a specialist need.
+        </p>
+      {/if}
+    </div>
+
+    <!-- Concierge turns — the THINKING ledger (COMPLETION-LEDGER Wave A, finding 2). One row per
+         advisory turn: what was asked, what it decided, and WHICH brain served it. The spend for a
+         turn lives on its separate metering row (/reports), never here — so a turn that called no
+         model reads honestly as "no model call" rather than as a free cloud answer (F-008). Ask
+         and reply were screened + excerpted at write (D-026). -->
+    <div class="card section">
+      <div class="section-head">
+        <span class="eyebrow">concierge · thinking</span>
+        <h2 class="section-title">Concierge turns</h2>
+      </div>
+      {#if turns.length}
+        <ul class="decisions" aria-label="concierge turns">
+          {#each turns as t (t.id)}
+            <li class="decision turn" data-tone={turnTone(t.outcome)}>
+              <div class="decision-head">
+                <span class="status-tag" data-tone={turnTone(t.outcome)}>
+                  {t.intent ?? 'unclassified'}
+                </span>
+                <span class="cost-tag mono" data-cost={t.costClass ?? 'unknown'}>
+                  {t.costClassLabel ?? 'cost unknown'}
+                </span>
+                {#if t.fromRole}<span class="mono dim decision-project">from {t.fromRole}</span>{/if}
+                <time class="ts mono dim" datetime={t.at ?? undefined}>{fmtTime(t.at)}</time>
+              </div>
+
+              <p class="decision-body dim turn-ask">asked: {t.ask ?? '—'}</p>
+              <p class="decision-body turn-reply">{t.reply ?? '—'}</p>
+
+              {#if t.error}
+                <p class="decision-body turn-error">{t.error}</p>
+              {/if}
+
+              <div class="turn-meta mono dim">
+                <span>{t.outcomeLabel ?? t.outcome ?? 'outcome unknown'}</span>
+                <span>·</span>
+                <!-- The honest local/cloud pair: what RAN vs what was merely available. -->
+                <span>{t.llmUsed ? `model: ${t.modelUsed ?? 'unknown'}` : 'no model called'}</span>
+                {#if !t.llmUsed && t.brainConfigured}
+                  <span>·</span>
+                  <span>brain available: {t.brainConfigured}</span>
+                {/if}
+                <span>·</span>
+                <span>{t.groundingCount} citation(s)</span>
+                {#if t.recommendationCount > 0}
+                  <span>·</span>
+                  <span>{t.recommendations}</span>
+                {/if}
+                <span>·</span>
+                <span>{fmtDuration(t.durationMs)}</span>
+              </div>
+            </li>
+          {/each}
+        </ul>
+      {:else}
+        <p class="dim state-body">
+          No concierge turns recorded yet — a row appears here each time a PM or worker consults the
+          Atelier concierge over the peer bus.
         </p>
       {/if}
     </div>
@@ -612,6 +688,62 @@
   }
   .advisory[data-status='pending'] {
     border-left-color: var(--color-warn, #c8a45c);
+  }
+
+  /* ---- Concierge turns (the thinking ledger) --------------------------------
+     Badge TEXT uses the `-on-overlay` status tokens ONLY. Those are the ramp
+     gated at ≥4.5:1 on --color-surface-overlay, the app's LIGHTEST surface, so
+     they hold on the card surface these rows actually sit on too. This is the
+     exact trap the hiring ledger hit last wave (base -500 hues measure 3.50:1
+     on an overlay surface) — do not swap these for --color-error/--color-warn.
+     Colour is never the sole signal: the outcome word is always rendered. */
+  .turn[data-tone='error'] {
+    border-left-color: var(--color-error, #e0655f);
+  }
+  .turn[data-tone='warn'] {
+    border-left-color: var(--color-warn, #d6a44e);
+  }
+  .status-tag[data-tone='error'] {
+    color: var(--color-error-on-overlay, #f0958f);
+    border-color: var(--color-error-on-overlay, #f0958f);
+  }
+  .status-tag[data-tone='warn'] {
+    color: var(--color-warn-on-overlay, #d6a44e);
+    border-color: var(--color-warn-on-overlay, #d6a44e);
+  }
+  .cost-tag {
+    font-size: 0.62rem;
+    padding: 0.02rem 0.4rem;
+    border-radius: var(--radius-sm, 6px);
+    border: 1px solid var(--color-border);
+    color: var(--color-text-muted);
+  }
+  /* A LOCAL turn is genuinely free — marked positively so it is never mistaken
+     for a cloud call; a cloud turn is marked so its real cost is not invisible. */
+  .cost-tag[data-cost='local-free'] {
+    color: var(--color-success-on-overlay, #5fb87a);
+    border-color: var(--color-success-on-overlay, #5fb87a);
+  }
+  .cost-tag[data-cost='cloud-metered'] {
+    color: var(--color-info-on-overlay, #85b5e3);
+    border-color: var(--color-info-on-overlay, #85b5e3);
+  }
+  .turn-ask {
+    white-space: pre-wrap;
+  }
+  .turn-reply {
+    color: var(--color-text);
+    white-space: pre-wrap;
+  }
+  .turn-error {
+    color: var(--color-error-on-overlay, #f0958f);
+    white-space: pre-wrap;
+  }
+  .turn-meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.35rem;
+    font-size: 0.68rem;
   }
   .advisory-need {
     font-size: 0.68rem;

@@ -23,6 +23,124 @@
   const catalog = $derived(data.catalog ?? []);
   const error = $derived('error' in data ? (data.error as string | undefined) : undefined);
 
+  // ── COMPLETION-LEDGER Wave A — hiring & certification activity ──────────────────────
+  // The durable role_event ledger (narrowed server-side to HIRE_LIFECYCLE_OPS), newest-first.
+  // Before this wave the whole hire/cert lifecycle happened invisibly: the engine made real
+  // decisions and left no trace an operator could read. Every row here is a REAL persisted
+  // decision — nothing is synthesized client-side (F-008).
+  const hiring = $derived(data.hiring ?? []);
+
+  /** Plain-language label per audit op (never the raw enum — human-readable bar). */
+  const HIRE_OP_LABEL: Record<string, string> = {
+    gauntlet_started: 'Gauntlet started',
+    interviewed: 'Gauntlet scored',
+    adjudicated: 'Adjudicated',
+    reversioned: 'Re-versioned',
+    candidate_considered: 'Candidate considered',
+    hired: 'Hired',
+    hire_rejected: 'Hire rejected',
+    staffed: 'Staffed onto project'
+  };
+  /** Outcome class for the badge tint — success / danger / neutral. Purely presentational. */
+  const HIRE_OP_TONE: Record<string, 'good' | 'bad' | 'neutral'> = {
+    hired: 'good',
+    hire_rejected: 'bad',
+    staffed: 'good',
+    reversioned: 'bad',
+    gauntlet_started: 'neutral',
+    interviewed: 'neutral',
+    adjudicated: 'neutral',
+    candidate_considered: 'neutral'
+  };
+
+  function hireLabel(op: string): string {
+    return HIRE_OP_LABEL[op] ?? op;
+  }
+
+  /** F-013 — an absent/unparseable timestamp renders '—', NEVER 'undefined'/'Invalid Date'. */
+  function whenLabel(at: string | null | undefined): string {
+    if (!at) return '—';
+    const d = new Date(at);
+    return Number.isNaN(d.getTime()) ? '—' : d.toLocaleString();
+  }
+
+  /**
+   * The WHY line for one ledger row, built from the event's OWN recorded detail — never
+   * inferred and never fabricated. Each op explains itself with the facts that decided it; an
+   * op whose detail is missing the expected keys falls through to '' and the row still renders
+   * (honest partial, never a fake reason).
+   */
+  function hireWhy(op: string, detail: Record<string, unknown> | undefined): string {
+    const d = detail ?? {};
+    const num = (k: string): number | null => (typeof d[k] === 'number' ? (d[k] as number) : null);
+    const str = (k: string): string | null => (typeof d[k] === 'string' ? (d[k] as string) : null);
+    const recallPart = (): string => {
+      const found = num('planted_found');
+      const total = num('planted_total');
+      const r = num('recall');
+      // Honest '—' when the run planted nothing: recall is genuinely unknown, not 0 or 1.
+      if (found === null || total === null || total === 0) return 'recall —';
+      return `recall ${found}/${total}${r !== null ? ` (${Math.round(r * 100)}%)` : ''}`;
+    };
+    switch (op) {
+      case 'gauntlet_started': {
+        const bits = [str('trigger'), str('tier'), str('model_id')].filter(Boolean);
+        const plants = num('planted_total');
+        return [bits.join(' · '), plants !== null ? `${plants} plants` : null].filter(Boolean).join(' · ');
+      }
+      case 'interviewed': {
+        const bits = [str('status'), recallPart()];
+        const fp = num('false_positives');
+        if (fp !== null) bits.push(`${fp} FP`);
+        const err = str('error_reason');
+        if (err) bits.push(err);
+        if (d.demotion_withheld === true) bits.push('evidence only — no demotion');
+        return bits.filter(Boolean).join(' · ');
+      }
+      case 'adjudicated': {
+        const bits = [
+          `${num('items') ?? 0} item(s)`,
+          `${num('confirmed_hits') ?? 0} confirmed`,
+          `${num('false_positives') ?? 0} FP`,
+          `${num('dismissed') ?? 0} dismissed`
+        ];
+        const after = str('status_after');
+        if (after) bits.push(`→ ${after}`);
+        return bits.join(' · ');
+      }
+      case 'reversioned':
+        return str('reason') ?? `from ${str('from_lifecycle') ?? 'a failed version'}`;
+      case 'candidate_considered': {
+        const bits = [`recommends ${str('recommendation') ?? '—'}`, recallPart()];
+        const esc = num('escalated');
+        if (esc) bits.push(`${esc} escalated`);
+        return bits.join(' · ');
+      }
+      case 'hired':
+      case 'hire_rejected': {
+        const bits = [`recruiter recommended ${str('recommendation') ?? '—'}`];
+        if (d.overrode_recommendation === true) bits.push('OPERATOR OVERRODE');
+        if (op === 'hired') bits.push(d.cert_flipped === true ? 'cert flipped' : 'cert already set');
+        if (d.staffed_in_same_act === true) bits.push('staffed in same act');
+        return bits.join(' · ');
+      }
+      case 'staffed': {
+        const bits = [str('project') ?? '', str('source') ?? ''].filter(Boolean);
+        if (d.re_staff === true) bits.push('re-staff');
+        return bits.join(' · ');
+      }
+      default:
+        return '';
+    }
+  }
+
+  /** The falsifier — the honest strongest reason NOT to follow the recommendation (D-038).
+   *  Surfaced only where the event actually recorded one. */
+  function hireFalsifier(detail: Record<string, unknown> | undefined): string | null {
+    const f = detail?.falsifier;
+    return typeof f === 'string' && f.trim() ? f : null;
+  }
+
   // ── UO-3 (USAGE-OBSERVABILITY-SPEC) — capability usage: GRANTED (UO-1) vs USED (UO-2) ──
   // The roll-up answers "what agents/hires/tasks use what tools/skills?" without conflating
   // the two: `granted` is the ACTUAL composed grant persisted at spawn (never the static
@@ -671,6 +789,49 @@
         </ul>
       </div>
     {/if}
+
+    <!-- ── COMPLETION-LEDGER Wave A — hiring & certification activity ───────────────
+         The human-visible half of the hire/cert event ledger. Every row is a REAL
+         persisted role_event carrying the WHY of a decision the engine made; nothing
+         here is synthesized (F-008). Honest empty state when nothing has been hired
+         or certified yet. -->
+    <div class="card hiring" aria-labelledby="hiring-title">
+      <div class="panel-head">
+        <span class="eyebrow" id="hiring-title">hiring &amp; certification activity</span>
+        <span class="count mono">{hiring.length} recent</span>
+      </div>
+      {#if hiring.length === 0}
+        <p class="state-body">
+          Nothing hired or certified yet. Gauntlet runs, adjudications, hire decisions and
+          staffing acts will appear here as they happen — each with the evidence it rested on.
+        </p>
+      {:else}
+        <ol class="hire-log" aria-label="hiring and certification events">
+          {#each hiring as ev (ev.id)}
+            {@const why = hireWhy(ev.op, ev.detail)}
+            {@const falsifier = hireFalsifier(ev.detail)}
+            <li class="hire-log-row">
+              <div class="hire-log-head">
+                <span class="hire-op" data-tone={HIRE_OP_TONE[ev.op] ?? 'neutral'}>
+                  {hireLabel(ev.op)}
+                </span>
+                <span class="hire-role mono">{ev.role_slug ?? ev.role}</span>
+                <span class="hire-when mono">{whenLabel(ev.at)}</span>
+              </div>
+              {#if why}
+                <p class="hire-why">{why}</p>
+              {/if}
+              {#if falsifier}
+                <p class="hire-falsifier">
+                  <span class="hire-falsifier-tag">strongest counter-argument</span>
+                  {falsifier}
+                </p>
+              {/if}
+            </li>
+          {/each}
+        </ol>
+      {/if}
+    </div>
 
     <!-- Live fleet grid -->
     <div class="card">
@@ -1597,6 +1758,78 @@
   .adj-ok {
     font: var(--type-body-sm);
     color: var(--color-success);
+  }
+
+  /* ── COMPLETION-LEDGER Wave A — hiring & certification activity ───────────────── */
+  .hire-log {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  .hire-log-row {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-3);
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-md);
+    background: var(--color-surface-overlay);
+  }
+  .hire-log-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
+  }
+  .hire-op {
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.04em;
+    padding: 0.1rem 0.5rem;
+    border-radius: var(--radius-sm);
+    border: var(--border-width) solid var(--color-border);
+    color: var(--color-text-muted);
+  }
+  /* Tone is a SECONDARY cue layered on the always-present text label — never the only
+     signal, so the row stays readable without colour perception. */
+  .hire-op[data-tone='good'] {
+    color: var(--color-success);
+    border-color: var(--color-success);
+  }
+  .hire-op[data-tone='bad'] {
+    color: var(--color-error);
+    border-color: var(--color-error);
+  }
+  .hire-role {
+    font: var(--type-body-sm);
+    color: var(--color-text);
+  }
+  .hire-when {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    margin-left: auto;
+  }
+  .hire-why {
+    margin: 0;
+    font: var(--type-body-sm);
+    color: var(--color-text-muted);
+  }
+  .hire-falsifier {
+    margin: 0;
+    font: var(--type-body-sm);
+    color: var(--color-text-muted);
+    padding-left: var(--space-3);
+    border-left: var(--border-width) solid var(--color-border);
+  }
+  .hire-falsifier-tag {
+    display: block;
+    font-size: var(--text-xs);
+    font-weight: var(--weight-semibold);
+    letter-spacing: 0.04em;
+    color: var(--color-text-muted);
   }
 
   /* ── HR-5 §7.5 — operator hire queue (B4 gate) ──────────────────────────────── */

@@ -105,3 +105,13 @@ export * from './recruiter-hire';
 // drain handler that calls draftCertificationSet (propose-only, B1/B2). It NEVER runs the gauntlet
 // (that fires only post-approval, operatorApprovedKeySet===true) and NEVER confirms a key.
 export * from './hire-dispatch';
+
+// COMPLETION-LEDGER Wave A — the HIRE/CERTIFICATION EVENT LEDGER. Before this the whole workforce
+// subsystem emitted ZERO scene_event rows and left the hire itself entirely unaudited: a hire
+// happened and nothing durable recorded that it had. These emitters are the ONE funnel every
+// hire/cert moment routes through, composing the two EXISTING chokepoints (repo.addRoleEvent for
+// the durable audit, scene.appendSceneEvent for the live feed) rather than adding a writer (F-055).
+// Best-effort by construction: a telemetry fault NEVER changes a hire, a cert flip, or a run's
+// outcome. The /agents "hiring & certification activity" surface renders the durable half via
+// repo.listRecentRoleEvents(db, n, HIRE_LIFECYCLE_OPS).
+export * from './hire-events';

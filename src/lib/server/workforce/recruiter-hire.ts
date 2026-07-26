@@ -41,6 +41,7 @@ import {
 	type InterviewRunRow
 } from './repo';
 import { canTransition } from './lifecycle';
+import { emitCandidateConsidered, emitHireDecided } from './hire-events';
 import { confirmStaffing, type ConfirmStaffingResult } from './staffing-proposal';
 import { RECRUITER_SLUG, extractFixtureResults } from './recruiter';
 
@@ -262,7 +263,7 @@ export async function raiseHireBrief(db: Db, runId: string): Promise<DecisionBri
 		}
 	];
 
-	return createDecisionBrief(db, {
+	const brief = await createDecisionBrief(db, {
 		artifact: decision.run,
 		artifact_kind: 'cert_hire',
 		classification: 'confirm',
@@ -276,6 +277,37 @@ export async function raiseHireBrief(db: Db, runId: string): Promise<DecisionBri
 		falsifier: decision.falsifier,
 		options
 	});
+
+	// COMPLETION-LEDGER Wave A — a candidate entering CONSIDERATION is a first-class fact. Before
+	// this wave the recruiter raised a brief and nothing recorded that it had happened: the operator
+	// could not see who was being considered, on what evidence, or what the recruiter thought. This
+	// carries the recommendation AND the `falsifier` — the honest strongest reason NOT to follow it
+	// (the alternative-not-chosen, D-038) — so the WHY survives even after the brief is decided and
+	// leaves the open queue. Best-effort (F-048): the brief is already raised; telemetry never un-raises it.
+	try {
+		await emitCandidateConsidered(db, {
+			role: decision.role,
+			roleSlug: decision.roleSlug,
+			roleVersion: decision.roleVersion,
+			run: decision.run,
+			brief: brief.id,
+			recommendation: decision.recommendation,
+			recall: decision.recall,
+			plantedFound: decision.plantedFound,
+			plantedTotal: decision.plantedTotal,
+			falsePositives: decision.falsePositives,
+			maxFalsePositives: decision.maxFalsePositives,
+			autoResolvedCount: decision.autoResolved.length,
+			escalatedCount: decision.escalated.length,
+			tier: decision.tier,
+			falsifier: decision.falsifier
+		});
+	} catch (err) {
+		console.warn(
+			`[workforce] candidate_considered trace failed for ${brief.id} (the brief is unaffected): ${(err as Error).message}`
+		);
+	}
+	return brief;
 }
 
 // ── Apply the operator's hire decision (B4 — the final gate; reuses the cert flip + staffing) ──
@@ -357,15 +389,52 @@ export async function applyHireDecision(
 		// recommendation (honest — it is what the brief actually asked), never a fabricated verdict.
 		let recommendation: HireRecommendation = recommendationFromBrief(brief);
 		let lifecycle = '(unknown)';
+		// Held for the trace below: a reject must be attributable to a ROLE (role_event's FK), and
+		// only the re-derived decision carries it.
+		let traced: HireDecision | null = null;
 		try {
 			const d = await buildHireDecision(db, brief.artifact);
 			recommendation = d.recommendation;
 			lifecycle = await versionLifecycle(db, d.roleVersion);
+			traced = d;
 		} catch (err) {
 			if (!(err instanceof HireGateError)) throw err; // a non-gate error is a real fault — surface it
 			// the run/role is gone or no longer terminal — the stale brief is cleared regardless (interrupt
 			// contract: a withdrawal never re-derives a vanished decision). Lifecycle stays '(unknown)'.
 		}
+
+		// COMPLETION-LEDGER Wave A — a REJECTED hire is exactly as important to see as an accepted
+		// one, and previously left NO trace whatsoever (applyHireDecision wrote no audit row on
+		// either arm). UPSTREAM-ERROR SHADOW PATH, named: when the underlying run/role has vanished
+		// the reject still succeeds but cannot be attributed to a role, and role_event.role is a
+		// required FK — so we skip the emission and say so, rather than inventing a role (F-008).
+		if (traced) {
+			try {
+				await emitHireDecided(db, {
+					role: traced.role,
+					roleSlug: traced.roleSlug,
+					roleVersion: traced.roleVersion,
+					brief: brief.id,
+					action: 'reject',
+					recommendation,
+					certFlipped: false,
+					lifecycleBefore: lifecycle,
+					lifecycleAfter: lifecycle,
+					// A reject withholds; it is never the gated spend act, so no confirm is required.
+					operatorConfirmed: false
+				});
+			} catch (err) {
+				console.warn(
+					`[workforce] hire_rejected trace failed for ${brief.id} (the rejection stands): ${(err as Error).message}`
+				);
+			}
+		} else {
+			console.warn(
+				`[workforce] hire_rejected NOT traced for ${brief.id}: its interview_run (${brief.artifact}) is gone ` +
+					`or no longer terminal, so the reject cannot be attributed to a role — the rejection itself stands.`
+			);
+		}
+
 		return {
 			brief: decided,
 			recommendation,
@@ -441,10 +510,39 @@ export async function applyHireDecision(
 	// decision after the effects landed, so a crash before this re-runs and converges (the flip
 	// no-ops on the now-'passed' version, confirmStaffing absorbs its already-'swapped' proposal).
 	const decided = await markBriefDecided(db, brief.id, 'approved');
+	const lifecycleAfter = await versionLifecycle(db, decision.roleVersion);
+
+	// COMPLETION-LEDGER Wave A — THE HIRE ITSELF. This is the single biggest hole the audit found:
+	// the act that certifies a role and lets it be staffed onto real work wrote NO durable record at
+	// all. The payload reconstructs the whole decision: what the recruiter recommended, what the
+	// operator actually did, whether that OVERRODE the recommendation, whether the cert genuinely
+	// flipped (vs the run's finalizer having already driven it), the lifecycle either side, and the
+	// B4 confirm that gated it. Emitted AFTER the brief mark so it records a hire that actually
+	// completed. Best-effort (F-048): the cert has already flipped; telemetry never un-flips it.
+	try {
+		await emitHireDecided(db, {
+			role: decision.role,
+			roleSlug: decision.roleSlug,
+			roleVersion: decision.roleVersion,
+			brief: brief.id,
+			action: 'approve',
+			recommendation: decision.recommendation,
+			certFlipped,
+			lifecycleBefore: before,
+			lifecycleAfter,
+			operatorConfirmed: true,
+			...(input.staffingProposal ? { staffingProposal: input.staffingProposal } : {})
+		});
+	} catch (err) {
+		console.warn(
+			`[workforce] hired trace failed for ${brief.id} (the certification stands): ${(err as Error).message}`
+		);
+	}
+
 	return {
 		brief: decided,
 		recommendation: decision.recommendation,
-		lifecycle: await versionLifecycle(db, decision.roleVersion),
+		lifecycle: lifecycleAfter,
 		certFlipped,
 		...(staffing ? { staffing } : {})
 	};

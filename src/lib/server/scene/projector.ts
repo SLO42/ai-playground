@@ -49,7 +49,10 @@ import { screen } from '../memory/screen';
 /** The v1 scene_event vocabulary (MEMORY-SCENE-SPEC §5; matches the schema ASSERT).
  *  LIFECYCLE-GRAPH adds three causal-root kinds (m0066): `continue`/`batch_drained` (a
  *  Continue/drain root) + `pm_tick` (a PM re-tick) — emitted by the controls/PM loop, not
- *  the projector's db_change classifier (they are explicit causal markers, not row mirrors). */
+ *  the projector's db_change classifier (they are explicit causal markers, not row mirrors).
+ *  COMPLETION-LEDGER Wave A adds the HIRE/CERTIFICATION kinds (m0083) — likewise explicit
+ *  markers emitted by workforce/hire-events.ts at each decision chokepoint, NOT row mirrors.
+ *  `hire_staffed` was in the m0055 vocabulary but never emitted until that wave. */
 export type SceneEventKind =
 	| 'node_spawned'
 	| 'job_fired'
@@ -60,7 +63,14 @@ export type SceneEventKind =
 	| 'hire_staffed'
 	| 'continue'
 	| 'batch_drained'
-	| 'pm_tick';
+	| 'pm_tick'
+	| 'candidate_considered'
+	| 'hired'
+	| 'hire_rejected'
+	| 'gauntlet_started'
+	| 'gauntlet_scored'
+	| 'gauntlet_adjudicated'
+	| 'role_reversioned';
 
 /** Input to {@link appendSceneEvent} — a single derived viz event. */
 export interface AppendSceneEventInput {

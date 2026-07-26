@@ -30,11 +30,14 @@ import {
 	loadWorkforcePanel,
 	adjudicateInterviewRun,
 	applyHireDecision,
+	listRecentRoleEvents,
+	HIRE_LIFECYCLE_OPS,
 	HireGateError,
 	StaffingGateError,
 	WorkforceInputError,
 	type WorkforcePanelData,
-	type AmbiguousResolution
+	type AmbiguousResolution,
+	type RecentRoleEventRow
 } from '$lib/server/workforce';
 import { BriefError } from '$lib/server/projects';
 import { IdentifierError } from '$lib/server/db/validate';
@@ -63,6 +66,14 @@ export interface AgentsData {
 	 * state); a connected-but-empty DB yields empty arrays (honest empty, F-008).
 	 */
 	usageRollup: UsageRollup | null;
+	/**
+	 * COMPLETION-LEDGER Wave A — the HIRING & CERTIFICATION activity feed: the durable role_event
+	 * ledger narrowed to the hire lifecycle (HIRE_LIFECYCLE_OPS). This is the human-visible half of
+	 * the wave: the engine now records every hire/cert decision with its WHY, and this is where an
+	 * operator actually reads it. Empty array = nothing has been hired or certified yet (honest
+	 * empty, F-008 — the card says so rather than rendering a plausible-looking placeholder).
+	 */
+	hiring: RecentRoleEventRow[];
 	error?: string;
 }
 
@@ -110,11 +121,12 @@ export const load: PageServerLoad = async ({ depends }): Promise<AgentsData> => 
 			usage: [],
 			catalog: [],
 			workforce: null,
-			usageRollup: null
+			usageRollup: null,
+			hiring: []
 		};
 	}
 	try {
-		const [pool, fleet, usage, catalogRows, workforce, rollup] = await Promise.all([
+		const [pool, fleet, usage, catalogRows, workforce, rollup, hiring] = await Promise.all([
 			listPoolSlots(db),
 			listFleet(db, 30),
 			buildTierUsage(db, { windowDays: 30 }),
@@ -123,14 +135,21 @@ export const load: PageServerLoad = async ({ depends }): Promise<AgentsData> => 
 			// UO-3 — granted-vs-used roll-up over the recent session window. Bounded by the read
 			// model's own caps (F-014); the result carries sessionsCapped/toolRowsCapped so the UI
 			// surfaces a truncated read honestly rather than implying it scanned everything.
-			usageRollup(db)
+			usageRollup(db),
+			// COMPLETION-LEDGER Wave A — the hire/cert ledger, newest-first and bounded (F-014).
+			// Deliberately NOT wrapped in its own best-effort catch: a fault here belongs to the
+			// page-level catch below, which degrades the whole page to connected:false + an honest
+			// error. A local catch would silently render an empty hiring feed while the rest of the
+			// page looked healthy — the exact "best-effort catch hides a developer bug" defect
+			// (F-020 sweep) this wave is meant to eliminate, not reproduce.
+			listRecentRoleEvents(db, 40, HIRE_LIFECYCLE_OPS)
 		]);
 		const bundles = agentBundleMap();
 		const catalog: CatalogAgent[] = catalogRows.map((a) => ({
 			...a,
 			bundles: bundles.get(a.name) ?? []
 		}));
-		return { connected: true, pool, fleet, usage, catalog, workforce, usageRollup: rollup };
+		return { connected: true, pool, fleet, usage, catalog, workforce, usageRollup: rollup, hiring };
 	} catch (err) {
 		return {
 			connected: false,
@@ -140,6 +159,7 @@ export const load: PageServerLoad = async ({ depends }): Promise<AgentsData> => 
 			catalog: [],
 			workforce: null,
 			usageRollup: null,
+			hiring: [],
 			error: (err as Error).message
 		};
 	}

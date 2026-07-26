@@ -49,6 +49,7 @@ import {
 	type Tier
 } from './repo';
 import { isCeremonySelectable } from './lifecycle';
+import { emitRoleReversioned } from './hire-events';
 import { runGauntlet, type GauntletDeps, type GauntletOutcome } from './gauntlet';
 import { checkDeployability } from './deployability';
 import { activateGauntletFixture, isSentinelShape, newSentinelUlid } from './activation';
@@ -876,6 +877,31 @@ export async function reversionFailedRole(db: Db, roleId: string): Promise<Rever
 			of_prompt_sha: newest.prompt_sha
 		}
 	});
+
+	// COMPLETION-LEDGER Wave A — a RE-VERSION is the "certification failed, try again" act, and it
+	// previously hid inside a generic role_event{op:'created'} that the hiring surface has no way to
+	// tell apart from an ordinary new version. This dedicated emission records the lineage (which
+	// version was walked away from, in what lifecycle, and what replaced it) and puts the recovery on
+	// the live scene. The 'created' provenance row above is KEPT and unchanged — it carries the
+	// prompt_sha clone provenance and is a different fact; the /agents hiring feed filters to
+	// HIRE_LIFECYCLE_OPS (which includes 'reversioned', not 'created'), so this never double-counts.
+	// Best-effort (F-048): the new version already exists; telemetry never un-creates it.
+	try {
+		await emitRoleReversioned(db, {
+			role: role.id,
+			roleSlug: role.slug,
+			fromVersion: newest.id,
+			toVersion: created.id,
+			fromLifecycle: newest.lifecycle,
+			reason:
+				`v${newest.version} was terminally '${newest.lifecycle}' with no drivable version left; ` +
+				`v${created.version} clones its content so the ceremony has a target again (§8 recovery)`
+		});
+	} catch (err) {
+		console.warn(
+			`[workforce] role_reversioned trace failed for ${created.id} (the re-version stands): ${(err as Error).message}`
+		);
+	}
 
 	return { reversioned: true, version: created, from: newest, reason: null };
 }

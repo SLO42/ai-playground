@@ -33,6 +33,11 @@ import {
 	type ProposalStatus,
 	type RoleVersionLifecycle
 } from './lifecycle';
+// COMPLETION-LEDGER Wave A — the hire/cert event funnel. NOTE the deliberate module cycle
+// (repo → hire-events → repo, for addRoleEvent): both sides reference the other ONLY inside
+// function bodies, never at module-evaluation time, so ESM's live bindings resolve it cleanly.
+// The alternative (duplicating the role_event append here) would be a second writer — F-055.
+import { emitGauntletScored, emitGauntletStarted } from './hire-events';
 
 // ── Named errors (every error has a name — what triggers it is in the message) ───
 
@@ -56,6 +61,10 @@ export type GauntletFixtureKind =
 export type PanelArtifactKind = 'task' | 'review_proposal' | 'fixture_proposal';
 export type PanelVerdictValue = 'approve' | 'pushback';
 export type PanelOutcome = 'upheld' | 'overridden_by_operator' | 'revised' | 'withdrawn';
+/** The role_event audit vocabulary (matches the schema ASSERT — m0031 + m0083).
+ *  COMPLETION-LEDGER Wave A (m0083) added the six previously-UNAUDITED hire/cert moments:
+ *  a gauntlet OPENING, an adjudication, a re-version, and the whole hire gate
+ *  (considered → hired | hire_rejected). Emitted through workforce/hire-events.ts. */
 export type RoleEventOp =
 	| 'created'
 	| 'interviewed'
@@ -66,7 +75,27 @@ export type RoleEventOp =
 	| 'staffed'
 	| 'unstaffed'
 	| 'fixture_activated'
-	| 'stale_marked';
+	| 'stale_marked'
+	| 'gauntlet_started'
+	| 'adjudicated'
+	| 'reversioned'
+	| 'candidate_considered'
+	| 'hired'
+	| 'hire_rejected';
+
+/** The hire + certification lifecycle ops (m0083) — the subset the /agents hiring-activity
+ *  feed renders. 'interviewed'/'staffed' predate the wave but ARE part of the story, so they
+ *  are included; 'created'/'swap'/'retired'/… are role-admin, not a hire, and are excluded. */
+export const HIRE_LIFECYCLE_OPS: readonly RoleEventOp[] = [
+	'gauntlet_started',
+	'interviewed',
+	'adjudicated',
+	'reversioned',
+	'candidate_considered',
+	'hired',
+	'hire_rejected',
+	'staffed'
+] as const;
 
 // ── Row types (normalized: ids/links → string, datetimes → ISO string | null) ───
 
@@ -668,7 +697,36 @@ export async function createInterviewRun(
 	const [rows] = await db.query<[Raw[]]>(`CREATE interview_run CONTENT $content RETURN AFTER;`, {
 		content
 	});
-	return normInterviewRun(rows[0]);
+	const created = normInterviewRun(rows[0]);
+
+	// COMPLETION-LEDGER Wave A — a certification campaign OPENING is a first-class, durable fact.
+	// Before this wave a gauntlet START left NO trace at all: the operator saw a run appear with no
+	// record of what it was about to be judged against. Emitted HERE (the one chokepoint every run
+	// creation funnels through) with the inputs the verdict will rest on. Best-effort in full — the
+	// slug lookup and both appends are swallowed together, so telemetry NEVER fails a run (F-048).
+	try {
+		const role = await getRole(db, version.role);
+		await emitGauntletStarted(db, {
+			role: version.role,
+			roleSlug: role?.slug ?? version.role,
+			roleVersion: version.id,
+			run: created.id,
+			tier: input.tier,
+			provider: input.provider,
+			modelId: input.model_id,
+			fixtureSetSha: input.fixture_set_sha,
+			...(input.planted_total !== undefined ? { plantedTotal: input.planted_total } : {}),
+			// The lifecycle as it was BEFORE this call's campaign transition above — the honest record
+			// of whether this run started a campaign, retried one, or is evidence against a cert.
+			lifecycleBefore: version.lifecycle,
+			...(input.retry_of ? { retryOf: input.retry_of } : {})
+		});
+	} catch (err) {
+		console.warn(
+			`[workforce] gauntlet_started trace failed for ${created.id} (the run is unaffected): ${(err as Error).message}`
+		);
+	}
+	return created;
 }
 
 export async function getInterviewRun(db: Db, runId: string): Promise<InterviewRunRow | null> {
@@ -748,17 +806,48 @@ export async function finalizeInterviewRun(
 	);
 	const updated = normInterviewRun(rows[0]);
 
+	// The version's lifecycle BEFORE any campaign transition — half of the honest "did this verdict
+	// actually move the campaign, or was it absorbed as evidence" record (§2.2 re-run-never-demotes).
+	const version = await getRoleVersion(db, run.role_version);
+	const lifecycleBefore = version?.lifecycle ?? '(missing)';
+	let lifecycleAfter = lifecycleBefore;
+
 	if (input.status === 'passed' || input.status === 'failed' || input.status === 'error') {
-		const version = await getRoleVersion(db, run.role_version);
 		if (version && version.lifecycle === 'interviewing') {
 			await transitionLifecycle(db, version.id, input.status);
+			lifecycleAfter = input.status;
 		}
-		await addRoleEvent(db, {
+	}
+
+	// COMPLETION-LEDGER Wave A — the scorer's verdict becomes a first-class, durable fact carrying
+	// the FULL basis it rested on (recall + its numerator/denominator, false positives, the mechanical
+	// error class, cost, and whether the campaign actually moved). This REPLACES the previous thin
+	// `role_event{op:'interviewed', detail:{run,status}}` write — a flat status with no WHY, which is
+	// exactly the defect class this wave exists to fix. It is emitted for EVERY finalize status, not
+	// only the terminal ones: an 'adjudicating' outcome previously left NO trace at all, so the
+	// operator could not see that a run was parked waiting on THEM. Best-effort (F-048): a telemetry
+	// fault never changes a run's recorded outcome.
+	try {
+		const role = await getRole(db, run.role);
+		await emitGauntletScored(db, {
 			role: run.role,
-			role_version: run.role_version,
-			op: 'interviewed',
-			detail: { run: run.id, status: input.status }
+			roleSlug: role?.slug ?? run.role,
+			roleVersion: run.role_version,
+			run: run.id,
+			status: input.status,
+			...(input.planted_total !== undefined ? { plantedTotal: input.planted_total } : {}),
+			...(input.planted_found !== undefined ? { plantedFound: input.planted_found } : {}),
+			...(input.false_positives !== undefined ? { falsePositives: input.false_positives } : {}),
+			...(input.error_reason ? { errorReason: input.error_reason } : {}),
+			...(input.cost_usd !== undefined ? { costUsd: input.cost_usd } : {}),
+			ambiguousCount: input.ambiguous?.length ?? 0,
+			lifecycleBefore,
+			lifecycleAfter
 		});
+	} catch (err) {
+		console.warn(
+			`[workforce] gauntlet_scored trace failed for ${run.id} (the run outcome is unaffected): ${(err as Error).message}`
+		);
 	}
 	return updated;
 }
@@ -1058,13 +1147,30 @@ export interface RecentRoleEventRow extends RoleEventRow {
  * role.slug is joined in the projection (F-022: the ORDER BY field `at` is selected). datetime → ISO
  * string in normRoleEvent (F-013); a dangling role link yields role_slug:null (honest, F-008).
  *
+ * `ops` (COMPLETION-LEDGER Wave A) OPTIONALLY narrows the feed to a set of audit ops — the
+ * /agents hiring-activity surface passes HIRE_LIFECYCLE_OPS so role-admin noise (created/swap/
+ * tier_changed) does not drown the hire story. Bound as a $param (D-016 — never interpolated).
+ * Omitted ⇒ every op (the existing command-center behaviour, byte-identical).
+ *
  * SHADOW PATHS: no role_events ⇒ [] (honest empty — the surface shows "HR idle"); a row with a
- * dangling role ⇒ role_slug:null (shown as the raw id, never dropped); limit≤0 ⇒ clamped to 1.
+ * dangling role ⇒ role_slug:null (shown as the raw id, never dropped); limit≤0 ⇒ clamped to 1;
+ * `ops: []` ⇒ [] (an EMPTY filter selects nothing — honest, never silently "all").
  */
-export async function listRecentRoleEvents(db: Db, limit = 20): Promise<RecentRoleEventRow[]> {
+export async function listRecentRoleEvents(
+	db: Db,
+	limit = 20,
+	ops?: readonly RoleEventOp[]
+): Promise<RecentRoleEventRow[]> {
 	const cap = Math.min(Math.max(limit, 1), 200);
+	// Empty-input shadow path: an explicitly EMPTY op filter matches nothing. Returning early
+	// keeps that honest (a `WHERE op IN []` is a needless round-trip) and can never be confused
+	// with the unfiltered case, which passes `ops: undefined`.
+	if (ops && ops.length === 0) return [];
+	const where = ops ? 'WHERE op IN $ops' : '';
+	// F-020: the ORDER BY field (`at`) is in the projection — `SELECT *` covers it.
 	const [rows] = await db.query<[Array<Raw & { role_slug?: unknown }>]>(
-		`SELECT *, role.slug AS role_slug FROM role_event ORDER BY at DESC LIMIT ${cap};`
+		`SELECT *, role.slug AS role_slug FROM role_event ${where} ORDER BY at DESC LIMIT ${cap};`,
+		ops ? { ops: [...ops] } : {}
 	);
 	return (rows ?? []).map((row) => ({
 		...normRoleEvent(row),

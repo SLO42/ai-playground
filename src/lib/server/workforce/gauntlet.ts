@@ -44,6 +44,7 @@ import { writeAgentEvent } from '../analytics/events';
 import { enforceTokenBudget, resolveDailyTokenBudget } from '../analytics/spend-budget';
 import { loadGatesConfig, type WorkforceConfig } from '../config/index';
 import { enqueue } from '../orchestrator/workqueue';
+import { emitGauntletAdjudicated } from './hire-events';
 import { eventToMessage } from '../sessions/launch';
 import type { AgentRuntime, SpawnRequest, CapabilitySet } from '../runtime/index';
 import {
@@ -1049,11 +1050,40 @@ export async function adjudicateInterviewRun(
 		tolerances,
 		criteria: { pass_recall: criteria.pass_recall, max_false_positives: criteria.max_false_positives }
 	});
-	return finalizeInterviewRun(db, run.id, {
+	const finalized = await finalizeInterviewRun(db, run.id, {
 		status: bar.passed ? 'passed' : 'failed',
 		planted_found: plantedFound,
 		false_positives: bar.countedFalsePositives,
 		results: [...run.results, ...auditRows, { kind: 'verdict', recall: bar.recall, reasons: bar.reasons }],
 		ambiguous: []
 	});
+
+	// COMPLETION-LEDGER Wave A — the OPERATOR's adjudication is its own first-class fact, distinct
+	// from the scorer verdict finalizeInterviewRun just recorded. Before this wave the human judgment
+	// (§3.4 — the operator IS the judge, there is no judge agent) vanished into the run's `results`
+	// blob with nothing surfacing it. The per-resolution counts ARE the reasoning: how many
+	// ambiguous findings the operator confirmed as real hits vs called false positives vs dismissed.
+	// Best-effort (F-048): the adjudication has already landed; telemetry never un-does it.
+	try {
+		const role = await getRole(db, run.role);
+		const tally = (want: AmbiguousResolution): number =>
+			input.resolutions.filter((r) => r.resolution === want).length;
+		await emitGauntletAdjudicated(db, {
+			role: run.role,
+			roleSlug: role?.slug ?? run.role,
+			roleVersion: run.role_version,
+			run: run.id,
+			itemCount: input.resolutions.length,
+			confirmedHits: tally('confirm_hit'),
+			falsePositives: tally('false_positive'),
+			dismissed: tally('dismiss'),
+			statusBefore: run.status,
+			statusAfter: finalized.status
+		});
+	} catch (err) {
+		console.warn(
+			`[workforce] gauntlet_adjudicated trace failed for ${run.id} (the adjudication is unaffected): ${(err as Error).message}`
+		);
+	}
+	return finalized;
 }

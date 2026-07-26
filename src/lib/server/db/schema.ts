@@ -2923,6 +2923,60 @@ const m0082_autonomy_status: Migration = {
 	`
 };
 
+// m0083 — COMPLETION-LEDGER Wave A — the HIRE/CERTIFICATION event vocabulary.
+//
+// THE GAP THIS CLOSES: the whole workforce/HR subsystem (src/lib/server/workforce/) emitted ZERO
+// scene_event rows, and its role_event audit covered only a THIN slice — a gauntlet START, an
+// ADJUDICATION, a RE-VERSION, and (worst) the HIRE ITSELF (applyHireDecision) wrote NO audit row at
+// all. An entire hire — candidate considered, gauntlet run, scored, adjudicated, certified, staffed —
+// happened with no durable, human-visible trace. The operator could not watch or audit hiring.
+//
+// TWO EXISTING chokepoints are widened here; NO new table, NO second writer (F-055):
+//   • role_event.op  — the workforce subsystem's OWN append-only, NEVER-pruned audit feed
+//                      (repo.addRoleEvent). This is the DURABLE trace the /agents surface renders.
+//   • scene_event.kind — the DERIVED live activity feed (scene/projector.appendSceneEvent), a
+//                      ROLLING 500-row window (NOT an audit log) that drives the living-brain scene.
+// Each hire/cert moment writes BOTH: role_event for durability + scene_event for the live scene.
+// The split is deliberate — scene_event's rolling prune would silently eat an audit trail, so the
+// audit lives in role_event where nothing prunes it.
+//
+// NEW role_event ops (the previously-unaudited moments):
+//   gauntlet_started      — a certification campaign's interview run OPENED (repo.createInterviewRun).
+//   adjudicated           — an operator resolved a run's ambiguous queue (gauntlet.adjudicateInterviewRun).
+//   reversioned           — a failed role was re-versioned (ceremony.reversionFailedRole).
+//   candidate_considered  — the recruiter raised a cert_hire brief (recruiter-hire.raiseHireBrief).
+//   hired                 — the operator APPROVED a hire brief (recruiter-hire.applyHireDecision).
+//   hire_rejected         — the operator REJECTED a hire brief (same chokepoint, reject arm).
+// ('interviewed'/'staffed' already existed — their detail payloads are ENRICHED in code, not here.)
+//
+// NEW scene_event kinds mirror those moments (+ 'gauntlet_scored' for the finalize chokepoint);
+// 'hire_staffed' was ALREADY in the m0055 vocabulary but had never been emitted ("Reserved") — this
+// wave finally emits it from staff.staffRole.
+//
+// WHY the widened ASSERTs are REQUIRED (not cosmetic): both fields are SCHEMAFULL with a value
+// ASSERT, so an un-enumerated op/kind is REJECTED at write — the exact m0022 'hook' silent-swallow
+// bug. ADDITIVE + idempotent (F-015: OVERWRITE-only, re-runs the FULL enum; widening an ASSERT never
+// touches an existing row, so every prior row still validates. The generic schemaMigrations sweep in
+// migrate.test.ts covers apply-twice AND half-applied). This is its OWN migration, never an in-place
+// edit of m0055/m0066/the m0031 role_event DDL: the runner records a migration only on success and
+// never re-runs an applied one, so an in-place edit would NEVER land on the LIVE dev DB (F-015).
+//
+// role_event_by_at: the /agents hiring-activity feed reads role_event ORDER BY at DESC. Without an
+// index that is a full-table sort on every page load; the existing role_event_by_role index does not
+// serve it. Additive + OVERWRITE (idempotent).
+const m0083_workforce_hire_events: Migration = {
+	id: '0083_workforce_hire_events',
+	up: `
+		DEFINE FIELD OVERWRITE op ON role_event TYPE string
+			ASSERT $value IN ["created","interviewed","swap","retired","archived","tier_changed","staffed","unstaffed","fixture_activated","stale_marked","gauntlet_started","adjudicated","reversioned","candidate_considered","hired","hire_rejected"];
+
+		DEFINE FIELD OVERWRITE kind ON scene_event TYPE string
+			ASSERT $value IN ["node_spawned","job_fired","job_done","connection_formed","node_retired","memory_added","hire_staffed","continue","batch_drained","pm_tick","candidate_considered","hired","hire_rejected","gauntlet_started","gauntlet_scored","gauntlet_adjudicated","role_reversioned"];
+
+		DEFINE INDEX OVERWRITE role_event_by_at ON role_event FIELDS at;
+	`
+};
+
 // ── §4.12 note (BL-R3 — F-048 structural fix + F-026) — active-window dedup is the PRIMARY id ──
 //
 // NO new migration ships for BL-R3. The task_run active-window dedup ("one pending-or-processing
@@ -3032,5 +3086,6 @@ export const schemaMigrations: Migration[] = [
 	m0079_peer_message_reply_to,
 	m0080_maintenance_loops,
 	m0081_agent_event_supervision,
-	m0082_autonomy_status
+	m0082_autonomy_status,
+	m0083_workforce_hire_events
 ];

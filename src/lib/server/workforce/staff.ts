@@ -25,6 +25,7 @@ import { assertRecordId } from '../db/validate';
 import { screen } from '../memory/screen';
 import { checkDeployability, type DeployabilityVerdict } from './deployability';
 import { addRoleEvent, getRole, type Tier } from './repo';
+import { emitHireStaffed } from './hire-events';
 
 // ── Tier → model resolution seam (D-003) ─────────────────────────────────────────
 //
@@ -304,7 +305,32 @@ export async function staffRole(
 	await addRoleEvent(db, {
 		role: roleId,
 		op: 'staffed',
-		detail: { project: projectId, staff: row.id, source: row.source }
+		detail: {
+			project: projectId,
+			staff: row.id,
+			source: row.source,
+			// COMPLETION-LEDGER Wave A — the audit row existed but was flat. A re-staff of an
+			// existing (project, role) row and a first-time hire are indistinguishable in the
+			// upserted row itself, so the distinction is recorded HERE, where it is still known.
+			re_staff: Boolean(existing),
+			...(row.pinned_version ? { pinned_version: row.pinned_version } : {}),
+			...(row.tier_override ? { tier_override: row.tier_override } : {})
+		}
+	});
+
+	// COMPLETION-LEDGER Wave A — the hire becoming REAL WORK. `hire_staffed` has been in the scene
+	// vocabulary since m0055 but was marked "Reserved" and never emitted; this is its first emitter,
+	// so a staffing finally animates on the living-brain scene. The durable audit half is the
+	// addRoleEvent above (staffRole owns that chokepoint — F-055: one write per act), so this adds
+	// the scene half only. Best-effort: the staffing is already committed.
+	await emitHireStaffed(db, {
+		role: roleId,
+		project: projectId,
+		staffRow: row.id,
+		...(row.source ? { source: row.source } : {}),
+		...(row.pinned_version ? { pinnedVersion: row.pinned_version } : {}),
+		...(row.tier_override ? { tierOverride: row.tier_override } : {}),
+		reStaff: Boolean(existing)
 	});
 	return row;
 }

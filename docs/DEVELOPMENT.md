@@ -138,6 +138,7 @@ Copy these into v2's `docs/fails.md` on day one — they are prevention rules, n
 ## 6. Environment & secrets
 
 - Secrets only in `.env` (gitignored). `.env.example` is the authoritative key list: `CODE_ROOT`, `SURREAL_WS`/`SURREAL_NS`/`SURREAL_DB`/`SURREAL_USER`/`SURREAL_PASS`, `HOST`/`PORT`, `OLLAMA_HOST`, and ONE of `CLAUDE_CODE_OAUTH_TOKEN` / `ANTHROPIC_API_KEY`.
+- **Scoped least-priv runtime user (SF2-1 / D-026c), opt-in.** `npm run db:up` provisions `atelier_runtime` (DATABASE-level `ROLES EDITOR`) and prints the `.env` block for it. The runtime reads it under exactly two names — `SURREAL_RUNTIME_USER` and `SURREAL_RUNTIME_PASS` (same spelling in `.env.example` and in db:up's printed handoff). Set **both** and `db/runtime-init.ts` signs in at `authLevel:'database'` by itself — no code edit — and `SURREAL_USER`/`SURREAL_PASS` are then ignored. Set **neither** and the historical root path is unchanged. Setting only one is refused with an honest reason (never a silent fall-back to root).
 - SurrealDB file lives in `.data/` (gitignored). Back up by copying that directory.
 - Feature flags gate dashboard pages (env-based, as v1).
 - **Loopback-only bind (D-025).** Set `HOST=127.0.0.1` for SvelteKit; keep Ollama, SurrealDB, and the embeddings endpoint on loopback (`127.0.0.1`). A **startup assertion** must refuse to boot if any bind is non-loopback.

@@ -33,6 +33,7 @@ import {
 	provisionRuntimeUser,
 	DEFAULT_RUNTIME_USERNAME
 } from '../src/lib/server/db/provision-user.ts';
+import { runtimeHandoffLines } from '../src/lib/server/db/runtime-handoff.ts';
 
 const WS = (process.env.SURREAL_WS || 'ws://127.0.0.1:8000').trim();
 const NS = (process.env.SURREAL_NS || 'playground').trim();
@@ -143,46 +144,25 @@ async function main(): Promise<void> {
 	console.log(
 		`[db:up] CONNECTED — ${schemaMigrations.length}/${schemaMigrations.length} migrations applied on ${NS}/${DB}.`
 	);
-	console.log(
-		`[db:up] Runtime user provisioned: ${runtime.username} (ROLES ${runtime.role}, scoped to DATABASE ${NS}/${DB} — D-026c).`
-	);
-	console.log(
-		'[db:up]   Scope (verified vs 2.6.5): CRUD on product tables YES; DEFINE USER / root+namespace admin / cross-database access NO.'
-	);
-	console.log('[db:up] .env block for the dashboard runtime user (least-priv — D-026c):');
-	console.log(`          SURREAL_WS=${WS}`);
-	console.log(`          SURREAL_NS=${NS}`);
-	console.log(`          SURREAL_DB=${DB}`);
-	console.log(`          SURREAL_USER=${runtime.username}`);
-	if (runtime.alreadyExisted) {
-		// HONEST (F-008): the user was already defined — IF NOT EXISTS is a no-op and does
-		// NOT reset the password, so we must NOT print a fresh/fabricated value. The
-		// original credential (from the FIRST provisioning) still stands.
-		console.log(
-			'          SURREAL_PASS=<unchanged — user already existed; the password from its FIRST'
-		);
-		console.log(
-			'                       provisioning is retained. To rotate: REMOVE USER then re-run,'
-		);
-		console.log('                       or set SURREAL_RUNTIME_PASS before the first provisioning.>');
-	} else if (runtime.generated) {
-		// Printed ONCE, here only — never persisted, never logged again (D-026). A future
-		// re-run does NOT reset this password, so store it now.
-		console.log(`          SURREAL_PASS=${runtime.password}   # GENERATED — shown ONCE; store it now`);
-	} else {
-		console.log('          SURREAL_PASS=<the SURREAL_RUNTIME_PASS you configured>');
+	// The operator handoff is built by db/runtime-handoff.ts (SF3-1) so it stays pinned to
+	// the seam that actually reads the env (db/runtime-init.ts) — it drifted once already,
+	// printing SURREAL_USER/SURREAL_PASS + a code edit the seam does not need, which left
+	// a following operator silently disconnected. runtime-handoff.test.ts is the anti-drift
+	// gate. Nothing is flipped automatically — the root user stays provisioning-only.
+	for (const line of runtimeHandoffLines({
+		ws: WS,
+		namespace: NS,
+		database: DB,
+		username: runtime.username,
+		role: runtime.role,
+		alreadyExisted: runtime.alreadyExisted,
+		generated: runtime.generated,
+		password: runtime.password
+	})) {
+		console.log(line);
 	}
 	console.log(
-		'[db:up]   NOTE: the runtime is NOT flipped automatically. To use the scoped user, set the'
-	);
-	console.log(
-		'[db:up]   above SURREAL_USER/SURREAL_PASS in .env AND connect at DATABASE auth level'
-	);
-	console.log(
-		'[db:up]   (Db.connect authLevel:\'database\'). Until then the runtime keeps its current'
-	);
-	console.log(
-		`[db:up]   user; root (${ROOT_USER}) remains provisioning/migration-only (D-026c).`
+		`[db:up]   Nothing is flipped automatically — root (${ROOT_USER}) stays provisioning/migration-only (D-026c).`
 	);
 
 	if (server) {

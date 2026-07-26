@@ -715,7 +715,11 @@
             onclick={() => focus(n.id)}
           >
             <span class="dot" data-class={v.colorClass} data-status={v.statusClass} aria-hidden="true"></span>
-            <span class="legend-label">{n.label}</span>
+            <!-- NAMING (operator rule 2026-07-26): `n.label` is now the PURPOSE-composed name
+                 from the scene aggregator (role/specialist/intent/task · slot id) rather than a
+                 bare pool-slot id like `sonnet-1`. It is ellipsis-truncated at 22ch, so carry the
+                 full name in `title` — a truncated name must still be readable, not guessed. -->
+            <span class="legend-label" title={n.label}>{n.label}</span>
             <span class="legend-status mono">{n.status}</span>
           </button>
         </li>

@@ -277,6 +277,21 @@ describe('describeSceneEvent — human-readable activity line', () => {
 		expect(describeSceneEvent(ev({ ref: 'memory:abc' }))?.subject).toBe('abc');
 	});
 
+	// NAMING (standing operator rule, 2026-07-26): an id is not a name.
+	it('humanizes a seeded-id ref, and refuses to print an OPAQUE auto-id as a subject', () => {
+		// a readable id tail still reads as before, minus the epoch suffix a seeder appended.
+		expect(describeSceneEvent(ev({ ref: 'role:probe_fit_1781894354268' }))?.subject).toBe('probe_fit');
+		expect(describeSceneEvent(ev({ ref: 'role:hr-recruiter' }))?.subject).toBe('hr-recruiter');
+		// an opaque ULID carries NO human content — the line degrades to the honest '—' rather
+		// than printing `01k9x…` where a name belongs.
+		expect(describeSceneEvent(ev({ ref: 'session:01k9abcdefghjkmnpqrs' }))?.subject).toBe('—');
+		// a screened meta label still outranks the ref entirely.
+		expect(
+			describeSceneEvent(ev({ ref: 'session:01k9abcdefghjkmnpqrs', meta: { label: 'code-write · fix the reaper' } }))
+				?.subject
+		).toBe('code-write · fix the reaper');
+	});
+
 	it('surfaces a status detail off the screened meta when present', () => {
 		expect(describeSceneEvent(ev({ kind: 'job_done', ref: 'session:s', meta: { status: 'done' } }))?.detail).toBe('done');
 		expect(describeSceneEvent(ev({ meta: { kind: 'semantic' } }))?.detail).toBeUndefined();

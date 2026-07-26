@@ -27,6 +27,7 @@ import { startTestDb, type TestDb } from '$lib/server/db/testserver';
 import { StringRecordId } from 'surrealdb';
 import { createProject } from '$lib/server/projects/repo';
 import { createPm } from '$lib/server/projects/pm-repo';
+import { loadOrchestration } from '$lib/server/config/load';
 import { load, type ProjectDetailData } from './+page.server';
 
 let tdb: TestDb | undefined;
@@ -83,6 +84,24 @@ async function runLoad(slug: string): Promise<ProjectDetailData> {
 	} as unknown as Parameters<typeof load>[0])) as ProjectDetailData;
 }
 
+/**
+ * The daily spawn cap the operator has ACTUALLY configured, read from the SAME YAML the boot seam
+ * reads and normalized through the orchestrator's own `> 0` gate (0 / absent / non-positive =
+ * UNCAPPED ⇒ honest null). Derived independently of `readSpendCaps()` so the assertion is a real
+ * reported-vs-enforced check, not a tautology, and so an operator budget adjustment TRACKS instead
+ * of breaking the suite. Shadow path: an unreadable/malformed config mirrors `bootDailySpawnCap()`
+ * and reports null (never a fabricated denominator, F-008).
+ */
+function configuredDailyCap(): number | null {
+	try {
+		const dir = process.env.CONFIG_DIR?.trim() || 'config';
+		const raw = loadOrchestration(`${dir}/orchestration.yaml`).concurrency.dailySpawnCap;
+		return typeof raw === 'number' && Number.isFinite(raw) && raw > 0 ? raw : null;
+	} catch {
+		return null;
+	}
+}
+
 /** The universal honest-empty + POJO assertions every under-populated variant must satisfy. */
 function assertHonestAndSerializable(data: ProjectDetailData, projectId: string): void {
 	// (a) The row EXISTS and is connected — a live-but-thin project is NOT dressed as disconnected.
@@ -106,9 +125,16 @@ function assertHonestAndSerializable(data: ProjectDetailData, projectId: string)
 	// A never-verified game harness is honestly "not configured" (no fabricated launch config).
 	expect(data.gameVerifyConfigured).toBe(false);
 	expect(data.gameVerify).toEqual([]);
-	// The spend caps are always present (static ceilings) but the daily cap is honest null when the
-	// test boot wires none — never a fabricated /N (F-008).
-	expect(data.spendCaps.dailySpawnCap).toBeNull();
+	// The spend caps are always present. The daily cap is OPERATOR-TUNABLE (D-021,
+	// config/orchestration.yaml `concurrency.dailySpawnCap` — armed to a positive backstop by the
+	// SD-1 safety-defaults wave, 38717d4), so pinning a magic number here would make this suite
+	// break every time the operator adjusts a budget. Assert the INVARIANT the loader actually owes:
+	//   • REPORTED == ENFORCED — the denominator the UI shows is the cap the orchestrator enforces;
+	//   • honest SHAPE — null (uncapped) or a POSITIVE INTEGER, never 0/negative/NaN (F-008).
+	expect(data.spendCaps.dailySpawnCap).toBe(configuredDailyCap());
+	const cap = data.spendCaps.dailySpawnCap;
+	expect(cap === null || (Number.isInteger(cap) && cap > 0)).toBe(true);
+	expect(data.spendCaps.reTickCap).toBeGreaterThan(0);
 
 	// No optional column is ever the literal string "undefined"/"null" (the str(undefined) F-013 smell).
 	const repo = data.project?.repo_url;

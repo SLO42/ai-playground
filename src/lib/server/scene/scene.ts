@@ -41,9 +41,13 @@
 // no id is interpolated. Datetimes are coerced to ISO strings in the projection (F-013);
 // an absent datetime becomes `undefined` (omitted) → the UI renders '—', never str(NONE).
 
+import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { loadSoul } from '../memory/soul';
 import type { MaturityStage, MaturityGateResult, SoulMetrics } from '../memory/soul';
+import { screenForDisplay } from '../memory/observability';
+import { assertRecordIdOfTable } from '../db/validate';
+import { sessionDisplayName, agentDisplayName } from '$lib/shared/naming';
 
 /**
  * A node class in the scene. MEMORY (entity/memory) + JOB (session/work_item) are the original
@@ -204,13 +208,50 @@ function refOrUndef(v: unknown): string | undefined {
 	return s.includes(':') ? s : undefined;
 }
 
-/** Short, content-free label for a job node (no raw row content leaks into the scene). */
+/** Character cap for the task-title part of a scene node label (see `maxSubjectChars`). */
+const SCENE_LABEL_SUBJECT_MAX = 56;
+
+/** Short, content-free label for a work_item node (no raw row content leaks into the scene). */
 function jobLabel(table: 'session' | 'work_item', row: Record<string, unknown>): string {
 	const kind = typeof row.kind === 'string' ? row.kind : undefined;
 	const workType = typeof row.work_type === 'string' ? row.work_type : undefined;
 	const tag = kind ?? workType;
 	const head = table === 'session' ? 'session' : 'work';
 	return tag ? `${head}: ${tag}` : head;
+}
+
+/**
+ * D-026 screen for a label sourced from a MUTABLE, agent-authored row (a task title, a role
+ * name). Unlike `project.name` (operator-set) or `concept.label` (screened before store), these
+ * were never screened at the write, so they pass the §3.1b display screen HERE before entering
+ * the scene. A `quarantined` verdict drops the value entirely — the naming composer then falls
+ * back one rung, so a poisoned title degrades the label rather than leaking (F-008 honesty: a
+ * dropped title is an absent field, not a fabricated one). Redacted text is safe to render.
+ */
+function screenedLabel(v: unknown): string | undefined {
+	if (typeof v !== 'string' || !v.trim()) return undefined;
+	const { text, status } = screenForDisplay(v);
+	if (status === 'quarantined') return undefined;
+	const t = text.trim();
+	return t ? t : undefined;
+}
+
+/**
+ * Validate a batch of `table:id` link strings at the D-016 chokepoint and wrap them as record
+ * links. A malformed id (the upstream-error shadow path — a corrupted link, a legacy string)
+ * is DROPPED, not thrown on: one bad link must not blank the whole scene. The dropped row's
+ * name simply falls back a rung, which is honest.
+ */
+function recordLinks(ids: readonly string[], table: string): StringRecordId[] {
+	const out: StringRecordId[] = [];
+	for (const id of ids) {
+		try {
+			out.push(new StringRecordId(assertRecordIdOfTable(id, table)));
+		} catch {
+			// named failure: an invalid/foreign-table record link — skipped, never interpolated.
+		}
+	}
+	return out;
 }
 
 /**
@@ -270,6 +311,11 @@ export async function buildSceneGraph(
 	// ── USAGE / JOBS class ──────────────────────────────────────────────────────────
 	// session nodes — active/recent jobs. Most-recent first (started_at DESC) so the window
 	// is the live front, not stale history. status carries running/done/… for color/animate.
+	//
+	// NAMING (operator rule 2026-07-26): `role`, `specialist` and `granted_intent` are selected
+	// alongside so a session/agent node can be named by PURPOSE instead of by the pool-SLOT id
+	// (`session.agent` is `opus-1`/`sonnet-1` — F-046 leaking into the UI). F-020: every field the
+	// projection reads is in the SELECT, and `started_at` (the ORDER BY key) already is.
 	const [sessionRows] = await db.query<
 		[
 			Array<{
@@ -279,14 +325,67 @@ export async function buildSceneGraph(
 				project?: unknown;
 				task?: unknown;
 				agent?: unknown;
+				role?: unknown;
+				specialist?: unknown;
+				granted_intent?: unknown;
 				started_at?: unknown;
 			}>
 		]
 	>(
-		`SELECT id, kind, status, project, task, agent, started_at FROM session
+		`SELECT id, kind, status, project, task, agent, role, specialist, granted_intent, started_at
+		   FROM session
 		  ORDER BY started_at DESC LIMIT $sessions;`,
 		{ sessions: lim.sessions }
 	);
+
+	// ── NAMING joins — bounded by the session window already fetched (≤ lim.sessions ids) ─────
+	// A session's PURPOSE lives one hop away: `task.title` (what it is doing) and `role.name/slug`
+	// (what it is). Both are resolved with a single id-bounded SELECT each (D-016 $param binding,
+	// no interpolation) rather than a per-row lookup. Absent link / absent row → the field simply
+	// stays undefined and the composer falls back a rung — never a fabricated title (F-008).
+	const taskTitles = new Map<string, string>();
+	const roleNames = new Map<string, { name?: string; slug?: string }>();
+	const taskIds = [...new Set(sessionRows.map((s) => refOrUndef(s.task)).filter((v): v is string => !!v))];
+	const roleIds = [...new Set(sessionRows.map((s) => refOrUndef(s.role)).filter((v): v is string => !!v))];
+	const taskLinks = recordLinks(taskIds, 'task');
+	const roleLinks = recordLinks(roleIds, 'role');
+	if (taskLinks.length) {
+		const [rows] = await db.query<[Array<{ id: unknown; title?: unknown }>]>(
+			`SELECT id, title FROM task WHERE id IN $ids;`,
+			{ ids: taskLinks }
+		);
+		for (const r of rows ?? []) {
+			// A task title is AGENT-AUTHORED and unscreened at write → screen it here (D-026).
+			const t = screenedLabel(r.title);
+			if (t) taskTitles.set(String(r.id), t);
+		}
+	}
+	if (roleLinks.length) {
+		const [rows] = await db.query<[Array<{ id: unknown; name?: unknown; slug?: unknown }>]>(
+			`SELECT id, name, slug FROM role WHERE id IN $ids;`,
+			{ ids: roleLinks }
+		);
+		for (const r of rows ?? []) {
+			roleNames.set(String(r.id), {
+				...(screenedLabel(r.name) ? { name: screenedLabel(r.name)! } : {}),
+				...(screenedLabel(r.slug) ? { slug: screenedLabel(r.slug)! } : {})
+			});
+		}
+	}
+
+	/** The naming fields for one session row, resolved through the two joins above. */
+	const nameInputFor = (s: (typeof sessionRows)[number]) => {
+		const role = roleNames.get(refOrUndef(s.role) ?? '');
+		return {
+			roleName: role?.name,
+			roleSlug: role?.slug,
+			role: refOrUndef(s.role),
+			specialist: typeof s.specialist === 'string' ? s.specialist : undefined,
+			taskTitle: taskTitles.get(refOrUndef(s.task) ?? ''),
+			intent: typeof s.granted_intent === 'string' ? s.granted_intent : undefined,
+			kind: s.kind
+		};
+	};
 
 	// work_item nodes — the queue / firing jobs. Most-recent first; status carries
 	// pending/processing/done/failed for the firing animation.
@@ -394,7 +493,17 @@ export async function buildSceneGraph(
 			id: String(s.id),
 			class: 'job',
 			subclass: 'session',
-			label: jobLabel('session', s),
+			// NAMING: purpose first, the pool-slot id demoted to a trailing qualifier. The old
+			// `jobLabel('session', …)` rendered `session: task` for EVERY task session — a
+			// content-free label repeated N times, which the standing operator rule classes as a
+			// defect. When no purposeful field exists the composer returns an honest placeholder.
+			// `maxSubjectChars`: live task titles run past 200 chars, which is unreadable as a graph
+			// node label. The cap ellipsizes VISIBLY (`…`), and the legend carries the full label in
+			// its `title` while the inspector links the task itself — truncated, never hidden.
+			label: sessionDisplayName(
+				{ ...nameInputFor(s), qualifier: agent },
+				{ maxSubjectChars: SCENE_LABEL_SUBJECT_MAX }
+			),
 			status: s.status ?? 'running',
 			...(refOrUndef(s.project) ? { project: refOrUndef(s.project)! } : {}),
 			...(agent ? { agent } : {}),
@@ -483,14 +592,30 @@ export async function buildSceneGraph(
 	// there is no `agent` table (D-026: the slot id is an opaque identity, not content). One
 	// node per slot clusters every job that agent ran. status = 'running' if any of its
 	// windowed sessions is live, else 'idle'; `at` = its most-recent session start (scrubber).
-	const agentAcc = new Map<string, { running: boolean; at?: string }>();
+	//
+	// NAMING (operator rule 2026-07-26): the slot id is NOT the name — `sonnet-1` says which
+	// TIER BUCKET ran the work, not what the work was. Each cluster is named by the PURPOSE of
+	// the sessions inside it (roles → specialists → intents → kinds), the slot id demoted to a
+	// trailing qualifier, and the cluster SPREAD disclosed (`code-write +2`) rather than one of
+	// several shown at random. A cluster with no purposeful field at all reads
+	// `unnamed agent · sonnet-1` — honest, and still never the slot id alone (F-008/F-046).
+	const agentAcc = new Map<
+		string,
+		{ running: boolean; at?: string; roleNames: string[]; specialists: string[]; intents: string[]; kinds: string[] }
+	>();
 	for (const s of sessionRows) {
 		const agent = typeof s.agent === 'string' && s.agent.trim() ? s.agent.trim() : undefined;
 		if (!agent) continue;
-		const acc = agentAcc.get(agent) ?? { running: false };
+		const acc =
+			agentAcc.get(agent) ?? { running: false, roleNames: [], specialists: [], intents: [], kinds: [] };
 		if ((s.status ?? 'running') === 'running') acc.running = true;
 		const at = isoOrUndef(s.started_at);
 		if (at && (!acc.at || at > acc.at)) acc.at = at;
+		const n = nameInputFor(s);
+		if (n.roleName ?? n.roleSlug) acc.roleNames.push((n.roleName ?? n.roleSlug)!);
+		if (n.specialist) acc.specialists.push(n.specialist);
+		if (n.intent) acc.intents.push(n.intent);
+		if (n.kind) acc.kinds.push(n.kind);
 		agentAcc.set(agent, acc);
 	}
 	for (const [agent, acc] of agentAcc) {
@@ -498,7 +623,13 @@ export async function buildSceneGraph(
 			id: `agent:${agent}`,
 			class: 'agent',
 			subclass: 'agent',
-			label: agent,
+			label: agentDisplayName({
+				slot: agent,
+				roleNames: acc.roleNames,
+				specialists: acc.specialists,
+				intents: acc.intents,
+				kinds: acc.kinds
+			}),
 			status: acc.running ? 'running' : 'idle',
 			...(acc.at ? { at: acc.at } : {})
 		});

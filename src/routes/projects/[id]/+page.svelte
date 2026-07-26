@@ -37,6 +37,7 @@
     type Turn
   } from '$lib/client/transcript-core';
   import { relativeTime, elapsed, absoluteTime } from '$lib/client/time-format';
+  import { describeSession } from '$lib/shared/naming';
   import type { PageData, ActionData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -2982,7 +2983,19 @@
           {:else}
             <ul class="rows" aria-label="sessions">
               {#each sessions as s (s.id)}
+                {@const name = describeSession(
+                  { roleName: s.roleName, roleSlug: s.roleSlug, kind: s.kind },
+                  { includeKind: true }
+                )}
                 <li class="row session" data-selected={selectedSession === s.id}>
+                  <!-- NAMING (operator rule 2026-07-26): the row opened with an id tail and a
+                       model, telling the operator which TIER ran but not what the run WAS. The
+                       shared composer supplies the purposeful name; the id/model stay as demoted
+                       qualifiers. `unnamed session` is the honest placeholder, styled as unknown
+                       rather than presented as a real name (F-008). -->
+                  <span class="sess-name" class:unnamed={name.isPlaceholder} title={name.name}
+                    >{name.name}</span
+                  >
                   <span class="mono sid">{shortId(s.id)}</span>
                   <span class="status" data-status={s.status}>{s.status}</span>
                   <span class="model mono">{s.provider}/{s.modelId}</span>
@@ -3762,6 +3775,19 @@
   .sid {
     font-size: 0.74rem;
     color: var(--color-text-muted);
+  }
+  .sess-name {
+    flex-basis: 100%;
+    font-size: var(--text-sm, 0.82rem);
+    font-weight: var(--weight-semibold, 600);
+    color: var(--color-text);
+    overflow-wrap: anywhere;
+  }
+  /* The honest-unknown state reads as unknown, not as a name (F-008). */
+  .sess-name.unnamed {
+    color: var(--color-text-muted);
+    font-weight: var(--weight-regular, 400);
+    font-style: italic;
   }
   .model {
     font-size: 0.74rem;

@@ -166,9 +166,17 @@ describe('buildSceneGraph — derived node/edge truth', () => {
 		const g = await buildSceneGraph(db);
 		const agents = g.nodes.filter((n) => n.class === 'agent');
 		expect(agents.map((n) => n.id).sort()).toEqual(['agent:opus-1', 'agent:sonnet-1']);
-		// sonnet-1 has a running session → status running; its label is the slot id.
+		// sonnet-1 has a running session → status running. Its NODE ID is still the slot id (the
+		// cluster key), but its LABEL must not BE the slot id — these sessions carry no role /
+		// specialist / intent / task, so the honest name is the placeholder + demoted qualifier
+		// (operator rule 2026-07-26; F-046 must not leak into the UI as an identity).
 		const sonnet = agents.find((n) => n.id === 'agent:sonnet-1')!;
-		expect(sonnet).toMatchObject({ subclass: 'agent', label: 'sonnet-1', status: 'running' });
+		expect(sonnet).toMatchObject({
+			subclass: 'agent',
+			label: 'task · sonnet-1',
+			status: 'running'
+		});
+		expect(sonnet.label).not.toBe('sonnet-1');
 		// Each agent-bearing session draws a session→agent edge; the legacy one does not.
 		expect(g.edges).toContainEqual({ from: 'session:a1', to: 'agent:sonnet-1', kind: 'agent' });
 		expect(g.edges).toContainEqual({ from: 'session:a2', to: 'agent:sonnet-1', kind: 'agent' });
@@ -178,6 +186,108 @@ describe('buildSceneGraph — derived node/edge truth', () => {
 		const s1 = g.nodes.find((n) => n.id === 'session:a1')!;
 		expect(s1.agent).toBe('sonnet-1');
 		expect(g.nodes.find((n) => n.id === 'session:legacy')!.agent).toBeUndefined();
+	});
+
+	// ── NAMES CONVEY PURPOSE (standing operator rule, 2026-07-26) ────────────────────────
+	//
+	// *"our agents should have names that give clarity into what they do and are. so the memory
+	//  scene says agent sonnet 1, but that just tells me it uses sonnet, not its purpose."*
+	//
+	// `sonnet-1` is a pool SLOT id (agent-pool.yaml → boot.agentForTier → launch `agent:`), i.e.
+	// F-046 leaking into the UI. These run against a REAL SurrealDB (not stubDb) because the fix
+	// has a QUERY prerequisite — `granted_intent` / `role` / `specialist` had to be added to the
+	// session SELECT and `task.title` / `role.name` resolved one hop out (F-020: a stub cannot
+	// prove a projection reads a field it never parsed).
+
+	it('names a session by PURPOSE, demoting the pool-slot id to a trailing qualifier', async () => {
+		// The EXACT live row from the operator review: sonnet-1 / code-write / "Unblock 1 stalled task(s)".
+		const project = await seedProject('naming');
+		await db.query(
+			`CREATE task:t1 SET title="Unblock 1 stalled task(s)", description="",
+			   status="ready", project=type::thing("project", $pid);`,
+			{ pid: project.split(':')[1] }
+		);
+		await db.query(
+			`CREATE session:n1 SET kind="task", status="running", agent="sonnet-1",
+			   granted_intent="code-write", task=task:t1, model={provider:"x",model_id:"y"};`
+		);
+
+		const g = await buildSceneGraph(db);
+		const s = g.nodes.find((n) => n.id === 'session:n1')!;
+		expect(s.label).toBe('code-write · Unblock 1 stalled task(s) · sonnet-1');
+		// The two defects this replaces: the content-free `session: task` repeated N times, and
+		// the slot id standing in as the identity.
+		expect(s.label).not.toBe('session: task');
+		expect(s.label.startsWith('sonnet-1')).toBe(false);
+
+		// The agent CLUSTER node inherits the purpose, slot id still demoted.
+		const a = g.nodes.find((n) => n.id === 'agent:sonnet-1')!;
+		expect(a.label).toBe('code-write · sonnet-1');
+	});
+
+	it('prefers the workforce role name over the intent, and discloses a mixed cluster', async () => {
+		await db.query('CREATE role:r1 SET slug="hr-recruiter", name="HR Recruiter", purpose="hire";');
+		await db.query(
+			`CREATE session:n2 SET kind="interview", status="done", agent="opus-1", role=role:r1,
+			   granted_intent="read-only", model={provider:"x",model_id:"y"};`
+		);
+		await db.query(
+			`CREATE session:n3 SET kind="task", status="running", agent="opus-1",
+			   granted_intent="code-write", model={provider:"x",model_id:"y"};`
+		);
+
+		const g = await buildSceneGraph(db);
+		expect(g.nodes.find((n) => n.id === 'session:n2')!.label).toBe('HR Recruiter · opus-1');
+		// The cluster holds one ROLE-bearing session; the role dimension wins and the spread is
+		// disclosed honestly rather than one member being shown at random.
+		expect(g.nodes.find((n) => n.id === 'agent:opus-1')!.label).toBe('HR Recruiter · opus-1');
+	});
+
+	it('SHADOW empty — the barest possible session still names itself by kind, never by the slot id', async () => {
+		// The 145/177 live shape: no role, no specialist, no intent, no task. `session.kind` is a
+		// REQUIRED enum (schema.ts:1219 `ASSERT $value IN [chat|task|review|release|discussion|
+		// interview]`), so a schema-valid session ALWAYS has at least one purposeful rung — the
+		// `unnamed session` placeholder is therefore UNREACHABLE from a valid row here (it is
+		// covered directly in naming.test.ts). What matters is the floor: the label is the KIND,
+		// with the slot id demoted — never the slot id standing in as the identity.
+		await db.query(
+			'CREATE session:n4 SET kind="chat", status="running", agent="sonnet-1", model={provider:"x",model_id:"y"};'
+		);
+		const g = await buildSceneGraph(db);
+		const s = g.nodes.find((n) => n.id === 'session:n4')!;
+		expect(s.label).toBe('chat · sonnet-1');
+		expect(s.label).not.toBe('sonnet-1');
+		expect(s.label).not.toContain('undefined'); // F-013 — never str(NONE)
+		expect(g.nodes.find((n) => n.id === 'agent:sonnet-1')!.label).toBe('chat · sonnet-1');
+	});
+
+	it('SHADOW upstream-error — a dangling task link degrades the name, it does not blank the node', async () => {
+		// `task` points at a row that does not exist (deleted mid-flight): the title join returns
+		// nothing, the composer falls back one rung to the intent. Honest, never fabricated.
+		await db.query(
+			`CREATE session:n5 SET kind="task", status="running", agent="sonnet-1",
+			   granted_intent="code-write", task=task:gone, model={provider:"x",model_id:"y"};`
+		);
+		const g = await buildSceneGraph(db);
+		expect(g.nodes.find((n) => n.id === 'session:n5')!.label).toBe('code-write · sonnet-1');
+	});
+
+	it('D-026 — a task title carrying a secret is SCREENED before it becomes a scene label', async () => {
+		// task.title is AGENT-authored and unscreened at write, unlike project.name / concept.label.
+		const project = await seedProject('screened');
+		await db.query(
+			`CREATE task:t2 SET title="deploy with sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLLLLMMMM",
+			   description="", status="ready", project=type::thing("project", $pid);`,
+			{ pid: project.split(':')[1] }
+		);
+		await db.query(
+			`CREATE session:n6 SET kind="task", status="running", agent="sonnet-1",
+			   granted_intent="code-write", task=task:t2, model={provider:"x",model_id:"y"};`
+		);
+		const g = await buildSceneGraph(db);
+		const label = g.nodes.find((n) => n.id === 'session:n6')!.label;
+		expect(label).not.toContain('sk-ant-api03-AAAABBBBCCCCDDDDEEEEFFFFGGGGHHHHIIIIJJJJKKKKLLLLMMMM');
+		expect(label.startsWith('code-write')).toBe(true);
 	});
 
 	it('derives S3 cognitive nodes — concept / causal / skill / correction — from real rows', async () => {
@@ -448,8 +558,14 @@ describe('listSceneEvents — the activity feed reader', () => {
 describe('buildSceneGraph — read-only invariant', () => {
 	it('the aggregator source contains NO mutating SurrealQL verb (derive, never write)', () => {
 		const src = readFileSync(fileURLToPath(new URL('./scene.ts', import.meta.url)), 'utf8');
-		// Strip line + block comments so a verb appearing in prose doesn't false-positive.
+		// F-054 — NORMALIZE CRLF→LF FIRST. On a `core.autocrlf=true` Windows checkout every line
+		// on disk ends `\r\n`; JS treats `\r` as a LINE TERMINATOR, so `.` cannot match it and a
+		// non-multiline `$` will not match before it — `/\/\/.*$/` then strips NOTHING and this
+		// invariant silently asserted against un-stripped PROSE (the header's own
+		// "no CREATE / UPDATE / DELETE …" sentence made it fail). Green-on-LF, red-on-CRLF, for
+		// reasons that have nothing to do with the aggregator. Normalize, then strip.
 		const code = src
+			.replace(/\r\n/g, '\n')
 			.replace(/\/\*[\s\S]*?\*\//g, '')
 			.split('\n')
 			.map((l) => l.replace(/\/\/.*$/, ''))

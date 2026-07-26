@@ -60,13 +60,38 @@ describe('restartableSessions', () => {
 });
 
 describe('sessionLabel', () => {
+	// NAMING (standing operator rule, 2026-07-26): this now delegates to the ONE shared composer
+	// (`$lib/shared/naming`) so a restart row, a memory-scene node and a fleet card all name the
+	// same session identically. Two deliberate changes from the ad-hoc version:
+	//   • the separator is the shared ` · ` (was ` — `);
+	//   • the dead-end `'agent run'` is the explicit `'unnamed session'` placeholder — an honest
+	//     "no purposeful field on this row", which `describeSession(...).isPlaceholder` flags so a
+	//     renderer can style it as unknown instead of presenting it as a real name (F-008).
 	it('combines role + kind; falls back honestly when unknown (never fabricated)', () => {
 		expect(sessionLabel({ id: 's', status: 'failed', roleName: 'PM', kind: 'lifecycle' })).toBe(
-			'PM — lifecycle'
+			'PM · lifecycle'
 		);
 		expect(sessionLabel({ id: 's', status: 'failed', roleSlug: 'hr-recruiter' })).toBe('hr-recruiter');
 		expect(sessionLabel({ id: 's', status: 'failed', kind: 'task' })).toBe('task');
-		expect(sessionLabel({ id: 's', status: 'failed' })).toBe('agent run');
+		expect(sessionLabel({ id: 's', status: 'failed' })).toBe('unnamed session');
+	});
+
+	it('the ROLE outranks the kind, and the kind is never duplicated', () => {
+		// role wins the identity slot; kind rides along as the coarse secondary.
+		expect(sessionLabel({ id: 's', status: 'failed', roleName: 'PM', roleSlug: 'pm', kind: 'task' })).toBe(
+			'PM · task'
+		);
+		// a kind identical to the role must not render twice.
+		expect(sessionLabel({ id: 's', status: 'failed', roleSlug: 'review', kind: 'review' })).toBe('review');
+	});
+
+	it('SHADOW empty/upstream-error — blank and stringified-nil fields never reach the label', () => {
+		expect(sessionLabel({ id: 's', status: 'failed', roleName: '   ', kind: '' })).toBe(
+			'unnamed session'
+		);
+		const label = sessionLabel({ id: 's', status: 'failed', roleName: 'undefined', kind: 'task' });
+		expect(label).toBe('task');
+		expect(label).not.toContain('undefined');
 	});
 });
 

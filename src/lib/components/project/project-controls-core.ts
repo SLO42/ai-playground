@@ -13,6 +13,8 @@ export interface TaskLike {
 }
 
 /** A minimal session shape — works with the loader's FleetSession (id/status/taskId/note + label fields). */
+import { sessionDisplayName } from '$lib/shared/naming';
+
 export interface SessionLike {
 	id: string;
 	status: string;
@@ -81,15 +83,23 @@ export function restartableSessions(
 	return out;
 }
 
-/** A short, honest "what kind of work" label from kind/role. Neutral fallback when unknown — never a
- *  fabricated label (F-008). */
+/**
+ * A short, honest "what kind of work" label from role/kind. Neutral fallback when unknown —
+ * never a fabricated label (F-008).
+ *
+ * NAMING (standing operator rule, 2026-07-26): delegates to the ONE shared composer so a restart
+ * row reads the same as the same session in the memory scene and on the fleet cards. Behaviour is
+ * preserved (`role` still beats `kind`, and `includeKind` keeps the coarse kind alongside it);
+ * what changes is that the two are joined with the shared ` · ` separator instead of an ad-hoc
+ * ` — `, and the dead-end `'agent run'` becomes the explicit `'unnamed session'` placeholder —
+ * the honest "we have no purposeful field for this row", which `describeSession(...).isPlaceholder`
+ * lets a renderer style as unknown rather than as a name.
+ */
 export function sessionLabel(s: SessionLike): string {
-	const role = s.roleName || s.roleSlug || null;
-	const kind = s.kind || null;
-	if (role && kind) return `${role} — ${kind}`;
-	if (role) return role;
-	if (kind) return kind;
-	return 'agent run';
+	return sessionDisplayName(
+		{ roleName: s.roleName, roleSlug: s.roleSlug, kind: s.kind },
+		{ includeKind: true }
+	);
 }
 
 /** The honest result-banner state for a CONTINUE/RESTART action: idle (no result yet) / busy (in flight) /

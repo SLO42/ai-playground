@@ -30,6 +30,7 @@
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
+import { roleDisplayName } from '$lib/shared/naming';
 import { rowTurnKind, normOrigin, type Turn } from '../../client/transcript-core';
 
 // ── Bounds (frozen — §3 / F-014) ─────────────────────────────────────────────────────
@@ -121,6 +122,18 @@ function shortId(v: unknown): string {
 	return i >= 0 ? s.slice(i + 1) : s;
 }
 
+/**
+ * A ROLE actor label. `shortId` alone renders the raw record tail — which for the live seeded
+ * roles is `probe_fit_1781894354268` / `gq3glfee2zcw993suhto`, i.e. an id where a NAME belongs
+ * (standing operator rule 2026-07-26). This humanizes the id (`probe_fit`) and degrades to an
+ * honest placeholder when the id carries no human content at all. The row is never hidden.
+ * KNOWN LIMIT (deferred, named): the readers do not join `role.name`, so a role with a nice
+ * display name still shows its slug-ish id here — see `roleDisplayName({name, slug, ref})`.
+ */
+function roleLabel(v: unknown): string {
+	return roleDisplayName({ ref: v });
+}
+
 // ── Source readers (each bounded: own time-window + LIMIT pageSize+1, newest-first) ──────
 //
 // Every reader takes the SAME (scope, cutoffIso, before, fetch) and returns TimelineEntry[]
@@ -208,7 +221,7 @@ async function readMessages(
 				: {}),
 			...(kind === 'communication' ? { origin } : {}),
 			...(persisted.toolCall ? { toolCall: persisted.toolCall } : {}),
-			actor: shortId(r.srole) !== '—' ? `${shortId(r.srole)}` : `session ${shortId(r.session)}`,
+			actor: r.srole != null ? roleLabel(r.srole) : `session ${shortId(r.session)}`,
 			project: shortId(r.sproject)
 		};
 		return { id: persisted.id, source: 'message' as const, at, session: str(r.session), turn };
@@ -261,10 +274,10 @@ async function readPeerMessages(
 	return (rows ?? []).map((r) => {
 		const at = isoOrNull(r.created_at) ?? cutoffIso;
 		const id = String(r.id);
-		const from = r.from_role != null ? shortId(r.from_role) : `session ${shortId(r.from_session)}`;
+		const from = r.from_role != null ? roleLabel(r.from_role) : `session ${shortId(r.from_session)}`;
 		const to =
 			r.to_kind === 'role'
-				? shortId(r.to_role)
+				? roleLabel(r.to_role)
 				: r.to_kind === 'session'
 					? `session ${shortId(r.to_session)}`
 					: r.to_kind; // pm / atelier — an identity address (§11 placeholder)
@@ -325,7 +338,7 @@ async function readVerdicts(
 		const at = isoOrNull(r.at) ?? cutoffIso;
 		const id = String(r.id);
 		const actor =
-			r.role != null ? shortId(r.role) : `validator ${shortId(r.validator_session)}`;
+			r.role != null ? roleLabel(r.role) : `validator ${shortId(r.validator_session)}`;
 		const turn: Turn = {
 			id,
 			kind: 'verdict',

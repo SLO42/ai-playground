@@ -228,6 +228,21 @@
   .content {
     flex: 1 1 auto;
     overflow-y: auto;
+    /* The scroller MUST be the containing block for its absolutely-positioned
+       descendants. Without this the shell is `position: static` all the way up,
+       so an abspos descendant (every visually-hidden `.sr-only` legend/label —
+       base.css:76) resolves against the INITIAL containing block instead. The
+       `overflow: hidden` on `.shell` cannot clip it (a static ancestor never
+       clips an abspos box whose containing block is above it), so its static
+       offset — which for a tall page is far below the fold — grows
+       `documentElement.scrollHeight` and the app sprouts an OUTER document
+       scrollbar plus a dead band under the shell. Measured on /agents before
+       this line: innerHeight 861, documentElement.scrollHeight 1316.
+       `relative` with no offsets is layout-neutral, does NOT capture the
+       `position: fixed` overlays (palette / confirm / tray / toasts / the graph
+       canvas), and creates NO stacking context — `.content` sets no z-index,
+       transform or filter, and must keep it that way. */
+    position: relative;
     /* 14.2a: ONE consistent gutter token between fluid full-width pages and
        the shell edges (no per-page px caps — prose keeps ch-based measure). */
     padding: var(--page-gutter);

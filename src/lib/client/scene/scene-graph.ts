@@ -23,6 +23,7 @@
 //   4. nodeVisual()        — a node's design-system color family + radius (TOKENS only).
 
 import type { SceneGraph, SceneNode, SceneEdge, SceneNodeClass, SceneEvent, SceneSelfDetail } from '$lib/server/scene';
+import { stripRecordId } from '$lib/shared/naming';
 
 // ── 1. Force model ──────────────────────────────────────────────────────────────────
 
@@ -368,10 +369,15 @@ function kindColorClass(kind: string): SceneNodeClass {
 	return kind === 'job_fired' || kind === 'job_done' ? 'job' : 'memory';
 }
 
-/** The short tail of a record-id ref ('session:abc' → 'abc'), or the whole ref if untagged. */
-function refTail(ref: string): string {
-	const i = ref.indexOf(':');
-	return i >= 0 ? ref.slice(i + 1) : ref;
+/**
+ * The short tail of a record-id ref ('session:abc' → 'abc'), or the whole ref if untagged.
+ * NAMING (operator rule 2026-07-26): the tail of an AUTO-ID is not a name — `stripRecordId`
+ * humanizes what it can (`role:probe_fit_178…` → `probe_fit`) and returns null for an opaque
+ * ULID, so the caller can fall through to an honest '—' instead of printing `01k9x…` as if it
+ * were one. A readable ref (a slug) is unchanged.
+ */
+function refTail(ref: string): string | null {
+	return stripRecordId(ref);
 }
 
 /**
@@ -389,7 +395,7 @@ export function describeSceneEvent(event: SceneEvent | null | undefined): SceneE
 	// meta fields are the ones the projector surfaces (already screened) — never raw content.
 	const labelMeta =
 		metaStr(meta, 'label') ?? metaStr(meta, 'kind') ?? metaStr(meta, 'work_type');
-	const subject = labelMeta ?? (typeof event.ref === 'string' ? refTail(event.ref) : '—');
+	const subject = labelMeta ?? (typeof event.ref === 'string' ? refTail(event.ref) : null);
 	// Detail: a status off the screened meta (e.g. 'done', 'failed') — the only extra label.
 	const detail = metaStr(meta, 'status');
 	return {

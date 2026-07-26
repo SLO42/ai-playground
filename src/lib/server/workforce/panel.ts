@@ -29,6 +29,7 @@
 
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
+import { roleDisplayName } from '$lib/shared/naming';
 import { assertRecordId } from '../db/validate';
 import {
 	listOpenProposals,
@@ -372,7 +373,9 @@ async function buildAdjudicationQueue(db: Db): Promise<AdjudicationCard[]> {
 				`SELECT slug FROM $rid;`,
 				{ rid: new StringRecordId(assertRecordId(roleId)) }
 			);
-			slug = sr?.[0]?.slug ?? roleId;
+			// NAMING: a real slug passes through untouched; a dangling role no longer renders as a
+			// raw record id in the ceremony card.
+			slug = roleDisplayName({ slug: sr?.[0]?.slug, ref: roleId });
 			slugCache.set(roleId, slug);
 		}
 		cards.push({

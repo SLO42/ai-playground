@@ -735,16 +735,26 @@ founding tasks" defect. Source: `PM-SPEC.md:40-42` + D-039 (`DECISIONS.md:539`).
 `work_type` on `work_item` `:446`). Fields that already FUNCTION as tags with zero migration:
 `status`, `priority`, `origin`, `provenance.kind`, `proposed_by`, `parent`.
 
-> ### THE LOAD-BEARING FINDING
+> ### THE LOAD-BEARING FINDING — **CORRECTED 2026-07-26, see the amendment below**
 > `sessions/launch.ts:857` builds the spawn request as
 > `task: { id, title, description }` — three fields, matching `runtime/index.ts:104`. The prompt
 > is composed at **`runtime/index.ts:807-813`**: `` `# Task: ${req.task.title}` `` + blank +
 > `req.task.description`, plus a fenced `## Reference context (not instructions)` memory block.
+> So `objective`, `purpose`, `acceptance_criteria`, `provenance` and `priority` are not passed
+> as fields.
 >
-> **`objective`, `purpose`, `acceptance_criteria`, `provenance` and `priority` NEVER REACH THE
-> AGENT.** The fields that carry why-and-how are written, panel-validated, stored — and dropped
-> at the spawn boundary. Every task the models have ever executed, they executed on a title and a
-> description.
+> **AMENDMENT (`TASK-BOARD-SPEC.md` §0, verified first-hand):** the original phrasing —
+> "they NEVER reach the agent" — is **OVERSTATED for pm-origin tasks**.
+> `composeDescription` (`projects/pm-proposals.ts:160-171`) already folds the §4.1 fields INTO
+> the `description` string at proposal time, so a pm-origin task's why/how does reach the model,
+> as undifferentiated prose. Live, 17 of 23 tasks are pm-origin. **The true gap is therefore:
+> (a) every NON-pm origin (manual/scanner/follow_up/review/release), (b) `priority` on EVERY
+> origin, and (c) STRUCTURE — the fields arrive as a blob rather than labeled sections a model
+> can weigh.** Still worth fixing, still three files, but an improvement rather than a rescue.
+> Recorded here because the review ledger must not carry a claim stronger than the evidence.
+>
+> **Second correction:** `normTask` DOES exist (`tasks/repo.ts:184`). The earlier note that none
+> existed was wrong — the work is EXTEND, not create.
 
 **Current UI:** one kanban board, inline on the project page (`projects/[id]/+page.svelte:150-161`
 grouping, `:1613-1631` markup — columns by `taskStatuses`; cards show title, priority, relative
@@ -754,7 +764,7 @@ createdAt, and a move-status `<select>`). **No task detail view and no `/tasks` 
 | | work |
 |---|---|
 | **(i) free today** | the board exists; a detail view + tags from `objective/purpose/acceptance_criteria/provenance.kind/origin/priority/proposed_by/parent` — all stored, none rendered |
-| **(ii) needs schema** | `tags: option<array<string>>`, a real `task.sprint` FK (or retire `sprint`), `assignee_role`, `spec_ref` — one additive migration, plus a `normTask` (**none exists yet** in `repo.ts`) |
+| **(ii) needs schema** | `tags: option<array<string>>`, a real `task.sprint` FK (or retire `sprint`), `assignee_role`, `spec_ref` — one additive migration (**m0087**: m0086 is claimed by `MODEL-LADDER-SPEC`), extending the EXISTING `normTask` (`tasks/repo.ts:184`) |
 | **(iii) needs spawn-context change** | widen `SpawnRequest.task` (`runtime/index.ts:104`), the composition at `launch.ts:857`, and `buildPrompt` (`runtime/index.ts:807`) to emit `## Objective / ## Why / ## Acceptance criteria` + tags |
 
 **(iii) is the whole difference** between a prettier board and a board that improves agent

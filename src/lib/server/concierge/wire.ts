@@ -36,6 +36,7 @@ import {
 	resolveConciergeProvider,
 	parseSkillsSearchResponse,
 	type AtelierTriggerResult,
+	type ConciergeBrain,
 	type ConciergeGroundingItem,
 	type ConciergeLlmFn,
 	type ConciergeRecallFn,
@@ -467,6 +468,8 @@ export function providerToLlmFn(
 function buildConciergeLlm(dir: string, db: Db): {
 	llm: ConciergeLlmFn | undefined;
 	sessionModel: ConciergeSessionModel | undefined;
+	/** COMPLETION-LEDGER Wave A — the resolved brain, for the thinking ledger (see below). */
+	llmBrain: ConciergeBrain | undefined;
 } {
 	let pool, orchestration;
 	try {
@@ -474,14 +477,14 @@ function buildConciergeLlm(dir: string, db: Db): {
 		orchestration = loadOrchestration(`${dir}/orchestration.yaml`);
 	} catch (err) {
 		console.warn(`[concierge] config unreadable — LLM turn disabled: ${(err as Error).message}`);
-		return { llm: undefined, sessionModel: undefined };
+		return { llm: undefined, sessionModel: undefined, llmBrain: undefined };
 	}
 
 	const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
 	const choice = resolveConciergeProvider(orchestration.defaultProvider, pool, {
 		hasCloudKey: !!apiKey
 	});
-	if (!choice) return { llm: undefined, sessionModel: undefined };
+	if (!choice) return { llm: undefined, sessionModel: undefined, llmBrain: undefined };
 
 	let provider: Provider;
 	if (choice.provider === 'ollama') {
@@ -495,7 +498,7 @@ function buildConciergeLlm(dir: string, db: Db): {
 			console.warn(
 				`[concierge] defaultProvider resolved to cloud tier '${choice.tier}' but no ANTHROPIC_API_KEY — LLM turn disabled (honest).`
 			);
-			return { llm: undefined, sessionModel: undefined };
+			return { llm: undefined, sessionModel: undefined, llmBrain: undefined };
 		}
 		provider = new ClaudeProvider({
 			endpoint: readProviderEndpoint(dir, 'claude', 'https://api.anthropic.com'),
@@ -507,7 +510,11 @@ function buildConciergeLlm(dir: string, db: Db): {
 
 	return {
 		llm: providerToLlmFn(provider, db, choice.provider, choice.model, choice.tier),
-		sessionModel: { provider: choice.provider, model_id: choice.model }
+		sessionModel: { provider: choice.provider, model_id: choice.model },
+		// The brain that IS available to serve an open question. The thinking ledger records it as
+		// `brainConfigured` and stamps `modelUsed` ONLY when a model actually ran — so a deterministic
+		// turn under a configured CLOUD brain is never misreported as a cloud call (F-008).
+		llmBrain: { provider: choice.provider, model: choice.model, tier: choice.tier }
 	};
 }
 
@@ -521,7 +528,7 @@ export async function triggerConcierge(db: Db): Promise<AtelierTriggerResult | n
 		const recallLimit = 5;
 		const recall = await buildRecallFn(db, recallLimit);
 		const dir = process.env.CONFIG_DIR?.trim() || 'config';
-		const { llm, sessionModel } = buildConciergeLlm(dir, db);
+		const { llm, sessionModel, llmBrain } = buildConciergeLlm(dir, db);
 		const soulBlock = await buildSoulBlock(db);
 		const skillSearch = buildSkillSearch();
 		return await handleAtelierMessages({
@@ -531,6 +538,7 @@ export async function triggerConcierge(db: Db): Promise<AtelierTriggerResult | n
 			recallLimit,
 			...(llm ? { llm } : {}),
 			...(sessionModel ? { sessionModel } : {}),
+			...(llmBrain ? { llmBrain } : {}),
 			...(soulBlock ? { soulBlock } : {}),
 			...(skillSearch ? { skillSearch } : {})
 		});

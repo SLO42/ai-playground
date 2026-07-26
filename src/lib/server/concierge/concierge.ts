@@ -44,6 +44,15 @@ import {
 	type AgentRecommendation,
 	type RecommendAgentInput
 } from '../agent-library/recommend';
+import {
+	recordConciergeTurn,
+	type ConciergeBrain,
+	type ConciergeTurnOutcomeKind
+} from './turn-events';
+
+/** Re-exported so wire.ts (and tests) name the brain shape from the same module they import the
+ *  deps type from — the ledger owns the definition (turn-events.ts). */
+export type { ConciergeBrain };
 
 // ── Injectable seams (production wiring in wire.ts; tests inject deterministic stubs) ────
 
@@ -184,6 +193,17 @@ export interface ConciergeDeps {
 	 * block (honest omission, F-008 — never a fabricated persona). Only the open-question path uses it.
 	 */
 	soulBlock?: string;
+	/**
+	 * COMPLETION-LEDGER Wave A (finding 2) — the brain that was RESOLVED and AVAILABLE to serve an
+	 * open question (wire.ts buildConciergeLlm's `choice`). Recorded on the thinking-ledger row so a
+	 * reader can tell WHICH provider+model would have run — kept deliberately SEPARATE from the
+	 * `modelUsed` field the ledger stamps only when a model actually ran (turn-events.ts), because
+	 * most turns are deterministic and calling none. Absent ⇒ no brain was configured (honest).
+	 *
+	 * NOT `sessionModel`: that one is the session-identity stamp (provider + model_id only, and it
+	 * is written into the atelier_self session row). Widening it would change what that row stores.
+	 */
+	llmBrain?: ConciergeBrain;
 }
 
 // ── The atelier_self session (short-lived, project-less, LIVE only while the turn runs) ──
@@ -866,12 +886,60 @@ export async function handleAtelierMessages(deps: ConciergeDeps): Promise<Atelie
 
 	try {
 		for (const msg of inbox) {
+			// COMPLETION-LEDGER Wave A (finding 2) — ONE thinking-ledger row per turn, recorded at
+			// THIS chokepoint because it is the only place that sees the intent, the reply, the
+			// requester AND the delivery outcome together. Declared out here so the fail-open catch
+			// below can record a FAILED turn with whatever context the turn got to before throwing.
+			const turnStartedAt = Date.now();
+			let ledger: {
+				intent?: string;
+				handledIntent?: boolean;
+				llmUsed?: boolean;
+				groundingCitations?: string[];
+				recommendations?: Array<{ name: string; score: number }>;
+				skillCandidates?: number;
+				reply?: string;
+			} = {};
+			// Awaited (never fire-and-forget) so ordering is deterministic for tests, but the writer
+			// itself is best-effort by contract and can never throw back into the turn.
+			const recordTurn = (outcome: ConciergeTurnOutcomeKind, error?: unknown): Promise<boolean> =>
+				recordConciergeTurn(db, {
+					messageId: msg.id,
+					fromSession: msg.fromSession,
+					fromRole: msg.fromRole,
+					conciergeSession: sessionId,
+					...(deps.llmBrain ? { brainConfigured: deps.llmBrain } : {}),
+					// The ask is UNTRUSTED peer content — screened + excerpted inside the writer (D-026).
+					ask: msg.body,
+					...ledger,
+					durationMs: Date.now() - turnStartedAt,
+					outcome,
+					...(error !== undefined ? { error } : {})
+				});
 			try {
 				const turn = await runConciergeTurn(deps, msg.body);
+				ledger = {
+					intent: turn.intent,
+					handledIntent: turn.handledIntent,
+					llmUsed: turn.llmUsed,
+					groundingCitations: turn.groundingCitations,
+					recommendations: turn.recommendations.map((r) => ({
+						name: r.name,
+						score: r.normalized
+					})),
+					...(turn.skillCandidates ? { skillCandidates: turn.skillCandidates.length } : {}),
+					reply: turn.replyText
+				};
 				// IDEMPOTENT single-reply guard: flip pending→delivered FIRST; only the trigger that
 				// wins the flip sends the reply (a concurrent trigger sees no flip → skips → no double-send).
 				const flipped = await markAtelierDelivered(db, msg.id);
-				if (!flipped) continue;
+				if (!flipped) {
+					// A CONCURRENT trigger already answered this message, so the work we just did is
+					// discarded. That is real duplicated spend and latency — recorded as a first-class
+					// outcome rather than a silent `continue` (it was previously invisible).
+					await recordTurn('duplicate_suppressed');
+					continue;
+				}
 				handled++;
 				// Reply to the requester session directly (advisory, non-steering). The atelier is the
 				// one cross-project identity, so it may reach any requester; the reply persists pending
@@ -888,10 +956,19 @@ export async function handleAtelierMessages(deps: ConciergeDeps): Promise<Atelie
 						reply_to: msg.id
 					});
 					replies++;
+					await recordTurn('replied');
+				} else {
+					// The consult named no requester session, so the advice exists and reaches nobody.
+					// A real dead end, now visible instead of silently absent from the reply count.
+					await recordTurn('no_requester');
 				}
 			} catch (perMsgErr) {
 				// Fail-open per message (F-014): one bad message never sinks the whole drain — it stays
 				// delivered/pending per what already flipped, and the rest are still handled.
+				// FAILURE VISIBILITY (F-008): the fault is PERSISTED as a `failed` turn row (named error
+				// + class, screened) before it is logged — a console.warn alone left every concierge
+				// fault invisible to the operator, which is exactly this wave's defect class.
+				await recordTurn('failed', perMsgErr);
 				console.warn(
 					`[concierge] failed handling atelier message ${msg.id} (fail-open): ${(perMsgErr as Error).message}`
 				);

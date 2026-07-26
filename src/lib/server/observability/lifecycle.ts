@@ -197,9 +197,20 @@ const DEFAULT_LIMITS: Required<LifecycleGraphLimits> = {
 	peerMessages: 500
 };
 
-/** The scene_event PM marker kind that roots the PM node (LG-1; m0066). The Continue roots
- *  (`continue`/`batch_drained`) are matched inline at read; this names the PM kind once. */
-const PM_KIND = 'pm_tick';
+/**
+ * The scene_event PM marker kinds that root a PM node.
+ *   • `pm_tick`   (LG-1; m0066) — "the PM woke up" (an autonomous re-tick outcome).
+ *   • `pm_review` (m0085; COMPLETION-LEDGER Wave A) — "the PM read the project and decided". The
+ *     substantive pass: it examines live tasks/findings/risks, writes typed memories, and proposes.
+ *     It emitted no scene_event at all before this wave, so the PM's actual THINKING was absent
+ *     from the graph of the PM's own lifecycle.
+ * Both project onto the same `pm` node family (same lane, same edge rules); they differ in label
+ * and status so a reader can tell a wake from a decision. The Continue roots (`continue`/
+ * `batch_drained`) are matched inline at read.
+ */
+const PM_TICK_KIND = 'pm_tick';
+const PM_REVIEW_KIND = 'pm_review';
+const PM_KINDS: ReadonlySet<string> = new Set([PM_TICK_KIND, PM_REVIEW_KIND]);
 
 // ── Coercion helpers (mirror scene.ts / timeline.ts — F-013, never str(NONE)) ────────────
 
@@ -270,7 +281,15 @@ function elapsedMs(startIso: string | undefined, endIso: string | undefined): nu
 
 /** Bounded short label off a scene_event marker — never raw row content (meta was screened at write). */
 function markerLabel(kind: string, meta: Record<string, unknown> | undefined): string {
-	if (kind === PM_KIND) {
+	if (kind === PM_REVIEW_KIND) {
+		// The review's OWN verdict, in the PM's terms: what it wrote and what it proposed. Falls back
+		// to the bare kind when the meta is absent — never a fabricated count (F-008).
+		const wrote = typeof meta?.memoriesWritten === 'number' ? meta.memoriesWritten : undefined;
+		const proposed = typeof meta?.proposalsMade === 'number' ? meta.proposalsMade : undefined;
+		if (wrote === undefined && proposed === undefined) return 'PM review';
+		return `PM review: ${wrote ?? 0} memo, ${proposed ?? 0} proposed`;
+	}
+	if (kind === PM_TICK_KIND) {
 		const state = meta && typeof meta.state === 'string' ? meta.state : undefined;
 		return state ? `PM: ${state}` : 'PM tick';
 	}
@@ -345,9 +364,12 @@ interface RawPeer {
 /** Continue/PM marker scene_events for the project (most-recent first, capped). */
 async function readMarkers(db: Db, project: StringRecordId, lim: number): Promise<RawMarker[]> {
 	const [rows] = await db.query<[RawMarker[]]>(
+		// F-020: `at` is BOTH the ORDER BY idiom AND in the projection. Do not remove it.
+		// `pm_review` (m0085) joins the marker vocabulary — without it here the emitted rows exist
+		// in the table and are still invisible in the graph, i.e. only half the fix.
 		`SELECT id, kind, at, meta FROM scene_event
 		  WHERE project = $project
-		    AND kind IN ["continue","batch_drained","pm_tick"]
+		    AND kind IN ["continue","batch_drained","pm_tick","pm_review"]
 		  ORDER BY at DESC LIMIT $lim;`,
 		{ project, lim }
 	);
@@ -525,13 +547,15 @@ export async function buildLifecycleGraph(
 	for (const m of markers) {
 		const id = String(m.id);
 		const meta = m.meta && typeof m.meta === 'object' ? m.meta : undefined;
-		const kind: LifecycleNodeKind = m.kind === PM_KIND ? 'pm' : 'continue';
+		const kind: LifecycleNodeKind = PM_KINDS.has(m.kind) ? 'pm' : 'continue';
 		const at = isoOrUndef(m.at);
 		nodes.push({
 			id,
 			kind,
 			label: markerLabel(m.kind, meta),
-			status: m.kind === PM_KIND ? 'tick' : 'drained',
+			// A wake ('tick') and a decision ('review') are different PM moments — the status keeps
+			// them distinguishable on the node without needing a second node family.
+			status: m.kind === PM_REVIEW_KIND ? 'review' : m.kind === PM_TICK_KIND ? 'tick' : 'drained',
 			...(at ? { startedAt: at } : {})
 		});
 	}
@@ -594,7 +618,7 @@ export async function buildLifecycleGraph(
 		const id = String(m.id);
 		const at = isoOrUndef(m.at);
 		markerAt.set(id, {
-			kind: m.kind === PM_KIND ? 'pm' : 'continue',
+			kind: PM_KINDS.has(m.kind) ? 'pm' : 'continue',
 			ms: at ? new Date(at).getTime() : undefined
 		});
 	}

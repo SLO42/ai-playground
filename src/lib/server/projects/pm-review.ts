@@ -33,6 +33,7 @@ import {
 	surfacePmInbox,
 	type PmConciergeDeps
 } from './pm-concierge';
+import { emitPmReviewScene } from './pm-review-events';
 import {
 	addPmMemory,
 	addPmReview,
@@ -110,6 +111,9 @@ export async function runPmReview(
 ): Promise<PmReviewResult> {
 	const project = await getProject(db, projectId);
 	if (!project) throw new Error(`project not found: ${projectId}`);
+
+	// COMPLETION-LEDGER Wave A (finding 6): wall-clock of the whole pass, for the scene marker.
+	const passStartedAt = Date.now();
 
 	// Path B (CONVERSATION-LAYER-SPEC): FIRST drain the PM identity inbox — async Atelier-concierge
 	// advisories (replies to earlier consults) AND worker peer messages (a granted session's
@@ -306,6 +310,38 @@ export async function runPmReview(
 		{ projectId, projectLabel: project.name, tasks, severe },
 		conciergeDeps
 	);
+
+	// COMPLETION-LEDGER Wave A (finding 6) — the PM's THINKING becomes visible in the lifecycle
+	// scene/graph. Emitted LAST, when every fact the marker reports is settled (memories written,
+	// proposals resolved, skip reason known). BEST-EFFORT: the review and all of its durable rows
+	// are already committed, so a marker fault is absorbed inside emitPmReviewScene and can never
+	// change this pass's outcome (F-048). `proposalsSkipped` is recorded here for the FIRST time —
+	// until now it was computed and returned to the caller, then dropped on every autonomous trigger.
+	const byKind = (k: string): number => written.filter((m) => m.kind === k).length;
+	await emitPmReviewScene(db, {
+		projectId,
+		reviewId: review.id,
+		trigger,
+		...(provenance?.kind ? { provenanceKind: provenance.kind } : {}),
+		...(provenance?.evidence ? { provenanceEvidence: [...provenance.evidence] } : {}),
+		...(provenance?.authority ? { authority: String(provenance.authority) } : {}),
+		tasksExamined: tasks.length,
+		findingsExamined: findings.length,
+		risksOpen: openRisks.length,
+		blocked,
+		failed,
+		severeFindings: severe.length,
+		memoriesWritten: written.length,
+		risksWritten: byKind('risk'),
+		observationsWritten: byKind('observation'),
+		learningsWritten: byKind('learning'),
+		advisoriesSurfaced: surfacedAdvisories.length,
+		proposalsMade: proposals.length,
+		proposalsCreated: proposals.filter((p) => p.outcome === 'created').length,
+		proposalsAbsorbed: proposals.filter((p) => p.outcome !== 'created').length,
+		...(proposalsSkipped !== undefined ? { proposalsSkipped } : {}),
+		durationMs: Date.now() - passStartedAt
+	});
 
 	return {
 		review,

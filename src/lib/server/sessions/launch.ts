@@ -89,6 +89,26 @@ export interface LaunchInput {
 	/** Agent slot id this session runs as (carried into the isolated config dir). */
 	agentId: string;
 	/**
+	 * SPAWN-IDENTITY (LB-2 write half) — the PURPOSEFUL name of the agent-pool slot this spawn
+	 * picked (agent-pool.yaml `slots[].name`, e.g. "builder"). When present it REPLACES the slot
+	 * id as the persisted `session.agent` identity: `agentId` answers "which ladder rung" (a tier
+	 * bucket — F-046 leaking into every surface that renders it), `agentName` answers "what this
+	 * agent is FOR", which is what the standing operator naming rule requires.
+	 *
+	 * The slot id is NOT lost — it stays the runtime run-key/isolated-config key on the
+	 * SpawnRequest (unchanged) and is recorded on the spawn `agent_event.detail` alongside the
+	 * purpose, so provenance is complete. ABSENT ⇒ `session.agent` is `agentId`, byte-identical to
+	 * before (F-053 — the additive branch engages only when wired).
+	 */
+	agentName?: string;
+	/**
+	 * SPAWN-IDENTITY — one sentence describing what the picked slot exists to do (agent-pool.yaml
+	 * `slots[].purpose`). Prose, never an identity/key: it is recorded on the spawn
+	 * `agent_event.detail` (analytics first-class — WHY this slot ran) and is NOT persisted on the
+	 * session row (there is no column for it, and inventing one is not this change's job).
+	 */
+	agentPurpose?: string;
+	/**
 	 * AGENT-INVOCATION (per-specialist usage) — the OPTIONAL `.claude/agents` specialist NAME
 	 * (the library agent's `name`, e.g. "atelier-developer") this spawn is acting AS. It does
 	 * NOT change tier/slot selection (agentId stays the tier-picked slot) — it is a PROVENANCE
@@ -98,6 +118,35 @@ export interface LaunchInput {
 	 * ⇒ the column stays NONE → usage counts only via role.slug (F-008 honest, no fabrication).
 	 */
 	specialist?: string;
+	/**
+	 * SPAWN-IDENTITY (LB-2 write half) — the HR identity this session runs AS: `role:<id>` and the
+	 * certified `role_version:<id>`. Stamped on the row AT CREATE.
+	 *
+	 * WHY AT CREATE (this supersedes the "role is stamped LATER by workforce activation" note that
+	 * m0069/m0070 were written under): nothing in `src/` ever performed that later stamp for a
+	 * launched session — the only other writer of `session.role` is the gauntlet, which CREATEs its
+	 * own interview row. So a launched session's role was never stamped at all. It is stamped here
+	 * instead, from the ONE resolver that genuinely knows it: routing's WORKFORCE-SPEC §7 staffing
+	 * short-circuit (`ResolvedPlan.roleId/roleVersionId`), plus any caller that knows its own role.
+	 *
+	 * ⚠ THIS SEAM IS WIRED END-TO-END BUT DORMANT IN PRODUCTION TODAY — do not read the plumbing as
+	 * a coverage claim. The §7 short-circuit fires only when `RouteTask.role` is set, and the ONE
+	 * production producer of a RouteTask (`orchestrator/boot.ts` `readRouteTask`) cannot set it:
+	 * `task` is SCHEMAFULL (schema.ts `DEFINE TABLE OVERWRITE task SCHEMAFULL`) and has NO `role`
+	 * field, so no task can carry a role at all, and the recurring-ceremony scheduler that would
+	 * stamp one is not built (see `RouteTask.role`'s own doc). Making it live needs a migration
+	 * adding `task.role` + that scheduler — BOTH out of scope here (a migration was explicitly
+	 * excluded from this task). Until then `session.role` stays NONE for every launched session and
+	 * this path is exercised by tests + a caller that hand-builds a role-bound plan.
+	 *
+	 * WHERE IT IS ABSENT, AND WHY THAT IS CORRECT: a plain orchestrator-drained task is not
+	 * role-bound — it runs as no certified HR identity — so both stay undefined and the columns are
+	 * OMITTED (option<T> rejects NULL — §6.1). That is an honest "no role", not a gap to paper over
+	 * with a guess (F-008). Ids are validated at the db/validate.ts chokepoint and written as true
+	 * record links; a malformed id throws BEFORE the row is created (no half-identified session).
+	 */
+	roleId?: string;
+	roleVersionId?: string;
 	/** Chosen model (from Routing in a later wave; explicit here). */
 	model: ModelSelection;
 	intent: Intent;
@@ -556,17 +605,29 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 			model_id: input.model.modelId,
 			tier: input.model.tier
 		},
-		// m0069 — the spawn-time AGENT identity for the living-scene `agent` node (which agent
-		// ran this job). The slot id is the only agent identity known at CREATE time (role is
-		// stamped LATER by workforce activation). NEW sessions only; historical rows stay NONE
-		// → no agent edge (F-008 honest). option<string> on the schema — omitted if ever blank.
-		agent: input.agentId,
+		// m0069 — the spawn-time AGENT identity for the living-scene `agent` node (which agent ran
+		// this job). PREFER the pool slot's purposeful NAME (agent-pool.yaml `slots[].name`, e.g.
+		// "builder") over the slot ID ("sonnet-1"), which is a tier bucket rather than an identity
+		// (F-046 leaking into the UI — the operator saw 26 unrelated sessions clustered under one
+		// "agent"). Falls back to the slot id when no name is configured, so an un-named pool writes
+		// exactly what it wrote before (F-053). The slot id itself is never lost: it remains the
+		// runtime run-key and is recorded on the spawn agent_event.detail below.
+		// NEW sessions only; historical rows stay NONE → no agent edge (F-008 honest).
+		// option<string> on the schema — a blank name collapses to the slot id, never "".
+		agent: input.agentName?.trim() || input.agentId,
 		// m0070 — the spawn-time SPECIALIST identity (the .claude/agents agent name) when the
 		// caller routed to one (the gated manual-launch seam). OMITTED when absent (omitUndefined
 		// → NONE) so an orchestrator-drain / legacy spawn reads back NONE and is counted only via
 		// role.slug downstream (F-008 honest — never a fabricated specialist). Trimmed; a blank
 		// string collapses to undefined so it is omitted rather than persisting "".
 		specialist: input.specialist?.trim() || undefined,
+		// SPAWN-IDENTITY (LB-2 write half) — the HR identity, stamped AT CREATE rather than deferred
+		// to a workforce activation that never ran for a launched session (see the LaunchInput doc).
+		// Written as TRUE record links via link() (assertRecordId validates first — D-016), and
+		// OMITTED by omitUndefined when the caller has no role, so an unstaffed spawn is byte-
+		// identical to before and reads back NONE (honest "no role", never a guessed one — F-008).
+		role: input.roleId ? link(input.roleId) : undefined,
+		role_version: input.roleVersionId ? link(input.roleVersionId) : undefined,
 		runtime: 'claude-code',
 		workflow_run: input.workflowRunId ? link(input.workflowRunId) : undefined,
 		// UO-1: the persisted granted set (each field already omitted-when-absent by the helper).
@@ -665,7 +726,21 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		// LIFECYCLE-GRAPH (m0067): carry the explicit cause when the caller knew it (the orchestrator
 		// drain passes the triggering work_item id). Absent ⇒ omitted → NONE (graph infers the edge).
 		...(input.parentEventId ? { parentEventId: input.parentEventId } : {}),
-		detail: { intent: input.intent, reason: `spawn for ${input.intent}` }
+		detail: {
+			intent: input.intent,
+			reason: `spawn for ${input.intent}`,
+			// SPAWN-IDENTITY (LB-2 write half) — WHO ran this and WHY that agent, recorded on the
+			// spawn event so the decision chain is explainable and the pool-SLOT id survives even
+			// though `session.agent` now carries the purposeful name (analytics first-class; never
+			// a flat event). Each key is present only when it is real — an un-named pool / an
+			// unstaffed spawn emits the pre-change keys plus agentSlot (F-008: absent, not empty).
+			agentSlot: input.agentId,
+			...(input.agentName?.trim() ? { agentName: input.agentName.trim() } : {}),
+			...(input.agentPurpose?.trim() ? { agentPurpose: input.agentPurpose.trim() } : {}),
+			...(input.specialist?.trim() ? { specialist: input.specialist.trim() } : {}),
+			...(input.roleId ? { role: input.roleId } : {}),
+			...(input.roleVersionId ? { roleVersion: input.roleVersionId } : {})
+		}
 	});
 
 	// 2a. G-B OFFLINE DRAIN (PEER-MESSAGE-SPEC §7/§5 D2). At THIS recipient session's spawn, drain
@@ -676,8 +751,11 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	// 'communication' turn (transcript visibility is FREE). The drained, already-fenced bodies are
 	// folded into the briefing below (channelBodies) so they also reach the agent's context as DATA.
 	// FAIL-OPEN (F-014): a drain fault NEVER blocks the spawn — the undelivered rows stay pending for
-	// the NEXT spawn. The recipient's role is read from the just-created session row (the authoritative
-	// identity — never the launch input, which carries no role; role is stamped by workforce activation).
+	// the NEXT spawn. The recipient's role is read BACK from the just-created session row (the
+	// authoritative identity) rather than from `input.roleId` — the ROW is what a `role@project`
+	// mailbox address resolves against, and reading it back stays correct whether the role arrived at
+	// CREATE (the SPAWN-IDENTITY stamp above) or from any future writer. Absent ⇒ null ⇒ the drain
+	// matches on `to_session` only, exactly as before.
 	const drainedChannelBodies: { origin: string; body: string }[] = [];
 	try {
 		const [roleRows] = await db.query<[Array<{ role?: unknown }>]>(

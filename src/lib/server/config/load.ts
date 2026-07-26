@@ -141,6 +141,36 @@ export interface AgentSlot {
 	id: string;
 	tier: string;
 	role: string;
+	/**
+	 * SPAWN-IDENTITY (LB-2 write half) — the slot's PURPOSEFUL name: what this slot is FOR,
+	 * not which tier bucket it is. `id`/`tier` answer "which model ladder rung"; a spawn row
+	 * stamped with only that reads `sonnet-1` in every surface, which the standing operator
+	 * rule (2026-07-26: a display name must convey PURPOSE, never tier/model/slot/id) classes
+	 * as a defect. When set, the orchestrator stamps THIS on `session.agent` instead of the
+	 * slot id (the slot id stays the runtime run-key and is preserved on the spawn
+	 * `agent_event.detail`, so nothing is lost). OPTIONAL: absent ⇒ `session.agent` is the
+	 * slot id, byte-identical to before (F-053 — an additive field engages only when wired).
+	 */
+	name?: string;
+	/**
+	 * SPAWN-IDENTITY — one human sentence: what work this slot exists to do. Never persisted
+	 * as an identity (it is prose, not a key); recorded on the spawn `agent_event.detail` so
+	 * the analytics surfaces can explain WHY this slot ran (analytics first-class). Optional.
+	 */
+	purpose?: string;
+	/**
+	 * SPAWN-IDENTITY — the `.claude/agents` specialist NAME the operator has DELIBERATELY routed
+	 * this slot to. When set it is stamped on `session.specialist` (m0070) at CREATE for every
+	 * spawn that picks this slot, so per-specialist usage stops being 0%.
+	 *
+	 * HONESTY CAVEAT (F-008), read before setting it: the spawn argv carries NO agent directive
+	 * (`cli-backend.ts` builds `--model/--settings/--mcp-config` only) and `capabilities` is
+	 * stripped from the settings file (`HARNESS_ONLY_SETTINGS_KEYS`), so `session.specialist` is
+	 * a PROVENANCE label — it records the routing DECISION, not an observed behaviour change in
+	 * the CLI. Set it only when you mean "this slot is routed to that specialist". Left unset in
+	 * the shipped config on purpose: inventing an attribution would be a fabricated value.
+	 */
+	specialist?: string;
 }
 export interface AgentPool {
 	tiers: Record<string, Tier>;
@@ -955,6 +985,18 @@ export function loadAgentPool(file: string, opts: LoadOpts = {}): AgentPool {
 		const s = slot as Record<string, unknown>;
 		if (typeof s.id !== 'string' || typeof s.tier !== 'string' || typeof s.role !== 'string') {
 			throw new ConfigError('agent-pool: slot needs string id/tier/role', file);
+		}
+		// SPAWN-IDENTITY — the OPTIONAL purposeful-identity keys. Absent is the legacy shape and is
+		// fine (F-053: the additive branch engages only when wired); PRESENT-but-not-a-string is an
+		// operator typo that would otherwise ride silently onto every spawn row, so it fails closed
+		// at the boundary with a named error rather than stamping `[object Object]` on a session.
+		for (const key of ['name', 'purpose', 'specialist'] as const) {
+			if (s[key] !== undefined && typeof s[key] !== 'string') {
+				throw new ConfigError(
+					`agent-pool: slot "${s.id}" ${key} must be a string when present`,
+					file
+				);
+			}
 		}
 		if (!tierNames.has(s.tier)) {
 			throw new ConfigError(

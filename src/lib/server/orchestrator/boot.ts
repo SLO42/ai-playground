@@ -49,7 +49,7 @@ import {
 	DEFAULT_MODEL
 } from '../harness';
 import { makeSkillHarvestAgent } from '../skills/harvest-agent';
-import { loadOrchestration, loadAgentPool, loadPricing, ConfigError, type OrchMode, type AgentPool, type Orchestration } from '../config/index';
+import { loadOrchestration, loadAgentPool, loadPricing, ConfigError, type OrchMode, type AgentPool, type AgentSlot, type Orchestration } from '../config/index';
 import { resolveRoute, type RouteTask, type StaffRouteResolver } from '../routing/index';
 import type { ModelSelection } from '../runtime/index';
 import { resolveStaff, getProjectStaff, type Tier, type TierModelResolver } from '../workforce';
@@ -194,30 +194,82 @@ function readAgentPool(): AgentPool | null {
  *  is gone (the route then fails honestly rather than spawning a fabricated plan). */
 async function readRouteTask(db: Db, taskId: string, projectId: string): Promise<RouteTask> {
 	const tid = new StringRecordId(assertRecordId(taskId));
-	const [rows] = await db.query<[Array<{ id: unknown; title?: string; description?: string }>]>(
-		`SELECT id, title, description FROM ONLY $tid;`,
-		{ tid }
-	);
+	// SPAWN-IDENTITY: `role` is selected so the WORKFORCE-SPEC §7 staffing short-circuit — and with
+	// it the `session.role`/`role_version` stamp at CREATE — lights up the instant a task can carry
+	// one. It reads NONE today: `task` is SCHEMAFULL (schema.ts `DEFINE TABLE OVERWRITE task
+	// SCHEMAFULL`) with no `role` field, and the recurring-ceremony scheduler that would stamp it is
+	// not built. Selecting a field a SCHEMAFULL table does not define is a safe NONE, not an error,
+	// so this is inert until the migration lands — and then correct with no further edit. The
+	// remaining blocker is exactly one named item: a migration adding `task.role`.
+	const [rows] = await db.query<
+		[Array<{ id: unknown; title?: string; description?: string; role?: unknown }>]
+	>(`SELECT id, title, description, role FROM ONLY $tid;`, { tid });
 	const row = (Array.isArray(rows) ? rows[0] : rows) as
-		| { id: unknown; title?: string; description?: string }
+		| { id: unknown; title?: string; description?: string; role?: unknown }
 		| undefined;
 	if (!row) throw new Error(`routing: task not found: ${taskId}`);
+	// NONE/null ⇒ OMIT the key (never the string "undefined" — F-013): resolveRoute gates the
+	// short-circuit on `task.role` being truthy, so an absent role falls through unchanged.
+	const role = row.role == null ? undefined : String(row.role).trim() || undefined;
 	return {
 		id: String(row.id),
 		project: projectId,
 		title: row.title ?? '',
-		description: row.description ?? ''
+		description: row.description ?? '',
+		...(role ? { role } : {})
 	};
 }
 
-/** Pick the agent slot to run as for the resolved tier; fall back to DEFAULT_AGENT when no
- *  slot matches (the slot list is advisory — a missing tier slot must not block the spawn). */
-function agentForTier(pool: AgentPool, tier: string | undefined): string {
+/** Pick the agent slot to run as for the resolved tier; fall back to the first slot when no
+ *  slot matches (the slot list is advisory — a missing tier slot must not block the spawn).
+ *  Returns undefined only for a slot-less pool (startOrchestrator refuses to boot on one, so
+ *  this is the belt-and-braces branch that keeps resolveSlotIdentity's DEFAULT_AGENT fallback
+ *  reachable — startOrchestrator refuses to boot a slot-less pool, so it never fires live). */
+function slotForTier(pool: AgentPool, tier: string | undefined): AgentSlot | undefined {
 	if (tier) {
-		const slot = pool.slots.find((s) => s.tier === tier);
-		if (slot) return slot.id;
+		const match = pool.slots.find((s) => s.tier === tier);
+		if (match) return match;
 	}
-	return pool.slots[0]?.id ?? DEFAULT_AGENT;
+	return pool.slots[0];
+}
+
+/** The spawn identity a resolved tier maps to: the runtime key plus whatever PURPOSE the
+ *  operator configured on that slot. Only `agentId` is ever guaranteed. */
+export interface SlotIdentity {
+	/** The pool slot id — the runtime run-key / isolated-config key. Always present. */
+	agentId: string;
+	/** agent-pool `slots[].name` — the purposeful identity persisted as `session.agent`. */
+	agentName?: string;
+	/** agent-pool `slots[].purpose` — prose for the spawn analytics event. */
+	agentPurpose?: string;
+	/** agent-pool `slots[].specialist` — persisted as `session.specialist` (m0070). */
+	specialist?: string;
+}
+
+/**
+ * SPAWN-IDENTITY (LB-2 write half) — resolve a routed tier to the slot's FULL identity, normalized
+ * for persistence. This is the one seam boot's route resolver uses, exported so a test exercises
+ * the REAL mapping (against the real shipped agent-pool.yaml) rather than a mirror of it.
+ *
+ * Normalization: a blank/whitespace-only config value collapses to ABSENT so the launch path omits
+ * the column rather than persisting "" (F-013/§6.1 — absent reads as 'not recorded', never a
+ * fabricated empty identity). A pool whose slots carry none of the optional keys yields
+ * `{ agentId }` alone, which spreads to nothing extra on the route — byte-identical to the
+ * pre-change spawn (F-053: the additive branch engages only when wired).
+ */
+export function resolveSlotIdentity(pool: AgentPool, tier: string | undefined): SlotIdentity {
+	const slot = slotForTier(pool, tier);
+	const clean = (v: unknown): string | undefined =>
+		typeof v === 'string' && v.trim() ? v.trim() : undefined;
+	const name = clean(slot?.name);
+	const purpose = clean(slot?.purpose);
+	const specialist = clean(slot?.specialist);
+	return {
+		agentId: slot?.id ?? DEFAULT_AGENT,
+		...(name ? { agentName: name } : {}),
+		...(purpose ? { agentPurpose: purpose } : {}),
+		...(specialist ? { specialist } : {})
+	};
 }
 
 /** Tier→model resolver from the loaded pool config (D-003: the map lives in config). Fail-closed:
@@ -321,14 +373,32 @@ function bootRoute(db: Db, pool: AgentPool, orchestration: Orchestration): Route
 			staffResolver,
 			...(providerOverride ? { override: providerOverride } : {})
 		});
+		// SPAWN-IDENTITY (LB-2 write half) — resolve the picked slot ONCE so the runtime key
+		// (slot id) and the purposeful identity (name/purpose/specialist) come from the SAME slot.
+		const slot = resolveSlotIdentity(pool, plan.model.tier);
 		return {
-			agentId: agentForTier(pool, plan.model.tier),
 			model: plan.model,
 			intent: plan.intent,
 			budgets: plan.budgets,
 			toolPolicy: DEFAULT_TOOL_POLICY,
 			// D-036: the resolved intent's capability set from the live orchestration config.
-			capabilities: resolveCapabilitiesForIntent(plan.intent)
+			capabilities: resolveCapabilitiesForIntent(plan.intent),
+			// The slot's id (runtime key) + purposeful identity (agent-pool.yaml
+			// `slots[].name/purpose/specialist`). Every optional key is omitted when the operator
+			// has not configured it — an un-named pool yields the pre-change route object exactly
+			// (F-053), since `agentId` was and remains the only guaranteed member.
+			...slot,
+			// The HR identity, present ONLY when the §7 staffing path resolved one (a role-bound
+			// task staffed to this project). Absent on every other route — an unstaffed spawn runs
+			// as no role, and guessing one would be a fabricated identity (F-008).
+			//
+			// ⚠ DORMANT via THIS resolver today: `readRouteTask` above cannot set `RouteTask.role`
+			// because the `task` table is SCHEMAFULL with no `role` field, so `plan.roleId` is
+			// always undefined here and `session.role` stays NONE for every drained spawn. The
+			// forwarding is built so the seam lights up the moment a migration adds `task.role` +
+			// the recurring-ceremony scheduler stamps it — it is NOT a coverage claim today.
+			...(plan.roleId ? { roleId: plan.roleId } : {}),
+			...(plan.roleVersionId ? { roleVersionId: plan.roleVersionId } : {})
 		};
 	};
 }

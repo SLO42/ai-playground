@@ -84,6 +84,26 @@ export interface ResolvedPlan {
 	alternatives: Array<Record<string, unknown>>;
 	/** Id of the persisted routing_event (the analytics record). */
 	routingEventId: string;
+	/**
+	 * SPAWN-IDENTITY (§7 staffing path only) — the `role:<id>` this spawn runs AS, and the
+	 * `role_version:<id>` staffing resolved it at. SET only on the staffing short-circuit below,
+	 * which is the ONE place routing genuinely KNOWS the HR identity of the work. The launch path
+	 * stamps them on the session row at CREATE, so a role-bound session is born with its identity
+	 * instead of waiting for a workforce activation that never fires on the drain path.
+	 *
+	 * ABSENT on every other route (override / classify / tier / fallback) — an unstaffed spawn
+	 * genuinely runs as NO role, and guessing one would be a fabricated identity (F-008). Absent ⇒
+	 * the launch omits both columns, byte-identical to before (F-053).
+	 *
+	 * ⚠ DORMANT IN PRODUCTION TODAY (measured, not assumed): the short-circuit needs `task.role`,
+	 * and the ONE production RouteTask producer (`orchestrator/boot.ts` `readRouteTask`) cannot
+	 * supply it because the `task` table is SCHEMAFULL with no `role` field — see `RouteTask.role`
+	 * above, whose producer (the recurring-ceremony scheduler) is not built. So these travel with
+	 * the plan for the tests + any in-memory caller, and `session.role` stays NONE live until a
+	 * migration adds `task.role`. Stated here so the plumbing is never mistaken for coverage.
+	 */
+	roleId?: string;
+	roleVersionId?: string;
 }
 
 // ── Intent classification (pure JS — §2.5) ──────────────────────────────────────
@@ -321,7 +341,13 @@ export async function resolveRoute(input: ResolveRouteInput): Promise<ResolvedPl
 				reason,
 				complexity: undefined,
 				alternatives: [],
-				routingEventId
+				routingEventId,
+				// SPAWN-IDENTITY: the resolved HR identity travels WITH the plan so launchSession can
+				// stamp it at CREATE. `task.role` is the role the ceremony scheduler bound to the task;
+				// `staffed.version` is the certified version staffing picked. Both are real record ids
+				// resolved above — never inferred.
+				roleId: task.role,
+				roleVersionId: staffed.version
 			};
 		}
 		// staffed === null ⇒ NOT staffed / not deployable → fall through to the normal order

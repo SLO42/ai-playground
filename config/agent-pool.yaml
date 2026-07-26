@@ -25,19 +25,45 @@ tiers:
 # Agent slots — the named roles a spawn runs as (carried into the isolated config dir).
 # A spawn picks the slot whose tier matches the resolved tier; an unmatched tier falls
 # back to the first slot.
+#
+# SPAWN IDENTITY (operator rule 2026-07-26 — a display name must convey PURPOSE, never
+# tier/model/slot/id). `id` and `tier` say WHICH LADDER RUNG ran the work; on their own they
+# make every spawn row read `sonnet-1`, which is a tier bucket, not an identity. Two optional
+# keys fix that at the WRITE path, so the fields exist for everything spawned from now on:
+#
+#   name       the purposeful identity stamped on `session.agent` at CREATE. The slot `id`
+#              stays the runtime run-key and is preserved on the spawn agent_event.detail,
+#              so provenance is never lost. Omit the key ⇒ `session.agent` is the slot id,
+#              exactly as before.
+#   purpose    one sentence: what this slot exists to do. Never an identity — it rides the
+#              spawn agent_event.detail so analytics can explain WHY this slot ran.
+#
+# A third optional key, `specialist`, stamps `session.specialist` (the `.claude/agents`
+# specialist NAME this slot is routed to). It is DELIBERATELY UNSET here: the spawn argv
+# carries no agent directive today (cli-backend builds --model/--settings/--mcp-config only),
+# so `session.specialist` records a routing DECISION, not observed behaviour — inventing one
+# would be a fabricated attribution (F-008). Set it per-slot only when you mean it.
 slots:
   - id: opus-1
     tier: opus
     role: coder
+    name: deep-builder
+    purpose: Multi-file implementation, refactors and architecture work
   - id: sonnet-1
     tier: sonnet
     role: builder
+    name: builder
+    purpose: Everyday feature work, fixes and code review
   - id: haiku-1
     tier: haiku
     role: scout
+    name: scout
+    purpose: Fast reads, lookups and mechanical edits
   - id: local-1
     tier: local
     role: local
+    name: local-scout
+    purpose: Offline, zero-cost reads and simple questions
 
 # Cheapest → dearest escalation order (the routing ladder above `local`). Routing prepends
 # the `local` floor automatically, so the effective ladder is: local → haiku → sonnet → opus.

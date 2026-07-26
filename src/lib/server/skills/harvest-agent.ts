@@ -38,6 +38,7 @@ import type { Db } from '../db/client';
 import type { EventBus } from '../events/bus';
 import type { AgentRuntime, ModelSelection } from '../runtime/index';
 import { launchSession, type LaunchInput, type SkillHarvester, type SkillHarvestContext } from '../sessions/launch';
+import { spawnIdentity } from '../sessions/spawn-identity';
 import type { ProposeSkillInput } from './proposal';
 
 // ── Bounds (bounded capture — a runaway draft cannot bloat a row; SH-1 re-bounds at persist) ─────────
@@ -258,6 +259,10 @@ export function makeSkillHarvestAgent(deps: SkillHarvestAgentDeps): SkillHarvest
 				// No real task — a synthetic prompt task (D-013 shape), so nothing is written to `task`.
 				promptTask: { id: `skill_harvest_${Date.now()}`, title: prompt.title, description: prompt.description },
 				agentId: deps.agentId,
+				// SPAWN-IDENTITY: `deps.agentId` is DEFAULT_AGENT ("opus-1") — a tier bucket, which
+				// left every harvest session indistinguishable from every other opus spawn. The slot
+				// id stays the runtime key; the ROW is born saying what this agent is for.
+				...spawnIdentity('skillHarvester'),
 				model: deps.model,
 				intent: 'deep-explore',
 				budgets: { thinking: 'high', toolCalls: 20, concurrency: 1 },

@@ -45,6 +45,7 @@ import type { Db } from '../db/client';
 import type { EventBus } from '../events/bus';
 import type { AgentRuntime } from '../runtime/index';
 import { launchSession, type LaunchInput } from '../sessions/launch';
+import { spawnIdentity } from '../sessions/spawn-identity';
 import { screen } from '../memory/screen';
 import { getProject, type ProjectPlan } from './repo';
 import { listTasksByProject, type TaskProvenance } from '../tasks/repo';
@@ -478,6 +479,9 @@ export function makePmProposalAgent(deps: PmProposalAgentDeps): PmProposalGenera
 			// No real task — a synthetic prompt task (D-013 shape), so nothing is written to `task`.
 			promptTask: { id: `pm_propose_${Date.now()}`, title: prompt.title, description: prompt.description },
 			agentId: deps.agentId,
+			// SPAWN-IDENTITY: the PM's proposal turn knows exactly what it is. Without this the row
+			// carries only the tier bucket the caller picked, so it reads like any other spawn.
+			...spawnIdentity('pmPlanner'),
 			model: deps.model,
 			intent: 'deep-explore',
 			budgets: { thinking: 'high', toolCalls: 30, concurrency: 1 },

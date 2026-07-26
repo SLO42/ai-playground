@@ -881,15 +881,9 @@
     font: var(--type-body-sm);
     color: var(--color-text-2);
   }
-  .sr-only {
-    position: absolute;
-    width: 1px;
-    height: 1px;
-    padding: 0;
-    margin: -1px;
-    overflow: hidden;
-    clip: rect(0, 0, 0, 0);
-    white-space: nowrap;
-    border: 0;
-  }
+  /* `.sr-only` is NOT redeclared here — this page's three visually-hidden
+     legends/labels (:177, :290, :442) defer to the ONE shared definition in
+     src/lib/styles/tokens/base.css:76, loaded app-wide from +layout.svelte:2.
+     Per-page copies of a design-system primitive drift; this one had already
+     diverged into a second source of truth for the same clip-rect pattern. */
 </style>

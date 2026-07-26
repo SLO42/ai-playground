@@ -9,6 +9,16 @@
 
 > ⏭ **RESUME PLAN (operator, 2026-06-26):** **BL-R1 DONE** (`eed3163`+`bcbc1f5`) · **BL-H1 digest DONE** · **BL-H2 eval DONE — headroom NO-ADOPT/idea-only** (`docs/HEADROOM-DIGEST.md` §6; F-049). Recovery + headroom closed; **recovery-harden-2 DONE** (RH-1 BL-R2 `d11db2f` + RH-2 wi-harden-2 `e89c9c5` + RH-3 `c58e5fb`, pushed) — the loop is hardened. Next + LAST — **go-live for ROUNDS**: bring up DB (v2 :8000) + dev server `CLAUDE_CODE_OAUTH_TOKEN` UNSET (F-029) → operator hits Continue → watch ROUNDS + `/projects/[id]/graph`. Boot reaper now runs BL-R1 release+reset, so go-live live-validates that path. Open deferred (non-blocking): BL-R3 (2 task-status MEDIUMs), BL-GUX-FIX (3 graph-UI test gaps), wi-harden done. (bring up DB + dev server token-unset → operator hits Continue → watch ROUNDS + the new `/projects/[id]/graph`). Server is currently DOWN (paused). All work committed + pushed to origin/v2 (tip `1da738e`); docs on v2-main. The full "alive" arc + repo-creation + usage-observability + command-center-ux + lifecycle-graph are DONE. Open tracked: BL-R1, wi-harden-2 (latent), headroom (BL-H1/H2), backlog (BL-1/BL-2/BL-2b).
 
+> ⏸ **OPERATOR PAUSE (2026-07-26): DO NOT AUTO-CHAIN.** The operator directed: let the running
+> `shell-and-labels` lane finish, update the queue, then STOP. This SUSPENDS the standing
+> auto-chain directive above (2026-06-10) until the operator lifts it — do not launch the next
+> queued wave on green, even though the rows below are marked `auto`. Resume point after the
+> pause lifts, in the recommended order: (1) **`review-and-gate`** — `post-task.ts` commits agent
+> work BEFORE the test runs and nothing reads the diff; `orchestrator/review.ts:115` is fully
+> built with zero production callers (the only CORRECTNESS finding of the 2026-07-26 review);
+> (2) **`TASK-BOARD-SPEC` P1** — structured task context to the model, 3 files, no migration;
+> (3) `finish-small-polish`. Full evidence: `docs/OPERATOR-REVIEW-2026-07-26.md`.
+
 | status | id | what | gate |
 |---|---|---|---|
 | running | shell-and-labels | **▶ RUNNING (`wf_00058077-464`, 2026-07-26, redTeamAll) — PARALLEL LANE B in worktree `F:\code\ai-playground-v2b` on branch `v2-lane-b`** (the wave host is now worktree/branch-parameterized, `af235b5`, host pre-check 28/28). LB-1 shell dead-space (`position:relative` on `.content`) · LB-2 the shared naming spine (`src/lib/shared/naming.ts` + adopters) · LB-3 stamp `role`/`specialist`/slot-purpose at spawn (the write-path root cause) · LB-4 `/claude-code` fleet filter-by-project/failure + collapse. Scope-locked OFF `analytics/**`, `routes/reports/**`, `agents/+page.svelte` (lane A owns them); port 5174; no `db:up`. **Merges into `v2` on green.** Grounded in `docs/OPERATOR-REVIEW-2026-07-26.md` §1 + §3. | auto |

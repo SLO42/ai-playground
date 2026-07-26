@@ -1794,13 +1794,18 @@
     color: var(--color-text-muted);
   }
   /* Tone is a SECONDARY cue layered on the always-present text label — never the only
-     signal, so the row stays readable without colour perception. */
+     signal, so the row stays readable without colour perception.
+     The badge TEXT sits at --text-xs/semibold on .hire-log-row's --color-surface-overlay,
+     so it is non-large text and owes BODY AA (4.5:1) — it must come from the *-on-overlay
+     ramp, not the base-surface semantic token (raw --color-error is error-500, only 3.50:1
+     there). The BORDER is a UI component, so 3:1 is its bar and it stays on the base token
+     (same split as SessionFailureReason's advisory variant). */
   .hire-op[data-tone='good'] {
-    color: var(--color-success);
+    color: var(--color-success-on-overlay);
     border-color: var(--color-success);
   }
   .hire-op[data-tone='bad'] {
-    color: var(--color-error);
+    color: var(--color-error-on-overlay);
     border-color: var(--color-error);
   }
   .hire-role {

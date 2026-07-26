@@ -13,6 +13,7 @@
   import SessionTranscript from '$lib/components/shell/SessionTranscript.svelte';
   import SessionFailureReason from '$lib/components/shell/SessionFailureReason.svelte';
   import { rowToTurn, interjectEventToTurn, type Turn } from '$lib/client/transcript-core';
+  import { describeSession } from '$lib/shared/naming';
   import type { PageData, ActionData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -311,8 +312,24 @@
           {#each [...running, ...recent] as s (s.id)}
             {@const isRunning = s.status === 'running'}
             {@const isSelected = selectedSession === s.id}
+            {@const name = describeSession(
+              {
+                roleName: s.roleName,
+                roleSlug: s.roleSlug,
+                intent: s.granted?.intent,
+                kind: s.kind
+              },
+              { includeKind: true }
+            )}
             <li class="fleet-row" class:running={isRunning} class:selected={isSelected}>
               <div class="fleet-main">
+                <!-- NAMING (operator rule 2026-07-26): lead with WHAT this session is, composed by
+                     the ONE shared composer (role → intent → kind). The model/tier/session-id
+                     remain, demoted to qualifiers. `unnamed session` is the honest placeholder for
+                     a row carrying no purposeful field — styled as unknown, never fabricated. -->
+                <span class="sess-name" class:unnamed={name.isPlaceholder} title={name.name}
+                  >{name.name}</span
+                >
                 <span class="sess-status" data-status={s.status}>{s.status}</span>
                 {#if s.projectName}
                   {#if s.projectSlug}
@@ -1124,6 +1141,20 @@
     align-items: center;
     gap: 0.55rem;
     min-width: 0;
+  }
+  .sess-name {
+    flex-basis: 100%;
+    font-size: var(--text-sm, 0.82rem);
+    font-weight: var(--weight-semibold, 600);
+    color: var(--color-text);
+    overflow-wrap: anywhere;
+    min-width: 0;
+  }
+  /* The honest-unknown state reads as unknown, not as a name (F-008). */
+  .sess-name.unnamed {
+    color: var(--color-text-muted);
+    font-weight: var(--weight-regular, 400);
+    font-style: italic;
   }
   .sess-status {
     font-size: 0.68rem;

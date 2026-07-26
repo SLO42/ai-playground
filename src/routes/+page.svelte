@@ -9,6 +9,7 @@
    * vars are zeroed under prefers-reduced-motion at the token layer). Svelte 5 runes only.
    */
   import { invalidate } from '$app/navigation';
+  import { describeSession } from '$lib/shared/naming';
   import { stream } from '$lib/client/stream.svelte';
   import LiveBadge from '$lib/components/shell/LiveBadge.svelte';
   import type { PageData } from './$types';
@@ -245,16 +246,19 @@
       </p>
     {:else}
       <ul class="fleet-grid" aria-label="agent fleet">
-        {#each running as s (s.id)}
-          <li class="agent running">
-            <span class="agent-status" data-status="running">running</span>
-            <span class="agent-model mono">{s.provider}/{s.modelId}</span>
-            {#if s.tier}<span class="tier-tag" data-tier={s.tier}>{s.tier}</span>{/if}
-            <span class="agent-id mono">{shortId(s.id)}</span>
-          </li>
-        {/each}
-        {#each recent as s (s.id)}
-          <li class="agent">
+        {#each [...running, ...recent] as s (s.id)}
+          {@const name = describeSession(
+            { roleName: s.roleName, roleSlug: s.roleSlug, kind: s.kind },
+            { includeKind: true }
+          )}
+          <li class="agent" class:running={s.status === 'running'}>
+            <!-- NAMING (operator rule 2026-07-26): the card led with `provider/modelId` + an id
+                 tail, i.e. it said which MODEL ran and nothing about WHAT it was doing. The name
+                 is now the primary line, composed by the ONE shared composer; the model/tier/id
+                 stay as demoted qualifiers below it. A row with no purposeful field renders the
+                 honest `unnamed session` placeholder, visibly styled as unknown — never a
+                 fabricated name and never the model standing in as one (F-008). -->
+            <span class="agent-name" class:unnamed={name.isPlaceholder} title={name.name}>{name.name}</span>
             <span class="agent-status" data-status={s.status}>{s.status}</span>
             <span class="agent-model mono">{s.provider}/{s.modelId}</span>
             {#if s.tier}<span class="tier-tag" data-tier={s.tier}>{s.tier}</span>{/if}
@@ -534,6 +538,19 @@
   }
   .agent.running {
     border-color: var(--color-running);
+  }
+  .agent-name {
+    flex-basis: 100%;
+    font-size: var(--text-sm, 0.82rem);
+    font-weight: var(--weight-semibold, 600);
+    color: var(--color-text);
+    overflow-wrap: anywhere;
+  }
+  /* The honest-unknown state reads as unknown, not as a name (F-008). */
+  .agent-name.unnamed {
+    color: var(--color-text-muted);
+    font-weight: var(--weight-regular, 400);
+    font-style: italic;
   }
   .agent-status {
     font-size: var(--text-xs, 0.68rem);

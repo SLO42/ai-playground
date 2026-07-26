@@ -70,7 +70,11 @@ export type SceneEventKind =
 	| 'gauntlet_started'
 	| 'gauntlet_scored'
 	| 'gauntlet_adjudicated'
-	| 'role_reversioned';
+	| 'role_reversioned'
+	/** COMPLETION-LEDGER Wave A (m0085) — one autonomous/manual PM REVIEW pass. Joins `pm_tick` as a
+	 *  PM marker kind: the tick is "the PM woke up", the review is "the PM read the project and
+	 *  decided". Emitted explicitly by projects/pm-review-events.ts, not a row mirror. */
+	| 'pm_review';
 
 /** Input to {@link appendSceneEvent} — a single derived viz event. */
 export interface AppendSceneEventInput {

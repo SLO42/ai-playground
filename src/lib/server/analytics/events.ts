@@ -40,6 +40,13 @@ import { loadPricing, resolveModelCost, type PricingConfig } from '../config/loa
  * gate-blocked — through this chokepoint like every other lifecycle producer. It is NOT an `error`:
  * a park is a healthy ceiling doing its job, and conflating the two would make the failure surface
  * lie about how much is broken.
+ *
+ * 'consult' (m0085, COMPLETION-LEDGER Wave A) IS written here: the concierge THINKING ledger
+ * (concierge/turn-events.ts) records one row per advisory turn — what was asked, what was decided,
+ * and which brain (if any) served it. It deliberately does NOT ride 'completion': that type IS the
+ * spend contract (spend-budget.tokensSpentSince sums token legs over `type = 'completion'`), so a
+ * thinking row there would DOUBLE-COUNT the concierge's already-metered spend. A consult row carries
+ * NO token legs and NO cost, so it is inert to the budget by construction as well as by filter.
  */
 export const AGENT_EVENT_TYPES = [
 	'spawn',
@@ -47,7 +54,8 @@ export const AGENT_EVENT_TYPES = [
 	'escalation',
 	'cancel',
 	'error',
-	'queue'
+	'queue',
+	'consult'
 ] as const;
 export type AgentEventType = (typeof AGENT_EVENT_TYPES)[number];
 

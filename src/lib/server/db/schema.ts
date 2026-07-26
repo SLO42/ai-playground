@@ -3013,6 +3013,52 @@ const m0084_drain_ledger: Migration = {
 	`
 };
 
+// m0085 — COMPLETION-LEDGER Wave A — the THINKING LEDGER vocabulary.
+//
+// THE GAP THIS CLOSES (findings 2 + 6). Two engines make real decisions that left no durable,
+// operator-visible trace of HOW or WHY:
+//
+//   (2) THE CONCIERGE TURN. cost-governance-2 wired the SPEND (an agent_event `type:'completion'`
+//       metering row + a `type:'error'` late-fault row), so the money is now tracked — but the
+//       THINKING is not. What was asked, which intent it classified, what it grounded on, what it
+//       recommended, which provider+model actually served it (or that NO model was called at all),
+//       and whether the advice ever reached the requester: none of it was recorded anywhere.
+//
+//   (6) THE PM REVIEW. runPmReview writes pm_memory + a pm_review summary row (both surfaced in the
+//       project PM tab) but emits NO scene_event, so PM thinking is absent from the lifecycle
+//       scene/graph — the surface built precisely to show WHO decided WHAT and WHY.
+//
+// WHY TWO DIFFERENT SINKS. They are different KINDS of record, so they ride the vocabulary that
+// already fits (F-055 — no new table, no second writer):
+//   • The concierge turn gains `agent_event.type = 'consult'`. It CANNOT ride 'completion': that
+//     type IS the spend contract (spend-budget.tokensSpentSince sums tokens over
+//     `type = 'completion'`), and a second completion row per turn would DOUBLE-COUNT the budget.
+//     It is not an 'error' either — a successful advisory turn is not a failure. A consult row
+//     carries NO token legs at all, so it is inert to the budget by construction as well as by
+//     filter.
+//   • The PM review gains `scene_event.kind = 'pm_review'`, joining the existing `pm_tick` PM
+//     marker. The DURABLE copy already exists (the pm_review table, never pruned); the scene feed
+//     is the rolling live view, which is exactly the missing half.
+//
+// Both fields are SCHEMAFULL with an ASSERT, so writing an un-enumerated value would be REFUSED and
+// the best-effort emitters would absorb that refusal — leaving each hole exactly as it was. Widening
+// is therefore REQUIRED, not cosmetic. This follows the m0081/m0084 precedent EXACTLY (restate the
+// full prior list plus the new value) and is its OWN migration, never an in-place edit of m0084/
+// m0083: the runner records a migration only on success and never re-runs an applied one, so an
+// in-place edit would NEVER land on the LIVE dev DB (F-015). Both DEFINEs are OVERWRITE ⇒ idempotent
+// under apply-twice AND half-applied re-run (covered by the generic schemaMigrations sweep in
+// migrate.test.ts).
+const m0085_thinking_ledger: Migration = {
+	id: '0085_thinking_ledger',
+	up: `
+		DEFINE FIELD OVERWRITE type ON agent_event TYPE string
+			ASSERT $value IN ["spawn","completion","escalation","cancel","error","hook","maintenance","supervision","queue","consult"];
+
+		DEFINE FIELD OVERWRITE kind ON scene_event TYPE string
+			ASSERT $value IN ["node_spawned","job_fired","job_done","connection_formed","node_retired","memory_added","hire_staffed","continue","batch_drained","pm_tick","candidate_considered","hired","hire_rejected","gauntlet_started","gauntlet_scored","gauntlet_adjudicated","role_reversioned","pm_review"];
+	`
+};
+
 // ── §4.12 note (BL-R3 — F-048 structural fix + F-026) — active-window dedup is the PRIMARY id ──
 //
 // NO new migration ships for BL-R3. The task_run active-window dedup ("one pending-or-processing
@@ -3124,5 +3170,6 @@ export const schemaMigrations: Migration[] = [
 	m0081_agent_event_supervision,
 	m0082_autonomy_status,
 	m0083_workforce_hire_events,
-	m0084_drain_ledger
+	m0084_drain_ledger,
+	m0085_thinking_ledger
 ];

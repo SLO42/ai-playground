@@ -17,7 +17,7 @@ codebase disagree, **the codebase wins — verify, then fix this file.**
 | **Product code** | branch `v2`, worktree `F:\code\ai-playground-v2`. **App is at the repo ROOT** — `src/routes`, `src/lib/server`. There is NO `dashboard/` in v2 (that path is v1). |
 | **Docs / this file / workflows** | branch `v2-main`, `F:\code\ai-playground` — `docs/`, `CLAUDE.md`, `.claude/workflows/v2-wave.js`, `docs/devlog/`. |
 | **Backend subsystems** | `src/lib/server/<subsystem>/` — `db orchestrator runtime sessions harness claude-code memory scene concierge loops workforce projects analytics providers routing cc-config peer create release`. |
-| **SurrealDB migrations** | `const mNNNN_name: Migration = {...}` **inside `src/lib/server/db/schema.ts`** → exported `schemaMigrations`. **There is NO migrations directory and NO per-migration files.** Head is `m0081` (supervision `agent_event` type widen, 2026-07-23; prior `m0080_maintenance_loops`). |
+| **SurrealDB migrations** | `const mNNNN_name: Migration = {...}` **inside `src/lib/server/db/schema.ts`** → exported `schemaMigrations`. **There is NO migrations directory and NO per-migration files.** Head is `m0082` (`m0082_autonomy_status`, safety-defaults SD-2 honest boot-status, 2026-07-23; prior `m0081_agent_event_supervision`). |
 | **Migration runner + idempotency toolkit** | `src/lib/server/db/migrate.ts` — `runMigrations`, `isApplied`, `defineFlagField`, `guardedScan`, `backfillValueField`. |
 | **DB client** | `src/lib/server/db/client.ts` — `Db`, hard-bounded connect (`DEFAULT_CONNECT_TIMEOUT_MS=5000`). |
 | **Table normalizers (`norm*`)** | **per-repo, not in schema.ts** — canonical set in `src/lib/server/projects/repo.ts` (`normProject/normSprint/…`, `isoOrUndef`). |

@@ -9,12 +9,41 @@
 
 > ⏭ **RESUME PLAN (operator, 2026-06-26):** **BL-R1 DONE** (`eed3163`+`bcbc1f5`) · **BL-H1 digest DONE** · **BL-H2 eval DONE — headroom NO-ADOPT/idea-only** (`docs/HEADROOM-DIGEST.md` §6; F-049). Recovery + headroom closed; **recovery-harden-2 DONE** (RH-1 BL-R2 `d11db2f` + RH-2 wi-harden-2 `e89c9c5` + RH-3 `c58e5fb`, pushed) — the loop is hardened. Next + LAST — **go-live for ROUNDS**: bring up DB (v2 :8000) + dev server `CLAUDE_CODE_OAUTH_TOKEN` UNSET (F-029) → operator hits Continue → watch ROUNDS + `/projects/[id]/graph`. Boot reaper now runs BL-R1 release+reset, so go-live live-validates that path. Open deferred (non-blocking): BL-R3 (2 task-status MEDIUMs), BL-GUX-FIX (3 graph-UI test gaps), wi-harden done. (bring up DB + dev server token-unset → operator hits Continue → watch ROUNDS + the new `/projects/[id]/graph`). Server is currently DOWN (paused). All work committed + pushed to origin/v2 (tip `1da738e`); docs on v2-main. The full "alive" arc + repo-creation + usage-observability + command-center-ux + lifecycle-graph are DONE. Open tracked: BL-R1, wi-harden-2 (latent), headroom (BL-H1/H2), backlog (BL-1/BL-2/BL-2b).
 
-> ▶ **PAUSE LIFTED (operator, 2026-07-26) — two lanes running.** Lane A `finish-small-polish`
-> (`wf_e02fc7e4-a3c`, worktree `ai-playground-v2`, branch `v2`, :5173, MAY migrate → m0089).
-> Lane B `shell-and-labels-resume` (`wf_cd9b747a-a6c`, worktree `ai-playground-v2b`, branch
-> `v2-lane-b`, :5174, no db:up) — resumes the interrupted LB-3 + LB-4.
+> ⏸ **OPERATOR PAUSE #2 (2026-07-26, second of the session) — DO NOT AUTO-CHAIN.** Both lanes
+> stopped mid-second-task. Everything COMMITTED is fully gated (review PASS + red-team PASS) and
+> PUSHED; both worktrees hold in-progress work that resumes with a VERIFY-DON'T-REDO brief.
 >
-> **SEQUENCING NOTE — why `review-and-gate` is NOT first despite being the recorded priority:**
+> **LANE A — `finish-small-polish` (`wf_e02fc7e4-a3c`, worktree `ai-playground-v2`, branch `v2`,
+> :5173, holds the migration slot → m0089). origin/v2 = `b035577`.**
+> ✅ FP-1 DONE, 3 commits, gated: `e077161` — **a REAL live bug, not the bookkeeping failure it
+> looked like: `/brain` live-update was DEAD, `concept` + `soul_graduation` were subscribed but
+> never watched** (found by taking the census-drift test seriously instead of relaxing it) ·
+> `654fff2` catalogued `soul.ts` in the quarantine census, VERIFIED safe live rather than by grep ·
+> `b035577` the workspace render-smoke stopped pinning a magic `dailySpawnCap` and asserts the
+> invariant (the stale expectation OUR OWN SD-1 wave created).
+> ⏳ FP-2 UNCOMMITTED (7 paths): `observability/usage.ts`+test, `workforce/repo.ts`,
+> `routes/agents/+page.server.ts`, `routes/agents/+page.svelte`, new `src/lib/components/agents/`,
+> new `workforce/hiring-activity.test.ts` — the chip wall + the hiring-feed `interview_run` join.
+> ⛔ FP-3 (gauntlet.ts:717 truncation + residue cluster) NEVER STARTED.
+>
+> **LANE B — `shell-and-labels-resume` (`wf_cd9b747a-a6c`, worktree `ai-playground-v2b`, branch
+> `v2-lane-b`, :5174, no db:up). origin/v2-lane-b = `2fd4987`.**
+> ✅ **LB-3 DONE, 2 commits, gated — the write-path root cause is CLOSED:** `65adffd` a session row
+> is BORN with an identity · `2fd4987` the six non-drain spawn seams name themselves + a guard
+> keeps it that way. **This unblocks `review-and-gate`** (it wanted the same files).
+> ⏳ LB-4 UNCOMMITTED (7 paths): `routes/claude-code/+page.server.ts`+`+page.svelte`,
+> `transcript-link.test.ts`, new `fleet-view.ts` + `fleet-view.test.ts` + `fleet-controls.test.ts`
+> + `fleet-filter.live.test.ts` — the fleet filter/collapse.
+>
+> **NOT MERGED:** `v2-lane-b` (LB-1/LB-2/LB-3) is NOT yet merged into `v2` because the v2 worktree
+> is dirty with FP-2. Merge only from a clean tree, `--no-ff`, and RE-GATE the merge result — the
+> lanes never test each other's combination (this caught nothing last time, but it is why we look).
+>
+> **Order when the pause lifts:** (1) finish FP-2 + FP-3 and LB-4 (resume briefs, both worktrees
+> hold their diffs); (2) merge `v2-lane-b` → `v2` + re-gate; (3) **`review-and-gate`** — now
+> unblocked; (4) **`TASK-BOARD-SPEC` P1**.
+>
+> **SEQUENCING NOTE (retained) — why `review-and-gate` was NOT first despite being the recorded priority:**
 > it edits `post-task.ts` / `boot.ts` / `orchestrator.ts`, exactly the file set LB-3 is half-way
 > through. Two builders in one file set is the F-052 failure this project already logged. It runs
 > NEXT, alone, once LB-3 merges and the spawn/post-task path is free — deferred by 1 wave for

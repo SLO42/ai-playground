@@ -9,15 +9,22 @@
 
 > ⏭ **RESUME PLAN (operator, 2026-06-26):** **BL-R1 DONE** (`eed3163`+`bcbc1f5`) · **BL-H1 digest DONE** · **BL-H2 eval DONE — headroom NO-ADOPT/idea-only** (`docs/HEADROOM-DIGEST.md` §6; F-049). Recovery + headroom closed; **recovery-harden-2 DONE** (RH-1 BL-R2 `d11db2f` + RH-2 wi-harden-2 `e89c9c5` + RH-3 `c58e5fb`, pushed) — the loop is hardened. Next + LAST — **go-live for ROUNDS**: bring up DB (v2 :8000) + dev server `CLAUDE_CODE_OAUTH_TOKEN` UNSET (F-029) → operator hits Continue → watch ROUNDS + `/projects/[id]/graph`. Boot reaper now runs BL-R1 release+reset, so go-live live-validates that path. Open deferred (non-blocking): BL-R3 (2 task-status MEDIUMs), BL-GUX-FIX (3 graph-UI test gaps), wi-harden done. (bring up DB + dev server token-unset → operator hits Continue → watch ROUNDS + the new `/projects/[id]/graph`). Server is currently DOWN (paused). All work committed + pushed to origin/v2 (tip `1da738e`); docs on v2-main. The full "alive" arc + repo-creation + usage-observability + command-center-ux + lifecycle-graph are DONE. Open tracked: BL-R1, wi-harden-2 (latent), headroom (BL-H1/H2), backlog (BL-1/BL-2/BL-2b).
 
-> ⏸ **OPERATOR PAUSE (2026-07-26): DO NOT AUTO-CHAIN.** The operator directed: let the running
-> `shell-and-labels` lane finish, update the queue, then STOP. This SUSPENDS the standing
-> auto-chain directive above (2026-06-10) until the operator lifts it — do not launch the next
-> queued wave on green, even though the rows below are marked `auto`. Resume point after the
-> pause lifts, in the recommended order: (1) **`review-and-gate`** — `post-task.ts` commits agent
-> work BEFORE the test runs and nothing reads the diff; `orchestrator/review.ts:115` is fully
-> built with zero production callers (the only CORRECTNESS finding of the 2026-07-26 review);
-> (2) **`TASK-BOARD-SPEC` P1** — structured task context to the model, 3 files, no migration;
-> (3) `finish-small-polish`. Full evidence: `docs/OPERATOR-REVIEW-2026-07-26.md`.
+> ▶ **PAUSE LIFTED (operator, 2026-07-26) — two lanes running.** Lane A `finish-small-polish`
+> (`wf_e02fc7e4-a3c`, worktree `ai-playground-v2`, branch `v2`, :5173, MAY migrate → m0089).
+> Lane B `shell-and-labels-resume` (`wf_cd9b747a-a6c`, worktree `ai-playground-v2b`, branch
+> `v2-lane-b`, :5174, no db:up) — resumes the interrupted LB-3 + LB-4.
+>
+> **SEQUENCING NOTE — why `review-and-gate` is NOT first despite being the recorded priority:**
+> it edits `post-task.ts` / `boot.ts` / `orchestrator.ts`, exactly the file set LB-3 is half-way
+> through. Two builders in one file set is the F-052 failure this project already logged. It runs
+> NEXT, alone, once LB-3 merges and the spawn/post-task path is free — deferred by 1 wave for
+> file-safety, not deprioritized.
+>
+> **Order after these two land:** (1) **`review-and-gate`** — `post-task.ts` commits agent work
+> BEFORE the test runs and nothing reads the diff; `orchestrator/review.ts:115` is fully built
+> with zero production callers (the only CORRECTNESS finding of the 2026-07-26 review);
+> (2) **`TASK-BOARD-SPEC` P1** — structured task context to the model, 3 files, no migration.
+> Full evidence: `docs/OPERATOR-REVIEW-2026-07-26.md`.
 
 | status | id | what | gate |
 |---|---|---|---|

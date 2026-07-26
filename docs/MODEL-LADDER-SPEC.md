@@ -320,10 +320,16 @@ the health fallback already uses (`resolve.ts:352-366`). The routing-rationale s
 (`analytics/routing-rationale.ts`) then renders it with zero new plumbing. Nothing is silent;
 nothing is fabricated; nothing stops.
 
-**F-005 note, stated loudly:** this is a deliberate, operator-locked exception to "an explicit
-override MUST win" (`resolve.ts:10-13`) — scoped ONLY to duty-restricted tiers/models. An override
-naming any unrestricted model behaves exactly as today, byte-identical. The operator's escape hatch
-is config (remove/edit `duties` on the tier), not a per-call bypass — one knob, no shadow path.
+**F-005 tension, stated loudly (operator decision, 2026-07-26):** this deliberately bends F-005's
+"an explicit override MUST win" (`resolve.ts:10-13`) for duty-restricted tiers/models ONLY. The
+operator confirmed there is **no per-call bypass — not even for an explicit operator pick**: an
+operator routing fable onto a build task is re-routed like any other caller. The escape hatch is
+editing `duties` in config (one knob, restart, no shadow path), never a per-call flag. The
+non-negotiable compensation is honesty: every re-routed pick — operator picks included — is
+recorded as `method:'policy'` with the refused selection in structured `alternatives` and an
+explicit `reason`, surfaced through the routing-rationale view, so an overridden pick is never
+silently swallowed: the operator can always see THAT their pick was re-routed and WHY. An override
+naming any unrestricted model behaves exactly as today, byte-identical.
 
 ### 4.5 Tests that pin the gate (Phase 2 DoD)
 
@@ -502,6 +508,7 @@ local candidate can be trialed on tool-using duties instead of the Stage-1 chat-
 | ML-9 | D-042: a fitness verdict is an append-only, server-stamped `artifact_version` (kind `model_fitness`); source from the closed vocabulary, stamped by the invoking code path, never from LLM payload; supersession only, no edits. No parallel verdict store, ever. | substrate invariant tests (VERSIONING-AUDIT-SPEC §8) + grep-gate for `CREATE` outside the chokepoint |
 | ML-10 | Pricing precedes trials: the trial runner warns loudly (and the checklist orders) when the candidate is unpriced, because unpriced spend is invisible to the budget gates. | trial wrapper test: unpriced model → named warning recorded |
 | ML-11 | The `/settings` ladder renders only live config + live verdicts — no prose that can drift, no fabricated fitness/price states (F-008). | render-smoke: undocumented/unpriced/untrialed states each render honestly |
+| ML-12 | An unpriced routed/configured model never becomes a permanent silent hole: the honest-NULL cost + loud warn stand, AND actionable work is raised — at most ONE open research proposal per model id (structural `proposal_fingerprint` over immutable kind+evidence, `pm-proposals.ts:90-100`; never keyed on status, F-048), through the `proposeTask` chokepoint only (born `proposed`, D-039), with the CTA always rendered on every unpriced surface. No auto-edit of pricing.yaml, ever. | §3c tests: warn→propose happy path; double-trigger absorbs as `duplicate_open`; no-PM fallback renders CTA + named log; grep-gate: no direct `createTask` on this path |
 
 ---
 
@@ -528,12 +535,18 @@ Live verify: `npm run db:up` against the LIVE dev DB, clean, twice (F-015).
 
 ## 10. Phased build (each independently shippable, each with its verification command)
 
-**Phase 1 — Ladder legible (no behaviour change).** §3.2 config fields + loader validation, §3.3
-chokepoint tier resolution, §6 `/settings` panel (documented/priced/ladder-walk; fitness column
-renders "untrialed" honestly). No migration.
+**Phase 1 — Ladder legible (no routing-behaviour change).** §3.2 config fields + loader
+validation, §3.3 chokepoint tier resolution, §6 `/settings` panel (documented/priced/ladder-walk;
+fitness column renders "untrialed" honestly), **§3c unpriced-model research machinery** (warn-
+chokepoint propose trigger + `/settings` and `/reports` CTA). No migration.
 *Verify:* `npm run build && npm test && npm run lint && npx svelte-check --threshold error`;
 `resolve.test.ts` new cases (ML-1/ML-2); render-smoke `/settings` (`page.live.test.ts`); one live
-task's `routing_event.chosen.tier` non-null on an explicit override.
+task's `routing_event.chosen.tier` non-null on an explicit override. **§3c (ML-12):** unit — first
+unpriced completion in a boot yields exactly one propose attempt with
+`provenance.kind='unpriced_model'` and the correct fingerprint inputs; second trigger (same boot or
+re-boot) returns `duplicate_open` against the standing proposal; no-hired-PM path skips with the
+named log and the CTA still renders (real-surreal where the proposal write is exercised — F-020);
+happy-path test on the best-effort propose (a swallowed failure may not hide a dead path).
 
 **Phase 2 — Planner tier + the gate.** §9 migration + the five enum edits; `planner` tier in
 `agent-pool.yaml`; fable-5 into `MODEL_IDS`; pricing entry for fable-5 **only if the operator
@@ -579,16 +592,18 @@ spike reports.
   Phase 2 build/test concern (order-in-`classifyIntent` is the load-bearing constraint, not the
   precise wording).
 
-QUESTIONS:
-1. **Planner fallback target:** I specified "ELSE opus-5" as `planner.escalates_to: opus` — i.e.
-   whatever the `opus` tier pins (today `claude-opus-4-8`), auto-following when you later add
-   `claude-opus-5` via the §3 checklist. Confirm this indirection is what you meant, or name a
-   dedicated fallback tier now.
-2. **Verified list prices for `claude-fable-5`** (and `claude-opus-5*` when it lands): pricing.yaml
-   forbids guessed prices and I will not supply one — without them, fable trials/planning spend
-   records honest-NULL cost and is invisible to the 15M/5M budget meters (ML-10 makes this loud,
-   but only you can close it).
-3. **Gate strictness for `origin=operator` explicit picks:** as specified, even an operator's
-   explicit fable-on-a-build-task pick is re-routed (the escape hatch is editing `duties` in
-   config, not a per-call bypass). Confirm you want no operator per-call override — it is the
-   simplest invariant, but it does bend F-005's "override always wins" for this one tier.
+## 13. Operator resolutions (2026-07-26 — the draft's three questions, answered and folded in)
+
+1. **Planner fallback: CONFIRMED.** `planner.escalates_to: opus` tier indirection is the intent —
+   whatever the `opus` tier pins today (`claude-opus-4-8`), automatically `claude-opus-5` once it
+   is added via the §3 checklist. No model literal in routing code. Folded into §4.2.
+2. **fable-5 pricing: ship honest-NULL + loud unpriced warning, PLUS raise actionable work.**
+   Operator's words: "ship honest-NULL + unpriced warning. but also allow research to cover the
+   gaps with a research this model task or call to action." Designed as §3c (proposeTask-backed
+   research proposal + always-on CTA), invariant ML-12, verified in Phase 1. Generalized to ANY
+   unpriced/unknown model id.
+3. **Gate strictness: CONFIRMED — no per-call operator bypass.** Even an explicit operator pick of
+   fable on a build task is re-routed; the escape hatch is editing `duties` in config. The F-005
+   tension is stated explicitly, with this decision and date recorded, in §4.4 — together with the
+   honesty requirement that a re-routed operator pick is always visible (`method:'policy'` +
+   structured `alternatives` + reason), never silently swallowed.

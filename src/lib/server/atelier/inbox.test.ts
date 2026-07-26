@@ -88,6 +88,8 @@ async function freshSession(project?: string): Promise<string> {
 
 interface SeedOpts {
 	from: string;
+	/** Optional SENDER role link — the half of the from→to pair the naming sweep must humanize. */
+	fromRole?: string;
 	toKind: 'session' | 'role' | 'pm' | 'atelier';
 	toSession?: string;
 	toRole?: string;
@@ -121,6 +123,10 @@ async function seedPeer(o: SeedOpts): Promise<string> {
 		pseq: ++seq,
 		at: o.created_at
 	};
+	if (o.fromRole) {
+		set.push(`from_role = type::thing('role', $fr)`);
+		bind.fr = o.fromRole.split(':')[1];
+	}
 	if (o.toSession) {
 		set.push(`to_session = type::thing('session', $ts)`);
 		bind.ts = o.toSession.split(':')[1];
@@ -213,6 +219,53 @@ describe('readInbox — D-040 recipient placeholder + identity', () => {
 		expect(byId.get(toAtelierId)!.recipientPending).toBe(true);
 		expect(byId.get(toAtelierId)!.to).toBe('atelier');
 		expect(byId.get(toAtelierId)!.project).toBe('—'); // project-less address
+	});
+});
+
+describe('readInbox — sender identity is a NAME, never a raw record id', () => {
+	// REGRESSION (LB-2 A, fix pass): `normInboxItem` humanized the RECIPIENT half of the from→to
+	// pair (recipientLabel → roleDisplayName) but left the SENDER half on `shortId`, which returns
+	// everything after the ':' — so a seeded role rendered its raw epoch id
+	// `probe_fit_1781894354268` in the `from` column while the SIBLING surface (timeline.ts:277,
+	// reading the SAME peer_message.from_role) showed `probe_fit`. One comm, two sender names.
+	// A raw record id where a name belongs is the exact F-008-class defect this feature exists to
+	// kill (naming.ts:4-8) and the cross-surface divergence it warns against (naming.ts:32-33).
+	it('humanizes an epoch-suffixed sender role and matches the recipient half exactly', async () => {
+		// A role whose RECORD ID carries the seeder's epoch suffix — the live shape that leaked.
+		const epochRoleId = `role:probe_fit_${1781894354268 + ++seq}`;
+		await db.query(
+			`CREATE type::thing('role', $rid) SET slug = $rid, name = $rid, purpose = "test", status = "active" RETURN id;`,
+			{ rid: epochRoleId.split(':')[1] }
+		);
+		const proj = await freshProject();
+		const s = await freshSession(proj);
+		// SAME role on BOTH ends: sender and recipient must compose to the SAME label.
+		const id = await seedPeer({
+			from: s,
+			fromRole: epochRoleId,
+			toKind: 'role',
+			toRole: epochRoleId,
+			project: proj,
+			created_at: ts(410)
+		});
+
+		const page = await readInbox(db, { scope: { kind: 'project', project: proj } });
+		const item = page.items.find((i) => i.id === id)!;
+
+		expect(item.from).toBe('probe_fit'); // humanized, not the raw tail
+		expect(item.from).not.toMatch(/\d{10,}/); // no epoch id anywhere in a name slot
+		expect(item.from).not.toContain(epochRoleId.split(':')[1]);
+		// CROSS-SURFACE: the two halves of one comm read identically (one composer, not two).
+		expect(item.from).toBe(item.to);
+	});
+
+	it('a role-less sender still degrades to the honest session label (unchanged)', async () => {
+		const proj = await freshProject();
+		const s = await freshSession(proj);
+		const id = await seedPeer({ from: s, toKind: 'pm', project: proj, created_at: ts(420) });
+		const page = await readInbox(db, { scope: { kind: 'project', project: proj } });
+		const item = page.items.find((i) => i.id === id)!;
+		expect(item.from).toBe(`session ${s.split(':')[1]}`);
 	});
 });
 

@@ -67,7 +67,9 @@ export interface InboxItem {
 	id: string;
 	/** Lifecycle state (pending / delivered / expired / quarantined). */
 	status: PeerStatus;
-	/** Sender identity label (the role slug if it has one, else "session <id>"). Display-only. */
+	/** Sender identity label — the HUMANIZED role name when the sender has a role, else
+	 *  "session <id>". Composed by the SAME `roleDisplayName` the recipient side and the timeline
+	 *  use, so one comm reads identically on every surface. Display-only. */
 	from: string;
 	/** Recipient identity label. For a `pm`/`atelier` address with no concrete recipient yet, this
 	 *  is the address word ('pm'/'atelier'); `recipientPending` is true so the UI shows the honest
@@ -197,7 +199,15 @@ function normInboxItem(row: {
 	return {
 		id: str(row.id),
 		status: row.status as PeerStatus,
-		from: row.from_role != null ? shortId(row.from_role) : `session ${shortId(row.from_session)}`,
+		// NAMING (operator rule 2026-07-26): the SENDER half of the from→to pair is humanized by the
+		// same composer as the recipient half (recipientLabel) and as the timeline's `roleLabel`
+		// (timeline.ts:133) — both read the SAME `peer_message.from_role`, so a raw `role:probe_fit_
+		// 178…` tail here would make one comm carry two different sender names across two surfaces
+		// (naming.ts:32-33). A raw record id where a name belongs is an F-008-class defect.
+		from:
+			row.from_role != null
+				? roleDisplayName({ ref: row.from_role })
+				: `session ${shortId(row.from_session)}`,
 		to: rcpt.to,
 		toKind: rcpt.toKind,
 		recipientPending: rcpt.recipientPending,

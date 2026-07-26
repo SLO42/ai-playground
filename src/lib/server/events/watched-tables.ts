@@ -124,7 +124,13 @@ export const WATCHED_TABLES = [
 	'scene_event',
 	// loop — /loops (the loop manifest: declare/checklist/phase/override + arm changes re-derive the
 	// declared-vs-running cards + readiness gate live) — LOOP-ENGINEERING.md steps 3-5
-	'loop'
+	'loop',
+	// concept — /brain (S3 concepts feed readSoulMetrics + readDominantConcepts, both compute-on-read;
+	// a new/updated concept must re-derive the soul without a manual reload) — COGNITIVE-ARCHITECTURE S3/S4
+	'concept',
+	// soul_graduation — /brain (the maturity-ladder feed: a freshly-recorded graduation appears
+	// live) — COGNITIVE-ARCHITECTURE S4
+	'soul_graduation'
 ] as const;
 
 /** One of the boot-watched table names. */

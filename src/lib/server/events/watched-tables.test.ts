@@ -55,35 +55,74 @@ interface ScanResult {
 	callSites: number;
 }
 
-/** Scan one file's source for onDbChange table names. Handles the literal form
- *  `onDbChange('table', …)` and the layout's `['a','b'].map((t) => …onDbChange(t, …))`. */
-function scanFile(file: string, acc: ScanResult): void {
-	const src = readFileSync(file, 'utf8');
+/** Pull every `'literal'` table name out of an array-literal body. */
+function literalsOf(arrayBody: string): string[] {
+	return [...arrayBody.matchAll(/'([a-z0-9_]+)'/g)].map((m) => m[1]);
+}
+
+/** Index a file's `const NAME = ['a','b', …];` string-array declarations by NAME. Lets the scanner
+ *  see through the HOISTED form (`const tables = [...]` then `tables.map((t) => onDbChange(t, …))`)
+ *  that /brain uses — an indirection, not an escape hatch: anything still unresolved fails below. */
+function constStringArrays(src: string): Map<string, string[]> {
+	const out = new Map<string, string[]>();
+	const declRe = /\bconst\s+([A-Za-z_$][\w$]*)\s*(?::[^=]+)?=\s*\[((?:\s*'[a-z0-9_]+'\s*,?)+)\]/g;
+	for (const m of src.matchAll(declRe)) out.set(m[1], literalsOf(m[2]));
+	return out;
+}
+
+/** Scan one file's SOURCE TEXT for onDbChange table names. Three resolvable forms:
+ *   (a) literal            — `onDbChange('table', …)`
+ *   (b) inline array + map — `['a','b'].map((t) => …onDbChange(t, …))`   (shell layout)
+ *   (c) hoisted const+map  — `const tables = ['a','b']; tables.map((t) => …onDbChange(t, …))` (/brain)
+ *  Anything else lands in `unresolved` and fails the suite — a NEW indirection pattern must extend
+ *  this scanner, never silently escape the superset audit. */
+function scanSource(src: string, file: string, acc: ScanResult): void {
+	const consts = constStringArrays(src);
 	const callRe = /\bonDbChange\(\s*('([a-z0-9_]+)'|[A-Za-z_$][\w$]*)/g;
 	for (const m of src.matchAll(callRe)) {
 		acc.callSites += 1;
 		if (m[2]) {
-			acc.tables.add(m[2]); // string-literal arg
+			acc.tables.add(m[2]); // (a) string-literal arg
 			continue;
 		}
-		// Identifier arg — resolve the `[ 'a', 'b' ].map((ident) => …` source array.
 		const ident = m[1];
-		const mapRe = new RegExp(
-			String.raw`\[((?:\s*'[a-z0-9_]+'\s*,?)+)\]\s*\.map\(\s*\(?\s*` + ident + String.raw`\s*\)?\s*=>`
+		// (b) inline `[ 'a', 'b' ].map((ident) => …` source array.
+		const inline = src.match(
+			new RegExp(
+				String.raw`\[((?:\s*'[a-z0-9_]+'\s*,?)+)\]\s*\.map\(\s*\(?\s*` +
+					ident +
+					String.raw`\s*\)?\s*=>`
+			)
 		);
-		const arr = src.match(mapRe);
+		if (inline) {
+			for (const t of literalsOf(inline[1])) acc.tables.add(t);
+			continue;
+		}
+		// (c) hoisted `NAME.map((ident) => …` where NAME is a const string-array in this file.
+		const named = src.match(
+			new RegExp(String.raw`([A-Za-z_$][\w$]*)\s*\.map\(\s*\(?\s*` + ident + String.raw`\s*\)?\s*=>`)
+		);
+		const arr = named ? consts.get(named[1]) : undefined;
 		if (!arr) {
 			acc.unresolved.push(`${file}: onDbChange(${ident}, …)`);
 			continue;
 		}
-		for (const lit of arr[1].matchAll(/'([a-z0-9_]+)'/g)) acc.tables.add(lit[1]);
+		for (const t of arr) acc.tables.add(t);
 	}
+}
+
+function scanFile(file: string, acc: ScanResult): void {
+	scanSource(readFileSync(file, 'utf8'), file, acc);
 }
 
 function scanRoutes(): ScanResult {
 	const acc: ScanResult = { tables: new Set(), unresolved: [], callSites: 0 };
 	for (const dir of SCAN_DIRS) for (const file of listSourceFiles(dir)) scanFile(file, acc);
 	return acc;
+}
+
+function emptyAcc(): ScanResult {
+	return { tables: new Set(), unresolved: [], callSites: 0 };
 }
 
 describe('WATCHED_TABLES covers every route onDbChange subscription (13.1)', () => {
@@ -101,8 +140,53 @@ describe('WATCHED_TABLES covers every route onDbChange subscription (13.1)', () 
 
 	it('every onDbChange call site is statically resolvable', () => {
 		// A dynamic subscription the scanner cannot resolve would escape the superset
-		// audit — extend scanFile() for the new pattern instead of ignoring it.
+		// audit — extend scanSource() for the new pattern instead of ignoring it.
 		expect(scan.unresolved).toEqual([]);
+	});
+
+	it('the /brain hoisted-const subscription is RESOLVED, not skipped (Wave C finding 1)', () => {
+		// /brain declares `const tables = [...]` then `tables.map((t) => stream.onDbChange(t, …))`.
+		// The pre-fix scanner only understood the INLINE `[…].map(…)` form, so this call site landed
+		// in `unresolved` — and behind it two genuinely-subscribed tables (`concept`,
+		// `soul_graduation`) were absent from WATCHED_TABLES and could never live-update.
+		expect(scan.tables.has('concept')).toBe(true);
+		expect(scan.tables.has('soul_graduation')).toBe(true);
+	});
+
+	it('the scanner resolves all three forms and still FAILS on a genuinely dynamic one', () => {
+		// (a) literal
+		const a = emptyAcc();
+		scanSource(`stream.onDbChange('task', fn);`, 'a.svelte', a);
+		expect([...a.tables]).toEqual(['task']);
+		expect(a.unresolved).toEqual([]);
+
+		// (b) inline array + map
+		const b = emptyAcc();
+		scanSource(`['x_one','x_two'].map((t) => stream.onDbChange(t, fn));`, 'b.svelte', b);
+		expect([...b.tables].sort()).toEqual(['x_one', 'x_two']);
+		expect(b.unresolved).toEqual([]);
+
+		// (c) hoisted const + map (the /brain form)
+		const c = emptyAcc();
+		scanSource(
+			`const tables = ['y_one','y_two'];\nconst offs = tables.map((t) => stream.onDbChange(t, fn));`,
+			'c.svelte',
+			c
+		);
+		expect([...c.tables].sort()).toEqual(['y_one', 'y_two']);
+		expect(c.unresolved).toEqual([]);
+
+		// NOT weakened: a table name the scanner cannot statically resolve still fails the audit.
+		const d = emptyAcc();
+		scanSource(`stream.onDbChange(someRuntimeValue, fn);`, 'd.svelte', d);
+		expect([...d.tables]).toEqual([]);
+		expect(d.unresolved).toEqual(['d.svelte: onDbChange(someRuntimeValue, …)']);
+
+		// NOT weakened: a const array that exists but is not the mapped one leaves it unresolved.
+		const e = emptyAcc();
+		scanSource(`const other = ['z_one'];\nrows.map((t) => stream.onDbChange(t, fn));`, 'e.svelte', e);
+		expect([...e.tables]).toEqual([]);
+		expect(e.unresolved).toEqual(['e.svelte: onDbChange(t, …)']);
 	});
 
 	it('WATCHED_TABLES is a superset of every subscribed table', () => {

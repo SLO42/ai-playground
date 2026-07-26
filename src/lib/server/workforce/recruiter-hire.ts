@@ -25,6 +25,7 @@
 
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
+import { roleDisplayName } from '$lib/shared/naming';
 import { assertRecordId } from '../db/validate';
 import {
 	createDecisionBrief,
@@ -168,8 +169,10 @@ export async function buildHireDecision(db: Db, runId: string): Promise<HireDeci
 	return {
 		run: run.id,
 		role: run.role,
-		roleSlug: role?.slug ?? run.role,
-		roleName: role?.name ?? role?.slug ?? run.role,
+		// NAMING: identical output for every resolvable role; the dangling-role fallback becomes
+		// human (`probe_fit`) instead of a raw `role:` id in the operator's hire brief.
+		roleSlug: roleDisplayName({ slug: role?.slug, ref: run.role }),
+		roleName: roleDisplayName({ name: role?.name, slug: role?.slug, ref: run.role }),
 		roleVersion: run.role_version,
 		tier: run.tier,
 		recall,

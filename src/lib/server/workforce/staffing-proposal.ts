@@ -31,6 +31,7 @@
 // does not fabricate an auto-proposal for an act that needs operator authoring (F-008 honest scope).
 
 import type { Db } from '../db/client';
+import { roleDisplayName } from '$lib/shared/naming';
 import {
 	createReviewProposal,
 	getReviewProposal,
@@ -371,7 +372,11 @@ export async function loadProjectStaffingView(
 		const role = await getRole(db, s.role);
 		orphanStaffed.push({
 			role: s.role,
-			roleName: role?.name ?? s.role, // honest: fall back to the id when the role row is gone.
+			// NAMING (operator rule 2026-07-26): a raw `role:probe_fit_1781894354268` is not a name.
+			// The composer keeps `role.name` byte-identical when it exists and only IMPROVES the
+			// dangling-role fallback (humanized id, else an honest placeholder). The row is still
+			// surfaced — the operator must be able to reject an orphan (F-008: label, never hide).
+			roleName: roleDisplayName({ name: role?.name, slug: role?.slug, ref: s.role }),
 			staffedAt: s.created_at
 		});
 	}
@@ -394,7 +399,7 @@ export async function loadProjectStaffingView(
 		orphanProposals.push({
 			proposal: p.id,
 			role: p.role,
-			roleName: role?.name ?? p.role,
+			roleName: roleDisplayName({ name: role?.name, slug: role?.slug, ref: p.role }),
 			status: p.status,
 			createdAt: p.created_at
 		});

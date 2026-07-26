@@ -30,6 +30,7 @@
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
+import { roleDisplayName } from '$lib/shared/naming';
 import type { PeerStatus } from '../peer/repo';
 import type { ToKind } from '../peer/resolve';
 import type { TimelineScope } from './timeline';
@@ -160,7 +161,13 @@ function recipientLabel(row: {
 		case 'session':
 			return { to: `session ${shortId(row.to_session)}`, toKind: 'session', recipientPending: false };
 		case 'role':
-			return { to: shortId(row.to_role), toKind: 'role', recipientPending: false };
+			// NAMING (operator rule 2026-07-26): a raw `role:probe_fit_178…` tail is an id, not a
+			// name. Humanize it; an id with no human content degrades to an honest placeholder.
+			return {
+				to: roleDisplayName({ ref: row.to_role }),
+				toKind: 'role',
+				recipientPending: false
+			};
 		case 'pm':
 			// D-040 placeholder: no `session.pm` seam → no concrete recipient identity yet (honest).
 			return { to: 'pm', toKind: 'pm', recipientPending: true };

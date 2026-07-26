@@ -35,6 +35,7 @@
 
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
+import { roleDisplayName } from '$lib/shared/naming';
 import { assertRecordId } from '../db/validate';
 import { screen } from '../memory/screen';
 import { checkDeployability } from './deployability';
@@ -862,8 +863,10 @@ export async function buildProposalCard(db: Db, proposal: ReviewProposalRow): Pr
 	return {
 		proposal: proposal.id,
 		role: proposal.role,
-		roleSlug: role?.slug ?? proposal.role,
-		roleName: role?.name ?? proposal.role,
+		// NAMING: unchanged whenever the role row resolves; only the dangling-role fallback stops
+		// being a raw record id (`role:probe_fit_178…` → `probe_fit`, opaque → honest placeholder).
+		roleSlug: roleDisplayName({ slug: role?.slug, ref: proposal.role }),
+		roleName: roleDisplayName({ name: role?.name, slug: role?.slug, ref: proposal.role }),
 		kind: proposal.kind,
 		status: proposal.status,
 		incumbent: proposal.incumbent,

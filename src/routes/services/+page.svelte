@@ -39,6 +39,18 @@
   // line. null (DB down / never persisted) → an honest "unknown", never a fabricated "armed" (F-008).
   const autonomy = $derived(data.autonomyStatus);
 
+  // COMPLETION-LEDGER Wave A (m0086) — the per-subsystem BOOT-SKIP ledger on the SAME row. It
+  // answers the question the autonomy line alone cannot: "what did NOT start, and why?". Three
+  // distinct honest states, never collapsed (F-008):
+  //   • null  — NOT REPORTED (a boot before the ledger existed, or one that died before sealing it).
+  //   • []    — reported, but nothing recorded (should not happen; rendered as not-reported).
+  //   • [...] — the real outcomes; entries that are off/degraded are surfaced FIRST.
+  const subsystems = $derived(autonomy?.subsystems ?? null);
+  const subsystemsReported = $derived(!!subsystems && subsystems.length > 0);
+  const bootProblems = $derived((subsystems ?? []).filter((s) => s.severity !== 'ok'));
+  const bootHealthy = $derived((subsystems ?? []).filter((s) => s.severity === 'ok'));
+  const bootOffCount = $derived((subsystems ?? []).filter((s) => !s.started).length);
+
   const op = $derived(
     (form?.op ?? null) as
       | { name?: string; action?: string; ok?: boolean; error?: string; incidentTitle?: string }
@@ -170,6 +182,62 @@
         {/if}
       </div>
     {/if}
+
+    <!-- ── COMPLETION-LEDGER Wave A (m0086): the BOOT-SKIP ledger ────────────────────────────
+         The autonomy line above says whether the MODE is armed. It cannot say whether the engines
+         that mode depends on actually STARTED. Before this, a declined engine existed only as a
+         `console.warn` in the server terminal — so a credential-less boot rendered a calm
+         "Autonomy · Armed" while the orchestrator never started and the queue waited forever.
+         This answers "what did not start, and why", persistently and in plain language. ── -->
+    <div class="card boot-ledger" data-degraded={bootProblems.length > 0 ? 'true' : null}>
+      <div class="card-head">
+        <span class="eyebrow">boot · what started</span>
+        <h2 class="card-title">
+          {#if !subsystemsReported}
+            Subsystem boot outcomes were not reported
+          {:else if bootProblems.length === 0}
+            All {bootHealthy.length} subsystems started cleanly
+          {:else}
+            {bootProblems.length} of {subsystems!.length}
+            {bootProblems.length === 1 ? 'subsystem needs' : 'subsystems need'} attention
+          {/if}
+        </h2>
+      </div>
+
+      {#if !subsystemsReported}
+        <p class="card-body">
+          This boot recorded no per-subsystem outcomes — either it predates the boot ledger, or the
+          server stopped before the engines finished starting. That is reported as
+          <strong>unknown</strong>, not as "everything started". Restart the server to record a fresh
+          ledger.
+        </p>
+      {:else}
+        <ul class="boot-list">
+          <!-- Problems first: the operator should never have to hunt for the failure. -->
+          {#each [...bootProblems, ...bootHealthy] as sub (sub.key)}
+            <li class="boot-item" data-severity={sub.severity}>
+              <span class="boot-line">
+                <span class="dot" data-severity={sub.severity} aria-hidden="true"></span>
+                <span class="boot-label">{sub.label}</span>
+                <span class="boot-state" data-severity={sub.severity}>
+                  {#if sub.severity === 'ok'}started{:else if sub.severity === 'degraded'}degraded{:else}not started{/if}
+                </span>
+              </span>
+              {#if sub.reason}
+                <p class="boot-reason">{sub.reason}</p>
+              {/if}
+            </li>
+          {/each}
+        </ul>
+        <p class="card-body boot-foot">
+          Recorded once per boot, when the server starts (F-029 — restart to refresh).
+          {#if bootOffCount > 0}
+            Work owned by a <strong>not started</strong> subsystem will not happen until the reason
+            is fixed and the server is restarted.
+          {/if}
+        </p>
+      {/if}
+    </div>
 
     <!-- ── SD-1 budget-safety banner: an ARMED autonomous loop against an UNCAPPED token ceiling
          is the runaway-spend hole — make it LOUD, never silent (F-008). Silent when safe. ── -->
@@ -465,6 +533,89 @@
   }
   .dot[data-autonomy='unknown'] {
     background: var(--color-text-faint);
+  }
+
+  /* ── Boot-skip ledger (COMPLETION-LEDGER Wave A, m0086) ─────────────────────
+     Design-system tokens only (D-034). Colour is never the sole signal: every row
+     carries an explicit text state ("started" / "degraded" / "not started") and,
+     where it is not healthy, a full-sentence reason. */
+  .boot-ledger {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3);
+  }
+  .boot-ledger[data-degraded='true'] {
+    border-color: var(--color-warn);
+  }
+  .boot-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+  }
+  .boot-item {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    padding: var(--space-2) var(--space-3);
+    border: var(--border-width) solid var(--color-border);
+    border-radius: var(--radius-sm);
+    background: var(--color-surface-overlay);
+  }
+  .boot-item[data-severity='off'] {
+    border-color: var(--color-error);
+  }
+  .boot-item[data-severity='degraded'] {
+    border-color: var(--color-warn);
+  }
+  .boot-line {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    flex-wrap: wrap;
+  }
+  .boot-label {
+    font: var(--type-body-sm);
+    font-weight: 600;
+    color: var(--color-text);
+  }
+  .boot-state {
+    font: var(--type-label);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    padding: 0.1rem 0.5rem;
+    border-radius: var(--radius-sm);
+    color: var(--color-text-muted);
+    background: var(--color-surface);
+  }
+  .boot-state[data-severity='ok'] {
+    color: var(--color-running);
+  }
+  .boot-state[data-severity='degraded'] {
+    color: var(--color-warn);
+  }
+  .boot-state[data-severity='off'] {
+    color: var(--color-error);
+  }
+  .dot[data-severity='ok'] {
+    background: var(--color-running);
+  }
+  .dot[data-severity='degraded'] {
+    background: var(--color-warn);
+  }
+  .dot[data-severity='off'] {
+    background: var(--color-error);
+  }
+  .boot-reason {
+    font: var(--type-body-sm);
+    color: var(--color-text-2);
+    max-width: 90ch;
+  }
+  .boot-foot {
+    color: var(--color-text-muted);
   }
 
   .card-head {

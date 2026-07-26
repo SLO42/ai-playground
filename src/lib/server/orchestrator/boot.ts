@@ -68,6 +68,13 @@ export type OrchestratorBootResult =
 			/** The per-project in-flight cap actually wired into the orchestrator (concurrency.perProject). */
 			perProject?: number;
 			dailySpawnCap?: number;
+			/**
+			 * COMPLETION-LEDGER Wave A — WHY the memory recall/extract loop is OFF this boot, or
+			 * undefined when it is armed. It was previously a `console.warn` only: the orchestrator
+			 * reports 'started' while every spawn silently runs WITHOUT recall, and nothing durable
+			 * says so. Returned here so the caller records it in the m0086 boot ledger (F-008).
+			 */
+			memoryOffReason?: string;
 	  }
 	| { started: false; reason: string };
 
@@ -377,6 +384,9 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 	// a vector or a memory. The loop is best-effort (D-019) — it never blocks a spawn.
 	const memAvail = await getMemoryService(db);
 	const memory = memAvail.available ? { service: memAvail.memory, extract: memAvail.extract } : undefined;
+	// COMPLETION-LEDGER Wave A — keep the reason so it reaches the DURABLE boot ledger, not just the
+	// terminal. "Orchestrator started, memory silently off" was invisible on every surface (F-008).
+	const memoryOffReason = memAvail.available ? undefined : memAvail.reason;
 	if (!memAvail.available) {
 		console.warn(`[startup] memory loop OFF: ${memAvail.reason}`);
 	}
@@ -533,5 +543,5 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 		});
 	orchestrator.startMaintenance();
 
-	return { started: true, orchestrator, mode, maxConcurrent, perProject, dailySpawnCap };
+	return { started: true, orchestrator, mode, maxConcurrent, perProject, dailySpawnCap, memoryOffReason };
 }

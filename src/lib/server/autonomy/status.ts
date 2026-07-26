@@ -53,10 +53,76 @@ export interface AutonomyAssessment {
 	note: string | null;
 }
 
+// ── COMPLETION-LEDGER Wave A — the BOOT-SKIP ledger (m0086), an EXTENSION of SD-2 ────────────────
+//
+// SD-2 above answers "is autonomy armed?". It does NOT answer "what did not start, and why?" — that
+// lived only in `console.warn` lines in the server terminal (boot.ts / hooks.server.ts). So a
+// credential-less boot renders a calm "Autonomy · Armed" on /services while the orchestrator never
+// started and the queue silently waits forever. Same F-008 class as the SD-2 hole, one layer down.
+//
+// The fix EXTENDS the same singleton row (F-055 — one boot-status mechanism, not two): each engine's
+// boot outcome is recorded as a `SubsystemStatus` and persisted into `autonomy_status.subsystems`.
+// /services renders it directly under the autonomy line, so the page answers both questions.
+
+/** How badly a subsystem's boot outcome hurts — drives the /services tone, not just a colour. */
+export type SubsystemSeverity =
+	/** Started, doing its job. */
+	| 'ok'
+	/** Running, but a capability it normally provides is unavailable (e.g. memory recall OFF). */
+	| 'degraded'
+	/** Did not start at all — the work it owns will NOT happen this boot. */
+	| 'off';
+
+/** One engine/subsystem's boot outcome — the durable answer to "did this start, and if not why?". */
+export interface SubsystemStatus {
+	/** Stable machine key (e.g. 'orchestrator'); the render key + the join key across boots. */
+	key: string;
+	/** Operator-facing name (e.g. 'Task orchestrator'). Plain language, no internal jargon. */
+	label: string;
+	/** Did it start? */
+	started: boolean;
+	/** WHY it did not start / is degraded — verbatim from the boot path. null when fully healthy. */
+	reason: string | null;
+	/** Severity of this outcome (see SubsystemSeverity). */
+	severity: SubsystemSeverity;
+}
+
 /** The persisted/read row shape — the assessment plus the boot instant (ISO; F-013). */
 export interface AutonomyStatusRow extends AutonomyAssessment {
 	/** ISO instant this status was written at boot, or null (renders "—"). */
 	bootedAt: string | null;
+	/**
+	 * Per-subsystem boot outcomes (m0086). `null` means NOT REPORTED — a boot that predates the
+	 * ledger, or one that died before the engines finished. That is deliberately distinct from `[]`
+	 * ("reported, nothing to report"): an empty array must never be rendered as "everything started"
+	 * when in truth nothing was ever recorded (F-008).
+	 */
+	subsystems: SubsystemStatus[] | null;
+}
+
+/** Build an 'ok' subsystem entry (started, nothing to explain). */
+export function subsystemOk(key: string, label: string): SubsystemStatus {
+	return { key, label, started: true, reason: null, severity: 'ok' };
+}
+
+/**
+ * Build a NOT-STARTED subsystem entry. The reason is required and must be non-empty: a boot-skip
+ * with no reason is exactly the invisible failure this ledger exists to abolish, so an empty/blank
+ * reason is replaced with an explicit "no reason reported" marker rather than a silent null.
+ */
+export function subsystemOff(key: string, label: string, reason: string): SubsystemStatus {
+	return { key, label, started: false, reason: nonEmptyReason(reason), severity: 'off' };
+}
+
+/** Build a STARTED-BUT-DEGRADED entry (running, with a named capability unavailable). */
+export function subsystemDegraded(key: string, label: string, reason: string): SubsystemStatus {
+	return { key, label, started: true, reason: nonEmptyReason(reason), severity: 'degraded' };
+}
+
+/** Every error has a NAME: an absent/blank reason becomes an explicit marker, never a silent null. */
+function nonEmptyReason(reason: string): string {
+	const r = typeof reason === 'string' ? reason.trim() : '';
+	return r || 'no reason reported by the boot path (this is itself a defect — please report it)';
 }
 
 /** The fixed singleton record id — a CONSTANT literal (safe to inline; D-016). */
@@ -184,7 +250,11 @@ export function computeAutonomyStatus(configDir: string): AutonomyAssessment {
  * config-error's detail/config_file (omitted option fields become NONE, §6.1). Idempotent (F-015):
  * re-boot re-runs it cleanly, one honest current state. booted_at is a JS Date → SurrealDB datetime.
  */
-export async function persistAutonomyStatus(db: Db, a: AutonomyAssessment): Promise<void> {
+export async function persistAutonomyStatus(
+	db: Db,
+	a: AutonomyAssessment,
+	subsystems?: readonly SubsystemStatus[]
+): Promise<void> {
 	const content: Record<string, unknown> = {
 		state: a.state,
 		config_ok: a.configOk,
@@ -197,6 +267,21 @@ export async function persistAutonomyStatus(db: Db, a: AutonomyAssessment): Prom
 	if (a.configFile !== null) content.config_file = a.configFile;
 	if (a.detail !== null) content.detail = a.detail;
 	if (a.note !== null) content.note = a.note;
+	// m0086 — the per-engine boot-skip ledger. OMITTED when the caller has nothing to report (the
+	// PRE-engine write), so the column stays NONE and the surface reads an honest "not reported yet"
+	// rather than an empty ledger implying everything started. The POST-engine write passes the real
+	// list and, because this is UPSERT ... CONTENT, fully REPLACES the row — no stale merge, and a
+	// re-run of the boot simply overwrites (idempotent; no observable half-state).
+	if (subsystems && subsystems.length > 0) {
+		content.subsystems = subsystems.map((s) => ({
+			key: s.key,
+			label: s.label,
+			started: s.started,
+			severity: s.severity,
+			// NONE rather than null for an absent reason (option<T> discipline inside the FLEXIBLE object).
+			...(s.reason !== null ? { reason: s.reason } : {})
+		}));
+	}
 
 	await db.query(`UPSERT ${AUTONOMY_STATUS_ID} CONTENT $content;`, { content });
 }
@@ -213,6 +298,42 @@ interface RawAutonomyRow {
 	detail?: unknown;
 	note?: unknown;
 	booted_at?: unknown;
+	subsystems?: unknown;
+}
+
+/**
+ * Normalize ONE raw subsystem entry, or null when the entry is unusable. Defensive by design: this
+ * is a FLEXIBLE object column, so a row written by an older/other build can carry any shape and must
+ * never crash the /services load or invent an outcome.
+ *
+ * Shadow paths (covered by status.test.ts):
+ *   • nil            — null/undefined/non-object entry ⇒ null (dropped, not rendered as started).
+ *   • empty          — an entry with no `key` ⇒ null (nothing to render or join on).
+ *   • upstream error — a non-boolean `started` / unknown `severity` ⇒ the CONSERVATIVE reading:
+ *                      not started, severity 'off'. A malformed row must never read as healthy.
+ *   • happy          — a well-formed entry round-trips verbatim.
+ */
+function normSubsystem(raw: unknown): SubsystemStatus | null {
+	if (raw === null || typeof raw !== 'object') return null;
+	const r = raw as Record<string, unknown>;
+	const key = typeof r.key === 'string' ? r.key.trim() : '';
+	if (!key) return null;
+	const started = r.started === true;
+	const sev = r.severity;
+	const severity: SubsystemSeverity =
+		sev === 'ok' || sev === 'degraded' || sev === 'off'
+			? sev
+			: // Unknown/absent severity: infer conservatively from `started`. Never assume 'ok'.
+				started
+				? 'degraded'
+				: 'off';
+	return {
+		key,
+		label: typeof r.label === 'string' && r.label.trim() ? r.label.trim() : key,
+		started,
+		reason: r.reason == null ? null : String(r.reason),
+		severity
+	};
 }
 
 /** Coerce a SurrealDB datetime (Date | ISO string | {toISOString}) to an ISO string, else null (F-013). */
@@ -244,7 +365,12 @@ function normAutonomyStatus(row: RawAutonomyRow): AutonomyStatusRow {
 		reason: row.reason == null ? '' : String(row.reason),
 		detail: row.detail == null ? null : String(row.detail),
 		note: row.note == null ? null : String(row.note),
-		bootedAt: isoOrNull(row.booted_at)
+		bootedAt: isoOrNull(row.booted_at),
+		// m0086: absent column ⇒ null ("not reported"), which the UI renders differently from an
+		// empty ledger. A non-array value is likewise "not reported" rather than a silent [].
+		subsystems: Array.isArray(row.subsystems)
+			? row.subsystems.map(normSubsystem).filter((s): s is SubsystemStatus => s !== null)
+			: null
 	};
 }
 

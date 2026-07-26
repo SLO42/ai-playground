@@ -65,7 +65,15 @@ import {
 import { defaultMaintenanceRegistry } from '$lib/server/loops/maintenance-actions';
 import { ServicesTicker, DEFAULT_SERVICES_TICK_MS } from '$lib/server/services';
 import { recordIncident, recordNotification } from '$lib/server/services';
-import { computeAutonomyStatus, persistAutonomyStatus } from '$lib/server/autonomy';
+import {
+	computeAutonomyStatus,
+	persistAutonomyStatus,
+	subsystemOk,
+	subsystemOff,
+	subsystemDegraded,
+	type AutonomyAssessment,
+	type SubsystemStatus
+} from '$lib/server/autonomy';
 
 // Runtime env source (TASK 6.8). SvelteKit's `$env/dynamic/private` loads `.env` in
 // BOTH dev SSR (which Vite does NOT inject into `process.env`) and the prod Node
@@ -306,13 +314,19 @@ async function bootstrap(): Promise<DbInitResult> {
 		// a pure bus consumer (§2.11 — no own live query) and best-effort (a projection write
 		// never crashes the host flow), so it starts on every connected boot. A start failure
 		// must never crash the boot (D-019) — the scene feed simply stays empty (F-008 honest).
+		// Outcome captured here and appended to the boot ledger below — the projector starts BEFORE
+		// the ledger is declared (it must run as early as the bus allows), so it cannot push directly.
+		// `null` would mean this block never ran at all.
+		let sceneProjectorStarted: { ok: boolean; reason?: string } | null = null;
 		try {
 			const projector = new SceneProjector({ db, bus });
 			projector.start();
 			sceneProjectors.push(projector);
+			sceneProjectorStarted = { ok: true };
 			console.log('[startup] scene projector started — scene_event derived from live row changes (MEMORY-SCENE-SPEC §5).');
 		} catch (err) {
 			console.warn(`[startup] scene projector boot failed: ${(err as Error).message}`);
+			sceneProjectorStarted = { ok: false, reason: `boot threw: ${(err as Error).message}` };
 		}
 
 		// SD-2 (PRE-WAKE SAFETY) — persist the HONEST autonomy boot-status BEFORE the engines start,
@@ -324,8 +338,16 @@ async function bootstrap(): Promise<DbInitResult> {
 			// analytics/audit trail + the live right-tray surface, which re-invalidates /services): the
 			// degrade path is logged with HOW+WHY (which file, the raw message), not swallowed. A persist
 			// fault must never crash boot (D-019/F-014) — worst case the surface stays 'unknown' honestly.
+		// COMPLETION-LEDGER Wave A — the per-engine BOOT-SKIP ledger, collected across the engine
+		// starts below and folded into the SAME autonomy_status row at the end of boot (m0086 /
+		// F-055: ONE boot-status mechanism, EXTENDED, never a second one). A boot that dies before
+		// the final seal simply leaves the PRE-engine row (state honest, ledger 'not reported')
+		// — never a half-ledger implying engines started that did not.
+		let bootAssessment: AutonomyAssessment | null = null;
+		const bootLedger: SubsystemStatus[] = [];
 			try {
 				const status = computeAutonomyStatus(process.env.CONFIG_DIR?.trim() || 'config');
+				bootAssessment = status;
 				await persistAutonomyStatus(db, status);
 				if (status.state === 'config-error') {
 					console.warn(
@@ -367,12 +389,46 @@ async function bootstrap(): Promise<DbInitResult> {
 				console.log(
 					`[startup] orchestrator started (mode=${boot.mode}, maxConcurrent=${boot.maxConcurrent}) — task→ready auto-drives a session (D-004).`
 				);
+				bootLedger.push(subsystemOk('orchestrator', 'Task orchestrator'));
+				// The memory recall/extract loop rides ON the orchestrator, so it can be OFF while the
+				// orchestrator is up — previously a terminal-only warning (every spawn ran without recall
+				// and no surface said so). Record it as its OWN degraded entry.
+				bootLedger.push(
+					boot.memoryOffReason
+						? subsystemDegraded(
+								'memory-loop',
+								'Memory recall + extraction',
+								`${boot.memoryOffReason} — sessions run WITHOUT memory recall and nothing is extracted at session end until this is fixed and the server restarts.`
+							)
+						: subsystemOk('memory-loop', 'Memory recall + extraction')
+				);
 			} else {
 				console.warn(`[startup] orchestrator NOT started — ${boot.reason}`);
+				bootLedger.push(
+					subsystemOff(
+						'orchestrator',
+						'Task orchestrator',
+						`${boot.reason} — no task will auto-drive a session this boot; the queue waits.`
+					)
+				);
+				bootLedger.push(
+					subsystemOff(
+						'memory-loop',
+						'Memory recall + extraction',
+						'The orchestrator did not start, so the memory loop it hosts never armed.'
+					)
+				);
 			}
 		} catch (err) {
 			// A boot failure must never crash the server boot (D-019 honest degrade).
 			console.warn(`[startup] orchestrator boot failed: ${(err as Error).message}`);
+			bootLedger.push(
+				subsystemOff(
+					'orchestrator',
+					'Task orchestrator',
+					`boot threw: ${(err as Error).message} — no task will auto-drive a session this boot.`
+				)
+			);
 		}
 
 		// PMA — the CONTINUOUS AUTONOMOUS LOOP, AFTER the orchestrator so a re-tick's promoted task→ready
@@ -401,12 +457,27 @@ async function bootstrap(): Promise<DbInitResult> {
 			});
 			if (loopBoot.started) {
 				autonomousLoops.push(loopBoot.loop);
+				bootLedger.push(subsystemOk('autonomous-loop', 'Autonomous PM loop'));
 				console.log('[startup] autonomous PM loop started — an ARMED PM re-ticks toward the DoD; at DoD it auto-publishes ONLY with recorded consent + a GREEN release-readiness gate, else HALTS at the publish gate (PMA, D-037 consented override / D-039 untouched).');
 			} else {
 				console.warn(`[startup] autonomous PM loop NOT started — ${loopBoot.reason}`);
+				bootLedger.push(
+					subsystemOff(
+						'autonomous-loop',
+						'Autonomous PM loop',
+						`${loopBoot.reason} — an armed PM will NOT re-tick toward its DoD on its own this boot.`
+					)
+				);
 			}
 		} catch (err) {
 			console.warn(`[startup] autonomous PM loop boot failed: ${(err as Error).message}`);
+			bootLedger.push(
+				subsystemOff(
+					'autonomous-loop',
+					'Autonomous PM loop',
+					`boot threw: ${(err as Error).message} — an armed PM will NOT re-tick on its own this boot.`
+				)
+			);
 		}
 
 		// TASK 16.2 — the PM trigger engine (PM-SPEC §3), AFTER the watchers so the bus
@@ -446,11 +517,33 @@ async function bootstrap(): Promise<DbInitResult> {
 			engine.start();
 			pmTriggerEngines.push(engine);
 			setActivePmTriggerEngine(engine);
+			bootLedger.push(
+				mode === 'manual'
+					? subsystemDegraded(
+							'pm-triggers',
+							'PM trigger engine',
+							'Orchestration mode is MANUAL, so the engine subscribes to nothing — a failing session will not raise a PM review by itself (as configured, D-004).'
+						)
+					: failureThreshold === null
+						? subsystemDegraded(
+								'pm-triggers',
+								'PM trigger engine',
+								'Started, but the failure trigger is UNARMED — workforce.yaml yielded no failure_threshold, so repeated failures raise no PM review.'
+							)
+							: subsystemOk('pm-triggers', 'PM trigger engine')
+			);
 			console.log(
 				`[startup] pm trigger engine started (mode=${mode}, failure_threshold=${failureThreshold ?? 'unarmed'}, distress_cooldown=${distressCooldownMs !== null ? `${Math.round(distressCooldownMs / 60_000)}m` : 'none'}, drift=${driftConfig && mode !== 'manual' ? 'armed' : 'unarmed'}) — PM-SPEC §3 + WORKFORCE-SPEC §5 (D-004).`
 			);
 		} catch (err) {
 			console.warn(`[startup] pm trigger engine boot failed: ${(err as Error).message}`);
+			bootLedger.push(
+				subsystemOff(
+					'pm-triggers',
+					'PM trigger engine',
+					`boot threw: ${(err as Error).message} — failing sessions and drift will not raise a PM review this boot.`
+				)
+			);
 		}
 
 		// SELF-MAINTENANCE LOOPS (m0080; LOOP-ENGINEERING) — the manifest-driven MaintenanceLoopEngine,
@@ -473,11 +566,27 @@ async function bootstrap(): Promise<DbInitResult> {
 			engine.start();
 			maintenanceEngines.push(engine);
 			setActiveMaintenanceEngine(engine);
+			bootLedger.push(
+				mode === 'manual'
+					? subsystemDegraded(
+							'maintenance-loops',
+							'Self-maintenance loops',
+							'Orchestration mode is MANUAL, so no cadence timer is armed — declared loops stay inert until an operator runs them (as configured, D-004).'
+						)
+					: subsystemOk('maintenance-loops', 'Self-maintenance loops')
+			);
 			console.log(
 				`[startup] maintenance loop engine started (mode=${mode}${created ? `, declared ${created} loop(s)` : ''}) — manifest-driven, readiness-gated, propose-only (m0080).`
 			);
 		} catch (err) {
 			console.warn(`[startup] maintenance loop engine boot failed: ${(err as Error).message}`);
+			bootLedger.push(
+				subsystemOff(
+					'maintenance-loops',
+					'Self-maintenance loops',
+					`boot threw: ${(err as Error).message} — no maintenance loop will fire this boot.`
+				)
+			);
 		}
 
 		// SVC-1 (SERVICES-SPEC §3 / D-004 additive note, DECISIONS.md 7ca9145) — arm the
@@ -502,11 +611,27 @@ async function bootstrap(): Promise<DbInitResult> {
 			const ticker = new ServicesTicker({ db, tickMs });
 			ticker.start();
 			servicesTickers.push(ticker);
+			bootLedger.push(
+				ticker.periodicArmed
+					? subsystemOk('services-ticker', 'Service supervision')
+					: subsystemDegraded(
+							'services-ticker',
+							'Service supervision',
+							'services.tickMs is 0, so the supervision backstop is OFF — a crashed desired-up service stays down until someone loads a page (as configured, D-004).'
+						)
+			);
 			console.log(
 				`[startup] services ticker ${ticker.periodicArmed ? `armed (tickMs=${tickMs})` : 'OFF (tickMs=0)'} — bounded unref'd supervision backstop (SVC-1/D-004).`
 			);
 		} catch (err) {
 			console.warn(`[startup] services ticker boot failed: ${(err as Error).message}`);
+			bootLedger.push(
+				subsystemOff(
+					'services-ticker',
+					'Service supervision',
+					`boot threw: ${(err as Error).message} — a crashed managed service will not be auto-restarted this boot.`
+				)
+			);
 		}
 
 		// TASK 16.6 — the §4.2 gauntlet SENTINEL SWEEP, once per connected boot (the
@@ -524,6 +649,41 @@ async function bootstrap(): Promise<DbInitResult> {
 			}
 		} catch (err) {
 			console.warn(`[startup] gauntlet sentinel sweep failed: ${(err as Error).message}`);
+		}
+
+		// COMPLETION-LEDGER Wave A — SEAL the boot-skip ledger onto the SAME autonomy_status row
+		// (m0086). Every engine above recorded its outcome; this ONE write makes "what did not
+		// start, and why" durable and visible on /services instead of terminal-only (F-008).
+		//
+		// It re-writes the singleton with UPSERT ... CONTENT using the SAME assessment the pre-engine
+		// write used, so the row is never half-updated and a re-run of boot simply overwrites it
+		// (idempotent — no observable half-state).
+		//
+		// Best-effort (D-019/F-014): a persist fault must never crash boot. Worst case the row keeps
+		// its pre-engine content and the surface honestly reads 'not reported'.
+		if (bootAssessment && bootLedger.length > 0) {
+			try {
+				if (sceneProjectorStarted) {
+					bootLedger.unshift(
+						sceneProjectorStarted.ok
+							? subsystemOk('scene-projector', 'Live activity scene')
+							: subsystemOff(
+									'scene-projector',
+									'Live activity scene',
+									`${sceneProjectorStarted.reason ?? 'unknown fault'} — the living-brain scene feed stays empty this boot.`
+								)
+					);
+				}
+				await persistAutonomyStatus(db, bootAssessment, bootLedger);
+				const notStarted = bootLedger.filter((sub) => !sub.started);
+				console.log(
+					`[startup] boot ledger persisted — ${bootLedger.length} subsystem(s), ${notStarted.length} did NOT start${notStarted.length ? ` (${notStarted.map((sub) => sub.key).join(', ')})` : ''}. Visible on /services (m0086).`
+				);
+			} catch (err) {
+				console.warn(
+					`[startup] boot ledger persist failed (autonomy state stays honest; the per-subsystem ledger reads 'not reported'): ${(err as Error).message}`
+				);
+			}
 		}
 	}
 	return result;

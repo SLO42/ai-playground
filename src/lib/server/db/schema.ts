@@ -3059,6 +3059,40 @@ const m0085_thinking_ledger: Migration = {
 	`
 };
 
+// m0086 — COMPLETION-LEDGER Wave A — the BOOT-SKIP ledger on the EXISTING autonomy_status row.
+//
+// THE GAP THIS CLOSES: when a boot engine declines to start, the reason existed ONLY as a
+// `console.warn` in the server terminal — "[startup] orchestrator NOT started — <reason>",
+// "[startup] autonomous PM loop NOT started — <reason>", "[startup] memory loop OFF: <reason>".
+// Nothing durable, nothing on a page. The operator opens /services, sees "Autonomy · Armed", and
+// has no way to learn that the orchestrator never actually started because the Claude credential
+// was absent. That is the SD-2 silent-disarm hole one layer down: the MODE is armed, but a
+// subsystem the mode depends on is dead, and the surface says nothing.
+//
+// DELIBERATELY NOT A SECOND MECHANISM (F-055). SD-2 (m0082) already owns the persisted, honest,
+// once-per-boot autonomy surface on /services. This EXTENDS that singleton row with one additive
+// field rather than introducing a parallel boot-status table with its own writer, reader and drift:
+//
+//   • subsystems — an array of per-engine boot outcomes, each a FLEXIBLE object:
+//       { key, label, started (bool), reason (string|NONE), severity ('ok'|'degraded'|'off') }
+//     Written by the SAME persist path (autonomy/status.ts), read by the SAME /services loader.
+//
+// FLEXIBLE is REQUIRED (the m0016/m0017 lesson): on a SCHEMAFULL table a plain `TYPE array<object>`
+// silently DISCARDS every nested key on write, so the surface would render a row of empty objects —
+// a green-looking, information-free lie. `array<object>` with FLEXIBLE preserves the payload.
+//
+// The field is OPTIONAL so a row persisted by a PRIOR boot (pre-m0086) still validates and reads as
+// an honest "not reported" rather than an empty ledger claiming everything started. ADDITIVE +
+// idempotent (F-015: OVERWRITE-only; the generic schemaMigrations apply-twice + half-applied sweep in
+// migrate.test.ts covers both paths). The row is still UPSERTed at the fixed id, so a re-boot fully
+// replaces the prior boot's ledger — one honest current state, never a stale merge.
+const m0086_boot_skip_ledger: Migration = {
+	id: '0086_boot_skip_ledger',
+	up: `
+		DEFINE FIELD OVERWRITE subsystems ON autonomy_status FLEXIBLE TYPE option<array<object>>;
+	`
+};
+
 // ── §4.12 note (BL-R3 — F-048 structural fix + F-026) — active-window dedup is the PRIMARY id ──
 //
 // NO new migration ships for BL-R3. The task_run active-window dedup ("one pending-or-processing
@@ -3171,5 +3205,6 @@ export const schemaMigrations: Migration[] = [
 	m0082_autonomy_status,
 	m0083_workforce_hire_events,
 	m0084_drain_ledger,
-	m0085_thinking_ledger
+	m0085_thinking_ledger,
+	m0086_boot_skip_ledger
 ];

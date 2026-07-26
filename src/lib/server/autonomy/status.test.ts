@@ -17,6 +17,9 @@ import {
 	computeAutonomyStatus,
 	persistAutonomyStatus,
 	readAutonomyStatus,
+	subsystemOk,
+	subsystemOff,
+	subsystemDegraded,
 	type AutonomyAssessment
 } from './status';
 
@@ -276,5 +279,119 @@ describe('persist + read (REAL SurrealDB)', () => {
 		const row = await readAutonomyStatus(db);
 		expect(row!.workforceOk).toBe(false);
 		expect(row!.note).toMatch(/workforce/i);
+	});
+
+	// ── COMPLETION-LEDGER Wave A (m0086) — the BOOT-SKIP ledger on the SAME row ────────────────
+	//
+	// FLEXIBLE is the whole point of the migration: on a SCHEMAFULL table a plain
+	// `TYPE array<object>` silently DISCARDS every nested key on write, so /services would render
+	// a row of EMPTY objects — a green-looking, information-free lie. Only a real SurrealDB proves
+	// the payload survives the round-trip; a stubDb test would pass green while this is broken.
+	describe('boot-skip ledger (m0086)', () => {
+		const ARMED: AutonomyAssessment = {
+			state: 'armed',
+			mode: 'event',
+			configOk: true,
+			workforceOk: true,
+			configFile: null,
+			reason: 'Autonomy is ARMED (event mode) — engines drive automatically per config.',
+			detail: null,
+			note: null
+		};
+
+		it('nil: a status persisted with NO ledger reads back as "not reported", never []', async () => {
+			await persistAutonomyStatus(db, ARMED);
+			const row = await readAutonomyStatus(db);
+			// Distinct from an empty array — the UI must be able to say "unknown", not "all started".
+			expect(row!.subsystems).toBeNull();
+		});
+
+		it('empty: an EMPTY ledger is likewise omitted (nothing to claim ⇒ nothing claimed)', async () => {
+			await persistAutonomyStatus(db, ARMED, []);
+			expect((await readAutonomyStatus(db))!.subsystems).toBeNull();
+		});
+
+		it('happy: every nested key survives the FLEXIBLE round-trip (the m0016/m0017 trap)', async () => {
+			await persistAutonomyStatus(db, ARMED, [
+				subsystemOk('orchestrator', 'Task orchestrator'),
+				subsystemOff('autonomous-loop', 'Autonomous PM loop', 'no Claude credential at boot'),
+				subsystemDegraded('memory-loop', 'Memory recall + extraction', 'Ollama embeddings unreachable')
+			]);
+			const subs = (await readAutonomyStatus(db))!.subsystems!;
+			expect(subs).toHaveLength(3);
+
+			const orch = subs.find((s) => s.key === 'orchestrator')!;
+			expect(orch).toEqual({
+				key: 'orchestrator',
+				label: 'Task orchestrator',
+				started: true,
+				reason: null,
+				severity: 'ok'
+			});
+
+			const loop = subs.find((s) => s.key === 'autonomous-loop')!;
+			expect(loop.started).toBe(false);
+			expect(loop.severity).toBe('off');
+			expect(loop.reason).toContain('no Claude credential');
+
+			const mem = subs.find((s) => s.key === 'memory-loop')!;
+			expect(mem.started).toBe(true); // running, but a capability is unavailable
+			expect(mem.severity).toBe('degraded');
+			expect(mem.reason).toContain('Ollama');
+		});
+
+		it('a boot-skip with a BLANK reason still names something (never a silent null)', async () => {
+			await persistAutonomyStatus(db, ARMED, [subsystemOff('x', 'X engine', '   ')]);
+			const sub = (await readAutonomyStatus(db))!.subsystems![0];
+			expect(sub.reason).toBeTruthy();
+			expect(sub.reason).toContain('no reason reported');
+		});
+
+		it('re-boot REPLACES the ledger rather than accumulating (UPSERT CONTENT, idempotent)', async () => {
+			await persistAutonomyStatus(db, ARMED, [subsystemOff('orchestrator', 'Task orchestrator', 'no credential')]);
+			await persistAutonomyStatus(db, ARMED, [subsystemOk('orchestrator', 'Task orchestrator')]);
+			const subs = (await readAutonomyStatus(db))!.subsystems!;
+			expect(subs).toHaveLength(1);
+			expect(subs[0].started).toBe(true);
+			const [rows] = await db.query<[unknown[]]>('SELECT * FROM autonomy_status;');
+			expect(rows.length).toBe(1);
+		});
+
+		it('upstream error: a MALFORMED persisted entry never reads back as healthy', async () => {
+			// Simulate a row written by another/older build: junk entries + an unknown severity.
+			// (A NON-OBJECT element is rejected by the m0086 `array<object>` ASSERT itself — verified
+			// separately below — so the storable malformed shapes are what this seed covers.)
+			await db.query(
+				`UPSERT autonomy_status:current CONTENT {
+					state: "armed", config_ok: true, workforce_ok: true,
+					reason: "armed", booted_at: time::now(),
+					subsystems: [
+						{ key: "good", label: "Good", started: true, severity: "ok" },
+						{ key: "weird", started: "yes", severity: "banana" },
+						{ label: "no key at all", started: true, severity: "ok" }
+					]
+				};`
+			);
+			const subs = (await readAutonomyStatus(db))!.subsystems!;
+			// The key-less entry and the non-object are DROPPED (nothing to render or join on).
+			expect(subs.map((s) => s.key)).toEqual(['good', 'weird']);
+			// `started: "yes"` is not a boolean ⇒ conservative reading: not started, severity 'off'.
+			const weird = subs.find((s) => s.key === 'weird')!;
+			expect(weird.started).toBe(false);
+			expect(weird.severity).toBe('off');
+			expect(weird.label).toBe('weird'); // falls back to the key rather than rendering blank
+		});
+
+		it('the m0086 array<object> ASSERT itself rejects a non-object entry (defence in depth)', async () => {
+			await expect(
+				db.query(
+					`UPSERT autonomy_status:current CONTENT {
+						state: "armed", config_ok: true, workforce_ok: true,
+						reason: "armed", booted_at: time::now(),
+						subsystems: ["not-an-object"]
+					};`
+				)
+			).rejects.toThrow(/array<object>/);
+		});
 	});
 });

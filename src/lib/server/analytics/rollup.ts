@@ -12,9 +12,17 @@
 // while the windowing LIMIT keeps the scan bounded.
 
 import type { Db } from '../db/client';
+import {
+	accumulateSpendProvenance,
+	newSpendProvenanceAccumulator,
+	sealSpendProvenance,
+	sumSpendProvenance,
+	type SpendProvenance,
+	type SpendProvenanceAccumulator
+} from './spend-provenance';
 
 /** One day's agent-activity rollup (all figures from real rows; F-008). */
-export interface DailyRollup {
+export interface DailyRollup extends SpendProvenance {
 	/** ISO date (YYYY-MM-DD), UTC. */
 	day: string;
 	/** Count of spawn events that day (runs started). */
@@ -29,11 +37,31 @@ export interface DailyRollup {
 	tokensIn: number;
 	/** Σ tokens_out. */
 	tokensOut: number;
-	/** Σ cost_usd across rows that carried a PRICED cost; null when none were priced. */
+	/**
+	 * Σ cost_usd across rows that carried a PRICED cost; null when none were priced.
+	 * NOTE: this is the FULL total over the rows that HAD a price — it can be dishonest in two
+	 * independent ways, and the inherited {@link SpendProvenance} legs disclose both: it may include
+	 * ESTIMATED dollars (`spendEstimatedUsd`/`estimatedRowCount`, DS-2), and it silently OMITS
+	 * metered rows whose model resolved no price (`unpricedRowCount`), which makes it a FLOOR rather
+	 * than the cost of the runs shown. Neither may be presented as a measurement (F-008).
+	 */
 	costUsd: number | null;
 	/** Mean duration_ms across completion rows that reported one; null when none did. */
 	avgDurationMs: number | null;
-	/** error / (completions + errors) — the day's failure rate in [0,1]; null when no terminal rows. */
+	/** Median (p50) duration_ms across rows that reported one; null when none did. */
+	p50DurationMs: number | null;
+	/** p95 duration_ms across rows that reported one; null when none did (the tail, not the mean). */
+	p95DurationMs: number | null;
+	/** error / (completions + errors) — the day's failure rate in [0,1]; null when no terminal rows.
+	 *  This denominator is SOUND: both legs are terminal events, so the ratio is bounded by [0,1].
+	 *
+	 *  NOT SHIPPED, deliberately: a "completion rate" (completions / spawns). Live data proved the
+	 *  denominator unsound — a run SPAWNED on day A completes on day B, so a day's completions are
+	 *  not bounded by that day's spawns and the ratio rendered 1175%. A >100% "rate" is the same
+	 *  dishonest-denominator defect this wave exists to remove, so the raw `completions` COUNT is
+	 *  reported and no rate is derived from it. A sound version needs spawn→completion PAIRING
+	 *  (cohort by the spawn's day, via parent_event_id / session), which is a real piece of work,
+	 *  not a free column. */
 	errorRate: number | null;
 }
 
@@ -54,8 +82,9 @@ export interface ReportSummary {
 	days: DailyRollup[];
 	/** Anomalies detected across the window. */
 	anomalies: Anomaly[];
-	/** Window totals (sum across days). */
-	totals: {
+	/** Window totals (sum across days) — `costUsd` is the summed total; the inherited provenance
+	 *  legs disclose the ESTIMATED share and the PRICED coverage behind it (F-008). */
+	totals: SpendProvenance & {
 		spawns: number;
 		completions: number;
 		errors: number;
@@ -74,6 +103,8 @@ interface RawEvent {
 	tokens_out?: number | null;
 	cost_usd?: number | null;
 	duration_ms?: number | null;
+	/** FLEXIBLE provenance object — read ONLY through isEstimatedRow (analytics/estimated.ts). */
+	detail?: unknown;
 }
 
 /** UTC YYYY-MM-DD for a row's `at` (SurrealDB returns an ISO string or Date). */
@@ -93,8 +124,26 @@ function emptyRollup(day: string): DailyRollup {
 		tokensOut: 0,
 		costUsd: null,
 		avgDurationMs: null,
-		errorRate: null
+		p50DurationMs: null,
+		p95DurationMs: null,
+		errorRate: null,
+		spendEstimatedUsd: null,
+		estimatedRowCount: 0,
+		pricedRowCount: 0,
+		unpricedRowCount: 0
 	};
+}
+
+/**
+ * The q-th percentile of a duration sample by nearest-rank on the SORTED array (no interpolation —
+ * the reported value is always a duration that really happened). Returns null for an empty sample:
+ * a percentile of nothing is not 0 (F-008). `q` is clamped to [0,1]. Pure.
+ */
+export function percentileMs(sorted: readonly number[], q: number): number | null {
+	if (sorted.length === 0) return null;
+	const qq = Math.min(1, Math.max(0, q));
+	const idx = Math.min(sorted.length - 1, Math.max(0, Math.ceil(qq * sorted.length) - 1));
+	return Math.round(sorted[idx]);
 }
 
 /**
@@ -104,8 +153,11 @@ function emptyRollup(day: string): DailyRollup {
  */
 export function foldDaily(events: RawEvent[]): DailyRollup[] {
 	const byDay = new Map<string, DailyRollup>();
-	// duration accumulators kept aside (DailyRollup only exposes the mean).
-	const durAccum = new Map<string, { sum: number; n: number }>();
+	// Duration SAMPLES kept aside (DailyRollup exposes mean + p50 + p95; the raw array never leaves).
+	// Retaining the array instead of a running sum/count is what makes the percentiles free.
+	const durSamples = new Map<string, number[]>();
+	// The spend-provenance split (estimated share + priced coverage), per day, beside the total.
+	const provAccum = new Map<string, SpendProvenanceAccumulator>();
 
 	for (const ev of events) {
 		const key = dayKey(ev.at);
@@ -114,6 +166,14 @@ export function foldDaily(events: RawEvent[]): DailyRollup[] {
 			r = emptyRollup(key);
 			byDay.set(key, r);
 		}
+		let prov = provAccum.get(key);
+		if (!prov) {
+			prov = newSpendProvenanceAccumulator();
+			provAccum.set(key, prov);
+		}
+		// Read the row's spend provenance BEFORE the totals fold, so an estimated/unpriced row lands
+		// in both the total AND the disclosure leg (never one without the other).
+		accumulateSpendProvenance(prov, ev);
 		switch (ev.type) {
 			case 'spawn':
 				r.spawns++;
@@ -133,19 +193,22 @@ export function foldDaily(events: RawEvent[]): DailyRollup[] {
 		if (typeof ev.cost_usd === 'number') {
 			r.costUsd = (r.costUsd ?? 0) + ev.cost_usd; // stays null until a PRICED row appears
 		}
-		if (typeof ev.duration_ms === 'number') {
-			const a = durAccum.get(key) ?? { sum: 0, n: 0 };
-			a.sum += ev.duration_ms;
-			a.n++;
-			durAccum.set(key, a);
+		if (typeof ev.duration_ms === 'number' && Number.isFinite(ev.duration_ms)) {
+			const a = durSamples.get(key) ?? [];
+			a.push(ev.duration_ms);
+			durSamples.set(key, a);
 		}
 	}
 
 	for (const [key, r] of byDay) {
-		const a = durAccum.get(key);
-		r.avgDurationMs = a && a.n > 0 ? Math.round(a.sum / a.n) : null;
+		const sample = (durSamples.get(key) ?? []).slice().sort((a, b) => a - b);
+		r.avgDurationMs = sample.length > 0 ? Math.round(sample.reduce((s, x) => s + x, 0) / sample.length) : null;
+		r.p50DurationMs = percentileMs(sample, 0.5);
+		r.p95DurationMs = percentileMs(sample, 0.95);
 		const terminal = r.completions + r.errors;
 		r.errorRate = terminal > 0 ? r.errors / terminal : null;
+		const prov = provAccum.get(key);
+		if (prov) Object.assign(r, sealSpendProvenance(prov));
 	}
 
 	return [...byDay.values()].sort((x, y) => x.day.localeCompare(y.day));
@@ -248,7 +311,10 @@ function sumTotals(days: DailyRollup[]): ReportSummary['totals'] {
 		t.tokensOut += d.tokensOut;
 		if (d.costUsd != null) t.costUsd = (t.costUsd ?? 0) + d.costUsd;
 	}
-	return t;
+	// The provenance legs sum the SAME way the total does (the dollar leg stays null until a priced
+	// estimated row lands), so the window headline can disclose both "X of this total is estimated"
+	// AND "only N of M metered runs are priced" (F-008).
+	return { ...t, ...sumSpendProvenance(days) };
 }
 
 export interface RollupOptions {
@@ -280,8 +346,11 @@ export async function buildReportSummary(db: Db, opts: RollupOptions = {}): Prom
 		where += ` AND project = $pid`;
 	}
 
+	// F-020: `at` (the ORDER BY idiom) is in the projection. `detail` carries the DS-2 spend
+	// provenance (`detail.estimated`) the estimated-vs-measured disclosure leg is folded from —
+	// without it every aggregate silently reports guesswork as measurement.
 	const [rows] = await db.query<[RawEvent[]]>(
-		`SELECT type, at, tokens_in, tokens_out, cost_usd, duration_ms
+		`SELECT type, at, tokens_in, tokens_out, cost_usd, duration_ms, detail
 		   FROM agent_event WHERE ${where} ORDER BY at ASC LIMIT $lim;`,
 		params
 	);
@@ -292,11 +361,26 @@ export async function buildReportSummary(db: Db, opts: RollupOptions = {}): Prom
 
 // ── Per-tier usage (for /agents — tier-centric LENS, UI-SPEC §198) ────────────────
 
-/** Usage rolled up per tier from real agent_event rows (F-008). */
-export interface TierUsage {
+/**
+ * Usage rolled up per tier from real agent_event rows (F-008).
+ *
+ * `costUsd` is Σ over the rows that RESOLVED a price — which is NOT the same as the cost of the runs
+ * shown. The inherited {@link SpendProvenance} legs are what make the difference visible: how much of
+ * the figure is ESTIMATED, and how many of the metered runs actually carry a price. This card is
+ * where the dishonesty was worst — an opus bucket of 18 rows with 2 priced rendered a confident
+ * "$0.00" next to "9 runs / 20.2k tok", which reads as "opus cost nothing". It did not.
+ */
+export interface TierUsage extends SpendProvenance {
 	tier: string;
 	provider: string;
+	/** The DISTINCT model ids that ran in this bucket, sorted. Ends the 'unknown'-tier opacity: a
+	 *  bucket whose tier is unset still names the models behind it. Empty ⇒ no row carried a model. */
+	models: string[];
 	runs: number;
+	/** Completion events in the bucket (the terminal counterpart of `runs`). A COUNT, not a rate:
+	 *  a spawn in this bucket may complete in another window, so completions/runs is not bounded by
+	 *  [0,1] and is deliberately NOT derived (see the DailyRollup.errorRate note). */
+	completions: number;
 	tokensIn: number;
 	tokensOut: number;
 	costUsd: number | null;
@@ -306,11 +390,14 @@ export interface TierUsage {
 interface RawTierRow {
 	tier?: string | null;
 	provider?: string | null;
+	model_id?: string | null;
 	tokens_in?: number | null;
 	tokens_out?: number | null;
 	cost_usd?: number | null;
 	duration_ms?: number | null;
 	type?: string;
+	/** FLEXIBLE provenance object — read ONLY through the spend-provenance module. */
+	detail?: unknown;
 }
 
 /**
@@ -321,14 +408,22 @@ interface RawTierRow {
 export async function buildTierUsage(db: Db, opts: RollupOptions = {}): Promise<TierUsage[]> {
 	const windowDays = opts.windowDays ?? 30;
 	const since = new Date(Date.now() - windowDays * 24 * 60 * 60 * 1000);
+	// `detail` carries the DS-2 estimate provenance; `model.model_id` names the concrete model behind
+	// each bucket (an 'unknown' tier used to be a dead end — now the model ids explain it). F-020 is
+	// satisfied trivially here: this query has no ORDER BY / GROUP BY (the fold + sort happen in JS).
 	const [rows] = await db.query<[RawTierRow[]]>(
-		`SELECT model.tier AS tier, model.provider AS provider,
-		        tokens_in, tokens_out, cost_usd, duration_ms, type
+		`SELECT model.tier AS tier, model.provider AS provider, model.model_id AS model_id,
+		        tokens_in, tokens_out, cost_usd, duration_ms, type, detail
 		   FROM agent_event WHERE at >= $since AND type IN ["spawn","completion"] LIMIT 50000;`,
 		{ since }
 	);
 
-	const byKey = new Map<string, TierUsage & { _durSum: number; _durN: number }>();
+	type TierAcc = TierUsage & {
+		_durSum: number;
+		_durN: number;
+		_models: Set<string>;
+	} & SpendProvenanceAccumulator;
+	const byKey = new Map<string, TierAcc>();
 	for (const r of rows ?? []) {
 		const tier = (r.tier as string) || 'unknown';
 		const provider = (r.provider as string) || 'unknown';
@@ -338,21 +433,32 @@ export async function buildTierUsage(db: Db, opts: RollupOptions = {}): Promise<
 			u = {
 				tier,
 				provider,
+				models: [],
 				runs: 0,
+				completions: 0,
 				tokensIn: 0,
 				tokensOut: 0,
 				costUsd: null,
 				avgDurationMs: null,
+				spendEstimatedUsd: null,
+				estimatedRowCount: 0,
+				pricedRowCount: 0,
+				unpricedRowCount: 0,
 				_durSum: 0,
-				_durN: 0
+				_durN: 0,
+				_models: new Set<string>(),
+				...newSpendProvenanceAccumulator()
 			};
 			byKey.set(key, u);
 		}
 		// Count one run per spawn (the lifecycle start); completions carry the totals.
 		if (r.type === 'spawn') u.runs++;
+		else if (r.type === 'completion') u.completions++;
+		if (typeof r.model_id === 'string' && r.model_id.trim()) u._models.add(r.model_id.trim());
 		if (typeof r.tokens_in === 'number') u.tokensIn += r.tokens_in;
 		if (typeof r.tokens_out === 'number') u.tokensOut += r.tokens_out;
 		if (typeof r.cost_usd === 'number') u.costUsd = (u.costUsd ?? 0) + r.cost_usd;
+		accumulateSpendProvenance(u, r);
 		if (typeof r.duration_ms === 'number') {
 			u._durSum += r.duration_ms;
 			u._durN++;
@@ -360,9 +466,11 @@ export async function buildTierUsage(db: Db, opts: RollupOptions = {}): Promise<
 	}
 
 	return [...byKey.values()]
-		.map(({ _durSum, _durN, ...u }) => ({
+		.map(({ _durSum, _durN, _models, _estUsd, _estPriced, _estRows, _priced, _unpriced, ...u }) => ({
 			...u,
-			avgDurationMs: _durN > 0 ? Math.round(_durSum / _durN) : null
+			models: [..._models].sort(),
+			avgDurationMs: _durN > 0 ? Math.round(_durSum / _durN) : null,
+			...sealSpendProvenance({ _estUsd, _estPriced, _estRows, _priced, _unpriced })
 		}))
 		.sort((a, b) => b.runs - a.runs);
 }
@@ -379,12 +487,18 @@ export async function buildTierUsage(db: Db, opts: RollupOptions = {}): Promise<
 // same day bucket the daily rollup uses, so the ticker and /reports agree.
 
 /** The live shell counters (all from real rows; null ⇒ render "—", never a fake number). */
-export interface ShellMetrics {
+export interface ShellMetrics extends SpendProvenance {
 	/** Sessions with status='running' right now (live agent count). */
 	runningAgents: number;
 	/** Σ (tokens_in + tokens_out) across today's agent_event rows. */
 	tokensToday: number;
-	/** Σ cost_usd across today's PRICED rows; null when none were priced (never a fake $0). */
+	/**
+	 * Σ cost_usd across today's PRICED rows; null when none were priced (never a fake $0).
+	 * The inherited {@link SpendProvenance} legs disclose the two ways this figure can mislead — the
+	 * ESTIMATED portion (derived, not provider-reported) and the UNPRICED metered rows it omits — so
+	 * the always-on ticker can flag a partly-derived / partly-priced day instead of presenting it as
+	 * a measurement (F-008).
+	 */
 	costToday: number | null;
 }
 
@@ -402,7 +516,7 @@ export async function buildShellMetrics(db: Db): Promise<ShellMetrics> {
 
 	const [running, todays] = await db.query<[Array<{ c: number }>, RawEvent[]]>(
 		`SELECT count() AS c FROM session WHERE status = 'running' GROUP ALL;
-		 SELECT type, at, tokens_in, tokens_out, cost_usd FROM agent_event
+		 SELECT type, at, tokens_in, tokens_out, cost_usd, detail FROM agent_event
 		   WHERE at >= $since LIMIT 50000;`,
 		{ since: startOfDay }
 	);
@@ -411,11 +525,13 @@ export async function buildShellMetrics(db: Db): Promise<ShellMetrics> {
 
 	let tokensToday = 0;
 	let costToday: number | null = null;
+	const prov = newSpendProvenanceAccumulator();
 	for (const ev of todays ?? []) {
 		if (typeof ev.tokens_in === 'number') tokensToday += ev.tokens_in;
 		if (typeof ev.tokens_out === 'number') tokensToday += ev.tokens_out;
 		if (typeof ev.cost_usd === 'number') costToday = (costToday ?? 0) + ev.cost_usd;
+		accumulateSpendProvenance(prov, ev);
 	}
 
-	return { runningAgents, tokensToday, costToday };
+	return { runningAgents, tokensToday, costToday, ...sealSpendProvenance(prov) };
 }

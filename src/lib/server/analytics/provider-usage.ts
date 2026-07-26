@@ -14,9 +14,16 @@
 // attributing it per-provider needs a session→provider join — surfaced honestly, not half-built.
 
 import type { Db } from '../db/client';
+import {
+	accumulateSpendProvenance,
+	newSpendProvenanceAccumulator,
+	sealSpendProvenance,
+	type SpendProvenance,
+	type SpendProvenanceAccumulator
+} from './spend-provenance';
 
 /** One provider's objective usage rollup (all figures from real agent_event rows; F-008). */
-export interface ProviderUsage {
+export interface ProviderUsage extends SpendProvenance {
 	/** The model provider (e.g. 'ollama' = local/free, 'claude' = cloud). 'unknown' when unset. */
 	provider: string;
 	/** Distinct sessions that ran at this provider in the window. */
@@ -31,7 +38,14 @@ export interface ProviderUsage {
 	tokensIn: number;
 	/** Σ tokens_out. */
 	tokensOut: number;
-	/** Σ cost_usd across PRICED rows; null when none were priced (local is free ⇒ typically null/0). */
+	/**
+	 * Σ cost_usd across PRICED rows; null when none were priced (local is free ⇒ typically null/0).
+	 * The inherited SpendProvenance legs disclose the two ways this can mislead: how much of it is
+	 * DERIVED rather than provider-reported (`spendEstimatedUsd`), and how many metered runs resolved
+	 * no price at all (`unpricedRowCount`). Comparing a cloud provider's cost against free local is
+	 * only honest if the operator can see BOTH — an under-priced cloud bucket makes local look worse
+	 * than it is, and a $0 cloud bucket is otherwise indistinguishable from a genuinely free one.
+	 */
 	costUsd: number | null;
 	/** Mean duration_ms across rows that reported one; null when none did (latency proxy). */
 	avgDurationMs: number | null;
@@ -57,13 +71,14 @@ interface RawProviderRow {
 	duration_ms?: number | null;
 	parent?: unknown;
 	type?: string;
+	/** FLEXIBLE provenance object — read ONLY through the spend-provenance module. */
+	detail?: unknown;
 }
 
-interface Acc extends ProviderUsage {
+interface Acc extends ProviderUsage, SpendProvenanceAccumulator {
 	_sessions: Set<string>;
 	_durSum: number;
 	_durN: number;
-	_priced: boolean;
 }
 
 /**
@@ -89,9 +104,11 @@ export async function buildProviderUsage(
 		where += ` AND project = $pid`;
 	}
 
+	// F-020: `at` (the ORDER BY idiom) is in the projection. `detail` carries the DS-2 estimate
+	// provenance; tokens_in/out + cost_usd together give the priced-coverage leg its denominator.
 	const [rows] = await db.query<[RawProviderRow[]]>(
 		`SELECT model.provider AS provider, session, tokens_in, tokens_out, cost_usd,
-		        duration_ms, parent_event_id AS parent, type, at
+		        duration_ms, parent_event_id AS parent, type, at, detail
 		   FROM agent_event WHERE ${where} ORDER BY at ASC LIMIT $lim;`,
 		params
 	);
@@ -112,23 +129,27 @@ export async function buildProviderUsage(
 				costUsd: null,
 				avgDurationMs: null,
 				childSpawns: 0,
+				spendEstimatedUsd: null,
+				estimatedRowCount: 0,
+				pricedRowCount: 0,
+				unpricedRowCount: 0,
 				_sessions: new Set<string>(),
 				_durSum: 0,
 				_durN: 0,
-				_priced: false
+				...newSpendProvenanceAccumulator()
 			};
 			byProvider.set(provider, u);
 		}
+		// Fold the row's spend PROVENANCE alongside its spend, so a partly-estimated / partly-priced
+		// per-provider cost can never render as a measurement.
+		accumulateSpendProvenance(u, r);
 		if (r.session != null) u._sessions.add(String(r.session));
 		if (r.type === 'spawn') u.runs++;
 		else if (r.type === 'completion') u.completions++;
 		else if (r.type === 'error') u.errors++;
 		if (typeof r.tokens_in === 'number') u.tokensIn += r.tokens_in;
 		if (typeof r.tokens_out === 'number') u.tokensOut += r.tokens_out;
-		if (typeof r.cost_usd === 'number') {
-			u.costUsd = (u.costUsd ?? 0) + r.cost_usd;
-			u._priced = true;
-		}
+		if (typeof r.cost_usd === 'number') u.costUsd = (u.costUsd ?? 0) + r.cost_usd;
 		if (typeof r.duration_ms === 'number') {
 			u._durSum += r.duration_ms;
 			u._durN++;
@@ -146,9 +167,12 @@ export async function buildProviderUsage(
 			tokensIn: u.tokensIn,
 			tokensOut: u.tokensOut,
 			// Keep cost null unless a real priced row landed (never dress an unpriced provider as $0).
-			costUsd: u._priced ? u.costUsd : null,
+			// The priced-row COUNT from the provenance accumulator is that flag — one source of truth
+			// for "did anything here resolve a price", shared with the coverage disclosure.
+			costUsd: u._priced > 0 ? u.costUsd : null,
 			avgDurationMs: u._durN > 0 ? Math.round(u._durSum / u._durN) : null,
-			childSpawns: u.childSpawns
+			childSpawns: u.childSpawns,
+			...sealSpendProvenance(u)
 		}))
 		.sort((a, b) => b.runs - a.runs || b.sessions - a.sessions);
 }

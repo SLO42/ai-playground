@@ -27,7 +27,8 @@ import {
 	runJudgeBatch,
 	resolveJudgeModel,
 	makeClaudeJudge,
-	boundJudgeLimit
+	boundJudgeLimit,
+	EMPTY_SPEND_PROVENANCE
 } from '$lib/server/analytics';
 import type {
 	DailyRollup,
@@ -124,7 +125,19 @@ function familyForRule(rule: string): FindingCard['family'] {
 }
 
 function emptyTotals(): ReportSummary['totals'] {
-	return { spawns: 0, completions: 0, errors: 0, escalations: 0, tokensIn: 0, tokensOut: 0, costUsd: null };
+	// The spend-provenance disclosure legs are part of the totals SHAPE, so the disconnected/error
+	// branch returns an honest zeroed leg ("nothing estimated, nothing metered") rather than an
+	// absent field the UI would have to guess about.
+	return {
+		spawns: 0,
+		completions: 0,
+		errors: 0,
+		escalations: 0,
+		tokensIn: 0,
+		tokensOut: 0,
+		costUsd: null,
+		...EMPTY_SPEND_PROVENANCE
+	};
 }
 
 function emptyRouting(): RoutingRationale {

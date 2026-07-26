@@ -16,6 +16,31 @@ export {
 	type WriteAgentEventInput
 } from './events';
 
+// COMPLETION-LEDGER Wave A — the SPEND PROVENANCE legs every cost aggregate now carries, so a total
+// can never read as fully measured when it is partly ESTIMATED (DS-2) or partly UNPRICED (CG-1).
+export {
+	isEstimatedRow,
+	isMeteredRow,
+	accumulateSpendProvenance,
+	newSpendProvenanceAccumulator,
+	sealSpendProvenance,
+	sumSpendProvenance,
+	costCoverage,
+	describeCostCoverage,
+	describeEstimatedSpend,
+	describeSpendProvenance,
+	emptySpendProvenance,
+	hasSpendDisclosure,
+	spendBadge,
+	fmtUsd,
+	EMPTY_SPEND_PROVENANCE,
+	type SpendProvenance,
+	type SpendProvenanceAccumulator,
+	type CostCoverage,
+	type CoverageLevel,
+	type EstimateProvenance
+} from './spend-provenance';
+
 export {
 	buildReportSummary,
 	buildTierUsage,

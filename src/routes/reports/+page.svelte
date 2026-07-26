@@ -16,6 +16,15 @@
   import { enhance } from '$app/forms';
   import { page } from '$app/state';
   import { stream } from '$lib/client/stream.svelte';
+  // COMPLETION-LEDGER Wave A — the SPEND PROVENANCE vocabulary, shared verbatim with the server
+  // folds so the numbers and the words about them can never drift ($lib/client = pure, browser-safe).
+  import {
+    fmtUsd,
+    spendBadge,
+    describeSpendProvenance,
+    hasSpendDisclosure,
+    costCoverage
+  } from '$lib/client/spend-provenance-core';
   import type { PageData, ActionData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -32,6 +41,15 @@
   const anomalies = $derived(data.anomalies ?? []);
   const totals = $derived(data.totals);
   const usage = $derived(data.usage ?? []);
+
+  // ── Spend provenance for the WINDOW total (the headline the operator reads first) ──────
+  // Two independent ways a cost total can mislead, both disclosed here rather than in a footnote:
+  // ESTIMATED dollars folded in (DS-2), and metered runs that resolved no price at all (CG-1).
+  const totalsBadge = $derived(spendBadge(totals));
+  const totalsDisclosures = $derived(describeSpendProvenance(totals, totals.costUsd));
+  const totalsCoverage = $derived(costCoverage(totals));
+  /** True when SOMETHING in this window needs disclosing — drives the card's honest empty state. */
+  const spendIsQualified = $derived(hasSpendDisclosure(totals));
   const providerComparison = $derived(data.providerComparison ?? []);
   const judgedComparison = $derived(data.judgedComparison ?? []);
   function providerLabel(p: string): string {
@@ -128,9 +146,12 @@
   function shortId(id: string | null): string {
     return id ? (id.split(':').pop()?.slice(0, 8) ?? id) : '—';
   }
-  function fmtCost(c: number | null): string {
-    return c == null ? '—' : `$${c.toFixed(2)}`;
-  }
+  /**
+   * Money, without the rounding lie. The old `$${c.toFixed(2)}` turned a real Σ $0.000570 into a
+   * confident `$0.00`, which reads as "these runs were free" — they were not. fmtUsd renders a
+   * positive sub-cent figure as `<$0.01`, a genuine zero as `$0.00`, and null as '—' (F-008).
+   */
+  const fmtCost = fmtUsd;
   function fmtTokens(n: number): string {
     return n >= 1000 ? `${(n / 1000).toFixed(1)}k` : String(n);
   }
@@ -157,7 +178,10 @@
       Routing decisions with their rationale, daily agent activity, and outcomes — rolled up
       from real run events. No figure is fabricated: cost shows <span class="mono">—</span>
       until runs report a priced cost, and a decision with no run shows
-      <span class="mono">pending</span>, never a guessed result.
+      <span class="mono">pending</span>, never a guessed result. Every cost figure also carries its
+      <strong>provenance</strong> — how much of it is <em>estimated</em> rather than measured, and how
+      many of the runs behind it actually resolved a price — so a total is never mistaken for a
+      complete measurement.
     </p>
   </header>
 
@@ -308,9 +332,59 @@
         <li class="card kpi"><span class="kpi-val">{totals.completions}</span><span class="kpi-label">completions</span></li>
         <li class="card kpi"><span class="kpi-val" data-tone={totals.errors > 0 ? 'warn' : ''}>{totals.errors}</span><span class="kpi-label">errors</span></li>
         <li class="card kpi"><span class="kpi-val">{totals.escalations}</span><span class="kpi-label">escalations</span></li>
-        <li class="card kpi"><span class="kpi-val mono">{fmtTokens(totals.tokensIn + totals.tokensOut)}</span><span class="kpi-label">tokens</span></li>
-        <li class="card kpi"><span class="kpi-val mono">{fmtCost(totals.costUsd)}</span><span class="kpi-label">cost</span></li>
+        <li class="card kpi">
+          <span class="kpi-val mono">{fmtTokens(totals.tokensIn + totals.tokensOut)}</span>
+          <span class="kpi-label">tokens</span>
+          <span class="kpi-sub mono">{fmtTokens(totals.tokensIn)} in · {fmtTokens(totals.tokensOut)} out</span>
+        </li>
+        <li class="card kpi" data-qualified={spendIsQualified ? 'true' : null}>
+          <span class="kpi-val mono">{fmtCost(totals.costUsd)}</span>
+          <span class="kpi-label">cost</span>
+          <!-- The figure NEVER stands alone when it is qualified: the badge is rendered inside the
+               same tile so a glance cannot pick up the number without its caveat (F-008). -->
+          {#if totalsBadge}
+            <span class="prov-badge" data-level={totalsCoverage.level}>{totalsBadge}</span>
+          {/if}
+        </li>
       </ul>
+
+      <!-- ── Spend provenance: how REAL is that cost figure? ────────────────────────────────
+           Two independent dishonesty modes, both disclosed: ESTIMATED dollars (a turn that died
+           before the provider reported usage is metered from a bounded heuristic — DS-2), and
+           UNPRICED metered runs (a model absent from config/pricing.yaml resolves cost NULL by
+           design — CG-1, so the total silently OMITS them and reads as a full cost). Honest empty
+           state when neither applies. ── -->
+      <div class="card provenance-card" data-qualified={spendIsQualified ? 'true' : null}>
+        <span class="eyebrow">spend provenance</span>
+        {#if spendIsQualified}
+          <h2 class="chart-title">The {fmtCost(totals.costUsd)} above is not the whole story</h2>
+          <ul class="prov-list">
+            {#each totalsDisclosures as d (d)}
+              <li class="prov-item">{d}</li>
+            {/each}
+          </ul>
+          <p class="chart-note">
+            Coverage is counted over <strong>metered</strong> runs only — rows that reported token
+            usage, i.e. the rows the pricing chokepoint could have priced. A bare spawn carries no
+            tokens and is excluded, so correct un-meterable rows never distort the ratio. To close an
+            unpriced gap, add the model to <span class="mono">config/pricing.yaml</span> and restart;
+            past rows keep their honest <span class="mono">NULL</span> — cost is never backfilled from
+            a guess.
+          </p>
+        {:else}
+          <h2 class="chart-title">Every dollar in this window is measured</h2>
+          <p class="chart-note">
+            {#if totalsCoverage.metered > 0}
+              All {totalsCoverage.metered} metered {totalsCoverage.metered === 1 ? 'run' : 'runs'}
+              resolved a real price, and no run's spend was estimated — the total above is a
+              measurement, not a floor.
+            {:else}
+              No run in this window reported token usage yet, so there is nothing to price. Cost shows
+              <span class="mono">—</span> rather than <span class="mono">$0.00</span>.
+            {/if}
+          </p>
+        {/if}
+      </div>
 
       <!-- Anomaly flags -->
       {#if anomalies.length}
@@ -342,7 +416,10 @@
 
         <table class="rollup-table">
           <thead>
-            <tr><th>day</th><th>runs</th><th>done</th><th>errors</th><th>esc</th><th>tokens</th><th>cost</th><th>avg dur</th><th>err rate</th></tr>
+            <tr>
+              <th>day</th><th>runs</th><th>done</th><th>errors</th><th>esc</th>
+              <th>tok in</th><th>tok out</th><th>cost</th><th>p50 dur</th><th>p95 dur</th><th>err rate</th>
+            </tr>
           </thead>
           <tbody>
             {#each days as d (d.day)}
@@ -352,14 +429,30 @@
                 <td>{d.completions}</td>
                 <td data-tone={d.errors > 0 ? 'warn' : ''}>{d.errors}</td>
                 <td>{d.escalations}</td>
-                <td class="mono">{fmtTokens(d.tokensIn + d.tokensOut)}</td>
-                <td class="mono">{fmtCost(d.costUsd)}</td>
-                <td class="mono">{fmtMs(d.avgDurationMs)}</td>
+                <td class="mono">{fmtTokens(d.tokensIn)}</td>
+                <td class="mono">{fmtTokens(d.tokensOut)}</td>
+                <!-- Cost carries its own provenance badge per day — a day whose runs were mostly
+                     unpriced must not read as a cheap day (F-008). -->
+                <td class="mono cost-cell">
+                  {fmtCost(d.costUsd)}
+                  {#if spendBadge(d)}
+                    <span class="prov-badge" data-level={costCoverage(d).level}>{spendBadge(d)}</span>
+                  {/if}
+                </td>
+                <td class="mono">{fmtMs(d.p50DurationMs)}</td>
+                <td class="mono">{fmtMs(d.p95DurationMs)}</td>
                 <td class="mono">{pct(d.errorRate)}</td>
               </tr>
             {/each}
           </tbody>
         </table>
+        <p class="chart-note">
+          Duration is reported as <strong>p50 / p95</strong> rather than a mean — a single 40-minute
+          run drags an average until it describes no run that happened. <span class="mono">—</span>
+          means no row that day reported a duration. <strong>done</strong> is a count, not a rate:
+          a run started on one day can finish on the next, so completions are not bounded by that
+          day's runs and no ratio is derived from them.
+        </p>
       </div>
 
       <!-- Per-tier usage -->
@@ -369,21 +462,55 @@
           <h2 class="chart-title">Cost &amp; volume by model tier (30 days)</h2>
           <table class="rollup-table">
             <thead>
-              <tr><th>tier</th><th>provider</th><th>runs</th><th>tokens</th><th>cost</th><th>avg dur</th></tr>
+              <tr>
+                <th>tier</th><th>provider</th><th>models</th><th>runs</th><th>done</th>
+                <th>tok in</th><th>tok out</th><th>cost</th><th>priced</th><th>avg dur</th>
+              </tr>
             </thead>
             <tbody>
               {#each usage as u (u.provider + ':' + u.tier)}
+                {@const cov = costCoverage(u)}
                 <tr>
                   <td><span class="tier-tag" data-tier={u.tier}>{u.tier}</span></td>
                   <td class="mono">{u.provider}</td>
+                  <!-- model_id ends the 'unknown'-tier dead end: even an untiered bucket names the
+                       concrete models behind it. '—' when no row carried a model (F-008). -->
+                  <td class="mono models-cell" title={u.models.join(', ')}>
+                    {u.models.length ? u.models.join(', ') : '—'}
+                  </td>
                   <td>{u.runs}</td>
-                  <td class="mono">{fmtTokens(u.tokensIn + u.tokensOut)}</td>
-                  <td class="mono">{fmtCost(u.costUsd)}</td>
+                  <!-- A COUNT, not a rate. completions/runs is NOT bounded by [0,1] (a run spawned
+                       in one window completes in another — live data rendered 1175%), and a >100%
+                       "rate" is the same dishonest-denominator defect this card exists to remove. -->
+                  <td>{u.completions}</td>
+                  <td class="mono">{fmtTokens(u.tokensIn)}</td>
+                  <td class="mono">{fmtTokens(u.tokensOut)}</td>
+                  <td class="mono cost-cell">
+                    {fmtCost(u.costUsd)}
+                    {#if u.estimatedRowCount > 0}<span class="prov-badge" data-level="estimated">est.</span>{/if}
+                  </td>
+                  <!-- THE FIX for the dishonest '$0.00': the denominator behind the cost, in the same
+                       row. 'none' ⇒ the cost cell already shows '—' and this says why. -->
+                  <td class="mono coverage-cell" data-level={cov.level}>
+                    {#if cov.level === 'unmetered'}
+                      <span title="No run in this bucket reported token usage, so nothing here could be priced.">n/a</span>
+                    {:else}
+                      {cov.priced}/{cov.metered}
+                    {/if}
+                  </td>
                   <td class="mono">{fmtMs(u.avgDurationMs)}</td>
                 </tr>
               {/each}
             </tbody>
           </table>
+          <p class="chart-note">
+            <strong>priced</strong> is how many of the bucket's metered runs resolved a real dollar
+            figure. A tier showing e.g. <span class="mono">2/9</span> has a cost that is a
+            <strong>floor</strong>, not the cost of the runs listed — the other runs used a model
+            absent from <span class="mono">config/pricing.yaml</span> (or predate cost metering), so
+            their spend is <em>unknown</em>, not zero. Where nothing priced, cost shows
+            <span class="mono">—</span> rather than <span class="mono">$0.00</span> (F-008).
+          </p>
         </div>
       {/if}
 
@@ -398,19 +525,31 @@
             <thead>
               <tr>
                 <th>provider</th><th>sessions</th><th>runs</th><th>done</th><th>err</th>
-                <th>tokens</th><th>cost</th><th>avg dur</th><th>spawns</th>
+                <th>tok in</th><th>tok out</th><th>cost</th><th>priced</th><th>avg dur</th><th>spawns</th>
               </tr>
             </thead>
             <tbody>
               {#each providerComparison as p (p.provider)}
+                {@const cov = costCoverage(p)}
                 <tr>
                   <td class="mono">{providerLabel(p.provider)}</td>
                   <td>{p.sessions}</td>
                   <td>{p.runs}</td>
                   <td>{p.completions}</td>
                   <td>{p.errors}</td>
-                  <td class="mono">{fmtTokens(p.tokensIn + p.tokensOut)}</td>
-                  <td class="mono">{fmtCost(p.costUsd)}</td>
+                  <td class="mono">{fmtTokens(p.tokensIn)}</td>
+                  <td class="mono">{fmtTokens(p.tokensOut)}</td>
+                  <td class="mono cost-cell">
+                    {fmtCost(p.costUsd)}
+                    {#if p.estimatedRowCount > 0}<span class="prov-badge" data-level="estimated">est.</span>{/if}
+                  </td>
+                  <td class="mono coverage-cell" data-level={cov.level}>
+                    {#if cov.level === 'unmetered'}
+                      <span title="No run at this provider reported token usage, so nothing here could be priced.">n/a</span>
+                    {:else}
+                      {cov.priced}/{cov.metered}
+                    {/if}
+                  </td>
                   <td class="mono">{fmtMs(p.avgDurationMs)}</td>
                   <td>{p.childSpawns}</td>
                 </tr>
@@ -419,8 +558,11 @@
           </table>
           <p class="chart-note">
             Objective metrics from real <span class="mono">agent_event</span> rows. Local (Ollama) runs are
-            free (cost shows <span class="mono">—</span> until a priced row lands). Inter-hire comms volume
-            (peer messages per provider) is a follow-on measurement.
+            genuinely free — an explicit <span class="mono">$0.00</span>, which is a measurement, not a gap.
+            <strong>priced</strong> shows how many metered runs resolved a dollar figure: a cloud provider
+            with incomplete coverage looks cheaper than it is, so this comparison is only fair when you read
+            that column alongside the cost. Inter-hire comms volume (peer messages per provider) is a
+            follow-on measurement.
           </p>
         {:else}
           <p class="empty-note">
@@ -716,6 +858,68 @@
     font-size: 0.72rem;
     text-transform: lowercase;
     color: var(--color-text-muted);
+  }
+  .kpi-sub {
+    font-size: 0.68rem;
+    color: var(--color-text-2);
+  }
+
+  /* ── Spend provenance (COMPLETION-LEDGER Wave A) ───────────────────────────────────────
+     Design-system tokens only (D-034). The qualified state uses the same --color-warn the
+     anomaly/uncapped surfaces use, so "this number has a caveat" reads consistently across
+     the app. Colour is never the ONLY signal — every badge carries its own text label, and
+     the card states its caveat in a full sentence. */
+  .kpi[data-qualified='true'] {
+    border-color: var(--color-warn);
+  }
+  .prov-badge {
+    font-size: 0.64rem;
+    line-height: 1.4;
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm, 6px);
+    background: var(--color-surface-overlay);
+    color: var(--color-warn-on-overlay);
+    white-space: nowrap;
+  }
+  .provenance-card {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2, 0.5rem);
+  }
+  .provenance-card[data-qualified='true'] {
+    border-color: var(--color-warn);
+  }
+  .prov-list {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 0.4rem;
+  }
+  .prov-item {
+    font: var(--type-body-sm, 0.78rem/1.4 sans-serif);
+    color: var(--color-text-2);
+    max-width: 90ch;
+  }
+  .cost-cell {
+    display: flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    flex-wrap: wrap;
+  }
+  .coverage-cell[data-level='partial'],
+  .coverage-cell[data-level='none'] {
+    color: var(--color-warn);
+  }
+  .coverage-cell[data-level='unmetered'] {
+    color: var(--color-text-muted);
+  }
+  .models-cell {
+    max-width: 22ch;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
 
   /* RoutingRationale */

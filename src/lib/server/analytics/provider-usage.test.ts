@@ -152,4 +152,37 @@ describe('buildProviderUsage — live SurrealDB (F-020)', () => {
 	it('HONEST empty when the window has no rows (F-008)', async () => {
 		expect(await buildProviderUsage(db)).toEqual([]);
 	});
+
+	// COMPLETION-LEDGER Wave A — the local-vs-cloud comparison is only fair if the operator can see
+	// how COMPLETE each side's cost is. A cloud provider whose rows are mostly unpriced looks cheap.
+	it('carries the spend-provenance legs per provider through the REAL projection (F-020)', async () => {
+		// cloud: 1 priced, 1 metered-but-unpriced, 1 priced+ESTIMATED (the DS-2 detail shape).
+		await seedEvent({ provider: 'claude', session: 'session:p1', type: 'completion', tokens_in: 100, tokens_out: 20, cost_usd: 0.02 });
+		await seedEvent({ provider: 'claude', session: 'session:p1', type: 'completion', tokens_in: 100, tokens_out: 20 });
+		await db.query(
+			`CREATE agent_event SET type="completion", model={ provider: "claude", model_id: "m" },
+			   session=session:p1, tokens_in=50, tokens_out=10, cost_usd=0.5,
+			   detail={ estimated: true, estimate_basis: "worst-case-cap" } RETURN NONE;`
+		);
+		// local: a genuine explicit $0 — a MEASUREMENT, so it must count as PRICED, not as a gap.
+		await seedEvent({ provider: 'ollama', session: 'session:p2', type: 'completion', tokens_in: 900, tokens_out: 100, cost_usd: 0 });
+		// a bare spawn at each provider — token-less, so never a coverage gap.
+		await seedEvent({ provider: 'claude', session: 'session:p1', type: 'spawn' });
+		await seedEvent({ provider: 'ollama', session: 'session:p2', type: 'spawn' });
+
+		const out = await buildProviderUsage(db);
+		const claude = out.find((p) => p.provider === 'claude')!;
+		const ollama = out.find((p) => p.provider === 'ollama')!;
+
+		expect(claude.pricedRowCount).toBe(2);
+		expect(claude.unpricedRowCount).toBe(1); // the gap that made cloud look cheaper than it is
+		expect(claude.estimatedRowCount).toBe(1); // `detail` really came back from SurrealDB
+		expect(claude.spendEstimatedUsd).toBeCloseTo(0.5, 6);
+
+		// Local is genuinely free: fully priced, nothing estimated — no false caveat on the free side.
+		expect(ollama.pricedRowCount).toBe(1);
+		expect(ollama.unpricedRowCount).toBe(0);
+		expect(ollama.estimatedRowCount).toBe(0);
+		expect(ollama.costUsd).toBe(0);
+	});
 });

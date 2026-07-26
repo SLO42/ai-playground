@@ -192,4 +192,26 @@ describe('buildProjectUsage — live SurrealDB (F-020)', () => {
 		expect(alpha).toMatchObject({ runs: 2, tokensIn: 101, tokensOut: 51, sessions: 1 }); // (a)+(c) via session
 		expect(out.find((p) => p.project === 'unknown')).toMatchObject({ errors: 1 }); // (d) still honest
 	});
+
+	// COMPLETION-LEDGER Wave A — per-project spend is the figure an operator budgets against, so it
+	// must never read as complete when it is partly estimated or partly unpriced (F-008).
+	it('carries the spend-provenance legs per project through the REAL projection (F-020)', async () => {
+		await seedSession('session:s9', 'project:omega');
+		// 1 priced, 1 metered-but-unpriced, 1 priced+ESTIMATED, 1 bare spawn (never a coverage gap).
+		await seedEvent({ session: 'session:s9', type: 'completion', tokens_in: 100, tokens_out: 20, cost_usd: 0.04 });
+		await seedEvent({ session: 'session:s9', type: 'completion', tokens_in: 100, tokens_out: 20 });
+		await db.query(
+			`CREATE agent_event SET type="completion", session=session:s9, tokens_in=10, tokens_out=2,
+			   cost_usd=0.6, detail={ estimated: true, estimate_basis: "partial-stream" } RETURN NONE;`
+		);
+		await seedEvent({ session: 'session:s9', type: 'spawn' });
+
+		const omega = (await buildProjectUsage(db)).find((p) => p.project === 'project:omega')!;
+		expect(omega.pricedRowCount).toBe(2);
+		expect(omega.unpricedRowCount).toBe(1);
+		expect(omega.estimatedRowCount).toBe(1);
+		expect(omega.spendEstimatedUsd).toBeCloseTo(0.6, 6);
+		// The total is real but INCOMPLETE — the legs above are what say so.
+		expect(omega.costUsd).toBeCloseTo(0.64, 6);
+	});
 });

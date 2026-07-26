@@ -18,9 +18,16 @@
 // an unpriced project reads null, never a fabricated $0.
 
 import type { Db } from '../db/client';
+import {
+	accumulateSpendProvenance,
+	newSpendProvenanceAccumulator,
+	sealSpendProvenance,
+	type SpendProvenance,
+	type SpendProvenanceAccumulator
+} from './spend-provenance';
 
 /** One project's usage rollup (all figures from real agent_event rows; F-008). */
-export interface ProjectUsage {
+export interface ProjectUsage extends SpendProvenance {
 	/** The project record id (e.g. 'project:rounds'); 'unknown' when no session/project link. */
 	project: string;
 	/** Distinct sessions attributed to this project in the window. */
@@ -35,7 +42,12 @@ export interface ProjectUsage {
 	tokensIn: number;
 	/** Σ tokens_out. */
 	tokensOut: number;
-	/** Σ cost_usd across PRICED rows; null when none were priced (F-008 — never a fake $0). */
+	/**
+	 * Σ cost_usd across PRICED rows; null when none were priced (F-008 — never a fake $0). The
+	 * inherited SpendProvenance legs disclose how much of it is DERIVED rather than provider-reported
+	 * (`spendEstimatedUsd`) and how many metered runs resolved no price at all (`unpricedRowCount`) —
+	 * without the second leg, a project whose models predate pricing reads as a cheap project.
+	 */
 	costUsd: number | null;
 }
 
@@ -54,11 +66,12 @@ interface RawProjectRow {
 	tokens_out?: number | null;
 	cost_usd?: number | null;
 	type?: string;
+	/** FLEXIBLE provenance object — read ONLY through the spend-provenance module. */
+	detail?: unknown;
 }
 
-interface Acc extends ProjectUsage {
+interface Acc extends ProjectUsage, SpendProvenanceAccumulator {
 	_sessions: Set<string>;
-	_priced: boolean;
 }
 
 /**
@@ -83,7 +96,7 @@ export async function buildProjectUsage(
 	// project (CG2-3). Only a row with BOTH a NONE session/project-link AND a NONE own-project yields
 	// NONE here → the 'unknown' bucket below. F-020: `at` (the ORDER BY idiom) is projected.
 	const [rows] = await db.query<[RawProjectRow[]]>(
-		`SELECT (session.project ?? project) AS project, session, tokens_in, tokens_out, cost_usd, type, at
+		`SELECT (session.project ?? project) AS project, session, tokens_in, tokens_out, cost_usd, type, at, detail
 		   FROM agent_event WHERE at >= $since ORDER BY at ASC LIMIT $lim;`,
 		{ since, lim: maxRows }
 	);
@@ -102,21 +115,24 @@ export async function buildProjectUsage(
 				tokensIn: 0,
 				tokensOut: 0,
 				costUsd: null,
+				spendEstimatedUsd: null,
+				estimatedRowCount: 0,
+				pricedRowCount: 0,
+				unpricedRowCount: 0,
 				_sessions: new Set<string>(),
-				_priced: false
+				...newSpendProvenanceAccumulator()
 			};
 			byProject.set(project, u);
 		}
+		// Fold the row's spend PROVENANCE alongside its spend (estimated-vs-measured AND priced-vs-not).
+		accumulateSpendProvenance(u, r);
 		if (r.session != null) u._sessions.add(String(r.session));
 		if (r.type === 'spawn') u.runs++;
 		else if (r.type === 'completion') u.completions++;
 		else if (r.type === 'error') u.errors++;
 		if (typeof r.tokens_in === 'number') u.tokensIn += r.tokens_in;
 		if (typeof r.tokens_out === 'number') u.tokensOut += r.tokens_out;
-		if (typeof r.cost_usd === 'number') {
-			u.costUsd = (u.costUsd ?? 0) + r.cost_usd;
-			u._priced = true;
-		}
+		if (typeof r.cost_usd === 'number') u.costUsd = (u.costUsd ?? 0) + r.cost_usd;
 	}
 
 	return [...byProject.values()]
@@ -129,7 +145,10 @@ export async function buildProjectUsage(
 			tokensIn: u.tokensIn,
 			tokensOut: u.tokensOut,
 			// Keep cost null unless a real priced row landed (never dress an unpriced project as $0).
-			costUsd: u._priced ? u.costUsd : null
+			// The provenance accumulator's priced-row COUNT is that flag — one source of truth shared
+			// with the coverage disclosure, so the figure and its caveat can never disagree.
+			costUsd: u._priced > 0 ? u.costUsd : null,
+			...sealSpendProvenance(u)
 		}))
 		.sort((a, b) => b.tokensIn + b.tokensOut - (a.tokensIn + a.tokensOut) || b.runs - a.runs);
 }

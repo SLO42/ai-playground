@@ -963,4 +963,49 @@ close the pricing gap**. → `MODEL-LADDER-SPEC.md`.
 **Operator-gated, do not start without an explicit decision:** arming a PM (§10e — real spend),
 per-hire souls (§10), widening auto-adjudication past B3 (§6), any publish/deploy/release.
 
-**Separately flagged, not investigated:** 19 of 36 `interview_run` rows are `error` status (§5).
+---
+
+## 13. The 19 errored `interview_run` rows — investigated (was §5's open flag)
+
+**Verdict: HISTORICAL, not an active regression — with one honest caveat.**
+
+`interview_run` (`schema.ts:1103-1134`) carries `error_reason` `option<string>` ASSERT
+`env_timeout|spawn_failure|scorer_error` (`:1117-1118`); `repo.ts:770-779` enforces
+error⇔error_reason. There is **no free-text error field** — detail is stuffed into `results[]`
+(FLEXIBLE, `:1125`). Error paths, all in `gauntlet.ts`: `:702` env_timeout · `:710`
+spawn_failure (`streamErrored !== undefined || !sawDone`) · `:728` spawn_failure (gate plane
+down) · `:807`/`:821`/`:835` scorer_error · `:880` spawn_failure (runner threw). §3.6
+auto-retries an errored run once (`:426`).
+
+Live: **19 error = 15 `spawn_failure` + 4 `scorer_error`, 0 `env_timeout`**, all
+`tier=opus / claude-opus-4-8`. **9 of the 19 are auto-retries** (`retry_of` set) → only
+**10 distinct attempts**.
+
+| group | rows | window | cause |
+|---|---|---|---|
+| G1 | 8 | 06-15 15:16–15:50, code-reviewer | `claude CLI exited 1:` with EMPTY detail — predates `815c102` (same afternoon, *"surface stdout on non-zero CLI exit … F-030"*). The blankness IS the absence of that fix (`cli-backend.ts:748-751` stdout-tail + `'(no stdout/stderr captured)'` fallback did not exist). Rows from 15:53 already show stdout. Cause unrecoverable; defect fixed |
+| G2 | 4 | 06-15 15:53–15:57 | ENV OUTAGE — gate control plane (HOOK_URL/HOOK_TOKEN) unreachable, every tool call failed closed per D-024. Classified via `:710`, not the dedicated `:728` branch |
+| G3 | 4 | 06-15 16:11–16:15 | **F-033** — missing keyed `scorer_control` fixture. Fixed same day (`da1d519` + `73fb593`); the live DB now has an active `scorer_control` for **all 7 roles**, so the premise is gone |
+| **G4** | 3 | 06-18 01:32–01:49, recruiter | **THE LIVE DEFECT.** `cli-backend.ts:750` keeps the LAST 3 stdout lines (800 chars); `gauntlet.ts:717` then keeps the FIRST 500 — cutting off the terminal `result` line. Verbose `thinking_tokens` lines consumed the window. **The exit cause is genuinely unrecorded** |
+
+> **THE CAVEAT:** it is not still happening, but the honest reason is that **nothing has run**.
+> Last error 2026-06-18T01:49; **last run of ANY status 2026-06-19T18:53 — 37 days ago.** Zero
+> gauntlet activity since. Archaeology, not an active regression — but equally, **zero evidence
+> the machinery is currently healthy**, only evidence it is idle.
+
+**Blast radius is clean:** 0 rows stuck `running`; interview sessions 19 done / 15 failed, none
+hung; no orphaned work_items; teardown is idempotent (`gauntlet.ts:886-900`).
+`role_version:0emka7916cq6l8jvw1qw` (code-reviewer) absorbed **16 of the 19 errors and is now
+`passed`** — the errors never blocked certification. The 2 `adjudicating` rows are **unrelated**
+to the errors (no `error_reason`) — but one, `role_version:9ziccmhvmqzccj5hhsi4`, has a
+**dangling `role` link (null)**.
+
+**Follow-ups (all cheap, → `hiring-trail` wave):**
+1. `gauntlet.ts:717` — `slice(0, 500)` → `slice(-500)`, or better, add
+   `error_detail: option<string>` to `interview_run` carrying the untruncated `streamErrored`
+   tail. One line, and it is the difference between a diagnosable and an undiagnosable future
+   failure. No Iron-Law repro needed (it is a read of the code, not a hypothesis) — but the G4
+   *exit cause* itself would need one and cannot be reproduced from existing rows.
+2. Filter or badge `status='error'` in the hiring feed — 19/36 rows are dead noise and 9 are
+   duplicate retries. **Leave the rows; do not delete.**
+3. The dangling `role` link on `role_version:9ziccmhvmqzccj5hhsi4`.

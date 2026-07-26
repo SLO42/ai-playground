@@ -17,6 +17,7 @@ import {
 	listProjectMemories,
 	listProjectGraph
 } from './index';
+import { readLearnedValues, readSoulMetrics } from './soul';
 
 // MEMORY-SPEC §3.1b + §5.3 — END-TO-END QUARANTINE LEAK HARNESS (D-026).
 //
@@ -145,6 +146,18 @@ const READERS: ReaderPath[] = [
 		why: 'consolidate §5.2 guard — by-id curator read of an explicitly-passed member; not a query surface and never injects'
 	},
 	{
+		file: 'memory/soul.ts',
+		marker: 'count() AS c FROM memory WHERE category = "correction"',
+		kind: 'LEAK',
+		why: 'readSoulMetrics correction count — feeds the S4 maturity ladder; a quarantined correction must never move Atelier\'s identity (COGNITIVE-ARCHITECTURE S4, D-026)'
+	},
+	{
+		file: 'memory/soul.ts',
+		marker: 'SELECT content, importance, created_at FROM memory',
+		kind: 'LEAK',
+		why: 'readLearnedValues — surfaces correction memory CONTENT as the soul\'s "learned values" on /brain AND into the concierge S4 consumer; the strongest injection-shaped read in soul.ts (D-026)'
+	},
+	{
 		file: 'memory/eval/harness.ts',
 		marker: 'embedding <|${k},COSINE|>',
 		kind: 'LEAK',
@@ -155,6 +168,17 @@ const READERS: ReaderPath[] = [
 function readSource(rel: string): string {
 	return readFileSync(join(SRC, rel), 'utf8');
 }
+
+// The accepted quarantine-excluding predicates. `screen_status` is a NON-OPTIONAL string with
+// DEFAULT "clean" over the closed domain clean|redacted|quarantined (schema.ts DEFINE FIELD
+// OVERWRITE screen_status ON memory; screen.ts `ScreenStatus`), so:
+//   • `screen_status != "quarantined"` is the DENY-LIST form — the baseline active-set filter (§5.3).
+//   • `screen_status = "clean"` is the ALLOW-LIST form — STRICTLY STRONGER: it excludes quarantined
+//     AND redacted rows. Accepting it does NOT weaken the guard (an allow-list over a closed domain
+//     can only admit a subset of what the deny-list admits); rejecting it would force a SAFER reader
+//     to loosen its filter to satisfy a test, which is the wrong direction.
+// Anything else still FAILS — an unfiltered read cannot satisfy either form.
+const QUARANTINE_FILTERS = ['screen_status != "quarantined"', 'screen_status = "clean"'];
 
 describe('PART A — static grep-and-assert: every `memory`-row reader is classified + guarded', () => {
 	for (const r of READERS) {
@@ -170,12 +194,29 @@ describe('PART A — static grep-and-assert: every `memory`-row reader is classi
 				const stmtEnd = src.indexOf(';', idx);
 				const stmt = src.slice(stmtStart, stmtEnd === -1 ? src.length : stmtEnd);
 				expect(
-					stmt.includes('screen_status != "quarantined"'),
-					`LEAK surface ${r.file} (${r.marker}) is MISSING the quarantine filter in its statement`
+					QUARANTINE_FILTERS.some((f) => stmt.includes(f)),
+					`LEAK surface ${r.file} (${r.marker}) is MISSING a quarantine-excluding filter in its statement — expected one of: ${QUARANTINE_FILTERS.join(' | ')}`
 				).toBe(true);
 			}
 		});
 	}
+
+	it('the accepted filter forms are exactly two, and an UNFILTERED statement still FAILS', () => {
+		// Guards the Wave C widening (allow-list form) from becoming a blanket weakening: only the
+		// two closed-domain predicates are accepted, and a read carrying neither is still rejected.
+		const unfiltered = 'SELECT content FROM memory WHERE project = $p ORDER BY importance DESC';
+		expect(QUARANTINE_FILTERS.some((f) => unfiltered.includes(f))).toBe(false);
+		// A near-miss that admits quarantined rows is NOT accepted (it is not one of the two forms).
+		const nearMiss = 'SELECT content FROM memory WHERE screen_status != "redacted"';
+		expect(QUARANTINE_FILTERS.some((f) => nearMiss.includes(f))).toBe(false);
+		// Both accepted forms are recognised.
+		expect(
+			QUARANTINE_FILTERS.some((f) => 'WHERE screen_status != "quarantined" AND x'.includes(f))
+		).toBe(true);
+		expect(QUARANTINE_FILTERS.some((f) => 'WHERE screen_status = "clean" AND x'.includes(f))).toBe(
+			true
+		);
+	});
 
 	// Bare `FROM memory` table reads only — NOT `memory_history`, `memory:id`, `memory_entries`,
 	// `pm_memory`, nor by-id reads (`FROM $m`). This is the leak-surface regex the guard is built on.
@@ -447,6 +488,48 @@ describe('PART B — end-to-end quarantine leak proof (real SurrealDB, real coun
 		);
 		expect(quarantinedProjRows).toBeGreaterThanOrEqual(1);
 		expect(projRows.length).toBe(totalProjRows - quarantinedProjRows); // exactly the quarantined excluded
+	});
+
+	it('Deliverable (6): the quarantined row NEVER reaches the SOUL — even promoted to a high-importance correction', async () => {
+		// Adversarial promotion, same shape as (4): make the quarantined row look like exactly the
+		// thing soul.ts reads — an ACTIVE, high-importance `category:"correction"` memory. soul.ts
+		// filters with the ALLOW-LIST form (`screen_status = "clean"`), which is strictly stronger
+		// than the deny-list; this proves that live, not by grep.
+		await db.query(`UPDATE $id SET category = "correction", importance = 0.99, status = "active";`, {
+			id: rid(quarantinedId)
+		});
+		// A CLEAN control correction so the read is demonstrably working (not empty-by-accident).
+		await mem.store([
+			{
+				content: 'correction control: always screen before embed (control)',
+				project: projectId,
+				category: 'correction',
+				importance: 0.9
+			}
+		]);
+
+		const values = await readLearnedValues(db, 50, projectId);
+		const text = values.map((v) => v.text).join('\n');
+		expect(text).toContain('(control)'); // the read works
+		expect(text).not.toContain(SENTINEL); // no raw key material
+		expect(text).not.toContain('leak-probe'); // nor the quarantined row's body at all
+
+		// Real excluded-row count: correction rows in the project vs corrections the soul counts.
+		const metrics = await readSoulMetrics(db, projectId);
+		const totalCorrections = await count(
+			`SELECT count() AS c FROM memory
+			   WHERE category = "correction" AND status = "active" AND project = $p GROUP ALL;`,
+			{ p: rid(projectId) }
+		);
+		const quarantinedCorrections = await count(
+			`SELECT count() AS c FROM memory
+			   WHERE category = "correction" AND status = "active" AND project = $p
+			     AND screen_status != "clean" GROUP ALL;`,
+			{ p: rid(projectId) }
+		);
+		expect(quarantinedCorrections).toBeGreaterThanOrEqual(1); // we planted ≥1
+		expect(metrics.corrections).toBe(totalCorrections - quarantinedCorrections);
+		expect(values.length).toBe(metrics.corrections);
 	});
 
 	// ── SHADOW PATHS: nil / empty / error inputs on the quarantine-bearing read paths ──

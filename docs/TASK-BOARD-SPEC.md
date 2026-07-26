@@ -5,10 +5,15 @@
 > two corrections in §0). Operator intent: task tags/metadata exist *"to remind our models exactly
 > why and how to handle each task"* — this is a PROMPT-CONTEXT feature first, a UI feature second,
 > and the phases are ordered accordingly. Status: **SPEC — DRAFT, ready to build** (one operator
-> confirm gated inside: sprint retirement, §8.2). Migration head at drafting time: `m0085`
-> (`m0085_thinking_ledger` `schema.ts:3051`, list ends `schema.ts:3174`); `MODEL-LADDER-SPEC.md` §0
-> already claims `m0086`, so this spec claims **`m0087`** — whichever builds second renumbers to
-> the actual next free id (both specs flag the collision).
+> confirm gated inside: sprint retirement, §8.2). Migration head at drafting time was `m0085`
+> (`m0085_thinking_ledger` `schema.ts:3051`).
+>
+> **MIGRATION NUMBERS — ALLOCATED 2026-07-26 (do not renumber ad hoc).** `m0086` was CONSUMED by
+> the shipped `m0086_boot_skip_ledger` (analytics-visibility AV-4, live db:up 86/86) while these
+> specs were being written in parallel. Allocation now: **`m0087` → `MODEL-LADDER-SPEC`**,
+> **`m0088` → this spec**. The lesson worth keeping: specs authored concurrently with builds race
+> for migration ids, so a spec must ALLOCATE from the live head rather than claim the next number
+> it happens to see.
 
 ---
 
@@ -88,7 +93,7 @@
 | # | Deliverable | Phase |
 |---|---|---|
 | 1 | `buildPrompt` emits labeled `## Objective / ## Why this task / ## Acceptance criteria / ## Task metadata` instruction sections for every task that carries the fields — three files, no migration. | **P1** |
-| 2 | `task.tags: option<array<string>>` (m0087), boundary-validated, editable, in the prompt's metadata line and the board's filters. | P2 |
+| 2 | `task.tags: option<array<string>>` (m0088), boundary-validated, editable, in the prompt's metadata line and the board's filters. | P2 |
 | 3 | A full-page board at `/projects/[id]/tasks` with per-task detail (`?task=` panel), filters, and every stored field rendered — nav-reachable, no new nav entry. | P3 |
 | 4 | The manual create path grows optional why/how fields + an honest context-completeness chip; sprint is explicitly retired (operator confirm). | P4 |
 
@@ -192,7 +197,7 @@ fields:
 
 ## 4. Phase 2 — tags (one additive migration + repo widening)
 
-### 4.1 Migration `m0087_task_tags` (renumber at build if m0086 is taken — header note)
+### 4.1 Migration `m0088_task_tags` (allocated 2026-07-26; m0086 shipped, m0087 is model-ladder)
 
 ```sql
 DEFINE FIELD OVERWRITE tags ON task TYPE option<array<string>>;
@@ -365,7 +370,7 @@ a real row (SET-case assertion, F-013).
 
 | id | DDL | notes |
 |---|---|---|
-| `m0087_task_tags` (renumber if m0086 collides — §0 header) | `DEFINE FIELD OVERWRITE tags ON task TYPE option<array<string>>;` | Idempotent (F-015); apply-twice + half-applied via the generic sweep + a targeted tasks test; **no index** (deliberate, §4.1); `npm run db:up` live-verified twice. |
+| `m0088_task_tags` (allocated; see §0) | `DEFINE FIELD OVERWRITE tags ON task TYPE option<array<string>>;` | Idempotent (F-015); apply-twice + half-applied via the generic sweep + a targeted tasks test; **no index** (deliberate, §4.1); `npm run db:up` live-verified twice. |
 
 No other schema change in this spec. Phases 1, 3, 4 are migration-free.
 
@@ -381,7 +386,7 @@ No other schema change in this spec. Phases 1, 3, 4 are migration-free.
 | TB-4 | `decidePanel` (`pm-panel.ts:524`) remains the ONLY automated promoter; the board adds no promote action and no new status-write path — every move goes through `setStatus` (F-055). | grep-gate: no `status` write outside `tasks/repo.ts`; UI review |
 | TB-5 | `description` is never mutated by any board/detail surface (D-008); §4.1 fields on a `proposed` task change only via `revisePmProposal`. | `UpdateTaskInput` shape test + action tests |
 | TB-6 | Every new/changed query has a real-surreal test asserting the SET case; every optional field renders '—'/absent, never a fabricated value (F-013/F-020/F-008). | tasks/repo + loader tests, live db:up |
-| TB-7 | m0087 is idempotent: apply-twice and half-applied both converge (F-015). | migrate sweep + targeted test |
+| TB-7 | m0088 is idempotent: apply-twice and half-applied both converge (F-015). | migrate sweep + targeted test |
 | TB-8 | Tag values are boundary-validated (≤8 × ≤32 chars, trimmed, lowercased) and `$param`-bound (D-016); tags are operator-authored only until a screened PM path exists. | createTask/updateTask validation tests |
 | TB-9 | The board route is reachable from a nav parent in ≤2 clicks and `NAV-IA-MAP.md` is updated in the same wave — no orphan route. | NAV-IA-MAP row + live render check |
 | TB-10 | The completeness chip counts only fields that actually exist on the row — never inferred, never backfilled (F-008). | component test |
@@ -393,7 +398,7 @@ No other schema change in this spec. Phases 1, 3, 4 are migration-free.
 | Phase | Scope lock (files) | Ships alone? | Verification command |
 |---|---|---|---|
 | **P1 prompt-context** | `sessions/launch.ts`, `runtime/index.ts`, their tests | Yes — no migration, no UI; success criterion (a) lands here | `npx vitest run src/lib/server/runtime src/lib/server/sessions` + green bar |
-| **P2 tags** | `db/schema.ts` (m0087), `tasks/repo.ts` + test, `launch.ts` (SELECT + mapping only) | Yes — tags exist + reach prompts even before any UI | `npx vitest run src/lib/server/tasks` + `npm run db:up` ×2 + green bar |
+| **P2 tags** | `db/schema.ts` (m0088), `tasks/repo.ts` + test, `launch.ts` (SELECT + mapping only) | Yes — tags exist + reach prompts even before any UI | `npx vitest run src/lib/server/tasks` + `npm run db:up` ×2 + green bar |
 | **P3 board+detail** | `routes/projects/[id]/tasks/` (new `+page.server.ts`, `+page.svelte`), one link in the project page tasks tab, `docs/NAV-IA-MAP.md` | Yes — reads P2 fields when present, renders honest '—' otherwise | build + `svelte-check` 0 + live render (F-010 `waitUntil:'load'`) |
 | **P4 create+sprint** | board/project-page create forms + actions, sprint UI removal, `projects/repo.ts` comment | Yes — gated internally on the operator's sprint confirm | `npx vitest run src/routes/projects` + green bar + live render |
 

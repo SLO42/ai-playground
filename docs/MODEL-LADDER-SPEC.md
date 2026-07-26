@@ -32,7 +32,7 @@
    `{ provider, modelId, tier: tierName }`), so the tier-less explicit events come from *other*
    override callers. The fix (§3.3) is therefore placed at the chokepoint, not in any one caller.
 4. **`VERSIONING-AUDIT-SPEC.md` §7 numbers its migrations `m0082/m0083` — stale** (head is m0085).
-   Whichever spec builds later renumbers; this spec claims `m0086` and flags the collision (§9).
+   Whichever spec builds later renumbers; this spec claims `m0087` (m0086 was CONSUMED by the shipped m0086_boot_skip_ledger) (§9).
 
 Everything else in the briefing checked out against the code cited below.
 
@@ -104,7 +104,7 @@ explained", touch exactly these, in this order:
 | 1 | **Price it (or explicitly 0/0 for local).** Only a price you can verify; absent = honest NULL + once-per-boot warn (`events.ts:239-244`) **+ the system raises a research task / CTA to close the gap (§3c)**. Never guess (pricing.yaml header rule, `:13-15`). | `config/pricing.yaml` (loader `load.ts:78 loadPricing`) | Trials (step 5) spend real tokens; price FIRST so `cost_usd` meters from the first trial run (ML-10). |
 | 2 | **Allowlist the id (claude provider only).** Add to `MODEL_IDS` (`config/load.ts:35-39`). Non-claude providers (ollama etc.) are intentionally NOT bound to this list (`load.ts:929-934`). | `config/load.ts` + its pin test `load.test.ts` | The pool loader fail-closes an unlisted claude id (`load.ts:943-948`) — nothing else works until this. |
 | 3 | **Pin it to a tier.** Existing tier: change the tier's `model:`. New tier: add the tier block WITH its §3.2 doc fields, add it to `escalation.order` if it's on the general ladder (planner is NOT, §4.2), add a slot if role-mapping matters (`agent-pool.yaml:28-40`). | `config/agent-pool.yaml` | The pool is the ONLY model→tier authority (ML-1). |
-| 4 | **New tier NAME only: widen the five hardcoded enums** via the §9 migration + TS edits (`schema.ts:1069,1086,1107`; `repo.ts:52`; `load.ts:763`). | migration `m0086`+ / two TS files | Skipping this wedges gauntlet runs (`interview_run.tier` ASSERT rejects the new name) and role staffing. |
+| 4 | **New tier NAME only: widen the five hardcoded enums** via the §9 migration + TS edits (`schema.ts:1069,1086,1107`; `repo.ts:52`; `load.ts:763`). | migration `m0087`+ / two TS files | Skipping this wedges gauntlet runs (`interview_run.tier` ASSERT rejects the new name) and role staffing. |
 | 5 | **Trial it before trusting it (§5).** Run the duty trial for each duty you intend to hand it. Operator approves the verdict (B4/D-039). | `/agents/ceremony` surface + `runModelTrial` (§5.3) | An untrialed model may exist in config; it must not be *staffed or duty-routed* until a `fit` verdict exists for that duty (ML-8; enforcement per §5.5). |
 | 6 | **Restart + verify.** Config is boot-read (F-029 — `/settings` already shows the restart-needed banner, `+page.server.ts:294,320`). Then: `/settings` shows the tier documented+priced; drive one task; check its `routing_event.chosen.tier` is non-null and its completion `agent_event.cost_usd` is non-NULL (or genuine 0). | dev server + `/settings` + `/reports` | The green bar is behaviour, not config diff. |
 
@@ -520,7 +520,7 @@ lands. This spec needs exactly ONE migration:
 
 | id | contents |
 |----|----------|
-| `m0086_model_ladder_tiers` | Widen the three tier ASSERT enums to include `planner`: re-`DEFINE FIELD OVERWRITE` `role.preferred_tier` (`schema.ts:1069-1070`), `role_version.default_tier` (`:1086`), `interview_run.tier` (`:1107`) with `["local","haiku","sonnet","opus","planner"]`. OVERWRITE-only, additive enum widening — the m0081/m0084 precedent explicitly relied on for idempotency (`schema.ts:2878-2879,2996-3005`); never touches existing rows. Covered by the generic `schemaMigrations` apply-twice + half-applied sweep in `migrate.test.ts`. |
+| `m0087_model_ladder_tiers` | Widen the three tier ASSERT enums to include `planner`: re-`DEFINE FIELD OVERWRITE` `role.preferred_tier` (`schema.ts:1069-1070`), `role_version.default_tier` (`:1086`), `interview_run.tier` (`:1107`) with `["local","haiku","sonnet","opus","planner"]`. OVERWRITE-only, additive enum widening — the m0081/m0084 precedent explicitly relied on for idempotency (`schema.ts:2878-2879,2996-3005`); never touches existing rows. Covered by the generic `schemaMigrations` apply-twice + half-applied sweep in `migrate.test.ts`. |
 
 Paired **non-migration** edits shipped in the same commit (the enum lives in five places, §1.4):
 `workforce/repo.ts:52` Tier union += `'planner'`; `config/load.ts:763` allowed_auto_tiers allowlist

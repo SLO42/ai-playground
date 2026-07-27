@@ -38,11 +38,21 @@ describe('TV-1 — fleet rows open a session transcript', () => {
   const row = fleetRowBlock(src);
 
   it('each row navigates to /claude-code?session=<id> via an <a href> (not a div onclick)', () => {
-    // A real anchor with the session id encoded into the query — keyboard-focusable
-    // and Enter-activatable for free (no synthetic key handling needed).
-    expect(row).toMatch(/<a[^>]*href=\{`\/claude-code\?session=\$\{encodeURIComponent\(s\.id\)\}`\}/);
+    // A real anchor with a bound href — keyboard-focusable and Enter-activatable for free
+    // (no synthetic key handling needed). The URL itself is composed by `transcriptHref`,
+    // which ALSO carries the active fleet filter params so opening a transcript does not
+    // silently strip the operator's filter from the URL (the fleet filter/collapse work).
+    expect(row).toMatch(/<a[^>]*href=\{transcriptHref\(s\.id\)\}/);
     // The affordance is NOT a bare div/span onclick masquerading as a button.
     expect(row).not.toMatch(/<(div|span)[^>]*onclick=/);
+  });
+
+  it('transcriptHref really targets /claude-code with the session id as a param', () => {
+    // The composer is what the href now delegates to — assert it sets `session` on the
+    // page's own params rather than inventing a different route.
+    const fn = src.slice(src.indexOf('function transcriptHref'), src.indexOf('const fleetLimit'));
+    expect(fn).toMatch(/params\.set\('session', sessionId\)/);
+    expect(fn).toMatch(/`\/claude-code\?\$\{params\.toString\(\)\}`/);
   });
 
   it('the transcript link carries an explicit accessible name', () => {

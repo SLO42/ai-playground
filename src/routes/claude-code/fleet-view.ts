@@ -1,0 +1,412 @@
+/**
+ * FLEET VIEW — the pure view model behind the /claude-code session-fleet filters + collapse.
+ *
+ * OPERATOR ASK (2026-07-26, verbatim): *"the session fleet for claude code section should be
+ * filterable by project, failure, or collapseable. to keep the page from getting to tall."*
+ *
+ * This module owns the WHOLE decision surface — parse, options, counts, predicate, filter, and
+ * the URL round-trip — as pure, dependency-free functions so it can be unit-tested without a
+ * browser and re-used by both the loader and the `.svelte` call site. No runes live here (F-009:
+ * runes only compile in `.svelte`/`.svelte.ts`); the page holds the `$derived` wrappers.
+ *
+ * ── Why URL params ───────────────────────────────────────────────────────────────────────
+ * Filter + collapse state survives a reload because it lives in the URL (`?fleet=`,
+ * `?fleetProject=`, `?fleetState=`) — shareable, back/forward-able, and it invents no storage
+ * mechanism (no localStorage, no server-side view row). The page writes them with SvelteKit's
+ * shallow `replaceState` so a filter click does NOT re-run the loader and re-pull the whole
+ * config catalog (the page's DEFECT-2 "invalidate storm" rule); the loader never reads these
+ * params, so the LT-1 trap — a replaceState-injected param that a re-invalidated loader cannot
+ * see — cannot apply here.
+ *
+ * ── Honesty (F-008) ──────────────────────────────────────────────────────────────────────
+ * Every option offered is DERIVED FROM THE LOADED ROWS and carries its real count, so the UI
+ * can never present a filter that cannot match. The fleet itself is a BOUNDED WINDOW (the
+ * loader's `listFleetAcrossProjects(db, LIMIT)`) — the page discloses that bound next to the
+ * filters, because "project X has no failures" and "project X's failures are older than the
+ * window" are different facts and must not be conflated.
+ *
+ * ── The failure predicate is DERIVED, not invented ───────────────────────────────────────
+ * `session.status` is `ASSERT $value IN ["running","done","failed","cancelled"]`
+ * (`schema.ts:130-131`), so a HARD failure is exactly `status === 'failed'` — the same predicate
+ * `SessionFailureReason.svelte:45` uses to raise its error banner. That component ALSO banners a
+ * non-failed session that carries a `session.note` (`:48` — the WI-3 "work preserved on branch,
+ * merge needed" advisory), so the broader `attention` filter is defined as *exactly the set of
+ * rows this page already flags*: failed, or carrying a note. Nothing is invented; `cancelled`
+ * with no note is a clean operator stop and is deliberately NOT called a failure.
+ *
+ * ── Shadow paths, all four, on every exported function ───────────────────────────────────
+ *   • happy — real rows / real params → the composed view.
+ *   • nil   — `null`/`undefined` rows, list, or params → the default view / an empty result.
+ *   • empty — a zero-length list, a blank param value, a whitespace-only note → treated as
+ *             absent, never as a match.
+ *   • upstream error — an unknown state token, a stale project id no longer in the window, a
+ *             non-string field → absorbed into an honest default + a `staleProject` flag the
+ *             page renders as a named state. Nothing here throws.
+ */
+
+import { stripRecordId } from '$lib/shared/naming';
+
+/**
+ * How many sessions the cross-project fleet window carries (newest-first, TASK 9.3) — the
+ * `listFleetAcrossProjects` limit the loader passes, and the bound the page DISCLOSES next to the
+ * filters (F-008): with a project/failure filter engaged, "this project has no failures" and
+ * "this project's failures are older than the window" are different facts, and a filtered-empty
+ * list must not be read as portfolio-wide coverage.
+ *
+ * It lives here, not in `+page.server.ts`, because SvelteKit rejects any non-reserved export from
+ * a `+page.server.ts` ("Invalid export 'FLEET_LIMIT'") — and because the loader and the page must
+ * agree on ONE number rather than each hardcoding its own.
+ */
+export const FLEET_LIMIT = 40;
+
+/** URL param: whether the fleet section is expanded (`open`) or collapsed (`closed`). */
+export const FLEET_PARAM_OPEN = 'fleet';
+/** URL param: the project filter — a `project:…` record id, or {@link FLEET_NO_PROJECT}. */
+export const FLEET_PARAM_PROJECT = 'fleetProject';
+/** URL param: the state filter — one of {@link FLEET_STATE_FILTERS}. */
+export const FLEET_PARAM_STATE = 'fleetState';
+
+/**
+ * The sentinel project value meaning "sessions with NO project link" (a bare chat).
+ *
+ * It cannot collide with a real project id: `assertRecordId` (`db/validate.ts:18`) requires a
+ * `table:id` shape, so every real `projectId` contains a `:` and `'none'` never can.
+ */
+export const FLEET_NO_PROJECT = 'none';
+
+/** The state filters the section offers. `attention` is a SUPERSET of `failed` (see below). */
+export const FLEET_STATE_FILTERS = ['all', 'running', 'failed', 'attention'] as const;
+export type FleetStateFilter = (typeof FLEET_STATE_FILTERS)[number];
+
+/** The short chip label per state filter. */
+export const FLEET_STATE_LABELS: Record<FleetStateFilter, string> = {
+	all: 'all',
+	running: 'running',
+	failed: 'failed',
+	attention: 'needs attention'
+};
+
+/**
+ * The honest, verbatim predicate behind each chip — rendered as the chip's `title`/description so
+ * the operator can see WHAT "failed" means here rather than trusting a word (F-008).
+ */
+export const FLEET_STATE_HINTS: Record<FleetStateFilter, string> = {
+	all: 'every session in the window',
+	running: 'session.status = running',
+	failed: 'session.status = failed',
+	attention: 'failed, or carrying an operator note (the rows this page already flags)'
+};
+
+/** The resolved fleet view: which project, which state, and whether the section is expanded. */
+export interface FleetView {
+	/** A `project:…` id, {@link FLEET_NO_PROJECT}, or `null` for "every project". */
+	project: string | null;
+	state: FleetStateFilter;
+	/** TRUE when the section body is expanded. Default TRUE — collapsing hides data, so it is
+	 *  never the silent default; the operator opts in and the choice persists in the URL. */
+	open: boolean;
+}
+
+/** The default view: everything, expanded. */
+export const DEFAULT_FLEET_VIEW: FleetView = { project: null, state: 'all', open: true };
+
+/**
+ * The only row fields this module reads. Structural, so `FleetSessionXP` (analytics/fleet.ts)
+ * satisfies it without this module importing a server type into a shared/client path.
+ */
+export interface FleetFilterRow {
+	status: string;
+	projectId: string | null;
+	projectName: string | null;
+	note: string | null;
+}
+
+/** Trimmed non-empty string, or `undefined`. Absorbs nil / blank / non-string (upstream error). */
+function clean(v: unknown): string | undefined {
+	if (typeof v !== 'string') return undefined;
+	const s = v.trim();
+	return s ? s : undefined;
+}
+
+/** TRUE when `v` is one of the known state tokens. Narrows for the parser. */
+export function isFleetStateFilter(v: unknown): v is FleetStateFilter {
+	return typeof v === 'string' && (FLEET_STATE_FILTERS as readonly string[]).includes(v);
+}
+
+/**
+ * Parse the fleet view out of a URL's search params. Total — never throws.
+ *
+ *   `?fleet=closed&fleetState=failed&fleetProject=project:atelier`
+ *      → `{ open:false, state:'failed', project:'project:atelier' }`
+ *   `?fleetState=bogus`   → state `'all'`   (unknown token → honest default, not a crash)
+ *   `?fleetProject=`      → project `null`  (blank → absent)
+ *   `null` / `undefined`  → {@link DEFAULT_FLEET_VIEW}
+ */
+export function parseFleetView(params: URLSearchParams | null | undefined): FleetView {
+	if (!params || typeof params.get !== 'function') return { ...DEFAULT_FLEET_VIEW };
+	const rawState = clean(params.get(FLEET_PARAM_STATE));
+	const rawProject = clean(params.get(FLEET_PARAM_PROJECT));
+	const rawOpen = clean(params.get(FLEET_PARAM_OPEN))?.toLowerCase();
+	return {
+		project: rawProject ?? null,
+		state: isFleetStateFilter(rawState) ? rawState : 'all',
+		// Only the explicit `closed` collapses. Any other value (including a typo) keeps the
+		// section expanded — a malformed param must never silently hide the fleet.
+		open: rawOpen !== 'closed'
+	};
+}
+
+/**
+ * Write a view back into a copy of the current search params, DROPPING every default so a
+ * pristine view leaves the URL clean (and `?session=` and anything else is preserved).
+ */
+export function applyFleetViewToParams(
+	current: URLSearchParams | null | undefined,
+	view: FleetView
+): URLSearchParams {
+	const out = new URLSearchParams(current ?? undefined);
+	if (view.project) out.set(FLEET_PARAM_PROJECT, view.project);
+	else out.delete(FLEET_PARAM_PROJECT);
+	if (view.state !== 'all') out.set(FLEET_PARAM_STATE, view.state);
+	else out.delete(FLEET_PARAM_STATE);
+	if (!view.open) out.set(FLEET_PARAM_OPEN, 'closed');
+	else out.delete(FLEET_PARAM_OPEN);
+	return out;
+}
+
+/** TRUE when the view is the untouched default (nothing filtered, expanded). */
+export function isDefaultFleetView(view: FleetView | null | undefined): boolean {
+	return !view || (!view.project && view.state === 'all' && view.open);
+}
+
+/** TRUE when either FILTER is engaged (collapse alone is not a filter). */
+export function isFleetFiltered(view: FleetView | null | undefined): boolean {
+	return !!view && (!!view.project || view.state !== 'all');
+}
+
+// ── Predicates ────────────────────────────────────────────────────────────────────────────
+
+/** A HARD failure: `session.status === 'failed'` (schema.ts:130-131). */
+export function isFleetFailure(row: FleetFilterRow | null | undefined): boolean {
+	return clean(row?.status) === 'failed';
+}
+
+/** Live: `session.status === 'running'` — never a pool/slot flag (UI-SPEC §199). */
+export function isFleetRunning(row: FleetFilterRow | null | undefined): boolean {
+	return clean(row?.status) === 'running';
+}
+
+/**
+ * The set this page already flags with a `<SessionFailureReason>` banner: a hard failure, OR any
+ * session carrying an operator-visible note (the WI-3 merge-preserved advisory). A whitespace-only
+ * note is NOT a note.
+ */
+export function fleetNeedsAttention(row: FleetFilterRow | null | undefined): boolean {
+	if (!row) return false;
+	return isFleetFailure(row) || clean(row.note) !== undefined;
+}
+
+/** Does one row satisfy a state filter? An unknown filter degrades to `all` (never drops rows). */
+export function matchesFleetState(
+	row: FleetFilterRow | null | undefined,
+	state: FleetStateFilter
+): boolean {
+	if (!row) return false;
+	switch (state) {
+		case 'running':
+			return isFleetRunning(row);
+		case 'failed':
+			return isFleetFailure(row);
+		case 'attention':
+			return fleetNeedsAttention(row);
+		default:
+			return true;
+	}
+}
+
+/**
+ * The project FILTER KEY for a row: its `project:…` id, or {@link FLEET_NO_PROJECT} when the
+ * session has no project link (an honest "no project", never an invented bucket).
+ */
+export function fleetProjectKey(row: FleetFilterRow | null | undefined): string {
+	return clean(row?.projectId) ?? FLEET_NO_PROJECT;
+}
+
+/**
+ * The human label for a project key. `projectName` wins; a name-less row falls back to the
+ * SHARED naming composer's `stripRecordId` (LB-2) so `project:card_draw_control` reads
+ * `card_draw_control` and an opaque auto-id honestly reads `unnamed project` — never a raw id.
+ */
+export function fleetProjectLabel(key: string, name: string | null | undefined): string {
+	if (key === FLEET_NO_PROJECT) return 'no project';
+	return clean(name) ?? stripRecordId(key) ?? 'unnamed project';
+}
+
+/**
+ * What the section's HEADING is actually showing right now.
+ *
+ * LIVE-VERIFIED DEFECT (2026-07-26, browser): the head read a hardcoded `session fleet · all
+ * projects` even with a project filter engaged — so a screen-reader user collapsing the section
+ * heard "all projects" while the list held four `bepinexpack_rounds_port` rows. The heading is the
+ * disclosure's ACCESSIBLE NAME; it must describe the real scope, not the widest possible one
+ * (F-008). Unfiltered → `all projects`; filtered → that project's label, never a raw record id.
+ */
+export function fleetScopeLabel(
+	view: FleetView | null | undefined,
+	options: readonly FleetProjectOption[] | null | undefined
+): string {
+	const project = clean(view?.project);
+	if (!project) return 'all projects';
+	// The resolved options already carry the honest label (including the stale 0-count entry
+	// resolveFleetView appends), so a selected project ALWAYS has a name to show.
+	return (options ?? []).find((o) => o.value === project)?.label ?? fleetProjectLabel(project, null);
+}
+
+// ── Options + counts ──────────────────────────────────────────────────────────────────────
+
+/** One selectable project, with the real number of rows it would show. */
+export interface FleetProjectOption {
+	/** The URL value — a `project:…` id or {@link FLEET_NO_PROJECT}. */
+	value: string;
+	label: string;
+	count: number;
+	/**
+	 * TRUE for an option that is only present because it is the CURRENTLY SELECTED value and no
+	 * loaded row matches it any more (a shared/stale link, or the other filter excluded it). The
+	 * page renders it as an honest "0 shown" state with a clear action — it is never silently
+	 * dropped, which would make the select lie about what is filtering the list.
+	 */
+	stale?: boolean;
+}
+
+/**
+ * The project options derived from the rows that already pass the STATE filter — so selecting one
+ * can never yield an empty list ("never offer a filter option that cannot match"). Named projects
+ * sort alphabetically; the "no project" bucket sorts last.
+ *
+ * nil/empty rows → `[]` (the page renders the project control only when there is a choice).
+ */
+export function fleetProjectOptions(
+	rows: readonly (FleetFilterRow | null | undefined)[] | null | undefined,
+	state: FleetStateFilter = 'all'
+): FleetProjectOption[] {
+	const byKey = new Map<string, FleetProjectOption>();
+	for (const r of rows ?? []) {
+		if (!r || !matchesFleetState(r, state)) continue;
+		const value = fleetProjectKey(r);
+		const existing = byKey.get(value);
+		if (existing) {
+			existing.count += 1;
+			// A later row may carry the name an earlier one lacked — take the first real label.
+			if (existing.label === 'unnamed project') existing.label = fleetProjectLabel(value, r.projectName);
+			continue;
+		}
+		byKey.set(value, { value, label: fleetProjectLabel(value, r.projectName), count: 1 });
+	}
+	return [...byKey.values()].sort((a, b) => {
+		if (a.value === FLEET_NO_PROJECT) return 1;
+		if (b.value === FLEET_NO_PROJECT) return -1;
+		return a.label.localeCompare(b.label);
+	});
+}
+
+/**
+ * The count each STATE chip would show, over the rows that already pass the PROJECT filter — so a
+ * `0` means "selecting this shows nothing", and the page can disable that chip honestly.
+ */
+export function fleetStateCounts(
+	rows: readonly (FleetFilterRow | null | undefined)[] | null | undefined,
+	project: string | null = null
+): Record<FleetStateFilter, number> {
+	const counts: Record<FleetStateFilter, number> = { all: 0, running: 0, failed: 0, attention: 0 };
+	for (const r of rows ?? []) {
+		if (!r) continue;
+		if (project && fleetProjectKey(r) !== project) continue;
+		counts.all += 1;
+		if (isFleetRunning(r)) counts.running += 1;
+		if (isFleetFailure(r)) counts.failed += 1;
+		if (fleetNeedsAttention(r)) counts.attention += 1;
+	}
+	return counts;
+}
+
+/** Apply both filters, preserving the loader's running-first / newest-first ordering. */
+export function filterFleet<T extends FleetFilterRow>(
+	rows: readonly T[] | null | undefined,
+	view: FleetView | null | undefined
+): T[] {
+	const v = view ?? DEFAULT_FLEET_VIEW;
+	const out: T[] = [];
+	for (const r of rows ?? []) {
+		if (!r) continue;
+		if (v.project && fleetProjectKey(r) !== v.project) continue;
+		if (!matchesFleetState(r, v.state)) continue;
+		out.push(r);
+	}
+	return out;
+}
+
+/**
+ * Everything the section needs to render in one pass: the (possibly repaired) view, the visible
+ * rows, both option sets, and the named honest states.
+ */
+export interface ResolvedFleetView<T extends FleetFilterRow> {
+	view: FleetView;
+	/** The rows to render, after both filters. */
+	visible: T[];
+	/** Total rows in the loaded window, before any filter. */
+	total: number;
+	projectOptions: FleetProjectOption[];
+	stateCounts: Record<FleetStateFilter, number>;
+	/**
+	 * TRUE when a project filter is selected that no loaded row matches — a stale/shared link, or
+	 * a project with no rows in the current state. NAMED state: the page says so and offers Clear,
+	 * instead of showing a bare empty list that looks like "no sessions exist".
+	 */
+	staleProject: boolean;
+	/** TRUE when a filter is engaged and it matched nothing (the honest empty, F-008). */
+	filteredEmpty: boolean;
+}
+
+/**
+ * Resolve the whole section state from the loaded rows + the URL view.
+ *
+ * Shadow paths: nil rows → an empty resolution with the view intact; an empty window → no options
+ * and `filteredEmpty:false` (the section's own "no sessions yet" copy owns that case); a stale
+ * project id → kept, flagged, and appended to the options as a `stale` 0-count entry so the select
+ * still shows what is filtering.
+ */
+export function resolveFleetView<T extends FleetFilterRow>(
+	rows: readonly T[] | null | undefined,
+	view: FleetView | null | undefined
+): ResolvedFleetView<T> {
+	const v: FleetView = view ? { ...view } : { ...DEFAULT_FLEET_VIEW };
+	const all = (rows ?? []).filter((r): r is T => !!r);
+	const projectOptions = fleetProjectOptions(all, v.state);
+	const stateCounts = fleetStateCounts(all, v.project);
+	const visible = filterFleet(all, v);
+
+	let staleProject = false;
+	if (v.project && !projectOptions.some((o) => o.value === v.project)) {
+		staleProject = true;
+		// Recover a label from the FULL window (the row may exist but be excluded by the state
+		// filter) before falling back to the id-humanizer.
+		const anyRow = all.find((r) => fleetProjectKey(r) === v.project);
+		projectOptions.push({
+			value: v.project,
+			label: fleetProjectLabel(v.project, anyRow?.projectName ?? null),
+			count: 0,
+			stale: true
+		});
+	}
+
+	return {
+		view: v,
+		visible,
+		total: all.length,
+		projectOptions,
+		stateCounts,
+		staleProject,
+		filteredEmpty: all.length > 0 && visible.length === 0
+	};
+}

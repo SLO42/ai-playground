@@ -1,6 +1,26 @@
+import { availableParallelism } from 'node:os';
 import { sveltekit } from '@sveltejs/kit/vite';
 import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
+
+// ── Test-worker cap — the fix for the ROTATING full-suite failures ──────────────────────
+// 191 of the ~330 suites call `startTestDb()`, which spawns a REAL SurrealDB process on its
+// own loopback port with its own SurrealKV data dir in tmp, then applies all 86 migrations
+// in `beforeAll`. Vitest's default fork count is one-per-core, so on a 24-core box the suite
+// tried to run ~23 SurrealDB servers at once. The result was not a clean failure but a
+// ROTATING one: whichever real-DB/real-git suites happened to lose the I/O race that run
+// blew a timeout, so three consecutive runs produced three different failing sets — which
+// trains everyone to ignore red.
+//
+// Measured on this machine (24 cores), full suite, same commit:
+//   default (~23 forks) → 6 failed files / 145s   (freshen.live: beforeAll TIMED OUT at 90s)
+//   maxForks = 8        → 2 failed files / 117s   (freshen.live: 2.7s)
+// The same suites pass in isolation in seconds (freshen.live 2.7s, orchestrator.test.ts
+// 33/33 in 8.7s), which is what identified contention rather than the tests as the cause.
+//
+// Capping is FASTER as well as stabler: past ~8 workers the extra forks only contend for
+// the one disk. This bounds concurrency without pretending any individual suite is flaky.
+const TEST_MAX_FORKS = Math.max(2, Math.min(8, availableParallelism()));
 
 export default defineConfig({
   plugins: [tailwindcss(), sveltekit()],
@@ -26,6 +46,11 @@ export default defineConfig({
     // SurrealDB testserver teardown (deleteProject + db.close + process kill) can
     // exceed the 10s default and fail a file whose every TEST passed — the documented
     // full-suite flake. 60s keeps teardown bounded without false suite failures.
-    hookTimeout: 60_000
+    hookTimeout: 60_000,
+    // See TEST_MAX_FORKS above — bounds concurrent real-SurrealDB servers so the suite's
+    // failures stop rotating. `forks` is vitest's default pool; named explicitly so the
+    // option is not silently dropped if the default ever changes.
+    pool: 'forks',
+    poolOptions: { forks: { maxForks: TEST_MAX_FORKS } }
   }
 });

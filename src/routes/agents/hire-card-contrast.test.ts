@@ -106,6 +106,12 @@ describe('AV-1 hiring ledger — tone badges use the BODY-AA on-overlay text tok
 
   it('colour is never the ONLY signal — the badge always renders a text label too', () => {
     // The a11y argument for keeping tone as a secondary cue depends on this staying true.
-    expect(/<span class="hire-op" data-tone=\{[^}]*\}>\s*\{hireLabel\(ev\.op\)\}/.test(src)).toBe(true);
+    //
+    // The INVARIANT is "the toned badge also carries a hireLabel() text child" — NOT the name of
+    // whatever loop variable supplies the op. This guard used to pin `hireLabel(ev.op)` verbatim
+    // and so broke when the ledger was regrouped into ceremony threads and the row's head event
+    // became `head` (operator review §5). That is the same over-pinning class as CL-C3/C4's magic
+    // dailySpawnCap (b035577): assert the invariant, not an incidental identifier.
+    expect(/<span class="hire-op" data-tone=\{[^}]*\}>\s*\{hireLabel\([^)]*\)\}/.test(src)).toBe(true);
   });
 });

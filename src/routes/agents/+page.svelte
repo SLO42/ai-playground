@@ -12,6 +12,13 @@
   import { enhance } from '$app/forms';
   import { stream } from '$lib/client/stream.svelte';
   import { isRunBusy, setRunBusy, type AdjBusyMap } from './adj-busy';
+  import SessionRefChips from '$lib/components/agents/SessionRefChips.svelte';
+  import { roleDisplayName } from '$lib/shared/naming';
+  import {
+    groupHiringCeremonies,
+    ceremonyFacts,
+    type HiringCeremonyLike
+  } from '$lib/components/agents/hiring-ledger-core';
   import type { PageData, ActionData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -28,7 +35,16 @@
   // Before this wave the whole hire/cert lifecycle happened invisibly: the engine made real
   // decisions and left no trace an operator could read. Every row here is a REAL persisted
   // decision — nothing is synthesized client-side (F-008).
-  const hiring = $derived(data.hiring ?? []);
+  // Operator review §5/§13 — the feed is now CEREMONY THREADS (events grouped by the
+  // interview_run they already pointed at, with that run's recall/FP/tier/model joined), not 36
+  // loose `Gauntlet scored … recall —` rows. 19 of the 36 live runs BROKE (§13: spawn_failure /
+  // scorer_error, 9 of them duplicate auto-retries), so broken ceremonies are hidden by DEFAULT
+  // behind a counted, reversible disclosure. The rows stay in the DB; this is a VIEW filter.
+  const hiring = $derived(data.hiring ?? { ceremonies: [], totalEvents: 0, erroredCount: 0, retryCount: 0 });
+  let showBrokenRuns = $state(false);
+  const hiringView = $derived(
+    groupHiringCeremonies(hiring.ceremonies as HiringCeremonyLike[], showBrokenRuns)
+  );
 
   /** Plain-language label per audit op (never the raw enum — human-readable bar). */
   const HIRE_OP_LABEL: Record<string, string> = {
@@ -74,12 +90,23 @@
     const d = detail ?? {};
     const num = (k: string): number | null => (typeof d[k] === 'number' ? (d[k] as number) : null);
     const str = (k: string): string | null => (typeof d[k] === 'string' ? (d[k] as string) : null);
-    const recallPart = (): string => {
+    /**
+     * The recall fragment for THIS ledger row's own detail, or null when the row never recorded
+     * the numbers.
+     *
+     * Returning null (rather than the literal `recall —`) matters now that the row sits inside a
+     * ceremony thread: the ceremony HEADER states the authoritative recall joined from the
+     * `interview_run` (`recall 4/4 (100%)`), and the pre-wave flat detail (`{run, status}`) has no
+     * numbers of its own. Emitting `recall —` here printed a contradiction directly beneath the
+     * real figure — and it was the exact string the operator flagged as papering the card. The
+     * honest-unknown case is still stated, once, by `ceremonyFacts` (which can tell "planted
+     * nothing" apart from "no run joined"); repeating a weaker guess here only adds noise.
+     */
+    const recallPart = (): string | null => {
       const found = num('planted_found');
       const total = num('planted_total');
       const r = num('recall');
-      // Honest '—' when the run planted nothing: recall is genuinely unknown, not 0 or 1.
-      if (found === null || total === null || total === 0) return 'recall —';
+      if (found === null || total === null || total === 0) return null;
       return `recall ${found}/${total}${r !== null ? ` (${Math.round(r * 100)}%)` : ''}`;
     };
     switch (op) {
@@ -151,18 +178,12 @@
   const rollup = $derived(data.usageRollup ?? null);
   const granted = $derived(rollup?.granted ?? []);
   const usedTools = $derived(rollup?.usedTools ?? []);
-  // A short, opaque session-id tail for an attribution chip (the full id is the chip title).
-  function sessTail(id: string): string {
-    return id.split(':').pop()?.slice(0, 8) ?? id;
-  }
-  // The honest per-attribution label for a session ref: prefer the role (the "what agent"),
-  // fall back to the intent (the "what kind of work"), else the bare session tail. NEVER
-  // fabricates — an absent role/intent simply degrades to the next honest label (F-008).
-  function refLabel(ref: { roleId: string | null; intent: string | null; sessionId: string }): string {
-    if (ref.roleId) return ref.roleId.split(':').pop() ?? ref.roleId;
-    if (ref.intent) return ref.intent;
-    return sessTail(ref.sessionId);
-  }
+  // THE CHIP WALL (operator review 2026-07-26 §2) — the old page-local `refLabel()` went
+  // `roleId → intent → session-id tail`, and `session.role` is unset on orchestrator-drained
+  // sessions, so ~30 genuinely distinct sessions all rendered the same `code-write` chip. Both
+  // the labelling and the grouping now live in ONE component (SessionRefChips) off the SHARED
+  // naming spine ($lib/shared/naming) — no second competing fallback chain on this page, and the
+  // same treatment for every granted dimension AND the used-by chips.
 
   // ── TASK 16.7b — W-D7c workforce surfaces (WORKFORCE-SPEC §8). Role cards + the §3.4
   //    adjudication queue. Live via the existing SSE onDbChange watchers (no second SSE
@@ -798,38 +819,90 @@
     <div class="card hiring" aria-labelledby="hiring-title">
       <div class="panel-head">
         <span class="eyebrow" id="hiring-title">hiring &amp; certification activity</span>
-        <span class="count mono">{hiring.length} recent</span>
+        <span class="count mono">
+          {hiring.ceremonies.length} ceremon{hiring.ceremonies.length === 1 ? 'y' : 'ies'} · {hiring.totalEvents}
+          event{hiring.totalEvents === 1 ? '' : 's'}
+        </span>
       </div>
-      {#if hiring.length === 0}
+      {#if hiring.ceremonies.length === 0}
         <p class="state-body">
           Nothing hired or certified yet. Gauntlet runs, adjudications, hire decisions and
           staffing acts will appear here as they happen — each with the evidence it rested on.
         </p>
       {:else}
-        <ol class="hire-log" aria-label="hiring and certification events">
-          {#each hiring as ev (ev.id)}
-            {@const why = hireWhy(ev.op, ev.detail)}
-            {@const falsifier = hireFalsifier(ev.detail)}
-            <li class="hire-log-row">
-              <div class="hire-log-head">
-                <span class="hire-op" data-tone={HIRE_OP_TONE[ev.op] ?? 'neutral'}>
-                  {hireLabel(ev.op)}
-                </span>
-                <span class="hire-role mono">{ev.role_slug ?? ev.role}</span>
-                <span class="hire-when mono">{whenLabel(ev.at)}</span>
-              </div>
-              {#if why}
-                <p class="hire-why">{why}</p>
-              {/if}
-              {#if falsifier}
-                <p class="hire-falsifier">
-                  <span class="hire-falsifier-tag">strongest counter-argument</span>
-                  {falsifier}
-                </p>
-              {/if}
-            </li>
-          {/each}
-        </ol>
+        <!-- The broken-run disclosure. Never silent: the count is stated even while hidden, so
+             "17 shown" can never be mistaken for "17 happened" (F-008). -->
+        {#if hiring.erroredCount > 0}
+          <div class="hire-filter">
+            <p class="hire-filter-note" role="note">
+              {hiring.erroredCount} of these {hiring.ceremonies.length} runs BROKE before producing a
+              verdict{#if hiring.retryCount > 0}, {hiring.retryCount} of them automatic re-runs of an
+                earlier attempt{/if}. They are kept in the ledger, not deleted.
+            </p>
+            <button
+              type="button"
+              class="hire-filter-toggle"
+              aria-pressed={showBrokenRuns}
+              onclick={() => (showBrokenRuns = !showBrokenRuns)}
+            >
+              {showBrokenRuns ? 'Hide' : 'Show'} broken runs ({hiring.erroredCount})
+            </button>
+          </div>
+        {/if}
+
+        {#if hiringView.visible.length === 0}
+          <p class="state-body">
+            Every one of the {hiring.ceremonies.length} recorded runs broke before producing a verdict —
+            there is no successful ceremony to show. Use “Show broken runs” above to read what failed.
+          </p>
+        {:else}
+          <ol class="hire-log" aria-label="hiring and certification ceremonies">
+            {#each hiringView.visible as c (c.key)}
+              {@const facts = ceremonyFacts(c)}
+              {@const head = c.events[0]}
+              <li class="hire-log-row" class:broken={c.errored}>
+                <div class="hire-log-head">
+                  <span class="hire-op" data-tone={c.errored ? 'bad' : (HIRE_OP_TONE[head.op] ?? 'neutral')}>
+                    {hireLabel(head.op)}
+                  </span>
+                  <span class="hire-role">
+                    {roleDisplayName({ name: c.role_name, slug: c.role_slug, ref: c.role })}
+                  </span>
+                  <span class="hire-when mono">{whenLabel(c.at)}</span>
+                </div>
+
+                {#if facts.length > 0}
+                  <ul class="hire-facts" aria-label="run facts">
+                    {#each facts as f (f.kind + f.text)}
+                      <li class="hire-fact" data-kind={f.kind} title={f.detail ?? undefined}>{f.text}</li>
+                    {/each}
+                  </ul>
+                {/if}
+
+                <!-- The ceremony's own events, each still stating the WHY it recorded. -->
+                <ul class="hire-events" aria-label="events in this ceremony">
+                  {#each c.events as ev (ev.id)}
+                    {@const why = hireWhy(ev.op, ev.detail)}
+                    {@const falsifier = hireFalsifier(ev.detail)}
+                    <li class="hire-event">
+                      <span class="hire-event-op">{hireLabel(ev.op)}</span>
+                      <span class="hire-event-when mono">{whenLabel(ev.at)}</span>
+                      {#if why}
+                        <span class="hire-why">{why}</span>
+                      {/if}
+                      {#if falsifier}
+                        <span class="hire-falsifier">
+                          <span class="hire-falsifier-tag">strongest counter-argument</span>
+                          {falsifier}
+                        </span>
+                      {/if}
+                    </li>
+                  {/each}
+                </ul>
+              </li>
+            {/each}
+          </ol>
+        {/if}
       {/if}
     </div>
 
@@ -1040,21 +1113,7 @@
                       </span>
                     {/if}
                   </div>
-                  <div class="uo-attrib">
-                    <span class="uo-attrib-label">granted to</span>
-                    <span class="uo-chips">
-                      {#each g.grantedTo as ref (ref.sessionId)}
-                        <a
-                          class="uo-chip"
-                          href={`/claude-code?session=${ref.sessionId}`}
-                          title={ref.sessionId}
-                        >{refLabel(ref)}</a>
-                      {/each}
-                      {#if g.grantedTo.length === 0}
-                        <span class="uo-none">— no in-window session</span>
-                      {/if}
-                    </span>
-                  </div>
+                  <SessionRefChips refs={g.grantedTo} label="granted to" />
                 </li>
               {/each}
             </ul>
@@ -1088,18 +1147,11 @@
                       </span>
                     {/if}
                   </div>
-                  <div class="uo-attrib">
-                    <span class="uo-attrib-label">used by</span>
-                    <span class="uo-chips">
-                      {#each t.sessions as ref (ref.sessionId)}
-                        <a
-                          class="uo-chip"
-                          href={`/claude-code?session=${ref.sessionId}`}
-                          title={ref.sessionId}
-                        >{refLabel(ref)}</a>
-                      {/each}
-                    </span>
-                  </div>
+                  <SessionRefChips
+                    refs={t.sessions}
+                    label="used by"
+                    emptyText="— no in-window session recorded this use"
+                  />
                 </li>
               {/each}
             </ul>
@@ -1837,6 +1889,109 @@
     color: var(--color-text-muted);
   }
 
+  /* ── Operator review §5/§13 — ceremony threads + the broken-run disclosure ────── */
+  .hire-filter {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    justify-content: space-between;
+    gap: var(--space-2);
+    margin-bottom: var(--space-2);
+  }
+  .hire-filter-note {
+    margin: 0;
+    flex: 1 1 20rem;
+    font: var(--type-body-sm);
+    color: var(--color-text-muted);
+  }
+  .hire-filter-toggle {
+    /* `--type-body-sm` is a `font` SHORTHAND and already carries `var(--font-body)`, so the
+       family needs no restating — an explicit `inherit` used to sit here and silently OVERRODE
+       the token it had just applied (and tripped the D-034 typography guard). NOTE: that guard
+       regex-scans raw source and does not strip comments, so never spell the literal
+       declaration out in prose here. */
+    font: var(--type-body-sm);
+    padding: 0.1rem 0.6rem;
+    border-radius: var(--radius-sm);
+    border: var(--border-width) solid var(--color-border);
+    background: var(--color-surface-card);
+    color: var(--color-text-2);
+    cursor: pointer;
+  }
+  .hire-filter-toggle:hover {
+    color: var(--color-text);
+    border-color: var(--color-accent);
+  }
+  .hire-filter-toggle:focus-visible {
+    outline: 2px solid var(--color-focus-ring);
+    outline-offset: 2px;
+  }
+  .hire-filter-toggle[aria-pressed='true'] {
+    border-color: var(--color-accent);
+    color: var(--color-text);
+  }
+  /* A broken ceremony keeps a TEXT fact chip ("run broke · spawn_failure") — the tint is a
+     secondary cue layered on it, never the only signal. */
+  .hire-log-row.broken {
+    border-color: var(--color-error);
+    background: var(--color-error-bg);
+  }
+  .hire-facts {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.3rem;
+  }
+  .hire-fact {
+    font-size: var(--text-xs);
+    padding: 0.05rem 0.4rem;
+    border-radius: var(--radius-sm);
+    border: var(--border-width) solid var(--color-border);
+    background: var(--color-surface-card);
+    color: var(--color-text-2);
+  }
+  /* Fact tints: same AA split as .hire-op — text from the *-on-overlay ramp (body AA on
+     --color-surface-overlay), border from the base semantic token (3:1 UI-component bar). */
+  .hire-fact[data-kind='error'],
+  .hire-fact[data-kind='missing'] {
+    color: var(--color-error-on-overlay);
+    border-color: var(--color-error);
+  }
+  .hire-fact[data-kind='recall'] {
+    color: var(--color-info-on-overlay);
+    border-color: var(--color-info);
+  }
+  .hire-fact[data-kind='stale'],
+  .hire-fact[data-kind='retry'] {
+    color: var(--color-warn-on-overlay);
+    border-color: var(--color-warn);
+  }
+  .hire-events {
+    list-style: none;
+    margin: 0;
+    padding: 0 0 0 var(--space-3);
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+    border-left: var(--border-width) solid var(--color-border);
+  }
+  .hire-event {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-2);
+    font: var(--type-body-sm);
+  }
+  .hire-event-op {
+    color: var(--color-text-2);
+  }
+  .hire-event-when {
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+  }
+
   /* ── HR-5 §7.5 — operator hire queue (B4 gate) ──────────────────────────────── */
   .inline-link {
     color: var(--color-accent);
@@ -2149,42 +2304,6 @@
   .uo-status.na {
     font-style: italic;
   }
-  .uo-attrib {
-    display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: var(--space-1) var(--space-2);
-    font-size: var(--text-xs);
-  }
-  .uo-attrib-label {
-    color: var(--color-text-muted);
-    text-transform: lowercase;
-    min-width: 5rem;
-  }
-  .uo-chips {
-    display: flex;
-    flex-wrap: wrap;
-    gap: 0.3rem;
-  }
-  .uo-chip {
-    font-size: 0.66rem;
-    padding: 0.05rem 0.4rem;
-    border-radius: var(--radius-sm);
-    background: var(--color-surface-card);
-    color: var(--color-text-2);
-    border: var(--border-width) solid var(--color-border);
-    text-decoration: none;
-  }
-  .uo-chip:hover {
-    color: var(--color-text);
-    border-color: var(--color-accent);
-  }
-  .uo-chip:focus-visible {
-    outline: 2px solid var(--color-focus-ring, var(--color-accent));
-    outline-offset: 2px;
-  }
-  .uo-none {
-    color: var(--color-text-muted);
-    font-style: italic;
-  }
+  /* The attribution chips moved into $lib/components/agents/SessionRefChips.svelte (the
+     chip-wall fix, §2) — their styles moved with them so there is ONE place they live. */
 </style>

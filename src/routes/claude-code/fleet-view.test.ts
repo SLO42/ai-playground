@@ -522,6 +522,97 @@ describe('reseedFleetView — a re-publish is not a navigation (DEFECT 1)', () =
 	});
 });
 
+// ── THE SAME HREF, BOTH WAYS (regression, 2026-07-26) ─────────────────────────────────────
+//
+// The gap that let the regression ship green: every case above drives the SAME-href path with the
+// invalidate meaning only, so "same href ⇒ keep the live view" looked unconditionally right. It is
+// not — a real navigation can land on the same href too (click `failed`, then click the sidebar
+// self-link `a[href="/claude-code"]`), and then the URL must win or the address bar and the UI
+// disagree. Both readings of one href are pinned here, together, so they can never again be
+// conflated by a fix to either one.
+//
+// The `navigated` flag is what separates them, and it is NOT a guess: in kit 2.63.0
+// `afterNavigate` fires only from the hydration path (client.js:724) and the tail of `navigate()`
+// (client.js:1987), while `_invalidate` (client.js:405-488) and `replaceState` (client.js:2489-2521)
+// fire neither it nor `navigating` (client.js:1713).
+describe('reseedFleetView — the SAME href means two different things (regression)', () => {
+	// The state a CLICK produced: written to the address bar by `replaceState`, and therefore
+	// absent from `page.url` — which is why `SEEDED` below is the bare address in both cases.
+	const CLICKED: FleetView = { project: null, state: 'failed', open: true };
+	const SEEDED = 'http://x/claude-code';
+
+	it('SAME href + NO navigation (invalidate re-publish) → the clicked view survives', () => {
+		const d = reseedFleetView(SEEDED, new URL(SEEDED), CLICKED, false);
+		expect(d.view).toBeNull();
+		expect(d.href).toBe(SEEDED);
+	});
+
+	it('THE REGRESSION: SAME href + a REAL navigation → the URL wins, so URL and UI agree', () => {
+		// Repro: /claude-code → click `failed` (address bar gains ?fleetState=failed, page.url does
+		// not) → click the sidebar self-link /claude-code. Kit navigates for real; page.url.href
+		// equals the seeded href. Before the fix this returned `view:null`, leaving `failed` pressed
+		// over 32 rows while the address bar had gone back to bare — and a reload then swung it to 40.
+		const d = reseedFleetView(SEEDED, new URL(SEEDED), CLICKED, true);
+		expect(d.view).toEqual(DEFAULT_FLEET_VIEW);
+		expect(d.href).toBe(SEEDED);
+	});
+
+	it('a same-href navigation whose params ALREADY match writes no redundant state', () => {
+		const url = new URL('http://x/claude-code?fleetState=failed');
+		const d = reseedFleetView(url.href, url, CLICKED, true);
+		expect(d.view).toBeNull();
+		expect(d.href).toBe(url.href);
+	});
+
+	it('the flag is consumed ONCE: the invalidate storm AFTER a same-href nav cannot wipe again', () => {
+		// The page's own sequencing, replayed: navigate (flag true) → adopt → then 100 session-row
+		// invalidates at the same href with the flag back to false. If the flag leaked into the
+		// re-publishes, the operator's next filter click would be wiped on every row change.
+		let href = SEEDED;
+		let view: FleetView = { ...CLICKED };
+		const first = reseedFleetView(href, new URL(SEEDED), view, true);
+		href = first.href;
+		if (first.view) view = first.view;
+		expect(view).toEqual(DEFAULT_FLEET_VIEW);
+
+		// The operator now filters again — a click, so the address bar moves and page.url does not.
+		view = { project: null, state: 'attention', open: false };
+		for (let i = 0; i < 100; i += 1) {
+			const d = reseedFleetView(href, new URL(SEEDED), view, false);
+			href = d.href;
+			if (d.view) view = d.view;
+		}
+		expect(view).toEqual({ project: null, state: 'attention', open: false });
+	});
+
+	it('a DIFFERENT href re-seeds with or without the flag (a caller with no signal loses nothing)', () => {
+		const next = new URL('http://x/claude-code?fleetState=running');
+		const expected: FleetView = { project: null, state: 'running', open: true };
+		expect(reseedFleetView(SEEDED, next, CLICKED, false).view).toEqual(expected);
+		expect(reseedFleetView(SEEDED, next, CLICKED, true).view).toEqual(expected);
+	});
+
+	it('the flag defaults to FALSE — an un-signalled caller keeps the conservative re-publish rule', () => {
+		expect(reseedFleetView(SEEDED, new URL(SEEDED), CLICKED).view).toBeNull();
+	});
+
+	it('nil / empty / upstream-error url: a navigation flag never discards the view on a bad url', () => {
+		// The navigation is NOT consumed here — `href` stays the recorded one, so the effect's next
+		// run (with a usable url) still sees the flag and can seed from it.
+		expect(reseedFleetView(SEEDED, null, CLICKED, true)).toEqual({ href: SEEDED, view: null });
+		expect(reseedFleetView(SEEDED, undefined, CLICKED, true)).toEqual({ href: SEEDED, view: null });
+		expect(reseedFleetView(SEEDED, { href: '   ' }, CLICKED, true)).toEqual({
+			href: SEEDED,
+			view: null
+		});
+	});
+
+	it('a same-href navigation with a nil current view resolves to the default, never a throw', () => {
+		expect(reseedFleetView(SEEDED, new URL(SEEDED), null, true).view).toBeNull();
+		expect(reseedFleetView(SEEDED, new URL(SEEDED), undefined, true).view).toBeNull();
+	});
+});
+
 /* ============================================================================
    REGRESSION — DEFECT 2 (MEDIUM, live-verified 2026-07-26):
    the universal escape chip was disabled exactly in the dead end, and its hint

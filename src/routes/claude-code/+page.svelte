@@ -9,7 +9,7 @@
    */
   import { untrack } from 'svelte';
   import { enhance } from '$app/forms';
-  import { invalidate, replaceState } from '$app/navigation';
+  import { afterNavigate, invalidate, replaceState } from '$app/navigation';
   import { page } from '$app/state';
   import { stream } from '$lib/client/stream.svelte';
   import SessionTranscript from '$lib/components/shell/SessionTranscript.svelte';
@@ -81,6 +81,32 @@
   // bookkeeping, never a render input, so it must not be reactive.
   let fleetSeedHref = page.url.href;
 
+  // THE NAVIGATION SIGNAL — the second input the href alone cannot supply.
+  //
+  // REGRESSION (2026-07-26, measured on :5174): keying the re-seed on the href alone made a
+  // SAME-HREF real navigation indistinguishable from an invalidate re-publish. Load
+  // /claude-code → click `failed` (replaceState writes only the address bar) → click the sidebar
+  // self-link `/claude-code`: kit really navigates, `page.url.href` equals the seeded href, the
+  // href test said "re-publish", nothing was adopted — and the address bar lost its params while
+  // `failed` stayed pressed over its 32 rows. Advancing the seed inside `syncFleetUrl` instead
+  // would re-open the wipe above, because an invalidate re-publishes the ORIGINAL bare href.
+  //
+  // `afterNavigate` fires from exactly two places in kit 2.63.0 — hydration (client.js:724,
+  // `type:'enter'`) and the tail of `navigate()` (client.js:1987) — while `_invalidate`
+  // (client.js:405-488) and `replaceState` (client.js:2489-2521) call neither it nor
+  // `navigating` (:1713). So a bump here means "a real navigation happened", for a same-href
+  // navigation as much as a different-href one.
+  //
+  // A monotonic COUNTER rather than a boolean, and an effect that depends on BOTH it and
+  // `page.url`, so the decision is independent of which of the two lands first: whichever runs
+  // last re-runs the effect with both facts present. `$state` because the effect must react to
+  // it; `fleetSeededNav` is a plain `let` — effect bookkeeping, never a render input.
+  let fleetNavEpoch = $state(0);
+  let fleetSeededNav = 0;
+  afterNavigate(() => {
+    fleetNavEpoch += 1;
+  });
+
   // A REAL navigation (a transcript link, a shared URL) re-seeds the view from the new URL — a
   // mere RE-PUBLISH of the same address does not.
   //
@@ -92,13 +118,18 @@
   // `?fleetState=failed&fleet=closed`, collapsed, 0 rows → one invalidate later, SAME URL,
   // EXPANDED, 40 rows. `untrack` stopped the self-bounce; it could not stop the stale-URL clobber.
   //
-  // The rule now lives in the pure `reseedFleetView` (unit-tested): adopt the URL only when its
-  // href actually CHANGED. Identical href ⇒ the live view is strictly newer and wins.
+  // The rule now lives in the pure `reseedFleetView` (unit-tested): adopt the URL when its href
+  // CHANGED, or when a real navigation fired (`fleetNavEpoch`, above) even at the SAME href.
+  // Identical href with no navigation ⇒ a re-publish ⇒ the live view is strictly newer and wins.
   // `untrack` still keeps `fleetView` out of the dependency set: this effect reacts to the URL and
-  // to nothing else, so our own writes can never re-enter it.
+  // to the navigation counter and to nothing else, so our own writes can never re-enter it.
   $effect(() => {
-    const decision = reseedFleetView(fleetSeedHref, page.url, untrack(() => fleetView));
+    const navigated = fleetNavEpoch !== fleetSeededNav;
+    const decision = reseedFleetView(fleetSeedHref, page.url, untrack(() => fleetView), navigated);
     fleetSeedHref = decision.href;
+    // Consume the navigation exactly once: the NEXT invalidate re-publish at this href must read
+    // as a re-publish again, or the wipe returns on the very next session row change.
+    fleetSeededNav = fleetNavEpoch;
     if (decision.view) fleetView = decision.view;
   });
 

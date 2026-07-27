@@ -232,17 +232,17 @@ describe('the view survives the page\'s OWN live stream (live-verified DEFECT)',
      below fires on EVERY session row change — and the same URL rendered aria-expanded=true with
      40 rows. The re-seed effect parsed a `page.url` that `replaceState` never wrote.
 
-     The page must therefore NOT re-parse `page.url` unconditionally; it delegates to the pure,
-     href-keyed `reseedFleetView`, whose own contract is pinned in fleet-view.test.ts. */
+     The page must therefore NOT re-parse `page.url` unconditionally; it delegates to the pure
+     `reseedFleetView`, whose own contract is pinned in fleet-view.test.ts. */
   const reseedEffect = (() => {
     const i = src.indexOf('let fleetSeedHref');
     expect(i, 'the page must record the href it last seeded from').toBeGreaterThan(-1);
     return src.slice(i, src.indexOf('/** Mirror the view into the address bar.'));
   })();
 
-  it('the re-seed goes through the pure href-keyed rule, not a raw re-parse of page.url', () => {
+  it('the re-seed goes through the pure rule, not a raw re-parse of page.url', () => {
     expect(reseedEffect).toMatch(
-      /reseedFleetView\(fleetSeedHref, page\.url, untrack\(\(\) => fleetView\)\)/
+      /reseedFleetView\(\s*fleetSeedHref,\s*page\.url,\s*untrack\(\(\) => fleetView\),\s*navigated\s*\)/
     );
     // The exact shape that shipped the defect: an unconditional parse of the republished URL
     // inside the effect.
@@ -267,5 +267,44 @@ describe('the view survives the page\'s OWN live stream (live-verified DEFECT)',
     expect(src).toMatch(
       /let fleetView = \$state<FleetView>\(parseFleetView\(page\.url\.searchParams\)\)/
     );
+  });
+});
+
+describe('…and a SAME-HREF navigation still re-seeds (the regression the href-only rule shipped)', () => {
+  /* REGRESSION, measured on :5174 after the fix above landed: load /claude-code, click `failed`
+     (replaceState writes the address bar, never `page.url`), then click the sidebar self-link
+     `a[href="/claude-code"]`. Kit really navigates, `page.url.href` equals the seeded href, so the
+     href-only rule adopted nothing — the address bar lost its params while `failed 32` stayed
+     pressed over 32 rows, and a reload silently swung it to 40.
+
+     Advancing the seed inside `syncFleetUrl` would re-open the wipe above (an invalidate
+     re-publishes the ORIGINAL bare href), so the page needs a SECOND, independent signal. It is
+     `afterNavigate`, which in kit 2.63.0 fires only from the hydration path (client.js:724) and
+     the tail of `navigate()` (client.js:1987) — never from `_invalidate` (client.js:405-488) and
+     never from `replaceState` (client.js:2489-2521). */
+  const reseedEffect = src.slice(
+    src.indexOf('let fleetSeedHref'),
+    src.indexOf('/** Mirror the view into the address bar.')
+  );
+
+  it('the page imports the ONE kit hook that fires for navigations and not for invalidates', () => {
+    expect(src).toMatch(/import \{[^}]*\bafterNavigate\b[^}]*\} from '\$app\/navigation'/);
+  });
+
+  it('a navigation bumps a monotonic epoch — the effect input the href cannot supply', () => {
+    expect(src).toMatch(/let fleetNavEpoch = \$state\(0\)/);
+    expect(src).toMatch(/afterNavigate\(\(\) => \{\s*fleetNavEpoch \+= 1;\s*\}\)/);
+  });
+
+  it('the epoch is compared against a NON-reactive seeded counter, never a render input', () => {
+    expect(src).toMatch(/let fleetSeededNav = 0;/);
+    expect(src).not.toMatch(/fleetSeededNav = \$state/);
+    expect(reseedEffect).toMatch(/const navigated = fleetNavEpoch !== fleetSeededNav;/);
+  });
+
+  it('the navigation is CONSUMED once, so the next invalidate storm reads as a re-publish', () => {
+    // Without this line the flag would stay TRUE forever after the first navigation, and every
+    // subsequent `invalidate('app:fleet')` would re-seed — i.e. the original wipe, restored.
+    expect(reseedEffect).toMatch(/fleetSeededNav = fleetNavEpoch;/);
   });
 });

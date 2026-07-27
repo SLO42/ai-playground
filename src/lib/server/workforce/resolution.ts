@@ -36,6 +36,7 @@
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { roleDisplayName } from '$lib/shared/naming';
+import { isScoredStatus } from '$lib/shared/interview-status';
 import { assertRecordId } from '../db/validate';
 import { screen } from '../memory/screen';
 import { checkDeployability } from './deployability';
@@ -433,8 +434,16 @@ export interface ProposalComparison {
 		run: string;
 		status: string;
 		modelId: string;
+		/** null when the run planted nothing OR has not TERMINALLY produced a score. */
 		recall: number | null;
-		falsePositives: number;
+		/**
+		 * null when the run has not TERMINALLY produced a score. Widened from `number` on
+		 * purpose: `interview_run.false_positives` is written by the PASS BAR only, so on a
+		 * non-{passed,failed} run the column is an uninitialised schema DEFAULT 0. Typing it
+		 * `number` forced this object to state a zero it had not measured — the type itself
+		 * made the honest answer unrepresentable.
+		 */
+		falsePositives: number | null;
 		costUsd: number | null;
 		fixtureSetSha: string | null;
 	};
@@ -492,6 +501,26 @@ function recallOf(found: number, total: number): number | null {
  * A queued outcome (budget-unarmed under trigger:'auto') records NO comparison and leaves the
  * proposal in 'interviewing' (honest — the run did not happen); the operator path uses
  * trigger:'operator' (the click IS the budget decision).
+ *
+ * A NON-TERMINAL run (adjudicating / error / running) is treated the same way, and this is the
+ * one place in the terminality rule where getting it wrong PERSISTS. Everywhere else a
+ * fabricated score is merely rendered and a reload corrects it; here it would be written into
+ * `review_proposal.comparison` and read back downstream as fact. Two decisions, both deliberate:
+ *
+ *   • WHAT IS WRITTEN: nothing. The proposal stays 'interviewing' and no comparison row is
+ *     persisted. 'compared' is not a display state — `nextAction` derives 'decide_swap' from it
+ *     and the surface presents the D-039 swap ceremony — so advancing it on a run with no
+ *     verdict asks the operator to decide on a number that does not exist, which is the same
+ *     fabrication one level up. 'interviewing' is also simply TRUE for both non-terminal cases:
+ *     'adjudicating' means the operator still has queue items to resolve on /agents, 'error'
+ *     means the run must be retried. Leaving the proposal there routes to the correct next
+ *     action instead of a dead-end decision screen, and it is the reversible choice — no row
+ *     written is a state nothing downstream can misread.
+ *   • WHAT IS RETURNED: an EXPLICIT UNKNOWN, not null. The spend really happened and the run
+ *     row really exists, so the caller is handed a comparison with `comparable:false`, the
+ *     score fields null, and an `incomparableReason` naming the status. The surface can then
+ *     say "the re-gauntlet ran, run X is adjudicating, no comparison yet" — the fact of the run
+ *     is never silently dropped, it is just never dressed up as a verdict.
  */
 export async function regauntletChallenger(
 	deps: GauntletDeps,
@@ -525,6 +554,20 @@ export async function regauntletChallenger(
 	}
 
 	const run = outcome.run;
+
+	// THE TERMINALITY GATE — the shared one (`$lib/shared/interview-status`), never a locally
+	// re-declared set; a second definition of terminality is exactly how this defect class
+	// survived five point fixes. Fail-closed by construction: an unclassified future status
+	// lands here, not in the scoring branch.
+	if (!isScoredStatus(run.status)) {
+		return {
+			outcome,
+			// The proposal row is NOT advanced and NOT written — see the header comment.
+			proposal,
+			comparison: unscoredComparison(run)
+		};
+	}
+
 	// The incumbent's certifying run at THIS (model_id) for the comparison baseline — the
 	// latest passing run at the same model_id, prompt_sha matching the incumbent's text.
 	let incumbentRun: IncumbentRunRow | null = null;
@@ -553,7 +596,43 @@ export async function regauntletChallenger(
 	return { outcome, proposal: moved, comparison };
 }
 
-/** Compose the §5 comparison object from the challenger's run + the incumbent's baseline. */
+/**
+ * The EXPLICIT UNKNOWN handed back for a challenger run that has not terminally produced a
+ * score. Every score field is null — not 0, not a lower bound dressed as a verdict — and the
+ * reason names the status so the surface states WHY there is nothing to compare.
+ *
+ * This value is returned to the caller and NEVER persisted: `regauntletChallenger` leaves the
+ * proposal in 'interviewing' rather than writing it into `review_proposal.comparison`.
+ */
+function unscoredComparison(run: { id: string; status: string; model_id: string; cost_usd: number | null; fixture_set_sha: string }): ProposalComparison {
+	const why =
+		run.status === 'adjudicating'
+			? "the challenger run is parked on the operator's adjudication queue — resolving it can still RAISE planted_found, so it has no verdict yet (§3.4)"
+			: run.status === 'error'
+				? 'the challenger run BROKE before producing a score — this is not a verdict on the challenger (§3.6); retry the re-gauntlet'
+				: `the challenger run is '${run.status}' — it has not terminally produced a score`;
+	return {
+		comparable: false,
+		incomparableReason: `${why}; no comparison recorded and the proposal stays 'interviewing' (§5)`,
+		challenger: {
+			run: run.id,
+			status: run.status,
+			modelId: run.model_id,
+			recall: null,
+			falsePositives: null,
+			// cost_usd IS real on a non-terminal run — it is summed from PRICED agent_event rows,
+			// not from the pass bar — so it is stated rather than nulled. The spend happened.
+			costUsd: run.cost_usd,
+			fixtureSetSha: run.fixture_set_sha || null
+		},
+		incumbent: null,
+		delta: null,
+		at: new Date().toISOString()
+	};
+}
+
+/** Compose the §5 comparison object from the challenger's run + the incumbent's baseline.
+ *  PRECONDITION: `run.status` is terminal (`isScoredStatus`) — the caller gates. */
 function buildComparison(
 	run: {
 		id: string;

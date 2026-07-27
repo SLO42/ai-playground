@@ -431,6 +431,128 @@ describe('§5 reject', () => {
 	});
 });
 
+// ── TERMINALITY — the one place an ungated score PERSISTS ────────────────────────────
+
+/** A candidate that reports the right FILE but the wrong lines + wrong evidence: a PARTIAL
+ *  match, which the §3.4 scorer queues for the operator → the run finalizes 'adjudicating'.
+ *  This is the non-terminal status `regauntletChallenger` must refuse to score. */
+function partialMatchBackend(defectSlug: string): ScriptedBackend {
+	const plans: CcSpawnPlan[] = [];
+	const probes: ScriptedBackend['probes'] = {};
+	return {
+		plans,
+		probes,
+		kind: 'mock',
+		run(plan: CcSpawnPlan): CcBackendRun {
+			plans.push(plan);
+			return {
+				ccSessionId: `cc_res_${Math.random().toString(36).slice(2, 10)}`,
+				async *stream() {
+					writeFileSync(
+						join(plan.cwd, 'findings.json'),
+						JSON.stringify([
+							{ fixture: defectSlug, file: 'a.ts', lines: [40, 41], class: 'platform-bug', evidence: 'different quote' }
+						]),
+						'utf8'
+					);
+					yield { type: 'done', result: { ok: true, summary: 'done' } } as RuntimeEvent;
+				},
+				async cancel() {}
+			};
+		},
+		async resume() {
+			throw new Error('not in this test');
+		},
+		async interject() {}
+	};
+}
+
+describe('§5 re-gauntlet TERMINALITY — a non-terminal run never writes a score', () => {
+	// THE DEFECT THIS PINS. `regauntletChallenger` read `outcome.run` straight into
+	// buildComparison with no terminality gate, so an 'adjudicating' challenger — a run whose
+	// planted_found is a LOWER BOUND the operator's queue can still raise, and whose
+	// false_positives is an uninitialised DEFAULT 0 the pass bar never wrote — produced a
+	// comparison stating `recall 0.5 · 0 FP` and PERSISTED it into review_proposal.comparison,
+	// then advanced the proposal to 'compared' so the surface offered the D-039 swap decision on
+	// it. Every other instance of this class merely RENDERED a wrong number; this one wrote a row
+	// that everything downstream reads as fact.
+	it('an ADJUDICATING challenger: nothing persisted, proposal stays interviewing, scores null', async () => {
+		const seed = await seedRole();
+		await certifyIncumbent(seed);
+		const proposal = await openProposal(seed);
+		await authorChallenger(db, {
+			proposal: proposal.id,
+			promptCore: 'You are reviewer.\nAmbiguous evidence.',
+			operatorConfirmed: true
+		});
+
+		const re = await regauntletChallenger(depsFor(partialMatchBackend(seed.defectSlug)), {
+			proposal: proposal.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: MODEL,
+			trigger: 'operator'
+		});
+		expect(re.outcome.kind).toBe('ran');
+		if (re.outcome.kind !== 'ran') return;
+		expect(re.outcome.run.status).toBe('adjudicating');
+
+		// ① NOTHING WAS WRITTEN. The proposal stays where it honestly is: still interviewing,
+		// because the interview is not over — the operator has queue items to resolve.
+		expect(re.proposal.status).toBe('interviewing');
+		const persisted = await getReviewProposal(db, proposal.id);
+		expect(persisted!.status).toBe('interviewing');
+		expect(persisted!.comparison ?? null).toBeNull();
+
+		// ② AN EXPLICIT UNKNOWN WAS RETURNED. The spend happened and the run exists, so the caller
+		// is told so — with every score field null rather than a fabricated zero, and a REASON.
+		expect(re.comparison).toBeTruthy();
+		expect(re.comparison!.comparable).toBe(false);
+		expect(re.comparison!.challenger.recall).toBeNull();
+		expect(re.comparison!.challenger.falsePositives).toBeNull();
+		expect(re.comparison!.incumbent).toBeNull();
+		expect(re.comparison!.delta).toBeNull();
+		expect(re.comparison!.challenger.status).toBe('adjudicating');
+		expect(re.comparison!.incomparableReason).toMatch(/adjudication queue/);
+		expect(re.comparison!.incomparableReason).toMatch(/interviewing/);
+
+		// ③ AND THE SWAP IS STILL SHUT. Belt and braces: even if a caller ignored all of the above,
+		// swapFromProposal fail-closes on a proposal that never reached 'compared'.
+		await expect(
+			swapFromProposal(db, { proposal: proposal.id, modelId: MODEL, operatorConfirmed: true })
+		).rejects.toThrow(ResolutionGateError);
+		expect((await getRole(db, seed.role.id))!.active_version).toBe(seed.incumbent.id);
+	}, 60_000);
+
+	it('a TERMINAL challenger is unaffected — the gate withholds, it does not break the path', async () => {
+		// The counterweight: the gate must not turn every re-gauntlet into an unknown. A 'failed'
+		// run is TERMINAL and its score is real, so the comparison is built and persisted exactly
+		// as before (this is the same shape asserted by the red-team block below, restated here so
+		// a gate that fails CLOSED on everything would fail HERE by name).
+		const seed = await seedRole();
+		await certifyIncumbent(seed);
+		const proposal = await openProposal(seed);
+		await authorChallenger(db, {
+			proposal: proposal.id,
+			promptCore: 'You are reviewer.\nSilent.',
+			operatorConfirmed: true
+		});
+		const re = await regauntletChallenger(depsFor(candidateBackend(seed.defectSlug, false)), {
+			proposal: proposal.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: MODEL,
+			trigger: 'operator'
+		});
+		if (re.outcome.kind !== 'ran') throw new Error('expected a ran outcome');
+		expect(re.outcome.run.status).toBe('failed');
+		expect(re.proposal.status).toBe('compared');
+		expect(re.comparison!.challenger.recall).toBe(0);
+		expect(re.comparison!.challenger.falsePositives).toBe(0); // a REAL zero: the pass bar wrote it
+		expect((await getReviewProposal(db, proposal.id))!.comparison).toBeTruthy();
+	}, 60_000);
+});
+
 // ── GOVERNANCE RED-TEAM (the locked invariants) ──────────────────────────────────────
 
 describe('§5 RED-TEAM — no swap without operator confirm AND a passing challenger gauntlet', () => {

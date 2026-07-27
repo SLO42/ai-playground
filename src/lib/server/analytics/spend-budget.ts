@@ -150,9 +150,19 @@ export interface BudgetSafety {
 	perProjectUncapped: boolean;
 	/**
 	 * The LOUD state: at least one autonomous loop is armed AND at least one token ceiling is
-	 * uncapped (0). This is the runaway-spend hole SD-1 makes visible — an armed loop can burn
-	 * unbounded tokens against an uncapped ceiling. false when no loop is armed (an uncapped
-	 * ceiling is harmless with nothing driving spend) or when both ceilings are armed.
+	 * uncapped (0). This is the runaway-spend hole SD-1 makes visible. false when no loop is
+	 * armed (an uncapped ceiling is harmless with nothing driving spend) or when both ceilings
+	 * are armed.
+	 *
+	 * SEVERITY IS NOT UNIFORM, and the UI must not flatten it (F-008 honesty cuts both ways — a
+	 * warning that OVERSTATES is as dishonest as one that hides). Read `dailyUncapped` /
+	 * `perProjectUncapped` to tell the two cases apart:
+	 *   • BOTH uncapped        — genuinely unbounded: nothing caps total spend.
+	 *   • daily armed, per-project uncapped — total spend IS still bounded by the daily ceiling;
+	 *     the narrower risk is that ONE project consumes the whole global allowance.
+	 *   • per-project armed, daily uncapped — each project is bounded, but the number of projects
+	 *     spending in parallel is not.
+	 * Only the first case may be described as having "no backstop".
 	 */
 	uncappedWhileArmed: boolean;
 }

@@ -162,6 +162,7 @@ const watchers: DbSourceHandle[] = [];
  * dashboard still serves. This array is the TEARDOWN list only; server-side introspection goes
  * through `activeOrchestrator` in `$lib/server/orchestrator` (see the note below).
  */
+const orchestrators: Orchestrator[] = [];
 
 // NOTE — there is deliberately NO `activeOrchestrator` accessor exported from this module.
 // It used to live here, and because this module also carries the top-level, EAGER

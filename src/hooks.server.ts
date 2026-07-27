@@ -159,14 +159,24 @@ const watchers: DbSourceHandle[] = [];
  * a module-scope registry (mirrors `watchers`) so the instance is NOT garbage-collected for the
  * life of the server process — its bus subscription is what drives task→ready → spawn. Empty when
  * the DB is down or the Claude Code credential is absent (honest degraded boot — F-008): the
- * dashboard still serves. Exposed via {@link activeOrchestrator} for server-side introspection.
+ * dashboard still serves. This array is the TEARDOWN list only; server-side introspection goes
+ * through `activeOrchestrator` in `$lib/server/orchestrator` (see the note below).
  */
-const orchestrators: Orchestrator[] = [];
 
-/** The live orchestrator, or null when none is running (honest degraded boot). */
-export function activeOrchestrator(): Orchestrator | null {
-	return orchestrators[0] ?? null;
-}
+// NOTE — there is deliberately NO `activeOrchestrator` accessor exported from this module.
+// It used to live here, and because this module also carries the top-level, EAGER
+// `export const startup = bootstrap()` below, any consumer that merely wanted the accessor
+// dragged the entire server boot in with it at import time: initDbFromEnv against the DEV
+// database, the live table watchers, the boot reaper and the m0086 boot-ledger write. Under
+// SvelteKit that is invisible (the boot happens regardless); under `vitest` it meant a test
+// that imported a route module booted the real server, claimed the process-wide Db singleton,
+// and then died at FILE level on its own `initDb(testDb)` with "Db singleton already
+// initialised" — three suites, deterministically, in isolation.
+// The canonical READ-ONLY registry is `setActiveOrchestrator`/`activeOrchestrator` in
+// `$lib/server/orchestrator` (populated by boot.ts startOrchestrator, cleared in
+// stopOrchestrators below). It is side-effect-free by construction — importing it starts
+// nothing — which is exactly why it was created (see its header: "without importing
+// hooks.server.ts (circularity)"). Consumers import it from there, never from here.
 
 /**
  * TASK 16.2 — the PM trigger engine(s) (PM-SPEC §3), held like `orchestrators` so the

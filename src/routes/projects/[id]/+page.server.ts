@@ -141,7 +141,11 @@ import {
 	OrchestratorUnavailableError,
 	SessionControlError
 } from '$lib/server/projects/project-controls';
-import { activeOrchestrator } from '../../../hooks.server';
+// From the side-effect-free orchestrator registry, NOT from hooks.server — importing
+// hooks.server eagerly runs its top-level `bootstrap()` (initDb against the dev DB, live
+// watchers, boot reaper), which is invisible under SvelteKit but boots the real server
+// inside any test that imports this loader and kills it on the Db singleton guard.
+import { activeOrchestrator } from '$lib/server/orchestrator';
 import { getFleetSession, estimateLoopRun, toEstimateDisplay, type RunEstimateDisplay } from '$lib/server/analytics';
 import { PmProposalContractError } from '$lib/server/projects/pm-propose';
 import {

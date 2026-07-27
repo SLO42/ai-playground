@@ -39,7 +39,9 @@ import {
 	type AgentPool,
 	type KeyPresence
 } from '$lib/server/config';
-import { activeOrchestrator } from '../../hooks.server';
+// From the side-effect-free orchestrator registry, NOT from hooks.server — importing
+// hooks.server eagerly runs its top-level `bootstrap()` (see the note in hooks.server.ts).
+import { activeOrchestrator } from '$lib/server/orchestrator';
 import type { Actions, PageServerLoad } from './$types';
 
 /** Resolve the config dir (overridable for tooling/tests; default the repo-root config dir). */

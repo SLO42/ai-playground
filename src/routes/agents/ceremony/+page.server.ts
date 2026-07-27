@@ -54,6 +54,7 @@ import { getRuntime } from '$lib/server/harness';
 import { estimateCeremonyRun, toEstimateDisplay, type RunEstimateDisplay } from '$lib/server/analytics';
 import { loadAgentPool, loadWorkforce, type AgentPool } from '$lib/server/config';
 import { fail, type Actions } from '@sveltejs/kit';
+import { isScoredStatus } from '$lib/shared/interview-status';
 import type { PageServerLoad } from './$types';
 
 /**
@@ -308,20 +309,38 @@ function resolveTierModel(
 /** Map a GauntletOutcome (ran | queued) into the named action result the UI renders. The
  *  queued branch is the §3.7 count-and-surface path (an AUTO trigger over an unarmed cap) —
  *  here every ceremony trigger is operator='operator', so a ran outcome is the norm; queued
- *  surfaces honestly if it ever occurs. */
+ *  surfaces honestly if it ever occurs.
+ *
+ *  THE SCORE KEYS ARE GATED AT THE PAYLOAD, not only in the markup. `falsePositives` is
+ *  written by the PASS BAR only, so it exists ONLY on a terminal run; `plantedFound` /
+ *  `plantedTotal` are real on 'adjudicating' but as PROGRESS (resolving the queue can only
+ *  raise plantedFound, §3.4) and are uninitialised on 'running' / 'error'. Omitting the keys
+ *  the run did not earn means a template cannot render them by accident — the failure mode
+ *  that put `found 0/4 · 0 FP` on this very page's action feedback (F-008). */
 function outcomeResult(outcome: GauntletOutcome): Record<string, unknown> {
 	if (outcome.kind === 'queued') {
 		return { queued: true, reason: outcome.reason };
 	}
 	const run = outcome.run;
+	const scored = isScoredStatus(run.status);
 	return {
 		ran: true,
 		run: run.id,
 		status: run.status,
 		...(run.error_reason ? { errorReason: run.error_reason } : {}),
-		plantedFound: run.planted_found,
-		plantedTotal: run.planted_total,
-		falsePositives: run.false_positives,
+		// Verdict figures — terminal runs only.
+		...(scored
+			? {
+					plantedFound: run.planted_found,
+					plantedTotal: run.planted_total,
+					falsePositives: run.false_positives
+				}
+			: {}),
+		// Progress figures — 'adjudicating' only, and named differently so no surface can mistake
+		// a lower bound for the verdict. NO false-positive count: never written on this finalize.
+		...(run.status === 'adjudicating'
+			? { progressFound: run.planted_found, progressTotal: run.planted_total }
+			: {}),
 		...(run.cost_usd !== null ? { costUsd: run.cost_usd } : {})
 	};
 }

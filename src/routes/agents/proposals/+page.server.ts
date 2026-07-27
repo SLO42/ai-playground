@@ -38,6 +38,7 @@ import {
 import { getRuntime } from '$lib/server/harness';
 import { loadAgentPool, loadWorkforce, type AgentPool } from '$lib/server/config';
 import { fail, type Actions } from '@sveltejs/kit';
+import { isScoredStatus } from '$lib/shared/interview-status';
 import type { PageServerLoad } from './$types';
 
 export interface ProposalsPageData {
@@ -138,18 +139,30 @@ function configDir(): string {
 	return process.env.CONFIG_DIR?.trim() || 'config';
 }
 
-/** Map a GauntletOutcome (ran | queued) into the named action result the UI renders. */
+/** Map a GauntletOutcome (ran | queued) into the named action result the UI renders.
+ *  Score keys are gated at the PAYLOAD through the shared terminality rule — see the twin in
+ *  `routes/agents/ceremony/+page.server.ts` for the column provenance. Today this page's
+ *  markup renders only `status`; emitting an uninitialised `0 FP` anyway is a loaded gun
+ *  pointed at whoever adds the next line to the template. */
 function outcomeResult(outcome: GauntletOutcome): Record<string, unknown> {
 	if (outcome.kind === 'queued') return { queued: true, reason: outcome.reason };
 	const run = outcome.run;
+	const scored = isScoredStatus(run.status);
 	return {
 		ran: true,
 		run: run.id,
 		status: run.status,
 		...(run.error_reason ? { errorReason: run.error_reason } : {}),
-		plantedFound: run.planted_found,
-		plantedTotal: run.planted_total,
-		falsePositives: run.false_positives,
+		...(scored
+			? {
+					plantedFound: run.planted_found,
+					plantedTotal: run.planted_total,
+					falsePositives: run.false_positives
+				}
+			: {}),
+		...(run.status === 'adjudicating'
+			? { progressFound: run.planted_found, progressTotal: run.planted_total }
+			: {}),
 		...(run.cost_usd !== null ? { costUsd: run.cost_usd } : {})
 	};
 }
@@ -260,6 +273,11 @@ export const actions: Actions = {
 					proposal,
 					regauntlet: true,
 					comparable: res.comparison?.comparable ?? null,
+					// Named on the surface, not swallowed: a non-terminal challenger run records NO
+					// comparison and leaves the proposal in 'interviewing' (resolution.ts). Without
+					// this the operator saw "Re-gauntlet adjudicating." and no explanation for why
+					// the swap stage never appeared.
+					incomparableReason: res.comparison?.incomparableReason ?? null,
 					...outcomeResult(res.outcome)
 				}
 			};

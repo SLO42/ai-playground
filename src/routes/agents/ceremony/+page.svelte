@@ -949,17 +949,34 @@
                 <p class="brief-ok" role="status">
                   Fixture activated{#if Number(xfb.staleMarked) > 0} · {String(xfb.staleMarked)} run(s) marked stale{/if}.
                 </p>
-              {:else if xfb?.ok && xfb?.kind === 'reference'}
+              <!-- `&& xfb?.ran` on both branches: a BUDGET-QUEUED outcome still carries its
+                   `kind`, but has no run and therefore no `status`, so these lines printed the
+                   literal string "undefined" as a status. They now fall through to the honest
+                   queued branch below. -->
+              {:else if xfb?.ok && xfb?.kind === 'reference' && xfb?.ran}
                 <p class="brief-ok" role="status">
                   Reference-run {String(xfb.status)}{#if xfb.provisional} (provisional){/if}
                   {#if Array.isArray(xfb.recordedFor) && xfb.recordedFor.length > 0}
                     · proof recorded for {(xfb.recordedFor as string[]).length} fixture(s){/if}
                   {#if xfb.costUsd != null} · {fmtUsd(xfb.costUsd)}{/if}.
                 </p>
-              {:else if xfb?.ok && xfb?.kind === 'interview'}
+              {:else if xfb?.ok && xfb?.kind === 'interview' && xfb?.ran}
+                <!-- THE ACTION-FEEDBACK LINE. This block used to print
+                     `found {plantedFound}/{plantedTotal} · {falsePositives} FP` COMPLETELY
+                     UNGATED — while branching on `status` on the very next line — so triggering an
+                     interview that landed 'adjudicating' or 'error' printed the exact recall and FP
+                     figure this page's own chips (and the interview line above) suppress for those
+                     statuses. Same defect class, sixth surface: a score stated by a run that never
+                     produced it (F-008). It now routes through the ONE shared rule,
+                     `isScoredStatus`, like every other scoring surface. -->
                 <p class="brief-ok" role="status">
-                  Interview {String(xfb.status)} · found {String(xfb.plantedFound)}/{String(xfb.plantedTotal)}
-                  · {String(xfb.falsePositives)} FP{#if xfb.costUsd != null} · {fmtUsd(xfb.costUsd)}{/if}.
+                  Interview {String(xfb.status)}{#if isScoredStatus(String(xfb.status))}
+                    · found {String(xfb.plantedFound)}/{String(xfb.plantedTotal)} plants ·
+                    {String(xfb.falsePositives)} FP{:else if xfb.status === 'adjudicating'}
+                    · {String(xfb.progressFound)}/{String(xfb.progressTotal)} plants found so far
+                    (progress, not a verdict — resolving the queue can only raise it){:else}
+                    · no verdict recorded for this status{#if xfb.errorReason} ·
+                      <span class="mono">{String(xfb.errorReason)}</span>{/if}{/if}{#if xfb.costUsd != null} · {fmtUsd(xfb.costUsd)}{/if}.
                   {#if xfb.status === 'adjudicating'}Routed to the adjudication queue on /agents.
                     {#if Number(xfb.hrAutoResolved) > 0}
                       HR held {String(xfb.hrAutoResolved)} clear item(s) (a sibling escalated, batch-or-nothing) — audit on /agents.{/if}

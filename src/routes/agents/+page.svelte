@@ -393,10 +393,18 @@
                     <!-- ALLOW-LIST, not a fall-through. The bare `{:else}` this replaces meant
                          "not error/running/adjudicating ⇒ has a verdict", so any status added to
                          the schema later would inherit the verdict shape and publish an
-                         uninitialised planted_found / false_positives as a measurement (F-008). -->
-                    <span class="iv-verdict">
-                      found {r.interview.plantedFound}/{r.interview.plantedTotal} plants
-                    </span>
+                         uninitialised planted_found / false_positives as a measurement (F-008).
+
+                         THE VERDICT WORD IS STATED FIRST, and that is not cosmetic. This branch
+                         used to put the recall INTO the `iv-verdict` slot and drop the status
+                         entirely, so a `failed` run and a `passed` run rendered IDENTICALLY here
+                         — `found 4/4 plants · 0 FP` with no way to tell a certification from a
+                         rejection — while the sibling ceremony page printed the status. Two
+                         terminal surfaces disagreeing about what a terminal run says is the exact
+                         property this whole rule exists to enforce, so they now match. -->
+                    <span class="iv-verdict" data-status={r.interview.status}>{r.interview.status}</span>
+                    <span class="iv-sep">·</span>
+                    <span>found {r.interview.plantedFound}/{r.interview.plantedTotal} plants</span>
                     <span class="iv-sep">·</span>
                     <span>{r.interview.falsePositives} FP</span>
                   {:else}

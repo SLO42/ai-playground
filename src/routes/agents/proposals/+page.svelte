@@ -508,7 +508,10 @@
           {:else if f?.ok && (f.authored || f.regauntlet || f.swapped || f.rejected || f.proposedTier || f.tierInterview || f.tierSwapped)}
             <p class="action-ok" role="status">
               {#if f.authored}Challenger authored{f.created === false ? ' (already existed)' : ''}.{/if}
-              {#if f.regauntlet}{f.ran ? `Re-gauntlet ${f.status}` : 'Re-gauntlet queued'}{f.comparable === true ? ' · comparable' : ''}.{/if}
+              {#if f.regauntlet}{f.ran ? `Re-gauntlet ${f.status}` : 'Re-gauntlet queued'}{f.comparable === true ? ' · comparable' : ''}.{#if f.comparable === false && f.incomparableReason}
+                  <!-- The re-gauntlet ran but produced no comparison — say WHY rather than
+                       leaving the operator to wonder where the swap stage went. -->
+                  <span class="incomparable-inline">{String(f.incomparableReason)}</span>{/if}{/if}
               {#if f.swapped}Swapped — challenger is now active.{/if}
               {#if f.proposedTier}Tier-change proposed{f.created === false ? ' (already open)' : ''} → {String(f.targetTier)}.{/if}
               {#if f.tierInterview}{f.alreadyReady ? 'Target tier already certified' : f.ran ? `Tier interview ${f.status}` : 'Tier interview queued'}.{/if}
@@ -745,6 +748,13 @@
     font-size: var(--text-xs);
     color: var(--color-text-muted);
     margin: 0;
+  }
+  /* The same "no comparison, and here is why" voice, inline in the action-feedback line. */
+  .incomparable-inline {
+    display: block;
+    font-size: var(--text-xs);
+    color: var(--color-text-muted);
+    margin-top: var(--space-1, 0.25rem);
   }
   .reject-form,
   .swap-form {

@@ -20,6 +20,7 @@ import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import { getRoleVersion, WorkforceInputError } from './repo';
+import { isScoredStatus } from '$lib/shared/interview-status';
 
 /** One (model_id) cell of the interview plane — all figures from real runs. */
 export interface InterviewPlaneCell {
@@ -33,10 +34,15 @@ export interface InterviewPlaneCell {
 	error: number;
 	adjudicating: number;
 	running: number;
-	/** planted_found / planted_total of the LATEST terminal run; null when no
-	 * terminal run exists or its planted_total is 0 (never a fake 0%). */
+	/** planted_found / planted_total of the LATEST SCORED run — `isScoredStatus`, i.e.
+	 * {passed, failed}. null when no scored run exists or its planted_total is 0 (never a
+	 * fake 0%). An 'error' run is NOT scored: the runner writes `planted_found: 0` on the
+	 * spawn_failure / scorer_error finalizes (workforce/gauntlet.ts), so counting it here
+	 * published `recall 0%` as this model's latest measurement (F-008). */
 	recall: number | null;
-	/** false_positives of the latest terminal run; null when no terminal run. */
+	/** false_positives of the latest SCORED run; null when none. `false_positives` is
+	 * written by the PASS BAR only, so on any non-{passed,failed} run it is an
+	 * uninitialised schema DEFAULT 0, never a measurement. */
 	falsePositives: number | null;
 	/** Σ cost_usd across PRICED runs only; null when none were priced (F-008). */
 	costUsd: number | null;
@@ -94,7 +100,7 @@ export interface RoleTrackRecord {
 	suppressionCount: null;
 }
 
-interface RawRun {
+export interface RawRun {
 	model_id: string;
 	tier: string;
 	status: string;
@@ -121,9 +127,29 @@ interface RawFieldEvent {
 	duration_ms?: number | null;
 }
 
-const TERMINAL = new Set(['passed', 'failed', 'error']);
-
-function foldInterviews(runs: RawRun[]): InterviewPlaneCell[] {
+/**
+ * Fold the runs at one role_version into per-model cells.
+ *
+ * TERMINALITY IS NOT DECLARED HERE. This module used to carry its own
+ * `const TERMINAL = new Set(['passed','failed','error'])` — a SECOND definition of "has this run
+ * produced a score", and one that disagreed with the canonical `$lib/shared/interview-status`:
+ * it admitted `'error'`. An errored run produced NO score (the runner finalizes spawn_failure /
+ * scorer_error with `planted_found: 0` — workforce/gauntlet.ts), so the `recall` / `falsePositives`
+ * cells published `0%` and `0 FP` as this model's latest MEASUREMENT for every broken run — the
+ * F-008 fabrication this whole rule exists to stop, and it was rendering live on `/agents`
+ * ("recall (latest)").
+ *
+ * The duplicate set is precisely how the defect class survived five point fixes, so it is gone:
+ * every terminality question in this file routes through `isScoredStatus`.
+ *
+ * Note what is NOT gated, deliberately: the `passed` / `failed` / `error` / `adjudicating` /
+ * `running` COUNTS. Counting how many runs reached a status is a fact about the runs; it states
+ * no score. Only `recall` and `falsePositives` claim a measurement, so only they are gated.
+ *
+ * Exported for `track-record.test.ts` — the terminality property is asserted directly on this
+ * fold rather than through a live query, so a regression fails by name in milliseconds.
+ */
+export function foldInterviews(runs: RawRun[]): InterviewPlaneCell[] {
 	const byModel = new Map<string, RawRun[]>();
 	for (const r of runs) {
 		const list = byModel.get(r.model_id) ?? [];
@@ -134,7 +160,9 @@ function foldInterviews(runs: RawRun[]): InterviewPlaneCell[] {
 	for (const [model_id, list] of byModel) {
 		// Newest first (started_at was projected + ordered by the query — F-022).
 		const latest = list[0];
-		const latestTerminal = list.find((r) => TERMINAL.has(r.status)) ?? null;
+		// The newest run that TERMINALLY produced a score — the only run allowed to state
+		// recall/FP for this cell. Newest-first order comes from the caller's ORDER BY.
+		const latestScored = list.find((r) => isScoredStatus(r.status)) ?? null;
 		let costUsd: number | null = null;
 		for (const r of list) {
 			if (typeof r.cost_usd === 'number') costUsd = (costUsd ?? 0) + r.cost_usd;
@@ -150,10 +178,10 @@ function foldInterviews(runs: RawRun[]): InterviewPlaneCell[] {
 			adjudicating: list.filter((r) => r.status === 'adjudicating').length,
 			running: list.filter((r) => r.status === 'running').length,
 			recall:
-				latestTerminal && latestTerminal.planted_total > 0
-					? latestTerminal.planted_found / latestTerminal.planted_total
+				latestScored && latestScored.planted_total > 0
+					? latestScored.planted_found / latestScored.planted_total
 					: null,
-			falsePositives: latestTerminal ? latestTerminal.false_positives : null,
+			falsePositives: latestScored ? latestScored.false_positives : null,
 			costUsd,
 			stale: passing.length > 0 && passing.every((r) => r.stale),
 			lastRunAt: latest.started_at != null ? String(latest.started_at) : null

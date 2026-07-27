@@ -30,14 +30,13 @@ import {
 	loadWorkforcePanel,
 	adjudicateInterviewRun,
 	applyHireDecision,
-	listRecentRoleEvents,
-	HIRE_LIFECYCLE_OPS,
+	listHiringActivity,
 	HireGateError,
 	StaffingGateError,
 	WorkforceInputError,
 	type WorkforcePanelData,
 	type AmbiguousResolution,
-	type RecentRoleEventRow
+	type HiringActivity
 } from '$lib/server/workforce';
 import { BriefError } from '$lib/server/projects';
 import { IdentifierError } from '$lib/server/db/validate';
@@ -70,12 +69,28 @@ export interface AgentsData {
 	 * COMPLETION-LEDGER Wave A — the HIRING & CERTIFICATION activity feed: the durable role_event
 	 * ledger narrowed to the hire lifecycle (HIRE_LIFECYCLE_OPS). This is the human-visible half of
 	 * the wave: the engine now records every hire/cert decision with its WHY, and this is where an
-	 * operator actually reads it. Empty array = nothing has been hired or certified yet (honest
-	 * empty, F-008 — the card says so rather than rendering a plausible-looking placeholder).
+	 * operator actually reads it.
+	 *
+	 * Operator review 2026-07-26 §5 — the feed used to be a FLAT list of 36 near-identical
+	 * `Gauntlet scored … recall —` rows. It is now `HiringActivity`: the same ledger rows JOINED
+	 * to the `interview_run` they already pointed at (so recall / FP / tier / model render), GROUPED
+	 * into ceremony threads, and CLASSIFIED (errored / auto-retry) so the surface can hide the
+	 * 19 broken runs (§13) behind a counted, reversible disclosure. No row is deleted or dropped.
+	 *
+	 * `ceremonies: []` = nothing has been hired or certified yet (honest empty, F-008 — the card
+	 * says so rather than rendering a plausible-looking placeholder).
 	 */
-	hiring: RecentRoleEventRow[];
+	hiring: HiringActivity;
 	error?: string;
 }
+
+/** The honest disconnected/empty hiring feed — one literal, so every exit path agrees. */
+const EMPTY_HIRING: HiringActivity = {
+	ceremonies: [],
+	totalEvents: 0,
+	erroredCount: 0,
+	retryCount: 0
+};
 
 /** The config dir for orchestration.yaml — same resolution as the rest of the app. */
 function configDir(): string {
@@ -122,7 +137,7 @@ export const load: PageServerLoad = async ({ depends }): Promise<AgentsData> => 
 			catalog: [],
 			workforce: null,
 			usageRollup: null,
-			hiring: []
+			hiring: EMPTY_HIRING
 		};
 	}
 	try {
@@ -142,7 +157,7 @@ export const load: PageServerLoad = async ({ depends }): Promise<AgentsData> => 
 			// error. A local catch would silently render an empty hiring feed while the rest of the
 			// page looked healthy — the exact "best-effort catch hides a developer bug" defect
 			// (F-020 sweep) this wave is meant to eliminate, not reproduce.
-			listRecentRoleEvents(db, 40, HIRE_LIFECYCLE_OPS)
+			listHiringActivity(db, 60)
 		]);
 		const bundles = agentBundleMap();
 		const catalog: CatalogAgent[] = catalogRows.map((a) => ({
@@ -159,7 +174,7 @@ export const load: PageServerLoad = async ({ depends }): Promise<AgentsData> => 
 			catalog: [],
 			workforce: null,
 			usageRollup: null,
-			hiring: [],
+			hiring: EMPTY_HIRING,
 			error: (err as Error).message
 		};
 	}

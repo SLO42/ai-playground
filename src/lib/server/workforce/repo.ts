@@ -1130,11 +1130,14 @@ export async function listRoleEvents(db: Db, roleId: string, limit = 100): Promi
 	return rows.map(normRoleEvent);
 }
 
-/** A recent role_event with the role's display slug joined — for the workforce activity surface
- *  (the project command-center HR/role pulse). `role_slug` is the human-readable role identity
- *  (role.slug), or null when the link is dangling (honest — never fabricated). */
+/** A recent role_event with the role's display identity joined — for the workforce activity
+ *  surface (the project command-center HR/role pulse). `role_slug`/`role_name` are the
+ *  human-readable role identity, or null when the link is dangling (honest — never fabricated;
+ *  the renderer runs them through the shared naming composer so a dangling role reads as
+ *  `probe_fit`, not `role:probe_fit_1781894354268`). */
 export interface RecentRoleEventRow extends RoleEventRow {
 	role_slug: string | null;
+	role_name: string | null;
 }
 
 /**
@@ -1168,14 +1171,273 @@ export async function listRecentRoleEvents(
 	if (ops && ops.length === 0) return [];
 	const where = ops ? 'WHERE op IN $ops' : '';
 	// F-020: the ORDER BY field (`at`) is in the projection — `SELECT *` covers it.
-	const [rows] = await db.query<[Array<Raw & { role_slug?: unknown }>]>(
-		`SELECT *, role.slug AS role_slug FROM role_event ${where} ORDER BY at DESC LIMIT ${cap};`,
+	const [rows] = await db.query<[Array<Raw & { role_slug?: unknown; role_name?: unknown }>]>(
+		`SELECT *, role.slug AS role_slug, role.name AS role_name
+		   FROM role_event ${where} ORDER BY at DESC LIMIT ${cap};`,
 		ops ? { ops: [...ops] } : {}
 	);
 	return (rows ?? []).map((row) => ({
 		...normRoleEvent(row),
-		role_slug: row.role_slug != null ? str(row.role_slug) : null
+		role_slug: row.role_slug != null ? str(row.role_slug) : null,
+		role_name: row.role_name != null ? str(row.role_name) : null
 	}));
+}
+
+// ── The hiring & certification LEDGER read model (operator review 2026-07-26 §5 + §13) ──
+//
+// The /agents "HIRING & CERTIFICATION ACTIVITY" card rendered 36 near-identical rows, every one
+// `Gauntlet scored … recall —`. Three separate defects, all fixed here rather than in the markup:
+//
+//   (i)  `recall —` was HONEST but needlessly blind. The 36 live rows carry the PRE-WAVE flat
+//        detail `{run, status}`, so the page had no planted_found/planted_total to show — yet the
+//        numbers exist ONE FETCH away: every `interview_run` row has planted_total / planted_found
+//        / false_positives / pass_criteria / status / tier / model_id, and the ledger row already
+//        stores the pointer in `detail.run`. We join it.
+//   (ii) The feed was a FLAT list. A gauntlet ceremony emits several events against ONE run
+//        (started → scored → adjudicated → re-versioned); grouping by run turns 36 loose rows into
+//        threads that read as what actually happened.
+//   (iii) 19 of the 36 runs BROKE (§13: 15 spawn_failure + 4 scorer_error, of which 9 are duplicate
+//        auto-retries), so the operator's view was dominated by dead noise. The rows are CLASSIFIED
+//        here (`errored` / `isRetry`) and the SURFACE defaults to hiding them behind an honest,
+//        counted disclosure. Nothing is deleted and nothing is dropped from the read model —
+//        filtering is a VIEW choice the operator can reverse, not data loss.
+
+/** The run facts joined onto a ceremony — the numbers `recall —` was standing in for. */
+export interface HiringRunFacts {
+	id: string;
+	/** The certification axis (§2.4): the tier + resolved model the gauntlet actually ran at. */
+	tier: string | null;
+	model_id: string | null;
+	provider: string | null;
+	/** running | adjudicating | passed | failed | error. */
+	status: string | null;
+	/** env_timeout | spawn_failure | scorer_error. Set iff status='error' (repo invariant). */
+	error_reason: string | null;
+	/** The run this one auto-retried (§3.6), or null. 9 of the 19 live errors are retries. */
+	retry_of: string | null;
+	planted_total: number | null;
+	planted_found: number | null;
+	false_positives: number | null;
+	/**
+	 * planted_found / planted_total, or NULL when the run planted nothing. A run with 0 plants has
+	 * an UNDEFINED recall — not 0, not 1. Computing it here keeps the honest-null decision in one
+	 * place instead of re-deriving it in the markup (F-008).
+	 */
+	recall: number | null;
+	/** The pass-bar SNAPSHOT the run was judged against ({} when the run recorded none). */
+	pass_criteria: Record<string, unknown>;
+	/** Fixture pool changed since the run (§3.7) — an honest staleness flag, NOT a revocation. */
+	stale: boolean;
+	started_at: string | null;
+	ended_at: string | null;
+}
+
+/** One gauntlet/hire ceremony: the events that belong to one run, plus that run's facts. */
+export interface HiringCeremony {
+	/** `interview_run:…` when the thread has a run, else `event:<role_event id>` (a singleton). */
+	key: string;
+	/** The joined run, or null — see {@link runMissing} for WHY it is null. */
+	run: HiringRunFacts | null;
+	/**
+	 * TRUE when the events pointed at a run that no longer resolves (deleted / dangling pointer).
+	 * Distinguishes "this ceremony has no run" (an op like `staffed` that never had one) from
+	 * "the run it named is GONE" — two different truths that must not render identically.
+	 */
+	runMissing: boolean;
+	/** The role the ceremony was about (raw link + the joined identity; any may be null). */
+	role: string | null;
+	role_slug: string | null;
+	role_name: string | null;
+	/** The ledger events in the thread, newest-first. Never empty. */
+	events: RecentRoleEventRow[];
+	/** The newest event time in the thread (ISO) — the sort key. null when unrecorded. */
+	at: string | null;
+	/** The run BROKE (status='error'). The surface hides these by default, counted + reversible. */
+	errored: boolean;
+	/** The run is an auto-retry of an earlier one (§3.6) — duplicate noise, badged not hidden. */
+	isRetry: boolean;
+}
+
+/** The whole hiring feed: threads + the honest totals the surface discloses. */
+export interface HiringActivity {
+	/** Ceremony threads, newest-first. */
+	ceremonies: HiringCeremony[];
+	/** How many raw ledger events were folded (the pre-grouping count). */
+	totalEvents: number;
+	/** How many ceremonies rest on a BROKEN run (§13) — surfaced, never silently dropped. */
+	erroredCount: number;
+	/** How many ceremonies are auto-retries of an earlier run. */
+	retryCount: number;
+}
+
+/** Max interview_run rows hydrated for one feed read (F-014 — bounded, never a scan). */
+const HIRING_RUN_FETCH_CAP = 200;
+
+/** A finite number, or null. A missing/NaN count is UNKNOWN, never silently 0 (F-008). */
+function numOrNull(v: unknown): number | null {
+	return typeof v === 'number' && Number.isFinite(v) ? v : null;
+}
+
+/** Normalize one interview_run row into {@link HiringRunFacts} (datetimes → ISO, F-013). */
+function normHiringRun(row: Raw): HiringRunFacts {
+	const plantedTotal = numOrNull(row.planted_total);
+	const plantedFound = numOrNull(row.planted_found);
+	return {
+		id: str(row.id),
+		tier: row.tier != null ? str(row.tier) : null,
+		model_id: row.model_id != null ? str(row.model_id) : null,
+		provider: row.provider != null ? str(row.provider) : null,
+		status: row.status != null ? str(row.status) : null,
+		error_reason: row.error_reason != null ? str(row.error_reason) : null,
+		retry_of: row.retry_of != null ? str(row.retry_of) : null,
+		planted_total: plantedTotal,
+		planted_found: plantedFound,
+		false_positives: numOrNull(row.false_positives),
+		// A run that planted nothing has an UNDEFINED recall — null, never 0 (F-008).
+		recall:
+			plantedTotal != null && plantedTotal > 0 && plantedFound != null
+				? plantedFound / plantedTotal
+				: null,
+		pass_criteria: (row.pass_criteria ?? {}) as Record<string, unknown>,
+		stale: row.stale === true,
+		started_at: strDate(row.started_at),
+		ended_at: strDate(row.ended_at)
+	};
+}
+
+/**
+ * The subject pointer a ledger row groups by — the thing the ceremony is ABOUT.
+ *
+ * TWO SHAPES EXIST ON THE LIVE TABLE, and joining on only one is a trap:
+ *   • PRE-WAVE rows (all 36 live `interviewed` rows, newest 2026-06-19) carry the flat
+ *     `detail.run` written by the old thin `role_event{op:'interviewed', detail:{run,status}}`.
+ *   • POST-m0083 rows carry `detail.ref` — `hire-events.ts` emitHireEvent stamps
+ *     `detail: { ...detail, ref: input.ref }` on EVERY hire moment and never writes `run`.
+ * Reading only `detail.run` would light up the historical rows and then go dark the instant a
+ * gauntlet next runs. Both are accepted; `run` wins when a row somehow carries both.
+ *
+ * A `ref` is not always an interview_run (a hire decision refs a `decision_brief:`), which is
+ * fine — grouping a hire ceremony by its brief is still the right thread. Only a pointer that
+ * actually names `interview_run` is handed to {@link isRunPointer} for hydration.
+ */
+function ceremonyPointer(detail: Record<string, unknown> | undefined): string | null {
+	for (const key of ['run', 'ref'] as const) {
+		const v = detail?.[key];
+		if (typeof v !== 'string') continue;
+		const s = v.trim();
+		if (s !== '') return s;
+	}
+	return null;
+}
+
+/** Whether a ceremony pointer names an `interview_run` row (⇒ it can be hydrated with facts). */
+function isRunPointer(pointer: string | null): pointer is string {
+	return pointer != null && pointer.startsWith('interview_run:');
+}
+
+/**
+ * The /agents HIRING & CERTIFICATION feed: the HIRE_LIFECYCLE_OPS ledger, joined to the
+ * `interview_run` rows it points at, grouped into ceremony threads, newest-first.
+ *
+ * BOUNDED (F-014): the ledger read is the existing clamped {@link listRecentRoleEvents}; the run
+ * hydration is a point read over the DISTINCT run pointers in that window, itself capped at
+ * {@link HIRING_RUN_FETCH_CAP}. Neither is a table scan. Params are bound (D-016). No `ORDER BY`
+ * on the run lookup, so there is no F-020 order-idiom obligation there; the ledger query's
+ * `ORDER BY at` field is already in its projection.
+ *
+ * SHADOW PATHS, all four, all named:
+ *   • happy          — events + resolvable runs → threads carrying recall / FP / tier / model.
+ *   • empty          — no ledger rows ⇒ `{ceremonies: [], totalEvents: 0, …}`; the surface shows
+ *                      its honest "nothing hired or certified yet" state (F-008).
+ *   • nil-ish input  — `limit ≤ 0` is clamped by listRecentRoleEvents; an event whose pointer is
+ *                      absent / not a string becomes its OWN singleton ceremony rather than
+ *                      being dropped or merged into a bogus shared thread.
+ *   • upstream error — a run pointer that no longer resolves (deleted run) yields
+ *                      `run: null, runMissing: true`; the thread still renders, honestly labelled.
+ *                      A fault in either query PROPAGATES to the page-level catch — a local
+ *                      best-effort catch here would render an empty feed on a healthy-looking
+ *                      page, which is exactly the defect the F-020 sweep exists to prevent.
+ */
+export async function listHiringActivity(db: Db, limit = 60): Promise<HiringActivity> {
+	const events = await listRecentRoleEvents(db, limit, HIRE_LIFECYCLE_OPS);
+	if (events.length === 0) {
+		return { ceremonies: [], totalEvents: 0, erroredCount: 0, retryCount: 0 };
+	}
+
+	// Distinct interview_run pointers across the window → one bounded point read.
+	const runIds: string[] = [];
+	const seenRun = new Set<string>();
+	for (const ev of events) {
+		const p = ceremonyPointer(ev.detail);
+		if (!isRunPointer(p) || seenRun.has(p)) continue;
+		seenRun.add(p);
+		if (runIds.length < HIRING_RUN_FETCH_CAP) runIds.push(p);
+	}
+
+	const runById = new Map<string, HiringRunFacts>();
+	if (runIds.length > 0) {
+		const links: StringRecordId[] = [];
+		for (const id of runIds) {
+			try {
+				links.push(link(id));
+			} catch {
+				// IdentifierError on a malformed pointer → that ONE ceremony reports runMissing.
+				continue;
+			}
+		}
+		if (links.length > 0) {
+			const [rows] = await db.query<[Raw[]]>(
+				`SELECT id, role, role_version, tier, provider, model_id, status, error_reason, retry_of,
+				        planted_total, planted_found, false_positives, pass_criteria, stale,
+				        started_at, ended_at
+				   FROM interview_run WHERE id IN $ids LIMIT $lim;`,
+				{ ids: links, lim: links.length }
+			);
+			for (const r of rows ?? []) runById.set(str(r.id), normHiringRun(r));
+		}
+	}
+
+	// Group into ceremonies. `events` is already newest-first, so first-seen order IS newest-first
+	// and the thread's `at` is its newest event — no re-sort needed (and none that could reorder
+	// two threads whose newest events tie).
+	const byKey = new Map<string, HiringCeremony>();
+	for (const ev of events) {
+		const pointer = ceremonyPointer(ev.detail);
+		const key = pointer ?? `event:${ev.id}`;
+		const existing = byKey.get(key);
+		if (existing) {
+			existing.events.push(ev);
+			// A thread inherits the first non-null role identity it sees — a later event in the same
+			// ceremony can carry the slug when an earlier one's link was dangling.
+			existing.role ??= ev.role ?? null;
+			existing.role_slug ??= ev.role_slug;
+			existing.role_name ??= ev.role_name;
+			continue;
+		}
+		const run = isRunPointer(pointer) ? (runById.get(pointer) ?? null) : null;
+		byKey.set(key, {
+			key,
+			run,
+			// Only an interview_run pointer can be "missing" — a `decision_brief:` ref was never
+			// expected to hydrate into run facts, so it must not be reported as a broken link.
+			runMissing: isRunPointer(pointer) && run == null,
+			role: ev.role ?? null,
+			role_slug: ev.role_slug,
+			role_name: ev.role_name,
+			events: [ev],
+			at: ev.at,
+			errored: run?.status === 'error',
+			isRetry: run?.retry_of != null
+		});
+	}
+
+	const ceremonies = [...byKey.values()];
+	return {
+		ceremonies,
+		totalEvents: events.length,
+		erroredCount: ceremonies.filter((c) => c.errored).length,
+		retryCount: ceremonies.filter((c) => c.isRetry).length
+	};
 }
 
 // ── §2.6 bundle_digest honesty ───────────────────────────────────────────────────

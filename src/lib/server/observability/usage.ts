@@ -65,11 +65,31 @@ export interface SessionToolBreakdown {
 	capped: boolean;
 }
 
-/** A reference to a session that touched a capability/tool, with attribution labels. */
+/**
+ * A reference to a session that touched a capability/tool, with attribution labels.
+ *
+ * CHIP-WALL FIX (operator review 2026-07-26 §2): the /agents "granted to" / "used by" chips
+ * rendered ~30 IDENTICAL `code-write` labels because the only discriminating field the UI could
+ * reach was `intent` — `role` is unset on orchestrator-drained sessions (0/32 live). The rows
+ * were never duplicates; the LABEL was. Every field below except `sessionId`/`taskId`/`roleId`/
+ * `intent` was added to make the chips honestly distinguishable:
+ *   • `startedAt`  — already in the roll-up's SELECT projection, previously dropped on the floor.
+ *   • `taskTitle`  — the strongest discriminator (100% populated where a task exists), resolved
+ *                    by ONE bounded lookup over the window's distinct task ids.
+ *   • `roleName` / `roleSlug` — so the shared naming composer ($lib/shared/naming) can render a
+ *                    PURPOSE, not a raw `role:…` record id (the standing operator naming rule).
+ * Every one is honestly null when absent — never `str(undefined)` (F-013).
+ */
 export interface SessionRef {
 	sessionId: string;
 	/** The task record id the session ran for, or null (a workflow-step session has no task). */
 	taskId: string | null;
+	/**
+	 * `task.title` for {@link taskId}, resolved by a bounded second lookup. null when the session
+	 * has no task, when the task row was deleted (dangling link — honest, never fabricated), or
+	 * when the title is blank.
+	 */
+	taskTitle: string | null;
 	/**
 	 * The workforce role record id the session ran AS (session.role — pm / hr-recruiter / coder),
 	 * the "what agent" attribution, or null on a session with no role link (a plain task session).
@@ -77,8 +97,14 @@ export interface SessionRef {
 	 * ON session role, m-role). Honest null when absent — never str(undefined) (F-013).
 	 */
 	roleId: string | null;
+	/** `role.name` for {@link roleId} (bounded lookup); null when absent/dangling/blank. */
+	roleName: string | null;
+	/** `role.slug` for {@link roleId} (bounded lookup); null when absent/dangling/blank. */
+	roleSlug: string | null;
 	/** The resolved intent slug the session ran as (session.granted_intent, UO-1), or null. */
 	intent: string | null;
+	/** `session.started_at`, ISO-coerced (F-013). null when the column is absent/unparseable. */
+	startedAt: string | null;
 }
 
 /** The capability dimension a granted id belongs to. */
@@ -198,6 +224,78 @@ function idOrNull(v: unknown): string | null {
 }
 
 /**
+ * Coerce a SurrealDB datetime column to an ISO string, or null (F-013 — the recurrent defect:
+ * a raw SDK datetime escaping a `load` blows up devalue, and `String(undefined)` renders the
+ * literal `"undefined"` in the UI).
+ *
+ * Shadow paths: nil → null · a `Date` → `.toISOString()` · an unparseable string → null (honest
+ * unknown, never a fabricated timestamp) · a well-formed string → normalized ISO.
+ */
+function isoOrNull(v: unknown): string | null {
+	if (v == null) return null;
+	if (v instanceof Date) return Number.isNaN(v.getTime()) ? null : v.toISOString();
+	const s = String(v).trim();
+	if (s === '' || s === 'undefined' || s === 'null') return null;
+	const d = new Date(s);
+	return Number.isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+/** A non-empty trimmed string, or null. Blank/absent is NOT a name (F-008). */
+function textOrNull(v: unknown): string | null {
+	if (v == null) return null;
+	const s = String(v).trim();
+	return s === '' || s === 'undefined' || s === 'null' ? null : s;
+}
+
+/**
+ * Resolve a set of record ids to a `id → row` map with ONE bounded query.
+ *
+ * Used to hydrate the chip labels (task titles, role names) that make the /agents attribution
+ * chips distinguishable. The lookup is a point read over ids that came out of the session window
+ * itself, so it is O(distinct links) — never a table scan, and it carries its own LIMIT (F-014).
+ * No `ORDER BY`, so there is no F-020 order-idiom obligation.
+ *
+ * Shadow paths, all named:
+ *   • EMPTY id set          → `{}` with NO round-trip (a `WHERE id IN []` is a wasted query).
+ *   • a MALFORMED id        → `assertRecordId` throws `IdentifierError`; that ONE id is skipped
+ *                             (its chip keeps the honest null label) rather than failing the
+ *                             whole roll-up. Ids here originate from the DB, so this is defense
+ *                             in depth, not an expected path.
+ *   • a DANGLING link       → the row simply does not come back; the map has no entry and the
+ *                             caller renders null (honest, F-008 — never an invented title).
+ *   • the query itself throws → propagates. A read fault is a real error and belongs to the
+ *                             page-level catch; swallowing it would silently blank every label
+ *                             (the "best-effort catch hides a developer bug" defect, F-020 sweep).
+ */
+async function fetchByIds<T extends { id: unknown }>(
+	db: Db,
+	table: 'task' | 'role',
+	fields: string,
+	ids: readonly string[]
+): Promise<Map<string, T>> {
+	const out = new Map<string, T>();
+	if (ids.length === 0) return out;
+	const links: StringRecordId[] = [];
+	for (const id of ids) {
+		try {
+			links.push(link(id));
+		} catch {
+			continue; // IdentifierError on a malformed id → skip this one id, keep the roll-up.
+		}
+	}
+	if (links.length === 0) return out;
+	const [rows] = await db.query<[T[]]>(
+		`SELECT ${fields} FROM ${table} WHERE id IN $ids LIMIT $lim;`,
+		{ ids: links, lim: links.length }
+	);
+	for (const r of rows ?? []) {
+		const id = idOrNull(r.id);
+		if (id != null) out.set(id, r);
+	}
+	return out;
+}
+
+/**
  * (a) PER-SESSION tool breakdown — fold the session's `tool_use` `message` rows into
  * tool-name → count. The raw rows are written per launch.ts eventToMessage (kind='tool_use',
  * tool_call.name = the invoked tool); `session.tool_iter_count` is the grand total, this is the
@@ -251,6 +349,7 @@ interface RawRollupSession {
 	id: unknown;
 	task: unknown;
 	role: unknown;
+	started_at?: unknown;
 	granted_skills?: unknown;
 	granted_agents?: unknown;
 	granted_mcp?: unknown;
@@ -279,11 +378,19 @@ interface RawToolUseRow {
  * `sessionsCapped` / `toolRowsCapped`. The roll-up restricts the tool_use scan to the SAME session
  * window so granted/used attribution is over a consistent set.
  *
+ * ATTRIBUTION LABELS (§2 chip-wall fix): each {@link SessionRef} is hydrated with `taskTitle` /
+ * `roleName` / `roleSlug` / `startedAt` so the /agents chips can render a PURPOSE instead of ~30
+ * copies of the same intent slug. `started_at` was already in the session projection (no SELECT
+ * change ⇒ no new F-020 risk); the title/name come from two BOUNDED point lookups over the
+ * window's distinct task/role links — never a scan.
+ *
  * Shadow paths: no sessions / no tool rows → empty `granted` + `usedTools`, counts 0 (honest
  * empty, F-008); a session with NO recorded grant (legacy row, normGrantedRow → null) contributes
  * nothing to `granted` but its tool_use rows still count toward `usedTools` with wasGranted=null
  * (we cannot assert granted-ness for it); a tool_use row whose session is outside the window is
- * not folded (kept consistent with the granted set).
+ * not folded (kept consistent with the granted set); a session with no task/role link, or a
+ * DANGLING one, yields null labels (the chip falls back through the shared naming composer to an
+ * honest placeholder — never an invented name).
  */
 export async function usageRollup(db: Db, opts: UsageRollupOptions = {}): Promise<UsageRollup> {
 	const sessionCap = Math.max(1, Math.floor(opts.sessionCap ?? DEFAULT_ROLLUP_SESSION_CAP));
@@ -301,17 +408,47 @@ export async function usageRollup(db: Db, opts: UsageRollupOptions = {}): Promis
 	const sessionsCapped = rawSessions.length > sessionCap;
 	const sessions = sessionsCapped ? rawSessions.slice(0, sessionCap) : rawSessions;
 
+	// Hydrate the label dimensions the chips need (§2 chip-wall fix). `task` and `role` are LINKS
+	// on the session row; without their titles/names every chip degrades to the intent slug and a
+	// wall of ~30 identical labels. Two bounded point lookups over the window's DISTINCT ids —
+	// small (live: 23 tasks, 8 roles) and independent, so they run concurrently.
+	const distinctIds = (pick: (s: RawRollupSession) => unknown): string[] => {
+		const set = new Set<string>();
+		for (const s of sessions) {
+			const id = idOrNull(pick(s));
+			if (id != null) set.add(id);
+		}
+		return [...set];
+	};
+	const [taskById, roleById] = await Promise.all([
+		fetchByIds<{ id: unknown; title?: unknown }>(db, 'task', 'id, title', distinctIds((s) => s.task)),
+		fetchByIds<{ id: unknown; name?: unknown; slug?: unknown }>(
+			db,
+			'role',
+			'id, name, slug',
+			distinctIds((s) => s.role)
+		)
+	]);
+
 	// Build a SessionRef + granted view per in-window session, indexed by id for the tool fold.
 	const refById = new Map<string, SessionRef>();
 	const grantedById = new Map<string, GrantedCapabilities | null>();
 	for (const s of sessions) {
 		const id = idOrNull(s.id);
 		if (id == null) continue;
+		const taskId = idOrNull(s.task);
+		const roleId = idOrNull(s.role);
+		const task = taskId != null ? taskById.get(taskId) : undefined;
+		const role = roleId != null ? roleById.get(roleId) : undefined;
 		refById.set(id, {
 			sessionId: id,
-			taskId: idOrNull(s.task),
-			roleId: idOrNull(s.role),
-			intent: s.granted_intent == null ? null : String(s.granted_intent)
+			taskId,
+			taskTitle: textOrNull(task?.title),
+			roleId,
+			roleName: textOrNull(role?.name),
+			roleSlug: textOrNull(role?.slug),
+			intent: s.granted_intent == null ? null : String(s.granted_intent),
+			startedAt: isoOrNull(s.started_at)
 		});
 		grantedById.set(id, normGrantedRow(s as unknown as Record<string, unknown>));
 	}

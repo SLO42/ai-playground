@@ -1,10 +1,12 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { StringRecordId } from 'surrealdb';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
 import { createProject, deleteProject } from '../projects/repo';
 import { createTask } from '../tasks/repo';
+import { createRole } from '../workforce/repo';
 import { launchSession, type LaunchInput } from '../sessions/launch';
 import { EventBus } from '../events/bus';
 import {
@@ -310,5 +312,92 @@ describe('UO-2 usageRollup — cross-session granted-vs-used attribution (distin
 		await seedSession({ tools: ['Bash', 'Bash', 'Bash'] });
 		const r = await usageRollup(db, { toolRowCap: 2 });
 		expect(r.toolRowsCapped).toBe(true);
+	});
+});
+
+// ── THE CHIP WALL (operator review 2026-07-26 §2) — attribution labels, vs REAL SurrealDB ──
+//
+// The defect: the /agents "granted to" / "used by" chips rendered ~30 identical `code-write`
+// labels because the only discriminator the UI could reach was `intent`. `started_at` was already
+// in the SELECT and dropped on the floor; `task.title` and `role.name` were one bounded lookup
+// away. A stubDb test cannot prove this — it does not parse SurrealQL, so the `WHERE id IN $ids`
+// point reads would pass green while being broken live (F-020's lesson). Hence real Surreal.
+describe('UO-2 usageRollup — SessionRef attribution labels (§2 chip-wall fix)', () => {
+	it('hydrates taskTitle / roleName / roleSlug / startedAt from the REAL rows', async () => {
+		const role = await createRole(db, {
+			slug: 'chip-wall-reviewer',
+			name: 'Chip Wall Reviewer',
+			purpose: 'prove the label join is live'
+		});
+		const namedTask = await createTask(db, {
+			project: projectId,
+			title: 'Unblock 1 stalled task(s)',
+			description: 'the live shape the operator saw'
+		});
+		const sid = await seedSession({ tools: ['Bash'], toolAllow: ['Bash'] });
+		// Simulate a workforce-activated session: role + a distinctly-titled task.
+		await db.query(`UPDATE $sid SET role = $role, task = $task;`, {
+			sid: new StringRecordId(sid),
+			role: new StringRecordId(role.id),
+			task: new StringRecordId(namedTask.id)
+		});
+
+		const r = await usageRollup(db);
+		const grant = r.granted.find((g) => g.dimension === 'tool-allow' && g.id === 'Bash');
+		const ref = grant!.grantedTo.find((s) => s.sessionId === sid);
+		expect(ref).toBeTruthy();
+		expect(ref!.roleId).toBe(role.id);
+		expect(ref!.roleName).toBe('Chip Wall Reviewer');
+		expect(ref!.roleSlug).toBe('chip-wall-reviewer');
+		expect(ref!.taskId).toBe(namedTask.id);
+		expect(ref!.taskTitle).toBe('Unblock 1 stalled task(s)');
+		// F-013: an ISO STRING, never a raw SDK datetime (which would blow up devalue in a load).
+		expect(typeof ref!.startedAt).toBe('string');
+		expect(ref!.startedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
+		expect(Number.isNaN(Date.parse(ref!.startedAt!))).toBe(false);
+	});
+
+	it('a session with NO role reads honest nulls — never str(undefined) (F-013/F-008)', async () => {
+		const sid = await seedSession({ tools: ['Read'], toolAllow: ['Read'] });
+		const r = await usageRollup(db);
+		const grant = r.granted.find((g) => g.dimension === 'tool-allow' && g.id === 'Read');
+		const ref = grant!.grantedTo.find((s) => s.sessionId === sid);
+		expect(ref!.roleId).toBeNull();
+		expect(ref!.roleName).toBeNull();
+		expect(ref!.roleSlug).toBeNull();
+		// The seed task exists but is titled 'work' — the join resolves it, honestly.
+		expect(ref!.taskTitle).toBe('work');
+		expect(ref!.intent).toBe('code-write');
+	});
+
+	it('a DANGLING task link yields taskTitle null and never fails the roll-up', async () => {
+		const doomed = await createTask(db, {
+			project: projectId,
+			title: 'about to be deleted',
+			description: 'x'
+		});
+		const sid = await seedSession({ tools: ['Glob'], toolAllow: ['Glob'] });
+		await db.query(`UPDATE $sid SET task = $task;`, {
+			sid: new StringRecordId(sid),
+			task: new StringRecordId(doomed.id)
+		});
+		await db.query(`DELETE $task;`, { task: new StringRecordId(doomed.id) });
+
+		const r = await usageRollup(db);
+		const grant = r.granted.find((g) => g.dimension === 'tool-allow' && g.id === 'Glob');
+		const ref = grant!.grantedTo.find((s) => s.sessionId === sid);
+		expect(ref).toBeTruthy();
+		expect(ref!.taskId).toBe(doomed.id); // the link is still recorded — honest
+		expect(ref!.taskTitle).toBeNull(); // …but the title genuinely does not exist
+	});
+
+	it('the same enrichment reaches the `used by` refs, not only `granted to`', async () => {
+		const sid = await seedSession({ tools: ['Write'], toolAllow: [] });
+		const r = await usageRollup(db);
+		const used = r.usedTools.find((t) => t.tool === 'Write');
+		const ref = used!.sessions.find((s) => s.sessionId === sid);
+		expect(ref).toBeTruthy();
+		expect(ref!.taskTitle).toBe('work');
+		expect(typeof ref!.startedAt).toBe('string');
 	});
 });

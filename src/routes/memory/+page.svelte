@@ -9,7 +9,7 @@
    * (§155/§156). Svelte 5 runes only.
    */
   import { invalidate } from '$app/navigation';
-  import { page } from '$app/stores';
+  import { page } from '$app/state';
   import { stream } from '$lib/client/stream.svelte';
   import MemoryTabs from '$lib/components/shell/MemoryTabs.svelte';
   import MemoryScene from '$lib/components/scene/MemoryScene.svelte';
@@ -33,7 +33,7 @@
   // is decorative-augmenting — the honest Explorer text views stay the default + always
   // reachable. Seeded from ?lens=scene so the view is deep-linkable.
   let lens = $state<'explorer' | 'scene'>(
-    $page.url.searchParams.get('lens') === 'scene' ? 'scene' : 'explorer'
+    page.url.searchParams.get('lens') === 'scene' ? 'scene' : 'explorer'
   );
 
   // The live animation feed for the Scene (the ONE SSE). The component owns NO truth — this
@@ -59,7 +59,7 @@
   // Keyword recall filter (client-side over the live list — honest: filters real rows only).
   // Seeded from ?q= so a deep link (e.g. the /cannibalize "recall →" link, which passes a
   // memory row id) lands pre-filtered on the target finding. Matches content OR the row id.
-  let query = $state($page.url.searchParams.get('q') ?? '');
+  let query = $state(page.url.searchParams.get('q') ?? '');
   const filtered = $derived(
     query.trim()
       ? memories.filter((m) => {

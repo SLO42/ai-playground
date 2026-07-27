@@ -262,6 +262,24 @@ export function fleetScopeLabel(
 	return (options ?? []).find((o) => o.value === project)?.label ?? fleetProjectLabel(project, null);
 }
 
+/**
+ * The qualifier the ALWAYS-VISIBLE head counts need to stay TRUE.
+ *
+ * LIVE-VERIFIED DEFECT (2026-07-26, browser, `?fleetProject=project:bepinexpack_rounds_port`):
+ * the head read `session fleet · bepinexpack_rounds_port` beside `0 running · 40 recent · 32
+ * failed` over a 4-row list. Both halves are individually correct — the counts are deliberately
+ * window-wide so collapsing can never hide a failure — but they used to be reconciled by the
+ * heading's own hardcoded `all projects`. Scoping the heading ({@link fleetScopeLabel}) orphaned
+ * the counts, so a reader attributes 32 failures to a project that has 4 (F-008).
+ *
+ * The counts stay window-wide (that invariant is the point); they SAY SO instead. Unfiltered the
+ * heading already reads `all projects`, so the qualifier would be noise → null. A state-only
+ * filter does not narrow the heading either, so it also needs no qualifier.
+ */
+export function fleetCountScopeNote(view: FleetView | null | undefined): string | null {
+	return clean(view?.project) ? 'across all projects' : null;
+}
+
 // ── Options + counts ──────────────────────────────────────────────────────────────────────
 
 /** One selectable project, with the real number of rows it would show. */

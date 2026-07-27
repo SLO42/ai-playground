@@ -101,6 +101,28 @@ describe('collapse — a real, accessible disclosure', () => {
     expect(fleetHead).toMatch(/fleetWindowCounts\.failed > 0/);
     expect(fleetHead).toMatch(/class="count-failed"/);
   });
+
+  it('those window-wide counts QUALIFY themselves once the heading is project-scoped', () => {
+    // REGRESSION: the heading became project-scoped while the counts beside it stayed window-wide
+    // and unlabelled, so one head made two contradicting claims (`bepinexpack_rounds_port` next to
+    // `40 recent · 32 failed` over 4 rows). The counts stay window-wide — they now say so.
+    expect(fleetHead).toMatch(/\{#if fleetCountScope\}<span\s+class="count-scope"/);
+    expect(src).toMatch(/const fleetCountScope = \$derived\(fleetCountScopeNote\(fleetView\)\)/);
+    // CAUGHT IN THE BROWSER: Svelte trims a text node's leading whitespace at an element
+    // boundary, so a plain space inside the span rendered `32 failedacross all projects`. The
+    // separator must be a literal `&nbsp;` — the same fix `.count-failed` above already carries.
+    expect(fleetHead).toMatch(/class="count-scope"\s*>&nbsp;\{fleetCountScope\}/);
+    // It lives INSIDE the same `.count` element as the numbers it qualifies — never as a separate
+    // fact elsewhere in the head, and never inside the toggle, where it would corrupt the
+    // disclosure's accessible name (which `fleetScope` alone owns).
+    const countEl = fleetHead.slice(fleetHead.indexOf('<span class="count mono">'));
+    expect(countEl).toMatch(/class="count-scope"/);
+    const toggle = fleetHead.slice(
+      fleetHead.indexOf('<button'),
+      fleetHead.indexOf('<span class="count mono">')
+    );
+    expect(toggle).not.toMatch(/count-scope/);
+  });
 });
 
 describe('filters — real data, real counts, no dead option', () => {

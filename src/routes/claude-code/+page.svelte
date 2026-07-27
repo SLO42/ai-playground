@@ -21,6 +21,7 @@
     FLEET_STATE_HINTS,
     FLEET_STATE_LABELS,
     applyFleetViewToParams,
+    fleetCountScopeNote,
     fleetScopeLabel,
     fleetStateCounts,
     isFleetFiltered,
@@ -128,6 +129,11 @@
   const fleetFiltered = $derived(isFleetFiltered(fleetView));
   /** What the heading actually shows — the real project scope, never a blanket "all projects". */
   const fleetScope = $derived(fleetScopeLabel(fleetView, fleetResolved.projectOptions));
+  /**
+   * The qualifier that keeps the window-wide head counts TRUE once the heading beside them is
+   * narrowed to one project — without it the two halves of one head disagree (F-008).
+   */
+  const fleetCountScope = $derived(fleetCountScopeNote(fleetView));
   /** The head's one-line summary of what is filtering, shown even when collapsed. */
   const fleetFilterSummary = $derived.by((): string | null => {
     if (!fleetFiltered) return null;
@@ -412,6 +418,8 @@
         <span class="count mono">
           {running.length} running · {recent.length} recent{#if fleetWindowCounts.failed > 0}<span
               class="count-failed">&nbsp;· {fleetWindowCounts.failed} failed</span
+            >{/if}{#if fleetCountScope}<span class="count-scope"
+              >&nbsp;{fleetCountScope}</span
             >{/if}
         </span>
       </div>
@@ -1367,6 +1375,13 @@
   .count-failed {
     color: var(--color-error-on-overlay);
     font-weight: 600;
+  }
+  /* The qualifier that reconciles the window-wide counts with a project-scoped heading. It keeps
+     the muted weight of the counts it qualifies (never the failure emphasis, which ends before
+     it) and never wraps away from them — split across lines it would stop reading as one claim. */
+  .count-scope {
+    font-weight: 400;
+    white-space: nowrap;
   }
   .fleet-body {
     display: flex;

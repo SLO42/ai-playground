@@ -28,6 +28,7 @@ import {
 	fleetProjectKey,
 	fleetProjectLabel,
 	fleetProjectOptions,
+	fleetCountScopeNote,
 	fleetScopeLabel,
 	fleetStateCounts,
 	isDefaultFleetView,
@@ -381,5 +382,54 @@ describe('fleetScopeLabel — the heading names the REAL scope (live-verified de
 		expect(fleetScopeLabel({ project: '   ', state: 'all', open: true }, [])).toBe('all projects');
 		// Options missing entirely (an upstream resolve that never ran) → the shared id-humanizer.
 		expect(fleetScopeLabel({ project: 'project:rounds', state: 'all', open: true }, [])).toBe('rounds');
+	});
+});
+
+describe('fleetCountScopeNote — the head counts stay TRUE beside a scoped heading (regression)', () => {
+	// REGRESSION (2026-07-26, live at `?fleetProject=project:bepinexpack_rounds_port&fleetState=failed`):
+	// scoping the heading orphaned the window-wide counts beside it — `bepinexpack_rounds_port`
+	// next to `0 running · 40 recent · 32 failed` over a 4-row list. Before the heading was scoped,
+	// its own hardcoded `all projects` had been reconciling those counts. The counts REMAIN
+	// window-wide by design (a collapse must never hide a failure); they now say so.
+	it('happy: a project-scoped heading forces the counts to declare their real scope', () => {
+		const r = resolveFleetView(WINDOW, { project: 'project:rounds', state: 'all', open: true });
+		// The exact pairing that read as a lie: scoped heading + unscoped counts.
+		expect(fleetScopeLabel(r.view, r.projectOptions)).toBe('ROUNDS');
+		expect(fleetCountScopeNote(r.view)).toBe('across all projects');
+	});
+
+	it('the no-project bucket is a narrowing too — it also needs the qualifier', () => {
+		const r = resolveFleetView(WINDOW, { project: FLEET_NO_PROJECT, state: 'all', open: true });
+		expect(fleetCountScopeNote(r.view)).toBe('across all projects');
+	});
+
+	it('a STALE project id still narrows the heading, so the counts still qualify themselves', () => {
+		const r = resolveFleetView(WINDOW, {
+			project: 'project:card_draw_control',
+			state: 'all',
+			open: true
+		});
+		expect(r.staleProject).toBe(true);
+		expect(fleetCountScopeNote(r.view)).toBe('across all projects');
+	});
+
+	it('unfiltered: the heading already reads "all projects" — a qualifier would be noise', () => {
+		expect(fleetCountScopeNote(DEFAULT_FLEET_VIEW)).toBeNull();
+		// A STATE-only filter does not narrow the heading either, so the counts need nothing.
+		expect(fleetCountScopeNote({ project: null, state: 'failed', open: true })).toBeNull();
+	});
+
+	it('nil / blank / upstream error: never throws, never emits a stray qualifier', () => {
+		expect(fleetCountScopeNote(null)).toBeNull();
+		expect(fleetCountScopeNote(undefined)).toBeNull();
+		expect(fleetCountScopeNote({ project: '   ', state: 'all', open: true })).toBeNull();
+	});
+
+	it('the qualifier and the heading never both claim the widest scope (no double "all projects")', () => {
+		for (const project of [null, 'project:rounds', FLEET_NO_PROJECT]) {
+			const r = resolveFleetView(WINDOW, { project, state: 'all', open: true });
+			const head = `${fleetScopeLabel(r.view, r.projectOptions)} ${fleetCountScopeNote(r.view) ?? ''}`;
+			expect(head.match(/all projects/g) ?? []).toHaveLength(1);
+		}
 	});
 });

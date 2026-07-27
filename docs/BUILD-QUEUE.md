@@ -9,7 +9,64 @@
 
 > ⏭ **RESUME PLAN (operator, 2026-06-26):** **BL-R1 DONE** (`eed3163`+`bcbc1f5`) · **BL-H1 digest DONE** · **BL-H2 eval DONE — headroom NO-ADOPT/idea-only** (`docs/HEADROOM-DIGEST.md` §6; F-049). Recovery + headroom closed; **recovery-harden-2 DONE** (RH-1 BL-R2 `d11db2f` + RH-2 wi-harden-2 `e89c9c5` + RH-3 `c58e5fb`, pushed) — the loop is hardened. Next + LAST — **go-live for ROUNDS**: bring up DB (v2 :8000) + dev server `CLAUDE_CODE_OAUTH_TOKEN` UNSET (F-029) → operator hits Continue → watch ROUNDS + `/projects/[id]/graph`. Boot reaper now runs BL-R1 release+reset, so go-live live-validates that path. Open deferred (non-blocking): BL-R3 (2 task-status MEDIUMs), BL-GUX-FIX (3 graph-UI test gaps), wi-harden done. (bring up DB + dev server token-unset → operator hits Continue → watch ROUNDS + the new `/projects/[id]/graph`). Server is currently DOWN (paused). All work committed + pushed to origin/v2 (tip `1da738e`); docs on v2-main. The full "alive" arc + repo-creation + usage-observability + command-center-ux + lifecycle-graph are DONE. Open tracked: BL-R1, wi-harden-2 (latent), headroom (BL-H1/H2), backlog (BL-1/BL-2/BL-2b).
 
-> ⏸ **OPERATOR PAUSE #3 (2026-07-27) — DO NOT AUTO-CHAIN. SUPERSEDES PAUSE #2 below.**
+> ⏸ **OPERATOR PAUSE #4 (2026-07-27) — DO NOT AUTO-CHAIN. SUPERSEDES PAUSE #3 below.**
+> Lane B unchanged and still COMPLETE (`origin/v2-lane-b` = `e25738b`, clean, 0/0 vs remote).
+> Lane A ran the FP-2 close-out and was stopped mid-fix-loop. **Tree CLEAN. `v2` HEAD = `a4b36e7`,
+> now 6 commits ahead of `origin/v2` (`b035577`), STILL UNPUSHED. SurrealDB is DOWN.**
+>
+> **WHAT THE CLOSE-OUT ESTABLISHED — the verification task did its job.** FP-2v's first verdict was
+> *"the tip was correct"*: both fixes (`58a57e9` HIGH, `fe3aa24` MEDIUM) were verified against the
+> real code and the live app and neither needed changing. `hiring-ledger-core` uses a genuine
+> TERMINAL allow-list, so an unknown status falls to the WITHHOLD side and cannot silently inherit
+> `scored`. That is the good outcome for a verify task, and it was reported as such rather than
+> padded with invented work.
+> `ced89e4` then closed the terminality defect CLASS rather than its two known instances.
+>
+> **THEN THE REVIEW FOUND THE ANCHOR ITSELF WAS BLIND — the best find of the run.**
+> `src/lib/shared/interview-status.test.ts:31` used `String.prototype.match` WITHOUT `/g`, which
+> returns the FIRST occurrence — while SurrealDB `OVERWRITE` makes the LAST applied DEFINE the one
+> in force. Re-DEFINing a field in a later migration is schema.ts's DOMINANT idiom (measured:
+> `type ON agent_event` ×6, `kind ON scene_event` ×4, `status ON task` ×2, `op ON role_event` ×2),
+> so the one load-bearing guarantee of the commit did not hold, and the test would have stayed
+> GREEN FOREVER while a widening migration added an unclassified status. Fixed in `a4b36e7`
+> (`matchAll(/…/g)` → take the LAST), diff is ONE test file, zero runtime files.
+> **It was MUTATION-PROVEN closed**: injecting a widening `DEFINE FIELD OVERWRITE status ON
+> interview_run … "cancelled"` into m0086 makes the test fail BY NAME; the reverse narrowing
+> mutation fires the other assertion. That is the standard to hold future guard-tests to.
+> The same review also caught a **D-038 honesty defect in a commit message**: `ced89e4` asserted a
+> green full suite (`vitest 323 files ✓`) that did not exist.
+>
+> **WHY IT STOPPED HERE:** the red-team then FAILED `a4b36e7` on a NEW in-scope HIGH — **a SIXTH
+> score surface still fabricates, inside a scope-locked file**: `agents/ceremony/+page.svelte:961-962`
+> renders `found {plantedFound}/{plantedTotal} · {falsePositives} FP` UNGATED. The fix-loop was
+> mid-flight when the operator stopped it. **`a4b36e7` is therefore an unverified tip AGAIN — the
+> same state PAUSE #3 recorded, one layer deeper.**
+>
+> **THE OPEN THREAD THAT MATTERS MOST (deferred HIGH, do not lose):**
+> `src/lib/server/workforce/resolution.ts:522-576` **PERSISTS** a fabricated score — worse than
+> rendering one, because a bad render is corrected by a reload and a bad row is not.
+> `regauntletChallenger` takes `outcome.run` straight through without a terminality gate.
+> Also still open: `track-record.ts:124` keeps its OWN `TERMINAL` set (including `'error'`) instead
+> of importing `isScoredStatus` — confirmed RENDERING live · `HIRING_RUN_FETCH_CAP=200` truncates
+> silently with no honest partial signal (`repo.ts:1374`) · the hiring header count is the
+> UNFILTERED total while the list defaults to filtered · no render test for the two new
+> honest-unknown `{:else}` branches · the migration-order grounding test asserts DECLARATION order
+> while the authority is the `schemaMigrations` ARRAY.
+> One carried item did NOT reproduce and is retired: "off-token literals in SessionRefChips.svelte".
+>
+> **`npm test` on `v2` is RED independently of any of this** — `projects/[id]/loops-tab.live`,
+> `pm-autonomous-action`, `pm-fit-verdict-action` all throw `Db singleton already initialised`.
+> That is FP-3 ITEM 4(d) and it reproduces in isolation, so it is a real lifecycle defect.
+>
+> **FP-3 NEVER STARTED.**
+>
+> **Order when the pause lifts:** (1) close the ceremony `961-962` HIGH and re-verify `a4b36e7`,
+> then push lane A — six commits are riding on an unverified tip; (2) FP-3; (3) merge `v2-lane-b`
+> → `v2` `--no-ff` + RE-GATE the merge result; (4) **`review-and-gate`**; (5) **`TASK-BOARD-SPEC` P1**.
+> Consider promoting `resolution.ts:522-576` ahead of FP-3 — it writes bad data, and everything
+> else on this list only displays it.
+
+> ⏸ **OPERATOR PAUSE #3 (2026-07-27) — SUPERSEDED BY PAUSE #4 ABOVE.**
 > Lane B is FINISHED and pushed. Lane A was stopped mid-flight; its work is COMMITTED and the
 > worktree is CLEAN, but the tip commit has NOT been re-reviewed and NOTHING is pushed.
 >

@@ -313,22 +313,25 @@ describe('shadow paths — nil / empty / upstream error', () => {
 
 // ── RED-TEAM follow-ups (wave-v2.2b-b deferral ledger) ───────────────────────────
 
-describe('RT-1 (F-008) enqueueReview dedup catch — swallow ONLY the unique-violation, re-raise the rest', () => {
-	it('a real dedup collision (UNIQUE index already contains) coalesces to a null no-op', async () => {
-		// Enqueue once, then again with the SAME session ⇒ the work_item_dedup UNIQUE index
-		// (dedup_key = the session id) collides; the second call returns null, not a throw.
+describe('RT-1 / F-048 — enqueueReview dedups on a DETERMINISTIC id, across the status transition', () => {
+	// enqueueReview used to CREATE with a RANDOM id and lean on the m0012 work_item_dedup UNIQUE
+	// index over the computed `dedup_key` VALUE — a key that includes the MUTABLE `status`. That
+	// guards the insert but NOT the pending→processing transition (F-048), and does not hold under
+	// concurrent inserts on this build (F-026). It now routes through the deterministic-id
+	// enqueue(), so these tests pin the NEW contract.
+
+	it('the review row IS the deterministic unit id (routed through enqueue, not a random CREATE)', async () => {
 		const s = await makeSession();
 		const first = await enqueueReview(db, { session: s, kind: 'memory', turnText: 'first' });
-		expect(first).not.toBeNull();
-		// F-057-class regression (pins the corrected workqueue.ts/schema.ts §4.12 comment):
-		// enqueueReview is the SOLE active-window RANDOM-id producer that relies on the
-		// work_item_dedup UNIQUE index — it does NOT use the deterministic-id enqueue() scheme,
-		// so its row id is NOT activeWorkItemId(...). If it is ever routed through enqueue()
-		// (making the "sole random-id producer" note stale), this inequality breaks.
-		expect(first).not.toBe(activeWorkItemId('memory_review', s, s));
-		const second = await enqueueReview(db, { session: s, kind: 'memory', turnText: 'second' });
-		expect(second).toBeNull(); // dedup no-op — the real unique-violation signal
-		// Exactly ONE pending review for the session (the dedup actually coalesced).
+		// The inverse of the old assertion: the id is now the unit's stable hash, which is exactly
+		// what makes it survive the claim transition below.
+		expect(first).toBe(activeWorkItemId('memory_review', s, s));
+	});
+
+	it('a second enqueue for a PENDING review coalesces to a null no-op (one row)', async () => {
+		const s = await makeSession();
+		expect(await enqueueReview(db, { session: s, kind: 'memory', turnText: 'first' })).not.toBeNull();
+		expect(await enqueueReview(db, { session: s, kind: 'memory', turnText: 'second' })).toBeNull();
 		const [rows] = await db.query<[Array<{ c: number }>]>(
 			`SELECT count() AS c FROM work_item WHERE session = $sid GROUP ALL;`,
 			{ sid: new StringRecordId(s) }
@@ -336,9 +339,66 @@ describe('RT-1 (F-008) enqueueReview dedup catch — swallow ONLY the unique-vio
 		expect(rows[0]?.c).toBe(1);
 	});
 
-	it('a CREATE error containing the substring "index" but NOT the unique phrase re-raises (the F-008 core)', async () => {
-		// Direct unit-level proof of the regex tightening: simulate the SurrealDB layer throwing
-		// an HNSW/index-build style error (contains "index", is NOT "already contains/exists").
+	// ── THE F-048 CASE ITSELF — the hole the old random-id CREATE left open ────────────
+	it('a second enqueue while the review is PROCESSING still dedups (F-048 status-transition)', async () => {
+		const s = await makeSession();
+		const first = await enqueueReview(db, { session: s, kind: 'memory', turnText: 'first' });
+		expect(first).not.toBeNull();
+
+		// CLAIM it — the transition that used to free the `…|pending` dedup_key slot and let a
+		// second row through while the first was still running (double-mining a turn into the
+		// APPEND-ONLY knowledge tables, downstream of a paid LLM call).
+		await db.query(`UPDATE $rid SET status = "processing";`, {
+			rid: new StringRecordId(first!)
+		});
+
+		const second = await enqueueReview(db, { session: s, kind: 'memory', turnText: 'second' });
+		expect(second, 'a processing twin must still dedup — this is F-048').toBeNull();
+
+		const [rows] = await db.query<[Array<{ c: number }>]>(
+			`SELECT count() AS c FROM work_item WHERE session = $sid GROUP ALL;`,
+			{ sid: new StringRecordId(s) }
+		);
+		expect(rows[0]?.c, 'exactly one review row across the transition').toBe(1);
+	});
+
+	it('once the review is TERMINAL the session is re-queueable (the window reopens, same id)', async () => {
+		// The dedup window is the ACTIVE window, not "forever" — a finished review must not wedge
+		// the session out of ever being mined again.
+		const s = await makeSession();
+		const first = await enqueueReview(db, { session: s, kind: 'memory', turnText: 'first' });
+		await db.query(`UPDATE $rid SET status = "done";`, { rid: new StringRecordId(first!) });
+		const again = await enqueueReview(db, { session: s, kind: 'memory', turnText: 'next turn' });
+		expect(again).toBe(first); // the unit id is reused, reset to pending
+		const [rows] = await db.query<[Array<{ c: number; status: string }>]>(
+			`SELECT count() AS c, status FROM work_item WHERE session = $sid GROUP BY status;`,
+			{ sid: new StringRecordId(s) }
+		);
+		expect(rows).toHaveLength(1);
+		expect(rows[0].status).toBe('pending');
+	});
+
+	it('CONCURRENT enqueues for one session collapse to ONE row (F-026 — the index alone did not)', async () => {
+		const s = await makeSession();
+		const results = await Promise.all(
+			Array.from({ length: 5 }, (_, i) =>
+				enqueueReview(db, { session: s, kind: 'memory', turnText: `racer ${i}` })
+			)
+		);
+		// Exactly one racer enqueued; the rest deduped to null.
+		expect(results.filter((r) => r !== null)).toHaveLength(1);
+		const [rows] = await db.query<[Array<{ c: number }>]>(
+			`SELECT count() AS c FROM work_item WHERE session = $sid GROUP ALL;`,
+			{ sid: new StringRecordId(s) }
+		);
+		expect(rows[0]?.c).toBe(1);
+	});
+
+	// ── F-008 core, preserved: a best-effort catch must never swallow a REAL write failure ──
+	it('a non-collision DB error PROPAGATES — it is never coalesced into a silent null', async () => {
+		// The old code string-matched error messages and could swallow an unrelated fault (an
+		// HNSW index-build error merely CONTAINS "index"). enqueue() re-raises anything that is
+		// not the narrow primary-key collision, so the fault still surfaces.
 		const throwingDb = {
 			query: async (sql: string) => {
 				if (/SELECT kind FROM/.test(sql)) return [[{ kind: 'task' }]];
@@ -348,21 +408,6 @@ describe('RT-1 (F-008) enqueueReview dedup catch — swallow ONLY the unique-vio
 		await expect(
 			enqueueReview(throwingDb, { session: sessionId, kind: 'memory', turnText: 't' })
 		).rejects.toThrow(/index `memory_vec` is being built/);
-	});
-
-	it('a CREATE error in the "already contains"/"already exists" shape coalesces to null', async () => {
-		for (const msg of [
-			"Database index `work_item_dedup` already contains 'session:abc', with record 'work_item:x'",
-			'Database record `work_item:dup` already exists'
-		]) {
-			const dupDb = {
-				query: async (sql: string) => {
-					if (/SELECT kind FROM/.test(sql)) return [[{ kind: 'task' }]];
-					throw new Error(msg);
-				}
-			} as unknown as Db;
-			expect(await enqueueReview(dupDb, { session: sessionId, kind: 'memory', turnText: 't' })).toBeNull();
-		}
 	});
 });
 

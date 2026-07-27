@@ -3103,16 +3103,21 @@ const m0086_boot_skip_ledger: Migration = {
 // it closes the F-048 status-split clobber (the old `dedup_key = …|status` key recomputed on claim and
 // let a 2nd enqueue slip in as a fresh `…|pending`) WITHOUT a schema change.
 //
-// The `work_item_dedup` UNIQUE index (m0012) is DELIBERATELY LEFT in place: ONE active-window
-// producer, loop.ts enqueueReview (a `memory_review` work_item, status pending), still `CREATE`s with
-// a random id and relies on that index for its dedup. reinterview (activation.ts) and queued-interview
-// (gauntlet.ts) now route through the deterministic-id enqueue() and do NOT rely on the index; the two
-// `status:'done'` audit tokens (activation.ts sentinel-sweep, gauntlet.ts auto-interview) are terminal
-// and never in the active window. The deterministic-id path for task_run is unaffected by the index
-// (the id is the guard; the index never false-fires because the same unit is always the same single
-// row). DEFERRED (written down, not silently cut): routing loop.ts enqueueReview through the same
-// deterministic-id enqueue() to give IT the same F-026-proof concurrency guarantee — out of BL-R3's
-// task_run scope.
+// The `work_item_dedup` UNIQUE index (m0012) is DELIBERATELY LEFT in place, but NOTHING now relies
+// on it for active-window dedup. reinterview (activation.ts), queued-interview (gauntlet.ts) and —
+// as of the F-048 residue fix — loop.ts enqueueReview (the `memory_review` work_item) all route
+// through the deterministic-id enqueue(). The two `status:'done'` audit tokens (activation.ts
+// sentinel-sweep, gauntlet.ts auto-interview) are terminal and never in the active window. The
+// index never false-fires because the same unit is always the same single row.
+//
+// BL-R3's written-down DEFERRED item ("route loop.ts enqueueReview through the deterministic-id
+// enqueue()") is now DONE. It closed a live F-048 hole: enqueueReview CREATEd with a random id, so
+// the `…|pending` dedup_key slot was freed the moment the orchestrator claimed the row and flipped
+// it to `processing` — a second enqueue then created a SECOND review and the session's turn was
+// mined twice into the APPEND-ONLY knowledge tables (D-015/D-028), downstream of a paid LLM call.
+// It was also exposed to F-026 on the insert itself. No migration was required for that fix, for
+// the same reason none was required for BL-R3: the guard is the deterministic PRIMARY record id
+// computed in code, not schema — no field, index or existing row changes shape.
 
 /**
  * The full, ordered DATA-MODEL §4 schema. Pass to runMigrations(root, …).

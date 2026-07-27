@@ -20,6 +20,8 @@
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
+// The F-048/F-026-proof deterministic-id enqueue (see enqueueReview below) — NOT a raw CREATE.
+import { enqueue } from '../orchestrator/workqueue';
 import type { Embedder } from './embed';
 import { storeMemories, type MemoryCandidate, type StoredMemory, type ExtractFn, buildExtraction } from './store';
 import {
@@ -102,9 +104,35 @@ export interface EnqueueReviewInput {
  * the turn text + review kind; the orchestrator drains it (shelling the host agent CLI,
  * §9.3) under the daily-spend / PID-lock / spawn-depth caps that double as the
  * poisoned-self-reinjection circuit breaker (§9.3). The work_type is whitelisted to the
- * memory writer; the dedup_scope keys on the session so one pending review per session.
- * Returns the work_item id, or null when a pending review for that session already exists
- * (the dedup_key UNIQUE constraint coalesces it).
+ * memory writer; the dedup_scope keys on the session so one review per session in the ACTIVE
+ * window. Returns the work_item id, or null when an active review for that session already
+ * exists (deduped) — and null too for the interview exclusion below.
+ *
+ * ── F-048 RESIDUE, CLOSED (BL-R3's written-down DEFERRED item) ──────────────────────────
+ * This function used to `CREATE work_item` with a RANDOM id and lean on the m0012
+ * `work_item_dedup` UNIQUE index over the computed `dedup_key` VALUE. That key is
+ * `work_type|session|dedup_scope|status` — keyed on the MUTABLE `status`, which is precisely
+ * the F-048 shape: it guards the INSERT but not the status TRANSITION. Concretely, the hole:
+ *
+ *   1. enqueueReview(S) → row A, dedup_key = `memory_review|S|S|pending`.
+ *   2. The orchestrator CLAIMS A → status flips to `processing` → the VALUE RECOMPUTES to
+ *      `memory_review|S|S|processing`, so the `…|pending` slot is now FREE.
+ *   3. A second enqueueReview(S) collides with nothing and CREATEs a SECOND row while the
+ *      first is still running → the session's turn is mined TWICE. Because the knowledge
+ *      tables are append-only (D-015/D-028), that duplicate is not idempotent: it lands as
+ *      duplicate memories, downstream of a paid LLM call.
+ *
+ * It was also exposed to F-026 on the insert itself: on this SurrealDB build a secondary
+ * UNIQUE index over a computed VALUE does NOT hold under concurrent inserts.
+ *
+ * Both halves are now guarded by routing through `enqueue()`, whose unit key is a
+ * DETERMINISTIC PRIMARY record id (`work_item:<sha(work_type|session|dedup_scope)>`) that is
+ * STABLE across the pending→processing claim — so the `processing` twin is seen and deduped,
+ * and the primary key is collision-atomic where the secondary index is not.
+ *
+ * NO MIGRATION IS NEEDED, for the same reason BL-R3 shipped none: the guard is the record id
+ * computed in code, not schema. The m0012 index stays (harmless — the same unit is always the
+ * same single row, so it never false-fires) and no existing row changes shape.
  */
 export async function enqueueReview(db: Db, input: EnqueueReviewInput): Promise<string | null> {
 	// TASK 16.6 (WORKFORCE-SPEC §4.2) — the D-027 FAST-WRITER EXCLUSION for gauntlet
@@ -119,38 +147,22 @@ export async function enqueueReview(db: Db, input: EnqueueReviewInput): Promise<
 	});
 	if (krows[0]?.kind === 'interview') return null;
 
-	const content: Record<string, unknown> = {
-		work_type: 'memory_review',
-		session: link(input.session),
-		priority: 5,
-		status: 'pending',
+	// One review per session in the active window (D-008). `enqueue()` owns the dedup: it
+	// classifies the unit's deterministic row (active ⇒ dedup, terminal ⇒ guarded reuse,
+	// absent ⇒ create) and raises only on a genuine write failure. That replaces the old
+	// catch-and-string-match: no error-message pattern here can swallow a real fault (F-008).
+	const { id, enqueued } = await enqueue(db, {
+		workType: 'memory_review',
 		payload: { kind: input.kind, turnText: input.turnText },
-		// One pending review per session (active-window dedup, D-008).
-		dedup_scope: assertRecordId(input.session)
-	};
-	if (input.project) content.project = link(input.project);
-	try {
-		const [rows] = await db.query<[Array<{ id: unknown }>]>(
-			`CREATE work_item CONTENT $content RETURN AFTER;`,
-			{ content }
-		);
-		return String(rows[0].id);
-	} catch (err) {
-		// dedup_key UNIQUE violation ⇒ a pending review already queued for this session
-		// (coalesce to a null no-op). Match ONLY the real dedup signal — the work_item_dedup
-		// UNIQUE-index "already contains" shape, or the (table:id) primary-key "already exists"
-		// shape — both SurrealDB 2.x raises on the dedup_key collision (precedent: ceremony.ts
-		// isDedupCollision). The OLD bare `|index|`/`|unique|` alternation swallowed ANY error
-		// whose message merely CONTAINS "index"/"unique" (e.g. an HNSW-index build error, an
-		// "index out of range", a malformed-unique-field error) as a silent dedup no-op — a
-		// real write failure on the work_item path was eaten, F-008 silent failure. RE-RAISE
-		// everything that is not the unique-violation phrase.
-		const msg = (err as Error).message;
-		if (/index `?[^`']*`? already contains/i.test(msg) || /record `?[^`']*`? already exists/i.test(msg)) {
-			return null;
-		}
-		throw err;
-	}
+		priority: 5,
+		sessionId: assertRecordId(input.session),
+		// A completed review for this session must be re-queueable on the NEXT turn, so the unit
+		// key is the session — the same discriminator the old dedup_scope carried.
+		dedupScope: assertRecordId(input.session),
+		...(input.project ? { projectId: assertRecordId(input.project) } : {})
+	});
+	// Deduped ⇒ an active review already holds this session: null no-op, exactly as before.
+	return enqueued ? id : null;
 }
 
 // ── §2.1 the review-memory WRITER FORK — ADD-only, tool-whitelisted to memory/skill ──

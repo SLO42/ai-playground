@@ -3,7 +3,7 @@ import { StringRecordId } from 'surrealdb';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
-import { startTestDb, type TestDb } from '../db/testserver';
+import { startTestDb, clearTable, type TestDb } from '../db/testserver';
 import { createProject, deleteProject } from '../projects/repo';
 import { EventBus } from '../events/bus';
 import { ClaudeCodeRuntime, type CcBackend, type CcSpawnPlan, type RuntimeEvent } from '../runtime/index';
@@ -90,8 +90,9 @@ afterAll(async () => {
 	await tdb?.teardown();
 });
 
+// Bounded-retry clear — same rotating-red class as orchestrator.test.ts (see clearTable).
 async function clearQueue(): Promise<void> {
-	await db.query(`DELETE work_item;`);
+	await clearTable(db, 'work_item');
 }
 
 async function makeSession(kind = 'task'): Promise<string> {

@@ -3,7 +3,7 @@ import { StringRecordId } from 'surrealdb';
 import { Db } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
-import { startTestDb, type TestDb } from '../db/testserver';
+import { startTestDb, clearTable, type TestDb } from '../db/testserver';
 import { EventBus } from '../events/bus';
 import { watchTable } from '../events/db-source';
 import { createProject, deleteProject } from '../projects/repo';
@@ -157,8 +157,10 @@ afterAll(async () => {
 	await tdb?.teardown();
 });
 
+// Bounded-retry clear: a bare DELETE here races the writers the previous case left in
+// flight and loses on a conflict the DB labels retryable — the rotating-red class.
 async function clearQueue(): Promise<void> {
-	await db.query(`DELETE work_item;`);
+	await clearTable(db, 'work_item');
 }
 
 describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
@@ -1411,10 +1413,22 @@ describe('WI-3 — merge-back + teardown composed with post-task (real temp git 
 			const worktreePath = String(sessions[0].worktree_path);
 			expect(branch).toContain('atelier/session/');
 
-			// The merge-back is awaited inside #runItem but the drain returns before it; teardown is
-			// its LAST step (after the FF merge). Wait for the worktree to be gone — that proves the
-			// whole success path (FF merge → teardown) completed.
-			await waitForAsync(async () => !existsSync(worktreePath));
+			// The merge-back is awaited inside #runItem but the drain returns before it. Its LAST
+			// step is the BRANCH DELETE, not the teardown: merge-back.ts removes the worktree FIRST
+			// (a branch checked out in a worktree cannot be deleted) and only then runs the safe
+			// `git branch -d` (merge-back.ts:321-322). Waiting on the worktree alone therefore
+			// proves the wrong thing — it returns inside the window between those two git calls,
+			// and the branch assertion below then loses the race under load. Wait for the branch to
+			// be gone: that is the true "whole success path completed" signal.
+			const branchGone = () => {
+				try {
+					git(repo, 'rev-parse', '--verify', branch);
+					return false;
+				} catch {
+					return true;
+				}
+			};
+			await waitForAsync(async () => !existsSync(worktreePath) && branchGone());
 
 			// NO LOST WORK: the session's commit is now on the project branch (main advanced).
 			expect(git(repo, 'rev-parse', 'main')).not.toBe(baseHead);

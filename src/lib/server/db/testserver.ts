@@ -10,6 +10,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Surreal } from 'surrealdb';
 import { SurrealServer } from './provision';
+import { retryOnConflict } from './retry';
 
 export interface TestDb {
 	server: SurrealServer;
@@ -65,6 +66,28 @@ export async function startTestDb(): Promise<TestDb> {
 		root: { username: 'root', password: 'root' },
 		teardown
 	};
+}
+
+/**
+ * DELETE every row of `table`, absorbing the retryable commit conflict (see `./retry`).
+ *
+ * A bare `DELETE <table>` in a suite's setup is the ROTATING-RED class: it races writers a
+ * previous case left in flight and, when it loses, kills the whole FILE — a different file
+ * each run, with a fault the DB explicitly says to retry. A DELETE is idempotent, so the
+ * retry is safe by construction.
+ *
+ * `table` is an identifier, not a value, so it cannot be a `$param` (D-016); it is validated
+ * against the SurrealDB identifier grammar before it is ever interpolated.
+ */
+export async function clearTable(
+	db: { query: (sql: string) => Promise<unknown> },
+	table: string,
+	attempts = 5
+): Promise<void> {
+	if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(table)) {
+		throw new Error(`clearTable: refusing to interpolate unsafe table identifier "${table}"`);
+	}
+	await retryOnConflict(() => db.query(`DELETE ${table};`), attempts);
 }
 
 /** A 1024-dim fixture vector (deterministic, normalized) for HNSW/KNN tests. */

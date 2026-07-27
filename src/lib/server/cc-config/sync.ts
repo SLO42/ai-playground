@@ -23,6 +23,7 @@ import { existsSync, mkdirSync, realpathSync, statSync } from 'node:fs';
 import { resolve, sep } from 'node:path';
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
+import { retryOnConflict } from '../db/retry';
 import { assertRecordId, assertTableName } from '../db/validate';
 import {
 	digestScope,
@@ -175,8 +176,22 @@ export interface SyncResult {
  *
  * Idempotent: the scope id is deterministic; re-syncing unchanged config rewrites
  * the same rows + same digest. NEVER writes config files (read-only, D-010 v0.1).
+ *
+ * CONCURRENCY (F-014/F-048, CLAUDE.md §3): this runs off the /claude-code loader hot path,
+ * where an event burst fans N reconciles at the SAME scope simultaneously. Deterministic ids
+ * + UPSERT make those writers CONVERGE, but they do not stop SurrealDB from failing the
+ * loser of a commit race with a conflict it explicitly labels retryable. Unretried, that
+ * loser threw — a burst of 8 concurrent syncs reliably killed one of them. Because every
+ * write below is idempotent by construction (deterministic id + UPSERT + guarded sweep), the
+ * WHOLE operation is safely re-runnable, so the retry wraps it end-to-end rather than
+ * per-statement: a conflict in any one write replays the same converging writes.
  */
 export async function syncScope(db: Db, scope: SyncScope): Promise<SyncResult> {
+	return retryOnConflict(() => syncScopeOnce(db, scope));
+}
+
+/** One attempt of {@link syncScope} — see the retry note there. */
+async function syncScopeOnce(db: Db, scope: SyncScope): Promise<SyncResult> {
 	const content = readScope(scope.claudeDir, scope.mcpJsonPath);
 	const digest = digestScope(content);
 	const scopeId = scopeIdOf(scope.kind, scope.claudeDir);

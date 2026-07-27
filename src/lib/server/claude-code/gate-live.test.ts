@@ -22,7 +22,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { createServer, type Server } from 'node:http';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -32,16 +32,18 @@ import { handleGatePreToolUse, resetGateSessions } from './gate-transport';
 import { authorizeHookRequest } from '../hooks/index';
 import { DEFAULT_GATE_POLICY, type PreToolUseOutput } from './gates';
 
-/** Read CLAUDE_CODE_OAUTH_TOKEN from process env or the worktree .env (never logged). */
-function readToken(): string | undefined {
-	if (process.env.CLAUDE_CODE_OAUTH_TOKEN) return process.env.CLAUDE_CODE_OAUTH_TOKEN;
-	const p = join(process.cwd(), '.env');
-	if (!existsSync(p)) return undefined;
-	const line = readFileSync(p, 'utf8')
-		.split(/\r?\n/)
-		.find((l) => l.startsWith('CLAUDE_CODE_OAUTH_TOKEN='));
-	if (!line) return undefined;
-	return line.slice('CLAUDE_CODE_OAUTH_TOKEN='.length).trim().replace(/^["']|["']$/g, '');
+/**
+ * Read CLAUDE_CODE_OAUTH_TOKEN from the PROCESS ENV ONLY (never logged).
+ *
+ * It used to fall back to reading the worktree `.env`, which broke this file's own contract
+ * above: the gates are mandated to run with CLAUDE_CODE_OAUTH_TOKEN UNSET (CLAUDE.md §1 /
+ * F-029 — a stale token wedges the spawn path), and under exactly that condition the `.env`
+ * fallback resurrected a credential, spawned a real CLI, and reported the resulting
+ * credential failure as a GATE-WIRING failure. The env var is the single source of truth, so
+ * "unset ⇒ honest skip" is now structurally true — this module no longer reads the FS at all.
+ */
+export function readToken(env: NodeJS.ProcessEnv = process.env): string | undefined {
+	return env.CLAUDE_CODE_OAUTH_TOKEN || undefined;
 }
 
 const TOKEN = readToken();
@@ -120,6 +122,35 @@ afterAll(async () => {
 	if (harnessRoot) rmSync(harnessRoot, { recursive: true, force: true });
 });
 
+// REGRESSION (always runs, even under the mandated token-unset gate condition): the skip
+// contract this file's header promises must be decided by the ENV VAR ALONE. When readToken
+// fell back to the worktree `.env`, running the gates with CLAUDE_CODE_OAUTH_TOKEN unset did
+// NOT skip — it spawned a real CLI against a stale credential and failed the suite.
+describe('gate-live skip contract — the token comes from the env var alone (F-029)', () => {
+	it('an absent token resolves to undefined, so the live suite skips honestly', () => {
+		expect(readToken({})).toBeUndefined();
+	});
+
+	it('an EMPTY token is absent, not a credential (an empty env var must not spawn)', () => {
+		expect(readToken({ CLAUDE_CODE_OAUTH_TOKEN: '' })).toBeUndefined();
+	});
+
+	it('a present token is returned verbatim, so the live suite runs', () => {
+		expect(readToken({ CLAUDE_CODE_OAUTH_TOKEN: 'tok-abc' })).toBe('tok-abc');
+	});
+
+	it('a worktree .env is NEVER consulted — the resolver is env-only', () => {
+		// Structural: the module reads no file at all. A `.env` sitting next to the process cwd
+		// (the exact condition that broke the contract) cannot influence the decision.
+		const src = readFileSync(new URL(import.meta.url), 'utf8').replace(/\r\n/g, '\n');
+		const resolver = src.slice(
+			src.indexOf('export function readToken'),
+			src.indexOf('const TOKEN = readToken()')
+		);
+		expect(resolver).not.toMatch(/readFileSync|existsSync|\.env['"`]/);
+	});
+});
+
 live('LIVE 13.3 — a real session is DENIED a gated tool call via the wired PreToolUse hook', () => {
 	it(
 		'the gate endpoint receives the call and denies it; the secret never reaches the transcript',
@@ -153,6 +184,19 @@ live('LIVE 13.3 — a real session is DENIED a gated tool call via the wired Pre
 				toolPolicy: { allow: ['Bash', 'Read'] }
 			})) {
 				events.push(ev);
+			}
+
+			// NAME THE FAILING CHANNEL (F-008). If the runtime errored and NOTHING ever reached
+			// the gate endpoint, the SPAWN channel failed (credential rejected / CLI missing) —
+			// the gate wiring was never exercised at all. Reporting that as a gate-wiring failure
+			// names the wrong channel and sends the next reader hunting the wrong subsystem.
+			const runtimeErrors = events.flatMap((e) => (e.type === 'error' ? [e.error] : []));
+			if (seen.length === 0 && runtimeErrors.length > 0) {
+				throw new Error(
+					'SPAWN channel failed before any PreToolUse traffic reached the gate endpoint ' +
+						'— this is a credential/CLI fault, NOT a gate-wiring fault. First runtime error: ' +
+						runtimeErrors[0]
+				);
 			}
 
 			// The session ran to completion (deny blocks the TOOL, not the session).

@@ -2,7 +2,7 @@ import { existsSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { Db } from '../db/client';
+import { Db, type Bindings } from '../db/client';
 import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
@@ -504,6 +504,50 @@ describe('harvest scope (SH-5) — harness-owned synced scope so a promoted skil
 		expect(after).toHaveLength(1);
 		expect(String(after[0].id)).toBe(String(before[0].id)); // same row, not re-created
 		expect(String(after[0].synced_at)).toBe(beforeStamp); // NOT re-written (write-free)
+	});
+
+	// REGRESSION (the rotating-red class): 8 parallel ensureHarvestScope calls converge on one
+	// row, but SurrealDB still fails the LOSER of the commit race with a conflict it explicitly
+	// labels retryable — and syncScope used to let that throw, so one of the 8 exploded. The
+	// live race is not reproducible on demand, so the fault is INJECTED verbatim here.
+	it('a retryable commit conflict is ABSORBED — syncScope retries instead of throwing', async () => {
+		const CONFLICT =
+			'The query was not executed due to a failed transaction. Failed to commit transaction ' +
+			'due to a read or write conflict. This transaction can be retried';
+		let injected = 0;
+		// sync.ts touches ONLY db.query, so a narrow delegating stand-in is enough (and avoids
+		// re-binding a real Db instance).
+		const faulting = {
+			query: <T = unknown>(surql: string, bindings: Bindings = {}): Promise<T> => {
+				// Fail the cc_settings write exactly once — the statement that lost the live race.
+				if (injected === 0 && surql.includes('UPSERT $rid CONTENT $content')) {
+					injected++;
+					return Promise.reject(new Error(CONFLICT));
+				}
+				return db.query<T>(surql, bindings);
+			}
+		} as unknown as Db;
+
+		const res = await syncScope(faulting, scope);
+		expect(injected).toBe(1); // the fault really fired
+		expect(res.scopeId).toBe(scopeIdOf(scope.kind, scope.claudeDir));
+
+		// …and the mirror still converged: exactly one settings row for the scope.
+		const rid = `cc_scope:${res.scopeId.split(':')[1]}`;
+		const [rows] = await db.query<[unknown[]]>(`SELECT id FROM cc_settings WHERE scope = ${rid};`);
+		expect(rows).toHaveLength(1);
+	});
+
+	it('a NON-retryable DB error still propagates from syncScope (no masking)', async () => {
+		const faulting = {
+			query: <T = unknown>(surql: string, bindings: Bindings = {}): Promise<T> => {
+				if (surql.includes('UPSERT $rid CONTENT $content')) {
+					return Promise.reject(new Error('IAM error: Not enough permissions'));
+				}
+				return db.query<T>(surql, bindings);
+			}
+		} as unknown as Db;
+		await expect(syncScope(faulting, scope)).rejects.toThrow(/Not enough permissions/);
 	});
 
 	it('the harvest scope carries ONLY harvested skills — no operator-plugin agents bleed in (D-002)', async () => {

@@ -147,6 +147,93 @@ describe('ceremonyFacts — every stated fact traces to a real column', () => {
 		expect(facts.some((f) => /0\/4|0%/.test(f.text))).toBe(false);
 	});
 
+	// ── The invariant is "a score is stated only when the run PRODUCED one" — NOT "error runs state
+	//    no score". The first cut gated on `status !== 'error'`, which left every in-flight run
+	//    stating the identical uninitialised-column lie the error path was fixed for. These cases
+	//    pin the invariant at the NON-TERMINAL statuses, the gap that let it ship.
+	//
+	//    Column provenance (db/schema.ts `interview_run` + workforce/gauntlet.ts finalizes):
+	//      planted_total    ← set at CREATION, so the denominator is real from t=0;
+	//      planted_found    ← DEFAULT 0 until the scorer finalizes ('adjudicating' or terminal);
+	//      false_positives  ← DEFAULT 0 until the PASS BAR finalizes (terminal ONLY — never on
+	//                         'adjudicating').
+	it('a RUNNING run states no score — the denominator is real, the numerator is a DEFAULT 0', () => {
+		// Live the instant a gauntlet starts: HIRE_LIFECYCLE_OPS leads with 'gauntlet_started' and
+		// the ledger row already points at the in-flight run, so this shape is on screen for the
+		// whole duration of every interview.
+		const facts = ceremonyFacts(
+			ceremony({
+				run: {
+					id: 'interview_run:inflight',
+					status: 'running',
+					tier: 'opus',
+					model_id: 'claude-opus-4-8',
+					planted_total: 4,
+					planted_found: 0,
+					false_positives: 0
+				}
+			})
+		);
+		expect(facts.find((f) => f.kind === 'status')!.text).toBe('running');
+		expect(facts.some((f) => f.kind === 'recall')).toBe(false); // not even the honest '—'
+		expect(facts.some((f) => f.kind === 'fp')).toBe(false);
+		expect(facts.some((f) => /0\/4|0%|0 FP/.test(f.text))).toBe(false);
+		// The facts describing the RUN ITSELF are unaffected.
+		expect(facts.map((f) => f.kind)).toEqual(expect.arrayContaining(['status', 'tier', 'model']));
+	});
+
+	it('an ADJUDICATING run states no score — planted_found is a LOWER BOUND, FP is still DEFAULT 0', () => {
+		// The scorer HAS written planted_found here, but resolving the operator's ambiguous queue can
+		// only raise it (`plantedFound++` on confirm_hit, §3.4) — so 3/5 is a figure that is going to
+		// move, not a verdict. false_positives is never written on the 'adjudicating' finalize at all.
+		const facts = ceremonyFacts(
+			ceremony({
+				run: {
+					id: 'interview_run:queued',
+					status: 'adjudicating',
+					tier: 'sonnet',
+					model_id: 'claude-sonnet-4-5',
+					planted_total: 5,
+					planted_found: 3,
+					false_positives: 0
+				}
+			})
+		);
+		expect(facts.find((f) => f.kind === 'status')!.text).toBe('adjudicating');
+		expect(facts.some((f) => f.kind === 'recall')).toBe(false);
+		expect(facts.some((f) => f.kind === 'fp')).toBe(false);
+		expect(facts.some((f) => /3\/5|60%|0 FP/.test(f.text))).toBe(false);
+	});
+
+	it('the invariant holds across EVERY non-terminal status, and only there', () => {
+		// The whole schema enum, so a future status can never silently inherit "scored".
+		const nonTerminal = ['running', 'adjudicating', 'error'];
+		for (const status of nonTerminal) {
+			const facts = ceremonyFacts(
+				ceremony({
+					run: { id: 'r', status, planted_total: 8, planted_found: 0, false_positives: 0, recall: 0 }
+				})
+			);
+			expect(facts.some((f) => f.kind === 'recall' || f.kind === 'fp')).toBe(false);
+		}
+		for (const status of ['passed', 'failed']) {
+			const facts = ceremonyFacts(
+				ceremony({
+					run: { id: 'r', status, planted_total: 8, planted_found: 6, false_positives: 2, recall: 0.75 }
+				})
+			);
+			expect(facts.find((f) => f.kind === 'recall')!.text).toBe('recall 6/8 (75%)');
+			expect(facts.find((f) => f.kind === 'fp')!.text).toBe('2 FP');
+		}
+	});
+
+	it('a run with an ABSENT status is treated as non-terminal — no score is invented', () => {
+		const facts = ceremonyFacts(
+			ceremony({ run: { id: 'r', status: null, planted_total: 4, planted_found: 0, false_positives: 0 } })
+		);
+		expect(facts.some((f) => f.kind === 'recall' || f.kind === 'fp')).toBe(false);
+	});
+
 	it('a broken run with NO recorded reason says so rather than implying one', () => {
 		const facts = ceremonyFacts(
 			ceremony({ errored: true, run: { id: 'r', status: 'error', error_reason: null } })

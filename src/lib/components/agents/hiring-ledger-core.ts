@@ -115,8 +115,11 @@ function pct(r: number): string {
  * Every fact is derived from a REAL persisted column; a column that does not exist produces NO
  * chip rather than a placeholder chip, except where the absence is itself the news:
  *   • `runMissing`   → an explicit `run not found` chip (a dangling pointer is a fact, not a blank).
- *   • recall unknown → `recall —` is emitted ONLY when the run exists but planted nothing, so the
+ *   • recall unknown → `recall —` is emitted ONLY when a TERMINAL run planted nothing, so the
  *                      operator can tell "0 plants" apart from "no run joined".
+ *
+ * Score facts (recall, FP) require a TERMINAL status — see the gate below for why a non-terminal
+ * run's `planted_found` / `false_positives` are uninitialised columns rather than measurements.
  *
  * Shadow paths: nil ceremony → `[]`; a ceremony with no run and no missing-pointer flag (e.g. a
  * `staffed` act, which never had a gauntlet) → `[]`, and the row simply shows its own event detail.
@@ -145,19 +148,33 @@ export function ceremonyFacts(c: HiringCeremonyLike | null | undefined): Ceremon
 					: null
 		});
 	}
-	// SCORE FACTS ARE SUPPRESSED ON A BROKEN RUN — the single most important honesty rule here.
+	// SCORE FACTS ARE STATED ONLY BY A RUN THAT TERMINALLY PRODUCED THEM — the single most
+	// important honesty rule here, and the one the first cut got only half right.
 	//
-	// A run that died at `spawn_failure` still has `planted_total` SET (the fixtures were planted
-	// before the candidate was ever spawned) and `planted_found` sitting at its 0 default. Stating
-	// that verbatim renders `recall 0/4 (0%)` — which reads as "the candidate found none of the 4
-	// planted defects", a damning verdict on an agent that never got to answer. It sat directly
-	// beneath a chip whose own tooltip says "this is not a verdict on the candidate", and it was
-	// live on all 19 broken runs. The zero is not a measurement, it is an uninitialised column
-	// (F-008: an honest unknown, never a plausible-looking fabricated value).
+	// `planted_total` is the ONLY score column written at run CREATION (workforce/repo.ts,
+	// `createInterviewRun`). `planted_found` and `false_positives` fall to their schema DEFAULT 0
+	// (db/schema.ts, `interview_run`) and are written LATER — at DIFFERENT lifecycle points:
+	//   • planted_found   ← the deterministic scorer: the 'adjudicating' finalize AND the
+	//                       passed/failed finalizes (workforce/gauntlet.ts).
+	//   • false_positives ← the pass bar ONLY, i.e. the passed/failed finalizes. It is NEVER
+	//                       written on the 'adjudicating' finalize.
+	// So a 0 in either column is an UNINITIALISED COLUMN, not a measurement, on every non-terminal
+	// status. Gating on `status !== 'error'` alone conflated "the run did not break" with "the run
+	// produced this number", and still rendered `recall 0/4 (0%)` + `0 FP` on every in-flight
+	// gauntlet — from the instant `gauntlet_started` lands, since the run is born 'running'. That
+	// reads as "the candidate found none of the 4 planted defects": a damning verdict on an agent
+	// that has not answered yet, sitting directly beneath a chip whose own tooltip says "this is
+	// not a verdict on the candidate" (F-008 — an honest unknown, never a plausible-looking
+	// fabricated value). It is the same lie the error path was fixed for, at a sibling status.
 	//
-	// Same argument for false_positives: `0 FP` on a crashed run measures nothing.
-	// `status === 'error'` is the ONLY gate — the error chip above already states what happened.
-	const scored = run.status !== 'error';
+	// 'adjudicating' is suppressed too, even though ITS `planted_found` is a real scorer number,
+	// because that number is a LOWER BOUND: resolving the operator's ambiguous queue can only
+	// raise it (`plantedFound++` on `confirm_hit`, §3.4). Publishing a figure that is going to move
+	// as though it were the verdict is the same class of claim. The status chip above already
+	// tells the operator the run is mid-flight.
+	//
+	// TERMINAL ⇒ scored. Nothing else. An absent status is treated as non-terminal (conservative).
+	const scored = run.status === 'passed' || run.status === 'failed';
 	if (scored) {
 		// recall: honest '—' when the run planted nothing (undefined, not zero).
 		if (run.planted_total != null && run.planted_total > 0 && run.planted_found != null) {
@@ -167,7 +184,8 @@ export function ceremonyFacts(c: HiringCeremonyLike | null | undefined): Ceremon
 				text: `recall ${run.planted_found}/${run.planted_total} (${pct(r)})`,
 				detail: 'planted defects the candidate found, over planted defects total'
 			});
-		} else if (run.status) {
+		} else {
+			// `scored` already proves the status is terminal, so no status re-check is needed here.
 			facts.push({
 				kind: 'recall',
 				text: 'recall —',

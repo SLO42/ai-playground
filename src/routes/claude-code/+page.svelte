@@ -18,14 +18,16 @@
   import { describeSession } from '$lib/shared/naming';
   import {
     FLEET_STATE_FILTERS,
-    FLEET_STATE_HINTS,
     FLEET_STATE_LABELS,
     applyFleetViewToParams,
     fleetCountScopeNote,
     fleetScopeLabel,
     fleetStateCounts,
+    fleetStateHint,
     isFleetFiltered,
+    isFleetStateChipDisabled,
     parseFleetView,
+    reseedFleetView,
     resolveFleetView,
     type FleetView
   } from './fleet-view';
@@ -75,19 +77,29 @@
   // replaceState-injected param an invalidated loader cannot see) does not apply.
   let fleetView = $state<FleetView>(parseFleetView(page.url.searchParams));
 
-  // A REAL navigation (a transcript link, a shared URL, back/forward) re-seeds the view from the
-  // new URL. `untrack` keeps `fleetView` out of this effect's dependency set — reading it as a
-  // dependency would make our own writes bounce straight back to the previous value.
+  // The href we last SEEDED the view from. Plain `let` on purpose — it is the effect's own
+  // bookkeeping, never a render input, so it must not be reactive.
+  let fleetSeedHref = page.url.href;
+
+  // A REAL navigation (a transcript link, a shared URL) re-seeds the view from the new URL — a
+  // mere RE-PUBLISH of the same address does not.
+  //
+  // LIVE-VERIFIED DEFECT (2026-07-26, :5174): this effect used to re-seed on every `page` change.
+  // `page` is republished by every `invalidate`, and `onDbChange('session')` below invalidates
+  // `app:fleet` on every session row change — constantly, on the one page about running sessions.
+  // Since `replaceState` never writes `page.url` (:66-69), the republished URL still lacked the
+  // operator's params, so the re-seed overwrote a live filter/collapse with the parsed default:
+  // `?fleetState=failed&fleet=closed`, collapsed, 0 rows → one invalidate later, SAME URL,
+  // EXPANDED, 40 rows. `untrack` stopped the self-bounce; it could not stop the stale-URL clobber.
+  //
+  // The rule now lives in the pure `reseedFleetView` (unit-tested): adopt the URL only when its
+  // href actually CHANGED. Identical href ⇒ the live view is strictly newer and wins.
+  // `untrack` still keeps `fleetView` out of the dependency set: this effect reacts to the URL and
+  // to nothing else, so our own writes can never re-enter it.
   $effect(() => {
-    const parsed = parseFleetView(page.url.searchParams);
-    const current = untrack(() => fleetView);
-    if (
-      parsed.project !== current.project ||
-      parsed.state !== current.state ||
-      parsed.open !== current.open
-    ) {
-      fleetView = parsed;
-    }
+    const decision = reseedFleetView(fleetSeedHref, page.url, untrack(() => fleetView));
+    fleetSeedHref = decision.href;
+    if (decision.view) fleetView = decision.view;
   });
 
   /** Mirror the view into the address bar. Best-effort: the in-page view applies regardless. */
@@ -134,6 +146,12 @@
    * narrowed to one project — without it the two halves of one head disagree (F-008).
    */
   const fleetCountScope = $derived(fleetCountScopeNote(fleetView));
+  /**
+   * The project scope the CHIP BADGES are counted under (`fleetStateCounts(fleet, view.project)`),
+   * so each chip's disclosed predicate matches its own number instead of claiming the whole
+   * window. `null` when no project filter is engaged — then the base predicate is already true.
+   */
+  const fleetChipScope = $derived(fleetView.project ? fleetScope : null);
   /** The head's one-line summary of what is filtering, shown even when collapsed. */
   const fleetFilterSummary = $derived.by((): string | null => {
     if (!fleetFiltered) return null;
@@ -442,8 +460,10 @@
           {/if}
 
           <!-- FILTERS. Every option is derived from the LOADED rows and carries its real count,
-               so the operator is never offered a filter that cannot match. A 0-count chip is
-               disabled (except the active one, which must stay clickable to be un-set). -->
+               so the operator is never offered a NARROWING filter that cannot match. The disable
+               rule and the hint are the pure `isFleetStateChipDisabled` / `fleetStateHint`: the
+               active chip and the widening `all` chip are never dead, and each chip's disclosed
+               predicate carries the project scope its badge is already counted under. -->
           {#if fleet.length > 0}
             <div class="fleet-filters">
               <div class="chips" role="group" aria-label="Filter sessions by state">
@@ -455,8 +475,8 @@
                     class="chip"
                     data-active={active}
                     aria-pressed={active}
-                    disabled={n === 0 && !active}
-                    title={FLEET_STATE_HINTS[st]}
+                    disabled={isFleetStateChipDisabled(st, n, active)}
+                    title={fleetStateHint(st, fleetChipScope)}
                     onclick={() => setFleetView({ state: st })}
                   >
                     {FLEET_STATE_LABELS[st]}

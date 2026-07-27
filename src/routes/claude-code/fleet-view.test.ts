@@ -31,13 +31,16 @@ import {
 	fleetCountScopeNote,
 	fleetScopeLabel,
 	fleetStateCounts,
+	fleetStateHint,
 	isDefaultFleetView,
 	isFleetFailure,
 	isFleetFiltered,
 	isFleetRunning,
+	isFleetStateChipDisabled,
 	isFleetStateFilter,
 	matchesFleetState,
 	parseFleetView,
+	reseedFleetView,
 	resolveFleetView,
 	type FleetFilterRow,
 	type FleetView
@@ -431,5 +434,151 @@ describe('fleetCountScopeNote — the head counts stay TRUE beside a scoped head
 			const head = `${fleetScopeLabel(r.view, r.projectOptions)} ${fleetCountScopeNote(r.view) ?? ''}`;
 			expect(head.match(/all projects/g) ?? []).toHaveLength(1);
 		}
+	});
+});
+
+/* ============================================================================
+   REGRESSION — DEFECT 1 (HIGH, live-verified 2026-07-26 on :5174):
+   the page's OWN live stream wiped the filter and re-expanded the collapse.
+
+   Repro measured in the browser: on `/claude-code`, click the `failed` chip, then
+   collapse. Address bar `?fleetState=failed&fleet=closed`, aria-expanded=false,
+   0 rows, "32 of 40 sessions hidden · filtered by failed". One
+   `invalidate('app:fleet')` — which `onDbChange('session')` fires on EVERY session
+   row change — and: same URL, aria-expanded=TRUE, 40 rows, filter gone.
+
+   Root cause: the re-seed `$effect` parsed the republished `page.url`, and
+   `replaceState` never writes `page.url` — so the invalidate re-published the URL
+   of the last real NAVIGATION, which carries no fleet params. Note the control
+   case below: with the params in the INITIAL url, an invalidate was harmless —
+   which is exactly why only clicked state was lost.
+   ============================================================================ */
+describe('reseedFleetView — a re-publish is not a navigation (DEFECT 1)', () => {
+	const CLICKED: FleetView = { project: 'project:bepinexpack_rounds_port', state: 'failed', open: false };
+
+	it('THE DEFECT: an invalidate re-publishes the SAME href — the live view survives untouched', () => {
+		// The href is the last real navigation (paramless): exactly what `page.url` holds after a
+		// filter click, because `replaceState` never wrote it.
+		const url = new URL('http://x/claude-code');
+		const d = reseedFleetView(url.href, url, CLICKED);
+		expect(d.view).toBeNull(); // ← before the fix this returned DEFAULT_FLEET_VIEW
+		expect(d.href).toBe(url.href);
+	});
+
+	it('re-publishing a hundred times never erodes the view (the session-churn case)', () => {
+		const url = new URL('http://x/claude-code');
+		let href = url.href;
+		let view = { ...CLICKED };
+		for (let i = 0; i < 100; i += 1) {
+			const d = reseedFleetView(href, url, view);
+			href = d.href;
+			if (d.view) view = d.view;
+		}
+		expect(view).toEqual(CLICKED);
+	});
+
+	it('a REAL navigation (different href) still re-seeds — the behaviour the effect exists for', () => {
+		const next = new URL('http://x/claude-code?session=session:abc&fleetState=running&fleet=closed');
+		const d = reseedFleetView('http://x/claude-code', next, DEFAULT_FLEET_VIEW);
+		expect(d.view).toEqual({ project: null, state: 'running', open: false });
+		expect(d.href).toBe(next.href);
+	});
+
+	it('a navigation to a URL expressing the SAME view adopts the href but writes no state', () => {
+		const next = new URL('http://x/claude-code?fleetState=failed');
+		const d = reseedFleetView('http://x/claude-code', next, {
+			project: null,
+			state: 'failed',
+			open: true
+		});
+		expect(d.view).toBeNull();
+		expect(d.href).toBe(next.href);
+	});
+
+	it('CONTROL: params in the INITIAL url were always safe — proving the mechanism', () => {
+		// A view seeded FROM the url round-trips through a re-publish unchanged, which is why the
+		// defect only ever bit a clicked (replaceState-written) view.
+		const url = new URL('http://x/claude-code?fleetState=failed&fleet=closed');
+		const seeded = parseFleetView(url.searchParams);
+		expect(reseedFleetView(url.href, url, seeded).view).toBeNull();
+	});
+
+	it('nil / empty / upstream-error: never throws, never discards the operator view', () => {
+		expect(reseedFleetView(null, null, CLICKED)).toEqual({ href: '', view: null });
+		expect(reseedFleetView('http://x/a', undefined, CLICKED).view).toBeNull();
+		expect(reseedFleetView('http://x/a', { href: '   ' }, CLICKED).view).toBeNull();
+		expect(reseedFleetView('http://x/a', { href: '   ' }, CLICKED).href).toBe('http://x/a');
+		// A first run with no recorded href IS a navigation — it seeds.
+		const url = new URL('http://x/claude-code?fleetState=running');
+		expect(reseedFleetView(undefined, url, null).view).toEqual({
+			project: null,
+			state: 'running',
+			open: true
+		});
+		// A url with no searchParams at all degrades to the default view, not a throw.
+		expect(reseedFleetView('http://x/a', { href: 'http://x/b' }, CLICKED).view).toEqual(
+			DEFAULT_FLEET_VIEW
+		);
+	});
+});
+
+/* ============================================================================
+   REGRESSION — DEFECT 2 (MEDIUM, live-verified 2026-07-26):
+   the universal escape chip was disabled exactly in the dead end, and its hint
+   contradicted its own badge.
+
+   Measured at `?fleetProject=project:ghost&fleetState=failed`:
+   `all 0 [DISABLED] · running 0 [DISABLED] · failed 0 · needs attention 0
+   [DISABLED]`, with the `all` chip's title reading "every session in the window"
+   beside a badge of 0 while the window held 40.
+   ============================================================================ */
+describe('state chips — the widen action is never dead, the hint never lies (DEFECT 2)', () => {
+	it('THE DEFECT: `all` is never disabled, even at a real 0', () => {
+		expect(isFleetStateChipDisabled('all', 0, false)).toBe(false); // ← was `true`
+		expect(isFleetStateChipDisabled('all', 0, true)).toBe(false);
+	});
+
+	it('a narrowing chip at 0 IS still disabled — no filter that cannot match (F-008)', () => {
+		for (const st of ['running', 'failed', 'attention'] as const) {
+			expect(isFleetStateChipDisabled(st, 0, false)).toBe(true);
+			expect(isFleetStateChipDisabled(st, 3, false)).toBe(false);
+		}
+	});
+
+	it('the ACTIVE chip stays clickable at 0 so it can be un-set', () => {
+		expect(isFleetStateChipDisabled('failed', 0, true)).toBe(false);
+	});
+
+	it('the whole dead end has at least one live escape', () => {
+		// The state the browser measured: every count 0 under a stale project, state=failed.
+		const counts = { all: 0, running: 0, failed: 0, attention: 0 };
+		const live = FLEET_STATE_FILTERS.filter(
+			(st) => !isFleetStateChipDisabled(st, counts[st], st === 'failed')
+		);
+		expect(live).toContain('all');
+		expect(live.length).toBeGreaterThan(0);
+	});
+
+	it('upstream error: a non-numeric / negative count degrades to disabled, never crashes', () => {
+		expect(isFleetStateChipDisabled('failed', NaN, false)).toBe(true);
+		expect(isFleetStateChipDisabled('failed', undefined as unknown as number, false)).toBe(true);
+		expect(isFleetStateChipDisabled('all', undefined as unknown as number, false)).toBe(false);
+	});
+
+	it('THE DEFECT: a project-scoped chip discloses the scope its badge is counted under', () => {
+		expect(fleetStateHint('all', 'ghost')).toBe('every session in the window · within ghost');
+		expect(fleetStateHint('failed', 'ghost')).toBe('session.status = failed · within ghost');
+	});
+
+	it('unscoped: the base predicate is passed through verbatim, unchanged', () => {
+		for (const st of FLEET_STATE_FILTERS) {
+			expect(fleetStateHint(st, null)).toBe(FLEET_STATE_HINTS[st]);
+			expect(fleetStateHint(st, undefined)).toBe(FLEET_STATE_HINTS[st]);
+			expect(fleetStateHint(st, '   ')).toBe(FLEET_STATE_HINTS[st]); // blank → absent
+		}
+	});
+
+	it('upstream error: an unknown state token still yields a usable hint, never undefined', () => {
+		expect(fleetStateHint('bogus' as never, null)).toBe(FLEET_STATE_HINTS.all);
 	});
 });

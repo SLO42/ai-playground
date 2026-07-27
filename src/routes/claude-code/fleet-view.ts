@@ -11,12 +11,17 @@
  *
  * ── Why URL params ───────────────────────────────────────────────────────────────────────
  * Filter + collapse state survives a reload because it lives in the URL (`?fleet=`,
- * `?fleetProject=`, `?fleetState=`) — shareable, back/forward-able, and it invents no storage
- * mechanism (no localStorage, no server-side view row). The page writes them with SvelteKit's
- * shallow `replaceState` so a filter click does NOT re-run the loader and re-pull the whole
- * config catalog (the page's DEFECT-2 "invalidate storm" rule); the loader never reads these
- * params, so the LT-1 trap — a replaceState-injected param that a re-invalidated loader cannot
- * see — cannot apply here.
+ * `?fleetProject=`, `?fleetState=`) — shareable, and it invents no storage mechanism (no
+ * localStorage, no server-side view row). The page writes them with SvelteKit's shallow
+ * `replaceState` so a filter click does NOT re-run the loader and re-pull the whole config
+ * catalog (the page's DEFECT-2 "invalidate storm" rule); the loader never reads these params, so
+ * the LT-1 trap — a replaceState-injected param that a re-invalidated loader cannot see — cannot
+ * apply here.
+ *
+ * NOT back/forward-able, and the doc used to claim otherwise: `replaceState` REPLACES the current
+ * history entry (kit client.js:2516 → `history.replaceState`), so a filter click is reachable by
+ * reload or by sharing the address, never by pressing Back. Stated plainly here because the
+ * page's re-seed rule ({@link reseedFleetView}) is built on exactly this history behaviour.
  *
  * ── Honesty (F-008) ──────────────────────────────────────────────────────────────────────
  * Every option offered is DERIVED FROM THE LOADED ROWS and carries its real count, so the UI
@@ -97,6 +102,51 @@ export const FLEET_STATE_HINTS: Record<FleetStateFilter, string> = {
 	attention: 'failed, or carrying an operator note (the rows this page already flags)'
 };
 
+/**
+ * The chip's hint, QUALIFIED by the project scope actually in force.
+ *
+ * LIVE-VERIFIED DEFECT (2026-07-26, browser, `?fleetProject=project:ghost&fleetState=failed`): the
+ * `all` chip rendered its static hint *"every session in the window"* beside a badge reading `0`
+ * while the window held 40. Both come from the same code — the badge is
+ * {@link fleetStateCounts}, which is deliberately scoped to the selected project, while the hint
+ * was window-wide prose — so the control contradicted itself (F-008, the same head-vs-body
+ * contradiction {@link fleetCountScopeNote} exists to close on the head).
+ *
+ * The counts stay project-scoped (that is what makes a `0` mean "selecting this shows nothing");
+ * the hint SAYS SO. Unscoped → the base predicate verbatim, unchanged.
+ */
+export function fleetStateHint(state: FleetStateFilter, scope: string | null | undefined): string {
+	const base = FLEET_STATE_HINTS[state] ?? FLEET_STATE_HINTS.all;
+	const s = clean(scope);
+	return s ? `${base} · within ${s}` : base;
+}
+
+/**
+ * Is a state chip a DEAD option that should be disabled?
+ *
+ * LIVE-VERIFIED DEFECT (2026-07-26, browser): the rule was a bare `count === 0 && !active`, which
+ * disabled `all` — the WIDEN action — exactly in the dead end. Measured at
+ * `?fleetProject=project:ghost&fleetState=failed`: `all 0 [DISABLED] · running 0 [DISABLED] ·
+ * failed 0 · needs attention 0 [DISABLED]`, i.e. the one chip meaning "stop narrowing by state"
+ * was the one the operator could not press.
+ *
+ * Three rules, in order:
+ *   • the ACTIVE chip stays clickable — it must be un-settable;
+ *   • `all` is never disabled — it is not a filter that can "fail to match", it is the un-set of
+ *     the state filter, and a control whose only job is to widen must never be dead;
+ *   • any other chip with a real `0` is disabled — offering a narrowing filter that cannot match
+ *     would be a lie about the data (F-008).
+ */
+export function isFleetStateChipDisabled(
+	state: FleetStateFilter,
+	count: number,
+	active: boolean
+): boolean {
+	if (active) return false;
+	if (state === 'all') return false;
+	return !(typeof count === 'number' && count > 0);
+}
+
 /** The resolved fleet view: which project, which state, and whether the section is expanded. */
 export interface FleetView {
 	/** A `project:…` id, {@link FLEET_NO_PROJECT}, or `null` for "every project". */
@@ -172,6 +222,60 @@ export function applyFleetViewToParams(
 	if (!view.open) out.set(FLEET_PARAM_OPEN, 'closed');
 	else out.delete(FLEET_PARAM_OPEN);
 	return out;
+}
+
+/**
+ * The outcome of {@link reseedFleetView}: the href to remember, and the view to ADOPT (or `null`
+ * when the live view must be left exactly as the operator set it).
+ */
+export interface FleetSeedDecision {
+	/** The href the caller should record as "the last one we seeded from". */
+	href: string;
+	/** A view to adopt, or `null` for "change nothing". */
+	view: FleetView | null;
+}
+
+/**
+ * Should a republished `page.url` re-seed the live view? — the rule that separates a REAL
+ * NAVIGATION from a mere re-publish.
+ *
+ * LIVE-VERIFIED DEFECT (2026-07-26, browser, :5174). The page re-seeded `fleetView` from
+ * `page.url.searchParams` on every `page` change. `page` is republished by every `invalidate`,
+ * and this page invalidates `app:fleet` on EVERY `session` row change (`+page.svelte` onDbChange)
+ * — the one page whose whole subject is running sessions. But `replaceState` never writes
+ * `page.url` (kit client.js:2490-2522 — the premise the URL mirror is built on), so the
+ * republished `page.url` is still the URL of the last real navigation, WITHOUT the operator's
+ * filter params. Measured: filter `failed` + collapsed → `?fleetState=failed&fleet=closed`,
+ * `aria-expanded=false`, 0 rows; one `invalidate('app:fleet')` later → SAME URL,
+ * `aria-expanded=true`, 40 rows. The filter and the collapse were wiped by the page's own live
+ * stream, and the URL and the UI then disagreed, so a reload "fixed" it and it read as flaky.
+ *
+ * The fix is to key the re-seed on the href actually CHANGING. A re-publish carries an identical
+ * href → nothing is adopted (the live view wins, because it is strictly newer than that URL). A
+ * real navigation — a transcript link, a shared link, back/forward — carries a different href →
+ * its params win, which is the behaviour the re-seed existed for.
+ *
+ * Total; never throws. nil url → keep the recorded href and change nothing. An identical parse
+ * (a navigation to a URL that happens to express the same view) reports the new href with
+ * `view:null`, so the caller never writes a redundant `$state` update.
+ */
+export function reseedFleetView(
+	seededHref: string | null | undefined,
+	url: { href?: string; searchParams?: URLSearchParams } | null | undefined,
+	current: FleetView | null | undefined
+): FleetSeedDecision {
+	const prev = typeof seededHref === 'string' ? seededHref : '';
+	const href = clean(url?.href);
+	// nil / unusable url (SSR, a mangled object) — never discard what the operator has set.
+	if (!href) return { href: prev, view: null };
+	// A RE-PUBLISH, not a navigation: same address, so it carries no newer intent than the live
+	// view. This is the invalidate path — the one that used to wipe the filter.
+	if (href === prev) return { href: prev, view: null };
+
+	const parsed = parseFleetView(url?.searchParams);
+	const now = current ?? DEFAULT_FLEET_VIEW;
+	const same = parsed.project === now.project && parsed.state === now.state && parsed.open === now.open;
+	return { href, view: same ? null : parsed };
 }
 
 /** TRUE when the view is the untouched default (nothing filtered, expanded). */

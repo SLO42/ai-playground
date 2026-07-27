@@ -134,13 +134,23 @@ describe('filters — real data, real counts, no dead option', () => {
     expect(fleetSection).toMatch(/class="chip-n mono">\{n\}/);
   });
 
-  it('a 0-count chip is disabled — never an option that cannot match', () => {
-    // …except the ACTIVE one, which must stay clickable so the operator can un-set it.
-    expect(fleetSection).toMatch(/disabled=\{n === 0 && !active\}/);
+  it('a 0-count NARROWING chip is disabled — never an option that cannot match', () => {
+    // …except the ACTIVE one, and except `all`. REGRESSION (live-verified 2026-07-26): the rule
+    // was a bare `n === 0 && !active`, which disabled the WIDEN action exactly in the dead end
+    // (`?fleetProject=project:ghost&fleetState=failed` → every chip disabled but `failed`). The
+    // three rules now live in the pure, unit-tested `isFleetStateChipDisabled`.
+    expect(fleetSection).toMatch(/disabled=\{isFleetStateChipDisabled\(st, n, active\)\}/);
+    expect(fleetSection).not.toMatch(/disabled=\{n === 0 && !active\}/);
   });
 
-  it('each chip discloses its honest predicate (what "failed" actually means here)', () => {
-    expect(fleetSection).toMatch(/title=\{FLEET_STATE_HINTS\[st\]\}/);
+  it('each chip discloses its honest predicate, SCOPED to the project its badge counts under', () => {
+    // REGRESSION: the static hint claimed "every session in the window" beside a badge of 0 while
+    // the window held 40 — the badge is project-scoped (`fleetStateCounts(fleet, view.project)`)
+    // and the prose was not, so one control made two contradicting claims (F-008).
+    expect(fleetSection).toMatch(/title=\{fleetStateHint\(st, fleetChipScope\)\}/);
+    expect(src).toMatch(
+      /const fleetChipScope = \$derived\(fleetView\.project \? fleetScope : null\)/
+    );
   });
 
   it('the project filter is a real labelled <select> driven by derived options', () => {
@@ -213,5 +223,49 @@ describe('a11y + tokens on the new controls', () => {
 
   it('the collapse control is wrapped in a heading — collapsing costs no document structure', () => {
     expect(fleetHead).toMatch(/<h2 class="fleet-h">\s*<button/);
+  });
+});
+
+describe('the view survives the page\'s OWN live stream (live-verified DEFECT)', () => {
+  /* REGRESSION. Measured on :5174: click `failed`, collapse → `?fleetState=failed&fleet=closed`,
+     aria-expanded=false, 0 rows. One `invalidate('app:fleet')` — which the `session` onDbChange
+     below fires on EVERY session row change — and the same URL rendered aria-expanded=true with
+     40 rows. The re-seed effect parsed a `page.url` that `replaceState` never wrote.
+
+     The page must therefore NOT re-parse `page.url` unconditionally; it delegates to the pure,
+     href-keyed `reseedFleetView`, whose own contract is pinned in fleet-view.test.ts. */
+  const reseedEffect = (() => {
+    const i = src.indexOf('let fleetSeedHref');
+    expect(i, 'the page must record the href it last seeded from').toBeGreaterThan(-1);
+    return src.slice(i, src.indexOf('/** Mirror the view into the address bar.'));
+  })();
+
+  it('the re-seed goes through the pure href-keyed rule, not a raw re-parse of page.url', () => {
+    expect(reseedEffect).toMatch(
+      /reseedFleetView\(fleetSeedHref, page\.url, untrack\(\(\) => fleetView\)\)/
+    );
+    // The exact shape that shipped the defect: an unconditional parse of the republished URL
+    // inside the effect.
+    expect(reseedEffect).not.toMatch(/const parsed = parseFleetView\(page\.url\.searchParams\)/);
+  });
+
+  it('the recorded href is advanced on every run, so one navigation re-seeds exactly once', () => {
+    expect(reseedEffect).toMatch(/fleetSeedHref = decision\.href/);
+    expect(reseedEffect).toMatch(/if \(decision\.view\) fleetView = decision\.view/);
+  });
+
+  it('the seed bookkeeping is NOT reactive state — it is never a render input', () => {
+    expect(src).toMatch(/let fleetSeedHref = page\.url\.href;/);
+    expect(src).not.toMatch(/fleetSeedHref = \$state/);
+  });
+
+  it('the live invalidate that exposed it is still wired (the fix must not have removed it)', () => {
+    expect(src).toMatch(/onDbChange\('session', \(\) => void invalidate\('app:fleet'\)\)/);
+  });
+
+  it('the initial seed still comes from the URL, so a shared/reloaded link restores the view', () => {
+    expect(src).toMatch(
+      /let fleetView = \$state<FleetView>\(parseFleetView\(page\.url\.searchParams\)\)/
+    );
   });
 });

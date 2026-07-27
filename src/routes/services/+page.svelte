@@ -13,6 +13,7 @@
   import { invalidate } from '$app/navigation';
   import { enhance } from '$app/forms';
   import { stream } from '$lib/client/stream.svelte';
+  import { describeBudgetRisk } from '$lib/shared/budget-risk';
   import type { PageData, ActionData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -33,25 +34,13 @@
     ].filter((x): x is string => x !== null)
   );
 
-  // SD-1 WORDING (F-008 honesty cuts BOTH ways — a warning must not OVERSTATE either).
-  // The banner used to say "armed with no token ceiling … spend can grow without a backstop"
-  // whenever EITHER ceiling was 0. That is only true when BOTH are 0. With the shipped config
-  // (dailyTokenBudget 15,000,000) the global ceiling IS armed, so total spend is still bounded —
-  // the real, narrower risk is that one project can consume the whole global allowance. Claiming
-  // "no backstop" when a backstop exists is exactly the kind of inaccurate state F-008 forbids,
-  // and it trains the operator to discount the banner.
-  const fullyUncapped = $derived(
-    !!budgetSafety?.dailyUncapped && !!budgetSafety?.perProjectUncapped
-  );
-  // The surviving backstop, named, when only ONE ceiling is uncapped.
-  const remainingCeiling = $derived(
-    budgetSafety
-      ? budgetSafety.dailyUncapped
-        ? { label: 'per-project', tokens: budgetSafety.perProjectTokenBudget }
-        : { label: 'daily', tokens: budgetSafety.dailyTokenBudget }
-      : null
-  );
-  const fmtTokens = (n: number) => n.toLocaleString('en-US');
+  // SD-1 WORDING — severity-accurate copy from the pure `describeBudgetRisk` helper (unit-tested
+  // there). The banner used to render the both-uncapped copy ("no token ceiling … without a
+  // backstop") whenever EITHER ceiling was 0; with the shipped config the global daily ceiling IS
+  // armed, so that claim was false. F-008 honesty cuts both ways — an alarm that overstates trains
+  // the operator to discount it. null ⇒ safe ⇒ the banner renders nothing.
+  const risk = $derived(budgetSafety ? describeBudgetRisk(budgetSafety) : null);
+
 
   // SD-2 — the persisted autonomy boot-status (armed | manual | config-error). A 'config-error'
   // is the silent-disarm hole made VISIBLE: a config file was unreadable so every engine is forced
@@ -261,20 +250,14 @@
 
     <!-- ── SD-1 budget-safety banner: an ARMED autonomous loop against an UNCAPPED token ceiling
          is the runaway-spend hole — make it LOUD, never silent (F-008). Silent when safe. ── -->
-    {#if budgetSafety?.uncappedWhileArmed}
+    {#if budgetSafety?.uncappedWhileArmed && risk}
       <div class="card budget-banner" role="alert">
         <div class="card-head">
-          <span class="eyebrow budget-eyebrow">
-            autonomy · {fullyUncapped ? 'uncapped spend' : 'partially uncapped spend'}
-          </span>
+          <span class="eyebrow budget-eyebrow">{risk.eyebrow}</span>
           <h2 class="card-title">
             {budgetSafety.armedLoops}
             {budgetSafety.armedLoops === 1 ? 'autonomous loop is' : 'autonomous loops are'} armed
-            {#if fullyUncapped}
-              with no token ceiling
-            {:else}
-              with no {budgetSafety.dailyUncapped ? 'daily' : 'per-project'} token ceiling
-            {/if}
+            {risk.headline}
           </h2>
         </div>
         <p class="card-body budget-body">
@@ -283,16 +266,7 @@
             : `${budgetSafety.armedLoops} autonomous loops are`}
           running unsupervised, but {uncappedList.join(' and ')}
           {uncappedList.length === 1 ? 'is' : 'are'} set to 0 (uncapped).
-          {#if fullyUncapped}
-            Both ceilings are off, so unattended spend can grow without a backstop.
-          {:else if remainingCeiling}
-            The {remainingCeiling.label} ceiling is still armed at
-            <span class="mono">{fmtTokens(remainingCeiling.tokens)}</span> tokens, so total spend is
-            still bounded — but
-            {budgetSafety.perProjectUncapped
-              ? 'a single project can consume the whole allowance.'
-              : 'the number of projects spending in parallel is not bounded.'}
-          {/if}
+          {risk.risk}
         </p>
         <p class="card-body budget-fix">
           Arm a ceiling in <span class="mono">config/orchestration.yaml</span> —

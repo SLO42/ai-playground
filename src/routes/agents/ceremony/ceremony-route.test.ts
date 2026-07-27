@@ -628,16 +628,38 @@ describe('HR-1 — adjudication surface (loader unpack + adjudicate action)', ()
 		expect(data.adjudication.find((c) => c.run === runId)).toBeUndefined();
 	});
 
-	it('RENDER: the interview brief reads hrAutoResolved (plumbed-but-dead regression)', () => {
-		// The server attaches hrAutoResolved on the all-clear auto-finalize path; the ONLY interview
-		// brief renderer must consume it. A source-presence pin (no component harness in this repo):
-		// fails if the binding is dropped, the exact AQ1 defect (counts computed, never rendered).
+	/**
+	 * The interview-brief block, sliced to its REAL boundaries.
+	 *
+	 * This used to be `src.slice(briefStart, briefStart + 600)` — a fixed character budget, which
+	 * silently encodes "the brief must stay under 600 chars". Adding the terminality gate to the
+	 * brief (score figures only on a scored status) is legitimate markup that pushed the wording
+	 * assertions out of the window, so the pins failed for a reason that had nothing to do with
+	 * what they pin. Slicing to the NEXT branch instead makes the window mean what it always
+	 * meant — "inside the interview brief" — and it cannot drift with the block's length.
+	 */
+	function interviewBriefBlock(): string {
 		const sveltePath = fileURLToPath(new URL('./+page.svelte', import.meta.url));
 		const src = readFileSync(sveltePath, 'utf8');
 		const briefStart = src.indexOf("xfb?.kind === 'interview'");
 		expect(briefStart, 'interview brief block must exist').toBeGreaterThan(-1);
-		const briefBlock = src.slice(briefStart, briefStart + 600);
-		expect(briefBlock, 'interview brief must render xfb.hrAutoResolved (HR audit transparency)').toContain('hrAutoResolved');
+		// The brief ends where the next sibling branch begins. If that branch is ever renamed this
+		// throws rather than silently widening to the rest of the file.
+		const briefEnd = src.indexOf('{:else if xfb?.queued}', briefStart);
+		expect(briefEnd, 'the brief block must be followed by the queued branch').toBeGreaterThan(
+			briefStart
+		);
+		return src.slice(briefStart, briefEnd);
+	}
+
+	it('RENDER: the interview brief reads hrAutoResolved (plumbed-but-dead regression)', () => {
+		// The server attaches hrAutoResolved on the all-clear auto-finalize path; the ONLY interview
+		// brief renderer must consume it. A source-presence pin (no component harness in this repo):
+		// fails if the binding is dropped, the exact AQ1 defect (counts computed, never rendered).
+		expect(
+			interviewBriefBlock(),
+			'interview brief must render xfb.hrAutoResolved (HR audit transparency)'
+		).toContain('hrAutoResolved');
 	});
 
 	// REGRESSION (AQ1 FIX #2, F-008 honest-data) — on the ESCALATE path the server STILL attaches a
@@ -720,11 +742,7 @@ describe('HR-1 — adjudication surface (loader unpack + adjudicate action)', ()
 		// Source pin (no component harness). The hrAutoResolved clause must NOT claim 'auto-resolved'
 		// while status === 'adjudicating' (the escalate path holds everything). It must read 'held'
 		// there, and 'auto-resolved' only once the run finalized (status !== 'adjudicating').
-		const sveltePath = fileURLToPath(new URL('./+page.svelte', import.meta.url));
-		const src = readFileSync(sveltePath, 'utf8');
-		const briefStart = src.indexOf("xfb?.kind === 'interview'");
-		expect(briefStart, 'interview brief block must exist').toBeGreaterThan(-1);
-		const briefBlock = src.slice(briefStart, briefStart + 900);
+		const briefBlock = interviewBriefBlock();
 		// The 'auto-resolved' claim lives in the status !== 'adjudicating' branch (the {:else if}).
 		const autoResolvedIdx = briefBlock.indexOf('auto-resolved');
 		const heldIdx = briefBlock.indexOf('HR held');

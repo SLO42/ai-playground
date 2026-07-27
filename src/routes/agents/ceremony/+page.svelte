@@ -960,15 +960,19 @@
                     · proof recorded for {(xfb.recordedFor as string[]).length} fixture(s){/if}
                   {#if xfb.costUsd != null} · {fmtUsd(xfb.costUsd)}{/if}.
                 </p>
+              <!-- THE ACTION-FEEDBACK LINE (the branch below). It used to print
+                   `found {plantedFound}/{plantedTotal} · {falsePositives} FP` COMPLETELY UNGATED —
+                   while branching on `status` on the very next line — so triggering an interview
+                   that landed 'adjudicating' or 'error' printed the exact recall and FP figure this
+                   page's own chips (and the interview line above) suppress for those statuses. Same
+                   defect class, sixth surface: a score stated by a run that never produced it
+                   (F-008). It now routes through the ONE shared rule, `isScoredStatus`, like every
+                   other scoring surface.
+                   NB: this note sits OUTSIDE the branch on purpose. `ceremony-route.test.ts` pins
+                   the brief's wording inside a fixed-width source window anchored on the branch
+                   condition below, so prose placed inside it pushes the assertions out of range —
+                   and naming that condition verbatim up here would move the anchor itself. -->
               {:else if xfb?.ok && xfb?.kind === 'interview' && xfb?.ran}
-                <!-- THE ACTION-FEEDBACK LINE. This block used to print
-                     `found {plantedFound}/{plantedTotal} · {falsePositives} FP` COMPLETELY
-                     UNGATED — while branching on `status` on the very next line — so triggering an
-                     interview that landed 'adjudicating' or 'error' printed the exact recall and FP
-                     figure this page's own chips (and the interview line above) suppress for those
-                     statuses. Same defect class, sixth surface: a score stated by a run that never
-                     produced it (F-008). It now routes through the ONE shared rule,
-                     `isScoredStatus`, like every other scoring surface. -->
                 <p class="brief-ok" role="status">
                   Interview {String(xfb.status)}{#if isScoredStatus(String(xfb.status))}
                     · found {String(xfb.plantedFound)}/{String(xfb.plantedTotal)} plants ·

@@ -23,21 +23,103 @@ import {
 // client-side unit test.
 const SCHEMA_PATH = fileURLToPath(new URL('../server/db/schema.ts', import.meta.url));
 
-/** The `interview_run.status` ASSERT set, read out of the live schema source. */
-function schemaStatuses(): string[] {
+// THE ANCHOR MUST READ THE *EFFECTIVE* ENUM, NOT THE FIRST ONE WRITTEN.
+// This parser originally used `src.match(...)` — no /g — which returns the FIRST occurrence.
+// That is the wrong end of the file. A field is not defined once here: the dominant migration
+// idiom in `schema.ts` is a SECOND `DEFINE FIELD OVERWRITE <field> ON <table>` in a LATER
+// migration, and SurrealDB `OVERWRITE` semantics mean the LAST one applied is the one in force
+// (measured in this file: `type ON agent_event` ×6, `kind ON scene_event` ×4, `status ON task` ×2,
+// `op ON role_event` ×2). So a migration that WIDENS `interview_run.status` tomorrow would leave
+// this test reading the narrow original enum and passing green with the new status unclassified —
+// i.e. the exact defect class the parity test exists to close would still be open.
+// Now: every occurrence, LAST wins, and zero occurrences throw.
+const STATUS_ASSERT_RE =
+	/DEFINE FIELD OVERWRITE status\s+ON interview_run[\s\S]{0,200}?ASSERT \$value IN \[([^\]]+)\]/g;
+
+/**
+ * The EFFECTIVE `interview_run.status` ASSERT set for a schema source.
+ *
+ * Exposed with an injectable `src` so the last-wins property itself is testable without mutating
+ * the real `schema.ts` (the only way the original bug was found was by hand-editing it).
+ */
+export function parseStatusEnum(src: string): string[] {
 	// F-054: the editor flips LF→CRLF on this repo, so normalize before any multi-line match.
-	const src = readFileSync(SCHEMA_PATH, 'utf8').replace(/\r\n/g, '\n');
-	const m = src.match(
-		/DEFINE FIELD OVERWRITE status\s+ON interview_run[\s\S]{0,200}?ASSERT \$value IN \[([^\]]+)\]/
-	);
-	if (!m) {
+	const matches = [...src.replace(/\r\n/g, '\n').matchAll(STATUS_ASSERT_RE)];
+	if (matches.length === 0) {
 		throw new Error(
 			'could not locate the interview_run.status ASSERT in db/schema.ts — the field was renamed, ' +
 				'reshaped, or the ASSERT was dropped. Re-anchor this test before trusting any status gate.'
 		);
 	}
-	return [...m[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+	// LAST, not first: later migrations OVERWRITE earlier ones.
+	const last = matches[matches.length - 1];
+	return [...last[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
 }
+
+/** The `interview_run.status` ASSERT set, read out of the live schema source. */
+function schemaStatuses(): string[] {
+	return parseStatusEnum(readFileSync(SCHEMA_PATH, 'utf8'));
+}
+
+// ── REGRESSION: the anchor must survive a LATER re-DEFINE ─────────────────────────────────────
+// These are the tests that would have failed on the first-match parser. They are the reason the
+// parity guarantee below is worth anything.
+describe('schema anchor — the parser reads the EFFECTIVE enum', () => {
+	const FIRST = `
+		DEFINE FIELD OVERWRITE status          ON interview_run TYPE string DEFAULT "running"
+			ASSERT $value IN ["running","adjudicating","passed","failed","error"];
+	`;
+	const WIDENED = `
+		DEFINE FIELD OVERWRITE status          ON interview_run TYPE string DEFAULT "running"
+			ASSERT $value IN ["running","adjudicating","passed","failed","error","cancelled"];
+	`;
+
+	it('takes the LAST re-DEFINE, not the first — a later migration widening the enum is seen', () => {
+		// The exact shape of a widening migration in this repo: the original DEFINE stays in its
+		// original migration, and a later migration re-DEFINEs the field with a bigger ASSERT.
+		expect(parseStatusEnum(`${FIRST}\n-- ...later migration...\n${WIDENED}`)).toContain('cancelled');
+	});
+
+	it('a later NARROWING re-DEFINE is seen too — the anchor is not "the union"', () => {
+		expect(parseStatusEnum(`${WIDENED}\n${FIRST}`)).not.toContain('cancelled');
+	});
+
+	it('a single DEFINE still parses (the ordinary case is unchanged)', () => {
+		expect(parseStatusEnum(FIRST)).toEqual([
+			'running',
+			'adjudicating',
+			'passed',
+			'failed',
+			'error'
+		]);
+	});
+
+	it('ZERO occurrences throws loudly rather than yielding an empty set', () => {
+		// An empty set would make every parity assertion below vacuously pass.
+		expect(() => parseStatusEnum('DEFINE FIELD OVERWRITE tier ON interview_run TYPE string;')).toThrow(
+			/could not locate the interview_run\.status ASSERT/
+		);
+	});
+
+	it('CRLF source is normalized before matching (F-054)', () => {
+		expect(parseStatusEnum(FIRST.replace(/\n/g, '\r\n'))).toContain('adjudicating');
+	});
+
+	it('"last textual DEFINE = last applied" is grounded: migrations are declared in id order', () => {
+		// Taking the LAST match is only correct if the file's textual order matches the order
+		// `schemaMigrations` applies them. Both are numerically ordered by construction — assert it
+		// rather than assume it, since the whole anchor rests on it.
+		const src = readFileSync(SCHEMA_PATH, 'utf8').replace(/\r\n/g, '\n');
+		const ids = [...src.matchAll(/^const m(\d{4})_\w+: Migration = \{/gm)].map((m) =>
+			Number(m[1])
+		);
+		expect(ids.length).toBeGreaterThan(50);
+		const outOfOrder = ids.filter((id, i) => i > 0 && id <= ids[i - 1]);
+		expect(outOfOrder, `migration consts declared out of id order: ${outOfOrder.join(', ')}`).toEqual(
+			[]
+		);
+	});
+});
 
 describe('interview_run status classification', () => {
 	it('parses a non-empty status enum out of the live schema (the anchor itself is checked)', () => {

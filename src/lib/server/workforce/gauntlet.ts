@@ -507,11 +507,17 @@ const GATE_PLANE_DOWN_MARKER = 'gate control plane not configured';
 // The window keeps a BOUND (a row must never be allowed to blow up — F-014) but takes it
 // from BOTH ends with an honest, countable elision marker in between, so the reader can see
 // that something was dropped and exactly how much. Screened (D-026) BEFORE it is persisted.
+//
+// It is applied at the CAPTURE site, never at a read site: a captured payload has several persist
+// readers (session.note, agent_event.detail, interview_run.results) and windowing at only one of
+// them leaks the raw text out of the other two. Window once, where the value is born.
 
 /** Total budget for a captured diagnostic payload. Bounded — a row must not blow up. */
 const DIAG_MAX_CHARS = 2000;
 /** Share of the budget spent on the HEAD; the remainder goes to the tail (the reason). */
 const DIAG_HEAD_CHARS = 700;
+/** The countable elision marker. Its own length is charged against DIAG_MAX_CHARS. */
+const diagMarker = (elided: number) => `\n[… ${elided} characters elided …]\n`;
 
 /**
  * Bound a captured payload to a head+tail window with an honest elision marker, D-026-screened.
@@ -531,11 +537,14 @@ export function diagnosticWindow(raw: unknown): string {
 	if (!screened.trim()) return '(no error message)';
 	if (screened.length <= DIAG_MAX_CHARS) return screened;
 	// Reserve room for the marker so the RESULT honours the bound, not just the two slices.
-	const tailChars = DIAG_MAX_CHARS - DIAG_HEAD_CHARS;
+	// `elided` is always < screened.length, so the marker built for screened.length is a strict
+	// UPPER BOUND on the real one (same or more digits) — head + marker + tail ≤ DIAG_MAX_CHARS.
+	const reserve = diagMarker(screened.length).length;
+	const tailChars = Math.max(0, DIAG_MAX_CHARS - DIAG_HEAD_CHARS - reserve);
 	const head = screened.slice(0, DIAG_HEAD_CHARS);
 	const tail = screened.slice(screened.length - tailChars);
 	const elided = screened.length - DIAG_HEAD_CHARS - tailChars;
-	return `${head}\n[… ${elided} characters elided …]\n${tail}`;
+	return `${head}${diagMarker(elided)}${tail}`;
 }
 
 async function attemptGauntlet(deps: GauntletDeps, ctx: AttemptContext): Promise<InterviewRunRow> {
@@ -647,6 +656,10 @@ async function attemptGauntlet(deps: GauntletDeps, ctx: AttemptContext): Promise
 		// ── Bounded pump (F-014): race each stream step against the wall clock. ──────
 		const startedAt = Date.now();
 		let timedOut = false;
+		// INVARIANT: captured through diagnosticWindow at BOTH capture sites, so it is D-026-screened
+		// and DIAG_MAX_CHARS-bounded before ANY of its four persist/branch readers see it. Never the
+		// empty string and never `undefined`-when-set (a non-Error throw becomes '(no error message)',
+		// not `undefined`) — so `!streamErrored` and `!== undefined` both mean exactly "no error".
 		let streamErrored: string | undefined;
 		let sawDone = false;
 		let doneOk = false;
@@ -697,14 +710,14 @@ async function attemptGauntlet(deps: GauntletDeps, ctx: AttemptContext): Promise
 					tokensIn += ev.input;
 					tokensOut += ev.output;
 				} else if (ev.type === 'error') {
-					streamErrored = ev.error;
+					streamErrored = diagnosticWindow(ev.error);
 				} else if (ev.type === 'done') {
 					sawDone = true;
 					doneOk = ev.result.ok;
 				}
 			}
 		} catch (err) {
-			streamErrored = (err as Error).message;
+			streamErrored = diagnosticWindow(err);
 		}
 		const durationMs = Date.now() - startedAt;
 
@@ -757,7 +770,7 @@ async function attemptGauntlet(deps: GauntletDeps, ctx: AttemptContext): Promise
 					{
 						kind: 'env',
 						note: streamErrored
-							? `runtime stream error: ${diagnosticWindow(streamErrored)}`
+							? `runtime stream error: ${streamErrored}`
 							: 'stream ended without a done event'
 					}
 				]

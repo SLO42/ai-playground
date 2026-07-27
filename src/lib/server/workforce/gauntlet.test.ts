@@ -299,6 +299,56 @@ function brokenBackend(): ScriptedBackend {
 	};
 }
 
+/** A backend whose stream error carries a live-looking credential (the D-026 leak shape). */
+function secretLeakBackend(secret: string): ScriptedBackend {
+	const plans: CcSpawnPlan[] = [];
+	return {
+		plans,
+		probes: {},
+		kind: 'mock',
+		run(plan: CcSpawnPlan): CcBackendRun {
+			plans.push(plan);
+			return {
+				ccSessionId: 'cc_secret',
+				async *stream() {
+					yield { type: 'error', error: `spawn failed with token ${secret}` } as RuntimeEvent;
+				},
+				async cancel() {}
+			};
+		},
+		async resume() {
+			throw new Error('no');
+		},
+		async interject() {}
+	};
+}
+
+/** A backend that reports `done` and THEN dies with a non-Error throw (the harness-throw shape). */
+function doneThenThrowBackend(): ScriptedBackend {
+	const plans: CcSpawnPlan[] = [];
+	return {
+		plans,
+		probes: {},
+		kind: 'mock',
+		run(plan: CcSpawnPlan): CcBackendRun {
+			plans.push(plan);
+			return {
+				ccSessionId: 'cc_done_then_throw',
+				async *stream() {
+					yield { type: 'done', result: { ok: true, summary: 'looks fine' } } as RuntimeEvent;
+					// A bare non-Error throw: `(err as Error).message` is `undefined` for this.
+					throw 'harness died after done';
+				},
+				async cancel() {}
+			};
+		},
+		async resume() {
+			throw new Error('no');
+		},
+		async interject() {}
+	};
+}
+
 function runtimeFor(backend: CcBackend): ClaudeCodeRuntime {
 	return new ClaudeCodeRuntime({
 		backend,
@@ -348,13 +398,27 @@ describe('diagnosticWindow — a bounded capture that keeps the TAIL (§3.6 diag
 		const raw = 'y'.repeat(50_000);
 		const out = diagnosticWindow(raw);
 		// The bound covers the WHOLE result, marker included — not just the two slices.
-		expect(out.length).toBeLessThanOrEqual(2000 + 64);
+		expect(out.length).toBeLessThanOrEqual(2000);
 		const m = out.match(/\[… (\d+) characters elided …\]/);
 		expect(m, 'an elision marker must be present').not.toBeNull();
 		// The arithmetic must reconcile: head + elided + tail === the screened original.
 		const elided = Number(m![1]);
 		const kept = out.length - m![0].length - 2; // minus the two joining newlines
 		expect(kept + elided).toBe(raw.length);
+	});
+
+	it('the bound holds for EVERY over-bound size, marker included (it used to overshoot by ~30)', () => {
+		// Regression: `tailChars = DIAG_MAX_CHARS - DIAG_HEAD_CHARS` spent the entire budget on the
+		// two slices, so the marker was pure overshoot — a 5000-char input measured 2030. The
+		// marker's own length must be charged against the budget, at every size and digit-count.
+		for (const n of [2001, 2050, 5000, 50_000, 1_000_000]) {
+			const out = diagnosticWindow('y'.repeat(n));
+			expect(out.length, `input ${n} must honour the 2000-char bound`).toBeLessThanOrEqual(2000);
+			// …and the window is still worth having: both ends survive and the count reconciles.
+			const m = out.match(/\[… (\d+) characters elided …\]/);
+			expect(m, `input ${n} must carry an elision marker`).not.toBeNull();
+			expect(Number(m![1]) + (out.length - m![0].length - 2)).toBe(n);
+		}
 	});
 
 	it('a WITHIN-bound payload is returned verbatim — no marker, nothing lost', () => {
@@ -831,6 +895,69 @@ describe('§3.6 mechanical error classification + ONE retry', () => {
 		expect(out.run.status).toBe('error');
 		expect(out.run.error_reason).toBe('spawn_failure');
 		expect(JSON.stringify(out.run.results)).toContain('spawn exploded');
+	}, 30_000);
+
+	it('D-026: a secret in a stream error reaches NO persisted row — note, event detail or results', async () => {
+		// Regression: diagnosticWindow screened only the `interview_run.results` read site, so the
+		// SAME raw string was still written verbatim into `session.note` (head-only) and
+		// `agent_event.detail.error` (unbounded). Screening now happens at the CAPTURE site, so
+		// every reader is downstream of it. Asserted against the whole datastore, not one row.
+		const secret = 'sk-ant-api03-GAUNTLETLEAKPROBE0000000000000';
+		const seed = await seedRole();
+		const out = await runGauntlet(depsFor(secretLeakBackend(secret)), {
+			roleVersionId: seed.version.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: 'claude-sonnet-x',
+			trigger: 'operator'
+		});
+		expect(out.kind).toBe('ran');
+		if (out.kind !== 'ran') return;
+		expect(out.run.error_reason).toBe('spawn_failure');
+
+		const [sessions, events, runs] = await db.query<[unknown[], unknown[], unknown[]]>(
+			`SELECT * FROM session; SELECT * FROM agent_event; SELECT * FROM interview_run;`
+		);
+		for (const [label, rows] of [
+			['session', sessions],
+			['agent_event', events],
+			['interview_run', runs]
+		] as const) {
+			expect(JSON.stringify(rows), `${label} must not carry the credential`).not.toContain(secret);
+		}
+		// …and the failure is still DIAGNOSABLE — screen() REDACTS the credential in place, so the
+		// surrounding reason survives. Honest, not silently blanked (F-008).
+		const results = JSON.stringify(out.run.results);
+		expect(results).toContain('[REDACTED:anthropic-key]');
+		expect(results).toContain('spawn failed with token');
+
+		// The unbounded persist site is bounded too: no agent_event.detail.error over the window.
+		for (const ev of events as Array<{ detail?: { error?: unknown } }>) {
+			const err = ev?.detail?.error;
+			if (typeof err === 'string') expect(err.length).toBeLessThanOrEqual(2000);
+		}
+	}, 30_000);
+
+	it('a non-Error throw AFTER a done event is spawn_failure, never a candidate verdict', async () => {
+		// Regression: the capture was `(err as Error).message`, which is `undefined` for a bare
+		// non-Error throw. Both classifier branches read that — `sawDone && !streamErrored` and
+		// `streamErrored !== undefined` — so a harness that died right after `done` was silently
+		// finalized as a real candidate verdict instead of an env failure (F-008 silent failure
+		// on the hire-adjudication path).
+		const seed = await seedRole();
+		const out = await runGauntlet(depsFor(doneThenThrowBackend()), {
+			roleVersionId: seed.version.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: 'claude-sonnet-x',
+			trigger: 'operator'
+		});
+		expect(out.kind).toBe('ran');
+		if (out.kind !== 'ran') return;
+		expect(out.run.status).toBe('error');
+		expect(out.run.error_reason).toBe('spawn_failure');
+		// The note names the failure honestly — never the literal string "undefined" (F-013 spirit).
+		expect(JSON.stringify(out.run.results)).not.toContain('undefined');
 	}, 30_000);
 
 	it('gate-plane-down is an ENV error (spawn_failure), never a terminal capability failed (live-verify finding)', async () => {

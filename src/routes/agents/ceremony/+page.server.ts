@@ -69,9 +69,19 @@ export interface CeremonyAdjudicationCard {
 	roleSlug: string;
 	tier: string;
 	modelId: string;
+	/**
+	 * Scorer progress on this run — a real number, but a LOWER BOUND while the queue below is
+	 * open (`plantedFound++` on `confirm_hit`, §3.4).
+	 *
+	 * NO `falsePositives`, deliberately, and for the same reason as the sibling
+	 * `workforce/panel.ts` AdjudicationCard: `interview_run.false_positives` is written by the
+	 * PASS BAR only (the passed/failed finalizes) and never by the 'adjudicating' finalize this
+	 * query selects for, so it is the schema DEFAULT 0 on every card here — a fabricated `0 FP`
+	 * on the exact surface where the operator is about to decide the false positives (F-008).
+	 * The pass bar below still shows `max false positives`, which IS a real recorded snapshot.
+	 */
 	plantedFound: number;
 	plantedTotal: number;
-	falsePositives: number;
 	at: string | null;
 	/** Verbatim interview_run.ambiguous — each item {type, fixture, plant?, finding, note}. */
 	ambiguous: Array<Record<string, unknown>>;
@@ -146,7 +156,6 @@ async function buildCeremonyAdjudication(
 				model_id?: string;
 				planted_found?: number;
 				planted_total?: number;
-				false_positives?: number;
 				ambiguous?: unknown;
 				results?: unknown;
 				pass_criteria?: { pass_recall?: unknown; max_false_positives?: unknown } | null;
@@ -154,7 +163,10 @@ async function buildCeremonyAdjudication(
 			}>
 		]
 	>(
-		`SELECT id, role, tier, model_id, planted_found, planted_total, false_positives,
+		// `false_positives` is deliberately NOT projected — never written on the 'adjudicating'
+		// finalize, so it could only ever return the schema DEFAULT 0 (see CeremonyAdjudicationCard).
+		// F-020: the ORDER BY field (`started_at`) IS in the projection.
+		`SELECT id, role, tier, model_id, planted_found, planted_total,
 		        ambiguous, results, pass_criteria, started_at
 		   FROM interview_run WHERE status = 'adjudicating'
 		  ORDER BY started_at DESC LIMIT 100;`
@@ -201,7 +213,6 @@ async function buildCeremonyAdjudication(
 			modelId: r.model_id ?? '—',
 			plantedFound: Number(r.planted_found ?? 0),
 			plantedTotal: Number(r.planted_total ?? 0),
-			falsePositives: Number(r.false_positives ?? 0),
 			at: isoOrNull(r.started_at),
 			ambiguous,
 			hrDecisions,

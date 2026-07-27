@@ -17,8 +17,13 @@
   import {
     groupHiringCeremonies,
     ceremonyFacts,
+    ceremonyCountLabel,
     type HiringCeremonyLike
   } from '$lib/components/agents/hiring-ledger-core';
+  // The SAME terminality rule the ceremony chips and the event line gate their scores on, applied
+  // to the role-card interview line — the third surface of the identical defect class. Anchored to
+  // the schema ASSERT by $lib/shared/interview-status's parity test.
+  import { isScoredStatus } from '$lib/shared/interview-status';
   // The ceremony HEADER chips come from hiring-ledger-core; the EVENT LINE beneath them comes
   // from its sibling. Both state facts about the SAME run and so must obey the SAME honesty
   // rule — they were split out of this file precisely so one status sweep can hold both.
@@ -48,6 +53,9 @@
   let showBrokenRuns = $state(false);
   const hiringView = $derived(
     groupHiringCeremonies(hiring.ceremonies as HiringCeremonyLike[], showBrokenRuns)
+  );
+  const hiringCount = $derived(
+    ceremonyCountLabel(hiring.ceremonies as HiringCeremonyLike[], hiring.totalEvents)
   );
 
   /** Plain-language label per audit op (never the raw enum — human-readable bar). */
@@ -378,15 +386,23 @@
                   {:else if r.interview.status === 'adjudicating'}
                     <span class="iv-verdict">adjudicating</span>
                     <span class="iv-sep">·</span>
-                    <span>found {r.interview.plantedFound}/{r.interview.plantedTotal} plants</span>
+                    <span>found {r.interview.plantedFound}/{r.interview.plantedTotal} plants so far</span>
                     <span class="iv-sep">·</span>
                     <span class="iv-resolve">resolve on /agents</span>
-                  {:else}
+                  {:else if isScoredStatus(r.interview.status)}
+                    <!-- ALLOW-LIST, not a fall-through. The bare `{:else}` this replaces meant
+                         "not error/running/adjudicating ⇒ has a verdict", so any status added to
+                         the schema later would inherit the verdict shape and publish an
+                         uninitialised planted_found / false_positives as a measurement (F-008). -->
                     <span class="iv-verdict">
                       found {r.interview.plantedFound}/{r.interview.plantedTotal} plants
                     </span>
                     <span class="iv-sep">·</span>
                     <span>{r.interview.falsePositives} FP</span>
+                  {:else}
+                    <span class="iv-verdict">{r.interview.status ?? '—'}</span>
+                    <span class="iv-sep">·</span>
+                    <span class="empty-cell">no verdict recorded for this status</span>
                   {/if}
                   <span class="iv-sep">·</span>
                   <span class="tier-tag" data-tier={r.interview.tier}>{r.interview.tier}</span>
@@ -656,8 +672,11 @@
                 <span class="role-slug mono">{a.roleSlug}</span>
                 <span class="tier-tag" data-tier={a.tier}>{a.tier}</span>
                 <span class="iv-model mono">({a.modelId})</span>
-                <span class="adj-progress mono">
-                  {a.plantedFound}/{a.plantedTotal} found · {a.falsePositives} FP
+                <!-- Progress, not a verdict — see workforce/panel.ts AdjudicationCard. No FP
+                     figure: false_positives is never written on the 'adjudicating' finalize, so
+                     the old `0 FP` was a schema DEFAULT rendering as a settled count (F-008). -->
+                <span class="adj-progress mono" title="scorer progress — a lower bound while this queue is open">
+                  {a.plantedFound}/{a.plantedTotal} found so far
                 </span>
               </div>
               <form
@@ -735,10 +754,10 @@
     <div class="card hiring" aria-labelledby="hiring-title">
       <div class="panel-head">
         <span class="eyebrow" id="hiring-title">hiring &amp; certification activity</span>
-        <span class="count mono">
-          {hiring.ceremonies.length} ceremon{hiring.ceremonies.length === 1 ? 'y' : 'ies'} · {hiring.totalEvents}
-          event{hiring.totalEvents === 1 ? '' : 's'}
-        </span>
+        <!-- The count is HONEST about whether grouping actually folded anything: on data where
+             every ceremony carries one event (today: no run predates the gauntlet_started
+             emitter), "N ceremonies · N events" would imply threading that has not happened. -->
+        <span class="count mono" title={hiringCount.detail ?? undefined}>{hiringCount.text}</span>
       </div>
       {#if hiring.ceremonies.length === 0}
         <p class="state-body">

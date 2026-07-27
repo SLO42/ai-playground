@@ -16,6 +16,8 @@
 //
 // Nothing here invents a value, and nothing here reaches the DB.
 
+import { isScoredStatus } from '$lib/shared/interview-status';
+
 /** The run facts a ceremony carries — structurally mirrors `workforce.HiringRunFacts`. */
 export interface HiringRunFactsLike {
 	id: string;
@@ -104,6 +106,55 @@ export function groupHiringCeremonies(
 	return filterCeremonies(ceremonies, showErrored);
 }
 
+/** The header count line + the tooltip that keeps it honest. */
+export interface CeremonyCountLabel {
+	text: string;
+	/** The long form for a `title`; null when `text` already says everything. */
+	detail: string | null;
+}
+
+/**
+ * The card's header count.
+ *
+ * WHY THIS IS NOT JUST `${n} ceremonies · ${m} events`. On today's live data the two numbers are
+ * EQUAL (36 · 36) — the ledger holds exactly one `interviewed` row per `interview_run`, because
+ * `emitGauntletStarted` (workforce/repo.ts) post-dates every run currently in the DB, so no
+ * ceremony has yet emitted a second event. The grouping is therefore CORRECT and doing nothing:
+ * a 1:1 join, not a broken one. Rendering "36 ceremonies · 36 events" implies threading that has
+ * not happened, which is a lie of implication even though both integers are true (F-008). So when
+ * every thread is a singleton the header says so, and explains why.
+ *
+ * Shadow paths: nil/empty ceremonies → the honest zero (the card renders its empty state anyway);
+ * a NEGATIVE or absent `totalEvents` (a read model that could not count) → falls back to stating
+ * the ceremony count alone rather than printing a nonsense event figure.
+ */
+export function ceremonyCountLabel(
+	ceremonies: readonly HiringCeremonyLike[] | null | undefined,
+	totalEvents: number | null | undefined
+): CeremonyCountLabel {
+	const n = Array.isArray(ceremonies) ? ceremonies.length : 0;
+	const noun = `${n} ceremon${n === 1 ? 'y' : 'ies'}`;
+	if (n === 0) return { text: noun, detail: null };
+	if (typeof totalEvents !== 'number' || !Number.isFinite(totalEvents) || totalEvents < n) {
+		// The event total is missing or impossible (fewer events than threads) — state only what
+		// we can stand behind rather than publishing an arithmetic that cannot be true.
+		return { text: noun, detail: 'the ledger event total was not available for this read' };
+	}
+	if (totalEvents === n) {
+		return {
+			text: `${noun} · one event each`,
+			detail:
+				'every ceremony here carries exactly one ledger event, so grouping has nothing to fold yet — ' +
+				'a gauntlet emits its second event (gauntlet_started) only on runs launched since that ' +
+				'emitter landed. Threads will fold as soon as one does.'
+		};
+	}
+	return {
+		text: `${noun} · ${totalEvents} event${totalEvents === 1 ? '' : 's'}`,
+		detail: `${totalEvents} ledger events folded into ${n} ceremon${n === 1 ? 'y' : 'ies'}`
+	};
+}
+
 /** Percentage, rounded, for a 0..1 ratio. */
 function pct(r: number): string {
 	return `${Math.round(r * 100)}%`;
@@ -151,30 +202,20 @@ export function ceremonyFacts(c: HiringCeremonyLike | null | undefined): Ceremon
 	// SCORE FACTS ARE STATED ONLY BY A RUN THAT TERMINALLY PRODUCED THEM — the single most
 	// important honesty rule here, and the one the first cut got only half right.
 	//
-	// `planted_total` is the ONLY score column written at run CREATION (workforce/repo.ts,
-	// `createInterviewRun`). `planted_found` and `false_positives` fall to their schema DEFAULT 0
-	// (db/schema.ts, `interview_run`) and are written LATER — at DIFFERENT lifecycle points:
-	//   • planted_found   ← the deterministic scorer: the 'adjudicating' finalize AND the
-	//                       passed/failed finalizes (workforce/gauntlet.ts).
-	//   • false_positives ← the pass bar ONLY, i.e. the passed/failed finalizes. It is NEVER
-	//                       written on the 'adjudicating' finalize.
-	// So a 0 in either column is an UNINITIALISED COLUMN, not a measurement, on every non-terminal
-	// status. Gating on `status !== 'error'` alone conflated "the run did not break" with "the run
-	// produced this number", and still rendered `recall 0/4 (0%)` + `0 FP` on every in-flight
-	// gauntlet — from the instant `gauntlet_started` lands, since the run is born 'running'. That
-	// reads as "the candidate found none of the 4 planted defects": a damning verdict on an agent
-	// that has not answered yet, sitting directly beneath a chip whose own tooltip says "this is
-	// not a verdict on the candidate" (F-008 — an honest unknown, never a plausible-looking
-	// fabricated value). It is the same lie the error path was fixed for, at a sibling status.
+	// Gating on `status !== 'error'` alone conflated "the run did not break" with "the run produced
+	// this number", and still rendered `recall 0/4 (0%)` + `0 FP` on every in-flight gauntlet —
+	// from the instant `gauntlet_started` lands, since the run is born 'running'. That reads as
+	// "the candidate found none of the 4 planted defects": a damning verdict on an agent that has
+	// not answered yet, sitting directly beneath a chip whose own tooltip says "this is not a
+	// verdict on the candidate" (F-008). It is the same lie the error path was fixed for, at a
+	// sibling status.
 	//
-	// 'adjudicating' is suppressed too, even though ITS `planted_found` is a real scorer number,
-	// because that number is a LOWER BOUND: resolving the operator's ambiguous queue can only
-	// raise it (`plantedFound++` on `confirm_hit`, §3.4). Publishing a figure that is going to move
-	// as though it were the verdict is the same class of claim. The status chip above already
-	// tells the operator the run is mid-flight.
-	//
-	// TERMINAL ⇒ scored. Nothing else. An absent status is treated as non-terminal (conservative).
-	const scored = run.status === 'passed' || run.status === 'failed';
+	// The rule itself — WHICH statuses have produced a score, and the column provenance that
+	// decides it — now lives ONCE in `$lib/shared/interview-status`, anchored to the schema ASSERT
+	// by a parity test. It used to be spelled here, in `hire-why-core.ts`, and in
+	// `workforce/recruiter-hire.ts` independently; nothing made those three agree, which is exactly
+	// how the event line beneath these chips shipped ungated while these chips were correct.
+	const scored = isScoredStatus(run.status);
 	if (scored) {
 		// recall: honest '—' when the run planted nothing (undefined, not zero).
 		if (run.planted_total != null && run.planted_total > 0 && run.planted_found != null) {

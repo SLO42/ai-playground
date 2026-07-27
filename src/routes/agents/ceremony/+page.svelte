@@ -17,6 +17,10 @@
   import { invalidate } from '$app/navigation';
   import { enhance } from '$app/forms';
   import { stream } from '$lib/client/stream.svelte';
+  // The SAME terminality rule the /agents ceremony chips and event lines gate their scores on:
+  // one definition in $lib/shared/interview-status, anchored to the schema ASSERT by a parity
+  // test, so this interview line cannot drift away from its siblings the way it had.
+  import { isScoredStatus } from '$lib/shared/interview-status';
   import type { PageData, ActionData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -322,8 +326,12 @@
                 <span class="role-slug mono">{a.roleSlug}</span>
                 <span class="tier-tag mono" data-tier={a.tier}>{a.tier}</span>
                 <span class="iv-model mono">({a.modelId})</span>
-                <span class="adj-progress mono">
-                  {a.plantedFound}/{a.plantedTotal} plants found · {a.falsePositives} FP
+                <!-- Progress, not a verdict: resolving the queue below can only RAISE plantedFound
+                     (§3.4). No FP figure — false_positives is never written on the 'adjudicating'
+                     finalize, so the old `0 FP` was an uninitialised column claiming to be a
+                     count, on the very card where the operator decides the false positives. -->
+                <span class="adj-progress mono" title="scorer progress — a lower bound while the queue below is open">
+                  {a.plantedFound}/{a.plantedTotal} plants found so far
                 </span>
                 <time datetime={a.at ?? ''}>{fmtDate(a.at)}</time>
               </div>
@@ -868,12 +876,23 @@
                     <span class="iv-verdict" data-status="running">running…</span>
                   {:else if r.interview.status === 'adjudicating'}
                     <span class="iv-verdict" data-status="adjudicating">adjudicating</span>
-                    <span>found {r.interview.plantedFound}/{r.interview.plantedTotal} plants</span>
+                    <span>found {r.interview.plantedFound}/{r.interview.plantedTotal} plants so far</span>
                     <span class="iv-resolve">· resolve on /agents</span>
-                  {:else}
+                  {:else if isScoredStatus(r.interview.status)}
+                    <!-- THE ONLY branch that may state a score, and it is an ALLOW-LIST. This used
+                         to be a bare `{:else}`, i.e. "anything that isn't error/running/
+                         adjudicating has a verdict" — so a status added to the schema tomorrow
+                         would silently inherit `passed`-shaped rendering, publishing an
+                         uninitialised planted_found/false_positives as a measurement (F-008).
+                         Same defect class as the ceremony chips and the event line; same fix. -->
                     <span class="iv-verdict" data-status={r.interview.status}>{r.interview.status}</span>
                     <span>found {r.interview.plantedFound}/{r.interview.plantedTotal} plants</span>
                     <span>· {r.interview.falsePositives} FP</span>
+                  {:else}
+                    <!-- An unclassified status: state it, and say plainly that no score exists —
+                         never fall through into the verdict shape. -->
+                    <span class="iv-verdict" data-status={r.interview.status}>{r.interview.status ?? '—'}</span>
+                    <span class="empty-cell">— no verdict recorded for this status</span>
                   {/if}
                   <span class="tier-tag mono" data-tier={r.interview.tier}>{r.interview.tier}</span>
                   <span class="iv-model mono">({r.interview.model_id})</span>

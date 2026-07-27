@@ -100,9 +100,23 @@ export interface AdjudicationCard {
 	roleVersion: string;
 	tier: string;
 	modelId: string;
+	/**
+	 * Scorer progress on THIS run. `plantedFound` is written by the 'adjudicating' finalize
+	 * (workforce/gauntlet.ts), so it is a REAL number — but a LOWER BOUND: resolving the queue
+	 * below can only raise it (`plantedFound++` on `confirm_hit`, §3.4). The surface must render
+	 * it as progress, never as a verdict.
+	 *
+	 * There is deliberately NO `falsePositives` here. `interview_run.false_positives` is written by
+	 * the PASS BAR only — i.e. on the passed/failed finalizes — and never on the 'adjudicating'
+	 * finalize this queue selects for, so it is the schema DEFAULT 0 on every card without
+	 * exception. Publishing it rendered a flat `0 FP` on the very surface where the operator is
+	 * about to DECIDE the false positives: an uninitialised column reading as a settled count
+	 * (F-008). Dropping it at the read model rather than in the markup is what stops a third
+	 * surface from re-rendering it tomorrow — the number does not exist yet, so nothing is handed
+	 * one. It becomes real, and is shown, once the run finalizes.
+	 */
 	plantedFound: number;
 	plantedTotal: number;
-	falsePositives: number;
 	/** The ambiguous-queue items (verbatim from interview_run.ambiguous). */
 	ambiguous: Array<Record<string, unknown>>;
 	at: string | null;
@@ -351,14 +365,16 @@ async function buildAdjudicationQueue(db: Db): Promise<AdjudicationCard[]> {
 				model_id: string;
 				planted_found: number;
 				planted_total: number;
-				false_positives: number;
 				ambiguous: Array<Record<string, unknown>>;
 				started_at: unknown;
 			}>
 		]
 	>(
+		// `false_positives` is deliberately NOT projected — see AdjudicationCard: it is never
+		// written on the 'adjudicating' finalize, so selecting it would only ever return the
+		// schema DEFAULT 0. F-020: every ORDER BY field (`started_at`) IS in the projection.
 		`SELECT id, role, role_version, tier, model_id, planted_found, planted_total,
-		        false_positives, ambiguous, started_at
+		        ambiguous, started_at
 		   FROM interview_run WHERE status = 'adjudicating'
 		  ORDER BY started_at DESC LIMIT 100;`
 	);
@@ -387,7 +403,6 @@ async function buildAdjudicationQueue(db: Db): Promise<AdjudicationCard[]> {
 			modelId: r.model_id,
 			plantedFound: r.planted_found,
 			plantedTotal: r.planted_total,
-			falsePositives: r.false_positives,
 			ambiguous: Array.isArray(r.ambiguous) ? r.ambiguous : [],
 			at: strOrNull(r.started_at)
 		});

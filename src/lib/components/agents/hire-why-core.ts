@@ -11,22 +11,12 @@
 // Nothing here invents a value, and nothing here reaches the DB: every fragment is read out of
 // the event's OWN recorded `detail`.
 
-/**
- * A run states a SCORE only once it has terminally produced one — the same gate as
- * `hiring-ledger-core.ts` (`ceremonyFacts`, the `scored` const), for the same reason.
- *
- * `planted_total` is written at run CREATION; `planted_found` is written by the deterministic
- * scorer on the 'adjudicating' finalize AND on the passed/failed finalizes, and
- * `false_positives` is written by the pass bar ONLY (never on 'adjudicating') — see
- * `workforce/gauntlet.ts` and `workforce/repo.ts` (`finalizeInterviewRun`). So on any
- * non-terminal status those columns are uninitialised or provisional, not measurements.
- *
- * 'adjudicating' is suppressed even though its `planted_found` IS a real scorer number, because
- * that number is a LOWER BOUND: resolving the operator's ambiguous queue can only raise it
- * (`plantedFound++` on `confirm_hit`, §3.4). The status fragment already tells the operator the
- * run is mid-flight.
- */
-const TERMINAL_RUN_STATUSES: ReadonlySet<string> = new Set(['passed', 'failed']);
+// A run states a SCORE only once it has terminally produced one — the SAME gate as
+// `hiring-ledger-core.ts` (`ceremonyFacts`, the `scored` const), because the two modules state
+// facts about the same run and a disagreement between them IS the defect. That rule, and the
+// column provenance behind it, is defined once in `$lib/shared/interview-status` and pinned to
+// the schema ASSERT by a parity test — it used to be a private copy in this file.
+import { isScoredStatus } from '$lib/shared/interview-status';
 
 /**
  * The WHY line for one ledger row, built from the event's OWN recorded detail — never
@@ -75,7 +65,7 @@ export function hireWhy(op: string, detail: Record<string, unknown> | undefined)
 			// (50%)` directly beneath a header whose chips deliberately withhold that very figure —
 			// the card contradicting itself, and the provisional number reading as the verdict.
 			const status = str('status');
-			const scored = status !== null && TERMINAL_RUN_STATUSES.has(status);
+			const scored = isScoredStatus(status);
 			const bits = [status, scored ? recallPart() : null];
 			// FP rides the same gate: the pass bar is the only writer, so a non-terminal run's
 			// `false_positives` is an uninitialised column, never a measurement.

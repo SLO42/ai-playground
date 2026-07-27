@@ -11,6 +11,10 @@
 
 import { describe, it, expect } from 'vitest';
 import { hireWhy, hireFalsifier } from './hire-why-core';
+import {
+	TERMINAL_RUN_STATUSES,
+	NON_TERMINAL_RUN_STATUSES
+} from '$lib/shared/interview-status';
 
 /** The exact detail `emitGauntletScored` writes for the 'adjudicating' finalize
  *  (workforce/gauntlet.ts passes planted_total + planted_found; false_positives is NOT written). */
@@ -94,6 +98,24 @@ describe('hireWhy — interviewed: score facts require a TERMINAL run', () => {
 	it('treats an ABSENT status as non-terminal (conservative), like ceremonyFacts', () => {
 		const why = hireWhy('interviewed', { recall: 0.5, planted_found: 2, planted_total: 4 });
 		expect(why).toBe('');
+	});
+
+	it('sweeps the WHOLE live schema enum — derived, not hand-listed', () => {
+		// Both sets come from $lib/shared/interview-status, whose parity test PARSES the
+		// interview_run ASSERT out of db/schema.ts. So adding a status to the schema forces a
+		// classification there, and this sweep picks it up automatically — the gap that let the
+		// event line ship ungated while its sibling header was correct.
+		expect(NON_TERMINAL_RUN_STATUSES.size).toBeGreaterThan(0);
+		for (const status of NON_TERMINAL_RUN_STATUSES) {
+			const why = hireWhy('interviewed', { ...adjudicatingDetail, status, false_positives: 3 });
+			expect(why, status).not.toContain('recall');
+			expect(why, status).not.toContain('FP');
+		}
+		for (const status of TERMINAL_RUN_STATUSES) {
+			const why = hireWhy('interviewed', { ...adjudicatingDetail, status, false_positives: 3 });
+			expect(why, status).toContain('recall 2/4 (50%)');
+			expect(why, status).toContain('3 FP');
+		}
 	});
 
 	it('treats an UNKNOWN future status as non-terminal — the allow-list never fails open', () => {

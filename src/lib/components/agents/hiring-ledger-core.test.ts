@@ -8,11 +8,16 @@
 
 import { describe, it, expect } from 'vitest';
 import {
+	ceremonyCountLabel,
 	ceremonyFacts,
 	filterCeremonies,
 	groupHiringCeremonies,
 	type HiringCeremonyLike
 } from './hiring-ledger-core';
+import {
+	TERMINAL_RUN_STATUSES,
+	NON_TERMINAL_RUN_STATUSES
+} from '$lib/shared/interview-status';
 
 function ceremony(over: Partial<HiringCeremonyLike> = {}): HiringCeremonyLike {
 	return {
@@ -206,8 +211,14 @@ describe('ceremonyFacts — every stated fact traces to a real column', () => {
 	});
 
 	it('the invariant holds across EVERY non-terminal status, and only there', () => {
-		// The whole schema enum, so a future status can never silently inherit "scored".
-		const nonTerminal = ['running', 'adjudicating', 'error'];
+		// DERIVED, not hand-copied. The previous cut listed the statuses inline under a comment
+		// claiming "the whole schema enum" — nothing checked that claim, so a status added to
+		// db/schema.ts would simply have been absent from the sweep with every test still green.
+		// These sets come from $lib/shared/interview-status, whose own parity test PARSES the
+		// interview_run ASSERT out of the schema source and fails if the two disagree. So this
+		// loop is now genuinely exhaustive over the live enum, transitively.
+		const nonTerminal = [...NON_TERMINAL_RUN_STATUSES];
+		expect(nonTerminal.length).toBeGreaterThan(0);
 		for (const status of nonTerminal) {
 			const facts = ceremonyFacts(
 				ceremony({
@@ -216,7 +227,7 @@ describe('ceremonyFacts — every stated fact traces to a real column', () => {
 			);
 			expect(facts.some((f) => f.kind === 'recall' || f.kind === 'fp')).toBe(false);
 		}
-		for (const status of ['passed', 'failed']) {
+		for (const status of TERMINAL_RUN_STATUSES) {
 			const facts = ceremonyFacts(
 				ceremony({
 					run: { id: 'r', status, planted_total: 8, planted_found: 6, false_positives: 2, recall: 0.75 }
@@ -224,6 +235,21 @@ describe('ceremonyFacts — every stated fact traces to a real column', () => {
 			);
 			expect(facts.find((f) => f.kind === 'recall')!.text).toBe('recall 6/8 (75%)');
 			expect(facts.find((f) => f.kind === 'fp')!.text).toBe('2 FP');
+		}
+	});
+
+	it('an UNKNOWN future status states no score — the allow-list never fails open', () => {
+		// The property the derived sweep above cannot show by construction: a status that is in
+		// NEITHER set (because nobody has classified it yet) must land on the withhold side.
+		for (const status of ['cancelled', 'superseded', 'PASSED']) {
+			const facts = ceremonyFacts(
+				ceremony({
+					run: { id: 'r', status, planted_total: 8, planted_found: 0, false_positives: 0, recall: 0 }
+				})
+			);
+			expect(facts.some((f) => f.kind === 'recall' || f.kind === 'fp'), status).toBe(false);
+			// The run's own non-score facts still render — withholding the score is not blanking the row.
+			expect(facts.find((f) => f.kind === 'status')!.text).toBe(status);
 		}
 	});
 
@@ -275,5 +301,63 @@ describe('ceremonyFacts — every stated fact traces to a real column', () => {
 		expect(kinds).not.toContain('fp');
 		expect(kinds).not.toContain('tier');
 		expect(kinds).not.toContain('model');
+	});
+});
+
+// ── ceremonyCountLabel — the header must not imply threading it did not do ──────────────
+//
+// LIVE GROUNDING (read-only probe of the dev DB, 2026-07-27): role_event holds exactly three ops
+// — created(18) / fixture_activated(36) / interviewed(36) — and there are 36 interview_run rows.
+// HIRE_LIFECYCLE_OPS selects only `interviewed`, and emitGauntletScored fires once per finalize,
+// so the feed is 36 events over 36 runs: 1:1 BY CONSTRUCTION, not a failing join (the join
+// demonstrably resolves — erroredCount 19 matches the DB's 19 status='error' rows exactly, and
+// that number is only computable from hydrated run facts). Zero `gauntlet_started` rows exist
+// because every run predates that emitter (wired at workforce/repo.ts). So the header must say
+// "one event each" rather than "36 ceremonies · 36 events", which reads as folding that happened.
+describe('ceremonyCountLabel', () => {
+	const many = (n: number): HiringCeremonyLike[] =>
+		Array.from({ length: n }, (_, i) => ceremony({ key: `interview_run:${i}` }));
+
+	it('says "one event each" when nothing folded — the live 36·36 shape', () => {
+		const label = ceremonyCountLabel(many(36), 36);
+		expect(label.text).toBe('36 ceremonies · one event each');
+		expect(label.text).not.toContain('36 events');
+		expect(label.detail).toMatch(/nothing to fold yet/);
+	});
+
+	it('states both counts once grouping actually folds events', () => {
+		const label = ceremonyCountLabel(many(12), 41);
+		expect(label.text).toBe('12 ceremonies · 41 events');
+		expect(label.detail).toBe('41 ledger events folded into 12 ceremonies');
+	});
+
+	it('singular grammar on one ceremony / one event', () => {
+		expect(ceremonyCountLabel(many(1), 1).text).toBe('1 ceremony · one event each');
+		expect(ceremonyCountLabel(many(1), 3).text).toBe('1 ceremony · 3 events');
+	});
+
+	// ── Shadow paths: nil, empty, and an upstream read that could not produce a total ──
+	it('nil / empty ceremonies → the honest zero, no event arithmetic', () => {
+		for (const input of [null, undefined, [] as HiringCeremonyLike[]]) {
+			const label = ceremonyCountLabel(input, 0);
+			expect(label.text).toBe('0 ceremonies');
+			expect(label.detail).toBeNull();
+		}
+	});
+
+	it('an absent / non-finite event total states only the ceremony count', () => {
+		for (const total of [null, undefined, NaN, Infinity]) {
+			const label = ceremonyCountLabel(many(4), total as number);
+			expect(label.text).toBe('4 ceremonies');
+			expect(label.detail).toMatch(/not available/);
+		}
+	});
+
+	it('an IMPOSSIBLE total (fewer events than threads) is never published as arithmetic', () => {
+		// A thread cannot exist without at least one event, so totalEvents < ceremonies means the
+		// read model disagrees with itself. Print what we can stand behind, not the contradiction.
+		const label = ceremonyCountLabel(many(9), 2);
+		expect(label.text).toBe('9 ceremonies');
+		expect(label.detail).toMatch(/not available/);
 	});
 });

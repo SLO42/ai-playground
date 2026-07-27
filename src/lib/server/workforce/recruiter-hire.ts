@@ -26,6 +26,7 @@
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { roleDisplayName } from '$lib/shared/naming';
+import { isScoredStatus } from '$lib/shared/interview-status';
 import { assertRecordId } from '../db/validate';
 import {
 	createDecisionBrief,
@@ -38,8 +39,7 @@ import {
 	getInterviewRun,
 	getRole,
 	getRoleVersion,
-	getReviewProposal,
-	type InterviewRunRow
+	getReviewProposal
 } from './repo';
 import { canTransition } from './lifecycle';
 import { emitCandidateConsidered, emitHireDecided } from './hire-events';
@@ -97,7 +97,11 @@ export interface HireDecision {
 	falsifier: string;
 }
 
-const TERMINAL_RUN_STATUSES = new Set<InterviewRunRow['status']>(['passed', 'failed']);
+// THE SAME terminality rule the /agents ceremony chips and event lines gate their scores on —
+// defined once in `$lib/shared/interview-status` and pinned to the schema ASSERT by a parity
+// test, rather than re-spelled per module. This gate is the load-bearing one: it is BECAUSE it
+// refuses every non-terminal run that the `candidate_considered` numbers downstream need no
+// status key of their own to gate on (see hire-why-core.ts).
 
 /**
  * Assemble the recruiter's hire decision for a TERMINAL interview_run (B3 read-only). Shadow
@@ -117,7 +121,7 @@ export async function buildHireDecision(db: Db, runId: string): Promise<HireDeci
 			`B1 violation: the recruiter ('${RECRUITER_SLUG}') is operator-bootstrap-certified and never has a hire brief raised on its own run — refused`
 		);
 	}
-	if (!TERMINAL_RUN_STATUSES.has(run.status)) {
+	if (!isScoredStatus(run.status)) {
 		throw new HireGateError(
 			`interview_run ${runId} is '${run.status}' — a hire decision needs a TERMINAL run (passed | failed). ` +
 				`An adjudicating run has an open ambiguous queue the operator resolves FIRST (HR-1/HR-4); a running/error run has no verdict.`

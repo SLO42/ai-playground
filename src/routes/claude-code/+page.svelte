@@ -21,6 +21,7 @@
     FLEET_STATE_LABELS,
     applyFleetViewToParams,
     fleetCountScopeNote,
+    fleetMirrorDrift,
     fleetScopeLabel,
     fleetStateCounts,
     fleetStateHint,
@@ -97,6 +98,13 @@
   // `navigating` (:1713). So a bump here means "a real navigation happened", for a same-href
   // navigation as much as a different-href one.
   //
+  // The CONVERSE is false, and this comment used to imply it: an ABORTED navigation commits the
+  // address bar (:1833-1834) and `page.url` (:1894-1896) and then returns at :1929-1932 without
+  // ever reaching :1987 — no bump. `_invalidate` is what bumps that abort token (:413), and this
+  // page invalidates on every session row. The missing signal is repaired downstream, by
+  // `reassertFleetUrl` re-stating the view into the address bar; read its doc before touching
+  // either half.
+  //
   // A monotonic COUNTER rather than a boolean, and an effect that depends on BOTH it and
   // `page.url`, so the decision is independent of which of the two lands first: whichever runs
   // last re-runs the effect with both facts present. `$state` because the effect must react to
@@ -131,7 +139,45 @@
     // as a re-publish again, or the wipe returns on the very next session row change.
     fleetSeededNav = fleetNavEpoch;
     if (decision.view) fleetView = decision.view;
+    // …AND THEN RE-STATE OUR OWN FACT. The decision above trusts `navigated`, and that signal has
+    // a hole this page cannot close from the inside (see `reassertFleetUrl`). Whatever the view
+    // ends up being, the address bar is made to say it — untracked, because this reads `fleetView`
+    // / `page.state` purely as bookkeeping and must never re-enter the effect.
+    untrack(() => reassertFleetUrl());
   });
+
+  /**
+   * Re-assert the URL mirror once the re-seed above has settled — the page, not a kit internal,
+   * owns "the address bar and the rendered view agree".
+   *
+   * LIVE-VERIFIED DEFECT (2026-07-26, :5174, AFTER the `afterNavigate` fix): engage `failed`
+   * (`?fleetState=failed`, 32 rows, pressed), then a same-href navigation with one
+   * `invalidate('app:fleet')` landing after kit pushed the history entry ⇒ address bar bare
+   * `/claude-code` while `failed 32` was still pressed over 32 rows. Kit 2.63.0 `navigate()`
+   * commits the address bar (client.js:1833-1834) and `page.url` (:1894-1896), awaits settled + 2
+   * ticks (:1921-1926), and only THEN aborts at `if (token !== nav_token) … return false`
+   * (:1929-1932) — an early return that never reaches `after_navigate_callbacks` (:1987).
+   * `_invalidate` bumps that token (:413), and the `onDbChange('session')` below invalidates on
+   * every session row change. So a navigation commits BOTH the address bar and `page.url` and
+   * never signals: `fleetNavEpoch` does not move, the decision reads a re-publish (correctly —
+   * the navigation was discarded), and the URL is left advertising a view nobody applied.
+   *
+   * Rather than hunt a complete navigation signal inside kit, the mirror re-states the view.
+   * Idempotent by construction: it only writes when the address bar actually DISAGREES
+   * ({@link fleetMirrorDrift}), so the invalidate storm costs one comparison, not a
+   * `history.replaceState` per session row. It also repairs the Back case, where kit restores
+   * `page.url` from the entry's `PAGE_URL_KEY` (client.js:2822) — written by `replaceState` as the
+   * PRE-click href (:2512) — so the restored view and the displayed address disagreed.
+   */
+  function reassertFleetUrl(): void {
+    const drift = fleetMirrorDrift(
+      typeof location === 'undefined' ? null : location.search,
+      page.url.searchParams,
+      fleetView
+    );
+    if (drift === null) return;
+    syncFleetUrl();
+  }
 
   /** Mirror the view into the address bar. Best-effort: the in-page view applies regardless. */
   function syncFleetUrl(): void {

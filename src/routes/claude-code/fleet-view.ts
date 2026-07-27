@@ -224,6 +224,48 @@ export function applyFleetViewToParams(
 	return out;
 }
 
+/** Order-insensitive, encoding-insensitive canonical form of a param set, for comparison only. */
+function canonicalSearch(params: URLSearchParams): string {
+	return [...params.entries()].map(([k, v]) => `${k}=${v}`).sort().join('&');
+}
+
+/**
+ * Has the ADDRESS BAR drifted away from the live view? — the repair that makes THIS PAGE, not a
+ * kit internal, the authority on "the URL and the UI agree".
+ *
+ * ── Why the navigation signal alone cannot hold the invariant ─────────────────────────────
+ * {@link reseedFleetView}'s `navigated` flag is a SOUND NEGATIVE and an INCOMPLETE POSITIVE (see
+ * its doc): kit's `navigate()` commits the address bar (client.js:1833-1834) and `page.url`
+ * (:1894-1896) BEFORE the abort check at :1929-1932, which returns early and never reaches the
+ * `afterNavigate` fire at :1987 — and `_invalidate` bumps exactly that token (:413), which this
+ * page does on every `session` row change. MEASURED on :5174: engage `failed` (32 rows,
+ * `?fleetState=failed`), then a same-href navigation with one `invalidate('app:fleet')` landing
+ * after the history push ⇒ address bar bare `/claude-code` while `failed 32` stayed pressed over
+ * 32 rows. The address bar advertised a view the UI was not applying — the exact defect the
+ * re-seed rule exists to close, re-entering through kit's abort path.
+ *
+ * So the page stops relying on a signal it does not own and re-states its own fact instead: after
+ * the re-seed decision settles, whatever the view IS gets written back to the address bar. That
+ * also repairs the Back case, where kit restores `page.url` from the history entry's
+ * `PAGE_URL_KEY` (client.js:2822) — which `replaceState` wrote as the PRE-click href
+ * (client.js:2512) — leaving the displayed address and the restored view disagreeing.
+ *
+ * Returns the search string the address bar SHOULD carry (no leading `?`), or `null` when it
+ * already agrees. Comparison is order- and encoding-insensitive, so a shared link that spells the
+ * same params in another order provokes no rewrite. Total; never throws — a nil/garbage
+ * `actualSearch` parses to "no params", which simply reads as drift when the view has any.
+ */
+export function fleetMirrorDrift(
+	actualSearch: string | null | undefined,
+	currentParams: URLSearchParams | null | undefined,
+	view: FleetView | null | undefined
+): string | null {
+	const want = applyFleetViewToParams(currentParams, view ?? DEFAULT_FLEET_VIEW);
+	const raw = typeof actualSearch === 'string' ? actualSearch.replace(/^\?/, '') : '';
+	const have = new URLSearchParams(raw);
+	return canonicalSearch(want) === canonicalSearch(have) ? null : want.toString();
+}
+
 /**
  * The outcome of {@link reseedFleetView}: the href to remember, and the view to ADOPT (or `null`
  * when the live view must be left exactly as the operator set it).
@@ -260,14 +302,31 @@ export interface FleetSeedDecision {
  * signal is required, and the caller passes it in as {@link reseedFleetView} `navigated` rather
  * than this pure module importing kit runtime state.
  *
- * ── The signal, verified in kit 2.63.0 source ────────────────────────────────────────────
+ * ── The signal, verified in kit 2.63.0 source — sound NEGATIVE, incomplete POSITIVE ──────
  * `afterNavigate` fires from exactly two places: the hydration path (client.js:724, with
  * `type:'enter'`) and the tail of `navigate()` (client.js:1987, after `update_url` at :2923 has
  * assigned `page.url`). `_invalidate` (client.js:405-488) calls `update(...)` + `root.$set(...)`
  * directly and touches NEITHER `after_navigate_callbacks` NOR `navigating` (:1713); `replaceState`
- * (:2489-2521) touches neither either. So "an `afterNavigate` fired since we last seeded" is TRUE
- * for every real navigation — including a same-href one — and FALSE for every invalidate
- * re-publish and every filter click. That is the discriminator the href could not provide.
+ * (:2489-2521) touches neither either. So the FALSE half holds absolutely: no invalidate
+ * re-publish and no filter click can ever be mistaken for a navigation, which is what makes it
+ * safe to keep the operator's live view when the flag is down.
+ *
+ * The TRUE half does NOT hold, and the first reading of this file asserted that it did.
+ * `navigate()` commits the address bar at :1833-1834 (`const fn = replace_state ?
+ * history.replaceState : history.pushState; fn.call(history, entry, '', url)`) and `page.url` at
+ * :1894-1896, then awaits `commit_promise` + two ticks (:1921-1926), and only THEN checks
+ * `if (token !== nav_token) { nav.reject(…); return false; }` (:1929-1932) — an early return that
+ * never reaches the `afterNavigate` fire at :1987. `_invalidate` bumps that exact token (:413),
+ * and THIS page invalidates `app:fleet` on every `session` row change. MEASURED on :5174: engage
+ * `failed` (32 rows, `?fleetState=failed`), then a same-href navigation with one invalidate
+ * landing after the history push ⇒ bare address bar, `failed 32` still pressed over 32 rows.
+ *
+ * A navigation can therefore commit BOTH the address bar and `page.url` and never signal. The
+ * flag stays — it is the right discriminator when it is up — but it cannot be the guarantee. The
+ * caller closes the hole on its own side by re-asserting the URL mirror from the view once this
+ * decision settles ({@link fleetMirrorDrift}, `+page.svelte` `reassertFleetUrl`), so the page's
+ * own mirror — not a kit internal with an abort path — is what keeps the address bar from ever
+ * advertising a view the UI is not applying.
  *
  * LIVE-VERIFIED DEFECT (2026-07-26, browser, :5174). The page re-seeded `fleetView` from
  * `page.url.searchParams` on every `page` change. `page` is republished by every `invalidate`,
@@ -303,9 +362,11 @@ export function reseedFleetView(
 ): FleetSeedDecision {
 	const prev = typeof seededHref === 'string' ? seededHref : '';
 	const href = clean(url?.href);
-	// nil / unusable url (SSR, a mangled object) — never discard what the operator has set, and
-	// never report the navigation as consumed: the caller keeps the flag for its next run, when a
-	// usable url may finally be present.
+	// nil / unusable url (SSR, a mangled object) — never discard what the operator has set. The
+	// recorded href comes back unchanged, so nothing is re-seeded from a url we could not read.
+	// (This decision says nothing about the caller's navigation FLAG — the page consumes that
+	// unconditionally on every run, `+page.svelte`. Unreachable in practice either way: the effect
+	// is client-only and `page.url` is always a real URL there.)
 	if (!href) return { href: prev, view: null };
 	// A RE-PUBLISH, not a navigation: same address AND no navigation fired, so it carries no newer
 	// intent than the live view. This is the invalidate path — the one that used to wipe the

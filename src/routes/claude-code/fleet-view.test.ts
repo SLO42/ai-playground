@@ -24,6 +24,7 @@ import {
 	FLEET_STATE_LABELS,
 	applyFleetViewToParams,
 	filterFleet,
+	fleetMirrorDrift,
 	fleetNeedsAttention,
 	fleetProjectKey,
 	fleetProjectLabel,
@@ -671,5 +672,263 @@ describe('state chips — the widen action is never dead, the hint never lies (D
 
 	it('upstream error: an unknown state token still yields a usable hint, never undefined', () => {
 		expect(fleetStateHint('bogus' as never, null)).toBe(FLEET_STATE_HINTS.all);
+	});
+});
+
+/* ============================================================================
+   THE SHIPPED INVARIANT — the address bar and the rendered view never disagree.
+
+   THE GAP THAT LET THE LAST FIX SHIP GREEN: every re-seed test above drives the
+   PURE function's `navigated` argument, and the source gate in
+   fleet-controls.test.ts regex-matches the `afterNavigate` wiring. Neither can
+   express the failing input, because it is a navigation that COMMITS and then
+   ABORTS — kit 2.63.0 `navigate()` writes the address bar (client.js:1833-1834)
+   and `page.url` (:1894-1896), awaits settled + 2 ticks (:1921-1926), and only
+   then returns at `if (token !== nav_token) … return false` (:1929-1932),
+   never reaching the `afterNavigate` fire at :1987. `_invalidate` bumps that
+   token (:413), and THIS page invalidates `app:fleet` on every `session` row.
+
+   MEASURED on :5174 against the previous fix: engage `failed` (32 rows,
+   `?fleetState=failed`, pressed) → same-href `goto('/claude-code')` with one
+   `invalidate('app:fleet')` fired from a `history.pushState` wrapper ⇒ address
+   bar bare `/claude-code`, UI still `failed 32` over 32 rows.
+
+   So the invariant is pinned HERE, at the composition level, by replaying kit's
+   observable transitions (what it writes to the address bar, what it writes to
+   `page.url`, and whether `afterNavigate` fires) through the exact sequence the
+   page runs. `FleetAddressBar` is that replay — it is a MODEL of kit, not kit,
+   and every transition it models carries the client.js line it was read from.
+   ============================================================================ */
+
+/** Deep-equality on a view, as the operator would judge it: same filters, same collapse. */
+function sameView(a: FleetView, b: FleetView): boolean {
+	return a.project === b.project && a.state === b.state && a.open === b.open;
+}
+
+/**
+ * The page's URL/UI contract, replayed off kit's observable transitions.
+ *
+ * `address` is what the operator SEES and copies; `pageUrl` is what kit republishes to the
+ * component. They are separate fields because that separation IS the bug class: `replaceState`
+ * writes only the first (client.js:2489-2521), an aborted `navigate()` writes both and then
+ * signals nothing, and Back restores them from two different sources (:2822 vs the entry's own
+ * displayed url).
+ */
+class FleetAddressBar {
+	view: FleetView;
+	address: string;
+	pageUrl: string;
+	/** How many times the mirror actually wrote — a re-publish must cost ZERO history writes. */
+	writes = 0;
+	private seedHref: string;
+	private navEpoch = 0;
+	private seededNav = 0;
+
+	constructor(href: string) {
+		this.address = href;
+		this.pageUrl = href;
+		this.seedHref = href;
+		this.view = parseFleetView(new URL(href).searchParams);
+	}
+
+	/** TRUE when a reload of the current address would reproduce the view on screen. */
+	get agrees(): boolean {
+		return sameView(parseFleetView(new URL(this.address).searchParams), this.view);
+	}
+
+	/** `syncFleetUrl` — shallow `replaceState`: the address bar moves, `page.url` never does. */
+	private syncUrl(): void {
+		const u = new URL(this.pageUrl);
+		u.search = applyFleetViewToParams(new URL(this.pageUrl).searchParams, this.view).toString();
+		this.address = u.href;
+		this.writes += 1;
+	}
+
+	/** `reassertFleetUrl` — write only when the address bar actually disagrees. */
+	private reassert(): void {
+		const drift = fleetMirrorDrift(
+			new URL(this.address).search,
+			new URL(this.pageUrl).searchParams,
+			this.view
+		);
+		if (drift !== null) this.syncUrl();
+	}
+
+	/** The page's `$effect` body: re-seed decision, consume the flag, then re-assert the mirror. */
+	private publish(): void {
+		const navigated = this.navEpoch !== this.seededNav;
+		const d = reseedFleetView(this.seedHref, new URL(this.pageUrl), this.view, navigated);
+		this.seedHref = d.href;
+		this.seededNav = this.navEpoch;
+		if (d.view) this.view = d.view;
+		this.reassert();
+	}
+
+	/** An operator click on a chip (`setFleetView`). */
+	click(next: Partial<FleetView>): void {
+		this.view = { ...this.view, ...next };
+		this.syncUrl();
+	}
+
+	/** One `invalidate('app:fleet')` re-publish — same `page.url`, no navigation. */
+	invalidate(): void {
+		this.publish();
+	}
+
+	/** A `navigate()` that COMPLETES: address bar + `page.url`, then `afterNavigate` (:1987). */
+	navigate(href: string): void {
+		this.address = href;
+		this.pageUrl = href;
+		this.publish();
+		this.navEpoch += 1;
+		this.publish();
+	}
+
+	/**
+	 * A `navigate()` ABORTED at :1929-1932 by an `invalidate` that bumped `nav_token` (:413) after
+	 * the history push. The address bar and `page.url` are already committed; `afterNavigate` never
+	 * fires; the invalidate that killed it re-publishes.
+	 */
+	navigateAborted(href: string): void {
+		this.address = href;
+		this.pageUrl = href;
+		this.publish();
+		this.publish();
+	}
+
+	/**
+	 * Back onto an entry `replaceState` wrote. The browser restores the DISPLAYED address, while
+	 * kit restores `page.url` from that entry's `PAGE_URL_KEY` (:2822) — which `replaceState` set
+	 * to the PRE-click href (:2512). The two disagree by construction.
+	 */
+	back(displayed: string, restoredPageUrl: string): void {
+		this.address = displayed;
+		this.pageUrl = restoredPageUrl;
+		this.publish();
+		this.navEpoch += 1;
+		this.publish();
+	}
+}
+
+const HOME = 'http://x/claude-code';
+
+describe('URL/UI agreement — the invariant the page ships (regression, 2026-07-26)', () => {
+	it('THE DEFECT: a same-href navigation ABORTED by the live stream cannot leave the URL lying', () => {
+		// Measured on :5174: `failed` engaged, then goto('/claude-code') racing one
+		// invalidate('app:fleet'). Kit committed the bare address bar and bare `page.url`, then
+		// aborted before `afterNavigate` — so `navigated` stayed FALSE (correctly: the navigation
+		// was discarded) and the view kept `failed`, while the address bar had already gone bare.
+		const p = new FleetAddressBar(HOME);
+		p.click({ state: 'failed' });
+		expect(p.address).toBe(`${HOME}?fleetState=failed`);
+
+		p.navigateAborted(HOME);
+
+		// The navigation was discarded, so the operator's view is the honest survivor — and the
+		// address bar must say so rather than advertising a view nobody is applying.
+		expect(p.view.state).toBe('failed');
+		expect(p.address).toBe(`${HOME}?fleetState=failed`);
+		expect(p.agrees).toBe(true);
+	});
+
+	it('a COMPLETED same-href navigation still wins — the previous fix is not undone', () => {
+		// The behaviour 7553ca7 exists for: the sidebar self-link really navigates, so the bare URL
+		// wins and the filter clears. Both halves land together — URL and UI never disagree after.
+		const p = new FleetAddressBar(HOME);
+		p.click({ state: 'failed' });
+		p.navigate(HOME);
+		expect(p.view).toEqual(DEFAULT_FLEET_VIEW);
+		expect(p.address).toBe(HOME);
+		expect(p.agrees).toBe(true);
+	});
+
+	it('BACK off a transcript link restores an address and a view that AGREE', () => {
+		// GAP 5, measured on :5174: /claude-code → `failed` → a row's `transcript →` link → Back.
+		// Kit restores `page.url` from the entry's PAGE_URL_KEY — the PRE-click BARE href — while the
+		// browser shows the entry's displayed address `?fleetState=failed`. Before the mirror
+		// re-assert that shipped `all 40` under a `?fleetState=failed` address bar.
+		const p = new FleetAddressBar(HOME);
+		p.click({ state: 'failed' });
+		p.navigate(`${HOME}?fleetState=failed&session=session%3Aabc`);
+		expect(p.agrees).toBe(true);
+
+		p.back(`${HOME}?fleetState=failed`, HOME);
+
+		expect(p.agrees).toBe(true);
+		expect(parseFleetView(new URL(p.address).searchParams)).toEqual(p.view);
+	});
+
+	it('the invalidate STORM is still free: the view survives and the mirror writes NOTHING', () => {
+		// The wipe this whole module exists to prevent, plus the new cost check — the repair must be
+		// drift-triggered, or a session-row storm would mean a `history.replaceState` per row.
+		const p = new FleetAddressBar(HOME);
+		p.click({ state: 'attention', open: false });
+		const writesAfterClick = p.writes;
+		for (let i = 0; i < 100; i += 1) p.invalidate();
+		expect(p.view).toEqual({ project: null, state: 'attention', open: false });
+		expect(p.address).toBe(`${HOME}?fleetState=attention&fleet=closed`);
+		expect(p.writes).toBe(writesAfterClick);
+		expect(p.agrees).toBe(true);
+	});
+
+	it('a shared link lands with URL and UI agreeing, and survives its own storm', () => {
+		const p = new FleetAddressBar(`${HOME}?fleetState=failed&fleetProject=project%3Aatelier`);
+		expect(p.view).toEqual({ project: 'project:atelier', state: 'failed', open: true });
+		expect(p.agrees).toBe(true);
+		for (let i = 0; i < 20; i += 1) p.invalidate();
+		expect(p.agrees).toBe(true);
+		expect(p.writes).toBe(0);
+	});
+
+	it('a NON-fleet param is never collateral damage of the repair', () => {
+		// `?session=` belongs to the transcript panel; the mirror rewrites only the fleet params.
+		const p = new FleetAddressBar(`${HOME}?session=session%3Aabc`);
+		p.click({ state: 'failed' });
+		p.navigateAborted(`${HOME}?session=session%3Aabc`);
+		expect(new URL(p.address).searchParams.get('session')).toBe('session:abc');
+		expect(p.agrees).toBe(true);
+	});
+});
+
+describe('fleetMirrorDrift — the address-bar comparison behind the repair', () => {
+	const FAILED: FleetView = { project: null, state: 'failed', open: true };
+
+	it('happy: agreement reports NO drift, so a re-publish costs no history write', () => {
+		expect(fleetMirrorDrift('?fleetState=failed', new URLSearchParams(''), FAILED)).toBeNull();
+		expect(fleetMirrorDrift('', new URLSearchParams(''), DEFAULT_FLEET_VIEW)).toBeNull();
+	});
+
+	it('THE REPAIR: an address bar the view does not match reports what it SHOULD carry', () => {
+		// The aborted-navigation shape: the address bar went bare, the view is still `failed`.
+		expect(fleetMirrorDrift('', new URLSearchParams(''), FAILED)).toBe('fleetState=failed');
+		// The Back shape: the address bar carries a filter the restored view dropped.
+		expect(
+			fleetMirrorDrift('?fleetState=failed', new URLSearchParams(''), DEFAULT_FLEET_VIEW)
+		).toBe('');
+	});
+
+	it('comparison is order- and encoding-insensitive — a shared link provokes no rewrite', () => {
+		const view: FleetView = { project: 'project:atelier', state: 'failed', open: true };
+		const params = new URLSearchParams('fleetProject=project%3Aatelier&fleetState=failed');
+		expect(
+			fleetMirrorDrift('?fleetState=failed&fleetProject=project:atelier', params, view)
+		).toBeNull();
+	});
+
+	it('non-fleet params are preserved in the repaired search, never dropped', () => {
+		const drift = fleetMirrorDrift('', new URLSearchParams('session=session%3Aabc'), FAILED);
+		expect(new URLSearchParams(drift ?? '').get('session')).toBe('session:abc');
+		expect(new URLSearchParams(drift ?? '').get('fleetState')).toBe('failed');
+	});
+
+	it('nil / empty / upstream-error: never throws, and a nil view reads as the default', () => {
+		expect(fleetMirrorDrift(null, null, null)).toBeNull();
+		expect(fleetMirrorDrift(undefined, undefined, undefined)).toBeNull();
+		expect(fleetMirrorDrift(null, null, FAILED)).toBe('fleetState=failed');
+		expect(fleetMirrorDrift('?fleetState=failed', null, null)).toBe('');
+		// A non-string address (an upstream mangling) is read as "no params", never a throw.
+		expect(fleetMirrorDrift(42 as never, null, DEFAULT_FLEET_VIEW)).toBeNull();
+		// A garbage address still resolves to the honest empty search rather than throwing.
+		expect(fleetMirrorDrift('?%%%', null, DEFAULT_FLEET_VIEW)).toBe('');
 	});
 });

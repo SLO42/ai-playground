@@ -308,3 +308,42 @@ describe('…and a SAME-HREF navigation still re-seeds (the regression the href-
     expect(reseedEffect).toMatch(/fleetSeededNav = fleetNavEpoch;/);
   });
 });
+
+describe('…and the PAGE, not kit, owns URL/UI agreement (the abort-path regression)', () => {
+  /* `afterNavigate` is a SOUND NEGATIVE and an INCOMPLETE POSITIVE: kit 2.63.0 `navigate()`
+     commits the address bar (client.js:1833-1834) and `page.url` (:1894-1896), awaits settled + 2
+     ticks (:1921-1926), then aborts at :1929-1932 — before the `afterNavigate` fire at :1987.
+     `_invalidate` bumps that token (:413) and this page invalidates on every session row, so a
+     navigation can commit BOTH and never signal. MEASURED on :5174: `failed` engaged (32 rows,
+     `?fleetState=failed`) + a same-href goto racing one invalidate ⇒ bare address bar, `failed 32`
+     still pressed. The decision logic cannot see that; the mirror re-assert is what closes it, so
+     the WIRING of that re-assert is pinned here (its behaviour is in fleet-view.test.ts). */
+  const reseedEffect = src.slice(
+    src.indexOf('$effect(() => {\n    const navigated'),
+    src.indexOf('/**\n   * Re-assert the URL mirror')
+  );
+  const reassert = src.slice(
+    src.indexOf('function reassertFleetUrl'),
+    src.indexOf('/** Mirror the view into the address bar.')
+  );
+
+  it('the effect re-asserts the mirror after the re-seed decision has settled', () => {
+    // AFTER the adopt, or it would mirror the pre-navigation view and then be overwritten.
+    expect(reseedEffect).toMatch(/if \(decision\.view\) fleetView = decision\.view;\s*(\/\/[^\n]*\n\s*)*untrack\(\(\) => reassertFleetUrl\(\)\);/);
+  });
+
+  it('the re-assert is UNTRACKED — it must never become a dependency of its own effect', () => {
+    expect(reseedEffect).toMatch(/untrack\(\(\) => reassertFleetUrl\(\)\)/);
+  });
+
+  it('it compares against the REAL address bar, not `page.url` (which replaceState never writes)', () => {
+    expect(reassert).toMatch(/fleetMirrorDrift\(/);
+    expect(reassert).toMatch(/location\.search/);
+    expect(src).toMatch(/import \{[^}]*\bfleetMirrorDrift\b[^}]*\} from '\.\/fleet-view'/s);
+  });
+
+  it('it writes ONLY on drift — an invalidate storm must not cost a history write per row', () => {
+    expect(reassert).toMatch(/if \(drift === null\) return;/);
+    expect(reassert).toMatch(/syncFleetUrl\(\);/);
+  });
+});

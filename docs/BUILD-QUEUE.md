@@ -9,7 +9,65 @@
 
 > ⏭ **RESUME PLAN (operator, 2026-06-26):** **BL-R1 DONE** (`eed3163`+`bcbc1f5`) · **BL-H1 digest DONE** · **BL-H2 eval DONE — headroom NO-ADOPT/idea-only** (`docs/HEADROOM-DIGEST.md` §6; F-049). Recovery + headroom closed; **recovery-harden-2 DONE** (RH-1 BL-R2 `d11db2f` + RH-2 wi-harden-2 `e89c9c5` + RH-3 `c58e5fb`, pushed) — the loop is hardened. Next + LAST — **go-live for ROUNDS**: bring up DB (v2 :8000) + dev server `CLAUDE_CODE_OAUTH_TOKEN` UNSET (F-029) → operator hits Continue → watch ROUNDS + `/projects/[id]/graph`. Boot reaper now runs BL-R1 release+reset, so go-live live-validates that path. Open deferred (non-blocking): BL-R3 (2 task-status MEDIUMs), BL-GUX-FIX (3 graph-UI test gaps), wi-harden done. (bring up DB + dev server token-unset → operator hits Continue → watch ROUNDS + the new `/projects/[id]/graph`). Server is currently DOWN (paused). All work committed + pushed to origin/v2 (tip `1da738e`); docs on v2-main. The full "alive" arc + repo-creation + usage-observability + command-center-ux + lifecycle-graph are DONE. Open tracked: BL-R1, wi-harden-2 (latent), headroom (BL-H1/H2), backlog (BL-1/BL-2/BL-2b).
 
-> ⏸ **OPERATOR PAUSE #2 (2026-07-26, second of the session) — DO NOT AUTO-CHAIN.** Both lanes
+> ⏸ **OPERATOR PAUSE #3 (2026-07-27) — DO NOT AUTO-CHAIN. SUPERSEDES PAUSE #2 below.**
+> Lane B is FINISHED and pushed. Lane A was stopped mid-flight; its work is COMMITTED and the
+> worktree is CLEAN, but the tip commit has NOT been re-reviewed and NOTHING is pushed.
+>
+> **LANE B — COMPLETE. `origin/v2-lane-b` = `e25738b`, worktree `ai-playground-v2b` clean, 0/0 vs remote.**
+> LB-1..LB-4 all green (review PASS + red-team PASS). LB-4 took two waves: `915293c`+`d15a880`+`1a2236d`
+> (feature, review FAILED `functional` on a regression the fix-loop itself introduced), then the
+> close-out `7553ca7`+`e25738b`. **The close-out is the interesting one.** The builder found a real
+> discriminator in kit 2.63.0 source — `afterNavigate` fires only from hydration (`client.js:724`)
+> and the tail of `navigate()` (`:1987`), never from `_invalidate` (`:405-488`) — threaded it into
+> the pure seam as a defaulted-false arg so every prior test passed unchanged, and ran a NEGATIVE
+> CONTROL proving exactly 2 new tests fail without the fix. **Review PASSED it; the RED-TEAM broke
+> it anyway: kit commits the address bar BEFORE its abort check, so an aborted navigation moves the
+> URL without ever firing `afterNavigate`.** `e25738b` has the page re-assert its own mirror instead
+> of trusting the callback; re-review + re-red-team both green.
+> **Deferred from LB-4 (recorded, not lost):** the BACK BUTTON reproduces the same URL-vs-UI desync
+> (pre-existing, not caused by the diff) · no component-render harness for `/claude-code` — the
+> page↔module wiring is pinned only by regex source-gates (`fleet-controls.test.ts:229-271`), and
+> adding `@testing-library/svelte` needs `package.json`, outside lane B's scope lock · route-wide
+> token drift in `claude-code/+page.svelte` (28 of 35 literal `font-size:` values pre-existing —
+> a lane-A sweep should tokenize the whole file at once, not just the new 7).
+>
+> **LANE A — `finish-small-polish-resume` (`wf_f0cc58b3-aca`), worktree `ai-playground-v2`, branch
+> `v2`. Tree CLEAN. HEAD = `fe3aa24`, 4 commits AHEAD of `origin/v2` (`b035577`), UNPUSHED.**
+> FP-2 ran the full loop and was stopped one step short of closing:
+> `86696ee` build → `1d63b55` build-commit → review **FAIL** (HIGH/F-008: `hiring-ledger-core.ts:160`
+> gated score suppression on `run.status !== 'error'`, i.e. ONE of five enum values from
+> `schema.ts:1114-1122`) → `58a57e9` fix (`status === 'passed' || 'failed'`) → review **PASS** →
+> red-team **FAIL** (in-scope MEDIUM: `agents/+page.svelte:105-120` `recallPart()` has no terminal
+> gate, so an `adjudicating` run prints the exact recall the header chips suppress) → `fe3aa24` fix.
+> **`fe3aa24` HAS NOT BEEN RE-REVIEWED — the wave was stopped before the verify pass.** Treat it as
+> unverified until a review runs. FP-3 NEVER STARTED.
+> **Deferred/observed from FP-2 (all recorded by the reviewers, worth keeping):** the adjudication
+> queue renders a never-written `false_positives` column (`agents/+page.svelte:743-744`,
+> `ceremony/+page.svelte:325-326`) · `ceremony/+page.svelte:872-876` repeats the same enum-chain
+> gap on a sibling surface · `repo.ts` truncates at `HIRING_RUN_FETCH_CAP` SILENTLY, and every
+> truncated ceremony then renders the honest `run not found` chip — an honest state produced by a
+> dishonest cause · join-key asymmetry (`str()` over an SDK RecordId escapes to `⟨…⟩`) · 3 of 36
+> `interview_run` rows carry NO `role_event` at all, so they can never reach the feed · `usage.ts:231`
+> adds `isoOrNull`, a FOURTH spelling of the F-013 coercion already in `projects/repo.ts` ·
+> `HIRE_LIFECYCLE_OPS` includes `staffed` but omits `unstaffed`. **Live observation worth acting on:
+> the header reads "36 ceremonies · 36 events" — every ledger row points at a distinct run, so the
+> "flat rows become threads" benefit does not materialise on today's data.**
+>
+> **NOT MERGED:** `v2-lane-b` → `v2` still pending. The v2 worktree is now CLEAN, so the blocker is
+> no longer dirtiness — it is that lane A's 4 unpushed commits end on an unverified tip. Re-review
+> `fe3aa24` (or revert it) BEFORE merging, then merge `--no-ff` and RE-GATE the merge result; the
+> lanes never test each other's combination.
+>
+> **A FAILURE MODE TO LOG (fails.md candidate, from the LB-4b builder's own report):** while running
+> its negative control it used `git checkout -- <file>` to undo a temporary `sed` and wiped its own
+> real edits along with it. It recovered and the final gate proved the committed file correct — but
+> a less lucky version of that mistake **silently ships a no-op fix while every test passes**.
+>
+> **Order when the pause lifts:** (1) re-review `fe3aa24` and push lane A; (2) FP-3 (never started);
+> (3) merge `v2-lane-b` → `v2` + re-gate; (4) **`review-and-gate`** — unblocked by LB-3;
+> (5) **`TASK-BOARD-SPEC` P1**.
+
+> ⏸ **OPERATOR PAUSE #2 (2026-07-26, second of the session) — SUPERSEDED BY PAUSE #3 ABOVE.** Both lanes
 > stopped mid-second-task. Everything COMMITTED is fully gated (review PASS + red-team PASS) and
 > PUSHED; both worktrees hold in-progress work that resumes with a VERIFY-DON'T-REDO brief.
 >

@@ -9,7 +9,74 @@
 
 > ⏭ **RESUME PLAN (operator, 2026-06-26):** **BL-R1 DONE** (`eed3163`+`bcbc1f5`) · **BL-H1 digest DONE** · **BL-H2 eval DONE — headroom NO-ADOPT/idea-only** (`docs/HEADROOM-DIGEST.md` §6; F-049). Recovery + headroom closed; **recovery-harden-2 DONE** (RH-1 BL-R2 `d11db2f` + RH-2 wi-harden-2 `e89c9c5` + RH-3 `c58e5fb`, pushed) — the loop is hardened. Next + LAST — **go-live for ROUNDS**: bring up DB (v2 :8000) + dev server `CLAUDE_CODE_OAUTH_TOKEN` UNSET (F-029) → operator hits Continue → watch ROUNDS + `/projects/[id]/graph`. Boot reaper now runs BL-R1 release+reset, so go-live live-validates that path. Open deferred (non-blocking): BL-R3 (2 task-status MEDIUMs), BL-GUX-FIX (3 graph-UI test gaps), wi-harden done. (bring up DB + dev server token-unset → operator hits Continue → watch ROUNDS + the new `/projects/[id]/graph`). Server is currently DOWN (paused). All work committed + pushed to origin/v2 (tip `1da738e`); docs on v2-main. The full "alive" arc + repo-creation + usage-observability + command-center-ux + lifecycle-graph are DONE. Open tracked: BL-R1, wi-harden-2 (latent), headroom (BL-H1/H2), backlog (BL-1/BL-2/BL-2b).
 
-> ⏸ **OPERATOR PAUSE #4 (2026-07-27) — DO NOT AUTO-CHAIN. SUPERSEDES PAUSE #3 below.**
+> ⏸ **OPERATOR PAUSE #5 (2026-07-27, 14:30 timebox reached) — DO NOT AUTO-CHAIN. SUPERSEDES #4.**
+> Lane B unchanged and COMPLETE (`origin/v2-lane-b` = `e25738b`). Lane A: tree CLEAN, `v2` HEAD =
+> `89807a9`, **21 commits ahead of `origin/v2`, STILL UNPUSHED.** SurrealDB left UP on :8000
+> (pid 30020, 86/86). No dev server running.
+>
+> **THE HEADLINE: `npm test` on `v2` IS NOW HONESTLY GREEN.** 331 passed files / 1 skipped,
+> 5712 passed, exit 0, zero FAIL lines — measured by two different agents on the final tree.
+> It had been red all session, which is why every wave kept hard-stopping.
+>
+> **FP-3 ✅ COMPLETE AND FULLY GATED** (build → review FAIL → fix → review PASS → red-team FAIL →
+> fix → re-review PASS). 8 commits, `bb406e3`..`89807a9`. Three root causes, none of them the
+> symptom anyone had been staring at:
+> 1. **`hooks.server.ts:201` runs `export const startup = bootstrap()` at MODULE SCOPE.**
+>    `/projects/[id]/+page.server.ts:144` and `/settings/+page.server.ts:42` imported the pure
+>    accessor `activeOrchestrator` from there — so ANY test importing those loaders booted the real
+>    server, claimed the process-wide Db singleton, and died at FILE level. Fixed by REUSE: a
+>    side-effect-free registry already existed for exactly this purpose. **Recovered 22 tests that
+>    had never actually run** while being counted as "skipped".
+> 2. **The rotating failure set had a shared cause.** 191 of ~330 suites call `startTestDb()`, each
+>    spawning a REAL SurrealDB with its own SurrealKV dir + 86 migrations. Vitest defaults to one
+>    fork per core, so a 24-core box ran **~23 SurrealDB servers at once** and whichever real-DB
+>    suite lost that run's I/O race blew a timeout. Instrumented: ~23 forks → 6 failed files / 145s;
+>    `maxForks=8` → 2 failed / 117s.
+> 3. **But capping forks only lowered the PROBABILITY.** The true cause was an **unretried
+>    commit-race conflict** — SurrealDB is optimistically concurrent and says so in the error
+>    ("This transaction can be retried"). New single-owner classifier + bounded retry at
+>    `src/lib/server/db/retry.ts`, applied to PRODUCTION `cc-config/sync.ts` (idempotent by
+>    construction, so a replay converges) and to the bare `DELETE work_item;` helper in
+>    `orchestrator.test.ts` **plus its two identical siblings** — fixing only the cited instance
+>    would have left the class alive in two files.
+>
+> **THE MOST IMPORTANT SINGLE FIND OF THE DAY (red-team, FP-3 fix-2 `89807a9`):**
+> `diagnosticWindow` was applied at a READ site, but `streamErrored` has FOUR readers — the other
+> three saw the raw value (`session.note` head-only-unscreened; `agent_event.detail` unscreened AND
+> unbounded). Windowing moved to BOTH CAPTURE sites. **And the impact was worse than reported: a
+> harness throw after a `done` event finalized the run as status `failed` — a TERMINAL capability
+> verdict on the hire-adjudication path. An ENVIRONMENT OUTAGE was being recorded as a real
+> candidate REJECTION.** Now correctly `error`. This bears directly on the 19 errored
+> `interview_run` rows: some "failed" candidates may never have failed.
+> Also: `gate-live.test.ts` `readToken` fell back to reading the worktree `.env`, so running the
+> gates under the mandated token-unset condition (F-029) did NOT skip — it spawned a real CLI
+> against a stale credential and reported a CREDENTIAL failure as a GATE-WIRING failure.
+> Also: the elision marker was never charged against the 2000-char budget (measured overshoot
+> 2027/2030/2031); the existing test's `2000 + 64` assertion had been tuned to the defect.
+>
+> **STALE PREMISE IN MY OWN BRIEF, corrected by the builder:** `scripts/memory-pull-mcp.test.js`,
+> `scripts/peer-send-mcp.test.js` and `tests/verify-flows/lib/runner.test.ts` are ALREADY vitest
+> files and ALREADY pass. No exclusion was needed. FP-3 ITEM 4(d)'s node:test half did not exist.
+>
+> **⛔ STILL UNREVIEWED — 5 commits: `bdd299a`, `48602bc`, `101ea3e`, `d403d65`, `73046cd` (TERM-1..5).**
+> `TERM-R` was written to review them (including re-running 2 of the 5 mutation proofs personally,
+> and judging whether the `score-read-ledger` text-scan guard is worth its rename cost) and was
+> STOPPED AT THE TIMEBOX before starting. **Nothing on this branch is pushed, so the unreviewed
+> tip is contained — but 21 local-only commits is the largest this has been.**
+>
+> **TWO HARNESS FINDINGS TO FIX (they cost us real time today):**
+> - **`verifyPassed=false` conflates "I broke the gate" with "the gate was red when I arrived."**
+>   TC-1 honestly reported a pre-existing red suite and the host hard-stopped, leaving 5 good
+>   commits unreviewed. The wave host should compare against a stated BASELINE, not an absolute.
+> - **`git checkout -- <file>` destroyed an agent's own uncommitted work TWICE today** (LB-4b and
+>   TC-1), both self-detected and recovered. Second occurrence = fails.md entry, not an anecdote.
+>   A less lucky version silently ships a no-op fix while every test passes.
+>
+> **Order when the pause lifts:** (1) **`TERM-R`** — review the 5 orphaned commits, then push all 21;
+> (2) merge `v2-lane-b` → `v2` `--no-ff` + RE-GATE the merge result; (3) **`review-and-gate`**;
+> (4) **`TASK-BOARD-SPEC` P1**. Then a devlog for the whole 2026-07-26/27 stretch.
+
+> ⏸ **OPERATOR PAUSE #4 (2026-07-27) — SUPERSEDED BY PAUSE #5 ABOVE.**
 > Lane B unchanged and still COMPLETE (`origin/v2-lane-b` = `e25738b`, clean, 0/0 vs remote).
 > Lane A ran the FP-2 close-out and was stopped mid-fix-loop. **Tree CLEAN. `v2` HEAD = `a4b36e7`,
 > now 6 commits ahead of `origin/v2` (`b035577`), STILL UNPUSHED. SurrealDB is DOWN.**

@@ -27,6 +27,7 @@ import {
 	runGauntlet,
 	sampleFixtures,
 	assertSafeRelPath,
+	diagnosticWindow,
 	AUTO_INTERVIEW_TOKEN_TYPE,
 	QUEUED_INTERVIEW_TYPE,
 	type GauntletDeps
@@ -327,6 +328,78 @@ const perfectFindings: FindingsWriter = (cwd, seed) => {
 };
 
 // ── The suite ───────────────────────────────────────────────────────────────────
+
+describe('diagnosticWindow — a bounded capture that keeps the TAIL (§3.6 diagnosability)', () => {
+	// The defect: the note was `payload.slice(0, 500)` — head-only. A runtime/stream error puts
+	// its wrapper text and paths up front and the ACTUAL reason at the TAIL, so the 19 errored
+	// interview_run rows in the live DB are undiagnosable. The window must stay BOUNDED but keep
+	// both ends, and it must say honestly how much it dropped.
+
+	it('an OVER-BOUND payload retains its TAIL — the reason survives the clip', () => {
+		const reason = 'CAUSED BY: ENOENT spawn claude.exe — the reason lives at the very end';
+		const out = diagnosticWindow(`${'x'.repeat(50_000)}\n${reason}`);
+		expect(out).toContain(reason);
+		expect(out.endsWith(reason)).toBe(true);
+		// …and the HEAD is kept too (the wrapper/context half is still useful).
+		expect(out.startsWith('xxxx')).toBe(true);
+	});
+
+	it('the clip is BOUNDED and says how much it elided (honest, countable — F-008)', () => {
+		const raw = 'y'.repeat(50_000);
+		const out = diagnosticWindow(raw);
+		// The bound covers the WHOLE result, marker included — not just the two slices.
+		expect(out.length).toBeLessThanOrEqual(2000 + 64);
+		const m = out.match(/\[… (\d+) characters elided …\]/);
+		expect(m, 'an elision marker must be present').not.toBeNull();
+		// The arithmetic must reconcile: head + elided + tail === the screened original.
+		const elided = Number(m![1]);
+		const kept = out.length - m![0].length - 2; // minus the two joining newlines
+		expect(kept + elided).toBe(raw.length);
+	});
+
+	it('a WITHIN-bound payload is returned verbatim — no marker, nothing lost', () => {
+		const raw = 'short but complete failure reason';
+		expect(diagnosticWindow(raw)).toBe(raw);
+		expect(diagnosticWindow(raw)).not.toContain('elided');
+	});
+
+	it('accepts an Error and reads its message (the runner-threw call site)', () => {
+		expect(diagnosticWindow(new Error('runner exploded'))).toBe('runner exploded');
+	});
+
+	// ── Shadow paths: nil, empty, and upstream-error input ────────────────────────
+	it('nil / non-string input is an HONEST marker, never the string "undefined"', () => {
+		for (const nil of [undefined, null, 42, {}, []]) {
+			const out = diagnosticWindow(nil);
+			expect(out).toBe('(no error message)');
+			expect(out).not.toContain('undefined');
+		}
+	});
+
+	it('empty / whitespace-only input is an honest marker, never a blank field', () => {
+		expect(diagnosticWindow('')).toBe('(no error message)');
+		expect(diagnosticWindow('   \n\t ')).toBe('(no error message)');
+	});
+
+	it('a NON-Error throw does not crash the classifier (the old `.message.slice()` did)', () => {
+		// The previous code was `(err as Error).message.slice(0, 500)`. A bare `throw 'boom'`
+		// made that `undefined.slice(...)` — a TypeError raised INSIDE the catch that classifies
+		// errors, losing the original failure entirely.
+		expect(() => diagnosticWindow('boom')).not.toThrow();
+		expect(diagnosticWindow('boom')).toBe('boom');
+	});
+
+	it('D-026: a payload carrying a secret is SCREENED before it is ever persisted', () => {
+		const out = diagnosticWindow('spawn failed with token sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+		expect(out).not.toContain('sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+	});
+
+	it('D-026: a home path is redacted, and the surrounding diagnostic text still survives', () => {
+		const out = diagnosticWindow('ENOENT at C:\\Users\\alice\\code\\thing — spawn failed');
+		expect(out).not.toContain('alice');
+		expect(out).toContain('spawn failed');
+	});
+});
 
 describe('runGauntlet — happy path (operator trigger, perfect candidate)', () => {
 	let seed: Seed;

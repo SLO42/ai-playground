@@ -41,6 +41,7 @@ import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import { writeAgentEvent } from '../analytics/events';
+import { screen } from '../memory/screen';
 import { enforceTokenBudget, resolveDailyTokenBudget } from '../analytics/spend-budget';
 import { loadGatesConfig, type WorkforceConfig } from '../config/index';
 import { enqueue } from '../orchestrator/workqueue';
@@ -495,6 +496,48 @@ const DEADLINE: unique symbol = Symbol('gauntlet-deadline');
  */
 const GATE_PLANE_DOWN_MARKER = 'gate control plane not configured';
 
+// ── Diagnostic capture window (§3.6 error_reason notes) ─────────────────────────────
+// A gauntlet failure note used to be `payload.slice(0, 500)` — HEAD-only. That is the
+// wrong half: a runtime stream error or a thrown runner error carries its prefix up front
+// (wrapper text, the command line, an absolute worktree path) and the ACTUAL reason at the
+// TAIL (the final stack frame, the "caused by", the non-zero exit line). Head-only clipping
+// therefore threw away exactly the bytes an operator needs — which is why the 19 errored
+// `interview_run` rows in the live DB cannot be diagnosed after the fact.
+//
+// The window keeps a BOUND (a row must never be allowed to blow up — F-014) but takes it
+// from BOTH ends with an honest, countable elision marker in between, so the reader can see
+// that something was dropped and exactly how much. Screened (D-026) BEFORE it is persisted.
+
+/** Total budget for a captured diagnostic payload. Bounded — a row must not blow up. */
+const DIAG_MAX_CHARS = 2000;
+/** Share of the budget spent on the HEAD; the remainder goes to the tail (the reason). */
+const DIAG_HEAD_CHARS = 700;
+
+/**
+ * Bound a captured payload to a head+tail window with an honest elision marker, D-026-screened.
+ *
+ * Every error has a name here:
+ *  • nil / non-string / blank        ⇒ '(no error message)'   — never `String(undefined)` (F-013 spirit).
+ *  • contains a secret               ⇒ '(error text withheld — it contained a secret)' (screen() fails CLOSED).
+ *  • within budget                   ⇒ returned verbatim (screened), no marker.
+ *  • over budget                     ⇒ head … `[… N characters elided …]` … tail, so the TAIL survives.
+ */
+export function diagnosticWindow(raw: unknown): string {
+	const text = raw instanceof Error ? raw.message : typeof raw === 'string' ? raw : '';
+	if (!text.trim()) return '(no error message)';
+	const res = screen(text);
+	if (res.status === 'quarantined') return '(error text withheld — it contained a secret)';
+	const screened = res.text;
+	if (!screened.trim()) return '(no error message)';
+	if (screened.length <= DIAG_MAX_CHARS) return screened;
+	// Reserve room for the marker so the RESULT honours the bound, not just the two slices.
+	const tailChars = DIAG_MAX_CHARS - DIAG_HEAD_CHARS;
+	const head = screened.slice(0, DIAG_HEAD_CHARS);
+	const tail = screened.slice(screened.length - tailChars);
+	const elided = screened.length - DIAG_HEAD_CHARS - tailChars;
+	return `${head}\n[… ${elided} characters elided …]\n${tail}`;
+}
+
 async function attemptGauntlet(deps: GauntletDeps, ctx: AttemptContext): Promise<InterviewRunRow> {
 	const { db, runtime, config } = deps;
 	const { role, version, fixtures, keys, plantedTotal, input } = ctx;
@@ -714,7 +757,7 @@ async function attemptGauntlet(deps: GauntletDeps, ctx: AttemptContext): Promise
 					{
 						kind: 'env',
 						note: streamErrored
-							? `runtime stream error: ${streamErrored.slice(0, 500)}`
+							? `runtime stream error: ${diagnosticWindow(streamErrored)}`
 							: 'stream ended without a done event'
 					}
 				]
@@ -879,7 +922,7 @@ async function attemptGauntlet(deps: GauntletDeps, ctx: AttemptContext): Promise
 			return await finalizeInterviewRun(db, run.id, {
 				status: 'error',
 				error_reason: 'spawn_failure',
-				results: [{ kind: 'env', note: `runner threw: ${(err as Error).message.slice(0, 500)}` }]
+				results: [{ kind: 'env', note: `runner threw: ${diagnosticWindow(err)}` }]
 			});
 		}
 		throw err;

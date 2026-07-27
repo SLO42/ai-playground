@@ -33,27 +33,90 @@ const SCHEMA_PATH = fileURLToPath(new URL('../server/db/schema.ts', import.meta.
 // this test reading the narrow original enum and passing green with the new status unclassified —
 // i.e. the exact defect class the parity test exists to close would still be open.
 // Now: every occurrence, LAST wins, and zero occurrences throw.
-const STATUS_ASSERT_RE =
-	/DEFINE FIELD OVERWRITE status\s+ON interview_run[\s\S]{0,200}?ASSERT \$value IN \[([^\]]+)\]/g;
+//
+// TWO MORE SILENT-GREEN MODES OF THE SAME CLASS, both closed below. The first cut matched
+// `DEFINE FIELD OVERWRITE status ... {0,200}? ASSERT $value IN [...]` — a DEFINE plus a lazy
+// 200-char window. That shape is blind in two ways, and BOTH end in a green test over an
+// unanchored gate, which is worse than no test at all:
+//
+//   ① A LATER re-DEFINE THAT DROPS THE ASSERT WAS INVISIBLE. `DEFINE FIELD OVERWRITE status ON
+//      interview_run TYPE string DEFAULT "running";` is a perfectly ordinary migration line, and
+//      it makes the column accept ANY string. The old pattern simply failed to match it, silently
+//      fell back to the earlier constrained DEFINE, and reported the OLD enum as effective — so
+//      the parity test would keep certifying a classification that the schema no longer enforces.
+//      Worse, the 200-char window could jump the statement boundary entirely and bind a
+//      NEIGHBOURING field's `ASSERT $value IN [...]` to the status DEFINE (the fields around it —
+//      `tier`, `error_reason` — carry their own enums), reporting some other column's values as
+//      the status set. Fixed by matching a whole STATEMENT: `[^;]*` cannot cross the `;`, so the
+//      ASSERT found always belongs to this field, and an effective DEFINE with no ASSERT THROWS.
+//
+//   ② A re-DEFINE WITHOUT `OVERWRITE` WAS INVISIBLE, and "last wins" is not even true for one.
+//      F-015 blesses `IF NOT EXISTS` alongside `OVERWRITE`, and the old pattern hard-required the
+//      literal `OVERWRITE` — so `DEFINE FIELD IF NOT EXISTS status ON interview_run ...` matched
+//      nothing and the parser read the older DEFINE. That is right by accident and wrong in
+//      general: `IF NOT EXISTS` is a NO-OP over an existing field, so the EARLIER define stays
+//      effective — the opposite of last-wins — while a bare `DEFINE FIELD` re-define errors
+//      outright. Rather than guess apply history from source text, the parser now SEES both forms
+//      and THROWS when a re-define is anything other than `OVERWRITE`, naming the form it found.
+//
+// The polarity of every one of these is "throw and make a human re-anchor", never "assume".
+const STATUS_DEFINE_RE =
+	/DEFINE FIELD\s+(OVERWRITE|IF NOT EXISTS)?\s*status\s+ON\s+(?:TABLE\s+)?interview_run\b([^;]*);/g;
+const ASSERT_ENUM_RE = /ASSERT\s+\$value\s+IN\s+\[([^\]]*)\]/;
+const QUOTED_RE = /(["'])([^"']+)\1/g;
 
 /**
  * The EFFECTIVE `interview_run.status` ASSERT set for a schema source.
  *
  * Exposed with an injectable `src` so the last-wins property itself is testable without mutating
  * the real `schema.ts` (the only way the original bug was found was by hand-editing it).
+ *
+ * EVERY ERROR HERE HAS A NAME. Four throws, four distinct causes, each stated in the message:
+ * no DEFINE at all (renamed/dropped field), a non-OVERWRITE re-define (apply order unknowable
+ * from source), an effective DEFINE with no ASSERT (column unconstrained), and an ASSERT whose
+ * list yields no values (quoting the parser does not understand).
  */
 export function parseStatusEnum(src: string): string[] {
 	// F-054: the editor flips LF→CRLF on this repo, so normalize before any multi-line match.
-	const matches = [...src.replace(/\r\n/g, '\n').matchAll(STATUS_ASSERT_RE)];
+	const matches = [...src.replace(/\r\n/g, '\n').matchAll(STATUS_DEFINE_RE)];
 	if (matches.length === 0) {
 		throw new Error(
 			'could not locate the interview_run.status ASSERT in db/schema.ts — the field was renamed, ' +
 				'reshaped, or the ASSERT was dropped. Re-anchor this test before trusting any status gate.'
 		);
 	}
+	// ② Every RE-define must be an OVERWRITE for "last textual wins" to hold.
+	for (let i = 1; i < matches.length; i++) {
+		if (matches[i][1] !== 'OVERWRITE') {
+			throw new Error(
+				`re-DEFINE #${i + 1} of interview_run.status is '${matches[i][1] ?? 'a bare DEFINE FIELD'}', ` +
+					'not OVERWRITE — which definition is EFFECTIVE can no longer be read off the source ' +
+					'text (IF NOT EXISTS is a no-op over an existing field, so the EARLIER one stays in ' +
+					'force; a bare re-DEFINE errors on apply). Re-anchor this test before trusting any ' +
+					'status gate.'
+			);
+		}
+	}
 	// LAST, not first: later migrations OVERWRITE earlier ones.
-	const last = matches[matches.length - 1];
-	return [...last[1].matchAll(/"([^"]+)"/g)].map((x) => x[1]);
+	const body = matches[matches.length - 1][2];
+	// ① The EFFECTIVE define must itself carry the ASSERT. Scoped to this statement by `[^;]*`,
+	// so a neighbouring field's enum can never be mistaken for the status enum.
+	const assert = ASSERT_ENUM_RE.exec(body);
+	if (!assert) {
+		throw new Error(
+			'the EFFECTIVE DEFINE of interview_run.status carries NO `ASSERT $value IN [...]` — the ' +
+				'column accepts any string, so the status classification in interview-status.ts is ' +
+				'anchored to nothing. Restore the ASSERT or re-anchor this test.'
+		);
+	}
+	const statuses = [...assert[1].matchAll(QUOTED_RE)].map((x) => x[2]);
+	if (statuses.length === 0) {
+		throw new Error(
+			`the interview_run.status ASSERT list parsed to ZERO values (raw: '${assert[1].trim()}') — an ` +
+				'empty set makes every parity assertion vacuously true. Re-anchor this test.'
+		);
+	}
+	return statuses;
 }
 
 /** The `interview_run.status` ASSERT set, read out of the live schema source. */
@@ -105,19 +168,128 @@ describe('schema anchor — the parser reads the EFFECTIVE enum', () => {
 		expect(parseStatusEnum(FIRST.replace(/\n/g, '\r\n'))).toContain('adjudicating');
 	});
 
-	it('"last textual DEFINE = last applied" is grounded: migrations are declared in id order', () => {
-		// Taking the LAST match is only correct if the file's textual order matches the order
-		// `schemaMigrations` applies them. Both are numerically ordered by construction — assert it
-		// rather than assume it, since the whole anchor rests on it.
-		const src = readFileSync(SCHEMA_PATH, 'utf8').replace(/\r\n/g, '\n');
-		const ids = [...src.matchAll(/^const m(\d{4})_\w+: Migration = \{/gm)].map((m) =>
-			Number(m[1])
+	// ── BLINDNESS MODE ① — an effective re-DEFINE that DROPPED the ASSERT ─────────────────
+	const NO_ASSERT = `
+		DEFINE FIELD OVERWRITE status          ON interview_run TYPE string DEFAULT "running";
+	`;
+
+	it('a LATER re-DEFINE that DROPS the ASSERT throws — it does not fall back to the older enum', () => {
+		// The silent-green mode: the column now accepts ANY string, but the old parser skipped the
+		// unasserted DEFINE and reported the earlier, narrow enum as effective.
+		expect(() => parseStatusEnum(`${FIRST}\n-- ...later migration...\n${NO_ASSERT}`)).toThrow(
+			/EFFECTIVE DEFINE of interview_run\.status carries NO/
 		);
-		expect(ids.length).toBeGreaterThan(50);
-		const outOfOrder = ids.filter((id, i) => i > 0 && id <= ids[i - 1]);
-		expect(outOfOrder, `migration consts declared out of id order: ${outOfOrder.join(', ')}`).toEqual(
+	});
+
+	it('a neighbouring field’s ASSERT can never be mistaken for the status enum', () => {
+		// The 200-char lookahead could jump the `;` and bind the NEXT field's enum. Statement-scoped
+		// matching makes that impossible: this must throw, not return ["local","haiku"].
+		const NEIGHBOUR = `
+			DEFINE FIELD OVERWRITE status ON interview_run TYPE string DEFAULT "running";
+			DEFINE FIELD OVERWRITE tier   ON interview_run TYPE string ASSERT $value IN ["local","haiku"];
+		`;
+		expect(() => parseStatusEnum(NEIGHBOUR)).toThrow(/carries NO/);
+	});
+
+	// ── BLINDNESS MODE ② — a re-DEFINE that is not an OVERWRITE ───────────────────────────
+	it('an `IF NOT EXISTS` re-DEFINE throws — last-wins is FALSE for a no-op re-define', () => {
+		const INE = FIRST.replace('DEFINE FIELD OVERWRITE', 'DEFINE FIELD IF NOT EXISTS').replace(
+			'"error"]',
+			'"error","cancelled"]'
+		);
+		expect(() => parseStatusEnum(`${FIRST}\n${INE}`)).toThrow(/is 'IF NOT EXISTS', not OVERWRITE/);
+	});
+
+	it('a BARE re-DEFINE (no modifier) throws too — it errors on apply, so the source lies', () => {
+		const BARE = FIRST.replace('DEFINE FIELD OVERWRITE', 'DEFINE FIELD');
+		expect(() => parseStatusEnum(`${FIRST}\n${BARE}`)).toThrow(
+			/is 'a bare DEFINE FIELD', not OVERWRITE/
+		);
+	});
+
+	it('a SINGLE `IF NOT EXISTS` define is fine — there is nothing earlier for it to no-op over', () => {
+		const INE = FIRST.replace('DEFINE FIELD OVERWRITE', 'DEFINE FIELD IF NOT EXISTS');
+		expect(parseStatusEnum(INE)).toContain('adjudicating');
+	});
+
+	it('an ASSERT list the parser cannot read throws rather than yielding an empty set', () => {
+		const EMPTY = 'DEFINE FIELD OVERWRITE status ON interview_run TYPE string ASSERT $value IN [];';
+		expect(() => parseStatusEnum(EMPTY)).toThrow(/parsed to ZERO values/);
+	});
+
+	it('single-quoted SurrealQL string literals parse (the enum is not double-quote-only)', () => {
+		const SQ = "DEFINE FIELD OVERWRITE status ON interview_run TYPE string ASSERT $value IN ['passed','failed'];";
+		expect(parseStatusEnum(SQ)).toEqual(['passed', 'failed']);
+	});
+});
+
+// ── THE APPLY-ORDER GROUNDING ────────────────────────────────────────────────────────────────
+// Taking the LAST textual DEFINE is only correct if textual order equals APPLY order. The
+// previous version of this test asserted that the `const mNNNN_name: Migration = {` DECLARATIONS
+// are in ascending id order — but declaration order is not the authority. `runMigrations` walks
+// the exported `schemaMigrations` ARRAY, in array order. Two silent-green gaps followed:
+//
+//   • an array whose entries are REORDERED relative to the declarations (or relative to id order)
+//     applies a later-declared migration FIRST, so the last DEFINE in the text is not the last
+//     one applied — and the old test, reading only declarations, stayed green;
+//   • a migration const DECLARED but never added to the array is NEVER APPLIED at all, yet a
+//     textual parser reads its DDL as effective. That is not hypothetical: `m0087`/`m0088` are
+//     already claimed on paper by two specs, so a half-landed migration const is a live shape.
+//
+// So the grounding now reads the ARRAY — the real authority — and pins it to the declarations.
+describe('the anchor rests on APPLY order — schemaMigrations, not declaration order', () => {
+	const src = readFileSync(SCHEMA_PATH, 'utf8').replace(/\r\n/g, '\n');
+
+	/** The migration consts DECLARED in the file, in textual order. */
+	const declared = [...src.matchAll(/^const (m\d{4}_\w+): Migration = \{/gm)].map((m) => m[1]);
+
+	/** The migration consts EXPORTED in `schemaMigrations`, in APPLY order. */
+	const applied = (() => {
+		const open = src.indexOf('export const schemaMigrations: Migration[] = [');
+		if (open === -1) throw new Error('schemaMigrations array not found in db/schema.ts');
+		const close = src.indexOf('\n];', open);
+		if (close === -1) throw new Error('schemaMigrations array is not terminated by "\\n];"');
+		return [...src.slice(open, close).matchAll(/^\s*(m\d{4}_\w+),?\s*$/gm)].map((m) => m[1]);
+	})();
+
+	it('the exported array is non-trivial (the parse itself is checked)', () => {
+		expect(applied.length).toBeGreaterThan(50);
+	});
+
+	it('no migration is listed twice — a duplicate would apply its DDL out of band', () => {
+		const seen = new Set<string>();
+		const dupes = applied.filter((n) => (seen.has(n) ? true : (seen.add(n), false)));
+		expect(dupes, `duplicated in schemaMigrations: ${dupes.join(', ')}`).toEqual([]);
+	});
+
+	it('every DECLARED migration is EXPORTED — a declared-but-unlisted one never applies', () => {
+		const listed = new Set(applied);
+		const orphans = declared.filter((n) => !listed.has(n));
+		expect(
+			orphans,
+			`declared in schema.ts but absent from schemaMigrations (its DDL NEVER applies, yet a ` +
+				`textual parser reads it as effective): ${orphans.join(', ')}`
+		).toEqual([]);
+	});
+
+	it('every EXPORTED migration is DECLARED in this file', () => {
+		const known = new Set(declared);
+		const ghosts = applied.filter((n) => !known.has(n));
+		expect(ghosts, `listed in schemaMigrations but not declared here: ${ghosts.join(', ')}`).toEqual(
 			[]
 		);
+	});
+
+	it('APPLY order equals TEXTUAL order — the premise the last-wins parser rests on', () => {
+		// If these ever diverge, "the last DEFINE in the file" stops meaning "the last one applied"
+		// and `parseStatusEnum` must be re-anchored to walk the array instead of the raw source.
+		expect(applied).toEqual(declared);
+	});
+
+	it('APPLY order is ascending by migration id', () => {
+		const ids = applied.map((n) => Number(n.slice(1, 5)));
+		const outOfOrder = ids.filter((id, i) => i > 0 && id <= ids[i - 1]);
+		expect(outOfOrder, `schemaMigrations out of id order at: ${outOfOrder.join(', ')}`).toEqual([]);
 	});
 });
 

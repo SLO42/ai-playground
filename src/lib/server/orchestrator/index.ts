@@ -41,6 +41,19 @@ export {
 	type TestOutcome
 } from './post-task';
 
+// PCG-1 — the pre-commit gate: the project's build/lint/typecheck/test, run BEFORE the terminal
+// transition and the merge, so Atelier applies its own Definition of Done to its own output.
+export {
+	runPreCommitGate,
+	GATE_STEP_NAMES,
+	type GateOutcome,
+	type GateStatus,
+	type GateStep,
+	type GateStepName,
+	type PreCommitGateInput,
+	type PreCommitGateOptions
+} from './pre-commit-gate';
+
 export {
 	enqueue,
 	claimNext,

@@ -25,63 +25,25 @@
 // StringRecordId; every VALUE binds via $param; absent optionals are OMITTED, never NULL
 // (option<T> rejects NULL — MEMORY-SPEC §6.1).
 
-import { execFile } from 'node:child_process';
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
 import { assertRecordId } from '../db/validate';
 import { enqueue } from './workqueue';
 import { testCommandFor } from '../scanner/detect';
+import { execFileRunner, splitCommand, type CommandRunner } from './command-runner';
+import { runPreCommitGate, type GateOutcome, type GateStepName } from './pre-commit-gate';
+import { maybeEnqueueReview, type ReviewDecision } from './review';
 
 // ── The command runner seam (so tests inject a fake — NO live process, the same
-//    mocked-backend pattern 1.4/1.6b used; F-008 holds: a mock in a TEST is allowed) ──
-
-/** The result of running ONE external command. */
-export interface CommandResult {
-	/** Process exit code (0 = success). null only if the process was signalled. */
-	code: number | null;
-	stdout: string;
-	stderr: string;
-}
-
-/**
- * Runs an external program with an ARGUMENT ARRAY (never a shell string). This is the
- * single seam through which the post-task loop touches the OS — the default impl wraps
- * `execFile`, which spawns the program directly and passes each `args` element as a
- * literal argv entry (no shell word-splitting / metacharacter expansion). A malformed
- * path or a `;rm -rf …`-style task title therefore cannot inject a second command: it is
- * just one inert argv string handed to the program (D-008).
- */
-export type CommandRunner = (
-	file: string,
-	args: readonly string[],
-	opts: { cwd: string }
-) => Promise<CommandResult>;
-
-/**
- * The default runner: `execFile` with an argument array. `shell` is FALSE — even though
- * the platform note allows shell:true for binary-paths-with-spaces, this loop never needs
- * it (the programs are `git`/the test launcher on PATH) and shell:false is the strongest
- * no-injection guarantee: argv is passed verbatim, the OS never re-parses it (D-008/F-002).
- */
-export const execFileRunner: CommandRunner = (file, args, opts) =>
-	new Promise<CommandResult>((resolve) => {
-		execFile(
-			file,
-			[...args],
-			{ cwd: opts.cwd, shell: false, windowsHide: true, maxBuffer: 8 * 1024 * 1024 },
-			(err, stdout, stderr) => {
-				// A non-zero exit shows up as an error with a `.code`; we surface it as a
-				// CommandResult, never a throw — the loop decides what a failure means.
-				const code =
-					err && typeof (err as { code?: unknown }).code === 'number'
-						? ((err as { code: number }).code)
-						: err
-							? 1
-							: 0;
-				resolve({ code, stdout: stdout?.toString() ?? '', stderr: stderr?.toString() ?? '' });
-			}
-		);
-	});
+//    mocked-backend pattern 1.4/1.6b used; F-008 holds: a mock in a TEST is allowed).
+//    The definitions MOVED to ./command-runner (PCG-1 broke the post-task ⇄ gate/review
+//    import cycle); they are re-exported here so every existing import site is unchanged. ──
+export {
+	execFileRunner,
+	splitCommand,
+	type CommandRunner,
+	type CommandResult
+} from './command-runner';
 
 // ── Inputs / outputs ──────────────────────────────────────────────────────────────
 
@@ -98,6 +60,12 @@ export interface PostTaskInput {
 	commitMessage: string;
 	/** The project test command, e.g. "npm test" — split to program + args (NOT a shell line). */
 	testCommand?: string;
+	/**
+	 * PCG-1 — `project.build_tool` (a bare detected tool like 'npm'/'dotnet', or an operator-edited
+	 * real command). Used ONLY by the pre-commit gate, to resolve the build/lint/typecheck steps.
+	 * Absent ⇒ the gate has no build step (an honest per-step skip, not a failure).
+	 */
+	buildTool?: string | null;
 	/** Whether the agent run itself succeeded (decides the task's terminal status). */
 	runOk: boolean;
 }
@@ -147,6 +115,27 @@ export interface PostTaskResult {
 	 * task state; the divergence event makes the half-state observable to the operator/PM.
 	 */
 	divergent: boolean;
+	/**
+	 * PCG-1 — the pre-commit gate verdict, present ONLY when the gate was enabled AND the run
+	 * succeeded (a failed run has nothing to gate). `status:'failed'` is the caller's signal to
+	 * REFUSE THE MERGE: the work is committed on the session branch but must not land on the
+	 * project branch. Absent ⇒ the gate did not run (byte-identical to the pre-PCG-1 behaviour).
+	 */
+	gate?: GateOutcome;
+	/**
+	 * PCG-1 — the review decision, present ONLY when review wiring was enabled AND the gate did
+	 * not fail AND a commit actually landed. `triggered:true` means the change was large enough to
+	 * warrant a code review and (unless it deduped to an existing one) a `review` work_item now
+	 * exists. The caller decides whether that HOLDS the merge — see the orchestrator's
+	 * `holdMergeBack` policy.
+	 */
+	review?: ReviewDecision;
+	/**
+	 * PCG-1 — set when the review DECISION itself could not be made (a git/DB fault inside
+	 * `maybeEnqueueReview`). Best-effort by construction: the failure is named here and on the
+	 * completion event, and it never changes the commit or the terminal status.
+	 */
+	reviewError?: string;
 }
 
 export interface PostTaskOptions {
@@ -158,6 +147,33 @@ export interface PostTaskOptions {
 	 * (D-021), drained off the interactive path, never run inline here.
 	 */
 	followUpOnTestFail?: boolean;
+	/**
+	 * PCG-1 — THE PRE-COMMIT GATE. When enabled, the project's build/lint/typecheck/test run
+	 * BEFORE the terminal transition, and a RED gate lands the task `failed` and tells the caller
+	 * to withhold the merge (see pre-commit-gate.ts for the full reasoning and the F-007 argument
+	 * for committing-but-not-merging). Absent/false ⇒ the gate never runs and this module behaves
+	 * exactly as it did before (F-053: an additive branch is opt-in and falls through byte-identical).
+	 */
+	gate?: {
+		enabled: boolean;
+		/** Injectable runner for the GATE's commands (test seam). Defaults to `opts.run`/execFile. */
+		runner?: CommandRunner;
+		/** Narrow the gate to these steps. Default: all four. */
+		steps?: readonly GateStepName[];
+	};
+	/**
+	 * PCG-1 — wire the (previously caller-less) review capability. When enabled, a change that
+	 * passed the gate and produced a real commit is measured, and a large one enqueues EXACTLY ONE
+	 * `review` work_item via the EXISTING {@link maybeEnqueueReview} (F-055 — no second path).
+	 * Absent/false ⇒ no review is ever enqueued (byte-identical to the pre-PCG-1 behaviour).
+	 */
+	review?: {
+		enabled: boolean;
+		/** Files-changed threshold; >= this triggers a review. Default DEFAULT_REVIEW_THRESHOLD (5). */
+		threshold?: number;
+		/** Injectable runner for the review's `git diff` (test seam). Defaults to `opts.run`/execFile. */
+		runner?: CommandRunner;
+	};
 }
 
 /** Validate a `table:id` link at the D-016 chokepoint, then wrap as a record link. */
@@ -172,19 +188,6 @@ function omitUndefined<T extends Record<string, unknown>>(obj: T): Partial<T> {
 		if (v !== undefined) (out as Record<string, unknown>)[k] = v;
 	}
 	return out;
-}
-
-/**
- * Split a project test command string into a program + argv array WITHOUT a shell. We
- * split on whitespace only — there is NO shell, so quoting/`&&`/`;`/`|`/redirections are
- * NOT honoured; each token becomes a literal argv element. This is deliberate: it means a
- * configured `test_command` can never smuggle a second command through a shell operator —
- * the operators are passed inert to the test program (which simply rejects them). D-008.
- */
-export function splitCommand(cmd: string): { file: string; args: string[] } | null {
-	const tokens = cmd.trim().split(/\s+/).filter(Boolean);
-	if (tokens.length === 0) return null;
-	return { file: tokens[0], args: tokens.slice(1) };
 }
 
 /**
@@ -279,6 +282,19 @@ function assertLocalGit(args: readonly string[]): void {
  * process table); their OUTCOMES are recorded atomically with the completion event in a
  * SECOND transaction. A failed agent run (runOk=false) skips the commit (nothing to record)
  * and lands the task `failed` — still a legal terminal transition that must land.
+ *
+ * ORDERING (PCG-1 — the pre-commit gate). When `opts.gate.enabled`, step 0 runs the project's
+ * build/lint/typecheck/test BEFORE the terminal transition, so the transition itself is decided
+ * WITH the verdict in hand. A RED gate:
+ *   • lands the task `failed` (not `done`) — the terminal transition is honest;
+ *   • STILL COMMITS the agent's work to the session branch (F-007 — refusing to commit would let
+ *     merge-back's worktree teardown DESTROY the very work an operator needs to inspect). The
+ *     commit is preservation; the MERGE is the assertion, and the caller withholds the merge;
+ *   • carries the full per-step gate record onto the `completion` event and returns it to the
+ *     caller, which records a named `pre_commit_gate` drain fault (F-008 — never a silent drop).
+ * The legacy post-commit test step is SUBSUMED by the gate's own `test` step when the gate ran, so
+ * a project's test suite is never executed twice. With the gate off, everything below is
+ * byte-identical to the pre-PCG-1 behaviour.
  */
 export async function runPostTask(
 	db: Db,
@@ -288,9 +304,25 @@ export async function runPostTask(
 	const run = opts.run ?? execFileRunner;
 	const followUpOnTestFail = opts.followUpOnTestFail ?? true;
 
-	// The terminal status the task SHOULD land in (decided by the run outcome, NOT the test
-	// result — tests only trigger a follow-up, they never change the terminal status).
-	const taskStatus: 'done' | 'failed' = input.runOk ? 'done' : 'failed';
+	// ── 0. THE PRE-COMMIT GATE (PCG-1) — runs BEFORE the terminal transition and the commit. ──
+	// Only for a run that actually succeeded: a failed agent run has no work to verify, and gating
+	// it would just append a second, redundant red. runPreCommitGate NEVER throws (every failure is
+	// a named step detail), so this cannot crash the drain (F-014/F-048).
+	let gate: GateOutcome | undefined;
+	if (opts.gate?.enabled && input.runOk) {
+		gate = await runPreCommitGate(
+			{ cwd: input.cwd, buildTool: input.buildTool, testCommand: input.testCommand },
+			{ run: opts.gate.runner ?? run, steps: opts.gate.steps }
+		);
+	}
+	// A gate that RAN and came back red is the one signal that overrides a successful run. 'skipped'
+	// (nothing detectable to verify) is honestly recorded but is NOT a failure — failing a project
+	// for having no test suite would be a false RED that wedges every non-JS/.NET project (HB-2).
+	const gateFailed = gate?.status === 'failed';
+
+	// The terminal status the task SHOULD land in. Decided by the run outcome AND — new in PCG-1 —
+	// the pre-commit gate: a run whose work does not build/lint/typecheck/test is NOT `done`.
+	const taskStatus: 'done' | 'failed' = input.runOk && !gateFailed ? 'done' : 'failed';
 
 	// ── 1. GUARDED TERMINAL TRANSITION FIRST — does it land? ──────────────────────────────
 	// One transaction performs the SAME guarded UPDATE the prior code did, and RETURNS both
@@ -340,7 +372,11 @@ export async function runPostTask(
 				`NO commit performed; NO ok completion event written.`,
 			taskId: input.taskId,
 			intended_status: taskStatus,
-			actual_status: actualStatus
+			actual_status: actualStatus,
+			// PCG-1: the gate ran BEFORE the transition, so on a divergence we already hold a real
+			// verdict. Carry it — an operator reconciling this half-state needs to know whether the
+			// abandoned work was even green (omitted when the gate did not run).
+			gate: gate ? gateDetail(gate) : undefined
 		});
 		const divResult = await db.query<unknown[]>(
 			`CREATE agent_event CONTENT {
@@ -351,26 +387,37 @@ export async function runPostTask(
 		const divEventId = String(
 			Array.isArray(divResult[0]) ? (divResult[0] as unknown[])[0] : divResult[0]
 		);
-		return {
+		return omitUndefined({
 			commit: { attempted: false, ok: false, note: 'post-task-divergence-midrun: transition not landed' },
 			test: { attempted: false, ok: false, note: 'skipped (divergence)' },
 			taskStatus: actualStatus,
 			agentEventId: divEventId,
-			divergent: true
-		};
+			divergent: true,
+			gate
+		}) as PostTaskResult;
 	}
 
 	// ── 2. git commit (only when the run succeeded) — execFile ARRAYS, never a shell ──
 	// Reached ONLY after the terminal transition LANDED, so a commit can never be stranded
 	// under a non-terminal task. A failed run (runOk=false) commits nothing.
+	//
+	// PCG-1 — A RED GATE STILL COMMITS. This is the deliberate choice, not an oversight: the
+	// agent's edits live in a per-session worktree that merge-back TEARS DOWN, so "refuse to
+	// commit" would DESTROY the failing work (F-007) — the opposite of preserving it for
+	// inspection. We commit to the session BRANCH (invisible to the project branch) and the
+	// CALLER refuses to merge. The subject is marked so `git log` on that branch says why it
+	// is sitting there unmerged.
 	const commit: CommitOutcome = { attempted: false, ok: false };
 	if (input.runOk) {
 		commit.attempted = true;
 		// Stage everything the agent changed, then commit. `commitMessage` is ONE argv
 		// element (after -m) — execFile hands it to git verbatim; a `; rm -rf /` inside it
 		// is an inert commit subject, not a second command (D-008).
+		const message = gateFailed
+			? `${input.commitMessage} [pre-commit gate FAILED at ${gate?.failedAt} — preserved, NOT merged]`
+			: input.commitMessage;
 		const addArgs = ['add', '-A'] as const;
-		const commitArgs = ['commit', '-m', input.commitMessage] as const;
+		const commitArgs = ['commit', '-m', message] as const;
 		assertLocalGit(addArgs);
 		assertLocalGit(commitArgs);
 		await run('git', addArgs, { cwd: input.cwd });
@@ -391,8 +438,18 @@ export async function runPostTask(
 	// HB-2: `input.testCommand` is the ALREADY-RESOLVED command (the caller runs it through
 	// resolveTestCommand). When it is absent the test is an HONEST SKIP — attempted stays
 	// false, recorded as 'no test target', never a fake pass and never a false fail.
+	//
+	// PCG-1: when the gate ran, IT already executed this exact command as its `test` step — so we
+	// PROJECT the gate's step onto the legacy TestOutcome instead of spawning the suite a second
+	// time. Same field semantics, one execution.
 	const test: TestOutcome = { attempted: false, ok: false };
-	if (input.runOk) {
+	if (gate) {
+		const step = gate.steps.find((s) => s.name === 'test');
+		test.attempted = step?.ran === true;
+		test.ok = step?.ok === true;
+		if (step?.code !== undefined) test.code = step.code;
+		test.note = step ? step.detail.slice(-200) : 'test step not part of the configured gate';
+	} else if (input.runOk) {
 		const cmd = input.testCommand?.trim();
 		const split = cmd ? splitCommand(cmd) : null;
 		if (split) {
@@ -429,6 +486,38 @@ export async function runPostTask(
 		if (enqueued) followUpWorkId = id;
 	}
 
+	// ── 4b. THE REVIEW DECISION (PCG-1) — the production caller `maybeEnqueueReview` never had ──
+	// It sits HERE, after the commit and BEFORE the caller's merge-back, because that is the only
+	// point where both facts it needs exist: the change is committed (so `git diff HEAD` measures
+	// the real footprint) and nothing has merged yet (so the decision can still hold the merge).
+	//
+	// PRECONDITIONS, deliberately narrow:
+	//   • the gate did NOT fail — a red change is already being withheld; asking for a review of it
+	//     would enqueue a second, redundant signal for work nobody should be reading yet;
+	//   • a commit actually landed (`commit.ok`) — a no-op commit has nothing to review.
+	// BEST-EFFORT (F-014/F-048): a git or DB fault here is NAMED on the result + the completion
+	// event and changes NOTHING about the commit or the terminal status. `enqueue` is idempotent
+	// per task via the work_item dedup key, so a re-run after a mid-gate crash collapses to a
+	// no-op rather than producing a second review (interrupt contract).
+	let review: ReviewDecision | undefined;
+	let reviewError: string | undefined;
+	if (opts.review?.enabled && input.runOk && !gateFailed && commit.ok) {
+		try {
+			review = await maybeEnqueueReview(
+				db,
+				{
+					projectId: input.projectId,
+					taskId: input.taskId,
+					sessionId: input.sessionId,
+					cwd: input.cwd
+				},
+				{ runner: opts.review.runner ?? run, threshold: opts.review.threshold }
+			);
+		} catch (err) {
+			reviewError = `review decision failed: ${(err as Error).message}`;
+		}
+	}
+
 	// ── 5. record the ok completion agent_event (re-checking the task is STILL terminal) ──
 	// The terminal transition ALREADY landed (§ step 1) — this records the commit sha + test
 	// outcome an analytics reader needs. We re-assert the task is STILL in the intended
@@ -445,6 +534,24 @@ export async function runPostTask(
 		test_code: test.code ?? undefined,
 		test_note: test.note,
 		follow_up_work_item: followUpWorkId,
+		// PCG-1 — ANALYTICS IS FIRST-CLASS (CLAUDE.md §3). Not a flat "gate: false": the whole
+		// ordered record, every step with its resolved command, exit code and output tail, plus
+		// the consequence. An operator asking "why did task X's work not land" must be able to
+		// answer it from this row alone, without reading a log file that may not exist.
+		gate: gate ? gateDetail(gate) : undefined,
+		gate_failed: gate ? gateFailed : undefined,
+		gate_consequence: gate
+			? gateFailed
+				? 'task marked FAILED; work committed to the session branch and PRESERVED, NOT merged into the project branch'
+				: gate.status === 'skipped'
+					? 'no build/test target detected — the change is UNVERIFIED but not blocked (honest skip)'
+					: 'gate green — the work is eligible to merge'
+			: undefined,
+		// The review decision (or the honest reason there is none).
+		review_changed_files: review?.changedFiles,
+		review_triggered: review?.triggered,
+		review_work_item: review?.workItemId,
+		review_note: reviewError,
 		reason: 'post-task loop'
 	});
 
@@ -492,7 +599,8 @@ export async function runPostTask(
 			taskId: input.taskId,
 			intended_status: taskStatus,
 			actual_status: movedStatus,
-			commit_sha: commit.sha
+			commit_sha: commit.sha,
+			gate: gate ? gateDetail(gate) : undefined
 		});
 		const divResult = await db.query<unknown[]>(
 			`CREATE agent_event CONTENT {
@@ -509,7 +617,10 @@ export async function runPostTask(
 			taskStatus: movedStatus,
 			followUpWorkId,
 			agentEventId: divEventId,
-			divergent: true
+			divergent: true,
+			gate,
+			review,
+			reviewError
 		}) as PostTaskResult;
 	}
 
@@ -519,6 +630,37 @@ export async function runPostTask(
 		taskStatus,
 		followUpWorkId,
 		agentEventId: completionId,
-		divergent: false
+		divergent: false,
+		gate,
+		review,
+		reviewError
 	}) as PostTaskResult;
+}
+
+/**
+ * PCG-1 — flatten a {@link GateOutcome} into a PLAIN, DB-safe detail object for the agent_event.
+ *
+ * POJOs only: every value is a string/number/boolean/array-of-those. There is no Date, no SDK
+ * datetime and no class instance anywhere in a gate outcome, so nothing here can produce the
+ * devalue-500 class (F-013) when a `load` reads the event back. Steps keep their ORDER (an
+ * operator reads the gate top-to-bottom) and every step is included — including the ones that did
+ * not run, with the reason — because a truncated record is how a skipped check becomes invisible.
+ */
+function gateDetail(gate: GateOutcome): Record<string, unknown> {
+	return {
+		status: gate.status,
+		verified: gate.verified,
+		errored: gate.errored,
+		failed_at: gate.failedAt ?? null,
+		summary: gate.summary,
+		steps: gate.steps.map((s) => ({
+			name: s.name,
+			command: s.command,
+			ran: s.ran,
+			ok: s.ok,
+			// `code` is option<number> upstream; NULL (not undefined) so the shape is stable per row.
+			code: s.code ?? null,
+			detail: s.detail
+		}))
+	};
 }

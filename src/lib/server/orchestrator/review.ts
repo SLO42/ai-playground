@@ -6,9 +6,16 @@
 // enqueues EXACTLY ONE `review` work_item — drained off the interactive path through the
 // same background claim queue as every other heavy job (§4.12 / D-021). It NEVER spawns the
 // review inline and NEVER consumes the interactive semaphore (the two queues stay distinct,
-// ARCHITECTURE §2.2). The orchestrator's drain loop later claims the review work_item and
-// runs it through launchSession exactly like a task_run (the same isolated-config /
-// permissions.deny path, D-002 / 1.4a) — no new spawn machinery here.
+// ARCHITECTURE §2.2).
+//
+// PCG-1 CORRECTION (this module had ZERO production callers until PCG-1 wired it, and this
+// paragraph is part of the reason why): the header used to say the drain "runs it through
+// launchSession exactly like a task_run". That would have been a DEFECT the moment a real caller
+// existed — a review item's `payload.taskId` is the REVIEWED task, so the task-spawn path would
+// have re-spawned the very task under review, burning a session and redoing the work. The drain
+// now intercepts `review` in its own fork (orchestrator.ts #runItem), which escalates the request
+// to the operator and spawns NOTHING. Wiring an automated reviewer is a separate, operator-gated
+// decision (it arms a new spawn class) — see boot.ts's named deferral.
 //
 // "N+ changed files" is measured the same way the post-task loop touches the OS: via the
 // `CommandRunner` seam (execFile ARRAYS, never a shell — D-008/F-002). We ask git for
@@ -24,7 +31,10 @@
 // post-task re-drains) can NEVER produce two reviews — even across the pending→processing transition.
 
 import type { Db } from '../db/client';
-import { execFileRunner, type CommandRunner } from './post-task';
+// PCG-1: the runner seam now lives in ./command-runner (extracted from post-task.ts). Importing it
+// from there — not from post-task.ts — is what keeps post-task → review a one-way edge now that
+// post-task calls maybeEnqueueReview.
+import { execFileRunner, type CommandRunner } from './command-runner';
 import { enqueue } from './workqueue';
 
 /**

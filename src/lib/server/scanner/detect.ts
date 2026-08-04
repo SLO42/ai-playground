@@ -266,6 +266,37 @@ function hasNpmTestScript(dir: string): boolean {
 }
 
 /**
+ * PCG-1 — resolve an `npm run <script>` command for a project, but ONLY when the top-level
+ * `package.json` actually DECLARES that script. Mirror of {@link testCommandFor}'s discipline for
+ * the LINT / TYPECHECK steps of the pre-commit gate (orchestrator/pre-commit-gate.ts): running
+ * `npm run lint` on a package that has no `lint` script exits NON-ZERO ("Missing script"), which
+ * would be a FALSE RED — a gate that fails every project that simply doesn't lint.
+ *
+ * Returns the command string (`npm run <script>`) when the script exists and is a non-empty
+ * string, else `null` — an HONEST SKIP (neither a pass nor a fail). Reads the filesystem only
+ * (pure, no DB/spawn), so it is unit-testable against a temp dir like every other probe here.
+ *
+ * Shadow paths: no package.json / unreadable / malformed JSON → null (the catch); `scripts`
+ * absent → null; the script present but blank/non-string → null.
+ */
+export function npmScriptCommandFor(
+	projectRoot: string | undefined | null,
+	script: string
+): string | null {
+	if (!projectRoot || !script.trim()) return null;
+	try {
+		const pkg = JSON.parse(readFileSync(join(projectRoot, 'package.json'), 'utf8')) as {
+			scripts?: Record<string, unknown>;
+		};
+		const value = pkg.scripts?.[script];
+		if (typeof value !== 'string' || !value.trim()) return null;
+		return `npm run ${script}`;
+	} catch {
+		return null;
+	}
+}
+
+/**
  * True when any file under `dir` (bounded recursive, depth ≤ `maxDepth`) ends
  * with `ext`. Mod/.NET project files frequently live one or two levels down
  * (e.g. `src/SWIP.csproj`), so a top-level-only check misses them.

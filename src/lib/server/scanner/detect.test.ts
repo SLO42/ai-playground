@@ -2,7 +2,14 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { detectEcosystem, slugify, readRepoUrl, buildCommandFor, testCommandFor } from './detect';
+import {
+	detectEcosystem,
+	slugify,
+	readRepoUrl,
+	buildCommandFor,
+	testCommandFor,
+	npmScriptCommandFor
+} from './detect';
 
 // TASK 1.1 (detect half): pure ecosystem/mod detection over fixture directories.
 // No DB, no spawn — fixtures are real temp dirs with marker files.
@@ -282,5 +289,48 @@ describe('testCommandFor — bare tool → REAL test command ONLY when a test ta
 		const cmd = testCommandFor('cargo', dir);
 		expect(cmd).not.toBeNull();
 		expect(cmd!.trim().split(/\s+/).length).toBeGreaterThan(1); // 'cargo test', not bare 'cargo'.
+	});
+});
+
+// PCG-1 — the lint/typecheck resolver the pre-commit gate uses. The rule it encodes: `npm run lint`
+// on a package with no `lint` script exits NON-ZERO ("Missing script"), which as a gate step would
+// be a FALSE RED failing every project that simply does not lint. So it resolves ONLY a declared,
+// non-empty script and honestly returns null otherwise.
+describe('npmScriptCommandFor — an npm script step resolves ONLY when the script is declared', () => {
+	it('a declared script → `npm run <script>`', () => {
+		const dir = fixture('npm-scripts', {
+			'package.json': JSON.stringify({ scripts: { lint: 'eslint .', typecheck: 'tsc --noEmit' } })
+		});
+		expect(npmScriptCommandFor(dir, 'lint')).toBe('npm run lint');
+		expect(npmScriptCommandFor(dir, 'typecheck')).toBe('npm run typecheck');
+	});
+
+	it('EMPTY: an undeclared script → null (never a false RED for a project that does not lint)', () => {
+		const dir = fixture('npm-scripts-partial', {
+			'package.json': JSON.stringify({ scripts: { build: 'vite build' } })
+		});
+		expect(npmScriptCommandFor(dir, 'lint')).toBeNull();
+		expect(npmScriptCommandFor(dir, 'typecheck')).toBeNull();
+	});
+
+	it('EMPTY: a declared-but-blank script, and a package with no scripts block at all → null', () => {
+		const blank = fixture('npm-blank-script', {
+			'package.json': JSON.stringify({ scripts: { lint: '   ' } })
+		});
+		const none = fixture('npm-no-scripts', { 'package.json': JSON.stringify({ name: 'x' }) });
+		expect(npmScriptCommandFor(blank, 'lint')).toBeNull();
+		expect(npmScriptCommandFor(none, 'lint')).toBeNull();
+	});
+
+	it('UPSTREAM ERROR: malformed JSON / no package.json / nil inputs → null, never a throw', () => {
+		const bad = fixture('npm-bad-json', { 'package.json': '{ not json' });
+		const empty = fixture('npm-nothing', { 'README.md': '#' });
+		expect(npmScriptCommandFor(bad, 'lint')).toBeNull();
+		expect(npmScriptCommandFor(empty, 'lint')).toBeNull();
+		expect(npmScriptCommandFor(undefined, 'lint')).toBeNull();
+		expect(npmScriptCommandFor(null, 'lint')).toBeNull();
+		expect(npmScriptCommandFor('', 'lint')).toBeNull();
+		expect(npmScriptCommandFor(join(tmpdir(), 'pcg-absent-dir-77'), 'lint')).toBeNull();
+		expect(npmScriptCommandFor(empty, '  ')).toBeNull();
 	});
 });

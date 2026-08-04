@@ -43,6 +43,36 @@
 // test suite would be a false RED (exactly the HB-2 class), and it would wedge every non-JS/.NET
 // project in the studio. 'skipped' is recorded as loudly as a failure; it just doesn't block.
 //
+// THE SECOND MEMBER OF THAT FALSE-RED FAMILY — AN ABSENT TOOLCHAIN (the DoD-review finding that
+// sent PCG-1 back). The gate's `cwd` is the per-session WI-2 worktree, and `sessions/worktree.ts`
+// creates it with `git worktree add` and NOTHING ELSE — there is no dependency provisioning in that
+// module, and `node_modules/` is gitignored, so it is NOT carried over by the checkout. Running
+// `npm run build` there therefore exits non-zero with "'vite' is not recognized" — reproduced
+// directly: a dir holding only a package.json exits 1 on `npm run build`. That is a statement about
+// the ENVIRONMENT, not about the agent's code, and reading it as RED made the armed gate fail EVERY
+// write task on EVERY npm project (Atelier's own self-hosting repo first — D-040), preserving every
+// branch and merging none. So: an npm-family step whose dependency tree is not installed in `cwd`
+// is an honest per-step SKIP with a named reason — the same verdict, for the same reason, as a
+// project that declares no test script. We cannot verify here, so we say we did not verify; we
+// never say the work is broken, and we never wedge the studio on it.
+//
+// THE SAME FAMILY, SECOND MEMBER — AN UNSPAWNABLE PROGRAM. Running the gate with its real default
+// runner (the test the DoD-review named as missing) turned up the other half: on Windows `npm` is a
+// `.cmd` shim, and `execFileRunner` is `shell:false` for D-008, so `execFile('npm', …)` fails ENOENT
+// — which this seam reports as EXIT CODE 1 WITH EMPTY OUTPUT. Every npm step on this platform was
+// therefore an unexplained RED even in a fully installed tree. Same rule, same reason: we could not
+// run the check, so we say we did not, rather than blaming the change. See toolchainSkipReason.
+//
+// NOTE WHAT THIS DELIBERATELY DOES *NOT* DO: it does not install anything, and it does not turn on
+// a shell. Provisioning a worktree with dependencies (an `npm ci`, or a linked/shared
+// `node_modules`) is a new capability with its own cost, cache-sharing and F-052 concurrency
+// questions; spawning through a shell to reach a `.cmd` trades this false RED for a command-
+// injection surface (D-008) and is a SECURITY decision. Both are NAMED here as the follow-up work
+// that would make this gate genuinely verify a JS worktree, and neither is decided by this fix.
+// Until they exist the composition is still safe rather than silent: the gate reports 'skipped'
+// (UNVERIFIED), and the review policy `holdMergeBack:'unverified'` (boot.ts) turns exactly that
+// state into a merge HELD for operator review on any large change.
+//
 // SHADOW PATHS (all four built + tested): happy (steps run, all green) · nil (no cwd / no
 // buildTool / no testCommand → skipped) · empty (a resolvable tool whose scripts are absent →
 // skipped) · upstream error (a step exits non-zero → failed; the runner THROWS → failed+errored).
@@ -51,12 +81,19 @@
 // shell string, so a project-configured command can never smuggle a second command.
 
 import { existsSync } from 'node:fs';
+import { basename, delimiter, extname, join } from 'node:path';
 import {
 	execFileRunner,
 	splitCommand,
 	type CommandRunner
 } from './command-runner';
 import { buildCommandFor, npmScriptCommandFor } from '../scanner/detect';
+// D-026 — command output is UNTRUSTED text that gets PERSISTED (agent_event.detail.gate + the
+// drain-fault context) and RENDERED on /atelier/queue. A failing build/test routinely prints an
+// absolute worktree path (home-path PII) and can print an env token, so it goes through the
+// codebase's existing screening chokepoint before it is ever put in a detail string — never a
+// second, hand-rolled redactor (F-055).
+import { screen } from '../memory/screen';
 
 /** The named checks the gate can run, in the order it runs them (CLAUDE.md §1's green bar). */
 export const GATE_STEP_NAMES = ['build', 'lint', 'typecheck', 'test'] as const;
@@ -124,11 +161,117 @@ export interface PreCommitGateOptions {
 	steps?: readonly GateStepName[];
 }
 
-/** A bounded, single-line tail of command output — honest but never the whole log. */
+/**
+ * D-026 — screen an untrusted text span before it is embedded in a persisted detail string.
+ * `screen()` fails CLOSED (a scan error ⇒ quarantined ⇒ empty text), so a quarantined result
+ * degrades to an HONEST marker rather than a blank field or the raw text (F-008) — the same
+ * contract drain-events.ts's screenErrorText applies to a drain error.
+ */
+function screened(text: string): string {
+	const res = screen(text);
+	return res.status === 'quarantined' ? '(output withheld — it contained a secret)' : res.text;
+}
+
+/**
+ * A bounded, single-line tail of command output — honest but never the whole log, and SCREENED
+ * (D-026) before it can reach an agent_event / the drain ledger / the queue page.
+ */
 function tail(text: string, max = 240): string {
-	const oneLine = text.replace(/\s+/g, ' ').trim();
+	const oneLine = screened(text).replace(/\s+/g, ' ').trim();
 	if (!oneLine) return '';
 	return oneLine.length > max ? `…${oneLine.slice(oneLine.length - max)}` : oneLine;
+}
+
+/**
+ * The npm-family programs whose steps cannot run at all without an installed dependency tree.
+ * (Everything they invoke — vite, eslint, svelte-check, vitest — lives in `node_modules/.bin`.)
+ */
+const NPM_FAMILY = new Set(['npm', 'npx', 'pnpm', 'pnpx', 'yarn', 'bun', 'bunx']);
+
+/** Extensions that only a SHELL can execute — this seam is argv-only (shell:false) by design. */
+const SHELL_ONLY_EXT = new Set(['.cmd', '.bat', '.ps1']);
+
+/**
+ * Where the argv-only runner would actually FIND `prog`, or null. Mirrors what `execFile` with
+ * `shell:false` does: a literal PATH scan, extended by PATHEXT on Windows. We resolve it ourselves
+ * because the runner cannot report the difference — `execFile` surfaces a spawn ENOENT as exit
+ * code 1 with EMPTY output, which the gate would otherwise record as a build failure with no
+ * reason at all.
+ */
+function resolveOnPath(prog: string): string | null {
+	// On Windows ONLY a PATHEXT extension is executable: `C:\Program Files\nodejs\npm` (the
+	// extension-less POSIX shell script npm also ships) sits right next to `npm.cmd` on PATH, and
+	// probing for it first is how a scan can "find" npm and still be unable to spawn it. Elsewhere
+	// the bare name is the executable.
+	const exts =
+		process.platform === 'win32'
+			? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
+			: [''];
+	for (const dir of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {
+		for (const ext of exts) {
+			const candidate = join(dir, prog + ext.toLowerCase());
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+	return null;
+}
+
+/**
+ * PRE-FLIGHT: can this resolved step actually be RUN in `cwd`, or would running it only prove that
+ * the ENVIRONMENT is missing? Returns a named skip reason, or '' when the step is safe to spawn.
+ *
+ * Three named cases, all npm-family, all discovered by running the real thing rather than reading:
+ *
+ *  1. NO package.json in the working dir. `buildCommandFor('npm')` resolves `npm run build` from
+ *     the project's `build_tool` ALONE and never looks at the disk, so a JS project's build step
+ *     would otherwise be spawned in a tree that has no manifest at all.
+ *  2. NO node_modules — the WI-2 worktree case, which is the DEFAULT for every write session (see
+ *     the header). `npm run build` there exits 1 with "'vite' is not recognized".
+ *  3. THE PROGRAM IS NOT SPAWNABLE BY THIS SEAM (only checked when the DEFAULT argv-only runner is
+ *     in use — `argvOnly`; an injected runner has its own spawn rules and this must not speak for
+ *     it). On Windows `npm`/`npx`/`pnpm`/`yarn` exist only as
+ *     `.cmd` shims, and {@link execFileRunner} is `shell:false` for D-008 (argv is never re-parsed
+ *     by a shell). Verified against the live runtime: `execFile('npm', …, {shell:false})` fails
+ *     ENOENT — which this seam reports as exit code 1 with EMPTY stdout/stderr — and `npm.cmd`
+ *     throws EINVAL outright (Node refuses to spawn a batch file without a shell). So on Windows
+ *     EVERY npm step was an unexplained RED: not the agent's code, and not even a real run. The
+ *     gate says so instead of inventing a verdict. Turning on `shell:true` to "fix" this would
+ *     trade a false RED for a command-injection surface (D-008) — that is a security decision, not
+ *     a bug fix, and it is NOT taken here; it is named as follow-up work alongside the dependency
+ *     provisioning in the header.
+ *
+ * Deliberately NARROW: no other ecosystem is probed. Guessing "is the dotnet SDK installed" would
+ * re-introduce exactly the false-verdict class this exists to remove; for those, a genuine non-zero
+ * exit remains a genuine RED.
+ */
+function toolchainSkipReason(cwd: string, file: string, argvOnly: boolean): string {
+	// A resolution can hand us `npm.cmd` / an absolute path; compare on the bare program name.
+	const prog = basename(file).replace(/\.(cmd|exe|bat|ps1)$/i, '').toLowerCase();
+	if (!NPM_FAMILY.has(prog)) return '';
+	if (!existsSync(join(cwd, 'package.json'))) {
+		return `not run — no package.json in the working dir, so \`${prog}\` has nothing to run here (UNVERIFIED, not failed)`;
+	}
+	if (!existsSync(join(cwd, 'node_modules'))) {
+		return (
+			`not run — the working dir has NO installed dependency tree (node_modules absent), so this check ` +
+			`cannot be performed here; a non-zero exit would describe the environment, not the change ` +
+			`(UNVERIFIED, not failed)`
+		);
+	}
+	if (!argvOnly) return '';
+	const resolved = resolveOnPath(prog);
+	if (!resolved) {
+		return `not run — \`${prog}\` is not on PATH for this server process (UNVERIFIED, not failed)`;
+	}
+	const ext = extname(resolved).toLowerCase();
+	if (SHELL_ONLY_EXT.has(ext)) {
+		return (
+			`not run — on this platform \`${prog}\` exists only as a ${ext} shim, which the argv-only ` +
+			`command seam refuses to spawn (shell:false, D-008); the exit code would describe the shim, ` +
+			`not the change (UNVERIFIED, not failed)`
+		);
+	}
+	return '';
 }
 
 /**
@@ -223,8 +366,9 @@ export async function runPreCommitGate(
 			errored: false,
 			steps: [],
 			failedAt: null,
+			// SCREENED (D-026): a worktree path is a home path — PII — and this summary is persisted.
 			summary: cwd
-				? `pre-commit gate skipped: working dir not found on disk (${cwd})`
+				? `pre-commit gate skipped: working dir not found on disk (${screened(cwd)})`
 				: 'pre-commit gate skipped: no working dir'
 		};
 	}
@@ -270,6 +414,14 @@ export async function runPreCommitGate(
 			steps.push({ name, command, ran: false, ok: false, detail: skipReason || 'not run' });
 			continue;
 		}
+		// The step RESOLVED, but can it truthfully be run HERE? An npm-family command in a worktree
+		// with no installed dependency tree exits non-zero for a reason that has nothing to do with
+		// the agent's change — recording that as RED is the false-RED wedge (see the header).
+		const preflight = toolchainSkipReason(cwd, split.file, run === execFileRunner);
+		if (preflight) {
+			steps.push({ name, command, ran: false, ok: false, detail: `${command} ${preflight}` });
+			continue;
+		}
 		try {
 			const res = await run(split.file, split.args, { cwd });
 			const out = tail(res.stderr || res.stdout);
@@ -294,7 +446,9 @@ export async function runPreCommitGate(
 				command,
 				ran: false,
 				ok: false,
-				detail: `${command} could not run: ${(err as Error).message}`
+				// SCREENED (D-026): a spawn rejection embeds the absolute cwd (home-path PII) and can
+				// carry environment text — and this string is persisted onto the completion event.
+				detail: `${command} could not run: ${screened((err as Error).message)}`
 			});
 		}
 	}

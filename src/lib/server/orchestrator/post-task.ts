@@ -238,6 +238,14 @@ function isResolvableTool(tool: string): boolean {
 	return ['dotnet', 'npm', 'cargo', 'go'].includes(tool.trim().toLowerCase());
 }
 
+/**
+ * Git's canonical EMPTY TREE object id — the well-known hash of the empty tree, present in every
+ * git repository without being written by anyone. `git diff --name-only <empty-tree>` against a
+ * repo whose first commit just landed lists that commit's files, which is what lets the review
+ * measure a ROOT commit (unborn HEAD before the commit, so there is no parent to diff against).
+ */
+const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
+
 // Remote-mutating / dangerous git verbs that this loop must NEVER issue (D-018). Used as
 // a self-audit assertion: the args we build are fixed, but this keeps the invariant local.
 const FORBIDDEN_GIT = ['push', 'remote'];
@@ -408,8 +416,31 @@ export async function runPostTask(
 	// CALLER refuses to merge. The subject is marked so `git log` on that branch says why it
 	// is sitting there unmerged.
 	const commit: CommitOutcome = { attempted: false, ok: false };
+	/**
+	 * The sha HEAD pointed at BEFORE this loop committed — the review's diff base (step 4b).
+	 *
+	 * THE DEFECT THIS CLOSES (the DoD-review's second finding, reproduced in a scratch repo): step 4b
+	 * measured the change with `maybeEnqueueReview`'s DEFAULT ref, 'HEAD'. But `git diff HEAD` is
+	 * "working tree vs HEAD", and step 2 has just `git add -A`-ed and committed everything — the tree
+	 * is CLEAN by construction, so the diff printed NOTHING. Six new files measured as 0 changed
+	 * files; `triggered` was therefore always false, no `review` work_item could ever be enqueued in
+	 * production, and the orchestrator's `reviewHeld` / 'review-held' exit state was unreachable
+	 * code. The whole review half of the feature was a no-op that the scripted-runner tests could
+	 * not see, because their fake `git diff` returned a fabricated file list for ANY ref.
+	 *
+	 * Read BEFORE the commit (that is the only moment the base still exists as HEAD) and via the
+	 * same argv-array runner seam (D-008). `rev-parse --verify HEAD` is read-only and local (D-018).
+	 * A non-zero exit means "no commits yet" — an UNBORN HEAD, i.e. this is the repo's root commit —
+	 * which is not an error and must not silently suppress the review of a whole initial import; see
+	 * EMPTY_TREE below.
+	 */
+	let preCommitSha: string | null = null;
 	if (input.runOk) {
 		commit.attempted = true;
+		const revArgs = ['rev-parse', '--verify', 'HEAD'] as const;
+		assertLocalGit(revArgs);
+		const pre = await run('git', revArgs, { cwd: input.cwd });
+		preCommitSha = pre.code === 0 ? pre.stdout.trim() || null : null;
 		// Stage everything the agent changed, then commit. `commitMessage` is ONE argv
 		// element (after -m) — execFile hands it to git verbatim; a `; rm -rf /` inside it
 		// is an inert commit subject, not a second command (D-008).
@@ -511,7 +542,16 @@ export async function runPostTask(
 					sessionId: input.sessionId,
 					cwd: input.cwd
 				},
-				{ runner: opts.review.runner ?? run, threshold: opts.review.threshold }
+				{
+					runner: opts.review.runner ?? run,
+					threshold: opts.review.threshold,
+					// THE FIX: diff against the sha HEAD held BEFORE step 2's commit, so the count is
+					// the footprint that just landed. Never 'HEAD' — post-commit that is an empty diff
+					// (see `preCommitSha`). On an unborn HEAD (root commit) we diff against git's
+					// EMPTY TREE, which enumerates every file in the first commit rather than silently
+					// measuring 0 — an initial import is exactly the change most worth reviewing.
+					baseRef: preCommitSha ?? EMPTY_TREE
+				}
 			);
 		} catch (err) {
 			reviewError = `review decision failed: ${(err as Error).message}`;

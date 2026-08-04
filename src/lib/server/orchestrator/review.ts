@@ -49,10 +49,17 @@ export interface CountChangedOptions {
 	/** Injectable command runner (test seam); defaults to {@link execFileRunner}. */
 	runner?: CommandRunner;
 	/**
-	 * The git ref to diff the working tree / HEAD against. Default 'HEAD' — counts the
-	 * files in the just-made commit (HEAD vs its parent) PLUS any still-unstaged changes,
-	 * which is the agent's full footprint. A caller can pass an explicit base (e.g. the
-	 * pre-spawn sha) for a tighter window.
+	 * The git ref to diff the WORKING TREE against. Default 'HEAD' — i.e. the UNCOMMITTED
+	 * footprint only.
+	 *
+	 * READ THIS BEFORE CALLING AFTER A COMMIT. The default does NOT mean "the files in the
+	 * just-made commit": `git diff <ref>` compares the working tree to `<ref>`, so once the
+	 * caller has committed, `HEAD` is the tree itself and the diff is EMPTY. (The previous
+	 * wording claimed "HEAD vs its parent PLUS unstaged changes"; it was wrong, and the
+	 * post-task caller inherited the default and measured 0 changed files on every real
+	 * commit — the review never fired.) A caller measuring a change it has ALREADY committed
+	 * MUST pass an explicit base: the pre-commit sha (see post-task.ts's `preCommitSha`), or
+	 * git's empty-tree id for a root commit.
 	 */
 	baseRef?: string;
 }
@@ -95,7 +102,10 @@ export interface ReviewDecisionOptions {
 	runner?: CommandRunner;
 	/** Files-changed threshold; >= this triggers a review. Default {@link DEFAULT_REVIEW_THRESHOLD}. */
 	threshold?: number;
-	/** Diff base ref (see {@link CountChangedOptions.baseRef}). Default 'HEAD'. */
+	/**
+	 * Diff base ref (see {@link CountChangedOptions.baseRef}). Default 'HEAD' — which measures
+	 * only UNCOMMITTED work; a caller running after its own commit must pass the pre-commit sha.
+	 */
 	baseRef?: string;
 }
 

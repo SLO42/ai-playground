@@ -1089,9 +1089,11 @@ describe('THE HEARTBEAT — post-task wiring advances the TASK to terminal (read
 			const finished = await getTask(db, task.id);
 			expect(finished?.status).toBe('done'); // ready→in_progress→done (post-task terminal write)
 
-			// F-007 — the work was committed via execFile arrays (git add / commit / rev-parse).
+			// F-007 — the work was committed via execFile arrays. The LEADING rev-parse reads the
+			// pre-commit base sha (the review's diff base — 'HEAD' after a commit is an empty diff);
+			// then git add / commit / rev-parse (the sha readback).
 			const gitVerbs = runner.calls.filter((c) => c.file === 'git').map((c) => c.args[0]);
-			expect(gitVerbs).toEqual(['add', 'commit', 'rev-parse']);
+			expect(gitVerbs).toEqual(['rev-parse', 'add', 'commit', 'rev-parse']);
 
 			// The completion agent_event carries the sha (the db_change the PM consumes is the
 			// task→done above; this is the analytics trace of the commit).
@@ -1596,16 +1598,24 @@ describe('WI-3 — merge-back + teardown composed with post-task (real temp git 
 		await clearQueue();
 		const repo3 = initGitRepo();
 		const baseHead = git(repo3, 'rev-parse', 'main');
-		// build_tool 'npm' makes the gate resolve a build step; the scripted runner below fails it.
+		// A build_tool that resolves a real build step which the scripted runner below fails.
+		//
+		// NOT 'npm' — deliberately. The gate runs in the WI-2 WORKTREE, and a worktree is a bare
+		// `git worktree add` checkout: no node_modules, and here not even a package.json. The gate
+		// now REFUSES to spawn an npm step in a tree that cannot run one and records an honest skip
+		// instead of a false RED (that false RED is what wedged every npm project). 'dotnet' has no
+		// such environment precondition, so this test keeps exercising what it is actually about:
+		// a genuinely RED gate is honored end-to-end. The npm/worktree case has its own coverage in
+		// post-task-gate.test.ts and gate-review-real-runner.test.ts.
 		const proj = await createProject(db, {
 			slug: 'mb_gate_red',
 			name: 'MB Gate Red',
 			root_path: repo3,
-			build_tool: 'npm'
+			build_tool: 'dotnet'
 		});
 		const gateProjectId = proj.id;
 
-		// Real git; every NON-git program (the gate's `npm run build`) comes back RED.
+		// Real git; every NON-git program (the gate's `dotnet build -c Release`) comes back RED.
 		const gatedRunner: CommandRunner = async (file, args, opts) =>
 			file === 'git'
 				? gitExecFileRunner(file, args, opts)

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runPreCommitGate } from './pre-commit-gate';
@@ -31,7 +31,7 @@ function fakeRunner(
 const OK: CommandResult = { code: 0, stdout: '', stderr: '' };
 
 let root: string;
-/** An npm project declaring build + lint + typecheck + test — the fully-covered case. */
+/** An INSTALLED npm project declaring build + lint + typecheck + test — the fully-covered case. */
 let fullRoot: string;
 
 beforeAll(() => {
@@ -44,6 +44,11 @@ beforeAll(() => {
 			scripts: { build: 'vite build', lint: 'eslint .', typecheck: 'svelte-check', test: 'vitest run' }
 		})
 	);
+	// The dependency tree has to be PRESENT for an npm step to be runnable at all — without it the
+	// gate now refuses to spawn `npm` and records an honest skip (the false-RED fix; see the
+	// 'the TOOLCHAIN pre-flight' block below). This fixture is the INSTALLED project, so the
+	// happy/failure paths above it are exercising a tree where npm genuinely has something to run.
+	mkdirSync(join(fullRoot, 'node_modules'));
 });
 
 afterAll(() => {
@@ -199,6 +204,7 @@ describe('pre-commit gate — the SKIP path (honest, and deliberately not a fail
 	it('EMPTY: an npm project declaring NO scripts and no test target ⇒ skipped, never a false RED', async () => {
 		const bare = mkdtempSync(join(tmpdir(), 'pcg-empty-'));
 		writeFileSync(join(bare, 'package.json'), JSON.stringify({ name: 'bare' }));
+		mkdirSync(join(bare, 'node_modules')); // installed, but declaring no scripts
 		try {
 			// `npm` DOES map to a build command, so the build step still runs; force it to be the only
 			// resolvable one and assert lint/typecheck/test each skip with their own named reason.
@@ -233,6 +239,112 @@ describe('pre-commit gate — the SKIP path (honest, and deliberately not a fail
 		expect(runner.calls.length).toBe(0);
 		expect(gate.steps[0].detail).toMatch(/no known real build command/);
 		expect(gate.status).toBe('skipped');
+	});
+});
+
+// ── REGRESSION (DoD-review finding #1): the TOOLCHAIN pre-flight — an npm step in a tree with no
+//    installed dependencies is a SKIP, never a RED. This is the defect that made the ARMED gate
+//    (boot.ts preCommitGate:true) fail every write task on every npm project: the gate's cwd is the
+//    WI-2 per-session worktree, `sessions/worktree.ts` does `git worktree add` and no dependency
+//    provisioning, and `node_modules/` is gitignored — so `npm run build` exited 1 with "'vite' is
+//    not recognized" (reproduced directly) and the false RED preserved every branch and merged none.
+describe('pre-commit gate — the TOOLCHAIN pre-flight (the false-RED wedge, closed)', () => {
+	it('an npm project with NO node_modules ⇒ skipped with a named reason, and npm is never spawned', async () => {
+		const uninstalled = mkdtempSync(join(tmpdir(), 'pcg-uninstalled-'));
+		writeFileSync(
+			join(uninstalled, 'package.json'),
+			JSON.stringify({ name: 'wt', scripts: { build: 'vite build', lint: 'eslint .' } })
+		);
+		try {
+			const runner = fakeRunner(() => ({ code: 1, stdout: '', stderr: "'vite' is not recognized" }));
+			const gate = await runPreCommitGate(
+				{ cwd: uninstalled, buildTool: 'npm', testCommand: 'npm test' },
+				{ run: runner }
+			);
+
+			// THE REGRESSION: this used to be 'failed' — a statement about the environment, read as a
+			// statement about the agent's code.
+			expect(gate.status).toBe('skipped');
+			expect(gate.failedAt).toBeNull();
+			expect(gate.verified).toBe(false);
+			expect(gate.errored).toBe(false);
+			// Not one command spawned: we do not learn anything by running a tool that cannot work.
+			expect(runner.calls.length).toBe(0);
+			// HONEST (F-008): every step names the environment as the reason, and says UNVERIFIED.
+			for (const step of gate.steps) {
+				expect(step.ran).toBe(false);
+				expect(step.ok).toBe(false);
+			}
+			expect(gate.steps.find((s) => s.name === 'build')?.detail).toMatch(/NO installed dependency tree/);
+			expect(gate.steps.find((s) => s.name === 'build')?.detail).toMatch(/UNVERIFIED, not failed/);
+			expect(gate.steps.find((s) => s.name === 'test')?.detail).toMatch(/NO installed dependency tree/);
+			expect(gate.summary).toMatch(/UNVERIFIED/);
+		} finally {
+			rmSync(uninstalled, { recursive: true, force: true });
+		}
+	});
+
+	it('an npm build_tool with NO package.json in the working dir ⇒ skipped, not a RED', async () => {
+		// `buildCommandFor('npm')` resolves `npm run build` from build_tool ALONE — it never looks at
+		// the disk — so without this check a JS project's build step is spawned in a manifest-less tree.
+		const runner = fakeRunner(() => ({ code: 1, stdout: '', stderr: 'ENOENT package.json' }));
+		const gate = await runPreCommitGate({ cwd: root, buildTool: 'npm' }, { run: runner });
+		expect(gate.status).toBe('skipped');
+		expect(runner.calls.length).toBe(0);
+		expect(gate.steps.find((s) => s.name === 'build')?.detail).toMatch(/no package.json in the working dir/);
+	});
+
+	it('the pre-flight is NARROW: a non-npm ecosystem still gates for real (a red dotnet build is RED)', async () => {
+		// The fix must not become a blanket "if it fails, skip". Only the npm-family/no-deps case is
+		// claimed; every other non-zero exit remains a genuine failure.
+		const runner = fakeRunner(() => ({ code: 1, stdout: '', stderr: 'CS0103: name not found' }));
+		const gate = await runPreCommitGate({ cwd: root, buildTool: 'dotnet' }, { run: runner });
+		expect(gate.status).toBe('failed');
+		expect(gate.failedAt).toBe('build');
+		expect(gate.verified).toBe(true);
+		expect(runner.calls[0]).toMatchObject({ file: 'dotnet', args: ['build', '-c', 'Release'] });
+	});
+
+	it('an INSTALLED npm tree is gated exactly as before — the pre-flight only removes the false RED', async () => {
+		const runner = fakeRunner((file, args) =>
+			args[1] === 'build' ? { code: 1, stdout: '', stderr: 'TS2304' } : OK
+		);
+		const gate = await runPreCommitGate({ cwd: fullRoot, buildTool: 'npm' }, { run: runner });
+		expect(gate.status).toBe('failed');
+		expect(gate.failedAt).toBe('build');
+		expect(runner.calls.length).toBe(1);
+	});
+});
+
+// ── REGRESSION (DoD-review finding #4, D-026): raw command output is SCREENED before it lands in a
+//    step detail — the detail is persisted onto agent_event.detail.gate and copied into the drain
+//    fault context, and is rendered on /atelier/queue.
+describe('pre-commit gate — D-026 screening of persisted command output', () => {
+	it('a build that prints a secret does NOT put the secret in the persisted step detail', async () => {
+		const runner = fakeRunner(() => ({
+			code: 1,
+			stdout: '',
+			stderr: 'auth failed using sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+		}));
+		const gate = await runPreCommitGate({ cwd: fullRoot, buildTool: 'npm' }, { run: runner });
+		expect(gate.status).toBe('failed');
+		const detail = gate.steps.find((s) => s.name === 'build')?.detail ?? '';
+		expect(detail).not.toMatch(/sk-ant-api03-AAAA/);
+		// …and the same screened text is what the summary (→ the drain ledger) carries.
+		expect(gate.summary).not.toMatch(/sk-ant-api03-AAAA/);
+		// Still HONEST: the failure itself is not swallowed, only the secret span is.
+		expect(detail).toMatch(/exited 1/);
+	});
+
+	it('a spawn error carrying an absolute home path is screened before it is persisted', async () => {
+		const runner = fakeRunner(() => {
+			throw new Error('spawn ENOENT in C:\\Users\\someone\\worktrees\\session_x');
+		});
+		const gate = await runPreCommitGate({ cwd: fullRoot, buildTool: 'npm' }, { run: runner });
+		expect(gate.errored).toBe(true);
+		const detail = gate.steps.find((s) => s.name === 'build')?.detail ?? '';
+		expect(detail).toMatch(/REDACTED:home-path/);
+		expect(detail).not.toMatch(/someone/);
 	});
 });
 

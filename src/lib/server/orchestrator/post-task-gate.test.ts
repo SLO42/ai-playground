@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { StringRecordId } from 'surrealdb';
-import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Db } from '../db/client';
@@ -50,6 +50,9 @@ beforeAll(async () => {
 			scripts: { build: 'vite build', lint: 'eslint .', typecheck: 'svelte-check', test: 'vitest run' }
 		})
 	);
+	// An INSTALLED tree: without node_modules the gate refuses to spawn npm at all and records an
+	// honest skip (the false-RED fix). These cases are about a project whose checks CAN run.
+	mkdirSync(join(cwd, 'node_modules'));
 	const project = await createProject(db, {
 		slug: 'pcg_proj',
 		name: 'pcg-proj',
@@ -321,10 +324,18 @@ describe('PCG-1 — the review wiring (maybeEnqueueReview finally has a caller)'
 		expect(res.review?.workItemId).toBeTruthy();
 		expect(await countReviewItems(taskId)).toBe(1);
 
-		// The measurement happened AFTER the commit (so it measures the real committed footprint).
+		// The measurement happened AFTER the commit (so it measures the real committed footprint)…
 		const diffIdx = runner.calls.findIndex((c) => c.file === 'git' && c.args[0] === 'diff');
 		const commitIdx = runner.calls.findIndex((c) => c.file === 'git' && c.args[0] === 'commit');
 		expect(diffIdx).toBeGreaterThan(commitIdx);
+		// …and therefore it MUST diff against the PRE-COMMIT sha, not 'HEAD'. This is the DoD-review's
+		// finding #2: after `git add -A && git commit` the tree is clean, so `git diff HEAD` prints
+		// NOTHING — the count was always 0 and no review could ever be enqueued in production. The
+		// ordering assertion above passed while the feature was dead; this is the assertion that
+		// would have caught it.
+		const diffCall = runner.calls[diffIdx];
+		expect(diffCall.args).toEqual(['diff', '--name-only', '--no-renames', 'dec0de1']);
+		expect(diffCall.args).not.toContain('HEAD');
 
 		const detail = await readEventDetail(res.agentEventId);
 		expect(detail.review_triggered).toBe(true);
@@ -459,5 +470,89 @@ describe('PCG-1 — the review wiring (maybeEnqueueReview finally has a caller)'
 		expect(second.review?.triggered).toBe(true);
 		expect(second.review?.workItemId).toBeUndefined(); // deduped, not created twice
 		expect(await countReviewItems(taskId)).toBe(1);
+	});
+
+	it('a ROOT commit (unborn HEAD) is measured against the EMPTY TREE, not silently counted as 0', async () => {
+		const taskId = await freshRunningTask('root commit import');
+		const sessionId = await makeSession(taskId);
+		// `git rev-parse --verify HEAD` in a repo with no commits exits 128 ("Needed a single
+		// revision") — verified against real git. That is not an error, it is the first commit.
+		const runner = fakeRunner((file, args) => {
+			if (file === 'git' && args[0] === 'rev-parse' && args[1] === '--verify') {
+				return { code: 128, stdout: '', stderr: 'fatal: Needed a single revision' };
+			}
+			if (file === 'git' && args[0] === 'rev-parse') return { code: 0, stdout: 'r00t001\n', stderr: '' };
+			if (file === 'git' && args[0] === 'diff') {
+				return { code: 0, stdout: 'a.ts\nb.ts\nc.ts\nd.ts\ne.ts\nf.ts\n', stderr: '' };
+			}
+			return OK;
+		});
+		const res = await runPostTask(
+			db,
+			{ projectId, taskId, sessionId, cwd, commitMessage: 'feat: initial import', testCommand: 'npm test', buildTool: 'npm', runOk: true },
+			{ run: runner, gate: { enabled: true }, review: { enabled: true } }
+		);
+		const diffCall = runner.calls.find((c) => c.file === 'git' && c.args[0] === 'diff')!;
+		expect(diffCall.args[3]).toBe('4b825dc642cb6eb9a060e54bf8d69288fbee4904');
+		expect(res.review?.changedFiles).toBe(6);
+		expect(res.review?.triggered).toBe(true);
+	});
+});
+
+// ── REGRESSION (DoD-review finding #1, at the post-task level, against a REAL SurrealDB): the
+//    ARMED gate must not WEDGE a project it cannot verify. The WI-2 worktree the gate runs in has
+//    no node_modules, so every npm step used to exit non-zero → task `failed` → branch preserved,
+//    never merged, for EVERY write task on EVERY npm project.
+describe('PCG-1 — an UNVERIFIABLE working dir does not wedge the task (the false-RED fix)', () => {
+	it('an npm project whose worktree has NO node_modules lands `done` with an honest UNVERIFIED gate', async () => {
+		const worktreeLike = mkdtempSync(join(tmpdir(), 'pcg-wt-'));
+		writeFileSync(
+			join(worktreeLike, 'package.json'),
+			JSON.stringify({ name: 'wt', scripts: { build: 'vite build', test: 'vitest run' } })
+		);
+		try {
+			const taskId = await freshRunningTask('work in an uninstalled worktree');
+			const sessionId = await makeSession(taskId);
+			// The runner would say RED for any npm step — the point is that npm is never spawned.
+			const runner = gitAnd(() => ({ code: 1, stdout: '', stderr: "'vite' is not recognized" }));
+
+			const res = await runPostTask(
+				db,
+				{
+					projectId,
+					taskId,
+					sessionId,
+					cwd: worktreeLike,
+					commitMessage: 'feat: in a worktree',
+					testCommand: 'npm test',
+					buildTool: 'npm',
+					runOk: true
+				},
+				{ run: runner, gate: { enabled: true }, review: { enabled: true } }
+			);
+
+			// NOT failed: the environment could not verify, which is not a verdict on the change.
+			expect(res.gate?.status).toBe('skipped');
+			expect(res.gate?.verified).toBe(false);
+			expect(res.taskStatus).toBe('done');
+			expect(await readTaskStatus(taskId)).toBe('done');
+			expect(runner.calls.some((c) => c.file === 'npm')).toBe(false);
+
+			// HONEST, not silent: the completion event says UNVERIFIED and names the reason.
+			const detail = await readEventDetail(res.agentEventId);
+			expect(detail.gate_failed).toBe(false);
+			expect(String(detail.gate_consequence)).toMatch(/UNVERIFIED but not blocked/);
+			const gateDetail = detail.gate as { steps: Array<{ name: string; detail: string }> };
+			expect(gateDetail.steps.find((s) => s.name === 'build')?.detail).toMatch(
+				/NO installed dependency tree/
+			);
+
+			// …and the safety net still engages: an unverified LARGE change queues a review, which is
+			// what boot.ts's holdMergeBack:'unverified' policy turns into a HELD merge.
+			expect(res.review?.triggered).toBe(true);
+			expect(await countReviewItems(taskId)).toBe(1);
+		} finally {
+			rmSync(worktreeLike, { recursive: true, force: true });
+		}
 	});
 });

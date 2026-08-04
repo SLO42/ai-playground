@@ -108,9 +108,12 @@ describe('post-task loop — commit + test in a transaction (2.7)', () => {
 			{ run: runner }
 		);
 
-		// commit happened via execFile arrays — git add -A, git commit -m <msg>, rev-parse.
+		// commit happened via execFile arrays — the leading rev-parse READS THE BASE (the sha HEAD
+		// held BEFORE the commit, which the review's diff needs; measuring against 'HEAD' after the
+		// commit always yields an empty diff), then git add -A, git commit -m <msg>, rev-parse (sha).
 		const gitCalls = runner.calls.filter((c) => c.file === 'git');
-		expect(gitCalls.map((c) => c.args[0])).toEqual(['add', 'commit', 'rev-parse']);
+		expect(gitCalls.map((c) => c.args[0])).toEqual(['rev-parse', 'add', 'commit', 'rev-parse']);
+		expect(gitCalls[0].args).toEqual(['rev-parse', '--verify', 'HEAD']);
 		// the commit message is ONE argv element after -m (never a shell string).
 		const commitCall = gitCalls.find((c) => c.args[0] === 'commit')!;
 		expect(commitCall.args).toEqual(['commit', '-m', 'feat: did the work']);
@@ -151,8 +154,8 @@ describe('post-task loop — commit + test in a transaction (2.7)', () => {
 			{ run: runner }
 		);
 		const gitCalls = runner.calls.filter((c) => c.file === 'git');
-		// Only local verbs were ever issued.
-		expect(gitCalls.map((c) => c.args[0]).sort()).toEqual(['add', 'commit', 'rev-parse']);
+		// Only local verbs were ever issued (rev-parse twice: the pre-commit BASE + the sha readback).
+		expect([...new Set(gitCalls.map((c) => c.args[0]))].sort()).toEqual(['add', 'commit', 'rev-parse']);
 		// No forbidden remote/push verb and no force flag anywhere in the loop's git argv.
 		for (const c of gitCalls) {
 			expect(['push', 'remote']).not.toContain(c.args[0]);

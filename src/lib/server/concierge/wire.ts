@@ -171,7 +171,39 @@ export interface ConciergeTurnUsage {
 	basis: 'measured-usage' | 'partial-stream' | 'worst-case-cap' | 'none';
 	/** Plain-language explanation of the estimate (surfaced verbatim on the row). */
 	note?: string;
+	/** Set ONLY on the `worst-case-cap` basis: did the PROVIDER actually enforce the cap the output leg
+	 *  was charged at? FALSE ⇒ the number is a nominal charge, not a ceiling (see ConciergeOutputCap). */
+	capEnforced?: boolean;
 }
+
+/**
+ * CG-4-2 — the turn's output cap, and whether the PROVIDER actually enforces it.
+ *
+ * The `worst-case-cap` estimate charges the output leg at this cap and calls it an UPPER bound. That
+ * claim is only true when the provider was really built with the cap:
+ *   • CLOUD (`ClaudeProvider`) IS constructed with `maxTokens: CONCIERGE_MAX_TOKENS` below, so the
+ *     Anthropic request carries `max_tokens` and the turn genuinely cannot exceed it ⇒ enforced.
+ *   • LOCAL (`OllamaProvider`) exposes NO max-output option at all — `OllamaOptions` is
+ *     `{ endpoint, model, fetchImpl }` (providers/index.ts) and its request body is
+ *     `{ model, messages, stream: true }` with no `options.num_predict`. A local turn is therefore
+ *     UNCAPPED, and charging it 1024 with "the turn cannot have produced more than the cap" is a
+ *     wrong number dressed as a guarantee (F-008). We still charge the nominal figure — metering zero
+ *     would be worse — but the row says, in data and in words, that it is not a ceiling.
+ *
+ * DEFERRED (named, not silently dropped): giving `OllamaProvider` a real max-output option
+ * (`options.num_predict`) would make the local cap enforceable too. That edit lives in
+ * `src/lib/server/providers/index.ts`, outside this change's scope lock, so it is recorded rather
+ * than made — see the deviation on this task.
+ */
+export interface ConciergeOutputCap {
+	/** The output-token figure charged when nothing streamed back. */
+	tokens: number;
+	/** TRUE only when the constructed provider really carries the cap. */
+	enforced: boolean;
+}
+
+/** The historical assumption — a cap the provider honours. Default for callers that do not say. */
+const ENFORCED_OUTPUT_CAP: ConciergeOutputCap = { tokens: CONCIERGE_MAX_TOKENS, enforced: true };
 
 /** Rough token count for a span of characters — the ~4-chars-per-token rule of thumb. ESTIMATE ONLY:
  *  every row built from it is stamped `estimated:true` with its basis, never passed off as measured. */
@@ -201,7 +233,8 @@ function estimateTokensFromChars(chars: number): number {
 export function resolveConciergeTurnUsage(
 	chunks: StreamChunk[] | null | undefined,
 	promptChars: number,
-	outcome: ConciergeTurnOutcome
+	outcome: ConciergeTurnOutcome,
+	cap: ConciergeOutputCap = ENFORCED_OUTPUT_CAP
 ): ConciergeTurnUsage {
 	const list = Array.isArray(chunks) ? chunks : [];
 	const usage = list.find((c): c is Extract<StreamChunk, { type: 'done' }> => c.type === 'done')?.usage;
@@ -225,16 +258,24 @@ export function resolveConciergeTurnUsage(
 				`provider may have generated more than was read back.`
 		};
 	}
+	const capPreamble =
+		`Tokens are ESTIMATED, not measured: the turn ended with NO output read back and no usage total, so the ` +
+		`input leg is derived at ~${CHARS_PER_TOKEN_ESTIMATE} characters per token from the ${promptChars}-character prompt and the ` +
+		`output leg is charged at this turn's ${cap.tokens}-token cap.`;
 	return {
 		tokensIn,
-		tokensOut: CONCIERGE_MAX_TOKENS,
+		tokensOut: cap.tokens,
 		estimated: true,
 		basis: 'worst-case-cap',
-		note:
-			`Tokens are ESTIMATED, not measured: the turn ended with NO output read back and no usage total, so the ` +
-			`input leg is derived at ~${CHARS_PER_TOKEN_ESTIMATE} characters per token from the ${promptChars}-character prompt and the ` +
-			`output leg is charged at this turn's hard ${CONCIERGE_MAX_TOKENS}-token cap. Treat it as an UPPER bound — the ` +
-			`turn cannot have produced more than the cap, and under-counting real spend is the failure this guards.`
+		capEnforced: cap.enforced,
+		note: cap.enforced
+			? `${capPreamble} That cap IS enforced on this provider (it is built with the max-output limit), so treat ` +
+				`the figure as an UPPER bound — the turn cannot have produced more than the cap, and under-counting real ` +
+				`spend is the failure this guards.`
+			: // CG-4-2: the local adapter takes no max-output option, so the same number is NOT a ceiling.
+				`${capPreamble} That cap is NOT enforced on this provider — it takes no max-output option, so the turn ` +
+				`could have produced more. Treat the figure as a NOMINAL charge, not an upper bound: it is recorded so the ` +
+				`turn is not metered at zero, but the true output count for this turn is unknown.`
 	};
 }
 
@@ -270,10 +311,11 @@ async function meterConciergeTurn(
 	chunks: StreamChunk[],
 	promptChars: number,
 	durationMs: number,
-	outcome: ConciergeTurnOutcome
+	outcome: ConciergeTurnOutcome,
+	cap: ConciergeOutputCap
 ): Promise<void> {
 	try {
-		const usage = resolveConciergeTurnUsage(chunks, promptChars, outcome);
+		const usage = resolveConciergeTurnUsage(chunks, promptChars, outcome, cap);
 		const spendNote = usage.estimated
 			? 'spend ESTIMATED, not measured'
 			: usage.basis === 'measured-usage'
@@ -303,7 +345,9 @@ async function meterConciergeTurn(
 				...(outcome.kind === 'ok' ? {} : { error: outcome.error }),
 				estimated: usage.estimated,
 				estimate_basis: usage.basis,
-				...(usage.note ? { estimate_note: usage.note } : {})
+				...(usage.note ? { estimate_note: usage.note } : {}),
+				// CG-4-2: on the worst-case-cap basis, say whether the cap charged is a real ceiling.
+				...(usage.capEnforced !== undefined ? { output_cap_enforced: usage.capEnforced } : {})
 			}
 		});
 	} catch (err) {
@@ -314,14 +358,20 @@ async function meterConciergeTurn(
 /**
  * CG-3-2 — record a stream fault raised AFTER the wall-clock timeout already ended the turn.
  *
- * The `collect` IIFE is deliberately not cancellable: when the timeout wins the race the generator is
- * still draining, so a later `provider.stream` throw lands on a promise nobody is awaiting → an
- * unhandled rejection (which on Node can take the process down). Swallowing it in a bare `.catch` would
- * trade a crash for an invisible failure, so the fault is PERSISTED as an `agent_event` `type:'error'`
- * row instead of a console line — a real operator-visible signal that this provider is failing late.
- * It carries NO tokens: the turn's spend was already accounted for by the estimated completion row, and
- * a second spend-bearing row would double-count. The DB write itself is best-effort; only if THAT fails
- * do we fall back to a named console warning (there is nowhere left to record it).
+ * The turn IS cancelled when the timeout wins (CG-4-1: the drain aborts the signal, stops reading and
+ * finalizes the generator), but cancellation is a request, not a guarantee: a read already in flight can
+ * still settle afterwards, and an adapter that ignores the signal can throw at its own pace. Such a
+ * throw lands on a promise nobody is awaiting → an unhandled rejection (which on Node can take the
+ * process down). Swallowing it in a bare `.catch` would trade a crash for an invisible failure, so a
+ * GENUINE late fault is PERSISTED as an `agent_event` `type:'error'` row instead of a console line — a
+ * real operator-visible signal that this provider is failing late.
+ *
+ * A cancellation error we caused ourselves is NOT a late fault and never reaches here (isCancellationError
+ * filters it): reporting our own teardown as "the provider failed" would be a fabricated failure.
+ *
+ * The row carries NO tokens: the turn's spend was already accounted for by the estimated completion row,
+ * and a second spend-bearing row would double-count. The DB write itself is best-effort; only if THAT
+ * fails do we fall back to a named console warning (there is nowhere left to record it).
  */
 async function recordLateStreamFault(
 	db: Db,
@@ -352,19 +402,90 @@ async function recordLateStreamFault(
 	}
 }
 
+/**
+ * CG-4-1 — where ONE turn's Provider comes from.
+ *
+ * A bare `Provider` is used as-is: the shape unit tests pass, and the only shape available to a caller
+ * holding an already-built adapter. It can be cancelled at the ITERATOR level (the drain stops reading
+ * and calls `return()` on the generator) but not below it.
+ *
+ * A FACTORY is handed the turn's `AbortSignal` and can wire it all the way down to its transport — see
+ * `fetchWithSignal`. That is what makes a WEDGED HTTP provider genuinely cancellable rather than merely
+ * abandoned, because `Provider.stream(messages, tools?)` (providers/index.ts) takes no signal of its own.
+ */
+export type ConciergeProviderSource = Provider | ((signal: AbortSignal) => Provider);
+
+/**
+ * Wrap a fetch impl so EVERY request it issues carries `signal`.
+ *
+ * The `Provider.stream` contract takes no AbortSignal, so this is how a turn's cancellation reaches the
+ * socket: both adapters accept an injected `fetchImpl`, and the concierge builds them per-turn with this
+ * wrapper. Aborting then rejects the in-flight `fetch`, which unwinds the adapter's generator (running its
+ * `finally`, releasing the response reader lock) instead of leaving it suspended for the process lifetime.
+ *
+ * Shadow paths: `init` absent (a bare GET) ⇒ our signal is used alone; `init.signal` already present ⇒ the
+ * two are COMBINED with `AbortSignal.any` so neither cancellation source is silently dropped (no adapter
+ * sets one today, but dropping a caller's signal would be a latent bug). `base` defaults to global fetch.
+ */
+export function fetchWithSignal(signal: AbortSignal, base: typeof fetch = fetch): typeof fetch {
+	return ((input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+		const merged = init?.signal ? AbortSignal.any([init.signal, signal]) : signal;
+		return base(input, { ...(init ?? {}), signal: merged });
+	}) as typeof fetch;
+}
+
+/** Sentinel resolved by the turn's cancellation promise — distinguishable from any IteratorResult. */
+const TURN_CANCELLED = Symbol('concierge-turn-cancelled');
+
+/**
+ * Is this error OUR OWN cancellation coming back at us, rather than a provider fault?
+ *
+ * An aborted `fetch` surfaces as a `DOMException` named `AbortError`, but both adapters re-wrap transport
+ * failures as `ProviderError: <kind> request failed: <message>` — so the NAME is not reliable and the
+ * message is matched too. Named explicitly because the alternative is worse than a leak: reporting a
+ * teardown we initiated as "the provider failed late" is a fabricated failure (F-008).
+ */
+function isCancellationError(err: unknown): boolean {
+	if (!(err instanceof Error)) return false;
+	return err.name === 'AbortError' || /\babort(ed|ing)?\b/i.test(err.message);
+}
+
+/** Options for one wired concierge LLM fn. */
+export interface ProviderToLlmOptions {
+	/** The output cap charged by the worst-case-cap estimate, and whether the provider enforces it.
+	 *  Defaults to the historical assumption (enforced) — see ConciergeOutputCap. */
+	outputCap?: ConciergeOutputCap;
+}
+
 /** Wrap a Provider's stream into the ConciergeLlmFn shape (system+user → text), wall-clock bounded.
  *  Mirrors makeClaudeJudge but is provider-agnostic (works for the local Ollama model too).
  *  `providerKind` is the resolved provider label ('ollama'/'local' vs 'claude') threaded into the
  *  budget gate so a genuinely-$0 LOCAL turn is EXEMPT (COST-GOVERNANCE-SPEC §1 invariant 5) — see below;
  *  `modelId`/`tier` name the concrete brain so the metered completion row is priced correctly. */
 export function providerToLlmFn(
-	provider: Provider,
+	source: ConciergeProviderSource,
 	db: Db,
 	providerKind: string,
 	modelId: string,
-	tier: string
+	tier: string,
+	opts: ProviderToLlmOptions = {}
 ): ConciergeLlmFn {
+	const outputCap = opts.outputCap ?? ENFORCED_OUTPUT_CAP;
 	return async ({ system, user }) => {
+		// CG-4-1 — the turn OWNS an AbortController, and the turn's end aborts it (see the finally).
+		// Before this, the drain was a detached IIFE with no cancellation at all: when the 30s bound won
+		// the race the underlying stream was never cancelled, so a wedged provider left a suspended async
+		// generator, a promise that never settled, and its chunk buffer retained — for the PROCESS
+		// LIFETIME. The signal is handed to a provider FACTORY (so it reaches the adapter's fetch) and is
+		// also what stops the drain loop below, so cancellation works even for an adapter that ignores it.
+		//
+		// Built BEFORE the budget gate ON PURPOSE: a factory that throws (e.g. OllamaProvider rejecting a
+		// `/v1` endpoint) must not leave a gate RESERVATION un-released, and there is no try/finally to
+		// catch it in yet. Both adapter constructors are pure validate-and-store — no I/O — so nothing is
+		// spent by building one the gate then refuses.
+		const ctrl = new AbortController();
+		const provider = typeof source === 'function' ? source(ctrl.signal) : source;
+
 		// CG-2 (COST-GOVERNANCE-SPEC) — the concierge Stage-2 turn is a direct provider call (NOT
 		// launchSession). CG-2-1 wires its metering HERE: after the turn we write the one agent_event
 		// completion row (meterConciergeTurn), so this turn's spend IS counted by tokensSpentSince and
@@ -398,14 +519,55 @@ export function providerToLlmFn(
 		const promptChars = (system?.length ?? 0) + (user?.length ?? 0);
 		const startedAt = Date.now();
 		const meterModel = { provider: providerKind, modelId, tier };
+
 		// CG-3-1: the chunk buffer is HOISTED out of the IIFE. It used to be closure-local, so when the
 		// timeout won the race the caller could see NOTHING the provider had already delivered — the
 		// spend was real and permanently invisible. Held here, whatever arrived before the abort is
 		// still readable by the metering path.
 		const chunks: StreamChunk[] = [];
-		const collect = (async () => {
-			for await (const c of provider.stream(messages)) chunks.push(c);
-			return chunks;
+
+		// Kept by identity so the catch can tell "the bound fired" from "the provider threw" without
+		// string-matching an error message. Declared before the drain: the orphan handler reads it.
+		let timeoutErr: Error | undefined;
+
+		/** Resolves the instant this turn is cancelled — the drain races every read against it, so no
+		 *  read can outlive the turn even when the provider never answers. */
+		const cancelled = new Promise<typeof TURN_CANCELLED>((resolve) => {
+			if (ctrl.signal.aborted) resolve(TURN_CANCELLED);
+			else ctrl.signal.addEventListener('abort', () => resolve(TURN_CANCELLED), { once: true });
+		});
+
+		/** Terminal handler for the ONE read we orphan at cancellation. Two jobs, both named: never leave
+		 *  its rejection unobserved (an unhandled rejection can take Node down), and still surface a
+		 *  GENUINE provider fault as a persisted event — while filtering out our own abort, which is not
+		 *  a provider failure and must not be reported as one. */
+		const onOrphanedRead = (err: unknown): void => {
+			if (!timeoutErr) return;
+			if (isCancellationError(err)) return;
+			void recordLateStreamFault(db, meterModel, err);
+		};
+
+		const collect = (async (): Promise<StreamChunk[]> => {
+			const iter = provider.stream(messages)[Symbol.asyncIterator]();
+			try {
+				for (;;) {
+					const pending = iter.next();
+					const r = await Promise.race([pending, cancelled]);
+					if (r === TURN_CANCELLED) {
+						pending.then(() => {}, onOrphanedRead);
+						break;
+					}
+					if (r.done) break;
+					chunks.push(r.value);
+				}
+				return chunks;
+			} finally {
+				// ASK the generator to finalize: this runs its own `finally`, which in providers/index.ts
+				// releases the response reader lock. Deliberately NOT awaited — a generator suspended on a
+				// promise that never settles would make this hang, which is the exact leak being closed
+				// (the fetch-level signal is what tears that case down for real).
+				void Promise.resolve(iter.return?.(undefined)).catch(() => {});
+			}
 		})();
 
 		// Exactly ONE accounting of this turn's spend, whichever way it ends (never double-metered).
@@ -414,13 +576,10 @@ export function providerToLlmFn(
 		const meterOnce = async (outcome: ConciergeTurnOutcome): Promise<void> => {
 			if (metered) return;
 			metered = true;
-			await meterConciergeTurn(db, meterModel, chunks, promptChars, Date.now() - startedAt, outcome);
+			await meterConciergeTurn(db, meterModel, chunks, promptChars, Date.now() - startedAt, outcome, outputCap);
 		};
 
 		let timer: ReturnType<typeof setTimeout> | undefined;
-		// Kept by identity so the catch can tell "the bound fired" from "the provider threw" without
-		// string-matching an error message.
-		let timeoutErr: Error | undefined;
 		const timeout = new Promise<never>((_, reject) => {
 			timer = setTimeout(() => {
 				timeoutErr = new Error(`concierge LLM turn exceeded ${llmTimeoutMs()}ms`);
@@ -428,13 +587,15 @@ export function providerToLlmFn(
 			}, llmTimeoutMs());
 		});
 
-		// CG-3-2: `collect` outlives a lost race — it is not cancellable, so a throw arriving after the
-		// timeout already ended the turn would be an UNHANDLED rejection. Attach a terminal handler that
-		// RECORDS the fault (a persisted agent_event, not a console line). When the race has not yet been
-		// decided by the timeout, the race path owns the error and meters/surfaces it there — recording
-		// again here would double-report one fault.
+		// CG-3-2: `collect` can still reject in the window between the timeout winning the race and the
+		// finally aborting the turn — a throw there has no awaiter left and would be an UNHANDLED
+		// rejection. Attach a terminal handler that RECORDS a genuine fault (a persisted agent_event, not
+		// a console line) and ignores our own cancellation. When the race has not yet been decided by the
+		// timeout, the race path owns the error and meters/surfaces it there — recording again here would
+		// double-report one fault.
 		collect.catch((err: unknown) => {
 			if (!timeoutErr) return;
+			if (isCancellationError(err)) return;
 			void recordLateStreamFault(db, meterModel, err);
 		});
 
@@ -453,6 +614,10 @@ export function providerToLlmFn(
 			throw err;
 		} finally {
 			if (timer) clearTimeout(timer);
+			// CG-4-1 — CANCEL. However the turn ended, it is over: stop the drain, finalize the generator
+			// and abort the adapter's in-flight request so nothing outlives the turn. Idempotent and safe
+			// on the success path (the stream is already exhausted, so this is a no-op there).
+			ctrl.abort();
 			gate.release();
 		}
 	};
@@ -486,12 +651,19 @@ function buildConciergeLlm(dir: string, db: Db): {
 	});
 	if (!choice) return { llm: undefined, sessionModel: undefined, llmBrain: undefined };
 
-	let provider: Provider;
+	// CG-4-1 — the adapter is built PER TURN from the turn's AbortSignal (not once, here), so the
+	// signal reaches its `fetch` and a wedged request is torn down when the turn's bound fires. The
+	// endpoint is resolved ONCE, outside the factory: config reads must not repeat per turn.
+	let source: ConciergeProviderSource;
+	// CG-4-2 — is CONCIERGE_MAX_TOKENS actually enforced on this provider? See ConciergeOutputCap.
+	let outputCap: ConciergeOutputCap;
 	if (choice.provider === 'ollama') {
-		provider = new OllamaProvider({
-			endpoint: readProviderEndpoint(dir, 'ollama', 'http://127.0.0.1:11434'),
-			model: choice.model
-		});
+		const endpoint = readProviderEndpoint(dir, 'ollama', 'http://127.0.0.1:11434');
+		source = (signal) =>
+			new OllamaProvider({ endpoint, model: choice.model, fetchImpl: fetchWithSignal(signal) });
+		// OllamaOptions has no max-output field, so the local turn is UNCAPPED — the worst-case-cap
+		// estimate records its 1024 as a NOMINAL charge rather than claiming a ceiling it cannot hold.
+		outputCap = { tokens: CONCIERGE_MAX_TOKENS, enforced: false };
 	} else {
 		// A cloud (ClaudeProvider) turn needs a key; without it we cannot run it honestly.
 		if (!apiKey) {
@@ -500,16 +672,21 @@ function buildConciergeLlm(dir: string, db: Db): {
 			);
 			return { llm: undefined, sessionModel: undefined, llmBrain: undefined };
 		}
-		provider = new ClaudeProvider({
-			endpoint: readProviderEndpoint(dir, 'claude', 'https://api.anthropic.com'),
-			model: choice.model,
-			apiKey,
-			maxTokens: CONCIERGE_MAX_TOKENS
-		});
+		const endpoint = readProviderEndpoint(dir, 'claude', 'https://api.anthropic.com');
+		source = (signal) =>
+			new ClaudeProvider({
+				endpoint,
+				model: choice.model,
+				apiKey,
+				maxTokens: CONCIERGE_MAX_TOKENS,
+				fetchImpl: fetchWithSignal(signal)
+			});
+		// The request really carries `max_tokens`, so the cap IS a ceiling for this turn.
+		outputCap = ENFORCED_OUTPUT_CAP;
 	}
 
 	return {
-		llm: providerToLlmFn(provider, db, choice.provider, choice.model, choice.tier),
+		llm: providerToLlmFn(source, db, choice.provider, choice.model, choice.tier, { outputCap }),
 		sessionModel: { provider: choice.provider, model_id: choice.model },
 		// The brain that IS available to serve an open question. The thinking ledger records it as
 		// `brainConfigured` and stamps `modelUsed` ONLY when a model actually ran — so a deterministic

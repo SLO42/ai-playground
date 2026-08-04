@@ -429,6 +429,33 @@
                   Run re-gauntlet
                 </button>
               </form>
+
+              <!-- ②b RECONCILE — the free alternative to spending again. Rendered ONLY when a run
+                   this proposal already paid for actually exists, so it can never look like a
+                   second way to start one. `ready:false` is SHOWN, not hidden: "there is a run,
+                   here is why its verdict is not usable yet" beats an unexplained absence beside
+                   a button that costs money. -->
+              {#if p.reconcilable}
+                <div class="reconcile" class:pending={!p.reconcilable.ready}>
+                  <p class="stage-note">
+                    A gauntlet run for this challenger already exists —
+                    <span class="mono">{p.reconcilable.run}</span> ·
+                    <span class="mono">{p.reconcilable.status}</span>.
+                    {p.reconcilable.reason}
+                  </p>
+                  {#if p.reconcilable.ready}
+                    <form method="POST" action="?/reconcile" use:enhance={busyEnhance(p.proposal)}>
+                      <input type="hidden" name="proposal" value={p.proposal} />
+                      <!-- No confirm tick: this spends nothing and moves no role. It records the
+                           comparison and lands on 'compared', which IS where D-039 asks for the
+                           operator's confirm. -->
+                      <button class="btn" type="submit" disabled={busy[p.proposal]}>
+                        Use this run’s verdict (no new spend)
+                      </button>
+                    </form>
+                  {/if}
+                </div>
+              {/if}
             </div>
 
           <!-- Stage 3: the comparison + the D-039 swap (or reject). -->
@@ -505,13 +532,14 @@
 
           {#if f?.error}
             <p class="action-err" role="alert">{f.error}</p>
-          {:else if f?.ok && (f.authored || f.regauntlet || f.swapped || f.rejected || f.proposedTier || f.tierInterview || f.tierSwapped)}
+          {:else if f?.ok && (f.authored || f.regauntlet || f.reconciled || f.swapped || f.rejected || f.proposedTier || f.tierInterview || f.tierSwapped)}
             <p class="action-ok" role="status">
               {#if f.authored}Challenger authored{f.created === false ? ' (already existed)' : ''}.{/if}
               {#if f.regauntlet}{f.ran ? `Re-gauntlet ${f.status}` : 'Re-gauntlet queued'}{f.comparable === true ? ' · comparable' : ''}.{#if f.comparable === false && f.incomparableReason}
                   <!-- The re-gauntlet ran but produced no comparison — say WHY rather than
                        leaving the operator to wonder where the swap stage went. -->
                   <span class="incomparable-inline">{String(f.incomparableReason)}</span>{/if}{/if}
+              {#if f.reconciled}Comparison recorded from run <span class="mono">{String(f.run)}</span> — no new spend{f.comparable === true ? ' · comparable' : ''}.{#if f.comparable === false && f.incomparableReason}<span class="incomparable-inline">{String(f.incomparableReason)}</span>{/if}{/if}
               {#if f.swapped}Swapped — challenger is now active.{/if}
               {#if f.proposedTier}Tier-change proposed{f.created === false ? ' (already open)' : ''} → {String(f.targetTier)}.{/if}
               {#if f.tierInterview}{f.alreadyReady ? 'Target tier already certified' : f.ran ? `Tier interview ${f.status}` : 'Tier interview queued'}.{/if}
@@ -659,6 +687,20 @@
     font: var(--type-body-sm);
     color: var(--color-text-2);
     margin: 0;
+  }
+  /* ②b RECONCILE — set apart from the spending control above it so the free path is never
+     mistaken for a second way to start a paid run. Accent border when the verdict is ready to
+     consume; muted when the run is still pending (a state, not a fault — no error ramp). */
+  .reconcile {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-2);
+    padding: var(--space-3);
+    border: var(--border-width, 1px) solid var(--color-accent);
+    border-radius: var(--radius-sm, 6px);
+  }
+  .reconcile.pending {
+    border-color: var(--color-border);
   }
   .diff {
     font-family: var(--font-mono, monospace);

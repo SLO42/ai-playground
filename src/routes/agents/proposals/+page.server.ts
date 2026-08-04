@@ -18,6 +18,7 @@ import {
 	loadProposalCards,
 	proposalDiff,
 	proposeTierChange,
+	reconcileProposalFromRun,
 	regauntletChallenger,
 	rejectProposal,
 	resolveRegauntletTarget,
@@ -279,6 +280,50 @@ export const actions: Actions = {
 					// the swap stage never appeared.
 					incomparableReason: res.comparison?.incomparableReason ?? null,
 					...outcomeResult(res.outcome)
+				}
+			};
+		} catch (err) {
+			if (err instanceof ResolutionGateError || err instanceof WorkforceInputError) {
+				return fail(400, { proposals: { proposal, error: err.message } });
+			}
+			return fail(500, { proposals: { proposal, error: (err as Error).message } });
+		}
+	},
+
+	// ②b RECONCILE (NO SPEND). The free counterpart to ②: consume the verdict of the run this
+	// proposal is ALREADY waiting on, instead of paying for a second gauntlet to re-derive it.
+	//
+	// WHY THERE IS NO CONFIRM TICK HERE, unlike ② and ③. A confirm gate exists to authorise a
+	// consequence — real money (②) or a pointer move on a live role (③). This action spends
+	// nothing and moves no role: it records a comparison from a run the operator ALREADY paid for
+	// and adjudicated, and lands the proposal on 'compared', which is precisely where the D-039
+	// swap ceremony asks for their confirm. Gating the free, reversible step the same way as the
+	// expensive irreversible one trains the tick to mean nothing.
+	//
+	// Fail-closed by delegation: every refusal (wrong status, no challenger, no run, run still
+	// non-terminal) is decided inside reconcileProposalFromRun and returned NAMED — this handler
+	// invents no permission of its own.
+	reconcile: async ({ request }) => {
+		const db = tryGetDb();
+		if (!db) return fail(503, { proposals: { error: 'database not connected' } });
+		const form = await request.formData();
+		const proposal = String(form.get('proposal') ?? '').trim();
+		if (!proposal) return fail(400, { proposals: { error: 'missing proposal id' } });
+		try {
+			const res = await reconcileProposalFromRun(db, { proposal });
+			if (res.outcome !== 'reconciled') {
+				// Not an ERROR the operator caused — a state. Named, at 400 so the surface shows it
+				// beside the card rather than swallowing it into a silent no-op.
+				return fail(400, { proposals: { proposal, error: res.reason ?? res.outcome } });
+			}
+			return {
+				proposals: {
+					ok: true,
+					proposal,
+					reconciled: true,
+					run: res.run,
+					comparable: res.comparison?.comparable ?? null,
+					incomparableReason: res.comparison?.incomparableReason ?? null
 				}
 			};
 		} catch (err) {

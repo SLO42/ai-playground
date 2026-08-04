@@ -41,6 +41,7 @@ import {
 	buildProposalCard,
 	diffLines,
 	proposalDiff,
+	reconcileProposalFromRun,
 	regauntletChallenger,
 	rejectProposal,
 	resolveRegauntletTarget,
@@ -468,6 +469,21 @@ function partialMatchBackend(defectSlug: string): ScriptedBackend {
 	};
 }
 
+/**
+ * How many interview_runs exist for a proposal's challenger. The reconcile path's whole point is
+ * that this number does NOT move — a spend assertion has to count rows, not trust a comment.
+ * `role_version` is the durable proposal→run link the runner already writes.
+ */
+async function challengerRunCount(proposalId: string): Promise<number> {
+	const p = await getReviewProposal(db, proposalId);
+	if (!p?.challenger) return 0;
+	const [rows] = await db.query<[Array<{ n: number }>]>(
+		`SELECT count() AS n FROM interview_run WHERE role_version = $vid GROUP ALL;`,
+		{ vid: new StringRecordId(p.challenger) }
+	);
+	return rows?.[0]?.n ?? 0;
+}
+
 describe('§5 re-gauntlet TERMINALITY — a non-terminal run never writes a score', () => {
 	// THE DEFECT THIS PINS. `regauntletChallenger` read `outcome.run` straight into
 	// buildComparison with no terminality gate, so an 'adjudicating' challenger — a run whose
@@ -525,15 +541,14 @@ describe('§5 re-gauntlet TERMINALITY — a non-terminal run never writes a scor
 		expect((await getRole(db, seed.role.id))!.active_version).toBe(seed.incumbent.id);
 	}, 60_000);
 
-	// THE SECOND DEFECT, found by the TERM-R independent review: the gate above is correct but
-	// leaves no EXIT. `regauntletChallenger` is the only function that records a comparison, and
-	// that write sits below an unconditional `runGauntlet` — so when the operator resolves the
-	// queue, `adjudicateInterviewRun` finalizes the RUN and nothing reconciles the proposal. The
-	// paid, fully-scored run is stranded behind a second real spend. The reason string is what the
-	// operator actually reads (surfaced verbatim as `incomparableReason` by the regauntlet action
-	// in routes/agents/proposals/+page.server.ts), and it used to say only "resolving it can still
-	// RAISE" — i.e. it pointed at the queue as the way forward, which recovers nothing.
-	it('the ADJUDICATING reason is TRUE about the exit: the queue finalizes the RUN and strands the proposal', async () => {
+	// THE SECOND DEFECT, found by the TERM-R independent review and CLOSED 2026-08-04: the gate
+	// above is correct but used to leave no EXIT. `regauntletChallenger` was the only function
+	// that records a comparison, and that write sits below an unconditional `runGauntlet` — so
+	// when the operator resolved the queue, `adjudicateInterviewRun` finalized the RUN and nothing
+	// reconciled the proposal. The paid, fully-scored run was stranded behind a SECOND real spend
+	// for a verdict already on disk. The harm is money, which is what makes it the real defect of
+	// the three. `reconcileProposalFromRun` is the exit; this walks the whole path.
+	it('STRANDED → RECONCILED end to end: the queue verdict is consumed with NO second spend', async () => {
 		const seed = await seedRole();
 		await certifyIncumbent(seed);
 		const proposal = await openProposal(seed);
@@ -553,33 +568,195 @@ describe('§5 re-gauntlet TERMINALITY — a non-terminal run never writes a scor
 		expect(re.outcome.kind).toBe('ran');
 		if (re.outcome.kind !== 'ran') return;
 		expect(re.outcome.run.status).toBe('adjudicating');
+		const runId = re.outcome.run.id;
 
-		// ① THE OPERATOR-FACING REASON NAMES THE REAL NEXT STEP. Not "resolve the queue" (which
-		// records nothing) but a NEW run, and it says that costs money — the operator is deciding
-		// a spend, so the sentence that informs the decision must not understate it.
+		// ① THE OPERATOR-FACING REASON POINTS AT THE FREE EXIT, in the words that matter for a
+		// spend decision. Surfaced verbatim as `incomparableReason` by the regauntlet action in
+		// routes/agents/proposals/+page.server.ts.
 		const reason = re.comparison!.incomparableReason;
 		expect(reason).toMatch(/adjudication queue/);
-		expect(reason).toMatch(/NEW re-gauntlet/);
-		expect(reason).toMatch(/real spend/);
-		// And it must not be readable as "resolving the queue finishes this".
-		expect(reason).toMatch(/Resolving the queue does NOT produce this comparison/);
+		expect(reason).toMatch(/reconcile/);
+		expect(reason).toMatch(/costs NOTHING/);
+		expect(reason).toMatch(/second real spend/);
 
-		// ② THE STRAND ITSELF, pinned as DOCUMENTED behaviour rather than an accident. Resolve the
-		// whole queue the way the operator does on /agents (the same adjudicateInterviewRun the
-		// route action calls) and the run goes TERMINAL — it is scored and paid for...
-		const runId = re.outcome.run.id;
+		// ② WHILE THE RUN IS STILL PENDING, reconciling REFUSES and writes nothing. A run without
+		// a verdict is never consumed as one — the withholding gate is not weakened by having an
+		// exit behind it.
+		const early = await reconcileProposalFromRun(db, { proposal: proposal.id });
+		expect(early.outcome).toBe('still_pending');
+		expect(early.run).toBe(runId);
+		expect(early.comparison!.comparable).toBe(false);
+		expect(early.comparison!.challenger.recall).toBeNull();
+		expect((await getReviewProposal(db, proposal.id))!.status).toBe('interviewing');
+		expect((await getReviewProposal(db, proposal.id))!.comparison ?? null).toBeNull();
+
+		// The card the surface renders says the same: there IS a run, it is not ready yet.
+		const parked = await buildProposalCard(db, (await getReviewProposal(db, proposal.id))!);
+		expect(parked.reconcilable).toBeTruthy();
+		expect(parked.reconcilable!.run).toBe(runId);
+		expect(parked.reconcilable!.ready).toBe(false);
+
+		// ③ THE OPERATOR RESOLVES THE QUEUE the way /agents does (the same adjudicateInterviewRun
+		// the route action calls). The run goes TERMINAL — scored, and already paid for.
 		const queued = await getInterviewRun(db, runId);
 		const finalized = await adjudicateInterviewRun(db, runId, {
 			resolutions: queued!.ambiguous.map((_, index) => ({ index, resolution: 'dismiss' as const }))
 		});
 		expect(['passed', 'failed']).toContain(finalized.status);
 
-		// ...and the proposal is exactly where it was. Nothing reconciled it. THIS is why the
-		// reason string has to say a new run is required. When a reconcile path lands, these two
-		// assertions are the ones that must change — and the reason string must change with them.
-		const after = await getReviewProposal(db, proposal.id);
-		expect(after!.status).toBe('interviewing');
-		expect(after!.comparison ?? null).toBeNull();
+		// The card now offers the free path, naming the run and that it costs nothing.
+		const ready = await buildProposalCard(db, (await getReviewProposal(db, proposal.id))!);
+		expect(ready.reconcilable!.ready).toBe(true);
+		expect(ready.reconcilable!.reason).toMatch(/NO second gauntlet spend/);
+
+		// ④ RECONCILE — and COUNT the spend. `depsFor` is never handed to this call: the
+		// function's signature cannot reach a runtime, so a new run is IMPOSSIBLE rather than
+		// merely unlikely. The run count is asserted unchanged for belt and braces.
+		const runsBefore = await challengerRunCount(proposal.id);
+		const done = await reconcileProposalFromRun(db, { proposal: proposal.id });
+		expect(done.outcome).toBe('reconciled');
+		expect(done.run).toBe(runId);
+		expect(done.proposal.status).toBe('compared');
+		expect(
+			await challengerRunCount(proposal.id),
+			'RECONCILING MUST NOT SPEND: no new interview_run may exist'
+		).toBe(runsBefore);
+
+		// ⑤ THE COMPARISON IS THE ONE THE PAID PATH WOULD HAVE PRODUCED — same run, real scores.
+		const persisted = await getReviewProposal(db, proposal.id);
+		expect(persisted!.status).toBe('compared');
+		expect(persisted!.comparison).toBeTruthy();
+		expect(done.comparison!.challenger.run).toBe(runId);
+		expect(done.comparison!.challenger.status).toBe(finalized.status);
+		expect(done.comparison!.challenger.recall).not.toBeNull();
+		expect(done.comparison!.challenger.falsePositives).not.toBeNull();
+
+		// ⑥ IDEMPOTENT / INTERRUPT-SAFE: a re-run absorbs the prior work rather than erroring or
+		// writing twice.
+		const again = await reconcileProposalFromRun(db, { proposal: proposal.id });
+		expect(again.outcome).toBe('not_waiting');
+		expect(again.reason).toMatch(/'compared'/);
+		expect((await getReviewProposal(db, proposal.id))!.status).toBe('compared');
+	}, 90_000);
+
+	// ── THE GATE MUST SURVIVE THE FIX ────────────────────────────────────────────────────
+	//
+	// 'compared' is a GATE-BEARING status: nextActionFor derives 'decide_swap' from it and the
+	// surface then presents the D-039 swap ceremony. A reconcile path that reaches it is only
+	// acceptable if the operator's approval point is intact on the other side.
+	it('RECONCILING DOES NOT BYPASS THE D-039 SWAP APPROVAL', async () => {
+		const seed = await seedRole();
+		await certifyIncumbent(seed);
+		const proposal = await openProposal(seed);
+		await authorChallenger(db, {
+			proposal: proposal.id,
+			promptCore: 'You are reviewer.\nAmbiguous evidence, gate check.',
+			operatorConfirmed: true
+		});
+		const re = await regauntletChallenger(depsFor(partialMatchBackend(seed.defectSlug)), {
+			proposal: proposal.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: MODEL,
+			trigger: 'operator'
+		});
+		if (re.outcome.kind !== 'ran') throw new Error('expected a ran outcome');
+		const runId = re.outcome.run.id;
+		const queued = await getInterviewRun(db, runId);
+		await adjudicateInterviewRun(db, runId, {
+			// confirm_hit, not dismiss: the OTHER adjudication outcome, so the gate test does not
+			// share the happy path's verdict shape.
+			resolutions: queued!.ambiguous.map((_, index) => ({
+				index,
+				resolution: 'confirm_hit' as const
+			}))
+		});
+		const done = await reconcileProposalFromRun(db, { proposal: proposal.id });
+		expect(done.outcome).toBe('reconciled');
+		expect(done.proposal.status).toBe('compared');
+
+		// ① The role has NOT moved. Reconciling produced a decision POINT, never a decision.
+		expect((await getRole(db, seed.role.id))!.active_version).toBe(seed.incumbent.id);
+
+		// ② The surface asks for the swap confirm, exactly as after a paid re-gauntlet.
+		const card = await buildProposalCard(db, (await getReviewProposal(db, proposal.id))!);
+		expect(card.nextAction).toBe('decide_swap');
+
+		// ③ A swap WITHOUT the operator's D-039 confirm is still refused — there is no auto-swap
+		// path, and reconciling did not open one.
+		await expect(
+			swapFromProposal(db, { proposal: proposal.id, modelId: MODEL, operatorConfirmed: false })
+		).rejects.toThrow(ResolutionGateError);
+		expect((await getRole(db, seed.role.id))!.active_version).toBe(seed.incumbent.id);
+	}, 90_000);
+
+	// ── Shadow paths on the reconcile entry, all four, all named ─────────────────────────
+	it('SHADOW PATHS: nil id throws; wrong status / no run each REFUSE by name, writing nothing', async () => {
+		// nil-ish input — a proposal that does not exist is a caller bug, not a state.
+		await expect(
+			reconcileProposalFromRun(db, { proposal: 'review_proposal:doesnotexist' })
+		).rejects.toThrow(WorkforceInputError);
+
+		// WRONG STATUS: a freshly-raised proposal is 'proposed' — it has not reached the diff
+		// ceremony, so reconcile must not be a side door into 'compared'.
+		const seed = await seedRole();
+		await certifyIncumbent(seed);
+		const fresh = await openProposal(seed);
+		const wrongStatus = await reconcileProposalFromRun(db, { proposal: fresh.id });
+		expect(wrongStatus.outcome).toBe('not_waiting');
+		expect(wrongStatus.reason).toMatch(/'proposed'/);
+		expect((await getReviewProposal(db, fresh.id))!.status).toBe('proposed');
+		expect((await getReviewProposal(db, fresh.id))!.comparison ?? null).toBeNull();
+
+		// EMPTY: the challenger is authored but NO gauntlet has ever run — nothing was paid for,
+		// so there is no verdict to consume and the answer names the spend as the next move.
+		const seed2 = await seedRole();
+		await certifyIncumbent(seed2);
+		const p2 = await openProposal(seed2);
+		await authorChallenger(db, {
+			proposal: p2.id,
+			promptCore: 'You are reviewer.\nNever interviewed.',
+			operatorConfirmed: true
+		});
+		const noRun = await reconcileProposalFromRun(db, { proposal: p2.id });
+		expect(noRun.outcome).toBe('no_run');
+		expect(noRun.run).toBeNull();
+		expect(noRun.reason).toMatch(/nothing has been paid for yet/);
+		expect((await getReviewProposal(db, p2.id))!.status).toBe('interviewing');
+		// And the card offers nothing to reconcile rather than a dead control.
+		expect(
+			(await buildProposalCard(db, (await getReviewProposal(db, p2.id))!)).reconcilable
+		).toBeNull();
+	}, 90_000);
+
+	it('reconcile is NOT a pass-machine — a proposal the paid path already advanced is declined', async () => {
+		// The counterweight to the exit: once the paid path recorded a comparison (terminal run),
+		// reconcile declines by name instead of re-writing it, and the §2.4 refusal for a FAILED
+		// challenger still happens where it belongs — swapFromProposal, not a silent skip here.
+		const seed = await seedRole();
+		await certifyIncumbent(seed);
+		const proposal = await openProposal(seed);
+		await authorChallenger(db, {
+			proposal: proposal.id,
+			promptCore: 'You are reviewer.\nSilent, reconciled.',
+			operatorConfirmed: true
+		});
+		const re = await regauntletChallenger(depsFor(candidateBackend(seed.defectSlug, false)), {
+			proposal: proposal.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: MODEL,
+			trigger: 'operator'
+		});
+		if (re.outcome.kind !== 'ran') throw new Error('expected a ran outcome');
+		expect(re.outcome.run.status).toBe('failed');
+		const res = await reconcileProposalFromRun(db, { proposal: proposal.id });
+		expect(res.outcome).toBe('not_waiting');
+		expect(res.reason).toMatch(/'compared'/);
+		await expect(
+			swapFromProposal(db, { proposal: proposal.id, modelId: MODEL, operatorConfirmed: true })
+		).rejects.toThrow(ResolutionGateError);
+		expect((await getRole(db, seed.role.id))!.active_version).toBe(seed.incumbent.id);
 	}, 60_000);
 
 	it('a TERMINAL challenger is unaffected — the gate withholds, it does not break the path', async () => {

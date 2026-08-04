@@ -9,7 +9,77 @@
 
 > ⏭ **RESUME PLAN (operator, 2026-06-26):** **BL-R1 DONE** (`eed3163`+`bcbc1f5`) · **BL-H1 digest DONE** · **BL-H2 eval DONE — headroom NO-ADOPT/idea-only** (`docs/HEADROOM-DIGEST.md` §6; F-049). Recovery + headroom closed; **recovery-harden-2 DONE** (RH-1 BL-R2 `d11db2f` + RH-2 wi-harden-2 `e89c9c5` + RH-3 `c58e5fb`, pushed) — the loop is hardened. Next + LAST — **go-live for ROUNDS**: bring up DB (v2 :8000) + dev server `CLAUDE_CODE_OAUTH_TOKEN` UNSET (F-029) → operator hits Continue → watch ROUNDS + `/projects/[id]/graph`. Boot reaper now runs BL-R1 release+reset, so go-live live-validates that path. Open deferred (non-blocking): BL-R3 (2 task-status MEDIUMs), BL-GUX-FIX (3 graph-UI test gaps), wi-harden done. (bring up DB + dev server token-unset → operator hits Continue → watch ROUNDS + the new `/projects/[id]/graph`). Server is currently DOWN (paused). All work committed + pushed to origin/v2 (tip `1da738e`); docs on v2-main. The full "alive" arc + repo-creation + usage-observability + command-center-ux + lifecycle-graph are DONE. Open tracked: BL-R1, wi-harden-2 (latent), headroom (BL-H1/H2), backlog (BL-1/BL-2/BL-2b).
 
-> ⏸ **OPERATOR PAUSE #5 (2026-07-27, 14:30 timebox reached) — DO NOT AUTO-CHAIN. SUPERSEDES #4.**
+> ✅ **PAUSE LIFTED AND CLEARED (2026-08-04) — SUPERSEDES PAUSES #3/#4/#5 BELOW. Nothing is parked.**
+> **`origin/v2` = `fbcb8d0`, 0/0 vs local. All 26 commits PUSHED. Lane B is MERGED (`cf2b178`).**
+> The suite is green and stayed green across the merge. `origin/v2-lane-b` = `e25738b` retained
+> (branch NOT deleted — operator's call).
+>
+> **TERM-R verdict: all five terminality commits are CORRECT and deserved to be pushed.** The
+> reviewer reproduced **all five mutation proofs personally**, not the three required — each
+> reverted via Edit, never `git checkout --`, with a clean `git status` confirmed after every one.
+> (A) failed verbatim as claimed (`ledger says 10, source has 11`); (D) failed BOTH apply-order
+> assertions and is invisible to the old declaration-order test by construction.
+> **It sharpened TERM-2's "latent, not live" claim into something more useful:** the largest live
+> cell (`role_version:0emka…|claude-opus-4-8`) reads `[failed 4/5, passed 5/5, then 16× error]`, so
+> **ONE more error run becomes newest and flips `/agents` "recall (latest)" from 80% to 0% / 0 FP.**
+> Confirmed live rendering `80% · 0 FP · 18 run(s)`. The defect was one event away, not theoretical.
+> **Ledger-guard cost verdict: KEEP AS-IS**, grounded rather than tasteful — it strips comments
+> before counting (proven: TERM-3's large comment additions naming the score identifiers did NOT
+> move the count, while a one-line code addition moved it 10→11), `\b` already carves out
+> `max_false_positives`, and a sibling test enforces `why.length >= 40` so the reflexive path is
+> "bump a number while reading a paragraph", not "bump a number". Against a 6-for-6 escape record,
+> a known nuisance cost wins.
+> TERM-R's own fix `38eb9a8` found a REAL gap in TERM-1: the terminality gate withholds correctly
+> but **has no reconcile path** — resolving the adjudication queue finalizes the run and never
+> touches the proposal, so a paid `adjudicating` run is STRANDED and a comparison costs a SECOND
+> real spend. TERM-1's "routes to the correct next action" claim is now a documented KNOWN
+> LIMITATION instead of a claim.
+>
+> **MERGE-B — the merge found three real defects that neither lane could have found alone:**
+> - `8085fbb` **the one to read twice.** The bg3 placeholder UUID was an unguarded random roll, so
+>   a roll that came out all-digits formed a **Luhn-valid, card-shaped run** — which `screen()`
+>   then dutifully REDACTED into the scaffold's `info.json`. A secret-screener corrupting real data
+>   because random noise looked like a credit card.
+> - `fbcb8d0` the collapsed fleet line reused the expanded footer's "showing N of M" pair and
+>   swapped the verb, so the FILTERED count was printed as the HIDDEN count.
+> - `360b55f` the F-042 heal test re-expired its own FRESH token under load — the merge exposed it;
+>   **the client is innocent** (the test was wrong, not the code).
+>
+> **ENVIRONMENT FINDING — fails.md candidate, and it is a trap for future agents.** Two consecutive
+> full-suite runs died with `Unhandled Rejection: ERR_IPC_CHANNEL_CLOSED` at NON-DETERMINISTIC
+> points (66 and 140 of 332 files) **with ZERO failing tests in either log**. Root-caused per the
+> Iron Law rather than re-run blindly: OOM refuted (82 GB of 98 GB free), CPU contention refuted
+> (suspect idle, 0% over 6s), then found a `npm run db:up` from the harness bring-up still PARKED
+> after 15+ minutes. Killing its vite-node child restored exit 0 immediately. This is the F-052
+> family and it is dangerous **because it presents as a red suite with no failing test** — a future
+> agent reads the truncation as a regression it caused. Pairs with F-059 (db:up is foreground).
+>
+> **Honestly not verified, named rather than glossed:** TERM-3's budget-QUEUED "undefined" fix is
+> code-read only (triggering it needs an AUTO trigger over an unarmed cap plus real spend);
+> `/agents/proposals` rendered its honest empty state because the live DB has no open proposals, so
+> TERM-1's UI path rests on source read + its real-SurrealDB tests. Both would have required
+> unconsented spend.
+>
+> **STILL DEFERRED, re-confirmed live with exact numbers:** `HIRING_RUN_FETCH_CAP=200` truncates
+> silently at `repo.ts:1374` (the `.uo-truncation` notice on `/agents` belongs to a DIFFERENT
+> window and does not cover it) · the hiring header reads "36 ceremonies · one event each" while
+> the list defaults to `showBrokenRuns=false` and renders 17.
+>
+> **NEXT (unblocked, in order):** (1) **`review-and-gate`** — the only CORRECTNESS finding of the
+> 2026-07-26 operator review: `post-task.ts` commits at `:376` and runs the project test at `:400`
+> — *after* — with `followUpOnTestFail:false`, then mergeBack FF-merges the unreviewed branch,
+> while `orchestrator/review.ts:115` is fully built and tested with ZERO production callers.
+> LB-3 merging is what unblocked it. (2) **`TASK-BOARD-SPEC` P1**. (3) the `fails.md` DIVERGENCE
+> below.
+>
+> **⚠ `docs/fails.md` HAS DIVERGED ACROSS BRANCHES AND THE NUMBERING ALREADY COLLIDED.** This
+> branch holds F-001..F-056 (with gaps, and NOT in numeric order — F-054/F-055/F-056 sit above
+> F-053, so a naive `tail` reads the max as F-053). The `v2` copies hold F-001..F-047 plus
+> F-056/F-057, and **their F-045/F-046 are entirely DIFFERENT failures from this branch's**.
+> New entries were allocated F-058/F-059 from the union. The header's "unified log … synced to
+> both branches" claim is STALE — flagged, not edited (append-only; only the operator retires).
+
+> ⏸ **OPERATOR PAUSE #5 (2026-07-27, 14:30 timebox) — CLEARED; see the block above.**
 > Lane B unchanged and COMPLETE (`origin/v2-lane-b` = `e25738b`). Lane A: tree CLEAN, `v2` HEAD =
 > `89807a9`, **21 commits ahead of `origin/v2`, STILL UNPUSHED.** SurrealDB left UP on :8000
 > (pid 30020, 86/86). No dev server running.

@@ -45,6 +45,8 @@ export interface HiringCeremonyLike {
 	key: string;
 	run?: HiringRunFactsLike | null;
 	runMissing?: boolean;
+	/** The pointer was past the read's hydration cap — never queried. See {@link ceremonyFacts}. */
+	runUnfetched?: boolean;
 	role?: string | null;
 	role_slug?: string | null;
 	role_name?: string | null;
@@ -57,7 +59,17 @@ export interface HiringCeremonyLike {
 /** One stated fact on a ceremony header — `label` is for the a11y/title text, `text` is shown. */
 export interface CeremonyFact {
 	/** A machine key so the renderer can tint (`status`, `recall`, `fp`, `tier`, `model`, `error`). */
-	kind: 'status' | 'recall' | 'fp' | 'tier' | 'model' | 'error' | 'stale' | 'retry' | 'missing';
+	kind:
+		| 'status'
+		| 'recall'
+		| 'fp'
+		| 'tier'
+		| 'model'
+		| 'error'
+		| 'stale'
+		| 'retry'
+		| 'missing'
+		| 'unfetched';
 	text: string;
 	/** The long form for a `title` tooltip; null when `text` already says everything. */
 	detail: string | null;
@@ -160,11 +172,69 @@ function pct(r: number): string {
 	return `${Math.round(r * 100)}%`;
 }
 
+// ── The run-hydration cap notice ─────────────────────────────────────────────────────────
+
+/** Structural mirror of `workforce.HiringRunFetch` (this module must not import from server). */
+export interface HiringRunFetchLike {
+	pointers?: number | null;
+	hydrated?: number | null;
+	cap?: number | null;
+	unfetched?: number | null;
+	capped?: boolean;
+}
+
+/** A count safe to print: nil / negative / NaN / non-number → 0. */
+function safeCount(n: unknown): number {
+	return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/**
+ * The notice shown when the feed's run-hydration cap actually bit — `null` when it did not, so
+ * the surface renders no note at all rather than a reassuring "nothing was truncated" line.
+ *
+ * THE DEFECT THIS CLOSES. The cap used to drop surplus pointers with no marker anywhere; the
+ * affected rows rendered `run not found`, and an operator reading them concluded the ledger
+ * pointed at deleted runs. Two separate lies for the price of one silent `if`.
+ *
+ * NOTE ON COVERAGE — the `.uo-truncation` note already on /agents is about a DIFFERENT window
+ * (the capability usage roll-up's session scan). It never described this read and never could;
+ * mistaking it for coverage is how this one stayed unsurfaced.
+ *
+ * The two numbers are NAMED, never folded into a bare "N of M" whose numerator a reader has to
+ * infer — the same rule `fleetCollapsedSummary` was rewritten under after that shape inverted
+ * live (F-008).
+ *
+ * Shadow paths: nil/undefined → null. `capped:false` → null. `capped:true` with a shortfall that
+ * does not add up (0 or negative after the safe-count) → recomputed from pointers − hydrated, and
+ * null if THAT is not positive either: a note we cannot state a true number in is worse than none.
+ */
+export function runFetchNotice(f: HiringRunFetchLike | null | undefined): string | null {
+	if (!f || f.capped !== true) return null;
+	const pointers = safeCount(f.pointers);
+	const hydrated = safeCount(f.hydrated);
+	const shortfall = safeCount(f.unfetched) || pointers - hydrated;
+	if (shortfall <= 0) return null;
+	const rows = `${shortfall} ceremon${shortfall === 1 ? 'y' : 'ies'}`;
+	return (
+		`Run details were loaded for ${hydrated} of ${pointers} ceremonies that name a gauntlet run — ` +
+		`${rows} below show “run details not fetched” instead of recall/model, and the broken-run ` +
+		`count covers only the fetched ones. Those runs exist and every row is still listed; this ` +
+		`load stopped fetching at its cap of ${safeCount(f.cap)} (bounded read, F-014), so this is a ` +
+		`fetch bound, not missing data.`
+	);
+}
+
 /**
  * State a ceremony's run facts as a list of chips.
  *
  * Every fact is derived from a REAL persisted column; a column that does not exist produces NO
  * chip rather than a placeholder chip, except where the absence is itself the news:
+ *   • `runUnfetched` → `run details not fetched` — this read hit its hydration cap and never
+ *                      QUERIED this pointer. Checked FIRST, and deliberately so: before this chip
+ *                      existed a capped-out pointer fell through to `runMissing` and rendered
+ *                      `run not found`, reporting a data-integrity problem where the only fact was
+ *                      a fetch bound. An honest state produced by a dishonest cause is the most
+ *                      misleading outcome available, because it survives review looking correct.
  *   • `runMissing`   → an explicit `run not found` chip (a dangling pointer is a fact, not a blank).
  *   • recall unknown → `recall —` is emitted ONLY when a TERMINAL run planted nothing, so the
  *                      operator can tell "0 plants" apart from "no run joined".
@@ -178,6 +248,19 @@ function pct(r: number): string {
 export function ceremonyFacts(c: HiringCeremonyLike | null | undefined): CeremonyFact[] {
 	if (!c) return [];
 	const facts: CeremonyFact[] = [];
+	// UNFETCHED BEFORE MISSING. Both produce `run === null`; only one of them is news about the
+	// DATA. If a read ever sets both (it must not — the server makes them exclusive), saying
+	// "not fetched" is the claim we can actually stand behind.
+	if (c.runUnfetched === true) {
+		facts.push({
+			kind: 'unfetched',
+			text: 'run details not fetched',
+			detail:
+				'this read hit its per-load cap on interview_run lookups, so this ceremony’s run was ' +
+				'never queried — the run is not missing, it was not asked for (bounded read, F-014)'
+		});
+		return facts;
+	}
 	if (c.runMissing === true) {
 		facts.push({
 			kind: 'missing',

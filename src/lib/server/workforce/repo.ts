@@ -1236,14 +1236,30 @@ export interface HiringRunFacts {
 export interface HiringCeremony {
 	/** `interview_run:…` when the thread has a run, else `event:<role_event id>` (a singleton). */
 	key: string;
-	/** The joined run, or null — see {@link runMissing} for WHY it is null. */
+	/** The joined run, or null — see {@link runMissing} / {@link runUnfetched} for WHY it is null. */
 	run: HiringRunFacts | null;
 	/**
 	 * TRUE when the events pointed at a run that no longer resolves (deleted / dangling pointer).
 	 * Distinguishes "this ceremony has no run" (an op like `staffed` that never had one) from
 	 * "the run it named is GONE" — two different truths that must not render identically.
+	 *
+	 * MUTUALLY EXCLUSIVE with {@link runUnfetched}: a pointer we never ASKED about cannot be
+	 * reported as one that failed to resolve.
 	 */
 	runMissing: boolean;
+	/**
+	 * TRUE when the pointer is a well-formed `interview_run:…` that this read deliberately did NOT
+	 * hydrate because the per-read hydration cap ({@link HIRING_RUN_FETCH_CAP}) was already full.
+	 *
+	 * WHY THIS EXISTS (the defect it closes). The cap used to drop the surplus pointers silently:
+	 * `if (runIds.length < CAP) runIds.push(p)` and nothing else. Every dropped ceremony then fell
+	 * into the `runMissing` branch and rendered the chip `run not found` — an HONEST state produced
+	 * by a DISHONEST cause, which is worse than either alone. The operator reads a data-integrity
+	 * problem ("the ledger points at runs that no longer exist") where the only fact is that this
+	 * one read stopped fetching. Cap pressure and dangling pointers are different news and must not
+	 * share a chip (F-008).
+	 */
+	runUnfetched: boolean;
 	/** The role the ceremony was about (raw link + the joined identity; any may be null). */
 	role: string | null;
 	role_slug: string | null;
@@ -1258,20 +1274,65 @@ export interface HiringCeremony {
 	isRetry: boolean;
 }
 
+/**
+ * How much of the run-hydration budget this read spent, so the SURFACE can disclose a cap it hit
+ * instead of letting the shortfall masquerade as missing data.
+ *
+ * Every field describes THE SAME set — the distinct, well-formed `interview_run:…` pointers in the
+ * event window — and each is named separately rather than folded into an "N of M" whose numerator
+ * a reader has to guess at (the /claude-code `fleetCollapsedSummary` inversion, F-008).
+ */
+export interface HiringRunFetch {
+	/** Distinct well-formed run pointers seen across the window. */
+	pointers: number;
+	/**
+	 * How many of those this read included in its point query (≤ {@link cap}). "Asked about", not
+	 * "came back": a pointer whose id is malformed is asked about and still resolves to nothing,
+	 * and that is a genuine `runMissing` — the count deliberately does not paper over it.
+	 */
+	hydrated: number;
+	/** The per-read hydration cap in force (F-014 — bounded, never a scan). */
+	cap: number;
+	/** `pointers - hydrated` — how many ceremonies carry a run this read never asked about. */
+	unfetched: number;
+	/** TRUE iff `unfetched > 0`. The one flag the surface branches on. */
+	capped: boolean;
+}
+
 /** The whole hiring feed: threads + the honest totals the surface discloses. */
 export interface HiringActivity {
 	/** Ceremony threads, newest-first. */
 	ceremonies: HiringCeremony[];
 	/** How many raw ledger events were folded (the pre-grouping count). */
 	totalEvents: number;
-	/** How many ceremonies rest on a BROKEN run (§13) — surfaced, never silently dropped. */
+	/**
+	 * How many ceremonies rest on a BROKEN run (§13) — surfaced, never silently dropped.
+	 *
+	 * SCOPE, STATED: this is derived from JOINED run facts, so under cap pressure
+	 * ({@link runFetch}.capped) it counts only ceremonies whose run was fetched. A ceremony
+	 * flagged `runUnfetched` is neither counted here nor hidden by the broken-run filter — it
+	 * stays VISIBLE and says why. The surface discloses the cap alongside this number for exactly
+	 * that reason; an undisclosed cap would make this a count of a different set again.
+	 */
 	erroredCount: number;
-	/** How many ceremonies are auto-retries of an earlier run. */
+	/** How many ceremonies are auto-retries of an earlier run. Same cap scope as {@link erroredCount}. */
 	retryCount: number;
+	/** The run-hydration budget this read spent — see {@link HiringRunFetch}. */
+	runFetch: HiringRunFetch;
 }
 
 /** Max interview_run rows hydrated for one feed read (F-014 — bounded, never a scan). */
-const HIRING_RUN_FETCH_CAP = 200;
+export const HIRING_RUN_FETCH_CAP = 200;
+
+/** Options for {@link listHiringActivity}. */
+export interface HiringActivityOptions {
+	/**
+	 * Override the run-hydration cap, clamped to [1, {@link HIRING_RUN_FETCH_CAP}]. Exists so the
+	 * cap-pressure path can be exercised against a REAL SurrealDB without seeding 200+ runs; the
+	 * bound itself can only ever be tightened, never raised past the F-014 ceiling.
+	 */
+	runFetchCap?: number;
+}
 
 /** A finite number, or null. A missing/NaN count is UNKNOWN, never silently 0 (F-008). */
 function numOrNull(v: unknown): number | null {
@@ -1357,21 +1418,44 @@ function isRunPointer(pointer: string | null): pointer is string {
  *                      A fault in either query PROPAGATES to the page-level catch — a local
  *                      best-effort catch here would render an empty feed on a healthy-looking
  *                      page, which is exactly the defect the F-020 sweep exists to prevent.
+ *   • CAP PRESSURE   — more distinct run pointers than the hydration cap allows. The surplus
+ *                      pointers are marked `runUnfetched` (NOT `runMissing` — see the field doc)
+ *                      and the shortfall is reported in `runFetch`, so the operator reads "this
+ *                      read stopped fetching" rather than "these runs are gone".
  */
-export async function listHiringActivity(db: Db, limit = 60): Promise<HiringActivity> {
+export async function listHiringActivity(
+	db: Db,
+	limit = 60,
+	opts: HiringActivityOptions = {}
+): Promise<HiringActivity> {
+	// The cap can only be TIGHTENED from the F-014 ceiling — a caller cannot widen the bound.
+	const cap =
+		typeof opts.runFetchCap === 'number' && Number.isFinite(opts.runFetchCap)
+			? Math.min(Math.max(Math.floor(opts.runFetchCap), 1), HIRING_RUN_FETCH_CAP)
+			: HIRING_RUN_FETCH_CAP;
 	const events = await listRecentRoleEvents(db, limit, HIRE_LIFECYCLE_OPS);
 	if (events.length === 0) {
-		return { ceremonies: [], totalEvents: 0, erroredCount: 0, retryCount: 0 };
+		return {
+			ceremonies: [],
+			totalEvents: 0,
+			erroredCount: 0,
+			retryCount: 0,
+			runFetch: { pointers: 0, hydrated: 0, cap, unfetched: 0, capped: false }
+		};
 	}
 
-	// Distinct interview_run pointers across the window → one bounded point read.
+	// Distinct interview_run pointers across the window → one bounded point read. The pointers
+	// PAST the cap are not dropped on the floor: they are remembered so the ceremony that carries
+	// one can say "not fetched" instead of inheriting the "not found" chip.
 	const runIds: string[] = [];
+	const unfetchedPointers = new Set<string>();
 	const seenRun = new Set<string>();
 	for (const ev of events) {
 		const p = ceremonyPointer(ev.detail);
 		if (!isRunPointer(p) || seenRun.has(p)) continue;
 		seenRun.add(p);
-		if (runIds.length < HIRING_RUN_FETCH_CAP) runIds.push(p);
+		if (runIds.length < cap) runIds.push(p);
+		else unfetchedPointers.add(p);
 	}
 
 	const runById = new Map<string, HiringRunFacts>();
@@ -1415,12 +1499,17 @@ export async function listHiringActivity(db: Db, limit = 60): Promise<HiringActi
 			continue;
 		}
 		const run = isRunPointer(pointer) ? (runById.get(pointer) ?? null) : null;
+		// A pointer past the hydration cap was never QUERIED, so its null run says nothing about
+		// whether the row exists. It gets its own flag; `runMissing` stays reserved for a pointer
+		// we DID ask about and that genuinely did not come back.
+		const unfetched = isRunPointer(pointer) && unfetchedPointers.has(pointer);
 		byKey.set(key, {
 			key,
 			run,
 			// Only an interview_run pointer can be "missing" — a `decision_brief:` ref was never
 			// expected to hydrate into run facts, so it must not be reported as a broken link.
-			runMissing: isRunPointer(pointer) && run == null,
+			runMissing: isRunPointer(pointer) && !unfetched && run == null,
+			runUnfetched: unfetched,
 			role: ev.role ?? null,
 			role_slug: ev.role_slug,
 			role_name: ev.role_name,
@@ -1436,7 +1525,14 @@ export async function listHiringActivity(db: Db, limit = 60): Promise<HiringActi
 		ceremonies,
 		totalEvents: events.length,
 		erroredCount: ceremonies.filter((c) => c.errored).length,
-		retryCount: ceremonies.filter((c) => c.isRetry).length
+		retryCount: ceremonies.filter((c) => c.isRetry).length,
+		runFetch: {
+			pointers: seenRun.size,
+			hydrated: runIds.length,
+			cap,
+			unfetched: unfetchedPointers.size,
+			capped: unfetchedPointers.size > 0
+		}
 	};
 }
 

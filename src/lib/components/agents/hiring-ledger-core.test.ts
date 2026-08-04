@@ -12,6 +12,7 @@ import {
 	ceremonyFacts,
 	filterCeremonies,
 	groupHiringCeremonies,
+	runFetchNotice,
 	type HiringCeremonyLike
 } from './hiring-ledger-core';
 import {
@@ -283,6 +284,29 @@ describe('ceremonyFacts — every stated fact traces to a real column', () => {
 		expect(facts[0].text).toBe('run not found');
 	});
 
+	// ── DEFECT #1: an honest state produced by a dishonest cause ─────────────────────
+	it('a CAPPED-OUT pointer says "not fetched" — never "not found"', () => {
+		const facts = ceremonyFacts(ceremony({ run: null, runUnfetched: true, runMissing: false }));
+		expect(facts).toHaveLength(1);
+		expect(facts[0].kind).toBe('unfetched');
+		expect(facts[0].text).toBe('run details not fetched');
+		// THE REGRESSION GUARD: the words that reported a data-integrity fault must not appear.
+		expect(facts[0].text).not.toContain('not found');
+		expect(facts[0].detail).toMatch(/never queried/);
+	});
+
+	it('if a read ever set BOTH flags, "not fetched" wins — it is the claim we can stand behind', () => {
+		const facts = ceremonyFacts(ceremony({ run: null, runUnfetched: true, runMissing: true }));
+		expect(facts.map((f) => f.kind)).toEqual(['unfetched']);
+	});
+
+	it('runUnfetched:false leaves every other path byte-identical (no accidental widening)', () => {
+		expect(ceremonyFacts(ceremony({ run: null, runMissing: true, runUnfetched: false }))).toEqual(
+			ceremonyFacts(ceremony({ run: null, runMissing: true }))
+		);
+		expect(ceremonyFacts(ceremony({ runUnfetched: false }))).toEqual(ceremonyFacts(ceremony()));
+	});
+
 	// ── Shadow paths ──────────────────────────────────────────────────────────────
 	it('nil ceremony → [] (never a row of placeholder chips)', () => {
 		expect(ceremonyFacts(null)).toEqual([]);
@@ -359,5 +383,54 @@ describe('ceremonyCountLabel', () => {
 		const label = ceremonyCountLabel(many(9), 2);
 		expect(label.text).toBe('9 ceremonies');
 		expect(label.detail).toMatch(/not available/);
+	});
+});
+
+// ── runFetchNotice — DEFECT #1's surfaced half ───────────────────────────────────────────
+describe('runFetchNotice', () => {
+	const fetch = (over: Partial<Parameters<typeof runFetchNotice>[0]> = {}) => ({
+		pointers: 213,
+		hydrated: 200,
+		cap: 200,
+		unfetched: 13,
+		capped: true,
+		...over
+	});
+
+	it('states each number separately and calls the cap a BOUND, not missing data', () => {
+		const note = runFetchNotice(fetch())!;
+		expect(note).toContain('200 of 213');
+		expect(note).toContain('13 ceremonies');
+		expect(note).toContain('cap of 200');
+		expect(note).toContain('not missing data');
+		// It must also disclose that the broken-run count only covers the fetched subset —
+		// otherwise the fix for one "count of a different set" spawns another.
+		expect(note).toMatch(/broken-run count covers only the fetched/);
+	});
+
+	it('singular grammar on a shortfall of one', () => {
+		expect(runFetchNotice(fetch({ pointers: 201, hydrated: 200, unfetched: 1 }))).toContain(
+			'1 ceremony'
+		);
+	});
+
+	// ── Shadow paths ───────────────────────────────────────────────────────────────
+	it('NOT capped → null (no note at all, never a reassuring "nothing was truncated")', () => {
+		expect(runFetchNotice(fetch({ capped: false, unfetched: 0 }))).toBeNull();
+	});
+
+	it('nil / non-object input → null', () => {
+		expect(runFetchNotice(null)).toBeNull();
+		expect(runFetchNotice(undefined)).toBeNull();
+	});
+
+	it('capped:true with an unusable shortfall recomputes, then gives up rather than lie', () => {
+		// unfetched missing but the pair still implies a real shortfall → recomputed.
+		expect(runFetchNotice(fetch({ unfetched: 0, pointers: 210, hydrated: 200 }))).toContain(
+			'10 ceremonies'
+		);
+		// Nothing adds up (a read model contradicting itself) → no note, rather than "0 ceremonies".
+		expect(runFetchNotice(fetch({ unfetched: 0, pointers: 5, hydrated: 200 }))).toBeNull();
+		expect(runFetchNotice(fetch({ unfetched: -4, pointers: 0, hydrated: 0 }))).toBeNull();
 	});
 });

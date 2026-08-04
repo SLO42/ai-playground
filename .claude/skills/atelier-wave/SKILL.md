@@ -19,7 +19,8 @@ every trap below has cost a full re-run.
 ## Args (shape)
 ```js
 { waveName, tasks: [{ id, title, build, redTeam?, tier? }],
-  commonExtra?, maxFixAttempts? /*2*/, redTeamAll?, model?, models?, pushAtEnd? /*true*/ }
+  commonExtra?, maxFixAttempts? /*2*/, redTeamAll?, model?, models?, pushAtEnd? /*true*/,
+  stopOnAnyRed? /*false*/ }
 ```
 Per task: BUILD → independent review → in-script fix-loop (`MAX_FIX=2`, no main-thread round-trip)
 → verdict-artifact gate → red-team second pass on `redTeam`/`redTeamAll` → commit on green.
@@ -56,6 +57,33 @@ node --test .claude/workflows/v2-wave.test.mjs
   never resume a cache from a retired model.
 - **`node --test` the template against REAL past verdict/deviation texts** before adding any new
   verdict-field regex (F-019) — substring presence is never intent; only position + convention is.
+- **The build gate is RELATIVE on tests, ABSOLUTE on everything else — `buildStop(b, waveArgs)`.**
+  `nonTestGatesPassed:false` (build/lint/svelte-check) always stops. The test suite is judged against
+  the baseline the builder MEASURED and reported in the required `suite` field
+  (`{baselineFailed, afterFailed, baselineSource}`): `afterFailed <= baselineFailed` proceeds to
+  review, worse stops, and **unmeasured also stops** (the honesty is the number, not a flag). This
+  replaced a `verifyPassed===false` check that could not tell "I broke the gate" from "the gate was
+  already red when I arrived" — it once hard-stopped a wave over a pre-existing red suite and left 5
+  good committed commits unreviewed. Pass `stopOnAnyRed: true` for a wave that must land on a green
+  tip.
+
+## Mutation-proof discipline (F-058 — 2nd occurrence, escalated here)
+A mutation proof is the right way to show a guard/test actually bites: break the thing deliberately,
+confirm the test fails **by name**, revert. The trap is the revert.
+
+**Never `git checkout -- <file>` a file that carries uncommitted work.** It restores from the
+index/HEAD and discards *every* unstaged change in that file — your deliberate mutation AND the real
+fix sitting next to it. No reflog, no stash, no undo. Two agents lost work to this in one week, in
+two different worktrees. Do one of these instead:
+
+1. **Commit the real fix first**, then mutate → prove → revert (the checkout is safe: the fix is in HEAD).
+2. **Mutate a COPY** — copy the file and its test to a scratch dir, mutate and run the test *there*,
+   delete the copy. The working tree is never touched. (This is how the `buildStop` proofs were run.)
+3. **Undo the mutation by hand** with the same editing tool that made it.
+
+Why it matters more than the rework: the unlucky version ships a **no-op fix while every test
+passes** — the tests were written against a fix that no longer exists, so they pass for the wrong
+reason. Build/test/lint/svelte-check cannot see it.
 
 ## Recovery — `StructuredOutput retry cap` host crash (F-051)
 The host can die at a schema step with `StructuredOutput retry cap (5) exceeded` AFTER each task's

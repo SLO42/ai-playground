@@ -91,6 +91,17 @@ export const DRAIN_STAGES = [
 	'post_task',
 	/** post-task reported a mid-run divergence — the terminal task write did NOT land. */
 	'post_task_divergence',
+	/**
+	 * PCG-1: the PRE-COMMIT GATE came back RED — the project's build/lint/typecheck/test failed on
+	 * the agent's work (or could not be run at all). Unlike most stages this is NOT a swallowed
+	 * infrastructure fault: it is a DELIBERATE refusal, recorded with absorbed:false because it
+	 * changes the verdict — the task lands `failed` and the session branch is preserved rather than
+	 * merged. It belongs in the ledger because "why is my change not on the project branch" must be
+	 * answerable from the same surface as every other named drain outcome.
+	 */
+	'pre_commit_gate',
+	/** PCG-1: the `review` fork's operator escalation threw (a review request that vanished). */
+	'review_fork',
 	/** #runItem: the GAME-VERIFY step threw (task stays done — a fix signal, not a hard fail). */
 	'game_verify',
 	/** #runItem: WI-3 merge-back / worktree teardown threw (committed work stays on its branch). */
@@ -121,6 +132,8 @@ export const DRAIN_STAGE_LABELS: Record<DrainStage, string> = {
 	task_transition: 'moving the task to in-progress',
 	post_task: 'committing and testing after the run',
 	post_task_divergence: 'writing the task result after the run',
+	pre_commit_gate: 'checking the work builds and passes tests before it lands',
+	review_fork: 'requesting a code review',
 	game_verify: 'verifying the build by running the game',
 	merge_back: 'merging the session branch back',
 	heartbeat: 'writing the final task status',

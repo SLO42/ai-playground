@@ -46,7 +46,11 @@ import { setStatus, resetStuckTaskToFailed, resetStuckTaskToDone } from '../task
 import { writeAgentEvent } from '../analytics/events';
 import { Semaphore } from './semaphore';
 import { runPostTask, resolveTestCommand, type CommandRunner } from './post-task';
-import { mergeBackWorktree, type CommandRunner as GitRunner } from '../sessions/merge-back';
+import {
+	mergeBackWorktree,
+	type CommandRunner as GitRunner,
+	type SessionExitState
+} from '../sessions/merge-back';
 import { runGameVerifyStep, type GameVerifyRunner } from './game-verify-step';
 import {
 	claimNext,
@@ -132,6 +136,27 @@ export interface StubRoute {
 /** The route seam: maps a triggering task → a resolved spawn plan. Sync (degenerate stub /
  *  test) or async (production resolveRoute — content-dependent + writes the routing_event). */
 export type RouteResolver = (taskId: string, projectId: string) => StubRoute | Promise<StubRoute>;
+
+/**
+ * PCG-1 — what a TRIGGERED review withholds. This is the "the review outcome must actually gate
+ * something" knob, and each value is a deliberate trade, not a preference:
+ *
+ *   • 'never'      — the review work_item is enqueued and visible, but the merge proceeds. The
+ *                    decision gates nothing. Present for a project that wants the signal only.
+ *   • 'unverified' — THE SHIPPED DEFAULT. A large change is withheld from the project branch ONLY
+ *                    when the pre-commit gate could not actually verify anything (status
+ *                    'skipped': no build/lint/typecheck/test target). That is precisely the case
+ *                    the operator's finding is about — a big change landing with NEITHER an
+ *                    automated gate NOR a human review — and it CANNOT wedge a healthy project,
+ *                    because any project with a real build/test target verifies and merges as
+ *                    before. Nothing is lost: the branch + worktree are preserved with an honest
+ *                    note and the queued review is the operator's actionable surface.
+ *   • 'always'     — every triggered review withholds the merge. Correct for a repo that wants a
+ *                    human in the loop on every large change, and NOT the default because with no
+ *                    review RUNNER armed (see the deferred note in boot.ts) the release from that
+ *                    hold is an operator action, so it would stall an unattended run.
+ */
+export type ReviewHoldPolicy = 'never' | 'unverified' | 'always';
 
 export interface OrchestratorOptions {
 	db: Db;
@@ -232,6 +257,26 @@ export interface OrchestratorOptions {
 		runner?: CommandRunner;
 		/** Auto-enqueue a follow_up when the run succeeded but tests failed (default true). */
 		followUpOnTestFail?: boolean;
+		/**
+		 * PCG-1 — THE PRE-COMMIT GATE. Runs the project's build/lint/typecheck/test BEFORE the
+		 * task's terminal transition; a RED gate lands the task `failed` and makes this drain
+		 * REFUSE THE MERGE (the branch is preserved for inspection — see pre-commit-gate.ts).
+		 * Absent/false ⇒ never runs (byte-identical to the pre-PCG-1 drain).
+		 */
+		preCommitGate?: boolean;
+		/**
+		 * PCG-1 — the (previously caller-less) review capability. When enabled, a gate-green change
+		 * that produced a real commit is measured and a large one enqueues EXACTLY ONE `review`
+		 * work_item through the EXISTING maybeEnqueueReview (F-055). `holdMergeBack` decides what
+		 * that decision GATES — see {@link ReviewHoldPolicy}.
+		 */
+		review?: {
+			enabled: boolean;
+			/** Files-changed threshold; >= this triggers a review. Default 5. */
+			threshold?: number;
+			/** What a triggered review withholds. Default 'unverified'. */
+			holdMergeBack?: ReviewHoldPolicy;
+		};
 	};
 	/**
 	 * WI-3 (WORKSPACE-ISOLATION-SPEC) — merge-back + teardown for per-session WRITE worktrees.
@@ -1065,9 +1110,79 @@ export class Orchestrator {
 			return;
 		}
 
+		// PCG-1 — the `review` work_item fork. This MUST sit before the task-spawn path, and it is a
+		// prerequisite of wiring maybeEnqueueReview at all: a `review` item carries `payload.taskId`
+		// + `payload.projectId`, so WITHOUT this fork it would fall straight through to the task-spawn
+		// path below and RE-SPAWN the very task it was created to review — burning a full session and
+		// re-running the work. (That latent trap is a large part of why the review capability sat with
+		// zero callers.) The fork mirrors memory_review/hire_request: same claim-token, same D-021 cap,
+		// same stale-GC — no new uncapped path.
+		//
+		// It deliberately spawns NOTHING. There is no automated reviewer armed (arming a new spawn
+		// class is out of scope), so the honest thing this item can do is ESCALATE: record a named,
+		// operator-facing `escalation` event carrying the task, the session, the measured footprint
+		// and the reason, and complete. The session branch that produced the change is preserved by
+		// merge-back when the hold policy says so, which is what the operator actually reviews.
+		if (workType === 'review') {
+			let reviewOk = false;
+			try {
+				await writeAgentEvent(this.#db, {
+					type: 'escalation',
+					session: item.sessionId ?? String(item.payload.sessionId ?? ''),
+					project: item.projectId ?? String(item.payload.projectId ?? ''),
+					detail: {
+						reason: 'code-review-requested',
+						taskId: String(item.payload.taskId ?? ''),
+						changed_files: item.payload.changedFiles ?? null,
+						trigger: item.payload.reason ?? null,
+						// F-008: say plainly that nothing reviewed this. A reader must never infer from
+						// a `done` work_item that an automated review happened.
+						status: 'awaiting operator — no automated reviewer is armed',
+						by: 'orchestrator'
+					}
+				});
+				reviewOk = true;
+			} catch (err) {
+				console.warn(
+					`[orchestrator] review ${item.id} escalation failed (best-effort, item marked failed): ${(err as Error).message}`
+				);
+				// DRAIN LEDGER: a review request that vanished is exactly the invisible-failure class —
+				// the operator would never learn a large change wanted their eyes. absorbed:false.
+				await recordDrainFault(this.#db, {
+					stage: 'review_fork',
+					error: err,
+					taskId: String(item.payload.taskId ?? '') || undefined,
+					projectId: item.projectId ?? (String(item.payload.projectId ?? '') || undefined),
+					sessionId: item.sessionId,
+					workItemId: item.id,
+					workType,
+					absorbed: false,
+					context: {
+						consequence: 'the code-review request was NOT surfaced to the operator'
+					}
+				});
+			} finally {
+				await this.#completeItem(item, reviewOk ? 'done' : 'failed', workType);
+				// `review` IS a CWD_SPAWNING_WORK_TYPES member, so the drain BUMPED the per-project
+				// in-flight counter when it claimed this item. Unlike memory_review/hire_request
+				// (gatedProjectId === '' → a no-op drop), this fork must drop it explicitly or the
+				// counter leaks and permanently wedges the project at its perProject cap (F-014).
+				this.#dropProject(gatedProjectId);
+				permit.release();
+				void this.drain();
+			}
+			return;
+		}
+
 		const taskId = String(item.payload.taskId ?? '');
 		const projectId = String(item.payload.projectId ?? '');
 		let ok = false;
+		// PCG-1 — the two reasons a SUCCESSFUL session's branch still must not be fast-forwarded.
+		// Declared at drain scope (not inside the post-task block) because the merge-back call that
+		// honors them lives further down, outside it. Both default false, so a drain with the gate
+		// and review wiring off behaves exactly as before (F-053).
+		let gateFailed = false;
+		let reviewHeld = false;
 		// CG-2 park flag: set when launchSession REFUSES on the token budget (the narrow race past the
 		// drain gate). A parked item is RELEASED back to pending (re-drains when spend frees) — it must
 		// NOT be completed-failed nor its task burned-to-failed in the finally (that would drop the work).
@@ -1327,13 +1442,86 @@ export class Orchestrator {
 							cwd,
 							commitMessage: `chore(agent): task ${taskId}`,
 							testCommand,
+							// PCG-1: the gate resolves the build/lint/typecheck steps from this.
+							buildTool: project?.build_tool,
 							runOk: res.status === 'done'
 						},
 						{
 							run: this.#postTask.runner,
-							followUpOnTestFail: this.#postTask.followUpOnTestFail
+							followUpOnTestFail: this.#postTask.followUpOnTestFail,
+							// PCG-1 — both are OPT-IN and fall through byte-identical when unset (F-053).
+							// They share the post-task runner so a test drives gate, review and git from
+							// ONE scripted seam (no live process).
+							...(this.#postTask.preCommitGate
+								? { gate: { enabled: true, runner: this.#postTask.runner } }
+								: {}),
+							...(this.#postTask.review?.enabled
+								? {
+										review: {
+											enabled: true,
+											threshold: this.#postTask.review.threshold,
+											runner: this.#postTask.runner
+										}
+									}
+								: {})
 						}
 					);
+					// PCG-1 — HONOR THE GATE. A red gate is the one thing that can turn a SUCCESSFUL
+					// session into a non-`done` verdict. `ok=false` is what makes the merge-back below
+					// pass a preserve state instead of 'done', so the unverified branch is NOT
+					// fast-forwarded into the project branch. runPostTask already landed the task
+					// `failed` and wrote the full gate record onto the completion event; here we
+					// additionally name it in the DRAIN LEDGER (absorbed:false — this DID change the
+					// verdict), because "my change is missing from main" must have an answer the
+					// operator can find without reading a log.
+					gateFailed = ptRes.gate?.status === 'failed';
+					if (gateFailed) {
+						ok = false;
+						console.warn(
+							`[orchestrator] pre-commit gate FAILED for task ${taskId} (work committed to the session branch and PRESERVED, NOT merged): ${ptRes.gate?.summary}`
+						);
+						await recordDrainFault(this.#db, {
+							stage: 'pre_commit_gate',
+							error: ptRes.gate?.summary ?? 'pre-commit gate failed',
+							taskId,
+							projectId,
+							sessionId: res.sessionId,
+							workItemId: item.id,
+							workType,
+							absorbed: false,
+							context: {
+								consequence:
+									'the task is marked FAILED and the session branch is PRESERVED for inspection — the work was NOT merged into the project branch',
+								failed_at: ptRes.gate?.failedAt ?? null,
+								errored: ptRes.gate?.errored ?? false,
+								steps: (ptRes.gate?.steps ?? []).map((s) => ({
+									name: s.name,
+									command: s.command,
+									ran: s.ran,
+									ok: s.ok,
+									code: s.code ?? null,
+									detail: s.detail
+								}))
+							}
+						});
+					}
+					// PCG-1 — THE REVIEW HOLD. `triggered` means the change was big enough to warrant a
+					// review and one is queued. Whether that WITHHOLDS the merge is the configured
+					// policy (see ReviewHoldPolicy): 'unverified' — the shipped default — holds only
+					// when the gate verified NOTHING, i.e. the change has neither an automated gate nor
+					// a review behind it. The work is never lost: merge-back preserves the branch and
+					// the queued review is the operator's surface.
+					const holdPolicy = this.#postTask.review?.holdMergeBack ?? 'unverified';
+					reviewHeld =
+						!gateFailed &&
+						ptRes.review?.triggered === true &&
+						(holdPolicy === 'always' ||
+							(holdPolicy === 'unverified' && ptRes.gate?.status === 'skipped'));
+					if (reviewHeld) {
+						console.info(
+							`[orchestrator] merge HELD for review on task ${taskId}: ${ptRes.review?.changedFiles} files changed, gate ${ptRes.gate?.status ?? 'off'}, policy '${holdPolicy}' (branch preserved; review work_item ${ptRes.review?.workItemId ?? '(already queued)'})`
+						);
+					}
 					// HB-H3 — the MID-RUN divergence close. The HB-H2 gate above only catches a
 					// stale CLAIM pre-state; a concurrent operator/PM status move can also land
 					// DURING the session run, AFTER preStateEligible was captured. runPostTask now
@@ -1347,7 +1535,10 @@ export class Orchestrator {
 						console.warn(
 							`[orchestrator] post-task mid-run divergence for task ${taskId} (concurrent status move; work_item marked failed, divergence event recorded): now '${ptRes.taskStatus}'`
 						);
-					} else if (this.#gameVerify?.enabled && res.status === 'done') {
+					} else if (this.#gameVerify?.enabled && res.status === 'done' && !gateFailed) {
+						// PCG-1: `!gateFailed` — never launch the game to verify a build that did not pass
+						// its own gate. It would burn minutes verifying known-red code, and a game-verify
+						// PASS on unmergeable work is exactly the misleading green this wave is closing.
 						// GAME-VERIFY (docs/GAME-VERIFY-SPEC.md) — runs AFTER the build/test gate
 						// (post-task) on a CLEAN-done session, BEFORE the task is considered settled.
 						// GATED: only a project that DECLARES a `game_verify` harness launches anything
@@ -1429,7 +1620,18 @@ export class Orchestrator {
 			// merging. Best-effort (F-014): a merge-back fault is logged and NEVER crashes the drain or
 			// changes the work_item verdict — any committed work stays on its branch.
 			if (this.#mergeBack?.enabled) {
-				await this.#mergeBackSession(res.sessionId, projectId, ok ? 'done' : 'failed').catch(
+				// PCG-1 — THE MERGE DECISION, routed through the EXISTING merge-back function with an
+				// exit state it already understands (F-055: no second "preserve the branch" path). The
+				// order matters: a red gate is reported as 'gate-failed' even if a review was also
+				// pending, because the gate is the stronger and more actionable reason.
+				const exitState: SessionExitState = gateFailed
+					? 'gate-failed'
+					: !ok
+						? 'failed'
+						: reviewHeld
+							? 'review-held'
+							: 'done';
+				await this.#mergeBackSession(res.sessionId, projectId, exitState).catch(
 					async (mbErr) => {
 						console.warn(
 							`[orchestrator] merge-back skipped for session ${res.sessionId} (best-effort; committed work stays on its branch): ${(mbErr as Error).message}`
@@ -1821,7 +2023,7 @@ export class Orchestrator {
 	async #mergeBackSession(
 		sessionId: string,
 		projectId: string,
-		exitState: 'done' | 'failed'
+		exitState: SessionExitState
 	): Promise<void> {
 		// Read the WI-2 provenance off the just-finished session row (the same read post-task used
 		// for its commit cwd). Honest absent (option<string> NONE on a READ/non-git session) → no

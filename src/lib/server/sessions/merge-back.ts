@@ -146,8 +146,21 @@ async function withMergeLock<T>(projectRoot: string, fn: () => Promise<T>): Prom
 
 // ── Inputs / outputs ──────────────────────────────────────────────────────────────────────
 
-/** The session's terminal exit state — decides merge (done) vs preserve (everything else). */
-export type SessionExitState = 'done' | 'failed' | 'cancelled';
+/**
+ * The session's terminal exit state — decides merge (done) vs preserve (EVERYTHING else).
+ *
+ * PCG-1 added two states that are NOT session failures but must still withhold the merge. They
+ * are values of THIS type, handled by the SAME `exitState !== 'done'` preserve branch, precisely
+ * so no second "preserve the branch" path appears anywhere (F-055 — a gate bypassed via a new
+ * call path is a logged failure here). Only the stamped NOTE differs, because an operator reading
+ * "session failed" about a session that succeeded but failed its gate is a lie (F-008):
+ *   • 'gate-failed'  — the run succeeded, but the pre-commit build/lint/typecheck/test came back
+ *                      RED. The commit is on the branch; it must not reach the project branch.
+ *   • 'review-held'  — the run succeeded and the gate was green, but the change was large enough
+ *                      to warrant a code review and policy says an unreviewed change of this size
+ *                      does not auto-merge.
+ */
+export type SessionExitState = 'done' | 'failed' | 'cancelled' | 'gate-failed' | 'review-held';
 
 export interface MergeBackInput {
 	/** Session record id — the note is stamped here on a preserve, and it identifies the row. */
@@ -241,6 +254,25 @@ export async function removeWorktree(
 	}
 }
 
+/**
+ * The honest, operator-facing reason a branch was preserved instead of merged (PCG-1).
+ *
+ * `failed`/`cancelled` keep their EXACT pre-PCG-1 wording — that string is what the MC-4 surface
+ * and the existing tests read, and changing it would be a silent break. The two new states get
+ * their own wording because "session gate-failed — merge needed" would read as a session crash,
+ * and the whole point of the pre-commit gate is that the operator can tell the difference between
+ * "the agent broke" and "the agent's work did not pass the checks".
+ */
+function preserveReason(exitState: SessionExitState): string {
+	if (exitState === 'gate-failed') {
+		return 'pre-commit gate FAILED — the work is committed here but was NOT merged; inspect this branch';
+	}
+	if (exitState === 'review-held') {
+		return 'held for code review — the change is large and does not auto-merge; a review work_item is queued';
+	}
+	return `session ${exitState}`;
+}
+
 // ── The merge-back ──────────────────────────────────────────────────────────────────────────
 
 /**
@@ -268,16 +300,17 @@ export async function mergeBackWorktree(
 	const teardown =
 		opts.teardown ?? (() => removeWorktree(projectRoot, worktreePath, run));
 
-	// ── Non-done exit (failed / cancelled) → PRESERVE before touching git merge state. ──
-	// The session did not cleanly complete; its branch may carry partial-but-committed work
-	// (F-007 — never discard it). Keep the branch AND the worktree (so a resume re-acquires the
-	// SAME tree), and stamp the honest reason. We do NOT delete or merge anything here.
+	// ── Non-done exit (failed / cancelled / gate-failed / review-held) → PRESERVE before touching ──
+	// git merge state. The session's branch may carry partial-but-committed work, or work that is
+	// complete but not CLEARED to land (F-007 — never discard it either way). Keep the branch AND
+	// the worktree (so a resume/an inspection re-acquires the SAME tree), and stamp the honest
+	// reason. We do NOT delete or merge anything here.
 	if (exitState !== 'done') {
 		// If the branch never materialized (e.g. the session failed before any commit / a non-git
 		// path that fail-closed in WI-2) there is nothing to preserve — honest no-op.
 		const exists = await branchExists(projectRoot, branch, run).catch(() => false);
 		if (!exists) return { kind: 'noop-gone', branch };
-		const note = `work preserved on branch ${branch}; session ${exitState} — merge needed`;
+		const note = `work preserved on branch ${branch}; ${preserveReason(exitState)} — merge needed`;
 		await stampNote(db, sessionId, note);
 		return { kind: 'preserved-incomplete', branch, note };
 	}

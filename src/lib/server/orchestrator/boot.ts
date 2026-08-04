@@ -540,7 +540,34 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 			// a non-zero/absent `test_command` outcome stays a recorded fact on the completion
 			// event, never an auto-enqueued follow_up. (Default in post-task.ts is true — we
 			// explicitly override to false.)
-			followUpOnTestFail: false
+			followUpOnTestFail: false,
+			// PCG-1 — THE PRE-COMMIT GATE, ARMED. This is the 2026-07-26 operator review's only
+			// correctness finding: Atelier committed its autonomous sessions' work and then
+			// fast-forwarded it into the project branch with NO gate — the studio held every managed
+			// project to a Definition of Done it did not apply to itself. With this on, the project's
+			// build/lint/typecheck/test run BEFORE the terminal transition; a RED gate lands the task
+			// `failed`, and merge-back PRESERVES the branch instead of merging it (the work is safe on
+			// the session branch — F-007 — and the full per-step record is on the completion event and
+			// in the drain ledger, F-008). A project with no detectable target is an honest 'skipped',
+			// never a false RED (HB-2), so this cannot wedge a non-JS/.NET project.
+			preCommitGate: true,
+			// PCG-1 — the review capability, WIRED. `maybeEnqueueReview` has been fully built and
+			// tested since TASK 2.8 with ZERO production callers; it now runs after a gate-green
+			// commit and before merge-back. `holdMergeBack:'unverified'` is the deliberate policy:
+			// a large change withholds the merge ONLY when the gate verified nothing at all — a
+			// change with neither an automated gate NOR a review behind it does not silently land.
+			// It cannot stall a healthy project (one with a real build/test target verifies and
+			// merges exactly as before).
+			//
+			// The enqueued `review` work_item is drained by the PCG-1 `review` fork in #runItem, which
+			// ESCALATES it to the operator and spawns nothing (without that fork the item would have
+			// fallen through to the task-spawn path and re-spawned the very task under review).
+			//
+			// DEFERRED, NAMED (not built here): an AUTOMATED reviewer — a review session that reads
+			// the diff, produces a verdict, and RELEASES a hold on a pass. That is a new spawn class,
+			// which this task explicitly forbids arming. Until it exists, the release from a hold is
+			// an operator action, which is why 'always' is opt-in and 'unverified' is the default.
+			review: { enabled: true, holdMergeBack: 'unverified' }
 		},
 		// WI-3 (WORKSPACE-ISOLATION-SPEC) — merge-back + teardown for per-session WRITE worktrees.
 		// A WRITE-class session runs in an isolated per-session worktree (WI-2) and the post-task loop

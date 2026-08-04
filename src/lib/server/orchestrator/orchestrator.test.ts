@@ -672,13 +672,19 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 		}
 	}, 30_000);
 
-	// ── HB-H1 extension — the gate covers EVERY cwd-spawning work type {task_run, review} ────────
+	// ── HB-H1 extension — the per-project gate on cwd-spawning work ─────────────────────────────
 	//
-	// A `review` work_item ALSO runs through launchSession in project.root_path and commits there
-	// (review.ts: "exactly like a task_run"), so a review + a task_run for the SAME project would
-	// re-open the F-046/F-007 same-repo race. Proves the per-project gate now serializes them, never
-	// parks the in-process forks, and still lets two DIFFERENT projects run concurrently.
-	it('perProject=1: a review + a task_run for ONE project → only 1 in flight; the 2nd runs after the 1st completes', async () => {
+	// Two spawning items for the SAME project would re-open the F-046/F-007 same-repo race. Proves
+	// the per-project gate serializes them, never parks the in-process forks, and still lets two
+	// DIFFERENT projects run concurrently.
+	//
+	// PCG-1 NOTE: this pair used to drive one of the two items as a `review` work_item, because
+	// review.ts documented a review as running "through launchSession exactly like a task_run". That
+	// is no longer true and MUST not be: a review item's payload.taskId is the REVIEWED task, so the
+	// task-spawn path would re-spawn the very task under review. `review` is now intercepted by the
+	// #runItem review fork (it escalates to the operator and spawns nothing) — covered by its own
+	// test below, including that it still bumps + DROPS the per-project counter.
+	it('perProject=1: two task_runs for ONE project → only 1 in flight; the 2nd runs after the 1st completes', async () => {
 		await clearQueue();
 		const bus = new EventBus();
 		const backend = gatedBackend();
@@ -696,20 +702,15 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 		orch.start();
 		try {
 			const a = await createTask(db, { project: projectId, title: 'cwd A', description: 'task_run' });
-			const b = await createTask(db, { project: projectId, title: 'cwd B', description: 'review' });
-			// A task_run (via enqueueTask) + a review (enqueued directly, the maybeEnqueueReview shape):
-			// both carry taskId+projectId so #runItem runs each through launchSession in the shared cwd.
+			const b = await createTask(db, { project: projectId, title: 'cwd B', description: 'task_run' });
+			// Two cwd-spawning items for the SAME project: both carry taskId+projectId so #runItem
+			// runs each through launchSession in the shared cwd.
 			await orch.enqueueTask(a.id, projectId);
-			await enqueue(db, {
-				workType: 'review',
-				payload: { taskId: b.id, projectId, sessionId: 'session:fake' },
-				projectId,
-				dedupScope: b.id
-			});
+			await orch.enqueueTask(b.id, projectId);
 			await orch.drain();
 
 			// Only ONE of the two cwd-spawning items started despite two ready + 8 free permits — the
-			// per-project cap (1) parked the second REGARDLESS of which type it is (task_run or review).
+			// per-project cap (1) parked the second.
 			await waitFor(() => backend.plans.length >= 1);
 			await backend.gates[0].started;
 			await new Promise((r) => setTimeout(r, 300));
@@ -719,7 +720,7 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 			expect(await countByStatus(db, 'processing')).toBe(1);
 
 			// Release the first — its completion drops the per-project count + re-drains, so the SECOND
-			// cwd-spawning item (the other of {task_run, review}) now claims + spawns.
+			// cwd-spawning item now claims + spawns.
 			backend.gates[0].release();
 			await waitFor(() => backend.plans.length >= 2, 10_000);
 			await backend.gates[1].started;
@@ -802,7 +803,7 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 		}
 	}, 30_000);
 
-	it('perProject=1: a review in project A + a task_run in project B → BOTH run concurrently', async () => {
+	it('perProject=1: a task_run in project A + a task_run in project B → BOTH run concurrently', async () => {
 		await clearQueue();
 		const other = await createProject(db, {
 			slug: 'orch_pp_cwd2',
@@ -824,16 +825,11 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 		});
 		orch.start();
 		try {
-			const a = await createTask(db, { project: projectId, title: 'A review', description: 'review' });
+			const a = await createTask(db, { project: projectId, title: 'A task', description: 'task_run' });
 			const b = await createTask(db, { project: other.id, title: 'B task', description: 'task_run' });
-			// A review for project A + a task_run for project B — DIFFERENT projects, so each gets its
-			// own cwd-spawn slot and both run at once (global maxConcurrent=8 permits it).
-			await enqueue(db, {
-				workType: 'review',
-				payload: { taskId: a.id, projectId, sessionId: 'session:fake' },
-				projectId,
-				dedupScope: a.id
-			});
+			// One cwd-spawning item per project — DIFFERENT projects, so each gets its own cwd-spawn
+			// slot and both run at once (global maxConcurrent=8 permits it).
+			await orch.enqueueTask(a.id, projectId);
 			await orch.enqueueTask(b.id, other.id);
 			await orch.drain();
 
@@ -850,6 +846,74 @@ describe('Orchestrator (event mode, degenerate) — TASK 2.2 VERIFY', () => {
 		} finally {
 			orch.stop();
 			await deleteProject(db, other.id).catch(() => {});
+		}
+	}, 30_000);
+
+	// ── PCG-1 — the `review` work_item fork ──────────────────────────────────────────────────────
+	//
+	// Wiring maybeEnqueueReview means real `review` items now hit the drain. A review item carries
+	// `payload.taskId` = the REVIEWED task, so without a fork the task-spawn path would re-spawn the
+	// very task under review — a full session, redoing the work. This proves the fork intercepts it:
+	// nothing spawns, the operator gets an honest escalation, the item goes terminal (no re-drain
+	// spin), and the per-project in-flight counter it bumped is DROPPED (a leak would wedge the
+	// project at its cap forever — the F-014 class).
+	it('PCG-1: a `review` work_item ESCALATES to the operator and spawns NOTHING (never re-spawns the reviewed task)', async () => {
+		await clearQueue();
+		const bus = new EventBus();
+		const backend = gatedBackend();
+		const runtime = new ClaudeCodeRuntime({ backend });
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 4,
+			perProject: 1,
+			mode: 'manual',
+			route: stubRoute(),
+			acquireWorktree: fakeWt
+		});
+		orch.start();
+		try {
+			const reviewed = await createTask(db, {
+				project: projectId,
+				title: 'a big change',
+				description: 'the task whose change is under review'
+			});
+			await enqueue(db, {
+				workType: 'review',
+				payload: {
+					taskId: reviewed.id,
+					projectId,
+					sessionId: 'session:fake',
+					changedFiles: 7,
+					reason: 'change touched 7 files (>= 5)'
+				},
+				projectId,
+				dedupScope: reviewed.id
+			});
+			await orch.drain();
+			await waitForAsync(async () => (await countByStatus(db, 'done')) >= 1);
+
+			// NOTHING was spawned — no session, no tokens, no re-run of the reviewed task.
+			expect(backend.plans.length).toBe(0);
+			// The item is terminal, so it never re-drains in a loop.
+			expect(await countByStatus(db, 'pending')).toBe(0);
+			expect(await countByStatus(db, 'processing')).toBe(0);
+			// The per-project counter it bumped came back down (no wedge at the cap).
+			await waitForAsync(async () => orch.inFlightFor(projectId) === 0);
+
+			// The operator gets an HONEST escalation naming the task, the size and the fact that no
+			// automated reviewer ran — never a silent `done` that reads like a review happened.
+			const [events] = await db.query<[Array<{ detail: Record<string, unknown> }>]>(
+				`SELECT detail FROM agent_event
+				   WHERE type = "escalation" AND detail.reason = $reason AND detail.taskId = $tid;`,
+				{ reason: 'code-review-requested', tid: reviewed.id }
+			);
+			expect(events.length).toBe(1);
+			expect(events[0].detail.changed_files).toBe(7);
+			expect(String(events[0].detail.status)).toContain('no automated reviewer is armed');
+		} finally {
+			orch.stop();
 		}
 	}, 30_000);
 
@@ -1515,6 +1579,131 @@ describe('WI-3 — merge-back + teardown composed with post-task (real temp git 
 			await deleteProject(db, failedProjectId).catch(() => {});
 			try {
 				rmSync(join(repo2, '..'), { recursive: true, force: true });
+			} catch {
+				/* best effort */
+			}
+		}
+	}, 40_000);
+
+	// ── PCG-1 — THE END-TO-END PROOF: a SUCCESSFUL session whose work fails the gate does NOT land ──
+	//
+	// This is the operator's finding, reproduced against a REAL git repo and a REAL SurrealDB: the
+	// session ends `done`, its work is committed, and the project branch STILL does not advance,
+	// because the pre-commit gate came back red. Git is driven by the real execFile runner (so the
+	// merge decision is genuinely git's); only the GATE commands are scripted, so no build or test
+	// suite is spawned.
+	it('PCG-1: a DONE session whose PRE-COMMIT GATE fails is committed but NOT merged — task failed, branch preserved, fault visible', async () => {
+		await clearQueue();
+		const repo3 = initGitRepo();
+		const baseHead = git(repo3, 'rev-parse', 'main');
+		// build_tool 'npm' makes the gate resolve a build step; the scripted runner below fails it.
+		const proj = await createProject(db, {
+			slug: 'mb_gate_red',
+			name: 'MB Gate Red',
+			root_path: repo3,
+			build_tool: 'npm'
+		});
+		const gateProjectId = proj.id;
+
+		// Real git; every NON-git program (the gate's `npm run build`) comes back RED.
+		const gatedRunner: CommandRunner = async (file, args, opts) =>
+			file === 'git'
+				? gitExecFileRunner(file, args, opts)
+				: { code: 1, stdout: '', stderr: 'src/broken.ts(1,1): error TS2304' };
+
+		const bus = new EventBus();
+		const backend = fileWritingBackend(true, 'gated.txt'); // the SESSION succeeds
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: join(repo3, '.harness-cc') });
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 1,
+			mode: 'manual',
+			route: stubRoute(),
+			postTask: {
+				enabled: true,
+				runner: gatedRunner,
+				followUpOnTestFail: false,
+				preCommitGate: true
+			},
+			mergeBack: { enabled: true, runner: gitExecFileRunner }
+		});
+		try {
+			const task = await createTask(db, {
+				project: gateProjectId,
+				title: 'mb gate red',
+				description: 'a done session whose work does not build must not reach the project branch'
+			});
+			await setStatus(db, task.id, 'ready');
+			await orch.enqueueTask(task.id, gateProjectId);
+			await orch.drain();
+
+			await waitForAsync(async () => backend.plans.length >= 1);
+			// 1. THE TASK DOES NOT REPORT SUCCESS — the session was `done`, the gate says otherwise.
+			await waitForAsync(async () => (await getTask(db, task.id))?.status === 'failed');
+
+			const [sessions] = await db.query<[Array<{ id: unknown; worktree_path?: unknown; worktree_branch?: unknown }>]>(
+				`SELECT id, worktree_path, worktree_branch FROM session WHERE task = $tid;`,
+				{ tid: new StringRecordId(task.id) }
+			);
+			expect(sessions.length).toBe(1);
+			const branch = String(sessions[0].worktree_branch);
+			const worktreePath = String(sessions[0].worktree_path);
+
+			// 2. THE WORK WAS PRESERVED, NOT MERGED. Wait for the preserve advisory so we do not
+			//    race-read the note before merge-back stamps it.
+			await waitForAsync(async () => {
+				const [rows] = await db.query<[Array<{ note?: unknown }>]>(
+					`SELECT note FROM session WHERE id = $sid;`,
+					{ sid: new StringRecordId(String(sessions[0].id)) }
+				);
+				return rows[0]?.note != null && String(rows[0].note).includes('preserved on branch');
+			});
+			// THE HEADLINE ASSERTION: the project branch did not move. Unverified work did not land.
+			expect(git(repo3, 'rev-parse', 'main')).toBe(baseHead);
+			// …and the work is NOT lost — it is committed on the session branch, tree intact (F-007).
+			expect(existsSync(worktreePath)).toBe(true);
+			expect(() => git(repo3, 'rev-parse', '--verify', branch)).not.toThrow();
+			expect(git(repo3, 'rev-parse', branch)).not.toBe(baseHead); // a real commit is sitting there
+
+			// 3. THE FAILURE IS VISIBLE — the honest reason, not "session failed".
+			const [noteRows] = await db.query<[Array<{ note?: unknown }>]>(
+				`SELECT note FROM session WHERE id = $sid;`,
+				{ sid: new StringRecordId(String(sessions[0].id)) }
+			);
+			expect(String(noteRows[0].note)).toContain('pre-commit gate FAILED');
+
+			// …and in the drain ledger, with the full per-step record an operator can act on.
+			const [faults] = await db.query<[Array<{ detail: Record<string, unknown> }>]>(
+				`SELECT detail FROM agent_event
+				   WHERE type = "error" AND detail.stage = $stage AND detail.taskId = $tid;`,
+				{ stage: 'pre_commit_gate', tid: task.id }
+			);
+			expect(faults.length).toBeGreaterThanOrEqual(1);
+			// recordDrainFault SPREADS `context` into the detail, so the extra keys are top-level.
+			const fault = faults[0].detail as {
+				absorbed?: boolean;
+				error?: string;
+				consequence?: string;
+				failed_at?: string;
+				steps?: Array<{ name: string; ran: boolean; ok: boolean; detail: string }>;
+			};
+			expect(fault.absorbed).toBe(false); // it CHANGED the verdict — not a swallowed fault
+			expect(String(fault.error)).toContain('TS2304'); // the compiler's own words survive
+			expect(String(fault.consequence)).toContain('NOT merged');
+			expect(fault.failed_at).toBe('build');
+			// The full ordered step record is queryable — "which check failed, and what did it say".
+			expect(fault.steps?.map((s) => s.name)).toEqual(['build', 'lint', 'typecheck', 'test']);
+			expect(fault.steps?.find((s) => s.name === 'build')?.detail).toContain('TS2304');
+
+			// 4. The work_item is terminal-failed, so nothing re-drains this forever.
+			expect(await countByStatus(db, 'failed')).toBeGreaterThanOrEqual(1);
+		} finally {
+			orch.stop();
+			await deleteProject(db, gateProjectId).catch(() => {});
+			try {
+				rmSync(join(repo3, '..'), { recursive: true, force: true });
 			} catch {
 				/* best effort */
 			}

@@ -269,6 +269,44 @@ describe('mergeBackWorktree — failed / cancelled session → preserve + note',
 		});
 	}
 
+	// PCG-1 — the two exit states that are NOT session failures but still must not merge. They ride
+	// the SAME preserve branch (F-055: no second "preserve the branch" path), so what is proved here
+	// is that the work survives IDENTICALLY and that the note tells the operator the honest reason —
+	// "session gate-failed" would read as a crash, which is exactly the wrong diagnosis.
+	for (const [exitState, expectNote] of [
+		['gate-failed', 'pre-commit gate FAILED'],
+		['review-held', 'held for code review']
+	] as const) {
+		it(`${exitState}: work preserved for inspection, NOT merged, with an honest note`, async () => {
+			const repo = initRepo();
+			trackParent(repo);
+			const wt = await sessionWithWork(repo, `sess-${exitState}`);
+			const sessionHead = git(repo, 'rev-parse', `atelier/session/sess-${exitState}`);
+			const projHead = git(repo, 'rev-parse', 'main');
+			const { db, notes } = fakeDb();
+
+			const outcome = await mergeBackWorktree(asDb(db), {
+				sessionId: `session:preserve_${exitState.replace('-', '_')}`,
+				projectRoot: repo,
+				worktreePath: wt.cwd,
+				worktreeBranch: `atelier/session/sess-${exitState}`,
+				exitState
+			});
+
+			expect(outcome.kind).toBe('preserved-incomplete');
+			// THE POINT: the project branch did NOT advance — unreviewed/ungated work did not land.
+			expect(git(repo, 'rev-parse', 'main')).toBe(projHead);
+			// AND the work is not lost (F-007): branch + worktree both still there for the operator.
+			expect(git(repo, 'rev-parse', `atelier/session/sess-${exitState}`)).toBe(sessionHead);
+			expect(existsSync(wt.cwd)).toBe(true);
+			expect(notes[0].note).toContain(expectNote);
+			expect(notes[0].note).not.toContain('session gate-failed');
+			expect(notes[0].note).toContain('merge needed');
+
+			await wt.cleanup();
+		});
+	}
+
 	it('failed session that never committed (branch absent) → honest noop-gone, no note', async () => {
 		const repo = initRepo();
 		trackParent(repo);

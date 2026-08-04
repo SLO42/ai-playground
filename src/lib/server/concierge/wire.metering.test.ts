@@ -33,7 +33,8 @@ import {
 	providerToLlmFn,
 	resolveConciergeTurnUsage,
 	fetchWithSignal,
-	__setConciergeLlmTimeoutForTest
+	__setConciergeLlmTimeoutForTest,
+	__setConciergeMeterWriteTimeoutForTest
 } from './wire';
 
 /** A deterministic fake provider: yields the given text, then a `done` chunk with (or without) usage. */
@@ -837,6 +838,114 @@ describe('CG-4-1 — an aborted concierge turn CANCELS its stream, and still met
 		await sleep(200);
 		expect(await latestConciergeErrorRow('cg4-ollama-hang')).toBeUndefined();
 		__setConciergeLlmTimeoutForTest(null);
+	}, 20_000);
+});
+
+// ── CG-4-3 — the turn's TEARDOWN is not sequenced behind a DB write ───────────────────────────────
+//
+// THE DEFECT the CG-4-1 review found still open: `ctrl.abort()` lived in the outer `finally`, i.e.
+// BEHIND `await meterOnce(...)`. That await is a DB write — writeAgentEvent is a bare `db.query`
+// (analytics/events.ts) with no wall-clock bound of its own; only CONNECT is bounded (db/client.ts).
+// So a SurrealDB that accepted the socket and never answered held the cancellation hostage: the drain
+// kept pulling, `chunks` grew without bound, the generator was never finalized, the caller never
+// settled and the budget reservation was never released — the exact leak CG-4-1 exists to close,
+// reachable through the teardown path itself. Every CG-4-1 case above runs against a HEALTHY DB, so
+// none of them could fail on it.
+//
+// A real SurrealDB cannot be made to stall on demand, so these three cases inject a STUB Db that
+// answers normally except on the completion-row CREATE. That is the only way to reproduce the fault;
+// the honesty of what gets WRITTEN stays covered by the real-surreal cases above.
+
+/** A stub Db that answers every query, but handles the completion-row CREATE per `onCreate`. */
+function stubDbWithCreate(onCreate: () => Promise<unknown>): { db: Db; creates: () => number } {
+	let creates = 0;
+	const db = {
+		query: (q: string): Promise<unknown> => {
+			if (/CREATE agent_event/.test(q)) {
+				creates++;
+				return onCreate() as Promise<unknown>;
+			}
+			return Promise.resolve([[{ id: 'stub:row' }]]);
+		}
+	} as unknown as Db;
+	return { db, creates: () => creates };
+}
+
+/** A CREATE that is ACCEPTED and never answered — the stalled-DB shape. */
+const neverAnswers = (): Promise<never> => new Promise<never>(() => {});
+
+describe('CG-4-3 — a stalled metering write cannot hold the turn open', () => {
+	it('TIMEOUT + stalled write: the stream is still cancelled and the generator FINALIZED', async () => {
+		__setConciergeLlmTimeoutForTest(40);
+		__setConciergeMeterWriteTimeoutForTest(80);
+		const { db: stalled, creates } = stubDbWithCreate(neverAnswers);
+		const state = { finalized: false, yields: 0 };
+		const llm = providerToLlmFn(
+			endlessProvider({ text: 'streaming advice', chunkMs: 10, state }),
+			stalled,
+			'claude',
+			'cg4-stalled-meter',
+			'opus'
+		);
+
+		const startedAt = Date.now();
+		// The caller IS released — bounded by the turn's bound plus the write's, never by the DB.
+		await expect(llm({ system: 'sys', user: 'q' })).rejects.toThrow(/exceeded 40ms/);
+		expect(Date.now() - startedAt).toBeLessThan(5_000);
+		expect(creates()).toBe(1);
+
+		// THE regression assertion: teardown happened even though the write never answered.
+		expect(await waitUntil(() => state.finalized)).toBe(true);
+		const yieldsAtFinalize = state.yields;
+		await sleep(200);
+		expect(state.yields).toBe(yieldsAtFinalize);
+		expect(state.yields).toBeLessThan(300);
+
+		__setConciergeLlmTimeoutForTest(null);
+		__setConciergeMeterWriteTimeoutForTest(null);
+	}, 20_000);
+
+	it('SUCCESS + stalled write: the caller still gets its answer (metering is best-effort, not blocking)', async () => {
+		__setConciergeMeterWriteTimeoutForTest(80);
+		const { db: stalled, creates } = stubDbWithCreate(neverAnswers);
+		const llm = providerToLlmFn(
+			fakeProvider('advice that survives a stalled meter', { input: 10, output: 4 }),
+			stalled,
+			'claude',
+			'cg4-stalled-meter-ok',
+			'opus'
+		);
+
+		const startedAt = Date.now();
+		await expect(llm({ system: 'sys', user: 'q' })).resolves.toBe('advice that survives a stalled meter');
+		expect(Date.now() - startedAt).toBeLessThan(5_000);
+		expect(creates()).toBe(1);
+		__setConciergeMeterWriteTimeoutForTest(null);
+	}, 20_000);
+
+	it('ORDERING: the turn signal is ALREADY aborted by the time the metering write is issued', async () => {
+		// The ordering itself, asserted directly rather than inferred: with teardown behind the write
+		// this reads false, with teardown ahead of it, true. A healthy (fast) write, so the only thing
+		// under test is the sequence.
+		let atWrite: boolean | undefined;
+		let signal: AbortSignal | undefined;
+		const { db: quick } = stubDbWithCreate(() => {
+			atWrite = signal?.aborted;
+			return Promise.resolve([[{ id: 'stub:row' }]]);
+		});
+		const llm = providerToLlmFn(
+			(s) => {
+				signal = s;
+				return fakeProvider('ordered', { input: 2, output: 2 });
+			},
+			quick,
+			'claude',
+			'cg4-teardown-order',
+			'opus'
+		);
+
+		await expect(llm({ system: 'sys', user: 'q' })).resolves.toBe('ordered');
+		expect(atWrite).toBe(true);
 	}, 20_000);
 });
 

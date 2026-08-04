@@ -48,6 +48,9 @@ import {
 const CONCIERGE_LLM_TIMEOUT_MS = 30_000;
 /** Output cap for the concierge turn (advisory prose is short; keeps cost + latency bounded). */
 const CONCIERGE_MAX_TOKENS = 1024;
+/** Wall-clock bound on the turn's best-effort metering write (F-014) — see meterConciergeTurn. A
+ *  DB that accepts the socket and never answers must not be able to hold a turn open. */
+const CONCIERGE_METER_WRITE_TIMEOUT_MS = 5_000;
 
 /** TEST SEAM (CG-3-1): shrink the turn's wall-clock bound so the abort path is testable in ms, not
  *  30s. `null` restores the production bound. Not exported from the barrel — tests only. */
@@ -57,6 +60,16 @@ export function __setConciergeLlmTimeoutForTest(ms: number | null): void {
 }
 function llmTimeoutMs(): number {
 	return llmTimeoutOverrideMs ?? CONCIERGE_LLM_TIMEOUT_MS;
+}
+
+/** TEST SEAM (CG-4-3): same, for the metering write's bound — so the stalled-write path is testable
+ *  in ms. `null` restores the production bound. Not exported from the barrel — tests only. */
+let meterWriteTimeoutOverrideMs: number | null = null;
+export function __setConciergeMeterWriteTimeoutForTest(ms: number | null): void {
+	meterWriteTimeoutOverrideMs = ms;
+}
+function meterWriteTimeoutMs(): number {
+	return meterWriteTimeoutOverrideMs ?? CONCIERGE_METER_WRITE_TIMEOUT_MS;
 }
 
 // ── Stage-3 skill-discovery transport (GATED, opt-in, READ-ONLY) ──────────────────────────
@@ -280,6 +293,45 @@ export function resolveConciergeTurnUsage(
 }
 
 /**
+ * CG-4-3 — WALL-CLOCK-BOUND one best-effort analytics write.
+ *
+ * `writeAgentEvent` is a bare `db.query` (analytics/events.ts) with no bound of its own; only the
+ * CONNECT is bounded (db/client.ts DEFAULT_CONNECT_TIMEOUT_MS). So a SurrealDB that accepts the socket
+ * and then never answers leaves that promise pending FOREVER — and the turn awaiting it never settles.
+ * A best-effort write is by definition allowed to fail, so it must also be allowed to be GIVEN UP ON:
+ * past the bound we stop waiting and let the caller's catch NAME it (F-014 — a DB fault on a spend path
+ * never hangs or crashes the caller).
+ *
+ * The abandoned write may still settle later. It is observed either way, so a late rejection can never
+ * become an unhandled rejection (which on Node can take the process down) and a late failure is still
+ * reported rather than silently swallowed.
+ */
+async function boundedMeterWrite(write: Promise<unknown>, what: string): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let overran = false;
+	const bound = new Promise<never>((_, reject) => {
+		timer = setTimeout(() => {
+			overran = true;
+			reject(new Error(`${what} exceeded ${meterWriteTimeoutMs()}ms`));
+		}, meterWriteTimeoutMs());
+	});
+	try {
+		await Promise.race([write, bound]);
+	} finally {
+		if (timer) clearTimeout(timer);
+		if (overran) {
+			write.then(
+				() => {},
+				(err: unknown) =>
+					console.warn(
+						`[concierge] ${what} failed after its bound had already elapsed: ${(err as Error).message}`
+					)
+			);
+		}
+	}
+}
+
+/**
  * METER one concierge Stage-2 turn (CG-2-1, extended by CG-3-1): write the ONE `agent_event`
  * `type:'completion'` row for the turn, so its spend is (a) COUNTED by the budget (tokensSpentSince
  * sums every completion row) and (b) PRICED at the events.ts chokepoint — a CLOUD turn ⇒ a real
@@ -301,9 +353,10 @@ export function resolveConciergeTurnUsage(
  * is not visible at this provider-call site, but the GLOBAL budget counter reads every completion row
  * regardless of session (and the concierge gate is project-less / global-only), so a session-less row
  * is still counted. BEST-EFFORT (F-014): any write fault is NAMED + logged, never thrown — a lost meter
- * row must not sink the advisory reply the turn already produced. Every branch here (happy, timeout,
- * throw, no-double-meter) is asserted by wire.metering.test.ts against a live SurrealDB, so this catch
- * never silently drops spend without a covering test.
+ * row must not sink the advisory reply the turn already produced — and the write itself is wall-clock
+ * bounded (boundedMeterWrite), so a DB that never answers is a logged fault rather than a hung turn.
+ * Every branch here (happy, timeout, throw, no-double-meter) is asserted by wire.metering.test.ts
+ * against a live SurrealDB, so this catch never silently drops spend without a covering test.
  */
 async function meterConciergeTurn(
 	db: Db,
@@ -327,7 +380,7 @@ async function meterConciergeTurn(
 				: `concierge Stage-2 open-question turn — ${
 						outcome.kind === 'timeout' ? 'TIMED OUT' : 'FAILED mid-stream'
 					} (${spendNote})`;
-		await writeAgentEvent(db, {
+		const write = writeAgentEvent(db, {
 			type: 'completion',
 			model: { provider: model.provider, modelId: model.modelId, tier: model.tier },
 			// Tokens are metered when they are knowable — measured off the usage leg, or (on an abort
@@ -350,6 +403,9 @@ async function meterConciergeTurn(
 				...(usage.capEnforced !== undefined ? { output_cap_enforced: usage.capEnforced } : {})
 			}
 		});
+		// CG-4-3: BOUNDED. The caller AWAITS this write, so leaving it unbounded made a stalled DB —
+		// not a wedged provider — the thing that could hold a turn open indefinitely.
+		await boundedMeterWrite(write, 'metering write');
 	} catch (err) {
 		console.warn(`[concierge] metering write failed (best-effort): ${(err as Error).message}`);
 	}
@@ -472,7 +528,8 @@ export function providerToLlmFn(
 ): ConciergeLlmFn {
 	const outputCap = opts.outputCap ?? ENFORCED_OUTPUT_CAP;
 	return async ({ system, user }) => {
-		// CG-4-1 — the turn OWNS an AbortController, and the turn's end aborts it (see the finally).
+		// CG-4-1 — the turn OWNS an AbortController, and the turn's end aborts it (see the teardown
+		// attached to `raced` below — deliberately ahead of the metering await, CG-4-3).
 		// Before this, the drain was a detached IIFE with no cancellation at all: when the 30s bound won
 		// the race the underlying stream was never cancelled, so a wedged provider left a suspended async
 		// generator, a promise that never settled, and its chunk buffer retained — for the PROCESS
@@ -588,7 +645,7 @@ export function providerToLlmFn(
 		});
 
 		// CG-3-2: `collect` can still reject in the window between the timeout winning the race and the
-		// finally aborting the turn — a throw there has no awaiter left and would be an UNHANDLED
+		// teardown aborting the turn — a throw there has no awaiter left and would be an UNHANDLED
 		// rejection. Attach a terminal handler that RECORDS a genuine fault (a persisted agent_event, not
 		// a console line) and ignores our own cancellation. When the race has not yet been decided by the
 		// timeout, the race path owns the error and meters/surfaces it there — recording again here would
@@ -599,8 +656,30 @@ export function providerToLlmFn(
 			void recordLateStreamFault(db, meterModel, err);
 		});
 
+		// CG-4-1 — CANCEL, THE INSTANT THE RACE SETTLES. However the turn ended, it is over: stop the
+		// drain, finalize the generator and abort the adapter's in-flight request so nothing outlives
+		// the turn. Idempotent and safe on the success path (the stream is already exhausted there).
+		//
+		// CG-4-3 — WHY IT IS HERE AND NOT IN THE `finally` BELOW. It used to be in that finally, i.e.
+		// SEQUENCED BEHIND `await meterOnce(...)` — a DB write. A metering write that stalls therefore
+		// held the cancellation hostage: the drain kept pulling, `chunks` kept growing and the provider's
+		// generator was never finalized — the exact leak CG-4-1 exists to close, reachable through the
+		// teardown path itself. Cancellation must never be conditional on I/O completing, so it now runs
+		// in a `.finally()` on the race itself — the moment the race settles, ahead of everything the
+		// turn awaits afterwards. Nothing metered moves: `resolveConciergeTurnUsage` snapshots `chunks`
+		// synchronously as meterConciergeTurn's first statement, and CG-2's ordering invariant is about
+		// the GATE RESERVATION dropping after the meter row lands (gate.release stays below) — not
+		// about the abort.
+		//
+		// The turn's timer dies here too: past the race it can only fire spuriously, and setting
+		// `timeoutErr` late would mislabel a genuine post-turn fault as one of ours.
+		const raced = Promise.race([collect, timeout]).finally(() => {
+			if (timer) clearTimeout(timer);
+			ctrl.abort();
+		});
+
 		try {
-			const done = await Promise.race([collect, timeout]);
+			const done = await raced;
 			// METER the turn (CG-2-1) BEFORE releasing the gate reservation, so the spend the gate
 			// accounted for is a durable, counted completion row by the time the reservation drops.
 			await meterOnce({ kind: 'ok' });
@@ -613,11 +692,6 @@ export function providerToLlmFn(
 			await meterOnce(err === timeoutErr ? { kind: 'timeout', error: message } : { kind: 'error', error: message });
 			throw err;
 		} finally {
-			if (timer) clearTimeout(timer);
-			// CG-4-1 — CANCEL. However the turn ended, it is over: stop the drain, finalize the generator
-			// and abort the adapter's in-flight request so nothing outlives the turn. Idempotent and safe
-			// on the success path (the stream is already exhausted, so this is a no-op there).
-			ctrl.abort();
 			gate.release();
 		}
 	};

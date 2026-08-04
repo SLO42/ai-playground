@@ -63,8 +63,14 @@
   const hiringView = $derived(
     groupHiringCeremonies(hiring.ceremonies as HiringCeremonyLike[], showBrokenRuns)
   );
+  // The header count is handed the VISIBLE row count as well as the loaded total, so it can never
+  // state a number that describes a different set than the list underneath it (see the fn doc).
   const hiringCount = $derived(
-    ceremonyCountLabel(hiring.ceremonies as HiringCeremonyLike[], hiring.totalEvents)
+    ceremonyCountLabel(
+      hiring.ceremonies as HiringCeremonyLike[],
+      hiring.totalEvents,
+      hiringView.visible.length
+    )
   );
   // Non-null ONLY when this load's interview_run hydration cap actually bit. Distinct from the
   // `.uo-truncation` note further down the page, which bounds a different window entirely.
@@ -776,7 +782,10 @@
         <span class="eyebrow" id="hiring-title">hiring &amp; certification activity</span>
         <!-- The count is HONEST about whether grouping actually folded anything: on data where
              every ceremony carries one event (today: no run predates the gauntlet_started
-             emitter), "N ceremonies · N events" would imply threading that has not happened. -->
+             emitter), "N ceremonies · N events" would imply threading that has not happened.
+             It is also honest about WHICH SET it counts: with the broken-run filter engaged it
+             reads "showing 17 of 36 ceremonies" rather than "36" over a 17-row list — the
+             /claude-code `.fleet-window` convention, not a second one. -->
         <span class="count mono" title={hiringCount.detail ?? undefined}>{hiringCount.text}</span>
       </div>
       <!-- HONEST FETCH BOUND (F-014/F-008). Rendered ONLY when this load's interview_run

@@ -128,29 +128,82 @@ export interface CeremonyCountLabel {
 /**
  * The card's header count.
  *
- * WHY THIS IS NOT JUST `${n} ceremonies · ${m} events`. On today's live data the two numbers are
- * EQUAL (36 · 36) — the ledger holds exactly one `interviewed` row per `interview_run`, because
- * `emitGauntletStarted` (workforce/repo.ts) post-dates every run currently in the DB, so no
- * ceremony has yet emitted a second event. The grouping is therefore CORRECT and doing nothing:
- * a 1:1 join, not a broken one. Rendering "36 ceremonies · 36 events" implies threading that has
- * not happened, which is a lie of implication even though both integers are true (F-008). So when
- * every thread is a singleton the header says so, and explains why.
+ * ── DEFECT #2, LIVE-CONFIRMED (2026-08-04, /agents on real data) ────────────────────────────
+ * The header read `36 ceremonies · one event each` directly above a list rendering 17 rows,
+ * because the list defaults to `showBrokenRuns=false` and 19 of the 36 runs broke. A total that
+ * does not describe the visible rows, sitting on top of them. Both integers were true; the
+ * PAIRING was the lie (F-008) — the same defect class as the fleet-collapsed inversion, one
+ * surface over.
  *
- * Shadow paths: nil/empty ceremonies → the honest zero (the card renders its empty state anyway);
- * a NEGATIVE or absent `totalEvents` (a read model that could not count) → falls back to stating
- * the ceremony count alone rather than printing a nonsense event figure.
+ * THE RULE, taken from how `/claude-code` already solved this (`.fleet-window`: `showing
+ * {visibleFleet.length} of {fleet.length}`, plus a separate sentence naming what is excluded):
+ * when a filter narrows the list, the header says `showing V of N ceremonies` — the leading
+ * number is what you can SEE, the trailing one is what was LOADED — and the detail names the
+ * hidden count separately. The two numbers are never folded into a bare "N of M" whose numerator
+ * a reader has to infer, which is exactly the shape that inverted in `fleetCollapsedSummary`.
+ * This is that convention, not a third one.
+ *
+ * WHY THE UNFILTERED TEXT IS NOT JUST `${n} ceremonies · ${m} events`. On today's live data the
+ * two numbers are EQUAL (36 · 36) — the ledger holds exactly one `interviewed` row per
+ * `interview_run`, because `emitGauntletStarted` (workforce/repo.ts) post-dates every run
+ * currently in the DB, so no ceremony has yet emitted a second event. The grouping is therefore
+ * CORRECT and doing nothing: a 1:1 join, not a broken one. Rendering "36 ceremonies · 36 events"
+ * implies threading that has not happened, which is a lie of implication even though both
+ * integers are true. So when every thread is a singleton the header says so, and explains why.
+ *
+ * The event clause is DELIBERATELY dropped from the filtered text and moved into the detail:
+ * `totalEvents` counts events across the LOADED set, so printing it beside a filtered ceremony
+ * count would re-commit the very defect this rewrite closes.
+ *
+ * Shadow paths:
+ *   • nil/empty ceremonies      → the honest zero (the card renders its empty state anyway).
+ *   • `totalEvents` absent / impossible (fewer events than threads, i.e. a read model that could
+ *     not count) → state the ceremony count alone rather than publishing arithmetic that cannot
+ *     be true.
+ *   • `visibleCount` absent / not a number → treated as UNFILTERED. A caller that cannot tell us
+ *     what is on screen must not have a "showing …" fabricated on its behalf.
+ *   • `visibleCount` out of range (negative, or greater than the loaded count) → clamped into
+ *     [0, n]; clamping to n lands on the unfiltered text, which is the honest reading of "the
+ *     list is not narrower than what was loaded".
+ *   • `visibleCount === 0` with n > 0 (every row filtered out) → `showing 0 of N ceremonies`. The
+ *     card also renders its own "every run broke" body; the header must not silently read "N".
  */
 export function ceremonyCountLabel(
 	ceremonies: readonly HiringCeremonyLike[] | null | undefined,
-	totalEvents: number | null | undefined
+	totalEvents: number | null | undefined,
+	visibleCount?: number | null
 ): CeremonyCountLabel {
 	const n = Array.isArray(ceremonies) ? ceremonies.length : 0;
 	const noun = `${n} ceremon${n === 1 ? 'y' : 'ies'}`;
 	if (n === 0) return { text: noun, detail: null };
-	if (typeof totalEvents !== 'number' || !Number.isFinite(totalEvents) || totalEvents < n) {
-		// The event total is missing or impossible (fewer events than threads) — state only what
-		// we can stand behind rather than publishing an arithmetic that cannot be true.
-		return { text: noun, detail: 'the ledger event total was not available for this read' };
+
+	const eventsKnown =
+		typeof totalEvents === 'number' && Number.isFinite(totalEvents) && totalEvents >= n;
+	const eventsClause = !eventsKnown
+		? 'the ledger event total was not available for this read'
+		: totalEvents === n
+			? `${n} ledger event${n === 1 ? '' : 's'} loaded — one per ceremony, so grouping has nothing to fold yet`
+			: `${totalEvents} ledger events loaded, folded into ${noun}`;
+
+	// FILTERED: the visible count leads, the loaded count follows, the hidden count is named on
+	// its own so neither number can be mistaken for the other.
+	const visible =
+		typeof visibleCount === 'number' && Number.isFinite(visibleCount)
+			? Math.min(Math.max(Math.floor(visibleCount), 0), n)
+			: n;
+	if (visible < n) {
+		const hidden = n - visible;
+		return {
+			text: `showing ${visible} of ${n} ceremonies`,
+			detail:
+				`${visible} shown · ${hidden} hidden by the broken-run filter · ${n} loaded in this ` +
+				`window. ${eventsClause}.`
+		};
+	}
+
+	// UNFILTERED: the header describes exactly the rows below it, so it states the loaded set.
+	if (!eventsKnown) {
+		return { text: noun, detail: eventsClause };
 	}
 	if (totalEvents === n) {
 		return {
@@ -163,7 +216,7 @@ export function ceremonyCountLabel(
 	}
 	return {
 		text: `${noun} · ${totalEvents} event${totalEvents === 1 ? '' : 's'}`,
-		detail: `${totalEvents} ledger events folded into ${n} ceremon${n === 1 ? 'y' : 'ies'}`
+		detail: `${totalEvents} ledger events folded into ${noun}`
 	};
 }
 

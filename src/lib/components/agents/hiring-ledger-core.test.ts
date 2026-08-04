@@ -384,6 +384,76 @@ describe('ceremonyCountLabel', () => {
 		expect(label.text).toBe('9 ceremonies');
 		expect(label.detail).toMatch(/not available/);
 	});
+
+	// ── DEFECT #2: the header counted a different set than the list ──────────────────────
+	//
+	// LIVE-CONFIRMED (2026-08-04, /agents on the dev DB): the header read
+	//   "36 ceremonies · one event each"
+	// above a list rendering 17 rows, because showBrokenRuns defaults false and 19 of the 36 runs
+	// have status='error' (read-only probe: adjudicating 2 / passed 8 / error 19 / failed 7 = 36).
+	// The convention adopted is /claude-code's `.fleet-window` shape — `showing V of N`, visible
+	// first, plus the hidden count named SEPARATELY in the detail — not a third invention.
+	describe('the header must count the set the operator is looking at', () => {
+		it('THE DEFECT, reproduced and closed: 36 loaded / 17 visible → "showing 17 of 36"', () => {
+			const label = ceremonyCountLabel(many(36), 36, 17);
+			expect(label.text).toBe('showing 17 of 36 ceremonies');
+			// The bare total that sat above a 17-row list must not be the whole line any more.
+			expect(label.text).not.toBe('36 ceremonies · one event each');
+			// Hidden is NAMED, never left for the reader to subtract — and never fused into the
+			// "N of M" pair, which is the shape that inverted live in fleetCollapsedSummary.
+			expect(label.detail).toContain('17 shown');
+			expect(label.detail).toContain('19 hidden');
+			expect(label.detail).toContain('36 loaded');
+		});
+
+		it('the EVENT total is dropped from the filtered text — it counts the loaded set', () => {
+			const label = ceremonyCountLabel(many(36), 41, 17);
+			expect(label.text).toBe('showing 17 of 36 ceremonies');
+			expect(label.text).not.toContain('41');
+			// It survives in the detail, explicitly scoped to what it actually counts.
+			expect(label.detail).toContain('41 ledger events loaded');
+		});
+
+		it('unfiltered (visible === loaded) is byte-identical to the pre-change label', () => {
+			expect(ceremonyCountLabel(many(36), 36, 36)).toEqual(ceremonyCountLabel(many(36), 36));
+			expect(ceremonyCountLabel(many(12), 41, 12)).toEqual(ceremonyCountLabel(many(12), 41));
+			expect(ceremonyCountLabel(many(1), 1, 1).text).toBe('1 ceremony · one event each');
+		});
+
+		it('EVERY row filtered out → "showing 0 of N", never a bare N over an empty list', () => {
+			const label = ceremonyCountLabel(many(19), 19, 0);
+			expect(label.text).toBe('showing 0 of 19 ceremonies');
+			expect(label.detail).toContain('19 hidden');
+		});
+
+		// ── Shadow paths on the new argument ────────────────────────────────────────
+		it('an ABSENT visible count is treated as unfiltered — never a fabricated "showing"', () => {
+			for (const v of [null, undefined, NaN, Infinity, 'nope' as unknown as number]) {
+				const label = ceremonyCountLabel(many(36), 36, v as number);
+				expect(label.text).toBe('36 ceremonies · one event each');
+			}
+		});
+
+		it('an OUT-OF-RANGE visible count is clamped, never printed raw', () => {
+			// Greater than loaded → clamps to loaded → the unfiltered text (the honest reading).
+			expect(ceremonyCountLabel(many(5), 5, 99).text).toBe('5 ceremonies · one event each');
+			// Negative → clamps to 0 → "showing 0 of 5", not "showing -3 of 5".
+			expect(ceremonyCountLabel(many(5), 5, -3).text).toBe('showing 0 of 5 ceremonies');
+			// Fractional → floored, never rendered as a decimal row count.
+			expect(ceremonyCountLabel(many(5), 5, 2.9).text).toBe('showing 2 of 5 ceremonies');
+		});
+
+		it('a filtered header with an UNAVAILABLE event total still states both ceremony counts', () => {
+			const label = ceremonyCountLabel(many(36), null, 17);
+			expect(label.text).toBe('showing 17 of 36 ceremonies');
+			expect(label.detail).toContain('not available');
+		});
+
+		it('nil/empty ceremonies ignore the visible count entirely', () => {
+			expect(ceremonyCountLabel([], 0, 0).text).toBe('0 ceremonies');
+			expect(ceremonyCountLabel(null, 0, 5).text).toBe('0 ceremonies');
+		});
+	});
 });
 
 // ── runFetchNotice — DEFECT #1's surfaced half ───────────────────────────────────────────

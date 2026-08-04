@@ -1,6 +1,7 @@
 // server/create — project template registry (CT-1, CREATE-SPEC).
 //
-// PURE module: no DB, no fs, no $env, no runtime imports. Each template declares metadata
+// PURE module: no DB, no fs, no $env. Its ONLY import is the equally-pure memory/screen (used to
+// keep the bg3 placeholder UUID screen-stable — see placeholderUUID). Each template declares metadata
 // (rendered as form controls in the create-project UI) plus a `generate` function returning a
 // RELATIVE-path → file-content map. Ported from v1 `dashboard/src/lib/server/project-templates.ts`
 // (all 17 templates + BEPINEX_GAME_CONFIGS + the metadata projection), with inline typed exports.
@@ -12,6 +13,8 @@
 //     bare `NAME=` placeholders). execute.ts re-screens every file via memory/screen.screen()
 //     before write; templates.test redTeam screens every generated file here too.
 // This module is NOT wired into any route/execute path yet — it is the pure source CT-2..CT-4 read.
+
+import { screen } from '../memory/screen';
 
 // ---------------------------------------------------------------------------
 // Typed exports (CREATE-SPEC CT-1 contract)
@@ -1738,6 +1741,34 @@ const paper: ProjectTemplate = {
 // Baldur's Gate 3 mod template
 // ---------------------------------------------------------------------------
 
+/**
+ * A random v4-shaped placeholder UUID that is guaranteed CLEAN under the canonical write-time
+ * screen (D-026) — the same gate execute.ts applies before writing a scaffold file.
+ *
+ * Why the guard exists: a bare random roll is not screen-stable. Groups 4+5 (4 + 12 chars) or
+ * groups 1+2+3 (8 + 4 + 4) can come out ALL-DIGITS, forming a 13–16 digit run that screen()'s
+ * `card-number` rule matches (memory/screen.ts) — and roughly one in ten of those also passes its
+ * Luhn gate. The consequence was NOT cosmetic: execute.ts hard-throws only on 'quarantined', so a
+ * 'redacted' info.json was written to disk with the mod's `UUID`/`Group` partly overwritten by
+ * `[REDACTED:card]`, plus a bogus "payment card" redaction note surfaced to the operator — a
+ * corrupted BG3 metadata file. It also made the CT-1 redTeam suite nondeterministically RED.
+ *
+ * Re-rolling on the canonical screen() (rather than re-implementing the digit-run check here)
+ * keeps the guard correct if a screen rule ever changes. Each roll is overwhelmingly likely to be
+ * clean, so the loop effectively never iterates; the bound + fixed fallback exist only so this can
+ * never spin. The fallback is letter-bearing in every group, so no digit-run can form.
+ */
+function placeholderUUID(): string {
+	for (let attempt = 0; attempt < 64; attempt++) {
+		const candidate = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
+			const r = (Math.random() * 16) | 0;
+			return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
+		});
+		if (screen(candidate).status === 'clean') return candidate;
+	}
+	return 'deadbeef-dead-4ead-bead-deadbeefdead';
+}
+
 const bg3: ProjectTemplate = {
 	id: 'bg3',
 	name: 'BG3 Mod',
@@ -1785,10 +1816,7 @@ const bg3: ProjectTemplate = {
 
 		// Deterministic-looking placeholder UUID. NOTE: not cryptographically meaningful — a real
 		// build re-stamps it; this is filler the user replaces. Random (not env), never a secret.
-		const modUUID = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-			const r = (Math.random() * 16) | 0;
-			return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
-		});
+		const modUUID = placeholderUUID();
 
 		const files: Record<string, string> = {};
 

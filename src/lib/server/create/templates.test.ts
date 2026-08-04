@@ -7,7 +7,7 @@
 //   • redTeam — across param combos: NO literal secret (D-026, via the canonical screen())
 //     and NO absolute / `..`-escaping path (D-018 pre-condition).
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
 	registry,
 	getTemplate,
@@ -19,9 +19,12 @@ import {
 } from './templates';
 import { screen } from '../memory/screen';
 
-// The canonical write-time secret gate execute.ts uses (D-026). A template whose generated
-// content trips screen() to anything other than 'clean' would HARD-throw ScaffoldSecretError
-// at scaffold time — so it must be clean here. This couples the redTeam to the REAL detector.
+// The canonical write-time secret gate execute.ts uses (D-026). A template whose generated content
+// trips screen() is broken at scaffold time — 'quarantined' HARD-throws ScaffoldSecretError, and
+// 'redacted' is WORSE THAN A THROW for template-authored content: execute.ts writes the redacted
+// text (execute.ts, the `res.status === 'redacted'` branch), silently corrupting the generated file
+// and reporting a bogus redaction reason to the operator. So it must be clean here. This couples the
+// redTeam to the REAL detector.
 function assertNoSecret(rel: string, content: string): void {
 	const res = screen(content);
 	expect(res.status, `screen('${rel}') reasons=[${res.reasons.join(',')}]`).toBe('clean');
@@ -263,5 +266,85 @@ describe('CT-1 redTeam — D-026 secret-free & D-018 path-safe across param comb
 		// Proves the redTeam gate has teeth: a real token in a description would be flagged.
 		const leaked = screen('GameDir password = hunter2supersecret value here');
 		expect(leaked.status).not.toBe('clean');
+	});
+});
+
+// ── regression: the bg3 placeholder UUID must be screen-clean BY CONSTRUCTION ──
+//
+// Defect (MERGE-B re-gate, root cause): bg3's placeholder UUID was a bare `Math.random()` roll,
+// so its output was nondeterministic. A roll whose 4th+5th groups (4+12 = 16 chars) — or whose
+// 1st+2nd+3rd (8+4+4) — come out ALL-DIGITS forms a 13–16 digit run that screen()'s `card-number`
+// rule matches (screen.ts:174), and ~1 in 10 of those also passes the Luhn gate. Measured ≈1.4e-4
+// per roll; the redTeam block above makes 168 bg3 generate() calls per suite run, so ~2.4% of runs
+// went RED on a suite that must stay green — and, worse, ~1 in 7,000 REAL bg3 scaffolds had its
+// info.json `UUID`/`Group` partly overwritten with `[REDACTED:card]` (execute.ts:453-457 writes the
+// redacted text for status 'redacted'; only 'quarantined' hard-throws) plus a bogus "payment card"
+// redaction note to the operator. The fix re-rolls until screen() calls the candidate clean.
+describe('CT-1 bg3 placeholder UUID is screen-clean by construction (card-number flake + info.json corruption)', () => {
+	// The `xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx` template the generator fills, one nibble per x/y.
+	const UUID_PATTERN = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx';
+
+	/** The exact Math.random() sequence that makes the generator emit `uuid`. */
+	function randomsFor(uuid: string): number[] {
+		const out: number[] = [];
+		for (let i = 0; i < UUID_PATTERN.length; i++) {
+			const slot = UUID_PATTERN[i];
+			if (slot !== 'x' && slot !== 'y') continue;
+			const nib = parseInt(uuid[i], 16);
+			// x → r.toString(16); y → ((r & 3) | 8).toString(16), so r = nib & 3 reproduces it.
+			out.push((slot === 'y' ? nib & 0x3 : nib) / 16);
+		}
+		return out;
+	}
+
+	// Groups 4+5 = '8000' + '000000000003' → the 16-digit run '8000000000000003', whose Luhn sum is
+	// 0 mod 10. Letters in groups 1-3 keep the OTHER window inert, isolating one cause.
+	const DIRTY_UUID = 'deadbeef-dead-4ead-8000-000000000003';
+	const CLEAN_UUID = 'deadbeef-dead-4ead-bead-deadbeefdead';
+
+	afterEach(() => {
+		vi.restoreAllMocks();
+	});
+
+	it('the reproduction: a Luhn-valid all-digit UUID tail IS flagged by the canonical screen()', () => {
+		const res = screen(DIRTY_UUID);
+		expect(res.status).toBe('redacted');
+		expect(res.reasons).toContain('card-number');
+		expect(res.text).toContain('[REDACTED:card]');
+		// …and the control: the clean candidate is untouched, so the fix's exit condition is real.
+		expect(screen(CLEAN_UUID).status).toBe('clean');
+	});
+
+	it('the generator re-rolls past a card-shaped UUID and emits the clean one', () => {
+		const seq = [...randomsFor(DIRTY_UUID), ...randomsFor(CLEAN_UUID)];
+		let i = 0;
+		vi.spyOn(Math, 'random').mockImplementation(() => {
+			if (i >= seq.length) throw new Error(`Math.random() over-drawn (${i}): re-roll did not stop`);
+			return seq[i++];
+		});
+
+		const out = getTemplate('bg3')!.generate('My Mod', 'a mod', {});
+		const info = out['info.json'];
+
+		// The dirty roll was rejected; the clean one was emitted (both UUID fields).
+		expect(info).not.toContain(DIRTY_UUID);
+		expect(info).toContain(`"UUID": "${CLEAN_UUID}"`);
+		expect(info).toContain(`"Group": "${CLEAN_UUID}"`);
+		// Exactly two rolls were consumed — no silent extra churn.
+		expect(i).toBe(seq.length);
+		// The whole file passes the write-time gate execute.ts applies (D-026), so nothing is
+		// redacted into the mod metadata on disk.
+		const res = screen(info);
+		expect(res.status, `screen('info.json') reasons=[${res.reasons.join(',')}]`).toBe('clean');
+	});
+
+	it('every bg3 UUID is clean across many real (unstubbed) rolls', () => {
+		// Statistical backstop: at ≈1.4e-4 per roll the OLD code fails this ~1 in 4 runs; the fixed
+		// generator cannot fail it at all, because 'clean' is its loop exit condition.
+		for (let n = 0; n < 2000; n++) {
+			const info = getTemplate('bg3')!.generate('My Mod', 'a mod', {});
+			const res = screen(info['info.json']);
+			expect(res.status, `roll ${n}: reasons=[${res.reasons.join(',')}]`).toBe('clean');
+		}
 	});
 });

@@ -211,7 +211,7 @@ describe('Db self-heal on auth-token expiry (F-042)', () => {
 			// WIDEN THE USER'S TOKEN TTL BEFORE THE HEALING QUERY (the same mid-test DEFINE USER
 			// OVERWRITE technique the bad-re-auth case below uses to rotate a password). The token
 			// already MINTED stays expired, so the real TTL-lapse trigger this test exists to cover
-			// is untouched — but the re-signin `runQuery` performs now mints a 4w token instead of
+			// is untouched — but the re-signin `runQuery` performs now mints a 1h token instead of
 			// another 1s one.
 			//
 			// WHY: `runQuery` (client.ts) re-auths ONCE and retries ONCE, and on retry failure
@@ -257,7 +257,8 @@ describe('Db self-heal on auth-token expiry (F-042)', () => {
 		// re-auth issues a fresh full-duration token. This makes the test DETERMINISTIC
 		// under parallel-worker load (a sub-second TTL re-expires the fresh token before
 		// a contended retry runs — that flake is a test artefact, not a client defect;
-		// the durable fix uses 4w tokens). See F-042.
+		// the durable fix avoids sub-second TTLs, here via the full-duration root signin
+		// below and in the heal case above via an explicit 1h TTL). See F-042.
 		const racer = await Db.connect({
 			url: tdb.wsUrl,
 			username: tdb.root.username,

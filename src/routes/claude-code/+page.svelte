@@ -20,6 +20,7 @@
     FLEET_STATE_FILTERS,
     FLEET_STATE_LABELS,
     applyFleetViewToParams,
+    fleetCollapsedSummary,
     fleetCountScopeNote,
     fleetMirrorDrift,
     fleetScopeLabel,
@@ -237,6 +238,15 @@
     if (fleetView.project) parts.push(fleetScope);
     return parts.join(' · ');
   });
+  /**
+   * The collapsed line. Composed by the pure `fleetCollapsedSummary` so the "hidden" number can
+   * be asserted SEMANTICALLY — inlined in the template it once reported the FILTERED count as the
+   * hidden count ("32 of 40 sessions hidden" over 40 hidden rows) and a source-text test mirrored
+   * the wrong string back, so the suite could not see it.
+   */
+  const fleetCollapsed = $derived(
+    fleetCollapsedSummary(fleet.length, visibleFleet.length, fleetFilterSummary)
+  );
 
   // ── TASK (transcript-panel) — the LIVE read-only transcript the fleet's `transcript →`
   // link (/claude-code?session=<id>) lands on. The PERSISTED LT1 conversation (`message`
@@ -523,13 +533,11 @@
            always resolves; only its contents are conditional. -->
       <div id="fleet-body" class="fleet-body">
         {#if !fleetView.open}
-          <!-- Collapsed: say exactly what is hidden, and that a filter is still narrowing it —
-               a collapse must not quietly change what "hidden" counts (F-008). -->
-          <p class="fleet-collapsed mono">
-            {#if fleetFilterSummary}{visibleFleet.length} of {fleet.length} sessions hidden ·
-              filtered by {fleetFilterSummary}{:else}{fleet.length}
-              session{fleet.length === 1 ? '' : 's'} hidden{/if}
-          </p>
+          <!-- Collapsed: say exactly what is hidden, and — separately — what reopening would
+               show while a filter is still narrowing it. A collapse hides EVERY loaded row, so
+               the filtered count is never the hidden count; the two numbers are named, never
+               folded into one "N of M" (F-008, live-verified inversion). -->
+          <p class="fleet-collapsed mono">{fleetCollapsed}</p>
         {:else}
           {#if capsNote && fleet.length > 0}
             <!-- HONEST capability state (14.6/F-008): why some controls are disabled. -->

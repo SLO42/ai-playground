@@ -29,6 +29,7 @@ import {
 	fleetProjectKey,
 	fleetProjectLabel,
 	fleetProjectOptions,
+	fleetCollapsedSummary,
 	fleetCountScopeNote,
 	fleetScopeLabel,
 	fleetStateCounts,
@@ -439,12 +440,121 @@ describe('fleetCountScopeNote — the head counts stay TRUE beside a scoped head
 });
 
 /* ============================================================================
+   REGRESSION — the COLLAPSED line stated the matching count as the hidden count.
+
+   MEASURED in the browser (2026-08-04, :5173, 40-row window):
+     ?fleetState=failed&fleet=closed                    → "32 of 40 sessions hidden"
+     ?fleetProject=project:bepinexpack_rounds_port&…    → "4 of 40 sessions hidden"
+     ?fleet=closed (unfiltered control)                 → "40 sessions hidden"  ← correct
+   32 and 4 are what MATCHES the filter — what reopening would SHOW. All 40 are hidden. The
+   number was printed as its own opposite (F-008).
+
+   Root cause: the template reused the expanded footer's `showing {visible} of {total}` pair and
+   swapped the verb to "hidden"; that swap inverts the numerator, because a collapse hides every
+   loaded row regardless of any filter.
+
+   These assertions are SEMANTIC — they read the number the sentence attaches to "hidden" and
+   compare it to the totals. The defect originally shipped green because its only coverage was a
+   source-text mirror (`fleet-controls.test.ts`) that asserted the exact wrong template string, so
+   the suite was structurally incapable of seeing an inversion. A regex over the template cannot
+   tell 32 from 40; arithmetic over the output can.
+   ============================================================================ */
+describe('fleetCollapsedSummary — "hidden" always means the whole collapsed set', () => {
+	/**
+	 * The integer the sentence attaches to "… sessions hidden" / "… session hidden".
+	 *
+	 * ANCHORED to the start deliberately: in the old `32 of 40 sessions hidden` shape an unanchored
+	 * regex reads the SECOND number (40) and would have passed while the sentence still claimed 32
+	 * were hidden. Requiring the count to LEAD the clause makes the ambiguous "N of M" shape
+	 * unreadable → null → a hard failure, which is what a regression test for an inverted number
+	 * has to do. (Verified by re-introducing the inversion: this returns null, the test fails.)
+	 */
+	const hiddenCount = (s: string): number | null => {
+		const m = s.match(/^(\d+)\s+sessions?\s+hidden/);
+		return m ? Number(m[1]) : null;
+	};
+	/** The integer the sentence attaches to "… would show". */
+	const shownCount = (s: string): number | null => {
+		const m = s.match(/(\d+)\s+would show/);
+		return m ? Number(m[1]) : null;
+	};
+
+	it('THE DEFECT, state filter: 32 of 40 match → 40 are hidden, never 32', () => {
+		const s = fleetCollapsedSummary(40, 32, 'failed');
+		expect(hiddenCount(s)).toBe(40); // ← was 32 (the MATCHING count) before the fix
+		expect(shownCount(s)).toBe(32);
+		expect(s).toContain('filtered by failed');
+		// The two numbers are never folded into one "N of M" — that shape is what inverted.
+		expect(s).not.toMatch(/\d+\s+of\s+\d+\s+sessions?\s+hidden/);
+	});
+
+	it('THE DEFECT, project filter: 4 of 40 match → 40 are hidden, never 4', () => {
+		const s = fleetCollapsedSummary(40, 4, 'bepinexpack_rounds_port');
+		expect(hiddenCount(s)).toBe(40); // ← was 4 before the fix
+		expect(shownCount(s)).toBe(4);
+	});
+
+	it('the hidden count NEVER varies with the filter — only the "would show" count does', () => {
+		// The invariant, stated directly: same window, every possible match count, one hidden number.
+		for (const matching of [0, 1, 7, 32, 40]) {
+			const s = fleetCollapsedSummary(40, matching, 'failed');
+			expect(hiddenCount(s), `matching=${matching}`).toBe(40);
+			expect(shownCount(s), `matching=${matching}`).toBe(matching);
+		}
+		// …and it equals the UNFILTERED line's number, which was always correct.
+		expect(hiddenCount(fleetCollapsedSummary(40, 40, null))).toBe(40);
+	});
+
+	it('unfiltered: the honest control — the total, no filter clause, no phantom "would show"', () => {
+		const s = fleetCollapsedSummary(40, 40, null);
+		expect(s).toBe('40 sessions hidden');
+		expect(s).not.toContain('filtered by');
+		expect(shownCount(s)).toBeNull();
+	});
+
+	it('a filter that excludes nothing still discloses itself (equal counts are not noise)', () => {
+		const s = fleetCollapsedSummary(40, 40, 'all projects · failed');
+		expect(hiddenCount(s)).toBe(40);
+		expect(shownCount(s)).toBe(40);
+		expect(s).toContain('filtered by all projects · failed');
+	});
+
+	it('a filter matching NOTHING says so — 0 shown is a fact, not an empty string (F-008)', () => {
+		const s = fleetCollapsedSummary(40, 0, 'running');
+		expect(hiddenCount(s)).toBe(40);
+		expect(shownCount(s)).toBe(0);
+	});
+
+	it('singular / empty window: grammar tracks the HIDDEN count, not the matching one', () => {
+		expect(fleetCollapsedSummary(1, 0, null)).toBe('1 session hidden');
+		expect(fleetCollapsedSummary(1, 1, 'failed')).toMatch(/^1 session hidden · 1 would show/);
+		expect(fleetCollapsedSummary(0, 0, null)).toBe('0 sessions hidden');
+	});
+
+	it('nil / blank / upstream error: never throws, never prints NaN or a blank filter clause', () => {
+		// Blank-ish filter summaries degrade to the unfiltered sentence rather than "filtered by ".
+		for (const bad of [null, undefined, '', '   ']) {
+			expect(fleetCollapsedSummary(40, 4, bad as unknown as string)).toBe('40 sessions hidden');
+		}
+		// Non-numeric / negative / non-finite counts (an upstream error) → 0, never "NaN sessions".
+		for (const bad of [NaN, -3, Infinity, undefined, null, '40']) {
+			const s = fleetCollapsedSummary(bad as unknown as number, bad as unknown as number, 'failed');
+			expect(s).not.toMatch(/NaN|Infinity|undefined|null/);
+			expect(hiddenCount(s)).toBe(0);
+			expect(shownCount(s)).toBe(0);
+		}
+	});
+});
+
+/* ============================================================================
    REGRESSION — DEFECT 1 (HIGH, live-verified 2026-07-26 on :5174):
    the page's OWN live stream wiped the filter and re-expanded the collapse.
 
    Repro measured in the browser: on `/claude-code`, click the `failed` chip, then
    collapse. Address bar `?fleetState=failed&fleet=closed`, aria-expanded=false,
-   0 rows, "32 of 40 sessions hidden · filtered by failed". One
+   0 rows, "32 of 40 sessions hidden · filtered by failed" (that WORDING was itself a
+   defect — see the fleetCollapsedSummary block above; it is quoted here verbatim only
+   as the historical repro transcript, not as intended copy). One
    `invalidate('app:fleet')` — which `onDbChange('session')` fires on EVERY session
    row change — and: same URL, aria-expanded=TRUE, 40 rows, filter gone.
 

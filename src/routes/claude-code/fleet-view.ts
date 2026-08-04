@@ -486,6 +486,46 @@ export function fleetCountScopeNote(view: FleetView | null | undefined): string 
 	return clean(view?.project) ? 'across all projects' : null;
 }
 
+/** A count that is safe to print: nil / negative / NaN / non-number (upstream error) → 0. */
+function safeCount(n: unknown): number {
+	return typeof n === 'number' && Number.isFinite(n) && n > 0 ? Math.floor(n) : 0;
+}
+
+/**
+ * The COLLAPSED section's one line: how much the collapse is hiding, and — when a filter is
+ * engaged — how much reopening would actually show.
+ *
+ * LIVE-VERIFIED DEFECT (2026-08-04, browser, `?fleetState=failed&fleet=closed` over a 40-row
+ * window): the line read *"32 of 40 sessions hidden"* where 32 is the number of rows that MATCH
+ * the filter — the count of what the operator would SEE, announced as the count of what is
+ * hidden. Its own opposite, in the one control whose whole point is that collapsing can never
+ * change what a number means (F-008). `?fleetProject=…` rendered the same inversion as
+ * "4 of 40 sessions hidden".
+ *
+ * Root cause: the line was written by reusing the EXPANDED footer's `showing {visible} of {total}`
+ * pair (`.fleet-window`, authored in the same commit, a few lines below) and swapping the verb to
+ * "hidden". That swap inverts what the numerator means — collapsing hides EVERY loaded row,
+ * filtered or not, so the filtered count is never the hidden count.
+ *
+ * The fix is that the two numbers are NAMED separately and never share an "N of M": `total` is
+ * what the collapse hides, `matching` is what reopening would show. Equal counts still print both
+ * — a filter that happens to exclude nothing is a true statement, not noise. Living here (rather
+ * than inline in the template) is deliberate: a source-text test cannot tell an inverted count
+ * from a correct one, and the mirror test that green-locked this defect through two reviews is
+ * exactly what a pure, semantically-asserted helper prevents.
+ */
+export function fleetCollapsedSummary(
+	total: number,
+	matching: number,
+	filterSummary: string | null | undefined
+): string {
+	const hidden = safeCount(total);
+	const head = `${hidden} session${hidden === 1 ? '' : 's'} hidden`;
+	const filter = clean(filterSummary);
+	if (!filter) return head;
+	return `${head} · ${safeCount(matching)} would show · filtered by ${filter}`;
+}
+
 // ── Options + counts ──────────────────────────────────────────────────────────────────────
 
 /** One selectable project, with the real number of rows it would show. */

@@ -75,14 +75,25 @@ describe('collapse — a real, accessible disclosure', () => {
     expect(src).toMatch(/replaceState\(url, page\.state\)/);
   });
 
-  it('the collapsed state still says how much is hidden, and what is filtering', () => {
+  it('the collapsed line is COMPOSED, not counted inline — its numbers are asserted semantically', () => {
     expect(fleetSection).toMatch(/class="fleet-collapsed[^"]*"/);
-    expect(fleetSection).toMatch(/session\{fleet\.length === 1 \? '' : 's'\} hidden/);
-    // With a filter engaged the collapsed line reports the FILTERED count too, so "hidden"
-    // never silently means a different number than the expanded list would show.
-    expect(fleetSection).toMatch(
-      /\{#if fleetFilterSummary\}\{visibleFleet\.length\} of \{fleet\.length\} sessions hidden/
+    // REGRESSION (live-measured 2026-08-04): this line used to inline
+    // `{visibleFleet.length} of {fleet.length} sessions hidden`, which states the MATCHING count
+    // as the HIDDEN count — collapsing hides every loaded row, filtered or not. Its only coverage
+    // was a source-text mirror of that exact template, so the suite green-locked the inversion
+    // through two reviews. A regex cannot tell 32 from 40; the sentence now comes from the pure
+    // `fleetCollapsedSummary`, whose numbers ARE checked by arithmetic in fleet-view.test.ts.
+    expect(fleetSection).toMatch(/<p class="fleet-collapsed mono">\{fleetCollapsed\}<\/p>/);
+    expect(src).toMatch(
+      /const fleetCollapsed = \$derived\(\s*fleetCollapsedSummary\(fleet\.length, visibleFleet\.length, fleetFilterSummary\)\s*\)/
     );
+    // No count arithmetic may creep back into the collapsed paragraph itself.
+    const collapsed = fleetSection.slice(
+      fleetSection.indexOf('{#if !fleetView.open}'),
+      fleetSection.indexOf('{:else}', fleetSection.indexOf('{#if !fleetView.open}'))
+    );
+    expect(collapsed).not.toMatch(/\{fleet\.length\}|\{visibleFleet\.length\}/);
+    expect(collapsed).not.toMatch(/\d+\s+of\s+|of \{/);
   });
 
   it('the heading names the REAL scope, not a hardcoded "all projects" (live-verified defect)', () => {

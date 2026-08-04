@@ -284,6 +284,61 @@ describe('pre-commit gate — the TOOLCHAIN pre-flight (the false-RED wedge, clo
 		}
 	});
 
+	// ── REGRESSION (the FOLLOW-ON DoD-review finding): the two reasons a gate is 'skipped' are NOT
+	//    interchangeable, and the outcome has to say which one happened. Keying a merge hold on
+	//    'skipped' alone held every large change on every npm project forever (no automated reviewer
+	//    exists to release a hold). `unrunnable` is the discriminator the hold policy reads.
+	it('an ENVIRONMENT skip is flagged `unrunnable`, and its summary does not claim "no target"', async () => {
+		const uninstalled = mkdtempSync(join(tmpdir(), 'pcg-unrunnable-'));
+		writeFileSync(
+			join(uninstalled, 'package.json'),
+			JSON.stringify({ name: 'wt', scripts: { build: 'vite build', test: 'vitest run' } })
+		);
+		try {
+			const runner = fakeRunner(() => OK);
+			const gate = await runPreCommitGate(
+				{ cwd: uninstalled, buildTool: 'npm', testCommand: 'npm test' },
+				{ run: runner }
+			);
+			expect(gate.status).toBe('skipped');
+			// THE POINT: the project DECLARES real checks — this working dir just cannot run them.
+			expect(gate.unrunnable).toBe(true);
+			// …and the operator-facing line says so, instead of the (false) "no target detected".
+			expect(gate.summary).toMatch(/could NOT BE RUN in this working dir/);
+			expect(gate.summary).not.toMatch(/no build\/lint\/typecheck\/test target detected/);
+		} finally {
+			rmSync(uninstalled, { recursive: true, force: true });
+		}
+	});
+
+	it('a NOTHING-TO-VERIFY skip is NOT `unrunnable` — the case the merge hold is actually for', async () => {
+		const runner = fakeRunner(() => OK);
+		// `root` has no package.json, no build_tool and no test command: nothing resolves at all.
+		const gate = await runPreCommitGate({ cwd: root }, { run: runner });
+		expect(gate.status).toBe('skipped');
+		expect(gate.unrunnable).toBe(false);
+		expect(gate.summary).toMatch(/no build\/lint\/typecheck\/test target detected/);
+	});
+
+	it('a gate that RAN is never `unrunnable` — green or red', async () => {
+		const green = await runPreCommitGate({ cwd: fullRoot, buildTool: 'npm' }, { run: fakeRunner(() => OK) });
+		expect(green.status).toBe('passed');
+		expect(green.unrunnable).toBe(false);
+
+		const red = await runPreCommitGate(
+			{ cwd: root, buildTool: 'dotnet' },
+			{ run: fakeRunner(() => ({ code: 1, stdout: '', stderr: 'CS0103' })) }
+		);
+		expect(red.status).toBe('failed');
+		expect(red.unrunnable).toBe(false);
+	});
+
+	it('a NIL cwd is not `unrunnable` either — nothing ever resolved to be run', async () => {
+		const gate = await runPreCommitGate({ cwd: '', buildTool: 'npm' }, { run: fakeRunner(() => OK) });
+		expect(gate.status).toBe('skipped');
+		expect(gate.unrunnable).toBe(false);
+	});
+
 	it('an npm build_tool with NO package.json in the working dir ⇒ skipped, not a RED', async () => {
 		// `buildCommandFor('npm')` resolves `npm run build` from build_tool ALONE — it never looks at
 		// the disk — so without this check a JS project's build step is spawned in a manifest-less tree.

@@ -584,7 +584,9 @@ export async function runPostTask(
 			? gateFailed
 				? 'task marked FAILED; work committed to the session branch and PRESERVED, NOT merged into the project branch'
 				: gate.status === 'skipped'
-					? 'no build/test target detected — the change is UNVERIFIED but not blocked (honest skip)'
+					? gate.unrunnable
+						? 'the project declares real checks but this working dir could not RUN them — the change is UNVERIFIED but not blocked (an environment skip, not a verdict on the change)'
+						: 'no build/test target detected — the change is UNVERIFIED but not blocked (honest skip)'
 					: 'gate green — the work is eligible to merge'
 			: undefined,
 		// The review decision (or the honest reason there is none).
@@ -691,6 +693,10 @@ function gateDetail(gate: GateOutcome): Record<string, unknown> {
 		status: gate.status,
 		verified: gate.verified,
 		errored: gate.errored,
+		// WHY a skip was a skip — "no target at all" vs "this working dir could not run the project's
+		// real checks". The merge-hold policy keys on this distinction, so the row an operator reads
+		// must carry it too (CLAUDE.md §3 — never a flat event).
+		unrunnable: gate.unrunnable,
 		failed_at: gate.failedAt ?? null,
 		summary: gate.summary,
 		steps: gate.steps.map((s) => ({

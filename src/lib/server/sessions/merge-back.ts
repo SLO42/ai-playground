@@ -156,9 +156,14 @@ async function withMergeLock<T>(projectRoot: string, fn: () => Promise<T>): Prom
  * "session failed" about a session that succeeded but failed its gate is a lie (F-008):
  *   • 'gate-failed'  — the run succeeded, but the pre-commit build/lint/typecheck/test came back
  *                      RED. The commit is on the branch; it must not reach the project branch.
- *   • 'review-held'  — the run succeeded and the gate was green, but the change was large enough
- *                      to warrant a code review and policy says an unreviewed change of this size
- *                      does not auto-merge.
+ *   • 'review-held'  — the run succeeded and the gate did NOT come back red, but the change was
+ *                      large enough to warrant a code review and policy says an unreviewed change
+ *                      of this size does not auto-merge. Under the SHIPPED default
+ *                      (`holdMergeBack:'unverified'`) that is specifically the UNVERIFIED gate —
+ *                      one with nothing to verify — NOT a green one; a green gate withholds the
+ *                      merge only under the opt-in 'always' policy. The caller owns that decision
+ *                      (orchestrator.ts `shouldHoldMergeBack`); this module preserves what it is
+ *                      told not to merge.
  */
 export type SessionExitState = 'done' | 'failed' | 'cancelled' | 'gate-failed' | 'review-held';
 

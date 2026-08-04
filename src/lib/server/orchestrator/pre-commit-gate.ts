@@ -70,8 +70,20 @@
 // injection surface (D-008) and is a SECURITY decision. Both are NAMED here as the follow-up work
 // that would make this gate genuinely verify a JS worktree, and neither is decided by this fix.
 // Until they exist the composition is still safe rather than silent: the gate reports 'skipped'
-// (UNVERIFIED), and the review policy `holdMergeBack:'unverified'` (boot.ts) turns exactly that
-// state into a merge HELD for operator review on any large change.
+// (UNVERIFIED) and says WHY on every step, and the completion event + drain ledger carry the whole
+// record.
+//
+// AND THE ONE THING THAT SKIP MUST NOT DO — the follow-on DoD-review's finding, closed here.
+// 'skipped' is now reachable for TWO different reasons, and they are not interchangeable:
+//   (a) the project declares NOTHING to check — no build/lint/typecheck/test target at all;
+//   (b) the project DOES declare checks and THIS working dir could not run them (the two cases
+//       above: no dependency tree, un-spawnable `.cmd` shim).
+// The merge-hold policy `holdMergeBack:'unverified'` (boot.ts) was written against (a) alone — a
+// change with neither a gate nor a review behind it does not silently land. Once (b) started
+// producing the same status value, every large change on every npm project became a PERMANENT hold
+// (no automated reviewer exists to release it), which is precisely the "cannot stall a healthy
+// project" invariant the arming site promises. So the outcome now carries {@link
+// GateOutcome.unrunnable} to keep the two apart, and the policy keys on it.
 //
 // SHADOW PATHS (all four built + tested): happy (steps run, all green) · nil (no cwd / no
 // buildTool / no testCommand → skipped) · empty (a resolvable tool whose scripts are absent →
@@ -130,6 +142,21 @@ export interface GateOutcome {
 	verified: boolean;
 	/** True when a step could not be RUN (spawn threw / cwd gone), as opposed to running and failing. */
 	errored: boolean;
+	/**
+	 * True when at least one step RESOLVED to a real command that this working dir could not
+	 * exercise — the toolchain pre-flight fired (no dependency tree / no manifest / a program the
+	 * argv-only seam cannot spawn). It separates the two reasons `status` can be 'skipped':
+	 *
+	 *   • `unrunnable:false` — there was NOTHING to verify: the project declares no build/lint/
+	 *     typecheck/test target. Nobody can check this change, here or anywhere.
+	 *   • `unrunnable:true`  — the project DOES declare real checks; THIS environment could not run
+	 *     them. Equally unverified, but it is a statement about the working dir, not the project.
+	 *
+	 * Consumers must not conflate them: `holdMergeBack:'unverified'` (orchestrator.ts
+	 * ReviewHoldPolicy) withholds a merge on the first and NOT on the second, because the
+	 * second is every healthy npm project on this platform and the hold has no automated release.
+	 */
+	unrunnable: boolean;
 	/** Every step considered, in order — including the ones that did not run and why (F-008). */
 	steps: GateStep[];
 	/** The first failing step's name, or null when nothing failed. */
@@ -354,6 +381,8 @@ export async function runPreCommitGate(
 	const steps: GateStep[] = [];
 	let failedAt: GateStepName | null = null;
 	let errored = false;
+	/** Set by the toolchain pre-flight — see {@link GateOutcome.unrunnable}. */
+	let unrunnable = false;
 
 	const cwd = (input.cwd ?? '').trim();
 	if (!cwd || !existsSync(cwd)) {
@@ -364,6 +393,9 @@ export async function runPreCommitGate(
 			status: 'skipped',
 			verified: false,
 			errored: false,
+			// Nothing RESOLVED here at all — we never got as far as asking whether a real command
+			// could run, so this is the "nothing to verify" skip, not the environment one.
+			unrunnable: false,
 			steps: [],
 			failedAt: null,
 			// SCREENED (D-026): a worktree path is a home path — PII — and this summary is persisted.
@@ -419,6 +451,10 @@ export async function runPreCommitGate(
 		// the agent's change — recording that as RED is the false-RED wedge (see the header).
 		const preflight = toolchainSkipReason(cwd, split.file, run === execFileRunner);
 		if (preflight) {
+			// The step resolved to a REAL command we chose not to run here. That is the environment
+			// skip, and it is recorded as such: a downstream policy that treats "nothing to check" and
+			// "could not check here" alike turns this into a permanent merge hold (see the header).
+			unrunnable = true;
 			steps.push({ name, command, ran: false, ok: false, detail: `${command} ${preflight}` });
 			continue;
 		}
@@ -464,8 +500,14 @@ export async function runPreCommitGate(
 			: `pre-commit gate FAILED at ${failedAt}: ${steps.find((s) => s.name === failedAt)?.detail ?? ''}`
 		: verified
 			? `pre-commit gate passed (${ranNames.join(', ')})`
-			: `pre-commit gate skipped: no build/lint/typecheck/test target detected — the change is UNVERIFIED ` +
-				`(${steps.map((s) => `${s.name}: ${s.detail}`).join('; ')})`;
+			: unrunnable
+				? // HONEST (F-008): saying "no target detected" about a project that declares four of
+					// them is a lie the operator would read on /atelier/queue.
+					`pre-commit gate skipped: the project's checks could NOT BE RUN in this working dir — the change ` +
+					`is UNVERIFIED here, which describes the environment, not the change ` +
+					`(${steps.map((s) => `${s.name}: ${s.detail}`).join('; ')})`
+				: `pre-commit gate skipped: no build/lint/typecheck/test target detected — the change is UNVERIFIED ` +
+					`(${steps.map((s) => `${s.name}: ${s.detail}`).join('; ')})`;
 
-	return { status, verified, errored, steps, failedAt, summary };
+	return { status, verified, errored, unrunnable, steps, failedAt, summary };
 }

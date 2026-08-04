@@ -10,6 +10,7 @@ import { startTestDb, type TestDb } from '../db/testserver';
 import { createProject } from '../projects/repo';
 import { createTask, setStatus } from '../tasks/repo';
 import { runPostTask } from './post-task';
+import { shouldHoldMergeBack } from './orchestrator';
 import type { CommandResult, CommandRunner } from './command-runner';
 
 // PCG-1 VERIFY (integration, REAL SurrealDB) — the pre-commit gate + the review wiring inside the
@@ -548,9 +549,23 @@ describe('PCG-1 — an UNVERIFIABLE working dir does not wedge the task (the fal
 			);
 
 			// …and the safety net still engages: an unverified LARGE change queues a review, which is
-			// what boot.ts's holdMergeBack:'unverified' policy turns into a HELD merge.
+			// the operator's surface on a change nothing could check here.
 			expect(res.review?.triggered).toBe(true);
 			expect(await countReviewItems(taskId)).toBe(1);
+
+			// REGRESSION (the follow-on DoD-review finding, at the composition level): this skip is
+			// flagged as an ENVIRONMENT skip, so boot.ts's holdMergeBack:'unverified' does NOT turn
+			// it into a merge hold. Holding here stalled every large change on every npm project with
+			// no automated release, which is exactly the "cannot stall a healthy project" invariant
+			// the gate is armed under.
+			expect(res.gate?.unrunnable).toBe(true);
+			expect(shouldHoldMergeBack('unverified', res.review?.triggered === true, res.gate)).toBe(
+				false
+			);
+			// The persisted record carries the distinction too — an operator asking "why did this
+			// land unverified" gets the environment named, not a false "no build/test target".
+			expect((detail.gate as { unrunnable?: boolean }).unrunnable).toBe(true);
+			expect(String(detail.gate_consequence)).toMatch(/could not RUN them/);
 		} finally {
 			rmSync(worktreeLike, { recursive: true, force: true });
 		}

@@ -545,19 +545,36 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 			// correctness finding: Atelier committed its autonomous sessions' work and then
 			// fast-forwarded it into the project branch with NO gate — the studio held every managed
 			// project to a Definition of Done it did not apply to itself. With this on, the project's
-			// build/lint/typecheck/test run BEFORE the terminal transition; a RED gate lands the task
-			// `failed`, and merge-back PRESERVES the branch instead of merging it (the work is safe on
-			// the session branch — F-007 — and the full per-step record is on the completion event and
-			// in the drain ledger, F-008). A project with no detectable target is an honest 'skipped',
-			// never a false RED (HB-2), so this cannot wedge a non-JS/.NET project.
+			// build/lint/typecheck/test run BEFORE the terminal transition — WHEN THIS HOST CAN RUN
+			// THEM; a RED gate lands the task `failed`, and merge-back PRESERVES the branch instead of
+			// merging it (the work is safe on the session branch — F-007 — and the full per-step record
+			// is on the completion event and in the drain ledger, F-008). A project with no detectable
+			// target is an honest 'skipped', never a false RED (HB-2), so this cannot wedge a
+			// non-JS/.NET project.
+			//
+			// READ THIS BEFORE RELYING ON THE GATE (the state as SHIPPED, not as intended). An
+			// npm-family step is ALSO 'skipped' — not run at all — whenever the working dir has no
+			// installed dependency tree, or the program is only a `.cmd` shim the argv-only seam
+			// refuses to spawn (D-008). A WI-2 session worktree has NO node_modules and Windows npm is
+			// a `.cmd`, so TODAY every npm project — Atelier's own repo included (D-040) — gets an
+			// UNVERIFIED gate here, and only dotnet/cargo/go projects are genuinely gated. That is
+			// honest rather than false-RED (the alternative wedged every write task), but it is not
+			// verification: making the gate really check a JS worktree needs dependency provisioning
+			// or a vetted shell escape, both named as follow-up work in pre-commit-gate.ts.
 			preCommitGate: true,
 			// PCG-1 — the review capability, WIRED. `maybeEnqueueReview` has been fully built and
 			// tested since TASK 2.8 with ZERO production callers; it now runs after a gate-green
 			// commit and before merge-back. `holdMergeBack:'unverified'` is the deliberate policy:
-			// a large change withholds the merge ONLY when the gate verified nothing at all — a
-			// change with neither an automated gate NOR a review behind it does not silently land.
-			// It cannot stall a healthy project (one with a real build/test target verifies and
-			// merges exactly as before).
+			// a large change withholds the merge ONLY when there was NOTHING TO VERIFY — the project
+			// declares no build/lint/typecheck/test target, so the change has neither an automated
+			// gate nor a review behind it. It does NOT fire on the environment skip described above
+			// (`gate.unrunnable` — the project HAS checks, this host could not run them): that skip
+			// covers every npm project here, and since the release from a hold is an OPERATOR action
+			// (see the deferral below), holding on it would stop the autonomous line on every
+			// substantial task and pile up preserved worktrees — including on Atelier's own repo.
+			// The rule lives in ONE place, orchestrator.ts `shouldHoldMergeBack`; "it cannot stall a
+			// healthy project" is enforced there rather than assumed here. Either way the review
+			// work_item IS enqueued and escalated — the policy only decides whether the merge waits.
 			//
 			// The enqueued `review` work_item is drained by the PCG-1 `review` fork in #runItem, which
 			// ESCALATES it to the operator and spawns nothing (without that fork the item would have

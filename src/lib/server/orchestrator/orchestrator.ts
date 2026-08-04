@@ -46,6 +46,8 @@ import { setStatus, resetStuckTaskToFailed, resetStuckTaskToDone } from '../task
 import { writeAgentEvent } from '../analytics/events';
 import { Semaphore } from './semaphore';
 import { runPostTask, resolveTestCommand, type CommandRunner } from './post-task';
+// Type-only: the hold policy reads the gate's own verdict shape (status + why it was skipped).
+import type { GateOutcome } from './pre-commit-gate';
 import {
 	mergeBackWorktree,
 	type CommandRunner as GitRunner,
@@ -144,19 +146,53 @@ export type RouteResolver = (taskId: string, projectId: string) => StubRoute | P
  *   • 'never'      — the review work_item is enqueued and visible, but the merge proceeds. The
  *                    decision gates nothing. Present for a project that wants the signal only.
  *   • 'unverified' — THE SHIPPED DEFAULT. A large change is withheld from the project branch ONLY
- *                    when the pre-commit gate could not actually verify anything (status
- *                    'skipped': no build/lint/typecheck/test target). That is precisely the case
- *                    the operator's finding is about — a big change landing with NEITHER an
- *                    automated gate NOR a human review — and it CANNOT wedge a healthy project,
- *                    because any project with a real build/test target verifies and merges as
- *                    before. Nothing is lost: the branch + worktree are preserved with an honest
- *                    note and the queued review is the operator's actionable surface.
+ *                    when there was NOTHING TO VERIFY: the gate is 'skipped' because the project
+ *                    declares no build/lint/typecheck/test target at all (gate.unrunnable false).
+ *                    That is precisely the case the operator's finding is about — a big change
+ *                    landing with NEITHER an automated gate NOR a human review.
+ *
+ *                    IT DOES NOT FIRE ON AN ENVIRONMENT SKIP (gate.unrunnable true — the project
+ *                    HAS real checks and this working dir could not run them; see
+ *                    pre-commit-gate.ts's toolchain pre-flight). Keying on 'skipped' alone was a
+ *                    defect the moment that status grew a second meaning: on this platform EVERY
+ *                    npm project skips, so EVERY change of >= threshold files was held, forever —
+ *                    there is no automated reviewer to release a hold (boot.ts names it DEFERRED),
+ *                    so the autonomous line stopped on every substantial task and worktrees piled
+ *                    up. Atelier's own self-hosting repo (D-040) is an npm project, so it stopped
+ *                    itself first. The invariant this policy is armed under — "it cannot stall a
+ *                    healthy project" — is now enforced by the code, not just asserted in a comment.
+ *
+ *                    Nothing is lost either way: on a hold the branch + worktree are preserved with
+ *                    an honest note, and the review work_item is enqueued (and escalated to the
+ *                    operator) in BOTH cases — the policy decides only whether the merge waits on it.
  *   • 'always'     — every triggered review withholds the merge. Correct for a repo that wants a
  *                    human in the loop on every large change, and NOT the default because with no
  *                    review RUNNER armed (see the deferred note in boot.ts) the release from that
  *                    hold is an operator action, so it would stall an unattended run.
  */
 export type ReviewHoldPolicy = 'never' | 'unverified' | 'always';
+
+/**
+ * PCG-1 — THE hold decision, as ONE pure function (F-055: no second copy of this rule anywhere).
+ * Exported so the policy can be driven directly by tests across every combination, rather than
+ * only being observable through a full live drain — the composition that produced the permanent
+ * hold was invisible precisely because each half was tested alone.
+ *
+ * A hold means: the work is committed on the session branch, the branch + worktree are PRESERVED,
+ * and the merge waits for an operator. Never returned unless a review was actually triggered.
+ */
+export function shouldHoldMergeBack(
+	policy: ReviewHoldPolicy,
+	reviewTriggered: boolean,
+	gate: Pick<GateOutcome, 'status' | 'unrunnable'> | undefined
+): boolean {
+	if (!reviewTriggered || policy === 'never') return false;
+	if (policy === 'always') return true;
+	// 'unverified' — hold only when there was nothing to verify AT ALL. A gate skipped because this
+	// working dir could not run the project's real checks is an environment verdict, and holding on
+	// it stalls every healthy npm project with no automated release (see ReviewHoldPolicy).
+	return gate?.status === 'skipped' && gate.unrunnable !== true;
+}
 
 export interface OrchestratorOptions {
 	db: Db;
@@ -1507,19 +1543,25 @@ export class Orchestrator {
 					}
 					// PCG-1 — THE REVIEW HOLD. `triggered` means the change was big enough to warrant a
 					// review and one is queued. Whether that WITHHOLDS the merge is the configured
-					// policy (see ReviewHoldPolicy): 'unverified' — the shipped default — holds only
-					// when the gate verified NOTHING, i.e. the change has neither an automated gate nor
-					// a review behind it. The work is never lost: merge-back preserves the branch and
-					// the queued review is the operator's surface.
+					// policy — decided by the single {@link shouldHoldMergeBack} rule: 'unverified',
+					// the shipped default, holds only when there was NOTHING to verify (not when the
+					// environment merely could not run the project's real checks — that skip stalls
+					// every healthy npm project and has no automated release). The work is never lost:
+					// merge-back preserves the branch and the queued review is the operator's surface.
 					const holdPolicy = this.#postTask.review?.holdMergeBack ?? 'unverified';
 					reviewHeld =
 						!gateFailed &&
-						ptRes.review?.triggered === true &&
-						(holdPolicy === 'always' ||
-							(holdPolicy === 'unverified' && ptRes.gate?.status === 'skipped'));
+						shouldHoldMergeBack(holdPolicy, ptRes.review?.triggered === true, ptRes.gate);
 					if (reviewHeld) {
 						console.info(
 							`[orchestrator] merge HELD for review on task ${taskId}: ${ptRes.review?.changedFiles} files changed, gate ${ptRes.gate?.status ?? 'off'}, policy '${holdPolicy}' (branch preserved; review work_item ${ptRes.review?.workItemId ?? '(already queued)'})`
+						);
+					} else if (ptRes.review?.triggered === true) {
+						// The other half of the same decision, said out loud (F-008): a review IS queued
+						// and the merge proceeded anyway. Silence here would leave "why did this large
+						// change land while that one is stuck" unanswerable from the log.
+						console.info(
+							`[orchestrator] review queued but merge NOT held on task ${taskId}: ${ptRes.review.changedFiles} files changed, gate ${ptRes.gate?.status ?? 'off'}${ptRes.gate?.unrunnable ? ' (environment could not run the project checks — not a "nothing to verify" skip)' : ''}, policy '${holdPolicy}'`
 						);
 					}
 					// HB-H3 — the MID-RUN divergence close. The HB-H2 gate above only catches a

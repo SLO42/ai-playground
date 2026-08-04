@@ -188,9 +188,11 @@ describe('Db self-heal on auth-token expiry (F-042)', () => {
 	// DEFINE USER ... PASSWORD requires a strand LITERAL (no $param binding — SurrealQL
 	// parse limitation). name/password here are fixed test constants (never user input),
 	// so the literal is safe; D-016 value-binding still applies to all real call sites.
-	async function defineShortTokenUser(name: string, password: string) {
+	// `tokenDuration` is a SurrealQL duration literal, defaulted to the sub-second TTL used to
+	// PROVOKE an expiry; pass a long one to re-issue the same user a token that cannot lapse.
+	async function defineShortTokenUser(name: string, password: string, tokenDuration = '1s') {
 		await db.query(
-			`DEFINE USER OVERWRITE ${name} ON ROOT PASSWORD '${password}' ROLES OWNER DURATION FOR TOKEN 1s, FOR SESSION 4w;`
+			`DEFINE USER OVERWRITE ${name} ON ROOT PASSWORD '${password}' ROLES OWNER DURATION FOR TOKEN ${tokenDuration}, FOR SESSION 4w;`
 		);
 	}
 
@@ -206,6 +208,38 @@ describe('Db self-heal on auth-token expiry (F-042)', () => {
 		try {
 			// Let the 1s token lapse — the next query would otherwise throw IAM.
 			await new Promise((r) => setTimeout(r, 2200));
+			// WIDEN THE USER'S TOKEN TTL BEFORE THE HEALING QUERY (the same mid-test DEFINE USER
+			// OVERWRITE technique the bad-re-auth case below uses to rotate a password). The token
+			// already MINTED stays expired, so the real TTL-lapse trigger this test exists to cover
+			// is untouched — but the re-signin `runQuery` performs now mints a 4w token instead of
+			// another 1s one.
+			//
+			// WHY: `runQuery` (client.ts) re-auths ONCE and retries ONCE, and on retry failure
+			// rethrows the ORIGINAL expiry error. With a 1s TTL on BOTH tokens, any scheduling gap
+			// >1s between the re-signin and the retry re-expires the FRESH token, the retry throws
+			// IAM again, and the test fails with the very error it asserts against — a false RED
+			// that indicts the client for a test artefact. That is load-dependent, so it stayed
+			// hidden until the suite grew a second real-SurrealDB live server and 8-way fork
+			// contention pushed the gap past 1s. The sibling stampede case below already documents
+			// this exact class ("a sub-second TTL re-expires the fresh token before a contended
+			// retry runs — that flake is a test artefact, not a client defect"); this is the one
+			// case that was never converted. Now deterministic under any load.
+			// 1h, NOT 4w: the SDK arms a token-refresh timer from this duration, and 4w
+			// (2_419_200_000ms) overflows setTimeout's signed-32-bit limit — node clamps it to 1ms
+			// and emits TimeoutOverflowWarning, i.e. a timer that fires immediately and churns. 1h
+			// is SurrealDB's own default token TTL (see this block's header) and is four orders of
+			// magnitude beyond any scheduling gap, so it is deterministic without the overflow.
+			await defineShortTokenUser('heal_ok', SHORT_TOKEN_PW, '1h');
+			// PROVE THE HEAL IS STILL EXERCISED (guard against a vacuous green). Widening the
+			// user's TTL must NOT revive the token already minted — a SurrealDB token is a signed
+			// JWT whose `exp` is fixed at mint time, so re-DEFINEing the user cannot retroactively
+			// extend it. If that ever stopped holding, the session would still be authenticated,
+			// the guarded query below would succeed WITHOUT healing, and this test would pass while
+			// asserting nothing. So assert the precondition directly, through the RAW handle (which
+			// has no re-auth wrapper): it must still fail with the expiry signature.
+			await expect(healed.raw.query('SELECT content FROM note LIMIT 1;')).rejects.toThrow(
+				/Not enough permissions/
+			);
 			const out = await healed.query<[{ content: string }[]]>(
 				'SELECT content FROM note WHERE content = $c;',
 				{ c: 'hello world' }

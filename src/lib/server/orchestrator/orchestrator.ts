@@ -103,6 +103,30 @@ export interface StubRoute {
 	 * Absent ⇒ the harness base only.
 	 */
 	capabilities?: CapabilitySet;
+	/**
+	 * SPAWN-IDENTITY (LB-2 write half) — the PURPOSEFUL identity of the picked agent-pool slot
+	 * (`slots[].name` / `slots[].purpose` in agent-pool.yaml). `agentId` above is the ladder-rung
+	 * slot id (`sonnet-1`) — a tier bucket, not a name. These carry what the slot is FOR so the
+	 * session row is born with an identity instead of a bucket. Both OPTIONAL: a route seam that
+	 * supplies neither (every existing test stub, the degenerate stub route) produces a spawn
+	 * byte-identical to before (F-053).
+	 */
+	agentName?: string;
+	agentPurpose?: string;
+	/**
+	 * SPAWN-IDENTITY — the `.claude/agents` specialist NAME this route DELIBERATELY chose
+	 * (agent-pool `slots[].specialist`). Stamped on `session.specialist` (m0070). Absent ⇒ the
+	 * column stays NONE, exactly as today (F-008 — never a fabricated specialist).
+	 */
+	specialist?: string;
+	/**
+	 * SPAWN-IDENTITY — the HR identity the routing STAFFING path (WORKFORCE-SPEC §7) resolved for
+	 * a role-bound task: `role:<id>` + the certified `role_version:<id>`. Stamped on the session at
+	 * CREATE. Absent on every non-staffed route — an unstaffed spawn runs as NO role and inventing
+	 * one would be a fabricated identity (F-008).
+	 */
+	roleId?: string;
+	roleVersionId?: string;
 }
 
 /** The route seam: maps a triggering task → a resolved spawn plan. Sync (degenerate stub /
@@ -1196,6 +1220,16 @@ export class Orchestrator {
 					projectId,
 					taskId,
 					agentId: route.agentId,
+					// SPAWN-IDENTITY (LB-2 write half): forward the identity the route resolved so the
+					// session row is BORN with it. Each key is spread only when the route supplied it —
+					// a route seam that supplies none produces exactly the pre-change input object
+					// (F-053: the additive branch engages only when wired). launchSession omits every
+					// absent column at write, so an unwired spawn reads back NONE, never a fabrication.
+					...(route.agentName ? { agentName: route.agentName } : {}),
+					...(route.agentPurpose ? { agentPurpose: route.agentPurpose } : {}),
+					...(route.specialist ? { specialist: route.specialist } : {}),
+					...(route.roleId ? { roleId: route.roleId } : {}),
+					...(route.roleVersionId ? { roleVersionId: route.roleVersionId } : {}),
 					model: route.model,
 					intent: route.intent,
 					budgets: route.budgets,

@@ -38,6 +38,9 @@ import {
 	type AllowedScope,
 	type ResolvedTarget
 } from './config-target';
+// The fleet WINDOW BOUND is shared with the page so the loader's limit and the bound the filter
+// bar discloses can never drift apart (F-008). Pure module — no server-only imports.
+import { FLEET_LIMIT } from './fleet-view';
 import type { Actions, PageServerLoad } from './$types';
 
 /** The config kinds the editor accepts (validated at the boundary, D-016). */
@@ -106,6 +109,7 @@ export const load: PageServerLoad = async ({ depends, url }) => {
 			scopes: [] as CatalogScope[],
 			fleet: [] as FleetSessionXP[],
 			controlCaps,
+			fleetLimit: FLEET_LIMIT,
 			selectedSession,
 			transcript: [] as TranscriptMessage[],
 			sessionMeta: null as FleetSessionXP | null,
@@ -125,7 +129,7 @@ export const load: PageServerLoad = async ({ depends, url }) => {
 		// must NOT blank the config catalog (and vice-versa), so this degrades to [] on its own.
 		let fleet: FleetSessionXP[] = [];
 		try {
-			fleet = await listFleetAcrossProjects(db, 40);
+			fleet = await listFleetAcrossProjects(db, FLEET_LIMIT);
 		} catch {
 			fleet = [];
 		}
@@ -197,6 +201,7 @@ export const load: PageServerLoad = async ({ depends, url }) => {
 			scopes: withStatus,
 			fleet,
 			controlCaps,
+			fleetLimit: FLEET_LIMIT,
 			selectedSession,
 			transcript,
 			sessionMeta,
@@ -215,6 +220,7 @@ export const load: PageServerLoad = async ({ depends, url }) => {
 				scopes: [] as CatalogScope[],
 				fleet: [] as FleetSessionXP[],
 				controlCaps,
+				fleetLimit: FLEET_LIMIT,
 				selectedSession,
 				transcript: [] as TranscriptMessage[],
 				sessionMeta: null as FleetSessionXP | null,
@@ -228,6 +234,7 @@ export const load: PageServerLoad = async ({ depends, url }) => {
 			scopes: [] as CatalogScope[],
 			fleet: [] as FleetSessionXP[],
 			controlCaps,
+			fleetLimit: FLEET_LIMIT,
 			queryError: (err as Error).message,
 			selectedSession,
 			transcript: [] as TranscriptMessage[],

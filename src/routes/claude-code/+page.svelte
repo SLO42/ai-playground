@@ -7,13 +7,31 @@
    * is LIVE from the cc_* mirror (F-008 — no fabricated rows); honest empty states
    * when nothing is synced or the DB isn't connected yet. Svelte 5 runes only.
    */
+  import { untrack } from 'svelte';
   import { enhance } from '$app/forms';
-  import { invalidate } from '$app/navigation';
+  import { afterNavigate, invalidate, replaceState } from '$app/navigation';
+  import { page } from '$app/state';
   import { stream } from '$lib/client/stream.svelte';
   import SessionTranscript from '$lib/components/shell/SessionTranscript.svelte';
   import SessionFailureReason from '$lib/components/shell/SessionFailureReason.svelte';
   import { rowToTurn, interjectEventToTurn, type Turn } from '$lib/client/transcript-core';
   import { describeSession } from '$lib/shared/naming';
+  import {
+    FLEET_STATE_FILTERS,
+    FLEET_STATE_LABELS,
+    applyFleetViewToParams,
+    fleetCountScopeNote,
+    fleetMirrorDrift,
+    fleetScopeLabel,
+    fleetStateCounts,
+    fleetStateHint,
+    isFleetFiltered,
+    isFleetStateChipDisabled,
+    parseFleetView,
+    reseedFleetView,
+    resolveFleetView,
+    type FleetView
+  } from './fleet-view';
   import type { PageData, ActionData } from './$types';
 
   let { data, form }: { data: PageData; form: ActionData } = $props();
@@ -36,6 +54,189 @@
   const fleet = $derived(data.fleet ?? []);
   const running = $derived(fleet.filter((s) => s.status === 'running'));
   const recent = $derived(fleet.filter((s) => s.status !== 'running'));
+
+  // ── FLEET FILTERS + COLLAPSE (operator ask 2026-07-26) ────────────────────────────────
+  // *"the session fleet for claude code section should be filterable by project, failure, or
+  // collapseable. to keep the page from getting to tall."*
+  //
+  // The decision surface (parse / options / counts / predicate / filter) is the PURE
+  // `./fleet-view` module — unit-tested, and pinned to real rows in fleet-filter.live.test.ts.
+  // Here we only hold the reactive shell.
+  //
+  // WHERE THE STATE LIVES — and why it is not simply `page.url`:
+  // the view is LOCAL `$state`, SEEDED from the URL and MIRRORED back to it. The URL is the
+  // persistence (a reload or a shared link restores the exact view, no invented storage), but it
+  // cannot be the live source of truth here, because the mirror is written with SvelteKit's
+  // shallow `replaceState`, and `replaceState` updates the address bar + `page.state` WITHOUT
+  // touching `page.url` (kit client.js:2490-2521 — it even stashes the OLD `page.url.href` in the
+  // history entry). Reading `page.url.searchParams` back would therefore never see a filter click.
+  //
+  // Shallow `replaceState` (rather than `goto`) is deliberate: this loader reconciles config
+  // scopes against DISK and re-reads the whole cc_* catalog, so routing a filter/collapse click
+  // through it would re-pull all of that per click — exactly the "invalidate storm" this page
+  // already fights (DEFECT 2). The loader never reads the fleet params, so the LT-1 trap (a
+  // replaceState-injected param an invalidated loader cannot see) does not apply.
+  let fleetView = $state<FleetView>(parseFleetView(page.url.searchParams));
+
+  // The href we last SEEDED the view from. Plain `let` on purpose — it is the effect's own
+  // bookkeeping, never a render input, so it must not be reactive.
+  let fleetSeedHref = page.url.href;
+
+  // THE NAVIGATION SIGNAL — the second input the href alone cannot supply.
+  //
+  // REGRESSION (2026-07-26, measured on :5174): keying the re-seed on the href alone made a
+  // SAME-HREF real navigation indistinguishable from an invalidate re-publish. Load
+  // /claude-code → click `failed` (replaceState writes only the address bar) → click the sidebar
+  // self-link `/claude-code`: kit really navigates, `page.url.href` equals the seeded href, the
+  // href test said "re-publish", nothing was adopted — and the address bar lost its params while
+  // `failed` stayed pressed over its 32 rows. Advancing the seed inside `syncFleetUrl` instead
+  // would re-open the wipe above, because an invalidate re-publishes the ORIGINAL bare href.
+  //
+  // `afterNavigate` fires from exactly two places in kit 2.63.0 — hydration (client.js:724,
+  // `type:'enter'`) and the tail of `navigate()` (client.js:1987) — while `_invalidate`
+  // (client.js:405-488) and `replaceState` (client.js:2489-2521) call neither it nor
+  // `navigating` (:1713). So a bump here means "a real navigation happened", for a same-href
+  // navigation as much as a different-href one.
+  //
+  // The CONVERSE is false, and this comment used to imply it: an ABORTED navigation commits the
+  // address bar (:1833-1834) and `page.url` (:1894-1896) and then returns at :1929-1932 without
+  // ever reaching :1987 — no bump. `_invalidate` is what bumps that abort token (:413), and this
+  // page invalidates on every session row. The missing signal is repaired downstream, by
+  // `reassertFleetUrl` re-stating the view into the address bar; read its doc before touching
+  // either half.
+  //
+  // A monotonic COUNTER rather than a boolean, and an effect that depends on BOTH it and
+  // `page.url`, so the decision is independent of which of the two lands first: whichever runs
+  // last re-runs the effect with both facts present. `$state` because the effect must react to
+  // it; `fleetSeededNav` is a plain `let` — effect bookkeeping, never a render input.
+  let fleetNavEpoch = $state(0);
+  let fleetSeededNav = 0;
+  afterNavigate(() => {
+    fleetNavEpoch += 1;
+  });
+
+  // A REAL navigation (a transcript link, a shared URL) re-seeds the view from the new URL — a
+  // mere RE-PUBLISH of the same address does not.
+  //
+  // LIVE-VERIFIED DEFECT (2026-07-26, :5174): this effect used to re-seed on every `page` change.
+  // `page` is republished by every `invalidate`, and `onDbChange('session')` below invalidates
+  // `app:fleet` on every session row change — constantly, on the one page about running sessions.
+  // Since `replaceState` never writes `page.url` (:66-69), the republished URL still lacked the
+  // operator's params, so the re-seed overwrote a live filter/collapse with the parsed default:
+  // `?fleetState=failed&fleet=closed`, collapsed, 0 rows → one invalidate later, SAME URL,
+  // EXPANDED, 40 rows. `untrack` stopped the self-bounce; it could not stop the stale-URL clobber.
+  //
+  // The rule now lives in the pure `reseedFleetView` (unit-tested): adopt the URL when its href
+  // CHANGED, or when a real navigation fired (`fleetNavEpoch`, above) even at the SAME href.
+  // Identical href with no navigation ⇒ a re-publish ⇒ the live view is strictly newer and wins.
+  // `untrack` still keeps `fleetView` out of the dependency set: this effect reacts to the URL and
+  // to the navigation counter and to nothing else, so our own writes can never re-enter it.
+  $effect(() => {
+    const navigated = fleetNavEpoch !== fleetSeededNav;
+    const decision = reseedFleetView(fleetSeedHref, page.url, untrack(() => fleetView), navigated);
+    fleetSeedHref = decision.href;
+    // Consume the navigation exactly once: the NEXT invalidate re-publish at this href must read
+    // as a re-publish again, or the wipe returns on the very next session row change.
+    fleetSeededNav = fleetNavEpoch;
+    if (decision.view) fleetView = decision.view;
+    // …AND THEN RE-STATE OUR OWN FACT. The decision above trusts `navigated`, and that signal has
+    // a hole this page cannot close from the inside (see `reassertFleetUrl`). Whatever the view
+    // ends up being, the address bar is made to say it — untracked, because this reads `fleetView`
+    // / `page.state` purely as bookkeeping and must never re-enter the effect.
+    untrack(() => reassertFleetUrl());
+  });
+
+  /**
+   * Re-assert the URL mirror once the re-seed above has settled — the page, not a kit internal,
+   * owns "the address bar and the rendered view agree".
+   *
+   * LIVE-VERIFIED DEFECT (2026-07-26, :5174, AFTER the `afterNavigate` fix): engage `failed`
+   * (`?fleetState=failed`, 32 rows, pressed), then a same-href navigation with one
+   * `invalidate('app:fleet')` landing after kit pushed the history entry ⇒ address bar bare
+   * `/claude-code` while `failed 32` was still pressed over 32 rows. Kit 2.63.0 `navigate()`
+   * commits the address bar (client.js:1833-1834) and `page.url` (:1894-1896), awaits settled + 2
+   * ticks (:1921-1926), and only THEN aborts at `if (token !== nav_token) … return false`
+   * (:1929-1932) — an early return that never reaches `after_navigate_callbacks` (:1987).
+   * `_invalidate` bumps that token (:413), and the `onDbChange('session')` below invalidates on
+   * every session row change. So a navigation commits BOTH the address bar and `page.url` and
+   * never signals: `fleetNavEpoch` does not move, the decision reads a re-publish (correctly —
+   * the navigation was discarded), and the URL is left advertising a view nobody applied.
+   *
+   * Rather than hunt a complete navigation signal inside kit, the mirror re-states the view.
+   * Idempotent by construction: it only writes when the address bar actually DISAGREES
+   * ({@link fleetMirrorDrift}), so the invalidate storm costs one comparison, not a
+   * `history.replaceState` per session row. It also repairs the Back case, where kit restores
+   * `page.url` from the entry's `PAGE_URL_KEY` (client.js:2822) — written by `replaceState` as the
+   * PRE-click href (:2512) — so the restored view and the displayed address disagreed.
+   */
+  function reassertFleetUrl(): void {
+    const drift = fleetMirrorDrift(
+      typeof location === 'undefined' ? null : location.search,
+      page.url.searchParams,
+      fleetView
+    );
+    if (drift === null) return;
+    syncFleetUrl();
+  }
+
+  /** Mirror the view into the address bar. Best-effort: the in-page view applies regardless. */
+  function syncFleetUrl(): void {
+    try {
+      const url = new URL(page.url);
+      url.search = applyFleetViewToParams(page.url.searchParams, fleetView).toString();
+      replaceState(url, page.state);
+    } catch {
+      // EVERY ERROR HAS A NAME — trigger: `replaceState` before the client router is initialised
+      // (or during SSR). Caught here; the operator sees the filter apply normally, only the
+      // address bar is not updated for that one click. Never a thrown error in a click handler.
+    }
+  }
+
+  function setFleetView(next: Partial<FleetView>): void {
+    fleetView = { ...fleetView, ...next };
+    syncFleetUrl();
+  }
+
+  /**
+   * The transcript href carries the CURRENT fleet params, so opening a transcript (a real
+   * navigation) does not silently strip the operator's filter from the URL.
+   */
+  function transcriptHref(sessionId: string): string {
+    const params = applyFleetViewToParams(page.url.searchParams, fleetView);
+    params.set('session', sessionId);
+    return `/claude-code?${params.toString()}`;
+  }
+
+  // The bound of the loaded window (the loader's FLEET_LIMIT) — disclosed next to the filters so a
+  // filtered-empty list is never mistaken for "this project has never had a session" (F-008).
+  const fleetLimit = $derived(data.fleetLimit ?? fleet.length);
+  // Window-wide counts for the ALWAYS-VISIBLE head — they must stay true while the section is
+  // collapsed or filtered, so a collapse can never hide the fact that something failed.
+  const fleetWindowCounts = $derived(fleetStateCounts(fleet));
+  const fleetResolved = $derived(resolveFleetView(fleet, fleetView));
+  const visibleFleet = $derived(fleetResolved.visible);
+  const fleetFiltered = $derived(isFleetFiltered(fleetView));
+  /** What the heading actually shows — the real project scope, never a blanket "all projects". */
+  const fleetScope = $derived(fleetScopeLabel(fleetView, fleetResolved.projectOptions));
+  /**
+   * The qualifier that keeps the window-wide head counts TRUE once the heading beside them is
+   * narrowed to one project — without it the two halves of one head disagree (F-008).
+   */
+  const fleetCountScope = $derived(fleetCountScopeNote(fleetView));
+  /**
+   * The project scope the CHIP BADGES are counted under (`fleetStateCounts(fleet, view.project)`),
+   * so each chip's disclosed predicate matches its own number instead of claiming the whole
+   * window. `null` when no project filter is engaged — then the base predicate is already true.
+   */
+  const fleetChipScope = $derived(fleetView.project ? fleetScope : null);
+  /** The head's one-line summary of what is filtering, shown even when collapsed. */
+  const fleetFilterSummary = $derived.by((): string | null => {
+    if (!fleetFiltered) return null;
+    const parts: string[] = [];
+    if (fleetView.state !== 'all') parts.push(FLEET_STATE_LABELS[fleetView.state]);
+    if (fleetView.project) parts.push(fleetScope);
+    return parts.join(' · ');
+  });
 
   // ── TASK (transcript-panel) — the LIVE read-only transcript the fleet's `transcript →`
   // link (/claude-code?session=<id>) lands on. The PERSISTED LT1 conversation (`message`
@@ -294,22 +495,131 @@
        over the loopback control endpoint (D-035). Live over the one SSE. -->
   {#if connected}
     <section class="card fleet" aria-label="cross-project session fleet">
+      <!-- The head is ALWAYS visible, collapsed or not: the window-wide running/recent/failed
+           counts stay true so collapsing the section can never hide that something failed. -->
       <div class="fleet-head">
-        <span class="eyebrow">session fleet · all projects</span>
-        <span class="count mono">{running.length} running · {recent.length} recent</span>
+        <h2 class="fleet-h">
+          <button
+            class="fleet-toggle"
+            type="button"
+            aria-expanded={fleetView.open}
+            aria-controls="fleet-body"
+            onclick={() => setFleetView({ open: !fleetView.open })}
+          >
+            <span class="chev" data-open={fleetView.open} aria-hidden="true">▸</span>
+            <span class="eyebrow">session fleet · {fleetScope}</span>
+          </button>
+        </h2>
+        <span class="count mono">
+          {running.length} running · {recent.length} recent{#if fleetWindowCounts.failed > 0}<span
+              class="count-failed">&nbsp;· {fleetWindowCounts.failed} failed</span
+            >{/if}{#if fleetCountScope}<span class="count-scope"
+              >&nbsp;{fleetCountScope}</span
+            >{/if}
+        </span>
       </div>
-      {#if capsNote && fleet.length > 0}
-        <!-- HONEST capability state (14.6/F-008): why some controls are disabled. -->
-        <p class="caps-note mono">controls limited — {capsNote}</p>
-      {/if}
-      {#if fleet.length === 0}
-        <p class="card-body none-body">
-          No sessions across the portfolio yet — launch a Claude Code session from any
-          project and it appears here, live.
-        </p>
-      {:else}
-        <ul class="fleet-rows" aria-label="sessions across all projects">
-          {#each [...running, ...recent] as s (s.id)}
+
+      <!-- The whole expandable region. The container is ALWAYS in the DOM so `aria-controls`
+           always resolves; only its contents are conditional. -->
+      <div id="fleet-body" class="fleet-body">
+        {#if !fleetView.open}
+          <!-- Collapsed: say exactly what is hidden, and that a filter is still narrowing it —
+               a collapse must not quietly change what "hidden" counts (F-008). -->
+          <p class="fleet-collapsed mono">
+            {#if fleetFilterSummary}{visibleFleet.length} of {fleet.length} sessions hidden ·
+              filtered by {fleetFilterSummary}{:else}{fleet.length}
+              session{fleet.length === 1 ? '' : 's'} hidden{/if}
+          </p>
+        {:else}
+          {#if capsNote && fleet.length > 0}
+            <!-- HONEST capability state (14.6/F-008): why some controls are disabled. -->
+            <p class="caps-note mono">controls limited — {capsNote}</p>
+          {/if}
+
+          <!-- FILTERS. Every option is derived from the LOADED rows and carries its real count,
+               so the operator is never offered a NARROWING filter that cannot match. The disable
+               rule and the hint are the pure `isFleetStateChipDisabled` / `fleetStateHint`: the
+               active chip and the widening `all` chip are never dead, and each chip's disclosed
+               predicate carries the project scope its badge is already counted under. -->
+          {#if fleet.length > 0}
+            <div class="fleet-filters">
+              <div class="chips" role="group" aria-label="Filter sessions by state">
+                {#each FLEET_STATE_FILTERS as st (st)}
+                  {@const n = fleetResolved.stateCounts[st]}
+                  {@const active = fleetView.state === st}
+                  <button
+                    type="button"
+                    class="chip"
+                    data-active={active}
+                    aria-pressed={active}
+                    disabled={isFleetStateChipDisabled(st, n, active)}
+                    title={fleetStateHint(st, fleetChipScope)}
+                    onclick={() => setFleetView({ state: st })}
+                  >
+                    {FLEET_STATE_LABELS[st]}
+                    <span class="chip-n mono">{n}</span>
+                  </button>
+                {/each}
+              </div>
+
+              {#if fleetResolved.projectOptions.length > 1 || fleetView.project}
+                <!-- A <select> rather than chips: the point of this whole change is page HEIGHT,
+                     and the project list grows with the portfolio. -->
+                <label class="filter-project">
+                  <span class="filter-label">project</span>
+                  <select
+                    value={fleetView.project ?? ''}
+                    onchange={(e) => setFleetView({ project: e.currentTarget.value || null })}
+                  >
+                    <option value="">all projects ({fleetWindowCounts[fleetView.state]})</option>
+                    {#each fleetResolved.projectOptions as o (o.value)}
+                      <option value={o.value}
+                        >{o.label} ({o.count}){o.stale ? ' — none in view' : ''}</option
+                      >
+                    {/each}
+                  </select>
+                </label>
+              {/if}
+
+              {#if fleetFiltered}
+                <button
+                  type="button"
+                  class="ctl clear-filters"
+                  onclick={() => setFleetView({ project: null, state: 'all' })}>Clear filters</button
+                >
+              {/if}
+
+              <!-- HONEST WINDOW BOUND (F-008): the fleet is the newest N sessions, not the whole
+                   portfolio history. "This project has no failures" and "its failures are older
+                   than the window" are different facts; the operator gets to tell them apart. -->
+              <p class="fleet-window mono">
+                showing {visibleFleet.length} of {fleet.length} · window = newest {fleetLimit} sessions
+                across all projects
+              </p>
+            </div>
+          {/if}
+
+          {#if fleet.length === 0}
+            <p class="card-body none-body">
+              No sessions across the portfolio yet — launch a Claude Code session from any
+              project and it appears here, live.
+            </p>
+          {:else if fleetResolved.filteredEmpty}
+            <!-- Honest FILTERED-empty — distinct from "no sessions exist" (F-008). Names WHY. -->
+            <p class="card-body none-body" role="status">
+              No session in this window matches
+              {#if fleetView.state !== 'all'}<span class="mono"
+                  >{FLEET_STATE_LABELS[fleetView.state]}</span
+                >{/if}{#if fleetView.state !== 'all' && fleetView.project}&nbsp;+{/if}
+              {#if fleetView.project}<span class="mono"
+                  >{fleetResolved.projectOptions.find((o) => o.value === fleetView.project)?.label ??
+                    fleetView.project}</span
+                >{/if}. {#if fleetResolved.staleProject}Older sessions may exist outside the newest
+                {fleetLimit}.{/if}
+            </p>
+          {:else}
+            <ul class="fleet-rows" aria-label="sessions across all projects">
+              {#each visibleFleet as s (s.id)}
             {@const isRunning = s.status === 'running'}
             {@const isSelected = selectedSession === s.id}
             {@const name = describeSession(
@@ -348,7 +658,7 @@
                      interactive nesting — the controls live in their own .sess-controls). -->
                 <a
                   class="sess-id mono transcript-link"
-                  href={`/claude-code?session=${encodeURIComponent(s.id)}`}
+                  href={transcriptHref(s.id)}
                   aria-current={isSelected ? 'true' : undefined}
                   aria-label={`View transcript for session ${shortId(s.id)}`}
                   title={s.id}>{shortId(s.id)}</a
@@ -423,9 +733,11 @@
                 <p class="ctl-error" role="alert">{controlErr[s.id]}</p>
               {/if}
             </li>
-          {/each}
-        </ul>
-      {/if}
+              {/each}
+            </ul>
+          {/if}
+        {/if}
+      </div>
     </section>
   {/if}
 
@@ -1100,9 +1412,175 @@
     align-items: baseline;
     justify-content: space-between;
     gap: var(--space-3, 0.75rem);
+    flex-wrap: wrap;
+  }
+  /* The section heading IS the disclosure control — a real <button> (keyboard + aria-expanded),
+     wrapped in an <h2> so the collapse does not cost the page its heading structure.
+     LONGHAND, never the `font:` shorthand: the shorthand resets font-family and would strip the
+     --font-display that base.css:26 puts on every h1–h6 (the 14.3d guard in route-head-a11y).
+     Only the SIZE/WEIGHT are neutralised here — the visible text is the .eyebrow span inside. */
+  .fleet-h {
+    margin: 0;
+    font-size: inherit;
+    font-weight: inherit;
+    line-height: inherit;
+    min-width: 0;
+  }
+  .fleet-toggle {
+    appearance: none;
+    display: inline-flex;
+    align-items: baseline;
+    gap: var(--space-2, 0.5rem);
+    margin: 0;
+    padding: 0.15rem 0.35rem 0.15rem 0.15rem;
+    background: none;
+    border: 0;
+    border-radius: var(--radius-sm, 6px);
+    color: inherit;
+    cursor: pointer;
+    text-align: left;
+  }
+  .fleet-toggle:hover {
+    background: var(--color-surface-overlay);
+  }
+  .fleet-toggle:focus-visible {
+    outline: 2px solid var(--color-focus-ring);
+    outline-offset: 2px;
+  }
+  .chev {
+    flex: none;
+    display: inline-block;
+    font-size: 0.7rem;
+    line-height: 1;
+    color: var(--color-text-muted);
+    transform: rotate(0deg);
+    transition: transform var(--motion-fast, 120ms) ease;
+  }
+  .chev[data-open='true'] {
+    transform: rotate(90deg);
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .chev {
+      transition: none;
+    }
   }
   .count {
     font-size: 0.75rem;
+    color: var(--color-text-muted);
+  }
+  /* A failure count in the ALWAYS-VISIBLE head: collapsing the section must never hide it. */
+  .count-failed {
+    color: var(--color-error-on-overlay);
+    font-weight: 600;
+  }
+  /* The qualifier that reconciles the window-wide counts with a project-scoped heading. It keeps
+     the muted weight of the counts it qualifies (never the failure emphasis, which ends before
+     it) and never wraps away from them — split across lines it would stop reading as one claim. */
+  .count-scope {
+    font-weight: 400;
+    white-space: nowrap;
+  }
+  .fleet-body {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-3, 0.75rem);
+  }
+  .fleet-collapsed {
+    margin: 0;
+    font-size: 0.74rem;
+    color: var(--color-text-muted);
+  }
+
+  /* ── Fleet filters (operator ask 2026-07-26: filter by project / failure, collapse) ── */
+  .fleet-filters {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-2, 0.5rem) var(--space-3, 0.75rem);
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1, 0.25rem);
+  }
+  .chip {
+    appearance: none;
+    display: inline-flex;
+    align-items: baseline;
+    gap: 0.35rem;
+    padding: 0.2rem 0.6rem;
+    background: var(--color-surface-card);
+    color: var(--color-text-2);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-pill, 999px);
+    font-size: 0.72rem;
+    font-weight: 600;
+    cursor: pointer;
+    min-height: 24px;
+  }
+  .chip:hover:not(:disabled) {
+    background: var(--color-surface-overlay);
+    color: var(--color-text);
+  }
+  .chip:focus-visible {
+    outline: 2px solid var(--color-focus-ring);
+    outline-offset: 2px;
+  }
+  .chip[data-active='true'] {
+    background: var(--color-accent-muted, var(--color-surface-overlay));
+    border-color: var(--color-accent);
+    color: var(--color-text);
+  }
+  /* A 0-count option cannot match anything — it is offered, but honestly unusable. */
+  .chip:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
+  }
+  .chip-n {
+    font-size: 0.68rem;
+    color: var(--color-text-muted);
+  }
+  .chip[data-active='true'] .chip-n {
+    color: var(--color-text-2);
+  }
+  .filter-project {
+    display: inline-flex;
+    align-items: center;
+    gap: var(--space-2, 0.5rem);
+    min-width: 0;
+  }
+  .filter-label {
+    font-size: 0.68rem;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-text-muted);
+  }
+  .filter-project select {
+    appearance: auto;
+    max-width: 16rem;
+    padding: 0.2rem 0.4rem;
+    background: var(--color-surface-card);
+    color: var(--color-text);
+    border: var(--border-width, 1px) solid var(--color-border);
+    border-radius: var(--radius-sm, 6px);
+    font-size: 0.74rem;
+    /* A <select> does NOT inherit the page face by default (UA stylesheet), so it must be set —
+       through the TOKEN, never `inherit`/a literal family (the 14.1 typography-tokens guard). */
+    font-family: var(--font-body);
+  }
+  .filter-project select:focus-visible {
+    outline: 2px solid var(--color-focus-ring);
+    outline-offset: 2px;
+  }
+  .clear-filters {
+    flex: none;
+  }
+  /* The honest window bound — the fleet is the newest N sessions, not all of history (F-008). */
+  .fleet-window {
+    margin: 0;
+    margin-left: auto;
+    font-size: 0.7rem;
     color: var(--color-text-muted);
   }
   .none-body {

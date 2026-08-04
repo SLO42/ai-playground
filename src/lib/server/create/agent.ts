@@ -15,6 +15,7 @@ import type { Db } from '../db/client';
 import type { EventBus } from '../events/bus';
 import type { AgentRuntime } from '../runtime/index';
 import { launchSession, type LaunchInput } from '../sessions/launch';
+import { spawnIdentity } from '../sessions/spawn-identity';
 import type { CreateBrief, ProposalGenerator } from './plan';
 import { ProposalContractError } from './plan';
 import { getTemplate, BEPINEX_GAME_CONFIGS, type ProjectTemplate } from './templates';
@@ -228,6 +229,9 @@ export function makeProposalAgent(deps: ProposalAgentDeps): ProposalGenerator {
 			// No real task — a synthetic prompt task (D-013 shape), so nothing is written to `task`.
 			promptTask: { id: `create_proposal_${Date.now()}`, title: prompt.title, description: prompt.description },
 			agentId: deps.agentId,
+			// SPAWN-IDENTITY: the caller passes DEFAULT_AGENT ("opus-1"). The slot id stays the
+			// runtime key; the row is born naming the work — this is the Create-with-AI founder.
+			...spawnIdentity('projectFounder'),
 			model: deps.model,
 			intent: 'deep-explore',
 			budgets: { thinking: 'high', toolCalls: 30, concurrency: 1 },

@@ -30,7 +30,7 @@ import { join } from 'node:path';
 import type { Db } from '../db/client';
 import type { EventBus } from '../events/bus';
 import { ConfigError, loadOrchestration, loadWorkforce } from '../config/index';
-import { launchSession, listSessionMessages } from '../sessions/index';
+import { launchSession, listSessionMessages, spawnIdentity } from '../sessions/index';
 import type { AgentRuntime, ModelSelection, SpawnBudgets } from '../runtime/index';
 import {
 	getTask,
@@ -461,6 +461,12 @@ export async function runValidationPanel(
 						description: buildValidatorPrompt(seat, panelSize)
 					},
 					agentId: `panel-validator-${seat}`,
+					// SPAWN-IDENTITY: the slot id here is PER-SEAT, so every panel seat used to become
+					// its OWN agent node in the living scene — the F-046 shape (a session-unique key
+					// standing in as an agent identity) rendered as N unrelated one-session clusters.
+					// The seat number stays the runtime key (and rides the spawn event's agentSlot);
+					// all seats now share ONE honest identity because they ARE the same agent.
+					...spawnIdentity('validationPanelist'),
 					model: route.model,
 					// A validation read is a judgment turn, not an edit turn.
 					intent: 'simple-question',

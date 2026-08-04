@@ -275,6 +275,31 @@ describe('routing — §7 staffing short-circuit (additive, fail-closed)', () =>
 		const ev = await getRoutingEvent(db, plan.routingEventId);
 		expect(ev.method).toBe('explicit');
 		expect((ev.chosen as Record<string, unknown>).model_id).toBe('claude-opus');
+		// SPAWN-IDENTITY (LB-2 write half): the resolved HR identity travels WITH the plan so the
+		// launch path can stamp `session.role`/`role_version` AT CREATE. Staffing is the ONE place
+		// routing genuinely knows it; dropping it here is what left every drained session role-less.
+		expect(plan.roleId).toBe('role:security_officer');
+		expect(plan.roleVersionId).toBe(STAFFED.version);
+	});
+
+	it('carries NO role identity on a non-staffed route — an unstaffed spawn runs as no role', async () => {
+		// Every other path (classify / tier / fallback / explicit override) leaves both undefined,
+		// so the launch omits the columns. An honest "no role" beats a guessed one (F-008).
+		const t = await createTask(db, {
+			project: projectId,
+			title: 'Implement the widget',
+			description: 'add a feature'
+		});
+		const plan = await resolveRoute({
+			db,
+			task: { id: t.id, project: projectId, title: t.title, description: t.description },
+			pool,
+			orchestration: orch,
+			providerHealth: async () => allUp,
+			staffResolver: async () => STAFFED // present, but the task carries no role → never consulted
+		});
+		expect(plan.roleId).toBeUndefined();
+		expect(plan.roleVersionId).toBeUndefined();
 	});
 
 	it('an UNSTAFFED role (resolver → null) falls through to the normal order — byte-identical to no seam', async () => {

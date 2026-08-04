@@ -25,6 +25,7 @@ import {
 	createReviewProposal,
 	createRole,
 	createRoleVersion,
+	getInterviewRun,
 	getReviewProposal,
 	getRole,
 	getRoleVersion,
@@ -46,7 +47,7 @@ import {
 	ResolutionGateError,
 	swapFromProposal
 } from './resolution';
-import { type GauntletDeps } from './gauntlet';
+import { adjudicateInterviewRun, type GauntletDeps } from './gauntlet';
 
 // WORKFORCE-SPEC §5 RESOLUTION — the operator-gated half, end-to-end vs a REAL throwaway
 // SurrealDB + the REAL ClaudeCodeRuntime over a scripted backend (gauntlet.test.ts
@@ -522,6 +523,63 @@ describe('§5 re-gauntlet TERMINALITY — a non-terminal run never writes a scor
 			swapFromProposal(db, { proposal: proposal.id, modelId: MODEL, operatorConfirmed: true })
 		).rejects.toThrow(ResolutionGateError);
 		expect((await getRole(db, seed.role.id))!.active_version).toBe(seed.incumbent.id);
+	}, 60_000);
+
+	// THE SECOND DEFECT, found by the TERM-R independent review: the gate above is correct but
+	// leaves no EXIT. `regauntletChallenger` is the only function that records a comparison, and
+	// that write sits below an unconditional `runGauntlet` — so when the operator resolves the
+	// queue, `adjudicateInterviewRun` finalizes the RUN and nothing reconciles the proposal. The
+	// paid, fully-scored run is stranded behind a second real spend. The reason string is what the
+	// operator actually reads (surfaced verbatim as `incomparableReason` by the regauntlet action
+	// in routes/agents/proposals/+page.server.ts), and it used to say only "resolving it can still
+	// RAISE" — i.e. it pointed at the queue as the way forward, which recovers nothing.
+	it('the ADJUDICATING reason is TRUE about the exit: the queue finalizes the RUN and strands the proposal', async () => {
+		const seed = await seedRole();
+		await certifyIncumbent(seed);
+		const proposal = await openProposal(seed);
+		await authorChallenger(db, {
+			proposal: proposal.id,
+			promptCore: 'You are reviewer.\nAmbiguous evidence, second run.',
+			operatorConfirmed: true
+		});
+
+		const re = await regauntletChallenger(depsFor(partialMatchBackend(seed.defectSlug)), {
+			proposal: proposal.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: MODEL,
+			trigger: 'operator'
+		});
+		expect(re.outcome.kind).toBe('ran');
+		if (re.outcome.kind !== 'ran') return;
+		expect(re.outcome.run.status).toBe('adjudicating');
+
+		// ① THE OPERATOR-FACING REASON NAMES THE REAL NEXT STEP. Not "resolve the queue" (which
+		// records nothing) but a NEW run, and it says that costs money — the operator is deciding
+		// a spend, so the sentence that informs the decision must not understate it.
+		const reason = re.comparison!.incomparableReason;
+		expect(reason).toMatch(/adjudication queue/);
+		expect(reason).toMatch(/NEW re-gauntlet/);
+		expect(reason).toMatch(/real spend/);
+		// And it must not be readable as "resolving the queue finishes this".
+		expect(reason).toMatch(/Resolving the queue does NOT produce this comparison/);
+
+		// ② THE STRAND ITSELF, pinned as DOCUMENTED behaviour rather than an accident. Resolve the
+		// whole queue the way the operator does on /agents (the same adjudicateInterviewRun the
+		// route action calls) and the run goes TERMINAL — it is scored and paid for...
+		const runId = re.outcome.run.id;
+		const queued = await getInterviewRun(db, runId);
+		const finalized = await adjudicateInterviewRun(db, runId, {
+			resolutions: queued!.ambiguous.map((_, index) => ({ index, resolution: 'dismiss' as const }))
+		});
+		expect(['passed', 'failed']).toContain(finalized.status);
+
+		// ...and the proposal is exactly where it was. Nothing reconciled it. THIS is why the
+		// reason string has to say a new run is required. When a reconcile path lands, these two
+		// assertions are the ones that must change — and the reason string must change with them.
+		const after = await getReviewProposal(db, proposal.id);
+		expect(after!.status).toBe('interviewing');
+		expect(after!.comparison ?? null).toBeNull();
 	}, 60_000);
 
 	it('a TERMINAL challenger is unaffected — the gate withholds, it does not break the path', async () => {

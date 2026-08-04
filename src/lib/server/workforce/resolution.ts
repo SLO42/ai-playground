@@ -513,9 +513,22 @@ function recallOf(found: number, total: number): number | null {
  *     verdict asks the operator to decide on a number that does not exist, which is the same
  *     fabrication one level up. 'interviewing' is also simply TRUE for both non-terminal cases:
  *     'adjudicating' means the operator still has queue items to resolve on /agents, 'error'
- *     means the run must be retried. Leaving the proposal there routes to the correct next
- *     action instead of a dead-end decision screen, and it is the reversible choice — no row
- *     written is a state nothing downstream can misread.
+ *     means the run must be retried. It is also the reversible choice — no row written is a
+ *     state nothing downstream can misread.
+ *
+ *     KNOWN LIMITATION, stated here because the operator PAYS for it (TERM-R review). Withholding
+ *     is correct, but there is no RECONCILE path behind it. This function holds the only write of
+ *     'compared' that records a comparison (below), and that write sits BELOW an unconditional
+ *     `runGauntlet` — so a comparison can be recorded ONLY by paying for a new run. When the
+ *     operator later resolves the queue, `adjudicateInterviewRun` (gauntlet.ts) finalizes the
+ *     interview_run to passed/failed and never touches review_proposal, and no other caller
+ *     re-enters this function. That paid, fully-scored run is therefore STRANDED: the proposal's
+ *     only forward move is a second real spend. An earlier version of this comment claimed the
+ *     withheld proposal "routes to the correct next action instead of a dead-end" — that is TRUE
+ *     for 'error' (retry) and FALSE for 'adjudicating', where the routed action is another
+ *     re-gauntlet. Closing it needs a reconcile path, which is an operator decision (it changes
+ *     what the re-gauntlet button spends), so until then the 'adjudicating' reason below SAYS SO
+ *     instead of implying that resolving the queue is enough.
  *   • WHAT IS RETURNED: an EXPLICIT UNKNOWN, not null. The spend really happened and the run
  *     row really exists, so the caller is handed a comparison with `comparable:false`, the
  *     score fields null, and an `incomparableReason` naming the status. The surface can then
@@ -607,7 +620,7 @@ export async function regauntletChallenger(
 function unscoredComparison(run: { id: string; status: string; model_id: string; cost_usd: number | null; fixture_set_sha: string }): ProposalComparison {
 	const why =
 		run.status === 'adjudicating'
-			? "the challenger run is parked on the operator's adjudication queue — resolving it can still RAISE planted_found, so it has no verdict yet (§3.4)"
+			? "the challenger run is parked on the operator's adjudication queue — resolving it can still RAISE planted_found, so it has no verdict yet (§3.4). Resolving the queue does NOT produce this comparison: the adjudication finalizes the RUN and never touches the proposal, so a NEW re-gauntlet (another real spend) is required afterwards"
 			: run.status === 'error'
 				? 'the challenger run BROKE before producing a score — this is not a verdict on the challenger (§3.6); retry the re-gauntlet'
 				: `the challenger run is '${run.status}' — it has not terminally produced a score`;

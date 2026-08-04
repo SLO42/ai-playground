@@ -44,6 +44,13 @@ npm run db:up        # provision + migrate the LIVE dev SurrealDB (idempotent; s
 npm run verify       # build && vitest && playwright  (full)
 ```
 
+**`db:up` runs SurrealDB in the FOREGROUND when it has to start it (F-059).** It does not return —
+that is a foreground wait, not a hang (it returns promptly only when :8000 is already listening).
+So launch it **detached** and confirm readiness by checking that **:8000 is LISTENING**
+(`netstat -ano | findstr :8000`), never by waiting for the command to exit. Its exit code is not a
+migration verdict either — read the log for `N/N migrations applied` before calling a non-zero exit
+a failure. Don't kill the wrapper as routine cleanup; it can take the datastore with it.
+
 **The green bar is four checks, zero-tolerance:** `npm run build`, `npm test`, `npm run lint` (0),
 `svelte-check` (0 errors). That is necessary but **not sufficient** — see §5.
 

@@ -147,9 +147,9 @@ const LEDGER: Record<string, LedgerEntry> = {
 		why: 'HiringRunFacts is the raw interview_run join for the hiring feed; it carries status alongside, and hiring-ledger-core is its single renderer and gates. The derived `recall` is computed unconditionally here BY DESIGN — null only when planted_total is 0 — because the row model states rows, not verdicts'
 	},
 	'src/lib/server/workforce/resolution.ts': {
-		reads: 25,
+		reads: 40,
 		verdict: 'gated',
-		why: 'regauntletChallenger gates on isScoredStatus BEFORE building or persisting a comparison — the one path where an ungated read PERSISTED. A non-terminal run writes nothing and returns unscoredComparison (all score fields null). The incumbent baseline query is gated-upstream: `WHERE status = "passed"`'
+		why: 'regauntletChallenger gates on isScoredStatus BEFORE building or persisting a comparison — the one path where an ungated read PERSISTED. A non-terminal run writes nothing and returns unscoredComparison (all score fields null). The incumbent baseline query is gated-upstream: `WHERE status = "passed"`. +15 reads (2026-08-04) from `latestChallengerRun`, the reconcile path\'s row fetch: it projects and normalizes planted_found/planted_total/false_positives ungated BY DESIGN — it is a row model, not a claim. Its columns reach a stated number only through buildComparison, which reconcileProposalFromRun calls behind the SAME shared isScoredStatus gate (never a locally re-declared terminality set); a non-terminal run takes the unscoredComparison branch and writes nothing'
 	},
 	'src/lib/server/workforce/scorer.ts': {
 		reads: 25,

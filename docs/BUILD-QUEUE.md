@@ -9,7 +9,46 @@
 
 > ⏭ **RESUME PLAN (operator, 2026-06-26):** **BL-R1 DONE** (`eed3163`+`bcbc1f5`) · **BL-H1 digest DONE** · **BL-H2 eval DONE — headroom NO-ADOPT/idea-only** (`docs/HEADROOM-DIGEST.md` §6; F-049). Recovery + headroom closed; **recovery-harden-2 DONE** (RH-1 BL-R2 `d11db2f` + RH-2 wi-harden-2 `e89c9c5` + RH-3 `c58e5fb`, pushed) — the loop is hardened. Next + LAST — **go-live for ROUNDS**: bring up DB (v2 :8000) + dev server `CLAUDE_CODE_OAUTH_TOKEN` UNSET (F-029) → operator hits Continue → watch ROUNDS + `/projects/[id]/graph`. Boot reaper now runs BL-R1 release+reset, so go-live live-validates that path. Open deferred (non-blocking): BL-R3 (2 task-status MEDIUMs), BL-GUX-FIX (3 graph-UI test gaps), wi-harden done. (bring up DB + dev server token-unset → operator hits Continue → watch ROUNDS + the new `/projects/[id]/graph`). Server is currently DOWN (paused). All work committed + pushed to origin/v2 (tip `1da738e`); docs on v2-main. The full "alive" arc + repo-creation + usage-observability + command-center-ux + lifecycle-graph are DONE. Open tracked: BL-R1, wi-harden-2 (latent), headroom (BL-H1/H2), backlog (BL-1/BL-2/BL-2b).
 
-> ✅ **PAUSE LIFTED AND CLEARED (2026-08-04) — SUPERSEDES PAUSES #3/#4/#5 BELOW. Nothing is parked.**
+> ⏸ **OPERATOR PAUSE #6 (2026-08-04) — DO NOT AUTO-CHAIN. Servers STOPPED at operator request.**
+> SurrealDB terminated (was pid 10320); :8000/:5173/:5174 all free; no dev servers. **Both worktrees
+> CLEAN — nothing uncommitted, no leftover probe files.** Neither lane is pushed.
+>
+> **LANE A — `v2`, worktree `ai-playground-v2`, HEAD `6878d14`, 4 commits ahead of `origin/v2`
+> (`fbcb8d0`), UNPUSHED. RG-1 mid-fix-loop (both fix attempts spent); TB-1 NEVER STARTED.**
+> `4ba14c1` the pre-commit gate — build/lint/typecheck/test run BEFORE the terminal transition and a
+> red gate is honored. `5f43aeb` the drain PRESERVES an unverified branch instead of fast-forwarding
+> it into the base (the F-007-safe choice: commit to a preserved branch, refuse to MERGE — never
+> discard the agent's work).
+> Then two review-caught defects, both of which are the harness lying about itself:
+> - `bcb1bad` — **both of the gate's own verdicts described the ENVIRONMENT, not the change.** The
+>   gate ran `npm` in a worktree with no toolchain, and the review diffed `HEAD` AFTER its own commit
+>   had already cleaned the tree. A self-review that reports on its environment instead of the diff
+>   would have passed everything forever.
+> - `6878d14` — **the merge hold keyed on gate status `'skipped'`, which the toolchain pre-flight had
+>   just given a SECOND meaning — so every large npm change was held forever.** One enum value, two
+>   meanings, introduced one commit apart.
+> **`6878d14` has NOT been re-reviewed** (stopped during the re-review). Treat the tip as unverified.
+>
+> **LANE C — `v2-lane-c`, worktree `ai-playground-v2b` (branched off `fbcb8d0`), HEAD `f55fe91`,
+> 7 commits, UNPUSHED. LC-1 fully GREEN; the LC-2/3/4 task was mid review/red-team.**
+> LC-1 ✅ (review PASS + red-team PASS): `31813d8` the concierge LLM stream is now CANCELLABLE — a
+> wedged provider no longer leaks a suspended generator for the process lifetime · `b226a9a` guards
+> the corrected comments (a comment asserting the opposite of the code is its own defect) · **the
+> red-team FAILED the first pass and was right: `46b078f` — the turn's teardown was sequenced BEHIND
+> an unbounded metering DB write**, so the abort still could not complete promptly.
+> Then, unverified at tip: `be4fa6b` the hiring feed's run-fetch cap dropped pointers SILENTLY and
+> each dropped row then rendered the honest-looking "run not found" (an honest state produced by a
+> dishonest cause) · `f49e670` the hiring header counted 36 while the list rendered 17 — a total that
+> did not describe the rows underneath it · **`beff950` THE ONE THAT COSTS MONEY: a paid, adjudicated
+> gauntlet run was STRANDED — the only way to a comparison was a SECOND real spend for a verdict
+> ALREADY ON DISK.** · `f55fe91` re-pins the score-read ledger for the reconcile path's row fetch.
+>
+> **Order when the pause lifts:** (1) re-review lane A's `6878d14` and finish RG-1, then TB-1;
+> (2) finish lane C's review/red-team; (3) push both, merge `v2-lane-c` → `v2` `--no-ff` + RE-GATE
+> the combination; (4) TASK-BOARD P2 (needs the migration slot — m0089 still FREE); (5) `v1-retirement`;
+> (6) the `fails.md` cross-branch numbering divergence recorded below.
+
+> ✅ **PAUSE LIFTED AND CLEARED (2026-08-04) — earlier the same day; superseded by PAUSE #6 above.**
 > **`origin/v2` = `fbcb8d0`, 0/0 vs local. All 26 commits PUSHED. Lane B is MERGED (`cf2b178`).**
 > The suite is green and stayed green across the merge. `origin/v2-lane-b` = `e25738b` retained
 > (branch NOT deleted — operator's call).

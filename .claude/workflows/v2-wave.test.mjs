@@ -31,7 +31,7 @@ test('pure-helper block is host-free (no agent/phase/log/parallel/pipeline/args)
   assert.ok(!/\bargs\b/.test(block), 'helper block must not reference the host args global')
 })
 
-const { checkVerdict, shouldRedTeam, modelFor, collectDeferred } = new Function(`${block}; return { checkVerdict, shouldRedTeam, modelFor, collectDeferred }`)()
+const { checkVerdict, shouldRedTeam, modelFor, collectDeferred, buildStop, stopRegex } = new Function(`${block}; return { checkVerdict, shouldRedTeam, modelFor, collectDeferred, buildStop, stopRegex }`)()
 
 const allTrue = { complete: true, tested: true, designSystem: true, functional: true, purpose: true, honest: true }
 const evidenceVerdict = 'Ran npm test (14 files green), npm run lint clean, svelte-check 0 errors; drove the live app in the browser and verified the flow. Recommendation: ship.'
@@ -209,6 +209,80 @@ test('collectDeferred: non-array input → [] (never throws)', () => {
 test('collectDeferred: a verdict with no feature string falls back to "(unknown)"', () => {
   const results = [{ review: { followUps: [{ severity: 'MEDIUM', scope: 'deferred', title: 't' }] }, redTeam: null }]
   assert.deepEqual(collectDeferred(results), [{ task: '(unknown)', severity: 'MEDIUM', title: 't' }])
+})
+
+// ---- buildStop matrix (relative suite semantics, 2026-08-04) ----
+// The defect this pins: the old gate was `verifyPassed===false`, an ABSOLUTE claim that cannot tell
+// "I broke the suite" from "the suite was red when I arrived" — it hard-stopped a wave whose builder
+// had honestly reported a pre-existing red suite, leaving 5 good commits unreviewed.
+
+const goodBuild = (over = {}) => ({
+  task: 'TC-1', summary: 's', filesChanged: ['a.ts'], verifyPassed: true, nonTestGatesPassed: true,
+  suite: { baselineFailed: 0, afterFailed: 0, baselineSource: 'npm test @ 73046cd' },
+  liveVerified: true, liveVerifyReason: null, lintClean: true, committed: true, commitSha: 'abc', deviation: null,
+  ...over,
+})
+
+test('buildStop: clean build → null (proceed to review)', () => {
+  assert.equal(buildStop(goodBuild(), {}), null)
+})
+
+test('buildStop: THE REGRESSION — pre-existing red suite, no worse after → proceeds to review', () => {
+  const b = goodBuild({ verifyPassed: false, suite: { baselineFailed: 3, afterFailed: 3, baselineSource: 'npm test @ 73046cd (tip, before my change)' } })
+  assert.equal(buildStop(b, {}), null)
+  // and the same build even repairs one of them
+  assert.equal(buildStop(goodBuild({ verifyPassed: false, suite: { baselineFailed: 3, afterFailed: 1, baselineSource: 'npm test @ 73046cd' } }), {}), null)
+})
+
+test('buildStop: a build that makes the suite WORSE stops, naming both numbers', () => {
+  const r = buildStop(goodBuild({ verifyPassed: false, suite: { baselineFailed: 3, afterFailed: 5, baselineSource: 'npm test @ 73046cd' } }), {})
+  assert.match(String(r), /WORSE: 3 failing at baseline → 5 after/)
+})
+
+test('buildStop: NON-TEST gates red always stops, even with a spotless suite delta', () => {
+  const r = buildStop(goodBuild({ nonTestGatesPassed: false }), {})
+  assert.match(String(r), /NON-TEST gates red/)
+})
+
+test('buildStop: unmeasured/malformed suite counts stop — the honesty is the number, not the flag', () => {
+  for (const bad of [undefined, null, 'green', [], {}, { baselineFailed: 1 }, { baselineFailed: 1, afterFailed: '1', baselineSource: 'x' },
+    { baselineFailed: 1.5, afterFailed: 1, baselineSource: 'x' }, { baselineFailed: -1, afterFailed: -2, baselineSource: 'x' }]) {
+    assert.match(String(buildStop(goodBuild({ suite: bad }), {})), /no MEASURED suite counts/)
+  }
+})
+
+test('buildStop: stopOnAnyRed opt-out restores ABSOLUTE semantics (strict === true)', () => {
+  const b = goodBuild({ verifyPassed: false, suite: { baselineFailed: 3, afterFailed: 3, baselineSource: 'npm test @ 73046cd' } })
+  assert.match(String(buildStop(b, { stopOnAnyRed: true })), /suite still red \(3 failing\)/)
+  assert.equal(buildStop(b, { stopOnAnyRed: 'yes' }), null)   // truthy non-boolean does NOT opt in
+  assert.equal(buildStop(b, {}), null)
+  assert.equal(buildStop(goodBuild(), { stopOnAnyRed: true }), null) // green suite is unaffected by the opt-out
+})
+
+test('buildStop: sentinel-prefix stop marker still stops (F-019); an advisory mention does not', () => {
+  assert.match(String(buildStop(goodBuild({ deviation: 'BLOCKED: spec contradicts D-016' }), {})), /signalled a hard stop/)
+  assert.equal(buildStop(goodBuild({ deviation: 'No BLOCKED/CONFLICT items; renamed a helper.' }), {}), null)
+  assert.equal(buildStop(goodBuild({ deviation: 'blocked tool_result events are logged now' }), {}), null)
+})
+
+test('buildStop: a dead/skipped build agent still stops, and garbage args never throws', () => {
+  assert.match(String(buildStop(null, {})), /no verdict/)
+  assert.match(String(buildStop(undefined, null)), /no verdict/)
+  assert.equal(buildStop(goodBuild(), null), null)
+  assert.equal(buildStop(goodBuild(), undefined), null)
+})
+
+test('buildStop: verifyPassed is no longer the gate — true or false alone decides nothing', () => {
+  assert.equal(buildStop(goodBuild({ verifyPassed: false }), {}), null)
+  // an over-claiming builder is NOT auto-stopped; the contradiction is surfaced to the reviewer instead
+  assert.equal(buildStop(goodBuild({ verifyPassed: true, suite: { baselineFailed: 2, afterFailed: 2, baselineSource: 'npm test @ 73046cd' } }), {}), null)
+})
+
+test('schema/prompt drift guard: BUILD requires the new fields and BUILD_PRE tells builders to measure', () => {
+  const s = src.replaceAll('\r\n', '\n') // F-054: editors here flip LF→CRLF
+  assert.match(s, /required:\[[^\]]*'nonTestGatesPassed'[^\]]*'suite'[^\]]*\]/, 'BUILD schema must REQUIRE nonTestGatesPassed + suite so they cannot be silently omitted')
+  assert.match(s, /SUITE BASELINE — MEASURE IT, DO NOT GUESS IT/, 'BUILD_PRE must instruct builders to measure the baseline')
+  assert.ok(!/b\.verifyPassed===false|f\.verifyPassed===false/.test(s), 'verifyPassed must no longer be used as the wave-stop gate')
 })
 
 // ---- host-load regression (F-016) ----

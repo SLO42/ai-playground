@@ -129,7 +129,10 @@ describe('guard — `.mjs` shebang line endings (vitest collect-time SyntaxError
 				`F-058). Stage-then-rename, never a bare writeFileSync: writeFileSync TRUNCATES first, ` +
 				`so an interrupt part-way through the loop would leave a source file empty or half — ` +
 				`the exact half-state a re-runnable step must never produce:\n` +
-				`  node -e "const fs=require('fs');for(const f of ${JSON.stringify(offenders)}){` +
+				// Single-quoted paths, NOT JSON.stringify: the whole command is already wrapped in the
+				// double quotes `node -e "…"` needs, so JSON's double quotes would terminate that
+				// string and the printed repair line would not paste into cmd or PowerShell at all.
+				`  node -e "const fs=require('fs');for(const f of [${offenders.map((f) => `'${f}'`).join(',')}]){` +
 				`const t=fs.readFileSync(f,'utf8').replace(/\\r\\n/g,'\\n');` +
 				`fs.writeFileSync(f+'.eolfix',t);fs.renameSync(f+'.eolfix',f)}"\n\n` +
 				`Offenders:`

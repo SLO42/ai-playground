@@ -294,6 +294,13 @@ function orderKeysNotProjected(
 		const projection = stmt.slice(0, fromAt);
 		// `SELECT *` and `SELECT VALUE x` project everything / a single value — exempt.
 		if (/\bSELECT\s+(\*|VALUE\b)/.test(projection)) continue;
+		// An INTERPOLATED projection (`SELECT ${COLS} FROM …`) is UNRESOLVABLE from source text: the
+		// column list lives in a variable, so the literal membership test below can only ever answer
+		// "absent" and would report every ordering key of a PERFECTLY CORRECT query. Same rule as the
+		// ordering-term side further down — skip what cannot be resolved rather than guess FAIL.
+		// MEASURED: without this, projects/pm-concierge.ts:346/:358 (whose SENDER_PROJECTION does
+		// contain `created_at`) produce 2 fabricated F-020 violations in a whole-tree sweep.
+		if (projection.includes('${')) continue;
 		let ordered = false;
 		// EVERY ordering clause, not just the first — `GROUP BY x ORDER BY y` is two clauses.
 		for (const m of stmt.matchAll(ORDERING_CLAUSE)) {
@@ -452,6 +459,37 @@ describe('PART A — static grep-and-assert: every `memory`-row reader is classi
 		expect(
 			g('const ids = Array.from(set)\nconst r = await db.query(`SELECT id, importance FROM memory ORDER BY importance DESC, created_at DESC LIMIT $l`)')
 		).toEqual(['created_at']);
+	});
+
+	it('REGRESSION: the F-020 detector does NOT red on a query whose PROJECTION is interpolated', () => {
+		// THE SECOND TRIGGER of the same false-positive class, and the fail this closes. The
+		// projection is sliced out of TYPESCRIPT, so when the column list is a variable — `SELECT
+		// ${COLS} FROM …`, the live shape at projects/pm-concierge.ts:346/:358 — the literal
+		// `\b{field}\b` membership test can only ever answer "absent", and EVERY ordering key of a
+		// PERFECTLY CORRECT query came back an offender. Measured on the real tree before the fix:
+		// 260 files, 116 ordered statements, 2 offenders — both of them pm-concierge queries whose
+		// SENDER_PROJECTION literally contains `created_at`. Unresolvable is not the same as
+		// violating; the ordering-TERM side already skipped what it could not resolve, and the
+		// PROJECTION side now does too. (Written with single quotes so `${` stays literal here.)
+		const g = (s: string) => orderKeysNotProjected(s).map((o) => o.field);
+		// The exact live shape: interpolated projection AND an interpolated LIMIT.
+		expect(
+			g('const COLS = `id, body, created_at`;\nconst [rows] = await db.query(`SELECT ${COLS} FROM peer_message WHERE to_kind = "pm" ORDER BY created_at ASC LIMIT ${MAX}`);')
+		).toEqual([]);
+		// Also with GROUP BY, and with the interpolation mid-projection rather than whole.
+		expect(g('await db.query(`SELECT id, ${EXTRA} FROM memory GROUP BY category ORDER BY created_at DESC`);')).toEqual([]);
+		// An unresolvable statement is NOT counted as inspected — the coverage counter that proves
+		// the scan is not blind must never be inflated by a statement it declined to judge.
+		let inspected = 0;
+		orderKeysNotProjected('await db.query(`SELECT ${COLS} FROM peer_message ORDER BY created_at ASC`);', () => inspected++);
+		expect(inspected, 'a skipped, unresolvable statement must not count as inspected').toBe(0);
+		// ── The skip is NARROW: everything still resolvable is still judged ──────────────────
+		// An interpolated LIMIT with a LITERAL projection is fully resolvable → still red.
+		expect(g('await db.query(`SELECT id, importance FROM memory ORDER BY created_at DESC LIMIT ${MAX}`);')).toEqual(['created_at']);
+		// A skipped statement does not shield a sibling: the literal, broken one still reds.
+		expect(
+			g('const a = `SELECT ${COLS} FROM peer_message ORDER BY created_at ASC`, b = `SELECT id FROM memory ORDER BY importance DESC`;')
+		).toEqual(['importance']);
 	});
 
 	it('REGRESSION: the F-020 detector sees BOTH clauses, and each of two statements in one chunk', () => {

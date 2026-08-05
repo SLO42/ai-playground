@@ -1,0 +1,26 @@
+# EOL policy — the fix for the "passes on one checkout, SyntaxError on another" class (F-054/F-060).
+#
+# This repo is developed on Windows with `core.autocrlf=true` and had NO .gitattributes, so every
+# file was stored LF in the object database but materialised CRLF in the working tree. `git status`
+# stays clean either way (autocrlf normalises CRLF back to LF on the way in), which makes the
+# difference INVISIBLE to git — two worktrees at the SAME sha could disagree about the bytes on disk.
+#
+# That is not cosmetic for `.mjs`. Vite/vitest does not run its esbuild transform over `.mjs`, and
+# its shebang strip does not survive a CRLF line ending, so an executable module whose first line is
+#
+#     #!/usr/bin/env node\r\n
+#
+# fails to parse the moment any vitest test imports it:
+#
+#     SyntaxError: Invalid or unexpected token
+#
+# reported at COLLECT time against the *importing* test file (0 tests collected), not against the
+# .mjs itself. With LF the identical file parses fine. All 9 shebang-bearing files in this repo are
+# `.mjs`, so pinning that extension covers the whole class.
+#
+# Pinned deliberately narrowly: a blanket `* text=auto eol=lf` would renormalise the entire working
+# tree in one commit. Widen only with a dedicated, measured commit.
+*.mjs text eol=lf
+
+# Shell scripts are executed by sh/bash; a CR is a syntax error there too.
+*.sh text eol=lf

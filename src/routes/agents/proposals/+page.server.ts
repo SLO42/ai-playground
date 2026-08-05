@@ -13,12 +13,13 @@
 // that has not earned its own passing gauntlet (§2.4).
 
 import { tryGetDb } from '$lib/server/db/runtime-init';
-import { IdentifierError } from '$lib/server/db/validate';
+import { assertRecordIdOfTable, IdentifierError } from '$lib/server/db/validate';
 import {
 	authorChallenger,
 	loadProposalCards,
 	proposalDiff,
 	ProposalComparisonCollisionError,
+	ProposalWriteContentionError,
 	proposeTierChange,
 	reconcileProposalFromRun,
 	regauntletChallenger,
@@ -181,13 +182,58 @@ function outcomeResult(outcome: GauntletOutcome): Record<string, unknown> {
  * claim every refusal is returned NAMED; a 500 says "this server broke", which is the opposite
  * claim about the same event. (The validator itself is doing its job: the id never reaches
  * SurrealQL. Only the reporting was wrong.)
+ *
+ * COVERAGE, STATED EXACTLY — because a doc comment claiming coverage it does not have is the same
+ * dishonesty class as a fabricated notice, one layer down. It used to claim "every action's catch"
+ * while wired into 4 of them. COUNTED, and latched by a source scan in refusal-ladder.test.ts:
+ * TEN catch sites inside `actions` route through here — one per action (previewDiff · author ·
+ * regauntlet · reconcile · swap · reject · proposeTier · tierInterview · tierSwap) plus
+ * tierInterview's gate-resolution catch. TWO deliberately do not, and that is a decision, not an
+ * omission: the two `loadWorkforce` catches (regauntlet, tierInterview) — an unreadable
+ * workforce.yaml is a server fault by construction, no class in this ladder can occur there, and
+ * the message already names the file. 500 is the true answer there.
+ *
+ * OUTSIDE `actions`, three more catches exist and are NOT response-classifiers, so this ladder has
+ * nothing to say about them: `makeTierResolver` swallows an unreadable agent-pool.yaml to `null`
+ * so the §7 grid renders an honest '— (tier unmapped)' (F-008), and `load`'s two inner catches omit
+ * ONE proposal's grid/gate rather than sinking the page (its outer catch returns `error` in the
+ * page payload).
+ *
+ * THE ONE CONDITION, THE ONE STATUS. A comparison collision is a 409 wherever it surfaces —
+ * `regauntletChallenger` re-throws it as the SAME class with its run named, rather than wrapping
+ * it into a ResolutionGateError, which used to make the identical condition a 400 on the paid
+ * route and a 409 on the free one.
  */
 function refusalStatus(err: unknown): number | null {
-	// A second writer already recorded a different comparison — a genuine CONFLICT, not bad input.
+	// A second writer already recorded a different comparison, or is moving the row right now —
+	// genuine CONFLICTs, not bad input. Nothing was written in either case.
 	if (err instanceof ProposalComparisonCollisionError) return 409;
+	if (err instanceof ProposalWriteContentionError) return 409;
 	if (err instanceof IdentifierError) return 400;
 	if (err instanceof ResolutionGateError || err instanceof WorkforceInputError) return 400;
+	if (err instanceof TierGateError) return 400;
 	return null;
+}
+
+/**
+ * Validate a client-supplied record id AT THE BOUNDARY (D-016), before it can reach a repo.
+ *
+ * THE DEFECT THIS CLOSES. A malformed `proposal` ('not-a-record-id') reached `link()` deep inside
+ * the repo and threw IdentifierError there — which the ladder above maps to 400, but only for the
+ * calls that sit INSIDE a try. `regauntlet` resolves its target and `tierInterview` reads its
+ * incumbent BEFORE their try blocks, so a malformed id escaped as an unhandled 500: the server
+ * blaming itself for a client's typo. Validating here also narrows the check from "some record
+ * id" to "an id of THIS table", so `role:x` is refused as the wrong kind of thing, by name.
+ *
+ * @returns the named refusal message, or null when the id is well-formed.
+ */
+function idRefusal(id: string, table: string): string | null {
+	try {
+		assertRecordIdOfTable(id, table);
+		return null;
+	} catch (err) {
+		return (err as Error).message;
+	}
 }
 
 export const actions: Actions = {
@@ -200,12 +246,13 @@ export const actions: Actions = {
 		const proposal = String(form.get('proposal') ?? '').trim();
 		const draft = String(form.get('promptCore') ?? '');
 		if (!proposal) return fail(400, { proposals: { error: 'missing proposal id' } });
+		const bad = idRefusal(proposal, 'review_proposal');
+		if (bad) return fail(400, { proposals: { proposal, error: bad } });
 		try {
 			const diff = await proposalDiff(db, proposal, draft);
 			return { proposals: { ok: true, proposal, previewDiff: { lines: diff.lines, added: diff.added, removed: diff.removed, unchanged: diff.unchanged } } };
 		} catch (err) {
-			if (err instanceof WorkforceInputError) return fail(400, { proposals: { proposal, error: err.message } });
-			return fail(500, { proposals: { proposal, error: (err as Error).message } });
+			return fail(refusalStatus(err) ?? 500, { proposals: { proposal, error: (err as Error).message } });
 		}
 	},
 
@@ -219,6 +266,8 @@ export const actions: Actions = {
 		const proposal = String(form.get('proposal') ?? '').trim();
 		const promptCore = String(form.get('promptCore') ?? '');
 		if (!proposal) return fail(400, { proposals: { error: 'missing proposal id' } });
+		const bad = idRefusal(proposal, 'review_proposal');
+		if (bad) return fail(400, { proposals: { proposal, error: bad } });
 		if (form.get('operatorConfirmed') !== 'on') {
 			return fail(400, {
 				proposals: { proposal, error: 'confirm the prompt-core diff to author the challenger (the §5 D-010 ceremony is operator-gated; until then the draft is fenced as DATA)' }
@@ -254,6 +303,10 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const proposal = String(form.get('proposal') ?? '').trim();
 		if (!proposal) return fail(400, { proposals: { error: 'missing proposal id' } });
+		// BEFORE the unguarded `resolveRegauntletTarget` below — that call sits outside the try on
+		// purpose (its refusals are already named), so a malformed id had no catch to land in.
+		const bad = idRefusal(proposal, 'review_proposal');
+		if (bad) return fail(400, { proposals: { proposal, error: bad } });
 		if (form.get('operatorConfirmed') !== 'on') {
 			return fail(400, {
 				proposals: { proposal, error: 'confirm the spend — this runs a REAL gauntlet for the challenger at the incumbent’s certified tier/model (the click IS the budget decision, §3.7)' }
@@ -293,6 +346,12 @@ export const actions: Actions = {
 					proposal,
 					regauntlet: true,
 					comparable: res.comparison?.comparable ?? null,
+					// A displacement is never silent (§5): when this paid verdict replaced a FREE one
+					// the run it displaced is named here, so the operator can still read that run's
+					// scores rather than wondering where the earlier comparison went.
+					...(res.displacedComparisonFrom
+						? { displacedComparisonFrom: res.displacedComparisonFrom }
+						: {}),
 					// Named on the surface, not swallowed: a non-terminal challenger run records NO
 					// comparison and leaves the proposal in 'interviewing' (resolution.ts). Without
 					// this the operator saw "Re-gauntlet adjudicating." and no explanation for why
@@ -325,12 +384,18 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const proposal = String(form.get('proposal') ?? '').trim();
 		if (!proposal) return fail(400, { proposals: { error: 'missing proposal id' } });
+		const bad = idRefusal(proposal, 'review_proposal');
+		if (bad) return fail(400, { proposals: { proposal, error: bad } });
 		try {
 			const res = await reconcileProposalFromRun(db, { proposal });
 			if (res.outcome !== 'reconciled') {
-				// Not an ERROR the operator caused — a state. Named, at 400 so the surface shows it
-				// beside the card rather than swallowing it into a silent no-op.
-				return fail(400, { proposals: { proposal, error: res.reason ?? res.outcome } });
+				// Not an ERROR the operator caused — a state. Named, so the surface shows it beside
+				// the card rather than swallowing it into a silent no-op. 'superseded' is the one
+				// that is a genuine CONFLICT (a rival writer won the row), and it carries the same
+				// 409 the collision throw does — one condition, one status, whichever side reports it.
+				return fail(res.outcome === 'superseded' ? 409 : 400, {
+					proposals: { proposal, error: res.reason ?? res.outcome }
+				});
 			}
 			return {
 				proposals: {
@@ -357,6 +422,8 @@ export const actions: Actions = {
 		const proposal = String(form.get('proposal') ?? '').trim();
 		const modelId = String(form.get('modelId') ?? '').trim();
 		if (!proposal) return fail(400, { proposals: { error: 'missing proposal id' } });
+		const bad = idRefusal(proposal, 'review_proposal');
+		if (bad) return fail(400, { proposals: { proposal, error: bad } });
 		if (!modelId) return fail(400, { proposals: { proposal, error: 'missing model_id (the challenger’s certified model)' } });
 		if (form.get('operatorConfirmed') !== 'on') {
 			return fail(400, {
@@ -389,6 +456,8 @@ export const actions: Actions = {
 		const reason = String(form.get('reason') ?? '').trim() || undefined;
 		const as = form.get('as') === 'withdrawn' ? 'withdrawn' : 'operator';
 		if (!proposal) return fail(400, { proposals: { error: 'missing proposal id' } });
+		const bad = idRefusal(proposal, 'review_proposal');
+		if (bad) return fail(400, { proposals: { proposal, error: bad } });
 		try {
 			const res = await rejectProposal(db, { proposal, ...(reason ? { reason } : {}), as });
 			return {
@@ -401,8 +470,7 @@ export const actions: Actions = {
 				}
 			};
 		} catch (err) {
-			if (err instanceof WorkforceInputError) return fail(400, { proposals: { proposal, error: err.message } });
-			return fail(500, { proposals: { proposal, error: (err as Error).message } });
+			return fail(refusalStatus(err) ?? 500, { proposals: { proposal, error: (err as Error).message } });
 		}
 	},
 
@@ -418,6 +486,8 @@ export const actions: Actions = {
 		const targetTier = String(form.get('targetTier') ?? '').trim() as Tier;
 		const note = String(form.get('note') ?? '').trim() || undefined;
 		if (!roleVersion) return fail(400, { proposals: { error: 'missing role version id' } });
+		const bad = idRefusal(roleVersion, 'role_version');
+		if (bad) return fail(400, { proposals: { error: bad } });
 		if (!['local', 'haiku', 'sonnet', 'opus'].includes(targetTier)) {
 			return fail(400, { proposals: { error: `invalid target tier '${targetTier}'` } });
 		}
@@ -437,8 +507,7 @@ export const actions: Actions = {
 				}
 			};
 		} catch (err) {
-			if (err instanceof WorkforceInputError) return fail(400, { proposals: { error: err.message } });
-			return fail(500, { proposals: { error: (err as Error).message } });
+			return fail(refusalStatus(err) ?? 500, { proposals: { error: (err as Error).message } });
 		}
 	},
 
@@ -452,6 +521,9 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const proposal = String(form.get('proposal') ?? '').trim();
 		if (!proposal) return fail(400, { proposals: { error: 'missing proposal id' } });
+		// BEFORE the unguarded `getProposalIncumbent` below, for the same reason as ②.
+		const bad = idRefusal(proposal, 'review_proposal');
+		if (bad) return fail(400, { proposals: { proposal, error: bad } });
 		if (form.get('operatorConfirmed') !== 'on') {
 			return fail(400, {
 				proposals: { proposal, error: 'confirm the spend — this runs a REAL gauntlet at the target tier to satisfy the §7 strict gate (the click IS the budget decision)' }
@@ -461,7 +533,10 @@ export const actions: Actions = {
 		try {
 			gate = await resolveTierChangeGate(db, proposal, makeTierResolver());
 		} catch (err) {
-			return fail(400, { proposals: { proposal, error: (err as Error).message } });
+			// The ladder, not a blanket 400: a gate resolution can fail on a malformed tier_change
+			// (caller-facing) or on a broken DB read (a server fault), and calling the second one a
+			// 400 tells the operator to fix input they did not get wrong.
+			return fail(refusalStatus(err) ?? 500, { proposals: { proposal, error: (err as Error).message } });
 		}
 		if (gate.state === 'ready_to_swap') {
 			return { proposals: { ok: true, proposal, tierInterview: true, alreadyReady: true } };
@@ -504,8 +579,7 @@ export const actions: Actions = {
 				}
 			};
 		} catch (err) {
-			if (err instanceof WorkforceInputError) return fail(400, { proposals: { proposal, error: err.message } });
-			return fail(500, { proposals: { proposal, error: (err as Error).message } });
+			return fail(refusalStatus(err) ?? 500, { proposals: { proposal, error: (err as Error).message } });
 		}
 	},
 
@@ -518,6 +592,8 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const proposal = String(form.get('proposal') ?? '').trim();
 		if (!proposal) return fail(400, { proposals: { error: 'missing proposal id' } });
+		const bad = idRefusal(proposal, 'review_proposal');
+		if (bad) return fail(400, { proposals: { proposal, error: bad } });
 		if (form.get('operatorConfirmed') !== 'on') {
 			return fail(400, {
 				proposals: { proposal, error: 'confirm the tier swap — the role’s operating tier changes (D-039; there is no auto-swap)' }
@@ -534,10 +610,7 @@ export const actions: Actions = {
 				}
 			};
 		} catch (err) {
-			if (err instanceof TierGateError || err instanceof WorkforceInputError) {
-				return fail(400, { proposals: { proposal, error: err.message } });
-			}
-			return fail(500, { proposals: { proposal, error: (err as Error).message } });
+			return fail(refusalStatus(err) ?? 500, { proposals: { proposal, error: (err as Error).message } });
 		}
 	}
 };

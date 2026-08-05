@@ -538,7 +538,15 @@
               {#if f.regauntlet}{f.ran ? `Re-gauntlet ${f.status}` : 'Re-gauntlet queued'}{f.comparable === true ? ' · comparable' : ''}.{#if f.comparable === false && f.incomparableReason}
                   <!-- The re-gauntlet ran but produced no comparison — say WHY rather than
                        leaving the operator to wonder where the swap stage went. -->
-                  <span class="incomparable-inline">{String(f.incomparableReason)}</span>{/if}{/if}
+                  <span class="incomparable-inline">{String(f.incomparableReason)}</span>{/if}{#if f.displacedComparisonFrom}
+                  <!-- A paid verdict replaced a FREE one (the reconcile path's). Say so, and name
+                       the run whose comparison it replaced — a displacement the operator cannot
+                       see is the silent discard this whole seam exists to end. -->
+                  <span class="incomparable-inline"
+                    >replaced the free comparison reconciled from run <span class="mono"
+                      >{String(f.displacedComparisonFrom)}</span
+                    > — that run's scores are still on its own row</span
+                  >{/if}{/if}
               {#if f.reconciled}Comparison recorded from run <span class="mono">{String(f.run)}</span> — no new spend{f.comparable === true ? ' · comparable' : ''}.{#if f.comparable === false && f.incomparableReason}<span class="incomparable-inline">{String(f.incomparableReason)}</span>{/if}{/if}
               {#if f.swapped}Swapped — challenger is now active.{/if}
               {#if f.proposedTier}Tier-change proposed{f.created === false ? ' (already open)' : ''} → {String(f.targetTier)}.{/if}

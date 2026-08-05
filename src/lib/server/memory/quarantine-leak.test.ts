@@ -86,7 +86,10 @@ const READERS: ReaderPath[] = [
 	},
 	{
 		file: 'memory/explorer.ts',
-		marker: 'ORDER BY importance DESC, created_at DESC\n\t\t  LIMIT $limit',
+		// Whitespace-insensitive (see collapseWs): this pins that the ordering keys and the bound
+		// are still there, NOT how the SQL string happens to be wrapped or indented. Both ORDER BY
+		// fields appear in this query's SELECT projection, which is the F-020 invariant.
+		marker: 'ORDER BY importance DESC, created_at DESC LIMIT $limit',
 		kind: 'LEAK',
 		why: 'listMemories — /memory explorer + knowledge-only export surface (UI-SPEC §43, D-026)'
 	},
@@ -165,8 +168,68 @@ const READERS: ReaderPath[] = [
 	}
 ];
 
+// EOL-normalise on read (F-054). This repo is developed on Windows with `core.autocrlf=true`,
+// so source files are LF in the git object database but CRLF in the working tree — invisibly,
+// since git normalises back on the way in and `git status` stays clean either way. A source-text
+// scan that does not normalise therefore passes in one checkout and fails in another AT THE SAME
+// SHA, which is exactly how this suite went red for a query that had not changed at all.
 function readSource(rel: string): string {
-	return readFileSync(join(SRC, rel), 'utf8');
+	return readFileSync(join(SRC, rel), 'utf8').replace(/\r\n/g, '\n');
+}
+
+// Collapse every run of whitespace to a single space, for marker matching ONLY.
+//
+// The markers below pin the SEMANTIC shape of a query — which columns are projected, which table
+// is read, which predicate filters it. They must NOT pin its LAYOUT: a marker carrying the exact
+// indentation of a wrapped SQL string breaks forever the first time anyone reformats the query or
+// checks it out with different line endings, and the resulting red says "marker not found" when
+// nothing is actually wrong. Collapsing whitespace on BOTH sides keeps the assertion sensitive to
+// what matters (a genuinely removed `ORDER BY`, a dropped quarantine filter) and blind to what
+// does not (indentation, wrapping, CRLF vs LF).
+function collapseWs(s: string): string {
+	return s.replace(/\s+/g, ' ');
+}
+
+// F-020 detector: every field named in an `ORDER BY` / `GROUP BY` must also appear in that same
+// statement's `SELECT` projection, or SurrealDB errors at QUERY time — a live-only failure a
+// `stubDb()` unit test can never catch, because it does not parse SurrealQL. This has recurred
+// 3× in this repo, which is what earns it a static check.
+//
+// Returns one entry per violating field. `onStatement` is invoked for every ordered statement
+// actually inspected, so a caller can prove the scan is not silently looking at nothing.
+function orderKeysNotProjected(
+	source: string,
+	onStatement: () => void = () => {}
+): Array<{ field: string; stmt: string }> {
+	const out: Array<{ field: string; stmt: string }> = [];
+	// Shadow path — nil/empty source: nothing to inspect, and never a throw.
+	if (!source) return out;
+	for (const stmt of collapseWs(source.replace(/\r\n/g, '\n')).split(';')) {
+		if (!/\bSELECT\b/.test(stmt)) continue;
+		const m = /\b(?:ORDER|GROUP) BY\s+(.+?)(?:\s+LIMIT\b|\s*$)/i.exec(stmt);
+		if (!m) continue;
+		const fromAt = stmt.search(/\bFROM\b/i);
+		// Shadow path — an ordered statement with no FROM (a malformed or inlined fragment):
+		// there is no projection to check against, so it cannot be judged.
+		if (fromAt === -1) continue;
+		onStatement();
+		const projection = stmt.slice(0, fromAt);
+		// `SELECT *` and `SELECT VALUE x` project everything / a single value — exempt.
+		if (/\bSELECT\s+(\*|VALUE\b)/i.test(projection)) continue;
+		for (const term of m[1].split(',')) {
+			const field = term
+				.trim()
+				.replace(/\s+(ASC|DESC|COLLATE|NUMERIC)\b.*$/i, '')
+				.trim();
+			// Only plain column references are checkable; expressions/functions are skipped
+			// rather than guessed at — a false FAIL here would push someone to weaken a query.
+			if (!/^[a-z_][a-z0-9_]*$/i.test(field)) continue;
+			if (!new RegExp(`\\b${field}\\b`).test(projection)) {
+				out.push({ field, stmt: stmt.trim().slice(0, 120) });
+			}
+		}
+	}
+	return out;
 }
 
 // The accepted quarantine-excluding predicates. `screen_status` is a NON-OPTIONAL string with
@@ -183,8 +246,12 @@ const QUARANTINE_FILTERS = ['screen_status != "quarantined"', 'screen_status = "
 describe('PART A — static grep-and-assert: every `memory`-row reader is classified + guarded', () => {
 	for (const r of READERS) {
 		it(`${r.file} :: ${r.kind} — ${r.why}`, () => {
-			const src = readSource(r.file);
-			const idx = src.indexOf(r.marker);
+			// Match on the whitespace-collapsed form so the assertion tracks the query's meaning,
+			// not its formatting. Both the source and the marker go through the same normaliser,
+			// and the statement slicing below runs on that SAME string so the indices stay valid.
+			const src = collapseWs(readSource(r.file));
+			const marker = collapseWs(r.marker);
+			const idx = src.indexOf(marker);
 			expect(idx, `marker not found in ${r.file}: ${r.marker}`).toBeGreaterThanOrEqual(0);
 			if (r.kind === 'LEAK') {
 				// The quarantine filter must appear in the SAME query statement as the marker.
@@ -216,6 +283,83 @@ describe('PART A — static grep-and-assert: every `memory`-row reader is classi
 		expect(QUARANTINE_FILTERS.some((f) => 'WHERE screen_status = "clean" AND x'.includes(f))).toBe(
 			true
 		);
+	});
+
+	it('marker matching is blind to EOL/indentation but STILL detects a genuinely-missing clause', () => {
+		// The trap this closes, from both sides.
+		//
+		// A source-text scan that pins exact whitespace breaks forever the first time the file is
+		// reformatted or checked out with different line endings — and then reports "marker not
+		// found" about a query that is perfectly correct, which is precisely what happened here
+		// (the marker below failed with CRLF while explorer.ts's query was unchanged and valid).
+		//
+		// But relaxing it must NOT make it vacuous: this same census caught a REAL bug two waves
+		// ago, so the matcher has to keep failing when the clause is actually gone. Both directions
+		// are asserted, because only proving one of them is how a guard quietly becomes decoration.
+		const marker = collapseWs('ORDER BY importance DESC, created_at DESC LIMIT $limit');
+
+		// ── Insensitive to LAYOUT ──────────────────────────────────────────────────────────
+		const lf = 'SELECT importance, created_at FROM memory\n\tORDER BY importance DESC, created_at DESC\n\t  LIMIT $limit;';
+		expect(collapseWs(lf).indexOf(marker)).toBeGreaterThanOrEqual(0);
+		// The exact CRLF form that produced the original -1.
+		expect(collapseWs(lf.replace(/\n/g, '\r\n')).indexOf(marker)).toBeGreaterThanOrEqual(0);
+		// Re-indented / re-wrapped differently — still found.
+		const reflowed = 'SELECT importance, created_at FROM memory ORDER BY importance DESC,     created_at DESC\n\n        LIMIT $limit;';
+		expect(collapseWs(reflowed).indexOf(marker)).toBeGreaterThanOrEqual(0);
+
+		// ── Sensitive to MEANING ───────────────────────────────────────────────────────────
+		// ORDER BY removed entirely → must NOT match.
+		const noOrder = 'SELECT importance, created_at FROM memory LIMIT $limit;';
+		expect(collapseWs(noOrder).indexOf(marker)).toBe(-1);
+		// A secondary ordering key dropped → must NOT match (ordering is part of the contract).
+		const droppedKey = 'SELECT importance, created_at FROM memory ORDER BY importance DESC LIMIT $limit;';
+		expect(collapseWs(droppedKey).indexOf(marker)).toBe(-1);
+		// Direction flipped → must NOT match.
+		const flipped = 'SELECT importance, created_at FROM memory ORDER BY importance DESC, created_at ASC LIMIT $limit;';
+		expect(collapseWs(flipped).indexOf(marker)).toBe(-1);
+		// The bound removed → must NOT match (an unbounded read is its own defect).
+		const unbounded = 'SELECT importance, created_at FROM memory ORDER BY importance DESC, created_at DESC;';
+		expect(collapseWs(unbounded).indexOf(marker)).toBe(-1);
+	});
+
+	it('F-020 predicate: catches a missing ordering key, exempts SELECT */VALUE, survives CRLF', () => {
+		// Proves the scan below is NOT vacuous, against synthetic queries with known verdicts.
+		// A census check that cannot fail is decoration, and this file's whole purpose is to be
+		// the evidence artifact — so the detector is itself under test.
+		const g = (s: string) => orderKeysNotProjected(s).map((o) => o.field);
+		// Detects the real defect, in both ORDER BY and GROUP BY form.
+		expect(g('SELECT id, importance FROM memory ORDER BY importance DESC, created_at DESC;')).toEqual(['created_at']);
+		expect(g('SELECT count() AS c FROM memory GROUP BY category;')).toEqual(['category']);
+		// Clean queries stay clean — including under CRLF and heavy indentation (the F-054 shape).
+		expect(g('SELECT id, importance, created_at FROM memory ORDER BY importance DESC, created_at DESC LIMIT $l;')).toEqual([]);
+		expect(g('SELECT id,\r\n\t importance,\r\n\t created_at\r\n FROM memory\r\n ORDER BY importance DESC, created_at DESC\r\n LIMIT $l;')).toEqual([]);
+		expect(g('SELECT category, count() AS c FROM memory GROUP BY category;')).toEqual([]);
+		// Exemptions: `*` and `VALUE` project everything / a single value.
+		expect(g('SELECT * FROM memory ORDER BY created_at DESC;')).toEqual([]);
+		expect(g('SELECT VALUE id FROM memory ORDER BY created_at DESC;')).toEqual([]);
+		// Expressions/functions are not plain column refs and are deliberately not checked.
+		expect(g('SELECT id FROM memory ORDER BY math::abs(score) DESC;')).toEqual([]);
+		// Shadow paths — empty input, and source with no SELECT at all.
+		expect(g('')).toEqual([]);
+		expect(g('const x = 1;')).toEqual([]);
+	});
+
+	it('F-020: every ORDER BY / GROUP BY field in a catalogued reader appears in its own SELECT', () => {
+		// The invariant the brittle literal was standing in for, asserted DIRECTLY against the real
+		// source instead of via a whitespace-exact string. F-020 has recurred 3× in this repo and a
+		// stubDb unit test cannot catch it (it never parses SurrealQL), so a static check earns its
+		// place: a projection missing an ordering key is a live-only failure.
+		const offenders: string[] = [];
+		let inspected = 0;
+		for (const file of new Set(READERS.map((r) => r.file))) {
+			for (const o of orderKeysNotProjected(readSource(file), () => inspected++)) {
+				offenders.push(`${file}: ORDER/GROUP BY \`${o.field}\` is not in its SELECT — ${o.stmt}`);
+			}
+		}
+		// Non-vacuity on the REAL tree: if a refactor moved these queries out of the catalogued
+		// files, this check would silently inspect nothing and pass. Assert it actually looked.
+		expect(inspected, 'F-020 scan inspected NO ordered statements — the scan has gone blind').toBeGreaterThan(0);
+		expect(offenders, `F-020 violation(s):\n${offenders.join('\n')}`).toEqual([]);
 	});
 
 	// Bare `FROM memory` table reads only — NOT `memory_history`, `memory:id`, `memory_entries`,

@@ -5,6 +5,8 @@ import { runMigrations } from '../db/migrate';
 import { schemaMigrations } from '../db/schema';
 import { startTestDb, type TestDb } from '../db/testserver';
 import { createProject, deleteProject } from '../projects/repo';
+import { createPm } from '../projects/pm-repo';
+import { proposeTask } from '../projects/pm-proposals';
 import { createTask } from '../tasks/repo';
 import { EventBus, type BusEvent } from '../events/bus';
 import {
@@ -1441,5 +1443,97 @@ describe('launchSession — the §4.1 task brief reaches the prompt (widened SEL
 		});
 		expect(res.status).toBe('done');
 		expect(backend.plans[0]?.prompt).toBe('# Task: run the step\n\ndo step work');
+	});
+});
+
+// ── TB-3 — the ACTUAL pm writer's row, end-to-end (the case the first cut never ran) ──
+//
+// Every test above builds its row with `createTask`, so the shape the REAL majority of live
+// tasks have — a row written by `proposeTask`, whose `composeDescription` bakes the §4.1
+// fields into the description as prose — was never exercised. That gap is exactly where the
+// duplication hid: measured on the live dev DB, the objective was repeated verbatim in 17 of
+// 23 composed prompts and the criteria in 11 of 23. This describe drives the real writer, so
+// the seed under test is composed by the production code path rather than by a fixture that
+// could drift away from it.
+
+describe('launchSession — a REAL proposeTask row composes a prompt that says each thing once', () => {
+	const OBJECTIVE = 'Resolve the open critical finding before the release gate.';
+	const PURPOSE = 'Severe findings block the plan Definition of Done.';
+	const CRITERIA = [
+		'The finding is resolved or suppressed with a written justification.',
+		'The release gate reports green.'
+	];
+	const EVIDENCE = ['security_finding:ev_tb3', 'pm_memory:note_tb3'];
+
+	// One PM per project (the pm_by_project UNIQUE index) and one proposal per fingerprint
+	// (the anti-spam ladder absorbs a re-propose as 'duplicate_open'), so the real writer runs
+	// ONCE and the three assertions below read the one prompt it produced.
+	let prompt = '';
+
+	beforeAll(async () => {
+		await createPm(db, { project: projectId, name: 'Vesper TB-3' });
+		const res = await proposeTask(db, {
+			project: projectId,
+			title: 'Triage the open finding',
+			objective: OBJECTIVE,
+			purpose: PURPOSE,
+			acceptance_criteria: CRITERIA,
+			provenance: { kind: 'finding', evidence: EVIDENCE }
+		});
+		expect(res.outcome).toBe('created');
+
+		const backend = scriptedBackend(transcript('cc_sess_TB3'));
+		const runtime = new ClaudeCodeRuntime({
+			backend,
+			harnessConfigRoot: 'F:/code/sess/.harness-tb3'
+		});
+		// Status is irrelevant to prompt composition (launchSession reads the row, it does not
+		// gate on status) — what is under test is the SEED this writer produced.
+		const launched = await launchSession({
+			db,
+			bus: new EventBus(),
+			runtime,
+			input: baseInput({ taskId: res.task!.id })
+		});
+		expect(launched.status).toBe('done');
+		prompt = backend.plans[0]?.prompt ?? '';
+	}, 60_000);
+
+	it('says the objective, purpose and criteria exactly ONCE — the seed already carries them', () => {
+		const once = (needle: string) => expect(prompt.split(needle).length - 1).toBe(1);
+		once(OBJECTIVE);
+		once(PURPOSE);
+		for (const c of CRITERIA) once(c);
+
+		// composeDescription's own labels are what the agent reads — the brief adds no second
+		// copy under a `##` heading of its own.
+		expect(prompt).toContain(`Objective: ${OBJECTIVE}`);
+		expect(prompt).toContain(`Purpose: ${PURPOSE}`);
+		expect(prompt).not.toContain('## Objective');
+		expect(prompt).not.toContain('## Why this task');
+		expect(prompt).not.toContain('## Acceptance criteria');
+		// ...and NOT because the brief decided this task has none.
+		expect(prompt).not.toContain('None recorded on this task');
+	});
+
+	it('still delivers the metadata the seed does NOT carry — the real gain of the widened SELECT', () => {
+		// priority + origin reached NO agent on ANY origin before this feature, and
+		// composeDescription does not write them into the seed, so they survive de-duplication.
+		expect(prompt).toContain('## Task metadata');
+		expect(prompt).toContain('priority: normal · origin: pm · provenance: finding');
+		expect(prompt).not.toContain('undefined');
+	});
+
+	it('provenance evidence reaches the prompt through the SEED only — the brief channel adds none', () => {
+		// The honest statement of TB-2. The ids ARE in the prompt: proposeTask wrote them into
+		// the immutable description (D-008) at propose time, before any brief existed, and the
+		// prompt emits that description verbatim. What TB-2 guarantees is narrower and still
+		// holds — the brief CHANNEL carries only `provenance.kind`, so it neither adds a second
+		// copy nor introduces `provenance.detail`.
+		for (const ev of EVIDENCE) expect(prompt.split(ev).length - 1).toBe(1);
+		expect(prompt).toContain(`Provenance: finding — evidence: ${EVIDENCE.join(', ')}`);
+		// The one occurrence is the seed's: it precedes every server-composed section.
+		expect(prompt.indexOf(EVIDENCE[0])).toBeLessThan(prompt.indexOf('## Task metadata'));
+		expect(prompt).toContain('provenance: finding');
 	});
 });

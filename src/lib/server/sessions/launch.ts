@@ -541,8 +541,13 @@ function briefStr(value: unknown): string | undefined {
  *
  * TB-2 — the D-026 boundary is enforced HERE, by construction: only `provenance.kind` (a
  * machine enum) is read off `provenance`. `provenance.evidence` and `provenance.detail` are
- * never copied out, so they cannot reach the prompt's instruction region even though the row
- * carries them — evidence can quote scanner/tool/retrieved output, the untrusted class.
+ * never copied out, so THIS MAPPER contributes none of them to the prompt — evidence can quote
+ * scanner/tool/retrieved output, the untrusted class.
+ *
+ * Read that as the channel claim it is, not as "the prompt contains no evidence id": for a
+ * pm-origin task `composeDescription` already wrote a "Provenance: … — evidence: …" line into
+ * `description`, which the prompt emits verbatim as the immutable run seed (D-008). Dropping it
+ * here neither adds nor removes that; see the TB-2 note in runtime/index.ts `buildPrompt`.
  *
  * Absent fields are OMITTED from the returned object, never set to `''` or `null`, so
  * `buildPrompt` emits nothing for them and a task with no brief composes the pre-change

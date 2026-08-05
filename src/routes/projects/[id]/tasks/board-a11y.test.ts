@@ -27,6 +27,7 @@ import {
 	contrastRatio,
 	findBannedOutline,
 	loadColorTokens,
+	parseHex,
 	resolveToHex
 } from '../../../../lib/styles/tokens/contrast-gate';
 
@@ -133,10 +134,84 @@ const PAIRS: [string, string, string][] = [
 	['.form-ok', '--color-success', '--color-success-bg']
 ];
 
+/**
+ * `opacity` is the one styling mechanism that makes the table above LIE, and it did.
+ *
+ * MEASURED (red-team, 2026-08-05): `['.chip:disabled', '--color-text-muted',
+ * '--color-surface-overlay']` asserted 4.68:1 while the rule it audits also carried `opacity: 0.7`
+ * — the pixel painted 3.09:1, and the count nested inside it (`.chip-n { opacity: 0.75 }`) painted
+ * 2.38:1. `contrastRatio` resolves TOKEN against TOKEN and has no notion of alpha, so a file titled
+ * "contrast is MEASURED, not assumed" was certifying a composite it never computed. WCAG 1.4.3
+ * exempts disabled controls, so the page was not non-conformant — the GATE was dishonest.
+ *
+ * Two things close it. The chip rules no longer composite at all (they paint the token they claim),
+ * and every `opacity` that remains in this stylesheet is enumerated HERE with its alpha, blended,
+ * and measured as painted. The enumeration is asserted to be EXHAUSTIVE against the stylesheet, so
+ * a future `opacity:` fails this gate until someone measures it.
+ */
+interface CompositedPair {
+	sel: string;
+	fg: string;
+	bg: string;
+	alpha: number;
+}
+const COMPOSITED: CompositedPair[] = [
+	// A disabled button dims its label; `--color-text` is bright enough (12.28:1 on raised) that
+	// 0.6 alpha still paints 5.45:1 — measured, not assumed, which is now the whole point.
+	{ sel: '.btn:disabled', fg: '--color-text', bg: '--color-surface-raised', alpha: 0.6 }
+];
+
+/** Source-accurate alpha compositing: the painted color of `fg` at `alpha` over an opaque `bg`. */
+function compositeOver(fgHex: string, bgHex: string, alpha: number): string {
+	const f = parseHex(fgHex);
+	const b = parseHex(bgHex);
+	const mixed = f.map((v, i) => Math.round(v * alpha + b[i] * (1 - alpha)));
+	return `#${mixed.map((v) => v.toString(16).padStart(2, '0')).join('')}`;
+}
+
+/** Every rule in a stylesheet that declares `opacity`, as `{selector, alpha}`. */
+function opacityRules(css: string): { selector: string; alpha: number }[] {
+	const out: { selector: string; alpha: number }[] = [];
+	// Comments legitimately QUOTE the defect ("opacity: 0.7 painted 3.09:1") — strip them so the
+	// scan reads declarations, never documentation.
+	const stripped = css.replace(/\/\*[\s\S]*?\*\//g, '');
+	for (const m of stripped.matchAll(/([^{}]+)\{([^{}]*)\}/g)) {
+		const alpha = /(?:^|[;\s])opacity\s*:\s*([\d.]+)/.exec(m[2]);
+		if (!alpha) continue;
+		out.push({ selector: m[1].trim().replace(/\s+/g, ' '), alpha: Number(alpha[1]) });
+	}
+	return out;
+}
+
 describe('board page — contrast is MEASURED, not assumed', () => {
 	it.each(PAIRS)('%s: %s on %s clears AA body', (_sel, fg, bg) => {
 		const ratio = contrastRatio(resolveToHex(fg, DECLS), resolveToHex(bg, DECLS));
 		expect(ratio).toBeGreaterThanOrEqual(AA_BODY);
+	});
+
+	it('every opacity in this stylesheet is enumerated — the gate cannot go blind again', () => {
+		const found = opacityRules(CSS);
+		expect(found.map((r) => r.selector).sort()).toEqual(COMPOSITED.map((c) => c.sel).sort());
+		for (const r of found) {
+			expect(COMPOSITED.find((c) => c.sel === r.selector)?.alpha).toBe(r.alpha);
+		}
+	});
+
+	it.each(COMPOSITED)('$sel: $fg at $alpha over $bg clears AA body AS PAINTED', ({ fg, bg, alpha }) => {
+		const bgHex = resolveToHex(bg, DECLS);
+		const painted = compositeOver(resolveToHex(fg, DECLS), bgHex, alpha);
+		expect(contrastRatio(painted, bgHex)).toBeGreaterThanOrEqual(AA_BODY);
+	});
+
+	it('regression: the chip rules paint the token the PAIRS table asserts (no alpha)', () => {
+		// The exact defect, restated as an absence: `.chip:disabled` and `.chip-n` must carry no
+		// opacity, because PAIRS measures `.chip:disabled` at full alpha and `.chip-n` inherits.
+		const rules = opacityRules(CSS).map((r) => r.selector);
+		expect(rules).not.toContain('.chip:disabled');
+		expect(rules).not.toContain('.chip-n');
+		// And the disabled state is still SIGNALLED — by a non-compositing affordance.
+		expect(CSS).toMatch(/\.chip:disabled\s*\{[^}]*cursor:\s*not-allowed/);
+		expect(CSS).toMatch(/\.chip:disabled\s*\{[^}]*border-style:\s*dashed/);
 	});
 
 	it('the faint ramp is not used for content anywhere on this page', () => {
@@ -231,6 +306,35 @@ describe('board controls — every one has an accessible name', () => {
 		expect(MARKUP).toContain('role="alert"'); // the error envelope
 		const statuses = [...MARKUP.matchAll(/role="status"/g)];
 		expect(statuses.length).toBeGreaterThanOrEqual(4); // db-down, filtered-empty, stale, feedback
+	});
+});
+
+/**
+ * The action banner was the ONE element on this page composed from the action RESULT rather than
+ * from the live rows, and it duly asserted `Moved task to ready.` in the same DOM read as an
+ * `in_progress` badge and a `ready=0` column (red-team, live, 2026-08-05). The behaviour is unit-
+ * tested in `task-board-view.test.ts`; what is guarded HERE is the wiring — that the template
+ * cannot drift back to interpolating the write's own request.
+ */
+describe('board banner — the success line is derived from the LIVE row', () => {
+	it('renders the composed line, never the write-requested status from the action result', () => {
+		expect(MARKUP).toContain('{feedbackLine}');
+		// The exact shape that shipped. `feedback.to` may not be interpolated into the banner at all.
+		expect(MARKUP).not.toContain('Moved task to {feedback.to}');
+		expect(MARKUP).not.toMatch(/\{feedback\.(to|tagCount|priority)\}/);
+	});
+
+	it('the banner is composed against the live row for the task the action wrote', () => {
+		expect(SRC).toContain('boardFeedbackLine(feedback, feedbackTask)');
+		expect(SRC).toMatch(/tasks\.find\(\(t\) => t\.id === feedback\.taskId\)/);
+	});
+
+	it('a view change RETIRES the banner — replaceState never clears `form`', () => {
+		// `setView` is the single funnel for every filter click (chips, selects, search, clear), so
+		// acking there covers all of them.
+		const setView = SRC.slice(SRC.indexOf('function setView'), SRC.indexOf('function toggleTag'));
+		expect(setView).toContain('ackedForm = form');
+		expect(SRC).toContain('form !== ackedForm');
 	});
 });
 

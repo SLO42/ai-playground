@@ -16,6 +16,7 @@ import { describe, it, expect } from 'vitest';
 import {
 	applyBoardViewToParams,
 	boardColumns,
+	boardFeedbackLine,
 	boardScalarOptions,
 	boardSummaryLine,
 	boardTagOptions,
@@ -490,5 +491,72 @@ describe('resolveBoard — the honest states', () => {
 		expect(s).toContain('priority high');
 		expect(s).toContain('origin pm');
 		expect(s).toContain('status ready');
+	});
+});
+
+/**
+ * THE BANNER — the one element that could contradict the board, and did.
+ *
+ * MEASURED (red-team, live, 2026-08-05): clicking `→ ready` rendered `Moved task to ready.` while
+ * the same DOM read showed the badge at `in_progress` and the columns at `ready=0 in_progress=1` —
+ * the orchestrator had claimed the task within ~1s. The banner interpolated the ACTION RESULT's
+ * requested status, the only number/word on the page not derived from the live rows.
+ *
+ * So the regression is stated as the divergence itself: given a write that asked for X and a live
+ * row that now reads Y, the sentence must never claim X as the current state.
+ */
+describe('boardFeedbackLine — the banner states the LIVE row, not the write request', () => {
+	const moved = { ok: true as const, action: 'move', taskId: 'task:a', to: 'ready' };
+
+	it('REGRESSION: a move the orchestrator has already advanced is not reported as `ready`', () => {
+		const live = task({ id: 'task:a', status: 'in_progress' });
+		const line = boardFeedbackLine(moved, live);
+		expect(line).toBe('Move to ready accepted — the task now reads in_progress.');
+		// The exact shape that shipped must be impossible: no sentence may assert the requested
+		// status as the current one while the row says otherwise.
+		expect(line).not.toBe('Moved task to ready.');
+		expect(line).toContain('in_progress');
+	});
+
+	it('states the short sentence when the live row really does read the requested status', () => {
+		expect(boardFeedbackLine(moved, task({ id: 'task:a', status: 'ready' }))).toBe(
+			'Moved task to ready.'
+		);
+	});
+
+	it('a row no longer loaded is reported WITHOUT any claim about current state', () => {
+		expect(boardFeedbackLine(moved, null)).toBe('Move to ready accepted.');
+	});
+
+	it('retag counts the LIVE tags, falling back to the write readback only without a row', () => {
+		const live = task({ id: 'task:a', tags: ['db', 'careful'] });
+		const fb = { ok: true as const, action: 'retag', taskId: 'task:a', tagCount: 9 };
+		// The write said 9; the row carries 2. The row wins.
+		expect(boardFeedbackLine(fb, live)).toBe('Tags saved (2).');
+		expect(boardFeedbackLine(fb, null)).toBe('Tags saved (9).');
+		expect(boardFeedbackLine({ ...fb, tagCount: 0 }, task({ id: 'task:a' }))).toBe('Tags cleared.');
+		expect(boardFeedbackLine({ ...fb, tagCount: 0 }, null)).toBe('Tags cleared.');
+	});
+
+	it('priority names the divergence the same way a move does', () => {
+		const fb = { ok: true as const, action: 'priority', taskId: 'task:a', priority: 'high' };
+		expect(boardFeedbackLine(fb, task({ id: 'task:a', priority: 'high' }))).toBe(
+			'Priority set to high.'
+		);
+		expect(boardFeedbackLine(fb, task({ id: 'task:a', priority: 'critical' }))).toBe(
+			'Priority change to high saved — the task now reads critical.'
+		);
+		expect(boardFeedbackLine(fb, null)).toBe('Priority set to high.');
+	});
+
+	it('shadow paths: nil · error · unknown action · missing field → no banner at all', () => {
+		expect(boardFeedbackLine(null, null)).toBeNull();
+		expect(boardFeedbackLine(undefined, task({ id: 'task:a' }))).toBeNull();
+		// An error envelope is the page's own `.form-error` line — never a success banner too.
+		expect(boardFeedbackLine({ error: 'task not found on this board' }, null)).toBeNull();
+		expect(boardFeedbackLine({ ok: true, action: 'teleport' }, task({ id: 'task:a' }))).toBeNull();
+		expect(boardFeedbackLine({ ok: true, action: 'move' }, task({ id: 'task:a' }))).toBeNull();
+		expect(boardFeedbackLine({ ok: true, action: 'priority' }, task({ id: 'task:a' }))).toBeNull();
+		expect(boardFeedbackLine({ ok: true }, task({ id: 'task:a' }))).toBeNull();
 	});
 });

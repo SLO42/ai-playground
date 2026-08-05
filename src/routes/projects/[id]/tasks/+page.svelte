@@ -27,6 +27,7 @@
   import { shortRef } from '$lib/shared/naming';
   import {
     applyBoardViewToParams,
+    boardFeedbackLine,
     columnCountLabel,
     completenessHint,
     contextCompleteness,
@@ -36,6 +37,7 @@
     resolveBoard,
     linkLabel,
     originLabel,
+    type BoardActionFeedback,
     type BoardTask,
     type BoardView
   } from './task-board-view';
@@ -53,12 +55,36 @@
   const sprintReality = $derived(data.sprintReality);
   const backHref = $derived(`/projects/${slug}`);
 
-  /** The action envelope this route's actions return (`{ board: … }`). */
+  /**
+   * The action envelope this route's actions return (`{ board: … }`), RETIRED once the operator
+   * moves the view on.
+   *
+   * A filter click writes the address bar with `replaceState`, which does not re-run the loader —
+   * and SvelteKit only resets `form` on a real navigation. Measured live 2026-08-05: a
+   * "Tags saved (1)." banner survived a filter change and sat there indefinitely, still asserting
+   * an act the operator had moved past. So a view change ACKS the current result and the banner
+   * retires with it; the next action arrives as a fresh `form` object and shows again.
+   *
+   * `$state.raw` is LOAD-BEARING, not a micro-optimisation. A plain `$state` deep-PROXIES the
+   * object it is assigned, so `ackedForm = form` stores a proxy and `form !== ackedForm` stays true
+   * forever — measured in the browser 2026-08-05 with a `data-dbg-acked` probe, which read `false`
+   * immediately after the assignment and left the banner standing. `$state.raw` holds the reference
+   * itself, which is the whole point of an identity ack.
+   */
+  let ackedForm = $state.raw<unknown>(null);
   const feedback = $derived(
-    (form?.board ?? null) as
-      | { error?: string; ok?: true; action?: string; to?: string; tagCount?: number; priority?: string }
-      | null
+    form && form !== ackedForm ? ((form.board ?? null) as BoardActionFeedback | null) : null
   );
+
+  /**
+   * The LIVE row the last action wrote, and the banner's sentence composed FROM it — never from
+   * the action result alone (see `boardFeedbackLine`: the banner was the one element on this page
+   * that could, and did, assert `ready` beside an `in_progress` badge).
+   */
+  const feedbackTask = $derived(
+    feedback?.taskId ? (tasks.find((t) => t.id === feedback.taskId) ?? null) : null
+  );
+  const feedbackLine = $derived(boardFeedbackLine(feedback, feedbackTask));
 
   // ── The view lives in the URL (shareable, survives a reload) ───────────────────────────────
   //
@@ -87,6 +113,9 @@
 
   /** Apply a filter patch and mirror it into the address bar (no loader round-trip). */
   function setView(patch: Partial<BoardView>): void {
+    // Changing the view retires the last action's banner — `replaceState` below never clears
+    // `form`, so without this ack the banner outlives the view it was posted from.
+    ackedForm = form;
     view = { ...view, ...patch };
     const params = applyBoardViewToParams(new URLSearchParams(), view);
     const q = params.toString();
@@ -163,20 +192,12 @@
       </p>
     </div>
   {:else}
-    {#if feedback}
-      {#if feedback.error}
-        <p class="form-error" role="alert">{feedback.error}</p>
-      {:else if feedback.action === 'move'}
-        <p class="form-ok" role="status">Moved task to {feedback.to}.</p>
-      {:else if feedback.action === 'retag'}
-        <p class="form-ok" role="status">
-          {Number(feedback.tagCount) === 0
-            ? 'Tags cleared.'
-            : `Tags saved (${Number(feedback.tagCount)}).`}
-        </p>
-      {:else if feedback.action === 'priority'}
-        <p class="form-ok" role="status">Priority set to {feedback.priority}.</p>
-      {/if}
+    <!-- The action banner. The success sentence is composed by `boardFeedbackLine` FROM THE LIVE
+         ROW, so it can no longer assert a status the badges and columns beside it contradict. -->
+    {#if feedback?.error}
+      <p class="form-error" role="alert">{feedback.error}</p>
+    {:else if feedbackLine}
+      <p class="form-ok" role="status">{feedbackLine}</p>
     {/if}
 
     {#if board.total === 0}
@@ -820,15 +841,25 @@
   /* A DISABLED chip means "selecting this shows nothing" — it must still be READABLE, because the
      zero beside it is the information. WCAG 1.4.3 exempts disabled controls from the body minimum,
      but the faint ramp (1.86:1 on overlay) made the label guesswork, so this keeps the muted ramp
-     and signals the state through the cursor + a light opacity instead of by hiding the text. */
+     and signals the state through the cursor + a DASHED border.
+
+     It signals it through NEITHER of them with `opacity`, which is what shipped and what the
+     red-team measured on 2026-08-05: `opacity` composites the text into its background before the
+     pixel exists, and the token gate — which measures token against token — cannot see it. The gate
+     certified 4.68:1 for this rule while `opacity: 0.7` painted 3.09:1, and the count nested inside
+     it (a second `opacity: 0.75`) painted 2.38:1. At full alpha the muted ramp really is the 4.68:1
+     the gate asserts, and board-a11y.test.ts now enumerates + composites every remaining opacity so
+     the blind spot cannot silently return. */
   .chip:disabled {
     color: var(--color-text-muted);
     cursor: not-allowed;
-    opacity: 0.7;
+    border-style: dashed;
   }
+  /* The count carries no dimming of its own for the same reason — it IS the information the chip
+     exists to report, and an alpha here would nest a second composite on top of the chip's own. */
   .chip-n {
     color: inherit;
-    opacity: 0.75;
+    font-variant-numeric: tabular-nums;
   }
 
   .filter-foot {

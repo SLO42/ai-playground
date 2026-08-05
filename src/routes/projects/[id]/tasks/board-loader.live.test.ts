@@ -119,6 +119,29 @@ beforeAll(async () => {
 	// A real sprint row, so the board's sprint counts are measured rather than assumed.
 	await createSprint(db!, { project: board.id, name: 'Sprint 1' });
 
+	// …and a project whose sprints ARE time-boxed. `sprintReality.timeBoxed` is an operator-facing
+	// claim on the page ("N sprint rows, M of them time-boxed") whose true branch had ZERO coverage:
+	// every assertion in the repo pinned it to 0 because the only fixture sprint carried no dates.
+	// That is CLAUDE.md §4's named F-013 pattern applied to a COUNT — "unit tests where the field is
+	// NONE won't catch it; assert on a row where it's SET". Three rows so both halves of the
+	// `!!starts || !!ends` predicate get their own row and one row still lands on the false branch.
+	const boxed = await createProject(db!, {
+		slug: 'boardsprints',
+		name: 'Board Sprints',
+		root_path: '/tmp/boardsprints'
+	});
+	await createSprint(db!, {
+		project: boxed.id,
+		name: 'Starts only',
+		starts: new Date('2026-08-01T00:00:00.000Z')
+	});
+	await createSprint(db!, {
+		project: boxed.id,
+		name: 'Ends only',
+		ends: new Date('2026-08-31T00:00:00.000Z')
+	});
+	await createSprint(db!, { project: boxed.id, name: 'Undated' });
+
 	// A project with a REAL hired PM — the `proposed_by` → name join is a real FK read, so it gets a
 	// real pm row rather than a stubbed map. It lives on its OWN project because `pm` is UNIQUE per
 	// project and the other boards deliberately have none.
@@ -323,6 +346,19 @@ describe.runIf(!process.env.SKIP_LIVE)('task board loader — real SurrealDB', (
 		expect(data.sprintReality.timeBoxed).toBe(0);
 		// `task` carries no sprint link at all, so this can only ever be 0.
 		expect(data.sprintReality.withTasks).toBe(0);
+	});
+
+	it('timeBoxed counts a sprint dated on EITHER end — the true branch, over real rows', async () => {
+		if (!available) return;
+		const data = await runLoad('boardsprints');
+		// Three real rows: `starts`-only, `ends`-only, and one with neither. The loader's predicate is
+		// `!!s.starts || !!s.ends`, so both dated rows must count and the undated one must not — the
+		// claim the page renders as "3 sprint rows, 2 of them time-boxed".
+		expect(data.sprintReality.total).toBe(3);
+		expect(data.sprintReality.timeBoxed).toBe(2);
+		expect(data.sprintReality.withTasks).toBe(0);
+		// Still no task link anywhere — a time-boxed sprint is not a task container (§6.2).
+		expect(data.tasks).toEqual([]);
 	});
 
 	it('an unknown project 404s; a malformed slug 404s — never a silent empty board', async () => {

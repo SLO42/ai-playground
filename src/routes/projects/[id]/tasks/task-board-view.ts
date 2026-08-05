@@ -700,6 +700,83 @@ export function originLabel(origin: unknown): string {
 	return o;
 }
 
+// ── The action banner (the one element that could contradict the board) ────────────────────
+
+/**
+ * The envelope this route's three actions return under `form.board` (see `+page.server.ts`).
+ *
+ * Structural, like {@link BoardTask}: the page receives it as an untyped `form` prop, so the shape
+ * is declared here once and both sides agree without the client importing a server type.
+ */
+export interface BoardActionFeedback {
+	error?: string;
+	ok?: true;
+	/** `move` | `retag` | `priority` — which action produced this. */
+	action?: string;
+	/** The row the action wrote. The page resolves it against the LIVE rows (see below). */
+	taskId?: string;
+	/** move: the status the write ASKED for. */
+	to?: string;
+	/** retag: the tag count read back off the stored row at write time. */
+	tagCount?: number;
+	/** priority: the priority the write ASKED for. */
+	priority?: string;
+}
+
+/**
+ * The success banner's sentence, composed from the LIVE row rather than from the action result.
+ *
+ * MEASURED DEFECT (red-team, live, 2026-08-05): clicking `→ ready` rendered `Moved task to ready.`
+ * while, in the SAME DOM read, the detail badge said `in_progress` and the columns read
+ * `ready=0 in_progress=1` — the orchestrator had claimed the task within ~1s of the write. The
+ * banner was the ONE element on this page derived from the action result (a point-in-time snapshot
+ * of what the write ASKED for) instead of from the live rows, which is precisely the head-vs-body
+ * class this module exists to make structurally impossible (see the counts-invariant note above).
+ *
+ * So the write's outcome and the row's CURRENT state are stated as the two different facts they
+ * are: the action really did succeed (past tense, never retracted), and the status beside it is
+ * whatever the live row says now. When they agree the sentence stays the short one; when they have
+ * diverged the banner says so rather than asserting a state the columns contradict.
+ *
+ * Shadow paths: nil feedback / an error envelope / an unknown action → `null` (the page renders
+ * nothing, or its own error line); a live row that is no longer loaded → the write is reported
+ * WITHOUT any claim about current state, never with a stale one.
+ */
+export function boardFeedbackLine(
+	feedback: BoardActionFeedback | null | undefined,
+	live: BoardTask | null | undefined
+): string | null {
+	if (!feedback || clean(feedback.error)) return null;
+	const action = clean(feedback.action);
+	if (!action) return null;
+
+	if (action === 'move') {
+		const to = clean(feedback.to);
+		if (!to) return null;
+		const now = clean(live?.status);
+		if (!now) return `Move to ${to} accepted.`;
+		if (now === to) return `Moved task to ${to}.`;
+		return `Move to ${to} accepted — the task now reads ${now}.`;
+	}
+
+	if (action === 'retag') {
+		// The live row's tags where we have them; the write's own readback only as a fallback. Both
+		// are DB truth — the live one is simply the more recent of the two.
+		const n = live ? taskTags(live).length : safeCount(feedback.tagCount);
+		return n === 0 ? 'Tags cleared.' : `Tags saved (${n}).`;
+	}
+
+	if (action === 'priority') {
+		const asked = clean(feedback.priority);
+		if (!asked) return null;
+		const now = clean(live?.priority);
+		if (!now || now === asked) return `Priority set to ${asked}.`;
+		return `Priority change to ${asked} saved — the task now reads ${now}.`;
+	}
+
+	return null;
+}
+
 // ── One-pass resolution ────────────────────────────────────────────────────────────────────
 
 /** Everything the board needs to render in one pass. */

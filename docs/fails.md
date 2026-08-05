@@ -8,6 +8,20 @@ This is the UNIFIED F-001–F-015 log (2026-06-10): F-001..F-013 were carried on
 the build branch (`v2`), F-014/F-015 were logged on `v2-main` — merged here and
 synced to both branches so every agent sees the full set.
 
+> **STALE-PROPOSED: 2026-08-05 — the "synced to both branches" claim above is no longer
+> true, in BOTH directions.** Measured against `F:\code\ai-playground\docs\fails.md`
+> (branch `v2-main`) by comparing the `## F-NNN` id sets:
+> - **Absent from THIS copy:** F-048, F-049, F-050, F-051, F-052, F-053, F-054, F-055,
+>   F-058, F-059, F-060. These are not minor — F-052 (one builder per worktree), F-058
+>   (never `git checkout -- <file>`) and F-059 (`db:up` is a FOREGROUND process) are named
+>   hard rules in the current operating manual.
+> - **Absent from THAT copy:** F-017..F-047 and F-057. It cites F-029 in prose while
+>   carrying no F-029 entry, so it is not a superset either.
+>
+> So **neither file is the full set — scan both.** This copy was last written at `4e8698b`
+> (2026-07-07). Per the marking protocol this is a MARK, not a retirement: nothing has been
+> merged or deleted here. Re-unifying the two ledgers is an **operator** action.
+
 The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
 — the prevention rules apply to v2 from day 0.
 

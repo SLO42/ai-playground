@@ -21,7 +21,11 @@ A ground-up, **lighter** rebuild of the ai-playground project-lifecycle platform
 > resolves — e.g. `docs/GAME-VERIFY-SPEC.md`, referenced from `src/lib/server/orchestrator/`,
 > exists there and not here.
 >
-> The one file in this directory that is live and current is **`fails.md`** (append-only).
+> **`fails.md`** is the one file here still appended to — but it is **NOT the full set**.
+> It has forked from `F:\code\ai-playground\docs\fails.md` in **both** directions: this copy
+> lacks F-048..F-055 and F-058..F-060, that copy lacks F-017..F-047. Scan **both** before
+> starting a task; `CLAUDE.md` (worktree root) carries the measured breakdown. Re-unifying
+> them is an operator action — mark, never delete.
 
 ## Read in this order
 

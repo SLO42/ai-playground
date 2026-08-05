@@ -21,7 +21,16 @@ the original v2 plan; read it as history, not as the current system.
 - Frozen local snapshot, still useful for original intent: `docs/IMPLEMENTATION-PLAN.md`,
   `docs/DATA-MODEL.md`, `docs/MEMORY-SPEC.md`, `docs/ARCHITECTURE.md`, `docs/UI-SPEC.md`,
   `docs/AGENTS.md`, `docs/DEVELOPMENT.md`.
-- `docs/fails.md` — live and append-only in this worktree.
+- `docs/fails.md` — **FORKED from the docs-checkout copy. Scan BOTH; neither is the full
+  set.** Its own header still claims to be the unified log "synced to both branches so
+  every agent sees the full set" — measured 2026-08-05, that is false in BOTH directions.
+  This copy (last touched `4e8698b`, 2026-07-07) carries F-001..F-057 but is **missing
+  F-048..F-055, F-058, F-059, F-060** — which include hard rules in the current operating
+  manual: F-052 (one builder per worktree), F-058 (never `git checkout -- <file>`), F-059
+  (`db:up` runs SurrealDB in the FOREGROUND). `F:\code\ai-playground\docs\fails.md` carries
+  those but is itself **missing F-017..F-047** (it cites F-029 in prose with no F-029
+  entry). Re-unifying the two is an **operator** action (mark, never delete) — do not merge
+  or delete either copy. New entries still append here.
 
 ## Stack (verify APIs before use)
 - Node 24, ESM only (`"type":"module"`).

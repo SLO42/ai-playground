@@ -61,7 +61,8 @@ import type {
 	ContextBundle,
 	CapabilitySet,
 	CapabilityCatalog,
-	EditScopeInput
+	EditScopeInput,
+	SpawnRequest
 } from '../runtime/index';
 
 // ── Input / result shapes ──────────────────────────────────────────────────────
@@ -504,6 +505,71 @@ export function eventToMessage(ev: RuntimeEvent): PersistedMessage | null {
 	}
 }
 
+// ── The prompt-source row (TASK-BOARD-SPEC §3.1) ─────────────────────────────────
+
+/**
+ * The task shape the prompt is composed from. `id`/`title`/`description` are the original
+ * run seed; the rest are the §4.1 why/how fields the widened SELECT now reads.
+ *
+ * Every added field is `unknown`, not a claimed type: this row comes STRAIGHT off the SDK
+ * with no repo normalizer in between (the workflow `promptTask` branch supplies the same
+ * shape with all of them simply absent). `taskBriefFor` below is the one place they are
+ * coerced, so a NONE column, a null, or a surprising SDK type can never reach the prompt as
+ * the literal string "undefined" (F-013).
+ */
+interface PromptTaskRow {
+	id: unknown;
+	title: string;
+	description: string;
+	objective?: unknown;
+	purpose?: unknown;
+	acceptance_criteria?: unknown;
+	provenance?: unknown;
+	priority?: unknown;
+	origin?: unknown;
+}
+
+/** A non-empty trimmed string, or undefined — absent stays ABSENT, never `''` (§6.1/F-008). */
+function briefStr(value: unknown): string | undefined {
+	if (typeof value !== 'string') return undefined;
+	const trimmed = value.trim();
+	return trimmed ? trimmed : undefined;
+}
+
+/**
+ * Map a task row onto the SpawnRequest's structured-brief fields (TASK-BOARD-SPEC §3.1.2).
+ *
+ * TB-2 — the D-026 boundary is enforced HERE, by construction: only `provenance.kind` (a
+ * machine enum) is read off `provenance`. `provenance.evidence` and `provenance.detail` are
+ * never copied out, so they cannot reach the prompt's instruction region even though the row
+ * carries them — evidence can quote scanner/tool/retrieved output, the untrusted class.
+ *
+ * Absent fields are OMITTED from the returned object, never set to `''` or `null`, so
+ * `buildPrompt` emits nothing for them and a task with no brief composes the pre-change
+ * prompt byte-for-byte (TB-1).
+ */
+function taskBriefFor(row: PromptTaskRow): Partial<SpawnRequest['task']> {
+	const criteria = Array.isArray(row.acceptance_criteria)
+		? row.acceptance_criteria.map(briefStr).filter((v): v is string => v !== undefined)
+		: undefined;
+	const provenanceKind =
+		row.provenance && typeof row.provenance === 'object'
+			? briefStr((row.provenance as { kind?: unknown }).kind)
+			: undefined;
+	const brief: Partial<SpawnRequest['task']> = {};
+	const objective = briefStr(row.objective);
+	const purpose = briefStr(row.purpose);
+	const priority = briefStr(row.priority);
+	const origin = briefStr(row.origin);
+	if (objective) brief.objective = objective;
+	if (purpose) brief.purpose = purpose;
+	if (criteria?.length) brief.acceptanceCriteria = criteria;
+	if (priority) brief.priority = priority;
+	if (origin) brief.origin = origin;
+	if (provenanceKind) brief.provenanceKind = provenanceKind;
+	return brief;
+}
+
 // ── The launch + persistence engine ──────────────────────────────────────────────
 
 /**
@@ -556,11 +622,20 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 	// Resolve the prompt source. Exactly one of taskId / promptTask drives the prompt:
 	//   • taskId    — read the real task; its title/description seed the prompt (D-008).
 	//   • promptTask — a workflow step (D-013) with no task row; its prompt is supplied.
-	let task: { id: unknown; title: string; description: string } | undefined;
+	let task: PromptTaskRow | undefined;
 	if (input.taskId) {
-		const [taskRows] = await db.query<
-			[Array<{ id: unknown; title: string; description: string }>]
-		>(`SELECT id, title, description FROM ONLY $tid;`, { tid: link(input.taskId) });
+		// TASK-BOARD-SPEC §3.1.1 — the SELECT is WIDENED to the §4.1 why/how fields the task
+		// already stores, so they can reach the executing model as a structured brief. Every
+		// field is named explicitly (never `SELECT *`): the projection IS the D-026 boundary —
+		// `provenance` arrives whole but only its `.kind` is mapped across below (TB-2).
+		// F-020: there is no ORDER BY/GROUP BY here, and this SELECT is covered by a
+		// real-SurrealDB test asserting the SET case (a stubDb does not parse SurrealQL).
+		// F-013: no datetime is selected, so no ISO coercion is owed; all of these are plain
+		// strings / string arrays / a plain object.
+		const [taskRows] = await db.query<[PromptTaskRow[]]>(
+			`SELECT id, title, description, objective, purpose, acceptance_criteria, provenance, priority, origin FROM ONLY $tid;`,
+			{ tid: link(input.taskId) }
+		);
 		task = (Array.isArray(taskRows) ? taskRows[0] : taskRows) as typeof task;
 		if (!task) throw new Error(`task not found: ${input.taskId}`);
 	} else if (input.promptTask) {
@@ -932,7 +1007,16 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		cwd, // EXPLICIT cwd (D-002 / 1.4a): project root for a READ session; the per-session worktree for a WRITE session (WI-2)
 		model: input.model,
 		intent: input.intent,
-		task: { id: String(task.id), title: task.title, description: task.description },
+		// TASK-BOARD-SPEC §3.1.2 — the run seed (D-008, unchanged) PLUS the structured §4.1
+		// brief. `taskBriefFor` omits every absent field, so a task carrying no brief — and
+		// every workflow `promptTask` step, whose narrow shape has none of them — composes a
+		// prompt byte-identical to the pre-change output (TB-1, F-053 fall-through).
+		task: {
+			id: String(task.id),
+			title: task.title,
+			description: task.description,
+			...taskBriefFor(task)
+		},
 		context: recalledContext,
 		budgets: input.budgets,
 		toolPolicy: input.toolPolicy,

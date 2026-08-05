@@ -9,7 +9,69 @@
 
 > ⏭ **RESUME PLAN (operator, 2026-06-26):** **BL-R1 DONE** (`eed3163`+`bcbc1f5`) · **BL-H1 digest DONE** · **BL-H2 eval DONE — headroom NO-ADOPT/idea-only** (`docs/HEADROOM-DIGEST.md` §6; F-049). Recovery + headroom closed; **recovery-harden-2 DONE** (RH-1 BL-R2 `d11db2f` + RH-2 wi-harden-2 `e89c9c5` + RH-3 `c58e5fb`, pushed) — the loop is hardened. Next + LAST — **go-live for ROUNDS**: bring up DB (v2 :8000) + dev server `CLAUDE_CODE_OAUTH_TOKEN` UNSET (F-029) → operator hits Continue → watch ROUNDS + `/projects/[id]/graph`. Boot reaper now runs BL-R1 release+reset, so go-live live-validates that path. Open deferred (non-blocking): BL-R3 (2 task-status MEDIUMs), BL-GUX-FIX (3 graph-UI test gaps), wi-harden done. (bring up DB + dev server token-unset → operator hits Continue → watch ROUNDS + the new `/projects/[id]/graph`). Server is currently DOWN (paused). All work committed + pushed to origin/v2 (tip `1da738e`); docs on v2-main. The full "alive" arc + repo-creation + usage-observability + command-center-ux + lifecycle-graph are DONE. Open tracked: BL-R1, wi-harden-2 (latent), headroom (BL-H1/H2), backlog (BL-1/BL-2/BL-2b).
 
-> ⏸ **OPERATOR PAUSE #6 (2026-08-04) — DO NOT AUTO-CHAIN. Servers STOPPED at operator request.**
+> ⏸ **OPERATOR PAUSE #7 (2026-08-05) — DO NOT AUTO-CHAIN. Servers stopped. SUPERSEDES #6 below.**
+>
+> **LANE A — `v2` = `b4f58f6`, PUSHED, 0/0, worktree clean. Everything below is fully gated
+> (review PASS + red-team PASS).** Migration head is now **`m0087`** (`m0087_task_tags`); next free
+> is `m0088`; **MODEL-LADDER-SPEC's paper claim on `m0087` is VOID and must re-allocate.**
+> - **RG-1 / the pre-commit gate is DONE and it found four more of its own class.** The headline:
+>   `orchestrator.ts` `#runItem`'s post-task catch is best-effort by design (F-014), but `gateFailed`
+>   /`reviewHeld` stayed false — so merge-back computed `done` and **FAST-FORWARDED an unverified
+>   branch with an ARMED gate that never returned a verdict** (F-055, a gated change reached by a
+>   path around the gate), and worse, that path reads `noop-empty` and **TEARS THE WORKTREE DOWN,
+>   deleting the agent's uncommitted work** (F-007). Fixed with a new `gate-unknown` exit state
+>   riding the SAME preserve branch. Also: the toolchain pre-flight was npm-shaped while the failure
+>   is not — a spawn ENOENT reports `{code:1,stdout:'',stderr:''}` for ANY program, so a cargo/go/
+>   dotnet project on a host without that SDK got a RED gate with an EMPTY reason and the change took
+>   the blame (`cargo` is absent on this host — it was live). Plus `countChangedFiles` returning 0
+>   for both "touched nothing" and "git could not be asked", and `branchExists` reading a repo fault
+>   as "branch already gone".
+> - **TASK-BOARD P1/P2/P3 SHIPPED** — structured task context reaches the model (`## Objective` /
+>   `## Why this task` / `## Acceptance criteria` / `## Task metadata`), `task.tags` with an
+>   authoring path, and the board at `/projects/[id]/tasks` with a full-page task view.
+>   Three real defects caught in review: `escapeBriefText` anchored on `^\s*` so `> ## Acceptance
+>   criteria` behind a container prefix **FORGED A SECTION** (D-026 prompt-injection); `retagTask`
+>   guarded its id with the SHAPE-only `assertRecordId` so a bare `UPDATE $rid MERGE` **landed on
+>   whatever table the id named** (cross-table write); `normalizeTags` enforced its count bound as a
+>   POST-condition, so the O(n²) dedup ran over the entire unbounded input first.
+> - **DEFERRED HIGH, named by the reviewer, NOT fixed:** the sibling `moveTask`
+>   (`routes/projects/[id]/+page.server.ts:1115`) still uses the shape-only `assertRecordId` — the
+>   same hole `retagTask` just closed. **Fix this first when the pause lifts.**
+>
+> **LANE C — `v2-lane-c` = `03f0d4d`, 4 commits ahead, ⛔ NOT PUSHED, tip UNVERIFIED (V1R-1's review
+> failed twice).** Everything BEFORE those 4 is pushed and green (`origin/v2-lane-c` = `6ecc350`).
+> - **The suite is honestly green because of this lane** — 0 failing files, 6019 tests. The
+>   root-cause is the best diagnostic work of the stretch and is now **F-060**: `core.autocrlf=true`
+>   with no `.gitattributes` means **a sha does NOT determine the bytes on disk**. Git materialises
+>   CRLF on checkout and normalises back on the way in, so `git status` is clean in BOTH states.
+>   Vitest does not run esbuild over `.mjs` and its shebang strip does not survive CRLF → a
+>   `SyntaxError` reported against the IMPORTING file, which then collected ZERO tests. Two agents
+>   measured the same commit and got opposite, both-correct answers. **53 tests had been contributing
+>   nothing while the suite reported them merely as "failing files"** — it was overstating coverage,
+>   not just colour. Fixed by `.gitattributes` pinning `*.mjs text eol=lf` + a guard test.
+>   **Residual: the pin covers `*.mjs`/`*.sh` only — `.ts` source-text scanners still need the F-054
+>   normalisation.**
+> - **V1R-1 is a WHACK-A-MOLE and must be finished by asserting the CLASS.** It refuted its own queue
+>   entry's premise — **`.playground/` is NOT dead v1 state and must NOT be deleted**: it has live
+>   readers (`workforce/gauntlet.ts:553` uses it as the D-018 ephemeral confinement root;
+>   `scripts/browser-verify/*` keeps daemon discovery state there). The task was "fix pointers that
+>   lie" and the fix **authored a lying pointer** — a fresh line calling `docs/fails.md` "live and
+>   append-only in this worktree" when that copy is a FORK. Each fix closed one instance; each
+>   re-review found it verbatim in a file the fixer had not touched (a 4th, then a 5th), and the
+>   guard written to close the class was **FAIL-OPEN on that very instance** by a rule the same
+>   commit authored (`if (frozen.has(file)) continue;`). Same shape as the terminality defect that
+>   escaped six times: fix the CLASS, not the instances.
+>
+> **NOT MERGED:** `v2-lane-c` → `v2`. Needs the v2 worktree plus a full re-gate of the combination.
+>
+> **Order when the pause lifts:** (1) finish V1R-1 by asserting the class, then push lane C;
+> (2) `moveTask`'s shape-only guard (deferred HIGH); (3) merge `v2-lane-c` → `v2` `--no-ff` +
+> RE-GATE the combination; (4) **`toolpolicy-enforcement`** (operator-gated, below — it blocks any
+> researching council); (5) **`COUNCIL-SPEC` P1** (operator-gated); (6) the `fails.md` cross-branch
+> numbering divergence — now measured: the copies' F-045/F-046 are ENTIRELY DIFFERENT failures, the
+> docs copy has a gap at F-057, and the v2 copies lack F-049..F-055/F-058/F-059 outright.
+
+> ⏸ **OPERATOR PAUSE #6 (2026-08-04) — superseded by PAUSE #7 above.**
 > SurrealDB terminated (was pid 10320); :8000/:5173/:5174 all free; no dev servers. **Both worktrees
 > CLEAN — nothing uncommitted, no leftover probe files.** Neither lane is pushed.
 >

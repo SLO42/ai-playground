@@ -685,6 +685,13 @@ export type ReconcileOutcome =
 	/** The run exists but is STILL non-terminal — there is genuinely no verdict yet. */
 	| 'still_pending'
 	/**
+	 * The newest challenger run did NOT run at the incumbent's certified model, so consuming it
+	 * would record an INCOMPARABLE verdict — and 'compared' is one-way (§5), which would foreclose
+	 * the paid apples-to-apples re-gauntlet forever. NOTHING was written. See
+	 * {@link offTargetRefusal} for why this guard exists and exactly when it fires.
+	 */
+	| 'off_target'
+	/**
 	 * A rival writer recorded a comparison for this proposal while this reconcile was deriving
 	 * one, and the repo's collision rule kept theirs. NOTHING was written and NOTHING was spent —
 	 * this path re-derives its verdict for free and can simply be repeated once the row settles.
@@ -728,6 +735,9 @@ export interface ReconcileProposalResult {
  *   • upstream error — the run is 'error' (broke before scoring) or still 'running' /
  *                      'adjudicating' → 'still_pending' with the SAME wording the paid path uses,
  *                      and NOTHING written. A broken run must never be consumed as a verdict.
+ *   • off target     — the newest run did not run at the incumbent's CERTIFIED model, so its
+ *                      verdict is not the one the paid path would have produced → 'off_target',
+ *                      NOTHING written (see {@link offTargetRefusal}).
  *   • rival writer   — a paid re-gauntlet recorded its comparison first (or landed between this
  *                      function's read and its compare-and-swap) → 'superseded', NOTHING written.
  *                      This side yields by design: its verdict is free to re-derive, the paid one
@@ -772,6 +782,14 @@ export async function reconcileProposalFromRun(
 			reason:
 				'the challenger has no interview_run — nothing has been paid for yet, so there is no verdict to consume. Run the re-gauntlet (a real spend) to produce one (§5)'
 		};
+	}
+
+	// THE CERTIFIED-TARGET GUARD — BEFORE the terminality gate on purpose: an off-target run will
+	// never become usable, so telling the operator "still pending, come back when it finishes" would
+	// send them to adjudicate a queue for a verdict this path can never consume.
+	const offTarget = await offTargetRefusal(db, proposal, run);
+	if (offTarget) {
+		return { outcome: 'off_target', proposal, comparison: null, run: run.id, reason: offTarget };
 	}
 
 	// THE TERMINALITY GATE — the shared one, the same call the paid path makes. A second local
@@ -873,6 +891,62 @@ async function latestChallengerRun(db: Db, challenger: string): Promise<Challeng
 		cost_usd: typeof r.cost_usd === 'number' ? r.cost_usd : null,
 		fixture_set_sha: typeof r.fixture_set_sha === 'string' ? r.fixture_set_sha : ''
 	};
+}
+
+/**
+ * THE CERTIFIED-TARGET GUARD — the free path may consume only the run the PAID path would have
+ * produced. Returns the named refusal, or null when this run is on target.
+ *
+ * THE DEFECT THIS CLOSES (LC-D review, finding ②). The paid path is constrained: the route calls
+ * `resolveRegauntletTarget`, which reads the incumbent's certified (tier × model_id), and
+ * `regauntletChallenger` runs the challenger at exactly that — which is the whole basis of this
+ * module's "apples-to-apples" claim. `latestChallengerRun` was constrained by NOTHING but
+ * `role_version = challenger`, so ANY run on that version qualified — including one a different
+ * caller produced at a different model (`ceremony.triggerBootstrapInterview` /
+ * `triggerAdmissionReferenceRun` both take an arbitrary role_version AND an arbitrary tier/model).
+ * Consuming such a run makes `loadIncumbentBaseline` find no baseline at that model, so
+ * `buildComparison` yields `comparable:false` — and the proposal advanced to 'compared' anyway.
+ * 'compared' is a ONE-WAY door (lifecycle.ts: compared → swapped | rejected_by_operator |
+ * withdrawn), and `regauntletChallenger` refuses any status but 'interviewing'. So ONE free click
+ * on the wrong run permanently foreclosed the paid comparison the operator was entitled to. The
+ * doc claim "Identical inputs, identical verdict, zero tokens" held only by luck.
+ *
+ * WHEN IT FIRES, EXACTLY — the guard is scoped to the FORECLOSURE condition, not widened past it:
+ *   • certified target resolves AND the run's model_id differs  → REFUSE (a paid apples-to-apples
+ *     comparison is still possible, and consuming this run would destroy the chance to record it).
+ *   • certified target does NOT resolve (no incumbent, or no passing run at the incumbent's
+ *     current prompt_sha)                                        → ALLOW, unchanged. The paid path
+ *     refuses that case too (`resolveRegauntletTarget` → ok:false → the route's 400), so there is
+ *     no better verdict being foreclosed — only an honest `comparable:false` comparison to record,
+ *     and the D-039 swap gate behind it is untouched. Refusing here instead would strand such a
+ *     proposal with NO forward move at all, which is a strictly worse harm than the one being
+ *     fixed. (The residual: certifying the incumbent AFTER the challenger already ran off-target
+ *     would re-open a comparison this path had already consumed. Stated, not hidden.)
+ *
+ * MODEL, NOT TIER: model_id is the axis `buildComparison` actually compares on (with
+ * fixture_set_sha) and the axis `loadIncumbentBaseline` filters the baseline by. Tier is a cost
+ * LABEL that two rungs could map to the same model; refusing on it would reject runs that are
+ * genuinely comparable. The target's tier is named in the message for provenance only.
+ *
+ * ONE definition, two callers: this gate and `buildProposalCard` — so the surface can never offer a
+ * button the mechanism will refuse (a dead control is F-008 dishonesty on the affordance).
+ */
+async function offTargetRefusal(
+	db: Db,
+	proposal: ReviewProposalRow,
+	run: ChallengerRunRow
+): Promise<string | null> {
+	const target = await resolveRegauntletTarget(db, proposal.id);
+	if (!target.ok) return null;
+	if (run.model_id === target.target.modelId) return null;
+	return (
+		`run ${run.id} ran at model '${run.model_id}', but the incumbent is certified at ` +
+		`'${target.target.modelId}' (tier '${target.target.tier}', certified by ${target.target.certifiedBy}) — ` +
+		`its verdict is NOT the one a re-gauntlet would produce, so recording it would land an ` +
+		`INCOMPARABLE comparison on a status ('compared') that has no way back (§5), foreclosing the ` +
+		`apples-to-apples comparison for good. Run the re-gauntlet (a real spend) to get a verdict at ` +
+		`the certified model.`
+	);
 }
 
 /**
@@ -1235,9 +1309,17 @@ export interface ProposalCard {
 	reconcilable: {
 		run: string;
 		status: string;
-		/** TRUE iff the run is terminal, i.e. reconciling would record a comparison right now. */
+		/**
+		 * The model the run ACTUALLY ran at. Shown because it is the axis the verdict's
+		 * comparability turns on: a run at a model other than the incumbent's certified one cannot
+		 * be reconciled, and the card used to name only the run id and status — so the one fact
+		 * that decides whether this control does anything useful was invisible.
+		 */
+		model: string;
+		/** TRUE iff reconciling would record a comparison right now — i.e. the run is terminal AND
+		 *  it ran at the incumbent's certified model (see `offTargetRefusal`). */
 		ready: boolean;
-		/** Why it is / is not ready — the same wording the paid path uses. */
+		/** Why it is / is not ready — the same wording the mechanism refuses with. */
 		reason: string;
 	} | null;
 	createdAt: string | null;
@@ -1283,15 +1365,21 @@ export async function buildProposalCard(db: Db, proposal: ReviewProposalRow): Pr
 	if (proposal.status === 'interviewing' && proposal.challenger) {
 		const run = await latestChallengerRun(db, proposal.challenger);
 		if (run) {
-			const ready = isScoredStatus(run.status);
+			// The SAME guard the mechanism refuses with — never a second, weaker local notion of
+			// "reconcilable", or the surface offers a button that is certain to 400.
+			const offTarget = await offTargetRefusal(db, proposal, run);
+			const scored = isScoredStatus(run.status);
 			reconcilable = {
 				run: run.id,
 				status: run.status,
-				ready,
-				reason: ready
-					? `run ${run.id} finished '${run.status}' — its verdict can be recorded on this proposal now, with NO second gauntlet spend (§5)`
-					: (unscoredComparison(run).incomparableReason ??
-						`run ${run.id} is '${run.status}' — no verdict yet`)
+				model: run.model_id,
+				ready: scored && !offTarget,
+				reason:
+					offTarget ??
+					(scored
+						? `run ${run.id} finished '${run.status}' — its verdict can be recorded on this proposal now, with NO second gauntlet spend (§5)`
+						: (unscoredComparison(run).incomparableReason ??
+							`run ${run.id} is '${run.status}' — no verdict yet`))
 			};
 		}
 	}

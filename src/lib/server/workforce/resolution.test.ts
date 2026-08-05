@@ -22,9 +22,11 @@ import { KNOWN_FAIL_PATH, KNOWN_PASS_PATH } from './scorer';
 import {
 	createGauntletFixture,
 	createGauntletKey,
+	createInterviewRun,
 	createReviewProposal,
 	createRole,
 	createRoleVersion,
+	finalizeInterviewRun,
 	getInterviewRun,
 	getReviewProposal,
 	getRole,
@@ -1484,4 +1486,151 @@ describe("§5 the 'compared' write is a COMPARE-AND-SWAP — the mid-write windo
 		const third = await setProposalStatus(db, id, { to: 'compared' });
 		expect(comparisonRun(third.comparison)).toBe(run);
 	}, 60_000);
+});
+
+// ── THE CERTIFIED-TARGET GUARD on the free reconcile path (LC-D review, finding ②) ──────
+//
+// THE DEFECT THESE PIN. `latestChallengerRun` was constrained by NOTHING but
+// `role_version = <the challenger>`, so the free path consumed ANY newest run on that version.
+// The PAID twin is constrained: the route resolves the incumbent's certified (tier × model_id)
+// via `resolveRegauntletTarget` and `regauntletChallenger` runs at exactly that — which is the
+// entire basis of the module's "identical inputs, identical verdict" claim. A challenger run
+// produced by some other caller at some other model (ceremony.triggerBootstrapInterview /
+// triggerAdmissionReferenceRun both take an arbitrary role_version AND an arbitrary tier/model)
+// therefore reconciled cleanly, `loadIncumbentBaseline` found no baseline at that model, and an
+// INCOMPARABLE verdict landed on 'compared' — a ONE-WAY status (lifecycle.ts) that
+// `regauntletChallenger` will never re-enter (it demands 'interviewing'). One free click on the
+// wrong run permanently foreclosed the paid apples-to-apples comparison. Money, again.
+describe('§5 reconcile — only the run the PAID path would have produced may be consumed', () => {
+	/** A terminal, fully-scored interview_run for a version at a chosen model — built directly,
+	 *  no LLM: these gates are about the target guard, not the scoring engine (which has its own
+	 *  real-DB coverage above). */
+	async function scoredRunAt(
+		roleVersionId: string,
+		opts: { tier: 'sonnet' | 'haiku'; modelId: string; sha: string }
+	): Promise<string> {
+		const run = await createInterviewRun(db, {
+			role_version: roleVersionId,
+			tier: opts.tier,
+			provider: 'claude',
+			model_id: opts.modelId,
+			fixture_set_sha: opts.sha,
+			planted_total: 1
+		});
+		const fin = await finalizeInterviewRun(db, run.id, {
+			status: 'passed',
+			planted_total: 1,
+			planted_found: 1,
+			false_positives: 0
+		});
+		return fin.id;
+	}
+
+	const OFF_MODEL = 'claude-haiku-off-target';
+
+	it('OFF TARGET: a run at another model is REFUSED by name — nothing written, the paid path still open', async () => {
+		const seed = await seedRole();
+		await certifyIncumbent(seed); // certifies the incumbent at MODEL
+		const proposal = await openProposal(seed);
+		const authored = await authorChallenger(db, {
+			proposal: proposal.id,
+			promptCore: 'You are reviewer.\nOff-target reconcile.',
+			operatorConfirmed: true
+		});
+		const offRun = await scoredRunAt(authored.challenger.id, {
+			tier: 'haiku',
+			modelId: OFF_MODEL,
+			sha: 'sha-off-target'
+		});
+
+		// ① THE MECHANISM REFUSES BY NAME, and names BOTH models — the operator can see why.
+		const res = await reconcileProposalFromRun(db, { proposal: proposal.id });
+		expect(res.outcome).toBe('off_target');
+		expect(res.run).toBe(offRun);
+		expect(res.comparison).toBeNull();
+		expect(res.reason).toContain(OFF_MODEL);
+		expect(res.reason).toContain(MODEL);
+
+		// ② NOTHING WAS WRITTEN — the one-way door was not opened.
+		const persisted = await getReviewProposal(db, proposal.id);
+		expect(persisted!.status).toBe('interviewing');
+		expect(persisted!.comparison ?? null).toBeNull();
+
+		// ③ AND THE PAID, APPLES-TO-APPLES COMPARISON IS STILL REACHABLE — the whole point of the
+		// refusal. `regauntletChallenger` refuses any status but 'interviewing', so a reconcile that
+		// had advanced the row would have foreclosed this forever.
+		const target = await resolveRegauntletTarget(db, proposal.id);
+		expect(target.ok).toBe(true);
+		if (target.ok) expect(target.target.modelId).toBe(MODEL);
+
+		// ④ THE SURFACE OFFERS NO CONTROL THAT IS CERTAIN TO REFUSE, and discloses the run's model —
+		// the one fact that decides whether the free path can do anything, previously invisible.
+		const card = await buildProposalCard(db, persisted!);
+		expect(card.reconcilable).toBeTruthy();
+		expect(card.reconcilable!.run).toBe(offRun);
+		expect(card.reconcilable!.model).toBe(OFF_MODEL);
+		expect(card.reconcilable!.ready).toBe(false);
+		expect(card.reconcilable!.reason).toContain(MODEL);
+	}, 90_000);
+
+	// THE POSITIVE CONTROL — a guard that refuses everything would "fix" the defect by killing the
+	// feature. Same shape, run at the CERTIFIED model: it reconciles, exactly as before.
+	it('ON TARGET: the same run at the incumbent’s certified model still reconciles for free', async () => {
+		const seed = await seedRole();
+		await certifyIncumbent(seed);
+		const proposal = await openProposal(seed);
+		const authored = await authorChallenger(db, {
+			proposal: proposal.id,
+			promptCore: 'You are reviewer.\nOn-target reconcile.',
+			operatorConfirmed: true
+		});
+		const onRun = await scoredRunAt(authored.challenger.id, {
+			tier: 'sonnet',
+			modelId: MODEL,
+			sha: 'sha-on-target'
+		});
+
+		const card = await buildProposalCard(db, (await getReviewProposal(db, proposal.id))!);
+		expect(card.reconcilable!.model).toBe(MODEL);
+		expect(card.reconcilable!.ready).toBe(true);
+
+		const runsBefore = await challengerRunCount(proposal.id);
+		const res = await reconcileProposalFromRun(db, { proposal: proposal.id });
+		expect(res.outcome).toBe('reconciled');
+		expect(res.run).toBe(onRun);
+		expect(res.proposal.status).toBe('compared');
+		expect(
+			await challengerRunCount(proposal.id),
+			'RECONCILING MUST NOT SPEND: no new interview_run may exist'
+		).toBe(runsBefore);
+	}, 90_000);
+
+	// THE GUARD IS SCOPED TO THE FORECLOSURE CONDITION, not widened past it. When the incumbent has
+	// NO certified (tier × model_id), the paid path refuses too (`resolveRegauntletTarget` →
+	// ok:false), so no better verdict is being foreclosed — and refusing here as well would strand
+	// the proposal with no forward move at all, a strictly worse harm than the one being fixed.
+	it('NO CERTIFIED TARGET: the guard stands down rather than stranding the proposal', async () => {
+		const seed = await seedRole(); // incumbent deliberately NOT certified
+		const proposal = await openProposal(seed);
+		const authored = await authorChallenger(db, {
+			proposal: proposal.id,
+			promptCore: 'You are reviewer.\nUncertified incumbent.',
+			operatorConfirmed: true
+		});
+		const someRun = await scoredRunAt(authored.challenger.id, {
+			tier: 'haiku',
+			modelId: OFF_MODEL,
+			sha: 'sha-no-target'
+		});
+		const target = await resolveRegauntletTarget(db, proposal.id);
+		expect(target.ok, 'precondition: there is no certified target to foreclose').toBe(false);
+
+		const res = await reconcileProposalFromRun(db, { proposal: proposal.id });
+		expect(res.outcome).toBe('reconciled');
+		expect(res.run).toBe(someRun);
+		// Honest about what it recorded: no baseline at that model, so comparable:false — stated,
+		// never dressed up as a verdict.
+		expect(res.comparison!.comparable).toBe(false);
+		expect(res.proposal.status).toBe('compared');
+	}, 90_000);
 });

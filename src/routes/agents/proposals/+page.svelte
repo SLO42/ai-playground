@@ -440,7 +440,8 @@
                   <p class="stage-note">
                     A gauntlet run for this challenger already exists —
                     <span class="mono">{p.reconcilable.run}</span> ·
-                    <span class="mono">{p.reconcilable.status}</span>.
+                    <span class="mono">{p.reconcilable.status}</span> ·
+                    <span class="mono">{p.reconcilable.model}</span>.
                     {p.reconcilable.reason}
                   </p>
                   {#if p.reconcilable.ready}

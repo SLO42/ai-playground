@@ -19,6 +19,7 @@ import {
 	loadProposalCards,
 	proposalDiff,
 	ProposalComparisonCollisionError,
+	ProposalStatusError,
 	ProposalWriteContentionError,
 	proposeTierChange,
 	reconcileProposalFromRun,
@@ -203,6 +204,19 @@ function outcomeResult(outcome: GauntletOutcome): Record<string, unknown> {
  * `regauntletChallenger` re-throws it as the SAME class with its run named, rather than wrapping
  * it into a ResolutionGateError, which used to make the identical condition a 400 on the paid
  * route and a 409 on the free one.
+ *
+ * THE SECOND MISS, and why the shape of the first fix did not catch it (LC-D review, finding ①).
+ * The previous pass fixed the CALL SITES — it wired all ten catches through this function — and
+ * left the CLASS LIST short. `ProposalStatusError` (workforce/lifecycle.ts) is a plain `Error`,
+ * NOT a WorkforceInputError subclass, and `assertProposalTransition` throws it from inside
+ * `setProposalStatus` (repo.ts) — i.e. underneath EVERY one of those ten catches. It is the most
+ * caller-facing refusal there is (`illegal review_proposal status transition 'x' → 'y'`), and it
+ * answered 500. Reachable at least four ways: `?/tierSwap` on a terminal row (tier-hiring.ts's
+ * `closeProposalSwapped` deliberately delegates the refusal here, AFTER role.preferred_tier and
+ * the tier_changed role_event have already committed), and `?/regauntlet` / `?/reconcile` /
+ * `?/swap` whenever a rival moves the row mid-act. A missing CLASS is invisible to a call-site
+ * scan, which is exactly how it survived — so the latch for this one is BEHAVIOURAL
+ * (refusal-ladder.test.ts drives a real terminal-row tierSwap and asserts 400).
  */
 function refusalStatus(err: unknown): number | null {
 	// A second writer already recorded a different comparison, or is moving the row right now —
@@ -212,6 +226,10 @@ function refusalStatus(err: unknown): number | null {
 	if (err instanceof IdentifierError) return 400;
 	if (err instanceof ResolutionGateError || err instanceof WorkforceInputError) return 400;
 	if (err instanceof TierGateError) return 400;
+	// An illegal §5 status move: the caller asked for a transition the state machine forbids
+	// (a terminal row, or a row a rival moved between this act's read and its write). Named,
+	// caller-facing, and NOT a server fault.
+	if (err instanceof ProposalStatusError) return 400;
 	return null;
 }
 

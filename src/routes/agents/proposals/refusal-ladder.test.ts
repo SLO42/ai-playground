@@ -29,11 +29,20 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
+import { StringRecordId } from 'surrealdb';
 import { Db, initDb, closeDb } from '$lib/server/db/client';
 import { runMigrations } from '$lib/server/db/migrate';
 import { schemaMigrations } from '$lib/server/db/schema';
 import { startTestDb, type TestDb } from '$lib/server/db/testserver';
-import { createReviewProposal, createRole, createRoleVersion } from '$lib/server/workforce';
+import {
+	createInterviewRun,
+	createReviewProposal,
+	createRole,
+	createRoleVersion,
+	finalizeInterviewRun,
+	getReviewProposal
+} from '$lib/server/workforce';
+import { loadAgentPool } from '$lib/server/config';
 import { actions } from './+page.server';
 
 const SERVER = join(dirname(fileURLToPath(import.meta.url)), '+page.server.ts');
@@ -235,4 +244,90 @@ describe('③ the shared refusal ladder covers every catch that classifies an er
 			.filter((b) => /err instanceof/.test(b));
 		expect(inCatch).toEqual([]);
 	});
+});
+
+/* ============================================================================
+   ① THE CLASS LIST, not the call sites (LC-D review, finding ①)
+
+   THE DEFECT THIS EXISTS TO CATCH — and it is the SAME defect as ③ above, one
+   level in. The previous pass fixed the CALL SITES: it wired all ten catches
+   through `refusalStatus`. It left the CLASS LIST short. `ProposalStatusError`
+   (workforce/lifecycle.ts) is a plain `Error`, NOT a WorkforceInputError
+   subclass, and `assertProposalTransition` throws it from inside
+   `setProposalStatus` — i.e. UNDERNEATH every one of those ten catches. So the
+   most caller-facing refusal in the §5 machine ("illegal review_proposal status
+   transition 'x' → 'y'") still answered 500: "the server broke", about an event
+   the caller caused.
+
+   A missing CLASS is structurally invisible to the source scan in ③ — which is
+   exactly how it survived that pass. This latch is therefore BEHAVIOURAL: it
+   drives the reachable route end-to-end against a real SurrealDB.
+
+   THE ROUTE. `?/tierSwap` → `swapTierChange` → `closeProposalSwapped`, whose
+   own comment reads "Terminal or unknown — let setProposalStatus throw the
+   named transition error" — and that fires AFTER role.preferred_tier and the
+   tier_changed role_event have already committed, so the operator met a 500 on
+   a PARTIALLY APPLIED swap. Reproduced here by rewinding the row to a terminal
+   status (the crash-window technique tier-hiring.test.ts already uses) after the
+   §7 strict gate is satisfied.
+   ============================================================================ */
+describe('① a named §5 transition refusal is a 400, not "the server broke"', () => {
+	it('?/tierSwap on a TERMINAL row surfaces ProposalStatusError at 400, never a 500 or a throw', async () => {
+		const i = ++n;
+		// The tier→model map the ACTION itself reads (config/agent-pool.yaml, D-003) — never a
+		// hard-coded model id, or this test drifts from the handler it is gating.
+		const pool = loadAgentPool(`${process.env.CONFIG_DIR?.trim() || 'config'}/agent-pool.yaml`);
+		const targetTier = 'haiku';
+		const targetModel = pool.tiers[targetTier].model;
+
+		const role = await createRole(db, {
+			slug: `ladder-tier-${i}-${Date.now()}`,
+			name: `Ladder Tier ${i}`,
+			purpose: 'transition refusal gate'
+		});
+		const version = await createRoleVersion(db, {
+			role: role.id,
+			prompt_core: `You are reviewer #${i}.\nHunt platform bugs.`,
+			default_tier: 'sonnet',
+			source: 'operator'
+		});
+		// A PASSING interview at the TARGET model — the §7 strict gate's only key. Built directly
+		// (no LLM): this gate is about the error ladder, not the scoring engine.
+		const run = await createInterviewRun(db, {
+			role_version: version.id,
+			tier: targetTier,
+			provider: 'claude',
+			model_id: targetModel,
+			fixture_set_sha: `sha-ladder-${i}`,
+			planted_total: 1
+		});
+		await finalizeInterviewRun(db, run.id, {
+			status: 'passed',
+			planted_total: 1,
+			planted_found: 1,
+			false_positives: 0
+		});
+
+		const opened = await call('proposeTier', { roleVersion: version.id, targetTier });
+		expect(opened.status, 'precondition: the tier_change proposal must open').toBe(200);
+		const proposal = String(
+			(opened.data as { proposals: { proposal: string } }).proposals.proposal
+		);
+
+		// The row goes TERMINAL under the operator's feet (a rival reject, or the crash window in
+		// swapTierChange itself). `closeProposalSwapped` then asks for rejected_by_operator →
+		// 'swapped', which the §5 table forbids.
+		await db.query(`UPDATE $pid SET status = 'rejected_by_operator';`, {
+			pid: new StringRecordId(proposal)
+		});
+		expect((await getReviewProposal(db, proposal))?.status).toBe('rejected_by_operator');
+
+		const res = await call('tierSwap', { proposal, operatorConfirmed: 'on' });
+		expect(
+			res.status,
+			'an illegal §5 transition is a NAMED, caller-facing refusal — 500 makes the opposite claim about the same event'
+		).toBe(400);
+		expect(errorOf(res)).toMatch(/illegal review_proposal status transition/);
+		expect(errorOf(res)).toMatch(/rejected_by_operator/);
+	}, 90_000);
 });

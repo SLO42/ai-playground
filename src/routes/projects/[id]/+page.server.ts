@@ -167,6 +167,7 @@ import { loadOrchestration } from '$lib/server/config';
 import {
 	listTasksByProject,
 	createTask,
+	getTask,
 	updateTask,
 	setStatus,
 	canTransition,
@@ -1060,6 +1061,15 @@ export const actions: Actions = {
 	 * It writes ONE column through the existing `updateTask` repo function — no status is touched
 	 * (every move still goes through `setStatus`, TB-4) and `description` remains immutable
 	 * (D-008, absent from UpdateTaskInput). Submitting an empty box CLEARS the tags.
+	 *
+	 * The posted `taskId` is TABLE-scoped and PROJECT-scoped before anything is written. Unlike
+	 * `moveTask` — whose `setStatus` pre-reads the row and whose state machine rejects a non-task —
+	 * this action's write is a bare MERGE, so the shape-only `assertRecordId` used to let any
+	 * well-formed id through and land the MERGE on `project`/`memory` (both carry a `tags` column)
+	 * while reporting "Tags saved". `assertRecordIdOfTable` pins the table; the `getTask` pre-read
+	 * pins the row to THIS project's board (`task.project` is not in UpdateTaskInput, so it cannot
+	 * move out from under the check). A foreign task is a plain 404 — the board neither writes to
+	 * it nor confirms it exists.
 	 */
 	retagTask: async ({ params, request }) => {
 		const projectId = pmProjectId(params.id);
@@ -1070,12 +1080,16 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const taskId = String(form.get('taskId') ?? '').trim();
 		try {
-			assertRecordId(taskId);
+			assertRecordIdOfTable(taskId, 'task');
 		} catch {
 			return fail(400, { task: { error: 'invalid task id' } });
 		}
 		const tags = parseTagInput(String(form.get('tags') ?? ''));
 		try {
+			const existing = await getTask(db, taskId);
+			if (!existing || existing.project !== projectId) {
+				return fail(404, { task: { error: 'task not found' } });
+			}
 			const row = await updateTask(db, taskId, { tags });
 			if (!row) return fail(404, { task: { error: 'task not found' } });
 			return {

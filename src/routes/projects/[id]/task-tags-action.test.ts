@@ -19,7 +19,15 @@ import { Db, initDb, closeDb } from '$lib/server/db/client';
 import { runMigrations } from '$lib/server/db/migrate';
 import { schemaMigrations } from '$lib/server/db/schema';
 import { startTestDb, type TestDb } from '$lib/server/db/testserver';
-import { getTask, listTasksByProject, setStatus, MAX_TASK_TAG_LENGTH } from '$lib/server/tasks/repo';
+import {
+	createTask,
+	getTask,
+	listTasksByProject,
+	setStatus,
+	updateTask,
+	MAX_TASK_TAG_LENGTH
+} from '$lib/server/tasks/repo';
+import { StringRecordId } from 'surrealdb';
 import { actions } from './+page.server';
 
 let tdb: TestDb;
@@ -235,5 +243,75 @@ describe('the board loader ships tags to the page', () => {
 		const newest = await newestTask();
 		expect(newest?.id).toBe(String(taskOf(res).taskId));
 		expect(newest?.tags).toEqual(['fresh']);
+	});
+});
+
+// ── D-016 table-scope + project-scope on retagTask ───────────────────────────────────────────
+//
+// The regression the previous round shipped: `retagTask` guarded its `taskId` with the SHAPE-only
+// `assertRecordId`, so any WELL-FORMED record id passed and the MERGE landed on whatever table the
+// id named. `project` and `memory` both carry an `option<array<string>> tags` column, so a posted
+// `taskId=project:<slug>` really did rewrite a project row's tags and returned `{ok:true}` — an
+// F-008 honesty defect on top of the write (the operator is told "Tags saved" for a row that is
+// not a task). The malformed-id test below it passed the whole time, which is why the hole read as
+// covered: a WELL-FORMED FOREIGN id was never driven through the action.
+//
+// Two guards, so neither alone is load-bearing: the id must be in table `task`
+// (assertRecordIdOfTable — the D-016 chokepoint that names expected-vs-actual), and the row must
+// belong to THIS project (the URL's `params.id`), so one project's board cannot retag another's.
+describe('retagTask refuses ids that are not a task of THIS project', () => {
+	it('a WELL-FORMED FOREIGN record id is a 400 and writes NOTHING to that row', async () => {
+		// The project row itself: a real, existing, well-formed id in another table that HAS a
+		// `tags` column — precisely the row the shape-only guard let through.
+		const before = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $rid;`, {
+			rid: new StringRecordId(projectId)
+		});
+		const beforeRow = before[0][0];
+
+		const res = await call('retagTask', { taskId: projectId, tags: 'pwned' });
+		expect(res.status).toBe(400);
+		expect(String(taskOf(res).error)).toMatch(/invalid task id/);
+
+		const after = await db.query<[Array<Record<string, unknown>>]>(`SELECT * FROM $rid;`, {
+			rid: new StringRecordId(projectId)
+		});
+		const afterRow = after[0][0];
+		expect(afterRow.tags).toBeUndefined();
+		// Nothing at all moved — not even `updated_at`, which the MERGE used to stamp.
+		expect(String(afterRow.updated_at)).toBe(String(beforeRow.updated_at));
+	});
+
+	it('a `memory:` id is refused the same way (m0005 also has a tags column)', async () => {
+		const res = await call('retagTask', { taskId: 'memory:some_row', tags: 'pwned' });
+		expect(res.status).toBe(400);
+		expect(String(taskOf(res).error)).toMatch(/invalid task id/);
+	});
+
+	it("a REAL task belonging to ANOTHER project is a 404 — one board cannot retag another's", async () => {
+		const [prows] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE type::thing('project', $id) CONTENT { slug: $slug, name: $slug, root_path: '/tmp/tags2' } RETURN id;`,
+			{ id: `tag_other_${Date.now()}`, slug: 'tag-other' }
+		);
+		const otherProjectId = String(prows[0].id);
+		const foreign = await createTask(db, {
+			project: otherProjectId,
+			title: 'Belongs to the other project',
+			description: 'Belongs to the other project',
+			tags: ['original']
+		});
+
+		const res = await call('retagTask', { taskId: foreign.id, tags: 'pwned' });
+		expect(res.status).toBe(404);
+		expect(String(taskOf(res).error)).toMatch(/not found/);
+		// The refusal is a REFUSAL, not a partial write.
+		expect((await getTask(db, foreign.id))?.tags).toEqual(['original']);
+	});
+
+	it('the repo chokepoint itself rejects a foreign id, naming expected-vs-actual', async () => {
+		// The action guard is not the only layer: `updateTask` is the tags write chokepoint and
+		// must refuse a non-task id on its own, for every future caller.
+		await expect(updateTask(db, projectId, { tags: ['pwned'] })).rejects.toThrow(
+			/is in table 'project'.*'task' record id is required/s
+		);
 	});
 });

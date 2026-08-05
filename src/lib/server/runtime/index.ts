@@ -132,7 +132,11 @@ export interface SpawnRequest {
 		priority?: string;
 		origin?: string;
 		provenanceKind?: string;
-		/** TASK-BOARD-SPEC P2 (m0088) — operator tags. Not yet populated by any caller. */
+		/**
+		 * TASK-BOARD-SPEC §4.2 (m0087) — operator-authored tags, populated by
+		 * `taskBriefFor` (sessions/launch.ts) and rendered into the brief's metadata line.
+		 * Absent when the operator set none — an honest absence, never `[]`.
+		 */
 		tags?: string[];
 	};
 	context?: ContextBundle; // never mutates task

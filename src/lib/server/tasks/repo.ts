@@ -20,7 +20,7 @@
 
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
-import { assertRecordId } from '../db/validate';
+import { assertRecordId, assertRecordIdOfTable } from '../db/validate';
 import { closeOpenPanelVerdictsForArtifact } from '../workforce/repo';
 
 // ── Enums (DATA-MODEL §4.2 ASSERTs — kept in lock-step with the schema) ─────────
@@ -399,6 +399,13 @@ export async function listTasksByProject(
  * design (D-008 — never mutate the stored description in place) and `status` moves
  * ONLY through {@link setStatus} so every transition passes the state machine.
  * Touches `updated_at`. MERGE preserves untouched columns.
+ *
+ * The id is TABLE-SCOPED (`assertRecordIdOfTable`, not the shape-only `assertRecordId`): this
+ * function ends in a bare `UPDATE $rid MERGE`, which writes to whatever table the id names. The
+ * generic guard accepts any well-formed `table:id`, so a caller that forwarded an unvalidated
+ * operator-supplied id would silently MERGE onto `project`/`memory` (both carry a `tags` column)
+ * and get a row back as if it had succeeded. A function called `updateTask` may only ever write a
+ * `task`, and that is enforced HERE so no future caller has to remember it.
  */
 export async function updateTask(
 	db: Db,
@@ -410,7 +417,7 @@ export async function updateTask(
 	}
 	// TB-8 — same write chokepoint as createTask; throws InvalidTagsError before anything binds.
 	const tags = patch.tags === undefined ? undefined : normalizeTags(patch.tags);
-	const rid = new StringRecordId(assertRecordId(id));
+	const rid = new StringRecordId(assertRecordIdOfTable(id, 'task'));
 	const content = omitUndefined({ ...patch, tags, updated_at: new Date() });
 	// CLEARING tags needs UNSET, not MERGE. MERGE with `[]` would STORE an empty array — a second
 	// representation of "no tags" that then has to be special-cased on every read. `option<T>`

@@ -1558,6 +1558,19 @@
     {:else if tab === 'tasks'}
       <!-- TASK 10.4 — the Tasks BOARD: kanban by status; create + move live (UI-SPEC §190). -->
       <div class="tab-body">
+        <!-- TASK-BOARD-SPEC §5.1 — the full-page board's ONLY entry point. This inline kanban stays
+             the quick glance (title · priority · tags · move); the full board renders every §4.1
+             field the row stores and opens a per-task detail panel. No new nav entry: the board is
+             two clicks from the Projects nav item, via here. -->
+        <p class="board-link-row">
+          <a class="link-inline board-link" href={`/projects/${slug}/tasks`}
+            >Open the full task board ↗</a
+          >
+          <span class="board-link-note"
+            >every field a task stores — objective, purpose, acceptance criteria, provenance — plus
+            filters and a detail view</span
+          >
+        </p>
         <div class="card">
           <h2 class="section-title">New task</h2>
           <form
@@ -4844,6 +4857,18 @@
   }
   .pm-chat-form .field {
     flex: 1 1 18rem;
+  }
+  /* TASK-BOARD-SPEC §5.1 — the full-board entry point above the inline kanban. */
+  .board-link-row {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: var(--space-3, 0.75rem);
+    margin: 0;
+  }
+  .board-link-note {
+    font-size: var(--text-xs, 0.75rem);
+    color: var(--color-text-muted);
   }
   .link-inline {
     appearance: none;

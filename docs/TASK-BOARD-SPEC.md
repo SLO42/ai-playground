@@ -8,12 +8,20 @@
 > confirm gated inside: sprint retirement, §8.2). Migration head at drafting time was `m0085`
 > (`m0085_thinking_ledger` `schema.ts:3051`).
 >
-> **MIGRATION NUMBERS — ALLOCATED 2026-07-26 (do not renumber ad hoc).** `m0086` was CONSUMED by
+> **MIGRATION NUMBER — BUILT AS `m0087`, 2026-08-05 (this supersedes the allocation below).**
+> P2 shipped `m0087_task_tags` (`schema.ts`, live db:up **87/87** on playground/v2). It took
+> `m0087`, NOT the `m0088` allocated below, because CLAUDE.md's rule is to allocate from the LIVE
+> head and the live head was still `m0086` — neither `m0087` nor `m0088` existed in code, so
+> `m0088` would have left a permanent hole reserved for a spec that had not been built.
+> **`MODEL-LADDER-SPEC` must therefore RE-ALLOCATE from the live head when it is built — its paper
+> claim on `m0087` is void.**
+>
+> ~~**MIGRATION NUMBERS — ALLOCATED 2026-07-26 (do not renumber ad hoc).** `m0086` was CONSUMED by
 > the shipped `m0086_boot_skip_ledger` (analytics-visibility AV-4, live db:up 86/86) while these
 > specs were being written in parallel. Allocation now: **`m0087` → `MODEL-LADDER-SPEC`**,
-> **`m0088` → this spec**. The lesson worth keeping: specs authored concurrently with builds race
-> for migration ids, so a spec must ALLOCATE from the live head rather than claim the next number
-> it happens to see.
+> **`m0088` → this spec**.~~ The lesson worth keeping is unchanged and was proved twice: specs
+> authored concurrently with builds race for migration ids, so a BUILD must allocate from the live
+> head rather than honour a number a spec happened to reserve.
 
 ---
 
@@ -93,7 +101,7 @@
 | # | Deliverable | Phase |
 |---|---|---|
 | 1 | `buildPrompt` emits labeled `## Objective / ## Why this task / ## Acceptance criteria / ## Task metadata` instruction sections for every task that carries the fields — three files, no migration. | **P1** |
-| 2 | `task.tags: option<array<string>>` (m0088), boundary-validated, editable, in the prompt's metadata line and the board's filters. | P2 |
+| 2 | `task.tags: option<array<string>>` (m0087 — BUILT 2026-08-05), boundary-validated, editable, in the prompt's metadata line and the board's filters. | P2 |
 | 3 | A full-page board at `/projects/[id]/tasks` with per-task detail (`?task=` panel), filters, and every stored field rendered — nav-reachable, no new nav entry. | P3 |
 | 4 | The manual create path grows optional why/how fields + an honest context-completeness chip; sprint is explicitly retired (operator confirm). | P4 |
 
@@ -197,14 +205,20 @@ fields:
 
 ## 4. Phase 2 — tags (one additive migration + repo widening)
 
-### 4.1 Migration `m0088_task_tags` (allocated 2026-07-26; m0086 shipped, m0087 is model-ladder)
+### 4.1 Migration `m0087_task_tags` (BUILT 2026-08-05 — took `m0087` from the live head, see §0)
 
 ```sql
 DEFINE FIELD OVERWRITE tags ON task TYPE option<array<string>>;
 ```
 
 - Idempotent by construction (OVERWRITE, F-015); apply-twice + half-applied covered by the
-  generic `schemaMigrations` sweep in `migrate.test.ts` + a targeted test in `tasks/repo.test.ts`.
+  generic `schemaMigrations` sweep in `migrate.test.ts` + targeted tests in
+  `src/lib/server/tasks/tags.test.ts` (the half-applied case wedges a bare non-OVERWRITE `tags`
+  field of the WRONG type, since `task` itself already exists from m0002).
+- **`array<string>` on SCHEMAFULL is deliberate, decided once** (the m0086 precedent): the
+  silent-nested-key-loss trap is specific to `array<object>`; a string array has no nested keys to
+  lose, so SCHEMAFULL is both exact and enforcing (a non-string entry is REFUSED by the DB). A
+  richer tag would need FLEXIBLE + a second migration and is explicitly not wanted (§10.3).
 - **No index initially** — deliberate: live population is n=23 (§1.5 source), every board read is
   already project-scoped through `task_by_project`, and filtering happens client-side (§5.4).
   Revisit only if a measured need appears; a guessed index is a guessed claim.
@@ -223,6 +237,27 @@ DEFINE FIELD OVERWRITE tags ON task TYPE option<array<string>>;
 - Tag AUTHORSHIP this phase is operator-UI only (create form + detail editor, §5). PM-proposed
   tags would have to enter through the `proposeTask` chokepoint and its `screenCandidate` screen —
   explicitly out of scope, noted for a PM-SPEC follow-up.
+
+**AS BUILT — two departures from the text above, both deliberate (2026-08-05):**
+
+1. **The authoring path shipped WITH P2, on the existing inline board**, not deferred to P3's
+   detail panel. §4.2 as written would have left the field unreachable: every one of the live
+   tasks predates m0087, so with no editor none of them could ever be tagged and the feature
+   would be shipped-but-unusable (a D-038 "purposeful/reachable" failure). What landed on
+   `projects/[id]`: a **Tags** input on the create form, tag CHIPS on each card (rendered only
+   when the row really carries tags — no placeholder), and a per-card `Edit tags` disclosure
+   posting to a new `retagTask` action. `retagTask` writes ONE column through the existing
+   `updateTask`; it adds no status-write path (TB-4) and cannot touch `description` (TB-5).
+   Still deferred to P3: filtering by tag, and tags on the full-page board.
+2. **`normalizeTags` also collapses INTERIOR whitespace** (`\s+` → one space), which §4.2's
+   "trim, drop empties, lowercase" did not name. Reason: a tag is rendered into the ONE-LINE
+   `## Task metadata` fragment, where a `##` mid-line is inert — but a NEWLINE inside a tag would
+   move whatever follows it to the start of a line, which is where markdown block constructs
+   become real. Collapsing closes that at the write boundary; `escapeBriefText` still covers it
+   independently at the prompt layer (defence in depth — a legacy row never passed through the
+   repo). Both legs are tested.
+   De-duplication (first-occurrence order preserved) was likewise added: after lower-casing,
+   `Infra`/`infra` are the same reminder, and duplicates do not consume the ≤8 budget.
 - Phase-1 hook completes: `launch.ts` SELECT adds `tags`; the prompt metadata line renders them —
   success criterion (c)'s "part of the agent's context" leg.
 
@@ -370,7 +405,7 @@ a real row (SET-case assertion, F-013).
 
 | id | DDL | notes |
 |---|---|---|
-| `m0088_task_tags` (allocated; see §0) | `DEFINE FIELD OVERWRITE tags ON task TYPE option<array<string>>;` | Idempotent (F-015); apply-twice + half-applied via the generic sweep + a targeted tasks test; **no index** (deliberate, §4.1); `npm run db:up` live-verified twice. |
+| `m0087_task_tags` (BUILT 2026-08-05; see §0) | `DEFINE FIELD OVERWRITE tags ON task TYPE option<array<string>>;` | Idempotent (F-015); apply-twice + half-applied via the generic sweep + targeted tests in `tasks/tags.test.ts`; **no index** (deliberate, §4.1); `npm run db:up` live-verified twice — **87/87**, second run applied nothing. |
 
 No other schema change in this spec. Phases 1, 3, 4 are migration-free.
 
@@ -386,7 +421,7 @@ No other schema change in this spec. Phases 1, 3, 4 are migration-free.
 | TB-4 | `decidePanel` (`pm-panel.ts:524`) remains the ONLY automated promoter; the board adds no promote action and no new status-write path — every move goes through `setStatus` (F-055). | grep-gate: no `status` write outside `tasks/repo.ts`; UI review |
 | TB-5 | `description` is never mutated by any board/detail surface (D-008); §4.1 fields on a `proposed` task change only via `revisePmProposal`. | `UpdateTaskInput` shape test + action tests |
 | TB-6 | Every new/changed query has a real-surreal test asserting the SET case; every optional field renders '—'/absent, never a fabricated value (F-013/F-020/F-008). | tasks/repo + loader tests, live db:up |
-| TB-7 | m0088 is idempotent: apply-twice and half-applied both converge (F-015). | migrate sweep + targeted test |
+| TB-7 | m0087 is idempotent: apply-twice and half-applied both converge (F-015). | migrate sweep + targeted test |
 | TB-8 | Tag values are boundary-validated (≤8 × ≤32 chars, trimmed, lowercased) and `$param`-bound (D-016); tags are operator-authored only until a screened PM path exists. | createTask/updateTask validation tests |
 | TB-9 | The board route is reachable from a nav parent in ≤2 clicks and `NAV-IA-MAP.md` is updated in the same wave — no orphan route. | NAV-IA-MAP row + live render check |
 | TB-10 | The completeness chip counts only fields that actually exist on the row — never inferred, never backfilled (F-008). | component test |
@@ -398,7 +433,7 @@ No other schema change in this spec. Phases 1, 3, 4 are migration-free.
 | Phase | Scope lock (files) | Ships alone? | Verification command |
 |---|---|---|---|
 | **P1 prompt-context** | `sessions/launch.ts`, `runtime/index.ts`, their tests | Yes — no migration, no UI; success criterion (a) lands here | `npx vitest run src/lib/server/runtime src/lib/server/sessions` + green bar |
-| **P2 tags** | `db/schema.ts` (m0088), `tasks/repo.ts` + test, `launch.ts` (SELECT + mapping only) | Yes — tags exist + reach prompts even before any UI | `npx vitest run src/lib/server/tasks` + `npm run db:up` ×2 + green bar |
+| **P2 tags** ✅ BUILT | `db/schema.ts` (m0087), `tasks/repo.ts` + `tasks/tags.test.ts`, `launch.ts` (SELECT + mapping), `runtime/task-brief.test.ts`, `projects/[id]/+page.{server.ts,svelte}` + `task-tags-action.test.ts` | Yes — shipped with an operator authoring path (§4.2 note), so tags are usable before P3 | `npx vitest run src/lib/server/tasks` + `npm run db:up` ×2 + green bar |
 | **P3 board+detail** | `routes/projects/[id]/tasks/` (new `+page.server.ts`, `+page.svelte`), one link in the project page tasks tab, `docs/NAV-IA-MAP.md` | Yes — reads P2 fields when present, renders honest '—' otherwise | build + `svelte-check` 0 + live render (F-010 `waitUntil:'load'`) |
 | **P4 create+sprint** | board/project-page create forms + actions, sprint UI removal, `projects/repo.ts` comment | Yes — gated internally on the operator's sprint confirm | `npx vitest run src/routes/projects` + green bar + live render |
 

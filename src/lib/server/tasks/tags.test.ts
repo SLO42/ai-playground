@@ -270,6 +270,43 @@ describe('normalizeTags — what is normalized, and what is refused (TB-8)', () 
 			new RegExp(`at most ${MAX_TASK_TAGS} tags`)
 		);
 	});
+
+	// TB-8 regression — the count bound is enforced DURING the scan, not after it.
+	//
+	// It used to sit after the loop, so the O(n²) `includes` dedup walked the entire unbounded
+	// input before the limit was ever consulted: a 60 000-entry POST to `?/retagTask` blocked the
+	// event loop ~2.5s (measured) and with it the orchestrator drain and the SSE stream, and only
+	// THEN returned 400. Both tests below fail on that ordering.
+	it('stops at the bound INSIDE the loop — entries past it are never inspected', () => {
+		// A non-string entry parked behind the bound. Under the old post-loop check the scan
+		// reached it and threw the "must be a string" error; the count bound must win first.
+		const past = [
+			...Array.from({ length: MAX_TASK_TAGS + 1 }, (_, i) => `t${i}`),
+			99 as unknown as string
+		];
+		expect(() => normalizeTags(past)).toThrow(new RegExp(`at most ${MAX_TASK_TAGS} tags`));
+		expect(() => normalizeTags(past)).not.toThrow(/must be a string/);
+		// The count it reports is the one it actually reached — never a total it never measured.
+		expect(() => normalizeTags(past)).toThrow(
+			new RegExp(`got at least ${MAX_TASK_TAGS + 1}`)
+		);
+	});
+
+	it('a 60 000-entry list costs the bound, not the list (the event loop is not hostage)', () => {
+		// Deliberately NOT a wall-clock assertion: a timing bound inside a concurrent worker pool
+		// measures the machine, not the code. The invariant is structural — HOW MANY entries the
+		// scan touches — so it is asserted structurally.
+		//
+		// A holey array of 60 000 slots: nine real tags at the front (one over the bound), the
+		// rest left as holes. `for…of` yields `undefined` for a hole, which the scan rejects with
+		// the DIFFERENT, "must be a string" error — so the error identity alone says exactly how
+		// far the scan got. Pre-fix it walked all 60 000 (~2.3s measured, with the O(n²) dedup on
+		// top); post-fix it stops on the 9th. The holes also keep this cheap: no 60 000 strings.
+		const huge: string[] = new Array(60_000);
+		for (let i = 0; i <= MAX_TASK_TAGS; i++) huge[i] = `t${i}`;
+		expect(() => normalizeTags(huge)).toThrow(new RegExp(`at most ${MAX_TASK_TAGS} tags`));
+		expect(() => normalizeTags(huge)).not.toThrow(/must be a string/);
+	});
 });
 
 describe('the write chokepoint refuses before it binds (D-016)', () => {

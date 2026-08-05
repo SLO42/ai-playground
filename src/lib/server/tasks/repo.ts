@@ -260,10 +260,24 @@ export function normalizeTags(value: unknown): string[] {
 				`task tag "${tag.slice(0, MAX_TASK_TAG_LENGTH)}…" exceeds ${MAX_TASK_TAG_LENGTH} characters`
 			);
 		}
-		if (!out.includes(tag)) out.push(tag);
-	}
-	if (out.length > MAX_TASK_TAGS) {
-		throw new InvalidTagsError(`a task may carry at most ${MAX_TASK_TAGS} tags, got ${out.length}`);
+		if (!out.includes(tag)) {
+			out.push(tag);
+			// The count bound is an INVARIANT held DURING the scan, not a post-condition on the
+			// finished result. Checked after the loop it bounded nothing: the O(n²) `includes`
+			// dedup ran over the whole unbounded input first, so a 60 000-entry list burned
+			// ~2.5s of the event loop — the same loop that hosts the orchestrator drain and the
+			// SSE stream — before rejecting (CLAUDE.md §3, "no blocking hangs"). Bailing HERE
+			// caps `out` at MAX_TASK_TAGS + 1, which makes each `includes` O(1)-ish and the
+			// whole refusal linear in the input rather than quadratic.
+			//
+			// "at least" is deliberate and not hedging: we stop counting at the bail, so a total
+			// would be a number we never measured (F-008 — an honest bound, not a plausible one).
+			if (out.length > MAX_TASK_TAGS) {
+				throw new InvalidTagsError(
+					`a task may carry at most ${MAX_TASK_TAGS} tags, got at least ${out.length}`
+				);
+			}
+		}
 	}
 	return out;
 }

@@ -28,6 +28,7 @@ import { runMigrations } from '$lib/server/db/migrate';
 import { schemaMigrations } from '$lib/server/db/schema';
 import { startTestDb, type TestDb } from '$lib/server/db/testserver';
 import { createProject, createSprint } from '$lib/server/projects/repo';
+import { createPm } from '$lib/server/projects/pm-repo';
 import { createTask, getTask, setStatus } from '$lib/server/tasks/repo';
 import { load, actions, type TaskBoardData } from './+page.server';
 import { contextCompleteness, resolveBoard, DEFAULT_BOARD_VIEW } from './task-board-view';
@@ -41,6 +42,10 @@ let ownsSingleton = false;
 let richId = '';
 let bareId = '';
 let foreignId = '';
+/** A REAL hired pm row + the two tasks that exercise the `proposed_by` → name join. */
+let pmId = '';
+let pmTaskId = '';
+let ghostTaskId = '';
 
 beforeAll(async () => {
 	try {
@@ -113,6 +118,38 @@ beforeAll(async () => {
 
 	// A real sprint row, so the board's sprint counts are measured rather than assumed.
 	await createSprint(db!, { project: board.id, name: 'Sprint 1' });
+
+	// A project with a REAL hired PM — the `proposed_by` → name join is a real FK read, so it gets a
+	// real pm row rather than a stubbed map. It lives on its OWN project because `pm` is UNIQUE per
+	// project and the other boards deliberately have none.
+	const pmBoard = await createProject(db!, {
+		slug: 'boardpm',
+		name: 'Board PM',
+		root_path: '/tmp/boardpm'
+	});
+	const pm = await createPm(db!, { project: pmBoard.id, name: 'Vesper', authority: 'act' });
+	pmId = pm.id;
+	pmTaskId = (
+		await createTask(db!, {
+			project: pmBoard.id,
+			title: 'Proposed by a named PM',
+			description: 'Proposed by a named PM',
+			origin: 'pm',
+			status: 'proposed',
+			proposed_by: pm.id
+		})
+	).id;
+	// …and one whose proposer cannot be resolved at all: the honest "(unnamed)" case.
+	ghostTaskId = (
+		await createTask(db!, {
+			project: pmBoard.id,
+			title: 'Proposed by nobody resolvable',
+			description: 'Proposed by nobody resolvable',
+			origin: 'pm',
+			status: 'proposed',
+			proposed_by: 'pm:ghost0000000000000'
+		})
+	).id;
 }, 120_000);
 
 afterAll(async () => {
@@ -183,6 +220,10 @@ describe.runIf(!process.env.SKIP_LIVE)('task board loader — real SurrealDB', (
 		expect(t.origin).toBe('pm');
 		expect(t.status).toBe('proposed');
 		expect(t.provenanceKind).toBe('pm_lifecycle');
+		// REGRESSION: `authority` was WRITTEN by this fixture and asserted by nothing, which is exactly
+		// how the projection came to drop it. It is stamped on every real PM proposal
+		// (pm-proposals.ts), so the panel's completeness contract requires it on the wire.
+		expect(t.provenanceAuthority).toBe('panel');
 		expect(t.provenanceEvidence).toEqual(['pm_memory:abc', 'pm_review:def']);
 		// The free-form detail object is FLATTENED to printable pairs — nothing SDK-shaped survives.
 		const detail = Object.fromEntries(t.provenanceDetail.map((d) => [d.key, d.value]));
@@ -215,9 +256,37 @@ describe.runIf(!process.env.SKIP_LIVE)('task board loader — real SurrealDB', (
 		expect(t.tags).toEqual([]);
 		expect(t.provenanceEvidence).toEqual([]);
 		expect(t.provenanceDetail).toEqual([]);
+		expect(t).not.toHaveProperty('provenanceAuthority');
+		expect(t).not.toHaveProperty('proposedByName');
 		// The F-013 literal must appear NOWHERE in the serialized row.
 		expect(JSON.stringify(t)).not.toContain('undefined');
 		expect(contextCompleteness(t).have).toBe(0);
+	});
+
+	// ── REGRESSION (the operator's naming rule, 2026-07-26) ───────────────────────────────────
+	// `proposed_by` stores `pm.id`, an opaque auto-id. The panel used to print "8qzbfijl (unnamed)"
+	// about a PM the SAME database names Vesper — a false claim about live data (F-008 family), and
+	// exactly the degrading-fallback defect class the rule targets. The name is ONE FK away, so the
+	// loader joins it. This runs against a REAL pm row, because the join is the thing under test.
+	it("resolves the PROPOSER'S NAME off the real pm row — never '(unnamed)' for a named PM", async () => {
+		if (!available) return;
+		const data = await runLoad('boardpm');
+		const t = data.tasks.find((r) => r.id === pmTaskId)!;
+		expect(t.proposedBy).toBe(pmId);
+		expect(t.proposedByName).toBe('Vesper');
+		// And it survives the load serializer like every other wire field.
+		expect(() => devalue.stringify(data)).not.toThrow();
+	});
+
+	it('leaves the proposer name ABSENT when the id is not this project\'s PM — no invented name', async () => {
+		if (!available) return;
+		// Same board, a task whose proposed_by points at a pm record that does not exist. "unnamed" is
+		// then TRUE, which is the only condition under which the panel may say it.
+		const data = await runLoad('boardpm');
+		const t = data.tasks.find((r) => r.id === ghostTaskId)!;
+		expect(t.proposedBy).toBe('pm:ghost0000000000000');
+		expect(t).not.toHaveProperty('proposedByName');
+		expect(JSON.stringify(t)).not.toContain('undefined');
 	});
 
 	it('(c) POJOs ONLY — the whole payload survives devalue (the load-500 class)', async () => {

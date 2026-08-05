@@ -101,12 +101,28 @@ export interface BoardTask {
 	acceptanceCriteria: string[];
 	/** `provenance.kind` — the machine enum. Evidence/detail are separate (see below). */
 	provenanceKind?: string;
+	/**
+	 * `provenance.authority` — the PM authority in force WHEN the proposal was made (`observe` /
+	 * `propose` / `act`), stamped unconditionally by the propose path (`pm-proposals.ts`). It is the
+	 * field that answers "was this PM even allowed to act on this?", so a panel whose contract is
+	 * completeness cannot drop it: absent ⇒ the row predates the stamp or was not PM-proposed.
+	 */
+	provenanceAuthority?: string;
 	/** `provenance.evidence` — record ids. DISPLAY-ONLY: D-026 keeps these out of PROMPTS, not
 	 *  out of the operator's own UI (spec §5.5). */
 	provenanceEvidence: string[];
 	/** `provenance.detail` flattened to printable `key → value` pairs at the loader (F-013). */
 	provenanceDetail: { key: string; value: string }[];
 	proposedBy?: string;
+	/**
+	 * The PURPOSEFUL display name behind {@link proposedBy}, joined at the loader.
+	 *
+	 * `proposed_by` stores `pm.id` — an opaque auto-id that {@link linkLabel} correctly refuses to
+	 * dress up as a name. The name lives one FK away on the `pm` row, so the loader resolves it and
+	 * ships it here; ABSENT ⇒ genuinely unresolvable (no PM row, a blank name, or a link to
+	 * something that is not this project's PM), which is the only case the page may call unnamed.
+	 */
+	proposedByName?: string;
 	revisionOf?: string;
 	supersededBy?: string;
 	proposalFingerprint?: string;
@@ -586,7 +602,7 @@ export function filterSummary(view: BoardView | null | undefined): string | null
 	if (clean(v.priority)) parts.push(`priority ${v.priority}`);
 	if (clean(v.origin)) parts.push(`origin ${v.origin}`);
 	if (clean(v.status)) parts.push(`status ${v.status}`);
-    return parts.length ? parts.join(' · ') : null;
+	return parts.length ? parts.join(' · ') : null;
 }
 
 /**

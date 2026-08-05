@@ -42,6 +42,7 @@ import { error, fail } from '@sveltejs/kit';
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import { assertRecordId, assertRecordIdOfTable } from '$lib/server/db/validate';
 import { getProject, listSprints } from '$lib/server/projects/repo';
+import { getPm } from '$lib/server/projects/pm-repo';
 import {
 	listTasksByProject,
 	getTask,
@@ -119,6 +120,26 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<TaskBoa
 
 		const rows = await listTasksByProject(db, projectId);
 
+		// ── The proposer's NAME (standing operator rule 2026-07-26: a label must convey PURPOSE) ──
+		// `task.proposed_by` stores `pm.id` — an opaque auto-id the naming composer will not dress up as
+		// a name. The purposeful name is one FK away on the project's own `pm` row (UNIQUE project), so
+		// this is a JOIN, not a fabrication: ONE read for the whole board, resolved here and shipped on
+		// the wire. A project with no PM, or a PM with a blank name, resolves to NOTHING and the panel
+		// says "unnamed" — which is then a TRUE statement rather than a degraded fallback.
+		const names = new Map<string, string>();
+		try {
+			const pm = await getPm(db, projectId);
+			const pmName = pm?.name?.trim();
+			if (pm && pmName) names.set(pm.id, pmName);
+		} catch (err) {
+			// Same discipline as the sprint read below: a PM-row failure must not take the BOARD down, and
+			// it is LOGGED rather than swallowed. The only consequence is that `proposed by` falls back to
+			// the bare id — degraded, but never a WRONG name.
+			console.warn(
+				`[task-board] pm read failed for ${projectId} (best-effort; 'proposed by' falls back to the raw id): ${(err as Error).message}`
+			);
+		}
+
 		// Sprint reality (see the header note): counted, never assumed. `withTasks` is the literal 0
 		// because `task` carries no sprint link at all — there is no query that could return another
 		// number, and stating it as a measured field keeps the page from having to assert it in prose.
@@ -143,7 +164,7 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<TaskBoa
 			connected: true,
 			...base,
 			projectName: project.name ?? null,
-			tasks: rows.map(toBoardTask),
+			tasks: rows.map((r) => toBoardTask(r, names)),
 			sprintReality: {
 				total: sprints.length,
 				timeBoxed: sprints.filter((s) => !!s.starts || !!s.ends).length,

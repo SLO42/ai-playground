@@ -149,4 +149,60 @@ describe('toBoardTask', () => {
 		expect(t.objective).toBeUndefined();
 		expect(t.description).toBe('D');
 	});
+
+	// ── REGRESSION: provenance.authority was DROPPED by this projection ───────────────────────
+	// `pm-proposals.ts` stamps `authority` on EVERY PM proposal, and `TaskProvenance` declares it,
+	// but the projection carried only kind/evidence/detail — so a stored field vanished before the
+	// wire and the panel could neither render it nor name it absent. The whole point of that panel
+	// is completeness, so a silently-dropped §4.1 field is the defect, not a cosmetic gap.
+	it('provenance.AUTHORITY crosses the wire — a stored §4.1 field is never silently dropped', () => {
+		const t = toBoardTask(
+			row({ provenance: { kind: 'periodic', evidence: [], authority: 'act' } })
+		);
+		expect(t.provenanceAuthority).toBe('act');
+	});
+
+	it('an absent or blank provenance.authority stays ABSENT — no key, never "undefined"', () => {
+		const none = toBoardTask(row({ provenance: { kind: 'scan', evidence: [] } }));
+		expect(none).not.toHaveProperty('provenanceAuthority');
+		const blank = toBoardTask(
+			row({ provenance: { kind: 'scan', evidence: [], authority: '   ' } })
+		);
+		expect(blank).not.toHaveProperty('provenanceAuthority');
+		expect(JSON.stringify(blank)).not.toContain('undefined');
+	});
+
+	// ── REGRESSION: 'proposed by' called a NAMED pm "(unnamed)" ───────────────────────────────
+	// `proposed_by` is `pm.id` — an opaque auto-id. The naming composer refuses (correctly) to make
+	// a name out of one, so the panel printed "(unnamed)" about a PM the DB calls Vesper. The name
+	// is one FK away; the loader joins it and passes it here. Standing operator rule 2026-07-26.
+	it('joins the proposer NAME when the loader resolved one', () => {
+		const t = toBoardTask(
+			row({ proposed_by: 'pm:a1czfobj2cx28qzbfijl' }),
+			new Map([['pm:a1czfobj2cx28qzbfijl', 'Vesper']])
+		);
+		expect(t.proposedBy).toBe('pm:a1czfobj2cx28qzbfijl');
+		expect(t.proposedByName).toBe('Vesper');
+	});
+
+	it('leaves the name ABSENT when nothing resolves — "unnamed" must stay a TRUE statement', () => {
+		// No map at all (the DB read failed), an empty map (no PM hired), a map that names some OTHER
+		// record, and a PM whose stored name is blank. None of them may invent a name.
+		expect(toBoardTask(row({ proposed_by: 'pm:x' }))).not.toHaveProperty('proposedByName');
+		expect(toBoardTask(row({ proposed_by: 'pm:x' }), new Map())).not.toHaveProperty(
+			'proposedByName'
+		);
+		expect(
+			toBoardTask(row({ proposed_by: 'pm:x' }), new Map([['pm:other', 'Vesper']]))
+		).not.toHaveProperty('proposedByName');
+		expect(
+			toBoardTask(row({ proposed_by: 'pm:x' }), new Map([['pm:x', '   ']]))
+		).not.toHaveProperty('proposedByName');
+	});
+
+	it('never carries a name for a task that has no proposer at all', () => {
+		const t = toBoardTask(row(), new Map([['pm:x', 'Vesper']]));
+		expect(t).not.toHaveProperty('proposedBy');
+		expect(t).not.toHaveProperty('proposedByName');
+	});
 });

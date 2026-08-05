@@ -125,7 +125,10 @@ const PAIRS: [string, string, string][] = [
 	['.detail-hint', '--color-text-muted', '--color-surface-card'],
 	['.detail-kv dt', '--color-text-muted', '--color-surface-card'],
 	['.detail-kv dd', '--color-text-2', '--color-surface-card'],
-	['.dim', '--color-text-subtle', '--color-bg-inset'],
+	// `.dim` is composed in exactly ONE place: the proposer's id next to the joined PM name, inside a
+	// `.detail-kv dd` on the card surface. Read off the stylesheet (`color: var(--color-text-muted)`),
+	// not transcribed by hand — the previous entry measured a subtle/inset pair this page never pairs.
+	['.dim', '--color-text-muted', '--color-surface-card'],
 	['.form-error', '--color-error', '--color-error-bg'],
 	['.form-ok', '--color-success', '--color-success-bg']
 ];
@@ -228,5 +231,28 @@ describe('board controls — every one has an accessible name', () => {
 		expect(MARKUP).toContain('role="alert"'); // the error envelope
 		const statuses = [...MARKUP.matchAll(/role="status"/g)];
 		expect(statuses.length).toBeGreaterThanOrEqual(4); // db-down, filtered-empty, stale, feedback
+	});
+});
+
+/**
+ * The detail panel's whole claim is COMPLETENESS — every stored §4.1 field either rendered or named
+ * absent. Two ways that claim can go false, both regressions of a real review finding:
+ * a field that reaches the wire but no `dt` ever prints, and a label that asserts "(unnamed)" about
+ * a record the database has named. Both are checked against the markup, not against a screenshot.
+ */
+describe('detail panel — the completeness claim is kept', () => {
+	it('renders provenance.AUTHORITY, and counts it when deciding the block is empty', () => {
+		expect(MARKUP).toContain('<dt>authority</dt>');
+		expect(MARKUP).toContain('{t.provenanceAuthority}');
+		// The "Not recorded" fallback must not fire on a row that carries ONLY an authority.
+		const gate = MARKUP.slice(MARKUP.indexOf('{#if t.provenanceKind'));
+		expect(gate.slice(0, 200)).toContain('t.provenanceAuthority');
+	});
+
+	it("prefers the JOINED proposer name before falling back to the id (operator naming rule)", () => {
+		expect(MARKUP).toContain('t.proposedByName ?? linkLabel(t.proposedBy)');
+		// "(unnamed)" survives — but only downstream of that fallback, i.e. only when nothing resolved.
+		const unnamedAt = MARKUP.indexOf('(unnamed)');
+		expect(unnamedAt).toBeGreaterThan(MARKUP.indexOf('t.proposedByName'));
 	});
 });

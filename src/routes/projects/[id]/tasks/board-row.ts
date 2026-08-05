@@ -87,16 +87,26 @@ export function detailPairs(detail: unknown): { key: string; value: string }[] {
 	return out;
 }
 
-/** Project one normalized `TaskRow` onto the board's POJO wire shape. */
-export function toBoardTask(t: TaskRow): BoardTask {
+/**
+ * Project one normalized `TaskRow` onto the board's POJO wire shape.
+ *
+ * `names` maps a RECORD ID to the purposeful display name behind it (today: the project's `pm` row,
+ * resolved once in the loader). It exists because `proposed_by` stores an opaque auto-id and the
+ * naming composer will not — correctly — invent a name from one; the name is a JOIN away, not a
+ * fabrication. A miss leaves `proposedByName` ABSENT so the page can honestly say "unnamed"; the
+ * map is never consulted for anything it was not asked to resolve.
+ */
+export function toBoardTask(t: TaskRow, names?: ReadonlyMap<string, string>): BoardTask {
 	const objective = present(t.objective);
 	const purpose = present(t.purpose);
 	const proposedBy = present(t.proposed_by);
+	const proposedByName = proposedBy ? present(names?.get(proposedBy)) : undefined;
 	const revisionOf = present(t.revision_of);
 	const supersededBy = present(t.superseded_by);
 	const fingerprint = present(t.proposal_fingerprint);
 	const parent = present(t.parent);
 	const provenanceKind = present(t.provenance?.kind);
+	const provenanceAuthority = present(t.provenance?.authority);
 
 	return {
 		id: t.id,
@@ -115,9 +125,11 @@ export function toBoardTask(t: TaskRow): BoardTask {
 		...(purpose ? { purpose } : {}),
 		acceptanceCriteria: stringList(t.acceptance_criteria),
 		...(provenanceKind ? { provenanceKind } : {}),
+		...(provenanceAuthority ? { provenanceAuthority } : {}),
 		provenanceEvidence: stringList(t.provenance?.evidence),
 		provenanceDetail: detailPairs(t.provenance?.detail),
 		...(proposedBy ? { proposedBy } : {}),
+		...(proposedByName ? { proposedByName } : {}),
 		...(revisionOf ? { revisionOf } : {}),
 		...(supersededBy ? { supersededBy } : {}),
 		...(fingerprint ? { proposalFingerprint: fingerprint } : {}),

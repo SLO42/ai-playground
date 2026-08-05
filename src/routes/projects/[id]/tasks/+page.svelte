@@ -533,11 +533,18 @@
               <!-- ── PROVENANCE — display-only. D-026 constrains PROMPTS, not operator UI. ─ -->
               <section class="detail-block">
                 <h3 class="detail-h">Provenance</h3>
-                {#if t.provenanceKind || t.provenanceEvidence.length || t.provenanceDetail.length}
+                {#if t.provenanceKind || t.provenanceAuthority || t.provenanceEvidence.length || t.provenanceDetail.length}
                   <dl class="detail-kv">
                     {#if t.provenanceKind}
                       <dt>trigger</dt>
                       <dd class="mono">{t.provenanceKind}</dd>
+                    {/if}
+                    <!-- The authority IN FORCE when the proposal was made — stamped on every PM
+                         proposal, and the field that answers "was this PM allowed to act on it?".
+                         Absent ⇒ the row predates the stamp or was not PM-proposed. -->
+                    {#if t.provenanceAuthority}
+                      <dt>authority</dt>
+                      <dd class="mono">{t.provenanceAuthority}</dd>
                     {/if}
                     {#if t.provenanceEvidence.length}
                       <dt>evidence</dt>
@@ -591,10 +598,13 @@
                   <dt>proposed by</dt>
                   <dd>
                     {#if t.proposedBy}
-                      {@const name = linkLabel(t.proposedBy)}
-                      <!-- naming.ts's own rule: an opaque auto-id is NOT a name, so the composer
-                           returns '—' for one. Rendering "— <id>" would read as a name followed by
-                           a qualifier; when there is no name we show ONLY the id, as an id. -->
+                      {@const name = t.proposedByName ?? linkLabel(t.proposedBy)}
+                      <!-- The loader JOINS the pm row's name, because `proposed_by` stores an opaque
+                           auto-id and naming.ts's own rule is that such an id is NOT a name — the
+                           composer returns '—' for one. So we prefer the joined name, and only when
+                           there genuinely is none do we show the id alone, as an id: rendering
+                           "— <id>" would read as a name followed by a qualifier, and calling a PM
+                           the DB has named "unnamed" is a false claim about live data (F-008). -->
                       {#if name === '—'}
                         <span class="mono" title={t.proposedBy}>{shortRef(t.proposedBy)}</span>
                         <span class="detail-absent-inline">(unnamed)</span>

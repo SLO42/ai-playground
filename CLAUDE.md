@@ -4,14 +4,24 @@ This is the **v2 build worktree** (branch `v2`). The app is scaffolded here
 alongside `spikes/` (throwaway proofs) and `bin/` (provisioned binaries).
 
 The full project conventions live in the main repo's `CLAUDE.md`
-(`F:\code\ai-playground\CLAUDE.md`) and the v2 doc set in `docs/`. This file is
-the lean, build-worktree-specific overlay.
+(`F:\code\ai-playground\CLAUDE.md`). This file is the lean, build-worktree-specific
+overlay.
 
 ## Canonical spec (read before building — do NOT guess)
-- `docs/IMPLEMENTATION-PLAN.md` — what to build, in what order, how to verify.
-- `docs/DECISIONS.md` — locked decisions D-000..D-035 are LAW.
-- `docs/DATA-MODEL.md`, `docs/MEMORY-SPEC.md`, `docs/ARCHITECTURE.md`,
-  `docs/UI-SPEC.md`, `docs/AGENTS.md`, `docs/DEVELOPMENT.md`.
+
+**The authoritative doc set is the docs checkout, `F:\code\ai-playground\docs\` (branch
+`v2-main`)** — decisions, every `*-SPEC.md`, the build queue and the devlog live there and
+are kept current. The `docs/` directory in THIS worktree is a frozen 2026-06 snapshot of
+the original v2 plan; read it as history, not as the current system.
+
+- `F:\code\ai-playground\docs\DECISIONS.md` — locked decisions **D-000..D-042** are LAW.
+  (The local `docs/DECISIONS.md` is a retired redirect — it stopped at D-034.)
+- `F:\code\ai-playground\docs\` — the current `*-SPEC.md` set, e.g. `GAME-VERIFY-SPEC.md`,
+  which source comments in this tree cite by that name.
+- Frozen local snapshot, still useful for original intent: `docs/IMPLEMENTATION-PLAN.md`,
+  `docs/DATA-MODEL.md`, `docs/MEMORY-SPEC.md`, `docs/ARCHITECTURE.md`, `docs/UI-SPEC.md`,
+  `docs/AGENTS.md`, `docs/DEVELOPMENT.md`.
+- `docs/fails.md` — live and append-only in this worktree.
 
 ## Stack (verify APIs before use)
 - Node 24, ESM only (`"type":"module"`).

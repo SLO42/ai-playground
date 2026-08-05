@@ -16,6 +16,13 @@
 > **`MODEL-LADDER-SPEC` must therefore RE-ALLOCATE from the live head when it is built — its paper
 > claim on `m0087` is void.**
 >
+> **P3 CONSUMED NO MIGRATION ID (2026-08-05).** The board+detail phase is read-side plus three
+> writes through existing repo functions, so the live head after P3 is still **`m0087`** and
+> `m0088` remains FREE. Re-verified on disk before building (`grep -o 'm00[0-9][0-9]'
+> src/lib/server/db/schema.ts | sort -u | tail -3` → `m0086 m0087 m0088`, where the `m0088` hit is
+> the ID-ALLOCATION comment at `schema.ts:3098`, not a migration). The next build allocates
+> `m0088` **from the live head**, not from this line.
+>
 > ~~**MIGRATION NUMBERS — ALLOCATED 2026-07-26 (do not renumber ad hoc).** `m0086` was CONSUMED by
 > the shipped `m0086_boot_skip_ledger` (analytics-visibility AV-4, live db:up 86/86) while these
 > specs were being written in parallel. Allocation now: **`m0087` → `MODEL-LADDER-SPEC`**,
@@ -102,7 +109,7 @@
 |---|---|---|
 | 1 | `buildPrompt` emits labeled `## Objective / ## Why this task / ## Acceptance criteria / ## Task metadata` instruction sections for every task that carries the fields — three files, no migration. | **P1** |
 | 2 | `task.tags: option<array<string>>` (m0087 — BUILT 2026-08-05), boundary-validated, editable, in the prompt's metadata line and the board's filters. | P2 |
-| 3 | A full-page board at `/projects/[id]/tasks` with per-task detail (`?task=` panel), filters, and every stored field rendered — nav-reachable, no new nav entry. | P3 |
+| 3 | A full-page board at `/projects/[id]/tasks` with per-task detail (`?task=` panel), filters, and every stored field rendered — nav-reachable, no new nav entry. | **P3 ✅ BUILT 2026-08-05** |
 | 4 | The manual create path grows optional why/how fields + an honest context-completeness chip; sprint is explicitly retired (operator confirm). | P4 |
 
 Non-goals: a second promoter (F-055 — `decidePanel` stays the only automated `proposed→ready`
@@ -270,7 +277,55 @@ DEFINE FIELD OVERWRITE tags ON task TYPE option<array<string>>;
 
 ---
 
-## 5. Phase 3 — the full-page board + per-task detail
+## 5. Phase 3 — the full-page board + per-task detail ✅ BUILT 2026-08-05
+
+**AS BUILT — what landed, and the four departures from the text below (all deliberate).**
+
+Files: `src/routes/projects/[id]/tasks/` — `+page.server.ts` (loader + 3 actions), `+page.svelte`,
+`task-board-view.ts` (the pure view model, the `fleet-view.ts` precedent), `board-row.ts` (the
+row→wire projection) and five test files (132 tests: `task-board-view.test.ts` 42,
+`board-loader.live.test.ts` 18 real-SurrealDB, `board-a11y.test.ts` 52, `board-row.test.ts` 15,
+`board-disconnected.test.ts` 5), plus the "Open the full task board ↗" link on the project page's
+Tasks tab. No migration (see §0).
+
+1. **`toBoardTask` lives in `board-row.ts`, not the loader.** SvelteKit's build-time `validate`
+   REFUSES any non-reserved export from a `+page.server.ts` ("Invalid export 'toBoardTask'") — the
+   same constraint that put `FLEET_LIMIT` in `fleet-view.ts`. Caught by `npm run build`, not by
+   `svelte-check`, so it is worth stating: a helper a route test wants to import cannot live in
+   `+page.server.ts`.
+2. **`provenance.detail` is FLATTENED to `{key,value}` string pairs at the loader.** §5.2 assumed
+   `normTask` made the row devalue-safe; it does for the id, the project link and both datetimes,
+   but `detail` is a free-form `Record<string, unknown>` straight off the SDK and can carry a
+   `RecordId`/`Datetime` — a load-500 waiting to happen (F-013's family). A cyclic value becomes
+   the named `[unprintable]` rather than a dropped key.
+3. **`setPriority` shipped as a third action** (§5.5 lists priority as editable). Tags and status
+   were the other two. No create form — that is P4's §6.1, and the board links to the project
+   page's existing quick-add instead of duplicating it.
+4. **Every WIDENING option carries a measured count (`BoardClearedCounts`).** LIVE-VERIFIED DEFECT,
+   found in the browser during this build at `?origin=pm&tag=ghost`: the Priority and Origin
+   selects read `any (5)` — the hardcoded loaded-row total — beside a board rendering ZERO cards
+   and a footer correctly saying `showing 0 of 5 tasks · 5 hidden by filters`. The widening control
+   was the one number not derived from a filtered set. Fixed + regression-tested; the tag axis
+   gained an `any tag (N)` chip so it has the same affordance.
+
+**Live-verified** on :5173 against the real dev DB (`db:up` 87/87, idempotent): board renders 5 real
+tasks with truthful per-column counts, the `?task=` panel renders every stored field with named
+absences, a real `retagTask` write round-tripped (`DB , db , Careful Handling` → `db` +
+`careful handling`) and the tag chips appeared live via the existing `task` SSE → `app:tasks`
+invalidate (assumption §10.4 RESOLVED: the seam exists, no new channel was wired). Zero console
+errors. The live row was restored to untagged afterwards.
+
+**DEFERRED, explicitly (not done, not hidden):**
+- **TB-9's `NAV-IA-MAP.md` row is NOT written** — this build's scope lock permitted exactly one
+  file in the docs checkout (this spec). The row to add, verbatim from §5.1:
+  `| Task board + detail (TASK-BOARD-SPEC §5) | /projects/[id]/tasks | Projects › project › Open board | No — extends Projects | live |`
+- **A `docs/fails.md` F-entry for the PowerShell 5.1 encoding trap** (same reason). The defect:
+  `Get-Content -Raw` reads as ANSI and `Set-Content -Encoding utf8` writes UTF-8, so a
+  round-trip through PowerShell DOUBLE-ENCODES every non-ASCII character (`·` → `Â·`, `—` →
+  `â€”`) and adds a BOM — invisible in `git diff --stat` on an untracked file, visible in the
+  browser as a mojibake page title. It is F-054's sibling and bit this build. Rule: never
+  round-trip a source file through PowerShell 5.1; use the Edit tool or `node`.
+- The board's own create form (P4 §6.1) and sprint retirement (P4 §6.2, operator-gated).
 
 ### 5.1 IA placement (no orphan routes)
 
@@ -434,7 +489,7 @@ No other schema change in this spec. Phases 1, 3, 4 are migration-free.
 |---|---|---|---|
 | **P1 prompt-context** | `sessions/launch.ts`, `runtime/index.ts`, their tests | Yes — no migration, no UI; success criterion (a) lands here | `npx vitest run src/lib/server/runtime src/lib/server/sessions` + green bar |
 | **P2 tags** ✅ BUILT | `db/schema.ts` (m0087), `tasks/repo.ts` + `tasks/tags.test.ts`, `launch.ts` (SELECT + mapping), `runtime/task-brief.test.ts`, `projects/[id]/+page.{server.ts,svelte}` + `task-tags-action.test.ts` | Yes — shipped with an operator authoring path (§4.2 note), so tags are usable before P3 | `npx vitest run src/lib/server/tasks` + `npm run db:up` ×2 + green bar |
-| **P3 board+detail** | `routes/projects/[id]/tasks/` (new `+page.server.ts`, `+page.svelte`), one link in the project page tasks tab, `docs/NAV-IA-MAP.md` | Yes — reads P2 fields when present, renders honest '—' otherwise | build + `svelte-check` 0 + live render (F-010 `waitUntil:'load'`) |
+| **P3 board+detail** ✅ BUILT | `routes/projects/[id]/tasks/` (`+page.server.ts`, `+page.svelte`, `task-board-view.ts`, `board-row.ts`, 5 test files), one link in the project page tasks tab. `docs/NAV-IA-MAP.md` row DEFERRED — see §5 | Yes — reads P2 fields when present, renders honest '—' otherwise | build + `svelte-check` 0 + 132 tests + live render on :5173 |
 | **P4 create+sprint** | board/project-page create forms + actions, sprint UI removal, `projects/repo.ts` comment | Yes — gated internally on the operator's sprint confirm | `npx vitest run src/routes/projects` + green bar + live render |
 
 Order is binding: P1 first (operator's stated purpose), P2 next (completes the prompt payload),
@@ -456,6 +511,9 @@ wiring; the roadmap/timeline axis (§10g).
 3. **Tag vocabulary is free-form** (validated shape, no curated enum). Assumed intentional — the
    operator's purpose is reminding models, not taxonomy; a curated vocabulary can layer on later
    without migration (same column).
-4. **The events/SSE bus** may or may not already republish `task` changes to a subscribable
-   layout stream; P3 subscribes if the seam exists and otherwise keeps the enhance/invalidate
-   behaviour of the inline board — it does not wire a new channel (honest TODO, §5.3).
+4. ~~**The events/SSE bus** may or may not already republish `task` changes to a subscribable
+   layout stream~~ — **RESOLVED 2026-08-05 by the P3 build.** It does: `task` is in
+   `events/watched-tables.ts:23`, and the project page already maps it to `invalidate('app:tasks')`
+   (`+page.svelte:652`). The board's loader `depends('app:tasks')` on that SAME key and subscribes
+   via `stream.onDbChange('task', …)` — REUSE of the one channel, no new push seam, verified live
+   (a `retagTask` write repainted the tag chips without a reload).

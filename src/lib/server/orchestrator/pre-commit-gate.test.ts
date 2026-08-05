@@ -371,6 +371,70 @@ describe('pre-commit gate — the TOOLCHAIN pre-flight (the false-RED wedge, clo
 	});
 });
 
+// ── REGRESSION (the follow-on review's sweep): the SPAWNABILITY half of the pre-flight is NOT an
+//    npm story. `execFileRunner` reports a spawn ENOENT for ANY program as {code:1, stdout:'',
+//    stderr:''} — re-verified by execution — so a cargo/go/dotnet project on a host WITHOUT that SDK
+//    produced a RED gate with an empty reason: task `failed`, branch preserved, never merged, the
+//    change blamed for a missing toolchain. Same wedge as the npm one, different ecosystem.
+//
+//    These run with the DEFAULT runner (no `run` option) because `argvOnly` is the precondition for
+//    the check — but NOTHING is ever spawned: the pre-flight answers from PATH before any process
+//    starts, which is the entire point.
+describe('pre-commit gate — the spawnability pre-flight is ecosystem-agnostic', () => {
+	/** A program name that cannot exist on any PATH — the "SDK is not installed" case. */
+	const ABSENT = 'atelier-no-such-toolchain-xyz';
+
+	it('a NON-npm build tool that is not on PATH is an environment SKIP, never a RED', async () => {
+		const gate = await runPreCommitGate({ cwd: fullRoot, buildTool: `${ABSENT} build` });
+		expect(gate.status).toBe('skipped');
+		expect(gate.failedAt).toBeNull();
+		expect(gate.verified).toBe(false);
+		// It is the ENVIRONMENT skip, so the merge hold does not fire on it (that is the whole
+		// distinction 6878d14 introduced — a false RED here would have been worse still).
+		expect(gate.unrunnable).toBe(true);
+		expect(gate.steps.find((s) => s.name === 'build')?.detail).toMatch(/is not on PATH/);
+		// …and the summary does not claim the project declares nothing to check.
+		expect(gate.summary).not.toMatch(/no build\/lint\/typecheck\/test target detected/);
+		expect(gate.summary).toMatch(/could NOT BE RUN in this working dir/);
+	});
+
+	it('an absent TEST program is an environment skip too — the test step is not a RED either', async () => {
+		const gate = await runPreCommitGate({
+			cwd: fullRoot,
+			buildTool: 'node --eval process.exit(0)',
+			testCommand: `${ABSENT} test`
+		});
+		// build really ran (node is spawnable), test could not — so the verdict is not 'failed'.
+		expect(gate.failedAt).toBeNull();
+		expect(gate.unrunnable).toBe(true);
+		expect(gate.steps.find((s) => s.name === 'test')?.ran).toBe(false);
+		expect(gate.steps.find((s) => s.name === 'test')?.detail).toMatch(/is not on PATH/);
+	}, 20_000);
+
+	it('an EXPLICIT path is never PATH-probed — the fix must not invent a new false skip', async () => {
+		// `./x` / `C:\tools\x` is resolved against the cwd by execFile, not looked up on PATH.
+		// Probing PATH for its basename would skip a command that runs perfectly well.
+		const gate = await runPreCommitGate({ cwd: fullRoot, buildTool: `./${ABSENT} build` });
+		// It was SPAWNED (and failed, because it does not exist in the cwd) — a real verdict, not a
+		// pre-flight opinion. What matters is that the pre-flight did NOT claim it.
+		expect(gate.steps.find((s) => s.name === 'build')?.detail).not.toMatch(/is not on PATH/);
+		expect(gate.status).toBe('failed');
+	}, 20_000);
+
+	it('an INJECTED runner is never second-guessed — it has its own spawn rules (argvOnly only)', async () => {
+		// A caller that supplies a runner may well be able to run what execFile cannot; the pre-flight
+		// must not speak for it. A red verdict from an injected runner stays red.
+		const runner = fakeRunner(() => ({ code: 1, stdout: '', stderr: 'real failure' }));
+		const gate = await runPreCommitGate(
+			{ cwd: fullRoot, buildTool: `${ABSENT} build` },
+			{ run: runner }
+		);
+		expect(gate.status).toBe('failed');
+		expect(gate.unrunnable).toBe(false);
+		expect(runner.calls.length).toBe(1);
+	});
+});
+
 // ── REGRESSION (DoD-review finding #4, D-026): raw command output is SCREENED before it lands in a
 //    step detail — the detail is persisted onto agent_event.detail.gate and copied into the drain
 //    fault context, and is rendered on /atelier/queue.

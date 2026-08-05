@@ -31,6 +31,10 @@
 // post-task re-drains) can NEVER produce two reviews — even across the pending→processing transition.
 
 import type { Db } from '../db/client';
+// D-026 — git's own output is UNTRUSTED text that gets PERSISTED (agent_event.detail.review_note)
+// and rendered to the operator. It goes through the codebase's existing screening chokepoint before
+// it can reach a detail string — never a second, hand-rolled redactor (F-055).
+import { screen } from '../memory/screen';
 // PCG-1: the runner seam now lives in ./command-runner (extracted from post-task.ts). Importing it
 // from there — not from post-task.ts — is what keeps post-task → review a one-way edge now that
 // post-task calls maybeEnqueueReview.
@@ -65,25 +69,79 @@ export interface CountChangedOptions {
 }
 
 /**
- * Count the DISTINCT files a change touched, via `git diff --name-only <ref>` run with an
- * ARGUMENT ARRAY (no shell — D-008). Blank/whitespace lines are ignored; duplicate paths are
- * collapsed. A non-zero git exit (e.g. not a repo) yields 0 — a count failure must never be
- * read as "trigger a review", and it must never crash the post-task path.
+ * The honest result of measuring a change's footprint — the count AND whether git could answer.
+ *
+ * THE DEFECT THIS SEPARATES (the follow-on review's finding, and the same class as the two the
+ * DoD-review caught): `countChangedFiles` returned 0 both when the change genuinely touched no
+ * files and when git could not be asked at all (the cwd is not a repo, the base ref does not
+ * resolve, git itself is unspawnable — `execFileRunner` reports a spawn ENOENT as exit 1 with
+ * empty output). Those are opposite facts with the same recorded value: `review_changed_files: 0`
+ * on the completion event, `triggered:false`, no review, and — because the merge hold only ever
+ * fires on a TRIGGERED review — no hold either. A measurement fault therefore disabled the whole
+ * review half SILENTLY, and the persisted row said "this change was small" about a change nobody
+ * had measured. `measured` is the discriminator, and `detail` names the fault so an operator
+ * reading the event can tell a small change from an unmeasured one (F-008).
  */
-export async function countChangedFiles(opts: CountChangedOptions): Promise<number> {
+export interface ChangedFilesMeasurement {
+	/** Distinct files touched. 0 when `measured` is false — a floor, NOT a finding. */
+	changedFiles: number;
+	/** True ⇔ git actually answered. False ⇒ `changedFiles` is unknown, not zero. */
+	measured: boolean;
+	/** Named reason git could not answer (screened, D-026). '' when `measured` is true. */
+	detail: string;
+}
+
+/**
+ * Measure the DISTINCT files a change touched, via `git diff --name-only <ref>` run with an
+ * ARGUMENT ARRAY (no shell — D-008). Blank/whitespace lines are ignored; duplicate paths are
+ * collapsed. A non-zero git exit does NOT throw and does NOT trigger a review — but it is
+ * reported as `measured:false` with a named reason rather than laundered into a count of 0.
+ * Never throws on a non-zero exit; a runner that REJECTS still propagates to the caller's
+ * best-effort catch (post-task names it as `reviewError`).
+ */
+export async function measureChangedFiles(
+	opts: CountChangedOptions
+): Promise<ChangedFilesMeasurement> {
 	const run = opts.runner ?? execFileRunner;
 	const ref = opts.baseRef ?? 'HEAD';
 	// `diff --name-only <ref>` — every token is a literal argv element; the ref is data, not
 	// a shell-parsed string (D-008). `--no-color`/`--no-renames` keep the output to bare paths.
 	const res = await run('git', ['diff', '--name-only', '--no-renames', ref], { cwd: opts.cwd });
-	if (res.code !== 0) return 0;
+	if (res.code !== 0) {
+		// D-026 — git's stderr is untrusted text that lands on a persisted agent_event and is
+		// rendered to the operator; it routinely carries the absolute worktree path (home-path PII).
+		// Through the EXISTING chokepoint, which fails closed, never a second redactor (F-055).
+		const raw = (res.stderr || res.stdout).replace(/\s+/g, ' ').trim();
+		const scanned = screen(raw);
+		const why =
+			scanned.status === 'quarantined'
+				? '(git output withheld — it contained a secret)'
+				: scanned.text.slice(0, 200);
+		return {
+			changedFiles: 0,
+			measured: false,
+			detail:
+				`git diff --name-only ${ref} exited ${res.code} — the change's footprint could NOT be ` +
+				`measured, so no review was requested (this describes the repo/environment, not the ` +
+				`change)${why ? `: ${why}` : ''}`
+		};
+	}
 	const files = new Set(
 		res.stdout
 			.split(/\r?\n/)
 			.map((l) => l.trim())
 			.filter((l) => l.length > 0)
 	);
-	return files.size;
+	return { changedFiles: files.size, measured: true, detail: '' };
+}
+
+/**
+ * Count the DISTINCT files a change touched. Thin wrapper over {@link measureChangedFiles} kept
+ * for callers that genuinely only want the number; an UNMEASURABLE change counts 0 here, so a
+ * caller that must not confuse "small" with "unmeasured" reads the measurement instead.
+ */
+export async function countChangedFiles(opts: CountChangedOptions): Promise<number> {
+	return (await measureChangedFiles(opts)).changedFiles;
 }
 
 export interface ReviewDecisionInput {
@@ -110,10 +168,19 @@ export interface ReviewDecisionOptions {
 }
 
 export interface ReviewDecision {
-	/** How many distinct files the change touched. */
+	/** How many distinct files the change touched. 0 AND `measured:false` ⇒ unknown, not zero. */
 	changedFiles: number;
 	/** True iff changedFiles >= threshold (the review condition was met). */
 	triggered: boolean;
+	/**
+	 * True ⇔ git actually measured the footprint. When FALSE the decision is "no review" because we
+	 * could not look, NOT because the change was small — see {@link ChangedFilesMeasurement}. The
+	 * caller persists this so a reader can tell the two apart; without it a repo/environment fault
+	 * silently disables the review AND the merge hold behind it (F-008).
+	 */
+	measured: boolean;
+	/** Named reason the footprint could not be measured (screened). Absent when `measured`. */
+	measureNote?: string;
 	/**
 	 * The enqueued `review` work_item id — set ONLY when a NEW row was created. When
 	 * `triggered` is true but this is undefined, an active review for this task already
@@ -138,14 +205,21 @@ export async function maybeEnqueueReview(
 	opts: ReviewDecisionOptions = {}
 ): Promise<ReviewDecision> {
 	const threshold = opts.threshold ?? DEFAULT_REVIEW_THRESHOLD;
-	const changedFiles = await countChangedFiles({
+	const { changedFiles, measured, detail } = await measureChangedFiles({
 		cwd: input.cwd,
 		runner: opts.runner,
 		baseRef: opts.baseRef
 	});
 
+	// UNMEASURED is NOT "small". We still do not enqueue a review (a fabricated footprint would be
+	// worse), but the decision says so out loud instead of reporting a confident 0 — the caller puts
+	// the named reason on the completion event.
+	if (!measured) {
+		return { changedFiles, triggered: false, measured: false, measureNote: detail };
+	}
+
 	if (changedFiles < threshold) {
-		return { changedFiles, triggered: false };
+		return { changedFiles, triggered: false, measured: true };
 	}
 
 	// N+ files ⇒ enqueue ONE review. The dedup is scoped per-task (not per-session): one open
@@ -171,6 +245,6 @@ export async function maybeEnqueueReview(
 	});
 
 	return enqueued
-		? { changedFiles, triggered: true, workItemId: id }
-		: { changedFiles, triggered: true };
+		? { changedFiles, triggered: true, measured: true, workItemId: id }
+		: { changedFiles, triggered: true, measured: true };
 }

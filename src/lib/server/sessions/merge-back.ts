@@ -164,8 +164,22 @@ async function withMergeLock<T>(projectRoot: string, fn: () => Promise<T>): Prom
  *                      merge only under the opt-in 'always' policy. The caller owns that decision
  *                      (orchestrator.ts `shouldHoldMergeBack`); this module preserves what it is
  *                      told not to merge.
+ *   • 'gate-unknown' — the run succeeded and a gate was ARMED, but it never produced a verdict: the
+ *                      post-task block faulted (a DB/OS fault mid-loop). Unverified is unverified,
+ *                      so it withholds exactly like the others. It is its OWN value rather than
+ *                      'gate-failed' because "the gate said no" and "the gate never answered" send
+ *                      an operator to two different places, and only one of them is about the code.
+ *                      NOTE this state also protects an UNCOMMITTED tree: a fault before post-task's
+ *                      commit leaves the branch with no new commits, and the 'done' path would read
+ *                      that as noop-empty and tear the worktree down — deleting the work (F-007).
  */
-export type SessionExitState = 'done' | 'failed' | 'cancelled' | 'gate-failed' | 'review-held';
+export type SessionExitState =
+	| 'done'
+	| 'failed'
+	| 'cancelled'
+	| 'gate-failed'
+	| 'review-held'
+	| 'gate-unknown';
 
 export interface MergeBackInput {
 	/** Session record id — the note is stamped here on a preserve, and it identifies the row. */
@@ -219,12 +233,38 @@ function screenNote(s: string): string {
 
 // ── git helpers (all LOCAL verbs, all execFile arrays) ──────────────────────────────────────
 
-/** Does a local branch ref exist? `git show-ref --verify --quiet refs/heads/<branch>`. */
-async function branchExists(projectRoot: string, branch: string, run: CommandRunner): Promise<boolean> {
+/**
+ * Does a local branch ref exist — and CAN we even tell?
+ *
+ * THE DEFECT THIS SEPARATES (the follow-on review's sweep, same class as the pre-commit gate's).
+ * This used to be `res.code === 0`, so a git that could not answer AT ALL — the project root is not
+ * a repo (or is unreadable, or git is unspawnable) — came back `false`, identical to "that branch
+ * is genuinely not there". The caller reads `false` as `noop-gone`: "already merged and cleaned up,
+ * nothing to see". On the PRESERVE path that meant a gate-failed session's branch went un-noted,
+ * and the one record telling the operator where the withheld work is was never written. A verdict
+ * about the ENVIRONMENT was reported as a verdict about the BRANCH.
+ *
+ * Instrumented against real git before relying on it: `show-ref --verify --quiet` exits **1** when
+ * the ref is absent and **128** when the repo itself cannot be read ("fatal: not a git repository").
+ * So exit 1 is a real answer and anything else is "we could not look".
+ *
+ * KNOWN LIMIT, named rather than hidden: `execFileRunner` reports an unspawnable `git` as exit 1
+ * with no output, so a host with NO git at all still reads as 'absent' here. Every other verb in
+ * this module shares that floor — a gitless host has no merge-back to speak of.
+ */
+type BranchProbe = 'present' | 'absent' | 'unknown';
+
+async function probeBranch(
+	projectRoot: string,
+	branch: string,
+	run: CommandRunner
+): Promise<BranchProbe> {
 	const args = ['show-ref', '--verify', '--quiet', `refs/heads/${branch}`] as const;
 	assertLocalGit(args);
-	const res = await run('git', args, { cwd: projectRoot });
-	return res.code === 0;
+	const res = await run('git', args, { cwd: projectRoot }).catch(() => null);
+	if (!res) return 'unknown';
+	if (res.code === 0) return 'present';
+	return res.code === 1 ? 'absent' : 'unknown';
 }
 
 /** Resolve a ref to its full sha, or null if it does not resolve. `rev-parse --verify` (read-only). */
@@ -275,6 +315,13 @@ function preserveReason(exitState: SessionExitState): string {
 	if (exitState === 'review-held') {
 		return 'held for code review — the change is large and does not auto-merge; a review work_item is queued';
 	}
+	if (exitState === 'gate-unknown') {
+		return (
+			'the pre-commit gate produced NO verdict (the post-task step faulted) — the work is NOT ' +
+			'known to be broken and NOT known to be good, so it was not merged; the drain ledger has ' +
+			'the fault'
+		);
+	}
 	return `session ${exitState}`;
 }
 
@@ -313,9 +360,18 @@ export async function mergeBackWorktree(
 	if (exitState !== 'done') {
 		// If the branch never materialized (e.g. the session failed before any commit / a non-git
 		// path that fail-closed in WI-2) there is nothing to preserve — honest no-op.
-		const exists = await branchExists(projectRoot, branch, run).catch(() => false);
-		if (!exists) return { kind: 'noop-gone', branch };
-		const note = `work preserved on branch ${branch}; ${preserveReason(exitState)} — merge needed`;
+		// …but ONLY on a REAL 'absent' answer. A git that could not be asked at all must never be
+		// reported as "already gone" (see probeBranch): on 'unknown' we still stamp the note, because
+		// the withheld work may well be sitting on that branch and a silent no-op is exactly how a
+		// refused merge becomes invisible (F-008).
+		const probe = await probeBranch(projectRoot, branch, run);
+		if (probe === 'absent') return { kind: 'noop-gone', branch };
+		const note =
+			probe === 'unknown'
+				? `work may be preserved on branch ${branch}; ${preserveReason(exitState)} — merge needed ` +
+					`(git could not be read at the project root, so the branch could NOT be confirmed — that ` +
+					`describes the repo, not the work)`
+				: `work preserved on branch ${branch}; ${preserveReason(exitState)} — merge needed`;
 		await stampNote(db, sessionId, note);
 		return { kind: 'preserved-incomplete', branch, note };
 	}
@@ -324,8 +380,13 @@ export async function mergeBackWorktree(
 	return withMergeLock(projectRoot, async () => {
 		// Re-check existence INSIDE the lock — a concurrent earlier merge-back (or a prior re-run)
 		// may have already merged + deleted this branch. Gone ⇒ idempotent no-op (interrupt contract).
-		const exists = await branchExists(projectRoot, branch, run).catch(() => false);
-		if (!exists) return { kind: 'noop-gone', branch } as MergeBackOutcome;
+		// 'unknown' (git could not be read) is NOT 'gone': falling through to the merge is safe —
+		// every step below is a git command that will fail honestly against an unreadable repo, and
+		// ff-only never discards anything — whereas claiming noop-gone would assert this session was
+		// already reconciled when nobody checked.
+		if ((await probeBranch(projectRoot, branch, run)) === 'absent') {
+			return { kind: 'noop-gone', branch } as MergeBackOutcome;
+		}
 
 		// Nothing to merge? If the branch points at a commit already reachable from the project
 		// branch's tip (no session commits), the FF merge would be an "Already up to date" no-op.

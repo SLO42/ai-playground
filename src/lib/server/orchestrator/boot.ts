@@ -560,7 +560,17 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 			// UNVERIFIED gate here, and only dotnet/cargo/go projects are genuinely gated. That is
 			// honest rather than false-RED (the alternative wedged every write task), but it is not
 			// verification: making the gate really check a JS worktree needs dependency provisioning
-			// or a vetted shell escape, both named as follow-up work in pre-commit-gate.ts.
+			// or a vetted shell escape, both named as follow-up work in pre-commit-gate.ts. The same
+			// pre-flight covers EVERY ecosystem, not just npm: a `cargo`/`go`/`dotnet` project on a
+			// host without that SDK is an honest UNVERIFIED skip too, because the command seam reports
+			// an unspawnable program as exit 1 with no output and that would otherwise read as a
+			// broken change.
+			//
+			// AND IF THE GATE NEVER ANSWERS: a fault inside the post-task loop (DB/OS/git) leaves no
+			// verdict at all. With the gate armed that is NOT a merge — the session exits
+			// 'gate-unknown' and the branch + worktree are preserved with the fault in the drain
+			// ledger. Unverified is unverified, however we got there; the alternative fast-forwarded
+			// un-gated work precisely when something had already gone wrong.
 			preCommitGate: true,
 			// PCG-1 — the review capability, WIRED. `maybeEnqueueReview` has been fully built and
 			// tested since TASK 2.8 with ZERO production callers; it now runs after a gate-green

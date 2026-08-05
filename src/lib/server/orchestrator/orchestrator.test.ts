@@ -1719,6 +1719,324 @@ describe('WI-3 — merge-back + teardown composed with post-task (real temp git 
 			}
 		}
 	}, 40_000);
+
+	// ── PCG-1 — THE OTHER HALF OF THE MERGE DECISION, AT THE DRAIN: the REVIEW HOLD ────────────
+	//
+	// WHY THIS TEST EXISTS. `shouldHoldMergeBack` is unit-tested pure, merge-back is tested with
+	// 'review-held' handed to it directly, and post-task is tested for the review decision — but
+	// NOTHING exercised the WIRE between them: the orchestrator reading ptRes.gate, applying the
+	// policy, and turning the answer into an exitState merge-back honors. That wire is exactly
+	// where the shipped defect lived (the hold keyed on gate.status alone), and each half being
+	// green is precisely why it survived. So this drives the real drain, end to end.
+	//
+	// The HOLD case, by construction: a project with NO build_tool and NO test target ⇒ the gate is
+	// 'skipped' with `unrunnable:false` — genuinely NOTHING to verify, which is the one case the
+	// shipped 'unverified' policy is for — and a change big enough to trigger a review.
+	it('PCG-1: a large change with NOTHING to verify is HELD — task done, branch preserved, review queued, project branch unmoved', async () => {
+		await clearQueue();
+		const repo4 = initGitRepo();
+		const baseHead = git(repo4, 'rev-parse', 'main');
+		// NO build_tool and NO test_command ⇒ every gate step resolves to nothing ⇒ 'skipped',
+		// unrunnable:false. This is the "neither an automated gate NOR a review behind it" case.
+		const proj = await createProject(db, {
+			slug: 'mb_review_hold',
+			name: 'MB Review Hold',
+			root_path: repo4
+		});
+		const holdProjectId = proj.id;
+
+		// Real git for every decision that matters (the merge, the branch, the commit) — only the
+		// footprint MEASUREMENT is scripted, so the change reads as large without the backend having
+		// to author six files. `git diff --name-only --no-renames <base>` is the review's one query.
+		const holdRunner: CommandRunner = async (file, args, opts) => {
+			if (file === 'git' && args[0] === 'diff' && args[1] === '--name-only') {
+				return { code: 0, stdout: 'a.ts\nb.ts\nc.ts\nd.ts\ne.ts\nf.ts\n', stderr: '' };
+			}
+			return gitExecFileRunner(file, args, opts);
+		};
+
+		const bus = new EventBus();
+		const backend = fileWritingBackend(true, 'held.txt'); // the SESSION succeeds
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: join(repo4, '.harness-cc') });
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 1,
+			mode: 'manual',
+			route: stubRoute(),
+			postTask: {
+				enabled: true,
+				runner: holdRunner,
+				followUpOnTestFail: false,
+				preCommitGate: true,
+				// The SHIPPED default, stated explicitly so the test pins the policy it claims to.
+				review: { enabled: true, holdMergeBack: 'unverified' }
+			},
+			mergeBack: { enabled: true, runner: gitExecFileRunner }
+		});
+		try {
+			const task = await createTask(db, {
+				project: holdProjectId,
+				title: 'mb review hold',
+				description: 'a large change nothing could verify must not auto-merge'
+			});
+			await setStatus(db, task.id, 'ready');
+			await orch.enqueueTask(task.id, holdProjectId);
+			await orch.drain();
+
+			await waitForAsync(async () => backend.plans.length >= 1);
+			// 1. THE TASK IS HONESTLY DONE — a hold is NOT a failure. The session worked; the change
+			//    simply is not cleared to land. Reporting `failed` here would be the false-RED class.
+			await waitForAsync(async () => (await getTask(db, task.id))?.status === 'done');
+
+			const [sessions] = await db.query<[Array<{ id: unknown; worktree_branch?: unknown }>]>(
+				`SELECT id, worktree_branch FROM session WHERE task = $tid;`,
+				{ tid: new StringRecordId(task.id) }
+			);
+			expect(sessions.length).toBe(1);
+			const branch = String(sessions[0].worktree_branch);
+
+			// 2. THE HOLD IS VISIBLE where an operator looks, in its own words (not "session failed").
+			await waitForAsync(async () => {
+				const [rows] = await db.query<[Array<{ note?: unknown }>]>(
+					`SELECT note FROM session WHERE id = $sid;`,
+					{ sid: new StringRecordId(String(sessions[0].id)) }
+				);
+				return rows[0]?.note != null && String(rows[0].note).includes('held for code review');
+			});
+
+			// 3. THE HEADLINE: the project branch did NOT move, and the work is safe on its branch.
+			expect(git(repo4, 'rev-parse', 'main')).toBe(baseHead);
+			expect(() => git(repo4, 'rev-parse', '--verify', branch)).not.toThrow();
+			expect(git(repo4, 'rev-parse', branch)).not.toBe(baseHead);
+
+			// 4. The review the hold is waiting ON actually exists, and the completion event records
+			//    the measured footprint + that it WAS measured (not an unmeasured 0 — F-008).
+			const [reviews] = await db.query<[Array<{ id: unknown }>]>(
+				`SELECT id FROM work_item WHERE work_type = "review" AND payload.taskId = $tid;`,
+				{ tid: task.id }
+			);
+			expect(reviews.length).toBe(1);
+			// Scoped to THIS session, not "the most recent N completions" — the whole suite shares one
+			// SurrealDB, so a global recent-window query is a race against every other file writing
+			// completion events (it passed alone and failed under the full suite).
+			// F-020: every ORDER BY field is in the projection — `created_at` is selected, not only
+			// sorted on (a missing order idiom is a parse error against real SurrealDB).
+			const [events] = await db.query<[Array<{ detail: Record<string, unknown>; created_at: unknown }>]>(
+				`SELECT detail, created_at FROM agent_event
+				   WHERE session = $sid AND type = "completion" AND detail.reason = "post-task loop"
+				   ORDER BY created_at DESC;`,
+				{ sid: new StringRecordId(String(sessions[0].id)) }
+			);
+			const completion = events.find((e) => e.detail?.review_triggered === true);
+			expect(completion).toBeTruthy();
+			expect(completion!.detail.review_changed_files).toBe(6);
+			expect(completion!.detail.review_measured).toBe(true);
+			const gateDetail = completion!.detail.gate as { status?: string; unrunnable?: boolean };
+			expect(gateDetail.status).toBe('skipped');
+			// The distinction the whole 6878d14 fix turns on, asserted at the drain: this skip is
+			// "nothing to verify", NOT "the environment could not verify".
+			expect(gateDetail.unrunnable).toBe(false);
+		} finally {
+			orch.stop();
+			await deleteProject(db, holdProjectId).catch(() => {});
+			try {
+				rmSync(join(repo4, '..'), { recursive: true, force: true });
+			} catch {
+				/* best effort */
+			}
+		}
+	}, 40_000);
+
+	// ── PCG-1 — THE GATE BYPASS (the follow-on review's finding, closed): a post-task FAULT must not
+	//    become a merge. The post-task block is best-effort and its catch cannot flip the spawn
+	//    verdict (F-014) — but `gateFailed`/`reviewHeld` then stayed false and merge-back computed
+	//    'done', so an ARMED gate that never returned a verdict fast-forwarded the branch into the
+	//    project branch anyway: the gated state change reached by a path around the gate (F-055).
+	//    And because the fault lands BEFORE the commit, the branch carries no new commits, so the
+	//    'done' path reads noop-empty and TEARS THE WORKTREE DOWN — deleting the work (F-007).
+	it('PCG-1: a post-task FAULT with the gate armed does NOT merge and does NOT tear down the worktree', async () => {
+		await clearQueue();
+		const repo6 = initGitRepo();
+		const baseHead = git(repo6, 'rev-parse', 'main');
+		const proj = await createProject(db, {
+			slug: 'mb_gate_unknown',
+			name: 'MB Gate Unknown',
+			root_path: repo6
+		});
+		const faultProjectId = proj.id;
+
+		// The post-task loop's FIRST git call is `rev-parse --verify HEAD` (the review's diff base,
+		// read before staging). Throwing there models any fault — DB, OS, or git — that aborts the
+		// loop before a gate verdict exists. merge-back keeps its own REAL git runner, so the merge
+		// decision below is genuinely git's.
+		const faultingRunner: CommandRunner = async (file, args) => {
+			if (file === 'git' && args[0] === 'rev-parse') {
+				throw new Error('injected post-task fault: git unavailable');
+			}
+			return { code: 0, stdout: '', stderr: '' };
+		};
+
+		const bus = new EventBus();
+		const backend = fileWritingBackend(true, 'unverified.txt'); // the SESSION succeeds
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: join(repo6, '.harness-cc') });
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 1,
+			mode: 'manual',
+			route: stubRoute(),
+			postTask: {
+				enabled: true,
+				runner: faultingRunner,
+				followUpOnTestFail: false,
+				preCommitGate: true
+			},
+			mergeBack: { enabled: true, runner: gitExecFileRunner }
+		});
+		try {
+			const task = await createTask(db, {
+				project: faultProjectId,
+				title: 'mb gate unknown',
+				description: 'a gate that never answered must not let the work through'
+			});
+			await setStatus(db, task.id, 'ready');
+			await orch.enqueueTask(task.id, faultProjectId);
+			await orch.drain();
+
+			await waitForAsync(async () => backend.plans.length >= 1);
+
+			const [sessions] = await db.query<[Array<{ id: unknown; worktree_path?: unknown; worktree_branch?: unknown }>]>(
+				`SELECT id, worktree_path, worktree_branch FROM session WHERE task = $tid;`,
+				{ tid: new StringRecordId(task.id) }
+			);
+			expect(sessions.length).toBe(1);
+			const worktreePath = String(sessions[0].worktree_path);
+
+			// THE HEADLINE: nothing unverified reached the project branch.
+			await waitForAsync(async () => {
+				const [rows] = await db.query<[Array<{ note?: unknown }>]>(
+					`SELECT note FROM session WHERE id = $sid;`,
+					{ sid: new StringRecordId(String(sessions[0].id)) }
+				);
+				return rows[0]?.note != null;
+			});
+			expect(git(repo6, 'rev-parse', 'main')).toBe(baseHead);
+
+			// …and the agent's work was NOT destroyed: the worktree is still on disk. Under the old
+			// behaviour this branch had no commits, so the 'done' merge path tore it down (F-007).
+			expect(existsSync(worktreePath)).toBe(true);
+
+			// THE REFUSAL IS VISIBLE, and says which kind of "unverified" this is.
+			const [noteRows] = await db.query<[Array<{ note?: unknown }>]>(
+				`SELECT note FROM session WHERE id = $sid;`,
+				{ sid: new StringRecordId(String(sessions[0].id)) }
+			);
+			expect(String(noteRows[0].note)).toContain('produced NO verdict');
+			expect(String(noteRows[0].note)).not.toContain('pre-commit gate FAILED'); // not a code verdict
+
+			// …and the drain ledger names the fault with the gate's state at that moment.
+			const [faults] = await db.query<[Array<{ detail: Record<string, unknown> }>]>(
+				`SELECT detail FROM agent_event
+				   WHERE type = "error" AND detail.stage = $stage AND detail.taskId = $tid;`,
+				{ stage: 'post_task', tid: task.id }
+			);
+			expect(faults.length).toBeGreaterThanOrEqual(1);
+			const fault = faults[0].detail as { gate_armed?: boolean; consequence?: string };
+			expect(fault.gate_armed).toBe(true);
+			expect(String(fault.consequence)).toContain('NOT merged');
+		} finally {
+			orch.stop();
+			await deleteProject(db, faultProjectId).catch(() => {});
+			try {
+				rmSync(join(repo6, '..'), { recursive: true, force: true });
+			} catch {
+				/* best effort */
+			}
+		}
+	}, 40_000);
+
+	// The COMPLEMENT, and the regression that 6878d14 was: the SAME large change, but the gate
+	// skipped because THIS ENVIRONMENT could not run the project's real checks. That must NOT hold —
+	// it is every npm project on this platform, and no automated reviewer exists to release it. If
+	// this ever goes red, the autonomous line is wedged again on every substantial task.
+	it('PCG-1: a large change whose gate was skipped by the ENVIRONMENT is NOT held — it merges, review still queued', async () => {
+		await clearQueue();
+		const repo5 = initGitRepo();
+		const baseHead = git(repo5, 'rev-parse', 'main');
+		// An npm project: the WI-2 worktree has no node_modules, so every npm step is an environment
+		// skip (`unrunnable:true`) rather than a false RED.
+		const proj = await createProject(db, {
+			slug: 'mb_env_skip',
+			name: 'MB Env Skip',
+			root_path: repo5,
+			build_tool: 'npm'
+		});
+		const envProjectId = proj.id;
+
+		const envRunner: CommandRunner = async (file, args, opts) => {
+			if (file === 'git' && args[0] === 'diff' && args[1] === '--name-only') {
+				return { code: 0, stdout: 'a.ts\nb.ts\nc.ts\nd.ts\ne.ts\nf.ts\n', stderr: '' };
+			}
+			return gitExecFileRunner(file, args, opts);
+		};
+
+		const bus = new EventBus();
+		const backend = fileWritingBackend(true, 'env.txt');
+		const runtime = new ClaudeCodeRuntime({ backend, harnessConfigRoot: join(repo5, '.harness-cc') });
+		const orch = new Orchestrator({
+			db,
+			bus,
+			runtime,
+			maxConcurrent: 1,
+			mode: 'manual',
+			route: stubRoute(),
+			postTask: {
+				enabled: true,
+				runner: envRunner,
+				followUpOnTestFail: false,
+				preCommitGate: true,
+				review: { enabled: true, holdMergeBack: 'unverified' }
+			},
+			mergeBack: { enabled: true, runner: gitExecFileRunner }
+		});
+		try {
+			const task = await createTask(db, {
+				project: envProjectId,
+				title: 'mb env skip',
+				description: 'an environment skip must not stall a healthy project'
+			});
+			await setStatus(db, task.id, 'ready');
+			await orch.enqueueTask(task.id, envProjectId);
+			await orch.drain();
+
+			await waitForAsync(async () => backend.plans.length >= 1);
+			await waitForAsync(async () => (await getTask(db, task.id))?.status === 'done');
+
+			// THE HEADLINE: the work LANDED. The project branch advanced past its base — no permanent
+			// hold, no piled-up worktree, on a project this host simply cannot verify.
+			await waitForAsync(async () => git(repo5, 'rev-parse', 'main') !== baseHead);
+			expect(git(repo5, 'rev-parse', 'main')).not.toBe(baseHead);
+
+			// …and the review is STILL queued: the policy changed what the merge WAITS on, never
+			// whether the operator is told a large change went by unverified.
+			const [reviews] = await db.query<[Array<{ id: unknown }>]>(
+				`SELECT id FROM work_item WHERE work_type = "review" AND payload.taskId = $tid;`,
+				{ tid: task.id }
+			);
+			expect(reviews.length).toBe(1);
+		} finally {
+			orch.stop();
+			await deleteProject(db, envProjectId).catch(() => {});
+			try {
+				rmSync(join(repo5, '..'), { recursive: true, force: true });
+			} catch {
+				/* best effort */
+			}
+		}
+	}, 40_000);
 });
 
 // R1-2 — the BACKSTOP maintenance gc. gcStale was built but never invoked automatically; this

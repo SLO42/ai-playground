@@ -253,4 +253,66 @@ describe('review agent — below the threshold ⇒ NO spawn (2.8)', () => {
 		expect(res.triggered).toBe(true);
 		expect(await countByStatus(db, 'pending')).toBe(before + 1);
 	});
+
+	// ── REGRESSION (the follow-on review's sweep): "the change touched 0 files" and "I could not
+	//    measure the change" were the SAME recorded value. Both produced changedFiles:0,
+	//    triggered:false, no review — and because the merge hold only fires on a TRIGGERED review, a
+	//    measurement fault silently took the hold down with it while the persisted row asserted the
+	//    change was small. That is a claim about the ENVIRONMENT dressed as a claim about the DIFF.
+	it('an UNMEASURABLE change says so — measured:false with a named reason, not a confident 0', async () => {
+		const before = await countByStatus(db, 'pending');
+		const taskId = await freshDoneTask('unmeasurable');
+		const sessionId = await makeSession(taskId);
+		// git's real answer when the cwd is not a repo: exit 128 with a fatal on stderr.
+		const runner = fakeRunner(() => ({
+			code: 128,
+			stdout: '',
+			stderr: 'fatal: not a git repository (or any of the parent directories): .git'
+		}));
+
+		const res = await maybeEnqueueReview(
+			db,
+			{ projectId, taskId, sessionId, cwd: 'F:/code/ai-playground-v2' },
+			{ runner }
+		);
+
+		expect(res.measured).toBe(false);
+		expect(res.changedFiles).toBe(0); // a floor, and the flag above says it is not a finding
+		expect(res.triggered).toBe(false); // still no review — we never fabricate a footprint
+		expect(res.measureNote).toMatch(/could NOT be measured/);
+		expect(res.measureNote).toMatch(/not a git repository/); // git's own words survive
+		expect(await countByStatus(db, 'pending')).toBe(before); // nothing enqueued
+	});
+
+	it('a genuinely SMALL change is measured:true — the two are distinguishable, not just labelled', async () => {
+		const taskId = await freshDoneTask('genuinely small');
+		const sessionId = await makeSession(taskId);
+		const res = await maybeEnqueueReview(
+			db,
+			{ projectId, taskId, sessionId, cwd: 'F:/code/ai-playground-v2' },
+			{ runner: fakeRunner(() => diffOf(0)) }
+		);
+		expect(res.changedFiles).toBe(0);
+		expect(res.measured).toBe(true);
+		expect(res.measureNote).toBeUndefined();
+	});
+
+	it('D-026: a measurement fault that prints a secret does NOT persist it in the note', async () => {
+		const taskId = await freshDoneTask('leaky fault');
+		const sessionId = await makeSession(taskId);
+		const runner = fakeRunner(() => ({
+			code: 128,
+			stdout: '',
+			stderr: 'fatal: auth failed using sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA'
+		}));
+		const res = await maybeEnqueueReview(
+			db,
+			{ projectId, taskId, sessionId, cwd: 'F:/code/ai-playground-v2' },
+			{ runner }
+		);
+		expect(res.measured).toBe(false);
+		expect(res.measureNote).not.toContain('sk-ant-api03-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA');
+		// …and it is not blanked either — the operator still learns a measurement failed (F-008).
+		expect(res.measureNote).toMatch(/could NOT be measured/);
+	});
 });

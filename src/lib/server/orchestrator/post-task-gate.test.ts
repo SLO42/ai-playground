@@ -413,6 +413,62 @@ describe('PCG-1 — the review wiring (maybeEnqueueReview finally has a caller)'
 		expect(String(detail.review_note)).toMatch(/review decision failed/);
 	});
 
+	// ── REGRESSION (the follow-on review's sweep, at the level that matters — the persisted row).
+	//    A git that cannot MEASURE the footprint used to be indistinguishable, on the completion
+	//    event, from a change that touched nothing: `review_changed_files: 0`, `review_triggered:
+	//    false`, no note. The review — and therefore the merge hold behind it — was disabled by an
+	//    environment fault, invisibly. The operator must be able to read the difference back.
+	it('a footprint git could NOT measure is NAMED on the completion event, not recorded as 0 files', async () => {
+		const taskId = await freshRunningTask('unmeasurable footprint');
+		const sessionId = await makeSession(taskId);
+		// Real-ish git for the commit, but `git diff` answers the way it does outside a repo.
+		const runner = fakeRunner((file, args) => {
+			if (file === 'git' && args[0] === 'diff') {
+				return { code: 128, stdout: '', stderr: 'fatal: not a git repository' };
+			}
+			if (file === 'git' && args[0] === 'rev-parse') return { code: 0, stdout: 'abc1234\n', stderr: '' };
+			return OK;
+		});
+
+		const res = await runPostTask(
+			db,
+			{ projectId, taskId, sessionId, cwd, commitMessage: 'feat: unmeasured', testCommand: 'npm test', buildTool: 'npm', runOk: true },
+			{ run: runner, gate: { enabled: true }, review: { enabled: true } }
+		);
+
+		// The work still lands — a measurement fault is not a verdict on the change (F-008), and it
+		// must not fabricate a review either.
+		expect(res.taskStatus).toBe('done');
+		expect(res.review?.measured).toBe(false);
+		expect(res.review?.triggered).toBe(false);
+		expect(await countReviewItems(taskId)).toBe(0);
+
+		// THE ASSERTION THAT MATTERS: the row an operator reads says WHICH kind of 0 this is.
+		const detail = await readEventDetail(res.agentEventId);
+		expect(detail.review_changed_files).toBe(0);
+		expect(detail.review_measured).toBe(false);
+		expect(String(detail.review_note)).toMatch(/could NOT be measured/);
+	});
+
+	it('a MEASURED small change is recorded as measured:true — the flag discriminates, not decorates', async () => {
+		const taskId = await freshRunningTask('genuinely small change');
+		const sessionId = await makeSession(taskId);
+		const runner = fakeRunner((file, args) => {
+			if (file === 'git' && args[0] === 'diff') return { code: 0, stdout: 'only.ts\n', stderr: '' };
+			if (file === 'git' && args[0] === 'rev-parse') return { code: 0, stdout: 'abc1234\n', stderr: '' };
+			return OK;
+		});
+		const res = await runPostTask(
+			db,
+			{ projectId, taskId, sessionId, cwd, commitMessage: 'feat: small', testCommand: 'npm test', buildTool: 'npm', runOk: true },
+			{ run: runner, gate: { enabled: true }, review: { enabled: true } }
+		);
+		const detail = await readEventDetail(res.agentEventId);
+		expect(detail.review_changed_files).toBe(1);
+		expect(detail.review_measured).toBe(true);
+		expect(detail.review_note).toBeUndefined();
+	});
+
 	it('INTERRUPT CONTRACT: a crash DURING the gate leaves no state; the re-run lands normally', async () => {
 		const taskId = await freshRunningTask('killed mid-gate');
 		const sessionId = await makeSession(taskId);

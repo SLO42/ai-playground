@@ -587,13 +587,28 @@ export async function runPostTask(
 					? gate.unrunnable
 						? 'the project declares real checks but this working dir could not RUN them — the change is UNVERIFIED but not blocked (an environment skip, not a verdict on the change)'
 						: 'no build/test target detected — the change is UNVERIFIED but not blocked (honest skip)'
-					: 'gate green — the work is eligible to merge'
+					: gate.unrunnable
+						? // PARTIALLY verified: some checks ran green, but at least one resolved to a real
+							// command this working dir could not run. "Gate green" alone would overstate what
+							// was actually checked — the steps array says which, and this says that.
+							'gate green on the checks this working dir COULD run — at least one other declared ' +
+							'check could not be run here, so the work is eligible to merge but is only PARTLY ' +
+							'verified'
+						: 'gate green — the work is eligible to merge'
 			: undefined,
 		// The review decision (or the honest reason there is none).
 		review_changed_files: review?.changedFiles,
 		review_triggered: review?.triggered,
 		review_work_item: review?.workItemId,
-		review_note: reviewError,
+		// F-008 — `review_changed_files: 0` means TWO opposite things unless this says which: the
+		// change really touched nothing, or git could not be asked (not a repo / bad base ref /
+		// unspawnable git — the seam reports a spawn failure as exit 1 with no output). An
+		// unmeasured change requests no review, and since the merge hold only fires on a TRIGGERED
+		// review, it takes the hold down with it — a refusal that must not be invisible.
+		review_measured: review?.measured,
+		// One field for "why there is no review decision to read": a thrown fault (reviewError) or a
+		// git that could not measure (measureNote). Both are named; neither is ever silence.
+		review_note: reviewError ?? review?.measureNote,
 		reason: 'post-task loop'
 	});
 

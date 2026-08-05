@@ -4,7 +4,7 @@ import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { runPreCommitGate } from './pre-commit-gate';
-import { countChangedFiles } from './review';
+import { countChangedFiles, measureChangedFiles } from './review';
 
 // PCG-1 — THE REAL-RUNNER CONTRACT (the artifact the D-038 DoD-review found missing).
 //
@@ -162,5 +162,35 @@ describe('REAL RUNNER — countChangedFiles against a real git repo', () => {
 		const dir = mkdtempSync(join(tmpdir(), 'pcg-real-norepo-'));
 		dirs.push(dir);
 		expect(await countChangedFiles({ cwd: dir, baseRef: 'HEAD' })).toBe(0);
+	}, 30_000);
+
+	// …but that 0 must be DISTINGUISHABLE from a real 0, against real git — the scripted-runner
+	// version of this assertion cannot prove git actually exits non-zero here.
+	it('a non-repo cwd is measured:false — "could not measure" is not "measured nothing"', async () => {
+		if (!gitAvailable) return;
+		const dir = mkdtempSync(join(tmpdir(), 'pcg-real-norepo2-'));
+		dirs.push(dir);
+		const m = await measureChangedFiles({ cwd: dir, baseRef: 'HEAD' });
+		expect(m.measured).toBe(false);
+		expect(m.changedFiles).toBe(0);
+		expect(m.detail).toMatch(/could NOT be measured/);
+	}, 30_000);
+
+	it('a REAL clean repo measures 0 with measured:true — the honest empty, against live git', async () => {
+		if (!gitAvailable) return;
+		const { dir } = track(repoWithCommittedChange(6));
+		// The tree is clean after the commit, so HEAD really does diff to nothing.
+		const m = await measureChangedFiles({ cwd: dir, baseRef: 'HEAD' });
+		expect(m.measured).toBe(true);
+		expect(m.changedFiles).toBe(0);
+		expect(m.detail).toBe('');
+	}, 30_000);
+
+	it('an UNRESOLVABLE base ref is a measurement fault, not a 0-file change', async () => {
+		if (!gitAvailable) return;
+		const { dir } = track(repoWithCommittedChange(6));
+		const m = await measureChangedFiles({ cwd: dir, baseRef: 'deadbeefdeadbeefdeadbeefdeadbeefdeadbeef' });
+		expect(m.measured).toBe(false);
+		expect(m.detail).toMatch(/could NOT be measured/);
 	}, 30_000);
 });

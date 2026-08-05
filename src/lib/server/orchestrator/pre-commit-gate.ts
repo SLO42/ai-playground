@@ -63,6 +63,15 @@
 // therefore an unexplained RED even in a fully installed tree. Same rule, same reason: we could not
 // run the check, so we say we did not, rather than blaming the change. See toolchainSkipReason.
 //
+// AND THAT SECOND MEMBER IS NOT ABOUT npm (the follow-on review's finding, closed here). The
+// mechanism is `execFileRunner`'s: a spawn ENOENT for ANY program comes back as `{code:1, stdout:'',
+// stderr:''}` — re-verified by running it. So a `cargo`/`go`/`dotnet` project on a host WITHOUT that
+// SDK got a RED gate with an empty reason, landed every task `failed`, and preserved every branch
+// unmerged — the identical wedge, found only because npm was the ecosystem that happened to be
+// looked at. The spawnability pre-flight therefore asks its question of EVERY program, not just the
+// npm family; only the `node_modules`/`package.json` checks stay npm-shaped. A program that IS
+// spawnable and exits non-zero is still a genuine RED, in every ecosystem.
+//
 // NOTE WHAT THIS DELIBERATELY DOES *NOT* DO: it does not install anything, and it does not turn on
 // a shell. Provisioning a worktree with dependencies (an `npm ci`, or a linked/shared
 // `node_modules`) is a new capability with its own cost, cache-sharing and F-052 concurrency
@@ -226,12 +235,14 @@ const SHELL_ONLY_EXT = new Set(['.cmd', '.bat', '.ps1']);
  * reason at all.
  */
 function resolveOnPath(prog: string): string | null {
-	// On Windows ONLY a PATHEXT extension is executable: `C:\Program Files\nodejs\npm` (the
-	// extension-less POSIX shell script npm also ships) sits right next to `npm.cmd` on PATH, and
-	// probing for it first is how a scan can "find" npm and still be unable to spawn it. Elsewhere
-	// the bare name is the executable.
+	// On Windows a name WITHOUT an extension is executable only via PATHEXT: `C:\Program
+	// Files\nodejs\npm` (the extension-less POSIX shell script npm also ships) sits right next to
+	// `npm.cmd` on PATH, and probing for the bare name first is how a scan can "find" npm and still
+	// be unable to spawn it — so the bare name is deliberately NOT a candidate there. A name that
+	// already CARRIES an extension (`node.exe`, `npm.cmd`) is probed literally, or we would look for
+	// `node.exe.exe` and wrongly report a present program as missing. Elsewhere the name is the file.
 	const exts =
-		process.platform === 'win32'
+		process.platform === 'win32' && extname(prog) === ''
 			? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
 			: [''];
 	for (const dir of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {
@@ -254,46 +265,74 @@ function resolveOnPath(prog: string): string | null {
  *     would otherwise be spawned in a tree that has no manifest at all.
  *  2. NO node_modules — the WI-2 worktree case, which is the DEFAULT for every write session (see
  *     the header). `npm run build` there exits 1 with "'vite' is not recognized".
- *  3. THE PROGRAM IS NOT SPAWNABLE BY THIS SEAM (only checked when the DEFAULT argv-only runner is
- *     in use — `argvOnly`; an injected runner has its own spawn rules and this must not speak for
- *     it). On Windows `npm`/`npx`/`pnpm`/`yarn` exist only as
- *     `.cmd` shims, and {@link execFileRunner} is `shell:false` for D-008 (argv is never re-parsed
- *     by a shell). Verified against the live runtime: `execFile('npm', …, {shell:false})` fails
- *     ENOENT — which this seam reports as exit code 1 with EMPTY stdout/stderr — and `npm.cmd`
- *     throws EINVAL outright (Node refuses to spawn a batch file without a shell). So on Windows
- *     EVERY npm step was an unexplained RED: not the agent's code, and not even a real run. The
- *     gate says so instead of inventing a verdict. Turning on `shell:true` to "fix" this would
- *     trade a false RED for a command-injection surface (D-008) — that is a security decision, not
- *     a bug fix, and it is NOT taken here; it is named as follow-up work alongside the dependency
- *     provisioning in the header.
+ *  3. THE PROGRAM IS NOT SPAWNABLE BY THIS SEAM — checked for EVERY ecosystem, not just npm (see
+ *     below), and only when the DEFAULT argv-only runner is in use (`argvOnly`; an injected runner
+ *     has its own spawn rules and this must not speak for it). On Windows `npm`/`npx`/`pnpm`/`yarn`
+ *     exist only as `.cmd` shims, and {@link execFileRunner} is `shell:false` for D-008 (argv is
+ *     never re-parsed by a shell). Verified against the live runtime: `execFile('npm', …,
+ *     {shell:false})` fails ENOENT — which this seam reports as exit code 1 with EMPTY
+ *     stdout/stderr — and `npm.cmd` throws EINVAL outright (Node refuses to spawn a batch file
+ *     without a shell). So on Windows EVERY npm step was an unexplained RED: not the agent's code,
+ *     and not even a real run. The gate says so instead of inventing a verdict. Turning on
+ *     `shell:true` to "fix" this would trade a false RED for a command-injection surface (D-008) —
+ *     that is a security decision, not a bug fix, and it is NOT taken here; it is named as
+ *     follow-up work alongside the dependency provisioning in the header.
  *
- * Deliberately NARROW: no other ecosystem is probed. Guessing "is the dotnet SDK installed" would
- * re-introduce exactly the false-verdict class this exists to remove; for those, a genuine non-zero
- * exit remains a genuine RED.
+ * WHY (3) IS NOT NPM-ONLY (the follow-on review's finding). The npm/`.cmd` story is one INSTANCE of
+ * a mechanism that has nothing to do with npm: `execFileRunner` reports a spawn ENOENT as
+ * `{code:1, stdout:'', stderr:''}` for ANY program (re-verified by execution: spawning a
+ * non-existent program returns exactly that). So a project whose `build_tool` is `cargo`/`go`/
+ * `dotnet` on a host where that SDK is NOT INSTALLED produced a RED gate with an empty reason —
+ * the task landed `failed`, its branch was preserved and never merged, and the record blamed the
+ * agent's change for the absence of a toolchain. That is the same false-RED wedge that closing the
+ * npm case was about, wearing a different ecosystem's clothes; it just needed a host without the
+ * SDK to show it. The spawnability question ("would this argv-only seam find this program at all?")
+ * is answerable for every program with the SAME PATH scan, so it is asked for every program.
+ *
+ * Still deliberately NARROW where narrowness is right: we do NOT guess at an ecosystem's inner
+ * health (an installed-but-broken SDK, a missing workspace file). Only two things are claimed, and
+ * both are FACTS about the host rather than opinions: the program is not on PATH at all, or it is
+ * on PATH exclusively in a form this seam cannot spawn. A program that IS spawnable and exits
+ * non-zero remains a genuine RED, in every ecosystem.
+ *
+ * The dependency-tree checks (1) and (2) stay npm-family-only — `node_modules` is an npm-shaped
+ * fact and asking it of `dotnet` would mean nothing.
  */
 function toolchainSkipReason(cwd: string, file: string, argvOnly: boolean): string {
 	// A resolution can hand us `npm.cmd` / an absolute path; compare on the bare program name.
 	const prog = basename(file).replace(/\.(cmd|exe|bat|ps1)$/i, '').toLowerCase();
-	if (!NPM_FAMILY.has(prog)) return '';
-	if (!existsSync(join(cwd, 'package.json'))) {
-		return `not run — no package.json in the working dir, so \`${prog}\` has nothing to run here (UNVERIFIED, not failed)`;
-	}
-	if (!existsSync(join(cwd, 'node_modules'))) {
-		return (
-			`not run — the working dir has NO installed dependency tree (node_modules absent), so this check ` +
-			`cannot be performed here; a non-zero exit would describe the environment, not the change ` +
-			`(UNVERIFIED, not failed)`
-		);
+	if (NPM_FAMILY.has(prog)) {
+		if (!existsSync(join(cwd, 'package.json'))) {
+			return `not run — no package.json in the working dir, so \`${prog}\` has nothing to run here (UNVERIFIED, not failed)`;
+		}
+		if (!existsSync(join(cwd, 'node_modules'))) {
+			return (
+				`not run — the working dir has NO installed dependency tree (node_modules absent), so this check ` +
+				`cannot be performed here; a non-zero exit would describe the environment, not the change ` +
+				`(UNVERIFIED, not failed)`
+			);
+		}
 	}
 	if (!argvOnly) return '';
-	const resolved = resolveOnPath(prog);
+	// An EXPLICIT path (`./scripts/check.sh`, `C:\tools\build.exe`) is not a PATH lookup at all —
+	// execFile resolves it against the cwd. Probing PATH for its basename would invent a "not on
+	// PATH" skip for a command that runs perfectly well, so such a command is left alone: spawned
+	// as given, and a non-zero exit from it is a real verdict.
+	if (/[\\/]/.test(file)) return '';
+	// Probe the name AS WRITTEN (`node`, `node.exe`) — resolveOnPath handles the extension rules.
+	const name = basename(file);
+	const resolved = resolveOnPath(name);
 	if (!resolved) {
-		return `not run — \`${prog}\` is not on PATH for this server process (UNVERIFIED, not failed)`;
+		return (
+			`not run — \`${name}\` is not on PATH for this server process, so this check cannot be ` +
+			`performed here; the seam reports an unspawnable program as exit 1 with NO output, which ` +
+			`would read as a broken change rather than a missing toolchain (UNVERIFIED, not failed)`
+		);
 	}
 	const ext = extname(resolved).toLowerCase();
 	if (SHELL_ONLY_EXT.has(ext)) {
 		return (
-			`not run — on this platform \`${prog}\` exists only as a ${ext} shim, which the argv-only ` +
+			`not run — on this platform \`${name}\` exists only as a ${ext} shim, which the argv-only ` +
 			`command seam refuses to spawn (shell:false, D-008); the exit code would describe the shim, ` +
 			`not the change (UNVERIFIED, not failed)`
 		);

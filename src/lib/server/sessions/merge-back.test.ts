@@ -307,6 +307,61 @@ describe('mergeBackWorktree — failed / cancelled session → preserve + note',
 		});
 	}
 
+	// ── REGRESSION (the follow-on review's sweep): "the branch is gone" vs "I could not look".
+	//    `branchExists` was `res.code === 0`, so an unreadable project root came back false and the
+	//    preserve path returned `noop-gone` — "already reconciled, nothing to see" — about a
+	//    gate-failed session whose withheld work may be sitting on that very branch, and stamped NO
+	//    note. A verdict about the ENVIRONMENT reported as a verdict about the BRANCH.
+	//    Instrumented against real git first: show-ref --verify --quiet exits 1 for an absent ref and
+	//    128 when the repo itself cannot be read.
+	it('a project root git cannot read is NOT reported as "branch gone" — the hold is still noted', async () => {
+		const { db, notes } = fakeDb();
+		// A runner that answers the way git does outside a repository.
+		const unreadable: CommandRunner = async (file, args) =>
+			file === 'git' && args[0] === 'show-ref'
+				? { code: 128, stdout: '', stderr: 'fatal: not a git repository (or any of the parent directories): .git' }
+				: { code: 128, stdout: '', stderr: 'fatal: not a git repository' };
+
+		const outcome = await mergeBackWorktree(
+			asDb(db),
+			{
+				sessionId: 'session:unreadable_root',
+				projectRoot: 'F:/no/such/project/root',
+				worktreePath: 'F:/no/such/project/.atelier-worktrees/x',
+				worktreeBranch: 'atelier/session/unreadable',
+				exitState: 'gate-failed'
+			},
+			{ run: unreadable }
+		);
+
+		expect(outcome.kind).not.toBe('noop-gone');
+		expect(outcome.kind).toBe('preserved-incomplete');
+		// The note is HONEST about the uncertainty rather than asserting either way (F-008)…
+		expect(notes.length).toBe(1);
+		expect(notes[0].note).toContain('could NOT be confirmed');
+		// …and it still names the real reason the merge was withheld, so the operator is not left
+		// chasing a git problem when the actual event is a failed gate.
+		expect(notes[0].note).toContain('pre-commit gate FAILED');
+	});
+
+	it('an ABSENT branch (exit 1) is still the honest no-op — the fix must not make every miss "unknown"', async () => {
+		const { db, notes } = fakeDb();
+		const absent: CommandRunner = async () => ({ code: 1, stdout: '', stderr: '' });
+		const outcome = await mergeBackWorktree(
+			asDb(db),
+			{
+				sessionId: 'session:really_absent',
+				projectRoot: 'F:/no/such/project/root',
+				worktreePath: 'F:/no/such/project/.atelier-worktrees/y',
+				worktreeBranch: 'atelier/session/absent',
+				exitState: 'gate-failed'
+			},
+			{ run: absent }
+		);
+		expect(outcome.kind).toBe('noop-gone');
+		expect(notes.length).toBe(0);
+	});
+
 	it('failed session that never committed (branch absent) → honest noop-gone, no note', async () => {
 		const repo = initRepo();
 		trackParent(repo);

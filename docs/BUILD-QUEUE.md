@@ -40,7 +40,9 @@
 >
 > **LANE C — `v2-lane-c` = `03f0d4d`, 4 commits ahead, ⛔ NOT PUSHED, tip UNVERIFIED (V1R-1's review
 > failed twice).** Everything BEFORE those 4 is pushed and green (`origin/v2-lane-c` = `6ecc350`).
-> - **The suite is honestly green because of this lane** — 0 failing files, 6019 tests. The
+> - **The suite is honestly green because of this lane** — 0 failing files. (Counts, since they get
+>   quoted forward: `6ecc350` measured 6002 passed / 17 skipped = 6019 collected; the tip `03f0d4d`
+>   measured 6011 passed. Both correct, different commits — do not conflate them.) The
 >   root-cause is the best diagnostic work of the stretch and is now **F-060**: `core.autocrlf=true`
 >   with no `.gitattributes` means **a sha does NOT determine the bytes on disk**. Git materialises
 >   CRLF on checkout and normalises back on the way in, so `git status` is clean in BOTH states.

@@ -3093,6 +3093,50 @@ const m0086_boot_skip_ledger: Migration = {
 	`
 };
 
+// m0087 — TASK-BOARD-SPEC §4.1 (P2) — operator-authored TAGS on `task`.
+//
+// ID ALLOCATION (read this before adding m0088). TASK-BOARD-SPEC §0 allocated `m0088` for this
+// field and `m0087` for MODEL-LADDER-SPEC — but that allocation was written against a live head
+// of `m0085`, and by the time either spec was built the head was `m0086` and NEITHER m0087 nor
+// m0088 existed in code. CLAUDE.md's rule is the one that binds: allocate from the LIVE head, not
+// from the number a spec happened to see. The live head was `m0086_boot_skip_ledger`, so this is
+// `m0087`. MODEL-LADDER-SPEC must re-allocate from the live head when it is built.
+//
+// WHAT THIS IS FOR (the operator's ask, 2026-07-26 review): "each task having meta data and tags
+// to help remind our models exactly why and how to handle each task." So a tag is not decoration —
+// it is prompt payload. P1 built the structured brief (`## Objective` / `## Why this task` /
+// `## Acceptance criteria` / `## Task metadata`); this field is what fills the `tags:` fragment of
+// that metadata line, via the widened launch SELECT → taskBriefFor → buildTaskBrief path.
+//
+// THE FIELD SHAPE, DECIDED ONCE (the m0086 precedent is the reason this is stated at all): on a
+// SCHEMAFULL table a plain `TYPE array<object>` silently DISCARDS every nested key on write — a
+// green-looking, information-free lie — which is why m0086 had to go FLEXIBLE. That trap is
+// specific to nested objects. `array<string>` has no nested keys to lose, so the SCHEMAFULL form
+// is exact AND enforcing: a non-string entry is REFUSED by the DB rather than silently flattened.
+// The choice is deliberate and forward-looking: a richer tag (a {key,value} pair, a colour, an
+// author) would need FLEXIBLE + a second migration, and it is NOT wanted — TASK-BOARD-SPEC §10.3
+// records that the vocabulary is free-form strings on purpose (the purpose is reminding a model,
+// not building a taxonomy). A curated vocabulary can still layer on later WITHOUT a migration,
+// since validation lives at the repo chokepoint, not in the column.
+//
+// `option<…>` so every one of the 23 pre-existing live rows still validates and reads as an honest
+// absence — never an empty array claiming "the operator considered tags and chose none".
+//
+// NO INDEX, deliberately (§4.1): live population is n≈23, every board read is already
+// project-scoped through `task_by_project` (m0002), and filtering happens client-side. A guessed
+// index is a guessed claim; this one is revisited only when a measured need appears.
+//
+// Mirrors the existing `memory.tags` precedent (`option<array<string>>`, m0005) — same type, same
+// optionality, so there is one tag shape in the schema and not two. ADDITIVE + idempotent
+// (F-015: OVERWRITE-only ⇒ converges under apply-twice AND a half-applied re-run; covered by the
+// generic schemaMigrations sweep in migrate.test.ts plus a targeted test in tasks/repo.test.ts).
+const m0087_task_tags: Migration = {
+	id: '0087_task_tags',
+	up: `
+		DEFINE FIELD OVERWRITE tags ON task TYPE option<array<string>>;
+	`
+};
+
 // ── §4.12 note (BL-R3 — F-048 structural fix + F-026) — active-window dedup is the PRIMARY id ──
 //
 // NO new migration ships for BL-R3. The task_run active-window dedup ("one pending-or-processing
@@ -3211,5 +3255,6 @@ export const schemaMigrations: Migration[] = [
 	m0083_workforce_hire_events,
 	m0084_drain_ledger,
 	m0085_thinking_ledger,
-	m0086_boot_skip_ledger
+	m0086_boot_skip_ledger,
+	m0087_task_tags
 ];

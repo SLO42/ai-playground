@@ -167,6 +167,7 @@ import { loadOrchestration } from '$lib/server/config';
 import {
 	listTasksByProject,
 	createTask,
+	updateTask,
 	setStatus,
 	canTransition,
 	TASK_STATUSES,
@@ -233,6 +234,22 @@ import { assertRecordId, assertRecordIdOfTable } from '$lib/server/db/validate';
 import { error, fail } from '@sveltejs/kit';
 import type { Actions, PageServerLoad } from './$types';
 
+/**
+ * TASK-BOARD-SPEC §4.2 — split the operator's comma-separated tag box into a list.
+ *
+ * This is the UI-INPUT parser and nothing more: it splits on commas and drops blanks. Trimming,
+ * lowercasing, de-duplication and the ≤8 × ≤32 bounds all live in `normalizeTags` at the repo
+ * WRITE chokepoint (TB-8) — one validator, not two, so the form and any future caller cannot
+ * drift apart, and an over-long tag surfaces the SAME named InvalidTagsError message everywhere.
+ * A blank box yields `[]`: "no tags" on create, and an explicit CLEAR on update.
+ */
+function parseTagInput(raw: string): string[] {
+	return raw
+		.split(',')
+		.map((t) => t.trim())
+		.filter((t) => t.length > 0);
+}
+
 /** A task row reduced to what the detail page renders (plain, serializable). */
 export interface TaskSummary {
 	id: string;
@@ -244,6 +261,10 @@ export interface TaskSummary {
 	/** When the task was created (ISO string), or null when absent/unparseable (F-013 — never a
 	 *  fabricated time). Drives the board card's "created Nm ago" relative label. */
 	createdAt: string | null;
+	/** TASK-BOARD-SPEC §4.2 (m0087) — the operator's tags, already trimmed/lowercased/deduped by
+	 *  the repo write chokepoint. `[]` means the task carries none, and the card renders NO tag
+	 *  row at all — never a placeholder chip implying an empty tag exists (F-008). */
+	tags: string[];
 }
 
 export interface ProjectDetailData {
@@ -724,7 +745,10 @@ export const load: PageServerLoad = async ({ params, depends, url }): Promise<Pr
 			// Legal move targets for the board (the state machine — D-008 task lifecycle).
 			moves: [...TASK_STATUSES].filter((s) => canTransition(t.status, s)),
 			// ISO-coerced creation time (F-013); null when absent → the card renders '—'.
-			createdAt: isoOrNull(t.created_at)
+			createdAt: isoOrNull(t.created_at),
+			// An untagged task is `[]` on the wire — the normalizer already collapsed absent,
+			// blank and malformed to an honest absence (tasks/repo.ts normTagsRead).
+			tags: t.tags ?? []
 		}));
 
 		return {
@@ -1004,6 +1028,9 @@ export const actions: Actions = {
 		const priority = (TASK_PRIORITIES as readonly string[]).includes(priorityRaw)
 			? (priorityRaw as TaskPriority)
 			: 'normal';
+		// TASK-BOARD-SPEC §4.2 — optional tags; `[]` is omitted by createTask so the column
+		// stays NONE (an untagged task is honestly untagged).
+		const tags = parseTagInput(String(form.get('tags') ?? ''));
 		try {
 			const t = await createTask(db, {
 				project: projectId,
@@ -1011,11 +1038,52 @@ export const actions: Actions = {
 				// D-008: the description is the immutable run seed; default to the title when blank.
 				description: description || title,
 				priority,
-				origin: 'manual'
+				origin: 'manual',
+				tags
 			});
 			return { task: { ok: true as const, action: 'create', taskId: t.id, title } };
 		} catch (err) {
-			return fail(500, { task: { error: (err as Error).message } });
+			// InvalidTagsError is the operator's own input being refused, not a server fault —
+			// 400 with the named message, so the form says exactly which bound was crossed.
+			const status = (err as Error).name === 'InvalidTagsError' ? 400 : 500;
+			return fail(status, { task: { error: (err as Error).message } });
+		}
+	},
+
+	/**
+	 * TASK-BOARD-SPEC §4.2 — set (or clear) a task's tags.
+	 *
+	 * The tags exist to remind the EXECUTING MODEL how to handle the task, so this action has to
+	 * exist for the field to be usable at all: without it, only tasks created after m0087 could
+	 * ever carry tags, and every task already on the board would be permanently untagged.
+	 *
+	 * It writes ONE column through the existing `updateTask` repo function — no status is touched
+	 * (every move still goes through `setStatus`, TB-4) and `description` remains immutable
+	 * (D-008, absent from UpdateTaskInput). Submitting an empty box CLEARS the tags.
+	 */
+	retagTask: async ({ params, request }) => {
+		const projectId = pmProjectId(params.id);
+		if (!projectId) return fail(400, { task: { error: 'invalid project id' } });
+		const db = tryGetDb();
+		if (!db) return fail(503, { task: { error: 'Database not connected — start SurrealDB and retry.' } });
+
+		const form = await request.formData();
+		const taskId = String(form.get('taskId') ?? '').trim();
+		try {
+			assertRecordId(taskId);
+		} catch {
+			return fail(400, { task: { error: 'invalid task id' } });
+		}
+		const tags = parseTagInput(String(form.get('tags') ?? ''));
+		try {
+			const row = await updateTask(db, taskId, { tags });
+			if (!row) return fail(404, { task: { error: 'task not found' } });
+			return {
+				task: { ok: true as const, action: 'retag', taskId, tagCount: (row.tags ?? []).length }
+			};
+		} catch (err) {
+			const status = (err as Error).name === 'InvalidTagsError' ? 400 : 500;
+			return fail(status, { task: { error: (err as Error).message } });
 		}
 	},
 

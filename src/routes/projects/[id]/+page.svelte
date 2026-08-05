@@ -162,6 +162,7 @@
   });
   let newTaskTitle = $state('');
   let newTaskPriority = $state('normal');
+  let newTaskTags = $state('');
   let taskBusy = $state(false);
   const taskFeedback = $derived(
     form && 'task' in form ? (form.task as Record<string, unknown>) : undefined
@@ -1569,6 +1570,7 @@
                 await update({ reset: false });
                 taskBusy = false;
                 newTaskTitle = '';
+                newTaskTags = '';
               };
             }}
           >
@@ -1591,9 +1593,27 @@
                 {/each}
               </select>
             </label>
+            <!-- TASK-BOARD-SPEC §4.2 — tags reach the EXECUTING MODEL in the prompt's
+                 "## Task metadata" line, so the hint says what they are for rather than
+                 describing them as labels. Bounds are enforced server-side (≤8 × ≤32). -->
+            <label class="field task-tags-field">
+              <span class="field-label">Tags <span class="field-hint">— sent to the agent</span></span>
+              <input
+                class="pm-input"
+                type="text"
+                name="tags"
+                bind:value={newTaskTags}
+                placeholder="db, migration, careful"
+                aria-describedby="task-tags-help"
+              />
+            </label>
             <button class="btn primary" type="submit" disabled={taskBusy || !newTaskTitle.trim()}>
               {taskBusy ? 'Adding…' : 'Add task'}
             </button>
+            <p class="field-help" id="task-tags-help">
+              Comma-separated, up to 8 tags of 32 characters. Tags are lower-cased and appear in the
+              agent's task metadata — use them to remind it how to handle the task.
+            </p>
           </form>
           {#if taskFeedback}
             {#if 'error' in taskFeedback}
@@ -1602,6 +1622,14 @@
               <p class="form-ok">Task created: {String(taskFeedback.title)}.</p>
             {:else if taskFeedback.action === 'move'}
               <p class="form-ok">Moved task to {String(taskFeedback.to)}.</p>
+            {:else if taskFeedback.action === 'retag'}
+              <!-- Honest count, read back off the row the DB actually stored — never an echo of
+                   what was typed (duplicates and blanks collapse server-side). -->
+              <p class="form-ok">
+                {Number(taskFeedback.tagCount) === 0
+                  ? 'Tags cleared.'
+                  : `Tags saved (${Number(taskFeedback.tagCount)}).`}
+              </p>
             {/if}
           {/if}
         </div>
@@ -1626,6 +1654,49 @@
                     {#each colTasks as t (t.id)}
                       <li class="board-card">
                         <span class="board-card-title">{t.title}</span>
+                        <!-- TASK-BOARD-SPEC §4.2 — tag chips. Rendered ONLY when the row really
+                             carries tags: an untagged task shows no chip row at all, never a
+                             placeholder implying an empty tag exists (F-008). -->
+                        {#if t.tags.length}
+                          <ul class="card-tags" aria-label="tags">
+                            {#each t.tags as tag (tag)}
+                              <li class="card-tag mono">{tag}</li>
+                            {/each}
+                          </ul>
+                        {/if}
+                        <!-- Every task needs an edit path, not only ones created after m0087 —
+                             otherwise the board's existing tasks could never be tagged at all.
+                             A disclosure keeps the affordance keyboard-reachable without adding
+                             an input to every card at rest. -->
+                        <details class="card-tag-edit">
+                          <summary class="card-tag-summary">
+                            {t.tags.length ? 'Edit tags' : 'Add tags'}
+                          </summary>
+                          <form
+                            method="POST"
+                            action="?/retagTask"
+                            class="card-tag-form"
+                            use:enhance={() => {
+                              taskBusy = true;
+                              return async ({ update }) => {
+                                await update({ reset: false });
+                                taskBusy = false;
+                              };
+                            }}
+                          >
+                            <input type="hidden" name="taskId" value={t.id} />
+                            <label class="vh" for={`tags-${t.id}`}>Tags for {t.title}</label>
+                            <input
+                              class="pm-input card-tag-input"
+                              id={`tags-${t.id}`}
+                              type="text"
+                              name="tags"
+                              value={t.tags.join(', ')}
+                              placeholder="comma-separated; empty clears"
+                            />
+                            <button class="btn small" type="submit" disabled={taskBusy}>Save</button>
+                          </form>
+                        </details>
                         <div class="board-card-foot">
                           <span class="prio mono" data-prio={t.priority}>{t.priority}</span>
                           <!-- Creation age (relative; precise on hover). Honest '—' when absent (F-013). -->
@@ -5326,6 +5397,68 @@
     align-items: center;
     justify-content: space-between;
     gap: 0.4rem;
+  }
+
+  /* ── TASK-BOARD-SPEC §4.2 — tags (design tokens only, D-034) ───────────────── */
+  .task-tags-field {
+    flex: 1 1 14rem;
+  }
+  .field-help {
+    flex: 1 1 100%;
+    margin: 0;
+    font: var(--type-body-sm);
+    color: var(--color-text-muted, var(--color-text-2));
+  }
+  .card-tags {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem;
+  }
+  .card-tag {
+    font-size: 0.68rem;
+    line-height: 1.5;
+    padding: 0.05rem 0.35rem;
+    border-radius: var(--radius-xs, 3px);
+    background: var(--color-surface-overlay);
+    border: var(--border-width, 1px) solid var(--color-border);
+    color: var(--color-text-2);
+    word-break: break-word;
+  }
+  .card-tag-summary {
+    font-size: 0.68rem;
+    color: var(--color-text-muted, var(--color-text-2));
+    cursor: pointer;
+    list-style: none;
+  }
+  .card-tag-summary::-webkit-details-marker {
+    display: none;
+  }
+  .card-tag-summary:hover {
+    color: var(--color-accent);
+  }
+  /* Never outline:none — the disclosure is a primary keyboard affordance here. */
+  .card-tag-summary:focus-visible {
+    outline: 2px solid var(--color-accent);
+    outline-offset: 2px;
+    border-radius: var(--radius-xs, 3px);
+  }
+  .card-tag-form {
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    margin-top: 0.3rem;
+  }
+  .card-tag-input {
+    flex: 1 1 auto;
+    min-width: 0;
+    font-size: 0.7rem;
+  }
+  .btn.small {
+    padding: 0.2rem 0.45rem;
+    font-size: 0.7rem;
   }
   .prio[data-prio='high'],
   .prio[data-prio='critical'] {

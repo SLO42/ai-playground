@@ -527,6 +527,7 @@ interface PromptTaskRow {
 	provenance?: unknown;
 	priority?: unknown;
 	origin?: unknown;
+	tags?: unknown;
 }
 
 /** A non-empty trimmed string, or undefined — absent stays ABSENT, never `''` (§6.1/F-008). */
@@ -557,6 +558,13 @@ function taskBriefFor(row: PromptTaskRow): Partial<SpawnRequest['task']> {
 	const criteria = Array.isArray(row.acceptance_criteria)
 		? row.acceptance_criteria.map(briefStr).filter((v): v is string => v !== undefined)
 		: undefined;
+	// TASK-BOARD-SPEC §4.2 (m0087) — operator-authored tags. Coerced exactly like the criteria
+	// list: a non-array, a non-string entry, or a blank entry contributes NOTHING rather than the
+	// literal "undefined" (F-013). Tags reach the model as DATA inside the metadata line, which
+	// buildTaskBrief runs through escapeBriefText — a tag cannot forge a section (TB-2/D-026).
+	const tags = Array.isArray(row.tags)
+		? row.tags.map(briefStr).filter((v): v is string => v !== undefined)
+		: undefined;
 	const provenanceKind =
 		row.provenance && typeof row.provenance === 'object'
 			? briefStr((row.provenance as { kind?: unknown }).kind)
@@ -572,6 +580,7 @@ function taskBriefFor(row: PromptTaskRow): Partial<SpawnRequest['task']> {
 	if (priority) brief.priority = priority;
 	if (origin) brief.origin = origin;
 	if (provenanceKind) brief.provenanceKind = provenanceKind;
+	if (tags?.length) brief.tags = tags;
 	return brief;
 }
 
@@ -638,7 +647,7 @@ export async function launchSession(deps: LaunchDeps): Promise<LaunchResult> {
 		// F-013: no datetime is selected, so no ISO coercion is owed; all of these are plain
 		// strings / string arrays / a plain object.
 		const [taskRows] = await db.query<[PromptTaskRow[]]>(
-			`SELECT id, title, description, objective, purpose, acceptance_criteria, provenance, priority, origin FROM ONLY $tid;`,
+			`SELECT id, title, description, objective, purpose, acceptance_criteria, provenance, priority, origin, tags FROM ONLY $tid;`,
 			{ tid: link(input.taskId) }
 		);
 		task = (Array.isArray(taskRows) ? taskRows[0] : taskRows) as typeof task;

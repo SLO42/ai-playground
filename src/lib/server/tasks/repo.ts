@@ -130,6 +130,11 @@ export interface TaskRow {
 	revision_of?: string;
 	superseded_by?: string;
 	proposal_fingerprint?: string;
+	// ── TASK-BOARD-SPEC §4.2 (m0087) — operator-authored tags. Absent (NONE) when the
+	//    operator never set any: an honest absence, never `[]` claiming "considered, chose
+	//    none". Normalized at the write chokepoint (see normalizeTags), so a row that came
+	//    back from the DB is already trimmed/lowercased/deduped/bounded. ─────────────────
+	tags?: string[];
 	created_at: string;
 	updated_at: string;
 }
@@ -153,12 +158,19 @@ export interface CreateTaskInput {
 	proposed_by?: string;
 	revision_of?: string;
 	proposal_fingerprint?: string;
+	/** TASK-BOARD-SPEC §4.2 — operator-authored tags; normalized + bounded by
+	 *  {@link normalizeTags}. Omitted when absent so the column stays NONE (§6.1). */
+	tags?: string[];
 }
 
 /** Mutable task columns. `description` is intentionally absent (D-008 — immutable). */
 export interface UpdateTaskInput {
 	title?: string;
 	priority?: TaskPriority;
+	/** TASK-BOARD-SPEC §4.2 — tags ARE mutable metadata (unlike `description`, D-008): the whole
+	 *  point of a tag is that the operator refines it as they learn how a task should be handled.
+	 *  Passing `[]` CLEARS the column back to an honest absence; omitting the key leaves it. */
+	tags?: string[];
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -181,6 +193,95 @@ function link(id: string): StringRecordId {
 	return new StringRecordId(assertRecordId(id));
 }
 
+// ── Tags (TASK-BOARD-SPEC §4.2 / TB-8) ────────────────────────────────────────
+//
+// Tags exist to REMIND THE EXECUTING MODEL how to handle a task (the operator's 2026-07-26
+// ask), so they are prompt payload, not decoration: `launch.ts` selects them and
+// `buildTaskBrief` renders them into the prompt's `## Task metadata` line. That is exactly why
+// the bounds below are enforced at the WRITE chokepoint rather than left to the UI — a tag list
+// that grows unbounded is a prompt-budget leak, and one that varies only by case or whitespace
+// ("Infra", "infra ") reads to a model as two different reminders.
+
+/** Most tags one task may carry — bounded because every tag lands in the model's prompt. */
+export const MAX_TASK_TAGS = 8;
+/** Longest single tag — a tag is a label, not a sentence (sentences belong in `purpose`). */
+export const MAX_TASK_TAG_LENGTH = 32;
+
+/**
+ * Thrown when a tag list cannot be normalized into the bounded shape above.
+ *
+ * NAMED, not a generic Error (and never a silent truncation): the operator typed something the
+ * system will not store, and the honest outcome is a message saying which value and which bound —
+ * the form action surfaces `.message` verbatim.
+ */
+export class InvalidTagsError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'InvalidTagsError';
+	}
+}
+
+/**
+ * Normalize an operator-supplied tag list into the stored shape, or throw {@link InvalidTagsError}.
+ *
+ * NORMALIZED (silently, because the operator's intent is unambiguous): each tag is trimmed and
+ * lowercased, INTERIOR whitespace runs collapse to a single space, blank/whitespace-only entries
+ * are dropped, and duplicates collapse to the first occurrence (order preserved — the operator's
+ * ordering is meaningful in a prompt line).
+ *
+ * The whitespace collapse is not cosmetic. A tag is rendered INTO the prompt's one-line
+ * `## Task metadata` fragment, where a `##` mid-line is inert — but a NEWLINE inside a tag would
+ * put whatever follows it at the start of a line, which is exactly where markdown block
+ * constructs become real. Collapsing here removes that class at the write boundary; the prompt
+ * layer's `escapeBriefText` still covers it independently (defence in depth — a legacy row, or a
+ * writer that predates this function, never passed through here).
+ *
+ * REJECTED (loudly, because dropping the value would lose the operator's intent): a non-array,
+ * a non-string entry, a tag over {@link MAX_TASK_TAG_LENGTH} chars, or more than
+ * {@link MAX_TASK_TAGS} distinct tags. Truncating instead would store something the operator did
+ * not write and put it in a prompt an autonomous agent acts on (F-008).
+ *
+ * Shadow paths: `[]` and an all-blank list both yield `[]`, which callers treat as "no tags" —
+ * an honest absence on create, and an explicit CLEAR on update.
+ */
+export function normalizeTags(value: unknown): string[] {
+	if (!Array.isArray(value)) {
+		throw new InvalidTagsError(`task tags must be an array of strings, got ${typeof value}`);
+	}
+	const out: string[] = [];
+	for (const raw of value) {
+		if (typeof raw !== 'string') {
+			throw new InvalidTagsError(`task tag must be a string, got ${typeof raw}`);
+		}
+		const tag = raw.trim().toLowerCase().replace(/\s+/g, ' ');
+		if (!tag) continue; // a blank entry is nothing to say, not an error
+		if (tag.length > MAX_TASK_TAG_LENGTH) {
+			throw new InvalidTagsError(
+				`task tag "${tag.slice(0, MAX_TASK_TAG_LENGTH)}…" exceeds ${MAX_TASK_TAG_LENGTH} characters`
+			);
+		}
+		if (!out.includes(tag)) out.push(tag);
+	}
+	if (out.length > MAX_TASK_TAGS) {
+		throw new InvalidTagsError(`a task may carry at most ${MAX_TASK_TAGS} tags, got ${out.length}`);
+	}
+	return out;
+}
+
+/**
+ * Read-side coercion for the `tags` column (the normalizer's counterpart).
+ *
+ * A row written before m0087, or by a path that bypassed {@link normalizeTags}, must never reach a
+ * caller as `String(undefined)` or as a fabricated `[]` (F-013/F-008). Anything that is not a
+ * non-empty array of non-blank strings reads as an honest ABSENCE — the same convention `parent`
+ * and the proposal links already follow in this module.
+ */
+function normTagsRead(value: unknown): string[] | undefined {
+	if (!Array.isArray(value)) return undefined;
+	const tags = value.filter((t): t is string => typeof t === 'string' && t.trim() !== '');
+	return tags.length ? tags : undefined;
+}
+
 function normTask(
 	row: TaskRow & {
 		id: unknown;
@@ -189,11 +290,15 @@ function normTask(
 		proposed_by?: unknown;
 		revision_of?: unknown;
 		superseded_by?: unknown;
+		tags?: unknown;
 	}
 ): TaskRow {
 	return {
 		...row,
 		id: str(row.id),
+		// TASK-BOARD-SPEC §4.2 — tags read back as a plain string array; absent/blank/garbage
+		// reads as an honest absence, never `[]` and never the literal "undefined" (F-013).
+		tags: normTagsRead(row.tags),
 		project: str(row.project),
 		parent: row.parent != null ? str(row.parent) : undefined,
 		// TASK 16.4 — proposal links → plain strings; absent stays absent (honest).
@@ -220,6 +325,10 @@ export async function createTask(db: Db, input: CreateTaskInput): Promise<TaskRo
 	if (input.status !== undefined && !isTaskStatus(input.status)) {
 		throw new Error(`invalid task status: ${String(input.status)}`);
 	}
+	// TB-8 — tags are validated at THIS chokepoint (D-016), before any value is bound. A list
+	// that normalizes to empty is OMITTED, so the column stays NONE (§6.1): a task created
+	// without tags is honestly untagged, not tagged with nothing.
+	const tags = input.tags === undefined ? undefined : normalizeTags(input.tags);
 	const content = omitUndefined({
 		project: link(input.project),
 		title: input.title,
@@ -236,7 +345,8 @@ export async function createTask(db: Db, input: CreateTaskInput): Promise<TaskRo
 		provenance: input.provenance,
 		proposed_by: input.proposed_by ? link(input.proposed_by) : undefined,
 		revision_of: input.revision_of ? link(input.revision_of) : undefined,
-		proposal_fingerprint: input.proposal_fingerprint
+		proposal_fingerprint: input.proposal_fingerprint,
+		tags: tags?.length ? tags : undefined
 	});
 	const [rows] = await db.query<[(TaskRow & { id: unknown; project: unknown })[]]>(
 		`CREATE task CONTENT $content RETURN AFTER;`,
@@ -298,12 +408,29 @@ export async function updateTask(
 	if (patch.priority !== undefined && !TASK_PRIORITIES.includes(patch.priority)) {
 		throw new Error(`invalid task priority: ${String(patch.priority)}`);
 	}
+	// TB-8 — same write chokepoint as createTask; throws InvalidTagsError before anything binds.
+	const tags = patch.tags === undefined ? undefined : normalizeTags(patch.tags);
 	const rid = new StringRecordId(assertRecordId(id));
-	const content = omitUndefined({ ...patch, updated_at: new Date() });
-	const [rows] = await db.query<[(TaskRow & { id: unknown; project: unknown })[]]>(
-		`UPDATE $rid MERGE $content RETURN AFTER;`,
-		{ rid, content }
-	);
+	const content = omitUndefined({ ...patch, tags, updated_at: new Date() });
+	// CLEARING tags needs UNSET, not MERGE. MERGE with `[]` would STORE an empty array — a second
+	// representation of "no tags" that then has to be special-cased on every read. `option<T>`
+	// also rejects an explicit NULL (§6.1), and NONE cannot be bound as a $param from JS, so the
+	// clear is expressed as its own statement. Both statements run in ONE transaction so a task
+	// can never be observed with its old tags removed but its title/priority patch not applied
+	// (the interrupt contract). The MERGE is last, so its rows are the last statement result.
+	const clearTags = tags !== undefined && tags.length === 0;
+	if (clearTags) delete (content as { tags?: unknown }).tags;
+	const surql = clearTags
+		? `BEGIN TRANSACTION;
+			UPDATE $rid UNSET tags;
+			UPDATE $rid MERGE $content RETURN AFTER;
+			COMMIT TRANSACTION;`
+		: `UPDATE $rid MERGE $content RETURN AFTER;`;
+	const results = await db.query<unknown[]>(surql, { rid, content });
+	const rows = (results[results.length - 1] ?? []) as (TaskRow & {
+		id: unknown;
+		project: unknown;
+	})[];
 	return rows.length ? normTask(rows[0]) : null;
 }
 

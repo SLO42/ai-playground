@@ -257,6 +257,14 @@ function safeCount(n: unknown): number {
  * infer — the same rule `fleetCollapsedSummary` was rewritten under after that shape inverted
  * live (F-008).
  *
+ * TWO CLAIMS THIS NOTE MAY NOT MAKE, both fixed here after the first draft made them (F-008):
+ *   • "Those runs exist." It cannot know that. A pointer past the cap was never QUERIED, so a
+ *     dangling pointer and a healthy one are indistinguishable from this read — asserting
+ *     existence is the same fabrication the chip text avoids ("not missing, not asked for").
+ *   • "loaded". `hydrated` is `runIds.length` — pointers this read ASKED ABOUT, not rows that
+ *     came back (repo.ts HiringRunFetch says so in its own doc). A malformed pointer inside the
+ *     cap is counted here and still resolves to nothing, so "requested" is the only true verb.
+ *
  * Shadow paths: nil/undefined → null. `capped:false` → null. `capped:true` with a shortfall that
  * does not add up (0 or negative after the safe-count) → recomputed from pointers − hydrated, and
  * null if THAT is not positive either: a note we cannot state a true number in is worse than none.
@@ -269,11 +277,11 @@ export function runFetchNotice(f: HiringRunFetchLike | null | undefined): string
 	if (shortfall <= 0) return null;
 	const rows = `${shortfall} ceremon${shortfall === 1 ? 'y' : 'ies'}`;
 	return (
-		`Run details were loaded for ${hydrated} of ${pointers} ceremonies that name a gauntlet run — ` +
+		`Run details were requested for ${hydrated} of ${pointers} ceremonies that name a gauntlet run — ` +
 		`${rows} below show “run details not fetched” instead of recall/model, and the broken-run ` +
-		`count covers only the fetched ones. Those runs exist and every row is still listed; this ` +
-		`load stopped fetching at its cap of ${safeCount(f.cap)} (bounded read, F-014), so this is a ` +
-		`fetch bound, not missing data.`
+		`count covers only the ones this read asked about. Every row is still listed; this load ` +
+		`stopped fetching at its cap of ${safeCount(f.cap)} (bounded read, F-014), so their run rows ` +
+		`were never checked here — a fetch bound, not a finding about the data.`
 	);
 }
 

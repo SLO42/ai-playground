@@ -472,10 +472,27 @@ describe('runFetchNotice', () => {
 		expect(note).toContain('200 of 213');
 		expect(note).toContain('13 ceremonies');
 		expect(note).toContain('cap of 200');
-		expect(note).toContain('not missing data');
-		// It must also disclose that the broken-run count only covers the fetched subset —
-		// otherwise the fix for one "count of a different set" spawns another.
-		expect(note).toMatch(/broken-run count covers only the fetched/);
+		expect(note).toContain('not a finding about the data');
+		// It must also disclose that the broken-run count only covers the subset this read asked
+		// about — otherwise the fix for one "count of a different set" spawns another.
+		expect(note).toMatch(/broken-run count covers only the ones this read asked about/);
+	});
+
+	// THE DEFECT THIS PINS (found by the LC-C DoD review). The first draft of this very notice —
+	// the copy whose whole job is to stop the feed claiming things it cannot know — asserted
+	// "Those runs exist and every row is still listed". It cannot know that: a pointer past the
+	// cap was never QUERIED (repo.ts listHiringActivity pushes it to `unfetchedPointers` INSTEAD
+	// of the query), so a dangling pointer and a healthy one are indistinguishable from this read.
+	// It also said run details were "loaded", while `hydrated` counts pointers ASKED ABOUT
+	// (runIds.length) — a malformed pointer inside the cap is counted and still returns no row.
+	it('never claims the unfetched runs EXIST, and never says "loaded" for a count of asks (F-008)', () => {
+		const note = runFetchNotice(fetch())!;
+		expect(note, 'existence past the cap is unknowable from this read').not.toMatch(/exist/i);
+		expect(note, '"loaded" overstates a count of pointers asked about').not.toMatch(
+			/loaded for/i
+		);
+		expect(note).toMatch(/requested for 200 of 213/);
+		expect(note).toMatch(/run rows were never checked here/);
 	});
 
 	it('singular grammar on a shortfall of one', () => {

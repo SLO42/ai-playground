@@ -249,6 +249,30 @@ describe('LC-4 — the ?/reconcile action refuses BY NAME and succeeds without s
 		expect(String(payload(res).error)).toMatch(/not found/i);
 	}, 60_000);
 
+	// THE DEFECT THIS PINS (LC-C review, MEASURED live on :5174 before the fix). The catch listed
+	// ResolutionGateError | WorkforceInputError and nothing else, so the D-016 IdentifierError that
+	// `link()` throws on a malformed record id — the FIRST refusal a fat-fingered or hostile id
+	// meets — fell to the 500 branch. The handler's own comment promises every refusal is returned
+	// NAMED; a 500 makes the opposite claim about the same event, and the operator reads "the
+	// server broke" where the truth is "that is not a record id".
+	it('a MALFORMED proposal id is the D-016 refusal at 400, not an opaque 500', async () => {
+		const res = await reconcile({ proposal: 'not-a-record-id' });
+		expect(res.status, 'a rejected identifier is caller input, not a server fault').toBe(400);
+		expect(String(payload(res).error)).toMatch(/record id/i);
+		expect(String(payload(res).error)).toMatch(/D-016/);
+	}, 60_000);
+
+	// The same probe doubles as the D-016 proof: the injection never reaches SurrealQL, and it is
+	// reported as a refusal rather than a server fault.
+	it('an INJECTION payload in the proposal id is refused by the validator at 400, nothing written', async () => {
+		const before = await db.query(`SELECT id FROM review_proposal;`);
+		const res = await reconcile({ proposal: "review_proposal:x'; DELETE review_proposal; --" });
+		expect(res.status).toBe(400);
+		expect(String(payload(res).error)).toMatch(/record id/i);
+		const after = await db.query(`SELECT id FROM review_proposal;`);
+		expect(JSON.stringify(after)).toBe(JSON.stringify(before));
+	}, 60_000);
+
 	it("not_waiting: a proposal that is not parked on a run is declined WITH its reason", async () => {
 		const { proposal } = await freshProposal(); // status 'proposed'
 		const res = await reconcile({ proposal });

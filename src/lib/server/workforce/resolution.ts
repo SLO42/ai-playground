@@ -47,6 +47,7 @@ import {
 	getRole,
 	getRoleVersion,
 	listOpenProposals,
+	ProposalComparisonCollisionError,
 	setProposalStatus,
 	swapActiveVersion,
 	WorkforceInputError,
@@ -584,10 +585,29 @@ export async function regauntletChallenger(
 
 	const incumbentRun = await loadIncumbentBaseline(db, proposal.incumbent, input.modelId);
 	const comparison = buildComparison(run, incumbentRun);
-	const moved = await setProposalStatus(db, proposal.id, {
-		to: 'compared',
-		comparison: comparison as unknown as Record<string, unknown>
-	});
+
+	// THE SECOND-WRITER SEAM. `proposal.status` was read at the TOP of this function, before a
+	// gauntlet that spends real money and takes minutes; ②b reconcile is an independent writer of
+	// the same 'compared' state and only the browser serialises the two (one tab's `busy` flag).
+	// So the row can already be 'compared' by the time this write lands. setProposalStatus refuses
+	// that by name instead of absorbing it — the refusal is re-thrown as a ResolutionGateError so
+	// the operator surface renders it beside the card, and it NAMES this run, because the spend
+	// really happened and the scored row really exists even though the proposal did not move.
+	let moved: ReviewProposalRow;
+	try {
+		moved = await setProposalStatus(db, proposal.id, {
+			to: 'compared',
+			comparison: comparison as unknown as Record<string, unknown>
+		});
+	} catch (err) {
+		if (err instanceof ProposalComparisonCollisionError) {
+			throw new ResolutionGateError(
+				`${err.message} This re-gauntlet's run ${run.id} DID run and WAS paid for — its scores are on that run row; ` +
+					`nothing was overwritten and the proposal keeps the comparison it already had (§5).`
+			);
+		}
+		throw err;
+	}
 	return { outcome, proposal: moved, comparison };
 }
 

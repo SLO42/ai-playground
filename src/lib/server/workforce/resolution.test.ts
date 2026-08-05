@@ -30,6 +30,8 @@ import {
 	getRole,
 	getRoleVersion,
 	listOpenProposals,
+	ProposalComparisonCollisionError,
+	setProposalStatus,
 	swapActiveVersion,
 	transitionLifecycle,
 	WorkforceInputError,
@@ -973,4 +975,193 @@ describe('proposal status machine', () => {
 		// draft → passed is illegal (must go through interviewing) — sanity the version machine holds.
 		await expect(transitionLifecycle(db, seed.incumbent.id, 'passed')).rejects.toThrow();
 	});
+});
+
+// ── THE SECOND WRITER OF 'compared' (LC-C) ───────────────────────────────────────────
+//
+// THE DEFECT THIS PINS. LC-4 gave `review_proposal.comparison` a SECOND writer:
+// `reconcileProposalFromRun` records 'compared' beside `regauntletChallenger`. Nothing on the
+// server serialises them — the only mutual exclusion was a `busy[p.proposal]` flag inside ONE
+// browser tab (routes/agents/proposals/+page.svelte) — and `regauntletChallenger` reads the
+// proposal's status ONCE, then spends real money for minutes, then writes.
+//
+// That write landed in `setProposalStatus`'s idempotent-absorb branch, which was written for one
+// writer re-running ITSELF: with a comparison already stored it matched no SET clause and
+// returned the STORED row. The paid comparison was dropped on the floor — and the function still
+// returned the object it had just built, so the action replied ok:true with a comparison that was
+// never persisted. Money spent, verdict lost, UI disagreeing with the row: precisely the harm
+// LC-4 was written to end, re-created by LC-4.
+describe("§5 the SECOND WRITER of 'compared' — a paid verdict is refused, never discarded", () => {
+	/** The `challenger.run` a persisted comparison was derived from — a verdict's identity. */
+	function comparisonRun(c: Record<string, unknown> | null | undefined): string | null {
+		const ch = (c as { challenger?: { run?: unknown } } | null | undefined)?.challenger;
+		return typeof ch?.run === 'string' ? ch.run : null;
+	}
+
+	/** A comparison shaped like `buildComparison`'s output, derived from `run`. Stands in for the
+	 *  OTHER writer's payload — reconcile builds exactly this shape from the run it consumes. */
+	function comparisonFrom(run: string): Record<string, unknown> {
+		return {
+			comparable: false,
+			incomparableReason: 'no incumbent certifying run at this (tier × model_id)',
+			challenger: {
+				run,
+				status: 'passed',
+				modelId: MODEL,
+				recall: 1,
+				falsePositives: 0,
+				costUsd: null,
+				fixtureSetSha: null
+			},
+			incumbent: null,
+			delta: null,
+			at: new Date().toISOString()
+		};
+	}
+
+	/** Every interview_run the proposal's challenger has — the spend, counted as rows. */
+	async function challengerRunIds(proposalId: string): Promise<string[]> {
+		const p = await getReviewProposal(db, proposalId);
+		if (!p?.challenger) return [];
+		const [rows] = await db.query<[Array<{ id: unknown }>]>(
+			`SELECT id FROM interview_run WHERE role_version = $vid;`,
+			{ vid: new StringRecordId(p.challenger) }
+		);
+		return (rows ?? []).map((r) => String(r.id));
+	}
+
+	// ① THE ROOT CAUSE, AT THE SITE. The absorb branch must tell a re-run from a rival writer.
+	it('absorbs the SAME run’s comparison, refuses a DIFFERENT one, and never overwrites', async () => {
+		const seed = await seedRole();
+		await certifyIncumbent(seed);
+		const proposal = await openProposal(seed);
+		await authorChallenger(db, {
+			proposal: proposal.id,
+			promptCore: 'You are reviewer.\nSecond-writer seam.',
+			operatorConfirmed: true
+		});
+		const re = await regauntletChallenger(depsFor(candidateBackend(seed.defectSlug)), {
+			proposal: proposal.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: MODEL,
+			trigger: 'operator'
+		});
+		expect(re.outcome.kind).toBe('ran');
+		if (re.outcome.kind !== 'ran') return;
+		const paidRun = re.outcome.run.id;
+		expect((await getReviewProposal(db, proposal.id))!.status).toBe('compared');
+		expect(comparisonRun((await getReviewProposal(db, proposal.id))!.comparison)).toBe(paidRun);
+
+		// THE INTERRUPT CONTRACT IS INTACT: the same run's verdict re-applied (a re-run after a
+		// crash, whose `at` and re-read baselines differ) is still absorbed as a no-op.
+		const absorbed = await setProposalStatus(db, proposal.id, {
+			to: 'compared',
+			comparison: comparisonFrom(paidRun)
+		});
+		expect(absorbed.status).toBe('compared');
+		expect(comparisonRun(absorbed.comparison)).toBe(paidRun);
+
+		// A DIFFERENT run is a second writer, not a re-run → NAMED refusal naming both runs.
+		await expect(
+			setProposalStatus(db, proposal.id, {
+				to: 'compared',
+				comparison: comparisonFrom('interview_run:rival')
+			})
+		).rejects.toThrow(ProposalComparisonCollisionError);
+
+		// An UNREADABLE comparison counts as a collision too — fail loud rather than guess two
+		// verdicts are the same and drop one.
+		await expect(
+			setProposalStatus(db, proposal.id, {
+				to: 'compared',
+				comparison: { note: 'no challenger key' }
+			})
+		).rejects.toThrow(ProposalComparisonCollisionError);
+
+		// AND THE ROW IS UNTOUCHED by every refusal.
+		const after = await getReviewProposal(db, proposal.id);
+		expect(after!.status).toBe('compared');
+		expect(comparisonRun(after!.comparison)).toBe(paidRun);
+	}, 60_000);
+
+	// ② THE HARM, END TO END. A rival write lands WHILE the paid gauntlet is in flight — the real
+	// interleaving (a second tab reconciling an adjudicated run, or a second re-gauntlet click)
+	// reproduced deterministically by performing the rival write from inside the scripted backend:
+	// after `regauntletChallenger` read status='interviewing', before it writes. The rival payload
+	// is a `buildComparison`-shaped object naming a DIFFERENT run — which is the whole of what the
+	// collision turns on — rather than a second live gauntlet, because a real second run would
+	// first have to move the challenger's lifecycle off 'interviewing' and that is a different
+	// gate, not this seam.
+	it('a rival write mid-spend: the re-gauntlet refuses BY NAME instead of reporting a comparison it never persisted', async () => {
+		const seed = await seedRole();
+		await certifyIncumbent(seed);
+		const proposal = await openProposal(seed);
+		await authorChallenger(db, {
+			proposal: proposal.id,
+			promptCore: 'You are reviewer.\nRival writer mid-spend.',
+			operatorConfirmed: true
+		});
+		const rivalRun = 'interview_run:reconciled_by_the_other_tab';
+
+		// The operator clicks Re-gauntlet (REAL SPEND). Mid flight, the other writer lands
+		// 'compared' from the run it consumed.
+		const rival = candidateBackend(seed.defectSlug);
+		const inner = rival.run.bind(rival);
+		let rivalWritten = false;
+		rival.run = (plan: CcSpawnPlan): CcBackendRun => {
+			const started = inner(plan);
+			return {
+				ccSessionId: started.ccSessionId,
+				async *stream() {
+					if (!rivalWritten) {
+						rivalWritten = true;
+						await setProposalStatus(db, proposal.id, {
+							to: 'compared',
+							comparison: comparisonFrom(rivalRun)
+						});
+					}
+					yield* started.stream();
+				},
+				cancel: started.cancel
+			};
+		};
+
+		const before = await challengerRunIds(proposal.id);
+		let thrown: unknown = null;
+		try {
+			await regauntletChallenger(depsFor(rival), {
+				proposal: proposal.id,
+				tier: 'sonnet',
+				provider: 'claude',
+				modelId: MODEL,
+				trigger: 'operator'
+			});
+		} catch (err) {
+			thrown = err;
+		}
+		expect(rivalWritten, 'the rival write must have landed mid-spend').toBe(true);
+		expect(thrown, 'the paid write must REFUSE, not return a dropped comparison').toBeInstanceOf(
+			ResolutionGateError
+		);
+
+		// ① THE SPEND REALLY HAPPENED and is never denied: a new run row exists…
+		const after = await challengerRunIds(proposal.id);
+		expect(after.length).toBe(before.length + 1);
+		const paid = after.filter((r) => !before.includes(r));
+		expect(paid.length).toBe(1);
+		// …and the refusal NAMES it, so the operator can read the scores they paid for, alongside
+		// the run whose verdict is already on the row.
+		const message = (thrown as Error).message;
+		expect(message).toContain(paid[0]);
+		expect(message).toContain(rivalRun);
+		expect(message).toMatch(/NOT recorded/);
+		expect(message).toMatch(/paid for/);
+
+		// ② THE STORED VERDICT IS THE RIVAL'S, UNCHANGED. Nothing overwritten, nothing dropped in
+		// silence: the row still points at the run the other writer consumed.
+		const row = await getReviewProposal(db, proposal.id);
+		expect(row!.status).toBe('compared');
+		expect(comparisonRun(row!.comparison)).toBe(rivalRun);
+	}, 90_000);
 });

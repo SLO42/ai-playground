@@ -13,10 +13,12 @@
 // that has not earned its own passing gauntlet (§2.4).
 
 import { tryGetDb } from '$lib/server/db/runtime-init';
+import { IdentifierError } from '$lib/server/db/validate';
 import {
 	authorChallenger,
 	loadProposalCards,
 	proposalDiff,
+	ProposalComparisonCollisionError,
 	proposeTierChange,
 	reconcileProposalFromRun,
 	regauntletChallenger,
@@ -168,6 +170,26 @@ function outcomeResult(outcome: GauntletOutcome): Record<string, unknown> {
 	};
 }
 
+/**
+ * The HTTP status for a CALLER-FACING refusal, or `null` when the throw is a genuine server
+ * fault (→ 500). One ladder, shared by every action's catch, because the alternative — each
+ * catch listing the classes it happens to know — is what let a whole error class fall through.
+ *
+ * THE DEFECT THIS CLOSES. Every action's catch listed ResolutionGateError | WorkforceInputError
+ * and nothing else, so the D-016 `IdentifierError` that `link()` throws on a malformed record id
+ * — the FIRST refusal a hostile or fat-fingered id meets — landed in the 500 branch. The handlers
+ * claim every refusal is returned NAMED; a 500 says "this server broke", which is the opposite
+ * claim about the same event. (The validator itself is doing its job: the id never reaches
+ * SurrealQL. Only the reporting was wrong.)
+ */
+function refusalStatus(err: unknown): number | null {
+	// A second writer already recorded a different comparison — a genuine CONFLICT, not bad input.
+	if (err instanceof ProposalComparisonCollisionError) return 409;
+	if (err instanceof IdentifierError) return 400;
+	if (err instanceof ResolutionGateError || err instanceof WorkforceInputError) return 400;
+	return null;
+}
+
 export const actions: Actions = {
 	// ① PREVIEW the D-010 diff for a draft challenger (read-only; the operator inspects the
 	// real incumbent-vs-draft delta BEFORE authoring). No write, no gate.
@@ -218,10 +240,7 @@ export const actions: Actions = {
 				}
 			};
 		} catch (err) {
-			if (err instanceof ResolutionGateError || err instanceof WorkforceInputError) {
-				return fail(400, { proposals: { proposal, error: err.message } });
-			}
-			return fail(500, { proposals: { proposal, error: (err as Error).message } });
+			return fail(refusalStatus(err) ?? 500, { proposals: { proposal, error: (err as Error).message } });
 		}
 	},
 
@@ -283,10 +302,7 @@ export const actions: Actions = {
 				}
 			};
 		} catch (err) {
-			if (err instanceof ResolutionGateError || err instanceof WorkforceInputError) {
-				return fail(400, { proposals: { proposal, error: err.message } });
-			}
-			return fail(500, { proposals: { proposal, error: (err as Error).message } });
+			return fail(refusalStatus(err) ?? 500, { proposals: { proposal, error: (err as Error).message } });
 		}
 	},
 
@@ -327,10 +343,7 @@ export const actions: Actions = {
 				}
 			};
 		} catch (err) {
-			if (err instanceof ResolutionGateError || err instanceof WorkforceInputError) {
-				return fail(400, { proposals: { proposal, error: err.message } });
-			}
-			return fail(500, { proposals: { proposal, error: (err as Error).message } });
+			return fail(refusalStatus(err) ?? 500, { proposals: { proposal, error: (err as Error).message } });
 		}
 	},
 
@@ -362,10 +375,7 @@ export const actions: Actions = {
 				}
 			};
 		} catch (err) {
-			if (err instanceof ResolutionGateError || err instanceof WorkforceInputError) {
-				return fail(400, { proposals: { proposal, error: err.message } });
-			}
-			return fail(500, { proposals: { proposal, error: (err as Error).message } });
+			return fail(refusalStatus(err) ?? 500, { proposals: { proposal, error: (err as Error).message } });
 		}
 	},
 

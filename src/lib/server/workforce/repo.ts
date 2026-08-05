@@ -1716,11 +1716,52 @@ export async function listOpenProposals(db: Db, limit = 200): Promise<ReviewProp
 // with createRoleVersion / runGauntlet / swapActiveVersion.
 
 /**
+ * Refusal to overwrite a comparison already on the row with a DIFFERENT one (§5).
+ *
+ * THE DEFECT THIS CLOSES. The absorb branch below was written for ONE writer re-running
+ * itself after an interrupt. LC-4 added a SECOND, independent writer of 'compared'
+ * (`reconcileProposalFromRun` beside `regauntletChallenger`), which turned that branch into a
+ * data-loss path: with a comparison already stored, the incoming one matched no `sets` clause,
+ * the function returned the STORED row, and the caller — which had just spent real money on a
+ * gauntlet — could not tell its verdict had been discarded. Money spent, verdict lost, and the
+ * surface reporting success from an object that was never persisted. Naming the collision is the
+ * only honest answer available without a second column to keep both (which needs a migration).
+ */
+export class ProposalComparisonCollisionError extends Error {
+	override readonly name = 'ProposalComparisonCollisionError';
+	constructor(
+		readonly proposal: string,
+		readonly storedRun: string | null,
+		readonly incomingRun: string | null
+	) {
+		super(
+			`review_proposal ${proposal} is already 'compared' and holds a comparison from run ` +
+				`${storedRun ?? '(no readable run)'} — refusing to discard an incoming comparison from run ` +
+				`${incomingRun ?? '(no readable run)'}. The incoming comparison was NOT recorded and the ` +
+				`stored one was NOT overwritten; both runs are on disk and can be read directly (§5).`
+		);
+	}
+}
+
+/** The challenger run a persisted/incoming comparison was derived from — the identity that
+ *  says whether two comparisons are the SAME verdict. Unreadable shape → null (treated as a
+ *  collision, never as a match: guessing equality here is what would drop the verdict). */
+function comparisonChallengerRun(c: unknown): string | null {
+	if (!c || typeof c !== 'object') return null;
+	const challenger = (c as { challenger?: unknown }).challenger;
+	if (!challenger || typeof challenger !== 'object') return null;
+	const run = (challenger as { run?: unknown }).run;
+	return typeof run === 'string' && run.length > 0 ? run : null;
+}
+
+/**
  * Move a proposal to a new status, transition-checked (§5). Optionally set the
  * challenger (on diff approval) and/or the comparison (after the re-gauntlet) in the
  * SAME write — a partial write can never leave the row in a status whose required field
  * is missing (interrupt contract). A terminal target stamps decided_at. Idempotent
- * re-target to the SAME status is an absorbed no-op (interrupt-safe re-run).
+ * re-target to the SAME status is an absorbed no-op (interrupt-safe re-run) — EXCEPT when a
+ * DIFFERENT comparison is already stored, which is a second writer, not a re-run, and is
+ * refused by name ({@link ProposalComparisonCollisionError}) rather than silently dropped.
  */
 export interface SetProposalStatusInput {
 	to: ProposalStatus;
@@ -1746,9 +1787,21 @@ export async function setProposalStatus(
 			sets.push('challenger = $challenger');
 			binds.challenger = link(input.challenger);
 		}
-		if (input.comparison !== undefined && p.comparison == null) {
-			sets.push('comparison = $comparison');
-			binds.comparison = input.comparison;
+		if (input.comparison !== undefined) {
+			if (p.comparison == null) {
+				sets.push('comparison = $comparison');
+				binds.comparison = input.comparison;
+			} else {
+				// A comparison is already recorded. Same challenger run ⇒ the same verdict is already
+				// on the row, so this really is the interrupt-safe re-run the branch exists for and
+				// absorbing it is correct (the only differences are `at` and re-read baselines).
+				// A DIFFERENT run ⇒ a second writer, and dropping it is the LC-4 harm inverted.
+				const stored = comparisonChallengerRun(p.comparison);
+				const incoming = comparisonChallengerRun(input.comparison);
+				if (stored == null || incoming == null || stored !== incoming) {
+					throw new ProposalComparisonCollisionError(p.id, stored, incoming);
+				}
+			}
 		}
 		if (sets.length === 0) return p;
 		const [rows] = await db.query<[Raw[]]>(`UPDATE $rid SET ${sets.join(', ')} RETURN AFTER;`, binds);

@@ -15,8 +15,15 @@ synced to both branches so every agent sees the full set.
 >   F-058, F-059, F-060. These are not minor — F-052 (one builder per worktree), F-058
 >   (never `git checkout -- <file>`) and F-059 (`db:up` is a FOREGROUND process) are named
 >   hard rules in the current operating manual.
-> - **Absent from THAT copy:** F-017..F-047 and F-057. It cites F-029 in prose while
->   carrying no F-029 entry, so it is not a superset either.
+> - **Absent from THAT copy — 28 ids, enumerated:** F-017, F-018, F-021, F-022, F-023,
+>   F-024, F-025, F-026, F-027, F-028, F-029, F-030, F-031, F-032, F-033, F-034, F-035,
+>   F-036, F-037, F-038, F-039, F-040, F-041, F-042, F-043, F-044, F-047, F-057. It cites
+>   F-029 in prose while carrying no F-029 entry, so it is not a superset either.
+>   (This marker first stated the set as the range `F-017`..`F-047`, which is its min and
+>   max rather than its members — that wrongly swept in F-019, F-020, F-045 and F-046,
+>   which BOTH copies carry. The list is enumerated here because it is the input to the
+>   operator's re-unification, and F-020's own Date line below records that duplicate
+>   F-019 numbering has already caused exactly this failure once.)
 >
 > So **neither file is the full set — scan both.** This copy was last written at `4e8698b`
 > (2026-07-07). Per the marking protocol this is a MARK, not a retirement: nothing has been

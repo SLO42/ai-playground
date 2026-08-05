@@ -23,8 +23,11 @@ A ground-up, **lighter** rebuild of the ai-playground project-lifecycle platform
 >
 > **`fails.md`** is the one file here still appended to — but it is **NOT the full set**.
 > It has forked from `F:\code\ai-playground\docs\fails.md` in **both** directions: this copy
-> lacks F-048..F-055 and F-058..F-060, that copy lacks F-017..F-047. Scan **both** before
-> starting a task; `CLAUDE.md` (worktree root) carries the measured breakdown. Re-unifying
+> lacks F-048..F-055 and F-058..F-060; that copy is **missing 28 entries: F-017, F-018,
+> F-021..F-044, F-047, F-057** — the measured set, not the `F-017`..`F-047` range first
+> written here, which wrongly swept in F-019/F-020/F-045/F-046 that BOTH copies carry.
+> Scan **both** before starting a task; `CLAUDE.md` (worktree root) carries the measured
+> breakdown and `fails.md`'s own fork marker enumerates the 28 ids one by one. Re-unifying
 > them is an operator action — mark, never delete.
 
 ## Read in this order

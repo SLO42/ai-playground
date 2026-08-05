@@ -47,6 +47,9 @@ git log --follow -- docs/DECISIONS.md
 
 - **Operating manual:** `F:\code\ai-playground\CLAUDE.md` — §7 is the quick-reference index
   of the decisions you must not silently cross.
-- **Failure log:** `docs/fails.md` in this worktree is still live and append-only.
+- **Failure log:** `docs/fails.md` in this worktree is still appended to — but it is **not
+  the full set**. It has FORKED bidirectionally from `F:\code\ai-playground\docs\fails.md`;
+  scan BOTH. `CLAUDE.md` (worktree root) carries the measured breakdown, and re-unifying
+  the two is an operator action (mark, never delete).
 - The other planning docs in this directory are a **frozen 2026-06 snapshot** of the v2
   plan, not a description of the built system — see [README.md](./README.md).

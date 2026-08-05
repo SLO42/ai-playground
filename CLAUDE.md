@@ -28,9 +28,12 @@ the original v2 plan; read it as history, not as the current system.
   F-048..F-055, F-058, F-059, F-060** — which include hard rules in the current operating
   manual: F-052 (one builder per worktree), F-058 (never `git checkout -- <file>`), F-059
   (`db:up` runs SurrealDB in the FOREGROUND). `F:\code\ai-playground\docs\fails.md` carries
-  those but is itself **missing F-017..F-047** (it cites F-029 in prose with no F-029
-  entry). Re-unifying the two is an **operator** action (mark, never delete) — do not merge
-  or delete either copy. New entries still append here.
+  those but is itself **missing 28 entries: F-017, F-018, F-021..F-044, F-047, F-057**
+  (enumerated id-by-id in the fork marker in `docs/fails.md`, which is the merge input; it
+  also cites F-029 in prose with no F-029 entry). That is the measured set — NOT the
+  `F-017`..`F-047` range first written here, which wrongly swept in F-019, F-020, F-045 and
+  F-046, all carried by BOTH copies. Re-unifying the two is an **operator** action (mark,
+  never delete) — do not merge or delete either copy. New entries still append here.
 
 ## Stack (verify APIs before use)
 - Node 24, ESM only (`"type":"module"`).

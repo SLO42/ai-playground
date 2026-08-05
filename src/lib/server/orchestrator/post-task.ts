@@ -160,6 +160,22 @@ export interface PostTaskOptions {
 		runner?: CommandRunner;
 		/** Narrow the gate to these steps. Default: all four. */
 		steps?: readonly GateStepName[];
+		/**
+		 * Called with the verdict THE MOMENT the gate produces one — before the terminal transition,
+		 * the commit, the review and the completion-event write, every one of which can throw.
+		 *
+		 * WHY A HOOK AND NOT JUST THE RETURN VALUE (the follow-on DoD-review's finding #3). The
+		 * caller's `catch` around this whole loop was its only signal that a gate verdict was
+		 * missing, so ANY later fault — a DB fault on the completion event, a git fault on the
+		 * commit — made the orchestrator record `gate_verdict: 'none'` and stamp "the pre-commit gate
+		 * produced NO verdict" on the session, with a green verdict already in hand. The return value
+		 * cannot fix that: on the throw path there IS no return value. So the verdict is handed over
+		 * the instant it exists.
+		 *
+		 * It is a NOTIFICATION, never a control path: nothing here reads it back, and an observer
+		 * that throws cannot change the verdict or fail the loop.
+		 */
+		onVerdict?: (gate: GateOutcome) => void;
 	};
 	/**
 	 * PCG-1 — wire the (previously caller-less) review capability. When enabled, a change that
@@ -322,6 +338,19 @@ export async function runPostTask(
 			{ cwd: input.cwd, buildTool: input.buildTool, testCommand: input.testCommand },
 			{ run: opts.gate.runner ?? run, steps: opts.gate.steps }
 		);
+		// Hand the verdict to the caller IMMEDIATELY — everything below this line can throw, and on
+		// that path the return value never arrives (see PostTaskOptions.gate.onVerdict).
+		if (opts.gate.onVerdict) {
+			try {
+				opts.gate.onVerdict(gate);
+			} catch (err) {
+				// The observer must never be able to turn a produced verdict into a fault — that would
+				// invert the honesty it exists to provide. Named, never silent (F-014).
+				console.warn(
+					`[post-task] gate onVerdict observer threw (the verdict itself is unaffected): ${(err as Error).message}`
+				);
+			}
+		}
 	}
 	// A gate that RAN and came back red is the one signal that overrides a successful run. 'skipped'
 	// (nothing detectable to verify) is honestly recorded but is NOT a failure — failing a project

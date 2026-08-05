@@ -413,12 +413,112 @@ describe('pre-commit gate — the spawnability pre-flight is ecosystem-agnostic'
 
 	it('an EXPLICIT path is never PATH-probed — the fix must not invent a new false skip', async () => {
 		// `./x` / `C:\tools\x` is resolved against the cwd by execFile, not looked up on PATH.
-		// Probing PATH for its basename would skip a command that runs perfectly well.
-		const gate = await runPreCommitGate({ cwd: fullRoot, buildTool: `./${ABSENT} build` });
-		// It was SPAWNED (and failed, because it does not exist in the cwd) — a real verdict, not a
-		// pre-flight opinion. What matters is that the pre-flight did NOT claim it.
+		// Probing PATH for its BASENAME would skip a command that runs perfectly well, so an explicit
+		// path that EXISTS in the working dir and is not a shell-only script must still be HANDED TO
+		// THE RUNNER — the pre-flight forms no opinion on it, and whatever the runner then says is a
+		// real verdict. (The fixture is a plain file, so the spawn itself fails on every platform;
+		// what this test asserts is which layer answered, not what the answer was.)
+		const explicitDir = mkdtempSync(join(tmpdir(), 'pcg-explicit-'));
+		writeFileSync(join(explicitDir, `probe${process.platform === 'win32' ? '.exe' : ''}`), 'x');
+		try {
+			const gate = await runPreCommitGate(
+				{
+					cwd: explicitDir,
+					buildTool: `./probe${process.platform === 'win32' ? '.exe' : ''} build`
+				},
+				{ steps: ['build'] }
+			);
+			const step = gate.steps.find((s) => s.name === 'build');
+			// The pre-flight did NOT claim it: no PATH opinion, no environment skip.
+			expect(step?.detail).not.toMatch(/is not on PATH/);
+			expect(step?.detail).not.toMatch(/UNVERIFIED, not failed/);
+			expect(gate.unrunnable).toBe(false);
+			// It reached the RUNNER — the detail is the runner's own spawn report.
+			expect(step?.detail).toMatch(/could not run/);
+			expect(gate.status).toBe('failed');
+		} finally {
+			rmSync(explicitDir, { recursive: true, force: true });
+		}
+	}, 20_000);
+
+	// ── REGRESSION (the follow-on DoD-review's finding #1 — the explicit-path exemption REOPENED the
+	//    false-RED class). "Do not PATH-probe an explicit path" had been implemented as "ask nothing
+	//    at all about an explicit path", and the two questions the pre-flight exists to ask are about
+	//    the FILE, not about how it was named. Both cases below were reproduced against the DEFAULT
+	//    runner before the fix and came back status 'failed' — task `failed`, branch preserved, never
+	//    merged. Both are reachable in production: resolveTestCommand (post-task.ts) hands an
+	//    operator's stored `test_command` to this gate VERBATIM for any build_tool the resolver has
+	//    no opinion on, so `.\run-tests.cmd` / `./scripts/test.sh --ci` is an operator-configured
+	//    command that this platform can never merge.
+	it('an explicit path to a SHELL-ONLY script is an environment skip, not a RED (measured: spawn EINVAL)', async () => {
+		// A .cmd that EXISTS and that a shell runs fine. execFile with shell:false cannot spawn it —
+		// Node rejects a batch file outright — so its "failure" describes the seam, not the change.
+		const shimDir = mkdtempSync(join(tmpdir(), 'pcg-shim-'));
+		writeFileSync(join(shimDir, 'package.json'), JSON.stringify({ name: 'shim', scripts: {} }));
+		mkdirSync(join(shimDir, 'node_modules'));
+		writeFileSync(join(shimDir, 'check.cmd'), '@echo off\r\nexit /b 0\r\n');
+		try {
+			const gate = await runPreCommitGate(
+				{ cwd: shimDir, buildTool: './check.cmd build' },
+				{ steps: ['build'] }
+			);
+			if (process.platform === 'win32') {
+				expect(gate.status).toBe('skipped');
+				expect(gate.errored).toBe(false);
+				expect(gate.failedAt).toBeNull();
+				// The ENVIRONMENT skip — so it does not fire the merge hold either.
+				expect(gate.unrunnable).toBe(true);
+				expect(gate.steps.find((s) => s.name === 'build')?.detail).toMatch(/\.cmd script/);
+				expect(gate.steps.find((s) => s.name === 'build')?.detail).toMatch(/UNVERIFIED, not failed/);
+			} else {
+				// On POSIX a `.cmd` is just a file: nothing is claimed about it here, and the seam's own
+				// verdict (it is not executable) stands. The assertion that matters on every platform is
+				// that this is never reported as a RED with no reason.
+				expect(gate.steps.find((s) => s.name === 'build')?.detail).toBeTruthy();
+			}
+		} finally {
+			rmSync(shimDir, { recursive: true, force: true });
+		}
+	}, 20_000);
+
+	it('an explicit path that does NOT exist in the working dir is an environment skip, not a RED', async () => {
+		// Measured before the fix: the seam returns {code:1, stdout:'', stderr:''} for this, which the
+		// gate recorded as a build failure with NO reason at all — the exact signature the PATH probe
+		// exists to convert into an honest skip.
+		const gate = await runPreCommitGate(
+			{ cwd: fullRoot, buildTool: `./${ABSENT} build` },
+			{ steps: ['build'] }
+		);
+		expect(gate.status).toBe('skipped');
+		expect(gate.unrunnable).toBe(true);
+		expect(gate.failedAt).toBeNull();
+		expect(gate.steps.find((s) => s.name === 'build')?.detail).toMatch(/does not exist in this working dir/);
+		// …and it is NOT the PATH claim: an explicit path is still never PATH-probed.
 		expect(gate.steps.find((s) => s.name === 'build')?.detail).not.toMatch(/is not on PATH/);
-		expect(gate.status).toBe('failed');
+	}, 20_000);
+
+	it('the npm-family explicit path regression: `…/npm.cmd run build` skips (it did before 6878d14 too)', async () => {
+		// An explicit path to the npm shim used to reach the shim skip via resolveOnPath('npm'); the
+		// exemption sent it straight back into an EINVAL RED. It is a skip again — by the npm-family
+		// dependency-tree branch when there is no node_modules, and by the shell-only branch when
+		// there is. Asserted on the OUTCOME, so it holds either way.
+		const shimDir = mkdtempSync(join(tmpdir(), 'pcg-npmshim-'));
+		writeFileSync(join(shimDir, 'package.json'), JSON.stringify({ name: 'x', scripts: {} }));
+		mkdirSync(join(shimDir, 'node_modules'));
+		writeFileSync(join(shimDir, 'npm.cmd'), '@echo off\r\nexit /b 0\r\n');
+		try {
+			const gate = await runPreCommitGate(
+				{ cwd: shimDir, buildTool: './npm.cmd run build' },
+				{ steps: ['build'] }
+			);
+			if (process.platform === 'win32') {
+				expect(gate.status).toBe('skipped');
+				expect(gate.unrunnable).toBe(true);
+			}
+			expect(gate.errored).toBe(false);
+		} finally {
+			rmSync(shimDir, { recursive: true, force: true });
+		}
 	}, 20_000);
 
 	it('an INJECTED runner is never second-guessed — it has its own spawn rules (argvOnly only)', async () => {
@@ -432,6 +532,45 @@ describe('pre-commit gate — the spawnability pre-flight is ecosystem-agnostic'
 		expect(gate.status).toBe('failed');
 		expect(gate.unrunnable).toBe(false);
 		expect(runner.calls.length).toBe(1);
+	});
+});
+
+// ── REGRESSION (the follow-on DoD-review's finding #2): a PARTIALLY verified gate must not
+//    summarize as a flat pass. `gate.summary` is persisted VERBATIM on the completion event
+//    (post-task.ts) and is the one operator-facing sentence on the drain ledger, so
+//    `pre-commit gate passed (build)` for a run where the declared test step never executed is the
+//    same overstatement this module refuses everywhere else. Measured before the fix: status
+//    'passed', unrunnable TRUE, summary 'pre-commit gate passed (build)'.
+describe('pre-commit gate — a PARTLY verified gate says so in the summary', () => {
+	it('some steps green + a declared check that could not run here ⇒ the summary names both', async () => {
+		// build = `node --version` (really spawnable, really runs); test = `npm test` in a tree with no
+		// node_modules (resolves to a REAL command the pre-flight refuses here).
+		const partial = mkdtempSync(join(tmpdir(), 'pcg-partial-'));
+		writeFileSync(join(partial, 'package.json'), JSON.stringify({ name: 'p', scripts: {} }));
+		try {
+			const gate = await runPreCommitGate(
+				{ cwd: partial, buildTool: 'node --version', testCommand: 'npm test' },
+				{ steps: ['build', 'test'] }
+			);
+			expect(gate.status).toBe('passed');
+			expect(gate.unrunnable).toBe(true);
+			// The claim itself: PARTLY, and it NAMES the check that did not run.
+			expect(gate.summary).toMatch(/PARTLY verified/);
+			expect(gate.summary).toMatch(/\btest\b/);
+			expect(gate.summary).toMatch(/NOT fully verified/);
+			// …and it is no longer the flat sentence.
+			expect(gate.summary).not.toBe('pre-commit gate passed (build)');
+		} finally {
+			rmSync(partial, { recursive: true, force: true });
+		}
+	}, 20_000);
+
+	it('a FULLY verified gate keeps its exact wording — the fix adds no noise to the clean case', async () => {
+		const runner = fakeRunner(() => OK);
+		const gate = await runPreCommitGate({ cwd: fullRoot, buildTool: 'dotnet' }, { run: runner, steps: ['build'] });
+		expect(gate.status).toBe('passed');
+		expect(gate.unrunnable).toBe(false);
+		expect(gate.summary).toBe('pre-commit gate passed (build)');
 	});
 });
 

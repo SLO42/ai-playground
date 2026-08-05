@@ -362,6 +362,46 @@ describe('mergeBackWorktree — failed / cancelled session → preserve + note',
 		expect(notes.length).toBe(0);
 	});
 
+	// ── REGRESSION (the follow-on DoD-review's finding #4c): the probe fix was only ever asserted on
+	//    the PRESERVE path. The DONE path re-probes INSIDE the merge lock and treats 'unknown' as
+	//    "not absent" — it falls through to the ff-only merge rather than claiming noop-gone. That
+	//    fall-through is the load-bearing half (claiming "already reconciled" about a branch nobody
+	//    could read is how withheld work becomes invisible), and it had no test.
+	it('DONE path: a git that cannot be read is NOT noop-gone — it falls through, and NOTHING is torn down', async () => {
+		const { db } = fakeDb();
+		let torndown = false;
+		const unreadable: CommandRunner = async () => ({
+			code: 128,
+			stdout: '',
+			stderr: 'fatal: not a git repository'
+		});
+
+		const outcome = await mergeBackWorktree(
+			asDb(db),
+			{
+				sessionId: 'session:unreadable_done',
+				projectRoot: 'F:/no/such/project/root',
+				worktreePath: 'F:/no/such/project/.atelier-worktrees/z',
+				worktreeBranch: 'atelier/session/unreadable_done',
+				exitState: 'done'
+			},
+			{
+				run: unreadable,
+				teardown: async () => {
+					torndown = true;
+				}
+			}
+		);
+
+		// NOT the "already reconciled" answer — nobody checked.
+		expect(outcome.kind).not.toBe('noop-gone');
+		// …and the work-safety property that actually matters: an unreadable repo never reaches a
+		// teardown, so nothing on that worktree can be destroyed by a failed probe (F-007).
+		expect(torndown).toBe(false);
+		// It ends on a preserve, so the branch and its commits are kept for the operator.
+		expect(outcome.kind).toBe('preserved-conflict');
+	});
+
 	it('failed session that never committed (branch absent) → honest noop-gone, no note', async () => {
 		const repo = initRepo();
 		trackParent(repo);

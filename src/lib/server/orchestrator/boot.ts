@@ -570,7 +570,10 @@ export async function startOrchestrator(db: Db, bus: EventBus = getBus()): Promi
 			// verdict at all. With the gate armed that is NOT a merge — the session exits
 			// 'gate-unknown' and the branch + worktree are preserved with the fault in the drain
 			// ledger. Unverified is unverified, however we got there; the alternative fast-forwarded
-			// un-gated work precisely when something had already gone wrong.
+			// un-gated work precisely when something had already gone wrong. A fault that lands AFTER
+			// the gate answered is withheld identically (the commit may not have happened either), but
+			// exits 'post-task-faulted' and carries the real verdict — the same catch covers the whole
+			// loop, so claiming "no verdict" for all of it was a false ledger row.
 			preCommitGate: true,
 			// PCG-1 — the review capability, WIRED. `maybeEnqueueReview` has been fully built and
 			// tested since TASK 2.8 with ZERO production callers; it now runs after a gate-green

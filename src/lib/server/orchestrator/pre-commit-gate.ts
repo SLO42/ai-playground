@@ -102,7 +102,7 @@
 // shell string, so a project-configured command can never smuggle a second command.
 
 import { existsSync } from 'node:fs';
-import { basename, delimiter, extname, join } from 'node:path';
+import { basename, delimiter, dirname, extname, join, resolve } from 'node:path';
 import {
 	execFileRunner,
 	splitCommand,
@@ -228,13 +228,32 @@ const NPM_FAMILY = new Set(['npm', 'npx', 'pnpm', 'pnpx', 'yarn', 'bun', 'bunx']
 const SHELL_ONLY_EXT = new Set(['.cmd', '.bat', '.ps1']);
 
 /**
- * Where the argv-only runner would actually FIND `prog`, or null. Mirrors what `execFile` with
- * `shell:false` does: a literal PATH scan, extended by PATHEXT on Windows. We resolve it ourselves
+ * Is this file something the argv-only seam CANNOT spawn on this platform?
+ *
+ * `.cmd`/`.bat`/`.ps1` are Windows-only artefacts and are never spawnable without a shell. `.sh` is
+ * the platform-conditional one, and it is measured rather than assumed: on win32 `execFile('./x.sh',
+ * …, {shell:false})` rejects with `spawn EFTYPE` (reproduced against this host before the fix), so
+ * an operator's `./scripts/test.sh --ci` is not a verdict on the change; on a POSIX host the same
+ * file with a shebang and the exec bit is a perfectly good argv target and skipping it would be a
+ * NEW false skip — exactly what this module must not invent.
+ */
+function isShellOnly(ext: string): boolean {
+	const e = ext.toLowerCase();
+	return SHELL_ONLY_EXT.has(e) || (process.platform === 'win32' && e === '.sh');
+}
+
+/**
+ * Where the argv-only runner would find `prog` among `dirs`, or null. Mirrors what `execFile` with
+ * `shell:false` does: a literal name scan, extended by PATHEXT on Windows. We resolve it ourselves
  * because the runner cannot report the difference — `execFile` surfaces a spawn ENOENT as exit
  * code 1 with EMPTY output, which the gate would otherwise record as a build failure with no
  * reason at all.
+ *
+ * Two callers, ONE scan (F-055 — never a second hand-rolled resolver): {@link resolveOnPath} asks
+ * it of PATH for a bare program name, and the explicit-path branch of {@link toolchainSkipReason}
+ * asks it of the single directory execFile would actually resolve that path against.
  */
-function resolveOnPath(prog: string): string | null {
+function probeIn(dirs: readonly string[], prog: string): string | null {
 	// On Windows a name WITHOUT an extension is executable only via PATHEXT: `C:\Program
 	// Files\nodejs\npm` (the extension-less POSIX shell script npm also ships) sits right next to
 	// `npm.cmd` on PATH, and probing for the bare name first is how a scan can "find" npm and still
@@ -245,13 +264,18 @@ function resolveOnPath(prog: string): string | null {
 		process.platform === 'win32' && extname(prog) === ''
 			? (process.env.PATHEXT ?? '.COM;.EXE;.BAT;.CMD').split(';').filter(Boolean)
 			: [''];
-	for (const dir of (process.env.PATH ?? '').split(delimiter).filter(Boolean)) {
+	for (const dir of dirs) {
 		for (const ext of exts) {
 			const candidate = join(dir, prog + ext.toLowerCase());
 			if (existsSync(candidate)) return candidate;
 		}
 	}
 	return null;
+}
+
+/** {@link probeIn} over PATH — what the seam would find for a BARE program name. */
+function resolveOnPath(prog: string): string | null {
+	return probeIn((process.env.PATH ?? '').split(delimiter).filter(Boolean), prog);
 }
 
 /**
@@ -315,10 +339,47 @@ function toolchainSkipReason(cwd: string, file: string, argvOnly: boolean): stri
 	}
 	if (!argvOnly) return '';
 	// An EXPLICIT path (`./scripts/check.sh`, `C:\tools\build.exe`) is not a PATH lookup at all —
-	// execFile resolves it against the cwd. Probing PATH for its basename would invent a "not on
-	// PATH" skip for a command that runs perfectly well, so such a command is left alone: spawned
-	// as given, and a non-zero exit from it is a real verdict.
-	if (/[\\/]/.test(file)) return '';
+	// execFile resolves it against the cwd — so PATH is the wrong place to ask about it, and
+	// probing PATH for its basename would invent a "not on PATH" skip for a command that runs
+	// perfectly well.
+	//
+	// BUT "don't ask PATH" is not "don't ask anything" (the follow-on DoD-review's finding, closed
+	// here). Returning '' here skipped the WHOLE pre-flight for an explicit path, including the
+	// spawnability question, which is a fact about the FILE and not about how it was named — so the
+	// exemption REOPENED the very false-RED class this module exists to close. Both halves were
+	// reproduced by execution against the real default runner before this fix:
+	//   • a real `./probe.cmd` that a shell runs fine → `spawn EINVAL` → status 'failed',
+	//     errored:true, "COULD NOT RUN … treated as RED" — task `failed`, branch preserved, never
+	//     merged, on a host where `.cmd` is how operators write a check;
+	//   • an explicit path that is simply ABSENT → the seam's `{code:1, stdout:'', stderr:''}` →
+	//     a RED with no reason at all, the exact signature the PATH probe exists to convert into an
+	//     honest skip.
+	// It is reachable in production because `resolveTestCommand` (post-task.ts) returns an
+	// operator's stored `test_command` VERBATIM for any build_tool the resolver has no opinion on,
+	// and it was a REGRESSION for the npm family too: an explicit `…\npm.cmd run build` used to
+	// reach the shim skip via the PATH probe and was exempted straight back into an EINVAL RED.
+	// So: ask the same two questions, against the one directory execFile would actually resolve
+	// against. `resolve` handles both the relative (`./x`) and the absolute form.
+	if (/[\\/]/.test(file)) {
+		const abs = resolve(cwd, file);
+		const found = probeIn([dirname(abs)], basename(abs));
+		if (!found) {
+			return (
+				`not run — \`${file}\` does not exist in this working dir, so this check cannot be ` +
+				`performed here; the seam reports an unspawnable path as exit 1 with NO output, which ` +
+				`would read as a broken change rather than a missing script (UNVERIFIED, not failed)`
+			);
+		}
+		const explicitExt = extname(found).toLowerCase();
+		if (isShellOnly(explicitExt)) {
+			return (
+				`not run — \`${file}\` is a ${explicitExt} script, which the argv-only command seam refuses ` +
+				`to spawn on this platform (shell:false, D-008); the spawn error would describe the seam, ` +
+				`not the change (UNVERIFIED, not failed)`
+			);
+		}
+		return '';
+	}
 	// Probe the name AS WRITTEN (`node`, `node.exe`) — resolveOnPath handles the extension rules.
 	const name = basename(file);
 	const resolved = resolveOnPath(name);
@@ -330,7 +391,7 @@ function toolchainSkipReason(cwd: string, file: string, argvOnly: boolean): stri
 		);
 	}
 	const ext = extname(resolved).toLowerCase();
-	if (SHELL_ONLY_EXT.has(ext)) {
+	if (isShellOnly(ext)) {
 		return (
 			`not run — on this platform \`${name}\` exists only as a ${ext} shim, which the argv-only ` +
 			`command seam refuses to spawn (shell:false, D-008); the exit code would describe the shim, ` +
@@ -422,6 +483,8 @@ export async function runPreCommitGate(
 	let errored = false;
 	/** Set by the toolchain pre-flight — see {@link GateOutcome.unrunnable}. */
 	let unrunnable = false;
+	/** WHICH steps the pre-flight refused, so the summary can NAME them (see below). */
+	const unrunnableNames: GateStepName[] = [];
 
 	const cwd = (input.cwd ?? '').trim();
 	if (!cwd || !existsSync(cwd)) {
@@ -494,6 +557,7 @@ export async function runPreCommitGate(
 			// skip, and it is recorded as such: a downstream policy that treats "nothing to check" and
 			// "could not check here" alike turns this into a permanent merge hold (see the header).
 			unrunnable = true;
+			unrunnableNames.push(name);
 			steps.push({ name, command, ran: false, ok: false, detail: `${command} ${preflight}` });
 			continue;
 		}
@@ -538,7 +602,18 @@ export async function runPreCommitGate(
 				`${steps.find((s) => s.name === failedAt)?.detail ?? ''}`
 			: `pre-commit gate FAILED at ${failedAt}: ${steps.find((s) => s.name === failedAt)?.detail ?? ''}`
 		: verified
-			? `pre-commit gate passed (${ranNames.join(', ')})`
+			? unrunnable
+				? // PARTLY VERIFIED — the honesty half the follow-on DoD-review caught missing. When some
+					// steps ran green and at least one DECLARED check could not be run here, `pre-commit gate
+					// passed (build)` is the whole operator-facing sentence on the completion event
+					// (post-task.ts persists `gate.summary` verbatim) and on the drain ledger, and it says
+					// nothing about the check that never ran. The gate_consequence field had been taught this
+					// distinction; the summary had not, so the flat claim was still the line an operator
+					// reads. Same rule as everywhere else in this module: never overstate what was checked.
+					`pre-commit gate PARTLY verified — passed (${ranNames.join(', ')}), but ` +
+					`${unrunnableNames.length} declared check(s) could NOT BE RUN in this working dir ` +
+					`(${unrunnableNames.join(', ')}); the work is eligible to merge but is NOT fully verified`
+				: `pre-commit gate passed (${ranNames.join(', ')})`
 			: unrunnable
 				? // HONEST (F-008): saying "no target detected" about a project that declares four of
 					// them is a lie the operator would read on /atelier/queue.

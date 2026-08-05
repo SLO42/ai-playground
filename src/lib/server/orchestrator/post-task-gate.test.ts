@@ -11,7 +11,7 @@ import { createProject } from '../projects/repo';
 import { createTask, setStatus } from '../tasks/repo';
 import { runPostTask } from './post-task';
 import { shouldHoldMergeBack } from './orchestrator';
-import type { CommandResult, CommandRunner } from './command-runner';
+import { execFileRunner, type CommandResult, type CommandRunner } from './command-runner';
 
 // PCG-1 VERIFY (integration, REAL SurrealDB) — the pre-commit gate + the review wiring inside the
 // post-task loop. Every query here is parsed by a real SurrealDB instance (a stubDb does not parse
@@ -626,4 +626,56 @@ describe('PCG-1 — an UNVERIFIABLE working dir does not wedge the task (the fal
 			rmSync(worktreeLike, { recursive: true, force: true });
 		}
 	});
+
+	// ── REGRESSION (the follow-on DoD-review's finding #2): the PARTLY-verified branch — a gate that
+	//    ran some checks green while at least one DECLARED check could not be run here — had NO
+	//    assertion anywhere, in either of the two places it is persisted. Both are operator-facing and
+	//    both are read on /atelier/queue, so both are asserted here.
+	it('a PARTIALLY verified gate never reports a flat green — in the consequence AND in the summary', async () => {
+		// build = a real, spawnable command that exits 0 (the check that RAN); test = `npm test` in a
+		// dir with no node_modules (a REAL declared check the pre-flight refuses here). The gate uses
+		// the DEFAULT runner so the pre-flight is live — `gitAnd` would make it argvOnly:false.
+		const partialDir = mkdtempSync(join(tmpdir(), 'pcg-partial-'));
+		writeFileSync(join(partialDir, 'package.json'), JSON.stringify({ name: 'p', scripts: {} }));
+		try {
+			const taskId = await freshRunningTask('partly verifiable work');
+			const sessionId = await makeSession(taskId);
+			const res = await runPostTask(
+				db,
+				{
+					projectId,
+					taskId,
+					sessionId,
+					cwd: partialDir,
+					commitMessage: 'feat: partly verified',
+					testCommand: 'npm test',
+					buildTool: 'node --version',
+					runOk: true
+				},
+				// `run` still drives git through the fake (no live commit); the GATE is handed the REAL
+				// argv runner on purpose — the toolchain pre-flight only speaks for `execFileRunner`
+				// (an injected runner has its own spawn rules and is never second-guessed), so the
+				// partial shape this test is about is unreachable with a fake gate runner.
+				{ run: gitAnd(() => OK), gate: { enabled: true, runner: execFileRunner } }
+			);
+
+			// It really is the partial shape: green overall, and flagged unrunnable.
+			expect(res.gate?.status).toBe('passed');
+			expect(res.gate?.unrunnable).toBe(true);
+			expect(res.taskStatus).toBe('done');
+
+			const detail = await readEventDetail(res.agentEventId);
+			// (a) the consequence — the branch that shipped in 11baf72 with no test at all.
+			expect(String(detail.gate_consequence)).toMatch(/PARTLY/);
+			expect(String(detail.gate_consequence)).toMatch(/could not be run here/);
+			// (b) the SUMMARY — persisted verbatim from the gate, and the sentence an operator reads
+			// first. Before the fix this said `pre-commit gate passed (build)` and nothing more.
+			expect(String((detail.gate as { summary?: string }).summary)).toMatch(/PARTLY verified/);
+			expect(String((detail.gate as { summary?: string }).summary)).not.toBe(
+				'pre-commit gate passed (build)'
+			);
+		} finally {
+			rmSync(partialDir, { recursive: true, force: true });
+		}
+	}, 20_000);
 });

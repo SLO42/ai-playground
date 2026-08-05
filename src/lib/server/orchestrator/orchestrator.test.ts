@@ -1930,23 +1930,42 @@ describe('WI-3 — merge-back + teardown composed with post-task (real temp git 
 			expect(existsSync(worktreePath)).toBe(true);
 
 			// THE REFUSAL IS VISIBLE, and says which kind of "unverified" this is.
+			//
+			// AND THIS IS THE FOLLOW-ON DoD-REVIEW'S FINDING #3, IN THE ONE TEST THAT COVERED IT. The
+			// injected fault is on the FIRST git call, which the post-task loop makes AFTER the gate
+			// (the gate is step 0). This project declares no build_tool and no test command, so the
+			// gate really did answer here — 'skipped' — and the note this test used to assert,
+			// "the pre-commit gate produced NO verdict", was FALSE for the very run it was asserting
+			// on. It passed because nothing distinguished "no verdict" from "verdict, then a fault".
+			// The headline guarantees above are unchanged; what changes is that the stamped reason is
+			// now true.
 			const [noteRows] = await db.query<[Array<{ note?: unknown }>]>(
 				`SELECT note FROM session WHERE id = $sid;`,
 				{ sid: new StringRecordId(String(sessions[0].id)) }
 			);
-			expect(String(noteRows[0].note)).toContain('produced NO verdict');
+			expect(String(noteRows[0].note)).toContain('FAULTED after the pre-commit gate');
+			expect(String(noteRows[0].note)).not.toContain('produced NO verdict'); // it DID produce one
 			expect(String(noteRows[0].note)).not.toContain('pre-commit gate FAILED'); // not a code verdict
+			expect(String(noteRows[0].note)).toContain('not merged');
 
-			// …and the drain ledger names the fault with the gate's state at that moment.
+			// …and the drain ledger names the fault with the gate's REAL state at that moment.
 			const [faults] = await db.query<[Array<{ detail: Record<string, unknown> }>]>(
 				`SELECT detail FROM agent_event
 				   WHERE type = "error" AND detail.stage = $stage AND detail.taskId = $tid;`,
 				{ stage: 'post_task', tid: task.id }
 			);
 			expect(faults.length).toBeGreaterThanOrEqual(1);
-			const fault = faults[0].detail as { gate_armed?: boolean; consequence?: string };
+			const fault = faults[0].detail as {
+				gate_armed?: boolean;
+				consequence?: string;
+				gate_verdict?: string;
+			};
 			expect(fault.gate_armed).toBe(true);
 			expect(String(fault.consequence)).toContain('NOT merged');
+			// The ledger row carries the verdict the gate actually produced, not a blanket 'none'.
+			expect(String(fault.gate_verdict)).toContain('skipped');
+			expect(String(fault.gate_verdict)).not.toContain('none —');
+			expect(String(fault.consequence)).toContain('downstream of it');
 		} finally {
 			orch.stop();
 			await deleteProject(db, faultProjectId).catch(() => {});

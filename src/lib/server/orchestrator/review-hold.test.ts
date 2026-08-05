@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { shouldHoldMergeBack, type ReviewHoldPolicy } from './orchestrator';
-import type { GateOutcome } from './pre-commit-gate';
+import { shouldHoldMergeBack, resolveSessionExitState, type ReviewHoldPolicy } from './orchestrator';
+import type { GateOutcome, GateStatus } from './pre-commit-gate';
 
 // PCG-1 REGRESSION — THE MERGE-HOLD POLICY, as a composition.
 //
@@ -73,5 +73,90 @@ describe('shouldHoldMergeBack — the opt-in policies', () => {
 		expect(shouldHoldMergeBack('never', true, NOTHING_TO_VERIFY)).toBe(false);
 		expect(shouldHoldMergeBack('never', true, ENVIRONMENT_SKIP)).toBe(false);
 		expect(shouldHoldMergeBack('never', true, GREEN)).toBe(false);
+	});
+});
+
+// ── REGRESSION (the follow-on DoD-review's finding #3): 'gate-unknown' MUST NOT be stamped on a run
+//    whose gate already answered.
+//
+//    THE DEFECT. `postTaskFaulted` is set by a catch spanning the ENTIRE post-task block — the gate,
+//    the terminal transition, the commit, the review, the completion-event write and the game-verify
+//    dispatch. The drain read it as "no gate verdict exists", so a DB fault on the completion event
+//    produced a drain-ledger row saying `gate_verdict: 'none — the post-task loop faulted before one
+//    was produced'` and a session note saying "the pre-commit gate produced NO verdict" — with a
+//    green verdict in hand. The row was false; the operator reading it would re-run a task whose
+//    checks had already passed.
+//
+//    WHAT THE FIX IS NOT. It is NOT "merge it, the gate was green" — the gate runs BEFORE the commit
+//    (post-task.ts step 0), so a green verdict says nothing about whether the work was committed. A
+//    fault between the two leaves the branch with no commits, and the 'done' merge path reads that
+//    as noop-empty and TEARS THE WORKTREE DOWN (F-007). Both cases still WITHHOLD, identically. Only
+//    the stamped reason differs — which is the whole finding: the withhold was right, the claim was
+//    not.
+describe('resolveSessionExitState — the post-task fault says WHICH kind of unverified it is', () => {
+	const base = {
+		gateFailed: false,
+		ok: true,
+		postTaskFaulted: false,
+		gateArmed: true,
+		gateVerdict: undefined as GateStatus | undefined,
+		reviewHeld: false
+	};
+
+	it('a fault with NO verdict produced is gate-unknown (the honest original case)', () => {
+		expect(resolveSessionExitState({ ...base, postTaskFaulted: true })).toBe('gate-unknown');
+	});
+
+	it('a fault AFTER a verdict is post-task-faulted — never the "no verdict" claim', () => {
+		for (const verdict of ['passed', 'skipped', 'failed'] as const) {
+			expect(
+				resolveSessionExitState({ ...base, postTaskFaulted: true, gateVerdict: verdict })
+			).toBe('post-task-faulted');
+		}
+	});
+
+	it('BOTH fault cases withhold the merge — the fix changes the reason, never the safety', () => {
+		// The property that actually protects the work: neither is 'done', so both ride merge-back's
+		// `exitState !== 'done'` preserve branch (no FF, no teardown — F-007).
+		expect(resolveSessionExitState({ ...base, postTaskFaulted: true })).not.toBe('done');
+		expect(
+			resolveSessionExitState({ ...base, postTaskFaulted: true, gateVerdict: 'passed' })
+		).not.toBe('done');
+	});
+
+	it('with the gate NOT armed a post-task fault is unchanged — byte-identical to pre-PCG-1 (F-053)', () => {
+		expect(
+			resolveSessionExitState({ ...base, postTaskFaulted: true, gateArmed: false })
+		).toBe('done');
+		expect(
+			resolveSessionExitState({
+				...base,
+				postTaskFaulted: true,
+				gateArmed: false,
+				reviewHeld: true
+			})
+		).toBe('review-held');
+	});
+
+	it('a RED gate outranks a fault and a hold — the most actionable reason wins', () => {
+		expect(
+			resolveSessionExitState({
+				...base,
+				gateFailed: true,
+				postTaskFaulted: true,
+				gateVerdict: 'failed',
+				reviewHeld: true
+			})
+		).toBe('gate-failed');
+	});
+
+	it('a failed session outranks both fault states, and a clean run still merges', () => {
+		expect(
+			resolveSessionExitState({ ...base, ok: false, postTaskFaulted: true, gateVerdict: 'passed' })
+		).toBe('failed');
+		expect(resolveSessionExitState({ ...base, gateVerdict: 'passed' })).toBe('done');
+		expect(resolveSessionExitState({ ...base, gateVerdict: 'passed', reviewHeld: true })).toBe(
+			'review-held'
+		);
 	});
 });

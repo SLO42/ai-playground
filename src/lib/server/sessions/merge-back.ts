@@ -179,7 +179,16 @@ export type SessionExitState =
 	| 'cancelled'
 	| 'gate-failed'
 	| 'review-held'
-	| 'gate-unknown';
+	/** The gate was ARMED and the post-task loop faulted before it produced any verdict at all. */
+	| 'gate-unknown'
+	/**
+	 * The gate DID produce a verdict and the post-task loop faulted AFTERWARDS (on the commit, the
+	 * terminal transition, the completion-event write, the game-verify dispatch). Withheld for the
+	 * same reason and by the same branch as 'gate-unknown' — a fault before the commit leaves the
+	 * work uncommitted and the 'done' merge path would tear the worktree down (F-007) — but it is a
+	 * DIFFERENT fact, and saying "no verdict was produced" about it is a false ledger row (F-008).
+	 */
+	| 'post-task-faulted';
 
 export interface MergeBackInput {
 	/** Session record id — the note is stamped here on a preserve, and it identifies the row. */
@@ -317,9 +326,18 @@ function preserveReason(exitState: SessionExitState): string {
 	}
 	if (exitState === 'gate-unknown') {
 		return (
-			'the pre-commit gate produced NO verdict (the post-task step faulted) — the work is NOT ' +
-			'known to be broken and NOT known to be good, so it was not merged; the drain ledger has ' +
-			'the fault'
+			'the pre-commit gate produced NO verdict (the post-task step faulted before one existed) — ' +
+			'the work is NOT known to be broken and NOT known to be good, so it was not merged; the ' +
+			'drain ledger has the fault'
+		);
+	}
+	if (exitState === 'post-task-faulted') {
+		// F-008 — this used to be stamped as 'gate-unknown'. The gate HAD answered; what failed was
+		// everything after it, and the commit is the part an operator actually needs to check.
+		return (
+			'the post-task step FAULTED after the pre-commit gate had already returned its verdict — ' +
+			'the commit / test half of the loop may not have completed, so the work was not merged; the ' +
+			'drain ledger carries the fault AND the gate verdict'
 		);
 	}
 	return `session ${exitState}`;

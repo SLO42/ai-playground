@@ -47,7 +47,7 @@ import { writeAgentEvent } from '../analytics/events';
 import { Semaphore } from './semaphore';
 import { runPostTask, resolveTestCommand, type CommandRunner } from './post-task';
 // Type-only: the hold policy reads the gate's own verdict shape (status + why it was skipped).
-import type { GateOutcome } from './pre-commit-gate';
+import type { GateOutcome, GateStatus } from './pre-commit-gate';
 import {
 	mergeBackWorktree,
 	type CommandRunner as GitRunner,
@@ -192,6 +192,52 @@ export function shouldHoldMergeBack(
 	// working dir could not run the project's real checks is an environment verdict, and holding on
 	// it stalls every healthy npm project with no automated release (see ReviewHoldPolicy).
 	return gate?.status === 'skipped' && gate.unrunnable !== true;
+}
+
+/**
+ * THE MERGE-BACK EXIT STATE — one pure rule, so every branch of it is testable without an
+ * injectable DB/OS fault (the same reason {@link shouldHoldMergeBack} is a function and not an
+ * inline conditional). The drain calls this and passes the result straight to merge-back.
+ *
+ * ORDER IS THE POLICY, and it is the strongest-reason-first order:
+ *   1. `gate-failed`       — a RED gate is the most actionable thing an operator can be told, and it
+ *                            outranks a pending review of the same change.
+ *   2. `failed`            — the session itself did not succeed.
+ *   3. `gate-unknown`      — the gate was ARMED and produced NO verdict (the post-task block faulted
+ *                            before one existed).
+ *   4. `post-task-faulted` — the gate DID answer and the fault landed downstream of it (the commit,
+ *                            the completion event, game-verify). Withheld identically to (3): the
+ *                            commit may not have happened, and the 'done' path would read that
+ *                            branch as noop-empty and tear the worktree down (F-007). Kept APART
+ *                            from (3) because "the gate produced no verdict" is a false statement
+ *                            about a run that has one (F-008) — the follow-on DoD-review's finding.
+ *   5. `review-held`       — the configured hold policy withheld a large change.
+ *   6. `done`              — merge.
+ *
+ * (3) and (4) fire ONLY when a gate was actually armed, so a drain with the gate off is byte-
+ * identical to the pre-PCG-1 behaviour (F-053: an additive branch never changes the un-wired case).
+ */
+export function resolveSessionExitState(input: {
+	/** The gate ran and came back RED. */
+	gateFailed: boolean;
+	/** The FINAL run verdict (the post-task divergence may already have flipped it). */
+	ok: boolean;
+	/** The post-task block threw (best-effort catch — it never flips `ok`). */
+	postTaskFaulted: boolean;
+	/** Was the pre-commit gate wired at all? */
+	gateArmed: boolean;
+	/** What the gate said, captured the moment it said it — `undefined` ⇒ it never answered. */
+	gateVerdict: GateStatus | undefined;
+	/** The review hold fired for this change. */
+	reviewHeld: boolean;
+}): SessionExitState {
+	if (input.gateFailed) return 'gate-failed';
+	if (!input.ok) return 'failed';
+	if (input.postTaskFaulted && input.gateArmed) {
+		return input.gateVerdict === undefined ? 'gate-unknown' : 'post-task-faulted';
+	}
+	if (input.reviewHeld) return 'review-held';
+	return 'done';
 }
 
 export interface OrchestratorOptions {
@@ -1231,6 +1277,21 @@ export class Orchestrator {
 		// agent's uncommitted work (F-007). "We could not verify" must withhold, exactly like every
 		// other unverified outcome.
 		let postTaskFaulted = false;
+		// PCG-1 (the follow-on DoD-review's finding #3) — WHAT THE GATE ACTUALLY SAID, carried out of
+		// the post-task block so the fault path can tell its two cases apart.
+		//
+		// `postTaskFaulted` is set by a catch spanning the ENTIRE block: the gate, the terminal
+		// transition, the commit, the review, the completion-event write and the game-verify dispatch.
+		// Reading it as "no gate verdict exists" was therefore false for every fault that happened
+		// AFTER a gate had answered — a DB fault on the completion event produced a ledger row and a
+		// session note asserting the gate never ran, with a green verdict in hand. The verdict is
+		// handed over by `gate.onVerdict` the moment it exists (post-task.ts), so it survives a throw
+		// from anything downstream; `undefined` now means exactly one thing — no verdict was produced.
+		//
+		// It does NOT weaken the withhold: a fault before the commit still leaves the work
+		// uncommitted, and the 'done' merge path would read that branch as noop-empty and tear the
+		// worktree down (F-007). Both cases still preserve; they just stop lying about which is which.
+		let gateVerdict: GateStatus | undefined;
 		// CG-2 park flag: set when launchSession REFUSES on the token budget (the narrow race past the
 		// drain gate). A parked item is RELEASED back to pending (re-drains when spend frees) — it must
 		// NOT be completed-failed nor its task burned-to-failed in the finally (that would drop the work).
@@ -1501,7 +1562,17 @@ export class Orchestrator {
 							// They share the post-task runner so a test drives gate, review and git from
 							// ONE scripted seam (no live process).
 							...(this.#postTask.preCommitGate
-								? { gate: { enabled: true, runner: this.#postTask.runner } }
+								? {
+										gate: {
+											enabled: true,
+											runner: this.#postTask.runner,
+											// Capture the verdict as soon as it exists — a fault anywhere downstream
+											// (commit, completion event, game-verify) must not be able to erase it.
+											onVerdict: (g: GateOutcome) => {
+												gateVerdict = g.status;
+											}
+										}
+									}
 								: {}),
 							...(this.#postTask.review?.enabled
 								? {
@@ -1522,6 +1593,7 @@ export class Orchestrator {
 					// additionally name it in the DRAIN LEDGER (absorbed:false — this DID change the
 					// verdict), because "my change is missing from main" must have an answer the
 					// operator can find without reading a log.
+					gateVerdict = ptRes.gate?.status ?? gateVerdict;
 					gateFailed = ptRes.gate?.status === 'failed';
 					if (gateFailed) {
 						ok = false;
@@ -1652,8 +1724,21 @@ export class Orchestrator {
 					// case). Said out loud in the ledger either way, because "my change is missing from
 					// main" and "my change landed unverified" are both questions this row must answer.
 					const gateArmed = this.#postTask?.preCommitGate === true;
+					// A verdict CAPTURED before the fault (gate.onVerdict) is the one that landed the
+					// task's terminal status inside runPostTask, so a red one must still withhold the
+					// merge as 'gate-failed' — the stronger, more actionable reason — even though the
+					// loop then threw and the pre_commit_gate ledger row above was never reached.
+					if (gateVerdict === 'failed') gateFailed = true;
+					// F-008 — say which of the two things happened. "The gate returned NO verdict" was
+					// printed for every fault in the block, including the ones that happened after a green
+					// gate.
+					const gateNote = !gateArmed
+						? ''
+						: gateVerdict === undefined
+							? ' — the pre-commit gate returned NO verdict, so the branch is PRESERVED, not merged'
+							: ` — the pre-commit gate had already returned '${gateVerdict}'; the fault is downstream of it, so the branch is PRESERVED, not merged`;
 					console.warn(
-						`[orchestrator] post-task loop failed for task ${taskId} (spawn verdict unchanged; commit/test may NOT have run)${gateArmed ? ' — the pre-commit gate returned NO verdict, so the branch is PRESERVED, not merged' : ''}: ${(ptErr as Error).message}`
+						`[orchestrator] post-task loop failed for task ${taskId} (spawn verdict unchanged; commit/test may NOT have run)${gateNote}: ${(ptErr as Error).message}`
 					);
 					await recordDrainFault(this.#db, {
 						stage: 'post_task',
@@ -1665,14 +1750,22 @@ export class Orchestrator {
 						workType,
 						absorbed: true,
 						context: {
-							consequence: gateArmed
-								? 'the session verdict stands, but the commit / project-test step may not have completed — the pre-commit gate produced NO verdict, so the session branch is PRESERVED and was NOT merged into the project branch (the work, committed or not, is intact in the worktree)'
-								: 'the session verdict stands, but the commit / project-test step may not have completed — check the session branch for uncommitted work',
+							consequence: !gateArmed
+								? 'the session verdict stands, but the commit / project-test step may not have completed — check the session branch for uncommitted work'
+								: gateVerdict === undefined
+									? 'the session verdict stands, but the commit / project-test step may not have completed — the pre-commit gate produced NO verdict, so the session branch is PRESERVED and was NOT merged into the project branch (the work, committed or not, is intact in the worktree)'
+									: `the session verdict stands, but the commit / project-test step may not have completed — the pre-commit gate DID return '${gateVerdict}' and the fault is downstream of it, so the session branch is PRESERVED and was NOT merged into the project branch (the work, committed or not, is intact in the worktree)`,
 							// The gate's own state at the moment of the fault — an operator deciding whether
-							// to re-run needs to know whether "no verdict" means "not armed" or "armed and
-							// it never answered".
+							// to re-run needs to know whether "no verdict" means "not armed", "armed and it
+							// never answered", or "armed, answered, and something after it broke". The catch
+							// spans the WHOLE block (gate → transition → commit → review → completion event →
+							// game-verify), so the third case is the common one and asserting the second about
+							// it is a false ledger row (F-008).
 							gate_armed: gateArmed,
-							gate_verdict: 'none — the post-task loop faulted before one was produced'
+							gate_verdict:
+								gateVerdict === undefined
+									? 'none — the post-task loop faulted before one was produced'
+									: `${gateVerdict} — produced BEFORE the fault; the fault is downstream of the gate`
 						}
 					});
 				}
@@ -1695,16 +1788,20 @@ export class Orchestrator {
 				// (the post-task block threw). Unverified is unverified — it rides the same
 				// `exitState !== 'done'` preserve branch as every other withheld outcome (F-055), and
 				// only when a gate was actually armed, so a drain with the gate off is unchanged (F-053).
-				const gateUnknown = postTaskFaulted && this.#postTask?.preCommitGate === true;
-				const exitState: SessionExitState = gateFailed
-					? 'gate-failed'
-					: !ok
-						? 'failed'
-						: gateUnknown
-							? 'gate-unknown'
-							: reviewHeld
-								? 'review-held'
-								: 'done';
+				//
+				// …and 'post-task-faulted' is its twin for the case the follow-on DoD-review caught: the
+				// gate ANSWERED and the fault came after it. Identical safety (the same preserve branch —
+				// the commit may not have happened, and the 'done' path would tear the worktree down,
+				// F-007), different stamped reason, because "the gate produced no verdict" is a false
+				// statement about a run that has one (F-008).
+				const exitState: SessionExitState = resolveSessionExitState({
+					gateFailed,
+					ok,
+					postTaskFaulted,
+					gateArmed: this.#postTask?.preCommitGate === true,
+					gateVerdict,
+					reviewHeld
+				});
 				await this.#mergeBackSession(res.sessionId, projectId, exitState).catch(
 					async (mbErr) => {
 						console.warn(

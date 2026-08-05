@@ -125,9 +125,13 @@ describe('guard — `.mjs` shebang line endings (vitest collect-time SyntaxError
 				`contributes 0 tests, while \`node --check\` still passes.\n\n` +
 				`This is a WORKING-TREE artifact, not a content bug: the git blobs are already LF. ` +
 				`Repo .gitattributes pins \`*.mjs text eol=lf\`, but a worktree checked out BEFORE that ` +
-				`landed still holds the old CRLF bytes. Repair in place (do NOT use \`git checkout --\`, F-058):\n` +
-				`  node -e "const fs=require('fs');for(const f of ${JSON.stringify(offenders)})` +
-				`fs.writeFileSync(f,fs.readFileSync(f,'utf8').replace(/\\r\\n/g,'\\n'))"\n\n` +
+				`landed still holds the old CRLF bytes. Repair in place (do NOT use \`git checkout --\`, ` +
+				`F-058). Stage-then-rename, never a bare writeFileSync: writeFileSync TRUNCATES first, ` +
+				`so an interrupt part-way through the loop would leave a source file empty or half — ` +
+				`the exact half-state a re-runnable step must never produce:\n` +
+				`  node -e "const fs=require('fs');for(const f of ${JSON.stringify(offenders)}){` +
+				`const t=fs.readFileSync(f,'utf8').replace(/\\r\\n/g,'\\n');` +
+				`fs.writeFileSync(f+'.eolfix',t);fs.renameSync(f+'.eolfix',f)}"\n\n` +
 				`Offenders:`
 		).toEqual([]);
 	});

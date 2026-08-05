@@ -190,10 +190,59 @@ function collapseWs(s: string): string {
 	return s.replace(/\s+/g, ' ');
 }
 
+// Paren depth at every index of `src` — `(` carries its OUTER depth, `)` its outer depth too,
+// so a whole `( … )` group reads as "deeper" only strictly between the brackets. Used below to
+// tell a SUBQUERY apart from the statement that contains it. Clamped at 0 so an unbalanced `)`
+// inside a string literal degrades to depth-0 rather than going negative.
+function parenDepths(src: string): number[] {
+	const depths = new Array<number>(src.length);
+	let d = 0;
+	for (let i = 0; i < src.length; i++) {
+		const ch = src[i];
+		if (ch === '(') {
+			depths[i] = d;
+			d++;
+		} else if (ch === ')') {
+			d = d > 0 ? d - 1 : 0;
+			depths[i] = d;
+		} else {
+			depths[i] = d;
+		}
+	}
+	return depths;
+}
+
+// The SurrealQL clauses that TERMINATE an `ORDER BY` / `GROUP BY` field list. A second ordering
+// clause terminates the first, which is what makes `GROUP BY … ORDER BY …` legible as two
+// clauses instead of one un-parseable blob.
+const ORDERING_CLAUSE =
+	/\b(?:ORDER|GROUP) BY\s+(.+?)(?=\s+(?:LIMIT|START|FETCH|TIMEOUT|PARALLEL|EXPLAIN|ORDER BY|GROUP BY)\b|$)/g;
+
 // F-020 detector: every field named in an `ORDER BY` / `GROUP BY` must also appear in that same
 // statement's `SELECT` projection, or SurrealDB errors at QUERY time — a live-only failure a
 // `stubDb()` unit test can never catch, because it does not parse SurrealQL. This has recurred
 // 3× in this repo, which is what earns it a static check.
+//
+// THE INPUT IS TYPESCRIPT, NOT SQL — which is the whole difficulty, and was the bug. The first
+// cut split the source on `;` and treated each chunk as one statement. In TypeScript `;` is not
+// a SQL delimiter and the surrounding prose freely contains SQL-shaped words, so that produced
+// BOTH failure directions on real files:
+//   • FALSE POSITIVE — a case-insensitive `FROM` anchor bound to a lowercase TypeScript `from`
+//     (`import … from`, `Array.from(…)`, a comment saying "pulled from cache") sitting ahead of
+//     the real SQL, truncating the projection to nothing and reporting every ordering key of a
+//     PERFECTLY CORRECT query as an offender. A guard that reds on correct SQL is worse than no
+//     guard: it teaches people to weaken the query.
+//   • FALSE NEGATIVE — one `;`-chunk can hold two clauses or two statements, and a single
+//     non-global `.exec` plus a first-`SELECT`-anchored projection made the second invisible.
+//     `GROUP BY … ORDER BY …` (the standard analytics-rollup shape) was entirely unchecked.
+//
+// So the scan anchors on SQL, not on chunks: each `SELECT` keyword starts a statement whose
+// extent runs to the first `;`, the next SIBLING `SELECT` (a DEEPER one is a subquery and stays
+// part of this statement), or the close of the enclosing paren group. Every keyword match is
+// UPPERCASE-only and must sit at the statement's own paren depth, so neither TypeScript prose
+// nor a subquery's clauses can be mistaken for the statement's own. (The `SELECT` gate was
+// already case-sensitive before this, so requiring uppercase throughout removes no coverage —
+// SurrealQL keywords are uppercase in all 11 catalogued readers.)
 //
 // Returns one entry per violating field. `onStatement` is invoked for every ordered statement
 // actually inspected, so a caller can prove the scan is not silently looking at nothing.
@@ -204,30 +253,67 @@ function orderKeysNotProjected(
 	const out: Array<{ field: string; stmt: string }> = [];
 	// Shadow path — nil/empty source: nothing to inspect, and never a throw.
 	if (!source) return out;
-	for (const stmt of collapseWs(source.replace(/\r\n/g, '\n')).split(';')) {
-		if (!/\bSELECT\b/.test(stmt)) continue;
-		const m = /\b(?:ORDER|GROUP) BY\s+(.+?)(?:\s+LIMIT\b|\s*$)/i.exec(stmt);
-		if (!m) continue;
-		const fromAt = stmt.search(/\bFROM\b/i);
-		// Shadow path — an ordered statement with no FROM (a malformed or inlined fragment):
-		// there is no projection to check against, so it cannot be judged.
-		if (fromAt === -1) continue;
-		onStatement();
-		const projection = stmt.slice(0, fromAt);
-		// `SELECT *` and `SELECT VALUE x` project everything / a single value — exempt.
-		if (/\bSELECT\s+(\*|VALUE\b)/i.test(projection)) continue;
-		for (const term of m[1].split(',')) {
-			const field = term
-				.trim()
-				.replace(/\s+(ASC|DESC|COLLATE|NUMERIC)\b.*$/i, '')
-				.trim();
-			// Only plain column references are checkable; expressions/functions are skipped
-			// rather than guessed at — a false FAIL here would push someone to weaken a query.
-			if (!/^[a-z_][a-z0-9_]*$/i.test(field)) continue;
-			if (!new RegExp(`\\b${field}\\b`).test(projection)) {
-				out.push({ field, stmt: stmt.trim().slice(0, 120) });
+	const src = collapseWs(source.replace(/\r\n/g, '\n'));
+	const depths = parenDepths(src);
+	const heads = [...src.matchAll(/\bSELECT\b/g)].map((m) => m.index);
+
+	for (let h = 0; h < heads.length; h++) {
+		const start = heads[h];
+		const depth = depths[start];
+		// Extent: the first `;` or the point where the enclosing paren group closes…
+		let end = src.length;
+		for (let j = start + 'SELECT'.length; j < src.length; j++) {
+			if (src[j] === ';' || depths[j] < depth) {
+				end = j;
+				break;
 			}
 		}
+		// …or the next SIBLING/outer `SELECT`, whichever comes first. A deeper `SELECT` is a
+		// subquery of THIS statement and must not truncate it.
+		for (let k = h + 1; k < heads.length && heads[k] < end; k++) {
+			if (depths[heads[k]] <= depth) {
+				end = heads[k];
+				break;
+			}
+		}
+		const stmt = src.slice(start, end);
+
+		// The FROM that binds THIS statement: uppercase, after the SELECT, at the SELECT's own
+		// depth. A lowercase TypeScript `from` and a subquery's `FROM` are both invisible here.
+		let fromAt = -1;
+		for (const m of stmt.matchAll(/\bFROM\b/g)) {
+			if (depths[start + m.index] === depth) {
+				fromAt = m.index;
+				break;
+			}
+		}
+		// Shadow path — a statement with no FROM of its own (prose containing the word SELECT, a
+		// malformed or inlined fragment): there is no projection to check against, so it cannot
+		// be judged.
+		if (fromAt === -1) continue;
+		const projection = stmt.slice(0, fromAt);
+		// `SELECT *` and `SELECT VALUE x` project everything / a single value — exempt.
+		if (/\bSELECT\s+(\*|VALUE\b)/.test(projection)) continue;
+		let ordered = false;
+		// EVERY ordering clause, not just the first — `GROUP BY x ORDER BY y` is two clauses.
+		for (const m of stmt.matchAll(ORDERING_CLAUSE)) {
+			// A clause belonging to a nested subquery is checked when that subquery is visited.
+			if (depths[start + m.index] !== depth) continue;
+			ordered = true;
+			for (const term of m[1].split(',')) {
+				const field = term
+					.trim()
+					.replace(/\s+(ASC|DESC|COLLATE|NUMERIC)\b.*$/i, '')
+					.trim();
+				// Only plain column references are checkable; expressions/functions are skipped
+				// rather than guessed at — a false FAIL here would push someone to weaken a query.
+				if (!/^[a-z_][a-z0-9_]*$/i.test(field)) continue;
+				if (!new RegExp(`\\b${field}\\b`).test(projection)) {
+					out.push({ field, stmt: stmt.trim().slice(0, 120) });
+				}
+			}
+		}
+		if (ordered) onStatement();
 	}
 	return out;
 }
@@ -330,6 +416,8 @@ describe('PART A — static grep-and-assert: every `memory`-row reader is classi
 		// Detects the real defect, in both ORDER BY and GROUP BY form.
 		expect(g('SELECT id, importance FROM memory ORDER BY importance DESC, created_at DESC;')).toEqual(['created_at']);
 		expect(g('SELECT count() AS c FROM memory GROUP BY category;')).toEqual(['category']);
+		// …and in the COMBINED form, which is the shape the first cut could not see at all.
+		expect(g('SELECT count() AS c FROM memory GROUP BY category ORDER BY created_at DESC LIMIT 5;')).toEqual(['category', 'created_at']);
 		// Clean queries stay clean — including under CRLF and heavy indentation (the F-054 shape).
 		expect(g('SELECT id, importance, created_at FROM memory ORDER BY importance DESC, created_at DESC LIMIT $l;')).toEqual([]);
 		expect(g('SELECT id,\r\n\t importance,\r\n\t created_at\r\n FROM memory\r\n ORDER BY importance DESC, created_at DESC\r\n LIMIT $l;')).toEqual([]);
@@ -342,6 +430,51 @@ describe('PART A — static grep-and-assert: every `memory`-row reader is classi
 		// Shadow paths — empty input, and source with no SELECT at all.
 		expect(g('')).toEqual([]);
 		expect(g('const x = 1;')).toEqual([]);
+	});
+
+	it('REGRESSION: the F-020 detector does NOT red on CORRECT SQL sitting next to TypeScript `from`', () => {
+		// THE FAIL THIS CLOSES. The first cut anchored the projection on a CASE-INSENSITIVE `FROM`
+		// searched over raw TypeScript, so the first lowercase `from` in the `;`-chunk — an import,
+		// an `Array.from`, a comment — truncated the projection to nothing and every ordering key
+		// of a PERFECTLY CORRECT query came back an offender. There are 90 such non-import `from`
+		// occurrences across the catalogued readers (scene.ts alone has 30); the guard was one
+		// statement reorder away from reporting a fabricated F-020 violation, which is precisely
+		// the mystery-red this whole wave exists to end.
+		const g = (s: string) => orderKeysNotProjected(s).map((o) => o.field);
+		const CORRECT = 'SELECT id, importance, created_at FROM memory ORDER BY importance DESC, created_at DESC LIMIT $l';
+		// A comment, an ASI-style import, and a call — each ahead of a correct query, none an offender.
+		expect(g('const t = 1 // pulled from cache\nconst r = await db.query(`' + CORRECT + '`)')).toEqual([]);
+		expect(g("import { Db } from '../db/client'\nconst r = await db.query(`" + CORRECT + '`)')).toEqual([]);
+		expect(g('const ids = Array.from(set)\nconst r = await db.query(`' + CORRECT + '`)')).toEqual([]);
+		// A lowercase `from` AFTER the query (a params object) is equally harmless.
+		expect(g('await db.query(`' + CORRECT + '`, { l: Array.from(s).length })')).toEqual([]);
+		// Still sensitive: the SAME surroundings around a genuinely BROKEN query still red.
+		expect(
+			g('const ids = Array.from(set)\nconst r = await db.query(`SELECT id, importance FROM memory ORDER BY importance DESC, created_at DESC LIMIT $l`)')
+		).toEqual(['created_at']);
+	});
+
+	it('REGRESSION: the F-020 detector sees BOTH clauses, and each of two statements in one chunk', () => {
+		// Second half of the same root cause — a `;`-chunk of TypeScript is not one SQL statement.
+		const g = (s: string) => orderKeysNotProjected(s).map((o) => o.field);
+		// (a) GROUP BY + ORDER BY in ONE statement: a single `.exec` saw only the first clause and
+		// its capture swallowed the second, so the analytics-rollup shape was never checked at all.
+		expect(g('SELECT category, count() AS c FROM memory GROUP BY category ORDER BY created_at DESC LIMIT 5;')).toEqual(['created_at']);
+		// The clean counterpart of that same shape stays clean.
+		expect(g('SELECT category, created_at, count() AS c FROM memory GROUP BY category ORDER BY created_at DESC LIMIT 5;')).toEqual([]);
+		// (b) TWO SELECTs sharing one `;`-chunk: the second statement's violation was masked
+		// because the projection slice resolved against the FIRST SELECT.
+		expect(
+			g('const a = `SELECT id, created_at FROM memory ORDER BY created_at DESC`, b = `SELECT id FROM memory ORDER BY importance DESC`;')
+		).toEqual(['importance']);
+		// (c) A SUBQUERY is its own statement — it neither truncates its parent nor inherits its
+		// parent's projection. Both the parent's ordering key and the subquery's are checked.
+		expect(
+			g('SELECT out FROM references WHERE in IN (SELECT VALUE id FROM memory WHERE project = $p) ORDER BY out DESC;')
+		).toEqual([]);
+		expect(
+			g('SELECT out FROM references WHERE in IN (SELECT id FROM memory ORDER BY created_at DESC) ORDER BY kind DESC;')
+		).toEqual(['kind', 'created_at']); // parent first (source order), then the subquery
 	});
 
 	it('F-020: every ORDER BY / GROUP BY field in a catalogued reader appears in its own SELECT', () => {

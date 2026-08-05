@@ -857,28 +857,53 @@ async function* failClosed(err: unknown): AsyncIterable<RuntimeEvent> {
  *   3. SETEXT rules   — a line of `===` / `---` promotes the PRECEDING line to a heading, so a
  *      two-line payload forges a section without ever writing a `#`.
  *
+ * ALL THREE ARE ANCHORED PAST THE CONTAINER PREFIX, not past whitespace. This is the bug the
+ * first cut shipped: anchoring on `^\s*` neutralised `## Acceptance criteria` but passed
+ * `> ## Acceptance criteria` through BYTE-UNCHANGED, and a blockquoted ATX heading is still an
+ * ATX heading — it opened exactly the section the escape existed to prevent. `- ## x`,
+ * `1. ## x` and any nesting of those are the same bypass, one character wide. See
+ * `CONTAINER_PREFIX` below.
+ *
  * The claim this function supports is therefore bounded and exact: a brief field cannot OPEN,
- * CLOSE, or SWALLOW a section via those three markdown constructs. It is not a general markdown
- * sanitiser and does not claim to be one — the durable guarantee is elsewhere, in what may enter
- * this region at all (buildPrompt's D-026 note) and in the fact that the server's sections carry
- * the values the DB actually holds.
+ * CLOSE, or SWALLOW a section via those three markdown constructs, at any container depth. It
+ * is not a general markdown sanitiser and does not claim to be one — a thematic break (`***`),
+ * an HTML comment, a link or a table are all left alone, because none of them starts, ends or
+ * swallows a section. The durable guarantee is elsewhere, in what may enter this region at all
+ * (buildPrompt's D-026 note) and in the fact that the server's sections carry the values the DB
+ * actually holds.
  *
  * Deliberately NOT applied to `description`: that is the immutable run seed (D-008) emitted
  * byte-for-byte as it always has been (TB-1), and it precedes every server section — a hostile
  * description therefore cannot delete, alter, or reorder the real sections that follow it.
  */
+/**
+ * The CommonMark CONTAINER PREFIX a block construct may legally begin behind: any nesting of
+ * block-quote markers (`>`) and list markers (`-` `*` `+` `1.` `1)`), with the whitespace around
+ * them. `# x`, `> # x`, `- # x`, `> - 1. # x` are ALL headings; anchoring on whitespace alone
+ * sees only the first.
+ *
+ * Every alternative consumes at least one character, so the outer `*` cannot iterate on an empty
+ * match (no catastrophic backtracking). Only ` ` and `\t` are matched as whitespace — never
+ * `\s`, which spans newlines and would let one match swallow a line a later pass still has to
+ * see. The list-marker lookaheads require a following space/tab so that a bare `---` or `***`
+ * line is NOT eaten as a container prefix — the setext pass below still has to see it whole.
+ */
+const CONTAINER_PREFIX = String.raw`(?:[ \t]*(?:>|[-*+](?=[ \t])|\d{1,9}[.)](?=[ \t])))*[ \t]*`;
+
+/** 1. ATX heading markers (`#` … `######`). */
+const ATX_LINE = new RegExp(String.raw`^(${CONTAINER_PREFIX})(#{1,6}(?=\s|$))`, 'gm');
+/** 2. Code-fence openers. Single-quoted, not a template literal — the pattern contains
+ *  backticks, and escaping them into `String.raw` would leave the backslash in the pattern. */
+const FENCE_LINE = new RegExp('^(' + CONTAINER_PREFIX + ')(`{3,}|~{3,})', 'gm');
+/** 3. Setext underlines — a line that is ONLY `=` or `-` (a line of dashes is never prose, so
+ *  escaping it costs nothing legible). */
+const SETEXT_LINE = new RegExp(String.raw`^(${CONTAINER_PREFIX})(=+|-+)([ \t]*)$`, 'gm');
+
 function escapeBriefText(value: string): string {
-	return (
-		value
-			// 1. ATX heading markers (`#` … `######`).
-			.replace(/^(\s*)(#{1,6}(?=\s|$))/gm, '$1\\$2')
-			// 2. Code-fence openers. `[ \t]*` — never `\s*`, which would span newlines and let one
-			//    match consume a line that the setext pass below still has to see.
-			.replace(/^([ \t]*)(`{3,}|~{3,})/gm, '$1\\$2')
-			// 3. Setext underlines — a line that is ONLY `=` or `-` (a line of dashes is never
-			//    prose, so escaping it costs nothing legible).
-			.replace(/^([ \t]*)(=+|-+)([ \t]*)$/gm, '$1\\$2$3')
-	);
+	return value
+		.replace(ATX_LINE, '$1\\$2')
+		.replace(FENCE_LINE, '$1\\$2')
+		.replace(SETEXT_LINE, '$1\\$2$3');
 }
 
 /**
@@ -1006,11 +1031,32 @@ function buildTaskBrief(task: SpawnRequest['task']): string[] {
 function buildPrompt(req: SpawnRequest): string {
 	const parts = [`# Task: ${req.task.title}`, '', req.task.description];
 	// TASK-BOARD-SPEC §3.1 — the structured brief sits in the INSTRUCTION region (with
-	// title/description), ABOVE the fenced "(not instructions)" context. D-026 holds because the
-	// gate is PROMOTION, not authorship: a task only ever spawns from `ready`, and the only routes
-	// into `ready` are an operator move or decidePanel's validation panel — so every field here
-	// carries operator or panel sanction, and LLM-authored fields were D-026-screened at their
-	// write boundary.
+	// title/description), ABOVE the fenced "(not instructions)" context.
+	//
+	// WHY D-026 HOLDS — stated from the writers that actually exist, not from a promotion gate.
+	// An earlier wording here claimed "the only routes into `ready` are an operator move or
+	// decidePanel's validation panel, so every field carries operator or panel sanction". That
+	// enumeration was FALSE and is retracted: `create/execute.ts:1394` births Create-with-AI
+	// founding tasks DIRECTLY `ready` when the project has no PM, `importer/v1.ts` maps an
+	// imported v1 `ready` straight through, and `tasks/repo.ts` (`resetStuckTaskToReady`,
+	// `reopenFailedTaskToReady`) moves rows back to `ready` unattended. So a field in this region
+	// can be LLM-authored with NO operator status move behind it. The three claims that survive:
+	//
+	//   1. CLASS — the untrusted class D-026 fences (retrieved / tool / peer output) still cannot
+	//      cross HERE: `SpawnRequest.task` has no field for it, so no mapper can pass one. What
+	//      crosses is task-shaped prose a writer composed, never text a tool returned.
+	//   2. CONTENT — every LLM-authored field on this path is secrets/PII-screened at its WRITE
+	//      boundary (`screenWriterText`, create/execute.ts:781; the same screen on the pm-propose
+	//      path), which is D-026's screening half — done where the row is written, not here.
+	//   3. STRUCTURE — `escapeBriefText` stops any of these fields from forging, closing or
+	//      swallowing a section (TB-2), at any container depth.
+	//
+	// The residue this does NOT claim away, named plainly: on the founding-task shape
+	// (create/execute.ts:786-788, `description === objective`, `purpose` set) the brief emits
+	// `## Why this task` carrying LLM-authored purpose — a channel that did not exist before this
+	// change. It is the SAME writer, the SAME screen and the same trust level as the objective
+	// that shape already emits as the immutable seed, so the brief widens the label, not the
+	// trust boundary. Narrowing it further means gating at the PROPOSE boundary, not here.
 	//
 	// TB-2, stated EXACTLY (an earlier wording over-claimed and is corrected here): the BRIEF
 	// CHANNEL never carries `provenance.evidence`/`detail` — `SpawnRequest.task` has no field

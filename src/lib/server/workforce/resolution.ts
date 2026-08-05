@@ -461,12 +461,28 @@ export interface ProposalComparison {
 	/** challenger − incumbent on the surfaced columns; null when not comparable. */
 	delta: { recall: number | null; falsePositives: number | null; costUsd: number | null } | null;
 	at: string;
+	/**
+	 * WHICH writer produced this comparison — stamped at the two persist sites below and read back
+	 * by `repo.comparisonWriteVerdict`, which decides who yields when both writers hold a verdict
+	 * for the same proposal. 'regauntlet' cost real money on that call; 'reconcile' was re-derived
+	 * for free from a run already on disk. Absent on the transient `unscoredComparison` (never
+	 * persisted) and on rows written before the field existed — the repo reads absent as "assume
+	 * PAID", the only reading that cannot discard a bought verdict.
+	 */
+	source?: 'regauntlet' | 'reconcile';
 }
 
 export interface RegauntletResult {
 	outcome: GauntletOutcome;
 	proposal: ReviewProposalRow;
 	comparison: ProposalComparison | null;
+	/**
+	 * The run whose FREE (reconcile-derived) comparison this paid write displaced, or null — the
+	 * far side of the collision rule, surfaced so a displacement is never silent. Non-null means:
+	 * a reconcile had already recorded run X's verdict, this paid run's verdict replaced it, and
+	 * run X's scores are still on its own row (nothing was destroyed, only the pointer moved).
+	 */
+	displacedComparisonFrom: string | null;
 }
 
 interface IncumbentRunRow {
@@ -565,7 +581,7 @@ export async function regauntletChallenger(
 
 	// A queued outcome (auto + unarmed budget) did not run — record nothing, stay 'interviewing'.
 	if (outcome.kind === 'queued') {
-		return { outcome, proposal, comparison: null };
+		return { outcome, proposal, comparison: null, displacedComparisonFrom: null };
 	}
 
 	const run = outcome.run;
@@ -579,36 +595,56 @@ export async function regauntletChallenger(
 			outcome,
 			// The proposal row is NOT advanced and NOT written — see the header comment.
 			proposal,
-			comparison: unscoredComparison(run)
+			comparison: unscoredComparison(run),
+			displacedComparisonFrom: null
 		};
 	}
 
 	const incumbentRun = await loadIncumbentBaseline(db, proposal.incumbent, input.modelId);
-	const comparison = buildComparison(run, incumbentRun);
+	// PROVENANCE, stamped on the object that is BOTH persisted and returned, so the row and the
+	// caller's copy can never disagree about who paid for this verdict. It is what lets the repo's
+	// collision rule keep this comparison and yield the free one — see comparisonWriteVerdict.
+	const comparison: ProposalComparison = {
+		...buildComparison(run, incumbentRun),
+		source: 'regauntlet'
+	};
 
 	// THE SECOND-WRITER SEAM. `proposal.status` was read at the TOP of this function, before a
 	// gauntlet that spends real money and takes minutes; ②b reconcile is an independent writer of
 	// the same 'compared' state and only the browser serialises the two (one tab's `busy` flag).
-	// So the row can already be 'compared' by the time this write lands. setProposalStatus refuses
-	// that by name instead of absorbing it — the refusal is re-thrown as a ResolutionGateError so
-	// the operator surface renders it beside the card, and it NAMES this run, because the spend
-	// really happened and the scored row really exists even though the proposal did not move.
+	// So the row can already be 'compared' by the time this write lands — and it can become so
+	// between setProposalStatus's own read and its write, which is why that write is a
+	// compare-and-swap rather than an unconditional UPDATE (F-048: guard the transition too).
+	//
+	// Outcomes, all three named: a FREE (reconcile) comparison YIELDS to this paid one and the run
+	// it came from is reported back in `displacedComparisonFrom` (displacement is never silent);
+	// any other stored verdict — another paid one, or an unstamped one read as paid — refuses, and
+	// the refusal keeps its CLASS (ProposalComparisonCollisionError, one HTTP status on every
+	// route) while NAMING this run, because the spend really happened and the scored row really
+	// exists even though the proposal did not move.
 	let moved: ReviewProposalRow;
+	const displaced: { run: string | null } = { run: null };
 	try {
 		moved = await setProposalStatus(db, proposal.id, {
 			to: 'compared',
-			comparison: comparison as unknown as Record<string, unknown>
+			comparison: comparison as unknown as Record<string, unknown>,
+			onDisplace: (r) => {
+				displaced.run = r;
+			}
 		});
 	} catch (err) {
 		if (err instanceof ProposalComparisonCollisionError) {
-			throw new ResolutionGateError(
-				`${err.message} This re-gauntlet's run ${run.id} DID run and WAS paid for — its scores are on that run row; ` +
+			throw new ProposalComparisonCollisionError(
+				err.proposal,
+				err.storedRun,
+				err.incomingRun,
+				`This re-gauntlet's run ${run.id} DID run and WAS paid for — its scores are on that run row; ` +
 					`nothing was overwritten and the proposal keeps the comparison it already had (§5).`
 			);
 		}
 		throw err;
 	}
-	return { outcome, proposal: moved, comparison };
+	return { outcome, proposal: moved, comparison, displacedComparisonFrom: displaced.run };
 }
 
 // ── Step ②b — RECONCILE: consume the run the proposal is ALREADY waiting on (§5, no spend) ──
@@ -647,7 +683,14 @@ export type ReconcileOutcome =
 	/** The challenger has no interview_run at all — nothing was ever paid for. */
 	| 'no_run'
 	/** The run exists but is STILL non-terminal — there is genuinely no verdict yet. */
-	| 'still_pending';
+	| 'still_pending'
+	/**
+	 * A rival writer recorded a comparison for this proposal while this reconcile was deriving
+	 * one, and the repo's collision rule kept theirs. NOTHING was written and NOTHING was spent —
+	 * this path re-derives its verdict for free and can simply be repeated once the row settles.
+	 * It is the yielding side of the paid-over-free rule, and it is reported, never swallowed.
+	 */
+	| 'superseded';
 
 export interface ReconcileProposalInput {
 	proposal: string;
@@ -685,6 +728,10 @@ export interface ReconcileProposalResult {
  *   • upstream error — the run is 'error' (broke before scoring) or still 'running' /
  *                      'adjudicating' → 'still_pending' with the SAME wording the paid path uses,
  *                      and NOTHING written. A broken run must never be consumed as a verdict.
+ *   • rival writer   — a paid re-gauntlet recorded its comparison first (or landed between this
+ *                      function's read and its compare-and-swap) → 'superseded', NOTHING written.
+ *                      This side yields by design: its verdict is free to re-derive, the paid one
+ *                      is not (see `repo.comparisonWriteVerdict`).
  */
 export async function reconcileProposalFromRun(
 	db: Db,
@@ -745,11 +792,38 @@ export async function reconcileProposalFromRun(
 	// of a run that never touched that model; `buildComparison` would then still mark it
 	// incomparable, but the incumbent column would be a baseline the challenger never faced.
 	const incumbentRun = await loadIncumbentBaseline(db, proposal.incumbent, run.model_id);
-	const comparison = buildComparison(run, incumbentRun);
-	const moved = await setProposalStatus(db, proposal.id, {
-		to: 'compared',
-		comparison: comparison as unknown as Record<string, unknown>
-	});
+	// PROVENANCE (see the paid twin): this verdict cost nothing, and saying so on the row is what
+	// lets a paid rival displace it instead of being discarded by it.
+	const comparison: ProposalComparison = {
+		...buildComparison(run, incumbentRun),
+		source: 'reconcile'
+	};
+	let moved: ReviewProposalRow;
+	try {
+		moved = await setProposalStatus(db, proposal.id, {
+			to: 'compared',
+			comparison: comparison as unknown as Record<string, unknown>
+		});
+	} catch (err) {
+		// THE YIELDING SIDE of the collision rule. A rival got there first, so this free
+		// re-derivation is refused — as a named OUTCOME, not an exception the route turns into a
+		// server fault, because from the operator's side nothing failed and nothing was lost: the
+		// proposal already carries a verdict, and this one can be re-derived at any time for free.
+		if (err instanceof ProposalComparisonCollisionError) {
+			const current = (await getReviewProposal(db, proposal.id)) ?? proposal;
+			return {
+				outcome: 'superseded',
+				proposal: current,
+				comparison: null,
+				run: run.id,
+				reason:
+					`${err.message} This reconcile re-derived run ${run.id}'s verdict for FREE and spent ` +
+					`nothing, so nothing is lost — the proposal already carries a comparison another writer ` +
+					`recorded; re-read it (§5).`
+			};
+		}
+		throw err;
+	}
 	return { outcome: 'reconciled', proposal: moved, comparison, run: run.id, reason: null };
 }
 

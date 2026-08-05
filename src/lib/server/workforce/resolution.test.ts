@@ -31,6 +31,7 @@ import {
 	getRoleVersion,
 	listOpenProposals,
 	ProposalComparisonCollisionError,
+	ProposalWriteContentionError,
 	setProposalStatus,
 	swapActiveVersion,
 	transitionLifecycle,
@@ -999,8 +1000,13 @@ describe("§5 the SECOND WRITER of 'compared' — a paid verdict is refused, nev
 	}
 
 	/** A comparison shaped like `buildComparison`'s output, derived from `run`. Stands in for the
-	 *  OTHER writer's payload — reconcile builds exactly this shape from the run it consumes. */
-	function comparisonFrom(run: string): Record<string, unknown> {
+	 *  OTHER writer's payload — reconcile builds exactly this shape from the run it consumes.
+	 *  `source` is the provenance stamp the collision rule reads; omitted = the unstamped/legacy
+	 *  shape, which the repo deliberately treats as PAID. */
+	function comparisonFrom(
+		run: string,
+		source?: 'regauntlet' | 'reconcile'
+	): Record<string, unknown> {
 		return {
 			comparable: false,
 			incomparableReason: 'no incumbent certifying run at this (tier × model_id)',
@@ -1015,8 +1021,14 @@ describe("§5 the SECOND WRITER of 'compared' — a paid verdict is refused, nev
 			},
 			incumbent: null,
 			delta: null,
-			at: new Date().toISOString()
+			at: new Date().toISOString(),
+			...(source ? { source } : {})
 		};
+	}
+
+	/** The provenance stamp on a persisted comparison — who paid for this verdict. */
+	function comparisonSourceOf(c: Record<string, unknown> | null | undefined): unknown {
+		return (c as { source?: unknown } | null | undefined)?.source;
 	}
 
 	/** Every interview_run the proposal's challenger has — the spend, counted as rows. */
@@ -1141,8 +1153,13 @@ describe("§5 the SECOND WRITER of 'compared' — a paid verdict is refused, nev
 			thrown = err;
 		}
 		expect(rivalWritten, 'the rival write must have landed mid-spend').toBe(true);
+		// ONE CONDITION, ONE CLASS. The refusal keeps `ProposalComparisonCollisionError` rather than
+		// being re-wrapped into a ResolutionGateError — the wrap made the identical condition a 400
+		// on this route and a 409 on the reconcile route (refusalStatus maps the class, not the site).
+		// This rival's payload carries NO `source`, which the repo reads as "assume paid": an
+		// unstamped verdict may have cost money, so it is refused, never displaced.
 		expect(thrown, 'the paid write must REFUSE, not return a dropped comparison').toBeInstanceOf(
-			ResolutionGateError
+			ProposalComparisonCollisionError
 		);
 
 		// ① THE SPEND REALLY HAPPENED and is never denied: a new run row exists…
@@ -1164,4 +1181,307 @@ describe("§5 the SECOND WRITER of 'compared' — a paid verdict is refused, nev
 		expect(row!.status).toBe('compared');
 		expect(comparisonRun(row!.comparison)).toBe(rivalRun);
 	}, 90_000);
+
+	// ③ THE SAME INTERLEAVING, WITH THE RIVAL STAMPED AS THE FREE PATH — the outcome INVERTS, and
+	// that inversion is the whole point of the rule. A reconcile-derived comparison can be
+	// re-derived from a run still on disk at zero cost, any time; the paid one cannot be reproduced
+	// without spending again AND could never be re-offered (the re-gauntlet's own gate refuses a
+	// proposal already in 'compared'). So the free verdict yields — VISIBLY, naming the run it came
+	// from — and the money verdict is the one on the row.
+	it('a FREE rival mid-spend YIELDS to the paid verdict, and the displacement is reported, not silent', async () => {
+		const seed = await seedRole();
+		await certifyIncumbent(seed);
+		const proposal = await openProposal(seed);
+		await authorChallenger(db, {
+			proposal: proposal.id,
+			promptCore: 'You are reviewer.\nFree rival mid-spend.',
+			operatorConfirmed: true
+		});
+		const freeRun = 'interview_run:reconciled_for_free';
+
+		const rival = candidateBackend(seed.defectSlug);
+		const inner = rival.run.bind(rival);
+		let rivalWritten = false;
+		rival.run = (plan: CcSpawnPlan): CcBackendRun => {
+			const started = inner(plan);
+			return {
+				ccSessionId: started.ccSessionId,
+				async *stream() {
+					if (!rivalWritten) {
+						rivalWritten = true;
+						await setProposalStatus(db, proposal.id, {
+							to: 'compared',
+							comparison: comparisonFrom(freeRun, 'reconcile')
+						});
+					}
+					yield* started.stream();
+				},
+				cancel: started.cancel
+			};
+		};
+
+		const before = await challengerRunIds(proposal.id);
+		const res = await regauntletChallenger(depsFor(rival), {
+			proposal: proposal.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: MODEL,
+			trigger: 'operator'
+		});
+		expect(rivalWritten, 'the free write must have landed mid-spend').toBe(true);
+		expect(res.outcome.kind).toBe('ran');
+		if (res.outcome.kind !== 'ran') return;
+		const paidRun = res.outcome.run.id;
+
+		// ① THE PAID VERDICT IS ON THE ROW — not merely returned by the function, READ BACK from
+		// SurrealDB, which is precisely the check the original defect passed while lying.
+		const row = await getReviewProposal(db, proposal.id);
+		expect(row!.status).toBe('compared');
+		expect(comparisonRun(row!.comparison)).toBe(paidRun);
+		expect(comparisonSourceOf(row!.comparison)).toBe('regauntlet');
+
+		// ② THE DISPLACEMENT IS NAMED. The operator is told which free comparison was replaced, so
+		// the yielding verdict is never a thing that silently vanished.
+		expect(res.displacedComparisonFrom).toBe(freeRun);
+
+		// ③ EXACTLY ONE VERDICT AND EXACTLY ONE SPEND — never double-counted: one new run row, one
+		// comparison on the row, and the returned comparison is the persisted one.
+		const after = await challengerRunIds(proposal.id);
+		expect(after.length).toBe(before.length + 1);
+		expect(res.comparison!.challenger.run).toBe(paidRun);
+	}, 90_000);
+});
+
+// ── THE WRITE ITSELF IS A COMPARE-AND-SWAP (LC-C2) ───────────────────────────────────
+//
+// THE DEFECT THIS PINS. The refusal above is decided from a READ, and the UPDATE that followed it
+// was UNCONDITIONAL (`UPDATE $rid SET status = $to, comparison = …`). A rival landing between
+// `setProposalStatus`'s own read and that write therefore slipped straight THROUGH the refusal and
+// was overwritten in silence — the same harm one layer down, and the F-048 shape exactly: a guard
+// that covers the insert but not the transition. A named refusal at the wrong layer closes nothing.
+//
+// These tests are RACES, not sequences: the rival writer is fired from inside `db.query`,
+// immediately before the UPDATE statement reaches SurrealDB. That is the real window, entered
+// deterministically on every run — with the old unconditional UPDATE each of them silently
+// clobbers a verdict.
+describe("§5 the 'compared' write is a COMPARE-AND-SWAP — the mid-write window is closed", () => {
+	function comparisonRun(c: Record<string, unknown> | null | undefined): string | null {
+		const ch = (c as { challenger?: { run?: unknown } } | null | undefined)?.challenger;
+		return typeof ch?.run === 'string' ? ch.run : null;
+	}
+	function sourceOf(c: Record<string, unknown> | null | undefined): unknown {
+		return (c as { source?: unknown } | null | undefined)?.source;
+	}
+	function comparisonFrom(run: string, source?: 'regauntlet' | 'reconcile'): Record<string, unknown> {
+		return {
+			comparable: false,
+			incomparableReason: 'no incumbent certifying run at this (tier × model_id)',
+			challenger: { run, status: 'passed', modelId: MODEL, recall: 1, falsePositives: 0, costUsd: null, fixtureSetSha: null },
+			incumbent: null,
+			delta: null,
+			at: new Date().toISOString(),
+			...(source ? { source } : {})
+		};
+	}
+
+	/**
+	 * A `Db` that fires the next rival writer immediately BEFORE each `UPDATE $rid …` it is asked
+	 * to run — i.e. after the caller has read and decided, before the write lands. Reads are passed
+	 * through untouched, so the re-decide after a CAS miss sees the real, rival-modified row.
+	 */
+	function dbRacing(...rivals: Array<() => Promise<unknown>>): Db {
+		let fired = 0;
+		return new Proxy(db, {
+			get(target, prop) {
+				const value = Reflect.get(target, prop, target);
+				if (prop !== 'query' || typeof value !== 'function') {
+					return typeof value === 'function' ? (value as (...a: unknown[]) => unknown).bind(target) : value;
+				}
+				return async (surql: string, bindings: Record<string, unknown> = {}) => {
+					if (surql.startsWith('UPDATE $rid SET') && fired < rivals.length) await rivals[fired++]();
+					return target.query(surql, bindings);
+				};
+			}
+		}) as Db;
+	}
+
+	/** A proposal parked in 'interviewing' — the status both writers of 'compared' start from. */
+	async function parkedProposal(): Promise<string> {
+		const seed = await seedRole();
+		const p = await openProposal(seed);
+		await setProposalStatus(db, p.id, { to: 'diff_review' });
+		await setProposalStatus(db, p.id, { to: 'interviewing' });
+		return p.id;
+	}
+
+	// ① THE WINDOW ITSELF, in the direction that costs money. The free writer wins the row AFTER
+	// the paid writer read it and BEFORE it wrote — the interleaving the unconditional UPDATE could
+	// not see. The CAS misses, the write is DECIDED AGAIN against real state, and the paid verdict
+	// lands by replacing the free one rather than by blindly overwriting whatever is there.
+	it('a rival landing between the read and the write cannot be blind-overwritten — paid displaces free', async () => {
+		const id = await parkedProposal();
+		const freeRun = 'interview_run:free_side';
+		const paidRun = 'interview_run:paid_side';
+		const displaced: Array<string | null> = [];
+		const racing = dbRacing(async () =>
+			setProposalStatus(db, id, { to: 'compared', comparison: comparisonFrom(freeRun, 'reconcile') })
+		);
+
+		const moved = await setProposalStatus(racing, id, {
+			to: 'compared',
+			comparison: comparisonFrom(paidRun, 'regauntlet'),
+			onDisplace: (r) => displaced.push(r)
+		});
+
+		expect(moved.status).toBe('compared');
+		expect(comparisonRun(moved.comparison)).toBe(paidRun);
+		expect(displaced, 'the displacement must be REPORTED — never a silent swap').toEqual([freeRun]);
+		// Read back from SurrealDB: ONE verdict, and it is the one that cost money.
+		const row = await getReviewProposal(db, id);
+		expect(comparisonRun(row!.comparison)).toBe(paidRun);
+		expect(sourceOf(row!.comparison)).toBe('regauntlet');
+	}, 60_000);
+
+	// ② THE MIRROR. Same window, roles swapped: the free writer read first and the PAID verdict
+	// landed underneath it. The free write must not overwrite it — it refuses BY NAME, and the
+	// refusal names both runs so nothing has to be guessed at.
+	it('the mirror interleaving: the FREE write refuses by name rather than overwrite the paid verdict', async () => {
+		const id = await parkedProposal();
+		const freeRun = 'interview_run:free_late';
+		const paidRun = 'interview_run:paid_first';
+		const racing = dbRacing(async () =>
+			setProposalStatus(db, id, { to: 'compared', comparison: comparisonFrom(paidRun, 'regauntlet') })
+		);
+
+		let thrown: unknown = null;
+		try {
+			await setProposalStatus(racing, id, {
+				to: 'compared',
+				comparison: comparisonFrom(freeRun, 'reconcile')
+			});
+		} catch (err) {
+			thrown = err;
+		}
+		expect(thrown).toBeInstanceOf(ProposalComparisonCollisionError);
+		expect((thrown as Error).message).toContain(paidRun);
+		expect((thrown as Error).message).toContain(freeRun);
+		expect((thrown as Error).message).toMatch(/NOT recorded/);
+
+		const row = await getReviewProposal(db, id);
+		expect(comparisonRun(row!.comparison)).toBe(paidRun);
+		expect(sourceOf(row!.comparison)).toBe('regauntlet');
+	}, 60_000);
+
+	// ③ THE CONSERVATIVE SHADOW PATH. An UNSTAMPED stored comparison (written before the field
+	// existed, or unreadable) is read as PAID — because every writer that existed before the free
+	// path shipped was the paid one. Guessing 'free' there is the only guess that could discard a
+	// bought verdict, so a paid incoming REFUSES instead of displacing it.
+	it('an unstamped stored comparison is treated as PAID — a paid incoming refuses, never displaces', async () => {
+		const id = await parkedProposal();
+		const legacyRun = 'interview_run:legacy_unstamped';
+		const racing = dbRacing(async () =>
+			setProposalStatus(db, id, { to: 'compared', comparison: comparisonFrom(legacyRun) })
+		);
+		await expect(
+			setProposalStatus(racing, id, {
+				to: 'compared',
+				comparison: comparisonFrom('interview_run:paid_incoming', 'regauntlet')
+			})
+		).rejects.toThrow(ProposalComparisonCollisionError);
+		expect(comparisonRun((await getReviewProposal(db, id))!.comparison)).toBe(legacyRun);
+	}, 60_000);
+
+	// ④ THE FREE PATH REPORTS ITS LOSS AS A NAMED OUTCOME, not a thrown 500. End to end against a
+	// REAL adjudicated run: the reconcile derives a genuine verdict, a paid rival wins the row
+	// mid-write, and the caller gets 'superseded' with the reason — the route renders it as a 409
+	// beside the card. Nothing was written, nothing was spent, and the paid verdict is untouched.
+	it('reconcileProposalFromRun yields as the NAMED outcome `superseded` — nothing written, nothing spent', async () => {
+		const seed = await seedRole();
+		await certifyIncumbent(seed);
+		const proposal = await openProposal(seed);
+		await authorChallenger(db, {
+			proposal: proposal.id,
+			promptCore: 'You are reviewer.\nSuperseded reconcile.',
+			operatorConfirmed: true
+		});
+		const re = await regauntletChallenger(depsFor(partialMatchBackend(seed.defectSlug)), {
+			proposal: proposal.id,
+			tier: 'sonnet',
+			provider: 'claude',
+			modelId: MODEL,
+			trigger: 'operator'
+		});
+		expect(re.outcome.kind).toBe('ran');
+		if (re.outcome.kind !== 'ran') return;
+		const runId = re.outcome.run.id;
+		const queued = await getInterviewRun(db, runId);
+		await adjudicateInterviewRun(db, runId, {
+			resolutions: queued!.ambiguous.map((_, index) => ({ index, resolution: 'dismiss' as const }))
+		});
+		expect((await getReviewProposal(db, proposal.id))!.status).toBe('interviewing');
+
+		const paidRun = 'interview_run:second_regauntlet';
+		const racing = dbRacing(async () =>
+			setProposalStatus(db, proposal.id, {
+				to: 'compared',
+				comparison: comparisonFrom(paidRun, 'regauntlet')
+			})
+		);
+		const runsBefore = await challengerRunCount(proposal.id);
+		const res = await reconcileProposalFromRun(racing, { proposal: proposal.id });
+
+		expect(res.outcome).toBe('superseded');
+		expect(res.run).toBe(runId);
+		expect(res.comparison).toBeNull();
+		expect(res.reason).toMatch(/spent\s+nothing|FREE/);
+		expect(res.reason).toContain(paidRun);
+		// The row it hands back is the CURRENT one, not the stale pre-write copy it read.
+		expect(res.proposal.status).toBe('compared');
+		expect(comparisonRun(res.proposal.comparison)).toBe(paidRun);
+		// And the rival's verdict stands, with no second spend on either side.
+		expect(comparisonRun((await getReviewProposal(db, proposal.id))!.comparison)).toBe(paidRun);
+		expect(await challengerRunCount(proposal.id)).toBe(runsBefore);
+	}, 90_000);
+
+	// ⑤ SUSTAINED CONTENTION IS NOT A RACE, and it does not spin (F-014). One re-decide absorbs the
+	// ordinary interleaving; a second miss stops BY NAME with nothing written, rather than looping
+	// against a row someone else is walking.
+	it('two consecutive CAS misses stop by name (ProposalWriteContentionError) having written nothing', async () => {
+		const seed = await seedRole();
+		const p = await openProposal(seed);
+		expect(p.status).toBe('proposed');
+		const racing = dbRacing(
+			async () => setProposalStatus(db, p.id, { to: 'validated' }),
+			async () => setProposalStatus(db, p.id, { to: 'diff_review' })
+		);
+		let thrown: unknown = null;
+		try {
+			await setProposalStatus(racing, p.id, { to: 'withdrawn' });
+		} catch (err) {
+			thrown = err;
+		}
+		expect(thrown).toBeInstanceOf(ProposalWriteContentionError);
+		expect((thrown as Error).message).toMatch(/NOTHING was written/);
+		// The row is exactly where the rivals left it — this writer's 'withdrawn' never landed.
+		const row = await getReviewProposal(db, p.id);
+		expect(row!.status).toBe('diff_review');
+		expect(row!.decided_at ?? null).toBeNull();
+	}, 60_000);
+
+	// ⑥ THE INTERRUPT CONTRACT IS UNTOUCHED BY THE GUARD. A re-run of the SAME writer (same
+	// challenger run, later `at`) still absorbs as a no-op — the CAS must not turn idempotence into
+	// a conflict, or every crash-resume becomes a false alarm.
+	it('re-running the SAME writer still absorbs — the guard did not break idempotence', async () => {
+		const id = await parkedProposal();
+		const run = 'interview_run:same_writer';
+		await setProposalStatus(db, id, { to: 'compared', comparison: comparisonFrom(run, 'regauntlet') });
+		const again = await setProposalStatus(db, id, {
+			to: 'compared',
+			comparison: comparisonFrom(run, 'regauntlet')
+		});
+		expect(again.status).toBe('compared');
+		expect(comparisonRun(again.comparison)).toBe(run);
+		const third = await setProposalStatus(db, id, { to: 'compared' });
+		expect(comparisonRun(third.comparison)).toBe(run);
+	}, 60_000);
 });

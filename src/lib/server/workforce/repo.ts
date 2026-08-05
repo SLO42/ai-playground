@@ -1732,13 +1732,44 @@ export class ProposalComparisonCollisionError extends Error {
 	constructor(
 		readonly proposal: string,
 		readonly storedRun: string | null,
-		readonly incomingRun: string | null
+		readonly incomingRun: string | null,
+		/** Caller context appended verbatim — how the LOSING writer names what it is losing.
+		 *  The paid path adds its run id here instead of re-wrapping this in a different class:
+		 *  one condition, one class, one HTTP status on every route that can reach it. */
+		note?: string
 	) {
 		super(
 			`review_proposal ${proposal} is already 'compared' and holds a comparison from run ` +
 				`${storedRun ?? '(no readable run)'} — refusing to discard an incoming comparison from run ` +
 				`${incomingRun ?? '(no readable run)'}. The incoming comparison was NOT recorded and the ` +
-				`stored one was NOT overwritten; both runs are on disk and can be read directly (§5).`
+				`stored one was NOT overwritten; both runs are on disk and can be read directly (§5).` +
+				(note ? ` ${note}` : '')
+		);
+	}
+}
+
+/**
+ * Two writers moved the same proposal row while this one held a compare-and-swap on it, TWICE in
+ * a row — the write never landed and NOTHING was changed.
+ *
+ * Why this is its own name rather than a retry loop: every write below is a CAS, so a miss means
+ * the row is not what this caller decided against and the decision must be MADE AGAIN, not forced.
+ * One bounded re-decide absorbs the ordinary race (the rival landed, we re-read and either absorb
+ * it, replace it, or refuse by name). A second miss is not a race any more — it is sustained
+ * contention on a row that only an operator click can move — so it stops, loudly, having written
+ * nothing, instead of spinning (F-014: no unbounded retry, ever).
+ */
+export class ProposalWriteContentionError extends Error {
+	override readonly name = 'ProposalWriteContentionError';
+	constructor(
+		readonly proposal: string,
+		readonly observed: string,
+		readonly target: string
+	) {
+		super(
+			`review_proposal ${proposal} changed underneath two consecutive compare-and-swap attempts ` +
+				`(observed '${observed}', targeting '${target}') — another writer is moving this row right ` +
+				`now. NOTHING was written; re-read the proposal and repeat the act (§5).`
 		);
 	}
 }
@@ -1755,13 +1786,69 @@ function comparisonChallengerRun(c: unknown): string | null {
 }
 
 /**
+ * WHICH writer produced a comparison — the provenance the collision rule turns on
+ * (`ProposalComparison.source`, stamped at the two write sites in resolution.ts):
+ *   • 'regauntlet' — derived from a run the operator PAID for on that call (§5 touch ②).
+ *   • 'reconcile'  — re-derived for FREE from a run already on disk (§5 touch ②b).
+ *   • null         — unreadable, or written before the field existed. Read as "assume PAID":
+ *                    every writer that existed before the free path shipped was the paid one, so
+ *                    guessing 'free' here is the one guess that could discard a bought verdict.
+ */
+function comparisonSource(c: unknown): 'regauntlet' | 'reconcile' | null {
+	if (!c || typeof c !== 'object') return null;
+	const s = (c as { source?: unknown }).source;
+	return s === 'regauntlet' || s === 'reconcile' ? s : null;
+}
+
+/** What an incoming comparison may do to the one already stored — see {@link comparisonWriteVerdict}. */
+type ComparisonWriteVerdict = 'absorb' | 'replace' | 'collide';
+
+/**
+ * WHO LOSES when two writers hold a comparison for the same proposal — decided here, once, and
+ * deliberately asymmetric. The stored row holds exactly ONE comparison, so the rule is:
+ *
+ *   • SAME challenger run       → 'absorb'. This is one writer re-running ITSELF after an
+ *                                 interrupt; only `at` and re-read baselines differ. The interrupt
+ *                                 contract depends on this staying a no-op.
+ *   • PAID over FREE            → 'replace'. The free reconcile path re-derives its comparison from
+ *                                 a run still on disk, at zero cost, any time; the paid one can be
+ *                                 reproduced only by spending again, and the row's status gate
+ *                                 ('compared' refuses a re-gauntlet) means it could never be
+ *                                 re-offered. Discarding the bought verdict is the ORIGINAL harm
+ *                                 LC-4 exists to prevent, so it is the free verdict that yields.
+ *                                 It yields VISIBLY: the write reports the displaced run through
+ *                                 `onDisplace` and the paid path surfaces it (never a silent swap).
+ *   • anything else             → 'collide'. Two paid verdicts, or an unreadable/unstamped stored
+ *                                 comparison (which is read as paid), refuse BY NAME. Nothing is
+ *                                 overwritten, both runs stay on disk, and the loser is told which
+ *                                 run holds the verdict it could not record.
+ */
+function comparisonWriteVerdict(stored: unknown, incoming: unknown): ComparisonWriteVerdict {
+	const storedRun = comparisonChallengerRun(stored);
+	const incomingRun = comparisonChallengerRun(incoming);
+	if (storedRun != null && incomingRun != null && storedRun === incomingRun) return 'absorb';
+	if (
+		storedRun != null &&
+		incomingRun != null &&
+		comparisonSource(incoming) === 'regauntlet' &&
+		comparisonSource(stored) === 'reconcile'
+	) {
+		return 'replace';
+	}
+	return 'collide';
+}
+
+/**
  * Move a proposal to a new status, transition-checked (§5). Optionally set the
  * challenger (on diff approval) and/or the comparison (after the re-gauntlet) in the
  * SAME write — a partial write can never leave the row in a status whose required field
  * is missing (interrupt contract). A terminal target stamps decided_at. Idempotent
  * re-target to the SAME status is an absorbed no-op (interrupt-safe re-run) — EXCEPT when a
- * DIFFERENT comparison is already stored, which is a second writer, not a re-run, and is
- * refused by name ({@link ProposalComparisonCollisionError}) rather than silently dropped.
+ * DIFFERENT comparison is already stored, which is a second writer, not a re-run: a PAID verdict
+ * displaces a FREE one (reported through `onDisplace`, never silently), and every other pairing is
+ * refused by name ({@link ProposalComparisonCollisionError}) rather than silently dropped. See
+ * {@link comparisonWriteVerdict} for who yields and why, and the compare-and-swap note on
+ * {@link setProposalStatus} for why the decision is carried into the write itself.
  */
 export interface SetProposalStatusInput {
 	to: ProposalStatus;
@@ -1769,56 +1856,118 @@ export interface SetProposalStatusInput {
 	challenger?: string;
 	/** Set when moving into 'compared': the re-gauntlet comparison object (§5). */
 	comparison?: Record<string, unknown>;
+	/**
+	 * Reporting hook, called ONLY when this write displaced a stored comparison (the PAID-over-FREE
+	 * verdict of {@link comparisonWriteVerdict}), with the run the displaced comparison came from.
+	 * Called AFTER the write commits, so it can never announce a displacement that did not happen.
+	 * Its whole job is to keep the swap from being silent — the caller surfaces the run id.
+	 */
+	onDisplace?: (displacedRun: string | null) => void;
 }
 
+/**
+ * THE COMPARE-AND-SWAP THIS FUNCTION IS BUILT ON (the F-048 family: guard the TRANSITION, not
+ * only the insert). Both the read that DECIDES and the write that ACTS live in this function, and
+ * a rival writer can land between them — that window is real, not theoretical: it is exactly how
+ * a paid verdict was silently overwritten by a free one, since `regauntletChallenger` reads a
+ * status, spends minutes of real money, and only then arrives here. A refusal computed from the
+ * read is worthless if the write that follows it is unconditional.
+ *
+ * So every write below carries its decision INTO the statement as a WHERE: the observed status,
+ * plus the observed value of each field it means to set (`… IS NONE`, or the exact stored run id
+ * when replacing). All bound as $params, never interpolated (D-016). A rival that moved the row
+ * therefore matches nothing, zero rows come back, and this re-reads and DECIDES AGAIN — once —
+ * so the rival is absorbed / replaced / refused by name on real state rather than stale state.
+ * A second miss is sustained contention, not a race: {@link ProposalWriteContentionError}, having
+ * written nothing (bounded, no spin).
+ */
 export async function setProposalStatus(
 	db: Db,
 	proposalId: string,
 	input: SetProposalStatusInput
 ): Promise<ReviewProposalRow> {
+	return setProposalStatusCas(db, proposalId, input, 1);
+}
+
+async function setProposalStatusCas(
+	db: Db,
+	proposalId: string,
+	input: SetProposalStatusInput,
+	redecidesLeft: number
+): Promise<ReviewProposalRow> {
 	const p = await getReviewProposal(db, proposalId);
 	if (!p) throw new WorkforceInputError(`review_proposal not found: ${proposalId}`);
+
+	const sets: string[] = [];
+	// The COMPARE half: the state this call's decision was made against.
+	const guards: string[] = ['status = $expect'];
+	const binds: Record<string, unknown> = { rid: link(p.id), expect: p.status };
+	let displacedRun: string | null = null;
+
 	if (p.status === input.to) {
 		// Idempotent absorb (interrupt contract): re-applying the same status, optionally
 		// folding in a challenger/comparison the prior partial write missed.
-		const sets: string[] = [];
-		const binds: Record<string, unknown> = { rid: link(p.id) };
 		if (input.challenger && p.challenger == null) {
 			sets.push('challenger = $challenger');
+			guards.push('challenger IS NONE');
 			binds.challenger = link(input.challenger);
 		}
 		if (input.comparison !== undefined) {
 			if (p.comparison == null) {
 				sets.push('comparison = $comparison');
+				guards.push('comparison IS NONE');
 				binds.comparison = input.comparison;
 			} else {
-				// A comparison is already recorded. Same challenger run ⇒ the same verdict is already
-				// on the row, so this really is the interrupt-safe re-run the branch exists for and
-				// absorbing it is correct (the only differences are `at` and re-read baselines).
-				// A DIFFERENT run ⇒ a second writer, and dropping it is the LC-4 harm inverted.
-				const stored = comparisonChallengerRun(p.comparison);
-				const incoming = comparisonChallengerRun(input.comparison);
-				if (stored == null || incoming == null || stored !== incoming) {
-					throw new ProposalComparisonCollisionError(p.id, stored, incoming);
+				// A comparison is already recorded — one writer re-running itself, or a rival.
+				// {@link comparisonWriteVerdict} decides which, and who yields.
+				switch (comparisonWriteVerdict(p.comparison, input.comparison)) {
+					case 'absorb':
+						break;
+					case 'replace':
+						displacedRun = comparisonChallengerRun(p.comparison);
+						sets.push('comparison = $comparison');
+						// CAS on the EXACT verdict this decision was made against — a third writer that
+						// landed in between is not silently displaced by a decision about someone else.
+						guards.push('comparison.challenger.run = $displaced');
+						binds.comparison = input.comparison;
+						binds.displaced = displacedRun;
+						break;
+					case 'collide':
+						throw new ProposalComparisonCollisionError(
+							p.id,
+							comparisonChallengerRun(p.comparison),
+							comparisonChallengerRun(input.comparison)
+						);
 				}
 			}
 		}
 		if (sets.length === 0) return p;
-		const [rows] = await db.query<[Raw[]]>(`UPDATE $rid SET ${sets.join(', ')} RETURN AFTER;`, binds);
-		return normReviewProposal(rows[0]);
+	} else {
+		assertProposalTransition(p.status, input.to);
+		sets.push('status = $to');
+		binds.to = input.to;
+		if (input.challenger !== undefined) {
+			sets.push('challenger = $challenger');
+			binds.challenger = link(input.challenger);
+		}
+		if (input.comparison !== undefined) {
+			sets.push('comparison = $comparison');
+			binds.comparison = input.comparison;
+		}
+		if (isProposalTerminal(input.to)) sets.push('decided_at = time::now()');
 	}
-	assertProposalTransition(p.status, input.to);
-	const sets: string[] = ['status = $to'];
-	const binds: Record<string, unknown> = { rid: link(p.id), to: input.to };
-	if (input.challenger !== undefined) {
-		sets.push('challenger = $challenger');
-		binds.challenger = link(input.challenger);
+
+	const [rows] = await db.query<[Raw[]]>(
+		`UPDATE $rid SET ${sets.join(', ')} WHERE ${guards.join(' AND ')} RETURN AFTER;`,
+		binds
+	);
+	const row = (rows ?? [])[0];
+	if (!row) {
+		// CAS MISS — the row is no longer the row this decision was made against (moved, or
+		// deleted). Re-decide ONCE against real state; a second miss stops by name.
+		if (redecidesLeft <= 0) throw new ProposalWriteContentionError(p.id, p.status, input.to);
+		return setProposalStatusCas(db, proposalId, input, redecidesLeft - 1);
 	}
-	if (input.comparison !== undefined) {
-		sets.push('comparison = $comparison');
-		binds.comparison = input.comparison;
-	}
-	if (isProposalTerminal(input.to)) sets.push('decided_at = time::now()');
-	const [rows] = await db.query<[Raw[]]>(`UPDATE $rid SET ${sets.join(', ')} RETURN AFTER;`, binds);
-	return normReviewProposal(rows[0]);
+	if (displacedRun !== null) input.onDisplace?.(displacedRun);
+	return normReviewProposal(row);
 }

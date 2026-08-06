@@ -20,7 +20,38 @@
 
 > ⏭ **RESUME PLAN (operator, 2026-06-26):** **BL-R1 DONE** (`eed3163`+`bcbc1f5`) · **BL-H1 digest DONE** · **BL-H2 eval DONE — headroom NO-ADOPT/idea-only** (`docs/HEADROOM-DIGEST.md` §6; F-049). Recovery + headroom closed; **recovery-harden-2 DONE** (RH-1 BL-R2 `d11db2f` + RH-2 wi-harden-2 `e89c9c5` + RH-3 `c58e5fb`, pushed) — the loop is hardened. Next + LAST — **go-live for ROUNDS**: bring up DB (v2 :8000) + dev server `CLAUDE_CODE_OAUTH_TOKEN` UNSET (F-029) → operator hits Continue → watch ROUNDS + `/projects/[id]/graph`. Boot reaper now runs BL-R1 release+reset, so go-live live-validates that path. Open deferred (non-blocking): BL-R3 (2 task-status MEDIUMs), BL-GUX-FIX (3 graph-UI test gaps), wi-harden done. (bring up DB + dev server token-unset → operator hits Continue → watch ROUNDS + the new `/projects/[id]/graph`). Server is currently DOWN (paused). All work committed + pushed to origin/v2 (tip `1da738e`); docs on v2-main. The full "alive" arc + repo-creation + usage-observability + command-center-ux + lifecycle-graph are DONE. Open tracked: BL-R1, wi-harden-2 (latent), headroom (BL-H1/H2), backlog (BL-1/BL-2/BL-2b).
 
-> ⏸ **OPERATOR PAUSE #7 (2026-08-05) — DO NOT AUTO-CHAIN. Servers stopped. SUPERSEDES #6 below.**
+> ▶ **PAUSE #7 LIFTED (operator, 2026-08-06) — resumed, running in parallel lanes. Progress against its
+> own resume order, in flight at time of writing:**
+> - **(1) V1R-1 FINISHED by asserting the class — DONE, pushed.** `v2-lane-c` `6ecc350..8e82bd4`, then
+>   `c3423e1`+`e009cce`. The guard had walked every `.md` and then run `if (frozen.has(file)) continue;`,
+>   skipping the seven frozen planning docs — the **highest-yield** files for a stale liveness claim — and
+>   reporting green. Root cause was an inversion: CLAUDE.md calling a doc frozen is evidence **about the doc
+>   being talked about**, not a licence for the doc **doing the talking**. Frozen list moved from the exempt
+>   side to the SUBJECT side; **no file-level exemption remains.** 8 instances fixed; 3 false positives fixed
+>   **in the predicate, not by exempting files** (that pressure is what produced the blanket `continue`).
+> - **(2) `moveTask` — DONE, and far worse than a shape-only guard.** Seven instances of one class, all
+>   reproduced against real SurrealDB → **F-062**, promoted to a CLAUDE.md §3 hard rule. `removeTarget`
+>   **deleted the project row** and answered `200 {ok:true}`; `pmRevise` **created a task in another project**
+>   and reported `ok:true`. Independent red-team found the last two (`pmWithdraw`/`pmRevise`) **on the page the
+>   first fix had just hardened** — F-055 one level up. Fixed at the repo chokepoint + a lifted
+>   `resolveProjectTask` (`tasks/scope.ts`) replacing six hand-copied project checks. Commits `ef18498`,
+>   `504c1e4`, `3623142`.
+> - **(3) merge `v2-lane-c` → `v2` + full re-gate — IN FLIGHT.**
+> - **(6) `fails.md` divergence — MEASURED, and it is not bookkeeping → `docs/FAILS-DIVERGENCE.md`.**
+>   **4 collisions** (not 2): F-016/F-020/F-045/F-046 name DIFFERENT failures per copy. Forks lack **12**
+>   entries (not 9). **25 of 26 worktrees carry the FORK numbering** — the authoritative copy is the rare one.
+>   **It has already reached code**: ~240 citations, and the two systems are MIXED in one worktree
+>   (`gather.ts:62` cites F-020 for the ORDER-BY rule; `briefs.ts:238` cites F-022 for the same rule), so **no
+>   id-based mechanical fix is safe.** Worst finding is not a collision: **F-019 was TRUNCATED** in the fork —
+>   same id, same failure, but missing the recurrence that escalated it to the sentinel-prefix rule, so fork
+>   worktrees taught the SUPERSEDED stop-marker rule for two months. A collision looks wrong when you read it;
+>   this read as complete. Propagated + marker re-based (step 1); **steps 2–4 remain `gate:operator`.**
+> - Also closed: **F-061** (a summary-less vitest run is UNMEASURED, not red — corrected same day when a solo
+>   run reproduced it with nothing else on the machine) and **F-060's residual** (measured clear; **do NOT**
+>   pin `*.ts` — 699/709 files change on checkout, it covers the smallest part of the exposure, and F-054
+>   means the Edit tool writes CRLF *after* checkout, so normalisation at the READ is the only defence).
+>
+> ⏸ **OPERATOR PAUSE #7 (2026-08-05) — superseded by the resumption above; retained for its recorded state.**
 >
 > **LANE A — `v2` = `b4f58f6`, PUSHED, 0/0, worktree clean. Everything below is fully gated
 > (review PASS + red-team PASS).** Migration head is now **`m0087`** (`m0087_task_tags`); next free

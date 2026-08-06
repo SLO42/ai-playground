@@ -1,5 +1,12 @@
 # UI-SPEC — ai-playground v2
 
+> ## ⚠ This file is a frozen 2026-06 planning snapshot, not current
+>
+> Kept for original intent and rationale — never as a description of what exists today.
+> The authoritative, current doc set lives in the docs checkout:
+> **`F:\code\ai-playground\docs\`** (branch `v2-main`).
+> Index of this frozen set: [README.md](./README.md).
+
 The UI/UX **design contract** (planning level). Defines information architecture, layout system, per-screen specs, component inventory, the real-time interaction model, and state/feedback patterns for the dashboard.
 
 > **Scope of this doc (read first).** This is the *structural* design — what screens exist, what they show, how they behave, and what states they have. **Concrete visual styling — the actual color values, type scale, spacing numbers — is intentionally DEFERRED** and will be derived from cannibalized sources (the v1 dashboard, already SvelteKit + Tailwind v4, plus other harvested UIs). Token *roles* and the system *structure* are defined here as placeholders; their values come later (see §6 and §15). No mockups, no component code, no `frontend-design` pass yet.

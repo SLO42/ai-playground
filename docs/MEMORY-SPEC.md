@@ -1,5 +1,12 @@
 # MEMORY-SPEC — ai-playground v2
 
+> ## ⚠ This file is a frozen 2026-06 planning snapshot, not current
+>
+> Kept for original intent and rationale — never as a description of what exists today.
+> The authoritative, current doc set lives in the docs checkout:
+> **`F:\code\ai-playground\docs\`** (branch `v2-main`).
+> Index of this frozen set: [README.md](./README.md).
+
 The **memory & learning engine** design. This sits *beneath* [ARCHITECTURE.md](./ARCHITECTURE.md) §2.6 (memory service) and on top of [DATA-MODEL.md](./DATA-MODEL.md) (the schema). It specifies *how* the memory service learns, extracts, recalls, consolidates, and stays safe — the behavioural design that the schema and the architecture diagram only gesture at.
 
 ---

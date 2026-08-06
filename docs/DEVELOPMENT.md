@@ -1,5 +1,12 @@
 # DEVELOPMENT — ai-playground v2
 
+> ## ⚠ This file is a frozen 2026-06 planning snapshot, not current
+>
+> Kept for original intent and rationale — never as a description of what exists today.
+> The authoritative, current doc set lives in the docs checkout:
+> **`F:\code\ai-playground\docs\`** (branch `v2-main`).
+> Index of this frozen set: [README.md](./README.md).
+
 How to build it. Repo layout, stack, commands, conventions, and the hard rules carried from v1's failure log.
 
 ---
@@ -60,7 +67,7 @@ ai-playground-v2/            # the build worktree (branch `v2`)
   bin/                       # provisioned binaries (surreal)
   static/                    # static assets; static/fonts/ is gitignored (D-034)
   docs/                      # FROZEN planning snapshot — see docs/README.md
-  docs/fails.md              # failure log — live, append-only
+  docs/fails.md              # failure log — FORKED from the docs-checkout copy; scan BOTH
   .data/                     # SurrealDB surrealkv data dir (gitignored, created on db:up)
   .playground/               # local scratch (gitignored): browser-verify daemon state, gauntlet workspaces
   .env / .env.example

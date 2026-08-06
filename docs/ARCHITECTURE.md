@@ -1,5 +1,12 @@
 # ARCHITECTURE — ai-playground v2
 
+> ## ⚠ This file is a frozen 2026-06 planning snapshot, not current
+>
+> Kept for original intent and rationale — never as a description of what exists today.
+> It plans 16 server modules; `src/lib/server/` now holds 41. The authoritative, current
+> doc set lives in the docs checkout: **`F:\code\ai-playground\docs\`** (branch `v2-main`).
+> Index of this frozen set: [README.md](./README.md).
+
 This describes the **target** system. It is deliberately simpler than v1. Where v1 had many moving parts, v2 collapses them: one datastore, one orchestrator, one event stream, one runtime interface.
 
 ---

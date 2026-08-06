@@ -1,5 +1,12 @@
 # DATA-MODEL — ai-playground v2
 
+> ## ⚠ This file is a frozen 2026-06 planning snapshot, not current
+>
+> Kept for original intent and rationale — never as a description of what exists today.
+> The live schema is `src/lib/server/db/schema.ts`; the authoritative, current doc set
+> lives in the docs checkout: **`F:\code\ai-playground\docs\`** (branch `v2-main`).
+> Index of this frozen set: [README.md](./README.md).
+
 One datastore: **SurrealDB 2.x**, run as a **managed local server binary** over `ws://127.0.0.1` (D-006, KongCode's path — no native addon). Document + graph + vector + FTS in a single engine. This doc is the authoritative schema and the migration map from v1's scattered stores.
 
 > **Version target:** SurrealDB **2.x**. All syntax below is 2.x. Known 3.x renames are flagged inline (e.g. `SEARCH ANALYZER` → `FULLTEXT ANALYZER`). Vector index is **HNSW** (MTREE is removed in 2.x).

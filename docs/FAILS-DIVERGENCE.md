@@ -28,7 +28,38 @@ fork marker lane C added to V2B. So this is a **2-way** divergence, not 3-way.
 - **AUTH-only (12):** F-048, F-049, F-050, F-051, F-052, F-053, F-054, F-055, F-058, F-059,
   F-060, F-061.
 - **FORK-only (28):** F-017, F-018, F-021–F-044 (24 contiguous), F-047, F-057.
-- **Holes in every copy:** F-003, F-004 — never existed anywhere.
+- **F-003, F-004 are NOT holes** (corrected 2026-08-06). They exist in the **v1 lineage** on
+  `origin/dev` — F-003 *"Deleted module without tracing all imports"*, F-004 *"Daemon `--quiet`
+  flag causes silent crash"*. They were simply never carried into v2, even though both v2 copies
+  state that F-001..F-012 are "carried from v1": **ten of twelve came across.** The v1 numbering
+  is the **ancestor** of the v2 shared core (F-001/F-002/F-005..F-012 are the same failures, some
+  retitled), not a competing system.
+
+### Worse than a collision: same id, same failure, DIVERGED prevention rule
+
+A body-level diff of all 15 shared ids (AUTH vs V2B) confirms **4 is the complete collision
+set** — 13 are byte-identical, F-056 differs only by a provenance annotation on its `Date` line.
+But it surfaced a defect class the id-level comparison could not see:
+
+**F-019 is not a collision** — same title, same failure, all five shared bullets byte-identical —
+**yet AUTH carries a sixth bullet the fork does not have**: `Recurrence (2026-06-11)`, ~550 bytes.
+It records that the case-sensitive fix false-matched again on a **negated** caps mention ("No
+BLOCKED/CONFLICT items" in a green build's deviation stopped wave v2.1), and escalates to the
+structural fix: **markers count only as a sentinel PREFIX at the start of the deviation**
+(`/^\s*(CONFLICT|BLOCKED|...)/`), with builders instructed to BEGIN the deviation with
+`BLOCKED:`/`CONFLICT:`. Its lesson — *substring presence is never intent; only position plus
+convention is.*
+
+**A builder in a fork worktree who opens F-019 gets the superseded guidance and no signal that
+the entry is truncated.** The sentinel-prefix form is what CLAUDE.md §4/§6 states as the hard
+rule and what our own briefs use. **A collision at least looks wrong when you read it; this reads
+as complete and is not.** Consequence for the plan: **the merge step must be body-level, not
+id-level** — "same id, same title" does not imply "same guidance", so the 15 shared entries
+cannot be assumed safe and skipped.
+
+**Propagating F-019's recurrence bullet to the fork copies is worth doing on its own merits,
+independent of the renumbering decision** — it is additive, retires nothing, and closes a live
+hazard.
 
 ### The headline: FOUR ids name different failures
 
@@ -109,6 +140,36 @@ having already become a code-level ambiguity, and it is why **any id-based mecha
 unsafe**: a blind renumber would corrupt the citations already using the other system. Every
 citation must be audited **by meaning, not by id**.
 
+### Nobody made an error — the chronology explains the mix
+
+A 7-citation sample (5 auth-sense, 2 fork-sense) traced to authoring commits shows **perfectly
+clean branch containment**: all 7 citation commits are on `v2`; both `fails.md` logging commits
+are on `v2-main` only. And the dates separate the two senses without appealing to intent:
+
+**every fork-sense citation PREDATES the corresponding AUTH entry, and every auth-sense citation
+POSTDATES it.** F-022 was cited on 06-11 and 06-16; AUTH F-020 was logged 06-19. `296dd86` cites
+F-045 on **2026-06-22 — the same day** `93eb4e3` logged AUTH F-045 on `v2-main`, and cannot have
+meant the fork's F-045 (bool DEFAULT), which had existed since 06-20.
+
+**Mechanism:** CLAUDE.md is authoritative, lives on `v2-main`, and cites ids in AUTH numbering.
+Agents read it, then write those ids into fork-worktree code where the local ledger means
+something else. Fork-native ids survive from before the AUTH entry existed. **The id space simply
+is not global** — which is the thing to fix, not the agents.
+
+Confirming case: `src/lib/server/config/load.test.ts:190` — *"WI-4 regression (F-016 false-premise
+class)"* — is **auth-sense and correct**, not a miscitation. Authoring commit `7dabe12`
+(2026-06-24) matches AUTH F-016's `Fix` bullet phrase *"corrected the comments that encoded the
+false premise"*; the fork's F-016 (ChildProcess crash) contains no occurrence of "premise" or
+"comment" anywhere in its body. It is a correct citation that is **unresolvable in the worktree it
+lives in**.
+
+### No third numbering exists
+
+`git ls-remote --heads origin` → 7 heads. `origin/v2-lane-b` carries fork numbering and is an
+ancestor of `origin/v2` (no independent numbering). `origin/main` has no `docs/fails.md`.
+`origin/dev` (12 entries) and `origin/feature/real-data` (7) are v1-era. **No third v2-era
+numbering.**
+
 ---
 
 ## 4. Reconciliation options
@@ -158,15 +219,20 @@ leaves code citing two systems. **A safety net, not a fix.**
 
 ---
 
-## 5. Open questions (what this measurement could NOT settle)
+## 5. Open questions
 
-- **Whether the auth-sense citations inside fork worktrees were deliberate.** Strong inference
-  (agents read the authoritative CLAUDE.md while sitting in a fork worktree) but not proof.
-  Settle with `git log -S` per citation → authoring commit → whether that agent had AUTH in context.
-- **`src/lib/server/config/load.test.ts:190`** — *"WI-4 regression (F-016 false-premise class)"*
-  matches **neither** F-016 title cleanly. Settle by reading the WI-4 brief or its commit.
-- **Whether 4 is the complete collision set.** The comparison was by *title* similarity; two
-  entries could share an id and a similar title while documenting different failures. Settle
-  with a body-level diff of the 15 "shared and consistent" ids.
-- **Whether any *remote* branch carries a third numbering.** Only local worktrees and branches
-  were enumerated; `grep`-negative ≠ absent.
+**Closed 2026-08-06** (all four of the original items — see §1 and §3 above): 4 IS the complete
+collision set; `load.test.ts:190` is auth-sense and correct; the auth-sense citations are
+explained by chronology, not error; no third numbering exists. The body diff also *added* the
+F-019 finding, which is why it was worth running.
+
+**Still open:**
+
+- **Whether the other 28 fork-only and 12 auth-only entries carry recurrence bullets that were
+  never propagated the way F-019's was.** Only the 15 *shared* ids were body-diffed. Settling this
+  needs **semantic** matching of subject matter across entries that exist in one copy only — not
+  id matching — so it is not cheap. **This is the residual risk in the whole analysis**: F-019
+  proves at least one live hazard of this shape exists, and nothing rules out others.
+- **Whether F-019's missing recurrence has already caused a wave stop in a fork worktree.** Settle
+  by grepping wave-run logs for a non-sentinel `BLOCKED`/`CONFLICT` false-trigger after
+  2026-06-11. Not looked at.

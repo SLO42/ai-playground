@@ -4,41 +4,67 @@ import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 
 /**
- * Regression guard for V1R-1 ("retire the v1 residue") — the defect class is a
- * FROZEN doc asserted as LIVE / as a source of truth.
+ * Regression guard for V1R-1 ("retire the v1 residue").
  *
- * Two real defects motivated this suite, both shipped by the commit that was
- * supposed to be fixing exactly this class:
+ * THE CLASS, in one sentence: **a file in this worktree tells the reader that a doc
+ * in this worktree is live / current / authoritative / complete, when that doc is in
+ * fact frozen, forked or retired** — and it does so without disclosing that.
  *
- *  1. `CLAUDE.md` and `docs/README.md` freshly certified `docs/fails.md` as "live
- *     and current". Measured, it is a bidirectional FORK of the docs-checkout copy:
- *     this copy is missing entries that are named hard rules in the operating
- *     manual (F-052 / F-058 / F-059), and the other copy is missing 28 other entries.
- *     A reader trusting "live" skips the other ledger and never sees those rules.
+ * The class has now produced FIVE instances, and each of the first four was closed
+ * one at a time while the fifth sat untouched in a file nobody had opened:
  *
- *  2. `docs/DESIGN-SYSTEM.md` still called `docs/design-system/` CSS the "source of
- *     truth" after the 🔒 mono-body rule (operator, 2026-06-10) superseded it —
- *     a pointer that misdirects a reader into copying pre-lock typography.
+ *   1. `CLAUDE.md`      — "`docs/fails.md` — live and append-only"
+ *   2. `docs/README.md` — "the only file in this directory that is live and current"
+ *   3. `docs/DESIGN-SYSTEM.md` — the superseded design-phase CSS called "source of truth"
+ *   4. `docs/DECISIONS.md:50`  — "`docs/fails.md` … is still live and append-only"
+ *   5. `docs/DEVELOPMENT.md:63` — "docs/fails.md   # failure log — live, append-only"
  *
- * These files have no runtime surface, so nothing else in the suite can catch them
- * regressing. The checks below are deliberately SELF-VERIFYING rather than plain
- * string matches: FORKED_ONLY_UPSTREAM is re-derived against the actual `## F-NNN`
- * headings, so appending one of those entries here fails the test and forces the
- * fork marker to be corrected instead of silently going stale again.
+ * Instances 1, 2 and 4 were AUTHORED BY THE COMMITS THAT WERE FIXING THIS CLASS. That
+ * is the tell: enumeration cannot close this: the fixer re-types the claim in the next
+ * file down. So the checks below scan a CORPUS, not a list of filenames.
  *
- * The first cut of this suite enumerated the two files it had just seen fail, which
- * is the very mistake it was written to prevent: a THIRD instance of the same claim
- * survived in `docs/DECISIONS.md` ("still live and append-only") and passed green,
- * because that file was never read. The guard below therefore scans EVERY markdown
- * file in the worktree and is fail-closed for files that do not exist yet — a new
- * doc is guarded by default. Its only exemption is the frozen-snapshot set, and even
- * that is not hand-listed: it is parsed out of `CLAUDE.md`'s own declaration, so a
- * doc cannot quietly exempt itself without the operating manual saying it is history.
+ * ── Why the previous guard reported green on instance 5 ────────────────────────────
+ * It walked every `.md`, which was right, and then did this:
+ *
+ *     if (frozen.has(file)) continue;   // declared history by CLAUDE.md, read as such
+ *
+ * `frozen` is CLAUDE.md's frozen-snapshot bullet, which names exactly the seven docs
+ * MOST likely to contain a stale liveness claim — `docs/DEVELOPMENT.md` among them.
+ * The guard skipped the highest-yield files in the corpus and reported zero offenders.
+ *
+ * The root cause is an inversion, and it is worth naming because it is easy to repeat:
+ * CLAUDE.md calling a doc frozen is evidence ABOUT THE DOC BEING TALKED ABOUT — it makes
+ * claims about that doc checkable. It is NOT a licence for the doc DOING THE TALKING.
+ * A frozen planning doc still misdirects a reader who opens it, and "CLAUDE.md says this
+ * file is history" is a fact visible only to someone reading CLAUDE.md, which is precisely
+ * the "inherited a liveness claim instead of measuring it" mistake that produced #1.
+ *
+ * So the frozen list has been moved from the EXEMPT side to the SUBJECT side, and there
+ * is no file-level exemption at all: every markdown file in the worktree is scanned, and
+ * files that do not exist yet are guarded by default.
+ *
+ * ── The two things that keep this from going vacuous ───────────────────────────────
+ *  - The subject set (`notLiveDocs()`) is DERIVED — from CLAUDE.md's own frozen bullet
+ *    UNION each doc's own supersession banner — and then asserted to still contain its
+ *    load-bearing members, so it cannot silently shrink to the empty set and pass.
+ *  - `offendingSentence()` is exercised directly against the five strings that actually
+ *    shipped ("the predicate still bites"), so a corpus that is merely clean cannot be
+ *    mistaken for a predicate that still works.
+ *
+ * ── Deliberate boundary ────────────────────────────────────────────────────────────
+ * Markdown is scanned by bare basename (max sensitivity; prose about docs is what these
+ * files are). Source files are scanned too, but only for a `docs/<NAME>.md`-QUALIFIED
+ * reference — the form a code comment uses to point at a doc. Scanning source by bare
+ * basename matches technical uses of the same words that have nothing to do with doc
+ * currency (`launch-fixtures.ts:353` "…defects that pass CI but break live … (fails.md
+ * F-015)"), and rewording live code to satisfy a doc-currency guard would be the tail
+ * wagging the dog — it is also exactly the pressure that produced the blanket `continue`
+ * this rewrite removes.
  *
  * Portability: everything asserted lives inside THIS worktree. The docs checkout
- * (`F:\code\ai-playground\docs\`) is intentionally NOT read — it is not guaranteed
- * to exist wherever the suite runs, and a test that needs it would be the same
- * "assume the other copy" mistake this suite exists to prevent.
+ * (`F:\code\ai-playground\docs\`) is intentionally NOT read — it is not guaranteed to
+ * exist wherever the suite runs, and a test that needs it would be the same "assume the
+ * other copy" mistake this suite exists to prevent.
  */
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -110,28 +136,151 @@ const SKIP_DIRS = new Set([
 	'coverage'
 ]);
 
-/** Every markdown file in the worktree, as repo-relative posix paths. */
-function repoMarkdownFiles(dir = repoRoot, rel: string[] = []): string[] {
+/** Every file with one of `exts` in the worktree, as repo-relative posix paths. */
+function repoFiles(exts: string[], dir = repoRoot, rel: string[] = []): string[] {
 	const out: string[] = [];
 	for (const entry of readdirSync(dir, { withFileTypes: true })) {
 		if (entry.isDirectory()) {
 			if (SKIP_DIRS.has(entry.name)) continue;
-			out.push(...repoMarkdownFiles(join(dir, entry.name), [...rel, entry.name]));
-		} else if (entry.name.endsWith('.md')) {
+			out.push(...repoFiles(exts, join(dir, entry.name), [...rel, entry.name]));
+		} else if (exts.some((ext) => entry.name.endsWith(ext))) {
 			out.push([...rel, entry.name].join('/'));
 		}
 	}
 	return out;
 }
 
+const repoMarkdownFiles = () => repoFiles(['.md']);
+const repoSourceFiles = () => repoFiles(['.ts', '.svelte', '.js', '.mjs']);
+
 /**
- * The docs CLAUDE.md itself declares to be a frozen 2026-06 snapshot. Parsed, not
- * hand-listed: a doc may only be exempt from the currency check if the operating
- * manual says out loud that it is history.
+ * A doc that says, in its own opening lines, that IT is not current — the banner a
+ * reader who opens the file directly actually sees.
+ *
+ * The self-scoping matters and was got wrong first: a bare
+ * `/frozen|superseded|retired/` over the head swept in `CLAUDE.md` (line 14 says the
+ * `docs/` DIRECTORY is a frozen snapshot) and `docs/DESIGN-SYSTEM.md` (its intro says
+ * it supersedes part of UI-SPEC). Both were then treated as not-live SUBJECTS, and
+ * every ordinary mention of them elsewhere became a false offender. A doc talking
+ * about another doc's status is not a doc declaring its own.
+ *
+ * So the marker must (a) sit on a heading or blockquote line — banners are formatted,
+ * running prose is not — and (b) either be one of the unambiguous self-marks, or bind
+ * a self-reference to a non-currency word inside the same clause.
  */
+const SELF_MARK = /\b(retired copy|superseded snapshot|frozen snapshot|stale-proposed)\b/i;
+const SELF_SCOPED_HISTORY =
+	/\bthis (?:file|doc|copy|directory|set|is a)\b[^.\n]{0,90}?\b(?:frozen|superseded|retired|redirect|snapshot|no longer|not (?:the )?current)\b/i;
+
+/** Docs CLAUDE.md itself declares to be a frozen 2026-06 snapshot. Parsed, not hand-listed. */
 function frozenSnapshotDocs(): Set<string> {
 	const bullet = /^- Frozen local snapshot[\s\S]*?(?=\n- )/m.exec(readDoc('CLAUDE.md'));
 	return new Set([...(bullet?.[0] ?? '').matchAll(/`(docs\/[^`]+\.md)`/g)].map((m) => m[1]));
+}
+
+/** Docs that declare their OWN non-currency in their first 15 lines. */
+function selfDeclaredHistoryDocs(): Set<string> {
+	const out = new Set<string>();
+	for (const file of repoMarkdownFiles()) {
+		const head = readDoc(...file.split('/')).split('\n').slice(0, 15);
+		const banner = head.some(
+			(line) => /^\s*[>#]/.test(line) && (SELF_MARK.test(line) || SELF_SCOPED_HISTORY.test(line))
+		);
+		if (banner) out.add(file);
+	}
+	return out;
+}
+
+/**
+ * The SUBJECT set: every doc in this worktree that is not a live source of truth,
+ * derived two independent ways so neither source can quietly empty it.
+ */
+function notLiveDocs(): Set<string> {
+	return new Set([...frozenSnapshotDocs(), ...selfDeclaredHistoryDocs()]);
+}
+
+/**
+ * Words that assert a doc is whole / trustworthy on its own.
+ *
+ * `live` excludes the LOCATIONAL sense — "concrete values live in DESIGN-SYSTEM.md"
+ * says where something resides, not that the doc is current (UI-SPEC.md:134).
+ */
+const CURRENCY_CLAIM =
+	/\b(live(?!-)(?!\s+(?:in|at|on|under|inside|alongside)\b)|current|authoritative|complete|up-to-date|unified|in sync|synced|the full set|source of truth)\b/i;
+
+/**
+ * ...unless the same sentence discloses that it is not. Every word here is a real
+ * disclosure of non-currency, and the escape is safe ONLY because it is judged over
+ * the sentence naming the doc: a 2-line window let DECISIONS.md:50's "still live and
+ * append-only" through on the strength of the NEXT bullet calling other docs frozen.
+ */
+const NOT_LIVE_DISCLOSURE =
+	/\b(fork|forked|neither|frozen|stale|snapshot|supersed\w*|historical|retired|redirect|drifted|no longer|both)\b|not the full set/i;
+
+/** A reference to the docs-checkout copy is a claim about THAT copy, not this one. */
+const UPSTREAM_PATH = /F:\\code\\ai-playground\\docs\\[A-Za-z0-9.-]*/g;
+
+/** A newline into a new markdown block ends the sentence — a bullet/row/heading is not a clause. */
+const BLOCK_BREAK = /\n(?=\s*(?:[-*+>#|]|\d+\.)\s)/;
+
+/**
+ * Does `line` (plus its continuation) assert currency about `subject` without saying
+ * it is not current? Returns the offending sentence, or null.
+ *
+ * Kept as one small pure function on purpose: the tests below run it against the
+ * historical strings, so "no offenders in the corpus" cannot be confused with
+ * "predicate quietly stopped matching".
+ */
+function offendingSentence(line: string, nextLine: string, subject: string): string | null {
+	if (!line.includes(subject)) return null;
+	// Judge the SENTENCE naming the doc, not the line and not a window: a claim may wrap
+	// onto the next line, but a currency word in a neighbouring sentence is about some
+	// other doc — PRODUCT.md:64 names MEMORY-SPEC.md and the NEXT BULLET happens to open
+	// "**One source of truth.** State lives in SurrealDB". Hence the block break.
+	const sentences = `${line}\n${nextLine}`.split(BLOCK_BREAK).flatMap((block) =>
+		// `.)` closes a sentence too — "(Engine detail in MEMORY-SPEC.md.)"
+		block.split(/(?<=[.;:!?]\)?)[\s\n]+/)
+	);
+	for (const sentence of sentences) {
+		// Normalize markdown before judging: emphasis and line-wrapping split the
+		// DISCLOSURE clean in half at DECISIONS.md:50 — "it is **not\n   the full set**"
+		// read as a currency claim ("the full set") with no disclosure, when the file
+		// says the opposite of what it was flagged for.
+		const flat = sentence.replace(/[*_`]/g, '').replace(/\s+/g, ' ');
+		// Strip docs-checkout references — "the live ledger is
+		// `F:\code\ai-playground\docs\DECISIONS.md`" is true and must not be flagged.
+		const local = flat.replace(UPSTREAM_PATH, '<upstream>');
+		if (!local.includes(subject)) continue;
+		if (CURRENCY_CLAIM.test(local) && !NOT_LIVE_DISCLOSURE.test(local)) return flat.trim();
+	}
+	return null;
+}
+
+/** Scan a corpus for the class. `subjectsFor` decides how a doc is referenced there. */
+function scanCorpus(files: string[], subjectsFor: (doc: string) => string[]): string[] {
+	const subjects = [...notLiveDocs()].flatMap((doc) =>
+		subjectsFor(doc).map((subject) => ({ doc, subject }))
+	);
+	const offenders: string[] = [];
+	for (const file of files) {
+		const lines = readDoc(...file.split('/')).split('\n');
+		lines.forEach((line, i) => {
+			for (const { doc, subject } of subjects) {
+				// The ONLY skip in this scan, and it is load-bearing on another test rather
+				// than taken on faith: a subject doc's own stale prose (fails.md's original
+				// "synced to both branches … the full set") is handled by MARKING, never
+				// deleting — CLAUDE.md §6. That marking is what makes the skip safe, so it
+				// is asserted: every member of the subject set is either self-declared
+				// history or is in CLAUDE.md's frozen list, and the "says so in its OWN
+				// first lines" test forces the latter to carry a banner too. If that test
+				// ever goes red, this skip is unsafe and the suite is already failing.
+				if (file === doc) continue;
+				const hit = offendingSentence(line, lines[i + 1] ?? '', subject);
+				if (hit) offenders.push(`${file}:${i + 1} [${doc}] ${hit.slice(0, 160)}`);
+			}
+		});
+	}
+	return [...new Set(offenders)];
 }
 
 /** Expand a compact id list like `F-017, F-018, F-021..F-044, F-047` into every id. */
@@ -160,7 +309,117 @@ function statedReverseForkSet(doc: string): string[] {
 	return expandIdList((claim?.[1] ?? '').replace(/\n>?\s*/g, ' '));
 }
 
-describe('docs pointers do not certify frozen docs as live', () => {
+describe('the not-live doc set is derived, and cannot go vacuous', () => {
+	it('CLAUDE.md still declares a frozen-snapshot set', () => {
+		expect(
+			frozenSnapshotDocs().size,
+			"parsed CLAUDE.md's frozen-snapshot bullet and got nothing — every check below " +
+				'would then be scanning for nothing and passing'
+		).toBeGreaterThan(0);
+	});
+
+	it('every doc CLAUDE.md calls history says so in its OWN first lines', () => {
+		// Otherwise "this file is frozen" is a fact only a CLAUDE.md reader has, and a
+		// reader who opens the doc directly is told nothing — the same inherited-claim
+		// mistake that certified fails.md as live without measuring it.
+		const undeclared = [...frozenSnapshotDocs()].filter((f) => !selfDeclaredHistoryDocs().has(f));
+		expect(
+			undeclared,
+			'CLAUDE.md calls these frozen but they do not; a reader opening them directly is ' +
+				'given no signal. Add a supersession banner to the first 15 lines.'
+		).toEqual([]);
+	});
+
+	it('the subject set still contains the docs that produced this class', () => {
+		// Anti-vacuity: if a rename or a reworded banner drops one of these, the scans
+		// below silently stop looking for the exact defects they exist to catch.
+		const subjects = notLiveDocs();
+		for (const doc of [
+			'docs/fails.md',
+			'docs/DECISIONS.md',
+			'docs/DOCS-REALITY.md',
+			'docs/README.md',
+			'docs/DEVELOPMENT.md'
+		]) {
+			expect(subjects.has(doc), `${doc} dropped out of the not-live subject set`).toBe(true);
+		}
+	});
+});
+
+describe('no file certifies a frozen/forked doc as live', () => {
+	it('the predicate still bites — every string that actually shipped is caught', () => {
+		// The corpus being clean proves nothing if the predicate stopped matching. These
+		// are the five real instances, verbatim.
+		const shipped: [string, string, string][] = [
+			['- `docs/fails.md` — live and append-only in this worktree.', '', 'docs/fails.md'],
+			[
+				'| `docs/fails.md` | The only file in this directory that is live and current. |',
+				'',
+				'docs/fails.md'
+			],
+			[
+				'the **source of truth is the CSS** in [`docs/design-system/`] — copy the values.',
+				'',
+				'docs/design-system/'
+			],
+			['- `docs/fails.md` in this worktree is still live and append-only.', '', 'docs/fails.md'],
+			['  docs/fails.md              # failure log — live, append-only', '', 'docs/fails.md']
+		];
+		for (const [line, next, subject] of shipped) {
+			expect(offendingSentence(line, next, subject), `missed: ${line.trim()}`).not.toBeNull();
+		}
+
+		// ...and does not bite an honest disclosure, or a claim about the upstream copy.
+		expect(
+			offendingSentence(
+				'- `docs/fails.md` — FORKED from the docs-checkout copy. Scan BOTH.',
+				'',
+				'docs/fails.md'
+			)
+		).toBeNull();
+		expect(
+			offendingSentence(
+				'see D-000 in the live ledger, `F:\\code\\ai-playground\\docs\\DECISIONS.md`.',
+				'',
+				'DECISIONS.md'
+			)
+		).toBeNull();
+	});
+
+	it('NO markdown in the worktree asserts a not-live doc is live/current/whole', () => {
+		const files = repoMarkdownFiles();
+		// Non-vacuity: the walker must actually be finding the corpus.
+		expect(files.length).toBeGreaterThan(20);
+		expect(files).toContain('CLAUDE.md');
+		expect(files).toContain('docs/DEVELOPMENT.md'); // the file the old `continue` skipped
+
+		const offenders = scanCorpus(files, (doc) => [doc, doc.split('/').pop()!]);
+
+		expect(
+			offenders,
+			'these lines tell a reader that a frozen/forked/retired doc is live, current or ' +
+				'the whole story, without disclosing that it is not. A reader trusting them ' +
+				'stops at one ledger and never sees F-052 / F-058 / F-059.'
+		).toEqual([]);
+	});
+
+	it('NO source file points at a not-live doc as live/current/whole', () => {
+		const files = repoSourceFiles();
+		expect(files.length).toBeGreaterThan(100);
+
+		// Qualified `docs/<NAME>.md` only — see the "deliberate boundary" note at the top.
+		const offenders = scanCorpus(
+			files.filter((f) => f !== 'src/docs-pointers.test.ts'), // this file quotes the defects verbatim
+			(doc) => (doc.startsWith('docs/') ? [doc] : [])
+		);
+
+		expect(offenders, 'a code comment sends the reader to a frozen doc as if it were current').toEqual(
+			[]
+		);
+	});
+});
+
+describe('the fails.md fork marker is accurate in both directions', () => {
 	it('fails.md is not claimed to be "live and current" / the full set', () => {
 		// The exact phrasings that shipped and were wrong. If either returns, the
 		// reader is told one ledger suffices — which is how F-052/F-058/F-059 got missed.
@@ -213,50 +472,6 @@ describe('docs pointers do not certify frozen docs as live', () => {
 		expect(present.has('F-057')).toBe(true);
 	});
 
-	it('NO markdown in the worktree certifies fails.md as live/current/the full set', () => {
-		// The class guard. Enumerating the known-bad files is what let a third instance
-		// ship in docs/DECISIONS.md; this reads every .md there is.
-		const frozen = frozenSnapshotDocs();
-		expect(
-			frozen.size,
-			"parsed CLAUDE.md's frozen-snapshot bullet and got nothing — the exemption list " +
-				'must never silently become empty (that would make this check vacuous)'
-		).toBeGreaterThan(0);
-
-		// Words that assert the file is whole / trustworthy on its own...
-		const CURRENCY_CLAIM = /\b(live|current|authoritative|complete|up-to-date|unified|in sync|synced|the full set)\b/i;
-		// ...unless the same breath discloses the fork. These are the only escapes, and
-		// they are deliberately narrow: generic doc-status words like "frozen" or "stale"
-		// are NOT escapes, because they routinely describe some neighbouring file. Scoped
-		// loosely, DECISIONS.md:50's "still live and append-only" slipped through on the
-		// strength of the *next bullet* calling the other planning docs frozen.
-		const FORK_DISCLOSURE = /\b(fork|forked|neither|both)\b|not the full set/i;
-
-		const offenders: string[] = [];
-		for (const file of repoMarkdownFiles()) {
-			if (frozen.has(file)) continue; // declared history by CLAUDE.md, read as such
-			const lines = readDoc(...file.split('/')).split('\n');
-			lines.forEach((line, i) => {
-				if (!line.includes('fails.md')) return;
-				// Judge the SENTENCE that names fails.md, not the line and not a window:
-				// a claim may wrap onto the next line, but a currency word sitting in a
-				// neighbouring sentence is about some other doc ("**4.5 Docs current.**").
-				const sentences = `${line}\n${lines[i + 1] ?? ''}`.split(/(?<=[.;:])[\s\n]+/);
-				const about = sentences.filter((s) => s.includes('fails.md')).join(' ');
-				if (CURRENCY_CLAIM.test(about) && !FORK_DISCLOSURE.test(about)) {
-					offenders.push(`${file}:${i + 1}: ${line.trim()}`);
-				}
-			});
-		}
-
-		expect(
-			offenders,
-			'these lines assert docs/fails.md is live/current/whole without disclosing that it ' +
-				'is a bidirectional fork — a reader trusting them skips the other ledger and ' +
-				'never sees F-052 / F-058 / F-059'
-		).toEqual([]);
-	});
-
 	it('the reverse-direction fork set is the measured 28 ids, never the F-017..F-047 range', () => {
 		const failsMd = readDoc('docs', 'fails.md');
 		const claudeMd = readDoc('CLAUDE.md');
@@ -301,8 +516,10 @@ describe('docs pointers do not certify frozen docs as live', () => {
 			expect(FORKED_ONLY_LOCAL).not.toContain(id);
 		}
 	});
+});
 
-	it('DESIGN-SYSTEM.md does not point at the superseded design-phase CSS as truth', () => {
+describe('DESIGN-SYSTEM.md does not point at superseded CSS as truth', () => {
+	it('the superseded design-phase pointer is retracted', () => {
 		const designSystem = readDoc('docs', 'DESIGN-SYSTEM.md');
 
 		expect(designSystem).not.toMatch(

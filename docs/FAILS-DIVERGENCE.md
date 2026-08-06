@@ -196,8 +196,35 @@ leaves code citing two systems. **A safety net, not a fix.**
 
 1. **Now, cheap, non-destructive.** Propagate a fork marker to V2 (which currently claims
    completeness), disclose the fork in AUTH, refresh V2B's marker. Makes the divergence
-   visible in every copy a reader can open. *(AUTH + CLAUDE.md done 2026-08-06; V2 pending —
-   held only because a red-team is live in that worktree.)*
+   visible in every copy a reader can open.
+
+   **Status 2026-08-06 — DONE except V2.**
+   - **AUTH** — fork disclosed in the header; `CLAUDE.md` §0 restates id allocation satisfiably
+     (`439ffd3`, `4ec43b2`).
+   - **V2B** (`v2-lane-c` `c3423e1`, `e009cce`) — **F-019's `Recurrence (2026-06-11)` bullet
+     propagated**, so the fork copy now teaches the sentinel-prefix rule instead of the
+     case-sensitive one it superseded. Marker re-based: absent-id list corrected to 12, and it
+     now **states its own basis** (measured 2026-08-06 against upstream head F-061) **and its own
+     falsifier** — if that head has moved, the list is a LOWER BOUND, re-measure. It also states
+     its blind spot in the file: *no test in this worktree can detect that drift*, because the
+     guard deliberately does not read the docs checkout. An honestly-dated claim beats a
+     confidently-wrong one.
+   - **Staleness assertion — added for what is actually checkable, and nothing more.** Upstream
+     drift is undetectable without reading the other copy, which would break the guard's
+     portability *and* repeat the "assume the other copy" mistake this whole file documents. What
+     *is* checkable is the marker contradicting **itself**, which is how a re-measure really goes
+     wrong — half-finished. Three assertions: the marker must state when and against which head;
+     the stated head must be consistent with the absent list (no id above it; the head itself
+     accounted for); and the prose list must agree with the `FORKED_ONLY_UPSTREAM` constant.
+     **Both new checks caught real bugs while being written** (a missing zero-pad `F-61`, and ids
+     named twice in one bullet) — they bite.
+   - **V2 — still pending**, held only because a red-team was live in that worktree.
+
+   **Standing consequence until the merge lands:** the F-019 truncation is still present in
+   `F:\code\ai-playground-v2` and in all 23 `atelier/session/*` worktrees. They inherit the fix
+   when `v2-lane-c` merges into `v2` and sessions are recreated. **Until then a builder in any of
+   those worktrees is reading the superseded stop-marker rule** — the one that false-matched on a
+   negated caps mention and stopped a green wave.
 2. **The fix.** Merge the fork's 32 divergent entries (28 fork-only + the fork's 4 collision
    meanings) into the authoritative copy under **NEW ids allocated from the live head
    (F-062+)**. Do not renumber on the AUTH side — it is the smaller set and the one CLAUDE.md

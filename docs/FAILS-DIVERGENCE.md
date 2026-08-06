@@ -222,9 +222,27 @@ leaves code citing two systems. **A safety net, not a fix.**
 
    **Standing consequence until the merge lands:** the F-019 truncation is still present in
    `F:\code\ai-playground-v2` and in all 23 `atelier/session/*` worktrees. They inherit the fix
-   when `v2-lane-c` merges into `v2` and sessions are recreated. **Until then a builder in any of
-   those worktrees is reading the superseded stop-marker rule** — the one that false-matched on a
-   negated caps mention and stopped a green wave.
+   when `v2-lane-c` merges into `v2` and sessions are recreated. Until then a builder in any of
+   those worktrees **reads** the superseded stop-marker rule.
+
+   **CORRECTION (2026-08-06): it is a documentation gap, not a live hazard — I overstated this.**
+   Measured after the fact, three independent lines agree:
+   1. **The rule that stops a wave lives in the HOST, not the ledger.**
+      `.claude/workflows/v2-wave.js:104` is `^`-anchored —
+      `/^\s*(CONFLICT|BLOCKED|BLOCKER|CANNOT PROCEED|HARD STOP)\b/` — landed in `2bd142e`
+      **70 seconds after the only recurrence**, and `git log` on that file shows no revert since.
+   2. **No fork worktree could run a stale host, because there is only ONE host.**
+      `git show v2:.claude/workflows/v2-wave.js` → *"path does not exist in 'v2'"*; same for
+      `v2-lane-c`; the v2b worktree has no `.claude/workflows/` at all. Only `v2-main` carries it.
+      **The truncated entry could mislead a reader; there was no forked host to mis-execute.**
+   3. **The records show exactly one incident — the known one.** A 79.5 MB transcript covering
+      2026-06-06 → 2026-07-08 contains one false-trigger, and it is the one already in F-019:
+      `2026-06-11T22:08:02` — `16.6 W-D7b GAUNTLET ENGINE … verify: true | review: none`, with
+      `LAST BUILD deviation: No BLOCKED/CONFLICT items.` **`review: none` on a `verify: true`
+      committed build** — the review never ran. Every later hit is a reference, not an incident.
+
+   The fix is still worth having — a reader following a superseded rule is a real cost — but it
+   was never going to stop a wave.
 2. **The fix.** Merge the fork's 32 divergent entries (28 fork-only + the fork's 4 collision
    meanings) into the authoritative copy under **NEW ids allocated from the live head
    (F-062+)**. Do not renumber on the AUTH side — it is the smaller set and the one CLAUDE.md

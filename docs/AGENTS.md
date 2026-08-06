@@ -1,5 +1,12 @@
 # AGENTS — ai-playground v2
 
+> ## ⚠ This file is a frozen 2026-06 planning snapshot, not current
+>
+> Kept for original intent and rationale — never as a description of what exists today.
+> The authoritative, current doc set lives in the docs checkout:
+> **`F:\code\ai-playground\docs\`** (branch `v2-main`).
+> Index of this frozen set: [README.md](./README.md).
+
 Authoring conventions for the **agents and skills** v2 manages and runs. How to *write* them — not how the harness executes them. Planning-level: a guide someone could author v2's agent definitions and skills from.
 
 > **Provenance.** Each convention is a **candidate** harvested from studied skills, carrying its source — *(kongcode)* (a friend's plugin: ideas/conventions are fine to adopt; lifting his *code* needs consent — everything here is an authoring convention, safe) or *(hermes)* (Nous Research, **MIT** — liftable). Adapt, don't follow blindly; verify against v2's constraints before locking. Source: `docs/CANNIBALIZE-BRIEF.md` §5.

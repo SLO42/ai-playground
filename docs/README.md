@@ -1,12 +1,34 @@
 # ai-playground v2 — Planning Docs
 
-Working title: **ai-playground v2** (final name TBD — see [DECISIONS.md](./DECISIONS.md) D-000).
+Working title: **ai-playground v2** (final name TBD — see D-000 in the live ledger, `F:\code\ai-playground\docs\DECISIONS.md`).
 
 A ground-up, **lighter** rebuild of the ai-playground project-lifecycle platform — which is **also a Claude Code harness**. Same product idea (create, develop, maintain, release software projects with AI agents) but simplified: one unified datastore (SurrealDB), **Claude Code as the agent runtime + config control surface + session fleet + workflow runner**, and a configurable (not always-on) orchestrator.
 
 **Two pillars:** (1) project lifecycle platform — decides *what* work to do; (2) Claude Code harness — *how* it gets done and how you control it. See [PRODUCT.md §1a](./PRODUCT.md).
 
-These are **planning documents only**. No code yet. The build happens later, phase by phase, assisted by skills.
+> ## ⚠ This directory is a frozen snapshot, not the current docs
+>
+> These were the **planning documents** written before the build, and they are kept at
+> that moment in time. **The system described here as future work is built.** Read this
+> set for original intent and rationale — never as a description of what exists today, and
+> never as the current contract.
+>
+> **The authoritative, current doc set lives in the docs checkout:**
+> **`F:\code\ai-playground\docs\`** (branch `v2-main`) — the decisions ledger
+> (D-000..D-042), every `*-SPEC.md`, the build queue, and the devlog.
+>
+> That is also where a `docs/<NAME>-SPEC.md` cited by a source comment in this worktree
+> resolves — e.g. `docs/GAME-VERIFY-SPEC.md`, referenced from `src/lib/server/orchestrator/`,
+> exists there and not here.
+>
+> **`fails.md`** is the one file here still appended to — but it is **NOT the full set**.
+> It has forked from `F:\code\ai-playground\docs\fails.md` in **both** directions: this copy
+> lacks F-048..F-055 and F-058..F-060; that copy is **missing 28 entries: F-017, F-018,
+> F-021..F-044, F-047, F-057** — the measured set, not the `F-017`..`F-047` range first
+> written here, which wrongly swept in F-019/F-020/F-045/F-046 that BOTH copies carry.
+> Scan **both** before starting a task; `CLAUDE.md` (worktree root) carries the measured
+> breakdown and `fails.md`'s own fork marker enumerates the 28 ids one by one. Re-unifying
+> them is an operator action — mark, never delete.
 
 ## Read in this order
 
@@ -17,7 +39,7 @@ These are **planning documents only**. No code yet. The build happens later, pha
 | 3 | [DATA-MODEL.md](./DATA-MODEL.md) | The SurrealDB schema (document + graph + vector) and migration from v1's ~12 stores |
 | 4 | [DEVELOPMENT.md](./DEVELOPMENT.md) | Repo layout, stack versions, build/test/lint, conventions, Windows rules |
 | 5 | [ROADMAP.md](./ROADMAP.md) | Phased build plan, releases, milestones, and the open spikes |
-| 6 | [DECISIONS.md](./DECISIONS.md) | ADR-style log: locked decisions + tracked OPEN decisions |
+| 6 | [DECISIONS.md](./DECISIONS.md) | **Retired redirect** → the live ledger is `F:\code\ai-playground\docs\DECISIONS.md` (D-000..D-042) |
 | 7 | [UI-SPEC.md](./UI-SPEC.md) | UI/UX design contract: IA, layout, per-screen specs, components, live-update UX, states (token values now resolved → DESIGN-SYSTEM) |
 | 8 | [MEMORY-SPEC.md](./MEMORY-SPEC.md) | Memory & learning engine design (two-tier loop, extraction, recall, lifecycle, SurrealDB gotchas) — folded from the cannibalize research |
 | 9 | [AGENTS.md](./AGENTS.md) | Agent & skill authoring conventions (description-as-classifier, agentskills.io SKILL.md, model tiers) |

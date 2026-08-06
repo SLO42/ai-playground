@@ -47,6 +47,7 @@ import {
 	getRole,
 	getRoleVersion,
 	listOpenProposals,
+	ProposalComparisonCollisionError,
 	setProposalStatus,
 	swapActiveVersion,
 	WorkforceInputError,
@@ -460,12 +461,28 @@ export interface ProposalComparison {
 	/** challenger − incumbent on the surfaced columns; null when not comparable. */
 	delta: { recall: number | null; falsePositives: number | null; costUsd: number | null } | null;
 	at: string;
+	/**
+	 * WHICH writer produced this comparison — stamped at the two persist sites below and read back
+	 * by `repo.comparisonWriteVerdict`, which decides who yields when both writers hold a verdict
+	 * for the same proposal. 'regauntlet' cost real money on that call; 'reconcile' was re-derived
+	 * for free from a run already on disk. Absent on the transient `unscoredComparison` (never
+	 * persisted) and on rows written before the field existed — the repo reads absent as "assume
+	 * PAID", the only reading that cannot discard a bought verdict.
+	 */
+	source?: 'regauntlet' | 'reconcile';
 }
 
 export interface RegauntletResult {
 	outcome: GauntletOutcome;
 	proposal: ReviewProposalRow;
 	comparison: ProposalComparison | null;
+	/**
+	 * The run whose FREE (reconcile-derived) comparison this paid write displaced, or null — the
+	 * far side of the collision rule, surfaced so a displacement is never silent. Non-null means:
+	 * a reconcile had already recorded run X's verdict, this paid run's verdict replaced it, and
+	 * run X's scores are still on its own row (nothing was destroyed, only the pointer moved).
+	 */
+	displacedComparisonFrom: string | null;
 }
 
 interface IncumbentRunRow {
@@ -516,19 +533,20 @@ function recallOf(found: number, total: number): number | null {
  *     means the run must be retried. It is also the reversible choice — no row written is a
  *     state nothing downstream can misread.
  *
- *     KNOWN LIMITATION, stated here because the operator PAYS for it (TERM-R review). Withholding
- *     is correct, but there is no RECONCILE path behind it. This function holds the only write of
- *     'compared' that records a comparison (below), and that write sits BELOW an unconditional
- *     `runGauntlet` — so a comparison can be recorded ONLY by paying for a new run. When the
- *     operator later resolves the queue, `adjudicateInterviewRun` (gauntlet.ts) finalizes the
- *     interview_run to passed/failed and never touches review_proposal, and no other caller
- *     re-enters this function. That paid, fully-scored run is therefore STRANDED: the proposal's
- *     only forward move is a second real spend. An earlier version of this comment claimed the
- *     withheld proposal "routes to the correct next action instead of a dead-end" — that is TRUE
- *     for 'error' (retry) and FALSE for 'adjudicating', where the routed action is another
- *     re-gauntlet. Closing it needs a reconcile path, which is an operator decision (it changes
- *     what the re-gauntlet button spends), so until then the 'adjudicating' reason below SAYS SO
- *     instead of implying that resolving the queue is enough.
+ *     THE RECONCILE PATH BEHIND THE WITHHOLDING (was a KNOWN LIMITATION; closed 2026-08-04).
+ *     Withholding is correct and unchanged, but it used to have no way FORWARD. This function
+ *     holds the only write of 'compared' that records a comparison (below), and that write sits
+ *     BELOW an unconditional `runGauntlet` — so a comparison could be recorded ONLY by paying for
+ *     a new run. When the operator later resolved the queue, `adjudicateInterviewRun`
+ *     (gauntlet.ts) finalized the interview_run to passed/failed and never touched
+ *     review_proposal, and no other caller re-entered this function. That paid, fully-scored run
+ *     was STRANDED, and the proposal's only forward move was a SECOND real spend for a verdict
+ *     that already existed on disk. That is money, not tidiness — it is the actual harm.
+ *     {@link reconcileProposalFromRun} is that forward move: it consumes the run the proposal was
+ *     already waiting on and records the comparison WITHOUT calling `runGauntlet` at all. It
+ *     cannot bypass the operator, because the gate it advances INTO is the D-039 swap ceremony
+ *     (`swapFromProposal` still fail-closes on a missing confirm and on a challenger that has not
+ *     earned its own pass) — reconciling produces the DECISION POINT, never the decision.
  *   • WHAT IS RETURNED: an EXPLICIT UNKNOWN, not null. The spend really happened and the run
  *     row really exists, so the caller is handed a comparison with `comparable:false`, the
  *     score fields null, and an `incomparableReason` naming the status. The surface can then
@@ -563,7 +581,7 @@ export async function regauntletChallenger(
 
 	// A queued outcome (auto + unarmed budget) did not run — record nothing, stay 'interviewing'.
 	if (outcome.kind === 'queued') {
-		return { outcome, proposal, comparison: null };
+		return { outcome, proposal, comparison: null, displacedComparisonFrom: null };
 	}
 
 	const run = outcome.run;
@@ -577,36 +595,396 @@ export async function regauntletChallenger(
 			outcome,
 			// The proposal row is NOT advanced and NOT written — see the header comment.
 			proposal,
-			comparison: unscoredComparison(run)
+			comparison: unscoredComparison(run),
+			displacedComparisonFrom: null
 		};
 	}
 
-	// The incumbent's certifying run at THIS (model_id) for the comparison baseline — the
-	// latest passing run at the same model_id, prompt_sha matching the incumbent's text.
-	let incumbentRun: IncumbentRunRow | null = null;
-	if (proposal.incumbent) {
-		const inc = await getRoleVersion(db, proposal.incumbent);
-		if (inc) {
-			const vid = new StringRecordId(assertRecordId(inc.id));
-			const [rows] = await db.query<[IncumbentRunRow[]]>(
-				`SELECT id, model_id, planted_total, planted_found, false_positives, cost_usd,
-				        fixture_set_sha, started_at
-				   FROM interview_run
-				  WHERE role_version = $vid AND status = 'passed' AND model_id = $model
-				        AND prompt_sha = $sha
-				  ORDER BY started_at DESC LIMIT 1;`,
-				{ vid, model: input.modelId, sha: inc.prompt_sha }
+	const incumbentRun = await loadIncumbentBaseline(db, proposal.incumbent, input.modelId);
+	// PROVENANCE, stamped on the object that is BOTH persisted and returned, so the row and the
+	// caller's copy can never disagree about who paid for this verdict. It is what lets the repo's
+	// collision rule keep this comparison and yield the free one — see comparisonWriteVerdict.
+	const comparison: ProposalComparison = {
+		...buildComparison(run, incumbentRun),
+		source: 'regauntlet'
+	};
+
+	// THE SECOND-WRITER SEAM. `proposal.status` was read at the TOP of this function, before a
+	// gauntlet that spends real money and takes minutes; ②b reconcile is an independent writer of
+	// the same 'compared' state and only the browser serialises the two (one tab's `busy` flag).
+	// So the row can already be 'compared' by the time this write lands — and it can become so
+	// between setProposalStatus's own read and its write, which is why that write is a
+	// compare-and-swap rather than an unconditional UPDATE (F-048: guard the transition too).
+	//
+	// Outcomes, all three named: a FREE (reconcile) comparison YIELDS to this paid one and the run
+	// it came from is reported back in `displacedComparisonFrom` (displacement is never silent);
+	// any other stored verdict — another paid one, or an unstamped one read as paid — refuses, and
+	// the refusal keeps its CLASS (ProposalComparisonCollisionError, one HTTP status on every
+	// route) while NAMING this run, because the spend really happened and the scored row really
+	// exists even though the proposal did not move.
+	let moved: ReviewProposalRow;
+	const displaced: { run: string | null } = { run: null };
+	try {
+		moved = await setProposalStatus(db, proposal.id, {
+			to: 'compared',
+			comparison: comparison as unknown as Record<string, unknown>,
+			onDisplace: (r) => {
+				displaced.run = r;
+			}
+		});
+	} catch (err) {
+		if (err instanceof ProposalComparisonCollisionError) {
+			throw new ProposalComparisonCollisionError(
+				err.proposal,
+				err.storedRun,
+				err.incomingRun,
+				`This re-gauntlet's run ${run.id} DID run and WAS paid for — its scores are on that run row; ` +
+					`nothing was overwritten and the proposal keeps the comparison it already had (§5).`
 			);
-			incumbentRun = rows?.[0] ?? null;
 		}
+		throw err;
+	}
+	return { outcome, proposal: moved, comparison, displacedComparisonFrom: displaced.run };
+}
+
+// ── Step ②b — RECONCILE: consume the run the proposal is ALREADY waiting on (§5, no spend) ──
+//
+// THE DEFECT THIS CLOSES. `regauntletChallenger` correctly WITHHOLDS a comparison when the
+// challenger run is non-terminal: it writes nothing, the proposal stays 'interviewing', and it
+// returns `comparable:false` with a named `incomparableReason`. That gating is right and stays.
+// What was missing was the other half. Resolving the adjudication queue finalizes the
+// `interview_run` (adjudicateInterviewRun → passed/failed) and never touches `review_proposal`,
+// and no other caller re-enters the re-gauntlet — so the paid, now fully-scored run sat STRANDED
+// and the proposal's only forward move was a SECOND real gauntlet spend for a verdict already on
+// disk. The harm is money: an operator paying twice because of a bookkeeping gap.
+//
+// HOW THIS PREVENTS THE DOUBLE SPEND, concretely: this function never calls `runGauntlet`. It
+// re-reads the challenger's own newest `interview_run` — the durable link is `interview_run.
+// role_version = proposal.challenger`, which the runner already writes, so no new column and no
+// migration are needed — and, if that run is now terminal, feeds THAT row through the SAME
+// `buildComparison` + the SAME `loadIncumbentBaseline` the paid path uses. Identical inputs,
+// identical verdict, zero tokens.
+//
+// WHAT IT DOES NOT DO — the D-039 boundary, stated because 'compared' is a gate-bearing status:
+// `nextActionFor` derives 'decide_swap' from 'compared' and the surface then presents the swap
+// ceremony. Advancing here therefore produces the operator's DECISION POINT, never the decision.
+// `swapFromProposal` is still the sole swap entry and still fail-closes on (a) a missing explicit
+// operator confirm and (b) a challenger that has not itself earned a passing interview at
+// (prompt_sha × model_id). A FAILED challenger reconciles just as readily as a passing one — the
+// comparison is recorded honestly and the swap then refuses on deployability, which is the
+// correct place for that refusal, not here.
+
+/** Why a reconcile did not record a comparison. Every outcome is NAMED — never a bare false. */
+export type ReconcileOutcome =
+	/** The run's verdict was consumed; the proposal is now 'compared' (no spend). */
+	| 'reconciled'
+	/** The proposal is not parked waiting on a run (wrong status / no challenger). */
+	| 'not_waiting'
+	/** The challenger has no interview_run at all — nothing was ever paid for. */
+	| 'no_run'
+	/** The run exists but is STILL non-terminal — there is genuinely no verdict yet. */
+	| 'still_pending'
+	/**
+	 * The newest challenger run did NOT run at the incumbent's certified model, so consuming it
+	 * would record an INCOMPARABLE verdict — and 'compared' is one-way (§5), which would foreclose
+	 * the paid apples-to-apples re-gauntlet forever. NOTHING was written. See
+	 * {@link offTargetRefusal} for why this guard exists and exactly when it fires.
+	 */
+	| 'off_target'
+	/**
+	 * A rival writer recorded a comparison for this proposal while this reconcile was deriving
+	 * one, and the repo's collision rule kept theirs. NOTHING was written and NOTHING was spent —
+	 * this path re-derives its verdict for free and can simply be repeated once the row settles.
+	 * It is the yielding side of the paid-over-free rule, and it is reported, never swallowed.
+	 */
+	| 'superseded';
+
+export interface ReconcileProposalInput {
+	proposal: string;
+}
+
+export interface ReconcileProposalResult {
+	outcome: ReconcileOutcome;
+	/** The proposal row — ADVANCED only on 'reconciled'; the unchanged row otherwise. */
+	proposal: ReviewProposalRow;
+	/** The recorded comparison on 'reconciled'; the explicit-unknown on 'still_pending'; else null. */
+	comparison: ProposalComparison | null;
+	/** The run this looked at, when one exists. */
+	run: string | null;
+	/** Named reason when `outcome !== 'reconciled'`; null when it is. */
+	reason: string | null;
+}
+
+/**
+ * Consume the verdict of the run a proposal is already waiting on — the free counterpart to
+ * `regauntletChallenger`. Reads; writes at most ONE row (the proposal's status + comparison).
+ *
+ * IDEMPOTENT / INTERRUPT-SAFE (the contract every step here is held to): re-running it on an
+ * already-'compared' proposal is `not_waiting` with a reason, not an error and not a second
+ * write. The single write goes through `setProposalStatus`, which is transition-checked against
+ * the §5 table and absorbs a re-target to the same status as a no-op — so a run that dies between
+ * the read and the write leaves nothing half-applied, and the re-run picks up where it stopped.
+ *
+ * Shadow paths, all four, all named:
+ *   • happy          — challenger's newest run is terminal → comparison recorded → 'compared'.
+ *   • nil input      — proposal id absent/unknown → WorkforceInputError (a caller asking about a
+ *                      proposal that does not exist is a bug, not a state).
+ *   • empty          — no run for the challenger → 'no_run', NOTHING written. This is the honest
+ *                      "you have not paid for anything to reconcile" answer; the operator's next
+ *                      move is the re-gauntlet, which is a spend they can then consent to.
+ *   • upstream error — the run is 'error' (broke before scoring) or still 'running' /
+ *                      'adjudicating' → 'still_pending' with the SAME wording the paid path uses,
+ *                      and NOTHING written. A broken run must never be consumed as a verdict.
+ *   • off target     — the newest run did not run at the incumbent's CERTIFIED model, so its
+ *                      verdict is not the one the paid path would have produced → 'off_target',
+ *                      NOTHING written (see {@link offTargetRefusal}).
+ *   • rival writer   — a paid re-gauntlet recorded its comparison first (or landed between this
+ *                      function's read and its compare-and-swap) → 'superseded', NOTHING written.
+ *                      This side yields by design: its verdict is free to re-derive, the paid one
+ *                      is not (see `repo.comparisonWriteVerdict`).
+ */
+export async function reconcileProposalFromRun(
+	db: Db,
+	input: ReconcileProposalInput
+): Promise<ReconcileProposalResult> {
+	const proposal = await getReviewProposal(db, input.proposal);
+	if (!proposal) throw new WorkforceInputError(`review_proposal not found: ${input.proposal}`);
+
+	// GATE: only a proposal PARKED in 'interviewing' is waiting on a run. Refusing every other
+	// status is what keeps this from being a second, weaker route into 'compared' — it cannot
+	// skip the diff ceremony (proposed/validated/diff_review) and it cannot reopen a closed row.
+	if (proposal.status !== 'interviewing') {
+		return {
+			outcome: 'not_waiting',
+			proposal,
+			comparison: null,
+			run: null,
+			reason: `proposal ${proposal.id} is status '${proposal.status}', not 'interviewing' — only a proposal parked waiting on a challenger run has a verdict to consume (§5)`
+		};
+	}
+	if (!proposal.challenger) {
+		return {
+			outcome: 'not_waiting',
+			proposal,
+			comparison: null,
+			run: null,
+			reason: `proposal ${proposal.id} has no challenger — there is no run to reconcile from (§5)`
+		};
 	}
 
-	const comparison = buildComparison(run, incumbentRun);
-	const moved = await setProposalStatus(db, proposal.id, {
-		to: 'compared',
-		comparison: comparison as unknown as Record<string, unknown>
-	});
-	return { outcome, proposal: moved, comparison };
+	const run = await latestChallengerRun(db, proposal.challenger);
+	if (!run) {
+		return {
+			outcome: 'no_run',
+			proposal,
+			comparison: null,
+			run: null,
+			reason:
+				'the challenger has no interview_run — nothing has been paid for yet, so there is no verdict to consume. Run the re-gauntlet (a real spend) to produce one (§5)'
+		};
+	}
+
+	// THE CERTIFIED-TARGET GUARD — BEFORE the terminality gate on purpose: an off-target run will
+	// never become usable, so telling the operator "still pending, come back when it finishes" would
+	// send them to adjudicate a queue for a verdict this path can never consume.
+	const offTarget = await offTargetRefusal(db, proposal, run);
+	if (offTarget) {
+		return { outcome: 'off_target', proposal, comparison: null, run: run.id, reason: offTarget };
+	}
+
+	// THE TERMINALITY GATE — the shared one, the same call the paid path makes. A second local
+	// notion of "terminal" is exactly how this defect class survived five point fixes.
+	if (!isScoredStatus(run.status)) {
+		const unscored = unscoredComparison(run);
+		return {
+			outcome: 'still_pending',
+			proposal,
+			comparison: unscored,
+			run: run.id,
+			reason: unscored.incomparableReason
+		};
+	}
+
+	// The baseline is resolved at the model the run ACTUALLY ran at — never a caller-supplied one.
+	// A reconcile that let its caller pick the model could manufacture a flattering comparison out
+	// of a run that never touched that model; `buildComparison` would then still mark it
+	// incomparable, but the incumbent column would be a baseline the challenger never faced.
+	const incumbentRun = await loadIncumbentBaseline(db, proposal.incumbent, run.model_id);
+	// PROVENANCE (see the paid twin): this verdict cost nothing, and saying so on the row is what
+	// lets a paid rival displace it instead of being discarded by it.
+	const comparison: ProposalComparison = {
+		...buildComparison(run, incumbentRun),
+		source: 'reconcile'
+	};
+	let moved: ReviewProposalRow;
+	try {
+		moved = await setProposalStatus(db, proposal.id, {
+			to: 'compared',
+			comparison: comparison as unknown as Record<string, unknown>
+		});
+	} catch (err) {
+		// THE YIELDING SIDE of the collision rule. A rival got there first, so this free
+		// re-derivation is refused — as a named OUTCOME, not an exception the route turns into a
+		// server fault, because from the operator's side nothing failed and nothing was lost: the
+		// proposal already carries a verdict, and this one can be re-derived at any time for free.
+		if (err instanceof ProposalComparisonCollisionError) {
+			const current = (await getReviewProposal(db, proposal.id)) ?? proposal;
+			return {
+				outcome: 'superseded',
+				proposal: current,
+				comparison: null,
+				run: run.id,
+				reason:
+					`${err.message} This reconcile re-derived run ${run.id}'s verdict for FREE and spent ` +
+					`nothing, so nothing is lost — the proposal already carries a comparison another writer ` +
+					`recorded; re-read it (§5).`
+			};
+		}
+		throw err;
+	}
+	return { outcome: 'reconciled', proposal: moved, comparison, run: run.id, reason: null };
+}
+
+/** The shape `buildComparison` / `unscoredComparison` need from the challenger's run. */
+interface ChallengerRunRow {
+	id: string;
+	status: string;
+	model_id: string;
+	planted_found: number;
+	planted_total: number;
+	false_positives: number;
+	cost_usd: number | null;
+	fixture_set_sha: string;
+}
+
+/**
+ * The challenger's NEWEST interview_run. The proposal→run link is not a stored column: the runner
+ * writes `interview_run.role_version = <the challenger version>`, and a challenger role_version is
+ * created per proposal (`authorChallenger`), so its runs are exactly the runs this proposal paid
+ * for. Reading it back is why no migration is needed to close the stranding.
+ *
+ * NEWEST, not "the passing one": consuming the latest verdict is what the paid path would have
+ * produced had the operator run it again, and picking a favourable older run would be the same
+ * fabrication one level up. `started_at` is projected because it is the ORDER BY idiom (F-020).
+ */
+async function latestChallengerRun(db: Db, challenger: string): Promise<ChallengerRunRow | null> {
+	const vid = new StringRecordId(assertRecordId(challenger));
+	const [rows] = await db.query<
+		[Array<Omit<ChallengerRunRow, 'id'> & { id: unknown; started_at: unknown }>]
+	>(
+		`SELECT id, status, model_id, planted_found, planted_total, false_positives, cost_usd,
+		        fixture_set_sha, started_at
+		   FROM interview_run
+		  WHERE role_version = $vid
+		  ORDER BY started_at DESC LIMIT 1;`,
+		{ vid }
+	);
+	const r = rows?.[0];
+	if (!r) return null;
+	return {
+		id: String(r.id),
+		status: String(r.status ?? ''),
+		model_id: String(r.model_id ?? ''),
+		planted_found: typeof r.planted_found === 'number' ? r.planted_found : 0,
+		planted_total: typeof r.planted_total === 'number' ? r.planted_total : 0,
+		false_positives: typeof r.false_positives === 'number' ? r.false_positives : 0,
+		cost_usd: typeof r.cost_usd === 'number' ? r.cost_usd : null,
+		fixture_set_sha: typeof r.fixture_set_sha === 'string' ? r.fixture_set_sha : ''
+	};
+}
+
+/**
+ * THE CERTIFIED-TARGET GUARD — the free path may consume only the run the PAID path would have
+ * produced. Returns the named refusal, or null when this run is on target.
+ *
+ * THE DEFECT THIS CLOSES (LC-D review, finding ②). The paid path is constrained: the route calls
+ * `resolveRegauntletTarget`, which reads the incumbent's certified (tier × model_id), and
+ * `regauntletChallenger` runs the challenger at exactly that — which is the whole basis of this
+ * module's "apples-to-apples" claim. `latestChallengerRun` was constrained by NOTHING but
+ * `role_version = challenger`, so ANY run on that version qualified — including one a different
+ * caller produced at a different model (`ceremony.triggerBootstrapInterview` /
+ * `triggerAdmissionReferenceRun` both take an arbitrary role_version AND an arbitrary tier/model).
+ * Consuming such a run makes `loadIncumbentBaseline` find no baseline at that model, so
+ * `buildComparison` yields `comparable:false` — and the proposal advanced to 'compared' anyway.
+ * 'compared' is a ONE-WAY door (lifecycle.ts: compared → swapped | rejected_by_operator |
+ * withdrawn), and `regauntletChallenger` refuses any status but 'interviewing'. So ONE free click
+ * on the wrong run permanently foreclosed the paid comparison the operator was entitled to. The
+ * doc claim "Identical inputs, identical verdict, zero tokens" held only by luck.
+ *
+ * WHEN IT FIRES, EXACTLY — the guard is scoped to the FORECLOSURE condition, not widened past it:
+ *   • certified target resolves AND the run's model_id differs  → REFUSE (a paid apples-to-apples
+ *     comparison is still possible, and consuming this run would destroy the chance to record it).
+ *   • certified target does NOT resolve (no incumbent, or no passing run at the incumbent's
+ *     current prompt_sha)                                        → ALLOW, unchanged. The paid path
+ *     refuses that case too (`resolveRegauntletTarget` → ok:false → the route's 400), so there is
+ *     no better verdict being foreclosed — only an honest `comparable:false` comparison to record,
+ *     and the D-039 swap gate behind it is untouched. Refusing here instead would strand such a
+ *     proposal with NO forward move at all, which is a strictly worse harm than the one being
+ *     fixed. (The residual: certifying the incumbent AFTER the challenger already ran off-target
+ *     would re-open a comparison this path had already consumed. Stated, not hidden.)
+ *
+ * MODEL, NOT TIER: model_id is the axis `buildComparison` actually compares on (with
+ * fixture_set_sha) and the axis `loadIncumbentBaseline` filters the baseline by. Tier is a cost
+ * LABEL that two rungs could map to the same model; refusing on it would reject runs that are
+ * genuinely comparable. The target's tier is named in the message for provenance only.
+ *
+ * ONE definition, two callers: this gate and `buildProposalCard` — so the surface can never offer a
+ * button the mechanism will refuse (a dead control is F-008 dishonesty on the affordance).
+ */
+async function offTargetRefusal(
+	db: Db,
+	proposal: ReviewProposalRow,
+	run: ChallengerRunRow
+): Promise<string | null> {
+	const target = await resolveRegauntletTarget(db, proposal.id);
+	if (!target.ok) return null;
+	if (run.model_id === target.target.modelId) return null;
+	return (
+		`run ${run.id} ran at model '${run.model_id}', but the incumbent is certified at ` +
+		`'${target.target.modelId}' (tier '${target.target.tier}', certified by ${target.target.certifiedBy}) — ` +
+		`its verdict is NOT the one a re-gauntlet would produce, so recording it would land an ` +
+		`INCOMPARABLE comparison on a status ('compared') that has no way back (§5), foreclosing the ` +
+		`apples-to-apples comparison for good. Run the re-gauntlet (a real spend) to get a verdict at ` +
+		`the certified model.`
+	);
+}
+
+/**
+ * The incumbent's certifying run at THIS model_id — the comparison baseline. The latest PASSING
+ * run at the same model_id whose prompt_sha matches the incumbent's current text (a baseline from
+ * a superseded prompt would not be the incumbent that is actually deployed).
+ *
+ * ONE definition, two callers: the paid re-gauntlet (`regauntletChallenger`) and the free
+ * reconcile (`reconcileProposalFromRun`). They MUST derive the same baseline from the same run,
+ * or the reconcile path would quietly produce a different verdict than paying again would — which
+ * is the exact class of bug that makes an operator distrust the cheap path and pay anyway.
+ *
+ * `started_at` is in the projection because it is the ORDER BY idiom (SurrealDB 2.x raises
+ * "Missing order idiom" otherwise — F-020, three recurrences deep in this repo). It is not read.
+ *
+ * Shadow paths: no incumbent on the proposal → null (the §5 asymmetry, stated by buildComparison
+ * as `incomparableReason`); incumbent link dangling → null; no passing run at that (prompt_sha ×
+ * model_id) → null. Never a throw — an absent baseline is a comparison that says so, not a fault.
+ */
+async function loadIncumbentBaseline(
+	db: Db,
+	incumbent: string | null,
+	modelId: string
+): Promise<IncumbentRunRow | null> {
+	if (!incumbent) return null;
+	const inc = await getRoleVersion(db, incumbent);
+	if (!inc) return null;
+	const vid = new StringRecordId(assertRecordId(inc.id));
+	const [rows] = await db.query<[IncumbentRunRow[]]>(
+		`SELECT id, model_id, planted_total, planted_found, false_positives, cost_usd,
+		        fixture_set_sha, started_at
+		   FROM interview_run
+		  WHERE role_version = $vid AND status = 'passed' AND model_id = $model
+		        AND prompt_sha = $sha
+		  ORDER BY started_at DESC LIMIT 1;`,
+		{ vid, model: modelId, sha: inc.prompt_sha }
+	);
+	return rows?.[0] ?? null;
 }
 
 /**
@@ -620,7 +998,7 @@ export async function regauntletChallenger(
 function unscoredComparison(run: { id: string; status: string; model_id: string; cost_usd: number | null; fixture_set_sha: string }): ProposalComparison {
 	const why =
 		run.status === 'adjudicating'
-			? "the challenger run is parked on the operator's adjudication queue — resolving it can still RAISE planted_found, so it has no verdict yet (§3.4). Resolving the queue does NOT produce this comparison: the adjudication finalizes the RUN and never touches the proposal, so a NEW re-gauntlet (another real spend) is required afterwards"
+			? "the challenger run is parked on the operator's adjudication queue — resolving it can still RAISE planted_found, so it has no verdict yet (§3.4). Resolve the queue, then use the run's verdict on this proposal (reconcile) — that costs NOTHING; a second re-gauntlet would be a second real spend for a verdict you already own"
 			: run.status === 'error'
 				? 'the challenger run BROKE before producing a score — this is not a verdict on the challenger (§3.6); retry the re-gauntlet'
 				: `the challenger run is '${run.status}' — it has not terminally produced a score`;
@@ -915,6 +1293,35 @@ export interface ProposalCard {
 	/** The recorded re-gauntlet comparison (§5); null until 'compared'. */
 	comparison: Record<string, unknown> | null;
 	nextAction: ProposalNextAction;
+	/**
+	 * Set ONLY for a proposal parked in 'interviewing' that has an interview_run behind it: the
+	 * run the proposal is waiting on, and whether its verdict can be consumed WITHOUT paying for a
+	 * second gauntlet ({@link reconcileProposalFromRun}).
+	 *
+	 * This is what makes the reconcile path REACHABLE rather than a function nobody can call. It
+	 * is deliberately a separate field instead of a new `nextAction`: 'regauntlet' is still the
+	 * honest next action (the run may legitimately still be pending), and `nextActionFor` derives
+	 * the D-039 'decide_swap' gate — widening that enum is not a change to make in passing.
+	 *
+	 * `ready:false` is stated, not hidden: the operator sees "there IS a run, here is why its
+	 * verdict is not usable yet" rather than an unexplained absence beside a button that spends.
+	 */
+	reconcilable: {
+		run: string;
+		status: string;
+		/**
+		 * The model the run ACTUALLY ran at. Shown because it is the axis the verdict's
+		 * comparability turns on: a run at a model other than the incumbent's certified one cannot
+		 * be reconciled, and the card used to name only the run id and status — so the one fact
+		 * that decides whether this control does anything useful was invisible.
+		 */
+		model: string;
+		/** TRUE iff reconciling would record a comparison right now — i.e. the run is terminal AND
+		 *  it ran at the incumbent's certified model (see `offTargetRefusal`). */
+		ready: boolean;
+		/** Why it is / is not ready — the same wording the mechanism refuses with. */
+		reason: string;
+	} | null;
 	createdAt: string | null;
 }
 
@@ -952,6 +1359,30 @@ export async function buildProposalCard(db: Db, proposal: ReviewProposalRow): Pr
 		const d = await proposalDiff(db, proposal.id);
 		diff = { added: d.added, removed: d.removed, unchanged: d.unchanged, lines: d.lines };
 	}
+	// One bounded point read, and ONLY for the parked state that can have a stranded run — a card
+	// in any other status has nothing to reconcile, so it must not pay for the lookup either.
+	let reconcilable: ProposalCard['reconcilable'] = null;
+	if (proposal.status === 'interviewing' && proposal.challenger) {
+		const run = await latestChallengerRun(db, proposal.challenger);
+		if (run) {
+			// The SAME guard the mechanism refuses with — never a second, weaker local notion of
+			// "reconcilable", or the surface offers a button that is certain to 400.
+			const offTarget = await offTargetRefusal(db, proposal, run);
+			const scored = isScoredStatus(run.status);
+			reconcilable = {
+				run: run.id,
+				status: run.status,
+				model: run.model_id,
+				ready: scored && !offTarget,
+				reason:
+					offTarget ??
+					(scored
+						? `run ${run.id} finished '${run.status}' — its verdict can be recorded on this proposal now, with NO second gauntlet spend (§5)`
+						: (unscoredComparison(run).incomparableReason ??
+							`run ${run.id} is '${run.status}' — no verdict yet`))
+			};
+		}
+	}
 	return {
 		proposal: proposal.id,
 		role: proposal.role,
@@ -969,6 +1400,7 @@ export async function buildProposalCard(db: Db, proposal: ReviewProposalRow): Pr
 		diff,
 		comparison: proposal.comparison,
 		nextAction: nextActionFor(proposal.status),
+		reconcilable,
 		createdAt: proposal.created_at
 	};
 }

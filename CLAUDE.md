@@ -4,14 +4,36 @@ This is the **v2 build worktree** (branch `v2`). The app is scaffolded here
 alongside `spikes/` (throwaway proofs) and `bin/` (provisioned binaries).
 
 The full project conventions live in the main repo's `CLAUDE.md`
-(`F:\code\ai-playground\CLAUDE.md`) and the v2 doc set in `docs/`. This file is
-the lean, build-worktree-specific overlay.
+(`F:\code\ai-playground\CLAUDE.md`). This file is the lean, build-worktree-specific
+overlay.
 
 ## Canonical spec (read before building — do NOT guess)
-- `docs/IMPLEMENTATION-PLAN.md` — what to build, in what order, how to verify.
-- `docs/DECISIONS.md` — locked decisions D-000..D-035 are LAW.
-- `docs/DATA-MODEL.md`, `docs/MEMORY-SPEC.md`, `docs/ARCHITECTURE.md`,
-  `docs/UI-SPEC.md`, `docs/AGENTS.md`, `docs/DEVELOPMENT.md`.
+
+**The authoritative doc set is the docs checkout, `F:\code\ai-playground\docs\` (branch
+`v2-main`)** — decisions, every `*-SPEC.md`, the build queue and the devlog live there and
+are kept current. The `docs/` directory in THIS worktree is a frozen 2026-06 snapshot of
+the original v2 plan; read it as history, not as the current system.
+
+- `F:\code\ai-playground\docs\DECISIONS.md` — locked decisions **D-000..D-042** are LAW.
+  (The local `docs/DECISIONS.md` is a retired redirect — it stopped at D-034.)
+- `F:\code\ai-playground\docs\` — the current `*-SPEC.md` set, e.g. `GAME-VERIFY-SPEC.md`,
+  which source comments in this tree cite by that name.
+- Frozen local snapshot, still useful for original intent: `docs/IMPLEMENTATION-PLAN.md`,
+  `docs/DATA-MODEL.md`, `docs/MEMORY-SPEC.md`, `docs/ARCHITECTURE.md`, `docs/UI-SPEC.md`,
+  `docs/AGENTS.md`, `docs/DEVELOPMENT.md`.
+- `docs/fails.md` — **FORKED from the docs-checkout copy. Scan BOTH; neither is the full
+  set.** Its own header still claims to be the unified log "synced to both branches so
+  every agent sees the full set" — measured 2026-08-05, that is false in BOTH directions.
+  This copy (last touched `4e8698b`, 2026-07-07) carries F-001..F-057 but is **missing
+  F-048..F-055, F-058, F-059, F-060** — which include hard rules in the current operating
+  manual: F-052 (one builder per worktree), F-058 (never `git checkout -- <file>`), F-059
+  (`db:up` runs SurrealDB in the FOREGROUND). `F:\code\ai-playground\docs\fails.md` carries
+  those but is itself **missing 28 entries: F-017, F-018, F-021..F-044, F-047, F-057**
+  (enumerated id-by-id in the fork marker in `docs/fails.md`, which is the merge input; it
+  also cites F-029 in prose with no F-029 entry). That is the measured set — NOT the
+  `F-017`..`F-047` range first written here, which wrongly swept in F-019, F-020, F-045 and
+  F-046, all carried by BOTH copies. Re-unifying the two is an **operator** action (mark,
+  never delete) — do not merge or delete either copy. New entries still append here.
 
 ## Stack (verify APIs before use)
 - Node 24, ESM only (`"type":"module"`).

@@ -12,6 +12,7 @@ import {
 	ceremonyFacts,
 	filterCeremonies,
 	groupHiringCeremonies,
+	runFetchNotice,
 	type HiringCeremonyLike
 } from './hiring-ledger-core';
 import {
@@ -283,6 +284,29 @@ describe('ceremonyFacts — every stated fact traces to a real column', () => {
 		expect(facts[0].text).toBe('run not found');
 	});
 
+	// ── DEFECT #1: an honest state produced by a dishonest cause ─────────────────────
+	it('a CAPPED-OUT pointer says "not fetched" — never "not found"', () => {
+		const facts = ceremonyFacts(ceremony({ run: null, runUnfetched: true, runMissing: false }));
+		expect(facts).toHaveLength(1);
+		expect(facts[0].kind).toBe('unfetched');
+		expect(facts[0].text).toBe('run details not fetched');
+		// THE REGRESSION GUARD: the words that reported a data-integrity fault must not appear.
+		expect(facts[0].text).not.toContain('not found');
+		expect(facts[0].detail).toMatch(/never queried/);
+	});
+
+	it('if a read ever set BOTH flags, "not fetched" wins — it is the claim we can stand behind', () => {
+		const facts = ceremonyFacts(ceremony({ run: null, runUnfetched: true, runMissing: true }));
+		expect(facts.map((f) => f.kind)).toEqual(['unfetched']);
+	});
+
+	it('runUnfetched:false leaves every other path byte-identical (no accidental widening)', () => {
+		expect(ceremonyFacts(ceremony({ run: null, runMissing: true, runUnfetched: false }))).toEqual(
+			ceremonyFacts(ceremony({ run: null, runMissing: true }))
+		);
+		expect(ceremonyFacts(ceremony({ runUnfetched: false }))).toEqual(ceremonyFacts(ceremony()));
+	});
+
 	// ── Shadow paths ──────────────────────────────────────────────────────────────
 	it('nil ceremony → [] (never a row of placeholder chips)', () => {
 		expect(ceremonyFacts(null)).toEqual([]);
@@ -359,5 +383,141 @@ describe('ceremonyCountLabel', () => {
 		const label = ceremonyCountLabel(many(9), 2);
 		expect(label.text).toBe('9 ceremonies');
 		expect(label.detail).toMatch(/not available/);
+	});
+
+	// ── DEFECT #2: the header counted a different set than the list ──────────────────────
+	//
+	// LIVE-CONFIRMED (2026-08-04, /agents on the dev DB): the header read
+	//   "36 ceremonies · one event each"
+	// above a list rendering 17 rows, because showBrokenRuns defaults false and 19 of the 36 runs
+	// have status='error' (read-only probe: adjudicating 2 / passed 8 / error 19 / failed 7 = 36).
+	// The convention adopted is /claude-code's `.fleet-window` shape — `showing V of N`, visible
+	// first, plus the hidden count named SEPARATELY in the detail — not a third invention.
+	describe('the header must count the set the operator is looking at', () => {
+		it('THE DEFECT, reproduced and closed: 36 loaded / 17 visible → "showing 17 of 36"', () => {
+			const label = ceremonyCountLabel(many(36), 36, 17);
+			expect(label.text).toBe('showing 17 of 36 ceremonies');
+			// The bare total that sat above a 17-row list must not be the whole line any more.
+			expect(label.text).not.toBe('36 ceremonies · one event each');
+			// Hidden is NAMED, never left for the reader to subtract — and never fused into the
+			// "N of M" pair, which is the shape that inverted live in fleetCollapsedSummary.
+			expect(label.detail).toContain('17 shown');
+			expect(label.detail).toContain('19 hidden');
+			expect(label.detail).toContain('36 loaded');
+		});
+
+		it('the EVENT total is dropped from the filtered text — it counts the loaded set', () => {
+			const label = ceremonyCountLabel(many(36), 41, 17);
+			expect(label.text).toBe('showing 17 of 36 ceremonies');
+			expect(label.text).not.toContain('41');
+			// It survives in the detail, explicitly scoped to what it actually counts.
+			expect(label.detail).toContain('41 ledger events loaded');
+		});
+
+		it('unfiltered (visible === loaded) is byte-identical to the pre-change label', () => {
+			expect(ceremonyCountLabel(many(36), 36, 36)).toEqual(ceremonyCountLabel(many(36), 36));
+			expect(ceremonyCountLabel(many(12), 41, 12)).toEqual(ceremonyCountLabel(many(12), 41));
+			expect(ceremonyCountLabel(many(1), 1, 1).text).toBe('1 ceremony · one event each');
+		});
+
+		it('EVERY row filtered out → "showing 0 of N", never a bare N over an empty list', () => {
+			const label = ceremonyCountLabel(many(19), 19, 0);
+			expect(label.text).toBe('showing 0 of 19 ceremonies');
+			expect(label.detail).toContain('19 hidden');
+		});
+
+		// ── Shadow paths on the new argument ────────────────────────────────────────
+		it('an ABSENT visible count is treated as unfiltered — never a fabricated "showing"', () => {
+			for (const v of [null, undefined, NaN, Infinity, 'nope' as unknown as number]) {
+				const label = ceremonyCountLabel(many(36), 36, v as number);
+				expect(label.text).toBe('36 ceremonies · one event each');
+			}
+		});
+
+		it('an OUT-OF-RANGE visible count is clamped, never printed raw', () => {
+			// Greater than loaded → clamps to loaded → the unfiltered text (the honest reading).
+			expect(ceremonyCountLabel(many(5), 5, 99).text).toBe('5 ceremonies · one event each');
+			// Negative → clamps to 0 → "showing 0 of 5", not "showing -3 of 5".
+			expect(ceremonyCountLabel(many(5), 5, -3).text).toBe('showing 0 of 5 ceremonies');
+			// Fractional → floored, never rendered as a decimal row count.
+			expect(ceremonyCountLabel(many(5), 5, 2.9).text).toBe('showing 2 of 5 ceremonies');
+		});
+
+		it('a filtered header with an UNAVAILABLE event total still states both ceremony counts', () => {
+			const label = ceremonyCountLabel(many(36), null, 17);
+			expect(label.text).toBe('showing 17 of 36 ceremonies');
+			expect(label.detail).toContain('not available');
+		});
+
+		it('nil/empty ceremonies ignore the visible count entirely', () => {
+			expect(ceremonyCountLabel([], 0, 0).text).toBe('0 ceremonies');
+			expect(ceremonyCountLabel(null, 0, 5).text).toBe('0 ceremonies');
+		});
+	});
+});
+
+// ── runFetchNotice — DEFECT #1's surfaced half ───────────────────────────────────────────
+describe('runFetchNotice', () => {
+	const fetch = (over: Partial<Parameters<typeof runFetchNotice>[0]> = {}) => ({
+		pointers: 213,
+		hydrated: 200,
+		cap: 200,
+		unfetched: 13,
+		capped: true,
+		...over
+	});
+
+	it('states each number separately and calls the cap a BOUND, not missing data', () => {
+		const note = runFetchNotice(fetch())!;
+		expect(note).toContain('200 of 213');
+		expect(note).toContain('13 ceremonies');
+		expect(note).toContain('cap of 200');
+		expect(note).toContain('not a finding about the data');
+		// It must also disclose that the broken-run count only covers the subset this read asked
+		// about — otherwise the fix for one "count of a different set" spawns another.
+		expect(note).toMatch(/broken-run count covers only the ones this read asked about/);
+	});
+
+	// THE DEFECT THIS PINS (found by the LC-C DoD review). The first draft of this very notice —
+	// the copy whose whole job is to stop the feed claiming things it cannot know — asserted
+	// "Those runs exist and every row is still listed". It cannot know that: a pointer past the
+	// cap was never QUERIED (repo.ts listHiringActivity pushes it to `unfetchedPointers` INSTEAD
+	// of the query), so a dangling pointer and a healthy one are indistinguishable from this read.
+	// It also said run details were "loaded", while `hydrated` counts pointers ASKED ABOUT
+	// (runIds.length) — a malformed pointer inside the cap is counted and still returns no row.
+	it('never claims the unfetched runs EXIST, and never says "loaded" for a count of asks (F-008)', () => {
+		const note = runFetchNotice(fetch())!;
+		expect(note, 'existence past the cap is unknowable from this read').not.toMatch(/exist/i);
+		expect(note, '"loaded" overstates a count of pointers asked about').not.toMatch(
+			/loaded for/i
+		);
+		expect(note).toMatch(/requested for 200 of 213/);
+		expect(note).toMatch(/run rows were never checked here/);
+	});
+
+	it('singular grammar on a shortfall of one', () => {
+		expect(runFetchNotice(fetch({ pointers: 201, hydrated: 200, unfetched: 1 }))).toContain(
+			'1 ceremony'
+		);
+	});
+
+	// ── Shadow paths ───────────────────────────────────────────────────────────────
+	it('NOT capped → null (no note at all, never a reassuring "nothing was truncated")', () => {
+		expect(runFetchNotice(fetch({ capped: false, unfetched: 0 }))).toBeNull();
+	});
+
+	it('nil / non-object input → null', () => {
+		expect(runFetchNotice(null)).toBeNull();
+		expect(runFetchNotice(undefined)).toBeNull();
+	});
+
+	it('capped:true with an unusable shortfall recomputes, then gives up rather than lie', () => {
+		// unfetched missing but the pair still implies a real shortfall → recomputed.
+		expect(runFetchNotice(fetch({ unfetched: 0, pointers: 210, hydrated: 200 }))).toContain(
+			'10 ceremonies'
+		);
+		// Nothing adds up (a read model contradicting itself) → no note, rather than "0 ceremonies".
+		expect(runFetchNotice(fetch({ unfetched: 0, pointers: 5, hydrated: 200 }))).toBeNull();
+		expect(runFetchNotice(fetch({ unfetched: -4, pointers: 0, hydrated: 0 }))).toBeNull();
 	});
 });

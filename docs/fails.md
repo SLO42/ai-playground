@@ -8,6 +8,44 @@ This is the UNIFIED F-001–F-015 log (2026-06-10): F-001..F-013 were carried on
 the build branch (`v2`), F-014/F-015 were logged on `v2-main` — merged here and
 synced to both branches so every agent sees the full set.
 
+> **STALE-PROPOSED: 2026-08-05 — the "synced to both branches" claim above is no longer
+> true, in BOTH directions.** Measured against `F:\code\ai-playground\docs\fails.md`
+> (branch `v2-main`) by comparing the `## F-NNN` id sets.
+>
+> **Measurement basis — 2026-08-06, upstream head `F-061` (31 entries).** This marker
+> states its own basis so a reader can CHECK it instead of trusting it: if that copy's head
+> is now above `F-061`, this marker is older than the ledger it describes and the list below
+> is a LOWER BOUND, not the full set — re-measure. It has already gone stale exactly that
+> way once: it named F-060 as the last absent id, F-061 was appended upstream the next day,
+> and nothing here could notice. **No test in this worktree can detect that drift** — the
+> guard deliberately does not read the docs checkout (it is not guaranteed to exist where
+> the suite runs), so the honest dated claim above is the only warning a reader gets.
+> - **Absent from THIS copy — 12 ids:** F-048, F-049, F-050, F-051, F-052, F-053, F-054,
+>   F-055, F-058, F-059, F-060, F-061. These are not minor — F-052 (one builder per
+>   worktree), F-058 (never `git checkout -- <file>`) and F-059 (`db:up` is a FOREGROUND
+>   process) are named hard rules in the current operating manual.
+> - **Absent from THAT copy — 28 ids, enumerated:** F-017, F-018, F-021, F-022, F-023,
+>   F-024, F-025, F-026, F-027, F-028, F-029, F-030, F-031, F-032, F-033, F-034, F-035,
+>   F-036, F-037, F-038, F-039, F-040, F-041, F-042, F-043, F-044, F-047, F-057. It cites
+>   F-029 in prose while carrying no F-029 entry, so it is not a superset either.
+>   (This marker first stated the set as the range `F-017`..`F-047`, which is its min and
+>   max rather than its members — that wrongly swept in F-019, F-020, F-045 and F-046,
+>   which BOTH copies carry. The list is enumerated here because it is the input to the
+>   operator's re-unification, and F-020's own Date line below records that duplicate
+>   F-019 numbering has already caused exactly this failure once.)
+> - **Divergence is NOT only about which ids exist — a shared id can carry different
+>   content.** Four ids name entirely different failures depending on the copy: **F-016,
+>   F-020, F-045, F-046**. Worse, F-019 was silently TRUNCATED here: it lacked the
+>   `Recurrence (2026-06-11)` bullet that escalates the stop-marker rule from case-sensitive
+>   matching to a sentinel PREFIX, so this copy taught the superseded rule while reading as
+>   complete. Propagated 2026-08-06. A truncated entry is more dangerous than a collision —
+>   a collision looks wrong when you read it; this did not. Full per-id measurement:
+>   `docs/FAILS-DIVERGENCE.md` on branch `v2-main`.
+>
+> So **neither file is the full set — scan both.** This copy: head `F-057`, 47 entries
+> (2026-08-06). Per the marking protocol this is a MARK, not a retirement: nothing has been
+> merged or deleted here. Re-unifying the two ledgers is an **operator** action.
+
 The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
 — the prevention rules apply to v2 from day 0.
 
@@ -182,6 +220,7 @@ The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
 - **Why**: the v2-wave template's deviation stop-guard `/\bBLOCK(?:ED|ER)?\b/i` was case-insensitive, so the builder's *advisory* deviation prose — "SDK-path denies surface as **blocked** tool_result events" (describing the gate working correctly) — matched the BLOCKED marker.
 - **Fix**: stop markers are now case-SENSITIVE all-caps flags (`CONFLICT|BLOCKED|BLOCKER` exact + the literal phrases "cannot proceed"/"hard stop"); resumed the wave via resumeFromRunId (green build returned cached).
 - **Prevention**: machine-parsed control flags embedded in free prose must be syntactically distinguishable from prose — all-caps exact markers, dedicated fields, or sentinel prefixes. Never case-insensitive word-match a control signal against text agents write naturally. (When adding any new verdict-field regex to the template: test it against REAL past verdict texts first.)
+- **Recurrence (2026-06-11)**: the case-sensitive fix false-matched AGAIN on a NEGATED caps mention — 16.6's green build wrote "No BLOCKED/CONFLICT items" in its deviation and stopped wave v2.1. Escalated to the structural fix the entry already prescribed: **sentinel prefix** — markers count only at the START of the deviation (`/^\s*(CONFLICT|BLOCKED|...)/`), and BUILD_PRE now instructs builders to BEGIN the deviation with "BLOCKED:"/"CONFLICT:" when a stop is intended. Lesson: substring presence is never intent; only position + convention is.
 
 ## F-020: dev-server keyboard/SSE assertions race client hydration
 - **Date**: 2026-06-11 (renumbered from F-019 on 2026-06-11 — the unified log on

@@ -28,6 +28,7 @@ import {
 	listHiringActivity,
 	listRecentRoleEvents,
 	addRoleEvent,
+	HIRING_RUN_FETCH_CAP,
 	type HiringCeremony
 } from './repo';
 
@@ -404,6 +405,136 @@ describe('listHiringActivity — shadow paths, all four, all named', () => {
 	});
 });
 
+// ── DEFECT #1: THE SILENT TRUNCATION ────────────────────────────────────────────────────────
+//
+// `if (runIds.length < HIRING_RUN_FETCH_CAP) runIds.push(p)` dropped every pointer past the cap
+// with no marker anywhere in the returned shape. The dropped ceremonies then fell into the
+// `runMissing` branch and rendered the chip `run not found` — an HONEST state produced by a
+// DISHONEST cause, and therefore the most misleading outcome available: the operator reads a
+// data-integrity problem (the ledger points at deleted runs) where the only fact is that this
+// one read stopped fetching. Everything below runs against a REAL SurrealDB on a REAL cap.
+describe('listHiringActivity — the run-hydration CAP is disclosed, never silent', () => {
+	/** Seed N distinct roles each with one finalized run → N distinct run pointers in the window. */
+	async function seedDistinctRuns(n: number): Promise<string[]> {
+		const ids: string[] = [];
+		for (let i = 0; i < n; i++) {
+			const role = await freshRole();
+			const version = await createRoleVersion(db, {
+				role: role.id,
+				prompt_core: 'p',
+				default_tier: 'opus'
+			});
+			ids.push(
+				await seedRun({
+					roleId: role.id,
+					versionId: version.id,
+					status: 'passed',
+					plantedTotal: 2,
+					plantedFound: 2
+				})
+			);
+		}
+		return ids;
+	}
+
+	it('UNCAPPED: every pointer hydrates and the read says so (capped:false, unfetched:0)', async () => {
+		await seedDistinctRuns(2);
+		const feed = await listHiringActivity(db, 200);
+		const withRuns = feed.ceremonies.filter((c) => c.run != null);
+		expect(withRuns.length).toBeGreaterThan(0);
+		expect(feed.runFetch.capped).toBe(false);
+		expect(feed.runFetch.unfetched).toBe(0);
+		expect(feed.runFetch.cap).toBe(HIRING_RUN_FETCH_CAP);
+		expect(feed.runFetch.hydrated).toBe(feed.runFetch.pointers);
+		// Nothing is flagged unfetched when nothing was skipped.
+		expect(feed.ceremonies.some((c) => c.runUnfetched)).toBe(false);
+	});
+
+	it('THE DEFECT: a pointer past the cap is `runUnfetched`, NOT `runMissing` — the run EXISTS', async () => {
+		const ids = await seedDistinctRuns(3);
+		// Cap of 1: at least two of the three fresh pointers are pushed past it. The runs are all
+		// present in the DB — read them back to prove the "not found" chip would have been a lie.
+		const feed = await listHiringActivity(db, 200, { runFetchCap: 1 });
+		expect(feed.runFetch.cap).toBe(1);
+		expect(feed.runFetch.hydrated).toBe(1);
+		expect(feed.runFetch.capped).toBe(true);
+		expect(feed.runFetch.unfetched).toBe(feed.runFetch.pointers - 1);
+
+		const skipped = feed.ceremonies.filter((c) => c.runUnfetched);
+		expect(skipped.length).toBe(feed.runFetch.unfetched);
+		expect(skipped.length).toBeGreaterThan(0);
+		for (const c of skipped) {
+			expect(c.run, 'an unfetched pointer carries no run facts — it was never queried').toBeNull();
+			expect(
+				c.runMissing,
+				'THE REGRESSION GUARD: a capped-out pointer must NEVER masquerade as a dangling one'
+			).toBe(false);
+		}
+
+		// And the rows really ARE in the database — the cap said nothing about their existence.
+		// This is the assertion that makes `run not found` provably a lie for these ceremonies.
+		for (const id of ids) {
+			const [rows] = await db.query<[Array<{ id: unknown }>]>(
+				`SELECT id FROM type::thing($rid);`,
+				{ rid: id }
+			);
+			expect(rows?.[0]?.id, `${id} exists; only the FETCH was bounded`).toBeTruthy();
+		}
+	});
+
+	it('`runMissing` still fires for a genuinely DANGLING pointer even under cap pressure', async () => {
+		// The two states must stay independently reachable: a deleted run inside the fetched slice
+		// is still `runMissing`. Collapsing them (either direction) is the defect.
+		const role = await freshRole();
+		const version = await createRoleVersion(db, {
+			role: role.id,
+			prompt_core: 'p',
+			default_tier: 'opus'
+		});
+		const runId = await seedRun({ roleId: role.id, versionId: version.id, status: 'failed' });
+		await db.query(`DELETE type::thing($rid);`, { rid: runId });
+
+		// Newest-first, so this just-deleted run's events lead the window and land inside a cap of 1.
+		const feed = await listHiringActivity(db, 200, { runFetchCap: 1 });
+		const c = ceremonyFor(feed, runId);
+		expect(c).toBeTruthy();
+		expect(c!.runUnfetched).toBe(false);
+		expect(c!.runMissing, 'a pointer we DID ask about and got nothing back for is missing').toBe(true);
+	});
+
+	it('the two flags are MUTUALLY EXCLUSIVE on every ceremony of every read', async () => {
+		for (const cap of [1, 2, HIRING_RUN_FETCH_CAP]) {
+			const feed = await listHiringActivity(db, 200, { runFetchCap: cap });
+			for (const c of feed.ceremonies) {
+				expect(
+					c.runMissing && c.runUnfetched,
+					`ceremony ${c.key} claims both missing AND unfetched at cap ${cap}`
+				).toBe(false);
+			}
+		}
+	});
+
+	it('the cap can only be TIGHTENED — a caller cannot raise it past the F-014 ceiling', async () => {
+		const wide = await listHiringActivity(db, 5, { runFetchCap: 10_000 });
+		expect(wide.runFetch.cap).toBe(HIRING_RUN_FETCH_CAP);
+		// nil-ish / nonsense overrides fall back to the ceiling rather than to 0 (which would mark
+		// EVERY ceremony unfetched and turn a bad argument into a page full of false disclosure).
+		for (const bad of [0, -5, Number.NaN, undefined]) {
+			const f = await listHiringActivity(db, 5, { runFetchCap: bad as number });
+			expect(f.runFetch.cap).toBeGreaterThanOrEqual(1);
+			expect(f.runFetch.cap).toBeLessThanOrEqual(HIRING_RUN_FETCH_CAP);
+		}
+	});
+
+	it('the totals still describe the FULL window — capping hydration never drops a ceremony', async () => {
+		const full = await listHiringActivity(db, 200);
+		const capped = await listHiringActivity(db, 200, { runFetchCap: 1 });
+		expect(capped.ceremonies.length).toBe(full.ceremonies.length);
+		expect(capped.totalEvents).toBe(full.totalEvents);
+		expect(capped.runFetch.pointers).toBe(full.runFetch.pointers);
+	});
+});
+
 describe('EMPTY-DB shadow path — an untouched ledger reads as an honest empty feed (F-008)', () => {
 	it('returns zeroed counts and no ceremonies, never a fabricated row', async () => {
 		const fresh = await startTestDb();
@@ -420,7 +551,9 @@ describe('EMPTY-DB shadow path — an untouched ledger reads as an honest empty 
 				ceremonies: [],
 				totalEvents: 0,
 				erroredCount: 0,
-				retryCount: 0
+				retryCount: 0,
+				// A read that fetched NOTHING must not claim it fetched to its cap.
+				runFetch: { pointers: 0, hydrated: 0, cap: HIRING_RUN_FETCH_CAP, unfetched: 0, capped: false }
 			});
 		} finally {
 			await fdb.close().catch(() => {});

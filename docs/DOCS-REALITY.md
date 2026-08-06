@@ -1,5 +1,22 @@
 # DOCS-REALITY — v1.0 closeout audit (Task 4.5)
 
+> ## ⚠ Superseded snapshot — this is a 2026-06-08 audit, not current reality
+>
+> This file is a point-in-time audit result, kept for the record. **Do not read it as a
+> description of the tree today.** Re-verified 2026-08-05: the tree has grown well past
+> what §1–§4 describe. Concretely —
+>
+> - §1 audits **16** server modules; `src/lib/server/` now holds **41** subsystems
+>   (`agent-library`, `atelier`, `autonomy`, `concierge`, `loops`, `peer`, `scene`,
+>   `skills`, `workforce`, … ). `ls src/lib/server` is the truth.
+> - §4 lists `/settings`, `/memory`, `/workflows`, `/services` as *unbuilt by design*.
+>   **All four are built** — as are `/atelier`, `/brain`, `/loops`, `/skills`,
+>   `/cannibalize`, `/setup`, `/login`. `ls src/routes` is the truth.
+>
+> The verdict this audit reached ("no doc claims a module that has no backing code") was
+> true on its date; it is not a standing guarantee. The current doc set is
+> `F:\code\ai-playground\docs\` — see [README.md](./README.md).
+
 Cross-reference of every doc module/task claim against the built tree
 (`src/lib/server/*`, `src/routes/*`, `scripts/`, `spikes/`) on branch `v2`.
 

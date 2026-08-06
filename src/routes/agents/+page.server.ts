@@ -31,6 +31,7 @@ import {
 	adjudicateInterviewRun,
 	applyHireDecision,
 	listHiringActivity,
+	HIRING_RUN_FETCH_CAP,
 	HireGateError,
 	StaffingGateError,
 	WorkforceInputError,
@@ -89,7 +90,10 @@ const EMPTY_HIRING: HiringActivity = {
 	ceremonies: [],
 	totalEvents: 0,
 	erroredCount: 0,
-	retryCount: 0
+	retryCount: 0,
+	// No read happened, so nothing was capped. `capped:false` keeps the truncation notice OFF on
+	// the disconnected path — a read that never ran must not claim it fetched to its cap either.
+	runFetch: { pointers: 0, hydrated: 0, cap: HIRING_RUN_FETCH_CAP, unfetched: 0, capped: false }
 };
 
 /** The config dir for orchestration.yaml — same resolution as the rest of the app. */

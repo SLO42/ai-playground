@@ -18,6 +18,7 @@
     groupHiringCeremonies,
     ceremonyFacts,
     ceremonyCountLabel,
+    runFetchNotice,
     type HiringCeremonyLike
   } from '$lib/components/agents/hiring-ledger-core';
   // The SAME terminality rule the ceremony chips and the event line gate their scores on, applied
@@ -49,14 +50,31 @@
   // loose `Gauntlet scored … recall —` rows. 19 of the 36 live runs BROKE (§13: spawn_failure /
   // scorer_error, 9 of them duplicate auto-retries), so broken ceremonies are hidden by DEFAULT
   // behind a counted, reversible disclosure. The rows stay in the DB; this is a VIEW filter.
-  const hiring = $derived(data.hiring ?? { ceremonies: [], totalEvents: 0, erroredCount: 0, retryCount: 0 });
+  const hiring = $derived(
+    data.hiring ?? {
+      ceremonies: [],
+      totalEvents: 0,
+      erroredCount: 0,
+      retryCount: 0,
+      runFetch: { pointers: 0, hydrated: 0, cap: 0, unfetched: 0, capped: false }
+    }
+  );
   let showBrokenRuns = $state(false);
   const hiringView = $derived(
     groupHiringCeremonies(hiring.ceremonies as HiringCeremonyLike[], showBrokenRuns)
   );
+  // The header count is handed the VISIBLE row count as well as the loaded total, so it can never
+  // state a number that describes a different set than the list underneath it (see the fn doc).
   const hiringCount = $derived(
-    ceremonyCountLabel(hiring.ceremonies as HiringCeremonyLike[], hiring.totalEvents)
+    ceremonyCountLabel(
+      hiring.ceremonies as HiringCeremonyLike[],
+      hiring.totalEvents,
+      hiringView.visible.length
+    )
   );
+  // Non-null ONLY when this load's interview_run hydration cap actually bit. Distinct from the
+  // `.uo-truncation` note further down the page, which bounds a different window entirely.
+  const hiringFetchNotice = $derived(runFetchNotice(hiring.runFetch));
 
   /** Plain-language label per audit op (never the raw enum — human-readable bar). */
   const HIRE_OP_LABEL: Record<string, string> = {
@@ -764,9 +782,19 @@
         <span class="eyebrow" id="hiring-title">hiring &amp; certification activity</span>
         <!-- The count is HONEST about whether grouping actually folded anything: on data where
              every ceremony carries one event (today: no run predates the gauntlet_started
-             emitter), "N ceremonies · N events" would imply threading that has not happened. -->
+             emitter), "N ceremonies · N events" would imply threading that has not happened.
+             It is also honest about WHICH SET it counts: with the broken-run filter engaged it
+             reads "showing 17 of 36 ceremonies" rather than "36" over a 17-row list — the
+             /claude-code `.fleet-window` convention, not a second one. -->
         <span class="count mono" title={hiringCount.detail ?? undefined}>{hiringCount.text}</span>
       </div>
+      <!-- HONEST FETCH BOUND (F-014/F-008). Rendered ONLY when this load's interview_run
+           hydration cap actually bit. Without it the capped-out rows showed `run not found`,
+           reporting a data-integrity problem where the only fact was a fetch cap. This is a
+           DIFFERENT window from the `.uo-truncation` note in the capability roll-up below. -->
+      {#if hiringFetchNotice}
+        <p class="hire-truncation" role="note">{hiringFetchNotice}</p>
+      {/if}
       {#if hiring.ceremonies.length === 0}
         <p class="state-body">
           Nothing hired or certified yet. Gauntlet runs, adjudications, hire decisions and
@@ -1910,6 +1938,18 @@
   .hire-fact[data-kind='retry'] {
     color: var(--color-warn-on-overlay);
     border-color: var(--color-warn);
+  }
+  /* `run details not fetched` is a BOUND, not a fault: it must not borrow the error ramp that
+     `missing` uses, or the chip re-tells the exact lie its text was written to stop. Warn, the
+     same "true but incomplete" ramp as `stale`. */
+  .hire-fact[data-kind='unfetched'] {
+    color: var(--color-warn-on-overlay);
+    border-color: var(--color-warn);
+  }
+  .hire-truncation {
+    margin: 0 0 var(--space-2);
+    font: var(--type-body-sm);
+    color: var(--color-text-muted);
   }
   .hire-events {
     list-style: none;

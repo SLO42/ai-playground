@@ -1,5 +1,12 @@
 # DEVELOPMENT — ai-playground v2
 
+> ## ⚠ This file is a frozen 2026-06 planning snapshot, not current
+>
+> Kept for original intent and rationale — never as a description of what exists today.
+> The authoritative, current doc set lives in the docs checkout:
+> **`F:\code\ai-playground\docs\`** (branch `v2-main`).
+> Index of this frozen set: [README.md](./README.md).
+
 How to build it. Repo layout, stack, commands, conventions, and the hard rules carried from v1's failure log.
 
 ---
@@ -27,46 +34,47 @@ How to build it. Repo layout, stack, commands, conventions, and the hard rules c
 
 ## 2. Repo layout
 
+> **Corrected against the built tree (2026-08-05).** The layout originally planned here
+> nested the app under `dashboard/` — a v1 shape. **v2 has no `dashboard/` directory: the
+> SvelteKit app lives at the repo ROOT.** The tree below is the real one.
+
 ```
-ai-playground-v2/
-  docs/                      # these planning docs
-  dashboard/                 # SvelteKit app
-    src/
-      routes/                # pages + thin server API (+page.server.ts / +server.ts)
-      lib/
-        components/          # Svelte 5 components
-        stores/              # runes-based client state (*.svelte.ts!)
-        server/              # the modules in ARCHITECTURE §5
-          db/                # SurrealDB connect, migrations, query helpers
-          events/            # event bus + SSE fan-out
-          scanner/
-          projects/
-          tasks/
-          routing/
-          providers/         # ollama, claude
-          runtime/           # AgentRuntime iface + claude-code impl (D-002)
-          claude-code/       # CC session orchestration: launch/stream/interject/stop/resume (D-011)
-          cc-config/         # CC config manager + mirror sync + watcher (D-010)
-          workflows/         # headless CC pipeline runner (D-013)
-          orchestrator/
-          memory/
-          analytics/
-          services/
-          config/
-        types/               # shared TS types (mirror DATA-MODEL)
-    tests/                   # vitest + playwright
+ai-playground-v2/            # the build worktree (branch `v2`)
+  src/                       # the SvelteKit app — AT THE ROOT, no dashboard/ wrapper
+    routes/                  # pages + thin server API (+page.server.ts / +server.ts)
+    lib/
+      components/            # Svelte 5 components
+      client/ shared/        # runes-based client state (*.svelte.ts!) + shared helpers
+      server/                # the modules in ARCHITECTURE §5, plus those grown since
+        db/                  # SurrealDB connect, migrations (schema.ts), query helpers
+        events/              # event bus + SSE fan-out
+        scanner/ projects/ tasks/ routing/
+        providers/           # ollama, claude
+        runtime/             # AgentRuntime iface + claude-code impl (D-002)
+        claude-code/         # CC gates/backends
+        sessions/            # CC session launch/stream/interject/stop/resume (D-011)
+        cc-config/           # CC config manager + mirror sync + watcher (D-010)
+        workflows/           # headless CC pipeline runner (D-013)
+        orchestrator/ memory/ analytics/ services/ config/
+        …                    # further subsystems added since; `ls src/lib/server` is truth
+      styles/                # Tailwind v4 @theme + the design-system tokens
+    app.d.ts app.html hooks.server.ts
+  tests/                     # e2e/ + fixtures/ + verify-flows/ (unit tests sit beside their source as *.test.ts)
   config/
-    agent-pool.yaml
-    models.yaml | models.json5
-    orchestration.yaml
-  scripts/                   # daemon-ctl, importer, setup
-  .data/                     # SurrealDB surrealkv data dir (gitignored)
+    agent-pool.yaml  orchestration.yaml  gates.yaml  workforce.yaml  pricing.yaml
+  scripts/                   # db-up.ts, import-v1.ts, memory-eval.ts, browser-verify/, hook + MCP shims
+  spikes/                    # throwaway proofs (S0/S1)
+  bin/                       # provisioned binaries (surreal)
+  static/                    # static assets; static/fonts/ is gitignored (D-034)
+  docs/                      # FROZEN planning snapshot — see docs/README.md
+  docs/fails.md              # failure log — FORKED from the docs-checkout copy; scan BOTH
+  .data/                     # SurrealDB surrealkv data dir (gitignored, created on db:up)
+  .playground/               # local scratch (gitignored): browser-verify daemon state, gauntlet workspaces
   .env / .env.example
-  CLAUDE.md                  # behavioral rules (port v1's lean version)
-  docs/fails.md              # failure log — START it by copying v1's rules
+  CLAUDE.md                  # build-worktree overlay; full manual is F:\code\ai-playground\CLAUDE.md
 ```
 
-**Structure rules (from CLAUDE.md):** source → `/src`, tests → `/tests`, docs → `/docs`, config → `/config`, scripts → `/scripts`. No root clutter. Edit existing files over creating new ones.
+**Structure rules (from CLAUDE.md):** source → `/src`, docs → `/docs`, config → `/config`, scripts → `/scripts`. No root clutter. Edit existing files over creating new ones. **Tests:** unit/integration tests live *beside* the source they cover (`foo.ts` → `foo.test.ts`); `/tests` holds only e2e, fixtures and verify-flows.
 
 ---
 

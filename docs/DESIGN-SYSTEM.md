@@ -1,6 +1,6 @@
 # DESIGN-SYSTEM — ai-playground v2
 
-The **concrete** design system — the values UI-SPEC §4 left as roles. Delivered by the operator (built in Claude design), dark-first teal/slate, three-layer tokens. This doc is the human-readable summary; the **source of truth is the CSS** in [`docs/design-system/`](./design-system/) (`tokens/*.css`, `styles.css`, `components/*`).
+The **concrete** design system — the values UI-SPEC §4 left as roles. Delivered by the operator (built in Claude design), dark-first teal/slate, three-layer tokens. This doc is the human-readable summary; the **live source of truth is the app's token CSS** at `src/lib/styles/tokens/` in this worktree — the build evolved the tokens (mono-body, caps tracking, contrast gate). [`docs/design-system/`](./design-system/) (`tokens/*.css`, `styles.css`, `components/*`) is the **historical design-phase reference** — do NOT copy its `tokens/typography.css` families verbatim; it pre-dates the 🔒 mono-body rule (operator, 2026-06-10: ALL text that is not a header/title is monospace), which this frozen snapshot predates and does not contain. Concretely, `docs/design-system/tokens/typography.css:47` still defines `--type-body` from `--font-sans` (Lastik) — copying it violates that locked rule. The rule lives in `F:\code\ai-playground\docs\DESIGN-SYSTEM.md` §4.
 
 > **Relationship to UI-SPEC:** UI-SPEC §4 defines the token *roles* + the status-enum→role map; this doc + `docs/design-system/` supply the *values*. UI-SPEC §15's deferral is now **resolved** — the blue §15.1 seed is superseded by this teal/Lastik system.
 
@@ -12,7 +12,7 @@ The **concrete** design system — the values UI-SPEC §4 left as roles. Deliver
 - **Palette/type:** original to this project (teal/slate dark, Lastik + JetBrains Mono). Not lifted from a third party.
 - **⚠ Font license — Lastik (That That Type, Commercial License) — load-bearing constraints (D-034):**
   1. **Web = WOFF2/WOFF only** via `@font-face`. **TTF/OTF on the web is prohibited.** (`fonts.css` fixed to woff2/woff.)
-  2. **Font binaries MUST NOT be committed to the public repo** ("not accessible to unlicensed third parties; not on GitHub/S3"). Provision at **build time** into `dashboard/static/fonts/` (or equivalent), **gitignored**. This repo tracks **no** `.woff/.woff2/.ttf/.otf`.
+  2. **Font binaries MUST NOT be committed to the public repo** ("not accessible to unlicensed third parties; not on GitHub/S3"). Provision at **build time** into `static/fonts/` — the app is at the repo root in v2, there is no `dashboard/` — **gitignored**. This repo tracks **no** `.woff/.woff2/.ttf/.otf`.
   3. **Single-operator / local serving only.** No SAS/public exposure that serves the font to unlicensed third parties. Re-check before any public or multi-user deployment.
   4. **Cut confirmed (✅):** ships **Lastik-Free**, **purchased** — the That That Type **Commercial EULA** applies, so (1)–(3) above stand.
 - **JetBrains Mono** — OFL (open), Google Fonts; no constraint.
@@ -116,7 +116,7 @@ Map onto UI-SPEC §5 inventory: `StatusBadge` → the status-pill (status-enum c
 
 At build (Phase 0.a / the cannibalization visual pass, ROADMAP v1.0 4.x):
 1. `styles.css` is the single entry (`@import`s tokens + fonts + component css) → Tailwind v4 `@theme`.
-2. **Provision Lastik woff2/woff into `dashboard/static/fonts/` — gitignored, never committed** (D-034). JetBrains Mono via the Google `@import` (or self-host OFL).
+2. **Provision Lastik woff2/woff into `static/fonts/` — gitignored, never committed** (D-034; the app is at the repo root — there is no `dashboard/`). JetBrains Mono via the Google `@import` (or self-host OFL).
 3. Run the **impeccable** contrast/a11y gate over the token pairs; fix any AA miss (§9).
 4. Port the component primitives to Svelte 5 (the delivered ones are React/JSX references — same tokens, same states).
 

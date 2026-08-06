@@ -1236,14 +1236,30 @@ export interface HiringRunFacts {
 export interface HiringCeremony {
 	/** `interview_run:…` when the thread has a run, else `event:<role_event id>` (a singleton). */
 	key: string;
-	/** The joined run, or null — see {@link runMissing} for WHY it is null. */
+	/** The joined run, or null — see {@link runMissing} / {@link runUnfetched} for WHY it is null. */
 	run: HiringRunFacts | null;
 	/**
 	 * TRUE when the events pointed at a run that no longer resolves (deleted / dangling pointer).
 	 * Distinguishes "this ceremony has no run" (an op like `staffed` that never had one) from
 	 * "the run it named is GONE" — two different truths that must not render identically.
+	 *
+	 * MUTUALLY EXCLUSIVE with {@link runUnfetched}: a pointer we never ASKED about cannot be
+	 * reported as one that failed to resolve.
 	 */
 	runMissing: boolean;
+	/**
+	 * TRUE when the pointer is a well-formed `interview_run:…` that this read deliberately did NOT
+	 * hydrate because the per-read hydration cap ({@link HIRING_RUN_FETCH_CAP}) was already full.
+	 *
+	 * WHY THIS EXISTS (the defect it closes). The cap used to drop the surplus pointers silently:
+	 * `if (runIds.length < CAP) runIds.push(p)` and nothing else. Every dropped ceremony then fell
+	 * into the `runMissing` branch and rendered the chip `run not found` — an HONEST state produced
+	 * by a DISHONEST cause, which is worse than either alone. The operator reads a data-integrity
+	 * problem ("the ledger points at runs that no longer exist") where the only fact is that this
+	 * one read stopped fetching. Cap pressure and dangling pointers are different news and must not
+	 * share a chip (F-008).
+	 */
+	runUnfetched: boolean;
 	/** The role the ceremony was about (raw link + the joined identity; any may be null). */
 	role: string | null;
 	role_slug: string | null;
@@ -1258,20 +1274,65 @@ export interface HiringCeremony {
 	isRetry: boolean;
 }
 
+/**
+ * How much of the run-hydration budget this read spent, so the SURFACE can disclose a cap it hit
+ * instead of letting the shortfall masquerade as missing data.
+ *
+ * Every field describes THE SAME set — the distinct, well-formed `interview_run:…` pointers in the
+ * event window — and each is named separately rather than folded into an "N of M" whose numerator
+ * a reader has to guess at (the /claude-code `fleetCollapsedSummary` inversion, F-008).
+ */
+export interface HiringRunFetch {
+	/** Distinct well-formed run pointers seen across the window. */
+	pointers: number;
+	/**
+	 * How many of those this read included in its point query (≤ {@link cap}). "Asked about", not
+	 * "came back": a pointer whose id is malformed is asked about and still resolves to nothing,
+	 * and that is a genuine `runMissing` — the count deliberately does not paper over it.
+	 */
+	hydrated: number;
+	/** The per-read hydration cap in force (F-014 — bounded, never a scan). */
+	cap: number;
+	/** `pointers - hydrated` — how many ceremonies carry a run this read never asked about. */
+	unfetched: number;
+	/** TRUE iff `unfetched > 0`. The one flag the surface branches on. */
+	capped: boolean;
+}
+
 /** The whole hiring feed: threads + the honest totals the surface discloses. */
 export interface HiringActivity {
 	/** Ceremony threads, newest-first. */
 	ceremonies: HiringCeremony[];
 	/** How many raw ledger events were folded (the pre-grouping count). */
 	totalEvents: number;
-	/** How many ceremonies rest on a BROKEN run (§13) — surfaced, never silently dropped. */
+	/**
+	 * How many ceremonies rest on a BROKEN run (§13) — surfaced, never silently dropped.
+	 *
+	 * SCOPE, STATED: this is derived from JOINED run facts, so under cap pressure
+	 * ({@link runFetch}.capped) it counts only ceremonies whose run was fetched. A ceremony
+	 * flagged `runUnfetched` is neither counted here nor hidden by the broken-run filter — it
+	 * stays VISIBLE and says why. The surface discloses the cap alongside this number for exactly
+	 * that reason; an undisclosed cap would make this a count of a different set again.
+	 */
 	erroredCount: number;
-	/** How many ceremonies are auto-retries of an earlier run. */
+	/** How many ceremonies are auto-retries of an earlier run. Same cap scope as {@link erroredCount}. */
 	retryCount: number;
+	/** The run-hydration budget this read spent — see {@link HiringRunFetch}. */
+	runFetch: HiringRunFetch;
 }
 
 /** Max interview_run rows hydrated for one feed read (F-014 — bounded, never a scan). */
-const HIRING_RUN_FETCH_CAP = 200;
+export const HIRING_RUN_FETCH_CAP = 200;
+
+/** Options for {@link listHiringActivity}. */
+export interface HiringActivityOptions {
+	/**
+	 * Override the run-hydration cap, clamped to [1, {@link HIRING_RUN_FETCH_CAP}]. Exists so the
+	 * cap-pressure path can be exercised against a REAL SurrealDB without seeding 200+ runs; the
+	 * bound itself can only ever be tightened, never raised past the F-014 ceiling.
+	 */
+	runFetchCap?: number;
+}
 
 /** A finite number, or null. A missing/NaN count is UNKNOWN, never silently 0 (F-008). */
 function numOrNull(v: unknown): number | null {
@@ -1357,21 +1418,44 @@ function isRunPointer(pointer: string | null): pointer is string {
  *                      A fault in either query PROPAGATES to the page-level catch — a local
  *                      best-effort catch here would render an empty feed on a healthy-looking
  *                      page, which is exactly the defect the F-020 sweep exists to prevent.
+ *   • CAP PRESSURE   — more distinct run pointers than the hydration cap allows. The surplus
+ *                      pointers are marked `runUnfetched` (NOT `runMissing` — see the field doc)
+ *                      and the shortfall is reported in `runFetch`, so the operator reads "this
+ *                      read stopped fetching" rather than "these runs are gone".
  */
-export async function listHiringActivity(db: Db, limit = 60): Promise<HiringActivity> {
+export async function listHiringActivity(
+	db: Db,
+	limit = 60,
+	opts: HiringActivityOptions = {}
+): Promise<HiringActivity> {
+	// The cap can only be TIGHTENED from the F-014 ceiling — a caller cannot widen the bound.
+	const cap =
+		typeof opts.runFetchCap === 'number' && Number.isFinite(opts.runFetchCap)
+			? Math.min(Math.max(Math.floor(opts.runFetchCap), 1), HIRING_RUN_FETCH_CAP)
+			: HIRING_RUN_FETCH_CAP;
 	const events = await listRecentRoleEvents(db, limit, HIRE_LIFECYCLE_OPS);
 	if (events.length === 0) {
-		return { ceremonies: [], totalEvents: 0, erroredCount: 0, retryCount: 0 };
+		return {
+			ceremonies: [],
+			totalEvents: 0,
+			erroredCount: 0,
+			retryCount: 0,
+			runFetch: { pointers: 0, hydrated: 0, cap, unfetched: 0, capped: false }
+		};
 	}
 
-	// Distinct interview_run pointers across the window → one bounded point read.
+	// Distinct interview_run pointers across the window → one bounded point read. The pointers
+	// PAST the cap are not dropped on the floor: they are remembered so the ceremony that carries
+	// one can say "not fetched" instead of inheriting the "not found" chip.
 	const runIds: string[] = [];
+	const unfetchedPointers = new Set<string>();
 	const seenRun = new Set<string>();
 	for (const ev of events) {
 		const p = ceremonyPointer(ev.detail);
 		if (!isRunPointer(p) || seenRun.has(p)) continue;
 		seenRun.add(p);
-		if (runIds.length < HIRING_RUN_FETCH_CAP) runIds.push(p);
+		if (runIds.length < cap) runIds.push(p);
+		else unfetchedPointers.add(p);
 	}
 
 	const runById = new Map<string, HiringRunFacts>();
@@ -1415,12 +1499,17 @@ export async function listHiringActivity(db: Db, limit = 60): Promise<HiringActi
 			continue;
 		}
 		const run = isRunPointer(pointer) ? (runById.get(pointer) ?? null) : null;
+		// A pointer past the hydration cap was never QUERIED, so its null run says nothing about
+		// whether the row exists. It gets its own flag; `runMissing` stays reserved for a pointer
+		// we DID ask about and that genuinely did not come back.
+		const unfetched = isRunPointer(pointer) && unfetchedPointers.has(pointer);
 		byKey.set(key, {
 			key,
 			run,
 			// Only an interview_run pointer can be "missing" — a `decision_brief:` ref was never
 			// expected to hydrate into run facts, so it must not be reported as a broken link.
-			runMissing: isRunPointer(pointer) && run == null,
+			runMissing: isRunPointer(pointer) && !unfetched && run == null,
+			runUnfetched: unfetched,
 			role: ev.role ?? null,
 			role_slug: ev.role_slug,
 			role_name: ev.role_name,
@@ -1436,7 +1525,14 @@ export async function listHiringActivity(db: Db, limit = 60): Promise<HiringActi
 		ceremonies,
 		totalEvents: events.length,
 		erroredCount: ceremonies.filter((c) => c.errored).length,
-		retryCount: ceremonies.filter((c) => c.isRetry).length
+		retryCount: ceremonies.filter((c) => c.isRetry).length,
+		runFetch: {
+			pointers: seenRun.size,
+			hydrated: runIds.length,
+			cap,
+			unfetched: unfetchedPointers.size,
+			capped: unfetchedPointers.size > 0
+		}
 	};
 }
 
@@ -1620,11 +1716,139 @@ export async function listOpenProposals(db: Db, limit = 200): Promise<ReviewProp
 // with createRoleVersion / runGauntlet / swapActiveVersion.
 
 /**
+ * Refusal to overwrite a comparison already on the row with a DIFFERENT one (§5).
+ *
+ * THE DEFECT THIS CLOSES. The absorb branch below was written for ONE writer re-running
+ * itself after an interrupt. LC-4 added a SECOND, independent writer of 'compared'
+ * (`reconcileProposalFromRun` beside `regauntletChallenger`), which turned that branch into a
+ * data-loss path: with a comparison already stored, the incoming one matched no `sets` clause,
+ * the function returned the STORED row, and the caller — which had just spent real money on a
+ * gauntlet — could not tell its verdict had been discarded. Money spent, verdict lost, and the
+ * surface reporting success from an object that was never persisted. Naming the collision is the
+ * only honest answer available without a second column to keep both (which needs a migration).
+ */
+export class ProposalComparisonCollisionError extends Error {
+	override readonly name = 'ProposalComparisonCollisionError';
+	constructor(
+		readonly proposal: string,
+		readonly storedRun: string | null,
+		readonly incomingRun: string | null,
+		/** Caller context appended verbatim — how the LOSING writer names what it is losing.
+		 *  The paid path adds its run id here instead of re-wrapping this in a different class:
+		 *  one condition, one class, one HTTP status on every route that can reach it. */
+		note?: string
+	) {
+		super(
+			`review_proposal ${proposal} is already 'compared' and holds a comparison from run ` +
+				`${storedRun ?? '(no readable run)'} — refusing to discard an incoming comparison from run ` +
+				`${incomingRun ?? '(no readable run)'}. The incoming comparison was NOT recorded and the ` +
+				`stored one was NOT overwritten; both runs are on disk and can be read directly (§5).` +
+				(note ? ` ${note}` : '')
+		);
+	}
+}
+
+/**
+ * Two writers moved the same proposal row while this one held a compare-and-swap on it, TWICE in
+ * a row — the write never landed and NOTHING was changed.
+ *
+ * Why this is its own name rather than a retry loop: every write below is a CAS, so a miss means
+ * the row is not what this caller decided against and the decision must be MADE AGAIN, not forced.
+ * One bounded re-decide absorbs the ordinary race (the rival landed, we re-read and either absorb
+ * it, replace it, or refuse by name). A second miss is not a race any more — it is sustained
+ * contention on a row that only an operator click can move — so it stops, loudly, having written
+ * nothing, instead of spinning (F-014: no unbounded retry, ever).
+ */
+export class ProposalWriteContentionError extends Error {
+	override readonly name = 'ProposalWriteContentionError';
+	constructor(
+		readonly proposal: string,
+		readonly observed: string,
+		readonly target: string
+	) {
+		super(
+			`review_proposal ${proposal} changed underneath two consecutive compare-and-swap attempts ` +
+				`(observed '${observed}', targeting '${target}') — another writer is moving this row right ` +
+				`now. NOTHING was written; re-read the proposal and repeat the act (§5).`
+		);
+	}
+}
+
+/** The challenger run a persisted/incoming comparison was derived from — the identity that
+ *  says whether two comparisons are the SAME verdict. Unreadable shape → null (treated as a
+ *  collision, never as a match: guessing equality here is what would drop the verdict). */
+function comparisonChallengerRun(c: unknown): string | null {
+	if (!c || typeof c !== 'object') return null;
+	const challenger = (c as { challenger?: unknown }).challenger;
+	if (!challenger || typeof challenger !== 'object') return null;
+	const run = (challenger as { run?: unknown }).run;
+	return typeof run === 'string' && run.length > 0 ? run : null;
+}
+
+/**
+ * WHICH writer produced a comparison — the provenance the collision rule turns on
+ * (`ProposalComparison.source`, stamped at the two write sites in resolution.ts):
+ *   • 'regauntlet' — derived from a run the operator PAID for on that call (§5 touch ②).
+ *   • 'reconcile'  — re-derived for FREE from a run already on disk (§5 touch ②b).
+ *   • null         — unreadable, or written before the field existed. Read as "assume PAID":
+ *                    every writer that existed before the free path shipped was the paid one, so
+ *                    guessing 'free' here is the one guess that could discard a bought verdict.
+ */
+function comparisonSource(c: unknown): 'regauntlet' | 'reconcile' | null {
+	if (!c || typeof c !== 'object') return null;
+	const s = (c as { source?: unknown }).source;
+	return s === 'regauntlet' || s === 'reconcile' ? s : null;
+}
+
+/** What an incoming comparison may do to the one already stored — see {@link comparisonWriteVerdict}. */
+type ComparisonWriteVerdict = 'absorb' | 'replace' | 'collide';
+
+/**
+ * WHO LOSES when two writers hold a comparison for the same proposal — decided here, once, and
+ * deliberately asymmetric. The stored row holds exactly ONE comparison, so the rule is:
+ *
+ *   • SAME challenger run       → 'absorb'. This is one writer re-running ITSELF after an
+ *                                 interrupt; only `at` and re-read baselines differ. The interrupt
+ *                                 contract depends on this staying a no-op.
+ *   • PAID over FREE            → 'replace'. The free reconcile path re-derives its comparison from
+ *                                 a run still on disk, at zero cost, any time; the paid one can be
+ *                                 reproduced only by spending again, and the row's status gate
+ *                                 ('compared' refuses a re-gauntlet) means it could never be
+ *                                 re-offered. Discarding the bought verdict is the ORIGINAL harm
+ *                                 LC-4 exists to prevent, so it is the free verdict that yields.
+ *                                 It yields VISIBLY: the write reports the displaced run through
+ *                                 `onDisplace` and the paid path surfaces it (never a silent swap).
+ *   • anything else             → 'collide'. Two paid verdicts, or an unreadable/unstamped stored
+ *                                 comparison (which is read as paid), refuse BY NAME. Nothing is
+ *                                 overwritten, both runs stay on disk, and the loser is told which
+ *                                 run holds the verdict it could not record.
+ */
+function comparisonWriteVerdict(stored: unknown, incoming: unknown): ComparisonWriteVerdict {
+	const storedRun = comparisonChallengerRun(stored);
+	const incomingRun = comparisonChallengerRun(incoming);
+	if (storedRun != null && incomingRun != null && storedRun === incomingRun) return 'absorb';
+	if (
+		storedRun != null &&
+		incomingRun != null &&
+		comparisonSource(incoming) === 'regauntlet' &&
+		comparisonSource(stored) === 'reconcile'
+	) {
+		return 'replace';
+	}
+	return 'collide';
+}
+
+/**
  * Move a proposal to a new status, transition-checked (§5). Optionally set the
  * challenger (on diff approval) and/or the comparison (after the re-gauntlet) in the
  * SAME write — a partial write can never leave the row in a status whose required field
  * is missing (interrupt contract). A terminal target stamps decided_at. Idempotent
- * re-target to the SAME status is an absorbed no-op (interrupt-safe re-run).
+ * re-target to the SAME status is an absorbed no-op (interrupt-safe re-run) — EXCEPT when a
+ * DIFFERENT comparison is already stored, which is a second writer, not a re-run: a PAID verdict
+ * displaces a FREE one (reported through `onDisplace`, never silently), and every other pairing is
+ * refused by name ({@link ProposalComparisonCollisionError}) rather than silently dropped. See
+ * {@link comparisonWriteVerdict} for who yields and why, and the compare-and-swap note on
+ * {@link setProposalStatus} for why the decision is carried into the write itself.
  */
 export interface SetProposalStatusInput {
 	to: ProposalStatus;
@@ -1632,44 +1856,118 @@ export interface SetProposalStatusInput {
 	challenger?: string;
 	/** Set when moving into 'compared': the re-gauntlet comparison object (§5). */
 	comparison?: Record<string, unknown>;
+	/**
+	 * Reporting hook, called ONLY when this write displaced a stored comparison (the PAID-over-FREE
+	 * verdict of {@link comparisonWriteVerdict}), with the run the displaced comparison came from.
+	 * Called AFTER the write commits, so it can never announce a displacement that did not happen.
+	 * Its whole job is to keep the swap from being silent — the caller surfaces the run id.
+	 */
+	onDisplace?: (displacedRun: string | null) => void;
 }
 
+/**
+ * THE COMPARE-AND-SWAP THIS FUNCTION IS BUILT ON (the F-048 family: guard the TRANSITION, not
+ * only the insert). Both the read that DECIDES and the write that ACTS live in this function, and
+ * a rival writer can land between them — that window is real, not theoretical: it is exactly how
+ * a paid verdict was silently overwritten by a free one, since `regauntletChallenger` reads a
+ * status, spends minutes of real money, and only then arrives here. A refusal computed from the
+ * read is worthless if the write that follows it is unconditional.
+ *
+ * So every write below carries its decision INTO the statement as a WHERE: the observed status,
+ * plus the observed value of each field it means to set (`… IS NONE`, or the exact stored run id
+ * when replacing). All bound as $params, never interpolated (D-016). A rival that moved the row
+ * therefore matches nothing, zero rows come back, and this re-reads and DECIDES AGAIN — once —
+ * so the rival is absorbed / replaced / refused by name on real state rather than stale state.
+ * A second miss is sustained contention, not a race: {@link ProposalWriteContentionError}, having
+ * written nothing (bounded, no spin).
+ */
 export async function setProposalStatus(
 	db: Db,
 	proposalId: string,
 	input: SetProposalStatusInput
 ): Promise<ReviewProposalRow> {
+	return setProposalStatusCas(db, proposalId, input, 1);
+}
+
+async function setProposalStatusCas(
+	db: Db,
+	proposalId: string,
+	input: SetProposalStatusInput,
+	redecidesLeft: number
+): Promise<ReviewProposalRow> {
 	const p = await getReviewProposal(db, proposalId);
 	if (!p) throw new WorkforceInputError(`review_proposal not found: ${proposalId}`);
+
+	const sets: string[] = [];
+	// The COMPARE half: the state this call's decision was made against.
+	const guards: string[] = ['status = $expect'];
+	const binds: Record<string, unknown> = { rid: link(p.id), expect: p.status };
+	let displacedRun: string | null = null;
+
 	if (p.status === input.to) {
 		// Idempotent absorb (interrupt contract): re-applying the same status, optionally
 		// folding in a challenger/comparison the prior partial write missed.
-		const sets: string[] = [];
-		const binds: Record<string, unknown> = { rid: link(p.id) };
 		if (input.challenger && p.challenger == null) {
+			sets.push('challenger = $challenger');
+			guards.push('challenger IS NONE');
+			binds.challenger = link(input.challenger);
+		}
+		if (input.comparison !== undefined) {
+			if (p.comparison == null) {
+				sets.push('comparison = $comparison');
+				guards.push('comparison IS NONE');
+				binds.comparison = input.comparison;
+			} else {
+				// A comparison is already recorded — one writer re-running itself, or a rival.
+				// {@link comparisonWriteVerdict} decides which, and who yields.
+				switch (comparisonWriteVerdict(p.comparison, input.comparison)) {
+					case 'absorb':
+						break;
+					case 'replace':
+						displacedRun = comparisonChallengerRun(p.comparison);
+						sets.push('comparison = $comparison');
+						// CAS on the EXACT verdict this decision was made against — a third writer that
+						// landed in between is not silently displaced by a decision about someone else.
+						guards.push('comparison.challenger.run = $displaced');
+						binds.comparison = input.comparison;
+						binds.displaced = displacedRun;
+						break;
+					case 'collide':
+						throw new ProposalComparisonCollisionError(
+							p.id,
+							comparisonChallengerRun(p.comparison),
+							comparisonChallengerRun(input.comparison)
+						);
+				}
+			}
+		}
+		if (sets.length === 0) return p;
+	} else {
+		assertProposalTransition(p.status, input.to);
+		sets.push('status = $to');
+		binds.to = input.to;
+		if (input.challenger !== undefined) {
 			sets.push('challenger = $challenger');
 			binds.challenger = link(input.challenger);
 		}
-		if (input.comparison !== undefined && p.comparison == null) {
+		if (input.comparison !== undefined) {
 			sets.push('comparison = $comparison');
 			binds.comparison = input.comparison;
 		}
-		if (sets.length === 0) return p;
-		const [rows] = await db.query<[Raw[]]>(`UPDATE $rid SET ${sets.join(', ')} RETURN AFTER;`, binds);
-		return normReviewProposal(rows[0]);
+		if (isProposalTerminal(input.to)) sets.push('decided_at = time::now()');
 	}
-	assertProposalTransition(p.status, input.to);
-	const sets: string[] = ['status = $to'];
-	const binds: Record<string, unknown> = { rid: link(p.id), to: input.to };
-	if (input.challenger !== undefined) {
-		sets.push('challenger = $challenger');
-		binds.challenger = link(input.challenger);
+
+	const [rows] = await db.query<[Raw[]]>(
+		`UPDATE $rid SET ${sets.join(', ')} WHERE ${guards.join(' AND ')} RETURN AFTER;`,
+		binds
+	);
+	const row = (rows ?? [])[0];
+	if (!row) {
+		// CAS MISS — the row is no longer the row this decision was made against (moved, or
+		// deleted). Re-decide ONCE against real state; a second miss stops by name.
+		if (redecidesLeft <= 0) throw new ProposalWriteContentionError(p.id, p.status, input.to);
+		return setProposalStatusCas(db, proposalId, input, redecidesLeft - 1);
 	}
-	if (input.comparison !== undefined) {
-		sets.push('comparison = $comparison');
-		binds.comparison = input.comparison;
-	}
-	if (isProposalTerminal(input.to)) sets.push('decided_at = time::now()');
-	const [rows] = await db.query<[Raw[]]>(`UPDATE $rid SET ${sets.join(', ')} RETURN AFTER;`, binds);
-	return normReviewProposal(rows[0]);
+	if (displacedRun !== null) input.onDisplace?.(displacedRun);
+	return normReviewProposal(row);
 }

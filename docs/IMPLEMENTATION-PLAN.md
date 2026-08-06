@@ -1,5 +1,12 @@
 # IMPLEMENTATION-PLAN — ai-playground v2
 
+> ## ⚠ This file is a frozen 2026-06 planning snapshot, not current
+>
+> Kept for original intent and rationale — never as a description of what exists today.
+> The authoritative, current doc set lives in the docs checkout:
+> **`F:\code\ai-playground\docs\`** (branch `v2-main`).
+> Index of this frozen set: [README.md](./README.md).
+
 How to **build** v2, in what order, with what verification. ROADMAP says *what ships when*; this doc says *how to get there, concretely* — the bridge from the planning docs to code. Read alongside ARCHITECTURE (modules/§5), DATA-MODEL (schema), DECISIONS (D-000–D-033), MEMORY-SPEC, UI-SPEC, AGENTS, DEVELOPMENT.
 
 > **Status:** planning-level. No code exists yet (v2-main is a docs-only orphan branch). This plan is executed on a *new* build branch/worktree once approved.

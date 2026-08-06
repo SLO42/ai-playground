@@ -125,6 +125,92 @@ function buildStop(b, waveArgs){
     return `suite still red (${s.afterFailed} failing) and this wave set stopOnAnyRed`
   return null
 }
+// ---- verdict retention (pure half: screen + build the record; the I/O sink lives in the host body) ----
+// WHY THIS EXISTS (audit, 2026-08-06): wave verdict payloads were retained NOWHERE. Zero `deviation`
+// fields across a 79.5 MB session transcript, and no run store on disk at all. The only deviation text
+// still readable from the one recorded stop (2026-06-11) survives because a human ran a one-off dump at
+// the time. So a wave that stopped unattended left NO durable record of why. Survivable while someone is
+// watching; not survivable for an autonomous stretch, and impossible to reconstruct a reasoned changelog
+// from records that were never written.
+//
+// THE CONTRACT — RETENTION IS OBSERVABILITY, NEVER A GATE. A failed write is swallowed and the wave
+// PROCEEDS (F-014). This is deliberately the INVERSE of D-024, whose fail-CLOSED rule governs SECURITY
+// boundaries only; a logging fault is not a security boundary, and a wave that dies because it could not
+// write a log has turned an audit aid into an outage. Records are APPEND-ONLY, one per event, never
+// rewritten or compacted.
+
+// D-026: deviation/reason text is AGENT-AUTHORED content, so it is DATA and it gets screened before it
+// is persisted — a builder that pasted an .env line or a stack trace into its deviation must not turn
+// the run log into a durable secret store. Redaction is by pattern and deliberately OVER-broad: a false
+// redaction costs a little context, a missed secret sits on disk forever. Order matters — the specific
+// token shapes run before the generic NAME=VALUE sweep.
+const SCREEN_RULES=[
+  [/\bsk-ant-[A-Za-z0-9_-]{8,}/g, '[REDACTED:ANTHROPIC_KEY]'],
+  [/\bsk-[A-Za-z0-9]{16,}/g, '[REDACTED:API_KEY]'],
+  [/\bgh[pousr]_[A-Za-z0-9]{16,}/g, '[REDACTED:GITHUB_TOKEN]'],
+  [/\bgithub_pat_[A-Za-z0-9_]{20,}/g, '[REDACTED:GITHUB_TOKEN]'],
+  [/\bAKIA[0-9A-Z]{16}\b/g, '[REDACTED:AWS_KEY]'],
+  [/\beyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{4,}/g, '[REDACTED:JWT]'],
+  [/\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}\b/g, '[REDACTED:EMAIL]'],
+]
+function screenText(text, maxLen){
+  if(typeof text!=='string') return null
+  let out=text
+  for(const rule of SCREEN_RULES) out=out.replace(rule[0], rule[1])
+  // NAME=VALUE / NAME: VALUE secrets — the catch-all for credential shapes the specific rules above do
+  // not know. The NAME survives (it is the useful signal — WHICH credential was involved); the VALUE
+  // never does. The negative lookahead matters: without it this rule re-redacts a value one of the
+  // specific rules already replaced, overwriting "[REDACTED:ANTHROPIC_KEY]" with the vaguer
+  // "[REDACTED:SECRET]" and throwing away the one thing an auditor actually wants to know.
+  out=out.replace(/\b([A-Za-z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIAL)[A-Za-z0-9_]*)(\s*[:=]\s*)(?!\[REDACTED:)("[^"\n]*"|'[^'\n]*'|[^\s,;]+)/gi,
+    (m, name, sep) => `${name}${sep}[REDACTED:SECRET]`)
+  const cap=(Number.isInteger(maxLen)&&maxLen>0)?maxLen:2000
+  if(out.length<=cap) return out
+  return `${out.slice(0,cap)}…[truncated ${out.length-cap} chars]`
+}
+// One append-only record: the event plus enough identity to correlate a stop back to the run, task and
+// step that produced it. `at` is ISO-8601 so a run's records sort lexically. Absent fields are OMITTED
+// rather than written as null noise — except the identity four, which are always present (a record you
+// cannot correlate is not worth keeping).
+function retentionRecord(kind, fields){
+  const f=(fields&&typeof fields==='object'&&!Array.isArray(fields))?fields:{}
+  const str=(v)=>(typeof v==='string'&&v)?v:null
+  const rec={
+    at:new Date().toISOString(),
+    kind:str(kind)||'unknown',
+    runId:str(f.runId),
+    wave:str(f.wave),
+    taskId:str(f.taskId),
+    step:str(f.step),
+  }
+  // Recorded for PROCEED as well as STOP: the question "why did this stop?" is only answerable against
+  // the trail of what it passed on the way there.
+  if(typeof f.stopped==='boolean') rec.stopped=f.stopped
+  const reason=screenText(f.reason, 500)
+  if(reason) rec.reason=reason
+  const deviation=screenText(f.deviation, 2000)
+  if(deviation) rec.deviation=deviation
+  const sha=str(f.commitSha)
+  if(sha) rec.commitSha=sha
+  const s=(f.suite&&typeof f.suite==='object'&&!Array.isArray(f.suite))?f.suite:null
+  if(s&&Number.isInteger(s.baselineFailed)&&Number.isInteger(s.afterFailed))
+    rec.suite={baselineFailed:s.baselineFailed, afterFailed:s.afterFailed}
+  return rec
+}
+// FAIL-OPEN BY CONSTRUCTION. The sink performs the I/O and MAY throw — full disk, locked file, read-only
+// mount, a host that forbids fs, a serializer that chokes. Every one of those is swallowed HERE and
+// reported as `false`, never rethrown, so no caller can turn a logging fault into a wave stop. This is
+// the whole safety property of the feature, which is why it is a named function with its own test rather
+// than an inline try/catch at each call site.
+function retainVia(sink, kind, fields){
+  try{
+    if(typeof sink!=='function') return false
+    sink(retentionRecord(kind, fields))
+    return true
+  }catch(_err){
+    return false
+  }
+}
 // ---- end pure helpers ----
 
 const BUILD = { type:'object', additionalProperties:false,
@@ -193,12 +279,55 @@ async function gatedReview(prompt, opts){
 }
 
 // stopRegex (F-019) + buildStop (relative suite semantics) live in the pure-helper block above.
+
+// ---- verdict retention (impure half: the JSONL sink) ----
+// LOCATION, chosen deliberately — the WORKFLOW repo, NOT the build worktree:
+//  - NOT inside WT. A wave's BUILD/FIX agents run `git add -A && git commit`, so anything written there
+//    is swept into a feature commit. The run log would corrupt the very history it exists to explain.
+//  - NOT .playground/. That is live state with real readers, not a dumping ground.
+//  - HERE, and gitignored BY CONSTRUCTION: on v2-main .gitignore line 6 is `/*`, admitting only /docs/
+//    and /.gitignore, so an untracked file under .claude/ can never be committed by accident. Verified
+//    with `git check-ignore -v` rather than assumed.
+// ONE FILE PER RUN, keyed by RUN_ID, so concurrent waves (the args.worktree parallel lanes, F-052) can
+// never interleave into one file or clobber each other.
+const RUN_DIR=args.runLogDir||'F:\\code\\ai-playground\\.claude\\wave-runs'
+const RUN_ID=`${String(args.waveName).replace(/[^A-Za-z0-9._-]+/g,'-').slice(0,40)}-${new Date().toISOString().replace(/[:.]/g,'-')}-${Math.random().toString(36).slice(2,8)}`
+let retainWarned=false
+// Never throws, never awaits anything the wave depends on. The fs handle is acquired defensively because
+// the host's evaluation model is not knowable from this repo: dynamic import first, `require` second, and
+// if BOTH fail the wave proceeds with retention off and says so ONCE (honest degradation, F-008 — never
+// a silent no-op that reads as "it was logged").
+async function retain(kind, fields){
+  let ok=false
+  try{
+    let mod=null
+    try{ const m=await import('node:fs'); mod=m&&m.default?m.default:m }catch(_err){ mod=null }
+    if(!mod){ try{ mod=require('node:fs') }catch(_err){ mod=null } }
+    if(mod) ok=retainVia((rec)=>{
+      mod.mkdirSync(RUN_DIR,{recursive:true})
+      mod.appendFileSync(`${RUN_DIR}\\${RUN_ID}.jsonl`, `${JSON.stringify(rec)}\n`, 'utf8')
+    }, kind, {...fields, runId:RUN_ID, wave:args.waveName})
+  }catch(_err){ ok=false }
+  if(!ok&&!retainWarned){
+    retainWarned=true
+    try{ log(`verdict retention unavailable (${RUN_DIR}) — the wave PROCEEDS without it; retention is observability, never a gate`) }catch(_err){}
+  }
+}
+
 const results=[]
+await retain('wave-start', {step:'start'})
 for (const t of args.tasks){
   phase(`${t.id} ${t.title}`)
   const b=await agent(`${BUILD_PRE}\n\n${t.build}`, KOPTS('build', t, {label:`${t.id} ${t.title}`, phase:`${t.id} ${t.title}`, schema:BUILD}))
   const bstop=buildStop(b, args)
-  if(bstop) return {stoppedAt:`${t.id} build — ${bstop}`, results:[...results,{build:b}]}
+  // Every buildStop DECISION is retained, proceed as well as stop — the deviation text rides along
+  // because it is the payload that vanished before (an audit found zero of them anywhere on disk).
+  await retain('build-gate', {taskId:t.id, step:`${t.id} build`, stopped:!!bstop, reason:bstop,
+    deviation:b&&b.deviation, commitSha:b&&b.commitSha, suite:b&&b.suite})
+  if(bstop){
+    await retain('wave-stop', {taskId:t.id, step:`${t.id} build`, stopped:true, reason:bstop, deviation:b&&b.deviation})
+    return {stoppedAt:`${t.id} build — ${bstop}`, results:[...results,{build:b}]}
+  }
 
   phase(`${t.id} review`)
   let r=await gatedReview(`${REVIEW_PRE}\n\nFEATURE: ${t.id} ${t.title}. Builder files: ${(b.filesChanged||[]).join(', ')} (commit ${b.commitSha}); claimed lintClean=${b.lintClean}, verifyPassed=${b.verifyPassed}, nonTestGatesPassed=${b.nonTestGatesPassed}, liveVerified=${b.liveVerified}${b.liveVerified?'':` (reason: ${b.liveVerifyReason})`}. MEASURED suite: ${b.suite?`${b.suite.baselineFailed} failing at baseline → ${b.suite.afterFailed} after (baseline source: ${b.suite.baselineSource})`:'(none reported)'} — judge the DELTA only: failures that predate this task are wave context, NOT a gap against it. But numbers that contradict the flags (e.g. verifyPassed=true alongside afterFailed>0, or a baselineSource that names no command/sha) ARE an honesty finding under criterion 6. Builder claim: ${b.summary}\n\nIndependently certify against the six D-038 criteria now.`, KOPTS('review', t, {label:`${t.id} DoD-review`, phase:`${t.id} review`, schema:REVIEW}))
@@ -220,7 +349,12 @@ for (const t of args.tasks){
     const f=await agent(`You are a FIX agent. ${COMMON} Feature ${t.id} ${t.title} (commit ${b.commitSha}) FAILED its independent D-038 DoD-review. Fix the cited defects ONLY — no rebuild, no scope creep. TRIAGE (harvested: gstack review/checklist.md Fix-First heuristic, MIT; G3-bounded): classify each gap MECHANICAL (a senior engineer would apply it without discussion — dead code, missing validation guard, token/path/version mismatch, stale comment) vs JUDGMENT (security, race conditions, design decisions, fixes >20 lines, removing functionality, anything changing user-visible behavior). At most 3 gaps may be fixed as straight mechanical fixes; every other gap gets the full ROOT-CAUSE treatment (reproduce it; do not guess-fix); state the actual root cause in your summary. A JUDGMENT gap that needs a product decision is a STOP-and-report deviation, not a guess. LOW-confidence (taste) design findings are advisory — do NOT fix them on your own judgment (G3). You fix, you never self-certify — every fix goes to a fresh independent re-review; do not mark gaps resolved yourself. Add a regression test per defect.\n\nREVIEW VERDICT:\n${r.verdict}\n\nGAPS:\n${(r.gaps||[]).map((g,i)=>`${i+1}. ${g}`).join('\n')}\n\nHARD GATE then bounded live verify of the fixed behavior. Your \`suite\` baseline is the tip you start from — i.e. AFTER the build commit ${b.commitSha}; same rule applies (you are judged on the delta, not on failures you inherited), and \`nonTestGatesPassed\` red still stops the wave. Commit atomically: git add -A && git commit -m "fix(v2): ${t.id} ${t.title} — <root cause one-liner>" (blank line) "Co-Authored-By: Claude <noreply@anthropic.com>". Final message IS the BUILD verdict.`, KOPTS('fix', t, {label:`${t.id} fix-${attempt}`, phase:`${t.id} fix-${attempt}`, schema:BUILD}))
     fixes.push(f)
     const fstop=buildStop(f, args)
-    if(fstop) return {stoppedAt:`${t.id} fix-${attempt} — ${fstop}`, results:[...results,{build:b,review:r,redTeam,fixes}]}
+    await retain('fix-gate', {taskId:t.id, step:`${t.id} fix-${attempt}`, stopped:!!fstop, reason:fstop,
+      deviation:f&&f.deviation, commitSha:f&&f.commitSha, suite:f&&f.suite})
+    if(fstop){
+      await retain('wave-stop', {taskId:t.id, step:`${t.id} fix-${attempt}`, stopped:true, reason:fstop, deviation:f&&f.deviation})
+      return {stoppedAt:`${t.id} fix-${attempt} — ${fstop}`, results:[...results,{build:b,review:r,redTeam,fixes}]}
+    }
     phase(`${t.id} re-review-${attempt}`)
     r=await gatedReview(`${REVIEW_PRE}\n\nFEATURE: ${t.id} ${t.title} — RE-REVIEW after fix attempt ${attempt}. Original commit ${b.commitSha}; fix commit ${f.commitSha} (files: ${(f.filesChanged||[]).join(', ')}). PRIOR FAIL verdict: ${String(r.verdict).slice(0,1500)}\n\nFixer claim: ${f.summary}\n\nVerify each previously-cited gap is GENUINELY resolved (not papered over), then re-certify ALL six D-038 criteria.`, KOPTS('review', t, {label:`${t.id} re-review-${attempt}`, phase:`${t.id} re-review-${attempt}`, schema:REVIEW}))
   }
@@ -232,14 +366,25 @@ for (const t of args.tasks){
     phase(`${t.id} red-team`)
     const fixShas=fixes.filter(x=>x&&x.commitSha).map(x=>x.commitSha)
     redTeam=await gatedReview(`${REVIEW_PRE}\n\nFEATURE: ${t.id} ${t.title} — RED-TEAM SECOND PASS. A first independent DoD-review already PASSED this risk-flagged feature. This is NOT a checklist re-run — it is adversarial analysis: your job is to find what the first reviewer MISSED, not to re-find the same things. Think like an attacker, a chaos engineer, and a hostile QA tester at once: attack the happy path (load, concurrent writes, slow DB, garbage from upstream); hunt silent failures (swallowed exceptions, partial completion, inconsistent state after a crash); exploit trust assumptions (frontend-only validation, unvalidated config, paths/URLs built from user input); break edge cases (max-size input, zero/empty/null, first-run-ever, double-submit); and probe the seams the first pass didn't cover — cross-cutting and integration-boundary issues. Builder files: ${(b.filesChanged||[]).join(', ')} (commit ${b.commitSha}${fixShas.length?`; fix commits ${fixShas.join(', ')}`:''}).\n\nPRIOR REVIEW (PASSED) — findings/gaps VERBATIM, hunt what it MISSED:\nverdict: ${r.verdict}\ngaps: ${(r.gaps&&r.gaps.length)?r.gaps.map((g,i)=>`${i+1}. ${g}`).join('; '):'(none listed)'}\n\nRe-certify ALL six D-038 criteria with fresh adversarial eyes; set passed=false ONLY for real, evidenced gaps the first pass missed.`, KOPTS('redTeam', t, {label:`${t.id} red-team`, phase:`${t.id} red-team`, schema:REVIEW}))
-    if(!redTeam) return {stoppedAt:`${t.id} red-team (agent skipped/died — required gate, fail closed)`, results:[...results,{build:b,review:r,redTeam:null,fixes}]}
+    if(!redTeam){
+      await retain('wave-stop', {taskId:t.id, step:`${t.id} red-team`, stopped:true,
+        reason:'red-team agent skipped/died — required gate, fail closed'})
+      return {stoppedAt:`${t.id} red-team (agent skipped/died — required gate, fail closed)`, results:[...results,{build:b,review:r,redTeam:null,fixes}]}
+    }
     if(redTeam.passed===false){ log(`${t.id} red-team FAILED — feeding its gaps into the fix-loop`); r=redTeam; escalate=true }
   }
   }
 
   results.push({build:b, review:r, redTeam, fixes})
   // name the actual failing gate: when the red team failed with the fix budget already spent, r IS the red-team verdict
-  if(!r||r.passed===false) return {stoppedAt:`${t.id} ${r&&r===redTeam?'red-team review':'DoD-review'} (after ${attempt} fix attempts)`, results}
+  if(!r||r.passed===false){
+    const gate=r&&r===redTeam?'red-team review':'DoD-review'
+    // The reviewer's own gaps are the "why" here — the verdict is a review verdict, not a build one,
+    // so the reason is assembled from the gaps rather than a buildStop string.
+    await retain('wave-stop', {taskId:t.id, step:`${t.id} ${gate}`, stopped:true,
+      reason:`${gate} failed after ${attempt} fix attempts — ${r?(r.gaps||[]).join(' | '):'no verdict (agent skipped/died)'}`})
+    return {stoppedAt:`${t.id} ${gate} (after ${attempt} fix attempts)`, results}
+  }
 }
 
 if(args.pushAtEnd!==false){
@@ -249,4 +394,6 @@ if(args.pushAtEnd!==false){
 }
 const deferredFollowUps = collectDeferred(results)
 if(deferredFollowUps.length) log(`${deferredFollowUps.length} DEFERRED follow-up(s) recorded — orchestrator should chain a hardening wave: ${deferredFollowUps.map(d=>`[${d.severity}] ${d.task}: ${d.title}`).join(' | ')}`)
-return {stoppedAt:null, complete:true, results, deferredFollowUps}
+await retain('wave-complete', {step:'end', stopped:false,
+  reason:`all ${args.tasks.length} task(s) green${deferredFollowUps.length?`; ${deferredFollowUps.length} deferred follow-up(s)`:''}`})
+return {stoppedAt:null, complete:true, results, deferredFollowUps, runId:RUN_ID}

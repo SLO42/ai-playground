@@ -97,7 +97,7 @@ Route spawned agents/waves accordingly: planning/spec/authoring subagents on `cl
 - **Devlog every session** — see §5.
 
 **The ones I'm adding (hold yourself to these):**
-- **One builder per worktree (F-052).** Never run two build/`svelte-kit sync`/dev processes in the same worktree at once — they race `.svelte-kit`. Serialize, or give each agent its own worktree.
+- **One builder per worktree (F-052).** Never run two build/`svelte-kit sync`/dev processes in the same worktree at once — they race `.svelte-kit`. Serialize, or give each agent its own worktree. **But separate worktrees do NOT make concurrent full test suites safe (F-061)** — vitest forks one worker per core, so two full suites contend for the whole machine and kill each other with `ERR_IPC_CHANNEL_CLOSED` / no failing test / no summary line. **One full `npm test` per MACHINE at a time.** A run that ends without a summary is UNMEASURED, not red — re-run it solo before believing it.
 - **A session-unique resource is keyed by session id, never a pool/slot id (F-046).**
 - **A DB fault on the orchestrator drain path never crashes the server (F-014/F-048).** Every claim/enqueue/complete query absorbs UNIQUE/conflict as a no-op-retry.
 - **fail-closed is for security boundaries ONLY (D-024/F-053).** An additive capability/provider branch is opt-in: engage only when wired, else fall through byte-identical. Never fail-closed on the un-wired case for something the routing ladder can send trivial traffic to.

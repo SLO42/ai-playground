@@ -31,7 +31,7 @@ test('pure-helper block is host-free (no agent/phase/log/parallel/pipeline/args)
   assert.ok(!/\bargs\b/.test(block), 'helper block must not reference the host args global')
 })
 
-const { checkVerdict, shouldRedTeam, modelFor, collectDeferred, buildStop, stopRegex } = new Function(`${block}; return { checkVerdict, shouldRedTeam, modelFor, collectDeferred, buildStop, stopRegex }`)()
+const { checkVerdict, shouldRedTeam, modelFor, collectDeferred, buildStop, stopRegex, screenText, retentionRecord, retainVia } = new Function(`${block}; return { checkVerdict, shouldRedTeam, modelFor, collectDeferred, buildStop, stopRegex, screenText, retentionRecord, retainVia }`)()
 
 const allTrue = { complete: true, tested: true, designSystem: true, functional: true, purpose: true, honest: true }
 const evidenceVerdict = 'Ran npm test (14 files green), npm run lint clean, svelte-check 0 errors; drove the live app in the browser and verified the flow. Recommendation: ship.'
@@ -283,6 +283,122 @@ test('schema/prompt drift guard: BUILD requires the new fields and BUILD_PRE tel
   assert.match(s, /required:\[[^\]]*'nonTestGatesPassed'[^\]]*'suite'[^\]]*\]/, 'BUILD schema must REQUIRE nonTestGatesPassed + suite so they cannot be silently omitted')
   assert.match(s, /SUITE BASELINE — MEASURE IT, DO NOT GUESS IT/, 'BUILD_PRE must instruct builders to measure the baseline')
   assert.ok(!/b\.verifyPassed===false|f\.verifyPassed===false/.test(s), 'verifyPassed must no longer be used as the wave-stop gate')
+})
+
+// ---- verdict retention (2026-08-06) ----
+// The defect this pins: wave verdict payloads were retained NOWHERE — an audit found zero `deviation`
+// fields across a 79.5 MB transcript and no run store on disk, so a wave that stopped unattended left no
+// durable record of why. Two properties matter and both are tested: the stop REASON is actually captured,
+// and a retention failure can NEVER stop the wave.
+
+test('screenText: D-026 — credential shapes are redacted, and the NAME survives while the VALUE never does', () => {
+  const s = screenText([
+    'ANTHROPIC_API_KEY=sk-ant-api03-AbCdEfGhIjKlMnOpQrSt',
+    'token gone: ghp_AbCdEfGhIjKlMnOpQrStUvWx1234',
+    'aws AKIAIOSFODNN7EXAMPLE here',
+    'jwt eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NSJ9.dBjftJeZ4CVP',
+    'mail sam.olive.lee@gmail.com',
+    'DB_PASSWORD: "hunter2"',
+  ].join('\n'), 5000)
+  for (const leaked of ['sk-ant-api03-AbCdEfGhIjKlMnOpQrSt', 'ghp_AbCdEfGhIjKlMnOpQrStUvWx1234',
+    'AKIAIOSFODNN7EXAMPLE', 'sam.olive.lee@gmail.com', 'hunter2']) {
+    assert.ok(!s.includes(leaked), `screenText leaked ${leaked}`)
+  }
+  assert.match(s, /\[REDACTED:ANTHROPIC_KEY\]/)
+  assert.match(s, /\[REDACTED:GITHUB_TOKEN\]/)
+  assert.match(s, /\[REDACTED:AWS_KEY\]/)
+  assert.match(s, /\[REDACTED:JWT\]/)
+  assert.match(s, /\[REDACTED:EMAIL\]/)
+  // the NAME is the useful signal — it must be kept so an auditor knows WHICH credential was involved
+  assert.match(s, /DB_PASSWORD: \[REDACTED:SECRET\]/)
+  // and where a SPECIFIC rule already identified the shape, that label must survive the generic
+  // NAME=VALUE sweep — "which kind of credential leaked" is the whole point of keeping the name
+  assert.match(s, /ANTHROPIC_API_KEY=\[REDACTED:ANTHROPIC_KEY\]/)
+})
+
+test('screenText: ordinary deviation prose is preserved verbatim — screening must not eat the signal', () => {
+  const dev = 'BLOCKED: the spec contradicts D-016 at src/lib/server/db/validate.ts:77 — cannot proceed.'
+  assert.equal(screenText(dev, 2000), dev)
+})
+
+test('screenText: hard-caps length and says how much it dropped; non-strings → null', () => {
+  const out = screenText('x'.repeat(3000), 2000)
+  assert.equal(out.length, 2000 + '…[truncated 1000 chars]'.length)
+  assert.match(out, /…\[truncated 1000 chars\]$/)
+  for (const bad of [null, undefined, 7, {}, []]) assert.equal(screenText(bad, 100), null)
+})
+
+test('retentionRecord: carries the identity needed to correlate a stop, and screens the deviation', () => {
+  const rec = retentionRecord('build-gate', {
+    runId: 'r1', wave: 'w', taskId: 'TC-1', step: 'TC-1 build', stopped: true,
+    reason: 'NON-TEST gates red', deviation: 'BLOCKED: leaked ghp_AbCdEfGhIjKlMnOpQrStUvWx1234',
+    commitSha: 'abc123', suite: { baselineFailed: 3, afterFailed: 5, baselineSource: 'npm test' },
+  })
+  assert.equal(rec.kind, 'build-gate')
+  assert.equal(rec.runId, 'r1')
+  assert.equal(rec.taskId, 'TC-1')
+  assert.equal(rec.step, 'TC-1 build')
+  assert.equal(rec.stopped, true)
+  assert.equal(rec.reason, 'NON-TEST gates red')
+  assert.equal(rec.commitSha, 'abc123')
+  assert.deepEqual(rec.suite, { baselineFailed: 3, afterFailed: 5 })
+  assert.match(rec.at, /^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/)
+  assert.ok(!rec.deviation.includes('ghp_AbCdEfGhIjKlMnOpQrStUvWx1234'), 'deviation reached the record unscreened')
+  assert.match(rec.deviation, /BLOCKED: leaked \[REDACTED:GITHUB_TOKEN\]/)
+})
+
+test('retentionRecord: absent optional fields are OMITTED, not written as null noise; garbage never throws', () => {
+  const rec = retentionRecord('wave-start', { runId: 'r1', wave: 'w', step: 'start' })
+  assert.deepEqual(Object.keys(rec).sort(), ['at', 'kind', 'runId', 'step', 'taskId', 'wave'])
+  assert.equal(rec.taskId, null)
+  for (const bad of [null, undefined, '', 7, []]) {
+    const r = retentionRecord(bad, bad)
+    assert.equal(r.kind, 'unknown')
+    assert.equal(r.runId, null)
+  }
+  // a legitimate kind string is kept as-is — only unusable values fall back to 'unknown'
+  assert.equal(retentionRecord('fix-gate', {}).kind, 'fix-gate')
+  // a half-reported suite is dropped rather than recorded as a misleading partial
+  assert.equal(retentionRecord('k', { suite: { baselineFailed: 1 } }).suite, undefined)
+})
+
+test('retainVia: THE SAFETY PROPERTY — a sink that throws NEVER propagates; it returns false', () => {
+  const boom = () => { throw new Error('ENOSPC: no space left on device') }
+  assert.doesNotThrow(() => retainVia(boom, 'build-gate', { runId: 'r1', reason: 'x' }),
+    'a failed retention write must never escape — retention is observability, never a gate (F-014)')
+  assert.equal(retainVia(boom, 'build-gate', { runId: 'r1' }), false)
+  // every other way a sink can be broken is equally contained
+  for (const bad of [null, undefined, 'not-a-function', 42, {}]) {
+    assert.doesNotThrow(() => retainVia(bad, 'k', {}))
+    assert.equal(retainVia(bad, 'k', {}), false)
+  }
+})
+
+test('retainVia: the happy path actually hands a complete record to the sink and reports true', () => {
+  const seen = []
+  const ok = retainVia((rec) => seen.push(rec), 'wave-stop',
+    { runId: 'r1', wave: 'w', taskId: 'TC-1', step: 'TC-1 build', stopped: true, reason: 'suite WORSE: 3 → 5' })
+  assert.equal(ok, true)
+  assert.equal(seen.length, 1)
+  assert.equal(seen[0].kind, 'wave-stop')
+  assert.equal(seen[0].reason, 'suite WORSE: 3 → 5')
+  assert.equal(seen[0].taskId, 'TC-1')
+})
+
+test('retention wiring guard: every buildStop decision and every wave-stop return is retained', () => {
+  const s = src.replaceAll('\r\n', '\n') // F-054: editors here flip LF→CRLF
+  assert.match(s, /await retain\('build-gate'/, 'the build gate decision must be retained')
+  assert.match(s, /await retain\('fix-gate'/, 'each fix gate decision must be retained')
+  assert.match(s, /await retain\('wave-start'/, 'the run must open with a correlatable start record')
+  assert.match(s, /await retain\('wave-complete'/, 'a clean finish must be recorded too, not only failures')
+  // every `stoppedAt:` return path must have a wave-stop record ahead of it
+  const stopReturns = (s.match(/return \{stoppedAt:`/g) || []).length
+  const stopRecords = (s.match(/await retain\('wave-stop'/g) || []).length
+  assert.equal(stopRecords, stopReturns,
+    `every stoppedAt return must retain a wave-stop record first (${stopReturns} returns, ${stopRecords} records)`)
+  // the sink must not live in the build worktree — a BUILD agent's `git add -A` would commit the log
+  assert.ok(!/RUN_DIR=args\.runLogDir\|\|'F:\\\\code\\\\ai-playground-v2/.test(s),
+    'the run log must not be written inside the build worktree')
 })
 
 // ---- host-load regression (F-016) ----

@@ -36,7 +36,16 @@
 >   first fix had just hardened** — F-055 one level up. Fixed at the repo chokepoint + a lifted
 >   `resolveProjectTask` (`tasks/scope.ts`) replacing six hand-copied project checks. Commits `ef18498`,
 >   `504c1e4`, `3623142`.
-> - **(3) merge `v2-lane-c` → `v2` + full re-gate — IN FLIGHT.**
+> - **(3) merge `v2-lane-c` → `v2` + full re-gate — DONE, GREEN, PUSHED.** `origin/v2` = **`7d88a87`**
+>   (`b4f58f6..7d88a87`), worktree clean. **Zero conflicts — zero file overlap, not luck.** Full suite on
+>   the combination: `Test Files 357 passed | 1 skipped (358)` · `Tests 6411 passed | 10 skipped (6421)` ·
+>   **0 failed** · exit 0. Build OK · lint **0** · svelte-check **1164 files / 0 errors / 0 warnings**.
+>   **Every delta reconciled to its source with nothing left over** (+7 files / +146 tests vs `b4f58f6`),
+>   and the **file count rose against BOTH baselines — no suite went missing**, which is the check that
+>   matters after F-060. The 1 skipped file collected its 5 tests and skipped them (honest environment
+>   gate, not the zero-collection shape). Lane C's `docs-pointers.test.ts` **passed against the `v2` docs
+>   copy on its first run there** (17/17). **`v2` and every `atelier/session/*` worktree cut from it now
+>   carry the corrected F-019 and the fork marker** — that was the point of routing the fix through the merge.
 > - **(6) `fails.md` divergence — MEASURED, and it is not bookkeeping → `docs/FAILS-DIVERGENCE.md`.**
 >   **4 collisions** (not 2): F-016/F-020/F-045/F-046 name DIFFERENT failures per copy. Forks lack **12**
 >   entries (not 9). **25 of 26 worktrees carry the FORK numbering** — the authoritative copy is the rare one.

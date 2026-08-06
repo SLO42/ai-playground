@@ -14,8 +14,10 @@ orphaned-SurrealDB attribution that was correlation and never instrumented, a
 "briefs weren't reaching the agents" claim, and the framing of the truncated F-019 as a *live*
 hazard when it was a reading hazard only. Each was recorded rather than quietly patched.
 
-The stretch ends with **lane C merged into `v2` and the merge NOT pushed** — 28 commits ahead
-of `origin/v2`, its gate still in flight at the time of writing.
+The stretch ends with **lane C merged into `v2`, re-gated green, and PUSHED** — `origin/v2` =
+`7d88a87` (`b4f58f6..7d88a87`), 357 test files / 6411 passed / 0 failed, every delta reconciled
+to its source. (The gate was still in flight when the body below was first written; the End-gate
+section records both states rather than rewriting history.)
 
 > **Span.** Continues from
 > [2026-08-04/05 — Atelier starts gating its own work](2026-08-05-the-self-gate-and-the-sha-that-lied.md),
@@ -36,7 +38,7 @@ Lane C = worktree `F:\code\ai-playground-v2b`, branch `v2-lane-c`.
 | F-019 propagation + self-dating marker | C | ✅ pushed | `c3423e1` `e009cce` | The fork's F-019 restored; fork marker re-measured and rewritten to state its own basis and falsifier. |
 | `fails.md` divergence measurement | — | ✅ read-only, no code | `439ffd3` `4ec43b2` | `docs/FAILS-DIVERGENCE.md` (17.7 KB). Full per-id table, hazard, four reconciliation options. Operator-gated. |
 | F-060 residual — `.ts` scanners | — | ✅ measured CLEAR, nothing changed | `5b7993b` | Swept every `.ts`/`.js` that reads source text and matches. **AT RISK set is empty.** Recommendation: leave `.gitattributes` alone. |
-| Merge lane C → `v2` | A | ⚠️ **merged, NOT pushed** | `7d88a87` | Parents `3623142` + `e009cce`. 28 commits ahead of `origin/v2` (`b4f58f6`). Re-gate in flight — see End-gate. |
+| Merge lane C → `v2` | A | ✅ **merged, re-gated GREEN, pushed** | `7d88a87` | Parents `3623142` + `e009cce`. Zero conflicts — zero file overlap, not luck. `origin/v2` = `7d88a87`. 357 files / 6411 passed / 0 failed. |
 
 ### V1R-1 — the guard skipped the seven files most likely to hold the defect
 
@@ -207,14 +209,30 @@ touched by any commit in this stretch. Migration head remains **`m0087`** (`m008
 | `npx vitest run` (full) | `v2b` @ `03f0d4d` (baseline) | ✅ 334 files passed / 10 skipped; **6008 passed / 20 skipped**; exit 0 |
 | `npx vitest run` (full) | `v2b`, working tree = `8e82bd4` content | ✅ 334 files passed / 10 skipped; **6013 passed / 20 skipped**; exit 0 |
 | targeted | `v2b` @ `e009cce` | ✅ `docs-pointers.test.ts` 17/17; `launch-fixtures` + `edit-scope` 115/115 |
-| **full suite on the merge** | `v2` @ `7d88a87` | ⚠️ **NOT MEASURED BY ME.** Gate in flight in the sibling worktree. |
+| **full suite on the merge** | `v2` @ `7d88a87` | ✅ **RESOLVED after this was written — GREEN and PUSHED.** `Test Files 357 passed \| 1 skipped (358)` · `Tests 6411 passed \| 10 skipped (6421)` · 0 failed · exit 0 · 116.95s. Plus `build` OK, `lint` **0**, `svelte-check` **1164 files / 0 errors / 0 warnings**. `origin/v2` = `7d88a87` (`b4f58f6..7d88a87`), worktree clean, 0 ahead — verified independently. |
 
 The +5 between the two full runs is exactly this guard growing 9→14 tests; no pre-existing
 failures existed to inherit. **Every count above is attributed to the commit it was measured
 on** — per F-060, a count without its commit is not a result.
 
-**`v2` is 28 commits ahead of `origin/v2` and NOT pushed.** The merge `7d88a87` had not been
-re-gated at the time this was written. Treat the merge tip as unverified until that lands.
+**Resolved after writing: the merge re-gate came back green and `v2` is pushed.** `origin/v2` =
+`7d88a87`. **Every delta reconciled to its source with nothing left over** — +7 files / +146 tests
+against `b4f58f6` (2 from the subject commits, 0 from `3623142` which appended to an existing file,
+5 from the lane C merge; +146 = 20 + 4 + 57 from five new files + 65 from lane C's expanded existing
+suites). **File count rose against BOTH baselines — no suite went missing**, which is the check that
+matters after F-060. The 1 skipped file (`scripts/browser-verify/daemon.live.test.ts`) **collected
+its 5 tests and skipped them** — an honest environment gate, not the zero-collection shape. And
+lane C's `docs-pointers.test.ts` **passed against the `v2` docs copy on its first run there** (17/17),
+so that guard does not find this copy wanting.
+
+**One process note worth keeping.** The first full-suite attempt returned **exit 0 with a zero-byte
+log** — piped through `tail`, which buffers to EOF. Reported as UNMEASURED, not green, and re-run
+with a direct redirect. Then the re-armed watcher **fired a FALSE POSITIVE**: a case-insensitive
+`FATAL` matched `fatal: Needed a single revision`, git output from *inside a test*. It was checked
+against the log rather than trusted, and re-armed anchored and case-sensitive. **A watcher tuned too
+broadly manufactures red exactly as a watcher tuned too narrowly manufactures green** — and this is
+the same `fatal:`/git-fixture text that appears as the unexplained lead in F-061's log tail, which
+is worth remembering before that lead is over-read.
 
 ## Parked / next
 

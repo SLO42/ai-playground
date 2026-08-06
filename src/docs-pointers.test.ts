@@ -75,9 +75,10 @@ function readDoc(...segments: string[]): string {
 }
 
 /**
- * F-entry ids that exist ONLY in the docs-checkout copy of fails.md, measured
- * 2026-08-05. The fork marker in docs/fails.md promises these are absent here;
- * the tests below hold both the marker and the file to that promise.
+ * F-entry ids that exist ONLY in the docs-checkout copy of fails.md, re-measured
+ * 2026-08-06 against upstream head F-061. The fork marker in docs/fails.md promises
+ * these are absent here; the tests below hold both the marker and the file to that
+ * promise, and hold this constant and the marker's prose list to EACH OTHER.
  */
 const FORKED_ONLY_UPSTREAM = [
 	'F-048',
@@ -90,7 +91,8 @@ const FORKED_ONLY_UPSTREAM = [
 	'F-055',
 	'F-058',
 	'F-059',
-	'F-060'
+	'F-060',
+	'F-061'
 ];
 
 /**
@@ -416,6 +418,83 @@ describe('no file certifies a frozen/forked doc as live', () => {
 		expect(offenders, 'a code comment sends the reader to a frozen doc as if it were current').toEqual(
 			[]
 		);
+	});
+});
+
+describe('the fork marker states a checkable basis and is internally consistent', () => {
+	/**
+	 * WHAT THESE CANNOT DO, stated up front so they are not mistaken for more than they are:
+	 * nothing here detects that the upstream copy has moved. That is not an oversight — the
+	 * suite deliberately does not read `F:\code\ai-playground\docs\`, which is not guaranteed
+	 * to exist where the tests run, and reading it would be the same "assume the other copy"
+	 * mistake this file exists to prevent. Upstream drift is therefore unguardable from here,
+	 * and the marker's dated basis is the only warning a reader gets. That is why the marker
+	 * says so out loud rather than sounding current.
+	 *
+	 * What IS checkable is the marker contradicting ITSELF — which is how it went wrong the
+	 * first time. These catch a half-finished re-measure: bumping the head without listing
+	 * the new id, listing an id above the stated head, or updating the prose and leaving
+	 * FORKED_ONLY_UPSTREAM behind (or the reverse).
+	 */
+	const statedBasis = () =>
+		/Measurement basis — (\d{4}-\d{2}-\d{2}), upstream head `(F-\d+)`/.exec(
+			readDoc('docs', 'fails.md')
+		);
+
+	/** Zero-padded id from a raw number — `61` is `F-061`, never `F-61`. */
+	const failId = (n: number) => `F-${String(n).padStart(3, '0')}`;
+
+	/**
+	 * The ids the marker's own prose lists as absent from this copy. Deduped: the bullet
+	 * enumerates the set and then names three of them again in the sentence explaining why
+	 * they matter ("F-052 (one builder per worktree), F-058 …"). Every id NAMED anywhere in
+	 * that bullet is a claim of absence, so comparing the deduped set is the right check.
+	 */
+	function markerAbsentIds(): string[] {
+		const bullet = /\*\*Absent from THIS copy[^*]*\*\*([\s\S]*?)(?=\n> - )/.exec(
+			readDoc('docs', 'fails.md')
+		);
+		return [...new Set([...(bullet?.[1] ?? '').matchAll(/F-\d+/g)].map((m) => m[0]))];
+	}
+
+	it('the marker states WHEN it was measured and against WHICH upstream head', () => {
+		const basis = statedBasis();
+		expect(
+			basis,
+			'the fork marker must carry a measurement date and the upstream head it was measured ' +
+				'against — without them a reader cannot tell whether it is a day old or two months old, ' +
+				'which is exactly how it silently went stale on F-061'
+		).not.toBeNull();
+		expect(/^\d{4}-\d{2}-\d{2}$/.test(basis![1])).toBe(true);
+	});
+
+	it('the stated upstream head is consistent with the ids the marker lists as absent', () => {
+		const head = Number(statedBasis()![2].slice(2));
+		const absent = markerAbsentIds();
+		expect(absent.length, 'parsed no ids out of the absent-from-THIS-copy bullet').toBeGreaterThan(0);
+
+		// Nothing may be claimed absent-upstream that is NEWER than the head we measured.
+		const aboveHead = absent.filter((id) => Number(id.slice(2)) > head);
+		expect(
+			aboveHead,
+			`these ids sit above the stated upstream head ${failId(head)} — the head is stale`
+		).toEqual([]);
+
+		// And the head itself must be accounted for: upstream's newest entry is either one
+		// this copy carries or one it is missing. If it is in neither, the head was bumped
+		// without finishing the re-measure.
+		const accounted = absent.includes(failId(head)) || localFailIds().has(failId(head));
+		expect(
+			accounted,
+			`the stated upstream head ${failId(head)} appears neither in the absent list nor in ` +
+				'this copy — the head was updated without completing the measurement'
+		).toBe(true);
+	});
+
+	it('the marker prose and FORKED_ONLY_UPSTREAM agree', () => {
+		// Two hand-maintained copies of the same fact drift apart; this is the "derive, do
+		// not duplicate" rule applied to the pair that already exists.
+		expect(markerAbsentIds().sort()).toEqual([...FORKED_ONLY_UPSTREAM].sort());
 	});
 });
 

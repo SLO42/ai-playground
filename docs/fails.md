@@ -4,9 +4,33 @@ Carried-forward failure patterns + prevention rules. Scan this BEFORE starting a
 task (error-learning protocol). Append a new `F-NNN` entry whenever build/test
 did not pass on the first try; escalate recurrences per the protocol.
 
-This is the UNIFIED log (F-001 onward; 2026-06-10): F-001..F-013 were carried on
-the build branch (`v2`), F-014/F-015 were logged on `v2-main` — merged here and
-synced to both branches so every agent sees the full set. New entries append here.
+> ⚠️ **THIS COPY IS NOT SYNCED, AND AN `F-NNN` ID IS AMBIGUOUS ACROSS COPIES (measured 2026-08-06).**
+> The claim that once stood here — "synced to both branches so every agent sees the full set" — has been
+> false since `e7828c4` (2026-06-07), the merge-base of `v2` and `v2-main`. Since then each branch has
+> appended ids from **its own head**, so there are two numbering systems:
+> - **This copy (`v2-main`) — 31 entries, head F-061.** It is the AUTHORITATIVE one, and it is also the
+>   RARE one: of 26 worktrees on disk, **25 carry the other numbering** (the 23 `atelier/session/*`
+>   worktrees are byte-identical to the `v2` copy).
+> - **The `v2` fork — 47 entries, head F-057.** Holds **28 entries that do not exist here** (F-017, F-018,
+>   F-021..F-044, F-047, F-057) and is missing 12 that do (F-048..F-055, F-058..F-061).
+>
+> **FOUR ids name DIFFERENT failures depending on which copy you read: F-016, F-020, F-045, F-046.**
+> `CLAUDE.md` cites all four; they resolve correctly here and **incorrectly in a `v2` worktree**. A builder
+> there following §4's "F-046" lands on a Svelte `$effect` loop, not the config-dir rule.
+> **This has already reached code** — ~240 citations of the four ambiguous ids, and the two systems are
+> MIXED inside one worktree: `analytics/benchmark/gather.ts:62` cites **F-020** for the ORDER-BY rule while
+> `projects/briefs.ts:238` cites **F-022** for the same rule. A blind id-based renumber would corrupt the
+> citations already using the other system.
+>
+> **Allocate a new id from the HIGHEST head across BOTH copies** (today: F-062+), never from a branch-local
+> head — that is what produced the collisions. Precedent, from the fork's own F-020 `Date` line: on
+> 2026-06-11 the fork already renumbered its F-019→F-020 to dodge a collision, which created today's F-020
+> collision. **A one-sided renumber relocates a collision; it does not resolve one.**
+> Full measurement + reconciliation options: `docs/FAILS-DIVERGENCE.md`. Reconciliation is operator-gated.
+
+This log began as a UNIFIED log (F-001 onward; 2026-06-10): F-001..F-013 were carried on
+the build branch (`v2`), F-014/F-015 were logged on `v2-main` — merged here and, at that
+time, synced to both branches. That sync stopped; see the warning above. New entries append here.
 
 The F-001..F-012 entries below are **carried from v1** (IMPLEMENTATION-PLAN §6)
 — the prevention rules apply to v2 from day 0.

@@ -84,7 +84,7 @@ function fd(fields: Record<string, string>): FormData {
 }
 
 type ActionResult = { status: number; data: Record<string, unknown> };
-type ActionName = 'moveTask' | 'pmCompleteSprint' | 'launch';
+type ActionName = 'moveTask' | 'pmCompleteSprint' | 'launch' | 'pmRevise' | 'pmWithdraw';
 
 async function call(name: ActionName, fields: Record<string, string>): Promise<ActionResult> {
 	const request = { formData: async () => fd(fields) } as unknown as Request;
@@ -295,5 +295,99 @@ describe('launch refuses to spend on a task that is not this project\'s', () => 
 		expect(res.status).toBe(404);
 		expect(String(launchOf(res).error)).toMatch(/not found/);
 		await deleteTask(db, foreign.id);
+	});
+});
+
+// ── pmRevise / pmWithdraw — the PROJECT half, which the table guard never bought ──────────────
+//
+// The sweep above closed the TABLE hole everywhere and the PROJECT hole on `moveTask`,
+// `pmCompleteSprint` and `launch`. These two actions were missed: `requireProposed` table-scopes
+// the id, so a foreign TABLE was already refused — but a real `proposed` task belonging to ANOTHER
+// project sailed through it, because a table check pins WHICH table and never WHICH row.
+//
+// BEFORE (reproduced against this same real DB): posting another project's `proposed` task to
+// `pmWithdraw` on THIS project's page drove it to 'withdrawn', closed its open verdicts and
+// superseded its open brief, answering HTTP 200 `{ pm: { ok: true, action: 'withdraw' } }`.
+// `pmRevise` was worse — it read the OTHER project's PM, CREATED a successor task row on that
+// project and withdrew the predecessor, also answering 200 `{ ok: true }`. A cross-project CREATE
+// reported as success is the half that matters most, so the revise test asserts not just that the
+// predecessor is untouched but that NO successor row was born in the other project.
+describe('pmRevise/pmWithdraw refuse a proposed task of ANOTHER project', () => {
+	/** A §4.1-complete `proposed` task on the OTHER project — a legitimate proposal, not a stub. */
+	async function foreignProposal(): Promise<string> {
+		const [rows] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE task CONTENT {
+				project: $p, title: 'Other project proposal', description: 'other project body',
+				status: 'proposed', objective: 'obj', purpose: 'why', acceptance_criteria: ['ac1'],
+				origin: 'pm', priority: 'normal',
+				provenance: { kind: 'roadmap', evidence: ['docs/other-project.md:1'] }
+			 } RETURN id;`,
+			{ p: new StringRecordId(otherProjectId) }
+		);
+		return String(rows[0].id);
+	}
+
+	async function taskCountOnOtherProject(): Promise<number> {
+		const [rows] = await db.query<[Array<{ n: number }>]>(
+			`SELECT count() AS n FROM task WHERE project = $p GROUP ALL;`,
+			{ p: new StringRecordId(otherProjectId) }
+		);
+		return rows.length ? Number(rows[0].n) : 0;
+	}
+
+	it("another project's proposed task is NOT withdrawn — it is a plain 404", async () => {
+		const foreign = await foreignProposal();
+		const res = await call('pmWithdraw', { taskId: foreign });
+
+		expect(res.status).toBe(404);
+		expect(String(pmOf(res).error)).toMatch(/not found/);
+		expect((await rawRow(foreign))?.status).toBe('proposed'); // untouched
+	});
+
+	it("another project's proposed task is NOT revised — and NO successor row is created", async () => {
+		// The other project has a hired PM, so `revisePmProposal` would get past `getPm` and do the
+		// full revise. Nothing but the project scope check stands between this post and the write.
+		await db.query(`CREATE pm CONTENT { project: $p, name: 'Other PM' } RETURN id;`, {
+			p: new StringRecordId(otherProjectId)
+		});
+		const foreign = await foreignProposal();
+		const before = await taskCountOnOtherProject();
+
+		const res = await call('pmRevise', {
+			taskId: foreign,
+			title: 'Injected revision',
+			objective: 'injected objective',
+			purpose: 'injected purpose',
+			criteria: 'injected criterion'
+		});
+
+		expect(res.status).toBe(404);
+		expect(String(pmOf(res).error)).toMatch(/not found/);
+		expect((await rawRow(foreign))?.status).toBe('proposed'); // predecessor untouched
+		// The cross-project CREATE is the worse half: prove no successor was born over there.
+		expect(await taskCountOnOtherProject()).toBe(before);
+	});
+
+	it('a well-formed id in another table is a 400 at the boundary, not a 409 from the repo', async () => {
+		const res = await call('pmWithdraw', { taskId: thisProjectId });
+		expect(res.status).toBe(400);
+		expect(String(pmOf(res).error)).toMatch(/invalid task id/);
+	});
+
+	it("this project's own proposed task still withdraws", async () => {
+		const [rows] = await db.query<[Array<{ id: unknown }>]>(
+			`CREATE task CONTENT {
+				project: $p, title: 'Our proposal', description: 'our body', status: 'proposed',
+				objective: 'obj', purpose: 'why', acceptance_criteria: ['ac1'],
+				origin: 'pm', priority: 'normal'
+			 } RETURN id;`,
+			{ p: new StringRecordId(thisProjectId) }
+		);
+		const mine = String(rows[0].id);
+		const res = await call('pmWithdraw', { taskId: mine });
+
+		expect(res.status).toBe(200);
+		expect(pmOf(res).ok).toBe(true);
+		expect((await rawRow(mine))?.status).toBe('withdrawn');
 	});
 });

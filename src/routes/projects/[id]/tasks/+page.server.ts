@@ -40,20 +40,19 @@
 
 import { error, fail } from '@sveltejs/kit';
 import { tryGetDb } from '$lib/server/db/runtime-init';
-import { assertRecordId, assertRecordIdOfTable } from '$lib/server/db/validate';
+import { assertRecordId } from '$lib/server/db/validate';
 import { getProject, listSprints } from '$lib/server/projects/repo';
 import { getPm } from '$lib/server/projects/pm-repo';
 import {
 	listTasksByProject,
-	getTask,
 	setStatus,
 	updateTask,
 	TASK_STATUSES,
 	TASK_PRIORITIES,
-	type TaskRow,
 	type TaskStatus,
 	type TaskPriority
 } from '$lib/server/tasks/repo';
+import { resolveProjectTask } from '$lib/server/tasks/scope';
 // The row → wire projection lives in its own module: SvelteKit REFUSES any non-reserved export from
 // a `+page.server.ts` (build-time `validate`), so `toBoardTask` cannot be declared here.
 import { toBoardTask } from './board-row';
@@ -179,25 +178,15 @@ export const load: PageServerLoad = async ({ params, depends }): Promise<TaskBoa
 	}
 };
 
-/** Validate a posted task id: table-scoped (D-016) AND on THIS project's board. */
-async function resolveBoardTask(
-	db: NonNullable<ReturnType<typeof tryGetDb>>,
-	projectId: string,
-	rawId: string
-): Promise<TaskRow | null> {
-	let taskId: string;
-	try {
-		taskId = assertRecordIdOfTable(rawId, 'task');
-	} catch {
-		return null;
-	}
-	const row = await getTask(db, taskId);
-	// A task on ANOTHER project is a plain not-found: this board neither writes to it nor confirms
-	// it exists. `task.project` is absent from UpdateTaskInput, so it cannot move out from under
-	// this check between the read and the write.
-	if (!row || row.project !== projectId) return null;
-	return row;
-}
+/**
+ * Validate a posted task id: table-scoped (D-016) AND on THIS project's board.
+ *
+ * This was a local function; it is now `resolveProjectTask` in `$lib/server/tasks/scope` so the
+ * project-page actions can reach the SAME check instead of hand-copying it. The behaviour is
+ * unchanged — the lift moved the code, not the semantics. See that module for why the project half
+ * of the guard cannot live in the repo alongside the table half.
+ */
+const resolveBoardTask = resolveProjectTask;
 
 export const actions: Actions = {
 	/**

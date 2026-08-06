@@ -168,7 +168,6 @@ import { loadOrchestration } from '$lib/server/config';
 import {
 	listTasksByProject,
 	createTask,
-	getTask,
 	updateTask,
 	setStatus,
 	canTransition,
@@ -177,6 +176,7 @@ import {
 	type TaskStatus,
 	type TaskPriority
 } from '$lib/server/tasks/repo';
+import { resolveProjectTask } from '$lib/server/tasks/scope';
 import { updateProject } from '$lib/server/projects/repo';
 import { listFindings, type FindingRow } from '$lib/server/scanner/findings-repo';
 import {
@@ -961,8 +961,7 @@ export const actions: Actions = {
 		// another project's — or another table's — text as its instructions (D-026: content from
 		// outside the scope reaching the model). Table-scope + this project-scope pre-read refuse
 		// that before any spend. A foreign task is a plain 404, like every other board action here.
-		const launchTask = await getTask(db, taskId);
-		if (!launchTask || launchTask.project !== projectId) {
+		if (!(await resolveProjectTask(db, projectId, taskId))) {
 			return fail(404, { launch: { error: 'task not found' } });
 		}
 
@@ -1079,7 +1078,7 @@ export const actions: Actions = {
 	 * `moveTask` — whose `setStatus` pre-reads the row and whose state machine rejects a non-task —
 	 * this action's write is a bare MERGE, so the shape-only `assertRecordId` used to let any
 	 * well-formed id through and land the MERGE on `project`/`memory` (both carry a `tags` column)
-	 * while reporting "Tags saved". `assertRecordIdOfTable` pins the table; the `getTask` pre-read
+	 * while reporting "Tags saved". `assertRecordIdOfTable` pins the table; `resolveProjectTask`
 	 * pins the row to THIS project's board (`task.project` is not in UpdateTaskInput, so it cannot
 	 * move out from under the check). A foreign task is a plain 404 — the board neither writes to
 	 * it nor confirms it exists.
@@ -1099,8 +1098,7 @@ export const actions: Actions = {
 		}
 		const tags = parseTagInput(String(form.get('tags') ?? ''));
 		try {
-			const existing = await getTask(db, taskId);
-			if (!existing || existing.project !== projectId) {
+			if (!(await resolveProjectTask(db, projectId, taskId))) {
 				return fail(404, { task: { error: 'task not found' } });
 			}
 			const row = await updateTask(db, taskId, { tags });
@@ -1118,15 +1116,16 @@ export const actions: Actions = {
 	 * Move a task to a new status (guarded by the state machine — illegal moves rejected).
 	 *
 	 * The posted `taskId` is TABLE-scoped and PROJECT-scoped before anything is written — the same
-	 * two guards `retagTask` above carries, and the same pair the full board route already applies
-	 * in `tasks/+page.server.ts` (`resolveBoardTask`). This inline action is the call path that fix
-	 * did not reach (F-055 — a gate closed on the new path while the old one kept the hole).
+	 * two guards `retagTask` above carries, and the same pair the full board route applies via the
+	 * shared `resolveProjectTask`. This inline action is the call path that fix did not reach — a
+	 * gate closed on the new path while the old one kept the hole (F-055 in the AUTHORITATIVE
+	 * `v2-main` copy of fails.md; that id does not exist in this worktree's forked copy).
 	 *
 	 * The shape-only `assertRecordId` was not sufficient here, and the state machine did not cover
 	 * for it: `canTransition` reads the FOREIGN row's status string, so any table whose enum
 	 * overlaps the task enum was writable through this form (see the note on `setStatus`). The
 	 * repo now refuses a non-task id on its own; this guard is what turns that into a named 400
-	 * instead of a 500, and the `getTask` pre-read is the part the repo CANNOT do — only the route
+	 * instead of a 500, and `resolveProjectTask` is the part the repo CANNOT do — only the route
 	 * knows which project the URL is scoped to. A task on another project's board is a plain 404:
 	 * this page neither moves it nor confirms it exists.
 	 */
@@ -1148,10 +1147,7 @@ export const actions: Actions = {
 			return fail(400, { task: { error: `Unknown status "${to}".` } });
 		}
 		try {
-			// `task.project` is absent from UpdateTaskInput and `setStatus` writes only `status` +
-			// `updated_at`, so the row cannot move out from under this check between read and write.
-			const existing = await getTask(db, taskId);
-			if (!existing || existing.project !== projectId) {
+			if (!(await resolveProjectTask(db, projectId, taskId))) {
 				return fail(404, { task: { error: 'task not found' } });
 			}
 			const row = await setStatus(db, taskId, to as TaskStatus);
@@ -2048,9 +2044,18 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const taskId = String(form.get('taskId') ?? '').trim();
 		try {
-			assertRecordId(taskId);
+			assertRecordIdOfTable(taskId, 'task');
 		} catch {
 			return fail(400, { pm: { error: 'invalid task id' } });
+		}
+		// PROJECT SCOPE — the guard this action never had. `requireProposed` is table-scoped, so a
+		// foreign TABLE was already refused, but a real `proposed` task of ANOTHER project passed
+		// straight through it: `revisePmProposal` then read that project's PM, created a successor
+		// row ON THAT PROJECT and withdrew its predecessor, and this action answered HTTP 200
+		// `{ ok: true }`. One project's PM surface must not author or retire another's proposals.
+		// A foreign task is a plain 404 — neither revised nor confirmed to exist.
+		if (!(await resolveProjectTask(db, projectId, taskId))) {
+			return fail(404, { pm: { error: 'task not found' } });
 		}
 		const title = String(form.get('title') ?? '').trim();
 		const objective = String(form.get('objective') ?? '').trim();
@@ -2100,9 +2105,16 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const taskId = String(form.get('taskId') ?? '').trim();
 		try {
-			assertRecordId(taskId);
+			assertRecordIdOfTable(taskId, 'task');
 		} catch {
 			return fail(400, { pm: { error: 'invalid task id' } });
+		}
+		// PROJECT SCOPE — the guard this action never had (see `pmRevise`). A real `proposed` task
+		// of ANOTHER project passed the table-scoped `requireProposed` and was driven to
+		// 'withdrawn', its open verdicts closed and its open brief superseded, with HTTP 200
+		// `{ ok: true }` returned. A foreign task is a plain 404.
+		if (!(await resolveProjectTask(db, projectId, taskId))) {
+			return fail(404, { pm: { error: 'task not found' } });
 		}
 		try {
 			const res = await withdrawPmProposal(db, taskId);

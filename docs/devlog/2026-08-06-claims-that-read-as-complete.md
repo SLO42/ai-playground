@@ -236,15 +236,31 @@ is worth remembering before that lead is over-read.
 
 ## Parked / next
 
-**Not operator-gated — can proceed:**
-- Push `v2` once the merge re-gate lands green (28 commits, `b4f58f6..7d88a87`).
-- `wave-verdict-retention` — persist each `buildStop` reason + verdict `deviation` to a run log.
-  Named, not designed. Blocks after-the-fact auditing of wave stops today.
-- The fork copy in `F:\code\ai-playground-v2` still carries the **pre-fix F-019** and no fork
-  marker at all — its header still claims it is the full set. It inherits both when the merge
-  lands and sessions are recreated; until then a builder there reads the superseded rule.
-- `src/routes/projects/create/run-nav.test.ts:40` is CRLF-safe only *incidentally*. A one-line
-  normalisation would make it safe by design. Deliberately not committed pre-merge.
+**Closed after this section was first written:**
+- ✅ **`v2` pushed** — `origin/v2` = `7d88a87`, gate green (357 files / 6411 passed / 0 failed).
+- ✅ **`wave-verdict-retention` BUILT** — `28e1038` + `0a70ac0`, host pre-check **46/46** (was 38).
+  Append-only JSONL at `.claude/wave-runs/<RUN_ID>.jsonl`, one file per run so concurrent lanes
+  cannot interleave. **I had queued this `gate:operator` and that was wrong** — additive
+  observability, no spend, no publish, no entry retirement; it meets none of the gate criteria,
+  and inventing a gate is a way of not doing work. Three details outlast the feature: the location
+  is *decided* (not the build worktree, where `git add -A` would sweep the log into a feature
+  commit and corrupt the history it exists to explain — uncommittable where it sits, verified with
+  `git check-ignore -v`); fail-open is a **named function** so the safety property is
+  mutation-provable, and was proven; and screening keeps the credential's NAME while discarding
+  its VALUE, because which credential leaked is the useful signal. **Still open:** fs acquisition
+  is unproven until a real wave runs — the give-up path logs ONCE that retention is unavailable
+  rather than silently no-op'ing. Check `.claude/wave-runs/` after the next wave.
+- ✅ **The `v2` fork copy inherited** the corrected F-019 and the fork marker via the merge —
+  verified in that copy (recurrence at `docs/fails.md:223`, marker at `:39-47`). Session worktrees
+  pick it up as they are recreated from `v2`.
+
+**Not operator-gated — still open:**
+- `src/routes/projects/create/run-nav.test.ts:40` is CRLF-safe only *incidentally* — its three
+  patterns are all mid-line. A one-line normalisation would make it safe by design. Deliberately
+  not given its own commit; it should ride along with whatever next touches that file.
+- The 23 `atelier/session/*` worktrees still carry the pre-merge `fails.md`. They are not stale
+  by neglect — they inherit the corrected F-019 and the fork marker as they are recreated from
+  `v2`, which is now `7d88a87`.
 
 **Operator-gated:**
 - **`fails.md` reconciliation** — all four options in `docs/FAILS-DIVERGENCE.md`. Renumbering

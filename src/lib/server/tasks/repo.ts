@@ -455,8 +455,15 @@ export async function updateTask(
 	return rows.length ? normTask(rows[0]) : null;
 }
 
+/**
+ * Delete a task. TABLE-SCOPED for the same reason as {@link updateTask}/{@link setStatus}, and
+ * most urgently of the three: the statement is a bare `DELETE $rid`, so under the shape-only
+ * guard any well-formed `table:id` would delete that row — from ANY table, with no enum or state
+ * machine standing in the way. No caller reaches this with an operator-supplied id today; the
+ * guard is here so none ever can.
+ */
 export async function deleteTask(db: Db, id: string): Promise<boolean> {
-	const rid = new StringRecordId(assertRecordId(id));
+	const rid = new StringRecordId(assertRecordIdOfTable(id, 'task'));
 	const [rows] = await db.query<[unknown[]]>(`DELETE $rid RETURN BEFORE;`, { rid });
 	return rows.length > 0;
 }
@@ -483,11 +490,28 @@ export async function deleteTask(db: Db, id: string): Promise<boolean> {
 export async function setStatus(db: Db, id: string, to: TaskStatus): Promise<TaskRow | null> {
 	if (!isTaskStatus(to)) throw new Error(`invalid task status: ${String(to)}`);
 
+	// TABLE-SCOPED (`assertRecordIdOfTable`, not the shape-only `assertRecordId`) for exactly the
+	// reason `updateTask` is: this function ends in a bare `UPDATE $rid SET status`, which writes
+	// to whatever table the id names. The state machine below does NOT make up the difference —
+	// `canTransition` only asks whether the row's CURRENT status string is a key of
+	// ALLOWED_TRANSITIONS with `to` in its list, so EVERY table whose status enum overlaps the
+	// task enum was reachable through a well-formed foreign id: `phase` and `feature` sit in
+	// 'in_progress' and their own ASSERT admits 'done'; a 'proposed' `review_proposal` admits
+	// 'withdrawn'. Those writes committed and returned a row, so the caller was told the move
+	// succeeded. (`project` happened to be safe — its enum is disjoint — which is why the hole
+	// read as covered.) A `setStatus` in the task repo may only ever move a `task`, and that is
+	// enforced HERE so no caller, present or future, has to remember it.
+	//
+	// The guard runs BEFORE the pre-read, so a foreign id is refused without reading the row at
+	// all — no foreign row is normalized as a task, and the identity-'done' branch below (which
+	// writes, via closeOpenPanelVerdictsForArtifact) can never fire against a non-task artifact.
+	const taskId = assertRecordIdOfTable(id, 'task');
+
 	// Pre-read the current status to produce a precise, typed error BEFORE issuing
 	// the guarded transaction (the transaction is the authoritative guard; this is
 	// the friendly-error fast path).
-	const current = await getTask(db, id);
-	if (!current) throw new Error(`task not found: ${id}`);
+	const current = await getTask(db, taskId);
+	if (!current) throw new Error(`task not found: ${taskId}`);
 	if (current.status === to) {
 		// Identity is a no-op, never a transition — do not touch the row, so no
 		// spurious db_change fires. Return the row unchanged.
@@ -508,7 +532,7 @@ export async function setStatus(db: Db, id: string, to: TaskStatus): Promise<Tas
 		throw new InvalidTransitionError(current.status, to);
 	}
 
-	const rid = new StringRecordId(assertRecordId(id));
+	const rid = new StringRecordId(taskId);
 	// Atomic guard-and-write (D-008 — kill the v1 TOCTOU class): the LEGALITY of the
 	// transition is decided in JS above (canTransition); the transaction enforces the
 	// RACE guard — the row's status must still equal the `from` we read, else a

@@ -25,7 +25,7 @@ import { createHash } from 'node:crypto';
 import { join } from 'node:path';
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
-import { assertRecordId } from '../db/validate';
+import { assertRecordId, assertRecordIdOfTable } from '../db/validate';
 import { ConfigError, loadWorkforce } from '../config/index';
 import {
 	createTask,
@@ -296,8 +296,22 @@ export interface ReviseProposalResult {
 	verdictsClosed: number;
 }
 
-/** Load + guard a proposal row for the revise/withdraw loop. */
+/**
+ * Load + guard a proposal row for the revise/withdraw loop.
+ *
+ * TABLE-SCOPED first (D-016): this is the single entry gate for `revisePmProposal` and
+ * `withdrawPmProposal`, and both reach writes. The `status === 'proposed'` check below is NOT a
+ * table guard — `decision`, `gauntlet_fixture` and `review_proposal` all carry a 'proposed'
+ * status too, so a well-formed foreign id passed it. The downstream writes are now table-scoped
+ * on their own, so this refuses by construction rather than by luck, and it does so BEFORE the
+ * read rather than partway through the loop.
+ */
 async function requireProposed(db: Db, taskId: string): Promise<TaskRow> {
+	try {
+		assertRecordIdOfTable(taskId, 'task');
+	} catch (err) {
+		throw new ProposalContractError((err as Error).message);
+	}
 	const task = await getTask(db, taskId);
 	if (!task) throw new ProposalContractError(`task not found: ${taskId}`);
 	if (task.status !== 'proposed') {

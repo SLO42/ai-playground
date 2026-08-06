@@ -18,7 +18,7 @@
 
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
-import { assertRecordId } from '../db/validate';
+import { assertRecordId, assertRecordIdOfTable } from '../db/validate';
 import { screen } from '../memory/screen';
 import { getProject, type SprintRow } from './repo';
 
@@ -387,9 +387,17 @@ export async function listPmReviews(
 
 // ── Sprint lifecycle (create lives in repo.ts; complete is a PM action) ──────────
 
-/** Mark a sprint completed (status + completed_at). MERGE preserves other columns. */
+/**
+ * Mark a sprint completed (status + completed_at). MERGE preserves other columns.
+ *
+ * TABLE-SCOPED (D-016): the statement is a bare `UPDATE $rid MERGE`, so under the shape-only
+ * `link()` guard any well-formed `table:id` was merged into — writing `status:"completed"` and a
+ * `completed_at` onto whatever row the id named, and returning it so the caller reported success.
+ * Tables that define no `status` absorbed the merge silently and still answered `ok` (an F-008
+ * honesty defect on top of the write). `completeSprint` may only ever complete a `sprint`.
+ */
 export async function completeSprint(db: Db, id: string): Promise<SprintRow | null> {
-	const rid = link(id);
+	const rid = new StringRecordId(assertRecordIdOfTable(id, 'sprint'));
 	const [rows] = await db.query<[(SprintRow & { id: unknown; project: unknown })[]]>(
 		`UPDATE $rid MERGE { status: "completed", completed_at: $now } RETURN AFTER;`,
 		{ rid, now: new Date() }

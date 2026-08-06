@@ -26,6 +26,7 @@ import {
 	listFeatures,
 	listSprints,
 	createSprint,
+	getSprint,
 	parseGameVerifyConfig,
 	PROJECT_STATUSES,
 	isoOrNull,
@@ -943,7 +944,7 @@ export const actions: Actions = {
 		// re-submits with overrideBudget=true (consent + cap stay separate — CLAUDE.md §6).
 		const overrideTokenBudget = form.get('overrideBudget') === 'true';
 		try {
-			assertRecordId(taskId);
+			assertRecordIdOfTable(taskId, 'task');
 		} catch {
 			return fail(400, { launch: { error: 'invalid task id' } });
 		}
@@ -951,6 +952,18 @@ export const actions: Actions = {
 		const db = tryGetDb();
 		if (!db) {
 			return fail(503, { launch: { error: 'Database not connected — start SurrealDB and retry.' } });
+		}
+
+		// The launched session is seeded with the TASK's title/description as its prompt, so a
+		// shape-only id here was worse than a stray write: `launchSession` resolves the prompt with
+		// `SELECT … FROM ONLY $tid` and only asserts the row EXISTS, so a well-formed foreign id
+		// spawned a real, token-spending Claude Code session against THIS project's worktree with
+		// another project's — or another table's — text as its instructions (D-026: content from
+		// outside the scope reaching the model). Table-scope + this project-scope pre-read refuse
+		// that before any spend. A foreign task is a plain 404, like every other board action here.
+		const launchTask = await getTask(db, taskId);
+		if (!launchTask || launchTask.project !== projectId) {
+			return fail(404, { launch: { error: 'task not found' } });
 		}
 
 		// getRuntime reads the LIVE cc-config catalog from this db so composeCapabilities
@@ -1101,7 +1114,22 @@ export const actions: Actions = {
 		}
 	},
 
-	/** Move a task to a new status (guarded by the state machine — illegal moves rejected). */
+	/**
+	 * Move a task to a new status (guarded by the state machine — illegal moves rejected).
+	 *
+	 * The posted `taskId` is TABLE-scoped and PROJECT-scoped before anything is written — the same
+	 * two guards `retagTask` above carries, and the same pair the full board route already applies
+	 * in `tasks/+page.server.ts` (`resolveBoardTask`). This inline action is the call path that fix
+	 * did not reach (F-055 — a gate closed on the new path while the old one kept the hole).
+	 *
+	 * The shape-only `assertRecordId` was not sufficient here, and the state machine did not cover
+	 * for it: `canTransition` reads the FOREIGN row's status string, so any table whose enum
+	 * overlaps the task enum was writable through this form (see the note on `setStatus`). The
+	 * repo now refuses a non-task id on its own; this guard is what turns that into a named 400
+	 * instead of a 500, and the `getTask` pre-read is the part the repo CANNOT do — only the route
+	 * knows which project the URL is scoped to. A task on another project's board is a plain 404:
+	 * this page neither moves it nor confirms it exists.
+	 */
 	moveTask: async ({ params, request }) => {
 		const projectId = pmProjectId(params.id);
 		if (!projectId) return fail(400, { task: { error: 'invalid project id' } });
@@ -1112,7 +1140,7 @@ export const actions: Actions = {
 		const taskId = String(form.get('taskId') ?? '').trim();
 		const to = String(form.get('to') ?? '').trim();
 		try {
-			assertRecordId(taskId);
+			assertRecordIdOfTable(taskId, 'task');
 		} catch {
 			return fail(400, { task: { error: 'invalid task id' } });
 		}
@@ -1120,6 +1148,12 @@ export const actions: Actions = {
 			return fail(400, { task: { error: `Unknown status "${to}".` } });
 		}
 		try {
+			// `task.project` is absent from UpdateTaskInput and `setStatus` writes only `status` +
+			// `updated_at`, so the row cannot move out from under this check between read and write.
+			const existing = await getTask(db, taskId);
+			if (!existing || existing.project !== projectId) {
+				return fail(404, { task: { error: 'task not found' } });
+			}
 			const row = await setStatus(db, taskId, to as TaskStatus);
 			if (!row) return fail(404, { task: { error: 'task not found' } });
 			return { task: { ok: true as const, action: 'move', taskId, to } };
@@ -1352,7 +1386,14 @@ export const actions: Actions = {
 		}
 	},
 
-	/** Complete a sprint (status → completed + completed_at). */
+	/**
+	 * Complete a sprint (status → completed + completed_at).
+	 *
+	 * Same two guards as `moveTask`/`retagTask`, for the same reason: `completeSprint` ends in a
+	 * bare `UPDATE $rid MERGE`, so a shape-only id let the merge land on a foreign row and still
+	 * report success. Table-scope pins it to `sprint`; the `getSprint` pre-read pins it to THIS
+	 * project, so one project's panel cannot complete another's sprint.
+	 */
 	pmCompleteSprint: async ({ params, request }) => {
 		const projectId = pmProjectId(params.id);
 		if (!projectId) return fail(400, { pm: { error: 'invalid project id' } });
@@ -1362,11 +1403,15 @@ export const actions: Actions = {
 		const form = await request.formData();
 		const sprintId = String(form.get('sprintId') ?? '').trim();
 		try {
-			assertRecordId(sprintId);
+			assertRecordIdOfTable(sprintId, 'sprint');
 		} catch {
 			return fail(400, { pm: { error: 'invalid sprint id' } });
 		}
 		try {
+			const existing = await getSprint(db, sprintId);
+			if (!existing || existing.project !== projectId) {
+				return fail(404, { pm: { error: 'sprint not found' } });
+			}
 			const done = await completeSprint(db, sprintId);
 			if (!done) return fail(404, { pm: { error: 'sprint not found' } });
 			return { pm: { ok: true as const, action: 'sprint-complete', sprintId } };

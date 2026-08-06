@@ -21,7 +21,7 @@
 import { env } from '$env/dynamic/private';
 import { tryGetDb } from '$lib/server/db/runtime-init';
 import { getProject } from '$lib/server/projects/repo';
-import { assertRecordId } from '$lib/server/db/validate';
+import { assertRecordId, assertRecordIdOfTable } from '$lib/server/db/validate';
 import {
 	getAdapterRegistry,
 	declareTarget,
@@ -284,10 +284,20 @@ export const actions: Actions = {
 		}
 	},
 
-	/** Remove a target declaration (by id). */
+	/**
+	 * Remove a target declaration (by id).
+	 *
+	 * The posted id is TABLE-scoped and PROJECT-scoped before the delete. `removeTarget` ends in a
+	 * bare `DELETE $rid`, so the shape-only guard this used to carry made the form an arbitrary-
+	 * record delete: any well-formed `table:id` was removed and `{ ok: true }` returned. Table-
+	 * scope pins it to `project_target`; the `getTarget` pre-read pins it to THIS project, so one
+	 * project's targets page cannot delete another's target. A foreign target is a plain 404 —
+	 * the page neither deletes it nor confirms it exists.
+	 */
 	remove: async ({ params, request }) => {
+		let projectId: string;
 		try {
-			assertRecordId(`project:${params.id}`);
+			projectId = assertRecordId(`project:${params.id}`);
 		} catch {
 			return fail(400, { remove: { error: 'invalid project id' } });
 		}
@@ -296,11 +306,15 @@ export const actions: Actions = {
 		const form = await request.formData();
 		let targetId: string;
 		try {
-			targetId = assertRecordId(String(form.get('targetId') ?? ''));
+			targetId = assertRecordIdOfTable(String(form.get('targetId') ?? ''), 'project_target');
 		} catch {
 			return fail(400, { remove: { error: 'invalid target id' } });
 		}
 		try {
+			const existing = await getTarget(db, targetId);
+			if (!existing || existing.project !== projectId) {
+				return fail(404, { remove: { error: 'target not found' } });
+			}
 			const ok = await removeTarget(db, targetId);
 			return { remove: { ok } };
 		} catch (err) {

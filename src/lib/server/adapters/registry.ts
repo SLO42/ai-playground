@@ -19,7 +19,7 @@
 
 import { StringRecordId } from 'surrealdb';
 import type { Db } from '../db/client';
-import { assertRecordId } from '../db/validate';
+import { assertRecordId, assertRecordIdOfTable } from '../db/validate';
 import {
 	UnknownAdapterError,
 	type ActionAdapter,
@@ -240,8 +240,16 @@ export async function resolveDefaultTarget(
 }
 
 /** Remove a target declaration. Returns true iff a row was deleted. */
+/**
+ * Delete a target declaration. TABLE-SCOPED (D-016): the statement is a bare `DELETE $rid`, and
+ * the `remove` action on `/projects/[id]/targets` posts this id straight from a form. Under the
+ * shape-only `link()` guard that made the page an ARBITRARY-RECORD DELETE — any well-formed
+ * `table:id` an operator (or a crafted post) supplied was deleted, with no enum, state machine or
+ * FK in the way, and `{ ok: true }` returned. `removeTarget` may only ever remove a
+ * `project_target`; the caller adds the project-scope check the repo cannot make.
+ */
 export async function removeTarget(db: Db, targetId: string): Promise<boolean> {
-	const rid = link(targetId);
+	const rid = new StringRecordId(assertRecordIdOfTable(targetId, 'project_target'));
 	const [rows] = await db.query<[unknown[]]>(`DELETE $rid RETURN BEFORE;`, { rid });
 	return rows.length > 0;
 }
